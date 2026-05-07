@@ -387,7 +387,7 @@ Note: These rules are guiding principles. Apply them flexibly with actual data â
 
 Fields:
 - ticker: stock code string (e.g. "600519" or "600519.SH"), null if unrecognizable
-- horizons: list of time horizons, options: "short" (1-2 weeks, technicals-driven), "medium" (1-3 months, fundamentals-driven), default ["short"]
+- horizons: always ["short"]. Do not infer multiple horizons; each analyst uses its natural lookback internally.
 - focus_areas: list of analysis dimensions the user specifically cares about (empty array if none)
 - specific_questions: list of specific questions from the user (empty array if none)
 - user_context: extracted account/profile context object. Return {} if not mentioned. It may include:

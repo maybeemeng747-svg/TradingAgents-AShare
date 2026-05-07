@@ -9,12 +9,16 @@ from api.database import ScheduledAnalysisDB
 
 MAX_SCHEDULED_ITEMS = 10
 
-# 非交易时间窗口：15:00~次日9:15 允许设置
 VALID_HORIZONS = {"short", "medium"}
 
 
 def _validate_trigger_time(t: str) -> str:
-    """Validate HH:MM format. Allowed: 20:00~23:59 or 00:00~08:00."""
+    """Validate HH:MM format.
+
+    The scheduler now supports both intraday watch points and post-close
+    review points. Frontend guidance can still recommend 11:35/14:30/20:00,
+    but the backend only enforces a valid wall-clock time.
+    """
     parts = t.strip().split(":")
     if len(parts) != 2:
         raise ValueError("时间格式错误，请使用 HH:MM")
@@ -24,11 +28,26 @@ def _validate_trigger_time(t: str) -> str:
         raise ValueError("时间格式错误，请使用 HH:MM")
     if not (0 <= hh <= 23 and 0 <= mm <= 59):
         raise ValueError("时间格式错误，请使用 HH:MM")
-    time_val = hh * 60 + mm
-    # Allowed: 20:00 (1200) ~ 23:59 (1439) or 00:00 (0) ~ 08:00 (480)
-    if 8 * 60 < time_val < 20 * 60:
-        raise ValueError("定时时间仅允许 20:00~次日 08:00（避免影响白天使用）")
     return f"{hh:02d}:{mm:02d}"
+
+
+def _ensure_no_schedule_conflict(
+    db: Session,
+    user_id: str,
+    symbol: str,
+    trigger_time: str,
+    *,
+    exclude_id: Optional[str] = None,
+) -> None:
+    query = db.query(ScheduledAnalysisDB).filter(
+        ScheduledAnalysisDB.user_id == user_id,
+        ScheduledAnalysisDB.symbol == symbol,
+        ScheduledAnalysisDB.trigger_time == trigger_time,
+    )
+    if exclude_id:
+        query = query.filter(ScheduledAnalysisDB.id != exclude_id)
+    if query.first():
+        raise ValueError(f"{symbol} 在 {trigger_time} 已有定时分析任务")
 
 
 def list_scheduled(db: Session, user_id: str) -> List[dict]:
@@ -120,17 +139,9 @@ def create_scheduled(
     if count >= MAX_SCHEDULED_ITEMS:
         raise ValueError(f"定时分析数量已达上限 ({MAX_SCHEDULED_ITEMS})")
 
-    existing = (
-        db.query(ScheduledAnalysisDB)
-        .filter(ScheduledAnalysisDB.user_id == user_id, ScheduledAnalysisDB.symbol == symbol)
-        .first()
-    )
-    if existing:
-        raise ValueError(f"{symbol} 已有定时分析任务")
-
     horizon = _validate_horizon(horizon)
-
     trigger_time = _validate_trigger_time(trigger_time)
+    _ensure_no_schedule_conflict(db, user_id, symbol, trigger_time)
 
     item = ScheduledAnalysisDB(
         id=uuid4().hex,
@@ -164,7 +175,7 @@ def ensure_scheduled_for_symbols(
         .order_by(ScheduledAnalysisDB.created_at)
         .all()
     )
-    existing_symbols = {item.symbol for item in existing_items}
+    existing_keys = {(item.symbol, item.trigger_time or "20:00") for item in existing_items}
     remaining_slots = max(0, MAX_SCHEDULED_ITEMS - len(existing_items))
 
     created: list[str] = []
@@ -178,7 +189,8 @@ def ensure_scheduled_for_symbols(
             continue
         seen.add(symbol)
 
-        if symbol in existing_symbols:
+        key = (symbol, trigger_time)
+        if key in existing_keys:
             existing.append(symbol)
             continue
 
@@ -195,7 +207,7 @@ def ensure_scheduled_for_symbols(
                 trigger_time=trigger_time,
             )
         )
-        existing_symbols.add(symbol)
+        existing_keys.add(key)
         created.append(symbol)
         remaining_slots -= 1
 
@@ -219,6 +231,9 @@ def update_scheduled(db: Session, user_id: str, item_id: str, **kwargs) -> Optio
     if not item:
         return None
 
+    next_trigger_time = _validate_trigger_time(kwargs["trigger_time"]) if "trigger_time" in kwargs else (item.trigger_time or "20:00")
+    if "trigger_time" in kwargs:
+        _ensure_no_schedule_conflict(db, user_id, item.symbol, next_trigger_time, exclude_id=item.id)
     _apply_scheduled_updates(item, **kwargs)
 
     db.commit()
@@ -252,6 +267,17 @@ def batch_update_scheduled(
     missing_ids = [item_id for item_id in normalized_ids if item_id not in item_map]
     if missing_ids:
         raise ValueError("部分定时任务不存在或已失效，请刷新后重试")
+
+    if "trigger_time" in kwargs:
+        next_trigger_time = _validate_trigger_time(kwargs["trigger_time"])
+        seen_keys: set[tuple[str, str]] = set()
+        for item_id in normalized_ids:
+            item = item_map[item_id]
+            key = (item.symbol, next_trigger_time)
+            if key in seen_keys:
+                raise ValueError(f"{item.symbol} 在 {next_trigger_time} 已有定时分析任务")
+            seen_keys.add(key)
+            _ensure_no_schedule_conflict(db, user_id, item.symbol, next_trigger_time, exclude_id=item.id)
 
     for item_id in normalized_ids:
         _apply_scheduled_updates(item_map[item_id], **kwargs)
@@ -372,7 +398,7 @@ def _to_dict(item: ScheduledAnalysisDB) -> dict:
         "id": item.id,
         "symbol": item.symbol,
         "horizon": item.horizon or "short",
-        "trigger_time": item.trigger_time or "15:30",
+        "trigger_time": item.trigger_time or "20:00",
         "is_active": item.is_active,
         "last_run_date": item.last_run_date,
         "last_run_status": item.last_run_status,

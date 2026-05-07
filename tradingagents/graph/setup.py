@@ -60,7 +60,9 @@ class GraphSetup:
     def __init__(
         self,
         quick_thinking_llm: ChatOpenAI,
+        mid_thinking_llm: ChatOpenAI,
         deep_thinking_llm: ChatOpenAI,
+        ultra_thinking_llm: ChatOpenAI,
         tool_nodes: Dict[str, ToolNode],
         bull_memory,
         bear_memory,
@@ -72,7 +74,9 @@ class GraphSetup:
     ):
         """Initialize with required components."""
         self.quick_thinking_llm = quick_thinking_llm
+        self.mid_thinking_llm = mid_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
+        self.ultra_thinking_llm = ultra_thinking_llm
         self.tool_nodes = tool_nodes
         self.bull_memory = bull_memory
         self.bear_memory = bear_memory
@@ -105,6 +109,12 @@ class GraphSetup:
         def analyst_done_node(_state):
             return {}
 
+        # ── 模型分档分配 ──────────────────────────────
+        # quick (glm-4.5-air): 数据采集层，信息抽取为主
+        # mid   (glm-4.7):     强分析+风控辩论，需要强推理
+        # deep  (glm-5-turbo): 辩论核心+交易执行，综合构建论据
+        # ultra (glm-5.1):     双终审，最高决策权重
+
         if "market" in selected_analysts:
             analyst_nodes["market"] = factories["create_market_analyst"](
                 self.quick_thinking_llm, self.data_collector
@@ -128,14 +138,14 @@ class GraphSetup:
 
         if "fundamentals" in selected_analysts:
             analyst_nodes["fundamentals"] = factories["create_fundamentals_analyst"](
-                self.quick_thinking_llm, self.data_collector
+                self.mid_thinking_llm, self.data_collector
             )
             tool_nodes["fundamentals"] = self.tool_nodes["fundamentals"]
             done_nodes["fundamentals"] = analyst_done_node
 
         if "macro" in selected_analysts:
             analyst_nodes["macro"] = factories["create_macro_analyst"](
-                self.quick_thinking_llm, self.data_collector
+                self.mid_thinking_llm, self.data_collector
             )
             tool_nodes["macro"] = self.tool_nodes["macro"]
             done_nodes["macro"] = analyst_done_node
@@ -156,22 +166,22 @@ class GraphSetup:
 
         # Create researcher and manager nodes
         bull_researcher_node = factories["create_bull_researcher"](
-            self.quick_thinking_llm, self.bull_memory
+            self.deep_thinking_llm, self.bull_memory
         )
         bear_researcher_node = factories["create_bear_researcher"](
-            self.quick_thinking_llm, self.bear_memory
+            self.deep_thinking_llm, self.bear_memory
         )
         research_manager_node = factories["create_research_manager"](
-            self.deep_thinking_llm, self.invest_judge_memory
+            self.ultra_thinking_llm, self.invest_judge_memory
         )
-        trader_node = factories["create_trader"](self.quick_thinking_llm, self.trader_memory)
+        trader_node = factories["create_trader"](self.deep_thinking_llm, self.trader_memory)
 
         # Create risk analysis nodes
-        aggressive_analyst = factories["create_aggressive_debator"](self.quick_thinking_llm)
-        neutral_analyst = factories["create_neutral_debator"](self.quick_thinking_llm)
-        conservative_analyst = factories["create_conservative_debator"](self.quick_thinking_llm)
+        aggressive_analyst = factories["create_aggressive_debator"](self.mid_thinking_llm)
+        neutral_analyst = factories["create_neutral_debator"](self.mid_thinking_llm)
+        conservative_analyst = factories["create_conservative_debator"](self.mid_thinking_llm)
         risk_manager_node = factories["create_risk_manager"](
-            self.deep_thinking_llm, self.risk_manager_memory
+            self.ultra_thinking_llm, self.risk_manager_memory
         )
 
         # Create workflow

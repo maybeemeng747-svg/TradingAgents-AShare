@@ -169,6 +169,7 @@ function AgentNodeComponent({ data }: NodeProps<AgentFlowNode>) {
     const active = status === 'in_progress'
     const done = status === 'completed'
     const skipped = status === 'skipped'
+    const errored = status === 'error'
     const { Icon } = meta
 
     return (
@@ -180,6 +181,8 @@ function AgentNodeComponent({ data }: NodeProps<AgentFlowNode>) {
                     ? 'border-blue-500 dark:border-blue-400 bg-blue-50 dark:bg-blue-500/10 shadow-lg ring-2 ring-blue-400/30'
                     : active
                     ? 'border-blue-400 dark:border-blue-500/60 bg-white dark:bg-slate-800 shadow-[0_0_14px_rgba(59,130,246,0.25)]'
+                    : errored
+                    ? 'border-red-300 dark:border-red-500/60 bg-red-50 dark:bg-red-500/10 shadow-sm'
                     : done
                     ? 'border-emerald-300 dark:border-emerald-500/50 bg-white dark:bg-slate-800/80 shadow-sm'
                     : skipped
@@ -215,6 +218,7 @@ function AgentNodeComponent({ data }: NodeProps<AgentFlowNode>) {
                 <span className={[
                     'shrink-0 text-[11px] px-2 py-0.5 rounded-full font-bold',
                     active ? 'bg-blue-600 text-white animate-pulse'
+                        : errored ? 'bg-red-500 text-white'
                         : done ? 'bg-emerald-500 text-white'
                         : 'bg-slate-100 text-slate-400 dark:bg-slate-700 dark:text-slate-500',
                 ].join(' ')}>
@@ -250,6 +254,13 @@ function AgentNodeComponent({ data }: NodeProps<AgentFlowNode>) {
                 <div className="flex items-center gap-1.5 mt-2">
                     <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
                     <span className="text-[12px] text-emerald-600 dark:text-emerald-400 font-bold">完成</span>
+                </div>
+            )}
+
+            {errored && (
+                <div className="flex items-center gap-1.5 mt-2">
+                    <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" />
+                    <span className="text-[12px] text-red-600 dark:text-red-400 font-bold">已中止</span>
                 </div>
             )}
         </div>
@@ -307,6 +318,12 @@ export default function AgentCollaboration({ onSelectSection, onOpenDebate, sele
     const cardMap = useMemo(() => new Map(cards.map(c => [c.meta.name, c])), [cards])
     const doneN = cards.filter(c => c.status === 'completed').length
     const participatingCount = cards.filter(c => c.status !== 'skipped').length
+    const mobileGroups = useMemo(() => [
+        { title: '分析师', names: META.slice(0, 7).map(meta => meta.name) },
+        { title: '研究', names: ['Bull Researcher', 'Bear Researcher', 'Research Manager'] },
+        { title: '交易', names: ['Trader'] },
+        { title: '风控', names: ['Aggressive Analyst', 'Neutral Analyst', 'Conservative Analyst', 'Portfolio Manager'] },
+    ], [])
 
     // 构建 React Flow 节点
     const nodes: (AgentFlowNode | GroupLabelFlowNode)[] = useMemo(() => {
@@ -427,14 +444,66 @@ export default function AgentCollaboration({ onSelectSection, onOpenDebate, sele
                 )}
             </div>
 
+            {/* Mobile compact workflow */}
+            <div className="lg:hidden space-y-3">
+                {mobileGroups.map(group => (
+                    <div key={group.title} className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/40 p-3">
+                        <div className="text-[11px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-2">
+                            {group.title}
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            {group.names.map(name => {
+                                const card = cardMap.get(name)
+                                if (!card) return null
+                                const Icon = card.meta.Icon
+                                const active = card.status === 'in_progress'
+                                const done = card.status === 'completed'
+                                const errored = card.status === 'error'
+                                return (
+                                    <button
+                                        key={name}
+                                        onClick={(event) => handleNodeClick(event, { id: name } as Node)}
+                                        disabled={card.status !== 'completed' && card.status !== 'in_progress'}
+                                        className={[
+                                            'flex items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors',
+                                            active ? 'border-blue-400 bg-blue-50 dark:bg-blue-500/10 dark:border-blue-500/50' :
+                                            errored ? 'border-red-300 bg-red-50 dark:bg-red-500/10 dark:border-red-500/50' :
+                                            done ? 'border-emerald-300 bg-white dark:bg-slate-800 dark:border-emerald-500/40' :
+                                            'border-slate-200 bg-white/70 dark:bg-slate-900 dark:border-slate-800',
+                                            card.status === 'completed' || card.status === 'in_progress' ? 'hover:border-blue-400' : 'cursor-default',
+                                        ].join(' ')}
+                                    >
+                                        <span className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${card.meta.badgeBg}`}>
+                                            {active ? <Loader2 className={`h-4 w-4 animate-spin ${card.meta.badgeText}`} /> : <Icon className={`h-4 w-4 ${card.meta.badgeText}`} />}
+                                        </span>
+                                        <span className="min-w-0 flex-1">
+                                            <span className="block text-sm font-bold text-slate-800 dark:text-slate-100">{card.meta.label}</span>
+                                            <span className={[
+                                                'block text-[11px]',
+                                                errored ? 'text-red-500' : active ? 'text-blue-500' : done ? 'text-emerald-500' : 'text-slate-400',
+                                            ].join(' ')}>
+                                                {STATUS_LABEL[card.status]}
+                                            </span>
+                                        </span>
+                                    </button>
+                                )
+                            })}
+                        </div>
+                    </div>
+                ))}
+            </div>
+
             {/* React Flow 画布 */}
-            <div className="h-[700px] w-full">
+            <div className="hidden lg:block h-[620px] xl:h-[700px] w-full">
                 <ReactFlow
                     nodes={nodes}
                     edges={edges}
                     nodeTypes={nodeTypes}
                     onNodeClick={handleNodeClick}
-                    defaultViewport={{ x: 20, y: 20, zoom: 1 }}
+                    fitView
+                    fitViewOptions={{ padding: 0.08, includeHiddenNodes: false }}
+                    minZoom={0.35}
+                    maxZoom={1}
                     nodesDraggable={false}
                     nodesConnectable={false}
                     nodesFocusable={false}

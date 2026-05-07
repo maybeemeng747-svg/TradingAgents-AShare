@@ -68,12 +68,11 @@ def sync_positions(
             "current_position_pct": _to_float(raw.get("current_position_pct")),
         })
 
-    # Compute position_pct if not provided but market_value is available
-    total_mv = sum(p["market_value"] or 0 for p in cleaned if (p["market_value"] or 0) > 0)
-    if total_mv > 0:
-        for p in cleaned:
-            if p["current_position_pct"] is None and p["market_value"] and p["market_value"] > 0:
-                p["current_position_pct"] = round((p["market_value"] / total_mv) * 100, 4)
+    # Do not infer account-level position_pct from imported rows.
+    # A screenshot may contain only one visible holding, and using that subset as
+    # the denominator would incorrectly turn it into "100% full position".
+    # Only persist current_position_pct when the user/import source explicitly
+    # provides an account-level percentage.
 
     if not cleaned:
         raise ValueError("没有有效的持仓记录，请检查输入格式")
@@ -181,6 +180,8 @@ def build_scheduled_user_context(db: Session, user_id: str, symbol: str) -> dict
         "average_cost": row.average_cost,
         "user_notes": f"来源：持仓导入（{row.source}）",
     }
+    if row.current_position_pct is None:
+        payload["user_notes"] += "；未提供现金、总资产或账户仓位占比，仅代表已导入的可见持仓，禁止据此推断满仓。"
     return normalize_user_context(payload)
 
 

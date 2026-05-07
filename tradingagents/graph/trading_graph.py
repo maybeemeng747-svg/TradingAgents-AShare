@@ -89,9 +89,21 @@ class TradingAgentsGraph:
         if self.callbacks:
             llm_kwargs["callbacks"] = self.callbacks
 
+        ultra_client = create_llm_client(
+            provider=self.config["llm_provider"],
+            model=self.config["ultra_think_llm"],
+            base_url=self.config.get("backend_url"),
+            **llm_kwargs,
+        )
         deep_client = create_llm_client(
             provider=self.config["llm_provider"],
             model=self.config["deep_think_llm"],
+            base_url=self.config.get("backend_url"),
+            **llm_kwargs,
+        )
+        mid_client = create_llm_client(
+            provider=self.config["llm_provider"],
+            model=self.config["mid_think_llm"],
             base_url=self.config.get("backend_url"),
             **llm_kwargs,
         )
@@ -102,7 +114,9 @@ class TradingAgentsGraph:
             **llm_kwargs,
         )
 
+        self.ultra_thinking_llm = ultra_client.get_llm()
         self.deep_thinking_llm = deep_client.get_llm()
+        self.mid_thinking_llm = mid_client.get_llm()
         self.quick_thinking_llm = quick_client.get_llm()
         
         # Initialize memories
@@ -125,7 +139,9 @@ class TradingAgentsGraph:
         )
         self.graph_setup = GraphSetup(
             self.quick_thinking_llm,
+            self.mid_thinking_llm,
             self.deep_thinking_llm,
+            self.ultra_thinking_llm,
             self.tool_nodes,
             self.bull_memory,
             self.bear_memory,
@@ -253,6 +269,16 @@ class TradingAgentsGraph:
 
         self.ticker = company_name
 
+        # Pre-collect data once (same as propagate_async)
+        import logging; _plog = logging.getLogger("propagate")
+        _plog.info(f"[propagate] dc_id={id(self.data_collector)} collecting {company_name} {trade_date}…")
+        try:
+            self.data_collector.collect(company_name, trade_date)
+        except Exception as e:
+            _plog.error(f"[propagate] collect FAILED: {type(e).__name__}: {e}")
+        _pool = self.data_collector.get(company_name, trade_date)
+        _plog.info(f"[propagate] after collect: pool={'None' if _pool is None else 'OK'} cache_keys={list(self.data_collector._cache.keys())}")
+
         # Initialize state
         init_agent_state = self.propagator.create_initial_state(
             company_name,
@@ -271,25 +297,31 @@ class TradingAgentsGraph:
             args["config"]["configurable"] = {"thread_id": f"{company_name}_{trade_date}"}
 
         if self.debug:
-            # Debug mode with tracing
-            trace = []
-            for chunk in self.graph.stream(init_agent_state, **args):
-                if len(chunk["messages"]) == 0:
-                    pass
-                else:
-                    chunk["messages"][-1].pretty_print()
-                    trace.append(chunk)
-
-            final_state = trace[-1]
+            # Debug mode with tracing (async stream)
+            import asyncio
+            async def _debug():
+                trace = []
+                async for chunk in self.graph.astream(init_agent_state, **args):
+                    if isinstance(chunk, dict):
+                        for _key, messages in chunk.items():
+                            if hasattr(messages, 'pretty_print'):
+                                messages.pretty_print()
+                                trace.append(chunk)
+                return trace[-1] if trace else init_agent_state
+            final_state = asyncio.run(_debug())
         else:
-            # Standard mode without tracing
-            final_state = self.graph.invoke(init_agent_state, **args)
+            # Standard mode — must use ainvoke since all analyst nodes are async
+            import asyncio
+            final_state = asyncio.run(self.graph.ainvoke(init_agent_state, **args))
 
         # Store current state for reflection
         self.curr_state = final_state
 
         # Log state
         self._log_state(trade_date, final_state)
+
+        # Evict cached data to free memory
+        self.data_collector.evict(company_name, trade_date)
 
         # Return decision and processed signal
         return final_state, self.process_signal(final_state["final_trade_decision"])
@@ -326,8 +358,18 @@ class TradingAgentsGraph:
             }
 
         # Pre-collect data once (always full data); analysts will read from cache
-        print(f"[TradingAgentsGraph] Collecting data for {ticker} {trade_date}…")
+        import logging; _logger = logging.getLogger("trading_graph")
+        _logger.info(f"[TradingAgentsGraph] Collecting data for {ticker} {trade_date}…")
         self.data_collector.collect(ticker, trade_date)
+
+        # Debug: verify cache is populated
+        pool_check = self.data_collector.get(ticker, trade_date)
+        if pool_check is not None:
+            vpa_check = pool_check.get("vpa_indicators", "MISSING")
+            stock_check = pool_check.get("stock_data", "MISSING")
+            _logger.info(f"[TradingAgentsGraph] Cache OK: vpa_len={len(vpa_check) if isinstance(vpa_check, str) else 'N/A'} stock_len={len(stock_check) if isinstance(stock_check, str) else 'N/A'}")
+        else:
+            _logger.warning(f"[TradingAgentsGraph] WARNING: cache is None after collect!")
 
         graph_args = self.propagator.get_graph_args()
 
@@ -358,6 +400,8 @@ class TradingAgentsGraph:
             "final_trade_decision": final_state.get("final_trade_decision", ""),
             "investment_plan": final_state.get("investment_plan", ""),
             "trader_investment_plan": final_state.get("trader_investment_plan", ""),
+            "metadata": final_state.get("metadata", {}),
+            "trade_quality_check": (final_state.get("metadata") or {}).get("trade_quality_check"),
             "analyst_traces": final_state.get("analyst_traces", []),
             "market_report": final_state.get("market_report", ""),
             "sentiment_report": final_state.get("sentiment_report", ""),
@@ -450,6 +494,8 @@ class TradingAgentsGraph:
                 "round_goal": final_state["risk_debate_state"].get("round_goal", ""),
             },
             "risk_feedback_state": final_state.get("risk_feedback_state", {}),
+            "metadata": final_state.get("metadata", {}),
+            "trade_quality_check": (final_state.get("metadata") or {}).get("trade_quality_check"),
             "investment_plan": final_state["investment_plan"],
             "final_trade_decision": final_state["final_trade_decision"],
         }

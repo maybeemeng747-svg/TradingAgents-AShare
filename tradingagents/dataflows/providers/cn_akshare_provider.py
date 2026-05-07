@@ -30,6 +30,11 @@ def set_scheduled_task_context(value: bool = True) -> contextvars.Token:
     return _is_scheduled_task.set(value)
 
 
+def reset_scheduled_task_context(token: contextvars.Token) -> None:
+    """Restore the scheduled-task marker to its previous ContextVar value."""
+    _is_scheduled_task.reset(token)
+
+
 import logging as _logging
 
 _lock_logger = _logging.getLogger(__name__)
@@ -535,6 +540,23 @@ class CnAkshareProvider(BaseMarketDataProvider):
                 + "; ".join(errors)
             )
 
+    @staticmethod
+    def _select_cashflow_cols(df: pd.DataFrame) -> pd.DataFrame:
+        """现金流量表智能列筛选：保留关键汇总列，剔除大量 NaN 的金融行业专用列。"""
+        # 优先保留的关键列（按重要性排序）
+        priority_cols = [
+            "报告日", "经营活动产生的现金流量净额", "经营活动现金流入小计", "经营活动现金流出小计",
+            "投资活动产生的现金流量净额", "投资活动现金流入小计", "投资活动现金流出小计",
+            "筹资活动产生的现金流量净额", "筹资活动现金流入小计", "筹资活动现金流出小计",
+            "现金及现金等价物净增加额", "期末现金及现金等价物余额",
+        ]
+        selected = [c for c in priority_cols if c in df.columns]
+        if len(selected) >= 6:
+            return df[selected]
+        # 如果关键列不足，回退到剔除全 NaN 列的方式
+        non_nan_cols = [c for c in df.columns if df[c].notna().any()]
+        return df[non_nan_cols] if non_nan_cols else df
+
     def _financial_report_sina(self, ticker: str, report_name: str) -> str:
         with AKSHARE_CALL_LOCK:
             ak = self._ak()
@@ -544,6 +566,14 @@ class CnAkshareProvider(BaseMarketDataProvider):
                 df = ak.stock_financial_report_sina(stock=symbol, symbol=report_name)
                 if df is None or df.empty:
                     raise ValueError("empty dataframe")
+                # 现金流量表特殊处理：智能列筛选
+                if "现金流量" in report_name:
+                    df = self._select_cashflow_cols(df)
+                    return self._shrink_table(df, max_rows=12, max_cols=20).to_markdown(index=False)
+                # 其他报表：剔除全 NaN 列，减少噪音
+                non_nan_cols = [c for c in df.columns if df[c].notna().any()]
+                if non_nan_cols and len(non_nan_cols) < len(df.columns):
+                    df = df[non_nan_cols]
                 return self._shrink_table(df, max_rows=12, max_cols=18).to_markdown(index=False)
             except Exception as exc:
                 errors.append(f"stock_financial_report_sina: {type(exc).__name__}")
@@ -593,6 +623,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
                 date_col = "发布时间" if "发布时间" in df.columns else None
                 if date_col is not None:
                     df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+                    df = df.dropna(subset=[date_col])
                     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
                     end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
                     df = df[(df[date_col] >= start_dt) & (df[date_col] < end_dt)]

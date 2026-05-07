@@ -97,6 +97,43 @@ class TestPortfolioImportService:
         assert "600519.SH" in symbols
         assert "000858.SZ" in symbols
 
+    def test_sync_positions_does_not_infer_account_pct_from_import_subset(self, db):
+        from api.services import portfolio_import_service
+
+        result = portfolio_import_service.sync_positions(
+            db=db,
+            user_id="user-no-pct-infer",
+            positions=[
+                {
+                    "symbol": "601958.SH",
+                    "name": "金钼股份",
+                    "current_position": 200,
+                    "average_cost": 20.57,
+                    "market_value": 4114.0,
+                },
+            ],
+        )
+
+        assert result["positions"][0]["current_position_pct"] is None
+
+    def test_sync_positions_preserves_explicit_account_pct(self, db):
+        from api.services import portfolio_import_service
+
+        result = portfolio_import_service.sync_positions(
+            db=db,
+            user_id="user-explicit-pct",
+            positions=[
+                {
+                    "symbol": "601958.SH",
+                    "current_position": 200,
+                    "market_value": 4114.0,
+                    "current_position_pct": 12.5,
+                },
+            ],
+        )
+
+        assert result["positions"][0]["current_position_pct"] == pytest.approx(12.5)
+
     def test_sync_positions_deduplicates(self, db):
         from api.services import portfolio_import_service
 
@@ -124,7 +161,7 @@ class TestPortfolioImportService:
         assert state["summary"]["positions"] == 0
 
     def test_scheduled_job_uses_imported_position_context(self, db):
-        from api.main import _run_scheduled_job
+        from scheduler.main import _run_scheduled_job
         from api.services import portfolio_import_service
 
         portfolio_import_service.sync_positions(
@@ -150,8 +187,8 @@ class TestPortfolioImportService:
                 if exc_type is not None:
                     db.rollback()
 
-        with patch("api.main._run_job", side_effect=fake_run_job), patch(
-            "api.main.get_db_ctx",
+        with patch("scheduler.main._run_job", side_effect=fake_run_job), patch(
+            "scheduler.main.get_db_ctx",
             return_value=FakeDbCtx(),
         ), patch("tradingagents.dataflows.trade_calendar.is_cn_trading_day", return_value=True):
             asyncio.run(
@@ -171,8 +208,33 @@ class TestPortfolioImportService:
         assert request.average_cost == pytest.approx(1700.0)
         assert "持仓导入" in (request.user_notes or "")
 
+    def test_imported_context_warns_when_account_pct_unknown(self, db):
+        from api.services import portfolio_import_service
+
+        portfolio_import_service.sync_positions(
+            db=db,
+            user_id="user-unknown-account-pct",
+            positions=[
+                {
+                    "symbol": "601958.SH",
+                    "name": "金钼股份",
+                    "current_position": 200,
+                    "average_cost": 20.57,
+                    "market_value": 4114.0,
+                },
+            ],
+            auto_apply_scheduled=False,
+        )
+
+        context = portfolio_import_service.build_scheduled_user_context(
+            db, "user-unknown-account-pct", "601958.SH"
+        )
+
+        assert "current_position_pct" not in context
+        assert "禁止据此推断满仓" in context["user_notes"]
+
     def test_scheduled_job_marks_failed_when_underlying_job_fails(self, db):
-        from api.main import _run_scheduled_job, _set_job
+        from scheduler.main import _run_scheduled_job, _set_job
 
         item = scheduled_service.create_scheduled(db, "user-failed", "300750.SZ", "short")
 
@@ -187,8 +249,8 @@ class TestPortfolioImportService:
         async def fake_run_job(job_id, request, *args, **kwargs):
             _set_job(job_id, status="failed", error="ModuleNotFoundError: missing module")
 
-        with patch("api.main._run_job", side_effect=fake_run_job), patch(
-            "api.main.get_db_ctx",
+        with patch("scheduler.main._run_job", side_effect=fake_run_job), patch(
+            "scheduler.main.get_db_ctx",
             return_value=FakeDbCtx(),
         ), patch("tradingagents.dataflows.trade_calendar.is_cn_trading_day", return_value=True):
             asyncio.run(
@@ -209,6 +271,19 @@ class TestPortfolioImportService:
 
 
 class TestPortfolioImportApi:
+    def test_repair_position_symbols_prefers_name_when_ocr_code_disagrees(self, monkeypatch):
+        import api.main as main
+
+        monkeypatch.setattr(main, "_load_cn_stock_map", lambda: {"金钼股份": "601958.SH"})
+        monkeypatch.setattr(main, "_get_reverse_stock_map", lambda: {"601958.SH": "金钼股份", "600519.SH": "贵州茅台"})
+
+        result = main._repair_portfolio_position_symbols([
+            {"symbol": "600519", "name": "金钼股份", "current_position": 200, "average_cost": 20.57}
+        ])
+
+        assert result[0]["symbol"] == "601958.SH"
+        assert result[0]["symbol_correction"]["from"] == "600519.SH"
+
     def test_sync_endpoint_stores_positions(self):
         from api.main import app
 

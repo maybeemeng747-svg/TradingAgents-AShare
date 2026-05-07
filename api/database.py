@@ -93,6 +93,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_report_schema()
     _ensure_user_schema()
+    _ensure_scheduled_schema()
 
 
 def _ensure_report_schema() -> None:
@@ -131,9 +132,13 @@ def _ensure_user_schema() -> None:
                 conn.execute(text("ALTER TABLE users ADD COLUMN email_report_enabled BOOLEAN NOT NULL DEFAULT 1"))
             if "wecom_report_enabled" not in columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN wecom_report_enabled BOOLEAN NOT NULL DEFAULT 1"))
+            if "bark_report_enabled" not in columns:
+                conn.execute(text("ALTER TABLE users ADD COLUMN bark_report_enabled BOOLEAN NOT NULL DEFAULT 1"))
             llm_columns = {row[1] for row in conn.execute(text("PRAGMA table_info(user_llm_configs)"))}
             if "wecom_webhook_encrypted" not in llm_columns:
                 conn.execute(text("ALTER TABLE user_llm_configs ADD COLUMN wecom_webhook_encrypted TEXT"))
+            if "bark_url_encrypted" not in llm_columns:
+                conn.execute(text("ALTER TABLE user_llm_configs ADD COLUMN bark_url_encrypted TEXT"))
             if "default_analysts" not in llm_columns:
                 conn.execute(text("ALTER TABLE user_llm_configs ADD COLUMN default_analysts TEXT"))
     except Exception as e:
@@ -189,25 +194,28 @@ def _migrate_api_keys_reencrypt() -> None:
             rows = conn.execute(
                 text(
                     """
-                    SELECT user_id, api_key_encrypted, wecom_webhook_encrypted
+                    SELECT user_id, api_key_encrypted, wecom_webhook_encrypted, bark_url_encrypted
                     FROM user_llm_configs
-                    WHERE api_key_encrypted IS NOT NULL OR wecom_webhook_encrypted IS NOT NULL
+                    WHERE api_key_encrypted IS NOT NULL
+                       OR wecom_webhook_encrypted IS NOT NULL
+                       OR bark_url_encrypted IS NOT NULL
                     """
                 )
             ).fetchall()
             if not rows:
                 return
             # Quick check: if the first row decrypts fine, likely all are OK already.
-            _, first_api_key, first_wecom_webhook = rows[0]
-            first_secret = first_api_key or first_wecom_webhook
+            _, first_api_key, first_wecom_webhook, first_bark_url = rows[0]
+            first_secret = first_api_key or first_wecom_webhook or first_bark_url
             if first_secret and decrypt_secret(first_secret) is not None and len(rows) < 50:
                 # Small dataset, still verify all — but for large sets, skip if first is OK
                 pass
             migrated = 0
-            for user_id, encrypted_api_key, encrypted_wecom_webhook in rows:
+            for user_id, encrypted_api_key, encrypted_wecom_webhook, encrypted_bark_url in rows:
                 for column_name, encrypted_value in (
                     ("api_key_encrypted", encrypted_api_key),
                     ("wecom_webhook_encrypted", encrypted_wecom_webhook),
+                    ("bark_url_encrypted", encrypted_bark_url),
                 ):
                     if not encrypted_value:
                         continue
@@ -232,11 +240,87 @@ def _migrate_api_keys_reencrypt() -> None:
                             text("UPDATE user_llm_configs SET wecom_webhook_encrypted = :enc WHERE user_id = :uid"),
                             {"enc": new_encrypted, "uid": user_id},
                         )
+                    elif column_name == "bark_url_encrypted":
+                        conn.execute(
+                            text("UPDATE user_llm_configs SET bark_url_encrypted = :enc WHERE user_id = :uid"),
+                            {"enc": new_encrypted, "uid": user_id},
+                        )
                     migrated += 1
             if migrated:
                 logger.info("[security] Re-encrypted %s user secret(s) with new TA_APP_SECRET_KEY.", migrated)
     except Exception as e:
         logger.error("User secret re-encryption migration failed: %s", e)
+
+
+def _ensure_scheduled_schema() -> None:
+    """Allow multiple daily schedules per symbol at different trigger times."""
+    if not DATABASE_URL.startswith("sqlite"):
+        return
+    try:
+        with engine.begin() as conn:
+            tables = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))}
+            if "scheduled_analyses" not in tables:
+                return
+
+            index_rows = conn.execute(text("PRAGMA index_list(scheduled_analyses)")).fetchall()
+            unique_columns: list[list[str]] = []
+            for row in index_rows:
+                index_name = row[1]
+                is_unique = bool(row[2])
+                if not is_unique:
+                    continue
+                cols = [info[2] for info in conn.execute(text(f"PRAGMA index_info({index_name})")).fetchall()]
+                unique_columns.append(cols)
+
+            has_new_unique = ["user_id", "symbol", "trigger_time"] in unique_columns
+            has_old_unique = ["user_id", "symbol"] in unique_columns
+            if has_new_unique or not has_old_unique:
+                return
+
+            logger.info("[migration] Rebuilding scheduled_analyses unique constraint for dual schedules.")
+            conn.execute(text("DROP TABLE IF EXISTS scheduled_analyses_new"))
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE scheduled_analyses_new (
+                        id VARCHAR(36) NOT NULL PRIMARY KEY,
+                        user_id VARCHAR(64) NOT NULL,
+                        symbol VARCHAR(20) NOT NULL,
+                        horizon VARCHAR(10),
+                        trigger_time VARCHAR(5),
+                        is_active BOOLEAN,
+                        last_run_date VARCHAR(10),
+                        last_run_status VARCHAR(10),
+                        last_report_id VARCHAR(36),
+                        consecutive_failures INTEGER,
+                        created_at DATETIME,
+                        updated_at DATETIME,
+                        CONSTRAINT uq_scheduled_user_symbol_time UNIQUE (user_id, symbol, trigger_time)
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO scheduled_analyses_new (
+                        id, user_id, symbol, horizon, trigger_time, is_active,
+                        last_run_date, last_run_status, last_report_id,
+                        consecutive_failures, created_at, updated_at
+                    )
+                    SELECT
+                        id, user_id, symbol, horizon, COALESCE(trigger_time, '20:00'), is_active,
+                        last_run_date, last_run_status, last_report_id,
+                        consecutive_failures, created_at, updated_at
+                    FROM scheduled_analyses
+                    """
+                )
+            )
+            conn.execute(text("DROP TABLE scheduled_analyses"))
+            conn.execute(text("ALTER TABLE scheduled_analyses_new RENAME TO scheduled_analyses"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_scheduled_analyses_user_id ON scheduled_analyses (user_id)"))
+    except Exception as e:
+        logger.error("Failed to ensure scheduled schema: %s", e)
 
 
 # Report Model
@@ -330,6 +414,7 @@ class UserDB(Base):
     last_login_ip = Column(String(45), nullable=True)
     email_report_enabled = Column(Boolean, default=True, nullable=False, server_default="1")
     wecom_report_enabled = Column(Boolean, default=True, nullable=False, server_default="1")
+    bark_report_enabled = Column(Boolean, default=True, nullable=False, server_default="1")
 
 
 class EmailVerificationCodeDB(Base):
@@ -356,6 +441,7 @@ class UserLLMConfigDB(Base):
     max_risk_discuss_rounds = Column(Integer, nullable=True)
     api_key_encrypted = Column(Text, nullable=True)
     wecom_webhook_encrypted = Column(Text, nullable=True)
+    bark_url_encrypted = Column(Text, nullable=True)
     default_analysts = Column(Text, nullable=True)  # JSON list, e.g. '["market","social",...]'
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
@@ -414,7 +500,7 @@ class ScheduledAnalysisDB(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
-    __table_args__ = (UniqueConstraint('user_id', 'symbol', name='uq_scheduled_user_symbol'),)
+    __table_args__ = (UniqueConstraint('user_id', 'symbol', 'trigger_time', name='uq_scheduled_user_symbol_time'),)
 
 
 class SponsorDB(Base):
@@ -478,5 +564,4 @@ class ImportedPortfolioPositionDB(Base):
     __table_args__ = (
         UniqueConstraint('user_id', 'source', 'symbol', name='uq_imported_portfolio_user_source_symbol'),
     )
-
 

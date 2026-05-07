@@ -9,7 +9,7 @@ def test_parse_intent_returns_defaults():
     )
     result = parse_intent("分析600519", mock_llm)
     assert result["ticker"] == "600519"
-    assert result["horizons"] == ["short", "medium"]
+    assert result["horizons"] == ["short"]
     assert result["focus_areas"] == []
 
 
@@ -18,7 +18,7 @@ def test_parse_intent_fallback_on_invalid_json():
     mock_llm.invoke.return_value = MagicMock(content="这不是JSON")
     result = parse_intent("600519", mock_llm, fallback_ticker="600519")
     assert result["ticker"] == "600519"
-    assert result["horizons"] == ["short", "medium"]
+    assert result["horizons"] == ["short"]
     assert result["focus_areas"] == []
 
 

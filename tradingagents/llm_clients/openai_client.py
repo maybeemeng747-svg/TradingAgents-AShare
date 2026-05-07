@@ -113,6 +113,10 @@ class OpenAIClient(BaseLLMClient):
             llm_kwargs["api_key"] = "ollama"
         elif self.base_url:
             llm_kwargs["base_url"] = self.base_url
+            # For custom OpenAI-compatible endpoints (e.g. Zhipu), read TA_API_KEY
+            api_key = os.environ.get("TA_API_KEY") or os.environ.get("OPENAI_API_KEY")
+            if api_key:
+                llm_kwargs["api_key"] = api_key
 
         # Pass remaining keys
         for key in ("api_key", "callbacks", "reasoning_effort"):

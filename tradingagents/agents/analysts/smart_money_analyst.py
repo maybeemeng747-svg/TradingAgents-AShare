@@ -5,6 +5,7 @@ from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
 from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
+from tradingagents.agents.utils.context_utils import build_prompt_context_block
 
 
 def create_smart_money_analyst(llm, data_collector=None):
@@ -26,6 +27,7 @@ def create_smart_money_analyst(llm, data_collector=None):
         config = get_config()
         system_message = get_prompt("smart_money_system_message", config=config) or ""
         horizon_ctx = build_horizon_context(horizon, focus_areas, specific_questions, agent_type="smart_money")
+        context_block = build_prompt_context_block(state, "analyst")
 
         pool = data_collector.get(ticker, current_date) if data_collector else None
 
@@ -56,6 +58,7 @@ def create_smart_money_analyst(llm, data_collector=None):
             )),
             HumanMessage(content=(
                 horizon_ctx + "\n"
+                f"{context_block}\n\n"
                 f"请分析 {ticker} 在 {current_date} 的主力资金行为。\n\n"
                 f"【近5日主力资金净流向】\n{fund_flow}\n\n"
                 f"【龙虎榜数据】\n{lhb}\n\n"

@@ -4,6 +4,10 @@ from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.agents.utils.agent_states import current_tracker_var
 from tradingagents.agents.utils.context_utils import build_agent_context_view
+from tradingagents.agents.utils.trade_setup import (
+    build_trade_quality_check,
+    format_trade_quality_check,
+)
 from tradingagents.agents.utils.debate_utils import (
     extract_risk_judge_result,
     format_claim_subset_for_prompt,
@@ -67,12 +71,19 @@ def create_risk_manager(llm, memory):
         execution_preconditions = judge_result["execution_preconditions"]
         de_risk_triggers = judge_result["de_risk_triggers"]
         revision_reason = judge_result["revision_reason"]
+        trade_quality_check = build_trade_quality_check(
+            investment_plan=state.get("investment_plan", ""),
+            trader_plan=trader_plan,
+            final_decision=cleaned_response,
+            user_context=state.get("user_context", {}),
+        )
+        final_response = cleaned_response + "\n\n" + format_trade_quality_check(trade_quality_check)
 
         # ── 推送辩论裁决（用 cleaned 覆盖流式 raw content）──
         if tracker:
             tracker.emit_debate_message(
                 debate="risk", agent="Portfolio Manager",
-                round_num=-1, content=cleaned_response, is_verdict=True,
+                round_num=-1, content=final_response, is_verdict=True,
             )
 
         new_risk_debate_state = {
@@ -106,11 +117,16 @@ def create_risk_manager(llm, memory):
             "de_risk_triggers": de_risk_triggers,
             "revision_reason": revision_reason or ("风控要求交易员按硬约束重写方案" if verdict == "revise" else ""),
         }
+        metadata = {
+            **(state.get("metadata") or {}),
+            "trade_quality_check": trade_quality_check,
+        }
 
         return {
             "risk_debate_state": new_risk_debate_state,
             "risk_feedback_state": new_risk_feedback_state,
-            "final_trade_decision": cleaned_response,
+            "metadata": metadata,
+            "final_trade_decision": final_response,
         }
 
     return risk_manager_node

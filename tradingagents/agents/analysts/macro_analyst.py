@@ -5,6 +5,7 @@ from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
 from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
+from tradingagents.agents.utils.context_utils import build_prompt_context_block
 
 
 def create_macro_analyst(llm, data_collector=None):
@@ -26,6 +27,7 @@ def create_macro_analyst(llm, data_collector=None):
         config = get_config()
         system_message = get_prompt("macro_system_message", config=config) or ""
         horizon_ctx = build_horizon_context(horizon, focus_areas, specific_questions, agent_type="macro")
+        context_block = build_prompt_context_block(state, "analyst")
 
         pool = data_collector.get(ticker, current_date) if data_collector else None
 
@@ -55,6 +57,7 @@ def create_macro_analyst(llm, data_collector=None):
             )),
             HumanMessage(content=(
                 horizon_ctx + "\n"
+                f"{context_block}\n\n"
                 f"请分析 {ticker} 在 {current_date} 的宏观与板块环境。\n\n"
                 f"【今日行业板块资金流向】\n{board_flow}\n\n"
                 f"【近期相关新闻】\n{recent_news}"
@@ -72,6 +75,16 @@ def create_macro_analyst(llm, data_collector=None):
 
         print(f"[Macro Analyst] DONE {ticker}, report length={len(full_content)}")
         verdict, confidence = extract_verdict(full_content)
+
+        # Detect data availability for confidence override
+        _has_board = isinstance(board_flow, str) and len(board_flow) > 100 and "失败" not in board_flow and "无数据" not in board_flow and "No data" not in board_flow and "暂不可用" not in board_flow
+        _has_news = isinstance(recent_news, str) and len(recent_news) > 100 and "No news found" not in recent_news and "暂不可用" not in recent_news
+        print(f"[Macro Analyst] DATA CHECK {ticker}: board={'OK' if _has_board else 'MISSING(' + str(board_flow)[:50] + ')'}, news={'OK' if _has_news else 'MISSING'}")
+        if not _has_board or not _has_news:
+            confidence = "低"
+            if "⚠️" not in full_content:
+                full_content += "\n\n⚠️ 注意：部分数据源不可用（板块资金流向或新闻数据缺失），置信度较低。"
+
         return {
             "macro_report": full_content,
             "analyst_traces": [{

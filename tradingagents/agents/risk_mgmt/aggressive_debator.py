@@ -3,6 +3,7 @@ import json
 from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.agents.utils.agent_states import current_tracker_var
+from tradingagents.agents.utils.context_utils import build_prompt_context_block
 from tradingagents.agents.utils.debate_utils import (
     format_claim_subset_for_prompt,
     format_claims_for_prompt,
@@ -32,7 +33,8 @@ def create_aggressive_debator(llm):
 
         trader_decision = state["trader_investment_plan"]
 
-        prompt = get_prompt("aggressive_prompt", config=get_config()).format(
+        context_block = build_prompt_context_block(state, "risk")
+        prompt = context_block + "\n\n" + get_prompt("aggressive_prompt", config=get_config()).format(
             trader_decision=trader_decision,
             market_research_report=market_research_report,
             sentiment_report=sentiment_report,

@@ -107,6 +107,7 @@ interface AnalysisState {
     setIsAnalyzing: (isAnalyzing: boolean) => void
     setIsConnected: (isConnected: boolean) => void
     setAnalysisRunState: (state: 'idle' | 'running' | 'completed' | 'failed', error?: string | null) => void
+    failRun: (error: string) => void
     setCurrentHorizon: (horizon: string | null) => void
     addChatMessage: (message: ChatMessage) => void
     appendToChatMessage: (id: string, chunk: string) => void
@@ -145,6 +146,22 @@ const initialAgents: Agent[] = [
     // Portfolio Management
     { id: 'portfolio_manager', name: 'Portfolio Manager', team: 'Portfolio Management', status: 'pending' },
 ]
+
+function normalizePersistedChatMessages(messages?: ChatMessage[]): ChatMessage[] | undefined {
+    if (!messages?.length) return undefined
+    return messages
+        .filter(m => !m.content.startsWith('__'))
+        .map(m => {
+            if (m.role !== 'assistant' || !m.agent || m.complete) return m
+            return {
+                ...m,
+                complete: true,
+                content: /正在思考并撰写报告中/.test(m.content)
+                    ? `### ${m.agent}\n\n分析已中断，未生成完整报告。`
+                    : m.content,
+            }
+        })
+}
 
 // Debounced localStorage storage to avoid blocking the main thread on every token
 function createDebouncedStorage(delay = 800) {
@@ -414,6 +431,9 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
     setReport: (report) => set((state) => ({
         report,
         currentSymbol: report?.symbol || state.currentSymbol,
+        jobConfidence: report?.confidence ?? state.jobConfidence,
+        jobTargetPrice: report?.target_price ?? state.jobTargetPrice,
+        jobStopLoss: report?.stop_loss_price ?? state.jobStopLoss,
     })),
 
     setStructuredData: (data) => set({
@@ -431,6 +451,35 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
     setAnalysisRunState: (analysisRunState, error = null) => set({
         analysisRunState,
         analysisRunError: analysisRunState === 'failed' ? error : null,
+    }),
+
+    failRun: (error) => set((state) => {
+        const finishedAt = Date.now()
+        const streamingSections = Object.fromEntries(
+            Object.entries(state.streamingSections).map(([section, value]) => [
+                section,
+                {
+                    ...value,
+                    displayed: value.displayed || value.buffer,
+                    isTyping: false,
+                    isComplete: true,
+                },
+            ]),
+        )
+
+        return {
+            isAnalyzing: false,
+            isConnected: false,
+            analysisRunState: 'failed',
+            analysisRunError: error,
+            currentHorizon: null,
+            streamingSections,
+            agents: state.agents.map(agent => (
+                agent.status === 'in_progress'
+                    ? { ...agent, status: 'error', finishedAt }
+                    : agent
+            )),
+        }
     }),
 
     setCurrentHorizon: (horizon) => set({ currentHorizon: horizon }),
@@ -470,12 +519,11 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
         jobConfidence: state.jobConfidence,
         jobTargetPrice: state.jobTargetPrice,
         jobStopLoss: state.jobStopLoss,
-        // Filter out transient status indicator messages (e.g. __typing__, __parsing__)
-        // so they don't persist across page refreshes
-        chatMessages: state.chatMessages.filter(m => !m.content.startsWith('__')),
+        chatMessages: normalizePersistedChatMessages(state.chatMessages) ?? [],
     }),
     merge: (persistedState, currentState) => {
         const persisted = (persistedState ?? {}) as Partial<AnalysisState>
+        const chatMessages = normalizePersistedChatMessages(persisted.chatMessages)
         return {
             ...currentState,
             ...persisted,
@@ -491,7 +539,7 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
             isConnected: false,
             analysisRunState: 'idle',
             analysisRunError: null,
-            chatMessages: persisted.chatMessages?.length ? persisted.chatMessages : currentState.chatMessages,
+            chatMessages: chatMessages?.length ? chatMessages : currentState.chatMessages,
         }
     },
 }))

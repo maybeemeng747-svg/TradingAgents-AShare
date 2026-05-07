@@ -13,7 +13,9 @@ export function detectDecisionLabel(text?: string | null): string | null {
 export function sanitizeReportMarkdown(text?: string | null): string {
     if (!text) return ''
     return text
-        .replace(/<!--\s*VERDICT:[^>]*-->/gi, '') // strip machine-readable verdict tag
+        .replace(/<!--\s*VERDICT:\s*\{[\s\S]*?\}\s*-->/gi, '') // strip machine-readable verdict tag
+        .replace(/<!--\s*DEBATE_STATE:\s*\{[\s\S]*?\}\s*-->/gi, '')
+        .replace(/<!--\s*RISK_JUDGE:\s*\{[\s\S]*?\}\s*-->/gi, '')
         .replace(/FINAL TRANSACTION PROPOSAL:\s*\**\s*BUY\s*\**/gi, '最终交易建议：买入')
         .replace(/FINAL TRANSACTION PROPOSAL:\s*\**\s*SELL\s*\**/gi, '最终交易建议：卖出')
         .replace(/FINAL TRANSACTION PROPOSAL:\s*\**\s*HOLD\s*\**/gi, '最终交易建议：观望')

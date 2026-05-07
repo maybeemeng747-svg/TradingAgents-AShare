@@ -89,7 +89,10 @@ from api.main import (
     get_job_store,
 )
 
-from tradingagents.dataflows.providers.cn_akshare_provider import set_scheduled_task_context
+from tradingagents.dataflows.providers.cn_akshare_provider import (
+    reset_scheduled_task_context,
+    set_scheduled_task_context,
+)
 
 
 # ── Semaphore-based concurrency slot ─────────────────────────────────────────
@@ -127,15 +130,18 @@ async def _concurrency_slot(job_id: str, symbol: str):
 async def _send_scheduled_report_notifications(
     user_id: str, report_id: str, symbol: str
 ) -> None:
-    """Send configured scheduled report notifications (email & WeCom)."""
+    """Send configured scheduled report notifications (email, WeCom & Bark)."""
     try:
+        from api.services.bark_notification_service import send_report_message_with_retry as send_bark_report_with_retry
         from api.services.email_report_service import send_report_email_with_retry
         from api.services.wecom_notification_service import send_report_message_with_retry
 
         email_user = None
         report_to_send = None
         webhook_url = None
+        bark_url = None
         wecom_report_enabled = True
+        bark_report_enabled = True
         with get_db_ctx() as db:
             user = db.query(UserDB).filter(UserDB.id == user_id).first()
             report = db.query(ReportDB).filter(ReportDB.id == report_id).first()
@@ -143,11 +149,15 @@ async def _send_scheduled_report_notifications(
             webhook_url = auth_service.decrypt_secret(
                 getattr(user_cfg, "wecom_webhook_encrypted", None)
             )
+            bark_url = auth_service.decrypt_secret(
+                getattr(user_cfg, "bark_url_encrypted", None)
+            )
             if report:
                 db.expunge(report)
                 report_to_send = report
             if user:
                 wecom_report_enabled = getattr(user, "wecom_report_enabled", True)
+                bark_report_enabled = getattr(user, "bark_report_enabled", True)
                 if getattr(user, "email_report_enabled", True):
                     db.expunge(user)
                     email_user = user
@@ -162,6 +172,12 @@ async def _send_scheduled_report_notifications(
             _create_tracked_task(
                 send_report_message_with_retry(report_to_send, webhook_url),
                 label=f"WeCom notification task ({symbol})",
+            )
+        if report_to_send and bark_url and bark_report_enabled:
+            _log(f"[Scheduler] Sending Bark report for {symbol}")
+            _create_tracked_task(
+                send_bark_report_with_retry(report_to_send, bark_url),
+                label=f"Bark notification task ({symbol})",
             )
     except Exception as e:
         logger.warning(f"[Scheduler] Notification send failed for {symbol}: {e}")
@@ -185,7 +201,7 @@ async def _run_scheduled_analysis_once(
     actual_trade_date = _resolve_scheduled_trade_date(requested_trade_date)
     _log(f"[Scheduler] {symbol} trade_date={actual_trade_date} (requested={requested_trade_date})")
 
-    set_scheduled_task_context(True)
+    scheduled_context_token = set_scheduled_task_context(True)
     try:
         async with _concurrency_slot(job_id, symbol):
             with get_db_ctx() as db:
@@ -227,6 +243,8 @@ async def _run_scheduled_analysis_once(
                 scheduled_service.mark_run_failed(db, task_id, requested_trade_date)
             else:
                 scheduled_service.record_manual_test_result(db, task_id, "failed")
+    finally:
+        reset_scheduled_task_context(scheduled_context_token)
 
 
 async def _run_scheduled_job(task: dict, trade_date: str):
@@ -259,7 +277,7 @@ async def _scheduler_loop():
     """Background loop: check every minute for scheduled tasks to trigger.
 
     Each task has its own trigger_time (HH:MM). The scheduler runs on trading
-    days only, outside of trading hours (before 9:15 or after 15:00). Tasks
+    days only, including intraday watch points and post-close reviews. Tasks
     are triggered when current time >= task.trigger_time and the task hasn't
     run today yet.
     """
@@ -276,10 +294,6 @@ async def _scheduler_loop():
 
             if not is_cn_trading_day(today):
                 continue
-            time_val = now.hour * 60 + now.minute
-            if 8 * 60 < time_val < 20 * 60:
-                continue
-
             with get_db_ctx() as db:
                 tasks = scheduled_service.get_pending_tasks(db, today, current_hhmm)
                 if not tasks:

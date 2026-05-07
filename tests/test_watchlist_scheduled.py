@@ -101,11 +101,11 @@ class TestScheduled:
         assert items[0]["trigger_time"] == "07:30"
         assert items[0]["horizon"] == "medium"
 
-    def test_reject_daytime_hours(self, db):
-        with pytest.raises(ValueError, match="20:00"):
-            scheduled_service.create_scheduled(db, "user1", "300750.SZ", "short", "10:30")
-        with pytest.raises(ValueError, match="20:00"):
-            scheduled_service.create_scheduled(db, "user1", "300750.SZ", "short", "15:00")
+    def test_allow_intraday_hours(self, db):
+        scheduled_service.create_scheduled(db, "user1", "300750.SZ", "short", "11:35")
+        scheduled_service.create_scheduled(db, "user1", "300750.SZ", "short", "14:30")
+        items = scheduled_service.list_scheduled(db, "user1")
+        assert [item["trigger_time"] for item in items] == ["11:35", "14:30"]
 
     def test_allow_boundary_times(self, db):
         # 08:00 is the boundary, should be OK
@@ -115,10 +115,11 @@ class TestScheduled:
         # Midnight should be OK
         scheduled_service.create_scheduled(db, "user1", "000001.SZ", "short", "00:30")
 
-    def test_duplicate_rejected(self, db):
-        scheduled_service.create_scheduled(db, "user1", "300750.SZ")
-        with pytest.raises(ValueError, match="已有定时分析"):
-            scheduled_service.create_scheduled(db, "user1", "300750.SZ")
+    def test_duplicate_same_time_rejected(self, db):
+        scheduled_service.create_scheduled(db, "user1", "300750.SZ", "short", "20:00")
+        scheduled_service.create_scheduled(db, "user1", "300750.SZ", "short", "14:30")
+        with pytest.raises(ValueError, match="20:00 已有定时分析"):
+            scheduled_service.create_scheduled(db, "user1", "300750.SZ", "medium", "20:00")
 
     def test_invalid_horizon(self, db):
         with pytest.raises(ValueError, match="horizon"):
@@ -179,10 +180,11 @@ class TestScheduled:
                 horizon="medium",
             )
 
-    def test_update_reject_daytime(self, db):
-        item = scheduled_service.create_scheduled(db, "user1", "300750.SZ")
-        with pytest.raises(ValueError, match="20:00"):
-            scheduled_service.update_scheduled(db, "user1", item["id"], trigger_time="11:00")
+    def test_update_rejects_duplicate_time_for_same_symbol(self, db):
+        scheduled_service.create_scheduled(db, "user1", "300750.SZ", "short", "14:30")
+        item = scheduled_service.create_scheduled(db, "user1", "300750.SZ", "short", "20:00")
+        with pytest.raises(ValueError, match="14:30 已有定时分析"):
+            scheduled_service.update_scheduled(db, "user1", item["id"], trigger_time="14:30")
 
     def test_mark_success(self, db):
         item = scheduled_service.create_scheduled(db, "user1", "300750.SZ")

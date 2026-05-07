@@ -5,6 +5,7 @@ from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
 from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
+from tradingagents.agents.utils.context_utils import build_prompt_context_block
 
 
 def create_fundamentals_analyst(llm, data_collector=None):
@@ -25,6 +26,7 @@ def create_fundamentals_analyst(llm, data_collector=None):
         config = get_config()
         system_message = get_prompt("fundamentals_system_message", config=config)
         horizon_ctx = build_horizon_context(horizon, focus_areas, specific_questions, agent_type="fundamentals")
+        context_block = build_prompt_context_block(state, "analyst")
 
         pool = data_collector.get(ticker, current_date) if data_collector else None
 
@@ -49,6 +51,7 @@ def create_fundamentals_analyst(llm, data_collector=None):
             SystemMessage(content=system_message + "\n\n请全程使用中文。"),
             HumanMessage(content=(
                 horizon_ctx + "\n"
+                f"{context_block}\n\n"
                 f"以下是 {ticker} 在 {current_date} 的基本面资料。\n\n"
                 f"【get_fundamentals】\n{outputs['fundamentals']}\n\n"
                 f"【get_balance_sheet】\n{outputs['balance_sheet']}\n\n"

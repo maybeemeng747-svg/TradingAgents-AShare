@@ -11,6 +11,8 @@ DEFAULT_CONFIG = {
     "llm_provider": os.getenv("TA_LLM_PROVIDER", "openai"),
     "deep_think_llm": os.getenv("TA_LLM_DEEP", "gpt-4o"),
     "quick_think_llm": os.getenv("TA_LLM_QUICK", "gpt-4o-mini"),
+    "mid_think_llm": os.getenv("TA_LLM_MID", os.getenv("TA_LLM_DEEP", "gpt-4o")),
+    "ultra_think_llm": os.getenv("TA_LLM_ULTRA", os.getenv("TA_LLM_DEEP", "gpt-4o")),
     "backend_url": os.getenv("TA_BASE_URL", "https://api.openai.com/v1"),
     "api_key": os.getenv("TA_API_KEY", ""),
     

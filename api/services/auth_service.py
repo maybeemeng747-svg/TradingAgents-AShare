@@ -252,8 +252,10 @@ def upsert_user_llm_config(
     max_risk_discuss_rounds: Optional[int] = None,
     api_key: Optional[str] = None,
     wecom_webhook_url: Optional[str] = None,
+    bark_url: Optional[str] = None,
     clear_api_key: bool = False,
     clear_wecom_webhook: bool = False,
+    clear_bark_url: bool = False,
     default_analysts: Optional[list] = None,
 ) -> UserLLMConfigDB:
     row = get_user_llm_config(db, user_id)
@@ -284,6 +286,11 @@ def upsert_user_llm_config(
         row.wecom_webhook_encrypted = None
     elif wecom_webhook_url:
         row.wecom_webhook_encrypted = encrypt_secret(wecom_webhook_url)
+
+    if clear_bark_url:
+        row.bark_url_encrypted = None
+    elif bark_url:
+        row.bark_url_encrypted = encrypt_secret(bark_url)
 
     if default_analysts is not None:
         import json

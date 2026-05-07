@@ -5,6 +5,7 @@ from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
 from tradingagents.agents.utils.agent_states import current_tracker_var
+from tradingagents.agents.utils.context_utils import build_prompt_context_block
 from tradingagents.agents.utils.debate_utils import (
     format_claim_subset_for_prompt,
     format_claims_for_prompt,
@@ -33,6 +34,7 @@ def create_bull_researcher(llm, memory):
         focus_areas = user_intent.get("focus_areas", [])
         specific_questions = user_intent.get("specific_questions", [])
         horizon_ctx = build_horizon_context(horizon, focus_areas, specific_questions, agent_type="bull")
+        context_block = build_prompt_context_block(state, "research")
 
         curr_situation = f"{market_research_report}\n\n{sentiment_report}\n\n{news_report}\n\n{fundamentals_report}\n\n{volume_price_report}"
         past_memories = memory.get_memories(curr_situation, n_matches=2)
@@ -41,7 +43,7 @@ def create_bull_researcher(llm, memory):
         for i, rec in enumerate(past_memories, 1):
             past_memory_str += rec["recommendation"] + "\n\n"
 
-        prompt = horizon_ctx + get_prompt("bull_prompt", config=get_config()).format(
+        prompt = horizon_ctx + context_block + "\n\n" + get_prompt("bull_prompt", config=get_config()).format(
             market_research_report=market_research_report,
             sentiment_report=sentiment_report,
             news_report=news_report,

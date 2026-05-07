@@ -78,13 +78,29 @@ def build_horizon_context(
     horizon_label = _HORIZON_LABELS.get(horizon, horizon)
     focus_str = "、".join(focus_areas) if focus_areas else "无特殊关注"
     questions_str = "；".join(specific_questions) if specific_questions else "无"
+    weight_hint = _build_weight_hint(horizon, agent_type)
 
     return template.format(
         horizon_label=horizon_label,
         focus_areas_str=focus_str,
         specific_questions_str=questions_str,
-        weight_hint="",
+        weight_hint=weight_hint,
     )
+
+
+def _build_weight_hint(horizon: str, agent_type: Optional[str]) -> str:
+    """Return a concise weighting hint for single-run mixed-horizon analysis."""
+    if not agent_type:
+        return ""
+
+    normalized_agent = agent_type.strip().lower()
+    if horizon == "short" and normalized_agent in {"fundamentals", "macro"}:
+        return "短线决策中该维度作为次要约束使用，重点识别硬风险、估值压力和中期失效条件，不要覆盖量价、资金与市场结构信号。"
+    if horizon == "short" and normalized_agent in {"market", "smart_money", "volume_price", "social", "news"}:
+        return "短线决策中该维度权重较高，请优先关注1-2周内可验证的触发条件、失效条件和风险收益比。"
+    if horizon == "medium" and normalized_agent in {"fundamentals", "macro"}:
+        return "中线决策中该维度权重较高，请优先关注盈利质量、估值消化、行业周期和政策约束。"
+    return ""
 
 
 def _merge_inferred_user_context(

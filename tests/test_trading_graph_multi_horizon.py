@@ -212,7 +212,9 @@ class _FakeWorkflow:
 
 def test_graph_setup_wires_market_analyst_without_name_errors():
     quick_llm = object()
+    mid_llm = object()
     deep_llm = object()
+    ultra_llm = object()
     tool_nodes = {"market": object()}
     conditional_logic = SimpleNamespace(
         should_continue_market=lambda *_args, **_kwargs: "done",
@@ -236,6 +238,7 @@ def test_graph_setup_wires_market_analyst_without_name_errors():
         "create_risk_manager": MagicMock(return_value="risk_node"),
         "create_smart_money_analyst": MagicMock(return_value="smart_money_node"),
         "create_social_media_analyst": MagicMock(return_value="social_node"),
+        "create_volume_price_analyst": MagicMock(return_value="volume_price_node"),
         "create_trader": MagicMock(return_value="trader_node"),
     }
 
@@ -243,7 +246,9 @@ def test_graph_setup_wires_market_analyst_without_name_errors():
          patch("tradingagents.graph.setup.StateGraph", _FakeWorkflow):
         graph_setup = GraphSetup(
             quick_llm,
+            mid_llm,
             deep_llm,
+            ultra_llm,
             tool_nodes,
             bull_memory=object(),
             bear_memory=object(),

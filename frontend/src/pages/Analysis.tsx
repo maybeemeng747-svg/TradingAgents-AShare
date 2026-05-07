@@ -81,13 +81,13 @@ export default function Analysis() {
 
     const finalDecision = report?.final_trade_decision
     const confidence = jobConfidence ?? extractConfidence(finalDecision)
-    const targetPrice = jobTargetPrice ?? extractPrice(finalDecision, 'target')
-    const stopLoss = jobStopLoss ?? extractPrice(finalDecision, 'stop')
+    const targetPrice = jobTargetPrice ?? report?.target_price ?? extractPrice(finalDecision, 'target')
+    const stopLoss = jobStopLoss ?? report?.stop_loss_price ?? extractPrice(finalDecision, 'stop')
 
     return (
         <div className="space-y-4">
-            <div className="grid grid-cols-[340px_minmax(0,1fr)] gap-4 min-h-[calc(100vh-5rem)]">
-                <aside className="h-[calc(100vh-5rem)] sticky top-0 flex flex-col gap-4">
+            <div className="grid grid-cols-1 lg:grid-cols-[340px_minmax(0,1fr)] gap-4 min-h-[calc(100vh-5rem)]">
+                <aside className="h-[70vh] min-h-[520px] lg:h-[calc(100vh-5rem)] lg:sticky lg:top-0 flex flex-col gap-4">
                     <div className="min-h-0 flex-1">
                         <ChatCopilotPanel
                             onSymbolDetected={(symbol) => {
@@ -101,7 +101,7 @@ export default function Analysis() {
                 </aside>
 
                 <div className="min-w-0 space-y-4">
-                    <div className="h-[360px]">
+                    <div className="h-[300px] sm:h-[360px]">
                         <KlinePanel
                             symbol={activeSymbol}
                             onSymbolChange={(symbol) => {

@@ -126,7 +126,7 @@ class InMemoryJobStore:
 
         On timeout:
           - If job is still running, yield a ping event.
-          - If job is completed or failed, terminate the generator.
+          - If job is completed or failed, replay a terminal event and terminate.
         On terminal events (job.completed, job.failed), yield and terminate.
         """
         q = self._ensure_queue(job_id)
@@ -138,8 +138,34 @@ class InMemoryJobStore:
                     break
             except asyncio.TimeoutError:
                 with self._lock:
-                    status = self._jobs.get(job_id, {}).get("status")
+                    job = dict(self._jobs.get(job_id, {}))
+                    status = job.get("status")
                 if status in ("completed", "failed"):
+                    if status == "completed":
+                        yield {
+                            "event": "job.completed",
+                            "data": {
+                                "job_id": job_id,
+                                "decision": job.get("decision"),
+                                "direction": job.get("direction") or (job.get("result") or {}).get("direction"),
+                                "result": job.get("result"),
+                                "risk_items": job.get("risk_items") or [],
+                                "key_metrics": job.get("key_metrics") or [],
+                                "confidence": job.get("confidence") or (job.get("result") or {}).get("confidence"),
+                                "target_price": job.get("target_price") or (job.get("result") or {}).get("target_price"),
+                                "stop_loss_price": job.get("stop_loss_price") or (job.get("result") or {}).get("stop_loss_price"),
+                            },
+                            "timestamp": _utcnow_iso(),
+                        }
+                    else:
+                        yield {
+                            "event": "job.failed",
+                            "data": {
+                                "job_id": job_id,
+                                "error": job.get("error") or "job failed",
+                            },
+                            "timestamp": _utcnow_iso(),
+                        }
                     break
                 yield {
                     "event": "ping",

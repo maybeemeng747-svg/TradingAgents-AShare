@@ -69,12 +69,35 @@ class KeyMetricSchema(BaseModel):
         # LLM 可能返回数字而非字符串
         return str(v) if not isinstance(v, str) else v
 
-    @field_validator("status", mode="before")
+    @field_validator("status", mode="after")
     @classmethod
-    def _coerce_status(cls, v):
-        if isinstance(v, str) and v.lower() in ("good", "neutral", "bad"):
-            return v.lower()
-        return "neutral"
+    def _infer_status(cls, v, info):
+        """如果 LLM 给了 neutral，尝试从 name+value 推断实际优劣。"""
+        if v in ("good", "bad"):
+            return v
+        value = info.data.get("value", "")
+        name = info.data.get("name", "").lower()
+        vl = str(value).lower()
+        # 数据缺失 → bad
+        if any(k in vl for k in ["缺失", "nan", "missing", "n/a", "无数据", "-"]):
+            return "bad"
+        # 尝试提取数字
+        import re
+        nums = re.findall(r'[\-+]?[\d.]+', vl)
+        if not nums:
+            return v
+        num = float(nums[0])
+        if "roe" in name:
+            return "good" if num > 15 else ("bad" if num < 8 else v)
+        if "roa" in name:
+            return "good" if num > 8 else ("bad" if num < 3 else v)
+        if any(k in name for k in ["负债", "debt", "liability"]):
+            return "bad" if num > 70 else ("good" if num < 40 else v)
+        if any(k in name for k in ["增速", "增长", "growth"]):
+            return "good" if num > 20 else ("bad" if num < 5 else v)
+        if any(k in name for k in ["现金流", "cash flow"]):
+            return "bad" if num < 0 else ("good" if num > 50 else v)
+        return v
 
 
 class StructuredReport(BaseModel):
@@ -127,7 +150,13 @@ def extract_structured_data(
             "2. confidence：整体置信度（0-100整数），若文中未明确给出则根据语气判断\n"
             "3. target_price / stop_loss_price：纯数字，若未提及则为 null\n"
             "4. risks：最多5条主要风险，每条包含名称（15字内）、等级（high/medium/low）、一句话说明\n"
-            "5. key_metrics：最多6条关键财务/估值指标，每条包含名称、值（含单位）、优劣（good/neutral/bad）"
+            "5. key_metrics：最多6条关键财务/估值指标，每条包含名称、值（含单位）、优劣（good/neutral/bad）。"
+            "**必须严格执行优劣判断，不要全部标neutral**："
+            "ROE>15%为good，<8%为bad；营收增速>20%为good，<5%为bad；"
+            "资产负债率<40%为good，>70%为bad，60%左右为neutral；"
+            "经营现金流净额为正且>净利润50%为good，为负为bad；"
+            "净利润为正且增长为good，下降为bad；数据缺失的指标必须标bad并在value中注明'数据缺失'。"
+            "每个指标都必须独立判断，至少要有1个good和1个bad（如果数据支持）。"
         )
 
         response = llm.invoke([HumanMessage(content=prompt)])
@@ -157,25 +186,70 @@ def _extract_confidence_regex(text: Optional[str]) -> Optional[int]:
     return None
 
 
-def _extract_price_regex(text: Optional[str], price_type: str = "target") -> Optional[float]:
+def _extract_price_regex(
+    text: Optional[str],
+    price_type: str = "target",
+    *,
+    include_tactical: bool = False,
+) -> Optional[float]:
     if not text:
         return None
     if price_type == "target":
         patterns = [
-            r'目标价[:：]\s*[¥$]?\s*(\d+\.?\d*)',
-            r'目标价格[:：]\s*[¥$]?\s*(\d+\.?\d*)',
-            r'target[:：]\s*[¥$]?\s*(\d+\.?\d*)',
+            r'目标价[:：][^\d\n]{0,30}(\d+\.?\d*)',
+            r'目标价格[:：][^\d\n]{0,30}(\d+\.?\d*)',
+            r'目标位[:：][^\d\n]{0,30}(\d+\.?\d*)',
+            r'止盈位[:：][^\d\n]{0,30}(\d+\.?\d*)',
+            r'target[:：][^\d\n]{0,30}(\d+\.?\d*)',
         ]
+        if include_tactical:
+            patterns.extend([
+                r'第一目标[:：]\s*[^\d\n]{0,30}(\d+\.?\d*)',
+                r'第二目标[:：]\s*[^\d\n]{0,30}(\d+\.?\d*)',
+                r'止盈[/／、和]?减仓条件[\s\S]{0,140}?(?:第一目标|目标)[^\d]{0,30}(\d+\.?\d*)',
+                r'止盈(?:区间|条件)?[:：]\s*[^\d\n]{0,30}(\d+\.?\d*)',
+                r'股价(?:回落)?(?:至|到)\s*[¥$]?(\d+\.?\d*)\s*元[^\n。；]{0,30}(?:减仓|止盈|目标)',
+            ])
     else:
         patterns = [
-            r'止损价[:：]\s*[¥$]?\s*(\d+\.?\d*)',
-            r'止损价格[:：]\s*[¥$]?\s*(\d+\.?\d*)',
-            r'stop[-\s_]?loss[:：]\s*[¥$]?\s*(\d+\.?\d*)',
+            r'止损价[:：][^\d\n]{0,30}(\d+\.?\d*)',
+            r'止损价格[:：][^\d\n]{0,30}(\d+\.?\d*)',
+            r'止损位[:：][^\d\n]{0,30}(\d+\.?\d*)',
+            r'stop[-\s_]?loss[:：][^\d\n]{0,30}(\d+\.?\d*)',
         ]
+        if include_tactical:
+            patterns.extend([
+                r'止损触发[:：]\s*[^\d\n]{0,50}(\d+\.?\d*)',
+                r'失效条件[^\d\n]{0,80}(\d+\.?\d*)',
+                r'股价[^\n。；]{0,20}(?:突破|站稳|跌破)\s*[¥$]?(\d+\.?\d*)\s*元[^\n。；]{0,40}(?:止损|失效|反转)',
+                r'(?:突破|站稳|跌破)\s*[¥$]?(\d+\.?\d*)\s*元[^\n。；]{0,40}(?:止损|失效|反转)',
+            ])
     for p in patterns:
         m = re.search(p, text, re.IGNORECASE)
         if m:
             return float(m.group(1))
+    return None
+
+
+def _extract_price_from_sections(
+    sections: Iterable[Optional[str]],
+    price_type: Literal["target", "stop_loss"],
+) -> Optional[float]:
+    """Extract an actionable price across report sections.
+
+    Final risk reports may intentionally show "目标价：—" for a current watch
+    stance while upstream manager/trader sections still contain conditional
+    execution prices. Use strict labels first, then broader tactical labels.
+    """
+    texts = [text for text in sections if text]
+    for text in texts:
+        price = _extract_price_regex(text, price_type)
+        if price is not None:
+            return price
+    for text in texts:
+        price = _extract_price_regex(text, price_type, include_tactical=True)
+        if price is not None:
+            return price
     return None
 
 
@@ -228,13 +302,24 @@ def resolve_report_fields(
 
     confidence = confidence_override if confidence_override is not None else _extract_confidence_regex(final_trade_decision)
 
-    target_price = target_price_override if target_price_override is not None else _extract_price_regex(final_trade_decision, "target")
-    if target_price is None:
-        target_price = _extract_price_regex(trader_investment_plan, "target")
+    price_sections = (
+        final_trade_decision,
+        trader_investment_plan,
+        investment_plan,
+        volume_price_report,
+        market_report,
+    )
+    target_price = (
+        target_price_override
+        if target_price_override is not None
+        else _extract_price_from_sections(price_sections, "target")
+    )
 
-    stop_loss_price = stop_loss_override if stop_loss_override is not None else _extract_price_regex(final_trade_decision, "stop_loss")
-    if stop_loss_price is None:
-        stop_loss_price = _extract_price_regex(trader_investment_plan, "stop_loss")
+    stop_loss_price = (
+        stop_loss_override
+        if stop_loss_override is not None
+        else _extract_price_from_sections(price_sections, "stop_loss")
+    )
 
     return {
         "market_report": market_report,
@@ -337,7 +422,7 @@ def recover_stale_active_reports(
         .all()
     )
     if not rows:
-        return {"total": 0, "failed": 0}
+        return {"total": 0, "completed": 0, "failed": 0}
 
     failed = 0
     changed = False
@@ -356,6 +441,7 @@ def recover_stale_active_reports(
 
     return {
         "total": failed,
+        "completed": 0,
         "failed": failed,
     }
 

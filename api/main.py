@@ -404,9 +404,9 @@ def _get_reverse_stock_map_cached_only() -> Dict[str, str]:
     When the cache is cold we simply return an empty mapping and let the UI fall back
     to stock codes. Search endpoints can still call _load_cn_stock_map() explicitly.
     """
-    if _cn_stock_map is None or _cn_stock_reverse_map is None:
+    if _cn_stock_map is None:
         return {}
-    return dict(_cn_stock_reverse_map)
+    return {code: name for name, code in _cn_stock_map.items()}
 
 
 def _search_cn_stock_by_name(query: str) -> Optional[str]:
@@ -747,6 +747,8 @@ class UserResponse(BaseModel):
     created_at: Optional[datetime] = None
     last_login_at: Optional[datetime] = None
     email_report_enabled: bool = True
+    wecom_report_enabled: bool = True
+    bark_report_enabled: bool = True
 
     model_config = {"from_attributes": True}
 
@@ -780,9 +782,12 @@ class UserRuntimeConfigResponse(BaseModel):
     has_api_key: bool = False
     has_wecom_webhook: bool = False
     wecom_webhook_display: Optional[str] = None
+    has_bark_url: bool = False
+    bark_url_display: Optional[str] = None
     server_fallback_enabled: bool = True
     email_report_enabled: bool = True
     wecom_report_enabled: bool = True
+    bark_report_enabled: bool = True
     default_analysts: List[str] = Field(default_factory=lambda: ["market", "social", "news", "fundamentals", "macro", "smart_money", "volume_price"])
 
 
@@ -795,10 +800,13 @@ class UserRuntimeConfigUpdateRequest(BaseModel):
     max_risk_discuss_rounds: Optional[int] = None
     email_report_enabled: Optional[bool] = None
     wecom_report_enabled: Optional[bool] = None
+    bark_report_enabled: Optional[bool] = None
     api_key: Optional[str] = None
     wecom_webhook_url: Optional[str] = None
+    bark_url: Optional[str] = None
     clear_api_key: bool = False
     clear_wecom_webhook: bool = False
+    clear_bark_url: bool = False
     warmup: bool = True
     force_warmup: bool = False
     default_analysts: Optional[List[str]] = None
@@ -829,6 +837,17 @@ class WecomWebhookWarmupResponse(BaseModel):
     sent: bool = True
     message: str
     webhook_display: Optional[str] = None
+
+
+class BarkWarmupRequest(BaseModel):
+    bark_url: Optional[str] = None
+    content: Optional[str] = None
+
+
+class BarkWarmupResponse(BaseModel):
+    sent: bool = True
+    message: str
+    bark_url_display: Optional[str] = None
 
 
 class PortfolioPositionItem(BaseModel):
@@ -955,6 +974,13 @@ def _build_runtime_config(overrides: Dict[str, Any], user_id: Optional[str] = No
         config["deep_think_llm"] = quick
     if not quick and deep:
         config["quick_think_llm"] = deep
+
+    # UI/user configs currently expose quick/deep only. When a user switches to
+    # another OpenAI-compatible endpoint, keep hidden tiers on the same endpoint
+    # by mapping mid/ultra to deep instead of leaking env-level model names.
+    if filtered_user_overrides or filtered_request_overrides:
+        config["mid_think_llm"] = config.get("deep_think_llm") or config.get("quick_think_llm")
+        config["ultra_think_llm"] = config.get("deep_think_llm") or config.get("quick_think_llm")
 
     return config
 
@@ -1127,6 +1153,8 @@ def _build_result_payload(final_state: Dict[str, Any]) -> Dict[str, Any]:
         "investment_plan": final_state.get("investment_plan"),
         "trader_investment_plan": final_state.get("trader_investment_plan"),
         "risk_feedback_state": final_state.get("risk_feedback_state"),
+        "metadata": final_state.get("metadata"),
+        "trade_quality_check": (final_state.get("metadata") or {}).get("trade_quality_check"),
         "final_trade_decision": final_state.get("final_trade_decision"),
     }
 
@@ -1626,10 +1654,23 @@ async def _run_job_inner(
             request.horizons = [request.horizons[0]]
 
         # ── Dual-horizon intent-driven path ──────────────────────────────────
+        if not request.query:
+            # No query provided — generate a default query so we always use the
+            # streaming path (which pre-collects data correctly via DualHorizon).
+            # The old `propagate()` path had a data-collection race condition.
+            request.query = f"分析{request.symbol}的短线机会"
+            # Skip intent parsing — we already know the ticker and horizon
+            request.user_intent = {
+                "ticker": request.symbol,
+                "horizons": request.horizons or ["short"],
+                "user_context": {},
+                "raw_query": request.query,
+            }
+            _log(f"[auto-query] No query provided, generated default intent for {request.symbol}")
+
+        intent_start_t = time.time()
+        ticker = request.symbol or display_name
         if request.query:
-            # 1. 组装用户意图
-            intent_start_t = time.time()
-            ticker = request.symbol or display_name
 
             # 优先使用已由 chat_completions 预解析的 intent（单次 LLM），避免二次调用
             if request.user_intent:
@@ -1637,8 +1678,10 @@ async def _run_job_inner(
                 user_intent["ticker"] = ticker
                 user_intent["horizons"] = request.horizons
             else:
-                # 直接 POST /v1/analyze 时的兜底（无预解析 intent）
+                # 直接 POST /v1/analyze 时的兕底（无预解析 intent）
+                _log(f"[auto-query] Calling _parse_intent for query: {request.query}")
                 user_intent = await asyncio.to_thread(_parse_intent, request.query, graph.quick_thinking_llm, fallback_ticker=ticker)
+                _log(f"[auto-query] _parse_intent done: {user_intent}")
                 if not request.horizons:
                     request.horizons = user_intent["horizons"]
                 user_intent["horizons"] = request.horizons
@@ -1895,8 +1938,19 @@ async def _run_job_inner(
                     _log(f"Failed to save report: {e}")
 
             # 所有后处理完成后再标记 completed，防止 SSE 超时提前关闭流
-            _set_job(job_id, status="completed", result=result,
-                     decision=decision, finished_at=_utcnow_iso())
+            _set_job(
+                job_id,
+                status="completed",
+                result=result,
+                decision=decision,
+                direction=result["direction"],
+                risk_items=[r.model_dump() for r in structured.risks] if structured else [],
+                key_metrics=[m.model_dump() for m in structured.key_metrics] if structured else [],
+                confidence=result["confidence"],
+                target_price=result["target_price"],
+                stop_loss_price=result["stop_loss_price"],
+                finished_at=_utcnow_iso(),
+            )
             _emit_job_event(job_id, "job.completed", {
                 "job_id": job_id, "decision": decision,
                 "direction": result["direction"],
@@ -2046,16 +2100,6 @@ async def _run_job_inner(
                 _log(f"Error during default streaming: {e}")
             finally:
                 current_tracker_var.reset(_tracker_token)
-        else:
-            final_state, _ = await asyncio.to_thread(
-                graph.propagate,
-                request.symbol,
-                request.trade_date,
-                user_context=user_context_payload,
-                selected_analysts=request.selected_analysts,
-                request_source=request_source,
-                thread_id=job_id,
-            )
 
         if not final_state:
             raise RuntimeError("graph returned empty final state")
@@ -2130,6 +2174,12 @@ async def _run_job_inner(
             status="completed",
             result=result,
             decision=decision,
+            direction=result["direction"],
+            risk_items=[r.model_dump() for r in structured.risks] if structured else [],
+            key_metrics=[m.model_dump() for m in structured.key_metrics] if structured else [],
+            confidence=result["confidence"],
+            target_price=result["target_price"],
+            stop_loss_price=result["stop_loss_price"],
             finished_at=_utcnow_iso(),
         )
         _emit_job_event(
@@ -3306,7 +3356,7 @@ _CONFIG_ALLOWED_KEYS = {
     "llm_provider", "deep_think_llm", "quick_think_llm",
     "backend_url", "max_debate_rounds", "max_risk_discuss_rounds",
 }
-_CONFIG_PREFERENCE_KEYS = {"email_report_enabled", "wecom_report_enabled"}
+_CONFIG_PREFERENCE_KEYS = {"email_report_enabled", "wecom_report_enabled", "bark_report_enabled"}
 _CONFIG_MODEL_KEYS = ("llm_provider", "backend_url", "quick_think_llm", "deep_think_llm")
 _CONFIG_MODEL_LABELS = {
     "quick_think_llm": "常规模型",
@@ -3341,6 +3391,12 @@ def _mask_wecom_webhook(webhook_url: Optional[str]) -> Optional[str]:
             return f"{base}key={_mask_secret_value(key)}"
         return _mask_secret_value(normalized, head=18, tail=8)
     return _mask_secret_value(normalized)
+
+
+def _mask_bark_url(bark_url: Optional[str]) -> Optional[str]:
+    from api.services.bark_notification_service import mask_bark_url
+
+    return mask_bark_url(bark_url)
 
 
 def _warmup_model_names(config: Dict[str, Any]) -> List[str]:
@@ -3544,6 +3600,7 @@ def _config_response_for_user(user: Optional[UserDB], db: Session) -> UserRuntim
     cfg = _build_runtime_config({}, user_id=user.id if user else None, db=db)
     user_cfg = auth_service.get_user_llm_config(db, user.id) if user else None
     webhook_url = auth_service.decrypt_secret(getattr(user_cfg, "wecom_webhook_encrypted", None))
+    bark_url = auth_service.decrypt_secret(getattr(user_cfg, "bark_url_encrypted", None))
     return UserRuntimeConfigResponse(
         llm_provider=cfg["llm_provider"],
         deep_think_llm=cfg["deep_think_llm"],
@@ -3554,9 +3611,12 @@ def _config_response_for_user(user: Optional[UserDB], db: Session) -> UserRuntim
         has_api_key=bool(user_cfg and user_cfg.api_key_encrypted),
         has_wecom_webhook=bool(webhook_url),
         wecom_webhook_display=_mask_wecom_webhook(webhook_url),
+        has_bark_url=bool(bark_url),
+        bark_url_display=_mask_bark_url(bark_url),
         server_fallback_enabled=bool(cfg.get("server_fallback_enabled", True)),
         email_report_enabled=user.email_report_enabled if user and hasattr(user, 'email_report_enabled') else True,
         wecom_report_enabled=user.wecom_report_enabled if user and hasattr(user, "wecom_report_enabled") else True,
+        bark_report_enabled=user.bark_report_enabled if user and hasattr(user, "bark_report_enabled") else True,
         default_analysts=json.loads(user_cfg.default_analysts) if user_cfg and user_cfg.default_analysts else ["market", "social", "news", "fundamentals", "macro", "smart_money", "volume_price"],
     )
 
@@ -3615,6 +3675,14 @@ def update_runtime_config(
             normalized_wecom_webhook = normalize_webhook_url(updates.wecom_webhook_url)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+    normalized_bark_url = None
+    if updates.bark_url:
+        from api.services.bark_notification_service import normalize_bark_url
+
+        try:
+            normalized_bark_url = normalize_bark_url(updates.bark_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     persistent_user = db.query(UserDB).filter(UserDB.id == current_user.id).first() or current_user
     before_cfg = _config_response_for_user(persistent_user, db)
     pending_cfg = _build_pending_runtime_config(updates, persistent_user.id, db)
@@ -3635,8 +3703,10 @@ def update_runtime_config(
         max_risk_discuss_rounds=updates.max_risk_discuss_rounds,
         api_key=updates.api_key,
         wecom_webhook_url=normalized_wecom_webhook,
+        bark_url=normalized_bark_url,
         clear_api_key=updates.clear_api_key,
         clear_wecom_webhook=updates.clear_wecom_webhook,
+        clear_bark_url=updates.clear_bark_url,
         default_analysts=updates.default_analysts,
     )
     user_pref_updated = False
@@ -3645,6 +3715,9 @@ def update_runtime_config(
         user_pref_updated = True
     if updates.wecom_report_enabled is not None:
         persistent_user.wecom_report_enabled = updates.wecom_report_enabled
+        user_pref_updated = True
+    if updates.bark_report_enabled is not None:
+        persistent_user.bark_report_enabled = updates.bark_report_enabled
         user_pref_updated = True
     if user_pref_updated:
         db.commit()
@@ -3685,11 +3758,11 @@ def update_runtime_config(
         k: v
         for k, v in updates.model_dump().items()
         if v is not None
-        and k not in {"api_key", "wecom_webhook_url", "warmup", "force_warmup"}
+        and k not in {"api_key", "wecom_webhook_url", "bark_url", "warmup", "force_warmup"}
         and (
             k in _CONFIG_ALLOWED_KEYS
             or k in _CONFIG_PREFERENCE_KEYS
-            or (k in {"clear_api_key", "clear_wecom_webhook"} and bool(v))
+            or (k in {"clear_api_key", "clear_wecom_webhook", "clear_bark_url"} and bool(v))
         )
     }
     return {
@@ -3746,6 +3819,39 @@ async def warmup_wecom_webhook(
         "sent": True,
         "message": "Webhook 测试发送成功",
         "webhook_display": _mask_wecom_webhook(webhook_url),
+    }
+
+
+@app.post("/v1/config/bark/warmup", response_model=BarkWarmupResponse)
+async def warmup_bark(
+    request: BarkWarmupRequest,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(_require_web_user),
+):
+    from api.services.bark_notification_service import build_test_payload, normalize_bark_url, send_message
+
+    bark_url = (request.bark_url or "").strip()
+    if not bark_url:
+        user_cfg = auth_service.get_user_llm_config(db, current_user.id)
+        bark_url = auth_service.decrypt_secret(getattr(user_cfg, "bark_url_encrypted", None)) or ""
+    if not bark_url:
+        raise HTTPException(status_code=400, detail="请先填写或保存 Bark 地址/设备 Key")
+    try:
+        bark_url = normalize_bark_url(bark_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        sent = await asyncio.to_thread(send_message, build_test_payload(request.content), bark_url)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Bark 测试发送失败：{exc}") from exc
+    if not sent:
+        raise HTTPException(status_code=400, detail="Bark 测试发送失败，请检查地址或 App 状态")
+
+    return {
+        "sent": True,
+        "message": "Bark 测试发送成功",
+        "bark_url_display": _mask_bark_url(bark_url),
     }
 
 
@@ -3830,6 +3936,36 @@ def _attach_stock_names(items: List[dict], code_to_name: Dict[str, str]) -> List
     return items
 
 
+def _repair_portfolio_position_symbols(positions: List[dict]) -> List[dict]:
+    """Correct OCR/manual imports when stock name and code disagree."""
+    if not positions:
+        return positions
+
+    name_to_code = _load_cn_stock_map()
+    code_to_name = _get_reverse_stock_map()
+    repaired: List[dict] = []
+    for raw in positions:
+        item = dict(raw)
+        name = str(item.get("name") or "").strip()
+        symbol = _normalize_symbol(str(item.get("symbol") or "").strip())
+        resolved_by_name = name_to_code.get(name) if name else None
+
+        if resolved_by_name and symbol != resolved_by_name:
+            item["symbol"] = resolved_by_name
+            item["name"] = name or code_to_name.get(resolved_by_name, resolved_by_name)
+            item["symbol_correction"] = {
+                "from": symbol,
+                "to": resolved_by_name,
+                "reason": "name_code_mismatch",
+            }
+        else:
+            item["symbol"] = symbol
+            if not name and symbol in code_to_name:
+                item["name"] = code_to_name[symbol]
+        repaired.append(item)
+    return repaired
+
+
 @app.get("/v1/portfolio/imports")
 def get_portfolio_import_state(
     current_user: UserDB = Depends(_require_api_user),
@@ -3845,10 +3981,11 @@ def sync_portfolio_import(
     db: Session = Depends(get_db),
 ):
     try:
+        positions = _repair_portfolio_position_symbols([p.model_dump() for p in body.positions])
         return portfolio_import_service.sync_positions(
             db=db,
             user_id=current_user.id,
-            positions=[p.model_dump() for p in body.positions],
+            positions=positions,
             source=body.source,
             auto_apply_scheduled=body.auto_apply_scheduled,
         )
@@ -3881,6 +4018,7 @@ async def parse_position_image_endpoint(
 
     try:
         positions = await asyncio.to_thread(parse_position_image, image_bytes, file.content_type)
+        positions = await asyncio.to_thread(_repair_portfolio_position_symbols, positions)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:

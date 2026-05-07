@@ -211,26 +211,36 @@ def summarize_user_context(context: Mapping[str, Any] | None) -> str:
 
 
 def build_agent_context_view(state: Mapping[str, Any], role: str) -> dict[str, str]:
-    role_key = role.lower()
     instrument_context = state.get("instrument_context", {})
     market_context = state.get("market_context", {})
     user_context = state.get("user_context", {})
 
     user_summary = summarize_user_context(user_context)
-    if role_key in {"analyst", "research"} and user_context:
-        user_summary = "\n".join(
-            [
-                f"目标动作：{user_context.get('objective', '未说明')}",
-                f"风险偏好：{user_context.get('risk_profile', '未说明')}",
-                f"持有周期：{user_context.get('investment_horizon', '未说明')}",
-            ]
-        )
-
     return {
         "instrument_context_summary": summarize_instrument_context(instrument_context),
         "market_context_summary": summarize_market_context(market_context),
         "user_context_summary": user_summary,
     }
+
+
+def build_prompt_context_block(state: Mapping[str, Any], role: str = "agent") -> str:
+    """Build a compact context block shared by analyst, research, trader, and risk prompts."""
+    context_view = build_agent_context_view(state, role)
+    return "\n".join(
+        [
+            "【标的上下文】",
+            context_view["instrument_context_summary"],
+            "",
+            "【市场上下文】",
+            context_view["market_context_summary"],
+            "",
+            "【用户上下文】",
+            context_view["user_context_summary"],
+            "",
+            "【执行要求】",
+            "所有结论必须尊重用户上下文；若用户有硬约束，入场、加仓、止损、减仓和观望条件都不得与硬约束冲突。",
+        ]
+    )
 
 
 def _build_cn_market_context(trade_date: str, now: datetime | None = None) -> dict[str, Any]:

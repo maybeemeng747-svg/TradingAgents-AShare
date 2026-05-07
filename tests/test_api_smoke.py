@@ -174,6 +174,11 @@ class TestAnalyzeEndpoint:
         now = datetime.now(timezone.utc)
 
         with get_db_ctx() as db:
+            db.query(ImportedPortfolioPositionDB).filter(
+                ImportedPortfolioPositionDB.user_id == current_user["id"],
+                ImportedPortfolioPositionDB.source == "manual",
+                ImportedPortfolioPositionDB.symbol == "600519.SH",
+            ).delete()
             db.add(
                 ImportedPortfolioPositionDB(
                     id=uuid4().hex,
@@ -453,6 +458,80 @@ class TestWecomRuntimeConfig:
         assert "企业微信 Webhook" in r.json()["detail"]
 
 
+class TestBarkRuntimeConfig:
+    BARK_KEY = "abcd1234efgh5678"
+    BARK_URL = f"https://api.day.app/{BARK_KEY}"
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.client = _get_client()
+        self.token = _auth_unique(self.client)
+        self.headers = {"Authorization": f"Bearer {self.token}"}
+
+    def test_config_returns_masked_bark_url_and_toggle_state(self):
+        r = self.client.patch("/v1/config", headers=self.headers, json={
+            "bark_url": self.BARK_KEY,
+            "bark_report_enabled": False,
+            "warmup": False,
+        })
+
+        assert r.status_code == 200
+        body = r.json()
+        current = body["current"]
+        assert current["has_bark_url"] is True
+        assert current["bark_report_enabled"] is False
+        assert current["bark_url_display"].startswith("https://api.day.app/")
+        assert current["bark_url_display"] != self.BARK_URL
+        assert "abcd" in current["bark_url_display"]
+        assert "5678" in current["bark_url_display"]
+        assert body["applied"]["bark_report_enabled"] is False
+
+        config_resp = self.client.get("/v1/config", headers=self.headers)
+        assert config_resp.status_code == 200
+        assert config_resp.json()["bark_report_enabled"] is False
+
+    def test_bark_warmup_uses_stored_url_when_input_missing(self):
+        save_resp = self.client.patch("/v1/config", headers=self.headers, json={
+            "bark_url": self.BARK_URL,
+            "warmup": False,
+        })
+        assert save_resp.status_code == 200
+
+        with patch("api.services.bark_notification_service.send_message", return_value=True) as mock_send:
+            r = self.client.post("/v1/config/bark/warmup", headers=self.headers, json={})
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["sent"] is True
+        assert "成功" in body["message"]
+        assert mock_send.call_count == 1
+        assert mock_send.call_args.args[0]["title"] == "TradingAgents Bark 测试"
+        assert mock_send.call_args.args[1] == self.BARK_URL
+
+    def test_inline_bark_warmup_does_not_persist_unsaved_url(self):
+        with patch("api.services.bark_notification_service.send_message", return_value=True) as mock_send:
+            r = self.client.post("/v1/config/bark/warmup", headers=self.headers, json={
+                "bark_url": self.BARK_KEY,
+            })
+
+        assert r.status_code == 200
+        assert mock_send.call_count == 1
+        assert mock_send.call_args.args[1] == self.BARK_URL
+
+        config_resp = self.client.get("/v1/config", headers=self.headers)
+        assert config_resp.status_code == 200
+        assert config_resp.json()["has_bark_url"] is False
+
+    def test_invalid_bark_url_is_rejected(self):
+        r = self.client.patch("/v1/config", headers=self.headers, json={
+            "bark_url": "http://api.day.app/unsafe",
+            "warmup": False,
+        })
+
+        assert r.status_code == 400
+        assert "Bark 地址" in r.json()["detail"]
+
+
 class TestWatchlistAddEndpoint:
     @pytest.fixture(autouse=True)
     def setup(self):
@@ -693,7 +772,7 @@ class TestScheduledBatchEndpoints:
             coro.close()
             return MagicMock()
 
-        with patch("api.main._run_scheduled_analysis_once", run_once), \
+        with patch("api.main._run_manual_trigger", run_once), \
              patch("api.main._create_tracked_task", side_effect=_close_coro), \
              patch("api.main.cn_today_str", return_value="2026-03-31"), \
              patch("api.main._resolve_scheduled_trade_date", return_value="2026-03-31"):
@@ -713,7 +792,7 @@ class TestScheduledBatchEndpoints:
         assert args[0]["user_id"]
         assert args[1] == "2026-03-31"
         assert args[2] == body["job_id"]
-        assert kwargs == {"mark_schedule_run": False}
+        assert kwargs == {}
 
     def test_batch_trigger_endpoint_queues_selected_tasks_with_position_context(self):
         from api.database import ImportedPortfolioPositionDB, get_db_ctx
@@ -723,6 +802,11 @@ class TestScheduledBatchEndpoints:
         current_user = self.client.get("/v1/auth/me", headers=self.headers).json()
 
         with get_db_ctx() as db:
+            db.query(ImportedPortfolioPositionDB).filter(
+                ImportedPortfolioPositionDB.user_id == current_user["id"],
+                ImportedPortfolioPositionDB.source == "manual",
+                ImportedPortfolioPositionDB.symbol == "600519.SH",
+            ).delete()
             db.add(
                 ImportedPortfolioPositionDB(
                     id=uuid4().hex,
@@ -743,7 +827,7 @@ class TestScheduledBatchEndpoints:
             coro.close()
             return MagicMock()
 
-        with patch("api.main._run_scheduled_analysis_once", run_once), \
+        with patch("api.main._run_manual_trigger", run_once), \
              patch("api.main._create_tracked_task", side_effect=_close_coro), \
              patch("api.main.cn_today_str", return_value="2026-03-31"), \
              patch("api.main._resolve_scheduled_trade_date", return_value="2026-03-31"), \
@@ -775,5 +859,5 @@ class TestScheduledBatchEndpoints:
         assert second_args[0]["symbol"] == "600519.SH"
         assert first_args[1] == "2026-03-31"
         assert second_args[1] == "2026-03-31"
-        assert first_kwargs == {"mark_schedule_run": False}
-        assert second_kwargs == {"mark_schedule_run": False}
+        assert first_kwargs == {}
+        assert second_kwargs == {}

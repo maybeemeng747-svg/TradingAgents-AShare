@@ -246,6 +246,9 @@ export interface AnalysisReport {
     trade_date: string
     decision?: string
     direction?: string
+    confidence?: number | null
+    target_price?: number | null
+    stop_loss_price?: number | null
     instrument_context?: InstrumentContext
     market_context?: MarketContext
     user_context?: UserContext
@@ -564,9 +567,12 @@ export interface RuntimeConfig {
     has_api_key?: boolean
     has_wecom_webhook?: boolean
     wecom_webhook_display?: string | null
+    has_bark_url?: boolean
+    bark_url_display?: string | null
     server_fallback_enabled?: boolean
     email_report_enabled?: boolean
     wecom_report_enabled?: boolean
+    bark_report_enabled?: boolean
     default_analysts?: string[]
 }
 
@@ -587,10 +593,13 @@ export interface RuntimeConfigUpdate {
     max_risk_discuss_rounds?: number
     api_key?: string
     wecom_webhook_url?: string
+    bark_url?: string
     clear_api_key?: boolean
     clear_wecom_webhook?: boolean
+    clear_bark_url?: boolean
     email_report_enabled?: boolean
     wecom_report_enabled?: boolean
+    bark_report_enabled?: boolean
     default_analysts?: string[]
     warmup?: boolean
     force_warmup?: boolean
@@ -629,6 +638,17 @@ export interface WecomWarmupResponse {
     sent: boolean
     message: string
     webhook_display?: string | null
+}
+
+export interface BarkWarmupRequest {
+    bark_url?: string
+    content?: string
+}
+
+export interface BarkWarmupResponse {
+    sent: boolean
+    message: string
+    bark_url_display?: string | null
 }
 
 export interface AuthUser {

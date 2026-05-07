@@ -271,6 +271,7 @@ export default function KlinePanel({ symbol, onSymbolChange }: KlinePanelProps) 
     const compactChangePercent = panelChangePercent == null ? '--' : `${panelChangePercent >= 0 ? '+' : ''}${formatNumber(panelChangePercent)}%`
     const showCurrentSymbolButton = !!currentAnalysisSymbol && currentAnalysisSymbol !== symbol
     const currentSymbolLabel = currentAnalysisSymbol ? getDisplayName(currentAnalysisSymbol).replace(/（.*?）/, '') : '当前标的'
+    const currentSymbolButtonLabel = `回到分析标的：${currentSymbolLabel}`
 
     return (
         <section className="card h-full flex flex-col overflow-hidden">
@@ -294,9 +295,12 @@ export default function KlinePanel({ symbol, onSymbolChange }: KlinePanelProps) 
                     {showCurrentSymbolButton && (
                         <button
                             onClick={() => onSymbolChange?.(currentAnalysisSymbol)}
+                            title={currentSymbolButtonLabel}
+                            aria-label={currentSymbolButtonLabel}
                             className="text-xs px-2.5 py-1 rounded border border-emerald-500 text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 transition-colors"
                         >
-                            {currentSymbolLabel}
+                            <span className="hidden 2xl:inline">{currentSymbolButtonLabel}</span>
+                            <span className="2xl:hidden">回到标的</span>
                         </button>
                     )}
                     {INDEX_PRESETS.map((item) => (

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Save, Key, Database, Loader2, Trash2, Link2, Copy, Plus, CheckCircle2, Mail, Flame, Webhook } from 'lucide-react'
+import { Save, Key, Database, Loader2, Trash2, Link2, Copy, Plus, CheckCircle2, Mail, Flame, Webhook, Smartphone } from 'lucide-react'
 import { api } from '@/services/api'
 import { useAuthStore } from '@/stores/authStore'
 import type { RuntimeWarmupResult, UserToken } from '@/types'
@@ -10,17 +10,22 @@ type ProviderPreset = {
     provider: string
     baseUrl: string
     protocol: string
+    defaultQuickModel?: string
+    defaultDeepModel?: string
     editableBaseUrl?: boolean
 }
 
 const PROVIDER_PRESETS: ProviderPreset[] = [
-    { id: 'openai', label: 'OpenAI', provider: 'openai', baseUrl: 'https://api.openai.com/v1', protocol: 'OpenAI' },
+    { id: 'openai', label: 'OpenAI', provider: 'openai', baseUrl: 'https://api.openai.com/v1', protocol: 'OpenAI', defaultQuickModel: 'gpt-4o-mini', defaultDeepModel: 'gpt-4o' },
     { id: 'anthropic', label: 'Anthropic', provider: 'anthropic', baseUrl: '', protocol: 'Anthropic' },
     { id: 'google', label: 'Google Gemini', provider: 'google', baseUrl: '', protocol: 'Google' },
-    { id: 'dashscope', label: '阿里云百炼（DashScope）', provider: 'openai', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', protocol: 'OpenAI 兼容' },
-    { id: 'deepseek', label: 'DeepSeek', provider: 'openai', baseUrl: 'https://api.deepseek.com/v1', protocol: 'OpenAI 兼容' },
-    { id: 'moonshot', label: 'Moonshot AI（Kimi）', provider: 'openai', baseUrl: 'https://api.moonshot.cn/v1', protocol: 'OpenAI 兼容' },
-    { id: 'zhipu', label: '智谱 AI', provider: 'openai', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', protocol: 'OpenAI 兼容' },
+    { id: 'dashscope', label: '阿里云百炼（DashScope）', provider: 'openai', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', protocol: 'OpenAI 兼容', defaultQuickModel: 'qwen-plus', defaultDeepModel: 'qwen-max' },
+    { id: 'deepseek', label: 'DeepSeek', provider: 'openai', baseUrl: 'https://api.deepseek.com/v1', protocol: 'OpenAI 兼容', defaultQuickModel: 'deepseek-chat', defaultDeepModel: 'deepseek-reasoner' },
+    { id: 'moonshot', label: 'Moonshot AI（Kimi）', provider: 'openai', baseUrl: 'https://api.moonshot.cn/v1', protocol: 'OpenAI 兼容', defaultQuickModel: 'moonshot-v1-8k', defaultDeepModel: 'moonshot-v1-32k' },
+    { id: 'zhipu', label: '智谱 AI', provider: 'openai', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', protocol: 'OpenAI 兼容', defaultQuickModel: 'glm-4.5-air', defaultDeepModel: 'glm-4.5' },
+    { id: 'zhipu-coding', label: '智谱 Coding Plan', provider: 'openai', baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4', protocol: 'OpenAI 兼容', defaultQuickModel: 'glm-4.5-air', defaultDeepModel: 'glm-5-turbo' },
+    { id: 'xiaomi-mimo', label: '小米 MiMo', provider: 'openai', baseUrl: 'https://api.xiaomimimo.com/v1', protocol: 'OpenAI 兼容', defaultQuickModel: 'xiaomi/mimo-v2-flash', defaultDeepModel: 'xiaomi/mimo-v2-pro' },
+    { id: 'xiaomi-token-plan', label: '小米 MiMo Token Plan', provider: 'openai', baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1', protocol: 'OpenAI 兼容', defaultQuickModel: 'mimo-v2.5', defaultDeepModel: 'mimo-v2.5-pro' },
     { id: 'siliconflow', label: '硅基流动', provider: 'openai', baseUrl: 'https://api.siliconflow.cn/v1', protocol: 'OpenAI 兼容' },
     { id: 'custom-openai', label: '自定义 OpenAI 兼容', provider: 'openai', baseUrl: '', protocol: 'OpenAI 兼容', editableBaseUrl: true },
 ]
@@ -47,6 +52,9 @@ export default function Settings() {
     const [wecomWebhook, setWecomWebhook] = useState('')
     const [hasStoredWebhook, setHasStoredWebhook] = useState(false)
     const [storedWebhookDisplay, setStoredWebhookDisplay] = useState('')
+    const [barkUrl, setBarkUrl] = useState('')
+    const [hasStoredBarkUrl, setHasStoredBarkUrl] = useState(false)
+    const [storedBarkDisplay, setStoredBarkDisplay] = useState('')
 
     const [providerPreset, setProviderPreset] = useState('openai')
     const [customBaseUrl, setCustomBaseUrl] = useState('')
@@ -57,6 +65,7 @@ export default function Settings() {
     const [serverFallbackEnabled, setServerFallbackEnabled] = useState(true)
     const [emailReportEnabled, setEmailReportEnabled] = useState(true)
     const [wecomReportEnabled, setWecomReportEnabled] = useState(true)
+    const [barkReportEnabled, setBarkReportEnabled] = useState(true)
     const [configLoading, setConfigLoading] = useState(false)
     const [saving, setSaving] = useState(false)
     const [saveAllSaving, setSaveAllSaving] = useState(false)
@@ -69,6 +78,9 @@ export default function Settings() {
     const [wecomWarmingUp, setWecomWarmingUp] = useState(false)
     const [wecomWarmupMessage, setWecomWarmupMessage] = useState<string | null>(null)
     const [wecomWarmupError, setWecomWarmupError] = useState<string | null>(null)
+    const [barkWarmingUp, setBarkWarmingUp] = useState(false)
+    const [barkWarmupMessage, setBarkWarmupMessage] = useState<string | null>(null)
+    const [barkWarmupError, setBarkWarmupError] = useState<string | null>(null)
 
     // API Token states
     const [tokens, setTokens] = useState<UserToken[]>([])
@@ -94,6 +106,11 @@ export default function Settings() {
         setWecomWarmupMessage(null)
         setWecomWarmupError(null)
     }, [wecomWebhook])
+
+    useEffect(() => {
+        setBarkWarmupMessage(null)
+        setBarkWarmupError(null)
+    }, [barkUrl])
 
     useEffect(() => {
         try {
@@ -126,9 +143,12 @@ export default function Settings() {
                 setHasStoredApiKey(!!cfg.has_api_key)
                 setHasStoredWebhook(!!cfg.has_wecom_webhook)
                 setStoredWebhookDisplay(cfg.wecom_webhook_display || '')
+                setHasStoredBarkUrl(!!cfg.has_bark_url)
+                setStoredBarkDisplay(cfg.bark_url_display || '')
                 setServerFallbackEnabled(!!cfg.server_fallback_enabled)
                 setEmailReportEnabled(cfg.email_report_enabled !== false)
                 setWecomReportEnabled(cfg.wecom_report_enabled !== false)
+                setBarkReportEnabled(cfg.bark_report_enabled !== false)
                 if (Array.isArray(cfg.default_analysts) && cfg.default_analysts.length > 0) {
                     setDefaultAnalysts(cfg.default_analysts)
                 }
@@ -152,6 +172,19 @@ export default function Settings() {
         } finally {
             setTokensLoading(false)
         }
+    }
+
+    const handleProviderPresetChange = (presetId: string) => {
+        const nextPreset = PROVIDER_PRESETS.find((preset) => preset.id === presetId)
+        setProviderPreset(presetId)
+        if (!nextPreset) return
+        if (nextPreset.editableBaseUrl) {
+            setCustomBaseUrl('')
+        } else if (nextPreset.baseUrl) {
+            setCustomBaseUrl(nextPreset.baseUrl)
+        }
+        if (nextPreset.defaultQuickModel) setQuickThinkLlm(nextPreset.defaultQuickModel)
+        if (nextPreset.defaultDeepModel) setDeepThinkLlm(nextPreset.defaultDeepModel)
     }
 
     const handleCreateToken = async (e: React.FormEvent) => {
@@ -194,7 +227,7 @@ export default function Settings() {
         localStorage.setItem('ta-custom-prompt', customPrompt)
     }
 
-    const buildRuntimeConfigPayload = (options?: { includeEmail?: boolean; includeWecom?: boolean }) => ({
+    const buildRuntimeConfigPayload = (options?: { includeEmail?: boolean; includeWecom?: boolean; includeBark?: boolean }) => ({
         llm_provider: effectiveProvider,
         backend_url: effectiveBaseUrl || undefined,
         deep_think_llm: deepThinkLlm,
@@ -206,6 +239,10 @@ export default function Settings() {
             wecom_webhook_url: wecomWebhook.trim() || undefined,
             wecom_report_enabled: wecomReportEnabled,
         } : {}),
+        ...(options?.includeBark ? {
+            bark_url: barkUrl.trim() || undefined,
+            bark_report_enabled: barkReportEnabled,
+        } : {}),
         ...(options?.includeEmail ? { email_report_enabled: emailReportEnabled } : {}),
         default_analysts: defaultAnalysts,
     })
@@ -216,20 +253,24 @@ export default function Settings() {
         setTimeout(() => setSaved(false), 2000)
     }
 
-    const submitConfig = async (options?: { forceWarmup?: boolean; successMessage?: string; includeEmail?: boolean; includeWecom?: boolean }) => {
+    const submitConfig = async (options?: { forceWarmup?: boolean; successMessage?: string; includeEmail?: boolean; includeWecom?: boolean; includeBark?: boolean }) => {
         persistLocalSettings()
-        const { forceWarmup = false, successMessage = '设置已保存', includeEmail = true, includeWecom = false } = options || {}
+        const { forceWarmup = false, successMessage = '设置已保存', includeEmail = true, includeWecom = false, includeBark = false } = options || {}
         const response = await api.updateConfig({
-            ...buildRuntimeConfigPayload({ includeEmail, includeWecom }),
+            ...buildRuntimeConfigPayload({ includeEmail, includeWecom, includeBark }),
             warmup: true,
             force_warmup: forceWarmup,
         })
         setHasStoredApiKey(!!response.has_api_key)
         setHasStoredWebhook(!!response.current.has_wecom_webhook)
         setStoredWebhookDisplay(response.current.wecom_webhook_display || '')
+        setHasStoredBarkUrl(!!response.current.has_bark_url)
+        setStoredBarkDisplay(response.current.bark_url_display || '')
         setWecomReportEnabled(response.current.wecom_report_enabled !== false)
+        setBarkReportEnabled(response.current.bark_report_enabled !== false)
         setLlmApiKey('')
         setWecomWebhook('')
+        setBarkUrl('')
         showSavedMessage(response.warmup?.message || successMessage)
         return response
     }
@@ -237,7 +278,7 @@ export default function Settings() {
     const handleSaveAll = async () => {
         setSaveAllSaving(true)
         try {
-            await submitConfig({ includeEmail: true, includeWecom: true, successMessage: '全部设置已保存' })
+            await submitConfig({ includeEmail: true, includeWecom: true, includeBark: true, successMessage: '全部设置已保存' })
             showSavedMessage('全部设置已保存')
         } catch (err) {
             alert(err instanceof Error ? err.message : '保存全部设置失败')
@@ -296,6 +337,24 @@ export default function Settings() {
         }
     }
 
+    const handleClearBark = async () => {
+        if (!hasStoredBarkUrl) return
+        setSaving(true)
+        try {
+            const response = await api.updateConfig({ clear_bark_url: true })
+            setHasStoredBarkUrl(!!response.current.has_bark_url)
+            setStoredBarkDisplay(response.current.bark_url_display || '')
+            setBarkUrl('')
+            setBarkWarmupMessage(null)
+            setBarkWarmupError(null)
+            showSavedMessage('Bark 推送已清除')
+        } catch (err) {
+            alert(err instanceof Error ? err.message : '清除 Bark 推送失败')
+        } finally {
+            setSaving(false)
+        }
+    }
+
     const handleWecomWarmup = async () => {
         setWecomWarmingUp(true)
         setWecomWarmupMessage(null)
@@ -313,6 +372,26 @@ export default function Settings() {
             setWecomWarmupError(err instanceof Error ? err.message : 'Webhook 测试发送失败')
         } finally {
             setWecomWarmingUp(false)
+        }
+    }
+
+    const handleBarkWarmup = async () => {
+        setBarkWarmingUp(true)
+        setBarkWarmupMessage(null)
+        setBarkWarmupError(null)
+        try {
+            const response = await api.warmupBark({
+                bark_url: barkUrl.trim() || undefined,
+            })
+            setBarkWarmupMessage(
+                response.bark_url_display
+                    ? `${response.message}，目标：${response.bark_url_display}`
+                    : response.message
+            )
+        } catch (err) {
+            setBarkWarmupError(err instanceof Error ? err.message : 'Bark 测试发送失败')
+        } finally {
+            setBarkWarmingUp(false)
         }
     }
 
@@ -347,7 +426,7 @@ export default function Settings() {
                         </label>
                         <select
                             value={providerPreset}
-                            onChange={e => setProviderPreset(e.target.value)}
+                            onChange={e => handleProviderPresetChange(e.target.value)}
                             className="input w-full"
                             disabled={configLoading}
                         >
@@ -398,7 +477,7 @@ export default function Settings() {
                             value={quickThinkLlm}
                             onChange={e => setQuickThinkLlm(e.target.value)}
                             className="input w-full"
-                            placeholder="例如：gpt-4.1-mini / deepseek-chat / moonshot-v1-8k"
+                            placeholder={selectedPreset.defaultQuickModel || '例如：gpt-4.1-mini / deepseek-chat / moonshot-v1-8k'}
                             disabled={configLoading}
                         />
                     </div>
@@ -413,7 +492,7 @@ export default function Settings() {
                             value={deepThinkLlm}
                             onChange={e => setDeepThinkLlm(e.target.value)}
                             className="input w-full"
-                            placeholder="例如：gpt-4.1 / deepseek-reasoner / kimi-k2-0905-preview"
+                            placeholder={selectedPreset.defaultDeepModel || '例如：gpt-4.1 / deepseek-reasoner / kimi-k2-0905-preview'}
                             disabled={configLoading}
                         />
                     </div>
@@ -764,6 +843,74 @@ export default function Settings() {
                     {wecomWarmupError && (
                         <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-600 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300">
                             {wecomWarmupError}
+                        </div>
+                    )}
+                </div>
+
+                {/* Bark 推送 */}
+                <div className="rounded-xl border border-slate-200/80 bg-slate-50/80 px-4 py-3 space-y-3 dark:border-slate-700/80 dark:bg-slate-900/40">
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <div className="text-sm font-medium text-slate-700 dark:text-slate-200">Bark iPhone 推送</div>
+                            <div className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">
+                                定时分析完成时推送到 iPhone
+                                {storedBarkDisplay && <span className="ml-2 font-mono">({storedBarkDisplay})</span>}
+                            </div>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => setBarkReportEnabled(!barkReportEnabled)}
+                            disabled={configLoading}
+                            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                                barkReportEnabled ? 'bg-blue-500' : 'bg-slate-300 dark:bg-slate-600'
+                            }`}
+                        >
+                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${barkReportEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                        </button>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                        <div className="relative flex-1">
+                            <Smartphone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                            <input
+                                type="text"
+                                value={barkUrl}
+                                onChange={e => setBarkUrl(e.target.value)}
+                                className="input w-full pl-10"
+                                placeholder={hasStoredBarkUrl ? '已保存，留空则保持不变' : 'Bark 地址或设备 Key'}
+                                disabled={configLoading}
+                            />
+                        </div>
+                        <button
+                            type="button"
+                            onClick={handleBarkWarmup}
+                            disabled={configLoading || saving || saveAllSaving || barkWarmingUp || (!barkUrl.trim() && !hasStoredBarkUrl)}
+                            className="btn-secondary inline-flex items-center gap-1.5 text-xs shrink-0"
+                        >
+                            {barkWarmingUp ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Flame className="w-3.5 h-3.5" />}
+                            {barkWarmingUp ? '发送中...' : '测试连接'}
+                        </button>
+                        {hasStoredBarkUrl && (
+                            <button
+                                type="button"
+                                onClick={handleClearBark}
+                                disabled={saving || saveAllSaving}
+                                className="inline-flex items-center gap-1 text-xs text-slate-400 hover:text-rose-500 disabled:opacity-50 shrink-0"
+                            >
+                                <Trash2 className="w-3 h-3" />
+                                清除
+                            </button>
+                        )}
+                    </div>
+
+                    {barkWarmupMessage && (
+                        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300">
+                            {barkWarmupMessage}
+                        </div>
+                    )}
+                    {barkWarmupError && (
+                        <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-600 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300">
+                            {barkWarmupError}
                         </div>
                     )}
                 </div>

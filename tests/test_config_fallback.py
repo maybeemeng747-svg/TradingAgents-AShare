@@ -36,6 +36,30 @@ class TestConfigFallback(unittest.TestCase):
             config = _build_runtime_config(overrides)
             self.assertEqual(config["deep_think_llm"], "only-one-model", "Deep 应该借用唯一的有效配置")
 
+    def test_hidden_model_tiers_follow_user_deep_model(self):
+        """验证: 用户切换厂商时，隐藏的 mid/ultra 不继续使用环境默认模型"""
+        with patch(
+            'api.main.DEFAULT_CONFIG',
+            {
+                "llm_provider": "openai",
+                "backend_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+                "quick_think_llm": "glm-4.5-air",
+                "deep_think_llm": "glm-5-turbo",
+                "mid_think_llm": "glm-4.7",
+                "ultra_think_llm": "glm-5.1",
+            },
+        ):
+            config = _build_runtime_config({
+                "backend_url": "https://api.xiaomimimo.com/v1",
+                "quick_think_llm": "mimo-v2-flash",
+                "deep_think_llm": "mimo-v2-pro",
+            })
+
+            self.assertEqual(config["quick_think_llm"], "mimo-v2-flash")
+            self.assertEqual(config["deep_think_llm"], "mimo-v2-pro")
+            self.assertEqual(config["mid_think_llm"], "mimo-v2-pro")
+            self.assertEqual(config["ultra_think_llm"], "mimo-v2-pro")
+
     def test_no_hardcoded_fallback_in_client(self):
         """验证: OpenAIClient 不再有硬编码的 gpt-4o-mini 降级"""
         client = OpenAIClient(model="actual-model", provider="openai")

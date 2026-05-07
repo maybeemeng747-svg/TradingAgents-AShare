@@ -63,3 +63,31 @@ def test_market_analyst_uses_short_window_for_medium_request():
     result = asyncio.run(node(_make_state("medium")))
     assert result["analyst_traces"][0]["horizon"] == "short"
     assert result["analyst_traces"][0]["data_window"] == "14天"
+
+
+def test_market_analyst_prompt_includes_user_context_constraints():
+    mock_llm = MagicMock()
+    captured = {}
+
+    async def _astream(messages):
+        captured["messages"] = messages
+        yield SimpleNamespace(content="report")
+
+    mock_llm.astream = _astream
+    collector = DataCollector()
+    collector._cache["600519_2026-03-12"] = _stub_pool("short")
+    node = create_market_analyst(mock_llm, collector)
+    state = _make_state("short")
+    state["user_context"] = {
+        "objective": "短线波段",
+        "risk_profile": "谨慎",
+        "constraints": ["不追高", "只在回调确认后入场"],
+        "user_notes": "优先看情绪和预期，不做长期价值投资。",
+    }
+
+    asyncio.run(node(state))
+
+    prompt_text = "\n".join(getattr(message, "content", "") for message in captured["messages"])
+    assert "【用户上下文】" in prompt_text
+    assert "不追高" in prompt_text
+    assert "只在回调确认后入场" in prompt_text

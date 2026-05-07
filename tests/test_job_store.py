@@ -84,10 +84,33 @@ def test_subscribe_timeout_ping():
                 # After first ping, mark job as completed so next timeout terminates
                 store.set_job("j1", status="completed")
 
-        # First event should be a ping (timeout with job still running)
-        assert len(collected) == 1
+        # First event is a ping while running; second replays terminal state.
+        assert len(collected) == 2
         assert collected[0]["event"] == "ping"
         assert "timestamp" in collected[0]["data"]
+        assert collected[1]["event"] == "job.completed"
+
+    asyncio.run(scenario())
+
+
+def test_subscribe_replays_completed_job_on_late_subscriber():
+    async def scenario():
+        store = _make_store()
+        store.set_job(
+            "j1",
+            status="completed",
+            decision="BUY",
+            result={"symbol": "601958.SH", "target_price": 22.0},
+        )
+
+        collected = []
+        async for event in store.subscribe("j1", poll_interval=0.01):
+            collected.append(event)
+
+        assert len(collected) == 1
+        assert collected[0]["event"] == "job.completed"
+        assert collected[0]["data"]["decision"] == "BUY"
+        assert collected[0]["data"]["result"]["symbol"] == "601958.SH"
 
     asyncio.run(scenario())
 
