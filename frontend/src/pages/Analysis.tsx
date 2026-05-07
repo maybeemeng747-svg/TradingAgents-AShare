@@ -9,6 +9,7 @@ import DecisionCard from '@/components/DecisionCard'
 import RiskRadar from '@/components/RiskRadar'
 import KeyMetrics from '@/components/KeyMetrics'
 import { useAnalysisStore } from '@/stores/analysisStore'
+import { api } from '@/services/api'
 
 function mapDecision(decision?: string): 'buy' | 'sell' | 'hold' | 'add' | 'reduce' | 'watch' | undefined {
     if (!decision) return undefined
@@ -50,6 +51,7 @@ export default function Analysis() {
     const [activeSymbol, setActiveSymbol] = useState(() => querySymbol || useAnalysisStore.getState().currentSymbol || '000001.SH')
     const [activeSection, setActiveSection] = useState<string | undefined>()
     const [debateDrawer, setDebateDrawer] = useState<'research' | 'risk' | null>(null)
+    const [latestPriceFallback, setLatestPriceFallback] = useState<{ target?: number | null; stop?: number | null; symbol?: string } | null>(null)
     const reportRef = useRef<HTMLDivElement | null>(null)
     const {
         report,
@@ -60,6 +62,7 @@ export default function Analysis() {
         jobStopLoss,
         riskItems,
         keyMetrics,
+        analysisRunState,
     } = useAnalysisStore()
 
     const handleShowReport = (section?: string) => {
@@ -81,8 +84,39 @@ export default function Analysis() {
 
     const finalDecision = report?.final_trade_decision
     const confidence = jobConfidence ?? extractConfidence(finalDecision)
-    const targetPrice = jobTargetPrice ?? report?.target_price ?? extractPrice(finalDecision, 'target')
-    const stopLoss = jobStopLoss ?? report?.stop_loss_price ?? extractPrice(finalDecision, 'stop')
+    const reportMatchesActiveSymbol = !report?.symbol || report.symbol === activeSymbol
+    const latestFallbackMatches = latestPriceFallback?.symbol === activeSymbol
+    const targetPrice = jobTargetPrice
+        ?? (reportMatchesActiveSymbol ? report?.target_price : undefined)
+        ?? (latestFallbackMatches ? latestPriceFallback?.target : undefined)
+        ?? extractPrice(finalDecision, 'target')
+    const stopLoss = jobStopLoss
+        ?? (reportMatchesActiveSymbol ? report?.stop_loss_price : undefined)
+        ?? (latestFallbackMatches ? latestPriceFallback?.stop : undefined)
+        ?? extractPrice(finalDecision, 'stop')
+
+    useEffect(() => {
+        let cancelled = false
+        const symbol = activeSymbol
+        if (!symbol || targetPrice != null || stopLoss != null || analysisRunState === 'running') return
+        api.getReports(symbol, 0, 1)
+            .then(response => {
+                if (cancelled) return
+                const latest = response.reports?.[0]
+                if (!latest || latest.symbol !== symbol) return
+                setLatestPriceFallback({
+                    symbol,
+                    target: latest.target_price ?? null,
+                    stop: latest.stop_loss_price ?? null,
+                })
+            })
+            .catch(() => {
+                if (!cancelled) setLatestPriceFallback(null)
+            })
+        return () => {
+            cancelled = true
+        }
+    }, [activeSymbol, targetPrice, stopLoss, analysisRunState])
 
     return (
         <div className="space-y-4">
