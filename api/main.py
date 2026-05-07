@@ -316,6 +316,51 @@ def _create_tracked_task(coro, *, label: str = "Background task") -> asyncio.Tas
     return task
 
 
+async def _send_report_bark_notification(
+    user_id: Optional[str],
+    report_id: str,
+    symbol: str,
+    *,
+    source: str = "report_saved",
+) -> None:
+    """Send Bark once a report is persisted, for all report creation paths."""
+    if not user_id or not report_id:
+        return
+    try:
+        from api.services.bark_notification_service import send_report_message_with_retry
+
+        bark_url = None
+        report_to_send = None
+        with get_db_ctx() as db:
+            user = db.query(UserDB).filter(UserDB.id == user_id).first()
+            if not user or not getattr(user, "bark_report_enabled", True):
+                return
+            user_cfg = auth_service.get_user_llm_config(db, user_id)
+            bark_url = auth_service.decrypt_secret(getattr(user_cfg, "bark_url_encrypted", None))
+            if not bark_url:
+                return
+            report = db.query(ReportDB).filter(ReportDB.id == report_id).first()
+            if not report or report.status != "completed":
+                return
+            db.expunge(report)
+            report_to_send = report
+
+        if report_to_send and bark_url:
+            _log(f"[Bark] Sending report notification for {symbol} source={source}")
+            await send_report_message_with_retry(report_to_send, bark_url)
+    except Exception as exc:
+        logger.warning("[Bark] report notification failed for %s: %s", symbol, exc)
+
+
+def _send_report_bark_notification_background(
+    user_id: Optional[str],
+    report_id: str,
+    symbol: str,
+    source: str = "report_saved",
+) -> None:
+    asyncio.run(_send_report_bark_notification(user_id, report_id, symbol, source=source))
+
+
 def _log(msg: str):
     """Helper to log with timestamp via standard logging."""
     logger.info(msg)
@@ -1915,7 +1960,7 @@ async def _run_job_inner(
             if save_report:
                 def _save_report_sync():
                     with get_db_ctx() as save_db:
-                        report_service.create_report(
+                        saved_report = report_service.create_report(
                             db=save_db,
                             symbol=request.symbol,
                             trade_date=request.trade_date,
@@ -1931,9 +1976,14 @@ async def _run_job_inner(
                             analyst_traces=result.get("analyst_traces"),
                         )
                         save_db.commit()
+                        return saved_report.id
 
                 try:
-                    await asyncio.to_thread(_save_report_sync)
+                    saved_report_id = await asyncio.to_thread(_save_report_sync)
+                    _create_tracked_task(
+                        _send_report_bark_notification(user_id, saved_report_id, request.symbol, source=request_source),
+                        label=f"Bark report notification ({request.symbol})",
+                    )
                 except Exception as e:
                     _log(f"Failed to save report: {e}")
 
@@ -2147,7 +2197,7 @@ async def _run_job_inner(
         if save_report:
             def _save_report_final_sync():
                 with get_db_ctx() as save_db:
-                    report_service.create_report(
+                    saved_report = report_service.create_report(
                         db=save_db,
                         symbol=request.symbol,
                         trade_date=request.trade_date,
@@ -2163,9 +2213,14 @@ async def _run_job_inner(
                         analyst_traces=result.get("analyst_traces"),
                     )
                     save_db.commit()
+                    return saved_report.id
 
             try:
-                await asyncio.to_thread(_save_report_final_sync)
+                saved_report_id = await asyncio.to_thread(_save_report_final_sync)
+                _create_tracked_task(
+                    _send_report_bark_notification(user_id, saved_report_id, request.symbol, source=request_source),
+                    label=f"Bark report notification ({request.symbol})",
+                )
             except Exception as e:
                 _log(f"Failed to finalize report: {e}")
         # 所有后处理完成后再标记 completed，防止 SSE 超时提前关闭流
@@ -3153,6 +3208,7 @@ async def chat_completions(
 @app.post("/v1/reports", response_model=ReportResponse)
 def create_report_endpoint(
     request: ReportCreateRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: UserDB = Depends(_require_api_user),
 ):
@@ -3164,6 +3220,13 @@ def create_report_endpoint(
         decision=request.decision,
         result_data=request.result_data,
         user_id=current_user.id,
+    )
+    background_tasks.add_task(
+        _send_report_bark_notification_background,
+        current_user.id,
+        report.id,
+        report.symbol,
+        "manual_report_create",
     )
     return report
 

@@ -531,6 +531,53 @@ class TestBarkRuntimeConfig:
         assert r.status_code == 400
         assert "Bark 地址" in r.json()["detail"]
 
+    def test_report_create_sends_bark_when_enabled(self):
+        save_resp = self.client.patch("/v1/config", headers=self.headers, json={
+            "bark_url": self.BARK_URL,
+            "bark_report_enabled": True,
+            "warmup": False,
+        })
+        assert save_resp.status_code == 200
+
+        with patch("api.services.bark_notification_service.send_report_message_with_retry", new_callable=AsyncMock) as mock_send:
+            r = self.client.post("/v1/reports", headers=self.headers, json={
+                "symbol": "601958.SH",
+                "trade_date": "2026-05-07",
+                "decision": "BUY",
+                "result_data": {
+                    "symbol": "601958.SH",
+                    "trade_date": "2026-05-07",
+                    "final_trade_decision": "结论：买入\n目标价：22\n止损价：19.68",
+                },
+            })
+
+        assert r.status_code == 200
+        assert mock_send.await_count == 1
+        assert mock_send.await_args.args[1] == self.BARK_URL
+
+    def test_report_create_skips_bark_when_disabled(self):
+        save_resp = self.client.patch("/v1/config", headers=self.headers, json={
+            "bark_url": self.BARK_URL,
+            "bark_report_enabled": False,
+            "warmup": False,
+        })
+        assert save_resp.status_code == 200
+
+        with patch("api.services.bark_notification_service.send_report_message_with_retry", new_callable=AsyncMock) as mock_send:
+            r = self.client.post("/v1/reports", headers=self.headers, json={
+                "symbol": "601958.SH",
+                "trade_date": "2026-05-07",
+                "decision": "BUY",
+                "result_data": {
+                    "symbol": "601958.SH",
+                    "trade_date": "2026-05-07",
+                    "final_trade_decision": "结论：买入\n目标价：22\n止损价：19.68",
+                },
+            })
+
+        assert r.status_code == 200
+        mock_send.assert_not_awaited()
+
 
 class TestWatchlistAddEndpoint:
     @pytest.fixture(autouse=True)

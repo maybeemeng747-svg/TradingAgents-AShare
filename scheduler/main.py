@@ -130,18 +130,19 @@ async def _concurrency_slot(job_id: str, symbol: str):
 async def _send_scheduled_report_notifications(
     user_id: str, report_id: str, symbol: str
 ) -> None:
-    """Send configured scheduled report notifications (email, WeCom & Bark)."""
+    """Send configured scheduled report notifications (email & WeCom).
+
+    Bark is sent from the API report-persist hook so every report creation
+    path behaves consistently and scheduled jobs do not double-push.
+    """
     try:
-        from api.services.bark_notification_service import send_report_message_with_retry as send_bark_report_with_retry
         from api.services.email_report_service import send_report_email_with_retry
         from api.services.wecom_notification_service import send_report_message_with_retry
 
         email_user = None
         report_to_send = None
         webhook_url = None
-        bark_url = None
         wecom_report_enabled = True
-        bark_report_enabled = True
         with get_db_ctx() as db:
             user = db.query(UserDB).filter(UserDB.id == user_id).first()
             report = db.query(ReportDB).filter(ReportDB.id == report_id).first()
@@ -149,15 +150,11 @@ async def _send_scheduled_report_notifications(
             webhook_url = auth_service.decrypt_secret(
                 getattr(user_cfg, "wecom_webhook_encrypted", None)
             )
-            bark_url = auth_service.decrypt_secret(
-                getattr(user_cfg, "bark_url_encrypted", None)
-            )
             if report:
                 db.expunge(report)
                 report_to_send = report
             if user:
                 wecom_report_enabled = getattr(user, "wecom_report_enabled", True)
-                bark_report_enabled = getattr(user, "bark_report_enabled", True)
                 if getattr(user, "email_report_enabled", True):
                     db.expunge(user)
                     email_user = user
@@ -172,12 +169,6 @@ async def _send_scheduled_report_notifications(
             _create_tracked_task(
                 send_report_message_with_retry(report_to_send, webhook_url),
                 label=f"WeCom notification task ({symbol})",
-            )
-        if report_to_send and bark_url and bark_report_enabled:
-            _log(f"[Scheduler] Sending Bark report for {symbol}")
-            _create_tracked_task(
-                send_bark_report_with_retry(report_to_send, bark_url),
-                label=f"Bark notification task ({symbol})",
             )
     except Exception as e:
         logger.warning(f"[Scheduler] Notification send failed for {symbol}: {e}")
