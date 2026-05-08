@@ -4,14 +4,33 @@ import re
 from typing import Any, Mapping
 
 
+_PRICE_FOLLOWING_TEXT_RE = re.compile(r"\s*(?:日|周|月)?(?:均线|线|k|K|ma|MA)\b")
+_LIST_MARKER_AFTER_NUMBER_RE = re.compile(r"\s*[.)、]\s*(?:[A-Z0-9一二三四五六七八九十]|[*-])")
+_GENERATED_QUALITY_SECTION_RE = re.compile(r"\n?###?\s*执行质检[\s\S]*$", re.IGNORECASE)
+
+
+def _is_likely_indicator_number(text: str, end_index: int) -> bool:
+    """Avoid treating MA periods such as 5日线 as executable prices."""
+    return bool(_PRICE_FOLLOWING_TEXT_RE.match(text[end_index : end_index + 12]))
+
+
+def _is_likely_list_marker(text: str, end_index: int) -> bool:
+    return bool(_LIST_MARKER_AFTER_NUMBER_RE.match(text[end_index : end_index + 16]))
+
+
+def _strip_generated_quality_section(text: str) -> str:
+    return _GENERATED_QUALITY_SECTION_RE.sub("", text or "")
+
+
 def _first_price(text: str, labels: tuple[str, ...]) -> float | None:
     for label in labels:
-        match = re.search(rf"{label}[：:\s]*([0-9]+(?:\.[0-9]+)?)", text)
-        if match:
+        for match in re.finditer(rf"{label}[：:\s]*(?:[¥￥$])?([0-9]+(?:\.[0-9]+)?)", text):
+            if _is_likely_indicator_number(text, match.end(1)) or _is_likely_list_marker(text, match.end(1)):
+                continue
             try:
                 return float(match.group(1))
             except ValueError:
-                return None
+                continue
     return None
 
 
@@ -72,13 +91,13 @@ def build_trade_quality_check(
     user_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a deterministic execution checklist from the final reports."""
-    text = "\n".join([investment_plan or "", trader_plan or "", final_decision or ""])
+    text = _strip_generated_quality_section("\n".join([investment_plan or "", trader_plan or "", final_decision or ""]))
     conflicts = _conflicts(text)
     constraints = [str(item) for item in (user_context or {}).get("constraints", [])]
     setup_type = _setup_type(text)
     execution_mode = _execution_mode(text)
-    trigger_price = _first_price(text, ("触发价", "突破价", "站稳", "目标价"))
-    stop_loss_price = _first_price(text, ("止损价", "止损", "失效价"))
+    trigger_price = _first_price(text, ("触发价", "触发位", "突破价", "突破位", "站稳", "目标价"))
+    stop_loss_price = _first_price(text, ("止损价", "止损位", "止损", "失效价", "失效位", "防守位"))
     entry_range = _find_price_range(text)
 
     action = "人工复核"

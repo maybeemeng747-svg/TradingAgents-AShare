@@ -447,6 +447,18 @@ class UserLLMConfigDB(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
+class UserLLMProviderKeyDB(Base):
+    __tablename__ = "user_llm_provider_keys"
+    __table_args__ = (UniqueConstraint("user_id", "key_scope", name="uq_user_llm_provider_key_scope"),)
+
+    id = Column(String(36), primary_key=True, index=True)
+    user_id = Column(String(36), index=True, nullable=False)
+    key_scope = Column(String(600), index=True, nullable=False)
+    api_key_encrypted = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
 class UserTokenDB(Base):
     __tablename__ = "user_tokens"
 
@@ -564,4 +576,3 @@ class ImportedPortfolioPositionDB(Base):
     __table_args__ = (
         UniqueConstraint('user_id', 'source', 'symbol', name='uq_imported_portfolio_user_source_symbol'),
     )
-

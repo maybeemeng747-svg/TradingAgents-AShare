@@ -26,6 +26,34 @@ def test_trade_quality_check_detects_event_timing_conflict():
     assert "执行质检" in format_trade_quality_check(check)
 
 
+def test_trade_quality_check_ignores_ma_period_and_extracts_trigger_stop_levels():
+    check = build_trade_quality_check(
+        investment_plan="短线先观察，若重新站稳5日线再看承接。",
+        trader_plan="触发位：57.48 / 60.80；止损位：56.00 / 52.40；当前不追高。",
+        final_decision="未持仓者观望，只有放量重新站稳60.80后才重新评估机会。",
+    )
+
+    assert check["trigger_price"] == 57.48
+    assert check["stop_loss_price"] == 56.0
+    assert "无法从报告中解析出明确止损价。" not in check["do_not_trade_if"]
+
+
+def test_trade_quality_check_does_not_parse_numbered_risk_list_as_stop_loss():
+    check = build_trade_quality_check(
+        investment_plan="当前空仓观望。",
+        trader_plan="不建议入场，止损价：不适用（因不建议入场）。",
+        final_decision=(
+            "出现以下任一情况，应立即放弃任何入场计划，并对已持仓部分执行止损：\n"
+            "1. RISK-1恶化：后续财报显示盈利增速进一步下滑。\n"
+            "2. 技术面破位：股价放量跌破492.65元且无法收回。\n"
+            "目标价：—\n止损价：—"
+        ),
+    )
+
+    assert check["stop_loss_price"] is None
+    assert "无法从报告中解析出明确止损价。" in check["do_not_trade_if"]
+
+
 class _FakeLLM:
     async def astream(self, _prompt):
         yield SimpleNamespace(

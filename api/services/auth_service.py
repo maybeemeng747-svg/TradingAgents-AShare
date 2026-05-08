@@ -15,7 +15,7 @@ import jwt
 from jwt.exceptions import PyJWTError as JWTError
 from sqlalchemy.orm import Session
 
-from api.database import EmailVerificationCodeDB, UserDB, UserLLMConfigDB
+from api.database import EmailVerificationCodeDB, UserDB, UserLLMConfigDB, UserLLMProviderKeyDB
 
 
 ALGORITHM = "HS256"
@@ -238,6 +238,94 @@ def send_login_code(email: str, code: str) -> Optional[str]:
 
 def get_user_llm_config(db: Session, user_id: str) -> Optional[UserLLMConfigDB]:
     return db.query(UserLLMConfigDB).filter(UserLLMConfigDB.user_id == user_id).first()
+
+
+def normalize_provider_key_scope(llm_provider: Optional[str], backend_url: Optional[str]) -> str:
+    provider = (llm_provider or "openai").strip().lower() or "openai"
+    normalized_url = (backend_url or "").strip().rstrip("/")
+    if normalized_url:
+        return f"{provider}:{normalized_url}"
+    return provider
+
+
+def get_user_provider_key(db: Session, user_id: str, key_scope: str) -> Optional[UserLLMProviderKeyDB]:
+    return (
+        db.query(UserLLMProviderKeyDB)
+        .filter(
+            UserLLMProviderKeyDB.user_id == user_id,
+            UserLLMProviderKeyDB.key_scope == key_scope,
+        )
+        .first()
+    )
+
+
+def list_user_provider_key_scopes(db: Session, user_id: str) -> list[str]:
+    rows = (
+        db.query(UserLLMProviderKeyDB.key_scope, UserLLMProviderKeyDB.api_key_encrypted)
+        .filter(UserLLMProviderKeyDB.user_id == user_id)
+        .all()
+    )
+    return [
+        key_scope
+        for key_scope, encrypted_key in rows
+        if decrypt_secret_with_fallback(encrypted_key)
+    ]
+
+
+def has_user_provider_keys(db: Session, user_id: str) -> bool:
+    return (
+        db.query(UserLLMProviderKeyDB)
+        .filter(UserLLMProviderKeyDB.user_id == user_id)
+        .first()
+        is not None
+    )
+
+
+def get_user_provider_api_key(db: Session, user_id: str, llm_provider: Optional[str], backend_url: Optional[str]) -> Optional[str]:
+    key_scope = normalize_provider_key_scope(llm_provider, backend_url)
+    row = get_user_provider_key(db, user_id, key_scope)
+    if not row:
+        return None
+    return decrypt_secret_with_fallback(row.api_key_encrypted)
+
+
+def upsert_user_provider_api_key(
+    db: Session,
+    user_id: str,
+    llm_provider: Optional[str],
+    backend_url: Optional[str],
+    api_key: str,
+) -> UserLLMProviderKeyDB:
+    key_scope = normalize_provider_key_scope(llm_provider, backend_url)
+    row = get_user_provider_key(db, user_id, key_scope)
+    now = _utcnow()
+    if not row:
+        row = UserLLMProviderKeyDB(
+            id=str(uuid4()),
+            user_id=user_id,
+            key_scope=key_scope,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(row)
+    row.api_key_encrypted = encrypt_secret(api_key)
+    row.updated_at = now
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def clear_user_provider_api_key(
+    db: Session,
+    user_id: str,
+    llm_provider: Optional[str],
+    backend_url: Optional[str],
+) -> None:
+    key_scope = normalize_provider_key_scope(llm_provider, backend_url)
+    row = get_user_provider_key(db, user_id, key_scope)
+    if row:
+        db.delete(row)
+        db.commit()
 
 
 def upsert_user_llm_config(

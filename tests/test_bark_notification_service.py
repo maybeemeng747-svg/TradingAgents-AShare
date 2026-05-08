@@ -36,10 +36,37 @@ class TestBarkPayload:
 
         payload = build_report_payload(_make_report())
 
-        assert payload["title"] == "TradingAgents 601958.SH 定时分析"
-        assert "交易日：2026-05-07" in payload["body"]
-        assert "目标价：12.3" in payload["body"]
-        assert "止损价：10.8" in payload["body"]
+        assert payload["title"] == "601958.SH HOLD/中性 62%"
+        assert "TradingAgents 定时分析 | 2026-05-07" in payload["body"]
+        assert "价位：目标 12.3 / 止损 10.8" in payload["body"]
+
+    def test_report_payload_uses_push_summary_instead_of_full_markdown_report(self):
+        from api.services.bark_notification_service import build_report_payload
+
+        payload = build_report_payload(_make_report(
+            symbol="000938.SZ",
+            trade_date="2026-05-08",
+            decision="SELL",
+            direction="偏空",
+            confidence=85,
+            target_price=31.0,
+            stop_loss_price=33.8,
+            final_trade_decision=(
+                "### 风控委员会审核报告 **审核结论：** **Hold (持有/观望)** "
+                "核心判断：交易员方案的方向判断（卖出/观望）与上游研究团队的偏空结论一致。"
+                "未持仓者：严格禁止开立任何多头仓位。初始目标仓位为0%。"
+                "已持仓者（若存在）：应执行减仓或清仓操作。建议在股价反弹至33.50-33.80元区间时，将仓位降至20%以下或清仓。"
+                "事件风险约束：需高度警惕并监控事件风险。"
+            ),
+        ))
+
+        assert payload["title"] == "000938.SZ SELL/偏空 85%"
+        assert "价位：目标 31 / 止损 33.8" in payload["body"]
+        assert "风控：Hold" in payload["body"]
+        assert "未持仓：严格禁止开立任何多头仓位" in payload["body"]
+        assert "已持仓：应执行减仓或清仓操作" in payload["body"]
+        assert "### 风控委员会审核报告" not in payload["body"]
+        assert len(payload["body"]) <= 900
 
     def test_test_payload_uses_default_copy(self):
         from api.services.bark_notification_service import build_test_payload

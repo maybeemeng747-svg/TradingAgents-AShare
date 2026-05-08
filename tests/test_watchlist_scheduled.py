@@ -131,6 +131,35 @@ class TestScheduled:
         with pytest.raises(ValueError, match="上限"):
             scheduled_service.create_scheduled(db, "user1", "000001.SZ")
 
+    def test_ensure_scheduled_defaults_to_intraday_and_post_close(self, db):
+        result = scheduled_service.ensure_scheduled_for_symbols(
+            db,
+            "user-default-pair",
+            ["300750.SZ"],
+        )
+        db.commit()
+
+        items = scheduled_service.list_scheduled(db, "user-default-pair")
+
+        assert result["created"] == ["300750.SZ", "300750.SZ"]
+        assert [(item["symbol"], item["trigger_time"]) for item in items] == [
+            ("300750.SZ", "14:30"),
+            ("300750.SZ", "20:00"),
+        ]
+
+    def test_ensure_scheduled_respects_explicit_single_time(self, db):
+        scheduled_service.ensure_scheduled_for_symbols(
+            db,
+            "user-single-time",
+            ["300750.SZ"],
+            trigger_time="20:00",
+        )
+        db.commit()
+
+        items = scheduled_service.list_scheduled(db, "user-single-time")
+
+        assert [(item["symbol"], item["trigger_time"]) for item in items] == [("300750.SZ", "20:00")]
+
     def test_update_horizon(self, db):
         item = scheduled_service.create_scheduled(db, "user1", "300750.SZ", "short")
         updated = scheduled_service.update_scheduled(db, "user1", item["id"], horizon="medium")

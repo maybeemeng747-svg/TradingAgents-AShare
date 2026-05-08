@@ -175,6 +175,19 @@ def extract_structured_data(
 
 # ─── Fallback regex extraction (used when LLM extraction unavailable) ─────────
 
+_GENERATED_QUALITY_SECTION_RE = re.compile(r"\n?###?\s*执行质检[\s\S]*$", re.IGNORECASE)
+_LIST_MARKER_AFTER_NUMBER_RE = re.compile(r"\s*[.)、]\s*(?:[A-Z0-9一二三四五六七八九十]|[*-])")
+
+
+def _strip_generated_quality_section(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return text
+    return _GENERATED_QUALITY_SECTION_RE.sub("", text)
+
+
+def _is_likely_list_marker(text: str, end_index: int) -> bool:
+    return bool(_LIST_MARKER_AFTER_NUMBER_RE.match(text[end_index : end_index + 16]))
+
 def _extract_confidence_regex(text: Optional[str]) -> Optional[int]:
     if not text:
         return None
@@ -220,13 +233,14 @@ def _extract_price_regex(
         if include_tactical:
             patterns.extend([
                 r'止损触发[:：]\s*[^\d\n]{0,50}(\d+\.?\d*)',
-                r'失效条件[^\d\n]{0,80}(\d+\.?\d*)',
-                r'股价[^\n。；]{0,20}(?:突破|站稳|跌破)\s*[¥$]?(\d+\.?\d*)\s*元[^\n。；]{0,40}(?:止损|失效|反转)',
-                r'(?:突破|站稳|跌破)\s*[¥$]?(\d+\.?\d*)\s*元[^\n。；]{0,40}(?:止损|失效|反转)',
+                r'股价[^\n。；]{0,20}跌破\s*[¥$]?(\d+\.?\d*)\s*元[^\n。；]{0,40}(?:止损|离场|减仓)',
+                r'跌破\s*[¥$]?(\d+\.?\d*)\s*元[^\n。；]{0,40}(?:止损|离场|减仓)',
             ])
     for p in patterns:
         m = re.search(p, text, re.IGNORECASE)
         if m:
+            if _is_likely_list_marker(text, m.end(1)):
+                continue
             return float(m.group(1))
     return None
 
@@ -241,7 +255,7 @@ def _extract_price_from_sections(
     stance while upstream manager/trader sections still contain conditional
     execution prices. Use strict labels first, then broader tactical labels.
     """
-    texts = [text for text in sections if text]
+    texts = [text for text in (_strip_generated_quality_section(text) for text in sections) if text]
     for text in texts:
         price = _extract_price_regex(text, price_type)
         if price is not None:

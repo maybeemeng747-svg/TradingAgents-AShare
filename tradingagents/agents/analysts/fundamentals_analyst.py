@@ -6,6 +6,7 @@ from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
 from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
 from tradingagents.agents.utils.context_utils import build_prompt_context_block
+from tradingagents.agents.utils.data_consistency import append_financial_consistency_warnings
 
 
 def create_fundamentals_analyst(llm, data_collector=None):
@@ -68,6 +69,15 @@ def create_fundamentals_analyst(llm, data_collector=None):
             full_content += content
             if tracker:
                 tracker._emit_token("Fundamentals Analyst", "fundamentals_report", content)
+
+        checked_content = append_financial_consistency_warnings(full_content)
+        if tracker and checked_content != full_content:
+            tracker._emit_token(
+                "Fundamentals Analyst",
+                "fundamentals_report",
+                checked_content[len(full_content):],
+            )
+        full_content = checked_content
 
         verdict, confidence = extract_verdict(full_content)
         return {

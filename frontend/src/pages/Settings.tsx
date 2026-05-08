@@ -43,12 +43,19 @@ function inferPreset(llmProvider: string, backendUrl: string): string {
     return normalizedProvider || 'openai'
 }
 
+function providerKeyScope(llmProvider: string, backendUrl: string): string {
+    const provider = (llmProvider || 'openai').trim().toLowerCase() || 'openai'
+    const normalizedUrl = (backendUrl || '').trim().replace(/\/$/, '')
+    return normalizedUrl ? `${provider}:${normalizedUrl}` : provider
+}
+
 export default function Settings() {
     const { user } = useAuthStore()
     const [defaultAnalysts, setDefaultAnalysts] = useState(['market', 'social', 'news', 'fundamentals', 'macro', 'smart_money', 'volume_price'])
     const [customPrompt, setCustomPrompt] = useState('')
     const [llmApiKey, setLlmApiKey] = useState('')
     const [hasStoredApiKey, setHasStoredApiKey] = useState(false)
+    const [apiKeyScopes, setApiKeyScopes] = useState<string[]>([])
     const [wecomWebhook, setWecomWebhook] = useState('')
     const [hasStoredWebhook, setHasStoredWebhook] = useState(false)
     const [storedWebhookDisplay, setStoredWebhookDisplay] = useState('')
@@ -97,6 +104,7 @@ export default function Settings() {
 
     const effectiveProvider = selectedPreset.provider
     const effectiveBaseUrl = selectedPreset.editableBaseUrl ? customBaseUrl.trim() : selectedPreset.baseUrl
+    const currentApiKeyScope = providerKeyScope(effectiveProvider, effectiveBaseUrl)
     useEffect(() => {
         setWarmupResults([])
         setWarmupError(null)
@@ -141,6 +149,7 @@ export default function Settings() {
                 setMaxDebateRounds(cfg.max_debate_rounds)
                 setMaxRiskRounds(cfg.max_risk_discuss_rounds)
                 setHasStoredApiKey(!!cfg.has_api_key)
+                setApiKeyScopes(cfg.api_key_scopes || [])
                 setHasStoredWebhook(!!cfg.has_wecom_webhook)
                 setStoredWebhookDisplay(cfg.wecom_webhook_display || '')
                 setHasStoredBarkUrl(!!cfg.has_bark_url)
@@ -186,6 +195,10 @@ export default function Settings() {
         if (nextPreset.defaultQuickModel) setQuickThinkLlm(nextPreset.defaultQuickModel)
         if (nextPreset.defaultDeepModel) setDeepThinkLlm(nextPreset.defaultDeepModel)
     }
+
+    useEffect(() => {
+        setHasStoredApiKey(apiKeyScopes.includes(currentApiKeyScope))
+    }, [apiKeyScopes, currentApiKeyScope])
 
     const handleCreateToken = async (e: React.FormEvent) => {
         e.preventDefault()
@@ -262,6 +275,7 @@ export default function Settings() {
             force_warmup: forceWarmup,
         })
         setHasStoredApiKey(!!response.has_api_key)
+        setApiKeyScopes(response.current.api_key_scopes || [])
         setHasStoredWebhook(!!response.current.has_wecom_webhook)
         setStoredWebhookDisplay(response.current.wecom_webhook_display || '')
         setHasStoredBarkUrl(!!response.current.has_bark_url)
@@ -307,8 +321,13 @@ export default function Settings() {
         if (!hasStoredApiKey) return
         setSaving(true)
         try {
-            const response = await api.updateConfig({ clear_api_key: true })
+            const response = await api.updateConfig({
+                ...buildRuntimeConfigPayload(),
+                clear_api_key: true,
+                warmup: false,
+            })
             setHasStoredApiKey(!!response.has_api_key)
+            setApiKeyScopes(response.current.api_key_scopes || [])
             setLlmApiKey('')
             setSaved(true)
             setTimeout(() => setSaved(false), 2000)
@@ -530,9 +549,9 @@ export default function Settings() {
                                 </button>
                             )}
                         </div>
-                        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                            保存模型配置后，系统会在后台自动测试连通性；也可以直接点击下方按钮，发送\u201c你好\u201d来验证模型是否正常响应。
-                        </p>
+	                        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+	                            切换模型厂商时需要粘贴该厂商对应的 Key；留空会沿用当前已保存 Key。保存模型配置前，系统会先测试连通性；也可以直接点击下方按钮，发送\u201c你好\u201d来验证模型是否正常响应。
+	                        </p>
                     </div>
 
                     <div className="md:col-span-2 rounded-2xl border border-slate-200/80 dark:border-slate-700/80 bg-slate-50/80 dark:bg-slate-900/40 p-4 space-y-3">

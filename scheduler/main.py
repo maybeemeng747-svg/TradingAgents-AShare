@@ -39,7 +39,7 @@ def _log(msg: str):
 
 
 # ── Concurrency ──────────────────────────────────────────────────────────────
-SCHEDULER_CONCURRENCY = int(os.getenv("SCHEDULER_CONCURRENCY", "3"))
+SCHEDULER_CONCURRENCY = int(os.getenv("SCHEDULER_CONCURRENCY", "1"))
 
 _semaphore: Optional[asyncio.Semaphore] = None
 _executor: Optional[ThreadPoolExecutor] = None

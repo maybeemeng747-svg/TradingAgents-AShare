@@ -10,6 +10,10 @@ import type { WatchlistItem, ScheduledAnalysis, StockSearchResult, Report } from
 
 const HORIZON_LABELS: Record<string, string> = { short: '短线', medium: '中线' }
 const WATCHLIST_BATCH_SPLIT_RE = /[,\s，、；;]+/
+const DEFAULT_SCHEDULED_TASKS = [
+    { trigger_time: '14:30', label: '盘中跟踪' },
+    { trigger_time: '20:00', label: '盘后复盘' },
+] as const
 const SCHEDULED_TEST_TOOLTIP =
     '会立刻对当前勾选的股票批量发起最近交易日分析请求，并自动带上已导入的持仓上下文；若已开启邮箱报告，也可以顺带检查邮箱是否收到结果。不会改动原有定时设置。'
 
@@ -69,6 +73,13 @@ export default function Portfolio() {
     const [batchTriggerTime, setBatchTriggerTime] = useState('20:00')
     const [scheduledBatchBusyAction, setScheduledBatchBusyAction] = useState<string | null>(null)
     const [pendingHorizonTaskIds, setPendingHorizonTaskIds] = useState<Record<string, boolean>>({})
+    const [showScheduledAdd, setShowScheduledAdd] = useState(false)
+    const [scheduledAddQuery, setScheduledAddQuery] = useState('')
+    const [scheduledAddResults, setScheduledAddResults] = useState<StockSearchResult[]>([])
+    const [scheduledAddLoading, setScheduledAddLoading] = useState(false)
+    const [showScheduledAddDropdown, setShowScheduledAddDropdown] = useState(false)
+    const [scheduledAddHorizon, setScheduledAddHorizon] = useState<'short' | 'medium'>('short')
+    const [scheduledAddSubmitting, setScheduledAddSubmitting] = useState(false)
 
     // Search state
     const [searchQuery, setSearchQuery] = useState('')
@@ -85,9 +96,12 @@ export default function Portfolio() {
     } | null>(null)
     const searchTimerRef = useRef<ReturnType<typeof setTimeout>>()
     const dropdownRef = useRef<HTMLDivElement>(null)
+    const scheduledAddTimerRef = useRef<ReturnType<typeof setTimeout>>()
+    const scheduledAddDropdownRef = useRef<HTMLDivElement>(null)
 
     const navigate = useNavigate()
     const trimmedQuery = searchQuery.trim()
+    const trimmedScheduledAddQuery = scheduledAddQuery.trim()
     const isBatchInput = trimmedQuery.length > 0 && WATCHLIST_BATCH_SPLIT_RE.test(trimmedQuery)
     const selectedScheduledIdSet = new Set(selectedScheduledIds)
     const selectedScheduledCount = scheduled.filter(task => selectedScheduledIdSet.has(task.id)).length
@@ -123,6 +137,9 @@ export default function Portfolio() {
         const handler = (e: MouseEvent) => {
             if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
                 setShowDropdown(false)
+            }
+            if (scheduledAddDropdownRef.current && !scheduledAddDropdownRef.current.contains(e.target as Node)) {
+                setShowScheduledAddDropdown(false)
             }
         }
         document.addEventListener('mousedown', handler)
@@ -164,6 +181,28 @@ export default function Portfolio() {
             setSearchLoading(false)
         }, 300)
     }, [trimmedQuery, isBatchInput])
+
+    useEffect(() => {
+        if (scheduledAddTimerRef.current) clearTimeout(scheduledAddTimerRef.current)
+        if (!trimmedScheduledAddQuery) {
+            setScheduledAddResults([])
+            setShowScheduledAddDropdown(false)
+            setScheduledAddLoading(false)
+            return
+        }
+        setScheduledAddLoading(true)
+        scheduledAddTimerRef.current = setTimeout(async () => {
+            try {
+                const res = await api.searchStocks(trimmedScheduledAddQuery)
+                setScheduledAddResults(res.results)
+                setShowScheduledAddDropdown(true)
+            } catch (error) {
+                console.error('Failed to search scheduled stocks:', error)
+                setShowScheduledAddDropdown(false)
+            }
+            setScheduledAddLoading(false)
+        }, 300)
+    }, [trimmedScheduledAddQuery])
 
     const addToWatchlist = async (symbol: string) => {
         try {
@@ -261,17 +300,71 @@ export default function Portfolio() {
         }
     }
 
+    const getMissingDefaultSchedules = (symbol: string) => {
+        const normalizedSymbol = symbol.trim().toUpperCase()
+        return DEFAULT_SCHEDULED_TASKS.filter(task =>
+            !scheduled.some(item => item.symbol === normalizedSymbol && item.trigger_time === task.trigger_time)
+        )
+    }
+
+    const createDefaultScheduledTasks = async (symbol: string, horizon: 'short' | 'medium' = 'short') => {
+        const normalizedSymbol = symbol.trim().toUpperCase()
+        const missingTasks = getMissingDefaultSchedules(normalizedSymbol)
+        if (missingTasks.length === 0) {
+            alert(`${normalizedSymbol} 已有盘中和盘后定时任务`)
+            return
+        }
+        if (scheduled.length + missingTasks.length > 10) {
+            throw new Error(`定时任务最多 10 条；${normalizedSymbol} 默认需要新增 ${missingTasks.length} 条，请先删除不用的任务。`)
+        }
+
+        let createdCount = 0
+        for (const task of missingTasks) {
+            try {
+                await api.createScheduled(normalizedSymbol, horizon, task.trigger_time)
+                createdCount += 1
+            } catch (error) {
+                const message = error instanceof Error ? error.message : ''
+                if (!message.includes('已有定时分析')) {
+                    throw error
+                }
+            }
+        }
+        if (createdCount === 0) {
+            alert(`${normalizedSymbol} 已有盘中和盘后定时任务`)
+        }
+    }
+
     const toggleScheduled = async (symbol: string, hasScheduled: boolean) => {
         try {
             if (hasScheduled) {
-                const task = scheduled.find(s => s.symbol === symbol)
-                if (task) await api.deleteScheduled(task.id)
+                const tasks = scheduled.filter(s => s.symbol === symbol)
+                await Promise.all(tasks.map(task => api.deleteScheduled(task.id)))
             } else {
-                await api.createScheduled(symbol, 'short', '20:00')
+                await createDefaultScheduledTasks(symbol, 'short')
             }
             fetchAll()
         } catch (e) {
             alert(e instanceof Error ? e.message : '操作失败')
+        }
+    }
+
+    const submitScheduledAdd = async (symbolOverride?: string) => {
+        const symbol = (symbolOverride || trimmedScheduledAddQuery).trim().toUpperCase()
+        if (!symbol || scheduledAddSubmitting) return
+
+        setScheduledAddSubmitting(true)
+        try {
+            await createDefaultScheduledTasks(symbol, scheduledAddHorizon)
+            setScheduledAddQuery('')
+            setScheduledAddResults([])
+            setShowScheduledAddDropdown(false)
+            setShowScheduledAdd(false)
+            await fetchAll()
+        } catch (e) {
+            alert(e instanceof Error ? e.message : '添加定时任务失败')
+        } finally {
+            setScheduledAddSubmitting(false)
         }
     }
 
@@ -640,11 +733,87 @@ export default function Portfolio() {
 
                 {/* Right: Scheduled Analysis */}
                 <div className="card">
-                    <div className="flex items-center gap-2 mb-4">
+                    <div className="mb-4 flex items-center gap-2">
                         <Clock className="w-5 h-5 text-emerald-500" />
                         <h2 className="font-semibold text-slate-900 dark:text-slate-100">定时分析 ({scheduled.length}/10)</h2>
+                        <button
+                            type="button"
+                            onClick={() => setShowScheduledAdd(current => !current)}
+                            disabled={scheduled.length >= 10}
+                            className="ml-auto inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-emerald-500 px-3 text-xs font-medium text-white transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+                            title={scheduled.length >= 10 ? '定时任务已达上限' : '添加定时任务'}
+                        >
+                            <Plus className="h-3.5 w-3.5" />
+                            添加任务
+                        </button>
                     </div>
-                    <p className="text-xs text-slate-400 mb-4">每个交易日在设定时间自动执行（允许 20:00~次日 08:00）</p>
+                    <p className="text-xs text-slate-400 mb-4">每个交易日在设定时间自动执行，可设置盘中 14:30 或盘后 20:00 等时间</p>
+
+                    {showScheduledAdd && (
+                        <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50/50 p-3 dark:border-emerald-500/20 dark:bg-emerald-500/10">
+                            <div className="space-y-3" ref={scheduledAddDropdownRef}>
+                                <div className="relative">
+                                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                                    <input
+                                        type="text"
+                                        value={scheduledAddQuery}
+                                        onChange={e => setScheduledAddQuery(e.target.value)}
+                                        onFocus={() => scheduledAddResults.length > 0 && setShowScheduledAddDropdown(true)}
+                                        onKeyDown={e => e.key === 'Enter' && trimmedScheduledAddQuery && void submitScheduledAdd()}
+                                        placeholder="搜索代码/名称，或直接输入股票代码"
+                                        className="input w-full pl-9 pr-9"
+                                    />
+                                    {scheduledAddLoading && (
+                                        <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-slate-400" />
+                                    )}
+                                </div>
+
+                                {showScheduledAddDropdown && scheduledAddResults.length > 0 && (
+                                    <div className="max-h-52 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-800">
+                                        {scheduledAddResults.map(result => (
+                                            <button
+                                                key={result.symbol}
+                                                type="button"
+                                                onClick={() => void submitScheduledAdd(result.symbol)}
+                                                disabled={scheduledAddSubmitting}
+                                                className="flex w-full items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-slate-50 disabled:opacity-50 dark:hover:bg-slate-700/50"
+                                            >
+                                                <span className="text-sm font-medium text-slate-900 dark:text-slate-100">{result.name}</span>
+                                                <span className="text-xs text-slate-400">{result.symbol}</span>
+                                                {scheduledAddSubmitting ? (
+                                                    <Loader2 className="ml-auto h-3.5 w-3.5 animate-spin text-emerald-500" />
+                                                ) : (
+                                                    <Plus className="ml-auto h-3.5 w-3.5 text-emerald-500" />
+                                                )}
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
+
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <HorizonSwitch
+                                        value={scheduledAddHorizon}
+                                        compact
+                                        disabled={scheduledAddSubmitting}
+                                        onChange={setScheduledAddHorizon}
+                                    />
+                                    <div className="flex h-8 items-center gap-1 rounded-lg border border-emerald-200 bg-white px-2 text-[11px] font-medium text-emerald-700 dark:border-emerald-500/30 dark:bg-slate-900 dark:text-emerald-300">
+                                        <Clock className="h-3 w-3" />
+                                        14:30 盘中 + 20:00 盘后
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => void submitScheduledAdd()}
+                                        disabled={!trimmedScheduledAddQuery || scheduledAddSubmitting || scheduled.length >= 10}
+                                        className="ml-auto inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-emerald-500 px-3 text-xs font-medium text-white transition-colors hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                        {scheduledAddSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+                                        添加双任务
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {scheduled.length > 0 && (
                         <div className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 dark:border-slate-700 dark:bg-slate-800/30">
@@ -737,7 +906,7 @@ export default function Portfolio() {
                         <div className="text-center py-10">
                             <Clock className="w-12 h-12 text-slate-300 dark:text-slate-600 mx-auto mb-3" />
                             <p className="text-slate-500 dark:text-slate-400">暂无定时任务</p>
-                            <p className="text-sm text-slate-400 dark:text-slate-500 mt-1">在自选列表中点击"定时"开启</p>
+                            <p className="text-sm text-slate-400 dark:text-slate-500 mt-1">点击右上角"添加任务"，或在自选列表中点击"定时"开启</p>
                         </div>
                     ) : (
                         <div className="space-y-3">

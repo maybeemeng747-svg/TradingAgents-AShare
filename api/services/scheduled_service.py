@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from api.database import ScheduledAnalysisDB
 
 MAX_SCHEDULED_ITEMS = 10
+DEFAULT_SCHEDULED_TRIGGER_TIMES = ("14:30", "20:00")
 
 VALID_HORIZONS = {"short", "medium"}
 
@@ -161,13 +162,19 @@ def ensure_scheduled_for_symbols(
     user_id: str,
     symbols: Iterable[str],
     horizon: str = "short",
-    trigger_time: str = "20:00",
+    trigger_time: str | Iterable[str] | None = None,
 ) -> dict:
     """Ensure the given symbols exist in scheduled tasks without duplicating existing items."""
 
     horizon = _validate_horizon(horizon)
-
-    trigger_time = _validate_trigger_time(trigger_time)
+    if trigger_time is None:
+        trigger_times = list(DEFAULT_SCHEDULED_TRIGGER_TIMES)
+    elif isinstance(trigger_time, str):
+        trigger_times = [_validate_trigger_time(trigger_time)]
+    else:
+        trigger_times = [_validate_trigger_time(item) for item in trigger_time]
+    if not trigger_times:
+        trigger_times = list(DEFAULT_SCHEDULED_TRIGGER_TIMES)
 
     existing_items = (
         db.query(ScheduledAnalysisDB)
@@ -189,27 +196,28 @@ def ensure_scheduled_for_symbols(
             continue
         seen.add(symbol)
 
-        key = (symbol, trigger_time)
-        if key in existing_keys:
-            existing.append(symbol)
-            continue
+        for trigger_time_item in trigger_times:
+            key = (symbol, trigger_time_item)
+            if key in existing_keys:
+                existing.append(symbol)
+                continue
 
-        if remaining_slots <= 0:
-            skipped_limit.append(symbol)
-            continue
+            if remaining_slots <= 0:
+                skipped_limit.append(symbol)
+                continue
 
-        db.add(
-            ScheduledAnalysisDB(
-                id=uuid4().hex,
-                user_id=user_id,
-                symbol=symbol,
-                horizon=horizon,
-                trigger_time=trigger_time,
+            db.add(
+                ScheduledAnalysisDB(
+                    id=uuid4().hex,
+                    user_id=user_id,
+                    symbol=symbol,
+                    horizon=horizon,
+                    trigger_time=trigger_time_item,
+                )
             )
-        )
-        existing_keys.add(key)
-        created.append(symbol)
-        remaining_slots -= 1
+            existing_keys.add(key)
+            created.append(symbol)
+            remaining_slots -= 1
 
     if created:
         db.flush()

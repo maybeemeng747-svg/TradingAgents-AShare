@@ -124,3 +124,26 @@ def test_resolve_report_fields_prefers_explicit_final_prices():
 
     assert resolved["target_price"] == 23.5
     assert resolved["stop_loss_price"] == 20.48
+
+
+def test_resolve_report_fields_ignores_generated_quality_check_and_numbered_risk_list():
+    resolved = report_service.resolve_report_fields(
+        result_data={
+            "final_trade_decision": (
+                "最终审核意见：当前禁止建仓。\n"
+                "出现以下任一情况，应立即放弃任何入场计划，并对已持仓部分执行止损：\n"
+                "1. RISK-1恶化：后续财报显示盈利增速进一步下滑。\n"
+                "2. 技术面破位：股价放量跌破492.65元且无法在3个交易日内收回。\n"
+                "目标价：—\n"
+                "止损价：—\n\n"
+                "### 执行质检\n"
+                "- 触发价：554.96\n"
+                "- 止损价：1.0\n"
+            ),
+            "trader_investment_plan": "不建议入场。空头观点只有放量站稳554.96元才失效。",
+            "investment_plan": "不建议当前价位入场。",
+        }
+    )
+
+    assert resolved["target_price"] is None
+    assert resolved["stop_loss_price"] is None

@@ -114,21 +114,15 @@ def _select_reports_for_symbols(
         .all()
     )
 
-    exact_previous: dict[str, ReportDB] = {}
-    latest_before_previous: dict[str, ReportDB] = {}
     latest_any: dict[str, ReportDB] = {}
 
     for row in rows:
         if row.symbol not in latest_any:
             latest_any[row.symbol] = row
-        if row.trade_date == previous_trade_date and row.symbol not in exact_previous:
-            exact_previous[row.symbol] = row
-        if row.trade_date <= previous_trade_date and row.symbol not in latest_before_previous:
-            latest_before_previous[row.symbol] = row
 
     selected: dict[str, ReportDB] = {}
     for symbol in symbols:
-        report = exact_previous.get(symbol) or latest_before_previous.get(symbol) or latest_any.get(symbol)
+        report = latest_any.get(symbol)
         if report:
             selected[symbol] = report
     return selected

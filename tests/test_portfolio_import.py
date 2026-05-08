@@ -79,7 +79,12 @@ class TestPortfolioImportService:
         )
 
         tasks = scheduled_service.list_scheduled(db, "user-auto-scheduled")
-        assert [item["symbol"] for item in tasks] == ["600519.SH", "300750.SZ"]
+        assert [(item["symbol"], item["trigger_time"]) for item in tasks] == [
+            ("600519.SH", "14:30"),
+            ("600519.SH", "20:00"),
+            ("300750.SZ", "14:30"),
+            ("300750.SZ", "20:00"),
+        ]
 
     def test_sync_positions_normalizes_bare_codes(self, db):
         from api.services import portfolio_import_service
@@ -309,5 +314,10 @@ class TestPortfolioImportApi:
 
         scheduled = client.get("/v1/scheduled", headers=headers)
         assert scheduled.status_code == 200
-        scheduled_symbols = [item["symbol"] for item in scheduled.json()["items"]]
-        assert scheduled_symbols == ["600519.SH", "300750.SZ"]
+        scheduled_pairs = [(item["symbol"], item["trigger_time"]) for item in scheduled.json()["items"]]
+        assert scheduled_pairs == [
+            ("600519.SH", "14:30"),
+            ("600519.SH", "20:00"),
+            ("300750.SZ", "14:30"),
+            ("300750.SZ", "20:00"),
+        ]

@@ -111,7 +111,7 @@ class TestAnalyzeEndpoint:
     @pytest.fixture(autouse=True)
     def setup(self):
         self.client = _get_client()
-        self.token = _auth(self.client)
+        self.token = _auth_unique(self.client)
         self.headers = {"Authorization": f"Bearer {self.token}"}
 
     def test_dry_run_completes(self):
@@ -283,7 +283,7 @@ class TestRuntimeConfigWarmup:
     @pytest.fixture(autouse=True)
     def setup(self):
         self.client = _get_client()
-        self.token = _auth(self.client)
+        self.token = _auth_unique(self.client)
         self.headers = {"Authorization": f"Bearer {self.token}"}
 
     def test_model_change_schedules_warmup(self):
@@ -337,6 +337,42 @@ class TestRuntimeConfigWarmup:
         assert "模型 Key 验证失败" in r.json()["detail"]
         probe.assert_called_once()
         warmup.assert_not_called()
+
+    def test_model_endpoint_change_uses_matching_scoped_key(self):
+        with patch("api.main._probe_runtime_config", return_value={"status": "ok", "model": "moonshot-v1-8k"}), \
+             patch("api.main._run_config_warmup"):
+            r = self.client.patch("/v1/config", headers=self.headers, json={
+                "llm_provider": "openai",
+                "backend_url": "https://api.moonshot.cn/v1",
+                "quick_think_llm": "moonshot-v1-8k",
+                "api_key": "sk-stored-valid",
+            })
+        assert r.status_code == 200
+
+        from api.database import get_db_ctx
+        from api.services import auth_service
+
+        user_id = auth_service.decode_access_token(self.token)["sub"]
+        with get_db_ctx() as db:
+            auth_service.upsert_user_provider_api_key(
+                db,
+                user_id,
+                "openai",
+                "https://open.bigmodel.cn/api/coding/paas/v4",
+                "zhipu-stored-valid",
+            )
+
+        with patch("api.main._probe_runtime_config", return_value={"status": "ok", "model": "glm-4.5-air"}) as probe, \
+             patch("api.main._run_config_warmup"):
+            r = self.client.patch("/v1/config", headers=self.headers, json={
+                "backend_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+                "quick_think_llm": "glm-4.5-air",
+                "deep_think_llm": "glm-5-turbo",
+            })
+
+        assert r.status_code == 200
+        probe.assert_called_once()
+        assert probe.call_args.args[0]["api_key"] == "zhipu-stored-valid"
 
     def test_force_warmup_schedules_even_without_model_change(self):
         with patch("api.main._run_config_warmup") as warmup:

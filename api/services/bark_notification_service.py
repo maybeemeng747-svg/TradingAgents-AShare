@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import TYPE_CHECKING
 from urllib.parse import quote, urlparse
 
@@ -20,6 +21,94 @@ def _clip_text(text: str | None, limit: int = 720) -> str:
         return ""
     compact = " ".join(str(text).split()).strip()
     return compact[:limit]
+
+
+def _format_value(value: object) -> str:
+    if value is None:
+        return "-"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{number:.2f}".rstrip("0").rstrip(".")
+
+
+def _plain_report_text(report: "ReportDB") -> str:
+    parts = [
+        getattr(report, "final_trade_decision", None),
+        getattr(report, "trader_investment_plan", None),
+        getattr(report, "investment_plan", None),
+    ]
+    text = "\n".join(str(part) for part in parts if part)
+    text = re.sub(r"<!--.*?-->", " ", text, flags=re.DOTALL)
+    text = re.sub(r"[#*_`>\[\]]+", " ", text)
+    return text
+
+
+def _extract_phrase(text: str, keyword: str, limit: int = 86) -> str | None:
+    for segment in re.split(r"[\n。；;]+", text):
+        compact = " ".join(segment.split()).strip(" -*\t")
+        if keyword in compact:
+            compact = compact[compact.find(keyword):]
+            return compact[:limit]
+    return None
+
+
+def _extract_risk_review(text: str) -> str | None:
+    patterns = (
+        r"审核结论[：:\s*]*([A-Za-z]+|买入|卖出|持有|观望|减仓|清仓)",
+        r"风控结论[：:\s*]*([A-Za-z]+|买入|卖出|持有|观望|减仓|清仓)",
+        r"最终交易建议[：:\s*]*(买入|卖出|观望|持有|减仓|清仓|BUY|SELL|HOLD)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def _remove_leading_label(text: str, labels: tuple[str, ...]) -> str:
+    cleaned = text
+    for label in labels:
+        cleaned = cleaned.replace(label, "")
+    return cleaned.lstrip(" ：:-")
+
+
+def _build_action_lines(report: "ReportDB", text: str) -> list[str]:
+    lines: list[str] = []
+    risk_review = _extract_risk_review(text)
+    decision = str(getattr(report, "decision", "") or "").upper()
+    if risk_review and risk_review.upper() not in {"", decision}:
+        lines.append(f"风控：{risk_review}（若与决策不同，以执行约束为准）")
+
+    not_holding = _extract_phrase(text, "未持仓者") or _extract_phrase(text, "未持仓")
+    if not_holding:
+        lines.append(f"未持仓：{_remove_leading_label(not_holding, ('未持仓者', '未持仓'))}")
+    else:
+        if decision == "SELL":
+            lines.append("未持仓：不追高，不开多，等待右侧确认")
+        elif decision == "BUY":
+            lines.append("未持仓：只按触发条件小仓试探，避免追高")
+        else:
+            lines.append("未持仓：观望，等待确认信号")
+
+    holding = _extract_phrase(text, "已持仓者") or _extract_phrase(text, "已持仓")
+    if holding:
+        lines.append(f"已持仓：{_remove_leading_label(holding, ('已持仓者（若存在）', '已持仓者', '已持仓'))}")
+    elif decision == "SELL":
+        lines.append("已持仓：反弹减仓或清仓，严格执行止损")
+    elif decision == "BUY":
+        lines.append("已持仓：按计划持有，跌破止损先降风险")
+
+    trigger = _extract_phrase(text, "触发") or _extract_phrase(text, "站稳")
+    if trigger:
+        lines.append(f"触发：{trigger}")
+
+    event_risk = _extract_phrase(text, "事件风险") or _extract_phrase(text, "风险")
+    if event_risk and event_risk not in lines:
+        lines.append(f"风险：{event_risk}")
+
+    return lines[:5]
 
 
 def normalize_bark_url(value: str) -> str:
@@ -50,32 +139,34 @@ def normalize_bark_url(value: str) -> str:
 
 
 def build_report_payload(report: "ReportDB") -> dict:
-    title = f"TradingAgents {report.symbol} 定时分析"
-    lines = [
-        f"交易日：{report.trade_date}",
-    ]
-    if getattr(report, "decision", None):
-        lines.append(f"决策：{report.decision}")
-    if getattr(report, "direction", None):
-        lines.append(f"方向：{report.direction}")
-    if getattr(report, "confidence", None) is not None:
-        lines.append(f"置信度：{report.confidence}%")
-    if getattr(report, "target_price", None) is not None:
-        lines.append(f"目标价：{report.target_price}")
-    if getattr(report, "stop_loss_price", None) is not None:
-        lines.append(f"止损价：{report.stop_loss_price}")
+    decision = getattr(report, "decision", None) or "-"
+    direction = getattr(report, "direction", None) or "-"
+    confidence = getattr(report, "confidence", None)
+    confidence_text = f" {confidence}%" if confidence is not None else ""
+    title = f"{report.symbol} {decision}/{direction}{confidence_text}"
 
-    summary = (
-        _clip_text(getattr(report, "final_trade_decision", None), 700)
-        or _clip_text(getattr(report, "trader_investment_plan", None), 700)
-        or _clip_text(getattr(report, "investment_plan", None), 700)
-    )
-    if summary:
-        lines.append("")
-        lines.append(summary)
+    lines = [
+        f"TradingAgents 定时分析 | {report.trade_date}",
+        f"结论：{decision}，方向：{direction}"
+    ]
+
+    if confidence is not None:
+        lines[-1] += f"，置信度：{confidence}%"
+
+    target_price = getattr(report, "target_price", None)
+    stop_loss_price = getattr(report, "stop_loss_price", None)
+    if target_price is not None or stop_loss_price is not None:
+        lines.append(f"价位：目标 {_format_value(target_price)} / 止损 {_format_value(stop_loss_price)}")
+
+    text = _plain_report_text(report)
+    action_lines = _build_action_lines(report, text)
+    if action_lines:
+        lines.append("要点：")
+        lines.extend(f"- {line}" for line in action_lines)
+
     return {
         "title": title[:128],
-        "body": "\n".join(lines)[:1800],
+        "body": "\n".join(lines)[:900],
         "group": _BARK_DEFAULT_GROUP,
     }
 

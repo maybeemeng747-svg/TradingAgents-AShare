@@ -6,7 +6,7 @@ import os
 os.environ["QUICK_THINK_LLM"] = "env-default-quick"
 os.environ["DEEP_THINK_LLM"] = "env-default-deep"
 
-from api.main import _build_runtime_config
+from api.main import _build_runtime_config, _job_timeout_for_config
 from tradingagents.llm_clients.openai_client import OpenAIClient
 
 class TestConfigFallback(unittest.TestCase):
@@ -68,6 +68,12 @@ class TestConfigFallback(unittest.TestCase):
         # 如果真的传入空，它就应该是空（或者触发基类的初始化，但不应该自造 gpt-4o-mini）
         client_empty = OpenAIClient(model="", provider="openai")
         self.assertEqual(client_empty.model, "", "构造函数不应自造模型名")
+
+    def test_zhipu_coding_uses_longer_job_timeout(self):
+        self.assertEqual(
+            _job_timeout_for_config({"backend_url": "https://open.bigmodel.cn/api/coding/paas/v4"}),
+            2700,
+        )
 
 if __name__ == "__main__":
     unittest.main()

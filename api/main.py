@@ -301,6 +301,29 @@ def _utcnow_iso() -> str:
 
 
 _JOB_TIMEOUT = int(os.getenv("TA_JOB_TIMEOUT", "600"))  # seconds
+_ZHIPU_CODING_JOB_TIMEOUT = int(os.getenv("TA_ZHIPU_CODING_JOB_TIMEOUT", "2700"))  # seconds
+
+
+def _job_timeout_for_config(config: Dict[str, Any]) -> int:
+    base_url = str(config.get("backend_url") or "").lower().rstrip("/")
+    if "open.bigmodel.cn/api/coding" in base_url:
+        return _ZHIPU_CODING_JOB_TIMEOUT
+    return _JOB_TIMEOUT
+
+
+def _resolve_job_timeout(request: AnalyzeRequest, user_id: Optional[str]) -> int:
+    try:
+        if user_id:
+            with get_db_ctx() as db:
+                config = _build_runtime_config(request.config_overrides, user_id=user_id, db=db)
+        else:
+            config = _build_runtime_config(request.config_overrides, user_id=user_id)
+        return _job_timeout_for_config(config)
+    except Exception as exc:
+        _log(f"[Job Timeout] failed to resolve runtime timeout, falling back to {_JOB_TIMEOUT}s: {exc}")
+        return _JOB_TIMEOUT
+
+
 def _create_tracked_task(coro, *, label: str = "Background task") -> asyncio.Task:
     """Create an asyncio task and keep a reference to prevent GC.
     Also logs unhandled exceptions via a done callback."""
@@ -834,6 +857,8 @@ class UserRuntimeConfigResponse(BaseModel):
     wecom_report_enabled: bool = True
     bark_report_enabled: bool = True
     default_analysts: List[str] = Field(default_factory=lambda: ["market", "social", "news", "fundamentals", "macro", "smart_money", "volume_price"])
+    current_api_key_scope: Optional[str] = None
+    api_key_scopes: List[str] = Field(default_factory=list)
 
 
 class UserRuntimeConfigUpdateRequest(BaseModel):
@@ -974,7 +999,14 @@ def _user_config_overrides(user_id: Optional[str], db: Optional[Session] = None)
             value = getattr(user_cfg, key, None)
             if value is not None:
                 result[key] = value
-        api_key = auth_service.decrypt_secret(user_cfg.api_key_encrypted)
+        api_key = auth_service.get_user_provider_api_key(
+            sess,
+            user_id,
+            result.get("llm_provider"),
+            result.get("backend_url"),
+        )
+        if not api_key and not auth_service.has_user_provider_keys(sess, user_id):
+            api_key = auth_service.decrypt_secret_with_fallback(user_cfg.api_key_encrypted)
         if api_key:
             result["api_key"] = api_key
         return result
@@ -1026,6 +1058,14 @@ def _build_runtime_config(overrides: Dict[str, Any], user_id: Optional[str] = No
     if filtered_user_overrides or filtered_request_overrides:
         config["mid_think_llm"] = config.get("deep_think_llm") or config.get("quick_think_llm")
         config["ultra_think_llm"] = config.get("deep_think_llm") or config.get("quick_think_llm")
+
+    if user_id and db is not None and auth_service.has_user_provider_keys(db, user_id):
+        config["api_key"] = auth_service.get_user_provider_api_key(
+            db,
+            user_id,
+            config.get("llm_provider"),
+            config.get("backend_url"),
+        ) or ""
 
     return config
 
@@ -1585,17 +1625,18 @@ async def _run_job(
 ) -> None:
     # 用 asyncio.Task + sleep 竞速代替 wait_for，避免 cancel 卡在 to_thread 导致
     # semaphore 永远不释放的问题。超时后标记失败但不 cancel 内部协程（让线程自然结束）。
+    job_timeout = _resolve_job_timeout(request, user_id)
     inner_task = asyncio.create_task(
         _run_job_inner(job_id, request, stream_events, save_report, user_id, request_source)
     )
-    done, _ = await asyncio.wait({inner_task}, timeout=_JOB_TIMEOUT)
+    done, _ = await asyncio.wait({inner_task}, timeout=job_timeout)
     if inner_task in done:
         # 正常完成（可能成功也可能异常）
         if not inner_task.cancelled() and inner_task.exception():
             _log(f"[Job {job_id}] failed: {inner_task.exception()}")
         return
     # 超时：标记失败，但不 cancel 内部 task（避免 cancel 卡住）
-    err_msg = f"任务超时（超过 {_JOB_TIMEOUT} 秒），已自动终止"
+    err_msg = f"任务超时（超过 {job_timeout} 秒），已自动终止"
     _log(f"[Job {job_id}] {err_msg}")
     _set_job(job_id, status="failed", error=err_msg, finished_at=_utcnow_iso())
     # 注意：不能用 asyncio.to_thread 写 DB，因为线程池可能被僵尸任务占满导致死锁。
@@ -3514,17 +3555,28 @@ def _build_pending_runtime_config(
         if value is not None:
             config[key] = value
 
-    if updates.clear_api_key:
-        config["api_key"] = ""
-    elif updates.api_key:
-        config["api_key"] = updates.api_key
-
     quick = config.get("quick_think_llm")
     deep = config.get("deep_think_llm")
     if not deep and quick:
         config["deep_think_llm"] = quick
     if not quick and deep:
         config["quick_think_llm"] = deep
+
+    if updates.clear_api_key:
+        config["api_key"] = ""
+    elif updates.api_key:
+        config["api_key"] = updates.api_key
+    else:
+        scoped_api_key = auth_service.get_user_provider_api_key(
+            db,
+            user_id,
+            config.get("llm_provider"),
+            config.get("backend_url"),
+        )
+        if scoped_api_key:
+            config["api_key"] = scoped_api_key
+        elif auth_service.has_user_provider_keys(db, user_id):
+            config["api_key"] = ""
     return config
 
 
@@ -3533,10 +3585,19 @@ def _should_probe_runtime_config(
     pending_cfg: Dict[str, Any],
     updates: UserRuntimeConfigUpdateRequest,
 ) -> bool:
-    del before_cfg, pending_cfg
     if updates.clear_api_key:
         return False
-    return bool(updates.api_key)
+    if updates.api_key:
+        return True
+    if not str(pending_cfg.get("api_key") or "").strip():
+        return False
+
+    before = before_cfg.model_dump()
+    for key in _CONFIG_MODEL_KEYS:
+        next_value = getattr(updates, key, None)
+        if next_value is not None and next_value != before.get(key):
+            return True
+    return False
 
 
 def _probe_runtime_config(config: Dict[str, Any]) -> Dict[str, str]:
@@ -3662,8 +3723,18 @@ def _run_config_warmup(config: Dict[str, Any], user_id: str) -> None:
 def _config_response_for_user(user: Optional[UserDB], db: Session) -> UserRuntimeConfigResponse:
     cfg = _build_runtime_config({}, user_id=user.id if user else None, db=db)
     user_cfg = auth_service.get_user_llm_config(db, user.id) if user else None
-    webhook_url = auth_service.decrypt_secret(getattr(user_cfg, "wecom_webhook_encrypted", None))
-    bark_url = auth_service.decrypt_secret(getattr(user_cfg, "bark_url_encrypted", None))
+    current_api_key_scope = auth_service.normalize_provider_key_scope(cfg.get("llm_provider"), cfg.get("backend_url"))
+    api_key_scopes = auth_service.list_user_provider_key_scopes(db, user.id) if user else []
+    api_key = auth_service.get_user_provider_api_key(
+        db,
+        user.id,
+        cfg.get("llm_provider"),
+        cfg.get("backend_url"),
+    ) if user else None
+    if not api_key and not api_key_scopes:
+        api_key = auth_service.decrypt_secret_with_fallback(getattr(user_cfg, "api_key_encrypted", None))
+    webhook_url = auth_service.decrypt_secret_with_fallback(getattr(user_cfg, "wecom_webhook_encrypted", None))
+    bark_url = auth_service.decrypt_secret_with_fallback(getattr(user_cfg, "bark_url_encrypted", None))
     return UserRuntimeConfigResponse(
         llm_provider=cfg["llm_provider"],
         deep_think_llm=cfg["deep_think_llm"],
@@ -3671,7 +3742,7 @@ def _config_response_for_user(user: Optional[UserDB], db: Session) -> UserRuntim
         backend_url=cfg["backend_url"],
         max_debate_rounds=cfg["max_debate_rounds"],
         max_risk_discuss_rounds=cfg["max_risk_discuss_rounds"],
-        has_api_key=bool(user_cfg and user_cfg.api_key_encrypted),
+        has_api_key=bool(api_key),
         has_wecom_webhook=bool(webhook_url),
         wecom_webhook_display=_mask_wecom_webhook(webhook_url),
         has_bark_url=bool(bark_url),
@@ -3681,6 +3752,8 @@ def _config_response_for_user(user: Optional[UserDB], db: Session) -> UserRuntim
         wecom_report_enabled=user.wecom_report_enabled if user and hasattr(user, "wecom_report_enabled") else True,
         bark_report_enabled=user.bark_report_enabled if user and hasattr(user, "bark_report_enabled") else True,
         default_analysts=json.loads(user_cfg.default_analysts) if user_cfg and user_cfg.default_analysts else ["market", "social", "news", "fundamentals", "macro", "smart_money", "volume_price"],
+        current_api_key_scope=current_api_key_scope,
+        api_key_scopes=api_key_scopes,
     )
 
 
@@ -3772,6 +3845,21 @@ def update_runtime_config(
         clear_bark_url=updates.clear_bark_url,
         default_analysts=updates.default_analysts,
     )
+    if updates.api_key:
+        auth_service.upsert_user_provider_api_key(
+            db,
+            persistent_user.id,
+            pending_cfg.get("llm_provider"),
+            pending_cfg.get("backend_url"),
+            updates.api_key,
+        )
+    elif updates.clear_api_key:
+        auth_service.clear_user_provider_api_key(
+            db,
+            persistent_user.id,
+            pending_cfg.get("llm_provider"),
+            pending_cfg.get("backend_url"),
+        )
     user_pref_updated = False
     if updates.email_report_enabled is not None:
         persistent_user.email_report_enabled = updates.email_report_enabled
@@ -3863,7 +3951,7 @@ async def warmup_wecom_webhook(
     webhook_url = (request.wecom_webhook_url or "").strip()
     if not webhook_url:
         user_cfg = auth_service.get_user_llm_config(db, current_user.id)
-        webhook_url = auth_service.decrypt_secret(getattr(user_cfg, "wecom_webhook_encrypted", None)) or ""
+        webhook_url = auth_service.decrypt_secret_with_fallback(getattr(user_cfg, "wecom_webhook_encrypted", None)) or ""
     if not webhook_url:
         raise HTTPException(status_code=400, detail="请先填写或保存企业微信 Webhook")
     try:
@@ -3896,7 +3984,7 @@ async def warmup_bark(
     bark_url = (request.bark_url or "").strip()
     if not bark_url:
         user_cfg = auth_service.get_user_llm_config(db, current_user.id)
-        bark_url = auth_service.decrypt_secret(getattr(user_cfg, "bark_url_encrypted", None)) or ""
+        bark_url = auth_service.decrypt_secret_with_fallback(getattr(user_cfg, "bark_url_encrypted", None)) or ""
     if not bark_url:
         raise HTTPException(status_code=400, detail="请先填写或保存 Bark 地址/设备 Key")
     try:

@@ -574,6 +574,8 @@ export interface RuntimeConfig {
     wecom_report_enabled?: boolean
     bark_report_enabled?: boolean
     default_analysts?: string[]
+    current_api_key_scope?: string | null
+    api_key_scopes?: string[]
 }
 
 export interface RuntimeConfigUpdateResponse {
