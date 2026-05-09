@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-05-10 | 报告质量防线任务（C系列）
+
+- **执行者**：OpenClaw（主控AI）
+- **任务**：基于 ChatGPT 建议 + 主控AI评估，新增 8 项报告质量防线任务
+- **修改文件**：
+  - `docs/TASKS.md` — 新增 C-001~C-008 共 8 项任务，含实现要点、代码标注要求、验证方式
+- **实施顺序**：
+  - Phase 1：C-001 position_validation_gate + C-002 account_capability + C-003 禁止做空 + C-004 动作枚举
+  - Phase 2：C-005 delta_check + C-007 event_risk_gate
+  - Phase 3：C-006 financial_validator + C-008 readiness_score
+- **代码标注规范**：所有新功能入口必须加 `# [C-XXX] 标签名` 注释
+- **测试结果**：不涉及代码修改
+- **风险点**：无
+- **下一步**：
+  - [ ] Phase 1 实现（C-001~C-004）
+
+---
+
 ## 2026-05-09 | 搭建项目协作工作流
 
 - **执行者**：OpenClaw（主控AI）
