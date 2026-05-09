@@ -15,6 +15,7 @@ from tradingagents.agents.utils.debate_utils import (
     safe_int,
 )
 from tradingagents.agents.utils.delta_check import check_delta, save_conclusion, format_delta_warning
+from tradingagents.agents.utils.event_risk_gate import check_event_risk, format_event_risk_warning
 
 
 def create_risk_manager(llm, memory):
@@ -98,6 +99,12 @@ def create_risk_manager(llm, memory):
             final_response += format_delta_warning(delta_info)
             _logger.warning("[C-005] delta_check: %s 结论翻转, possible_noise=%s", stock_code, delta_info["possible_noise"])
         save_conclusion(stock_code, final_response, "medium", ["risk_manager"])
+
+        # [C-007] event_risk_gate — 检查重大风险事件
+        event_risk_info = check_event_risk(stock_code)
+        if event_risk_info["has_risk"]:
+            final_response += format_event_risk_warning(event_risk_info)
+            _logger.warning("[C-007] event_risk_gate: %s 检测到风险事件: %s", stock_code, event_risk_info["risk_events"])
 
         # ── 推送辩论裁决（用 cleaned 覆盖流式 raw content）──
         if tracker:
