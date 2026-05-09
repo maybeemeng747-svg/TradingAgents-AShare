@@ -16,6 +16,8 @@ from tradingagents.agents.utils.debate_utils import (
 )
 from tradingagents.agents.utils.delta_check import check_delta, save_conclusion, format_delta_warning
 from tradingagents.agents.utils.event_risk_gate import check_event_risk, format_event_risk_warning
+from tradingagents.agents.utils.financial_validator import check_financial_anomalies, format_financial_anomaly_warning
+from tradingagents.agents.utils.readiness_score import calculate_data_completeness, assess_confidence, generate_readiness_score, format_readiness_score, ConfidenceLevel
 
 
 def create_risk_manager(llm, memory):
@@ -105,6 +107,30 @@ def create_risk_manager(llm, memory):
         if event_risk_info["has_risk"]:
             final_response += format_event_risk_warning(event_risk_info)
             _logger.warning("[C-007] event_risk_gate: %s 检测到风险事件: %s", stock_code, event_risk_info["risk_events"])
+
+        # [C-006] financial_validator — 检测财报数据异常
+        financial_anomaly_info = check_financial_anomalies(stock_code)
+        if financial_anomaly_info["has_anomaly"]:
+            final_response += format_financial_anomaly_warning(financial_anomaly_info)
+            _logger.warning("[C-006] financial_validator: %s 检测到异常: %s", stock_code, financial_anomaly_info["anomalies"])
+
+        # [C-008] readiness_score — 生成报告质量评分
+        has_market = bool(market_research_report)
+        has_sentiment = bool(sentiment_report)
+        has_news = bool(news_report)
+        has_fundamentals = bool(fundamentals_report)
+        data_completeness = calculate_data_completeness(
+            has_market_data=has_market,
+            has_sentiment_data=has_sentiment,
+            has_news_data=has_news,
+            has_fundamentals_data=has_fundamentals,
+        )
+        confidence = assess_confidence(
+            data_completeness,
+            event_risk_active=event_risk_info["has_risk"],
+        )
+        readiness = generate_readiness_score(data_completeness, confidence)
+        final_response += format_readiness_score(readiness)
 
         # ── 推送辩论裁决（用 cleaned 覆盖流式 raw content）──
         if tracker:
