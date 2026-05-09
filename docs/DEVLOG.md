@@ -21,12 +21,15 @@
 - **Commits**：
   - `14e8e3d` — Phase 1 (C-001~C-004)
   - `ed73926` — Phase 2+3 (C-005~C-008)
+  - `13dc562` — C-001 集成到 risk_manager.py
+  - `4231144` — C-005 集成到 risk_manager.py
+  - `2959a16` — C-007 集成到 risk_manager.py
+  - `e314d8d` — C-006 + C-008 集成到 risk_manager.py
 - **测试结果**：所有模块 import 成功
-- **风险点**：C-001/C-003 已嵌入 Agent 流程，C-005/C-006/C-007/C-008 需要在 Agent 输出中集成调用
+- **风险点**：C-006 的财务数据目前传空值（需要从 fundamentals_report 中提取）
 - **下一步**：
-  - [ ] 在 risk_manager.py 中集成 C-001 校验
-  - [ ] 在 trader 中集成 C-005/C-006/C-007/C-008 的调用
   - [ ] 端到端测试：运行一次完整分析验证防线生效
+  - [ ] C-006 需要从 fundamentals_report 中提取实际财务数据
 
 ---
 
