@@ -14,6 +14,7 @@ from tradingagents.agents.utils.debate_utils import (
     format_claims_for_prompt,
     safe_int,
 )
+from tradingagents.agents.utils.delta_check import check_delta, save_conclusion, format_delta_warning
 
 
 def create_risk_manager(llm, memory):
@@ -89,6 +90,14 @@ def create_risk_manager(llm, memory):
             if any(kw in final_response for kw in reduce_keywords):
                 final_response += "\n\n⚠️ [C-001] 未持仓状态，已将减仓/清仓建议自动转换为观望（WAIT）。"
                 _logger.warning("[C-001] position_validation_gate: 未持仓但输出了减仓/清仓建议，已自动转换")
+
+        # [C-005] delta_check — 检测结论是否翻转
+        stock_code = state.get("ticker", company_name)
+        delta_info = check_delta(stock_code, final_response, ["risk_manager"])
+        if delta_info is not None:
+            final_response += format_delta_warning(delta_info)
+            _logger.warning("[C-005] delta_check: %s 结论翻转, possible_noise=%s", stock_code, delta_info["possible_noise"])
+        save_conclusion(stock_code, final_response, "medium", ["risk_manager"])
 
         # ── 推送辩论裁决（用 cleaned 覆盖流式 raw content）──
         if tracker:
