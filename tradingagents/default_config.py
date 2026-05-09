@@ -41,4 +41,11 @@ DEFAULT_CONFIG = {
         "realtime_data": "cn_akshare",
     },
     "tool_vendors": {},
+
+    # [C-002] account_capability
+    "account_capability": {
+        "can_buy_kcb": os.getenv("TA_CAN_BUY_KCB", "false").lower() == "true",
+        "can_buy_chinext": os.getenv("TA_CAN_BUY_CHINEXT", "true").lower() == "true",
+        "can_short": False,
+    },
 }

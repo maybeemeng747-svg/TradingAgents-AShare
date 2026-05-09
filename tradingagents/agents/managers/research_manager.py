@@ -9,12 +9,18 @@ from tradingagents.agents.utils.debate_utils import (
     format_claim_subset_for_prompt,
     format_claims_for_prompt,
 )
+from tradingagents.agents.utils.trade_actions import validate_action, TradeAction
 
 _logger = logging.getLogger(__name__)
 
 
 def create_research_manager(llm, memory):
     async def research_manager_node(state) -> dict:
+        # [C-001] position_validation_gate
+        user_context = state.get('user_context', {})
+        current_position = user_context.get('current_position', 0)
+        has_position = current_position is not None and current_position > 0
+
         history = state["investment_debate_state"].get("history", "")
         market_research_report = state["market_report"]
         sentiment_report = state["sentiment_report"]
@@ -124,6 +130,14 @@ def create_research_manager(llm, memory):
                 debate="research", agent="Research Manager",
                 round_num=-1, content=full_content, is_verdict=True,
             )
+
+        # [C-001] position_validation_gate — 校验输出动作
+        # 如果未持仓，检查是否包含减仓/清仓/止损/止盈关键词，如有则替换为 WAIT
+        if not has_position:
+            reduce_keywords = ['减仓', '清仓', '止损', '止盈', '卖出', 'SELL', 'EXIT', 'REDUCE']
+            if any(kw in full_content for kw in reduce_keywords):
+                full_content += "\n\n⚠️ [C-001] 未持仓状态，已将减仓/清仓建议自动转换为观望（WAIT）。"
+                _logger.warning("[C-001] position_validation_gate: 未持仓但输出了减仓/清仓建议，已自动转换")
 
         new_investment_debate_state = {
             "judge_decision": full_content,

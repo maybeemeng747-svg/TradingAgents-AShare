@@ -3,6 +3,8 @@ import time
 import json
 from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
+
+# [C-003] short_filter
 from tradingagents.graph.intent_parser import build_horizon_context
 from tradingagents.agents.utils.agent_states import current_tracker_var
 from tradingagents.agents.utils.context_utils import build_prompt_context_block
@@ -15,6 +17,10 @@ from tradingagents.agents.utils.debate_utils import (
 
 def create_bear_researcher(llm, memory):
     async def bear_node(state) -> dict:
+        # [C-003] short_filter — 检查是否允许做空
+        config = get_config()
+        can_short = config.get('account_capability', {}).get('can_short', False)
+
         investment_debate_state = state["investment_debate_state"]
         history = investment_debate_state.get("history", "")
         current_response = investment_debate_state.get("current_response", "")
@@ -58,6 +64,15 @@ def create_bear_researcher(llm, memory):
             round_summary=round_summary or "暂无轮次摘要，请先攻击最核心的多头 claim。",
             round_goal=round_goal,
         )
+
+        # [C-003] short_filter — 如果不允许做空，修改 prompt 移除做空策略
+        if not can_short:
+            prompt += (
+                "\n\n⚠️ 重要约束：当前账户不允许做空。\n"
+                "请不要输出任何做空、试空、平空、融券卖出等策略。\n"
+                "如果分析结论是看空，请改为输出：不买/回避/等待重新评估。\n"
+                "不要使用 SHORT、SELL、EXIT 等做空方向的动作。"
+            )
 
         # ── 实现 Token 级流式输出 ──────────────────
         tracker = current_tracker_var.get()
