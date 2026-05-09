@@ -204,6 +204,38 @@ async def _run_manual_trigger(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize resources on startup and cleanup on shutdown."""
+    # Raise the AnyIO thread limiter ceiling so frequent sync endpoints
+    # (tracking-board polling, /v1/jobs/{id} polling, akshare-backed
+    # market endpoints) cannot starve each other when the event loop is
+    # also running long-lived `_run_job` tasks.
+    try:
+        from anyio import to_thread as _anyio_to_thread
+
+        limiter = _anyio_to_thread.current_default_thread_limiter()
+        desired = int(os.getenv("ANYIO_THREAD_LIMIT", "120"))
+        if limiter.total_tokens < desired:
+            limiter.total_tokens = desired
+            _log(f"AnyIO thread limiter raised to {desired}.")
+    except Exception as exc:
+        _log(f"Could not raise AnyIO thread limiter: {exc}")
+
+    # Default asyncio executor is used by `asyncio.to_thread`. The CPython
+    # default is `min(32, cpu_count + 4)`, which is too small when many
+    # `_run_job_inner` coroutines fan out concurrent `to_thread` calls for
+    # DB writes, LLM extraction, and akshare data collection.
+    new_default_executor: Optional[ThreadPoolExecutor] = None
+    try:
+        loop = asyncio.get_running_loop()
+        executor_workers = int(os.getenv("ASYNCIO_DEFAULT_EXECUTOR_WORKERS", "64"))
+        new_default_executor = ThreadPoolExecutor(
+            max_workers=executor_workers,
+            thread_name_prefix="ta-asyncio",
+        )
+        loop.set_default_executor(new_default_executor)
+        _log(f"Default asyncio executor set to {executor_workers} workers.")
+    except Exception as exc:
+        _log(f"Could not configure default asyncio executor: {exc}")
+
     init_db()
     _log("Database initialized.")
     store = get_job_store()
@@ -229,6 +261,8 @@ async def lifespan(app: FastAPI):
     yield
     _log("Shutting down: Cleaning up resources...")
     _executor.shutdown(wait=True)
+    if new_default_executor is not None:
+        new_default_executor.shutdown(wait=False)
     _log("Executor shutdown complete.")
 
 
@@ -1917,7 +1951,10 @@ async def _run_job_inner(
                         if db_updates:
                             await asyncio.to_thread(_horizon_partial_update, db_updates)
                 except Exception as e:
-                    _log(f"Error during horizon streaming ({horizon}): {e}")
+                    _log(
+                        f"Error during horizon streaming ({horizon}): {e!r}\n"
+                        f"{traceback.format_exc()}"
+                    )
                     raise
                 finally:
                     current_tracker_var.reset(_tracker_token)
@@ -1936,7 +1973,8 @@ async def _run_job_inner(
             horizon_errors = []
             for i, r in enumerate(results):
                 if isinstance(r, Exception):
-                    _log(f"Horizon '{request.horizons[i]}' failed: {r}")
+                    tb = "".join(traceback.format_exception(type(r), r, r.__traceback__))
+                    _log(f"Horizon '{request.horizons[i]}' failed: {r!r}\n{tb}")
                     horizon_errors.append(f"{request.horizons[i]}: {r}")
             if horizon_errors:
                 raise RuntimeError(f"Horizon analysis failed: {'; '.join(horizon_errors)}")
@@ -2153,14 +2191,21 @@ async def _run_job_inner(
                         msg = messages[-1]
                         content = _extract_message_text(getattr(msg, "content", ""))
                         agent_name = getattr(msg, "name", None)
+                        msg_type = getattr(msg, "type", "unknown")  # human/system/ai/tool
 
                         if content:
-                            _log(f"[Agent Message] {agent_name}: {content[:200]}...")
+                            if agent_name:
+                                _log(f"[Agent Message] {agent_name}: {content[:200]}...")
+                            elif msg_type in ("human", "system"):
+                                # Graph 入口的初始 prompt，不是 agent 产出，跳过
+                                pass
+                            else:
+                                _log(f"[Agent Message] {msg_type}: {content[:200]}...")
 
                         for tool_call in getattr(msg, "tool_calls", []) or []:
                             tool_name = tool_call.get("name", "unknown") if isinstance(tool_call, dict) else getattr(tool_call, "name", "unknown")
                             tool_args = tool_call.get("args", {}) if isinstance(tool_call, dict) else getattr(tool_call, "args", {})
-                            _log(f"[Tool Call] {agent_name}: {tool_name}")
+                            _log(f"[Tool Call] {agent_name or msg_type}: {tool_name}")
 
                             agent_display = agent_name
                             if not agent_display:
@@ -2596,6 +2641,15 @@ def version_stats(payload: Dict[str, Any] = Body(...), request: Request = None, 
     return {"status": "ok"}
 
 
+_RESOLVABLE_SYMBOL_RE = re.compile(
+    r"^("
+    r"\d{6}\.(SH|SZ|BJ)"          # A 股 / 北交所
+    r"|\d{4,5}\.HK"                # 港股
+    r"|[A-Z][A-Z0-9.\-]{0,10}"     # 美股 / 通用 ticker
+    r")$"
+)
+
+
 @app.get("/v1/market/kline", response_model=KlineResponse)
 def get_kline(
     symbol: str,
@@ -2612,7 +2666,16 @@ def get_kline(
         candles = _fetch_index_kline(symbol, start, end)
     else:
         # Normalize symbol (convert "阳光电源" -> "300274.SZ")
+        original = symbol
         symbol = _normalize_symbol(symbol)
+        if not _RESOLVABLE_SYMBOL_RE.match(symbol):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"unrecognized symbol {original!r} (normalized to {symbol!r}); "
+                    f"expected formats: '300394.SZ' / 'AAPL' / '00700.HK'"
+                ),
+            )
         config = _build_runtime_config({})
         set_config(config)
         raw = route_to_vendor("get_stock_data", symbol, start, end)
@@ -2753,13 +2816,20 @@ async def analyze(
     request: AnalyzeRequest,
     current_user: UserDB = Depends(_require_api_user),
 ) -> AnalyzeResponse:
-    with get_db_ctx() as db:
-        merged_user_context = _compose_analysis_user_context(
-            db,
-            current_user.id,
-            request.symbol,
-            explicit_context=_extract_request_user_context(request),
-        )
+    explicit_context = _extract_request_user_context(request)
+
+    def _load_user_context() -> Dict[str, Any]:
+        with get_db_ctx() as db:
+            return _compose_analysis_user_context(
+                db,
+                current_user.id,
+                request.symbol,
+                explicit_context=explicit_context,
+            )
+
+    # Don't block the event loop on a sync SQLite read while the scheduler
+    # process may be holding write locks.
+    merged_user_context = await asyncio.to_thread(_load_user_context)
     _apply_user_context_to_request(request, merged_user_context)
 
     job_id = uuid4().hex
@@ -3073,14 +3143,19 @@ async def chat_completions(
                     "focus_areas": focus_areas,
                     "specific_questions": specific_questions,
                 }
-                with get_db_ctx() as db:
-                    merged_user_context = _compose_analysis_user_context(
-                        db,
-                        current_user.id,
-                        symbol,
-                        explicit_context=_extract_request_user_context(request),
-                        inferred_context=inferred_user_context,
-                    )
+                explicit_context = _extract_request_user_context(request)
+
+                def _load_user_context() -> Dict[str, Any]:
+                    with get_db_ctx() as db:
+                        return _compose_analysis_user_context(
+                            db,
+                            current_user.id,
+                            symbol,
+                            explicit_context=explicit_context,
+                            inferred_context=inferred_user_context,
+                        )
+
+                merged_user_context = await asyncio.to_thread(_load_user_context)
                 pre_intent["user_context"] = merged_user_context
                 analyze_req = AnalyzeRequest(
                     symbol=symbol,
@@ -3148,14 +3223,19 @@ async def chat_completions(
         "focus_areas": focus_areas,
         "specific_questions": specific_questions,
     }
-    with get_db_ctx() as db:
-        merged_user_context = _compose_analysis_user_context(
-            db,
-            current_user.id,
-            symbol,
-            explicit_context=_extract_request_user_context(request),
-            inferred_context=inferred_user_context,
-        )
+    explicit_context = _extract_request_user_context(request)
+
+    def _load_user_context_nonstream() -> Dict[str, Any]:
+        with get_db_ctx() as db:
+            return _compose_analysis_user_context(
+                db,
+                current_user.id,
+                symbol,
+                explicit_context=explicit_context,
+                inferred_context=inferred_user_context,
+            )
+
+    merged_user_context = await asyncio.to_thread(_load_user_context_nonstream)
     pre_intent["user_context"] = merged_user_context
     analyze_req = AnalyzeRequest(
         symbol=symbol,
