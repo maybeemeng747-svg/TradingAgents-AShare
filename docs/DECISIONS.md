@@ -27,8 +27,8 @@
 
 ## ADR-004: OpenClaw 作为项目协作调度层
 - **日期**：2026-05-09
-- **背景**：需要 OpenClaw、Codex CLI、Codex App 三者协作处理同一项目
-- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；Codex CLI 负责代码执行；Codex App 负责审查
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
 - **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
 - **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
 

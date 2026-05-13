@@ -18,11 +18,11 @@ A股智能投研多智能体系统，基于 LangGraph + LangChain 构建，模�
   │
   ├── OpenClaw（主控调度）── 读取上下文 → 判断任务 → 派发执行
   │     ├── 简单任务：直接 exec 执行（git/python/npm）
-  │     └── 复杂任务：sessions_spawn 子 agent 或生成 Codex CLI 命令
+  │     └── 复杂任务：sessions_spawn 子 agent 或调用 OpenCode 执行
   │
-  ├── Codex CLI（代码执行器）── 读取同一套上下文 → 改代码 → 跑测试 → 输出 diff
+  ├── OpenCode（代码执行器）── 读取同一套上下文 → 改代码 → 跑测试 → 输出 diff
   │
-  └── Codex App（审查界面）── 查看 diff → 确认修改 → 做 review
+  └── OpenCode TUI/Web（审查界面）── 查看 diff → 确认修改 → 做 review
 ```
 
 **核心原则**：三者读取同一套项目上下文，不各自保存独立记忆。
@@ -78,8 +78,8 @@ TradingAgents-AShare/
 
 ### OpenClaw 调度方式
 - **简单任务**（改配置、修 bug、小重构）：OpenClaw 直接 `exec` 执行
-- **复杂任务**（新功能、跨模块修改）：生成 Codex CLI 调用命令，由用户确认后执行
-- **审查任务**：OpenClaw 不直接审查代码，提示用户用 Codex App 查看 diff
+- **复杂任务**（新功能、跨模块修改）：调用 OpenCode 执行，由用户确认后执行
+- **审查任务**：OpenClaw 不直接审查代码，提示用户用 OpenCode TUI 查看 diff
 
 ## 安全红线
 
