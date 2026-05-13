@@ -20,6 +20,7 @@ from tradingagents.agents.utils.readiness_score import (
     sanitize_forbidden_strong_actions,
     infer_evidence_statuses,
     extract_execution_signals,
+    validate_stock_name,
     _split_llm_body_and_system_blocks,
     ConfidenceLevel,
 )
@@ -919,3 +920,298 @@ def test_sanitize_replaces_强买():
 
 def test_strong_buy_keywords_contains_强买():
     assert "强买" in _STRONG_BUY_KEYWORDS
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# E-002: name_mismatch gate + level downgrade
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_name_mismatch_blocks_strong_action_gate():
+    gate = get_strong_action_gate(
+        source_coverage=80, evidence_coverage=80,
+        name_mismatch=True,
+    )
+    assert gate["passed"] is False
+    assert any("name_mismatch" in f for f in gate["failures"])
+
+
+def test_name_mismatch_caps_risk_level_at_3():
+    result = calculate_risk_level(
+        source_coverage=85, evidence_coverage=85,
+        broke_support=True,
+        main_capital_outflow_days=2,
+        volume_breakdown=True,
+        position_status="has_position",
+        name_mismatch=True,
+    )
+    assert result["level"] <= 3
+
+
+def test_name_mismatch_caps_buy_level_at_3():
+    result = calculate_buy_level(
+        source_coverage=85, evidence_coverage=85,
+        trend_confirmed=True,
+        main_capital_inflow_days=2,
+        volume_healthy_expansion=True,
+        position_status="no_position",
+        name_mismatch=True,
+    )
+    assert result["level"] <= 3
+
+
+def test_no_name_mismatch_allows_level_4():
+    result = calculate_risk_level(
+        source_coverage=85, evidence_coverage=85,
+        broke_support=True,
+        main_capital_outflow_days=2,
+        volume_breakdown=True,
+        position_status="has_position",
+        name_mismatch=False,
+    )
+    assert result["level"] == 4
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# E-003: Expanded stop-loss keywords + execution zone conflict
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_stop_loss_red_line_detected():
+    signals = extract_execution_signals({}, "止损红线 25.50", {})
+    assert signals["has_stop_loss"] is True
+
+
+def test_stop_loss_position_detected():
+    signals = extract_execution_signals({}, "止损位：24.80", {})
+    assert signals["has_stop_loss"] is True
+
+
+def test_stop_loss_price_detected():
+    signals = extract_execution_signals({}, "止损价 26.5", {})
+    assert signals["has_stop_loss"] is True
+
+
+def test_stop_loss_line_detected():
+    signals = extract_execution_signals({}, "清仓线 20.00", {})
+    assert signals["has_stop_loss"] is True
+
+
+def test_entry_zone_detected():
+    signals = extract_execution_signals({}, "入场区间 28-30", {})
+    assert "entry_zone" in str(signals) or signals["execution_zone_conflict"] is False
+
+
+def test_reduce_zone_detected():
+    signals = extract_execution_signals({}, "减仓区间 32-35", {})
+    assert signals["execution_zone_conflict"] is False
+
+
+def test_entry_and_reduce_conflict():
+    signals = extract_execution_signals(
+        {},
+        "入场区间 28-35，减仓区间 30-40",
+        {},
+    )
+    assert signals["execution_zone_conflict"] is True
+
+
+def test_stop_loss_higher_than_entry_conflict():
+    signals = extract_execution_signals(
+        {},
+        "止损价 30.00，入场价 25.00",
+        {},
+    )
+    assert signals["execution_zone_conflict"] is True
+
+
+def test_entry_reduce_no_conflict_separate_contexts():
+    signals = extract_execution_signals(
+        {},
+        "入场区间 28-30。建议已持仓者在减仓区间 35-38 分批止盈",
+        {},
+    )
+    assert signals["execution_zone_conflict"] is False
+
+
+def test_gate_blocks_on_execution_zone_conflict():
+    gate = get_strong_action_gate(
+        source_coverage=80, evidence_coverage=80,
+        no_execution_zone_conflict=False,
+    )
+    assert gate["passed"] is False
+    assert any("execution_zone_conflict" in f for f in gate["failures"])
+
+
+def test_stop_loss_lower_than_entry_no_conflict():
+    signals = extract_execution_signals(
+        {},
+        "止损价 25.00，入场价 28.00",
+        {},
+    )
+    assert signals["execution_zone_conflict"] is False
+
+
+def test_entry_only_no_reduce_no_conflict():
+    signals = extract_execution_signals(
+        {},
+        "入场区间 28-30",
+        {},
+    )
+    assert signals["execution_zone_conflict"] is False
+
+
+def test_entry_reduce_overlap_conflict():
+    signals = extract_execution_signals(
+        {},
+        "入场区间 28-35，减仓区间 30-40",
+        {},
+    )
+    assert signals["execution_zone_conflict"] is True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# E-002 extended: validate_stock_name with strong context extraction
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_validate_stock_name_mismatch_wrong_name():
+    from unittest.mock import patch
+    with patch("tradingagents.agents.utils.readiness_score._resolve_name_from_ticker", return_value="顺络电子"):
+        result = validate_stock_name("002138.SZ", "标的：环旭电子\n分析报告")
+    assert result["name_mismatch"] is True
+    assert "环旭电子" in result["found_names"]
+
+
+def test_validate_stock_name_match_correct():
+    from unittest.mock import patch
+    with patch("tradingagents.agents.utils.readiness_score._resolve_name_from_ticker", return_value="顺络电子"):
+        result = validate_stock_name("002138.SZ", "标的：顺络电子\n分析报告")
+    assert result["name_mismatch"] is False
+
+
+def test_validate_stock_name_no_name_in_report():
+    from unittest.mock import patch
+    with patch("tradingagents.agents.utils.readiness_score._resolve_name_from_ticker", return_value="顺络电子"):
+        result = validate_stock_name("002138.SZ", "这是一份分析报告，不包含股票名称")
+    assert result["name_mismatch"] is False
+    assert result["found_names"] == []
+
+
+def test_validate_stock_name_industry_word_not_extracted():
+    from unittest.mock import patch
+    with patch("tradingagents.agents.utils.readiness_score._resolve_name_from_ticker", return_value="顺络电子"):
+        result = validate_stock_name("002138.SZ", "电子行业整体向好，科技板块表现突出")
+    assert result["name_mismatch"] is False
+    assert result["found_names"] == []
+
+
+def test_validate_stock_name_md_title_extracts_name():
+    from unittest.mock import patch
+    with patch("tradingagents.agents.utils.readiness_score._resolve_name_from_ticker", return_value="顺络电子"):
+        result = validate_stock_name("002138.SZ", "# 002138.SZ 环旭电子 分析")
+    assert result["name_mismatch"] is True
+    assert "环旭电子" in result["found_names"]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# E-004: Raw evidence priority over text regex
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_raw_evidence_stock_data_overrides_text():
+    statuses = infer_evidence_statuses(
+        {"market_report": "no data here"},
+        raw_evidence={"stock_data": "date,open,high,low,close,volume\n2026-05-01,10,11,9,10.5,1000000" + "x" * 60},
+    )
+    assert statuses["ohlcv_5d"] == EvidenceStatus.HAS_DATA
+    assert statuses["volume"] == EvidenceStatus.HAS_DATA
+
+
+def test_raw_evidence_stock_data_failed():
+    statuses = infer_evidence_statuses(
+        {"market_report": "report"},
+        raw_evidence={"stock_data": "stock_data 调用失败"},
+    )
+    assert statuses["ohlcv_5d"] == EvidenceStatus.QUERY_FAILED
+
+
+def test_raw_evidence_fund_flow_individual():
+    statuses = infer_evidence_statuses(
+        {"smart_money_report": "no regex match"},
+        raw_evidence={"fund_flow_individual": "日期,主力净流入\n2026-05-01,1000万"},
+    )
+    assert statuses["individual_fund_flow"] == EvidenceStatus.HAS_DATA
+
+
+def test_raw_evidence_fund_flow_failed():
+    statuses = infer_evidence_statuses(
+        {"smart_money_report": "report"},
+        raw_evidence={"fund_flow_individual": "fund_flow_individual 调用失败：timeout"},
+    )
+    assert statuses["individual_fund_flow"] == EvidenceStatus.QUERY_FAILED
+
+
+def test_raw_evidence_lhb_normal():
+    statuses = infer_evidence_statuses(
+        {"market_report": "report"},
+        raw_evidence={"lhb": ""},
+    )
+    assert statuses["lhb_status"] == EvidenceStatus.NORMAL_NO_DATA
+
+
+def test_raw_evidence_lhb_failed():
+    statuses = infer_evidence_statuses(
+        {"market_report": "report"},
+        raw_evidence={"lhb": "lhb 调用失败：API Error"},
+    )
+    assert statuses["lhb_status"] == EvidenceStatus.QUERY_FAILED
+
+
+def test_raw_evidence_lhb_has_data():
+    statuses = infer_evidence_statuses(
+        {"market_report": "report"},
+        raw_evidence={"lhb": "龙虎榜：买入营业部..."},
+    )
+    assert statuses["lhb_status"] == EvidenceStatus.HAS_DATA
+
+
+def test_raw_evidence_news_has_data():
+    statuses = infer_evidence_statuses(
+        {"news_report": "report"},
+        raw_evidence={"news": "x" * 100},
+    )
+    assert statuses["announcements"] == EvidenceStatus.HAS_DATA
+
+
+def test_raw_evidence_news_failed():
+    statuses = infer_evidence_statuses(
+        {"news_report": "report"},
+        raw_evidence={"news": "news 调用失败"},
+    )
+    assert statuses["announcements"] == EvidenceStatus.QUERY_FAILED
+
+
+def test_raw_evidence_turnover_rate_not_in_pool():
+    statuses = infer_evidence_statuses(
+        {"volume_price_report": "report"},
+        raw_evidence={"stock_data": "x" * 100},
+    )
+    assert statuses["turnover_rate"] == EvidenceStatus.FIELD_MISSING
+
+
+def test_raw_evidence_margin_trading_not_in_pool():
+    statuses = infer_evidence_statuses(
+        {},
+        raw_evidence={"stock_data": "x" * 100},
+    )
+    assert statuses["margin_trading"] == EvidenceStatus.NOT_QUERIED
+
+
+def test_raw_evidence_none_falls_back_to_text():
+    statuses_no_raw = infer_evidence_statuses(
+        {"market_report": "日期       | 开盘价 | 最高价 | 最低价 | 收盘价\n2026-05-09 | 25.30  | 26.10  | 25.00  | 25.80"},
+        raw_evidence=None,
+    )
+    statuses_raw_empty = infer_evidence_statuses(
+        {"market_report": "日期       | 开盘价 | 最高价 | 最低价 | 收盘价\n2026-05-09 | 25.30  | 26.10  | 25.00  | 25.80"},
+        raw_evidence={},
+    )
+    assert statuses_no_raw["ohlcv_5d"] == EvidenceStatus.HAS_DATA
+    assert statuses_raw_empty["ohlcv_5d"] == EvidenceStatus.HAS_DATA

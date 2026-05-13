@@ -4,6 +4,40 @@
 
 ---
 
+## 2026-05-13 | E-001~E-004 基础设施修复
+
+- **执行者**：OpenCode
+- **任务**：TASK_BATCH_E.md — E 系列基础设施修复
+- **修改文件**：
+  - `api/main.py` — [E-001] 启动时读取 git commit hash 并缓存为 `_GIT_COMMIT_SHORT`，记录 `_BACKEND_START_TIME`
+  - `tradingagents/agents/utils/readiness_score.py` — [E-001] `format_readiness_score` 追加系统版本区块；[E-002] 新增 `validate_stock_name` 名称校验函数 + `get_strong_action_gate` 增加 `name_mismatch` 和 `no_execution_zone_conflict` 参数 + `calculate_risk_level`/`calculate_buy_level` Level 4 降级；[E-003] 扩展止损关键词(`止损红线/止损位/止损价/清仓线/止损线`) + 入场/减仓区间冲突检测 + `has_stop_loss`/`execution_zone_conflict` 信号；[E-004] `infer_evidence_statuses` 支持从 `raw_evidence` 结构化数据直接读取，fallback 到文本正则
+  - `tradingagents/agents/managers/risk_manager.py` — [E-002] 集成 `validate_stock_name`；[E-003] 传递 `execution_zone_conflict` 到 gate；[E-004] 传递 `raw_evidence` 到 `infer_evidence_statuses`
+  - `tradingagents/graph/data_collector.py` — [E-004] 新增 `build_raw_evidence()` 方法从缓存池构建证据摘要
+  - `tradingagents/graph/trading_graph.py` — [E-004] `propagate` 和 `propagate_async` 中将 `raw_evidence` 存入 state metadata
+  - `tests/test_readiness_score.py` — 新增 26 个测试覆盖 E-001~E-004
+- **验证**：`pytest tests/test_readiness_score.py` 100 passed；`pytest -q` 294 passed, 4 pre-existing SQLite failures
+
+---
+
+## 2026-05-13 | 自选股拖拽排序功能
+
+- **执行者**：OpenCode
+- **任务**：TASK_DRAG_SORT.md — 自选股列表拖拽排序
+- **修改文件**：
+  - `api/services/watchlist_service.py` — 新增 `reorder_watchlist()` 函数，批量更新 sort_order，含 id 归属校验和唯一性校验
+  - `api/main.py` — 新增 `PUT /v1/watchlist/reorder` 路由
+  - `frontend/src/services/api.ts` — 新增 `reorderWatchlist()` API 方法
+  - `frontend/src/pages/Portfolio.tsx` — 用 @dnd-kit 实现拖拽排序：SortableWatchlistItem 组件、DndContext 包裹、乐观更新+失败回滚
+  - `frontend/package.json` — 新增 @dnd-kit/core、@dnd-kit/sortable、@dnd-kit/utilities 依赖
+- **要点**：
+  - 拖拽手柄为左侧 ⠿ (GripVertical) 图标，避免误触
+  - PointerSensor 需移动 5px 才激活；TouchSensor 长按 200ms 触发
+  - 拖拽中半透明+阴影效果
+  - 乐观更新本地 state，API 失败时回滚并提示
+- **验证**：TypeScript 编译通过，`git diff --check` 无报错
+
+---
+
 ## 2026-05-13 | D-001~D-004 修复：真降级、真证据、真信号、持仓未知语义
 
 - **执行者**：OpenCode

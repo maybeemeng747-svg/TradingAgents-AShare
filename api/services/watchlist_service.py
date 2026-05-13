@@ -29,6 +29,7 @@ def list_watchlist(db: Session, user_id: str) -> List[dict]:
             "id": item.id,
             "symbol": item.symbol,
             "sort_order": item.sort_order,
+            "notes": item.notes,
             "created_at": item.created_at.isoformat() if item.created_at else None,
             "has_scheduled": item.symbol in scheduled_symbols,
         }
@@ -58,6 +59,7 @@ def add_watchlist_item(db: Session, user_id: str, symbol: str) -> dict:
         "id": item.id,
         "symbol": item.symbol,
         "sort_order": item.sort_order,
+        "notes": item.notes,
         "created_at": item.created_at.isoformat() if item.created_at else None,
     }
 
@@ -85,6 +87,27 @@ def add_watchlist_items(db: Session, user_id: str, symbols: List[str]) -> List[d
     return results
 
 
+def update_watchlist_notes(db: Session, user_id: str, item_id: str, notes: str) -> dict | None:
+    """Update notes for a watchlist item. Returns updated item or None if not found."""
+    item = (
+        db.query(WatchlistItemDB)
+        .filter(WatchlistItemDB.id == item_id, WatchlistItemDB.user_id == user_id)
+        .first()
+    )
+    if not item:
+        return None
+    item.notes = notes
+    db.commit()
+    db.refresh(item)
+    return {
+        "id": item.id,
+        "symbol": item.symbol,
+        "sort_order": item.sort_order,
+        "notes": item.notes,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+    }
+
+
 def delete_watchlist_item(db: Session, user_id: str, item_id: str) -> bool:
     """Delete a watchlist item. Returns True if found and deleted."""
     item = (
@@ -97,3 +120,35 @@ def delete_watchlist_item(db: Session, user_id: str, item_id: str) -> bool:
     db.delete(item)
     db.commit()
     return True
+
+
+def reorder_watchlist(db: Session, user_id: str, items: List[dict]) -> None:
+    """Batch-update sort_order for watchlist items.
+
+    ``items`` is a list of ``{"id": str, "sort_order": int}``.
+    Validates that all ids belong to the user and sort_orders are unique,
+    then persists in a single transaction.
+    """
+    if not items:
+        return
+
+    id_list = [entry["id"] for entry in items]
+    order_list = [entry["sort_order"] for entry in items]
+
+    if len(set(id_list)) != len(id_list):
+        raise ValueError("存在重复的 id")
+    if len(set(order_list)) != len(order_list):
+        raise ValueError("存在重复的 sort_order")
+
+    rows = (
+        db.query(WatchlistItemDB)
+        .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.id.in_(id_list))
+        .all()
+    )
+    if len(rows) != len(id_list):
+        raise ValueError("包含不属于当前用户的自选股")
+
+    row_map = {row.id: row for row in rows}
+    for entry in items:
+        row_map[entry["id"]].sort_order = entry["sort_order"]
+    db.commit()

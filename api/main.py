@@ -268,6 +268,27 @@ async def lifespan(app: FastAPI):
 
 _is_prod = os.getenv("ENV", "").lower() == "prod"
 
+_BACKEND_START_TIME: str = ""
+_GIT_COMMIT_SHORT: str = "unknown"
+
+
+def _init_version_info() -> None:
+    """Read git commit hash once at startup; record process start time."""
+    global _BACKEND_START_TIME, _GIT_COMMIT_SHORT
+    _BACKEND_START_TIME = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        import subprocess as _sp
+        _GIT_COMMIT_SHORT = _sp.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=_sp.DEVNULL,
+            cwd=str(Path(__file__).resolve().parent),
+        ).decode().strip()
+    except Exception:
+        _GIT_COMMIT_SHORT = "unknown"
+
+
+_init_version_info()
+
 
 def _get_version() -> str:
     """Get app version: APP_VERSION env > package metadata > 'dev'."""
@@ -4366,6 +4387,40 @@ def delete_from_watchlist(
 ):
     if not watchlist_service.delete_watchlist_item(db, current_user.id, item_id):
         raise HTTPException(404, "未找到该自选股")
+
+
+class WatchlistNotesUpdate(BaseModel):
+    notes: str
+
+
+class WatchlistReorderRequest(BaseModel):
+    items: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+@app.put("/v1/watchlist/reorder")
+def reorder_watchlist(
+    body: WatchlistReorderRequest,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        watchlist_service.reorder_watchlist(db, current_user.id, body.items)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"message": "排序已更新"}
+
+
+@app.patch("/v1/watchlist/{item_id}")
+def update_watchlist_notes(
+    item_id: str,
+    body: WatchlistNotesUpdate,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    result = watchlist_service.update_watchlist_notes(db, current_user.id, item_id, body.notes)
+    if not result:
+        raise HTTPException(404, "未找到该自选股")
+    return result
 
 
 # ── Scheduled Analysis ────────────────────────────────────────────────────────

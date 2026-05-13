@@ -3,7 +3,9 @@
 from typing import Iterable, List, Optional
 from uuid import uuid4
 
+from sqlalchemy import orm
 from sqlalchemy.orm import Session
+import sqlalchemy
 
 from api.database import ScheduledAnalysisDB
 
@@ -347,11 +349,27 @@ def batch_delete_scheduled(db: Session, user_id: str, item_ids: Iterable[str]) -
 
 
 def get_pending_tasks(db: Session, today: str, current_hhmm: str) -> List[ScheduledAnalysisDB]:
-    """Get all active tasks that haven't run today and whose trigger time has passed."""
+    """Get all active tasks that haven't run today and whose trigger time has passed.
+
+    Only returns tasks for real (non-test) users to avoid duplicate runs
+    from dashboard test accounts.
+    """
+    from api.database import UserDB
+
+    # Exclude dashboard test accounts (@test.com) to prevent
+    # 452 test users from triggering duplicate scheduled runs.
+    # Users NOT in the users table (e.g. test fixtures) are kept.
+    test_user_ids = (
+        db.query(UserDB.id)
+        .filter(UserDB.email.like("%@test.com"))
+        .subquery()
+    )
+
     all_active = (
         db.query(ScheduledAnalysisDB)
         .filter(
             ScheduledAnalysisDB.is_active == True,
+            ~ScheduledAnalysisDB.user_id.in_(sqlalchemy.select(test_user_ids)),
             (ScheduledAnalysisDB.last_run_date != today) | (ScheduledAnalysisDB.last_run_date == None),
         )
         .all()

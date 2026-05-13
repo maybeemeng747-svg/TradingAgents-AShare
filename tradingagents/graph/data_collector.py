@@ -273,7 +273,7 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
         "global_news": (get_global_news, {"curr_date": trade_date, "look_back_days": lookback, "limit": 30}),
         "fund_flow_board": (get_board_fund_flow, {}),
         "fund_flow_individual": (get_individual_fund_flow, {"symbol": ticker}),
-        "lhb": (get_lhb_detail, {"symbol": ticker, "date": trade_date}),
+        "lhb": (get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": False}),
         "insider_transactions": (get_insider_transactions, {"ticker": ticker}),
         "zt_pool": (get_zt_pool, {"date": trade_date}),
         "hot_stocks": (get_hot_stocks_xq, {}),
@@ -407,8 +407,22 @@ class DataCollector:
             if count <= 0:
                 self._cache.pop(key, None)
                 self._refcounts.pop(key, None)
-                # 不删除 _locks[key]：其他线程可能仍持有该锁的引用，
-                # 删除会导致新 collect() 创建新锁，破坏互斥。
-                # 锁对象很轻量，留着不影响内存。
             else:
                 self._refcounts[key] = count
+
+    def build_raw_evidence(self, ticker: str, trade_date: str) -> Dict[str, Any]:
+        """Build a raw-evidence summary from the cached pool.
+
+        Returns a dict with keys matching what infer_evidence_statuses expects:
+        stock_data, fund_flow_individual, lhb, news.
+        Missing keys indicate data was not collected.
+        """
+        pool = self.get(ticker, trade_date)
+        if not pool:
+            return {}
+        return {
+            "stock_data": pool.get("stock_data"),
+            "fund_flow_individual": pool.get("fund_flow_individual"),
+            "lhb": pool.get("lhb"),
+            "news": pool.get("news"),
+        }

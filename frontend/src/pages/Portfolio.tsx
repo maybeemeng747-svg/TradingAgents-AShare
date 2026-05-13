@@ -1,9 +1,26 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
+    DndContext,
+    closestCenter,
+    KeyboardSensor,
+    PointerSensor,
+    TouchSensor,
+    useSensor,
+    useSensors,
+    type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+    SortableContext,
+    sortableKeyboardCoordinates,
+    useSortable,
+    verticalListSortingStrategy,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import {
     Briefcase, Plus, Trash2, TrendingUp, Activity, Search,
     Clock, AlertTriangle, CheckCircle2, XCircle, Loader2, Timer,
-    Database, ImagePlus,
+    Database, ImagePlus, GripVertical,
 } from 'lucide-react'
 import { api } from '@/services/api'
 import type { WatchlistItem, ScheduledAnalysis, StockSearchResult, Report } from '@/types'
@@ -62,6 +79,124 @@ function HorizonSwitch({
     )
 }
 
+function SortableWatchlistItem({
+    item,
+    report,
+    editingNotesId,
+    editingNotesText,
+    onNavigate,
+    onRemove,
+    onStartEditNotes,
+    onSaveNotes,
+    onSetEditingNotesText,
+    onSetEditingNotesId,
+    onToggleScheduled,
+}: {
+    item: WatchlistItem
+    report: Report | undefined
+    editingNotesId: string | null
+    editingNotesText: string
+    onNavigate: (path: string) => void
+    onRemove: (id: string) => void
+    onStartEditNotes: (item: WatchlistItem) => void
+    onSaveNotes: (id: string) => void
+    onSetEditingNotesText: (text: string) => void
+    onSetEditingNotesId: (id: string | null) => void
+    onToggleScheduled: (symbol: string, hasScheduled: boolean) => void
+}) {
+    const {
+        attributes,
+        listeners,
+        setNodeRef,
+        transform,
+        transition,
+        isDragging,
+    } = useSortable({ id: item.id })
+
+    const style = {
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.6 : 1,
+        zIndex: isDragging ? 50 : undefined,
+        boxShadow: isDragging ? '0 4px 12px rgba(0,0,0,0.12)' : undefined,
+    }
+
+    return (
+        <div ref={setNodeRef} style={style} className="flex items-center gap-3 py-3">
+            <button
+                type="button"
+                className="cursor-grab touch-none p-0.5 text-slate-300 hover:text-slate-500 dark:text-slate-600 dark:hover:text-slate-400 active:cursor-grabbing"
+                {...attributes}
+                {...listeners}
+            >
+                <GripVertical className="w-4 h-4" />
+            </button>
+            <div className="w-9 h-9 rounded-lg bg-blue-100 dark:bg-blue-500/10 flex items-center justify-center shrink-0">
+                <TrendingUp className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+            </div>
+            <div className="flex-1 min-w-0">
+                <p className="font-medium text-slate-900 dark:text-slate-100 text-sm">{item.name}</p>
+                <p className="text-xs text-slate-400">{item.symbol}</p>
+                {report && (
+                    <p className="text-xs text-slate-400 mt-0.5">
+                        最近：{report.trade_date} · {report.direction || report.decision || '—'}
+                    </p>
+                )}
+                <div className="mt-1">
+                    {editingNotesId === item.id ? (
+                        <input
+                            type="text"
+                            value={editingNotesText}
+                            onChange={e => onSetEditingNotesText(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') onSaveNotes(item.id); if (e.key === 'Escape') onSetEditingNotesId(null) }}
+                            placeholder="备注..."
+                            className="w-48 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded px-2 py-1 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                            autoFocus
+                        />
+                    ) : (
+                        <button
+                            onClick={() => onStartEditNotes(item)}
+                            className="w-48 text-left text-xs truncate px-1 py-0.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                            title={item.notes || '添加备注'}
+                        >
+                            {item.notes ? (
+                                <span className="text-amber-600 dark:text-amber-400">{item.notes}</span>
+                            ) : (
+                                <span className="text-slate-300 dark:text-slate-600">📝 备注</span>
+                            )}
+                        </button>
+                    )}
+                </div>
+            </div>
+            <button
+                onClick={() => onToggleScheduled(item.symbol, item.has_scheduled)}
+                className={`flex items-center gap-1 px-2 py-1 text-xs rounded-lg transition-colors ${
+                    item.has_scheduled
+                        ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100'
+                        : 'bg-slate-100 dark:bg-slate-700 text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-600'
+                }`}
+                title={item.has_scheduled ? '已开启定时分析' : '开启定时分析'}
+            >
+                <Timer className="w-3 h-3" />
+                定时
+            </button>
+            <button
+                onClick={() => onNavigate(`/analysis?symbol=${item.symbol}`)}
+                className="flex items-center gap-1 px-2 py-1 text-xs rounded-lg bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-colors"
+            >
+                <Activity className="w-3 h-3" />
+                分析
+            </button>
+            <button
+                onClick={() => onRemove(item.id)}
+                className="p-1.5 text-slate-400 hover:text-red-500 transition-colors"
+            >
+                <Trash2 className="w-3.5 h-3.5" />
+            </button>
+        </div>
+    )
+}
+
 export default function Portfolio() {
     const [watchlist, setWatchlist] = useState<WatchlistItem[]>([])
     const [scheduled, setScheduled] = useState<ScheduledAnalysis[]>([])
@@ -94,6 +229,8 @@ export default function Portfolio() {
         message: string
         details: string[]
     } | null>(null)
+    const [editingNotesId, setEditingNotesId] = useState<string | null>(null)
+    const [editingNotesText, setEditingNotesText] = useState('')
     const searchTimerRef = useRef<ReturnType<typeof setTimeout>>()
     const dropdownRef = useRef<HTMLDivElement>(null)
     const scheduledAddTimerRef = useRef<ReturnType<typeof setTimeout>>()
@@ -297,6 +434,53 @@ export default function Portfolio() {
         } catch (error) {
             console.error('Failed to remove watchlist item:', error)
             alert(error instanceof Error ? error.message : '移除自选失败')
+        }
+    }
+
+    const sensors = useSensors(
+        useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+        useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+        useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+    )
+
+    const handleWatchlistDragEnd = (event: DragEndEvent) => {
+        const { active, over } = event
+        if (!over || active.id === over.id) return
+
+        const oldIndex = watchlist.findIndex(i => i.id === active.id)
+        const newIndex = watchlist.findIndex(i => i.id === over.id)
+        if (oldIndex === -1 || newIndex === -1) return
+
+        const reordered = [...watchlist]
+        const [moved] = reordered.splice(oldIndex, 1)
+        reordered.splice(newIndex, 0, moved)
+
+        setWatchlist(reordered)
+
+        const items = reordered.map((item, idx) => ({ id: item.id, sort_order: idx }))
+        api.reorderWatchlist(items).catch(err => {
+            console.error('Failed to persist reorder:', err)
+            setWatchlistFeedback({
+                tone: 'error',
+                message: '排序保存失败，已恢复原顺序',
+                details: [],
+            })
+            setWatchlist(watchlist)
+        })
+    }
+
+    const startEditNotes = (item: WatchlistItem) => {
+        setEditingNotesId(item.id)
+        setEditingNotesText(item.notes || '')
+    }
+
+    const saveNotes = async (id: string) => {
+        try {
+            await api.updateWatchlistNotes(id, editingNotesText)
+            setEditingNotesId(null)
+            await fetchAll()
+        } catch (error) {
+            console.error('Failed to update notes:', error)
         }
     }
 
@@ -678,55 +862,32 @@ export default function Portfolio() {
                                 <p className="text-sm text-slate-400 dark:text-slate-500 mt-1">搜索代码或名称添加</p>
                             </div>
                         ) : (
-                            <div className="divide-y divide-slate-100 dark:divide-slate-700">
-                                {watchlist.map(item => {
-                                    const report = latestReports[item.symbol]
-                                    return (
-                                        <div key={item.id} className="flex items-center gap-3 py-3">
-                                            <div className="w-9 h-9 rounded-lg bg-blue-100 dark:bg-blue-500/10 flex items-center justify-center shrink-0">
-                                                <TrendingUp className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                                            </div>
-                                            <div className="flex-1 min-w-0">
-                                                <p className="font-medium text-slate-900 dark:text-slate-100 text-sm">{item.name}</p>
-                                                <p className="text-xs text-slate-400">{item.symbol}</p>
-                                                {report && (
-                                                    <p className="text-xs text-slate-400 mt-0.5">
-                                                        最近：{report.trade_date} · {report.direction || report.decision || '—'}
-                                                    </p>
-                                                )}
-                                            </div>
-                                            {/* Schedule toggle */}
-                                            <button
-                                                onClick={() => toggleScheduled(item.symbol, item.has_scheduled)}
-                                                className={`flex items-center gap-1 px-2 py-1 text-xs rounded-lg transition-colors ${
-                                                    item.has_scheduled
-                                                        ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100'
-                                                        : 'bg-slate-100 dark:bg-slate-700 text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-600'
-                                                }`}
-                                                title={item.has_scheduled ? '已开启定时分析' : '开启定时分析'}
-                                            >
-                                                <Timer className="w-3 h-3" />
-                                                {item.has_scheduled ? '定时' : '定时'}
-                                            </button>
-                                            {/* Analyze */}
-                                            <button
-                                                onClick={() => navigate(`/analysis?symbol=${item.symbol}`)}
-                                                className="flex items-center gap-1 px-2 py-1 text-xs rounded-lg bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-colors"
-                                            >
-                                                <Activity className="w-3 h-3" />
-                                                分析
-                                            </button>
-                                            {/* Delete */}
-                                            <button
-                                                onClick={() => removeFromWatchlist(item.id)}
-                                                className="p-1.5 text-slate-400 hover:text-red-500 transition-colors"
-                                            >
-                                                <Trash2 className="w-3.5 h-3.5" />
-                                            </button>
-                                        </div>
-                                    )
-                                })}
-                            </div>
+                            <DndContext
+                                sensors={sensors}
+                                collisionDetection={closestCenter}
+                                onDragEnd={handleWatchlistDragEnd}
+                            >
+                                <SortableContext items={watchlist.map(i => i.id)} strategy={verticalListSortingStrategy}>
+                                    <div className="divide-y divide-slate-100 dark:divide-slate-700">
+                                        {watchlist.map(item => (
+                                            <SortableWatchlistItem
+                                                key={item.id}
+                                                item={item}
+                                                report={latestReports[item.symbol]}
+                                                editingNotesId={editingNotesId}
+                                                editingNotesText={editingNotesText}
+                                                onNavigate={navigate}
+                                                onRemove={removeFromWatchlist}
+                                                onStartEditNotes={startEditNotes}
+                                                onSaveNotes={saveNotes}
+                                                onSetEditingNotesText={setEditingNotesText}
+                                                onSetEditingNotesId={setEditingNotesId}
+                                                onToggleScheduled={toggleScheduled}
+                                            />
+                                        ))}
+                                    </div>
+                                </SortableContext>
+                            </DndContext>
                         )}
                     </div>
                 </div>

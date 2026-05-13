@@ -2,6 +2,7 @@
 """报告质量评分（数据完整度 + 置信度 + 证据门禁 + 等级输出 + 机会评分）"""
 
 import re
+from datetime import datetime
 from enum import Enum
 from typing import Optional
 
@@ -20,6 +21,84 @@ class EvidenceStatus:
     QUERY_FAILED = "query_failed"
     NOT_QUERIED = "not_queried"
     FIELD_MISSING = "field_missing"
+
+
+_STRONG_NAME_CONTEXTS = [
+    re.compile(r'\d{6}\.(?:SZ|SH)\s*[\(（]\s*([\u4e00-\u9fff]{2,8})\s*[\)）]'),
+    re.compile(r'(?:标的|公司|名称|股票名称)\s*[：:]\s*([\u4e00-\u9fff]{2,8})'),
+    re.compile(r'关于\s*([\u4e00-\u9fff]{2,8})\s*的'),
+    re.compile(r'#\s*\d{6}\.(?:SZ|SH)\s+([\u4e00-\u9fff]{2,8})'),
+]
+
+
+def validate_stock_name(ticker: str, report_text: str) -> dict:
+    """Validate that the stock name in the report matches the actual name.
+
+    Only extracts names from strong context patterns (ticker+paren, 标的：,
+    公司：, etc.) to avoid false positives from industry words.
+
+    Returns:
+        {"name_mismatch": bool, "expected_name": str|None,
+         "found_names": list[str], "note": str}
+    """
+    if not ticker:
+        return {"name_mismatch": False, "expected_name": None, "found_names": [], "note": "无 ticker"}
+
+    expected_name = _resolve_name_from_ticker(ticker)
+    if not expected_name:
+        return {"name_mismatch": False, "expected_name": None, "found_names": [], "note": "名称映射不可用"}
+
+    if not report_text:
+        return {"name_mismatch": False, "expected_name": expected_name, "found_names": [], "note": ""}
+
+    found_names = []
+    for pattern in _STRONG_NAME_CONTEXTS:
+        for m in pattern.finditer(report_text):
+            name = m.group(1).strip()
+            if name and len(name) >= 2:
+                found_names.append(name)
+
+    found_names = list(dict.fromkeys(found_names))
+
+    mismatched = [n for n in found_names if n != expected_name]
+
+    if mismatched:
+        return {
+            "name_mismatch": True,
+            "expected_name": expected_name,
+            "found_names": mismatched,
+            "note": f"⚠️ [E-002] 股票名称校验失败：代码 {ticker} 实际名称为「{expected_name}」，报告中出现「{', '.join(mismatched)}」",
+        }
+    return {"name_mismatch": False, "expected_name": expected_name, "found_names": found_names, "note": ""}
+
+
+def _resolve_name_from_ticker(ticker: str) -> Optional[str]:
+    """Resolve a CN ticker like '002138.SZ' to its company name.
+
+    Prefers the pre-warmed cache from api.main; falls back to a direct
+    akshare call (static list, no anti-crawl).
+    """
+    code = ticker.split(".")[0] if "." in ticker else ticker
+    if not code.isdigit() or len(code) != 6:
+        return None
+    try:
+        from api.main import _get_reverse_stock_map_cached_only
+        rev_map = _get_reverse_stock_map_cached_only()
+        for suffix in (".SH", ".SZ"):
+            name = rev_map.get(f"{code}{suffix}")
+            if name:
+                return name
+    except Exception:
+        pass
+    try:
+        import akshare as ak
+        df = ak.stock_info_a_code_name()
+        match = df[df["code"] == code]
+        if not match.empty:
+            return str(match.iloc[0].get("name", "")).strip()
+    except Exception:
+        pass
+    return None
 
 
 _VALID_EVIDENCE = {EvidenceStatus.HAS_DATA, EvidenceStatus.NORMAL_NO_DATA}
@@ -217,6 +296,8 @@ def get_strong_action_gate(
     no_unresolved_analyst_conflict: bool = True,
     position_status: str = "unknown",
     contains_strong_action: bool = False,
+    name_mismatch: bool = False,
+    no_execution_zone_conflict: bool = True,
 ) -> dict:
     """强动作门禁检查。
 
@@ -241,10 +322,14 @@ def get_strong_action_gate(
         failures.append("个股资金流与板块资金流混用")
     if not no_execution_field_conflict:
         failures.append("执行层字段冲突")
+    if not no_execution_zone_conflict:
+        failures.append("入场/减仓区间冲突(execution_zone_conflict)")
     if not no_unresolved_analyst_conflict:
         failures.append("上游分析师结论冲突且未解释")
     if position_status == "unknown" and contains_strong_action:
         failures.append("持仓状态未知，禁止强动作")
+    if name_mismatch:
+        failures.append("股票名称校验失败(name_mismatch)，Buy/Risk Level 4 被降级")
 
     return {"passed": len(failures) == 0, "failures": failures}
 
@@ -257,6 +342,7 @@ def calculate_risk_level(
     volume_breakdown: bool = False,
     has_major_positive_announcement: bool = False,
     position_status: str = "unknown",
+    name_mismatch: bool = False,
 ) -> dict:
     """计算 Risk Level（持仓/卖出侧风控等级 0-4）。
 
@@ -264,6 +350,8 @@ def calculate_risk_level(
         {"level": int, "note": str}
     """
     max_level = 3 if position_status == "unknown" else 4
+    if name_mismatch:
+        max_level = min(max_level, 3)
 
     level_4_ok = (
         source_coverage >= 85
@@ -276,7 +364,9 @@ def calculate_risk_level(
     if level_4_ok:
         return {"level": min(4, max_level), "note": ""}
 
-    note = "Risk Level 4 条件证据不足" if max_level == 4 else "持仓状态未知，Risk Level 上限为 3"
+    note = "Risk Level 4 条件证据不足" if max_level == 4 else "Risk Level 4 被降级"
+    if name_mismatch and max_level <= 3:
+        note = "名称校验失败，Risk Level 上限为 3"
 
     level_3_ok = broke_support and main_capital_outflow_days >= 1
     if level_3_ok:
@@ -299,6 +389,7 @@ def calculate_buy_level(
     no_execution_conflict: bool = True,
     no_unresolved_analyst_conflict: bool = True,
     position_status: str = "unknown",
+    name_mismatch: bool = False,
 ) -> dict:
     """计算 Buy Level（买入/建仓侧等级 0-4）。
 
@@ -306,6 +397,8 @@ def calculate_buy_level(
         {"level": int, "note": str}
     """
     max_level = 2 if position_status == "unknown" else 4
+    if name_mismatch:
+        max_level = min(max_level, 3)
 
     level_4_ok = (
         source_coverage >= 85
@@ -442,7 +535,27 @@ def format_readiness_score(score: dict) -> str:
     )
     if actions['forbidden']:
         result += f"\n\n⚠️ {actions['message']}"
+    result += _format_version_block()
     return result
+
+
+def _format_version_block() -> str:
+    """Append system version block to the report."""
+    try:
+        from api.main import _GIT_COMMIT_SHORT, _BACKEND_START_TIME
+        commit = _GIT_COMMIT_SHORT
+        start_time = _BACKEND_START_TIME
+    except Exception:
+        commit = "unknown"
+        start_time = "unknown"
+    report_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return (
+        f"\n\n### 系统版本\n"
+        f"- Commit: {commit}\n"
+        f"- 评分版本: D-001~D-004 + 三轮审核修复\n"
+        f"- 后端启动时间: {start_time}\n"
+        f"- 报告生成时间: {report_time}"
+    )
 
 
 _SANITIZE_STRONG_SELL = [
@@ -592,12 +705,18 @@ def _text_match_any(text: str, patterns: list) -> bool:
     return False
 
 
-def infer_evidence_statuses(reports: dict) -> dict:
+def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) -> dict:
     """根据报告文本推断各项证据状态。
+
+    When *raw_evidence* dict is provided (from DataCollector pool), structured
+    fields are used directly and text-based regex is skipped for those keys.
+    Falls back to text regex for keys without raw evidence.
 
     Args:
         reports: dict with keys like 'market_report', 'volume_price_report',
                  'smart_money_report', 'news_report' etc.
+        raw_evidence: optional dict from DataCollector pool with keys like
+                      'stock_data', 'fund_flow_individual', 'lhb', etc.
 
     Returns:
         dict with evidence field names mapped to EvidenceStatus values.
@@ -609,21 +728,35 @@ def infer_evidence_statuses(reports: dict) -> dict:
 
     combined = f"{market}\n{volume_price}\n{smart_money}\n{news}"
 
+    # ── Structured evidence from raw data pool (E-004) ──
+    raw = raw_evidence or {}
+
+    # 1. OHLCV 5d — check stock_data CSV
     ohlcv_5d = EvidenceStatus.NOT_QUERIED
-    if market:
+    raw_stock_data = raw.get("stock_data")
+    if raw_stock_data and isinstance(raw_stock_data, str) and len(raw_stock_data) > 50:
+        ohlcv_5d = EvidenceStatus.HAS_DATA
+    elif raw_stock_data is not None:
+        ohlcv_5d = EvidenceStatus.QUERY_FAILED if (isinstance(raw_stock_data, str) and "失败" in raw_stock_data) else EvidenceStatus.NORMAL_NO_DATA
+    elif market:
         if _text_match_any(market, _OHLC_PATTERNS):
             ohlcv_5d = EvidenceStatus.HAS_DATA
         elif market.strip():
             ohlcv_5d = EvidenceStatus.FIELD_MISSING
 
+    # 2. Volume — derived from stock_data
     volume = EvidenceStatus.NOT_QUERIED
-    src = market or volume_price
-    if src:
-        if re.search(_VOLUME_PATTERN, src, re.IGNORECASE):
-            volume = EvidenceStatus.HAS_DATA
-        elif src.strip():
-            volume = EvidenceStatus.FIELD_MISSING
+    if raw_stock_data and isinstance(raw_stock_data, str) and len(raw_stock_data) > 50:
+        volume = EvidenceStatus.HAS_DATA
+    else:
+        src = market or volume_price
+        if src:
+            if re.search(_VOLUME_PATTERN, src, re.IGNORECASE):
+                volume = EvidenceStatus.HAS_DATA
+            elif src.strip():
+                volume = EvidenceStatus.FIELD_MISSING
 
+    # 3. Turnover rate — NOT in raw data pool (needs separate akshare call)
     turnover_rate = EvidenceStatus.NOT_QUERIED
     if volume_price:
         if re.search(_TURNOVER_PATTERN, volume_price, re.IGNORECASE):
@@ -631,6 +764,7 @@ def infer_evidence_statuses(reports: dict) -> dict:
         elif volume_price.strip():
             turnover_rate = EvidenceStatus.FIELD_MISSING
 
+    # 4. Volume ratio — NOT in raw data pool
     volume_ratio = EvidenceStatus.NOT_QUERIED
     if volume_price:
         if re.search(_VOLUME_RATIO_PATTERN, volume_price, re.IGNORECASE):
@@ -638,15 +772,37 @@ def infer_evidence_statuses(reports: dict) -> dict:
         elif volume_price.strip():
             volume_ratio = EvidenceStatus.FIELD_MISSING
 
+    # 5. Individual fund flow — check fund_flow_individual
     individual_fund_flow = EvidenceStatus.NOT_QUERIED
-    if smart_money:
+    raw_fund_flow = raw.get("fund_flow_individual")
+    if raw_fund_flow is not None:
+        if isinstance(raw_fund_flow, str) and len(raw_fund_flow) > 20 and "失败" not in raw_fund_flow:
+            individual_fund_flow = EvidenceStatus.HAS_DATA
+        elif isinstance(raw_fund_flow, str) and "失败" in raw_fund_flow:
+            individual_fund_flow = EvidenceStatus.QUERY_FAILED
+        elif raw_fund_flow:
+            individual_fund_flow = EvidenceStatus.HAS_DATA
+        else:
+            individual_fund_flow = EvidenceStatus.NORMAL_NO_DATA
+    elif smart_money:
         if re.search(_FUND_FLOW_PATTERN, smart_money, re.IGNORECASE | re.DOTALL):
             individual_fund_flow = EvidenceStatus.HAS_DATA
         elif smart_money.strip():
             individual_fund_flow = EvidenceStatus.FIELD_MISSING
 
+    # 6. LHB (龙虎榜) — check lhb field
     lhb_status = EvidenceStatus.NOT_QUERIED
-    if combined:
+    raw_lhb = raw.get("lhb")
+    if raw_lhb is not None:
+        if isinstance(raw_lhb, str) and "失败" in raw_lhb:
+            lhb_status = EvidenceStatus.QUERY_FAILED
+        elif isinstance(raw_lhb, str) and ("无" in raw_lhb or "未上榜" in raw_lhb or len(raw_lhb.strip()) == 0):
+            lhb_status = EvidenceStatus.NORMAL_NO_DATA
+        elif raw_lhb:
+            lhb_status = EvidenceStatus.HAS_DATA
+        else:
+            lhb_status = EvidenceStatus.NORMAL_NO_DATA
+    elif combined:
         if _text_match_any(combined, _LHB_FAILED_PATTERNS):
             lhb_status = EvidenceStatus.QUERY_FAILED
         elif _text_match_any(combined, _LHB_NORMAL_PATTERNS):
@@ -654,10 +810,20 @@ def infer_evidence_statuses(reports: dict) -> dict:
         elif re.search(r'龙虎榜', combined, re.IGNORECASE):
             lhb_status = EvidenceStatus.FIELD_MISSING
 
+    # 7. Margin trading (融资融券) — NOT in raw data pool
     margin_trading = EvidenceStatus.NOT_QUERIED
 
+    # 8. Announcements — check news data
     announcements = EvidenceStatus.NOT_QUERIED
-    if news:
+    raw_news = raw.get("news")
+    if raw_news is not None:
+        if isinstance(raw_news, str) and len(raw_news) > 50:
+            announcements = EvidenceStatus.HAS_DATA
+        elif isinstance(raw_news, str) and "失败" in raw_news:
+            announcements = EvidenceStatus.QUERY_FAILED
+        else:
+            announcements = EvidenceStatus.NORMAL_NO_DATA
+    elif news:
         if re.search(_ANNOUNCEMENT_PATTERN, news, re.IGNORECASE | re.DOTALL):
             announcements = EvidenceStatus.HAS_DATA
         elif news.strip():
@@ -766,6 +932,33 @@ _ENTRY_QUALITY_POOR = [
     r'(?:入场点|买点).*(?:差|不明确|模糊|难以判断)',
 ]
 
+_STOP_LOSS_KEYWORDS = [
+    r'止损红线\s*[:：]?\s*\d+\.?\d*',
+    r'止损位\s*[:：]?\s*\d+\.?\d*',
+    r'止损价\s*[:：]?\s*\d+\.?\d*',
+    r'清仓线\s*[:：]?\s*\d+\.?\d*',
+    r'止损线\s*[:：]?\s*\d+\.?\d*',
+    r'止损\s*[:：]?\s*\d+\.?\d*',
+]
+
+_ENTRY_ZONE_KEYWORDS = [
+    r'入场区间\s*[:：]?\s*[\d.]+\s*[-–—]\s*[\d.]+',
+    r'买入区间\s*[:：]?\s*[\d.]+\s*[-–—]\s*[\d.]+',
+    r'建仓区间\s*[:：]?\s*[\d.]+\s*[-–—]\s*[\d.]+',
+    r'入场价\s*[:：]?\s*\d+\.?\d*',
+    r'买入价位\s*[:：]?\s*\d+\.?\d*',
+    r'建仓价\s*[:：]?\s*\d+\.?\d*',
+]
+
+_REDUCE_ZONE_KEYWORDS = [
+    r'减仓区间\s*[:：]?\s*[\d.]+\s*[-–—]\s*[\d.]+',
+    r'减仓位\s*[:：]?\s*\d+\.?\d*',
+    r'减仓价位\s*[:：]?\s*\d+\.?\d*',
+    r'部分止盈位\s*[:：]?\s*\d+\.?\d*',
+]
+
+_PRICE_NUMBER_RE = re.compile(r'(\d+\.?\d*)')
+
 
 def _match_first_group(text: str, pattern: str) -> int:
     m = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
@@ -785,6 +978,43 @@ def _classify_level(text: str, strong: list, moderate: list, weak: list) -> str:
     if _text_match_any(text, weak):
         return "weak"
     return "none"
+
+
+def _extract_first_price(text: str, patterns: list) -> Optional[float]:
+    """Extract the first numeric price from matching pattern."""
+    for p in patterns:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            nums = _PRICE_NUMBER_RE.findall(m.group(0))
+            if nums:
+                try:
+                    return float(nums[0])
+                except ValueError:
+                    pass
+    return None
+
+
+def _extract_price_range(text: str, patterns: list) -> Optional[tuple]:
+    """Extract (low, high) price range from text using range patterns."""
+    for p in patterns:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            nums = _PRICE_NUMBER_RE.findall(m.group(0))
+            if len(nums) >= 2:
+                try:
+                    lo, hi = float(nums[0]), float(nums[1])
+                    if lo > hi:
+                        lo, hi = hi, lo
+                    return (lo, hi)
+                except ValueError:
+                    pass
+            elif len(nums) == 1:
+                try:
+                    v = float(nums[0])
+                    return (v, v)
+                except ValueError:
+                    pass
+    return None
 
 
 def extract_execution_signals(state: dict, final_response: str, reports: dict) -> dict:
@@ -844,6 +1074,31 @@ def extract_execution_signals(state: dict, final_response: str, reports: dict) -
     else:
         entry_quality = "unknown"
 
+    # [E-003] Stop-loss keyword detection
+    has_stop_loss = _text_match_any(text, _STOP_LOSS_KEYWORDS)
+
+    # [E-003] Entry zone vs reduce zone detection
+    has_entry_zone = _text_match_any(text, _ENTRY_ZONE_KEYWORDS)
+    has_reduce_zone = _text_match_any(text, _REDUCE_ZONE_KEYWORDS)
+
+    execution_zone_conflict = False
+
+    stop_loss_price = _extract_first_price(text, _STOP_LOSS_KEYWORDS)
+    entry_price = _extract_first_price(text, _ENTRY_ZONE_KEYWORDS)
+
+    if stop_loss_price is not None and entry_price is not None:
+        if stop_loss_price > entry_price:
+            execution_zone_conflict = True
+
+    if has_entry_zone and has_reduce_zone:
+        entry_range = _extract_price_range(text, _ENTRY_ZONE_KEYWORDS)
+        reduce_range = _extract_price_range(text, _REDUCE_ZONE_KEYWORDS)
+        if entry_range and reduce_range:
+            entry_lo, entry_hi = entry_range
+            reduce_lo, reduce_hi = reduce_range
+            if max(entry_lo, reduce_lo) < min(entry_hi, reduce_hi):
+                execution_zone_conflict = True
+
     return {
         "broke_support": broke_support,
         "main_capital_outflow_days": main_capital_outflow_days,
@@ -859,4 +1114,6 @@ def extract_execution_signals(state: dict, final_response: str, reports: dict) -
         "catalyst_strength": catalyst_strength,
         "risk_reward_ratio": risk_reward_ratio,
         "entry_quality": entry_quality,
+        "has_stop_loss": has_stop_loss,
+        "execution_zone_conflict": execution_zone_conflict,
     }

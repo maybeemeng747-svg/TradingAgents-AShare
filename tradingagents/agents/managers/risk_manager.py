@@ -37,6 +37,7 @@ from tradingagents.agents.utils.readiness_score import (
     extract_execution_signals,
     _split_llm_body_and_system_blocks,
     ConfidenceLevel,
+    validate_stock_name,
 )
 
 _logger = logging.getLogger(__name__)
@@ -185,7 +186,10 @@ def create_risk_manager(llm, memory):
             "news_report": news_report or "",
         }
 
-        evidence_statuses = infer_evidence_statuses(reports_dict)
+        evidence_statuses = infer_evidence_statuses(
+            reports_dict,
+            raw_evidence=state.get("metadata", {}).get("raw_evidence"),
+        )
 
         evidence_coverage = calculate_evidence_coverage(
             ohlcv_5d=evidence_statuses["ohlcv_5d"],
@@ -232,6 +236,13 @@ def create_risk_manager(llm, memory):
             kw in _llm_body for kw in _STRONG_BUY_KEYWORDS + _STRONG_SELL_KEYWORDS
         )
 
+        # [E-002] name_mismatch check
+        name_check = validate_stock_name(stock_code, _llm_body)
+        is_name_mismatch = name_check["name_mismatch"]
+        if is_name_mismatch:
+            final_response += f"\n\n{name_check['note']}"
+            _logger.warning("[E-002] name_mismatch: %s", name_check["note"])
+
         gate = get_strong_action_gate(
             source_coverage=source_coverage,
             evidence_coverage=evidence_coverage,
@@ -239,6 +250,8 @@ def create_risk_manager(llm, memory):
             contains_strong_action=contains_strong,
             no_execution_field_conflict=signals["no_execution_conflict"],
             no_unresolved_analyst_conflict=signals["no_unresolved_analyst_conflict"],
+            name_mismatch=is_name_mismatch,
+            no_execution_zone_conflict=not signals["execution_zone_conflict"],
         )
 
         risk_result = calculate_risk_level(
@@ -249,6 +262,7 @@ def create_risk_manager(llm, memory):
             volume_breakdown=signals["volume_breakdown"],
             has_major_positive_announcement=signals["has_major_positive_announcement"],
             position_status=position_status,
+            name_mismatch=is_name_mismatch,
         )
         buy_result = calculate_buy_level(
             source_coverage=source_coverage,
@@ -260,6 +274,7 @@ def create_risk_manager(llm, memory):
             no_execution_conflict=signals["no_execution_conflict"],
             no_unresolved_analyst_conflict=signals["no_unresolved_analyst_conflict"],
             position_status=position_status,
+            name_mismatch=is_name_mismatch,
         )
 
         opp_score = calculate_opportunity_score(
