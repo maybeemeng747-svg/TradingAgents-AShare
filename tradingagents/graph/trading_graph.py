@@ -287,6 +287,12 @@ class TradingAgentsGraph:
             selected_analysts=selected_analysts,
             request_source=request_source,
         )
+
+        # [E-004] Store raw evidence summary in metadata for risk_manager
+        init_agent_state["metadata"]["raw_evidence"] = self.data_collector.build_raw_evidence(
+            company_name, trade_date
+        )
+
         args = self.propagator.get_graph_args()
 
         # Use thread_id for checkpointer
@@ -376,6 +382,12 @@ class TradingAgentsGraph:
         state = self.propagator.create_initial_state(
             ticker, trade_date, user_intent=user_intent, horizon="short"
         )
+
+        # [E-004] Store raw evidence summary in metadata for risk_manager
+        state["metadata"]["raw_evidence"] = self.data_collector.build_raw_evidence(
+            ticker, trade_date
+        )
+
         final_state = await self.graph.ainvoke(state, **graph_args)
 
         # Evict cached data to free memory

@@ -94,6 +94,24 @@ def init_db() -> None:
     _ensure_report_schema()
     _ensure_user_schema()
     _ensure_scheduled_schema()
+    _ensure_watchlist_schema()
+
+
+def _ensure_watchlist_schema() -> None:
+    """Add notes column to watchlist_items for existing SQLite deployments."""
+    if not DATABASE_URL.startswith("sqlite"):
+        return
+    try:
+        with engine.begin() as conn:
+            tables = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))}
+            if "watchlist_items" not in tables:
+                return
+            columns = {row[1] for row in conn.execute(text("PRAGMA table_info(watchlist_items)"))}
+            if "notes" not in columns:
+                conn.execute(text("ALTER TABLE watchlist_items ADD COLUMN notes TEXT"))
+                logger.info("[migration] Added notes column to watchlist_items")
+    except Exception as e:
+        logger.error("Failed to ensure watchlist schema: %s", e)
 
 
 def _ensure_report_schema() -> None:
@@ -490,6 +508,7 @@ class WatchlistItemDB(Base):
     user_id = Column(String(64), index=True, nullable=False)
     symbol = Column(String(20), nullable=False)
     sort_order = Column(Integer, default=0)
+    notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (UniqueConstraint('user_id', 'symbol', name='uq_watchlist_user_symbol'),)

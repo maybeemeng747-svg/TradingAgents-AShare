@@ -387,6 +387,7 @@ export interface WatchlistItem {
     symbol: string
     name: string
     sort_order: number
+    notes: string | null
     created_at: string
     has_scheduled: boolean
 }
