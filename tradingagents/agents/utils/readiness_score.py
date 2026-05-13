@@ -689,7 +689,7 @@ _VOLUME_RATIO_PATTERN = r'(?:量比|Volume\s*Ratio)\s*[:：=]?\s*\d+\.?\d*'
 _FUND_FLOW_PATTERN = r'(?:主力|净流入|净流出|大单|超大单).*?(?:\d+\.?\d*\s*(?:万|亿|元))'
 _LHB_NORMAL_PATTERNS = [
     r'龙虎榜.*?(?:无触发|无数据|未上榜|没有.*?上榜|正常)',
-    r'(?:未上榜|无龙虎榜)',
+    r'(?:未上榜|无龙虎榜|查询未触发)',
 ]
 _LHB_FAILED_PATTERNS = [
     r'龙虎榜.*?(?:获取失败|查询失败|API.*?错误|异常|Error)',
@@ -796,7 +796,7 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
     if raw_lhb is not None:
         if isinstance(raw_lhb, str) and "失败" in raw_lhb:
             lhb_status = EvidenceStatus.QUERY_FAILED
-        elif isinstance(raw_lhb, str) and ("无" in raw_lhb or "未上榜" in raw_lhb or len(raw_lhb.strip()) == 0):
+        elif isinstance(raw_lhb, str) and ("无" in raw_lhb or "未上榜" in raw_lhb or "未触发" in raw_lhb or len(raw_lhb.strip()) == 0):
             lhb_status = EvidenceStatus.NORMAL_NO_DATA
         elif raw_lhb:
             lhb_status = EvidenceStatus.HAS_DATA

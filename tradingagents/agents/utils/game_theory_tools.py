@@ -21,9 +21,11 @@ def get_individual_fund_flow(
 def get_lhb_detail(
     symbol: Annotated[str, "股票代码，格式如 600519.SH"],
     date: Annotated[str, "日期，格式 YYYY-MM-DD"],
+    force: Annotated[bool, "是否强制查询，默认 False 按需触发"] = False,
 ) -> str:
-    """获取个股龙虎榜数据，非异动日无数据属正常。symbol 格式如 600519.SH，date 格式 YYYY-MM-DD。"""
-    return route_to_vendor("get_lhb_detail", symbol, date)
+    """获取个股龙虎榜数据，非异动日无数据属正常。symbol 格式如 600519.SH，date 格式 YYYY-MM-DD。
+    force=True 时才真正查询 API，否则返回提示信息避免限流。"""
+    return route_to_vendor("get_lhb_detail", symbol, date, force=force)
 
 
 @tool

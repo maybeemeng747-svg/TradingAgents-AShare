@@ -1215,3 +1215,67 @@ def test_raw_evidence_none_falls_back_to_text():
     )
     assert statuses_no_raw["ohlcv_5d"] == EvidenceStatus.HAS_DATA
     assert statuses_raw_empty["ohlcv_5d"] == EvidenceStatus.HAS_DATA
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LHB 未触发 & fund_flow anomaly fix
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_raw_evidence_lhb_not_triggered():
+    """LHB force=False 未触发应算 NORMAL_NO_DATA，不是 HAS_DATA."""
+    statuses = infer_evidence_statuses(
+        {"smart_money_report": "report"},
+        raw_evidence={"lhb": "龙虎榜查询未触发（force=False）"},
+    )
+    assert statuses["lhb_status"] == EvidenceStatus.NORMAL_NO_DATA
+
+
+def test_raw_evidence_lhb_not_triggered_short():
+    """短文本 '未触发' 也应识别."""
+    statuses = infer_evidence_statuses(
+        {"smart_money_report": "report"},
+        raw_evidence={"lhb": "未触发"},
+    )
+    assert statuses["lhb_status"] == EvidenceStatus.NORMAL_NO_DATA
+
+
+def test_fund_flow_anomaly_no_false_positive_on_dates():
+    """日期/金额等普通数字不应误触发 LHB."""
+    from tradingagents.agents.analysts.smart_money_analyst import _check_fund_flow_anomaly
+    text = "日期       主力净流入    成交额\n2026-05-09  1234.56万  50000万\n2026-05-08  -800万     45000万"
+    assert _check_fund_flow_anomaly(text) is False
+
+
+def test_fund_flow_anomaly_triggers_on_pct():
+    """带 % 的占比超过 5% 应触发 LHB."""
+    from tradingagents.agents.analysts.smart_money_analyst import _check_fund_flow_anomaly
+    text = "日期       主力净流入占比\n2026-05-09  +6.2%\n2026-05-08  -3.1%"
+    assert _check_fund_flow_anomaly(text) is True
+
+
+def test_fund_flow_anomaly_no_trigger_small_pct():
+    """占比 < 5% 不应触发."""
+    from tradingagents.agents.analysts.smart_money_analyst import _check_fund_flow_anomaly
+    text = "日期       主力净流入占比\n2026-05-09  +2.1%\n2026-05-08  -1.3%"
+    assert _check_fund_flow_anomaly(text) is False
+
+
+def test_fund_flow_anomaly_unsigned_pct():
+    """无符号百分比 6.2% 也应触发."""
+    from tradingagents.agents.analysts.smart_money_analyst import _check_fund_flow_anomaly
+    text = "2026-05-09  6.2%"
+    assert _check_fund_flow_anomaly(text) is True
+
+
+def test_fund_flow_anomaly_table_ratio_col():
+    """AKShare 表格 header 含 '净占比' 列，数据行 6.2 应触发（即使无 %）."""
+    from tradingagents.agents.analysts.smart_money_analyst import _check_fund_flow_anomaly
+    text = "日期       主力净流入-净占比  成交额\n2026-05-09  6.2  50000万\n2026-05-08  -3.1  45000万"
+    assert _check_fund_flow_anomaly(text) is True
+
+
+def test_fund_flow_anomaly_table_amount_no_trigger():
+    """表格中无占比列时，普通金额不触发."""
+    from tradingagents.agents.analysts.smart_money_analyst import _check_fund_flow_anomaly
+    text = "日期       主力净流入    成交额\n2026-05-09  1234.56万  50000万\n2026-05-08  -800万     45000万"
+    assert _check_fund_flow_anomaly(text) is False

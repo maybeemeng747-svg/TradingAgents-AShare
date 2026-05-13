@@ -1,4 +1,5 @@
 import asyncio
+import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from tradingagents.dataflows.config import get_config
@@ -6,6 +7,76 @@ from tradingagents.prompts import get_prompt
 from tradingagents.graph.intent_parser import build_horizon_context
 from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
 from tradingagents.agents.utils.context_utils import build_prompt_context_block
+
+
+def _check_fund_flow_anomaly(fund_flow_text: str) -> bool:
+    """判断 fund_flow 数据是否显示近5日有单日主力净流入/流出占比异常。
+
+    三种识别路径：
+    1. 带 % 的百分比（无符号/正/负均可）：6.2% / +6.2% / -6.2%
+    2. "占比/净占比"关键词后的数值（即使无 % 也按百分比处理）
+    3. AKShare 表格 header 中含"占比/净占比"列时，解析对应列数据
+
+    避免把日期、金额、成交额等普通数字误判为占比触发 LHB。
+    若数据不可解析则返回 True（视为不可判断，需要查询）。
+    """
+    if not fund_flow_text or fund_flow_text.strip() in ("无数据", ""):
+        return True
+    lines = fund_flow_text.strip().split("\n")
+    data_lines = [l for l in lines if l.strip() and not l.strip().startswith("近")]
+    recent = data_lines[-5:] if len(data_lines) >= 5 else data_lines
+    if not recent:
+        return True
+
+    # Pattern 1: any percentage value (unsigned, +, -)
+    _PCT_RE = re.compile(r"[-+]?\s*\d+\.?\d*\s*%")
+    # Pattern 2: percentage after "占比" keyword (inline)
+    _RATIO_RE = re.compile(r"(?:占比|净占比|主力净流入占比)[^\d]*?([-+]?\d+\.?\d*)")
+
+    # Pattern 3: table header containing 占比/净占比 column
+    _RATIO_HEADER_RE = re.compile(r"(?:占比|净占比)")
+    ratio_col_indices: list[int] = []
+    if len(data_lines) >= 2:
+        header_line = data_lines[0]
+        # Split by common table separators
+        headers = re.split(r"[\s\t|]+", header_line.strip())
+        for i, h in enumerate(headers):
+            if _RATIO_HEADER_RE.search(h):
+                ratio_col_indices.append(i)
+
+    for line in recent:
+        # Path 1: explicit percentage values
+        for m in _PCT_RE.finditer(line):
+            raw = m.group().replace("%", "").replace(" ", "")
+            try:
+                val = float(raw)
+                if abs(val) >= 5.0:
+                    return True
+            except ValueError:
+                continue
+
+        # Path 2: inline ratio keyword
+        for m in _RATIO_RE.finditer(line):
+            try:
+                val = float(m.group(1))
+                if abs(val) >= 5.0:
+                    return True
+            except ValueError:
+                continue
+
+        # Path 3: table column parsing (if header has ratio columns)
+        if ratio_col_indices:
+            cells = re.split(r"[\s\t|]+", line.strip())
+            for idx in ratio_col_indices:
+                if idx < len(cells):
+                    cell = cells[idx].replace(",", "").strip()
+                    try:
+                        val = float(cell)
+                        if abs(val) >= 5.0:
+                            return True
+                    except ValueError:
+                        continue
+    return False
 
 
 def create_smart_money_analyst(llm, data_collector=None):
@@ -19,7 +90,7 @@ def create_smart_money_analyst(llm, data_collector=None):
         current_date = state["trade_date"]
         ticker = state["company_of_interest"]
         print(f"[Smart Money Analyst] START {ticker} {current_date}")
-        horizon = "short"  # 资金面固定短期视角
+        horizon = "short"
         user_intent = state.get("user_intent") or {}
         focus_areas = user_intent.get("focus_areas", [])
         specific_questions = user_intent.get("specific_questions", [])
@@ -39,17 +110,23 @@ def create_smart_money_analyst(llm, data_collector=None):
             from tradingagents.agents.utils.agent_utils import (
                 get_individual_fund_flow, get_lhb_detail, get_indicators,
             )
-            
-            # Parallelize fallback fetches
-            results = await asyncio.gather(
-                _safe(get_individual_fund_flow, {"symbol": ticker}),
-                _safe(get_lhb_detail, {"symbol": ticker, "date": current_date}),
-                _safe(get_indicators, {
-                    "symbol": ticker, "indicator": "volume",
-                    "curr_date": current_date, "look_back_days": 20,
+
+            fund_flow_result = await _safe(get_individual_fund_flow, {"symbol": ticker})
+            fund_flow = fund_flow_result
+
+            should_query_lhb = _check_fund_flow_anomaly(fund_flow)
+
+            if should_query_lhb:
+                lhb = await _safe(get_lhb_detail, {
+                    "symbol": ticker, "date": current_date, "force": True,
                 })
-            )
-            fund_flow, lhb, volume = results
+            else:
+                lhb = "近期无明显异动，龙虎榜查询已跳过"
+
+            volume = await _safe(get_indicators, {
+                "symbol": ticker, "indicator": "volume",
+                "curr_date": current_date, "look_back_days": 20,
+            })
 
         messages = [
             SystemMessage(content=(
@@ -60,7 +137,7 @@ def create_smart_money_analyst(llm, data_collector=None):
                 horizon_ctx + "\n"
                 f"{context_block}\n\n"
                 f"请分析 {ticker} 在 {current_date} 的主力资金行为。\n\n"
-                f"【近5日主力资金净流向】\n{fund_flow}\n\n"
+                f"【近20日主力资金净流向】\n{fund_flow}\n\n"
                 f"【龙虎榜数据】\n{lhb}\n\n"
                 f"【成交量指标(vwma)】\n{volume}"
             )),

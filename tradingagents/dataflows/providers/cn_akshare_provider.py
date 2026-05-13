@@ -593,11 +593,51 @@ class CnAkshareProvider(BaseMarketDataProvider):
                 f"cn_akshare is temporarily unavailable for {report_name}: {'; '.join(errors)}"
             )
 
+    @staticmethod
+    def _select_balance_sheet_cols(df: pd.DataFrame) -> pd.DataFrame:
+        priority_cols = [
+            "报告日",
+            "流动资产合计", "货币资金", "应收账款", "存货", "固定资产净额", "资产总计",
+            "短期借款", "应付票据", "应付账款", "合同负债", "一年内到期的非流动负债",
+            "其他流动负债", "流动负债合计", "长期借款", "应付债券", "非流动负债合计",
+            "负债合计",
+            "实收资本(或股本)", "资本公积", "未分配利润", "归属于母公司股东权益合计",
+            "负债和所有者权益(或股东权益)总计",
+        ]
+        selected = [c for c in priority_cols if c in df.columns]
+        if len(selected) >= 6:
+            return df[selected]
+        non_nan_cols = [c for c in df.columns if df[c].notna().any()]
+        return df[non_nan_cols] if non_nan_cols else df
+
     def get_balance_sheet(
         self, ticker: str, freq: str = "quarterly", curr_date: str = None
     ) -> str:
-        table = self._financial_report_sina(ticker, "资产负债表")
-        return f"## Balance Sheet ({ticker})\n\n{table}"
+        with AKSHARE_CALL_LOCK:
+            ak = self._ak()
+            symbol = self._sina_symbol(ticker)
+            errors = []
+            try:
+                df = ak.stock_financial_report_sina(stock=symbol, symbol="资产负债表")
+                if df is not None and not df.empty:
+                    df = self._select_balance_sheet_cols(df)
+                    return f"## Balance Sheet ({ticker})\n\n" + self._shrink_table(df, max_rows=6, max_cols=20).to_markdown(index=False)
+                raise ValueError("empty dataframe")
+            except Exception as exc:
+                errors.append(f"stock_financial_report_sina: {type(exc).__name__}")
+
+            code = self._normalize_symbol(ticker)
+            try:
+                df = ak.stock_financial_abstract_new_ths(symbol=code, indicator="按报告期")
+                if df is not None and not df.empty:
+                    return f"## Balance Sheet ({ticker})\n\n" + self._shrink_table(df, max_rows=6, max_cols=20).to_markdown(index=False)
+                raise ValueError("empty dataframe")
+            except Exception as exc:
+                errors.append(f"stock_financial_abstract_new_ths: {type(exc).__name__}")
+
+            raise NotImplementedError(
+                f"cn_akshare is temporarily unavailable for 资产负债表: {'; '.join(errors)}"
+            )
 
     def get_cashflow(
         self, ticker: str, freq: str = "quarterly", curr_date: str = None
@@ -923,13 +963,24 @@ class CnAkshareProvider(BaseMarketDataProvider):
                 df = ak.stock_individual_fund_flow(stock=code, market=market)
             if df is None or df.empty:
                 return f"{symbol} 近期主力资金流向数据暂不可用。"
-            df_recent = df.tail(5)
-            return f"{symbol} 近5日主力资金净流向：\n{df_recent.to_string(index=False)}"
+            df_recent = df.tail(20)
+            return f"{symbol} 近20日主力资金净流向：\n{df_recent.to_string(index=False)}"
         except Exception as exc:
             return f"个股资金流向数据获取失败：{type(exc).__name__}: {exc}"
 
-    def get_lhb_detail(self, symbol: str, date: str) -> str:
-        """获取龙虎榜数据，非异动日返回空提示（属正常）。"""
+    def get_lhb_detail(self, symbol: str, date: str, *, force: bool = False) -> str:
+        """获取龙虎榜数据。
+
+        Args:
+            symbol: 股票代码
+            date: 查询日期（YYYY-MM-DD）
+            force: 是否强制查询。默认 False 时返回提示信息以避免批量调用触发限流。
+        """
+        if not force:
+            return (
+                f"{symbol} 龙虎榜查询未触发（force=False）。"
+                "龙虎榜为按需查询接口，仅当检测到资金异动时才应调用，以避免批量日期查询触发 API 限流。"
+            )
         try:
             ak = self._ak()
             code = self._normalize_symbol(symbol)
