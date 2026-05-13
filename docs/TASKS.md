@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-05-10
+> 最后更新：2026-05-13
 
 ---
 
@@ -148,9 +148,23 @@ Phase 3（优化期）：C-006 + C-008
 
 ---
 
-## D. 已完成
+## D. 修正评分与强动作门禁（2026-05-13 新增）
 
-无
+### D-001: 修正数据完整度评分 ✅ 已完成（含真证据修复）
+- **描述**：risk_manager.py 从 state 传入全部 8 项数据源；evidence 不再因报告存在就标 HAS_DATA，需匹配具体原始字段
+- **验证方式**：只有 4 个基础报告时 source_coverage=50%；纯文本报告无 OHLC 表格时 evidence 不虚高
+
+### D-002: 强结论证据门禁 ✅ 已完成（含真降级修复）
+- **描述**：新增 source_coverage/evidence_coverage 双维度评分；get_strong_action_gate 检查 7 项条件；gate 未通过时真正移除/替换强动作文本
+- **验证方式**：coverage<70 时强动作被替换为中性表达，原关键词不再出现在最终报告
+
+### D-003: Risk Level / Buy Level 双等级输出 ✅ 已完成（含真信号修复）
+- **描述**：Risk Level 0-4 + Buy Level 0-4；从报告文本提取 14 项交易信号传入计算；持仓未知时 gate 语义修正
+- **验证方式**：Level 4 需全部条件满足；持仓未知+无强动作时 gate 通过
+
+### D-004: Opportunity Score 机会评分 ✅ 已完成（含真信号修复）
+- **描述**：5 维加权 Opportunity Score 0-100；从报告文本提取趋势/资金共振/催化/盈亏比/入场质量信号传入计算
+- **验证方式**：Opportunity Score=100 但 coverage<70 时 Buy Level 仍受限；正向信号文本下 Score 明显高于默认值
 
 ---
 

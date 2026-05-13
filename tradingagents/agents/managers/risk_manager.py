@@ -1,5 +1,6 @@
 import time
 import json
+import logging
 from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
 from tradingagents.agents.utils.agent_states import current_tracker_var
@@ -17,7 +18,38 @@ from tradingagents.agents.utils.debate_utils import (
 from tradingagents.agents.utils.delta_check import check_delta, save_conclusion, format_delta_warning
 from tradingagents.agents.utils.event_risk_gate import check_event_risk, format_event_risk_warning
 from tradingagents.agents.utils.financial_validator import check_financial_anomalies, format_financial_anomaly_warning
-from tradingagents.agents.utils.readiness_score import calculate_data_completeness, assess_confidence, generate_readiness_score, format_readiness_score, ConfidenceLevel
+from tradingagents.agents.utils.readiness_score import (
+    calculate_data_completeness,
+    calculate_source_coverage,
+    calculate_evidence_coverage,
+    EvidenceStatus,
+    assess_confidence,
+    generate_readiness_score,
+    format_readiness_score,
+    get_position_status,
+    get_strong_action_gate,
+    calculate_risk_level,
+    calculate_buy_level,
+    calculate_opportunity_score,
+    format_execution_block,
+    sanitize_forbidden_strong_actions,
+    infer_evidence_statuses,
+    extract_execution_signals,
+    _split_llm_body_and_system_blocks,
+    ConfidenceLevel,
+)
+
+_logger = logging.getLogger(__name__)
+
+_STRONG_BUY_KEYWORDS = [
+    '强买', '重仓买入', '立即买入', '立刻买入', '强烈买入', '满仓买入',
+    '重仓布局', '强力买入',
+    '建议加仓', '执行加仓', '加仓买入', '可以加仓', '应该加仓', '考虑加仓',
+    '建议追涨', '可以追涨', '追涨买入',
+]
+_STRONG_SELL_KEYWORDS = [
+    '立即清仓', '立刻清仓', '强制清仓', '清仓离场', '清仓出局', '全部卖出离场',
+]
 
 
 def create_risk_manager(llm, memory):
@@ -119,18 +151,146 @@ def create_risk_manager(llm, memory):
         has_sentiment = bool(sentiment_report)
         has_news = bool(news_report)
         has_fundamentals = bool(fundamentals_report)
+        has_smart_money = bool(state.get("smart_money_report", ""))
+        has_volume_price = bool(state.get("volume_price_report", ""))
+        has_user_context = bool(state.get("user_context"))
+        has_position_data = user_context.get("current_position") is not None
+
         data_completeness = calculate_data_completeness(
             has_market_data=has_market,
             has_sentiment_data=has_sentiment,
             has_news_data=has_news,
             has_fundamentals_data=has_fundamentals,
+            has_smart_money_data=has_smart_money,
+            has_volume_price_data=has_volume_price,
+            has_user_context=has_user_context,
+            has_position_data=has_position_data,
         )
+
+        source_coverage = calculate_source_coverage(
+            has_market_data=has_market,
+            has_sentiment_data=has_sentiment,
+            has_news_data=has_news,
+            has_fundamentals_data=has_fundamentals,
+            has_smart_money_data=has_smart_money,
+            has_volume_price_data=has_volume_price,
+            has_user_context=has_user_context,
+            has_position_data=has_position_data,
+        )
+
+        reports_dict = {
+            "market_report": market_research_report or "",
+            "volume_price_report": state.get("volume_price_report", "") or "",
+            "smart_money_report": state.get("smart_money_report", "") or "",
+            "news_report": news_report or "",
+        }
+
+        evidence_statuses = infer_evidence_statuses(reports_dict)
+
+        evidence_coverage = calculate_evidence_coverage(
+            ohlcv_5d=evidence_statuses["ohlcv_5d"],
+            volume=evidence_statuses["volume"],
+            turnover_rate=evidence_statuses["turnover_rate"],
+            volume_ratio=evidence_statuses["volume_ratio"],
+            individual_fund_flow=evidence_statuses["individual_fund_flow"],
+            lhb_status=evidence_statuses["lhb_status"],
+            margin_trading=evidence_statuses["margin_trading"],
+            announcements=evidence_statuses["announcements"],
+        )
+
         confidence = assess_confidence(
             data_completeness,
             event_risk_active=event_risk_info["has_risk"],
         )
         readiness = generate_readiness_score(data_completeness, confidence)
         final_response += format_readiness_score(readiness)
+
+        data_sources = [
+            ("市场技术数据", has_market),
+            ("舆情数据", has_sentiment),
+            ("新闻数据", has_news),
+            ("基本面数据", has_fundamentals),
+            ("主力资金", has_smart_money),
+            ("量价分析", has_volume_price),
+            ("用户上下文", has_user_context),
+            ("持仓数据", has_position_data),
+        ]
+        checklist_lines = []
+        for name, available in data_sources:
+            status = "✅" if available else "❌"
+            checklist_lines.append(f"  {status} {name}")
+        checklist = "\n".join(checklist_lines)
+        final_response += f"\n\n📊 数据源可用性：\n{checklist}"
+
+        # ── D-002 ~ D-004: 证据门禁 + 双等级 + 机会评分 ──
+        position_status = get_position_status(user_context)
+
+        signals = extract_execution_signals(state, final_response, reports_dict)
+
+        _llm_body, _ = _split_llm_body_and_system_blocks(final_response)
+        contains_strong = any(
+            kw in _llm_body for kw in _STRONG_BUY_KEYWORDS + _STRONG_SELL_KEYWORDS
+        )
+
+        gate = get_strong_action_gate(
+            source_coverage=source_coverage,
+            evidence_coverage=evidence_coverage,
+            position_status=position_status,
+            contains_strong_action=contains_strong,
+            no_execution_field_conflict=signals["no_execution_conflict"],
+            no_unresolved_analyst_conflict=signals["no_unresolved_analyst_conflict"],
+        )
+
+        risk_result = calculate_risk_level(
+            source_coverage=source_coverage,
+            evidence_coverage=evidence_coverage,
+            broke_support=signals["broke_support"],
+            main_capital_outflow_days=signals["main_capital_outflow_days"],
+            volume_breakdown=signals["volume_breakdown"],
+            has_major_positive_announcement=signals["has_major_positive_announcement"],
+            position_status=position_status,
+        )
+        buy_result = calculate_buy_level(
+            source_coverage=source_coverage,
+            evidence_coverage=evidence_coverage,
+            trend_confirmed=signals["trend_confirmed"],
+            main_capital_inflow_days=signals["main_capital_inflow_days"],
+            volume_healthy_expansion=signals["volume_healthy_expansion"],
+            has_major_negative_announcement=signals["has_major_negative_announcement"],
+            no_execution_conflict=signals["no_execution_conflict"],
+            no_unresolved_analyst_conflict=signals["no_unresolved_analyst_conflict"],
+            position_status=position_status,
+        )
+
+        opp_score = calculate_opportunity_score(
+            trend_confirmed=signals["trend_confirmed"],
+            capital_resonance=signals["capital_resonance"],
+            catalyst_strength=signals["catalyst_strength"],
+            risk_reward_ratio=signals["risk_reward_ratio"],
+            entry_quality=signals["entry_quality"],
+            event_risk_active=event_risk_info["has_risk"],
+        )
+
+        # ── D-002 真降级：移除/替换强动作文本 ──
+        final_response, _sanitize_changes = sanitize_forbidden_strong_actions(
+            final_response, gate, position_status,
+            buy_result["level"], risk_result["level"],
+        )
+        if _sanitize_changes:
+            _logger.warning("[D-002] sanitize_forbidden_strong_actions: %s", _sanitize_changes)
+
+        final_response += "\n\n" + format_execution_block(
+            source_coverage=source_coverage,
+            evidence_coverage=evidence_coverage,
+            confidence=confidence.value,
+            opportunity_score=opp_score,
+            risk_level=risk_result["level"],
+            buy_level=buy_result["level"],
+            risk_level_note=risk_result["note"],
+            buy_level_note=buy_result["note"],
+            strong_action_gate=gate,
+            position_status=position_status,
+        )
 
         # ── 推送辩论裁决（用 cleaned 覆盖流式 raw content）──
         if tracker:
@@ -173,6 +333,12 @@ def create_risk_manager(llm, memory):
         metadata = {
             **(state.get("metadata") or {}),
             "trade_quality_check": trade_quality_check,
+            "source_coverage": source_coverage,
+            "evidence_coverage": evidence_coverage,
+            "buy_level": buy_result["level"],
+            "risk_level": risk_result["level"],
+            "opportunity_score": opp_score,
+            "strong_action_gate_passed": gate["passed"],
         }
 
         return {
