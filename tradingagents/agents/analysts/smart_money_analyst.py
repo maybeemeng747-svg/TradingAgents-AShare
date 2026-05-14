@@ -101,11 +101,26 @@ def create_smart_money_analyst(llm, data_collector=None):
         context_block = build_prompt_context_block(state, "analyst")
 
         pool = data_collector.get(ticker, current_date) if data_collector else None
+        # [E-007] LHB触发链路透明化标注
+        lhb_trigger_note = ""
 
         if pool is not None:
             fund_flow = pool.get("fund_flow_individual", "无数据")
-            lhb = pool.get("lhb", "无数据")
+            lhb_raw = pool.get("lhb", "无数据")
             volume = pool.get("indicators", {}).get("vwma", "无数据")
+
+            # 判断LHB是否因资金异动而被force查询
+            should_query_lhb = _check_fund_flow_anomaly(fund_flow)
+            if should_query_lhb:
+                lhb_trigger_note = f"[LHB触发: force=True, 原因=资金异动明显]"
+            else:
+                lhb_trigger_note = f"[LHB触发: force=False, 原因=资金流未超阈值]"
+
+            # 标注查询结果
+            if lhb_raw and lhb_raw not in ("无数据", ""):
+                lhb = f"{lhb_trigger_note}\n{lhb_raw}"
+            else:
+                lhb = f"{lhb_trigger_note}\n无龙虎榜数据（可能未上榜或查询未返回数据）"
         else:
             from tradingagents.agents.utils.agent_utils import (
                 get_individual_fund_flow, get_lhb_detail, get_indicators,
@@ -120,8 +135,11 @@ def create_smart_money_analyst(llm, data_collector=None):
                 lhb = await _safe(get_lhb_detail, {
                     "symbol": ticker, "date": current_date, "force": True,
                 })
+                lhb_trigger_note = f"[LHB触发: force=True, 原因=资金异动明显]"
+                lhb = f"{lhb_trigger_note}\n{lhb}"
             else:
-                lhb = "近期无明显异动，龙虎榜查询已跳过"
+                lhb_trigger_note = f"[LHB触发: force=False, 原因=资金流未超阈值]"
+                lhb = f"{lhb_trigger_note}\n近期无明显异动，龙虎榜查询已跳过"
 
             volume = await _safe(get_indicators, {
                 "symbol": ticker, "indicator": "volume",
