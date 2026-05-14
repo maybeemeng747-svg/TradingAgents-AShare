@@ -46,8 +46,37 @@ class SignalProcessor:
         return "HOLD"
 
 
+def _execution_layer_overrides_hold(text: str) -> bool:
+    """Check whether the execution layer signals a non-actionable state.
+
+    If the execution block (Strong Action Gate / trade quality check / C-001)
+    says the system should wait / hold / review, the final signal must be
+    HOLD regardless of what VERDICT says.
+    """
+    # Strong Action Gate failed
+    if re.search(r"Strong Action Gate[：:]\s*未通过", text, re.IGNORECASE):
+        return True
+
+    # Execution quality check: system action is non-actionable
+    m = re.search(r"系统动作[：:]\s*(.+)", text)
+    if m:
+        action = m.group(1).strip()
+        if action in ("等待人工复核", "等待触发", "人工复核"):
+            return True
+
+    # C-001 position validation: auto-converted to WAIT
+    if "[C-001]" in text and ("观望" in text or "WAIT" in text.upper()):
+        return True
+
+    return False
+
+
 def _extract_decision_keyword(text: str) -> str | None:
     """Rule-based decision extraction to keep UI consistent with final decision text."""
+    # P0: Execution layer takes priority over VERDICT
+    if _execution_layer_overrides_hold(text):
+        return "HOLD"
+
     upper = text.upper()
 
     def parse_verdict_direction(raw_text: str) -> str | None:
