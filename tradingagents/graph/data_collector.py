@@ -252,6 +252,31 @@ def _safe(tool, payload: dict) -> Any:
             print(f"  [Timer] {getattr(tool, 'name', str(tool))} took {duration:.2f}s")
         return res
     except Exception as exc:
+
+
+def _detect_fund_flow_anomaly(fund_flow_text: str) -> bool:
+    """Detect if individual fund flow shows significant capital anomaly.
+
+    Triggers when main capital net flow exceeds threshold in recent days,
+    indicating potential need for LHB (龙虎榜) forced query.
+    """
+    import re
+    if not fund_flow_text or "获取失败" in fund_flow_text or "不可用" in fund_flow_text:
+        return False
+    # Look for large net inflow/outflow numbers in recent data
+    # Typical format: recent 20 days with columns like 主力净流入-净额
+    # Match numbers like -12345.67 or 12345.67 in 主力 columns
+    anomaly_threshold = 50000  # 5000万 = 50,000 万元
+    # Find all numeric values that might be main capital flow
+    numbers = re.findall(r'[-–]?[\d,]+\.?\d*', fund_flow_text)
+    for num_str in numbers:
+        try:
+            val = float(num_str.replace(',', '').replace('–', '-'))
+            if abs(val) >= anomaly_threshold:
+                return True
+        except ValueError:
+            continue
+    return False
         return f"{getattr(tool, 'name', str(tool))} 调用失败：{type(exc).__name__}: {exc}"
 
 
@@ -294,6 +319,13 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
         future_to_key = {executor.submit(_safe, tool, payload): key for key, (tool, payload) in tasks.items()}
         for future in future_to_key:
             results[future_to_key[future]] = future.result()
+
+    # ── [E-003] 资金流异动时自动升级 LHB 查询 ─────────────────────────
+    ff_text = results.get("fund_flow_individual", "") or ""
+    if _detect_fund_flow_anomaly(ff_text):
+        print(f"  [E-003] 资金流异动检测触发，升级 LHB force=True")
+        lhb_forced = _safe(get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": True})
+        results["lhb"] = lhb_forced
 
     # ── Parse CSV once, reuse for indicators and VPA ──────────────────
     raw_csv = results.get("stock_data", "")
