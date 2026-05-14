@@ -1901,6 +1901,10 @@ async def _run_job_inner(
                     request_source=request_source,
                     user_intent=user_intent, horizon=horizon,
                 )
+                # [E-006] 确保raw_evidence写入metadata，与propagate/propagate_async一致
+                init_state["metadata"]["raw_evidence"] = graph.data_collector.build_raw_evidence(
+                    ticker, request.trade_date
+                )
                 last_report: Dict[str, str] = {}
                 seen: Dict[str, bool] = {}   # 追踪哪些字段已出现过，避免重复事件
                 horizon_final = None
