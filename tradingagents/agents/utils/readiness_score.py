@@ -556,7 +556,7 @@ def _format_version_block() -> str:
     return (
         f"\n\n### 系统版本\n"
         f"- Commit: {commit}\n"
-        f"- 评分版本: D-001~D-004 + 三轮审核修复\n"
+        f"- 评分版本: E-001~E-005 + E系列修复\n"
         f"- 后端启动时间: {start_time}\n"
         f"- 报告生成时间: {report_time}"
     )
