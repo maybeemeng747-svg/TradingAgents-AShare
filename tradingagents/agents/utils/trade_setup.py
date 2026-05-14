@@ -37,14 +37,32 @@ def _first_price(text: str, labels: tuple[str, ...]) -> float | None:
 
 
 def _find_price_range(text: str) -> str | None:
-    patterns = [
-        r"(?:入场区间|买入区间|建仓区间)[：:\s]*([0-9]+(?:\.[0-9]+)?\s*[-~至]\s*[0-9]+(?:\.[0-9]+)?)",
-        r"([0-9]+(?:\.[0-9]+)?\s*[-~至]\s*[0-9]+(?:\.[0-9]+)?)(?:\s*区间|\s*附近)",
+    """Extract entry price range from text, preferring final/effective ranges.
+
+    [E-008] Priority order:
+    1. Ranges labeled "最终有效/唯一有效" — the refined final range
+    2. Last occurrence of generic range patterns — later in text = more refined
+    """
+    # Priority: match ranges explicitly labeled as final/effective
+    priority_patterns = [
+        r"(?:最终(?:有效)?|唯一有效)(?:的)?(?:入场|买入|建仓)区间[：:\s]*([0-9]+(?:\.[0-9]+)?\s*[-~至]\s*[0-9]+(?:\.[0-9]+)?)",
+        r"有效(?:入场|买入|建仓)?区间[：:\s]*([0-9]+(?:\.[0-9]+)?\s*[-~至]\s*[0-9]+(?:\.[0-9]+)?)",
     ]
-    for pattern in patterns:
+    for pattern in priority_patterns:
         match = re.search(pattern, text)
         if match:
             return match.group(1).replace(" ", "")
+
+    # Fallback: take the LAST match (later in text = more likely the refined/final range)
+    generic_patterns = [
+        r"(?:入场区间|买入区间|建仓区间)[：:\s]*([0-9]+(?:\.[0-9]+)?\s*[-~至]\s*[0-9]+(?:\.[0-9]+)?)",
+        r"([0-9]+(?:\.[0-9]+)?\s*[-~至]\s*[0-9]+(?:\.[0-9]+)?)(?:\s*区间|\s*附近)",
+    ]
+    for pattern in generic_patterns:
+        matches = re.findall(pattern, text)
+        if matches:
+            # Last match is most likely the final/refined range, not upstream abandoned
+            return matches[-1].replace(" ", "")
     return None
 
 
@@ -75,7 +93,7 @@ def _execution_mode(text: str) -> str:
 def _conflicts(text: str) -> list[str]:
     conflicts: list[str] = []
     if "事件前" in text and any(keyword in text for keyword in ("平稳度过", "事件后", "解禁日平稳")):
-        conflicts.append("交易计划同时出现“事件前建仓”和“事件平稳后再执行”，执行时点冲突。")
+        conflicts.append("交易计划同时出现"事件前建仓"和"事件平稳后再执行"，执行时点冲突。")
     if "买入" in text and any(keyword in text for keyword in ("不追高", "追高风险")) and not any(
         keyword in text for keyword in ("回调", "入场区间", "站稳", "触发")
     ):
