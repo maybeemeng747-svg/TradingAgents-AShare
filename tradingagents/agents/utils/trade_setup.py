@@ -24,7 +24,9 @@ def _strip_generated_quality_section(text: str) -> str:
 
 def _first_price(text: str, labels: tuple[str, ...]) -> float | None:
     for label in labels:
-        for match in re.finditer(rf"{label}[：:\s]*(?:[¥￥$])?([0-9]+(?:\.[0-9]+)?)", text):
+        # Strip optional Markdown bold markers (**) around the label for matching
+        pattern = rf"\*{{0,2}}{re.escape(label)}\*{{0,2}}[：:\s]*(?:[¥￥$])?([0-9]+(?:\.[0-9]+)?)"
+        for match in re.finditer(pattern, text):
             if _is_likely_indicator_number(text, match.end(1)) or _is_likely_list_marker(text, match.end(1)):
                 continue
             try:
