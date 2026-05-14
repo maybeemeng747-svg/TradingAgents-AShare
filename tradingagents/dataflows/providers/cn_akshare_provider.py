@@ -933,7 +933,31 @@ class CnAkshareProvider(BaseMarketDataProvider):
             return None
 
     def get_board_fund_flow(self) -> str:
-        """获取行业板块资金流向排名。"""
+        """获取行业板块资金流向排名，主接口失败时尝试 AKShare fallback。"""
+        # Primary: stock_board_industry_fund_flow_em
+        result = self._board_fund_flow_primary()
+        if not ("获取失败" in result or "不可用" in result):
+            return result
+
+        # Fallback: stock_fund_flow_individual (概念板块资金流)
+        try:
+            ak = self._ak()
+            with AKSHARE_CALL_LOCK:
+                df = ak.stock_sector_fund_flow_rank(indicator="今日", sector_type="行业资金流")
+            if df is not None and not df.empty:
+                df_sorted = df.reset_index(drop=True)
+                df_sorted.insert(0, "排名", range(1, len(df_sorted) + 1))
+                total = len(df_sorted)
+                result_fb = df_sorted.head(10).to_string(index=False)
+                return f"板块资金流向排名（fallback，共{total}个板块，前10名）：\n{result_fb}"
+        except Exception as fb_exc:
+            pass
+
+        # Both failed
+        return f"板块资金流向数据获取失败（主接口和 fallback 均不可用）：{result}"
+
+    def _board_fund_flow_primary(self) -> str:
+        """Primary board fund flow via stock_board_industry_fund_flow_em."""
         try:
             ak = self._ak()
             with AKSHARE_CALL_LOCK:
