@@ -21,6 +21,7 @@ class EvidenceStatus:
     QUERY_FAILED = "query_failed"
     NOT_QUERIED = "not_queried"
     FIELD_MISSING = "field_missing"
+    NOT_AVAILABLE = "not_available"  # Data source does not provide this field
 
 
 _STRONG_NAME_CONTEXTS = [
@@ -102,6 +103,7 @@ def _resolve_name_from_ticker(ticker: str) -> Optional[str]:
 
 
 _VALID_EVIDENCE = {EvidenceStatus.HAS_DATA, EvidenceStatus.NORMAL_NO_DATA}
+_EXCLUDE_FROM_COVERAGE = {EvidenceStatus.NOT_AVAILABLE}
 
 _RISK_LABELS = {0: "观察", 1: "禁止加仓", 2: "条件减仓", 3: "触发止损", 4: "立即清仓"}
 _BUY_LABELS = {0: "禁止买入", 1: "观察等待", 2: "条件试仓", 3: "确认建仓", 4: "积极建仓"}
@@ -159,8 +161,10 @@ def calculate_evidence_coverage(
         ohlcv_5d, volume, turnover_rate, volume_ratio,
         individual_fund_flow, lhb_status, margin_trading, announcements,
     ]
-    valid = sum(1 for s in items if s in _VALID_EVIDENCE)
-    return int((valid / len(items)) * 100)
+    # Exclude NOT_AVAILABLE fields from denominator (data source doesn't provide them)
+    counted = [s for s in items if s not in _EXCLUDE_FROM_COVERAGE]
+    valid = sum(1 for s in counted if s in _VALID_EVIDENCE)
+    return int((valid / len(counted)) * 100) if counted else 0
 
 
 def assess_confidence(
@@ -757,7 +761,7 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
                 volume = EvidenceStatus.FIELD_MISSING
 
     # 3. Turnover rate — NOT in raw data pool (needs separate akshare call)
-    turnover_rate = EvidenceStatus.NOT_QUERIED
+    turnover_rate = EvidenceStatus.NOT_AVAILABLE
     if volume_price:
         if re.search(_TURNOVER_PATTERN, volume_price, re.IGNORECASE):
             turnover_rate = EvidenceStatus.HAS_DATA
@@ -811,7 +815,7 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
             lhb_status = EvidenceStatus.FIELD_MISSING
 
     # 7. Margin trading (融资融券) — NOT in raw data pool
-    margin_trading = EvidenceStatus.NOT_QUERIED
+    margin_trading = EvidenceStatus.NOT_AVAILABLE
 
     # 8. Announcements — check news data
     announcements = EvidenceStatus.NOT_QUERIED
