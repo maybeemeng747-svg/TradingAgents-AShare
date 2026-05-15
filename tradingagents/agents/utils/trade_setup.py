@@ -93,7 +93,7 @@ def _execution_mode(text: str) -> str:
 def _conflicts(text: str) -> list[str]:
     conflicts: list[str] = []
     if "事件前" in text and any(keyword in text for keyword in ("平稳度过", "事件后", "解禁日平稳")):
-        conflicts.append("交易计划同时出现"事件前建仓"和"事件平稳后再执行"，执行时点冲突。")
+        conflicts.append("交易计划同时出现“事件前建仓”和“事件平稳后再执行”，执行时点冲突。")
     if "买入" in text and any(keyword in text for keyword in ("不追高", "追高风险")) and not any(
         keyword in text for keyword in ("回调", "入场区间", "站稳", "触发")
     ):
