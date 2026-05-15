@@ -1,8 +1,11 @@
 import {
+    ArrowDown,
     ArrowDownRight,
+    ArrowUp,
     ArrowUpRight,
     ChevronDown,
     ChevronUp,
+    GripVertical,
     ImagePlus,
     Loader2,
     RefreshCw,
@@ -45,6 +48,15 @@ export default function TrackingBoardPanel() {
             return 'simple'
         }
     })
+    const [reorderMode, setReorderMode] = useState(false)
+    const [itemOrder, setItemOrder] = useState<string[]>(() => {
+        try {
+            const stored = localStorage.getItem('ta-tracking-board-order')
+            return stored ? JSON.parse(stored) : []
+        } catch {
+            return []
+        }
+    })
     const [showImportSection, setShowImportSection] = useState(false)
     const [positionText, setPositionText] = useState('')
     const [importSaving, setImportSaving] = useState(false)
@@ -54,7 +66,23 @@ export default function TrackingBoardPanel() {
     const fileInputRef = useRef<HTMLInputElement>(null)
     const navigate = useNavigate()
 
-    const trackingItems = trackingBoard?.items || []
+    const rawTrackingItems = trackingBoard?.items || []
+
+    // Apply custom order
+    const trackingItems = useMemo(() => {
+        if (itemOrder.length === 0) return rawTrackingItems
+        const itemMap = new Map(rawTrackingItems.map(item => [item.symbol, item]))
+        const ordered: typeof rawTrackingItems = []
+        for (const symbol of itemOrder) {
+            const item = itemMap.get(symbol)
+            if (item) ordered.push(item)
+        }
+        // Append any new items not in saved order
+        for (const item of rawTrackingItems) {
+            if (!itemOrder.includes(item.symbol)) ordered.push(item)
+        }
+        return ordered
+    }, [rawTrackingItems, itemOrder])
     const trackingRefreshSeconds = trackingBoard?.refresh_interval_seconds || 20
     const liveMarketValueTotal = trackingItems.reduce(
         (sum, item) => sum + (item.live_market_value ?? item.market_value ?? 0),
@@ -76,6 +104,12 @@ export default function TrackingBoardPanel() {
             localStorage.setItem('ta-tracking-board-view', viewMode)
         } catch {}
     }, [viewMode])
+
+    useEffect(() => {
+        try {
+            localStorage.setItem('ta-tracking-board-order', JSON.stringify(itemOrder))
+        } catch {}
+    }, [itemOrder])
 
     useEffect(() => {
         if (!user?.id) return
@@ -213,12 +247,25 @@ export default function TrackingBoardPanel() {
         }
     }, [])
 
+    const moveItem = useCallback((symbol: string, direction: 'up' | 'down') => {
+        setItemOrder(prev => {
+            const currentOrder = prev.length > 0 ? prev : rawTrackingItems.map(i => i.symbol)
+            const idx = currentOrder.indexOf(symbol)
+            if (idx < 0) return prev
+            const newIdx = direction === 'up' ? idx - 1 : idx + 1
+            if (newIdx < 0 || newIdx >= currentOrder.length) return prev
+            const next = [...currentOrder]
+            ;[next[idx], next[newIdx]] = [next[newIdx], next[idx]]
+            return next
+        })
+    }, [rawTrackingItems])
+
     // Auto-expand import section when no items
     useEffect(() => {
-        if (!trackingLoading && trackingItems.length === 0) {
+        if (!trackingLoading && rawTrackingItems.length === 0) {
             setShowImportSection(true)
         }
-    }, [trackingLoading, trackingItems.length])
+    }, [trackingLoading, rawTrackingItems.length])
 
     return (
         <div className="space-y-4">
@@ -233,6 +280,20 @@ export default function TrackingBoardPanel() {
                     <span className="rounded-full bg-slate-100 px-3 py-1 dark:bg-slate-700/70">
                         上一交易日：{trackingBoard?.previous_trade_date || '--'}
                     </span>
+                    {rawTrackingItems.length > 1 && (
+                        <button
+                            type="button"
+                            onClick={() => setReorderMode(v => !v)}
+                            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                                reorderMode
+                                    ? 'bg-blue-500 text-white'
+                                    : 'bg-slate-100 text-slate-500 hover:bg-slate-200 dark:bg-slate-700/70 dark:text-slate-400 dark:hover:bg-slate-600'
+                            }`}
+                        >
+                            <GripVertical className="h-3 w-3" />
+                            {reorderMode ? '完成排序' : '调整顺序'}
+                        </button>
+                    )}
                     <ViewModeSwitch value={viewMode} onChange={setViewMode} />
                 </div>
             </div>
@@ -329,6 +390,8 @@ export default function TrackingBoardPanel() {
                     trackingRefreshing={trackingRefreshing}
                     trackingError={trackingError}
                     lastQuoteTime={lastQuoteTime}
+                    reorderMode={reorderMode}
+                    onMove={moveItem}
                 />
             ) : (
                 <DetailedBoardView
@@ -339,6 +402,8 @@ export default function TrackingBoardPanel() {
                     floatingPnlTotal={floatingPnlTotal}
                     onAnalyze={symbol => navigate(`/analysis?symbol=${symbol}`)}
                     onOpenReport={reportId => navigate(`/reports?report=${reportId}`)}
+                    reorderMode={reorderMode}
+                    onMove={moveItem}
                 />
             )}
         </div>
@@ -380,11 +445,15 @@ function SimpleBoardView({
     trackingRefreshing,
     trackingError,
     lastQuoteTime,
+    reorderMode,
+    onMove,
 }: {
     items: TrackingBoardItem[]
     trackingRefreshing: boolean
     trackingError: string | null
     lastQuoteTime: string | null
+    reorderMode: boolean
+    onMove: (symbol: string, direction: 'up' | 'down') => void
 }) {
     return (
         <div className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900">
@@ -403,8 +472,15 @@ function SimpleBoardView({
                         <div>成交量 / 成交额</div>
                     </div>
 
-                    {items.map(item => (
-                        <SimpleTrackingRow key={item.symbol} item={item} />
+                    {items.map((item, idx) => (
+                        <SimpleTrackingRow
+                            key={item.symbol}
+                            item={item}
+                            reorderMode={reorderMode}
+                            isFirst={idx === 0}
+                            isLast={idx === items.length - 1}
+                            onMove={onMove}
+                        />
                     ))}
                 </div>
             </div>
@@ -421,7 +497,19 @@ function SimpleBoardView({
     )
 }
 
-function SimpleTrackingRow({ item }: { item: TrackingBoardItem }) {
+function SimpleTrackingRow({
+    item,
+    reorderMode,
+    isFirst,
+    isLast,
+    onMove,
+}: {
+    item: TrackingBoardItem
+    reorderMode: boolean
+    isFirst: boolean
+    isLast: boolean
+    onMove: (symbol: string, direction: 'up' | 'down') => void
+}) {
     const priceChangePct = item.price_change_pct ?? null
     const isUp = (priceChangePct ?? 0) >= 0
     const costToneClass = item.average_cost != null && item.live_price != null && item.average_cost > item.live_price
@@ -436,7 +524,27 @@ function SimpleTrackingRow({ item }: { item: TrackingBoardItem }) {
     const rangeAlert = getModelRangeAlert(item)
 
     return (
-        <div className="grid grid-cols-[1.36fr_0.88fr_0.74fr_0.78fr_1.28fr_0.86fr_0.96fr] gap-4 border-b border-slate-200 px-5 py-5 last:border-b-0 dark:border-slate-700">
+        <div className={`grid ${reorderMode ? 'grid-cols-[40px_1.36fr_0.88fr_0.74fr_0.78fr_1.28fr_0.86fr_0.96fr]' : 'grid-cols-[1.36fr_0.88fr_0.74fr_0.78fr_1.28fr_0.86fr_0.96fr]'} gap-4 border-b border-slate-200 px-5 py-5 last:border-b-0 dark:border-slate-700`}>
+            {reorderMode && (
+                <div className="flex flex-col items-center justify-center gap-1">
+                    <button
+                        type="button"
+                        onClick={() => onMove(item.symbol, 'up')}
+                        disabled={isFirst}
+                        className="rounded-lg p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 disabled:opacity-20 dark:hover:bg-slate-700"
+                    >
+                        <ArrowUp className="h-4 w-4" />
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => onMove(item.symbol, 'down')}
+                        disabled={isLast}
+                        className="rounded-lg p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 disabled:opacity-20 dark:hover:bg-slate-700"
+                    >
+                        <ArrowDown className="h-4 w-4" />
+                    </button>
+                </div>
+            )}
             <div className="min-w-0">
                 <div className="truncate text-[18px] font-semibold text-slate-900 dark:text-slate-100">{item.name}</div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-500 dark:text-slate-400">
@@ -594,6 +702,8 @@ function DetailedBoardView({
     floatingPnlTotal,
     onAnalyze,
     onOpenReport,
+    reorderMode,
+    onMove,
 }: {
     items: TrackingBoardItem[]
     trackingRefreshing: boolean
@@ -602,6 +712,8 @@ function DetailedBoardView({
     floatingPnlTotal: number
     onAnalyze: (symbol: string) => void
     onOpenReport: (reportId: string) => void
+    reorderMode: boolean
+    onMove: (symbol: string, direction: 'up' | 'down') => void
 }) {
     return (
         <div className="space-y-4 pt-4">
@@ -628,7 +740,7 @@ function DetailedBoardView({
             </div>
 
             <div className="space-y-3">
-                {items.map(item => (
+                {items.map((item, idx) => (
                     <DetailedTrackingRow
                         key={item.symbol}
                         item={item}
@@ -638,6 +750,10 @@ function DetailedBoardView({
                                 onOpenReport(item.analysis.report_id)
                             }
                         }}
+                        reorderMode={reorderMode}
+                        isFirst={idx === 0}
+                        isLast={idx === items.length - 1}
+                        onMove={onMove}
                     />
                 ))}
             </div>
@@ -649,10 +765,18 @@ function DetailedTrackingRow({
     item,
     onAnalyze,
     onOpenReport,
+    reorderMode,
+    isFirst,
+    isLast,
+    onMove,
 }: {
     item: TrackingBoardItem
     onAnalyze: () => void
     onOpenReport: () => void
+    reorderMode: boolean
+    isFirst: boolean
+    isLast: boolean
+    onMove: (symbol: string, direction: 'up' | 'down') => void
 }) {
     const priceChangePct = item.price_change_pct ?? null
     const floatingPnl = item.floating_pnl ?? null
@@ -676,6 +800,27 @@ function DetailedTrackingRow({
 
     return (
         <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900/40">
+            {reorderMode && (
+                <div className="mb-3 flex items-center gap-2">
+                    <GripVertical className="h-4 w-4 text-slate-400" />
+                    <button
+                        type="button"
+                        onClick={() => onMove(item.symbol, 'up')}
+                        disabled={isFirst}
+                        className="rounded-lg p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 disabled:opacity-20 dark:hover:bg-slate-700"
+                    >
+                        <ArrowUp className="h-4 w-4" />
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => onMove(item.symbol, 'down')}
+                        disabled={isLast}
+                        className="rounded-lg p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 disabled:opacity-20 dark:hover:bg-slate-700"
+                    >
+                        <ArrowDown className="h-4 w-4" />
+                    </button>
+                </div>
+            )}
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center">
                 <div className="min-w-0 xl:w-[220px]">
                     <div className="flex items-center gap-2">
