@@ -405,6 +405,14 @@ class TradingAgentsGraph:
 
     def _build_horizon_result(self, horizon: str, final_state: Dict[str, Any]) -> Dict[str, Any]:
         """Extract a compact result dict from a completed graph state."""
+        metadata = dict(final_state.get("metadata") or {})
+        if "raw_evidence" not in metadata:
+            ticker = final_state.get("company_of_interest", "")
+            trade_date = final_state.get("trade_date", "")
+            if ticker and trade_date:
+                raw_evidence = self.data_collector.build_raw_evidence(ticker, trade_date)
+                if raw_evidence:
+                    metadata["raw_evidence"] = raw_evidence
         return {
             "horizon": horizon,
             "company_of_interest": final_state.get("company_of_interest", ""),
@@ -412,8 +420,8 @@ class TradingAgentsGraph:
             "final_trade_decision": final_state.get("final_trade_decision", ""),
             "investment_plan": final_state.get("investment_plan", ""),
             "trader_investment_plan": final_state.get("trader_investment_plan", ""),
-            "metadata": final_state.get("metadata", {}),
-            "trade_quality_check": (final_state.get("metadata") or {}).get("trade_quality_check"),
+            "metadata": metadata,
+            "trade_quality_check": metadata.get("trade_quality_check"),
             "analyst_traces": final_state.get("analyst_traces", []),
             "market_report": final_state.get("market_report", ""),
             "sentiment_report": final_state.get("sentiment_report", ""),

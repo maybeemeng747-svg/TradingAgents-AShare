@@ -144,6 +144,16 @@ class RiskFeedbackState(TypedDict):
     revision_reason: Annotated[str, "Why the plan was sent back"]
 
 
+def merge_metadata(left: dict[str, Any] | None, right: dict[str, Any] | None) -> dict[str, Any]:
+    """Merge runtime metadata across LangGraph node updates."""
+    merged: dict[str, Any] = {}
+    if left:
+        merged.update(left)
+    if right:
+        merged.update(right)
+    return merged
+
+
 class AgentState(MessagesState):
     company_of_interest: Annotated[str, "Company that we are interested in trading"]
     trade_date: Annotated[str, "What date we are trading at"]
@@ -181,4 +191,4 @@ class AgentState(MessagesState):
     analyst_traces: Annotated[List[TraceItem], operator.add]
     short_term_result: Annotated[Optional[dict], "Final short-term analysis result"]
     medium_term_result: Annotated[Optional[dict], "Final medium-term analysis result"]
-    metadata: Annotated[dict[str, Any], "Optional runtime metadata"]
+    metadata: Annotated[dict[str, Any], merge_metadata]

@@ -197,6 +197,37 @@ class TestE006RawEvidencePersistence:
         assert init_state["metadata"]["raw_evidence"] == raw_evidence
         assert "raw_evidence" in init_state["metadata"]
 
+    def test_metadata_reducer_preserves_raw_evidence(self):
+        """LangGraph metadata updates should merge instead of replacing raw_evidence."""
+        from tradingagents.agents.utils.agent_states import merge_metadata
+
+        merged = merge_metadata(
+            {"raw_evidence": {"stock_data": "csv"}},
+            {"trade_quality_check": {"action": "等待触发"}},
+        )
+
+        assert merged["raw_evidence"] == {"stock_data": "csv"}
+        assert merged["trade_quality_check"] == {"action": "等待触发"}
+
+    def test_build_horizon_result_restores_raw_evidence_from_collector(self):
+        """If final state lost metadata.raw_evidence, compact result restores it."""
+        from tradingagents.graph.trading_graph import TradingAgentsGraph
+
+        class _Collector:
+            def build_raw_evidence(self, ticker, trade_date):
+                return {"stock_data": f"{ticker}:{trade_date}"}
+
+        graph = TradingAgentsGraph.__new__(TradingAgentsGraph)
+        graph.data_collector = _Collector()
+
+        result = TradingAgentsGraph._build_horizon_result(
+            graph,
+            "short",
+            {"company_of_interest": "002138.SZ", "trade_date": "2026-05-14", "metadata": {}},
+        )
+
+        assert result["metadata"]["raw_evidence"] == {"stock_data": "002138.SZ:2026-05-14"}
+
 
 # ── E-007: LHB trigger transparency ───────────────────────────────
 
