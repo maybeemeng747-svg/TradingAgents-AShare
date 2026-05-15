@@ -267,17 +267,21 @@ def _detect_fund_flow_anomaly(fund_flow_text: str) -> bool:
         return False
     # Look for large net inflow/outflow numbers in recent data
     # Typical format: recent 20 days with columns like 主力净流入-净额
-    # Match numbers like -12345.67 or 12345.67 in 主力 columns
     anomaly_threshold = 50000  # 5000万 = 50,000 万元
-    # Find all numeric values that might be main capital flow
-    numbers = re.findall(r'[-–]?[\d,]+\.?\d*', fund_flow_text)
-    for num_str in numbers:
-        try:
-            val = float(num_str.replace(',', '').replace('–', '-'))
-            if abs(val) >= anomaly_threshold:
-                return True
-        except ValueError:
+    # Only scan lines containing fund-flow keywords to avoid
+    # false positives from stock codes (600xxx/603xxx)
+    fund_keywords = ("主力", "净流入", "净流出", "超大", "大单")
+    for line in fund_flow_text.split("\n"):
+        if not any(kw in line for kw in fund_keywords):
             continue
+        numbers = re.findall(r'[-–]?[\d,]+\.?\d*', line)
+        for num_str in numbers:
+            try:
+                val = float(num_str.replace(',', '').replace('–', '-'))
+                if abs(val) >= anomaly_threshold:
+                    return True
+            except ValueError:
+                continue
     return False
 
 

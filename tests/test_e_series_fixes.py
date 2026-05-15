@@ -262,6 +262,15 @@ class TestE008PriceRangePriority:
         text = "买入区间：15.00~16.50"
         assert _find_price_range(text) == "15.00~16.50"
 
+    def test_real_format_唯一有效_执行区间_方括号_元(self):
+        """E-008 regression: real report format with 元/执行区间/【】."""
+        text = "唯一有效的建仓执行区间仅保留【35.80元 - 36.20元】"
+        assert _find_price_range(text) == "35.80-36.20"
+
+    def test_最终有效_with_元(self):
+        text = "最终有效入场区间：28.50元至29.20元"
+        assert _find_price_range(text) == "28.50至29.20"
+
 
 # ── E-009: Override disclaimer ─────────────────────────────────────
 
@@ -300,10 +309,21 @@ class TestE009OverrideDisclaimer:
             "### 执行等级\n- Strong Action Gate：未通过\n"
         )
         override_note = "\n上游买入建议已被最终门禁降级"
-        # First add
-        if "上游" not in ftd:
-            ftd = ftd + override_note
-        # Second add (should be skipped)
-        if "上游" not in ftd:
-            ftd = ftd + override_note
-        assert ftd.count("上游") == 1
+        marker = "系统最终动作以 HOLD/等待触发为准"
+        # Simulate E-009 idempotent check (uses marker, not generic "上游")
+        if marker not in ftd:
+            ftd = ftd + override_note + marker
+        if marker not in ftd:
+            ftd = ftd + override_note + marker
+        assert ftd.count(marker) == 1
+
+    def test_no_skip_when_上游_appears_in_analyst_conflict(self):
+        """E-009 regression: '上游' in '上游分析师结论冲突' should NOT prevent override."""
+        ftd = (
+            "上游分析师结论冲突且未解释\n"
+            "- Strong Action Gate：未通过\n"
+        )
+        # The idempotent check should use the specific marker, not generic '上游'
+        marker = "系统最终动作以 HOLD/等待触发为准"
+        assert marker not in ftd  # marker NOT present → should allow add
+        assert "上游" in ftd  # but '上游' IS present → old check would wrongly skip

@@ -44,25 +44,37 @@ def _find_price_range(text: str) -> str | None:
     2. Last occurrence of generic range patterns — later in text = more refined
     """
     # Priority: match ranges explicitly labeled as final/effective
+    # Supports: 【】, 元, 执行区间, 仅保留, etc.
+    range_val = r"[0-9]+(?:\.[0-9]+)?\s*(?:元)?\s*[-~至\-]\s*(?:元)?\s*[0-9]+(?:\.[0-9]+)?(?:元)?"
     priority_patterns = [
-        r"(?:最终(?:有效)?|唯一有效)(?:的)?(?:入场|买入|建仓)区间[：:\s]*([0-9]+(?:\.[0-9]+)?\s*[-~至]\s*[0-9]+(?:\.[0-9]+)?)",
-        r"有效(?:入场|买入|建仓)?区间[：:\s]*([0-9]+(?:\.[0-9]+)?\s*[-~至]\s*[0-9]+(?:\.[0-9]+)?)",
+        r"(?:最终(?:有效)?|唯一有效)(?:的)?(?:入场|买入|建仓|建仓执行)区间[^0-9]*?" + range_val,
+        r"有效(?:入场|买入|建仓|建仓执行)?区间[^0-9]*?" + range_val,
     ]
     for pattern in priority_patterns:
+        # Strip non-numeric decorators (元、【】)
         match = re.search(pattern, text)
         if match:
-            return match.group(1).replace(" ", "")
+            raw = match.group(0)
+            # Extract the two numbers
+            nums = re.findall(r"[0-9]+(?:\.[0-9]+)?", raw)
+            if len(nums) >= 2:
+                sep = "-" if "-" in raw else ("至" if "至" in raw else "~")
+                return f"{nums[0]}{sep}{nums[1]}"
 
     # Fallback: take the LAST match (later in text = more likely the refined/final range)
     generic_patterns = [
-        r"(?:入场区间|买入区间|建仓区间)[：:\s]*([0-9]+(?:\.[0-9]+)?\s*[-~至]\s*[0-9]+(?:\.[0-9]+)?)",
-        r"([0-9]+(?:\.[0-9]+)?\s*[-~至]\s*[0-9]+(?:\.[0-9]+)?)(?:\s*区间|\s*附近)",
+        r"(?:入场区间|买入区间|建仓区间)[：:\s]*" + range_val,
+        r"(?:【|\")(" + range_val + r")(?:】|\")",
+        r"(" + range_val + r")(?:\s*区间|\s*附近)",
     ]
     for pattern in generic_patterns:
         matches = re.findall(pattern, text)
         if matches:
-            # Last match is most likely the final/refined range, not upstream abandoned
-            return matches[-1].replace(" ", "")
+            raw = matches[-1] if isinstance(matches[-1], str) else matches[-1]
+            nums = re.findall(r"[0-9]+(?:\.[0-9]+)?", raw)
+            if len(nums) >= 2:
+                sep = "-" if "-" in raw else ("至" if "至" in raw else "~")
+                return f"{nums[0]}{sep}{nums[1]}"
     return None
 
 

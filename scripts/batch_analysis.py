@@ -103,14 +103,14 @@ def format_feishu_report(symbol, result):
     verdict = result.get("final_verdict", result.get("verdict", "N/A"))
     direction = verdict.get("direction", "N/A") if isinstance(verdict, dict) else str(verdict)
     reason = verdict.get("reason", "") if isinstance(verdict, dict) else ""
-    
+
     lines = [
         f"📊 **{symbol}** 分析报告 ({TODAY})",
         f"**方向**: {direction}",
         f"**理由**: {reason}",
         "",
     ]
-    
+
     # Add key sections
     for key in ["risk_judge", "trader_decision", "research_summary"]:
         if key in result and result[key]:
@@ -118,7 +118,7 @@ def format_feishu_report(symbol, result):
             if isinstance(section, str):
                 lines.append(f"**{key}**: {section[:300]}")
                 lines.append("")
-    
+
     return "\n".join(lines)
 
 
@@ -139,7 +139,7 @@ def main():
     print(f"📅 日期: {TODAY}")
     print(f"📁 结果目录: {RESULTS_DIR}")
     print()
-    
+
     # Create token
     try:
         token = create_api_token()
@@ -147,21 +147,21 @@ def main():
     except Exception as e:
         print(f"❌ Token 创建失败: {e}")
         return
-    
+
     results_summary = []
-    
+
     for i, symbol in enumerate(symbols, 1):
         print(f"[{i}/{len(symbols)}] 🔄 {symbol} ...")
-        
+
         try:
             job_id = submit_analysis(symbol, token)
             if not job_id:
                 results_summary.append({"symbol": symbol, "status": "submit_failed"})
                 continue
-            
+
             print(f"  📤 Job: {job_id}")
             status = poll_job(job_id, token, max_wait=1200)
-            
+
             if status.get("status") == "completed":
                 result = get_result(job_id, token)
                 if result:
@@ -176,24 +176,24 @@ def main():
             else:
                 results_summary.append({"symbol": symbol, "status": status.get("status", "unknown")})
                 print(f"  ❌ 状态: {status.get('status')}")
-        
+
         except Exception as e:
             results_summary.append({"symbol": symbol, "status": "error", "error": str(e)})
             print(f"  ❌ 错误: {e}")
-        
+
         # Brief pause between submissions
         time.sleep(5)
-    
+
     # Save summary
     summary_path = RESULTS_DIR / "_summary.json"
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(results_summary, f, ensure_ascii=False, indent=2)
-    
+
     ok_count = sum(1 for r in results_summary if r["status"] == "ok")
     print(f"\n{'='*50}")
     print(f"✅ 完成: {ok_count}/{len(symbols)}")
     print(f"📁 结果保存在: {RESULTS_DIR}")
-    
+
     return results_summary
 
 

@@ -2023,7 +2023,7 @@ async def _run_job_inner(
                         f"⚠️ **上游{upstream_dir}建议已被最终门禁降级，系统最终动作以 HOLD/等待触发为准。**\n"
                         f"请以「系统动作」和「最终裁决」字段为执行依据，上游中间层建议仅供参考。"
                     )
-                    if "上游" not in ftd:  # idempotent
+                    if "系统最终动作以 HOLD/等待触发为准" not in ftd:  # idempotent
                         ftd = ftd + override_note
                         primary_r["final_trade_decision"] = ftd
 
