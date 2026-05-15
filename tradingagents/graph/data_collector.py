@@ -252,6 +252,8 @@ def _safe(tool, payload: dict) -> Any:
             print(f"  [Timer] {getattr(tool, 'name', str(tool))} took {duration:.2f}s")
         return res
     except Exception as exc:
+        print(f"  [Error] {getattr(tool, 'name', str(tool))} failed: {exc}")
+        return f"数据获取失败：{type(exc).__name__}: {exc}"
 
 
 def _detect_fund_flow_anomaly(fund_flow_text: str) -> bool:
@@ -277,7 +279,6 @@ def _detect_fund_flow_anomaly(fund_flow_text: str) -> bool:
         except ValueError:
             continue
     return False
-        return f"{getattr(tool, 'name', str(tool))} 调用失败：{type(exc).__name__}: {exc}"
 
 
 def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
