@@ -2008,6 +2008,25 @@ async def _run_job_inner(
             medium_r = graph._build_horizon_result("medium", horizon_states.get("medium") or {})
             primary_r = short_r if horizon_states.get("short") else medium_r
             decision = graph.process_signal(primary_r.get("final_trade_decision", "")) or "UNKNOWN"
+
+            # E-009: Add override disclaimer when execution layer overrides VERDICT
+            ftd = primary_r.get("final_trade_decision", "")
+            if decision == "HOLD" and ftd:
+                from tradingagents.graph.signal_processing import _execution_layer_overrides_hold
+                if _execution_layer_overrides_hold(ftd):
+                    # Detect upstream direction for more specific disclaimer
+                    upstream_buy = any(k in ftd for k in ["买入", "看多", "偏多", "BUY"])
+                    upstream_sell = any(k in ftd for k in ["卖出", "看空", "偏空", "SELL"])
+                    upstream_dir = "买入" if upstream_buy else ("卖出" if upstream_sell else "交易")
+                    override_note = (
+                        f"\n\n---\n"
+                        f"⚠️ **上游{upstream_dir}建议已被最终门禁降级，系统最终动作以 HOLD/等待触发为准。**\n"
+                        f"请以「系统动作」和「最终裁决」字段为执行依据，上游中间层建议仅供参考。"
+                    )
+                    if "上游" not in ftd:  # idempotent
+                        ftd = ftd + override_note
+                        primary_r["final_trade_decision"] = ftd
+
             result = {
                 "symbol": ticker,
                 "trade_date": request.trade_date,
