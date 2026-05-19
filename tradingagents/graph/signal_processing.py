@@ -52,6 +52,8 @@ def _execution_layer_overrides_hold(text: str) -> bool:
     If the execution block (Strong Action Gate / trade quality check / C-001)
     says the system should wait / hold / review, the final signal must be
     HOLD regardless of what VERDICT says.
+
+    [Fix-4] For no-position, HOLD is mapped to WAIT/观察 in the caller.
     """
     # Strong Action Gate failed
     if re.search(r"Strong Action Gate[：:]\s*未通过", text, re.IGNORECASE):
@@ -67,6 +69,13 @@ def _execution_layer_overrides_hold(text: str) -> bool:
     # C-001 position validation: auto-converted to WAIT
     if "[C-001]" in text and ("观望" in text or "WAIT" in text.upper()):
         return True
+
+    # [Fix-4] No-position indicators
+    if re.search(r"未持仓|no_position|current_position.*(0|空)", text, re.IGNORECASE):
+        # If the text explicitly says 未持仓 + WAIT/观察, confirm as HOLD
+        if re.search(r"WAIT|观察|观望|禁止买入|禁止开仓", text, re.IGNORECASE):
+            if not re.search(r"(?:确认建仓|积极建仓|条件试仓|买入|BUY)", text):
+                return True
 
     return False
 

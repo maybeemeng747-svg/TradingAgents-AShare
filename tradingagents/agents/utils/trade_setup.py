@@ -22,18 +22,30 @@ def _strip_generated_quality_section(text: str) -> str:
     return _GENERATED_QUALITY_SECTION_RE.sub("", text or "")
 
 
-def _first_price(text: str, labels: tuple[str, ...]) -> float | None:
+def _first_price(text: str, labels: tuple[str, ...], prefer_later: bool = False) -> float | None:
+    """Extract the first (or last if prefer_later) price matching any label.
+
+    When prefer_later=True the *last* match **by text position** is returned —
+    useful for stop-loss extraction where the risk-manager paragraph appears
+    later in the text and should override the trader-level "不适用/—".
+    """
+    result = None
+    best_pos = -1
     for label in labels:
-        # Strip optional Markdown bold markers (**) around the label for matching
         pattern = rf"\*{{0,2}}{re.escape(label)}\*{{0,2}}[：:\s]*(?:[¥￥$])?([0-9]+(?:\.[0-9]+)?)"
         for match in re.finditer(pattern, text):
             if _is_likely_indicator_number(text, match.end(1)) or _is_likely_list_marker(text, match.end(1)):
                 continue
             try:
-                return float(match.group(1))
+                val = float(match.group(1))
+                if not prefer_later:
+                    return val
+                if match.start() > best_pos:
+                    best_pos = match.start()
+                    result = val
             except ValueError:
                 continue
-    return None
+    return result
 
 
 def _find_price_range(text: str) -> str | None:
@@ -42,13 +54,31 @@ def _find_price_range(text: str) -> str | None:
     [E-008] Priority order:
     1. Ranges labeled "最终有效/唯一有效" — the refined final range
     2. Last occurrence of generic range patterns — later in text = more refined
+
+    [Fix-7] Exclusion rules:
+    - "不建议入场/无入场区间" overrides everything (return None)
+    - Distinguish 震荡区间/观察区间/阻力区/支撑区 from 建议入场区间
+    - Only accept labels that explicitly indicate entry: 入场区间, 买入区间, 建仓区间,
+      可在X-Y买入, etc.
     """
+    # [Fix-7] Hard exclusion: explicit "no entry" statements
+    no_entry_patterns = [
+        r'不(?:建议|推荐)(?:入场|买入|建仓)',
+        r'(?:无|没有)(?:入场|买入|建仓)区间',
+        r'暂[无不](?:建议)?(?:入场|买入|建仓)',
+        r'(?:不建议入场|无入场区间|禁止入场)',
+    ]
+    for p in no_entry_patterns:
+        if re.search(p, text, re.IGNORECASE):
+            return None
+
     # Priority: match ranges explicitly labeled as final/effective
     # Supports: 【】, 元, 执行区间, 仅保留, etc.
     range_val = r"[0-9]+(?:\.[0-9]+)?\s*(?:元)?\s*[-~至\-]\s*(?:元)?\s*[0-9]+(?:\.[0-9]+)?(?:元)?"
     priority_patterns = [
         r"(?:最终(?:有效)?|唯一有效)(?:的)?(?:入场|买入|建仓|建仓执行)区间[^0-9]*?" + range_val,
         r"有效(?:入场|买入|建仓|建仓执行)?区间[^0-9]*?" + range_val,
+        r'可在[\d.]+\s*[-~至]\s*[\d.]+(?:元)?(?:买入|建仓|入场)',
     ]
     for pattern in priority_patterns:
         # Strip non-numeric decorators (元、【】)
@@ -62,10 +92,9 @@ def _find_price_range(text: str) -> str | None:
                 return f"{nums[0]}{sep}{nums[1]}"
 
     # Fallback: take the LAST match (later in text = more likely the refined/final range)
+    # [Fix-7] Only accept explicit entry labels (not 震荡/观察/阻力/支撑)
     generic_patterns = [
         r"(?:入场区间|买入区间|建仓区间)[：:\s]*" + range_val,
-        r"(?:【|\")(" + range_val + r")(?:】|\")",
-        r"(" + range_val + r")(?:\s*区间|\s*附近)",
     ]
     for pattern in generic_patterns:
         matches = re.findall(pattern, text)
@@ -79,18 +108,35 @@ def _find_price_range(text: str) -> str | None:
 
 
 def _setup_type(text: str) -> str:
+    """[Fix-8] Extract trading setup tags from factual events only.
+
+    Rules:
+    - Tags must be derived from factual events, not bullish templates.
+    - 净利润大幅下降/不及预期/业绩暴雷 → '业绩承压' or '业绩不及预期'.
+    - '业绩超预期' requires explicit positive evidence (超预期/大增/大幅增长).
+    """
     tags: list[str] = []
-    checks = [
-        ("业绩超预期", ("业绩", "同比", "净利润", "营收")),
-        ("题材预期", ("AI", "算力", "政策", "国产替代", "板块")),
-        ("事件驱动", ("解禁", "公告", "业绩说明会", "分红", "回购")),
-        ("量价低吸", ("缩量下跌", "放量反弹", "吸筹", "洗盘", "量价")),
-        ("趋势突破", ("突破", "站稳", "新高", "均线多头")),
-        ("持仓风控", ("持仓成本", "当前仓位", "减仓", "止损")),
-    ]
-    for tag, keywords in checks:
-        if any(keyword in text for keyword in keywords):
-            tags.append(tag)
+
+    # [Fix-8] Performance: distinguish positive vs negative explicitly
+    if any(k in text for k in ("业绩超预期", "业绩大增", "净利润大幅增长", "超预期")):
+        tags.append("业绩超预期")
+    elif any(k in text for k in ("业绩不及预期", "净利润大幅下降", "业绩暴雷", "净利润下滑",
+                                  "业绩下滑", "营收下降", "盈利下降", "业绩承压")):
+        tags.append("业绩承压")
+    elif any(k in text for k in ("业绩", "同比", "净利润", "营收")):
+        # Mentioned but direction unclear
+        tags.append("业绩关注")
+
+    if any(k in text for k in ("AI", "算力", "政策", "国产替代", "板块")):
+        tags.append("题材预期")
+    if any(k in text for k in ("解禁", "公告", "业绩说明会", "分红", "回购")):
+        tags.append("事件驱动")
+    if any(k in text for k in ("缩量下跌", "放量反弹", "吸筹", "洗盘", "量价")):
+        tags.append("量价低吸")
+    if any(k in text for k in ("突破", "站稳", "新高", "均线多头")):
+        tags.append("趋势突破")
+    if any(k in text for k in ("持仓成本", "当前仓位", "减仓", "止损")):
+        tags.append("持仓风控")
     return " + ".join(tags[:3]) if tags else "未识别"
 
 
@@ -115,6 +161,55 @@ def _conflicts(text: str) -> list[str]:
     return conflicts
 
 
+def _extract_stop_loss(text: str) -> tuple[float | None, str]:
+    """[Fix-1] Extract stop-loss with priority to risk manager paragraph.
+
+    Priority order:
+    1. "最终交易决策" / "风控委员会" / "风控裁决" sections (final authority)
+    2. The last occurrence of stop-loss keywords (later = more authoritative)
+    3. Conditional stop-loss patterns
+
+    Returns (price_or_None, label) where label is '' or '条件止损价'.
+    """
+    # Extended keywords per Fix-1 requirements
+    labels = (
+        "止损价", "止损位", "初始止损", "硬性止损",
+        "止损红线", "止损线", "止损", "失效价", "失效位", "防守位",
+    )
+
+    # 1. Try risk-manager / final decision sections first
+    rm_patterns = [
+        r'(?:最终交易决策|风控委员会|风控裁决|风控结论)[^\n]*\n([\s\S]*?)(?:\n##|\n###|\n---|\Z)',
+        r'(?:目标价|止损价)[：:\s]*[^\n]*',  # line containing 目标价/止损价
+    ]
+    for rm_p in rm_patterns:
+        rm_match = re.search(rm_p, text)
+        if rm_match:
+            rm_text = rm_match.group(1) if rm_match.lastindex else rm_match.group(0)
+            price = _first_price(rm_text, labels, prefer_later=True)
+            if price is not None:
+                return price, ''
+
+    # 2. Conditional stop-loss: "收盘价跌破X元" / "跌破X元止损"
+    cond_patterns = [
+        r'(?:收盘价)?跌破\s*(\d+(?:\.\d+)?)\s*元?.{0,6}(?:止损|清仓|离场)',
+        r'(?:止损|清仓|离场).{0,10}跌破\s*(\d+(?:\.\d+)?)\s*元?',
+        r'若?.{0,6}(?:跌破|低于|下破)\s*(\d+(?:\.\d+)?)\s*元?.{0,6}(?:止损|清仓)',
+    ]
+    for cp in cond_patterns:
+        cm = re.search(cp, text)
+        if cm:
+            try:
+                price = float(cm.group(1))
+                return price, '条件止损价'
+            except ValueError:
+                pass
+
+    # 3. Fallback: last occurrence in full text (prefer_later)
+    price = _first_price(text, labels, prefer_later=True)
+    return price, ''
+
+
 def build_trade_quality_check(
     *,
     investment_plan: str = "",
@@ -129,7 +224,7 @@ def build_trade_quality_check(
     setup_type = _setup_type(text)
     execution_mode = _execution_mode(text)
     trigger_price = _first_price(text, ("触发价", "触发位", "突破价", "突破位", "站稳", "目标价"))
-    stop_loss_price = _first_price(text, ("止损价", "止损位", "止损", "失效价", "失效位", "防守位"))
+    stop_loss_price, sl_label = _extract_stop_loss(text)
     entry_range = _find_price_range(text)
 
     action = "人工复核"
@@ -154,6 +249,7 @@ def build_trade_quality_check(
         "entry_range": entry_range,
         "trigger_price": trigger_price,
         "stop_loss_price": stop_loss_price,
+        "stop_loss_label": sl_label,  # '' or '条件止损价'
         "user_constraints": constraints,
         "do_not_trade_if": do_not_trade_if,
         "conflicts": conflicts,
@@ -163,6 +259,11 @@ def build_trade_quality_check(
 def format_trade_quality_check(check: Mapping[str, Any]) -> str:
     conflicts = check.get("conflicts") or []
     do_not_trade_if = check.get("do_not_trade_if") or []
+    sl_display = '—'
+    if check.get('stop_loss_price') is not None:
+        sl_label = check.get('stop_loss_label', '')
+        sl_display = f"{sl_label} " if sl_label else ""
+        sl_display += str(check['stop_loss_price'])
     lines = [
         "### 执行质检",
         f"- 打法标签：{check.get('setup_type') or '未识别'}",
@@ -170,7 +271,7 @@ def format_trade_quality_check(check: Mapping[str, Any]) -> str:
         f"- 系统动作：{check.get('action') or '人工复核'}",
         f"- 入场区间：{check.get('entry_range') or '—'}",
         f"- 触发价：{check.get('trigger_price') if check.get('trigger_price') is not None else '—'}",
-        f"- 止损价：{check.get('stop_loss_price') if check.get('stop_loss_price') is not None else '—'}",
+        f"- 止损价：{sl_display}",
     ]
     if do_not_trade_if:
         lines.append("- 禁止交易条件：" + "；".join(str(item) for item in do_not_trade_if))

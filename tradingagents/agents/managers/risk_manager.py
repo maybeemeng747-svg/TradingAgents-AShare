@@ -38,6 +38,8 @@ from tradingagents.agents.utils.readiness_score import (
     _split_llm_body_and_system_blocks,
     ConfidenceLevel,
     validate_stock_name,
+    check_valuation_mismatch,
+    _sanitize_short_selling_text,
 )
 
 _logger = logging.getLogger(__name__)
@@ -284,6 +286,12 @@ def create_risk_manager(llm, memory):
             risk_reward_ratio=signals["risk_reward_ratio"],
             entry_quality=signals["entry_quality"],
             event_risk_active=event_risk_info["has_risk"],
+            # [Fix-3] Cap parameters
+            gate_passed=gate["passed"],
+            final_direction_bearish=_is_direction_bearish(cleaned_response),
+            trader_disallows_buy=_trader_disallows_buy(cleaned_response),
+            data_completeness=data_completeness,
+            position_status=position_status,
         )
 
         # ── D-002 真降级：移除/替换强动作文本 ──
@@ -293,6 +301,25 @@ def create_risk_manager(llm, memory):
         )
         if _sanitize_changes:
             _logger.warning("[D-002] sanitize_forbidden_strong_actions: %s", _sanitize_changes)
+
+        # [Fix-2] Valuation sanity check
+        # Try to extract current price from market report or combined text
+        current_price = _extract_current_price(
+            market_research_report or "",
+            state.get("volume_price_report", "") or "",
+        )
+        valuation_check = check_valuation_mismatch(
+            current_price=current_price,
+            report_text=cleaned_response,
+        )
+        if valuation_check["mismatch"]:
+            final_response += "\n\n" + valuation_check["note"]
+            _logger.warning("[Fix-2] valuation_mismatch: %s", valuation_check["note"])
+
+        # [Fix-9] Filter A-share short-selling language
+        final_response, ss_changes = _sanitize_short_selling_text(final_response)
+        if ss_changes:
+            _logger.warning("[Fix-9] short_selling_filter: %s", ss_changes)
 
         final_response += "\n\n" + format_execution_block(
             source_coverage=source_coverage,
@@ -305,6 +332,8 @@ def create_risk_manager(llm, memory):
             buy_level_note=buy_result["note"],
             strong_action_gate=gate,
             position_status=position_status,
+            # [Fix-2]
+            valuation_mismatch=valuation_check["mismatch"],
         )
 
         # ── 推送辩论裁决（用 cleaned 覆盖流式 raw content）──
@@ -354,6 +383,8 @@ def create_risk_manager(llm, memory):
             "risk_level": risk_result["level"],
             "opportunity_score": opp_score,
             "strong_action_gate_passed": gate["passed"],
+            # [Fix-2]
+            "valuation_mismatch": valuation_check["mismatch"],
         }
 
         return {
@@ -364,3 +395,43 @@ def create_risk_manager(llm, memory):
         }
 
     return risk_manager_node
+
+
+# ── Helper functions for Fix-2, Fix-3, Fix-9 ──
+
+def _extract_current_price(*report_texts: str) -> float | None:
+    """[Fix-2] Extract current price from report texts.
+
+    Looks for patterns like '当前价：102.12', '收盘价 102.12', etc.
+    Returns the first valid price found.
+    """
+    import re as _re
+    patterns = [
+        r'(?:当前价|现价|最新价|收盘价|当前价格)[：:\s]*(?:[¥￥])?(\d+\.?\d*)',
+        r'(?:价格|股价)[为约：:\s]*(?:[¥￥])?(\d+\.?\d*)\s*元',
+    ]
+    for text in report_texts:
+        if not text:
+            continue
+        for p in patterns:
+            m = _re.search(p, text)
+            if m:
+                try:
+                    return float(m.group(1))
+                except ValueError:
+                    pass
+    return None
+
+
+def _is_direction_bearish(text: str) -> bool:
+    """[Fix-3] Check if final direction is bearish/neutral."""
+    bearish_keywords = ['偏空', '看空', '观望', '中性', 'HOLD', 'WAIT', 'SELL',
+                        '禁止买入', '不建议', '回避', '减仓', '卖出']
+    return any(k in text for k in bearish_keywords)
+
+
+def _trader_disallows_buy(text: str) -> bool:
+    """[Fix-3] Check if trader explicitly disallows buying."""
+    disallow_keywords = ['禁止买入', '不建议买入', '不允许买入', '不建议入场',
+                         '禁止开仓', '禁止建仓', '不允许建仓', '暂不建仓']
+    return any(k in text for k in disallow_keywords)

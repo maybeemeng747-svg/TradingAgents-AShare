@@ -105,8 +105,20 @@ def _resolve_name_from_ticker(ticker: str) -> Optional[str]:
 _VALID_EVIDENCE = {EvidenceStatus.HAS_DATA, EvidenceStatus.NORMAL_NO_DATA}
 _EXCLUDE_FROM_COVERAGE = {EvidenceStatus.NOT_AVAILABLE}
 
-_RISK_LABELS = {0: "观察", 1: "禁止加仓", 2: "条件减仓", 3: "触发止损", 4: "立即清仓"}
-_BUY_LABELS = {0: "禁止买入", 1: "观察等待", 2: "条件试仓", 3: "确认建仓", 4: "积极建仓"}
+_RISK_LABELS = {0: "风险观察", 1: "禁止开仓", 2: "条件减仓", 3: "触发止损", 4: "立即清仓"}
+_BUY_LABELS = {0: "禁止买入", 1: "观察", 2: "条件试仓", 3: "确认建仓", 4: "积极建仓"}
+
+# [Fix-9] A-share short-selling filter patterns
+_SHORT_SELLING_PATTERNS = [
+    (r'做空策略', '看空信号'),
+    (r'空头开仓', '离场信号'),
+    (r'若做空', '若确认偏空'),
+    (r'做空[，,。]', '回避信号，'),
+    (r'做空\\)', '回避)'),
+    (r'考虑做空', '考虑减仓/止损'),
+    (r'建议做空', '建议回避'),
+    (r'可以做空', '应考虑离场'),
+]
 
 
 def calculate_data_completeness(
@@ -350,12 +362,22 @@ def calculate_risk_level(
 ) -> dict:
     """计算 Risk Level（持仓/卖出侧风控等级 0-4）。
 
+    [Fix-5] For no-position: level 0-1 should use '风险观察/禁止开仓' semantics.
+    Level 0 = '风险观察' (not '观察') for no-position.
+
     返回:
         {"level": int, "note": str}
     """
     max_level = 3 if position_status == "unknown" else 4
     if name_mismatch:
         max_level = min(max_level, 3)
+
+    # [Fix-5] No-position: cap at level 1 (禁止开仓)
+    if position_status == "no_position":
+        max_level = min(max_level, 1)
+        base_note = "未持仓，Risk Level 上限为 1（禁止开仓）"
+    else:
+        base_note = ""
 
     level_4_ok = (
         source_coverage >= 85
@@ -366,11 +388,11 @@ def calculate_risk_level(
         and not has_major_positive_announcement
     )
     if level_4_ok:
-        return {"level": min(4, max_level), "note": ""}
+        return {"level": min(4, max_level), "note": base_note}
 
-    note = "Risk Level 4 条件证据不足" if max_level == 4 else "Risk Level 4 被降级"
+    note = base_note or ("Risk Level 4 条件证据不足" if max_level == 4 else "Risk Level 4 被降级")
     if name_mismatch and max_level <= 3:
-        note = "名称校验失败，Risk Level 上限为 3"
+        note = (base_note + "；" if base_note else "") + "名称校验失败，Risk Level 上限为 3"
 
     level_3_ok = broke_support and main_capital_outflow_days >= 1
     if level_3_ok:
@@ -380,7 +402,7 @@ def calculate_risk_level(
     if level_2_ok:
         return {"level": min(2, max_level), "note": note}
 
-    return {"level": 0, "note": ""}
+    return {"level": 0, "note": base_note}
 
 
 def calculate_buy_level(
@@ -397,12 +419,37 @@ def calculate_buy_level(
 ) -> dict:
     """计算 Buy Level（买入/建仓侧等级 0-4）。
 
+    [Fix-5] For no-position when entry conditions are NOT met:
+    - Buy Level should be 0 (禁止买入) or 1 (观察)
+    - '未来满足条件后可重新评估' should not elevate the current level
+    - "条件试仓" (level 2) requires actual entry conditions to be met
+
     返回:
         {"level": int, "note": str}
     """
     max_level = 2 if position_status == "unknown" else 4
     if name_mismatch:
         max_level = min(max_level, 3)
+
+    # [Fix-5] No-position: cap at level 1 unless real entry conditions met
+    if position_status == "no_position":
+        # Only allow level 2+ if ALL actual entry conditions are confirmed
+        real_entry_ready = (
+            trend_confirmed
+            and main_capital_inflow_days >= 1
+            and no_execution_conflict
+            and no_unresolved_analyst_conflict
+            and not has_major_negative_announcement
+        )
+        if not real_entry_ready:
+            max_level = min(max_level, 1)
+            note_prefix = "未持仓且入场条件未满足，Buy Level 上限为 1（观察）"
+        else:
+            note_prefix = "未持仓但入场条件已确认，Buy Level 可达 2"
+    elif position_status == "unknown":
+        note_prefix = "持仓状态未知，Buy Level 上限为 2"
+    else:
+        note_prefix = ""
 
     level_4_ok = (
         source_coverage >= 85
@@ -414,12 +461,12 @@ def calculate_buy_level(
         and no_execution_conflict
         and no_unresolved_analyst_conflict
     )
-    if position_status == "unknown":
-        note = "持仓状态未知，Buy Level 上限为 2"
-    elif not level_4_ok:
-        note = "Buy Level 4 条件证据不足" if source_coverage >= 85 and evidence_coverage >= 85 else ""
+    if not level_4_ok:
+        note_suffix = "Buy Level 4 条件证据不足" if source_coverage >= 85 and evidence_coverage >= 85 else ""
     else:
-        note = ""
+        note_suffix = ""
+
+    note = (note_prefix + "；" + note_suffix).strip("；") if note_prefix and note_suffix else (note_prefix or note_suffix)
 
     if level_4_ok:
         return {"level": min(4, max_level), "note": note}
@@ -447,6 +494,12 @@ def calculate_opportunity_score(
     risk_reward_ratio: str = "unknown",
     entry_quality: str = "unknown",
     event_risk_active: bool = False,
+    # [Fix-3] Cap parameters
+    gate_passed: bool = True,
+    final_direction_bearish: bool = False,
+    trader_disallows_buy: bool = False,
+    data_completeness: int = 100,
+    position_status: str = "unknown",
 ) -> int:
     """计算 Opportunity Score（0-100）。
 
@@ -457,6 +510,13 @@ def calculate_opportunity_score(
     - 盈亏比/风险收益比 (0-20)
     - 入场质量 (0-15)
     - 事件风险降权
+
+    [Fix-3] Cap rules (multiple conditions → take the lowest cap):
+    - Strong Action Gate 未通过: cap 60
+    - 最终方向偏空/观望: cap 60
+    - 交易员明确不允许买入: cap 50
+    - 数据完整度 <80%: cap 70
+    - 持仓未知: cap 70
 
     注意：Opportunity Score 不能单独决定买入，必须经过 evidence gate。
     """
@@ -471,7 +531,100 @@ def calculate_opportunity_score(
     if event_risk_active:
         score = int(score * 0.6)
 
+    # [Fix-3] Apply caps
+    caps = []
+    if not gate_passed:
+        caps.append(60)
+    if final_direction_bearish:
+        caps.append(60)
+    if trader_disallows_buy:
+        caps.append(50)
+    if data_completeness < 80:
+        caps.append(70)
+    if position_status == "unknown":
+        caps.append(70)
+
+    if caps:
+        upper = min(caps)
+        score = min(score, upper)
+
     return min(100, max(0, score))
+
+
+def _sanitize_short_selling_text(text: str) -> tuple:
+    """[Fix-9] Replace A-share short-selling language with appropriate alternatives.
+
+    When can_short=false (A-share default), replace:
+    - 做空策略 → 看空信号
+    - 空头开仓 → 离场信号
+    - 若做空 → 若确认偏空
+    - etc.
+
+    Returns (sanitized_text, list_of_changes)
+    """
+    changes = []
+    result = text
+    for pattern, replacement in _SHORT_SELLING_PATTERNS:
+        matches = list(re.finditer(pattern, result))
+        if matches:
+            changes.append(f'"{matches[0].group(0)}" → "{replacement}"')
+            result = re.sub(pattern, replacement, result)
+    return result, changes
+
+
+def check_valuation_mismatch(
+    current_price: float | None,
+    report_text: str,
+) -> dict:
+    """[Fix-2] Check if valuation assumptions in fundamentals match the current price.
+
+    If the price referenced in valuation paragraphs differs from the report's
+    current price by >20%, the valuation is flagged as unreliable.
+
+    Returns:
+        {"mismatch": bool, "current_price": float|None, "valuation_price": float|None,
+         "deviation_pct": float|None, "note": str}
+    """
+    if current_price is None or not report_text:
+        return {"mismatch": False, "current_price": current_price,
+                "valuation_price": None, "deviation_pct": None, "note": ""}
+
+    # Extract valuation paragraph prices: "假设约X元" / "PE~Y倍" / "假设股价X元"
+    val_price = None
+    val_patterns = [
+        r'假设[约]?(?:股价|价格)?[为约]?\s*(\d+(?:\.\d+)?)\s*元',
+        r'假设[约]\s*(\d+(?:\.\d+)?)\s*元',
+        r'以[约]?\s*(\d+(?:\.\d+)?)\s*元',
+        r'(?:估值|估值段).{0,30}?(\d+(?:\.\d+)?)\s*元',
+    ]
+    for p in val_patterns:
+        m = re.search(p, report_text)
+        if m:
+            try:
+                val_price = float(m.group(1))
+                break
+            except ValueError:
+                pass
+
+    if val_price is None:
+        return {"mismatch": False, "current_price": current_price,
+                "valuation_price": None, "deviation_pct": None, "note": ""}
+
+    deviation = abs(current_price - val_price) / current_price * 100
+    mismatch = deviation > 20
+    note = ""
+    if mismatch:
+        note = (f"⚠️ [Fix-2] 估值口径错配：报告当前价 {current_price:.2f}元，"
+                f"估值段引用价格 {val_price:.2f}元，偏差 {deviation:.1f}%。"
+                f"估值推导不可作为结论证据，基本面估值维度权重已降低。")
+
+    return {
+        "mismatch": mismatch,
+        "current_price": current_price,
+        "valuation_price": val_price,
+        "deviation_pct": round(deviation, 1),
+        "note": note,
+    }
 
 
 def format_execution_block(
@@ -485,6 +638,8 @@ def format_execution_block(
     buy_level_note: str = "",
     strong_action_gate: dict = None,
     position_status: str = "unknown",
+    # [Fix-2] valuation mismatch flag
+    valuation_mismatch: bool = False,
 ) -> str:
     """格式化报告末尾的「执行等级与证据门禁」结构化区块。"""
     gate = strong_action_gate or {"passed": True, "failures": []}
@@ -503,13 +658,18 @@ def format_execution_block(
         f"- Source Coverage：{source_coverage}%",
         f"- Evidence Coverage：{evidence_coverage}%",
         f"- Confidence：{confidence}",
+    ]
+    # [Fix-2] Append valuation warning if mismatch detected
+    if valuation_mismatch:
+        lines.append("- ⚠️ 估值口径需人工复核/估值数据错配")
+    lines.extend([
         f"- Opportunity Score：{opportunity_score}/100（{opp_label}）",
         f"- Buy Level：Buy Level {buy_level}（{_BUY_LABELS.get(buy_level, '未知')}）"
         + (f" — {buy_level_note}" if buy_level_note else ""),
         f"- Risk Level：Risk Level {risk_level}（{_RISK_LABELS.get(risk_level, '未知')}）"
         + (f" — {risk_level_note}" if risk_level_note else ""),
         f"- Strong Action Gate：{'通过' if gate['passed'] else '未通过'}",
-    ]
+    ])
     if gate["failures"]:
         lines.append("- 降级原因：")
         for f in gate["failures"]:
@@ -517,7 +677,7 @@ def format_execution_block(
 
     pos_notes = {
         "unknown": "⚠️ 持仓状态未知，Buy Level 上限为 2，Risk Level 上限为 3",
-        "no_position": "主输出为 Buy Level，持仓相关动作仅作假设性参考",
+        "no_position": "未持仓，主输出为 Buy Level（观察/禁止买入），持仓相关动作仅作假设性参考",
         "has_position": "主输出为 Risk Level，辅助输出加仓/补仓评估",
     }
     lines.append(f"- {pos_notes.get(position_status, '')}")
@@ -595,6 +755,10 @@ _SANITIZE_NO_POSITION = [
     (r'止盈', '未持仓-相关持仓动作不适用-仅保留观察/建仓判断'),
     (r'止损', '未持仓-相关持仓动作不适用-仅保留观察/建仓判断'),
     (r'卖出', '未持仓-相关持仓动作不适用-仅保留观察/建仓判断'),
+    # [Fix-4] No-position: HOLD should become WAIT/观察
+    (r'\bHOLD\b(?!.*(?:等待|观察|条件))', 'WAIT/观察'),
+    # [Fix-4] '条件减仓' should not appear as main action for no-position
+    (r'(?:作为|建议).{0,6}条件减仓', '未持仓-仅保留观察/建仓判断'),
 ]
 
 _SYSTEM_BLOCK_MARKERS = [
