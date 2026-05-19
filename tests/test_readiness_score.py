@@ -406,6 +406,8 @@ def test_opportunity_score_all_positive():
         catalyst_strength="strong",
         risk_reward_ratio="favorable",
         entry_quality="good",
+        position_status="held",
+        data_completeness=100,
     )
     assert score == 100
 
