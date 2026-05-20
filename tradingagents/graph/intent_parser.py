@@ -22,17 +22,20 @@ ANALYSIS_INTENT_VALUES = ("watch", "entry", "holding", "add", "reduce", "stop_lo
 # Keyword → (analysis_intent, horizon) mapping for rule-based routing
 _INTENT_KEYWORD_MAP = [
     # (keywords_regex, intent, horizon)
+    # 短线专用规则（优先匹配，防止被通用规则抢先）
     (r"短线.*?(?:买点|入场|建仓)|想.*?短线.*?(?:买|入)|短线机会", "entry", "short"),
+    # 中线专用规则（优先匹配）
+    (r"中线.*?(?:买点|入场|建仓)|想.*?中线.*?(?:买|入|建仓)", "entry", "medium"),
+    (r"中线.*?(?:拿|持有|持仓)|中线.*?(?:卖不卖|走不走)", "holding", "medium"),
+    (r"中线.*?(?:机会|走势|行情|空间)", "watch", "medium"),
+    # 通用规则（无周期前缀时默认 short）
     (r"买点|入场|建仓|进场|能不能买", "entry", "short"),
-    (r"中线.*?(?:买点|入场|建仓)|想.*?中线.*?(?:买|入)", "entry", "medium"),
     (r"加仓|补仓|追加|买入更多", "add", "short"),
     (r"减仓|部分.*?(?:卖出|离场)|降低仓位", "reduce", "short"),
     (r"止损|割肉|认赔", "stop_loss", "short"),
     (r"清仓|全部.*?(?:卖出|离场)", "stop_loss", "short"),
-    (r"中线.*?(?:拿|持有|持仓)|中线.*?(?:卖不卖|走不走)", "holding", "medium"),
     (r"继续.*?拿|继续.*?持有|拿着不动|套.*?(?:怎么办|怎么)|被套|持仓.*?(?:怎么办|如何)", "holding", "short"),
     (r"短线.*?(?:机会|走势|行情)", "watch", "short"),
-    (r"中线.*?(?:机会|走势|行情|空间)", "watch", "medium"),
     (r"先观察|先观望|继续观察|先看看|观望", "watch", "short"),
 ]
 
