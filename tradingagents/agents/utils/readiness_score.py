@@ -640,8 +640,15 @@ def format_execution_block(
     position_status: str = "unknown",
     # [Fix-2] valuation mismatch flag
     valuation_mismatch: bool = False,
+    # G-001: three-layer decision context
+    analysis_intent: str = "watch",
+    position_context: dict = None,
 ) -> str:
-    """格式化报告末尾的「执行等级与证据门禁」结构化区块。"""
+    """格式化报告末尾的「执行等级与证据门禁」结构化区块。
+
+    G-001: 新增三层决策区（中线逻辑层 / 短线时点层 / 持仓执行层）
+    和当前交易目的区块。
+    """
     gate = strong_action_gate or {"passed": True, "failures": []}
 
     if opportunity_score >= 85:
@@ -681,6 +688,59 @@ def format_execution_block(
         "has_position": "主输出为 Risk Level，辅助输出加仓/补仓评估",
     }
     lines.append(f"- {pos_notes.get(position_status, '')}")
+
+    # ── G-001: 三层决策区 ──
+    # 当前交易目的区块
+    intent_labels = {
+        "watch": "观察",
+        "entry": "寻找入场机会",
+        "holding": "持仓处理",
+        "add": "评估加仓条件",
+        "reduce": "评估减仓条件",
+        "stop_loss": "止损/清仓评估",
+    }
+    intent_label = intent_labels.get(analysis_intent, analysis_intent)
+
+    pos_ctx = position_context or {}
+    has_pos = pos_ctx.get("has_position", False) or position_status == "has_position"
+    pos_display = "已持仓" if has_pos else "未持仓"
+
+    # 禁止动作
+    forbidden_actions = []
+    if not has_pos:
+        forbidden_actions = ["HOLD", "REDUCE", "EXIT", "减仓", "清仓", "止损"]
+    else:
+        if analysis_intent == "watch":
+            forbidden_actions = []
+
+    lines.append("")
+    lines.append("### 三层决策")
+    lines.append(f"- 状态：{pos_display}")
+    lines.append(f"- 交易目的：{intent_label}")
+    lines.append(f"- 周期：{'短线' if position_status != 'unknown' else '未指定'}")
+    if forbidden_actions:
+        lines.append(f"- 禁止动作：{', '.join(forbidden_actions)}")
+
+    # 中线逻辑层
+    lines.append("")
+    lines.append("#### 中线逻辑层")
+    if evidence_coverage >= 70:
+        lines.append("- 数据支撑充分，中线判断可信")
+    else:
+        lines.append("- ⚠️ 数据完整度不足，中线判断仅供参考")
+
+    # 短线时点层
+    lines.append("")
+    lines.append("#### 短线时点层")
+    lines.append(f"- Opportunity Score: {opportunity_score}/100")
+    lines.append(f"- Buy Level: {buy_level}（{_BUY_LABELS.get(buy_level, '未知')}）")
+
+    # 持仓执行层
+    lines.append("")
+    lines.append("#### 持仓执行层")
+    lines.append(f"- Risk Level: {risk_level}（{_RISK_LABELS.get(risk_level, '未知')}）")
+    if has_pos and pos_ctx.get("avg_cost") is not None:
+        lines.append(f"- 持仓成本: {pos_ctx['avg_cost']}")
 
     return "\n".join(lines)
 
