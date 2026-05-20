@@ -1402,3 +1402,125 @@ def extract_execution_signals(state: dict, final_response: str, reports: dict) -
         "has_stop_loss": has_stop_loss,
         "execution_zone_conflict": execution_zone_conflict,
     }
+
+
+# ── G-001: 短中线冲突处理 ──────────────────────────────────────────────
+
+def resolve_horizon_conflict(
+    medium_bullish: bool,
+    short_bullish: bool,
+    has_position: bool = False,
+) -> dict:
+    """G-001: 短中线冲突处理 — 四种组合的降级规则。
+
+    Args:
+        medium_bullish: 中线是否偏多
+        short_bullish: 短线是否偏多
+        has_position: 是否已持仓
+
+    Returns:
+        dict with keys:
+        - action: 最终建议动作
+        - allowed_intents: 允许的 analysis_intent 列表
+        - note: 说明文本
+        - conflict_type: 冲突类型标识
+    """
+    if medium_bullish and short_bullish:
+        # 中线偏多 + 短线偏强 → 可条件买入/加仓
+        return {
+            "action": "可条件买入/加仓",
+            "allowed_intents": ["entry", "add", "watch"],
+            "note": "中短线共振偏多，可考虑条件入场或加仓。",
+            "conflict_type": "none",
+        }
+    elif medium_bullish and not short_bullish:
+        # 中线偏多 + 短线偏弱 → 不追买不清仓，等待短线修复
+        if has_position:
+            return {
+                "action": "持有等待",
+                "allowed_intents": ["holding", "watch"],
+                "note": "中线偏多但短线偏弱，已持仓不追买不清仓，等待短线修复。",
+                "conflict_type": "medium_bull_short_weak",
+            }
+        else:
+            return {
+                "action": "继续观察",
+                "allowed_intents": ["watch"],
+                "note": "中线偏多但短线偏弱，未持仓不追买，等待短线修复后再入场。",
+                "conflict_type": "medium_bull_short_weak",
+            }
+    elif not medium_bullish and short_bullish:
+        # 中线偏空 + 短线偏强 → 只允许短打观察
+        if has_position:
+            return {
+                "action": "短打观察",
+                "allowed_intents": ["holding", "reduce", "watch"],
+                "note": "中线偏空但短线偏强，已持仓可短打观察，禁止加仓。",
+                "conflict_type": "medium_bear_short_strong",
+            }
+        else:
+            return {
+                "action": "短打观察",
+                "allowed_intents": ["watch"],
+                "note": "中线偏空但短线偏强，未持仓只允许短打观察，禁止入场建仓。",
+                "conflict_type": "medium_bear_short_strong",
+            }
+    else:
+        # 中线偏空 + 短线偏弱 → 已持仓减仓/止损观察，未持仓继续观察
+        if has_position:
+            return {
+                "action": "减仓/止损观察",
+                "allowed_intents": ["reduce", "stop_loss", "watch"],
+                "note": "中短线共振偏空，已持仓建议减仓/止损观察。",
+                "conflict_type": "both_bearish",
+            }
+        else:
+            return {
+                "action": "继续观察",
+                "allowed_intents": ["watch"],
+                "note": "中短线共振偏空，未持仓继续观察，禁止入场。",
+                "conflict_type": "both_bearish",
+            }
+
+
+def apply_horizon_conflict_to_actions(
+    conflict_result: dict,
+    allowed_actions: dict,
+) -> dict:
+    """根据短中线冲突结果，进一步限制允许的动作。
+
+    Args:
+        conflict_result: resolve_horizon_conflict 的返回值
+        allowed_actions: get_allowed_actions 的返回值
+
+    Returns:
+        修改后的 allowed_actions dict
+    """
+    result = dict(allowed_actions)
+    allowed_intents = conflict_result.get("allowed_intents", [])
+    forbidden_extra = []
+
+    # 如果冲突类型不为 none，根据 allowed_intents 限制动作
+    if conflict_result.get("conflict_type") != "none":
+        if "entry" not in allowed_intents:
+            forbidden_extra.extend(["买入", "建仓", "确认建仓", "积极建仓"])
+        if "add" not in allowed_intents:
+            forbidden_extra.extend(["加仓", "补仓"])
+        if "reduce" not in allowed_intents:
+            forbidden_extra.append("减仓")
+        if "stop_loss" not in allowed_intents:
+            forbidden_extra.append("止损")
+
+    if forbidden_extra:
+        existing_forbidden = result.get("forbidden", [])
+        for f in forbidden_extra:
+            if f not in existing_forbidden:
+                existing_forbidden.append(f)
+        result["forbidden"] = existing_forbidden
+        # Remove from allowed
+        existing_allowed = result.get("allowed", [])
+        result["allowed"] = [a for a in existing_allowed if a not in forbidden_extra]
+        result["message"] = (result.get("message", "") +
+                            f" 短中线冲突({conflict_result.get('conflict_type', '')})：{conflict_result.get('note', '')}")
+
+    return result
