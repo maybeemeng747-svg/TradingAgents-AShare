@@ -252,39 +252,96 @@ def generate_readiness_score(
     }
 
 
-def get_allowed_actions(data_completeness: int) -> dict:
-    """
-    根据数据完整度，返回允许和禁止的动作。
+def get_allowed_actions(data_completeness: int, position_status: str = "unknown") -> dict:
+    """根据数据完整度和持仓状态，返回允许和禁止的动作。
 
-    规则：
-    - 数据完整度 < 50%：禁止主动加仓建议，允许持有和止损触发
-    - 数据完整度 50-79%：允许持有、止损、减仓，禁止主动加仓
-    - 数据完整度 >= 80%：允许所有动作
+    G-001 动作映射规则：
+    - 未持仓 (no_position)：允许 Level 0-2（观察/禁止追高/条件入场），禁止 HOLD/REDUCE/EXIT
+    - 已持仓 (has_position)：允许 Level 0-4（观察/禁止加仓/条件减仓/触发止损/立即清仓）
+    - 持仓未知 (unknown)：保守策略，禁止强动作
+
+    加仓条件：中线不差+短线转强+资金无持续流出+未跌破支撑+数据完整度>=75%
     """
-    if data_completeness < 50:
-        return {
-            "level": "low",
-            "allowed": ["持有处理", "止损触发", "减仓触发", "观望"],
-            "forbidden": ["买入", "加仓", "追涨"],
-            "label": "低质量报告",
-            "message": "数据完整度不足50%，禁止买入/加仓/追涨建议，仅允许持有和止损触发。",
-        }
-    elif data_completeness < 80:
-        return {
-            "level": "medium",
-            "allowed": ["持有处理", "止损触发", "减仓触发", "观望"],
-            "forbidden": ["加仓", "追涨"],
-            "label": "中等质量报告",
-            "message": "数据完整度50-79%，禁止主动加仓建议，允许持有和止损触发。",
-        }
+    if position_status == "no_position":
+        # 未持仓：禁止任何持仓操作
+        if data_completeness < 50:
+            return {
+                "level": "low",
+                "allowed": ["观察"],
+                "forbidden": ["买入", "加仓", "追涨", "HOLD", "REDUCE", "EXIT", "减仓", "清仓", "止损"],
+                "label": "低质量报告 · 未持仓",
+                "message": "未持仓且数据完整度不足50%，仅允许观察。",
+            }
+        elif data_completeness < 75:
+            return {
+                "level": "medium",
+                "allowed": ["观察", "条件试仓"],
+                "forbidden": ["买入", "加仓", "追涨", "HOLD", "REDUCE", "EXIT", "减仓", "清仓", "止损", "确认建仓", "积极建仓"],
+                "label": "中等质量报告 · 未持仓",
+                "message": "未持仓，数据50-74%，仅允许观察和条件试仓，禁止买入/加仓/追涨。",
+            }
+        else:
+            return {
+                "level": "high",
+                "allowed": ["观察", "条件试仓", "确认建仓"],
+                "forbidden": ["加仓", "追涨", "HOLD", "REDUCE", "EXIT", "减仓", "清仓", "止损", "积极建仓"],
+                "label": "高质量报告 · 未持仓",
+                "message": "未持仓，数据完整，允许条件入场，禁止持仓操作(HOLD/减仓/清仓/止损)。",
+            }
+    elif position_status == "has_position":
+        # 已持仓：允许持仓操作，加仓需高门槛
+        if data_completeness < 50:
+            return {
+                "level": "low",
+                "allowed": ["持有", "止损触发", "减仓触发"],
+                "forbidden": ["买入", "加仓", "追涨"],
+                "label": "低质量报告 · 已持仓",
+                "message": "已持仓但数据完整度不足50%，禁止买入/加仓/追涨，允许持有和止损触发。",
+            }
+        elif data_completeness < 75:
+            return {
+                "level": "medium",
+                "allowed": ["持有", "止损触发", "减仓触发", "观察"],
+                "forbidden": ["加仓", "追涨"],
+                "label": "中等质量报告 · 已持仓",
+                "allowed_levels": [0, 1, 2],  # 观察/禁止加仓/条件减仓
+                "message": "已持仓，数据50-74%，禁止主动加仓，允许持有/止损/减仓。",
+            }
+        else:
+            return {
+                "level": "high",
+                "allowed": ["持有", "止损触发", "减仓触发", "加仓", "观察"],
+                "forbidden": ["追涨"],
+                "label": "高质量报告 · 已持仓",
+                "allowed_levels": [0, 1, 2, 3, 4],  # 全部允许
+                "message": "已持仓且数据完整，允许持有/止损/减仓/加仓。",
+            }
     else:
-        return {
-            "level": "high",
-            "allowed": ["买入", "加仓", "持有处理", "止损触发", "减仓触发", "卖出", "观望"],
-            "forbidden": [],
-            "label": "高质量报告",
-            "message": "数据完整，允许所有交易建议。",
-        }
+        # 持仓未知：保守策略
+        if data_completeness < 50:
+            return {
+                "level": "low",
+                "allowed": ["观察"],
+                "forbidden": ["买入", "加仓", "追涨", "HOLD", "REDUCE", "EXIT"],
+                "label": "低质量报告 · 持仓未知",
+                "message": "持仓状态未知且数据不足50%，禁止所有主动操作。",
+            }
+        elif data_completeness < 80:
+            return {
+                "level": "medium",
+                "allowed": ["持有处理", "止损触发", "减仓触发", "观察"],
+                "forbidden": ["加仓", "追涨"],
+                "label": "中等质量报告 · 持仓未知",
+                "message": "持仓状态未知，禁止主动加仓建议，允许持有和止损触发。",
+            }
+        else:
+            return {
+                "level": "high",
+                "allowed": ["买入", "加仓", "持有处理", "止损触发", "减仓触发", "卖出", "观望"],
+                "forbidden": [],
+                "label": "高质量报告 · 持仓未知",
+                "message": "数据完整，允许所有交易建议。",
+            }
 
 
 def get_position_status(user_context: dict) -> str:
