@@ -141,6 +141,14 @@ def _build_scheduled_analyze_request(
         user_intent={
             "ticker": symbol,
             "horizons": [horizon],
+            "analysis_intent": "holding" if scheduled_user_context.get("current_position", 0) > 0 else "watch",
+            "position_context": {
+                "has_position": (scheduled_user_context.get("current_position", 0) or 0) > 0,
+                "avg_cost": scheduled_user_context.get("average_cost"),
+                "shares": scheduled_user_context.get("current_position"),
+                "position_pct": scheduled_user_context.get("current_position_pct"),
+                "holding_days": None,
+            } if scheduled_user_context.get("current_position", 0) else None,
             "focus_areas": [],
             "specific_questions": [],
             "user_context": scheduled_user_context,
@@ -1296,6 +1304,8 @@ def _build_result_payload(final_state: Dict[str, Any]) -> Dict[str, Any]:
         "metadata": final_state.get("metadata"),
         "trade_quality_check": (final_state.get("metadata") or {}).get("trade_quality_check"),
         "final_trade_decision": final_state.get("final_trade_decision"),
+        "analysis_intent": final_state.get("analysis_intent", "watch"),
+        "position_context": final_state.get("position_context"),
     }
 
 
@@ -1804,6 +1814,8 @@ async def _run_job_inner(
             request.user_intent = {
                 "ticker": request.symbol,
                 "horizons": request.horizons or ["short"],
+                "analysis_intent": "watch",
+                "position_context": None,
                 "user_context": {},
                 "raw_query": request.query,
             }
@@ -2050,6 +2062,8 @@ async def _run_job_inner(
                 "analyst_traces": (
                     short_r.get("analyst_traces", []) + medium_r.get("analyst_traces", [])
                 ),
+                "analysis_intent": user_intent.get("analysis_intent", "watch"),
+                "position_context": user_intent.get("position_context"),
             }
             # LLM 结构化提取（目标价、止损、信心、风险、关键指标）
             # 注意：必须在 _set_job(status="completed") 之前完成，否则 SSE 超时

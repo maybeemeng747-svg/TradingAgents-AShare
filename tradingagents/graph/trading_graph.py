@@ -358,6 +358,8 @@ class TradingAgentsGraph:
                 "raw_query": "",
                 "ticker": ticker,
                 "horizons": ["short"],
+                "analysis_intent": "watch",
+                "position_context": None,
                 "focus_areas": [],
                 "specific_questions": [],
                 "user_context": {},
@@ -377,10 +379,14 @@ class TradingAgentsGraph:
         else:
             _logger.warning(f"[TradingAgentsGraph] WARNING: cache is None after collect!")
 
+        # Determine horizon from intent (G-001: no longer hardcoded short)
+        horizons = user_intent.get("horizons", ["short"])
+        horizon = horizons[0] if horizons else "short"
+
         graph_args = self.propagator.get_graph_args()
 
         state = self.propagator.create_initial_state(
-            ticker, trade_date, user_intent=user_intent, horizon="short"
+            ticker, trade_date, user_intent=user_intent, horizon=horizon
         )
 
         # [E-004] Store raw evidence summary in metadata for risk_manager
@@ -423,6 +429,8 @@ class TradingAgentsGraph:
             "metadata": metadata,
             "trade_quality_check": metadata.get("trade_quality_check"),
             "analyst_traces": final_state.get("analyst_traces", []),
+            "analysis_intent": final_state.get("analysis_intent", "watch"),
+            "position_context": final_state.get("position_context"),
             "market_report": final_state.get("market_report", ""),
             "sentiment_report": final_state.get("sentiment_report", ""),
             "news_report": final_state.get("news_report", ""),
