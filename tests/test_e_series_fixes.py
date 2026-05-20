@@ -113,8 +113,9 @@ class TestE004NotAvailable:
             margin_trading=EvidenceStatus.NOT_AVAILABLE,  # excluded
             announcements=EvidenceStatus.HAS_DATA,
         )
-        # 6 counted (excluding 2 NOT_AVAILABLE), all 6 are valid
-        assert coverage == 100
+        # 6 counted (excluding 2 NOT_AVAILABLE), weighted: 5 HAS_DATA + 1 NORMAL_NO_DATA(0.5)
+        # = 5.5/6 ≈ 91%
+        assert coverage == 91
 
     def test_not_available_reduces_denominator(self):
         """With NOT_AVAILABLE, denominator shrinks but valid items still count."""
@@ -128,8 +129,9 @@ class TestE004NotAvailable:
             margin_trading=EvidenceStatus.NOT_AVAILABLE,
             announcements=EvidenceStatus.HAS_DATA,
         )
-        # 6 counted, 5 valid (volume is FIELD_MISSING)
-        assert coverage == 83  # 5/6 ≈ 83%
+        # 6 counted, weighted: 4 HAS_DATA + 1 NORMAL_NO_DATA(0.5) + 1 FIELD_MISSING(0)
+        # = 4.5/6 = 75%
+        assert coverage == 75
 
     def test_all_not_available_returns_zero(self):
         """Edge case: all fields are NOT_AVAILABLE → 0% (0/0 = 0)."""
@@ -322,11 +324,11 @@ class TestE009OverrideDisclaimer:
         if _execution_layer_overrides_hold(ftd):
             override_note = (
                 "\n\n---\n"
-                "⚠️ **上游买入建议已被最终门禁降级，系统最终动作以 HOLD/等待触发为准。**\n"
+                "⚠️ **上游买入建议已被最终门禁降级，系统最终动作以 WAIT/等待触发为准。**\n"
             )
             ftd = ftd + override_note
         assert "上游" in ftd
-        assert "HOLD" in ftd
+        assert "WAIT" in ftd
 
     def test_no_disclaimer_without_override(self):
         """Normal VERDICT (no override) should not have disclaimer."""
@@ -340,7 +342,7 @@ class TestE009OverrideDisclaimer:
             "### 执行等级\n- Strong Action Gate：未通过\n"
         )
         override_note = "\n上游买入建议已被最终门禁降级"
-        marker = "系统最终动作以 HOLD/等待触发为准"
+        marker = "系统最终动作以 WAIT/等待触发为准"
         # Simulate E-009 idempotent check (uses marker, not generic "上游")
         if marker not in ftd:
             ftd = ftd + override_note + marker
@@ -355,6 +357,6 @@ class TestE009OverrideDisclaimer:
             "- Strong Action Gate：未通过\n"
         )
         # The idempotent check should use the specific marker, not generic '上游'
-        marker = "系统最终动作以 HOLD/等待触发为准"
+        marker = "系统最终动作以 WAIT/等待触发为准"
         assert marker not in ftd  # marker NOT present → should allow add
         assert "上游" in ftd  # but '上游' IS present → old check would wrongly skip

@@ -105,6 +105,12 @@ def _resolve_name_from_ticker(ticker: str) -> Optional[str]:
 _VALID_EVIDENCE = {EvidenceStatus.HAS_DATA, EvidenceStatus.NORMAL_NO_DATA}
 _EXCLUDE_FROM_COVERAGE = {EvidenceStatus.NOT_AVAILABLE}
 
+# [F-001-fix] Evidence weight: HAS_DATA = full, NORMAL_NO_DATA = partial (0.5)
+_EVIDENCE_WEIGHTS = {
+    EvidenceStatus.HAS_DATA: 1.0,
+    EvidenceStatus.NORMAL_NO_DATA: 0.5,
+}
+
 _RISK_LABELS = {0: "风险观察", 1: "禁止开仓", 2: "条件减仓", 3: "触发止损", 4: "立即清仓"}
 _BUY_LABELS = {0: "禁止买入", 1: "观察", 2: "条件试仓", 3: "确认建仓", 4: "积极建仓"}
 
@@ -167,7 +173,8 @@ def calculate_evidence_coverage(
     计算原始证据覆盖度（0-100%）。
 
     区分：有数据 / 正常无触发 / 查询失败 / 未查询 / 字段缺失。
-    只有 has_data 和 normal_no_data 算有效覆盖。
+    [F-001-fix] Weighted: HAS_DATA = 1.0, NORMAL_NO_DATA = 0.5.
+    This prevents NORMAL_NO_DATA from inflating coverage when data completeness is low.
     """
     items = [
         ohlcv_5d, volume, turnover_rate, volume_ratio,
@@ -175,8 +182,9 @@ def calculate_evidence_coverage(
     ]
     # Exclude NOT_AVAILABLE fields from denominator (data source doesn't provide them)
     counted = [s for s in items if s not in _EXCLUDE_FROM_COVERAGE]
-    valid = sum(1 for s in counted if s in _VALID_EVIDENCE)
-    return int((valid / len(counted)) * 100) if counted else 0
+    # [F-001-fix] Weighted sum: HAS_DATA counts fully, NORMAL_NO_DATA counts 0.5
+    weighted = sum(_EVIDENCE_WEIGHTS.get(s, 0) for s in counted)
+    return int((weighted / len(counted)) * 100) if counted else 0
 
 
 def assess_confidence(
@@ -728,12 +736,32 @@ def format_execution_block(
         lines.append("- ⚠️ 估值口径需人工复核/估值数据错配")
     lines.extend([
         f"- Opportunity Score：{opportunity_score}/100（{opp_label}）",
-        f"- Buy Level：Buy Level {buy_level}（{_BUY_LABELS.get(buy_level, '未知')}）"
-        + (f" — {buy_level_note}" if buy_level_note else ""),
-        f"- Risk Level：Risk Level {risk_level}（{_RISK_LABELS.get(risk_level, '未知')}）"
-        + (f" — {risk_level_note}" if risk_level_note else ""),
-        f"- Strong Action Gate：{'通过' if gate['passed'] else '未通过'}",
     ])
+
+    # [F-001-fix] For unknown/no-position: clarify current action vs conditional candidate
+    if position_status in ("no_position", "unknown"):
+        lines.append(
+            f"- Buy Level：当前动作 WAIT/观察 | 条件候选：Buy Level {buy_level}（{_BUY_LABELS.get(buy_level, '未知')}）"
+            + (f" — {buy_level_note}" if buy_level_note else "")
+        )
+    else:
+        lines.append(
+            f"- Buy Level：Buy Level {buy_level}（{_BUY_LABELS.get(buy_level, '未知')}）"
+            + (f" — {buy_level_note}" if buy_level_note else "")
+        )
+
+    if position_status in ("no_position", "unknown"):
+        lines.append(
+            f"- Risk Level：未来持仓后止损条件 | Risk Level {risk_level}（{_RISK_LABELS.get(risk_level, '未知')}）"
+            + (f" — {risk_level_note}" if risk_level_note else "")
+        )
+    else:
+        lines.append(
+            f"- Risk Level：Risk Level {risk_level}（{_RISK_LABELS.get(risk_level, '未知')}）"
+            + (f" — {risk_level_note}" if risk_level_note else "")
+        )
+
+    lines.append(f"- Strong Action Gate：{'通过' if gate['passed'] else '未通过'}")
     if gate["failures"]:
         lines.append("- 降级原因：")
         for f in gate["failures"]:
@@ -873,6 +901,8 @@ _SANITIZE_NO_POSITION = [
     (r'止损', '未持仓-相关持仓动作不适用-仅保留观察/建仓判断'),
     (r'卖出', '未持仓-相关持仓动作不适用-仅保留观察/建仓判断'),
     # [Fix-4] No-position: HOLD should become WAIT/观察
+    # [F-001-fix] Also replace HOLD/等待触发 → WAIT/等待触发
+    (r'HOLD/等待触发', 'WAIT/等待触发'),
     (r'\bHOLD\b(?!.*(?:等待|观察|条件))', 'WAIT/观察'),
     # [Fix-4] '条件减仓' should not appear as main action for no-position
     (r'(?:作为|建议).{0,6}条件减仓', '未持仓-仅保留观察/建仓判断'),

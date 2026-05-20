@@ -28,11 +28,17 @@ def _first_price(text: str, labels: tuple[str, ...], prefer_later: bool = False)
     When prefer_later=True the *last* match **by text position** is returned —
     useful for stop-loss extraction where the risk-manager paragraph appears
     later in the text and should override the trader-level "不适用/—".
+
+    [F-001-fix] Handles bold markdown around both label and number:
+    e.g. **止损价**：**36.00元**
+    Also handles multi-price lines:
+    e.g. 止损价：34.40元（试探仓）和36.00元（主仓）
     """
     result = None
     best_pos = -1
     for label in labels:
-        pattern = rf"\*{{0,2}}{re.escape(label)}\*{{0,2}}[：:\s]*(?:[¥￥$])?([0-9]+(?:\.[0-9]+)?)"
+        # [F-001-fix] Allow optional ** around the number after colon
+        pattern = rf"\*{{0,2}}{re.escape(label)}\*{{0,2}}[：:\s]*(?:[¥￥$])?\*{{0,2}}([0-9]+(?:\.[0-9]+)?)"
         for match in re.finditer(pattern, text):
             if _is_likely_indicator_number(text, match.end(1)) or _is_likely_list_marker(text, match.end(1)):
                 continue
@@ -45,6 +51,30 @@ def _first_price(text: str, labels: tuple[str, ...], prefer_later: bool = False)
                     result = val
             except ValueError:
                 continue
+
+        # [F-001-fix] Handle multi-price on same line after "和"/"/"
+        # e.g. 止损价：34.40元（试探仓）和36.00元（主仓）
+        # Only runs when prefer_later=True (used by _extract_stop_loss fallback)
+        if prefer_later:
+            last_match = None
+            for match in re.finditer(pattern, text):
+                last_match = match
+            if last_match is not None:
+                rest = text[last_match.end():]
+                # Look for "和 XX[.XX]元" in the remainder of this line
+                extra = re.search(
+                    r'(?:和|及)\s*\*{0,2}([0-9]+(?:\.[0-9]+)?)\s*元?',
+                    rest.split('\n')[0],
+                )
+                if extra:
+                    try:
+                        val = float(extra.group(1))
+                        abs_pos = last_match.end() + extra.start(1)
+                        if abs_pos > best_pos:
+                            best_pos = abs_pos
+                            result = val
+                    except ValueError:
+                        pass
     return result
 
 
@@ -72,29 +102,31 @@ def _find_price_range(text: str) -> str | None:
         if re.search(p, text, re.IGNORECASE):
             return None
 
+    # [F-001-fix] Range value pattern that handles **bold** markdown around numbers
+    range_val = r"\*{0,2}[0-9]+(?:\.[0-9]+)?\*{0,2}\s*(?:元)?\s*[-~至\-]\s*(?:\*{0,2})?(?:元)?\s*\*{0,2}[0-9]+(?:\.[0-9]+)?\*{0,2}(?:元)?"
+
     # Priority: match ranges explicitly labeled as final/effective
-    # Supports: 【】, 元, 执行区间, 仅保留, etc.
-    range_val = r"[0-9]+(?:\.[0-9]+)?\s*(?:元)?\s*[-~至\-]\s*(?:元)?\s*[0-9]+(?:\.[0-9]+)?(?:元)?"
     priority_patterns = [
-        r"(?:最终(?:有效)?|唯一有效)(?:的)?(?:入场|买入|建仓|建仓执行)区间[^0-9]*?" + range_val,
-        r"有效(?:入场|买入|建仓|建仓执行)?区间[^0-9]*?" + range_val,
+        r"(?:最终(?:有效)?|唯一有效)(?:的)?(?:入场|买入|建仓|建仓执行)区间[^0-9*]*?" + range_val,
+        r"有效(?:入场|买入|建仓|建仓执行)?区间[^0-9*]*?" + range_val,
         r'可在[\d.]+\s*[-~至]\s*[\d.]+(?:元)?(?:买入|建仓|入场)',
     ]
     for pattern in priority_patterns:
-        # Strip non-numeric decorators (元、【】)
         match = re.search(pattern, text)
         if match:
             raw = match.group(0)
-            # Extract the two numbers
             nums = re.findall(r"[0-9]+(?:\.[0-9]+)?", raw)
             if len(nums) >= 2:
                 sep = "-" if "-" in raw else ("至" if "至" in raw else "~")
                 return f"{nums[0]}{sep}{nums[1]}"
 
-    # Fallback: take the LAST match (later in text = more likely the refined/final range)
-    # [Fix-7] Only accept explicit entry labels (not 震荡/观察/阻力/支撑)
+    # [F-001-fix] Extended entry labels including "入场条件"
     generic_patterns = [
         r"(?:入场区间|买入区间|建仓区间)[：:\s]*" + range_val,
+        # [F-001-fix] Match patterns like: 入场条件：股价回调至35.50-36.50元区间
+        r"(?:入场条件|买入条件|建仓条件)[^\n]*?" + range_val + r"\s*(?:元)?(?:区间|区域)?",
+        # [F-001-fix] Match inline: 建议在35.50-36.50元区间建仓 / 可在35.50至36.50元建仓
+        r"(?:建议|可|宜)(?:在|于)[^0-9]*?" + range_val + r"\s*(?:元)?(?:区间|区域)?(?:建仓|买入|入场)",
     ]
     for pattern in generic_patterns:
         matches = re.findall(pattern, text)

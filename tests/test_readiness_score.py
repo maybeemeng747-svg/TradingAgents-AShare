@@ -96,14 +96,15 @@ def test_full_evidence_coverage_100():
         turnover_rate=EvidenceStatus.HAS_DATA,
         volume_ratio=EvidenceStatus.HAS_DATA,
         individual_fund_flow=EvidenceStatus.HAS_DATA,
-        lhb_status=EvidenceStatus.NORMAL_NO_DATA,
+        lhb_status=EvidenceStatus.HAS_DATA,
         margin_trading=EvidenceStatus.HAS_DATA,
         announcements=EvidenceStatus.HAS_DATA,
     )
     assert ev == 100
 
 
-def test_normal_no_data_counts_as_valid():
+def test_normal_no_data_counts_as_half():
+    """NORMAL_NO_DATA counts as 0.5 weight (F-001 fix)."""
     ev = calculate_evidence_coverage(
         ohlcv_5d=EvidenceStatus.NORMAL_NO_DATA,
         volume=EvidenceStatus.NORMAL_NO_DATA,
@@ -114,7 +115,7 @@ def test_normal_no_data_counts_as_valid():
         margin_trading=EvidenceStatus.NORMAL_NO_DATA,
         announcements=EvidenceStatus.NORMAL_NO_DATA,
     )
-    assert ev == 100
+    assert ev == 50  # 8 fields * 0.5 weight / 8 = 50%
 
 
 def test_query_failed_not_counted_as_valid():
