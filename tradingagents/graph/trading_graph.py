@@ -399,7 +399,7 @@ class TradingAgentsGraph:
         # Evict cached data to free memory
         self.data_collector.evict(ticker, trade_date)
 
-        result = self._build_horizon_result("short", final_state)
+        result = self._build_horizon_result(horizon, final_state)
 
         self._log_state_dual(trade_date, result, {}, user_intent)
 

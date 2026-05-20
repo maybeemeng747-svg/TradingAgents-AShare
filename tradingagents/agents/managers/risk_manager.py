@@ -334,6 +334,10 @@ def create_risk_manager(llm, memory):
             position_status=position_status,
             # [Fix-2]
             valuation_mismatch=valuation_check["mismatch"],
+            # G-001: wire three-layer decision into production path
+            analysis_intent=state.get("analysis_intent", "watch"),
+            position_context=state.get("position_context", {}),
+            horizon=state.get("horizon", "short"),
         )
 
         # ── 推送辩论裁决（用 cleaned 覆盖流式 raw content）──

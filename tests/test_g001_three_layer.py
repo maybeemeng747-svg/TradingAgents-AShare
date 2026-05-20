@@ -336,3 +336,108 @@ class TestScenario6HorizonConflictComprehensive:
         assert "已持仓" in block
         assert "持仓处理" in block
         assert "持仓成本: 30.0" in block
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# G-001 Production Wiring — 补充测试
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestG001ProductionWiring:
+    """G-001 生产链路闭环的补充验证。"""
+
+    def test_medium_horizon_shows_zhongxian(self):
+        """medium query 最终报告显示「周期：中线」，不显示「周期：短线」。"""
+        block = format_execution_block(
+            source_coverage=75,
+            evidence_coverage=70,
+            confidence="中",
+            opportunity_score=50,
+            risk_level=1,
+            buy_level=1,
+            position_status="no_position",
+            analysis_intent="watch",
+            position_context={"has_position": False},
+            horizon="medium",
+        )
+        assert "周期：中线" in block
+        assert "周期：短线" not in block
+
+    def test_holding_intent_shows_chicang_chuli(self):
+        """holding query 执行区显示「持仓处理」。"""
+        block = format_execution_block(
+            source_coverage=80,
+            evidence_coverage=75,
+            confidence="中",
+            opportunity_score=40,
+            risk_level=2,
+            buy_level=0,
+            position_status="has_position",
+            analysis_intent="holding",
+            position_context={"has_position": True},
+            horizon="short",
+        )
+        assert "持仓处理" in block
+
+    def test_position_context_avg_cost_shown(self):
+        """position_context 带 avg_cost 时最终报告显示成本。"""
+        block = format_execution_block(
+            source_coverage=80,
+            evidence_coverage=75,
+            confidence="中",
+            opportunity_score=40,
+            risk_level=2,
+            buy_level=0,
+            position_status="has_position",
+            analysis_intent="holding",
+            position_context={"has_position": True, "avg_cost": 25.8},
+            horizon="short",
+        )
+        assert "持仓成本: 25.8" in block
+
+    def test_default_horizon_is_short(self):
+        """默认 horizon=short 时显示「周期：短线」。"""
+        block = format_execution_block(
+            source_coverage=80,
+            evidence_coverage=75,
+            confidence="中",
+            opportunity_score=50,
+            risk_level=1,
+            buy_level=1,
+            position_status="no_position",
+        )
+        assert "周期：短线" in block
+
+    def test_dual_horizon_conflict_in_block(self):
+        """传入 short_bullish + medium_bullish 时冲突裁决接入报告。"""
+        block = format_execution_block(
+            source_coverage=80,
+            evidence_coverage=75,
+            confidence="中",
+            opportunity_score=50,
+            risk_level=1,
+            buy_level=1,
+            position_status="no_position",
+            analysis_intent="watch",
+            position_context={"has_position": False},
+            horizon="short",
+            short_bullish=False,
+            medium_bullish=True,
+        )
+        assert "短中线冲突" in block
+        assert "中线偏多但短线偏弱" in block
+
+    def test_single_horizon_no_conflict_output(self):
+        """单周期不传冲突信号时不输出冲突裁决。"""
+        block = format_execution_block(
+            source_coverage=80,
+            evidence_coverage=75,
+            confidence="中",
+            opportunity_score=50,
+            risk_level=1,
+            buy_level=1,
+            position_status="no_position",
+            analysis_intent="watch",
+            position_context={"has_position": False},
+            horizon="short",
+        )
+        assert "短中线冲突" not in block

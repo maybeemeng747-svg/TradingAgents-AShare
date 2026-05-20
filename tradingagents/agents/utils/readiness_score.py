@@ -708,6 +708,10 @@ def format_execution_block(
     # G-001: three-layer decision context
     analysis_intent: str = "watch",
     position_context: dict = None,
+    horizon: str = "short",
+    # G-001: optional dual-horizon conflict signals
+    short_bullish: bool | None = None,
+    medium_bullish: bool | None = None,
 ) -> str:
     """格式化报告末尾的「执行等级与证据门禁」结构化区块。
 
@@ -802,9 +806,27 @@ def format_execution_block(
     lines.append("### 三层决策")
     lines.append(f"- 状态：{pos_display}")
     lines.append(f"- 交易目的：{intent_label}")
-    lines.append(f"- 周期：{'短线' if position_status != 'unknown' else '未指定'}")
+    horizon_labels = {"short": "短线", "medium": "中线", "long": "长线"}
+    lines.append(f"- 周期：{horizon_labels.get(horizon, horizon)}")
     if forbidden_actions:
         lines.append(f"- 禁止动作：{', '.join(forbidden_actions)}")
+
+    # G-001: 短中线冲突裁决（仅在双周期信号均可用时执行）
+    if short_bullish is not None and medium_bullish is not None:
+        conflict = resolve_horizon_conflict(
+            medium_bullish=medium_bullish,
+            short_bullish=short_bullish,
+            has_position=has_pos,
+        )
+        if conflict["conflict_type"] != "none":
+            lines.append(f"- ⚠️ 短中线冲突：{conflict['note']}")
+            lines.append(f"- 冲突裁决：{conflict['action']}")
+    elif horizon == "short" and medium_bullish is None:
+        # 单短线周期，不做短中线冲突裁决
+        pass
+    elif horizon == "medium" and short_bullish is None:
+        # 单中线周期，不做短中线冲突裁决
+        pass
 
     # 中线逻辑层
     lines.append("")
