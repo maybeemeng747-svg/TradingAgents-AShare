@@ -27,10 +27,20 @@ def extract_verdict(text: str) -> Tuple[str, str]:
     return "中性", "低"
 
 
+class PositionContext(TypedDict, total=False):
+    has_position: bool
+    avg_cost: float
+    shares: float
+    position_pct: float
+    holding_days: int
+
+
 class UserIntent(TypedDict, total=False):
     raw_query: str
     ticker: str
     horizons: List[str]
+    analysis_intent: str  # watch / entry / holding / add / reduce / stop_loss
+    position_context: PositionContext
     focus_areas: List[str]
     specific_questions: List[str]
     user_context: "UserContext"
@@ -187,6 +197,8 @@ class AgentState(MessagesState):
     smart_money_report: Annotated[str, "Report from the Smart Money Analyst"]
     volume_price_report: Annotated[str, "Report from the Volume Price Analyst"]
     user_intent: Annotated[Optional[UserIntent], "Parsed user intent from natural language"]
+    analysis_intent: Annotated[str, "Trading purpose: watch/entry/holding/add/reduce/stop_loss"]
+    position_context: Annotated[Optional[PositionContext], "Current position details"]
     horizon: Annotated[str, "Current analysis horizon: short or medium"]
     analyst_traces: Annotated[List[TraceItem], operator.add]
     short_term_result: Annotated[Optional[dict], "Final short-term analysis result"]

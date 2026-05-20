@@ -16,6 +16,77 @@ _HORIZON_LABELS = {
     "medium": "中线（1-3月，基本面主导）",
 }
 
+# Analysis intent constants
+ANALYSIS_INTENT_VALUES = ("watch", "entry", "holding", "add", "reduce", "stop_loss")
+
+# Keyword → (analysis_intent, horizon) mapping for rule-based routing
+_INTENT_KEYWORD_MAP = [
+    # (keywords_regex, intent, horizon)
+    (r"短线.*?(?:买点|入场|建仓)|想.*?短线.*?(?:买|入)|短线机会", "entry", "short"),
+    (r"买点|入场|建仓|进场|能不能买", "entry", "short"),
+    (r"中线.*?(?:买点|入场|建仓)|想.*?中线.*?(?:买|入)", "entry", "medium"),
+    (r"加仓|补仓|追加|买入更多", "add", "short"),
+    (r"减仓|部分.*?(?:卖出|离场)|降低仓位", "reduce", "short"),
+    (r"止损|割肉|认赔", "stop_loss", "short"),
+    (r"清仓|全部.*?(?:卖出|离场)", "stop_loss", "short"),
+    (r"中线.*?(?:拿|持有|持仓)|中线.*?(?:卖不卖|走不走)", "holding", "medium"),
+    (r"继续.*?拿|继续.*?持有|拿着不动|套.*?(?:怎么办|怎么)|被套|持仓.*?(?:怎么办|如何)", "holding", "short"),
+    (r"短线.*?(?:机会|走势|行情)", "watch", "short"),
+    (r"中线.*?(?:机会|走势|行情|空间)", "watch", "medium"),
+    (r"先观察|先观望|继续观察|先看看|观望", "watch", "short"),
+]
+
+
+def _infer_analysis_intent(query: str) -> tuple[str, str]:
+    """Rule-based inference of (analysis_intent, horizon) from query text.
+
+    Returns (intent, horizon) where intent is one of ANALYSIS_INTENT_VALUES
+    and horizon is 'short' or 'medium'.
+    """
+    text = (query or "").strip()
+    for pattern, intent, horizon in _INTENT_KEYWORD_MAP:
+        if re.search(pattern, text, re.IGNORECASE):
+            return intent, horizon
+    return "watch", "short"
+
+
+def _infer_position_context(query: str, user_context: Dict[str, Any]) -> Dict[str, Any]:
+    """Infer position_context from query text and user_context.
+
+    Returns a dict with keys: has_position, avg_cost, shares, position_pct, holding_days.
+    """
+    ctx: Dict[str, Any] = {
+        "has_position": False,
+        "avg_cost": None,
+        "shares": None,
+        "position_pct": None,
+        "holding_days": None,
+    }
+
+    # From explicit user_context fields
+    pos = user_context.get("current_position")
+    pos_pct = user_context.get("current_position_pct")
+    avg_cost = user_context.get("average_cost")
+
+    if pos is not None and float(pos) > 0:
+        ctx["has_position"] = True
+        ctx["shares"] = float(pos)
+    if pos_pct is not None:
+        ctx["position_pct"] = float(pos_pct)
+        if float(pos_pct) > 0:
+            ctx["has_position"] = True
+    if avg_cost is not None:
+        ctx["avg_cost"] = float(avg_cost)
+
+    # Infer from query keywords if user_context doesn't say
+    text = (query or "").strip()
+    holding_keywords = ["持有", "持仓", "拿着", "被套", "套牢", "仓位", "减仓", "止损", "加仓", "补仓"]
+    if not ctx["has_position"] and any(k in text for k in holding_keywords):
+        # If user mentions position-related keywords, assume has_position
+        ctx["has_position"] = True
+
+    return ctx
+
 
 def parse_intent(
     query: str,
@@ -46,19 +117,40 @@ def parse_intent(
         
         parsed = json.loads(raw) or {}
         parsed_user_context = normalize_user_context(parsed.get("user_context") or {})
+        merged_context = _merge_inferred_user_context(parsed_user_context, fallback_user_context)
+
+        # G-001: Infer analysis_intent and horizon from query + user_context
+        analysis_intent, inferred_horizon = _infer_analysis_intent(query)
+        position_context = _infer_position_context(query, merged_context)
+
+        # Determine horizons based on analysis_intent + position_context
+        # If user has position, default to holding; otherwise watch/entry
+        if position_context["has_position"] and analysis_intent == "watch":
+            analysis_intent = "holding"
+
+        horizons = [inferred_horizon]
+
         return {
             "raw_query": query,
             "ticker": parsed.get("ticker") or fallback_ticker or "",
-            "horizons": ["short"],  # 固定单次运行，每个分析师用自己的自然时间窗口
+            "horizons": horizons,
+            "analysis_intent": analysis_intent,
+            "position_context": position_context,
             "focus_areas": parsed.get("focus_areas") if isinstance(parsed.get("focus_areas"), list) else [],
             "specific_questions": parsed.get("specific_questions") if isinstance(parsed.get("specific_questions"), list) else [],
-            "user_context": _merge_inferred_user_context(parsed_user_context, fallback_user_context),
+            "user_context": merged_context,
         }
     except Exception:
+        analysis_intent, inferred_horizon = _infer_analysis_intent(query)
+        position_context = _infer_position_context(query, fallback_user_context)
+        if position_context["has_position"] and analysis_intent == "watch":
+            analysis_intent = "holding"
         return {
             "raw_query": query,
             "ticker": fallback_ticker or "",
-            "horizons": ["short"],
+            "horizons": [inferred_horizon],
+            "analysis_intent": analysis_intent,
+            "position_context": position_context,
             "focus_areas": [],
             "specific_questions": [],
             "user_context": fallback_user_context,
@@ -70,6 +162,8 @@ def build_horizon_context(
     focus_areas: List[str],
     specific_questions: List[str],
     agent_type: Optional[str] = None,
+    analysis_intent: Optional[str] = None,
+    position_context: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Build the horizon context block to prepend to any agent's system prompt."""
     config = get_config()
@@ -80,12 +174,41 @@ def build_horizon_context(
     questions_str = "；".join(specific_questions) if specific_questions else "无"
     weight_hint = _build_weight_hint(horizon, agent_type)
 
+    # G-001: Append three-layer decision context
+    intent_block = ""
+    if analysis_intent:
+        intent_labels = {
+            "watch": "观察",
+            "entry": "寻找入场机会",
+            "holding": "持仓处理",
+            "add": "评估加仓条件",
+            "reduce": "评估减仓条件",
+            "stop_loss": "止损/清仓评估",
+        }
+        intent_label = intent_labels.get(analysis_intent, analysis_intent)
+        intent_block = f"\n- 交易目的：{intent_label}"
+
+    position_block = ""
+    if position_context:
+        pos = position_context
+        has_pos = pos.get("has_position", False)
+        pos_status = "已持仓" if has_pos else "未持仓"
+        parts = [pos_status]
+        if has_pos:
+            if pos.get("avg_cost") is not None:
+                parts.append(f"成本 {pos['avg_cost']}")
+            if pos.get("shares") is not None:
+                parts.append(f"持仓 {pos['shares']} 股")
+            if pos.get("position_pct") is not None:
+                parts.append(f"仓位 {pos['position_pct']}%")
+        position_block = "\n- 持仓状态：" + " | ".join(parts)
+
     return template.format(
         horizon_label=horizon_label,
         focus_areas_str=focus_str,
         specific_questions_str=questions_str,
         weight_hint=weight_hint,
-    )
+    ) + intent_block + position_block
 
 
 def _build_weight_hint(horizon: str, agent_type: Optional[str]) -> str:

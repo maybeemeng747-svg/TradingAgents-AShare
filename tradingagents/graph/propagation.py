@@ -103,11 +103,17 @@ class Propagator:
             "metadata": {},
             "analyst_traces": [],
             "horizon": horizon,
+            "analysis_intent": "watch",  # G-001: default, overridden by user_intent
+            "position_context": None,    # G-001: populated from user_intent
             "short_term_result": None,
             "medium_term_result": None,
         }
         if user_intent is not None:
             state["user_intent"] = user_intent
+            # G-001: Extract analysis_intent and position_context from user_intent
+            if isinstance(user_intent, dict):
+                state["analysis_intent"] = user_intent.get("analysis_intent", "watch")
+                state["position_context"] = user_intent.get("position_context")
         return state
 
     def get_graph_args(self, callbacks: Optional[List] = None) -> Dict[str, Any]:
