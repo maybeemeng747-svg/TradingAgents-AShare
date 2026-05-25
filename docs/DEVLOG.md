@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-05-25 | P0-3 rate_limiter 补修（async 死锁 + 移除失败队列）
+
+- **执行者**：subagent
+- **任务**：修复 `rate_limiter.py` 的 async 死锁问题，移除名存实亡的 RetryQueue，补测试
+- **修改文件**：
+  - `tradingagents/llm_clients/rate_limiter.py` — 核心重写
+    - sync `invoke_with_retry` 继续用 `threading.Semaphore`
+    - async `ainvoke_with_retry` 改用 `asyncio.Semaphore`（`async with sem` 代替 `sem.acquire()`）
+    - 移除 `RetryTask`、`RetryQueue`、`_try_enqueue` 等队列相关代码（`retry_count=3 > max_queue_retries=2` 导致队列永远不消费）
+    - 429 重试耗尽后直接抛异常，不再假装入队
+    - `_get_async_semaphore()` 缓存到模块级变量，确保并发限制生效
+  - `tests/test_llm_rate_limiter.py` — 测试重写
+    - 移除 `TestRetryTask`、`TestRetryQueue` 类
+    - 新增 `TestAsyncSemaphoreContention`：max_concurrent=1 两个 ainvoke 必须串行完成且不死锁
+    - 新增 async 429 exhausted 直接报错测试
+    - 新增 async 402/auth 立即失败测试
+    - 新增 async 5xx/timeout 只重试一次测试
+    - 新增 sync 402 立即失败测试
+- **验证**：
+  - `pytest tests/test_llm_rate_limiter.py` → 37 passed
+  - `pytest tests/test_p0_p1_acceptance.py tests/test_g001_three_layer.py tests/test_readiness_score.py` → 175 passed
+
+---
+
 ## 2026-05-24 | 挑选式同步 GitHub 上游修复
 
 - **执行者**：Codex

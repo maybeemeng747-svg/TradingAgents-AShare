@@ -9,6 +9,7 @@ from langchain_openai import ChatOpenAI
 _logger = logging.getLogger(__name__)
 
 from .base_client import BaseLLMClient
+from .rate_limiter import invoke_with_retry, ainvoke_with_retry
 from .validators import validate_model
 
 
@@ -39,7 +40,16 @@ class UnifiedChatOpenAI(ChatOpenAI):
         super().__init__(**kwargs)
 
     def invoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
-        result = super().invoke(input=input, config=config, **kwargs)
+        """Invoke with retry + concurrency control via rate_limiter."""
+        result = invoke_with_retry(self, input, config=config, **kwargs)
+        if _logger.isEnabledFor(logging.DEBUG):
+            content = result.content if hasattr(result, "content") else str(result)
+            _logger.debug(f"[LLM Response] model={self.model_name} length={len(content)}\n{content}")
+        return result
+
+    async def ainvoke(self, input: Any, config: Any = None, **kwargs: Any) -> Any:
+        """Async invoke with retry + concurrency control via rate_limiter."""
+        result = await ainvoke_with_retry(self, input, config=config, **kwargs)
         if _logger.isEnabledFor(logging.DEBUG):
             content = result.content if hasattr(result, "content") else str(result)
             _logger.debug(f"[LLM Response] model={self.model_name} length={len(content)}\n{content}")
@@ -80,25 +90,25 @@ class OpenAIClient(BaseLLMClient):
         self.provider = provider.lower()
 
     def get_llm(self) -> Any:
-        """Return configured ChatOpenAI instance with long timeout and no retries."""
+        """Return configured ChatOpenAI instance with retry + concurrency control."""
         llm_kwargs = {"model": self.model}
 
         if not UnifiedChatOpenAI._is_reasoning_model(self.model):
             llm_kwargs["temperature"] = self.kwargs.get("temperature", 0)
 
-        # ── 极致稳定性配置 ──
-        # 1. 禁用一切重试：避免 Thinking 模型重复扣费或因重连导致的状态丢失
+        # ── 稳定性配置 ──
+        # 1. 禁用 LangChain 内置重试：由 rate_limiter 统一控制重试策略
         llm_kwargs["max_retries"] = 0
-        
+
         # 2. 超长超时：默认 300 秒，给足推理模型思考时间
         llm_kwargs["timeout"] = self.kwargs.get("timeout", 300.0)
-        
+
         target_url = self.base_url or "https://api.openai.com/v1"
         if self.provider == "xai": target_url = "https://api.x.ai/v1"
         elif self.provider == "openrouter": target_url = "https://openrouter.ai/api/v1"
         elif self.provider == "ollama": target_url = "http://localhost:11434/v1"
-        
-        print(f"[LLM Client] Init {self.provider} ({self.model}) at {target_url} (Retries=0, Timeout={llm_kwargs['timeout']}s)")
+
+        print(f"[LLM Client] Init {self.provider} ({self.model}) at {target_url} (Retries=rate_limiter, Timeout={llm_kwargs['timeout']}s)")
 
         if self.provider == "xai":
             llm_kwargs["base_url"] = "https://api.x.ai/v1"
