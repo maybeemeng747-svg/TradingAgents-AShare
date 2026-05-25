@@ -66,27 +66,49 @@ def _infer_position_context(query: str, user_context: Dict[str, Any]) -> Dict[st
         "holding_days": None,
     }
 
+    # ── [P0-1] Negation keyword priority ──
+    # Negation keywords force has_position=False even if holding keywords appear.
+    text = (query or "").strip()
+    negation_keywords = ["未持仓", "空仓", "还没买", "没有持仓", "无持仓", "不持有", "未持有"]
+    has_negation = any(neg in text for neg in negation_keywords)
+
     # From explicit user_context fields
     pos = user_context.get("current_position")
     pos_pct = user_context.get("current_position_pct")
     avg_cost = user_context.get("average_cost")
 
-    if pos is not None and float(pos) > 0:
-        ctx["has_position"] = True
-        ctx["shares"] = float(pos)
+    # [P0-1] explicit_no_position: 否定词或 current_position=0
+    explicit_no_position = has_negation
+
+    if pos is not None:
+        pos_value = float(pos)
+        if pos_value > 0 and not explicit_no_position:
+            ctx["has_position"] = True
+            ctx["shares"] = pos_value
+        elif pos_value == 0:
+            # [P0-1] current_position=0 也算 explicit_no_position
+            explicit_no_position = True
+            ctx["has_position"] = False
     if pos_pct is not None:
         ctx["position_pct"] = float(pos_pct)
-        if float(pos_pct) > 0:
+        if float(pos_pct) > 0 and not explicit_no_position:
             ctx["has_position"] = True
     if avg_cost is not None:
         ctx["avg_cost"] = float(avg_cost)
 
-    # Infer from query keywords if user_context doesn't say
-    text = (query or "").strip()
-    holding_keywords = ["持有", "持仓", "拿着", "被套", "套牢", "仓位", "减仓", "止损", "加仓", "补仓"]
-    if not ctx["has_position"] and any(k in text for k in holding_keywords):
-        # If user mentions position-related keywords, assume has_position
-        ctx["has_position"] = True
+    # [P0-1] 否定词优先：如果有否定词或 explicit_no_position，强制清空持仓数据
+    if explicit_no_position:
+        ctx["has_position"] = False
+        ctx["shares"] = None
+        ctx["avg_cost"] = None
+        ctx["position_pct"] = None
+        return ctx
+
+    # 只有在没有否定词且没有explicit user_context时，才用关键词推断
+    if not ctx["has_position"] and not has_negation and pos is None and pos_pct is None:
+        holding_keywords = ["持有", "持仓", "拿着", "被套", "套牢", "仓位", "减仓", "止损", "加仓", "补仓"]
+        if any(k in text for k in holding_keywords):
+            ctx["has_position"] = True
 
     return ctx
 

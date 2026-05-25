@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-05-24 | 挑选式同步 GitHub 上游修复
+
+- **执行者**：Codex
+- **任务**：检查 `KylinMountain/TradingAgents-AShare` 上游更新，挑选合入不覆盖本地 D/E/F/G 系列投研优化的修复
+- **修改文件**：
+  - `api/main.py` — 默认任务超时 `TA_JOB_TIMEOUT` 从 600s 调整为 1800s，保留智谱 Coding 专用 `TA_ZHIPU_CODING_JOB_TIMEOUT=2700`
+  - `api/main.py` — `_ai_extract_symbol_and_date()` 与 streaming 版本新增 regex 兜底：LLM 失败、限流、返回空或返回无法解析的中文名时，优先保留用户输入中的明确股票代码
+  - `frontend/src/components/DebateDrawer.tsx` — 辩论抽屉容器增加 `dark` class，确保暗色模式上下文生效
+  - `frontend/src/components/DebateTimeline.tsx` — Markdown 内容显式使用 `text-slate-200`，避免深色背景文字不可读
+  - `tests/test_stock_extract_fallback.py` — 新增股票识别兜底测试，覆盖 LLM 失败与中文名解析失败场景
+- **未合入**：
+  - 前端依赖小版本升级（react-router-dom/zustand/postcss 等）暂缓，避免与本地前端定制混在同一批
+  - pytest lock 小版本升级暂缓，后续可单独维护依赖
+- **验证**：
+  - `pytest tests/test_stock_extract_fallback.py tests/test_api_smoke.py::TestChatCompletionsEndpoint -q`：6 passed
+  - `python -m py_compile api/main.py`：通过
+  - `npm run build`：通过（Vite chunk size warning 为既有体积提示）
+
+---
+
 ## 2026-05-13 | E-001~E-004 基础设施修复
 
 - **执行者**：OpenCode

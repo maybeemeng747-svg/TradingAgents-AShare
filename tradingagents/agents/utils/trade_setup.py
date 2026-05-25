@@ -270,8 +270,20 @@ def build_trade_quality_check(
     do_not_trade_if = []
     if constraints:
         do_not_trade_if.append("交易计划违反用户硬约束：" + "；".join(constraints))
+    # [P1-3] Stop-loss tolerance: skip stop-loss error for no-position without conditional entry
+    current_position = (user_context or {}).get("current_position", 0)
+    _has_position = current_position is not None and current_position > 0
+    _is_conditional_entry = execution_mode == "条件触发" and any(
+        keyword in text for keyword in ("买入", "建仓", "入场", "BUY")
+    )
     if stop_loss_price is None:
-        do_not_trade_if.append("无法从报告中解析出明确止损价。")
+        if _has_position:
+            # Has position: stop-loss is required
+            do_not_trade_if.append("无法从报告中解析出明确止损价。")
+        elif _is_conditional_entry:
+            # No position but conditional entry: stop-loss required for the entry plan
+            do_not_trade_if.append("无法从报告中解析出明确止损价。")
+        # else: no position, no conditional entry → stop-loss missing is NOT an error
     do_not_trade_if.extend(conflicts)
 
     return {

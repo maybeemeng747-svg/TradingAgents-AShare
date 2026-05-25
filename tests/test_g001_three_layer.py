@@ -441,3 +441,190 @@ class TestG001ProductionWiring:
             horizon="short",
         )
         assert "短中线冲突" not in block
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# P0-1: 持仓状态统一 — 否定词 + current_position=0 清空持仓数据
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestP01PositionStateUnification:
+    """P0-1: 否定词或 current_position=0 必须完全清空持仓数据。"""
+
+    def test_negation_keyword_clears_all(self):
+        """否定词(未持仓)时 shares/avg_cost/position_pct 全部为 None。"""
+        ctx = _infer_position_context("未持仓，想看看", {
+            "current_position": 100,
+            "average_cost": 10,
+            "current_position_pct": 20,
+        })
+        assert ctx["has_position"] is False
+        assert ctx["shares"] is None
+        assert ctx["avg_cost"] is None
+        assert ctx["position_pct"] is None
+
+    def test_empty_position_keyword_clears_all(self):
+        """空仓 关键词清空所有持仓数据。"""
+        ctx = _infer_position_context("空仓状态", {
+            "current_position": 500,
+            "average_cost": 25.0,
+            "current_position_pct": 10,
+        })
+        assert ctx["has_position"] is False
+        assert ctx["shares"] is None
+        assert ctx["avg_cost"] is None
+        assert ctx["position_pct"] is None
+
+    def test_current_position_zero_is_explicit_no_position(self):
+        """current_position=0 + avg_cost=10 + position_pct=20 → 完全清空。"""
+        ctx = _infer_position_context("看看002353", {
+            "current_position": 0,
+            "average_cost": 10,
+            "current_position_pct": 20,
+        })
+        assert ctx["has_position"] is False
+        assert ctx["shares"] is None
+        assert ctx["avg_cost"] is None
+        assert ctx["position_pct"] is None
+
+    def test_current_position_zero_prevents_position_pct_override(self):
+        """current_position=0 阻止 position_pct 把状态污染为持仓。"""
+        ctx = _infer_position_context("分析一下", {
+            "current_position": 0,
+            "current_position_pct": 30,
+        })
+        assert ctx["has_position"] is False
+        assert ctx["position_pct"] is None
+
+    def test_no_negation_no_zero_position_normal(self):
+        """正常持仓数据不受影响。"""
+        ctx = _infer_position_context("继续拿着", {
+            "current_position": 1000,
+            "average_cost": 15.5,
+            "current_position_pct": 10,
+        })
+        assert ctx["has_position"] is True
+        assert ctx["shares"] == 1000
+        assert ctx["avg_cost"] == 15.5
+        assert ctx["position_pct"] == 10
+
+    def test_negation_keyword_variants(self):
+        """各种否定词变体都正确清空。"""
+        for keyword in ["未持仓", "空仓", "还没买", "没有持仓", "无持仓", "不持有", "未持有"]:
+            ctx = _infer_position_context(f"{keyword}，想看看", {
+                "current_position": 200,
+                "average_cost": 8.0,
+            })
+            assert ctx["has_position"] is False, f"keyword={keyword} should be no position"
+            assert ctx["shares"] is None, f"keyword={keyword} shares should be None"
+            assert ctx["avg_cost"] is None, f"keyword={keyword} avg_cost should be None"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# P0-2: sanitizer 修复 — 短句替换 + 保留字段名
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestP02SanitizerFix:
+    """P0-2: sanitizer 使用短句替换，保留止损价/止损位等字段名。"""
+
+    def test_sanitize_uses_short_replacement(self):
+        """替换文本是短句而不是长文本。"""
+        from tradingagents.agents.utils.readiness_score import sanitize_forbidden_strong_actions
+        text = "建议止损离场，风险较大"
+        result, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate={"passed": True, "failures": []},
+            position_status="no_position",
+            buy_level=1,
+            risk_level=1,
+        )
+        # 不应包含长文本
+        assert "未持仓-相关持仓动作不适用" not in result
+        # 应包含短句
+        assert "该持仓动作不适用，保持观察" in result
+
+    def test_sanitize_stop_loss_price_preserved(self):
+        """止损价/止损位/止损条件/止损红线/止损线 不被替换。"""
+        from tradingagents.agents.utils.readiness_score import sanitize_forbidden_strong_actions
+        text = "当前止损价为15元，止损位在14.5元，止损条件为跌破14元，止损红线13元，止损线12.5元"
+        result, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate={"passed": True, "failures": []},
+            position_status="no_position",
+            buy_level=1,
+            risk_level=1,
+        )
+        assert "止损价" in result
+        assert "止损位" in result
+        assert "止损条件" in result
+        assert "止损红线" in result
+        assert "止损线" in result
+
+    def test_sanitize_zh_sun_li_chang(self):
+        """止损离场 被完整替换。"""
+        from tradingagents.agents.utils.readiness_score import sanitize_forbidden_strong_actions
+        text = "建议止损离场"
+        result, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate={"passed": True, "failures": []},
+            position_status="no_position",
+            buy_level=1,
+            risk_level=1,
+        )
+        assert "止损离场" not in result
+        assert "该持仓动作不适用，保持观察" in result
+
+    def test_sanitize_trigger_stop_loss(self):
+        """触发止损 被替换。"""
+        from tradingagents.agents.utils.readiness_score import sanitize_forbidden_strong_actions
+        text = "如果跌破15元则触发止损"
+        result, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate={"passed": True, "failures": []},
+            position_status="no_position",
+            buy_level=1,
+            risk_level=1,
+        )
+        assert "触发止损" not in result
+
+    def test_sanitize_reduce_observe(self):
+        """减仓观察 被替换。"""
+        from tradingagents.agents.utils.readiness_score import sanitize_forbidden_strong_actions
+        text = "减仓观察为主"
+        result, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate={"passed": True, "failures": []},
+            position_status="no_position",
+            buy_level=1,
+            risk_level=1,
+        )
+        assert "减仓观察" not in result
+
+    def test_sanitize_no_half_pollution(self):
+        """不允许留下半截污染如 'xxx离场' 'xxx价'。"""
+        from tradingagents.agents.utils.readiness_score import sanitize_forbidden_strong_actions
+        text = "建议立即清仓离场出局"
+        result, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate={"passed": True, "failures": []},
+            position_status="no_position",
+            buy_level=1,
+            risk_level=1,
+        )
+        # 不应残留半截
+        assert "清仓" not in result or "该持仓动作不适用" in result
+
+    def test_has_position_not_sanitized(self):
+        """有持仓时不执行未持仓 sanitizer。"""
+        from tradingagents.agents.utils.readiness_score import sanitize_forbidden_strong_actions
+        text = "建议止损离场"
+        result, changes = sanitize_forbidden_strong_actions(
+            text,
+            gate={"passed": True, "failures": []},
+            position_status="has_position",
+            buy_level=1,
+            risk_level=1,
+        )
+        # 有持仓时止损离场不应被替换
+        assert "建议止损离场" in result

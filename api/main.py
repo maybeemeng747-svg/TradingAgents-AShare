@@ -116,6 +116,41 @@ def _resolve_scheduled_trade_date(trade_date: str) -> str:
     return trade_date if is_cn_trading_day(trade_date) else previous_cn_trading_day(trade_date)
 
 
+def _resolve_has_position(
+    user_intent: Optional[Dict[str, Any]],
+    request: Optional["AnalyzeRequest"] = None,
+) -> Optional[bool]:
+    """Resolve has_position from user_intent / request with priority fallback.
+
+    Priority order:
+    1. user_intent.position_context.has_position
+    2. user_intent.user_context.current_position > 0
+    3. request.current_position > 0
+    4. None (unknown)
+    """
+    if user_intent:
+        # 1. position_context.has_position (nested dict)
+        pos_ctx = user_intent.get("position_context")
+        if isinstance(pos_ctx, dict) and "has_position" in pos_ctx:
+            return bool(pos_ctx["has_position"])
+
+        # 2. user_context.current_position > 0
+        user_ctx = user_intent.get("user_context")
+        if isinstance(user_ctx, dict):
+            cp = user_ctx.get("current_position")
+            if cp is not None:
+                return (cp or 0) > 0
+
+    # 3. request.current_position > 0
+    if request is not None:
+        cp = getattr(request, "current_position", None)
+        if cp is not None:
+            return (cp or 0) > 0
+
+    # 4. Unknown
+    return None
+
+
 def _build_scheduled_analyze_request(
     db: Session,
     user_id: str,
@@ -363,7 +398,7 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-_JOB_TIMEOUT = int(os.getenv("TA_JOB_TIMEOUT", "600"))  # seconds
+_JOB_TIMEOUT = int(os.getenv("TA_JOB_TIMEOUT", "1800"))  # seconds
 _ZHIPU_CODING_JOB_TIMEOUT = int(os.getenv("TA_ZHIPU_CODING_JOB_TIMEOUT", "2700"))  # seconds
 
 
@@ -2019,11 +2054,14 @@ async def _run_job_inner(
             short_r = graph._build_horizon_result("short", horizon_states.get("short") or {})
             medium_r = graph._build_horizon_result("medium", horizon_states.get("medium") or {})
             primary_r = short_r if horizon_states.get("short") else medium_r
-            decision = graph.process_signal(primary_r.get("final_trade_decision", "")) or "UNKNOWN"
+            decision = graph.process_signal(
+                primary_r.get("final_trade_decision", ""),
+                has_position=_resolve_has_position(user_intent, request),
+            ) or "UNKNOWN"
 
             # E-009: Add override disclaimer when execution layer overrides VERDICT
             ftd = primary_r.get("final_trade_decision", "")
-            if decision == "HOLD" and ftd:
+            if decision in ("HOLD", "WAIT") and ftd:
                 from tradingagents.graph.signal_processing import _execution_layer_overrides_hold
                 if _execution_layer_overrides_hold(ftd):
                     # Detect upstream direction for more specific disclaimer
@@ -2298,7 +2336,8 @@ async def _run_job_inner(
         if not final_state:
             raise RuntimeError("graph returned empty final state")
 
-        decision = graph.process_signal(final_state["final_trade_decision"]) or "UNKNOWN"
+        _has_pos = (final_state.get("user_context") or {}).get("current_position", 0) is not None and (final_state.get("user_context") or {}).get("current_position", 0) > 0
+        decision = graph.process_signal(final_state["final_trade_decision"], has_position=_has_pos) or "UNKNOWN"
         result = _build_result_payload(final_state)
         result["decision"] = decision
 
@@ -2982,6 +3021,7 @@ async def _ai_extract_symbol_and_date_streaming(
     import json as _json
 
     today = datetime.now().strftime("%Y-%m-%d")
+    fast_symbol, fast_date = _extract_symbol_and_date(text)
     llm_name: Optional[str] = None
     llm_date: Optional[str] = None
     llm_horizons: List[str] = ["short"]
@@ -3049,20 +3089,28 @@ async def _ai_extract_symbol_and_date_streaming(
         _log(f"[StockExtract streaming] LLM failed: {e}")
 
     if not llm_name:
+        if fast_symbol:
+            _log(f"[StockExtract] LLM 未返回 stock_name，使用 regex 兜底: {fast_symbol}")
+            return fast_symbol, fast_date or today, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
         return None, None, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     _log(f"[StockExtract] extracted name='{llm_name}', date={llm_date}, horizons={llm_horizons}")
-    if re.match(r"^\d{6}$", llm_name) or re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", llm_name):
+    if re.match(r"^\d{6}(?:\.(?:SH|SZ|SS))?$", llm_name, re.IGNORECASE) or re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", llm_name):
         symbol = _normalize_symbol(llm_name)
-        return symbol or None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+        if symbol:
+            return symbol, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     local_code = await asyncio.to_thread(_search_cn_stock_by_name, llm_name)
     if local_code:
         return local_code, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     fallback = _normalize_symbol(llm_name)
-    if fallback:
+    if fallback and re.search(r"\d{6}|[A-Za-z]{2,}", fallback):
         return fallback, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+
+    if fast_symbol:
+        _log(f"[StockExtract] LLM 名 '{llm_name}' 无法解析为代码，使用 regex 兜底: {fast_symbol}")
+        return fast_symbol, llm_date or fast_date or today, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     return None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
@@ -3079,6 +3127,7 @@ def _ai_extract_symbol_and_date(
     import json as _json
 
     today = datetime.now().strftime("%Y-%m-%d")
+    fast_symbol, fast_date = _extract_symbol_and_date(text)
 
     llm_name: Optional[str] = None
     llm_date: Optional[str] = None
@@ -3144,16 +3193,20 @@ def _ai_extract_symbol_and_date(
         _log(f"[StockExtract] LLM failed: {e}")
 
     if not llm_name:
+        if fast_symbol:
+            _log(f"[StockExtract] LLM 未返回 stock_name，使用 regex 兜底: {fast_symbol}")
+            return fast_symbol, fast_date or today, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
         _log(f"[StockExtract] LLM returned no stock name for: '{text[:40]}'")
         return None, None, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     _log(f"[StockExtract] LLM extracted name='{llm_name}', date={llm_date}, horizons={llm_horizons}")
 
     # ── Step 2: If looks like a direct code (digits / letters), normalize it ──
-    if re.match(r"^\d{6}$", llm_name) or re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", llm_name):
+    if re.match(r"^\d{6}(?:\.(?:SH|SZ|SS))?$", llm_name, re.IGNORECASE) or re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", llm_name):
         symbol = _normalize_symbol(llm_name)
-        _log(f"[StockExtract] Direct code: {symbol}")
-        return symbol or None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+        if symbol:
+            _log(f"[StockExtract] Direct code: {symbol}")
+            return symbol, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     # ── Step 3: Search akshare A-share name database ──────────────────────────
     local_code = _search_cn_stock_by_name(llm_name)
@@ -3163,9 +3216,13 @@ def _ai_extract_symbol_and_date(
 
     # ── Step 4: Last resort — treat LLM name as a raw code ────────────────────
     fallback = _normalize_symbol(llm_name)
-    if fallback:
+    if fallback and re.search(r"\d{6}|[A-Za-z]{2,}", fallback):
         _log(f"[StockExtract] Fallback normalize: '{llm_name}' → {fallback}")
         return fallback, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+
+    if fast_symbol:
+        _log(f"[StockExtract] LLM 名 '{llm_name}' 无法解析为代码，使用 regex 兜底: {fast_symbol}")
+        return fast_symbol, llm_date or fast_date or today, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
 
     _log(f"[StockExtract] Could not resolve '{llm_name}' to a stock code")
     return None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context

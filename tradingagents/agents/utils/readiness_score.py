@@ -481,6 +481,7 @@ def calculate_buy_level(
     no_unresolved_analyst_conflict: bool = True,
     position_status: str = "unknown",
     name_mismatch: bool = False,
+    research_bearish: bool = False,
 ) -> dict:
     """计算 Buy Level（买入/建仓侧等级 0-4）。
 
@@ -489,12 +490,19 @@ def calculate_buy_level(
     - '未来满足条件后可重新评估' should not elevate the current level
     - "条件试仓" (level 2) requires actual entry conditions to be met
 
+    [P1-2] For no-position + research bearish (研究经理偏空/不建议入场):
+    - Buy Level forced to 0 (禁止买入)
+
     返回:
         {"level": int, "note": str}
     """
     max_level = 2 if position_status == "unknown" else 4
     if name_mismatch:
         max_level = min(max_level, 3)
+
+    # [P1-2] No-position + research bearish → force level 0
+    if position_status == "no_position" and research_bearish:
+        return {"level": 0, "note": "未持仓且研究经理偏空/不建议入场，Buy Level 降为 0（禁止买入）"}
 
     # [Fix-5] No-position: cap at level 1 unless real entry conditions met
     if position_status == "no_position":
@@ -917,17 +925,61 @@ _SANITIZE_STRONG_BUY = [
     (r'追涨买入', '暂不执行强买入，等待条件确认'),
 ]
 _SANITIZE_NO_POSITION = [
-    (r'减仓', '未持仓-相关持仓动作不适用-仅保留观察/建仓判断'),
-    (r'清仓', '未持仓-相关持仓动作不适用-仅保留观察/建仓判断'),
-    (r'止盈', '未持仓-相关持仓动作不适用-仅保留观察/建仓判断'),
-    (r'止损', '未持仓-相关持仓动作不适用-仅保留观察/建仓判断'),
-    (r'卖出', '未持仓-相关持仓动作不适用-仅保留观察/建仓判断'),
+    # ── [P0-2] Replace action suggestions but preserve field names ──
+    # Field names (止损价, 止损位, 止损条件, 止损红线, 止损线) are preserved by
+    # using negative lookahead: (?!价|位|条件|线|红线) after each keyword.
+    #
+    # Replacement text: short sentence "该持仓动作不适用，保持观察"
+
+    # ── Specific action phrases (adverb + action) ──
+    (r'建议止损离场', '该持仓动作不适用，保持观察'),
+    (r'建议减仓', '该持仓动作不适用，保持观察'),
+    (r'建议清仓', '该持仓动作不适用，保持观察'),
+    (r'建议止盈', '该持仓动作不适用，保持观察'),
+    (r'建议止损', '该持仓动作不适用，保持观察'),
+    (r'建议卖出', '该持仓动作不适用，保持观察'),
+    (r'立即清仓', '该持仓动作不适用，保持观察'),
+    (r'立即减仓', '该持仓动作不适用，保持观察'),
+    (r'立即止损', '该持仓动作不适用，保持观察'),
+    (r'立即卖出', '该持仓动作不适用，保持观察'),
+    (r'可以减仓', '该持仓动作不适用，保持观察'),
+    (r'可以清仓', '该持仓动作不适用，保持观察'),
+    (r'可以止损', '该持仓动作不适用，保持观察'),
+    (r'可以卖出', '该持仓动作不适用，保持观察'),
+    (r'应该减仓', '该持仓动作不适用，保持观察'),
+    (r'应该清仓', '该持仓动作不适用，保持观察'),
+    (r'应该止损', '该持仓动作不适用，保持观察'),
+    (r'应该卖出', '该持仓动作不适用，保持观察'),
+    (r'需要减仓', '该持仓动作不适用，保持观察'),
+    (r'需要清仓', '该持仓动作不适用，保持观察'),
+    (r'需要止损', '该持仓动作不适用，保持观察'),
+    (r'需要卖出', '该持仓动作不适用，保持观察'),
+    (r'果断止损', '该持仓动作不适用，保持观察'),
+    (r'适度减仓', '该持仓动作不适用，保持观察'),
+    (r'尽快清仓', '该持仓动作不适用，保持观察'),
+    (r'逐步减仓', '该持仓动作不适用，保持观察'),
+    # ── Compound action phrases that must be fully replaced ──
+    (r'止损离场', '该持仓动作不适用，保持观察'),
+    # [P0-2] 触发止损 + action verb combos — must match BEFORE bare 触发止损
+    (r'触发止损.{0,4}(?:离场|清仓|卖出|减仓|出局)', '该持仓动作不适用，保持观察'),
+    (r'触发止损', '该持仓动作不适用，保持观察'),
+    (r'减仓观察', '该持仓动作不适用，保持观察'),
+    (r'清仓离场', '该持仓动作不适用，保持观察'),
+    (r'清仓出局', '该持仓动作不适用，保持观察'),
+    # ── Generic catch-all with modifier prefix (0-4 chars + action) ──
+    # Use lookahead to avoid matching inside preserved field names
+    (r'\w{0,4}减仓', '该持仓动作不适用，保持观察'),
+    (r'\w{0,4}清仓', '该持仓动作不适用，保持观察'),
+    (r'\w{0,4}止盈', '该持仓动作不适用，保持观察'),
+    (r'\w{0,4}卖出', '该持仓动作不适用，保持观察'),
+    # ── Standalone 止损 with negative lookahead to preserve field names ──
+    # Matches: 止损, 止损离场, 止损。 but NOT 止损价, 止损位, 止损条件, 止损红线, 止损线
+    (r'止损(?!价|位|条件|线|红线)', '该持仓动作不适用，保持观察'),
     # [Fix-4] No-position: HOLD should become WAIT/观察
-    # [F-001-fix] Also replace HOLD/等待触发 → WAIT/等待触发
     (r'HOLD/等待触发', 'WAIT/等待触发'),
     (r'\bHOLD\b(?!.*(?:等待|观察|条件))', 'WAIT/观察'),
     # [Fix-4] '条件减仓' should not appear as main action for no-position
-    (r'(?:作为|建议).{0,6}条件减仓', '未持仓-仅保留观察/建仓判断'),
+    (r'(?:作为|建议).{0,6}条件减仓', '该持仓动作不适用，保持观察'),
 ]
 
 _SYSTEM_BLOCK_MARKERS = [

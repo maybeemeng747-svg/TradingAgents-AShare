@@ -51,6 +51,18 @@ def test_trade_quality_check_does_not_parse_numbered_risk_list_as_stop_loss():
     )
 
     assert check["stop_loss_price"] is None
+    # [P1-3] No position + no conditional entry → stop-loss missing is NOT an error
+    assert "无法从报告中解析出明确止损价。" not in check["do_not_trade_if"]
+
+
+def test_p13_no_position_conditional_entry_requires_stop_loss():
+    """[P1-3] No position + conditional entry → stop-loss IS required."""
+    check = build_trade_quality_check(
+        investment_plan="未持仓，若突破可试仓。",
+        trader_plan="若股价放量突破50.00元，可考虑建仓。",
+        final_decision="触发条件：放量突破50.00元建仓买入。",
+    )
+    assert check["stop_loss_price"] is None
     assert "无法从报告中解析出明确止损价。" in check["do_not_trade_if"]
 
 

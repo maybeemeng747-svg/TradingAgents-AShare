@@ -15,21 +15,26 @@ class SignalProcessor:
         """Initialize with an LLM for processing."""
         self.quick_thinking_llm = quick_thinking_llm
 
-    def process_signal(self, full_signal: str) -> str:
+    def process_signal(self, full_signal: str, *, has_position: bool | None = None) -> str:
         """
         Process a full trading signal to extract the core decision.
 
         Args:
             full_signal: Complete trading signal text
+            has_position: Whether the user currently holds the stock.
+                When False, HOLD is mapped to WAIT/观察 (P1-1).
 
         Returns:
-            Extracted decision (BUY, SELL, or HOLD)
+            Extracted decision (BUY, SELL, HOLD, or WAIT)
         """
         if not full_signal:
-            return "HOLD"
+            return "WAIT" if has_position is False else "HOLD"
 
-        decision = _extract_decision_keyword(full_signal)
+        decision = _extract_decision_keyword(full_signal, has_position=has_position)
         if decision:
+            # [P1-1] Map HOLD → WAIT when user has no position
+            if decision == "HOLD" and has_position is False:
+                return "WAIT"
             return decision
 
         messages = [
@@ -42,18 +47,24 @@ class SignalProcessor:
 
         response = str(self.quick_thinking_llm.invoke(messages).content).strip().upper()
         if response in {"BUY", "SELL", "HOLD"}:
+            # [P1-1] Map HOLD → WAIT when user has no position
+            if response == "HOLD" and has_position is False:
+                return "WAIT"
             return response
+        if has_position is False:
+            return "WAIT"
         return "HOLD"
 
 
-def _execution_layer_overrides_hold(text: str) -> bool:
+def _execution_layer_overrides_hold(text: str, *, has_position: bool | None = None) -> bool:
     """Check whether the execution layer signals a non-actionable state.
 
     If the execution block (Strong Action Gate / trade quality check / C-001)
     says the system should wait / hold / review, the final signal must be
     HOLD regardless of what VERDICT says.
 
-    [Fix-4] For no-position, HOLD is mapped to WAIT/观察 in the caller.
+    [P1-1] When has_position=False, non-actionable state should return WAIT
+    instead of HOLD. The caller (process_signal) handles the mapping.
     """
     # Strong Action Gate failed
     if re.search(r"Strong Action Gate[：:]\s*未通过", text, re.IGNORECASE):
@@ -72,18 +83,22 @@ def _execution_layer_overrides_hold(text: str) -> bool:
 
     # [Fix-4] No-position indicators
     if re.search(r"未持仓|no_position|current_position.*(0|空)", text, re.IGNORECASE):
-        # If the text explicitly says 未持仓 + WAIT/观察, confirm as HOLD
+        # If the text explicitly says 未持仓 + WAIT/观察, confirm non-actionable
         if re.search(r"WAIT|观察|观望|禁止买入|禁止开仓", text, re.IGNORECASE):
             if not re.search(r"(?:确认建仓|积极建仓|条件试仓|买入|BUY)", text):
                 return True
 
+    # [P1-1] Explicit no-position override from caller
+    if has_position is False:
+        return True
+
     return False
 
 
-def _extract_decision_keyword(text: str) -> str | None:
+def _extract_decision_keyword(text: str, *, has_position: bool | None = None) -> str | None:
     """Rule-based decision extraction to keep UI consistent with final decision text."""
     # P0: Execution layer takes priority over VERDICT
-    if _execution_layer_overrides_hold(text):
+    if _execution_layer_overrides_hold(text, has_position=has_position):
         return "HOLD"
 
     upper = text.upper()

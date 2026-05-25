@@ -16,7 +16,7 @@ function mapDecision(decision?: string): 'buy' | 'sell' | 'hold' | 'add' | 'redu
     const d = decision.toUpperCase()
     if (d.includes('SELL') || d.includes('卖出')) return 'sell'
     if (d.includes('REDUCE') || d.includes('减持')) return 'reduce'
-    if (d.includes('WATCH') || d.includes('观望')) return 'watch'
+    if (d.includes('WAIT') || d.includes('WATCH') || d.includes('观望') || d.includes('观察')) return 'watch'
     if (d.includes('HOLD') || d.includes('持有')) return 'hold'
     if (d.includes('ADD') || d.includes('增持')) return 'add'
     if (d.includes('BUY') || d.includes('买入')) return 'buy'

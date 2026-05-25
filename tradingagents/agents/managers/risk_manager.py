@@ -71,7 +71,11 @@ def create_risk_manager(llm, memory):
         fundamentals_report = state["fundamentals_report"]
         sentiment_report = state["sentiment_report"]
         trader_plan = state["trader_investment_plan"]
+        investment_plan = state.get("investment_plan", "")  # research_manager output
         risk_feedback_state = state.get("risk_feedback_state", {})
+
+        # [P1-2] Detect research_manager bearish direction
+        _research_bearish = _is_direction_bearish(investment_plan)
 
         curr_situation = f"{market_research_report}\n\n{sentiment_report}\n\n{news_report}\n\n{fundamentals_report}"
         past_memories = memory.get_memories(curr_situation, n_matches=2)
@@ -277,6 +281,7 @@ def create_risk_manager(llm, memory):
             no_unresolved_analyst_conflict=signals["no_unresolved_analyst_conflict"],
             position_status=position_status,
             name_mismatch=is_name_mismatch,
+            research_bearish=_research_bearish,
         )
 
         opp_score = calculate_opportunity_score(
