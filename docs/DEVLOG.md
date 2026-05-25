@@ -28,6 +28,25 @@
 
 ---
 
+## 2026-05-25 | TradeFlow P0 补修（事件源 + 价位覆盖 + 评分 + 落库 + 清理）
+
+- **执行者**：OpenCode
+- **任务**：TradeFlow P0 补修 6 项
+- **修改文件**：
+  - `tradingagents/tradeflow/schemas.py` — 新增 `primary_strategy` 字段，`merge_signals()` 只取最高分信号的价位
+  - `tradingagents/tradeflow/strategies/vcp.py` — 评分公式修正：`(1 - range_ratio) * 50`，强收缩得分更高
+  - `tradingagents/tradeflow/candidate_engine.py` — DB schema 新增 `primary_strategy` 列 + ALTER TABLE 迁移
+  - `tradingagents/tradeflow/plan_runner.py` — 新增 `news_texts/event_overrides/save_candidates` 参数
+  - `tradingagents/tradeflow/universe.py` — 支持 `event_overrides` 构造候选
+  - `scripts/run_tradeflow_plan.py` — CLI 新增 `--save-candidates` 和 `--news` 参数
+  - `.gitignore` — 新增 `tradeflow.db`
+  - `tests/` — 新增 11 个测试（事件源/价位覆盖/VCP评分/候选落库）
+- **验证**：
+  - `pytest tests/test_tradeflow_*.py` → 67 passed
+  - `python scripts/run_tradeflow_plan.py --symbols 002353.SZ,603256.SH` → 无事件输入时正确不命中
+
+---
+
 ## 2026-05-24 | 挑选式同步 GitHub 上游修复
 
 - **执行者**：Codex
