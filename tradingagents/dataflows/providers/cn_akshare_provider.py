@@ -249,7 +249,15 @@ class CnAkshareProvider(BaseMarketDataProvider):
 
         header = f"# Stock data for {symbol} from {start} to {end}\n"
         header += f"# Total records: {len(out)}\n"
-        header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        # [G-005] realtime_ohlcv_patch: record patch info in header
+        patch_info = getattr(df, "attrs", {}) or {}
+        if patch_info.get("_realtime_patched"):
+            info = patch_info.get("_realtime_patch_info", {})
+            header += f"# [G-005] is_realtime_patched=True, source={info.get('source')}, quote_time={info.get('quote_time')}\n"
+        elif patch_info.get("_realtime_patch_status") in ("FAILED", "STALE"):
+            header += f"# [G-005] is_realtime_patched=False, status={patch_info['_realtime_patch_status']}\n"
+        header += "\n"
         return header + out.to_csv(index=False)
 
     @staticmethod
@@ -359,6 +367,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
             ) from em_last_exc
 
     def _fetch_realtime_row_unlocked(self, symbol: str) -> pd.DataFrame:
+        # [G-005] realtime_ohlcv_patch: keep old Xueqiu path as last-resort fallback
         ak = self._ak()
         spot = ak.stock_individual_spot_xq(symbol=self._xq_symbol(symbol))
         if spot is None or spot.empty:
@@ -385,6 +394,81 @@ class CnAkshareProvider(BaseMarketDataProvider):
         with AKSHARE_CALL_LOCK:
             return self._fetch_realtime_row_unlocked(symbol)
 
+    # [G-005] realtime_ohlcv_patch
+    def _fetch_realtime_ohlcv_from_quotes(self, symbol: str) -> tuple[pd.DataFrame, dict]:
+        """Fetch today's OHLCV from get_realtime_quotes (Sina/Eastmoney).
+
+        Returns (DataFrame with one row, info_dict) or (empty DataFrame, info_dict).
+        info_dict contains quote_time, source, is_realtime_patched, status.
+        """
+        import json as _json
+
+        info = {"quote_time": None, "source": None, "is_realtime_patched": True, "status": "FAILED"}
+
+        code = self._normalize_symbol(symbol)
+        upper_symbol = symbol.strip().upper()
+        if not upper_symbol.endswith((".SH", ".SZ", ".SS")):
+            if code.startswith(("5", "6", "9")):
+                upper_symbol = f"{code}.SH"
+            else:
+                upper_symbol = f"{code}.SZ"
+
+        try:
+            raw_json = self._fetch_quotes_sina({code: upper_symbol})
+            data = _json.loads(raw_json)
+        except Exception:
+            data = {}
+
+        if not data or upper_symbol not in data:
+            try:
+                with AKSHARE_CALL_LOCK:
+                    ak = self._ak()
+                    em_df = ak.stock_zh_a_spot_em()
+                if em_df is not None and not em_df.empty:
+                    raw_json = self._build_quotes_from_em(em_df, {code: upper_symbol})
+                    data = _json.loads(raw_json)
+            except Exception:
+                pass
+
+        if not data or upper_symbol not in data:
+            info["status"] = "FAILED"
+            return pd.DataFrame(), info
+
+        q = data[upper_symbol]
+        price = q.get("price")
+        if price is None or price == 0:
+            info["status"] = "STALE"
+            return pd.DataFrame(), info
+
+        open_val = q.get("open") or price
+        high_val = q.get("high") or price
+        low_val = q.get("low") or price
+        volume = q.get("volume", 0) or 0
+        amount = q.get("amount", 0) or 0
+
+        if volume > 0 and amount > 0:
+            avg_price = amount / volume
+            if avg_price > 500:
+                volume = volume * 100
+
+        today = pd.to_datetime(cn_today_str())
+        row = {
+            "Date": today.normalize(),
+            "Open": float(open_val),
+            "High": float(high_val),
+            "Low": float(low_val),
+            "Close": float(price),
+            "Volume": float(volume),
+        }
+        info.update({
+            "quote_time": q.get("quote_time"),
+            "source": q.get("source", "unknown"),
+            "is_realtime_patched": True,
+            "status": "HAS_DATA",
+        })
+        rt = pd.DataFrame([row])
+        return rt, info
+
     def _maybe_append_realtime_row(
         self,
         symbol: str,
@@ -393,6 +477,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
         *,
         assume_locked: bool = False,
     ) -> pd.DataFrame:
+        # [G-005] realtime_ohlcv_patch
         if hist_df is None:
             hist_df = pd.DataFrame()
         try:
@@ -400,6 +485,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
             if pd.isna(end_dt):
                 return hist_df
             today = pd.to_datetime(cn_today_str())
+
             if end_dt.normalize() < today:
                 return hist_df
             if not is_cn_trading_day(today.strftime("%Y-%m-%d")):
@@ -415,24 +501,64 @@ class CnAkshareProvider(BaseMarketDataProvider):
             if phase in ("pre_open", "closed"):
                 return hist_df
 
-            if assume_locked:
-                rt = self._fetch_realtime_row_unlocked(symbol)
-            else:
-                rt = self._fetch_realtime_row(symbol)
+            rt, info = self._fetch_realtime_ohlcv_from_quotes(symbol)
+
             if rt.empty:
+                _lock_logger.warning(
+                    "[G-005] realtime OHLCV patch failed for %s, status=%s",
+                    symbol, info.get("status"),
+                )
+                hist_df.attrs["_realtime_patch_status"] = info.get("status", "FAILED")
                 return hist_df
-            if pd.to_datetime(rt.iloc[0]["Date"]).normalize() != today:
-                return hist_df
+
+            hist_vol_median = 0.0
+            if not hist_df.empty and len(hist_df) > 0:
+                hist_vol_median = hist_df["Volume"].median()
+            if hist_vol_median > 0:
+                rt_vol = rt.iloc[0]["Volume"]
+                ratio = rt_vol / hist_vol_median
+                if ratio > 100:
+                    rt.iloc[0, rt.columns.get_loc("Volume")] = rt_vol / 100
+                elif ratio < 0.01:
+                    rt.iloc[0, rt.columns.get_loc("Volume")] = rt_vol * 100
 
             merged = pd.concat([hist_df, rt], ignore_index=True)
             merged = merged.sort_values("Date").drop_duplicates(subset=["Date"], keep="last")
-            return merged.reset_index(drop=True)
-        except Exception:
+            merged = merged.reset_index(drop=True)
+
+            merged.attrs["_realtime_patched"] = True
+            merged.attrs["_realtime_patch_info"] = info
+
+            _lock_logger.info(
+                "[G-005] realtime OHLCV patched for %s, source=%s, quote_time=%s",
+                symbol, info.get("source"), info.get("quote_time"),
+            )
+            return merged
+        except Exception as exc:
+            _lock_logger.warning("[G-005] realtime OHLCV patch exception for %s: %s", symbol, exc)
+            hist_df.attrs["_realtime_patch_status"] = "FAILED"
             return hist_df
 
     def get_stock_data(self, symbol: str, start_date: str, end_date: str) -> str:
         df = self._fetch_hist_df(symbol, start_date, end_date)
         return self._format_ak_hist(df, symbol, start_date, end_date)
+
+    # [G-005] realtime_ohlcv_patch
+    def get_realtime_patch_info(self, symbol: str, start_date: str, end_date: str) -> dict:
+        """Return realtime patch metadata without re-fetching data.
+
+        Callers can use this to get is_realtime_patched status after get_stock_data.
+        """
+        df = self._fetch_hist_df(symbol, start_date, end_date)
+        attrs = getattr(df, "attrs", {}) or {}
+        if attrs.get("_realtime_patched"):
+            info = attrs.get("_realtime_patch_info", {})
+            info["is_realtime_patched"] = True
+            return info
+        return {
+            "is_realtime_patched": False,
+            "status": attrs.get("_realtime_patch_status", "NO_PATCH"),
+        }
 
     def get_indicators(
         self, symbol: str, indicator: str, curr_date: str, look_back_days: int
