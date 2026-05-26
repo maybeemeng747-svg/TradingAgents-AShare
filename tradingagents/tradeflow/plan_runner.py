@@ -166,9 +166,11 @@ def generate_daily_plan(
     if issues:
         plan.metadata["validation_issues"] = issues
 
-    # Optionally persist candidates
+    # Optionally persist candidates  # [G-004] tradeflow_candidate_date
     if save_candidates and tf_db_path:
         for c in candidates:
+            if c.trade_date != trade_date:
+                c.trade_date = trade_date
             save_candidate(c, tf_db_path)
 
     return plan
