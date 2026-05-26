@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-05-26 | AUTO-001 自动开发闭环 v1
+
+- **执行者**：主控AI
+- **任务**：实现 `scripts/auto_dev_loop.sh`，串联 TASKS.md → OpenCode → 测试 → Codex review → commit
+- **新增文件**：
+  - `scripts/auto_dev_loop.sh` — 单轮自动开发闭环脚本（约 200 行）
+- **流程**：
+  1. 解析 TASKS.md 找 status=ready 最高优先级任务
+  2. 工作区不干净时退出
+  3. OpenCode 实现 → 运行测试 → codex review --uncommitted
+  4. 测试通过 + review 无 P0/P1 → git commit
+  5. 单任务最多 2 轮修复，超过输出 NEEDS_HUMAN
+  6. 结果写入 DEVLOG.md
+- **约束**：不改 prompts、不写生产 DB、不 push、不跑全市场扫描
+
+---
+
 ## 2026-05-26 | G-005 + G-006 P0 修复
 
 - **执行者**：OpenCode

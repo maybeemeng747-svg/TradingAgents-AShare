@@ -4,6 +4,28 @@
 
 ---
 
+## Z. 自动开发基础设施（2026-05-26 新增）
+
+### AUTO-001: 自动开发闭环 v1（P0）
+- **描述**：实现 `scripts/auto_dev_loop.sh`，串联 TASKS.md → OpenCode → 测试 → Codex review → commit 的单轮闭环
+- **优先级**：P0
+- **状态**：done
+- **实现要点**：
+  1. 解析 TASKS.md 找 status=ready 最高优先级任务
+  2. 工作区不干净时退出
+  3. OpenCode 实现 → 运行测试 → codex review --uncommitted
+  4. 测试通过 + review 无 P0/P1 → git commit
+  5. 单任务最多 2 轮修复，超过输出 NEEDS_HUMAN
+  6. 结果写入 DEVLOG.md
+- **验证方式**：
+  - 运行 `./scripts/auto_dev_loop.sh` 一轮后任务状态变为 done
+  - 工作区不干净时脚本退出
+  - 测试失败时进入修复循环
+  - NEEDS_HUMAN 时正确输出
+- **完成记录**：scripts/auto_dev_loop.sh 已创建
+
+---
+
 ## A. 当前进行中
 
 ### F-001: TA研报执行层修复（P0-P2共10项）
@@ -136,6 +158,156 @@
 - **验证方式**：
   - 每日可输出候选复盘表。
   - 对失效候选给出明确移除原因。
+
+---
+
+## G. 研究经理层改进（2026-05-26 新增）
+
+### G-002: 研究经理一致性降权机制（P1）
+- **描述**：在 research_manager 层增加"多数一致性权重"与"孤立偏多降权"机制，减少同票多份矛盾报告和基本面孤证误导
+- **背景**：603256.SH、002353.SZ、002138.SZ 暴露同类问题——基本面分析师孤立偏多时，研究经理缺少显式降权机制，导致最终结论可能被单点意见带偏
+- **优先级**：P1
+- **状态**：done（已由 `G-003` 补修并通过测试）
+- **实现要点**：
+  1. 统计 7 个 analyst 的方向分布，形成结构化多数/少数结果
+  2. 当出现 1 对 6 或 2 对 5 时，孤立少数意见默认降权
+  3. 若孤立少数来自 fundamentals，且同时命中"经营现金流背离 / 内部人减持 / 量价走弱"中的至少 1-2 项，再额外降权
+  4. 研究经理输出里必须包含"多数方向、少数方向、采纳/降权原因"的冲突摘要
+  5. 不只改 prompt，优先在 research_manager 层补 deterministic 规则
+- **验收方式**：
+  - 603256.SH：基本面单点偏多不应压过其余 6 个偏空信号
+  - 002353.SZ：Q1 现金流转弱需被纳入降权逻辑
+  - 002138.SZ：同日多份矛盾报告问题应明显收敛
+  - 最终报告应能解释"为什么降权"，而不是只改最终方向
+- **代码标注要求**：`# [G-002] consensus_weight`
+
+### G-003: 修复 G-002 少数方向识别与测试缺口（P0）
+- **描述**：修复 `research_manager.py` 中 G-002 多数/少数方向识别错误，并补齐单元测试，确保孤立偏多/偏空真的触发降权摘要。
+- **背景**：Codex 巡检发现 5 空 / 1 多的典型场景下 `_build_consensus_block()` 返回 `None`。原因是当前实现把 0 票方向也纳入少数方向排序，导致 minority 先选到 0 票方向后直接跳过。
+- **优先级**：P0
+- **状态**：done
+- **执行约束**：
+  - 只修 deterministic 规则与测试，不改 `tradingagents/prompts/`。
+  - 保持 G-002 输出为辅助降权摘要，不直接输出强买卖建议。
+  - 修改后更新 `docs/DEVLOG.md`。
+- **实现要点**：
+  1. minority 只允许从非零票方向中选择，不能把 0 票方向当少数方向。
+  2. `_ANALYST_MAP` 补入 `game_theory_report`，满足 7 个 analyst 统计要求。
+  3. 覆盖 6:1、5:2、5:1、含中性、无明显多数、基本面额外降权等边界。
+  4. 输出摘要必须包含多数方向、少数方向、少数 analyst、降权原因。
+- **验证方式**：
+  - 新增 `tests/test_research_manager_consensus.py` 或等价测试文件。
+  - `pytest tests/test_research_manager_consensus.py -q` 通过。
+  - `pytest tests/test_g001_three_layer.py tests/test_readiness_score.py -q` 通过。
+- **完成记录**：
+  - `pytest tests/test_research_manager_consensus.py -q` → 17 passed
+  - `pytest tests/test_g001_three_layer.py tests/test_readiness_score.py -q` → 163 passed
+- **代码标注要求**：`# [G-003] consensus_weight_fix`
+
+### G-004: 修复 TradeFlow save_candidates 日期落库回归（P0）
+- **描述**：修复 `generate_daily_plan(..., trade_date=..., candidates=..., save_candidates=True)` 保存候选时未使用传入 `trade_date` 的问题。
+- **背景**：Codex 巡检运行 `pytest tests/test_tradeflow_*.py -q` 出现 1 个失败：`TestPlanPersistence.test_save_candidates_persisted`。已有候选对象使用默认当天日期，导致查询指定计划日期时查不到落库记录。
+- **优先级**：P0
+- **状态**：done
+- **执行约束**：
+  - 只修 TradeFlow P0 回归，不引入真实事件源/全市场扫描。
+  - 不写入生产 `tradingagents.db`。
+  - 修改后更新 `docs/DEVLOG.md`。
+- **实现要点**：
+  1. 当 `generate_daily_plan` 收到外部 `candidates` 和显式 `trade_date` 时，持久化前确保每个 `Candidate.trade_date` 与计划日期一致。
+  2. 不破坏由 `evaluate_symbol` 生成候选时已有的 trade_date 传递逻辑。
+  3. 如需调整测试，必须保持 `save_candidates=False` 不落库的断言。
+- **验证方式**：
+  - `pytest tests/test_tradeflow_plan_runner.py::TestPlanPersistence::test_save_candidates_persisted -q` 通过。
+  - `pytest tests/test_tradeflow_*.py -q` 全部通过。
+- **完成记录**：
+  - `pytest tests/test_tradeflow_*.py -q` → 83 passed
+- **代码标注要求**：`# [G-004] tradeflow_candidate_date`
+
+### G-005: 当日日线缺失时用实时行情补齐 TA 行情输入（P0） ✅ 已完成
+- **描述**：修复 TA 分析报告缺少当天实时行情的问题。当 `get_stock_data(symbol, ..., trade_date)` 的日线历史接口未返回 `trade_date` 当天数据时，必须调用 `get_realtime_quotes()` 合成当天 OHLCV 行，并在报告证据中标注补齐来源。
+- **背景**：600584.SH 报告生成于 2026-05-26 收盘后，但市场/量价分析仍只使用 2026-05-25 收盘 `80.17`，未使用 2026-05-26 新浪实时行情 `88.19`。代码中 `_maybe_append_realtime_row()` 走雪接口且异常静默吞掉，而更稳定的 `get_realtime_quotes()` 已能返回当日开高低收、成交量、成交额。
+- **优先级**：P0
+- **状态**：done
+- **执行约束**：
+  - 不改 `tradingagents/prompts/`。
+  - 不写入生产 `tradingagents.db`。
+  - 不自动跑全市场扫描或深度 TA。
+  - 修改后更新 `docs/DEVLOG.md`。
+- **实现要点**：
+  1. 在 `CnAkshareProvider._maybe_append_realtime_row()` 或 `get_stock_data()` 中，优先复用 `get_realtime_quotes()`/Sina quote 逻辑补当天行，避免只依赖 `stock_individual_spot_xq`。
+  2. 只在 `end_date == 今日` 且历史日线缺少今日时补行；历史回测日期禁止补实时行。
+  3. 补行必须记录 `quote_time`、`source`、`is_realtime_patched=True`，至少进入 raw evidence 或返回文本 header。
+  4. 成交量单位必须统一：Sina 返回股数时转成与历史 OHLCV 一致的单位，避免 275万手 vs 339,836,664 股混用。
+  5. 若实时接口失败，不能静默；应在数据质量状态中标记 `STALE` 或 `FAILED`。
+- **验证方式**：
+  - 新增或补充测试：mock 历史 OHLCV 缺今日，mock realtime quote 返回今日数据，断言输出 CSV 包含今日行。
+  - mock 历史 OHLCV 已含今日，断言不会重复补行。
+  - mock 非今日/历史回测日期，断言不会补实时行。
+  - 手工只读验证：`route_to_vendor('get_stock_data','600584.SH','2026-05-20','2026-05-26')` 在收盘后应包含 `2026-05-26` 行。
+- **代码标注要求**：`# [G-005] realtime_ohlcv_patch`
+
+### G-006: 报告原始证据快照落库与可追溯数据质量状态（P0） ✅ 已完成
+- **描述**：每份 TA 报告必须保存本次分析实际使用的原始证据快照，支持事后核查行情、资金、龙虎榜、新闻、财报到底来自哪个源、是否失败、是否过期。
+- **背景**：600584.SH 报告已入 `reports` 表，但 `result_data` 中缺少 `metadata.raw_evidence` 和完整原始行情快照。事后只能看到模型文字，无法从数据库还原模型实际使用的数据，导致“数据真伪/来源”难审计。
+- **优先级**：P0
+- **状态**：done
+- **执行约束**：
+  - 优先写入 `reports.result_data.metadata.raw_evidence`，暂不大规模迁移生产数据库。
+  - 如需新增表，先输出迁移方案并使用安全迁移函数，不直接破坏旧表。
+  - 不保存 API key、cookie、token。
+  - 修改后更新 `docs/DEVLOG.md`。
+- **实现要点**：
+  1. `DataCollector.build_raw_evidence()` 扩展为包含：`stock_data`、`realtime_quote`、`fund_flow_individual`、`fund_flow_board`、`lhb`、`news`、`global_news`、`fundamentals`、`balance_sheet`、`cashflow`、`income_statement`。
+  2. 每个数据源附带 `status`：`HAS_DATA / PARTIAL / NOT_QUERIED / NORMAL_NO_DATA / FAILED / STALE`。
+  3. 每个数据源附带 `vendor/source`、`as_of`、`fetched_at`、`record_count`、`unit`、`error`、`is_realtime_patched`。
+  4. `reports.result_data` 保存 `metadata.raw_evidence`，并确保 dual_horizon/quick_analysis 两条路径都不丢。
+  5. 报告底部数据源可用性从简单 ✅/❌ 改为多态摘要，至少显示“行情截至时间”和“是否补实时”。
+- **验证方式**：
+  - 新增测试：生成/构造 report result 后，`result_data.metadata.raw_evidence.stock_data` 存在。
+  - 新增测试：资金流失败时 status 为 `FAILED`，龙虎榜未触发时为 `NOT_QUERIED`，非异动无数据时为 `NORMAL_NO_DATA`。
+  - 新增测试：dual_horizon 结果中 metadata 不丢失 raw_evidence。
+  - 数据库只读验证：最新报告可通过 SQL 查到 raw evidence 摘要。
+- **代码标注要求**：`# [G-006] raw_evidence_snapshot`
+
+### G-007: 资金流与龙虎榜数据源口径校验（P1）
+- **描述**：修复“主力资金报告说缺失，但下游仍把主力净流出当强证据”的口径冲突；龙虎榜必须区分未查询、无触发、查询失败、有数据。
+- **背景**：600584.SH 报告中 `smart_money_report` 明确写近20日主力资金 ProxyError、龙虎榜未触发，但研究经理/交易员仍多次使用“主力资金净流出”作为强证据，且将 5月22日龙虎榜事实与 5月26日未查询混在一起。
+- **优先级**：P1
+- **状态**：ready
+- **执行约束**：
+  - 不把新闻中的“资金流向日报”直接等同于个股主力资金接口。
+  - 个股资金、板块资金、新闻转述资金必须分字段记录，禁止混用。
+  - 修改后更新 `docs/DEVLOG.md`。
+- **实现要点**：
+  1. `extract_execution_signals` 或研究经理输入中加入资金源类型：`individual_fund_flow`、`board_fund_flow`、`news_reported_fund_flow`。
+  2. 只有 `individual_fund_flow.status == HAS_DATA` 且单位校验通过，才允许作为“主力资金”强证据。
+  3. `lhb` 状态细分：`HAS_DATA / NOT_QUERIED / NORMAL_NO_DATA / FAILED`。
+  4. 下游冲突摘要必须指出“资金流接口失败，新闻转述资金仅作弱证据”。
+- **验证方式**：
+  - 构造资金流接口失败 + 新闻中出现“主力净流出”，最终强动作门禁不得把它当主力资金强证据。
+  - 龙虎榜 `force=False` 时底部显示 `NOT_QUERIED`，不显示“无显著资金异动”。
+  - 龙虎榜历史有数据但当日未查时，不得说“无龙虎榜数据”。
+- **代码标注要求**：`# [G-007] fund_lhb_provenance`
+
+### G-008: 估值 sanity check 与旧价污染拦截（P1）
+- **描述**：修复基本面报告中用旧股价/假设股价计算市值和 PE 的问题，禁止在已有最新行情价时使用过期假设价格。
+- **背景**：600584.SH 报告中一边使用 80.17 的行情，一边在基本面估值处使用“股价假设30元”计算总市值和 PE，导致 PE 从约90倍级别错写为36倍。
+- **优先级**：P1
+- **状态**：ready
+- **执行约束**：
+  - 不改 prompt 作为唯一方案，优先在 readiness/quality 层做 deterministic sanity check。
+  - 修改后更新 `docs/DEVLOG.md`。
+- **实现要点**：
+  1. 从 raw evidence/latest quote 中提取最新价格，作为估值计算基准。
+  2. 若报告中出现“假设股价/约X元”且与最新价格偏离超过 20%，标记 `valuation_stale_price_conflict`。
+  3. 出现该冲突时，基本面估值结论降权，Confidence 下调，不允许输出“估值合理/安全边际高”等强表述。
+  4. 报告底部执行质检列出冲突：`估值价格与行情价格不一致`。
+- **验证方式**：
+  - 构造最新价 80、报告估值用 30，断言触发冲突。
+  - 构造最新价 80、报告估值用 78，断言不触发。
+  - 触发冲突时 Evidence/Confidence 降级。
+- **代码标注要求**：`# [G-008] valuation_price_sanity`
 
 ---
 
