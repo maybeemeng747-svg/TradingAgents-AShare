@@ -4,6 +4,40 @@
 
 ---
 
+## 2026-05-26 | G-003 + G-004 P0 修复
+
+- **执行者**：OpenCode
+- **任务**：G-003 修复研究经理少数方向识别 + G-004 修复 TradeFlow save_candidates 日期落库回归
+- **修改文件**：
+  - `tradingagents/agents/managers/research_manager.py` — [G-003]
+    - `_ANALYST_MAP` 补入 `game_theory_report` → `game_theory_analyst`，满足 7 analyst 统计
+    - `_build_consensus_block()` 从 `counts` 改为 `nonzero_dirs`（排除 0 票方向），minority 只从非零票中选择
+    - 新增 `majority_cnt - minority_cnt < 2` 阈值检查，4:3 等无明显多数场景返回 None
+  - `tradingagents/tradeflow/plan_runner.py` — [G-004]
+    - `generate_daily_plan` 持久化候选前确保 `c.trade_date` 与计划 `trade_date` 一致
+  - `tests/test_research_manager_consensus.py` — 新增 17 个测试覆盖 G-003 全部场景
+- **测试结果**：
+  - `pytest tests/test_research_manager_consensus.py -q` → 17 passed
+  - `pytest tests/test_g001_three_layer.py tests/test_readiness_score.py -q` → 163 passed
+  - `pytest tests/test_tradeflow_*.py -q` → 83 passed
+
+---
+
+## 2026-05-26 | 巡检发现问题入任务池
+
+- **执行者**：Codex
+- **任务**：将开发巡检发现的阻塞问题整理为 OpenClaw 可执行任务，避免只停留在聊天记录中
+- **修改文件**：
+  - `docs/TASKS.md` — 将 `G-002` 状态改为 `in_review`，新增 `G-003` 修复研究经理多数/少数方向识别与测试缺口，新增 `G-004` 修复 TradeFlow `save_candidates` 日期落库回归
+  - `docs/DEVLOG.md` — 记录本次任务入库
+- **验证**：
+  - 文档变更，无代码测试
+- **下一步**：
+  - OpenClaw 优先执行 `G-003` 与 `G-004`
+  - 修复后由 Codex 复跑相关测试并做 diff 审核
+
+---
+
 ## 2026-05-26 | 自动开发巡检任务入库
 
 - **执行者**：Codex

@@ -18,13 +18,14 @@ _BULLISH_DIRS = {"看多", "偏多", "BULLISH", "LEAN_BULLISH"}
 _BEARISH_DIRS = {"看空", "偏空", "BEARISH", "LEAN_BEARISH"}
 _NEUTRAL_DIRS = {"中性", "NEUTRAL"}
 
-_ANALYST_MAP = [  # [G-002] consensus_weight
+_ANALYST_MAP = [  # [G-003] consensus_weight_fix
     ("market_report", "market_analyst"),
     ("sentiment_report", "sentiment_analyst"),
     ("news_report", "news_analyst"),
     ("fundamentals_report", "fundamentals_analyst"),
     ("smart_money_report", "smart_money_analyst"),
     ("volume_price_report", "volume_price_analyst"),
+    ("game_theory_report", "game_theory_analyst"),
 ]
 
 _FUNDAMENTALS_EXTRA_KEYWORDS = [  # [G-002] consensus_weight
@@ -43,7 +44,7 @@ def _classify_direction(direction: str) -> str:  # [G-002] consensus_weight
     return "中性"
 
 
-def _build_consensus_block(  # [G-002] consensus_weight
+def _build_consensus_block(  # [G-003] consensus_weight_fix
     state: dict,
 ) -> str | None:
     reports: list[tuple[str, str, str]] = []
@@ -64,14 +65,18 @@ def _build_consensus_block(  # [G-002] consensus_weight
         counts[bucket] += 1
         analyst_dirs.append({"name": name, "direction": bucket})
 
-    sorted_dirs = sorted(counts.items(), key=lambda x: x[1], reverse=True)
-    majority_dir, majority_cnt = sorted_dirs[0]
-    minority_dir = sorted_dirs[-1][0] if sorted_dirs[-1][1] < majority_cnt else None
-
-    if minority_dir is None or counts[minority_dir] == 0:
+    nonzero_dirs = {d: c for d, c in counts.items() if c > 0}  # [G-003] consensus_weight_fix
+    if len(nonzero_dirs) < 2:
         return None
 
-    minority_cnt = counts[minority_dir]
+    sorted_dirs = sorted(nonzero_dirs.items(), key=lambda x: x[1], reverse=True)
+    majority_dir, majority_cnt = sorted_dirs[0]
+    minority_dir, minority_cnt = sorted_dirs[-1]
+
+    if minority_cnt >= majority_cnt:
+        return None
+    if majority_cnt - minority_cnt < 2:
+        return None
     total = len(reports)
 
     minority_analysts = [a for a in analyst_dirs if a["direction"] == minority_dir]
@@ -180,7 +185,7 @@ def create_research_manager(llm, memory):
         unresolved_claims_text = format_claim_subset_for_prompt(claims, unresolved_claim_ids)
         round_summary_text = round_summary or "暂无轮次摘要。"
 
-        # [G-002] consensus_weight — inject conflict summary after context_block
+        # [G-003] consensus_weight_fix — inject conflict summary after context_block
         consensus_block = _build_consensus_block(state)
         consensus_section = ("\n\n" + consensus_block + "\n\n") if consensus_block else "\n\n"
 
