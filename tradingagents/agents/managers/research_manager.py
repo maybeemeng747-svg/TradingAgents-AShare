@@ -1,9 +1,10 @@
+import json
 import logging
 import time
 
 from tradingagents.dataflows.config import get_config
 from tradingagents.prompts import get_prompt
-from tradingagents.agents.utils.agent_states import current_tracker_var
+from tradingagents.agents.utils.agent_states import current_tracker_var, extract_verdict
 from tradingagents.agents.utils.context_utils import build_prompt_context_block
 from tradingagents.agents.utils.debate_utils import (
     format_claim_subset_for_prompt,
@@ -12,6 +13,139 @@ from tradingagents.agents.utils.debate_utils import (
 from tradingagents.agents.utils.trade_actions import validate_action, TradeAction
 
 _logger = logging.getLogger(__name__)
+
+_BULLISH_DIRS = {"看多", "偏多", "BULLISH", "LEAN_BULLISH"}
+_BEARISH_DIRS = {"看空", "偏空", "BEARISH", "LEAN_BEARISH"}
+_NEUTRAL_DIRS = {"中性", "NEUTRAL"}
+
+_ANALYST_MAP = [  # [G-002] consensus_weight
+    ("market_report", "market_analyst"),
+    ("sentiment_report", "sentiment_analyst"),
+    ("news_report", "news_analyst"),
+    ("fundamentals_report", "fundamentals_analyst"),
+    ("smart_money_report", "smart_money_analyst"),
+    ("volume_price_report", "volume_price_analyst"),
+]
+
+_FUNDAMENTALS_EXTRA_KEYWORDS = [  # [G-002] consensus_weight
+    (["经营现金流"], ["负", "下降", "背离"]),
+    (["减持", "内部人"], []),
+    (["量价"], ["弱", "缩量"]),
+]
+
+
+def _classify_direction(direction: str) -> str:  # [G-002] consensus_weight
+    d = (direction or "").strip()
+    if d in _BULLISH_DIRS:
+        return "偏多"
+    if d in _BEARISH_DIRS:
+        return "偏空"
+    return "中性"
+
+
+def _build_consensus_block(  # [G-002] consensus_weight
+    state: dict,
+) -> str | None:
+    reports: list[tuple[str, str, str]] = []
+    for state_key, analyst_name in _ANALYST_MAP:
+        text = state.get(state_key, "")
+        if not text:
+            continue
+        direction, _ = extract_verdict(text)
+        bucket = _classify_direction(direction)
+        reports.append((analyst_name, bucket, text))
+
+    if len(reports) < 3:
+        return None
+
+    counts: dict[str, int] = {"偏多": 0, "偏空": 0, "中性": 0}
+    analyst_dirs: list[dict] = []
+    for name, bucket, _ in reports:
+        counts[bucket] += 1
+        analyst_dirs.append({"name": name, "direction": bucket})
+
+    sorted_dirs = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+    majority_dir, majority_cnt = sorted_dirs[0]
+    minority_dir = sorted_dirs[-1][0] if sorted_dirs[-1][1] < majority_cnt else None
+
+    if minority_dir is None or counts[minority_dir] == 0:
+        return None
+
+    minority_cnt = counts[minority_dir]
+    total = len(reports)
+
+    minority_analysts = [a for a in analyst_dirs if a["direction"] == minority_dir]
+
+    downweighted = minority_cnt <= 2
+
+    extra_downweight = False
+    extra_reasons: list[str] = []
+
+    if downweighted:
+        for ma in minority_analysts:
+            if ma["name"] != "fundamentals_analyst":
+                continue
+            fundamentals_text = state.get("fundamentals_report", "")
+            for pos_kws, neg_kws in _FUNDAMENTALS_EXTRA_KEYWORDS:
+                pos_hit = any(kw in fundamentals_text for kw in pos_kws)
+                if not pos_hit:
+                    continue
+                if not neg_kws:
+                    extra_downweight = True
+                    extra_reasons.append(pos_kws[0])
+                else:
+                    for nkw in neg_kws:
+                        if nkw in fundamentals_text:
+                            extra_downweight = True
+                            extra_reasons.append(f"{pos_kws[0]}-{nkw}")
+                            break
+            break
+
+    minority_info = []
+    for ma in minority_analysts:
+        info = {
+            "name": ma["name"],
+            "direction": ma["direction"],
+            "downweighted": downweighted,
+            "extra_downweight": extra_downweight if ma["name"] == "fundamentals_analyst" else False,
+            "extra_reasons": extra_reasons if ma["name"] == "fundamentals_analyst" else [],
+        }
+        minority_info.append(info)
+
+    consensus_meta = {
+        "majority_direction": majority_dir,
+        "minority_count": minority_cnt,
+        "minority_analysts": minority_info,
+    }
+
+    minority_names = ", ".join(a["name"] for a in minority_analysts)
+    status_parts = []
+    if extra_downweight:
+        status_parts.append("已降权（" + " + ".join([a["name"] for a in minority_analysts]) + " 孤立偏" + minority_dir[-1] + " + " + "、".join(extra_reasons) + "）")
+    elif downweighted:
+        status_parts.append("已降权（" + " + ".join([a["name"] for a in minority_analysts]) + " 孤立偏" + minority_dir[-1] + "）")
+    else:
+        status_parts.append("未降权（少数比例较高）")
+
+    block = (
+        f"<!-- CONSENSUS_WEIGHT: {json.dumps(consensus_meta, ensure_ascii=False)} -->\n\n"
+        f"【多数一致性摘要】\n"
+        f"- 多数方向：{majority_dir}（{majority_cnt}/{total}）\n"
+        f"- 少数方向：{minority_dir}（{minority_cnt}/{total}，{minority_names}）\n"
+        f"- 降权状态：{status_parts[0]}\n"
+        f"- 建议：{minority_names}的偏{minority_dir[-1]}判断权重降低，"
+        f"最终决策应以多数方向为基准，但需说明{'基本面' if any(a['name'] == 'fundamentals_analyst' for a in minority_analysts) else ''}分歧点"
+    )
+
+    _logger.info(
+        "[research_manager] consensus: majority=%s(%d/%d) minority=%s(%d/%d,%s) "
+        "downweighted=%s extra_downweight=%s reasons=%s",
+        majority_dir, majority_cnt, total,
+        minority_dir, minority_cnt, total, ",".join(a["name"] for a in minority_analysts),
+        downweighted, extra_downweight, extra_reasons,
+    )
+
+    return block
 
 
 def create_research_manager(llm, memory):
@@ -46,7 +180,11 @@ def create_research_manager(llm, memory):
         unresolved_claims_text = format_claim_subset_for_prompt(claims, unresolved_claim_ids)
         round_summary_text = round_summary or "暂无轮次摘要。"
 
-        prompt = context_block + "\n\n" + get_prompt("research_manager_prompt", config=get_config()).format(
+        # [G-002] consensus_weight — inject conflict summary after context_block
+        consensus_block = _build_consensus_block(state)
+        consensus_section = ("\n\n" + consensus_block + "\n\n") if consensus_block else "\n\n"
+
+        prompt = context_block + consensus_section + get_prompt("research_manager_prompt", config=get_config()).format(
             past_memory_str=past_memory_str,
             history=history,
             smart_money_report=smart_money_report,
