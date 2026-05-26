@@ -2103,6 +2103,10 @@ async def _run_job_inner(
                 "analysis_intent": user_intent.get("analysis_intent", "watch"),
                 "position_context": user_intent.get("position_context"),
             }
+            # [G-006] raw_evidence_snapshot: hoist metadata to top-level
+            primary_metadata = primary_r.get("metadata", {})
+            if primary_metadata:
+                result["metadata"] = primary_metadata
             # LLM 结构化提取（目标价、止损、信心、风险、关键指标）
             # 注意：必须在 _set_job(status="completed") 之前完成，否则 SSE 超时
             # 会因为看到 status="completed" 而提前关闭流，导致 job.completed 事件丢失。
@@ -2340,6 +2344,16 @@ async def _run_job_inner(
         decision = graph.process_signal(final_state["final_trade_decision"], has_position=_has_pos) or "UNKNOWN"
         result = _build_result_payload(final_state)
         result["decision"] = decision
+
+        # [G-006] raw_evidence_snapshot: ensure legacy path also has raw_evidence
+        if not (result.get("metadata") or {}).get("raw_evidence"):
+            _ticker_legacy = final_state.get("company_of_interest", "")
+            _td_legacy = final_state.get("trade_date", "")
+            if _ticker_legacy and _td_legacy and hasattr(graph, 'data_collector'):
+                re_data = graph.data_collector.build_raw_evidence(_ticker_legacy, _td_legacy)
+                if re_data:
+                    result.setdefault("metadata", {})
+                    result["metadata"]["raw_evidence"] = re_data
 
         # 全量收口为 completed/skipped
         for agent, status in tracker.status.items():

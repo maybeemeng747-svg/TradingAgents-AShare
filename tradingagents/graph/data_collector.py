@@ -9,6 +9,7 @@ import time
 import pandas as pd
 from stockstats import wrap
 import io
+import logging
 
 from tradingagents.agents.utils.agent_utils import (
     get_stock_data,
@@ -37,6 +38,8 @@ LONG_DAYS = 90
 import numpy as np
 
 _OHLCV_COLS = ["date", "open", "high", "low", "close", "volume"]
+
+_logger = logging.getLogger(__name__)
 
 
 def _parse_csv_to_dataframe(raw_csv: str) -> Optional[pd.DataFrame]:
@@ -447,19 +450,100 @@ class DataCollector:
             else:
                 self._refcounts[key] = count
 
-    def build_raw_evidence(self, ticker: str, trade_date: str) -> Dict[str, Any]:
-        """Build a raw-evidence summary from the cached pool.
+    # [G-006] raw_evidence_snapshot
+    @staticmethod
+    def _infer_source_status(raw_value: Any) -> str:
+        if raw_value is None:
+            return "NOT_QUERIED"
+        if isinstance(raw_value, str):
+            val = raw_value.strip()
+            if not val:
+                return "NOT_QUERIED"
+            if "获取失败" in val or "不可用" in val or "error" in val.lower():
+                return "FAILED"
+            if val.startswith("N/A") or val == "VPA 数据不足" or val == "VPA 计算失败":
+                return "NORMAL_NO_DATA"
+            return "HAS_DATA"
+        if isinstance(raw_value, dict):
+            return "HAS_DATA" if raw_value else "NOT_QUERIED"
+        if isinstance(raw_value, list):
+            return "HAS_DATA" if raw_value else "NORMAL_NO_DATA"
+        return "HAS_DATA"
 
-        Returns a dict with keys matching what infer_evidence_statuses expects:
-        stock_data, fund_flow_individual, lhb, news.
-        Missing keys indicate data was not collected.
-        """
+    @staticmethod
+    def _count_records(raw_value: Any) -> int:
+        if raw_value is None:
+            return 0
+        if isinstance(raw_value, str):
+            lines = raw_value.strip().split("\n")
+            return max(0, len(lines) - 1) if len(lines) > 1 else 0
+        if isinstance(raw_value, (list, dict)):
+            return len(raw_value)
+        return 1
+
+    def build_raw_evidence(self, ticker: str, trade_date: str) -> Dict[str, Any]:
+        # [G-006] raw_evidence_snapshot
         pool = self.get(ticker, trade_date)
         if not pool:
             return {}
-        return {
-            "stock_data": pool.get("stock_data"),
-            "fund_flow_individual": pool.get("fund_flow_individual"),
-            "lhb": pool.get("lhb"),
-            "news": pool.get("news"),
-        }
+
+        now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+        data_source_keys = [
+            "stock_data", "news", "global_news",
+            "fund_flow_board", "fund_flow_individual", "lhb",
+            "fundamentals", "balance_sheet", "cashflow", "income_statement",
+            "insider_transactions", "zt_pool", "hot_stocks",
+            "indicators", "vpa_indicators",
+        ]
+
+        raw_evidence: Dict[str, Any] = {}
+        for key in data_source_keys:
+            raw_value = pool.get(key)
+            status = self._infer_source_status(raw_value)
+
+            entry: Dict[str, Any] = {
+                "status": status,
+                "vendor": "akshare",
+                "as_of": trade_date,
+                "fetched_at": now_iso,
+                "record_count": self._count_records(raw_value),
+                "unit": None,
+                "error": None,
+                "is_realtime_patched": False,
+            }
+
+            if key == "stock_data" and isinstance(raw_value, str):
+                if "is_realtime_patched=True" in raw_value:
+                    entry["is_realtime_patched"] = True
+                    for line in raw_value.split("\n"):
+                        if "source=" in line and "[G-005]" in line:
+                            parts = line.split("source=")
+                            if len(parts) > 1:
+                                entry["vendor"] = parts[1].split(",")[0].strip()
+                        if "quote_time=" in line and "[G-005]" in line:
+                            parts = line.split("quote_time=")
+                            if len(parts) > 1:
+                                entry["as_of"] = parts[1].strip()
+
+            if key == "fund_flow_individual":
+                entry["unit"] = "万元"
+            elif key in ("stock_data",):
+                entry["unit"] = "股"
+
+            if status == "FAILED" and isinstance(raw_value, str):
+                entry["error"] = raw_value[:200]
+
+            raw_evidence[key] = {
+                "raw": raw_value,
+                "status": entry["status"],
+                "vendor": entry["vendor"],
+                "as_of": entry["as_of"],
+                "fetched_at": entry["fetched_at"],
+                "record_count": entry["record_count"],
+                "unit": entry["unit"],
+                "error": entry["error"],
+                "is_realtime_patched": entry["is_realtime_patched"],
+            }
+
+        return raw_evidence

@@ -1106,10 +1106,19 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
                  'smart_money_report', 'news_report' etc.
         raw_evidence: optional dict from DataCollector pool with keys like
                       'stock_data', 'fund_flow_individual', 'lhb', etc.
+                      Supports both legacy format (raw values) and G-006 format
+                      (dict with 'raw', 'status', 'vendor', etc. keys).
 
     Returns:
         dict with evidence field names mapped to EvidenceStatus values.
     """
+
+    def _unwrap_raw(val):
+        # [G-006] raw_evidence_snapshot: unwrap G-006 structured entries
+        if isinstance(val, dict) and "raw" in val and "status" in val:
+            return val["raw"]
+        return val
+
     market = reports.get("market_report", "") or ""
     volume_price = reports.get("volume_price_report", "") or ""
     smart_money = reports.get("smart_money_report", "") or ""
@@ -1122,7 +1131,7 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
 
     # 1. OHLCV 5d — check stock_data CSV
     ohlcv_5d = EvidenceStatus.NOT_QUERIED
-    raw_stock_data = raw.get("stock_data")
+    raw_stock_data = _unwrap_raw(raw.get("stock_data"))
     if raw_stock_data and isinstance(raw_stock_data, str) and len(raw_stock_data) > 50:
         ohlcv_5d = EvidenceStatus.HAS_DATA
     elif raw_stock_data is not None:
@@ -1163,7 +1172,7 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
 
     # 5. Individual fund flow — check fund_flow_individual
     individual_fund_flow = EvidenceStatus.NOT_QUERIED
-    raw_fund_flow = raw.get("fund_flow_individual")
+    raw_fund_flow = _unwrap_raw(raw.get("fund_flow_individual"))
     if raw_fund_flow is not None:
         if isinstance(raw_fund_flow, str) and len(raw_fund_flow) > 20 and "失败" not in raw_fund_flow:
             individual_fund_flow = EvidenceStatus.HAS_DATA
@@ -1181,7 +1190,7 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
 
     # 6. LHB (龙虎榜) — check lhb field
     lhb_status = EvidenceStatus.NOT_QUERIED
-    raw_lhb = raw.get("lhb")
+    raw_lhb = _unwrap_raw(raw.get("lhb"))
     if raw_lhb is not None:
         if isinstance(raw_lhb, str) and "失败" in raw_lhb:
             lhb_status = EvidenceStatus.QUERY_FAILED
@@ -1204,7 +1213,7 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
 
     # 8. Announcements — check news data
     announcements = EvidenceStatus.NOT_QUERIED
-    raw_news = raw.get("news")
+    raw_news = _unwrap_raw(raw.get("news"))
     if raw_news is not None:
         if isinstance(raw_news, str) and len(raw_news) > 50:
             announcements = EvidenceStatus.HAS_DATA
