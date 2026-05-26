@@ -46,6 +46,34 @@
 
 > 详细自动开发边界、日报格式和验收标准见 `docs/AUTO_DEV_PLAN.md`。
 
+### T-000: 自动开发巡检基线
+- **描述**：为 OpenClaw 自动开发建立每日/每轮固定巡检清单，先检查项目状态、敏感风险、测试健康和 token/API 消耗风险，再决定是否进入代码开发。
+- **优先级**：高
+- **状态**：ready
+- **执行时机**：
+  - 每次 OpenClaw 自动开发开始前
+  - OpenCode/OpenClaw 完成代码修改后
+  - 用户要求“审核/巡检/看看有没有偷偷消耗 token”时
+- **巡检内容**：
+  - Git 状态：当前分支、远端跟踪、ahead/behind、未提交文件、最近 5 个 commit。
+  - Diff 摘要：按文件分组总结改动，标记是否涉及 `tradingagents/prompts/`、`tradingagents.db`、`logs/`、`eval_results/`、`.env`、模型配置、定时任务。
+  - 测试健康：优先运行被改模块对应测试；TradeFlow 改动运行 `pytest tests/test_tradeflow_*.py -q`；TA 执行层改动运行相关 readiness/G001/P0-P1 测试。
+  - 数据库安全：确认没有误改生产 `tradingagents.db`，测试数据不写入生产库。
+  - 模型/API 消耗风险：检查是否新增或修改会自动调用 LLM/API 的脚本、定时任务、scheduler、OpenClaw cron；标记 DeepSeek/高成本模型调用风险。
+  - 运行产物：检查是否产生未跟踪 `.db`、日志、报告、缓存、临时任务文件；该 ignore 的 ignore，该清理的清理。
+  - 文档一致性：确认 `docs/DEVLOG.md`、`docs/TASKS.md`、`docs/AUTO_DEV_PLAN.md` 是否需要同步。
+- **输出格式**：
+  - 当前状态：干净/有变更/有风险
+  - 变更摘要：文件列表 + 重点 diff
+  - 测试结果：命令 + passed/failed
+  - 敏感风险：数据库/prompt/log/env/API/cron
+  - token/API 风险：是否可能自动消耗
+  - 建议动作：可提交/需补修/暂停等待用户确认
+- **验收方式**：
+  - 巡检报告能明确区分“代码风险”和“运行/成本风险”。
+  - 无高风险项时才允许进入自动开发。
+  - 有高风险项时只输出报告，不改代码。
+
 ### T-001: TradeFlow P1 真实事件源接入
 - **描述**：为 TradeFlow 候选池接入真实公告/新闻事件源，支持公告、业绩预告、回购、增持、中标/订单、并购/重组、监管处罚等事件输入。
 - **优先级**：高
