@@ -4,6 +4,55 @@
 
 ---
 
+## 2026-05-26 | G-005 + G-006 P0 修复
+
+- **执行者**：OpenCode
+- **任务**：G-005 当日日线缺失时用实时行情补齐 + G-006 报告原始证据快照落库
+- **修改文件**：
+  - `tradingagents/dataflows/providers/cn_akshare_provider.py` — [G-005] realtime_ohlcv_patch
+    - 新增 `_fetch_realtime_ohlcv_from_quotes()`: 用 Sina/Eastmoney 实时行情替代不可靠的雪球接口
+    - 重写 `_maybe_append_realtime_row()`: 优先 Sina → Eastmoney fallback，失败时记录 STALE/FAILED 状态
+    - 更新 `_format_ak_hist()`: CSV header 记录 `is_realtime_patched`, `source`, `quote_time`
+    - 成交量单位自适应：通过中位数比率检测并修正股/手单位不一致
+    - 新增 `get_realtime_patch_info()` 辅助方法
+  - `tradingagents/graph/data_collector.py` — [G-006] raw_evidence_snapshot
+    - `build_raw_evidence()` 从 4 个 key 扩展到 15 个数据源全覆盖
+    - 每个数据源附带: `raw`, `status`, `vendor`, `as_of`, `fetched_at`, `record_count`, `unit`, `error`, `is_realtime_patched`
+    - 新增 `_infer_source_status()` 和 `_count_records()` 静态方法
+  - `tradingagents/agents/utils/readiness_score.py` — [G-006]
+    - `infer_evidence_statuses()` 新增 `_unwrap_raw()` 兼容 G-006 结构化格式
+    - 对 `stock_data`, `fund_flow_individual`, `lhb`, `news` 四个 key 解包 `.raw` 字段
+  - `api/main.py` — [G-006]
+    - dual_horizon 路径: 在 result dict 顶层 hoist `metadata` (含 raw_evidence)
+    - legacy streaming 路径: 若 `_build_result_payload` 丢失 raw_evidence，从 DataCollector 补回
+  - `tests/test_g005_realtime_ohlcv_patch.py` — 8 tests (全部通过)
+  - `tests/test_g006_raw_evidence_snapshot.py` — 10 tests (全部通过)
+- **测试结果**：
+  - G-005: 8/8 passed (补行/不重复/历史不补/失败状态/header/盘前不补/量单位/非交易日)
+  - G-006: 10/10 passed (stock_data存在/资金流FAILED/lhb NOT_QUERIED/全key/realtime标记/dual_horizon保留/空pool/无密钥/infer兼容新格式/infer兼容旧格式)
+  - 全量回归: 181 tests passed (含 test_readiness_score, test_e_series_fixes, test_data_collector, test_realtime_quote_provider)
+- **Commit**:
+  - `778892b` fix: G-005 realtime OHLCV patch for missing intraday data
+  - `720040f` feat: G-006 raw evidence snapshot in report result_data
+
+---
+
+## 2026-05-26 | 数据真实性与证据快照任务入库
+
+- **执行者**：Codex
+- **任务**：将 600584.SH 报告暴露的数据接入问题拆成 OpenClaw 可执行任务
+- **修改文件**：
+  - `docs/TASKS.md` — 新增 `G-005` 当日日线缺失时用实时行情补齐 TA 行情输入、`G-006` 报告原始证据快照落库、`G-007` 资金流与龙虎榜数据源口径校验、`G-008` 估值 sanity check 与旧价污染拦截
+  - `docs/TASKS.md` — 同步 `G-002/G-003/G-004` 状态为已完成/已补修
+  - `docs/DEVLOG.md` — 记录本次任务入库
+- **验证**：
+  - 文档变更，无代码测试
+- **下一步**：
+  - OpenClaw 优先执行 `G-005` 与 `G-006`
+  - `G-007/G-008` 在数据快照链路稳定后继续执行
+
+---
+
 ## 2026-05-26 | G-003 + G-004 P0 修复
 
 - **执行者**：OpenCode
