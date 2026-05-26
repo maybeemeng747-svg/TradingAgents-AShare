@@ -22,7 +22,6 @@ DRY_RUN=false
 for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY_RUN=true ;;
-        --test)    run_self_test; exit 0 ;;
         -h|--help) echo "用法: $0 [--dry-run]"; exit 0 ;;
     esac
 done
@@ -270,6 +269,24 @@ FIX_EOF
     log "Codex 退出码: $CODEX_EXIT"
 
     REVIEW_CONTENT=$(cat "$REVIEW_FILE" 2>/dev/null || echo "")
+
+    # Codex review 失败 → 不信任结果，进入修复或 NEEDS_HUMAN
+    if [ $CODEX_EXIT -ne 0 ]; then
+        err "Codex review 执行失败（exit=$CODEX_EXIT），不信任空结果"
+        cat > "$PROMPT_FILE" <<FIX_EOF
+# 修复任务: $TASK_ID
+
+Codex review 上一轮执行失败（exit code $CODEX_EXIT）。请检查代码质量并修复潜在问题。
+
+## 约束
+- 不改 tradingagents/prompts/
+- 不写入生产 tradingagents.db
+- 不 push
+- **不要 git commit**
+- 修复后更新 docs/DEVLOG.md
+FIX_EOF
+        continue
+    fi
 
     # 检查是否有 P0/P1 findings
     HAS_CRITICAL=false
