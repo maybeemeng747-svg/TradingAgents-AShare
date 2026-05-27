@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-05-26
+> 最后更新：2026-05-27
 
 ---
 
@@ -33,6 +33,109 @@
 - **优先级**：P0（1-3）+ P1（4-7）+ P2（8-10）
 - **验收**：重跑002837报告，10项全部通过
 - **状态**：已派发OpenCode执行
+
+### R-001: 2026-05-26 自动开发收尾巡检（P0） ✅ 已完成
+- **描述**：对昨日 OpenClaw/OpenCode 自动开发结果做收口验收，先处理未提交 diff、临时文件、脚本可靠性和 G-008 接线问题，再允许进入新功能开发。
+- **优先级**：P0
+- **状态**：ready
+- **背景**：
+  - 当前分支相对 `myfork/local/tradingagents-custom` 为 `ahead 13, behind 1`，不适合直接 push。
+  - 工作区存在 `G-007` 未提交代码改动、`tests/test_g007_fund_lhb_provenance.py` 未跟踪测试文件，以及多份 `G-008` 临时补丁/备份文件。
+  - `G-008` 已有 commit，但当前测试文件 `test_g008_valuation.py` 缺少 `Optional` import，且生产代码从 `state.get("raw_evidence")` 取值，可能无法读取实际的 `state.metadata.raw_evidence`。
+- **执行约束**：
+  - 不改 `tradingagents/prompts/`。
+  - 不写入生产 `tradingagents.db`。
+  - 不 push / PR / merge。
+  - 不自动跑全市场扫描或深度 TA。
+  - 每个子任务最多修复 2 轮，超过标记 `NEEDS_HUMAN`。
+- **验收方式**：
+  - `git status -sb` 只剩预期代码/文档变更，无临时补丁/备份文件。
+  - `G-007/G-008/AUTO-001` 各自有明确 PASS/FAIL 结论。
+  - 相关测试命令全部通过，或失败项明确标注为 pre-existing。
+  - `docs/DEVLOG.md` 与 `docs/TASKS.md` 状态一致。
+
+### AUTO-002: 自动开发闭环 v1.3 可靠性补修（P0）
+- **描述**：修复 `scripts/auto_dev_loop.sh` 仍可能误提交临时文件、commit 后污染工作区、review 误判等问题，让自动开发脚本可以安全进入日常试运行。
+- **优先级**：P0
+- **状态**：ready
+- **背景**：
+  - `AUTO-001 v1.1/v1.2` 已修复 `grep` 退出、OpenCode exit code、`codex review -o` 等问题，但仍存在剩余风险。
+  - 脚本当前在 PASS 后 `git add -A`，可能把 OpenCode 产生的根目录临时脚本、备份文件、测试草稿全部提交。
+  - 脚本 commit 后再回填 DEVLOG commit hash，会导致 commit 后工作区重新变脏。
+  - `codex review` 输出只用关键词粗判，仍需记录完整 review 文件路径和退出码。
+- **实现要点**：
+  1. 只允许提交任务声明中允许的路径，或至少排除根目录临时文件、`*.backup`、`*_original.py`、`*_fixed.py`、`patch_*.py`、`__pycache__/`。
+  2. DEVLOG/TASKS 更新必须在 commit 前完成；禁止 commit 后再改文件。
+  3. PASS 后提交前再次运行 `git status --porcelain` 并输出将提交文件清单。
+  4. `--dry-run` 在干净工作区能选中真实开发任务，不选 `T-000/R-001` 等巡检任务。
+  5. 失败时不得自动提交任何文件，只写明 `NEEDS_HUMAN`。
+- **验证方式**：
+  - `./scripts/auto_dev_loop.sh --dry-run` 在干净工作区可正常输出候选任务。
+  - 构造根目录临时文件后，脚本不得把临时文件纳入 commit。
+  - `bash -n scripts/auto_dev_loop.sh` 通过。
+  - 不实际调用 OpenCode 的情况下，至少完成 dry-run 与静态检查。
+
+### G-009: G-007 资金流与龙虎榜口径校验收尾提交（P0） ✅ 已完成
+- **描述**：把 `G-007` 当前未提交实现收口成干净 commit，并清理无关临时文件，避免任务文档显示 done 但代码仍悬在工作区。
+- **优先级**：P0
+- **状态**：ready
+- **背景**：
+  - `docs/DEVLOG.md` 已记录 G-007 完成，但相关代码仍在未提交 diff 中。
+  - 相关改动涉及 `readiness_score.py`、`cn_akshare_provider.py`、`data_collector.py`、`tests/test_readiness_score.py`、`tests/test_g007_fund_lhb_provenance.py`。
+- **执行约束**：
+  - 只收口 G-007，不夹带 G-008 临时文件。
+  - 不改 `tradingagents/prompts/`。
+  - 不写生产数据库。
+  - 不 push。
+- **实现要点**：
+  1. 保留 G-007 必要代码与测试，删除或忽略与 G-007 无关的临时文件。
+  2. 确认 `LHB_NOT_QUERIED / LHB_NORMAL_NO_DATA / LHB_FAILED / LHB_HAS_DATA` 四态可被 raw_evidence 和文本 fallback 正确识别。
+  3. 确认个股资金、板块资金、新闻转述资金不会混用为强证据。
+  4. `docs/TASKS.md` 与 `docs/DEVLOG.md` 的 G-007 状态保持一致。
+- **验证方式**：
+  - `pytest tests/test_g007_fund_lhb_provenance.py tests/test_readiness_score.py -q` 通过。
+  - `git diff --stat` 中只包含 G-007 预期文件。
+  - 形成单独 commit，建议消息：`fix: G-007 fund flow and LHB provenance gate`。
+
+### G-010: G-008 估值 sanity check 补修与生产接线（P0） ✅ 已完成
+- **描述**：修复 `G-008` 已提交实现的测试缺口和 raw_evidence 接线问题，确保估值旧价污染真的能在生产报告中触发。
+- **优先级**：P0
+- **状态**：ready
+- **背景**：
+  - 当前 `G-008` commit 只改了 `risk_manager.py`，独立测试文件在根目录且 pytest 收集失败。
+  - `risk_manager.py` 中 G-008 从 `state.get("raw_evidence")` 取值，但系统实际 raw evidence 位于 `state.get("metadata", {}).get("raw_evidence")`。
+  - 价格解析直接按 CSV 第 5 列读取，缺少 header 校验和错误分支测试。
+- **执行约束**：
+  - 不改 prompt。
+  - 不写生产数据库。
+  - 不扩大为估值模型重构，只修旧价污染拦截。
+  - 临时根目录测试/补丁文件必须清理或移入正式测试目录。
+- **实现要点**：
+  1. 新增正式测试 `tests/test_g008_valuation_sanity.py`，不要保留根目录 `test_g008_valuation.py`。
+  2. 把 raw evidence 读取改为优先 `state.metadata.raw_evidence`，兼容旧格式 `state.raw_evidence`。
+  3. CSV 解析按 header 查找 `close`/`收盘` 列，无法识别时保守 fallback，不抛异常。
+  4. 最新价 80、估值价 30 时触发 `valuation_mismatch=True`；最新价 80、估值价 78 时不触发。
+  5. 触发后必须进入最终报告执行质检区和 `metadata.valuation_mismatch`。
+- **验证方式**：
+  - `pytest tests/test_g008_valuation_sanity.py -q` 通过。
+  - `pytest tests/test_readiness_score.py -q` 通过。
+  - `pytest tests/test_g001_three_layer.py tests/test_readiness_score.py -q` 通过。
+  - 根目录不存在 `test_g008_valuation.py`、`patch_g008.py`、`risk_manager_*` 等临时文件。
+
+### V-001: 600584 数据真实性端到端验收（P1）
+- **描述**：在 G-007/G-008 收口后，用 600584.SH 做一次低成本验收，确认当天行情补齐、raw evidence、资金/LHB 口径、估值旧价拦截都能在报告或结果 metadata 中看见。
+- **优先级**：P1
+- **状态**：blocked
+- **前置条件**：`G-009` 与 `G-010` 完成。
+- **执行约束**：
+  - 默认只跑低成本/轻量路径；不要用 DeepSeek。
+  - 不自动全市场扫描。
+  - 如果需要完整 TA 深度分析，先输出预计模型与成本风险，等待用户确认。
+- **验收方式**：
+  - 行情证据包含最新交易日或明确标记 `STALE/FAILED`。
+  - `metadata.raw_evidence.stock_data`、`fund_flow_individual`、`lhb` 可追溯。
+  - 主力资金接口失败时，下游不得把新闻转述资金当强证据。
+  - 估值价与行情价偏离超过 20% 时，报告必须出现估值口径冲突提示。
 
 ---
 
@@ -270,11 +373,11 @@
   - 数据库只读验证：最新报告可通过 SQL 查到 raw evidence 摘要。
 - **代码标注要求**：`# [G-006] raw_evidence_snapshot`
 
-### G-007: 资金流与龙虎榜数据源口径校验（P1）
-- **描述**：修复“主力资金报告说缺失，但下游仍把主力净流出当强证据”的口径冲突；龙虎榜必须区分未查询、无触发、查询失败、有数据。
-- **背景**：600584.SH 报告中 `smart_money_report` 明确写近20日主力资金 ProxyError、龙虎榜未触发，但研究经理/交易员仍多次使用“主力资金净流出”作为强证据，且将 5月22日龙虎榜事实与 5月26日未查询混在一起。
+### G-007: 资金流与龙虎榜数据源口径校验（P1） ✅ 已完成
+- **描述**：修复"主力资金报告说缺失，但下游仍把主力净流出当强证据"的口径冲突；龙虎榜必须区分未查询、无触发、查询失败、有数据。
+- **背景**：600584.SH 报告中 `smart_money_report` 明确写近20日主力资金 ProxyError、龙虎榜未触发，但研究经理/交易员仍多次使用"主力资金净流出"作为强证据，且将 5月22日龙虎榜事实与 5月26日未查询混在一起。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done
 - **执行约束**：
   - 不把新闻中的“资金流向日报”直接等同于个股主力资金接口。
   - 个股资金、板块资金、新闻转述资金必须分字段记录，禁止混用。
