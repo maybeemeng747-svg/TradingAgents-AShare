@@ -37,7 +37,7 @@
 ### R-001: 2026-05-26 自动开发收尾巡检（P0） ✅ 已完成
 - **描述**：对昨日 OpenClaw/OpenCode 自动开发结果做收口验收，先处理未提交 diff、临时文件、脚本可靠性和 G-008 接线问题，再允许进入新功能开发。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done
 - **背景**：
   - 当前分支相对 `myfork/local/tradingagents-custom` 为 `ahead 13, behind 1`，不适合直接 push。
   - 工作区存在 `G-007` 未提交代码改动、`tests/test_g007_fund_lhb_provenance.py` 未跟踪测试文件，以及多份 `G-008` 临时补丁/备份文件。
@@ -79,7 +79,7 @@
 ### G-009: G-007 资金流与龙虎榜口径校验收尾提交（P0） ✅ 已完成
 - **描述**：把 `G-007` 当前未提交实现收口成干净 commit，并清理无关临时文件，避免任务文档显示 done 但代码仍悬在工作区。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done
 - **背景**：
   - `docs/DEVLOG.md` 已记录 G-007 完成，但相关代码仍在未提交 diff 中。
   - 相关改动涉及 `readiness_score.py`、`cn_akshare_provider.py`、`data_collector.py`、`tests/test_readiness_score.py`、`tests/test_g007_fund_lhb_provenance.py`。
@@ -101,7 +101,7 @@
 ### G-010: G-008 估值 sanity check 补修与生产接线（P0） ✅ 已完成
 - **描述**：修复 `G-008` 已提交实现的测试缺口和 raw_evidence 接线问题，确保估值旧价污染真的能在生产报告中触发。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done
 - **背景**：
   - 当前 `G-008` commit 只改了 `risk_manager.py`，独立测试文件在根目录且 pytest 收集失败。
   - `risk_manager.py` 中 G-008 从 `state.get("raw_evidence")` 取值，但系统实际 raw evidence 位于 `state.get("metadata", {}).get("raw_evidence")`。
@@ -126,7 +126,7 @@
 ### V-001: 600584 数据真实性端到端验收（P1）
 - **描述**：在 G-007/G-008 收口后，用 600584.SH 做一次低成本验收，确认当天行情补齐、raw evidence、资金/LHB 口径、估值旧价拦截都能在报告或结果 metadata 中看见。
 - **优先级**：P1
-- **状态**：blocked
+- **状态**：ready
 - **前置条件**：`G-009` 与 `G-010` 完成。
 - **执行约束**：
   - 默认只跑低成本/轻量路径；不要用 DeepSeek。
@@ -398,7 +398,7 @@
 - **描述**：修复基本面报告中用旧股价/假设股价计算市值和 PE 的问题，禁止在已有最新行情价时使用过期假设价格。
 - **背景**：600584.SH 报告中一边使用 80.17 的行情，一边在基本面估值处使用“股价假设30元”计算总市值和 PE，导致 PE 从约90倍级别错写为36倍。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done（已由 `G-010` 补修并通过正式测试）
 - **执行约束**：
   - 不改 prompt 作为唯一方案，优先在 readiness/quality 层做 deterministic sanity check。
   - 修改后更新 `docs/DEVLOG.md`。
