@@ -66,6 +66,8 @@ class UnifiedChatOpenAI(ChatOpenAI):
             or "-r1" in model_lower
             or "thinking" in model_lower
             or "reasoning" in model_lower
+            or "deepseek-v4-pro" in model_lower
+            or "reasoner" in model_lower  # deepseek-reasoner
         )
 
     @staticmethod
