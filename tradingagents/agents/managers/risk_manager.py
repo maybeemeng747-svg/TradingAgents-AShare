@@ -309,17 +309,56 @@ def create_risk_manager(llm, memory):
 
         # [Fix-2] Valuation sanity check
         # Try to extract current price from market report or combined text
-        current_price = _extract_current_price(
+        # [G-008] Enhanced: Extract current price from raw_evidence first
+        current_price_from_raw = None
+        raw_evidence = state.get("raw_evidence")
+
+        # Extract current price from raw_evidence (new G-006 format support)
+        if raw_evidence:
+            raw_stock_data = raw_evidence.get("stock_data")
+            if isinstance(raw_stock_data, dict) and "raw" in raw_stock_data:
+                # New G-006 format: raw_evidence.stock_data.raw = CSV string
+                raw_csv = raw_stock_data["raw"]
+                lines_csv = raw_csv.strip().split('\n')
+                if len(lines_csv) >= 2:
+                    # Extract latest close price from CSV (last line)
+                    latest_line = lines_csv[-1]
+                    parts = latest_line.split(',')
+                    if len(parts) >= 5:
+                        try:
+                            current_price_from_raw = float(parts[4])
+                            _logger.info("[G-008] Extracted current price from raw_evidence CSV: %.2f", current_price_from_raw)
+                        except (ValueError, IndexError):
+                            pass
+            elif isinstance(raw_stock_data, str):
+                # Legacy format: raw_evidence.stock_data = CSV string
+                raw_csv = raw_stock_data
+                lines_csv = raw_csv.strip().split('\n')
+                if len(lines_csv) >= 2:
+                    latest_line = lines_csv[-1]
+                    parts = latest_line.split(',')
+                    if len(parts) >= 5:
+                        try:
+                            current_price_from_raw = float(parts[4])
+                            _logger.info("[G-008] Extracted current price from raw_evidence CSV: %.2f", current_price_from_raw)
+                        except (ValueError, IndexError):
+                            pass
+
+        # Use raw_evidence price if available, otherwise use original method
+        current_price = current_price_from_raw or _extract_current_price(
             market_research_report or "",
             state.get("volume_price_report", "") or "",
         )
+
         valuation_check = check_valuation_mismatch(
             current_price=current_price,
             report_text=cleaned_response,
         )
         if valuation_check["mismatch"]:
             final_response += "\n\n" + valuation_check["note"]
-            _logger.warning("[Fix-2] valuation_mismatch: %s", valuation_check["note"])
+            _logger.warning("[G-008] valuation_mismatch: %s", valuation_check["note"])
+
+        # [Fix-9] Filter A-share short-selling language
 
         # [Fix-9] Filter A-share short-selling language
         final_response, ss_changes = _sanitize_short_selling_text(final_response)

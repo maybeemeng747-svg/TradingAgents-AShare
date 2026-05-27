@@ -4,6 +4,39 @@
 
 ---
 
+## 2026-05-26 | G-007 资金流与龙虎榜数据源口径校验
+
+- **执行者**：OpenCode
+- **任务**：修复"主力资金报告说缺失，但下游仍把主力净流出当强证据"的口径冲突；龙虎榜必须区分未查询/无触发/查询失败/有数据
+- **修改文件**：
+  - `tradingagents/dataflows/providers/cn_akshare_provider.py` — [G-007]
+    - `get_lhb_detail()`: 返回文本加 G-007 状态标签（LHB_NOT_QUERIED / LHB_NORMAL_NO_DATA / LHB_FAILED / LHB_HAS_DATA）
+  - `tradingagents/graph/data_collector.py` — [G-007]
+    - `_infer_source_status()`: 新增 LHB 状态标签识别（"查询未触发" → NOT_QUERIED，而非 HAS_DATA）
+    - `_fetch_all()`: 新增 `_lhb_query_mode` 追踪 LHB 是否被强制查询
+    - `build_raw_evidence()`: fund_flow_individual 新增 `source_type`、`unit_verified` 字段；fund_flow_board 新增 `source_type`；lhb 新增 `query_mode`
+  - `tradingagents/agents/utils/readiness_score.py` — [G-007]
+    - 新增 `build_fund_flow_provenance()`: 从 raw_evidence 构建资金流溯源，区分个股资金/板块资金/新闻转述资金，仅 individual HAS_DATA + unit 校验通过可作强证据
+    - 新增 `build_lhb_provenance()`: 从 raw_evidence 构建龙虎榜溯源，区分 HAS_DATA / NOT_QUERIED / NORMAL_NO_DATA / FAILED
+    - 新增 `format_fund_lhb_provenance()`: 格式化资金流与龙虎榜口径摘要，追加到报告底部
+    - `infer_evidence_statuses()`: LHB "查询未触发" → NOT_QUERIED（原为 NORMAL_NO_DATA）
+  - `tradingagents/agents/managers/risk_manager.py` — [G-007]
+    - 集成 `build_fund_flow_provenance` 和 `build_lhb_provenance`
+    - `get_strong_action_gate()` 调用使用 provenance 推导的 `fund_flow_unit_verified` 和 `fund_flow_not_mixed`
+    - 报告追加 provenance 口径摘要区块
+  - `tests/test_g007_fund_lhb_provenance.py` — 39 tests (全部通过)
+  - `tests/test_readiness_score.py` — 更新 LHB 未触发测试断言为 NOT_QUERIED
+- **测试结果**：
+  - G-007: 39/39 passed
+  - 全量回归: 597 passed, 9 skipped, 2 failed (pre-existing SQLite thread)
+- **关键逻辑**：
+  - 个股资金流接口失败 + 新闻中出现"主力净流出" → 门禁失败，新闻转述仅作弱证据
+  - 龙虎榜 force=False → NOT_QUERIED，不显示"无显著资金异动"
+  - 龙虎榜历史有数据但当日未查 → 不说"无龙虎榜数据"，正确显示"未查询（非异动触发）"
+- **代码标注要求**：`# [G-007] fund_lhb_provenance`
+
+---
+
 ## 2026-05-26 | AUTO-001 自动开发闭环 v1
 
 - **执行者**：主控AI
@@ -338,3 +371,26 @@
 ### 待做 — P3 架构层
 12. 打通 investment-controller 与 TA 持仓数据
 13. 调度器 14:30 任务逻辑修正
+## 2026-05-27 | G-008 估值sanity check与旧价污染拦截
+
+- **执行者**：主控AI
+- **任务**：实现估值sanity check与旧价污染拦截，解决"报告引用过期估值价格导致误导性结论"问题
+- **修改文件**：
+  - `tradingagents/agents/managers/risk_manager.py` — [G-008]
+    - 增强估值检查功能：从raw_evidence.stock_data.raw提取当前价格（支持G-006新格式和旧格式CSV）
+    - 添加价格提取函数：支持从CSV最新行获取收盘价，支持从CSV头部查找价格
+    - 集成到估值检查流程：优先使用raw_evidence价格，降级到原有文本提取方法
+    - 增强错误处理：价格提取失败时优雅降级，不影响原有功能
+    - 日志增强：添加G-008标签的详细日志记录价格提取过程和检测结果
+- **验证方式**：
+  - 创建独立测试文件验证价格提取功能
+  - 测试高偏差（62.5%）、低偏差（2.5%）、无价格、无证据等场景
+  - 验证CSV格式解析正确性
+  - 验证集成到risk_manager后不影响其他功能
+- **实现要点**：
+  1. 支持新G-006格式：`raw_evidence.stock_data.raw` 为CSV字符串
+  2. 支持旧格式：`raw_evidence.stock_data` 为CSV字符串
+  3. 价格提取策略：优先使用最新行的close价格，降级到头部价格查找
+  4. 集成位置：Fix-2估值检查环节，raw_evidence处理之后
+  5. 错误处理：价格提取失败时不中断流程，使用原有方法
+  6. 日志记录：区分新格式提取、旧格式提取、失败等场景
