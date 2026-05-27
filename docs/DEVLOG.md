@@ -4,6 +4,54 @@
 
 ---
 
+## 2026-05-27 | R-001 收尾巡检
+
+- **执行者**：OpenCode
+- **任务**：R-001 自动开发收尾巡检
+- **结论**：
+
+  | 子任务 | 结果 | 说明 |
+  |--------|------|------|
+  | 清理临时文件 | **PASS** | 删除 12 个根目录/子目录临时文件（patch_g008.py, fix_risk_manager.py 等） |
+  | G-007 收尾 | **PASS** | 155 tests passed，已提交 `94d726f` |
+  | G-008 接线修复 | **PASS** | `state.get("raw_evidence")` → 优先 `state["metadata"]["raw_evidence"]`，兼容旧路径 |
+  | G-008 正式测试 | **PASS** | 13 tests in `tests/test_g008_valuation_sanity.py`，已提交 `3903963` |
+  | 全量测试 | **PASS** | 653 passed, 9 skipped, 2 failed (pre-existing: test_portfolio_import scheduler DB) |
+
+- **修改文件**：
+  - `tradingagents/agents/managers/risk_manager.py` — raw_evidence 接线修复（优先 metadata 路径）
+  - `tests/test_g008_valuation_sanity.py` — 新增正式 G-008 测试
+  - 删除 12 个临时文件
+- **已知 pre-existing 失败**：
+  - `test_portfolio_import.py::test_scheduled_job_uses_imported_position_context`
+  - `test_portfolio_import.py::test_scheduled_job_marks_failed_when_underlying_job_fails`
+  - 原因：测试 DB 缺少 `scheduled_analyses` 表，非本次引入
+- **下一步**：执行 `G-009` → `G-010` → `AUTO-002` → `V-001`
+
+---
+
+## 2026-05-27 | 自动开发进度巡检与新一轮任务布置
+
+- **执行者**：Codex
+- **任务**：检查 2026-05-26 自动开发进度，并将新一轮收尾/补修任务写入任务池
+- **巡检结论**：
+  - `G-005/G-006` 已有独立 commit，属于可复核状态
+  - `G-007` 测试可通过，但代码仍处于未提交 diff，任务文档/DEVLOG 与 git 状态不一致
+  - `G-008` 已有 commit，但存在生产接线路径疑点与根目录临时测试文件失败问题
+  - `AUTO-001` 已有 v1.1/v1.2 修复，但仍需补提交白名单、commit 后工作区污染、临时文件防夹带等保险
+- **修改文件**：
+  - `docs/TASKS.md` — 新增 `R-001`、`AUTO-002`、`G-009`、`G-010`、`V-001`
+  - `docs/DEVLOG.md` — 记录本次巡检与任务入库
+- **验证**：
+  - `pytest tests/test_g007_fund_lhb_provenance.py tests/test_readiness_score.py -q` → 155 passed
+  - `pytest test_g008_valuation.py -q` → failed，根目录临时测试缺少 `Optional` import
+  - `./scripts/auto_dev_loop.sh --dry-run` → 正确因工作区不干净退出
+- **下一步**：
+  - OpenClaw 先执行 `R-001`，再按顺序执行 `G-009` → `G-010` → `AUTO-002`
+  - `V-001` 在 `G-009/G-010` 完成后再验收
+
+---
+
 ## 2026-05-26 | G-007 资金流与龙虎榜数据源口径校验
 
 - **执行者**：OpenCode
