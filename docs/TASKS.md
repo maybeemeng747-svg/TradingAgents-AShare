@@ -54,10 +54,11 @@
   - 相关测试命令全部通过，或失败项明确标注为 pre-existing。
   - `docs/DEVLOG.md` 与 `docs/TASKS.md` 状态一致。
 
-### AUTO-002: 自动开发闭环 v1.3 可靠性补修（P0）
+### AUTO-002: 自动开发闭环 v1.3 可靠性补修（P0） ✅ 已完成
 - **描述**：修复 `scripts/auto_dev_loop.sh` 仍可能误提交临时文件、commit 后污染工作区、review 误判等问题，让自动开发脚本可以安全进入日常试运行。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done
+- **完成记录**：commit 7ea198d
 - **背景**：
   - `AUTO-001 v1.1/v1.2` 已修复 `grep` 退出、OpenCode exit code、`codex review -o` 等问题，但仍存在剩余风险。
   - 脚本当前在 PASS 后 `git add -A`，可能把 OpenCode 产生的根目录临时脚本、备份文件、测试草稿全部提交。

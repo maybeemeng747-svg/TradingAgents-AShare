@@ -76,7 +76,7 @@ pattern = re.compile(
 priority_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
 EXCLUDE_KEYWORDS = {"巡检", "规则", "基线", "checklist", "inspection", "收尾"}
-EXCLUDE_ID_PREFIXES = ("R-",)
+EXCLUDE_ID_PREFIXES = ("R-", "AUTO-")
 EXCLUDE_IDS = {"T-000"}
 
 tasks = []
