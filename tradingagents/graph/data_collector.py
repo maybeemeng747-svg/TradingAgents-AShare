@@ -329,11 +329,13 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
             results[future_to_key[future]] = future.result()
 
     # ── [E-003] 资金流异动时自动升级 LHB 查询 ─────────────────────────
+    results["_lhb_query_mode"] = "on_demand"  # [G-007] default: force=False
     ff_text = results.get("fund_flow_individual", "") or ""
     if _detect_fund_flow_anomaly(ff_text):
         print(f"  [E-003] 资金流异动检测触发，升级 LHB force=True")
         lhb_forced = _safe(get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": True})
         results["lhb"] = lhb_forced
+        results["_lhb_query_mode"] = "forced"  # [G-007] fund_lhb_provenance
 
     # ── Parse CSV once, reuse for indicators and VPA ──────────────────
     raw_csv = results.get("stock_data", "")
@@ -463,6 +465,14 @@ class DataCollector:
                 return "FAILED"
             if val.startswith("N/A") or val == "VPA 数据不足" or val == "VPA 计算失败":
                 return "NORMAL_NO_DATA"
+            if "[G-007] LHB_NOT_QUERIED" in val or "查询未触发" in val:
+                return "NOT_QUERIED"
+            if "[G-007] LHB_NORMAL_NO_DATA" in val or "无龙虎榜数据" in val:
+                return "NORMAL_NO_DATA"
+            if "[G-007] LHB_FAILED" in val:
+                return "FAILED"
+            if "[G-007] LHB_HAS_DATA" in val or "龙虎榜明细" in val:
+                return "HAS_DATA"
             return "HAS_DATA"
         if isinstance(raw_value, dict):
             return "HAS_DATA" if raw_value else "NOT_QUERIED"
@@ -528,6 +538,12 @@ class DataCollector:
 
             if key == "fund_flow_individual":
                 entry["unit"] = "万元"
+                entry["source_type"] = "individual_fund_flow"  # [G-007]
+                entry["unit_verified"] = entry["unit"] is not None  # [G-007]
+            elif key == "fund_flow_board":
+                entry["source_type"] = "board_fund_flow"  # [G-007]
+            elif key == "lhb":
+                entry["query_mode"] = pool.get("_lhb_query_mode", "on_demand")  # [G-007]
             elif key in ("stock_data",):
                 entry["unit"] = "股"
 
@@ -544,6 +560,9 @@ class DataCollector:
                 "unit": entry["unit"],
                 "error": entry["error"],
                 "is_realtime_patched": entry["is_realtime_patched"],
+                "source_type": entry.get("source_type"),  # [G-007] fund_lhb_provenance
+                "unit_verified": entry.get("unit_verified", None),  # [G-007]
+                "query_mode": entry.get("query_mode", None),  # [G-007]
             }
 
         return raw_evidence

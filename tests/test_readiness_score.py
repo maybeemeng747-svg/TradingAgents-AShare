@@ -1225,21 +1225,21 @@ def test_raw_evidence_none_falls_back_to_text():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_raw_evidence_lhb_not_triggered():
-    """LHB force=False 未触发应算 NORMAL_NO_DATA，不是 HAS_DATA."""
+    """[G-007] LHB force=False 未触发应算 NOT_QUERIED（未实际查询）."""
     statuses = infer_evidence_statuses(
         {"smart_money_report": "report"},
         raw_evidence={"lhb": "龙虎榜查询未触发（force=False）"},
     )
-    assert statuses["lhb_status"] == EvidenceStatus.NORMAL_NO_DATA
+    assert statuses["lhb_status"] == EvidenceStatus.NOT_QUERIED
 
 
 def test_raw_evidence_lhb_not_triggered_short():
-    """短文本 '未触发' 也应识别."""
+    """短文本 '未触发' 也应识别为 NOT_QUERIED."""
     statuses = infer_evidence_statuses(
         {"smart_money_report": "report"},
         raw_evidence={"lhb": "未触发"},
     )
-    assert statuses["lhb_status"] == EvidenceStatus.NORMAL_NO_DATA
+    assert statuses["lhb_status"] == EvidenceStatus.NOT_QUERIED
 
 
 def test_fund_flow_anomaly_no_false_positive_on_dates():

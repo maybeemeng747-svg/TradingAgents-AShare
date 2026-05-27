@@ -1195,7 +1195,10 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
         if isinstance(raw_lhb, str) and "失败" in raw_lhb:
             lhb_status = EvidenceStatus.QUERY_FAILED
         elif isinstance(raw_lhb, str) and ("无" in raw_lhb or "未上榜" in raw_lhb or "未触发" in raw_lhb or len(raw_lhb.strip()) == 0):
-            lhb_status = EvidenceStatus.NORMAL_NO_DATA
+            if "查询未触发" in raw_lhb or "LHB_NOT_QUERIED" in raw_lhb or raw_lhb.strip() == "未触发":
+                lhb_status = EvidenceStatus.NOT_QUERIED  # [G-007]
+            else:
+                lhb_status = EvidenceStatus.NORMAL_NO_DATA
         elif raw_lhb:
             lhb_status = EvidenceStatus.HAS_DATA
         else:
@@ -1637,3 +1640,208 @@ def apply_horizon_conflict_to_actions(
                             f" 短中线冲突({conflict_result.get('conflict_type', '')})：{conflict_result.get('note', '')}")
 
     return result
+
+
+# ── [G-007] fund_lhb_provenance ──────────────────────────────────────────
+
+_NEWS_FUND_FLOW_PATTERNS = [
+    r'主力.*?(?:净流出|净流入)',
+    r'(?:净流出|净流入).*?主力',
+    r'大单.*?(?:净流出|净流入)',
+    r'资金.*?(?:流出|流入)',
+]
+
+
+def build_fund_flow_provenance(raw_evidence: Optional[dict], reports: dict) -> dict:
+    """[G-007] Build fund flow provenance info from raw_evidence and reports.
+
+    Determines whether fund flow data comes from individual fund flow API,
+    board fund flow API, or news text mentions.  Only individual_fund_flow
+    with HAS_DATA status and verified unit qualifies as strong evidence.
+
+    Returns:
+        {
+            "individual_status": str,
+            "board_status": str,
+            "news_reported_fund_flow": bool,
+            "strong_evidence_allowed": bool,
+            "unit_verified": bool,
+            "not_mixed": bool,
+            "conflict_summary": str,
+        }
+    """
+    raw = raw_evidence or {}
+
+    def _unwrap_g006(val):
+        if isinstance(val, dict) and "status" in val:
+            return val
+        return None
+
+    def _status_from_g006(val):
+        structured = _unwrap_g006(val)
+        if structured:
+            return structured.get("status", "NOT_QUERIED")
+        return None
+
+    def _unwrap_legacy(val):
+        if isinstance(val, dict) and "raw" in val and "status" in val:
+            return val["raw"]
+        return val
+
+    def _status_from_text(val):
+        if val is None:
+            return "NOT_QUERIED"
+        if isinstance(val, str):
+            s = val.strip()
+            if not s:
+                return "NOT_QUERIED"
+            if "获取失败" in s or "不可用" in s:
+                return "FAILED"
+            if len(s) > 20:
+                return "HAS_DATA"
+            return "NORMAL_NO_DATA"
+        return "HAS_DATA" if val else "NOT_QUERIED"
+
+    individual_status = _status_from_g006(raw.get("fund_flow_individual"))
+    individual_unit_verified = False
+    if individual_status:
+        structured = raw.get("fund_flow_individual")
+        individual_unit_verified = structured.get("unit_verified", False) is True
+    else:
+        raw_ff = _unwrap_legacy(raw.get("fund_flow_individual"))
+        individual_status = _status_from_text(raw_ff)
+        if individual_status == "HAS_DATA":
+            individual_unit_verified = True
+
+    board_status = _status_from_g006(raw.get("fund_flow_board"))
+    if not board_status:
+        raw_board = _unwrap_legacy(raw.get("fund_flow_board"))
+        board_status = _status_from_text(raw_board)
+
+    news_reported_fund_flow = False
+    news_text = reports.get("news_report", "") or ""
+    if news_text and _text_match_any(news_text, _NEWS_FUND_FLOW_PATTERNS):
+        news_reported_fund_flow = True
+
+    strong_evidence_allowed = (
+        individual_status == "HAS_DATA" and individual_unit_verified
+    )
+
+    conflict_parts = []
+    if individual_status == "FAILED":
+        conflict_parts.append("个股资金流接口查询失败")
+    elif individual_status == "NOT_QUERIED":
+        conflict_parts.append("个股资金流接口未查询")
+
+    if news_reported_fund_flow and not strong_evidence_allowed:
+        conflict_parts.append("新闻转述资金信息仅作弱证据，不得作为主力资金强证据")
+
+    conflict_summary = "；".join(conflict_parts) if conflict_parts else ""
+
+    return {
+        "individual_status": individual_status,
+        "board_status": board_status,
+        "news_reported_fund_flow": news_reported_fund_flow,
+        "strong_evidence_allowed": strong_evidence_allowed,
+        "unit_verified": individual_unit_verified,
+        "not_mixed": True,
+        "conflict_summary": conflict_summary,
+    }
+
+
+def build_lhb_provenance(raw_evidence: Optional[dict], reports: dict) -> dict:
+    """[G-007] Build LHB provenance info from raw_evidence and reports.
+
+    Distinguishes: HAS_DATA / NOT_QUERIED / NORMAL_NO_DATA / FAILED.
+    NOT_QUERIED  = force=False, no anomaly triggered
+    NORMAL_NO_DATA = force=True but stock not on LHB that day
+    FAILED = API error
+    HAS_DATA = actual LHB records found
+    """
+    raw = raw_evidence or {}
+
+    lhb_status = "NOT_QUERIED"
+    query_mode = "not_queried"
+
+    raw_lhb_entry = raw.get("lhb")
+
+    if isinstance(raw_lhb_entry, dict) and "status" in raw_lhb_entry:
+        lhb_status = raw_lhb_entry.get("status", "NOT_QUERIED")
+        query_mode = raw_lhb_entry.get("query_mode", "not_queried") or "not_queried"
+    else:
+        raw_lhb_val = raw_lhb_entry
+        if isinstance(raw_lhb_entry, dict) and "raw" in raw_lhb_entry:
+            raw_lhb_val = raw_lhb_entry["raw"]
+        if raw_lhb_val is None:
+            lhb_status = "NOT_QUERIED"
+        elif isinstance(raw_lhb_val, str):
+            val = raw_lhb_val.strip()
+            if not val:
+                lhb_status = "NOT_QUERIED"
+            elif "获取失败" in val or "LHB_FAILED" in val:
+                lhb_status = "FAILED"
+            elif "查询未触发" in val or "LHB_NOT_QUERIED" in val:
+                lhb_status = "NOT_QUERIED"
+            elif "无龙虎榜数据" in val or "非异动日" in val or "LHB_NORMAL_NO_DATA" in val:
+                lhb_status = "NORMAL_NO_DATA"
+            elif "龙虎榜明细" in val or "LHB_HAS_DATA" in val:
+                lhb_status = "HAS_DATA"
+            else:
+                lhb_status = "NOT_QUERIED"
+        else:
+            lhb_status = "HAS_DATA" if raw_lhb_val else "NOT_QUERIED"
+
+    if lhb_status == "NOT_QUERIED":
+        if query_mode == "not_queried":
+            query_mode = "not_queried"
+    elif lhb_status in ("NORMAL_NO_DATA", "HAS_DATA", "FAILED"):
+        if query_mode == "not_queried":
+            query_mode = "forced"
+
+    display_map = {
+        "HAS_DATA": "龙虎榜有数据",
+        "NOT_QUERIED": "龙虎榜未查询（非异动触发）",
+        "NORMAL_NO_DATA": "龙虎榜查询正常，当日无上榜记录",
+        "FAILED": "龙虎榜查询失败",
+        "FIELD_MISSING": "龙虎榜数据不完整",
+    }
+    display_text = display_map.get(lhb_status, f"龙虎榜状态未知: {lhb_status}")
+
+    return {
+        "status": lhb_status,
+        "query_mode": query_mode,
+        "display_text": display_text,
+    }
+
+
+def format_fund_lhb_provenance(fund_prov: dict, lhb_prov: dict) -> str:
+    """[G-007] Format fund flow and LHB provenance summary for reports."""
+    lines = ["\n\n📊 [G-007] 资金流与龙虎榜数据源口径："]
+
+    ff_labels = {
+        "HAS_DATA": "✅ 有数据",
+        "FAILED": "❌ 查询失败",
+        "NOT_QUERIED": "⬜ 未查询",
+        "NORMAL_NO_DATA": "⬜ 无数据（正常）",
+    }
+    lines.append(f"  个股资金流: {ff_labels.get(fund_prov['individual_status'], fund_prov['individual_status'])}")
+    if fund_prov['unit_verified']:
+        lines.append(f"  个股资金流单位: ✅ 已校验")
+    else:
+        lines.append(f"  个股资金流单位: ❌ 未校验")
+    lines.append(f"  板块资金流: {ff_labels.get(fund_prov['board_status'], fund_prov['board_status'])}")
+    if fund_prov['news_reported_fund_flow']:
+        lines.append(f"  新闻转述资金: ⚠️ 仅弱证据（不得作为主力资金强证据）")
+
+    lhb_icon = {"HAS_DATA": "✅", "NOT_QUERIED": "⬜", "NORMAL_NO_DATA": "⬜", "FAILED": "❌"}.get(lhb_prov['status'], "⬜")
+    lines.append(f"  龙虎榜: {lhb_icon} {lhb_prov['display_text']}")
+
+    if fund_prov['strong_evidence_allowed']:
+        lines.append(f"  主力资金强证据: ✅ 可用")
+    else:
+        lines.append(f"  主力资金强证据: ❌ 不可用（个股资金流接口不可用或单位未校验）")
+
+    if fund_prov['conflict_summary']:
+        lines.append(f"  ⚠️ {fund_prov['conflict_summary']}")
+
+    return "\n".join(lines)

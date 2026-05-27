@@ -1128,7 +1128,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
         """
         if not force:
             return (
-                f"{symbol} 龙虎榜查询未触发（force=False）。"
+                f"{symbol} [G-007] LHB_NOT_QUERIED: 龙虎榜查询未触发（force=False）。"
                 "龙虎榜为按需查询接口，仅当检测到资金异动时才应调用，以避免批量日期查询触发 API 限流。"
             )
         try:
@@ -1137,10 +1137,10 @@ class CnAkshareProvider(BaseMarketDataProvider):
             with AKSHARE_CALL_LOCK:
                 df = ak.stock_lhb_detail_em(symbol=code, start_date=date, end_date=date)
             if df is None or df.empty:
-                return f"{symbol} 在 {date} 无龙虎榜数据（非异动日属正常）。"
-            return f"{symbol} 龙虎榜明细（{date}）：\n{df.head(20).to_string(index=False)}"
+                return f"{symbol} [G-007] LHB_NORMAL_NO_DATA: 在 {date} 无龙虎榜数据（非异动日属正常）。"
+            return f"{symbol} [G-007] LHB_HAS_DATA: 龙虎榜明细（{date}）：\n{df.head(20).to_string(index=False)}"
         except Exception as exc:
-            return f"龙虎榜数据获取失败：{type(exc).__name__}: {exc}"
+            return f"{symbol} [G-007] LHB_FAILED: 龙虎榜数据获取失败：{type(exc).__name__}: {exc}"
 
     def get_zt_pool(self, date: str) -> str:
         """获取涨停板情绪池，反映市场整体情绪温度。"""
