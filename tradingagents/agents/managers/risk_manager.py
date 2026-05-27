@@ -311,7 +311,7 @@ def create_risk_manager(llm, memory):
         # Try to extract current price from market report or combined text
         # [G-008] Enhanced: Extract current price from raw_evidence first
         current_price_from_raw = None
-        raw_evidence = state.get("raw_evidence")
+        raw_evidence = state.get("metadata", {}).get("raw_evidence") or state.get("raw_evidence")
 
         # Extract current price from raw_evidence (new G-006 format support)
         if raw_evidence:
