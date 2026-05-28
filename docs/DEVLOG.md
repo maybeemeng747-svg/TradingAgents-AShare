@@ -643,3 +643,16 @@
   - ✅ 信号标签：回购公告 → BUYBACK_EVENT 策略标签；解禁公告 → LOCKUP_RISK 风险标签（N-004 功能正常）
   - 600584 今日无公告（正常现象）
 - **标记**：`# [V-001]`
+
+## 2026-05-28 | N-005 执行层 schema 化最小实现
+
+- **执行者**：OpenCode
+- **任务**：为最终执行层增加结构化输出的最小 schema
+- **修改文件**：
+  - `tradingagents/agents/utils/execution_schema.py`（220行）— ExecutionSchema dataclass + Action/BuyLevel/RiskLevel 枚举 + build_execution_schema() helper + validate() 方法
+  - `tests/test_execution_schema.py`（180行）— 覆盖 WAIT/ENTER/HOLD/REDUCE/EXIT 动作推导、字段冲突验证、低覆盖率标记、序列化
+- **Schema 字段**：action, buy_level, risk_level, trigger_price, invalid_price, confidence, opportunity_score, source_coverage, evidence_coverage, strong_action_gate_passed, gate_failures, position_status, analysis_intent, horizon, data_quality_flags, evidence_refs, valuation_mismatch
+- **设计**：sidecar 模式，不改变现有文本输出
+- **标记**：`# [N-005] execution_schema`
+- **测试**：139 passed（含 readiness_score 测试）
+- **Commit**：4ec69ec
