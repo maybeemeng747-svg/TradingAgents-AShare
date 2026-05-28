@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-05-28 | 自动开发任务运行档案
+
+- **执行者**：Codex
+- **任务**：补齐自动开发链路的可回查审计记录，覆盖 OpenCode 领取任务、开发输出、测试、Codex review、最终 summary
+- **修改文件**：
+  - `scripts/auto_dev_loop.sh` — 每次非 dry-run 创建 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/`，保存 task、prompt、OpenCode 输出、测试输出、Codex review、summary；持久化日志前做基础 API key 脱敏
+  - `scripts/auto_dev_loop.sh` — 工作区不干净时不再忽略 untracked docs，避免失败日志被下一轮误带入提交
+  - `docs/AUTO_DEV_PLAN.md` — 新增任务运行日志与审计链路规范，明确 Codex 审核和任务布置职责
+- **规则**：
+  - 通过任务：运行档案随代码和文档一起提交
+  - 失败任务：不自动提交，留下运行档案和 DEVLOG，下一轮自动开发停住等人工处理
+- **任务池收口**：
+  - `N-002` 已由 commit `a0770bb` 完成，补充标记为 `done`
+  - `N-002` 完成早于本次运行档案机制，未伪造历史 `task_runs`
+
+---
+
 ## 2026-05-28 | N-001 事件源接入候选扫描
 
 - **执行者**：OpenCode
@@ -557,3 +574,15 @@
   - `ak.stock_rank_forecast_cninfo` — 每日 40-60 条评级
 - **集成点**：`fetch_daily_events()` 返回格式直接兼容 `score_event_catalyst(news_texts=)`
 - **验证**：24 + 67 = 91 tests passed，commit b5131cd
+
+## 2026-05-28 | N-002 cn_astock fallback 接入
+
+- **执行者**：OpenCode
+- **任务**：cn_astock 数据源验收与 fallback 接入
+- **修改文件**：
+  - `tests/test_cn_astock_provider.py`（新增，251行）— 50 测试覆盖 symbol 规范化、registry 注册、CSV 字段、realtime quote JSON、失败降级、amount/volume 区分
+  - `tradingagents/tradeflow/candidate_engine.py` — `_fetch_price_data()` fallback 链改为 `cn_akshare → cn_astock → yfinance`，记录 `price_source` 到 `df.attrs`
+  - `tradingagents/dataflows/providers/cn_astock_provider.py` — `get_realtime_quotes()` 增加 amount < 10000 的 sanity check 日志
+- **标记**：`# [N-002] cn_astock_fallback`
+- **测试**：111 passed, 2 skipped
+- **Commit**：a0770bb

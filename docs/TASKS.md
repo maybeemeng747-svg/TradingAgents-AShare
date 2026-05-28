@@ -179,7 +179,7 @@
   - `b8e0023` 已新增 `tradingagents/dataflows/providers/cn_astock_provider.py` 并注册到 provider registry。
   - Simon `a-stock-data` 的优势是直连腾讯/东财/新浪/财联社/巨潮等 HTTP 数据源，适合补 AKShare 不稳定和当天行情滞后的问题。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done — commit a0770bb
 - **执行约束**：
   - 不把 `cn_astock` 直接设为唯一主源；先作为 fallback / cross-check。
   - 不改 prompt。

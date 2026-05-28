@@ -15,6 +15,7 @@
 #   - 失败时不得自动提交任何文件
 #   - DEVLOG/TASKS 在 commit 前完成，commit 后不再修改文件
 #   - Review 输出保存到 docs/reviews/
+#   - 每个任务运行过程保存到 docs/task_runs/<task>-<timestamp>/
 
 set -euo pipefail
 
@@ -22,6 +23,7 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TASKS_FILE="$REPO_DIR/docs/TASKS.md"
 DEVLOG_FILE="$REPO_DIR/docs/DEVLOG.md"
 REVIEW_DIR="$REPO_DIR/docs/reviews"
+TASK_RUN_ROOT="$REPO_DIR/docs/task_runs"
 MAX_FIX_ROUNDS=2
 DRY_RUN=false
 
@@ -45,13 +47,21 @@ log()  { echo -e "${GREEN}[AUTO]${NC} $*"; }
 warn() { echo -e "${YELLOW}[AUTO]${NC} $*"; }
 err()  { echo -e "${RED}[AUTO]${NC} $*" >&2; }
 
+redact_log() {
+    # 持久化日志前做基础密钥脱敏，避免把本地 API key 写入仓库。
+    sed -E \
+        -e 's/sk-[A-Za-z0-9_-]{20,}/[REDACTED_API_KEY]/g' \
+        -e 's/(api[_-]?key[=:][[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
+        -e 's/(authorization:[[:space:]]*bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig'
+}
+
 # ─── 0. 前置检查 ──────────────────────────────────────
 log "=== AUTO-002 自动开发闭环 v1.3 ==="
 log "仓库: $REPO_DIR"
 
-mkdir -p "$REVIEW_DIR"
+mkdir -p "$REVIEW_DIR" "$TASK_RUN_ROOT"
 
-DIRTY=$(git status --porcelain | grep -v '^?? docs/' | head -5 || true)
+DIRTY=$(git status --porcelain | head -5 || true)
 if [ -n "$DIRTY" ]; then
     err "工作区不干净，退出以避免覆盖用户改动："
     echo "$DIRTY"
@@ -152,6 +162,32 @@ if [ "$DRY_RUN" = true ]; then
     exit 0
 fi
 
+# ─── 2a. 建立任务运行档案 ──────────────────────────────
+RUN_ID="${TASK_ID}-$(date +%Y%m%d-%H%M%S)"
+RUN_DIR="$TASK_RUN_ROOT/$RUN_ID"
+mkdir -p "$RUN_DIR"
+
+cat > "$RUN_DIR/task.md" <<TASK_META_EOF
+# Auto Dev Task Run
+
+- Task: $TASK_ID — $TASK_TITLE
+- Priority: $TASK_PRIO
+- Status: CLAIMED
+- Started at: $(date +%Y-%m-%d_%H:%M:%S)
+- Git HEAD: $(git rev-parse --short HEAD)
+- Test commands: ${TASK_TESTS:-pytest tests/ -q --tb=short}
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+TASK_META_EOF
+log "任务运行档案: $RUN_DIR"
+
 # ─── 2. 构造 OpenCode prompt ────────────────────────────
 PROMPT_FILE=$(mktemp -t auto-dev-prompt.XXXXXX)
 cat > "$PROMPT_FILE" <<PROMPT_EOF
@@ -184,6 +220,7 @@ REVIEW_FILE=""
 while [ $ROUND -lt $MAX_FIX_ROUNDS ]; do
     ROUND=$((ROUND + 1))
     log "--- 第 $ROUND 轮 ---"
+    cp "$PROMPT_FILE" "$RUN_DIR/prompt-round${ROUND}.md"
 
     # 3a. 运行 OpenCode
     log "启动 OpenCode..."
@@ -193,6 +230,7 @@ while [ $ROUND -lt $MAX_FIX_ROUNDS ]; do
     OPENCODE_EXIT=$?
     set -e
     log "OpenCode 退出码: $OPENCODE_EXIT"
+    redact_log < "$OPENCODE_LOG" > "$RUN_DIR/opencode-round${ROUND}.txt"
 
     if [ $OPENCODE_EXIT -ne 0 ]; then
         err "OpenCode 执行失败（exit=$OPENCODE_EXIT）"
@@ -220,15 +258,27 @@ FIX_EOF
     # 3b. 运行测试
     TEST_PASS=true
     TEST_OUTPUT=""
+    TEST_LOG_FILE="$RUN_DIR/tests-round${ROUND}.txt"
+    : > "$TEST_LOG_FILE"
     if [ -n "$TASK_TESTS" ]; then
         IFS=',' read -ra TEST_CMD_ARRAY <<< "$TASK_TESTS"
         for test_cmd in "${TEST_CMD_ARRAY[@]}"; do
             test_cmd=$(echo "$test_cmd" | xargs)
             log "运行测试: $test_cmd"
+            {
+                echo "## $test_cmd"
+                echo
+            } >> "$TEST_LOG_FILE"
             set +e
             TEST_OUTPUT=$(source .venv/bin/activate && eval "$test_cmd" 2>&1)
             TEST_EXIT=$?
             set -e
+            echo "$TEST_OUTPUT" | redact_log >> "$TEST_LOG_FILE"
+            {
+                echo
+                echo "Exit code: $TEST_EXIT"
+                echo
+            } >> "$TEST_LOG_FILE"
             if [ $TEST_EXIT -ne 0 ]; then
                 TEST_PASS=false
                 err "测试失败: $test_cmd (exit=$TEST_EXIT)"
@@ -241,6 +291,13 @@ FIX_EOF
         TEST_OUTPUT=$(source .venv/bin/activate && pytest tests/ -q --tb=short 2>&1)
         TEST_EXIT=$?
         set -e
+        {
+            echo "## pytest tests/ -q --tb=short"
+            echo
+            echo "$TEST_OUTPUT" | redact_log
+            echo
+            echo "Exit code: $TEST_EXIT"
+        } >> "$TEST_LOG_FILE"
         if [ $TEST_EXIT -ne 0 ]; then
             TEST_PASS=false
         fi
@@ -291,6 +348,7 @@ FIX_EOF
         echo "---"
         cat "$REVIEW_FILE"
     } > "$REVIEW_SAVE_PATH"
+    cp "$REVIEW_SAVE_PATH" "$RUN_DIR/codex-review-round${ROUND}.txt"
     log "Review 已保存: $REVIEW_SAVE_PATH"
 
     # Codex review 失败 → 不信任结果，进入修复或 NEEDS_HUMAN
@@ -349,6 +407,20 @@ done
 COMMIT_HASH=""
 
 if [ "$RESULT_STATUS" = "PASS" ]; then
+    cat > "$RUN_DIR/summary.md" <<SUMMARY_EOF
+# Auto Dev Summary
+
+- Task: $TASK_ID — $TASK_TITLE
+- Priority: $TASK_PRIO
+- Final status: PASS
+- Rounds: $ROUND
+- Tests: PASS
+- Codex review: no P0/P1 findings
+- Review file: docs/reviews/${TASK_ID}-$(date +%Y%m%d)-round${ROUND}.txt
+- Run directory: docs/task_runs/$RUN_ID
+- Finished at: $(date +%Y-%m-%d_%H:%M:%S)
+SUMMARY_EOF
+
     # 4a. 精确 git add：只允许 tests/ tradingagents/ docs/
     log "精确提交：git add tests/ tradingagents/ docs/"
     git add tests/ tradingagents/ docs/
@@ -400,6 +472,7 @@ if [ "$RESULT_STATUS" = "PASS" ]; then
 - **测试**: 通过
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/${TASK_ID}-$(date +%Y%m%d)-round${ROUND}.txt
+- **运行档案**: docs/task_runs/$RUN_ID/
 DEVLOG_EOF
     log "已写入 DEVLOG.md"
 
@@ -442,6 +515,20 @@ elif [ "$RESULT_STATUS" != "DONE" ]; then
 fi
 
 if [ "$RESULT_STATUS" = "NEEDS_HUMAN" ]; then
+    cat > "$RUN_DIR/summary.md" <<SUMMARY_EOF
+# Auto Dev Summary
+
+- Task: $TASK_ID — $TASK_TITLE
+- Priority: $TASK_PRIO
+- Final status: NEEDS_HUMAN
+- Rounds: $ROUND
+- Reason: tests/review/pre-commit did not pass within the allowed rounds
+- Run directory: docs/task_runs/$RUN_ID
+- Finished at: $(date +%Y-%m-%d_%H:%M:%S)
+
+人工处理前请先查看本目录下的 OpenCode、测试和 Codex review 日志。
+SUMMARY_EOF
+
     cat >> "$DEVLOG_FILE" <<DEVLOG_EOF
 
 ## $(date +%Y-%m-%d) | AUTO-002 自动开发闭环
@@ -451,6 +538,7 @@ if [ "$RESULT_STATUS" = "NEEDS_HUMAN" ]; then
 - **轮次**: $ROUND (max)
 - **状态**: ❌ NEEDS_HUMAN
 - **原因**: 测试或 review 未通过，超过最大修复轮次，或 pre-commit 检查发现不应提交的文件
+- **运行档案**: docs/task_runs/$RUN_ID/
 DEVLOG_EOF
     log "已写入 DEVLOG.md（未提交）"
 fi
@@ -464,6 +552,7 @@ echo "  任务:   $TASK_ID — $TASK_TITLE"
 echo "  优先级: $TASK_PRIO"
 echo "  轮次:   $ROUND"
 echo "  状态:   $RESULT_STATUS"
+echo "  档案:   docs/task_runs/$RUN_ID/"
 if [ -n "$COMMIT_HASH" ]; then
     echo "  提交:   $COMMIT_HASH"
 fi

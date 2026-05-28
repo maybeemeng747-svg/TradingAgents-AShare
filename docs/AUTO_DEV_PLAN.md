@@ -53,6 +53,61 @@ codex exec -s read-only "请只读检查 TradingAgents-AShare 当前任务池和
 
 `REQUEST_TASKS` 的目标是避免自动开发空转，同时避免没有人确认的需求被自动开发。
 
+## 任务运行日志与审计链路
+
+自动开发的每一个任务都必须形成独立运行档案，便于回查"谁领了任务、怎么开发、测试结果、谁审核、为什么通过或打回"。
+
+### 固定目录
+
+每次 `./scripts/auto_dev_loop.sh` 非 dry-run 执行时，必须创建：
+
+```text
+docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/
+```
+
+目录内至少包含：
+
+- `task.md`：任务 ID、标题、优先级、领取时间、当时 git HEAD、验收命令
+- `prompt-round<N>.md`：每轮交给 OpenCode 的完整任务说明或修复说明
+- `opencode-round<N>.txt`：每轮 OpenCode stdout/stderr，持久化前做 API key 脱敏
+- `tests-round<N>.txt`：每轮测试命令、完整测试输出、退出码
+- `codex-review-round<N>.txt`：每轮 Codex review 输出
+- `summary.md`：最终状态、轮次、测试结果、review 结论、运行档案路径
+
+### 通过任务
+
+任务通过时，运行档案必须随同代码、测试、`docs/TASKS.md`、`docs/DEVLOG.md` 一起提交。`docs/DEVLOG.md` 必须写入运行档案路径。
+
+### 失败任务
+
+任务失败或超过修复轮次时，不允许自动提交代码。运行档案和 `docs/DEVLOG.md` 可以留在工作区，下一轮自动开发必须因为工作区不干净而停止，等待孟/Codex 先看失败日志并决定修复、回滚或重新派单。
+
+### Codex 审核职责
+
+Codex 审核时不只看 diff，还要同时检查：
+
+1. 任务是否来自 `docs/TASKS.md` 且状态为 `ready`
+2. 是否存在对应 `docs/task_runs/` 运行档案
+3. OpenCode 日志是否显示越权行为，例如改 prompts、写生产 DB、跑全市场扫描、调用 DeepSeek
+4. 测试日志是否与任务声明一致，有无只跑无关测试
+5. Codex review 是否保存到 `docs/reviews/` 和任务运行目录
+6. `docs/TASKS.md`、`docs/DEVLOG.md` 是否在 commit 前完成
+7. 提交范围是否聚焦，没有临时文件、运行产物、生产数据、密钥
+
+### 布置任务职责
+
+任务池新增任务时必须写清：
+
+1. 背景和目标
+2. 允许修改的文件范围
+3. 禁止事项
+4. 验收命令
+5. 完成后需要更新的文档
+6. 是否允许接入外部数据源或调用模型
+7. 是否需要人工确认后才能继续下一阶段
+
+没有写清验收命令的任务，自动开发只能按默认测试执行，不能自行扩大到全市场扫描或深度 TA。
+
 ## 任务优先级
 
 ### P0.5 — 自动开发巡检（固定前置）
@@ -76,7 +131,7 @@ codex exec -s read-only "请只读检查 TradingAgents-AShare 当前任务池和
 ### P1 — Simon 实践吸收（数据源 + A股标签）
 
 ```
-[ready]    N-002: cn_astock provider 验收与 TradeFlow fallback 接入
+[done]     N-002: cn_astock provider 验收与 TradeFlow fallback 接入 — commit a0770bb
 [ready]    N-003: cn_astock raw_evidence 溯源接入
 [ready]    N-004: 政策/游资/解禁 A股特化标签先入 TradeFlow
 [ready]    N-005: 最终执行层 schema 化最小实现
