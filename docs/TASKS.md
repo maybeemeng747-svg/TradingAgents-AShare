@@ -126,8 +126,8 @@
 ### V-001: 600584 数据真实性端到端验收（P1）
 - **描述**：在 G-007/G-008 收口后，用 600584.SH 做一次低成本验收，确认当天行情补齐、raw evidence、资金/LHB 口径、估值旧价拦截都能在报告或结果 metadata 中看见。
 - **优先级**：P1
-- **状态**：ready
-- **前置条件**：`G-009` 与 `G-010` 完成。
+- **状态**：blocked
+- **前置条件**：`G-009`、`G-010`、`N-002`、`N-003` 完成。
 - **执行约束**：
   - 默认只跑低成本/轻量路径；不要用 DeepSeek。
   - 不自动全市场扫描。
@@ -179,7 +179,7 @@
   - `b8e0023` 已新增 `tradingagents/dataflows/providers/cn_astock_provider.py` 并注册到 provider registry。
   - Simon `a-stock-data` 的优势是直连腾讯/东财/新浪/财联社/巨潮等 HTTP 数据源，适合补 AKShare 不稳定和当天行情滞后的问题。
 - **优先级**：P0
-- **状态**：done — commit `3b232a3`
+- **状态**：ready
 - **执行约束**：
   - 不把 `cn_astock` 直接设为唯一主源；先作为 fallback / cross-check。
   - 不改 prompt。
