@@ -148,7 +148,7 @@
 ### N-001: TradeFlow P1-2 事件源接入候选扫描（P0）
 - **描述**：将已完成的 `event_source.fetch_daily_events()` 接入 `generate_daily_plan()` / candidate evaluation，让公告、回购、评级事件能自动进入候选池并触发 `EVENT_CATALYST`。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done — commit 3b232a3
 - **背景**：
   - 上一阶段事件源已完成：`tradingagents/tradeflow/event_source.py` + `tests/test_event_source.py`，commit `b5131cd`。
   - 当前事件源只完成数据获取，尚未接入 `candidate_engine.py` / `plan_runner.py` 的候选扫描。
@@ -179,7 +179,7 @@
   - `b8e0023` 已新增 `tradingagents/dataflows/providers/cn_astock_provider.py` 并注册到 provider registry。
   - Simon `a-stock-data` 的优势是直连腾讯/东财/新浪/财联社/巨潮等 HTTP 数据源，适合补 AKShare 不稳定和当天行情滞后的问题。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done — commit `3b232a3`
 - **执行约束**：
   - 不把 `cn_astock` 直接设为唯一主源；先作为 fallback / cross-check。
   - 不改 prompt。
