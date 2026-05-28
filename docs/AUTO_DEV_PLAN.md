@@ -110,6 +110,14 @@ Codex 审核时不只看 diff，还要同时检查：
 
 ## 任务优先级
 
+### P0 — 自动开发基础设施（当前最高优先）
+
+```
+[ready]       INF-001: 自动开发任务领取锁与 in_progress 状态流转
+[ready]       M-002: 任务运行档案索引与夜间日报聚合
+[done]        N-004: A股特化信号标签 — commit 7fb535f
+```
+
 ### P0.5 — 自动开发巡检（固定前置）
 
 ```
@@ -122,8 +130,8 @@ Codex 审核时不只看 diff，还要同时检查：
 
 ```
 [done]    接入 akshare 公告接口（沪深公告、业绩预告、回购、增持） — commit b5131cd
-[ready]    N-001: 将 fetch_daily_events 接入 generate_daily_plan / candidate_engine
-[ready]    接入东财新闻关键词匹配（利好/利空分类）
+[done]    N-001: 将 fetch_daily_events 接入 generate_daily_plan / candidate_engine — commit 3b232a3
+[ready]   接入东财新闻关键词匹配（利好/利空分类）
 [blocked]  飞书 webhook 推送（需孟确认推送格式）
 [blocked]  全市场 Discovery（需事件源先跑通）
 ```
@@ -132,8 +140,8 @@ Codex 审核时不只看 diff，还要同时检查：
 
 ```
 [done]     N-002: cn_astock provider 验收与 TradeFlow fallback 接入 — commit a0770bb
-[ready]    N-003: cn_astock raw_evidence 溯源接入
-[ready]    N-004: 政策/游资/解禁 A股特化标签先入 TradeFlow
+[done]     N-003: cn_astock raw_evidence 溯源接入 — commit dd63bca
+[done]     N-004: 政策/游资/解禁 A股特化标签先入 TradeFlow — commit 7fb535f
 [ready]    N-005: 最终执行层 schema 化最小实现
 ```
 
@@ -142,21 +150,25 @@ Codex 审核时不只看 diff，还要同时检查：
 ```
 [ready]    行业池：按申万二级行业扫描（先做 1-2 个行业试点）
 [ready]    资金异动池：主力资金净流入 Top N
+[ready]    M-008: 数据源健康检查与 fallback 可观测性
+[blocked]  M-003: TradeFlow universe 管理器
+[blocked]  M-004: TradeFlow 策略权重与阈值配置
 [blocked]  全市场扫描（需先验证小范围逻辑）
 ```
 
 ### P2 — 盘中 Observe
 
 ```
-[blocked]  盘中低频触发（每 30 分钟检查一次候选池触发价）
-[blocked]  触发后自动调 TA 深度分析
-[blocked]  飞书推送触发通知
+[blocked]  M-005: 盘中低频触发（每 30 分钟检查一次候选池触发价）
+[blocked]  M-006: 触发后门控调用 TA 深度分析
+[blocked]  M-009: TradeFlow 前端观察池面板
+[blocked]  M-010: 飞书/通知链路人工确认版
 ```
 
 ### P3 — 盘后 Review
 
 ```
-[blocked]  盘后复盘：今日命中率、误报率
+[blocked]  M-007: 盘后复盘：今日命中率、误报率
 [blocked]  策略权重自动调整
 [blocked]  周度/月度统计
 ```

@@ -25,11 +25,10 @@
 ### 当前优先队列
 
 1. `INF-001`：任务领取锁与 `in_progress` 状态流转（P0，ready）。
-2. `N-004`：A股特化信号标签（当前有未提交 diff，状态为 in_progress，需先 review/补测试/收口）。
-3. `N-005`：最终执行层 schema 化最小实现（P2，ready）。
-4. `M-002`：任务运行档案索引与夜间日报聚合（P1，ready）。
-5. `M-008`：数据源健康检查与 fallback 可观测性（P1，ready）。
-6. `T-002/T-003`：小范围 Discovery / 资金异动池（P1，ready）。
+2. `N-005`：最终执行层 schema 化最小实现（P2，ready）。
+3. `M-002`：任务运行档案索引与夜间日报聚合（P1，ready）。
+4. `M-008`：数据源健康检查与 fallback 可观测性（P1，ready）。
+5. `T-002/T-003`：小范围 Discovery / 资金异动池（P1，ready）。
 
 ---
 
@@ -436,7 +435,7 @@
   - Simon 的 3 个 A 股特化角色方向正确，但直接新增 Agent 会增加成本和 prompt 复杂度。
   - 对本项目更稳的路径是先把政策、游资、解禁作为候选池标签和风险标签。
 - **优先级**：P1
-- **状态**：in_progress — 当前工作区已有未提交 diff，需补测试、review 并收口
+- **状态**：done — commit 7fb535f
 - **执行约束**：
   - 不新增 LLM Agent。
   - 不改 `tradingagents/prompts/`。
