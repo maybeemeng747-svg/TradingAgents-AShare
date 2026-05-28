@@ -284,6 +284,23 @@ def evaluate_symbol(
     )
     candidate.merge_signals()
 
+    # [N-004] astock_signal_tags — merge extra tags from event_catalyst evidence
+    for sig in signals:
+        if not isinstance(sig.evidence, dict):
+            continue
+        extra_tags = sig.evidence.get("astock_tags", [])
+        extra_risks = sig.evidence.get("astock_risk_flags", [])
+        if extra_tags or extra_risks:
+            from .schemas import SIGNAL_TAG_LOCKUP_RISK  # [N-004] astock_signal_tags
+            candidate.strategy_tags = sorted(
+                set(candidate.strategy_tags) | set(extra_tags)
+            )
+            candidate.risk_flags = sorted(
+                set(candidate.risk_flags) | set(extra_risks)
+            )
+            if SIGNAL_TAG_LOCKUP_RISK in candidate.risk_flags:
+                candidate.score = round(candidate.score * 0.8, 2)
+
     return candidate, ""
 
 

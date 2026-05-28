@@ -10,6 +10,7 @@ P0 简化版：基于简单规则检测（不调用 LLM），仅匹配关键词�
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -43,12 +44,70 @@ EVENT_PATTERNS = [
     ("regulation", "处罚|监管警示", "bearish", 60),
 ]
 
+# [N-004] astock_signal_tags — keyword patterns for A-share specific signal tags
+_POLICY_KEYWORDS = re.compile(
+    r"政策|补贴|扶持|产业政策|国务院|发改委|工信部|证监会|商务部|科技部|重点支持|国家战略"
+)
+_BUYBACK_KEYWORDS = re.compile(r"回购|回购进展|回购计划|回购实施")
+_RATING_CHANGE_KEYWORDS = re.compile(
+    r"评级上调|评级下调|目标价上调|目标价下调|首次覆盖|维持买入|维持增持"
+)
+_LOCKUP_KEYWORDS = re.compile(r"解禁|限售股解禁|解除限售|首发原股东限售股份")
+_LHB_KEYWORDS = re.compile(r"龙虎榜|游资|LHB|营业部")
+
+
+# [N-004] astock_signal_tags
+def extract_signal_tags(
+    event_texts: list[str],
+    lhb_status: str = "NOT_QUERIED",
+) -> tuple[list[str], list[str]]:
+    """Extract A-share specific signal tags from event text.
+
+    Args:
+        event_texts: List of news/announcement text snippets.
+        lhb_status: One of "HAS_DATA", "NOT_QUERIED", "NORMAL_NO_DATA".
+                    Only "HAS_DATA" enables HOT_MONEY_LHB tag.
+
+    Returns:
+        (strategy_tags, risk_flags) — LOCKUP_RISK goes ONLY to risk_flags.
+    """
+    combined = "\n".join(event_texts) if event_texts else ""
+
+    strategy_tags: list[str] = []
+    risk_flags: list[str] = []
+
+    from tradingagents.tradeflow.schemas import (
+        SIGNAL_TAG_POLICY_CATALYST,
+        SIGNAL_TAG_HOT_MONEY_LHB,
+        SIGNAL_TAG_LOCKUP_RISK,
+        SIGNAL_TAG_BUYBACK_EVENT,
+        SIGNAL_TAG_RATING_CHANGE,
+    )
+
+    if _POLICY_KEYWORDS.search(combined):
+        strategy_tags.append(SIGNAL_TAG_POLICY_CATALYST)
+
+    if _BUYBACK_KEYWORDS.search(combined):
+        strategy_tags.append(SIGNAL_TAG_BUYBACK_EVENT)
+
+    if _RATING_CHANGE_KEYWORDS.search(combined):
+        strategy_tags.append(SIGNAL_TAG_RATING_CHANGE)
+
+    if _LOCKUP_KEYWORDS.search(combined):
+        risk_flags.append(SIGNAL_TAG_LOCKUP_RISK)
+
+    if lhb_status == "HAS_DATA" and _LHB_KEYWORDS.search(combined):
+        strategy_tags.append(SIGNAL_TAG_HOT_MONEY_LHB)
+
+    return sorted(set(strategy_tags)), sorted(set(risk_flags))
+
 
 def score_event_catalyst(
     symbol: str,
     news_texts: Optional[list[str]] = None,
     event_overrides: Optional[list[dict]] = None,
     latest_close: float = 0.0,
+    lhb_status: str = "NOT_QUERIED",
 ) -> Optional[EventCatalystSignal]:
     """Score a stock for event-driven catalyst.
 
@@ -60,12 +119,12 @@ def score_event_catalyst(
         event_overrides: List of {"event_type", "direction", "title"} dicts
                         for manual event specification.
         latest_close: Latest close price for trigger/invalid calculation.
+        lhb_status: LHB data status, one of "HAS_DATA"/"NOT_QUERIED"/"NORMAL_NO_DATA".
+                    Controls HOT_MONEY_LHB tag.  [N-004] astock_signal_tags
 
     Returns:
         EventCatalystSignal if catalyst detected, None otherwise.
     """
-    import re
-
     detected_events = []
 
     # Check overrides first — only use overrides whose symbol matches,
@@ -129,6 +188,10 @@ def score_event_catalyst(
     else:
         verification = "需价格与成交量验证方向"
 
+    # [N-004] astock_signal_tags — extract A-share specific tags
+    all_texts = [t for t in (news_texts or []) if t]
+    extra_tags, extra_risks = extract_signal_tags(all_texts, lhb_status=lhb_status)
+
     return EventCatalystSignal(
         trigger_price=trigger_price,
         support_price=None,
@@ -139,8 +202,10 @@ def score_event_catalyst(
             "events": detected_events,
             "event_count": len(detected_events),
             "best_event": best["type"],
+            "astock_tags": extra_tags,
+            "astock_risk_flags": extra_risks,
         },
-        risk_flags=risk_flags,
+        risk_flags=risk_flags + extra_risks,
         need_deep_ta=need_deep_ta,
         event_type=best["type"],
         event_direction=direction,
