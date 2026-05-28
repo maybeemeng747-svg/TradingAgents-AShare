@@ -232,8 +232,8 @@ OpenClaw 每天自动开发后，输出以下格式：
 ## 固定节奏
 
 ```
-每天 10:30    OpenClaw 自动开发（从任务池挑 [ready] 任务）
-中午/晚上     孟拿日报发 review
+每天 20:00    OpenClaw 自动开发（从任务池挑 [ready] 任务）
+次日白天      孟拿日报发 review，白天主要做人审、决策和人工协作开发
 review 通过   孟决定 push
 review 不通过 孟把修改意见丢回 OpenClaw/OpenCode
 ```
