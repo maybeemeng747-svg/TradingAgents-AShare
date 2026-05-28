@@ -11,6 +11,7 @@ Data sources (zero third-party data wrapper dependencies):
 """
 
 import json
+import logging
 import re
 import time
 import uuid
@@ -23,6 +24,8 @@ from stockstats import wrap
 
 from .base import BaseMarketDataProvider
 from ..trade_calendar import cn_no_data_reason
+
+logger = logging.getLogger(__name__)
 
 
 # ── Shared constants ──
@@ -770,6 +773,14 @@ class CnAstockProvider(BaseMarketDataProvider):
             if code not in quotes:
                 continue
             q = quotes[code]
+            amount_val = q["amount_wan"] * 10000  # [N-002] cn_astock_fallback: 万 → 元
+            # [N-002] cn_astock_fallback: sanity check — amount is 成交额(元), NOT volume(股)
+            if amount_val < 10000:
+                logger.warning(
+                    "[N-002] cn_astock_fallback: amount=%s for %s is suspiciously low "
+                    "(< 10000) — may be volume mislabeled as amount",
+                    amount_val, original,
+                )
             result[original] = {
                 "price": q["price"],
                 "open": q["open"],
@@ -779,7 +790,7 @@ class CnAstockProvider(BaseMarketDataProvider):
                 "change": q["change_amt"],
                 "change_pct": q["change_pct"],
                 "volume": q["amount_wan"] * 10000,  # 万 → 元 approximation
-                "amount": q["amount_wan"] * 10000,
+                "amount": amount_val,  # [N-002] cn_astock_fallback
                 "source": "tencent",
             }
         return json.dumps(result, ensure_ascii=False)

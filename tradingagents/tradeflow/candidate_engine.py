@@ -96,48 +96,58 @@ def init_db(db_path: str) -> None:
 def _fetch_price_data(symbol: str, days: int = 120) -> Optional[pd.DataFrame]:
     """Fetch price data for a symbol using the project's data providers.
 
-    Uses cn_akshare → yfinance fallback chain.
+    Uses cn_akshare → cn_astock → yfinance fallback chain.  [N-002] cn_astock_fallback
     Returns DataFrame with Date, Open, High, Low, Close, Volume columns.
     """
     from datetime import timedelta
+    from io import StringIO
+
     end = datetime.now().strftime("%Y-%m-%d")
     start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-    # Try cn_akshare provider
+    def _try_provider(provider_cls, source_name: str) -> Optional[pd.DataFrame]:
+        try:
+            provider = provider_cls()
+            csv_str = provider.get_stock_data(symbol, start, end)
+            if csv_str and "No data found" not in csv_str:
+                df = pd.read_csv(StringIO(csv_str), comment="#")
+                if {"Date", "Open", "High", "Low", "Close", "Volume"}.issubset(df.columns):
+                    df["Date"] = pd.to_datetime(df["Date"])
+                    df = df.sort_values("Date").reset_index(drop=True)
+                    for col in ["Open", "High", "Low", "Close", "Volume"]:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                    df = df.dropna(subset=["Close"])
+                    if len(df) > 0:
+                        df.attrs["price_source"] = source_name  # [N-002] cn_astock_fallback
+                        return df
+        except Exception:
+            pass
+        return None
+
+    # [N-002] cn_astock_fallback: cn_akshare → cn_astock → yfinance
     try:
         from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
-        provider = CnAkshareProvider()
-        csv_str = provider.get_stock_data(symbol, start, end)
-        if csv_str and "No data found" not in csv_str:
-            from io import StringIO
-            df = pd.read_csv(StringIO(csv_str), comment="#")
-            if {"Date", "Open", "High", "Low", "Close", "Volume"}.issubset(df.columns):
-                df["Date"] = pd.to_datetime(df["Date"])
-                df = df.sort_values("Date").reset_index(drop=True)
-                for col in ["Open", "High", "Low", "Close", "Volume"]:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-                df = df.dropna(subset=["Close"])
-                if len(df) > 0:
-                    return df
+        result = _try_provider(CnAkshareProvider, "cn_akshare")
+        if result is not None:
+            return result
     except Exception:
         pass
 
-    # Fallback: yfinance
+    # [N-002] cn_astock_fallback: middle fallback
+    try:
+        from tradingagents.dataflows.providers.cn_astock_provider import CnAstockProvider
+        result = _try_provider(CnAstockProvider, "cn_astock")
+        if result is not None:
+            return result
+    except Exception:
+        pass
+
+    # Final fallback: yfinance
     try:
         from tradingagents.dataflows.providers.yfinance_provider import YFinanceProvider
-        provider = YFinanceProvider()
-        csv_str = provider.get_stock_data(symbol, start, end)
-        if csv_str and "No data found" not in csv_str:
-            from io import StringIO
-            df = pd.read_csv(StringIO(csv_str), comment="#")
-            if {"Date", "Open", "High", "Low", "Close", "Volume"}.issubset(df.columns):
-                df["Date"] = pd.to_datetime(df["Date"])
-                df = df.sort_values("Date").reset_index(drop=True)
-                for col in ["Open", "High", "Low", "Close", "Volume"]:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-                df = df.dropna(subset=["Close"])
-                if len(df) > 0:
-                    return df
+        result = _try_provider(YFinanceProvider, "yfinance")
+        if result is not None:
+            return result
     except Exception:
         pass
 
