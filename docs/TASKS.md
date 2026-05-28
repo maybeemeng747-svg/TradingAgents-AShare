@@ -147,11 +147,11 @@
 
 ### N-001: TradeFlow P1-2 事件源接入候选扫描（P0）
 - **描述**：将已完成的 `event_source.fetch_daily_events()` 接入 `generate_daily_plan()` / candidate evaluation，让公告、回购、评级事件能自动进入候选池并触发 `EVENT_CATALYST`。
-- **背景**：
-  - `P1-1` 已完成：`tradingagents/tradeflow/event_source.py` + `tests/test_event_source.py`，commit `b5131cd`。
-  - 当前事件源只完成数据获取，尚未接入 `candidate_engine.py` / `plan_runner.py` 的候选扫描。
 - **优先级**：P0
 - **状态**：ready
+- **背景**：
+  - 上一阶段事件源已完成：`tradingagents/tradeflow/event_source.py` + `tests/test_event_source.py`，commit `b5131cd`。
+  - 当前事件源只完成数据获取，尚未接入 `candidate_engine.py` / `plan_runner.py` 的候选扫描。
 - **执行约束**：
   - 不做全市场扫描，只在指定 symbols、自选池、事件池小范围内运行。
   - 不自动调用 TA 深度分析，只设置 `need_deep_ta`。
