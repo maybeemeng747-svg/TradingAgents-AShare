@@ -27,6 +27,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_zt_pool,
     get_hot_stocks_xq,
 )
+from tradingagents.dataflows.interface import get_last_hit_vendor  # [N-003] cn_astock_raw_evidence
 
 INDICATORS = [
     "close_50_sma", "close_200_sma", "close_10_ema",
@@ -524,6 +525,10 @@ class DataCollector:
             }
 
             if key == "stock_data" and isinstance(raw_value, str):
+                # [N-003] cn_astock_raw_evidence: prefer actual routed vendor
+                actual_vendor = get_last_hit_vendor("get_stock_data")
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
                 if "is_realtime_patched=True" in raw_value:
                     entry["is_realtime_patched"] = True
                     for line in raw_value.split("\n"):

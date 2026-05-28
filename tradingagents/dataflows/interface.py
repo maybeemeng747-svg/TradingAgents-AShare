@@ -51,6 +51,14 @@ _registry = build_default_registry()
 
 VENDOR_LIST = _registry.list_names()
 
+# [N-003] cn_astock_raw_evidence: track which vendor last handled each method
+_last_hit_vendor: dict[str, str] = {}
+
+
+def get_last_hit_vendor(method: str) -> str:
+    """Return the vendor name that most recently produced a successful hit for *method*."""
+    return _last_hit_vendor.get(method, "")
+
 
 def _is_trace_enabled() -> bool:
     env_value = os.getenv("TA_TRACE")
@@ -147,6 +155,7 @@ def route_to_vendor(method: str, *args, **kwargs):
 
         try:
             result = impl_func(*args, **kwargs)
+            _last_hit_vendor[method] = vendor  # [N-003] cn_astock_raw_evidence
             _trace(f"method={method} {args_summary} vendor={vendor} status=hit")
             return result
         except (AlphaVantageRateLimitError, NotImplementedError) as exc:

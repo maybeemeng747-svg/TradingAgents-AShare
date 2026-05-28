@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-05-28 | N-003 cn_astock raw_evidence 溯源接入
+
+- **执行者**：OpenCode
+- **任务**：当 `cn_astock` 作为 fallback 数据源时，`raw_evidence.stock_data.vendor` 应反映实际数据源而非硬编码的 "akshare"
+- **修改文件**：
+  - `tradingagents/dataflows/interface.py` — 新增 `_last_hit_vendor` 模块级字典和 `get_last_hit_vendor()` 函数；在 `route_to_vendor()` 成功 hit 时记录 vendor
+  - `tradingagents/graph/data_collector.py` — `build_raw_evidence()` 中 `stock_data` 的 vendor 改为从 `get_last_hit_vendor("get_stock_data")` 读取实际值
+  - `tests/test_raw_evidence_vendor.py` — 新增测试：akshare hit / cn_astock fallback / 无追踪 / realtime patch 覆盖 / 非 stock_data 保持默认
+- **标记**：`# [N-003] cn_astock_raw_evidence`
+
+---
+
 ## 2026-05-28 | 自动开发任务运行档案
 
 - **执行者**：Codex
