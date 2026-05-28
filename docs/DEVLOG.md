@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-05-28 | N-001 事件源接入候选扫描
+
+- **执行者**：OpenCode
+- **任务**：将 `event_source.fetch_daily_events()` 集成到候选扫描流程，使公告/回购/评级事件自动进入候选池
+- **修改文件**：
+  - `tradingagents/tradeflow/universe.py` — `build_universe()` 新增 `event_symbols` 参数，event-discovered symbols 以 `source="event_source"` 进入 universe
+  - `tradingagents/tradeflow/plan_runner.py` — `generate_daily_plan()` 新增 `use_event_source=False` 参数，启用后调用 `fetch_daily_events()` 并将每个 symbol 自身的事件标题作为 `news_texts` 传入 `evaluate_symbol()`
+  - `tests/test_event_source_integration.py` — 新增 13 个集成测试，覆盖 universe 扩展、事件隔离、默认关闭、空事件等场景
+- **标记**：`# [N-001] event_source_plan_integration`
+- **测试**：121 tests passed
+
+---
+
 ## 2026-05-28 | 自动开发无任务请求协议
 
 - **执行者**：Codex

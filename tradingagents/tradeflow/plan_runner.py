@@ -77,6 +77,7 @@ def generate_daily_plan(
     news_texts: Optional[list[str]] = None,
     event_overrides: Optional[list[dict]] = None,
     save_candidates: bool = False,
+    use_event_source: bool = False,  # [N-001] event_source_plan_integration
 ) -> DailyPlan:
     """Generate a pre-market daily plan.
 
@@ -89,6 +90,7 @@ def generate_daily_plan(
         news_texts: News/announcement texts for event catalyst detection.
         event_overrides: Manual event overrides for event catalyst detection.
         save_candidates: If True, persist evaluated candidates to tf_db_path.
+        use_event_source: [N-001] If True, fetch daily events and inject into universe.
 
     Returns:
         DailyPlan with validated entries.
@@ -96,17 +98,27 @@ def generate_daily_plan(
     if not trade_date:
         trade_date = datetime.now().strftime("%Y-%m-%d")
 
+    # [N-001] event_source_plan_integration — fetch events if enabled
+    events_map: dict[str, list[str]] = {}
+    if use_event_source:
+        from .event_source import fetch_daily_events
+        trade_date_compact = trade_date.replace("-", "")
+        events_map = fetch_daily_events(trade_date_compact)
+
     if candidates is None:
-        # Build universe
+        # Build universe — pass event_symbols so event-discovered
+        # symbols enter the pool
         universe = build_universe(
             symbols=symbols,
             prod_db_path=prod_db_path,
             tf_db_path=tf_db_path,
             event_overrides=event_overrides,
+            event_symbols=events_map if events_map else None,  # [N-001]
         )
 
         # Evaluate each symbol — filter event_overrides to only
         # those matching the current symbol (or global overrides without symbol).
+        # [N-001] Each symbol gets its own event titles as news_texts.
         candidates = []
         for item in universe:
             sym = item["symbol"]
@@ -117,12 +129,16 @@ def generate_daily_plan(
                 ]
             else:
                 filtered_overrides = None
+
+            # [N-001] event_source_plan_integration
+            sym_news = events_map.get(sym) if events_map else None
+
             c, reason = evaluate_symbol(
                 symbol=sym,
                 name=item.get("name", ""),
                 source=item.get("source", "manual"),
                 trade_date=trade_date,
-                news_texts=news_texts,
+                news_texts=sym_news or news_texts,
                 event_overrides=filtered_overrides,
             )
             if c is not None:

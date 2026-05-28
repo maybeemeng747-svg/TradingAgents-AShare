@@ -92,6 +92,7 @@ def build_universe(
     include_watchlist: bool = True,
     include_yesterday: bool = True,
     event_overrides: Optional[list[dict]] = None,
+    event_symbols: Optional[dict[str, list[str]]] = None,  # [N-001] event_source_plan_integration
 ) -> list[dict]:
     """Build the full universe of symbols to evaluate.
 
@@ -130,6 +131,17 @@ def build_universe(
                     "symbol": sym,
                     "name": ev.get("name", ""),
                     "source": "event_catalyst",
+                }
+
+    # 6. [N-001] event_source_plan_integration — event-discovered symbols
+    if event_symbols:
+        for sym, titles in event_symbols.items():
+            sym = sym.strip()
+            if sym and sym not in universe:
+                universe[sym] = {
+                    "symbol": sym,
+                    "name": "",
+                    "source": "event_source",
                 }
 
     return list(universe.values())
