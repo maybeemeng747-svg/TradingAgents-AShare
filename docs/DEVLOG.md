@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-05-28 | 夜间任务包入库：TradeFlow 事件源 + Simon 实践吸收
+
+- **执行者**：Codex
+- **任务**：根据 P1-1 事件源完成情况，以及 Simon `TradingAgents-astock` / `a-stock-data` 仓库实践，布置今晚 OpenCode 开发任务
+- **背景**：
+  - `P1-1` 已完成：`tradingagents/tradeflow/event_source.py` + `tests/test_event_source.py`，commit `b5131cd`
+  - Simon 仓库可吸收点：直连 A 股数据源、政策/游资/解禁标签、结构化输出 schema、数据质量门控
+  - 本项目保留自身路线：raw_evidence、强动作门禁、Buy/Risk Level、TradeFlow 候选池、Codex review 自动审核
+- **修改文件**：
+  - `docs/TASKS.md` — 新增 `N-001` 至 `N-005` 夜间任务包
+  - `docs/AUTO_DEV_PLAN.md` — 同步 P1 当前优先级，加入 Simon 实践吸收路线
+  - `docs/DEVLOG.md` — 记录本次任务入库
+- **任务顺序**：
+  1. `N-001` TradeFlow 事件源接入候选扫描
+  2. `N-002` cn_astock 数据源验收与 fallback 接入
+  3. `N-003` cn_astock raw_evidence 溯源接入
+  4. `N-004` 政策/游资/解禁 A 股特化标签先入 TradeFlow
+  5. `N-005` 最终执行层 schema 化方案与最小实现
+  6. `V-001` 600584 数据真实性端到端验收
+- **执行约束**：
+  - 不改 prompts
+  - 不写生产数据库
+  - 不跑全市场扫描
+  - 不自动调用 TA 深度分析
+  - 不调用 DeepSeek
+
+---
+
 ## 2026-05-27 | R-001 收尾巡检
 
 - **执行者**：OpenCode
@@ -456,3 +484,21 @@
   4. 集成位置：Fix-2估值检查环节，raw_evidence处理之后
   5. 错误处理：价格提取失败时不中断流程，使用原有方法
   6. 日志记录：区分新格式提取、旧格式提取、失败等场景
+
+## 2026-05-28 | P1-1 akshare 事件源接入
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：接入 akshare 公告接口，创建 TradeFlow 事件源模块
+- **修改文件**：
+  - `tradingagents/tradeflow/event_source.py`（265行）— 4 个核心函数
+    - `fetch_notice_events(date)` — 沪深公告（东方财富），支持按类型筛选
+    - `fetch_buyback_events()` — 回购计划，近30天内，全部 bullish
+    - `fetch_rating_events(date)` — 分析师评级（巨潮），买入/增持→bullish
+    - `fetch_daily_events(date)` — 聚合全部事件，返回 `{symbol: [title, ...]}`
+  - `tests/test_event_source.py`（251行）— 24 个测试
+- **数据源**：
+  - `ak.stock_notice_report` — 每日 1000-1500 条公告
+  - `ak.stock_repurchase_em` — 全量 5000+ 回购记录
+  - `ak.stock_rank_forecast_cninfo` — 每日 40-60 条评级
+- **集成点**：`fetch_daily_events()` 返回格式直接兼容 `score_event_catalyst(news_texts=)`
+- **验证**：24 + 67 = 91 tests passed，commit b5131cd

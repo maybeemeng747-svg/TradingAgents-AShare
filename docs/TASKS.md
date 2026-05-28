@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-05-27
+> 最后更新：2026-05-28
 
 ---
 
@@ -137,6 +137,127 @@
   - `metadata.raw_evidence.stock_data`、`fund_flow_individual`、`lhb` 可追溯。
   - 主力资金接口失败时，下游不得把新闻转述资金当强证据。
   - 估值价与行情价偏离超过 20% 时，报告必须出现估值口径冲突提示。
+
+---
+
+## N. 2026-05-28 夜间任务包（结合 Simon 仓库实践）
+
+> 执行顺序：`N-001` → `N-002` → `N-003` → `N-004` → `V-001`。  
+> 总原则：吸收 Simon 的数据源/事件源/结构化经验，但不照搬整套框架；继续保留本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+### N-001: TradeFlow P1-2 事件源接入候选扫描（P0）
+- **描述**：将已完成的 `event_source.fetch_daily_events()` 接入 `generate_daily_plan()` / candidate evaluation，让公告、回购、评级事件能自动进入候选池并触发 `EVENT_CATALYST`。
+- **背景**：
+  - `P1-1` 已完成：`tradingagents/tradeflow/event_source.py` + `tests/test_event_source.py`，commit `b5131cd`。
+  - 当前事件源只完成数据获取，尚未接入 `candidate_engine.py` / `plan_runner.py` 的候选扫描。
+- **优先级**：P0
+- **状态**：ready
+- **执行约束**：
+  - 不做全市场扫描，只在指定 symbols、自选池、事件池小范围内运行。
+  - 不自动调用 TA 深度分析，只设置 `need_deep_ta`。
+  - 不输出买入/卖出强建议。
+  - 不调用 DeepSeek。
+  - 不写生产 `tradingagents.db`；测试使用临时 DB。
+- **实现要点**：
+  1. `generate_daily_plan()` 新增开关，例如 `use_event_source: bool = False`，默认关闭，避免无意拉取大量公告。
+  2. 当 `use_event_source=True` 时，按 `trade_date` 调用 `fetch_daily_events(YYYYMMDD)`，得到 `{symbol: [title, ...]}`。
+  3. 构建 universe 时必须把事件池股票纳入候选范围，但仅限当日事件池，不做全 A 股扩展。
+  4. 每只股票只消费自己的事件文本，禁止把全局 `news_texts` 串给所有股票。
+  5. 候选 evidence 中记录事件来源：`event_source=akshare_notice/buyback/rating` 或至少记录 `event_titles`。
+  6. CLI/脚本如已有入口，可加 `--use-event-source`；没有入口则先只做 Python API。
+- **验证方式**：
+  - 新增或更新测试：mock `fetch_daily_events()` 返回 `{"002138": ["回购进展"], "600519": ["减持评级"]}`。
+  - 指定 symbols 为空时，事件池股票可进入 universe。
+  - 多只股票各自只消费自己的事件，不串票。
+  - 无事件时不触发 `EVENT_CATALYST`。
+  - `pytest tests/test_event_source.py tests/test_tradeflow_*.py -q` 通过。
+- **代码标注要求**：`# [N-001] event_source_plan_integration`
+
+### N-002: cn_astock 数据源验收与 fallback 接入（P0）
+- **描述**：参考 Simon `a-stock-data` 的数据源分层，把本地已接入的 `cn_astock` provider 从“已注册”推进到“可验收 fallback 源”。
+- **背景**：
+  - `b8e0023` 已新增 `tradingagents/dataflows/providers/cn_astock_provider.py` 并注册到 provider registry。
+  - Simon `a-stock-data` 的优势是直连腾讯/东财/新浪/财联社/巨潮等 HTTP 数据源，适合补 AKShare 不稳定和当天行情滞后的问题。
+- **优先级**：P0
+- **状态**：ready
+- **执行约束**：
+  - 不把 `cn_astock` 直接设为唯一主源；先作为 fallback / cross-check。
+  - 不改 prompt。
+  - 不写生产数据库。
+  - 测试优先 mock HTTP，少量 live smoke 必须可跳过。
+- **实现要点**：
+  1. 为 `CnAstockProvider` 增加正式测试，覆盖 symbol 规范化、registry 注册、CSV 字段、realtime quote JSON、失败降级。
+  2. 在 TradeFlow `_fetch_price_data()` 中加入 fallback 顺序：`cn_akshare → cn_astock → yfinance`。
+  3. fallback 命中时，候选 evidence 或 metadata 记录 `price_source=cn_astock`。
+  4. 对腾讯实时行情字段做 sanity check：`price/open/high/low/previous_close/amount/source` 必须存在；不得把成交额误写为成交量。
+  5. 不要求今晚接完全部 28 端点，先确保行情/实时估值/公告能力可被系统稳定识别。
+- **验证方式**：
+  - `pytest tests/test_cn_astock_provider.py -q` 通过。
+  - `pytest tests/test_tradeflow_*.py -q` 通过。
+  - 构造 `cn_akshare` 失败时，TradeFlow 能用 `cn_astock` 价格数据继续评估。
+- **代码标注要求**：`# [N-002] cn_astock_fallback`
+
+### N-003: cn_astock raw_evidence 溯源接入（P1）
+- **描述**：把 `cn_astock` 的数据源身份纳入 raw_evidence / 数据质量状态，让报告能看到数据来自腾讯、东财、巨潮、财联社等具体来源。
+- **背景**：
+  - 本项目已经有 `G-006 raw_evidence`，但新增 `cn_astock` 后需要补 vendor/source/as_of/unit/status。
+  - Simon 的 `a-stock-data` 强在端点多，但我们必须把端点结果纳入可审计证据体系。
+- **优先级**：P1
+- **状态**：ready
+- **执行约束**：
+  - 不新建大规模历史行情库。
+  - 不保存 cookie、token、API key。
+  - 不改生产 DB schema；优先写入 `metadata.raw_evidence`。
+- **实现要点**：
+  1. DataCollector 或 provider route 返回中标注实际 vendor：`akshare` / `cn_astock` / `sina` / `tencent` / `eastmoney` / `cninfo`。
+  2. 当 `cn_astock` 作为 fallback 命中时，`raw_evidence.stock_data.source` 不得仍显示 `akshare`。
+  3. 公告/龙虎榜/估值类数据如来自 cn_astock，必须保留 `source_url` 或可追溯字段。
+  4. 报告底部数据源摘要能显示 `source=cn_astock` 或更细粒度供应商。
+- **验证方式**：
+  - mock akshare 失败 + cn_astock 成功，断言 `raw_evidence.stock_data.vendor/source` 为 cn_astock。
+  - `pytest tests/test_g006_raw_evidence_snapshot.py tests/test_g007_fund_lhb_provenance.py -q` 通过。
+- **代码标注要求**：`# [N-003] cn_astock_raw_evidence`
+
+### N-004: A股特化信号标签（政策/游资/解禁）先入 TradeFlow（P1）
+- **描述**：吸收 Simon `TradingAgents-astock` 中“政策分析师/游资追踪师/解禁监控师”的设计，但第一阶段不新增 LLM Agent，先在 TradeFlow 中做 deterministic 信号标签。
+- **背景**：
+  - Simon 的 3 个 A 股特化角色方向正确，但直接新增 Agent 会增加成本和 prompt 复杂度。
+  - 对本项目更稳的路径是先把政策、游资、解禁作为候选池标签和风险标签。
+- **优先级**：P1
+- **状态**：ready
+- **执行约束**：
+  - 不新增 LLM Agent。
+  - 不改 `tradingagents/prompts/`。
+  - 只做规则标签，不输出强买卖动作。
+- **实现要点**：
+  1. 从事件标题/公告类型中提取 `POLICY_CATALYST`、`HOT_MONEY_LHB`、`LOCKUP_RISK`、`BUYBACK_EVENT`、`RATING_CHANGE` 标签。
+  2. 标签进入 Candidate `strategy_tags` 或 `risk_flags`，并写入 evidence。
+  3. `LOCKUP_RISK` 只能降权或标风险，不能作为入场理由。
+  4. `HOT_MONEY_LHB` 必须区分龙虎榜 `HAS_DATA` 与 `NOT_QUERIED`，复用 G-007 状态。
+- **验证方式**：
+  - 构造回购公告 → `BUYBACK_EVENT` / bullish event evidence。
+  - 构造风险提示/解禁公告 → `risk_flags` 包含 `LOCKUP_RISK` 或对应风险标签。
+  - 构造龙虎榜未查询 → 不生成 `HOT_MONEY_LHB` 强信号。
+  - `pytest tests/test_tradeflow_*.py -q` 通过。
+- **代码标注要求**：`# [N-004] astock_signal_tags`
+
+### N-005: 最终执行层 schema 化方案与最小实现（P2）
+- **描述**：参考 Simon 的 `schemas.py`，为本项目最终执行层增加结构化输出的最小 schema，减少模型自由文本导致的动作字段冲突。
+- **优先级**：P2
+- **状态**：ready
+- **执行约束**：
+  - 不重写全部 report。
+  - 不改 prompt 作为唯一方案。
+  - 第一阶段只做 schema/helper/test，可不接生产路径。
+- **实现要点**：
+  1. 定义最小执行 schema：`action`、`buy_level`、`risk_level`、`trigger_price`、`invalid_price`、`position_context`、`data_quality_flags`、`evidence_refs`。
+  2. 提供从现有 `format_execution_block()` / metadata 构造 schema 的 helper。
+  3. schema 只允许 `WAIT/ENTER/HOLD/REDUCE/EXIT` 动作枚举。
+  4. 不改变现有报告文本输出，只新增结构化副产物。
+- **验证方式**：
+  - 新增测试覆盖未持仓 WAIT、条件入场 ENTER、已持仓 HOLD/REDUCE/EXIT。
+  - 字段冲突时 schema 标记 `data_quality_flags`，不强行给高等级动作。
+- **代码标注要求**：`# [N-005] execution_schema`
 
 ---
 

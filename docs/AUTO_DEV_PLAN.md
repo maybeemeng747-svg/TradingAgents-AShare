@@ -47,10 +47,20 @@ P3   → 盘后 Review + 策略命中率复盘
 ### P1 — 真实事件源（当前优先）
 
 ```
-[ready]    接入 akshare 公告接口（沪深公告、业绩预告、回购、增持）
+[done]    接入 akshare 公告接口（沪深公告、业绩预告、回购、增持） — commit b5131cd
+[ready]    N-001: 将 fetch_daily_events 接入 generate_daily_plan / candidate_engine
 [ready]    接入东财新闻关键词匹配（利好/利空分类）
 [blocked]  飞书 webhook 推送（需孟确认推送格式）
 [blocked]  全市场 Discovery（需事件源先跑通）
+```
+
+### P1 — Simon 实践吸收（数据源 + A股标签）
+
+```
+[ready]    N-002: cn_astock provider 验收与 TradeFlow fallback 接入
+[ready]    N-003: cn_astock raw_evidence 溯源接入
+[ready]    N-004: 政策/游资/解禁 A股特化标签先入 TradeFlow
+[ready]    N-005: 最终执行层 schema 化最小实现
 ```
 
 ### P1 — 小范围 Discovery
