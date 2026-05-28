@@ -611,3 +611,16 @@
 - **标记**：`# [N-002] cn_astock_fallback`
 - **测试**：111 passed, 2 skipped
 - **Commit**：a0770bb
+
+## 2026-05-28 | V-001 600584 数据真实性端到端验收
+
+- **执行者**：主控AI
+- **任务**：用 600584 做轻量端到端验收，确认数据源、raw_evidence、事件源、信号标签链路正常
+- **验收结果**：
+  - ✅ 行情数据：cn_akshare 提供，5/20-5/28 共 11 行，最新 84.74
+  - ✅ 实时行情：cn_akshare 提供，价格/open/high/low/previous_close/amount/source 字段齐全
+  - ✅ Vendor 追踪：`get_last_hit_vendor("get_stock_data")` 返回 "cn_akshare"（N-003 功能正常）
+  - ✅ 事件源：`fetch_daily_events('20260528')` 返回 911 个 symbol 的事件（N-001 功能正常）
+  - ✅ 信号标签：回购公告 → BUYBACK_EVENT 策略标签；解禁公告 → LOCKUP_RISK 风险标签（N-004 功能正常）
+  - 600584 今日无公告（正常现象）
+- **标记**：`# [V-001]`

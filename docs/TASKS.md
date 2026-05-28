@@ -4,6 +4,218 @@
 
 ---
 
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；一个晚上默认只做一个任务。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `INF-001`：任务领取锁与 `in_progress` 状态流转（P0，ready）。
+2. `N-004`：A股特化信号标签（当前有未提交 diff，状态为 in_progress，需先 review/补测试/收口）。
+3. `N-005`：最终执行层 schema 化最小实现（P2，ready）。
+4. `M-002`：任务运行档案索引与夜间日报聚合（P1，ready）。
+5. `M-008`：数据源健康检查与 fallback 可观测性（P1，ready）。
+6. `T-002/T-003`：小范围 Discovery / 资金异动池（P1，ready）。
+
+---
+
+## M. 框架路线总任务池（2026-05-28 新增）
+
+### INF-001: 自动开发任务领取锁与 in_progress 状态流转（P0）
+- **描述**：给自动开发闭环增加任务领取锁，避免 OpenClaw/OpenCode/Codex 或多个夜间任务同时领取同一个 `ready` 任务。
+- **优先级**：P0
+- **状态**：ready
+- **背景**：
+  - 当前已经出现并发/半成品 diff：代码改动先出现，但任务状态和运行档案未同步。
+  - 需要把“领取任务 → 标记 in_progress → 写运行档案 → PASS/FAIL 收口”固化进脚本。
+- **执行约束**：
+  - 只改 `scripts/auto_dev_loop.sh`、`docs/AUTO_DEV_PLAN.md`、测试或必要文档。
+  - 不改业务代码。
+  - 不 push / PR / merge。
+- **实现要点**：
+  1. 非 dry-run 领取任务后，先把 `docs/TASKS.md` 中该任务状态从 `ready` 改为 `in_progress`，写入运行档案。
+  2. 任务 PASS 后改为 `done — commit <hash>`。
+  3. 任务失败或超轮次后改为 `blocked — NEEDS_HUMAN` 或保留 `in_progress` 并写明原因，不能静默回到 `ready`。
+  4. 加锁文件例如 `.auto_dev.lock` 或 `docs/task_runs/.lock`，脚本异常退出时要有清理/提示机制。
+  5. dry-run 不得修改任务状态。
+- **验证方式**：
+  - `bash -n scripts/auto_dev_loop.sh` 通过。
+  - 新增或补充脚本测试/静态验证，确认 dry-run 不改文件。
+  - 模拟领取任务后，TASKS 状态变为 `in_progress`，PASS 后变为 `done`。
+- **代码标注要求**：`# [INF-001] task_claim_lock`
+
+### M-002: 任务运行档案索引与夜间日报聚合（P1）
+- **描述**：把 `docs/task_runs/` 中的运行档案汇总成可读索引，让第二天白天快速知道昨晚做了什么、成功/失败、风险在哪里。
+- **优先级**：P1
+- **状态**：ready
+- **执行约束**：
+  - 不调用模型，不跑股票分析。
+  - 只读 `docs/task_runs/`、`docs/reviews/`、`git log`，输出文档/脚本。
+- **实现要点**：
+  1. 新增脚本，例如 `scripts/summarize_auto_dev_runs.py`，扫描最近 N 个 task run。
+  2. 生成 `docs/auto_dev_reports/YYYY-MM-DD.md`，包含任务、commit、测试、review、风险、下一步。
+  3. 自动开发日报中引用该报告路径。
+  4. 报告不得包含 API key、完整敏感日志。
+- **验证方式**：
+  - 构造最小 task_runs fixture，脚本能输出日报。
+  - `python scripts/summarize_auto_dev_runs.py --date YYYY-MM-DD --dry-run` 可运行。
+- **代码标注要求**：`# [M-002] auto_dev_report_index`
+
+### M-003: TradeFlow universe 管理器（P1）
+- **描述**：统一管理候选池来源：自选池、持仓池、手动行业池、事件池、资金异动池，避免每个策略各自拼 symbols。
+- **优先级**：P1
+- **状态**：blocked
+- **前置条件**：`N-004` 和 `T-002` 完成。
+- **执行约束**：
+  - 不做全市场扫描。
+  - 不写生产数据库 schema；如需表结构先输出迁移方案。
+- **实现要点**：
+  1. 定义 universe source 枚举：watchlist/holding/manual/event/fund_flow/industry。
+  2. 每个 symbol 记录来源、入池原因、时间戳、过滤原因。
+  3. 与 `generate_daily_plan()` 的现有 universe 构建兼容。
+- **验证方式**：
+  - 同一 symbol 来自多个来源时去重但保留来源列表。
+  - 无来源时不触发全市场扫描。
+- **代码标注要求**：`# [M-003] tradeflow_universe_manager`
+
+### M-004: TradeFlow 策略权重与阈值配置（P1）
+- **描述**：把 VCP、回踩、事件催化、资金异动、A股标签的权重和阈值集中配置，便于后续复盘调参。
+- **优先级**：P1
+- **状态**：blocked
+- **前置条件**：`N-004`、`T-003` 完成。
+- **执行约束**：
+  - 不让 LLM 动态改权重。
+  - 默认配置必须保守，不输出强买卖词。
+- **实现要点**：
+  1. 新增配置对象或 yaml/json，保留默认值。
+  2. 所有策略从配置读取阈值，测试覆盖默认值。
+  3. 生成 daily plan 时输出使用的策略版本/配置版本。
+- **验证方式**：
+  - 修改阈值 fixture 后候选分数变化可预测。
+  - 缺配置时使用默认值。
+- **代码标注要求**：`# [M-004] strategy_config`
+
+### M-005: 盘中 Observe 状态机（P2）
+- **描述**：对盘前候选做低频盘中观察，记录触发价、失效价、放量、跌破等状态，不直接调用 TA。
+- **优先级**：P2
+- **状态**：blocked
+- **前置条件**：`M-003`、`M-004` 完成。
+- **执行约束**：
+  - 每 30 分钟以内的低频观察，不做高频交易。
+  - 不自动推送飞书，不自动调用深度 TA。
+- **实现要点**：
+  1. 定义 observe 状态：WAITING/TRIGGERED/INVALIDATED/EXPIRED。
+  2. 每次检查保存原始价量证据和触发原因。
+  3. 单日触发次数上限，防止噪声。
+- **验证方式**：
+  - 价格突破触发价 → TRIGGERED。
+  - 跌破失效价 → INVALIDATED。
+  - 未触发时不输出提醒。
+- **代码标注要求**：`# [M-005] intraday_observe_state`
+
+### M-006: OpenClaw 自动触发 TA 深度分析门控（P2）
+- **描述**：在盘中 Observe 触发后，由 OpenClaw 决定是否调用 TA 深度分析，但必须有成本、模型、频率门控。
+- **优先级**：P2
+- **状态**：blocked
+- **前置条件**：`M-005` 完成并稳定运行。
+- **执行约束**：
+  - 默认不调用 DeepSeek。
+  - 每日 TA 深度分析次数设置硬上限。
+  - 未持仓/已持仓必须带 position_context。
+- **实现要点**：
+  1. 定义 `need_deep_ta` 的可执行条件。
+  2. 记录触发 TA 的原因、模型、耗时、报告路径。
+  3. 失败时不重试无限循环。
+- **验证方式**：
+  - `need_deep_ta=False` 不调用 TA。
+  - 超出每日次数上限不调用 TA。
+- **代码标注要求**：`# [M-006] gated_deep_ta_dispatch`
+
+### M-007: 盘后 Review 与策略命中率复盘（P2）
+- **描述**：复盘盘前候选和盘中触发是否有效，输出命中率、误报率、移除理由，服务下一轮策略调参。
+- **优先级**：P2
+- **状态**：blocked
+- **前置条件**：`M-005` 稳定运行至少 3 个交易日。
+- **执行约束**：
+  - 不自动调整策略权重，只输出建议。
+  - 不生成投资建议，只做信号质量复盘。
+- **实现要点**：
+  1. 每个候选记录次日/3日/5日表现。
+  2. 统计各策略命中率和误报率。
+  3. 输出 `docs/tradeflow_reviews/YYYY-MM-DD.md`。
+- **验证方式**：
+  - 给定候选和行情 fixture，能生成复盘表。
+- **代码标注要求**：`# [M-007] post_market_review`
+
+### M-008: 数据源健康检查与 fallback 可观测性（P1）
+- **描述**：建立数据源健康检查，持续观察 AKShare、cn_astock、BaoStock、yfinance、公告/资金/LHB 等源的成功率、延迟和失败原因。
+- **优先级**：P1
+- **状态**：ready
+- **执行约束**：
+  - 只跑小样本 smoke，不扫全市场。
+  - 不保存 cookie/API key。
+  - live 测试必须可跳过。
+- **实现要点**：
+  1. 新增数据源 health check 脚本，默认测试 2-3 只样例股。
+  2. 输出每个 endpoint 的 `OK/FAILED/STALE/NOT_QUERIED`。
+  3. 记录 fallback 是否发生以及最终 vendor。
+  4. 生成 `docs/data_source_health/YYYY-MM-DD.md`。
+- **验证方式**：
+  - mock 主源失败时 health report 显示 fallback 命中。
+  - `pytest tests/test_*provider*.py -q` 或新增专门测试通过。
+- **代码标注要求**：`# [M-008] data_source_health`
+
+### M-009: TradeFlow 前端观察池面板（P2）
+- **描述**：在前端增加 TradeFlow 观察池/计划展示：候选、策略标签、触发价、失效价、过滤原因、是否需要 TA。
+- **优先级**：P2
+- **状态**：blocked
+- **前置条件**：`M-003`、`M-005` 数据结构稳定。
+- **执行约束**：
+  - 先做只读展示，不加一键交易。
+  - 不展示强买卖词。
+- **实现要点**：
+  1. 后端提供只读 API 或复用现有 plan 输出。
+  2. 前端表格支持按策略/状态/need_deep_ta 筛选。
+  3. 每个候选可展开 evidence。
+- **验证方式**：
+  - 前端类型检查通过。
+  - mock 数据展示不溢出、不误显示强动作。
+- **代码标注要求**：`# [M-009] tradeflow_dashboard`
+
+### M-010: 飞书/通知链路人工确认版（P2）
+- **描述**：把夜间日报、盘中触发、盘后复盘接入飞书，但第一阶段只生成草稿/本地预览，人工确认后再发。
+- **优先级**：P2
+- **状态**：blocked
+- **前置条件**：孟确认 webhook、推送格式和频率。
+- **执行约束**：
+  - 不自动推送真实 webhook。
+  - 不发送强买卖词。
+  - 不泄露 API key/token。
+- **实现要点**：
+  1. 统一通知 payload schema。
+  2. 支持 `--dry-run` 输出本地 markdown/json。
+  3. 真实发送需显式开关。
+- **验证方式**：
+  - dry-run 生成 payload。
+  - 未配置 webhook 时不报错、不发送。
+- **代码标注要求**：`# [M-010] notification_dry_run`
+
+---
+
 ## Z. 自动开发基础设施（2026-05-26 新增）
 
 ### AUTO-001: 自动开发闭环 v1（P0）
@@ -203,7 +415,7 @@
   - 本项目已经有 `G-006 raw_evidence`，但新增 `cn_astock` 后需要补 vendor/source/as_of/unit/status。
   - Simon 的 `a-stock-data` 强在端点多，但我们必须把端点结果纳入可审计证据体系。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — commit dd63bca
 - **执行约束**：
   - 不新建大规模历史行情库。
   - 不保存 cookie、token、API key。
@@ -224,7 +436,7 @@
   - Simon 的 3 个 A 股特化角色方向正确，但直接新增 Agent 会增加成本和 prompt 复杂度。
   - 对本项目更稳的路径是先把政策、游资、解禁作为候选池标签和风险标签。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：in_progress — 当前工作区已有未提交 diff，需补测试、review 并收口
 - **执行约束**：
   - 不新增 LLM Agent。
   - 不改 `tradingagents/prompts/`。
@@ -324,7 +536,7 @@
 ### T-001: TradeFlow P1 真实事件源接入
 - **描述**：为 TradeFlow 候选池接入真实公告/新闻事件源，支持公告、业绩预告、回购、增持、中标/订单、并购/重组、监管处罚等事件输入。
 - **优先级**：高
-- **状态**：ready
+- **状态**：done — 由 `b5131cd` + `3b232a3` 完成事件源与候选扫描接入
 - **实现要点**：
   - 优先接入 AKShare 公告/业绩预告/回购/增持等结构化接口；接口不稳定时保守降级，不伪造事件。
   - 接入东财新闻关键词匹配，先做规则分类，不调用外部 LLM。
