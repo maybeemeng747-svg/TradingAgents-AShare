@@ -6,6 +6,7 @@ from .alpha_vantage_provider import AlphaVantageProvider
 from .china_equity_provider import CnStubProvider
 from .cn_akshare_provider import CnAkshareProvider
 from .cn_baostock_provider import CnBaoStockProvider
+from .cn_astock_provider import CnAstockProvider
 
 
 class DataProviderRegistry:
@@ -31,4 +32,5 @@ def build_default_registry() -> DataProviderRegistry:
     registry.register(YFinanceProvider())
     registry.register(AlphaVantageProvider())
     registry.register(CnStubProvider())
+    registry.register(CnAstockProvider())
     return registry
