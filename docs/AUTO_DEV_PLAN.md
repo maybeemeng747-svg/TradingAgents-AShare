@@ -16,6 +16,7 @@ P3   → 盘后 Review + 策略命中率复盘
 
 - 从下方"当前任务池"中挑选标记为 `[ready]` 的任务
 - 每轮开发前先执行 `T-000 自动开发巡检基线`
+- 如果没有 `[ready]` 任务，进入 `REQUEST_TASKS` 模式，只生成候选任务草案，不写代码
 - 单个任务控制在 1-2 个 commit 内完成
 - 补测试、修 bug、优化过滤逻辑
 - 更新 DEVLOG.md（只追加，不重排历史）
@@ -33,6 +34,24 @@ P3   → 盘后 Review + 策略命中率复盘
 - 不删除现有测试
 - 不跨任务做大重构
 - 不自由发挥做不在任务池里的功能
+- 不把 `REQUEST_TASKS` 草案自动改成 `ready`
+
+## 无任务时的 REQUEST_TASKS 协议
+
+当 `./scripts/auto_dev_loop.sh --dry-run` 输出没有可开发任务时，OpenClaw 不应空转，也不应自由发明任务后直接开发。它必须进入 `REQUEST_TASKS` 模式：
+
+1. 只读检查 `docs/TASKS.md`、`docs/DEVLOG.md`、`docs/AUTO_DEV_PLAN.md`、最近 10 个 commit 和当前 git status。
+2. 输出 1-3 个候选任务草案，格式必须包含：任务编号建议、优先级、背景、修改范围、验收命令、禁止事项。
+3. 候选任务状态只能是 `proposed`，不能是 `ready`。
+4. 若需要 Codex 参与，可调用一次低成本任务规划请求，例如：
+
+```bash
+codex exec -s read-only "请只读检查 TradingAgents-AShare 当前任务池和最近提交，提出 1-3 个 proposed 任务。不要修改文件，不要运行股票分析，不要调用外部数据源。"
+```
+
+5. OpenClaw 将候选任务写入日报或 `docs/task_requests/YYYY-MM-DD.md`，等待孟或 Codex 确认后，才允许把其中任务转入 `docs/TASKS.md` 的 `ready` 状态。
+
+`REQUEST_TASKS` 的目标是避免自动开发空转，同时避免没有人确认的需求被自动开发。
 
 ## 任务优先级
 
