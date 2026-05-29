@@ -172,7 +172,7 @@ for m in pattern.finditer(content):
     title = m.group(2).strip()
     body = m.group(3)
 
-    if not re.search(r"状态.*?ready", body, re.IGNORECASE):
+    if not re.search(r"\*\*状态\*\*.*?ready", body, re.IGNORECASE):
         continue
 
     if "已完成" in title or "\u2713" in title:
