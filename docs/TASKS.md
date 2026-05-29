@@ -37,7 +37,7 @@
 ### INF-001: 自动开发任务领取锁与 in_progress 状态流转（P0）
 - **描述**：给自动开发闭环增加任务领取锁，避免 OpenClaw/OpenCode/Codex 或多个夜间任务同时领取同一个 `ready` 任务。
 - **优先级**：P0
-- **状态**：in_progress — Codex manual repair, tests passed, pending review/commit
+- **状态**：done — commit 54a8292
 - **背景**：
   - 当前已经出现并发/半成品 diff：代码改动先出现，但任务状态和运行档案未同步。
   - 需要把“领取任务 → 标记 in_progress → 写运行档案 → PASS/FAIL 收口”固化进脚本。

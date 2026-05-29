@@ -113,7 +113,7 @@ Codex 审核时不只看 diff，还要同时检查：
 ### P0 — 自动开发基础设施（当前最高优先）
 
 ```
-[in_progress] INF-001: 自动开发任务领取锁与 in_progress 状态流转
+[done] INF-001: 自动开发任务领取锁与 in_progress 状态流转 (54a8292)
 [ready]       M-002: 任务运行档案索引与夜间日报聚合
 [done]        N-004: A股特化信号标签 — commit 7fb535f
 ```
