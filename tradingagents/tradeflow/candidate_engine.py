@@ -313,8 +313,15 @@ def evaluate_symbol(
                 candidate.score = round(candidate.score * 0.8, 2)
 
     # [S-001] policy_version_signal — detect policy version and add bonus
+    # Collect all available text sources: news_texts + event_override titles
+    all_event_texts = list(news_texts) if news_texts else []
+    if event_overrides:
+        for ev in event_overrides:
+            title = ev.get("title", "") or ev.get("headline", "")
+            if title:
+                all_event_texts.append(title)
     policy_result: PolicyVersionResult = detect_policy_version(
-        event_texts=news_texts,
+        event_texts=all_event_texts if all_event_texts else None,
     )
     if policy_result.policy_tags:
         candidate.policy_tags = policy_result.policy_tags
