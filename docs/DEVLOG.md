@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-05-29 | INF-001 自动开发领取锁与状态收口修复
+
+- **执行者**：Codex
+- **任务**：收口 2026-05-28 夜间 `INF-001` 自动开发失败，修复 `auto_dev_loop.sh` 失败路径和任务状态不同步问题
+- **修改文件**：
+  - `scripts/auto_dev_loop.sh` — 新增 `.auto_dev.lock` 目录锁、`update_task_status()` 状态流转函数；非 dry-run 领取后标记 `in_progress`，失败标记 `blocked — NEEDS_HUMAN`，通过后用独立文档提交写入准确 commit hash；修复 `OPENCODE_EXIT` 在中文括号旁触发的 `set -u` 变量展开问题
+  - `tests/test_auto_dev_loop_static.py` — 新增脚本语法、dry-run 不改 `TASKS.md`、锁与安全变量展开的静态测试
+  - `docs/TASKS.md` — 将 `INF-001` 标记为 Codex 修复中，将已完成的 `N-005` 对齐为 `done — commit 4ec69ec / dd717ca`
+  - `docs/AUTO_DEV_PLAN.md` — 同步 `INF-001` / `N-005` 当前状态
+  - `docs/task_runs/INF-001-20260528-200320/summary.md` — 补齐失败运行档案 summary
+- **运行档案**：`docs/task_runs/INF-001-20260528-200320/`
+- **标记**：`# [INF-001] task_claim_lock`
+
 ## 2026-05-28 | N-003 cn_astock raw_evidence 溯源接入
 
 - **执行者**：OpenCode

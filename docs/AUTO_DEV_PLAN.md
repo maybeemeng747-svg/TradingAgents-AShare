@@ -113,7 +113,7 @@ Codex 审核时不只看 diff，还要同时检查：
 ### P0 — 自动开发基础设施（当前最高优先）
 
 ```
-[ready]       INF-001: 自动开发任务领取锁与 in_progress 状态流转
+[in_progress] INF-001: 自动开发任务领取锁与 in_progress 状态流转
 [ready]       M-002: 任务运行档案索引与夜间日报聚合
 [done]        N-004: A股特化信号标签 — commit 7fb535f
 ```
@@ -142,7 +142,7 @@ Codex 审核时不只看 diff，还要同时检查：
 [done]     N-002: cn_astock provider 验收与 TradeFlow fallback 接入 — commit a0770bb
 [done]     N-003: cn_astock raw_evidence 溯源接入 — commit dd63bca
 [done]     N-004: 政策/游资/解禁 A股特化标签先入 TradeFlow — commit 7fb535f
-[ready]    N-005: 最终执行层 schema 化最小实现
+[done]     N-005: 最终执行层 schema 化最小实现 — commit 4ec69ec / dd717ca
 ```
 
 ### P1 — 小范围 Discovery

@@ -24,8 +24,8 @@
 
 ### 当前优先队列
 
-1. `INF-001`：任务领取锁与 `in_progress` 状态流转（P0，ready）。
-2. `N-005`：最终执行层 schema 化最小实现（P2，ready）。
+1. `INF-001`：任务领取锁与 `in_progress` 状态流转（P0，in_progress，Codex 修复中）。
+2. `N-005`：最终执行层 schema 化最小实现（P2，done — commit 4ec69ec / dd717ca）。
 3. `M-002`：任务运行档案索引与夜间日报聚合（P1，ready）。
 4. `M-008`：数据源健康检查与 fallback 可观测性（P1，ready）。
 5. `T-002/T-003`：小范围 Discovery / 资金异动池（P1，ready）。
@@ -37,7 +37,7 @@
 ### INF-001: 自动开发任务领取锁与 in_progress 状态流转（P0）
 - **描述**：给自动开发闭环增加任务领取锁，避免 OpenClaw/OpenCode/Codex 或多个夜间任务同时领取同一个 `ready` 任务。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：in_progress — Codex manual repair, tests passed, pending review/commit
 - **背景**：
   - 当前已经出现并发/半成品 diff：代码改动先出现，但任务状态和运行档案未同步。
   - 需要把“领取任务 → 标记 in_progress → 写运行档案 → PASS/FAIL 收口”固化进脚本。
@@ -455,7 +455,7 @@
 ### N-005: 最终执行层 schema 化方案与最小实现（P2）
 - **描述**：参考 Simon 的 `schemas.py`，为本项目最终执行层增加结构化输出的最小 schema，减少模型自由文本导致的动作字段冲突。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — commit 4ec69ec / dd717ca
 - **执行约束**：
   - 不重写全部 report。
   - 不改 prompt 作为唯一方案。

@@ -24,8 +24,13 @@ TASKS_FILE="$REPO_DIR/docs/TASKS.md"
 DEVLOG_FILE="$REPO_DIR/docs/DEVLOG.md"
 REVIEW_DIR="$REPO_DIR/docs/reviews"
 TASK_RUN_ROOT="$REPO_DIR/docs/task_runs"
+LOCK_DIR="$REPO_DIR/.auto_dev.lock"
 MAX_FIX_ROUNDS=2
 DRY_RUN=false
+PROMPT_FILE=""
+OPENCODE_LOG=""
+REVIEW_FILE=""
+HAVE_LOCK=false
 
 # ─── 参数解析 ─────────────────────────────────────────
 for arg in "$@"; do
@@ -55,11 +60,81 @@ redact_log() {
         -e 's/(authorization:[[:space:]]*bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig'
 }
 
+cleanup() {
+    rm -f "$PROMPT_FILE" "$OPENCODE_LOG" "$REVIEW_FILE" 2>/dev/null || true
+    if [ "$HAVE_LOCK" = true ]; then
+        rm -rf "$LOCK_DIR" 2>/dev/null || true
+    fi
+}
+
+trap cleanup EXIT
+
+acquire_lock() {
+    # [INF-001] task_claim_lock
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+        HAVE_LOCK=true
+        {
+            echo "pid=$$"
+            echo "started_at=$(date +%Y-%m-%d_%H:%M:%S)"
+            echo "repo=$REPO_DIR"
+        } > "$LOCK_DIR/owner"
+        return 0
+    fi
+
+    err "检测到自动开发锁，退出以避免重复领取任务：$LOCK_DIR"
+    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+    exit 1
+}
+
+update_task_status() {
+    # [INF-001] task_claim_lock
+    local status_text="$1"
+    python3 - "$TASKS_FILE" "$TASK_ID" "$status_text" <<'PYEOF'
+import re
+import sys
+
+tasks_file, target_id, status_text = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(tasks_file, "r", encoding="utf-8") as f:
+    content = f.read()
+
+section_pattern = re.compile(
+    r"(###\s+" + re.escape(target_id) + r":.*?)(?=\n###|\n---|\Z)",
+    re.DOTALL,
+)
+match = section_pattern.search(content)
+if not match:
+    print(f"TASKS.md: 未找到任务 {target_id}")
+    sys.exit(1)
+
+section = match.group(1)
+new_section, n = re.subn(
+    r"(- \*\*状态\*\*[：:]\s*).+",
+    r"\1" + status_text,
+    section,
+    count=1,
+)
+if n == 0:
+    print(f"TASKS.md: 未找到 {target_id} 的状态行")
+    sys.exit(1)
+
+new_content = content[: match.start(1)] + new_section + content[match.end(1) :]
+with open(tasks_file, "w", encoding="utf-8") as f:
+    f.write(new_content)
+print(f"TASKS.md: {target_id} -> {status_text}")
+PYEOF
+}
+
 # ─── 0. 前置检查 ──────────────────────────────────────
 log "=== AUTO-002 自动开发闭环 v1.3 ==="
 log "仓库: $REPO_DIR"
 
 mkdir -p "$REVIEW_DIR" "$TASK_RUN_ROOT"
+
+if [ -d "$LOCK_DIR" ]; then
+    err "检测到自动开发锁，退出以避免重复领取任务：$LOCK_DIR"
+    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+    exit 1
+fi
 
 DIRTY=$(git status --porcelain | head -5 || true)
 if [ -n "$DIRTY" ]; then
@@ -68,6 +143,8 @@ if [ -n "$DIRTY" ]; then
     exit 1
 fi
 log "工作区干净 ✓"
+
+acquire_lock
 
 # ─── 1. 解析 TASKS.md，找最高优先级 ready 任务 ──────────
 parse_ready_tasks() {
@@ -166,6 +243,7 @@ fi
 RUN_ID="${TASK_ID}-$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="$TASK_RUN_ROOT/$RUN_ID"
 mkdir -p "$RUN_DIR"
+update_task_status "in_progress — claimed $RUN_ID"
 
 cat > "$RUN_DIR/task.md" <<TASK_META_EOF
 # Auto Dev Task Run
@@ -214,8 +292,7 @@ log "OpenCode prompt: $PROMPT_FILE"
 RESULT_STATUS=""
 REVIEW_OUTPUT=""
 ROUND=0
-OPENCODE_LOG=""
-REVIEW_FILE=""
+LAST_FAILURE_REASON=""
 
 while [ $ROUND -lt $MAX_FIX_ROUNDS ]; do
     ROUND=$((ROUND + 1))
@@ -233,12 +310,13 @@ while [ $ROUND -lt $MAX_FIX_ROUNDS ]; do
     redact_log < "$OPENCODE_LOG" > "$RUN_DIR/opencode-round${ROUND}.txt"
 
     if [ $OPENCODE_EXIT -ne 0 ]; then
-        err "OpenCode 执行失败（exit=$OPENCODE_EXIT）"
+        LAST_FAILURE_REASON="OpenCode failed with exit ${OPENCODE_EXIT}"
+        err "OpenCode 执行失败（exit=${OPENCODE_EXIT}）"
         err "日志: $OPENCODE_LOG"
         cat > "$PROMPT_FILE" <<FIX_EOF
 # 修复任务: $TASK_ID
 
-上一轮 OpenCode 执行失败（exit code $OPENCODE_EXIT）。请修复：
+上一轮 OpenCode 执行失败（exit code ${OPENCODE_EXIT}）。请修复：
 
 ## OpenCode 日志（最后 30 行）
 \`\`\`
@@ -281,6 +359,7 @@ FIX_EOF
             } >> "$TEST_LOG_FILE"
             if [ $TEST_EXIT -ne 0 ]; then
                 TEST_PASS=false
+                LAST_FAILURE_REASON="Test failed: ${test_cmd} (exit ${TEST_EXIT})"
                 err "测试失败: $test_cmd (exit=$TEST_EXIT)"
                 break
             fi
@@ -300,6 +379,7 @@ FIX_EOF
         } >> "$TEST_LOG_FILE"
         if [ $TEST_EXIT -ne 0 ]; then
             TEST_PASS=false
+            LAST_FAILURE_REASON="Default pytest failed with exit ${TEST_EXIT}"
         fi
     fi
 
@@ -353,7 +433,8 @@ FIX_EOF
 
     # Codex review 失败 → 不信任结果，进入修复或 NEEDS_HUMAN
     if [ $CODEX_EXIT -ne 0 ]; then
-        err "Codex review 执行失败（exit=$CODEX_EXIT），不信任空结果"
+        LAST_FAILURE_REASON="Codex review failed with exit ${CODEX_EXIT}"
+        err "Codex review 执行失败（exit=${CODEX_EXIT}），不信任空结果"
         cat > "$PROMPT_FILE" <<FIX_EOF
 # 修复任务: $TASK_ID
 
@@ -376,6 +457,7 @@ FIX_EOF
     fi
 
     if [ "$HAS_CRITICAL" = true ]; then
+        LAST_FAILURE_REASON="Codex review reported P0/P1 findings"
         warn "Codex review 发现 P0/P1 问题，准备修复..."
         cat > "$PROMPT_FILE" <<FIX_EOF
 # 修复任务: $TASK_ID
@@ -421,9 +503,9 @@ if [ "$RESULT_STATUS" = "PASS" ]; then
 - Finished at: $(date +%Y-%m-%d_%H:%M:%S)
 SUMMARY_EOF
 
-    # 4a. 精确 git add：只允许 tests/ tradingagents/ docs/
-    log "精确提交：git add tests/ tradingagents/ docs/"
-    git add tests/ tradingagents/ docs/
+    # 4a. 精确 git add：允许 tests/ tradingagents/ docs/ scripts/
+    log "精确提交：git add tests/ tradingagents/ docs/ scripts/"
+    git add tests/ tradingagents/ docs/ scripts/
 
     # 4b. 排除临时文件和备份文件
     EXCLUDE_PATTERNS=('*.backup' '*_original.py' '*_fixed.py' 'patch_*.py' '*.tmp' '*.log')
@@ -476,36 +558,19 @@ if [ "$RESULT_STATUS" = "PASS" ]; then
 DEVLOG_EOF
     log "已写入 DEVLOG.md"
 
-    # 4e. 更新 TASKS.md 中该任务状态为 done
-    python3 - "$TASKS_FILE" "$TASK_ID" <<'PYEOF'
-import re, sys
-
-tasks_file, target_id = sys.argv[1], sys.argv[2]
-with open(tasks_file, "r") as f:
-    content = f.read()
-
-pattern = re.compile(
-    r"(###\s+" + re.escape(target_id) + r":.*?\n.*?)"
-    r"(\*\*状态\*\*[：:]\s*)ready",
-    re.DOTALL
-)
-new_content, n = pattern.subn(r"\1\2done", content)
-if n > 0:
-    with open(tasks_file, "w") as f:
-        f.write(new_content)
-    print(f"TASKS.md: {target_id} → done")
-else:
-    print(f"TASKS.md: 未找到 {target_id} 的 ready 状态行")
-PYEOF
-
-    # 4f. 将 DEVLOG/TASKS 变更加入暂存区
+    # 4e. 将 DEVLOG/TASKS 变更加入暂存区
     git add docs/
 
-    # 4g. 提交（commit 后不再修改任何文件）
+    # 4f. 提交实现与运行档案。
     COMMIT_MSG="auto: $TASK_ID $TASK_TITLE [AUTO-002]"
     git commit -m "$COMMIT_MSG"
     COMMIT_HASH=$(git rev-parse --short HEAD)
     log "已提交: $COMMIT_HASH"
+
+    # 4g. PASS 后用独立文档提交写入准确 commit hash，避免任务继续被领取。
+    update_task_status "done — commit ${COMMIT_HASH}"
+    git add docs/TASKS.md
+    git commit -m "docs: mark $TASK_ID done after auto run"
     RESULT_STATUS="DONE"
 
 elif [ "$RESULT_STATUS" != "DONE" ]; then
@@ -515,6 +580,9 @@ elif [ "$RESULT_STATUS" != "DONE" ]; then
 fi
 
 if [ "$RESULT_STATUS" = "NEEDS_HUMAN" ]; then
+    if [ -z "$LAST_FAILURE_REASON" ]; then
+        LAST_FAILURE_REASON="tests/review/pre-commit did not pass within the allowed rounds"
+    fi
     cat > "$RUN_DIR/summary.md" <<SUMMARY_EOF
 # Auto Dev Summary
 
@@ -522,12 +590,14 @@ if [ "$RESULT_STATUS" = "NEEDS_HUMAN" ]; then
 - Priority: $TASK_PRIO
 - Final status: NEEDS_HUMAN
 - Rounds: $ROUND
-- Reason: tests/review/pre-commit did not pass within the allowed rounds
+- Reason: $LAST_FAILURE_REASON
 - Run directory: docs/task_runs/$RUN_ID
 - Finished at: $(date +%Y-%m-%d_%H:%M:%S)
 
 人工处理前请先查看本目录下的 OpenCode、测试和 Codex review 日志。
 SUMMARY_EOF
+
+    update_task_status "blocked — NEEDS_HUMAN, see docs/task_runs/$RUN_ID"
 
     cat >> "$DEVLOG_FILE" <<DEVLOG_EOF
 
@@ -537,7 +607,7 @@ SUMMARY_EOF
 - **优先级**: $TASK_PRIO
 - **轮次**: $ROUND (max)
 - **状态**: ❌ NEEDS_HUMAN
-- **原因**: 测试或 review 未通过，超过最大修复轮次，或 pre-commit 检查发现不应提交的文件
+- **原因**: $LAST_FAILURE_REASON
 - **运行档案**: docs/task_runs/$RUN_ID/
 DEVLOG_EOF
     log "已写入 DEVLOG.md（未提交）"
@@ -557,8 +627,5 @@ if [ -n "$COMMIT_HASH" ]; then
     echo "  提交:   $COMMIT_HASH"
 fi
 echo "========================================"
-
-# ─── 6. 清理临时文件 ──────────────────────────────────
-rm -f "$PROMPT_FILE" "$OPENCODE_LOG" "$REVIEW_FILE" 2>/dev/null || true
 
 exit $([ "$RESULT_STATUS" = "DONE" ] && echo 0 || echo 1)
