@@ -1,0 +1,4076 @@
+Task: M-011 — 修复 M-003 universe 兼容性与来源 extra 序列化（P1）
+Date: 2026-05-30_02:35:14
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019e7503-341c-7090-bb58-7b033a11d835
+--------
+user
+current changes
+exec
+/bin/zsh -lc 'git status --short && git diff --stat && git diff --cached --stat' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tests/test_tradeflow_universe.py
+ M tradingagents/tradeflow/universe.py
+?? .auto_dev.lock/
+?? docs/task_runs/M-011-20260530-022843/
+ docs/DEVLOG.md                      |  17 ++++
+ docs/TASKS.md                       |   2 +-
+ tests/test_tradeflow_universe.py    | 172 ++++++++++++++++++++++++++++++++++--
+ tradingagents/tradeflow/universe.py |  23 ++---
+ 4 files changed, 196 insertions(+), 18 deletions(-)
+
+exec
+/bin/zsh -lc "git diff -- tradingagents/tradeflow/universe.py tests/test_tradeflow_universe.py docs/TASKS.md docs/DEVLOG.md && find .auto_dev.lock docs/task_runs/M-011-20260530-022843 -maxdepth 3 -type f -print -exec sed -n '1,220p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index ddbfd47..16c4f83 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,23 @@
+ 
+ ---
+ 
++## 2026-05-30 | M-011: 修复 M-003 universe 兼容性与来源 extra 序列化
++
++- **执行者**：OpenCode
++- **任务**：M-011 — 修复 Codex review 指出的 universe manager 兼容性问题：事件覆盖来源标签变化，以及 `SourceRecord.extra` 被收集但序列化丢失
++- **修改文件**：
++  - `tradingagents/tradeflow/universe.py` — [M-011] universe_compat_fix
++    1. `UniverseSource.EVENT` 值从 `"event"` 改为 `"event_catalyst"`，保留旧公共输出 `source="event_catalyst"`，避免已有报告、筛选器、测试断裂
++    2. `UniverseEntry.to_dict()` 序列化 `universe_source_records` 时包含 `SourceRecord.extra`（当 extra 非空时）
++    3. `include_yesterday` 带入的 `strategy_tags/trigger_price/invalid_price` 不再在序列化中丢失
++  - `tests/test_tradeflow_universe.py` — 新增 `TestM011EventOverridesCompat`（2 个测试）、`TestM011SourceRecordExtraSerialization`（3 个测试）、`TestM011PlanRunnerDiscoveryCompat`（3 个测试），覆盖事件来源标签兼容、extra 序列化、昨日候选 extra 保留、plan_runner/discovery 集成；更新 6 处既有断言使用 `"event_catalyst"`
++- **测试结果**：1711 passed, 17 skipped, 0 failed
++- **关键逻辑**：
++  - `UniverseSource.EVENT = "event_catalyst"` 恢复 M-003 重构前的公共来源标签，与 `test_tradeflow_plan_runner.py` 中已有的 `"event_catalyst"` 断言一致
++  - `to_dict()` 中 `universe_source_records` 只在 `extra` 非空时序列化，避免空字典噪声
++  - `include_yesterday` 通过 `add_from_yesterday()` 将 strategy_tags/trigger_price/invalid_price 存入 `SourceRecord.extra`，现在通过 `to_dict()` 可正确传递到下游
++- **风险点**：无；`UniverseSource.EVENT` 值从 `"event"` 改为 `"event_catalyst"` 恢复了旧的公共标签，`to_dict()` 的 extra 序列化是纯新增字段
++
+ ## 2026-05-30 | S-009: 修复 S-005 选股门控双重计分与资金单位校验
+ 
+ - **执行者**：OpenCode
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 5b98b5f..13ed1ff 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -360,7 +360,7 @@
+ ### M-011: 修复 M-003 universe 兼容性与来源 extra 序列化（P1）
+ - **描述**：修复 Codex review 指出的 universe manager 兼容性问题：事件覆盖来源标签变化，以及 `SourceRecord.extra` 被收集但序列化丢失。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：in_progress — claimed M-011-20260530-022843
+ - **前置条件**：`M-003` 完成。
+ - **执行约束**：
+   - 不做全市场扫描。
+diff --git a/tests/test_tradeflow_universe.py b/tests/test_tradeflow_universe.py
+index 17e2d16..c40c090 100644
+--- a/tests/test_tradeflow_universe.py
++++ b/tests/test_tradeflow_universe.py
+@@ -27,9 +27,9 @@ from tradingagents.tradeflow.schemas import Candidate, CandidateSignal
+ class TestUniverseSourceEnum:
+     def test_all_sources_defined(self):
+         expected = {
+-            "watchlist", "holding", "manual", "event", "event_source",
++            "watchlist", "holding", "manual", "event_catalyst", "event_source",
+             "fund_flow_pool", "industry_pool", "yesterday_observe",
+-        }
++        }  # [M-011] universe_compat_fix — event → event_catalyst
+         actual = {s.value for s in UniverseSource}
+         assert actual == expected
+ 
+@@ -83,7 +83,7 @@ class TestUniverseEntry:
+         assert d["name"] == "贵州茅台"
+         assert d["source"] == "holding"
+         assert "holding" in d["universe_sources"]
+-        assert "event" in d["universe_sources"]
++        assert "event_catalyst" in d["universe_sources"]
+         assert len(d["universe_source_records"]) == 2
+ 
+ 
+@@ -239,7 +239,7 @@ class TestBuildUniverseBackwardCompat:
+         )
+         assert len(universe) == 3
+         by_sym = {u["symbol"]: u for u in universe}
+-        assert "event" in by_sym["999999.SZ"]["universe_sources"]
++        assert "event_catalyst" in by_sym["999999.SZ"]["universe_sources"]
+         assert "event_source" in by_sym["888888.SZ"]["universe_sources"]
+         assert "manual" in by_sym["600519.SH"]["universe_sources"]
+ 
+@@ -254,7 +254,7 @@ class TestBuildUniverseBackwardCompat:
+         assert len(universe) == 1
+         entry = universe[0]
+         assert "manual" in entry["universe_sources"]
+-        assert "event" in entry["universe_sources"]
++        assert "event_catalyst" in entry["universe_sources"]
+ 
+     def test_build_universe_with_industry_and_fund_flow(self):
+         universe = build_universe(
+@@ -411,7 +411,165 @@ class TestCandidateUniverseSourcesField:
+             "strategy_tags_json": "[]",
+             "risk_flags_json": "[]",
+             "evidence_json": "{}",
+-            "universe_sources_json": '["manual", "event"]',
++            "universe_sources_json": '["manual", "event_catalyst"]',  # [M-011]
+         }
+         c = Candidate.from_db_row(row)
+-        assert c.universe_sources == ["manual", "event"]
++        assert c.universe_sources == ["manual", "event_catalyst"]  # [M-011]
++
++
++class TestM011EventOverridesCompat:  # [M-011] universe_compat_fix
++    def test_event_overrides_source_label_is_event_catalyst(self):
++        mgr = UniverseManager()
++        overrides = [
++            {"symbol": "AAA.SZ", "name": "AAA", "title": "回购", "event_type": "buyback"},
++        ]
++        mgr.add_from_events(event_overrides=overrides)
++        entry = mgr.get_entry("AAA.SZ")
++        assert entry.primary_source == "event_catalyst"
++        d = entry.to_dict()
++        assert d["source"] == "event_catalyst"
++        assert "event_catalyst" in d["universe_sources"]
++
++    def test_build_universe_event_overrides_backward_compat(self):
++        event_overrides = [
++            {"symbol": "999999.SZ", "name": "事件股", "title": "回购"},
++        ]
++        universe = build_universe(event_overrides=event_overrides)
++        by_sym = {u["symbol"]: u for u in universe}
++        assert by_sym["999999.SZ"]["source"] == "event_catalyst"
++        assert "event_catalyst" in by_sym["999999.SZ"]["universe_sources"]
++
++
++class TestM011SourceRecordExtraSerialization:  # [M-011] universe_compat_fix
++    def test_to_dict_includes_extra_when_present(self):
++        e = UniverseEntry(
++            symbol="600519.SH",
++            name="贵州茅台",
++            sources=[
++                SourceRecord(
++                    source=UniverseSource.YESTERDAY_OBSERVE,
++                    reason="昨日候选",
++                    extra={
++                        "strategy_tags": '["VCP"]',
++                        "trigger_price": 1800.0,
++                        "invalid_price": 1700.0,
++                    },
++                ),
++            ],
++        )
++        d = e.to_dict()
++        recs = d["universe_source_records"]
++        assert len(recs) == 1
++        assert "extra" in recs[0]
++        assert recs[0]["extra"]["strategy_tags"] == '["VCP"]'
++        assert recs[0]["extra"]["trigger_price"] == 1800.0
++        assert recs[0]["extra"]["invalid_price"] == 1700.0
++
++    def test_to_dict_omits_extra_when_empty(self):
++        e = UniverseEntry(
++            symbol="600519.SH",
++            sources=[
++                SourceRecord(source=UniverseSource.MANUAL, reason="test"),
++            ],
++        )
++        d = e.to_dict()
++        recs = d["universe_source_records"]
++        assert "extra" not in recs[0]
++
++    def test_include_yesterday_extra_preserved(self):
++        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
++            tf_db_path = f.name
++        try:
++            conn = sqlite3.connect(tf_db_path)
++            conn.execute(
++                "CREATE TABLE tradeflow_candidates ("
++                "trade_date TEXT, symbol TEXT, name TEXT, status TEXT, "
++                "strategy_tags_json TEXT, trigger_price REAL, invalid_price REAL)"
++            )
++            conn.execute(
++                "INSERT INTO tradeflow_candidates VALUES (?, ?, ?, ?, ?, ?, ?)",
++                ("2026-05-29", "600519.SH", "贵州茅台", "active",
++                 '["VCP","PULLBACK"]', 1800.0, 1700.0),
++            )
++            conn.commit()
++            conn.close()
++
++            mgr = UniverseManager()
++            mgr.add_from_yesterday(tf_db_path, trade_date="2026-05-29")
++            entry = mgr.get_entry("600519.SH")
++            assert entry is not None
++            assert entry.name == "贵州茅台"
++            sr = entry.sources[0]
++            assert sr.source == UniverseSource.YESTERDAY_OBSERVE
++            assert sr.extra.get("strategy_tags") == '["VCP","PULLBACK"]'
++            assert sr.extra.get("trigger_price") == 1800.0
++            assert sr.extra.get("invalid_price") == 1700.0
++
++            d = entry.to_dict()
++            recs = d["universe_source_records"]
++            assert recs[0]["extra"]["trigger_price"] == 1800.0
++            assert recs[0]["extra"]["invalid_price"] == 1700.0
++        finally:
++            os.unlink(tf_db_path)
++
++
++class TestM011PlanRunnerDiscoveryCompat:  # [M-011] universe_compat_fix
++    def test_plan_runner_preserves_event_catalyst_source(self):
++        from tradingagents.tradeflow.plan_runner import generate_daily_plan
++
++        mock_candidate = Candidate(
++            symbol="999999.SZ", name="事件股", source="event_catalyst",
++            strategy_tags=["EVENT_CATALYST"], score=60.0, trade_date="2026-05-25",
++        )
++        mock_candidate.signals = [CandidateSignal(strategy_tag="EVENT_CATALYST", score=60.0, reason="test")]
++        mock_candidate.primary_strategy = "EVENT_CATALYST"
++
++        mock_universe = [
++            {
++                "symbol": "999999.SZ",
++                "name": "事件股",
++                "source": "event_catalyst",
++                "universe_sources": ["event_catalyst"],
++                "universe_source_records": [
++                    {"source": "event_catalyst", "reason": "事件催化: 回购", "timestamp": "2026-05-25T08:00:00"},
++                ],
++            },
++        ]
++
++        with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol", return_value=(mock_candidate, "")):
++            with patch("tradingagents.tradeflow.plan_runner.build_universe", return_value=mock_universe):
++                plan = generate_daily_plan(
++                    trade_date="2026-05-25",
++                    candidates=None,
++                )
++
++        assert len(plan.candidates) == 1
++        entry = plan.candidates[0]
++        assert "event_catalyst" in entry["universe_sources"]
++
++    def test_discovery_preserves_event_catalyst_source(self):
++        from tradingagents.tradeflow.discovery import _build_discovery_universe
++
++        universe = _build_discovery_universe(
++            symbols=["600519.SH"],
++            prod_db_path="",
++            tf_db_path="",
++        )
++        by_sym = {u["symbol"]: u for u in universe}
++        assert by_sym["600519.SH"]["source"] == "manual"
++
++    def test_discovery_event_overrides_source_label(self):
++        from tradingagents.tradeflow.discovery import _build_discovery_universe
++
++        overrides = [
++            {"symbol": "999999.SZ", "name": "事件股", "title": "回购"},
++        ]
++        universe = _build_discovery_universe(
++            symbols=["600519.SH"],
++            prod_db_path="",
++            tf_db_path="",
++        )
++        universe_from_events = build_universe(event_overrides=overrides)
++        by_sym = {u["symbol"]: u for u in universe_from_events}
++        assert "999999.SZ" in by_sym
++        assert by_sym["999999.SZ"]["source"] == "event_catalyst"
+diff --git a/tradingagents/tradeflow/universe.py b/tradingagents/tradeflow/universe.py
+index 9ceabb7..729bbd9 100644
+--- a/tradingagents/tradeflow/universe.py
++++ b/tradingagents/tradeflow/universe.py
+@@ -29,7 +29,7 @@ class UniverseSource(Enum):
+     WATCHLIST = "watchlist"
+     HOLDING = "holding"
+     MANUAL = "manual"
+-    EVENT = "event"
++    EVENT = "event_catalyst"  # [M-011] universe_compat_fix — preserve old public source label
+     EVENT_SOURCE = "event_source"
+     FUND_FLOW = "fund_flow_pool"
+     INDUSTRY = "industry_pool"
+@@ -66,21 +66,24 @@ class UniverseEntry:
+         return sorted({sr.source.value for sr in self.sources})
+ 
+     def to_dict(self) -> dict:
+-        return {
++        result = {  # [M-011] universe_compat_fix — include extra in serialization
+             "symbol": self.symbol,
+             "name": self.name,
+             "source": self.primary_source,
+             "universe_sources": self.source_values,
+-            "universe_source_records": [
+-                {
+-                    "source": sr.source.value,
+-                    "reason": sr.reason,
+-                    "timestamp": sr.timestamp,
+-                }
+-                for sr in self.sources
+-            ],
++            "universe_source_records": [],
+             "filter_reason": self.filter_reason,
+         }
++        for sr in self.sources:
++            rec = {
++                "source": sr.source.value,
++                "reason": sr.reason,
++                "timestamp": sr.timestamp,
++            }
++            if sr.extra:
++                rec["extra"] = sr.extra
++            result["universe_source_records"].append(rec)
++        return result
+ 
+ 
+ class UniverseManager:
+.auto_dev.lock/owner
+pid=41733
+started_at=2026-05-30_02:22:15
+repo=/Users/maybee/TradingAgents-AShare
+docs/task_runs/M-011-20260530-022843/tests-round1.txt
+## pytest tests/test_tradeflow_universe.py tests/test_t002_discovery.py tests/test_t003_fund_flow_anomaly.py -q
+
+........................................................................ [ 46%]
+........................................................................ [ 92%]
+............                                                             [100%]
+156 passed in 0.26s
+
+Exit code: 0
+
+## pytest tests/test_tradeflow_*.py -q
+
+........................................................................ [ 55%]
+.........................................................                [100%]
+129 passed in 3.23s
+
+Exit code: 0
+
+docs/task_runs/M-011-20260530-022843/prompt-round1.md
+# 任务: M-011: 修复 M-003 universe 兼容性与来源 extra 序列化（P1）
+
+请从 docs/TASKS.md 中读取任务 "M-011" 的完整描述，按要求实现。
+
+## 执行约束
+- 不改 tradingagents/prompts/
+- 不写入生产 tradingagents.db
+- 不跑全市场扫描或股票深度 TA
+- 不 push / PR / merge
+- **不要 git commit** — commit 由外层脚本统一执行
+- 修改后更新 docs/DEVLOG.md
+
+## 完成后输出
+- 修改了哪些文件
+- 关键逻辑说明
+- 测试结果（passed/failed 数量）
+docs/task_runs/M-011-20260530-022843/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m# [0mTodos
+[ ] Read TASKS.md for M-011 full description
+[ ] Read required context files (DEVLOG, DECISIONS, project-overview)
+[ ] Implement M-011 fixes
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DECISIONS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/project-overview.md
+[0m
+[0m# [0mTodos
+[x] Read TASKS.md for M-011 full description
+[x] Read required context files (DEVLOG, DECISIONS, project-overview)
+[ ] Read Codex review findings for M-011
+[ ] Implement M-011 fixes
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead docs/task_runs/M-003-20260530-002721/codex-review-round2.txt
+[0m→ [0mRead tradingagents/tradeflow/universe.py
+[0m→ [0mRead tradingagents/tradeflow/discovery.py
+现在，让我阅读 Codex 审查的发现和当前的源文件。
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py
+[0m→ [0mRead docs/task_runs/M-003-20260530-002721/codex-review-round2.txt[90m [offset=1036][0m
+现在让我完整阅读 Codex review round2 文件，以找到具体的 P2 发现，并阅读现有的测试文件：
+[0m→ [0mRead tests/test_tradeflow_universe.py
+[0m→ [0mRead docs/reviews
+现在我来阅读 Codex review 的结果。我来检查一下评审文件：
+[0m→ [0mRead docs/reviews/M-003-20260530-round2.txt
+[0m
+[0m# [0mTodos
+[x] Read TASKS.md for M-011 full description
+[x] Read required context files (DEVLOG, DECISIONS, project-overview)
+[x] Read Codex review findings for M-011
+[ ] Implement M-011 fixes: event_overrides source compat + SourceRecord.extra serialization + include_yesterday fields
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+我现在对问题有了清晰的了解。让我来分析 M-011 中的三个修复点：
+
+1.  **`event_overrides` 来源标签兼容性**：在重构前，`event_overrides` 会生成 `source="event_catalyst"`，但现在 `add_from_events` 使用 `UniverseSource.EVENT`，其值为 `"event"`。任何依赖 `source="event_catalyst"` 的下游代码现在都会得到 `"event"`，从而破坏兼容性。
+
+2.  **`UniverseEntry.to_dict()` 序列化时会丢失 `SourceRecord.extra`**：`universe_source_records` 列表只包含 `source/reason/timestamp`，但 `extra`（其中包含昨天的 `strategy_tags/trigger_price/invalid_price`）未被序列化。
+
+3.  **`include_yesterday` 时的 `strategy_tags/trigger_price/invalid_price`**：这些值存储在 `SourceRecord.extra` 中，但在序列化时丢失，因此 `include_yesterday` 不会将这些值带入 universe 输出。
+
+现在我来实施这三个修复：
+[0m← [0mEdit tradingagents/tradeflow/universe.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/universe.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/universe.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/universe.py
+@@ -65,23 +65,26 @@
+     def source_values(self) -> list[str]:
+         return sorted({sr.source.value for sr in self.sources})
+ 
+     def to_dict(self) -> dict:
+-        return {
++        result = {  # [M-011] universe_compat_fix — include extra in serialization
+             "symbol": self.symbol,
+             "name": self.name,
+             "source": self.primary_source,
+             "universe_sources": self.source_values,
+-            "universe_source_records": [
+-                {
+-                    "source": sr.source.value,
+-                    "reason": sr.reason,
+-                    "timestamp": sr.timestamp,
+-                }
+-                for sr in self.sources
+-            ],
++            "universe_source_records": [],
+             "filter_reason": self.filter_reason,
+         }
++        for sr in self.sources:
++            rec = {
++                "source": sr.source.value,
++                "reason": sr.reason,
++                "timestamp": sr.timestamp,
++            }
++            if sr.extra:
++                rec["extra"] = sr.extra
++            result["universe_source_records"].append(rec)
++        return result
+ 
+ 
+ class UniverseManager:
+     """Centralized manager for TradeFlow candidate universe.  # [M-003] tradeflow_universe_manager
+
+[0m
+现在修复 `event_overrides` 的源标签兼容性——将 `UniverseSource.EVENT` 更改为生成 `"event_catalyst"` 以实现向后兼容：
+[0m← [0mEdit tradingagents/tradeflow/universe.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/universe.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/universe.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/universe.py
+@@ -28,9 +28,9 @@
+ class UniverseSource(Enum):
+     WATCHLIST = "watchlist"
+     HOLDING = "holding"
+     MANUAL = "manual"
+-    EVENT = "event"
++    EVENT = "event_catalyst"  # [M-011] universe_compat_fix — preserve old public source label
+     EVENT_SOURCE = "event_source"
+     FUND_FLOW = "fund_flow_pool"
+     INDUSTRY = "industry_pool"
+     YESTERDAY_OBSERVE = "yesterday_observe"
+
+[0m
+现在更新测试期望以使用 `"event_catalyst"`：
+[0m← [0mEdit tests/test_tradeflow_universe.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
+@@ -26,11 +26,11 @@
+ 
+ class TestUniverseSourceEnum:
+     def test_all_sources_defined(self):
+         expected = {
+-            "watchlist", "holding", "manual", "event", "event_source",
++            "watchlist", "holding", "manual", "event_catalyst", "event_source",
+             "fund_flow_pool", "industry_pool", "yesterday_observe",
+-        }
++        }  # [M-011] universe_compat_fix — event → event_catalyst
+         actual = {s.value for s in UniverseSource}
+         assert actual == expected
+ 
+     def test_source_values_are_unique(self):
+
+[0m
+[0m← [0mEdit tests/test_tradeflow_universe.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
+@@ -82,9 +82,9 @@
+         assert d["symbol"] == "600519.SH"
+         assert d["name"] == "贵州茅台"
+         assert d["source"] == "holding"
+         assert "holding" in d["universe_sources"]
+-        assert "event" in d["universe_sources"]
++        assert "event_catalyst" in d["universe_sources"]
+         assert len(d["universe_source_records"]) == 2
+ 
+ 
+ class TestUniverseManagerBasic:
+
+[0m
+[0m← [0mEdit tests/test_tradeflow_universe.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
+@@ -238,9 +238,9 @@
+         event_symbols=event_symbols,
+     )
+     assert len(universe) == 3
+     by_sym = {u["symbol"]: u for u in universe}
+-    assert "event" in by_sym["999999.SZ"]["universe_sources"]
++    assert "event_catalyst" in by_sym["999999.SZ"]["universe_sources"]
+     assert "event_source" in by_sym["888888.SZ"]["universe_sources"]
+     assert "manual" in by_sym["600519.SH"]["universe_sources"]
+ 
+ def test_build_universe_dedup_keeps_all_sources(self):
+
+[0m
+[0m← [0mEdit tests/test_tradeflow_universe.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
+@@ -253,9 +253,9 @@
+     )
+     assert len(universe) == 1
+     entry = universe[0]
+     assert "manual" in entry["universe_sources"]
+-    assert "event" in entry["universe_sources"]
++    assert "event_catalyst" in entry["universe_sources"]
+ 
+ def test_build_universe_with_industry_and_fund_flow(self):
+     universe = build_universe(
+         symbols=["600519.SH"],
+
+[0m
+[0m✱ [0mGrep ""event""[90m 2 matches[0m
+现在我还需要检查是否有其他测试文件引用了来自 universe 的 `"event"` 源标签。让我搜索一下：
+[0m✱ [0mGrep "source.*event_catalyst"[90m in tradingagents · 0 matches[0m
+[0m
+[0m← [0mEdit tests/test_tradeflow_universe.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
+@@ -410,8 +410,8 @@
+     "symbol": "600519.SH",
+     "strategy_tags_json": "[]",
+     "risk_flags_json": "[]",
+     "evidence_json": "{}",
+-    "universe_sources_json": '["manual", "event"]',
++    "universe_sources_json": '["manual", "event_catalyst"]',  # [M-011]
+ }
+ c = Candidate.from_db_row(row)
+ assert c.universe_sources == ["manual", "event"]
+
+[0m
+[0m← [0mEdit tests/test_tradeflow_universe.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tradeflow_universe.py
+@@ -413,5 +413,5 @@
+     "evidence_json": "{}",
+     "universe_sources_json": '["manual", "event_catalyst"]',  # [M-011]
+ }
+docs/task_runs/M-011-20260530-022843/task.md
+# Auto Dev Task Run
+
+- Task: M-011 — 修复 M-003 universe 兼容性与来源 extra 序列化（P1）
+- Priority: P1
+- Status: CLAIMED
+- Started at: 2026-05-30_02:28:43
+- Git HEAD: 51204dd
+- Test commands: pytest tests/test_tradeflow_universe.py tests/test_t002_discovery.py tests/test_t003_fund_flow_anomaly.py -q,pytest tests/test_tradeflow_*.py -q
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/tradeflow/universe.py && sed -n '1,520p' tests/test_tradeflow_universe.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""TradeFlow universe — manages the watch universe from multiple sources.  # [M-003] tradeflow_universe_manager
+
+P0 sources:
+1. Current holdings (imported_portfolio_positions)
+2. Watchlist items
+3. Manual symbol specification
+4. Previously observed candidates from yesterday's review
+5. Event/catalyst triggered stocks
+6. Fund flow anomaly triggered stocks
+7. Manual industry pool
+
+M-003 introduces UniverseManager which:
+- Defines a UniverseSource enum for all source types
+- Tracks per-symbol: sources list, entry reasons, timestamps, filter reasons
+- Deduplicates symbols while preserving ALL source provenance
+- Never triggers full-market scan when no sources are provided
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Optional
+
+
+class UniverseSource(Enum):
+    WATCHLIST = "watchlist"
+    HOLDING = "holding"
+    MANUAL = "manual"
+    EVENT = "event_catalyst"  # [M-011] universe_compat_fix — preserve old public source label
+    EVENT_SOURCE = "event_source"
+    FUND_FLOW = "fund_flow_pool"
+    INDUSTRY = "industry_pool"
+    YESTERDAY_OBSERVE = "yesterday_observe"
+
+
+@dataclass
+class SourceRecord:
+    source: UniverseSource
+    reason: str = ""
+    timestamp: str = ""
+    extra: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not self.timestamp:
+            self.timestamp = datetime.now().isoformat()
+
+
+@dataclass
+class UniverseEntry:
+    symbol: str
+    name: str = ""
+    sources: list[SourceRecord] = field(default_factory=list)
+    filter_reason: str = ""
+
+    @property
+    def primary_source(self) -> str:
+        if self.sources:
+            return self.sources[0].source.value
+        return ""
+
+    @property
+    def source_values(self) -> list[str]:
+        return sorted({sr.source.value for sr in self.sources})
+
+    def to_dict(self) -> dict:
+        result = {  # [M-011] universe_compat_fix — include extra in serialization
+            "symbol": self.symbol,
+            "name": self.name,
+            "source": self.primary_source,
+            "universe_sources": self.source_values,
+            "universe_source_records": [],
+            "filter_reason": self.filter_reason,
+        }
+        for sr in self.sources:
+            rec = {
+                "source": sr.source.value,
+                "reason": sr.reason,
+                "timestamp": sr.timestamp,
+            }
+            if sr.extra:
+                rec["extra"] = sr.extra
+            result["universe_source_records"].append(rec)
+        return result
+
+
+class UniverseManager:
+    """Centralized manager for TradeFlow candidate universe.  # [M-003] tradeflow_universe_manager
+
+    Collects symbols from multiple sources, deduplicates by symbol
+    while preserving all source provenance, and never falls back to
+    full-market scan.
+
+    Usage:
+        mgr = UniverseManager()
+        mgr.add_from_watchlist(db_path)
+        mgr.add_from_holdings(db_path)
+        mgr.add_manual(["600519.SH"])
+        mgr.add_from_events(event_map)
+        universe = mgr.get_universe()  # list[dict]
+    """
+
+    def __init__(self):
+        self._entries: dict[str, UniverseEntry] = {}
+
+    def add_symbol(
+        self,
+        symbol: str,
+        source: UniverseSource,
+        name: str = "",
+        reason: str = "",
+        extra: Optional[dict] = None,
+    ) -> UniverseEntry:
+        symbol = symbol.strip()
+        if not symbol:
+            return self._entries.get("", UniverseEntry(symbol=""))
+
+        entry = self._entries.get(symbol)
+        if entry is None:
+            entry = UniverseEntry(symbol=symbol, name=name)
+            self._entries[symbol] = entry
+        if name and not entry.name:
+            entry.name = name
+
+        existing_sources = {sr.source for sr in entry.sources}
+        if source not in existing_sources:
+            entry.sources.append(SourceRecord(
+                source=source,
+                reason=reason,
+                extra=extra or {},
+            ))
+
+        return entry
+
+    def remove_symbol(self, symbol: str, reason: str = "") -> None:
+        entry = self._entries.get(symbol.strip())
+        if entry is not None:
+            entry.filter_reason = reason
+
+    @property
+    def size(self) -> int:
+        return len(self._entries)
+
+    @property
+    def symbols(self) -> list[str]:
+        return list(self._entries.keys())
+
+    def get_entry(self, symbol: str) -> Optional[UniverseEntry]:
+        return self._entries.get(symbol.strip())
+
+    def get_universe(self) -> list[dict]:
+        return [entry.to_dict() for entry in self._entries.values()]
+
+    def get_active_universe(self) -> list[dict]:
+        return [
+            entry.to_dict()
+            for entry in self._entries.values()
+            if not entry.filter_reason
+        ]
+
+    def get_source_summary(self) -> dict[str, int]:
+        summary: dict[str, int] = {}
+        for entry in self._entries.values():
+            for sr in entry.sources:
+                key = sr.source.value
+                summary[key] = summary.get(key, 0) + 1
+        return summary
+
+    def add_from_holdings(self, db_path: str) -> int:
+        count = 0
+        for item in get_holdings(db_path):
+            self.add_symbol(
+                symbol=item["symbol"],
+                source=UniverseSource.HOLDING,
+                name=item.get("name", ""),
+                reason="持仓股",
+            )
+            count += 1
+        return count
+
+    def add_from_watchlist(self, db_path: str) -> int:
+        count = 0
+        for item in get_watchlist(db_path):
+            self.add_symbol(
+                symbol=item["symbol"],
+                source=UniverseSource.WATCHLIST,
+                name=item.get("name", ""),
+                reason="自选股",
+            )
+            count += 1
+        return count
+
+    def add_from_yesterday(self, tf_db_path: str, trade_date: Optional[str] = None) -> int:
+        count = 0
+        for item in get_yesterday_observations(tf_db_path, trade_date):
+            extra = {}
+            if item.get("strategy_tags"):
+                extra["strategy_tags"] = item["strategy_tags"]
+            if item.get("trigger_price"):
+                extra["trigger_price"] = item["trigger_price"]
+            if item.get("invalid_price"):
+                extra["invalid_price"] = item["invalid_price"]
+            self.add_symbol(
+                symbol=item["symbol"],
+                source=UniverseSource.YESTERDAY_OBSERVE,
+                name=item.get("name", ""),
+                reason="昨日候选继续观察",
+                extra=extra,
+            )
+            count += 1
+        return count
+
+    def add_manual(
+        self,
+        symbols: list[str],
+        reason: str = "手动指定",
+    ) -> int:
+        count = 0
+        for sym in symbols:
+            sym = sym.strip()
+            if sym:
+                self.add_symbol(
+                    symbol=sym,
+                    source=UniverseSource.MANUAL,
+                    reason=reason,
+                )
+                count += 1
+        return count
+
+    def add_from_events(
+        self,
+        event_overrides: Optional[list[dict]] = None,
+        event_symbols: Optional[dict[str, list[str]]] = None,
+    ) -> int:
+        count = 0
+
+        if event_overrides:
+            for ev in event_overrides:
+                sym = ev.get("symbol", "").strip()
+                if sym:
+                    self.add_symbol(
+                        symbol=sym,
+                        source=UniverseSource.EVENT,
+                        name=ev.get("name", ""),
+                        reason=f"事件催化: {ev.get('title', '') or ev.get('event_type', '')}",
+                    )
+                    count += 1
+
+        if event_symbols:
+            for sym, titles in event_symbols.items():
+                sym = sym.strip()
+                if sym:
+                    title_preview = "; ".join(titles[:3]) if titles else ""
+                    self.add_symbol(
+                        symbol=sym,
+                        source=UniverseSource.EVENT_SOURCE,
+                        reason=f"事件源: {title_preview}" if title_preview else "事件源",
+                    )
+"""Tests for TradeFlow UniverseManager — M-003 universe source tracking.  # [M-003] tradeflow_universe_manager
+
+Covers:
+- UniverseSource enum
+- UniverseManager: add_symbol, dedup with multi-source, remove, summary
+- build_universe backward compatibility
+- Integration with generate_daily_plan and discovery
+"""
+
+import sys
+import os
+import sqlite3
+import tempfile
+from unittest.mock import patch, MagicMock
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tradingagents.tradeflow.universe import (
+    UniverseManager, UniverseSource, UniverseEntry, SourceRecord,
+    build_universe, get_holdings, get_watchlist,
+)
+from tradingagents.tradeflow.schemas import Candidate, CandidateSignal
+
+
+class TestUniverseSourceEnum:
+    def test_all_sources_defined(self):
+        expected = {
+            "watchlist", "holding", "manual", "event_catalyst", "event_source",
+            "fund_flow_pool", "industry_pool", "yesterday_observe",
+        }  # [M-011] universe_compat_fix — event → event_catalyst
+        actual = {s.value for s in UniverseSource}
+        assert actual == expected
+
+    def test_source_values_are_unique(self):
+        values = [s.value for s in UniverseSource]
+        assert len(values) == len(set(values))
+
+
+class TestSourceRecord:
+    def test_auto_timestamp(self):
+        sr = SourceRecord(source=UniverseSource.MANUAL, reason="test")
+        assert sr.timestamp != ""
+
+    def test_explicit_timestamp(self):
+        sr = SourceRecord(source=UniverseSource.MANUAL, reason="test", timestamp="2026-01-01T00:00:00")
+        assert sr.timestamp == "2026-01-01T00:00:00"
+
+
+class TestUniverseEntry:
+    def test_primary_source(self):
+        e = UniverseEntry(
+            symbol="600519.SH",
+            sources=[
+                SourceRecord(source=UniverseSource.HOLDING),
+                SourceRecord(source=UniverseSource.WATCHLIST),
+            ],
+        )
+        assert e.primary_source == "holding"
+
+    def test_source_values_sorted(self):
+        e = UniverseEntry(
+            symbol="600519.SH",
+            sources=[
+                SourceRecord(source=UniverseSource.WATCHLIST),
+                SourceRecord(source=UniverseSource.HOLDING),
+            ],
+        )
+        assert e.source_values == ["holding", "watchlist"]
+
+    def test_to_dict(self):
+        e = UniverseEntry(
+            symbol="600519.SH",
+            name="贵州茅台",
+            sources=[
+                SourceRecord(source=UniverseSource.HOLDING, reason="持仓股"),
+                SourceRecord(source=UniverseSource.EVENT, reason="回购"),
+            ],
+        )
+        d = e.to_dict()
+        assert d["symbol"] == "600519.SH"
+        assert d["name"] == "贵州茅台"
+        assert d["source"] == "holding"
+        assert "holding" in d["universe_sources"]
+        assert "event_catalyst" in d["universe_sources"]
+        assert len(d["universe_source_records"]) == 2
+
+
+class TestUniverseManagerBasic:
+    def test_empty_manager(self):
+        mgr = UniverseManager()
+        assert mgr.size == 0
+        assert mgr.symbols == []
+        assert mgr.get_universe() == []
+
+    def test_add_single_symbol(self):
+        mgr = UniverseManager()
+        entry = mgr.add_symbol("600519.SH", UniverseSource.MANUAL, reason="test")
+        assert mgr.size == 1
+        assert entry.symbol == "600519.SH"
+        assert len(entry.sources) == 1
+
+    def test_add_empty_symbol_ignored(self):
+        mgr = UniverseManager()
+        mgr.add_symbol("", UniverseSource.MANUAL)
+        mgr.add_symbol("  ", UniverseSource.MANUAL)
+        assert mgr.size == 0
+
+    def test_add_duplicate_source_no_duplication(self):
+        mgr = UniverseManager()
+        mgr.add_symbol("600519.SH", UniverseSource.MANUAL, reason="first")
+        mgr.add_symbol("600519.SH", UniverseSource.MANUAL, reason="second")
+        assert mgr.size == 1
+        entry = mgr.get_entry("600519.SH")
+        assert len(entry.sources) == 1
+        assert entry.sources[0].reason == "first"
+
+    def test_add_same_symbol_different_sources(self):
+        mgr = UniverseManager()
+        mgr.add_symbol("600519.SH", UniverseSource.MANUAL, reason="手动")
+        mgr.add_symbol("600519.SH", UniverseSource.WATCHLIST, reason="自选")
+        mgr.add_symbol("600519.SH", UniverseSource.HOLDING, reason="持仓")
+        assert mgr.size == 1
+        entry = mgr.get_entry("600519.SH")
+        assert len(entry.sources) == 3
+        assert set(entry.source_values) == {"manual", "watchlist", "holding"}
+
+    def test_name_updated_on_first_set(self):
+        mgr = UniverseManager()
+        mgr.add_symbol("600519.SH", UniverseSource.MANUAL, name="贵州茅台")
+        entry = mgr.get_entry("600519.SH")
+        assert entry.name == "贵州茅台"
+
+    def test_name_not_overwritten_if_already_set(self):
+        mgr = UniverseManager()
+        mgr.add_symbol("600519.SH", UniverseSource.HOLDING, name="贵州茅台")
+        mgr.add_symbol("600519.SH", UniverseSource.WATCHLIST, name="")
+        entry = mgr.get_entry("600519.SH")
+        assert entry.name == "贵州茅台"
+
+
+class TestUniverseManagerRemove:
+    def test_remove_symbol(self):
+        mgr = UniverseManager()
+        mgr.add_symbol("600519.SH", UniverseSource.MANUAL)
+        mgr.remove_symbol("600519.SH", reason="流动性差")
+        entry = mgr.get_entry("600519.SH")
+        assert entry.filter_reason == "流动性差"
+
+    def test_get_active_excludes_filtered(self):
+        mgr = UniverseManager()
+        mgr.add_symbol("600519.SH", UniverseSource.MANUAL)
+        mgr.add_symbol("000001.SZ", UniverseSource.MANUAL)
+        mgr.remove_symbol("000001.SZ", reason="数据缺失")
+        active = mgr.get_active_universe()
+        assert len(active) == 1
+        assert active[0]["symbol"] == "600519.SH"
+
+
+class TestUniverseManagerSummary:
+    def test_source_summary(self):
+        mgr = UniverseManager()
+        mgr.add_symbol("A.SZ", UniverseSource.MANUAL)
+        mgr.add_symbol("B.SZ", UniverseSource.WATCHLIST)
+        mgr.add_symbol("C.SZ", UniverseSource.WATCHLIST)
+        mgr.add_symbol("D.SZ", UniverseSource.HOLDING)
+        summary = mgr.get_source_summary()
+        assert summary["manual"] == 1
+        assert summary["watchlist"] == 2
+        assert summary["holding"] == 1
+
+
+class TestUniverseManagerBulkAdd:
+    def test_add_manual(self):
+        mgr = UniverseManager()
+        count = mgr.add_manual(["600519.SH", "000001.SZ", "  ", "300750.SZ"])
+        assert count == 3
+        assert mgr.size == 3
+
+    def test_add_from_events_overrides(self):
+        mgr = UniverseManager()
+        overrides = [
+            {"symbol": "AAA.SZ", "name": "AAA", "title": "回购", "event_type": "buyback"},
+            {"symbol": "BBB.SZ", "name": "BBB", "title": "业绩", "event_type": "earnings"},
+        ]
+        count = mgr.add_from_events(event_overrides=overrides)
+        assert count == 2
+        entry = mgr.get_entry("AAA.SZ")
+        assert entry is not None
+        assert any(s.source == UniverseSource.EVENT for s in entry.sources)
+
+    def test_add_from_events_symbols(self):
+        mgr = UniverseManager()
+        event_syms = {"CCC.SZ": ["回购进展", "增持"], "DDD.SZ": ["减持公告"]}
+        count = mgr.add_from_events(event_symbols=event_syms)
+        assert count == 2
+
+    def test_add_from_fund_flow(self):
+        mgr = UniverseManager()
+        count = mgr.add_from_fund_flow(["EEE.SZ", "FFF.SZ"], reason="主力连续流入")
+        assert count == 2
+        entry = mgr.get_entry("EEE.SZ")
+        assert entry.sources[0].source == UniverseSource.FUND_FLOW
+
+    def test_add_from_industry(self):
+        mgr = UniverseManager()
+        count = mgr.add_from_industry(["GGG.SZ", "HHH.SZ"], industry_name="白酒")
+        assert count == 2
+        entry = mgr.get_entry("GGG.SZ")
+        assert "白酒" in entry.sources[0].reason
+
+
+class TestBuildUniverseBackwardCompat:
+    def test_basic_build_universe(self):
+        universe = build_universe(symbols=["600519.SH", "000001.SZ"])
+        assert len(universe) == 2
+        symbols = {u["symbol"] for u in universe}
+        assert symbols == {"600519.SH", "000001.SZ"}
+
+    def test_build_universe_returns_new_fields(self):
+        universe = build_universe(symbols=["600519.SH"])
+        assert len(universe) == 1
+        entry = universe[0]
+        assert "universe_sources" in entry
+        assert "universe_source_records" in entry
+        assert entry["source"] == "manual"
+        assert "manual" in entry["universe_sources"]
+
+    def test_build_universe_with_events(self):
+        event_overrides = [
+            {"symbol": "999999.SZ", "name": "事件股", "title": "回购", "event_type": "buyback"},
+        ]
+        event_symbols = {"888888.SZ": ["业绩预告"]}
+        universe = build_universe(
+            symbols=["600519.SH"],
+            event_overrides=event_overrides,
+            event_symbols=event_symbols,
+        )
+        assert len(universe) == 3
+        by_sym = {u["symbol"]: u for u in universe}
+        assert "event_catalyst" in by_sym["999999.SZ"]["universe_sources"]
+        assert "event_source" in by_sym["888888.SZ"]["universe_sources"]
+        assert "manual" in by_sym["600519.SH"]["universe_sources"]
+
+    def test_build_universe_dedup_keeps_all_sources(self):
+        event_overrides = [
+            {"symbol": "600519.SH", "title": "回购", "event_type": "buyback"},
+        ]
+        universe = build_universe(
+            symbols=["600519.SH"],
+            event_overrides=event_overrides,
+        )
+        assert len(universe) == 1
+        entry = universe[0]
+        assert "manual" in entry["universe_sources"]
+        assert "event_catalyst" in entry["universe_sources"]
+
+    def test_build_universe_with_industry_and_fund_flow(self):
+        universe = build_universe(
+            symbols=["600519.SH"],
+            industry_symbols=["000001.SZ", "600519.SH"],
+            fund_flow_symbols=["300750.SZ", "600519.SH"],
+        )
+        assert len(universe) == 3
+        by_sym = {u["symbol"]: u for u in universe}
+        mt = by_sym["600519.SH"]
+        assert set(mt["universe_sources"]) == {"fund_flow_pool", "industry_pool", "manual"}
+
+    def test_empty_sources_returns_empty(self):
+        universe = build_universe()
+        assert universe == []
+
+
+class TestBuildUniverseWithDB:
+    def test_holdings_and_watchlist(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "CREATE TABLE imported_portfolio_positions "
+                "(symbol TEXT, name TEXT, quantity REAL, avg_cost REAL, "
+                "current_price REAL, market_value REAL)"
+            )
+            conn.execute(
+                "INSERT INTO imported_portfolio_positions VALUES (?, ?, ?, ?, ?, ?)",
+                ("600519.SH", "贵州茅台", 100, 1800.0, 1900.0, 190000.0),
+            )
+            conn.execute(
+                "CREATE TABLE watchlist_items (symbol TEXT, name TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO watchlist_items VALUES (?, ?)",
+                ("000001.SZ", "平安银行"),
+            )
+            conn.execute(
+                "INSERT INTO watchlist_items VALUES (?, ?)",
+                ("600519.SH", "贵州茅台"),
+            )
+            conn.commit()
+            conn.close()
+
+            universe = build_universe(prod_db_path=db_path)
+            assert len(universe) == 2
+            by_sym = {u["symbol"]: u for u in universe}
+            mt = by_sym["600519.SH"]
+            assert set(mt["universe_sources"]) == {"holding", "watchlist"}
+            assert by_sym["000001.SZ"]["source"] == "watchlist"
+        finally:
+            os.unlink(db_path)
+
+    def test_empty_db_no_crash(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            universe = build_universe(prod_db_path=db_path)
+            assert universe == []
+        finally:
+            os.unlink(db_path)
+
+
+class TestPlanRunnerIntegration:
+    def test_universe_sources_passed_to_candidates(self):
+        from tradingagents.tradeflow.plan_runner import generate_daily_plan
+
+        mock_candidate = Candidate(
+            symbol="600519.SH", name="贵州茅台", source="manual",
+            strategy_tags=["VCP"], score=60.0, trade_date="2026-05-25",
+        )
+        mock_candidate.signals = [CandidateSignal(strategy_tag="VCP", score=60.0, reason="test")]
+        mock_candidate.primary_strategy = "VCP"
+
+        mock_universe = [
+            {
+                "symbol": "600519.SH",
+                "name": "贵州茅台",
+                "source": "manual",
+                "universe_sources": ["manual", "watchlist"],
+                "universe_source_records": [
+                    {"source": "manual", "reason": "手动指定", "timestamp": "2026-05-25T08:00:00"},
+                    {"source": "watchlist", "reason": "自选股", "timestamp": "2026-05-25T08:00:01"},
+                ],
+            },
+        ]
+
+        with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol", return_value=(mock_candidate, "")):
+            with patch("tradingagents.tradeflow.plan_runner.build_universe", return_value=mock_universe):
+                plan = generate_daily_plan(
+                    trade_date="2026-05-25",
+                    candidates=None,
+                )
+
+        assert len(plan.candidates) == 1
+        entry = plan.candidates[0]
+        assert "manual" in entry["universe_sources"]
+        assert "watchlist" in entry["universe_sources"]
+
+
+class TestDiscoveryIntegration:
+    def test_discovery_uses_universe_manager(self):
+        from tradingagents.tradeflow.discovery import _build_discovery_universe
+
+        universe = _build_discovery_universe(
+            symbols=["600519.SH"],
+            industry_symbols=["000001.SZ", "600519.SH"],
+            fund_flow_symbols=["300750.SZ", "600519.SH"],
+            prod_db_path="",
+            tf_db_path="",
+        )
+        assert len(universe) == 3
+        by_sym = {u["symbol"]: u for u in universe}
+        assert set(by_sym["600519.SH"]["universe_sources"]) == {"fund_flow_pool", "industry_pool", "manual"}
+        assert by_sym["000001.SZ"]["source"] == "industry_pool"
+        assert by_sym["300750.SZ"]["source"] == "fund_flow_pool"
+
+
+class TestNoFullMarketScan:
+    def test_empty_inputs_return_empty(self):
+        mgr = UniverseManager()
+        assert mgr.get_universe() == []
+        assert build_universe() == []
+
+    def test_manager_never_scans_market(self):
+        mgr = UniverseManager()
+        mgr.add_manual(["600519.SH"])
+        universe = mgr.get_universe()
+        assert len(universe) == 1
+        assert universe[0]["symbol"] == "600519.SH"
+
+
+class TestCandidateUniverseSourcesField:
+    def test_default_empty(self):
+        c = Candidate(symbol="600519.SH")
+        assert c.universe_sources == []
+
+    def test_set_and_read(self):
+        c = Candidate(symbol="600519.SH", universe_sources=["manual", "watchlist"])
+        assert c.universe_sources == ["manual", "watchlist"]
+
+    def test_to_db_row_includes_field(self):
+        c = Candidate(symbol="600519.SH", universe_sources=["holding"])
+        row = c.to_db_row()
+        assert "universe_sources_json" in row
+        import json
+        assert json.loads(row["universe_sources_json"]) == ["holding"]
+
+    def test_from_db_row_reads_field(self):
+        row = {
+            "symbol": "600519.SH",
+            "strategy_tags_json": "[]",
+            "risk_flags_json": "[]",
+            "evidence_json": "{}",
+            "universe_sources_json": '["manual", "event_catalyst"]',  # [M-011]
+        }
+        c = Candidate.from_db_row(row)
+        assert c.universe_sources == ["manual", "event_catalyst"]  # [M-011]
+
+
+class TestM011EventOverridesCompat:  # [M-011] universe_compat_fix
+    def test_event_overrides_source_label_is_event_catalyst(self):
+        mgr = UniverseManager()
+        overrides = [
+            {"symbol": "AAA.SZ", "name": "AAA", "title": "回购", "event_type": "buyback"},
+        ]
+        mgr.add_from_events(event_overrides=overrides)
+        entry = mgr.get_entry("AAA.SZ")
+        assert entry.primary_source == "event_catalyst"
+        d = entry.to_dict()
+        assert d["source"] == "event_catalyst"
+        assert "event_catalyst" in d["universe_sources"]
+
+    def test_build_universe_event_overrides_backward_compat(self):
+        event_overrides = [
+            {"symbol": "999999.SZ", "name": "事件股", "title": "回购"},
+        ]
+        universe = build_universe(event_overrides=event_overrides)
+        by_sym = {u["symbol"]: u for u in universe}
+        assert by_sym["999999.SZ"]["source"] == "event_catalyst"
+        assert "event_catalyst" in by_sym["999999.SZ"]["universe_sources"]
+
+
+class TestM011SourceRecordExtraSerialization:  # [M-011] universe_compat_fix
+    def test_to_dict_includes_extra_when_present(self):
+        e = UniverseEntry(
+            symbol="600519.SH",
+            name="贵州茅台",
+            sources=[
+                SourceRecord(
+                    source=UniverseSource.YESTERDAY_OBSERVE,
+                    reason="昨日候选",
+                    extra={
+                        "strategy_tags": '["VCP"]',
+                        "trigger_price": 1800.0,
+                        "invalid_price": 1700.0,
+                    },
+                ),
+            ],
+        )
+        d = e.to_dict()
+        recs = d["universe_source_records"]
+        assert len(recs) == 1
+        assert "extra" in recs[0]
+        assert recs[0]["extra"]["strategy_tags"] == '["VCP"]'
+        assert recs[0]["extra"]["trigger_price"] == 1800.0
+        assert recs[0]["extra"]["invalid_price"] == 1700.0
+
+    def test_to_dict_omits_extra_when_empty(self):
+        e = UniverseEntry(
+            symbol="600519.SH",
+            sources=[
+                SourceRecord(source=UniverseSource.MANUAL, reason="test"),
+            ],
+        )
+        d = e.to_dict()
+        recs = d["universe_source_records"]
+        assert "extra" not in recs[0]
+
+    def test_include_yesterday_extra_preserved(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            tf_db_path = f.name
+        try:
+            conn = sqlite3.connect(tf_db_path)
+            conn.execute(
+                "CREATE TABLE tradeflow_candidates ("
+                "trade_date TEXT, symbol TEXT, name TEXT, status TEXT, "
+                "strategy_tags_json TEXT, trigger_price REAL, invalid_price REAL)"
+            )
+            conn.execute(
+                "INSERT INTO tradeflow_candidates VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("2026-05-29", "600519.SH", "贵州茅台", "active",
+                 '["VCP","PULLBACK"]', 1800.0, 1700.0),
+            )
+            conn.commit()
+            conn.close()
+
+            mgr = UniverseManager()
+            mgr.add_from_yesterday(tf_db_path, trade_date="2026-05-29")
+            entry = mgr.get_entry("600519.SH")
+            assert entry is not None
+            assert entry.name == "贵州茅台"
+            sr = entry.sources[0]
+            assert sr.source == UniverseSource.YESTERDAY_OBSERVE
+            assert sr.extra.get("strategy_tags") == '["VCP","PULLBACK"]'
+            assert sr.extra.get("trigger_price") == 1800.0
+            assert sr.extra.get("invalid_price") == 1700.0
+
+            d = entry.to_dict()
+            recs = d["universe_source_records"]
+            assert recs[0]["extra"]["trigger_price"] == 1800.0
+            assert recs[0]["extra"]["invalid_price"] == 1700.0
+        finally:
+            os.unlink(tf_db_path)
+
+
+class TestM011PlanRunnerDiscoveryCompat:  # [M-011] universe_compat_fix
+    def test_plan_runner_preserves_event_catalyst_source(self):
+        from tradingagents.tradeflow.plan_runner import generate_daily_plan
+
+        mock_candidate = Candidate(
+
+exec
+/bin/zsh -lc "sed -n '260,520p' tradingagents/tradeflow/universe.py && sed -n '520,760p' tests/test_tradeflow_universe.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+                    )
+                    count += 1
+
+        return count
+
+    def add_from_fund_flow(
+        self,
+        symbols: list[str],
+        reason: str = "资金异动",
+    ) -> int:
+        count = 0
+        for sym in symbols:
+            sym = sym.strip()
+            if sym:
+                self.add_symbol(
+                    symbol=sym,
+                    source=UniverseSource.FUND_FLOW,
+                    reason=reason,
+                )
+                count += 1
+        return count
+
+    def add_from_industry(
+        self,
+        symbols: list[str],
+        industry_name: str = "",
+        reason: str = "行业池",
+    ) -> int:
+        count = 0
+        reason_text = f"{reason}: {industry_name}" if industry_name else reason
+        for sym in symbols:
+            sym = sym.strip()
+            if sym:
+                self.add_symbol(
+                    symbol=sym,
+                    source=UniverseSource.INDUSTRY,
+                    reason=reason_text,
+                )
+                count += 1
+        return count
+
+
+def get_holdings(db_path: str) -> list[dict]:
+    rows = []
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            "SELECT symbol, name, quantity, avg_cost, current_price, market_value "
+            "FROM imported_portfolio_positions WHERE quantity > 0"
+        )
+        for r in cur.fetchall():
+            rows.append({
+                "symbol": r["symbol"],
+                "name": r["name"],
+                "source": "holding",
+            })
+        conn.close()
+    except Exception:
+        pass
+    return rows
+
+
+def get_watchlist(db_path: str) -> list[dict]:
+    rows = []
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute("SELECT symbol, name FROM watchlist_items")
+        for r in cur.fetchall():
+            rows.append({
+                "symbol": r["symbol"],
+                "name": r["name"],
+                "source": "watchlist",
+            })
+        conn.close()
+    except Exception:
+        pass
+    return rows
+
+
+def get_yesterday_observations(tf_db_path: str, trade_date: Optional[str] = None) -> list[dict]:
+    if trade_date is None:
+        trade_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    rows = []
+    try:
+        conn = sqlite3.connect(tf_db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            "SELECT symbol, name, strategy_tags_json, trigger_price, invalid_price "
+            "FROM tradeflow_candidates WHERE trade_date = ? AND status = 'active'",
+            (trade_date,),
+        )
+        for r in cur.fetchall():
+            rows.append({
+                "symbol": r["symbol"],
+                "name": r["name"],
+                "source": "yesterday_observe",
+                "strategy_tags": r["strategy_tags_json"],
+                "trigger_price": r["trigger_price"],
+                "invalid_price": r["invalid_price"],
+            })
+        conn.close()
+    except Exception:
+        pass
+    return rows
+
+
+def build_universe(
+    symbols: Optional[list[str]] = None,
+    prod_db_path: str = "",
+    tf_db_path: str = "",
+    include_holdings: bool = True,
+    include_watchlist: bool = True,
+    include_yesterday: bool = True,
+    event_overrides: Optional[list[dict]] = None,
+    event_symbols: Optional[dict[str, list[str]]] = None,
+    industry_symbols: Optional[list[str]] = None,
+    fund_flow_symbols: Optional[list[str]] = None,
+) -> list[dict]:
+    """Build the full universe of symbols to evaluate.
+
+    Returns a deduplicated list of dicts with keys:
+    - symbol, name, source (primary), universe_sources (all sources),
+      universe_source_records (per-source detail), filter_reason.
+
+    Backward compatible: callers that only read symbol/name/source still work.
+    """
+    mgr = UniverseManager()
+
+    if include_holdings and prod_db_path:
+        mgr.add_from_holdings(prod_db_path)
+
+    if include_watchlist and prod_db_path:
+        mgr.add_from_watchlist(prod_db_path)
+
+    if symbols:
+        mgr.add_manual(symbols)
+
+    if include_yesterday and tf_db_path:
+        mgr.add_from_yesterday(tf_db_path)
+
+    if event_overrides or event_symbols:
+        mgr.add_from_events(event_overrides, event_symbols)
+
+    if industry_symbols:
+        mgr.add_from_industry(industry_symbols)
+
+    if fund_flow_symbols:
+        mgr.add_from_fund_flow(fund_flow_symbols)
+
+    return mgr.get_universe()
+        mock_candidate = Candidate(
+            symbol="999999.SZ", name="事件股", source="event_catalyst",
+            strategy_tags=["EVENT_CATALYST"], score=60.0, trade_date="2026-05-25",
+        )
+        mock_candidate.signals = [CandidateSignal(strategy_tag="EVENT_CATALYST", score=60.0, reason="test")]
+        mock_candidate.primary_strategy = "EVENT_CATALYST"
+
+        mock_universe = [
+            {
+                "symbol": "999999.SZ",
+                "name": "事件股",
+                "source": "event_catalyst",
+                "universe_sources": ["event_catalyst"],
+                "universe_source_records": [
+                    {"source": "event_catalyst", "reason": "事件催化: 回购", "timestamp": "2026-05-25T08:00:00"},
+                ],
+            },
+        ]
+
+        with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol", return_value=(mock_candidate, "")):
+            with patch("tradingagents.tradeflow.plan_runner.build_universe", return_value=mock_universe):
+                plan = generate_daily_plan(
+                    trade_date="2026-05-25",
+                    candidates=None,
+                )
+
+        assert len(plan.candidates) == 1
+        entry = plan.candidates[0]
+        assert "event_catalyst" in entry["universe_sources"]
+
+    def test_discovery_preserves_event_catalyst_source(self):
+        from tradingagents.tradeflow.discovery import _build_discovery_universe
+
+        universe = _build_discovery_universe(
+            symbols=["600519.SH"],
+            prod_db_path="",
+            tf_db_path="",
+        )
+        by_sym = {u["symbol"]: u for u in universe}
+        assert by_sym["600519.SH"]["source"] == "manual"
+
+    def test_discovery_event_overrides_source_label(self):
+        from tradingagents.tradeflow.discovery import _build_discovery_universe
+
+        overrides = [
+            {"symbol": "999999.SZ", "name": "事件股", "title": "回购"},
+        ]
+        universe = _build_discovery_universe(
+            symbols=["600519.SH"],
+            prod_db_path="",
+            tf_db_path="",
+        )
+        universe_from_events = build_universe(event_overrides=overrides)
+        by_sym = {u["symbol"]: u for u in universe_from_events}
+        assert "999999.SZ" in by_sym
+        assert by_sym["999999.SZ"]["source"] == "event_catalyst"
+
+exec
+/bin/zsh -lc "rg -n 'UniverseSource\\.EVENT|\"event\"|\\bevent\\b|event_catalyst|universe_sources' tradingagents api scheduler tests -g'*.py'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+api/job_store.py:20:# Per-job event queue cap. Prevents unbounded memory growth when an SSE
+api/job_store.py:22:# cap is hit, the oldest event is dropped to make room.
+api/job_store.py:27:# terminal event fires, so we can't delete immediately.
+api/job_store.py:37:    """Interface for job state + event storage."""
+api/job_store.py:48:        """Remove job state and associated event queue."""
+api/job_store.py:51:    def emit_event(self, job_id: str, event: str, data: Dict[str, Any]) -> None:
+api/job_store.py:52:        """Push SSE event for job (thread-safe, works from both event loop and worker threads)."""
+api/job_store.py:85:        # them if the job state is updated after the terminal event.
+api/job_store.py:95:        only when the caller is currently executing on the event loop thread.
+api/job_store.py:144:        """Drop job state and event queue after _INMEMORY_JOB_TTL seconds."""
+api/job_store.py:147:            # No event loop available (e.g. called from a worker thread before
+api/job_store.py:180:    # ── event queue ─────────────────────────────────────────────────────
+api/job_store.py:192:        """Push payload, dropping the oldest event if the queue is full.
+api/job_store.py:207:                # Extremely contended; drop the new event rather than block.
+api/job_store.py:210:    def emit_event(self, job_id: str, event: str, data: Dict[str, Any]) -> None:
+api/job_store.py:211:        """Thread-safe event emitter.
+api/job_store.py:213:        Uses put_nowait directly when called from the event loop, and
+api/job_store.py:219:            "event": event,
+api/job_store.py:245:          - If job is still running, yield a ping event.
+api/job_store.py:246:          - If job is completed or failed, replay a terminal event and terminate.
+api/job_store.py:248:        When the generator exits (terminal event or client disconnect), the
+api/job_store.py:249:        backing event queue is dropped to free memory.
+api/job_store.py:256:                    event = await asyncio.wait_for(q.get(), timeout=poll_interval)
+api/job_store.py:257:                    yield event
+api/job_store.py:258:                    if event["event"] in ("job.completed", "job.failed"):
+api/job_store.py:267:                                "event": "job.completed",
+api/job_store.py:283:                                "event": "job.failed",
+api/job_store.py:292:                        "event": "ping",
+tests/test_s008_evidence_gate.py:16:- No event source → missing_data_fields includes "事件/新闻来源".
+tests/test_strategy_config.py:27:from tradingagents.tradeflow.strategies.event_catalyst import score_event_catalyst
+tests/test_strategy_config.py:194:        result = score_event_catalyst("TEST.SZ", news_texts=["并购重组"], latest_close=25.0, cfg=None)
+tests/test_strategy_config.py:265:        result_default = score_event_catalyst("TEST.SZ", news_texts=["并购重组"], latest_close=25.0)
+tests/test_strategy_config.py:270:        result_low = score_event_catalyst("TEST.SZ", news_texts=["并购重组"], latest_close=25.0, cfg=low_cap_cfg)
+tests/test_strategy_config.py:275:        result_default = score_event_catalyst("TEST.SZ", news_texts=["并购重组"], latest_close=25.0)
+tests/test_strategy_config.py:280:        result_high = score_event_catalyst("TEST.SZ", news_texts=["并购重组"], latest_close=25.0, cfg=high_cfg)
+tests/test_event_source.py:231:# ── Integration with event_catalyst ──
+tests/test_event_source.py:235:    def test_events_compatible_with_score_event_catalyst(self):
+tests/test_event_source.py:236:        from tradingagents.tradeflow.strategies.event_catalyst import score_event_catalyst
+tests/test_event_source.py:242:        signal = score_event_catalyst("002138", news_texts=news_texts)
+tests/test_event_source.py:248:        from tradingagents.tradeflow.strategies.event_catalyst import score_event_catalyst
+tests/test_event_source.py:250:        signal = score_event_catalyst("002138", news_texts=["普通公告无关键词"])
+api/main.py:252:    # market endpoints) cannot starve each other when the event loop is
+api/main.py:1267:def _emit_job_event(job_id: str, event: str, data: Dict[str, Any]) -> None:
+api/main.py:1268:    get_job_store().emit_event(job_id, event, data)
+api/main.py:2551:def _sse_pack(event: str, data: Dict[str, Any]) -> str:
+api/main.py:2552:    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+api/main.py:2732:    async for event in store.subscribe(job_id):
+api/main.py:2733:        evt_name = event["event"]
+api/main.py:2734:        yield _sse_pack(evt_name, event["data"])
+api/main.py:2736:            yield "event: done\ndata: [DONE]\n\n"
+api/main.py:2959:    # Don't block the event loop on a sync SQLite read while the scheduler
+api/main.py:3040:        media_type="text/event-stream",
+api/main.py:3355:            media_type="text/event-stream",
+tests/test_s006_false_positive_audit.py:295:    def test_event_catalyst_hit(self):
+tests/test_s006_false_positive_audit.py:578:            "event_catalyst", "fund_flow_anomaly", "risk_demoted",
+tests/test_s006_false_positive_audit.py:623:    def test_replay_event_catalyst(self):
+tests/test_s006_false_positive_audit.py:625:        ev = next(r for r in results if r["fixture_name"] == "event_catalyst")
+tests/test_event_source_integration.py:4:and universe builder so that event-discovered symbols enter the candidate pool
+tests/test_event_source_integration.py:5:and each symbol only receives its own event titles.
+tests/test_event_source_integration.py:113:        """Manual symbol keeps its original source, event symbol adds new."""
+tests/test_event_source_integration.py:151:        """When use_event_source=True, event symbols enter the universe."""
+tests/test_event_source_integration.py:167:        """Each symbol should only receive its own event titles — no cross-contamination."""
+tests/test_event_source_integration.py:187:        """Empty event map should not break the flow."""
+tests/test_event_source_integration.py:251:        """Symbol in universe without events in the map gets no event news_texts."""
+tests/test_tradeflow_universe.py:30:            "watchlist", "holding", "manual", "event_catalyst", "event_source",
+tests/test_tradeflow_universe.py:32:        }  # [M-011] universe_compat_fix — event → event_catalyst
+tests/test_tradeflow_universe.py:78:                SourceRecord(source=UniverseSource.EVENT, reason="回购"),
+tests/test_tradeflow_universe.py:85:        assert "holding" in d["universe_sources"]
+tests/test_tradeflow_universe.py:86:        assert "event_catalyst" in d["universe_sources"]
+tests/test_tradeflow_universe.py:191:        assert any(s.source == UniverseSource.EVENT for s in entry.sources)
+tests/test_tradeflow_universe.py:225:        assert "universe_sources" in entry
+tests/test_tradeflow_universe.py:228:        assert "manual" in entry["universe_sources"]
+tests/test_tradeflow_universe.py:242:        assert "event_catalyst" in by_sym["999999.SZ"]["universe_sources"]
+tests/test_tradeflow_universe.py:243:        assert "event_source" in by_sym["888888.SZ"]["universe_sources"]
+tests/test_tradeflow_universe.py:244:        assert "manual" in by_sym["600519.SH"]["universe_sources"]
+tests/test_tradeflow_universe.py:256:        assert "manual" in entry["universe_sources"]
+tests/test_tradeflow_universe.py:257:        assert "event_catalyst" in entry["universe_sources"]
+tests/test_tradeflow_universe.py:268:        assert set(mt["universe_sources"]) == {"fund_flow_pool", "industry_pool", "manual"}
+tests/test_tradeflow_universe.py:308:            assert set(mt["universe_sources"]) == {"holding", "watchlist"}
+tests/test_tradeflow_universe.py:324:    def test_universe_sources_passed_to_candidates(self):
+tests/test_tradeflow_universe.py:339:                "universe_sources": ["manual", "watchlist"],
+tests/test_tradeflow_universe.py:356:        assert "manual" in entry["universe_sources"]
+tests/test_tradeflow_universe.py:357:        assert "watchlist" in entry["universe_sources"]
+tests/test_tradeflow_universe.py:373:        assert set(by_sym["600519.SH"]["universe_sources"]) == {"fund_flow_pool", "industry_pool", "manual"}
+tests/test_tradeflow_universe.py:395:        assert c.universe_sources == []
+tests/test_tradeflow_universe.py:398:        c = Candidate(symbol="600519.SH", universe_sources=["manual", "watchlist"])
+tests/test_tradeflow_universe.py:399:        assert c.universe_sources == ["manual", "watchlist"]
+tests/test_tradeflow_universe.py:402:        c = Candidate(symbol="600519.SH", universe_sources=["holding"])
+tests/test_tradeflow_universe.py:404:        assert "universe_sources_json" in row
+tests/test_tradeflow_universe.py:406:        assert json.loads(row["universe_sources_json"]) == ["holding"]
+tests/test_tradeflow_universe.py:414:            "universe_sources_json": '["manual", "event_catalyst"]',  # [M-011]
+tests/test_tradeflow_universe.py:417:        assert c.universe_sources == ["manual", "event_catalyst"]  # [M-011]
+tests/test_tradeflow_universe.py:421:    def test_event_overrides_source_label_is_event_catalyst(self):
+tests/test_tradeflow_universe.py:428:        assert entry.primary_source == "event_catalyst"
+tests/test_tradeflow_universe.py:430:        assert d["source"] == "event_catalyst"
+tests/test_tradeflow_universe.py:431:        assert "event_catalyst" in d["universe_sources"]
+tests/test_tradeflow_universe.py:439:        assert by_sym["999999.SZ"]["source"] == "event_catalyst"
+tests/test_tradeflow_universe.py:440:        assert "event_catalyst" in by_sym["999999.SZ"]["universe_sources"]
+tests/test_tradeflow_universe.py:517:    def test_plan_runner_preserves_event_catalyst_source(self):
+tests/test_tradeflow_universe.py:521:            symbol="999999.SZ", name="事件股", source="event_catalyst",
+tests/test_tradeflow_universe.py:531:                "source": "event_catalyst",
+tests/test_tradeflow_universe.py:532:                "universe_sources": ["event_catalyst"],
+tests/test_tradeflow_universe.py:534:                    {"source": "event_catalyst", "reason": "事件催化: 回购", "timestamp": "2026-05-25T08:00:00"},
+tests/test_tradeflow_universe.py:548:        assert "event_catalyst" in entry["universe_sources"]
+tests/test_tradeflow_universe.py:550:    def test_discovery_preserves_event_catalyst_source(self):
+tests/test_tradeflow_universe.py:575:        assert by_sym["999999.SZ"]["source"] == "event_catalyst"
+tests/test_v002_nightly_acceptance.py:212:                     "event_catalyst", "fund_flow_anomaly", "risk_demoted"]
+tests/test_tradeflow_plan_runner.py:199:            symbol="999999.SZ", name="事件股", source="event_catalyst",
+tests/test_tradeflow_plan_runner.py:226:                symbol="888888.SZ", name="纯事件股", source="event_catalyst",
+tests/test_tradeflow_plan_runner.py:252:            symbol="002353.SZ", name="重复股", source="event_catalyst",
+tests/test_tradeflow_plan_runner.py:284:                c = Candidate(symbol="AAA.SZ", name="AAA", source="event_catalyst",
+tests/test_tradeflow_plan_runner.py:292:                c = Candidate(symbol="BBB.SZ", name="BBB", source="event_catalyst",
+tests/test_job_store.py:55:        async for event in store.subscribe("j1"):
+tests/test_job_store.py:56:            collected.append(event)
+tests/test_job_store.py:59:        assert collected[0]["event"] == "agent.snapshot"
+tests/test_job_store.py:61:        assert collected[1]["event"] == "agent.snapshot"
+tests/test_job_store.py:63:        assert collected[2]["event"] == "job.completed"
+tests/test_job_store.py:65:        # Each event should have a timestamp
+tests/test_job_store.py:80:        async for event in store.subscribe("j1", poll_interval=0.05):
+tests/test_job_store.py:81:            collected.append(event)
+tests/test_job_store.py:87:        # First event is a ping while running; second replays terminal state.
+tests/test_job_store.py:89:        assert collected[0]["event"] == "ping"
+tests/test_job_store.py:91:        assert collected[1]["event"] == "job.completed"
+tests/test_job_store.py:107:        async for event in store.subscribe("j1", poll_interval=0.01):
+tests/test_job_store.py:108:            collected.append(event)
+tests/test_job_store.py:111:        assert collected[0]["event"] == "job.completed"
+tests/test_job_store.py:145:    """Bounded queue should drop the oldest event on overflow rather than
+tests/test_job_store_redis.py:114:    terminate on a terminal event."""
+tests/test_job_store_redis.py:136:        async for event in gen:
+tests/test_job_store_redis.py:137:            collected.append(event)
+tests/test_job_store_redis.py:142:        assert collected[0]["event"] == "agent.snapshot"
+tests/test_job_store_redis.py:144:        assert collected[1]["event"] == "agent.snapshot"
+tests/test_job_store_redis.py:146:        assert collected[2]["event"] == "job.completed"
+tests/test_job_store_redis.py:163:        async for event in store.subscribe("j1", poll_interval=0.2):
+tests/test_job_store_redis.py:164:            collected.append(event)
+tests/test_job_store_redis.py:171:        assert collected[0]["event"] == "ping"
+tradingagents/prompts/en.py:141:2. Provide constraints on position sizing, drawdown tolerance, liquidity, and event risk.
+api/job_store_redis.py:3:Uses Redis Hash for job state and Pub/Sub for real-time SSE event delivery,
+api/job_store_redis.py:5:job state and event stream.
+api/job_store_redis.py:104:    # ── event pub/sub ───────────────────────────────────────────────────
+api/job_store_redis.py:106:    def emit_event(self, job_id: str, event: str, data: Dict[str, Any]) -> None:
+api/job_store_redis.py:107:        """Publish an SSE event payload on the job's Pub/Sub channel."""
+api/job_store_redis.py:109:            "event": event,
+api/job_store_redis.py:125:          - If job is still running, yield a ping event.
+api/job_store_redis.py:161:                    event = await asyncio.wait_for(queue.get(), timeout=poll_interval)
+api/job_store_redis.py:162:                    yield event
+api/job_store_redis.py:163:                    if event["event"] in _TERMINAL_EVENTS:
+api/job_store_redis.py:170:                        "event": "ping",
+tests/test_tradeflow_strategies.py:13:from tradingagents.tradeflow.strategies.event_catalyst import score_event_catalyst, EventCatalystSignal
+tests/test_tradeflow_strategies.py:191:        result = score_event_catalyst(
+tests/test_tradeflow_strategies.py:201:        result = score_event_catalyst(
+tests/test_tradeflow_strategies.py:210:        result = score_event_catalyst(
+tests/test_tradeflow_strategies.py:218:        result = score_event_catalyst(
+tests/test_tradeflow_strategies.py:227:        result = score_event_catalyst(
+tests/test_tradeflow_strategies.py:240:        result = score_event_catalyst(
+tests/test_tradeflow_strategies.py:276:        result = score_event_catalyst("TEST.SZ", news_texts=None, event_overrides=None, latest_close=25.0)
+tests/test_tradeflow_strategies.py:281:        result = score_event_catalyst("TEST.SZ", news_texts=[], event_overrides=None, latest_close=25.0)
+tests/test_tradeflow_strategies.py:286:        result = score_event_catalyst("TEST.SZ", news_texts=["今天天气晴朗"], event_overrides=None, latest_close=25.0)
+tests/test_tradeflow_strategies.py:291:        result = score_event_catalyst(
+tests/test_tradeflow_strategies.py:301:        result = score_event_catalyst(
+tests/test_tradeflow_strategies.py:312:        result = score_event_catalyst(
+tests/test_tradeflow_strategies.py:323:        result = score_event_catalyst(
+tests/test_t006_event_source_discovery.py:1:"""[T-006] Integration tests: event source auto-integration with Discovery / Daily Plan.
+tests/test_t006_event_source_discovery.py:7:4. Daily Plan and Discovery outputs include event metadata (source, type, title, dedup)
+tests/test_t006_event_source_discovery.py:8:5. Symbols are isolated — no cross-contamination of event data
+tests/test_t006_event_source_discovery.py:163:        """When event source fails, system still evaluates manual symbols."""
+tests/test_t006_event_source_discovery.py:182:        """Manual symbols produce candidates even when event source failed."""
+tests/test_t006_event_source_discovery.py:214:        """Plan entries for event-discovered symbols include event metadata."""
+tests/test_t006_event_source_discovery.py:266:        """Symbols without events don't get event metadata fields."""
+tests/test_t006_event_source_discovery.py:286:        """Plan metadata includes event source status and counts."""
+tests/test_t006_event_source_discovery.py:329:        """Each symbol only gets its own event overrides — no cross-contamination."""
+tests/test_t006_event_source_discovery.py:350:        """Discovery still works when event source fails."""
+tests/test_t006_event_source_discovery.py:367:        """Discovery metadata includes OK status when event source succeeds."""
+tests/test_t006_event_source_discovery.py:381:        """Discovery entries include event metadata for event-discovered symbols."""
+tests/test_t006_event_source_discovery.py:417:        """In discovery, event items generate event_overrides for candidate evaluation."""
+tests/test_t006_event_source_discovery.py:435:        """In discovery, symbols only get their own event overrides."""
+tests/test_astock_signal_tags.py:9:from tradingagents.tradeflow.strategies.event_catalyst import (
+tests/test_astock_signal_tags.py:11:    score_event_catalyst,
+tests/test_astock_signal_tags.py:128:        result = score_event_catalyst(
+tests/test_astock_signal_tags.py:137:        result = score_event_catalyst(
+tests/test_astock_signal_tags.py:150:        result = score_event_catalyst(
+tests/test_astock_signal_tags.py:160:        result = score_event_catalyst(
+tests/test_astock_signal_tags.py:170:        result = score_event_catalyst(
+tests/test_astock_signal_tags.py:179:        result = score_event_catalyst(
+tradingagents/llm_clients/rate_limiter.py:27:# asyncio.Semaphore is created lazily per event-loop.
+tradingagents/llm_clients/rate_limiter.py:62:    event loop, so this is safe. Must be called from the async path (inside
+tradingagents/llm_clients/rate_limiter.py:63:    a running event loop).
+tradingagents/llm_clients/rate_limiter.py:176:    Uses asyncio.Semaphore for concurrency limiting (never blocks the event loop).
+api/database.py:8:from sqlalchemy import Boolean, create_engine, Column, String, DateTime, Text, Integer, Float, JSON, UniqueConstraint, event, text
+api/database.py:35:    @event.listens_for(engine, "connect")
+tradingagents/tradeflow/narrative_quality.py:2:"""Narrative Quality Score — assess event quality vs propagation potential.
+tradingagents/tradeflow/narrative_quality.py:6:  "consensus-forming" the event narrative is.
+tradingagents/tradeflow/narrative_quality.py:20:- narrative_score is 0 when no event texts are provided.
+tradingagents/tradeflow/false_positive_audit.py:10:   event catalyst, fund flow anomaly, risk demotion, evidence gap.
+tradingagents/tradeflow/false_positive_audit.py:508:    # 4. Event catalyst — event-driven candidate
+tradingagents/tradeflow/false_positive_audit.py:509:    fixtures["event_catalyst"] = {
+tradingagents/tradeflow/policy_version_signal.py:11:- Only keywords / regex matching against event texts and industry labels.
+tradingagents/tradeflow/policy_version_signal.py:112:    """Detect policy version signals from event texts and industry tags.
+tradingagents/tradeflow/schemas.py:104:    universe_sources: list[str] = field(default_factory=list)  # [M-003] tradeflow_universe_manager
+tradingagents/tradeflow/schemas.py:214:            "universe_sources_json": json.dumps(self.universe_sources, ensure_ascii=False),  # [M-003]
+tradingagents/tradeflow/schemas.py:284:            universe_sources=json.loads(row.get("universe_sources_json", "[]")),  # [M-003]
+tradingagents/tradeflow/schemas.py:299:    """One signal event — row in tradeflow_signals."""
+tradingagents/tradeflow/evidence_gate.py:18:  - event_source:   At least one event / news text for the symbol.
+tradingagents/tradeflow/evidence_gate.py:118:        has_event_source: Whether at least one event/news text is bound to this symbol.
+tradingagents/tradeflow/discovery.py:92:                    "universe_sources": [SOURCE_FUND_FLOW],
+tradingagents/tradeflow/discovery.py:127:        event_overrides: Manual event overrides.
+tradingagents/tradeflow/discovery.py:129:        use_event_source: Fetch daily events for event pool.
+tradingagents/tradeflow/discovery.py:213:            if item.get("universe_sources"):
+tradingagents/tradeflow/discovery.py:214:                c.universe_sources = item["universe_sources"]  # [M-003]
+tradingagents/tradeflow/discovery.py:215:            # [T-006] event_source_discovery — attach event items for discovery entry
+tradingagents/tradeflow/discovery.py:403:        "universe_sources": candidate.universe_sources,  # [M-003] tradeflow_universe_manager
+tradingagents/tradeflow/discovery.py:406:    # [T-006] event_source_discovery — add event metadata to discovery entry
+tradingagents/tradeflow/universe.py:32:    EVENT = "event_catalyst"  # [M-011] universe_compat_fix — preserve old public source label
+tradingagents/tradeflow/universe.py:73:            "universe_sources": self.source_values,
+tradingagents/tradeflow/universe.py:245:                        source=UniverseSource.EVENT,
+tradingagents/tradeflow/universe.py:258:                        source=UniverseSource.EVENT_SOURCE,
+tradingagents/tradeflow/universe.py:383:    - symbol, name, source (primary), universe_sources (all sources),
+tradingagents/tradeflow/plan_runner.py:109:        "universe_sources": candidate.universe_sources,  # [M-003] tradeflow_universe_manager
+tradingagents/tradeflow/plan_runner.py:121:    # [T-006] event_source_discovery — add event metadata to plan entry
+tradingagents/tradeflow/plan_runner.py:163:        news_texts: News/announcement texts for event catalyst detection.
+tradingagents/tradeflow/plan_runner.py:164:        event_overrides: Manual event overrides for event catalyst detection.
+tradingagents/tradeflow/plan_runner.py:195:        # Build universe — pass event_symbols so event-discovered
+tradingagents/tradeflow/plan_runner.py:207:        # [N-001] Each symbol gets its own event titles as news_texts.
+tradingagents/tradeflow/plan_runner.py:254:                if item.get("universe_sources"):
+tradingagents/tradeflow/plan_runner.py:255:                    c.universe_sources = item["universe_sources"]  # [M-003]
+tradingagents/tradeflow/plan_runner.py:256:                # [T-006] event_source_discovery — attach event items for plan entry
+tradingagents/tradeflow/underwater_risk_flags.py:18:- All risk flags MUST be backed by raw event text or explicit data fields.
+tradingagents/tradeflow/underwater_risk_flags.py:136:    """Detect underwater risk flags from event texts and data status.
+tradingagents/tradeflow/selection_priority_gate.py:144:        score: Aggregate tech + event + pullback score from merge_signals().
+tradingagents/tradeflow/selection_priority_gate.py:161:        has_event_data: Whether event/news data was available.
+tradingagents/tradeflow/strategies/__init__.py:3:from .event_catalyst import EventCatalystSignal, score_event_catalyst
+tradingagents/tradeflow/strategies/__init__.py:8:    "EventCatalystSignal", "score_event_catalyst",
+tradingagents/tradeflow/strategies/event_catalyst.py:66:    """Extract A-share specific signal tags from event text.
+tradingagents/tradeflow/strategies/event_catalyst.py:107:def score_event_catalyst(
+tradingagents/tradeflow/strategies/event_catalyst.py:115:    """Score a stock for event-driven catalyst.
+tradingagents/tradeflow/strategies/event_catalyst.py:123:                        for manual event specification.
+tradingagents/tradeflow/strategies/event_catalyst.py:167:    # Aggregate: take the highest-impact event
+tradingagents/tradeflow/game_balance.py:14:- Count resonance across four signal categories: policy, narrative/event, tech, fund.
+tradingagents/tradeflow/game_balance.py:126:        event_texts: Raw event texts for fund flow keyword extraction.
+tradingagents/tradeflow/event_source.py:4:供 event_catalyst 策略的 news_texts 参数使用。
+tradingagents/tradeflow/event_source.py:253:    这个格式直接兼容 event_catalyst.score_event_catalyst() 的 news_texts 参数。
+tradingagents/tradeflow/candidate_engine.py:24:from .strategies.event_catalyst import score_event_catalyst
+tradingagents/tradeflow/candidate_engine.py:195:    # [M-003] tradeflow_universe_manager — add universe_sources column
+tradingagents/tradeflow/candidate_engine.py:197:        ("universe_sources_json", "TEXT DEFAULT '[]'"),
+tradingagents/tradeflow/candidate_engine.py:372:    ev = score_event_catalyst(symbol, news_texts, event_overrides, latest_close, cfg=cfg)  # [M-004]
+tradingagents/tradeflow/candidate_engine.py:427:    # [N-004] astock_signal_tags — merge extra tags from event_catalyst evidence
+tradingagents/tradeflow/candidate_engine.py:472:    # [S-002] narrative_quality_score — assess event narrative quality
+tradingagents/tradeflow/candidate_engine.py:745:            "universe_sources_json, "
+tradingagents/tradeflow/candidate_engine.py:790:            "universe_sources_json=excluded.universe_sources_json, "
+tradingagents/tradeflow/candidate_engine.py:827:                row["universe_sources_json"],
+
+exec
+/bin/zsh -lc "sed -n '180,285p' tradingagents/tradeflow/plan_runner.py && sed -n '180,235p' tradingagents/tradeflow/discovery.py && sed -n '80,130p' tradingagents/tradeflow/plan_runner.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    events_map: dict[str, list[str]] = {}
+    event_items_by_symbol: dict[str, list] = {}
+    event_source_status = "NOT_QUERIED"
+    event_source_error = ""
+
+    if use_event_source:
+        from .event_source import fetch_daily_events_detailed, EventSourceStatus
+        trade_date_compact = trade_date.replace("-", "")
+        event_result = fetch_daily_events_detailed(trade_date_compact)
+        events_map = event_result.events_map
+        event_items_by_symbol = event_result.items_by_symbol
+        event_source_status = event_result.status.value
+        event_source_error = event_result.error_message
+
+    if candidates is None:
+        # Build universe — pass event_symbols so event-discovered
+        # symbols enter the pool
+        universe = build_universe(
+            symbols=symbols,
+            prod_db_path=prod_db_path,
+            tf_db_path=tf_db_path,
+            event_overrides=event_overrides,
+            event_symbols=events_map if events_map else None,  # [N-001]
+        )
+
+        # Evaluate each symbol — filter event_overrides to only
+        # those matching the current symbol (or global overrides without symbol).
+        # [N-001] Each symbol gets its own event titles as news_texts.
+        # [T-006] event_source_discovery — also generate event_overrides from EventItem data
+        candidates = []
+        for item in universe:
+            sym = item["symbol"]
+            if event_overrides:
+                filtered_overrides = [
+                    ev for ev in event_overrides
+                    if ev.get("symbol") is None or ev.get("symbol") == sym
+                ]
+            else:
+                filtered_overrides = None
+
+            # [T-006] event_source_discovery — generate event_overrides from EventItem data
+            sym_event_overrides = list(filtered_overrides) if filtered_overrides else []
+            if sym in event_items_by_symbol:
+                for ev_item in event_items_by_symbol[sym]:
+                    sym_event_overrides.append({
+                        "symbol": sym,
+                        "title": ev_item.title,
+                        "event_type": ev_item.event_type,
+                        "direction": ev_item.direction,
+                        "source": ev_item.source,
+                        "date": ev_item.date,
+                    })
+            sym_event_overrides_final = sym_event_overrides if sym_event_overrides else None
+
+            # [N-001] event_source_plan_integration
+            sym_news = events_map.get(sym) if events_map else None
+
+            # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
+            sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
+            sym_ff_individual = sym_ff.get("individual") if sym_ff else None
+            sym_ff_board = sym_ff.get("board") if sym_ff else None
+
+            c, reason = evaluate_symbol(
+                symbol=sym,
+                name=item.get("name", ""),
+                source=item.get("source", "manual"),
+                trade_date=trade_date,
+                news_texts=sym_news or news_texts,
+                event_overrides=sym_event_overrides_final,  # [T-006]
+                fund_flow_individual=sym_ff_individual,  # [T-003]
+                fund_flow_board=sym_ff_board,  # [T-003]
+                cfg=cfg,  # [M-004]
+            )
+            if c is not None:
+                if item.get("universe_sources"):
+                    c.universe_sources = item["universe_sources"]  # [M-003]
+                # [T-006] event_source_discovery — attach event items for plan entry
+                if sym in event_items_by_symbol:
+                    c._event_items = event_items_by_symbol[sym]  # type: ignore[attr-defined]
+                candidates.append(c)
+
+    # Build plan entries
+    plan_entries = []
+    for c in candidates:
+        ev_items = getattr(c, "_event_items", None)  # [T-006]
+        entry = _build_plan_entry(c, event_items=ev_items)
+        plan_entries.append(entry)
+
+    # Sort by composite_score descending (S-005 priority gate), fallback to score
+    plan_entries.sort(key=lambda x: (x.get("composite_score", 0) or 0, x.get("score", 0)), reverse=True)
+
+    # [S-007] candidate_tier_budget — sort by tier (A first, then B, then C)
+    tier_order = {"A": 0, "B": 1, "C": 2, "": 3}
+    plan_entries.sort(key=lambda x: (tier_order.get(x.get("tier", ""), 3), -(x.get("composite_score", 0) or 0)))
+
+    # [S-007] candidate_tier_budget — enforce A-tier cap and compute budget summary
+    from .tier_budget import TierBudgetResult
+    tier_results = []
+    for e in plan_entries:
+        tier_results.append(TierBudgetResult(
+            tier=e.get("tier", "C"),
+            ta_budget_priority=e.get("ta_budget_priority", 0),
+            tier_reason=e.get("tier_reason", ""),
+            missing_evidence_for_upgrade=e.get("missing_evidence_for_upgrade", []),
+            why_not_deep_ta=e.get("why_not_deep_ta", ""),
+        ))
+
+        # [T-006] event_source_discovery — generate event_overrides from EventItem data
+        sym_event_overrides = list(filtered_overrides) if filtered_overrides else []
+        if sym in event_items_by_symbol:
+            for ev_item in event_items_by_symbol[sym]:
+                sym_event_overrides.append({
+                    "symbol": sym,
+                    "title": ev_item.title,
+                    "event_type": ev_item.event_type,
+                    "direction": ev_item.direction,
+                    "source": ev_item.source,
+                    "date": ev_item.date,
+                })
+        sym_event_overrides_final = sym_event_overrides if sym_event_overrides else None
+
+        sym_news = events_map.get(sym) if events_map else None
+
+        # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
+        sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
+        sym_ff_individual = sym_ff.get("individual") if sym_ff else None
+        sym_ff_board = sym_ff.get("board") if sym_ff else None
+
+        c, reason = evaluate_symbol(
+            symbol=sym,
+            name=sym_name,
+            source=sym_source,
+            trade_date=trade_date,
+            news_texts=sym_news or news_texts,
+            event_overrides=sym_event_overrides_final,  # [T-006]
+            fund_flow_individual=sym_ff_individual,  # [T-003]
+            fund_flow_board=sym_ff_board,  # [T-003]
+        )
+        if c is not None:
+            if item.get("universe_sources"):
+                c.universe_sources = item["universe_sources"]  # [M-003]
+            # [T-006] event_source_discovery — attach event items for discovery entry
+            if sym in event_items_by_symbol:
+                c._event_items = event_items_by_symbol[sym]  # type: ignore[attr-defined]
+            candidates.append(c)
+        else:
+            filtered.append(FilteredSymbol(
+                symbol=sym,
+                name=sym_name,
+                source=sym_source,
+                reason=reason,
+            ))
+
+    candidates.sort(key=lambda c: (c.composite_score, c.score), reverse=True)
+    top_candidates = candidates[:top_n]
+
+    plan_entries = []
+    for c in top_candidates:
+        ev_items = getattr(c, "_event_items", None)  # [T-006]
+        entry = _build_discovery_entry(c, event_items=ev_items)
+        plan_entries.append(entry)
+
+        "game_balance": candidate.game_balance,  # [S-004] candidate_game_balance
+        "bull_case": candidate.bull_case,  # [S-004]
+        "bear_case": candidate.bear_case,  # [S-004]
+        "policy_case": candidate.policy_case,  # [S-004]
+        "fund_flow_case": candidate.fund_flow_case,  # [S-004]
+        "resonance_count": candidate.resonance_count,  # [S-004]
+        "game_balance_refs": candidate.game_balance_refs,  # [S-004]
+        "fund_flow_anomaly_score": candidate.fund_flow_anomaly_score,  # [T-003] fund_flow_anomaly_pool
+        "fund_flow_anomaly_tags": candidate.fund_flow_anomaly_tags,  # [T-003]
+        "fund_flow_anomaly_refs": candidate.fund_flow_anomaly_refs,  # [T-003]
+        "fund_flow_unit_verified": candidate.fund_flow_unit_verified,  # [T-003]
+        "fund_flow_individual_summary": candidate.fund_flow_individual_summary,  # [T-003]
+        "fund_flow_board_summary": candidate.fund_flow_board_summary,  # [T-003]
+        "composite_score": candidate.composite_score,  # [S-005] selection_priority_gate
+        "signal_category_hits": candidate.signal_category_hits,  # [S-005]
+        "positive_category_count": candidate.positive_category_count,  # [S-005]
+        "data_completeness": candidate.data_completeness,  # [S-005]
+        "missing_evidence": candidate.missing_evidence,  # [S-005]
+        "why_deep_ta": candidate.why_deep_ta,  # [S-005]
+        "why_not_deep_ta": candidate.why_not_deep_ta,  # [S-005]
+        "priority_rank": candidate.priority_rank,  # [S-005]
+        "tier": candidate.tier,  # [S-007] candidate_tier_budget
+        "ta_budget_priority": candidate.ta_budget_priority,  # [S-007]
+        "tier_reason": candidate.tier_reason,  # [S-007]
+        "missing_evidence_for_upgrade": candidate.missing_evidence_for_upgrade,  # [S-007]
+        "tradeflow_data_completeness": candidate.tradeflow_data_completeness,  # [S-008] tradeflow_evidence_gate
+        "missing_data_fields": candidate.missing_data_fields,  # [S-008]
+        "what_to_upgrade": candidate.what_to_upgrade,  # [S-008]
+        "evidence_gate_applied": candidate.evidence_gate_applied,  # [S-008]
+        "universe_sources": candidate.universe_sources,  # [M-003] tradeflow_universe_manager
+        "observe_state": candidate.observe_state,  # [M-005] intraday_observe_state
+        "observe_trigger_count": candidate.observe_trigger_count,  # [M-005]
+        "observe_first_trigger_time": candidate.observe_first_trigger_time,  # [M-005]
+        "deep_ta_status": candidate.deep_ta_status,  # [M-006] gated_deep_ta_dispatch
+        "deep_ta_dispatch_reason": candidate.deep_ta_dispatch_reason,  # [M-006]
+        "deep_ta_model": candidate.deep_ta_model,  # [M-006]
+        "deep_ta_report_path": candidate.deep_ta_report_path,  # [M-006]
+        "deep_ta_dispatch_time": candidate.deep_ta_dispatch_time,  # [M-006]
+        "deep_ta_position_context": candidate.deep_ta_position_context,  # [M-006]
+    }
+
+    # [T-006] event_source_discovery — add event metadata to plan entry
+    if event_items:
+        entry["event_titles"] = [it.title for it in event_items if it.title]
+        entry["event_types"] = sorted({it.event_type for it in event_items if it.event_type})
+        entry["event_sources"] = sorted({it.source for it in event_items if it.source})
+        entry["event_directions"] = sorted({it.direction for it in event_items if it.direction})
+        entry["event_count"] = len(event_items)
+        entry["event_details"] = [
+            {
+                "title": it.title,
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/tradeflow/discovery.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""TradeFlow Discovery — small-scope candidate discovery.  # [T-002] discovery
+
+Runs the full evaluation pipeline on a bounded set of symbols
+(watchlist / holdings / manual list / industry pilot) and returns
+TopN candidates with filter reasons, without invoking TA deep analysis.
+
+Design constraints:
+- No full-market scan; only explicitly specified symbol pools.
+- No TA deep analysis auto-invocation; only marks need_deep_ta.
+- No strong buy/sell words in output.
+- Filter reasons must distinguish: liquidity / data missing / no strategy hit.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from typing import Optional
+
+from .schemas import Candidate, DailyPlan, ALLOWED_ACTIONS, FORBIDDEN_WORDS
+from .candidate_engine import evaluate_symbol, init_db, filter_symbol
+from .universe import build_universe
+from .false_positive_audit import build_audit_report, render_audit_report, AuditReport  # [S-006] candidate_false_positive_audit
+from .tier_budget import allocate_tier_budget, render_tier_budget_summary  # [S-007] candidate_tier_budget
+
+
+SOURCE_WATCHLIST = "watchlist"
+SOURCE_HOLDING = "holding"
+SOURCE_MANUAL = "manual"
+SOURCE_INDUSTRY = "industry_pool"
+SOURCE_EVENT = "event_source"
+
+SOURCE_FUND_FLOW = "fund_flow_pool"  # [T-003] fund_flow_anomaly_pool
+
+TOPN_DEFAULT = 20
+
+
+@dataclass
+class FilteredSymbol:
+    symbol: str
+    name: str
+    source: str
+    reason: str
+
+
+@dataclass
+class DiscoveryResult:
+    trade_date: str
+    universe_size: int = 0
+    candidates: list[dict] = field(default_factory=list)
+    filtered: list[dict] = field(default_factory=list)
+    summary: str = ""
+    metadata: dict = field(default_factory=dict)
+    audit_report: Optional[AuditReport] = None  # [S-006] candidate_false_positive_audit
+
+
+def _build_discovery_universe(
+    symbols: Optional[list[str]] = None,
+    industry_symbols: Optional[list[str]] = None,
+    prod_db_path: str = "",
+    tf_db_path: str = "",
+    include_holdings: bool = True,
+    include_watchlist: bool = True,
+    include_yesterday: bool = False,
+    event_symbols: Optional[dict[str, list[str]]] = None,
+    fund_flow_symbols: Optional[list[str]] = None,  # [T-003] fund_flow_anomaly_pool
+) -> list[dict]:
+    """Build universe for discovery — uses UniverseManager with all sources."""
+    universe = build_universe(
+        symbols=symbols,
+        prod_db_path=prod_db_path,
+        tf_db_path=tf_db_path,
+        include_holdings=include_holdings,
+        include_watchlist=include_watchlist,
+        include_yesterday=include_yesterday,
+        event_symbols=event_symbols,
+        industry_symbols=industry_symbols,
+        fund_flow_symbols=fund_flow_symbols,
+    )
+
+    if fund_flow_symbols:
+        existing = {item["symbol"] for item in universe}
+        for sym in fund_flow_symbols:
+            sym = sym.strip()
+            if sym and sym not in existing:
+                universe.append({
+                    "symbol": sym,
+                    "name": "",
+                    "source": SOURCE_FUND_FLOW,
+                    "universe_sources": [SOURCE_FUND_FLOW],
+                    "universe_source_records": [],
+                    "filter_reason": "",
+                })
+                existing.add(sym)
+
+    return universe
+
+
+def run_discovery(
+    trade_date: Optional[str] = None,
+    symbols: Optional[list[str]] = None,
+    industry_symbols: Optional[list[str]] = None,
+    prod_db_path: str = "",
+    tf_db_path: str = "",
+    top_n: int = TOPN_DEFAULT,
+    include_holdings: bool = True,
+    include_watchlist: bool = True,
+    event_overrides: Optional[list[dict]] = None,
+    news_texts: Optional[list[str]] = None,
+    use_event_source: bool = False,
+    save_candidates: bool = False,
+    fund_flow_map: Optional[dict[str, dict]] = None,  # [T-003] fund_flow_anomaly_pool
+) -> DiscoveryResult:
+    """Run small-scope discovery and return TopN candidates.
+
+    Args:
+        trade_date: Trading date (default: today).
+        symbols: Manual symbol list.
+        industry_symbols: Industry pilot symbol list.
+        prod_db_path: Path to production DB.
+        tf_db_path: Path to tradeflow DB.
+        top_n: Maximum candidates to return.
+        include_holdings: Include holdings from prod DB.
+        include_watchlist: Include watchlist from prod DB.
+        event_overrides: Manual event overrides.
+        news_texts: News texts.
+        use_event_source: Fetch daily events for event pool.
+        save_candidates: Persist candidates to DB.
+        fund_flow_map: [T-003] Optional dict mapping symbol → {"individual": str, "board": str}.
+
+    Returns:
+        DiscoveryResult with candidates and filtered symbols.
+    """
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+
+    events_map: dict[str, list[str]] = {}
+    event_items_by_symbol: dict[str, list] = {}  # [T-006] event_source_discovery
+    event_source_status = "NOT_QUERIED"  # [T-006]
+    event_source_error = ""  # [T-006]
+
+    if use_event_source:
+        from .event_source import fetch_daily_events_detailed, EventSourceStatus  # [T-006]
+        trade_date_compact = trade_date.replace("-", "")
+        event_result = fetch_daily_events_detailed(trade_date_compact)  # [T-006]
+        events_map = event_result.events_map
+        event_items_by_symbol = event_result.items_by_symbol  # [T-006]
+        event_source_status = event_result.status.value  # [T-006]
+        event_source_error = event_result.error_message  # [T-006]
+
+    universe = _build_discovery_universe(
+        symbols=symbols,
+        industry_symbols=industry_symbols,
+        prod_db_path=prod_db_path,
+        tf_db_path=tf_db_path,
+        include_holdings=include_holdings,
+        include_watchlist=include_watchlist,
+        include_yesterday=False,
+        event_symbols=events_map if events_map else None,
+        fund_flow_symbols=list(fund_flow_map.keys()) if fund_flow_map else None,  # [T-003]
+    )
+
+    candidates: list[Candidate] = []
+    filtered: list[FilteredSymbol] = []
+
+    for item in universe:
+        sym = item["symbol"]
+        sym_name = item.get("name", "")
+        sym_source = item.get("source", "manual")
+
+        if event_overrides:
+            filtered_overrides = [
+                ev for ev in event_overrides
+                if ev.get("symbol") is None or ev.get("symbol") == sym
+            ]
+        else:
+            filtered_overrides = None
+
+        # [T-006] event_source_discovery — generate event_overrides from EventItem data
+        sym_event_overrides = list(filtered_overrides) if filtered_overrides else []
+        if sym in event_items_by_symbol:
+            for ev_item in event_items_by_symbol[sym]:
+                sym_event_overrides.append({
+                    "symbol": sym,
+                    "title": ev_item.title,
+                    "event_type": ev_item.event_type,
+                    "direction": ev_item.direction,
+                    "source": ev_item.source,
+                    "date": ev_item.date,
+                })
+        sym_event_overrides_final = sym_event_overrides if sym_event_overrides else None
+
+        sym_news = events_map.get(sym) if events_map else None
+
+        # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
+        sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
+        sym_ff_individual = sym_ff.get("individual") if sym_ff else None
+        sym_ff_board = sym_ff.get("board") if sym_ff else None
+
+        c, reason = evaluate_symbol(
+            symbol=sym,
+            name=sym_name,
+            source=sym_source,
+            trade_date=trade_date,
+            news_texts=sym_news or news_texts,
+            event_overrides=sym_event_overrides_final,  # [T-006]
+            fund_flow_individual=sym_ff_individual,  # [T-003]
+            fund_flow_board=sym_ff_board,  # [T-003]
+        )
+        if c is not None:
+            if item.get("universe_sources"):
+                c.universe_sources = item["universe_sources"]  # [M-003]
+            # [T-006] event_source_discovery — attach event items for discovery entry
+            if sym in event_items_by_symbol:
+                c._event_items = event_items_by_symbol[sym]  # type: ignore[attr-defined]
+            candidates.append(c)
+        else:
+            filtered.append(FilteredSymbol(
+                symbol=sym,
+                name=sym_name,
+                source=sym_source,
+                reason=reason,
+            ))
+
+    candidates.sort(key=lambda c: (c.composite_score, c.score), reverse=True)
+    top_candidates = candidates[:top_n]
+
+    plan_entries = []
+    for c in top_candidates:
+        ev_items = getattr(c, "_event_items", None)  # [T-006]
+        entry = _build_discovery_entry(c, event_items=ev_items)
+        plan_entries.append(entry)
+
+    # [S-007] candidate_tier_budget — sort by tier (A first, then B, then C)
+    tier_order = {"A": 0, "B": 1, "C": 2, "": 3}
+    plan_entries.sort(key=lambda x: (tier_order.get(x.get("tier", ""), 3), -(x.get("composite_score", 0) or 0)))
+
+    # [S-007] candidate_tier_budget — enforce A-tier cap and compute budget summary
+    from .tier_budget import TierBudgetResult
+    tier_results = []
+    for e in plan_entries:
+        tier_results.append(TierBudgetResult(
+            tier=e.get("tier", "C"),
+            ta_budget_priority=e.get("ta_budget_priority", 0),
+            tier_reason=e.get("tier_reason", ""),
+            missing_evidence_for_upgrade=e.get("missing_evidence_for_upgrade", []),
+            why_not_deep_ta=e.get("why_not_deep_ta", ""),
+        ))
+    budget_allocation = allocate_tier_budget(tier_results)
+    for i, tr in enumerate(tier_results):
+        if i < len(plan_entries):
+            plan_entries[i]["tier"] = tr.tier
+            plan_entries[i]["ta_budget_priority"] = tr.ta_budget_priority
+            plan_entries[i]["tier_reason"] = tr.tier_reason
+
+    n_total = len(plan_entries)
+    n_deep_ta = sum(1 for e in plan_entries if e.get("need_deep_ta"))
+    n_filtered = len(filtered)
+
+exec
+/bin/zsh -lc "git show HEAD:tradingagents/tradeflow/universe.py | sed -n '1,180p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""TradeFlow universe — manages the watch universe from multiple sources.  # [M-003] tradeflow_universe_manager
+
+P0 sources:
+1. Current holdings (imported_portfolio_positions)
+2. Watchlist items
+3. Manual symbol specification
+4. Previously observed candidates from yesterday's review
+5. Event/catalyst triggered stocks
+6. Fund flow anomaly triggered stocks
+7. Manual industry pool
+
+M-003 introduces UniverseManager which:
+- Defines a UniverseSource enum for all source types
+- Tracks per-symbol: sources list, entry reasons, timestamps, filter reasons
+- Deduplicates symbols while preserving ALL source provenance
+- Never triggers full-market scan when no sources are provided
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Optional
+
+
+class UniverseSource(Enum):
+    WATCHLIST = "watchlist"
+    HOLDING = "holding"
+    MANUAL = "manual"
+    EVENT = "event"
+    EVENT_SOURCE = "event_source"
+    FUND_FLOW = "fund_flow_pool"
+    INDUSTRY = "industry_pool"
+    YESTERDAY_OBSERVE = "yesterday_observe"
+
+
+@dataclass
+class SourceRecord:
+    source: UniverseSource
+    reason: str = ""
+    timestamp: str = ""
+    extra: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not self.timestamp:
+            self.timestamp = datetime.now().isoformat()
+
+
+@dataclass
+class UniverseEntry:
+    symbol: str
+    name: str = ""
+    sources: list[SourceRecord] = field(default_factory=list)
+    filter_reason: str = ""
+
+    @property
+    def primary_source(self) -> str:
+        if self.sources:
+            return self.sources[0].source.value
+        return ""
+
+    @property
+    def source_values(self) -> list[str]:
+        return sorted({sr.source.value for sr in self.sources})
+
+    def to_dict(self) -> dict:
+        return {
+            "symbol": self.symbol,
+            "name": self.name,
+            "source": self.primary_source,
+            "universe_sources": self.source_values,
+            "universe_source_records": [
+                {
+                    "source": sr.source.value,
+                    "reason": sr.reason,
+                    "timestamp": sr.timestamp,
+                }
+                for sr in self.sources
+            ],
+            "filter_reason": self.filter_reason,
+        }
+
+
+class UniverseManager:
+    """Centralized manager for TradeFlow candidate universe.  # [M-003] tradeflow_universe_manager
+
+    Collects symbols from multiple sources, deduplicates by symbol
+    while preserving all source provenance, and never falls back to
+    full-market scan.
+
+    Usage:
+        mgr = UniverseManager()
+        mgr.add_from_watchlist(db_path)
+        mgr.add_from_holdings(db_path)
+        mgr.add_manual(["600519.SH"])
+        mgr.add_from_events(event_map)
+        universe = mgr.get_universe()  # list[dict]
+    """
+
+    def __init__(self):
+        self._entries: dict[str, UniverseEntry] = {}
+
+    def add_symbol(
+        self,
+        symbol: str,
+        source: UniverseSource,
+        name: str = "",
+        reason: str = "",
+        extra: Optional[dict] = None,
+    ) -> UniverseEntry:
+        symbol = symbol.strip()
+        if not symbol:
+            return self._entries.get("", UniverseEntry(symbol=""))
+
+        entry = self._entries.get(symbol)
+        if entry is None:
+            entry = UniverseEntry(symbol=symbol, name=name)
+            self._entries[symbol] = entry
+        if name and not entry.name:
+            entry.name = name
+
+        existing_sources = {sr.source for sr in entry.sources}
+        if source not in existing_sources:
+            entry.sources.append(SourceRecord(
+                source=source,
+                reason=reason,
+                extra=extra or {},
+            ))
+
+        return entry
+
+    def remove_symbol(self, symbol: str, reason: str = "") -> None:
+        entry = self._entries.get(symbol.strip())
+        if entry is not None:
+            entry.filter_reason = reason
+
+    @property
+    def size(self) -> int:
+        return len(self._entries)
+
+    @property
+    def symbols(self) -> list[str]:
+        return list(self._entries.keys())
+
+    def get_entry(self, symbol: str) -> Optional[UniverseEntry]:
+        return self._entries.get(symbol.strip())
+
+    def get_universe(self) -> list[dict]:
+        return [entry.to_dict() for entry in self._entries.values()]
+
+    def get_active_universe(self) -> list[dict]:
+        return [
+            entry.to_dict()
+            for entry in self._entries.values()
+            if not entry.filter_reason
+        ]
+
+    def get_source_summary(self) -> dict[str, int]:
+        summary: dict[str, int] = {}
+        for entry in self._entries.values():
+            for sr in entry.sources:
+                key = sr.source.value
+                summary[key] = summary.get(key, 0) + 1
+        return summary
+
+    def add_from_holdings(self, db_path: str) -> int:
+        count = 0
+        for item in get_holdings(db_path):
+            self.add_symbol(
+                symbol=item["symbol"],
+                source=UniverseSource.HOLDING,
+                name=item.get("name", ""),
+                reason="持仓股",
+            )
+            count += 1
+        return count
+
+    def add_from_watchlist(self, db_path: str) -> int:
+
+exec
+/bin/zsh -lc 'pytest tests/test_tradeflow_universe.py tests/test_tradeflow_plan_runner.py tests/test_event_source_integration.py tests/test_t006_event_source_discovery.py -q' in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: pytest
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest tests/test_tradeflow_universe.py tests/test_tradeflow_plan_runner.py tests/test_event_source_integration.py tests/test_t006_event_source_discovery.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 463ms:
+........................................................................ [ 73%]
+..........................                                               [100%]
+98 passed in 0.24s
+
+exec
+/bin/zsh -lc 'git ls-files docs/task_runs | tail -20; git ls-files .auto_dev.lock docs/task_runs/M-011-20260530-022843 || true; cat .gitignore' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+docs/task_runs/T-002-20260529-143004/task.md
+docs/task_runs/T-002-20260529-143004/tests-round1.txt
+docs/task_runs/T-003-20260529-144007/codex-review-round1.txt
+docs/task_runs/T-003-20260529-144007/opencode-round1.txt
+docs/task_runs/T-003-20260529-144007/prompt-round1.md
+docs/task_runs/T-003-20260529-144007/summary.md
+docs/task_runs/T-003-20260529-144007/task.md
+docs/task_runs/T-003-20260529-144007/tests-round1.txt
+docs/task_runs/T-006-20260530-013347/codex-review-round1.txt
+docs/task_runs/T-006-20260530-013347/opencode-round1.txt
+docs/task_runs/T-006-20260530-013347/prompt-round1.md
+docs/task_runs/T-006-20260530-013347/summary.md
+docs/task_runs/T-006-20260530-013347/task.md
+docs/task_runs/T-006-20260530-013347/tests-round1.txt
+docs/task_runs/V-002-20260530-010220/codex-review-round1.txt
+docs/task_runs/V-002-20260530-010220/opencode-round1.txt
+docs/task_runs/V-002-20260530-010220/prompt-round1.md
+docs/task_runs/V-002-20260530-010220/summary.md
+docs/task_runs/V-002-20260530-010220/task.md
+docs/task_runs/V-002-20260530-010220/tests-round1.txt
+# Docs — ignore local design docs but track workflow files
+docs/report_reviews/
+docs/*_draft*
+docs/*_notes*
+
+# Local auto-dev runtime state
+.zai_quota_state.json
+
+# LangGraph Checkpoints
+graph_checkpoints.db
+graph_checkpoints.db-shm
+graph_checkpoints.db-wal
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[codz]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+#   Usually these files are written by a python script from a template
+#   before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py.cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+#   For a library or package, you might want to ignore these files since the code is
+#   intended to run in multiple environments; otherwise, check them in:
+# .python-version
+
+# pipenv
+#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
+#   However, in case of collaboration, if having platform-specific dependencies or dependencies
+#   having no cross-platform support, pipenv may install dependencies that don't work, or not
+#   install all needed dependencies.
+# Pipfile.lock
+
+# UV
+#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
+#   This is especially recommended for binary packages to ensure reproducibility, and is more
+#   commonly ignored for libraries.
+# uv.lock
+
+# poetry
+#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
+#   This is especially recommended for binary packages to ensure reproducibility, and is more
+#   commonly ignored for libraries.
+#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
+# poetry.lock
+# poetry.toml
+
+# pdm
+#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
+#   pdm recommends including project-wide configuration in pdm.toml, but excluding .pdm-python.
+#   https://pdm-project.org/en/latest/usage/project/#working-with-version-control
+# pdm.lock
+# pdm.toml
+.pdm-python
+.pdm-build/
+
+# pixi
+#   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
+# pixi.lock
+#   Pixi creates a virtual environment in the .pixi directory, just like venv module creates one
+#   in the .venv directory. It is recommended not to include this directory in version control.
+.pixi
+
+# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# Redis
+*.rdb
+*.aof
+*.pid
+
+# RabbitMQ
+mnesia/
+rabbitmq/
+rabbitmq-data/
+
+# ActiveMQ
+activemq-data/
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.envrc
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# PyCharm
+#   JetBrains specific template is maintained in a separate JetBrains.gitignore that can
+#   be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
+#   and can be added to the global gitignore or merged into this file.  For a more nuclear
+#   option (not recommended) you can uncomment the following to ignore the entire idea folder.
+# .idea/
+
+# Abstra
+#   Abstra is an AI-powered process automation framework.
+#   Ignore directories containing user credentials, local state, and settings.
+#   Learn more at https://abstra.io/docs
+.abstra/
+
+# Visual Studio Code
+#   Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
+#   that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
+#   and can be added to the global gitignore or merged into this file. However, if you prefer, 
+#   you could uncomment the following to ignore the entire vscode folder
+# .vscode/
+
+# Ruff stuff:
+.ruff_cache/
+
+# PyPI configuration file
+.pypirc
+
+# Marimo
+marimo/_static/
+marimo/_lsp/
+__marimo__/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Cache
+**/data_cache/
+
+# Runtime artifacts
+eval_results/
+reports/
+results/
+
+# Private dirs (not open-source for now)
+deploy/
+
+# Local development artifacts
+.DS_Store
+.vscode/
+/plans/
+tradingagents.db
+tradingagents.db-shm
+tradingagents.db-wal
+deploy/deploy.env
+
+.playwright-cli/
+.DS_Store
+*.log
+.vercel
+.env*.local
+frontend/node_modules/
+.vite/
+uv.lock.cp313
+.worktrees/
+
+.opencode.json
+.opencode/
+.env.bak.*
+ta_data.db
+tradeflow.db
+analysis_results/
+logs/
+TASK_BATCH*.md
+tradingagents/portfolio/
+
+exec
+/bin/zsh -lc "find docs/task_runs/M-011-20260530-022843 -maxdepth 1 -type f -printf '%f
+'" in /Users/maybee/TradingAgents-AShare
+ exited 1 in 0ms:
+find: -printf: unknown primary or operator
+
+exec
+/bin/zsh -lc 'find docs/task_runs/M-011-20260530-022843 -maxdepth 1 -type f -print' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+docs/task_runs/M-011-20260530-022843/tests-round1.txt
+docs/task_runs/M-011-20260530-022843/prompt-round1.md
+docs/task_runs/M-011-20260530-022843/opencode-round1.txt
+docs/task_runs/M-011-20260530-022843/task.md
+
+exec
+/bin/zsh -lc "nl -ba .auto_dev.lock/owner && nl -ba docs/TASKS.md | sed -n '356,366p' && nl -ba tradingagents/tradeflow/universe.py | sed -n '25,80p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+     1	pid=41733
+     2	started_at=2026-05-30_02:22:15
+     3	repo=/Users/maybee/TradingAgents-AShare
+   356	- **验证方式**：
+   357	  - 给定候选和行情 fixture，能生成复盘表。
+   358	- **代码标注要求**：`# [M-007] post_market_review`
+   359	
+   360	### M-011: 修复 M-003 universe 兼容性与来源 extra 序列化（P1）
+   361	- **描述**：修复 Codex review 指出的 universe manager 兼容性问题：事件覆盖来源标签变化，以及 `SourceRecord.extra` 被收集但序列化丢失。
+   362	- **优先级**：P1
+   363	- **状态**：in_progress — claimed M-011-20260530-022843
+   364	- **前置条件**：`M-003` 完成。
+   365	- **执行约束**：
+   366	  - 不做全市场扫描。
+    25	from typing import Optional
+    26	
+    27	
+    28	class UniverseSource(Enum):
+    29	    WATCHLIST = "watchlist"
+    30	    HOLDING = "holding"
+    31	    MANUAL = "manual"
+    32	    EVENT = "event_catalyst"  # [M-011] universe_compat_fix — preserve old public source label
+    33	    EVENT_SOURCE = "event_source"
+    34	    FUND_FLOW = "fund_flow_pool"
+    35	    INDUSTRY = "industry_pool"
+    36	    YESTERDAY_OBSERVE = "yesterday_observe"
+    37	
+    38	
+    39	@dataclass
+    40	class SourceRecord:
+    41	    source: UniverseSource
+    42	    reason: str = ""
+    43	    timestamp: str = ""
+    44	    extra: dict = field(default_factory=dict)
+    45	
+    46	    def __post_init__(self):
+    47	        if not self.timestamp:
+    48	            self.timestamp = datetime.now().isoformat()
+    49	
+    50	
+    51	@dataclass
+    52	class UniverseEntry:
+    53	    symbol: str
+    54	    name: str = ""
+    55	    sources: list[SourceRecord] = field(default_factory=list)
+    56	    filter_reason: str = ""
+    57	
+    58	    @property
+    59	    def primary_source(self) -> str:
+    60	        if self.sources:
+    61	            return self.sources[0].source.value
+    62	        return ""
+    63	
+    64	    @property
+    65	    def source_values(self) -> list[str]:
+    66	        return sorted({sr.source.value for sr in self.sources})
+    67	
+    68	    def to_dict(self) -> dict:
+    69	        result = {  # [M-011] universe_compat_fix — include extra in serialization
+    70	            "symbol": self.symbol,
+    71	            "name": self.name,
+    72	            "source": self.primary_source,
+    73	            "universe_sources": self.source_values,
+    74	            "universe_source_records": [],
+    75	            "filter_reason": self.filter_reason,
+    76	        }
+    77	        for sr in self.sources:
+    78	            rec = {
+    79	                "source": sr.source.value,
+    80	                "reason": sr.reason,
+
+exec
+/bin/zsh -lc "sed -n '360,390p' docs/TASKS.md && sed -n '1,220p' docs/reviews/M-003-20260530-round2.txt || true" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+### M-011: 修复 M-003 universe 兼容性与来源 extra 序列化（P1）
+- **描述**：修复 Codex review 指出的 universe manager 兼容性问题：事件覆盖来源标签变化，以及 `SourceRecord.extra` 被收集但序列化丢失。
+- **优先级**：P1
+- **状态**：in_progress — claimed M-011-20260530-022843
+- **前置条件**：`M-003` 完成。
+- **执行约束**：
+  - 不做全市场扫描。
+  - 不改生产数据库 schema。
+  - 保持已有报告和过滤逻辑兼容。
+- **问题来源**：
+  - `docs/task_runs/M-003-20260530-002721/codex-review-round2.txt` 中两个 P2 findings。
+- **实现要点**：
+  1. `event_overrides` 进入 universe 时保留旧公共输出 `source="event_catalyst"`，避免已有报告、筛选器、测试断裂。
+  2. `UniverseSymbol.to_dict()` 的 `universe_source_records` 序列化 `SourceRecord.extra`。
+  3. `include_yesterday` 带入的 `strategy_tags/trigger_price/invalid_price` 不能丢失。
+  4. 增加兼容性回归测试。
+- **验证方式**：
+  - `pytest tests/test_tradeflow_universe.py tests/test_t002_discovery.py tests/test_t003_fund_flow_anomaly.py -q` 通过。
+  - `pytest tests/test_tradeflow_*.py -q` 通过。
+- **代码标注要求**：`# [M-011] universe_compat_fix`
+
+### M-008: 数据源健康检查与 fallback 可观测性（P1）
+- **描述**：建立数据源健康检查，持续观察 AKShare、cn_astock、BaoStock、yfinance、公告/资金/LHB 等源的成功率、延迟和失败原因。
+- **优先级**：P1
+- **状态**：done — commit 4876cc8
+- **执行约束**：
+  - 只跑小样本 smoke，不扫全市场。
+  - 不保存 cookie/API key。
+  - live 测试必须可跳过。
+- **实现要点**：
+  1. 新增数据源 health check 脚本，默认测试 2-3 只样例股。
+Task: M-003 — TradeFlow universe 管理器（P1）
+Date: 2026-05-30_00:40:38
+Codex exit code: 0
+Round: 2
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e749a-238b-7b81-ad2a-0df1076298a8
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md && printf '\\n---TASKS---\\n' && sed -n '1,220p' docs/TASKS.md && printf '\\n---DECISIONS---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n---DEVLOG---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+---TASKS---
+# 任务池
+
+> 最后更新：2026-05-29
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `S-005`：选股优先级整合与 `need_deep_ta` 门槛重排（P1，ready）。
+2. `M-003`：TradeFlow universe 管理器（P1，ready）。
+3. `M-004`：TradeFlow 策略权重与阈值配置（P1，ready）。
+4. `T-006`：事件源自动接入 Discovery / Daily Plan（P1，ready）。
+5. `V-002`：夜间自动开发验收报告与候选样本回放（P1，ready）。
+6. `S-006`：候选误报审计与样本集沉淀（P1，ready）。
+7. 第二梯队：`S-007/S-008/M-005/M-006`，用于延长夜间窗口并继续围绕候选质量、触发状态和 TA 成本门控推进。
+
+---
+
+## S. TradeFlow 选股策略核心任务池（2026-05-29 新增）
+
+> 原则：先提高候选池质量，再扩大扫描范围。TA 深度分析只服务于已经有足够逻辑、事件、资金或风险结构支撑的候选股。
+
+### S-001: 政策版本因子进入 TradeFlow 候选池（P1）
+- **描述**：为 TradeFlow 增加政策版本因子，识别当前 A 股市场更容易被定价的政策/产业方向，让候选池从“技术形态先行”升级为“政策版本入池 + 技术确认”。
+- **优先级**：P1
+- **状态**：done — commit a4d06d4 + cf7d928
+- **背景**：
+  - A 股很多阶段不是简单的业绩驱动，而是政策方向、产业版本和市场叙事共同驱动。
+  - 现在 TradeFlow 已有 VCP、事件催化、A 股标签，但缺少“当前版本需要什么标杆”的第一层判断。
+- **执行约束**：
+  - 不调用外部 LLM，不跑全市场扫描。
+  - 不改 `tradingagents/prompts/`。
+  - 不输出买入/卖出强建议。
+  - 只在 TradeFlow 候选池层做信号、标签、分数和证据引用。
+- **实现要点**：
+  1. 新增或扩展政策版本信号模块，输出 `policy_tags`、`version_score`、`policy_evidence_refs`。
+  2. 先用可维护关键词/规则覆盖：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革等。
+  3. 事件标题、公告摘要、行业标签命中政策版本时加分；无原始文本证据时不得加分。
+  4. 与现有 `event_source`、`event_catalyst`、`candidate_engine` 兼容，不破坏 VCP/回踩策略。
+  5. Daily Plan 中展示政策标签和证据摘要，但动作仍只能是 `OBSERVE/NEED_DEEP_TA` 等非强交易动作。
+- **验证方式**：
+  - 构造政策关键词事件，候选包含对应 `policy_tags` 和 evidence refs。
+  - 无政策证据时 `version_score` 不得凭空加分。
+  - 不同股票事件必须按 symbol 隔离，不能串票。
+  - `pytest tests/test_tradeflow_*.py -q` 或新增对应测试通过。
+- **代码标注要求**：`# [S-001] policy_version_signal`
+
+### S-002: 叙事质量评分（P1）
+- **描述**：给事件催化增加叙事质量评分，区分“普通公告/普通新闻”和“容易形成市场共识的主线事件”。
+- **优先级**：P1
+- **状态**：done — commit 9825e22
+- **背景**：
+  - 选股不只看有没有事件，还要判断事件是否容易被市场理解、传播和接力。
+  - 目前事件催化更偏“是否存在”，缺少“事件质量与传播价值”。
+- **执行约束**：
+  - 第一阶段只做规则评分，不调用外部 LLM。
+  - 不做舆情全网抓取，不扫全市场。
+  - 评分只影响候选排序和 `need_deep_ta`，不直接生成交易建议。
+- **实现要点**：
+  1. 新增 `narrative_score`，分解为政策背书、产业落地、订单/回购/评级、传播清晰度、拥挤/过热扣分。
+  2. 回购、重大订单、中标、并购重组、业绩预告、评级变化等事件给不同基础分。
+  3. 多个事件叠加时做封顶，避免标题堆叠虚高。
+  4. 输出 `narrative_reasons` 和 evidence refs，便于日报解释“为什么进候选池”。
+- **验证方式**：
+  - 普通新闻低分，回购/订单/政策相关事件高分。
+  - 重复事件不会无限叠加。
+  - `narrative_score` 缺证据时为 0 或保守默认。
+- **代码标注要求**：`# [S-002] narrative_quality_score`
+
+### S-003: 水下风险标签与候选降权（P1）
+- **描述**：为 TradeFlow 候选池增加水下风险标签，识别解禁、减持、问询、财务异常、融资拥挤、龙虎榜过热等风险，对候选做降权或要求更严格技术确认。
+- **优先级**：P1
+- **状态**：done — commit a95c3d7
+- **背景**：
+  - 选对股票不只看上涨逻辑，也要避开“看起来有题材但水下结构很差”的票。
+  - 当前已有部分 A 股标签，但风险标签还不够系统，也没有形成候选池统一降权规则。
+- **执行约束**：
+  - 所有风险标签必须绑定原始字段或事件文本。
+  - 不把风险标签直接翻译成清仓/买入建议。
+  - 不写生产数据库 schema；如需持久化先用现有 TradeFlow 结构或输出方案。
+
+exec
+/bin/zsh -lc "rg -n \"auto_dev\\.lock|\\.auto_dev.lock|owner\" scripts . -g'*.sh' -g'*.py' -g'*.md'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+scripts/auto_dev_loop.sh:28:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+scripts/auto_dev_loop.sh:100:        } > "$LOCK_DIR/owner"
+scripts/auto_dev_loop.sh:105:    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+scripts/auto_dev_loop.sh:155:    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+./docs/TASKS.md:249:  4. 加锁文件例如 `.auto_dev.lock` 或 `docs/task_runs/.lock`，脚本异常退出时要有清理/提示机制。
+./scripts/auto_dev_loop.sh:28:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+./scripts/auto_dev_loop.sh:100:        } > "$LOCK_DIR/owner"
+./scripts/auto_dev_loop.sh:105:    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+./scripts/auto_dev_loop.sh:155:    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+./api/main.py:2993:def _require_job_owner(job_id: str, current_user: UserDB) -> Dict[str, Any]:
+./api/main.py:2997:    owner_id = job.get("user_id")
+./api/main.py:2998:    if owner_id and owner_id != current_user.id:
+./api/main.py:3005:    job = _require_job_owner(job_id, current_user)
+./api/main.py:3023:    job = _require_job_owner(job_id, current_user)
+./api/main.py:3037:    _require_job_owner(job_id, current_user)
+./tests/test_auto_dev_loop_static.py:72:    assert not (repo / ".auto_dev.lock").exists()
+
+exec
+/bin/zsh -lc "sed -n '1,180p' scripts/auto_dev_loop.sh && sed -n '50,90p' tests/test_auto_dev_loop_static.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+#!/usr/bin/env bash
+# AUTO-002: 自动开发闭环 v1.3 可靠性补修
+# 用法: ./scripts/auto_dev_loop.sh [--dry-run]
+#
+# 约束:
+#   - 只执行一轮
+#   - 只处理 docs/TASKS.md 中 status=ready 的最高优先级可开发任务
+#   - 工作区不干净时退出
+#   - 不允许 push / PR / merge
+#   - 单任务最多 2 次修复
+#   - 不改 prompts/，不写生产 tradingagents.db
+#   - 精确提交：只允许 tests/ tradingagents/ docs/ 下的文件
+#   - 排除临时文件：*.backup, *_original.py, *_fixed.py, patch_*.py, *.tmp, *.log, __pycache__
+#   - 排除根目录 *.py（非 tests/ 和 tradingagents/ 下）
+#   - 失败时不得自动提交任何文件
+#   - DEVLOG/TASKS 在 commit 前完成，commit 后不再修改文件
+#   - Review 输出保存到 docs/reviews/
+#   - 每个任务运行过程保存到 docs/task_runs/<task>-<timestamp>/
+
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TASKS_FILE="$REPO_DIR/docs/TASKS.md"
+DEVLOG_FILE="$REPO_DIR/docs/DEVLOG.md"
+REVIEW_DIR="$REPO_DIR/docs/reviews"
+TASK_RUN_ROOT="$REPO_DIR/docs/task_runs"
+LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+MAX_FIX_ROUNDS=2
+DRY_RUN=false
+PROMPT_FILE=""
+OPENCODE_LOG=""
+REVIEW_FILE=""
+HAVE_LOCK=false
+
+# 智谱 API Key（用于额度检查）
+ZAI_API_KEY="${ZAI_API_KEY:-}"
+if [[ -z "$ZAI_API_KEY" ]]; then
+    OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
+    if [[ -f "$OPENCLAW_CONFIG" ]]; then
+        ZAI_API_KEY=$(python3 -c "
+import json
+with open('$OPENCLAW_CONFIG') as f:
+    cfg = json.load(f)
+providers = cfg.get('models', {}).get('providers', {})
+for name, prov in providers.items():
+    if 'zai' in name.upper():
+        print(prov.get('apiKey', ''))
+        break
+" 2>/dev/null || echo "")
+    fi
+fi
+export ZAI_API_KEY
+
+# ─── 参数解析 ─────────────────────────────────────────
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=true ;;
+        -h|--help) echo "用法: $0 [--dry-run]"; exit 0 ;;
+    esac
+done
+
+cd "$REPO_DIR"
+
+# ─── 颜色 ───────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log()  { echo -e "${GREEN}[AUTO]${NC} $*"; }
+warn() { echo -e "${YELLOW}[AUTO]${NC} $*"; }
+err()  { echo -e "${RED}[AUTO]${NC} $*" >&2; }
+
+redact_log() {
+    # 持久化日志前做基础密钥脱敏，避免把本地 API key 写入仓库。
+    sed -E \
+        -e 's/sk-[A-Za-z0-9_-]{20,}/[REDACTED_API_KEY]/g' \
+        -e 's/(api[_-]?key[=:][[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
+        -e 's/(authorization:[[:space:]]*bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig'
+}
+
+cleanup() {
+    rm -f "$PROMPT_FILE" "$OPENCODE_LOG" "$REVIEW_FILE" 2>/dev/null || true
+    if [ "$HAVE_LOCK" = true ]; then
+        rm -rf "$LOCK_DIR" 2>/dev/null || true
+    fi
+}
+
+trap cleanup EXIT
+
+acquire_lock() {
+    # [INF-001] task_claim_lock
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+        HAVE_LOCK=true
+        {
+            echo "pid=$$"
+            echo "started_at=$(date +%Y-%m-%d_%H:%M:%S)"
+            echo "repo=$REPO_DIR"
+        } > "$LOCK_DIR/owner"
+        return 0
+    fi
+
+    err "检测到自动开发锁，退出以避免重复领取任务：$LOCK_DIR"
+    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+    exit 1
+}
+
+update_task_status() {
+    # [INF-001] task_claim_lock
+    local status_text="$1"
+    python3 - "$TASKS_FILE" "$TASK_ID" "$status_text" <<'PYEOF'
+import re
+import sys
+
+tasks_file, target_id, status_text = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(tasks_file, "r", encoding="utf-8") as f:
+    content = f.read()
+
+section_pattern = re.compile(
+    r"(###\s+" + re.escape(target_id) + r":.*?)(?=\n###|\n---|\Z)",
+    re.DOTALL,
+)
+match = section_pattern.search(content)
+if not match:
+    print(f"TASKS.md: 未找到任务 {target_id}")
+    sys.exit(1)
+
+section = match.group(1)
+new_section, n = re.subn(
+    r"(- \*\*状态\*\*[：:]\s*).+",
+    r"\1" + status_text,
+    section,
+    count=1,
+)
+if n == 0:
+    print(f"TASKS.md: 未找到 {target_id} 的状态行")
+    sys.exit(1)
+
+new_content = content[: match.start(1)] + new_section + content[match.end(1) :]
+with open(tasks_file, "w", encoding="utf-8") as f:
+    f.write(new_content)
+print(f"TASKS.md: {target_id} -> {status_text}")
+PYEOF
+}
+
+# ─── 0. 前置检查 ──────────────────────────────────────
+log "=== AUTO-002 自动开发闭环 v1.3 ==="
+log "仓库: $REPO_DIR"
+
+mkdir -p "$REVIEW_DIR" "$TASK_RUN_ROOT"
+
+if [ -d "$LOCK_DIR" ]; then
+    err "检测到自动开发锁，退出以避免重复领取任务：$LOCK_DIR"
+    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+    exit 1
+fi
+
+DIRTY=$(git status --porcelain | head -5 || true)
+if [ -n "$DIRTY" ]; then
+    err "工作区不干净，退出以避免覆盖用户改动："
+    echo "$DIRTY"
+    exit 1
+fi
+log "工作区干净 ✓"
+
+acquire_lock
+
+# ─── 1. 解析 TASKS.md，找最高优先级 ready 任务 ──────────
+parse_ready_tasks() {
+    python3 - "$TASKS_FILE" <<'PYEOF'
+import re, sys
+
+tasks_file = sys.argv[1]
+with open(tasks_file, "r") as f:
+    content = f.read()
+
+pattern = re.compile(
+    r"###\s+([\w-]+):\s*(.+?)\n(.*?)(?=\n###|\n---|\Z)",
+    re.DOTALL
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "init",
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    result = subprocess.run(
+        ["bash", "scripts/auto_dev_loop.sh", "--dry-run"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "AUTO-002 DRY-RUN" in result.stdout
+    assert tasks_path.read_text(encoding="utf-8") == tasks
+    assert not (repo / ".auto_dev.lock").exists()
+
+
+def test_runner_contains_claim_lock_and_safe_exit_expansion():
+    script_text = SCRIPT.read_text(encoding="utf-8")
+
+    assert "# [INF-001] task_claim_lock" in script_text
+    assert "update_task_status \"in_progress — claimed $RUN_ID\"" in script_text
+    assert "update_task_status \"blocked — NEEDS_HUMAN" in script_text
+    assert "exit=${OPENCODE_EXIT}" in script_text
+    assert "exit=$OPENCODE_EXIT）" not in script_text
+
+exec
+/bin/zsh -lc "sed -n '180,360p' scripts/auto_dev_loop.sh" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    re.DOTALL
+)
+
+priority_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+EXCLUDE_KEYWORDS = {"巡检", "规则", "基线", "checklist", "inspection", "收尾"}
+EXCLUDE_ID_PREFIXES = ("R-", "AUTO-")
+EXCLUDE_IDS = {"T-000"}
+
+tasks = []
+for m in pattern.finditer(content):
+    task_id = m.group(1)
+    title = m.group(2).strip()
+    body = m.group(3)
+
+    if not re.search(r"\*\*状态\*\*.*?ready", body, re.IGNORECASE):
+        continue
+
+    if "已完成" in title or "\u2713" in title:
+        continue
+
+    if task_id in EXCLUDE_IDS:
+        continue
+    if any(task_id.startswith(p) for p in EXCLUDE_ID_PREFIXES):
+        continue
+
+    title_lower = title.lower()
+    if any(kw in title_lower for kw in EXCLUDE_KEYWORDS):
+        continue
+
+    prio_match = re.search(r"P(\d)", body)
+    prio = f"P{prio_match.group(1)}" if prio_match else "P2"
+
+    test_cmds = re.findall(r"`(pytest\s+[^`]+)`", body)
+
+    tasks.append({
+        "id": task_id,
+        "title": title,
+        "priority": prio,
+        "priority_num": priority_order.get(prio, 9),
+        "test_cmds": test_cmds,
+        "body_start": m.start(),
+    })
+
+tasks.sort(key=lambda t: (t["priority_num"], t["body_start"]))
+
+if tasks:
+    t = tasks[0]
+    print(f"{t['id']}|{t['title']}|{t['priority']}|{','.join(t['test_cmds'])}")
+else:
+    print("NONE|||")
+PYEOF
+}
+
+# ─── 主循环：连续执行直到没有 ready 任务 ────────────────
+COMPLETED_TASKS=0
+FAILED_TASKS=0
+
+# 额度检查函数（智谱 API）
+check_zai_quota() {
+    if [[ -x "${SCRIPT_DIR}/check_zai_quota.sh" ]]; then
+        local result
+        result=$(ZAI_API_KEY="${ZAI_API_KEY:-}" bash "${SCRIPT_DIR}/check_zai_quota.sh" --json 2>/dev/null || echo '{"status":"ERROR"}')
+        local status
+        status=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','ERROR'))" 2>/dev/null || echo "ERROR")
+        # 保存额度状态到文件（供其他脚本读取）
+        echo "$result" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    data['last_check'] = '$(date -Iseconds)'
+    with open('${REPO_DIR}/.zai_quota_state.json', 'w') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+except: pass
+" 2>/dev/null || true
+        if [[ "$status" == "EXHAUSTED" ]]; then
+            local reset_time msg
+            reset_time=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('reset_time',''))" 2>/dev/null || echo "")
+            msg=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('message',''))" 2>/dev/null || echo "")
+            err "[QUOTA] 智谱 API 额度耗尽！"
+            [[ -n "$reset_time" ]] && err "[QUOTA] 下次刷新: $reset_time"
+            [[ -n "$msg" ]] && err "[QUOTA] 详情: $msg"
+            return 1
+        fi
+    fi
+    return 0
+}
+
+while true; do
+
+TASK_LINE=$(parse_ready_tasks)
+TASK_ID=$(echo "$TASK_LINE" | cut -d'|' -f1)
+TASK_TITLE=$(echo "$TASK_LINE" | cut -d'|' -f2)
+TASK_PRIO=$(echo "$TASK_LINE" | cut -d'|' -f3)
+TASK_TESTS=$(echo "$TASK_LINE" | cut -d'|' -f4)
+
+if [ "$TASK_ID" = "NONE" ]; then
+    log "没有 status=ready 的可开发任务，退出。"
+    break
+fi
+
+log "选中任务: [$TASK_PRIO] $TASK_ID: $TASK_TITLE"
+[ -n "$TASK_TESTS" ] && log "测试命令: $TASK_TESTS"
+
+# ─── dry-run 模式：只打印任务信息，不执行 ────────────────
+if [ "$DRY_RUN" = true ]; then
+    echo ""
+    echo "========================================"
+    echo "  AUTO-002 DRY-RUN"
+    echo "========================================"
+    echo "  任务 ID:   $TASK_ID"
+    echo "  任务标题:  $TASK_TITLE"
+    echo "  优先级:    $TASK_PRIO"
+    echo "  测试命令:  ${TASK_TESTS:-（默认 pytest）}"
+    echo "========================================"
+    break
+fi
+
+# ─── 2a. 建立任务运行档案 ──────────────────────────────
+RUN_ID="${TASK_ID}-$(date +%Y%m%d-%H%M%S)"
+RUN_DIR="$TASK_RUN_ROOT/$RUN_ID"
+mkdir -p "$RUN_DIR"
+update_task_status "in_progress — claimed $RUN_ID"
+
+cat > "$RUN_DIR/task.md" <<TASK_META_EOF
+# Auto Dev Task Run
+
+- Task: $TASK_ID — $TASK_TITLE
+- Priority: $TASK_PRIO
+- Status: CLAIMED
+- Started at: $(date +%Y-%m-%d_%H:%M:%S)
+- Git HEAD: $(git rev-parse --short HEAD)
+- Test commands: ${TASK_TESTS:-pytest tests/ -q --tb=short}
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+TASK_META_EOF
+log "任务运行档案: $RUN_DIR"
+
+# ─── 2. 构造 OpenCode prompt ────────────────────────────
+PROMPT_FILE=$(mktemp -t auto-dev-prompt.XXXXXX)
+cat > "$PROMPT_FILE" <<PROMPT_EOF
+# 任务: $TASK_ID: $TASK_TITLE
+
+请从 docs/TASKS.md 中读取任务 "$TASK_ID" 的完整描述，按要求实现。
+
+## 执行约束
+- 不改 tradingagents/prompts/
+- 不写入生产 tradingagents.db
+- 不跑全市场扫描或股票深度 TA
+- 不 push / PR / merge
+- **不要 git commit** — commit 由外层脚本统一执行
+- 修改后更新 docs/DEVLOG.md
+
+## 完成后输出
+- 修改了哪些文件
+- 关键逻辑说明
+- 测试结果（passed/failed 数量）
+PROMPT_EOF
+log "OpenCode prompt: $PROMPT_FILE"
+
+# ─── 3. 循环：实现 + 测试 + 审核（最多 MAX_FIX_ROUNDS 轮）──
+RESULT_STATUS=""
+REVIEW_OUTPUT=""
+ROUND=0
+LAST_FAILURE_REASON=""
+ISSUES_LOG=()
+
+while [ $ROUND -lt $MAX_FIX_ROUNDS ]; do
+    ROUND=$((ROUND + 1))
+    log "--- 第 $ROUND 轮 ---"
+    cp "$PROMPT_FILE" "$RUN_DIR/prompt-round${ROUND}.md"
+
+    # 3a. 运行 OpenCode
+    log "启动 OpenCode..."
+
+exec
+/bin/zsh -lc "sed -n '360,620p' scripts/auto_dev_loop.sh" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    log "启动 OpenCode..."
+    OPENCODE_LOG=$(mktemp -t auto-dev-opencode.XXXXXX)
+    
+    # 额度预检：如果额度耗尽，暂停等待
+    if ! check_zai_quota; then
+        err "[QUOTA] 额度耗尽，等待 10 分钟后重试..."
+        sleep 600
+        if ! check_zai_quota; then
+            err "[QUOTA] 10 分钟后额度仍不可用，终止本轮任务"
+            LAST_FAILURE_REASON="智谱 API 额度耗尽"
+            ISSUES_LOG+=("[Round $ROUND] 智谱 API 额度耗尽，无法继续")
+            RESULT_STATUS="QUOTA_EXHAUSTED"
+            break
+        fi
+    fi
+    
+    set +e
+    opencode run < "$PROMPT_FILE" > "$OPENCODE_LOG" 2>&1
+    OPENCODE_EXIT=$?
+    set -e
+    log "OpenCode 退出码: $OPENCODE_EXIT"
+    redact_log < "$OPENCODE_LOG" > "$RUN_DIR/opencode-round${ROUND}.txt"
+
+    if [ $OPENCODE_EXIT -ne 0 ]; then
+        # 检查是否因额度耗尽失败
+        if grep -qi "429\|rate.limit\|quota\|exhausted\|too many requests" "$OPENCODE_LOG" 2>/dev/null; then
+            err "[QUOTA] OpenCode 失败原因：智谱 API 额度耗尽"
+            check_zai_quota  # 显示详细信息
+            LAST_FAILURE_REASON="智谱 API 额度耗尽（429）"
+            ISSUES_LOG+=("[Round $ROUND] 智谱 API 额度耗尽")
+            RESULT_STATUS="QUOTA_EXHAUSTED"
+            break
+        fi
+        LAST_FAILURE_REASON="OpenCode failed with exit ${OPENCODE_EXIT}"
+        ISSUES_LOG+=("[Round $ROUND] OpenCode 退出码 $OPENCODE_EXIT：$(tail -5 "$OPENCODE_LOG" | tr '\n' ' ')")
+        err "OpenCode 执行失败（exit=${OPENCODE_EXIT}）"
+        err "日志: $OPENCODE_LOG"
+        cat > "$PROMPT_FILE" <<FIX_EOF
+# 修复任务: $TASK_ID
+
+上一轮 OpenCode 执行失败（exit code ${OPENCODE_EXIT}）。请修复：
+
+## OpenCode 日志（最后 30 行）
+\`\`\`
+$(tail -30 "$OPENCODE_LOG")
+\`\`\`
+
+## 约束
+- 不改 tradingagents/prompts/
+- 不写入生产 tradingagents.db
+- 不 push
+- **不要 git commit**
+- 修复后更新 docs/DEVLOG.md
+FIX_EOF
+        continue
+    fi
+
+    # 3b. 运行测试
+    TEST_PASS=true
+    TEST_OUTPUT=""
+    TEST_LOG_FILE="$RUN_DIR/tests-round${ROUND}.txt"
+    : > "$TEST_LOG_FILE"
+    if [ -n "$TASK_TESTS" ]; then
+        IFS=',' read -ra TEST_CMD_ARRAY <<< "$TASK_TESTS"
+        for test_cmd in "${TEST_CMD_ARRAY[@]}"; do
+            test_cmd=$(echo "$test_cmd" | xargs)
+            log "运行测试: $test_cmd"
+            {
+                echo "## $test_cmd"
+                echo
+            } >> "$TEST_LOG_FILE"
+            set +e
+            TEST_OUTPUT=$(source .venv/bin/activate && eval "$test_cmd" 2>&1)
+            TEST_EXIT=$?
+            set -e
+            echo "$TEST_OUTPUT" | redact_log >> "$TEST_LOG_FILE"
+            {
+                echo
+                echo "Exit code: $TEST_EXIT"
+                echo
+            } >> "$TEST_LOG_FILE"
+            if [ $TEST_EXIT -ne 0 ]; then
+                TEST_PASS=false
+                LAST_FAILURE_REASON="Test failed: ${test_cmd} (exit ${TEST_EXIT})"
+                FAILED_SUMMARY=$(echo "$TEST_OUTPUT" | grep -E "FAILED|ERROR|AssertionError" | head -5 | tr '\n' ' ')
+                ISSUES_LOG+=("[Round $ROUND] 测试失败 ($test_cmd)：$FAILED_SUMMARY")
+                err "测试失败: $test_cmd (exit=$TEST_EXIT)"
+                break
+            fi
+        done
+    else
+        log "未指定测试，运行默认 pytest..."
+        set +e
+        TEST_OUTPUT=$(source .venv/bin/activate && pytest tests/ -q --tb=short 2>&1)
+        TEST_EXIT=$?
+        set -e
+        {
+            echo "## pytest tests/ -q --tb=short"
+            echo
+            echo "$TEST_OUTPUT" | redact_log
+            echo
+            echo "Exit code: $TEST_EXIT"
+        } >> "$TEST_LOG_FILE"
+        if [ $TEST_EXIT -ne 0 ]; then
+            TEST_PASS=false
+            LAST_FAILURE_REASON="Default pytest failed with exit ${TEST_EXIT}"
+            FAILED_SUMMARY=$(echo "$TEST_OUTPUT" | grep -E "FAILED|ERROR" | head -5 | tr '\n' ' ')
+            ISSUES_LOG+=("[Round $ROUND] 默认 pytest 失败：$FAILED_SUMMARY")
+        fi
+    fi
+
+    if [ "$TEST_PASS" = false ]; then
+        warn "测试未通过，准备修复..."
+        cat > "$PROMPT_FILE" <<FIX_EOF
+# 修复任务: $TASK_ID
+
+之前的实现测试未通过。请修复以下问题：
+
+## 测试输出（最后 30 行）
+\`\`\`
+$(echo "$TEST_OUTPUT" | tail -30)
+\`\`\`
+
+## 约束
+- 不改 tradingagents/prompts/
+- 不写入生产 tradingagents.db
+- 不 push
+- **不要 git commit**
+- 修复后更新 docs/DEVLOG.md
+FIX_EOF
+        continue
+    fi
+
+    log "测试通过 ✓"
+
+    # 3c. 运行 Codex review
+    log "运行 Codex review..."
+    REVIEW_FILE=$(mktemp -t auto-dev-review.XXXXXX)
+    set +e
+    codex review --uncommitted > "$REVIEW_FILE" 2>&1
+    CODEX_EXIT=$?
+    set -e
+    log "Codex 退出码: $CODEX_EXIT"
+
+    REVIEW_CONTENT=$(cat "$REVIEW_FILE" 2>/dev/null || echo "")
+
+    # 保存完整 review 到 docs/reviews/（含退出码）
+    REVIEW_SAVE_PATH="$REVIEW_DIR/${TASK_ID}-$(date +%Y%m%d)-round${ROUND}.txt"
+    {
+        echo "Task: $TASK_ID — $TASK_TITLE"
+        echo "Date: $(date +%Y-%m-%d_%H:%M:%S)"
+        echo "Codex exit code: $CODEX_EXIT"
+        echo "Round: $ROUND"
+        echo "---"
+        cat "$REVIEW_FILE"
+    } > "$REVIEW_SAVE_PATH"
+    cp "$REVIEW_SAVE_PATH" "$RUN_DIR/codex-review-round${ROUND}.txt"
+    log "Review 已保存: $REVIEW_SAVE_PATH"
+
+    # Codex review 失败 → 不信任结果，进入修复或 NEEDS_HUMAN
+    if [ $CODEX_EXIT -ne 0 ]; then
+        LAST_FAILURE_REASON="Codex review failed with exit ${CODEX_EXIT}"
+        ISSUES_LOG+=("[Round $ROUND] Codex review 失败 (exit=$CODEX_EXIT)")
+        err "Codex review 执行失败（exit=${CODEX_EXIT}），不信任空结果"
+        cat > "$PROMPT_FILE" <<FIX_EOF
+# 修复任务: $TASK_ID
+
+Codex review 上一轮执行失败（exit code $CODEX_EXIT）。请检查代码质量并修复潜在问题。
+
+## 约束
+- 不改 tradingagents/prompts/
+- 不写入生产 tradingagents.db
+- 不 push
+- **不要 git commit**
+- 修复后更新 docs/DEVLOG.md
+FIX_EOF
+        continue
+    fi
+
+    # 检查是否有 P0/P1 findings
+    HAS_CRITICAL=false
+    if echo "$REVIEW_CONTENT" | grep -qiE "(P0|P1|critical|must.fix|blocker|严重|必须修复)"; then
+        HAS_CRITICAL=true
+    fi
+
+    if [ "$HAS_CRITICAL" = true ]; then
+        LAST_FAILURE_REASON="Codex review reported P0/P1 findings"
+        warn "Codex review 发现 P0/P1 问题，准备修复..."
+        cat > "$PROMPT_FILE" <<FIX_EOF
+# 修复任务: $TASK_ID
+
+Codex review 发现了关键问题，请按 review 意见修复：
+
+## Codex Review 输出
+\`\`\`
+$(echo "$REVIEW_CONTENT" | head -50)
+\`\`\`
+
+## 约束
+- 不改 tradingagents/prompts/
+- 不写入生产 tradingagents.db
+- 不 push
+- **不要 git commit**
+- 修复后更新 docs/DEVLOG.md
+FIX_EOF
+        continue
+    fi
+
+    log "Codex review 通过 ✓（无 P0/P1 findings）"
+    REVIEW_OUTPUT="$REVIEW_CONTENT"
+    RESULT_STATUS="PASS"
+    break
+done
+
+# ─── 4. 处理结果 ──────────────────────────────────────
+COMMIT_HASH=""
+
+if [ "$RESULT_STATUS" = "PASS" ]; then
+    cat > "$RUN_DIR/summary.md" <<SUMMARY_EOF
+# Auto Dev Summary
+
+- Task: $TASK_ID — $TASK_TITLE
+- Priority: $TASK_PRIO
+- Final status: PASS
+- Rounds: $ROUND
+- Tests: PASS
+- Codex review: no P0/P1 findings
+- Review file: docs/reviews/${TASK_ID}-$(date +%Y%m%d)-round${ROUND}.txt
+- Run directory: docs/task_runs/$RUN_ID
+- Finished at: $(date +%Y-%m-%d_%H:%M:%S)
+SUMMARY_EOF
+
+    # 4a. 精确 git add：允许 tests/ tradingagents/ docs/ scripts/
+    log "精确提交：git add tests/ tradingagents/ docs/ scripts/"
+    git add tests/ tradingagents/ docs/ scripts/
+
+    # 4b. 排除临时文件和备份文件
+    EXCLUDE_PATTERNS=('*.backup' '*_original.py' '*_fixed.py' 'patch_*.py' '*.tmp' '*.log')
+    for pat in "${EXCLUDE_PATTERNS[@]}"; do
+        git reset HEAD -- "$pat" 2>/dev/null || true
+    done
+
+    # 排除根目录 .py 文件（只保留 tests/ 和 tradingagents/ 下的）
+    git diff --cached --name-only -- '*.py' | while read -r f; do
+        if [ "$(dirname "$f")" = "." ]; then
+            git reset HEAD -- "$f"
+        fi
+    done
+
+    # 4c. 提交前确认清单：检查暂存区文件
+    STAGED=$(git diff --cached --name-only)
+    if [ -z "$STAGED" ]; then
+        log "无有效文件需要提交"
+        RESULT_STATUS="DONE"
+    else
+        log "将提交的文件清单："
+        echo "$STAGED"
+
+        # 检查是否有不应提交的文件
+        SUSPICIOUS=$(echo "$STAGED" | grep -E '^([^/]+\.py$|.*\.backup$|.*_original\.py$|.*_fixed\.py$|patch_.*\.py$|.*\.tmp$|.*\.log$|__pycache__)' || true)
+        if [ -n "$SUSPICIOUS" ]; then
+
+exec
+/bin/zsh -lc "sed -n '620,820p' scripts/auto_dev_loop.sh" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        if [ -n "$SUSPICIOUS" ]; then
+            err "检测到不应提交的文件："
+            echo "$SUSPICIOUS"
+            err "中止提交，标记 NEEDS_HUMAN"
+            git reset HEAD
+            RESULT_STATUS="NEEDS_HUMAN"
+        fi
+    fi
+fi
+
+if [ "$RESULT_STATUS" = "PASS" ]; then
+    # 4d. 写入 DEVLOG（commit 前，将包含在 commit 中）
+    cat >> "$DEVLOG_FILE" <<DEVLOG_EOF
+
+## $(date +%Y-%m-%d) | AUTO-002 自动开发闭环
+
+- **任务**: $TASK_ID — $TASK_TITLE
+- **优先级**: $TASK_PRIO
+- **轮次**: $ROUND
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/${TASK_ID}-$(date +%Y%m%d)-round${ROUND}.txt
+- **运行档案**: docs/task_runs/$RUN_ID/
+DEVLOG_EOF
+    log "已写入 DEVLOG.md"
+
+    # 4e. 将 DEVLOG/TASKS 变更加入暂存区
+    git add docs/
+
+    # 4f. 提交实现与运行档案。
+    COMMIT_MSG="auto: $TASK_ID $TASK_TITLE [AUTO-002]"
+    git commit -m "$COMMIT_MSG"
+    COMMIT_HASH=$(git rev-parse --short HEAD)
+    log "已提交: $COMMIT_HASH"
+
+    # 4g. PASS 后用独立文档提交写入准确 commit hash，避免任务继续被领取。
+    update_task_status "done — commit ${COMMIT_HASH}"
+    git add docs/TASKS.md
+    git commit -m "docs: mark $TASK_ID done after auto run"
+    RESULT_STATUS="DONE"
+
+elif [ "$RESULT_STATUS" != "DONE" ]; then
+    # 超过最大轮数 或 pre-commit 检查失败 → 不提交任何文件
+    err "需要人工介入"
+    RESULT_STATUS="NEEDS_HUMAN"
+fi
+
+if [ "$RESULT_STATUS" = "NEEDS_HUMAN" ]; then
+    if [ -z "$LAST_FAILURE_REASON" ]; then
+        LAST_FAILURE_REASON="tests/review/pre-commit did not pass within the allowed rounds"
+    fi
+    cat > "$RUN_DIR/summary.md" <<SUMMARY_EOF
+# Auto Dev Summary
+
+- Task: $TASK_ID — $TASK_TITLE
+- Priority: $TASK_PRIO
+- Final status: NEEDS_HUMAN
+- Rounds: $ROUND
+- Reason: $LAST_FAILURE_REASON
+- Run directory: docs/task_runs/$RUN_ID
+- Finished at: $(date +%Y-%m-%d_%H:%M:%S)
+
+## 问题记录
+
+SUMMARY_EOF
+    for issue in "${ISSUES_LOG[@]}"; do
+        echo "- $issue" >> "$RUN_DIR/summary.md"
+    done
+    if [ ${#ISSUES_LOG[@]} -eq 0 ]; then
+        echo "（无问题记录）" >> "$RUN_DIR/summary.md"
+    fi
+    echo "" >> "$RUN_DIR/summary.md"
+    echo "人工处理前请先查看本目录下的 OpenCode、测试和 Codex review 日志。" >> "$RUN_DIR/summary.md"
+
+    update_task_status "blocked — NEEDS_HUMAN, see docs/task_runs/$RUN_ID"
+
+    cat >> "$DEVLOG_FILE" <<DEVLOG_EOF
+
+## $(date +%Y-%m-%d) | AUTO-002 自动开发闭环
+
+- **任务**: $TASK_ID — $TASK_TITLE
+- **优先级**: $TASK_PRIO
+- **轮次**: $ROUND (max)
+- **状态**: ❌ NEEDS_HUMAN
+- **原因**: $LAST_FAILURE_REASON
+- **运行档案**: docs/task_runs/$RUN_ID/
+DEVLOG_EOF
+    log "已写入 DEVLOG.md（未提交）"
+fi
+
+# ─── 5. 输出摘要 ──────────────────────────────────────
+echo ""
+echo "========================================"
+echo "  AUTO-002 执行摘要"
+echo "========================================"
+echo "  任务:   $TASK_ID — $TASK_TITLE"
+echo "  优先级: $TASK_PRIO"
+echo "  轮次:   $ROUND"
+echo "  状态:   $RESULT_STATUS"
+echo "  档案:   docs/task_runs/$RUN_ID/"
+if [ -n "$COMMIT_HASH" ]; then
+    echo "  提交:   $COMMIT_HASH"
+fi
+echo "========================================"
+if [ ${#ISSUES_LOG[@]} -gt 0 ]; then
+    echo ""
+    echo "  问题记录（${#ISSUES_LOG[@]} 项）："
+    for issue in "${ISSUES_LOG[@]}"; do
+        echo "  - $issue"
+    done
+    echo "========================================"
+fi
+
+# ─── 计数并决定是否继续 ──────────────────────────
+if [ "$RESULT_STATUS" = "DONE" ]; then
+    COMPLETED_TASKS=$((COMPLETED_TASKS + 1))
+    log "--- 任务 $TASK_ID 完成，继续下一个 ---"
+elif [ "$RESULT_STATUS" = "QUOTA_EXHAUSTED" ]; then
+    FAILED_TASKS=$((FAILED_TASKS + 1))
+    err "--- 任务 $TASK_ID 因额度耗尽失败，停止批量执行 ---"
+    err "--- 等待额度恢复后可重新运行 ---"
+else
+    FAILED_TASKS=$((FAILED_TASKS + 1))
+    err "--- 任务 $TASK_ID 失败，停止批量执行，等待人工介入 ---"
+fi
+
+# 重置 per-task 变量
+RESULT_STATUS=""
+ROUND=0
+LAST_FAILURE_REASON=""
+COMMIT_HASH=""
+ISSUES_LOG=()
+
+# 失败即停止
+if [ $FAILED_TASKS -gt 0 ]; then
+    break
+fi
+
+
+done
+
+# ─── 批量汇总 ──────────────────────────────────────
+echo ""
+echo "========================================"
+echo "  AUTO-002 批量执行汇总"
+echo "========================================"
+echo "  完成: $COMPLETED_TASKS 个"
+echo "  失败: $FAILED_TASKS 个"
+echo "  总计: $((COMPLETED_TASKS + FAILED_TASKS)) 个"
+echo "========================================"
+
+exit $([ $FAILED_TASKS -eq 0 ] && echo 0 || echo 1)
+
+exec
+/bin/zsh -lc 'ps -p 41733 -o pid=,comm=' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+41733 bash
+
+exec
+/bin/zsh -lc "rg -n \"source.*(event|event_catalyst)|event_catalyst.*source|source ==|source in|candidate.source|source\\]\" tradingagents/tradeflow -g'*.py'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/tradeflow/policy_version_signal.py:164:                    "source": "event_text",
+tradingagents/tradeflow/universe.py:32:    EVENT = "event_catalyst"  # [M-011] universe_compat_fix — preserve old public source label
+tradingagents/tradeflow/plan_runner.py:121:    # [T-006] event_source_discovery — add event metadata to plan entry
+tradingagents/tradeflow/plan_runner.py:125:        entry["event_sources"] = sorted({it.source for it in event_items if it.source})
+tradingagents/tradeflow/plan_runner.py:151:    use_event_source: bool = False,  # [N-001] event_source_plan_integration
+tradingagents/tradeflow/plan_runner.py:166:        use_event_source: [N-001] If True, fetch daily events and inject into universe.
+tradingagents/tradeflow/plan_runner.py:178:    # [N-001] event_source_plan_integration — fetch events if enabled
+tradingagents/tradeflow/plan_runner.py:186:        from .event_source import fetch_daily_events_detailed, EventSourceStatus
+tradingagents/tradeflow/plan_runner.py:191:        event_source_status = event_result.status.value
+tradingagents/tradeflow/plan_runner.py:192:        event_source_error = event_result.error_message
+tradingagents/tradeflow/plan_runner.py:208:        # [T-006] event_source_discovery — also generate event_overrides from EventItem data
+tradingagents/tradeflow/plan_runner.py:220:            # [T-006] event_source_discovery — generate event_overrides from EventItem data
+tradingagents/tradeflow/plan_runner.py:256:                # [T-006] event_source_discovery — attach event items for plan entry
+tradingagents/tradeflow/plan_runner.py:316:            "event_source": {  # [T-006] event_source_discovery
+tradingagents/tradeflow/evidence_gate.py:18:  - event_source:   At least one event / news text for the symbol.
+tradingagents/tradeflow/evidence_gate.py:118:        has_event_source: Whether at least one event/news text is bound to this symbol.
+tradingagents/tradeflow/evidence_gate.py:136:        "event_source": has_event_source,
+tradingagents/tradeflow/underwater_risk_flags.py:104:    source_hint: str = "event_text",
+tradingagents/tradeflow/game_balance.py:175:            refs.append({"field": "fund_flow_case", "matched_text": s, "source": "event_text_positive"})
+tradingagents/tradeflow/game_balance.py:179:            refs.append({"field": "fund_flow_case", "matched_text": s, "source": "event_text_negative"})
+tradingagents/tradeflow/candidate_engine.py:445:    # Collect all available text sources: news_texts + event_override titles
+tradingagents/tradeflow/candidate_engine.py:663:    has_event_source = bool(all_event_texts)
+tradingagents/tradeflow/candidate_engine.py:676:        has_event_source=has_event_source,
+tradingagents/tradeflow/discovery.py:129:        use_event_source: Fetch daily events for event pool.
+tradingagents/tradeflow/discovery.py:145:        from .event_source import fetch_daily_events_detailed, EventSourceStatus  # [T-006]
+tradingagents/tradeflow/discovery.py:150:        event_source_status = event_result.status.value  # [T-006]
+tradingagents/tradeflow/discovery.py:151:        event_source_error = event_result.error_message  # [T-006]
+tradingagents/tradeflow/discovery.py:181:        # [T-006] event_source_discovery — generate event_overrides from EventItem data
+tradingagents/tradeflow/discovery.py:215:            # [T-006] event_source_discovery — attach event items for discovery entry
+tradingagents/tradeflow/discovery.py:286:            "event_source": {  # [T-006] event_source_discovery
+tradingagents/tradeflow/discovery.py:359:        "source": candidate.source,
+tradingagents/tradeflow/discovery.py:406:    # [T-006] event_source_discovery — add event metadata to discovery entry
+tradingagents/tradeflow/discovery.py:410:        entry["event_sources"] = sorted({it.source for it in event_items if it.source})
+
+codex
+The code changes themselves look consistent with the stated universe compatibility fix, but the current untracked runtime lock artifact would block the project's auto-dev workflow if carried forward.
+
+Review comment:
+
+- [P2] Remove the auto-dev lock artifact — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+  If this untracked `.auto_dev.lock` directory is included in the change set or left behind after the run, `scripts/auto_dev_loop.sh` exits immediately whenever it sees this path, so future automatic task runs in a checkout of this patch will be blocked by a stale local PID/path. This runtime lock should be cleaned up or ignored rather than committed.
+The code changes themselves look consistent with the stated universe compatibility fix, but the current untracked runtime lock artifact would block the project's auto-dev workflow if carried forward.
+
+Review comment:
+
+- [P2] Remove the auto-dev lock artifact — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+  If this untracked `.auto_dev.lock` directory is included in the change set or left behind after the run, `scripts/auto_dev_loop.sh` exits immediately whenever it sees this path, so future automatic task runs in a checkout of this patch will be blocked by a stale local PID/path. This runtime lock should be cleaned up or ignored rather than committed.

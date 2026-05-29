@@ -27,9 +27,9 @@ from tradingagents.tradeflow.schemas import Candidate, CandidateSignal
 class TestUniverseSourceEnum:
     def test_all_sources_defined(self):
         expected = {
-            "watchlist", "holding", "manual", "event", "event_source",
+            "watchlist", "holding", "manual", "event_catalyst", "event_source",
             "fund_flow_pool", "industry_pool", "yesterday_observe",
-        }
+        }  # [M-011] universe_compat_fix — event → event_catalyst
         actual = {s.value for s in UniverseSource}
         assert actual == expected
 
@@ -83,7 +83,7 @@ class TestUniverseEntry:
         assert d["name"] == "贵州茅台"
         assert d["source"] == "holding"
         assert "holding" in d["universe_sources"]
-        assert "event" in d["universe_sources"]
+        assert "event_catalyst" in d["universe_sources"]
         assert len(d["universe_source_records"]) == 2
 
 
@@ -239,7 +239,7 @@ class TestBuildUniverseBackwardCompat:
         )
         assert len(universe) == 3
         by_sym = {u["symbol"]: u for u in universe}
-        assert "event" in by_sym["999999.SZ"]["universe_sources"]
+        assert "event_catalyst" in by_sym["999999.SZ"]["universe_sources"]
         assert "event_source" in by_sym["888888.SZ"]["universe_sources"]
         assert "manual" in by_sym["600519.SH"]["universe_sources"]
 
@@ -254,7 +254,7 @@ class TestBuildUniverseBackwardCompat:
         assert len(universe) == 1
         entry = universe[0]
         assert "manual" in entry["universe_sources"]
-        assert "event" in entry["universe_sources"]
+        assert "event_catalyst" in entry["universe_sources"]
 
     def test_build_universe_with_industry_and_fund_flow(self):
         universe = build_universe(
@@ -411,7 +411,165 @@ class TestCandidateUniverseSourcesField:
             "strategy_tags_json": "[]",
             "risk_flags_json": "[]",
             "evidence_json": "{}",
-            "universe_sources_json": '["manual", "event"]',
+            "universe_sources_json": '["manual", "event_catalyst"]',  # [M-011]
         }
         c = Candidate.from_db_row(row)
-        assert c.universe_sources == ["manual", "event"]
+        assert c.universe_sources == ["manual", "event_catalyst"]  # [M-011]
+
+
+class TestM011EventOverridesCompat:  # [M-011] universe_compat_fix
+    def test_event_overrides_source_label_is_event_catalyst(self):
+        mgr = UniverseManager()
+        overrides = [
+            {"symbol": "AAA.SZ", "name": "AAA", "title": "回购", "event_type": "buyback"},
+        ]
+        mgr.add_from_events(event_overrides=overrides)
+        entry = mgr.get_entry("AAA.SZ")
+        assert entry.primary_source == "event_catalyst"
+        d = entry.to_dict()
+        assert d["source"] == "event_catalyst"
+        assert "event_catalyst" in d["universe_sources"]
+
+    def test_build_universe_event_overrides_backward_compat(self):
+        event_overrides = [
+            {"symbol": "999999.SZ", "name": "事件股", "title": "回购"},
+        ]
+        universe = build_universe(event_overrides=event_overrides)
+        by_sym = {u["symbol"]: u for u in universe}
+        assert by_sym["999999.SZ"]["source"] == "event_catalyst"
+        assert "event_catalyst" in by_sym["999999.SZ"]["universe_sources"]
+
+
+class TestM011SourceRecordExtraSerialization:  # [M-011] universe_compat_fix
+    def test_to_dict_includes_extra_when_present(self):
+        e = UniverseEntry(
+            symbol="600519.SH",
+            name="贵州茅台",
+            sources=[
+                SourceRecord(
+                    source=UniverseSource.YESTERDAY_OBSERVE,
+                    reason="昨日候选",
+                    extra={
+                        "strategy_tags": '["VCP"]',
+                        "trigger_price": 1800.0,
+                        "invalid_price": 1700.0,
+                    },
+                ),
+            ],
+        )
+        d = e.to_dict()
+        recs = d["universe_source_records"]
+        assert len(recs) == 1
+        assert "extra" in recs[0]
+        assert recs[0]["extra"]["strategy_tags"] == '["VCP"]'
+        assert recs[0]["extra"]["trigger_price"] == 1800.0
+        assert recs[0]["extra"]["invalid_price"] == 1700.0
+
+    def test_to_dict_omits_extra_when_empty(self):
+        e = UniverseEntry(
+            symbol="600519.SH",
+            sources=[
+                SourceRecord(source=UniverseSource.MANUAL, reason="test"),
+            ],
+        )
+        d = e.to_dict()
+        recs = d["universe_source_records"]
+        assert "extra" not in recs[0]
+
+    def test_include_yesterday_extra_preserved(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            tf_db_path = f.name
+        try:
+            conn = sqlite3.connect(tf_db_path)
+            conn.execute(
+                "CREATE TABLE tradeflow_candidates ("
+                "trade_date TEXT, symbol TEXT, name TEXT, status TEXT, "
+                "strategy_tags_json TEXT, trigger_price REAL, invalid_price REAL)"
+            )
+            conn.execute(
+                "INSERT INTO tradeflow_candidates VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("2026-05-29", "600519.SH", "贵州茅台", "active",
+                 '["VCP","PULLBACK"]', 1800.0, 1700.0),
+            )
+            conn.commit()
+            conn.close()
+
+            mgr = UniverseManager()
+            mgr.add_from_yesterday(tf_db_path, trade_date="2026-05-29")
+            entry = mgr.get_entry("600519.SH")
+            assert entry is not None
+            assert entry.name == "贵州茅台"
+            sr = entry.sources[0]
+            assert sr.source == UniverseSource.YESTERDAY_OBSERVE
+            assert sr.extra.get("strategy_tags") == '["VCP","PULLBACK"]'
+            assert sr.extra.get("trigger_price") == 1800.0
+            assert sr.extra.get("invalid_price") == 1700.0
+
+            d = entry.to_dict()
+            recs = d["universe_source_records"]
+            assert recs[0]["extra"]["trigger_price"] == 1800.0
+            assert recs[0]["extra"]["invalid_price"] == 1700.0
+        finally:
+            os.unlink(tf_db_path)
+
+
+class TestM011PlanRunnerDiscoveryCompat:  # [M-011] universe_compat_fix
+    def test_plan_runner_preserves_event_catalyst_source(self):
+        from tradingagents.tradeflow.plan_runner import generate_daily_plan
+
+        mock_candidate = Candidate(
+            symbol="999999.SZ", name="事件股", source="event_catalyst",
+            strategy_tags=["EVENT_CATALYST"], score=60.0, trade_date="2026-05-25",
+        )
+        mock_candidate.signals = [CandidateSignal(strategy_tag="EVENT_CATALYST", score=60.0, reason="test")]
+        mock_candidate.primary_strategy = "EVENT_CATALYST"
+
+        mock_universe = [
+            {
+                "symbol": "999999.SZ",
+                "name": "事件股",
+                "source": "event_catalyst",
+                "universe_sources": ["event_catalyst"],
+                "universe_source_records": [
+                    {"source": "event_catalyst", "reason": "事件催化: 回购", "timestamp": "2026-05-25T08:00:00"},
+                ],
+            },
+        ]
+
+        with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol", return_value=(mock_candidate, "")):
+            with patch("tradingagents.tradeflow.plan_runner.build_universe", return_value=mock_universe):
+                plan = generate_daily_plan(
+                    trade_date="2026-05-25",
+                    candidates=None,
+                )
+
+        assert len(plan.candidates) == 1
+        entry = plan.candidates[0]
+        assert "event_catalyst" in entry["universe_sources"]
+
+    def test_discovery_preserves_event_catalyst_source(self):
+        from tradingagents.tradeflow.discovery import _build_discovery_universe
+
+        universe = _build_discovery_universe(
+            symbols=["600519.SH"],
+            prod_db_path="",
+            tf_db_path="",
+        )
+        by_sym = {u["symbol"]: u for u in universe}
+        assert by_sym["600519.SH"]["source"] == "manual"
+
+    def test_discovery_event_overrides_source_label(self):
+        from tradingagents.tradeflow.discovery import _build_discovery_universe
+
+        overrides = [
+            {"symbol": "999999.SZ", "name": "事件股", "title": "回购"},
+        ]
+        universe = _build_discovery_universe(
+            symbols=["600519.SH"],
+            prod_db_path="",
+            tf_db_path="",
+        )
+        universe_from_events = build_universe(event_overrides=overrides)
+        by_sym = {u["symbol"]: u for u in universe_from_events}
+        assert "999999.SZ" in by_sym
+        assert by_sym["999999.SZ"]["source"] == "event_catalyst"

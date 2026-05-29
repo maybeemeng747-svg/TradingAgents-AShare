@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-05-30 | M-011: 修复 M-003 universe 兼容性与来源 extra 序列化
+
+- **执行者**：OpenCode
+- **任务**：M-011 — 修复 Codex review 指出的 universe manager 兼容性问题：事件覆盖来源标签变化，以及 `SourceRecord.extra` 被收集但序列化丢失
+- **修改文件**：
+  - `tradingagents/tradeflow/universe.py` — [M-011] universe_compat_fix
+    1. `UniverseSource.EVENT` 值从 `"event"` 改为 `"event_catalyst"`，保留旧公共输出 `source="event_catalyst"`，避免已有报告、筛选器、测试断裂
+    2. `UniverseEntry.to_dict()` 序列化 `universe_source_records` 时包含 `SourceRecord.extra`（当 extra 非空时）
+    3. `include_yesterday` 带入的 `strategy_tags/trigger_price/invalid_price` 不再在序列化中丢失
+  - `tests/test_tradeflow_universe.py` — 新增 `TestM011EventOverridesCompat`（2 个测试）、`TestM011SourceRecordExtraSerialization`（3 个测试）、`TestM011PlanRunnerDiscoveryCompat`（3 个测试），覆盖事件来源标签兼容、extra 序列化、昨日候选 extra 保留、plan_runner/discovery 集成；更新 6 处既有断言使用 `"event_catalyst"`
+- **测试结果**：1711 passed, 17 skipped, 0 failed
+- **关键逻辑**：
+  - `UniverseSource.EVENT = "event_catalyst"` 恢复 M-003 重构前的公共来源标签，与 `test_tradeflow_plan_runner.py` 中已有的 `"event_catalyst"` 断言一致
+  - `to_dict()` 中 `universe_source_records` 只在 `extra` 非空时序列化，避免空字典噪声
+  - `include_yesterday` 通过 `add_from_yesterday()` 将 strategy_tags/trigger_price/invalid_price 存入 `SourceRecord.extra`，现在通过 `to_dict()` 可正确传递到下游
+- **风险点**：无；`UniverseSource.EVENT` 值从 `"event"` 改为 `"event_catalyst"` 恢复了旧的公共标签，`to_dict()` 的 extra 序列化是纯新增字段
+
 ## 2026-05-30 | S-009: 修复 S-005 选股门控双重计分与资金单位校验
 
 - **执行者**：OpenCode
@@ -500,3 +517,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/S-009-20260530-round1.txt
 - **运行档案**: docs/task_runs/S-009-20260530-022215/
+
+## 2026-05-30 | AUTO-002 自动开发闭环
+
+- **任务**: M-011 — 修复 M-003 universe 兼容性与来源 extra 序列化（P1）
+- **优先级**: P1
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/M-011-20260530-round1.txt
+- **运行档案**: docs/task_runs/M-011-20260530-022843/

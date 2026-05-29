@@ -29,7 +29,7 @@ class UniverseSource(Enum):
     WATCHLIST = "watchlist"
     HOLDING = "holding"
     MANUAL = "manual"
-    EVENT = "event"
+    EVENT = "event_catalyst"  # [M-011] universe_compat_fix — preserve old public source label
     EVENT_SOURCE = "event_source"
     FUND_FLOW = "fund_flow_pool"
     INDUSTRY = "industry_pool"
@@ -66,21 +66,24 @@ class UniverseEntry:
         return sorted({sr.source.value for sr in self.sources})
 
     def to_dict(self) -> dict:
-        return {
+        result = {  # [M-011] universe_compat_fix — include extra in serialization
             "symbol": self.symbol,
             "name": self.name,
             "source": self.primary_source,
             "universe_sources": self.source_values,
-            "universe_source_records": [
-                {
-                    "source": sr.source.value,
-                    "reason": sr.reason,
-                    "timestamp": sr.timestamp,
-                }
-                for sr in self.sources
-            ],
+            "universe_source_records": [],
             "filter_reason": self.filter_reason,
         }
+        for sr in self.sources:
+            rec = {
+                "source": sr.source.value,
+                "reason": sr.reason,
+                "timestamp": sr.timestamp,
+            }
+            if sr.extra:
+                rec["extra"] = sr.extra
+            result["universe_source_records"].append(rec)
+        return result
 
 
 class UniverseManager:
