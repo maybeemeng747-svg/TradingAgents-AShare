@@ -1,0 +1,711 @@
+[0m
+> build · glm-5.1
+[0m
+[0m# [0mTodos
+[ ] Read TASKS.md to get S-002 full description
+[ ] Read project overview and understand existing codebase
+[ ] Implement narrative quality scoring feature
+[ ] Write tests for the feature
+[ ] Run tests and verify
+[ ] Update DEVLOG.md
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/project-overview.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m
+[0m# [0mTodos
+[x] Read TASKS.md to get S-002 full description
+[ ] Read project overview and understand existing codebase
+[ ] Implement narrative quality scoring feature
+[ ] Write tests for the feature
+[ ] Run tests and verify
+[ ] Update DEVLOG.md
+[0m
+Now let me understand the existing TradeFlow code structure, especially the S-001 implementation and the schemas/candidate_engine that I need to integrate with.
+[0m→ [0mRead tradingagents/tradeflow
+[0m→ [0mRead tradingagents/tradeflow/schemas.py
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py
+[0m→ [0mRead tradingagents/tradeflow/policy_version_signal.py
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py
+[0m→ [0mRead tests/test_s001_policy_version_signal.py
+[0m→ [0mRead tradingagents/tradeflow/strategies/event_catalyst.py
+[0m
+[0m# [0mTodos
+[x] Read TASKS.md to get S-002 full description
+[x] Read project overview and understand existing codebase
+[ ] Implement narrative quality scoring feature
+[ ] Write tests for the feature
+[ ] Run tests and verify
+[ ] Update DEVLOG.md
+[0m
+Now I have a thorough understanding of the codebase. Let me implement S-002: Narrative Quality Score.
+
+**Key requirements from S-002:**
+1. New `narrative_score` decomposed into: policy endorsement, industry implementation, order/buyback/rating, propagation clarity, crowding/overheating deduction
+2. Different base scores for buyback, major orders, winning bids, M&A, earnings preview, rating changes
+3. Cap for multiple events (prevent stacking)
+4. Output `narrative_reasons` and evidence refs
+5. Rule-based only, no LLM calls
+6. Low scores for ordinary news, high scores for buyback/orders/policy events
+7. No infinite stacking for repeated events
+8. Default 0 when no evidence
+
+Let me create the narrative quality scoring module, integrate it, and write tests.
+[0m← [0mWrite tradingagents/tradeflow/narrative_quality.py
+Wrote file successfully.
+[0m
+现在集成到 `schemas.py`、`candidate_engine.py` 和 `plan_runner.py` 中。
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -15,9 +15,10 @@
+ STRATEGY_VCP = "VCP"
+ STRATEGY_PULLBACK = "PULLBACK_SUPPORT"
+ STRATEGY_EVENT = "EVENT_CATALYST"
+ STRATEGY_POLICY_VERSION = "POLICY_VERSION"  # [S-001] policy_version_signal
+-ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION}
++STRATEGY_NARRATIVE = "NARRATIVE_QUALITY"  # [S-002] narrative_quality_score
++ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE}
+ 
+ # [N-004] astock_signal_tags
+ SIGNAL_TAG_POLICY_CATALYST = "POLICY_CATALYST"
+ SIGNAL_TAG_HOT_MONEY_LHB = "HOT_MONEY_LHB"
+
+[0m
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -64,8 +64,11 @@
+ signals: list[CandidateSignal] = field(default_factory=list, repr=False)
+ policy_tags: list[str] = field(default_factory=list)  # [S-001] policy_version_signal
+ version_score: float = 0.0  # [S-001] policy_version_signal
+ policy_evidence_refs: list[dict] = field(default_factory=list)  # [S-001] policy_version_signal
++narrative_score: float = 0.0  # [S-002] narrative_quality_score
++narrative_reasons: list[str] = field(default_factory=list)  # [S-002] narrative_quality_score
++narrative_evidence_refs: list[dict] = field(default_factory=list)  # [S-002] narrative_quality_score
+ 
+ def __post_init__(self):
+     if not self.trade_date:
+         self.trade_date = datetime.now().strftime("%Y-%m-%d")
+
+[0m
+现在更新 `to_db_row` 和 `from_db_row` 以支持叙事字段：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -132,8 +132,11 @@
+         "risk_flags_json": json.dumps(self.risk_flags, ensure_ascii=False),
+         "policy_tags_json": json.dumps(self.policy_tags, ensure_ascii=False),  # [S-001]
+         "version_score": self.version_score,  # [S-001]
+         "policy_evidence_refs_json": json.dumps(self.policy_evidence_refs, ensure_ascii=False),  # [S-001]
++        "narrative_score": self.narrative_score,  # [S-002] narrative_quality_score
++        "narrative_reasons_json": json.dumps(self.narrative_reasons, ensure_ascii=False),  # [S-002]
++        "narrative_evidence_refs_json": json.dumps(self.narrative_evidence_refs, ensure_ascii=False),  # [S-002]
+         "updated_at": datetime.now().isoformat(),
+     }
+ 
+ @classmethod
+
+[0m
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -160,8 +160,11 @@
+             updated_at=row.get("updated_at", ""),
+             policy_tags=json.loads(row.get("policy_tags_json", "[]")),  # [S-001]
+             version_score=row.get("version_score", 0.0),  # [S-001]
+             policy_evidence_refs=json.loads(row.get("policy_evidence_refs_json", "[]")),  # [S-001]
++            narrative_score=row.get("narrative_score", 0.0),  # [S-002] narrative_quality_score
++            narrative_reasons=json.loads(row.get("narrative_reasons_json", "[]")),  # [S-002]
++            narrative_evidence_refs=json.loads(row.get("narrative_evidence_refs_json", "[]")),  # [S-002]
+         )
+ 
+ 
+ @dataclass
+
+[0m
+现在更新 `DailyPlan.render_text()` 以显示叙事信息：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -280,7 +280,14 @@
+         if policy_refs:
+             for ref in policy_refs[:3]:
+                 snippet = ref.get("matched_text", "")[:60]
+                 lines.append(f"    - {snippet}")
++    # [S-002] narrative_quality_score — display narrative quality
++    narrative_score = c.get("narrative_score", 0)
++    narrative_reasons = c.get("narrative_reasons", [])
++    if narrative_score > 0:
++        lines.append(f"  叙事质量: +{narrative_score}分")
++        if narrative_reasons:
++            lines.append(f"    {'; '.join(narrative_reasons)}")
+     lines.append("")
+ 
+ return "\n".join(lines)
+
+[0m
+现在更新 `candidate_engine.py` 以集成叙事质量评分：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -22,8 +22,9 @@
+ from .strategies.vcp import score_vcp
+ from .strategies.pullback_support import score_pullback_support
+ from .strategies.event_catalyst import score_event_catalyst
+ from .policy_version_signal import detect_policy_version, PolicyVersionResult  # [S-001]
++from .narrative_quality import score_narrative_quality, NarrativeQualityResult  # [S-002]
+ 
+ 
+ # ── SQL for table creation ──
+ CREATE_CANDIDATES_TABLE = """
+
+[0m
+为叙述性列添加数据库迁移：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -100,8 +100,18 @@
+     try:
+         conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+     except sqlite3.OperationalError:
+         pass
++# [S-002] narrative_quality_score — add narrative quality columns
++for _col, _type in [
++    ("narrative_score", "REAL DEFAULT 0.0"),
++    ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
++    ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
++]:
++    try:
++        conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
++    except sqlite3.OperationalError:
++        pass
+ conn.commit()
+ conn.close()
+ 
+ 
+
+[0m
+现在在 `evaluate_symbol()` 中添加叙事质量评分的集成，在政策版本评分之后：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -17,9 +17,9 @@
+ from typing import Optional
+ 
+ import pandas as pd
+ 
+-from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION  # [S-001]
++from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE  # [S-001] [S-002]
+ from .strategies.vcp import score_vcp
+ from .strategies.pullback_support import score_pullback_support
+ from .strategies.event_catalyst import score_event_catalyst
+ from .policy_version_signal import detect_policy_version, PolicyVersionResult  # [S-001]
+
+[0m
+现在，在 `evaluate_symbol()` 中，策略版本块之后添加叙事质量评分：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -349,8 +349,28 @@
+         }
+         if policy_result.version_score >= 15:
+             candidate.need_deep_ta = True
+ 
++    # [S-002] narrative_quality_score — assess event narrative quality
++    narrative_result: NarrativeQualityResult = score_narrative_quality(
++        event_texts=all_event_texts if all_event_texts else None,
++    )
++    if narrative_result.narrative_score > 0:
++        candidate.narrative_score = narrative_result.narrative_score
++        candidate.narrative_reasons = narrative_result.narrative_reasons
++        candidate.narrative_evidence_refs = narrative_result.narrative_evidence_refs
++        candidate.score = round(candidate.score + narrative_result.narrative_score, 2)
++        candidate.strategy_tags = sorted(
++            set(candidate.strategy_tags) | {STRATEGY_NARRATIVE}
++        )
++        candidate.evidence["narrative_quality"] = {
++            "narrative_score": narrative_result.narrative_score,
++            "narrative_reasons": narrative_result.narrative_reasons,
++            "evidence_refs": narrative_result.narrative_evidence_refs,
++        }
++        if narrative_result.narrative_score >= 20:
++            candidate.need_deep_ta = True
++
+     return candidate, ""
+ 
+ 
+ def save_candidate(candidate: Candidate, db_path: str) -> int:
+
+[0m
+现在更新 `save_candidate()` 以包含叙事字段：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -382,10 +382,11 @@
+ "INSERT INTO tradeflow_candidates "
+ "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+ "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+ "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+-"policy_evidence_refs_json, created_at, updated_at) "
+-"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
++"policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
++"narrative_evidence_refs_json, created_at, updated_at) "
++"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+ "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+ "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
+ "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+ "trigger_price=excluded.trigger_price, "
+@@ -393,8 +394,11 @@
+ "need_deep_ta=excluded.need_deep_ta, evidence_json=excluded.evidence_json, "
+ "risk_flags_json=excluded.risk_flags_json, "
+ "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+ "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
++"narrative_score=excluded.narrative_score, "
++"narrative_reasons_json=excluded.narrative_reasons_json, "
++"narrative_evidence_refs_json=excluded.narrative_evidence_refs_json, "
+ "updated_at=excluded.updated_at",
+ (
+     row["trade_date"], row["symbol"], row["name"], row["source"],
+     row["strategy_tags_json"], row["primary_strategy"],
+
+[0m
+现在更新 VALUES 元组：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -406,8 +406,10 @@
+         row["trigger_price"], row["support_price"], row["invalid_price"],
+         row["need_deep_ta"], row["evidence_json"], row["risk_flags_json"],
+         row["policy_tags_json"], row["version_score"],
+         row["policy_evidence_refs_json"],
++        row["narrative_score"], row["narrative_reasons_json"],
++        row["narrative_evidence_refs_json"],
+         candidate.created_at, row["updated_at"],
+     ),
+ )
+ conn.commit()
+
+[0m
+现在更新 `plan_runner.py`，在计划条目中包含叙事字段：
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -67,8 +67,11 @@
+         "risk_flags": candidate.risk_flags,
+         "policy_tags": candidate.policy_tags,  # [S-001] policy_version_signal
+         "version_score": candidate.version_score,  # [S-001]
+         "policy_evidence_refs": candidate.policy_evidence_refs,  # [S-001]
++        "narrative_score": candidate.narrative_score,  # [S-002] narrative_quality_score
++        "narrative_reasons": candidate.narrative_reasons,  # [S-002]
++        "narrative_evidence_refs": candidate.narrative_evidence_refs,  # [S-002]
+     }
+ 
+ 
+ def generate_daily_plan(
+
+[0m
+[0m# [0mTodos
+[x] Read TASKS.md to get S-002 full description
+[x] Read project overview and understand existing codebase
+[x] Implement narrative quality scoring feature
+[ ] Write tests for the feature
+[ ] Run tests and verify
+[ ] Update DEVLOG.md
+[0m
+现在来编写全面的测试：
+[0m← [0mWrite tests/test_s002_narrative_quality.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[x] Read TASKS.md to get S-002 full description
+[x] Read project overview and understand existing codebase
+[x] Implement narrative quality scoring feature
+[x] Write tests for the feature
+[ ] Run tests and verify
+[ ] Update DEVLOG.md
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_s002_narrative_quality.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 51 items
+
+tests/test_s002_narrative_quality.py::TestPolicyBacking::test_state_council PASSED [  1%]
+tests/test_s002_narrative_quality.py::TestPolicyBacking::test_policy_support PASSED [  3%]
+tests/test_s002_narrative_quality.py::TestPolicyBacking::test_subsidy PASSED [  5%]
+tests/test_s002_narrative_quality.py::TestPolicyBacking::test_plan_document PASSED [  7%]
+tests/test_s002_narrative_quality.py::TestPolicyBacking::test_no_policy_keywords PASSED [  9%]
+tests/test_s002_narrative_quality.py::TestIndustryLanding::test_winning_bid PASSED [ 11%]
+tests/test_s002_narrative_quality.py::TestIndustryLanding::test_major_order PASSED [ 13%]
+tests/test_s002_narrative_quality.py::TestIndustryLanding::test_revenue_growth PASSED [ 15%]
+tests/test_s002_narrative_quality.py::TestIndustryLanding::test_market_share PASSED [ 17%]
+tests/test_s002_narrative_quality.py::TestIndustryLanding::test_commercialization PASSED [ 19%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_buyback_plan PASSED [ 21%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_major_contract PASSED [ 23%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_merger PASSED [ 25%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_earnings_preview_positive PASSED [ 27%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_earnings_preview_neutral PASSED [ 29%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_rating_upgrade PASSED [ 31%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_rating_downgrade_negative PASSED [ 33%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_insider_buy PASSED [ 35%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_dividend PASSED [ 37%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_equity_incentive PASSED [ 39%]
+tests/test_s002_narrative_quality.py::TestPropagationClarity::test_leader_keyword PASSED [ 41%]
+tests/test_s002_narrative_quality.py::TestPropagationClarity::test_first_unique PASSED [ 43%]
+tests/test_s002_narrative_quality.py::TestPropagationClarity::test_breakthrough PASSED [ 45%]
+tests/test_s002_narrative_quality.py::TestPropagationClarity::test_high_certainty PASSED [ 47%]
+tests/test_s002_narrative_quality.py::TestPropagationClarity::test_noise_reduces_clarity FAILED [ 49%]
+tests/test_s002_narrative_quality.py::TestCrowdingDeduction::test_overheating PASSED [ 50%]
+tests/test_s002_narrative_quality.py::TestCrowdingDeduction::test_speculation PASSED [ 52%]
+tests/test_s002_narrative_quality.py::TestCrowdingDeduction::test_concept_hype PASSED [ 54%]
+tests/test_s002_narrative_quality.py::TestCrowdingDeduction::test_risk_warning PASSED [ 56%]
+tests/test_s002_narrative_quality.py::TestCrowdingDeduction::test_crowding_reduces_score PASSED [ 58%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_empty_list PASSED [ 60%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_none_input PASSED [ 62%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_blank_strings PASSED [ 64%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_ordinary_news_low_score PASSED [ 66%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_ordinary_announcement_low_score PASSED [ 68%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_high_quality_event_high_score PASSED [ 70%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_score_capped_at_max PASSED [ 72%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_score_never_negative PASSED [ 74%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_duplicate_events_dont_stack PASSED [ 76%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_reasons_populated PASSED [ 78%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_evidence_refs_populated PASSED [ 80%]
+tests/test_s002_narrative_quality.py::TestNarrativeIntegration::test_narrative_in_candidate PASSED [ 82%]
+tests/test_s002_narrative_quality.py::TestNarrativeIntegration::test_narrative_adds_to_score PASSED [ 84%]
+tests/test_s002_narrative_quality.py::TestNarrativeIntegration::test_no_narrative_for_ordinary_news PASSED [ 86%]
+tests/test_s002_narrative_quality.py::TestNarrativeIntegration::test_high_narrative_triggers_deep_ta PASSED [ 88%]
+tests/test_s002_narrative_quality.py::TestNarrativeIntegration::test_symbol_isolation_narrative PASSED [ 90%]
+tests/test_s002_narrative_quality.py::TestNarrativeIntegration::test_narrative_coexists_with_policy_version PASSED [ 92%]
+tests/test_s002_narrative_quality.py::TestNarrativeIntegration::test_narrative_fields_in_db PASSED [ 94%]
+tests/test_s002_narrative_quality.py::TestNarrativeIntegration::test_narrative_in_db_roundtrip FAILED [ 96%]
+tests/test_s002_narrative_quality.py::TestNarrativePlanDisplay::test_render_text_shows_narrative PASSED [ 98%]
+tests/test_s002_narrative_quality.py::TestNarrativePlanDisplay::test_render_text_no_narrative PASSED [100%]
+
+=================================== FAILURES ===================================
+______________ TestPropagationClarity.test_noise_reduces_clarity _______________
+
+self = <tests.test_s002_narrative_quality.TestPropagationClarity object at 0x10c58e6f0>
+
+    def test_noise_reduces_clarity(self):
+        r_clear = score_narrative_quality(["公司是行业龙头"])
+        r_noisy = score_narrative_quality(["公司是行业龙头，但可能存在不确定性"])
+        clarity_clear = sum(1 for ref in r_clear.narrative_evidence_refs if ref.get("dimension") == "PROPAGATION_CLARITY")
+        clarity_noisy = sum(1 for ref in r_noisy.narrative_evidence_refs if ref.get("dimension") == "PROPAGATION_CLARITY")
+>       assert clarity_clear >= clarity_noisy
+E       assert 1 >= 2
+
+tests/test_s002_narrative_quality.py:166: AssertionError
+___________ TestNarrativeIntegration.test_narrative_in_db_roundtrip ____________
+
+self = <tests.test_s002_narrative_quality.TestNarrativeIntegration object at 0x10c58ee70>
+
+    def test_narrative_in_db_roundtrip(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            init_db(db_path)
+>           c = Candidate(
+                ^^^^^^^^^
+                symbol="RT.SZ",
+                narrative_score=15.0,
+                narrative_reasons=["产业落地(+)"],
+                narrative_evidence_refs=[{"dimension": "INDUSTRY_LANDING", "matched_text": "中标5亿", "weight": 8}],
+                strategy_tags=[STRATEGY_NARRATIVE],
+                score=65.0,
+                trade_date="2026-05-29",
+            )
+E           UnboundLocalError: cannot access local variable 'Candidate' where it is not associated with a value
+
+tests/test_s002_narrative_quality.py:385: UnboundLocalError
+=========================== short test summary info ============================
+FAILED tests/test_s002_narrative_quality.py::TestPropagationClarity::test_noise_reduces_clarity
+FAILED tests/test_s002_narrative_quality.py::TestNarrativeIntegration::test_narrative_in_db_roundtrip
+========================= 2 failed, 49 passed in 0.29s =========================
+[0m
+存在两个问题需要修复。我来修复它们：
+
+1. 降噪测试：嘈杂的文本也匹配“行业龙头”，并且“不确定”增加了噪声关键词。我需要调整测试逻辑。
+2. 往返测试：`Candidate` 在局部被重新导入，导致了遮蔽。
+[0m← [0mEdit tests/test_s002_narrative_quality.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_s002_narrative_quality.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_s002_narrative_quality.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_s002_narrative_quality.py
+@@ -160,11 +160,9 @@
+ 
+     def test_noise_reduces_clarity(self):
+         r_clear = score_narrative_quality(["公司是行业龙头"])
+         r_noisy = score_narrative_quality(["公司是行业龙头，但可能存在不确定性"])
+-        clarity_clear = sum(1 for ref in r_clear.narrative_evidence_refs if ref.get("dimension") == "PROPAGATION_CLARITY")
+-        clarity_noisy = sum(1 for ref in r_noisy.narrative_evidence_refs if ref.get("dimension") == "PROPAGATION_CLARITY")
+-        assert clarity_clear >= clarity_noisy
++        assert r_clear.narrative_score >= r_noisy.narrative_score
+ 
+ 
+ class TestCrowdingDeduction:
+     def test_overheating(self):
+
+[0m
+[0m← [0mEdit tests/test_s002_narrative_quality.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_s002_narrative_quality.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_s002_narrative_quality.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_s002_narrative_quality.py
+@@ -398,9 +398,8 @@
+     "SELECT * FROM tradeflow_candidates WHERE symbol='RT.SZ'"
+ ).fetchone()
+ conn.close()
+ 
+-from tradingagents.tradeflow.schemas import Candidate
+ restored = Candidate.from_db_row(dict(row))
+ assert restored.narrative_score == 15.0
+ assert restored.narrative_reasons == ["产业落地(+)"]
+ assert len(restored.narrative_evidence_refs) == 1
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_s002_narrative_quality.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 51 items
+
+tests/test_s002_narrative_quality.py::TestPolicyBacking::test_state_council PASSED [  1%]
+tests/test_s002_narrative_quality.py::TestPolicyBacking::test_policy_support PASSED [  3%]
+tests/test_s002_narrative_quality.py::TestPolicyBacking::test_subsidy PASSED [  5%]
+tests/test_s002_narrative_quality.py::TestPolicyBacking::test_plan_document PASSED [  7%]
+tests/test_s002_narrative_quality.py::TestPolicyBacking::test_no_policy_keywords PASSED [  9%]
+tests/test_s002_narrative_quality.py::TestIndustryLanding::test_winning_bid PASSED [ 11%]
+tests/test_s002_narrative_quality.py::TestIndustryLanding::test_major_order PASSED [ 13%]
+tests/test_s002_narrative_quality.py::TestIndustryLanding::test_revenue_growth PASSED [ 15%]
+tests/test_s002_narrative_quality.py::TestIndustryLanding::test_market_share PASSED [ 17%]
+tests/test_s002_narrative_quality.py::TestIndustryLanding::test_commercialization PASSED [ 19%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_buyback_plan PASSED [ 21%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_major_contract PASSED [ 23%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_merger PASSED [ 25%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_earnings_preview_positive PASSED [ 27%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_earnings_preview_neutral PASSED [ 29%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_rating_upgrade PASSED [ 31%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_rating_downgrade_negative PASSED [ 33%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_insider_buy PASSED [ 35%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_dividend PASSED [ 37%]
+tests/test_s002_narrative_quality.py::TestCorporateAction::test_equity_incentive PASSED [ 39%]
+tests/test_s002_narrative_quality.py::TestPropagationClarity::test_leader_keyword PASSED [ 41%]
+tests/test_s002_narrative_quality.py::TestPropagationClarity::test_first_unique PASSED [ 43%]
+tests/test_s002_narrative_quality.py::TestPropagationClarity::test_breakthrough PASSED [ 45%]
+tests/test_s002_narrative_quality.py::TestPropagationClarity::test_high_certainty PASSED [ 47%]
+tests/test_s002_narrative_quality.py::TestPropagationClarity::test_noise_reduces_clarity PASSED [ 49%]
+tests/test_s002_narrative_quality.py::TestCrowdingDeduction::test_overheating PASSED [ 50%]
+tests/test_s002_narrative_quality.py::TestCrowdingDeduction::test_speculation PASSED [ 52%]
+tests/test_s002_narrative_quality.py::TestCrowdingDeduction::test_concept_hype PASSED [ 54%]
+tests/test_s002_narrative_quality.py::TestCrowdingDeduction::test_risk_warning PASSED [ 56%]
+tests/test_s002_narrative_quality.py::TestCrowdingDeduction::test_crowding_reduces_score PASSED [ 58%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_empty_list PASSED [ 60%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_none_input PASSED [ 62%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_blank_strings PASSED [ 64%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_ordinary_news_low_score PASSED [ 66%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_ordinary_announcement_low_score PASSED [ 68%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_high_quality_event_high_score PASSED [ 70%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_score_capped_at_max PASSED [ 72%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_score_never_negative PASSED [ 74%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_duplicate_events_dont_stack PASSED [ 76%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_reasons_populated PASSED [ 78%]
+tests/test_s002_narrative_quality.py::TestEdgeCases::test_evidence_refs_populated PASSED [ 80%]
+tests/test_s002_narrative_quality.py::TestNarrativeIntegration::test_narrative_in_candidate PASSED [ 82%]
+tests/test_s002_narrative_quality.py::TestNarrativeIntegration::test_narrative_adds_to_score PASSED [ 84%]
+tests/test_s002_narrative_quality.py::TestNarrativeIntegration::test_no_narrative_for_ordinary_news PASSED [ 86%]
+tests/test_s002_narrative_quality.py::TestNarrativeIntegration::test_high_narrative_triggers_deep_ta PASSED [ 88%]
+tests/test_s002_narrative_quality.py::TestNarrativeIntegration::test_symbol_isolation_narrative PASSED [ 90%]
+tests/test_s002_narrative_quality.py::TestNarrativeIntegration::test_narrative_coexists_with_policy_version PASSED [ 92%]
+tests/test_s002_narrative_quality.py::TestNarrativeIntegration::test_narrative_fields_in_db PASSED [ 94%]
+tests/test_s002_narrative_quality.py::TestNarrativeIntegration::test_narrative_in_db_roundtrip PASSED [ 96%]
+tests/test_s002_narrative_quality.py::TestNarrativePlanDisplay::test_render_text_shows_narrative PASSED [ 98%]
+tests/test_s002_narrative_quality.py::TestNarrativePlanDisplay::test_render_text_no_narrative PASSED [100%]
+
+============================== 51 passed in 0.20s ==============================
+[0m
+51个都通过了。现在运行完整的TradeFlow测试套件，以确保没有回归：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tradeflow_*.py tests/test_s001_policy_version_signal.py tests/test_s002_narrative_quality.py -q 2>&1
+........................................................................ [ 42%]
+........................................................................ [ 85%]
+.........................                                                [100%]
+169 passed in 6.64s
+[0m
+169 条全部通过。现在运行扩展回归测试套件：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_readiness_score.py tests/test_g001_three_layer.py tests/test_g007_fund_lhb_provenance.py tests/test_g006_raw_evidence_snapshot.py tests/test_event_source.py tests/test_event_source_integration.py -q 2>&1
+........................................................................ [ 28%]
+........................................................................ [ 57%]
+........................................................................ [ 86%]
+..................................                                       [100%]
+250 passed in 10.18s
+[0m
+[0m# [0mTodos
+[x] Read TASKS.md to get S-002 full description
+[x] Read project overview and understand existing codebase
+[x] Implement narrative quality scoring feature
+[x] Write tests for the feature
+[x] Run tests and verify
+[ ] Update DEVLOG.md
+[0m
+所有 250 个通过。现在更新 DEVLOG.md：
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=5][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,48 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-05-29 | S-002 叙事质量评分
++
++- **执行者**：OpenCode (glm-5.1)
++- **任务**：为事件催化增加叙事质量评分，区分"普通公告/普通新闻"和"容易形成市场共识的主线事件"
++- **修改文件**：
++  - `tradingagents/tradeflow/narrative_quality.py`（新增，~210行）— [S-002] narrative_quality_score
++    - `score_narrative_quality(event_texts)` — 五维度叙事质量评分
++    - `NarrativeQualityResult` — 输出 `narrative_score`（0-40分）、`narrative_reasons`、`narrative_evidence_refs`
++    - 五个维度：政策背书（0-10）、产业落地（0-10）、公司动作（0-10）、传播清晰度（0-10）、拥挤/过热扣分（0 to -10）
++    - 每个维度独立打分，每维度只取最高权重命中，不重复叠加
++    - 总分上限 40 分（`MAX_NARRATIVE_SCORE`），下限 0
++  - `tradingagents/tradeflow/schemas.py` — [S-002]
++    - `Candidate` 新增 `narrative_score`、`narrative_reasons`、`narrative_evidence_refs` 字段
++    - `STRATEGY_NARRATIVE = "NARRATIVE_QUALITY"` 策略常量，加入 `ALL_STRATEGIES`
++    - `to_db_row()` / `from_db_row()` 支持新字段持久化
++    - `DailyPlan.render_text()` 展示叙事质量得分和原因摘要
++  - `tradingagents/tradeflow/candidate_engine.py` — [S-002]
++    - `evaluate_symbol()` 在 S-001 政策版本之后调用 `score_narrative_quality()`
++    - 叙事质量命中时加分、加入 `strategy_tags`、写入 `evidence.narrative_quality`
++    - `narrative_score >= 20` 时设置 `need_deep_ta=True`
++    - `init_db()` 新增 `narrative_score`、`narrative_reasons_json`、`narrative_evidence_refs_json` 列迁移
++    - `save_candidate()` INSERT/UPDATE 包含新字段
++  - `tradingagents/tradeflow/plan_runner.py` — [S-002]
++    - `_build_plan_entry()` 输出 `narrative_score`、`narrative_reasons`、`narrative_evidence_refs`
++  - `tests/test_s002_narrative_quality.py`（新增，~340行）— 51 个测试
++- **关键逻辑**：
++  1. 叙事质量作为 bonus 层叠加在 VCP/Pullback/Event/PolicyVersion 之上，不破坏现有策略
++  2. 无事件文本时 `narrative_score` 恒为 0，不凭空加分
++  3. 不同股票各自消费自己的事件文本，按 symbol 隔离
++  4. 每维度只取最高权重匹配，重复事件不会无限叠加
++  5. 高叙事质量得分（≥20）自动提升 need_deep_ta 优先级
++  6. 拥挤/过热扣分确保炒作类事件不被高估
++- **标记**：`# [S-002] narrative_quality_score`
++- **测试结果**：
++  - S-002 专项测试：51 passed
++  - TradeFlow 全量测试：169 passed
++  - 扩展回归测试：250 passed
++
++---
++
+ ## 2026-05-29 | OpenClaw cron timeout 提升至 4 小时
+ 
+ - **执行者**：主控AI
+ - **任务**：夜间自动开发窗口从 1 小时提升到 4 小时，支持多任务连续开发
+
+[0m
+现在更新 `TASKS.md`，将 `S-002` 标记为已完成：
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -24,9 +24,9 @@
+ 
+ ### 当前优先队列
+ 
+ 1. `S-001`：政策版本因子进入 TradeFlow 候选池（P1，done — commit a4d06d4 + cf7d928）。
+-2. `S-002`：叙事质量评分，区分普通事件与可传播主线（P1，ready）。
++2. `S-002`：叙事质量评分，区分普通事件与可传播主线（P1，done — pending commit）。
+ 3. `S-003`：水下风险标签，给候选池做风险降权（P1，ready）。
+ 4. `S-004`：候选股博弈平衡解释，输出多空/监管/资金结构（P1，ready）。
+ 5. `M-008`：数据源健康检查与 fallback 可观测性（P1，ready）。
+ 6. `T-002/T-003`：小范围 Discovery / 资金异动池（P1，ready，排在选股逻辑增强之后）。
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -64,9 +64,9 @@
+ 
+ ### S-002: 叙事质量评分（P1）
+ - **描述**：给事件催化增加叙事质量评分，区分“普通公告/普通新闻”和“容易形成市场共识的主线事件”。
+ - **优先级**：P1
+-- **状态**：in_progress — claimed S-002-20260529-134910
++- **状态**：done — pending commit
+ - **背景**：
+   - 选股不只看有没有事件，还要判断事件是否容易被市场理解、传播和接力。
+   - 目前事件催化更偏“是否存在”，缺少“事件质量与传播价值”。
+ - **执行约束**：
+
+[0m
+[0m# [0mTodos
+[x] Read TASKS.md to get S-002 full description
+[x] Read project overview and understand existing codebase
+[x] Implement narrative quality scoring feature
+[x] Write tests for the feature
+[x] Run tests and verify
+[x] Update DEVLOG.md
+[0m
+## 完成总结
+
+### 修改文件
+
+| 文件 | 变更类型 | 说明 |
+|---|---|---|
+| `tradingagents/tradeflow/narrative_quality.py` | **新增** | 叙事质量评分模块（~210行），五维度打分 |
+| `tradingagents/tradeflow/schemas.py` | 修改 | Candidate 新增3个字段 + 策略常量 + DB序列化 + Plan展示 |
+| `tradingagents/tradeflow/candidate_engine.py` | 修改 | 集成评分、DB迁移、save_candidate更新 |
+| `tradingagents/tradeflow/plan_runner.py` | 修改 | plan entry 输出新字段 |
+| `tests/test_s002_narrative_quality.py` | **新增** | 51个测试覆盖全部五维度 + 边界 + 集成 |
+| `docs/DEVLOG.md` | 修改 | 记录 S-002 完成 |
+| `docs/TASKS.md` | 修改 | S-002 状态更新为 done |
+
+### 关键逻辑
+
+1. **五维度评分**：政策背书(0-10)、产业落地(0-10)、公司动作(0-10)、传播清晰度(0-10)、拥挤过热扣分(0 to -10)，总分上限40
+2. **不叠加**：每维度只取最高权重命中，防止标题堆叠虚高
+3. **无证据零分**：无事件文本时 `narrative_score` 恒为 0
+4. **与 S-001 共存**：叙事质量与政策版本独立评分，可同时命中
+5. **`need_deep_ta` 门槛**：`narrative_score >= 20` 自动触发深度TA需求
+
+### 测试结果
+
+- **S-002 专项测试**：51 passed
+- **TradeFlow 全量测试**：169 passed
+- **扩展回归测试**：250 passed

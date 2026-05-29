@@ -4,6 +4,46 @@
 
 ---
 
+## 2026-05-29 | S-002 叙事质量评分
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：为事件催化增加叙事质量评分，区分"普通公告/普通新闻"和"容易形成市场共识的主线事件"
+- **修改文件**：
+  - `tradingagents/tradeflow/narrative_quality.py`（新增，~210行）— [S-002] narrative_quality_score
+    - `score_narrative_quality(event_texts)` — 五维度叙事质量评分
+    - `NarrativeQualityResult` — 输出 `narrative_score`（0-40分）、`narrative_reasons`、`narrative_evidence_refs`
+    - 五个维度：政策背书（0-10）、产业落地（0-10）、公司动作（0-10）、传播清晰度（0-10）、拥挤/过热扣分（0 to -10）
+    - 每个维度独立打分，每维度只取最高权重命中，不重复叠加
+    - 总分上限 40 分（`MAX_NARRATIVE_SCORE`），下限 0
+  - `tradingagents/tradeflow/schemas.py` — [S-002]
+    - `Candidate` 新增 `narrative_score`、`narrative_reasons`、`narrative_evidence_refs` 字段
+    - `STRATEGY_NARRATIVE = "NARRATIVE_QUALITY"` 策略常量，加入 `ALL_STRATEGIES`
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示叙事质量得分和原因摘要
+  - `tradingagents/tradeflow/candidate_engine.py` — [S-002]
+    - `evaluate_symbol()` 在 S-001 政策版本之后调用 `score_narrative_quality()`
+    - 叙事质量命中时加分、加入 `strategy_tags`、写入 `evidence.narrative_quality`
+    - `narrative_score >= 20` 时设置 `need_deep_ta=True`
+    - `init_db()` 新增 `narrative_score`、`narrative_reasons_json`、`narrative_evidence_refs_json` 列迁移
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+  - `tradingagents/tradeflow/plan_runner.py` — [S-002]
+    - `_build_plan_entry()` 输出 `narrative_score`、`narrative_reasons`、`narrative_evidence_refs`
+  - `tests/test_s002_narrative_quality.py`（新增，~340行）— 51 个测试
+- **关键逻辑**：
+  1. 叙事质量作为 bonus 层叠加在 VCP/Pullback/Event/PolicyVersion 之上，不破坏现有策略
+  2. 无事件文本时 `narrative_score` 恒为 0，不凭空加分
+  3. 不同股票各自消费自己的事件文本，按 symbol 隔离
+  4. 每维度只取最高权重匹配，重复事件不会无限叠加
+  5. 高叙事质量得分（≥20）自动提升 need_deep_ta 优先级
+  6. 拥挤/过热扣分确保炒作类事件不被高估
+- **标记**：`# [S-002] narrative_quality_score`
+- **测试结果**：
+  - S-002 专项测试：51 passed
+  - TradeFlow 全量测试：169 passed
+  - 扩展回归测试：250 passed
+
+---
+
 ## 2026-05-29 | OpenClaw cron timeout 提升至 4 小时
 
 - **执行者**：主控AI
@@ -790,3 +830,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/S-001-20260529-round1.txt
 - **运行档案**: docs/task_runs/S-001-20260529-124731/
+
+## 2026-05-29 | AUTO-002 自动开发闭环
+
+- **任务**: S-002 — 叙事质量评分（P1）
+- **优先级**: P1
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/S-002-20260529-round1.txt
+- **运行档案**: docs/task_runs/S-002-20260529-134910/

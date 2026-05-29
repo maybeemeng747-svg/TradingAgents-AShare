@@ -18,11 +18,12 @@ from typing import Optional
 
 import pandas as pd
 
-from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION  # [S-001]
+from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE  # [S-001] [S-002]
 from .strategies.vcp import score_vcp
 from .strategies.pullback_support import score_pullback_support
 from .strategies.event_catalyst import score_event_catalyst
 from .policy_version_signal import detect_policy_version, PolicyVersionResult  # [S-001]
+from .narrative_quality import score_narrative_quality, NarrativeQualityResult  # [S-002]
 
 
 # ── SQL for table creation ──
@@ -95,6 +96,16 @@ def init_db(db_path: str) -> None:
         ("policy_tags_json", "TEXT DEFAULT '[]'"),
         ("version_score", "REAL DEFAULT 0.0"),
         ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-002] narrative_quality_score — add narrative quality columns
+    for _col, _type in [
+        ("narrative_score", "REAL DEFAULT 0.0"),
+        ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
+        ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
@@ -339,6 +350,26 @@ def evaluate_symbol(
         if policy_result.version_score >= 15:
             candidate.need_deep_ta = True
 
+    # [S-002] narrative_quality_score — assess event narrative quality
+    narrative_result: NarrativeQualityResult = score_narrative_quality(
+        event_texts=all_event_texts if all_event_texts else None,
+    )
+    if narrative_result.narrative_score > 0:
+        candidate.narrative_score = narrative_result.narrative_score
+        candidate.narrative_reasons = narrative_result.narrative_reasons
+        candidate.narrative_evidence_refs = narrative_result.narrative_evidence_refs
+        candidate.score = round(candidate.score + narrative_result.narrative_score, 2)
+        candidate.strategy_tags = sorted(
+            set(candidate.strategy_tags) | {STRATEGY_NARRATIVE}
+        )
+        candidate.evidence["narrative_quality"] = {
+            "narrative_score": narrative_result.narrative_score,
+            "narrative_reasons": narrative_result.narrative_reasons,
+            "evidence_refs": narrative_result.narrative_evidence_refs,
+        }
+        if narrative_result.narrative_score >= 20:
+            candidate.need_deep_ta = True
+
     return candidate, ""
 
 
@@ -352,8 +383,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
             "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
             "evidence_json, risk_flags_json, policy_tags_json, version_score, "
-            "policy_evidence_refs_json, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
+            "narrative_evidence_refs_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
@@ -363,6 +395,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "risk_flags_json=excluded.risk_flags_json, "
             "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
             "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
+            "narrative_score=excluded.narrative_score, "
+            "narrative_reasons_json=excluded.narrative_reasons_json, "
+            "narrative_evidence_refs_json=excluded.narrative_evidence_refs_json, "
             "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
@@ -372,6 +407,8 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
                 row["need_deep_ta"], row["evidence_json"], row["risk_flags_json"],
                 row["policy_tags_json"], row["version_score"],
                 row["policy_evidence_refs_json"],
+                row["narrative_score"], row["narrative_reasons_json"],
+                row["narrative_evidence_refs_json"],
                 candidate.created_at, row["updated_at"],
             ),
         )

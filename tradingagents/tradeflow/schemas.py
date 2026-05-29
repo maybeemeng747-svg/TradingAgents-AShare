@@ -16,7 +16,8 @@ STRATEGY_VCP = "VCP"
 STRATEGY_PULLBACK = "PULLBACK_SUPPORT"
 STRATEGY_EVENT = "EVENT_CATALYST"
 STRATEGY_POLICY_VERSION = "POLICY_VERSION"  # [S-001] policy_version_signal
-ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION}
+STRATEGY_NARRATIVE = "NARRATIVE_QUALITY"  # [S-002] narrative_quality_score
+ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE}
 
 # [N-004] astock_signal_tags
 SIGNAL_TAG_POLICY_CATALYST = "POLICY_CATALYST"
@@ -64,6 +65,9 @@ class Candidate:
     policy_tags: list[str] = field(default_factory=list)  # [S-001] policy_version_signal
     version_score: float = 0.0  # [S-001] policy_version_signal
     policy_evidence_refs: list[dict] = field(default_factory=list)  # [S-001] policy_version_signal
+    narrative_score: float = 0.0  # [S-002] narrative_quality_score
+    narrative_reasons: list[str] = field(default_factory=list)  # [S-002] narrative_quality_score
+    narrative_evidence_refs: list[dict] = field(default_factory=list)  # [S-002] narrative_quality_score
 
     def __post_init__(self):
         if not self.trade_date:
@@ -129,6 +133,9 @@ class Candidate:
             "policy_tags_json": json.dumps(self.policy_tags, ensure_ascii=False),  # [S-001]
             "version_score": self.version_score,  # [S-001]
             "policy_evidence_refs_json": json.dumps(self.policy_evidence_refs, ensure_ascii=False),  # [S-001]
+            "narrative_score": self.narrative_score,  # [S-002] narrative_quality_score
+            "narrative_reasons_json": json.dumps(self.narrative_reasons, ensure_ascii=False),  # [S-002]
+            "narrative_evidence_refs_json": json.dumps(self.narrative_evidence_refs, ensure_ascii=False),  # [S-002]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -154,6 +161,9 @@ class Candidate:
             policy_tags=json.loads(row.get("policy_tags_json", "[]")),  # [S-001]
             version_score=row.get("version_score", 0.0),  # [S-001]
             policy_evidence_refs=json.loads(row.get("policy_evidence_refs_json", "[]")),  # [S-001]
+            narrative_score=row.get("narrative_score", 0.0),  # [S-002] narrative_quality_score
+            narrative_reasons=json.loads(row.get("narrative_reasons_json", "[]")),  # [S-002]
+            narrative_evidence_refs=json.loads(row.get("narrative_evidence_refs_json", "[]")),  # [S-002]
         )
 
 
@@ -271,6 +281,13 @@ class DailyPlan:
                     for ref in policy_refs[:3]:
                         snippet = ref.get("matched_text", "")[:60]
                         lines.append(f"    - {snippet}")
+            # [S-002] narrative_quality_score — display narrative quality
+            narrative_score = c.get("narrative_score", 0)
+            narrative_reasons = c.get("narrative_reasons", [])
+            if narrative_score > 0:
+                lines.append(f"  叙事质量: +{narrative_score}分")
+                if narrative_reasons:
+                    lines.append(f"    {'; '.join(narrative_reasons)}")
             lines.append("")
 
         return "\n".join(lines)
