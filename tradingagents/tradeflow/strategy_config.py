@@ -130,6 +130,15 @@ class StrategyConfig:
     observe_trigger_breach_pct: float = 0.0
     observe_invalidate_breach_pct: float = 0.0
 
+    # ── Deep TA Dispatch Gate [M-006] ──
+    deep_ta_daily_limit: int = 3
+    deep_ta_default_model: str = ""
+    deep_ta_blocked_models: tuple = ("deepseek",)
+    deep_ta_max_retries: int = 1
+    deep_ta_min_composite_score: float = 40.0
+    deep_ta_min_completeness: float = 0.5
+    deep_ta_require_observe_triggered: bool = True
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["risk_high_severity_flags"] = list(self.risk_high_severity_flags)

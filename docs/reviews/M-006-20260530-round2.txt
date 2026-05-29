@@ -1,0 +1,4823 @@
+Task: M-006 — OpenClaw 自动触发 TA 深度分析门控（P2）
+Date: 2026-05-30_01:33:47
+Codex exit code: 0
+Round: 2
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e74cb-2140-7780-a90a-6496904751f7
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,160p' docs/project-overview.md; printf '\\n---TASKS---\\n'; sed -n '1,120p' docs/TASKS.md; printf '\\n---DECISIONS---\\n'; sed -n '1,120p' docs/DECISIONS.md; printf '\\n---DEVLOG---\\n'; sed -n '1,120p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+---TASKS---
+# 任务池
+
+> 最后更新：2026-05-29
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `S-005`：选股优先级整合与 `need_deep_ta` 门槛重排（P1，ready）。
+2. `M-003`：TradeFlow universe 管理器（P1，ready）。
+3. `M-004`：TradeFlow 策略权重与阈值配置（P1，ready）。
+4. `T-006`：事件源自动接入 Discovery / Daily Plan（P1，ready）。
+5. `V-002`：夜间自动开发验收报告与候选样本回放（P1，ready）。
+6. `S-006`：候选误报审计与样本集沉淀（P1，ready）。
+7. 第二梯队：`S-007/S-008/M-005/M-006`，用于延长夜间窗口并继续围绕候选质量、触发状态和 TA 成本门控推进。
+
+---
+
+## S. TradeFlow 选股策略核心任务池（2026-05-29 新增）
+
+> 原则：先提高候选池质量，再扩大扫描范围。TA 深度分析只服务于已经有足够逻辑、事件、资金或风险结构支撑的候选股。
+
+### S-001: 政策版本因子进入 TradeFlow 候选池（P1）
+- **描述**：为 TradeFlow 增加政策版本因子，识别当前 A 股市场更容易被定价的政策/产业方向，让候选池从“技术形态先行”升级为“政策版本入池 + 技术确认”。
+- **优先级**：P1
+- **状态**：done — commit a4d06d4 + cf7d928
+- **背景**：
+  - A 股很多阶段不是简单的业绩驱动，而是政策方向、产业版本和市场叙事共同驱动。
+  - 现在 TradeFlow 已有 VCP、事件催化、A 股标签，但缺少“当前版本需要什么标杆”的第一层判断。
+- **执行约束**：
+  - 不调用外部 LLM，不跑全市场扫描。
+  - 不改 `tradingagents/prompts/`。
+  - 不输出买入/卖出强建议。
+  - 只在 TradeFlow 候选池层做信号、标签、分数和证据引用。
+- **实现要点**：
+  1. 新增或扩展政策版本信号模块，输出 `policy_tags`、`version_score`、`policy_evidence_refs`。
+  2. 先用可维护关键词/规则覆盖：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革等。
+  3. 事件标题、公告摘要、行业标签命中政策版本时加分；无原始文本证据时不得加分。
+  4. 与现有 `event_source`、`event_catalyst`、`candidate_engine` 兼容，不破坏 VCP/回踩策略。
+  5. Daily Plan 中展示政策标签和证据摘要，但动作仍只能是 `OBSERVE/NEED_DEEP_TA` 等非强交易动作。
+- **验证方式**：
+  - 构造政策关键词事件，候选包含对应 `policy_tags` 和 evidence refs。
+  - 无政策证据时 `version_score` 不得凭空加分。
+  - 不同股票事件必须按 symbol 隔离，不能串票。
+  - `pytest tests/test_tradeflow_*.py -q` 或新增对应测试通过。
+- **代码标注要求**：`# [S-001] policy_version_signal`
+
+### S-002: 叙事质量评分（P1）
+- **描述**：给事件催化增加叙事质量评分，区分“普通公告/普通新闻”和“容易形成市场共识的主线事件”。
+- **优先级**：P1
+- **状态**：done — commit 9825e22
+- **背景**：
+  - 选股不只看有没有事件，还要判断事件是否容易被市场理解、传播和接力。
+  - 目前事件催化更偏“是否存在”，缺少“事件质量与传播价值”。
+- **执行约束**：
+  - 第一阶段只做规则评分，不调用外部 LLM。
+  - 不做舆情全网抓取，不扫全市场。
+  - 评分只影响候选排序和 `need_deep_ta`，不直接生成交易建议。
+- **实现要点**：
+  1. 新增 `narrative_score`，分解为政策背书、产业落地、订单/回购/评级、传播清晰度、拥挤/过热扣分。
+  2. 回购、重大订单、中标、并购重组、业绩预告、评级变化等事件给不同基础分。
+  3. 多个事件叠加时做封顶，避免标题堆叠虚高。
+  4. 输出 `narrative_reasons` 和 evidence refs，便于日报解释“为什么进候选池”。
+- **验证方式**：
+  - 普通新闻低分，回购/订单/政策相关事件高分。
+  - 重复事件不会无限叠加。
+  - `narrative_score` 缺证据时为 0 或保守默认。
+- **代码标注要求**：`# [S-002] narrative_quality_score`
+
+### S-003: 水下风险标签与候选降权（P1）
+- **描述**：为 TradeFlow 候选池增加水下风险标签，识别解禁、减持、问询、财务异常、融资拥挤、龙虎榜过热等风险，对候选做降权或要求更严格技术确认。
+- **优先级**：P1
+- **状态**：done — commit a95c3d7
+- **背景**：
+  - 选对股票不只看上涨逻辑，也要避开“看起来有题材但水下结构很差”的票。
+  - 当前已有部分 A 股标签，但风险标签还不够系统，也没有形成候选池统一降权规则。
+- **执行约束**：
+  - 所有风险标签必须绑定原始字段或事件文本。
+  - 不把风险标签直接翻译成清仓/买入建议。
+  - 不写生产数据库 schema；如需持久化先用现有 TradeFlow 结构或输出方案。
+- **实现要点**：
+  1. 统一输出 `risk_flags`：`LOCKUP_RISK`、`REDUCE_HOLDING_RISK`、`INQUIRY_RISK`、`FINANCIAL_QUALITY_RISK`、`MARGIN_CROWDING_RISK`、`LHB_OVERHEAT_RISK`。
+  2. 风险标签进入候选分数降权和 `need_deep_ta` 门槛。
+  3. 解禁/减持/问询等公告类风险优先从 `event_source` 读取。
+  4. 龙虎榜和融资融券风险必须区分 `HAS_DATA/NOT_QUERIED/FAILED`，不得把未查询当作无风险。
+- **验证方式**：
+  - 构造解禁/减持/问询事件，候选出现对应 `risk_flags` 并降权。
+  - 龙虎榜未查询时不生成过热风险。
+  - 风险缺证据时不输出高置信风险标签。
+- **代码标注要求**：`# [S-003] underwater_risk_flags`
+
+### S-004: 候选股博弈平衡解释（P1）
+- **描述**：在 TradeFlow Plan 中为每个候选输出轻量博弈解释，说明多头为何可能买、空头为何可能卖、政策/监管/资金结构是否支持，避免只给策略标签而缺少交易对手视角。
+- **优先级**：P1
+- **状态**：done — commit c92e626
+- **背景**：
+  - A 股候选池要处理动态博弈：同一事件可能同时有多头叙事、风险压制和资金拥挤。
+  - 在 TA 深度分析前，候选池应先判断这只票是不是值得进一步消耗 token。
+- **执行约束**：
+  - 规则化生成，不调用外部 LLM。
+  - 不输出强买卖词。
+  - 不替代 TA 深度分析，只做候选池摘要。
+
+---DECISIONS---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+---DEVLOG---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-05-30 | M-006 代码质量修复（Codex review 失败后巡检）
+
+- **执行者**：OpenCode
+- **背景**：Codex review 因网络断连失败（exit code 1），非代码问题。人工巡检发现两个潜在缺陷。
+- **修复内容**：
+  - `tradingagents/tradeflow/gated_deep_ta.py`：
+    1. **新增空模型拦截**：`check_deep_ta_gate()` 在 resolved_model 为空时返回 BLOCKED，避免无模型调度
+    2. **修复 `can_retry_deep_ta()` 语义不一致**：原实现 `failures < max_retries` 与 `check_deep_ta_gate()` 的 `failures + retry_count > max_retries` 不一致；改为 `failures + retry_count <= max_retries`，新增 `retry_count` 参数
+  - `tests/test_m006_gated_deep_ta.py`：
+    - 新增 `test_no_model_blocks` 和 `test_no_model_uses_default` 测试
+    - 修正多个测试：未指定 model 时不再通过门控，需设置 `default_model` 或传入 `model`
+    - 修正 `can_retry_deep_ta` 测试预期：`failures=1, max_retries=1` → 允许重试（与 check 逻辑一致）
+    - 新增 `retry_count` 参数验证
+- **测试结果**：60 passed (M-006)；TradeFlow 全部 221 passed；0 failed
+- **风险点**：无；修复向后兼容（调用方必须在 config 设置 `deep_ta_default_model` 或传入 `model`）
+
+## 2026-05-30 | M-006: OpenClaw 自动触发 TA 深度分析门控
+
+- **执行者**：OpenCode
+- **任务**：M-006 — 在盘中 Observe 触发后，由 OpenClaw 决定是否调用 TA 深度分析，带成本、模型、频率门控
+- **修改文件**：
+  - `tradingagents/tradeflow/gated_deep_ta.py` — 新建：[M-006] 深度 TA 调度门控模块
+    - `DeepTAStatus` 枚举：PENDING / BLOCKED / DISPATCHED / SUCCESS / FAILED
+    - `DeepTARecord` 数据类：记录每次调度的 symbol、状态、模型、耗时、报告路径、重试次数、持仓上下文
+    - `DeepTADecision` 数据类：门控结果（allowed/reason/model/record）
+    - `DeepTADispatcher` 数据类：日内调度状态管理器，跟踪 daily_count、failure_counts、records；支持从 StrategyConfig 构建
+    - `check_deep_ta_gate()` — 核心门控函数：依次检查 need_deep_ta、每日上限、observe 状态、综合分、完整度、模型黑名单、重试上限
+    - `record_deep_ta_dispatch()` — 记录调度结果，更新 daily_count（DISPATCHED）和 failure_counts（FAILED）
+    - `can_retry_deep_ta()` — 判断是否可以重试
+  - `tradingagents/tradeflow/strategy_config.py` — StrategyConfig 新增 7 个 deep TA 门控配置：`deep_ta_daily_limit`(默认3)、`deep_ta_default_model`、`deep_ta_blocked_models`(默认屏蔽 deepseek)、`deep_ta_max_retries`(默认1)、`deep_ta_min_composite_score`(默认40)、`deep_ta_min_completeness`(默认0.5)、`deep_ta_require_observe_triggered`(默认True)
+  - `tradingagents/tradeflow/schemas.py` — Candidate 新增 6 个字段：`deep_ta_status`、`deep_ta_dispatch_reason`、`deep_ta_model`、`deep_ta_report_path`、`deep_ta_dispatch_time`、`deep_ta_position_context`；`to_db_row()`/`from_db_row()` 同步；`render_text()` 显示深度 TA 调度状态
+  - `tradingagents/tradeflow/candidate_engine.py` — `init_db()` 新增 6 列；`save_candidate()` INSERT/UPDATE 包含新列（58→64 字段）
+  - `tradingagents/tradeflow/plan_runner.py` — `_build_plan_entry()` 输出 deep_ta_status/.../deep_ta_position_context
+  - `tests/test_m006_gated_deep_ta.py` — 新建，58 个测试覆盖：
+    - TestDeepTAStatus (2): 枚举值、完整枚举集合
+    - TestDeepTARecord (4): 默认值、自定义值、自动日期、显式日期
+    - TestDeepTADispatcher (5): 默认初始化、from_config 默认/自定义、自动/显式日期
+    - TestCheckDeepTAGate (20): need_deep_ta=False 拦截、每日上限满/未满、observe 非 TRIGGERED 拦截、WAITING/INVALIDATED、TRIGGERED 放行、禁用 require 观察触发、低综合分、综合分在阈值、低完整度、完整度在阈值、DeepSeek 模型拦截、默认模型 DeepSeek、允许模型、默认模型使用、超重试上限、重试内允许、全部门通过、未知持仓、空黑名单
+    - TestRecordDeepTADispatch (7): DISPATCHED 增计数、FAILED 增失败、SUCCESS 不变、BLOCKED 不变、多次上限、更新记录、全部字段
+    - TestCanRetryDeepTA (4): 无失败可重试、达上限不可、低于上限可、不同 symbol 独立
+    - TestCandidateDeepTAFields (4): 默认值、to_db_row、from_db_row、from_db_row 默认值
+    - TestDeepTADbPersistence (2): 保存读取、upsert 覆盖
+    - TestStrategyConfigDeepTA (3): 默认值、自定义值、to_dict 包含
+    - TestFullDeepTAWorkflow (7): 触发→调度→成功、未触发拦截、每日上限耗尽、失败→重试→再失败→拦截、DeepSeek 默认拦截、多 symbol 独立、无无限重试
+- **测试结果**：58 passed (M-006)；TradeFlow 全部 219 passed；0 failed
+- **关键逻辑**：
+  - `check_deep_ta_gate()` 按顺序检查 7 道门：need_deep_ta=True → 每日上限未满 → observe TRIGGERED → 综合分达标 → 完整度达标 → 模型不在黑名单 → 失败次数未超限
+  - 默认屏蔽 deepseek 模型，必须在配置中显式移除才能使用
+  - `DeepTADispatcher.from_config(cfg)` 从 StrategyConfig 构建调度器，所有阈值集中配置
+  - `record_deep_ta_dispatch()` 只记录审计信息，不实际调用 LLM，由上层（OpenClaw/scheduler）负责执行
+  - 多 symbol 完全独立，失败计数和调度记录按 symbol 隔离
+- **风险点**：无；所有改动向后兼容，deep_ta_status 默认空字符串，不影响现有逻辑
+
+## 2026-05-30 | M-005: 盘中 Observe 状态机
+
+- **执行者**：OpenCode
+- **任务**：M-005 — 对盘前候选做低频盘中观察，记录触发价、失效价、放量、跌破等状态
+- **修改文件**：
+  - `tradingagents/tradeflow/intraday_observe.py` — 新建：[M-005] 盘中观察状态机核心模块
+    - `ObserveState` 枚举：WAITING / TRIGGERED / INVALIDATED / EXPIRED
+    - `ObserveSnapshot` 数据类：单次检查快照，记录价量证据和触发原因
+    - `ObserveTracker` 数据类：跟踪器，维护状态、触发次数、检查历史
+    - `run_observe_check()` — 核心检查函数：价格突破触发价→TRIGGERED，跌破失效价→INVALIDATED，支持单日触发次数上限
+    - `expire_tracker()` — 收盘到期处理
+  - `tradingagents/tradeflow/schemas.py` — Candidate 新增 3 个字段：`observe_state`、`observe_trigger_count`、`observe_first_trigger_time`；`to_db_row()`/`from_db_row()` 同步；`render_text()` 显示盘中观察状态
+  - `tradingagents/tradeflow/strategy_config.py` — StrategyConfig 新增 3 个 observe 配置：`observe_max_daily_triggers`(默认3)、`observe_trigger_breach_pct`、`observe_invalidate_breach_pct`
+  - `tradingagents/tradeflow/candidate_engine.py` — `init_db()` 新增 3 列；`save_candidate()` INSERT/UPDATE 包含新列（55→58 字段）
+  - `tradingagents/tradeflow/plan_runner.py` — `_build_plan_entry()` 输出 observe_state/observe_trigger_count/observe_first_trigger_time
+  - `tests/test_m005_intraday_observe.py` — 新建，40 个测试覆盖：
+    - TestObserveState (2): 枚举值、完整枚举集合
+    - TestObserveSnapshot (2): 基本创建、自动时间戳
+    - TestObserveTracker (2): 默认状态、自定义日期
+    - TestRunObserveCheck (11): 价格低于触发价/WAITING、突破触发价/TRIGGERED、恰好触发价/TRIGGERED、跌破失效价/INVALIDATED、恰好失效价/INVALIDATED、失效优先于触发检查、无触发价、无失效价、无价格、量价记录、单日触发上限
+    - TestTerminalStates (3): TRIGGERED 终态保持、INVALIDATED 终态保持、EXPIRED 终态保持
+    - TestExpireTracker (3): WAITING→EXPIRED、TRIGGERED 保持、INVALIDATED 保持
+    - TestCandidateObserveIntegration (4): 默认值、to_db_row、from_db_row、from_db_row 默认值
+    - TestDbPersistence (2): 保存并读取 observe 状态、upsert 覆盖
+    - TestTrackerToCandidateSync (3): 同步 TRIGGERED/INVALIDATED/WAITING
+    - TestStrategyConfigObserve (2): 默认配置、自定义配置
+    - TestFullObserveWorkflow (4): 完整日间流程、失效流程、未触发无输出、多 symbol 隔离
+- **测试结果**：40 passed (M-005)；TradeFlow 全部 121 passed；0 failed
+- **关键逻辑**：
+  - `run_observe_check()` 先检查失效价（INVALIDATED），再检查触发价（TRIGGERED），失效优先于触发
+  - 单日触发次数上限由 `StrategyConfig.observe_max_daily_triggers` 控制（默认3），超出上限后价格虽突破但不再触发
+  - 终态（TRIGGERED/INVALIDATED/EXPIRED）为不可逆状态，后续检查只记录快照不改变状态
+  - `expire_tracker()` 收盘时将 WAITING 状态转为 EXPIRED，已触发/已失效保持不变
+  - 每次 `run_observe_check()` 自动追加到 `tracker.check_history`，保存完整检查历史
+  - 多 symbol 完全隔离，互不影响
+- **风险点**：无；所有改动向后兼容，observe_state 默认 WAITING，不触发任何自动动作
+
+
+
+## 2026-05-30 | V-002: 夜间自动开发验收报告与候选样本回放
+
+- **执行者**：OpenCode
+- **任务**：V-002 — 为夜间自动开发增加固定样本回放和验收报告
+- **修改文件**：
+  - `scripts/summarize_auto_dev_runs.py` — [V-002] 扩展 M-002 夜间日报脚本，新增候选样本回放、Ready 队列解析、测试结果解析、敏感数据过滤
+    - `parse_ready_queue()` — 从 TASKS.md 解析 status=ready 的任务列表
+    - `parse_test_summary_from_logs()` — 从 task_runs 中的 tests-round*.txt 提取 passed/failed/skipped
+    - `run_sample_replay()` — 调用 false_positive_audit 的 8 个固定 fixture 进行候选池质量回放
+    - `format_sample_replay()` — 将回放结果格式化为 markdown 表格
+    - `generate_report()` 扩展 — 新增 ready_queue 和 replay_results 参数，输出测试汇总、Ready 队列（含"任务池不足"警告）、候选样本回放
+    - `redact()` 增强 — 新增 password/secret 脱敏模式
+    - `main()` 扩展 — 新增 `--with-sample-replay` 参数，最终报告整体脱敏
+  - `tests/test_v002_nightly_acceptance.py` — 新建，33 个测试覆盖：
+    - TestRedact (8): sk-key/api-key/bearer/token/password/secret/正常文本/环境变量 脱敏
+    - TestParseReadyQueue (5): 单个/多个/空/无文件/blocked+proposed 过滤
+    - TestParseTestSummaryFromLogs (5): 标准输出/含失败/无测试文件/含错误/最新轮次
+    - TestSampleReplay (5): 返回结果/覆盖 6 个必须场景/全部通过/markdown 格式/空回放
+    - TestGenerateReportV002 (9): 非空队列/空队列警告/无队列/含回放/含测试/无泄露/完整报告/队列计数
+    - TestDryRunIntegration (2): dry-run 含回放/dry-run 不含回放
+- **测试结果**：33 passed (V-002)；全项目 1570 passed, 17 skipped, 0 failed
+- **关键逻辑**：
+
+exec
+/bin/zsh -lc 'git status --short && git branch --show-current' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M .zai_quota_state.json
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/tradeflow/candidate_engine.py
+ M tradingagents/tradeflow/plan_runner.py
+ M tradingagents/tradeflow/schemas.py
+ M tradingagents/tradeflow/strategy_config.py
+?? .auto_dev.lock/
+?? docs/reviews/M-006-20260530-round1.txt
+?? docs/task_runs/M-006-20260530-011554/
+?? tests/test_m006_gated_deep_ta.py
+?? tradingagents/tradeflow/gated_deep_ta.py
+local/tradingagents-custom
+
+exec
+/bin/zsh -lc "git diff --stat && git diff -- . ':(exclude).zai_quota_state.json'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ .zai_quota_state.json                       | 11 +++---
+ docs/DEVLOG.md                              | 53 +++++++++++++++++++++++++++++
+ docs/TASKS.md                               |  2 +-
+ tradingagents/tradeflow/candidate_engine.py | 26 +++++++++++++-
+ tradingagents/tradeflow/plan_runner.py      |  6 ++++
+ tradingagents/tradeflow/schemas.py          | 38 +++++++++++++++++++++
+ tradingagents/tradeflow/strategy_config.py  |  9 +++++
+ 7 files changed, 136 insertions(+), 9 deletions(-)
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index adf32ce..437a8bd 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,59 @@
+ 
+ ---
+ 
++## 2026-05-30 | M-006 代码质量修复（Codex review 失败后巡检）
++
++- **执行者**：OpenCode
++- **背景**：Codex review 因网络断连失败（exit code 1），非代码问题。人工巡检发现两个潜在缺陷。
++- **修复内容**：
++  - `tradingagents/tradeflow/gated_deep_ta.py`：
++    1. **新增空模型拦截**：`check_deep_ta_gate()` 在 resolved_model 为空时返回 BLOCKED，避免无模型调度
++    2. **修复 `can_retry_deep_ta()` 语义不一致**：原实现 `failures < max_retries` 与 `check_deep_ta_gate()` 的 `failures + retry_count > max_retries` 不一致；改为 `failures + retry_count <= max_retries`，新增 `retry_count` 参数
++  - `tests/test_m006_gated_deep_ta.py`：
++    - 新增 `test_no_model_blocks` 和 `test_no_model_uses_default` 测试
++    - 修正多个测试：未指定 model 时不再通过门控，需设置 `default_model` 或传入 `model`
++    - 修正 `can_retry_deep_ta` 测试预期：`failures=1, max_retries=1` → 允许重试（与 check 逻辑一致）
++    - 新增 `retry_count` 参数验证
++- **测试结果**：60 passed (M-006)；TradeFlow 全部 221 passed；0 failed
++- **风险点**：无；修复向后兼容（调用方必须在 config 设置 `deep_ta_default_model` 或传入 `model`）
++
++## 2026-05-30 | M-006: OpenClaw 自动触发 TA 深度分析门控
++
++- **执行者**：OpenCode
++- **任务**：M-006 — 在盘中 Observe 触发后，由 OpenClaw 决定是否调用 TA 深度分析，带成本、模型、频率门控
++- **修改文件**：
++  - `tradingagents/tradeflow/gated_deep_ta.py` — 新建：[M-006] 深度 TA 调度门控模块
++    - `DeepTAStatus` 枚举：PENDING / BLOCKED / DISPATCHED / SUCCESS / FAILED
++    - `DeepTARecord` 数据类：记录每次调度的 symbol、状态、模型、耗时、报告路径、重试次数、持仓上下文
++    - `DeepTADecision` 数据类：门控结果（allowed/reason/model/record）
++    - `DeepTADispatcher` 数据类：日内调度状态管理器，跟踪 daily_count、failure_counts、records；支持从 StrategyConfig 构建
++    - `check_deep_ta_gate()` — 核心门控函数：依次检查 need_deep_ta、每日上限、observe 状态、综合分、完整度、模型黑名单、重试上限
++    - `record_deep_ta_dispatch()` — 记录调度结果，更新 daily_count（DISPATCHED）和 failure_counts（FAILED）
++    - `can_retry_deep_ta()` — 判断是否可以重试
++  - `tradingagents/tradeflow/strategy_config.py` — StrategyConfig 新增 7 个 deep TA 门控配置：`deep_ta_daily_limit`(默认3)、`deep_ta_default_model`、`deep_ta_blocked_models`(默认屏蔽 deepseek)、`deep_ta_max_retries`(默认1)、`deep_ta_min_composite_score`(默认40)、`deep_ta_min_completeness`(默认0.5)、`deep_ta_require_observe_triggered`(默认True)
++  - `tradingagents/tradeflow/schemas.py` — Candidate 新增 6 个字段：`deep_ta_status`、`deep_ta_dispatch_reason`、`deep_ta_model`、`deep_ta_report_path`、`deep_ta_dispatch_time`、`deep_ta_position_context`；`to_db_row()`/`from_db_row()` 同步；`render_text()` 显示深度 TA 调度状态
++  - `tradingagents/tradeflow/candidate_engine.py` — `init_db()` 新增 6 列；`save_candidate()` INSERT/UPDATE 包含新列（58→64 字段）
++  - `tradingagents/tradeflow/plan_runner.py` — `_build_plan_entry()` 输出 deep_ta_status/.../deep_ta_position_context
++  - `tests/test_m006_gated_deep_ta.py` — 新建，58 个测试覆盖：
++    - TestDeepTAStatus (2): 枚举值、完整枚举集合
++    - TestDeepTARecord (4): 默认值、自定义值、自动日期、显式日期
++    - TestDeepTADispatcher (5): 默认初始化、from_config 默认/自定义、自动/显式日期
++    - TestCheckDeepTAGate (20): need_deep_ta=False 拦截、每日上限满/未满、observe 非 TRIGGERED 拦截、WAITING/INVALIDATED、TRIGGERED 放行、禁用 require 观察触发、低综合分、综合分在阈值、低完整度、完整度在阈值、DeepSeek 模型拦截、默认模型 DeepSeek、允许模型、默认模型使用、超重试上限、重试内允许、全部门通过、未知持仓、空黑名单
++    - TestRecordDeepTADispatch (7): DISPATCHED 增计数、FAILED 增失败、SUCCESS 不变、BLOCKED 不变、多次上限、更新记录、全部字段
++    - TestCanRetryDeepTA (4): 无失败可重试、达上限不可、低于上限可、不同 symbol 独立
++    - TestCandidateDeepTAFields (4): 默认值、to_db_row、from_db_row、from_db_row 默认值
++    - TestDeepTADbPersistence (2): 保存读取、upsert 覆盖
++    - TestStrategyConfigDeepTA (3): 默认值、自定义值、to_dict 包含
++    - TestFullDeepTAWorkflow (7): 触发→调度→成功、未触发拦截、每日上限耗尽、失败→重试→再失败→拦截、DeepSeek 默认拦截、多 symbol 独立、无无限重试
++- **测试结果**：58 passed (M-006)；TradeFlow 全部 219 passed；0 failed
++- **关键逻辑**：
++  - `check_deep_ta_gate()` 按顺序检查 7 道门：need_deep_ta=True → 每日上限未满 → observe TRIGGERED → 综合分达标 → 完整度达标 → 模型不在黑名单 → 失败次数未超限
++  - 默认屏蔽 deepseek 模型，必须在配置中显式移除才能使用
++  - `DeepTADispatcher.from_config(cfg)` 从 StrategyConfig 构建调度器，所有阈值集中配置
++  - `record_deep_ta_dispatch()` 只记录审计信息，不实际调用 LLM，由上层（OpenClaw/scheduler）负责执行
++  - 多 symbol 完全独立，失败计数和调度记录按 symbol 隔离
++- **风险点**：无；所有改动向后兼容，deep_ta_status 默认空字符串，不影响现有逻辑
++
+ ## 2026-05-30 | M-005: 盘中 Observe 状态机
+ 
+ - **执行者**：OpenCode
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index dd65b9f..1e058d4 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -307,7 +307,7 @@
+ ### M-006: OpenClaw 自动触发 TA 深度分析门控（P2）
+ - **描述**：在盘中 Observe 触发后，由 OpenClaw 决定是否调用 TA 深度分析，但必须有成本、模型、频率门控。
+ - **优先级**：P2
+-- **状态**：ready
++- **状态**：done — 实现完成待 commit
+ - **前置条件**：`M-005` 完成并稳定运行。
+ - **执行约束**：
+   - 默认不调用 DeepSeek。
+diff --git a/tradingagents/tradeflow/candidate_engine.py b/tradingagents/tradeflow/candidate_engine.py
+index c1714e9..f3365a6 100644
+--- a/tradingagents/tradeflow/candidate_engine.py
++++ b/tradingagents/tradeflow/candidate_engine.py
+@@ -210,6 +210,19 @@ def init_db(db_path: str) -> None:
+             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+         except sqlite3.OperationalError:
+             pass
++    # [M-006] gated_deep_ta_dispatch — add deep TA dispatch columns
++    for _col, _type in [
++        ("deep_ta_status", "TEXT DEFAULT ''"),
++        ("deep_ta_dispatch_reason", "TEXT DEFAULT ''"),
++        ("deep_ta_model", "TEXT DEFAULT ''"),
++        ("deep_ta_report_path", "TEXT DEFAULT ''"),
++        ("deep_ta_dispatch_time", "TEXT DEFAULT ''"),
++        ("deep_ta_position_context", "TEXT DEFAULT ''"),
++    ]:
++        try:
++            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
++        except sqlite3.OperationalError:
++            pass
+     conn.commit()
+     conn.close()
+ 
+@@ -728,8 +741,10 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
+             "tradeflow_data_completeness, missing_data_fields_json, what_to_upgrade_json, evidence_gate_applied, "
+             "universe_sources_json, "
+             "observe_state, observe_trigger_count, observe_first_trigger_time, "
++            "deep_ta_status, deep_ta_dispatch_reason, deep_ta_model, "
++            "deep_ta_report_path, deep_ta_dispatch_time, deep_ta_position_context, "
+             "created_at, updated_at) "
+-            "VALUES ({}) ".format(",".join(["?"] * 58))
++            "VALUES ({}) ".format(",".join(["?"] * 64))
+             + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+             "trigger_price=excluded.trigger_price, "
+@@ -773,6 +788,12 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
+             "observe_state=excluded.observe_state, "
+             "observe_trigger_count=excluded.observe_trigger_count, "
+             "observe_first_trigger_time=excluded.observe_first_trigger_time, "
++            "deep_ta_status=excluded.deep_ta_status, "
++            "deep_ta_dispatch_reason=excluded.deep_ta_dispatch_reason, "
++            "deep_ta_model=excluded.deep_ta_model, "
++            "deep_ta_report_path=excluded.deep_ta_report_path, "
++            "deep_ta_dispatch_time=excluded.deep_ta_dispatch_time, "
++            "deep_ta_position_context=excluded.deep_ta_position_context, "
+             "updated_at=excluded.updated_at",
+             (
+                 row["trade_date"], row["symbol"], row["name"], row["source"],
+@@ -803,6 +824,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
+                 row["universe_sources_json"],
+                 row["observe_state"], row["observe_trigger_count"],
+                 row["observe_first_trigger_time"],
++                row["deep_ta_status"], row["deep_ta_dispatch_reason"],
++                row["deep_ta_model"], row["deep_ta_report_path"],
++                row["deep_ta_dispatch_time"], row["deep_ta_position_context"],
+                 candidate.created_at, row["updated_at"],
+             ),
+         )
+diff --git a/tradingagents/tradeflow/plan_runner.py b/tradingagents/tradeflow/plan_runner.py
+index 41c4a47..a40db33 100644
+--- a/tradingagents/tradeflow/plan_runner.py
++++ b/tradingagents/tradeflow/plan_runner.py
+@@ -110,6 +110,12 @@ def _build_plan_entry(candidate: Candidate) -> dict:
+         "observe_state": candidate.observe_state,  # [M-005] intraday_observe_state
+         "observe_trigger_count": candidate.observe_trigger_count,  # [M-005]
+         "observe_first_trigger_time": candidate.observe_first_trigger_time,  # [M-005]
++        "deep_ta_status": candidate.deep_ta_status,  # [M-006] gated_deep_ta_dispatch
++        "deep_ta_dispatch_reason": candidate.deep_ta_dispatch_reason,  # [M-006]
++        "deep_ta_model": candidate.deep_ta_model,  # [M-006]
++        "deep_ta_report_path": candidate.deep_ta_report_path,  # [M-006]
++        "deep_ta_dispatch_time": candidate.deep_ta_dispatch_time,  # [M-006]
++        "deep_ta_position_context": candidate.deep_ta_position_context,  # [M-006]
+     }
+ 
+ 
+diff --git a/tradingagents/tradeflow/schemas.py b/tradingagents/tradeflow/schemas.py
+index 01a5249..90b4f4e 100644
+--- a/tradingagents/tradeflow/schemas.py
++++ b/tradingagents/tradeflow/schemas.py
+@@ -105,6 +105,12 @@ class Candidate:
+     observe_state: str = "WAITING"  # [M-005] intraday_observe_state
+     observe_trigger_count: int = 0  # [M-005] intraday_observe_state
+     observe_first_trigger_time: str = ""  # [M-005] intraday_observe_state
++    deep_ta_status: str = ""  # [M-006] gated_deep_ta_dispatch
++    deep_ta_dispatch_reason: str = ""  # [M-006] gated_deep_ta_dispatch
++    deep_ta_model: str = ""  # [M-006] gated_deep_ta_dispatch
++    deep_ta_report_path: str = ""  # [M-006] gated_deep_ta_dispatch
++    deep_ta_dispatch_time: str = ""  # [M-006] gated_deep_ta_dispatch
++    deep_ta_position_context: str = ""  # [M-006] gated_deep_ta_dispatch
+ 
+     def __post_init__(self):
+         if not self.trade_date:
+@@ -209,6 +215,12 @@ class Candidate:
+             "observe_state": self.observe_state,  # [M-005] intraday_observe_state
+             "observe_trigger_count": self.observe_trigger_count,  # [M-005]
+             "observe_first_trigger_time": self.observe_first_trigger_time,  # [M-005]
++            "deep_ta_status": self.deep_ta_status,  # [M-006] gated_deep_ta_dispatch
++            "deep_ta_dispatch_reason": self.deep_ta_dispatch_reason,  # [M-006]
++            "deep_ta_model": self.deep_ta_model,  # [M-006]
++            "deep_ta_report_path": self.deep_ta_report_path,  # [M-006]
++            "deep_ta_dispatch_time": self.deep_ta_dispatch_time,  # [M-006]
++            "deep_ta_position_context": self.deep_ta_position_context,  # [M-006]
+             "updated_at": datetime.now().isoformat(),
+         }
+ 
+@@ -273,6 +285,12 @@ class Candidate:
+             observe_state=row.get("observe_state", "WAITING"),  # [M-005] intraday_observe_state
+             observe_trigger_count=row.get("observe_trigger_count", 0),  # [M-005]
+             observe_first_trigger_time=row.get("observe_first_trigger_time", ""),  # [M-005]
++            deep_ta_status=row.get("deep_ta_status", ""),  # [M-006] gated_deep_ta_dispatch
++            deep_ta_dispatch_reason=row.get("deep_ta_dispatch_reason", ""),  # [M-006]
++            deep_ta_model=row.get("deep_ta_model", ""),  # [M-006]
++            deep_ta_report_path=row.get("deep_ta_report_path", ""),  # [M-006]
++            deep_ta_dispatch_time=row.get("deep_ta_dispatch_time", ""),  # [M-006]
++            deep_ta_position_context=row.get("deep_ta_position_context", ""),  # [M-006]
+         )
+ 
+ 
+@@ -484,6 +502,26 @@ class DailyPlan:
+                 lines.append(f"  盘中观察: {state_label} (触发{obs_count}次)")
+                 if obs_time:
+                     lines.append(f"    首次触发: {obs_time}")
++            # [M-006] gated_deep_ta_dispatch — display deep TA dispatch status
++            dta_status = c.get("deep_ta_status", "")
++            dta_reason = c.get("deep_ta_dispatch_reason", "")
++            dta_model = c.get("deep_ta_model", "")
++            dta_pos = c.get("deep_ta_position_context", "")
++            if dta_status:
++                status_label = {
++                    "PENDING": "待调度",
++                    "BLOCKED": "已拦截",
++                    "DISPATCHED": "已调度",
++                    "SUCCESS": "已完成",
++                    "FAILED": "失败",
++                }.get(dta_status, dta_status)
++                lines.append(f"  深度TA: {status_label}")
++                if dta_reason:
++                    lines.append(f"    原因: {dta_reason}")
++                if dta_model:
++                    lines.append(f"    模型: {dta_model}")
++                if dta_pos:
++                    lines.append(f"    持仓: {dta_pos}")
+             lines.append("")
+ 
+         return "\n".join(lines)
+diff --git a/tradingagents/tradeflow/strategy_config.py b/tradingagents/tradeflow/strategy_config.py
+index 5a05d11..59e41ad 100644
+--- a/tradingagents/tradeflow/strategy_config.py
++++ b/tradingagents/tradeflow/strategy_config.py
+@@ -130,6 +130,15 @@ class StrategyConfig:
+     observe_trigger_breach_pct: float = 0.0
+     observe_invalidate_breach_pct: float = 0.0
+ 
++    # ── Deep TA Dispatch Gate [M-006] ──
++    deep_ta_daily_limit: int = 3
++    deep_ta_default_model: str = ""
++    deep_ta_blocked_models: tuple = ("deepseek",)
++    deep_ta_max_retries: int = 1
++    deep_ta_min_composite_score: float = 40.0
++    deep_ta_min_completeness: float = 0.5
++    deep_ta_require_observe_triggered: bool = True
++
+     def to_dict(self) -> dict:
+         d = asdict(self)
+         d["risk_high_severity_flags"] = list(self.risk_high_severity_flags)
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/tradeflow/gated_deep_ta.py; printf '\\n--- tests ---\\n'; sed -n '1,260p' tests/test_m006_gated_deep_ta.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [M-006] gated_deep_ta_dispatch
+"""Gated Deep TA Dispatch — decides whether to invoke deep TA analysis
+after an intraday observe trigger.
+
+Responsibilities:
+1. Check executable conditions before dispatching TA.
+2. Enforce daily hard cap on TA dispatch count.
+3. Block forbidden models (e.g. DeepSeek) by default.
+4. Record dispatch reason, model, duration, report path.
+5. Limit retries on failure — no infinite retry loops.
+6. Require position_context for all dispatches.
+
+Design constraints:
+- Default: do NOT call DeepSeek or any blocked model.
+- Daily TA deep analysis count has a hard upper limit.
+- need_deep_ta=False → never dispatch.
+- Exceeds daily limit → never dispatch.
+- Failures are recorded but not retried beyond max_retries.
+- Does NOT actually call any LLM — only produces a dispatch decision
+  and audit trail.  The caller (OpenClaw / scheduler) is responsible
+  for executing the TA if allowed.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import Optional
+
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
+
+class DeepTAStatus(str, Enum):
+    PENDING = "PENDING"
+    BLOCKED = "BLOCKED"
+    DISPATCHED = "DISPATCHED"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+
+
+@dataclass
+class DeepTARecord:
+    symbol: str
+    status: DeepTAStatus = DeepTAStatus.PENDING
+    dispatch_reason: str = ""
+    block_reason: str = ""
+    model: str = ""
+    dispatch_time: str = ""
+    duration_sec: float = 0.0
+    report_path: str = ""
+    retry_count: int = 0
+    position_context: str = ""
+    composite_score: float = 0.0
+    observe_state: str = ""
+    completeness: float = 0.0
+    trade_date: str = ""
+
+    def __post_init__(self):
+        if not self.trade_date:
+            self.trade_date = datetime.now().strftime("%Y-%m-%d")
+
+
+@dataclass
+class DeepTADecision:
+    allowed: bool = False
+    reason: str = ""
+    model: str = ""
+    record: Optional[DeepTARecord] = None
+
+
+@dataclass
+class DeepTADispatcher:
+    trade_date: str = ""
+    daily_count: int = 0
+    daily_limit: int = 3
+    blocked_models: tuple = ("deepseek",)
+    default_model: str = ""
+    max_retries: int = 1
+    min_composite_score: float = 40.0
+    min_completeness: float = 0.5
+    require_observe_triggered: bool = True
+    records: dict[str, DeepTARecord] = field(default_factory=dict)
+    failure_counts: dict[str, int] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not self.trade_date:
+            self.trade_date = datetime.now().strftime("%Y-%m-%d")
+
+    @classmethod
+    def from_config(cls, cfg: Optional[StrategyConfig] = None) -> "DeepTADispatcher":
+        if cfg is None:
+            cfg = DEFAULT_STRATEGY_CONFIG
+        return cls(
+            daily_limit=getattr(cfg, "deep_ta_daily_limit", 3),
+            blocked_models=getattr(cfg, "deep_ta_blocked_models", ("deepseek",)),
+            default_model=getattr(cfg, "deep_ta_default_model", ""),
+            max_retries=getattr(cfg, "deep_ta_max_retries", 1),
+            min_composite_score=getattr(cfg, "deep_ta_min_composite_score", 40.0),
+            min_completeness=getattr(cfg, "deep_ta_min_completeness", 0.5),
+            require_observe_triggered=getattr(cfg, "deep_ta_require_observe_triggered", True),
+        )
+
+
+def check_deep_ta_gate(
+    dispatcher: DeepTADispatcher,
+    symbol: str,
+    need_deep_ta: bool,
+    observe_state: str,
+    composite_score: float = 0.0,
+    completeness: float = 0.0,
+    position_context: str = "unknown",
+    tier: str = "",
+    model: str = "",
+    retry_count: int = 0,
+) -> DeepTADecision:
+    """Check all gates before allowing a deep TA dispatch.
+
+    Returns a DeepTADecision with allowed=True only if all gates pass.
+    """
+    record = DeepTARecord(
+        symbol=symbol,
+        position_context=position_context,
+        composite_score=composite_score,
+        observe_state=observe_state,
+        completeness=completeness,
+        trade_date=dispatcher.trade_date,
+    )
+
+    if not need_deep_ta:
+        record.status = DeepTAStatus.BLOCKED
+        record.block_reason = "need_deep_ta=False"
+        return DeepTADecision(allowed=False, reason="need_deep_ta=False", record=record)
+
+    if dispatcher.daily_count >= dispatcher.daily_limit:
+        record.status = DeepTAStatus.BLOCKED
+        record.block_reason = f"每日次数上限({dispatcher.daily_limit}次)已满"
+        return DeepTADecision(allowed=False, reason=record.block_reason, record=record)
+
+    if dispatcher.require_observe_triggered and observe_state != "TRIGGERED":
+        record.status = DeepTAStatus.BLOCKED
+        record.block_reason = f"盘中观察状态非TRIGGERED(当前:{observe_state})"
+        return DeepTADecision(allowed=False, reason=record.block_reason, record=record)
+
+    if composite_score < dispatcher.min_composite_score:
+        record.status = DeepTAStatus.BLOCKED
+        record.block_reason = f"综合分{composite_score:.1f}低于阈值{dispatcher.min_composite_score:.1f}"
+        return DeepTADecision(allowed=False, reason=record.block_reason, record=record)
+
+    if completeness < dispatcher.min_completeness:
+        record.status = DeepTAStatus.BLOCKED
+        record.block_reason = f"证据完整度{completeness:.0%}低于阈值{dispatcher.min_completeness:.0%}"
+        return DeepTADecision(allowed=False, reason=record.block_reason, record=record)
+
+    resolved_model = model or dispatcher.default_model
+    if not resolved_model:
+        record.status = DeepTAStatus.BLOCKED
+        record.block_reason = "未指定模型(default_model也为空)"
+        return DeepTADecision(allowed=False, reason=record.block_reason, record=record)
+
+    model_lower = resolved_model.lower()
+    for blocked in dispatcher.blocked_models:
+        if blocked and blocked.lower() in model_lower:
+            record.status = DeepTAStatus.BLOCKED
+            record.block_reason = f"模型'{resolved_model}'被默认屏蔽"
+            return DeepTADecision(allowed=False, reason=record.block_reason, record=record)
+
+    sym_failures = dispatcher.failure_counts.get(symbol, 0)
+    if sym_failures + retry_count > dispatcher.max_retries:
+        record.status = DeepTAStatus.BLOCKED
+        record.block_reason = f"失败次数({sym_failures + retry_count})超过最大重试({dispatcher.max_retries})"
+        return DeepTADecision(allowed=False, reason=record.block_reason, record=record)
+
+    if not position_context or position_context == "unknown":
+        record.position_context = "unknown"
+
+    record.status = DeepTAStatus.PENDING
+    record.model = resolved_model
+    record.retry_count = retry_count
+
+    reason_parts = [
+        f"综合分{composite_score:.1f}",
+        f"完整度{completeness:.0%}",
+        f"观察状态={observe_state}",
+        f"持仓={position_context}",
+    ]
+    if tier:
+        reason_parts.append(f"分层={tier}")
+    if retry_count > 0:
+        reason_parts.append(f"重试#{retry_count}")
+
+    return DeepTADecision(
+        allowed=True,
+        reason="; ".join(reason_parts),
+        model=resolved_model,
+        record=record,
+    )
+
+
+def record_deep_ta_dispatch(
+    dispatcher: DeepTADispatcher,
+    symbol: str,
+    status: DeepTAStatus,
+    model: str = "",
+    duration_sec: float = 0.0,
+    report_path: str = "",
+    dispatch_reason: str = "",
+    position_context: str = "unknown",
+) -> DeepTARecord:
+    """Record a deep TA dispatch result and update dispatcher state.
+
+    Increments daily count on DISPATCHED and failure count on FAILED.
+    """
+    now_iso = datetime.now().isoformat()
+
+    existing = dispatcher.records.get(symbol)
+    if existing is None:
+        record = DeepTARecord(
+            symbol=symbol,
+            status=status,
+            model=model,
+            dispatch_time=now_iso,
+            duration_sec=duration_sec,
+            report_path=report_path,
+            dispatch_reason=dispatch_reason,
+            position_context=position_context,
+            trade_date=dispatcher.trade_date,
+        )
+    else:
+        record = existing
+        record.status = status
+        if model:
+            record.model = model
+        if duration_sec > 0:
+            record.duration_sec = duration_sec
+        if report_path:
+            record.report_path = report_path
+        if dispatch_reason:
+            record.dispatch_reason = dispatch_reason
+        if position_context and position_context != "unknown":
+            record.position_context = position_context
+        record.dispatch_time = now_iso
+
+    dispatcher.records[symbol] = record
+
+    if status == DeepTAStatus.DISPATCHED:
+        dispatcher.daily_count += 1
+    elif status == DeepTAStatus.FAILED:
+        cur = dispatcher.failure_counts.get(symbol, 0)
+        dispatcher.failure_counts[symbol] = cur + 1
+
+    return record
+
+
+def can_retry_deep_ta(
+    dispatcher: DeepTADispatcher,
+    symbol: str,
+    retry_count: int = 0,
+) -> bool:
+    """Check if a failed deep TA dispatch can be retried."""
+
+--- tests ---
+# [M-006] gated_deep_ta_dispatch — tests
+"""Tests for gated deep TA dispatch module.
+
+Covers:
+- DeepTAStatus enum
+- DeepTARecord dataclass
+- DeepTADispatcher initialization and config
+- check_deep_ta_gate: all blocking conditions
+- record_deep_ta_dispatch: state tracking
+- can_retry_deep_ta: retry logic
+- Integration with Candidate schemas
+- DB persistence of deep TA fields
+- Full workflow: observe → gate → dispatch
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import tempfile
+import os
+from datetime import datetime
+
+import pytest
+
+from tradingagents.tradeflow.gated_deep_ta import (
+    DeepTAStatus,
+    DeepTARecord,
+    DeepTADecision,
+    DeepTADispatcher,
+    check_deep_ta_gate,
+    record_deep_ta_dispatch,
+    can_retry_deep_ta,
+)
+from tradingagents.tradeflow.schemas import Candidate
+from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
+from tradingagents.tradeflow.strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG
+
+
+# ── DeepTAStatus ──
+
+class TestDeepTAStatus:
+    def test_enum_values(self):
+        assert DeepTAStatus.PENDING == "PENDING"
+        assert DeepTAStatus.BLOCKED == "BLOCKED"
+        assert DeepTAStatus.DISPATCHED == "DISPATCHED"
+        assert DeepTAStatus.SUCCESS == "SUCCESS"
+        assert DeepTAStatus.FAILED == "FAILED"
+
+    def test_all_statuses(self):
+        expected = {"PENDING", "BLOCKED", "DISPATCHED", "SUCCESS", "FAILED"}
+        assert set(s.value for s in DeepTAStatus) == expected
+
+
+# ── DeepTARecord ──
+
+class TestDeepTARecord:
+    def test_default_values(self):
+        r = DeepTARecord(symbol="002138.SZ")
+        assert r.status == DeepTAStatus.PENDING
+        assert r.dispatch_reason == ""
+        assert r.model == ""
+        assert r.retry_count == 0
+        assert r.trade_date == datetime.now().strftime("%Y-%m-%d")
+
+    def test_custom_values(self):
+        r = DeepTARecord(
+            symbol="600519.SH",
+            status=DeepTAStatus.DISPATCHED,
+            model="gpt-4o",
+            duration_sec=12.5,
+            report_path="/tmp/report.md",
+            position_context="holding",
+            composite_score=75.0,
+            completeness=0.8,
+        )
+        assert r.symbol == "600519.SH"
+        assert r.status == DeepTAStatus.DISPATCHED
+        assert r.model == "gpt-4o"
+        assert r.duration_sec == 12.5
+        assert r.report_path == "/tmp/report.md"
+        assert r.position_context == "holding"
+        assert r.composite_score == 75.0
+        assert r.completeness == 0.8
+
+    def test_auto_trade_date(self):
+        r = DeepTARecord(symbol="000001.SZ")
+        assert r.trade_date == datetime.now().strftime("%Y-%m-%d")
+
+    def test_explicit_trade_date(self):
+        r = DeepTARecord(symbol="000001.SZ", trade_date="2026-05-29")
+        assert r.trade_date == "2026-05-29"
+
+
+# ── DeepTADispatcher ──
+
+class TestDeepTADispatcher:
+    def test_default_init(self):
+        d = DeepTADispatcher()
+        assert d.daily_count == 0
+        assert d.daily_limit == 3
+        assert d.blocked_models == ("deepseek",)
+        assert d.default_model == ""
+        assert d.max_retries == 1
+        assert d.min_composite_score == 40.0
+        assert d.min_completeness == 0.5
+        assert d.require_observe_triggered is True
+        assert d.records == {}
+        assert d.failure_counts == {}
+
+    def test_from_config_default(self):
+        d = DeepTADispatcher.from_config()
+        assert d.daily_limit == 3
+        assert d.blocked_models == ("deepseek",)
+        assert d.default_model == ""
+        assert d.max_retries == 1
+
+    def test_from_config_custom(self):
+        cfg = StrategyConfig(
+            deep_ta_daily_limit=5,
+            deep_ta_default_model="gpt-4o",
+            deep_ta_blocked_models=("deepseek", "doubao"),
+            deep_ta_max_retries=2,
+            deep_ta_min_composite_score=50.0,
+            deep_ta_min_completeness=0.6,
+            deep_ta_require_observe_triggered=False,
+        )
+        d = DeepTADispatcher.from_config(cfg)
+        assert d.daily_limit == 5
+        assert d.default_model == "gpt-4o"
+        assert d.blocked_models == ("deepseek", "doubao")
+        assert d.max_retries == 2
+        assert d.min_composite_score == 50.0
+        assert d.min_completeness == 0.6
+        assert d.require_observe_triggered is False
+
+    def test_auto_trade_date(self):
+        d = DeepTADispatcher()
+        assert d.trade_date == datetime.now().strftime("%Y-%m-%d")
+
+    def test_explicit_trade_date(self):
+        d = DeepTADispatcher(trade_date="2026-05-29")
+        assert d.trade_date == "2026-05-29"
+
+
+# ── check_deep_ta_gate ──
+
+class TestCheckDeepTAGate:
+    def setup_method(self):
+        self.dispatcher = DeepTADispatcher(daily_limit=3)
+
+    def test_need_deep_ta_false_blocks(self):
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=False,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+        )
+        assert decision.allowed is False
+        assert "need_deep_ta=False" in decision.reason
+        assert decision.record is not None
+        assert decision.record.status == DeepTAStatus.BLOCKED
+
+    def test_daily_limit_reached_blocks(self):
+        self.dispatcher.daily_count = 3
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+        )
+        assert decision.allowed is False
+        assert "上限" in decision.reason
+        assert decision.record.status == DeepTAStatus.BLOCKED
+
+    def test_daily_limit_not_reached_allows(self):
+        self.dispatcher.daily_count = 2
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+            model="gpt-4o",
+        )
+        assert decision.allowed is True
+
+    def test_observe_not_triggered_blocks(self):
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="WAITING",
+            composite_score=80.0,
+            completeness=0.9,
+        )
+        assert decision.allowed is False
+        assert "WAITING" in decision.reason
+        assert decision.record.status == DeepTAStatus.BLOCKED
+
+    def test_observe_invalidated_blocks(self):
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="INVALIDATED",
+            composite_score=80.0,
+            completeness=0.9,
+        )
+        assert decision.allowed is False
+        assert "INVALIDATED" in decision.reason
+
+    def test_observe_triggered_allows(self):
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+            model="gpt-4o",
+        )
+        assert decision.allowed is True
+
+    def test_require_observe_triggered_disabled(self):
+        d = DeepTADispatcher(require_observe_triggered=False, default_model="gpt-4o")
+        decision = check_deep_ta_gate(
+            dispatcher=d,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="WAITING",
+            composite_score=80.0,
+            completeness=0.9,
+        )
+        assert decision.allowed is True
+
+    def test_low_composite_score_blocks(self):
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=30.0,
+            completeness=0.9,
+        )
+        assert decision.allowed is False
+        assert "综合分" in decision.reason
+        assert decision.record.status == DeepTAStatus.BLOCKED
+
+    def test_composite_score_at_threshold_allows(self):
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=40.0,
+
+exec
+/bin/zsh -lc 'git diff --cached --stat && git diff --cached' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+exec
+/bin/zsh -lc "sed -n '260,620p' tradingagents/tradeflow/gated_deep_ta.py; printf '\\n--- tests 260+ ---\\n'; sed -n '260,620p' tests/test_m006_gated_deep_ta.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    """Check if a failed deep TA dispatch can be retried."""
+    sym_failures = dispatcher.failure_counts.get(symbol, 0)
+    return sym_failures + retry_count <= dispatcher.max_retries
+
+--- tests 260+ ---
+            composite_score=40.0,
+            completeness=0.9,
+            model="gpt-4o",
+        )
+        assert decision.allowed is True
+
+    def test_low_completeness_blocks(self):
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.3,
+        )
+        assert decision.allowed is False
+        assert "完整度" in decision.reason
+        assert decision.record.status == DeepTAStatus.BLOCKED
+
+    def test_completeness_at_threshold_allows(self):
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.5,
+            model="gpt-4o",
+        )
+        assert decision.allowed is True
+
+    def test_blocked_model_deepseek(self):
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+            model="deepseek-chat",
+        )
+        assert decision.allowed is False
+        assert "deepseek" in decision.reason.lower()
+        assert decision.record.status == DeepTAStatus.BLOCKED
+
+    def test_blocked_model_default_model_deepseek(self):
+        self.dispatcher.default_model = "deepseek-v3"
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+        )
+        assert decision.allowed is False
+        assert "deepseek" in decision.reason.lower()
+
+    def test_allowed_model(self):
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+            model="gpt-4o",
+        )
+        assert decision.allowed is True
+        assert decision.model == "gpt-4o"
+
+    def test_default_model_used_when_no_model(self):
+        self.dispatcher.default_model = "glm-4-plus"
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+        )
+        assert decision.allowed is True
+        assert decision.model == "glm-4-plus"
+
+    def test_exceed_max_retries_blocks(self):
+        self.dispatcher.failure_counts["002138.SZ"] = 2
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+            model="gpt-4o",
+            retry_count=1,
+        )
+        assert decision.allowed is False
+        assert "重试" in decision.reason
+
+    def test_within_max_retries_allows(self):
+        self.dispatcher.failure_counts["002138.SZ"] = 0
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+            model="gpt-4o",
+            retry_count=1,
+        )
+        assert decision.allowed is True
+
+    def test_all_gates_pass(self):
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=75.0,
+            completeness=0.8,
+            position_context="holding",
+            tier="A",
+            model="gpt-4o",
+        )
+        assert decision.allowed is True
+        assert decision.record.status == DeepTAStatus.PENDING
+        assert "综合分75.0" in decision.reason
+        assert "完整度80%" in decision.reason
+        assert "TRIGGERED" in decision.reason
+        assert "holding" in decision.reason
+        assert "A" in decision.reason
+
+    def test_unknown_position_context(self):
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+            position_context="unknown",
+            model="gpt-4o",
+        )
+        assert decision.allowed is True
+        assert decision.record.position_context == "unknown"
+
+    def test_empty_blocked_models_tuple(self):
+        d = DeepTADispatcher(blocked_models=())
+        decision = check_deep_ta_gate(
+            dispatcher=d,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+            model="deepseek-chat",
+        )
+        assert decision.allowed is True
+
+    def test_no_model_blocks(self):
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+        )
+        assert decision.allowed is False
+        assert "模型" in decision.reason
+        assert decision.record.status == DeepTAStatus.BLOCKED
+
+    def test_no_model_uses_default(self):
+        self.dispatcher.default_model = "glm-4-plus"
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+        )
+        assert decision.allowed is True
+        assert decision.model == "glm-4-plus"
+
+
+# ── record_deep_ta_dispatch ──
+
+class TestRecordDeepTADispatch:
+    def setup_method(self):
+        self.dispatcher = DeepTADispatcher(daily_limit=3)
+
+    def test_record_dispatched_increments_count(self):
+        assert self.dispatcher.daily_count == 0
+        record = record_deep_ta_dispatch(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            status=DeepTAStatus.DISPATCHED,
+            model="gpt-4o",
+            position_context="holding",
+        )
+        assert self.dispatcher.daily_count == 1
+        assert record.status == DeepTAStatus.DISPATCHED
+        assert record.model == "gpt-4o"
+        assert record.position_context == "holding"
+        assert record.dispatch_time != ""
+
+    def test_record_failed_increments_failure(self):
+        assert self.dispatcher.failure_counts.get("002138.SZ", 0) == 0
+        record = record_deep_ta_dispatch(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            status=DeepTAStatus.FAILED,
+            model="gpt-4o",
+        )
+        assert self.dispatcher.failure_counts["002138.SZ"] == 1
+        assert record.status == DeepTAStatus.FAILED
+        assert self.dispatcher.daily_count == 0
+
+    def test_record_success_no_count_change(self):
+        self.dispatcher.daily_count = 1
+        record = record_deep_ta_dispatch(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            status=DeepTAStatus.SUCCESS,
+            report_path="/tmp/report.md",
+            duration_sec=10.5,
+        )
+        assert self.dispatcher.daily_count == 1
+        assert record.status == DeepTAStatus.SUCCESS
+        assert record.report_path == "/tmp/report.md"
+        assert record.duration_sec == 10.5
+
+    def test_record_blocked_no_count_change(self):
+        record = record_deep_ta_dispatch(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            status=DeepTAStatus.BLOCKED,
+            dispatch_reason="need_deep_ta=False",
+        )
+        assert self.dispatcher.daily_count == 0
+        assert record.status == DeepTAStatus.BLOCKED
+
+    def test_multiple_dispatches_respect_limit(self):
+        for i in range(3):
+            record_deep_ta_dispatch(
+                dispatcher=self.dispatcher,
+                symbol=f"SYM{i:03d}.SZ",
+                status=DeepTAStatus.DISPATCHED,
+            )
+        assert self.dispatcher.daily_count == 3
+        decision = check_deep_ta_gate(
+            dispatcher=self.dispatcher,
+            symbol="SYM003.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+        )
+        assert decision.allowed is False
+        assert "上限" in decision.reason
+
+    def test_update_existing_record(self):
+        record_deep_ta_dispatch(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            status=DeepTAStatus.DISPATCHED,
+            model="gpt-4o",
+        )
+        record = record_deep_ta_dispatch(
+            dispatcher=self.dispatcher,
+            symbol="002138.SZ",
+            status=DeepTAStatus.SUCCESS,
+            report_path="/tmp/report_002138.md",
+            duration_sec=15.0,
+        )
+        assert record.status == DeepTAStatus.SUCCESS
+        assert record.report_path == "/tmp/report_002138.md"
+        assert record.model == "gpt-4o"
+        assert self.dispatcher.daily_count == 1
+
+    def test_record_with_all_fields(self):
+        record = record_deep_ta_dispatch(
+            dispatcher=self.dispatcher,
+            symbol="600519.SH",
+            status=DeepTAStatus.DISPATCHED,
+            model="gpt-4o",
+            duration_sec=20.5,
+            report_path="/tmp/report_600519.md",
+            dispatch_reason="综合分85.0; 完整度90%; 持仓=holding",
+            position_context="holding",
+        )
+        assert record.symbol == "600519.SH"
+        assert record.model == "gpt-4o"
+        assert record.duration_sec == 20.5
+        assert record.report_path == "/tmp/report_600519.md"
+        assert "综合分" in record.dispatch_reason
+        assert record.position_context == "holding"
+        assert record.dispatch_time != ""
+        assert "600519.SH" in self.dispatcher.records
+
+
+# ── can_retry_deep_ta ──
+
+class TestCanRetryDeepTA:
+    def test_no_failures_can_retry(self):
+        d = DeepTADispatcher(max_retries=1)
+        assert can_retry_deep_ta(d, "002138.SZ") is True
+
+    def test_at_max_failures_no_retry(self):
+        d = DeepTADispatcher(max_retries=1)
+        d.failure_counts["002138.SZ"] = 2
+        assert can_retry_deep_ta(d, "002138.SZ") is False
+
+    def test_below_max_failures_can_retry(self):
+        d = DeepTADispatcher(max_retries=2)
+        d.failure_counts["002138.SZ"] = 1
+        assert can_retry_deep_ta(d, "002138.SZ") is True
+
+    def test_different_symbols_independent(self):
+        d = DeepTADispatcher(max_retries=1)
+        d.failure_counts["002138.SZ"] = 1
+        assert can_retry_deep_ta(d, "002138.SZ") is True
+        assert can_retry_deep_ta(d, "600519.SH") is True
+        assert can_retry_deep_ta(d, "002138.SZ", retry_count=1) is False
+
+
+# ── Candidate Schema Integration ──
+
+class TestCandidateDeepTAFields:
+    def test_default_values(self):
+        c = Candidate(symbol="002138.SZ")
+        assert c.deep_ta_status == ""
+        assert c.deep_ta_dispatch_reason == ""
+        assert c.deep_ta_model == ""
+        assert c.deep_ta_report_path == ""
+        assert c.deep_ta_dispatch_time == ""
+        assert c.deep_ta_position_context == ""
+
+    def test_to_db_row(self):
+        c = Candidate(
+            symbol="002138.SZ",
+            deep_ta_status="DISPATCHED",
+            deep_ta_dispatch_reason="综合分75.0",
+            deep_ta_model="gpt-4o",
+            deep_ta_report_path="/tmp/report.md",
+            deep_ta_dispatch_time="2026-05-30T10:00:00",
+            deep_ta_position_context="holding",
+        )
+        row = c.to_db_row()
+        assert row["deep_ta_status"] == "DISPATCHED"
+        assert row["deep_ta_dispatch_reason"] == "综合分75.0"
+        assert row["deep_ta_model"] == "gpt-4o"
+        assert row["deep_ta_report_path"] == "/tmp/report.md"
+        assert row["deep_ta_dispatch_time"] == "2026-05-30T10:00:00"
+        assert row["deep_ta_position_context"] == "holding"
+
+    def test_from_db_row(self):
+        row = {
+            "symbol": "002138.SZ",
+
+exec
+/bin/zsh -lc "sed -n '620,1040p' tests/test_m006_gated_deep_ta.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            "symbol": "002138.SZ",
+            "name": "顺络电子",
+            "source": "manual",
+            "strategy_tags_json": "[]",
+            "primary_strategy": "",
+            "score": 0.0,
+            "status": "active",
+            "trigger_price": None,
+            "support_price": None,
+            "invalid_price": None,
+            "need_deep_ta": 0,
+            "evidence_json": "{}",
+            "risk_flags_json": "[]",
+            "trade_date": "2026-05-30",
+            "created_at": "",
+            "updated_at": "",
+            "deep_ta_status": "BLOCKED",
+            "deep_ta_dispatch_reason": "need_deep_ta=False",
+            "deep_ta_model": "",
+            "deep_ta_report_path": "",
+            "deep_ta_dispatch_time": "",
+            "deep_ta_position_context": "unknown",
+        }
+        c = Candidate.from_db_row(row)
+        assert c.deep_ta_status == "BLOCKED"
+        assert c.deep_ta_dispatch_reason == "need_deep_ta=False"
+        assert c.deep_ta_model == ""
+        assert c.deep_ta_position_context == "unknown"
+
+    def test_from_db_row_defaults(self):
+        row = {"symbol": "002138.SZ"}
+        c = Candidate.from_db_row(row)
+        assert c.deep_ta_status == ""
+        assert c.deep_ta_dispatch_reason == ""
+        assert c.deep_ta_model == ""
+        assert c.deep_ta_report_path == ""
+        assert c.deep_ta_dispatch_time == ""
+        assert c.deep_ta_position_context == ""
+
+
+# ── DB Persistence ──
+
+class TestDeepTADbPersistence:
+    def test_save_and_read_deep_ta_fields(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            init_db(db_path)
+            c = Candidate(
+                symbol="002138.SZ",
+                name="顺络电子",
+                trade_date="2026-05-30",
+                deep_ta_status="DISPATCHED",
+                deep_ta_dispatch_reason="综合分75.0; 完整度80%",
+                deep_ta_model="gpt-4o",
+                deep_ta_report_path="/tmp/report_002138.md",
+                deep_ta_dispatch_time="2026-05-30T10:00:00",
+                deep_ta_position_context="holding",
+            )
+            save_candidate(c, db_path)
+
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM tradeflow_candidates WHERE symbol='002138.SZ'"
+            ).fetchone()
+            conn.close()
+
+            assert row is not None
+            assert row["deep_ta_status"] == "DISPATCHED"
+            assert row["deep_ta_dispatch_reason"] == "综合分75.0; 完整度80%"
+            assert row["deep_ta_model"] == "gpt-4o"
+            assert row["deep_ta_report_path"] == "/tmp/report_002138.md"
+            assert row["deep_ta_dispatch_time"] == "2026-05-30T10:00:00"
+            assert row["deep_ta_position_context"] == "holding"
+        finally:
+            os.unlink(db_path)
+
+    def test_upsert_deep_ta_fields(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            init_db(db_path)
+            c1 = Candidate(
+                symbol="002138.SZ",
+                trade_date="2026-05-30",
+                deep_ta_status="PENDING",
+                deep_ta_model="gpt-4o",
+            )
+            save_candidate(c1, db_path)
+
+            c2 = Candidate(
+                symbol="002138.SZ",
+                trade_date="2026-05-30",
+                deep_ta_status="SUCCESS",
+                deep_ta_model="gpt-4o",
+                deep_ta_report_path="/tmp/report.md",
+                deep_ta_position_context="holding",
+            )
+            save_candidate(c2, db_path)
+
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM tradeflow_candidates WHERE symbol='002138.SZ'"
+            ).fetchone()
+            conn.close()
+
+            assert row["deep_ta_status"] == "SUCCESS"
+            assert row["deep_ta_report_path"] == "/tmp/report.md"
+            assert row["deep_ta_position_context"] == "holding"
+        finally:
+            os.unlink(db_path)
+
+
+# ── StrategyConfig Deep TA Fields ──
+
+class TestStrategyConfigDeepTA:
+    def test_default_values(self):
+        cfg = StrategyConfig()
+        assert cfg.deep_ta_daily_limit == 3
+        assert cfg.deep_ta_default_model == ""
+        assert cfg.deep_ta_blocked_models == ("deepseek",)
+        assert cfg.deep_ta_max_retries == 1
+        assert cfg.deep_ta_min_composite_score == 40.0
+        assert cfg.deep_ta_min_completeness == 0.5
+        assert cfg.deep_ta_require_observe_triggered is True
+
+    def test_custom_values(self):
+        cfg = StrategyConfig(
+            deep_ta_daily_limit=5,
+            deep_ta_default_model="gpt-4o",
+            deep_ta_blocked_models=("deepseek", "doubao"),
+            deep_ta_max_retries=3,
+            deep_ta_min_composite_score=60.0,
+            deep_ta_min_completeness=0.7,
+            deep_ta_require_observe_triggered=False,
+        )
+        assert cfg.deep_ta_daily_limit == 5
+        assert cfg.deep_ta_default_model == "gpt-4o"
+        assert cfg.deep_ta_blocked_models == ("deepseek", "doubao")
+        assert cfg.deep_ta_max_retries == 3
+        assert cfg.deep_ta_min_composite_score == 60.0
+        assert cfg.deep_ta_min_completeness == 0.7
+        assert cfg.deep_ta_require_observe_triggered is False
+
+    def test_to_dict_includes_deep_ta_fields(self):
+        cfg = StrategyConfig()
+        d = cfg.to_dict()
+        assert "deep_ta_daily_limit" in d
+        assert "deep_ta_default_model" in d
+        assert "deep_ta_blocked_models" in d
+        assert "deep_ta_max_retries" in d
+        assert "deep_ta_min_composite_score" in d
+        assert "deep_ta_min_completeness" in d
+        assert "deep_ta_require_observe_triggered" in d
+
+
+# ── Full Workflow: Observe → Gate → Dispatch ──
+
+class TestFullDeepTAWorkflow:
+    def test_triggered_candidate_gets_deep_ta(self):
+        dispatcher = DeepTADispatcher.from_config()
+        decision = check_deep_ta_gate(
+            dispatcher=dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=75.0,
+            completeness=0.8,
+            position_context="holding",
+            tier="A",
+            model="gpt-4o",
+        )
+        assert decision.allowed is True
+        record = record_deep_ta_dispatch(
+            dispatcher=dispatcher,
+            symbol="002138.SZ",
+            status=DeepTAStatus.DISPATCHED,
+            model="gpt-4o",
+            position_context="holding",
+            dispatch_reason=decision.reason,
+        )
+        assert record.status == DeepTAStatus.DISPATCHED
+        assert dispatcher.daily_count == 1
+
+        record = record_deep_ta_dispatch(
+            dispatcher=dispatcher,
+            symbol="002138.SZ",
+            status=DeepTAStatus.SUCCESS,
+            report_path="/tmp/002138_report.md",
+            duration_sec=12.0,
+        )
+        assert record.status == DeepTAStatus.SUCCESS
+        assert record.report_path == "/tmp/002138_report.md"
+
+    def test_not_triggered_candidate_blocked(self):
+        dispatcher = DeepTADispatcher.from_config()
+        decision = check_deep_ta_gate(
+            dispatcher=dispatcher,
+            symbol="600519.SH",
+            need_deep_ta=True,
+            observe_state="WAITING",
+            composite_score=80.0,
+            completeness=0.9,
+        )
+        assert decision.allowed is False
+
+    def test_daily_limit_exhaustion(self):
+        dispatcher = DeepTADispatcher(daily_limit=2)
+        for i in range(2):
+            decision = check_deep_ta_gate(
+                dispatcher=dispatcher,
+                symbol=f"SYM{i:03d}.SZ",
+                need_deep_ta=True,
+                observe_state="TRIGGERED",
+                composite_score=80.0,
+                completeness=0.9,
+                model="gpt-4o",
+            )
+            assert decision.allowed is True
+            record_deep_ta_dispatch(
+                dispatcher=dispatcher,
+                symbol=f"SYM{i:03d}.SZ",
+                status=DeepTAStatus.DISPATCHED,
+            )
+
+        decision = check_deep_ta_gate(
+            dispatcher=dispatcher,
+            symbol="SYM002.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+        )
+        assert decision.allowed is False
+        assert "上限" in decision.reason
+
+    def test_failure_then_retry_then_success(self):
+        dispatcher = DeepTADispatcher(max_retries=1)
+
+        decision = check_deep_ta_gate(
+            dispatcher=dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=75.0,
+            completeness=0.8,
+            model="gpt-4o",
+        )
+        assert decision.allowed is True
+
+        record_deep_ta_dispatch(
+            dispatcher=dispatcher,
+            symbol="002138.SZ",
+            status=DeepTAStatus.FAILED,
+            model="gpt-4o",
+        )
+        assert dispatcher.failure_counts["002138.SZ"] == 1
+
+        decision2 = check_deep_ta_gate(
+            dispatcher=dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=75.0,
+            completeness=0.8,
+            model="gpt-4o",
+        )
+        assert decision2.allowed is True
+
+        record_deep_ta_dispatch(
+            dispatcher=dispatcher,
+            symbol="002138.SZ",
+            status=DeepTAStatus.FAILED,
+            model="gpt-4o",
+        )
+        assert dispatcher.failure_counts["002138.SZ"] == 2
+
+        decision3 = check_deep_ta_gate(
+            dispatcher=dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=75.0,
+            completeness=0.8,
+            model="gpt-4o",
+        )
+        assert decision3.allowed is False
+        assert "重试" in decision3.reason
+
+    def test_deepseek_always_blocked_by_default(self):
+        dispatcher = DeepTADispatcher.from_config()
+        decision = check_deep_ta_gate(
+            dispatcher=dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=90.0,
+            completeness=0.95,
+            model="deepseek-chat",
+        )
+        assert decision.allowed is False
+
+    def test_multiple_symbols_independent(self):
+        dispatcher = DeepTADispatcher(daily_limit=2)
+
+        decision1 = check_deep_ta_gate(
+            dispatcher=dispatcher,
+            symbol="002138.SZ",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=75.0,
+            completeness=0.8,
+            model="gpt-4o",
+        )
+        assert decision1.allowed is True
+        record_deep_ta_dispatch(dispatcher, "002138.SZ", DeepTAStatus.DISPATCHED)
+
+        decision2 = check_deep_ta_gate(
+            dispatcher=dispatcher,
+            symbol="600519.SH",
+            need_deep_ta=True,
+            observe_state="TRIGGERED",
+            composite_score=80.0,
+            completeness=0.9,
+            model="gpt-4o",
+        )
+        assert decision2.allowed is True
+        record_deep_ta_dispatch(dispatcher, "600519.SH", DeepTAStatus.DISPATCHED)
+
+        record_deep_ta_dispatch(dispatcher, "002138.SZ", DeepTAStatus.FAILED)
+
+        assert dispatcher.failure_counts.get("002138.SZ") == 1
+        assert dispatcher.failure_counts.get("600519.SH") is None
+        assert dispatcher.daily_count == 2
+
+        assert can_retry_deep_ta(dispatcher, "002138.SZ") is True
+        assert can_retry_deep_ta(dispatcher, "002138.SZ", retry_count=1) is False
+        assert can_retry_deep_ta(dispatcher, "600519.SH") is True
+
+    def test_no_infinite_retry_loop(self):
+        dispatcher = DeepTADispatcher(max_retries=1)
+        record_deep_ta_dispatch(dispatcher, "002138.SZ", DeepTAStatus.FAILED)
+        record_deep_ta_dispatch(dispatcher, "002138.SZ", DeepTAStatus.FAILED)
+
+        for _ in range(10):
+            decision = check_deep_ta_gate(
+                dispatcher=dispatcher,
+                symbol="002138.SZ",
+                need_deep_ta=True,
+                observe_state="TRIGGERED",
+                composite_score=80.0,
+                completeness=0.9,
+                model="gpt-4o",
+            )
+            assert decision.allowed is False
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/tradeflow/candidate_engine.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""TradeFlow Candidate Engine — runs strategies and produces candidates.
+
+Responsibilities:
+- Load price data for each symbol in the universe
+- Run all three strategies
+- Filter out ST / low-liquidity / data-missing stocks
+- Deduplicate multi-strategy hits
+- Mark need_deep_ta
+- Persist to tradeflow tables
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime
+from typing import Optional
+
+import pandas as pd
+
+from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE, STRATEGY_FUND_FLOW  # [S-001] [S-002] [T-003]
+from .strategies.vcp import score_vcp
+from .strategies.pullback_support import score_pullback_support
+from .strategies.event_catalyst import score_event_catalyst
+from .policy_version_signal import detect_policy_version, PolicyVersionResult  # [S-001]
+from .narrative_quality import score_narrative_quality, NarrativeQualityResult  # [S-002]
+from .underwater_risk_flags import detect_underwater_risks, UnderwaterRiskResult, ALL_RISK_FLAGS  # [S-003]
+from .game_balance import assess_game_balance, GameBalanceResult  # [S-004] candidate_game_balance
+from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult, FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT  # [T-003] fund_flow_anomaly_pool
+from .selection_priority_gate import run_selection_priority_gate, SelectionPriorityResult  # [S-005] selection_priority_gate
+from .tier_budget import classify_candidate_tier, TierBudgetResult  # [S-007] candidate_tier_budget
+from .evidence_gate import compute_evidence_completeness, apply_evidence_gate, EvidenceGateResult  # [S-008] tradeflow_evidence_gate
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
+
+# ── SQL for table creation ──
+CREATE_CANDIDATES_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    source TEXT DEFAULT 'manual',
+    strategy_tags_json TEXT DEFAULT '[]',
+    primary_strategy TEXT DEFAULT '',
+    score REAL DEFAULT 0.0,
+    status TEXT DEFAULT 'active',
+    trigger_price REAL,
+    support_price REAL,
+    invalid_price REAL,
+    need_deep_ta INTEGER DEFAULT 0,
+    evidence_json TEXT DEFAULT '{}',
+    risk_flags_json TEXT DEFAULT '[]',
+    created_at TEXT,
+    updated_at TEXT,
+    UNIQUE(trade_date, symbol)
+);
+"""
+
+CREATE_SIGNALS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_time TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    signal_type TEXT NOT NULL,
+    signal_level TEXT DEFAULT 'info',
+    source TEXT DEFAULT 'tradeflow',
+    evidence_json TEXT DEFAULT '{}',
+    action_hint TEXT DEFAULT 'OBSERVE',
+    status TEXT DEFAULT 'new',
+    created_at TEXT
+);
+"""
+
+CREATE_DAILY_PLANS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_daily_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    mode TEXT DEFAULT 'pre_market',
+    summary TEXT DEFAULT '',
+    candidates_json TEXT DEFAULT '[]',
+    metadata_json TEXT DEFAULT '{}',
+    created_at TEXT,
+    UNIQUE(trade_date, mode)
+);
+"""
+
+
+def init_db(db_path: str) -> None:
+    """Create tradeflow tables if they don't exist."""
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        CREATE_CANDIDATES_TABLE
+        + CREATE_SIGNALS_TABLE
+        + CREATE_DAILY_PLANS_TABLE
+    )
+    try:
+        conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    # [S-001] policy_version_signal — add policy version columns
+    for _col, _type in [
+        ("policy_tags_json", "TEXT DEFAULT '[]'"),
+        ("version_score", "REAL DEFAULT 0.0"),
+        ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-002] narrative_quality_score — add narrative quality columns
+    for _col, _type in [
+        ("narrative_score", "REAL DEFAULT 0.0"),
+        ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
+        ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-003] underwater_risk_flags — add risk penalty columns
+    for _col, _type in [
+        ("risk_penalty", "REAL DEFAULT 0.0"),
+        ("risk_evidence_refs_json", "TEXT DEFAULT '[]'"),
+        ("risk_reasons_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-004] candidate_game_balance — add game balance columns
+    for _col, _type in [
+        ("game_balance", "TEXT DEFAULT ''"),
+        ("bull_case", "TEXT DEFAULT ''"),
+        ("bear_case", "TEXT DEFAULT ''"),
+        ("policy_case", "TEXT DEFAULT ''"),
+        ("fund_flow_case", "TEXT DEFAULT ''"),
+        ("resonance_count", "INTEGER DEFAULT 0"),
+        ("game_balance_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [T-003] fund_flow_anomaly_pool — add fund flow anomaly columns
+    for _col, _type in [
+        ("fund_flow_anomaly_score", "REAL DEFAULT 0.0"),
+        ("fund_flow_anomaly_tags_json", "TEXT DEFAULT '[]'"),
+        ("fund_flow_anomaly_refs_json", "TEXT DEFAULT '[]'"),
+        ("fund_flow_unit_verified", "INTEGER DEFAULT 0"),
+        ("fund_flow_individual_summary", "TEXT DEFAULT ''"),
+        ("fund_flow_board_summary", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-005] selection_priority_gate — add priority gate columns
+    for _col, _type in [
+        ("composite_score", "REAL DEFAULT 0.0"),
+        ("signal_category_hits_json", "TEXT DEFAULT '[]'"),
+        ("positive_category_count", "INTEGER DEFAULT 0"),
+        ("data_completeness", "REAL DEFAULT 0.0"),
+        ("missing_evidence_json", "TEXT DEFAULT '[]'"),
+        ("why_deep_ta", "TEXT DEFAULT ''"),
+        ("why_not_deep_ta", "TEXT DEFAULT ''"),
+        ("priority_rank", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-007] candidate_tier_budget — add tier budget columns
+    for _col, _type in [
+        ("tier", "TEXT DEFAULT ''"),
+        ("ta_budget_priority", "INTEGER DEFAULT 0"),
+        ("tier_reason", "TEXT DEFAULT ''"),
+        ("missing_evidence_for_upgrade_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-008] tradeflow_evidence_gate — add evidence gate columns
+    for _col, _type in [
+        ("tradeflow_data_completeness", "REAL DEFAULT 0.0"),
+        ("missing_data_fields_json", "TEXT DEFAULT '[]'"),
+        ("what_to_upgrade_json", "TEXT DEFAULT '[]'"),
+        ("evidence_gate_applied", "INTEGER DEFAULT 0"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [M-003] tradeflow_universe_manager — add universe_sources column
+    for _col, _type in [
+        ("universe_sources_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [M-005] intraday_observe_state — add observe state columns
+    for _col, _type in [
+        ("observe_state", "TEXT DEFAULT 'WAITING'"),
+        ("observe_trigger_count", "INTEGER DEFAULT 0"),
+        ("observe_first_trigger_time", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [M-006] gated_deep_ta_dispatch — add deep TA dispatch columns
+    for _col, _type in [
+        ("deep_ta_status", "TEXT DEFAULT ''"),
+        ("deep_ta_dispatch_reason", "TEXT DEFAULT ''"),
+        ("deep_ta_model", "TEXT DEFAULT ''"),
+        ("deep_ta_report_path", "TEXT DEFAULT ''"),
+        ("deep_ta_dispatch_time", "TEXT DEFAULT ''"),
+        ("deep_ta_position_context", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    conn.commit()
+    conn.close()
+
+
+def _fetch_price_data(symbol: str, days: int = 120) -> Optional[pd.DataFrame]:
+    """Fetch price data for a symbol using the project's data providers.
+
+    Uses cn_akshare → cn_astock → yfinance fallback chain.  [N-002] cn_astock_fallback
+    Returns DataFrame with Date, Open, High, Low, Close, Volume columns.
+    """
+    from datetime import timedelta
+    from io import StringIO
+
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    def _try_provider(provider_cls, source_name: str) -> Optional[pd.DataFrame]:
+        try:
+            provider = provider_cls()
+            csv_str = provider.get_stock_data(symbol, start, end)
+            if csv_str and "No data found" not in csv_str:
+                df = pd.read_csv(StringIO(csv_str), comment="#")
+                if {"Date", "Open", "High", "Low", "Close", "Volume"}.issubset(df.columns):
+                    df["Date"] = pd.to_datetime(df["Date"])
+                    df = df.sort_values("Date").reset_index(drop=True)
+                    for col in ["Open", "High", "Low", "Close", "Volume"]:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                    df = df.dropna(subset=["Close"])
+                    if len(df) > 0:
+                        df.attrs["price_source"] = source_name  # [N-002] cn_astock_fallback
+                        return df
+        except Exception:
+            pass
+        return None
+
+
+exec
+/bin/zsh -lc 'git diff -- .zai_quota_state.json' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/.zai_quota_state.json b/.zai_quota_state.json
+index f54443e..085a6e0 100644
+--- a/.zai_quota_state.json
++++ b/.zai_quota_state.json
+@@ -1,8 +1,5 @@
+ {
+-  "last_check": "2026-05-29T19:31:00+08:00",
+-  "status": "EXHAUSTED",
+-  "error_code": "1308",
+-  "reset_time": "2026-05-29 21:49:56",
+-  "message": "已达到 5 小时的使用上限",
+-  "model": "glm-5.1"
+-}
++  "status": "OK",
++  "http_code": 200,
++  "last_check": "2026-05-30T01:27:27+08:00"
++}
+\ No newline at end of file
+
+exec
+/bin/zsh -lc "find .auto_dev.lock docs/task_runs/M-006-20260530-011554 docs/reviews -maxdepth 2 -type f -print | sort | xargs -I{} sh -c 'echo --- {}; sed -n \"1,80p\" \"{}\"'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+--- .auto_dev.lock/owner
+pid=20911
+started_at=2026-05-30_00:27:21
+repo=/Users/maybee/TradingAgents-AShare
+--- docs/reviews/M-002-20260529-round2.txt
+Task: M-002 — 任务运行档案索引与夜间日报聚合（P1）
+Date: 2026-05-29_11:37:33
+Codex exit code: 0
+Round: 2
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e71cd-a3a3-7fb2-9499-db423d029246
+--------
+user
+current changes
+exec
+/bin/zsh -lc 'git status --short && git rev-parse --show-toplevel && git branch --show-current' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tests/test_portfolio_import.py
+?? .auto_dev.lock/
+?? docs/task_runs/M-002-20260529-112320/
+?? scripts/summarize_auto_dev_runs.py
+?? tests/test_m002_summarize_runs.py
+/Users/maybee/TradingAgents-AShare
+local/tradingagents-custom
+
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+--- docs/reviews/M-003-20260530-round2.txt
+Task: M-003 — TradeFlow universe 管理器（P1）
+Date: 2026-05-30_00:40:38
+Codex exit code: 0
+Round: 2
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e749a-238b-7b81-ad2a-0df1076298a8
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md && printf '\\n---TASKS---\\n' && sed -n '1,220p' docs/TASKS.md && printf '\\n---DECISIONS---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n---DEVLOG---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+--- docs/reviews/M-004-20260530-round1.txt
+Task: M-004 — TradeFlow 策略权重与阈值配置（P1）
+Date: 2026-05-30_01:02:20
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e74ae-845c-7833-b929-d83fde17637d
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md && printf '\\n---TASKS---\\n' && sed -n '1,220p' docs/TASKS.md && printf '\\n---DECISIONS---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n---DEVLOG---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+--- docs/reviews/M-005-20260530-round1.txt
+Task: M-005 — 盘中 Observe 状态机（P2）
+Date: 2026-05-30_01:15:53
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e74bb-25b1-73f0-8d4d-6bae0b04378a
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,160p' docs/DECISIONS.md && sed -n '1,120p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+--- docs/reviews/M-006-20260530-round1.txt
+Task: M-006 — OpenClaw 自动触发 TA 深度分析门控（P2）
+Date: 2026-05-30_01:27:22
+Codex exit code: 1
+Round: 1
+---
+2026-05-29T17:23:32.053667Z ERROR codex_models_manager::manager: failed to refresh available models: timeout waiting for child process to exit
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e74c3-3a56-7040-ae48-2aba3ce380e2
+--------
+user
+current changes
+2026-05-29T17:23:37.127100Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest("http/request failed: error sending request for url (https://chatgpt.com/backend-api/wham/apps)")))
+2026-05-29T17:23:37.130949Z ERROR codex_models_manager::manager: failed to refresh available models: timeout waiting for child process to exit
+2026-05-29T17:23:42.198734Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: tls handshake eof, url: wss://chatgpt.com/backend-api/codex/responses
+2026-05-29T17:23:42.242213Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest("http/request failed: error sending request for url (https://chatgpt.com/backend-api/wham/apps)")))
+2026-05-29T17:23:47.328413Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: tls handshake eof, url: wss://chatgpt.com/backend-api/codex/responses
+2026-05-29T17:23:57.408491Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: tls handshake eof, url: wss://chatgpt.com/backend-api/codex/responses
+2026-05-29T17:24:02.626371Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: tls handshake eof, url: wss://chatgpt.com/backend-api/codex/responses
+ERROR: Reconnecting... 2/5
+2026-05-29T17:24:08.064295Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: tls handshake eof, url: wss://chatgpt.com/backend-api/codex/responses
+ERROR: Reconnecting... 3/5
+2026-05-29T17:24:13.827827Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: tls handshake eof, url: wss://chatgpt.com/backend-api/codex/responses
+ERROR: Reconnecting... 4/5
+2026-05-29T17:24:20.395209Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: tls handshake eof, url: wss://chatgpt.com/backend-api/codex/responses
+ERROR: Reconnecting... 5/5
+2026-05-29T17:24:28.713130Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: tls handshake eof, url: wss://chatgpt.com/backend-api/codex/responses
+ERROR: Reconnecting... 1/5
+ERROR: Reconnecting... 2/5
+ERROR: Reconnecting... 3/5
+ERROR: Reconnecting... 4/5
+ERROR: Reconnecting... 5/5
+ERROR: stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)
+codex
+Review was interrupted. Please re-run /review and wait for it to complete.
+ERROR: stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)
+--- docs/reviews/M-008-20260529-round1.txt
+Task: M-008 — 数据源健康检查与 fallback 可观测性（P1）
+Date: 2026-05-29_14:30:03
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e726b-4d73-7131-b68b-5759a1b64878
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md; printf '\\n--- TASKS ---\\n'; sed -n '1,220p' docs/TASKS.md; printf '\\n--- DECISIONS ---\\n'; sed -n '1,220p' docs/DECISIONS.md; printf '\\n--- DEVLOG ---\\n'; sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+--- docs/reviews/S-001-20260529-round1.txt
+Task: S-001 — 政策版本因子进入 TradeFlow 候选池（P1）
+Date: 2026-05-29_12:54:47
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e7213-682c-7a92-a73b-8c8c057f14d9
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md && printf '\\n---TASKS---\\n' && sed -n '1,220p' docs/TASKS.md && printf '\\n---DECISIONS---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n---DEVLOG---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+--- docs/reviews/S-002-20260529-round1.txt
+Task: S-002 — 叙事质量评分（P1）
+Date: 2026-05-29_13:58:28
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e724e-1654-7161-a554-03fb9f4e6b2d
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md; printf '\\n---TASKS---\\n'; sed -n '1,220p' docs/TASKS.md; printf '\\n---DECISIONS---\\n'; sed -n '1,220p' docs/DECISIONS.md; printf '\\n---DEVLOG---\\n'; sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+--- docs/reviews/S-003-20260529-round1.txt
+Task: S-003 — 水下风险标签与候选降权（P1）
+Date: 2026-05-29_14:07:53
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e7256-5b71-74a2-8cec-78076283689d
+--------
+user
+current changes
+exec
+/bin/zsh -lc 'git status --short && git rev-parse --show-toplevel && git branch --show-current' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/tradeflow/candidate_engine.py
+ M tradingagents/tradeflow/plan_runner.py
+ M tradingagents/tradeflow/schemas.py
+?? .auto_dev.lock/
+?? docs/task_runs/S-003-20260529-135829/
+?? tests/test_s003_underwater_risk_flags.py
+?? tradingagents/tradeflow/underwater_risk_flags.py
+/Users/maybee/TradingAgents-AShare
+local/tradingagents-custom
+
+exec
+/bin/zsh -lc "git diff -- tradingagents/tradeflow/candidate_engine.py tradingagents/tradeflow/plan_runner.py tradingagents/tradeflow/schemas.py tradingagents/tradeflow/underwater_risk_flags.py tests/test_s003_underwater_risk_flags.py docs/TASKS.md docs/DEVLOG.md && find docs/task_runs/S-003-20260529-135829 -maxdepth 2 -type f -print -exec sed -n '1,120p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 7e14848..43fbc5b 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,44 @@
+ 
+ ---
+ 
++## 2026-05-29 | S-003 水下风险标签与候选降权
++
++- **执行者**：OpenCode (glm-5.1)
++- **任务**：为 TradeFlow 候选池增加水下风险标签，识别解禁、减持、问询、财务异常、融资拥挤、龙虎榜过热等风险，对候选做降权或要求更严格技术确认
++- **修改文件**：
++  - `tradingagents/tradeflow/underwater_risk_flags.py`（新增，~220行）— [S-003] underwater_risk_flags
++    - `detect_underwater_risks(event_texts, lhb_status, lhb_texts, margin_status, margin_texts)` — 六类水下风险检测
++    - `UnderwaterRiskResult` — 输出 `risk_flags`、`risk_penalty`（0 to -30）、`risk_evidence_refs`、`risk_reasons`
++    - 六类风险：LOCKUP_RISK、REDUCE_HOLDING_RISK、INQUIRY_RISK、FINANCIAL_QUALITY_RISK、MARGIN_CROWDING_RISK、LHB_OVERHEAT_RISK
++    - 龙虎榜和融资融券风险必须区分 HAS_DATA/NOT_QUERIED/FAILED，不得把未查询当作无风险
++    - 每类风险只取最高权重命中，不重复叠加；罚分上限 30
++  - `tradingagents/tradeflow/schemas.py` — [S-003]
++    - `Candidate` 新增 `risk_penalty`、`risk_evidence_refs`、`risk_reasons` 字段
++    - `to_db_row()` / `from_db_row()` 支持新字段持久化
++    - `DailyPlan.render_text()` 展示水下风险标签和罚分摘要
++  - `tradingagents/tradeflow/candidate_engine.py` — [S-003]
++    - `evaluate_symbol()` 在 S-002 叙事质量之后调用 `detect_underwater_risks()`
++    - 风险标签进入候选 `risk_flags` 并降权候选分数
++    - `init_db()` 新增 `risk_penalty`、`risk_evidence_refs_json`、`risk_reasons_json` 列迁移
++    - `save_candidate()` INSERT/UPDATE 包含新字段
++    - 当 INQUIRY_RISK 或 FINANCIAL_QUALITY_RISK 存在，或风险标签 >= 3 个时，关闭 `need_deep_ta`
++  - `tradingagents/tradeflow/plan_runner.py` — [S-003]
++    - `_build_plan_entry()` 输出 `risk_penalty`、`risk_evidence_refs`、`risk_reasons`
++  - `tests/test_s003_underwater_risk_flags.py`（新增，~370行）— 61 个测试
++- **关键逻辑**：
++  1. 水下风险作为惩罚层叠加在所有正向策略之上，不破坏现有策略
++  2. 所有风险标签必须绑定原始事件文本，无证据时不输出高置信风险
++  3. 龙虎榜未查询时不得生成 LHB_OVERHEAT_RISK；融资融券未查询同理
++  4. 高风险标签（问询/财务异常）或风险标签过多时关闭 need_deep_ta
++  5. 罚分上限 30，避免单个候选被无限扣分
++- **标记**：`# [S-003] underwater_risk_flags`
++- **测试结果**：
++  - S-003 专项测试：61 passed
++  - TradeFlow 全量测试：83 passed
++  - 扩展回归测试（S-001 + S-002 + S-003 + readiness_score）：346 passed
++
+--- docs/reviews/S-004-20260529-round1.txt
+Task: S-004 — 候选股博弈平衡解释（P1）
+Date: 2026-05-29_14:22:07
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e7263-41d3-7a70-b20b-b842ce8de555
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md; printf '\\n--- TASKS ---\\n'; sed -n '1,160p' docs/TASKS.md; printf '\\n--- DECISIONS ---\\n'; sed -n '1,160p' docs/DECISIONS.md; printf '\\n--- DEVLOG ---\\n'; sed -n '1,160p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+--- docs/reviews/S-005-20260529-round1.txt
+Task: S-005 — 选股优先级整合与 need_deep_ta 门槛重排（P1）
+Date: 2026-05-29_17:05:03
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e72f9-e36f-70d3-9b11-f7674cfe6cb1
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md && printf '\\n---TASKS---\\n' && sed -n '1,220p' docs/TASKS.md && printf '\\n---DECISIONS---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n---DEVLOG---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+--- docs/reviews/S-006-20260529-round1.txt
+Task: S-006 — 候选误报审计与样本集沉淀（P1）
+Date: 2026-05-29_17:17:08
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e7303-fa15-7e73-b94a-862a9da2861c
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' AGENTS.md && sed -n '1,160p' docs/project-overview.md && sed -n '1,160p' docs/TASKS.md && sed -n '1,160p' docs/DECISIONS.md && sed -n '1,160p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# TradingAgents-AShare — 项目协作规则
+
+## 项目简介
+
+A股智能投研多智能体系统，基于 LangGraph + LangChain 构建，模拟 14 名专业 Agent 的多空辩论与风控博弈，为投资者提供结构化的交易建议。
+
+核心模块：
+- **Agent 框架**：14 个多智能体（分析师/研究员/风控/交易员），LangGraph 编排
+- **后端 API**：FastAPI，提供分析、持仓、定时任务、研报管理等接口
+- **前端 UI**：React，意图驱动交互、辩论可视化、持仓看板
+- **定时调度**：独立 scheduler，支持自选股定时分析
+- **数据层**：AKShare + BaoStock + yfinance，SQLite 持久化
+
+## 多工具协作架构
+
+```
+孟（最终决策）
+  │
+  ├── OpenClaw（主控调度）── 读取上下文 → 判断任务 → 派发执行
+  │     ├── 简单任务：直接 exec 执行（git/python/npm）
+  │     └── 复杂任务：sessions_spawn 子 agent 或调用 OpenCode 执行
+  │
+  ├── OpenCode（代码执行器）── 读取同一套上下文 → 改代码 → 跑测试 → 输出 diff
+  │
+  └── OpenCode TUI/Web（审查界面）── 查看 diff → 确认修改 → 做 review
+```
+
+**核心原则**：三者读取同一套项目上下文，不各自保存独立记忆。
+
+## 必读文件（任何 coding agent 开始任务前）
+
+1. `AGENTS.md`（本文件）
+2. `docs/project-overview.md`（项目背景 + 架构 + 目录结构）
+3. `docs/TASKS.md`（当前任务池）
+4. `docs/DECISIONS.md`（架构决策记录）
+5. `docs/DEVLOG.md`（最近修改日志）
+
+## 项目目录结构
+
+```
+TradingAgents-AShare/
+├── tradingagents/            # 核心 Python 包
+│   ├── agents/               # 14 个多智能体
+│   │   ├── analysts/         # 7 个分析师（基本面/情绪/新闻/技术/宏观/主力/量价）
+│   │   ├── researchers/      # 多头/空头研究员 + 研究总监
+│   │   ├── risk_mgmt/        # 风控团队
+│   │   ├── managers/         # 管理层
+│   │   └── trader/           # 交易员
+│   ├── dataflows/            # 数据获取与缓存
+│   ├── graph/                # LangGraph 编排图
+│   ├── llm_clients/          # 多模型厂商适配
+│   ├── prompts/              # Agent 提示词模板
+│   └── default_config.py     # 默认配置
+├── api/                      # FastAPI 后端
+│   ├── main.py               # 入口
+│   ├── database.py           # SQLite
+│   └── services/             # 业务逻辑（分析/持仓/定时/研报）
+├── frontend/                 # React 前端
+├── scheduler/                # 定时分析调度
+--- docs/reviews/S-007-20260529-round1.txt
+Task: S-007 — 候选分层与 TA token 预算分配（P1）
+Date: 2026-05-29_17:33:11
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e7313-3436-74d2-9181-d50510f6d89c
+--------
+user
+current changes
+exec
+/bin/zsh -lc 'cat docs/project-overview.md docs/TASKS.md docs/DECISIONS.md docs/DEVLOG.md >/tmp/project_context_review.txt && wc -c /tmp/project_context_review.txt' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+  153634 /tmp/project_context_review.txt
+
+exec
+/bin/zsh -lc 'git status --short && git diff --stat && git diff --cached --stat' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/tradeflow/candidate_engine.py
+ M tradingagents/tradeflow/discovery.py
+ M tradingagents/tradeflow/plan_runner.py
+ M tradingagents/tradeflow/schemas.py
+?? .auto_dev.lock/
+?? docs/task_runs/S-007-20260529-171709/
+?? tests/test_s007_tier_budget.py
+?? tradingagents/tradeflow/tier_budget.py
+ docs/DEVLOG.md                              | 47 ++++++++++++++++++++++++
+ docs/TASKS.md                               |  2 +-
+ tradingagents/tradeflow/candidate_engine.py | 48 ++++++++++++++++++++++--
+ tradingagents/tradeflow/discovery.py        | 57 +++++++++++++++++++++++++++++
+ tradingagents/tradeflow/plan_runner.py      | 39 ++++++++++++++++++++
+ tradingagents/tradeflow/schemas.py          | 24 ++++++++++++
+ 6 files changed, 213 insertions(+), 4 deletions(-)
+
+exec
+/bin/zsh -lc "git diff -- tradingagents/tradeflow/candidate_engine.py tradingagents/tradeflow/discovery.py tradingagents/tradeflow/plan_runner.py tradingagents/tradeflow/schemas.py docs/TASKS.md docs/DEVLOG.md && sed -n '1,240p' tradingagents/tradeflow/tier_budget.py && sed -n '1,260p' tests/test_s007_tier_budget.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 95145a4..4d77cd4 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,53 @@
+ 
+ ---
+ 
++## 2026-05-29 | S-007 候选分层与 TA token 预算分配
++
++- **执行者**：OpenCode (glm-5.1)
++- **任务**：把候选池分为 A/B/C 三层，明确哪些值得优先深度 TA、哪些只观察、哪些淘汰，避免把 token 消耗在弱候选上
++- **修改文件**：
++  - `tradingagents/tradeflow/tier_budget.py`（新增，~200行）— [S-007] candidate_tier_budget
++    - `classify_candidate_tier()` — 单个候选分层主入口
++    - `TierBudgetResult` — 输出 `tier`(A/B/C)、`ta_budget_priority`(100/30/0)、`tier_reason`、`missing_evidence_for_upgrade`、`why_not_deep_ta`
++    - `allocate_tier_budget()` — 批量执行 A 层上限（默认 5 只），超出降级为 B
++    - `render_tier_budget_summary()` — 人类可读的预算分配摘要
++    - A 层条件：≥3 类信号或(≥2 类 + 综合分 ≥ 50) + 完整度 ≥ 60% + 无高风险 + 博弈 favorable/neutral + 门控通过
++    - C 层条件：高风险 / 风险标签过多(≥3) / 博弈 fragile / 无信号 / 数据严重不足(<30%) / 罚分过重
++    - B 层：不满足 A 也不落入 C 的候选
++    - 所有输出禁止强买卖词
++  - `tradingagents/tradeflow/schemas.py` — [S-007]
++    - `Candidate` 新增 4 个字段：tier、ta_budget_priority、tier_reason、missing_evidence_for_upgrade
++    - `to_db_row()` / `from_db_row()` 支持新字段持久化
++    - `DailyPlan.render_text()` 展示分层、TA 预算、分层原因、升级所需证据
++  - `tradingagents/tradeflow/candidate_engine.py` — [S-007]
++    - `evaluate_symbol()` 在 S-005 门控之后调用 `classify_candidate_tier()`
++    - 分层结果写入 `candidate.evidence["tier_budget"]`
++    - `init_db()` 新增 4 列迁移：tier、ta_budget_priority、tier_reason、missing_evidence_for_upgrade_json
++    - `save_candidate()` INSERT/UPDATE 包含新字段
++  - `tradingagents/tradeflow/plan_runner.py` — [S-007]
++    - `_build_plan_entry()` 输出 tier 全部字段
+--- docs/reviews/S-008-20260529-round1.txt
+Task: S-008 — TradeFlow 证据完整度门禁（P1）
+Date: 2026-05-29_17:46:29
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e731e-5e9c-7f21-abda-ef91f7fd4191
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md; printf '\\n---TASKS---\\n'; sed -n '1,220p' docs/TASKS.md; printf '\\n---DECISIONS---\\n'; sed -n '1,220p' docs/DECISIONS.md; printf '\\n---DEVLOG---\\n'; sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+--- docs/reviews/T-002-20260529-round1.txt
+Task: T-002 — TradeFlow P1 小范围 Discovery
+Date: 2026-05-29_14:40:07
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e7274-d46a-7203-a015-c02ff4cd7242
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md; printf '\\n---TASKS---\\n'; sed -n '1,220p' docs/TASKS.md; printf '\\n---DECISIONS---\\n'; sed -n '1,220p' docs/DECISIONS.md; printf '\\n---DEVLOG---\\n'; sed -n '1,160p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+--- docs/reviews/T-003-20260529-round1.txt
+Task: T-003 — TradeFlow P1 资金异动池
+Date: 2026-05-29_15:05:01
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e728b-4bf5-76b2-9c57-16f202e50f4d
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/TASKS.md && printf '\\n---DECISIONS---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n---DEVLOG---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 任务池
+
+> 最后更新：2026-05-28
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；一个晚上默认只做一个任务。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `S-001`：政策版本因子进入 TradeFlow 候选池（P1，done — commit a4d06d4 + cf7d928）。
+2. `S-002`：叙事质量评分，区分普通事件与可传播主线（P1，done — pending commit）。
+3. `S-003`：水下风险标签，给候选池做风险降权（P1，ready）。
+4. `S-004`：候选股博弈平衡解释，输出多空/监管/资金结构（P1，ready）。
+5. `M-008`：数据源健康检查与 fallback 可观测性（P1，ready）。
+6. `T-002/T-003`：小范围 Discovery / 资金异动池（P1，ready，排在选股逻辑增强之后）。
+
+---
+
+## S. TradeFlow 选股策略核心任务池（2026-05-29 新增）
+
+> 原则：先提高候选池质量，再扩大扫描范围。TA 深度分析只服务于已经有足够逻辑、事件、资金或风险结构支撑的候选股。
+
+### S-001: 政策版本因子进入 TradeFlow 候选池（P1）
+- **描述**：为 TradeFlow 增加政策版本因子，识别当前 A 股市场更容易被定价的政策/产业方向，让候选池从“技术形态先行”升级为“政策版本入池 + 技术确认”。
+- **优先级**：P1
+- **状态**：done — commit a4d06d4 + cf7d928
+- **背景**：
+  - A 股很多阶段不是简单的业绩驱动，而是政策方向、产业版本和市场叙事共同驱动。
+  - 现在 TradeFlow 已有 VCP、事件催化、A 股标签，但缺少“当前版本需要什么标杆”的第一层判断。
+- **执行约束**：
+  - 不调用外部 LLM，不跑全市场扫描。
+  - 不改 `tradingagents/prompts/`。
+  - 不输出买入/卖出强建议。
+  - 只在 TradeFlow 候选池层做信号、标签、分数和证据引用。
+- **实现要点**：
+  1. 新增或扩展政策版本信号模块，输出 `policy_tags`、`version_score`、`policy_evidence_refs`。
+  2. 先用可维护关键词/规则覆盖：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革等。
+  3. 事件标题、公告摘要、行业标签命中政策版本时加分；无原始文本证据时不得加分。
+  4. 与现有 `event_source`、`event_catalyst`、`candidate_engine` 兼容，不破坏 VCP/回踩策略。
+  5. Daily Plan 中展示政策标签和证据摘要，但动作仍只能是 `OBSERVE/NEED_DEEP_TA` 等非强交易动作。
+- **验证方式**：
+  - 构造政策关键词事件，候选包含对应 `policy_tags` 和 evidence refs。
+--- docs/reviews/V-002-20260530-round1.txt
+Task: V-002 — 夜间自动开发验收报告与候选样本回放（P1）
+Date: 2026-05-30_01:09:59
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e74b5-9243-7eb2-adca-097af14f4144
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,200p' docs/TASKS.md && sed -n '1,200p' docs/DECISIONS.md && sed -n '1,160p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 任务池
+
+> 最后更新：2026-05-29
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `S-005`：选股优先级整合与 `need_deep_ta` 门槛重排（P1，ready）。
+2. `M-003`：TradeFlow universe 管理器（P1，ready）。
+3. `M-004`：TradeFlow 策略权重与阈值配置（P1，ready）。
+4. `T-006`：事件源自动接入 Discovery / Daily Plan（P1，ready）。
+5. `V-002`：夜间自动开发验收报告与候选样本回放（P1，ready）。
+6. `S-006`：候选误报审计与样本集沉淀（P1，ready）。
+7. 第二梯队：`S-007/S-008/M-005/M-006`，用于延长夜间窗口并继续围绕候选质量、触发状态和 TA 成本门控推进。
+
+---
+
+## S. TradeFlow 选股策略核心任务池（2026-05-29 新增）
+
+> 原则：先提高候选池质量，再扩大扫描范围。TA 深度分析只服务于已经有足够逻辑、事件、资金或风险结构支撑的候选股。
+
+### S-001: 政策版本因子进入 TradeFlow 候选池（P1）
+- **描述**：为 TradeFlow 增加政策版本因子，识别当前 A 股市场更容易被定价的政策/产业方向，让候选池从“技术形态先行”升级为“政策版本入池 + 技术确认”。
+- **优先级**：P1
+- **状态**：done — commit a4d06d4 + cf7d928
+- **背景**：
+  - A 股很多阶段不是简单的业绩驱动，而是政策方向、产业版本和市场叙事共同驱动。
+  - 现在 TradeFlow 已有 VCP、事件催化、A 股标签，但缺少“当前版本需要什么标杆”的第一层判断。
+- **执行约束**：
+  - 不调用外部 LLM，不跑全市场扫描。
+  - 不改 `tradingagents/prompts/`。
+  - 不输出买入/卖出强建议。
+  - 只在 TradeFlow 候选池层做信号、标签、分数和证据引用。
+- **实现要点**：
+  1. 新增或扩展政策版本信号模块，输出 `policy_tags`、`version_score`、`policy_evidence_refs`。
+  2. 先用可维护关键词/规则覆盖：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革等。
+  3. 事件标题、公告摘要、行业标签命中政策版本时加分；无原始文本证据时不得加分。
+  4. 与现有 `event_source`、`event_catalyst`、`candidate_engine` 兼容，不破坏 VCP/回踩策略。
+  5. Daily Plan 中展示政策标签和证据摘要，但动作仍只能是 `OBSERVE/NEED_DEEP_TA` 等非强交易动作。
+- **验证方式**：
+--- docs/task_runs/M-006-20260530-011554/codex-review-round1.txt
+Task: M-006 — OpenClaw 自动触发 TA 深度分析门控（P2）
+Date: 2026-05-30_01:27:22
+Codex exit code: 1
+Round: 1
+---
+2026-05-29T17:23:32.053667Z ERROR codex_models_manager::manager: failed to refresh available models: timeout waiting for child process to exit
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e74c3-3a56-7040-ae48-2aba3ce380e2
+--------
+user
+current changes
+2026-05-29T17:23:37.127100Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest("http/request failed: error sending request for url (https://chatgpt.com/backend-api/wham/apps)")))
+2026-05-29T17:23:37.130949Z ERROR codex_models_manager::manager: failed to refresh available models: timeout waiting for child process to exit
+2026-05-29T17:23:42.198734Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: tls handshake eof, url: wss://chatgpt.com/backend-api/codex/responses
+2026-05-29T17:23:42.242213Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest(HttpRequest("http/request failed: error sending request for url (https://chatgpt.com/backend-api/wham/apps)")))
+2026-05-29T17:23:47.328413Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: tls handshake eof, url: wss://chatgpt.com/backend-api/codex/responses
+2026-05-29T17:23:57.408491Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: tls handshake eof, url: wss://chatgpt.com/backend-api/codex/responses
+2026-05-29T17:24:02.626371Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: tls handshake eof, url: wss://chatgpt.com/backend-api/codex/responses
+ERROR: Reconnecting... 2/5
+2026-05-29T17:24:08.064295Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: tls handshake eof, url: wss://chatgpt.com/backend-api/codex/responses
+ERROR: Reconnecting... 3/5
+2026-05-29T17:24:13.827827Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: tls handshake eof, url: wss://chatgpt.com/backend-api/codex/responses
+ERROR: Reconnecting... 4/5
+2026-05-29T17:24:20.395209Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: tls handshake eof, url: wss://chatgpt.com/backend-api/codex/responses
+ERROR: Reconnecting... 5/5
+2026-05-29T17:24:28.713130Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: tls handshake eof, url: wss://chatgpt.com/backend-api/codex/responses
+ERROR: Reconnecting... 1/5
+ERROR: Reconnecting... 2/5
+ERROR: Reconnecting... 3/5
+ERROR: Reconnecting... 4/5
+ERROR: Reconnecting... 5/5
+ERROR: stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)
+codex
+Review was interrupted. Please re-run /review and wait for it to complete.
+ERROR: stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)
+--- docs/task_runs/M-006-20260530-011554/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/project-overview.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m
+[0m# [0mTodos
+[ ] Read M-005 intraday_observe.py and understand the observe state machine
+[ ] Explore tradeflow module structure and existing deep TA dispatch patterns
+[ ] Implement M-006 gated_deep_ta_dispatch module
+[ ] Add StrategyConfig fields for deep TA gating
+[ ] Integrate with intraday_observe and schemas
+[ ] Write comprehensive tests for M-006
+[ ] Run all tests and verify passing
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/tradeflow/intraday_observe.py
+[0m→ [0mRead tradingagents/tradeflow/schemas.py
+[0m→ [0mRead tradingagents/tradeflow/strategy_config.py
+[0m→ [0mRead tradingagents/tradeflow
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [limit=80][0m
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [offset=80, limit=200][0m
+[0m
+[0m# [0mTodos
+[x] Read M-005 intraday_observe.py and understand the observe state machine
+[x] Explore tradeflow module structure and existing deep TA dispatch patterns
+[ ] Implement M-006 gated_deep_ta_dispatch module
+[ ] Add StrategyConfig fields for deep TA gating
+[ ] Integrate with intraday_observe and schemas
+[ ] Write comprehensive tests for M-006
+[ ] Run all tests and verify passing
+[ ] Update docs/DEVLOG.md
+[0m
+[0m← [0mWrite tradingagents/tradeflow/gated_deep_ta.py
+Wrote file successfully.
+[0m
+现在我对代码库有了清晰的了解。让我来实现 M-006。我将创建门控的深度 TA dispatch 模块，更新 schemas、config、candidate_engine 和 plan_runner，然后编写测试。
+现在更新 StrategyConfig，添加 M-006 字段：
+[0m← [0mEdit tradingagents/tradeflow/strategy_config.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/strategy_config.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/strategy_config.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/strategy_config.py
+@@ -129,8 +129,17 @@
+ observe_max_daily_triggers: int = 3
+ observe_trigger_breach_pct: float = 0.0
+ observe_invalidate_breach_pct: float = 0.0
+ 
++# ── Deep TA Dispatch Gate [M-006] ──
++deep_ta_daily_limit: int = 3
++deep_ta_default_model: str = ""
++deep_ta_blocked_models: tuple = ("deepseek",)
++deep_ta_max_retries: int = 1
++deep_ta_min_composite_score: float = 40.0
++deep_ta_min_completeness: float = 0.5
++deep_ta_require_observe_triggered: bool = True
++
+ def to_dict(self) -> dict:
+     d = asdict(self)
+     d["risk_high_severity_flags"] = list(self.risk_high_severity_flags)
+     return d
+
+[0m
+现在更新 schemas.py 以添加深度 TA 调度字段到 Candidate：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -104,8 +104,14 @@
+ universe_sources: list[str] = field(default_factory=list)  # [M-003] tradeflow_universe_manager
+ observe_state: str = "WAITING"  # [M-005] intraday_observe_state
+ observe_trigger_count: int = 0  # [M-005] intraday_observe_state
+ observe_first_trigger_time: str = ""  # [M-005] intraday_observe_state
++deep_ta_status: str = ""  # [M-006] gated_deep_ta_dispatch
++deep_ta_dispatch_reason: str = ""  # [M-006] gated_deep_ta_dispatch
++deep_ta_model: str = ""  # [M-006] gated_deep_ta_dispatch
++deep_ta_report_path: str = ""  # [M-006] gated_deep_ta_dispatch
++deep_ta_dispatch_time: str = ""  # [M-006] gated_deep_ta_dispatch
+--- docs/task_runs/M-006-20260530-011554/opencode-round2.txt
+[0m
+> build · glm-5.1
+[0m
+[0m# [0mTodos
+[ ] Check git status and recent history for failed review context
+[ ] Read DEVLOG and TASKS for context
+[ ] Identify and fix code quality issues
+[ ] Run tests to verify fixes
+[ ] Update docs/DEVLOG.md
+[0m
+[0m$ [0mgit status
+位于分支 local/tradingagents-custom
+您的分支和 'myfork/local/tradingagents-custom' 出现了偏离，
+并且分别有 85 和 1 处不同的提交。
+  （如果您想将远程分支与您的更改合并，请使用 "git pull"）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     .zai_quota_state.json
+	修改：     docs/DEVLOG.md
+	修改：     docs/TASKS.md
+	修改：     tradingagents/tradeflow/candidate_engine.py
+	修改：     tradingagents/tradeflow/plan_runner.py
+	修改：     tradingagents/tradeflow/schemas.py
+	修改：     tradingagents/tradeflow/strategy_config.py
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	.auto_dev.lock/
+	docs/reviews/M-006-20260530-round1.txt
+	docs/task_runs/M-006-20260530-011554/
+	tests/test_m006_gated_deep_ta.py
+	tradingagents/tradeflow/gated_deep_ta.py
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+[0m
+[0m$ [0mgit log --oneline -20
+94e0ce1 docs: mark M-005 done after auto run
+10ce312 auto: M-005 盘中 Observe 状态机（P2） [AUTO-002]
+10784f4 docs: mark V-002 done after auto run
+ba62fc2 auto: V-002 夜间自动开发验收报告与候选样本回放（P1） [AUTO-002]
+36ff8c7 docs: mark M-004 done after auto run
+bab3d5c auto: M-004 TradeFlow 策略权重与阈值配置（P1） [AUTO-002]
+1feaa18 docs: mark M-003 done after auto run
+5af9ff2 auto: M-003 TradeFlow universe 管理器（P1） [AUTO-002]
+01ccc56 feat: auto_dev_loop saves quota state to .zai_quota_state.json
+fadc0bd fix: quota check now uses GLM-5.1 and detects error 1308
+b64b1cd feat: add 智谱 API quota check to auto_dev_loop.sh
+ab7628f docs: mark S-008 done after auto run
+d2875cd auto: S-008 TradeFlow 证据完整度门禁（P1） [AUTO-002]
+5ef25fc docs: mark S-007 done after auto run
+c1c6a83 auto: S-007 候选分层与 TA token 预算分配（P1） [AUTO-002]
+6d48c6c docs: mark S-006 done after auto run
+e876172 auto: S-006 候选误报审计与样本集沉淀（P1） [AUTO-002]
+916f037 docs: mark S-005 done after auto run
+b503d63 auto: S-005 选股优先级整合与 need_deep_ta 门槛重排（P1） [AUTO-002]
+c723ab6 docs: refill nightly auto dev task queue
+[0m
+[0m$ [0mgit diff --stat HEAD~3..HEAD
+docs/DEVLOG.md                                     |   50 +
+ docs/TASKS.md                                      |    4 +-
+ docs/reviews/M-005-20260530-round1.txt             | 2508 ++++++++++++++++++++
+ .../M-005-20260530-010959/codex-review-round1.txt  | 2508 ++++++++++++++++++++
+ .../M-005-20260530-010959/opencode-round1.txt      |  435 ++++
+ .../M-005-20260530-010959/prompt-round1.md         |   16 +
+ docs/task_runs/M-005-20260530-010959/summary.md    |   11 +
+ docs/task_runs/M-005-20260530-010959/task.md       |   17 +
+ .../M-005-20260530-010959/tests-round1.txt         |   28 +
+ tests/test_m005_intraday_observe.py                |  449 ++++
+ tradingagents/tradeflow/candidate_engine.py        |   18 +-
+ tradingagents/tradeflow/intraday_observe.py        |  178 ++
+ tradingagents/tradeflow/plan_runner.py             |    3 +
+ tradingagents/tradeflow/schemas.py                 |   18 +
+ tradingagents/tradeflow/strategy_config.py         |    5 +
+ 15 files changed, 6245 insertions(+), 3 deletions(-)
+[0m
+[0m# [0mTodos
+[x] Check git status and recent history for failed review context
+[ ] Read review file and context documents
+--- docs/task_runs/M-006-20260530-011554/prompt-round1.md
+# 任务: M-006: OpenClaw 自动触发 TA 深度分析门控（P2）
+
+请从 docs/TASKS.md 中读取任务 "M-006" 的完整描述，按要求实现。
+
+## 执行约束
+- 不改 tradingagents/prompts/
+- 不写入生产 tradingagents.db
+- 不跑全市场扫描或股票深度 TA
+- 不 push / PR / merge
+- **不要 git commit** — commit 由外层脚本统一执行
+- 修改后更新 docs/DEVLOG.md
+
+## 完成后输出
+- 修改了哪些文件
+- 关键逻辑说明
+- 测试结果（passed/failed 数量）
+--- docs/task_runs/M-006-20260530-011554/prompt-round2.md
+# 修复任务: M-006
+
+Codex review 上一轮执行失败（exit code 1）。请检查代码质量并修复潜在问题。
+
+## 约束
+- 不改 tradingagents/prompts/
+- 不写入生产 tradingagents.db
+- 不 push
+- **不要 git commit**
+- 修复后更新 docs/DEVLOG.md
+--- docs/task_runs/M-006-20260530-011554/task.md
+# Auto Dev Task Run
+
+- Task: M-006 — OpenClaw 自动触发 TA 深度分析门控（P2）
+- Priority: P2
+- Status: CLAIMED
+- Started at: 2026-05-30_01:15:54
+- Git HEAD: 94e0ce1
+- Test commands: pytest tests/ -q --tb=short
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+--- docs/task_runs/M-006-20260530-011554/tests-round1.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  4%]
+...........................................ss........................... [  8%]
+........................................................................ [ 12%]
+........................................................................ [ 17%]
+........................................................................ [ 21%]
+............................................sssssssss................... [ 25%]
+........................................................................ [ 29%]
+........................................................................ [ 34%]
+........................................................................ [ 38%]
+........................................................................ [ 42%]
+........................................................................ [ 47%]
+........................................................................ [ 51%]
+........................................................................ [ 55%]
+........................................................................ [ 59%]
+........................................................................ [ 64%]
+........................................................................ [ 68%]
+........................................................................ [ 72%]
+......ss.................................................ssss........... [ 76%]
+........................................................................ [ 81%]
+........................................................................ [ 85%]
+........................................................................ [ 89%]
+........................................................................ [ 94%]
+........................................................................ [ 98%]
+.............................                                            [100%]
+1668 passed, 17 skipped in 73.15s (0:01:13)
+
+Exit code: 0
+--- docs/task_runs/M-006-20260530-011554/tests-round2.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  4%]
+...........................................ss........................... [  8%]
+........................................................................ [ 12%]
+........................................................................ [ 17%]
+........................................................................ [ 21%]
+............................................sssssssss................... [ 25%]
+........................................................................ [ 29%]
+........................................................................ [ 34%]
+........................................................................ [ 38%]
+........................................................................ [ 42%]
+........................................................................ [ 46%]
+........................................................................ [ 51%]
+........................................................................ [ 55%]
+........................................................................ [ 59%]
+........................................................................ [ 64%]
+........................................................................ [ 68%]
+........................................................................ [ 72%]
+........ss.................................................ssss......... [ 76%]
+........................................................................ [ 81%]
+........................................................................ [ 85%]
+........................................................................ [ 89%]
+........................................................................ [ 93%]
+........................................................................ [ 98%]
+...............................                                          [100%]
+1670 passed, 17 skipped in 53.54s
+
+Exit code: 0
+
+exec
+/bin/zsh -lc "sed -n '1,340p' tradingagents/tradeflow/schemas.py; grep -R \"from_db_row\" -n tests tradingagents | head -20; sed -n '700,840p' tradingagents/tradeflow/candidate_engine.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""TradeFlow schemas — data models for candidates, signals, and daily plans."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from typing import Optional
+
+
+# ── Allowed actions ──
+ALLOWED_ACTIONS = {"OBSERVE", "WAIT_TRIGGER", "NEED_DEEP_TA", "REMOVE_FROM_WATCH"}
+FORBIDDEN_WORDS = {"立即买入", "重仓买入", "立即清仓", "满仓", "梭哈"}
+
+STRATEGY_VCP = "VCP"
+STRATEGY_PULLBACK = "PULLBACK_SUPPORT"
+STRATEGY_EVENT = "EVENT_CATALYST"
+STRATEGY_POLICY_VERSION = "POLICY_VERSION"  # [S-001] policy_version_signal
+STRATEGY_NARRATIVE = "NARRATIVE_QUALITY"  # [S-002] narrative_quality_score
+STRATEGY_FUND_FLOW = "FUND_FLOW_ANOMALY"  # [T-003] fund_flow_anomaly_pool
+ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE, STRATEGY_FUND_FLOW}
+
+# [N-004] astock_signal_tags
+SIGNAL_TAG_POLICY_CATALYST = "POLICY_CATALYST"
+SIGNAL_TAG_HOT_MONEY_LHB = "HOT_MONEY_LHB"
+SIGNAL_TAG_LOCKUP_RISK = "LOCKUP_RISK"
+SIGNAL_TAG_BUYBACK_EVENT = "BUYBACK_EVENT"
+SIGNAL_TAG_RATING_CHANGE = "RATING_CHANGE"
+
+
+@dataclass
+class CandidateSignal:
+    """One strategy hit on a symbol."""
+    strategy_tag: str
+    trigger_price: Optional[float] = None
+    support_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    score: float = 0.0
+    reason: str = ""
+    evidence: dict = field(default_factory=dict)
+    risk_flags: list[str] = field(default_factory=list)
+    need_deep_ta: bool = False
+
+
+@dataclass
+class Candidate:
+    """A tradeflow candidate — one row in tradeflow_candidates."""
+    symbol: str
+    name: str = ""
+    source: str = "manual"
+    strategy_tags: list[str] = field(default_factory=list)
+    score: float = 0.0
+    status: str = "active"
+    trigger_price: Optional[float] = None
+    support_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    need_deep_ta: bool = False
+    evidence: dict = field(default_factory=dict)
+    risk_flags: list[str] = field(default_factory=list)
+    trade_date: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+    primary_strategy: str = ""
+    signals: list[CandidateSignal] = field(default_factory=list, repr=False)
+    policy_tags: list[str] = field(default_factory=list)  # [S-001] policy_version_signal
+    version_score: float = 0.0  # [S-001] policy_version_signal
+    policy_evidence_refs: list[dict] = field(default_factory=list)  # [S-001] policy_version_signal
+    narrative_score: float = 0.0  # [S-002] narrative_quality_score
+    narrative_reasons: list[str] = field(default_factory=list)  # [S-002] narrative_quality_score
+    narrative_evidence_refs: list[dict] = field(default_factory=list)  # [S-002] narrative_quality_score
+    risk_penalty: float = 0.0  # [S-003] underwater_risk_flags
+    risk_evidence_refs: list[dict] = field(default_factory=list)  # [S-003] underwater_risk_flags
+    risk_reasons: list[str] = field(default_factory=list)  # [S-003] underwater_risk_flags
+    game_balance: str = ""  # [S-004] candidate_game_balance
+    bull_case: str = ""  # [S-004] candidate_game_balance
+    bear_case: str = ""  # [S-004] candidate_game_balance
+    policy_case: str = ""  # [S-004] candidate_game_balance
+    fund_flow_case: str = ""  # [S-004] candidate_game_balance
+    resonance_count: int = 0  # [S-004] candidate_game_balance
+    game_balance_refs: list[dict] = field(default_factory=list)  # [S-004] candidate_game_balance
+    fund_flow_anomaly_score: float = 0.0  # [T-003] fund_flow_anomaly_pool
+    fund_flow_anomaly_tags: list[str] = field(default_factory=list)  # [T-003]
+    fund_flow_anomaly_refs: list[dict] = field(default_factory=list)  # [T-003]
+    fund_flow_unit_verified: bool = False  # [T-003]
+    fund_flow_individual_summary: str = ""  # [T-003]
+    fund_flow_board_summary: str = ""  # [T-003]
+    composite_score: float = 0.0  # [S-005] selection_priority_gate
+    signal_category_hits: list[str] = field(default_factory=list)  # [S-005]
+    positive_category_count: int = 0  # [S-005]
+    data_completeness: float = 0.0  # [S-005]
+    missing_evidence: list[str] = field(default_factory=list)  # [S-005]
+    why_deep_ta: str = ""  # [S-005]
+    why_not_deep_ta: str = ""  # [S-005]
+    priority_rank: str = ""  # [S-005]
+    tier: str = ""  # [S-007] candidate_tier_budget
+    ta_budget_priority: int = 0  # [S-007] candidate_tier_budget
+    tier_reason: str = ""  # [S-007] candidate_tier_budget
+    missing_evidence_for_upgrade: list[str] = field(default_factory=list)  # [S-007]
+    tradeflow_data_completeness: float = 0.0  # [S-008] tradeflow_evidence_gate
+    missing_data_fields: list[str] = field(default_factory=list)  # [S-008]
+    what_to_upgrade: list[str] = field(default_factory=list)  # [S-008]
+    evidence_gate_applied: bool = False  # [S-008]
+    universe_sources: list[str] = field(default_factory=list)  # [M-003] tradeflow_universe_manager
+    observe_state: str = "WAITING"  # [M-005] intraday_observe_state
+    observe_trigger_count: int = 0  # [M-005] intraday_observe_state
+    observe_first_trigger_time: str = ""  # [M-005] intraday_observe_state
+    deep_ta_status: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_dispatch_reason: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_model: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_report_path: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_dispatch_time: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_position_context: str = ""  # [M-006] gated_deep_ta_dispatch
+
+    def __post_init__(self):
+        if not self.trade_date:
+            self.trade_date = datetime.now().strftime("%Y-%m-%d")
+        if not self.created_at:
+            self.created_at = datetime.now().isoformat()
+        if not self.updated_at:
+            self.updated_at = self.created_at
+
+    def merge_signals(self):
+        """Merge individual signals into aggregate candidate fields.
+
+        The signal with the highest score becomes the primary_signal.
+        trigger/support/invalid prices come ONLY from the primary signal,
+        preventing later strategies from silently overwriting them.
+        """
+        if not self.signals:
+            return
+
+        primary = max(self.signals, key=lambda s: s.score)
+        self.primary_strategy = primary.strategy_tag
+
+        tags = set()
+        best_score = 0.0
+        all_evidence = {}
+        all_risks = []
+        deep_ta = False
+
+        for sig in self.signals:
+            tags.add(sig.strategy_tag)
+            if sig.score > best_score:
+                best_score = sig.score
+            all_evidence[sig.strategy_tag] = sig.evidence
+            all_risks.extend(sig.risk_flags)
+            if sig.need_deep_ta:
+                deep_ta = True
+
+        self.strategy_tags = sorted(tags)
+        self.score = round(best_score, 2)
+        self.evidence = all_evidence
+        self.risk_flags = sorted(set(all_risks))
+        self.trigger_price = primary.trigger_price
+        self.support_price = primary.support_price
+        self.invalid_price = primary.invalid_price
+        self.need_deep_ta = deep_ta
+
+    def to_db_row(self) -> dict:
+        return {
+            "trade_date": self.trade_date,
+            "symbol": self.symbol,
+            "name": self.name,
+            "source": self.source,
+            "strategy_tags_json": json.dumps(self.strategy_tags, ensure_ascii=False),
+            "primary_strategy": self.primary_strategy,
+            "score": self.score,
+            "status": self.status,
+            "trigger_price": self.trigger_price,
+            "support_price": self.support_price,
+            "invalid_price": self.invalid_price,
+            "need_deep_ta": 1 if self.need_deep_ta else 0,
+            "evidence_json": json.dumps(self.evidence, ensure_ascii=False),
+            "risk_flags_json": json.dumps(self.risk_flags, ensure_ascii=False),
+            "policy_tags_json": json.dumps(self.policy_tags, ensure_ascii=False),  # [S-001]
+            "version_score": self.version_score,  # [S-001]
+            "policy_evidence_refs_json": json.dumps(self.policy_evidence_refs, ensure_ascii=False),  # [S-001]
+            "narrative_score": self.narrative_score,  # [S-002] narrative_quality_score
+            "narrative_reasons_json": json.dumps(self.narrative_reasons, ensure_ascii=False),  # [S-002]
+            "narrative_evidence_refs_json": json.dumps(self.narrative_evidence_refs, ensure_ascii=False),  # [S-002]
+            "risk_penalty": self.risk_penalty,  # [S-003] underwater_risk_flags
+            "risk_evidence_refs_json": json.dumps(self.risk_evidence_refs, ensure_ascii=False),  # [S-003]
+            "risk_reasons_json": json.dumps(self.risk_reasons, ensure_ascii=False),  # [S-003]
+            "game_balance": self.game_balance,  # [S-004] candidate_game_balance
+            "bull_case": self.bull_case,  # [S-004]
+            "bear_case": self.bear_case,  # [S-004]
+            "policy_case": self.policy_case,  # [S-004]
+            "fund_flow_case": self.fund_flow_case,  # [S-004]
+            "resonance_count": self.resonance_count,  # [S-004]
+            "game_balance_refs_json": json.dumps(self.game_balance_refs, ensure_ascii=False),  # [S-004]
+            "fund_flow_anomaly_score": self.fund_flow_anomaly_score,  # [T-003] fund_flow_anomaly_pool
+            "fund_flow_anomaly_tags_json": json.dumps(self.fund_flow_anomaly_tags, ensure_ascii=False),  # [T-003]
+            "fund_flow_anomaly_refs_json": json.dumps(self.fund_flow_anomaly_refs, ensure_ascii=False),  # [T-003]
+            "fund_flow_unit_verified": 1 if self.fund_flow_unit_verified else 0,  # [T-003]
+            "fund_flow_individual_summary": self.fund_flow_individual_summary,  # [T-003]
+            "fund_flow_board_summary": self.fund_flow_board_summary,  # [T-003]
+            "composite_score": self.composite_score,  # [S-005] selection_priority_gate
+            "signal_category_hits_json": json.dumps(self.signal_category_hits, ensure_ascii=False),  # [S-005]
+            "positive_category_count": self.positive_category_count,  # [S-005]
+            "data_completeness": self.data_completeness,  # [S-005]
+            "missing_evidence_json": json.dumps(self.missing_evidence, ensure_ascii=False),  # [S-005]
+            "why_deep_ta": self.why_deep_ta,  # [S-005]
+            "why_not_deep_ta": self.why_not_deep_ta,  # [S-005]
+            "priority_rank": self.priority_rank,  # [S-005]
+            "tier": self.tier,  # [S-007] candidate_tier_budget
+            "ta_budget_priority": self.ta_budget_priority,  # [S-007]
+            "tier_reason": self.tier_reason,  # [S-007]
+            "missing_evidence_for_upgrade_json": json.dumps(self.missing_evidence_for_upgrade, ensure_ascii=False),  # [S-007]
+            "tradeflow_data_completeness": self.tradeflow_data_completeness,  # [S-008] tradeflow_evidence_gate
+            "missing_data_fields_json": json.dumps(self.missing_data_fields, ensure_ascii=False),  # [S-008]
+            "what_to_upgrade_json": json.dumps(self.what_to_upgrade, ensure_ascii=False),  # [S-008]
+            "evidence_gate_applied": 1 if self.evidence_gate_applied else 0,  # [S-008]
+            "universe_sources_json": json.dumps(self.universe_sources, ensure_ascii=False),  # [M-003]
+            "observe_state": self.observe_state,  # [M-005] intraday_observe_state
+            "observe_trigger_count": self.observe_trigger_count,  # [M-005]
+            "observe_first_trigger_time": self.observe_first_trigger_time,  # [M-005]
+            "deep_ta_status": self.deep_ta_status,  # [M-006] gated_deep_ta_dispatch
+            "deep_ta_dispatch_reason": self.deep_ta_dispatch_reason,  # [M-006]
+            "deep_ta_model": self.deep_ta_model,  # [M-006]
+            "deep_ta_report_path": self.deep_ta_report_path,  # [M-006]
+            "deep_ta_dispatch_time": self.deep_ta_dispatch_time,  # [M-006]
+            "deep_ta_position_context": self.deep_ta_position_context,  # [M-006]
+            "updated_at": datetime.now().isoformat(),
+        }
+
+    @classmethod
+    def from_db_row(cls, row: dict) -> "Candidate":
+        return cls(
+            symbol=row["symbol"],
+            name=row.get("name", ""),
+            source=row.get("source", "manual"),
+            strategy_tags=json.loads(row.get("strategy_tags_json", "[]")),
+            primary_strategy=row.get("primary_strategy", ""),
+            score=row.get("score", 0.0),
+            status=row.get("status", "active"),
+            trigger_price=row.get("trigger_price"),
+            support_price=row.get("support_price"),
+            invalid_price=row.get("invalid_price"),
+            need_deep_ta=bool(row.get("need_deep_ta", 0)),
+            evidence=json.loads(row.get("evidence_json", "{}")),
+            risk_flags=json.loads(row.get("risk_flags_json", "[]")),
+            trade_date=row.get("trade_date", ""),
+            created_at=row.get("created_at", ""),
+            updated_at=row.get("updated_at", ""),
+            policy_tags=json.loads(row.get("policy_tags_json", "[]")),  # [S-001]
+            version_score=row.get("version_score", 0.0),  # [S-001]
+            policy_evidence_refs=json.loads(row.get("policy_evidence_refs_json", "[]")),  # [S-001]
+            narrative_score=row.get("narrative_score", 0.0),  # [S-002] narrative_quality_score
+            narrative_reasons=json.loads(row.get("narrative_reasons_json", "[]")),  # [S-002]
+            narrative_evidence_refs=json.loads(row.get("narrative_evidence_refs_json", "[]")),  # [S-002]
+            risk_penalty=row.get("risk_penalty", 0.0),  # [S-003] underwater_risk_flags
+            risk_evidence_refs=json.loads(row.get("risk_evidence_refs_json", "[]")),  # [S-003]
+            risk_reasons=json.loads(row.get("risk_reasons_json", "[]")),  # [S-003]
+            game_balance=row.get("game_balance", ""),  # [S-004] candidate_game_balance
+            bull_case=row.get("bull_case", ""),  # [S-004]
+            bear_case=row.get("bear_case", ""),  # [S-004]
+            policy_case=row.get("policy_case", ""),  # [S-004]
+            fund_flow_case=row.get("fund_flow_case", ""),  # [S-004]
+            resonance_count=row.get("resonance_count", 0),  # [S-004]
+            game_balance_refs=json.loads(row.get("game_balance_refs_json", "[]")),  # [S-004]
+            fund_flow_anomaly_score=row.get("fund_flow_anomaly_score", 0.0),  # [T-003] fund_flow_anomaly_pool
+            fund_flow_anomaly_tags=json.loads(row.get("fund_flow_anomaly_tags_json", "[]")),  # [T-003]
+            fund_flow_anomaly_refs=json.loads(row.get("fund_flow_anomaly_refs_json", "[]")),  # [T-003]
+            fund_flow_unit_verified=bool(row.get("fund_flow_unit_verified", 0)),  # [T-003]
+            fund_flow_individual_summary=row.get("fund_flow_individual_summary", ""),  # [T-003]
+            fund_flow_board_summary=row.get("fund_flow_board_summary", ""),  # [T-003]
+            composite_score=row.get("composite_score", 0.0),  # [S-005] selection_priority_gate
+            signal_category_hits=json.loads(row.get("signal_category_hits_json", "[]")),  # [S-005]
+            positive_category_count=row.get("positive_category_count", 0),  # [S-005]
+            data_completeness=row.get("data_completeness", 0.0),  # [S-005]
+            missing_evidence=json.loads(row.get("missing_evidence_json", "[]")),  # [S-005]
+            why_deep_ta=row.get("why_deep_ta", ""),  # [S-005]
+            why_not_deep_ta=row.get("why_not_deep_ta", ""),  # [S-005]
+            priority_rank=row.get("priority_rank", ""),  # [S-005]
+            tier=row.get("tier", ""),  # [S-007] candidate_tier_budget
+            ta_budget_priority=row.get("ta_budget_priority", 0),  # [S-007]
+            tier_reason=row.get("tier_reason", ""),  # [S-007]
+            missing_evidence_for_upgrade=json.loads(row.get("missing_evidence_for_upgrade_json", "[]")),  # [S-007]
+            tradeflow_data_completeness=row.get("tradeflow_data_completeness", 0.0),  # [S-008] tradeflow_evidence_gate
+            missing_data_fields=json.loads(row.get("missing_data_fields_json", "[]")),  # [S-008]
+            what_to_upgrade=json.loads(row.get("what_to_upgrade_json", "[]")),  # [S-008]
+            evidence_gate_applied=bool(row.get("evidence_gate_applied", 0)),  # [S-008]
+            universe_sources=json.loads(row.get("universe_sources_json", "[]")),  # [M-003]
+            observe_state=row.get("observe_state", "WAITING"),  # [M-005] intraday_observe_state
+            observe_trigger_count=row.get("observe_trigger_count", 0),  # [M-005]
+            observe_first_trigger_time=row.get("observe_first_trigger_time", ""),  # [M-005]
+            deep_ta_status=row.get("deep_ta_status", ""),  # [M-006] gated_deep_ta_dispatch
+            deep_ta_dispatch_reason=row.get("deep_ta_dispatch_reason", ""),  # [M-006]
+            deep_ta_model=row.get("deep_ta_model", ""),  # [M-006]
+            deep_ta_report_path=row.get("deep_ta_report_path", ""),  # [M-006]
+            deep_ta_dispatch_time=row.get("deep_ta_dispatch_time", ""),  # [M-006]
+            deep_ta_position_context=row.get("deep_ta_position_context", ""),  # [M-006]
+        )
+
+
+@dataclass
+class Signal:
+    """One signal event — row in tradeflow_signals."""
+    symbol: str
+    signal_type: str
+    signal_level: str = "info"
+    source: str = "tradeflow"
+    evidence: dict = field(default_factory=dict)
+    action_hint: str = "OBSERVE"
+    status: str = "new"
+    signal_time: str = ""
+    created_at: str = ""
+
+    def __post_init__(self):
+        if not self.signal_time:
+            self.signal_time = datetime.now().isoformat()
+        if not self.created_at:
+            self.created_at = datetime.now().isoformat()
+        # validate action_hint
+        if self.action_hint not in ALLOWED_ACTIONS:
+            self.action_hint = "OBSERVE"
+
+    def to_db_row(self) -> dict:
+        return {
+            "signal_time": self.signal_time,
+            "symbol": self.symbol,
+            "signal_type": self.signal_type,
+            "signal_level": self.signal_level,
+            "source": self.source,
+            "evidence_json": json.dumps(self.evidence, ensure_ascii=False),
+            "action_hint": self.action_hint,
+            "status": self.status,
+        }
+
+
+@dataclass
+class DailyPlan:
+    """Daily pre-market plan — row in tradeflow_daily_plans."""
+    trade_date: str
+    mode: str = "pre_market"
+    summary: str = ""
+    candidates: list[dict] = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)
+    created_at: str = ""
+tests/test_s008_evidence_gate.py:9:4. Schema persistence — to_db_row / from_db_row round-trip.
+tests/test_s008_evidence_gate.py:427:# 4. Schema persistence — to_db_row / from_db_row round-trip
+tests/test_s008_evidence_gate.py:445:        restored = Candidate.from_db_row(row)
+tests/test_s007_tier_budget.py:722:        c2 = Candidate.from_db_row(row)
+tests/test_m006_gated_deep_ta.py:618:    def test_from_db_row(self):
+tests/test_m006_gated_deep_ta.py:643:        c = Candidate.from_db_row(row)
+tests/test_m006_gated_deep_ta.py:649:    def test_from_db_row_defaults(self):
+tests/test_m006_gated_deep_ta.py:651:        c = Candidate.from_db_row(row)
+tests/test_s004_game_balance.py:379:    def test_candidate_from_db_row_game_balance(self):
+tests/test_s004_game_balance.py:414:        c = Candidate.from_db_row(row)
+Binary file tests/__pycache__/test_t003_fund_flow_anomaly.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_m003_universe_manager.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_m005_intraday_observe.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_m006_gated_deep_ta.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_s005_selection_priority_gate.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_s004_game_balance.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_tradeflow_universe.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_s002_narrative_quality.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_s003_underwater_risk_flags.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_tradeflow_schemas.cpython-312-pytest-9.0.2.pyc matches
+            candidate.ta_budget_priority = gate_override["ta_budget_priority"]
+            if gate_override["tier_reason_addition"]:
+                candidate.tier_reason = f"{gate_override['tier_reason_addition']}；{candidate.tier_reason}" if candidate.tier_reason else gate_override["tier_reason_addition"]
+        if not gate_override["need_deep_ta"] and candidate.need_deep_ta:
+            candidate.need_deep_ta = False
+            if gate_override["why_not_deep_ta_addition"]:
+                candidate.why_not_deep_ta = f"{gate_override['why_not_deep_ta_addition']}；{candidate.why_not_deep_ta}" if candidate.why_not_deep_ta else gate_override["why_not_deep_ta_addition"]
+    candidate.evidence["evidence_gate"] = {
+        "tradeflow_data_completeness": eg_result.tradeflow_data_completeness,
+        "missing_data_fields": eg_result.missing_data_fields,
+        "can_enter_a_tier": eg_result.can_enter_a_tier,
+        "can_trigger_deep_ta": eg_result.can_trigger_deep_ta,
+        "what_to_upgrade": eg_result.what_to_upgrade,
+        "gate_applied": gate_override["gate_applied"],
+        "refs": eg_result.evidence_gate_refs,
+    }
+
+    return candidate, ""
+
+
+def save_candidate(candidate: Candidate, db_path: str) -> int:
+    """Save a candidate to the database. Upsert on (trade_date, symbol)."""
+    conn = sqlite3.connect(db_path)
+    row = candidate.to_db_row()
+    try:
+        conn.execute(
+            "INSERT INTO tradeflow_candidates "
+            "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+            "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+            "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+            "policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
+            "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+            "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
+            "fund_flow_case, resonance_count, game_balance_refs_json, "
+            "fund_flow_anomaly_score, fund_flow_anomaly_tags_json, "
+            "fund_flow_anomaly_refs_json, fund_flow_unit_verified, "
+            "fund_flow_individual_summary, fund_flow_board_summary, "
+            "composite_score, signal_category_hits_json, positive_category_count, "
+            "data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta, "
+            "priority_rank, "
+            "tier, ta_budget_priority, tier_reason, missing_evidence_for_upgrade_json, "
+            "tradeflow_data_completeness, missing_data_fields_json, what_to_upgrade_json, evidence_gate_applied, "
+            "universe_sources_json, "
+            "observe_state, observe_trigger_count, observe_first_trigger_time, "
+            "deep_ta_status, deep_ta_dispatch_reason, deep_ta_model, "
+            "deep_ta_report_path, deep_ta_dispatch_time, deep_ta_position_context, "
+            "created_at, updated_at) "
+            "VALUES ({}) ".format(",".join(["?"] * 64))
+            + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+            "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+            "trigger_price=excluded.trigger_price, "
+            "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+            "need_deep_ta=excluded.need_deep_ta, evidence_json=excluded.evidence_json, "
+            "risk_flags_json=excluded.risk_flags_json, "
+            "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+            "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
+            "narrative_score=excluded.narrative_score, "
+            "narrative_reasons_json=excluded.narrative_reasons_json, "
+            "narrative_evidence_refs_json=excluded.narrative_evidence_refs_json, "
+            "risk_penalty=excluded.risk_penalty, "
+            "risk_evidence_refs_json=excluded.risk_evidence_refs_json, "
+            "risk_reasons_json=excluded.risk_reasons_json, "
+            "game_balance=excluded.game_balance, "
+            "bull_case=excluded.bull_case, bear_case=excluded.bear_case, "
+            "policy_case=excluded.policy_case, fund_flow_case=excluded.fund_flow_case, "
+            "resonance_count=excluded.resonance_count, "
+            "game_balance_refs_json=excluded.game_balance_refs_json, "
+            "fund_flow_anomaly_score=excluded.fund_flow_anomaly_score, "
+            "fund_flow_anomaly_tags_json=excluded.fund_flow_anomaly_tags_json, "
+            "fund_flow_anomaly_refs_json=excluded.fund_flow_anomaly_refs_json, "
+            "fund_flow_unit_verified=excluded.fund_flow_unit_verified, "
+            "fund_flow_individual_summary=excluded.fund_flow_individual_summary, "
+            "fund_flow_board_summary=excluded.fund_flow_board_summary, "
+            "composite_score=excluded.composite_score, "
+            "signal_category_hits_json=excluded.signal_category_hits_json, "
+            "positive_category_count=excluded.positive_category_count, "
+            "data_completeness=excluded.data_completeness, "
+            "missing_evidence_json=excluded.missing_evidence_json, "
+            "why_deep_ta=excluded.why_deep_ta, why_not_deep_ta=excluded.why_not_deep_ta, "
+            "priority_rank=excluded.priority_rank, "
+            "tier=excluded.tier, ta_budget_priority=excluded.ta_budget_priority, "
+            "tier_reason=excluded.tier_reason, "
+            "missing_evidence_for_upgrade_json=excluded.missing_evidence_for_upgrade_json, "
+            "tradeflow_data_completeness=excluded.tradeflow_data_completeness, "
+            "missing_data_fields_json=excluded.missing_data_fields_json, "
+            "what_to_upgrade_json=excluded.what_to_upgrade_json, "
+            "evidence_gate_applied=excluded.evidence_gate_applied, "
+            "universe_sources_json=excluded.universe_sources_json, "
+            "observe_state=excluded.observe_state, "
+            "observe_trigger_count=excluded.observe_trigger_count, "
+            "observe_first_trigger_time=excluded.observe_first_trigger_time, "
+            "deep_ta_status=excluded.deep_ta_status, "
+            "deep_ta_dispatch_reason=excluded.deep_ta_dispatch_reason, "
+            "deep_ta_model=excluded.deep_ta_model, "
+            "deep_ta_report_path=excluded.deep_ta_report_path, "
+            "deep_ta_dispatch_time=excluded.deep_ta_dispatch_time, "
+            "deep_ta_position_context=excluded.deep_ta_position_context, "
+            "updated_at=excluded.updated_at",
+            (
+                row["trade_date"], row["symbol"], row["name"], row["source"],
+                row["strategy_tags_json"], row["primary_strategy"],
+                row["score"], row["status"],
+                row["trigger_price"], row["support_price"], row["invalid_price"],
+                row["need_deep_ta"], row["evidence_json"], row["risk_flags_json"],
+                row["policy_tags_json"], row["version_score"],
+                row["policy_evidence_refs_json"],
+                row["narrative_score"], row["narrative_reasons_json"],
+                row["narrative_evidence_refs_json"],
+                row["risk_penalty"], row["risk_evidence_refs_json"],
+                row["risk_reasons_json"],
+                row["game_balance"], row["bull_case"], row["bear_case"],
+                row["policy_case"], row["fund_flow_case"],
+                row["resonance_count"], row["game_balance_refs_json"],
+                row["fund_flow_anomaly_score"], row["fund_flow_anomaly_tags_json"],
+                row["fund_flow_anomaly_refs_json"], row["fund_flow_unit_verified"],
+                row["fund_flow_individual_summary"], row["fund_flow_board_summary"],
+                row["composite_score"], row["signal_category_hits_json"],
+                row["positive_category_count"], row["data_completeness"],
+                row["missing_evidence_json"], row["why_deep_ta"], row["why_not_deep_ta"],
+                row["priority_rank"],
+                row["tier"], row["ta_budget_priority"],
+                row["tier_reason"], row["missing_evidence_for_upgrade_json"],
+                row["tradeflow_data_completeness"], row["missing_data_fields_json"],
+                row["what_to_upgrade_json"], row["evidence_gate_applied"],
+                row["universe_sources_json"],
+                row["observe_state"], row["observe_trigger_count"],
+                row["observe_first_trigger_time"],
+                row["deep_ta_status"], row["deep_ta_dispatch_reason"],
+                row["deep_ta_model"], row["deep_ta_report_path"],
+                row["deep_ta_dispatch_time"], row["deep_ta_position_context"],
+                candidate.created_at, row["updated_at"],
+            ),
+        )
+        conn.commit()
+        row_id = conn.execute(
+            "SELECT id FROM tradeflow_candidates WHERE trade_date=? AND symbol=?",
+            (row["trade_date"], row["symbol"]),
+        ).fetchone()[0]
+        return row_id
+    finally:
+        conn.close()
+
+exec
+/bin/zsh -lc 'grep -R "Candidate.from_db_row" -n tradingagents | cat; grep -R "row_factory" -n tradingagents/tradeflow' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+Binary file tradingagents/tradeflow/__pycache__/schemas.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/universe.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/universe_manager.cpython-312.pyc matches
+tradingagents/tradeflow/universe.py:303:        conn.row_factory = sqlite3.Row
+tradingagents/tradeflow/universe.py:324:        conn.row_factory = sqlite3.Row
+tradingagents/tradeflow/universe.py:344:        conn.row_factory = sqlite3.Row
+
+exec
+/bin/zsh -lc "grep -R \"auto_dev.lock\\|.zai_quota_state\" -n scripts . | head -50" in /Users/maybee/TradingAgents-AShare
+ succeeded in 8070ms:
+scripts/auto_dev_loop.sh:28:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+scripts/auto_dev_loop.sh:251:    with open('${REPO_DIR}/.zai_quota_state.json', 'w') as f:
+Binary file ./tests/__pycache__/test_auto_dev_loop_static.cpython-312-pytest-9.0.2.pyc matches
+./tests/test_auto_dev_loop_static.py:72:    assert not (repo / ".auto_dev.lock").exists()
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:292:  4. 加锁文件例如 `.auto_dev.lock` 或 `docs/task_runs/.lock`，脚本异常退出时要有清理/提示机制。
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:497:  - `scripts/auto_dev_loop.sh` — 新增 `.auto_dev.lock` 目录锁、`update_task_status()` 状态流转函数；非 dry-run 领取后标记 `in_progress`，失败标记 `blocked — NEEDS_HUMAN`，通过后用独立文档提交写入准确 commit hash；修复 `OPENCODE_EXIT` 在中文括号旁触发的 `set -u` 变量展开问题
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:630:?? .auto_dev.lock/
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:2550:/bin/zsh -lc "sed -n '1,130p' tradingagents/tradeflow/universe.py; sed -n '1,130p' tests/test_tradeflow_schemas.py; git diff -- docs/TASKS.md docs/DEVLOG.md; find docs/task_runs/S-001-20260529-124731 -maxdepth 2 -type f -print -exec sed -n '1,120p' {} \\; ; find .auto_dev.lock -maxdepth 2 -type f -print -exec sed -n '1,80p' {} \\;" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3040:.auto_dev.lock/owner
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3375:/bin/zsh -lc "grep -R \"auto_dev.lock\\|LOCK\" -n scripts/auto_dev_loop.sh .gitignore | head -80; ls -la .auto_dev.lock" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3377:scripts/auto_dev_loop.sh:27:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3425:/bin/zsh -lc "nl -ba tradingagents/tradeflow/candidate_engine.py | sed -n '306,320p'; nl -ba .auto_dev.lock/owner" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3474:- [P2] Remove stale auto-dev lock file — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3475:  If this untracked lock directory is committed or left in place after the task completes, `scripts/auto_dev_loop.sh` exits as soon as it sees `.auto_dev.lock`, so the next automatic run cannot claim S-002 or any other ready task. The lock artifact should be removed from the patch/workspace once the run is finished.
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3483:- [P2] Remove stale auto-dev lock file — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3484:  If this untracked lock directory is committed or left in place after the task completes, `scripts/auto_dev_loop.sh` exits as soon as it sees `.auto_dev.lock`, so the next automatic run cannot claim S-002 or any other ready task. The lock artifact should be removed from the patch/workspace once the run is finished.
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:292:  4. 加锁文件例如 `.auto_dev.lock` 或 `docs/task_runs/.lock`，脚本异常退出时要有清理/提示机制。
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:626:?? .auto_dev.lock/
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:1249:/bin/zsh -lc "find .auto_dev.lock docs/task_runs/M-008-20260529-142207 -maxdepth 3 -type f -print -exec sed -n '1,220p' {} \\;" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:1251:.auto_dev.lock/owner
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2521:/bin/zsh -lc "grep -R \"auto_dev.lock\\|\\.auto_dev.lock\" -n scripts docs tests | head -50; nl -ba .auto_dev.lock/owner" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2523:scripts/auto_dev_loop.sh:27:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2524:docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:292:  4. 加锁文件例如 `.auto_dev.lock` 或 `docs/task_runs/.lock`，脚本异常退出时要有清理/提示机制。
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2525:docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:497:  - `scripts/auto_dev_loop.sh` — 新增 `.auto_dev.lock` 目录锁、`update_task_status()` 状态流转函数；非 dry-run 领取后标记 `in_progress`，失败标记 `blocked — NEEDS_HUMAN`，通过后用独立文档提交写入准确 commit hash；修复 `OPENCODE_EXIT` 在中文括号旁触发的 `set -u` 变量展开问题
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2526:docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:630:?? .auto_dev.lock/
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2527:docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:2550:/bin/zsh -lc "sed -n '1,130p' tradingagents/tradeflow/universe.py; sed -n '1,130p' tests/test_tradeflow_schemas.py; git diff -- docs/TASKS.md docs/DEVLOG.md; find docs/task_runs/S-001-20260529-124731 -maxdepth 2 -type f -print -exec sed -n '1,120p' {} \\; ; find .auto_dev.lock -maxdepth 2 -type f -print -exec sed -n '1,80p' {} \\;" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2528:docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3040:.auto_dev.lock/owner
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2529:docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3375:/bin/zsh -lc "grep -R \"auto_dev.lock\\|LOCK\" -n scripts/auto_dev_loop.sh .gitignore | head -80; ls -la .auto_dev.lock" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2530:docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3377:scripts/auto_dev_loop.sh:27:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2531:docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3425:/bin/zsh -lc "nl -ba tradingagents/tradeflow/candidate_engine.py | sed -n '306,320p'; nl -ba .auto_dev.lock/owner" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2532:docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3474:- [P2] Remove stale auto-dev lock file — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2533:docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3475:  If this untracked lock directory is committed or left in place after the task completes, `scripts/auto_dev_loop.sh` exits as soon as it sees `.auto_dev.lock`, so the next automatic run cannot claim S-002 or any other ready task. The lock artifact should be removed from the patch/workspace once the run is finished.
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2534:docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3483:- [P2] Remove stale auto-dev lock file — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2535:docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3484:  If this untracked lock directory is committed or left in place after the task completes, `scripts/auto_dev_loop.sh` exits as soon as it sees `.auto_dev.lock`, so the next automatic run cannot claim S-002 or any other ready task. The lock artifact should be removed from the patch/workspace once the run is finished.
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2536:docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:292:  4. 加锁文件例如 `.auto_dev.lock` 或 `docs/task_runs/.lock`，脚本异常退出时要有清理/提示机制。
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2537:docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:550:  - `scripts/auto_dev_loop.sh` — 新增 `.auto_dev.lock` 目录锁、`update_task_status()` 状态流转函数；非 dry-run 领取后标记 `in_progress`，失败标记 `blocked — NEEDS_HUMAN`，通过后用独立文档提交写入准确 commit hash；修复 `OPENCODE_EXIT` 在中文括号旁触发的 `set -u` 变量展开问题
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2538:docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:629:?? .auto_dev.lock/
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2539:docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:3760:/bin/zsh -lc "find .auto_dev.lock docs/task_runs/S-002-20260529-134910 -maxdepth 3 -type f -print -exec sed -n '1,120p' {} \\;" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2540:docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:3762:.auto_dev.lock/owner
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2541:docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:4355:/bin/zsh -lc "rg \"auto_dev.lock|LOCK\" -n scripts/auto_dev_loop.sh | head -40; sed -n '1,80p' scripts/auto_dev_loop.sh" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2542:docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:4357:27:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2543:docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:4395:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2544:docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:4453:.auto_dev.lock/owner
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2545:docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:4466:- [P2] Remove the stale auto-dev lock — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2546:docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:4467:  When `.auto_dev.lock` is left in the worktree, the next non-dry-run `scripts/auto_dev_loop.sh` exits immediately because it treats the directory as an active task-claim lock. Since this lock file is untracked run state rather than source or task-run evidence, leaving it in the current changes will block the next automated development run until it is manually removed.
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2547:docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:4472:- [P2] Remove the stale auto-dev lock — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2548:docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:4473:  When `.auto_dev.lock` is left in the worktree, the next non-dry-run `scripts/auto_dev_loop.sh` exits immediately because it treats the directory as an active task-claim lock. Since this lock file is untracked run state rather than source or task-run evidence, leaving it in the current changes will block the next automated development run until it is manually removed.
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2549:docs/task_runs/S-003-20260529-135829/codex-review-round1.txt:27:?? .auto_dev.lock/
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2550:docs/task_runs/S-003-20260529-135829/codex-review-round1.txt:3203:/bin/zsh -lc "find .auto_dev.lock -maxdepth 2 -type f -print -exec sed -n '1,80p' {} \\; ; git diff --stat" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2551:docs/task_runs/S-003-20260529-135829/codex-review-round1.txt:3205:.auto_dev.lock/owner
+
+exec
+/bin/zsh -lc "sed -n '1,90p' scripts/auto_dev_loop.sh; sed -n '220,275p' scripts/auto_dev_loop.sh; grep -n \"zai_quota_state\" -C2 scripts/auto_dev_loop.sh" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+#!/usr/bin/env bash
+# AUTO-002: 自动开发闭环 v1.3 可靠性补修
+# 用法: ./scripts/auto_dev_loop.sh [--dry-run]
+#
+# 约束:
+#   - 只执行一轮
+#   - 只处理 docs/TASKS.md 中 status=ready 的最高优先级可开发任务
+#   - 工作区不干净时退出
+#   - 不允许 push / PR / merge
+#   - 单任务最多 2 次修复
+#   - 不改 prompts/，不写生产 tradingagents.db
+#   - 精确提交：只允许 tests/ tradingagents/ docs/ 下的文件
+#   - 排除临时文件：*.backup, *_original.py, *_fixed.py, patch_*.py, *.tmp, *.log, __pycache__
+#   - 排除根目录 *.py（非 tests/ 和 tradingagents/ 下）
+#   - 失败时不得自动提交任何文件
+#   - DEVLOG/TASKS 在 commit 前完成，commit 后不再修改文件
+#   - Review 输出保存到 docs/reviews/
+#   - 每个任务运行过程保存到 docs/task_runs/<task>-<timestamp>/
+
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TASKS_FILE="$REPO_DIR/docs/TASKS.md"
+DEVLOG_FILE="$REPO_DIR/docs/DEVLOG.md"
+REVIEW_DIR="$REPO_DIR/docs/reviews"
+TASK_RUN_ROOT="$REPO_DIR/docs/task_runs"
+LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+MAX_FIX_ROUNDS=2
+DRY_RUN=false
+PROMPT_FILE=""
+OPENCODE_LOG=""
+REVIEW_FILE=""
+HAVE_LOCK=false
+
+# 智谱 API Key（用于额度检查）
+ZAI_API_KEY="${ZAI_API_KEY:-}"
+if [[ -z "$ZAI_API_KEY" ]]; then
+    OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
+    if [[ -f "$OPENCLAW_CONFIG" ]]; then
+        ZAI_API_KEY=$(python3 -c "
+import json
+with open('$OPENCLAW_CONFIG') as f:
+    cfg = json.load(f)
+providers = cfg.get('models', {}).get('providers', {})
+for name, prov in providers.items():
+    if 'zai' in name.upper():
+        print(prov.get('apiKey', ''))
+        break
+" 2>/dev/null || echo "")
+    fi
+fi
+export ZAI_API_KEY
+
+# ─── 参数解析 ─────────────────────────────────────────
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=true ;;
+        -h|--help) echo "用法: $0 [--dry-run]"; exit 0 ;;
+    esac
+done
+
+cd "$REPO_DIR"
+
+# ─── 颜色 ───────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log()  { echo -e "${GREEN}[AUTO]${NC} $*"; }
+warn() { echo -e "${YELLOW}[AUTO]${NC} $*"; }
+err()  { echo -e "${RED}[AUTO]${NC} $*" >&2; }
+
+redact_log() {
+    # 持久化日志前做基础密钥脱敏，避免把本地 API key 写入仓库。
+    sed -E \
+        -e 's/sk-[A-Za-z0-9_-]{20,}/[REDACTED_API_KEY]/g' \
+        -e 's/(api[_-]?key[=:][[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
+        -e 's/(authorization:[[:space:]]*bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig'
+}
+
+cleanup() {
+    rm -f "$PROMPT_FILE" "$OPENCODE_LOG" "$REVIEW_FILE" 2>/dev/null || true
+    if [ "$HAVE_LOCK" = true ]; then
+        rm -rf "$LOCK_DIR" 2>/dev/null || true
+    fi
+}
+
+trap cleanup EXIT
+        "test_cmds": test_cmds,
+        "body_start": m.start(),
+    })
+
+tasks.sort(key=lambda t: (t["priority_num"], t["body_start"]))
+
+if tasks:
+    t = tasks[0]
+    print(f"{t['id']}|{t['title']}|{t['priority']}|{','.join(t['test_cmds'])}")
+else:
+    print("NONE|||")
+PYEOF
+}
+
+# ─── 主循环：连续执行直到没有 ready 任务 ────────────────
+COMPLETED_TASKS=0
+FAILED_TASKS=0
+
+# 额度检查函数（智谱 API）
+check_zai_quota() {
+    if [[ -x "${SCRIPT_DIR}/check_zai_quota.sh" ]]; then
+        local result
+        result=$(ZAI_API_KEY="${ZAI_API_KEY:-}" bash "${SCRIPT_DIR}/check_zai_quota.sh" --json 2>/dev/null || echo '{"status":"ERROR"}')
+        local status
+        status=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','ERROR'))" 2>/dev/null || echo "ERROR")
+        # 保存额度状态到文件（供其他脚本读取）
+        echo "$result" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    data['last_check'] = '$(date -Iseconds)'
+    with open('${REPO_DIR}/.zai_quota_state.json', 'w') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+except: pass
+" 2>/dev/null || true
+        if [[ "$status" == "EXHAUSTED" ]]; then
+            local reset_time msg
+            reset_time=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('reset_time',''))" 2>/dev/null || echo "")
+            msg=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('message',''))" 2>/dev/null || echo "")
+            err "[QUOTA] 智谱 API 额度耗尽！"
+            [[ -n "$reset_time" ]] && err "[QUOTA] 下次刷新: $reset_time"
+            [[ -n "$msg" ]] && err "[QUOTA] 详情: $msg"
+            return 1
+        fi
+    fi
+    return 0
+}
+
+while true; do
+
+TASK_LINE=$(parse_ready_tasks)
+TASK_ID=$(echo "$TASK_LINE" | cut -d'|' -f1)
+TASK_TITLE=$(echo "$TASK_LINE" | cut -d'|' -f2)
+TASK_PRIO=$(echo "$TASK_LINE" | cut -d'|' -f3)
+TASK_TESTS=$(echo "$TASK_LINE" | cut -d'|' -f4)
+
+249-    data = json.load(sys.stdin)
+250-    data['last_check'] = '$(date -Iseconds)'
+251:    with open('${REPO_DIR}/.zai_quota_state.json', 'w') as f:
+252-        json.dump(data, f, ensure_ascii=False, indent=2)
+253-except: pass
+
+exec
+/bin/zsh -lc "grep -n \"LOCK_DIR\\|HAVE_LOCK\" -C3 scripts/auto_dev_loop.sh" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+25-DEVLOG_FILE="$REPO_DIR/docs/DEVLOG.md"
+26-REVIEW_DIR="$REPO_DIR/docs/reviews"
+27-TASK_RUN_ROOT="$REPO_DIR/docs/task_runs"
+28:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+29-MAX_FIX_ROUNDS=2
+30-DRY_RUN=false
+31-PROMPT_FILE=""
+32-OPENCODE_LOG=""
+33-REVIEW_FILE=""
+34:HAVE_LOCK=false
+35-
+36-# 智谱 API Key（用于额度检查）
+37-ZAI_API_KEY="${ZAI_API_KEY:-}"
+--
+82-
+83-cleanup() {
+84-    rm -f "$PROMPT_FILE" "$OPENCODE_LOG" "$REVIEW_FILE" 2>/dev/null || true
+85:    if [ "$HAVE_LOCK" = true ]; then
+86:        rm -rf "$LOCK_DIR" 2>/dev/null || true
+87-    fi
+88-}
+89-
+--
+91-
+92-acquire_lock() {
+93-    # [INF-001] task_claim_lock
+94:    if mkdir "$LOCK_DIR" 2>/dev/null; then
+95:        HAVE_LOCK=true
+96-        {
+97-            echo "pid=$$"
+98-            echo "started_at=$(date +%Y-%m-%d_%H:%M:%S)"
+99-            echo "repo=$REPO_DIR"
+100:        } > "$LOCK_DIR/owner"
+101-        return 0
+102-    fi
+103-
+104:    err "检测到自动开发锁，退出以避免重复领取任务：$LOCK_DIR"
+105:    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+106-    exit 1
+107-}
+108-
+--
+150-
+151-mkdir -p "$REVIEW_DIR" "$TASK_RUN_ROOT"
+152-
+153:if [ -d "$LOCK_DIR" ]; then
+154:    err "检测到自动开发锁，退出以避免重复领取任务：$LOCK_DIR"
+155:    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+156-    exit 1
+157-fi
+158-
+
+exec
+/bin/zsh -lc "nl -ba .auto_dev.lock/owner; nl -ba tradingagents/tradeflow/gated_deep_ta.py | sed -n '170,245p'; nl -ba tradingagents/tradeflow/strategy_config.py | sed -n '120,145p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+     1	pid=20911
+     2	started_at=2026-05-30_00:27:21
+     3	repo=/Users/maybee/TradingAgents-AShare
+   170	        record.status = DeepTAStatus.BLOCKED
+   171	        record.block_reason = f"失败次数({sym_failures + retry_count})超过最大重试({dispatcher.max_retries})"
+   172	        return DeepTADecision(allowed=False, reason=record.block_reason, record=record)
+   173	
+   174	    if not position_context or position_context == "unknown":
+   175	        record.position_context = "unknown"
+   176	
+   177	    record.status = DeepTAStatus.PENDING
+   178	    record.model = resolved_model
+   179	    record.retry_count = retry_count
+   180	
+   181	    reason_parts = [
+   182	        f"综合分{composite_score:.1f}",
+   183	        f"完整度{completeness:.0%}",
+   184	        f"观察状态={observe_state}",
+   185	        f"持仓={position_context}",
+   186	    ]
+   187	    if tier:
+   188	        reason_parts.append(f"分层={tier}")
+   189	    if retry_count > 0:
+   190	        reason_parts.append(f"重试#{retry_count}")
+   191	
+   192	    return DeepTADecision(
+   193	        allowed=True,
+   194	        reason="; ".join(reason_parts),
+   195	        model=resolved_model,
+   196	        record=record,
+   197	    )
+   198	
+   199	
+   200	def record_deep_ta_dispatch(
+   201	    dispatcher: DeepTADispatcher,
+   202	    symbol: str,
+   203	    status: DeepTAStatus,
+   204	    model: str = "",
+   205	    duration_sec: float = 0.0,
+   206	    report_path: str = "",
+   207	    dispatch_reason: str = "",
+   208	    position_context: str = "unknown",
+   209	) -> DeepTARecord:
+   210	    """Record a deep TA dispatch result and update dispatcher state.
+   211	
+   212	    Increments daily count on DISPATCHED and failure count on FAILED.
+   213	    """
+   214	    now_iso = datetime.now().isoformat()
+   215	
+   216	    existing = dispatcher.records.get(symbol)
+   217	    if existing is None:
+   218	        record = DeepTARecord(
+   219	            symbol=symbol,
+   220	            status=status,
+   221	            model=model,
+   222	            dispatch_time=now_iso,
+   223	            duration_sec=duration_sec,
+   224	            report_path=report_path,
+   225	            dispatch_reason=dispatch_reason,
+   226	            position_context=position_context,
+   227	            trade_date=dispatcher.trade_date,
+   228	        )
+   229	    else:
+   230	        record = existing
+   231	        record.status = status
+   232	        if model:
+   233	            record.model = model
+   234	        if duration_sec > 0:
+   235	            record.duration_sec = duration_sec
+   236	        if report_path:
+   237	            record.report_path = report_path
+   238	        if dispatch_reason:
+   239	            record.dispatch_reason = dispatch_reason
+   240	        if position_context and position_context != "unknown":
+   241	            record.position_context = position_context
+   242	        record.dispatch_time = now_iso
+   243	
+   244	    dispatcher.records[symbol] = record
+   245	
+   120	    tier_b_min_completeness: float = 0.3
+   121	    tier_a_min_composite_for_2cat: float = 50.0
+   122	
+   123	    # ── Evidence Gate ──
+   124	    evidence_total_dimensions: int = 10
+   125	    evidence_completeness_for_a_tier: float = 0.6
+   126	    evidence_completeness_for_deep_ta: float = 0.5
+   127	
+   128	    # ── Intraday Observe [M-005] ──
+   129	    observe_max_daily_triggers: int = 3
+   130	    observe_trigger_breach_pct: float = 0.0
+   131	    observe_invalidate_breach_pct: float = 0.0
+   132	
+   133	    # ── Deep TA Dispatch Gate [M-006] ──
+   134	    deep_ta_daily_limit: int = 3
+   135	    deep_ta_default_model: str = ""
+   136	    deep_ta_blocked_models: tuple = ("deepseek",)
+   137	    deep_ta_max_retries: int = 1
+   138	    deep_ta_min_composite_score: float = 40.0
+   139	    deep_ta_min_completeness: float = 0.5
+   140	    deep_ta_require_observe_triggered: bool = True
+   141	
+   142	    def to_dict(self) -> dict:
+   143	        d = asdict(self)
+   144	        d["risk_high_severity_flags"] = list(self.risk_high_severity_flags)
+   145	        return d
+
+exec
+/bin/zsh -lc 'grep -R "zai_quota_state" -n . --exclude-dir=.git --exclude-dir=__pycache__ | head -20' in /Users/maybee/TradingAgents-AShare
+ succeeded in 4791ms:
+./docs/task_runs/M-006-20260530-011554/opencode-round2.txt:20:	修改：     .zai_quota_state.json
+./docs/task_runs/M-006-20260530-011554/opencode-round2.txt:47:01ccc56 feat: auto_dev_loop saves quota state to .zai_quota_state.json
+./docs/task_runs/M-004-20260530-004038/codex-review-round1.txt:625: M .zai_quota_state.json
+./docs/task_runs/M-004-20260530-004038/codex-review-round1.txt:649: .zai_quota_state.json                              | 11 ++--
+./docs/task_runs/M-004-20260530-004038/opencode-round1.txt:2367:	修改：     .zai_quota_state.json
+./docs/task_runs/V-002-20260530-010220/codex-review-round1.txt:439: M .zai_quota_state.json
+./docs/task_runs/V-002-20260530-010220/codex-review-round1.txt:648:/bin/zsh -lc "git diff --stat && git diff -- . ':(exclude).zai_quota_state.json'" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/V-002-20260530-010220/codex-review-round1.txt:650: .zai_quota_state.json              |  11 +-
+./docs/task_runs/V-002-20260530-010220/codex-review-round1.txt:2528:/bin/zsh -lc 'git diff -- .zai_quota_state.json; cat .zai_quota_state.json' in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/V-002-20260530-010220/codex-review-round1.txt:2530:diff --git a/.zai_quota_state.json b/.zai_quota_state.json
+./docs/task_runs/V-002-20260530-010220/codex-review-round1.txt:2532:--- a/.zai_quota_state.json
+./docs/task_runs/V-002-20260530-010220/codex-review-round1.txt:2533:+++ b/.zai_quota_state.json
+./docs/task_runs/V-002-20260530-010220/codex-review-round1.txt:2554:/bin/zsh -lc 'grep -R "zai_quota_state" -n . | head -20' in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/V-002-20260530-010220/codex-review-round1.txt:2556:./docs/task_runs/M-004-20260530-004038/codex-review-round1.txt:625: M .zai_quota_state.json
+./docs/task_runs/V-002-20260530-010220/codex-review-round1.txt:2557:./docs/task_runs/M-004-20260530-004038/codex-review-round1.txt:649: .zai_quota_state.json                              | 11 ++--
+./docs/task_runs/V-002-20260530-010220/codex-review-round1.txt:2558:./docs/task_runs/M-004-20260530-004038/opencode-round1.txt:2367:	修改：     .zai_quota_state.json
+./docs/task_runs/V-002-20260530-010220/codex-review-round1.txt:2559:./docs/task_runs/M-003-20260530-002721/codex-review-round2.txt:611: M .zai_quota_state.json
+./docs/task_runs/V-002-20260530-010220/codex-review-round1.txt:2560:./docs/task_runs/M-003-20260530-002721/codex-review-round2.txt:1683: .zai_quota_state.json                       |  11 +-
+./docs/task_runs/V-002-20260530-010220/codex-review-round1.txt:2561:./docs/task_runs/M-003-20260530-002721/codex-review-round2.txt:4340:/bin/zsh -lc "git diff -- .zai_quota_state.json && ls -la .auto_dev.lock && find .auto_dev.lock -maxdepth 2 -type f -print -exec sed -n '1,120p' {} \\;" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/V-002-20260530-010220/codex-review-round1.txt:2562:./docs/task_runs/M-003-20260530-002721/codex-review-round2.txt:4342:diff --git a/.zai_quota_state.json b/.zai_quota_state.json
+
+codex
+The code changes themselves appear consistent, but the current changes include a stale auto-dev lock artifact that will block subsequent automated runs.
+
+Review comment:
+
+- [P2] Remove the stale auto-dev lock — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+  If this untracked lock directory is left in the workspace or committed with the task artifacts, the next non-dry-run `scripts/auto_dev_loop.sh` exits immediately because it treats `.auto_dev.lock` as an active task-claim lock. Since this is transient run state rather than source or evidence, it should be removed once the run has finished.
+The code changes themselves appear consistent, but the current changes include a stale auto-dev lock artifact that will block subsequent automated runs.
+
+Review comment:
+
+- [P2] Remove the stale auto-dev lock — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+  If this untracked lock directory is left in the workspace or committed with the task artifacts, the next non-dry-run `scripts/auto_dev_loop.sh` exits immediately because it treats `.auto_dev.lock` as an active task-claim lock. Since this is transient run state rather than source or evidence, it should be removed once the run has finished.

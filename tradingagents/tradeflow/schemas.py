@@ -105,6 +105,12 @@ class Candidate:
     observe_state: str = "WAITING"  # [M-005] intraday_observe_state
     observe_trigger_count: int = 0  # [M-005] intraday_observe_state
     observe_first_trigger_time: str = ""  # [M-005] intraday_observe_state
+    deep_ta_status: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_dispatch_reason: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_model: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_report_path: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_dispatch_time: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_position_context: str = ""  # [M-006] gated_deep_ta_dispatch
 
     def __post_init__(self):
         if not self.trade_date:
@@ -209,6 +215,12 @@ class Candidate:
             "observe_state": self.observe_state,  # [M-005] intraday_observe_state
             "observe_trigger_count": self.observe_trigger_count,  # [M-005]
             "observe_first_trigger_time": self.observe_first_trigger_time,  # [M-005]
+            "deep_ta_status": self.deep_ta_status,  # [M-006] gated_deep_ta_dispatch
+            "deep_ta_dispatch_reason": self.deep_ta_dispatch_reason,  # [M-006]
+            "deep_ta_model": self.deep_ta_model,  # [M-006]
+            "deep_ta_report_path": self.deep_ta_report_path,  # [M-006]
+            "deep_ta_dispatch_time": self.deep_ta_dispatch_time,  # [M-006]
+            "deep_ta_position_context": self.deep_ta_position_context,  # [M-006]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -273,6 +285,12 @@ class Candidate:
             observe_state=row.get("observe_state", "WAITING"),  # [M-005] intraday_observe_state
             observe_trigger_count=row.get("observe_trigger_count", 0),  # [M-005]
             observe_first_trigger_time=row.get("observe_first_trigger_time", ""),  # [M-005]
+            deep_ta_status=row.get("deep_ta_status", ""),  # [M-006] gated_deep_ta_dispatch
+            deep_ta_dispatch_reason=row.get("deep_ta_dispatch_reason", ""),  # [M-006]
+            deep_ta_model=row.get("deep_ta_model", ""),  # [M-006]
+            deep_ta_report_path=row.get("deep_ta_report_path", ""),  # [M-006]
+            deep_ta_dispatch_time=row.get("deep_ta_dispatch_time", ""),  # [M-006]
+            deep_ta_position_context=row.get("deep_ta_position_context", ""),  # [M-006]
         )
 
 
@@ -484,6 +502,26 @@ class DailyPlan:
                 lines.append(f"  盘中观察: {state_label} (触发{obs_count}次)")
                 if obs_time:
                     lines.append(f"    首次触发: {obs_time}")
+            # [M-006] gated_deep_ta_dispatch — display deep TA dispatch status
+            dta_status = c.get("deep_ta_status", "")
+            dta_reason = c.get("deep_ta_dispatch_reason", "")
+            dta_model = c.get("deep_ta_model", "")
+            dta_pos = c.get("deep_ta_position_context", "")
+            if dta_status:
+                status_label = {
+                    "PENDING": "待调度",
+                    "BLOCKED": "已拦截",
+                    "DISPATCHED": "已调度",
+                    "SUCCESS": "已完成",
+                    "FAILED": "失败",
+                }.get(dta_status, dta_status)
+                lines.append(f"  深度TA: {status_label}")
+                if dta_reason:
+                    lines.append(f"    原因: {dta_reason}")
+                if dta_model:
+                    lines.append(f"    模型: {dta_model}")
+                if dta_pos:
+                    lines.append(f"    持仓: {dta_pos}")
             lines.append("")
 
         return "\n".join(lines)

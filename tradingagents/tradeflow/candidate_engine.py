@@ -210,6 +210,19 @@ def init_db(db_path: str) -> None:
             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
         except sqlite3.OperationalError:
             pass
+    # [M-006] gated_deep_ta_dispatch — add deep TA dispatch columns
+    for _col, _type in [
+        ("deep_ta_status", "TEXT DEFAULT ''"),
+        ("deep_ta_dispatch_reason", "TEXT DEFAULT ''"),
+        ("deep_ta_model", "TEXT DEFAULT ''"),
+        ("deep_ta_report_path", "TEXT DEFAULT ''"),
+        ("deep_ta_dispatch_time", "TEXT DEFAULT ''"),
+        ("deep_ta_position_context", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 
@@ -728,8 +741,10 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "tradeflow_data_completeness, missing_data_fields_json, what_to_upgrade_json, evidence_gate_applied, "
             "universe_sources_json, "
             "observe_state, observe_trigger_count, observe_first_trigger_time, "
+            "deep_ta_status, deep_ta_dispatch_reason, deep_ta_model, "
+            "deep_ta_report_path, deep_ta_dispatch_time, deep_ta_position_context, "
             "created_at, updated_at) "
-            "VALUES ({}) ".format(",".join(["?"] * 58))
+            "VALUES ({}) ".format(",".join(["?"] * 64))
             + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
             "trigger_price=excluded.trigger_price, "
@@ -773,6 +788,12 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "observe_state=excluded.observe_state, "
             "observe_trigger_count=excluded.observe_trigger_count, "
             "observe_first_trigger_time=excluded.observe_first_trigger_time, "
+            "deep_ta_status=excluded.deep_ta_status, "
+            "deep_ta_dispatch_reason=excluded.deep_ta_dispatch_reason, "
+            "deep_ta_model=excluded.deep_ta_model, "
+            "deep_ta_report_path=excluded.deep_ta_report_path, "
+            "deep_ta_dispatch_time=excluded.deep_ta_dispatch_time, "
+            "deep_ta_position_context=excluded.deep_ta_position_context, "
             "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
@@ -803,6 +824,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
                 row["universe_sources_json"],
                 row["observe_state"], row["observe_trigger_count"],
                 row["observe_first_trigger_time"],
+                row["deep_ta_status"], row["deep_ta_dispatch_reason"],
+                row["deep_ta_model"], row["deep_ta_report_path"],
+                row["deep_ta_dispatch_time"], row["deep_ta_position_context"],
                 candidate.created_at, row["updated_at"],
             ),
         )

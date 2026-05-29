@@ -110,6 +110,12 @@ def _build_plan_entry(candidate: Candidate) -> dict:
         "observe_state": candidate.observe_state,  # [M-005] intraday_observe_state
         "observe_trigger_count": candidate.observe_trigger_count,  # [M-005]
         "observe_first_trigger_time": candidate.observe_first_trigger_time,  # [M-005]
+        "deep_ta_status": candidate.deep_ta_status,  # [M-006] gated_deep_ta_dispatch
+        "deep_ta_dispatch_reason": candidate.deep_ta_dispatch_reason,  # [M-006]
+        "deep_ta_model": candidate.deep_ta_model,  # [M-006]
+        "deep_ta_report_path": candidate.deep_ta_report_path,  # [M-006]
+        "deep_ta_dispatch_time": candidate.deep_ta_dispatch_time,  # [M-006]
+        "deep_ta_position_context": candidate.deep_ta_position_context,  # [M-006]
     }
 
 

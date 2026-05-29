@@ -4,6 +4,59 @@
 
 ---
 
+## 2026-05-30 | M-006 代码质量修复（Codex review 失败后巡检）
+
+- **执行者**：OpenCode
+- **背景**：Codex review 因网络断连失败（exit code 1），非代码问题。人工巡检发现两个潜在缺陷。
+- **修复内容**：
+  - `tradingagents/tradeflow/gated_deep_ta.py`：
+    1. **新增空模型拦截**：`check_deep_ta_gate()` 在 resolved_model 为空时返回 BLOCKED，避免无模型调度
+    2. **修复 `can_retry_deep_ta()` 语义不一致**：原实现 `failures < max_retries` 与 `check_deep_ta_gate()` 的 `failures + retry_count > max_retries` 不一致；改为 `failures + retry_count <= max_retries`，新增 `retry_count` 参数
+  - `tests/test_m006_gated_deep_ta.py`：
+    - 新增 `test_no_model_blocks` 和 `test_no_model_uses_default` 测试
+    - 修正多个测试：未指定 model 时不再通过门控，需设置 `default_model` 或传入 `model`
+    - 修正 `can_retry_deep_ta` 测试预期：`failures=1, max_retries=1` → 允许重试（与 check 逻辑一致）
+    - 新增 `retry_count` 参数验证
+- **测试结果**：60 passed (M-006)；TradeFlow 全部 221 passed；0 failed
+- **风险点**：无；修复向后兼容（调用方必须在 config 设置 `deep_ta_default_model` 或传入 `model`）
+
+## 2026-05-30 | M-006: OpenClaw 自动触发 TA 深度分析门控
+
+- **执行者**：OpenCode
+- **任务**：M-006 — 在盘中 Observe 触发后，由 OpenClaw 决定是否调用 TA 深度分析，带成本、模型、频率门控
+- **修改文件**：
+  - `tradingagents/tradeflow/gated_deep_ta.py` — 新建：[M-006] 深度 TA 调度门控模块
+    - `DeepTAStatus` 枚举：PENDING / BLOCKED / DISPATCHED / SUCCESS / FAILED
+    - `DeepTARecord` 数据类：记录每次调度的 symbol、状态、模型、耗时、报告路径、重试次数、持仓上下文
+    - `DeepTADecision` 数据类：门控结果（allowed/reason/model/record）
+    - `DeepTADispatcher` 数据类：日内调度状态管理器，跟踪 daily_count、failure_counts、records；支持从 StrategyConfig 构建
+    - `check_deep_ta_gate()` — 核心门控函数：依次检查 need_deep_ta、每日上限、observe 状态、综合分、完整度、模型黑名单、重试上限
+    - `record_deep_ta_dispatch()` — 记录调度结果，更新 daily_count（DISPATCHED）和 failure_counts（FAILED）
+    - `can_retry_deep_ta()` — 判断是否可以重试
+  - `tradingagents/tradeflow/strategy_config.py` — StrategyConfig 新增 7 个 deep TA 门控配置：`deep_ta_daily_limit`(默认3)、`deep_ta_default_model`、`deep_ta_blocked_models`(默认屏蔽 deepseek)、`deep_ta_max_retries`(默认1)、`deep_ta_min_composite_score`(默认40)、`deep_ta_min_completeness`(默认0.5)、`deep_ta_require_observe_triggered`(默认True)
+  - `tradingagents/tradeflow/schemas.py` — Candidate 新增 6 个字段：`deep_ta_status`、`deep_ta_dispatch_reason`、`deep_ta_model`、`deep_ta_report_path`、`deep_ta_dispatch_time`、`deep_ta_position_context`；`to_db_row()`/`from_db_row()` 同步；`render_text()` 显示深度 TA 调度状态
+  - `tradingagents/tradeflow/candidate_engine.py` — `init_db()` 新增 6 列；`save_candidate()` INSERT/UPDATE 包含新列（58→64 字段）
+  - `tradingagents/tradeflow/plan_runner.py` — `_build_plan_entry()` 输出 deep_ta_status/.../deep_ta_position_context
+  - `tests/test_m006_gated_deep_ta.py` — 新建，58 个测试覆盖：
+    - TestDeepTAStatus (2): 枚举值、完整枚举集合
+    - TestDeepTARecord (4): 默认值、自定义值、自动日期、显式日期
+    - TestDeepTADispatcher (5): 默认初始化、from_config 默认/自定义、自动/显式日期
+    - TestCheckDeepTAGate (20): need_deep_ta=False 拦截、每日上限满/未满、observe 非 TRIGGERED 拦截、WAITING/INVALIDATED、TRIGGERED 放行、禁用 require 观察触发、低综合分、综合分在阈值、低完整度、完整度在阈值、DeepSeek 模型拦截、默认模型 DeepSeek、允许模型、默认模型使用、超重试上限、重试内允许、全部门通过、未知持仓、空黑名单
+    - TestRecordDeepTADispatch (7): DISPATCHED 增计数、FAILED 增失败、SUCCESS 不变、BLOCKED 不变、多次上限、更新记录、全部字段
+    - TestCanRetryDeepTA (4): 无失败可重试、达上限不可、低于上限可、不同 symbol 独立
+    - TestCandidateDeepTAFields (4): 默认值、to_db_row、from_db_row、from_db_row 默认值
+    - TestDeepTADbPersistence (2): 保存读取、upsert 覆盖
+    - TestStrategyConfigDeepTA (3): 默认值、自定义值、to_dict 包含
+    - TestFullDeepTAWorkflow (7): 触发→调度→成功、未触发拦截、每日上限耗尽、失败→重试→再失败→拦截、DeepSeek 默认拦截、多 symbol 独立、无无限重试
+- **测试结果**：58 passed (M-006)；TradeFlow 全部 219 passed；0 failed
+- **关键逻辑**：
+  - `check_deep_ta_gate()` 按顺序检查 7 道门：need_deep_ta=True → 每日上限未满 → observe TRIGGERED → 综合分达标 → 完整度达标 → 模型不在黑名单 → 失败次数未超限
+  - 默认屏蔽 deepseek 模型，必须在配置中显式移除才能使用
+  - `DeepTADispatcher.from_config(cfg)` 从 StrategyConfig 构建调度器，所有阈值集中配置
+  - `record_deep_ta_dispatch()` 只记录审计信息，不实际调用 LLM，由上层（OpenClaw/scheduler）负责执行
+  - 多 symbol 完全独立，失败计数和调度记录按 symbol 隔离
+- **风险点**：无；所有改动向后兼容，deep_ta_status 默认空字符串，不影响现有逻辑
+
 ## 2026-05-30 | M-005: 盘中 Observe 状态机
 
 - **执行者**：OpenCode
@@ -343,3 +396,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/M-005-20260530-round1.txt
 - **运行档案**: docs/task_runs/M-005-20260530-010959/
+
+## 2026-05-30 | AUTO-002 自动开发闭环
+
+- **任务**: M-006 — OpenClaw 自动触发 TA 深度分析门控（P2）
+- **优先级**: P2
+- **轮次**: 2
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/M-006-20260530-round2.txt
+- **运行档案**: docs/task_runs/M-006-20260530-011554/
