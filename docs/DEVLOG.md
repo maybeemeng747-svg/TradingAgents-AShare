@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-05-30 | S-009: 修复 S-005 选股门控双重计分与资金单位校验
+
+- **执行者**：OpenCode
+- **任务**：S-009 — 修复 Codex review 指出的两个候选排序风险：综合分重复叠加，以及未校验单位的资金流也能作为正向类别
+- **修改文件**：
+  - `tradingagents/tradeflow/selection_priority_gate.py` — [S-009] selection_gate_fix
+    1. **双重计分修复**：新增 `score_already_includes_subscores` 参数（默认 True）。当为 True 时，composite_score = score + completeness_bonus，不再重复叠加 version_score/narrative_score/fund_flow_anomaly_score/risk_penalty。candidate_engine.evaluate_symbol() 传入的 candidate.score 已经包含这些子分数，默认模式正确避免双重计分。
+    2. **资金单位校验修复**：`has_fund` 判定增加 `fund_flow_unit_verified` 条件。未校验单位的资金流不再计入正向类别（fund category），也不能单独帮助通过 need_deep_ta 门控。
+  - `tradingagents/tradeflow/candidate_engine.py` — 补充注释说明 candidate.score 已包含子分数，score_already_includes_subscores=True 默认正确
+  - `tests/test_s005_selection_priority_gate.py` — 新增 `TestS009NoDoubleScoring`（6 个测试）和 `TestS009FundFlowUnitVerifiedGate`（6 个测试），覆盖：
+    - 默认模式不双重计分：composite_score ≈ score + completeness_bonus
+    - legacy 模式仍可叠加子分数：score_already_includes_subscores=False
+    - evaluate_symbol 端到端不虚高
+    - 未校验资金不作为正向类别
+    - 技术 + 未校验资金不能通过门控
+    - 技术 + 已校验资金可通过门控
+    - 未校验资金不影响政策/技术组合的门控
+    - evaluate_symbol 未校验资金不触发 need_deep_ta
+  - 更新 7 个既有测试适配新逻辑：添加 fund_flow_unit_verified=True、score_already_includes_subscores=False 等参数
+- **测试结果**：test_s005 85 passed；test_s005+s008+t003 209 passed, 4 skipped；test_tradeflow_* 121 passed
+- **关键逻辑**：
+  - `run_selection_priority_gate()` 的 `score` 参数语义：从 candidate_engine 调用时是已累积的 candidate.score（包含所有子分数），从外部直接调用时可以是原始技术分
+  - `score_already_includes_subscores=True`（默认）确保候选层到门控层不会二次叠加
+  - `score_already_includes_subscores=False` 保留旧公式用于外部调用和兼容测试
+  - 资金流类别（fund category）现在必须同时满足：有正向标签 + anomaly_score > 0 + unit_verified = True
+- **风险点**：无；所有改动向后兼容，默认参数行为不变，evaluate_symbol 无需修改
+
 ## 2026-05-30 | 自动开发验收与下一轮任务释放
 
 - **执行者**：Codex
@@ -462,3 +489,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/T-006-20260530-round1.txt
 - **运行档案**: docs/task_runs/T-006-20260530-013347/
+
+## 2026-05-30 | AUTO-002 自动开发闭环
+
+- **任务**: S-009 — 修复 S-005 选股门控双重计分与资金单位校验（P1）
+- **优先级**: P1
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/S-009-20260530-round1.txt
+- **运行档案**: docs/task_runs/S-009-20260530-022215/

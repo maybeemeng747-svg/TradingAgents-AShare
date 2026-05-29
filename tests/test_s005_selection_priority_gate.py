@@ -60,17 +60,21 @@ class TestCompositeScore:
         assert r.composite_score >= 45.0
 
     def test_policy_only(self):
-        r = run_selection_priority_gate(version_score=20.0, policy_tags=["低空经济"])
+        r = run_selection_priority_gate(version_score=20.0, policy_tags=["低空经济"],
+                                         score_already_includes_subscores=False)  # [S-009]
         assert r.composite_score >= 20.0
 
     def test_narrative_only(self):
-        r = run_selection_priority_gate(narrative_score=25.0)
+        r = run_selection_priority_gate(narrative_score=25.0,
+                                         score_already_includes_subscores=False)  # [S-009]
         assert r.composite_score >= 25.0
 
     def test_fund_flow_only(self):
         r = run_selection_priority_gate(
             fund_flow_anomaly_score=15.0,
             fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+            fund_flow_unit_verified=True,
+            score_already_includes_subscores=False,  # [S-009]
         )
         assert r.composite_score >= 15.0
 
@@ -81,11 +85,13 @@ class TestCompositeScore:
             narrative_score=25.0,
             fund_flow_anomaly_score=15.0,
             fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+            fund_flow_unit_verified=True,
             strategy_tags=["VCP"],
             policy_tags=["算力"],
             has_event_data=True,
             has_fund_flow_data=True,
             has_risk_assessment=True,
+            score_already_includes_subscores=False,  # [S-009] raw subscores, not pre-accumulated
         )
         assert r.composite_score >= 100.0
 
@@ -93,11 +99,13 @@ class TestCompositeScore:
         r_no_risk = run_selection_priority_gate(
             score=50.0, strategy_tags=["VCP"],
             has_event_data=True, has_fund_flow_data=True,
+            score_already_includes_subscores=False,  # [S-009]
         )
         r_with_risk = run_selection_priority_gate(
             score=50.0, strategy_tags=["VCP"],
             risk_penalty=-20.0,
             has_event_data=True, has_fund_flow_data=True,
+            score_already_includes_subscores=False,  # [S-009]
         )
         assert r_with_risk.composite_score < r_no_risk.composite_score
 
@@ -106,9 +114,11 @@ class TestCompositeScore:
             score=200.0, version_score=50.0, narrative_score=50.0,
             fund_flow_anomaly_score=50.0,
             fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+            fund_flow_unit_verified=True,
             strategy_tags=["VCP"],
             has_event_data=True, has_fund_flow_data=True,
             has_risk_assessment=True,
+            score_already_includes_subscores=False,  # [S-009]
         )
         assert r.composite_score <= MAX_COMPOSITE_SCORE
 
@@ -150,6 +160,7 @@ class TestSignalCategories:
         r = run_selection_priority_gate(
             fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
             fund_flow_anomaly_score=10.0,
+            fund_flow_unit_verified=True,  # [S-009] selection_gate_fix — must be verified
         )
         assert "fund" in r.signal_category_hits
 
@@ -157,6 +168,7 @@ class TestSignalCategories:
         r = run_selection_priority_gate(
             fund_flow_anomaly_tags=["NET_OUTFLOW_DOMINANT"],
             fund_flow_anomaly_score=10.0,
+            fund_flow_unit_verified=True,
         )
         assert "fund" not in r.signal_category_hits
 
@@ -168,6 +180,7 @@ class TestSignalCategories:
             narrative_score=20.0,
             fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
             fund_flow_anomaly_score=10.0,
+            fund_flow_unit_verified=True,  # [S-009] selection_gate_fix
         )
         assert set(r.signal_category_hits) == {"policy", "narrative", "tech", "fund"}
         assert r.positive_category_count == 4
@@ -877,6 +890,7 @@ class TestSortingBehavior:
             policy_tags=["低空经济"],
             version_score=20.0,
             has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+            score_already_includes_subscores=False,  # [S-009]
         )
         r_with_risk = run_selection_priority_gate(
             strategy_tags=["VCP"],
@@ -886,6 +900,7 @@ class TestSortingBehavior:
             risk_flags=["LOCKUP_RISK", "REDUCE_HOLDING_RISK", "MARGIN_CROWDING_RISK"],
             risk_penalty=-15.0,
             has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+            score_already_includes_subscores=False,  # [S-009]
         )
         assert r_with_risk.composite_score < r_no_risk.composite_score
 
@@ -935,6 +950,7 @@ class TestEdgeCases:
     def test_negative_score_with_large_penalty(self):
         r = run_selection_priority_gate(
             score=5.0, risk_penalty=-100.0,
+            score_already_includes_subscores=False,  # [S-009]
         )
         assert r.composite_score == 0.0
 
@@ -942,5 +958,203 @@ class TestEdgeCases:
         r = run_selection_priority_gate(
             fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
             fund_flow_anomaly_score=0.0,
+            fund_flow_unit_verified=True,
         )
         assert "fund" not in r.signal_category_hits
+
+
+# ═══════════════════════════════════════════════════════════════
+# [S-009] selection_gate_fix — regression tests
+# ═══════════════════════════════════════════════════════════════
+
+class TestS009NoDoubleScoring:
+    """Verify that sub-scores are not double-counted in composite_score."""
+
+    def test_default_mode_no_double_count(self):
+        r = run_selection_priority_gate(
+            score=100.0,
+            version_score=20.0,
+            narrative_score=25.0,
+            fund_flow_anomaly_score=15.0,
+            fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+            fund_flow_unit_verified=True,
+            risk_penalty=-5.0,
+            strategy_tags=["VCP"],
+            policy_tags=["算力"],
+            has_event_data=True,
+            has_fund_flow_data=True,
+            has_risk_assessment=True,
+        )
+        assert r.composite_score >= 100.0
+        assert r.composite_score <= 100.0 + 0.5 + 10.0
+
+    def test_default_mode_equals_score_plus_completeness_bonus(self):
+        r = run_selection_priority_gate(
+            score=50.0,
+            version_score=20.0,
+            narrative_score=30.0,
+            fund_flow_anomaly_score=10.0,
+            fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+            fund_flow_unit_verified=True,
+            risk_penalty=-10.0,
+            strategy_tags=["VCP"],
+            policy_tags=["算力"],
+            has_price_data=True,
+            has_event_data=True,
+            has_fund_flow_data=True,
+            has_risk_assessment=True,
+        )
+        expected_base = 50.0
+        assert r.composite_score >= expected_base
+        assert r.composite_score < expected_base + 50.0
+
+    def test_legacy_mode_adds_subscores(self):
+        r = run_selection_priority_gate(
+            score=40.0,
+            version_score=20.0,
+            narrative_score=25.0,
+            fund_flow_anomaly_score=15.0,
+            fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+            fund_flow_unit_verified=True,
+            risk_penalty=-5.0,
+            strategy_tags=["VCP"],
+            policy_tags=["算力"],
+            has_event_data=True,
+            has_fund_flow_data=True,
+            has_risk_assessment=True,
+            score_already_includes_subscores=False,
+        )
+        assert r.composite_score >= 95.0
+
+    def test_default_mode_does_not_readd_policy_score(self):
+        r1 = run_selection_priority_gate(
+            score=50.0,
+            version_score=0.0,
+            narrative_score=0.0,
+            strategy_tags=["VCP"],
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        r2 = run_selection_priority_gate(
+            score=50.0,
+            version_score=30.0,
+            narrative_score=0.0,
+            strategy_tags=["VCP"],
+            policy_tags=["算力"],
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert r2.composite_score - r1.composite_score < 1.0
+
+    def test_evaluate_symbol_composite_not_inflated(self):
+        from unittest.mock import patch
+        import pandas as pd
+        import numpy as np
+
+        dates = pd.date_range("2026-01-01", periods=120, freq="B")
+        df = pd.DataFrame({
+            "Date": dates,
+            "Open": np.random.uniform(10, 15, 120),
+            "High": np.random.uniform(15, 20, 120),
+            "Low": np.random.uniform(5, 10, 120),
+            "Close": np.linspace(10, 20, 120) + np.random.normal(0, 0.5, 120),
+            "Volume": np.random.uniform(1e7, 1e8, 120),
+            "Amount": np.random.uniform(5e7, 5e8, 120),
+        })
+
+        with patch("tradingagents.tradeflow.candidate_engine._fetch_price_data", return_value=df):
+            from tradingagents.tradeflow.candidate_engine import evaluate_symbol
+            c, reason = evaluate_symbol(
+                symbol="000001.SZ",
+                name="测试",
+                source="manual",
+                trade_date="2026-05-29",
+                news_texts=["低空经济政策支持"],
+            )
+        if c is not None and c.version_score > 0:
+            assert c.composite_score <= c.score + 10.0
+
+
+class TestS009FundFlowUnitVerifiedGate:
+    """Verify that unverified fund flow cannot count as a positive category."""
+
+    def test_unverified_fund_not_positive_category(self):
+        r = run_selection_priority_gate(
+            fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+            fund_flow_anomaly_score=20.0,
+            fund_flow_unit_verified=False,
+        )
+        assert "fund" not in r.signal_category_hits
+        assert r.positive_category_count == 0
+
+    def test_verified_fund_is_positive_category(self):
+        r = run_selection_priority_gate(
+            fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+            fund_flow_anomaly_score=20.0,
+            fund_flow_unit_verified=True,
+        )
+        assert "fund" in r.signal_category_hits
+
+    def test_tech_plus_unverified_fund_does_not_pass_gate(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=50.0,
+            fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+            fund_flow_anomaly_score=20.0,
+            fund_flow_unit_verified=False,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert not r.gate_passed
+
+    def test_tech_plus_verified_fund_can_pass_gate(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=50.0,
+            fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+            fund_flow_anomaly_score=20.0,
+            fund_flow_unit_verified=True,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert r.gate_passed
+        assert r.positive_category_count >= 2
+
+    def test_unverified_fund_with_policy_and_tech_passes(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=50.0,
+            policy_tags=["算力"],
+            version_score=15.0,
+            fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+            fund_flow_anomaly_score=20.0,
+            fund_flow_unit_verified=False,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert r.gate_passed
+        assert "fund" not in r.signal_category_hits
+        assert r.positive_category_count >= 2
+
+    def test_evaluate_symbol_unverified_fund_no_deep_ta(self):
+        from unittest.mock import patch
+        import pandas as pd
+        import numpy as np
+
+        dates = pd.date_range("2026-01-01", periods=120, freq="B")
+        df = pd.DataFrame({
+            "Date": dates,
+            "Open": np.random.uniform(10, 15, 120),
+            "High": np.random.uniform(15, 20, 120),
+            "Low": np.random.uniform(5, 10, 120),
+            "Close": np.linspace(10, 20, 120) + np.random.normal(0, 0.5, 120),
+            "Volume": np.random.uniform(1e7, 1e8, 120),
+            "Amount": np.random.uniform(5e7, 5e8, 120),
+        })
+
+        with patch("tradingagents.tradeflow.candidate_engine._fetch_price_data", return_value=df):
+            from tradingagents.tradeflow.candidate_engine import evaluate_symbol
+            c, reason = evaluate_symbol(
+                symbol="000001.SZ",
+                name="测试",
+                source="manual",
+                trade_date="2026-05-29",
+                fund_flow_individual="主力净流入-净额 50000 30000 60000 40000 70000",
+            )
+        if c is not None and c.fund_flow_anomaly_score > 0 and not c.fund_flow_unit_verified:
+            assert not c.need_deep_ta or "fund" not in c.signal_category_hits

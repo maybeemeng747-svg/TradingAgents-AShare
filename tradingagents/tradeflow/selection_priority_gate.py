@@ -136,11 +136,16 @@ def run_selection_priority_gate(
     has_fund_flow_data: bool = False,
     has_risk_assessment: bool = False,
     cfg: Optional[StrategyConfig] = None,  # [M-004]
+    score_already_includes_subscores: bool = True,  # [S-009] selection_gate_fix
 ) -> SelectionPriorityResult:
     """Run the unified selection priority gate on a candidate.
 
     Args:
         score: Aggregate tech + event + pullback score from merge_signals().
+            WARNING: If called from candidate_engine.evaluate_symbol(), this value
+            already includes version_score, narrative_score, fund_flow_anomaly_score,
+            and risk_penalty.  Set ``score_already_includes_subscores=True`` (default)
+            to avoid double-counting.  [S-009] selection_gate_fix
         strategy_tags: All strategy tags on the candidate.
         policy_tags: Policy version tags (S-001).
         version_score: Policy version score (S-001).
@@ -156,6 +161,10 @@ def run_selection_priority_gate(
         has_event_data: Whether event/news data was available.
         has_fund_flow_data: Whether fund flow data was provided.
         has_risk_assessment: Whether risk assessment was performed.
+        score_already_includes_subscores: [S-009] If True (default), ``score`` is
+            treated as a cumulative total that already includes sub-scores, so the
+            composite is ``score + completeness_bonus`` only.  If False, the legacy
+            formula ``score + version_score + narrative_score + ...`` is used.
 
     Returns:
         SelectionPriorityResult with composite score, gate verdict, and explanations.
@@ -173,7 +182,7 @@ def run_selection_priority_gate(
     has_policy = version_score > 0 or len(p_tags) > 0
     has_narrative = narrative_score > 0 or "EVENT_CATALYST" in tags or "NARRATIVE_QUALITY" in tags
     has_tech = "VCP" in tags or "PULLBACK_SUPPORT" in tags
-    has_fund = bool(ff_tags - {"NET_OUTFLOW_DOMINANT"}) and fund_flow_anomaly_score > 0
+    has_fund = bool(ff_tags - {"NET_OUTFLOW_DOMINANT"}) and fund_flow_anomaly_score > 0 and fund_flow_unit_verified  # [S-009] selection_gate_fix
 
     category_hits: list[str] = []
     if has_policy:
@@ -204,7 +213,11 @@ def run_selection_priority_gate(
 
     completeness_bonus = round(data_completeness * cfg.gate_completeness_bonus_factor, 2)  # [M-004]
 
-    composite_score = score + version_score + narrative_score + fund_flow_anomaly_score + risk_penalty + completeness_bonus
+    # [S-009] selection_gate_fix — avoid double-counting sub-scores
+    if score_already_includes_subscores:
+        composite_score = score + completeness_bonus
+    else:
+        composite_score = score + version_score + narrative_score + fund_flow_anomaly_score + risk_penalty + completeness_bonus
     composite_score = max(0.0, min(composite_score, cfg.gate_max_composite_score))
     composite_score = round(composite_score, 2)
 

@@ -586,6 +586,9 @@ def evaluate_symbol(
         # Net outflow dominant does not add score but records as observation
 
     # [S-005] selection_priority_gate — unified composite score and need_deep_ta gate
+    # [S-009] selection_gate_fix — candidate.score already includes subscores;
+    #   run_selection_priority_gate(score_already_includes_subscores=True by default)
+    #   will NOT re-add version_score/narrative_score/fund_flow_anomaly_score/risk_penalty.
     gate_result: SelectionPriorityResult = run_selection_priority_gate(  # [M-004]
         score=candidate.score,
         strategy_tags=candidate.strategy_tags,
