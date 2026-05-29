@@ -1,0 +1,2650 @@
+Task: V-002 — 夜间自动开发验收报告与候选样本回放（P1）
+Date: 2026-05-30_01:09:59
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e74b5-9243-7eb2-adca-097af14f4144
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,200p' docs/TASKS.md && sed -n '1,200p' docs/DECISIONS.md && sed -n '1,160p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 任务池
+
+> 最后更新：2026-05-29
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `S-005`：选股优先级整合与 `need_deep_ta` 门槛重排（P1，ready）。
+2. `M-003`：TradeFlow universe 管理器（P1，ready）。
+3. `M-004`：TradeFlow 策略权重与阈值配置（P1，ready）。
+4. `T-006`：事件源自动接入 Discovery / Daily Plan（P1，ready）。
+5. `V-002`：夜间自动开发验收报告与候选样本回放（P1，ready）。
+6. `S-006`：候选误报审计与样本集沉淀（P1，ready）。
+7. 第二梯队：`S-007/S-008/M-005/M-006`，用于延长夜间窗口并继续围绕候选质量、触发状态和 TA 成本门控推进。
+
+---
+
+## S. TradeFlow 选股策略核心任务池（2026-05-29 新增）
+
+> 原则：先提高候选池质量，再扩大扫描范围。TA 深度分析只服务于已经有足够逻辑、事件、资金或风险结构支撑的候选股。
+
+### S-001: 政策版本因子进入 TradeFlow 候选池（P1）
+- **描述**：为 TradeFlow 增加政策版本因子，识别当前 A 股市场更容易被定价的政策/产业方向，让候选池从“技术形态先行”升级为“政策版本入池 + 技术确认”。
+- **优先级**：P1
+- **状态**：done — commit a4d06d4 + cf7d928
+- **背景**：
+  - A 股很多阶段不是简单的业绩驱动，而是政策方向、产业版本和市场叙事共同驱动。
+  - 现在 TradeFlow 已有 VCP、事件催化、A 股标签，但缺少“当前版本需要什么标杆”的第一层判断。
+- **执行约束**：
+  - 不调用外部 LLM，不跑全市场扫描。
+  - 不改 `tradingagents/prompts/`。
+  - 不输出买入/卖出强建议。
+  - 只在 TradeFlow 候选池层做信号、标签、分数和证据引用。
+- **实现要点**：
+  1. 新增或扩展政策版本信号模块，输出 `policy_tags`、`version_score`、`policy_evidence_refs`。
+  2. 先用可维护关键词/规则覆盖：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革等。
+  3. 事件标题、公告摘要、行业标签命中政策版本时加分；无原始文本证据时不得加分。
+  4. 与现有 `event_source`、`event_catalyst`、`candidate_engine` 兼容，不破坏 VCP/回踩策略。
+  5. Daily Plan 中展示政策标签和证据摘要，但动作仍只能是 `OBSERVE/NEED_DEEP_TA` 等非强交易动作。
+- **验证方式**：
+  - 构造政策关键词事件，候选包含对应 `policy_tags` 和 evidence refs。
+  - 无政策证据时 `version_score` 不得凭空加分。
+  - 不同股票事件必须按 symbol 隔离，不能串票。
+  - `pytest tests/test_tradeflow_*.py -q` 或新增对应测试通过。
+- **代码标注要求**：`# [S-001] policy_version_signal`
+
+### S-002: 叙事质量评分（P1）
+- **描述**：给事件催化增加叙事质量评分，区分“普通公告/普通新闻”和“容易形成市场共识的主线事件”。
+- **优先级**：P1
+- **状态**：done — commit 9825e22
+- **背景**：
+  - 选股不只看有没有事件，还要判断事件是否容易被市场理解、传播和接力。
+  - 目前事件催化更偏“是否存在”，缺少“事件质量与传播价值”。
+- **执行约束**：
+  - 第一阶段只做规则评分，不调用外部 LLM。
+  - 不做舆情全网抓取，不扫全市场。
+  - 评分只影响候选排序和 `need_deep_ta`，不直接生成交易建议。
+- **实现要点**：
+  1. 新增 `narrative_score`，分解为政策背书、产业落地、订单/回购/评级、传播清晰度、拥挤/过热扣分。
+  2. 回购、重大订单、中标、并购重组、业绩预告、评级变化等事件给不同基础分。
+  3. 多个事件叠加时做封顶，避免标题堆叠虚高。
+  4. 输出 `narrative_reasons` 和 evidence refs，便于日报解释“为什么进候选池”。
+- **验证方式**：
+  - 普通新闻低分，回购/订单/政策相关事件高分。
+  - 重复事件不会无限叠加。
+  - `narrative_score` 缺证据时为 0 或保守默认。
+- **代码标注要求**：`# [S-002] narrative_quality_score`
+
+### S-003: 水下风险标签与候选降权（P1）
+- **描述**：为 TradeFlow 候选池增加水下风险标签，识别解禁、减持、问询、财务异常、融资拥挤、龙虎榜过热等风险，对候选做降权或要求更严格技术确认。
+- **优先级**：P1
+- **状态**：done — commit a95c3d7
+- **背景**：
+  - 选对股票不只看上涨逻辑，也要避开“看起来有题材但水下结构很差”的票。
+  - 当前已有部分 A 股标签，但风险标签还不够系统，也没有形成候选池统一降权规则。
+- **执行约束**：
+  - 所有风险标签必须绑定原始字段或事件文本。
+  - 不把风险标签直接翻译成清仓/买入建议。
+  - 不写生产数据库 schema；如需持久化先用现有 TradeFlow 结构或输出方案。
+- **实现要点**：
+  1. 统一输出 `risk_flags`：`LOCKUP_RISK`、`REDUCE_HOLDING_RISK`、`INQUIRY_RISK`、`FINANCIAL_QUALITY_RISK`、`MARGIN_CROWDING_RISK`、`LHB_OVERHEAT_RISK`。
+  2. 风险标签进入候选分数降权和 `need_deep_ta` 门槛。
+  3. 解禁/减持/问询等公告类风险优先从 `event_source` 读取。
+  4. 龙虎榜和融资融券风险必须区分 `HAS_DATA/NOT_QUERIED/FAILED`，不得把未查询当作无风险。
+- **验证方式**：
+  - 构造解禁/减持/问询事件，候选出现对应 `risk_flags` 并降权。
+  - 龙虎榜未查询时不生成过热风险。
+  - 风险缺证据时不输出高置信风险标签。
+- **代码标注要求**：`# [S-003] underwater_risk_flags`
+
+### S-004: 候选股博弈平衡解释（P1）
+- **描述**：在 TradeFlow Plan 中为每个候选输出轻量博弈解释，说明多头为何可能买、空头为何可能卖、政策/监管/资金结构是否支持，避免只给策略标签而缺少交易对手视角。
+- **优先级**：P1
+- **状态**：done — commit c92e626
+- **背景**：
+  - A 股候选池要处理动态博弈：同一事件可能同时有多头叙事、风险压制和资金拥挤。
+  - 在 TA 深度分析前，候选池应先判断这只票是不是值得进一步消耗 token。
+- **执行约束**：
+  - 规则化生成，不调用外部 LLM。
+  - 不输出强买卖词。
+  - 不替代 TA 深度分析，只做候选池摘要。
+- **实现要点**：
+  1. 输出 `game_balance`：`favorable/neutral/crowded/fragile`。
+  2. 输出 `bull_case`、`bear_case`、`policy_case`、`fund_flow_case` 的短字段，来源必须来自已存在信号和证据。
+  3. 当政策/叙事/资金/技术至少两类共振时，可提高 `need_deep_ta` 优先级。
+  4. 当风险标签过多或信号拥挤时，降低候选排序或标记 `fragile`。
+- **验证方式**：
+  - 政策 + 事件 + VCP 共振时 `game_balance=favorable` 或 `neutral`。
+  - 风险标签过多时 `game_balance=fragile/crowded`。
+  - 输出中包含证据引用，不出现强买卖词。
+- **代码标注要求**：`# [S-004] candidate_game_balance`
+
+### S-005: 选股优先级整合与 need_deep_ta 门槛重排（P1）
+- **描述**：整合政策版本、叙事质量、水下风险、资金异动和技术形态，重排 TradeFlow 候选优先级，让 TA 深度分析优先消耗在真正值得分析的股票上。
+- **优先级**：P1
+- **状态**：done — commit b503d63
+- **前置条件**：`S-001`、`S-002`、`S-003`、`S-004` 完成。
+- **执行约束**：
+  - 不自动调用 TA 深度分析。
+  - 不做全市场扫描。
+  - 不把单一信号直接提升为强结论。
+- **实现要点**：
+  1. 定义候选综合评分：政策版本、叙事质量、技术确认、资金验证、风险扣分、数据完整度。
+  2. `need_deep_ta=True` 至少需要两类正向信号，且无重大未解释风险。
+  3. Daily Plan 输出“为什么值得看/为什么暂不深挖/缺什么证据”。
+  4. 为后续 `M-003` universe 管理器和 `M-004` 策略配置提供统一字段。
+- **验证方式**：
+  - 只有技术形态但无逻辑证据的票排序下降。
+  - 政策/事件/技术/资金共振的票排序上升。
+  - 风险过高或数据缺失时不触发 `need_deep_ta`。
+- **代码标注要求**：`# [S-005] selection_priority_gate`
+
+### S-006: 候选误报审计与样本集沉淀（P1）
+- **描述**：建立 TradeFlow 候选误报审计机制，把“为什么没选中/为什么误选中”的样本沉淀为可回放 fixtures，持续压低候选池噪声。
+- **优先级**：P1
+- **状态**：done — commit e876172
+- **前置条件**：`T-002`、`T-003`、`S-002`、`S-003` 完成。
+- **执行约束**：
+  - 不调用外部 LLM。
+  - 不跑全市场扫描。
+  - 不写生产数据库，只新增测试 fixtures 或本地报告脚本。
+- **实现要点**：
+  1. 新增候选审计报告，按“命中策略/过滤原因/风险降权/证据缺口”分类。
+  2. 将最近人工验证过的样本沉淀为小型 fixtures，覆盖 VCP 命中、流动性过滤、无策略命中、事件催化、资金异动。
+  3. 输出误报/漏报原因字段，便于后续调参。
+  4. Daily Plan 或 discovery 报告增加“证据缺口”摘要，但不输出强交易建议。
+- **验证方式**：
+  - fixtures 可稳定回放，输出固定候选数量和过滤原因。
+  - 流动性不足、事件缺证据、资金单位未校验等场景不会被误判为高优先级。
+  - `pytest tests/test_tradeflow_*.py -q` 通过。
+- **代码标注要求**：`# [S-006] candidate_false_positive_audit`
+
+### S-007: 候选分层与 TA token 预算分配（P1）
+- **描述**：把候选池分为 A/B/C 三层，明确哪些值得优先深度 TA、哪些只观察、哪些淘汰，避免把 token 消耗在弱候选上。
+- **优先级**：P1
+- **状态**：done — commit c1c6a83
+- **前置条件**：`S-005` 完成。
+- **执行约束**：
+  - 不自动调用 TA。
+  - 不输出强买卖词。
+  - 不接入真实扣费 API，只输出预算建议和原因。
+- **实现要点**：
+  1. 定义候选等级：A=优先深挖、B=观察等待证据、C=淘汰/暂不关注。
+  2. 结合综合评分、风险标签、数据完整度、策略共振数量生成等级。
+  3. 输出 `ta_budget_priority`、`missing_evidence`、`why_not_deep_ta`。
+  4. Daily Plan 按等级排序，A 层数量设上限，防止一天候选过多。
+- **验证方式**：
+  - 单一弱信号不得进入 A 层。
+  - 两类以上强证据且风险可控时可进入 A 层。
+  - 高风险/低完整度候选最多 B/C。
+- **代码标注要求**：`# [S-007] candidate_tier_budget`
+
+### S-008: TradeFlow 证据完整度门禁（P1）
+- **描述**：给候选池增加轻量证据完整度门禁，避免缺行情、缺资金、缺事件来源时分数虚高。
+- **优先级**：P1
+- **状态**：done — commit d2875cd
+- **前置条件**：`M-008`、`T-002`、`T-003` 完成。
+- **执行约束**：
+  - 不改 TA 深度报告 readiness 逻辑，只在 TradeFlow 候选层做门禁。
+  - 数据缺失只能降权或标记缺口，不能编造补全。
+- **实现要点**：
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-05-30 | V-002: 夜间自动开发验收报告与候选样本回放
+
+- **执行者**：OpenCode
+- **任务**：V-002 — 为夜间自动开发增加固定样本回放和验收报告
+- **修改文件**：
+  - `scripts/summarize_auto_dev_runs.py` — [V-002] 扩展 M-002 夜间日报脚本，新增候选样本回放、Ready 队列解析、测试结果解析、敏感数据过滤
+    - `parse_ready_queue()` — 从 TASKS.md 解析 status=ready 的任务列表
+    - `parse_test_summary_from_logs()` — 从 task_runs 中的 tests-round*.txt 提取 passed/failed/skipped
+    - `run_sample_replay()` — 调用 false_positive_audit 的 8 个固定 fixture 进行候选池质量回放
+    - `format_sample_replay()` — 将回放结果格式化为 markdown 表格
+    - `generate_report()` 扩展 — 新增 ready_queue 和 replay_results 参数，输出测试汇总、Ready 队列（含"任务池不足"警告）、候选样本回放
+    - `redact()` 增强 — 新增 password/secret 脱敏模式
+    - `main()` 扩展 — 新增 `--with-sample-replay` 参数，最终报告整体脱敏
+  - `tests/test_v002_nightly_acceptance.py` — 新建，33 个测试覆盖：
+    - TestRedact (8): sk-key/api-key/bearer/token/password/secret/正常文本/环境变量 脱敏
+    - TestParseReadyQueue (5): 单个/多个/空/无文件/blocked+proposed 过滤
+    - TestParseTestSummaryFromLogs (5): 标准输出/含失败/无测试文件/含错误/最新轮次
+    - TestSampleReplay (5): 返回结果/覆盖 6 个必须场景/全部通过/markdown 格式/空回放
+    - TestGenerateReportV002 (9): 非空队列/空队列警告/无队列/含回放/含测试/无泄露/完整报告/队列计数
+    - TestDryRunIntegration (2): dry-run 含回放/dry-run 不含回放
+- **测试结果**：33 passed (V-002)；全项目 1570 passed, 17 skipped, 0 failed
+- **关键逻辑**：
+  - 候选样本回放复用 `false_positive_audit.generate_fixture_samples()` 的 8 个 fixture，覆盖：VCP 命中、事件催化、资金异动、流动性过滤、无策略命中、风险降权、证据缺口、资金单位未校验
+  - Ready 队列为空时报告必须显示"任务池不足"警告，防止 cron 空转
+  - 报告最终输出前经过整体 `redact()` 脱敏，防止 API key/secret 泄露
+  - `--with-sample-replay` 参数控制是否执行回放，默认关闭保持向后兼容
+- **风险点**：无；所有改动向后兼容，不影响现有 M-002 功能
+
+## 2026-05-30 | M-004: TradeFlow 策略权重与阈值配置
+
+- **执行者**：OpenCode
+- **任务**：M-004 — 把 VCP、回踩、事件催化、资金异动、A股标签的权重和阈值集中配置，便于后续复盘调参
+- **修改文件**：
+  - `tradingagents/tradeflow/strategy_config.py` — 新建：`StrategyConfig` 数据类（60+ 可配阈值），`DEFAULT_STRATEGY_CONFIG` 单例，`STRATEGY_CONFIG_VERSION="v1.0"`，`to_dict()` 序列化方法
+  - `tradingagents/tradeflow/strategies/vcp.py` — `score_vcp()` 新增 `cfg` 参数，8 个阈值从 config 读取（min_data_len/range_ratio/vol_ratio/price_position/ma20_break/score_max/need_deep_ta）
+  - `tradingagents/tradeflow/strategies/pullback_support.py` — `score_pullback_support()` 新增 `cfg` 参数，10 个阈值从 config 读取
+  - `tradingagents/tradeflow/strategies/event_catalyst.py` — `score_event_catalyst()` 新增 `cfg` 参数，score_max 和 need_deep_ta_score 从 config 读取
+  - `tradingagents/tradeflow/policy_version_signal.py` — `detect_policy_version()` 新增 `cfg` 参数，max_bonus/industry_weight/need_deep_ta 从 config 读取
+  - `tradingagents/tradeflow/narrative_quality.py` — `score_narrative_quality()` 新增 `cfg` 参数，max_score 从 config 读取
+  - `tradingagents/tradeflow/underwater_risk_flags.py` — `detect_underwater_risks()` 新增 `cfg` 参数，max_penalty 从 config 读取
+  - `tradingagents/tradeflow/fund_flow_anomaly.py` — `detect_fund_flow_anomaly()` 新增 `cfg` 参数，5 个阈值从 config 读取；内部辅助函数参数化
+  - `tradingagents/tradeflow/game_balance.py` — `assess_game_balance()` 新增 `cfg` 参数，3 个阈值从 config 读取
+  - `tradingagents/tradeflow/selection_priority_gate.py` — `run_selection_priority_gate()` 新增 `cfg` 参数，9 个阈值从 config 读取
+  - `tradingagents/tradeflow/tier_budget.py` — `classify_candidate_tier()` + `allocate_tier_budget()` 新增 `cfg` 参数，7 个阈值从 config 读取
+  - `tradingagents/tradeflow/evidence_gate.py` — `compute_evidence_completeness()` + `apply_evidence_gate()` 新增 `cfg` 参数，3 个阈值从 config 读取
+  - `tradingagents/tradeflow/candidate_engine.py` — `evaluate_symbol()` + `run_strategies()` + `filter_symbol()` + `_calc_liquidity()` 新增 `cfg` 参数并向下传递
+  - `tradingagents/tradeflow/plan_runner.py` — `generate_daily_plan()` 新增 `cfg` 参数，plan.metadata 新增 `strategy_config_version` 字段
+  - `tests/test_strategy_config.py` — 新建，42 个测试覆盖默认值、None 回退、阈值覆盖可预测性、config_version 输出
+- **测试结果**：1451 passed, 15 skipped, 0 failed
+- **关键逻辑**：
+  - 所有策略模块接受可选 `cfg: StrategyConfig = None`，None 时自动使用 `DEFAULT_STRATEGY_CONFIG`
+  - `DEFAULT_STRATEGY_CONFIG` 的默认值与重构前硬编码常量完全一致，确保向后兼容
+  - `generate_daily_plan()` 输出的 `plan.metadata["strategy_config_version"]` 记录配置版本，便于审计
+  - `StrategyConfig.to_dict()` 支持序列化输出（risk_high_severity_flags 转 list）
+- **风险点**：无；所有改动向后兼容，现有 121 个 tradeflow 测试全部通过
+
+## 2026-05-30 | M-003 fix: 枚举值对齐 + fund_flow 去重
+
+- **执行者**：OpenCode
+- **任务**：M-003 — 修复 3 个测试失败
+- **修改文件**：
+  - `tradingagents/tradeflow/universe.py` — `UniverseSource.INDUSTRY` 值 `"industry"` → `"industry_pool"`；`UniverseSource.FUND_FLOW` 值 `"fund_flow"` → `"fund_flow_pool"`，与 discovery 模块常量对齐
+  - `tradingagents/tradeflow/discovery.py` — `_build_discovery_universe()` 新增 fund_flow_symbols 独立去重逻辑：当 `build_universe` 被 mock 或 fund_flow 符号不在已有 universe 中时，补充添加
+  - `tests/test_tradeflow_universe.py` — 更新 4 处断言使用新枚举值 `"industry_pool"` / `"fund_flow_pool"`
+- **测试结果**：1495 passed, 17 skipped, 0 failed（原 3 failed → 0）
+- **根因**：UniverseSource 枚举值与 discovery 模块 SOURCE_* 常量不一致；`_build_discovery_universe` 未对 fund_flow_symbols 做独立去重补充
+
+## 2026-05-30 | M-003: TradeFlow universe 管理器
+
+- **执行者**：OpenCode
+- **任务**：M-003 — 统一管理候选池来源，避免每个策略各自拼 symbols
+- **修改文件**：
+  - `tradingagents/tradeflow/universe.py` — 重构：新增 `UniverseSource` 枚举（8 种来源）、`SourceRecord`/`UniverseEntry` 数据类、`UniverseManager` 类；`build_universe()` 改用 `UniverseManager` 内部聚合，新增 `industry_symbols`/`fund_flow_symbols` 参数；向后兼容
+  - `tradingagents/tradeflow/schemas.py` — Candidate 新增 `universe_sources: list[str]` 字段，`to_db_row()`/`from_db_row()` 同步
+  - `tradingagents/tradeflow/plan_runner.py` — `generate_daily_plan()` 将 universe 条目的 `universe_sources` 传递给 Candidate；`_build_plan_entry()` 输出新字段
+  - `tradingagents/tradeflow/discovery.py` — `_build_discovery_universe()` 改用 `build_universe()` 统一入口（含 industry/fund_flow）；评估后传递 `universe_sources` 到 Candidate；`_build_discovery_entry()` 输出新字段
+  - `tradingagents/tradeflow/candidate_engine.py` — `init_db()` 新增 `universe_sources_json` 列；`save_candidate()` INSERT/UPDATE 包含新列（54→55 字段）
+  - `tests/test_tradeflow_universe.py` — 新建，38 个测试覆盖 UniverseSource 枚举、UniverseManager CRUD、去重保留多来源、DB 集成、plan_runner/discovery 集成、无来源不扫全市场、Candidate schema 字段
+- **测试结果**：`pytest tests/test_tradeflow_*.py` 121 passed；`pytest tests/test_tradeflow_*.py tests/test_readiness_score.py` 237 passed
+- **关键逻辑**：
+  - 同一 symbol 从多个来源（watchlist/holding/manual/event/fund_flow/industry）进入 universe 时，去重但保留完整来源列表 `universe_sources`
+  - 每个来源记录 `SourceRecord`（source、reason、timestamp、extra）
+  - `UniverseManager.add_symbol()` 幂等：同一来源重复添加不会重复记录
+  - `build_universe()` 保持向后兼容：只读 symbol/name/source 的调用方不受影响
+  - 无来源输入返回空列表，绝不触发全市场扫描
+- **风险点**：无；所有改动向后兼容，新增字段默认空列表
+
+## 2026-05-15 | 定时任务 Token 护栏与模型 API 目录
+
+- **执行者**：Codex
+- **任务**：检查定时任务与模型 API 调用，降低静默消耗 token 的风险
+- **修改文件**：
+  - `scheduler/main.py` — 新增 `SCHEDULER_ENABLED`、`SCHEDULER_DRY_RUN`、`SCHEDULER_RUN_INTRADAY`、`SCHEDULER_MAX_TASKS_PER_TICK`、`SCHEDULER_ALLOWED_TRIGGER_TIMES` 护栏；默认尊重用户主动创建的盘中/盘后定时任务，启动日志输出当前 scheduler 配置
+  - `api/services/portfolio_import_service.py` / `api/main.py` / `frontend/src/components/TrackingBoardPanel.tsx` — 持仓导入默认不再自动创建定时分析任务，避免保存持仓后静默开跑
+  - `tradingagents/llm_clients/model_catalog.py` — 新增统一模型/API 端点目录
+  - `api/main.py` — 新增 `GET /v1/config/model-catalog`，返回模型目录且不暴露密钥
+  - `scripts/audit_llm_config.py` — 新增只读脱敏审计脚本，输出当前 runtime 模型配置与 key scope 的 `HAS_KEY/NO_KEY`
+  - `AGENTS.md` / `docs/LLM_API_USAGE.md` — 新增多工具协作下的 LLM API 使用边界：定时任务允许消耗 token，普通 coding 工作禁止擅自调用付费 LLM；live LLM 测试需先问用户
+  - `.env.example` — 补充 scheduler token guard 环境变量
+  - `docs/SCHEDULER_TOKEN_GUARD.md` / `docs/MODEL_API_CATALOG.md` — 新增定时任务和模型调用说明
+  - `tests/test_portfolio_import.py` / `tests/test_api_smoke.py` — 补充默认不创建定时任务、模型目录接口测试
+- **现场审计**：
+  - 本地存在运行中的 `python -m scheduler.main` 进程
+  - `scheduled_analyses` 当前有 3 条 active 任务：`002138.SZ` 14:30/20:00、`603629.SZ` 22:00
+  - 主用户当前运行配置为智谱 Coding Plan：`glm-4.5-air` / `glm-5-turbo`
+- **风险点**：代码护栏需要重启 scheduler 进程后生效；已有 active 任务仍保留，是否停用由用户决定
+
+---
+
+## 2026-05-13 | E-001~E-004 基础设施修复
+
+- **执行者**：OpenCode
+- **任务**：TASK_BATCH_E.md — E 系列基础设施修复
+- **修改文件**：
+  - `api/main.py` — [E-001] 启动时读取 git commit hash 并缓存为 `_GIT_COMMIT_SHORT`，记录 `_BACKEND_START_TIME`
+  - `tradingagents/agents/utils/readiness_score.py` — [E-001] `format_readiness_score` 追加系统版本区块；[E-002] 新增 `validate_stock_name` 名称校验函数 + `get_strong_action_gate` 增加 `name_mismatch` 和 `no_execution_zone_conflict` 参数 + `calculate_risk_level`/`calculate_buy_level` Level 4 降级；[E-003] 扩展止损关键词(`止损红线/止损位/止损价/清仓线/止损线`) + 入场/减仓区间冲突检测 + `has_stop_loss`/`execution_zone_conflict` 信号；[E-004] `infer_evidence_statuses` 支持从 `raw_evidence` 结构化数据直接读取，fallback 到文本正则
+  - `tradingagents/agents/managers/risk_manager.py` — [E-002] 集成 `validate_stock_name`；[E-003] 传递 `execution_zone_conflict` 到 gate；[E-004] 传递 `raw_evidence` 到 `infer_evidence_statuses`
+  - `tradingagents/graph/data_collector.py` — [E-004] 新增 `build_raw_evidence()` 方法从缓存池构建证据摘要
+  - `tradingagents/graph/trading_graph.py` — [E-004] `propagate` 和 `propagate_async` 中将 `raw_evidence` 存入 state metadata
+  - `tests/test_readiness_score.py` — 新增 26 个测试覆盖 E-001~E-004
+- **验证**：`pytest tests/test_readiness_score.py` 100 passed；`pytest -q` 294 passed, 4 pre-existing SQLite failures
+
+---
+
+## 2026-05-13 | 自选股拖拽排序功能
+
+- **执行者**：OpenCode
+- **任务**：TASK_DRAG_SORT.md — 自选股列表拖拽排序
+- **修改文件**：
+  - `api/services/watchlist_service.py` — 新增 `reorder_watchlist()` 函数，批量更新 sort_order，含 id 归属校验和唯一性校验
+  - `api/main.py` — 新增 `PUT /v1/watchlist/reorder` 路由
+  - `frontend/src/services/api.ts` — 新增 `reorderWatchlist()` API 方法
+  - `frontend/src/pages/Portfolio.tsx` — 用 @dnd-kit 实现拖拽排序：SortableWatchlistItem 组件、DndContext 包裹、乐观更新+失败回滚
+  - `frontend/package.json` — 新增 @dnd-kit/core、@dnd-kit/sortable、@dnd-kit/utilities 依赖
+- **要点**：
+  - 拖拽手柄为左侧 ⠿ (GripVertical) 图标，避免误触
+  - PointerSensor 需移动 5px 才激活；TouchSensor 长按 200ms 触发
+  - 拖拽中半透明+阴影效果
+  - 乐观更新本地 state，API 失败时回滚并提示
+- **验证**：TypeScript 编译通过，`git diff --check` 无报错
+
+---
+
+## 2026-05-13 | D-001~D-004 修复：真降级、真证据、真信号、持仓未知语义
+
+- **执行者**：OpenCode
+- **任务**：TASK_BATCH_FIX.md 全部 P1/P2/P3 修复
+- **修改文件**：
+  - `tradingagents/agents/utils/readiness_score.py` — 新增 3 个函数 + 修改 1 个函数：
+    - `sanitize_forbidden_strong_actions()` — gate 未通过时真正移除/替换强动作文本，而非仅追加警告
+    - `infer_evidence_statuses()` — 基于报告文本正则匹配推断证据状态，不再因报告存在就标 HAS_DATA
+    - `extract_execution_signals()` — 从报告文本保守提取 14 项交易信号，传入 Buy/Risk/Opportunity 计算
+    - `get_strong_action_gate()` — 新增 `contains_strong_action` 参数，持仓未知+无强动作时 gate 通过
+  - `tradingagents/agents/managers/risk_manager.py` — 集成 3 个新函数，替换旧的 evidence 硬编码和信号缺失逻辑
+
+exec
+/bin/zsh -lc "git status --short && sed -n '1,220p' AGENTS.md && sed -n '1,200p' docs/project-overview.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M .zai_quota_state.json
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M scripts/summarize_auto_dev_runs.py
+?? .auto_dev.lock/
+?? docs/task_runs/V-002-20260530-010220/
+?? tests/test_v002_nightly_acceptance.py
+# TradingAgents-AShare — 项目协作规则
+
+## 项目简介
+
+A股智能投研多智能体系统，基于 LangGraph + LangChain 构建，模拟 14 名专业 Agent 的多空辩论与风控博弈，为投资者提供结构化的交易建议。
+
+核心模块：
+- **Agent 框架**：14 个多智能体（分析师/研究员/风控/交易员），LangGraph 编排
+- **后端 API**：FastAPI，提供分析、持仓、定时任务、研报管理等接口
+- **前端 UI**：React，意图驱动交互、辩论可视化、持仓看板
+- **定时调度**：独立 scheduler，支持自选股定时分析
+- **数据层**：AKShare + BaoStock + yfinance，SQLite 持久化
+
+## 多工具协作架构
+
+```
+孟（最终决策）
+  │
+  ├── OpenClaw（主控调度）── 读取上下文 → 判断任务 → 派发执行
+  │     ├── 简单任务：直接 exec 执行（git/python/npm）
+  │     └── 复杂任务：sessions_spawn 子 agent 或调用 OpenCode 执行
+  │
+  ├── OpenCode（代码执行器）── 读取同一套上下文 → 改代码 → 跑测试 → 输出 diff
+  │
+  └── OpenCode TUI/Web（审查界面）── 查看 diff → 确认修改 → 做 review
+```
+
+**核心原则**：三者读取同一套项目上下文，不各自保存独立记忆。
+
+## 必读文件（任何 coding agent 开始任务前）
+
+1. `AGENTS.md`（本文件）
+2. `docs/project-overview.md`（项目背景 + 架构 + 目录结构）
+3. `docs/TASKS.md`（当前任务池）
+4. `docs/DECISIONS.md`（架构决策记录）
+5. `docs/DEVLOG.md`（最近修改日志）
+6. 涉及模型/API 调用时，必须读 `docs/MODEL_API_CATALOG.md` 和 `docs/LLM_API_USAGE.md`，并可运行 `python scripts/audit_llm_config.py` 查看脱敏配置
+
+## 项目目录结构
+
+```
+TradingAgents-AShare/
+├── tradingagents/            # 核心 Python 包
+│   ├── agents/               # 14 个多智能体
+│   │   ├── analysts/         # 7 个分析师（基本面/情绪/新闻/技术/宏观/主力/量价）
+│   │   ├── researchers/      # 多头/空头研究员 + 研究总监
+│   │   ├── risk_mgmt/        # 风控团队
+│   │   ├── managers/         # 管理层
+│   │   └── trader/           # 交易员
+│   ├── dataflows/            # 数据获取与缓存
+│   ├── graph/                # LangGraph 编排图
+│   ├── llm_clients/          # 多模型厂商适配
+│   ├── prompts/              # Agent 提示词模板
+│   └── default_config.py     # 默认配置
+├── api/                      # FastAPI 后端
+│   ├── main.py               # 入口
+│   ├── database.py           # SQLite
+│   └── services/             # 业务逻辑（分析/持仓/定时/研报）
+├── frontend/                 # React 前端
+├── scheduler/                # 定时分析调度
+├── skills/                   # OpenClaw 技能
+├── tests/                    # 测试
+├── docs/                     # 项目文档
+└── eval_results/             # 回测评估结果
+```
+
+## 执行规则
+
+### 代码修改前
+1. 执行 `git status`，确认当前分支和未提交变更
+2. 激活虚拟环境：`source .venv/bin/activate`
+3. 确认修改范围不影响生产数据库（tradingagents.db）
+4. 如果涉及核心模块，先跑一遍测试确认基线
+
+### 代码修改后
+1. 运行测试，全部通过才算完成
+2. 输出：修改文件列表、测试结果、发现的风险点
+3. 更新 `docs/DEVLOG.md`
+
+### OpenClaw 调度方式
+- **简单任务**（改配置、修 bug、小重构）：OpenClaw 直接 `exec` 执行
+- **复杂任务**（新功能、跨模块修改）：调用 OpenCode 执行，由用户确认后执行
+- **审查任务**：OpenClaw 不直接审查代码，提示用户用 OpenCode TUI 查看 diff
+
+## 安全红线
+
+- 不误改 `tradingagents.db`（生产数据库）
+- 不误改 `eval_results/` 中的历史回测结果
+- 不直接修改 `tradingagents/prompts/` 中的提示词模板（需走审批）
+- 不删除 `logs/` 中的历史日志
+- 测试数据不得写入生产数据库
+- 不读取、解密、打印、提交任何模型 API Key 明文；只能使用 `HAS_KEY/NO_KEY` 级别的脱敏状态
+- 除用户主动发起的分析/定时任务外，任何 live LLM API 调用前都要说明 provider、base_url、模型名和预计调用次数，并征得用户确认
+
+## 技术栈
+
+- **后端**：Python 3.10+, FastAPI, LangGraph, LangChain
+- **前端**：React, TypeScript, Tailwind CSS
+- **数据库**：SQLite
+- **数据源**：AKShare, BaoStock, yfinance
+- **模型**：OpenAI / Anthropic / 智谱 / DeepSeek / 小米 MiMo 等
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+exec
+/bin/zsh -lc "git diff --stat && git diff -- . ':(exclude).zai_quota_state.json'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ .zai_quota_state.json              |  11 +-
+ docs/DEVLOG.md                     |  28 +++++
+ docs/TASKS.md                      |   2 +-
+ scripts/summarize_auto_dev_runs.py | 216 ++++++++++++++++++++++++++++++++++++-
+ 4 files changed, 246 insertions(+), 11 deletions(-)
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 5d72f2f..221f4a6 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,34 @@
+ 
+ ---
+ 
++## 2026-05-30 | V-002: 夜间自动开发验收报告与候选样本回放
++
++- **执行者**：OpenCode
++- **任务**：V-002 — 为夜间自动开发增加固定样本回放和验收报告
++- **修改文件**：
++  - `scripts/summarize_auto_dev_runs.py` — [V-002] 扩展 M-002 夜间日报脚本，新增候选样本回放、Ready 队列解析、测试结果解析、敏感数据过滤
++    - `parse_ready_queue()` — 从 TASKS.md 解析 status=ready 的任务列表
++    - `parse_test_summary_from_logs()` — 从 task_runs 中的 tests-round*.txt 提取 passed/failed/skipped
++    - `run_sample_replay()` — 调用 false_positive_audit 的 8 个固定 fixture 进行候选池质量回放
++    - `format_sample_replay()` — 将回放结果格式化为 markdown 表格
++    - `generate_report()` 扩展 — 新增 ready_queue 和 replay_results 参数，输出测试汇总、Ready 队列（含"任务池不足"警告）、候选样本回放
++    - `redact()` 增强 — 新增 password/secret 脱敏模式
++    - `main()` 扩展 — 新增 `--with-sample-replay` 参数，最终报告整体脱敏
++  - `tests/test_v002_nightly_acceptance.py` — 新建，33 个测试覆盖：
++    - TestRedact (8): sk-key/api-key/bearer/token/password/secret/正常文本/环境变量 脱敏
++    - TestParseReadyQueue (5): 单个/多个/空/无文件/blocked+proposed 过滤
++    - TestParseTestSummaryFromLogs (5): 标准输出/含失败/无测试文件/含错误/最新轮次
++    - TestSampleReplay (5): 返回结果/覆盖 6 个必须场景/全部通过/markdown 格式/空回放
++    - TestGenerateReportV002 (9): 非空队列/空队列警告/无队列/含回放/含测试/无泄露/完整报告/队列计数
++    - TestDryRunIntegration (2): dry-run 含回放/dry-run 不含回放
++- **测试结果**：33 passed (V-002)；全项目 1570 passed, 17 skipped, 0 failed
++- **关键逻辑**：
++  - 候选样本回放复用 `false_positive_audit.generate_fixture_samples()` 的 8 个 fixture，覆盖：VCP 命中、事件催化、资金异动、流动性过滤、无策略命中、风险降权、证据缺口、资金单位未校验
++  - Ready 队列为空时报告必须显示"任务池不足"警告，防止 cron 空转
++  - 报告最终输出前经过整体 `redact()` 脱敏，防止 API key/secret 泄露
++  - `--with-sample-replay` 参数控制是否执行回放，默认关闭保持向后兼容
++- **风险点**：无；所有改动向后兼容，不影响现有 M-002 功能
++
+ ## 2026-05-30 | M-004: TradeFlow 策略权重与阈值配置
+ 
+ - **执行者**：OpenCode
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 2d97d6d..f73900c 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -530,7 +530,7 @@
+ ### V-002: 夜间自动开发验收报告与候选样本回放（P1）
+ - **描述**：为夜间自动开发增加固定样本回放和验收报告，第二天可以直接看到候选池质量、测试结果、review 结论和剩余风险。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：done — 代码已完成待 commit
+ - **前置条件**：`M-002`、`T-002`、`T-003`、`M-008` 完成。
+ - **执行约束**：
+   - 不调用外部 LLM。
+diff --git a/scripts/summarize_auto_dev_runs.py b/scripts/summarize_auto_dev_runs.py
+index 73ace4a..926dbba 100755
+--- a/scripts/summarize_auto_dev_runs.py
++++ b/scripts/summarize_auto_dev_runs.py
+@@ -1,13 +1,21 @@
+ #!/usr/bin/env python3
+ # [M-002] auto_dev_report_index
++# [V-002] nightly_acceptance_report
+ """
+ Scan docs/task_runs/ and generate a nightly dev report in docs/auto_dev_reports/YYYY-MM-DD.md.
+ 
++V-002 extends M-002 with:
++  - Candidate sample replay (VCP, event catalyst, fund flow, liquidity, no-strategy, risk)
++  - Ready queue status from TASKS.md
++  - Test results summary from test log files
++  - "任务池不足" warning when ready queue is empty
++
+ Usage:
+     python scripts/summarize_auto_dev_runs.py [--date YYYY-MM-DD] [--dry-run] [--repo-dir PATH]
++                                              [--with-sample-replay]
+ 
+ Constraints:
+-    - Read-only: only reads docs/task_runs/, docs/reviews/, git log
++    - Read-only: only reads docs/task_runs/, docs/reviews/, git log, TASKS.md
+     - No model calls, no stock analysis
+     - No API keys or sensitive logs in output
+     - Redacts any leaked keys from included content
+@@ -31,6 +39,8 @@ _REDACT_PATTERNS = [
+     (re.compile(r"(api[_-]?key[=:]\s*)\S+", re.IGNORECASE), r"\1[REDACTED]"),
+     (re.compile(r"(authorization:\s*bearer\s+)\S+", re.IGNORECASE), r"\1[REDACTED]"),
+     (re.compile(r"(token[=:]\s*)\S+", re.IGNORECASE), r"\1[REDACTED]"),
++    (re.compile(r"(password[=:]\s*)\S+", re.IGNORECASE), r"\1[REDACTED]"),
++    (re.compile(r"(secret[=:]\s*)\S+", re.IGNORECASE), r"\1[REDACTED]"),
+ ]
+ 
+ 
+@@ -40,6 +50,155 @@ def redact(text: str) -> str:
+     return text
+ 
+ 
++# ── [V-002] nightly_acceptance_report: Ready queue parsing ──
++
++def parse_ready_queue(tasks_md_path: Path) -> list[dict[str, str]]:
++    """Parse docs/TASKS.md to extract tasks with status=ready.
++
++    Returns list of dicts with keys: task_id, title, priority.
++    """
++    if not tasks_md_path.exists():
++        return []
++
++    ready_tasks: list[dict[str, str]] = []
++    text = tasks_md_path.read_text(encoding="utf-8")
++    lines = text.splitlines()
++
++    current_task_id = ""
++    current_title = ""
++    current_priority = ""
++    current_status = ""
++
++    for line in lines:
++        header_match = re.match(r"^###\s+([A-Z]+-\d+)\s*:\s*(.+)$", line)
++        if header_match:
++            if current_task_id and current_status == "ready":
++                ready_tasks.append({
++                    "task_id": current_task_id,
++                    "title": current_title.strip(),
++                    "priority": current_priority,
++                })
++            current_task_id = header_match.group(1)
++            current_title = header_match.group(2)
++            current_priority = ""
++            current_status = ""
++            continue
++
++        if current_task_id:
++            status_match = re.match(r"^-\s+\*\*状态\*\*\s*[:：]\s*(.+)$", line)
++            if status_match:
++                current_status = status_match.group(1).strip()
++            priority_match = re.match(r"^-\s+\*\*优先级\*\*\s*[:：]\s*(.+)$", line)
++            if priority_match:
++                current_priority = priority_match.group(1).strip()
++
++    if current_task_id and current_status == "ready":
++        ready_tasks.append({
++            "task_id": current_task_id,
++            "title": current_title.strip(),
++            "priority": current_priority,
++        })
++
++    return ready_tasks
++
++
++# ── [V-002] nightly_acceptance_report: Test log parsing ──
++
++def parse_test_summary_from_logs(run: TaskRun) -> dict[str, int]:
++    """Parse test result counts from trace files in a task run.
++
++    Looks for pytest-style output lines like 'X passed, Y failed, Z skipped'.
++    Returns dict with passed/failed/skipped/error counts.
++    """
++    summary = {"passed": 0, "failed": 0, "skipped": 0, "errors": 0, "raw_line": ""}
++
++    for trace_name in run.trace_files:
++        if not trace_name.startswith("tests-"):
++            continue
++        trace_path = run.path / trace_name
++        if not trace_path.exists():
++            continue
++        content = trace_path.read_text(encoding="utf-8", errors="replace")
++        for line in reversed(content.splitlines()):
++            line = line.strip()
++            m = re.match(r"^(\d+) passed", line)
++            if m:
++                summary["passed"] = int(m.group(1))
++                fm = re.search(r"(\d+) failed", line)
++                if fm:
++                    summary["failed"] = int(fm.group(1))
++                sm = re.search(r"(\d+) skipped", line)
++                if sm:
++                    summary["skipped"] = int(sm.group(1))
++                em = re.search(r"(\d+) error", line)
++                if em:
++                    summary["errors"] = int(em.group(1))
++                summary["raw_line"] = line
++                return summary
++
++    return summary
++
++
++# ── [V-002] nightly_acceptance_report: Candidate sample replay ──
++
++def run_sample_replay() -> list[dict]:
++    """Run TradeFlow candidate sample replay using false_positive_audit fixtures.
++
++    Returns list of dicts with fixture name, description, and audit result.
++    """
++    try:
++        from tradingagents.tradeflow.false_positive_audit import (
++            generate_fixture_samples,
++            replay_fixtures,
++        )
++    except ImportError:
++        return []
++
++    fixtures = generate_fixture_samples()
++    results = replay_fixtures(fixtures)
++    return results
++
++
++def format_sample_replay(replay_results: list[dict]) -> str:
++    """Format sample replay results into a markdown section."""
++    if not replay_results:
++        return ""
++
++    lines = ["## 候选样本回放", ""]
++    lines.append("| 样本 | 描述 | 分类 | 正误判 | 匹配 |")
++    lines.append("|------|------|------|--------|------|")
++
++    all_match = True
++    for r in replay_results:
++        name = r.get("fixture_name", "?")
++        desc = r.get("description", "")[:40]
++        category = r.get("actual_category", r.get("actual_subcategory", ""))
++        fp_type = r.get("actual_fp_type", r.get("actual_fn_type", ""))
++        cat_match = r.get("category_match", r.get("subcategory_match", None))
++        fp_match = r.get("fp_match", r.get("fn_match", None))
++
++        if cat_match is not None and fp_match is not None:
++            match_str = "PASS" if (cat_match and fp_match) else "FAIL"
++        elif cat_match is not None:
++            match_str = "PASS" if cat_match else "FAIL"
++        else:
++            match_str = "N/A"
++
++        if match_str == "FAIL":
++            all_match = False
++
++        lines.append(f"| {name} | {desc} | {category} | {fp_type} | {match_str} |")
++
++    lines.append("")
++    if all_match:
++        lines.append("> 所有样本回放通过，候选池质量基线稳定。")
++    else:
++        lines.append("> **注意**: 部分样本回放不匹配，请检查候选策略或审计逻辑。")
++    lines.append("")
++
++    return "\n".join(lines)
++
++
+ @dataclass
+ class TaskRun:
+     run_id: str
+@@ -225,6 +384,8 @@ def generate_report(
+     commits: list[dict[str, str]],
+     reviews: list[dict[str, str]],
+     target_date: str,
++    ready_queue: Optional[list[dict[str, str]]] = None,  # [V-002]
++    replay_results: Optional[list[dict]] = None,  # [V-002]
+ ) -> str:
+     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+ 
+@@ -236,6 +397,10 @@ def generate_report(
+     lines.append(f"> 提交数: {len(commits)}  ")
+     lines.append(f"> Review 数: {len(reviews)}  ")
+     lines.append("")
++
++    if ready_queue is not None:  # [V-002]
++        lines.append(f"> Ready 队列: {len(ready_queue)} 个任务  ")
++    lines.append("")
+     lines.append("---")
+     lines.append("")
+ 
+@@ -343,20 +508,56 @@ def generate_report(
+     lines.append("- 确认测试基线未被破坏")
+     lines.append("")
+ 
++    # [V-002] nightly_acceptance_report: Test results summary
++    if runs:
++        lines.append("## 测试结果汇总")
++        lines.append("")
++        for run in runs:
++            test_summary = parse_test_summary_from_logs(run)
++            if test_summary["raw_line"]:
++                lines.append(f"- **{run.task_id}**: {test_summary['passed']} passed, "
++                             f"{test_summary['failed']} failed, {test_summary['skipped']} skipped")
++            else:
++                lines.append(f"- **{run.task_id}**: 无测试日志")
++        lines.append("")
++
++    # [V-002] nightly_acceptance_report: Ready queue
++    if ready_queue is not None:
++        lines.append("## Ready 队列")
++        lines.append("")
++        if not ready_queue:
++            lines.append("> **任务池不足**: 当前无 `ready` 状态任务，夜间 cron 不应空转。")
++            lines.append("> 请人工添加新任务到 `docs/TASKS.md`，或将 `proposed` 任务转为 `ready`。")
++        else:
++            lines.append("| 任务ID | 标题 | 优先级 |")
++            lines.append("|--------|------|--------|")
++            for t in ready_queue:
++                lines.append(f"| {t['task_id']} | {t['title']} | {t['priority']} |")
++        lines.append("")
++
++    # [V-002] nightly_acceptance_report: Candidate sample replay
++    if replay_results:
++        replay_section = format_sample_replay(replay_results)
++        if replay_section:
++            lines.append(replay_section)
++
+     return "\n".join(lines)
+ 
+ 
+ def main() -> None:
+-    parser = argparse.ArgumentParser(description="[M-002] Summarize auto dev runs into a daily report")
++    parser = argparse.ArgumentParser(description="[M-002/V-002] Summarize auto dev runs into a daily report")
+     parser.add_argument("--date", default=None, help="Target date YYYY-MM-DD (default: today)")
+     parser.add_argument("--dry-run", action="store_true", help="Print report to stdout without writing file")
+     parser.add_argument("--repo-dir", default=None, help="Repository root directory")
++    parser.add_argument("--with-sample-replay", action="store_true",  # [V-002]
++                        help="Include TradeFlow candidate sample replay in report")
+     args = parser.parse_args()
+ 
+     repo_dir = Path(args.repo_dir) if args.repo_dir else Path(__file__).resolve().parent.parent
+     task_runs_dir = repo_dir / "docs" / "task_runs"
+     reviews_dir = repo_dir / "docs" / "reviews"
+     reports_dir = repo_dir / "docs" / "auto_dev_reports"
++    tasks_md_path = repo_dir / "docs" / "TASKS.md"  # [V-002]
+ 
+     target_date = args.date or datetime.now().strftime("%Y-%m-%d")
+ 
+@@ -364,7 +565,16 @@ def main() -> None:
+     commits = get_git_log_for_date(repo_dir, target_date)
+     reviews = collect_reviews(reviews_dir, target_date=target_date)
+ 
+-    report = generate_report(runs, commits, reviews, target_date)
++    ready_queue = parse_ready_queue(tasks_md_path)  # [V-002]
++
++    replay_results = None  # [V-002]
++    if args.with_sample_replay:
++        replay_results = run_sample_replay()
++
++    report = generate_report(runs, commits, reviews, target_date,
++                             ready_queue=ready_queue, replay_results=replay_results)  # [V-002]
++
++    report = redact(report)  # [V-002] final redaction pass
+ 
+     if args.dry_run:
+         print(report)
+
+exec
+/bin/zsh -lc "git diff -- scripts/summarize_auto_dev_runs.py | sed -n '200,420p'; find docs/task_runs/V-002-20260530-010220 -maxdepth 2 -type f -print -exec sed -n '1,160p' {} \\; ; sed -n '1,260p' tests/test_v002_nightly_acceptance.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+ 
+@@ -236,6 +397,10 @@ def generate_report(
+     lines.append(f"> 提交数: {len(commits)}  ")
+     lines.append(f"> Review 数: {len(reviews)}  ")
+     lines.append("")
++
++    if ready_queue is not None:  # [V-002]
++        lines.append(f"> Ready 队列: {len(ready_queue)} 个任务  ")
++    lines.append("")
+     lines.append("---")
+     lines.append("")
+ 
+@@ -343,20 +508,56 @@ def generate_report(
+     lines.append("- 确认测试基线未被破坏")
+     lines.append("")
+ 
++    # [V-002] nightly_acceptance_report: Test results summary
++    if runs:
++        lines.append("## 测试结果汇总")
++        lines.append("")
++        for run in runs:
++            test_summary = parse_test_summary_from_logs(run)
++            if test_summary["raw_line"]:
++                lines.append(f"- **{run.task_id}**: {test_summary['passed']} passed, "
++                             f"{test_summary['failed']} failed, {test_summary['skipped']} skipped")
++            else:
++                lines.append(f"- **{run.task_id}**: 无测试日志")
++        lines.append("")
++
++    # [V-002] nightly_acceptance_report: Ready queue
++    if ready_queue is not None:
++        lines.append("## Ready 队列")
++        lines.append("")
++        if not ready_queue:
++            lines.append("> **任务池不足**: 当前无 `ready` 状态任务，夜间 cron 不应空转。")
++            lines.append("> 请人工添加新任务到 `docs/TASKS.md`，或将 `proposed` 任务转为 `ready`。")
++        else:
++            lines.append("| 任务ID | 标题 | 优先级 |")
++            lines.append("|--------|------|--------|")
++            for t in ready_queue:
++                lines.append(f"| {t['task_id']} | {t['title']} | {t['priority']} |")
++        lines.append("")
++
++    # [V-002] nightly_acceptance_report: Candidate sample replay
++    if replay_results:
++        replay_section = format_sample_replay(replay_results)
++        if replay_section:
++            lines.append(replay_section)
++
+     return "\n".join(lines)
+ 
+ 
+ def main() -> None:
+-    parser = argparse.ArgumentParser(description="[M-002] Summarize auto dev runs into a daily report")
++    parser = argparse.ArgumentParser(description="[M-002/V-002] Summarize auto dev runs into a daily report")
+     parser.add_argument("--date", default=None, help="Target date YYYY-MM-DD (default: today)")
+     parser.add_argument("--dry-run", action="store_true", help="Print report to stdout without writing file")
+     parser.add_argument("--repo-dir", default=None, help="Repository root directory")
++    parser.add_argument("--with-sample-replay", action="store_true",  # [V-002]
++                        help="Include TradeFlow candidate sample replay in report")
+     args = parser.parse_args()
+ 
+     repo_dir = Path(args.repo_dir) if args.repo_dir else Path(__file__).resolve().parent.parent
+     task_runs_dir = repo_dir / "docs" / "task_runs"
+     reviews_dir = repo_dir / "docs" / "reviews"
+     reports_dir = repo_dir / "docs" / "auto_dev_reports"
++    tasks_md_path = repo_dir / "docs" / "TASKS.md"  # [V-002]
+ 
+     target_date = args.date or datetime.now().strftime("%Y-%m-%d")
+ 
+@@ -364,7 +565,16 @@ def main() -> None:
+     commits = get_git_log_for_date(repo_dir, target_date)
+     reviews = collect_reviews(reviews_dir, target_date=target_date)
+ 
+-    report = generate_report(runs, commits, reviews, target_date)
++    ready_queue = parse_ready_queue(tasks_md_path)  # [V-002]
++
++    replay_results = None  # [V-002]
++    if args.with_sample_replay:
++        replay_results = run_sample_replay()
++
++    report = generate_report(runs, commits, reviews, target_date,
++                             ready_queue=ready_queue, replay_results=replay_results)  # [V-002]
++
++    report = redact(report)  # [V-002] final redaction pass
+ 
+     if args.dry_run:
+         print(report)
+docs/task_runs/V-002-20260530-010220/tests-round1.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  4%]
+...........................................ss........................... [  9%]
+........................................................................ [ 13%]
+........................................................................ [ 18%]
+........................................................................ [ 22%]
+............................................sssssssss................... [ 27%]
+........................................................................ [ 31%]
+........................................................................ [ 36%]
+........................................................................ [ 40%]
+........................................................................ [ 45%]
+........................................................................ [ 49%]
+........................................................................ [ 54%]
+........................................................................ [ 58%]
+........................................................................ [ 63%]
+........................................................................ [ 68%]
+....................................................ss.................. [ 72%]
+...............................ssss..................................... [ 77%]
+........................................................................ [ 81%]
+........................................................................ [ 86%]
+........................................................................ [ 90%]
+........................................................................ [ 95%]
+........................................................................ [ 99%]
+...                                                                      [100%]
+1570 passed, 17 skipped in 50.16s
+
+Exit code: 0
+docs/task_runs/V-002-20260530-010220/prompt-round1.md
+# 任务: V-002: 夜间自动开发验收报告与候选样本回放（P1）
+
+请从 docs/TASKS.md 中读取任务 "V-002" 的完整描述，按要求实现。
+
+## 执行约束
+- 不改 tradingagents/prompts/
+- 不写入生产 tradingagents.db
+- 不跑全市场扫描或股票深度 TA
+- 不 push / PR / merge
+- **不要 git commit** — commit 由外层脚本统一执行
+- 修改后更新 docs/DEVLOG.md
+
+## 完成后输出
+- 修改了哪些文件
+- 关键逻辑说明
+- 测试结果（passed/failed 数量）
+docs/task_runs/V-002-20260530-010220/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m
+[0m# [0mTodos
+[ ] Read existing summarize_auto_dev_runs.py and understand M-002 implementation
+[ ] Explore TradeFlow sample fixtures and candidate engine for sample replay
+[ ] Extend nightly acceptance script with candidate sample replay (VCP, event, fund flow, liquidity, no-strategy, risk)
+[ ] Add ready queue check with '任务池不足' warning
+[ ] Add sensitive data filtering for reports
+[ ] Create tests for V-002
+[ ] Run tests and verify
+[ ] Update DEVLOG.md
+[0m
+[0m→ [0mRead scripts/summarize_auto_dev_runs.py
+[0m✱ [0mGlob "docs/task_runs/**/*"[90m 96 matches[0m
+[0m✱ [0mGlob "tests/test_tradeflow_*.py"[90m 5 matches[0m
+[0m✱ [0mGlob "tests/fixtures/**/*"[90m 0 matches[0m
+[0m→ [0mRead tradingagents/tradeflow
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py
+让我探究一下 TradeFlow 的核心模块和测试夹具，以理解其数据结构。
+[0m→ [0mRead tradingagents/tradeflow/schemas.py
+[0m→ [0mRead tradingagents/tradeflow/false_positive_audit.py
+[0m→ [0mRead tradingagents/tradeflow/strategies/vcp.py
+现在我来查看一些关键策略以及现有的误报审计模块，以理解样本数据模式。
+[0m→ [0mRead tests/test_tradeflow_strategies.py[90m [limit=100][0m
+[0m
+[0m# [0mTodos
+[x] Read existing summarize_auto_dev_runs.py and understand M-002 implementation
+[x] Explore TradeFlow sample fixtures and candidate engine for sample replay
+[ ] Extend nightly acceptance script with candidate sample replay (VCP, event, fund flow, liquidity, no-strategy, risk)
+[ ] Add ready queue check with '任务池不足' warning
+[ ] Add sensitive data filtering for reports
+[ ] Create tests for V-002
+[ ] Run tests and verify
+[ ] Update DEVLOG.md
+[0m
+[0m→ [0mRead docs/task_runs/V-002-20260530-010220/task.md
+[0m→ [0mRead docs/task_runs/M-004-20260530-004038/summary.md
+现在我来读取现有的 `task.md`，以便了解 `V-002` 运行的格式：
+我现在对情况已经完全了解。接下来，我将着手实现 V-002 扩展。我将扩展 `summarize_auto_dev_runs.py`，以添加：
+1. 候选样本回放功能
+2. 任务就绪队列解析
+3. 测试日志解析
+4. “任务池不足” 警告
+[0m→ [0mRead scripts/summarize_auto_dev_runs.py[90m [offset=1, limit=40][0m
+现在我将扩展 `summarize_auto_dev_runs.py`，增加 V-002 功能：
+[0m
+[0m← [0mEdit scripts/summarize_auto_dev_runs.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
++++ /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+@@ -1,14 +1,22 @@
+ #!/usr/bin/env python3
+ # [M-002] auto_dev_report_index
++# [V-002] nightly_acceptance_report
+ """
+ Scan docs/task_runs/ and generate a nightly dev report in docs/auto_dev_reports/YYYY-MM-DD.md.
+ 
++V-002 extends M-002 with:
++  - Candidate sample replay (VCP, event catalyst, fund flow, liquidity, no-strategy, risk)
++  - Ready queue status from TASKS.md
++  - Test results summary from test log files
++  - "任务池不足" warning when ready queue is empty
++
+ Usage:
+     python scripts/summarize_auto_dev_runs.py [--date YYYY-MM-DD] [--dry-run] [--repo-dir PATH]
++                                              [--with-sample-replay]
+ 
+ Constraints:
+-    - Read-only: only reads docs/task_runs/, docs/reviews/, git log
++    - Read-only: only reads docs/task_runs/, docs/reviews/, git log, TASKS.md
+     - No model calls, no stock analysis
+     - No API keys or sensitive logs in output
+     - Redacts any leaked keys from included content
+ """
+
+[0m
+现在在导入和常量之后添加 V-002 函数：
+[0m← [0mEdit scripts/summarize_auto_dev_runs.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
++++ /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py
+@@ -38,8 +38,10 @@
+     (re.compile(r"sk-[A-Za-z0-9_-]{20,}"), "[REDACTED_API_KEY]"),
+     (re.compile(r"(api[_-]?key[=:]\s*)\S+", re.IGNORECASE), r"\1[REDACTED]"),
+     (re.compile(r"(authorization:\s*bearer\s+)\S+", re.IGNORECASE), r"\1[REDACTED]"),
+     (re.compile(r"(token[=:]\s*)\S+", re.IGNORECASE), r"\1[REDACTED]"),
++    (re.compile(r"(password[=:]\s*)\S+", re.IGNORECASE), r"\1[REDACTED]"),
++    (re.compile(r"(secret[=:]\s*)\S+", re.IGNORECASE), r"\1[REDACTED]"),
+ ]
+ 
+ 
+ def redact(text: str) -> str:
+@@ -47,8 +49,157 @@
+         text = pat.sub(repl, text)
+     return text
+ 
+ 
++# ── [V-002] nightly_acceptance_report: Ready queue parsing ──
++
++def parse_ready_queue(tasks_md_path: Path) -> list[dict[str, str]]:
++    """Parse docs/TASKS.md to extract tasks with status=ready.
++
++    Returns list of dicts with keys: task_id, title, priority.
++    """
++    if not tasks_md_path.exists():
++        return []
++
++    ready_tasks: list[dict[str, str]] = []
++    text = tasks_md_path.read_text(encoding="utf-8")
++    lines = text.splitlines()
++
++    current_task_id = ""
++    current_title = ""
++    current_priority = ""
++    current_status = ""
++
++    for line in lines:
++        header_match = re.match(r"^###\s+([A-Z]+-\d+)\s*:\s*(.+)$", line)
++        if header_match:
++            if current_task_id and current_status == "ready":
++                ready_tasks.append({
++                    "task_id": current_task_id,
++                    "title": current_title.strip(),
++                    "priority": current_priority,
++                })
++            current_task_id = header_match.group(1)
++            current_title = header_match.group(2)
++            current_priority = ""
++            current_status = ""
++            continue
++
++        if current_task_id:
++            status_match = re.match(r"^-\s+\*\*状态\*\*\s*[:：]\s*(.+)$", line)
++            if status_match:
++                current_status = status_match.group(1).strip()
++            priority_match = re.match(r"^-\s+\*\*优先级\*\*\s*[:：]\s*(.+)$", line)
++            if priority_match:
++                current_priority = priority_match.group(1).strip()
++
++    if current_task_id and current_status == "ready":
++        ready_tasks.append({
++            "task_id": current_task_id,
++            "title": current_title.strip(),
++            "priority": current_priority,
++        })
++
++    return ready_tasks
++
++
++# ── [V-002] nightly_acceptance_report: Test log parsing ──
++
++def parse_test_summary_from_logs(run: TaskRun) -> dict[str, int]:
++    """Parse test result counts from trace files in a task run.
++
+docs/task_runs/V-002-20260530-010220/task.md
+# Auto Dev Task Run
+
+- Task: V-002 — 夜间自动开发验收报告与候选样本回放（P1）
+- Priority: P1
+- Status: CLAIMED
+- Started at: 2026-05-30_01:02:20
+- Git HEAD: 36ff8c7
+- Test commands: pytest tests/ -q --tb=short
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+# [V-002] nightly_acceptance_report
+"""Tests for V-002: nightly acceptance report with candidate sample replay."""
+
+import sys
+import os
+import tempfile
+import textwrap
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from scripts.summarize_auto_dev_runs import (
+    redact,
+    parse_ready_queue,
+    parse_test_summary_from_logs,
+    run_sample_replay,
+    format_sample_replay,
+    generate_report,
+    TaskRun,
+)
+from pathlib import Path
+
+
+class TestRedact:
+    def test_redact_sk_key(self):
+        assert "sk-" not in redact("key=sk-abc123def456ghi789jkl012mno345")
+        assert "[REDACTED_API_KEY]" in redact("key=sk-abc123def456ghi789jkl012mno345")
+
+    def test_redact_api_key(self):
+        result = redact("api_key=mysecretkey123")
+        assert "mysecretkey123" not in result
+        assert "[REDACTED]" in result
+
+    def test_redact_bearer(self):
+        result = redact("Authorization: Bearer tok_abcdef123456")
+        assert "tok_abcdef123456" not in result
+
+    def test_redact_token_equals(self):
+        result = redact("token=secret_value_here")
+        assert "secret_value_here" not in result
+
+    def test_redact_password(self):
+        result = redact("password=my_pass_123")
+        assert "my_pass_123" not in result
+
+    def test_redact_secret(self):
+        result = redact("secret=abc123xyz")
+        assert "abc123xyz" not in result
+
+    def test_redact_preserves_normal_text(self):
+        text = "This is a normal report with no secrets"
+        assert redact(text) == text
+
+    def test_redact_env_var_style(self):
+        result = redact("API_KEY=sk-proj-abc123def456ghi789")
+        assert "sk-proj-abc123def456ghi789" not in result
+
+
+class TestParseReadyQueue:
+    def _write_tasks_md(self, tmpdir: Path, content: str) -> Path:
+        p = tmpdir / "TASKS.md"
+        p.write_text(content, encoding="utf-8")
+        return p
+
+    def test_parse_single_ready(self, tmp_path):
+        content = textwrap.dedent("""\
+        ### T-006: Some task title（P1）
+        - **优先级**: P1
+        - **状态**: ready
+        """)
+        p = self._write_tasks_md(tmp_path, content)
+        result = parse_ready_queue(p)
+        assert len(result) == 1
+        assert result[0]["task_id"] == "T-006"
+        assert "P1" in result[0]["priority"]
+
+    def test_parse_multiple_ready(self, tmp_path):
+        content = textwrap.dedent("""\
+        ### T-006: First task（P1）
+        - **优先级**: P1
+        - **状态**: ready
+
+        ### M-005: Second task（P2）
+        - **优先级**: P2
+        - **状态**: ready
+
+        ### S-001: Done task（P1）
+        - **优先级**: P1
+        - **状态**: done
+        """)
+        p = self._write_tasks_md(tmp_path, content)
+        result = parse_ready_queue(p)
+        assert len(result) == 2
+        ids = [r["task_id"] for r in result]
+        assert "T-006" in ids
+        assert "M-005" in ids
+        assert "S-001" not in ids
+
+    def test_parse_empty_ready(self, tmp_path):
+        content = textwrap.dedent("""\
+        ### S-001: Done task（P1）
+        - **优先级**: P1
+        - **状态**: done
+        """)
+        p = self._write_tasks_md(tmp_path, content)
+        result = parse_ready_queue(p)
+        assert len(result) == 0
+
+    def test_parse_no_file(self):
+        result = parse_ready_queue(Path("/nonexistent/TASKS.md"))
+        assert result == []
+
+    def test_parse_blocked_and_proposed(self, tmp_path):
+        content = textwrap.dedent("""\
+        ### V-001: Blocked task（P1）
+        - **优先级**: P1
+        - **状态**: blocked
+
+        ### B-001: Proposed task（高）
+        - **优先级**: 高
+        - **状态**: proposed
+
+        ### T-006: Ready task（P1）
+        - **优先级**: P1
+        - **状态**: ready
+        """)
+        p = self._write_tasks_md(tmp_path, content)
+        result = parse_ready_queue(p)
+        assert len(result) == 1
+        assert result[0]["task_id"] == "T-006"
+
+
+class TestParseTestSummaryFromLogs:
+    def test_parse_standard_pytest_output(self, tmp_path):
+        run_dir = tmp_path / "T-001-20260530-120000"
+        run_dir.mkdir()
+        (run_dir / "tests-round1.txt").write_text(
+            "=== short test summary ===\n1451 passed, 15 skipped, 0 failed\n",
+            encoding="utf-8",
+        )
+        run = TaskRun(run_id="T-001-20260530-120000", path=run_dir, trace_files=["tests-round1.txt"])
+        result = parse_test_summary_from_logs(run)
+        assert result["passed"] == 1451
+        assert result["failed"] == 0
+        assert result["skipped"] == 15
+
+    def test_parse_with_failures(self, tmp_path):
+        run_dir = tmp_path / "M-003-20260530-120000"
+        run_dir.mkdir()
+        (run_dir / "tests-round1.txt").write_text(
+            "120 passed, 3 failed, 5 skipped\n",
+            encoding="utf-8",
+        )
+        run = TaskRun(run_id="M-003-20260530-120000", path=run_dir, trace_files=["tests-round1.txt"])
+        result = parse_test_summary_from_logs(run)
+        assert result["passed"] == 120
+        assert result["failed"] == 3
+        assert result["skipped"] == 5
+
+    def test_parse_no_test_files(self, tmp_path):
+        run_dir = tmp_path / "X-001-20260530-120000"
+        run_dir.mkdir()
+        run = TaskRun(run_id="X-001-20260530-120000", path=run_dir, trace_files=["opencode-round1.txt"])
+        result = parse_test_summary_from_logs(run)
+        assert result["passed"] == 0
+        assert result["failed"] == 0
+
+    def test_parse_errors(self, tmp_path):
+        run_dir = tmp_path / "E-001-20260530-120000"
+        run_dir.mkdir()
+        (run_dir / "tests-round1.txt").write_text(
+            "100 passed, 2 errors\n",
+            encoding="utf-8",
+        )
+        run = TaskRun(run_id="E-001-20260530-120000", path=run_dir, trace_files=["tests-round1.txt"])
+        result = parse_test_summary_from_logs(run)
+        assert result["passed"] == 100
+        assert result["errors"] == 2
+
+    def test_parse_latest_round(self, tmp_path):
+        run_dir = tmp_path / "R-001-20260530-120000"
+        run_dir.mkdir()
+        (run_dir / "tests-round1.txt").write_text(
+            "3 failed, 120 passed\n",
+            encoding="utf-8",
+        )
+        (run_dir / "tests-round2.txt").write_text(
+            "1495 passed, 17 skipped, 0 failed\n",
+            encoding="utf-8",
+        )
+        run = TaskRun(
+            run_id="R-001-20260530-120000",
+            path=run_dir,
+            trace_files=["tests-round1.txt", "tests-round2.txt"],
+        )
+        result = parse_test_summary_from_logs(run)
+        assert result["passed"] == 1495
+        assert result["failed"] == 0
+
+
+class TestSampleReplay:
+    def test_run_sample_replay_returns_results(self):
+        results = run_sample_replay()
+        assert isinstance(results, list)
+        assert len(results) >= 6
+
+    def test_replay_covers_required_scenarios(self):
+        results = run_sample_replay()
+        names = [r.get("fixture_name", "") for r in results]
+        required = ["vcp_hit", "liquidity_filter", "no_strategy_hit",
+                     "event_catalyst", "fund_flow_anomaly", "risk_demoted"]
+        for req in required:
+            assert req in names, f"Missing fixture: {req}"
+
+    def test_replay_all_pass(self):
+        results = run_sample_replay()
+        for r in results:
+            cat_match = r.get("category_match", r.get("subcategory_match", True))
+            fp_match = r.get("fp_match", r.get("fn_match", True))
+            if cat_match is not None and fp_match is not None:
+                assert cat_match and fp_match, (
+                    f"Fixture {r.get('fixture_name')} failed: "
+                    f"cat_match={cat_match}, fp_match={fp_match}"
+                )
+
+    def test_format_sample_replay_produces_markdown(self):
+        results = run_sample_replay()
+        md = format_sample_replay(results)
+        assert "## 候选样本回放" in md
+        assert "vcp_hit" in md
+        assert "liquidity_filter" in md
+        assert "risk_demoted" in md
+        assert "PASS" in md
+
+    def test_format_empty_replay(self):
+        md = format_sample_replay([])
+        assert md == ""
+
+
+class TestGenerateReportV002:
+    def test_report_with_ready_queue_nonempty(self):
+        runs = []
+        commits = []
+        reviews = []
+        ready_queue = [
+            {"task_id": "T-006", "title": "Some task", "priority": "P1"},
+            {"task_id": "S-006", "title": "Another task", "priority": "P1"},
+        ]
+        report = generate_report(runs, commits, reviews, "2026-05-30",
+                                 ready_queue=ready_queue, replay_results=None)
+        assert "Ready 队列" in report
+        assert "T-006" in report
+        assert "2 个任务" in report
+        assert "任务池不足" not in report
+
+    def test_report_with_empty_ready_queue(self):
+        runs = []
+        commits = []
+        reviews = []
+
+exec
+/bin/zsh -lc "sed -n '260,620p' tests/test_v002_nightly_acceptance.py; sed -n '1,260p' scripts/summarize_auto_dev_runs.py; sed -n '260,620p' scripts/summarize_auto_dev_runs.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        reviews = []
+        report = generate_report(runs, commits, reviews, "2026-05-30",
+                                 ready_queue=[], replay_results=None)
+        assert "任务池不足" in report
+        assert "夜间 cron 不应空转" in report
+
+    def test_report_without_ready_queue(self):
+        runs = []
+        commits = []
+        reviews = []
+        report = generate_report(runs, commits, reviews, "2026-05-30",
+                                 ready_queue=None, replay_results=None)
+        assert "Ready 队列" not in report
+
+    def test_report_with_sample_replay(self):
+        runs = []
+        commits = []
+        reviews = []
+        replay_results = run_sample_replay()
+        report = generate_report(runs, commits, reviews, "2026-05-30",
+                                 ready_queue=[], replay_results=replay_results)
+        assert "候选样本回放" in report
+        assert "vcp_hit" in report
+
+    def test_report_with_test_results(self, tmp_path):
+        run_dir = tmp_path / "M-004-20260530-120000"
+        run_dir.mkdir()
+        (run_dir / "tests-round1.txt").write_text(
+            "1451 passed, 15 skipped, 0 failed\n",
+            encoding="utf-8",
+        )
+        runs = [TaskRun(
+            run_id="M-004-20260530-120000",
+            path=run_dir,
+            task_id="M-004",
+            task_title="Test task",
+            status="PASS",
+            trace_files=["tests-round1.txt"],
+        )]
+        report = generate_report(runs, [], [], "2026-05-30",
+                                 ready_queue=[], replay_results=None)
+        assert "测试结果汇总" in report
+        assert "1451 passed" in report
+
+    def test_report_no_secrets(self):
+        runs = [TaskRun(
+            run_id="X-001",
+            path=Path("/tmp"),
+            task_id="X-001",
+            status="PASS",
+            reason="Used api_key=sk-abc123def456ghi789jkl012 for testing",
+        )]
+        report = generate_report(runs, [], [], "2026-05-30",
+                                 ready_queue=None, replay_results=None)
+        assert "sk-abc123" not in report
+        assert "[REDACTED]" in report or "[REDACTED_API_KEY]" in report
+
+    def test_full_report_dry_run(self):
+        runs = [TaskRun(
+            run_id="M-004-20260530-120000",
+            path=Path("/tmp"),
+            task_id="M-004",
+            task_title="Config task",
+            priority="P1",
+            status="PASS",
+            git_head="abc1234",
+            rounds=1,
+        )]
+        commits = [{"hash": "abc1234", "message": "feat: M-004", "author": "bot", "date": "2026-05-30T12:00:00"}]
+        ready_queue = [{"task_id": "T-006", "title": "Next task", "priority": "P1"}]
+        replay_results = run_sample_replay()
+
+        report = generate_report(runs, commits, [], "2026-05-30",
+                                 ready_queue=ready_queue, replay_results=replay_results)
+
+        assert "自动开发日报" in report
+        assert "总览" in report
+        assert "M-004" in report
+        assert "提交记录" in report
+        assert "Ready 队列" in report
+        assert "候选样本回放" in report
+        assert "T-006" in report
+        assert "vcp_hit" in report
+
+    def test_report_contains_ready_queue_count_in_header(self):
+        ready_queue = [{"task_id": "T-006", "title": "Task", "priority": "P1"}]
+        report = generate_report([], [], [], "2026-05-30",
+                                 ready_queue=ready_queue, replay_results=None)
+        assert "Ready 队列: 1 个任务" in report
+
+
+class TestDryRunIntegration:
+    def test_dry_run_with_fixtures(self, tmp_path):
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, "scripts/summarize_auto_dev_runs.py",
+             "--dry-run", "--with-sample-replay",
+             "--date", "2026-05-30",
+             "--repo-dir", str(tmp_path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=str(Path(__file__).parent.parent),
+        )
+        assert result.returncode == 0
+        output = result.stdout
+        assert "自动开发日报" in output
+        assert "Ready 队列" in output
+        assert "任务池不足" in output
+
+    def test_dry_run_without_replay(self, tmp_path):
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, "scripts/summarize_auto_dev_runs.py",
+             "--dry-run",
+             "--date", "2026-05-30",
+             "--repo-dir", str(tmp_path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=str(Path(__file__).parent.parent),
+        )
+        assert result.returncode == 0
+        output = result.stdout
+        assert "自动开发日报" in output
+        assert "候选样本回放" not in output
+#!/usr/bin/env python3
+# [M-002] auto_dev_report_index
+# [V-002] nightly_acceptance_report
+"""
+Scan docs/task_runs/ and generate a nightly dev report in docs/auto_dev_reports/YYYY-MM-DD.md.
+
+V-002 extends M-002 with:
+  - Candidate sample replay (VCP, event catalyst, fund flow, liquidity, no-strategy, risk)
+  - Ready queue status from TASKS.md
+  - Test results summary from test log files
+  - "任务池不足" warning when ready queue is empty
+
+Usage:
+    python scripts/summarize_auto_dev_runs.py [--date YYYY-MM-DD] [--dry-run] [--repo-dir PATH]
+                                              [--with-sample-replay]
+
+Constraints:
+    - Read-only: only reads docs/task_runs/, docs/reviews/, git log, TASKS.md
+    - No model calls, no stock analysis
+    - No API keys or sensitive logs in output
+    - Redacts any leaked keys from included content
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+
+_REDACT_PATTERNS = [
+    (re.compile(r"sk-[A-Za-z0-9_-]{20,}"), "[REDACTED_API_KEY]"),
+    (re.compile(r"(api[_-]?key[=:]\s*)\S+", re.IGNORECASE), r"\1[REDACTED]"),
+    (re.compile(r"(authorization:\s*bearer\s+)\S+", re.IGNORECASE), r"\1[REDACTED]"),
+    (re.compile(r"(token[=:]\s*)\S+", re.IGNORECASE), r"\1[REDACTED]"),
+    (re.compile(r"(password[=:]\s*)\S+", re.IGNORECASE), r"\1[REDACTED]"),
+    (re.compile(r"(secret[=:]\s*)\S+", re.IGNORECASE), r"\1[REDACTED]"),
+]
+
+
+def redact(text: str) -> str:
+    for pat, repl in _REDACT_PATTERNS:
+        text = pat.sub(repl, text)
+    return text
+
+
+# ── [V-002] nightly_acceptance_report: Ready queue parsing ──
+
+def parse_ready_queue(tasks_md_path: Path) -> list[dict[str, str]]:
+    """Parse docs/TASKS.md to extract tasks with status=ready.
+
+    Returns list of dicts with keys: task_id, title, priority.
+    """
+    if not tasks_md_path.exists():
+        return []
+
+    ready_tasks: list[dict[str, str]] = []
+    text = tasks_md_path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+
+    current_task_id = ""
+    current_title = ""
+    current_priority = ""
+    current_status = ""
+
+    for line in lines:
+        header_match = re.match(r"^###\s+([A-Z]+-\d+)\s*:\s*(.+)$", line)
+        if header_match:
+            if current_task_id and current_status == "ready":
+                ready_tasks.append({
+                    "task_id": current_task_id,
+                    "title": current_title.strip(),
+                    "priority": current_priority,
+                })
+            current_task_id = header_match.group(1)
+            current_title = header_match.group(2)
+            current_priority = ""
+            current_status = ""
+            continue
+
+        if current_task_id:
+            status_match = re.match(r"^-\s+\*\*状态\*\*\s*[:：]\s*(.+)$", line)
+            if status_match:
+                current_status = status_match.group(1).strip()
+            priority_match = re.match(r"^-\s+\*\*优先级\*\*\s*[:：]\s*(.+)$", line)
+            if priority_match:
+                current_priority = priority_match.group(1).strip()
+
+    if current_task_id and current_status == "ready":
+        ready_tasks.append({
+            "task_id": current_task_id,
+            "title": current_title.strip(),
+            "priority": current_priority,
+        })
+
+    return ready_tasks
+
+
+# ── [V-002] nightly_acceptance_report: Test log parsing ──
+
+def parse_test_summary_from_logs(run: TaskRun) -> dict[str, int]:
+    """Parse test result counts from trace files in a task run.
+
+    Looks for pytest-style output lines like 'X passed, Y failed, Z skipped'.
+    Returns dict with passed/failed/skipped/error counts.
+    """
+    summary = {"passed": 0, "failed": 0, "skipped": 0, "errors": 0, "raw_line": ""}
+
+    for trace_name in run.trace_files:
+        if not trace_name.startswith("tests-"):
+            continue
+        trace_path = run.path / trace_name
+        if not trace_path.exists():
+            continue
+        content = trace_path.read_text(encoding="utf-8", errors="replace")
+        for line in reversed(content.splitlines()):
+            line = line.strip()
+            m = re.match(r"^(\d+) passed", line)
+            if m:
+                summary["passed"] = int(m.group(1))
+                fm = re.search(r"(\d+) failed", line)
+                if fm:
+                    summary["failed"] = int(fm.group(1))
+                sm = re.search(r"(\d+) skipped", line)
+                if sm:
+                    summary["skipped"] = int(sm.group(1))
+                em = re.search(r"(\d+) error", line)
+                if em:
+                    summary["errors"] = int(em.group(1))
+                summary["raw_line"] = line
+                return summary
+
+    return summary
+
+
+# ── [V-002] nightly_acceptance_report: Candidate sample replay ──
+
+def run_sample_replay() -> list[dict]:
+    """Run TradeFlow candidate sample replay using false_positive_audit fixtures.
+
+    Returns list of dicts with fixture name, description, and audit result.
+    """
+    try:
+        from tradingagents.tradeflow.false_positive_audit import (
+            generate_fixture_samples,
+            replay_fixtures,
+        )
+    except ImportError:
+        return []
+
+    fixtures = generate_fixture_samples()
+    results = replay_fixtures(fixtures)
+    return results
+
+
+def format_sample_replay(replay_results: list[dict]) -> str:
+    """Format sample replay results into a markdown section."""
+    if not replay_results:
+        return ""
+
+    lines = ["## 候选样本回放", ""]
+    lines.append("| 样本 | 描述 | 分类 | 正误判 | 匹配 |")
+    lines.append("|------|------|------|--------|------|")
+
+    all_match = True
+    for r in replay_results:
+        name = r.get("fixture_name", "?")
+        desc = r.get("description", "")[:40]
+        category = r.get("actual_category", r.get("actual_subcategory", ""))
+        fp_type = r.get("actual_fp_type", r.get("actual_fn_type", ""))
+        cat_match = r.get("category_match", r.get("subcategory_match", None))
+        fp_match = r.get("fp_match", r.get("fn_match", None))
+
+        if cat_match is not None and fp_match is not None:
+            match_str = "PASS" if (cat_match and fp_match) else "FAIL"
+        elif cat_match is not None:
+            match_str = "PASS" if cat_match else "FAIL"
+        else:
+            match_str = "N/A"
+
+        if match_str == "FAIL":
+            all_match = False
+
+        lines.append(f"| {name} | {desc} | {category} | {fp_type} | {match_str} |")
+
+    lines.append("")
+    if all_match:
+        lines.append("> 所有样本回放通过，候选池质量基线稳定。")
+    else:
+        lines.append("> **注意**: 部分样本回放不匹配，请检查候选策略或审计逻辑。")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+@dataclass
+class TaskRun:
+    run_id: str
+    path: Path
+    task_id: str = ""
+    task_title: str = ""
+    priority: str = ""
+    status: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+    git_head: str = ""
+    rounds: int = 0
+    test_commands: str = ""
+    reason: str = ""
+    review_file: str = ""
+    has_summary: bool = False
+    summary_content: str = ""
+    trace_files: list[str] = field(default_factory=list)
+
+
+def parse_task_md(path: Path) -> dict[str, str]:
+    meta: dict[str, str] = {}
+    if not path.exists():
+        return meta
+    text = path.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("- ") and ":" in line:
+            key, _, val = line[2:].partition(":")
+            meta[key.strip().lower().replace(" ", "_")] = val.strip()
+    return meta
+
+
+def parse_summary_md(path: Path) -> dict[str, str]:
+    meta: dict[str, str] = {}
+    if not path.exists():
+        return meta
+    text = path.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("- ") and ":" in line:
+            key, _, val = line[2:].partition(":")
+            meta[key.strip().lower().replace(" ", "_")] = val.strip()
+    return meta
+
+
+def collect_trace_files(run_dir: Path) -> list[str]:
+    traces: list[str] = []
+    skip = {"task.md", "summary.md"}
+    for f in sorted(run_dir.iterdir()):
+        if f.is_file() and f.name not in skip:
+            traces.append(f.name)
+    return traces
+
+
+def scan_task_runs(task_runs_dir: Path, target_date: Optional[str] = None) -> list[TaskRun]:
+    if not task_runs_dir.exists():
+        return []
+
+
+    runs: list[TaskRun] = []
+    for d in sorted(task_runs_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        parts = d.name.split("-")
+        date_part = None
+        for i, p in enumerate(parts):
+            if re.match(r"^\d{8}$", p) and i + 1 < len(parts) and re.match(r"^\d{6}$", parts[i + 1]):
+                date_part = f"{p[:4]}-{p[4:6]}-{p[6:8]}"
+                break
+
+        if target_date and date_part != target_date:
+            continue
+
+        task_md = d / "task.md"
+        summary_md = d / "summary.md"
+
+        task_meta = parse_task_md(task_md)
+        summary_meta = parse_summary_md(summary_md)
+
+        task_id = task_meta.get("task", "")
+        task_title = ""
+        if "—" in task_id:
+            task_id, task_title = task_id.split("—", 1)
+            task_id = task_id.strip()
+            task_title = task_title.strip()
+
+        summary_content = ""
+        if summary_md.exists():
+            summary_content = redact(summary_md.read_text(encoding="utf-8"))
+
+        run = TaskRun(
+            run_id=d.name,
+            path=d,
+            task_id=task_id,
+            task_title=task_title,
+            priority=task_meta.get("priority", ""),
+            status=task_meta.get("status", ""),
+            started_at=task_meta.get("started_at", ""),
+            git_head=task_meta.get("git_head", ""),
+            test_commands=task_meta.get("test_commands", ""),
+            has_summary=summary_md.exists(),
+            summary_content=summary_content,
+            trace_files=collect_trace_files(d),
+        )
+
+        if summary_meta:
+            run.finished_at = summary_meta.get("finished_at", "")
+            run.rounds = int(summary_meta.get("rounds", "0") or "0")
+            run.reason = redact(summary_meta.get("reason", ""))
+            run.review_file = summary_meta.get("review_file", "")
+            final_status = summary_meta.get("final_status", "")
+            if final_status:
+                run.status = final_status
+
+        runs.append(run)
+
+    return runs
+
+
+def get_git_log_for_date(repo_dir: Path, target_date: str) -> list[dict[str, str]]:
+    try:
+        after = f"{target_date}T00:00:00"
+        before_suffix = target_date + "T23:59:59"
+        result = subprocess.run(
+            [
+                "git", "log",
+                "--after", after,
+                "--before", before_suffix,
+                "--pretty=format:%h|%s|%an|%ai",
+                "--no-merges",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=repo_dir,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return []
+        commits = []
+        for line in result.stdout.strip().splitlines():
+            if "|" not in line:
+                continue
+            parts = line.split("|", 3)
+            if len(parts) >= 4:
+                commits.append({
+                    "hash": parts[0],
+                    "message": parts[1],
+                    "author": parts[2],
+                    "date": parts[3],
+                })
+        return commits
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return []
+
+
+def collect_reviews(reviews_dir: Path, target_date: Optional[str] = None) -> list[dict[str, str]]:
+    reviews: list[dict[str, str]] = []
+    if not reviews_dir.exists():
+        return reviews
+    for f in sorted(reviews_dir.iterdir()):
+        if not f.is_file():
+            continue
+        date_match = re.search(r"(\d{8})", f.name)
+        file_date = None
+        if date_match:
+            raw = date_match.group(1)
+            file_date = f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+        if target_date and file_date != target_date:
+            continue
+        content = redact(f.read_text(encoding="utf-8"))
+        lines = content.splitlines()
+        first_lines = "\n".join(lines[:20])
+        reviews.append({
+            "file": f.name,
+            "date": file_date or "",
+            "preview": first_lines,
+        })
+    return reviews
+
+
+def generate_report(
+    runs: list[TaskRun],
+    commits: list[dict[str, str]],
+    reviews: list[dict[str, str]],
+    target_date: str,
+    ready_queue: Optional[list[dict[str, str]]] = None,  # [V-002]
+    replay_results: Optional[list[dict]] = None,  # [V-002]
+) -> str:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    lines: list[str] = []
+    lines.append(f"# 自动开发日报 — {target_date}")
+    lines.append("")
+    lines.append(f"> 生成时间: {now}  ")
+    lines.append(f"> 运行档案数: {len(runs)}  ")
+    lines.append(f"> 提交数: {len(commits)}  ")
+    lines.append(f"> Review 数: {len(reviews)}  ")
+    lines.append("")
+
+    if ready_queue is not None:  # [V-002]
+        lines.append(f"> Ready 队列: {len(ready_queue)} 个任务  ")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    # Summary table
+    pass_count = sum(1 for r in runs if r.status == "PASS")
+    fail_count = sum(1 for r in runs if r.status in ("NEEDS_HUMAN", "FAIL"))
+    other_count = len(runs) - pass_count - fail_count
+
+    lines.append("## 总览")
+    lines.append("")
+    lines.append(f"| 指标 | 值 |")
+    lines.append(f"|------|------|")
+    lines.append(f"| 任务运行 | {len(runs)} |")
+    lines.append(f"| PASS | {pass_count} |")
+    lines.append(f"| FAIL/NEEDS_HUMAN | {fail_count} |")
+    lines.append(f"| 其他 | {other_count} |")
+    lines.append(f"| 提交 | {len(commits)} |")
+    lines.append("")
+
+    # Task runs detail
+    if runs:
+        lines.append("## 任务运行详情")
+        lines.append("")
+        for run in runs:
+            status_icon = "PASS" if run.status == "PASS" else ("NEEDS_HUMAN" if run.status == "NEEDS_HUMAN" else run.status)
+            lines.append(f"### {run.run_id}")
+            lines.append("")
+            lines.append(f"- **任务**: {run.task_id} — {run.task_title}")
+            lines.append(f"- **优先级**: {run.priority}")
+            lines.append(f"- **最终状态**: {status_icon}")
+            lines.append(f"- **Git HEAD**: {run.git_head}")
+            lines.append(f"- **轮次**: {run.rounds}")
+            if run.started_at:
+                lines.append(f"- **开始时间**: {run.started_at}")
+            if run.finished_at:
+                lines.append(f"- **结束时间**: {run.finished_at}")
+            if run.test_commands:
+                lines.append(f"- **测试命令**: `{run.test_commands}`")
+            if run.reason:
+                lines.append(f"- **失败原因**: {redact(run.reason)}")
+            if run.review_file:
+                lines.append(f"- **Review**: {run.review_file}")
+            if run.trace_files:
+                lines.append(f"- **Trace 文件**: {', '.join(run.trace_files)}")
+            lines.append("")
+
+            if run.has_summary and run.summary_content:
+                safe_summary = redact(run.summary_content)
+                lines.append("<details>")
+                lines.append(f"<summary>summary.md</summary>")
+                lines.append("")
+                lines.append("```")
+                lines.append(safe_summary.strip())
+                lines.append("```")
+                lines.append("")
+                lines.append("</details>")
+                lines.append("")
+
+    # Commits
+    if commits:
+        lines.append("## 提交记录")
+        lines.append("")
+        lines.append("| Hash | Message | Author | Date |")
+        lines.append("|------|---------|--------|------|")
+        for c in commits:
+            msg = c["message"].replace("|", "\\|")
+            lines.append(f"| {c['hash']} | {msg} | {c['author']} | {c['date'][:16]} |")
+        lines.append("")
+
+    # Reviews
+    if reviews:
+        lines.append("## Codex Reviews")
+        lines.append("")
+        for rv in reviews:
+            lines.append(f"### {rv['file']}")
+            lines.append("")
+            lines.append("<details>")
+            lines.append("<summary>预览</summary>")
+            lines.append("")
+            lines.append("```")
+            lines.append(rv["preview"])
+            lines.append("```")
+            lines.append("")
+            lines.append("</details>")
+            lines.append("")
+
+    # Risks
+    lines.append("## 风险与注意事项")
+    lines.append("")
+    risk_items: list[str] = []
+    for run in runs:
+        if run.status in ("NEEDS_HUMAN", "FAIL"):
+            risk_items.append(f"- **{run.task_id}** 需要人工介入: {redact(run.reason)[:200]}")
+    if not risk_items:
+        risk_items.append("- 无特殊风险")
+    lines.extend(risk_items)
+    lines.append("")
+
+    # Next steps
+    lines.append("## 下一步")
+    lines.append("")
+    if fail_count > 0:
+        lines.append("- 优先处理 NEEDS_HUMAN 任务")
+    lines.append("- 检查 `docs/TASKS.md` 中下一个 `ready` 任务")
+    lines.append("- 确认测试基线未被破坏")
+    lines.append("")
+
+    # [V-002] nightly_acceptance_report: Test results summary
+    if runs:
+        lines.append("## 测试结果汇总")
+        lines.append("")
+        for run in runs:
+            test_summary = parse_test_summary_from_logs(run)
+            if test_summary["raw_line"]:
+                lines.append(f"- **{run.task_id}**: {test_summary['passed']} passed, "
+                             f"{test_summary['failed']} failed, {test_summary['skipped']} skipped")
+            else:
+                lines.append(f"- **{run.task_id}**: 无测试日志")
+        lines.append("")
+
+    # [V-002] nightly_acceptance_report: Ready queue
+    if ready_queue is not None:
+        lines.append("## Ready 队列")
+        lines.append("")
+        if not ready_queue:
+            lines.append("> **任务池不足**: 当前无 `ready` 状态任务，夜间 cron 不应空转。")
+            lines.append("> 请人工添加新任务到 `docs/TASKS.md`，或将 `proposed` 任务转为 `ready`。")
+        else:
+            lines.append("| 任务ID | 标题 | 优先级 |")
+            lines.append("|--------|------|--------|")
+            for t in ready_queue:
+                lines.append(f"| {t['task_id']} | {t['title']} | {t['priority']} |")
+        lines.append("")
+
+    # [V-002] nightly_acceptance_report: Candidate sample replay
+    if replay_results:
+        replay_section = format_sample_replay(replay_results)
+        if replay_section:
+            lines.append(replay_section)
+
+    return "\n".join(lines)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="[M-002/V-002] Summarize auto dev runs into a daily report")
+    parser.add_argument("--date", default=None, help="Target date YYYY-MM-DD (default: today)")
+    parser.add_argument("--dry-run", action="store_true", help="Print report to stdout without writing file")
+    parser.add_argument("--repo-dir", default=None, help="Repository root directory")
+    parser.add_argument("--with-sample-replay", action="store_true",  # [V-002]
+                        help="Include TradeFlow candidate sample replay in report")
+    args = parser.parse_args()
+
+    repo_dir = Path(args.repo_dir) if args.repo_dir else Path(__file__).resolve().parent.parent
+    task_runs_dir = repo_dir / "docs" / "task_runs"
+    reviews_dir = repo_dir / "docs" / "reviews"
+    reports_dir = repo_dir / "docs" / "auto_dev_reports"
+    tasks_md_path = repo_dir / "docs" / "TASKS.md"  # [V-002]
+
+    target_date = args.date or datetime.now().strftime("%Y-%m-%d")
+
+    runs = scan_task_runs(task_runs_dir, target_date=target_date)
+    commits = get_git_log_for_date(repo_dir, target_date)
+    reviews = collect_reviews(reviews_dir, target_date=target_date)
+
+    ready_queue = parse_ready_queue(tasks_md_path)  # [V-002]
+
+    replay_results = None  # [V-002]
+    if args.with_sample_replay:
+        replay_results = run_sample_replay()
+
+    report = generate_report(runs, commits, reviews, target_date,
+                             ready_queue=ready_queue, replay_results=replay_results)  # [V-002]
+
+    report = redact(report)  # [V-002] final redaction pass
+
+    if args.dry_run:
+        print(report)
+        return
+
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    report_path = reports_dir / f"{target_date}.md"
+    report_path.write_text(report, encoding="utf-8")
+    print(f"Report written to {report_path}")
+
+
+if __name__ == "__main__":
+    main()
+
+exec
+/bin/zsh -lc "nl -ba scripts/summarize_auto_dev_runs.py | sed -n '92,135p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    92	            if priority_match:
+    93	                current_priority = priority_match.group(1).strip()
+    94	
+    95	    if current_task_id and current_status == "ready":
+    96	        ready_tasks.append({
+    97	            "task_id": current_task_id,
+    98	            "title": current_title.strip(),
+    99	            "priority": current_priority,
+   100	        })
+   101	
+   102	    return ready_tasks
+   103	
+   104	
+   105	# ── [V-002] nightly_acceptance_report: Test log parsing ──
+   106	
+   107	def parse_test_summary_from_logs(run: TaskRun) -> dict[str, int]:
+   108	    """Parse test result counts from trace files in a task run.
+   109	
+   110	    Looks for pytest-style output lines like 'X passed, Y failed, Z skipped'.
+   111	    Returns dict with passed/failed/skipped/error counts.
+   112	    """
+   113	    summary = {"passed": 0, "failed": 0, "skipped": 0, "errors": 0, "raw_line": ""}
+   114	
+   115	    for trace_name in run.trace_files:
+   116	        if not trace_name.startswith("tests-"):
+   117	            continue
+   118	        trace_path = run.path / trace_name
+   119	        if not trace_path.exists():
+   120	            continue
+   121	        content = trace_path.read_text(encoding="utf-8", errors="replace")
+   122	        for line in reversed(content.splitlines()):
+   123	            line = line.strip()
+   124	            m = re.match(r"^(\d+) passed", line)
+   125	            if m:
+   126	                summary["passed"] = int(m.group(1))
+   127	                fm = re.search(r"(\d+) failed", line)
+   128	                if fm:
+   129	                    summary["failed"] = int(fm.group(1))
+   130	                sm = re.search(r"(\d+) skipped", line)
+   131	                if sm:
+   132	                    summary["skipped"] = int(sm.group(1))
+   133	                em = re.search(r"(\d+) error", line)
+   134	                if em:
+   135	                    summary["errors"] = int(em.group(1))
+
+exec
+/bin/zsh -lc "nl -ba scripts/summarize_auto_dev_runs.py | sed -n '135,145p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   135	                    summary["errors"] = int(em.group(1))
+   136	                summary["raw_line"] = line
+   137	                return summary
+   138	
+   139	    return summary
+   140	
+   141	
+   142	# ── [V-002] nightly_acceptance_report: Candidate sample replay ──
+   143	
+   144	def run_sample_replay() -> list[dict]:
+   145	    """Run TradeFlow candidate sample replay using false_positive_audit fixtures.
+
+exec
+/bin/zsh -lc "find .auto_dev.lock -maxdepth 3 -type f -print -exec sed -n '1,80p' {} \\; ; ls -la .auto_dev.lock" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+.auto_dev.lock/owner
+pid=20911
+started_at=2026-05-30_00:27:21
+repo=/Users/maybee/TradingAgents-AShare
+total 8
+drwx------   3 maybee  staff    96 May 30 00:27 .
+drwx------  52 maybee  staff  1664 May 30 00:57 ..
+-rw-------   1 maybee  staff    81 May 30 00:27 owner
+
+exec
+/bin/zsh -lc 'grep -R "auto_dev.lock" -n scripts . | head -20' in /Users/maybee/TradingAgents-AShare
+ succeeded in 4865ms:
+scripts/auto_dev_loop.sh:28:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+Binary file ./tests/__pycache__/test_auto_dev_loop_static.cpython-312-pytest-9.0.2.pyc matches
+./tests/test_auto_dev_loop_static.py:72:    assert not (repo / ".auto_dev.lock").exists()
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:292:  4. 加锁文件例如 `.auto_dev.lock` 或 `docs/task_runs/.lock`，脚本异常退出时要有清理/提示机制。
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:497:  - `scripts/auto_dev_loop.sh` — 新增 `.auto_dev.lock` 目录锁、`update_task_status()` 状态流转函数；非 dry-run 领取后标记 `in_progress`，失败标记 `blocked — NEEDS_HUMAN`，通过后用独立文档提交写入准确 commit hash；修复 `OPENCODE_EXIT` 在中文括号旁触发的 `set -u` 变量展开问题
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:630:?? .auto_dev.lock/
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:2550:/bin/zsh -lc "sed -n '1,130p' tradingagents/tradeflow/universe.py; sed -n '1,130p' tests/test_tradeflow_schemas.py; git diff -- docs/TASKS.md docs/DEVLOG.md; find docs/task_runs/S-001-20260529-124731 -maxdepth 2 -type f -print -exec sed -n '1,120p' {} \\; ; find .auto_dev.lock -maxdepth 2 -type f -print -exec sed -n '1,80p' {} \\;" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3040:.auto_dev.lock/owner
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3375:/bin/zsh -lc "grep -R \"auto_dev.lock\\|LOCK\" -n scripts/auto_dev_loop.sh .gitignore | head -80; ls -la .auto_dev.lock" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3377:scripts/auto_dev_loop.sh:27:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3425:/bin/zsh -lc "nl -ba tradingagents/tradeflow/candidate_engine.py | sed -n '306,320p'; nl -ba .auto_dev.lock/owner" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3474:- [P2] Remove stale auto-dev lock file — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3475:  If this untracked lock directory is committed or left in place after the task completes, `scripts/auto_dev_loop.sh` exits as soon as it sees `.auto_dev.lock`, so the next automatic run cannot claim S-002 or any other ready task. The lock artifact should be removed from the patch/workspace once the run is finished.
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3483:- [P2] Remove stale auto-dev lock file — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3484:  If this untracked lock directory is committed or left in place after the task completes, `scripts/auto_dev_loop.sh` exits as soon as it sees `.auto_dev.lock`, so the next automatic run cannot claim S-002 or any other ready task. The lock artifact should be removed from the patch/workspace once the run is finished.
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:292:  4. 加锁文件例如 `.auto_dev.lock` 或 `docs/task_runs/.lock`，脚本异常退出时要有清理/提示机制。
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:626:?? .auto_dev.lock/
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:1249:/bin/zsh -lc "find .auto_dev.lock docs/task_runs/M-008-20260529-142207 -maxdepth 3 -type f -print -exec sed -n '1,220p' {} \\;" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:1251:.auto_dev.lock/owner
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2521:/bin/zsh -lc "grep -R \"auto_dev.lock\\|\\.auto_dev.lock\" -n scripts docs tests | head -50; nl -ba .auto_dev.lock/owner" in /Users/maybee/TradingAgents-AShare
+
+exec
+/bin/zsh -lc "sed -n '1,60p' scripts/auto_dev_loop.sh; nl -ba .auto_dev.lock/owner" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+#!/usr/bin/env bash
+# AUTO-002: 自动开发闭环 v1.3 可靠性补修
+# 用法: ./scripts/auto_dev_loop.sh [--dry-run]
+#
+# 约束:
+#   - 只执行一轮
+#   - 只处理 docs/TASKS.md 中 status=ready 的最高优先级可开发任务
+#   - 工作区不干净时退出
+#   - 不允许 push / PR / merge
+#   - 单任务最多 2 次修复
+#   - 不改 prompts/，不写生产 tradingagents.db
+#   - 精确提交：只允许 tests/ tradingagents/ docs/ 下的文件
+#   - 排除临时文件：*.backup, *_original.py, *_fixed.py, patch_*.py, *.tmp, *.log, __pycache__
+#   - 排除根目录 *.py（非 tests/ 和 tradingagents/ 下）
+#   - 失败时不得自动提交任何文件
+#   - DEVLOG/TASKS 在 commit 前完成，commit 后不再修改文件
+#   - Review 输出保存到 docs/reviews/
+#   - 每个任务运行过程保存到 docs/task_runs/<task>-<timestamp>/
+
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TASKS_FILE="$REPO_DIR/docs/TASKS.md"
+DEVLOG_FILE="$REPO_DIR/docs/DEVLOG.md"
+REVIEW_DIR="$REPO_DIR/docs/reviews"
+TASK_RUN_ROOT="$REPO_DIR/docs/task_runs"
+LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+MAX_FIX_ROUNDS=2
+DRY_RUN=false
+PROMPT_FILE=""
+OPENCODE_LOG=""
+REVIEW_FILE=""
+HAVE_LOCK=false
+
+# 智谱 API Key（用于额度检查）
+ZAI_API_KEY="${ZAI_API_KEY:-}"
+if [[ -z "$ZAI_API_KEY" ]]; then
+    OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
+    if [[ -f "$OPENCLAW_CONFIG" ]]; then
+        ZAI_API_KEY=$(python3 -c "
+import json
+with open('$OPENCLAW_CONFIG') as f:
+    cfg = json.load(f)
+providers = cfg.get('models', {}).get('providers', {})
+for name, prov in providers.items():
+    if 'zai' in name.upper():
+        print(prov.get('apiKey', ''))
+        break
+" 2>/dev/null || echo "")
+    fi
+fi
+export ZAI_API_KEY
+
+# ─── 参数解析 ─────────────────────────────────────────
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=true ;;
+        -h|--help) echo "用法: $0 [--dry-run]"; exit 0 ;;
+    esac
+     1	pid=20911
+     2	started_at=2026-05-30_00:27:21
+     3	repo=/Users/maybee/TradingAgents-AShare
+
+exec
+/bin/zsh -lc 'grep -n "LOCK_DIR" -n scripts/auto_dev_loop.sh | head -20' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+28:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+86:        rm -rf "$LOCK_DIR" 2>/dev/null || true
+94:    if mkdir "$LOCK_DIR" 2>/dev/null; then
+100:        } > "$LOCK_DIR/owner"
+104:    err "检测到自动开发锁，退出以避免重复领取任务：$LOCK_DIR"
+105:    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+153:if [ -d "$LOCK_DIR" ]; then
+154:    err "检测到自动开发锁，退出以避免重复领取任务：$LOCK_DIR"
+155:    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+
+exec
+/bin/zsh -lc "sed -n '76,110p' scripts/auto_dev_loop.sh; sed -n '145,158p' scripts/auto_dev_loop.sh" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    # 持久化日志前做基础密钥脱敏，避免把本地 API key 写入仓库。
+    sed -E \
+        -e 's/sk-[A-Za-z0-9_-]{20,}/[REDACTED_API_KEY]/g' \
+        -e 's/(api[_-]?key[=:][[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
+        -e 's/(authorization:[[:space:]]*bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig'
+}
+
+cleanup() {
+    rm -f "$PROMPT_FILE" "$OPENCODE_LOG" "$REVIEW_FILE" 2>/dev/null || true
+    if [ "$HAVE_LOCK" = true ]; then
+        rm -rf "$LOCK_DIR" 2>/dev/null || true
+    fi
+}
+
+trap cleanup EXIT
+
+acquire_lock() {
+    # [INF-001] task_claim_lock
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+        HAVE_LOCK=true
+        {
+            echo "pid=$$"
+            echo "started_at=$(date +%Y-%m-%d_%H:%M:%S)"
+            echo "repo=$REPO_DIR"
+        } > "$LOCK_DIR/owner"
+        return 0
+    fi
+
+    err "检测到自动开发锁，退出以避免重复领取任务：$LOCK_DIR"
+    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+    exit 1
+}
+
+update_task_status() {
+    # [INF-001] task_claim_lock
+}
+
+# ─── 0. 前置检查 ──────────────────────────────────────
+log "=== AUTO-002 自动开发闭环 v1.3 ==="
+log "仓库: $REPO_DIR"
+
+mkdir -p "$REVIEW_DIR" "$TASK_RUN_ROOT"
+
+if [ -d "$LOCK_DIR" ]; then
+    err "检测到自动开发锁，退出以避免重复领取任务：$LOCK_DIR"
+    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+    exit 1
+fi
+
+
+exec
+/bin/zsh -lc 'git diff -- .zai_quota_state.json; cat .zai_quota_state.json' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/.zai_quota_state.json b/.zai_quota_state.json
+index f54443e..33b8316 100644
+--- a/.zai_quota_state.json
++++ b/.zai_quota_state.json
+@@ -1,8 +1,5 @@
+ {
+-  "last_check": "2026-05-29T19:31:00+08:00",
+-  "status": "EXHAUSTED",
+-  "error_code": "1308",
+-  "reset_time": "2026-05-29 21:49:56",
+-  "message": "已达到 5 小时的使用上限",
+-  "model": "glm-5.1"
+-}
++  "status": "OK",
++  "http_code": 200,
++  "last_check": "2026-05-30T01:02:23+08:00"
++}
+\ No newline at end of file
+{
+  "status": "OK",
+  "http_code": 200,
+  "last_check": "2026-05-30T01:02:23+08:00"
+}
+exec
+/bin/zsh -lc 'grep -R "zai_quota_state" -n . | head -20' in /Users/maybee/TradingAgents-AShare
+ succeeded in 5714ms:
+./docs/task_runs/M-004-20260530-004038/codex-review-round1.txt:625: M .zai_quota_state.json
+./docs/task_runs/M-004-20260530-004038/codex-review-round1.txt:649: .zai_quota_state.json                              | 11 ++--
+./docs/task_runs/M-004-20260530-004038/opencode-round1.txt:2367:	修改：     .zai_quota_state.json
+./docs/task_runs/M-003-20260530-002721/codex-review-round2.txt:611: M .zai_quota_state.json
+./docs/task_runs/M-003-20260530-002721/codex-review-round2.txt:1683: .zai_quota_state.json                       |  11 +-
+./docs/task_runs/M-003-20260530-002721/codex-review-round2.txt:4340:/bin/zsh -lc "git diff -- .zai_quota_state.json && ls -la .auto_dev.lock && find .auto_dev.lock -maxdepth 2 -type f -print -exec sed -n '1,120p' {} \\;" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/M-003-20260530-002721/codex-review-round2.txt:4342:diff --git a/.zai_quota_state.json b/.zai_quota_state.json
+./docs/task_runs/M-003-20260530-002721/codex-review-round2.txt:4344:--- a/.zai_quota_state.json
+./docs/task_runs/M-003-20260530-002721/codex-review-round2.txt:4345:+++ b/.zai_quota_state.json
+./docs/reviews/M-004-20260530-round1.txt:625: M .zai_quota_state.json
+./docs/reviews/M-004-20260530-round1.txt:649: .zai_quota_state.json                              | 11 ++--
+./docs/reviews/M-003-20260530-round2.txt:611: M .zai_quota_state.json
+./docs/reviews/M-003-20260530-round2.txt:1683: .zai_quota_state.json                       |  11 +-
+./docs/reviews/M-003-20260530-round2.txt:4340:/bin/zsh -lc "git diff -- .zai_quota_state.json && ls -la .auto_dev.lock && find .auto_dev.lock -maxdepth 2 -type f -print -exec sed -n '1,120p' {} \\;" in /Users/maybee/TradingAgents-AShare
+./docs/reviews/M-003-20260530-round2.txt:4342:diff --git a/.zai_quota_state.json b/.zai_quota_state.json
+./docs/reviews/M-003-20260530-round2.txt:4344:--- a/.zai_quota_state.json
+./docs/reviews/M-003-20260530-round2.txt:4345:+++ b/.zai_quota_state.json
+./scripts/auto_dev_loop.sh:251:    with open('${REPO_DIR}/.zai_quota_state.json', 'w') as f:
+./.git/logs/HEAD:153:fadc0bd47cb25981d1d14ad14c8dacdd7202a1f3 01ccc568496b0eed61995b838aad0c40d12730ce maybeemeng747-svg <maybeemeng747@gmail.com> 1780054381 +0800	commit: feat: auto_dev_loop saves quota state to .zai_quota_state.json
+./.git/logs/refs/heads/local/tradingagents-custom:141:fadc0bd47cb25981d1d14ad14c8dacdd7202a1f3 01ccc568496b0eed61995b838aad0c40d12730ce maybeemeng747-svg <maybeemeng747@gmail.com> 1780054381 +0800	commit: feat: auto_dev_loop saves quota state to .zai_quota_state.json
+
+exec
+/bin/zsh -lc "sed -n '220,270p' scripts/auto_dev_loop.sh" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        "test_cmds": test_cmds,
+        "body_start": m.start(),
+    })
+
+tasks.sort(key=lambda t: (t["priority_num"], t["body_start"]))
+
+if tasks:
+    t = tasks[0]
+    print(f"{t['id']}|{t['title']}|{t['priority']}|{','.join(t['test_cmds'])}")
+else:
+    print("NONE|||")
+PYEOF
+}
+
+# ─── 主循环：连续执行直到没有 ready 任务 ────────────────
+COMPLETED_TASKS=0
+FAILED_TASKS=0
+
+# 额度检查函数（智谱 API）
+check_zai_quota() {
+    if [[ -x "${SCRIPT_DIR}/check_zai_quota.sh" ]]; then
+        local result
+        result=$(ZAI_API_KEY="${ZAI_API_KEY:-}" bash "${SCRIPT_DIR}/check_zai_quota.sh" --json 2>/dev/null || echo '{"status":"ERROR"}')
+        local status
+        status=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','ERROR'))" 2>/dev/null || echo "ERROR")
+        # 保存额度状态到文件（供其他脚本读取）
+        echo "$result" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    data['last_check'] = '$(date -Iseconds)'
+    with open('${REPO_DIR}/.zai_quota_state.json', 'w') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+except: pass
+" 2>/dev/null || true
+        if [[ "$status" == "EXHAUSTED" ]]; then
+            local reset_time msg
+            reset_time=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('reset_time',''))" 2>/dev/null || echo "")
+            msg=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('message',''))" 2>/dev/null || echo "")
+            err "[QUOTA] 智谱 API 额度耗尽！"
+            [[ -n "$reset_time" ]] && err "[QUOTA] 下次刷新: $reset_time"
+            [[ -n "$msg" ]] && err "[QUOTA] 详情: $msg"
+            return 1
+        fi
+    fi
+    return 0
+}
+
+while true; do
+
+TASK_LINE=$(parse_ready_tasks)
+
+codex
+The patch adds useful reporting features, but the test-summary logic can report stale retry results, and the workspace includes a lock artifact that blocks subsequent automation runs.
+
+Full review comments:
+
+- [P2] Iterate test logs from newest round first — /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py:115-124
+  When a task is retried and has both `tests-round1.txt` and `tests-round2.txt`, `collect_trace_files()` supplies the sorted filenames and this loop returns the first matching pytest summary it sees, so the nightly report can publish stale round-1 results instead of the final retry. This is especially misleading for the V-002 acceptance report because a failed first round followed by a passing second round will still be summarized from round 1 whenever its summary starts with `passed`.
+
+- [P2] Remove stale auto-dev lock file — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+  If this untracked lock directory is left in the workspace or accidentally included in the patch, `scripts/auto_dev_loop.sh` exits immediately when it sees `.auto_dev.lock`, so the next nightly run cannot claim any `ready` task. This run artifact should be removed once the task finishes.
+The patch adds useful reporting features, but the test-summary logic can report stale retry results, and the workspace includes a lock artifact that blocks subsequent automation runs.
+
+Full review comments:
+
+- [P2] Iterate test logs from newest round first — /Users/maybee/TradingAgents-AShare/scripts/summarize_auto_dev_runs.py:115-124
+  When a task is retried and has both `tests-round1.txt` and `tests-round2.txt`, `collect_trace_files()` supplies the sorted filenames and this loop returns the first matching pytest summary it sees, so the nightly report can publish stale round-1 results instead of the final retry. This is especially misleading for the V-002 acceptance report because a failed first round followed by a passing second round will still be summarized from round 1 whenever its summary starts with `passed`.
+
+- [P2] Remove stale auto-dev lock file — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+  If this untracked lock directory is left in the workspace or accidentally included in the patch, `scripts/auto_dev_loop.sh` exits immediately when it sees `.auto_dev.lock`, so the next nightly run cannot claim any `ready` task. This run artifact should be removed once the task finishes.

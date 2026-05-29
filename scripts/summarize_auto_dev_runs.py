@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 # [M-002] auto_dev_report_index
+# [V-002] nightly_acceptance_report
 """
 Scan docs/task_runs/ and generate a nightly dev report in docs/auto_dev_reports/YYYY-MM-DD.md.
 
+V-002 extends M-002 with:
+  - Candidate sample replay (VCP, event catalyst, fund flow, liquidity, no-strategy, risk)
+  - Ready queue status from TASKS.md
+  - Test results summary from test log files
+  - "任务池不足" warning when ready queue is empty
+
 Usage:
     python scripts/summarize_auto_dev_runs.py [--date YYYY-MM-DD] [--dry-run] [--repo-dir PATH]
+                                              [--with-sample-replay]
 
 Constraints:
-    - Read-only: only reads docs/task_runs/, docs/reviews/, git log
+    - Read-only: only reads docs/task_runs/, docs/reviews/, git log, TASKS.md
     - No model calls, no stock analysis
     - No API keys or sensitive logs in output
     - Redacts any leaked keys from included content
@@ -31,6 +39,8 @@ _REDACT_PATTERNS = [
     (re.compile(r"(api[_-]?key[=:]\s*)\S+", re.IGNORECASE), r"\1[REDACTED]"),
     (re.compile(r"(authorization:\s*bearer\s+)\S+", re.IGNORECASE), r"\1[REDACTED]"),
     (re.compile(r"(token[=:]\s*)\S+", re.IGNORECASE), r"\1[REDACTED]"),
+    (re.compile(r"(password[=:]\s*)\S+", re.IGNORECASE), r"\1[REDACTED]"),
+    (re.compile(r"(secret[=:]\s*)\S+", re.IGNORECASE), r"\1[REDACTED]"),
 ]
 
 
@@ -38,6 +48,155 @@ def redact(text: str) -> str:
     for pat, repl in _REDACT_PATTERNS:
         text = pat.sub(repl, text)
     return text
+
+
+# ── [V-002] nightly_acceptance_report: Ready queue parsing ──
+
+def parse_ready_queue(tasks_md_path: Path) -> list[dict[str, str]]:
+    """Parse docs/TASKS.md to extract tasks with status=ready.
+
+    Returns list of dicts with keys: task_id, title, priority.
+    """
+    if not tasks_md_path.exists():
+        return []
+
+    ready_tasks: list[dict[str, str]] = []
+    text = tasks_md_path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+
+    current_task_id = ""
+    current_title = ""
+    current_priority = ""
+    current_status = ""
+
+    for line in lines:
+        header_match = re.match(r"^###\s+([A-Z]+-\d+)\s*:\s*(.+)$", line)
+        if header_match:
+            if current_task_id and current_status == "ready":
+                ready_tasks.append({
+                    "task_id": current_task_id,
+                    "title": current_title.strip(),
+                    "priority": current_priority,
+                })
+            current_task_id = header_match.group(1)
+            current_title = header_match.group(2)
+            current_priority = ""
+            current_status = ""
+            continue
+
+        if current_task_id:
+            status_match = re.match(r"^-\s+\*\*状态\*\*\s*[:：]\s*(.+)$", line)
+            if status_match:
+                current_status = status_match.group(1).strip()
+            priority_match = re.match(r"^-\s+\*\*优先级\*\*\s*[:：]\s*(.+)$", line)
+            if priority_match:
+                current_priority = priority_match.group(1).strip()
+
+    if current_task_id and current_status == "ready":
+        ready_tasks.append({
+            "task_id": current_task_id,
+            "title": current_title.strip(),
+            "priority": current_priority,
+        })
+
+    return ready_tasks
+
+
+# ── [V-002] nightly_acceptance_report: Test log parsing ──
+
+def parse_test_summary_from_logs(run: TaskRun) -> dict[str, int]:
+    """Parse test result counts from trace files in a task run.
+
+    Looks for pytest-style output lines like 'X passed, Y failed, Z skipped'.
+    Returns dict with passed/failed/skipped/error counts.
+    """
+    summary = {"passed": 0, "failed": 0, "skipped": 0, "errors": 0, "raw_line": ""}
+
+    for trace_name in run.trace_files:
+        if not trace_name.startswith("tests-"):
+            continue
+        trace_path = run.path / trace_name
+        if not trace_path.exists():
+            continue
+        content = trace_path.read_text(encoding="utf-8", errors="replace")
+        for line in reversed(content.splitlines()):
+            line = line.strip()
+            m = re.match(r"^(\d+) passed", line)
+            if m:
+                summary["passed"] = int(m.group(1))
+                fm = re.search(r"(\d+) failed", line)
+                if fm:
+                    summary["failed"] = int(fm.group(1))
+                sm = re.search(r"(\d+) skipped", line)
+                if sm:
+                    summary["skipped"] = int(sm.group(1))
+                em = re.search(r"(\d+) error", line)
+                if em:
+                    summary["errors"] = int(em.group(1))
+                summary["raw_line"] = line
+                return summary
+
+    return summary
+
+
+# ── [V-002] nightly_acceptance_report: Candidate sample replay ──
+
+def run_sample_replay() -> list[dict]:
+    """Run TradeFlow candidate sample replay using false_positive_audit fixtures.
+
+    Returns list of dicts with fixture name, description, and audit result.
+    """
+    try:
+        from tradingagents.tradeflow.false_positive_audit import (
+            generate_fixture_samples,
+            replay_fixtures,
+        )
+    except ImportError:
+        return []
+
+    fixtures = generate_fixture_samples()
+    results = replay_fixtures(fixtures)
+    return results
+
+
+def format_sample_replay(replay_results: list[dict]) -> str:
+    """Format sample replay results into a markdown section."""
+    if not replay_results:
+        return ""
+
+    lines = ["## 候选样本回放", ""]
+    lines.append("| 样本 | 描述 | 分类 | 正误判 | 匹配 |")
+    lines.append("|------|------|------|--------|------|")
+
+    all_match = True
+    for r in replay_results:
+        name = r.get("fixture_name", "?")
+        desc = r.get("description", "")[:40]
+        category = r.get("actual_category", r.get("actual_subcategory", ""))
+        fp_type = r.get("actual_fp_type", r.get("actual_fn_type", ""))
+        cat_match = r.get("category_match", r.get("subcategory_match", None))
+        fp_match = r.get("fp_match", r.get("fn_match", None))
+
+        if cat_match is not None and fp_match is not None:
+            match_str = "PASS" if (cat_match and fp_match) else "FAIL"
+        elif cat_match is not None:
+            match_str = "PASS" if cat_match else "FAIL"
+        else:
+            match_str = "N/A"
+
+        if match_str == "FAIL":
+            all_match = False
+
+        lines.append(f"| {name} | {desc} | {category} | {fp_type} | {match_str} |")
+
+    lines.append("")
+    if all_match:
+        lines.append("> 所有样本回放通过，候选池质量基线稳定。")
+    else:
+        lines.append("> **注意**: 部分样本回放不匹配，请检查候选策略或审计逻辑。")
+    lines.append("")
+
+    return "\n".join(lines)
 
 
 @dataclass
@@ -225,6 +384,8 @@ def generate_report(
     commits: list[dict[str, str]],
     reviews: list[dict[str, str]],
     target_date: str,
+    ready_queue: Optional[list[dict[str, str]]] = None,  # [V-002]
+    replay_results: Optional[list[dict]] = None,  # [V-002]
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -235,6 +396,10 @@ def generate_report(
     lines.append(f"> 运行档案数: {len(runs)}  ")
     lines.append(f"> 提交数: {len(commits)}  ")
     lines.append(f"> Review 数: {len(reviews)}  ")
+    lines.append("")
+
+    if ready_queue is not None:  # [V-002]
+        lines.append(f"> Ready 队列: {len(ready_queue)} 个任务  ")
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -343,20 +508,56 @@ def generate_report(
     lines.append("- 确认测试基线未被破坏")
     lines.append("")
 
+    # [V-002] nightly_acceptance_report: Test results summary
+    if runs:
+        lines.append("## 测试结果汇总")
+        lines.append("")
+        for run in runs:
+            test_summary = parse_test_summary_from_logs(run)
+            if test_summary["raw_line"]:
+                lines.append(f"- **{run.task_id}**: {test_summary['passed']} passed, "
+                             f"{test_summary['failed']} failed, {test_summary['skipped']} skipped")
+            else:
+                lines.append(f"- **{run.task_id}**: 无测试日志")
+        lines.append("")
+
+    # [V-002] nightly_acceptance_report: Ready queue
+    if ready_queue is not None:
+        lines.append("## Ready 队列")
+        lines.append("")
+        if not ready_queue:
+            lines.append("> **任务池不足**: 当前无 `ready` 状态任务，夜间 cron 不应空转。")
+            lines.append("> 请人工添加新任务到 `docs/TASKS.md`，或将 `proposed` 任务转为 `ready`。")
+        else:
+            lines.append("| 任务ID | 标题 | 优先级 |")
+            lines.append("|--------|------|--------|")
+            for t in ready_queue:
+                lines.append(f"| {t['task_id']} | {t['title']} | {t['priority']} |")
+        lines.append("")
+
+    # [V-002] nightly_acceptance_report: Candidate sample replay
+    if replay_results:
+        replay_section = format_sample_replay(replay_results)
+        if replay_section:
+            lines.append(replay_section)
+
     return "\n".join(lines)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="[M-002] Summarize auto dev runs into a daily report")
+    parser = argparse.ArgumentParser(description="[M-002/V-002] Summarize auto dev runs into a daily report")
     parser.add_argument("--date", default=None, help="Target date YYYY-MM-DD (default: today)")
     parser.add_argument("--dry-run", action="store_true", help="Print report to stdout without writing file")
     parser.add_argument("--repo-dir", default=None, help="Repository root directory")
+    parser.add_argument("--with-sample-replay", action="store_true",  # [V-002]
+                        help="Include TradeFlow candidate sample replay in report")
     args = parser.parse_args()
 
     repo_dir = Path(args.repo_dir) if args.repo_dir else Path(__file__).resolve().parent.parent
     task_runs_dir = repo_dir / "docs" / "task_runs"
     reviews_dir = repo_dir / "docs" / "reviews"
     reports_dir = repo_dir / "docs" / "auto_dev_reports"
+    tasks_md_path = repo_dir / "docs" / "TASKS.md"  # [V-002]
 
     target_date = args.date or datetime.now().strftime("%Y-%m-%d")
 
@@ -364,7 +565,16 @@ def main() -> None:
     commits = get_git_log_for_date(repo_dir, target_date)
     reviews = collect_reviews(reviews_dir, target_date=target_date)
 
-    report = generate_report(runs, commits, reviews, target_date)
+    ready_queue = parse_ready_queue(tasks_md_path)  # [V-002]
+
+    replay_results = None  # [V-002]
+    if args.with_sample_replay:
+        replay_results = run_sample_replay()
+
+    report = generate_report(runs, commits, reviews, target_date,
+                             ready_queue=ready_queue, replay_results=replay_results)  # [V-002]
+
+    report = redact(report)  # [V-002] final redaction pass
 
     if args.dry_run:
         print(report)

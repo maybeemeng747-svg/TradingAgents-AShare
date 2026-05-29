@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-05-30 | V-002: 夜间自动开发验收报告与候选样本回放
+
+- **执行者**：OpenCode
+- **任务**：V-002 — 为夜间自动开发增加固定样本回放和验收报告
+- **修改文件**：
+  - `scripts/summarize_auto_dev_runs.py` — [V-002] 扩展 M-002 夜间日报脚本，新增候选样本回放、Ready 队列解析、测试结果解析、敏感数据过滤
+    - `parse_ready_queue()` — 从 TASKS.md 解析 status=ready 的任务列表
+    - `parse_test_summary_from_logs()` — 从 task_runs 中的 tests-round*.txt 提取 passed/failed/skipped
+    - `run_sample_replay()` — 调用 false_positive_audit 的 8 个固定 fixture 进行候选池质量回放
+    - `format_sample_replay()` — 将回放结果格式化为 markdown 表格
+    - `generate_report()` 扩展 — 新增 ready_queue 和 replay_results 参数，输出测试汇总、Ready 队列（含"任务池不足"警告）、候选样本回放
+    - `redact()` 增强 — 新增 password/secret 脱敏模式
+    - `main()` 扩展 — 新增 `--with-sample-replay` 参数，最终报告整体脱敏
+  - `tests/test_v002_nightly_acceptance.py` — 新建，33 个测试覆盖：
+    - TestRedact (8): sk-key/api-key/bearer/token/password/secret/正常文本/环境变量 脱敏
+    - TestParseReadyQueue (5): 单个/多个/空/无文件/blocked+proposed 过滤
+    - TestParseTestSummaryFromLogs (5): 标准输出/含失败/无测试文件/含错误/最新轮次
+    - TestSampleReplay (5): 返回结果/覆盖 6 个必须场景/全部通过/markdown 格式/空回放
+    - TestGenerateReportV002 (9): 非空队列/空队列警告/无队列/含回放/含测试/无泄露/完整报告/队列计数
+    - TestDryRunIntegration (2): dry-run 含回放/dry-run 不含回放
+- **测试结果**：33 passed (V-002)；全项目 1570 passed, 17 skipped, 0 failed
+- **关键逻辑**：
+  - 候选样本回放复用 `false_positive_audit.generate_fixture_samples()` 的 8 个 fixture，覆盖：VCP 命中、事件催化、资金异动、流动性过滤、无策略命中、风险降权、证据缺口、资金单位未校验
+  - Ready 队列为空时报告必须显示"任务池不足"警告，防止 cron 空转
+  - 报告最终输出前经过整体 `redact()` 脱敏，防止 API key/secret 泄露
+  - `--with-sample-replay` 参数控制是否执行回放，默认关闭保持向后兼容
+- **风险点**：无；所有改动向后兼容，不影响现有 M-002 功能
+
 ## 2026-05-30 | M-004: TradeFlow 策略权重与阈值配置
 
 - **执行者**：OpenCode
@@ -254,3 +282,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/M-004-20260530-round1.txt
 - **运行档案**: docs/task_runs/M-004-20260530-004038/
+
+## 2026-05-30 | AUTO-002 自动开发闭环
+
+- **任务**: V-002 — 夜间自动开发验收报告与候选样本回放（P1）
+- **优先级**: P1
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/V-002-20260530-round1.txt
+- **运行档案**: docs/task_runs/V-002-20260530-010220/
