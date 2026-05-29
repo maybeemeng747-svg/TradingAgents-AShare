@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-05-30 | 自动开发验收与下一轮任务释放
+
+- **执行者**：Codex
+- **任务**：审核 2026-05-29/30 自动开发结果，处理阻断自动开发的运行态文件，并释放下一轮任务。
+- **验收结果**：
+  - S-005：1246 passed, 11 skipped；Codex review 留 2 个 P2，已转入 `S-009`。
+  - S-006：83 passed。
+  - S-007：1401 passed, 13 skipped。
+  - S-008：1454 passed, 17 skipped。
+  - M-003：第 1 轮 3 failed，第 2 轮 1495 passed, 17 skipped；Codex review 留 2 个 P2，已转入 `M-011`。
+  - M-004：1537 passed, 17 skipped。
+  - V-002：1570 passed, 17 skipped。
+  - M-005：1610 passed, 17 skipped。
+  - M-006：第 2 轮 1670 passed, 17 skipped。
+  - T-006：121 passed；Codex review 留 1 个 P2，已转入 `T-007`。
+- **修复内容**：
+  - `.zai_quota_state.json` 从 Git 跟踪中移除，并加入 `.gitignore`，避免额度检查导致工作区变脏、阻断 `auto_dev_loop`。
+  - `docs/TASKS.md` 当前优先队列更新为 `S-009`、`M-011`、`T-007`、`V-003`、`M-007`。
+  - 新增 `S-009`、`M-011`、`T-007`、`V-003` 四个 follow-up 任务。
+  - 将 `M-007` 释放为 ready，进入盘后复盘能力建设。
+- **风险点**：
+  - `.zai_quota_state.json` 仍保留在本地但不再入库。
+  - 下一轮必须优先修 P2 follow-up，再做更高层功能扩展。
+
 ## 2026-05-30 | T-006: 事件源自动接入 Discovery / Daily Plan
 
 - **执行者**：OpenCode

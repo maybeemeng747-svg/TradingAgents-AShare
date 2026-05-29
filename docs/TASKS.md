@@ -24,13 +24,11 @@
 
 ### 当前优先队列
 
-1. `S-005`：选股优先级整合与 `need_deep_ta` 门槛重排（P1，ready）。
-2. `M-003`：TradeFlow universe 管理器（P1，ready）。
-3. `M-004`：TradeFlow 策略权重与阈值配置（P1，ready）。
-4. `T-006`：事件源自动接入 Discovery / Daily Plan（P1，ready）。
-5. `V-002`：夜间自动开发验收报告与候选样本回放（P1，ready）。
-6. `S-006`：候选误报审计与样本集沉淀（P1，ready）。
-7. 第二梯队：`S-007/S-008/M-005/M-006`，用于延长夜间窗口并继续围绕候选质量、触发状态和 TA 成本门控推进。
+1. `S-009`：修复 S-005 选股门控双重计分与资金单位校验（P1，ready）。
+2. `M-011`：修复 M-003 universe 兼容性与来源 extra 序列化（P1，ready）。
+3. `T-007`：修复 T-006 事件源底层失败可观测性（P1，ready）。
+4. `V-003`：TradeFlow 端到端候选质量回放验收（P1，ready）。
+5. `M-007`：盘后 Review 与策略命中率复盘（P2，ready）。
 
 ---
 
@@ -208,6 +206,27 @@
   - 完整数据样本不被误降级。
 - **代码标注要求**：`# [S-008] tradeflow_evidence_gate`
 
+### S-009: 修复 S-005 选股门控双重计分与资金单位校验（P1）
+- **描述**：修复 Codex review 指出的两个候选排序风险：综合分重复叠加政策/叙事/资金/风险分，以及未校验单位的资金流也能作为 `need_deep_ta` 正向类别。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`S-005`、`T-003`、`S-008` 完成。
+- **执行约束**：
+  - 不改 `tradingagents/prompts/`。
+  - 不自动调用 TA 深度分析。
+  - 不改变强动作门禁，只修 TradeFlow 候选层评分与门控。
+- **问题来源**：
+  - `docs/task_runs/S-005-20260529-164949/codex-review-round1.txt` 中两个 P2 findings。
+- **实现要点**：
+  1. 明确 `selection_priority_gate.run_selection_priority_gate(score=...)` 的 `score` 语义：如果传入的是已累计后的 `candidate.score`，不得再次叠加 `version_score/narrative_score/fund_flow_anomaly_score/risk_penalty`。
+  2. 或者在 `candidate_engine.evaluate_symbol()` 传入未叠加的基础技术分，并在字段名/注释中标清。
+  3. `fund_flow_unit_verified=False` 时，资金异动不得计入正向类别，也不得单独帮助通过 `need_deep_ta`。
+  4. 增加回归测试：技术 + 未校验资金流不能触发 `gate_passed=True`；政策/叙事/资金/风险分不能重复计入综合分。
+- **验证方式**：
+  - `pytest tests/test_s005_selection_priority_gate.py tests/test_s008_evidence_gate.py tests/test_t003_fund_flow_anomaly.py -q` 通过。
+  - `pytest tests/test_tradeflow_*.py -q` 通过。
+- **代码标注要求**：`# [S-009] selection_gate_fix`
+
 ---
 
 ## M. 框架路线总任务池（2026-05-28 新增）
@@ -325,7 +344,7 @@
 ### M-007: 盘后 Review 与策略命中率复盘（P2）
 - **描述**：复盘盘前候选和盘中触发是否有效，输出命中率、误报率、移除理由，服务下一轮策略调参。
 - **优先级**：P2
-- **状态**：blocked
+- **状态**：ready
 - **前置条件**：`M-005` 稳定运行至少 3 个交易日。
 - **执行约束**：
   - 不自动调整策略权重，只输出建议。
@@ -337,6 +356,27 @@
 - **验证方式**：
   - 给定候选和行情 fixture，能生成复盘表。
 - **代码标注要求**：`# [M-007] post_market_review`
+
+### M-011: 修复 M-003 universe 兼容性与来源 extra 序列化（P1）
+- **描述**：修复 Codex review 指出的 universe manager 兼容性问题：事件覆盖来源标签变化，以及 `SourceRecord.extra` 被收集但序列化丢失。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`M-003` 完成。
+- **执行约束**：
+  - 不做全市场扫描。
+  - 不改生产数据库 schema。
+  - 保持已有报告和过滤逻辑兼容。
+- **问题来源**：
+  - `docs/task_runs/M-003-20260530-002721/codex-review-round2.txt` 中两个 P2 findings。
+- **实现要点**：
+  1. `event_overrides` 进入 universe 时保留旧公共输出 `source="event_catalyst"`，避免已有报告、筛选器、测试断裂。
+  2. `UniverseSymbol.to_dict()` 的 `universe_source_records` 序列化 `SourceRecord.extra`。
+  3. `include_yesterday` 带入的 `strategy_tags/trigger_price/invalid_price` 不能丢失。
+  4. 增加兼容性回归测试。
+- **验证方式**：
+  - `pytest tests/test_tradeflow_universe.py tests/test_t002_discovery.py tests/test_t003_fund_flow_anomaly.py -q` 通过。
+  - `pytest tests/test_tradeflow_*.py -q` 通过。
+- **代码标注要求**：`# [M-011] universe_compat_fix`
 
 ### M-008: 数据源健康检查与 fallback 可观测性（P1）
 - **描述**：建立数据源健康检查，持续观察 AKShare、cn_astock、BaoStock、yfinance、公告/资金/LHB 等源的成功率、延迟和失败原因。
@@ -412,6 +452,27 @@
   - 测试失败时进入修复循环
   - NEEDS_HUMAN 时正确输出
 - **完成记录**：scripts/auto_dev_loop.sh 已创建
+
+### Q-001: 自动开发运行态文件出库与工作区清洁修复（P0）
+- **描述**：修复 `.zai_quota_state.json` 被 Git 跟踪导致每次额度检查后工作区变脏、自动开发无法继续领取任务的问题。
+- **优先级**：P0
+- **状态**：done — 当前巡检提交
+- **背景**：
+  - 2026-05-30 巡检发现 `.zai_quota_state.json` 被提交进仓库，运行后变为 modified。
+  - `scripts/auto_dev_loop.sh --dry-run` 因工作区不干净退出，阻断后续自动开发。
+- **执行约束**：
+  - 保留本地 quota 状态文件，但从 Git 跟踪中移除。
+  - 加入 `.gitignore`。
+  - 不删除用户本地运行状态。
+- **实现要点**：
+  1. `git rm --cached .zai_quota_state.json`。
+  2. `.gitignore` 增加 `.zai_quota_state.json`。
+  3. 验证 `git status` 不再因额度检查文件变脏。
+  4. `./scripts/auto_dev_loop.sh --dry-run` 能继续选择下一项 ready 任务。
+- **验证方式**：
+  - `git status --short` 不出现 `.zai_quota_state.json` modified。
+  - `./scripts/auto_dev_loop.sh --dry-run` 不被 quota state 文件阻断。
+- **代码标注要求**：`# [Q-001] quota_state_gitignore`
 
 ---
 
@@ -547,6 +608,28 @@
   - 构造 fixture 后报告包含候选样本回放摘要。
   - 不泄露敏感变量。
 - **代码标注要求**：`# [V-002] nightly_acceptance_report`
+
+### V-003: TradeFlow 端到端候选质量回放验收（P1）
+- **描述**：基于固定样本回放一条完整 TradeFlow 链路，验证候选池从 universe、事件源、资金异动、证据门禁、候选分层到 deep TA 门控的最终输出是否一致。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`S-009`、`M-011`、`T-007` 完成。
+- **执行约束**：
+  - 不调用外部 LLM。
+  - 不跑全市场扫描。
+  - 不写生产数据库。
+  - 不输出强交易建议。
+- **实现要点**：
+  1. 建立固定 fixtures：强共振候选、技术单信号候选、未校验资金候选、事件源失败候选、高风险候选、昨日观察延续候选。
+  2. 回放 `run_discovery()` 或 `generate_daily_plan()`，输出稳定的候选层级、过滤原因、missing evidence、event_source status、deep_ta gate reason。
+  3. 生成本地验收报告路径，例如 `docs/tradeflow_acceptance/YYYY-MM-DD.md`。
+  4. 报告明确列出“可进入 TA / 仅观察 / 淘汰”的原因。
+- **验证方式**：
+  - 固定 fixtures 输出稳定。
+  - 未校验资金候选不得进入 A 层或触发 deep TA。
+  - 事件源失败时报告显示 `FAILED/PARTIAL`，不当成无事件。
+  - `pytest tests/test_tradeflow_*.py -q` 通过。
+- **代码标注要求**：`# [V-003] tradeflow_acceptance_replay`
 
 ---
 
@@ -792,6 +875,29 @@
   - 事件源失败时输出可观测状态，系统仍能处理手动 symbols。
   - `pytest tests/test_tradeflow_*.py -q` 通过。
 - **代码标注要求**：`# [T-006] event_source_discovery`
+
+### T-007: 修复 T-006 事件源底层失败可观测性（P1）
+- **描述**：修复事件源子 fetch 函数吞掉 AKShare/network 异常后，`fetch_daily_events_detailed()` 仍把结果标成 `OK` 的问题。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`T-006`、`M-008` 完成。
+- **执行约束**：
+  - 不做全市场扫描。
+  - 不把“源失败”解释为“无事件”。
+  - 不泄露接口错误中的敏感信息。
+- **问题来源**：
+  - `docs/task_runs/T-006-20260530-013347/codex-review-round1.txt` 中 P2 finding。
+- **实现要点**：
+  1. 让 `fetch_notice_events`、`fetch_buyback_events`、`fetch_rating_events` 的失败状态可被详细聚合函数感知。
+  2. 可以增加内部 detailed helper，或让子函数返回结构化状态；保持旧 `fetch_daily_events()` 兼容。
+  3. `fetch_daily_events_detailed()` 必须区分：全部成功但无事件 = `OK`；部分失败 = `STALE/PARTIAL`；全部失败 = `FAILED`。
+  4. Discovery / Daily Plan metadata 展示失败源和精简错误。
+- **验证方式**：
+  - mock 一个子 fetch 抛异常时，metadata 不得显示纯 `OK`。
+  - mock 全部子 fetch 失败时，status=`FAILED`。
+  - mock 成功但空事件时，status=`OK` 且 count=0。
+  - `pytest tests/test_t006_event_source_discovery.py tests/test_event_source_integration.py -q` 通过。
+- **代码标注要求**：`# [T-007] event_source_failure_status`
 
 ### T-004: TradeFlow P2 盘中 Observe
 - **描述**：对候选池做盘中低频触发检查，发现突破触发价、跌破失效价、异常放量等事件。
