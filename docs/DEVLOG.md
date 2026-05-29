@@ -4,6 +4,47 @@
 
 ---
 
+## 2026-05-30 | V-003: TradeFlow 端到端候选质量回放验收
+
+- **执行者**：OpenCode
+- **任务**：V-003 — 基于固定样本回放完整 TradeFlow 链路，验证候选池从 universe、事件源、资金异动、证据门禁、候选分层到 deep TA 门控的最终输出是否一致
+- **修改文件**：
+  - `tradingagents/tradeflow/acceptance_replay.py` — 新建：[V-003] tradeflow_acceptance_replay
+    - `AcceptanceFixture` / `AcceptanceReplayResult` 数据类
+    - `generate_acceptance_fixtures()` — 6 个固定场景定义
+    - `make_vcp_df()` / `make_flat_df()` — 确定性 DataFrame 构造
+    - 5 个候选构建器：`_build_strong_resonance_candidate` / `_build_tech_only_candidate` / `_build_unverified_fund_candidate` / `_build_high_risk_candidate` / `_build_yesterday_observation_candidate`
+    - 5 个验证器：`_verify_strong_resonance` / `_verify_tech_only` / `_verify_unverified_fund` / `_verify_high_risk` / `_verify_yesterday_observation`
+    - `generate_acceptance_report()` — 生成本地验收报告 markdown
+    - `extract_replay_result()` — 从 plan entry 提取回放结果
+  - `tests/test_v003_tradeflow_acceptance_replay.py` — 新建，84 个测试覆盖：
+    - `TestV003StrongResonance` (11): tier=A, need_deep_ta, positive_category>=3, game_balance, fund_flow_unit_verified, policy_tags, action, forbidden words, validate, composite_score, data_completeness
+    - `TestV003TechOnlySignal` (8): tier!=A, no deep_ta, positive_category<=2, missing_evidence, why_not_deep_ta, action, forbidden words, evidence_gate
+    - `TestV003UnverifiedFundFlow` (9): tier!=A, no deep_ta, unit not verified, missing_data_fields, why_not_deep_ta mentions unverified, fund_flow_tags, evidence_gate, forbidden words, tech+unverified cannot pass gate
+    - `TestV003EventSourceFailed` (6): metadata shows FAILED, system processes candidates, no crash, error recorded, not treated as no events, forbidden words
+    - `TestV003HighRisk` (8): tier B/C, no deep_ta, risk_flags>=2, game_balance fragile/crowded, negative risk_penalty, why_not_deep_ta, action OBSERVE, forbidden words
+    - `TestV003YesterdayObservation` (7): observe_state TRIGGERED, trigger_count preserved, first_trigger_time, universe_sources includes yesterday, fund_flow verified, forbidden words, strategies>=2
+    - `TestV003FullPipelineReplay` (6): all scenarios pass, strong resonance highest score, unverified fund not A, high risk lowest, no forbidden words, all validate
+    - `TestV003EventSourceFailedFullPipeline` (2): full replay with failure, failure does not block candidates
+    - `TestV003StableOutput` (4): deterministic output across 3 repeated runs for 4 scenarios
+    - `TestV003ReportGeneration` (3): report contains all scenarios, no forbidden words, tier summary
+    - `TestV003EvaluateSymbolIntegration` (4): evaluate_symbol with mocked data for strong resonance, tech only, unverified fund, high risk
+    - `TestV003FixtureCompleteness` (4): fixture count, names, builders, verifiers
+    - `TestV003TierClassification` (5): tier rules for all 5 candidate scenarios
+    - `TestV003DeepTAGate` (4): deep TA gate decisions for all 4 relevant scenarios
+    - `TestV003DeepTAGateIntegration` (3): gated_deep_ta module integration with strong resonance, tech only, high risk
+  - `docs/tradeflow_acceptance/2026-05-30.md` — 验收报告
+- **测试结果**：84 passed (V-003)；test_tradeflow_* 129 passed, 0 failed
+- **关键逻辑**：
+  - 6 个固定 fixture 覆盖全部验收场景：强共振→A/深挖、技术单信号→C/观察、未校验资金→C/不深挖、事件源失败→FAILED 可观测、高风险→C/脆弱、昨日观察→TRIGGERED 保留
+  - 每个 fixture 通过 `generate_daily_plan(candidates=...)` 回放完整链路（plan entry 构建、排序、tier 预算、evidence gate、validation、metadata）
+  - 事件源失败场景通过 mock `fetch_daily_events_detailed` 返回 `EventSourceStatus.FAILED`，验证 metadata 正确传播
+  - 未校验资金候选 tier!=A 且 need_deep_ta=False，验证 S-009 修复有效
+  - Deep TA gate 集成测试验证 `gated_deep_ta.check_deep_ta_gate()` 与候选层决策一致
+  - 稳定性测试验证 3 次重复运行输出完全一致
+  - 验收报告生成分层汇总：明确列出"可进入 TA / 仅观察 / 淘汰"及原因
+- **风险点**：无；所有改动新增文件，不影响现有逻辑
+
 ## 2026-05-30 | M-011: 修复 M-003 universe 兼容性与来源 extra 序列化
 
 - **执行者**：OpenCode
@@ -528,3 +569,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/M-011-20260530-round1.txt
 - **运行档案**: docs/task_runs/M-011-20260530-022843/
+
+## 2026-05-30 | AUTO-002 自动开发闭环
+
+- **任务**: V-003 — TradeFlow 端到端候选质量回放验收（P1）
+- **优先级**: P1
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/V-003-20260530-round1.txt
+- **运行档案**: docs/task_runs/V-003-20260530-023514/
