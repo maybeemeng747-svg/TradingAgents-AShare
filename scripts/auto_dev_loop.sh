@@ -293,6 +293,7 @@ RESULT_STATUS=""
 REVIEW_OUTPUT=""
 ROUND=0
 LAST_FAILURE_REASON=""
+ISSUES_LOG=()
 
 while [ $ROUND -lt $MAX_FIX_ROUNDS ]; do
     ROUND=$((ROUND + 1))
@@ -311,6 +312,7 @@ while [ $ROUND -lt $MAX_FIX_ROUNDS ]; do
 
     if [ $OPENCODE_EXIT -ne 0 ]; then
         LAST_FAILURE_REASON="OpenCode failed with exit ${OPENCODE_EXIT}"
+        ISSUES_LOG+=("[Round $ROUND] OpenCode 退出码 $OPENCODE_EXIT：$(tail -5 "$OPENCODE_LOG" | tr '\n' ' ')")
         err "OpenCode 执行失败（exit=${OPENCODE_EXIT}）"
         err "日志: $OPENCODE_LOG"
         cat > "$PROMPT_FILE" <<FIX_EOF
@@ -360,6 +362,8 @@ FIX_EOF
             if [ $TEST_EXIT -ne 0 ]; then
                 TEST_PASS=false
                 LAST_FAILURE_REASON="Test failed: ${test_cmd} (exit ${TEST_EXIT})"
+                FAILED_SUMMARY=$(echo "$TEST_OUTPUT" | grep -E "FAILED|ERROR|AssertionError" | head -5 | tr '\n' ' ')
+                ISSUES_LOG+=("[Round $ROUND] 测试失败 ($test_cmd)：$FAILED_SUMMARY")
                 err "测试失败: $test_cmd (exit=$TEST_EXIT)"
                 break
             fi
@@ -380,6 +384,8 @@ FIX_EOF
         if [ $TEST_EXIT -ne 0 ]; then
             TEST_PASS=false
             LAST_FAILURE_REASON="Default pytest failed with exit ${TEST_EXIT}"
+            FAILED_SUMMARY=$(echo "$TEST_OUTPUT" | grep -E "FAILED|ERROR" | head -5 | tr '\n' ' ')
+            ISSUES_LOG+=("[Round $ROUND] 默认 pytest 失败：$FAILED_SUMMARY")
         fi
     fi
 
@@ -434,6 +440,7 @@ FIX_EOF
     # Codex review 失败 → 不信任结果，进入修复或 NEEDS_HUMAN
     if [ $CODEX_EXIT -ne 0 ]; then
         LAST_FAILURE_REASON="Codex review failed with exit ${CODEX_EXIT}"
+        ISSUES_LOG+=("[Round $ROUND] Codex review 失败 (exit=$CODEX_EXIT)")
         err "Codex review 执行失败（exit=${CODEX_EXIT}），不信任空结果"
         cat > "$PROMPT_FILE" <<FIX_EOF
 # 修复任务: $TASK_ID
@@ -594,8 +601,17 @@ if [ "$RESULT_STATUS" = "NEEDS_HUMAN" ]; then
 - Run directory: docs/task_runs/$RUN_ID
 - Finished at: $(date +%Y-%m-%d_%H:%M:%S)
 
-人工处理前请先查看本目录下的 OpenCode、测试和 Codex review 日志。
+## 问题记录
+
 SUMMARY_EOF
+    for issue in "${ISSUES_LOG[@]}"; do
+        echo "- $issue" >> "$RUN_DIR/summary.md"
+    done
+    if [ ${#ISSUES_LOG[@]} -eq 0 ]; then
+        echo "（无问题记录）" >> "$RUN_DIR/summary.md"
+    fi
+    echo "" >> "$RUN_DIR/summary.md"
+    echo "人工处理前请先查看本目录下的 OpenCode、测试和 Codex review 日志。" >> "$RUN_DIR/summary.md"
 
     update_task_status "blocked — NEEDS_HUMAN, see docs/task_runs/$RUN_ID"
 
@@ -627,5 +643,13 @@ if [ -n "$COMMIT_HASH" ]; then
     echo "  提交:   $COMMIT_HASH"
 fi
 echo "========================================"
+if [ ${#ISSUES_LOG[@]} -gt 0 ]; then
+    echo ""
+    echo "  问题记录（${#ISSUES_LOG[@]} 项）："
+    for issue in "${ISSUES_LOG[@]}"; do
+        echo "  - $issue"
+    done
+    echo "========================================"
+fi
 
 exit $([ "$RESULT_STATUS" = "DONE" ] && echo 0 || echo 1)
