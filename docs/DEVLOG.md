@@ -40,6 +40,9 @@
   - S-001 专项测试：35 passed
   - TradeFlow 全量测试：118 passed
   - 扩展回归测试：370 passed, 2 skipped
+- **验收补修**：
+  - commit `cf7d928` 修复 `event_overrides` 路径漏传事件标题到政策版本检测的问题
+  - 验证："低空经济政策支持" 可正确生成 `policy_tags=["低空经济"]` 和 `POLICY_VERSION` 策略标签
 
 ---
 
