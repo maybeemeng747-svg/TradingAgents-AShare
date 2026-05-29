@@ -4,6 +4,39 @@
 
 ---
 
+## 2026-05-29 | M-002 修复 portfolio_import 测试 SQLite 线程安全问题
+
+- **执行者**：OpenCode
+- **任务**：M-002 — 修复 `test_scheduled_job_uses_imported_position_context` 和 `test_scheduled_job_marks_failed_when_underlying_job_fails` 两个测试因 SQLite 线程安全导致的失败
+- **根因**：`tests/test_portfolio_import.py` 的 `db` fixture 创建内存 SQLite 引擎时未设置 `check_same_thread=False`，而 `_run_scheduled_job` 内部通过 `asyncio.to_thread()` 在工作线程中访问 DB session，触发 `sqlite3.ProgrammingError: SQLite objects created in a thread can only be used in that same thread`
+- **修改文件**：
+  - `tests/test_portfolio_import.py`（1 行改动）— `db` fixture 的 `create_engine` 添加 `connect_args={"check_same_thread": False}`
+- **标记**：`# [M-002] fix_sqlite_thread_safety`
+- **验证**：`pytest tests/test_portfolio_import.py -xvs` 12/12 passed
+
+---
+
+## 2026-05-29 | M-002 任务运行档案索引与夜间日报聚合
+
+- **执行者**：OpenCode
+- **任务**：M-002 — 把 `docs/task_runs/` 中的运行档案汇总成可读索引，生成夜间日报
+- **修改文件**：
+  - `scripts/summarize_auto_dev_runs.py`（新增，~300行）— 扫描 task_runs 目录，解析 task.md / summary.md，聚合 git log / reviews，生成 `docs/auto_dev_reports/YYYY-MM-DD.md` 日报；支持 `--date`、`--dry-run`、`--repo-dir` 参数；内置 API key 脱敏
+  - `tests/test_m002_summarize_runs.py`（新增，~280行）— 27 个测试覆盖：密钥脱敏、空目录扫描、日期过滤、PASS/NEEDS_HUMAN 状态解析、trace 文件收集、commit 展示、风险标记、dry-run vs 写文件、reviews 聚合与脱敏
+  - `docs/auto_dev_reports/` — 新建日报输出目录
+- **关键逻辑**：
+  1. `scan_task_runs()` 按 `--date` 过滤目录名中的日期部分，解析 `task.md` 和 `summary.md` 提取任务元数据
+  2. `get_git_log_for_date()` 调用 `git log --after --before` 获取当日提交
+  3. `collect_reviews()` 扫描 `docs/reviews/` 并做脱敏预览
+  4. `generate_report()` 生成 Markdown 日报，包含总览表、任务详情（可折叠 summary）、提交记录、Codex Reviews、风险提示和下一步
+  5. `redact()` 使用正则匹配 sk-key、Bearer token、api_key 等敏感信息并替换为 `[REDACTED]`
+- **标记**：`# [M-002] auto_dev_report_index`
+- **验证**：
+  - `python scripts/summarize_auto_dev_runs.py --date 2026-05-28 --dry-run` 可运行并输出日报
+  - `pytest tests/test_m002_summarize_runs.py -q` 全部通过
+
+---
+
 ## 2026-05-29 | INF-001 自动开发领取锁与状态收口修复
 
 - **执行者**：Codex
@@ -669,3 +702,14 @@
 - **标记**：`# [N-005] execution_schema`
 - **测试**：139 passed（含 readiness_score 测试）
 - **Commit**：4ec69ec
+
+## 2026-05-29 | AUTO-002 自动开发闭环
+
+- **任务**: M-002 — 任务运行档案索引与夜间日报聚合（P1）
+- **优先级**: P1
+- **轮次**: 2
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/M-002-20260529-round2.txt
+- **运行档案**: docs/task_runs/M-002-20260529-112320/

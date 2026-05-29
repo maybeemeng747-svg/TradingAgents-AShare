@@ -14,7 +14,7 @@ from api.services import scheduled_service
 
 @pytest.fixture
 def db():
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     session = Session()
