@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-05-29 | OpenClaw cron timeout 提升至 4 小时
+
+- **执行者**：主控AI
+- **任务**：夜间自动开发窗口从 1 小时提升到 4 小时，支持多任务连续开发
+- **变更**：OpenClaw cron payload.timeoutSeconds 3600→14400，同步 message 中 timeout 描述
+- **关联**：auto_dev_loop.sh 连续执行模式（DONE 继续/NEEDS_HUMAN 停止）
+- **运行档案**：cron job 0ed1a9a1-10f4-4ed0-8720-fc4d5fd3ae8a
+
+---
+
 ## 2026-05-29 | S-001 政策版本因子进入 TradeFlow 候选池
 
 - **执行者**：OpenCode (glm-5.1)
