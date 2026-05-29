@@ -4,6 +4,46 @@
 
 ---
 
+## 2026-05-29 | T-002 TradeFlow P1 小范围 Discovery
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：在小范围股票池（自选/持仓/手动/行业试点/事件源）上运行候选发现，输出 TopN 候选、过滤原因和策略标签，不自动调用 TA 深度分析
+- **修改文件**：
+  - `tradingagents/tradeflow/discovery.py`（新增，~260行）— [T-002] discovery
+    - `run_discovery()` — 小范围候选扫描主入口
+    - `DiscoveryResult` — 输出候选列表、被过滤列表、摘要、metadata
+    - `FilteredSymbol` — 被过滤股票记录（symbol, name, source, reason）
+    - `_build_discovery_universe()` — 扩展 universe 构建，增加行业池（industry_symbols）
+    - `_build_discovery_entry()` — 构建候选计划条目
+    - `_classify_filter_reasons()` — 将过滤原因分类为：流动性差/数据缺失/无策略命中/其他
+    - `render_discovery_text()` — 人类可读的 Discovery 报告
+    - 支持 5 种来源：watchlist / holding / manual / industry_pool / event_source
+    - 支持 TopN 截断，默认 20 只
+    - 过滤原因分类统计进入 metadata.filter_breakdown
+    - 所有输出无强买卖词
+  - `scripts/run_tradeflow_plan.py`（重写）— [T-002] CLI 扩展
+    - 新增 `--discover` 模式切换
+    - 新增 `--industry-symbols` 行业池标的
+    - 新增 `--top-n` 候选截断数
+    - 新增 `--use-event-source` 事件源开关
+    - 新增 `--no-holdings` / `--no-watchlist` 排除选项
+    - 保留原有 `--symbols` / `--date` / `--db` / `--save-candidates` / `--news` 功能
+  - `tests/test_t002_discovery.py`（新增，~370行）— 39 个测试
+- **关键逻辑**：
+  1. Discovery 模式与原有 Plan 模式并行，不影响现有 `generate_daily_plan()` 路径
+  2. 行业池作为独立 universe 来源（`industry_pool`），与 manual/watchlist/holding/event_source 去重
+  3. 每只被过滤股票记录具体原因，统计为 4 类（流动性差/数据缺失/无策略命中/其他）
+  4. 不自动调用 TA 深度分析，只标记 `need_deep_ta`
+  5. 事件源按 symbol 隔离，每只股票只消费自己的事件标题
+  6. 输出中无强买卖词，自动 sanitize
+- **标记**：`# [T-002] discovery`
+- **测试结果**：
+  - T-002 专项测试：39 passed
+  - TradeFlow 全量测试：122 passed
+  - 扩展回归测试：519 passed, 2 skipped
+
+---
+
 ## 2026-05-29 | M-008 数据源健康检查与 fallback 可观测性
 
 - **执行者**：OpenCode (glm-5.1)
@@ -986,3 +1026,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/M-008-20260529-round1.txt
 - **运行档案**: docs/task_runs/M-008-20260529-142207/
+
+## 2026-05-29 | AUTO-002 自动开发闭环
+
+- **任务**: T-002 — TradeFlow P1 小范围 Discovery
+- **优先级**: P2
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/T-002-20260529-round1.txt
+- **运行档案**: docs/task_runs/T-002-20260529-143004/
