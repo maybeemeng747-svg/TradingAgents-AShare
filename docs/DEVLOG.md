@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-05-30 | T-006: 事件源自动接入 Discovery / Daily Plan
+
+- **执行者**：OpenCode
+- **任务**：T-006 — 把已完成的事件源模块纳入小范围 Discovery 和 Daily Plan，使公告、回购、评级等事件能在不全市场扫描的前提下自动进入候选池
+- **修改文件**：
+  - `tradingagents/tradeflow/event_source.py` — 新增 `EventSourceStatus` 枚举（OK/FAILED/STALE）、`EventSourceResult` 数据类、`fetch_daily_events_detailed()` 函数：返回包含完整元数据（event_type/direction/source/date）和状态跟踪的事件结果，支持标题去重
+  - `tradingagents/tradeflow/plan_runner.py` — `generate_daily_plan()` 改用 `fetch_daily_events_detailed()`；生成 `event_overrides` 从 EventItem 数据并传入候选评估链路；plan.metadata 新增 `event_source` 状态信息；`_build_plan_entry()` 新增 `event_items` 参数，输出 event_titles/event_types/event_sources/event_directions/event_count/event_details
+  - `tradingagents/tradeflow/discovery.py` — `run_discovery()` 改用 `fetch_daily_events_detailed()`；生成 `event_overrides` 从 EventItem 数据；result.metadata 新增 `event_source` 状态信息；`_build_discovery_entry()` 新增 `event_items` 参数，输出事件元数据
+  - `tests/test_t006_event_source_discovery.py` — 新建，22 个测试覆盖 EventSourceResult/EventSourceStatus、fetch_daily_events_detailed 去重/失败、plan_runner 事件元数据/失败可观测/事件覆盖/symbol 隔离、discovery 事件元数据/失败可观测/事件覆盖/symbol 隔离
+  - `tests/test_event_source_integration.py` — 更新 N-001 测试适配 `fetch_daily_events_detailed()` 替代 `fetch_daily_events()`
+  - `tests/test_t002_discovery.py` — 更新 T-002 测试适配 `fetch_daily_events_detailed()`
+- **测试结果**：1664 passed, 15 skipped, 0 failed
+- **关键逻辑**：
+  - `fetch_daily_events_detailed()` 包装三个子 fetch 函数，返回 `EventSourceResult`：包含 `events_map`（向后兼容）+ `items_by_symbol`（按 symbol 分组的 EventItem 列表）+ 状态信息
+  - 事件源异常时 status=FAILED + error_message，系统仍能正常处理手动 symbols
+  - EventItem 自动转换为 `event_overrides`（含 symbol/title/event_type/direction/source/date），传入 `evaluate_symbol()` 的 `event_overrides` 参数，使 event_catalyst 策略获得结构化事件数据
+  - 每个候选 plan entry 包含 event_details（完整事件列表）、event_types（去重事件类型）、event_sources（去重事件来源）
+  - 所有 symbol 严格隔离，每个 symbol 只消费自己的事件数据
+- **风险点**：无；所有改动向后兼容，use_event_source 默认 False，事件元数据字段只在有事件时才出现
+
 ## 2026-05-30 | M-006 代码质量修复（Codex review 失败后巡检）
 
 - **执行者**：OpenCode
@@ -407,3 +427,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/M-006-20260530-round2.txt
 - **运行档案**: docs/task_runs/M-006-20260530-011554/
+
+## 2026-05-30 | AUTO-002 自动开发闭环
+
+- **任务**: T-006 — 事件源自动接入 Discovery / Daily Plan（P1）
+- **优先级**: P2
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/T-006-20260530-round1.txt
+- **运行档案**: docs/task_runs/T-006-20260530-013347/

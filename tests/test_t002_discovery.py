@@ -349,6 +349,7 @@ class TestRunDiscoveryWithIndustry:
 
 class TestRunDiscoveryWithEvents:
     def test_event_source_integration(self):
+        from tradingagents.tradeflow.event_source import EventItem, EventSourceResult, EventSourceStatus
         c = _make_candidate("002138.SZ", score=65.0)
 
         def fake_evaluate(symbol, **kwargs):
@@ -357,8 +358,14 @@ class TestRunDiscoveryWithEvents:
                 return c, ""
             return None, "无策略命中"
 
-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events",
-                    return_value={"002138": ["回购进展"]}):
+        event_result = EventSourceResult(
+            status=EventSourceStatus.OK,
+            events_map={"002138": ["回购进展"]},
+            items_by_symbol={"002138": [EventItem(symbol="002138", title="回购进展", event_type="buyback", direction="bullish", source="eastmoney")]},
+            event_count=1, symbols_count=1,
+        )
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed",
+                    return_value=event_result):
             with patch("tradingagents.tradeflow.discovery.evaluate_symbol", side_effect=fake_evaluate):
                 result = run_discovery(
                     trade_date="2026-05-29",
@@ -369,8 +376,9 @@ class TestRunDiscoveryWithEvents:
         assert len(result.candidates) >= 1
 
     def test_event_source_not_fetched_when_disabled(self):
-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
-            mock_fetch.return_value = {}
+        from tradingagents.tradeflow.event_source import EventSourceResult
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = EventSourceResult()
             with patch("tradingagents.tradeflow.discovery.evaluate_symbol", return_value=(None, "无策略命中")):
                 run_discovery(
                     trade_date="2026-05-29",

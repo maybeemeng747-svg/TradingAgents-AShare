@@ -3,6 +3,8 @@
 Tests that fetch_daily_events() integrates correctly with the plan runner
 and universe builder so that event-discovered symbols enter the candidate pool
 and each symbol only receives its own event titles.
+
+Updated for [T-006]: plan_runner now uses fetch_daily_events_detailed().
 """
 
 import sys
@@ -18,12 +20,30 @@ from tradingagents.tradeflow.schemas import Candidate, CandidateSignal
 from tradingagents.tradeflow.plan_runner import generate_daily_plan
 from tradingagents.tradeflow.universe import build_universe
 from tradingagents.tradeflow.candidate_engine import init_db
+from tradingagents.tradeflow.event_source import EventItem, EventSourceResult, EventSourceStatus
 
 
 MOCK_EVENTS = {
     "002138": ["回购进展公告"],
     "600519": ["减持评级"],
 }
+
+MOCK_ITEMS_BY_SYMBOL = {
+    "002138": [EventItem(symbol="002138", title="回购进展公告", event_type="buyback", direction="bullish", source="eastmoney")],
+    "600519": [EventItem(symbol="600519", title="减持评级", event_type="rating", direction="bearish", source="cninfo")],
+}
+
+
+def _make_event_result(events_map=None, items_by_symbol=None):
+    ev_map = events_map or {}
+    items = items_by_symbol or {}
+    return EventSourceResult(
+        status=EventSourceStatus.OK,
+        events_map=ev_map,
+        items_by_symbol=items,
+        event_count=sum(len(v) for v in items.values()),
+        symbols_count=len(items),
+    )
 
 
 def _mock_candidate(symbol, name="", score=60.0):
@@ -102,8 +122,8 @@ class TestUniverseEventSymbols:
 
 class TestPlanRunnerEventSource:
     def test_use_event_source_false_does_not_call_fetch(self):
-        """Default use_event_source=False should NOT call fetch_daily_events."""
-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
+        """Default use_event_source=False should NOT call fetch_daily_events_detailed."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
                 mock_eval.return_value = (None, "无策略命中")
                 plan = generate_daily_plan(
@@ -114,9 +134,9 @@ class TestPlanRunnerEventSource:
             mock_fetch.assert_not_called()
 
     def test_use_event_source_true_calls_fetch(self):
-        """use_event_source=True should call fetch_daily_events with YYYYMMDD."""
-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
-            mock_fetch.return_value = MOCK_EVENTS
+        """use_event_source=True should call fetch_daily_events_detailed with YYYYMMDD."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result(MOCK_EVENTS, MOCK_ITEMS_BY_SYMBOL)
             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
                 mock_eval.return_value = (None, "无策略命中")
                 plan = generate_daily_plan(
@@ -129,8 +149,8 @@ class TestPlanRunnerEventSource:
 
     def test_event_symbols_in_universe_when_enabled(self):
         """When use_event_source=True, event symbols enter the universe."""
-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
-            mock_fetch.return_value = MOCK_EVENTS
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result(MOCK_EVENTS, MOCK_ITEMS_BY_SYMBOL)
             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
                 mock_eval.return_value = (None, "无策略命中")
                 plan = generate_daily_plan(
@@ -145,8 +165,8 @@ class TestPlanRunnerEventSource:
 
     def test_each_symbol_gets_own_events_only(self):
         """Each symbol should only receive its own event titles — no cross-contamination."""
-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
-            mock_fetch.return_value = MOCK_EVENTS
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result(MOCK_EVENTS, MOCK_ITEMS_BY_SYMBOL)
             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
                 mock_eval.return_value = (None, "无策略命中")
                 plan = generate_daily_plan(
@@ -165,8 +185,8 @@ class TestPlanRunnerEventSource:
 
     def test_empty_events_map_does_not_break(self):
         """Empty event map should not break the flow."""
-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
-            mock_fetch.return_value = {}
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result()
             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
                 mock_eval.return_value = (None, "无策略命中")
                 plan = generate_daily_plan(
@@ -180,8 +200,8 @@ class TestPlanRunnerEventSource:
 
     def test_event_source_candidates_appear_in_plan(self):
         """Event-discovered symbols that pass evaluation appear in the plan."""
-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
-            mock_fetch.return_value = MOCK_EVENTS
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result(MOCK_EVENTS, MOCK_ITEMS_BY_SYMBOL)
             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
                 def fake_eval(symbol, **kwargs):
                     if symbol in ("002138", "600519"):
@@ -202,8 +222,12 @@ class TestPlanRunnerEventSource:
     def test_manual_symbols_still_evaluated_with_events(self):
         """Manual symbols still get evaluated, and also receive their events if present."""
         mixed_events = {"002138": ["回购进展公告"], "300999": ["新股事件"]}
-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
-            mock_fetch.return_value = mixed_events
+        mixed_items = {
+            "002138": [EventItem(symbol="002138", title="回购进展公告", event_type="buyback", direction="bullish", source="eastmoney")],
+            "300999": [EventItem(symbol="300999", title="新股事件", event_type="notice", direction="neutral", source="eastmoney")],
+        }
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result(mixed_events, mixed_items)
             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
                 def fake_eval(symbol, **kwargs):
                     c = _mock_candidate(symbol, score=55.0)
@@ -215,7 +239,6 @@ class TestPlanRunnerEventSource:
                     candidates=None,
                     use_event_source=True,
                 )
-            # Check that 002138 gets its events (from event map, not just news_texts param)
             for call_item in mock_eval.call_args_list:
                 sym = call_item.kwargs.get("symbol", call_item.args[0] if call_item.args else "")
                 news = call_item.kwargs.get("news_texts")
@@ -227,8 +250,11 @@ class TestPlanRunnerEventSource:
     def test_symbol_without_events_gets_none_news(self):
         """Symbol in universe without events in the map gets no event news_texts."""
         events_only_one = {"002138": ["回购进展公告"]}
-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
-            mock_fetch.return_value = events_only_one
+        items_only_one = {
+            "002138": [EventItem(symbol="002138", title="回购进展公告", event_type="buyback", direction="bullish", source="eastmoney")],
+        }
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result(events_only_one, items_only_one)
             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
                 mock_eval.return_value = (None, "无策略命中")
                 plan = generate_daily_plan(

@@ -40,7 +40,7 @@ def _action_for_candidate(candidate: Candidate) -> str:
     return "OBSERVE"
 
 
-def _build_plan_entry(candidate: Candidate) -> dict:
+def _build_plan_entry(candidate: Candidate, event_items: Optional[list] = None) -> dict:  # [T-006] event_source_discovery
     """Build a plan entry dict from a candidate."""
     action = _action_for_candidate(candidate)
 
@@ -55,7 +55,7 @@ def _build_plan_entry(candidate: Candidate) -> dict:
         if word in reason_str:
             reason_str = reason_str.replace(word, "***")
 
-    return {
+    entry = {
         "symbol": candidate.symbol,
         "name": candidate.name,
         "action": action,
@@ -118,6 +118,26 @@ def _build_plan_entry(candidate: Candidate) -> dict:
         "deep_ta_position_context": candidate.deep_ta_position_context,  # [M-006]
     }
 
+    # [T-006] event_source_discovery — add event metadata to plan entry
+    if event_items:
+        entry["event_titles"] = [it.title for it in event_items if it.title]
+        entry["event_types"] = sorted({it.event_type for it in event_items if it.event_type})
+        entry["event_sources"] = sorted({it.source for it in event_items if it.source})
+        entry["event_directions"] = sorted({it.direction for it in event_items if it.direction})
+        entry["event_count"] = len(event_items)
+        entry["event_details"] = [
+            {
+                "title": it.title,
+                "event_type": it.event_type,
+                "direction": it.direction,
+                "source": it.source,
+                "date": it.date,
+            }
+            for it in event_items
+        ]
+
+    return entry
+
 
 def generate_daily_plan(
     trade_date: Optional[str] = None,
@@ -156,11 +176,20 @@ def generate_daily_plan(
         trade_date = datetime.now().strftime("%Y-%m-%d")
 
     # [N-001] event_source_plan_integration — fetch events if enabled
+    # [T-006] event_source_discovery — use detailed fetch for richer metadata
     events_map: dict[str, list[str]] = {}
+    event_items_by_symbol: dict[str, list] = {}
+    event_source_status = "NOT_QUERIED"
+    event_source_error = ""
+
     if use_event_source:
-        from .event_source import fetch_daily_events
+        from .event_source import fetch_daily_events_detailed, EventSourceStatus
         trade_date_compact = trade_date.replace("-", "")
-        events_map = fetch_daily_events(trade_date_compact)
+        event_result = fetch_daily_events_detailed(trade_date_compact)
+        events_map = event_result.events_map
+        event_items_by_symbol = event_result.items_by_symbol
+        event_source_status = event_result.status.value
+        event_source_error = event_result.error_message
 
     if candidates is None:
         # Build universe — pass event_symbols so event-discovered
@@ -176,6 +205,7 @@ def generate_daily_plan(
         # Evaluate each symbol — filter event_overrides to only
         # those matching the current symbol (or global overrides without symbol).
         # [N-001] Each symbol gets its own event titles as news_texts.
+        # [T-006] event_source_discovery — also generate event_overrides from EventItem data
         candidates = []
         for item in universe:
             sym = item["symbol"]
@@ -186,6 +216,20 @@ def generate_daily_plan(
                 ]
             else:
                 filtered_overrides = None
+
+            # [T-006] event_source_discovery — generate event_overrides from EventItem data
+            sym_event_overrides = list(filtered_overrides) if filtered_overrides else []
+            if sym in event_items_by_symbol:
+                for ev_item in event_items_by_symbol[sym]:
+                    sym_event_overrides.append({
+                        "symbol": sym,
+                        "title": ev_item.title,
+                        "event_type": ev_item.event_type,
+                        "direction": ev_item.direction,
+                        "source": ev_item.source,
+                        "date": ev_item.date,
+                    })
+            sym_event_overrides_final = sym_event_overrides if sym_event_overrides else None
 
             # [N-001] event_source_plan_integration
             sym_news = events_map.get(sym) if events_map else None
@@ -201,7 +245,7 @@ def generate_daily_plan(
                 source=item.get("source", "manual"),
                 trade_date=trade_date,
                 news_texts=sym_news or news_texts,
-                event_overrides=filtered_overrides,
+                event_overrides=sym_event_overrides_final,  # [T-006]
                 fund_flow_individual=sym_ff_individual,  # [T-003]
                 fund_flow_board=sym_ff_board,  # [T-003]
                 cfg=cfg,  # [M-004]
@@ -209,12 +253,16 @@ def generate_daily_plan(
             if c is not None:
                 if item.get("universe_sources"):
                     c.universe_sources = item["universe_sources"]  # [M-003]
+                # [T-006] event_source_discovery — attach event items for plan entry
+                if sym in event_items_by_symbol:
+                    c._event_items = event_items_by_symbol[sym]  # type: ignore[attr-defined]
                 candidates.append(c)
 
     # Build plan entries
     plan_entries = []
     for c in candidates:
-        entry = _build_plan_entry(c)
+        ev_items = getattr(c, "_event_items", None)  # [T-006]
+        entry = _build_plan_entry(c, event_items=ev_items)
         plan_entries.append(entry)
 
     # Sort by composite_score descending (S-005 priority gate), fallback to score
@@ -265,6 +313,12 @@ def generate_daily_plan(
             "universe_size": len(plan_entries),
             "generated_at": datetime.now().isoformat(),
             "strategy_config_version": cfg.config_version,  # [M-004]
+            "event_source": {  # [T-006] event_source_discovery
+                "status": event_source_status,
+                "error_message": event_source_error,
+                "event_count": sum(len(v) for v in event_items_by_symbol.values()),
+                "symbols_count": len(event_items_by_symbol),
+            },
         },
     )
 

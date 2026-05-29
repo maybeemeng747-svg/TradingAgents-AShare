@@ -10,9 +10,26 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from enum import Enum
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+class EventSourceStatus(Enum):
+    OK = "OK"
+    FAILED = "FAILED"
+    STALE = "STALE"
+
+
+@dataclass
+class EventSourceResult:
+    status: EventSourceStatus = EventSourceStatus.OK
+    events_map: dict[str, list[str]] = field(default_factory=dict)
+    items_by_symbol: dict[str, list[EventItem]] = field(default_factory=dict)
+    error_message: str = ""
+    event_count: int = 0
+    symbols_count: int = 0
 
 _BEARISH_NOTICE_TYPES = {"风险提示"}
 
@@ -256,6 +273,54 @@ def fetch_daily_events(date: str) -> dict[str, list[str]]:
             events_map[sym].append(item.title)
 
     return events_map
+
+
+def fetch_daily_events_detailed(date: str) -> EventSourceResult:
+    """获取指定日期的全部事件，返回包含完整元数据和状态的结果。  # [T-006] event_source_discovery
+
+    与 fetch_daily_events() 不同，此函数返回 EventSourceResult，
+    包含按 symbol 分组的 EventItem 列表（event_type/direction/source/date）
+    以及事件源状态（OK/FAILED/STALE），便于 Discovery 和 Daily Plan 输出
+    事件来源、标题摘要、事件类型、去重结果和证据引用。
+
+    Args:
+        date: 'YYYYMMDD'
+    Returns:
+        EventSourceResult
+    """
+    result = EventSourceResult()
+    try:
+        notice_items = fetch_notice_events(date)
+        buyback_items = fetch_buyback_events()
+        rating_items = fetch_rating_events(date)
+    except Exception as e:
+        result.status = EventSourceStatus.FAILED
+        result.error_message = str(e)
+        logger.warning("fetch_daily_events_detailed failed: %s", e)
+        return result
+
+    all_items = notice_items + buyback_items + rating_items
+
+    seen_titles_by_symbol: dict[str, set[str]] = {}
+    for item in all_items:
+        sym = item.symbol
+        if not sym:
+            continue
+        if sym not in result.items_by_symbol:
+            result.items_by_symbol[sym] = []
+            result.events_map[sym] = []
+            seen_titles_by_symbol[sym] = set()
+
+        if item.title and item.title != "nan":
+            if item.title not in seen_titles_by_symbol[sym]:
+                result.items_by_symbol[sym].append(item)
+                result.events_map[sym].append(item.title)
+                seen_titles_by_symbol[sym].add(item.title)
+
+    result.event_count = sum(len(v) for v in result.items_by_symbol.values())
+    result.symbols_count = len(result.items_by_symbol)
+
+    return result
 
 
 def fetch_events_for_symbol(symbol: str, date: str) -> list[str]:

@@ -1,0 +1,3265 @@
+Task: T-006 — 事件源自动接入 Discovery / Daily Plan（P1）
+Date: 2026-05-30_01:48:55
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e74d9-0f2d-7d53-ae45-69b180a97d31
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,160p' docs/project-overview.md && printf '\\n---TASKS---\\n' && sed -n '1,120p' docs/TASKS.md && printf '\\n---DECISIONS---\\n' && sed -n '1,120p' docs/DECISIONS.md && printf '\\n---DEVLOG---\\n' && sed -n '1,120p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+---TASKS---
+# 任务池
+
+> 最后更新：2026-05-29
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `S-005`：选股优先级整合与 `need_deep_ta` 门槛重排（P1，ready）。
+2. `M-003`：TradeFlow universe 管理器（P1，ready）。
+3. `M-004`：TradeFlow 策略权重与阈值配置（P1，ready）。
+4. `T-006`：事件源自动接入 Discovery / Daily Plan（P1，ready）。
+5. `V-002`：夜间自动开发验收报告与候选样本回放（P1，ready）。
+6. `S-006`：候选误报审计与样本集沉淀（P1，ready）。
+7. 第二梯队：`S-007/S-008/M-005/M-006`，用于延长夜间窗口并继续围绕候选质量、触发状态和 TA 成本门控推进。
+
+---
+
+## S. TradeFlow 选股策略核心任务池（2026-05-29 新增）
+
+> 原则：先提高候选池质量，再扩大扫描范围。TA 深度分析只服务于已经有足够逻辑、事件、资金或风险结构支撑的候选股。
+
+### S-001: 政策版本因子进入 TradeFlow 候选池（P1）
+- **描述**：为 TradeFlow 增加政策版本因子，识别当前 A 股市场更容易被定价的政策/产业方向，让候选池从“技术形态先行”升级为“政策版本入池 + 技术确认”。
+- **优先级**：P1
+- **状态**：done — commit a4d06d4 + cf7d928
+- **背景**：
+  - A 股很多阶段不是简单的业绩驱动，而是政策方向、产业版本和市场叙事共同驱动。
+  - 现在 TradeFlow 已有 VCP、事件催化、A 股标签，但缺少“当前版本需要什么标杆”的第一层判断。
+- **执行约束**：
+  - 不调用外部 LLM，不跑全市场扫描。
+  - 不改 `tradingagents/prompts/`。
+  - 不输出买入/卖出强建议。
+  - 只在 TradeFlow 候选池层做信号、标签、分数和证据引用。
+- **实现要点**：
+  1. 新增或扩展政策版本信号模块，输出 `policy_tags`、`version_score`、`policy_evidence_refs`。
+  2. 先用可维护关键词/规则覆盖：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革等。
+  3. 事件标题、公告摘要、行业标签命中政策版本时加分；无原始文本证据时不得加分。
+  4. 与现有 `event_source`、`event_catalyst`、`candidate_engine` 兼容，不破坏 VCP/回踩策略。
+  5. Daily Plan 中展示政策标签和证据摘要，但动作仍只能是 `OBSERVE/NEED_DEEP_TA` 等非强交易动作。
+- **验证方式**：
+  - 构造政策关键词事件，候选包含对应 `policy_tags` 和 evidence refs。
+  - 无政策证据时 `version_score` 不得凭空加分。
+  - 不同股票事件必须按 symbol 隔离，不能串票。
+  - `pytest tests/test_tradeflow_*.py -q` 或新增对应测试通过。
+- **代码标注要求**：`# [S-001] policy_version_signal`
+
+### S-002: 叙事质量评分（P1）
+- **描述**：给事件催化增加叙事质量评分，区分“普通公告/普通新闻”和“容易形成市场共识的主线事件”。
+- **优先级**：P1
+- **状态**：done — commit 9825e22
+- **背景**：
+  - 选股不只看有没有事件，还要判断事件是否容易被市场理解、传播和接力。
+  - 目前事件催化更偏“是否存在”，缺少“事件质量与传播价值”。
+- **执行约束**：
+  - 第一阶段只做规则评分，不调用外部 LLM。
+  - 不做舆情全网抓取，不扫全市场。
+  - 评分只影响候选排序和 `need_deep_ta`，不直接生成交易建议。
+- **实现要点**：
+  1. 新增 `narrative_score`，分解为政策背书、产业落地、订单/回购/评级、传播清晰度、拥挤/过热扣分。
+  2. 回购、重大订单、中标、并购重组、业绩预告、评级变化等事件给不同基础分。
+  3. 多个事件叠加时做封顶，避免标题堆叠虚高。
+  4. 输出 `narrative_reasons` 和 evidence refs，便于日报解释“为什么进候选池”。
+- **验证方式**：
+  - 普通新闻低分，回购/订单/政策相关事件高分。
+  - 重复事件不会无限叠加。
+  - `narrative_score` 缺证据时为 0 或保守默认。
+- **代码标注要求**：`# [S-002] narrative_quality_score`
+
+### S-003: 水下风险标签与候选降权（P1）
+- **描述**：为 TradeFlow 候选池增加水下风险标签，识别解禁、减持、问询、财务异常、融资拥挤、龙虎榜过热等风险，对候选做降权或要求更严格技术确认。
+- **优先级**：P1
+- **状态**：done — commit a95c3d7
+- **背景**：
+  - 选对股票不只看上涨逻辑，也要避开“看起来有题材但水下结构很差”的票。
+  - 当前已有部分 A 股标签，但风险标签还不够系统，也没有形成候选池统一降权规则。
+- **执行约束**：
+  - 所有风险标签必须绑定原始字段或事件文本。
+  - 不把风险标签直接翻译成清仓/买入建议。
+  - 不写生产数据库 schema；如需持久化先用现有 TradeFlow 结构或输出方案。
+- **实现要点**：
+  1. 统一输出 `risk_flags`：`LOCKUP_RISK`、`REDUCE_HOLDING_RISK`、`INQUIRY_RISK`、`FINANCIAL_QUALITY_RISK`、`MARGIN_CROWDING_RISK`、`LHB_OVERHEAT_RISK`。
+  2. 风险标签进入候选分数降权和 `need_deep_ta` 门槛。
+  3. 解禁/减持/问询等公告类风险优先从 `event_source` 读取。
+  4. 龙虎榜和融资融券风险必须区分 `HAS_DATA/NOT_QUERIED/FAILED`，不得把未查询当作无风险。
+- **验证方式**：
+  - 构造解禁/减持/问询事件，候选出现对应 `risk_flags` 并降权。
+  - 龙虎榜未查询时不生成过热风险。
+  - 风险缺证据时不输出高置信风险标签。
+- **代码标注要求**：`# [S-003] underwater_risk_flags`
+
+### S-004: 候选股博弈平衡解释（P1）
+- **描述**：在 TradeFlow Plan 中为每个候选输出轻量博弈解释，说明多头为何可能买、空头为何可能卖、政策/监管/资金结构是否支持，避免只给策略标签而缺少交易对手视角。
+- **优先级**：P1
+- **状态**：done — commit c92e626
+- **背景**：
+  - A 股候选池要处理动态博弈：同一事件可能同时有多头叙事、风险压制和资金拥挤。
+  - 在 TA 深度分析前，候选池应先判断这只票是不是值得进一步消耗 token。
+- **执行约束**：
+  - 规则化生成，不调用外部 LLM。
+  - 不输出强买卖词。
+  - 不替代 TA 深度分析，只做候选池摘要。
+
+---DECISIONS---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+---DEVLOG---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-05-30 | T-006: 事件源自动接入 Discovery / Daily Plan
+
+- **执行者**：OpenCode
+- **任务**：T-006 — 把已完成的事件源模块纳入小范围 Discovery 和 Daily Plan，使公告、回购、评级等事件能在不全市场扫描的前提下自动进入候选池
+- **修改文件**：
+  - `tradingagents/tradeflow/event_source.py` — 新增 `EventSourceStatus` 枚举（OK/FAILED/STALE）、`EventSourceResult` 数据类、`fetch_daily_events_detailed()` 函数：返回包含完整元数据（event_type/direction/source/date）和状态跟踪的事件结果，支持标题去重
+  - `tradingagents/tradeflow/plan_runner.py` — `generate_daily_plan()` 改用 `fetch_daily_events_detailed()`；生成 `event_overrides` 从 EventItem 数据并传入候选评估链路；plan.metadata 新增 `event_source` 状态信息；`_build_plan_entry()` 新增 `event_items` 参数，输出 event_titles/event_types/event_sources/event_directions/event_count/event_details
+  - `tradingagents/tradeflow/discovery.py` — `run_discovery()` 改用 `fetch_daily_events_detailed()`；生成 `event_overrides` 从 EventItem 数据；result.metadata 新增 `event_source` 状态信息；`_build_discovery_entry()` 新增 `event_items` 参数，输出事件元数据
+  - `tests/test_t006_event_source_discovery.py` — 新建，22 个测试覆盖 EventSourceResult/EventSourceStatus、fetch_daily_events_detailed 去重/失败、plan_runner 事件元数据/失败可观测/事件覆盖/symbol 隔离、discovery 事件元数据/失败可观测/事件覆盖/symbol 隔离
+  - `tests/test_event_source_integration.py` — 更新 N-001 测试适配 `fetch_daily_events_detailed()` 替代 `fetch_daily_events()`
+  - `tests/test_t002_discovery.py` — 更新 T-002 测试适配 `fetch_daily_events_detailed()`
+- **测试结果**：1664 passed, 15 skipped, 0 failed
+- **关键逻辑**：
+  - `fetch_daily_events_detailed()` 包装三个子 fetch 函数，返回 `EventSourceResult`：包含 `events_map`（向后兼容）+ `items_by_symbol`（按 symbol 分组的 EventItem 列表）+ 状态信息
+  - 事件源异常时 status=FAILED + error_message，系统仍能正常处理手动 symbols
+  - EventItem 自动转换为 `event_overrides`（含 symbol/title/event_type/direction/source/date），传入 `evaluate_symbol()` 的 `event_overrides` 参数，使 event_catalyst 策略获得结构化事件数据
+  - 每个候选 plan entry 包含 event_details（完整事件列表）、event_types（去重事件类型）、event_sources（去重事件来源）
+  - 所有 symbol 严格隔离，每个 symbol 只消费自己的事件数据
+- **风险点**：无；所有改动向后兼容，use_event_source 默认 False，事件元数据字段只在有事件时才出现
+
+## 2026-05-30 | M-006 代码质量修复（Codex review 失败后巡检）
+
+- **执行者**：OpenCode
+- **背景**：Codex review 因网络断连失败（exit code 1），非代码问题。人工巡检发现两个潜在缺陷。
+- **修复内容**：
+  - `tradingagents/tradeflow/gated_deep_ta.py`：
+    1. **新增空模型拦截**：`check_deep_ta_gate()` 在 resolved_model 为空时返回 BLOCKED，避免无模型调度
+    2. **修复 `can_retry_deep_ta()` 语义不一致**：原实现 `failures < max_retries` 与 `check_deep_ta_gate()` 的 `failures + retry_count > max_retries` 不一致；改为 `failures + retry_count <= max_retries`，新增 `retry_count` 参数
+  - `tests/test_m006_gated_deep_ta.py`：
+    - 新增 `test_no_model_blocks` 和 `test_no_model_uses_default` 测试
+    - 修正多个测试：未指定 model 时不再通过门控，需设置 `default_model` 或传入 `model`
+    - 修正 `can_retry_deep_ta` 测试预期：`failures=1, max_retries=1` → 允许重试（与 check 逻辑一致）
+    - 新增 `retry_count` 参数验证
+- **测试结果**：60 passed (M-006)；TradeFlow 全部 221 passed；0 failed
+- **风险点**：无；修复向后兼容（调用方必须在 config 设置 `deep_ta_default_model` 或传入 `model`）
+
+## 2026-05-30 | M-006: OpenClaw 自动触发 TA 深度分析门控
+
+- **执行者**：OpenCode
+- **任务**：M-006 — 在盘中 Observe 触发后，由 OpenClaw 决定是否调用 TA 深度分析，带成本、模型、频率门控
+- **修改文件**：
+  - `tradingagents/tradeflow/gated_deep_ta.py` — 新建：[M-006] 深度 TA 调度门控模块
+    - `DeepTAStatus` 枚举：PENDING / BLOCKED / DISPATCHED / SUCCESS / FAILED
+    - `DeepTARecord` 数据类：记录每次调度的 symbol、状态、模型、耗时、报告路径、重试次数、持仓上下文
+    - `DeepTADecision` 数据类：门控结果（allowed/reason/model/record）
+    - `DeepTADispatcher` 数据类：日内调度状态管理器，跟踪 daily_count、failure_counts、records；支持从 StrategyConfig 构建
+    - `check_deep_ta_gate()` — 核心门控函数：依次检查 need_deep_ta、每日上限、observe 状态、综合分、完整度、模型黑名单、重试上限
+    - `record_deep_ta_dispatch()` — 记录调度结果，更新 daily_count（DISPATCHED）和 failure_counts（FAILED）
+    - `can_retry_deep_ta()` — 判断是否可以重试
+  - `tradingagents/tradeflow/strategy_config.py` — StrategyConfig 新增 7 个 deep TA 门控配置：`deep_ta_daily_limit`(默认3)、`deep_ta_default_model`、`deep_ta_blocked_models`(默认屏蔽 deepseek)、`deep_ta_max_retries`(默认1)、`deep_ta_min_composite_score`(默认40)、`deep_ta_min_completeness`(默认0.5)、`deep_ta_require_observe_triggered`(默认True)
+  - `tradingagents/tradeflow/schemas.py` — Candidate 新增 6 个字段：`deep_ta_status`、`deep_ta_dispatch_reason`、`deep_ta_model`、`deep_ta_report_path`、`deep_ta_dispatch_time`、`deep_ta_position_context`；`to_db_row()`/`from_db_row()` 同步；`render_text()` 显示深度 TA 调度状态
+  - `tradingagents/tradeflow/candidate_engine.py` — `init_db()` 新增 6 列；`save_candidate()` INSERT/UPDATE 包含新列（58→64 字段）
+  - `tradingagents/tradeflow/plan_runner.py` — `_build_plan_entry()` 输出 deep_ta_status/.../deep_ta_position_context
+  - `tests/test_m006_gated_deep_ta.py` — 新建，58 个测试覆盖：
+    - TestDeepTAStatus (2): 枚举值、完整枚举集合
+    - TestDeepTARecord (4): 默认值、自定义值、自动日期、显式日期
+    - TestDeepTADispatcher (5): 默认初始化、from_config 默认/自定义、自动/显式日期
+    - TestCheckDeepTAGate (20): need_deep_ta=False 拦截、每日上限满/未满、observe 非 TRIGGERED 拦截、WAITING/INVALIDATED、TRIGGERED 放行、禁用 require 观察触发、低综合分、综合分在阈值、低完整度、完整度在阈值、DeepSeek 模型拦截、默认模型 DeepSeek、允许模型、默认模型使用、超重试上限、重试内允许、全部门通过、未知持仓、空黑名单
+    - TestRecordDeepTADispatch (7): DISPATCHED 增计数、FAILED 增失败、SUCCESS 不变、BLOCKED 不变、多次上限、更新记录、全部字段
+    - TestCanRetryDeepTA (4): 无失败可重试、达上限不可、低于上限可、不同 symbol 独立
+    - TestCandidateDeepTAFields (4): 默认值、to_db_row、from_db_row、from_db_row 默认值
+    - TestDeepTADbPersistence (2): 保存读取、upsert 覆盖
+    - TestStrategyConfigDeepTA (3): 默认值、自定义值、to_dict 包含
+    - TestFullDeepTAWorkflow (7): 触发→调度→成功、未触发拦截、每日上限耗尽、失败→重试→再失败→拦截、DeepSeek 默认拦截、多 symbol 独立、无无限重试
+- **测试结果**：58 passed (M-006)；TradeFlow 全部 219 passed；0 failed
+- **关键逻辑**：
+  - `check_deep_ta_gate()` 按顺序检查 7 道门：need_deep_ta=True → 每日上限未满 → observe TRIGGERED → 综合分达标 → 完整度达标 → 模型不在黑名单 → 失败次数未超限
+  - 默认屏蔽 deepseek 模型，必须在配置中显式移除才能使用
+  - `DeepTADispatcher.from_config(cfg)` 从 StrategyConfig 构建调度器，所有阈值集中配置
+  - `record_deep_ta_dispatch()` 只记录审计信息，不实际调用 LLM，由上层（OpenClaw/scheduler）负责执行
+  - 多 symbol 完全独立，失败计数和调度记录按 symbol 隔离
+- **风险点**：无；所有改动向后兼容，deep_ta_status 默认空字符串，不影响现有逻辑
+
+## 2026-05-30 | M-005: 盘中 Observe 状态机
+
+- **执行者**：OpenCode
+- **任务**：M-005 — 对盘前候选做低频盘中观察，记录触发价、失效价、放量、跌破等状态
+- **修改文件**：
+  - `tradingagents/tradeflow/intraday_observe.py` — 新建：[M-005] 盘中观察状态机核心模块
+    - `ObserveState` 枚举：WAITING / TRIGGERED / INVALIDATED / EXPIRED
+    - `ObserveSnapshot` 数据类：单次检查快照，记录价量证据和触发原因
+    - `ObserveTracker` 数据类：跟踪器，维护状态、触发次数、检查历史
+    - `run_observe_check()` — 核心检查函数：价格突破触发价→TRIGGERED，跌破失效价→INVALIDATED，支持单日触发次数上限
+    - `expire_tracker()` — 收盘到期处理
+  - `tradingagents/tradeflow/schemas.py` — Candidate 新增 3 个字段：`observe_state`、`observe_trigger_count`、`observe_first_trigger_time`；`to_db_row()`/`from_db_row()` 同步；`render_text()` 显示盘中观察状态
+  - `tradingagents/tradeflow/strategy_config.py` — StrategyConfig 新增 3 个 observe 配置：`observe_max_daily_triggers`(默认3)、`observe_trigger_breach_pct`、`observe_invalidate_breach_pct`
+  - `tradingagents/tradeflow/candidate_engine.py` — `init_db()` 新增 3 列；`save_candidate()` INSERT/UPDATE 包含新列（55→58 字段）
+  - `tradingagents/tradeflow/plan_runner.py` — `_build_plan_entry()` 输出 observe_state/observe_trigger_count/observe_first_trigger_time
+  - `tests/test_m005_intraday_observe.py` — 新建，40 个测试覆盖：
+    - TestObserveState (2): 枚举值、完整枚举集合
+    - TestObserveSnapshot (2): 基本创建、自动时间戳
+    - TestObserveTracker (2): 默认状态、自定义日期
+    - TestRunObserveCheck (11): 价格低于触发价/WAITING、突破触发价/TRIGGERED、恰好触发价/TRIGGERED、跌破失效价/INVALIDATED、恰好失效价/INVALIDATED、失效优先于触发检查、无触发价、无失效价、无价格、量价记录、单日触发上限
+    - TestTerminalStates (3): TRIGGERED 终态保持、INVALIDATED 终态保持、EXPIRED 终态保持
+    - TestExpireTracker (3): WAITING→EXPIRED、TRIGGERED 保持、INVALIDATED 保持
+    - TestCandidateObserveIntegration (4): 默认值、to_db_row、from_db_row、from_db_row 默认值
+    - TestDbPersistence (2): 保存并读取 observe 状态、upsert 覆盖
+    - TestTrackerToCandidateSync (3): 同步 TRIGGERED/INVALIDATED/WAITING
+    - TestStrategyConfigObserve (2): 默认配置、自定义配置
+    - TestFullObserveWorkflow (4): 完整日间流程、失效流程、未触发无输出、多 symbol 隔离
+- **测试结果**：40 passed (M-005)；TradeFlow 全部 121 passed；0 failed
+- **关键逻辑**：
+  - `run_observe_check()` 先检查失效价（INVALIDATED），再检查触发价（TRIGGERED），失效优先于触发
+  - 单日触发次数上限由 `StrategyConfig.observe_max_daily_triggers` 控制（默认3），超出上限后价格虽突破但不再触发
+  - 终态（TRIGGERED/INVALIDATED/EXPIRED）为不可逆状态，后续检查只记录快照不改变状态
+  - `expire_tracker()` 收盘时将 WAITING 状态转为 EXPIRED，已触发/已失效保持不变
+  - 每次 `run_observe_check()` 自动追加到 `tracker.check_history`，保存完整检查历史
+  - 多 symbol 完全隔离，互不影响
+- **风险点**：无；所有改动向后兼容，observe_state 默认 WAITING，不触发任何自动动作
+
+
+
+## 2026-05-30 | V-002: 夜间自动开发验收报告与候选样本回放
+
+
+exec
+/bin/zsh -lc 'git status --short --branch' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+## local/tradingagents-custom...myfork/local/tradingagents-custom [ahead 87, behind 1]
+ M .zai_quota_state.json
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tests/test_event_source_integration.py
+ M tests/test_t002_discovery.py
+ M tradingagents/tradeflow/discovery.py
+ M tradingagents/tradeflow/event_source.py
+ M tradingagents/tradeflow/plan_runner.py
+?? .auto_dev.lock/
+?? docs/task_runs/T-006-20260530-013347/
+?? tests/test_t006_event_source_discovery.py
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- tradingagents/tradeflow/event_source.py tradingagents/tradeflow/plan_runner.py tradingagents/tradeflow/discovery.py tests/test_t006_event_source_discovery.py tests/test_event_source_integration.py tests/test_t002_discovery.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ .zai_quota_state.json                   | 11 ++----
+ docs/DEVLOG.md                          | 20 ++++++++++
+ docs/TASKS.md                           |  2 +-
+ tests/test_event_source_integration.py  | 62 ++++++++++++++++++++++---------
+ tests/test_t002_discovery.py            | 16 ++++++--
+ tradingagents/tradeflow/discovery.py    | 64 +++++++++++++++++++++++++++++---
+ tradingagents/tradeflow/event_source.py | 65 ++++++++++++++++++++++++++++++++
+ tradingagents/tradeflow/plan_runner.py  | 66 ++++++++++++++++++++++++++++++---
+ 8 files changed, 264 insertions(+), 42 deletions(-)
+diff --git a/tests/test_event_source_integration.py b/tests/test_event_source_integration.py
+index 054d944..0b67f10 100644
+--- a/tests/test_event_source_integration.py
++++ b/tests/test_event_source_integration.py
+@@ -3,6 +3,8 @@
+ Tests that fetch_daily_events() integrates correctly with the plan runner
+ and universe builder so that event-discovered symbols enter the candidate pool
+ and each symbol only receives its own event titles.
++
++Updated for [T-006]: plan_runner now uses fetch_daily_events_detailed().
+ """
+ 
+ import sys
+@@ -18,6 +20,7 @@ from tradingagents.tradeflow.schemas import Candidate, CandidateSignal
+ from tradingagents.tradeflow.plan_runner import generate_daily_plan
+ from tradingagents.tradeflow.universe import build_universe
+ from tradingagents.tradeflow.candidate_engine import init_db
++from tradingagents.tradeflow.event_source import EventItem, EventSourceResult, EventSourceStatus
+ 
+ 
+ MOCK_EVENTS = {
+@@ -25,6 +28,23 @@ MOCK_EVENTS = {
+     "600519": ["减持评级"],
+ }
+ 
++MOCK_ITEMS_BY_SYMBOL = {
++    "002138": [EventItem(symbol="002138", title="回购进展公告", event_type="buyback", direction="bullish", source="eastmoney")],
++    "600519": [EventItem(symbol="600519", title="减持评级", event_type="rating", direction="bearish", source="cninfo")],
++}
++
++
++def _make_event_result(events_map=None, items_by_symbol=None):
++    ev_map = events_map or {}
++    items = items_by_symbol or {}
++    return EventSourceResult(
++        status=EventSourceStatus.OK,
++        events_map=ev_map,
++        items_by_symbol=items,
++        event_count=sum(len(v) for v in items.values()),
++        symbols_count=len(items),
++    )
++
+ 
+ def _mock_candidate(symbol, name="", score=60.0):
+     c = Candidate(
+@@ -102,8 +122,8 @@ class TestUniverseEventSymbols:
+ 
+ class TestPlanRunnerEventSource:
+     def test_use_event_source_false_does_not_call_fetch(self):
+-        """Default use_event_source=False should NOT call fetch_daily_events."""
+-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
++        """Default use_event_source=False should NOT call fetch_daily_events_detailed."""
++        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                 mock_eval.return_value = (None, "无策略命中")
+                 plan = generate_daily_plan(
+@@ -114,9 +134,9 @@ class TestPlanRunnerEventSource:
+             mock_fetch.assert_not_called()
+ 
+     def test_use_event_source_true_calls_fetch(self):
+-        """use_event_source=True should call fetch_daily_events with YYYYMMDD."""
+-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
+-            mock_fetch.return_value = MOCK_EVENTS
++        """use_event_source=True should call fetch_daily_events_detailed with YYYYMMDD."""
++        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
++            mock_fetch.return_value = _make_event_result(MOCK_EVENTS, MOCK_ITEMS_BY_SYMBOL)
+             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                 mock_eval.return_value = (None, "无策略命中")
+                 plan = generate_daily_plan(
+@@ -129,8 +149,8 @@ class TestPlanRunnerEventSource:
+ 
+     def test_event_symbols_in_universe_when_enabled(self):
+         """When use_event_source=True, event symbols enter the universe."""
+-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
+-            mock_fetch.return_value = MOCK_EVENTS
++        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
++            mock_fetch.return_value = _make_event_result(MOCK_EVENTS, MOCK_ITEMS_BY_SYMBOL)
+             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                 mock_eval.return_value = (None, "无策略命中")
+                 plan = generate_daily_plan(
+@@ -145,8 +165,8 @@ class TestPlanRunnerEventSource:
+ 
+     def test_each_symbol_gets_own_events_only(self):
+         """Each symbol should only receive its own event titles — no cross-contamination."""
+-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
+-            mock_fetch.return_value = MOCK_EVENTS
++        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
++            mock_fetch.return_value = _make_event_result(MOCK_EVENTS, MOCK_ITEMS_BY_SYMBOL)
+             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                 mock_eval.return_value = (None, "无策略命中")
+                 plan = generate_daily_plan(
+@@ -165,8 +185,8 @@ class TestPlanRunnerEventSource:
+ 
+     def test_empty_events_map_does_not_break(self):
+         """Empty event map should not break the flow."""
+-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
+-            mock_fetch.return_value = {}
++        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
++            mock_fetch.return_value = _make_event_result()
+             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                 mock_eval.return_value = (None, "无策略命中")
+                 plan = generate_daily_plan(
+@@ -180,8 +200,8 @@ class TestPlanRunnerEventSource:
+ 
+     def test_event_source_candidates_appear_in_plan(self):
+         """Event-discovered symbols that pass evaluation appear in the plan."""
+-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
+-            mock_fetch.return_value = MOCK_EVENTS
++        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
++            mock_fetch.return_value = _make_event_result(MOCK_EVENTS, MOCK_ITEMS_BY_SYMBOL)
+             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                 def fake_eval(symbol, **kwargs):
+                     if symbol in ("002138", "600519"):
+@@ -202,8 +222,12 @@ class TestPlanRunnerEventSource:
+     def test_manual_symbols_still_evaluated_with_events(self):
+         """Manual symbols still get evaluated, and also receive their events if present."""
+         mixed_events = {"002138": ["回购进展公告"], "300999": ["新股事件"]}
+-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
+-            mock_fetch.return_value = mixed_events
++        mixed_items = {
++            "002138": [EventItem(symbol="002138", title="回购进展公告", event_type="buyback", direction="bullish", source="eastmoney")],
++            "300999": [EventItem(symbol="300999", title="新股事件", event_type="notice", direction="neutral", source="eastmoney")],
++        }
++        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
++            mock_fetch.return_value = _make_event_result(mixed_events, mixed_items)
+             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                 def fake_eval(symbol, **kwargs):
+                     c = _mock_candidate(symbol, score=55.0)
+@@ -215,7 +239,6 @@ class TestPlanRunnerEventSource:
+                     candidates=None,
+                     use_event_source=True,
+                 )
+-            # Check that 002138 gets its events (from event map, not just news_texts param)
+             for call_item in mock_eval.call_args_list:
+                 sym = call_item.kwargs.get("symbol", call_item.args[0] if call_item.args else "")
+                 news = call_item.kwargs.get("news_texts")
+@@ -227,8 +250,11 @@ class TestPlanRunnerEventSource:
+     def test_symbol_without_events_gets_none_news(self):
+         """Symbol in universe without events in the map gets no event news_texts."""
+         events_only_one = {"002138": ["回购进展公告"]}
+-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
+-            mock_fetch.return_value = events_only_one
++        items_only_one = {
++            "002138": [EventItem(symbol="002138", title="回购进展公告", event_type="buyback", direction="bullish", source="eastmoney")],
++        }
++        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
++            mock_fetch.return_value = _make_event_result(events_only_one, items_only_one)
+             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                 mock_eval.return_value = (None, "无策略命中")
+                 plan = generate_daily_plan(
+diff --git a/tests/test_t002_discovery.py b/tests/test_t002_discovery.py
+index ce11dfd..8536159 100644
+--- a/tests/test_t002_discovery.py
++++ b/tests/test_t002_discovery.py
+@@ -349,6 +349,7 @@ class TestRunDiscoveryWithIndustry:
+ 
+ class TestRunDiscoveryWithEvents:
+     def test_event_source_integration(self):
++        from tradingagents.tradeflow.event_source import EventItem, EventSourceResult, EventSourceStatus
+         c = _make_candidate("002138.SZ", score=65.0)
+ 
+         def fake_evaluate(symbol, **kwargs):
+@@ -357,8 +358,14 @@ class TestRunDiscoveryWithEvents:
+                 return c, ""
+             return None, "无策略命中"
+ 
+-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events",
+-                    return_value={"002138": ["回购进展"]}):
++        event_result = EventSourceResult(
++            status=EventSourceStatus.OK,
++            events_map={"002138": ["回购进展"]},
++            items_by_symbol={"002138": [EventItem(symbol="002138", title="回购进展", event_type="buyback", direction="bullish", source="eastmoney")]},
++            event_count=1, symbols_count=1,
++        )
++        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed",
++                    return_value=event_result):
+             with patch("tradingagents.tradeflow.discovery.evaluate_symbol", side_effect=fake_evaluate):
+                 result = run_discovery(
+                     trade_date="2026-05-29",
+@@ -369,8 +376,9 @@ class TestRunDiscoveryWithEvents:
+         assert len(result.candidates) >= 1
+ 
+     def test_event_source_not_fetched_when_disabled(self):
+-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
+-            mock_fetch.return_value = {}
++        from tradingagents.tradeflow.event_source import EventSourceResult
++        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
++            mock_fetch.return_value = EventSourceResult()
+             with patch("tradingagents.tradeflow.discovery.evaluate_symbol", return_value=(None, "无策略命中")):
+                 run_discovery(
+                     trade_date="2026-05-29",
+diff --git a/tradingagents/tradeflow/discovery.py b/tradingagents/tradeflow/discovery.py
+index 015ca2e..df56599 100644
+--- a/tradingagents/tradeflow/discovery.py
++++ b/tradingagents/tradeflow/discovery.py
+@@ -137,10 +137,18 @@ def run_discovery(
+         trade_date = datetime.now().strftime("%Y-%m-%d")
+ 
+     events_map: dict[str, list[str]] = {}
++    event_items_by_symbol: dict[str, list] = {}  # [T-006] event_source_discovery
++    event_source_status = "NOT_QUERIED"  # [T-006]
++    event_source_error = ""  # [T-006]
++
+     if use_event_source:
+-        from .event_source import fetch_daily_events
++        from .event_source import fetch_daily_events_detailed, EventSourceStatus  # [T-006]
+         trade_date_compact = trade_date.replace("-", "")
+-        events_map = fetch_daily_events(trade_date_compact)
++        event_result = fetch_daily_events_detailed(trade_date_compact)  # [T-006]
++        events_map = event_result.events_map
++        event_items_by_symbol = event_result.items_by_symbol  # [T-006]
++        event_source_status = event_result.status.value  # [T-006]
++        event_source_error = event_result.error_message  # [T-006]
+ 
+     universe = _build_discovery_universe(
+         symbols=symbols,
+@@ -170,6 +178,20 @@ def run_discovery(
+         else:
+             filtered_overrides = None
+ 
++        # [T-006] event_source_discovery — generate event_overrides from EventItem data
++        sym_event_overrides = list(filtered_overrides) if filtered_overrides else []
++        if sym in event_items_by_symbol:
++            for ev_item in event_items_by_symbol[sym]:
++                sym_event_overrides.append({
++                    "symbol": sym,
++                    "title": ev_item.title,
++                    "event_type": ev_item.event_type,
++                    "direction": ev_item.direction,
++                    "source": ev_item.source,
++                    "date": ev_item.date,
++                })
++        sym_event_overrides_final = sym_event_overrides if sym_event_overrides else None
++
+         sym_news = events_map.get(sym) if events_map else None
+ 
+         # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
+@@ -183,13 +205,16 @@ def run_discovery(
+             source=sym_source,
+             trade_date=trade_date,
+             news_texts=sym_news or news_texts,
+-            event_overrides=filtered_overrides,
++            event_overrides=sym_event_overrides_final,  # [T-006]
+             fund_flow_individual=sym_ff_individual,  # [T-003]
+             fund_flow_board=sym_ff_board,  # [T-003]
+         )
+         if c is not None:
+             if item.get("universe_sources"):
+                 c.universe_sources = item["universe_sources"]  # [M-003]
++            # [T-006] event_source_discovery — attach event items for discovery entry
++            if sym in event_items_by_symbol:
++                c._event_items = event_items_by_symbol[sym]  # type: ignore[attr-defined]
+             candidates.append(c)
+         else:
+             filtered.append(FilteredSymbol(
+@@ -204,7 +229,8 @@ def run_discovery(
+ 
+     plan_entries = []
+     for c in top_candidates:
+-        entry = _build_discovery_entry(c)
++        ev_items = getattr(c, "_event_items", None)  # [T-006]
++        entry = _build_discovery_entry(c, event_items=ev_items)
+         plan_entries.append(entry)
+ 
+     # [S-007] candidate_tier_budget — sort by tier (A first, then B, then C)
+@@ -257,6 +283,12 @@ def run_discovery(
+             "generated_at": datetime.now().isoformat(),
+             "filter_breakdown": filter_breakdown,
+             "sources": list({item.get("source", "manual") for item in universe}),
++            "event_source": {  # [T-006] event_source_discovery
++                "status": event_source_status,
++                "error_message": event_source_error,
++                "event_count": sum(len(v) for v in event_items_by_symbol.values()),
++                "symbols_count": len(event_items_by_symbol),
++            },
+         },
+     )
+ 
+@@ -305,7 +337,7 @@ def run_discovery(
+     return result
+ 
+ 
+-def _build_discovery_entry(candidate: Candidate) -> dict:
++def _build_discovery_entry(candidate: Candidate, event_items: Optional[list] = None) -> dict:  # [T-006] event_source_discovery
+     """Build a discovery plan entry from a candidate."""
+     if candidate.need_deep_ta:
+         action = "NEED_DEEP_TA"
+@@ -321,7 +353,7 @@ def _build_discovery_entry(candidate: Candidate) -> dict:
+         if word in reason_str:
+             reason_str = reason_str.replace(word, "***")
+ 
+-    return {
++    entry = {
+         "symbol": candidate.symbol,
+         "name": candidate.name,
+         "source": candidate.source,
+@@ -371,6 +403,26 @@ def _build_discovery_entry(candidate: Candidate) -> dict:
+         "universe_sources": candidate.universe_sources,  # [M-003] tradeflow_universe_manager
+     }
+ 
++    # [T-006] event_source_discovery — add event metadata to discovery entry
++    if event_items:
++        entry["event_titles"] = [it.title for it in event_items if it.title]
++        entry["event_types"] = sorted({it.event_type for it in event_items if it.event_type})
++        entry["event_sources"] = sorted({it.source for it in event_items if it.source})
++        entry["event_directions"] = sorted({it.direction for it in event_items if it.direction})
++        entry["event_count"] = len(event_items)
++        entry["event_details"] = [
++            {
++                "title": it.title,
++                "event_type": it.event_type,
++                "direction": it.direction,
++                "source": it.source,
++                "date": it.date,
++            }
++            for it in event_items
++        ]
++
++    return entry
++
+ 
+ def _classify_filter_reasons(filtered: list[FilteredSymbol]) -> dict[str, int]:
+     """Classify filter reasons into categories."""
+diff --git a/tradingagents/tradeflow/event_source.py b/tradingagents/tradeflow/event_source.py
+index ac7535b..1cafc7e 100644
+--- a/tradingagents/tradeflow/event_source.py
++++ b/tradingagents/tradeflow/event_source.py
+@@ -10,10 +10,27 @@ import logging
+ import os
+ from dataclasses import dataclass, field
+ from datetime import datetime, timedelta
++from enum import Enum
+ from typing import Optional
+ 
+ logger = logging.getLogger(__name__)
+ 
++
++class EventSourceStatus(Enum):
++    OK = "OK"
++    FAILED = "FAILED"
++    STALE = "STALE"
++
++
++@dataclass
++class EventSourceResult:
++    status: EventSourceStatus = EventSourceStatus.OK
++    events_map: dict[str, list[str]] = field(default_factory=dict)
++    items_by_symbol: dict[str, list[EventItem]] = field(default_factory=dict)
++    error_message: str = ""
++    event_count: int = 0
++    symbols_count: int = 0
++
+ _BEARISH_NOTICE_TYPES = {"风险提示"}
+ 
+ 
+@@ -258,6 +275,54 @@ def fetch_daily_events(date: str) -> dict[str, list[str]]:
+     return events_map
+ 
+ 
++def fetch_daily_events_detailed(date: str) -> EventSourceResult:
++    """获取指定日期的全部事件，返回包含完整元数据和状态的结果。  # [T-006] event_source_discovery
++
++    与 fetch_daily_events() 不同，此函数返回 EventSourceResult，
++    包含按 symbol 分组的 EventItem 列表（event_type/direction/source/date）
++    以及事件源状态（OK/FAILED/STALE），便于 Discovery 和 Daily Plan 输出
++    事件来源、标题摘要、事件类型、去重结果和证据引用。
++
++    Args:
++        date: 'YYYYMMDD'
++    Returns:
++        EventSourceResult
++    """
++    result = EventSourceResult()
++    try:
++        notice_items = fetch_notice_events(date)
++        buyback_items = fetch_buyback_events()
++        rating_items = fetch_rating_events(date)
++    except Exception as e:
++        result.status = EventSourceStatus.FAILED
++        result.error_message = str(e)
++        logger.warning("fetch_daily_events_detailed failed: %s", e)
++        return result
++
++    all_items = notice_items + buyback_items + rating_items
++
++    seen_titles_by_symbol: dict[str, set[str]] = {}
++    for item in all_items:
++        sym = item.symbol
++        if not sym:
++            continue
++        if sym not in result.items_by_symbol:
++            result.items_by_symbol[sym] = []
++            result.events_map[sym] = []
++            seen_titles_by_symbol[sym] = set()
++
++        if item.title and item.title != "nan":
++            if item.title not in seen_titles_by_symbol[sym]:
++                result.items_by_symbol[sym].append(item)
++                result.events_map[sym].append(item.title)
++                seen_titles_by_symbol[sym].add(item.title)
++
++    result.event_count = sum(len(v) for v in result.items_by_symbol.values())
++    result.symbols_count = len(result.items_by_symbol)
++
++    return result
++
++
+ def fetch_events_for_symbol(symbol: str, date: str) -> list[str]:
+     """获取单只股票的事件标题列表。用于候选引擎按需查询。"""
+     raw_sym = _normalize_symbol(symbol)
+diff --git a/tradingagents/tradeflow/plan_runner.py b/tradingagents/tradeflow/plan_runner.py
+index a40db33..3ae2842 100644
+--- a/tradingagents/tradeflow/plan_runner.py
++++ b/tradingagents/tradeflow/plan_runner.py
+@@ -40,7 +40,7 @@ def _action_for_candidate(candidate: Candidate) -> str:
+     return "OBSERVE"
+ 
+ 
+-def _build_plan_entry(candidate: Candidate) -> dict:
++def _build_plan_entry(candidate: Candidate, event_items: Optional[list] = None) -> dict:  # [T-006] event_source_discovery
+     """Build a plan entry dict from a candidate."""
+     action = _action_for_candidate(candidate)
+ 
+@@ -55,7 +55,7 @@ def _build_plan_entry(candidate: Candidate) -> dict:
+         if word in reason_str:
+             reason_str = reason_str.replace(word, "***")
+ 
+-    return {
++    entry = {
+         "symbol": candidate.symbol,
+         "name": candidate.name,
+         "action": action,
+@@ -118,6 +118,26 @@ def _build_plan_entry(candidate: Candidate) -> dict:
+         "deep_ta_position_context": candidate.deep_ta_position_context,  # [M-006]
+     }
+ 
++    # [T-006] event_source_discovery — add event metadata to plan entry
++    if event_items:
++        entry["event_titles"] = [it.title for it in event_items if it.title]
++        entry["event_types"] = sorted({it.event_type for it in event_items if it.event_type})
++        entry["event_sources"] = sorted({it.source for it in event_items if it.source})
++        entry["event_directions"] = sorted({it.direction for it in event_items if it.direction})
++        entry["event_count"] = len(event_items)
++        entry["event_details"] = [
++            {
++                "title": it.title,
++                "event_type": it.event_type,
++                "direction": it.direction,
++                "source": it.source,
++                "date": it.date,
++            }
++            for it in event_items
++        ]
++
++    return entry
++
+ 
+ def generate_daily_plan(
+     trade_date: Optional[str] = None,
+@@ -156,11 +176,20 @@ def generate_daily_plan(
+         trade_date = datetime.now().strftime("%Y-%m-%d")
+ 
+     # [N-001] event_source_plan_integration — fetch events if enabled
++    # [T-006] event_source_discovery — use detailed fetch for richer metadata
+     events_map: dict[str, list[str]] = {}
++    event_items_by_symbol: dict[str, list] = {}
++    event_source_status = "NOT_QUERIED"
++    event_source_error = ""
++
+     if use_event_source:
+-        from .event_source import fetch_daily_events
++        from .event_source import fetch_daily_events_detailed, EventSourceStatus
+         trade_date_compact = trade_date.replace("-", "")
+-        events_map = fetch_daily_events(trade_date_compact)
++        event_result = fetch_daily_events_detailed(trade_date_compact)
++        events_map = event_result.events_map
++        event_items_by_symbol = event_result.items_by_symbol
++        event_source_status = event_result.status.value
++        event_source_error = event_result.error_message
+ 
+     if candidates is None:
+         # Build universe — pass event_symbols so event-discovered
+@@ -176,6 +205,7 @@ def generate_daily_plan(
+         # Evaluate each symbol — filter event_overrides to only
+         # those matching the current symbol (or global overrides without symbol).
+         # [N-001] Each symbol gets its own event titles as news_texts.
++        # [T-006] event_source_discovery — also generate event_overrides from EventItem data
+         candidates = []
+         for item in universe:
+             sym = item["symbol"]
+@@ -187,6 +217,20 @@ def generate_daily_plan(
+             else:
+                 filtered_overrides = None
+ 
++            # [T-006] event_source_discovery — generate event_overrides from EventItem data
++            sym_event_overrides = list(filtered_overrides) if filtered_overrides else []
++            if sym in event_items_by_symbol:
++                for ev_item in event_items_by_symbol[sym]:
++                    sym_event_overrides.append({
++                        "symbol": sym,
++                        "title": ev_item.title,
++                        "event_type": ev_item.event_type,
++                        "direction": ev_item.direction,
++                        "source": ev_item.source,
++                        "date": ev_item.date,
++                    })
++            sym_event_overrides_final = sym_event_overrides if sym_event_overrides else None
++
+             # [N-001] event_source_plan_integration
+             sym_news = events_map.get(sym) if events_map else None
+ 
+@@ -201,7 +245,7 @@ def generate_daily_plan(
+                 source=item.get("source", "manual"),
+                 trade_date=trade_date,
+                 news_texts=sym_news or news_texts,
+-                event_overrides=filtered_overrides,
++                event_overrides=sym_event_overrides_final,  # [T-006]
+                 fund_flow_individual=sym_ff_individual,  # [T-003]
+                 fund_flow_board=sym_ff_board,  # [T-003]
+                 cfg=cfg,  # [M-004]
+@@ -209,12 +253,16 @@ def generate_daily_plan(
+             if c is not None:
+                 if item.get("universe_sources"):
+                     c.universe_sources = item["universe_sources"]  # [M-003]
++                # [T-006] event_source_discovery — attach event items for plan entry
++                if sym in event_items_by_symbol:
++                    c._event_items = event_items_by_symbol[sym]  # type: ignore[attr-defined]
+                 candidates.append(c)
+ 
+     # Build plan entries
+     plan_entries = []
+     for c in candidates:
+-        entry = _build_plan_entry(c)
++        ev_items = getattr(c, "_event_items", None)  # [T-006]
++        entry = _build_plan_entry(c, event_items=ev_items)
+         plan_entries.append(entry)
+ 
+     # Sort by composite_score descending (S-005 priority gate), fallback to score
+@@ -265,6 +313,12 @@ def generate_daily_plan(
+             "universe_size": len(plan_entries),
+             "generated_at": datetime.now().isoformat(),
+             "strategy_config_version": cfg.config_version,  # [M-004]
++            "event_source": {  # [T-006] event_source_discovery
++                "status": event_source_status,
++                "error_message": event_source_error,
++                "event_count": sum(len(v) for v in event_items_by_symbol.values()),
++                "symbols_count": len(event_items_by_symbol),
++            },
+         },
+     )
+ 
+
+exec
+/bin/zsh -lc "sed -n '1,140p' tradingagents/tradeflow/event_source.py && sed -n '140,340p' tradingagents/tradeflow/event_source.py && sed -n '1,420p' tests/test_t006_event_source_discovery.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""TradeFlow Event Source — 从 akshare 获取公告/回购/评级事件。
+
+提供 fetch_daily_events(date) 函数，返回按 symbol 分组的事件列表。
+供 event_catalyst 策略的 news_texts 参数使用。
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+
+class EventSourceStatus(Enum):
+    OK = "OK"
+    FAILED = "FAILED"
+    STALE = "STALE"
+
+
+@dataclass
+class EventSourceResult:
+    status: EventSourceStatus = EventSourceStatus.OK
+    events_map: dict[str, list[str]] = field(default_factory=dict)
+    items_by_symbol: dict[str, list[EventItem]] = field(default_factory=dict)
+    error_message: str = ""
+    event_count: int = 0
+    symbols_count: int = 0
+
+_BEARISH_NOTICE_TYPES = {"风险提示"}
+
+
+@dataclass
+class EventItem:
+    """一个事件条目"""
+
+    symbol: str = ""
+    name: str = ""
+    event_type: str = ""
+    title: str = ""
+    direction: str = "neutral"
+    date: str = ""
+    source: str = ""
+    detail: dict = field(default_factory=dict)
+
+
+def _bypass_proxy() -> None:
+    env_keys = ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"]
+    for key in env_keys:
+        os.environ.pop(key, None)
+
+
+def _normalize_symbol(code: str) -> str:
+    raw = code.strip()
+    if "." in raw:
+        return raw.split(".")[0]
+    return raw
+
+
+def _date_str(ymd: str) -> str:
+    if len(ymd) == 8:
+        return f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}"
+    return ymd
+
+
+def _notice_direction(notice_type: str) -> str:
+    if notice_type in _BEARISH_NOTICE_TYPES:
+        return "bearish"
+    if notice_type in {"重大事项", "资产重组", "融资公告", "持股变动"}:
+        return "bullish"
+    return "neutral"
+
+
+def _rating_direction(rating: str) -> str:
+    bullish_keywords = {"买入", "增持", "推荐", "强烈推荐", "优于大势"}
+    bearish_keywords = {"卖出", "减持", "回避"}
+    for kw in bullish_keywords:
+        if kw in rating:
+            return "bullish"
+    for kw in bearish_keywords:
+        if kw in rating:
+            return "bearish"
+    return "neutral"
+
+
+def fetch_notice_events(
+    date: str,
+    symbol_filter: str = "全部",
+) -> list[EventItem]:
+    """获取沪深公告事件。
+
+    Args:
+        date: 'YYYYMMDD'
+        symbol_filter: '全部' / '重大事项' / '财务报告' / '融资公告' / '风险提示'
+    """
+    try:
+        _bypass_proxy()
+        import akshare as ak
+
+        df = ak.stock_notice_report(symbol=symbol_filter, date=date)
+    except Exception as e:
+        logger.warning("fetch_notice_events failed: %s", e)
+        return []
+
+    if df is None or df.empty:
+        return []
+
+    items: list[EventItem] = []
+    for _, row in df.iterrows():
+        code = str(row.get("代码", "")).strip()
+        if not code:
+            continue
+        notice_type = str(row.get("公告类型", ""))
+        title = str(row.get("公告标题", ""))
+        name = str(row.get("名称", ""))
+        pub_date = str(row.get("公告日期", ""))
+
+        items.append(
+            EventItem(
+                symbol=_normalize_symbol(code),
+                name=name,
+                event_type="notice",
+                title=title,
+                direction=_notice_direction(notice_type),
+                date=_date_str(date),
+                source="eastmoney",
+                detail={
+                    "notice_type": notice_type,
+                    "url": str(row.get("网址", "")),
+                    "pub_date": pub_date,
+                },
+            )
+        )
+    return items
+
+
+
+def fetch_buyback_events() -> list[EventItem]:
+    """获取回购事件。只取最新公告日期在近 30 天内的，全部标记为 bullish。"""
+    try:
+        _bypass_proxy()
+        import akshare as ak
+
+        df = ak.stock_repurchase_em()
+    except Exception as e:
+        logger.warning("fetch_buyback_events failed: %s", e)
+        return []
+
+    if df is None or df.empty:
+        return []
+
+    import pandas as pd
+
+    cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+    items: list[EventItem] = []
+
+    for _, row in df.iterrows():
+        code = str(row.get("股票代码", "")).strip()
+        if not code:
+            continue
+
+        latest_date_raw = str(row.get("最新公告日期", ""))
+        try:
+            latest_date = pd.Timestamp(latest_date_raw).strftime("%Y-%m-%d")
+        except Exception:
+            continue
+
+        if latest_date < cutoff:
+            continue
+
+        name = str(row.get("股票简称", ""))
+        price_range = str(row.get("计划回购价格区间", ""))
+        qty_low = str(row.get("计划回购数量区间-下限", ""))
+        qty_high = str(row.get("计划回购数量区间-上限", ""))
+
+        desc = f"{name}: 回购计划 价格区间{price_range} 数量{qty_low}-{qty_high}"
+
+        items.append(
+            EventItem(
+                symbol=_normalize_symbol(code),
+                name=name,
+                event_type="buyback",
+                title=desc,
+                direction="bullish",
+                date=latest_date,
+                source="eastmoney",
+                detail={col: str(row.get(col, "")) for col in df.columns},
+            )
+        )
+    return items
+
+
+def fetch_rating_events(date: str) -> list[EventItem]:
+    """获取分析师评级事件。
+
+    Args:
+        date: 'YYYYMMDD'
+    """
+    try:
+        _bypass_proxy()
+        import akshare as ak
+
+        df = ak.stock_rank_forecast_cninfo(date=date)
+    except Exception as e:
+        logger.warning("fetch_rating_events failed: %s", e)
+        return []
+
+    if df is None or df.empty:
+        return []
+
+    items: list[EventItem] = []
+    for _, row in df.iterrows():
+        code = str(row.get("证券代码", "")).strip()
+        if not code:
+            continue
+
+        name = str(row.get("证券简称", ""))
+        rating = str(row.get("投资评级", ""))
+        org = str(row.get("研究机构简称", ""))
+        analyst = str(row.get("研究员名称", ""))
+        change = str(row.get("评级变化", ""))
+
+        desc = f"{name}: {org} {analyst} 评级{rating}"
+        if change and change != "nan":
+            desc += f"({change})"
+
+        items.append(
+            EventItem(
+                symbol=_normalize_symbol(code),
+                name=name,
+                event_type="rating",
+                title=desc,
+                direction=_rating_direction(rating),
+                date=_date_str(date),
+                source="cninfo",
+                detail={
+                    "rating": rating,
+                    "org": org,
+                    "analyst": analyst,
+                    "change": change,
+                },
+            )
+        )
+    return items
+
+
+def fetch_daily_events(date: str) -> dict[str, list[str]]:
+    """获取指定日期的全部事件，返回 {symbol: [title1, title2, ...]} 格式。
+
+    这个格式直接兼容 event_catalyst.score_event_catalyst() 的 news_texts 参数。
+
+    Args:
+        date: 'YYYYMMDD'
+    Returns:
+        {'002138': ['顺络电子:关于回购进展公告', ...], '600519': [...]}
+    """
+    events_map: dict[str, list[str]] = {}
+
+    notice_items = fetch_notice_events(date)
+    buyback_items = fetch_buyback_events()
+    rating_items = fetch_rating_events(date)
+
+    all_items = notice_items + buyback_items + rating_items
+
+    for item in all_items:
+        sym = item.symbol
+        if sym not in events_map:
+            events_map[sym] = []
+        if item.title and item.title != "nan":
+            events_map[sym].append(item.title)
+
+    return events_map
+
+
+def fetch_daily_events_detailed(date: str) -> EventSourceResult:
+    """获取指定日期的全部事件，返回包含完整元数据和状态的结果。  # [T-006] event_source_discovery
+
+    与 fetch_daily_events() 不同，此函数返回 EventSourceResult，
+    包含按 symbol 分组的 EventItem 列表（event_type/direction/source/date）
+    以及事件源状态（OK/FAILED/STALE），便于 Discovery 和 Daily Plan 输出
+    事件来源、标题摘要、事件类型、去重结果和证据引用。
+
+    Args:
+        date: 'YYYYMMDD'
+    Returns:
+        EventSourceResult
+    """
+    result = EventSourceResult()
+    try:
+        notice_items = fetch_notice_events(date)
+        buyback_items = fetch_buyback_events()
+        rating_items = fetch_rating_events(date)
+    except Exception as e:
+        result.status = EventSourceStatus.FAILED
+        result.error_message = str(e)
+        logger.warning("fetch_daily_events_detailed failed: %s", e)
+        return result
+
+    all_items = notice_items + buyback_items + rating_items
+
+    seen_titles_by_symbol: dict[str, set[str]] = {}
+    for item in all_items:
+        sym = item.symbol
+        if not sym:
+            continue
+        if sym not in result.items_by_symbol:
+            result.items_by_symbol[sym] = []
+            result.events_map[sym] = []
+            seen_titles_by_symbol[sym] = set()
+
+        if item.title and item.title != "nan":
+            if item.title not in seen_titles_by_symbol[sym]:
+                result.items_by_symbol[sym].append(item)
+                result.events_map[sym].append(item.title)
+                seen_titles_by_symbol[sym].add(item.title)
+
+    result.event_count = sum(len(v) for v in result.items_by_symbol.values())
+    result.symbols_count = len(result.items_by_symbol)
+
+    return result
+
+
+def fetch_events_for_symbol(symbol: str, date: str) -> list[str]:
+    """获取单只股票的事件标题列表。用于候选引擎按需查询。"""
+    raw_sym = _normalize_symbol(symbol)
+    daily = fetch_daily_events(date)
+    return daily.get(raw_sym, [])
+"""[T-006] Integration tests: event source auto-integration with Discovery / Daily Plan.
+
+Tests that:
+1. fetch_daily_events_detailed() returns EventSourceResult with status tracking
+2. Event source failure is tracked as FAILED status, system still processes manual symbols
+3. Event items generate event_overrides passed to candidate evaluation
+4. Daily Plan and Discovery outputs include event metadata (source, type, title, dedup)
+5. Symbols are isolated — no cross-contamination of event data
+6. Event source metadata appears in plan/discovery result metadata
+"""
+
+import sys
+import os
+from unittest.mock import patch, MagicMock
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tradingagents.tradeflow.event_source import (
+    EventItem,
+    EventSourceStatus,
+    EventSourceResult,
+    fetch_daily_events_detailed,
+)
+from tradingagents.tradeflow.schemas import Candidate, CandidateSignal
+from tradingagents.tradeflow.plan_runner import generate_daily_plan
+from tradingagents.tradeflow.discovery import run_discovery
+
+
+MOCK_EVENT_ITEMS = {
+    "002138": [
+        EventItem(
+            symbol="002138",
+            name="顺络电子",
+            event_type="buyback",
+            title="回购进展公告",
+            direction="bullish",
+            date="2026-05-28",
+            source="eastmoney",
+        ),
+        EventItem(
+            symbol="002138",
+            name="顺络电子",
+            event_type="notice",
+            title="关于回购实施进展",
+            direction="neutral",
+            date="2026-05-28",
+            source="eastmoney",
+        ),
+    ],
+    "600519": [
+        EventItem(
+            symbol="600519",
+            name="贵州茅台",
+            event_type="rating",
+            title="减持评级",
+            direction="bearish",
+            date="2026-05-28",
+            source="cninfo",
+        ),
+    ],
+}
+
+
+def _mock_candidate(symbol, name="", score=60.0):
+    c = Candidate(
+        symbol=symbol,
+        name=name,
+        source="event_source",
+        strategy_tags=["EVENT_CATALYST"],
+        score=score,
+        trade_date="2026-05-28",
+    )
+    c.signals = [
+        CandidateSignal(strategy_tag="EVENT_CATALYST", score=score, reason="事件驱动")
+    ]
+    c.primary_strategy = "EVENT_CATALYST"
+    return c
+
+
+def _make_event_result(status=EventSourceStatus.OK, error_message=""):
+    return EventSourceResult(
+        status=status,
+        events_map={
+            sym: [it.title for it in items]
+            for sym, items in MOCK_EVENT_ITEMS.items()
+        },
+        items_by_symbol=MOCK_EVENT_ITEMS,
+        error_message=error_message,
+        event_count=sum(len(v) for v in MOCK_EVENT_ITEMS.values()),
+        symbols_count=len(MOCK_EVENT_ITEMS),
+    )
+
+
+class TestEventSourceResult:
+    def test_default_status_ok(self):
+        r = EventSourceResult()
+        assert r.status == EventSourceStatus.OK
+        assert r.events_map == {}
+        assert r.items_by_symbol == {}
+        assert r.event_count == 0
+        assert r.symbols_count == 0
+
+    def test_failed_status(self):
+        r = EventSourceResult(
+            status=EventSourceStatus.FAILED,
+            error_message="connection timeout",
+        )
+        assert r.status == EventSourceStatus.FAILED
+        assert r.error_message == "connection timeout"
+
+    def test_event_counts(self):
+        r = _make_event_result()
+        assert r.event_count == 3
+        assert r.symbols_count == 2
+
+
+class TestFetchDailyEventsDetailed:
+    def test_success_returns_ok(self):
+        with patch("tradingagents.tradeflow.event_source.fetch_notice_events", return_value=[]):
+            with patch("tradingagents.tradeflow.event_source.fetch_buyback_events", return_value=[]):
+                with patch("tradingagents.tradeflow.event_source.fetch_rating_events", return_value=[]):
+                    result = fetch_daily_events_detailed("20260528")
+        assert result.status == EventSourceStatus.OK
+        assert result.event_count == 0
+
+    def test_failure_returns_failed(self):
+        with patch("tradingagents.tradeflow.event_source.fetch_notice_events", side_effect=Exception("timeout")):
+            result = fetch_daily_events_detailed("20260528")
+        assert result.status == EventSourceStatus.FAILED
+        assert "timeout" in result.error_message
+
+    def test_dedup_by_title(self):
+        items = [
+            EventItem(symbol="002138", title="回购进展", event_type="buyback", source="eastmoney"),
+            EventItem(symbol="002138", title="回购进展", event_type="buyback", source="eastmoney"),
+            EventItem(symbol="002138", title="季报披露", event_type="notice", source="eastmoney"),
+        ]
+        with patch("tradingagents.tradeflow.event_source.fetch_notice_events", return_value=items):
+            with patch("tradingagents.tradeflow.event_source.fetch_buyback_events", return_value=[]):
+                with patch("tradingagents.tradeflow.event_source.fetch_rating_events", return_value=[]):
+                    result = fetch_daily_events_detailed("20260528")
+        assert result.status == EventSourceStatus.OK
+        assert len(result.items_by_symbol["002138"]) == 2
+        assert result.events_map["002138"] == ["回购进展", "季报披露"]
+
+    def test_items_grouped_by_symbol(self):
+        items = [
+            EventItem(symbol="002138", title="回购", event_type="buyback", source="eastmoney"),
+            EventItem(symbol="600519", title="评级", event_type="rating", source="cninfo"),
+        ]
+        with patch("tradingagents.tradeflow.event_source.fetch_notice_events", return_value=items):
+            with patch("tradingagents.tradeflow.event_source.fetch_buyback_events", return_value=[]):
+                with patch("tradingagents.tradeflow.event_source.fetch_rating_events", return_value=[]):
+                    result = fetch_daily_events_detailed("20260528")
+        assert set(result.items_by_symbol.keys()) == {"002138", "600519"}
+        assert result.symbols_count == 2
+
+
+class TestPlanRunnerEventSourceFailure:
+    def test_event_source_failure_still_processes_manual_symbols(self):
+        """When event source fails, system still evaluates manual symbols."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = EventSourceResult(
+                status=EventSourceStatus.FAILED,
+                error_message="network error",
+            )
+            with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                mock_eval.return_value = (None, "无策略命中")
+                plan = generate_daily_plan(
+                    trade_date="2026-05-28",
+                    symbols=["002138"],
+                    candidates=None,
+                    use_event_source=True,
+                )
+        assert plan is not None
+        assert plan.metadata["event_source"]["status"] == "FAILED"
+        assert plan.metadata["event_source"]["error_message"] == "network error"
+
+    def test_event_source_failure_manual_candidates_still_appear(self):
+        """Manual symbols produce candidates even when event source failed."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = EventSourceResult(
+                status=EventSourceStatus.FAILED,
+                error_message="timeout",
+            )
+            with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                mock_eval.return_value = (_mock_candidate("002138", score=70.0), "")
+                plan = generate_daily_plan(
+                    trade_date="2026-05-28",
+                    symbols=["002138"],
+                    candidates=None,
+                    use_event_source=True,
+                )
+        plan_symbols = {e["symbol"] for e in plan.candidates}
+        assert "002138" in plan_symbols
+
+    def test_no_event_source_status_not_queried(self):
+        """When use_event_source=False, status should be NOT_QUERIED."""
+        with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+            mock_eval.return_value = (None, "无策略命中")
+            plan = generate_daily_plan(
+                trade_date="2026-05-28",
+                symbols=["002138"],
+                candidates=None,
+                use_event_source=False,
+            )
+        assert plan.metadata["event_source"]["status"] == "NOT_QUERIED"
+
+
+class TestPlanRunnerEventMetadata:
+    def test_event_metadata_in_plan_entries(self):
+        """Plan entries for event-discovered symbols include event metadata."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result()
+            with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                def fake_eval(symbol, **kwargs):
+                    if symbol in MOCK_EVENT_ITEMS:
+                        return _mock_candidate(symbol, score=65.0), ""
+                    return None, "无策略命中"
+                mock_eval.side_effect = fake_eval
+                plan = generate_daily_plan(
+                    trade_date="2026-05-28",
+                    symbols=[],
+                    candidates=None,
+                    use_event_source=True,
+                )
+        entries_by_sym = {e["symbol"]: e for e in plan.candidates}
+        entry_002138 = entries_by_sym.get("002138")
+        assert entry_002138 is not None
+        assert "event_titles" in entry_002138
+        assert "回购进展公告" in entry_002138["event_titles"]
+        assert "event_types" in entry_002138
+        assert "buyback" in entry_002138["event_types"]
+        assert "event_sources" in entry_002138
+        assert "eastmoney" in entry_002138["event_sources"]
+        assert entry_002138["event_count"] == 2
+
+    def test_event_details_in_plan_entry(self):
+        """Plan entry contains full event_details with direction/source/date."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result()
+            with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                def fake_eval(symbol, **kwargs):
+                    if symbol == "600519":
+                        return _mock_candidate(symbol, score=55.0), ""
+                    return None, "无策略命中"
+                mock_eval.side_effect = fake_eval
+                plan = generate_daily_plan(
+                    trade_date="2026-05-28",
+                    symbols=[],
+                    candidates=None,
+                    use_event_source=True,
+                )
+        entries_by_sym = {e["symbol"]: e for e in plan.candidates}
+        entry = entries_by_sym.get("600519")
+        assert entry is not None
+        details = entry["event_details"]
+        assert len(details) == 1
+        assert details[0]["direction"] == "bearish"
+        assert details[0]["source"] == "cninfo"
+        assert details[0]["event_type"] == "rating"
+
+    def test_no_event_metadata_without_events(self):
+        """Symbols without events don't get event metadata fields."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result()
+            with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                def fake_eval(symbol, **kwargs):
+                    return _mock_candidate(symbol, score=50.0), ""
+                mock_eval.side_effect = fake_eval
+                plan = generate_daily_plan(
+                    trade_date="2026-05-28",
+                    symbols=["300999"],
+                    candidates=None,
+                    use_event_source=True,
+                )
+        entries_by_sym = {e["symbol"]: e for e in plan.candidates}
+        entry = entries_by_sym.get("300999")
+        assert entry is not None
+        assert "event_titles" not in entry
+        assert "event_count" not in entry
+
+    def test_event_source_metadata_in_plan(self):
+        """Plan metadata includes event source status and counts."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result()
+            with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                mock_eval.return_value = (None, "无策略命中")
+                plan = generate_daily_plan(
+                    trade_date="2026-05-28",
+                    symbols=[],
+                    candidates=None,
+                    use_event_source=True,
+                )
+        assert plan.metadata["event_source"]["status"] == "OK"
+        assert plan.metadata["event_source"]["event_count"] == 3
+        assert plan.metadata["event_source"]["symbols_count"] == 2
+
+
+class TestPlanRunnerEventOverrides:
+    def test_event_items_become_overrides(self):
+        """Event items are converted to event_overrides and passed to evaluate_symbol."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result()
+            with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                mock_eval.return_value = (None, "无策略命中")
+                plan = generate_daily_plan(
+                    trade_date="2026-05-28",
+                    symbols=[],
+                    candidates=None,
+                    use_event_source=True,
+                )
+            for call_item in mock_eval.call_args_list:
+                sym = call_item.kwargs.get("symbol", "")
+                ev_overrides = call_item.kwargs.get("event_overrides")
+                if sym == "002138":
+                    assert ev_overrides is not None
+                    titles = [ev["title"] for ev in ev_overrides]
+                    assert "回购进展公告" in titles
+                    types = [ev["event_type"] for ev in ev_overrides]
+                    assert "buyback" in types
+                elif sym == "600519":
+                    assert ev_overrides is not None
+                    assert any(ev["direction"] == "bearish" for ev in ev_overrides)
+
+    def test_symbol_isolation_in_overrides(self):
+        """Each symbol only gets its own event overrides — no cross-contamination."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result()
+            with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                mock_eval.return_value = (None, "无策略命中")
+                plan = generate_daily_plan(
+                    trade_date="2026-05-28",
+                    symbols=["002138", "600519"],
+                    candidates=None,
+                    use_event_source=True,
+                )
+            for call_item in mock_eval.call_args_list:
+                sym = call_item.kwargs.get("symbol", "")
+                ev_overrides = call_item.kwargs.get("event_overrides") or []
+                override_syms = {ev.get("symbol", "") for ev in ev_overrides}
+                if sym in ("002138", "600519"):
+                    assert override_syms == {sym}, f"{sym} has cross-contamination: {override_syms}"
+
+
+class TestDiscoveryEventSourceFailure:
+    def test_event_source_failure_discovery_still_works(self):
+        """Discovery still works when event source fails."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = EventSourceResult(
+                status=EventSourceStatus.FAILED,
+                error_message="api error",
+            )
+            with patch("tradingagents.tradeflow.discovery.evaluate_symbol") as mock_eval:
+                mock_eval.return_value = (None, "无策略命中")
+                result = run_discovery(
+                    trade_date="2026-05-28",
+                    symbols=["002138"],
+                    use_event_source=True,
+                )
+        assert result is not None
+        assert result.metadata["event_source"]["status"] == "FAILED"
+
+    def test_event_source_ok_in_discovery_metadata(self):
+        """Discovery metadata includes OK status when event source succeeds."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result()
+            with patch("tradingagents.tradeflow.discovery.evaluate_symbol") as mock_eval:
+                mock_eval.return_value = (None, "无策略命中")
+                result = run_discovery(
+                    trade_date="2026-05-28",
+                    symbols=[],
+                    use_event_source=True,
+                )
+        assert result.metadata["event_source"]["status"] == "OK"
+        assert result.metadata["event_source"]["event_count"] == 3
+
+    def test_discovery_entry_has_event_metadata(self):
+        """Discovery entries include event metadata for event-discovered symbols."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result()
+            with patch("tradingagents.tradeflow.discovery.evaluate_symbol") as mock_eval:
+                def fake_eval(symbol, **kwargs):
+                    if symbol == "002138":
+                        return _mock_candidate(symbol, score=65.0), ""
+                    return None, "无策略命中"
+                mock_eval.side_effect = fake_eval
+                result = run_discovery(
+                    trade_date="2026-05-28",
+                    symbols=[],
+                    use_event_source=True,
+                )
+        entries_by_sym = {e["symbol"]: e for e in result.candidates}
+        entry = entries_by_sym.get("002138")
+        assert entry is not None
+        assert "event_titles" in entry
+        assert len(entry["event_titles"]) == 2
+        assert "buyback" in entry["event_types"]
+        assert "eastmoney" in entry["event_sources"]
+
+    def test_discovery_no_event_source_not_queried(self):
+        """When use_event_source=False, discovery metadata shows NOT_QUERIED."""
+        with patch("tradingagents.tradeflow.discovery.evaluate_symbol") as mock_eval:
+            mock_eval.return_value = (None, "无策略命中")
+            result = run_discovery(
+                trade_date="2026-05-28",
+                symbols=["002138"],
+                use_event_source=False,
+            )
+        assert result.metadata["event_source"]["status"] == "NOT_QUERIED"
+
+
+class TestDiscoveryEventOverrides:
+    def test_discovery_event_items_become_overrides(self):
+        """In discovery, event items generate event_overrides for candidate evaluation."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result()
+            with patch("tradingagents.tradeflow.discovery.evaluate_symbol") as mock_eval:
+
+exec
+/bin/zsh -lc "sed -n '420,840p' tests/test_t006_event_source_discovery.py && grep -R \"fetch_daily_events\" -n . | head -50" in /Users/maybee/TradingAgents-AShare
+ succeeded in 4711ms:
+./tests/test_event_source_integration.py:3:Tests that fetch_daily_events() integrates correctly with the plan runner
+./tests/test_event_source_integration.py:7:Updated for [T-006]: plan_runner now uses fetch_daily_events_detailed().
+./tests/test_event_source_integration.py:125:        """Default use_event_source=False should NOT call fetch_daily_events_detailed."""
+./tests/test_event_source_integration.py:126:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_event_source_integration.py:137:        """use_event_source=True should call fetch_daily_events_detailed with YYYYMMDD."""
+./tests/test_event_source_integration.py:138:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_event_source_integration.py:152:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_event_source_integration.py:168:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_event_source_integration.py:188:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_event_source_integration.py:203:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_event_source_integration.py:229:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_event_source_integration.py:256:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_t002_discovery.py:367:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed",
+./tests/test_t002_discovery.py:380:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+Binary file ./tests/__pycache__/test_t002_discovery.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_t006_event_source_discovery.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_event_source.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_event_source_integration.cpython-312-pytest-9.0.2.pyc matches
+./tests/test_t006_event_source_discovery.py:4:1. fetch_daily_events_detailed() returns EventSourceResult with status tracking
+./tests/test_t006_event_source_discovery.py:24:    fetch_daily_events_detailed,
+./tests/test_t006_event_source_discovery.py:124:                    result = fetch_daily_events_detailed("20260528")
+./tests/test_t006_event_source_discovery.py:130:            result = fetch_daily_events_detailed("20260528")
+./tests/test_t006_event_source_discovery.py:143:                    result = fetch_daily_events_detailed("20260528")
+./tests/test_t006_event_source_discovery.py:156:                    result = fetch_daily_events_detailed("20260528")
+./tests/test_t006_event_source_discovery.py:164:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_t006_event_source_discovery.py:183:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_t006_event_source_discovery.py:215:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_t006_event_source_discovery.py:242:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_t006_event_source_discovery.py:267:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_t006_event_source_discovery.py:287:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_t006_event_source_discovery.py:305:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_t006_event_source_discovery.py:330:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_t006_event_source_discovery.py:351:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_t006_event_source_discovery.py:368:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_t006_event_source_discovery.py:382:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_t006_event_source_discovery.py:418:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_t006_event_source_discovery.py:436:        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+./tests/test_event_source.py:17:    fetch_daily_events,
+./tests/test_event_source.py:196:        result = fetch_daily_events("20260528")
+./tests/test_event_source.py:207:        result = fetch_daily_events("20260528")
+./tests/test_event_source.py:212:    @patch("tradingagents.tradeflow.event_source.fetch_daily_events")
+./tests/test_event_source.py:218:    @patch("tradingagents.tradeflow.event_source.fetch_daily_events")
+./tests/test_event_source.py:224:    @patch("tradingagents.tradeflow.event_source.fetch_daily_events")
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:569:- **任务**：将 `event_source.fetch_daily_events()` 集成到候选扫描流程，使公告/回购/评级事件自动进入候选池
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:572:  - `tradingagents/tradeflow/plan_runner.py` — `generate_daily_plan()` 新增 `use_event_source=False` 参数，启用后调用 `fetch_daily_events()` 并将每个 symbol 自身的事件标题作为 `news_texts` 传入 `evaluate_symbol()`
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:2164:        from .event_source import fetch_daily_events
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:2166:        events_map = fetch_daily_events(trade_date_compact)
+./docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3347:docs/DEVLOG.md:718:- **集成点**：`fetch_daily_events()` 返回格式直接兼容 `score_event_catalyst(news_texts=)`
+./docs/task_runs/S-006-20260529-170504/codex-review-round1.txt:3797:        from .event_source import fetch_daily_events
+./docs/task_runs/S-006-20260529-170504/codex-review-round1.txt:3799:        events_map = fetch_daily_events(trade_date_compact)
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/event_source.py | sed -n '275,310p'; nl -ba tradingagents/tradeflow/plan_runner.py | sed -n '210,255p'; nl -ba tradingagents/tradeflow/discovery.py | sed -n '178,210p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   275	    return events_map
+   276	
+   277	
+   278	def fetch_daily_events_detailed(date: str) -> EventSourceResult:
+   279	    """获取指定日期的全部事件，返回包含完整元数据和状态的结果。  # [T-006] event_source_discovery
+   280	
+   281	    与 fetch_daily_events() 不同，此函数返回 EventSourceResult，
+   282	    包含按 symbol 分组的 EventItem 列表（event_type/direction/source/date）
+   283	    以及事件源状态（OK/FAILED/STALE），便于 Discovery 和 Daily Plan 输出
+   284	    事件来源、标题摘要、事件类型、去重结果和证据引用。
+   285	
+   286	    Args:
+   287	        date: 'YYYYMMDD'
+   288	    Returns:
+   289	        EventSourceResult
+   290	    """
+   291	    result = EventSourceResult()
+   292	    try:
+   293	        notice_items = fetch_notice_events(date)
+   294	        buyback_items = fetch_buyback_events()
+   295	        rating_items = fetch_rating_events(date)
+   296	    except Exception as e:
+   297	        result.status = EventSourceStatus.FAILED
+   298	        result.error_message = str(e)
+   299	        logger.warning("fetch_daily_events_detailed failed: %s", e)
+   300	        return result
+   301	
+   302	    all_items = notice_items + buyback_items + rating_items
+   303	
+   304	    seen_titles_by_symbol: dict[str, set[str]] = {}
+   305	    for item in all_items:
+   306	        sym = item.symbol
+   307	        if not sym:
+   308	            continue
+   309	        if sym not in result.items_by_symbol:
+   310	            result.items_by_symbol[sym] = []
+   210	        for item in universe:
+   211	            sym = item["symbol"]
+   212	            if event_overrides:
+   213	                filtered_overrides = [
+   214	                    ev for ev in event_overrides
+   215	                    if ev.get("symbol") is None or ev.get("symbol") == sym
+   216	                ]
+   217	            else:
+   218	                filtered_overrides = None
+   219	
+   220	            # [T-006] event_source_discovery — generate event_overrides from EventItem data
+   221	            sym_event_overrides = list(filtered_overrides) if filtered_overrides else []
+   222	            if sym in event_items_by_symbol:
+   223	                for ev_item in event_items_by_symbol[sym]:
+   224	                    sym_event_overrides.append({
+   225	                        "symbol": sym,
+   226	                        "title": ev_item.title,
+   227	                        "event_type": ev_item.event_type,
+   228	                        "direction": ev_item.direction,
+   229	                        "source": ev_item.source,
+   230	                        "date": ev_item.date,
+   231	                    })
+   232	            sym_event_overrides_final = sym_event_overrides if sym_event_overrides else None
+   233	
+   234	            # [N-001] event_source_plan_integration
+   235	            sym_news = events_map.get(sym) if events_map else None
+   236	
+   237	            # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
+   238	            sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
+   239	            sym_ff_individual = sym_ff.get("individual") if sym_ff else None
+   240	            sym_ff_board = sym_ff.get("board") if sym_ff else None
+   241	
+   242	            c, reason = evaluate_symbol(
+   243	                symbol=sym,
+   244	                name=item.get("name", ""),
+   245	                source=item.get("source", "manual"),
+   246	                trade_date=trade_date,
+   247	                news_texts=sym_news or news_texts,
+   248	                event_overrides=sym_event_overrides_final,  # [T-006]
+   249	                fund_flow_individual=sym_ff_individual,  # [T-003]
+   250	                fund_flow_board=sym_ff_board,  # [T-003]
+   251	                cfg=cfg,  # [M-004]
+   252	            )
+   253	            if c is not None:
+   254	                if item.get("universe_sources"):
+   255	                    c.universe_sources = item["universe_sources"]  # [M-003]
+   178	        else:
+   179	            filtered_overrides = None
+   180	
+   181	        # [T-006] event_source_discovery — generate event_overrides from EventItem data
+   182	        sym_event_overrides = list(filtered_overrides) if filtered_overrides else []
+   183	        if sym in event_items_by_symbol:
+   184	            for ev_item in event_items_by_symbol[sym]:
+   185	                sym_event_overrides.append({
+   186	                    "symbol": sym,
+   187	                    "title": ev_item.title,
+   188	                    "event_type": ev_item.event_type,
+   189	                    "direction": ev_item.direction,
+   190	                    "source": ev_item.source,
+   191	                    "date": ev_item.date,
+   192	                })
+   193	        sym_event_overrides_final = sym_event_overrides if sym_event_overrides else None
+   194	
+   195	        sym_news = events_map.get(sym) if events_map else None
+   196	
+   197	        # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
+   198	        sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
+   199	        sym_ff_individual = sym_ff.get("individual") if sym_ff else None
+   200	        sym_ff_board = sym_ff.get("board") if sym_ff else None
+   201	
+   202	        c, reason = evaluate_symbol(
+   203	            symbol=sym,
+   204	            name=sym_name,
+   205	            source=sym_source,
+   206	            trade_date=trade_date,
+   207	            news_texts=sym_news or news_texts,
+   208	            event_overrides=sym_event_overrides_final,  # [T-006]
+   209	            fund_flow_individual=sym_ff_individual,  # [T-003]
+   210	            fund_flow_board=sym_ff_board,  # [T-003]
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/tradeflow/universe.py; sed -n '1,130p' tradingagents/tradeflow/plan_runner.py; sed -n '100,180p' tradingagents/tradeflow/discovery.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""TradeFlow universe — manages the watch universe from multiple sources.  # [M-003] tradeflow_universe_manager
+
+P0 sources:
+1. Current holdings (imported_portfolio_positions)
+2. Watchlist items
+3. Manual symbol specification
+4. Previously observed candidates from yesterday's review
+5. Event/catalyst triggered stocks
+6. Fund flow anomaly triggered stocks
+7. Manual industry pool
+
+M-003 introduces UniverseManager which:
+- Defines a UniverseSource enum for all source types
+- Tracks per-symbol: sources list, entry reasons, timestamps, filter reasons
+- Deduplicates symbols while preserving ALL source provenance
+- Never triggers full-market scan when no sources are provided
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
+from typing import Optional
+
+
+class UniverseSource(Enum):
+    WATCHLIST = "watchlist"
+    HOLDING = "holding"
+    MANUAL = "manual"
+    EVENT = "event"
+    EVENT_SOURCE = "event_source"
+    FUND_FLOW = "fund_flow_pool"
+    INDUSTRY = "industry_pool"
+    YESTERDAY_OBSERVE = "yesterday_observe"
+
+
+@dataclass
+class SourceRecord:
+    source: UniverseSource
+    reason: str = ""
+    timestamp: str = ""
+    extra: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        if not self.timestamp:
+            self.timestamp = datetime.now().isoformat()
+
+
+@dataclass
+class UniverseEntry:
+    symbol: str
+    name: str = ""
+    sources: list[SourceRecord] = field(default_factory=list)
+    filter_reason: str = ""
+
+    @property
+    def primary_source(self) -> str:
+        if self.sources:
+            return self.sources[0].source.value
+        return ""
+
+    @property
+    def source_values(self) -> list[str]:
+        return sorted({sr.source.value for sr in self.sources})
+
+    def to_dict(self) -> dict:
+        return {
+            "symbol": self.symbol,
+            "name": self.name,
+            "source": self.primary_source,
+            "universe_sources": self.source_values,
+            "universe_source_records": [
+                {
+                    "source": sr.source.value,
+                    "reason": sr.reason,
+                    "timestamp": sr.timestamp,
+                }
+                for sr in self.sources
+            ],
+            "filter_reason": self.filter_reason,
+        }
+
+
+class UniverseManager:
+    """Centralized manager for TradeFlow candidate universe.  # [M-003] tradeflow_universe_manager
+
+    Collects symbols from multiple sources, deduplicates by symbol
+    while preserving all source provenance, and never falls back to
+    full-market scan.
+
+    Usage:
+        mgr = UniverseManager()
+        mgr.add_from_watchlist(db_path)
+        mgr.add_from_holdings(db_path)
+        mgr.add_manual(["600519.SH"])
+        mgr.add_from_events(event_map)
+        universe = mgr.get_universe()  # list[dict]
+    """
+
+    def __init__(self):
+        self._entries: dict[str, UniverseEntry] = {}
+
+    def add_symbol(
+        self,
+        symbol: str,
+        source: UniverseSource,
+        name: str = "",
+        reason: str = "",
+        extra: Optional[dict] = None,
+    ) -> UniverseEntry:
+        symbol = symbol.strip()
+        if not symbol:
+            return self._entries.get("", UniverseEntry(symbol=""))
+
+        entry = self._entries.get(symbol)
+        if entry is None:
+            entry = UniverseEntry(symbol=symbol, name=name)
+            self._entries[symbol] = entry
+        if name and not entry.name:
+            entry.name = name
+
+        existing_sources = {sr.source for sr in entry.sources}
+        if source not in existing_sources:
+            entry.sources.append(SourceRecord(
+                source=source,
+                reason=reason,
+                extra=extra or {},
+            ))
+
+        return entry
+
+    def remove_symbol(self, symbol: str, reason: str = "") -> None:
+        entry = self._entries.get(symbol.strip())
+        if entry is not None:
+            entry.filter_reason = reason
+
+    @property
+    def size(self) -> int:
+        return len(self._entries)
+
+    @property
+    def symbols(self) -> list[str]:
+        return list(self._entries.keys())
+
+    def get_entry(self, symbol: str) -> Optional[UniverseEntry]:
+        return self._entries.get(symbol.strip())
+
+    def get_universe(self) -> list[dict]:
+        return [entry.to_dict() for entry in self._entries.values()]
+
+    def get_active_universe(self) -> list[dict]:
+        return [
+            entry.to_dict()
+            for entry in self._entries.values()
+            if not entry.filter_reason
+        ]
+
+    def get_source_summary(self) -> dict[str, int]:
+        summary: dict[str, int] = {}
+        for entry in self._entries.values():
+            for sr in entry.sources:
+                key = sr.source.value
+                summary[key] = summary.get(key, 0) + 1
+        return summary
+
+    def add_from_holdings(self, db_path: str) -> int:
+        count = 0
+        for item in get_holdings(db_path):
+            self.add_symbol(
+                symbol=item["symbol"],
+                source=UniverseSource.HOLDING,
+                name=item.get("name", ""),
+                reason="持仓股",
+            )
+            count += 1
+        return count
+
+    def add_from_watchlist(self, db_path: str) -> int:
+        count = 0
+        for item in get_watchlist(db_path):
+            self.add_symbol(
+                symbol=item["symbol"],
+                source=UniverseSource.WATCHLIST,
+                name=item.get("name", ""),
+                reason="自选股",
+            )
+            count += 1
+        return count
+
+    def add_from_yesterday(self, tf_db_path: str, trade_date: Optional[str] = None) -> int:
+        count = 0
+        for item in get_yesterday_observations(tf_db_path, trade_date):
+            extra = {}
+            if item.get("strategy_tags"):
+                extra["strategy_tags"] = item["strategy_tags"]
+            if item.get("trigger_price"):
+                extra["trigger_price"] = item["trigger_price"]
+            if item.get("invalid_price"):
+                extra["invalid_price"] = item["invalid_price"]
+            self.add_symbol(
+                symbol=item["symbol"],
+                source=UniverseSource.YESTERDAY_OBSERVE,
+                name=item.get("name", ""),
+                reason="昨日候选继续观察",
+                extra=extra,
+            )
+            count += 1
+        return count
+
+    def add_manual(
+        self,
+        symbols: list[str],
+        reason: str = "手动指定",
+    ) -> int:
+        count = 0
+        for sym in symbols:
+            sym = sym.strip()
+            if sym:
+                self.add_symbol(
+                    symbol=sym,
+                    source=UniverseSource.MANUAL,
+                    reason=reason,
+                )
+                count += 1
+        return count
+
+    def add_from_events(
+        self,
+        event_overrides: Optional[list[dict]] = None,
+        event_symbols: Optional[dict[str, list[str]]] = None,
+    ) -> int:
+        count = 0
+
+        if event_overrides:
+            for ev in event_overrides:
+                sym = ev.get("symbol", "").strip()
+                if sym:
+                    self.add_symbol(
+                        symbol=sym,
+                        source=UniverseSource.EVENT,
+                        name=ev.get("name", ""),
+                        reason=f"事件催化: {ev.get('title', '') or ev.get('event_type', '')}",
+                    )
+                    count += 1
+
+        if event_symbols:
+            for sym, titles in event_symbols.items():
+                sym = sym.strip()
+                if sym:
+                    title_preview = "; ".join(titles[:3]) if titles else ""
+                    self.add_symbol(
+                        symbol=sym,
+                        source=UniverseSource.EVENT_SOURCE,
+                        reason=f"事件源: {title_preview}" if title_preview else "事件源",
+                    )
+                    count += 1
+
+        return count
+"""TradeFlow Plan Runner — generates pre-market daily plans.
+
+Reads candidates from tradeflow_candidates, produces a DailyPlan
+with only allowed actions: OBSERVE / WAIT_TRIGGER / NEED_DEEP_TA / REMOVE_FROM_WATCH.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime
+from typing import Optional
+
+from .schemas import (
+    DailyPlan, Candidate, ALLOWED_ACTIONS, FORBIDDEN_WORDS
+)
+from .candidate_engine import init_db, save_candidate, evaluate_symbol
+from .universe import build_universe
+from .false_positive_audit import build_audit_report, AuditReport  # [S-006] candidate_false_positive_audit
+from .tier_budget import classify_candidate_tier, allocate_tier_budget, render_tier_budget_summary  # [S-007] candidate_tier_budget
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
+
+def _action_for_candidate(candidate: Candidate) -> str:
+    """Determine the action for a candidate based on its signals."""
+    if candidate.need_deep_ta:
+        return "NEED_DEEP_TA"
+
+    # If score is high and trigger price is close to current price
+    evidence = candidate.evidence
+    for strategy, ev in evidence.items():
+        if isinstance(ev, dict):
+            latest = ev.get("latest_close", 0)
+            trigger = candidate.trigger_price or 0
+            if latest > 0 and trigger > 0:
+                distance = (trigger - latest) / latest
+                if distance < 0.02:  # within 2% of trigger
+                    return "WAIT_TRIGGER"
+
+    return "OBSERVE"
+
+
+def _build_plan_entry(candidate: Candidate, event_items: Optional[list] = None) -> dict:  # [T-006] event_source_discovery
+    """Build a plan entry dict from a candidate."""
+    action = _action_for_candidate(candidate)
+
+    # Build reason — no forbidden words
+    reasons = []
+    for sig in candidate.signals:
+        reasons.append(f"[{sig.strategy_tag}] {sig.reason}")
+    reason_str = "; ".join(reasons) if reasons else "候选观察"
+
+    # Sanity check: no forbidden words
+    for word in FORBIDDEN_WORDS:
+        if word in reason_str:
+            reason_str = reason_str.replace(word, "***")
+
+    entry = {
+        "symbol": candidate.symbol,
+        "name": candidate.name,
+        "action": action,
+        "primary_strategy": candidate.primary_strategy,
+        "strategies": candidate.strategy_tags,
+        "score": candidate.score,
+        "trigger_price": candidate.trigger_price,
+        "support_price": candidate.support_price,
+        "invalid_price": candidate.invalid_price,
+        "reason": reason_str,
+        "need_deep_ta": candidate.need_deep_ta,
+        "risk_flags": candidate.risk_flags,
+        "policy_tags": candidate.policy_tags,  # [S-001] policy_version_signal
+        "version_score": candidate.version_score,  # [S-001]
+        "policy_evidence_refs": candidate.policy_evidence_refs,  # [S-001]
+        "narrative_score": candidate.narrative_score,  # [S-002] narrative_quality_score
+        "narrative_reasons": candidate.narrative_reasons,  # [S-002]
+        "narrative_evidence_refs": candidate.narrative_evidence_refs,  # [S-002]
+        "risk_penalty": candidate.risk_penalty,  # [S-003] underwater_risk_flags
+        "risk_evidence_refs": candidate.risk_evidence_refs,  # [S-003]
+        "risk_reasons": candidate.risk_reasons,  # [S-003]
+        "game_balance": candidate.game_balance,  # [S-004] candidate_game_balance
+        "bull_case": candidate.bull_case,  # [S-004]
+        "bear_case": candidate.bear_case,  # [S-004]
+        "policy_case": candidate.policy_case,  # [S-004]
+        "fund_flow_case": candidate.fund_flow_case,  # [S-004]
+        "resonance_count": candidate.resonance_count,  # [S-004]
+        "game_balance_refs": candidate.game_balance_refs,  # [S-004]
+        "fund_flow_anomaly_score": candidate.fund_flow_anomaly_score,  # [T-003] fund_flow_anomaly_pool
+        "fund_flow_anomaly_tags": candidate.fund_flow_anomaly_tags,  # [T-003]
+        "fund_flow_anomaly_refs": candidate.fund_flow_anomaly_refs,  # [T-003]
+        "fund_flow_unit_verified": candidate.fund_flow_unit_verified,  # [T-003]
+        "fund_flow_individual_summary": candidate.fund_flow_individual_summary,  # [T-003]
+        "fund_flow_board_summary": candidate.fund_flow_board_summary,  # [T-003]
+        "composite_score": candidate.composite_score,  # [S-005] selection_priority_gate
+        "signal_category_hits": candidate.signal_category_hits,  # [S-005]
+        "positive_category_count": candidate.positive_category_count,  # [S-005]
+        "data_completeness": candidate.data_completeness,  # [S-005]
+        "missing_evidence": candidate.missing_evidence,  # [S-005]
+        "why_deep_ta": candidate.why_deep_ta,  # [S-005]
+        "why_not_deep_ta": candidate.why_not_deep_ta,  # [S-005]
+        "priority_rank": candidate.priority_rank,  # [S-005]
+        "tier": candidate.tier,  # [S-007] candidate_tier_budget
+        "ta_budget_priority": candidate.ta_budget_priority,  # [S-007]
+        "tier_reason": candidate.tier_reason,  # [S-007]
+        "missing_evidence_for_upgrade": candidate.missing_evidence_for_upgrade,  # [S-007]
+        "tradeflow_data_completeness": candidate.tradeflow_data_completeness,  # [S-008] tradeflow_evidence_gate
+        "missing_data_fields": candidate.missing_data_fields,  # [S-008]
+        "what_to_upgrade": candidate.what_to_upgrade,  # [S-008]
+        "evidence_gate_applied": candidate.evidence_gate_applied,  # [S-008]
+        "universe_sources": candidate.universe_sources,  # [M-003] tradeflow_universe_manager
+        "observe_state": candidate.observe_state,  # [M-005] intraday_observe_state
+        "observe_trigger_count": candidate.observe_trigger_count,  # [M-005]
+        "observe_first_trigger_time": candidate.observe_first_trigger_time,  # [M-005]
+        "deep_ta_status": candidate.deep_ta_status,  # [M-006] gated_deep_ta_dispatch
+        "deep_ta_dispatch_reason": candidate.deep_ta_dispatch_reason,  # [M-006]
+        "deep_ta_model": candidate.deep_ta_model,  # [M-006]
+        "deep_ta_report_path": candidate.deep_ta_report_path,  # [M-006]
+        "deep_ta_dispatch_time": candidate.deep_ta_dispatch_time,  # [M-006]
+        "deep_ta_position_context": candidate.deep_ta_position_context,  # [M-006]
+    }
+
+    # [T-006] event_source_discovery — add event metadata to plan entry
+    if event_items:
+        entry["event_titles"] = [it.title for it in event_items if it.title]
+        entry["event_types"] = sorted({it.event_type for it in event_items if it.event_type})
+        entry["event_sources"] = sorted({it.source for it in event_items if it.source})
+        entry["event_directions"] = sorted({it.direction for it in event_items if it.direction})
+        entry["event_count"] = len(event_items)
+        entry["event_details"] = [
+            {
+                "title": it.title,
+
+def run_discovery(
+    trade_date: Optional[str] = None,
+    symbols: Optional[list[str]] = None,
+    industry_symbols: Optional[list[str]] = None,
+    prod_db_path: str = "",
+    tf_db_path: str = "",
+    top_n: int = TOPN_DEFAULT,
+    include_holdings: bool = True,
+    include_watchlist: bool = True,
+    event_overrides: Optional[list[dict]] = None,
+    news_texts: Optional[list[str]] = None,
+    use_event_source: bool = False,
+    save_candidates: bool = False,
+    fund_flow_map: Optional[dict[str, dict]] = None,  # [T-003] fund_flow_anomaly_pool
+) -> DiscoveryResult:
+    """Run small-scope discovery and return TopN candidates.
+
+    Args:
+        trade_date: Trading date (default: today).
+        symbols: Manual symbol list.
+        industry_symbols: Industry pilot symbol list.
+        prod_db_path: Path to production DB.
+        tf_db_path: Path to tradeflow DB.
+        top_n: Maximum candidates to return.
+        include_holdings: Include holdings from prod DB.
+        include_watchlist: Include watchlist from prod DB.
+        event_overrides: Manual event overrides.
+        news_texts: News texts.
+        use_event_source: Fetch daily events for event pool.
+        save_candidates: Persist candidates to DB.
+        fund_flow_map: [T-003] Optional dict mapping symbol → {"individual": str, "board": str}.
+
+    Returns:
+        DiscoveryResult with candidates and filtered symbols.
+    """
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+
+    events_map: dict[str, list[str]] = {}
+    event_items_by_symbol: dict[str, list] = {}  # [T-006] event_source_discovery
+    event_source_status = "NOT_QUERIED"  # [T-006]
+    event_source_error = ""  # [T-006]
+
+    if use_event_source:
+        from .event_source import fetch_daily_events_detailed, EventSourceStatus  # [T-006]
+        trade_date_compact = trade_date.replace("-", "")
+        event_result = fetch_daily_events_detailed(trade_date_compact)  # [T-006]
+        events_map = event_result.events_map
+        event_items_by_symbol = event_result.items_by_symbol  # [T-006]
+        event_source_status = event_result.status.value  # [T-006]
+        event_source_error = event_result.error_message  # [T-006]
+
+    universe = _build_discovery_universe(
+        symbols=symbols,
+        industry_symbols=industry_symbols,
+        prod_db_path=prod_db_path,
+        tf_db_path=tf_db_path,
+        include_holdings=include_holdings,
+        include_watchlist=include_watchlist,
+        include_yesterday=False,
+        event_symbols=events_map if events_map else None,
+        fund_flow_symbols=list(fund_flow_map.keys()) if fund_flow_map else None,  # [T-003]
+    )
+
+    candidates: list[Candidate] = []
+    filtered: list[FilteredSymbol] = []
+
+    for item in universe:
+        sym = item["symbol"]
+        sym_name = item.get("name", "")
+        sym_source = item.get("source", "manual")
+
+        if event_overrides:
+            filtered_overrides = [
+                ev for ev in event_overrides
+                if ev.get("symbol") is None or ev.get("symbol") == sym
+            ]
+        else:
+            filtered_overrides = None
+
+
+exec
+/bin/zsh -lc "sed -n '260,420p' tradingagents/tradeflow/universe.py && grep -R \"symbols=\\[.*\\.\" -n tests/test_*tradeflow* tests/test_t002_discovery.py tests/test_event_source_integration.py | head -50" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        return count
+
+    def add_from_fund_flow(
+        self,
+        symbols: list[str],
+        reason: str = "资金异动",
+    ) -> int:
+        count = 0
+        for sym in symbols:
+            sym = sym.strip()
+            if sym:
+                self.add_symbol(
+                    symbol=sym,
+                    source=UniverseSource.FUND_FLOW,
+                    reason=reason,
+                )
+                count += 1
+        return count
+
+    def add_from_industry(
+        self,
+        symbols: list[str],
+        industry_name: str = "",
+        reason: str = "行业池",
+    ) -> int:
+        count = 0
+        reason_text = f"{reason}: {industry_name}" if industry_name else reason
+        for sym in symbols:
+            sym = sym.strip()
+            if sym:
+                self.add_symbol(
+                    symbol=sym,
+                    source=UniverseSource.INDUSTRY,
+                    reason=reason_text,
+                )
+                count += 1
+        return count
+
+
+def get_holdings(db_path: str) -> list[dict]:
+    rows = []
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            "SELECT symbol, name, quantity, avg_cost, current_price, market_value "
+            "FROM imported_portfolio_positions WHERE quantity > 0"
+        )
+        for r in cur.fetchall():
+            rows.append({
+                "symbol": r["symbol"],
+                "name": r["name"],
+                "source": "holding",
+            })
+        conn.close()
+    except Exception:
+        pass
+    return rows
+
+
+def get_watchlist(db_path: str) -> list[dict]:
+    rows = []
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute("SELECT symbol, name FROM watchlist_items")
+        for r in cur.fetchall():
+            rows.append({
+                "symbol": r["symbol"],
+                "name": r["name"],
+                "source": "watchlist",
+            })
+        conn.close()
+    except Exception:
+        pass
+    return rows
+
+
+def get_yesterday_observations(tf_db_path: str, trade_date: Optional[str] = None) -> list[dict]:
+    if trade_date is None:
+        trade_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    rows = []
+    try:
+        conn = sqlite3.connect(tf_db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            "SELECT symbol, name, strategy_tags_json, trigger_price, invalid_price "
+            "FROM tradeflow_candidates WHERE trade_date = ? AND status = 'active'",
+            (trade_date,),
+        )
+        for r in cur.fetchall():
+            rows.append({
+                "symbol": r["symbol"],
+                "name": r["name"],
+                "source": "yesterday_observe",
+                "strategy_tags": r["strategy_tags_json"],
+                "trigger_price": r["trigger_price"],
+                "invalid_price": r["invalid_price"],
+            })
+        conn.close()
+    except Exception:
+        pass
+    return rows
+
+
+def build_universe(
+    symbols: Optional[list[str]] = None,
+    prod_db_path: str = "",
+    tf_db_path: str = "",
+    include_holdings: bool = True,
+    include_watchlist: bool = True,
+    include_yesterday: bool = True,
+    event_overrides: Optional[list[dict]] = None,
+    event_symbols: Optional[dict[str, list[str]]] = None,
+    industry_symbols: Optional[list[str]] = None,
+    fund_flow_symbols: Optional[list[str]] = None,
+) -> list[dict]:
+    """Build the full universe of symbols to evaluate.
+
+    Returns a deduplicated list of dicts with keys:
+    - symbol, name, source (primary), universe_sources (all sources),
+      universe_source_records (per-source detail), filter_reason.
+
+    Backward compatible: callers that only read symbol/name/source still work.
+    """
+    mgr = UniverseManager()
+
+    if include_holdings and prod_db_path:
+        mgr.add_from_holdings(prod_db_path)
+
+    if include_watchlist and prod_db_path:
+        mgr.add_from_watchlist(prod_db_path)
+
+    if symbols:
+        mgr.add_manual(symbols)
+
+    if include_yesterday and tf_db_path:
+        mgr.add_from_yesterday(tf_db_path)
+
+    if event_overrides or event_symbols:
+        mgr.add_from_events(event_overrides, event_symbols)
+
+    if industry_symbols:
+        mgr.add_from_industry(industry_symbols)
+
+    if fund_flow_symbols:
+        mgr.add_from_fund_flow(fund_flow_symbols)
+
+    return mgr.get_universe()
+tests/test_tradeflow_plan_runner.py:261:                symbols=["002353.SZ"],
+tests/test_tradeflow_universe.py:216:        universe = build_universe(symbols=["600519.SH", "000001.SZ"])
+tests/test_tradeflow_universe.py:222:        universe = build_universe(symbols=["600519.SH"])
+tests/test_tradeflow_universe.py:236:            symbols=["600519.SH"],
+tests/test_tradeflow_universe.py:251:            symbols=["600519.SH"],
+tests/test_tradeflow_universe.py:261:            symbols=["600519.SH"],
+tests/test_tradeflow_universe.py:262:            industry_symbols=["000001.SZ", "600519.SH"],
+tests/test_tradeflow_universe.py:263:            fund_flow_symbols=["300750.SZ", "600519.SH"],
+tests/test_tradeflow_universe.py:365:            symbols=["600519.SH"],
+tests/test_tradeflow_universe.py:366:            industry_symbols=["000001.SZ", "600519.SH"],
+tests/test_tradeflow_universe.py:367:            fund_flow_symbols=["300750.SZ", "600519.SH"],
+tests/test_t002_discovery.py:51:            industry_symbols=["600519.SH", "000001.SZ"],
+tests/test_t002_discovery.py:59:            symbols=["600519.SH", "603256.SH"],
+tests/test_t002_discovery.py:60:            industry_symbols=["600519.SH", "000001.SZ"],
+tests/test_t002_discovery.py:69:            industry_symbols=["999999.SZ"],
+tests/test_t002_discovery.py:183:                symbols=["A.SZ", "B.SZ"],
+tests/test_t002_discovery.py:203:                symbols=[f"S{i}.SZ" for i in range(1, 11)],
+tests/test_t002_discovery.py:220:                symbols=["GOOD.SZ", "BAD1.SZ", "BAD2.SZ"],
+tests/test_t002_discovery.py:241:                symbols=["A.SZ", "B.SZ", "C.SZ", "D.SZ"],
+tests/test_t002_discovery.py:271:                symbols=["A.SZ", "B.SZ"],
+tests/test_t002_discovery.py:285:                symbols=["A.SZ"],
+tests/test_t002_discovery.py:324:                industry_symbols=["600519.SH", "000001.SZ"],
+tests/test_t002_discovery.py:342:                industry_symbols=["600519.SH"],
+tests/test_t002_discovery.py:403:                    symbols=["A.SZ"],
+tests/test_t002_discovery.py:430:                    symbols=["A.SZ"],
+tests/test_t002_discovery.py:540:                symbols=["AAA.SZ", "BBB.SZ"],
+
+exec
+/bin/zsh -lc "grep -R \"generate_daily_plan\" -n . --exclude-dir=.git --exclude-dir=__pycache__ | head -50 && sed -n '130,330p' tradingagents/tradeflow/plan_runner.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 1916ms:
+./.pytest_cache/v/cache/nodeids:524:  "tests/test_m003_universe_manager.py::TestPlanRunnerUniverseIntegration::test_generate_daily_plan_with_universe_sources",
+./tests/test_event_source_integration.py:20:from tradingagents.tradeflow.plan_runner import generate_daily_plan
+./tests/test_event_source_integration.py:129:                plan = generate_daily_plan(
+./tests/test_event_source_integration.py:142:                plan = generate_daily_plan(
+./tests/test_event_source_integration.py:156:                plan = generate_daily_plan(
+./tests/test_event_source_integration.py:172:                plan = generate_daily_plan(
+./tests/test_event_source_integration.py:192:                plan = generate_daily_plan(
+./tests/test_event_source_integration.py:212:                plan = generate_daily_plan(
+./tests/test_event_source_integration.py:236:                plan = generate_daily_plan(
+./tests/test_event_source_integration.py:260:                plan = generate_daily_plan(
+./tests/test_s007_tier_budget.py:42:from tradingagents.tradeflow.plan_runner import generate_daily_plan
+./tests/test_s007_tier_budget.py:568:        plan = generate_daily_plan(
+./tests/test_s007_tier_budget.py:579:        plan = generate_daily_plan(trade_date="2026-05-29", candidates=[c1])
+./tests/test_s007_tier_budget.py:590:        plan = generate_daily_plan(trade_date="2026-05-29", candidates=[c_a, c_c, c_b])
+./tests/test_s007_tier_budget.py:596:        plan = generate_daily_plan(trade_date="2026-05-29", candidates=[c1])
+./tests/test_tradeflow_plan_runner.py:12:from tradingagents.tradeflow.plan_runner import generate_daily_plan, _action_for_candidate, _build_plan_entry
+./tests/test_tradeflow_plan_runner.py:61:        plan = generate_daily_plan(
+./tests/test_tradeflow_plan_runner.py:74:        plan = generate_daily_plan(
+./tests/test_tradeflow_plan_runner.py:86:        plan = generate_daily_plan(
+./tests/test_tradeflow_plan_runner.py:94:        plan = generate_daily_plan(
+./tests/test_tradeflow_plan_runner.py:106:        plan = generate_daily_plan(
+./tests/test_tradeflow_plan_runner.py:148:            plan = generate_daily_plan(
+./tests/test_tradeflow_plan_runner.py:175:            plan = generate_daily_plan(
+./tests/test_tradeflow_plan_runner.py:206:            plan = generate_daily_plan(
+./tests/test_tradeflow_plan_runner.py:233:                plan = generate_daily_plan(
+./tests/test_tradeflow_plan_runner.py:259:            plan = generate_daily_plan(
+./tests/test_tradeflow_plan_runner.py:304:                plan = generate_daily_plan(
+./tests/test_tradeflow_universe.py:7:- Integration with generate_daily_plan and discovery
+./tests/test_tradeflow_universe.py:325:        from tradingagents.tradeflow.plan_runner import generate_daily_plan
+./tests/test_tradeflow_universe.py:349:                plan = generate_daily_plan(
+./tests/test_strategy_config.py:37:from tradingagents.tradeflow.plan_runner import generate_daily_plan
+./tests/test_strategy_config.py:395:        plan = generate_daily_plan(
+./tests/test_strategy_config.py:404:        plan = generate_daily_plan(
+./tests/test_strategy_config.py:418:        plan = generate_daily_plan(
+./tests/test_t006_event_source_discovery.py:27:from tradingagents.tradeflow.plan_runner import generate_daily_plan
+./tests/test_t006_event_source_discovery.py:171:                plan = generate_daily_plan(
+./tests/test_t006_event_source_discovery.py:190:                plan = generate_daily_plan(
+./tests/test_t006_event_source_discovery.py:203:            plan = generate_daily_plan(
+./tests/test_t006_event_source_discovery.py:223:                plan = generate_daily_plan(
+./tests/test_t006_event_source_discovery.py:250:                plan = generate_daily_plan(
+./tests/test_t006_event_source_discovery.py:273:                plan = generate_daily_plan(
+./tests/test_t006_event_source_discovery.py:291:                plan = generate_daily_plan(
+./tests/test_t006_event_source_discovery.py:309:                plan = generate_daily_plan(
+./tests/test_t006_event_source_discovery.py:334:                plan = generate_daily_plan(
+./tests/test_s006_false_positive_audit.py:764:        from tradingagents.tradeflow.plan_runner import generate_daily_plan
+./tests/test_s006_false_positive_audit.py:775:        plan = generate_daily_plan(
+./tests/test_s006_false_positive_audit.py:783:        from tradingagents.tradeflow.plan_runner import generate_daily_plan
+./tests/test_s006_false_positive_audit.py:788:        plan = generate_daily_plan(
+./tests/test_s006_false_positive_audit.py:797:        from tradingagents.tradeflow.plan_runner import generate_daily_plan
+./tests/test_s006_false_positive_audit.py:806:        plan = generate_daily_plan(
+                "title": it.title,
+                "event_type": it.event_type,
+                "direction": it.direction,
+                "source": it.source,
+                "date": it.date,
+            }
+            for it in event_items
+        ]
+
+    return entry
+
+
+def generate_daily_plan(
+    trade_date: Optional[str] = None,
+    symbols: Optional[list[str]] = None,
+    prod_db_path: str = "",
+    tf_db_path: str = "",
+    candidates: Optional[list[Candidate]] = None,
+    news_texts: Optional[list[str]] = None,
+    event_overrides: Optional[list[dict]] = None,
+    save_candidates: bool = False,
+    use_event_source: bool = False,  # [N-001] event_source_plan_integration
+    fund_flow_map: Optional[dict[str, dict]] = None,  # [T-003] fund_flow_anomaly_pool
+    cfg: Optional[StrategyConfig] = None,  # [M-004]
+) -> DailyPlan:
+    """Generate a pre-market daily plan.
+
+    Args:
+        trade_date: Trading date (default: today).
+        symbols: Specific symbols to evaluate (overrides universe).
+        prod_db_path: Path to production tradingagents.db.
+        tf_db_path: Path to tradeflow SQLite DB.
+        candidates: Pre-evaluated candidates (skip evaluation if provided).
+        news_texts: News/announcement texts for event catalyst detection.
+        event_overrides: Manual event overrides for event catalyst detection.
+        save_candidates: If True, persist evaluated candidates to tf_db_path.
+        use_event_source: [N-001] If True, fetch daily events and inject into universe.
+        fund_flow_map: [T-003] Optional dict mapping symbol → {"individual": str, "board": str}.
+
+    Returns:
+        DailyPlan with validated entries.
+    """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+
+    # [N-001] event_source_plan_integration — fetch events if enabled
+    # [T-006] event_source_discovery — use detailed fetch for richer metadata
+    events_map: dict[str, list[str]] = {}
+    event_items_by_symbol: dict[str, list] = {}
+    event_source_status = "NOT_QUERIED"
+    event_source_error = ""
+
+    if use_event_source:
+        from .event_source import fetch_daily_events_detailed, EventSourceStatus
+        trade_date_compact = trade_date.replace("-", "")
+        event_result = fetch_daily_events_detailed(trade_date_compact)
+        events_map = event_result.events_map
+        event_items_by_symbol = event_result.items_by_symbol
+        event_source_status = event_result.status.value
+        event_source_error = event_result.error_message
+
+    if candidates is None:
+        # Build universe — pass event_symbols so event-discovered
+        # symbols enter the pool
+        universe = build_universe(
+            symbols=symbols,
+            prod_db_path=prod_db_path,
+            tf_db_path=tf_db_path,
+            event_overrides=event_overrides,
+            event_symbols=events_map if events_map else None,  # [N-001]
+        )
+
+        # Evaluate each symbol — filter event_overrides to only
+        # those matching the current symbol (or global overrides without symbol).
+        # [N-001] Each symbol gets its own event titles as news_texts.
+        # [T-006] event_source_discovery — also generate event_overrides from EventItem data
+        candidates = []
+        for item in universe:
+            sym = item["symbol"]
+            if event_overrides:
+                filtered_overrides = [
+                    ev for ev in event_overrides
+                    if ev.get("symbol") is None or ev.get("symbol") == sym
+                ]
+            else:
+                filtered_overrides = None
+
+            # [T-006] event_source_discovery — generate event_overrides from EventItem data
+            sym_event_overrides = list(filtered_overrides) if filtered_overrides else []
+            if sym in event_items_by_symbol:
+                for ev_item in event_items_by_symbol[sym]:
+                    sym_event_overrides.append({
+                        "symbol": sym,
+                        "title": ev_item.title,
+                        "event_type": ev_item.event_type,
+                        "direction": ev_item.direction,
+                        "source": ev_item.source,
+                        "date": ev_item.date,
+                    })
+            sym_event_overrides_final = sym_event_overrides if sym_event_overrides else None
+
+            # [N-001] event_source_plan_integration
+            sym_news = events_map.get(sym) if events_map else None
+
+            # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
+            sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
+            sym_ff_individual = sym_ff.get("individual") if sym_ff else None
+            sym_ff_board = sym_ff.get("board") if sym_ff else None
+
+            c, reason = evaluate_symbol(
+                symbol=sym,
+                name=item.get("name", ""),
+                source=item.get("source", "manual"),
+                trade_date=trade_date,
+                news_texts=sym_news or news_texts,
+                event_overrides=sym_event_overrides_final,  # [T-006]
+                fund_flow_individual=sym_ff_individual,  # [T-003]
+                fund_flow_board=sym_ff_board,  # [T-003]
+                cfg=cfg,  # [M-004]
+            )
+            if c is not None:
+                if item.get("universe_sources"):
+                    c.universe_sources = item["universe_sources"]  # [M-003]
+                # [T-006] event_source_discovery — attach event items for plan entry
+                if sym in event_items_by_symbol:
+                    c._event_items = event_items_by_symbol[sym]  # type: ignore[attr-defined]
+                candidates.append(c)
+
+    # Build plan entries
+    plan_entries = []
+    for c in candidates:
+        ev_items = getattr(c, "_event_items", None)  # [T-006]
+        entry = _build_plan_entry(c, event_items=ev_items)
+        plan_entries.append(entry)
+
+    # Sort by composite_score descending (S-005 priority gate), fallback to score
+    plan_entries.sort(key=lambda x: (x.get("composite_score", 0) or 0, x.get("score", 0)), reverse=True)
+
+    # [S-007] candidate_tier_budget — sort by tier (A first, then B, then C)
+    tier_order = {"A": 0, "B": 1, "C": 2, "": 3}
+    plan_entries.sort(key=lambda x: (tier_order.get(x.get("tier", ""), 3), -(x.get("composite_score", 0) or 0)))
+
+    # [S-007] candidate_tier_budget — enforce A-tier cap and compute budget summary
+    from .tier_budget import TierBudgetResult
+    tier_results = []
+    for e in plan_entries:
+        tier_results.append(TierBudgetResult(
+            tier=e.get("tier", "C"),
+            ta_budget_priority=e.get("ta_budget_priority", 0),
+            tier_reason=e.get("tier_reason", ""),
+            missing_evidence_for_upgrade=e.get("missing_evidence_for_upgrade", []),
+            why_not_deep_ta=e.get("why_not_deep_ta", ""),
+        ))
+    budget_allocation = allocate_tier_budget(tier_results, cfg=cfg)  # [M-004]
+    # Update entries if any were demoted by the cap
+    for i, tr in enumerate(tier_results):
+        if i < len(plan_entries):
+            plan_entries[i]["tier"] = tr.tier
+            plan_entries[i]["ta_budget_priority"] = tr.ta_budget_priority
+            plan_entries[i]["tier_reason"] = tr.tier_reason
+
+    # Build summary
+    n_total = len(plan_entries)
+    n_deep_ta = sum(1 for e in plan_entries if e["need_deep_ta"])
+    n_wait = sum(1 for e in plan_entries if e["action"] == "WAIT_TRIGGER")
+
+    summary_parts = [
+        f"共{n_total}只候选",
+        f"{n_deep_ta}只需要深度TA",
+        f"{n_wait}只接近触发",
+    ]
+    if symbols:
+        summary_parts.append(f"指定标的: {', '.join(symbols)}")
+
+    plan = DailyPlan(
+        trade_date=trade_date,
+        mode="pre_market",
+        summary="，".join(summary_parts) + "。",
+        candidates=plan_entries,
+        metadata={
+            "universe_size": len(plan_entries),
+            "generated_at": datetime.now().isoformat(),
+            "strategy_config_version": cfg.config_version,  # [M-004]
+            "event_source": {  # [T-006] event_source_discovery
+                "status": event_source_status,
+                "error_message": event_source_error,
+                "event_count": sum(len(v) for v in event_items_by_symbol.values()),
+                "symbols_count": len(event_items_by_symbol),
+            },
+        },
+    )
+
+    # [S-006] candidate_false_positive_audit — generate audit report
+    audit = build_audit_report(
+        candidates=candidates,
+        trade_date=trade_date,
+    )
+    plan.metadata["audit_summary"] = {
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate 2>/dev/null || true; pytest tests/test_t006_event_source_discovery.py tests/test_event_source_integration.py tests/test_t002_discovery.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 472ms:
+........................................................................ [ 96%]
+...                                                                      [100%]
+75 passed in 0.25s
+
+exec
+/bin/zsh -lc "grep -R \"def evaluate_symbol\\|event_overrides\\|news_texts\" -n tradingagents/tradeflow | head -80" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/tradeflow/event_source.py:4:供 event_catalyst 策略的 news_texts 参数使用。
+tradingagents/tradeflow/event_source.py:253:    这个格式直接兼容 event_catalyst.score_event_catalyst() 的 news_texts 参数。
+tradingagents/tradeflow/candidate_engine.py:353:    news_texts: Optional[list[str]] = None,
+tradingagents/tradeflow/candidate_engine.py:354:    event_overrides: Optional[list[dict]] = None,
+tradingagents/tradeflow/candidate_engine.py:372:    ev = score_event_catalyst(symbol, news_texts, event_overrides, latest_close, cfg=cfg)  # [M-004]
+tradingagents/tradeflow/candidate_engine.py:379:def evaluate_symbol(
+tradingagents/tradeflow/candidate_engine.py:384:    news_texts: Optional[list[str]] = None,
+tradingagents/tradeflow/candidate_engine.py:385:    event_overrides: Optional[list[dict]] = None,
+tradingagents/tradeflow/candidate_engine.py:412:    signals = run_strategies(symbol, df, news_texts, event_overrides, cfg=cfg)  # [M-004]
+tradingagents/tradeflow/candidate_engine.py:445:    # Collect all available text sources: news_texts + event_override titles
+tradingagents/tradeflow/candidate_engine.py:446:    all_event_texts = list(news_texts) if news_texts else []
+tradingagents/tradeflow/candidate_engine.py:447:    if event_overrides:
+tradingagents/tradeflow/candidate_engine.py:448:        for ev in event_overrides:
+tradingagents/tradeflow/discovery.py:110:    event_overrides: Optional[list[dict]] = None,
+tradingagents/tradeflow/discovery.py:111:    news_texts: Optional[list[str]] = None,
+tradingagents/tradeflow/discovery.py:127:        event_overrides: Manual event overrides.
+tradingagents/tradeflow/discovery.py:128:        news_texts: News texts.
+tradingagents/tradeflow/discovery.py:173:        if event_overrides:
+tradingagents/tradeflow/discovery.py:175:                ev for ev in event_overrides
+tradingagents/tradeflow/discovery.py:181:        # [T-006] event_source_discovery — generate event_overrides from EventItem data
+tradingagents/tradeflow/discovery.py:182:        sym_event_overrides = list(filtered_overrides) if filtered_overrides else []
+tradingagents/tradeflow/discovery.py:185:                sym_event_overrides.append({
+tradingagents/tradeflow/discovery.py:193:        sym_event_overrides_final = sym_event_overrides if sym_event_overrides else None
+tradingagents/tradeflow/discovery.py:207:            news_texts=sym_news or news_texts,
+tradingagents/tradeflow/discovery.py:208:            event_overrides=sym_event_overrides_final,  # [T-006]
+tradingagents/tradeflow/strategies/event_catalyst.py:109:    news_texts: Optional[list[str]] = None,
+tradingagents/tradeflow/strategies/event_catalyst.py:110:    event_overrides: Optional[list[dict]] = None,
+tradingagents/tradeflow/strategies/event_catalyst.py:121:        news_texts: List of news/announcement text snippets.
+tradingagents/tradeflow/strategies/event_catalyst.py:122:        event_overrides: List of {"event_type", "direction", "title"} dicts
+tradingagents/tradeflow/strategies/event_catalyst.py:138:    if event_overrides:
+tradingagents/tradeflow/strategies/event_catalyst.py:139:        for ev in event_overrides:
+tradingagents/tradeflow/strategies/event_catalyst.py:151:    if news_texts:
+tradingagents/tradeflow/strategies/event_catalyst.py:152:        for text in news_texts:
+tradingagents/tradeflow/strategies/event_catalyst.py:198:    all_texts = [t for t in (news_texts or []) if t]
+Binary file tradingagents/tradeflow/strategies/__pycache__/event_catalyst.cpython-312.pyc matches
+tradingagents/tradeflow/plan_runner.py:148:    news_texts: Optional[list[str]] = None,
+tradingagents/tradeflow/plan_runner.py:149:    event_overrides: Optional[list[dict]] = None,
+tradingagents/tradeflow/plan_runner.py:163:        news_texts: News/announcement texts for event catalyst detection.
+tradingagents/tradeflow/plan_runner.py:164:        event_overrides: Manual event overrides for event catalyst detection.
+tradingagents/tradeflow/plan_runner.py:201:            event_overrides=event_overrides,
+tradingagents/tradeflow/plan_runner.py:205:        # Evaluate each symbol — filter event_overrides to only
+tradingagents/tradeflow/plan_runner.py:207:        # [N-001] Each symbol gets its own event titles as news_texts.
+tradingagents/tradeflow/plan_runner.py:208:        # [T-006] event_source_discovery — also generate event_overrides from EventItem data
+tradingagents/tradeflow/plan_runner.py:212:            if event_overrides:
+tradingagents/tradeflow/plan_runner.py:214:                    ev for ev in event_overrides
+tradingagents/tradeflow/plan_runner.py:220:            # [T-006] event_source_discovery — generate event_overrides from EventItem data
+tradingagents/tradeflow/plan_runner.py:221:            sym_event_overrides = list(filtered_overrides) if filtered_overrides else []
+tradingagents/tradeflow/plan_runner.py:224:                    sym_event_overrides.append({
+tradingagents/tradeflow/plan_runner.py:232:            sym_event_overrides_final = sym_event_overrides if sym_event_overrides else None
+tradingagents/tradeflow/plan_runner.py:247:                news_texts=sym_news or news_texts,
+tradingagents/tradeflow/plan_runner.py:248:                event_overrides=sym_event_overrides_final,  # [T-006]
+Binary file tradingagents/tradeflow/__pycache__/discovery.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/candidate_engine.cpython-314.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/candidate_engine.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/plan_runner.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/universe.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/universe_manager.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/event_source.cpython-312.pyc matches
+tradingagents/tradeflow/universe.py:231:        event_overrides: Optional[list[dict]] = None,
+tradingagents/tradeflow/universe.py:236:        if event_overrides:
+tradingagents/tradeflow/universe.py:237:            for ev in event_overrides:
+tradingagents/tradeflow/universe.py:372:    event_overrides: Optional[list[dict]] = None,
+tradingagents/tradeflow/universe.py:399:    if event_overrides or event_symbols:
+tradingagents/tradeflow/universe.py:400:        mgr.add_from_events(event_overrides, event_symbols)
+
+exec
+/bin/zsh -lc "sed -n '330,470p' tradingagents/tradeflow/candidate_engine.py; sed -n '100,180p' tradingagents/tradeflow/strategies/event_catalyst.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    if df is None or len(df) == 0:
+        return True, ["数据缺失"]
+
+    if len(df) < 40:
+        return True, ["数据不足(需至少40日)"]
+
+    is_low, avg_amount, avg_volume, threshold = _calc_liquidity(df, cfg)  # [M-004]
+    if is_low:
+        reasons.append(
+            f"流动性差(avg_amount={avg_amount/1e8:.2f}亿, "
+            f"avg_volume={avg_volume/1e4:.0f}万, "
+            f"threshold={threshold/1e8:.2f}亿)"
+        )
+
+    if reasons:
+        return True, reasons
+
+    return False, []
+
+
+def run_strategies(
+    symbol: str,
+    df: pd.DataFrame,
+    news_texts: Optional[list[str]] = None,
+    event_overrides: Optional[list[dict]] = None,
+    cfg: StrategyConfig = DEFAULT_STRATEGY_CONFIG,  # [M-004]
+) -> list[CandidateSignal]:
+    """Run all strategies on a symbol, return list of signals."""
+    signals = []
+
+    # VCP
+    vcp = score_vcp(df, symbol, cfg=cfg)  # [M-004]
+    if vcp is not None:
+        signals.append(vcp)
+
+    # Pullback Support
+    pb = score_pullback_support(df, symbol, cfg=cfg)  # [M-004]
+    if pb is not None:
+        signals.append(pb)
+
+    # Event Catalyst
+    latest_close = float(df["Close"].iloc[-1]) if len(df) > 0 else 0.0
+    ev = score_event_catalyst(symbol, news_texts, event_overrides, latest_close, cfg=cfg)  # [M-004]
+    if ev is not None:
+        signals.append(ev)
+
+    return signals
+
+
+def evaluate_symbol(
+    symbol: str,
+    name: str = "",
+    source: str = "manual",
+    trade_date: str = "",
+    news_texts: Optional[list[str]] = None,
+    event_overrides: Optional[list[dict]] = None,
+    df: Optional[pd.DataFrame] = None,
+    fund_flow_individual: Optional[str] = None,  # [T-003] fund_flow_anomaly_pool
+    fund_flow_board: Optional[str] = None,  # [T-003] fund_flow_anomaly_pool
+    cfg: Optional[StrategyConfig] = None,  # [M-004]
+) -> tuple[Optional[Candidate], str]:
+    """Evaluate one symbol through all strategies.
+
+    Returns (Candidate, "") if any strategy hits, or (None, reason) if
+    filtered or no strategy matched.
+    """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+
+    # Fetch data if not provided
+    if df is None:
+        df = _fetch_price_data(symbol)
+
+    # Filter check
+    filtered, reasons = filter_symbol(symbol, df, cfg)  # [M-004]
+    if filtered:
+        return None, "；".join(reasons)
+
+    # Run strategies
+    signals = run_strategies(symbol, df, news_texts, event_overrides, cfg=cfg)  # [M-004]
+
+    if not signals:
+        return None, "无策略命中"
+
+    # Build candidate
+    candidate = Candidate(
+        symbol=symbol,
+        name=name,
+        source=source,
+        trade_date=trade_date,
+        signals=signals,
+    )
+    candidate.merge_signals()
+
+    # [N-004] astock_signal_tags — merge extra tags from event_catalyst evidence
+    for sig in signals:
+        if not isinstance(sig.evidence, dict):
+            continue
+        extra_tags = sig.evidence.get("astock_tags", [])
+        extra_risks = sig.evidence.get("astock_risk_flags", [])
+        if extra_tags or extra_risks:
+            from .schemas import SIGNAL_TAG_LOCKUP_RISK  # [N-004] astock_signal_tags
+            candidate.strategy_tags = sorted(
+                set(candidate.strategy_tags) | set(extra_tags)
+            )
+            candidate.risk_flags = sorted(
+                set(candidate.risk_flags) | set(extra_risks)
+            )
+            if SIGNAL_TAG_LOCKUP_RISK in candidate.risk_flags:
+                candidate.score = round(candidate.score * cfg.risk_lockup_score_factor, 2)  # [M-004]
+
+    # [S-001] policy_version_signal — detect policy version and add bonus
+    # Collect all available text sources: news_texts + event_override titles
+    all_event_texts = list(news_texts) if news_texts else []
+    if event_overrides:
+        for ev in event_overrides:
+            title = ev.get("title", "") or ev.get("headline", "")
+            if title:
+                all_event_texts.append(title)
+    policy_result: PolicyVersionResult = detect_policy_version(  # [M-004]
+        event_texts=all_event_texts if all_event_texts else None,
+        cfg=cfg,
+    )
+    if policy_result.policy_tags:
+        candidate.policy_tags = policy_result.policy_tags
+        candidate.version_score = policy_result.version_score
+        candidate.policy_evidence_refs = policy_result.policy_evidence_refs
+        candidate.score = round(candidate.score + policy_result.version_score, 2)
+        candidate.strategy_tags = sorted(
+            set(candidate.strategy_tags) | {STRATEGY_POLICY_VERSION}
+        )
+        candidate.evidence["policy_version"] = {
+            "policy_tags": policy_result.policy_tags,
+            "version_score": policy_result.version_score,
+            "evidence_refs": policy_result.policy_evidence_refs,
+        }
+        if policy_result.version_score >= cfg.policy_need_deep_ta_score:  # [M-004]
+            candidate.need_deep_ta = True
+
+    if lhb_status == "HAS_DATA" and _LHB_KEYWORDS.search(combined):
+        strategy_tags.append(SIGNAL_TAG_HOT_MONEY_LHB)
+
+    return sorted(set(strategy_tags)), sorted(set(risk_flags))
+
+
+def score_event_catalyst(
+    symbol: str,
+    news_texts: Optional[list[str]] = None,
+    event_overrides: Optional[list[dict]] = None,
+    latest_close: float = 0.0,
+    lhb_status: str = "NOT_QUERIED",
+    cfg: Optional[StrategyConfig] = None,  # [M-004]
+) -> Optional[EventCatalystSignal]:
+    """Score a stock for event-driven catalyst.
+
+    P0: Uses keyword matching on provided text. Does NOT call any LLM.
+
+    Args:
+        symbol: Stock symbol.
+        news_texts: List of news/announcement text snippets.
+        event_overrides: List of {"event_type", "direction", "title"} dicts
+                        for manual event specification.
+        latest_close: Latest close price for trigger/invalid calculation.
+        lhb_status: LHB data status, one of "HAS_DATA"/"NOT_QUERIED"/"NORMAL_NO_DATA".
+                    Controls HOT_MONEY_LHB tag.  [N-004] astock_signal_tags
+        cfg: StrategyConfig with thresholds. Uses defaults when None.
+
+    Returns:
+        EventCatalystSignal if catalyst detected, None otherwise.
+    """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+    detected_events = []
+
+    # Check overrides first — only use overrides whose symbol matches,
+    # or overrides without a symbol field (global manual events).
+    if event_overrides:
+        for ev in event_overrides:
+            ev_symbol = ev.get("symbol")
+            if ev_symbol is not None and ev_symbol != symbol:
+                continue
+            detected_events.append({
+                "type": ev.get("event_type", "custom"),
+                "title": ev.get("title", ""),
+                "direction": ev.get("direction", "neutral"),
+                "score": ev.get("score", 50),
+            })
+
+    # Check news texts with keyword patterns
+    if news_texts:
+        for text in news_texts:
+            if not text:
+                continue
+            for event_type, pattern, direction, base_score in EVENT_PATTERNS:
+                if re.search(pattern, text):
+                    detected_events.append({
+                        "type": event_type,
+                        "title": text[:80],
+                        "direction": direction,
+                        "score": base_score,
+                    })
+
+    if not detected_events:
+        return None
+
+    # Aggregate: take the highest-impact event
+    best = max(detected_events, key=lambda x: x["score"])
+    all_types = list({e["type"] for e in detected_events})
+    has_bearish = any(e["direction"] == "bearish" for e in detected_events)
+    has_bullish = any(e["direction"] == "bullish" for e in detected_events)
+
+    direction = best["direction"]
+    if has_bearish and has_bullish:
+        direction = "mixed"
+
+    score = min(best["score"], cfg.event_score_max)  # [M-004]
+
+    risk_flags = []
+    if has_bearish:
+
+exec
+/bin/zsh -lc "sed -n '1,110p' tradingagents/tradeflow/strategies/event_catalyst.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""Event Catalyst / 事件催化 strategy.
+
+入池逻辑：
+- 近期有公告、业绩预告、季报、回购、增持、中标、订单、并购等事件
+- 事件被分类为利好/利空/不确定
+- 需要市场价格确认
+
+P0 简化版：基于简单规则检测（不调用 LLM），仅匹配关键词模式。
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Optional
+
+from ..strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
+
+@dataclass
+class EventCatalystSignal:
+    strategy_tag: str = "EVENT_CATALYST"
+    trigger_price: Optional[float] = None
+    support_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    score: float = 0.0
+    reason: str = ""
+    evidence: dict = field(default_factory=dict)
+    risk_flags: list[str] = field(default_factory=list)
+    need_deep_ta: bool = False
+    event_type: str = ""
+    event_direction: str = "neutral"  # bullish / bearish / neutral
+    verification_condition: str = ""
+
+
+# Event keyword patterns for P0
+EVENT_PATTERNS = [
+    ("earnings_preview", "业绩预告", "bullish", 60),
+    ("quarterly_report", "季报披露", "neutral", 50),
+    ("buyback", "回购", "bullish", 55),
+    ("insider_buy", "增持", "bullish", 55),
+    ("contract", "中标|大单|签约", "bullish", 50),
+    ("merger", "并购|重组", "bullish", 65),
+    ("dividend", "分红|派息", "bullish", 40),
+    ("delist_warning", r"退市风险|\*ST", "bearish", 80),
+    ("regulation", "处罚|监管警示", "bearish", 60),
+]
+
+# [N-004] astock_signal_tags — keyword patterns for A-share specific signal tags
+_POLICY_KEYWORDS = re.compile(
+    r"政策|补贴|扶持|产业政策|国务院|发改委|工信部|证监会|商务部|科技部|重点支持|国家战略"
+)
+_BUYBACK_KEYWORDS = re.compile(r"回购|回购进展|回购计划|回购实施")
+_RATING_CHANGE_KEYWORDS = re.compile(
+    r"评级上调|评级下调|目标价上调|目标价下调|首次覆盖|维持买入|维持增持"
+)
+_LOCKUP_KEYWORDS = re.compile(r"解禁|限售股解禁|解除限售|首发原股东限售股份")
+_LHB_KEYWORDS = re.compile(r"龙虎榜|游资|LHB|营业部")
+
+
+# [N-004] astock_signal_tags
+def extract_signal_tags(
+    event_texts: list[str],
+    lhb_status: str = "NOT_QUERIED",
+) -> tuple[list[str], list[str]]:
+    """Extract A-share specific signal tags from event text.
+
+    Args:
+        event_texts: List of news/announcement text snippets.
+        lhb_status: One of "HAS_DATA", "NOT_QUERIED", "NORMAL_NO_DATA".
+                    Only "HAS_DATA" enables HOT_MONEY_LHB tag.
+
+    Returns:
+        (strategy_tags, risk_flags) — LOCKUP_RISK goes ONLY to risk_flags.
+    """
+    combined = "\n".join(event_texts) if event_texts else ""
+
+    strategy_tags: list[str] = []
+    risk_flags: list[str] = []
+
+    from tradingagents.tradeflow.schemas import (
+        SIGNAL_TAG_POLICY_CATALYST,
+        SIGNAL_TAG_HOT_MONEY_LHB,
+        SIGNAL_TAG_LOCKUP_RISK,
+        SIGNAL_TAG_BUYBACK_EVENT,
+        SIGNAL_TAG_RATING_CHANGE,
+    )
+
+    if _POLICY_KEYWORDS.search(combined):
+        strategy_tags.append(SIGNAL_TAG_POLICY_CATALYST)
+
+    if _BUYBACK_KEYWORDS.search(combined):
+        strategy_tags.append(SIGNAL_TAG_BUYBACK_EVENT)
+
+    if _RATING_CHANGE_KEYWORDS.search(combined):
+        strategy_tags.append(SIGNAL_TAG_RATING_CHANGE)
+
+    if _LOCKUP_KEYWORDS.search(combined):
+        risk_flags.append(SIGNAL_TAG_LOCKUP_RISK)
+
+    if lhb_status == "HAS_DATA" and _LHB_KEYWORDS.search(combined):
+        strategy_tags.append(SIGNAL_TAG_HOT_MONEY_LHB)
+
+    return sorted(set(strategy_tags)), sorted(set(risk_flags))
+
+
+def score_event_catalyst(
+    symbol: str,
+    news_texts: Optional[list[str]] = None,
+    event_overrides: Optional[list[dict]] = None,
+
+codex
+The change adds event source status reporting, but real underlying fetch failures are swallowed by the called fetchers and still reported as OK. This breaks a core observability goal of the patch.
+
+Review comment:
+
+- [P2] Report failures from the underlying event fetchers — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/event_source.py:293-295
+  When an AKShare/network error happens inside `fetch_notice_events`, `fetch_buyback_events`, or `fetch_rating_events`, those functions already catch the exception and return `[]`, so this `try` block never sees the real failure and the result stays `OK` with zero events. That makes the new plan/discovery `event_source` metadata report a successful empty fetch instead of the intended `FAILED` status, so operators cannot distinguish no catalysts from a broken source.
+The change adds event source status reporting, but real underlying fetch failures are swallowed by the called fetchers and still reported as OK. This breaks a core observability goal of the patch.
+
+Review comment:
+
+- [P2] Report failures from the underlying event fetchers — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/event_source.py:293-295
+  When an AKShare/network error happens inside `fetch_notice_events`, `fetch_buyback_events`, or `fetch_rating_events`, those functions already catch the exception and return `[]`, so this `try` block never sees the real failure and the result stays `OK` with zero events. That makes the new plan/discovery `event_source` metadata report a successful empty fetch instead of the intended `FAILED` status, so operators cannot distinguish no catalysts from a broken source.

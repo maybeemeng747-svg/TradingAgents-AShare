@@ -1,0 +1,1182 @@
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/project-overview.md
+[0m
+[0m# [0mTodos
+[ ] Read existing event_source, discovery, plan_runner, candidate_engine modules
+[ ] Add use_event_source toggle to Discovery entry point
+[ ] Add use_event_source toggle to Daily Plan (generate_daily_plan)
+[ ] Wire fetch_daily_events() → event_overrides → candidate evaluation pipeline
+[ ] Add event source failure observability (FAILED/STALE status)
+[ ] Write tests for T-006 event source discovery integration
+[ ] Run tests and verify all pass
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/tradeflow/event_source.py
+[0m→ [0mRead tradingagents/tradeflow/discovery.py
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [limit=80][0m
+[0m✱ [0mGlob "tests/test_tradeflow*.py"[90m 5 matches[0m
+现在让我看看现有的测试和 schema 以了解整体情况：
+[0m✱ [0mGlob "tests/test_event_source*.py"[90m 2 matches[0m
+[0m→ [0mRead tests/test_event_source_integration.py
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [offset=80, limit=100][0m
+[0m→ [0mRead tradingagents/tradeflow/strategies/event_catalyst.py
+[0m→ [0mRead tradingagents/tradeflow/universe.py
+[0m
+[0m# [0mTodos
+[x] Read existing event_source, discovery, plan_runner, candidate_engine modules
+[ ] Add EventSourceStatus/EventSourceResult + fetch_daily_events_detailed() to event_source.py
+[ ] Wire fetch_daily_events_detailed() → event_overrides → plan_runner and discovery
+[ ] Add event source failure observability (FAILED/STALE status) in plan/discovery metadata
+[ ] Add event metadata (source, type, title, dedup) to plan/discovery entries
+[ ] Write tests for T-006 event source discovery integration
+[ ] Run tests and verify all pass
+[ ] Update docs/DEVLOG.md
+[0m
+现在我将实施这些变更。从 `event_source.py` 开始：
+[0m← [0mEdit tradingagents/tradeflow/event_source.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/event_source.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/event_source.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/event_source.py
+@@ -9,12 +9,29 @@
+ import logging
+ import os
+ from dataclasses import dataclass, field
+ from datetime import datetime, timedelta
++from enum import Enum
+ from typing import Optional
+ 
+ logger = logging.getLogger(__name__)
+ 
++
++class EventSourceStatus(Enum):
++    OK = "OK"
++    FAILED = "FAILED"
++    STALE = "STALE"
++
++
++@dataclass
++class EventSourceResult:
++    status: EventSourceStatus = EventSourceStatus.OK
++    events_map: dict[str, list[str]] = field(default_factory=dict)
++    items_by_symbol: dict[str, list[EventItem]] = field(default_factory=dict)
++    error_message: str = ""
++    event_count: int = 0
++    symbols_count: int = 0
++
+ _BEARISH_NOTICE_TYPES = {"风险提示"}
+ 
+ 
+ @dataclass
+
+[0m
+现在在 `fetch_daily_events()` 之后添加 `fetch_daily_events_detailed()` 函数：
+[0m← [0mEdit tradingagents/tradeflow/event_source.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/event_source.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/event_source.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/event_source.py
+@@ -274,8 +274,56 @@
+ 
+     return events_map
+ 
+ 
++def fetch_daily_events_detailed(date: str) -> EventSourceResult:
++    """获取指定日期的全部事件，返回包含完整元数据和状态的结果。  # [T-006] event_source_discovery
++
++    与 fetch_daily_events() 不同，此函数返回 EventSourceResult，
++    包含按 symbol 分组的 EventItem 列表（event_type/direction/source/date）
++    以及事件源状态（OK/FAILED/STALE），便于 Discovery 和 Daily Plan 输出
++    事件来源、标题摘要、事件类型、去重结果和证据引用。
++
++    Args:
++        date: 'YYYYMMDD'
++    Returns:
++        EventSourceResult
++    """
++    result = EventSourceResult()
++    try:
++        notice_items = fetch_notice_events(date)
++        buyback_items = fetch_buyback_events()
++        rating_items = fetch_rating_events(date)
++    except Exception as e:
++        result.status = EventSourceStatus.FAILED
++        result.error_message = str(e)
++        logger.warning("fetch_daily_events_detailed failed: %s", e)
++        return result
++
++    all_items = notice_items + buyback_items + rating_items
++
++    seen_titles_by_symbol: dict[str, set[str]] = {}
++    for item in all_items:
++        sym = item.symbol
++        if not sym:
++            continue
++        if sym not in result.items_by_symbol:
++            result.items_by_symbol[sym] = []
++            result.events_map[sym] = []
++            seen_titles_by_symbol[sym] = set()
++
++        if item.title and item.title != "nan":
++            if item.title not in seen_titles_by_symbol[sym]:
++                result.items_by_symbol[sym].append(item)
++                result.events_map[sym].append(item.title)
++                seen_titles_by_symbol[sym].add(item.title)
++
++    result.event_count = sum(len(v) for v in result.items_by_symbol.values())
++    result.symbols_count = len(result.items_by_symbol)
++
++    return result
++
++
+ def fetch_events_for_symbol(symbol: str, date: str) -> list[str]:
+     """获取单只股票的事件标题列表。用于候选引擎按需查询。"""
+     raw_sym = _normalize_symbol(symbol)
+     daily = fetch_daily_events(date)
+
+[0m
+[0m# [0mTodos
+[x] Read existing event_source, discovery, plan_runner, candidate_engine modules
+[x] Add EventSourceStatus/EventSourceResult + fetch_daily_events_detailed() to event_source.py
+[ ] Wire fetch_daily_events_detailed() → event_overrides → plan_runner and discovery
+[ ] Add event source failure observability (FAILED/STALE status) in plan/discovery metadata
+[ ] Add event metadata (source, type, title, dedup) to plan/discovery entries
+[ ] Write tests for T-006 event source discovery integration
+[ ] Run tests and verify all pass
+[ ] Update docs/DEVLOG.md
+[0m
+现在更新 `plan_runner.py` 以使用详细的事件抓取功能，生成事件覆盖，并添加事件元数据：
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -155,13 +155,22 @@
+ if not trade_date:
+     trade_date = datetime.now().strftime("%Y-%m-%d")
+ 
+ # [N-001] event_source_plan_integration — fetch events if enabled
++# [T-006] event_source_discovery — use detailed fetch for richer metadata
+ events_map: dict[str, list[str]] = {}
++event_items_by_symbol: dict[str, list] = {}
++event_source_status = "NOT_QUERIED"
++event_source_error = ""
++
+ if use_event_source:
+-    from .event_source import fetch_daily_events
++    from .event_source import fetch_daily_events_detailed, EventSourceStatus
+     trade_date_compact = trade_date.replace("-", "")
+-    events_map = fetch_daily_events(trade_date_compact)
++    event_result = fetch_daily_events_detailed(trade_date_compact)
++    events_map = event_result.events_map
++    event_items_by_symbol = event_result.items_by_symbol
++    event_source_status = event_result.status.value
++    event_source_error = event_result.error_message
+ 
+ if candidates is None:
+     # Build universe — pass event_symbols so event-discovered
+     # symbols enter the pool
+
+[0m
+现在更新 `generate_daily_plan` 中每个符号的评估循环，以生成并传递事件覆盖（event overrides）：
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -184,8 +184,9 @@
+ 
+ # Evaluate each symbol — filter event_overrides to only
+ # those matching the current symbol (or global overrides without symbol).
+ # [N-001] Each symbol gets its own event titles as news_texts.
++# [T-006] event_source_discovery — also generate event_overrides from EventItem data
+ candidates = []
+ for item in universe:
+     sym = item["symbol"]
+     if event_overrides:
+@@ -195,8 +196,22 @@
+         ]
+     else:
+         filtered_overrides = None
+ 
++    # [T-006] event_source_discovery — generate event_overrides from EventItem data
++    sym_event_overrides = list(filtered_overrides) if filtered_overrides else []
++    if sym in event_items_by_symbol:
++        for ev_item in event_items_by_symbol[sym]:
++            sym_event_overrides.append({
++                "symbol": sym,
++                "title": ev_item.title,
++                "event_type": ev_item.event_type,
++                "direction": ev_item.direction,
++                "source": ev_item.source,
++                "date": ev_item.date,
++            })
++    sym_event_overrides_final = sym_event_overrides if sym_event_overrides else None
++
+     # [N-001] event_source_plan_integration
+     sym_news = events_map.get(sym) if events_map else None
+ 
+     # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
+
+[0m
+现在更新对 `evaluate_symbol` 的调用，使其传入 `sym_event_overrides_final` 而不是 `filtered_overrides`。
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -224,9 +224,9 @@
+     name=item.get("name", ""),
+     source=item.get("source", "manual"),
+     trade_date=trade_date,
+     news_texts=sym_news or news_texts,
+-    event_overrides=filtered_overrides,
++    event_overrides=sym_event_overrides_final,  # [T-006]
+     fund_flow_individual=sym_ff_individual,  # [T-003]
+     fund_flow_board=sym_ff_board,  # [T-003]
+     cfg=cfg,  # [M-004]
+ )
+
+[0m
+现在将事件源元数据添加到 `plan.metadata`。找到元数据构建的位置：
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -288,8 +288,14 @@
+     metadata={
+         "universe_size": len(plan_entries),
+         "generated_at": datetime.now().isoformat(),
+         "strategy_config_version": cfg.config_version,  # [M-004]
++        "event_source": {  # [T-006] event_source_discovery
++            "status": event_source_status,
++            "error_message": event_source_error,
++            "event_count": sum(len(v) for v in event_items_by_symbol.values()),
++            "symbols_count": len(event_items_by_symbol),
++        },
+     },
+ )
+ 
+ # [S-006] candidate_false_positive_audit — generate audit report
+
+[0m
+现在更新 `_build_plan_entry()` 以包含事件元数据。我需要向函数添加事件详情参数：
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -39,9 +39,9 @@
+ 
+     return "OBSERVE"
+ 
+ 
+-def _build_plan_entry(candidate: Candidate) -> dict:
++def _build_plan_entry(candidate: Candidate, event_items: Optional[list] = None) -> dict:  # [T-006] event_source_discovery
+     """Build a plan entry dict from a candidate."""
+     action = _action_for_candidate(candidate)
+ 
+     # Build reason — no forbidden words
+@@ -54,9 +54,9 @@
+     for word in FORBIDDEN_WORDS:
+         if word in reason_str:
+             reason_str = reason_str.replace(word, "***")
+ 
+-    return {
++    entry = {
+         "symbol": candidate.symbol,
+         "name": candidate.name,
+         "action": action,
+         "primary_strategy": candidate.primary_strategy,
+
+[0m
+现在我需要在入口字典的末尾添加事件详情字段。让我读取当前的入口结束部分：
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py[90m [offset=110, limit=30][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -117,9 +117,29 @@
+         "deep_ta_dispatch_time": candidate.deep_ta_dispatch_time,  # [M-006]
+         "deep_ta_position_context": candidate.deep_ta_position_context,  # [M-006]
+     }
+ 
++    # [T-006] event_source_discovery — add event metadata to plan entry
++    if event_items:
++        entry["event_titles"] = [it.title for it in event_items if it.title]
++        entry["event_types"] = sorted({it.event_type for it in event_items if it.event_type})
++        entry["event_sources"] = sorted({it.source for it in event_items if it.source})
++        entry["event_directions"] = sorted({it.direction for it in event_items if it.direction})
++        entry["event_count"] = len(event_items)
++        entry["event_details"] = [
++            {
++                "title": it.title,
++                "event_type": it.event_type,
++                "direction": it.direction,
++                "source": it.source,
++                "date": it.date,
++            }
++            for it in event_items
++        ]
+ 
++    return entry
++
++
+ def generate_daily_plan(
+     trade_date: Optional[str] = None,
+     symbols: Optional[list[str]] = None,
+     prod_db_path: str = "",
+
+[0m
+现在我需要更新调用 `_build_plan_entry()` 的循环，以便传入事件项：
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py[90m [limit=30, offset=230][0m
+我需要为每个候选者存储事件项，以便我可以在构建计划条目时传递它们。让我更新这个方法——我将把事件项存储在候选者对象中（暂时使用一个临时属性，或者存储在一个映射中）：
+[0m
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -252,14 +252,18 @@
+         )
+         if c is not None:
+             if item.get("universe_sources"):
+                 c.universe_sources = item["universe_sources"]  # [M-003]
++            # [T-006] event_source_discovery — attach event items for plan entry
++            if sym in event_items_by_symbol:
++                c._event_items = event_items_by_symbol[sym]  # type: ignore[attr-defined]
+             candidates.append(c)
+ 
+ # Build plan entries
+ plan_entries = []
+ for c in candidates:
+-    entry = _build_plan_entry(c)
++    ev_items = getattr(c, "_event_items", None)  # [T-006]
++    entry = _build_plan_entry(c, event_items=ev_items)
+     plan_entries.append(entry)
+ 
+ # Sort by composite_score descending (S-005 priority gate), fallback to score
+ plan_entries.sort(key=lambda x: (x.get("composite_score", 0) or 0, x.get("score", 0)), reverse=True)
+
+[0m
+现在使用相同的方法更新 `discovery.py`：
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -136,12 +136,20 @@
+ if not trade_date:
+     trade_date = datetime.now().strftime("%Y-%m-%d")
+ 
+ events_map: dict[str, list[str]] = {}
++event_items_by_symbol: dict[str, list] = {}  # [T-006] event_source_discovery
++event_source_status = "NOT_QUERIED"  # [T-006]
++event_source_error = ""  # [T-006]
++
+ if use_event_source:
+-    from .event_source import fetch_daily_events
++    from .event_source import fetch_daily_events_detailed, EventSourceStatus  # [T-006]
+     trade_date_compact = trade_date.replace("-", "")
+-    events_map = fetch_daily_events(trade_date_compact)
++    event_result = fetch_daily_events_detailed(trade_date_compact)  # [T-006]
++    events_map = event_result.events_map
++    event_items_by_symbol = event_result.items_by_symbol  # [T-006]
++    event_source_status = event_result.status.value  # [T-006]
++    event_source_error = event_result.error_message  # [T-006]
+ 
+ universe = _build_discovery_universe(
+     symbols=symbols,
+     industry_symbols=industry_symbols,
+
+[0m
+现在更新 discovery 中的每个符号循环，以生成事件覆盖：
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -177,8 +177,22 @@
+     ]
+ else:
+     filtered_overrides = None
+ 
++# [T-006] event_source_discovery — generate event_overrides from EventItem data
++sym_event_overrides = list(filtered_overrides) if filtered_overrides else []
++if sym in event_items_by_symbol:
++    for ev_item in event_items_by_symbol[sym]:
++        sym_event_overrides.append({
++            "symbol": sym,
++            "title": ev_item.title,
++            "event_type": ev_item.event_type,
++            "direction": ev_item.direction,
++            "source": ev_item.source,
++            "date": ev_item.date,
++        })
++sym_event_overrides_final = sym_event_overrides if sym_event_overrides else None
++
+ sym_news = events_map.get(sym) if events_map else None
+ 
+ # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
+ sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
+
+[0m
+现在更新 `evaluate_symbol` 的调用，以传递 `sym_event_overrides_final` 并附加事件项：
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -204,15 +204,18 @@
+     name=sym_name,
+     source=sym_source,
+     trade_date=trade_date,
+     news_texts=sym_news or news_texts,
+-    event_overrides=filtered_overrides,
++    event_overrides=sym_event_overrides_final,  # [T-006]
+     fund_flow_individual=sym_ff_individual,  # [T-003]
+     fund_flow_board=sym_ff_board,  # [T-003]
+ )
+ if c is not None:
+     if item.get("universe_sources"):
+         c.universe_sources = item["universe_sources"]  # [M-003]
++    # [T-006] event_source_discovery — attach event items for discovery entry
++    if sym in event_items_by_symbol:
++        c._event_items = event_items_by_symbol[sym]  # type: ignore[attr-defined]
+     candidates.append(c)
+ else:
+     filtered.append(FilteredSymbol(
+         symbol=sym,
+
+[0m
+现在，将 `event items` 传递给 discovery 中的 `_build_discovery_entry()`：
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -228,9 +228,10 @@
+ top_candidates = candidates[:top_n]
+ 
+ plan_entries = []
+ for c in top_candidates:
+-    entry = _build_discovery_entry(c)
++    ev_items = getattr(c, "_event_items", None)  # [T-006]
++    entry = _build_discovery_entry(c, event_items=ev_items)
+     plan_entries.append(entry)
+ 
+ # [S-007] candidate_tier_budget — sort by tier (A first, then B, then C)
+ tier_order = {"A": 0, "B": 1, "C": 2, "": 3}
+
+[0m
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -330,9 +330,9 @@
+ 
+     return result
+ 
+ 
+-def _build_discovery_entry(candidate: Candidate) -> dict:
++def _build_discovery_entry(candidate: Candidate, event_items: Optional[list] = None) -> dict:  # [T-006] event_source_discovery
+     """Build a discovery plan entry from a candidate."""
+     if candidate.need_deep_ta:
+         action = "NEED_DEEP_TA"
+     else:
+
+[0m
+现在更新 `_build_discovery_entry()` 以接受并包含事件元数据：
+现在在 `_build_discovery_entry` 的末尾添加事件元数据。让我看看 return 语句：
+[0m→ [0mRead tradingagents/tradeflow/discovery.py[90m [limit=20, offset=360][0m
+[0m→ [0mRead tradingagents/tradeflow/discovery.py[90m [limit=15, offset=380][0m
+[0m→ [0mRead tradingagents/tradeflow/discovery.py[90m [limit=10, offset=395][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -396,10 +396,27 @@
+         "evidence_gate_applied": candidate.evidence_gate_applied,  # [S-008]
+         "universe_sources": candidate.universe_sources,  # [M-003] tradeflow_universe_manager
+     }
+ 
++    # [T-006] event_source_discovery — add event metadata to discovery entry
++    if event_items:
++        entry["event_titles"] = [it.title for it in event_items if it.title]
++        entry["event_types"] = sorted({it.event_type for it in event_items if it.event_type})
++        entry["event_sources"] = sorted({it.source for it in event_items if it.source})
++        entry["event_directions"] = sorted({it.direction for it in event_items if it.direction})
++        entry["event_count"] = len(event_items)
++        entry["event_details"] = [
++            {
++                "title": it.title,
++                "event_type": it.event_type,
++                "direction": it.direction,
++                "source": it.source,
++                "date": it.date,
++            }
++            for it in event_items
++        ]
+ 
+-def _classify_filter_reasons(filtered: list[FilteredSymbol]) -> dict[str, int]:
++    return entry(filtered: list[FilteredSymbol]) -> dict[str, int]:
+     """Classify filter reasons into categories."""
+     categories: dict[str, int] = {}
+     for f in filtered:
+         reason = f.reason
+
+[0m
+现在添加 `def _classify_filter_reasons` 回去：
+[0m✗ [0medit failed
+[91m[1mError: [0mCould not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.
+[0m→ [0mRead tradingagents/tradeflow/discovery.py[90m [limit=10, offset=413][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -414,9 +414,12 @@
+             }
+             for it in event_items
+         ]
+ 
+-    return entry(filtered: list[FilteredSymbol]) -> dict[str, int]:
++    return entry
++
++
++def _classify_filter_reasons(filtered: list[FilteredSymbol]) -> dict[str, int]:
+     """Classify filter reasons into categories."""
+     categories: dict[str, int] = {}
+     for f in filtered:
+         reason = f.reason
+
+[0m
+我明白了，修改操作意外地损坏了函数定义。让我来修复它：
+现在将事件源元数据添加到 DiscoveryResult 中：
+[0m→ [0mRead tradingagents/tradeflow/discovery.py[90m [limit=30, offset=275][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -282,8 +282,14 @@
+         "top_n": top_n,
+         "generated_at": datetime.now().isoformat(),
+         "filter_breakdown": filter_breakdown,
+         "sources": list({item.get("source", "manual") for item in universe}),
++        "event_source": {  # [T-006] event_source_discovery
++            "status": event_source_status,
++            "error_message": event_source_error,
++            "event_count": sum(len(v) for v in event_items_by_symbol.values()),
++            "symbols_count": len(event_items_by_symbol),
++        },
+     },
+ )
+ 
+ if save_candidates and tf_db_path:
+
+[0m
+[0m# [0mTodos
+[x] Read existing event_source, discovery, plan_runner, candidate_engine modules
+[x] Add EventSourceStatus/EventSourceResult + fetch_daily_events_detailed() to event_source.py
+[x] Wire fetch_daily_events_detailed() → event_overrides → plan_runner and discovery
+[x] Add event source failure observability (FAILED/STALE status) in plan/discovery metadata
+[x] Add event metadata (source, type, title, dedup) to plan/discovery entries
+[ ] Write tests for T-006 event source discovery integration
+[ ] Run tests and verify all pass
+[ ] Update docs/DEVLOG.md
+[0m
+现在，让我来编写测试文件：
+[0m← [0mWrite tests/test_t006_event_source_discovery.py
+Wrote file successfully.
+[0m
+现在我来运行测试：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_t006_event_source_discovery.py -v 2>&1 | tail -60
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 22 items
+
+tests/test_t006_event_source_discovery.py::TestEventSourceResult::test_default_status_ok PASSED [  4%]
+tests/test_t006_event_source_discovery.py::TestEventSourceResult::test_failed_status PASSED [  9%]
+tests/test_t006_event_source_discovery.py::TestEventSourceResult::test_event_counts PASSED [ 13%]
+tests/test_t006_event_source_discovery.py::TestFetchDailyEventsDetailed::test_success_returns_ok PASSED [ 18%]
+tests/test_t006_event_source_discovery.py::TestFetchDailyEventsDetailed::test_failure_returns_failed PASSED [ 22%]
+tests/test_t006_event_source_discovery.py::TestFetchDailyEventsDetailed::test_dedup_by_title PASSED [ 27%]
+tests/test_t006_event_source_discovery.py::TestFetchDailyEventsDetailed::test_items_grouped_by_symbol PASSED [ 31%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventSourceFailure::test_event_source_failure_still_processes_manual_symbols PASSED [ 36%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventSourceFailure::test_event_source_failure_manual_candidates_still_appear PASSED [ 40%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventSourceFailure::test_no_event_source_status_not_queried PASSED [ 45%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventMetadata::test_event_metadata_in_plan_entries PASSED [ 50%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventMetadata::test_event_details_in_plan_entry PASSED [ 54%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventMetadata::test_no_event_metadata_without_events PASSED [ 59%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventMetadata::test_event_source_metadata_in_plan PASSED [ 63%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventOverrides::test_event_items_become_overrides PASSED [ 68%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventOverrides::test_symbol_isolation_in_overrides PASSED [ 72%]
+tests/test_t006_event_source_discovery.py::TestDiscoveryEventSourceFailure::test_event_source_failure_discovery_still_works PASSED [ 77%]
+tests/test_t006_event_source_discovery.py::TestDiscoveryEventSourceFailure::test_event_source_ok_in_discovery_metadata PASSED [ 81%]
+tests/test_t006_event_source_discovery.py::TestDiscoveryEventSourceFailure::test_discovery_entry_has_event_metadata FAILED [ 86%]
+tests/test_t006_event_source_discovery.py::TestDiscoveryEventSourceFailure::test_discovery_no_event_source_not_queried PASSED [ 90%]
+tests/test_t006_event_source_discovery.py::TestDiscoveryEventOverrides::test_discovery_event_items_become_overrides PASSED [ 95%]
+tests/test_t006_event_source_discovery.py::TestDiscoveryEventOverrides::test_discovery_symbol_isolation PASSED [100%]
+
+=================================== FAILURES ===================================
+___ TestDiscoveryEventSourceFailure.test_discovery_entry_has_event_metadata ____
+
+self = <tests.test_t006_event_source_discovery.TestDiscoveryEventSourceFailure object at 0x10a3bc860>
+
+    def test_discovery_entry_has_event_metadata(self):
+        """Discovery entries include event metadata for event-discovered symbols."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result()
+            with patch("tradingagents.tradeflow.discovery.evaluate_symbol") as mock_eval:
+                def fake_eval(symbol, **kwargs):
+                    if symbol == "002138":
+                        return _mock_candidate(symbol, score=65.0), ""
+                    return None, "无策略命中"
+                mock_eval.side_effect = fake_eval
+                result = run_discovery(
+                    trade_date="2026-05-28",
+                    symbols=[],
+                    use_event_source=True,
+                )
+        entries_by_sym = {e["symbol"]: e for e in result.candidates}
+        entry = entries_by_sym.get("002138")
+        assert entry is not None
+>       assert "event_titles" in entry
+E       AssertionError: assert 'event_titles' in {'action': 'OBSERVE', 'bear_case': '', 'bull_case': '', 'composite_score': 0.0, ...}
+
+tests/test_t006_event_source_discovery.py:398: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_t006_event_source_discovery.py::TestDiscoveryEventSourceFailure::test_discovery_entry_has_event_metadata
+========================= 1 failed, 21 passed in 0.26s =========================
+[0m
+有一个测试失败了。让我来调试一下：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_t006_event_source_discovery.py::TestDiscoveryEventSourceFailure::test_discovery_entry_has_event_metadata -v -s 2>&1 | tail -30
+=================================== FAILURES ===================================
+___ TestDiscoveryEventSourceFailure.test_discovery_entry_has_event_metadata ____
+
+self = <tests.test_t006_event_source_discovery.TestDiscoveryEventSourceFailure object at 0x10c467a10>
+
+    def test_discovery_entry_has_event_metadata(self):
+        """Discovery entries include event metadata for event-discovered symbols."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result()
+            with patch("tradingagents.tradeflow.discovery.evaluate_symbol") as mock_eval:
+                def fake_eval(symbol, **kwargs):
+                    if symbol == "002138":
+                        return _mock_candidate(symbol, score=65.0), ""
+                    return None, "无策略命中"
+                mock_eval.side_effect = fake_eval
+                result = run_discovery(
+                    trade_date="2026-05-28",
+                    symbols=[],
+                    use_event_source=True,
+                )
+        entries_by_sym = {e["symbol"]: e for e in result.candidates}
+        entry = entries_by_sym.get("002138")
+        assert entry is not None
+>       assert "event_titles" in entry
+E       AssertionError: assert 'event_titles' in {'action': 'OBSERVE', 'bear_case': '', 'bull_case': '', 'composite_score': 0.0, ...}
+
+tests/test_t006_event_source_discovery.py:398: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_t006_event_source_discovery.py::TestDiscoveryEventSourceFailure::test_discovery_entry_has_event_metadata
+============================== 1 failed in 0.20s ===============================
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -c "
+from unittest.mock import patch
+from tradingagents.tradeflow.event_source import EventSourceResult, EventItem, fetch_daily_events_detailed
+from tradingagents.tradeflow.discovery import run_discovery
+from tradingagents.tradeflow.schemas import Candidate, CandidateSignal
+
+MOCK_EVENT_ITEMS = {
+    '002138': [
+        EventItem(symbol='002138', name='顺络电子', event_type='buyback', title='回购进展公告', direction='bullish', date='2026-05-28', source='eastmoney'),
+    ],
+}
+
+def _mock_candidate(symbol, name='', score=60.0):
+    c = Candidate(symbol=symbol, name=name, source='event_source', strategy_tags=['EVENT_CATALYST'], score=score, trade_date='2026-05-28')
+    c.signals = [CandidateSignal(strategy_tag='EVENT_CATALYST', score=score, reason='事件驱动')]
+    c.primary_strategy = 'EVENT_CATALYST'
+    return c
+
+def _make_event_result():
+    return EventSourceResult(
+        status=EventSourceResult.__mro__[1].__dict__.get('OK', None) or __import__('tradingagents.tradeflow.event_source', fromlist=['EventSourceStatus']).EventSourceStatus.OK,
+        events_map={sym: [it.title for it in items] for sym, items in MOCK_EVENT_ITEMS.items()},
+        items_by_symbol=MOCK_EVENT_ITEMS,
+        event_count=sum(len(v) for v in MOCK_EVENT_ITEMS.values()),
+        symbols_count=len(MOCK_EVENT_ITEMS),
+    )
+
+from tradingagents.tradeflow.event_source import EventSourceStatus
+result = EventSourceResult(
+    status=EventSourceStatus.OK,
+    events_map={sym: [it.title for it in items] for sym, items in MOCK_EVENT_ITEMS.items()},
+    items_by_symbol=MOCK_EVENT_ITEMS,
+    event_count=1,
+    symbols_count=1,
+)
+
+with patch('tradingagents.tradeflow.event_source.fetch_daily_events_detailed', return_value=result):
+    with patch('tradingagents.tradeflow.discovery.evaluate_symbol') as mock_eval:
+        def fake_eval(symbol, **kwargs):
+            if symbol == '002138':
+                c = _mock_candidate(symbol, score=65.0)
+                return c, ''
+            return None, '无策略命中'
+        mock_eval.side_effect = fake_eval
+        r = run_discovery(trade_date='2026-05-28', symbols=[], use_event_source=True)
+
+for e in r.candidates:
+    print(e.get('symbol'), 'has event_titles?', 'event_titles' in e, 'keys:', list(e.keys())[:10])
+" 2>&1
+002138 has event_titles? False keys: ['symbol', 'name', 'source', 'action', 'primary_strategy', 'strategies', 'score', 'trigger_price', 'support_price', 'invalid_price']
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -c "
+from unittest.mock import patch, MagicMock
+from tradingagents.tradeflow.event_source import EventSourceResult, EventItem, EventSourceStatus
+from tradingagents.tradeflow.discovery import run_discovery
+from tradingagents.tradeflow.schemas import Candidate, CandidateSignal
+
+MOCK_ITEMS = {
+    '002138': [EventItem(symbol='002138', event_type='buyback', title='回购', direction='bullish', source='eastmoney')],
+}
+
+result = EventSourceResult(
+    status=EventSourceStatus.OK,
+    events_map={'002138': ['回购']},
+    items_by_symbol=MOCK_ITEMS,
+    event_count=1, symbols_count=1,
+)
+
+def _mock_candidate(symbol, score=60.0):
+    c = Candidate(symbol=symbol, source='event_source', strategy_tags=['EVENT_CATALYST'], score=score, trade_date='2026-05-28')
+    c.signals = [CandidateSignal(strategy_tag='EVENT_CATALYST', score=score, reason='test')]
+    c.primary_strategy = 'EVENT_CATALYST'
+    return c
+
+# Let me trace step by step
+import tradingagents.tradeflow.discovery as disco_mod
+print('evaluate_symbol in disco_mod:', hasattr(disco_mod, 'evaluate_symbol'))
+print('fetch_daily_events_detailed in event_source:', hasattr(__import__('tradingagents.tradeflow.event_source', fromlist=['fetch_daily_events_detailed']), 'fetch_daily_events_detailed'))
+
+# Patch both levels
+with patch('tradingagents.tradeflow.event_source.fetch_daily_events_detailed', return_value=result) as mock_fetch:
+    # Call the function directly to see what happens
+    r2 = mock_fetch('20260528')
+    print('mock_fetch result status:', r2.status, 'items:', r2.items_by_symbol)
+    
+    with patch('tradingagents.tradeflow.discovery.evaluate_symbol') as mock_eval:
+        def fake_eval(symbol, **kwargs):
+            if symbol == '002138':
+                return _mock_candidate(symbol, score=65.0), ''
+            return None, '无策略命中'
+        mock_eval.side_effect = fake_eval
+        r = run_discovery(trade_date='2026-05-28', symbols=[], use_event_source=True)
+        print('metadata event_source:', r.metadata.get('event_source'))
+        for e in r.candidates:
+            print('candidate:', e.get('symbol'), 'has _event_items attr?', 'event_titles' in e)
+" 2>&1
+evaluate_symbol in disco_mod: True
+fetch_daily_events_detailed in event_source: True
+mock_fetch result status: EventSourceStatus.OK items: {'002138': [EventItem(symbol='002138', name='', event_type='buyback', title='回购', direction='bullish', date='', source='eastmoney', detail={})]}
+metadata event_source: {'status': 'OK', 'error_message': '', 'event_count': 1, 'symbols_count': 1}
+candidate: 002138 has _event_items attr? False
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -c "
+from unittest.mock import patch
+from tradingagents.tradeflow.event_source import EventSourceResult, EventItem, EventSourceStatus
+from tradingagents.tradeflow.discovery import run_discovery, _build_discovery_entry
+from tradingagents.tradeflow.schemas import Candidate, CandidateSignal
+
+MOCK_ITEMS = {'002138': [EventItem(symbol='002138', event_type='buyback', title='回购', direction='bullish', source='eastmoney')]}
+result = EventSourceResult(status=EventSourceStatus.OK, events_map={'002138': ['回购']}, items_by_symbol=MOCK_ITEMS, event_count=1, symbols_count=1)
+
+def _mock_candidate(symbol, score=60.0):
+    c = Candidate(symbol=symbol, source='event_source', strategy_tags=['EVENT_CATALYST'], score=score, trade_date='2026-05-28')
+    c.signals = [CandidateSignal(strategy_tag='EVENT_CATALYST', score=score, reason='test')]
+    c.primary_strategy = 'EVENT_CATALYST'
+    return c
+
+# Test _build_discovery_entry directly with event_items
+c = _mock_candidate('002138', score=65.0)
+entry = _build_discovery_entry(c, event_items=MOCK_ITEMS['002138'])
+print('Direct entry has event_titles:', 'event_titles' in entry)
+print('event_count:', entry.get('event_count'))
+
+# Now trace the full flow with monkeypatch
+import tradingagents.tradeflow.discovery as dm
+
+original_run = dm.run_discovery
+
+def debug_run(*args, **kwargs):
+    # We need to intercept inside run_discovery...
+    pass
+
+# Actually let's just check the universe building
+from tradingagents.tradeflow.universe import build_universe
+u = build_universe(symbols=[], event_symbols={'002138': ['回购']})
+print('Universe symbols:', [x['symbol'] for x in u])
+print('Universe has 002138:', any(x['symbol'] == '002138' for x in u))
+" 2>&1
+Direct entry has event_titles: False
+event_count: None
+Universe symbols: ['002138']
+Universe has 002138: True
+[0m
+[0m→ [0mRead tradingagents/tradeflow/discovery.py[90m [limit=50, offset=330][0m
+我明白了问题所在 — 在发现模块中，我修改了 `_build_discovery_entry` 函数，将 `entry = {` 保留为 `return {`。`return` 语句是直接返回 `dict` 的字面量，而不是将其赋值给一个变量。让我来修复这个问题：
+[0m
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -352,9 +352,9 @@
+ for word in FORBIDDEN_WORDS:
+     if word in reason_str:
+         reason_str = reason_str.replace(word, "***")
+ 
+-return {
++entry = {
+     "symbol": candidate.symbol,
+     "name": candidate.name,
+     "source": candidate.source,
+     "action": action,
+
+[0m
+等等，可能有多个 `return {`。我来检查一下：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && grep -n "return {" tradingagents/tradeflow/discovery.py
+(no output)
+[0m
+[0m→ [0mRead tradingagents/tradeflow/discovery.py[90m [limit=25, offset=355][0m
+好的，现在我将其改为了 `entry = {`。让我验证一下条目构建和事件元数据添加的其余部分：
+[0m→ [0mRead tradingagents/tradeflow/discovery.py[90m [limit=30, offset=395][0m
+现在结构是正确的：`entry = {...}` 随后是 `if event_items: entry[...] = ...` 然后 `return entry`。让我再次运行测试：
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_t006_event_source_discovery.py -v 2>&1 | tail -30
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 22 items
+
+tests/test_t006_event_source_discovery.py::TestEventSourceResult::test_default_status_ok PASSED [  4%]
+tests/test_t006_event_source_discovery.py::TestEventSourceResult::test_failed_status PASSED [  9%]
+tests/test_t006_event_source_discovery.py::TestEventSourceResult::test_event_counts PASSED [ 13%]
+tests/test_t006_event_source_discovery.py::TestFetchDailyEventsDetailed::test_success_returns_ok PASSED [ 18%]
+tests/test_t006_event_source_discovery.py::TestFetchDailyEventsDetailed::test_failure_returns_failed PASSED [ 22%]
+tests/test_t006_event_source_discovery.py::TestFetchDailyEventsDetailed::test_dedup_by_title PASSED [ 27%]
+tests/test_t006_event_source_discovery.py::TestFetchDailyEventsDetailed::test_items_grouped_by_symbol PASSED [ 31%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventSourceFailure::test_event_source_failure_still_processes_manual_symbols PASSED [ 36%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventSourceFailure::test_event_source_failure_manual_candidates_still_appear PASSED [ 40%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventSourceFailure::test_no_event_source_status_not_queried PASSED [ 45%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventMetadata::test_event_metadata_in_plan_entries PASSED [ 50%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventMetadata::test_event_details_in_plan_entry PASSED [ 54%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventMetadata::test_no_event_metadata_without_events PASSED [ 59%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventMetadata::test_event_source_metadata_in_plan PASSED [ 63%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventOverrides::test_event_items_become_overrides PASSED [ 68%]
+tests/test_t006_event_source_discovery.py::TestPlanRunnerEventOverrides::test_symbol_isolation_in_overrides PASSED [ 72%]
+tests/test_t006_event_source_discovery.py::TestDiscoveryEventSourceFailure::test_event_source_failure_discovery_still_works PASSED [ 77%]
+tests/test_t006_event_source_discovery.py::TestDiscoveryEventSourceFailure::test_event_source_ok_in_discovery_metadata PASSED [ 81%]
+tests/test_t006_event_source_discovery.py::TestDiscoveryEventSourceFailure::test_discovery_entry_has_event_metadata PASSED [ 86%]
+tests/test_t006_event_source_discovery.py::TestDiscoveryEventSourceFailure::test_discovery_no_event_source_not_queried PASSED [ 90%]
+tests/test_t006_event_source_discovery.py::TestDiscoveryEventOverrides::test_discovery_event_items_become_overrides PASSED [ 95%]
+tests/test_t006_event_source_discovery.py::TestDiscoveryEventOverrides::test_discovery_symbol_isolation PASSED [100%]
+
+============================== 22 passed in 0.18s ==============================
+[0m
+所有 22 个测试都通过了。现在我来运行完整的 TradeFlow 测试套件和现有的事件源测试，以确保没有引入任何问题：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tradeflow_*.py tests/test_event_source*.py -v 2>&1 | tail -40
+with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
+            mock_fetch.return_value = events_only_one
+            with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                mock_eval.return_value = (None, "无策略命中")
+                plan = generate_daily_plan(
+                    trade_date="2026-05-28",
+                    symbols=["002138", "600519"],
+                    candidates=None,
+                    use_event_source=True,
+                )
+            for call_item in mock_eval.call_args_list:
+                sym = call_item.kwargs.get("symbol", call_item.args[0] if call_item.args else "")
+                news = call_item.kwargs.get("news_texts")
+                if sym == "600519":
+>                   assert news is None
+E                   AssertionError: assert ['贵州茅台:贵州茅台关于回购股份实施结果暨股份变动的公告', '贵州茅台: 回购计划 价格区间1863.67 数量804864.0-1609727.0'] is None
+
+tests/test_event_source_integration.py:244: AssertionError
+----------------------------- Captured stderr call -----------------------------
+  0%|          | 0/17 [00:00<?, ?it/s]  6%|▌         | 1/17 [00:00<00:01,  8.23it/s] 12%|█▏        | 2/17 [00:00<00:01,  7.68it/s] 18%|█▊        | 3/17 [00:00<00:01,  7.13it/s] 24%|██▎       | 4/17 [00:00<00:01,  7.29it/s] 29%|██▉       | 5/17 [00:00<00:01,  6.62it/s] 35%|███▌      | 6/17 [00:00<00:01,  6.44it/s] 41%|████      | 7/17 [00:01<00:01,  6.15it/s] 47%|████▋     | 8/17 [00:01<00:01,  6.45it/s] 53%|█████▎    | 9/17 [00:01<00:01,  5.95it/s] 59%|█████▉    | 10/17 [00:01<00:01,  5.86it/s] 65%|██████▍   | 11/17 [00:01<00:00,  6.17it/s] 71%|███████   | 12/17 [00:01<00:00,  6.08it/s] 76%|███████▋  | 13/17 [00:02<00:00,  6.07it/s] 82%|████████▏ | 14/17 [00:02<00:00,  6.16it/s] 88%|████████▊ | 15/17 [00:02<00:00,  6.22it/s] 94%|█████████▍| 16/17 [00:02<00:00,  6.27it/s]100%|██████████| 17/17 [00:02<00:00,  6.44it/s]                                                 0%|          | 0/11 [00:00<?, ?it/s]  9%|▉         | 1/11 [00:00<00:06,  1.67it/s] 18%|█▊        | 2/11 [00:01<00:04,  1.99it/s] 27%|██▋       | 3/11 [00:01<00:03,  2.04it/s] 36%|███▋      | 4/11 [00:01<00:03,  2.15it/s] 45%|████▌     | 5/11 [00:02<00:02,  2.54it/s] 55%|█████▍    | 6/11 [00:02<00:01,  2.54it/s] 64%|██████▎   | 7/11 [00:02<00:01,  2.80it/s] 73%|███████▎  | 8/11 [00:03<00:00,  3.06it/s] 82%|████████▏ | 9/11 [00:03<00:00,  3.26it/s] 91%|█████████ | 10/11 [00:03<00:00,  3.34it/s]100%|██████████| 11/11 [00:03<00:00,  3.44it/s]                                               
+=============================== warnings summary ===============================
+tests/test_event_source_integration.py::TestPlanRunnerEventSource::test_use_event_source_true_calls_fetch
+tests/test_event_source_integration.py::TestPlanRunnerEventSource::test_event_symbols_in_universe_when_enabled
+tests/test_event_source_integration.py::TestPlanRunnerEventSource::test_each_symbol_gets_own_events_only
+tests/test_event_source_integration.py::TestPlanRunnerEventSource::test_empty_events_map_does_not_break
+tests/test_event_source_integration.py::TestPlanRunnerEventSource::test_event_source_candidates_appear_in_plan
+tests/test_event_source_integration.py::TestPlanRunnerEventSource::test_manual_symbols_still_evaluated_with_events
+tests/test_event_source_integration.py::TestPlanRunnerEventSource::test_symbol_without_events_gets_none_news
+  /Users/maybee/TradingAgents-AShare/.venv/lib/python3.12/site-packages/akshare/stock/stock_repurchase_em.py:40: FutureWarning: The behavior of DataFrame concatenation with empty or all-NA entries is deprecated. In a future version, this will no longer exclude empty or all-NA columns when determining the result dtypes. To retain the old behavior, exclude the relevant entries before the concat operation.
+    big_df = pd.concat([big_df, temp_df], ignore_index=True)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_event_source_integration.py::TestPlanRunnerEventSource::test_use_event_source_true_calls_fetch
+FAILED tests/test_event_source_integration.py::TestPlanRunnerEventSource::test_event_symbols_in_universe_when_enabled
+FAILED tests/test_event_source_integration.py::TestPlanRunnerEventSource::test_each_symbol_gets_own_events_only
+FAILED tests/test_event_source_integration.py::TestPlanRunnerEventSource::test_event_source_candidates_appear_in_plan
+FAILED tests/test_event_source_integration.py::TestPlanRunnerEventSource::test_manual_symbols_still_evaluated_with_events
+FAILED tests/test_event_source_integration.py::TestPlanRunnerEventSource::test_symbol_without_events_gets_none_news
+================== 6 failed, 153 passed, 7 warnings in 55.69s ==================
+[0m
+现有的 N-001 测试失败是因为它们模拟了 `fetch_daily_events`，但 `plan_runner` 现在使用的是 `fetch_daily_events_detailed`。我需要更新这些测试：
+[0m→ [0mRead tests/test_event_source_integration.py
+我需要更新 N-001 测试以模拟 `fetch_daily_events_detailed` 而不是 `fetch_daily_events`，因为 `plan_runner` 现在使用的是新函数：
+[0m
+[0m← [0mWrite tests/test_event_source_integration.py
+Wrote file successfully.
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tradeflow_*.py tests/test_event_source*.py tests/test_t006_event_source_discovery.py -q 2>&1 | tail -20
+........................................................................ [ 39%]
+........................................................................ [ 79%]
+.....................................                                    [100%]
+181 passed in 6.01s
+[0m
+所有 181 个测试通过。现在，让我运行更广泛的测试套件以确保没有引入任何回归：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/ -q --ignore=tests/test_cn_astock_provider.py --ignore=tests/test_data_source_health.py 2>&1 | tail -10
+0%|          | 0/21 [00:00<?, ?it/s]  5%|▍         | 1/21 [00:00<00:03,  6.33it/s] 10%|▉         | 2/21 [00:00<00:02,  6.84it/s] 14%|█▍        | 3/21 [00:00<00:03,  5.85it/s] 19%|█▉        | 4/21 [00:00<00:02,  6.26it/s] 24%|██▍       | 5/21 [00:00<00:02,  6.36it/s] 29%|██▊       | 6/21 [00:00<00:02,  6.14it/s] 33%|███▎      | 7/21 [00:01<00:02,  6.37it/s] 38%|███▊      | 8/21 [00:01<00:02,  6.29it/s] 43%|████▎     | 9/21 [00:01<00:01,  6.50it/s] 48%|████▊     | 10/21 [00:01<00:01,  6.44it/s] 52%|█████▏    | 11/21 [00:01<00:01,  6.72it/s] 57%|█████▋    | 12/21 [00:01<00:01,  6.37it/s] 62%|██████▏   | 13/21 [00:02<00:01,  6.63it/s] 67%|██████▋   | 14/21 [00:02<00:01,  6.80it/s] 71%|███████▏  | 15/21 [00:02<00:00,  6.47it/s] 76%|███████▌  | 16/21 [00:02<00:00,  6.62it/s] 81%|████████  | 17/21 [00:02<00:00,  6.42it/s] 86%|████████▌ | 18/21 [00:02<00:00,  6.37it/s] 90%|█████████ | 19/21 [00:02<00:00,  6.65it/s] 95%|█████████▌| 20/21 [00:03<00:00,  7.03it/s]100%|██████████| 21/21 [00:03<00:00,  7.23it/s]                                                 0%|          | 0/11 [00:00<?, ?it/s]  9%|▉         | 1/11 [00:00<00:02,  3.42it/s] 18%|█▊        | 2/11 [00:00<00:04,  2.20it/s] 27%|██▋       | 3/11 [00:01<00:02,  2.87it/s] 36%|███▋      | 4/11 [00:01<00:02,  3.04it/s] 45%|████▌     | 5/11 [00:01<00:02,  2.41it/s] 55%|█████▍    | 6/11 [00:02<00:01,  2.81it/s] 64%|██████▎   | 7/11 [00:02<00:01,  2.45it/s] 73%|███████▎  | 8/11 [00:03<00:01,  2.61it/s] 82%|████████▏ | 9/11 [00:03<00:00,  2.20it/s] 91%|█████████ | 10/11 [00:03<00:00,  2.59it/s]100%|██████████| 11/11 [00:04<00:00,  3.02it/s]                                               
+=============================== warnings summary ===============================
+tests/test_t002_discovery.py::TestRunDiscoveryWithEvents::test_event_source_integration
+  /Users/maybee/TradingAgents-AShare/.venv/lib/python3.12/site-packages/akshare/stock/stock_repurchase_em.py:40: FutureWarning: The behavior of DataFrame concatenation with empty or all-NA entries is deprecated. In a future version, this will no longer exclude empty or all-NA columns when determining the result dtypes. To retain the old behavior, exclude the relevant entries before the concat operation.
+    big_df = pd.concat([big_df, temp_df], ignore_index=True)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_t002_discovery.py::TestRunDiscoveryWithEvents::test_event_source_integration
+1 failed, 1663 passed, 15 skipped, 1 warning in 59.28s
+[0m
+在 `test_t002_discovery.py` 中还有另一个失败。让我检查并修复它：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_t002_discovery.py::TestRunDiscoveryWithEvents::test_event_source_integration -v 2>&1 | tail -30
+if symbol == "002138" and news:
+                return c, ""
+            return None, "无策略命中"
+    
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events",
+                    return_value={"002138": ["回购进展"]}):
+            with patch("tradingagents.tradeflow.discovery.evaluate_symbol", side_effect=fake_evaluate):
+                result = run_discovery(
+                    trade_date="2026-05-29",
+                    use_event_source=True,
+                    include_holdings=False,
+                    include_watchlist=False,
+                )
+>       assert len(result.candidates) >= 1
+E       AssertionError: assert 0 >= 1
+E        +  where 0 = len([])
+E        +    where [] = DiscoveryResult(trade_date='2026-05-29', universe_size=1097, candidates=[], filtered=[{'symbol': '300433', 'name': '', 'source': 'event_source', 'reason': '无策略命中'}, {'symbol': '300710', 'name': '', 'source': 'event_source', 'reason': '无策略命中'}, {'symbol': '920174', 'name': '', 'source': 'event_source', 'reason': '无策略命中'}, {'symbol': '300094', 'name': '', 'source': 'event_source', 'reason': '无策略命中'}, {'symbol': '300765', 'name': '', 'source': 'event_source', 'reason': '无策略命中'}, {'symbol': '300691', 'name': '', 'source': 'event_source', 'reason': '无策略命中'}, {'symbol': '920438', 'name': '', 'source': 'event_source', 'reason': '无策略命中'}, {'symbol': '301308', 'name': '', 'source': 'event_source', 'reason': '无策略命中'}, {'symbol': 'A24070', 'name': '', 'source': 'event_source', 'reason': '无策略命中'}, {'symbol': '300696', 'name': '', 'source': 'event_source', 'reason': '无策略命中'}, {'symbol': '920096', 'name': '', 'source': 'event_source', 'reason': '无策略命中'}, {'symbol': '300513', 'name': '', 'source': 'event_source', 'reason': '无策略命中'}, {'symbol': '301486', 'name': '', 'source': 'event_source', 'reason': '无策略命中'}, {'symbol': '601012', 'name': '', 'source': 'event_source', 'reason': '无策略命中'}, {'symb..., audit_category='FILTERED', hit_strategies=[], filter_reason='无策略命中', filter_subcategory='无策略命中', risk_flags=[], risk_penalty=0.0, risk_demotion_reasons=[], evidence_gaps=[], composite_score=0.0, priority_rank='', need_deep_ta=False, fp_type='', fn_type='true_negative', data_completeness=0.0, game_balance='', refs=[{'field': 'filter_reason', 'value': '无策略命中'}, {'field': 'filter_subcategory', 'value': '无策略命中'}, {'field': 'source', 'value': 'event_source'}]), AuditEntry(symbol='920083', name='', audit_category='FILTERED', hit_strategies=[], filter_reason='无策略命中', filter_subcategory='无策略命中', risk_flags=[], risk_penalty=0.0, risk_demotion_reasons=[], evidence_gaps=[], composite_score=0.0, priority_rank='', need_deep_ta=False, fp_type='', fn_type='true_negative', data_completeness=0.0, game_balance='', refs=[{'field': 'filter_reason', 'value': '无策略命中'}, {'field': 'filter_subcategory', 'value': '无策略命中'}, {'field': 'source', 'value': 'event_source'}])], summary=AuditSummary(total_candidates=0, total_filtered=1097, by_category={'FILTERED': 1097}, by_filter_subcategory={'无策略命中': 1097}, by_strategy={}, by_priority_rank={}, by_fp_type={}, common_evidence_gaps=[], common_risk_demotions=[]))).candidates
+
+tests/test_t002_discovery.py:369: AssertionError
+----------------------------- Captured stderr call -----------------------------
+  0%|          | 0/21 [00:00<?, ?it/s]  5%|▍         | 1/21 [00:00<00:02,  8.67it/s] 10%|▉         | 2/21 [00:00<00:02,  7.97it/s] 14%|█▍        | 3/21 [00:00<00:02,  7.63it/s] 19%|█▉        | 4/21 [00:00<00:02,  7.73it/s] 24%|██▍       | 5/21 [00:00<00:02,  7.69it/s] 29%|██▊       | 6/21 [00:00<00:02,  6.89it/s] 33%|███▎      | 7/21 [00:00<00:02,  6.59it/s] 38%|███▊      | 8/21 [00:01<00:02,  6.03it/s] 43%|████▎     | 9/21 [00:01<00:01,  6.09it/s] 48%|████▊     | 10/21 [00:01<00:01,  6.09it/s] 52%|█████▏    | 11/21 [00:01<00:01,  6.01it/s] 57%|█████▋    | 12/21 [00:01<00:01,  6.35it/s] 62%|██████▏   | 13/21 [00:01<00:01,  6.19it/s] 67%|██████▋   | 14/21 [00:02<00:01,  6.02it/s] 71%|███████▏  | 15/21 [00:02<00:00,  6.03it/s] 76%|███████▌  | 16/21 [00:02<00:00,  6.05it/s] 81%|████████  | 17/21 [00:02<00:00,  6.06it/s] 86%|████████▌ | 18/21 [00:02<00:00,  5.90it/s] 90%|█████████ | 19/21 [00:02<00:00,  6.27it/s] 95%|█████████▌| 20/21 [00:03<00:00,  6.46it/s]100%|██████████| 21/21 [00:03<00:00,  6.64it/s]                                                 0%|          | 0/11 [00:00<?, ?it/s]  9%|▉         | 1/11 [00:00<00:04,  2.30it/s] 18%|█▊        | 2/11 [00:00<00:03,  2.98it/s] 27%|██▋       | 3/11 [00:00<00:02,  3.32it/s] 36%|███▋      | 4/11 [00:01<00:02,  3.26it/s] 45%|████▌     | 5/11 [00:01<00:01,  3.47it/s] 55%|█████▍    | 6/11 [00:01<00:01,  3.57it/s] 64%|██████▎   | 7/11 [00:02<00:01,  3.73it/s] 73%|███████▎  | 8/11 [00:02<00:00,  3.35it/s] 82%|████████▏ | 9/11 [00:02<00:00,  3.41it/s] 91%|█████████ | 10/11 [00:03<00:00,  2.83it/s]100%|██████████| 11/11 [00:03<00:00,  3.43it/s]                                               
+=============================== warnings summary ===============================
+tests/test_t002_discovery.py::TestRunDiscoveryWithEvents::test_event_source_integration
+  /Users/maybee/TradingAgents-AShare/.venv/lib/python3.12/site-packages/akshare/stock/stock_repurchase_em.py:40: FutureWarning: The behavior of DataFrame concatenation with empty or all-NA entries is deprecated. In a future version, this will no longer exclude empty or all-NA columns when determining the result dtypes. To retain the old behavior, exclude the relevant entries before the concat operation.
+    big_df = pd.concat([big_df, temp_df], ignore_index=True)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_t002_discovery.py::TestRunDiscoveryWithEvents::test_event_source_integration
+========================= 1 failed, 1 warning in 7.59s =========================
+[0m
+同样的模式——测试模拟了 `fetch_daily_events`，但发现模块现在使用了 `fetch_daily_events_detailed`。我来查找并修复这个测试：
+[0m✱ [0mGrep "fetch_daily_events"[90m 2 matches[0m
+[0m→ [0mRead tests/test_t002_discovery.py[90m [limit=50, offset=340][0m
+[0m
+[0m← [0mEdit tests/test_t002_discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_t002_discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_t002_discovery.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_t002_discovery.py
+@@ -348,18 +348,25 @@
+ 
+ 
+ class TestRunDiscoveryWithEvents:
+     def test_event_source_integration(self):
++        from tradingagents.tradeflow.event_source import EventItem, EventSourceResult, EventSourceStatus
+         c = _make_candidate("002138.SZ", score=65.0)
+ 
+         def fake_evaluate(symbol, **kwargs):
+             news = kwargs.get("news_texts")
+             if symbol == "002138" and news:
+                 return c, ""
+             return None, "无策略命中"
+ 
+-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events",
+-                    return_value={"002138": ["回购进展"]}):
++        event_result = EventSourceResult(
++            status=EventSourceStatus.OK,
++            events_map={"002138": ["回购进展"]},
++            items_by_symbol={"002138": [EventItem(symbol="002138", title="回购进展", event_type="buyback", direction="bullish", source="eastmoney")]},
++            event_count=1, symbols_count=1,
++        )
++        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed",
++                    return_value=event_result):
+             with patch("tradingagents.tradeflow.discovery.evaluate_symbol", side_effect=fake_evaluate):
+                 result = run_discovery(
+                     trade_date="2026-05-29",
+                     use_event_source=True,
+@@ -368,10 +375,10 @@
+                 )
+         assert len(result.candidates) >= 1
+ 
+     def test_event_source_not_fetched_when_disabled(self):
+-        with patch("tradingagents.tradeflow.event_source.fetch_daily_events") as mock_fetch:
+-            mock_fetch.return_value = {}
++        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
++            mock_fetch.return_value = EventSourceResult()
+             with patch("tradingagents.tradeflow.discovery.evaluate_symbol", return_value=(None, "无策略命中")):
+                 run_discovery(
+                     trade_date="2026-05-29",
+                     use_event_source=False,
+
+[0m
+我需要在 `test_t002_discovery.py` 文件的顶部添加必要的导入：
+[0m→ [0mRead tests/test_t002_discovery.py[90m [limit=20][0m
+导入是在测试方法内部进行的，所以这没问题。现在让我再次运行完整的测试套件：
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/ -q --ignore=tests/test_cn_astock_provider.py --ignore=tests/test_data_source_health.py 2>&1 | tail -10
+def test_event_source_not_fetched_when_disabled(self):
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+>           mock_fetch.return_value = EventSourceResult()
+                                      ^^^^^^^^^^^^^^^^^
+E           NameError: name 'EventSourceResult' is not defined
+
+tests/test_t002_discovery.py:380: NameError
+=========================== short test summary info ============================
+FAILED tests/test_t002_discovery.py::TestRunDiscoveryWithEvents::test_event_source_not_fetched_when_disabled
+1 failed, 1663 passed, 15 skipped in 52.65s
+[0m
+导入语句只存在于 `test_event_source_integration` 方法中，而不存在于 `test_event_source_not_fetched_when_disabled`。让我来修复：
+[0m← [0mEdit tests/test_t002_discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_t002_discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_t002_discovery.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_t002_discovery.py
+@@ -375,8 +375,9 @@
+             )
+     assert len(result.candidates) >= 1
+ 
+ def test_event_source_not_fetched_when_disabled(self):
++    from tradingagents.tradeflow.event_source import EventSourceResult
+     with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+         mock_fetch.return_value = EventSourceResult()
+         with patch("tradingagents.tradeflow.discovery.evaluate_symbol", return_value=(None, "无策略命中")):
+             run_discovery(
+
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/ -q --ignore=tests/test_cn_astock_provider.py --ignore=tests/test_data_source_health.py 2>&1 | tail -5
+........................................................................ [ 90%]
+........................................................................ [ 94%]
+........................................................................ [ 98%]
+.......................                                                  [100%]
+1664 passed, 15 skipped in 51.82s
+[0m
+[0m# [0mTodos
+[x] Read existing event_source, discovery, plan_runner, candidate_engine modules
+[x] Add EventSourceStatus/EventSourceResult + fetch_daily_events_detailed() to event_source.py
+[x] Wire fetch_daily_events_detailed() → event_overrides → plan_runner and discovery
+[x] Add event source failure observability (FAILED/STALE status) in plan/discovery metadata
+[x] Add event metadata (source, type, title, dedup) to plan/discovery entries
+[x] Write tests for T-006 event source discovery integration
+[x] Run tests and verify all pass
+[ ] Update docs/DEVLOG.md
+[0m
+所有 1664 个测试通过，0 个失败。现在让我更新 DEVLOG：
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=10][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,28 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-05-30 | T-006: 事件源自动接入 Discovery / Daily Plan
++
++- **执行者**：OpenCode
++- **任务**：T-006 — 把已完成的事件源模块纳入小范围 Discovery 和 Daily Plan，使公告、回购、评级等事件能在不全市场扫描的前提下自动进入候选池
++- **修改文件**：
++  - `tradingagents/tradeflow/event_source.py` — 新增 `EventSourceStatus` 枚举（OK/FAILED/STALE）、`EventSourceResult` 数据类、`fetch_daily_events_detailed()` 函数：返回包含完整元数据（event_type/direction/source/date）和状态跟踪的事件结果，支持标题去重
++  - `tradingagents/tradeflow/plan_runner.py` — `generate_daily_plan()` 改用 `fetch_daily_events_detailed()`；生成 `event_overrides` 从 EventItem 数据并传入候选评估链路；plan.metadata 新增 `event_source` 状态信息；`_build_plan_entry()` 新增 `event_items` 参数，输出 event_titles/event_types/event_sources/event_directions/event_count/event_details
++  - `tradingagents/tradeflow/discovery.py` — `run_discovery()` 改用 `fetch_daily_events_detailed()`；生成 `event_overrides` 从 EventItem 数据；result.metadata 新增 `event_source` 状态信息；`_build_discovery_entry()` 新增 `event_items` 参数，输出事件元数据
++  - `tests/test_t006_event_source_discovery.py` — 新建，22 个测试覆盖 EventSourceResult/EventSourceStatus、fetch_daily_events_detailed 去重/失败、plan_runner 事件元数据/失败可观测/事件覆盖/symbol 隔离、discovery 事件元数据/失败可观测/事件覆盖/symbol 隔离
++  - `tests/test_event_source_integration.py` — 更新 N-001 测试适配 `fetch_daily_events_detailed()` 替代 `fetch_daily_events()`
++  - `tests/test_t002_discovery.py` — 更新 T-002 测试适配 `fetch_daily_events_detailed()`
++- **测试结果**：1664 passed, 15 skipped, 0 failed
++- **关键逻辑**：
++  - `fetch_daily_events_detailed()` 包装三个子 fetch 函数，返回 `EventSourceResult`：包含 `events_map`（向后兼容）+ `items_by_symbol`（按 symbol 分组的 EventItem 列表）+ 状态信息
++  - 事件源异常时 status=FAILED + error_message，系统仍能正常处理手动 symbols
++  - EventItem 自动转换为 `event_overrides`（含 symbol/title/event_type/direction/source/date），传入 `evaluate_symbol()` 的 `event_overrides` 参数，使 event_catalyst 策略获得结构化事件数据
++  - 每个候选 plan entry 包含 event_details（完整事件列表）、event_types（去重事件类型）、event_sources（去重事件来源）
++  - 所有 symbol 严格隔离，每个 symbol 只消费自己的事件数据
++- **风险点**：无；所有改动向后兼容，use_event_source 默认 False，事件元数据字段只在有事件时才出现
++
+ ## 2026-05-30 | M-006 代码质量修复（Codex review 失败后巡检）
+ 
+ - **执行者**：OpenCode
+ - **背景**：Codex review 因网络断连失败（exit code 1），非代码问题。人工巡检发现两个潜在缺陷。
+
+[0m
+[0m# [0mTodos
+[x] Read existing event_source, discovery, plan_runner, candidate_engine modules
+[x] Add EventSourceStatus/EventSourceResult + fetch_daily_events_detailed() to event_source.py
+[x] Wire fetch_daily_events_detailed() → event_overrides → plan_runner and discovery
+[x] Add event source failure observability (FAILED/STALE status) in plan/discovery metadata
+[x] Add event metadata (source, type, title, dedup) to plan/discovery entries
+[x] Write tests for T-006 event source discovery integration
+[x] Run tests and verify all pass
+[x] Update docs/DEVLOG.md
+[0m
+## 完成总结
+
+### 修改文件
+| 文件 | 变更 |
+|------|------|
+| `tradingagents/tradeflow/event_source.py` | 新增 `EventSourceStatus` 枚举、`EventSourceResult` 数据类、`fetch_daily_events_detailed()` |
+| `tradingagents/tradeflow/plan_runner.py` | 改用 `fetch_daily_events_detailed()`；生成 event_overrides 传入评估；metadata 输出事件源状态；plan entry 输出事件元数据 |
+| `tradingagents/tradeflow/discovery.py` | 同 plan_runner 的变更；discovery entry 输出事件元数据 |
+| `tests/test_t006_event_source_discovery.py` | 新建，22 个测试 |
+| `tests/test_event_source_integration.py` | 更新 mock 适配新函数 |
+| `tests/test_t002_discovery.py` | 更新 mock 适配新函数 |
+| `docs/DEVLOG.md` | 新增 T-006 记录 |
+
+### 关键逻辑
+1. **`fetch_daily_events_detailed()`** 返回 `EventSourceResult`（含 status/events_map/items_by_symbol），子 fetch 异常时 status=FAILED，系统仍处理手动 symbols
+2. **EventItem → event_overrides**：每个 symbol 的事件自动转换为结构化 event_overrides（含 event_type/direction/source/date），传入 `evaluate_symbol()` 使 event_catalyst 策略获得丰富数据
+3. **事件元数据输出**：plan/discovery entry 包含 event_titles、event_types、event_sources、event_directions、event_count、event_details
+4. **Symbol 隔离**：每个 symbol 只消费自己的事件，不串票
+
+### 测试结果
+- **1664 passed, 15 skipped, 0 failed**
