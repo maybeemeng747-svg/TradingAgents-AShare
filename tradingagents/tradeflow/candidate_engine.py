@@ -191,6 +191,14 @@ def init_db(db_path: str) -> None:
             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
         except sqlite3.OperationalError:
             pass
+    # [M-003] tradeflow_universe_manager — add universe_sources column
+    for _col, _type in [
+        ("universe_sources_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 
@@ -694,8 +702,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "priority_rank, "
             "tier, ta_budget_priority, tier_reason, missing_evidence_for_upgrade_json, "
             "tradeflow_data_completeness, missing_data_fields_json, what_to_upgrade_json, evidence_gate_applied, "
+            "universe_sources_json, "
             "created_at, updated_at) "
-            "VALUES ({}) ".format(",".join(["?"] * 54))
+            "VALUES ({}) ".format(",".join(["?"] * 55))
             + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
             "trigger_price=excluded.trigger_price, "
@@ -735,6 +744,7 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "missing_data_fields_json=excluded.missing_data_fields_json, "
             "what_to_upgrade_json=excluded.what_to_upgrade_json, "
             "evidence_gate_applied=excluded.evidence_gate_applied, "
+            "universe_sources_json=excluded.universe_sources_json, "
             "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
@@ -762,6 +772,7 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
                 row["tier_reason"], row["missing_evidence_for_upgrade_json"],
                 row["tradeflow_data_completeness"], row["missing_data_fields_json"],
                 row["what_to_upgrade_json"], row["evidence_gate_applied"],
+                row["universe_sources_json"],
                 candidate.created_at, row["updated_at"],
             ),
         )

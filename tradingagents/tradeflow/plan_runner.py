@@ -105,6 +105,7 @@ def _build_plan_entry(candidate: Candidate) -> dict:
         "missing_data_fields": candidate.missing_data_fields,  # [S-008]
         "what_to_upgrade": candidate.what_to_upgrade,  # [S-008]
         "evidence_gate_applied": candidate.evidence_gate_applied,  # [S-008]
+        "universe_sources": candidate.universe_sources,  # [M-003] tradeflow_universe_manager
     }
 
 
@@ -191,6 +192,8 @@ def generate_daily_plan(
                 fund_flow_board=sym_ff_board,  # [T-003]
             )
             if c is not None:
+                if item.get("universe_sources"):
+                    c.universe_sources = item["universe_sources"]  # [M-003]
                 candidates.append(c)
 
     # Build plan entries

@@ -67,10 +67,8 @@ def _build_discovery_universe(
     event_symbols: Optional[dict[str, list[str]]] = None,
     fund_flow_symbols: Optional[list[str]] = None,  # [T-003] fund_flow_anomaly_pool
 ) -> list[dict]:
-    """Build universe for discovery — adds industry pool as a source."""
-    universe: dict[str, dict] = {}
-
-    base = build_universe(
+    """Build universe for discovery — uses UniverseManager with all sources."""
+    universe = build_universe(
         symbols=symbols,
         prod_db_path=prod_db_path,
         tf_db_path=tf_db_path,
@@ -78,24 +76,26 @@ def _build_discovery_universe(
         include_watchlist=include_watchlist,
         include_yesterday=include_yesterday,
         event_symbols=event_symbols,
+        industry_symbols=industry_symbols,
+        fund_flow_symbols=fund_flow_symbols,
     )
-    for item in base:
-        universe[item["symbol"]] = item
 
-    if industry_symbols:
-        for sym in industry_symbols:
-            sym = sym.strip()
-            if sym and sym not in universe:
-                universe[sym] = {"symbol": sym, "name": "", "source": SOURCE_INDUSTRY}
-
-    # [T-003] fund_flow_anomaly_pool — add fund flow anomaly symbols
     if fund_flow_symbols:
+        existing = {item["symbol"] for item in universe}
         for sym in fund_flow_symbols:
             sym = sym.strip()
-            if sym and sym not in universe:
-                universe[sym] = {"symbol": sym, "name": "", "source": SOURCE_FUND_FLOW}
+            if sym and sym not in existing:
+                universe.append({
+                    "symbol": sym,
+                    "name": "",
+                    "source": SOURCE_FUND_FLOW,
+                    "universe_sources": [SOURCE_FUND_FLOW],
+                    "universe_source_records": [],
+                    "filter_reason": "",
+                })
+                existing.add(sym)
 
-    return list(universe.values())
+    return universe
 
 
 def run_discovery(
@@ -188,6 +188,8 @@ def run_discovery(
             fund_flow_board=sym_ff_board,  # [T-003]
         )
         if c is not None:
+            if item.get("universe_sources"):
+                c.universe_sources = item["universe_sources"]  # [M-003]
             candidates.append(c)
         else:
             filtered.append(FilteredSymbol(
@@ -366,6 +368,7 @@ def _build_discovery_entry(candidate: Candidate) -> dict:
         "missing_data_fields": candidate.missing_data_fields,  # [S-008]
         "what_to_upgrade": candidate.what_to_upgrade,  # [S-008]
         "evidence_gate_applied": candidate.evidence_gate_applied,  # [S-008]
+        "universe_sources": candidate.universe_sources,  # [M-003] tradeflow_universe_manager
     }
 
 

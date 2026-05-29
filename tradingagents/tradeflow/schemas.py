@@ -101,6 +101,7 @@ class Candidate:
     missing_data_fields: list[str] = field(default_factory=list)  # [S-008]
     what_to_upgrade: list[str] = field(default_factory=list)  # [S-008]
     evidence_gate_applied: bool = False  # [S-008]
+    universe_sources: list[str] = field(default_factory=list)  # [M-003] tradeflow_universe_manager
 
     def __post_init__(self):
         if not self.trade_date:
@@ -201,6 +202,7 @@ class Candidate:
             "missing_data_fields_json": json.dumps(self.missing_data_fields, ensure_ascii=False),  # [S-008]
             "what_to_upgrade_json": json.dumps(self.what_to_upgrade, ensure_ascii=False),  # [S-008]
             "evidence_gate_applied": 1 if self.evidence_gate_applied else 0,  # [S-008]
+            "universe_sources_json": json.dumps(self.universe_sources, ensure_ascii=False),  # [M-003]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -261,6 +263,7 @@ class Candidate:
             missing_data_fields=json.loads(row.get("missing_data_fields_json", "[]")),  # [S-008]
             what_to_upgrade=json.loads(row.get("what_to_upgrade_json", "[]")),  # [S-008]
             evidence_gate_applied=bool(row.get("evidence_gate_applied", 0)),  # [S-008]
+            universe_sources=json.loads(row.get("universe_sources_json", "[]")),  # [M-003]
         )
 
 
