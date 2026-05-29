@@ -4,6 +4,51 @@
 
 ---
 
+## 2026-05-30 | T-007 Round2: 修复 Codex Review P1 — `_detailed` helper 绕过原始 fetch 的异常吞没
+
+- **执行者**：OpenCode
+- **任务**：T-007 Round2 — Codex review 发现 `_fetch_*_detailed()` 包装的是已经吞掉异常的公共 `fetch_*_events()` 函数，导致生产路径下 AKShare/network 失败时 `_detailed` 仍标为 `OK`
+- **修改文件**：
+  - `tradingagents/tradeflow/event_source.py` —
+    1. 将 `fetch_notice_events`/`fetch_buyback_events`/`fetch_rating_events` 的核心逻辑提取为 `_fetch_notice_events_raw()`/`_fetch_buyback_events_raw()`/`_fetch_rating_events_raw()`（可抛异常）
+    2. 公共 `fetch_*_events()` 变为 thin wrapper：`try: return _raw() except: return []`
+    3. `_fetch_*_detailed()` 改为调用 `_raw()` 而非公共函数，确保 AKShare/network 异常能被捕获
+  - `tests/test_t006_event_source_discovery.py` — 所有 mock target 从 `fetch_*_events` 改为 `_fetch_*_raw`，验证生产路径异常可观测
+- **测试结果**：1815 passed, 17 skipped, 0 failed
+- **关键逻辑**：`_raw()` 函数不吞异常 → `_detailed` helper 能看到真实失败 → `fetch_daily_events_detailed()` 正确报告 PARTIAL/FAILED
+- **风险点**：无；公共 `fetch_*_events()` 签名不变，`fetch_daily_events()` 不受影响
+
+---
+
+## 2026-05-30 | T-007: 修复 T-006 事件源底层失败可观测性
+
+- **执行者**：OpenCode
+- **任务**：T-007 — 修复事件源子 fetch 函数吞掉 AKShare/network 异常后，`fetch_daily_events_detailed()` 仍把结果标成 `OK` 的问题
+- **修改文件**：
+  - `tradingagents/tradeflow/event_source.py` — [T-007] event_source_failure_status
+    1. `EventSourceStatus` 新增 `PARTIAL` 枚举值
+    2. 新增 `_SubFetchResult` 数据类：`items`/`success`/`error`，追踪每个子 fetch 的成功/失败状态
+    3. 新增 `_fetch_notice_events_detailed()`、`_fetch_buyback_events_detailed()`、`_fetch_rating_events_detailed()` 内部 helper，捕获子函数异常并返回 `_SubFetchResult`
+    4. `EventSourceResult` 新增 `source_statuses: dict[str, str]` 和 `failed_sources: list[str]` 字段
+    5. `fetch_daily_events_detailed()` 改用 detailed helper，聚合状态：全部成功=OK、部分失败=PARTIAL、全部失败=FAILED
+    6. 新增 `_sanitize_error()` 函数：清除错误消息中的 API key/token 敏感信息
+  - `tradingagents/tradeflow/plan_runner.py` — metadata `event_source` 新增 `failed_sources` 和 `source_statuses` 字段
+  - `tradingagents/tradeflow/discovery.py` — metadata `event_source` 新增 `failed_sources` 和 `source_statuses` 字段
+  - `tests/test_t006_event_source_discovery.py` — 更新 `test_failure_returns_failed`（mock 全部 3 个子 fetch）；新增 `test_partial_failure_returns_partial`、`test_sub_fetch_swallows_exception_gives_ok`；新增 4 个 T-007 测试类：
+    - `TestT007SubFetchFailureStatus`（8）：全部/部分/两个失败、成功空/成功有事件、失败源事件仍保留、source_statuses 三项、API key 脱敏
+    - `TestT007PlanRunnerMetadata`（4）：PARTIAL/FAILED/OK/NOT_QUERIED 在 plan metadata 中的 failed_sources 和 source_statuses
+    - `TestT007DiscoveryMetadata`（4）：PARTIAL/FAILED/OK/NOT_QUERIED 在 discovery metadata 中的 failed_sources 和 source_statuses
+    - `TestT007EventSourceStatusEnum`（2）：PARTIAL 存在、全部枚举值
+- **测试结果**：1757 passed, 17 skipped, 0 failed
+- **关键逻辑**：
+  - 三个子 fetch 函数（notice/buyback/rating）内部 try/except 仍返回 `[]` 保持向后兼容
+  - 新增 `_fetch_*_detailed()` 内部 helper 捕获异常并返回 `_SubFetchResult(success=False)`
+  - `fetch_daily_events_detailed()` 基于 `_SubFetchResult` 聚合：0 失败=OK、1-2 失败=PARTIAL、3 失败=FAILED
+  - 失败源的 items 仍为空列表（因原始子函数吞异常返回 []），成功源的 items 正常合并
+  - 错误消息经 `_sanitize_error()` 脱敏，去除 api_key/token/key=xxx 等敏感信息
+  - plan_runner 和 discovery metadata 新增 `failed_sources` 和 `source_statuses`，下游可直接看到哪个源失败
+- **风险点**：无；原始子 fetch 函数签名不变，`fetch_daily_events()` 完全不受影响
+
 ## 2026-05-30 | V-003: TradeFlow 端到端候选质量回放验收
 
 - **执行者**：OpenCode
@@ -580,3 +625,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/V-003-20260530-round1.txt
 - **运行档案**: docs/task_runs/V-003-20260530-023514/
+
+## 2026-05-30 | AUTO-002 自动开发闭环
+
+- **任务**: T-007 — 修复 T-006 事件源底层失败可观测性（P1）
+- **优先级**: P1
+- **轮次**: 2
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/T-007-20260530-round2.txt
+- **运行档案**: docs/task_runs/T-007-20260530-024618/

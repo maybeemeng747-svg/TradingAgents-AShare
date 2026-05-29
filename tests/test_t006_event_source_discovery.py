@@ -7,6 +7,12 @@ Tests that:
 4. Daily Plan and Discovery outputs include event metadata (source, type, title, dedup)
 5. Symbols are isolated — no cross-contamination of event data
 6. Event source metadata appears in plan/discovery result metadata
+
+[T-007] event_source_failure_status extended tests:
+7. Sub-fetch failure is visible in source_statuses and failed_sources
+8. All sub-fetches fail → FAILED; partial → PARTIAL; all succeed → OK
+9. Discovery / Daily Plan metadata shows per-source failure info
+10. Sensitive info (API keys) in error messages is sanitized
 """
 
 import sys
@@ -118,18 +124,46 @@ class TestEventSourceResult:
 
 class TestFetchDailyEventsDetailed:
     def test_success_returns_ok(self):
-        with patch("tradingagents.tradeflow.event_source.fetch_notice_events", return_value=[]):
-            with patch("tradingagents.tradeflow.event_source.fetch_buyback_events", return_value=[]):
-                with patch("tradingagents.tradeflow.event_source.fetch_rating_events", return_value=[]):
+        with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw", return_value=[]):
+            with patch("tradingagents.tradeflow.event_source._fetch_buyback_events_raw", return_value=[]):
+                with patch("tradingagents.tradeflow.event_source._fetch_rating_events_raw", return_value=[]):
                     result = fetch_daily_events_detailed("20260528")
         assert result.status == EventSourceStatus.OK
         assert result.event_count == 0
 
     def test_failure_returns_failed(self):
-        with patch("tradingagents.tradeflow.event_source.fetch_notice_events", side_effect=Exception("timeout")):
-            result = fetch_daily_events_detailed("20260528")
+        """When ALL sub-fetches fail, status should be FAILED."""
+        with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw", side_effect=Exception("timeout")):
+            with patch("tradingagents.tradeflow.event_source._fetch_buyback_events_raw", side_effect=Exception("conn_refused")):
+                with patch("tradingagents.tradeflow.event_source._fetch_rating_events_raw", side_effect=Exception("dns_error")):
+                    result = fetch_daily_events_detailed("20260528")
         assert result.status == EventSourceStatus.FAILED
         assert "timeout" in result.error_message
+        assert len(result.failed_sources) == 3
+
+    def test_partial_failure_returns_partial(self):  # [T-007]
+        """When only some sub-fetches fail, status should be PARTIAL."""
+        with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw", side_effect=Exception("timeout")):
+            with patch("tradingagents.tradeflow.event_source._fetch_buyback_events_raw", return_value=[]):
+                with patch("tradingagents.tradeflow.event_source._fetch_rating_events_raw", return_value=[]):
+                    result = fetch_daily_events_detailed("20260528")
+        assert result.status == EventSourceStatus.PARTIAL
+        assert result.failed_sources == ["notice"]
+        assert result.source_statuses["notice"] == "FAILED: timeout"
+        assert result.source_statuses["buyback"] == "OK"
+        assert result.source_statuses["rating"] == "OK"
+
+    def test_sub_fetch_swallows_exception_gives_ok(self):  # [T-007]
+        """When sub-fetch catches its own exception and returns [], status is still OK.
+        This tests that the old behavior of sub-fetches swallowing exceptions
+        no longer causes the detailed function to show pure OK when a source failed."""
+        with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw", return_value=[]):
+            with patch("tradingagents.tradeflow.event_source._fetch_buyback_events_raw", return_value=[]):
+                with patch("tradingagents.tradeflow.event_source._fetch_rating_events_raw", return_value=[]):
+                    result = fetch_daily_events_detailed("20260528")
+        assert result.status == EventSourceStatus.OK
+        assert result.event_count == 0
+        assert len(result.failed_sources) == 0
 
     def test_dedup_by_title(self):
         items = [
@@ -137,9 +171,9 @@ class TestFetchDailyEventsDetailed:
             EventItem(symbol="002138", title="回购进展", event_type="buyback", source="eastmoney"),
             EventItem(symbol="002138", title="季报披露", event_type="notice", source="eastmoney"),
         ]
-        with patch("tradingagents.tradeflow.event_source.fetch_notice_events", return_value=items):
-            with patch("tradingagents.tradeflow.event_source.fetch_buyback_events", return_value=[]):
-                with patch("tradingagents.tradeflow.event_source.fetch_rating_events", return_value=[]):
+        with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw", return_value=items):
+            with patch("tradingagents.tradeflow.event_source._fetch_buyback_events_raw", return_value=[]):
+                with patch("tradingagents.tradeflow.event_source._fetch_rating_events_raw", return_value=[]):
                     result = fetch_daily_events_detailed("20260528")
         assert result.status == EventSourceStatus.OK
         assert len(result.items_by_symbol["002138"]) == 2
@@ -150,9 +184,9 @@ class TestFetchDailyEventsDetailed:
             EventItem(symbol="002138", title="回购", event_type="buyback", source="eastmoney"),
             EventItem(symbol="600519", title="评级", event_type="rating", source="cninfo"),
         ]
-        with patch("tradingagents.tradeflow.event_source.fetch_notice_events", return_value=items):
-            with patch("tradingagents.tradeflow.event_source.fetch_buyback_events", return_value=[]):
-                with patch("tradingagents.tradeflow.event_source.fetch_rating_events", return_value=[]):
+        with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw", return_value=items):
+            with patch("tradingagents.tradeflow.event_source._fetch_buyback_events_raw", return_value=[]):
+                with patch("tradingagents.tradeflow.event_source._fetch_rating_events_raw", return_value=[]):
                     result = fetch_daily_events_detailed("20260528")
         assert set(result.items_by_symbol.keys()) == {"002138", "600519"}
         assert result.symbols_count == 2
@@ -448,3 +482,283 @@ class TestDiscoveryEventOverrides:
                 override_syms = {ev.get("symbol", "") for ev in ev_overrides}
                 if sym in ("002138", "600519"):
                     assert override_syms == {sym}
+
+
+# [T-007] event_source_failure_status — sub-fetch failure observability tests
+
+
+def _make_partial_result():
+    """Event source result with partial failure (notice failed, buyback/rating OK)."""
+    items = [
+        EventItem(symbol="002138", title="回购进展", event_type="buyback",
+                  direction="bullish", source="eastmoney", date="2026-05-28"),
+    ]
+    return EventSourceResult(
+        status=EventSourceStatus.PARTIAL,
+        events_map={"002138": ["回购进展"]},
+        items_by_symbol={"002138": items},
+        error_message="notice: timeout",
+        event_count=1,
+        symbols_count=1,
+        source_statuses={"notice": "FAILED: timeout", "buyback": "OK", "rating": "OK"},
+        failed_sources=["notice"],
+    )
+
+
+def _make_all_failed_result():
+    """Event source result where all sub-fetches failed."""
+    return EventSourceResult(
+        status=EventSourceStatus.FAILED,
+        error_message="notice: timeout; buyback: conn_refused; rating: dns_error",
+        source_statuses={
+            "notice": "FAILED: timeout",
+            "buyback": "FAILED: conn_refused",
+            "rating": "FAILED: dns_error",
+        },
+        failed_sources=["notice", "buyback", "rating"],
+    )
+
+
+class TestT007SubFetchFailureStatus:
+    """Tests for T-007: sub-fetch failure status tracking."""
+
+    def test_all_sub_fetch_fail_returns_failed(self):
+        """When all 3 sub-fetches throw exceptions, status is FAILED."""
+        with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw", side_effect=Exception("timeout")):
+            with patch("tradingagents.tradeflow.event_source._fetch_buyback_events_raw", side_effect=Exception("conn_refused")):
+                with patch("tradingagents.tradeflow.event_source._fetch_rating_events_raw", side_effect=Exception("dns_error")):
+                    result = fetch_daily_events_detailed("20260528")
+        assert result.status == EventSourceStatus.FAILED
+        assert len(result.failed_sources) == 3
+        assert set(result.failed_sources) == {"notice", "buyback", "rating"}
+        assert "FAILED" in result.source_statuses["notice"]
+        assert "FAILED" in result.source_statuses["buyback"]
+        assert "FAILED" in result.source_statuses["rating"]
+
+    def test_one_sub_fetch_fail_returns_partial(self):
+        """When only notice fails, status is PARTIAL and failed_sources lists it."""
+        with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw", side_effect=Exception("timeout")):
+            with patch("tradingagents.tradeflow.event_source._fetch_buyback_events_raw", return_value=[]):
+                with patch("tradingagents.tradeflow.event_source._fetch_rating_events_raw", return_value=[]):
+                    result = fetch_daily_events_detailed("20260528")
+        assert result.status == EventSourceStatus.PARTIAL
+        assert result.failed_sources == ["notice"]
+        assert "timeout" in result.source_statuses["notice"]
+        assert result.source_statuses["buyback"] == "OK"
+        assert result.source_statuses["rating"] == "OK"
+
+    def test_two_sub_fetch_fail_returns_partial(self):
+        """When 2 of 3 sub-fetches fail, status is PARTIAL."""
+        with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw", side_effect=Exception("e1")):
+            with patch("tradingagents.tradeflow.event_source._fetch_buyback_events_raw", side_effect=Exception("e2")):
+                with patch("tradingagents.tradeflow.event_source._fetch_rating_events_raw", return_value=[]):
+                    result = fetch_daily_events_detailed("20260528")
+        assert result.status == EventSourceStatus.PARTIAL
+        assert set(result.failed_sources) == {"notice", "buyback"}
+        assert result.source_statuses["rating"] == "OK"
+
+    def test_all_succeed_empty_events_returns_ok(self):
+        """All sub-fetches succeed but return no events → OK with count 0."""
+        with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw", return_value=[]):
+            with patch("tradingagents.tradeflow.event_source._fetch_buyback_events_raw", return_value=[]):
+                with patch("tradingagents.tradeflow.event_source._fetch_rating_events_raw", return_value=[]):
+                    result = fetch_daily_events_detailed("20260528")
+        assert result.status == EventSourceStatus.OK
+        assert result.event_count == 0
+        assert result.failed_sources == []
+        assert all(v == "OK" for v in result.source_statuses.values())
+
+    def test_all_succeed_with_events_returns_ok(self):
+        """All sub-fetches succeed and return events → OK with events."""
+        items = [
+            EventItem(symbol="002138", title="回购", event_type="buyback",
+                      direction="bullish", source="eastmoney"),
+            EventItem(symbol="600519", title="评级", event_type="rating",
+                      direction="bearish", source="cninfo"),
+        ]
+        with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw", return_value=items):
+            with patch("tradingagents.tradeflow.event_source._fetch_buyback_events_raw", return_value=[]):
+                with patch("tradingagents.tradeflow.event_source._fetch_rating_events_raw", return_value=[]):
+                    result = fetch_daily_events_detailed("20260528")
+        assert result.status == EventSourceStatus.OK
+        assert result.event_count == 2
+        assert result.failed_sources == []
+
+    def test_failed_sub_fetch_items_still_included(self):
+        """Items from successful sub-fetches are still included even when some fail."""
+        notice_items = [
+            EventItem(symbol="002138", title="公告", event_type="notice",
+                      direction="neutral", source="eastmoney"),
+        ]
+        with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw", return_value=notice_items):
+            with patch("tradingagents.tradeflow.event_source._fetch_buyback_events_raw", side_effect=Exception("err")):
+                with patch("tradingagents.tradeflow.event_source._fetch_rating_events_raw", return_value=[]):
+                    result = fetch_daily_events_detailed("20260528")
+        assert result.status == EventSourceStatus.PARTIAL
+        assert "002138" in result.items_by_symbol
+        assert result.event_count == 1
+
+    def test_source_statuses_always_has_three_entries(self):
+        """source_statuses always has entries for notice, buyback, rating."""
+        with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw", side_effect=Exception("e")):
+            with patch("tradingagents.tradeflow.event_source._fetch_buyback_events_raw", return_value=[]):
+                with patch("tradingagents.tradeflow.event_source._fetch_rating_events_raw", return_value=[]):
+                    result = fetch_daily_events_detailed("20260528")
+        assert set(result.source_statuses.keys()) == {"notice", "buyback", "rating"}
+
+    def test_error_message_sanitize_api_key(self):
+        """Error messages should not contain API keys."""
+        with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw",
+                    side_effect=Exception("api_key=sk-abc123xyz")):
+            with patch("tradingagents.tradeflow.event_source._fetch_buyback_events_raw", return_value=[]):
+                with patch("tradingagents.tradeflow.event_source._fetch_rating_events_raw", return_value=[]):
+                    result = fetch_daily_events_detailed("20260528")
+        assert "sk-abc123xyz" not in result.source_statuses["notice"]
+        assert "[REDACTED]" in result.source_statuses["notice"]
+
+
+class TestT007PlanRunnerMetadata:
+    """Tests for T-007: plan_runner metadata includes per-source failure info."""
+
+    def test_partial_failure_in_plan_metadata(self):
+        """Plan metadata shows PARTIAL status and failed_sources."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_partial_result()
+            with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                mock_eval.return_value = (None, "无策略命中")
+                plan = generate_daily_plan(
+                    trade_date="2026-05-28",
+                    symbols=["002138"],
+                    candidates=None,
+                    use_event_source=True,
+                )
+        es = plan.metadata["event_source"]
+        assert es["status"] == "PARTIAL"
+        assert es["failed_sources"] == ["notice"]
+        assert "notice" in es["source_statuses"]
+        assert "FAILED" in es["source_statuses"]["notice"]
+        assert es["source_statuses"]["buyback"] == "OK"
+
+    def test_all_failed_in_plan_metadata(self):
+        """Plan metadata shows FAILED status when all sources fail."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_all_failed_result()
+            with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                mock_eval.return_value = (None, "无策略命中")
+                plan = generate_daily_plan(
+                    trade_date="2026-05-28",
+                    symbols=["002138"],
+                    candidates=None,
+                    use_event_source=True,
+                )
+        es = plan.metadata["event_source"]
+        assert es["status"] == "FAILED"
+        assert len(es["failed_sources"]) == 3
+
+    def test_ok_no_failed_sources_in_plan_metadata(self):
+        """Plan metadata shows OK with empty failed_sources."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result()
+            with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+                mock_eval.return_value = (None, "无策略命中")
+                plan = generate_daily_plan(
+                    trade_date="2026-05-28",
+                    symbols=[],
+                    candidates=None,
+                    use_event_source=True,
+                )
+        es = plan.metadata["event_source"]
+        assert es["status"] == "OK"
+        assert es["failed_sources"] == []
+        assert all(v == "OK" for v in es["source_statuses"].values())
+
+    def test_not_queried_empty_failed_sources(self):
+        """When use_event_source=False, failed_sources is empty."""
+        with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
+            mock_eval.return_value = (None, "无策略命中")
+            plan = generate_daily_plan(
+                trade_date="2026-05-28",
+                symbols=["002138"],
+                candidates=None,
+                use_event_source=False,
+            )
+        es = plan.metadata["event_source"]
+        assert es["status"] == "NOT_QUERIED"
+        assert es["failed_sources"] == []
+        assert es["source_statuses"] == {}
+
+
+class TestT007DiscoveryMetadata:
+    """Tests for T-007: discovery metadata includes per-source failure info."""
+
+    def test_partial_failure_in_discovery_metadata(self):
+        """Discovery metadata shows PARTIAL status and failed_sources."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_partial_result()
+            with patch("tradingagents.tradeflow.discovery.evaluate_symbol") as mock_eval:
+                mock_eval.return_value = (None, "无策略命中")
+                result = run_discovery(
+                    trade_date="2026-05-28",
+                    symbols=["002138"],
+                    use_event_source=True,
+                )
+        es = result.metadata["event_source"]
+        assert es["status"] == "PARTIAL"
+        assert es["failed_sources"] == ["notice"]
+        assert "notice" in es["source_statuses"]
+
+    def test_all_failed_in_discovery_metadata(self):
+        """Discovery metadata shows FAILED when all sources fail."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_all_failed_result()
+            with patch("tradingagents.tradeflow.discovery.evaluate_symbol") as mock_eval:
+                mock_eval.return_value = (None, "无策略命中")
+                result = run_discovery(
+                    trade_date="2026-05-28",
+                    symbols=["002138"],
+                    use_event_source=True,
+                )
+        es = result.metadata["event_source"]
+        assert es["status"] == "FAILED"
+        assert len(es["failed_sources"]) == 3
+
+    def test_ok_no_failed_sources_in_discovery_metadata(self):
+        """Discovery metadata shows OK with empty failed_sources."""
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
+            mock_fetch.return_value = _make_event_result()
+            with patch("tradingagents.tradeflow.discovery.evaluate_symbol") as mock_eval:
+                mock_eval.return_value = (None, "无策略命中")
+                result = run_discovery(
+                    trade_date="2026-05-28",
+                    symbols=[],
+                    use_event_source=True,
+                )
+        es = result.metadata["event_source"]
+        assert es["status"] == "OK"
+        assert es["failed_sources"] == []
+        assert all(v == "OK" for v in es["source_statuses"].values())
+
+    def test_not_queried_empty_failed_sources(self):
+        """When use_event_source=False, discovery failed_sources is empty."""
+        with patch("tradingagents.tradeflow.discovery.evaluate_symbol") as mock_eval:
+            mock_eval.return_value = (None, "无策略命中")
+            result = run_discovery(
+                trade_date="2026-05-28",
+                symbols=["002138"],
+                use_event_source=False,
+            )
+        es = result.metadata["event_source"]
+        assert es["status"] == "NOT_QUERIED"
+        assert es["failed_sources"] == []
+        assert es["source_statuses"] == {}
+
+
+class TestT007EventSourceStatusEnum:
+    """Verify EventSourceStatus enum has all expected values."""
+
+    def test_partial_exists(self):
+        assert EventSourceStatus.PARTIAL.value == "PARTIAL"
+
+    def test_all_statuses(self):
+        values = {s.value for s in EventSourceStatus}
+        assert values == {"OK", "FAILED", "STALE", "PARTIAL"}

@@ -140,6 +140,8 @@ def run_discovery(
     event_items_by_symbol: dict[str, list] = {}  # [T-006] event_source_discovery
     event_source_status = "NOT_QUERIED"  # [T-006]
     event_source_error = ""  # [T-006]
+    event_source_failed: list[str] = []  # [T-007]
+    event_source_per_source: dict[str, str] = {}  # [T-007]
 
     if use_event_source:
         from .event_source import fetch_daily_events_detailed, EventSourceStatus  # [T-006]
@@ -149,6 +151,8 @@ def run_discovery(
         event_items_by_symbol = event_result.items_by_symbol  # [T-006]
         event_source_status = event_result.status.value  # [T-006]
         event_source_error = event_result.error_message  # [T-006]
+        event_source_failed = event_result.failed_sources  # [T-007]
+        event_source_per_source = event_result.source_statuses  # [T-007]
 
     universe = _build_discovery_universe(
         symbols=symbols,
@@ -288,6 +292,8 @@ def run_discovery(
                 "error_message": event_source_error,
                 "event_count": sum(len(v) for v in event_items_by_symbol.values()),
                 "symbols_count": len(event_items_by_symbol),
+                "failed_sources": event_source_failed,  # [T-007]
+                "source_statuses": event_source_per_source,  # [T-007]
             },
         },
     )

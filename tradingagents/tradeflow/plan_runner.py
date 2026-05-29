@@ -181,6 +181,8 @@ def generate_daily_plan(
     event_items_by_symbol: dict[str, list] = {}
     event_source_status = "NOT_QUERIED"
     event_source_error = ""
+    event_source_failed: list[str] = []  # [T-007]
+    event_source_per_source: dict[str, str] = {}  # [T-007]
 
     if use_event_source:
         from .event_source import fetch_daily_events_detailed, EventSourceStatus
@@ -190,6 +192,8 @@ def generate_daily_plan(
         event_items_by_symbol = event_result.items_by_symbol
         event_source_status = event_result.status.value
         event_source_error = event_result.error_message
+        event_source_failed = event_result.failed_sources  # [T-007]
+        event_source_per_source = event_result.source_statuses  # [T-007]
 
     if candidates is None:
         # Build universe — pass event_symbols so event-discovered
@@ -318,6 +322,8 @@ def generate_daily_plan(
                 "error_message": event_source_error,
                 "event_count": sum(len(v) for v in event_items_by_symbol.values()),
                 "symbols_count": len(event_items_by_symbol),
+                "failed_sources": event_source_failed,  # [T-007]
+                "source_statuses": event_source_per_source,  # [T-007]
             },
         },
     )

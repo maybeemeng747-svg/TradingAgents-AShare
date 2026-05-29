@@ -20,6 +20,15 @@ class EventSourceStatus(Enum):
     OK = "OK"
     FAILED = "FAILED"
     STALE = "STALE"
+    PARTIAL = "PARTIAL"  # [T-007] event_source_failure_status
+
+
+@dataclass
+class _SubFetchResult:  # [T-007] event_source_failure_status
+    """Internal result from a sub-fetch function, tracking success/failure."""
+    items: list = field(default_factory=list)
+    success: bool = True
+    error: str = ""
 
 
 @dataclass
@@ -30,6 +39,8 @@ class EventSourceResult:
     error_message: str = ""
     event_count: int = 0
     symbols_count: int = 0
+    source_statuses: dict[str, str] = field(default_factory=dict)  # [T-007] per-source status
+    failed_sources: list[str] = field(default_factory=list)  # [T-007] failed source names
 
 _BEARISH_NOTICE_TYPES = {"风险提示"}
 
@@ -87,25 +98,11 @@ def _rating_direction(rating: str) -> str:
     return "neutral"
 
 
-def fetch_notice_events(
-    date: str,
-    symbol_filter: str = "全部",
-) -> list[EventItem]:
-    """获取沪深公告事件。
+def _fetch_notice_events_raw(date: str, symbol_filter: str = "全部") -> list[EventItem]:  # [T-007]
+    _bypass_proxy()
+    import akshare as ak
 
-    Args:
-        date: 'YYYYMMDD'
-        symbol_filter: '全部' / '重大事项' / '财务报告' / '融资公告' / '风险提示'
-    """
-    try:
-        _bypass_proxy()
-        import akshare as ak
-
-        df = ak.stock_notice_report(symbol=symbol_filter, date=date)
-    except Exception as e:
-        logger.warning("fetch_notice_events failed: %s", e)
-        return []
-
+    df = ak.stock_notice_report(symbol=symbol_filter, date=date)
     if df is None or df.empty:
         return []
 
@@ -138,17 +135,11 @@ def fetch_notice_events(
     return items
 
 
-def fetch_buyback_events() -> list[EventItem]:
-    """获取回购事件。只取最新公告日期在近 30 天内的，全部标记为 bullish。"""
-    try:
-        _bypass_proxy()
-        import akshare as ak
+def _fetch_buyback_events_raw() -> list[EventItem]:  # [T-007]
+    _bypass_proxy()
+    import akshare as ak
 
-        df = ak.stock_repurchase_em()
-    except Exception as e:
-        logger.warning("fetch_buyback_events failed: %s", e)
-        return []
-
+    df = ak.stock_repurchase_em()
     if df is None or df.empty:
         return []
 
@@ -193,21 +184,11 @@ def fetch_buyback_events() -> list[EventItem]:
     return items
 
 
-def fetch_rating_events(date: str) -> list[EventItem]:
-    """获取分析师评级事件。
+def _fetch_rating_events_raw(date: str) -> list[EventItem]:  # [T-007]
+    _bypass_proxy()
+    import akshare as ak
 
-    Args:
-        date: 'YYYYMMDD'
-    """
-    try:
-        _bypass_proxy()
-        import akshare as ak
-
-        df = ak.stock_rank_forecast_cninfo(date=date)
-    except Exception as e:
-        logger.warning("fetch_rating_events failed: %s", e)
-        return []
-
+    df = ak.stock_rank_forecast_cninfo(date=date)
     if df is None or df.empty:
         return []
 
@@ -247,6 +228,69 @@ def fetch_rating_events(date: str) -> list[EventItem]:
     return items
 
 
+def fetch_notice_events(
+    date: str,
+    symbol_filter: str = "全部",
+) -> list[EventItem]:
+    """获取沪深公告事件。
+
+    Args:
+        date: 'YYYYMMDD'
+        symbol_filter: '全部' / '重大事项' / '财务报告' / '融资公告' / '风险提示'
+    """
+    try:
+        return _fetch_notice_events_raw(date, symbol_filter)
+    except Exception as e:
+        logger.warning("fetch_notice_events failed: %s", e)
+        return []
+
+
+def fetch_buyback_events() -> list[EventItem]:
+    """获取回购事件。只取最新公告日期在近 30 天内的，全部标记为 bullish。"""
+    try:
+        return _fetch_buyback_events_raw()
+    except Exception as e:
+        logger.warning("fetch_buyback_events failed: %s", e)
+        return []
+
+
+def fetch_rating_events(date: str) -> list[EventItem]:
+    """获取分析师评级事件。
+
+    Args:
+        date: 'YYYYMMDD'
+    """
+    try:
+        return _fetch_rating_events_raw(date)
+    except Exception as e:
+        logger.warning("fetch_rating_events failed: %s", e)
+        return []
+
+
+def _fetch_notice_events_detailed(date: str, symbol_filter: str = "全部") -> _SubFetchResult:  # [T-007]
+    try:
+        items = _fetch_notice_events_raw(date, symbol_filter)
+        return _SubFetchResult(items=items, success=True)
+    except Exception as e:
+        return _SubFetchResult(items=[], success=False, error=str(e))
+
+
+def _fetch_buyback_events_detailed() -> _SubFetchResult:  # [T-007]
+    try:
+        items = _fetch_buyback_events_raw()
+        return _SubFetchResult(items=items, success=True)
+    except Exception as e:
+        return _SubFetchResult(items=[], success=False, error=str(e))
+
+
+def _fetch_rating_events_detailed(date: str) -> _SubFetchResult:  # [T-007]
+    try:
+        items = _fetch_rating_events_raw(date)
+        return _SubFetchResult(items=items, success=True)
+    except Exception as e:
+        return _SubFetchResult(items=[], success=False, error=str(e))
+
+
 def fetch_daily_events(date: str) -> dict[str, list[str]]:
     """获取指定日期的全部事件，返回 {symbol: [title1, title2, ...]} 格式。
 
@@ -280,8 +324,13 @@ def fetch_daily_events_detailed(date: str) -> EventSourceResult:
 
     与 fetch_daily_events() 不同，此函数返回 EventSourceResult，
     包含按 symbol 分组的 EventItem 列表（event_type/direction/source/date）
-    以及事件源状态（OK/FAILED/STALE），便于 Discovery 和 Daily Plan 输出
+    以及事件源状态（OK/FAILED/STALE/PARTIAL），便于 Discovery 和 Daily Plan 输出
     事件来源、标题摘要、事件类型、去重结果和证据引用。
+
+    [T-007] event_source_failure_status — 子 fetch 失败不再被吞掉：
+    - 全部成功（含无事件）= OK
+    - 部分失败 = PARTIAL
+    - 全部失败 = FAILED
 
     Args:
         date: 'YYYYMMDD'
@@ -289,18 +338,56 @@ def fetch_daily_events_detailed(date: str) -> EventSourceResult:
         EventSourceResult
     """
     result = EventSourceResult()
+
+    # [T-007] event_source_failure_status — use detailed sub-fetch helpers
+    sub_results: dict[str, _SubFetchResult] = {}
     try:
-        notice_items = fetch_notice_events(date)
-        buyback_items = fetch_buyback_events()
-        rating_items = fetch_rating_events(date)
+        sub_results["notice"] = _fetch_notice_events_detailed(date)
     except Exception as e:
+        sub_results["notice"] = _SubFetchResult(items=[], success=False, error=str(e))
+    try:
+        sub_results["buyback"] = _fetch_buyback_events_detailed()
+    except Exception as e:
+        sub_results["buyback"] = _SubFetchResult(items=[], success=False, error=str(e))
+    try:
+        sub_results["rating"] = _fetch_rating_events_detailed(date)
+    except Exception as e:
+        sub_results["rating"] = _SubFetchResult(items=[], success=False, error=str(e))
+
+    # Aggregate statuses
+    all_items: list[EventItem] = []
+    failed_sources: list[str] = []
+    source_statuses: dict[str, str] = {}
+
+    for source_name, sr in sub_results.items():
+        if sr.success:
+            source_statuses[source_name] = "OK"
+            all_items.extend(sr.items)
+        else:
+            source_statuses[source_name] = f"FAILED: {_sanitize_error(sr.error)}"
+            failed_sources.append(source_name)
+            all_items.extend(sr.items)
+
+    result.source_statuses = source_statuses
+    result.failed_sources = failed_sources
+
+    # Determine aggregate status
+    n_total = len(sub_results)
+    n_failed = len(failed_sources)
+    if n_failed == 0:
+        result.status = EventSourceStatus.OK
+    elif n_failed == n_total:
         result.status = EventSourceStatus.FAILED
-        result.error_message = str(e)
-        logger.warning("fetch_daily_events_detailed failed: %s", e)
-        return result
+        result.error_message = "; ".join(
+            f"{k}: {_sanitize_error(v.error)}" for k, v in sub_results.items()
+        )
+    else:
+        result.status = EventSourceStatus.PARTIAL
+        result.error_message = "; ".join(
+            f"{k}: {_sanitize_error(v.error)}" for k, v in sub_results.items() if not v.success
+        )
 
-    all_items = notice_items + buyback_items + rating_items
-
+    # Deduplicate and group by symbol
     seen_titles_by_symbol: dict[str, set[str]] = {}
     for item in all_items:
         sym = item.symbol
@@ -321,6 +408,15 @@ def fetch_daily_events_detailed(date: str) -> EventSourceResult:
     result.symbols_count = len(result.items_by_symbol)
 
     return result
+
+
+def _sanitize_error(error: str) -> str:  # [T-007] event_source_failure_status
+    """Sanitize error message to avoid leaking sensitive info (API keys, tokens)."""
+    import re
+    cleaned = error
+    for pattern in [r'key[=:]\s*\S+', r'token[=:]\s*\S+', r'api[_-]?key[=:]\s*\S+']:
+        cleaned = re.sub(pattern, '[REDACTED]', cleaned, flags=re.IGNORECASE)
+    return cleaned[:200]
 
 
 def fetch_events_for_symbol(symbol: str, date: str) -> list[str]:
