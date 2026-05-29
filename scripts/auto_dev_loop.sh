@@ -242,6 +242,16 @@ check_zai_quota() {
         result=$(ZAI_API_KEY="${ZAI_API_KEY:-}" bash "${SCRIPT_DIR}/check_zai_quota.sh" --json 2>/dev/null || echo '{"status":"ERROR"}')
         local status
         status=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','ERROR'))" 2>/dev/null || echo "ERROR")
+        # 保存额度状态到文件（供其他脚本读取）
+        echo "$result" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    data['last_check'] = '$(date -Iseconds)'
+    with open('${REPO_DIR}/.zai_quota_state.json', 'w') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+except: pass
+" 2>/dev/null || true
         if [[ "$status" == "EXHAUSTED" ]]; then
             local reset_time msg
             reset_time=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('reset_time',''))" 2>/dev/null || echo "")
