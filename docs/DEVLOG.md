@@ -4,6 +4,58 @@
 
 ---
 
+## 2026-05-29 | T-003 TradeFlow P1 资金异动池
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：新增资金异动候选池，将主力资金连续流入、资金占比异常、个股/板块资金共振作为候选入池信号
+- **修改文件**：
+  - `tradingagents/tradeflow/fund_flow_anomaly.py`（新增，~310行）— [T-003] fund_flow_anomaly_pool
+    - `detect_fund_flow_anomaly()` — 资金异动检测主入口
+    - `FundFlowAnomalyResult` — 输出 `fund_flow_anomaly_score`（0-25分）、`fund_flow_anomaly_tags`、`fund_flow_anomaly_refs`、`fund_flow_unit_verified`、`fund_flow_individual_summary`、`fund_flow_board_summary`
+    - 五类异常信号：CONSECUTIVE_INFLOW、HIGH_PROPORTION、BOARD_RESONANCE、LARGE_SINGLE_DAY、NET_OUTFLOW_DOMINANT
+    - 个股资金与板块资金分开记录，禁止混用
+    - 单位未校验时不输出高置信资金信号（HIGH_PROPORTION、LARGE_SINGLE_DAY、BOARD_RESONANCE降级）
+    - 资金异动只做加分项，不单独触发强结论
+    - 列式解析：识别"主力净流入-净额"列索引，精确提取净流入值
+  - `tradingagents/tradeflow/schemas.py` — [T-003]
+    - `STRATEGY_FUND_FLOW = "FUND_FLOW_ANOMALY"` 策略常量，加入 `ALL_STRATEGIES`
+    - `Candidate` 新增 6 个字段：fund_flow_anomaly_score、fund_flow_anomaly_tags、fund_flow_anomaly_refs、fund_flow_unit_verified、fund_flow_individual_summary、fund_flow_board_summary
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示资金异动标签、个股/板块摘要、单位校验状态
+  - `tradingagents/tradeflow/candidate_engine.py` — [T-003]
+    - `evaluate_symbol()` 新增 `fund_flow_individual` 和 `fund_flow_board` 参数
+    - 在 S-004 博弈平衡之后调用 `detect_fund_flow_anomaly()`
+    - 正向资金异动标签（非 NET_OUTFLOW_DOMINANT）加分并加入 strategy_tags
+    - NET_OUTFLOW_DOMINANT 记录但不加分
+    - 单位已校验 + 正向标签 + 分数 >= 10 时提升 need_deep_ta
+    - `init_db()` 新增 6 列迁移
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+  - `tradingagents/tradeflow/plan_runner.py` — [T-003]
+    - `generate_daily_plan()` 新增 `fund_flow_map` 参数（symbol → {individual, board}）
+    - `_build_plan_entry()` 输出资金异动全部字段
+  - `tradingagents/tradeflow/discovery.py` — [T-003]
+    - `SOURCE_FUND_FLOW = "fund_flow_pool"` 新来源常量
+    - `run_discovery()` 新增 `fund_flow_map` 参数
+    - `_build_discovery_universe()` 新增 `fund_flow_symbols` 参数，资金异动池股票可进入 universe
+    - `_build_discovery_entry()` 输出资金异动字段
+    - `render_discovery_text()` 展示资金异动标签和个股/板块摘要
+  - `tests/test_t003_fund_flow_anomaly.py`（新增，~530行）— 71 个测试
+- **关键逻辑**：
+  1. 列式解析：从表头找到"主力净流入-净额"列索引，精确提取净流入值，避免日期/收盘价/占比干扰
+  2. 单位校验：检查文本中是否包含"万元"、"净额"等单位提示；未校验时降级 HIGH_PROPORTION、LARGE_SINGLE_DAY、BOARD_RESONANCE
+  3. 个股/板块分离：individual_summary 和 board_summary 完全独立，个股资金流与板块资金流分开记录
+  4. 资金异动仅为加分项：不单独创建候选，必须至少有一个 VCP/Pullback/Event 策略命中
+  5. NET_OUTFLOW_DOMINANT 不加分、不加策略标签，仅作为观察记录
+  6. 与 S-001~S-004 兼容：资金异动在博弈平衡之后检测，正向信号可提升 need_deep_ta
+- **标记**：`# [T-003] fund_flow_anomaly_pool`
+- **测试结果**：
+  - T-003 专项测试：71 passed
+  - TradeFlow 全量测试：83 passed
+  - S/T 系列联合测试（S-001~S-004 + T-002 + T-003）：325 passed
+  - 扩展回归测试（readiness_score + g001_three_layer）：163 passed
+
+---
+
 ## 2026-05-29 | T-002 TradeFlow P1 小范围 Discovery
 
 - **执行者**：OpenCode (glm-5.1)
@@ -1037,3 +1089,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/T-002-20260529-round1.txt
 - **运行档案**: docs/task_runs/T-002-20260529-143004/
+
+## 2026-05-29 | AUTO-002 自动开发闭环
+
+- **任务**: T-003 — TradeFlow P1 资金异动池
+- **优先级**: P2
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/T-003-20260529-round1.txt
+- **运行档案**: docs/task_runs/T-003-20260529-144007/

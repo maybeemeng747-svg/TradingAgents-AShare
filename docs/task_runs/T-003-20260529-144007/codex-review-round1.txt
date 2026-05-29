@@ -1,0 +1,3508 @@
+Task: T-003 — TradeFlow P1 资金异动池
+Date: 2026-05-29_15:05:01
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e728b-4bf5-76b2-9c57-16f202e50f4d
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/TASKS.md && printf '\\n---DECISIONS---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n---DEVLOG---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 任务池
+
+> 最后更新：2026-05-28
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；一个晚上默认只做一个任务。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `S-001`：政策版本因子进入 TradeFlow 候选池（P1，done — commit a4d06d4 + cf7d928）。
+2. `S-002`：叙事质量评分，区分普通事件与可传播主线（P1，done — pending commit）。
+3. `S-003`：水下风险标签，给候选池做风险降权（P1，ready）。
+4. `S-004`：候选股博弈平衡解释，输出多空/监管/资金结构（P1，ready）。
+5. `M-008`：数据源健康检查与 fallback 可观测性（P1，ready）。
+6. `T-002/T-003`：小范围 Discovery / 资金异动池（P1，ready，排在选股逻辑增强之后）。
+
+---
+
+## S. TradeFlow 选股策略核心任务池（2026-05-29 新增）
+
+> 原则：先提高候选池质量，再扩大扫描范围。TA 深度分析只服务于已经有足够逻辑、事件、资金或风险结构支撑的候选股。
+
+### S-001: 政策版本因子进入 TradeFlow 候选池（P1）
+- **描述**：为 TradeFlow 增加政策版本因子，识别当前 A 股市场更容易被定价的政策/产业方向，让候选池从“技术形态先行”升级为“政策版本入池 + 技术确认”。
+- **优先级**：P1
+- **状态**：done — commit a4d06d4 + cf7d928
+- **背景**：
+  - A 股很多阶段不是简单的业绩驱动，而是政策方向、产业版本和市场叙事共同驱动。
+  - 现在 TradeFlow 已有 VCP、事件催化、A 股标签，但缺少“当前版本需要什么标杆”的第一层判断。
+- **执行约束**：
+  - 不调用外部 LLM，不跑全市场扫描。
+  - 不改 `tradingagents/prompts/`。
+  - 不输出买入/卖出强建议。
+  - 只在 TradeFlow 候选池层做信号、标签、分数和证据引用。
+- **实现要点**：
+  1. 新增或扩展政策版本信号模块，输出 `policy_tags`、`version_score`、`policy_evidence_refs`。
+  2. 先用可维护关键词/规则覆盖：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革等。
+  3. 事件标题、公告摘要、行业标签命中政策版本时加分；无原始文本证据时不得加分。
+  4. 与现有 `event_source`、`event_catalyst`、`candidate_engine` 兼容，不破坏 VCP/回踩策略。
+  5. Daily Plan 中展示政策标签和证据摘要，但动作仍只能是 `OBSERVE/NEED_DEEP_TA` 等非强交易动作。
+- **验证方式**：
+  - 构造政策关键词事件，候选包含对应 `policy_tags` 和 evidence refs。
+  - 无政策证据时 `version_score` 不得凭空加分。
+  - 不同股票事件必须按 symbol 隔离，不能串票。
+  - `pytest tests/test_tradeflow_*.py -q` 或新增对应测试通过。
+- **代码标注要求**：`# [S-001] policy_version_signal`
+
+### S-002: 叙事质量评分（P1）
+- **描述**：给事件催化增加叙事质量评分，区分“普通公告/普通新闻”和“容易形成市场共识的主线事件”。
+- **优先级**：P1
+- **状态**：done — commit 9825e22
+- **背景**：
+  - 选股不只看有没有事件，还要判断事件是否容易被市场理解、传播和接力。
+  - 目前事件催化更偏“是否存在”，缺少“事件质量与传播价值”。
+- **执行约束**：
+  - 第一阶段只做规则评分，不调用外部 LLM。
+  - 不做舆情全网抓取，不扫全市场。
+  - 评分只影响候选排序和 `need_deep_ta`，不直接生成交易建议。
+- **实现要点**：
+  1. 新增 `narrative_score`，分解为政策背书、产业落地、订单/回购/评级、传播清晰度、拥挤/过热扣分。
+  2. 回购、重大订单、中标、并购重组、业绩预告、评级变化等事件给不同基础分。
+  3. 多个事件叠加时做封顶，避免标题堆叠虚高。
+  4. 输出 `narrative_reasons` 和 evidence refs，便于日报解释“为什么进候选池”。
+- **验证方式**：
+  - 普通新闻低分，回购/订单/政策相关事件高分。
+  - 重复事件不会无限叠加。
+  - `narrative_score` 缺证据时为 0 或保守默认。
+- **代码标注要求**：`# [S-002] narrative_quality_score`
+
+### S-003: 水下风险标签与候选降权（P1）
+- **描述**：为 TradeFlow 候选池增加水下风险标签，识别解禁、减持、问询、财务异常、融资拥挤、龙虎榜过热等风险，对候选做降权或要求更严格技术确认。
+- **优先级**：P1
+- **状态**：done — commit a95c3d7
+- **背景**：
+  - 选对股票不只看上涨逻辑，也要避开“看起来有题材但水下结构很差”的票。
+  - 当前已有部分 A 股标签，但风险标签还不够系统，也没有形成候选池统一降权规则。
+- **执行约束**：
+  - 所有风险标签必须绑定原始字段或事件文本。
+  - 不把风险标签直接翻译成清仓/买入建议。
+  - 不写生产数据库 schema；如需持久化先用现有 TradeFlow 结构或输出方案。
+- **实现要点**：
+  1. 统一输出 `risk_flags`：`LOCKUP_RISK`、`REDUCE_HOLDING_RISK`、`INQUIRY_RISK`、`FINANCIAL_QUALITY_RISK`、`MARGIN_CROWDING_RISK`、`LHB_OVERHEAT_RISK`。
+  2. 风险标签进入候选分数降权和 `need_deep_ta` 门槛。
+  3. 解禁/减持/问询等公告类风险优先从 `event_source` 读取。
+  4. 龙虎榜和融资融券风险必须区分 `HAS_DATA/NOT_QUERIED/FAILED`，不得把未查询当作无风险。
+- **验证方式**：
+  - 构造解禁/减持/问询事件，候选出现对应 `risk_flags` 并降权。
+  - 龙虎榜未查询时不生成过热风险。
+  - 风险缺证据时不输出高置信风险标签。
+- **代码标注要求**：`# [S-003] underwater_risk_flags`
+
+### S-004: 候选股博弈平衡解释（P1）
+- **描述**：在 TradeFlow Plan 中为每个候选输出轻量博弈解释，说明多头为何可能买、空头为何可能卖、政策/监管/资金结构是否支持，避免只给策略标签而缺少交易对手视角。
+- **优先级**：P1
+- **状态**：done — commit c92e626
+- **背景**：
+  - A 股候选池要处理动态博弈：同一事件可能同时有多头叙事、风险压制和资金拥挤。
+  - 在 TA 深度分析前，候选池应先判断这只票是不是值得进一步消耗 token。
+- **执行约束**：
+  - 规则化生成，不调用外部 LLM。
+  - 不输出强买卖词。
+  - 不替代 TA 深度分析，只做候选池摘要。
+- **实现要点**：
+  1. 输出 `game_balance`：`favorable/neutral/crowded/fragile`。
+  2. 输出 `bull_case`、`bear_case`、`policy_case`、`fund_flow_case` 的短字段，来源必须来自已存在信号和证据。
+  3. 当政策/叙事/资金/技术至少两类共振时，可提高 `need_deep_ta` 优先级。
+  4. 当风险标签过多或信号拥挤时，降低候选排序或标记 `fragile`。
+- **验证方式**：
+  - 政策 + 事件 + VCP 共振时 `game_balance=favorable` 或 `neutral`。
+  - 风险标签过多时 `game_balance=fragile/crowded`。
+  - 输出中包含证据引用，不出现强买卖词。
+- **代码标注要求**：`# [S-004] candidate_game_balance`
+
+### S-005: 选股优先级整合与 need_deep_ta 门槛重排（P1）
+- **描述**：整合政策版本、叙事质量、水下风险、资金异动和技术形态，重排 TradeFlow 候选优先级，让 TA 深度分析优先消耗在真正值得分析的股票上。
+- **优先级**：P1
+- **状态**：blocked
+- **前置条件**：`S-001`、`S-002`、`S-003`、`S-004` 完成。
+- **执行约束**：
+  - 不自动调用 TA 深度分析。
+  - 不做全市场扫描。
+  - 不把单一信号直接提升为强结论。
+- **实现要点**：
+  1. 定义候选综合评分：政策版本、叙事质量、技术确认、资金验证、风险扣分、数据完整度。
+  2. `need_deep_ta=True` 至少需要两类正向信号，且无重大未解释风险。
+  3. Daily Plan 输出“为什么值得看/为什么暂不深挖/缺什么证据”。
+  4. 为后续 `M-003` universe 管理器和 `M-004` 策略配置提供统一字段。
+- **验证方式**：
+  - 只有技术形态但无逻辑证据的票排序下降。
+  - 政策/事件/技术/资金共振的票排序上升。
+  - 风险过高或数据缺失时不触发 `need_deep_ta`。
+- **代码标注要求**：`# [S-005] selection_priority_gate`
+
+---
+
+## M. 框架路线总任务池（2026-05-28 新增）
+
+### INF-001: 自动开发任务领取锁与 in_progress 状态流转（P0）
+- **描述**：给自动开发闭环增加任务领取锁，避免 OpenClaw/OpenCode/Codex 或多个夜间任务同时领取同一个 `ready` 任务。
+- **优先级**：P0
+- **状态**：done — commit 54a8292
+- **背景**：
+  - 当前已经出现并发/半成品 diff：代码改动先出现，但任务状态和运行档案未同步。
+  - 需要把“领取任务 → 标记 in_progress → 写运行档案 → PASS/FAIL 收口”固化进脚本。
+- **执行约束**：
+  - 只改 `scripts/auto_dev_loop.sh`、`docs/AUTO_DEV_PLAN.md`、测试或必要文档。
+  - 不改业务代码。
+  - 不 push / PR / merge。
+- **实现要点**：
+  1. 非 dry-run 领取任务后，先把 `docs/TASKS.md` 中该任务状态从 `ready` 改为 `in_progress`，写入运行档案。
+  2. 任务 PASS 后改为 `done — commit <hash>`。
+  3. 任务失败或超轮次后改为 `blocked — NEEDS_HUMAN` 或保留 `in_progress` 并写明原因，不能静默回到 `ready`。
+  4. 加锁文件例如 `.auto_dev.lock` 或 `docs/task_runs/.lock`，脚本异常退出时要有清理/提示机制。
+  5. dry-run 不得修改任务状态。
+- **验证方式**：
+  - `bash -n scripts/auto_dev_loop.sh` 通过。
+  - 新增或补充脚本测试/静态验证，确认 dry-run 不改文件。
+  - 模拟领取任务后，TASKS 状态变为 `in_progress`，PASS 后变为 `done`。
+- **代码标注要求**：`# [INF-001] task_claim_lock`
+
+### M-002: 任务运行档案索引与夜间日报聚合（P1）
+- **描述**：把 `docs/task_runs/` 中的运行档案汇总成可读索引，让第二天白天快速知道昨晚做了什么、成功/失败、风险在哪里。
+- **优先级**：P1
+- **状态**：done — commit 6a95046
+- **执行约束**：
+  - 不调用模型，不跑股票分析。
+  - 只读 `docs/task_runs/`、`docs/reviews/`、`git log`，输出文档/脚本。
+- **实现要点**：
+  1. 新增脚本，例如 `scripts/summarize_auto_dev_runs.py`，扫描最近 N 个 task run。
+  2. 生成 `docs/auto_dev_reports/YYYY-MM-DD.md`，包含任务、commit、测试、review、风险、下一步。
+  3. 自动开发日报中引用该报告路径。
+  4. 报告不得包含 API key、完整敏感日志。
+- **验证方式**：
+  - 构造最小 task_runs fixture，脚本能输出日报。
+  - `python scripts/summarize_auto_dev_runs.py --date YYYY-MM-DD --dry-run` 可运行。
+- **代码标注要求**：`# [M-002] auto_dev_report_index`
+
+### M-003: TradeFlow universe 管理器（P1）
+- **描述**：统一管理候选池来源：自选池、持仓池、手动行业池、事件池、资金异动池，避免每个策略各自拼 symbols。
+- **优先级**：P1
+- **状态**：blocked
+- **前置条件**：`N-004` 和 `T-002` 完成。
+- **执行约束**：
+  - 不做全市场扫描。
+  - 不写生产数据库 schema；如需表结构先输出迁移方案。
+- **实现要点**：
+  1. 定义 universe source 枚举：watchlist/holding/manual/event/fund_flow/industry。
+  2. 每个 symbol 记录来源、入池原因、时间戳、过滤原因。
+  3. 与 `generate_daily_plan()` 的现有 universe 构建兼容。
+- **验证方式**：
+  - 同一 symbol 来自多个来源时去重但保留来源列表。
+  - 无来源时不触发全市场扫描。
+- **代码标注要求**：`# [M-003] tradeflow_universe_manager`
+
+### M-004: TradeFlow 策略权重与阈值配置（P1）
+- **描述**：把 VCP、回踩、事件催化、资金异动、A股标签的权重和阈值集中配置，便于后续复盘调参。
+- **优先级**：P1
+- **状态**：blocked
+- **前置条件**：`N-004`、`T-003` 完成。
+- **执行约束**：
+  - 不让 LLM 动态改权重。
+  - 默认配置必须保守，不输出强买卖词。
+- **实现要点**：
+
+---DECISIONS---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+---DEVLOG---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-05-29 | T-003 TradeFlow P1 资金异动池
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：新增资金异动候选池，将主力资金连续流入、资金占比异常、个股/板块资金共振作为候选入池信号
+- **修改文件**：
+  - `tradingagents/tradeflow/fund_flow_anomaly.py`（新增，~310行）— [T-003] fund_flow_anomaly_pool
+    - `detect_fund_flow_anomaly()` — 资金异动检测主入口
+    - `FundFlowAnomalyResult` — 输出 `fund_flow_anomaly_score`（0-25分）、`fund_flow_anomaly_tags`、`fund_flow_anomaly_refs`、`fund_flow_unit_verified`、`fund_flow_individual_summary`、`fund_flow_board_summary`
+    - 五类异常信号：CONSECUTIVE_INFLOW、HIGH_PROPORTION、BOARD_RESONANCE、LARGE_SINGLE_DAY、NET_OUTFLOW_DOMINANT
+    - 个股资金与板块资金分开记录，禁止混用
+    - 单位未校验时不输出高置信资金信号（HIGH_PROPORTION、LARGE_SINGLE_DAY、BOARD_RESONANCE降级）
+    - 资金异动只做加分项，不单独触发强结论
+    - 列式解析：识别"主力净流入-净额"列索引，精确提取净流入值
+  - `tradingagents/tradeflow/schemas.py` — [T-003]
+    - `STRATEGY_FUND_FLOW = "FUND_FLOW_ANOMALY"` 策略常量，加入 `ALL_STRATEGIES`
+    - `Candidate` 新增 6 个字段：fund_flow_anomaly_score、fund_flow_anomaly_tags、fund_flow_anomaly_refs、fund_flow_unit_verified、fund_flow_individual_summary、fund_flow_board_summary
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示资金异动标签、个股/板块摘要、单位校验状态
+  - `tradingagents/tradeflow/candidate_engine.py` — [T-003]
+    - `evaluate_symbol()` 新增 `fund_flow_individual` 和 `fund_flow_board` 参数
+    - 在 S-004 博弈平衡之后调用 `detect_fund_flow_anomaly()`
+    - 正向资金异动标签（非 NET_OUTFLOW_DOMINANT）加分并加入 strategy_tags
+    - NET_OUTFLOW_DOMINANT 记录但不加分
+    - 单位已校验 + 正向标签 + 分数 >= 10 时提升 need_deep_ta
+    - `init_db()` 新增 6 列迁移
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+  - `tradingagents/tradeflow/plan_runner.py` — [T-003]
+    - `generate_daily_plan()` 新增 `fund_flow_map` 参数（symbol → {individual, board}）
+    - `_build_plan_entry()` 输出资金异动全部字段
+  - `tradingagents/tradeflow/discovery.py` — [T-003]
+    - `SOURCE_FUND_FLOW = "fund_flow_pool"` 新来源常量
+    - `run_discovery()` 新增 `fund_flow_map` 参数
+    - `_build_discovery_universe()` 新增 `fund_flow_symbols` 参数，资金异动池股票可进入 universe
+    - `_build_discovery_entry()` 输出资金异动字段
+    - `render_discovery_text()` 展示资金异动标签和个股/板块摘要
+  - `tests/test_t003_fund_flow_anomaly.py`（新增，~530行）— 71 个测试
+- **关键逻辑**：
+  1. 列式解析：从表头找到"主力净流入-净额"列索引，精确提取净流入值，避免日期/收盘价/占比干扰
+  2. 单位校验：检查文本中是否包含"万元"、"净额"等单位提示；未校验时降级 HIGH_PROPORTION、LARGE_SINGLE_DAY、BOARD_RESONANCE
+  3. 个股/板块分离：individual_summary 和 board_summary 完全独立，个股资金流与板块资金流分开记录
+  4. 资金异动仅为加分项：不单独创建候选，必须至少有一个 VCP/Pullback/Event 策略命中
+  5. NET_OUTFLOW_DOMINANT 不加分、不加策略标签，仅作为观察记录
+  6. 与 S-001~S-004 兼容：资金异动在博弈平衡之后检测，正向信号可提升 need_deep_ta
+- **标记**：`# [T-003] fund_flow_anomaly_pool`
+- **测试结果**：
+  - T-003 专项测试：71 passed
+  - TradeFlow 全量测试：83 passed
+  - S/T 系列联合测试（S-001~S-004 + T-002 + T-003）：325 passed
+  - 扩展回归测试（readiness_score + g001_three_layer）：163 passed
+
+---
+
+## 2026-05-29 | T-002 TradeFlow P1 小范围 Discovery
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：在小范围股票池（自选/持仓/手动/行业试点/事件源）上运行候选发现，输出 TopN 候选、过滤原因和策略标签，不自动调用 TA 深度分析
+- **修改文件**：
+  - `tradingagents/tradeflow/discovery.py`（新增，~260行）— [T-002] discovery
+    - `run_discovery()` — 小范围候选扫描主入口
+    - `DiscoveryResult` — 输出候选列表、被过滤列表、摘要、metadata
+    - `FilteredSymbol` — 被过滤股票记录（symbol, name, source, reason）
+    - `_build_discovery_universe()` — 扩展 universe 构建，增加行业池（industry_symbols）
+    - `_build_discovery_entry()` — 构建候选计划条目
+    - `_classify_filter_reasons()` — 将过滤原因分类为：流动性差/数据缺失/无策略命中/其他
+    - `render_discovery_text()` — 人类可读的 Discovery 报告
+    - 支持 5 种来源：watchlist / holding / manual / industry_pool / event_source
+    - 支持 TopN 截断，默认 20 只
+    - 过滤原因分类统计进入 metadata.filter_breakdown
+    - 所有输出无强买卖词
+  - `scripts/run_tradeflow_plan.py`（重写）— [T-002] CLI 扩展
+    - 新增 `--discover` 模式切换
+    - 新增 `--industry-symbols` 行业池标的
+    - 新增 `--top-n` 候选截断数
+    - 新增 `--use-event-source` 事件源开关
+    - 新增 `--no-holdings` / `--no-watchlist` 排除选项
+    - 保留原有 `--symbols` / `--date` / `--db` / `--save-candidates` / `--news` 功能
+  - `tests/test_t002_discovery.py`（新增，~370行）— 39 个测试
+- **关键逻辑**：
+  1. Discovery 模式与原有 Plan 模式并行，不影响现有 `generate_daily_plan()` 路径
+  2. 行业池作为独立 universe 来源（`industry_pool`），与 manual/watchlist/holding/event_source 去重
+  3. 每只被过滤股票记录具体原因，统计为 4 类（流动性差/数据缺失/无策略命中/其他）
+  4. 不自动调用 TA 深度分析，只标记 `need_deep_ta`
+  5. 事件源按 symbol 隔离，每只股票只消费自己的事件标题
+  6. 输出中无强买卖词，自动 sanitize
+- **标记**：`# [T-002] discovery`
+- **测试结果**：
+  - T-002 专项测试：39 passed
+  - TradeFlow 全量测试：122 passed
+  - 扩展回归测试：519 passed, 2 skipped
+
+---
+
+## 2026-05-29 | M-008 数据源健康检查与 fallback 可观测性
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：建立数据源健康检查，持续观察 AKShare、cn_astock、BaoStock、yfinance 等源的成功率、延迟和失败原因，记录 fallback 是否发生以及最终 vendor
+- **修改文件**：
+  - `tradingagents/dataflows/health_check.py`（新增，~280行）— [M-008] data_source_health
+    - `EndpointCheck` — 每个端点的检查结果：status(OK/FAILED/STALE/NOT_QUERIED)、vendor、fallback_from、latency_ms、error、chain、record_count
+    - `HealthReport` — 完整健康报告：run_at、date、checks、summary(OK/FAILED/STALE/fallback_count)
+    - `_default_endpoints()` — 默认检查 8 个端点：get_stock_data、get_indicators、get_fundamentals、get_balance_sheet、get_cashflow、get_income_statement、get_news、get_realtime_quotes
+    - `_probe_endpoint()` — 单端点探测：调用 route_to_vendor，记录延迟、记录数、fallback
+    - `run_health_check()` — 主入口：对默认 2-3 只样例股（600519.SH、000001.SZ）运行所有端点探测
+    - `render_report()` — 生成 Markdown 报告：Summary 表 + Endpoint Details 表 + Fallback Events + Failed Endpoints + Stale Responses
+    - `save_report()` — 写入 `docs/data_source_health/YYYY-MM-DD.md`
+    - 自动检测 fallback：当 chain 首位 vendor 与实际 hit vendor 不同时记录 fallback_from
+  - `scripts/run_health_check.py`（新增，~60行）— CLI 入口
+    - `--dry-run` 只打印不写文件
+    - `--output` 自定义输出路径
+    - `--symbols` 自定义样例股
+    - 非 dry-run 默认写入 `docs/data_source_health/YYYY-MM-DD.md`
+  - `tests/test_m008_health_check.py`（新增，~380行）— 44 个测试
+- **关键逻辑**：
+  1. 健康检查为纯观测层，不修改任何业务数据或配置
+  2. 每个端点记录完整的 vendor chain 和实际 hit vendor，fallback 时自动对比并标记
+  3. STALE 状态检测空响应/极短响应/None 返回
+  4. symbol 替换支持嵌套 list/tuple 参数（如 get_realtime_quotes 的 symbols 列表）
+  5. 所有测试 mock route_to_vendor，不依赖网络
+  6. live smoke 可通过 `python scripts/run_health_check.py --dry-run` 手动执行
+- **标记**：`# [M-008] data_source_health`
+- **测试结果**：
+  - M-008 专项测试：44 passed
+  - 关联 provider/tradeflow 测试：47 passed, 2 skipped
+
+## 2026-05-29 | S-004 候选股博弈平衡解释
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：在 TradeFlow Plan 中为每个候选输出轻量博弈解释，说明多头为何可能买、空头为何可能卖、政策/监管/资金结构是否支持
+- **修改文件**：
+  - `tradingagents/tradeflow/game_balance.py`（新增，~210行）— [S-004] candidate_game_balance
+    - `assess_game_balance(strategy_tags, score, policy_tags, version_score, ...)` — 规则化博弈平衡评估
+    - `GameBalanceResult` — 输出 `game_balance`(favorable/neutral/crowded/fragile)、`bull_case`、`bear_case`、`policy_case`、`fund_flow_case`、`resonance_count`、`game_balance_refs`
+    - 四类信号共振计数：政策(policy)、叙事/事件(narrative)、技术(tech)、资金(fund)
+    - 共振 >= 2 类且风险可控时标记 `favorable` 或 `neutral`，并提升 `need_deep_ta`
+    - 高严重性风险(INQUIRY_RISK/FINANCIAL_QUALITY_RISK)或风险标签 >= 3 个时标记 `fragile`
+    - 资金冲突(正负同时) + 风险标签 >= 2 时标记 `crowded`
+    - 所有输出文本禁止强买卖词，自动 sanitize
+    - 所有 case 字段来源必须来自已有信号和证据，不调用外部 LLM
+  - `tradingagents/tradeflow/schemas.py` — [S-004]
+    - `Candidate` 新增 `game_balance`、`bull_case`、`bear_case`、`policy_case`、`fund_flow_case`、`resonance_count`、`game_balance_refs` 字段
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示博弈平衡 verdict + 多空/政策/资金四维视角
+  - `tradingagents/tradeflow/candidate_engine.py` — [S-004]
+    - `evaluate_symbol()` 在 S-003 水下风险之后调用 `assess_game_balance()`
+    - 博弈平衡结果写入 `candidate.evidence["game_balance"]`
+    - 共振 >= 2 + 风险可控时自动提升 `need_deep_ta`
+    - fragile/crowded + 风险标签 >= 2 时关闭 `need_deep_ta`
+    - `init_db()` 新增 7 列迁移：game_balance, bull_case, bear_case, policy_case, fund_flow_case, resonance_count, game_balance_refs_json
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+  - `tradingagents/tradeflow/plan_runner.py` — [S-004]
+    - `_build_plan_entry()` 输出博弈平衡全部字段
+  - `tests/test_s004_game_balance.py`（新增，~470行）— 68 个测试
+- **关键逻辑**：
+  1. 博弈平衡作为总结层叠加在所有正向策略和风险标签之上，不破坏现有逻辑
+  2. 四类信号共振计数（政策/叙事/技术/资金），>= 2 类共振 + 风险可控 → favorable/neutral
+  3. 高严重性风险（问询/财务异常）或风险标签过多 → fragile，不进入深度 TA
+  4. 资金冲突 + 风险标签拥挤 → crowded
+  5. 所有 case 文本引用已有信号和证据，不凭空生成
+  6. 输出中包含 evidence refs，可追溯到 policy_evidence、narrative_reasons、risk_reasons、event_text
+  7. 不出现强买卖词
+- **标记**：`# [S-004] candidate_game_balance`
+- **测试结果**：
+  - S-004 专项测试：68 passed
+  - TradeFlow 全量测试：83 passed
+  - 扩展回归测试（S-001 + S-002 + S-003 + S-004 + readiness_score）：331 passed
+
+## 2026-05-29 | S-003 水下风险标签与候选降权
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：为 TradeFlow 候选池增加水下风险标签，识别解禁、减持、问询、财务异常、融资拥挤、龙虎榜过热等风险，对候选做降权或要求更严格技术确认
+- **修改文件**：
+  - `tradingagents/tradeflow/underwater_risk_flags.py`（新增，~220行）— [S-003] underwater_risk_flags
+    - `detect_underwater_risks(event_texts, lhb_status, lhb_texts, margin_status, margin_texts)` — 六类水下风险检测
+    - `UnderwaterRiskResult` — 输出 `risk_flags`、`risk_penalty`（0 to -30）、`risk_evidence_refs`、`risk_reasons`
+    - 六类风险：LOCKUP_RISK、REDUCE_HOLDING_RISK、INQUIRY_RISK、FINANCIAL_QUALITY_RISK、MARGIN_CROWDING_RISK、LHB_OVERHEAT_RISK
+    - 龙虎榜和融资融券风险必须区分 HAS_DATA/NOT_QUERIED/FAILED，不得把未查询当作无风险
+    - 每类风险只取最高权重命中，不重复叠加；罚分上限 30
+  - `tradingagents/tradeflow/schemas.py` — [S-003]
+    - `Candidate` 新增 `risk_penalty`、`risk_evidence_refs`、`risk_reasons` 字段
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示水下风险标签和罚分摘要
+  - `tradingagents/tradeflow/candidate_engine.py` — [S-003]
+    - `evaluate_symbol()` 在 S-002 叙事质量之后调用 `detect_underwater_risks()`
+    - 风险标签进入候选 `risk_flags` 并降权候选分数
+    - `init_db()` 新增 `risk_penalty`、`risk_evidence_refs_json`、`risk_reasons_json` 列迁移
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+    - 当 INQUIRY_RISK 或 FINANCIAL_QUALITY_RISK 存在，或风险标签 >= 3 个时，关闭 `need_deep_ta`
+  - `tradingagents/tradeflow/plan_runner.py` — [S-003]
+    - `_build_plan_entry()` 输出 `risk_penalty`、`risk_evidence_refs`、`risk_reasons`
+  - `tests/test_s003_underwater_risk_flags.py`（新增，~370行）— 61 个测试
+- **关键逻辑**：
+  1. 水下风险作为惩罚层叠加在所有正向策略之上，不破坏现有策略
+  2. 所有风险标签必须绑定原始事件文本，无证据时不输出高置信风险
+  3. 龙虎榜未查询时不得生成 LHB_OVERHEAT_RISK；融资融券未查询同理
+  4. 高风险标签（问询/财务异常）或风险标签过多时关闭 need_deep_ta
+  5. 罚分上限 30，避免单个候选被无限扣分
+- **标记**：`# [S-003] underwater_risk_flags`
+- **测试结果**：
+  - S-003 专项测试：61 passed
+  - TradeFlow 全量测试：83 passed
+  - 扩展回归测试（S-001 + S-002 + S-003 + readiness_score）：346 passed
+
+---
+
+## 2026-05-29 | S-002 叙事质量评分
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：为事件催化增加叙事质量评分，区分"普通公告/普通新闻"和"容易形成市场共识的主线事件"
+- **修改文件**：
+  - `tradingagents/tradeflow/narrative_quality.py`（新增，~210行）— [S-002] narrative_quality_score
+    - `score_narrative_quality(event_texts)` — 五维度叙事质量评分
+    - `NarrativeQualityResult` — 输出 `narrative_score`（0-40分）、`narrative_reasons`、`narrative_evidence_refs`
+    - 五个维度：政策背书（0-10）、产业落地（0-10）、公司动作（0-10）、传播清晰度（0-10）、拥挤/过热扣分（0 to -10）
+    - 每个维度独立打分，每维度只取最高权重命中，不重复叠加
+
+exec
+/bin/zsh -lc "git status --short --branch && sed -n '1,220p' docs/project-overview.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+## local/tradingagents-custom...myfork/local/tradingagents-custom [ahead 63, behind 1]
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/tradeflow/candidate_engine.py
+ M tradingagents/tradeflow/discovery.py
+ M tradingagents/tradeflow/plan_runner.py
+ M tradingagents/tradeflow/schemas.py
+?? .auto_dev.lock/
+?? docs/task_runs/T-003-20260529-144007/
+?? tests/test_t003_fund_flow_anomaly.py
+?? tradingagents/tradeflow/fund_flow_anomaly.py
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff --cached --stat && git diff -- tradingagents/tradeflow/fund_flow_anomaly.py tradingagents/tradeflow/candidate_engine.py tradingagents/tradeflow/schemas.py tradingagents/tradeflow/plan_runner.py tradingagents/tradeflow/discovery.py tests/test_t003_fund_flow_anomaly.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ docs/DEVLOG.md                              | 52 +++++++++++++++++++++++
+ docs/TASKS.md                               |  2 +-
+ tradingagents/tradeflow/candidate_engine.py | 64 ++++++++++++++++++++++++++++-
+ tradingagents/tradeflow/discovery.py        | 39 ++++++++++++++++++
+ tradingagents/tradeflow/plan_runner.py      | 15 +++++++
+ tradingagents/tradeflow/schemas.py          | 34 ++++++++++++++-
+ 6 files changed, 202 insertions(+), 4 deletions(-)
+diff --git a/tradingagents/tradeflow/candidate_engine.py b/tradingagents/tradeflow/candidate_engine.py
+index bcbe52b..cc102c0 100644
+--- a/tradingagents/tradeflow/candidate_engine.py
++++ b/tradingagents/tradeflow/candidate_engine.py
+@@ -18,7 +18,7 @@ from typing import Optional
+ 
+ import pandas as pd
+ 
+-from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE  # [S-001] [S-002]
++from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE, STRATEGY_FUND_FLOW  # [S-001] [S-002] [T-003]
+ from .strategies.vcp import score_vcp
+ from .strategies.pullback_support import score_pullback_support
+ from .strategies.event_catalyst import score_event_catalyst
+@@ -26,6 +26,7 @@ from .policy_version_signal import detect_policy_version, PolicyVersionResult  #
+ from .narrative_quality import score_narrative_quality, NarrativeQualityResult  # [S-002]
+ from .underwater_risk_flags import detect_underwater_risks, UnderwaterRiskResult, ALL_RISK_FLAGS  # [S-003]
+ from .game_balance import assess_game_balance, GameBalanceResult  # [S-004] candidate_game_balance
++from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult, FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT  # [T-003] fund_flow_anomaly_pool
+ 
+ 
+ # ── SQL for table creation ──
+@@ -137,6 +138,19 @@ def init_db(db_path: str) -> None:
+             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+         except sqlite3.OperationalError:
+             pass
++    # [T-003] fund_flow_anomaly_pool — add fund flow anomaly columns
++    for _col, _type in [
++        ("fund_flow_anomaly_score", "REAL DEFAULT 0.0"),
++        ("fund_flow_anomaly_tags_json", "TEXT DEFAULT '[]'"),
++        ("fund_flow_anomaly_refs_json", "TEXT DEFAULT '[]'"),
++        ("fund_flow_unit_verified", "INTEGER DEFAULT 0"),
++        ("fund_flow_individual_summary", "TEXT DEFAULT ''"),
++        ("fund_flow_board_summary", "TEXT DEFAULT ''"),
++    ]:
++        try:
++            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
++        except sqlite3.OperationalError:
++            pass
+     conn.commit()
+     conn.close()
+ 
+@@ -298,6 +312,8 @@ def evaluate_symbol(
+     news_texts: Optional[list[str]] = None,
+     event_overrides: Optional[list[dict]] = None,
+     df: Optional[pd.DataFrame] = None,
++    fund_flow_individual: Optional[str] = None,  # [T-003] fund_flow_anomaly_pool
++    fund_flow_board: Optional[str] = None,  # [T-003] fund_flow_anomaly_pool
+ ) -> tuple[Optional[Candidate], str]:
+     """Evaluate one symbol through all strategies.
+ 
+@@ -456,6 +472,38 @@ def evaluate_symbol(
+     if gb_result.game_balance in {"fragile", "crowded"} and len(candidate.risk_flags) >= 2:
+         candidate.need_deep_ta = False
+ 
++    # [T-003] fund_flow_anomaly_pool — detect capital anomaly
++    ff_result: FundFlowAnomalyResult = detect_fund_flow_anomaly(
++        fund_flow_individual=fund_flow_individual,
++        fund_flow_board=fund_flow_board,
++    )
++    if ff_result.fund_flow_anomaly_tags:
++        candidate.fund_flow_anomaly_score = ff_result.fund_flow_anomaly_score
++        candidate.fund_flow_anomaly_tags = ff_result.fund_flow_anomaly_tags
++        candidate.fund_flow_anomaly_refs = ff_result.fund_flow_anomaly_refs
++        candidate.fund_flow_unit_verified = ff_result.fund_flow_unit_verified
++        candidate.fund_flow_individual_summary = ff_result.fund_flow_individual_summary
++        candidate.fund_flow_board_summary = ff_result.fund_flow_board_summary
++        # Fund flow anomaly only adds bonus, does not trigger strong conclusions
++        positive_ff_tags = set(ff_result.fund_flow_anomaly_tags) - {FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT}
++        if positive_ff_tags:
++            candidate.score = round(candidate.score + ff_result.fund_flow_anomaly_score, 2)
++            candidate.strategy_tags = sorted(
++                set(candidate.strategy_tags) | {STRATEGY_FUND_FLOW}
++            )
++        candidate.evidence["fund_flow_anomaly"] = {
++            "anomaly_score": ff_result.fund_flow_anomaly_score,
++            "anomaly_tags": ff_result.fund_flow_anomaly_tags,
++            "anomaly_refs": ff_result.fund_flow_anomaly_refs,
++            "unit_verified": ff_result.fund_flow_unit_verified,
++            "individual_summary": ff_result.fund_flow_individual_summary,
++            "board_summary": ff_result.fund_flow_board_summary,
++        }
++        # Unit unverified: do not boost need_deep_ta from fund flow alone
++        if ff_result.fund_flow_unit_verified and positive_ff_tags and ff_result.fund_flow_anomaly_score >= 10:
++            candidate.need_deep_ta = True
++        # Net outflow dominant does not add score but records as observation
++
+     return candidate, ""
+ 
+ 
+@@ -473,8 +521,11 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
+             "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+             "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
+             "fund_flow_case, resonance_count, game_balance_refs_json, "
++            "fund_flow_anomaly_score, fund_flow_anomaly_tags_json, "
++            "fund_flow_anomaly_refs_json, fund_flow_unit_verified, "
++            "fund_flow_individual_summary, fund_flow_board_summary, "
+             "created_at, updated_at) "
+-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
++            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+             "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+             "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
+             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+@@ -495,6 +546,12 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
+             "policy_case=excluded.policy_case, fund_flow_case=excluded.fund_flow_case, "
+             "resonance_count=excluded.resonance_count, "
+             "game_balance_refs_json=excluded.game_balance_refs_json, "
++            "fund_flow_anomaly_score=excluded.fund_flow_anomaly_score, "
++            "fund_flow_anomaly_tags_json=excluded.fund_flow_anomaly_tags_json, "
++            "fund_flow_anomaly_refs_json=excluded.fund_flow_anomaly_refs_json, "
++            "fund_flow_unit_verified=excluded.fund_flow_unit_verified, "
++            "fund_flow_individual_summary=excluded.fund_flow_individual_summary, "
++            "fund_flow_board_summary=excluded.fund_flow_board_summary, "
+             "updated_at=excluded.updated_at",
+             (
+                 row["trade_date"], row["symbol"], row["name"], row["source"],
+@@ -511,6 +568,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
+                 row["game_balance"], row["bull_case"], row["bear_case"],
+                 row["policy_case"], row["fund_flow_case"],
+                 row["resonance_count"], row["game_balance_refs_json"],
++                row["fund_flow_anomaly_score"], row["fund_flow_anomaly_tags_json"],
++                row["fund_flow_anomaly_refs_json"], row["fund_flow_unit_verified"],
++                row["fund_flow_individual_summary"], row["fund_flow_board_summary"],
+                 candidate.created_at, row["updated_at"],
+             ),
+         )
+diff --git a/tradingagents/tradeflow/discovery.py b/tradingagents/tradeflow/discovery.py
+index 2b032f5..4fa4486 100644
+--- a/tradingagents/tradeflow/discovery.py
++++ b/tradingagents/tradeflow/discovery.py
+@@ -30,6 +30,8 @@ SOURCE_MANUAL = "manual"
+ SOURCE_INDUSTRY = "industry_pool"
+ SOURCE_EVENT = "event_source"
+ 
++SOURCE_FUND_FLOW = "fund_flow_pool"  # [T-003] fund_flow_anomaly_pool
++
+ TOPN_DEFAULT = 20
+ 
+ 
+@@ -60,6 +62,7 @@ def _build_discovery_universe(
+     include_watchlist: bool = True,
+     include_yesterday: bool = False,
+     event_symbols: Optional[dict[str, list[str]]] = None,
++    fund_flow_symbols: Optional[list[str]] = None,  # [T-003] fund_flow_anomaly_pool
+ ) -> list[dict]:
+     """Build universe for discovery — adds industry pool as a source."""
+     universe: dict[str, dict] = {}
+@@ -82,6 +85,13 @@ def _build_discovery_universe(
+             if sym and sym not in universe:
+                 universe[sym] = {"symbol": sym, "name": "", "source": SOURCE_INDUSTRY}
+ 
++    # [T-003] fund_flow_anomaly_pool — add fund flow anomaly symbols
++    if fund_flow_symbols:
++        for sym in fund_flow_symbols:
++            sym = sym.strip()
++            if sym and sym not in universe:
++                universe[sym] = {"symbol": sym, "name": "", "source": SOURCE_FUND_FLOW}
++
+     return list(universe.values())
+ 
+ 
+@@ -98,6 +108,7 @@ def run_discovery(
+     news_texts: Optional[list[str]] = None,
+     use_event_source: bool = False,
+     save_candidates: bool = False,
++    fund_flow_map: Optional[dict[str, dict]] = None,  # [T-003] fund_flow_anomaly_pool
+ ) -> DiscoveryResult:
+     """Run small-scope discovery and return TopN candidates.
+ 
+@@ -114,6 +125,7 @@ def run_discovery(
+         news_texts: News texts.
+         use_event_source: Fetch daily events for event pool.
+         save_candidates: Persist candidates to DB.
++        fund_flow_map: [T-003] Optional dict mapping symbol → {"individual": str, "board": str}.
+ 
+     Returns:
+         DiscoveryResult with candidates and filtered symbols.
+@@ -136,6 +148,7 @@ def run_discovery(
+         include_watchlist=include_watchlist,
+         include_yesterday=False,
+         event_symbols=events_map if events_map else None,
++        fund_flow_symbols=list(fund_flow_map.keys()) if fund_flow_map else None,  # [T-003]
+     )
+ 
+     candidates: list[Candidate] = []
+@@ -156,6 +169,11 @@ def run_discovery(
+ 
+         sym_news = events_map.get(sym) if events_map else None
+ 
++        # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
++        sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
++        sym_ff_individual = sym_ff.get("individual") if sym_ff else None
++        sym_ff_board = sym_ff.get("board") if sym_ff else None
++
+         c, reason = evaluate_symbol(
+             symbol=sym,
+             name=sym_name,
+@@ -163,6 +181,8 @@ def run_discovery(
+             trade_date=trade_date,
+             news_texts=sym_news or news_texts,
+             event_overrides=filtered_overrides,
++            fund_flow_individual=sym_ff_individual,  # [T-003]
++            fund_flow_board=sym_ff_board,  # [T-003]
+         )
+         if c is not None:
+             candidates.append(c)
+@@ -266,6 +286,11 @@ def _build_discovery_entry(candidate: Candidate) -> dict:
+         "policy_case": candidate.policy_case,
+         "fund_flow_case": candidate.fund_flow_case,
+         "resonance_count": candidate.resonance_count,
++        "fund_flow_anomaly_score": candidate.fund_flow_anomaly_score,  # [T-003]
++        "fund_flow_anomaly_tags": candidate.fund_flow_anomaly_tags,  # [T-003]
++        "fund_flow_unit_verified": candidate.fund_flow_unit_verified,  # [T-003]
++        "fund_flow_individual_summary": candidate.fund_flow_individual_summary,  # [T-003]
++        "fund_flow_board_summary": candidate.fund_flow_board_summary,  # [T-003]
+     }
+ 
+ 
+@@ -335,6 +360,20 @@ def render_discovery_text(result: DiscoveryResult) -> str:
+         if game_balance:
+             lines.append(f"  博弈平衡: {game_balance}")
+ 
++        # [T-003] fund_flow_anomaly_pool
++        ff_tags = c.get("fund_flow_anomaly_tags", [])
++        ff_score = c.get("fund_flow_anomaly_score", 0)
++        ff_ind = c.get("fund_flow_individual_summary", "")
++        ff_board = c.get("fund_flow_board_summary", "")
++        ff_verified = c.get("fund_flow_unit_verified", False)
++        if ff_tags:
++            unit_mark = "✓" if ff_verified else "⚠未校验"
++            lines.append(f"  资金异动: {', '.join(ff_tags)} (+{ff_score}分) [{unit_mark}]")
++            if ff_ind:
++                lines.append(f"    个股: {ff_ind}")
++            if ff_board:
++                lines.append(f"    板块: {ff_board}")
++
+         lines.append("")
+ 
+     if result.filtered:
+diff --git a/tradingagents/tradeflow/plan_runner.py b/tradingagents/tradeflow/plan_runner.py
+index 0764193..256b645 100644
+--- a/tradingagents/tradeflow/plan_runner.py
++++ b/tradingagents/tradeflow/plan_runner.py
+@@ -81,6 +81,12 @@ def _build_plan_entry(candidate: Candidate) -> dict:
+         "fund_flow_case": candidate.fund_flow_case,  # [S-004]
+         "resonance_count": candidate.resonance_count,  # [S-004]
+         "game_balance_refs": candidate.game_balance_refs,  # [S-004]
++        "fund_flow_anomaly_score": candidate.fund_flow_anomaly_score,  # [T-003] fund_flow_anomaly_pool
++        "fund_flow_anomaly_tags": candidate.fund_flow_anomaly_tags,  # [T-003]
++        "fund_flow_anomaly_refs": candidate.fund_flow_anomaly_refs,  # [T-003]
++        "fund_flow_unit_verified": candidate.fund_flow_unit_verified,  # [T-003]
++        "fund_flow_individual_summary": candidate.fund_flow_individual_summary,  # [T-003]
++        "fund_flow_board_summary": candidate.fund_flow_board_summary,  # [T-003]
+     }
+ 
+ 
+@@ -94,6 +100,7 @@ def generate_daily_plan(
+     event_overrides: Optional[list[dict]] = None,
+     save_candidates: bool = False,
+     use_event_source: bool = False,  # [N-001] event_source_plan_integration
++    fund_flow_map: Optional[dict[str, dict]] = None,  # [T-003] fund_flow_anomaly_pool
+ ) -> DailyPlan:
+     """Generate a pre-market daily plan.
+ 
+@@ -107,6 +114,7 @@ def generate_daily_plan(
+         event_overrides: Manual event overrides for event catalyst detection.
+         save_candidates: If True, persist evaluated candidates to tf_db_path.
+         use_event_source: [N-001] If True, fetch daily events and inject into universe.
++        fund_flow_map: [T-003] Optional dict mapping symbol → {"individual": str, "board": str}.
+ 
+     Returns:
+         DailyPlan with validated entries.
+@@ -149,6 +157,11 @@ def generate_daily_plan(
+             # [N-001] event_source_plan_integration
+             sym_news = events_map.get(sym) if events_map else None
+ 
++            # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
++            sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
++            sym_ff_individual = sym_ff.get("individual") if sym_ff else None
++            sym_ff_board = sym_ff.get("board") if sym_ff else None
++
+             c, reason = evaluate_symbol(
+                 symbol=sym,
+                 name=item.get("name", ""),
+@@ -156,6 +169,8 @@ def generate_daily_plan(
+                 trade_date=trade_date,
+                 news_texts=sym_news or news_texts,
+                 event_overrides=filtered_overrides,
++                fund_flow_individual=sym_ff_individual,  # [T-003]
++                fund_flow_board=sym_ff_board,  # [T-003]
+             )
+             if c is not None:
+                 candidates.append(c)
+diff --git a/tradingagents/tradeflow/schemas.py b/tradingagents/tradeflow/schemas.py
+index 18bd35b..842def1 100644
+--- a/tradingagents/tradeflow/schemas.py
++++ b/tradingagents/tradeflow/schemas.py
+@@ -17,7 +17,8 @@ STRATEGY_PULLBACK = "PULLBACK_SUPPORT"
+ STRATEGY_EVENT = "EVENT_CATALYST"
+ STRATEGY_POLICY_VERSION = "POLICY_VERSION"  # [S-001] policy_version_signal
+ STRATEGY_NARRATIVE = "NARRATIVE_QUALITY"  # [S-002] narrative_quality_score
+-ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE}
++STRATEGY_FUND_FLOW = "FUND_FLOW_ANOMALY"  # [T-003] fund_flow_anomaly_pool
++ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE, STRATEGY_FUND_FLOW}
+ 
+ # [N-004] astock_signal_tags
+ SIGNAL_TAG_POLICY_CATALYST = "POLICY_CATALYST"
+@@ -78,6 +79,12 @@ class Candidate:
+     fund_flow_case: str = ""  # [S-004] candidate_game_balance
+     resonance_count: int = 0  # [S-004] candidate_game_balance
+     game_balance_refs: list[dict] = field(default_factory=list)  # [S-004] candidate_game_balance
++    fund_flow_anomaly_score: float = 0.0  # [T-003] fund_flow_anomaly_pool
++    fund_flow_anomaly_tags: list[str] = field(default_factory=list)  # [T-003]
++    fund_flow_anomaly_refs: list[dict] = field(default_factory=list)  # [T-003]
++    fund_flow_unit_verified: bool = False  # [T-003]
++    fund_flow_individual_summary: str = ""  # [T-003]
++    fund_flow_board_summary: str = ""  # [T-003]
+ 
+     def __post_init__(self):
+         if not self.trade_date:
+@@ -156,6 +163,12 @@ class Candidate:
+             "fund_flow_case": self.fund_flow_case,  # [S-004]
+             "resonance_count": self.resonance_count,  # [S-004]
+             "game_balance_refs_json": json.dumps(self.game_balance_refs, ensure_ascii=False),  # [S-004]
++            "fund_flow_anomaly_score": self.fund_flow_anomaly_score,  # [T-003] fund_flow_anomaly_pool
++            "fund_flow_anomaly_tags_json": json.dumps(self.fund_flow_anomaly_tags, ensure_ascii=False),  # [T-003]
++            "fund_flow_anomaly_refs_json": json.dumps(self.fund_flow_anomaly_refs, ensure_ascii=False),  # [T-003]
++            "fund_flow_unit_verified": 1 if self.fund_flow_unit_verified else 0,  # [T-003]
++            "fund_flow_individual_summary": self.fund_flow_individual_summary,  # [T-003]
++            "fund_flow_board_summary": self.fund_flow_board_summary,  # [T-003]
+             "updated_at": datetime.now().isoformat(),
+         }
+ 
+@@ -194,6 +207,12 @@ class Candidate:
+             fund_flow_case=row.get("fund_flow_case", ""),  # [S-004]
+             resonance_count=row.get("resonance_count", 0),  # [S-004]
+             game_balance_refs=json.loads(row.get("game_balance_refs_json", "[]")),  # [S-004]
++            fund_flow_anomaly_score=row.get("fund_flow_anomaly_score", 0.0),  # [T-003] fund_flow_anomaly_pool
++            fund_flow_anomaly_tags=json.loads(row.get("fund_flow_anomaly_tags_json", "[]")),  # [T-003]
++            fund_flow_anomaly_refs=json.loads(row.get("fund_flow_anomaly_refs_json", "[]")),  # [T-003]
++            fund_flow_unit_verified=bool(row.get("fund_flow_unit_verified", 0)),  # [T-003]
++            fund_flow_individual_summary=row.get("fund_flow_individual_summary", ""),  # [T-003]
++            fund_flow_board_summary=row.get("fund_flow_board_summary", ""),  # [T-003]
+         )
+ 
+ 
+@@ -343,6 +362,19 @@ class DailyPlan:
+                     lines.append(f"    政策/监管: {policy_case}")
+                 if fund_flow_case:
+                     lines.append(f"    资金结构: {fund_flow_case}")
++            # [T-003] fund_flow_anomaly_pool — display fund flow anomaly
++            ff_tags = c.get("fund_flow_anomaly_tags", [])
++            ff_score = c.get("fund_flow_anomaly_score", 0)
++            ff_ind = c.get("fund_flow_individual_summary", "")
++            ff_board = c.get("fund_flow_board_summary", "")
++            ff_verified = c.get("fund_flow_unit_verified", False)
++            if ff_tags:
++                unit_mark = "✓" if ff_verified else "⚠未校验"
++                lines.append(f"  资金异动: {', '.join(ff_tags)} (+{ff_score}分) [{unit_mark}]")
++                if ff_ind:
++                    lines.append(f"    个股: {ff_ind}")
++                if ff_board:
++                    lines.append(f"    板块: {ff_board}")
+             lines.append("")
+ 
+         return "\n".join(lines)
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/tradeflow/fund_flow_anomaly.py && printf '\\n---rest---\\n' && sed -n '260,560p' tradingagents/tradeflow/fund_flow_anomaly.py && printf '\\n---tests snippets---\\n' && sed -n '1,220p' tests/test_t003_fund_flow_anomaly.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [T-003] fund_flow_anomaly_pool
+"""Fund Flow Anomaly Detection — detect capital anomaly for TradeFlow candidates.
+
+Uses individual stock fund flow data (近5-20日) to identify:
+- Consecutive main-capital net inflows
+- Abnormal capital proportion
+- Individual/sector fund flow resonance
+
+Outputs:
+- fund_flow_anomaly_score: 0 to 25 bonus points
+- fund_flow_anomaly_tags: e.g. CONSECUTIVE_INFLOW, HIGH_PROPORTION, BOARD_RESONANCE
+- fund_flow_anomaly_refs: evidence references
+- fund_flow_unit_verified: whether unit has been validated
+- fund_flow_individual_summary: individual fund flow summary
+- fund_flow_board_summary: board fund flow summary (separate from individual)
+
+Design constraints:
+- Individual fund flow and board fund flow MUST be recorded separately.
+- Fund flow anomaly is only a bonus; does NOT trigger strong conclusions alone.
+- When unit is unverified, no high-confidence fund flow signal is output.
+- No external LLM calls.
+- No strong buy/sell words.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Optional
+
+
+MAX_FUND_FLOW_BONUS = 25
+
+FUND_FLOW_TAG_CONSECUTIVE_INFLOW = "CONSECUTIVE_INFLOW"
+FUND_FLOW_TAG_HIGH_PROPORTION = "HIGH_PROPORTION"
+FUND_FLOW_TAG_BOARD_RESONANCE = "BOARD_RESONANCE"
+FUND_FLOW_TAG_LARGE_SINGLE_DAY = "LARGE_SINGLE_DAY"
+FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT = "NET_OUTFLOW_DOMINANT"
+ALL_FUND_FLOW_TAGS = {
+    FUND_FLOW_TAG_CONSECUTIVE_INFLOW,
+    FUND_FLOW_TAG_HIGH_PROPORTION,
+    FUND_FLOW_TAG_BOARD_RESONANCE,
+    FUND_FLOW_TAG_LARGE_SINGLE_DAY,
+    FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT,
+}
+
+_INDIVIDUAL_FUND_FLOW_PATTERN = re.compile(
+    r"近\d+日主力资金净流向|主力净流入|净流入-净额|主力净流入-净额"
+)
+_BOARD_FUND_FLOW_PATTERN = re.compile(
+    r"板块资金流向|行业.*资金流|stock_board_industry_fund_flow"
+)
+
+_ANOMALY_THRESHOLD_WAN = 50000  # 5000万 = 50,000 万元
+_CONSECUTIVE_INFLOW_MIN_DAYS = 3
+_HIGH_PROPORTION_THRESHOLD = 5.0  # 5%
+
+_STRONG_BUY_SELL_WORDS = {
+    "立即买入", "重仓买入", "立即清仓", "满仓", "梭哈",
+    "强力买入", "强烈推荐", "必买", "抄底", "追涨", "杀跌",
+}
+
+
+@dataclass
+class FundFlowAnomalyResult:
+    fund_flow_anomaly_score: float = 0.0
+    fund_flow_anomaly_tags: list[str] = field(default_factory=list)
+    fund_flow_anomaly_refs: list[dict] = field(default_factory=list)
+    fund_flow_unit_verified: bool = False
+    fund_flow_individual_summary: str = ""
+    fund_flow_board_summary: str = ""
+
+
+def _sanitize(text: str) -> str:
+    for w in _STRONG_BUY_SELL_WORDS:
+        if w in text:
+            text = text.replace(w, "***")
+    return text
+
+
+def _extract_net_flows(fund_flow_text: str) -> list[float]:
+    """Extract main capital net flow values from individual fund flow text.
+
+    Strategy:
+    1. If header has '主力净流入-净额' or '主力净流入' column, extract that column.
+    2. Fallback: scan lines after header for large absolute values.
+
+    Returns list of net flow values (positive = inflow, negative = outflow).
+    """
+    if not fund_flow_text or "获取失败" in fund_flow_text or "不可用" in fund_flow_text:
+        return []
+
+    lines = [l.strip() for l in fund_flow_text.split("\n") if l.strip()]
+    if not lines:
+        return []
+
+    header_line = ""
+    header_idx = -1
+    for i, line in enumerate(lines):
+        if ("主力" in line or "净流入" in line or "净流出" in line) and "净额" in line:
+            header_line = line
+            header_idx = i
+            break
+
+    if header_idx < 0:
+        for i, line in enumerate(lines):
+            if "主力" in line or "净流入" in line or "净流出" in line:
+                parts = line.split()
+                if len(parts) >= 4:
+                    header_line = line
+                    header_idx = i
+                    break
+
+    if header_idx < 0:
+        return []
+
+    target_col_idx = -1
+    parts = header_line.split()
+    for j, part in enumerate(parts):
+        if "主力净流入" in part:
+            target_col_idx = j
+            break
+
+    values: list[float] = []
+
+    for line in lines[header_idx + 1:]:
+        row_parts = line.split()
+        if len(row_parts) < 2:
+            continue
+        if target_col_idx >= 0 and target_col_idx < len(row_parts):
+            raw = row_parts[target_col_idx].replace(',', '').replace('–', '-')
+            try:
+                values.append(float(raw))
+            except ValueError:
+                continue
+        else:
+            for part in row_parts:
+                try:
+                    val = float(part.replace(',', '').replace('–', '-'))
+                    if abs(val) >= 100:
+                        values.append(val)
+                except ValueError:
+                    continue
+
+    return values
+
+
+def _detect_consecutive_inflow(net_flows: list[float], lookback: int = 5) -> tuple[bool, int, list[dict]]:
+    """Detect consecutive main-capital net inflows in recent N days.
+
+    Returns (is_consecutive, streak_length, refs).
+    """
+    if not net_flows:
+        return False, 0, []
+
+    recent = net_flows[:lookback]
+    streak = 0
+    refs: list[dict] = []
+
+    for i, val in enumerate(recent):
+        if val > 0:
+            streak += 1
+        else:
+            break
+
+    if streak >= _CONSECUTIVE_INFLOW_MIN_DAYS:
+        refs.append({
+            "field": "consecutive_inflow",
+            "matched_text": f"近{streak}日连续主力净流入",
+            "source": "individual_fund_flow",
+        })
+        return True, streak, refs
+
+    return False, streak, []
+
+
+def _detect_large_single_day(net_flows: list[float]) -> tuple[bool, float, list[dict]]:
+    """Detect a single day with unusually large net inflow/outflow.
+
+    Returns (is_large, max_abs_value, refs).
+    """
+    if not net_flows:
+        return False, 0.0, []
+
+    max_val = max(net_flows, key=abs)
+    if abs(max_val) >= _ANOMALY_THRESHOLD_WAN:
+        direction = "净流入" if max_val > 0 else "净流出"
+        refs = [{
+            "field": "large_single_day",
+            "matched_text": f"单日主力{direction} {abs(max_val):.0f} 万元",
+            "source": "individual_fund_flow",
+        }]
+        return True, max_val, refs
+
+    return False, max_val, []
+
+
+def _detect_high_proportion(fund_flow_text: str) -> tuple[bool, float, list[dict]]:
+    """Detect abnormal capital proportion (占比 >= 5%).
+
+    Returns (is_high, max_proportion, refs).
+    """
+    if not fund_flow_text or "获取失败" in fund_flow_text:
+        return False, 0.0, []
+
+    max_pct = 0.0
+    refs: list[dict] = []
+
+    explicit_pct = re.findall(r'[-–+]?(\d+\.?\d*)%', fund_flow_text)
+    for pct_str in explicit_pct:
+        try:
+            pct = abs(float(pct_str))
+            if pct > max_pct:
+                max_pct = pct
+        except ValueError:
+            continue
+
+    proportion_lines = []
+    for line in fund_flow_text.split("\n"):
+        if "占比" in line or "净占比" in line:
+            proportion_lines.append(line)
+
+    for line in proportion_lines:
+        numbers = re.findall(r'[-–+]?[\d,]+\.?\d*', line)
+        for num_str in numbers:
+            try:
+                val = abs(float(num_str.replace(',', '').replace('–', '-')))
+                if val >= 1.0 and val < 100 and val > max_pct:
+                    max_pct = val
+            except ValueError:
+                continue
+
+    if max_pct >= _HIGH_PROPORTION_THRESHOLD:
+        refs.append({
+            "field": "high_proportion",
+            "matched_text": f"主力资金占比 {max_pct:.1f}%",
+            "source": "individual_fund_flow",
+        })
+        return True, max_pct, refs
+
+    return False, max_pct, []
+
+
+def _detect_board_resonance(
+    individual_text: str,
+    board_text: str,
+) -> tuple[bool, list[dict]]:
+    """Detect if individual stock fund flow resonates with sector board fund flow.
+
+    Both individual inflow AND sector inflow must be positive.
+    Returns (is_resonance, refs).
+    """
+    if not individual_text or not board_text:
+        return False, []
+    if "获取失败" in individual_text or "获取失败" in board_text:
+        return False, []
+
+    ind_values = _extract_net_flows(individual_text)
+    if not ind_values:
+        return False, []
+
+---rest---
+        return False, []
+
+    recent_ind = ind_values[:3]
+    ind_positive = sum(1 for v in recent_ind if v > 0)
+    if ind_positive < 2:
+        return False, []
+
+    board_positive_kw = re.compile(r"主力.*净流入|净流入.*\d+")
+    board_negative_kw = re.compile(r"主力.*净流出|净流出.*\d+")
+
+    board_has_inflow = False
+    board_sector_name = ""
+    for line in board_text.split("\n"):
+        if board_positive_kw.search(line) and not board_negative_kw.search(line):
+            board_has_inflow = True
+            parts = line.split()
+            if parts:
+                board_sector_name = parts[0][:20]
+            break
+
+    if not board_has_inflow:
+        return False, []
+
+    refs = [{
+        "field": "board_resonance",
+        "matched_text": f"个股主力流入+板块资金共振(板块: {board_sector_name})",
+        "source": "board_fund_flow+individual_fund_flow",
+    }]
+    return True, refs
+
+
+def _detect_net_outflow_dominant(net_flows: list[float], lookback: int = 10) -> tuple[bool, int, list[dict]]:
+    """Detect if net outflows dominate in recent N days.
+
+    Returns (is_dominant, outflow_count, refs).
+    """
+    if not net_flows:
+        return False, 0, []
+
+    recent = net_flows[:lookback]
+    outflow_count = sum(1 for v in recent if v < 0)
+    total = len(recent)
+
+    if total >= 5 and outflow_count >= total * 0.7:
+        refs = [{
+            "field": "net_outflow_dominant",
+            "matched_text": f"近{total}日中{outflow_count}日主力净流出",
+            "source": "individual_fund_flow",
+        }]
+        return True, outflow_count, refs
+
+    return False, outflow_count, []
+
+
+def _verify_unit(fund_flow_text: str) -> bool:
+    """Verify the unit of fund flow data.
+
+    Returns True if unit is confirmed as 万元 (the AKShare standard).
+    Returns False if unit cannot be confirmed.
+    """
+    if not fund_flow_text or "获取失败" in fund_flow_text:
+        return False
+
+    unit_hints = ("万元", "万", "净额", "主力净流入-净额", "净流入-净额")
+    return any(h in fund_flow_text for h in unit_hints)
+
+
+def _summarize_individual(fund_flow_text: str, net_flows: list[float]) -> str:
+    """Create a brief summary of individual fund flow."""
+    if not fund_flow_text or "获取失败" in fund_flow_text:
+        return "个股资金流数据不可用"
+
+    if not net_flows:
+        return "个股资金流无可解析数据"
+
+    total = sum(net_flows[:5])
+    pos_days = sum(1 for v in net_flows[:5] if v > 0)
+    direction = "净流入" if total > 0 else "净流出"
+    return f"个股近{min(5, len(net_flows))}日主力合计{direction} {abs(total):.0f} 万元，{pos_days}/{min(5, len(net_flows))}日为正值"
+
+
+def _summarize_board(board_text: str) -> str:
+    """Create a brief summary of board fund flow."""
+    if not board_text or "获取失败" in board_text:
+        return "板块资金流数据不可用"
+
+    if "不可用" in board_text:
+        return "板块资金流数据暂不可用"
+
+    lines = board_text.strip().split("\n")
+    if len(lines) <= 2:
+        return "板块资金流数据不足"
+
+    return f"板块资金流可用（{len(lines)}行数据）"
+
+
+def detect_fund_flow_anomaly(
+    fund_flow_individual: Optional[str] = None,
+    fund_flow_board: Optional[str] = None,
+    lookback_days: int = 5,
+) -> FundFlowAnomalyResult:
+    """Detect fund flow anomaly from individual and board fund flow data.
+
+    Args:
+        fund_flow_individual: Individual stock fund flow text (近5-20日).
+        fund_flow_board: Board/sector fund flow text.
+        lookback_days: Number of recent days to analyze (5-20).
+
+    Returns:
+        FundFlowAnomalyResult with anomaly tags, score, and summaries.
+    """
+    lookback_days = max(5, min(20, lookback_days))
+
+    individual_text = fund_flow_individual or ""
+    board_text = fund_flow_board or ""
+
+    unit_verified = _verify_unit(individual_text)
+
+    net_flows = _extract_net_flows(individual_text)
+
+    tags: list[str] = []
+    refs: list[dict] = []
+    score = 0.0
+
+    is_consecutive, streak, cons_refs = _detect_consecutive_inflow(net_flows, lookback_days)
+    if is_consecutive:
+        tags.append(FUND_FLOW_TAG_CONSECUTIVE_INFLOW)
+        refs.extend(cons_refs)
+        bonus = min(streak * 3, 12)
+        score += bonus
+
+    is_large, max_val, large_refs = _detect_large_single_day(net_flows)
+    if is_large and unit_verified:
+        tags.append(FUND_FLOW_TAG_LARGE_SINGLE_DAY)
+        refs.extend(large_refs)
+        score += 5
+
+    is_high_prop, max_pct, prop_refs = _detect_high_proportion(individual_text)
+    if is_high_prop and unit_verified:
+        tags.append(FUND_FLOW_TAG_HIGH_PROPORTION)
+        refs.extend(prop_refs)
+        score += 5
+
+    is_resonance, resonance_refs = _detect_board_resonance(individual_text, board_text)
+    if is_resonance and unit_verified:
+        tags.append(FUND_FLOW_TAG_BOARD_RESONANCE)
+        refs.extend(resonance_refs)
+        score += 5
+
+    is_outflow, outflow_count, outflow_refs = _detect_net_outflow_dominant(net_flows, lookback_days)
+    if is_outflow:
+        tags.append(FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT)
+        refs.extend(outflow_refs)
+
+    if not unit_verified and tags:
+        verified_tags = [t for t in tags if t in {
+            FUND_FLOW_TAG_CONSECUTIVE_INFLOW,
+            FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT,
+        }]
+        dropped = set(tags) - set(verified_tags)
+        tags = verified_tags
+        score = min(streak * 3, 12) if is_consecutive else 0
+        if dropped:
+            refs.append({
+                "field": "unit_verification",
+                "matched_text": f"单位未校验，降级以下标签: {', '.join(sorted(dropped))}",
+                "source": "fund_flow_unit_check",
+            })
+
+    score = min(score, MAX_FUND_FLOW_BONUS)
+
+    ind_summary = _summarize_individual(individual_text, net_flows)
+    board_summary = _summarize_board(board_text)
+
+    return FundFlowAnomalyResult(
+        fund_flow_anomaly_score=round(score, 2),
+        fund_flow_anomaly_tags=sorted(tags),
+        fund_flow_anomaly_refs=refs,
+        fund_flow_unit_verified=unit_verified,
+        fund_flow_individual_summary=_sanitize(ind_summary),
+        fund_flow_board_summary=_sanitize(board_summary),
+    )
+
+---tests snippets---
+# [T-003] fund_flow_anomaly_pool tests
+"""Tests for fund flow anomaly detection in TradeFlow.
+
+Covers:
+- Consecutive inflow detection
+- Large single-day anomaly detection
+- High proportion detection
+- Board resonance detection
+- Net outflow dominant detection
+- Unit verification behavior
+- Individual/board separation
+- Integration with candidate_engine
+- Integration with plan_runner
+- Integration with discovery
+- DB persistence round-trip
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+from unittest.mock import patch, MagicMock
+
+import pytest
+
+from tradingagents.tradeflow.fund_flow_anomaly import (
+    detect_fund_flow_anomaly,
+    FundFlowAnomalyResult,
+    _extract_net_flows,
+    _detect_consecutive_inflow,
+    _detect_large_single_day,
+    _detect_high_proportion,
+    _detect_board_resonance,
+    _detect_net_outflow_dominant,
+    _verify_unit,
+    FUND_FLOW_TAG_CONSECUTIVE_INFLOW,
+    FUND_FLOW_TAG_HIGH_PROPORTION,
+    FUND_FLOW_TAG_BOARD_RESONANCE,
+    FUND_FLOW_TAG_LARGE_SINGLE_DAY,
+    FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT,
+    MAX_FUND_FLOW_BONUS,
+)
+from tradingagents.tradeflow.schemas import (
+    Candidate,
+    CandidateSignal,
+    DailyPlan,
+    STRATEGY_FUND_FLOW,
+)
+from tradingagents.tradeflow.candidate_engine import (
+    evaluate_symbol,
+    init_db,
+    save_candidate,
+)
+
+
+# ── Helper data ──
+
+def _make_fund_flow_text(values: list[float], unit_hint: bool = True) -> str:
+    """Build a fake individual fund flow text with given net flow values."""
+    prefix = "600519.SH 近20日主力资金净流向：\n"
+    header = "日期       收盘价  主力净流入-净额  主力净流入-净占比  超大单净流入-净额"
+    if not unit_hint:
+        header = "日期       收盘价  主力净流入  主力净流入占比  超大单净流入"
+    lines = [prefix + header]
+    for i, val in enumerate(values):
+        pct = abs(val) / 1000
+        lines.append(f"2026-05-{20+i:02d}  25.00  {val:>10.0f}    {pct:>6.2f}%     {val*0.6:>10.0f}")
+    return "\n".join(lines)
+
+
+def _make_board_fund_flow_text(sector_name: str = "半导体", inflow: bool = True) -> str:
+    """Build a fake board fund flow text."""
+    direction = "净流入" if inflow else "净流出"
+    val = "80000" if inflow else "-50000"
+    header = "板块资金流向排名（共50个板块，前10名）："
+    header += f"\n排名 名称       今日主力{direction}-净额  今日主力净流入-净占比"
+    header += f"\n1    {sector_name}  {val}                  3.5%"
+    header += f"\n2    电子元件   -20000                  -1.2%"
+    return header
+
+
+# ══════════════════════════════════════════════
+# 1. Unit extraction tests
+# ══════════════════════════════════════════════
+
+class TestExtractNetFlows:
+    def test_empty_text(self):
+        assert _extract_net_flows("") == []
+
+    def test_failed_text(self):
+        assert _extract_net_flows("获取失败") == []
+        assert _extract_net_flows("数据不可用") == []
+
+    def test_normal_extraction(self):
+        text = _make_fund_flow_text([10000, -20000, 30000])
+        flows = _extract_net_flows(text)
+        assert len(flows) > 0
+        assert 10000 in flows
+        assert -20000 in flows
+
+    def test_only_fund_keyword_lines(self):
+        text = "日期       600519   贵州茅台   1800.00\n"
+        text += "2026-05-20  25.00   10000"
+        flows = _extract_net_flows(text)
+        # Lines without fund keywords should be skipped
+        # The header line has no fund keywords, so only data lines matter
+
+    def test_negative_values(self):
+        text = "日期  收盘价  主力净流入-净额  占比\n2026-05-20  25.00  -50000  -2.5%"
+        flows = _extract_net_flows(text)
+        assert -50000 in flows
+
+
+# ══════════════════════════════════════════════
+# 2. Consecutive inflow tests
+# ══════════════════════════════════════════════
+
+class TestConsecutiveInflow:
+    def test_consecutive_5_days(self):
+        flows = [10000, 20000, 30000, 15000, 8000]
+        is_consec, streak, refs = _detect_consecutive_inflow(flows, 5)
+        assert is_consec is True
+        assert streak == 5
+        assert len(refs) == 1
+
+    def test_consecutive_3_days(self):
+        flows = [10000, 20000, 15000, -5000, 8000]
+        is_consec, streak, refs = _detect_consecutive_inflow(flows, 5)
+        assert is_consec is True
+        assert streak == 3
+
+    def test_not_consecutive_2_days(self):
+        flows = [10000, -5000, 30000, 15000, 8000]
+        is_consec, streak, refs = _detect_consecutive_inflow(flows, 5)
+        assert is_consec is False
+
+    def test_all_outflow(self):
+        flows = [-10000, -20000, -30000]
+        is_consec, streak, refs = _detect_consecutive_inflow(flows, 5)
+        assert is_consec is False
+        assert streak == 0
+
+    def test_empty_flows(self):
+        is_consec, streak, refs = _detect_consecutive_inflow([], 5)
+        assert is_consec is False
+
+    def test_consecutive_10_days_capped_lookback(self):
+        flows = [1000] * 20
+        is_consec, streak, refs = _detect_consecutive_inflow(flows, 5)
+        assert is_consec is True
+        assert streak == 5  # capped at lookback
+
+
+# ══════════════════════════════════════════════
+# 3. Large single day tests
+# ══════════════════════════════════════════════
+
+class TestLargeSingleDay:
+    def test_large_inflow(self):
+        flows = [100, 200, 80000, 50]
+        is_large, max_val, refs = _detect_large_single_day(flows)
+        assert is_large is True
+        assert max_val == 80000
+
+    def test_large_outflow(self):
+        flows = [100, -90000, 50]
+        is_large, max_val, refs = _detect_large_single_day(flows)
+        assert is_large is True
+
+    def test_no_large(self):
+        flows = [100, 200, 300]
+        is_large, max_val, refs = _detect_large_single_day(flows)
+        assert is_large is False
+
+    def test_empty(self):
+        is_large, max_val, refs = _detect_large_single_day([])
+        assert is_large is False
+
+
+# ══════════════════════════════════════════════
+# 4. High proportion tests
+# ══════════════════════════════════════════════
+
+class TestHighProportion:
+    def test_explicit_percentage(self):
+        text = "主力净流入-净占比  6.5%"
+        is_high, pct, refs = _detect_high_proportion(text)
+        assert is_high is True
+        assert pct >= 5.0
+
+    def test_below_threshold(self):
+        text = "主力净流入-净占比  3.2%"
+        is_high, pct, refs = _detect_high_proportion(text)
+        assert is_high is False
+
+    def test_inline_proportion(self):
+        text = "主力净流入占比  8.0%"
+        is_high, pct, refs = _detect_high_proportion(text)
+        assert is_high is True
+
+    def test_failed_data(self):
+        is_high, pct, refs = _detect_high_proportion("获取失败")
+        assert is_high is False
+
+    def test_empty_text(self):
+        is_high, pct, refs = _detect_high_proportion("")
+        assert is_high is False
+
+
+# ══════════════════════════════════════════════
+# 5. Board resonance tests
+# ══════════════════════════════════════════════
+
+class TestBoardResonance:
+    def test_resonance_both_positive(self):
+        ind_text = _make_fund_flow_text([10000, 20000, 30000])
+        board_text = _make_board_fund_flow_text(inflow=True)
+        is_res, refs = _detect_board_resonance(ind_text, board_text)
+        assert is_res is True
+
+exec
+/bin/zsh -lc "sed -n '1,620p' tradingagents/tradeflow/candidate_engine.py && printf '\\n---schemas---\\n' && sed -n '1,240p' tradingagents/tradeflow/schemas.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""TradeFlow Candidate Engine — runs strategies and produces candidates.
+
+Responsibilities:
+- Load price data for each symbol in the universe
+- Run all three strategies
+- Filter out ST / low-liquidity / data-missing stocks
+- Deduplicate multi-strategy hits
+- Mark need_deep_ta
+- Persist to tradeflow tables
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime
+from typing import Optional
+
+import pandas as pd
+
+from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE, STRATEGY_FUND_FLOW  # [S-001] [S-002] [T-003]
+from .strategies.vcp import score_vcp
+from .strategies.pullback_support import score_pullback_support
+from .strategies.event_catalyst import score_event_catalyst
+from .policy_version_signal import detect_policy_version, PolicyVersionResult  # [S-001]
+from .narrative_quality import score_narrative_quality, NarrativeQualityResult  # [S-002]
+from .underwater_risk_flags import detect_underwater_risks, UnderwaterRiskResult, ALL_RISK_FLAGS  # [S-003]
+from .game_balance import assess_game_balance, GameBalanceResult  # [S-004] candidate_game_balance
+from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult, FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT  # [T-003] fund_flow_anomaly_pool
+
+
+# ── SQL for table creation ──
+CREATE_CANDIDATES_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    source TEXT DEFAULT 'manual',
+    strategy_tags_json TEXT DEFAULT '[]',
+    primary_strategy TEXT DEFAULT '',
+    score REAL DEFAULT 0.0,
+    status TEXT DEFAULT 'active',
+    trigger_price REAL,
+    support_price REAL,
+    invalid_price REAL,
+    need_deep_ta INTEGER DEFAULT 0,
+    evidence_json TEXT DEFAULT '{}',
+    risk_flags_json TEXT DEFAULT '[]',
+    created_at TEXT,
+    updated_at TEXT,
+    UNIQUE(trade_date, symbol)
+);
+"""
+
+CREATE_SIGNALS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_time TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    signal_type TEXT NOT NULL,
+    signal_level TEXT DEFAULT 'info',
+    source TEXT DEFAULT 'tradeflow',
+    evidence_json TEXT DEFAULT '{}',
+    action_hint TEXT DEFAULT 'OBSERVE',
+    status TEXT DEFAULT 'new',
+    created_at TEXT
+);
+"""
+
+CREATE_DAILY_PLANS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_daily_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    mode TEXT DEFAULT 'pre_market',
+    summary TEXT DEFAULT '',
+    candidates_json TEXT DEFAULT '[]',
+    metadata_json TEXT DEFAULT '{}',
+    created_at TEXT,
+    UNIQUE(trade_date, mode)
+);
+"""
+
+
+def init_db(db_path: str) -> None:
+    """Create tradeflow tables if they don't exist."""
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        CREATE_CANDIDATES_TABLE
+        + CREATE_SIGNALS_TABLE
+        + CREATE_DAILY_PLANS_TABLE
+    )
+    try:
+        conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    # [S-001] policy_version_signal — add policy version columns
+    for _col, _type in [
+        ("policy_tags_json", "TEXT DEFAULT '[]'"),
+        ("version_score", "REAL DEFAULT 0.0"),
+        ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-002] narrative_quality_score — add narrative quality columns
+    for _col, _type in [
+        ("narrative_score", "REAL DEFAULT 0.0"),
+        ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
+        ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-003] underwater_risk_flags — add risk penalty columns
+    for _col, _type in [
+        ("risk_penalty", "REAL DEFAULT 0.0"),
+        ("risk_evidence_refs_json", "TEXT DEFAULT '[]'"),
+        ("risk_reasons_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-004] candidate_game_balance — add game balance columns
+    for _col, _type in [
+        ("game_balance", "TEXT DEFAULT ''"),
+        ("bull_case", "TEXT DEFAULT ''"),
+        ("bear_case", "TEXT DEFAULT ''"),
+        ("policy_case", "TEXT DEFAULT ''"),
+        ("fund_flow_case", "TEXT DEFAULT ''"),
+        ("resonance_count", "INTEGER DEFAULT 0"),
+        ("game_balance_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [T-003] fund_flow_anomaly_pool — add fund flow anomaly columns
+    for _col, _type in [
+        ("fund_flow_anomaly_score", "REAL DEFAULT 0.0"),
+        ("fund_flow_anomaly_tags_json", "TEXT DEFAULT '[]'"),
+        ("fund_flow_anomaly_refs_json", "TEXT DEFAULT '[]'"),
+        ("fund_flow_unit_verified", "INTEGER DEFAULT 0"),
+        ("fund_flow_individual_summary", "TEXT DEFAULT ''"),
+        ("fund_flow_board_summary", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    conn.commit()
+    conn.close()
+
+
+def _fetch_price_data(symbol: str, days: int = 120) -> Optional[pd.DataFrame]:
+    """Fetch price data for a symbol using the project's data providers.
+
+    Uses cn_akshare → cn_astock → yfinance fallback chain.  [N-002] cn_astock_fallback
+    Returns DataFrame with Date, Open, High, Low, Close, Volume columns.
+    """
+    from datetime import timedelta
+    from io import StringIO
+
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    def _try_provider(provider_cls, source_name: str) -> Optional[pd.DataFrame]:
+        try:
+            provider = provider_cls()
+            csv_str = provider.get_stock_data(symbol, start, end)
+            if csv_str and "No data found" not in csv_str:
+                df = pd.read_csv(StringIO(csv_str), comment="#")
+                if {"Date", "Open", "High", "Low", "Close", "Volume"}.issubset(df.columns):
+                    df["Date"] = pd.to_datetime(df["Date"])
+                    df = df.sort_values("Date").reset_index(drop=True)
+                    for col in ["Open", "High", "Low", "Close", "Volume"]:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                    df = df.dropna(subset=["Close"])
+                    if len(df) > 0:
+                        df.attrs["price_source"] = source_name  # [N-002] cn_astock_fallback
+                        return df
+        except Exception:
+            pass
+        return None
+
+    # [N-002] cn_astock_fallback: cn_akshare → cn_astock → yfinance
+    try:
+        from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
+        result = _try_provider(CnAkshareProvider, "cn_akshare")
+        if result is not None:
+            return result
+    except Exception:
+        pass
+
+    # [N-002] cn_astock_fallback: middle fallback
+    try:
+        from tradingagents.dataflows.providers.cn_astock_provider import CnAstockProvider
+        result = _try_provider(CnAstockProvider, "cn_astock")
+        if result is not None:
+            return result
+    except Exception:
+        pass
+
+    # Final fallback: yfinance
+    try:
+        from tradingagents.dataflows.providers.yfinance_provider import YFinanceProvider
+        result = _try_provider(YFinanceProvider, "yfinance")
+        if result is not None:
+            return result
+    except Exception:
+        pass
+
+    return None
+
+
+def _is_st_symbol(symbol: str) -> bool:
+    """Check if symbol is ST/*ST."""
+    code = symbol.split(".")[0] if "." in symbol else symbol
+    # Can't determine ST from code alone — would need name lookup
+    # P0: skip this check, rely on risk_flags from data
+    return False
+
+
+def _calc_liquidity(df: pd.DataFrame) -> tuple[bool, float, float, float]:
+    """Check liquidity using Amount (turnover) as primary metric.
+
+    Returns (is_low, avg_amount, avg_volume, threshold).
+    - Uses Amount column if available, otherwise estimates via Close * Volume.
+    - Threshold: 30,000,000 (3000万).
+    """
+    AMOUNT_THRESHOLD = 30_000_000
+
+    if len(df) < 5:
+        avg_amount = 0.0
+        avg_volume = 0.0
+        return True, avg_amount, avg_volume, AMOUNT_THRESHOLD
+
+    tail = df.tail(10)
+    avg_volume = float(tail["Volume"].mean())
+
+    if "Amount" in tail.columns:
+        avg_amount = float(tail["Amount"].mean())
+    else:
+        avg_amount = float((tail["Close"] * tail["Volume"]).mean())
+
+    return avg_amount < AMOUNT_THRESHOLD, avg_amount, avg_volume, AMOUNT_THRESHOLD
+
+
+def filter_symbol(symbol: str, df: pd.DataFrame) -> tuple[bool, list[str]]:
+    """Check if a symbol should be filtered out.
+
+    Returns (should_filter, reason_list).
+    """
+    reasons = []
+
+    if df is None or len(df) == 0:
+        return True, ["数据缺失"]
+
+    if len(df) < 40:
+        return True, ["数据不足(需至少40日)"]
+
+    is_low, avg_amount, avg_volume, threshold = _calc_liquidity(df)
+    if is_low:
+        reasons.append(
+            f"流动性差(avg_amount={avg_amount/1e8:.2f}亿, "
+            f"avg_volume={avg_volume/1e4:.0f}万, "
+            f"threshold={threshold/1e8:.2f}亿)"
+        )
+
+    if reasons:
+        return True, reasons
+
+    return False, []
+
+
+def run_strategies(
+    symbol: str,
+    df: pd.DataFrame,
+    news_texts: Optional[list[str]] = None,
+    event_overrides: Optional[list[dict]] = None,
+) -> list[CandidateSignal]:
+    """Run all strategies on a symbol, return list of signals."""
+    signals = []
+
+    # VCP
+    vcp = score_vcp(df, symbol)
+    if vcp is not None:
+        signals.append(vcp)
+
+    # Pullback Support
+    pb = score_pullback_support(df, symbol)
+    if pb is not None:
+        signals.append(pb)
+
+    # Event Catalyst
+    latest_close = float(df["Close"].iloc[-1]) if len(df) > 0 else 0.0
+    ev = score_event_catalyst(symbol, news_texts, event_overrides, latest_close)
+    if ev is not None:
+        signals.append(ev)
+
+    return signals
+
+
+def evaluate_symbol(
+    symbol: str,
+    name: str = "",
+    source: str = "manual",
+    trade_date: str = "",
+    news_texts: Optional[list[str]] = None,
+    event_overrides: Optional[list[dict]] = None,
+    df: Optional[pd.DataFrame] = None,
+    fund_flow_individual: Optional[str] = None,  # [T-003] fund_flow_anomaly_pool
+    fund_flow_board: Optional[str] = None,  # [T-003] fund_flow_anomaly_pool
+) -> tuple[Optional[Candidate], str]:
+    """Evaluate one symbol through all strategies.
+
+    Returns (Candidate, "") if any strategy hits, or (None, reason) if
+    filtered or no strategy matched.
+    """
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+
+    # Fetch data if not provided
+    if df is None:
+        df = _fetch_price_data(symbol)
+
+    # Filter check
+    filtered, reasons = filter_symbol(symbol, df)
+    if filtered:
+        return None, "；".join(reasons)
+
+    # Run strategies
+    signals = run_strategies(symbol, df, news_texts, event_overrides)
+
+    if not signals:
+        return None, "无策略命中"
+
+    # Build candidate
+    candidate = Candidate(
+        symbol=symbol,
+        name=name,
+        source=source,
+        trade_date=trade_date,
+        signals=signals,
+    )
+    candidate.merge_signals()
+
+    # [N-004] astock_signal_tags — merge extra tags from event_catalyst evidence
+    for sig in signals:
+        if not isinstance(sig.evidence, dict):
+            continue
+        extra_tags = sig.evidence.get("astock_tags", [])
+        extra_risks = sig.evidence.get("astock_risk_flags", [])
+        if extra_tags or extra_risks:
+            from .schemas import SIGNAL_TAG_LOCKUP_RISK  # [N-004] astock_signal_tags
+            candidate.strategy_tags = sorted(
+                set(candidate.strategy_tags) | set(extra_tags)
+            )
+            candidate.risk_flags = sorted(
+                set(candidate.risk_flags) | set(extra_risks)
+            )
+            if SIGNAL_TAG_LOCKUP_RISK in candidate.risk_flags:
+                candidate.score = round(candidate.score * 0.8, 2)
+
+    # [S-001] policy_version_signal — detect policy version and add bonus
+    # Collect all available text sources: news_texts + event_override titles
+    all_event_texts = list(news_texts) if news_texts else []
+    if event_overrides:
+        for ev in event_overrides:
+            title = ev.get("title", "") or ev.get("headline", "")
+            if title:
+                all_event_texts.append(title)
+    policy_result: PolicyVersionResult = detect_policy_version(
+        event_texts=all_event_texts if all_event_texts else None,
+    )
+    if policy_result.policy_tags:
+        candidate.policy_tags = policy_result.policy_tags
+        candidate.version_score = policy_result.version_score
+        candidate.policy_evidence_refs = policy_result.policy_evidence_refs
+        candidate.score = round(candidate.score + policy_result.version_score, 2)
+        candidate.strategy_tags = sorted(
+            set(candidate.strategy_tags) | {STRATEGY_POLICY_VERSION}
+        )
+        candidate.evidence["policy_version"] = {
+            "policy_tags": policy_result.policy_tags,
+            "version_score": policy_result.version_score,
+            "evidence_refs": policy_result.policy_evidence_refs,
+        }
+        if policy_result.version_score >= 15:
+            candidate.need_deep_ta = True
+
+    # [S-002] narrative_quality_score — assess event narrative quality
+    narrative_result: NarrativeQualityResult = score_narrative_quality(
+        event_texts=all_event_texts if all_event_texts else None,
+    )
+    if narrative_result.narrative_score > 0:
+        candidate.narrative_score = narrative_result.narrative_score
+        candidate.narrative_reasons = narrative_result.narrative_reasons
+        candidate.narrative_evidence_refs = narrative_result.narrative_evidence_refs
+        candidate.score = round(candidate.score + narrative_result.narrative_score, 2)
+        candidate.strategy_tags = sorted(
+            set(candidate.strategy_tags) | {STRATEGY_NARRATIVE}
+        )
+        candidate.evidence["narrative_quality"] = {
+            "narrative_score": narrative_result.narrative_score,
+            "narrative_reasons": narrative_result.narrative_reasons,
+            "evidence_refs": narrative_result.narrative_evidence_refs,
+        }
+        if narrative_result.narrative_score >= 20:
+            candidate.need_deep_ta = True
+
+    # [S-003] underwater_risk_flags — detect hidden structural risks
+    risk_result: UnderwaterRiskResult = detect_underwater_risks(
+        event_texts=all_event_texts if all_event_texts else None,
+    )
+    if risk_result.risk_flags:
+        candidate.risk_flags = sorted(
+            set(candidate.risk_flags) | set(risk_result.risk_flags)
+        )
+        candidate.risk_penalty = risk_result.risk_penalty
+        candidate.risk_evidence_refs = risk_result.risk_evidence_refs
+        candidate.risk_reasons = risk_result.risk_reasons
+        candidate.score = round(candidate.score + risk_result.risk_penalty, 2)
+        candidate.evidence["underwater_risk"] = {
+            "risk_flags": risk_result.risk_flags,
+            "risk_penalty": risk_result.risk_penalty,
+            "risk_evidence_refs": risk_result.risk_evidence_refs,
+            "risk_reasons": risk_result.risk_reasons,
+        }
+        high_risk_flags = {f for f in risk_result.risk_flags
+                           if f in {"INQUIRY_RISK", "FINANCIAL_QUALITY_RISK"}}
+        if len(risk_result.risk_flags) >= 3 or high_risk_flags:
+            candidate.need_deep_ta = False
+
+    # [S-004] candidate_game_balance — assess bull/bear/policy/fund perspective
+    gb_result: GameBalanceResult = assess_game_balance(
+        strategy_tags=candidate.strategy_tags,
+        score=candidate.score,
+        policy_tags=candidate.policy_tags,
+        version_score=candidate.version_score,
+        policy_evidence_refs=candidate.policy_evidence_refs,
+        narrative_score=candidate.narrative_score,
+        narrative_reasons=candidate.narrative_reasons,
+        risk_flags=candidate.risk_flags,
+        risk_penalty=candidate.risk_penalty,
+        risk_reasons=candidate.risk_reasons,
+        event_texts=all_event_texts if all_event_texts else None,
+    )
+    candidate.game_balance = gb_result.game_balance
+    candidate.bull_case = gb_result.bull_case
+    candidate.bear_case = gb_result.bear_case
+    candidate.policy_case = gb_result.policy_case
+    candidate.fund_flow_case = gb_result.fund_flow_case
+    candidate.resonance_count = gb_result.resonance_count
+    candidate.game_balance_refs = gb_result.game_balance_refs
+    candidate.evidence["game_balance"] = {
+        "game_balance": gb_result.game_balance,
+        "bull_case": gb_result.bull_case,
+        "bear_case": gb_result.bear_case,
+        "policy_case": gb_result.policy_case,
+        "fund_flow_case": gb_result.fund_flow_case,
+        "resonance_count": gb_result.resonance_count,
+        "refs": gb_result.game_balance_refs,
+    }
+    # When >= 2 categories resonate and risk manageable, boost need_deep_ta
+    if gb_result.resonance_count >= 2 and gb_result.game_balance in {"favorable", "neutral"}:
+        candidate.need_deep_ta = True
+    # When fragile or crowded with too many risks, demote need_deep_ta
+    if gb_result.game_balance in {"fragile", "crowded"} and len(candidate.risk_flags) >= 2:
+        candidate.need_deep_ta = False
+
+    # [T-003] fund_flow_anomaly_pool — detect capital anomaly
+    ff_result: FundFlowAnomalyResult = detect_fund_flow_anomaly(
+        fund_flow_individual=fund_flow_individual,
+        fund_flow_board=fund_flow_board,
+    )
+    if ff_result.fund_flow_anomaly_tags:
+        candidate.fund_flow_anomaly_score = ff_result.fund_flow_anomaly_score
+        candidate.fund_flow_anomaly_tags = ff_result.fund_flow_anomaly_tags
+        candidate.fund_flow_anomaly_refs = ff_result.fund_flow_anomaly_refs
+        candidate.fund_flow_unit_verified = ff_result.fund_flow_unit_verified
+        candidate.fund_flow_individual_summary = ff_result.fund_flow_individual_summary
+        candidate.fund_flow_board_summary = ff_result.fund_flow_board_summary
+        # Fund flow anomaly only adds bonus, does not trigger strong conclusions
+        positive_ff_tags = set(ff_result.fund_flow_anomaly_tags) - {FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT}
+        if positive_ff_tags:
+            candidate.score = round(candidate.score + ff_result.fund_flow_anomaly_score, 2)
+            candidate.strategy_tags = sorted(
+                set(candidate.strategy_tags) | {STRATEGY_FUND_FLOW}
+            )
+        candidate.evidence["fund_flow_anomaly"] = {
+            "anomaly_score": ff_result.fund_flow_anomaly_score,
+            "anomaly_tags": ff_result.fund_flow_anomaly_tags,
+            "anomaly_refs": ff_result.fund_flow_anomaly_refs,
+            "unit_verified": ff_result.fund_flow_unit_verified,
+            "individual_summary": ff_result.fund_flow_individual_summary,
+            "board_summary": ff_result.fund_flow_board_summary,
+        }
+        # Unit unverified: do not boost need_deep_ta from fund flow alone
+        if ff_result.fund_flow_unit_verified and positive_ff_tags and ff_result.fund_flow_anomaly_score >= 10:
+            candidate.need_deep_ta = True
+        # Net outflow dominant does not add score but records as observation
+
+    return candidate, ""
+
+
+def save_candidate(candidate: Candidate, db_path: str) -> int:
+    """Save a candidate to the database. Upsert on (trade_date, symbol)."""
+    conn = sqlite3.connect(db_path)
+    row = candidate.to_db_row()
+    try:
+        conn.execute(
+            "INSERT INTO tradeflow_candidates "
+            "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+            "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+            "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+            "policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
+            "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+            "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
+            "fund_flow_case, resonance_count, game_balance_refs_json, "
+            "fund_flow_anomaly_score, fund_flow_anomaly_tags_json, "
+            "fund_flow_anomaly_refs_json, fund_flow_unit_verified, "
+            "fund_flow_individual_summary, fund_flow_board_summary, "
+            "created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+            "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
+            "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+            "trigger_price=excluded.trigger_price, "
+            "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+            "need_deep_ta=excluded.need_deep_ta, evidence_json=excluded.evidence_json, "
+            "risk_flags_json=excluded.risk_flags_json, "
+            "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+            "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
+            "narrative_score=excluded.narrative_score, "
+            "narrative_reasons_json=excluded.narrative_reasons_json, "
+            "narrative_evidence_refs_json=excluded.narrative_evidence_refs_json, "
+            "risk_penalty=excluded.risk_penalty, "
+            "risk_evidence_refs_json=excluded.risk_evidence_refs_json, "
+            "risk_reasons_json=excluded.risk_reasons_json, "
+            "game_balance=excluded.game_balance, "
+            "bull_case=excluded.bull_case, bear_case=excluded.bear_case, "
+            "policy_case=excluded.policy_case, fund_flow_case=excluded.fund_flow_case, "
+            "resonance_count=excluded.resonance_count, "
+            "game_balance_refs_json=excluded.game_balance_refs_json, "
+            "fund_flow_anomaly_score=excluded.fund_flow_anomaly_score, "
+            "fund_flow_anomaly_tags_json=excluded.fund_flow_anomaly_tags_json, "
+            "fund_flow_anomaly_refs_json=excluded.fund_flow_anomaly_refs_json, "
+            "fund_flow_unit_verified=excluded.fund_flow_unit_verified, "
+            "fund_flow_individual_summary=excluded.fund_flow_individual_summary, "
+            "fund_flow_board_summary=excluded.fund_flow_board_summary, "
+            "updated_at=excluded.updated_at",
+            (
+                row["trade_date"], row["symbol"], row["name"], row["source"],
+                row["strategy_tags_json"], row["primary_strategy"],
+                row["score"], row["status"],
+                row["trigger_price"], row["support_price"], row["invalid_price"],
+                row["need_deep_ta"], row["evidence_json"], row["risk_flags_json"],
+                row["policy_tags_json"], row["version_score"],
+                row["policy_evidence_refs_json"],
+                row["narrative_score"], row["narrative_reasons_json"],
+                row["narrative_evidence_refs_json"],
+                row["risk_penalty"], row["risk_evidence_refs_json"],
+                row["risk_reasons_json"],
+                row["game_balance"], row["bull_case"], row["bear_case"],
+                row["policy_case"], row["fund_flow_case"],
+                row["resonance_count"], row["game_balance_refs_json"],
+                row["fund_flow_anomaly_score"], row["fund_flow_anomaly_tags_json"],
+                row["fund_flow_anomaly_refs_json"], row["fund_flow_unit_verified"],
+                row["fund_flow_individual_summary"], row["fund_flow_board_summary"],
+                candidate.created_at, row["updated_at"],
+            ),
+        )
+        conn.commit()
+        row_id = conn.execute(
+            "SELECT id FROM tradeflow_candidates WHERE trade_date=? AND symbol=?",
+            (row["trade_date"], row["symbol"]),
+        ).fetchone()[0]
+        return row_id
+    finally:
+        conn.close()
+
+---schemas---
+"""TradeFlow schemas — data models for candidates, signals, and daily plans."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from typing import Optional
+
+
+# ── Allowed actions ──
+ALLOWED_ACTIONS = {"OBSERVE", "WAIT_TRIGGER", "NEED_DEEP_TA", "REMOVE_FROM_WATCH"}
+FORBIDDEN_WORDS = {"立即买入", "重仓买入", "立即清仓", "满仓", "梭哈"}
+
+STRATEGY_VCP = "VCP"
+STRATEGY_PULLBACK = "PULLBACK_SUPPORT"
+STRATEGY_EVENT = "EVENT_CATALYST"
+STRATEGY_POLICY_VERSION = "POLICY_VERSION"  # [S-001] policy_version_signal
+STRATEGY_NARRATIVE = "NARRATIVE_QUALITY"  # [S-002] narrative_quality_score
+STRATEGY_FUND_FLOW = "FUND_FLOW_ANOMALY"  # [T-003] fund_flow_anomaly_pool
+ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE, STRATEGY_FUND_FLOW}
+
+# [N-004] astock_signal_tags
+SIGNAL_TAG_POLICY_CATALYST = "POLICY_CATALYST"
+SIGNAL_TAG_HOT_MONEY_LHB = "HOT_MONEY_LHB"
+SIGNAL_TAG_LOCKUP_RISK = "LOCKUP_RISK"
+SIGNAL_TAG_BUYBACK_EVENT = "BUYBACK_EVENT"
+SIGNAL_TAG_RATING_CHANGE = "RATING_CHANGE"
+
+
+@dataclass
+class CandidateSignal:
+    """One strategy hit on a symbol."""
+    strategy_tag: str
+    trigger_price: Optional[float] = None
+    support_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    score: float = 0.0
+    reason: str = ""
+    evidence: dict = field(default_factory=dict)
+    risk_flags: list[str] = field(default_factory=list)
+    need_deep_ta: bool = False
+
+
+@dataclass
+class Candidate:
+    """A tradeflow candidate — one row in tradeflow_candidates."""
+    symbol: str
+    name: str = ""
+    source: str = "manual"
+    strategy_tags: list[str] = field(default_factory=list)
+    score: float = 0.0
+    status: str = "active"
+    trigger_price: Optional[float] = None
+    support_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    need_deep_ta: bool = False
+    evidence: dict = field(default_factory=dict)
+    risk_flags: list[str] = field(default_factory=list)
+    trade_date: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+    primary_strategy: str = ""
+    signals: list[CandidateSignal] = field(default_factory=list, repr=False)
+    policy_tags: list[str] = field(default_factory=list)  # [S-001] policy_version_signal
+    version_score: float = 0.0  # [S-001] policy_version_signal
+    policy_evidence_refs: list[dict] = field(default_factory=list)  # [S-001] policy_version_signal
+    narrative_score: float = 0.0  # [S-002] narrative_quality_score
+    narrative_reasons: list[str] = field(default_factory=list)  # [S-002] narrative_quality_score
+    narrative_evidence_refs: list[dict] = field(default_factory=list)  # [S-002] narrative_quality_score
+    risk_penalty: float = 0.0  # [S-003] underwater_risk_flags
+    risk_evidence_refs: list[dict] = field(default_factory=list)  # [S-003] underwater_risk_flags
+    risk_reasons: list[str] = field(default_factory=list)  # [S-003] underwater_risk_flags
+    game_balance: str = ""  # [S-004] candidate_game_balance
+    bull_case: str = ""  # [S-004] candidate_game_balance
+    bear_case: str = ""  # [S-004] candidate_game_balance
+    policy_case: str = ""  # [S-004] candidate_game_balance
+    fund_flow_case: str = ""  # [S-004] candidate_game_balance
+    resonance_count: int = 0  # [S-004] candidate_game_balance
+    game_balance_refs: list[dict] = field(default_factory=list)  # [S-004] candidate_game_balance
+    fund_flow_anomaly_score: float = 0.0  # [T-003] fund_flow_anomaly_pool
+    fund_flow_anomaly_tags: list[str] = field(default_factory=list)  # [T-003]
+    fund_flow_anomaly_refs: list[dict] = field(default_factory=list)  # [T-003]
+    fund_flow_unit_verified: bool = False  # [T-003]
+    fund_flow_individual_summary: str = ""  # [T-003]
+    fund_flow_board_summary: str = ""  # [T-003]
+
+    def __post_init__(self):
+        if not self.trade_date:
+            self.trade_date = datetime.now().strftime("%Y-%m-%d")
+        if not self.created_at:
+            self.created_at = datetime.now().isoformat()
+        if not self.updated_at:
+            self.updated_at = self.created_at
+
+    def merge_signals(self):
+        """Merge individual signals into aggregate candidate fields.
+
+        The signal with the highest score becomes the primary_signal.
+        trigger/support/invalid prices come ONLY from the primary signal,
+        preventing later strategies from silently overwriting them.
+        """
+        if not self.signals:
+            return
+
+        primary = max(self.signals, key=lambda s: s.score)
+        self.primary_strategy = primary.strategy_tag
+
+        tags = set()
+        best_score = 0.0
+        all_evidence = {}
+        all_risks = []
+        deep_ta = False
+
+        for sig in self.signals:
+            tags.add(sig.strategy_tag)
+            if sig.score > best_score:
+                best_score = sig.score
+            all_evidence[sig.strategy_tag] = sig.evidence
+            all_risks.extend(sig.risk_flags)
+            if sig.need_deep_ta:
+                deep_ta = True
+
+        self.strategy_tags = sorted(tags)
+        self.score = round(best_score, 2)
+        self.evidence = all_evidence
+        self.risk_flags = sorted(set(all_risks))
+        self.trigger_price = primary.trigger_price
+        self.support_price = primary.support_price
+        self.invalid_price = primary.invalid_price
+        self.need_deep_ta = deep_ta
+
+    def to_db_row(self) -> dict:
+        return {
+            "trade_date": self.trade_date,
+            "symbol": self.symbol,
+            "name": self.name,
+            "source": self.source,
+            "strategy_tags_json": json.dumps(self.strategy_tags, ensure_ascii=False),
+            "primary_strategy": self.primary_strategy,
+            "score": self.score,
+            "status": self.status,
+            "trigger_price": self.trigger_price,
+            "support_price": self.support_price,
+            "invalid_price": self.invalid_price,
+            "need_deep_ta": 1 if self.need_deep_ta else 0,
+            "evidence_json": json.dumps(self.evidence, ensure_ascii=False),
+            "risk_flags_json": json.dumps(self.risk_flags, ensure_ascii=False),
+            "policy_tags_json": json.dumps(self.policy_tags, ensure_ascii=False),  # [S-001]
+            "version_score": self.version_score,  # [S-001]
+            "policy_evidence_refs_json": json.dumps(self.policy_evidence_refs, ensure_ascii=False),  # [S-001]
+            "narrative_score": self.narrative_score,  # [S-002] narrative_quality_score
+            "narrative_reasons_json": json.dumps(self.narrative_reasons, ensure_ascii=False),  # [S-002]
+            "narrative_evidence_refs_json": json.dumps(self.narrative_evidence_refs, ensure_ascii=False),  # [S-002]
+            "risk_penalty": self.risk_penalty,  # [S-003] underwater_risk_flags
+            "risk_evidence_refs_json": json.dumps(self.risk_evidence_refs, ensure_ascii=False),  # [S-003]
+            "risk_reasons_json": json.dumps(self.risk_reasons, ensure_ascii=False),  # [S-003]
+            "game_balance": self.game_balance,  # [S-004] candidate_game_balance
+            "bull_case": self.bull_case,  # [S-004]
+            "bear_case": self.bear_case,  # [S-004]
+            "policy_case": self.policy_case,  # [S-004]
+            "fund_flow_case": self.fund_flow_case,  # [S-004]
+            "resonance_count": self.resonance_count,  # [S-004]
+            "game_balance_refs_json": json.dumps(self.game_balance_refs, ensure_ascii=False),  # [S-004]
+            "fund_flow_anomaly_score": self.fund_flow_anomaly_score,  # [T-003] fund_flow_anomaly_pool
+            "fund_flow_anomaly_tags_json": json.dumps(self.fund_flow_anomaly_tags, ensure_ascii=False),  # [T-003]
+            "fund_flow_anomaly_refs_json": json.dumps(self.fund_flow_anomaly_refs, ensure_ascii=False),  # [T-003]
+            "fund_flow_unit_verified": 1 if self.fund_flow_unit_verified else 0,  # [T-003]
+            "fund_flow_individual_summary": self.fund_flow_individual_summary,  # [T-003]
+            "fund_flow_board_summary": self.fund_flow_board_summary,  # [T-003]
+            "updated_at": datetime.now().isoformat(),
+        }
+
+    @classmethod
+    def from_db_row(cls, row: dict) -> "Candidate":
+        return cls(
+            symbol=row["symbol"],
+            name=row.get("name", ""),
+            source=row.get("source", "manual"),
+            strategy_tags=json.loads(row.get("strategy_tags_json", "[]")),
+            primary_strategy=row.get("primary_strategy", ""),
+            score=row.get("score", 0.0),
+            status=row.get("status", "active"),
+            trigger_price=row.get("trigger_price"),
+            support_price=row.get("support_price"),
+            invalid_price=row.get("invalid_price"),
+            need_deep_ta=bool(row.get("need_deep_ta", 0)),
+            evidence=json.loads(row.get("evidence_json", "{}")),
+            risk_flags=json.loads(row.get("risk_flags_json", "[]")),
+            trade_date=row.get("trade_date", ""),
+            created_at=row.get("created_at", ""),
+            updated_at=row.get("updated_at", ""),
+            policy_tags=json.loads(row.get("policy_tags_json", "[]")),  # [S-001]
+            version_score=row.get("version_score", 0.0),  # [S-001]
+            policy_evidence_refs=json.loads(row.get("policy_evidence_refs_json", "[]")),  # [S-001]
+            narrative_score=row.get("narrative_score", 0.0),  # [S-002] narrative_quality_score
+            narrative_reasons=json.loads(row.get("narrative_reasons_json", "[]")),  # [S-002]
+            narrative_evidence_refs=json.loads(row.get("narrative_evidence_refs_json", "[]")),  # [S-002]
+            risk_penalty=row.get("risk_penalty", 0.0),  # [S-003] underwater_risk_flags
+            risk_evidence_refs=json.loads(row.get("risk_evidence_refs_json", "[]")),  # [S-003]
+            risk_reasons=json.loads(row.get("risk_reasons_json", "[]")),  # [S-003]
+            game_balance=row.get("game_balance", ""),  # [S-004] candidate_game_balance
+            bull_case=row.get("bull_case", ""),  # [S-004]
+            bear_case=row.get("bear_case", ""),  # [S-004]
+            policy_case=row.get("policy_case", ""),  # [S-004]
+            fund_flow_case=row.get("fund_flow_case", ""),  # [S-004]
+            resonance_count=row.get("resonance_count", 0),  # [S-004]
+            game_balance_refs=json.loads(row.get("game_balance_refs_json", "[]")),  # [S-004]
+            fund_flow_anomaly_score=row.get("fund_flow_anomaly_score", 0.0),  # [T-003] fund_flow_anomaly_pool
+            fund_flow_anomaly_tags=json.loads(row.get("fund_flow_anomaly_tags_json", "[]")),  # [T-003]
+            fund_flow_anomaly_refs=json.loads(row.get("fund_flow_anomaly_refs_json", "[]")),  # [T-003]
+            fund_flow_unit_verified=bool(row.get("fund_flow_unit_verified", 0)),  # [T-003]
+            fund_flow_individual_summary=row.get("fund_flow_individual_summary", ""),  # [T-003]
+            fund_flow_board_summary=row.get("fund_flow_board_summary", ""),  # [T-003]
+        )
+
+
+@dataclass
+class Signal:
+    """One signal event — row in tradeflow_signals."""
+    symbol: str
+    signal_type: str
+    signal_level: str = "info"
+    source: str = "tradeflow"
+    evidence: dict = field(default_factory=dict)
+    action_hint: str = "OBSERVE"
+    status: str = "new"
+    signal_time: str = ""
+    created_at: str = ""
+
+    def __post_init__(self):
+        if not self.signal_time:
+            self.signal_time = datetime.now().isoformat()
+        if not self.created_at:
+            self.created_at = datetime.now().isoformat()
+        # validate action_hint
+        if self.action_hint not in ALLOWED_ACTIONS:
+            self.action_hint = "OBSERVE"
+
+
+exec
+/bin/zsh -lc "python - <<'PY'
+s='?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?'
+print(s.count('?'))
+PY
+python - <<'PY'
+from tradingagents.tradeflow.candidate_engine import save_candidate, init_db
+from tradingagents.tradeflow.schemas import Candidate
+import tempfile, os
+p=tempfile.mktemp()
+init_db(p)
+print(save_candidate(Candidate(symbol='x'), p))
+os.remove(p)
+PY" in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: python
+zsh:5: command not found: python
+
+exec
+/bin/zsh -lc "source .venv/bin/activate && python - <<'PY'
+s='?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?'
+print(s.count('?'))
+PY
+python - <<'PY'
+from tradingagents.tradeflow.candidate_engine import save_candidate, init_db
+from tradingagents.tradeflow.schemas import Candidate
+import tempfile, os
+p=tempfile.mktemp()
+init_db(p)
+print(save_candidate(Candidate(symbol='x'), p))
+os.remove(p)
+PY" in /Users/maybee/TradingAgents-AShare
+ succeeded in 273ms:
+1
+
+exec
+/bin/zsh -lc "sed -n '1,240p' tradingagents/tradeflow/plan_runner.py && sed -n '1,210p' tradingagents/tradeflow/discovery.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""TradeFlow Plan Runner — generates pre-market daily plans.
+
+Reads candidates from tradeflow_candidates, produces a DailyPlan
+with only allowed actions: OBSERVE / WAIT_TRIGGER / NEED_DEEP_TA / REMOVE_FROM_WATCH.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime
+from typing import Optional
+
+from .schemas import (
+    DailyPlan, Candidate, ALLOWED_ACTIONS, FORBIDDEN_WORDS
+)
+from .candidate_engine import init_db, save_candidate, evaluate_symbol
+from .universe import build_universe
+
+
+def _action_for_candidate(candidate: Candidate) -> str:
+    """Determine the action for a candidate based on its signals."""
+    if candidate.need_deep_ta:
+        return "NEED_DEEP_TA"
+
+    # If score is high and trigger price is close to current price
+    evidence = candidate.evidence
+    for strategy, ev in evidence.items():
+        if isinstance(ev, dict):
+            latest = ev.get("latest_close", 0)
+            trigger = candidate.trigger_price or 0
+            if latest > 0 and trigger > 0:
+                distance = (trigger - latest) / latest
+                if distance < 0.02:  # within 2% of trigger
+                    return "WAIT_TRIGGER"
+
+    return "OBSERVE"
+
+
+def _build_plan_entry(candidate: Candidate) -> dict:
+    """Build a plan entry dict from a candidate."""
+    action = _action_for_candidate(candidate)
+
+    # Build reason — no forbidden words
+    reasons = []
+    for sig in candidate.signals:
+        reasons.append(f"[{sig.strategy_tag}] {sig.reason}")
+    reason_str = "; ".join(reasons) if reasons else "候选观察"
+
+    # Sanity check: no forbidden words
+    for word in FORBIDDEN_WORDS:
+        if word in reason_str:
+            reason_str = reason_str.replace(word, "***")
+
+    return {
+        "symbol": candidate.symbol,
+        "name": candidate.name,
+        "action": action,
+        "primary_strategy": candidate.primary_strategy,
+        "strategies": candidate.strategy_tags,
+        "score": candidate.score,
+        "trigger_price": candidate.trigger_price,
+        "support_price": candidate.support_price,
+        "invalid_price": candidate.invalid_price,
+        "reason": reason_str,
+        "need_deep_ta": candidate.need_deep_ta,
+        "risk_flags": candidate.risk_flags,
+        "policy_tags": candidate.policy_tags,  # [S-001] policy_version_signal
+        "version_score": candidate.version_score,  # [S-001]
+        "policy_evidence_refs": candidate.policy_evidence_refs,  # [S-001]
+        "narrative_score": candidate.narrative_score,  # [S-002] narrative_quality_score
+        "narrative_reasons": candidate.narrative_reasons,  # [S-002]
+        "narrative_evidence_refs": candidate.narrative_evidence_refs,  # [S-002]
+        "risk_penalty": candidate.risk_penalty,  # [S-003] underwater_risk_flags
+        "risk_evidence_refs": candidate.risk_evidence_refs,  # [S-003]
+        "risk_reasons": candidate.risk_reasons,  # [S-003]
+        "game_balance": candidate.game_balance,  # [S-004] candidate_game_balance
+        "bull_case": candidate.bull_case,  # [S-004]
+        "bear_case": candidate.bear_case,  # [S-004]
+        "policy_case": candidate.policy_case,  # [S-004]
+        "fund_flow_case": candidate.fund_flow_case,  # [S-004]
+        "resonance_count": candidate.resonance_count,  # [S-004]
+        "game_balance_refs": candidate.game_balance_refs,  # [S-004]
+        "fund_flow_anomaly_score": candidate.fund_flow_anomaly_score,  # [T-003] fund_flow_anomaly_pool
+        "fund_flow_anomaly_tags": candidate.fund_flow_anomaly_tags,  # [T-003]
+        "fund_flow_anomaly_refs": candidate.fund_flow_anomaly_refs,  # [T-003]
+        "fund_flow_unit_verified": candidate.fund_flow_unit_verified,  # [T-003]
+        "fund_flow_individual_summary": candidate.fund_flow_individual_summary,  # [T-003]
+        "fund_flow_board_summary": candidate.fund_flow_board_summary,  # [T-003]
+    }
+
+
+def generate_daily_plan(
+    trade_date: Optional[str] = None,
+    symbols: Optional[list[str]] = None,
+    prod_db_path: str = "",
+    tf_db_path: str = "",
+    candidates: Optional[list[Candidate]] = None,
+    news_texts: Optional[list[str]] = None,
+    event_overrides: Optional[list[dict]] = None,
+    save_candidates: bool = False,
+    use_event_source: bool = False,  # [N-001] event_source_plan_integration
+    fund_flow_map: Optional[dict[str, dict]] = None,  # [T-003] fund_flow_anomaly_pool
+) -> DailyPlan:
+    """Generate a pre-market daily plan.
+
+    Args:
+        trade_date: Trading date (default: today).
+        symbols: Specific symbols to evaluate (overrides universe).
+        prod_db_path: Path to production tradingagents.db.
+        tf_db_path: Path to tradeflow SQLite DB.
+        candidates: Pre-evaluated candidates (skip evaluation if provided).
+        news_texts: News/announcement texts for event catalyst detection.
+        event_overrides: Manual event overrides for event catalyst detection.
+        save_candidates: If True, persist evaluated candidates to tf_db_path.
+        use_event_source: [N-001] If True, fetch daily events and inject into universe.
+        fund_flow_map: [T-003] Optional dict mapping symbol → {"individual": str, "board": str}.
+
+    Returns:
+        DailyPlan with validated entries.
+    """
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+
+    # [N-001] event_source_plan_integration — fetch events if enabled
+    events_map: dict[str, list[str]] = {}
+    if use_event_source:
+        from .event_source import fetch_daily_events
+        trade_date_compact = trade_date.replace("-", "")
+        events_map = fetch_daily_events(trade_date_compact)
+
+    if candidates is None:
+        # Build universe — pass event_symbols so event-discovered
+        # symbols enter the pool
+        universe = build_universe(
+            symbols=symbols,
+            prod_db_path=prod_db_path,
+            tf_db_path=tf_db_path,
+            event_overrides=event_overrides,
+            event_symbols=events_map if events_map else None,  # [N-001]
+        )
+
+        # Evaluate each symbol — filter event_overrides to only
+        # those matching the current symbol (or global overrides without symbol).
+        # [N-001] Each symbol gets its own event titles as news_texts.
+        candidates = []
+        for item in universe:
+            sym = item["symbol"]
+            if event_overrides:
+                filtered_overrides = [
+                    ev for ev in event_overrides
+                    if ev.get("symbol") is None or ev.get("symbol") == sym
+                ]
+            else:
+                filtered_overrides = None
+
+            # [N-001] event_source_plan_integration
+            sym_news = events_map.get(sym) if events_map else None
+
+            # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
+            sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
+            sym_ff_individual = sym_ff.get("individual") if sym_ff else None
+            sym_ff_board = sym_ff.get("board") if sym_ff else None
+
+            c, reason = evaluate_symbol(
+                symbol=sym,
+                name=item.get("name", ""),
+                source=item.get("source", "manual"),
+                trade_date=trade_date,
+                news_texts=sym_news or news_texts,
+                event_overrides=filtered_overrides,
+                fund_flow_individual=sym_ff_individual,  # [T-003]
+                fund_flow_board=sym_ff_board,  # [T-003]
+            )
+            if c is not None:
+                candidates.append(c)
+
+    # Build plan entries
+    plan_entries = []
+    for c in candidates:
+        entry = _build_plan_entry(c)
+        plan_entries.append(entry)
+
+    # Sort by score descending
+    plan_entries.sort(key=lambda x: x["score"], reverse=True)
+
+    # Build summary
+    n_total = len(plan_entries)
+    n_deep_ta = sum(1 for e in plan_entries if e["need_deep_ta"])
+    n_wait = sum(1 for e in plan_entries if e["action"] == "WAIT_TRIGGER")
+
+    summary_parts = [
+        f"共{n_total}只候选",
+        f"{n_deep_ta}只需要深度TA",
+        f"{n_wait}只接近触发",
+    ]
+    if symbols:
+        summary_parts.append(f"指定标的: {', '.join(symbols)}")
+
+    plan = DailyPlan(
+        trade_date=trade_date,
+        mode="pre_market",
+        summary="，".join(summary_parts) + "。",
+        candidates=plan_entries,
+        metadata={
+            "universe_size": len(plan_entries),
+            "generated_at": datetime.now().isoformat(),
+        },
+    )
+
+    # Validate
+    issues = plan.validate()
+    if issues:
+        plan.metadata["validation_issues"] = issues
+
+    # Optionally persist candidates  # [G-004] tradeflow_candidate_date
+    if save_candidates and tf_db_path:
+        for c in candidates:
+            if c.trade_date != trade_date:
+                c.trade_date = trade_date
+            save_candidate(c, tf_db_path)
+
+    return plan
+
+
+def save_plan(plan: DailyPlan, db_path: str) -> int:
+    """Save daily plan to DB."""
+    conn = sqlite3.connect(db_path)
+    row = plan.to_db_row()
+    try:
+        conn.execute(
+            "INSERT INTO tradeflow_daily_plans "
+            "(trade_date, mode, summary, candidates_json, metadata_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(trade_date, mode) DO UPDATE SET "
+            "summary=excluded.summary, candidates_json=excluded.candidates_json, "
+            "metadata_json=excluded.metadata_json",
+            (row["trade_date"], row["mode"], row["summary"],
+             row["candidates_json"], row["metadata_json"], row["created_at"]),
+        )
+"""TradeFlow Discovery — small-scope candidate discovery.  # [T-002] discovery
+
+Runs the full evaluation pipeline on a bounded set of symbols
+(watchlist / holdings / manual list / industry pilot) and returns
+TopN candidates with filter reasons, without invoking TA deep analysis.
+
+Design constraints:
+- No full-market scan; only explicitly specified symbol pools.
+- No TA deep analysis auto-invocation; only marks need_deep_ta.
+- No strong buy/sell words in output.
+- Filter reasons must distinguish: liquidity / data missing / no strategy hit.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from typing import Optional
+
+from .schemas import Candidate, DailyPlan, ALLOWED_ACTIONS, FORBIDDEN_WORDS
+from .candidate_engine import evaluate_symbol, init_db, filter_symbol
+from .universe import build_universe
+
+
+SOURCE_WATCHLIST = "watchlist"
+SOURCE_HOLDING = "holding"
+SOURCE_MANUAL = "manual"
+SOURCE_INDUSTRY = "industry_pool"
+SOURCE_EVENT = "event_source"
+
+SOURCE_FUND_FLOW = "fund_flow_pool"  # [T-003] fund_flow_anomaly_pool
+
+TOPN_DEFAULT = 20
+
+
+@dataclass
+class FilteredSymbol:
+    symbol: str
+    name: str
+    source: str
+    reason: str
+
+
+@dataclass
+class DiscoveryResult:
+    trade_date: str
+    universe_size: int = 0
+    candidates: list[dict] = field(default_factory=list)
+    filtered: list[dict] = field(default_factory=list)
+    summary: str = ""
+    metadata: dict = field(default_factory=dict)
+
+
+def _build_discovery_universe(
+    symbols: Optional[list[str]] = None,
+    industry_symbols: Optional[list[str]] = None,
+    prod_db_path: str = "",
+    tf_db_path: str = "",
+    include_holdings: bool = True,
+    include_watchlist: bool = True,
+    include_yesterday: bool = False,
+    event_symbols: Optional[dict[str, list[str]]] = None,
+    fund_flow_symbols: Optional[list[str]] = None,  # [T-003] fund_flow_anomaly_pool
+) -> list[dict]:
+    """Build universe for discovery — adds industry pool as a source."""
+    universe: dict[str, dict] = {}
+
+    base = build_universe(
+        symbols=symbols,
+        prod_db_path=prod_db_path,
+        tf_db_path=tf_db_path,
+        include_holdings=include_holdings,
+        include_watchlist=include_watchlist,
+        include_yesterday=include_yesterday,
+        event_symbols=event_symbols,
+    )
+    for item in base:
+        universe[item["symbol"]] = item
+
+    if industry_symbols:
+        for sym in industry_symbols:
+            sym = sym.strip()
+            if sym and sym not in universe:
+                universe[sym] = {"symbol": sym, "name": "", "source": SOURCE_INDUSTRY}
+
+    # [T-003] fund_flow_anomaly_pool — add fund flow anomaly symbols
+    if fund_flow_symbols:
+        for sym in fund_flow_symbols:
+            sym = sym.strip()
+            if sym and sym not in universe:
+                universe[sym] = {"symbol": sym, "name": "", "source": SOURCE_FUND_FLOW}
+
+    return list(universe.values())
+
+
+def run_discovery(
+    trade_date: Optional[str] = None,
+    symbols: Optional[list[str]] = None,
+    industry_symbols: Optional[list[str]] = None,
+    prod_db_path: str = "",
+    tf_db_path: str = "",
+    top_n: int = TOPN_DEFAULT,
+    include_holdings: bool = True,
+    include_watchlist: bool = True,
+    event_overrides: Optional[list[dict]] = None,
+    news_texts: Optional[list[str]] = None,
+    use_event_source: bool = False,
+    save_candidates: bool = False,
+    fund_flow_map: Optional[dict[str, dict]] = None,  # [T-003] fund_flow_anomaly_pool
+) -> DiscoveryResult:
+    """Run small-scope discovery and return TopN candidates.
+
+    Args:
+        trade_date: Trading date (default: today).
+        symbols: Manual symbol list.
+        industry_symbols: Industry pilot symbol list.
+        prod_db_path: Path to production DB.
+        tf_db_path: Path to tradeflow DB.
+        top_n: Maximum candidates to return.
+        include_holdings: Include holdings from prod DB.
+        include_watchlist: Include watchlist from prod DB.
+        event_overrides: Manual event overrides.
+        news_texts: News texts.
+        use_event_source: Fetch daily events for event pool.
+        save_candidates: Persist candidates to DB.
+        fund_flow_map: [T-003] Optional dict mapping symbol → {"individual": str, "board": str}.
+
+    Returns:
+        DiscoveryResult with candidates and filtered symbols.
+    """
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+
+    events_map: dict[str, list[str]] = {}
+    if use_event_source:
+        from .event_source import fetch_daily_events
+        trade_date_compact = trade_date.replace("-", "")
+        events_map = fetch_daily_events(trade_date_compact)
+
+    universe = _build_discovery_universe(
+        symbols=symbols,
+        industry_symbols=industry_symbols,
+        prod_db_path=prod_db_path,
+        tf_db_path=tf_db_path,
+        include_holdings=include_holdings,
+        include_watchlist=include_watchlist,
+        include_yesterday=False,
+        event_symbols=events_map if events_map else None,
+        fund_flow_symbols=list(fund_flow_map.keys()) if fund_flow_map else None,  # [T-003]
+    )
+
+    candidates: list[Candidate] = []
+    filtered: list[FilteredSymbol] = []
+
+    for item in universe:
+        sym = item["symbol"]
+        sym_name = item.get("name", "")
+        sym_source = item.get("source", "manual")
+
+        if event_overrides:
+            filtered_overrides = [
+                ev for ev in event_overrides
+                if ev.get("symbol") is None or ev.get("symbol") == sym
+            ]
+        else:
+            filtered_overrides = None
+
+        sym_news = events_map.get(sym) if events_map else None
+
+        # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
+        sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
+        sym_ff_individual = sym_ff.get("individual") if sym_ff else None
+        sym_ff_board = sym_ff.get("board") if sym_ff else None
+
+        c, reason = evaluate_symbol(
+            symbol=sym,
+            name=sym_name,
+            source=sym_source,
+            trade_date=trade_date,
+            news_texts=sym_news or news_texts,
+            event_overrides=filtered_overrides,
+            fund_flow_individual=sym_ff_individual,  # [T-003]
+            fund_flow_board=sym_ff_board,  # [T-003]
+        )
+        if c is not None:
+            candidates.append(c)
+        else:
+            filtered.append(FilteredSymbol(
+                symbol=sym,
+                name=sym_name,
+                source=sym_source,
+                reason=reason,
+            ))
+
+    candidates.sort(key=lambda c: c.score, reverse=True)
+    top_candidates = candidates[:top_n]
+
+    plan_entries = []
+    for c in top_candidates:
+        entry = _build_discovery_entry(c)
+        plan_entries.append(entry)
+
+    n_total = len(plan_entries)
+    n_deep_ta = sum(1 for e in plan_entries if e.get("need_deep_ta"))
+    n_filtered = len(filtered)
+    n_universe = len(universe)
+
+    filter_breakdown = _classify_filter_reasons(filtered)
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/tradeflow/game_balance.py && grep -R \"fund_flow_map\\|fund_flow_individual\\|FUND_FLOW\" -n . | head -100" in /Users/maybee/TradingAgents-AShare
+ succeeded in 16683ms:
+./.pytest_cache/v/cache/nodeids:678:  "tests/test_readiness_score.py::test_raw_evidence_fund_flow_individual",
+Binary file ./tests/__pycache__/test_t003_fund_flow_anomaly.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_data_collector.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_readiness_score.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_raw_evidence_vendor.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_g007_fund_lhb_provenance.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_g006_raw_evidence_snapshot.cpython-312-pytest-9.0.2.pyc matches
+./tests/test_raw_evidence_vendor.py:19:        "fund_flow_individual": "Individual fund flow data",
+./tests/test_g006_raw_evidence_snapshot.py:13:        "fund_flow_individual": "Individual fund flow data",
+./tests/test_g006_raw_evidence_snapshot.py:49:        pool = _make_pool(fund_flow_individual="数据获取失败：timeout")
+./tests/test_g006_raw_evidence_snapshot.py:54:        assert re_data["fund_flow_individual"]["status"] == "FAILED"
+./tests/test_g006_raw_evidence_snapshot.py:55:        assert re_data["fund_flow_individual"]["error"] is not None
+./tests/test_g006_raw_evidence_snapshot.py:77:            "fund_flow_board", "fund_flow_individual", "lhb",
+./tests/test_g006_raw_evidence_snapshot.py:176:            "fund_flow_individual": {
+./tests/test_g006_raw_evidence_snapshot.py:200:            "fund_flow_individual": "flow data here",
+./tests/test_readiness_score.py:1138:def test_raw_evidence_fund_flow_individual():
+./tests/test_readiness_score.py:1141:        raw_evidence={"fund_flow_individual": "日期,主力净流入\n2026-05-01,1000万"},
+./tests/test_readiness_score.py:1149:        raw_evidence={"fund_flow_individual": "fund_flow_individual 调用失败：timeout"},
+./tests/test_g007_fund_lhb_provenance.py:29:            "fund_flow_individual": {
+./tests/test_g007_fund_lhb_provenance.py:48:            "fund_flow_individual": {
+./tests/test_g007_fund_lhb_provenance.py:65:            "fund_flow_individual": {
+./tests/test_g007_fund_lhb_provenance.py:78:            "fund_flow_individual": {
+./tests/test_g007_fund_lhb_provenance.py:90:            "fund_flow_individual": "600584.SH 近20日主力资金净流向：\n日期 净流入\n2026-05-26 12345",
+./tests/test_g007_fund_lhb_provenance.py:99:            "fund_flow_individual": "个股资金流向数据获取失败：ProxyError",
+./tests/test_g007_fund_lhb_provenance.py:107:            "fund_flow_individual": {
+./tests/test_g007_fund_lhb_provenance.py:125:            "fund_flow_individual": {
+./tests/test_g007_fund_lhb_provenance.py:143:            "fund_flow_individual": {
+./tests/test_g007_fund_lhb_provenance.py:273:                "fund_flow_individual": {
+./tests/test_g007_fund_lhb_provenance.py:295:                "fund_flow_individual": {
+./tests/test_g007_fund_lhb_provenance.py:317:                "fund_flow_individual": {
+./tests/test_data_collector.py:15:        "fund_flow_individual": "ffi", "lhb": "lhb",
+./tests/test_t003_fund_flow_anomaly.py:37:    FUND_FLOW_TAG_CONSECUTIVE_INFLOW,
+./tests/test_t003_fund_flow_anomaly.py:38:    FUND_FLOW_TAG_HIGH_PROPORTION,
+./tests/test_t003_fund_flow_anomaly.py:39:    FUND_FLOW_TAG_BOARD_RESONANCE,
+./tests/test_t003_fund_flow_anomaly.py:40:    FUND_FLOW_TAG_LARGE_SINGLE_DAY,
+./tests/test_t003_fund_flow_anomaly.py:41:    FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT,
+./tests/test_t003_fund_flow_anomaly.py:42:    MAX_FUND_FLOW_BONUS,
+./tests/test_t003_fund_flow_anomaly.py:48:    STRATEGY_FUND_FLOW,
+./tests/test_t003_fund_flow_anomaly.py:320:        result = detect_fund_flow_anomaly(fund_flow_individual=text)
+./tests/test_t003_fund_flow_anomaly.py:321:        assert FUND_FLOW_TAG_CONSECUTIVE_INFLOW in result.fund_flow_anomaly_tags
+./tests/test_t003_fund_flow_anomaly.py:327:        result = detect_fund_flow_anomaly(fund_flow_individual=text)
+./tests/test_t003_fund_flow_anomaly.py:329:        assert FUND_FLOW_TAG_CONSECUTIVE_INFLOW in result.fund_flow_anomaly_tags
+./tests/test_t003_fund_flow_anomaly.py:334:        result = detect_fund_flow_anomaly(fund_flow_individual=text)
+./tests/test_t003_fund_flow_anomaly.py:335:        assert FUND_FLOW_TAG_LARGE_SINGLE_DAY in result.fund_flow_anomaly_tags
+./tests/test_t003_fund_flow_anomaly.py:344:        result = detect_fund_flow_anomaly(fund_flow_individual=text)
+./tests/test_t003_fund_flow_anomaly.py:346:        assert FUND_FLOW_TAG_LARGE_SINGLE_DAY not in result.fund_flow_anomaly_tags
+./tests/test_t003_fund_flow_anomaly.py:352:            fund_flow_individual=ind_text,
+./tests/test_t003_fund_flow_anomaly.py:355:        assert FUND_FLOW_TAG_BOARD_RESONANCE in result.fund_flow_anomaly_tags
+./tests/test_t003_fund_flow_anomaly.py:361:            fund_flow_individual=ind_text,
+./tests/test_t003_fund_flow_anomaly.py:365:        assert "个股" in result.fund_flow_individual_summary
+./tests/test_t003_fund_flow_anomaly.py:367:        assert result.fund_flow_individual_summary != result.fund_flow_board_summary
+./tests/test_t003_fund_flow_anomaly.py:376:        result = detect_fund_flow_anomaly(fund_flow_individual=text)
+./tests/test_t003_fund_flow_anomaly.py:377:        assert FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT in result.fund_flow_anomaly_tags
+./tests/test_t003_fund_flow_anomaly.py:385:            fund_flow_individual=ind_text,
+./tests/test_t003_fund_flow_anomaly.py:388:        assert result.fund_flow_anomaly_score <= MAX_FUND_FLOW_BONUS
+./tests/test_t003_fund_flow_anomaly.py:392:        result = detect_fund_flow_anomaly(fund_flow_individual=ind_text)
+./tests/test_t003_fund_flow_anomaly.py:394:            assert word not in result.fund_flow_individual_summary
+./tests/test_t003_fund_flow_anomaly.py:399:            fund_flow_individual="个股资金流向数据获取失败：timeout",
+./tests/test_t003_fund_flow_anomaly.py:406:        result = detect_fund_flow_anomaly(fund_flow_individual=text)
+./tests/test_t003_fund_flow_anomaly.py:407:        assert "净流入" in result.fund_flow_individual_summary or "净流出" in result.fund_flow_individual_summary
+./tests/test_t003_fund_flow_anomaly.py:415:        result = detect_fund_flow_anomaly(fund_flow_individual=text, lookback_days=100)
+./tests/test_t003_fund_flow_anomaly.py:457:                fund_flow_individual=ind_text,
+./tests/test_t003_fund_flow_anomaly.py:462:        assert FUND_FLOW_TAG_CONSECUTIVE_INFLOW in c.fund_flow_anomaly_tags
+./tests/test_t003_fund_flow_anomaly.py:463:        assert STRATEGY_FUND_FLOW in c.strategy_tags
+./tests/test_t003_fund_flow_anomaly.py:519:                fund_flow_individual=ind_text,
+./tests/test_t003_fund_flow_anomaly.py:543:            c.fund_flow_individual_summary = "近5日主力合计净流入 63000 万元"
+./tests/test_t003_fund_flow_anomaly.py:560:            assert "净流入" in row["fund_flow_individual_summary"]
+./tests/test_t003_fund_flow_anomaly.py:570:            "strategy_tags_json": '["FUND_FLOW_ANOMALY"]',
+./tests/test_t003_fund_flow_anomaly.py:571:            "primary_strategy": "FUND_FLOW_ANOMALY",
+./tests/test_t003_fund_flow_anomaly.py:603:            "fund_flow_individual_summary": "近5日主力合计净流入 50000 万元",
+./tests/test_t003_fund_flow_anomaly.py:610:        assert "净流入" in c.fund_flow_individual_summary
+./tests/test_t003_fund_flow_anomaly.py:623:        c.fund_flow_individual_summary = "近5日主力合计净流入 60000 万元"
+./tests/test_t003_fund_flow_anomaly.py:632:        assert "净流入" in entry["fund_flow_individual_summary"]
+./tests/test_t003_fund_flow_anomaly.py:645:        c.fund_flow_individual_summary = "近5日主力合计净流入 60000 万元"
+./tests/test_t003_fund_flow_anomaly.py:692:                "strategies": ["FUND_FLOW_ANOMALY"],
+./tests/test_t003_fund_flow_anomaly.py:697:                "fund_flow_individual_summary": "近5日主力合计净流入 60000 万元",
+./tests/test_t003_fund_flow_anomaly.py:772:                fund_flow_individual=ind_text,
+./tests/test_t003_fund_flow_anomaly.py:808:                fund_flow_individual=ind_text,
+./tests/test_t003_fund_flow_anomaly.py:847:                fund_flow_individual=text,
+./tests/test_t003_fund_flow_anomaly.py:851:        assert FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT in c.fund_flow_anomaly_tags
+./tests/test_t003_fund_flow_anomaly.py:853:        # Also FUND_FLOW_ANOMALY strategy tag should NOT be added
+./tests/test_t003_fund_flow_anomaly.py:854:        assert STRATEGY_FUND_FLOW not in c.strategy_tags
+./tests/test_t003_fund_flow_anomaly.py:876:        assert c.fund_flow_individual_summary == ""
+./tests/test_t003_fund_flow_anomaly.py:891:        assert "FUND_FLOW_ANOMALY" in ALL_STRATEGIES
+./docs/task_runs/T-003-20260529-144007/opencode-round1.txt:68:+STRATEGY_FUND_FLOW = "FUND_FLOW_ANOMALY"  # [T-003] fund_flow_anomaly_pool
+./docs/task_runs/T-003-20260529-144007/opencode-round1.txt:69:+ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE, STRATEGY_FUND_FLOW}
+./docs/task_runs/T-003-20260529-144007/opencode-round1.txt:90:+fund_flow_individual_summary: str = ""  # [T-003]
+./docs/task_runs/T-003-20260529-144007/opencode-round1.txt:113:+        "fund_flow_individual_summary": self.fund_flow_individual_summary,  # [T-003]
+./docs/task_runs/T-003-20260529-144007/opencode-round1.txt:136:+            fund_flow_individual_summary=row.get("fund_flow_individual_summary", ""),  # [T-003]
+./docs/task_runs/T-003-20260529-144007/opencode-round1.txt:158:+    ff_ind = c.get("fund_flow_individual_summary", "")
+./docs/task_runs/T-003-20260529-144007/opencode-round1.txt:196:+from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE, STRATEGY_FUND_FLOW  # [S-001] [S-002] [T-003]
+./docs/task_runs/T-003-20260529-144007/opencode-round1.txt:237:+    ("fund_flow_individual_summary", "TEXT DEFAULT ''"),
+./docs/task_runs/T-003-20260529-144007/opencode-round1.txt:260:+    fund_flow_individual: Optional[str] = None,  # [T-003] fund_flow_anomaly_pool
+./docs/task_runs/T-003-20260529-144007/opencode-round1.txt:282:+        fund_flow_individual=fund_flow_individual,
+./docs/task_runs/T-003-20260529-144007/opencode-round1.txt:290:+        candidate.fund_flow_individual_summary = ff_result.fund_flow_individual_summary
+./docs/task_runs/T-003-20260529-144007/opencode-round1.txt:293:+        positive_ff_tags = set(ff_result.fund_flow_anomaly_tags) - {FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT}
+./docs/task_runs/T-003-20260529-144007/opencode-round1.txt:297:+                set(candidate.strategy_tags) | {STRATEGY_FUND_FLOW}
+./docs/task_runs/T-003-20260529-144007/opencode-round1.txt:304:+            "individual_summary": ff_result.fund_flow_individual_summary,
+./docs/task_runs/T-003-20260529-144007/opencode-round1.txt:318:我们需要导入 `FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT`:
+./docs/task_runs/T-003-20260529-144007/opencode-round1.txt:330:+from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult, FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT  # [T-003] fund_flow_anomaly_pool
+
+exec
+/bin/zsh -lc "grep -R \"stock_board_industry_fund_flow\\|板块资金流向\\|fund_flow_board\" -n tradingagents tests | head -120" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/tradeflow/candidate_engine.py:148:        ("fund_flow_board_summary", "TEXT DEFAULT ''"),
+tradingagents/tradeflow/candidate_engine.py:316:    fund_flow_board: Optional[str] = None,  # [T-003] fund_flow_anomaly_pool
+tradingagents/tradeflow/candidate_engine.py:478:        fund_flow_board=fund_flow_board,
+tradingagents/tradeflow/candidate_engine.py:486:        candidate.fund_flow_board_summary = ff_result.fund_flow_board_summary
+tradingagents/tradeflow/candidate_engine.py:500:            "board_summary": ff_result.fund_flow_board_summary,
+tradingagents/tradeflow/candidate_engine.py:526:            "fund_flow_individual_summary, fund_flow_board_summary, "
+tradingagents/tradeflow/candidate_engine.py:554:            "fund_flow_board_summary=excluded.fund_flow_board_summary, "
+tradingagents/tradeflow/candidate_engine.py:573:                row["fund_flow_individual_summary"], row["fund_flow_board_summary"],
+tradingagents/tradeflow/discovery.py:185:            fund_flow_board=sym_ff_board,  # [T-003]
+tradingagents/tradeflow/discovery.py:293:        "fund_flow_board_summary": candidate.fund_flow_board_summary,  # [T-003]
+tradingagents/tradeflow/discovery.py:367:        ff_board = c.get("fund_flow_board_summary", "")
+tradingagents/tradeflow/plan_runner.py:89:        "fund_flow_board_summary": candidate.fund_flow_board_summary,  # [T-003]
+tradingagents/tradeflow/plan_runner.py:173:                fund_flow_board=sym_ff_board,  # [T-003]
+Binary file tradingagents/tradeflow/__pycache__/schemas.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/discovery.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/candidate_engine.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/plan_runner.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/fund_flow_anomaly.cpython-312.pyc matches
+tradingagents/tradeflow/schemas.py:87:    fund_flow_board_summary: str = ""  # [T-003]
+tradingagents/tradeflow/schemas.py:171:            "fund_flow_board_summary": self.fund_flow_board_summary,  # [T-003]
+tradingagents/tradeflow/schemas.py:215:            fund_flow_board_summary=row.get("fund_flow_board_summary", ""),  # [T-003]
+tradingagents/tradeflow/schemas.py:369:            ff_board = c.get("fund_flow_board_summary", "")
+tradingagents/tradeflow/fund_flow_anomaly.py:15:- fund_flow_board_summary: board fund flow summary (separate from individual)
+tradingagents/tradeflow/fund_flow_anomaly.py:51:    r"板块资金流向|行业.*资金流|stock_board_industry_fund_flow"
+tradingagents/tradeflow/fund_flow_anomaly.py:71:    fund_flow_board_summary: str = ""
+tradingagents/tradeflow/fund_flow_anomaly.py:358:    fund_flow_board: Optional[str] = None,
+tradingagents/tradeflow/fund_flow_anomaly.py:365:        fund_flow_board: Board/sector fund flow text.
+tradingagents/tradeflow/fund_flow_anomaly.py:374:    board_text = fund_flow_board or ""
+tradingagents/tradeflow/fund_flow_anomaly.py:440:        fund_flow_board_summary=_sanitize(board_summary),
+tradingagents/graph/data_collector.py:308:        "fund_flow_board": (get_board_fund_flow, {}),
+tradingagents/graph/data_collector.py:505:            "fund_flow_board", "fund_flow_individual", "lhb",
+tradingagents/graph/data_collector.py:548:            elif key == "fund_flow_board":
+Binary file tradingagents/graph/__pycache__/data_collector.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/readiness_score.cpython-312.pyc matches
+tradingagents/agents/utils/readiness_score.py:1716:    board_status = _status_from_g006(raw.get("fund_flow_board"))
+tradingagents/agents/utils/readiness_score.py:1718:        raw_board = _unwrap_legacy(raw.get("fund_flow_board"))
+tradingagents/agents/utils/game_theory_tools.py:8:    """获取今日行业板块资金流向排名，用于判断板块轮动信号和个股所在板块的资金吸引力。"""
+tradingagents/agents/analysts/macro_analyst.py:35:            board_flow = pool.get("fund_flow_board", "无数据")
+tradingagents/agents/analysts/macro_analyst.py:62:                f"【今日行业板块资金流向】\n{board_flow}\n\n"
+tradingagents/agents/analysts/macro_analyst.py:86:                full_content += "\n\n⚠️ 注意：部分数据源不可用（板块资金流向或新闻数据缺失），置信度较低。"
+Binary file tradingagents/agents/analysts/__pycache__/macro_analyst.cpython-312.pyc matches
+tradingagents/dataflows/providers/cn_akshare_provider.py:1062:        """获取行业板块资金流向排名，主接口失败时尝试 AKShare fallback。"""
+tradingagents/dataflows/providers/cn_akshare_provider.py:1063:        # Primary: stock_board_industry_fund_flow_em
+tradingagents/dataflows/providers/cn_akshare_provider.py:1078:                return f"板块资金流向排名（fallback，共{total}个板块，前10名）：\n{result_fb}"
+tradingagents/dataflows/providers/cn_akshare_provider.py:1083:        return f"板块资金流向数据获取失败（主接口和 fallback 均不可用）：{result}"
+tradingagents/dataflows/providers/cn_akshare_provider.py:1086:        """Primary board fund flow via stock_board_industry_fund_flow_em."""
+tradingagents/dataflows/providers/cn_akshare_provider.py:1090:                df = ak.stock_board_industry_fund_flow_em(symbol="今日")
+tradingagents/dataflows/providers/cn_akshare_provider.py:1092:                return "今日板块资金流向数据暂不可用。"
+tradingagents/dataflows/providers/cn_akshare_provider.py:1101:            return f"板块资金流向排名（共{total}个板块，前10名）：\n{result}"
+tradingagents/dataflows/providers/cn_akshare_provider.py:1103:            return f"板块资金流向数据获取失败：{type(exc).__name__}: {exc}"
+Binary file tradingagents/dataflows/providers/__pycache__/cn_akshare_provider.cpython-312.pyc matches
+tradingagents/prompts/zh.py:377:1. 分析今日行业板块资金流向排名,判断板块是否处于资金净流入状态。
+Binary file tests/__pycache__/test_t003_fund_flow_anomaly.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_data_collector.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_raw_evidence_vendor.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_g007_fund_lhb_provenance.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_g006_raw_evidence_snapshot.cpython-312-pytest-9.0.2.pyc matches
+tests/test_raw_evidence_vendor.py:18:        "fund_flow_board": "Board fund flow data",
+tests/test_g006_raw_evidence_snapshot.py:12:        "fund_flow_board": "Board fund flow data",
+tests/test_g006_raw_evidence_snapshot.py:77:            "fund_flow_board", "fund_flow_individual", "lhb",
+tests/test_g007_fund_lhb_provenance.py:35:            "fund_flow_board": {
+tests/test_g007_fund_lhb_provenance.py:113:            "fund_flow_board": {
+tests/test_data_collector.py:14:        "income_statement": "is", "fund_flow_board": "ffb",
+tests/test_t003_fund_flow_anomaly.py:76:    header = "板块资金流向排名（共50个板块，前10名）："
+tests/test_t003_fund_flow_anomaly.py:353:            fund_flow_board=board_text,
+tests/test_t003_fund_flow_anomaly.py:362:            fund_flow_board=board_text,
+tests/test_t003_fund_flow_anomaly.py:366:        assert "板块" in result.fund_flow_board_summary
+tests/test_t003_fund_flow_anomaly.py:367:        assert result.fund_flow_individual_summary != result.fund_flow_board_summary
+tests/test_t003_fund_flow_anomaly.py:386:            fund_flow_board=board_text,
+tests/test_t003_fund_flow_anomaly.py:395:            assert word not in result.fund_flow_board_summary
+tests/test_t003_fund_flow_anomaly.py:410:        result = detect_fund_flow_anomaly(fund_flow_board="板块资金流数据获取失败")
+tests/test_t003_fund_flow_anomaly.py:411:        assert "不可用" in result.fund_flow_board_summary
+tests/test_t003_fund_flow_anomaly.py:544:            c.fund_flow_board_summary = "板块资金流可用（5行数据）"
+tests/test_t003_fund_flow_anomaly.py:561:            assert "板块" in row["fund_flow_board_summary"]
+tests/test_t003_fund_flow_anomaly.py:604:            "fund_flow_board_summary": "",
+tests/test_t003_fund_flow_anomaly.py:624:        c.fund_flow_board_summary = "板块资金流可用"
+tests/test_t003_fund_flow_anomaly.py:646:        c.fund_flow_board_summary = "板块资金流可用"
+tests/test_t003_fund_flow_anomaly.py:698:                "fund_flow_board_summary": "板块资金流可用",
+tests/test_t003_fund_flow_anomaly.py:809:                fund_flow_board=board_text,
+tests/test_t003_fund_flow_anomaly.py:877:        assert c.fund_flow_board_summary == ""
+
+exec
+/bin/zsh -lc "sed -n '1086,1102p' tradingagents/dataflows/providers/cn_akshare_provider.py && sed -n '530,570p' tradingagents/graph/data_collector.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        """Primary board fund flow via stock_board_industry_fund_flow_em."""
+        try:
+            ak = self._ak()
+            with AKSHARE_CALL_LOCK:
+                df = ak.stock_board_industry_fund_flow_em(symbol="今日")
+            if df is None or df.empty:
+                return "今日板块资金流向数据暂不可用。"
+            sort_col = "今日主力净流入-净额"
+            if sort_col in df.columns:
+                df_sorted = df.sort_values(sort_col, ascending=False).reset_index(drop=True)
+            else:
+                df_sorted = df.reset_index(drop=True)
+            df_sorted.insert(0, "排名", range(1, len(df_sorted) + 1))
+            total = len(df_sorted)
+            result = df_sorted.head(10).to_string(index=False)
+            return f"板块资金流向排名（共{total}个板块，前10名）：\n{result}"
+        except Exception as exc:
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+                if "is_realtime_patched=True" in raw_value:
+                    entry["is_realtime_patched"] = True
+                    for line in raw_value.split("\n"):
+                        if "source=" in line and "[G-005]" in line:
+                            parts = line.split("source=")
+                            if len(parts) > 1:
+                                entry["vendor"] = parts[1].split(",")[0].strip()
+                        if "quote_time=" in line and "[G-005]" in line:
+                            parts = line.split("quote_time=")
+                            if len(parts) > 1:
+                                entry["as_of"] = parts[1].strip()
+
+            if key == "fund_flow_individual":
+                entry["unit"] = "万元"
+                entry["source_type"] = "individual_fund_flow"  # [G-007]
+                entry["unit_verified"] = entry["unit"] is not None  # [G-007]
+            elif key == "fund_flow_board":
+                entry["source_type"] = "board_fund_flow"  # [G-007]
+            elif key == "lhb":
+                entry["query_mode"] = pool.get("_lhb_query_mode", "on_demand")  # [G-007]
+            elif key in ("stock_data",):
+                entry["unit"] = "股"
+
+            if status == "FAILED" and isinstance(raw_value, str):
+                entry["error"] = raw_value[:200]
+
+            raw_evidence[key] = {
+                "raw": raw_value,
+                "status": entry["status"],
+                "vendor": entry["vendor"],
+                "as_of": entry["as_of"],
+                "fetched_at": entry["fetched_at"],
+                "record_count": entry["record_count"],
+                "unit": entry["unit"],
+                "error": entry["error"],
+                "is_realtime_patched": entry["is_realtime_patched"],
+                "source_type": entry.get("source_type"),  # [G-007] fund_lhb_provenance
+                "unit_verified": entry.get("unit_verified", None),  # [G-007]
+                "query_mode": entry.get("query_mode", None),  # [G-007]
+
+exec
+/bin/zsh -lc "grep -R \"def get.*fund_flow_individual\\|近20日主力资金净流向\\|stock_individual_fund_flow\" -n tradingagents/dataflows/providers tradingagents | head -80" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/dataflows/providers/cn_akshare_provider.py:1113:                df = ak.stock_individual_fund_flow(stock=code, market=market)
+tradingagents/dataflows/providers/cn_akshare_provider.py:1117:            return f"{symbol} 近20日主力资金净流向：\n{df_recent.to_string(index=False)}"
+Binary file tradingagents/dataflows/providers/__pycache__/cn_akshare_provider.cpython-312.pyc matches
+tradingagents/agents/analysts/smart_money_analyst.py:158:                f"【近20日主力资金净流向】\n{fund_flow}\n\n"
+tradingagents/dataflows/providers/cn_akshare_provider.py:1113:                df = ak.stock_individual_fund_flow(stock=code, market=market)
+tradingagents/dataflows/providers/cn_akshare_provider.py:1117:            return f"{symbol} 近20日主力资金净流向：\n{df_recent.to_string(index=False)}"
+Binary file tradingagents/dataflows/providers/__pycache__/cn_akshare_provider.cpython-312.pyc matches
+
+exec
+/bin/zsh -lc "sed -n '1105,1120p' tradingagents/dataflows/providers/cn_akshare_provider.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    def get_individual_fund_flow(self, symbol: str) -> str:
+        """获取个股近期主力资金净流向。"""
+        try:
+            ak = self._ak()
+            code = self._normalize_symbol(symbol)
+            # 沪市：以 5、6、9 开头；其余为深市
+            market = "sh" if code[:1] in ("5", "6", "9") else "sz"
+            with AKSHARE_CALL_LOCK:
+                df = ak.stock_individual_fund_flow(stock=code, market=market)
+            if df is None or df.empty:
+                return f"{symbol} 近期主力资金流向数据暂不可用。"
+            df_recent = df.tail(20)
+            return f"{symbol} 近20日主力资金净流向：\n{df_recent.to_string(index=False)}"
+        except Exception as exc:
+            return f"个股资金流向数据获取失败：{type(exc).__name__}: {exc}"
+
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/fund_flow_anomaly.py | sed -n '120,190p;260,300p;380,420p' && nl -ba tradingagents/tradeflow/plan_runner.py | sed -n '132,178p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   120	        if "主力净流入" in part:
+   121	            target_col_idx = j
+   122	            break
+   123	
+   124	    values: list[float] = []
+   125	
+   126	    for line in lines[header_idx + 1:]:
+   127	        row_parts = line.split()
+   128	        if len(row_parts) < 2:
+   129	            continue
+   130	        if target_col_idx >= 0 and target_col_idx < len(row_parts):
+   131	            raw = row_parts[target_col_idx].replace(',', '').replace('–', '-')
+   132	            try:
+   133	                values.append(float(raw))
+   134	            except ValueError:
+   135	                continue
+   136	        else:
+   137	            for part in row_parts:
+   138	                try:
+   139	                    val = float(part.replace(',', '').replace('–', '-'))
+   140	                    if abs(val) >= 100:
+   141	                        values.append(val)
+   142	                except ValueError:
+   143	                    continue
+   144	
+   145	    return values
+   146	
+   147	
+   148	def _detect_consecutive_inflow(net_flows: list[float], lookback: int = 5) -> tuple[bool, int, list[dict]]:
+   149	    """Detect consecutive main-capital net inflows in recent N days.
+   150	
+   151	    Returns (is_consecutive, streak_length, refs).
+   152	    """
+   153	    if not net_flows:
+   154	        return False, 0, []
+   155	
+   156	    recent = net_flows[:lookback]
+   157	    streak = 0
+   158	    refs: list[dict] = []
+   159	
+   160	    for i, val in enumerate(recent):
+   161	        if val > 0:
+   162	            streak += 1
+   163	        else:
+   164	            break
+   165	
+   166	    if streak >= _CONSECUTIVE_INFLOW_MIN_DAYS:
+   167	        refs.append({
+   168	            "field": "consecutive_inflow",
+   169	            "matched_text": f"近{streak}日连续主力净流入",
+   170	            "source": "individual_fund_flow",
+   171	        })
+   172	        return True, streak, refs
+   173	
+   174	    return False, streak, []
+   175	
+   176	
+   177	def _detect_large_single_day(net_flows: list[float]) -> tuple[bool, float, list[dict]]:
+   178	    """Detect a single day with unusually large net inflow/outflow.
+   179	
+   180	    Returns (is_large, max_abs_value, refs).
+   181	    """
+   182	    if not net_flows:
+   183	        return False, 0.0, []
+   184	
+   185	    max_val = max(net_flows, key=abs)
+   186	    if abs(max_val) >= _ANOMALY_THRESHOLD_WAN:
+   187	        direction = "净流入" if max_val > 0 else "净流出"
+   188	        refs = [{
+   189	            "field": "large_single_day",
+   190	            "matched_text": f"单日主力{direction} {abs(max_val):.0f} 万元",
+   260	        return False, []
+   261	
+   262	    recent_ind = ind_values[:3]
+   263	    ind_positive = sum(1 for v in recent_ind if v > 0)
+   264	    if ind_positive < 2:
+   265	        return False, []
+   266	
+   267	    board_positive_kw = re.compile(r"主力.*净流入|净流入.*\d+")
+   268	    board_negative_kw = re.compile(r"主力.*净流出|净流出.*\d+")
+   269	
+   270	    board_has_inflow = False
+   271	    board_sector_name = ""
+   272	    for line in board_text.split("\n"):
+   273	        if board_positive_kw.search(line) and not board_negative_kw.search(line):
+   274	            board_has_inflow = True
+   275	            parts = line.split()
+   276	            if parts:
+   277	                board_sector_name = parts[0][:20]
+   278	            break
+   279	
+   280	    if not board_has_inflow:
+   281	        return False, []
+   282	
+   283	    refs = [{
+   284	        "field": "board_resonance",
+   285	        "matched_text": f"个股主力流入+板块资金共振(板块: {board_sector_name})",
+   286	        "source": "board_fund_flow+individual_fund_flow",
+   287	    }]
+   288	    return True, refs
+   289	
+   290	
+   291	def _detect_net_outflow_dominant(net_flows: list[float], lookback: int = 10) -> tuple[bool, int, list[dict]]:
+   292	    """Detect if net outflows dominate in recent N days.
+   293	
+   294	    Returns (is_dominant, outflow_count, refs).
+   295	    """
+   296	    if not net_flows:
+   297	        return False, 0, []
+   298	
+   299	    recent = net_flows[:lookback]
+   300	    outflow_count = sum(1 for v in recent if v < 0)
+   380	    tags: list[str] = []
+   381	    refs: list[dict] = []
+   382	    score = 0.0
+   383	
+   384	    is_consecutive, streak, cons_refs = _detect_consecutive_inflow(net_flows, lookback_days)
+   385	    if is_consecutive:
+   386	        tags.append(FUND_FLOW_TAG_CONSECUTIVE_INFLOW)
+   387	        refs.extend(cons_refs)
+   388	        bonus = min(streak * 3, 12)
+   389	        score += bonus
+   390	
+   391	    is_large, max_val, large_refs = _detect_large_single_day(net_flows)
+   392	    if is_large and unit_verified:
+   393	        tags.append(FUND_FLOW_TAG_LARGE_SINGLE_DAY)
+   394	        refs.extend(large_refs)
+   395	        score += 5
+   396	
+   397	    is_high_prop, max_pct, prop_refs = _detect_high_proportion(individual_text)
+   398	    if is_high_prop and unit_verified:
+   399	        tags.append(FUND_FLOW_TAG_HIGH_PROPORTION)
+   400	        refs.extend(prop_refs)
+   401	        score += 5
+   402	
+   403	    is_resonance, resonance_refs = _detect_board_resonance(individual_text, board_text)
+   404	    if is_resonance and unit_verified:
+   405	        tags.append(FUND_FLOW_TAG_BOARD_RESONANCE)
+   406	        refs.extend(resonance_refs)
+   407	        score += 5
+   408	
+   409	    is_outflow, outflow_count, outflow_refs = _detect_net_outflow_dominant(net_flows, lookback_days)
+   410	    if is_outflow:
+   411	        tags.append(FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT)
+   412	        refs.extend(outflow_refs)
+   413	
+   414	    if not unit_verified and tags:
+   415	        verified_tags = [t for t in tags if t in {
+   416	            FUND_FLOW_TAG_CONSECUTIVE_INFLOW,
+   417	            FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT,
+   418	        }]
+   419	        dropped = set(tags) - set(verified_tags)
+   420	        tags = verified_tags
+   132	    if candidates is None:
+   133	        # Build universe — pass event_symbols so event-discovered
+   134	        # symbols enter the pool
+   135	        universe = build_universe(
+   136	            symbols=symbols,
+   137	            prod_db_path=prod_db_path,
+   138	            tf_db_path=tf_db_path,
+   139	            event_overrides=event_overrides,
+   140	            event_symbols=events_map if events_map else None,  # [N-001]
+   141	        )
+   142	
+   143	        # Evaluate each symbol — filter event_overrides to only
+   144	        # those matching the current symbol (or global overrides without symbol).
+   145	        # [N-001] Each symbol gets its own event titles as news_texts.
+   146	        candidates = []
+   147	        for item in universe:
+   148	            sym = item["symbol"]
+   149	            if event_overrides:
+   150	                filtered_overrides = [
+   151	                    ev for ev in event_overrides
+   152	                    if ev.get("symbol") is None or ev.get("symbol") == sym
+   153	                ]
+   154	            else:
+   155	                filtered_overrides = None
+   156	
+   157	            # [N-001] event_source_plan_integration
+   158	            sym_news = events_map.get(sym) if events_map else None
+   159	
+   160	            # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
+   161	            sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
+   162	            sym_ff_individual = sym_ff.get("individual") if sym_ff else None
+   163	            sym_ff_board = sym_ff.get("board") if sym_ff else None
+   164	
+   165	            c, reason = evaluate_symbol(
+   166	                symbol=sym,
+   167	                name=item.get("name", ""),
+   168	                source=item.get("source", "manual"),
+   169	                trade_date=trade_date,
+   170	                news_texts=sym_news or news_texts,
+   171	                event_overrides=filtered_overrides,
+   172	                fund_flow_individual=sym_ff_individual,  # [T-003]
+   173	                fund_flow_board=sym_ff_board,  # [T-003]
+   174	            )
+   175	            if c is not None:
+   176	                candidates.append(c)
+   177	
+   178	    # Build plan entries
+
+codex
+The patch adds fund-flow scoring, but recent-window calculations can use stale rows, board resonance can be triggered by table headers, and daily-plan mode ignores fund-flow-only symbols. These affect candidate scoring and coverage.
+
+Full review comments:
+
+- [P1] Use newest fund-flow rows for recent-window checks — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/fund_flow_anomaly.py:156-156
+  When AKShare individual fund flow is passed through the existing provider, it uses `df.tail(20).to_string(...)`, which leaves the latest rows at the bottom. Taking `net_flows[:lookback]` makes `CONSECUTIVE_INFLOW` evaluate the oldest rows in that 20-day window, so a stock whose recent days have turned negative can still be tagged as consecutive inflow based on stale data; the same ordering issue also affects the net-outflow-dominant check.
+
+- [P1] Avoid treating board table headers as inflow evidence — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/fund_flow_anomaly.py:272-274
+  For standard board fund-flow output from `get_board_fund_flow()`, the header contains columns such as `今日主力净流入-净额`, so this regex matches the header before inspecting any sector row. As a result, whenever individual flow has 2 positive recent rows, `BOARD_RESONANCE` can be added even if every board row is a net outflow, inflating the candidate score with false sector resonance.
+
+- [P2] Include fund-flow-only symbols in daily-plan universe — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py:135-141
+  `generate_daily_plan()` accepts a `fund_flow_map`, but only looks up fund-flow data for symbols already returned by `build_universe()`. If the new fund-flow pool contains a symbol that is not also in the manual/watchlist/holding/event universe, it is never evaluated in daily-plan mode, so the advertised fund-flow candidate pool only works through discovery and is silently ignored here.
+The patch adds fund-flow scoring, but recent-window calculations can use stale rows, board resonance can be triggered by table headers, and daily-plan mode ignores fund-flow-only symbols. These affect candidate scoring and coverage.
+
+Full review comments:
+
+- [P1] Use newest fund-flow rows for recent-window checks — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/fund_flow_anomaly.py:156-156
+  When AKShare individual fund flow is passed through the existing provider, it uses `df.tail(20).to_string(...)`, which leaves the latest rows at the bottom. Taking `net_flows[:lookback]` makes `CONSECUTIVE_INFLOW` evaluate the oldest rows in that 20-day window, so a stock whose recent days have turned negative can still be tagged as consecutive inflow based on stale data; the same ordering issue also affects the net-outflow-dominant check.
+
+- [P1] Avoid treating board table headers as inflow evidence — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/fund_flow_anomaly.py:272-274
+  For standard board fund-flow output from `get_board_fund_flow()`, the header contains columns such as `今日主力净流入-净额`, so this regex matches the header before inspecting any sector row. As a result, whenever individual flow has 2 positive recent rows, `BOARD_RESONANCE` can be added even if every board row is a net outflow, inflating the candidate score with false sector resonance.
+
+- [P2] Include fund-flow-only symbols in daily-plan universe — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py:135-141
+  `generate_daily_plan()` accepts a `fund_flow_map`, but only looks up fund-flow data for symbols already returned by `build_universe()`. If the new fund-flow pool contains a symbol that is not also in the manual/watchlist/holding/event universe, it is never evaluated in daily-plan mode, so the advertised fund-flow candidate pool only works through discovery and is silently ignored here.

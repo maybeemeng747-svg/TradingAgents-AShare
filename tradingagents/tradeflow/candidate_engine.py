@@ -18,7 +18,7 @@ from typing import Optional
 
 import pandas as pd
 
-from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE  # [S-001] [S-002]
+from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE, STRATEGY_FUND_FLOW  # [S-001] [S-002] [T-003]
 from .strategies.vcp import score_vcp
 from .strategies.pullback_support import score_pullback_support
 from .strategies.event_catalyst import score_event_catalyst
@@ -26,6 +26,7 @@ from .policy_version_signal import detect_policy_version, PolicyVersionResult  #
 from .narrative_quality import score_narrative_quality, NarrativeQualityResult  # [S-002]
 from .underwater_risk_flags import detect_underwater_risks, UnderwaterRiskResult, ALL_RISK_FLAGS  # [S-003]
 from .game_balance import assess_game_balance, GameBalanceResult  # [S-004] candidate_game_balance
+from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult, FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT  # [T-003] fund_flow_anomaly_pool
 
 
 # ── SQL for table creation ──
@@ -132,6 +133,19 @@ def init_db(db_path: str) -> None:
         ("fund_flow_case", "TEXT DEFAULT ''"),
         ("resonance_count", "INTEGER DEFAULT 0"),
         ("game_balance_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [T-003] fund_flow_anomaly_pool — add fund flow anomaly columns
+    for _col, _type in [
+        ("fund_flow_anomaly_score", "REAL DEFAULT 0.0"),
+        ("fund_flow_anomaly_tags_json", "TEXT DEFAULT '[]'"),
+        ("fund_flow_anomaly_refs_json", "TEXT DEFAULT '[]'"),
+        ("fund_flow_unit_verified", "INTEGER DEFAULT 0"),
+        ("fund_flow_individual_summary", "TEXT DEFAULT ''"),
+        ("fund_flow_board_summary", "TEXT DEFAULT ''"),
     ]:
         try:
             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
@@ -298,6 +312,8 @@ def evaluate_symbol(
     news_texts: Optional[list[str]] = None,
     event_overrides: Optional[list[dict]] = None,
     df: Optional[pd.DataFrame] = None,
+    fund_flow_individual: Optional[str] = None,  # [T-003] fund_flow_anomaly_pool
+    fund_flow_board: Optional[str] = None,  # [T-003] fund_flow_anomaly_pool
 ) -> tuple[Optional[Candidate], str]:
     """Evaluate one symbol through all strategies.
 
@@ -456,6 +472,38 @@ def evaluate_symbol(
     if gb_result.game_balance in {"fragile", "crowded"} and len(candidate.risk_flags) >= 2:
         candidate.need_deep_ta = False
 
+    # [T-003] fund_flow_anomaly_pool — detect capital anomaly
+    ff_result: FundFlowAnomalyResult = detect_fund_flow_anomaly(
+        fund_flow_individual=fund_flow_individual,
+        fund_flow_board=fund_flow_board,
+    )
+    if ff_result.fund_flow_anomaly_tags:
+        candidate.fund_flow_anomaly_score = ff_result.fund_flow_anomaly_score
+        candidate.fund_flow_anomaly_tags = ff_result.fund_flow_anomaly_tags
+        candidate.fund_flow_anomaly_refs = ff_result.fund_flow_anomaly_refs
+        candidate.fund_flow_unit_verified = ff_result.fund_flow_unit_verified
+        candidate.fund_flow_individual_summary = ff_result.fund_flow_individual_summary
+        candidate.fund_flow_board_summary = ff_result.fund_flow_board_summary
+        # Fund flow anomaly only adds bonus, does not trigger strong conclusions
+        positive_ff_tags = set(ff_result.fund_flow_anomaly_tags) - {FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT}
+        if positive_ff_tags:
+            candidate.score = round(candidate.score + ff_result.fund_flow_anomaly_score, 2)
+            candidate.strategy_tags = sorted(
+                set(candidate.strategy_tags) | {STRATEGY_FUND_FLOW}
+            )
+        candidate.evidence["fund_flow_anomaly"] = {
+            "anomaly_score": ff_result.fund_flow_anomaly_score,
+            "anomaly_tags": ff_result.fund_flow_anomaly_tags,
+            "anomaly_refs": ff_result.fund_flow_anomaly_refs,
+            "unit_verified": ff_result.fund_flow_unit_verified,
+            "individual_summary": ff_result.fund_flow_individual_summary,
+            "board_summary": ff_result.fund_flow_board_summary,
+        }
+        # Unit unverified: do not boost need_deep_ta from fund flow alone
+        if ff_result.fund_flow_unit_verified and positive_ff_tags and ff_result.fund_flow_anomaly_score >= 10:
+            candidate.need_deep_ta = True
+        # Net outflow dominant does not add score but records as observation
+
     return candidate, ""
 
 
@@ -473,8 +521,11 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
             "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
             "fund_flow_case, resonance_count, game_balance_refs_json, "
+            "fund_flow_anomaly_score, fund_flow_anomaly_tags_json, "
+            "fund_flow_anomaly_refs_json, fund_flow_unit_verified, "
+            "fund_flow_individual_summary, fund_flow_board_summary, "
             "created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
@@ -495,6 +546,12 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "policy_case=excluded.policy_case, fund_flow_case=excluded.fund_flow_case, "
             "resonance_count=excluded.resonance_count, "
             "game_balance_refs_json=excluded.game_balance_refs_json, "
+            "fund_flow_anomaly_score=excluded.fund_flow_anomaly_score, "
+            "fund_flow_anomaly_tags_json=excluded.fund_flow_anomaly_tags_json, "
+            "fund_flow_anomaly_refs_json=excluded.fund_flow_anomaly_refs_json, "
+            "fund_flow_unit_verified=excluded.fund_flow_unit_verified, "
+            "fund_flow_individual_summary=excluded.fund_flow_individual_summary, "
+            "fund_flow_board_summary=excluded.fund_flow_board_summary, "
             "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
@@ -511,6 +568,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
                 row["game_balance"], row["bull_case"], row["bear_case"],
                 row["policy_case"], row["fund_flow_case"],
                 row["resonance_count"], row["game_balance_refs_json"],
+                row["fund_flow_anomaly_score"], row["fund_flow_anomaly_tags_json"],
+                row["fund_flow_anomaly_refs_json"], row["fund_flow_unit_verified"],
+                row["fund_flow_individual_summary"], row["fund_flow_board_summary"],
                 candidate.created_at, row["updated_at"],
             ),
         )

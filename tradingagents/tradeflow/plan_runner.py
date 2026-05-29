@@ -81,6 +81,12 @@ def _build_plan_entry(candidate: Candidate) -> dict:
         "fund_flow_case": candidate.fund_flow_case,  # [S-004]
         "resonance_count": candidate.resonance_count,  # [S-004]
         "game_balance_refs": candidate.game_balance_refs,  # [S-004]
+        "fund_flow_anomaly_score": candidate.fund_flow_anomaly_score,  # [T-003] fund_flow_anomaly_pool
+        "fund_flow_anomaly_tags": candidate.fund_flow_anomaly_tags,  # [T-003]
+        "fund_flow_anomaly_refs": candidate.fund_flow_anomaly_refs,  # [T-003]
+        "fund_flow_unit_verified": candidate.fund_flow_unit_verified,  # [T-003]
+        "fund_flow_individual_summary": candidate.fund_flow_individual_summary,  # [T-003]
+        "fund_flow_board_summary": candidate.fund_flow_board_summary,  # [T-003]
     }
 
 
@@ -94,6 +100,7 @@ def generate_daily_plan(
     event_overrides: Optional[list[dict]] = None,
     save_candidates: bool = False,
     use_event_source: bool = False,  # [N-001] event_source_plan_integration
+    fund_flow_map: Optional[dict[str, dict]] = None,  # [T-003] fund_flow_anomaly_pool
 ) -> DailyPlan:
     """Generate a pre-market daily plan.
 
@@ -107,6 +114,7 @@ def generate_daily_plan(
         event_overrides: Manual event overrides for event catalyst detection.
         save_candidates: If True, persist evaluated candidates to tf_db_path.
         use_event_source: [N-001] If True, fetch daily events and inject into universe.
+        fund_flow_map: [T-003] Optional dict mapping symbol → {"individual": str, "board": str}.
 
     Returns:
         DailyPlan with validated entries.
@@ -149,6 +157,11 @@ def generate_daily_plan(
             # [N-001] event_source_plan_integration
             sym_news = events_map.get(sym) if events_map else None
 
+            # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
+            sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
+            sym_ff_individual = sym_ff.get("individual") if sym_ff else None
+            sym_ff_board = sym_ff.get("board") if sym_ff else None
+
             c, reason = evaluate_symbol(
                 symbol=sym,
                 name=item.get("name", ""),
@@ -156,6 +169,8 @@ def generate_daily_plan(
                 trade_date=trade_date,
                 news_texts=sym_news or news_texts,
                 event_overrides=filtered_overrides,
+                fund_flow_individual=sym_ff_individual,  # [T-003]
+                fund_flow_board=sym_ff_board,  # [T-003]
             )
             if c is not None:
                 candidates.append(c)

@@ -30,6 +30,8 @@ SOURCE_MANUAL = "manual"
 SOURCE_INDUSTRY = "industry_pool"
 SOURCE_EVENT = "event_source"
 
+SOURCE_FUND_FLOW = "fund_flow_pool"  # [T-003] fund_flow_anomaly_pool
+
 TOPN_DEFAULT = 20
 
 
@@ -60,6 +62,7 @@ def _build_discovery_universe(
     include_watchlist: bool = True,
     include_yesterday: bool = False,
     event_symbols: Optional[dict[str, list[str]]] = None,
+    fund_flow_symbols: Optional[list[str]] = None,  # [T-003] fund_flow_anomaly_pool
 ) -> list[dict]:
     """Build universe for discovery — adds industry pool as a source."""
     universe: dict[str, dict] = {}
@@ -82,6 +85,13 @@ def _build_discovery_universe(
             if sym and sym not in universe:
                 universe[sym] = {"symbol": sym, "name": "", "source": SOURCE_INDUSTRY}
 
+    # [T-003] fund_flow_anomaly_pool — add fund flow anomaly symbols
+    if fund_flow_symbols:
+        for sym in fund_flow_symbols:
+            sym = sym.strip()
+            if sym and sym not in universe:
+                universe[sym] = {"symbol": sym, "name": "", "source": SOURCE_FUND_FLOW}
+
     return list(universe.values())
 
 
@@ -98,6 +108,7 @@ def run_discovery(
     news_texts: Optional[list[str]] = None,
     use_event_source: bool = False,
     save_candidates: bool = False,
+    fund_flow_map: Optional[dict[str, dict]] = None,  # [T-003] fund_flow_anomaly_pool
 ) -> DiscoveryResult:
     """Run small-scope discovery and return TopN candidates.
 
@@ -114,6 +125,7 @@ def run_discovery(
         news_texts: News texts.
         use_event_source: Fetch daily events for event pool.
         save_candidates: Persist candidates to DB.
+        fund_flow_map: [T-003] Optional dict mapping symbol → {"individual": str, "board": str}.
 
     Returns:
         DiscoveryResult with candidates and filtered symbols.
@@ -136,6 +148,7 @@ def run_discovery(
         include_watchlist=include_watchlist,
         include_yesterday=False,
         event_symbols=events_map if events_map else None,
+        fund_flow_symbols=list(fund_flow_map.keys()) if fund_flow_map else None,  # [T-003]
     )
 
     candidates: list[Candidate] = []
@@ -156,6 +169,11 @@ def run_discovery(
 
         sym_news = events_map.get(sym) if events_map else None
 
+        # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
+        sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
+        sym_ff_individual = sym_ff.get("individual") if sym_ff else None
+        sym_ff_board = sym_ff.get("board") if sym_ff else None
+
         c, reason = evaluate_symbol(
             symbol=sym,
             name=sym_name,
@@ -163,6 +181,8 @@ def run_discovery(
             trade_date=trade_date,
             news_texts=sym_news or news_texts,
             event_overrides=filtered_overrides,
+            fund_flow_individual=sym_ff_individual,  # [T-003]
+            fund_flow_board=sym_ff_board,  # [T-003]
         )
         if c is not None:
             candidates.append(c)
@@ -266,6 +286,11 @@ def _build_discovery_entry(candidate: Candidate) -> dict:
         "policy_case": candidate.policy_case,
         "fund_flow_case": candidate.fund_flow_case,
         "resonance_count": candidate.resonance_count,
+        "fund_flow_anomaly_score": candidate.fund_flow_anomaly_score,  # [T-003]
+        "fund_flow_anomaly_tags": candidate.fund_flow_anomaly_tags,  # [T-003]
+        "fund_flow_unit_verified": candidate.fund_flow_unit_verified,  # [T-003]
+        "fund_flow_individual_summary": candidate.fund_flow_individual_summary,  # [T-003]
+        "fund_flow_board_summary": candidate.fund_flow_board_summary,  # [T-003]
     }
 
 
@@ -334,6 +359,20 @@ def render_discovery_text(result: DiscoveryResult) -> str:
         game_balance = c.get("game_balance", "")
         if game_balance:
             lines.append(f"  博弈平衡: {game_balance}")
+
+        # [T-003] fund_flow_anomaly_pool
+        ff_tags = c.get("fund_flow_anomaly_tags", [])
+        ff_score = c.get("fund_flow_anomaly_score", 0)
+        ff_ind = c.get("fund_flow_individual_summary", "")
+        ff_board = c.get("fund_flow_board_summary", "")
+        ff_verified = c.get("fund_flow_unit_verified", False)
+        if ff_tags:
+            unit_mark = "✓" if ff_verified else "⚠未校验"
+            lines.append(f"  资金异动: {', '.join(ff_tags)} (+{ff_score}分) [{unit_mark}]")
+            if ff_ind:
+                lines.append(f"    个股: {ff_ind}")
+            if ff_board:
+                lines.append(f"    板块: {ff_board}")
 
         lines.append("")
 

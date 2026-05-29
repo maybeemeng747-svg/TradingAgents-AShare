@@ -17,7 +17,8 @@ STRATEGY_PULLBACK = "PULLBACK_SUPPORT"
 STRATEGY_EVENT = "EVENT_CATALYST"
 STRATEGY_POLICY_VERSION = "POLICY_VERSION"  # [S-001] policy_version_signal
 STRATEGY_NARRATIVE = "NARRATIVE_QUALITY"  # [S-002] narrative_quality_score
-ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE}
+STRATEGY_FUND_FLOW = "FUND_FLOW_ANOMALY"  # [T-003] fund_flow_anomaly_pool
+ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE, STRATEGY_FUND_FLOW}
 
 # [N-004] astock_signal_tags
 SIGNAL_TAG_POLICY_CATALYST = "POLICY_CATALYST"
@@ -78,6 +79,12 @@ class Candidate:
     fund_flow_case: str = ""  # [S-004] candidate_game_balance
     resonance_count: int = 0  # [S-004] candidate_game_balance
     game_balance_refs: list[dict] = field(default_factory=list)  # [S-004] candidate_game_balance
+    fund_flow_anomaly_score: float = 0.0  # [T-003] fund_flow_anomaly_pool
+    fund_flow_anomaly_tags: list[str] = field(default_factory=list)  # [T-003]
+    fund_flow_anomaly_refs: list[dict] = field(default_factory=list)  # [T-003]
+    fund_flow_unit_verified: bool = False  # [T-003]
+    fund_flow_individual_summary: str = ""  # [T-003]
+    fund_flow_board_summary: str = ""  # [T-003]
 
     def __post_init__(self):
         if not self.trade_date:
@@ -156,6 +163,12 @@ class Candidate:
             "fund_flow_case": self.fund_flow_case,  # [S-004]
             "resonance_count": self.resonance_count,  # [S-004]
             "game_balance_refs_json": json.dumps(self.game_balance_refs, ensure_ascii=False),  # [S-004]
+            "fund_flow_anomaly_score": self.fund_flow_anomaly_score,  # [T-003] fund_flow_anomaly_pool
+            "fund_flow_anomaly_tags_json": json.dumps(self.fund_flow_anomaly_tags, ensure_ascii=False),  # [T-003]
+            "fund_flow_anomaly_refs_json": json.dumps(self.fund_flow_anomaly_refs, ensure_ascii=False),  # [T-003]
+            "fund_flow_unit_verified": 1 if self.fund_flow_unit_verified else 0,  # [T-003]
+            "fund_flow_individual_summary": self.fund_flow_individual_summary,  # [T-003]
+            "fund_flow_board_summary": self.fund_flow_board_summary,  # [T-003]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -194,6 +207,12 @@ class Candidate:
             fund_flow_case=row.get("fund_flow_case", ""),  # [S-004]
             resonance_count=row.get("resonance_count", 0),  # [S-004]
             game_balance_refs=json.loads(row.get("game_balance_refs_json", "[]")),  # [S-004]
+            fund_flow_anomaly_score=row.get("fund_flow_anomaly_score", 0.0),  # [T-003] fund_flow_anomaly_pool
+            fund_flow_anomaly_tags=json.loads(row.get("fund_flow_anomaly_tags_json", "[]")),  # [T-003]
+            fund_flow_anomaly_refs=json.loads(row.get("fund_flow_anomaly_refs_json", "[]")),  # [T-003]
+            fund_flow_unit_verified=bool(row.get("fund_flow_unit_verified", 0)),  # [T-003]
+            fund_flow_individual_summary=row.get("fund_flow_individual_summary", ""),  # [T-003]
+            fund_flow_board_summary=row.get("fund_flow_board_summary", ""),  # [T-003]
         )
 
 
@@ -343,6 +362,19 @@ class DailyPlan:
                     lines.append(f"    政策/监管: {policy_case}")
                 if fund_flow_case:
                     lines.append(f"    资金结构: {fund_flow_case}")
+            # [T-003] fund_flow_anomaly_pool — display fund flow anomaly
+            ff_tags = c.get("fund_flow_anomaly_tags", [])
+            ff_score = c.get("fund_flow_anomaly_score", 0)
+            ff_ind = c.get("fund_flow_individual_summary", "")
+            ff_board = c.get("fund_flow_board_summary", "")
+            ff_verified = c.get("fund_flow_unit_verified", False)
+            if ff_tags:
+                unit_mark = "✓" if ff_verified else "⚠未校验"
+                lines.append(f"  资金异动: {', '.join(ff_tags)} (+{ff_score}分) [{unit_mark}]")
+                if ff_ind:
+                    lines.append(f"    个股: {ff_ind}")
+                if ff_board:
+                    lines.append(f"    板块: {ff_board}")
             lines.append("")
 
         return "\n".join(lines)
