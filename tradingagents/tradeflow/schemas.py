@@ -68,6 +68,9 @@ class Candidate:
     narrative_score: float = 0.0  # [S-002] narrative_quality_score
     narrative_reasons: list[str] = field(default_factory=list)  # [S-002] narrative_quality_score
     narrative_evidence_refs: list[dict] = field(default_factory=list)  # [S-002] narrative_quality_score
+    risk_penalty: float = 0.0  # [S-003] underwater_risk_flags
+    risk_evidence_refs: list[dict] = field(default_factory=list)  # [S-003] underwater_risk_flags
+    risk_reasons: list[str] = field(default_factory=list)  # [S-003] underwater_risk_flags
 
     def __post_init__(self):
         if not self.trade_date:
@@ -136,6 +139,9 @@ class Candidate:
             "narrative_score": self.narrative_score,  # [S-002] narrative_quality_score
             "narrative_reasons_json": json.dumps(self.narrative_reasons, ensure_ascii=False),  # [S-002]
             "narrative_evidence_refs_json": json.dumps(self.narrative_evidence_refs, ensure_ascii=False),  # [S-002]
+            "risk_penalty": self.risk_penalty,  # [S-003] underwater_risk_flags
+            "risk_evidence_refs_json": json.dumps(self.risk_evidence_refs, ensure_ascii=False),  # [S-003]
+            "risk_reasons_json": json.dumps(self.risk_reasons, ensure_ascii=False),  # [S-003]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -164,6 +170,9 @@ class Candidate:
             narrative_score=row.get("narrative_score", 0.0),  # [S-002] narrative_quality_score
             narrative_reasons=json.loads(row.get("narrative_reasons_json", "[]")),  # [S-002]
             narrative_evidence_refs=json.loads(row.get("narrative_evidence_refs_json", "[]")),  # [S-002]
+            risk_penalty=row.get("risk_penalty", 0.0),  # [S-003] underwater_risk_flags
+            risk_evidence_refs=json.loads(row.get("risk_evidence_refs_json", "[]")),  # [S-003]
+            risk_reasons=json.loads(row.get("risk_reasons_json", "[]")),  # [S-003]
         )
 
 
@@ -288,6 +297,14 @@ class DailyPlan:
                 lines.append(f"  叙事质量: +{narrative_score}分")
                 if narrative_reasons:
                     lines.append(f"    {'; '.join(narrative_reasons)}")
+            # [S-003] underwater_risk_flags — display risk penalty
+            risk_flags = c.get("risk_flags", [])
+            risk_penalty = c.get("risk_penalty", 0)
+            risk_reasons = c.get("risk_reasons", [])
+            if risk_flags:
+                lines.append(f"  ⚠️ 水下风险: {', '.join(risk_flags)} ({risk_penalty}分)")
+                if risk_reasons:
+                    lines.append(f"    {'; '.join(risk_reasons)}")
             lines.append("")
 
         return "\n".join(lines)

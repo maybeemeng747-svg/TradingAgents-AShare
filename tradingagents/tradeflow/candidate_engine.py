@@ -24,6 +24,7 @@ from .strategies.pullback_support import score_pullback_support
 from .strategies.event_catalyst import score_event_catalyst
 from .policy_version_signal import detect_policy_version, PolicyVersionResult  # [S-001]
 from .narrative_quality import score_narrative_quality, NarrativeQualityResult  # [S-002]
+from .underwater_risk_flags import detect_underwater_risks, UnderwaterRiskResult, ALL_RISK_FLAGS  # [S-003]
 
 
 # ── SQL for table creation ──
@@ -106,6 +107,16 @@ def init_db(db_path: str) -> None:
         ("narrative_score", "REAL DEFAULT 0.0"),
         ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
         ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-003] underwater_risk_flags — add risk penalty columns
+    for _col, _type in [
+        ("risk_penalty", "REAL DEFAULT 0.0"),
+        ("risk_evidence_refs_json", "TEXT DEFAULT '[]'"),
+        ("risk_reasons_json", "TEXT DEFAULT '[]'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
@@ -370,6 +381,29 @@ def evaluate_symbol(
         if narrative_result.narrative_score >= 20:
             candidate.need_deep_ta = True
 
+    # [S-003] underwater_risk_flags — detect hidden structural risks
+    risk_result: UnderwaterRiskResult = detect_underwater_risks(
+        event_texts=all_event_texts if all_event_texts else None,
+    )
+    if risk_result.risk_flags:
+        candidate.risk_flags = sorted(
+            set(candidate.risk_flags) | set(risk_result.risk_flags)
+        )
+        candidate.risk_penalty = risk_result.risk_penalty
+        candidate.risk_evidence_refs = risk_result.risk_evidence_refs
+        candidate.risk_reasons = risk_result.risk_reasons
+        candidate.score = round(candidate.score + risk_result.risk_penalty, 2)
+        candidate.evidence["underwater_risk"] = {
+            "risk_flags": risk_result.risk_flags,
+            "risk_penalty": risk_result.risk_penalty,
+            "risk_evidence_refs": risk_result.risk_evidence_refs,
+            "risk_reasons": risk_result.risk_reasons,
+        }
+        high_risk_flags = {f for f in risk_result.risk_flags
+                          if f in {"INQUIRY_RISK", "FINANCIAL_QUALITY_RISK"}}
+        if len(risk_result.risk_flags) >= 3 or high_risk_flags:
+            candidate.need_deep_ta = False
+
     return candidate, ""
 
 
@@ -384,8 +418,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
             "evidence_json, risk_flags_json, policy_tags_json, version_score, "
             "policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
-            "narrative_evidence_refs_json, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+            "risk_reasons_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
@@ -398,6 +433,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "narrative_score=excluded.narrative_score, "
             "narrative_reasons_json=excluded.narrative_reasons_json, "
             "narrative_evidence_refs_json=excluded.narrative_evidence_refs_json, "
+            "risk_penalty=excluded.risk_penalty, "
+            "risk_evidence_refs_json=excluded.risk_evidence_refs_json, "
+            "risk_reasons_json=excluded.risk_reasons_json, "
             "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
@@ -409,6 +447,8 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
                 row["policy_evidence_refs_json"],
                 row["narrative_score"], row["narrative_reasons_json"],
                 row["narrative_evidence_refs_json"],
+                row["risk_penalty"], row["risk_evidence_refs_json"],
+                row["risk_reasons_json"],
                 candidate.created_at, row["updated_at"],
             ),
         )

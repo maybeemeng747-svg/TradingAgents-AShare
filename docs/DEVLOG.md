@@ -4,6 +4,44 @@
 
 ---
 
+## 2026-05-29 | S-003 水下风险标签与候选降权
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：为 TradeFlow 候选池增加水下风险标签，识别解禁、减持、问询、财务异常、融资拥挤、龙虎榜过热等风险，对候选做降权或要求更严格技术确认
+- **修改文件**：
+  - `tradingagents/tradeflow/underwater_risk_flags.py`（新增，~220行）— [S-003] underwater_risk_flags
+    - `detect_underwater_risks(event_texts, lhb_status, lhb_texts, margin_status, margin_texts)` — 六类水下风险检测
+    - `UnderwaterRiskResult` — 输出 `risk_flags`、`risk_penalty`（0 to -30）、`risk_evidence_refs`、`risk_reasons`
+    - 六类风险：LOCKUP_RISK、REDUCE_HOLDING_RISK、INQUIRY_RISK、FINANCIAL_QUALITY_RISK、MARGIN_CROWDING_RISK、LHB_OVERHEAT_RISK
+    - 龙虎榜和融资融券风险必须区分 HAS_DATA/NOT_QUERIED/FAILED，不得把未查询当作无风险
+    - 每类风险只取最高权重命中，不重复叠加；罚分上限 30
+  - `tradingagents/tradeflow/schemas.py` — [S-003]
+    - `Candidate` 新增 `risk_penalty`、`risk_evidence_refs`、`risk_reasons` 字段
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示水下风险标签和罚分摘要
+  - `tradingagents/tradeflow/candidate_engine.py` — [S-003]
+    - `evaluate_symbol()` 在 S-002 叙事质量之后调用 `detect_underwater_risks()`
+    - 风险标签进入候选 `risk_flags` 并降权候选分数
+    - `init_db()` 新增 `risk_penalty`、`risk_evidence_refs_json`、`risk_reasons_json` 列迁移
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+    - 当 INQUIRY_RISK 或 FINANCIAL_QUALITY_RISK 存在，或风险标签 >= 3 个时，关闭 `need_deep_ta`
+  - `tradingagents/tradeflow/plan_runner.py` — [S-003]
+    - `_build_plan_entry()` 输出 `risk_penalty`、`risk_evidence_refs`、`risk_reasons`
+  - `tests/test_s003_underwater_risk_flags.py`（新增，~370行）— 61 个测试
+- **关键逻辑**：
+  1. 水下风险作为惩罚层叠加在所有正向策略之上，不破坏现有策略
+  2. 所有风险标签必须绑定原始事件文本，无证据时不输出高置信风险
+  3. 龙虎榜未查询时不得生成 LHB_OVERHEAT_RISK；融资融券未查询同理
+  4. 高风险标签（问询/财务异常）或风险标签过多时关闭 need_deep_ta
+  5. 罚分上限 30，避免单个候选被无限扣分
+- **标记**：`# [S-003] underwater_risk_flags`
+- **测试结果**：
+  - S-003 专项测试：61 passed
+  - TradeFlow 全量测试：83 passed
+  - 扩展回归测试（S-001 + S-002 + S-003 + readiness_score）：346 passed
+
+---
+
 ## 2026-05-29 | S-002 叙事质量评分
 
 - **执行者**：OpenCode (glm-5.1)
@@ -841,3 +879,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/S-002-20260529-round1.txt
 - **运行档案**: docs/task_runs/S-002-20260529-134910/
+
+## 2026-05-29 | AUTO-002 自动开发闭环
+
+- **任务**: S-003 — 水下风险标签与候选降权（P1）
+- **优先级**: P1
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/S-003-20260529-round1.txt
+- **运行档案**: docs/task_runs/S-003-20260529-135829/

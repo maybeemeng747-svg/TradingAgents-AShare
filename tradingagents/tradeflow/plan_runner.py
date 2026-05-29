@@ -71,6 +71,9 @@ def _build_plan_entry(candidate: Candidate) -> dict:
         "narrative_score": candidate.narrative_score,  # [S-002] narrative_quality_score
         "narrative_reasons": candidate.narrative_reasons,  # [S-002]
         "narrative_evidence_refs": candidate.narrative_evidence_refs,  # [S-002]
+        "risk_penalty": candidate.risk_penalty,  # [S-003] underwater_risk_flags
+        "risk_evidence_refs": candidate.risk_evidence_refs,  # [S-003]
+        "risk_reasons": candidate.risk_reasons,  # [S-003]
     }
 
 
