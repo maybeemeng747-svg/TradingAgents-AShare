@@ -281,7 +281,7 @@
 ### M-008: 数据源健康检查与 fallback 可观测性（P1）
 - **描述**：建立数据源健康检查，持续观察 AKShare、cn_astock、BaoStock、yfinance、公告/资金/LHB 等源的成功率、延迟和失败原因。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：in_progress — claimed M-008-20260529-142207
 - **执行约束**：
   - 只跑小样本 smoke，不扫全市场。
   - 不保存 cookie/API key。

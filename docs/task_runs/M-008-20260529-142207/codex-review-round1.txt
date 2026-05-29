@@ -1,0 +1,2936 @@
+Task: M-008 — 数据源健康检查与 fallback 可观测性（P1）
+Date: 2026-05-29_14:30:03
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e726b-4d73-7131-b68b-5759a1b64878
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md; printf '\\n--- TASKS ---\\n'; sed -n '1,220p' docs/TASKS.md; printf '\\n--- DECISIONS ---\\n'; sed -n '1,220p' docs/DECISIONS.md; printf '\\n--- DEVLOG ---\\n'; sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+--- TASKS ---
+# 任务池
+
+> 最后更新：2026-05-28
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；一个晚上默认只做一个任务。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `S-001`：政策版本因子进入 TradeFlow 候选池（P1，done — commit a4d06d4 + cf7d928）。
+2. `S-002`：叙事质量评分，区分普通事件与可传播主线（P1，done — pending commit）。
+3. `S-003`：水下风险标签，给候选池做风险降权（P1，ready）。
+4. `S-004`：候选股博弈平衡解释，输出多空/监管/资金结构（P1，ready）。
+5. `M-008`：数据源健康检查与 fallback 可观测性（P1，ready）。
+6. `T-002/T-003`：小范围 Discovery / 资金异动池（P1，ready，排在选股逻辑增强之后）。
+
+---
+
+## S. TradeFlow 选股策略核心任务池（2026-05-29 新增）
+
+> 原则：先提高候选池质量，再扩大扫描范围。TA 深度分析只服务于已经有足够逻辑、事件、资金或风险结构支撑的候选股。
+
+### S-001: 政策版本因子进入 TradeFlow 候选池（P1）
+- **描述**：为 TradeFlow 增加政策版本因子，识别当前 A 股市场更容易被定价的政策/产业方向，让候选池从“技术形态先行”升级为“政策版本入池 + 技术确认”。
+- **优先级**：P1
+- **状态**：done — commit a4d06d4 + cf7d928
+- **背景**：
+  - A 股很多阶段不是简单的业绩驱动，而是政策方向、产业版本和市场叙事共同驱动。
+  - 现在 TradeFlow 已有 VCP、事件催化、A 股标签，但缺少“当前版本需要什么标杆”的第一层判断。
+- **执行约束**：
+  - 不调用外部 LLM，不跑全市场扫描。
+  - 不改 `tradingagents/prompts/`。
+  - 不输出买入/卖出强建议。
+  - 只在 TradeFlow 候选池层做信号、标签、分数和证据引用。
+- **实现要点**：
+  1. 新增或扩展政策版本信号模块，输出 `policy_tags`、`version_score`、`policy_evidence_refs`。
+  2. 先用可维护关键词/规则覆盖：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革等。
+  3. 事件标题、公告摘要、行业标签命中政策版本时加分；无原始文本证据时不得加分。
+  4. 与现有 `event_source`、`event_catalyst`、`candidate_engine` 兼容，不破坏 VCP/回踩策略。
+  5. Daily Plan 中展示政策标签和证据摘要，但动作仍只能是 `OBSERVE/NEED_DEEP_TA` 等非强交易动作。
+- **验证方式**：
+  - 构造政策关键词事件，候选包含对应 `policy_tags` 和 evidence refs。
+  - 无政策证据时 `version_score` 不得凭空加分。
+  - 不同股票事件必须按 symbol 隔离，不能串票。
+  - `pytest tests/test_tradeflow_*.py -q` 或新增对应测试通过。
+- **代码标注要求**：`# [S-001] policy_version_signal`
+
+### S-002: 叙事质量评分（P1）
+- **描述**：给事件催化增加叙事质量评分，区分“普通公告/普通新闻”和“容易形成市场共识的主线事件”。
+- **优先级**：P1
+- **状态**：done — commit 9825e22
+- **背景**：
+  - 选股不只看有没有事件，还要判断事件是否容易被市场理解、传播和接力。
+  - 目前事件催化更偏“是否存在”，缺少“事件质量与传播价值”。
+- **执行约束**：
+  - 第一阶段只做规则评分，不调用外部 LLM。
+  - 不做舆情全网抓取，不扫全市场。
+  - 评分只影响候选排序和 `need_deep_ta`，不直接生成交易建议。
+- **实现要点**：
+  1. 新增 `narrative_score`，分解为政策背书、产业落地、订单/回购/评级、传播清晰度、拥挤/过热扣分。
+  2. 回购、重大订单、中标、并购重组、业绩预告、评级变化等事件给不同基础分。
+  3. 多个事件叠加时做封顶，避免标题堆叠虚高。
+  4. 输出 `narrative_reasons` 和 evidence refs，便于日报解释“为什么进候选池”。
+- **验证方式**：
+  - 普通新闻低分，回购/订单/政策相关事件高分。
+  - 重复事件不会无限叠加。
+  - `narrative_score` 缺证据时为 0 或保守默认。
+- **代码标注要求**：`# [S-002] narrative_quality_score`
+
+### S-003: 水下风险标签与候选降权（P1）
+- **描述**：为 TradeFlow 候选池增加水下风险标签，识别解禁、减持、问询、财务异常、融资拥挤、龙虎榜过热等风险，对候选做降权或要求更严格技术确认。
+- **优先级**：P1
+- **状态**：done — commit a95c3d7
+- **背景**：
+  - 选对股票不只看上涨逻辑，也要避开“看起来有题材但水下结构很差”的票。
+  - 当前已有部分 A 股标签，但风险标签还不够系统，也没有形成候选池统一降权规则。
+- **执行约束**：
+  - 所有风险标签必须绑定原始字段或事件文本。
+  - 不把风险标签直接翻译成清仓/买入建议。
+  - 不写生产数据库 schema；如需持久化先用现有 TradeFlow 结构或输出方案。
+- **实现要点**：
+  1. 统一输出 `risk_flags`：`LOCKUP_RISK`、`REDUCE_HOLDING_RISK`、`INQUIRY_RISK`、`FINANCIAL_QUALITY_RISK`、`MARGIN_CROWDING_RISK`、`LHB_OVERHEAT_RISK`。
+  2. 风险标签进入候选分数降权和 `need_deep_ta` 门槛。
+  3. 解禁/减持/问询等公告类风险优先从 `event_source` 读取。
+  4. 龙虎榜和融资融券风险必须区分 `HAS_DATA/NOT_QUERIED/FAILED`，不得把未查询当作无风险。
+- **验证方式**：
+  - 构造解禁/减持/问询事件，候选出现对应 `risk_flags` 并降权。
+  - 龙虎榜未查询时不生成过热风险。
+  - 风险缺证据时不输出高置信风险标签。
+- **代码标注要求**：`# [S-003] underwater_risk_flags`
+
+### S-004: 候选股博弈平衡解释（P1）
+- **描述**：在 TradeFlow Plan 中为每个候选输出轻量博弈解释，说明多头为何可能买、空头为何可能卖、政策/监管/资金结构是否支持，避免只给策略标签而缺少交易对手视角。
+- **优先级**：P1
+- **状态**：done — commit c92e626
+- **背景**：
+  - A 股候选池要处理动态博弈：同一事件可能同时有多头叙事、风险压制和资金拥挤。
+  - 在 TA 深度分析前，候选池应先判断这只票是不是值得进一步消耗 token。
+- **执行约束**：
+  - 规则化生成，不调用外部 LLM。
+  - 不输出强买卖词。
+  - 不替代 TA 深度分析，只做候选池摘要。
+- **实现要点**：
+  1. 输出 `game_balance`：`favorable/neutral/crowded/fragile`。
+  2. 输出 `bull_case`、`bear_case`、`policy_case`、`fund_flow_case` 的短字段，来源必须来自已存在信号和证据。
+  3. 当政策/叙事/资金/技术至少两类共振时，可提高 `need_deep_ta` 优先级。
+  4. 当风险标签过多或信号拥挤时，降低候选排序或标记 `fragile`。
+- **验证方式**：
+  - 政策 + 事件 + VCP 共振时 `game_balance=favorable` 或 `neutral`。
+  - 风险标签过多时 `game_balance=fragile/crowded`。
+  - 输出中包含证据引用，不出现强买卖词。
+- **代码标注要求**：`# [S-004] candidate_game_balance`
+
+### S-005: 选股优先级整合与 need_deep_ta 门槛重排（P1）
+- **描述**：整合政策版本、叙事质量、水下风险、资金异动和技术形态，重排 TradeFlow 候选优先级，让 TA 深度分析优先消耗在真正值得分析的股票上。
+- **优先级**：P1
+- **状态**：blocked
+- **前置条件**：`S-001`、`S-002`、`S-003`、`S-004` 完成。
+- **执行约束**：
+  - 不自动调用 TA 深度分析。
+  - 不做全市场扫描。
+  - 不把单一信号直接提升为强结论。
+- **实现要点**：
+  1. 定义候选综合评分：政策版本、叙事质量、技术确认、资金验证、风险扣分、数据完整度。
+  2. `need_deep_ta=True` 至少需要两类正向信号，且无重大未解释风险。
+  3. Daily Plan 输出“为什么值得看/为什么暂不深挖/缺什么证据”。
+  4. 为后续 `M-003` universe 管理器和 `M-004` 策略配置提供统一字段。
+- **验证方式**：
+  - 只有技术形态但无逻辑证据的票排序下降。
+  - 政策/事件/技术/资金共振的票排序上升。
+  - 风险过高或数据缺失时不触发 `need_deep_ta`。
+- **代码标注要求**：`# [S-005] selection_priority_gate`
+
+---
+
+## M. 框架路线总任务池（2026-05-28 新增）
+
+### INF-001: 自动开发任务领取锁与 in_progress 状态流转（P0）
+- **描述**：给自动开发闭环增加任务领取锁，避免 OpenClaw/OpenCode/Codex 或多个夜间任务同时领取同一个 `ready` 任务。
+- **优先级**：P0
+- **状态**：done — commit 54a8292
+- **背景**：
+  - 当前已经出现并发/半成品 diff：代码改动先出现，但任务状态和运行档案未同步。
+  - 需要把“领取任务 → 标记 in_progress → 写运行档案 → PASS/FAIL 收口”固化进脚本。
+- **执行约束**：
+  - 只改 `scripts/auto_dev_loop.sh`、`docs/AUTO_DEV_PLAN.md`、测试或必要文档。
+  - 不改业务代码。
+  - 不 push / PR / merge。
+- **实现要点**：
+  1. 非 dry-run 领取任务后，先把 `docs/TASKS.md` 中该任务状态从 `ready` 改为 `in_progress`，写入运行档案。
+  2. 任务 PASS 后改为 `done — commit <hash>`。
+  3. 任务失败或超轮次后改为 `blocked — NEEDS_HUMAN` 或保留 `in_progress` 并写明原因，不能静默回到 `ready`。
+  4. 加锁文件例如 `.auto_dev.lock` 或 `docs/task_runs/.lock`，脚本异常退出时要有清理/提示机制。
+  5. dry-run 不得修改任务状态。
+- **验证方式**：
+  - `bash -n scripts/auto_dev_loop.sh` 通过。
+  - 新增或补充脚本测试/静态验证，确认 dry-run 不改文件。
+  - 模拟领取任务后，TASKS 状态变为 `in_progress`，PASS 后变为 `done`。
+- **代码标注要求**：`# [INF-001] task_claim_lock`
+
+### M-002: 任务运行档案索引与夜间日报聚合（P1）
+- **描述**：把 `docs/task_runs/` 中的运行档案汇总成可读索引，让第二天白天快速知道昨晚做了什么、成功/失败、风险在哪里。
+- **优先级**：P1
+- **状态**：done — commit 6a95046
+- **执行约束**：
+  - 不调用模型，不跑股票分析。
+  - 只读 `docs/task_runs/`、`docs/reviews/`、`git log`，输出文档/脚本。
+- **实现要点**：
+  1. 新增脚本，例如 `scripts/summarize_auto_dev_runs.py`，扫描最近 N 个 task run。
+  2. 生成 `docs/auto_dev_reports/YYYY-MM-DD.md`，包含任务、commit、测试、review、风险、下一步。
+  3. 自动开发日报中引用该报告路径。
+  4. 报告不得包含 API key、完整敏感日志。
+- **验证方式**：
+  - 构造最小 task_runs fixture，脚本能输出日报。
+  - `python scripts/summarize_auto_dev_runs.py --date YYYY-MM-DD --dry-run` 可运行。
+- **代码标注要求**：`# [M-002] auto_dev_report_index`
+
+### M-003: TradeFlow universe 管理器（P1）
+- **描述**：统一管理候选池来源：自选池、持仓池、手动行业池、事件池、资金异动池，避免每个策略各自拼 symbols。
+- **优先级**：P1
+- **状态**：blocked
+- **前置条件**：`N-004` 和 `T-002` 完成。
+- **执行约束**：
+  - 不做全市场扫描。
+  - 不写生产数据库 schema；如需表结构先输出迁移方案。
+- **实现要点**：
+  1. 定义 universe source 枚举：watchlist/holding/manual/event/fund_flow/industry。
+  2. 每个 symbol 记录来源、入池原因、时间戳、过滤原因。
+  3. 与 `generate_daily_plan()` 的现有 universe 构建兼容。
+- **验证方式**：
+  - 同一 symbol 来自多个来源时去重但保留来源列表。
+  - 无来源时不触发全市场扫描。
+- **代码标注要求**：`# [M-003] tradeflow_universe_manager`
+
+### M-004: TradeFlow 策略权重与阈值配置（P1）
+- **描述**：把 VCP、回踩、事件催化、资金异动、A股标签的权重和阈值集中配置，便于后续复盘调参。
+- **优先级**：P1
+- **状态**：blocked
+- **前置条件**：`N-004`、`T-003` 完成。
+- **执行约束**：
+  - 不让 LLM 动态改权重。
+  - 默认配置必须保守，不输出强买卖词。
+- **实现要点**：
+
+--- DECISIONS ---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+--- DEVLOG ---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-05-29 | M-008 数据源健康检查与 fallback 可观测性
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：建立数据源健康检查，持续观察 AKShare、cn_astock、BaoStock、yfinance 等源的成功率、延迟和失败原因，记录 fallback 是否发生以及最终 vendor
+- **修改文件**：
+  - `tradingagents/dataflows/health_check.py`（新增，~280行）— [M-008] data_source_health
+    - `EndpointCheck` — 每个端点的检查结果：status(OK/FAILED/STALE/NOT_QUERIED)、vendor、fallback_from、latency_ms、error、chain、record_count
+    - `HealthReport` — 完整健康报告：run_at、date、checks、summary(OK/FAILED/STALE/fallback_count)
+    - `_default_endpoints()` — 默认检查 8 个端点：get_stock_data、get_indicators、get_fundamentals、get_balance_sheet、get_cashflow、get_income_statement、get_news、get_realtime_quotes
+    - `_probe_endpoint()` — 单端点探测：调用 route_to_vendor，记录延迟、记录数、fallback
+    - `run_health_check()` — 主入口：对默认 2-3 只样例股（600519.SH、000001.SZ）运行所有端点探测
+    - `render_report()` — 生成 Markdown 报告：Summary 表 + Endpoint Details 表 + Fallback Events + Failed Endpoints + Stale Responses
+    - `save_report()` — 写入 `docs/data_source_health/YYYY-MM-DD.md`
+    - 自动检测 fallback：当 chain 首位 vendor 与实际 hit vendor 不同时记录 fallback_from
+  - `scripts/run_health_check.py`（新增，~60行）— CLI 入口
+    - `--dry-run` 只打印不写文件
+    - `--output` 自定义输出路径
+    - `--symbols` 自定义样例股
+    - 非 dry-run 默认写入 `docs/data_source_health/YYYY-MM-DD.md`
+  - `tests/test_m008_health_check.py`（新增，~380行）— 44 个测试
+- **关键逻辑**：
+  1. 健康检查为纯观测层，不修改任何业务数据或配置
+  2. 每个端点记录完整的 vendor chain 和实际 hit vendor，fallback 时自动对比并标记
+  3. STALE 状态检测空响应/极短响应/None 返回
+  4. symbol 替换支持嵌套 list/tuple 参数（如 get_realtime_quotes 的 symbols 列表）
+  5. 所有测试 mock route_to_vendor，不依赖网络
+  6. live smoke 可通过 `python scripts/run_health_check.py --dry-run` 手动执行
+- **标记**：`# [M-008] data_source_health`
+- **测试结果**：
+  - M-008 专项测试：44 passed
+  - 关联 provider/tradeflow 测试：47 passed, 2 skipped
+
+## 2026-05-29 | S-004 候选股博弈平衡解释
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：在 TradeFlow Plan 中为每个候选输出轻量博弈解释，说明多头为何可能买、空头为何可能卖、政策/监管/资金结构是否支持
+- **修改文件**：
+  - `tradingagents/tradeflow/game_balance.py`（新增，~210行）— [S-004] candidate_game_balance
+    - `assess_game_balance(strategy_tags, score, policy_tags, version_score, ...)` — 规则化博弈平衡评估
+    - `GameBalanceResult` — 输出 `game_balance`(favorable/neutral/crowded/fragile)、`bull_case`、`bear_case`、`policy_case`、`fund_flow_case`、`resonance_count`、`game_balance_refs`
+    - 四类信号共振计数：政策(policy)、叙事/事件(narrative)、技术(tech)、资金(fund)
+    - 共振 >= 2 类且风险可控时标记 `favorable` 或 `neutral`，并提升 `need_deep_ta`
+    - 高严重性风险(INQUIRY_RISK/FINANCIAL_QUALITY_RISK)或风险标签 >= 3 个时标记 `fragile`
+    - 资金冲突(正负同时) + 风险标签 >= 2 时标记 `crowded`
+    - 所有输出文本禁止强买卖词，自动 sanitize
+    - 所有 case 字段来源必须来自已有信号和证据，不调用外部 LLM
+  - `tradingagents/tradeflow/schemas.py` — [S-004]
+    - `Candidate` 新增 `game_balance`、`bull_case`、`bear_case`、`policy_case`、`fund_flow_case`、`resonance_count`、`game_balance_refs` 字段
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示博弈平衡 verdict + 多空/政策/资金四维视角
+  - `tradingagents/tradeflow/candidate_engine.py` — [S-004]
+    - `evaluate_symbol()` 在 S-003 水下风险之后调用 `assess_game_balance()`
+    - 博弈平衡结果写入 `candidate.evidence["game_balance"]`
+    - 共振 >= 2 + 风险可控时自动提升 `need_deep_ta`
+    - fragile/crowded + 风险标签 >= 2 时关闭 `need_deep_ta`
+    - `init_db()` 新增 7 列迁移：game_balance, bull_case, bear_case, policy_case, fund_flow_case, resonance_count, game_balance_refs_json
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+  - `tradingagents/tradeflow/plan_runner.py` — [S-004]
+    - `_build_plan_entry()` 输出博弈平衡全部字段
+  - `tests/test_s004_game_balance.py`（新增，~470行）— 68 个测试
+- **关键逻辑**：
+  1. 博弈平衡作为总结层叠加在所有正向策略和风险标签之上，不破坏现有逻辑
+  2. 四类信号共振计数（政策/叙事/技术/资金），>= 2 类共振 + 风险可控 → favorable/neutral
+  3. 高严重性风险（问询/财务异常）或风险标签过多 → fragile，不进入深度 TA
+  4. 资金冲突 + 风险标签拥挤 → crowded
+  5. 所有 case 文本引用已有信号和证据，不凭空生成
+  6. 输出中包含 evidence refs，可追溯到 policy_evidence、narrative_reasons、risk_reasons、event_text
+  7. 不出现强买卖词
+- **标记**：`# [S-004] candidate_game_balance`
+- **测试结果**：
+  - S-004 专项测试：68 passed
+  - TradeFlow 全量测试：83 passed
+  - 扩展回归测试（S-001 + S-002 + S-003 + S-004 + readiness_score）：331 passed
+
+## 2026-05-29 | S-003 水下风险标签与候选降权
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：为 TradeFlow 候选池增加水下风险标签，识别解禁、减持、问询、财务异常、融资拥挤、龙虎榜过热等风险，对候选做降权或要求更严格技术确认
+- **修改文件**：
+  - `tradingagents/tradeflow/underwater_risk_flags.py`（新增，~220行）— [S-003] underwater_risk_flags
+    - `detect_underwater_risks(event_texts, lhb_status, lhb_texts, margin_status, margin_texts)` — 六类水下风险检测
+    - `UnderwaterRiskResult` — 输出 `risk_flags`、`risk_penalty`（0 to -30）、`risk_evidence_refs`、`risk_reasons`
+    - 六类风险：LOCKUP_RISK、REDUCE_HOLDING_RISK、INQUIRY_RISK、FINANCIAL_QUALITY_RISK、MARGIN_CROWDING_RISK、LHB_OVERHEAT_RISK
+    - 龙虎榜和融资融券风险必须区分 HAS_DATA/NOT_QUERIED/FAILED，不得把未查询当作无风险
+    - 每类风险只取最高权重命中，不重复叠加；罚分上限 30
+  - `tradingagents/tradeflow/schemas.py` — [S-003]
+    - `Candidate` 新增 `risk_penalty`、`risk_evidence_refs`、`risk_reasons` 字段
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示水下风险标签和罚分摘要
+  - `tradingagents/tradeflow/candidate_engine.py` — [S-003]
+    - `evaluate_symbol()` 在 S-002 叙事质量之后调用 `detect_underwater_risks()`
+    - 风险标签进入候选 `risk_flags` 并降权候选分数
+    - `init_db()` 新增 `risk_penalty`、`risk_evidence_refs_json`、`risk_reasons_json` 列迁移
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+    - 当 INQUIRY_RISK 或 FINANCIAL_QUALITY_RISK 存在，或风险标签 >= 3 个时，关闭 `need_deep_ta`
+  - `tradingagents/tradeflow/plan_runner.py` — [S-003]
+    - `_build_plan_entry()` 输出 `risk_penalty`、`risk_evidence_refs`、`risk_reasons`
+  - `tests/test_s003_underwater_risk_flags.py`（新增，~370行）— 61 个测试
+- **关键逻辑**：
+  1. 水下风险作为惩罚层叠加在所有正向策略之上，不破坏现有策略
+  2. 所有风险标签必须绑定原始事件文本，无证据时不输出高置信风险
+  3. 龙虎榜未查询时不得生成 LHB_OVERHEAT_RISK；融资融券未查询同理
+  4. 高风险标签（问询/财务异常）或风险标签过多时关闭 need_deep_ta
+  5. 罚分上限 30，避免单个候选被无限扣分
+- **标记**：`# [S-003] underwater_risk_flags`
+- **测试结果**：
+  - S-003 专项测试：61 passed
+  - TradeFlow 全量测试：83 passed
+  - 扩展回归测试（S-001 + S-002 + S-003 + readiness_score）：346 passed
+
+---
+
+## 2026-05-29 | S-002 叙事质量评分
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：为事件催化增加叙事质量评分，区分"普通公告/普通新闻"和"容易形成市场共识的主线事件"
+- **修改文件**：
+  - `tradingagents/tradeflow/narrative_quality.py`（新增，~210行）— [S-002] narrative_quality_score
+    - `score_narrative_quality(event_texts)` — 五维度叙事质量评分
+    - `NarrativeQualityResult` — 输出 `narrative_score`（0-40分）、`narrative_reasons`、`narrative_evidence_refs`
+    - 五个维度：政策背书（0-10）、产业落地（0-10）、公司动作（0-10）、传播清晰度（0-10）、拥挤/过热扣分（0 to -10）
+    - 每个维度独立打分，每维度只取最高权重命中，不重复叠加
+    - 总分上限 40 分（`MAX_NARRATIVE_SCORE`），下限 0
+  - `tradingagents/tradeflow/schemas.py` — [S-002]
+    - `Candidate` 新增 `narrative_score`、`narrative_reasons`、`narrative_evidence_refs` 字段
+    - `STRATEGY_NARRATIVE = "NARRATIVE_QUALITY"` 策略常量，加入 `ALL_STRATEGIES`
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示叙事质量得分和原因摘要
+  - `tradingagents/tradeflow/candidate_engine.py` — [S-002]
+    - `evaluate_symbol()` 在 S-001 政策版本之后调用 `score_narrative_quality()`
+    - 叙事质量命中时加分、加入 `strategy_tags`、写入 `evidence.narrative_quality`
+    - `narrative_score >= 20` 时设置 `need_deep_ta=True`
+    - `init_db()` 新增 `narrative_score`、`narrative_reasons_json`、`narrative_evidence_refs_json` 列迁移
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+  - `tradingagents/tradeflow/plan_runner.py` — [S-002]
+    - `_build_plan_entry()` 输出 `narrative_score`、`narrative_reasons`、`narrative_evidence_refs`
+  - `tests/test_s002_narrative_quality.py`（新增，~340行）— 51 个测试
+- **关键逻辑**：
+  1. 叙事质量作为 bonus 层叠加在 VCP/Pullback/Event/PolicyVersion 之上，不破坏现有策略
+  2. 无事件文本时 `narrative_score` 恒为 0，不凭空加分
+  3. 不同股票各自消费自己的事件文本，按 symbol 隔离
+  4. 每维度只取最高权重匹配，重复事件不会无限叠加
+  5. 高叙事质量得分（≥20）自动提升 need_deep_ta 优先级
+  6. 拥挤/过热扣分确保炒作类事件不被高估
+- **标记**：`# [S-002] narrative_quality_score`
+- **测试结果**：
+  - S-002 专项测试：51 passed
+  - TradeFlow 全量测试：169 passed
+  - 扩展回归测试：250 passed
+
+---
+
+## 2026-05-29 | OpenClaw cron timeout 提升至 4 小时
+
+- **执行者**：主控AI
+- **任务**：夜间自动开发窗口从 1 小时提升到 4 小时，支持多任务连续开发
+- **变更**：OpenClaw cron payload.timeoutSeconds 3600→14400，同步 message 中 timeout 描述
+- **关联**：auto_dev_loop.sh 连续执行模式（DONE 继续/NEEDS_HUMAN 停止）
+- **运行档案**：cron job 0ed1a9a1-10f4-4ed0-8720-fc4d5fd3ae8a
+
+---
+
+## 2026-05-29 | S-001 政策版本因子进入 TradeFlow 候选池
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：为 TradeFlow 增加政策版本因子，识别 A 股市场政策/产业方向，让候选池从"技术形态先行"升级为"政策版本入池 + 技术确认"
+- **修改文件**：
+  - `tradingagents/tradeflow/policy_version_signal.py`（新增，~140行）— [S-001] policy_version_signal
+    - `detect_policy_version(event_texts, industry_tags)` — 检测事件文本中的政策版本关键词
+    - `PolicyVersionResult` — 输出 `policy_tags`、`version_score`（0-30分）、`policy_evidence_refs`
+    - 14 个政策版本主题：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革、半导体、新能源、人工智能、数据要素、军工
+    - 仅事件文本命中时给完整权重；行业标签命中给 30% 权重；无原始文本证据时不得加分
+    - 累计加分上限 30 分（`MAX_POLICY_BONUS`）
+  - `tradingagents/tradeflow/schemas.py` — [S-001]
+    - `Candidate` 新增 `policy_tags`、`version_score`、`policy_evidence_refs` 字段
+    - `STRATEGY_POLICY_VERSION = "POLICY_VERSION"` 策略常量，加入 `ALL_STRATEGIES`
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示政策标签和证据摘要
+  - `tradingagents/tradeflow/candidate_engine.py` — [S-001]
+    - `evaluate_symbol()` 在 N-004 信号标签之后调用 `detect_policy_version()`
+    - 政策版本命中时加分、加入 `strategy_tags`、写入 `evidence.policy_version`
+    - `version_score >= 15` 时设置 `need_deep_ta=True`
+    - `init_db()` 新增 `policy_tags_json`、`version_score`、`policy_evidence_refs_json` 列迁移
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+  - `tradingagents/tradeflow/plan_runner.py` — [S-001]
+    - `_build_plan_entry()` 输出 `policy_tags`、`version_score`、`policy_evidence_refs`
+  - `tests/test_s001_policy_version_signal.py`（新增，~280行）— 35 个测试
+- **关键逻辑**：
+  1. 政策版本信号作为 bonus 层叠加在 VCP/Pullback/Event 之上，不破坏现有策略
+  2. 无事件文本证据时 `version_score` 恒为 0，不凭空加分
+  3. 不同股票各自消费自己的事件文本，按 symbol 隔离
+  4. Daily Plan 展示政策标签和证据摘要，动作仍为 OBSERVE/NEED_DEEP_TA
+  5. 高政策版本得分（≥15）自动提升 need_deep_ta 优先级
+- **标记**：`# [S-001] policy_version_signal`
+- **测试结果**：
+  - S-001 专项测试：35 passed
+  - TradeFlow 全量测试：118 passed
+  - 扩展回归测试：370 passed, 2 skipped
+- **验收补修**：
+  - commit `cf7d928` 修复 `event_overrides` 路径漏传事件标题到政策版本检测的问题
+  - 验证："低空经济政策支持" 可正确生成 `policy_tags=["低空经济"]` 和 `POLICY_VERSION` 策略标签
+
+---
+
+## 2026-05-29 | TradeFlow 选股策略任务池重排
+
+- **执行者**：Codex
+- **任务**：根据“先选对股票，再做深度 TA”的策略目标，重排 TradeFlow 后续开发任务池
+- **修改文件**：
+  - `docs/TASKS.md` — 新增 `S-001` 至 `S-005` 选股策略核心任务，并把当前优先队列调整为政策版本、叙事质量、水下风险、博弈平衡优先
+  - `docs/AUTO_DEV_PLAN.md` — 同步自动开发路线，把 P1 当前最高业务优先级调整为候选池质量提升
+- **策略方向**：
+  - 候选池从“技术形态先行”升级为“政策版本入池 + 叙事质量评分 + 水下风险降权 + 技术/资金确认”
+  - 小范围 Discovery、资金异动池、Universe 管理器和策略权重配置排在 S 系列之后，避免先扩大扫描范围再产生低质量候选
+
+exec
+/bin/zsh -lc 'git status --short && git diff --stat && git diff --cached --stat' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+?? .auto_dev.lock/
+?? docs/task_runs/M-008-20260529-142207/
+?? scripts/run_health_check.py
+?? tests/test_m008_health_check.py
+?? tradingagents/dataflows/health_check.py
+ docs/DEVLOG.md | 32 ++++++++++++++++++++++++++++++++
+ docs/TASKS.md  |  2 +-
+ 2 files changed, 33 insertions(+), 1 deletion(-)
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/dataflows/health_check.py; printf '\\n--- script ---\\n'; sed -n '1,220p' scripts/run_health_check.py; printf '\\n--- tests 1 ---\\n'; sed -n '1,260p' tests/test_m008_health_check.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""Data source health check and fallback observability.  # [M-008] data_source_health
+
+Runs small-sample smoke tests against every configured data-source endpoint,
+records success / failure / latency / fallback chain, and generates a
+human-readable Markdown report.
+
+Usage (library):
+    from tradingagents.dataflows.health_check import run_health_check, render_report
+    report = run_health_check()
+    print(render_report(report))
+
+Usage (CLI):
+    python scripts/run_health_check.py [--dry-run] [--output docs/data_source_health/YYYY-MM-DD.md]
+"""
+
+from __future__ import annotations
+
+import time
+import os
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, List, Optional
+
+from .interface import route_to_vendor, _registry, get_vendor, _resolve_vendor_chain, TOOLS_CATEGORIES
+
+# ── Constants ──────────────────────────────────────────────────────────
+
+STATUS_OK = "OK"
+STATUS_FAILED = "FAILED"
+STATUS_STALE = "STALE"
+STATUS_NOT_QUERIED = "NOT_QUERIED"
+
+DEFAULT_SAMPLE_SYMBOLS = ["600519.SH", "000001.SZ"]
+DEFAULT_HISTORY_DAYS = 30
+
+# ── Data models ────────────────────────────────────────────────────────
+
+
+@dataclass
+class EndpointCheck:
+    method: str
+    category: str
+    sample_symbol: str
+    status: str = STATUS_NOT_QUERIED
+    vendor: str = ""
+    fallback_from: str = ""
+    latency_ms: float = 0.0
+    error: str = ""
+    chain: List[str] = field(default_factory=list)
+    record_count: int = 0
+    is_stale: bool = False
+    stale_reason: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "method": self.method,
+            "category": self.category,
+            "sample_symbol": self.sample_symbol,
+            "status": self.status,
+            "vendor": self.vendor,
+            "fallback_from": self.fallback_from,
+            "latency_ms": round(self.latency_ms, 1),
+            "error": self.error,
+            "chain": self.chain,
+            "record_count": self.record_count,
+            "is_stale": self.is_stale,
+            "stale_reason": self.stale_reason,
+        }
+
+
+@dataclass
+class HealthReport:
+    run_at: str
+    date: str
+    checks: List[EndpointCheck] = field(default_factory=list)
+    summary: Dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "run_at": self.run_at,
+            "date": self.date,
+            "checks": [c.to_dict() for c in self.checks],
+            "summary": self.summary,
+        }
+
+
+# ── Endpoint definitions ───────────────────────────────────────────────
+
+def _default_endpoints() -> List[Dict[str, Any]]:
+    today = datetime.now().strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=DEFAULT_HISTORY_DAYS)).strftime("%Y%m%d")
+    return [
+        {
+            "method": "get_stock_data",
+            "args": ("_SYMBOL_", start, today),
+            "kwargs": {},
+        },
+        {
+            "method": "get_indicators",
+            "args": ("_SYMBOL_", "rsi", today, 14),
+            "kwargs": {},
+        },
+        {
+            "method": "get_fundamentals",
+            "args": ("_SYMBOL_",),
+            "kwargs": {"curr_date": today},
+        },
+        {
+            "method": "get_balance_sheet",
+            "args": ("_SYMBOL_",),
+            "kwargs": {"freq": "quarterly", "curr_date": today},
+        },
+        {
+            "method": "get_cashflow",
+            "args": ("_SYMBOL_",),
+            "kwargs": {"freq": "quarterly", "curr_date": today},
+        },
+        {
+            "method": "get_income_statement",
+            "args": ("_SYMBOL_",),
+            "kwargs": {"freq": "quarterly", "curr_date": today},
+        },
+        {
+            "method": "get_news",
+            "args": ("_SYMBOL_", start, today),
+            "kwargs": {},
+        },
+        {
+            "method": "get_realtime_quotes",
+            "args": (["_SYMBOL_"],),
+            "kwargs": {},
+        },
+    ]
+
+
+# ── Single-endpoint probe ──────────────────────────────────────────────
+
+def _probe_endpoint(
+    method: str,
+    args: tuple,
+    kwargs: dict,
+    symbol: str,
+) -> EndpointCheck:
+    category = ""
+    for cat, info in TOOLS_CATEGORIES.items():
+        if method in info["tools"]:
+            category = cat
+            break
+
+    chain: List[str] = []
+    try:
+        chain = _resolve_vendor_chain(method, get_vendor(category, method))
+    except Exception:
+        chain = []
+
+    check = EndpointCheck(
+        method=method,
+        category=category,
+        sample_symbol=symbol,
+        chain=chain,
+    )
+
+    def _replace_symbol(v):
+        if v == "_SYMBOL_":
+            return symbol
+        if isinstance(v, list):
+            return [_replace_symbol(item) for item in v]
+        if isinstance(v, tuple):
+            return tuple(_replace_symbol(item) for item in v)
+        return v
+
+    real_args = tuple(_replace_symbol(a) for a in args)
+    real_kwargs = {k: _replace_symbol(v) for k, v in kwargs.items()}
+
+    t0 = time.monotonic()
+    try:
+        result = route_to_vendor(method, *real_args, **real_kwargs)
+        elapsed = (time.monotonic() - t0) * 1000
+
+        check.latency_ms = elapsed
+        check.vendor = chain[0] if chain else ""
+
+        if result is None or (isinstance(result, str) and len(result.strip()) < 10):
+            check.status = STATUS_STALE
+            check.is_stale = True
+            check.stale_reason = "empty_or_minimal_response"
+        elif isinstance(result, str):
+            lines = [l for l in result.strip().split("\n") if l.strip() and not l.startswith("#")]
+            check.record_count = max(0, len(lines) - 1)
+            check.status = STATUS_OK
+            try:
+                from .interface import get_last_hit_vendor
+                actual_vendor = get_last_hit_vendor(method)
+                if actual_vendor:
+                    check.vendor = actual_vendor
+            except Exception:
+                pass
+        else:
+            check.status = STATUS_OK
+    except Exception as exc:
+        elapsed = (time.monotonic() - t0) * 1000
+        check.latency_ms = elapsed
+        check.status = STATUS_FAILED
+        check.error = f"{type(exc).__name__}: {exc}"
+        if chain:
+            check.vendor = chain[0]
+
+    return check
+
+
+# ── Main health-check runner ───────────────────────────────────────────
+
+def run_health_check(
+    symbols: Optional[List[str]] = None,
+    endpoints: Optional[List[Dict[str, Any]]] = None,
+    probe_fn: Optional[Callable] = None,
+) -> HealthReport:
+    now = datetime.now()
+    report = HealthReport(
+        run_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+        date=now.strftime("%Y-%m-%d"),
+    )
+
+    if symbols is None:
+        symbols = DEFAULT_SAMPLE_SYMBOLS
+    if endpoints is None:
+        endpoints = _default_endpoints()
+    if probe_fn is None:
+        probe_fn = _probe_endpoint
+
+    symbol = symbols[0]
+
+    for ep in endpoints:
+        check = probe_fn(
+            method=ep["method"],
+            args=ep.get("args", ()),
+            kwargs=ep.get("kwargs", {}),
+            symbol=symbol,
+        )
+        report.checks.append(check)
+
+    # Detect fallback: when the first vendor in chain differs from actual vendor
+    for check in report.checks:
+        if check.status == STATUS_OK and check.chain:
+            configured_first = check.chain[0]
+            if check.vendor and check.vendor != configured_first:
+                check.fallback_from = configured_first
+
+    summary: Dict[str, int] = {
+        STATUS_OK: 0,
+        STATUS_FAILED: 0,
+        STATUS_STALE: 0,
+        STATUS_NOT_QUERIED: 0,
+        "fallback_count": 0,
+        "total": len(report.checks),
+    }
+    for check in report.checks:
+        if check.status in summary:
+            summary[check.status] += 1
+        if check.fallback_from:
+
+--- script ---
+#!/usr/bin/env python3
+"""Data source health check CLI — [M-008] data_source_health.
+
+Runs small-sample smoke tests against every configured data-source endpoint
+and writes a Markdown health report.
+
+Usage:
+    python scripts/run_health_check.py                     # live smoke
+    python scripts/run_health_check.py --dry-run           # print report, don't write file
+    python scripts/run_health_check.py --output /tmp/health.md
+    python scripts/run_health_check.py --symbols 600519.SH,000001.SZ
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tradingagents.dataflows.health_check import (
+    run_health_check,
+    render_report,
+    save_report,
+)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Data source health check and fallback observability [M-008]",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the report to stdout without writing a file.",
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Output file path (default: docs/data_source_health/YYYY-MM-DD.md).",
+    )
+    parser.add_argument(
+        "--symbols",
+        default=None,
+        help="Comma-separated sample symbols (default: 600519.SH,000001.SZ).",
+    )
+    args = parser.parse_args()
+
+    symbols = None
+    if args.symbols:
+        symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+
+    print(f"[M-008] Running data source health check...", file=sys.stderr)
+    report = run_health_check(symbols=symbols)
+
+    md = render_report(report)
+
+    if args.dry_run:
+        print(md)
+    else:
+        if args.output:
+            os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(md)
+            print(f"[M-008] Report written to {args.output}", file=sys.stderr)
+        else:
+            path = save_report(report)
+            print(f"[M-008] Report written to {path}", file=sys.stderr)
+
+    s = report.summary
+    failed = s.get("FAILED", 0)
+    if failed > 0:
+        print(f"[M-008] WARNING: {failed} endpoint(s) FAILED", file=sys.stderr)
+        sys.exit(1)
+
+    print(
+        f"[M-008] OK={s.get('OK', 0)} FAILED={failed} "
+        f"STALE={s.get('STALE', 0)} fallback={s.get('fallback_count', 0)}",
+        file=sys.stderr,
+    )
+
+
+if __name__ == "__main__":
+    main()
+
+--- tests 1 ---
+"""Tests for M-008: data source health check and fallback observability.
+
+All tests mock the actual provider calls so that no live network requests
+are made.  Live smoke tests are exercised separately via
+``python scripts/run_health_check.py --dry-run`` when the user explicitly
+opts in.
+"""
+
+import os
+import sys
+import tempfile
+from datetime import datetime
+from unittest.mock import patch, MagicMock
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tradingagents.dataflows.health_check import (
+    EndpointCheck,
+    HealthReport,
+    STATUS_OK,
+    STATUS_FAILED,
+    STATUS_STALE,
+    STATUS_NOT_QUERIED,
+    DEFAULT_SAMPLE_SYMBOLS,
+    _default_endpoints,
+    _probe_endpoint,
+    run_health_check,
+    render_report,
+    save_report,
+)
+
+
+# ── Helpers ────────────────────────────────────────────────────────────
+
+def _make_check(
+    method="get_stock_data",
+    category="core_stock_apis",
+    symbol="600519.SH",
+    status=STATUS_OK,
+    vendor="cn_akshare",
+    fallback_from="",
+    latency_ms=100.0,
+    error="",
+    chain=None,
+    record_count=50,
+    is_stale=False,
+    stale_reason="",
+) -> EndpointCheck:
+    return EndpointCheck(
+        method=method,
+        category=category,
+        sample_symbol=symbol,
+        status=status,
+        vendor=vendor,
+        fallback_from=fallback_from,
+        latency_ms=latency_ms,
+        error=error,
+        chain=chain or ["cn_akshare", "cn_baostock", "yfinance"],
+        record_count=record_count,
+        is_stale=is_stale,
+        stale_reason=stale_reason,
+    )
+
+
+def _mock_probe(**overrides):
+    """Return a probe_fn that produces a predictable EndpointCheck."""
+
+    def probe_fn(method, args, kwargs, symbol):
+        defaults = dict(
+            method=method,
+            category="core_stock_apis",
+            sample_symbol=symbol,
+            status=STATUS_OK,
+            vendor="cn_akshare",
+            fallback_from="",
+            latency_ms=50.0,
+            error="",
+            chain=["cn_akshare", "cn_baostock", "yfinance"],
+            record_count=30,
+        )
+        defaults.update(overrides)
+        return EndpointCheck(**defaults)
+
+    return probe_fn
+
+
+# ── EndpointCheck dataclass ────────────────────────────────────────────
+
+class TestEndpointCheck:
+    def test_to_dict_roundtrip(self):
+        c = _make_check()
+        d = c.to_dict()
+        assert d["method"] == "get_stock_data"
+        assert d["status"] == STATUS_OK
+        assert d["vendor"] == "cn_akshare"
+        assert d["latency_ms"] == 100.0
+        assert d["record_count"] == 50
+
+    def test_to_dict_failed(self):
+        c = _make_check(status=STATUS_FAILED, error="TimeoutError: timed out")
+        d = c.to_dict()
+        assert d["status"] == STATUS_FAILED
+        assert "TimeoutError" in d["error"]
+
+    def test_to_dict_stale(self):
+        c = _make_check(status=STATUS_STALE, is_stale=True, stale_reason="empty_response")
+        d = c.to_dict()
+        assert d["status"] == STATUS_STALE
+        assert d["is_stale"] is True
+        assert d["stale_reason"] == "empty_response"
+
+    def test_default_status_is_not_queried(self):
+        c = EndpointCheck(method="get_news", category="news_data", sample_symbol="000001.SZ")
+        assert c.status == STATUS_NOT_QUERIED
+
+    def test_chain_default_empty(self):
+        c = EndpointCheck(method="x", category="y", sample_symbol="z")
+        assert c.chain == []
+
+
+# ── HealthReport dataclass ─────────────────────────────────────────────
+
+class TestHealthReport:
+    def test_to_dict_roundtrip(self):
+        report = HealthReport(
+            run_at="2026-05-29 14:00:00",
+            date="2026-05-29",
+            checks=[_make_check(), _make_check(method="get_news", category="news_data")],
+            summary={"OK": 2, "FAILED": 0, "STALE": 0, "NOT_QUERIED": 0, "fallback_count": 0, "total": 2},
+        )
+        d = report.to_dict()
+        assert d["date"] == "2026-05-29"
+        assert len(d["checks"]) == 2
+        assert d["summary"]["OK"] == 2
+
+    def test_empty_report(self):
+        report = HealthReport(run_at="2026-05-29 14:00:00", date="2026-05-29")
+        assert report.to_dict()["checks"] == []
+        assert report.to_dict()["summary"] == {}
+
+
+# ── _default_endpoints ─────────────────────────────────────────────────
+
+class TestDefaultEndpoints:
+    def test_has_expected_methods(self):
+        eps = _default_endpoints()
+        methods = [e["method"] for e in eps]
+        assert "get_stock_data" in methods
+        assert "get_indicators" in methods
+        assert "get_fundamentals" in methods
+        assert "get_news" in methods
+        assert "get_realtime_quotes" in methods
+
+    def test_each_endpoint_has_args(self):
+        for ep in _default_endpoints():
+            assert "method" in ep
+            assert "args" in ep
+            assert isinstance(ep["args"], tuple)
+
+    def test_symbol_placeholder(self):
+        for ep in _default_endpoints():
+            has_placeholder = any(a == "_SYMBOL_" for a in ep["args"])
+            if ep["method"] == "get_realtime_quotes":
+                assert any(
+                    isinstance(a, list) and "_SYMBOL_" in a for a in ep["args"]
+                )
+            elif ep["method"] not in ("get_global_news",):
+                assert has_placeholder or any(
+                    "_SYMBOL_" in str(v) for v in ep.get("kwargs", {}).values()
+                )
+
+
+# ── _probe_endpoint (with mocked route_to_vendor) ──────────────────────
+
+class TestProbeEndpoint:
+    def test_ok_response(self):
+        with patch("tradingagents.dataflows.health_check.route_to_vendor") as mock_route:
+            mock_route.return_value = "date,open,high,low,close,volume\n2026-05-29,1,2,3,4,5\n2026-05-28,6,7,8,9,10\n"
+            with patch("tradingagents.dataflows.health_check._resolve_vendor_chain", return_value=["cn_akshare", "cn_baostock"]):
+                with patch("tradingagents.dataflows.health_check.get_vendor", return_value="cn_akshare"):
+                    check = _probe_endpoint("get_stock_data", ("600519.SH", "20260429", "20260529"), {}, "600519.SH")
+        assert check.status == STATUS_OK
+        assert check.sample_symbol == "600519.SH"
+        assert check.latency_ms > 0
+
+    def test_failed_response(self):
+        with patch("tradingagents.dataflows.health_check.route_to_vendor") as mock_route:
+            mock_route.side_effect = RuntimeError("No available vendor for method 'get_stock_data'")
+            with patch("tradingagents.dataflows.health_check._resolve_vendor_chain", return_value=["cn_akshare"]):
+                with patch("tradingagents.dataflows.health_check.get_vendor", return_value="cn_akshare"):
+                    check = _probe_endpoint("get_stock_data", ("600519.SH", "20260429", "20260529"), {}, "600519.SH")
+        assert check.status == STATUS_FAILED
+        assert "RuntimeError" in check.error
+
+    def test_stale_empty_response(self):
+        with patch("tradingagents.dataflows.health_check.route_to_vendor") as mock_route:
+            mock_route.return_value = ""
+            with patch("tradingagents.dataflows.health_check._resolve_vendor_chain", return_value=["cn_akshare"]):
+                with patch("tradingagents.dataflows.health_check.get_vendor", return_value="cn_akshare"):
+                    check = _probe_endpoint("get_stock_data", ("600519.SH", "20260429", "20260529"), {}, "600519.SH")
+        assert check.status == STATUS_STALE
+        assert check.is_stale is True
+
+    def test_stale_minimal_response(self):
+        with patch("tradingagents.dataflows.health_check.route_to_vendor") as mock_route:
+            mock_route.return_value = "short"
+            with patch("tradingagents.dataflows.health_check._resolve_vendor_chain", return_value=["cn_akshare"]):
+                with patch("tradingagents.dataflows.health_check.get_vendor", return_value="cn_akshare"):
+                    check = _probe_endpoint("get_stock_data", ("600519.SH", "20260429", "20260529"), {}, "600519.SH")
+        assert check.status == STATUS_STALE
+
+    def test_none_response_is_stale(self):
+        with patch("tradingagents.dataflows.health_check.route_to_vendor") as mock_route:
+            mock_route.return_value = None
+            with patch("tradingagents.dataflows.health_check._resolve_vendor_chain", return_value=["cn_akshare"]):
+                with patch("tradingagents.dataflows.health_check.get_vendor", return_value="cn_akshare"):
+                    check = _probe_endpoint("get_stock_data", ("600519.SH", "20260429", "20260529"), {}, "600519.SH")
+        assert check.status == STATUS_STALE
+
+
+# ── run_health_check ───────────────────────────────────────────────────
+
+class TestRunHealthCheck:
+    def test_all_ok(self):
+        report = run_health_check(
+            symbols=["600519.SH"],
+            probe_fn=_mock_probe(status=STATUS_OK, vendor="cn_akshare"),
+        )
+        assert report.summary[STATUS_OK] == report.summary["total"]
+        assert report.summary[STATUS_FAILED] == 0
+        assert report.summary["STALE"] == 0
+        assert report.summary["fallback_count"] == 0
+
+    def test_all_failed(self):
+        report = run_health_check(
+            symbols=["600519.SH"],
+            probe_fn=_mock_probe(status=STATUS_FAILED, error="TimeoutError: timed out"),
+        )
+        assert report.summary[STATUS_FAILED] == report.summary["total"]
+        assert report.summary[STATUS_OK] == 0
+
+    def test_mixed_statuses(self):
+        statuses = [STATUS_OK, STATUS_FAILED, STATUS_OK, STATUS_STALE, STATUS_OK, STATUS_OK, STATUS_OK, STATUS_OK]
+        idx = [0]
+
+        def probe_fn(method, args, kwargs, symbol):
+            s = statuses[idx[0] % len(statuses)]
+            idx[0] += 1
+            return _make_check(status=s, method=method, error="err" if s == STATUS_FAILED else "")
+
+        report = run_health_check(symbols=["600519.SH"], probe_fn=probe_fn)
+        assert report.summary[STATUS_OK] == 6
+        assert report.summary[STATUS_FAILED] == 1
+        assert report.summary[STATUS_STALE] == 1
+
+    def test_fallback_detected(self):
+        def probe_fn(method, args, kwargs, symbol):
+            return _make_check(
+
+exec
+/bin/zsh -lc "find .auto_dev.lock docs/task_runs/M-008-20260529-142207 -maxdepth 3 -type f -print -exec sed -n '1,220p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+.auto_dev.lock/owner
+pid=37014
+started_at=2026-05-29_13:49:10
+repo=/Users/maybee/TradingAgents-AShare
+docs/task_runs/M-008-20260529-142207/tests-round1.txt
+## pytest tests/test_*provider*.py -q
+
+............................ss...                                        [100%]
+31 passed, 2 skipped in 0.25s
+
+Exit code: 0
+
+docs/task_runs/M-008-20260529-142207/prompt-round1.md
+# 任务: M-008: 数据源健康检查与 fallback 可观测性（P1）
+
+请从 docs/TASKS.md 中读取任务 "M-008" 的完整描述，按要求实现。
+
+## 执行约束
+- 不改 tradingagents/prompts/
+- 不写入生产 tradingagents.db
+- 不跑全市场扫描或股票深度 TA
+- 不 push / PR / merge
+- **不要 git commit** — commit 由外层脚本统一执行
+- 修改后更新 docs/DEVLOG.md
+
+## 完成后输出
+- 修改了哪些文件
+- 关键逻辑说明
+- 测试结果（passed/failed 数量）
+docs/task_runs/M-008-20260529-142207/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m# [0mTodos
+[ ] Read M-008 task description from docs/TASKS.md
+[ ] Read project docs for context (project-overview, DECISIONS, DEVLOG)
+[ ] Implement data source health check and fallback observability
+[ ] Write/update tests
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/project-overview.md
+[0m→ [0mRead docs/DECISIONS.md
+[0m
+[0m# [0mTodos
+[x] Read M-008 task description from docs/TASKS.md
+[x] Read project docs for context (project-overview, DECISIONS, DEVLOG)
+[ ] Explore current data source / provider infrastructure
+[ ] Implement data source health check module
+[ ] Implement health check script (smoke test)
+[ ] Implement health report generation
+[ ] Write tests with mocked fallback scenarios
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/dataflows
+[0m→ [0mRead tradingagents/dataflows/providers
+[0m→ [0mRead tradingagents/dataflows/interface.py
+[0m→ [0mRead tradingagents/dataflows/providers/registry.py
+[0m→ [0mRead tradingagents/dataflows/providers/base.py
+[0m→ [0mRead tradingagents/dataflows/providers/cn_akshare_provider.py[90m [limit=80][0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_astock_provider.py[90m [limit=80][0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_baostock_provider.py[90m [limit=60][0m
+[0m→ [0mRead tradingagents/dataflows/providers/yfinance_provider.py[90m [limit=60][0m
+[0m✱ [0mGlob "tests/test_*provider*.py"[90m 2 matches[0m
+[0m→ [0mRead tests/test_cn_astock_provider.py[90m [limit=60][0m
+[0m→ [0mRead tradingagents/dataflows/config.py
+[0m→ [0mRead tradingagents/dataflows/providers/__init__.py
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=80][0m
+[0m✱ [0mGrep "def (get_stock_data|get_indicators|get_fundamentals|get_balance_sheet|get_cashflow|get_income_statement|get_news|get_global_news|get_insider_transactions|get_realtime_quotes|get_board_fund_flow|get_individual_fund_flow|get_lhb_detail|get_zt_pool|get_hot_stocks_xq)"[90m 15 matches[0m
+[0m✱ [0mGlob "docs/data_source_health/**"[90m 0 matches[0m
+现在，让我检查现有的 `docs/data_source_health/` 目录和 `default_config`：
+[0m→ [0mRead tradingagents/default_config.py
+[0m
+[0m# [0mTodos
+[x] Read M-008 task description from docs/TASKS.md
+[x] Read project docs for context (project-overview, DECISIONS, DEVLOG)
+[x] Explore current data source / provider infrastructure
+[ ] Implement data source health check module (tradingagents/dataflows/health_check.py)
+[ ] Implement health check script (scripts/run_health_check.py)
+[ ] Write tests with mocked fallback scenarios
+[ ] Update docs/DEVLOG.md
+[0m
+[0m← [0mWrite tradingagents/dataflows/health_check.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[x] Read M-008 task description from docs/TASKS.md
+[x] Read project docs for context (project-overview, DECISIONS, DEVLOG)
+[x] Explore current data source / provider infrastructure
+[x] Implement data source health check module (tradingagents/dataflows/health_check.py)
+[ ] Implement health check script (scripts/run_health_check.py)
+[ ] Write tests with mocked fallback scenarios
+[ ] Update docs/DEVLOG.md
+[0m
+[0m← [0mWrite scripts/run_health_check.py
+Wrote file successfully.
+[0m
+现在我来编写全面的测试：
+[0m← [0mWrite tests/test_m008_health_check.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[x] Read M-008 task description from docs/TASKS.md
+[x] Read project docs for context (project-overview, DECISIONS, DEVLOG)
+[x] Explore current data source / provider infrastructure
+[x] Implement data source health check module (tradingagents/dataflows/health_check.py)
+[x] Implement health check script (scripts/run_health_check.py)
+[x] Write tests with mocked fallback scenarios
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_m008_health_check.py -q 2>&1
+..F.................F.......................                             [100%]
+=================================== FAILURES ===================================
+_____________________ TestEndpointCheck.test_to_dict_stale _____________________
+
+self = <tests.test_m008_health_check.TestEndpointCheck object at 0x10b4a87a0>
+
+    def test_to_dict_stale(self):
+>       c = _make_check(status=STATUS_STALE, is_stale=True, stale_reason="empty_response")
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: _make_check() got an unexpected keyword argument 'is_stale'
+
+tests/test_m008_health_check.py:104: TypeError
+_______________ TestRunHealthCheck.test_uses_first_sample_symbol _______________
+
+self = <tests.test_m008_health_check.TestRunHealthCheck object at 0x10b4aaf60>
+
+    def test_uses_first_sample_symbol(self):
+        symbols_used = []
+    
+        def probe_fn(method, args, kwargs, symbol):
+            symbols_used.append(symbol)
+            return _make_check(method=method, sample_symbol=symbol)
+    
+>       run_health_check(symbols=["000001.SZ", "600519.SH"], probe_fn=probe_fn)
+
+tests/test_m008_health_check.py:290: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tradingagents/dataflows/health_check.py:225: in run_health_check
+    check = probe_fn(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+method = 'get_stock_data', args = ('_SYMBOL_', '20260429', '20260529')
+kwargs = {}, symbol = '000001.SZ'
+
+    def probe_fn(method, args, kwargs, symbol):
+        symbols_used.append(symbol)
+>       return _make_check(method=method, sample_symbol=symbol)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: _make_check() got an unexpected keyword argument 'sample_symbol'
+
+tests/test_m008_health_check.py:288: TypeError
+=========================== short test summary info ============================
+FAILED tests/test_m008_health_check.py::TestEndpointCheck::test_to_dict_stale
+FAILED tests/test_m008_health_check.py::TestRunHealthCheck::test_uses_first_sample_symbol
+2 failed, 42 passed in 0.35s
+[0m
+两处小修复 - `_make_check` 辅助函数需要 `is_stale`/`stale_reason`/`sample_symbol` 参数：
+[0m← [0mEdit tests/test_m008_health_check.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_m008_health_check.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_m008_health_check.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_m008_health_check.py
+@@ -44,8 +44,10 @@
+     latency_ms=100.0,
+     error="",
+     chain=None,
+     record_count=50,
++    is_stale=False,
++    stale_reason="",
+ ) -> EndpointCheck:
+     return EndpointCheck(
+         method=method,
+         category=category,
+@@ -56,8 +58,10 @@
+         latency_ms=latency_ms,
+         error=error,
+         chain=chain or ["cn_akshare", "cn_baostock", "yfinance"],
+         record_count=record_count,
++        is_stale=is_stale,
++        stale_reason=stale_reason,
+     )
+ 
+ 
+ def _mock_probe(**overrides):
+
+[0m
+[0m← [0mEdit tests/test_m008_health_check.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_m008_health_check.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_m008_health_check.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_m008_health_check.py
+@@ -288,9 +288,9 @@
+ symbols_used = []
+ 
+ def probe_fn(method, args, kwargs, symbol):
+     symbols_used.append(symbol)
+-    return _make_check(method=method, sample_symbol=symbol)
++    return _make_check(method=method, symbol=symbol)
+ 
+ run_health_check(symbols=["000001.SZ", "600519.SH"], probe_fn=probe_fn)
+ assert all(s == "000001.SZ" for s in symbols_used)
+ 
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_m008_health_check.py -q 2>&1
+............................................                             [100%]
+44 passed in 0.26s
+[0m
+所有 44 个测试通过。现在我来运行更广泛的测试套件，以确保没有回归：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_cn_astock_provider.py tests/test_realtime_quote_provider.py tests/test_tradeflow_plan_runner.py -q 2>&1
+............................ss...................                        [100%]
+47 passed, 2 skipped in 0.28s
+[0m
+好的。现在让我来验证一下脚本的语法，以及 dry-run 是否正常工作。
+[0m$ [0msource .venv/bin/activate && python scripts/run_health_check.py --dry-run 2>&1
+[M-008] Running data source health check...
+[provider-trace] method=get_stock_data symbol='600519.SH' arg2='20260429' arg3='20260529' category=core_stock_apis configured='cn_akshare,cn_baostock,yfinance' chain=['cn_akshare', 'cn_baostock', 'yfinance', 'alpha_vantage', 'cn_astock']
+[provider-trace] method=get_stock_data symbol='600519.SH' arg2='20260429' arg3='20260529' vendor=cn_akshare status=hit
+[provider-trace] method=get_indicators symbol='600519.SH' arg2='rsi' arg3='20260529' category=technical_indicators configured='cn_akshare,cn_baostock,yfinance' chain=['cn_akshare', 'cn_baostock', 'yfinance', 'alpha_vantage', 'cn_astock']
+[provider-trace] method=get_indicators symbol='600519.SH' arg2='rsi' arg3='20260529' vendor=cn_akshare status=fallback reason=ValueError: time data '20260529' does not match format '%Y-%m-%d'
+[provider-trace] method=get_indicators symbol='600519.SH' arg2='rsi' arg3='20260529' vendor=cn_baostock status=fallback reason=ValueError: time data '20260529' does not match format '%Y-%m-%d'
+[provider-trace] method=get_indicators symbol='600519.SH' arg2='rsi' arg3='20260529' vendor=yfinance status=fallback reason=ValueError: time data '20260529' does not match format '%Y-%m-%d'
+[provider-trace] method=get_indicators symbol='600519.SH' arg2='rsi' arg3='20260529' vendor=alpha_vantage status=fallback reason=ValueError: time data '20260529' does not match format '%Y-%m-%d'
+[provider-trace] method=get_indicators symbol='600519.SH' arg2='rsi' arg3='20260529' vendor=cn_astock status=fallback reason=ValueError: time data '20260529' does not match format '%Y-%m-%d'
+[provider-trace] method=get_indicators symbol='600519.SH' arg2='rsi' arg3='20260529' status=failed reason=no-available-vendor
+[provider-trace] method=get_fundamentals symbol='600519.SH' curr_date='20260529' category=fundamental_data configured='cn_akshare,cn_baostock,yfinance' chain=['cn_akshare', 'cn_baostock', 'yfinance', 'alpha_vantage', 'cn_astock']
+[provider-trace] method=get_fundamentals symbol='600519.SH' curr_date='20260529' vendor=cn_akshare status=hit
+[provider-trace] method=get_balance_sheet symbol='600519.SH' curr_date='20260529' category=fundamental_data configured='cn_akshare,cn_baostock,yfinance' chain=['cn_akshare', 'cn_baostock', 'yfinance', 'alpha_vantage', 'cn_astock']
+[provider-trace] method=get_balance_sheet symbol='600519.SH' curr_date='20260529' vendor=cn_akshare status=hit
+[provider-trace] method=get_cashflow symbol='600519.SH' curr_date='20260529' category=fundamental_data configured='cn_akshare,cn_baostock,yfinance' chain=['cn_akshare', 'cn_baostock', 'yfinance', 'alpha_vantage', 'cn_astock']
+[provider-trace] method=get_cashflow symbol='600519.SH' curr_date='20260529' vendor=cn_akshare status=hit
+[provider-trace] method=get_income_statement symbol='600519.SH' curr_date='20260529' category=fundamental_data configured='cn_akshare,cn_baostock,yfinance' chain=['cn_akshare', 'cn_baostock', 'yfinance', 'alpha_vantage', 'cn_astock']
+[provider-trace] method=get_income_statement symbol='600519.SH' curr_date='20260529' vendor=cn_akshare status=hit
+[provider-trace] method=get_news symbol='600519.SH' arg2='20260429' arg3='20260529' category=news_data configured='cn_akshare,cn_baostock,yfinance' chain=['cn_akshare', 'cn_baostock', 'yfinance', 'alpha_vantage', 'cn_astock']
+[provider-trace] method=get_news symbol='600519.SH' arg2='20260429' arg3='20260529' vendor=cn_akshare status=fallback reason=NotImplementedError: cn_akshare is temporarily unavailable for news: time data '20260429' does not match format '%Y-%m-%d'
+[provider-trace] method=get_news symbol='600519.SH' arg2='20260429' arg3='20260529' vendor=cn_baostock status=fallback reason=NotImplementedError: cn_baostock does not provide news yet.
+[provider-trace] method=get_news symbol='600519.SH' arg2='20260429' arg3='20260529' vendor=yfinance status=hit
+[provider-trace] method=get_realtime_quotes symbol=['_SYMBOL_'] category=realtime_data configured='cn_akshare' chain=['cn_akshare', 'cn_baostock', 'yfinance', 'alpha_vantage', 'cn_astock']
+[provider-trace] method=get_realtime_quotes symbol=['_SYMBOL_'] vendor=cn_akshare status=hit
+[M-008] WARNING: 1 endpoint(s) FAILED
+# Data Source Health Report
+
+- **Date**: 2026-05-29
+- **Run at**: 2026-05-29 14:26:39
+
+## Summary
+
+docs/task_runs/M-008-20260529-142207/task.md
+# Auto Dev Task Run
+
+- Task: M-008 — 数据源健康检查与 fallback 可观测性（P1）
+- Priority: P1
+- Status: CLAIMED
+- Started at: 2026-05-29_14:22:08
+- Git HEAD: 93fc807
+- Test commands: pytest tests/test_*provider*.py -q
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+
+exec
+/bin/zsh -lc 'git diff -- docs/TASKS.md docs/DEVLOG.md' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index f3b15f4..83eb5eb 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,38 @@
+ 
+ ---
+ 
++## 2026-05-29 | M-008 数据源健康检查与 fallback 可观测性
++
++- **执行者**：OpenCode (glm-5.1)
++- **任务**：建立数据源健康检查，持续观察 AKShare、cn_astock、BaoStock、yfinance 等源的成功率、延迟和失败原因，记录 fallback 是否发生以及最终 vendor
++- **修改文件**：
++  - `tradingagents/dataflows/health_check.py`（新增，~280行）— [M-008] data_source_health
++    - `EndpointCheck` — 每个端点的检查结果：status(OK/FAILED/STALE/NOT_QUERIED)、vendor、fallback_from、latency_ms、error、chain、record_count
++    - `HealthReport` — 完整健康报告：run_at、date、checks、summary(OK/FAILED/STALE/fallback_count)
++    - `_default_endpoints()` — 默认检查 8 个端点：get_stock_data、get_indicators、get_fundamentals、get_balance_sheet、get_cashflow、get_income_statement、get_news、get_realtime_quotes
++    - `_probe_endpoint()` — 单端点探测：调用 route_to_vendor，记录延迟、记录数、fallback
++    - `run_health_check()` — 主入口：对默认 2-3 只样例股（600519.SH、000001.SZ）运行所有端点探测
++    - `render_report()` — 生成 Markdown 报告：Summary 表 + Endpoint Details 表 + Fallback Events + Failed Endpoints + Stale Responses
++    - `save_report()` — 写入 `docs/data_source_health/YYYY-MM-DD.md`
++    - 自动检测 fallback：当 chain 首位 vendor 与实际 hit vendor 不同时记录 fallback_from
++  - `scripts/run_health_check.py`（新增，~60行）— CLI 入口
++    - `--dry-run` 只打印不写文件
++    - `--output` 自定义输出路径
++    - `--symbols` 自定义样例股
++    - 非 dry-run 默认写入 `docs/data_source_health/YYYY-MM-DD.md`
++  - `tests/test_m008_health_check.py`（新增，~380行）— 44 个测试
++- **关键逻辑**：
++  1. 健康检查为纯观测层，不修改任何业务数据或配置
++  2. 每个端点记录完整的 vendor chain 和实际 hit vendor，fallback 时自动对比并标记
++  3. STALE 状态检测空响应/极短响应/None 返回
++  4. symbol 替换支持嵌套 list/tuple 参数（如 get_realtime_quotes 的 symbols 列表）
++  5. 所有测试 mock route_to_vendor，不依赖网络
++  6. live smoke 可通过 `python scripts/run_health_check.py --dry-run` 手动执行
++- **标记**：`# [M-008] data_source_health`
++- **测试结果**：
++  - M-008 专项测试：44 passed
++  - 关联 provider/tradeflow 测试：47 passed, 2 skipped
++
+ ## 2026-05-29 | S-004 候选股博弈平衡解释
+ 
+ - **执行者**：OpenCode (glm-5.1)
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 0a353d9..42f1b4d 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -281,7 +281,7 @@
+ ### M-008: 数据源健康检查与 fallback 可观测性（P1）
+ - **描述**：建立数据源健康检查，持续观察 AKShare、cn_astock、BaoStock、yfinance、公告/资金/LHB 等源的成功率、延迟和失败原因。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：in_progress — claimed M-008-20260529-142207
+ - **执行约束**：
+   - 只跑小样本 smoke，不扫全市场。
+   - 不保存 cookie/API key。
+
+exec
+/bin/zsh -lc "sed -n '220,520p' tradingagents/dataflows/health_check.py; sed -n '220,520p' tests/test_m008_health_check.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        run_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+        date=now.strftime("%Y-%m-%d"),
+    )
+
+    if symbols is None:
+        symbols = DEFAULT_SAMPLE_SYMBOLS
+    if endpoints is None:
+        endpoints = _default_endpoints()
+    if probe_fn is None:
+        probe_fn = _probe_endpoint
+
+    symbol = symbols[0]
+
+    for ep in endpoints:
+        check = probe_fn(
+            method=ep["method"],
+            args=ep.get("args", ()),
+            kwargs=ep.get("kwargs", {}),
+            symbol=symbol,
+        )
+        report.checks.append(check)
+
+    # Detect fallback: when the first vendor in chain differs from actual vendor
+    for check in report.checks:
+        if check.status == STATUS_OK and check.chain:
+            configured_first = check.chain[0]
+            if check.vendor and check.vendor != configured_first:
+                check.fallback_from = configured_first
+
+    summary: Dict[str, int] = {
+        STATUS_OK: 0,
+        STATUS_FAILED: 0,
+        STATUS_STALE: 0,
+        STATUS_NOT_QUERIED: 0,
+        "fallback_count": 0,
+        "total": len(report.checks),
+    }
+    for check in report.checks:
+        if check.status in summary:
+            summary[check.status] += 1
+        if check.fallback_from:
+            summary["fallback_count"] += 1
+    report.summary = summary
+
+    return report
+
+
+# ── Markdown rendering ─────────────────────────────────────────────────
+
+def render_report(report: HealthReport) -> str:
+    lines: List[str] = []
+    lines.append(f"# Data Source Health Report")
+    lines.append("")
+    lines.append(f"- **Date**: {report.date}")
+    lines.append(f"- **Run at**: {report.run_at}")
+    lines.append("")
+
+    s = report.summary
+    lines.append("## Summary")
+    lines.append("")
+    lines.append(f"| Metric | Count |")
+    lines.append(f"|--------|-------|")
+    lines.append(f"| Total endpoints checked | {s.get('total', 0)} |")
+    lines.append(f"| OK | {s.get(STATUS_OK, 0)} |")
+    lines.append(f"| FAILED | {s.get(STATUS_FAILED, 0)} |")
+    lines.append(f"| STALE | {s.get(STATUS_STALE, 0)} |")
+    lines.append(f"| NOT_QUERIED | {s.get(STATUS_NOT_QUERIED, 0)} |")
+    lines.append(f"| Fallback triggered | {s.get('fallback_count', 0)} |")
+    lines.append("")
+
+    lines.append("## Endpoint Details")
+    lines.append("")
+    lines.append("| Method | Category | Symbol | Status | Vendor | Fallback From | Latency (ms) | Records | Error |")
+    lines.append("|--------|----------|--------|--------|--------|---------------|-------------|---------|-------|")
+
+    for c in report.checks:
+        error_short = c.error[:60] + "..." if len(c.error) > 60 else c.error
+        lines.append(
+            f"| {c.method} | {c.category} | {c.sample_symbol} | {c.status} | {c.vendor} "
+            f"| {c.fallback_from or '-'} | {c.latency_ms:.0f} | {c.record_count} | {error_short or '-'} |"
+        )
+    lines.append("")
+
+    fallback_checks = [c for c in report.checks if c.fallback_from]
+    if fallback_checks:
+        lines.append("## Fallback Events")
+        lines.append("")
+        for c in fallback_checks:
+            lines.append(f"- **{c.method}**: {c.fallback_from} → {c.vendor}")
+        lines.append("")
+
+    failed_checks = [c for c in report.checks if c.status == STATUS_FAILED]
+    if failed_checks:
+        lines.append("## Failed Endpoints")
+        lines.append("")
+        for c in failed_checks:
+            lines.append(f"- **{c.method}** ({c.category}): {c.error}")
+        lines.append("")
+
+    stale_checks = [c for c in report.checks if c.status == STATUS_STALE]
+    if stale_checks:
+        lines.append("## Stale Responses")
+        lines.append("")
+        for c in stale_checks:
+            lines.append(f"- **{c.method}** ({c.category}): {c.stale_reason}")
+        lines.append("")
+
+    lines.append("---")
+    lines.append(f"*Generated by health_check.py — [M-008] data_source_health*")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+# ── File output ────────────────────────────────────────────────────────
+
+def save_report(
+    report: HealthReport,
+    output_dir: str = "docs/data_source_health",
+) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, f"{report.date}.md")
+    md = render_report(report)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(md)
+    return path
+        assert check.status == STATUS_STALE
+
+
+# ── run_health_check ───────────────────────────────────────────────────
+
+class TestRunHealthCheck:
+    def test_all_ok(self):
+        report = run_health_check(
+            symbols=["600519.SH"],
+            probe_fn=_mock_probe(status=STATUS_OK, vendor="cn_akshare"),
+        )
+        assert report.summary[STATUS_OK] == report.summary["total"]
+        assert report.summary[STATUS_FAILED] == 0
+        assert report.summary["STALE"] == 0
+        assert report.summary["fallback_count"] == 0
+
+    def test_all_failed(self):
+        report = run_health_check(
+            symbols=["600519.SH"],
+            probe_fn=_mock_probe(status=STATUS_FAILED, error="TimeoutError: timed out"),
+        )
+        assert report.summary[STATUS_FAILED] == report.summary["total"]
+        assert report.summary[STATUS_OK] == 0
+
+    def test_mixed_statuses(self):
+        statuses = [STATUS_OK, STATUS_FAILED, STATUS_OK, STATUS_STALE, STATUS_OK, STATUS_OK, STATUS_OK, STATUS_OK]
+        idx = [0]
+
+        def probe_fn(method, args, kwargs, symbol):
+            s = statuses[idx[0] % len(statuses)]
+            idx[0] += 1
+            return _make_check(status=s, method=method, error="err" if s == STATUS_FAILED else "")
+
+        report = run_health_check(symbols=["600519.SH"], probe_fn=probe_fn)
+        assert report.summary[STATUS_OK] == 6
+        assert report.summary[STATUS_FAILED] == 1
+        assert report.summary[STATUS_STALE] == 1
+
+    def test_fallback_detected(self):
+        def probe_fn(method, args, kwargs, symbol):
+            return _make_check(
+                method=method,
+                status=STATUS_OK,
+                vendor="cn_baostock",
+                chain=["cn_akshare", "cn_baostock", "yfinance"],
+            )
+
+        report = run_health_check(symbols=["600519.SH"], probe_fn=probe_fn)
+        assert report.summary["fallback_count"] == report.summary["total"]
+        for c in report.checks:
+            assert c.fallback_from == "cn_akshare"
+            assert c.vendor == "cn_baostock"
+
+    def test_no_fallback_when_first_vendor_succeeds(self):
+        def probe_fn(method, args, kwargs, symbol):
+            return _make_check(
+                method=method,
+                status=STATUS_OK,
+                vendor="cn_akshare",
+                chain=["cn_akshare", "cn_baostock"],
+            )
+
+        report = run_health_check(symbols=["600519.SH"], probe_fn=probe_fn)
+        assert report.summary["fallback_count"] == 0
+        for c in report.checks:
+            assert c.fallback_from == ""
+
+    def test_uses_first_sample_symbol(self):
+        symbols_used = []
+
+        def probe_fn(method, args, kwargs, symbol):
+            symbols_used.append(symbol)
+            return _make_check(method=method, symbol=symbol)
+
+        run_health_check(symbols=["000001.SZ", "600519.SH"], probe_fn=probe_fn)
+        assert all(s == "000001.SZ" for s in symbols_used)
+
+    def test_default_symbols(self):
+        assert DEFAULT_SAMPLE_SYMBOLS == ["600519.SH", "000001.SZ"]
+
+    def test_report_has_date(self):
+        report = run_health_check(probe_fn=_mock_probe())
+        assert report.date == datetime.now().strftime("%Y-%m-%d")
+
+    def test_report_has_run_at(self):
+        report = run_health_check(probe_fn=_mock_probe())
+        assert datetime.now().strftime("%Y-%m-%d") in report.run_at
+
+
+# ── render_report ──────────────────────────────────────────────────────
+
+class TestRenderReport:
+    def test_contains_summary_table(self):
+        report = run_health_check(probe_fn=_mock_probe())
+        md = render_report(report)
+        assert "## Summary" in md
+        assert "| OK |" in md
+
+    def test_contains_endpoint_details_table(self):
+        report = run_health_check(probe_fn=_mock_probe())
+        md = render_report(report)
+        assert "## Endpoint Details" in md
+        assert "get_stock_data" in md
+
+    def test_shows_fallback_section_when_present(self):
+        def probe_fn(method, args, kwargs, symbol):
+            return _make_check(
+                method=method,
+                vendor="cn_baostock",
+                chain=["cn_akshare", "cn_baostock"],
+            )
+
+        report = run_health_check(probe_fn=probe_fn)
+        md = render_report(report)
+        assert "## Fallback Events" in md
+        assert "cn_akshare → cn_baostock" in md
+
+    def test_no_fallback_section_when_absent(self):
+        report = run_health_check(probe_fn=_mock_probe(vendor="cn_akshare"))
+        md = render_report(report)
+        assert "## Fallback Events" not in md
+
+    def test_shows_failed_section(self):
+        report = run_health_check(
+            probe_fn=_mock_probe(status=STATUS_FAILED, error="TimeoutError: timed out after 30s"),
+        )
+        md = render_report(report)
+        assert "## Failed Endpoints" in md
+        assert "TimeoutError" in md
+
+    def test_no_failed_section_when_all_ok(self):
+        report = run_health_check(probe_fn=_mock_probe(status=STATUS_OK))
+        md = render_report(report)
+        assert "## Failed Endpoints" not in md
+
+    def test_shows_stale_section(self):
+        report = run_health_check(
+            probe_fn=_mock_probe(status=STATUS_STALE, is_stale=True, stale_reason="empty_response"),
+        )
+        md = render_report(report)
+        assert "## Stale Responses" in md
+
+    def test_no_stale_section_when_all_ok(self):
+        report = run_health_check(probe_fn=_mock_probe(status=STATUS_OK))
+        md = render_report(report)
+        assert "## Stale Responses" not in md
+
+    def test_error_truncated_in_table(self):
+        long_error = "X" * 100
+        c = _make_check(status=STATUS_FAILED, error=long_error)
+        report = HealthReport(
+            run_at="2026-05-29 14:00:00",
+            date="2026-05-29",
+            checks=[c],
+            summary={"OK": 0, "FAILED": 1, "STALE": 0, "NOT_QUERIED": 0, "fallback_count": 0, "total": 1},
+        )
+        md = render_report(report)
+        assert "..." in md
+
+    def test_m008_marker_in_footer(self):
+        report = run_health_check(probe_fn=_mock_probe())
+        md = render_report(report)
+        assert "[M-008] data_source_health" in md
+
+
+# ── save_report ────────────────────────────────────────────────────────
+
+class TestSaveReport:
+    def test_creates_directory_and_file(self):
+        report = run_health_check(probe_fn=_mock_probe())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_dir = os.path.join(tmpdir, "health_output")
+            path = save_report(report, output_dir=out_dir)
+            assert os.path.isfile(path)
+            assert report.date in path
+
+    def test_file_content_is_markdown(self):
+        report = run_health_check(probe_fn=_mock_probe())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = save_report(report, output_dir=tmpdir)
+            with open(path, encoding="utf-8") as f:
+                content = f.read()
+            assert content.startswith("# Data Source Health Report")
+
+    def test_overwrites_existing_file(self):
+        report1 = run_health_check(probe_fn=_mock_probe(status=STATUS_OK))
+        report2 = run_health_check(probe_fn=_mock_probe(status=STATUS_FAILED, error="test"))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path1 = save_report(report1, output_dir=tmpdir)
+            path2 = save_report(report2, output_dir=tmpdir)
+            assert path1 == path2
+            with open(path2, encoding="utf-8") as f:
+                content = f.read()
+            assert "FAILED" in content
+
+
+# ── Fallback observability integration ─────────────────────────────────
+
+class TestFallbackObservability:
+    def test_primary_fails_fallback_succeeds(self):
+        """Mock: cn_akshare fails, cn_baostock succeeds → report shows fallback."""
+
+        def probe_fn(method, args, kwargs, symbol):
+            return _make_check(
+                method=method,
+                status=STATUS_OK,
+                vendor="cn_baostock",
+                chain=["cn_akshare", "cn_baostock", "yfinance"],
+            )
+
+        report = run_health_check(symbols=["600519.SH"], probe_fn=probe_fn)
+        assert report.summary["fallback_count"] == report.summary["total"]
+        for c in report.checks:
+            assert c.fallback_from == "cn_akshare"
+            assert c.vendor == "cn_baostock"
+
+    def test_primary_fails_all_fail(self):
+        """Mock: all vendors fail → status FAILED, no fallback."""
+
+        def probe_fn(method, args, kwargs, symbol):
+            return _make_check(
+                method=method,
+                status=STATUS_FAILED,
+                vendor="",
+                error="RuntimeError: No available vendor",
+                chain=["cn_akshare", "cn_baostock", "yfinance"],
+            )
+
+        report = run_health_check(symbols=["600519.SH"], probe_fn=probe_fn)
+        assert report.summary[STATUS_FAILED] == report.summary["total"]
+        assert report.summary["fallback_count"] == 0
+
+    def test_yfinance_as_last_resort_fallback(self):
+        """Mock: cn_akshare + cn_baostock fail, yfinance succeeds."""
+
+        def probe_fn(method, args, kwargs, symbol):
+            return _make_check(
+                method=method,
+                status=STATUS_OK,
+                vendor="yfinance",
+                chain=["cn_akshare", "cn_baostock", "yfinance"],
+            )
+
+        report = run_health_check(symbols=["600519.SH"], probe_fn=probe_fn)
+        assert report.summary["fallback_count"] == report.summary["total"]
+        for c in report.checks:
+            assert c.fallback_from == "cn_akshare"
+            assert c.vendor == "yfinance"
+
+    def test_partial_fallback_only_some_endpoints(self):
+        """Some endpoints use fallback, others use primary directly."""
+        call_count = [0]
+
+        def probe_fn(method, args, kwargs, symbol):
+            call_count[0] += 1
+            if method in ("get_stock_data", "get_indicators"):
+                return _make_check(
+                    method=method,
+                    vendor="cn_baostock",
+                    chain=["cn_akshare", "cn_baostock"],
+                )
+            return _make_check(
+                method=method,
+                vendor="cn_akshare",
+                chain=["cn_akshare", "cn_baostock"],
+            )
+
+        report = run_health_check(symbols=["600519.SH"], probe_fn=probe_fn)
+        assert report.summary["fallback_count"] == 2
+        fallback_methods = [c.method for c in report.checks if c.fallback_from]
+        assert "get_stock_data" in fallback_methods
+        assert "get_indicators" in fallback_methods
+
+    def test_fallback_from_recorded_in_report_markdown(self):
+        def probe_fn(method, args, kwargs, symbol):
+            return _make_check(
+                method=method,
+                vendor="cn_astock",
+                chain=["cn_akshare", "cn_astock"],
+            )
+
+        report = run_health_check(probe_fn=probe_fn)
+        md = render_report(report)
+        assert "cn_akshare → cn_astock" in md
+
+
+# ── Status constants ───────────────────────────────────────────────────
+
+class TestStatusConstants:
+    def test_values(self):
+        assert STATUS_OK == "OK"
+        assert STATUS_FAILED == "FAILED"
+        assert STATUS_STALE == "STALE"
+        assert STATUS_NOT_QUERIED == "NOT_QUERIED"
+
+    def test_endpoint_check_all_statuses(self):
+        for status in (STATUS_OK, STATUS_FAILED, STATUS_STALE, STATUS_NOT_QUERIED):
+            c = _make_check(status=status)
+            assert c.status == status
+
+exec
+/bin/zsh -lc "grep -R \"def get_indicators\\|def get_stock_data\\|def get_news\\|def get_realtime_quotes\\|def route_to_vendor\\|def get_last_hit_vendor\" -n tradingagents/dataflows/interface.py tradingagents/dataflows/providers/*.py | head -80; sed -n '1,260p' tradingagents/dataflows/interface.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/dataflows/interface.py:58:def get_last_hit_vendor(method: str) -> str:
+tradingagents/dataflows/interface.py:133:def route_to_vendor(method: str, *args, **kwargs):
+tradingagents/dataflows/providers/alpha_vantage_provider.py:20:    def get_stock_data(self, symbol: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/alpha_vantage_provider.py:23:    def get_indicators(
+tradingagents/dataflows/providers/alpha_vantage_provider.py:46:    def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/base.py:14:    def get_stock_data(self, symbol: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/base.py:18:    def get_indicators(
+tradingagents/dataflows/providers/base.py:46:    def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/base.py:59:    def get_realtime_quotes(self, symbols: list[str]) -> str:
+tradingagents/dataflows/providers/china_equity_provider.py:19:    def get_stock_data(self, symbol: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/china_equity_provider.py:22:    def get_indicators(
+tradingagents/dataflows/providers/china_equity_provider.py:45:    def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/cn_akshare_provider.py:542:    def get_stock_data(self, symbol: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/cn_akshare_provider.py:563:    def get_indicators(
+tradingagents/dataflows/providers/cn_akshare_provider.py:780:    def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/cn_akshare_provider.py:902:    def get_realtime_quotes(self, symbols: list[str]) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:271:    def get_stock_data(self, symbol: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:290:    def get_indicators(
+tradingagents/dataflows/providers/cn_astock_provider.py:559:    def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:747:    def get_realtime_quotes(self, symbols: list[str]) -> str:
+tradingagents/dataflows/providers/cn_baostock_provider.py:109:    def get_stock_data(self, symbol: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/cn_baostock_provider.py:122:    def get_indicators(
+tradingagents/dataflows/providers/cn_baostock_provider.py:197:    def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/yfinance_provider.py:26:    def get_stock_data(self, symbol: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/yfinance_provider.py:29:    def get_indicators(
+tradingagents/dataflows/providers/yfinance_provider.py:54:    def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
+import os
+
+from .alpha_vantage_common import AlphaVantageRateLimitError
+from .config import get_config
+from .providers import build_default_registry
+
+# Tools organized by category
+TOOLS_CATEGORIES = {
+    "core_stock_apis": {
+        "description": "OHLCV stock price data",
+        "tools": ["get_stock_data"],
+    },
+    "technical_indicators": {
+        "description": "Technical analysis indicators",
+        "tools": ["get_indicators"],
+    },
+    "fundamental_data": {
+        "description": "Company fundamentals",
+        "tools": [
+            "get_fundamentals",
+            "get_balance_sheet",
+            "get_cashflow",
+            "get_income_statement",
+        ],
+    },
+    "news_data": {
+        "description": "News and insider data",
+        "tools": [
+            "get_news",
+            "get_global_news",
+            "get_insider_transactions",
+        ],
+    },
+    "realtime_data": {
+        "description": "Real-time market quotes",
+        "tools": ["get_realtime_quotes"],
+    },
+    "cn_market_data": {
+        "description": "China A-share market sentiment and fund flow data",
+        "tools": [
+            "get_board_fund_flow",
+            "get_individual_fund_flow",
+            "get_lhb_detail",
+            "get_zt_pool",
+            "get_hot_stocks_xq",
+        ],
+    },
+}
+
+_registry = build_default_registry()
+
+VENDOR_LIST = _registry.list_names()
+
+# [N-003] cn_astock_raw_evidence: track which vendor last handled each method
+_last_hit_vendor: dict[str, str] = {}
+
+
+def get_last_hit_vendor(method: str) -> str:
+    """Return the vendor name that most recently produced a successful hit for *method*."""
+    return _last_hit_vendor.get(method, "")
+
+
+def _is_trace_enabled() -> bool:
+    env_value = os.getenv("TA_TRACE")
+    if env_value is not None:
+        return env_value.strip().lower() in ("1", "true", "yes", "on")
+
+    config = get_config()
+    return bool(config.get("provider_trace", True))
+
+
+def _trace(msg: str) -> None:
+    if _is_trace_enabled():
+        print(f"[provider-trace] {msg}", flush=True)
+
+
+_TRACE_KEYS = ("symbol", "ticker", "start_date", "end_date", "curr_date", "indicator")
+
+
+def _summarize_args(args: tuple, kwargs: dict) -> str:
+    """格式化首参数（通常是 symbol）和常见日期/指标键，用于 trace 日志定位。"""
+    parts = []
+    if args:
+        # 约定：所有 provider 方法首参数为 symbol/ticker
+        parts.append(f"symbol={args[0]!r}")
+        if len(args) >= 2:
+            parts.append(f"arg2={args[1]!r}")
+        if len(args) >= 3:
+            parts.append(f"arg3={args[2]!r}")
+    for k, v in kwargs.items():
+        if k in _TRACE_KEYS:
+            parts.append(f"{k}={v!r}")
+    return " ".join(parts)
+
+
+def get_category_for_method(method: str) -> str:
+    """Get the category that contains the specified method."""
+    for category, info in TOOLS_CATEGORIES.items():
+        if method in info["tools"]:
+            return category
+    raise ValueError(f"Method '{method}' not found in any category")
+
+
+def get_vendor(category: str, method: str = None) -> str:
+    """Get configured vendor for category or tool method."""
+    config = get_config()
+
+    if method:
+        tool_vendors = config.get("tool_vendors", {})
+        if method in tool_vendors:
+            return tool_vendors[method]
+
+    return config.get("data_vendors", {}).get(category, "yfinance")
+
+
+def _resolve_vendor_chain(method: str, configured_vendor: str) -> list[str]:
+    configured = [v.strip() for v in configured_vendor.split(",") if v.strip()]
+    fallback = configured.copy()
+
+    for provider_name in _registry.list_names():
+        if provider_name in fallback:
+            continue
+        provider = _registry.get(provider_name)
+        # 占位 provider（如 cn_stub）不自动追加进 fallback chain，
+        # 避免污染日志和兜底链；用户显式配置仍可强制使用。
+        if getattr(provider, "is_placeholder", False):
+            continue
+        fallback.append(provider_name)
+
+    return fallback
+
+
+def route_to_vendor(method: str, *args, **kwargs):
+    """Route method calls to provider implementations with fallback support."""
+    category = get_category_for_method(method)
+    vendor_config = get_vendor(category, method)
+    fallback_vendors = _resolve_vendor_chain(method, vendor_config)
+    args_summary = _summarize_args(args, kwargs)
+    last_exc = None
+    _trace(
+        f"method={method} {args_summary} category={category} "
+        f"configured='{vendor_config}' chain={fallback_vendors}"
+    )
+
+    for vendor in fallback_vendors:
+        provider = _registry.get(vendor)
+        if provider is None:
+            _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-registered")
+            continue
+
+        impl_func = getattr(provider, method, None)
+        if impl_func is None:
+            _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-implemented")
+            continue
+
+        try:
+            result = impl_func(*args, **kwargs)
+            _last_hit_vendor[method] = vendor  # [N-003] cn_astock_raw_evidence
+            _trace(f"method={method} {args_summary} vendor={vendor} status=hit")
+            return result
+        except (AlphaVantageRateLimitError, NotImplementedError) as exc:
+            last_exc = exc
+            # Try next provider for transient/routing issues or placeholder providers.
+            _trace(
+                f"method={method} {args_summary} vendor={vendor} status=fallback "
+                f"reason={type(exc).__name__}: {exc}"
+            )
+            continue
+        except Exception as exc:
+            # Provider-specific runtime/parsing errors (e.g., schema changes, KeyError)
+            # should not terminate the full chain; fall through to next vendor.
+            last_exc = exc
+            _trace(
+                f"method={method} {args_summary} vendor={vendor} status=fallback "
+                f"reason={type(exc).__name__}: {exc}"
+            )
+            continue
+
+    _trace(f"method={method} {args_summary} status=failed reason=no-available-vendor")
+    if last_exc is not None:
+        raise RuntimeError(
+            f"No available vendor for method '{method}'. "
+            f"Configured chain: {fallback_vendors}. "
+            f"Last error: {type(last_exc).__name__}: {last_exc}"
+        ) from last_exc
+    raise RuntimeError(
+        f"No available vendor for method '{method}'. "
+        f"Configured chain: {fallback_vendors}"
+    )
+
+exec
+/bin/zsh -lc "sed -n '540,610p' tradingagents/dataflows/providers/cn_akshare_provider.py; sed -n '285,320p' tradingagents/dataflows/providers/cn_astock_provider.py; sed -n '1,45p' tradingagents/dataflows/providers/yfinance_provider.py; grep -R \"get_indicators\" -n tradingagents tests | head -60" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            return hist_df
+
+    def get_stock_data(self, symbol: str, start_date: str, end_date: str) -> str:
+        df = self._fetch_hist_df(symbol, start_date, end_date)
+        return self._format_ak_hist(df, symbol, start_date, end_date)
+
+    # [G-005] realtime_ohlcv_patch
+    def get_realtime_patch_info(self, symbol: str, start_date: str, end_date: str) -> dict:
+        """Return realtime patch metadata without re-fetching data.
+
+        Callers can use this to get is_realtime_patched status after get_stock_data.
+        """
+        df = self._fetch_hist_df(symbol, start_date, end_date)
+        attrs = getattr(df, "attrs", {}) or {}
+        if attrs.get("_realtime_patched"):
+            info = attrs.get("_realtime_patch_info", {})
+            info["is_realtime_patched"] = True
+            return info
+        return {
+            "is_realtime_patched": False,
+            "status": attrs.get("_realtime_patch_status", "NO_PATCH"),
+        }
+
+    def get_indicators(
+        self, symbol: str, indicator: str, curr_date: str, look_back_days: int
+    ) -> str:
+        if indicator not in self.INDICATOR_DESCRIPTIONS:
+            raise ValueError(
+                f"Indicator {indicator} is not supported. "
+                f"Please choose from: {list(self.INDICATOR_DESCRIPTIONS.keys())}"
+            )
+
+        curr_dt = datetime.strptime(curr_date, "%Y-%m-%d")
+        start_dt = curr_dt - timedelta(days=max(look_back_days, 260))
+        df = self._fetch_hist_df(symbol, start_dt.strftime("%Y-%m-%d"), curr_date)
+        if df is None or df.empty:
+            return f"No data found for {symbol} for indicator {indicator}"
+
+        ind_df = df.rename(
+            columns={
+                "Date": "date",
+                "Open": "open",
+                "High": "high",
+                "Low": "low",
+                "Close": "close",
+                "Volume": "volume",
+            }
+        )[["date", "open", "high", "low", "close", "volume"]].copy()
+        ind_df["date"] = pd.to_datetime(ind_df["date"], errors="coerce")
+        ind_df = ind_df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+
+        ss = wrap(ind_df)
+        indicator_series = ss[indicator]
+
+        values_by_date = {}
+        for idx, dt_val in enumerate(ind_df["date"]):
+            date_str = pd.to_datetime(dt_val).strftime("%Y-%m-%d")
+            val = indicator_series.iloc[idx]
+            values_by_date[date_str] = "N/A" if pd.isna(val) else str(val)
+
+        begin = curr_dt - timedelta(days=look_back_days)
+        lines = []
+        d = curr_dt
+        while d >= begin:
+            key = d.strftime("%Y-%m-%d")
+            if key in values_by_date:
+                value = values_by_date[key]
+                if value == "N/A":
+                    value = cn_no_data_reason(key)
+            else:
+                value = cn_no_data_reason(key)
+        header = f"# Stock data for {symbol} from {start_date} to {end_date}\n"
+        header += f"# Total records: {len(out)}\n"
+        header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        return header + out.to_csv(index=False)
+
+    def get_indicators(
+        self, symbol: str, indicator: str, curr_date: str, look_back_days: int
+    ) -> str:
+        """Return technical indicator values as formatted text."""
+        if indicator not in self.INDICATOR_DESCRIPTIONS:
+            raise ValueError(
+                f"Indicator {indicator} is not supported. "
+                f"Please choose from: {list(self.INDICATOR_DESCRIPTIONS.keys())}"
+            )
+
+        curr_dt = datetime.strptime(curr_date, "%Y-%m-%d")
+        start_dt = curr_dt - timedelta(days=max(look_back_days, 260))
+        df = self._fetch_hist_df(symbol, start_dt.strftime("%Y-%m-%d"), curr_date)
+        if df.empty:
+            return f"No data found for {symbol} for indicator {indicator}"
+
+        ind_df = df.rename(
+            columns={
+                "Date": "date", "Open": "open", "High": "high",
+                "Low": "low", "Close": "close", "Volume": "volume",
+            }
+        )[["date", "open", "high", "low", "close", "volume"]].copy()
+
+        ss = wrap(ind_df)
+        indicator_series = ss[indicator]
+
+        values_by_date: dict[str, str] = {}
+        for idx, dt_val in enumerate(ind_df["date"]):
+            date_str = pd.to_datetime(dt_val).strftime("%Y-%m-%d")
+            val = indicator_series.iloc[idx]
+            values_by_date[date_str] = "N/A" if pd.isna(val) else str(val)
+from .base import BaseMarketDataProvider
+from ..y_finance import (
+    get_YFin_data_online,
+    get_stock_stats_indicators_window,
+    get_fundamentals as get_yfinance_fundamentals,
+    get_balance_sheet as get_yfinance_balance_sheet,
+    get_cashflow as get_yfinance_cashflow,
+    get_income_statement as get_yfinance_income_statement,
+    get_insider_transactions as get_yfinance_insider_transactions,
+)
+from ..yfinance_news import get_news_yfinance, get_global_news_yfinance
+
+
+class YFinanceProvider(BaseMarketDataProvider):
+    @property
+    def name(self) -> str:
+        return "yfinance"
+
+    def _normalize_symbol(self, symbol: str) -> str:
+        s = symbol.strip().upper()
+        # yfinance uses .SS for Shanghai and .SZ for Shenzhen.
+        if s.endswith(".SH"):
+            return s[:-3] + ".SS"
+        return s
+
+    def get_stock_data(self, symbol: str, start_date: str, end_date: str) -> str:
+        return get_YFin_data_online(self._normalize_symbol(symbol), start_date, end_date)
+
+    def get_indicators(
+        self, symbol: str, indicator: str, curr_date: str, look_back_days: int
+    ) -> str:
+        return get_stock_stats_indicators_window(
+            self._normalize_symbol(symbol), indicator, curr_date, look_back_days
+        )
+
+    def get_fundamentals(self, ticker: str, curr_date: str = None) -> str:
+        return get_yfinance_fundamentals(self._normalize_symbol(ticker), curr_date)
+
+    def get_balance_sheet(
+        self, ticker: str, freq: str = "quarterly", curr_date: str = None
+    ) -> str:
+        return get_yfinance_balance_sheet(self._normalize_symbol(ticker), freq, curr_date)
+
+    def get_cashflow(
+        self, ticker: str, freq: str = "quarterly", curr_date: str = None
+tradingagents/graph/data_collector.py:16:    get_indicators,
+tradingagents/graph/trading_graph.py:29:    get_indicators,
+tradingagents/graph/trading_graph.py:210:                    get_indicators,
+tradingagents/graph/trading_graph.py:248:                    get_indicators,
+Binary file tradingagents/graph/__pycache__/trading_graph.cpython-314.pyc matches
+Binary file tradingagents/graph/__pycache__/trading_graph.cpython-312.pyc matches
+Binary file tradingagents/graph/__pycache__/data_collector.cpython-312.pyc matches
+tradingagents/agents/utils/agent_utils.py:8:    get_indicators
+Binary file tradingagents/agents/utils/__pycache__/agent_utils.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/technical_indicators_tools.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/agent_utils.cpython-314.pyc matches
+tradingagents/agents/utils/technical_indicators_tools.py:6:def get_indicators(
+tradingagents/agents/utils/technical_indicators_tools.py:23:    return route_to_vendor("get_indicators", symbol, indicator, curr_date, look_back_days)
+tradingagents/agents/analysts/market_analyst.py:96:    from tradingagents.agents.utils.agent_utils import get_stock_data, get_indicators
+tradingagents/agents/analysts/market_analyst.py:115:        tasks[ind] = _safe(get_indicators, {
+Binary file tradingagents/agents/analysts/__pycache__/market_analyst.cpython-312.pyc matches
+Binary file tradingagents/agents/analysts/__pycache__/smart_money_analyst.cpython-312.pyc matches
+tradingagents/agents/analysts/smart_money_analyst.py:126:                get_individual_fund_flow, get_lhb_detail, get_indicators,
+tradingagents/agents/analysts/smart_money_analyst.py:144:            volume = await _safe(get_indicators, {
+tradingagents/dataflows/providers/cn_akshare_provider.py:563:    def get_indicators(
+tradingagents/dataflows/providers/cn_baostock_provider.py:122:    def get_indicators(
+tradingagents/dataflows/providers/yfinance_provider.py:29:    def get_indicators(
+tradingagents/dataflows/providers/cn_astock_provider.py:290:    def get_indicators(
+tradingagents/dataflows/providers/alpha_vantage_provider.py:23:    def get_indicators(
+Binary file tradingagents/dataflows/providers/__pycache__/base.cpython-314.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/base.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/cn_astock_provider.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/cn_akshare_provider.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/alpha_vantage_provider.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/cn_baostock_provider.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/yfinance_provider.cpython-314.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/yfinance_provider.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/china_equity_provider.cpython-312.pyc matches
+tradingagents/dataflows/providers/china_equity_provider.py:22:    def get_indicators(
+tradingagents/dataflows/providers/base.py:18:    def get_indicators(
+tradingagents/dataflows/interface.py:15:        "tools": ["get_indicators"],
+Binary file tradingagents/dataflows/__pycache__/interface.cpython-314.pyc matches
+Binary file tradingagents/dataflows/__pycache__/interface.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/health_check.cpython-312.pyc matches
+tradingagents/dataflows/health_check.py:99:            "method": "get_indicators",
+Binary file tradingagents/prompts/__pycache__/en.cpython-312.pyc matches
+Binary file tradingagents/prompts/__pycache__/en.cpython-314.pyc matches
+Binary file tradingagents/prompts/__pycache__/zh.cpython-312.pyc matches
+Binary file tradingagents/prompts/__pycache__/zh.cpython-314.pyc matches
+tradingagents/prompts/zh.py:8:1. 先调用 get_stock_data,再调用 get_indicators。
+tradingagents/prompts/en.py:8:- You must call get_stock_data first, then call get_indicators.
+Binary file tests/__pycache__/test_m008_health_check.cpython-312-pytest-9.0.2.pyc matches
+tests/test_m008_health_check.py:151:        assert "get_indicators" in methods
+tests/test_m008_health_check.py:475:            if method in ("get_stock_data", "get_indicators"):
+tests/test_m008_health_check.py:491:        assert "get_indicators" in fallback_methods
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/dataflows/health_check.py | sed -n '80,120p'; nl -ba tradingagents/dataflows/health_check.py | sed -n '150,190p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    80	            "run_at": self.run_at,
+    81	            "date": self.date,
+    82	            "checks": [c.to_dict() for c in self.checks],
+    83	            "summary": self.summary,
+    84	        }
+    85	
+    86	
+    87	# ── Endpoint definitions ───────────────────────────────────────────────
+    88	
+    89	def _default_endpoints() -> List[Dict[str, Any]]:
+    90	    today = datetime.now().strftime("%Y%m%d")
+    91	    start = (datetime.now() - timedelta(days=DEFAULT_HISTORY_DAYS)).strftime("%Y%m%d")
+    92	    return [
+    93	        {
+    94	            "method": "get_stock_data",
+    95	            "args": ("_SYMBOL_", start, today),
+    96	            "kwargs": {},
+    97	        },
+    98	        {
+    99	            "method": "get_indicators",
+   100	            "args": ("_SYMBOL_", "rsi", today, 14),
+   101	            "kwargs": {},
+   102	        },
+   103	        {
+   104	            "method": "get_fundamentals",
+   105	            "args": ("_SYMBOL_",),
+   106	            "kwargs": {"curr_date": today},
+   107	        },
+   108	        {
+   109	            "method": "get_balance_sheet",
+   110	            "args": ("_SYMBOL_",),
+   111	            "kwargs": {"freq": "quarterly", "curr_date": today},
+   112	        },
+   113	        {
+   114	            "method": "get_cashflow",
+   115	            "args": ("_SYMBOL_",),
+   116	            "kwargs": {"freq": "quarterly", "curr_date": today},
+   117	        },
+   118	        {
+   119	            "method": "get_income_statement",
+   120	            "args": ("_SYMBOL_",),
+   150	    chain: List[str] = []
+   151	    try:
+   152	        chain = _resolve_vendor_chain(method, get_vendor(category, method))
+   153	    except Exception:
+   154	        chain = []
+   155	
+   156	    check = EndpointCheck(
+   157	        method=method,
+   158	        category=category,
+   159	        sample_symbol=symbol,
+   160	        chain=chain,
+   161	    )
+   162	
+   163	    def _replace_symbol(v):
+   164	        if v == "_SYMBOL_":
+   165	            return symbol
+   166	        if isinstance(v, list):
+   167	            return [_replace_symbol(item) for item in v]
+   168	        if isinstance(v, tuple):
+   169	            return tuple(_replace_symbol(item) for item in v)
+   170	        return v
+   171	
+   172	    real_args = tuple(_replace_symbol(a) for a in args)
+   173	    real_kwargs = {k: _replace_symbol(v) for k, v in kwargs.items()}
+   174	
+   175	    t0 = time.monotonic()
+   176	    try:
+   177	        result = route_to_vendor(method, *real_args, **real_kwargs)
+   178	        elapsed = (time.monotonic() - t0) * 1000
+   179	
+   180	        check.latency_ms = elapsed
+   181	        check.vendor = chain[0] if chain else ""
+   182	
+   183	        if result is None or (isinstance(result, str) and len(result.strip()) < 10):
+   184	            check.status = STATUS_STALE
+   185	            check.is_stale = True
+   186	            check.stale_reason = "empty_or_minimal_response"
+   187	        elif isinstance(result, str):
+   188	            lines = [l for l in result.strip().split("\n") if l.strip() and not l.startswith("#")]
+   189	            check.record_count = max(0, len(lines) - 1)
+   190	            check.status = STATUS_OK
+
+exec
+/bin/zsh -lc "grep -R \"auto_dev.lock\\|\\.auto_dev.lock\" -n scripts docs tests | head -50; nl -ba .auto_dev.lock/owner" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+scripts/auto_dev_loop.sh:27:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:292:  4. 加锁文件例如 `.auto_dev.lock` 或 `docs/task_runs/.lock`，脚本异常退出时要有清理/提示机制。
+docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:497:  - `scripts/auto_dev_loop.sh` — 新增 `.auto_dev.lock` 目录锁、`update_task_status()` 状态流转函数；非 dry-run 领取后标记 `in_progress`，失败标记 `blocked — NEEDS_HUMAN`，通过后用独立文档提交写入准确 commit hash；修复 `OPENCODE_EXIT` 在中文括号旁触发的 `set -u` 变量展开问题
+docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:630:?? .auto_dev.lock/
+docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:2550:/bin/zsh -lc "sed -n '1,130p' tradingagents/tradeflow/universe.py; sed -n '1,130p' tests/test_tradeflow_schemas.py; git diff -- docs/TASKS.md docs/DEVLOG.md; find docs/task_runs/S-001-20260529-124731 -maxdepth 2 -type f -print -exec sed -n '1,120p' {} \\; ; find .auto_dev.lock -maxdepth 2 -type f -print -exec sed -n '1,80p' {} \\;" in /Users/maybee/TradingAgents-AShare
+docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3040:.auto_dev.lock/owner
+docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3375:/bin/zsh -lc "grep -R \"auto_dev.lock\\|LOCK\" -n scripts/auto_dev_loop.sh .gitignore | head -80; ls -la .auto_dev.lock" in /Users/maybee/TradingAgents-AShare
+docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3377:scripts/auto_dev_loop.sh:27:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3425:/bin/zsh -lc "nl -ba tradingagents/tradeflow/candidate_engine.py | sed -n '306,320p'; nl -ba .auto_dev.lock/owner" in /Users/maybee/TradingAgents-AShare
+docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3474:- [P2] Remove stale auto-dev lock file — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3475:  If this untracked lock directory is committed or left in place after the task completes, `scripts/auto_dev_loop.sh` exits as soon as it sees `.auto_dev.lock`, so the next automatic run cannot claim S-002 or any other ready task. The lock artifact should be removed from the patch/workspace once the run is finished.
+docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3483:- [P2] Remove stale auto-dev lock file — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+docs/task_runs/S-001-20260529-124731/codex-review-round1.txt:3484:  If this untracked lock directory is committed or left in place after the task completes, `scripts/auto_dev_loop.sh` exits as soon as it sees `.auto_dev.lock`, so the next automatic run cannot claim S-002 or any other ready task. The lock artifact should be removed from the patch/workspace once the run is finished.
+docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:292:  4. 加锁文件例如 `.auto_dev.lock` 或 `docs/task_runs/.lock`，脚本异常退出时要有清理/提示机制。
+docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:550:  - `scripts/auto_dev_loop.sh` — 新增 `.auto_dev.lock` 目录锁、`update_task_status()` 状态流转函数；非 dry-run 领取后标记 `in_progress`，失败标记 `blocked — NEEDS_HUMAN`，通过后用独立文档提交写入准确 commit hash；修复 `OPENCODE_EXIT` 在中文括号旁触发的 `set -u` 变量展开问题
+docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:629:?? .auto_dev.lock/
+docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:3760:/bin/zsh -lc "find .auto_dev.lock docs/task_runs/S-002-20260529-134910 -maxdepth 3 -type f -print -exec sed -n '1,120p' {} \\;" in /Users/maybee/TradingAgents-AShare
+docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:3762:.auto_dev.lock/owner
+docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:4355:/bin/zsh -lc "rg \"auto_dev.lock|LOCK\" -n scripts/auto_dev_loop.sh | head -40; sed -n '1,80p' scripts/auto_dev_loop.sh" in /Users/maybee/TradingAgents-AShare
+docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:4357:27:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:4395:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:4453:.auto_dev.lock/owner
+docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:4466:- [P2] Remove the stale auto-dev lock — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:4467:  When `.auto_dev.lock` is left in the worktree, the next non-dry-run `scripts/auto_dev_loop.sh` exits immediately because it treats the directory as an active task-claim lock. Since this lock file is untracked run state rather than source or task-run evidence, leaving it in the current changes will block the next automated development run until it is manually removed.
+docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:4472:- [P2] Remove the stale auto-dev lock — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+docs/task_runs/S-002-20260529-134910/codex-review-round1.txt:4473:  When `.auto_dev.lock` is left in the worktree, the next non-dry-run `scripts/auto_dev_loop.sh` exits immediately because it treats the directory as an active task-claim lock. Since this lock file is untracked run state rather than source or task-run evidence, leaving it in the current changes will block the next automated development run until it is manually removed.
+docs/task_runs/S-003-20260529-135829/codex-review-round1.txt:27:?? .auto_dev.lock/
+docs/task_runs/S-003-20260529-135829/codex-review-round1.txt:3203:/bin/zsh -lc "find .auto_dev.lock -maxdepth 2 -type f -print -exec sed -n '1,80p' {} \\; ; git diff --stat" in /Users/maybee/TradingAgents-AShare
+docs/task_runs/S-003-20260529-135829/codex-review-round1.txt:3205:.auto_dev.lock/owner
+docs/task_runs/S-003-20260529-135829/codex-review-round1.txt:3236:/bin/zsh -lc "nl -ba .auto_dev.lock/owner; nl -ba tradingagents/tradeflow/candidate_engine.py | sed -n '384,387p'" in /Users/maybee/TradingAgents-AShare
+docs/task_runs/S-003-20260529-135829/codex-review-round1.txt:3254:- [P3] Remove the generated auto-dev lock file — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+docs/task_runs/S-003-20260529-135829/codex-review-round1.txt:3255:  If this untracked runtime lock is committed, future automation that checks `.auto_dev.lock` can see the stale `pid=37014` entry for this repo and incorrectly treat a finished run as still active. This file should be removed from the change set or ignored rather than versioned.
+docs/task_runs/S-003-20260529-135829/codex-review-round1.txt:3263:- [P3] Remove the generated auto-dev lock file — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+docs/task_runs/S-003-20260529-135829/codex-review-round1.txt:3264:  If this untracked runtime lock is committed, future automation that checks `.auto_dev.lock` can see the stale `pid=37014` entry for this repo and incorrectly treat a finished run as still active. This file should be removed from the change set or ignored rather than versioned.
+docs/task_runs/S-004-20260529-140753/codex-review-round1.txt:509:?? .auto_dev.lock/
+docs/task_runs/S-004-20260529-140753/codex-review-round1.txt:4047:/bin/zsh -lc "find .auto_dev.lock docs/task_runs/S-004-20260529-140753 -maxdepth 2 -type f -print -exec sed -n '1,120p' {} \\;" in /Users/maybee/TradingAgents-AShare
+docs/task_runs/S-004-20260529-140753/codex-review-round1.txt:4049:.auto_dev.lock/owner
+docs/task_runs/M-002-20260529-112320/codex-review-round2.txt:25:?? .auto_dev.lock/
+docs/task_runs/M-002-20260529-112320/codex-review-round2.txt:189:  4. 加锁文件例如 `.auto_dev.lock` 或 `docs/task_runs/.lock`，脚本异常退出时要有清理/提示机制。
+docs/task_runs/M-002-20260529-112320/codex-review-round2.txt:463:  - `scripts/auto_dev_loop.sh` — 新增 `.auto_dev.lock` 目录锁、`update_task_status()` 状态流转函数；非 dry-run 领取后标记 `in_progress`，失败标记 `blocked — NEEDS_HUMAN`，通过后用独立文档提交写入准确 commit hash；修复 `OPENCODE_EXIT` 在中文括号旁触发的 `set -u` 变量展开问题
+docs/task_runs/M-002-20260529-112320/codex-review-round2.txt:641:/bin/zsh -lc "git diff --stat && git diff -- tests/test_portfolio_import.py docs/TASKS.md docs/DEVLOG.md && find docs/task_runs/M-002-20260529-112320 -maxdepth 2 -type f -print && find .auto_dev.lock -maxdepth 2 -type f -print && sed -n '1,260p' scripts/summarize_auto_dev_runs.py && sed -n '1,340p' tests/test_m002_summarize_runs.py" in /Users/maybee/TradingAgents-AShare
+docs/task_runs/M-002-20260529-112320/codex-review-round2.txt:724:.auto_dev.lock/owner
+docs/task_runs/M-002-20260529-112320/codex-review-round2.txt:2217:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+docs/task_runs/M-002-20260529-112320/codex-review-round2.txt:2855:?? .auto_dev.lock/owner
+docs/task_runs/M-002-20260529-112320/codex-review-round2.txt:2867:/bin/zsh -lc 'nl -ba .auto_dev.lock/owner && git diff --no-index /dev/null .auto_dev.lock/owner || true' in /Users/maybee/TradingAgents-AShare
+docs/task_runs/M-002-20260529-112320/codex-review-round2.txt:2872:diff --git a/.auto_dev.lock/owner b/.auto_dev.lock/owner
+docs/task_runs/M-002-20260529-112320/codex-review-round2.txt:2876:+++ b/.auto_dev.lock/owner
+docs/task_runs/M-002-20260529-112320/codex-review-round2.txt:3185:- [P2] Remove the stale auto-dev lock from the patch — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+docs/task_runs/M-002-20260529-112320/codex-review-round2.txt:3186:  If this untracked `.auto_dev.lock` artifact is left in the workspace or accidentally committed, `scripts/auto_dev_loop.sh` will refuse to run because it treats the lock directory as an active task claim. This lock appears to be from the completed M-002 run, so it should not be part of the reviewed changes.
+docs/task_runs/M-002-20260529-112320/codex-review-round2.txt:3194:- [P2] Remove the stale auto-dev lock from the patch — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+     1	pid=37014
+     2	started_at=2026-05-29_13:49:10
+     3	repo=/Users/maybee/TradingAgents-AShare
+
+exec
+/bin/zsh -lc "sed -n '1,70p' scripts/auto_dev_loop.sh" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+#!/usr/bin/env bash
+# AUTO-002: 自动开发闭环 v1.3 可靠性补修
+# 用法: ./scripts/auto_dev_loop.sh [--dry-run]
+#
+# 约束:
+#   - 只执行一轮
+#   - 只处理 docs/TASKS.md 中 status=ready 的最高优先级可开发任务
+#   - 工作区不干净时退出
+#   - 不允许 push / PR / merge
+#   - 单任务最多 2 次修复
+#   - 不改 prompts/，不写生产 tradingagents.db
+#   - 精确提交：只允许 tests/ tradingagents/ docs/ 下的文件
+#   - 排除临时文件：*.backup, *_original.py, *_fixed.py, patch_*.py, *.tmp, *.log, __pycache__
+#   - 排除根目录 *.py（非 tests/ 和 tradingagents/ 下）
+#   - 失败时不得自动提交任何文件
+#   - DEVLOG/TASKS 在 commit 前完成，commit 后不再修改文件
+#   - Review 输出保存到 docs/reviews/
+#   - 每个任务运行过程保存到 docs/task_runs/<task>-<timestamp>/
+
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+TASKS_FILE="$REPO_DIR/docs/TASKS.md"
+DEVLOG_FILE="$REPO_DIR/docs/DEVLOG.md"
+REVIEW_DIR="$REPO_DIR/docs/reviews"
+TASK_RUN_ROOT="$REPO_DIR/docs/task_runs"
+LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+MAX_FIX_ROUNDS=2
+DRY_RUN=false
+PROMPT_FILE=""
+OPENCODE_LOG=""
+REVIEW_FILE=""
+HAVE_LOCK=false
+
+# ─── 参数解析 ─────────────────────────────────────────
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=true ;;
+        -h|--help) echo "用法: $0 [--dry-run]"; exit 0 ;;
+    esac
+done
+
+cd "$REPO_DIR"
+
+# ─── 颜色 ───────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log()  { echo -e "${GREEN}[AUTO]${NC} $*"; }
+warn() { echo -e "${YELLOW}[AUTO]${NC} $*"; }
+err()  { echo -e "${RED}[AUTO]${NC} $*" >&2; }
+
+redact_log() {
+    # 持久化日志前做基础密钥脱敏，避免把本地 API key 写入仓库。
+    sed -E \
+        -e 's/sk-[A-Za-z0-9_-]{20,}/[REDACTED_API_KEY]/g' \
+        -e 's/(api[_-]?key[=:][[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
+        -e 's/(authorization:[[:space:]]*bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig'
+}
+
+cleanup() {
+    rm -f "$PROMPT_FILE" "$OPENCODE_LOG" "$REVIEW_FILE" 2>/dev/null || true
+    if [ "$HAVE_LOCK" = true ]; then
+        rm -rf "$LOCK_DIR" 2>/dev/null || true
+    fi
+}
+
+trap cleanup EXIT
+
+exec
+/bin/zsh -lc "sed -n '70,130p' scripts/auto_dev_loop.sh" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+trap cleanup EXIT
+
+acquire_lock() {
+    # [INF-001] task_claim_lock
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+        HAVE_LOCK=true
+        {
+            echo "pid=$$"
+            echo "started_at=$(date +%Y-%m-%d_%H:%M:%S)"
+            echo "repo=$REPO_DIR"
+        } > "$LOCK_DIR/owner"
+        return 0
+    fi
+
+    err "检测到自动开发锁，退出以避免重复领取任务：$LOCK_DIR"
+    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+    exit 1
+}
+
+update_task_status() {
+    # [INF-001] task_claim_lock
+    local status_text="$1"
+    python3 - "$TASKS_FILE" "$TASK_ID" "$status_text" <<'PYEOF'
+import re
+import sys
+
+tasks_file, target_id, status_text = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(tasks_file, "r", encoding="utf-8") as f:
+    content = f.read()
+
+section_pattern = re.compile(
+    r"(###\s+" + re.escape(target_id) + r":.*?)(?=\n###|\n---|\Z)",
+    re.DOTALL,
+)
+match = section_pattern.search(content)
+if not match:
+    print(f"TASKS.md: 未找到任务 {target_id}")
+    sys.exit(1)
+
+section = match.group(1)
+new_section, n = re.subn(
+    r"(- \*\*状态\*\*[：:]\s*).+",
+    r"\1" + status_text,
+    section,
+    count=1,
+)
+if n == 0:
+    print(f"TASKS.md: 未找到 {target_id} 的状态行")
+    sys.exit(1)
+
+new_content = content[: match.start(1)] + new_section + content[match.end(1) :]
+with open(tasks_file, "w", encoding="utf-8") as f:
+    f.write(new_content)
+print(f"TASKS.md: {target_id} -> {status_text}")
+PYEOF
+}
+
+# ─── 0. 前置检查 ──────────────────────────────────────
+log "=== AUTO-002 自动开发闭环 v1.3 ==="
+log "仓库: $REPO_DIR"
+
+
+exec
+/bin/zsh -lc "sed -n '281,320p' docs/TASKS.md; nl -ba tradingagents/dataflows/health_check.py | sed -n '210,235p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+### M-008: 数据源健康检查与 fallback 可观测性（P1）
+- **描述**：建立数据源健康检查，持续观察 AKShare、cn_astock、BaoStock、yfinance、公告/资金/LHB 等源的成功率、延迟和失败原因。
+- **优先级**：P1
+- **状态**：in_progress — claimed M-008-20260529-142207
+- **执行约束**：
+  - 只跑小样本 smoke，不扫全市场。
+  - 不保存 cookie/API key。
+  - live 测试必须可跳过。
+- **实现要点**：
+  1. 新增数据源 health check 脚本，默认测试 2-3 只样例股。
+  2. 输出每个 endpoint 的 `OK/FAILED/STALE/NOT_QUERIED`。
+  3. 记录 fallback 是否发生以及最终 vendor。
+  4. 生成 `docs/data_source_health/YYYY-MM-DD.md`。
+- **验证方式**：
+  - mock 主源失败时 health report 显示 fallback 命中。
+  - `pytest tests/test_*provider*.py -q` 或新增专门测试通过。
+- **代码标注要求**：`# [M-008] data_source_health`
+
+### M-009: TradeFlow 前端观察池面板（P2）
+- **描述**：在前端增加 TradeFlow 观察池/计划展示：候选、策略标签、触发价、失效价、过滤原因、是否需要 TA。
+- **优先级**：P2
+- **状态**：blocked
+- **前置条件**：`M-003`、`M-005` 数据结构稳定。
+- **执行约束**：
+  - 先做只读展示，不加一键交易。
+  - 不展示强买卖词。
+- **实现要点**：
+  1. 后端提供只读 API 或复用现有 plan 输出。
+  2. 前端表格支持按策略/状态/need_deep_ta 筛选。
+  3. 每个候选可展开 evidence。
+- **验证方式**：
+  - 前端类型检查通过。
+  - mock 数据展示不溢出、不误显示强动作。
+- **代码标注要求**：`# [M-009] tradeflow_dashboard`
+
+### M-010: 飞书/通知链路人工确认版（P2）
+- **描述**：把夜间日报、盘中触发、盘后复盘接入飞书，但第一阶段只生成草稿/本地预览，人工确认后再发。
+- **优先级**：P2
+- **状态**：blocked
+- **前置条件**：孟确认 webhook、推送格式和频率。
+   210	
+   211	# ── Main health-check runner ───────────────────────────────────────────
+   212	
+   213	def run_health_check(
+   214	    symbols: Optional[List[str]] = None,
+   215	    endpoints: Optional[List[Dict[str, Any]]] = None,
+   216	    probe_fn: Optional[Callable] = None,
+   217	) -> HealthReport:
+   218	    now = datetime.now()
+   219	    report = HealthReport(
+   220	        run_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+   221	        date=now.strftime("%Y-%m-%d"),
+   222	    )
+   223	
+   224	    if symbols is None:
+   225	        symbols = DEFAULT_SAMPLE_SYMBOLS
+   226	    if endpoints is None:
+   227	        endpoints = _default_endpoints()
+   228	    if probe_fn is None:
+   229	        probe_fn = _probe_endpoint
+   230	
+   231	    symbol = symbols[0]
+   232	
+   233	    for ep in endpoints:
+   234	        check = probe_fn(
+   235	            method=ep["method"],
+
+exec
+/bin/zsh -lc "grep -R \"def get_board_fund_flow\\|def get_individual_fund_flow\\|def get_lhb_detail\\|def get_zt_pool\\|def get_hot_stocks_xq\" -n tradingagents/dataflows/providers tradingagents/agents/utils" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/dataflows/providers/cn_akshare_provider.py:1061:    def get_board_fund_flow(self) -> str:
+tradingagents/dataflows/providers/cn_akshare_provider.py:1105:    def get_individual_fund_flow(self, symbol: str) -> str:
+tradingagents/dataflows/providers/cn_akshare_provider.py:1121:    def get_lhb_detail(self, symbol: str, date: str, *, force: bool = False) -> str:
+tradingagents/dataflows/providers/cn_akshare_provider.py:1145:    def get_zt_pool(self, date: str) -> str:
+tradingagents/dataflows/providers/cn_akshare_provider.py:1162:    def get_hot_stocks_xq(self) -> str:
+tradingagents/agents/utils/game_theory_tools.py:7:def get_board_fund_flow() -> str:
+tradingagents/agents/utils/game_theory_tools.py:13:def get_individual_fund_flow(
+tradingagents/agents/utils/game_theory_tools.py:21:def get_lhb_detail(
+tradingagents/agents/utils/game_theory_tools.py:32:def get_zt_pool(
+tradingagents/agents/utils/game_theory_tools.py:40:def get_hot_stocks_xq() -> str:
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/dataflows/health_check.py | sed -n '89,135p'; nl -ba tradingagents/dataflows/health_check.py | sed -n '180,202p'; nl -ba .auto_dev.lock/owner" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    89	def _default_endpoints() -> List[Dict[str, Any]]:
+    90	    today = datetime.now().strftime("%Y%m%d")
+    91	    start = (datetime.now() - timedelta(days=DEFAULT_HISTORY_DAYS)).strftime("%Y%m%d")
+    92	    return [
+    93	        {
+    94	            "method": "get_stock_data",
+    95	            "args": ("_SYMBOL_", start, today),
+    96	            "kwargs": {},
+    97	        },
+    98	        {
+    99	            "method": "get_indicators",
+   100	            "args": ("_SYMBOL_", "rsi", today, 14),
+   101	            "kwargs": {},
+   102	        },
+   103	        {
+   104	            "method": "get_fundamentals",
+   105	            "args": ("_SYMBOL_",),
+   106	            "kwargs": {"curr_date": today},
+   107	        },
+   108	        {
+   109	            "method": "get_balance_sheet",
+   110	            "args": ("_SYMBOL_",),
+   111	            "kwargs": {"freq": "quarterly", "curr_date": today},
+   112	        },
+   113	        {
+   114	            "method": "get_cashflow",
+   115	            "args": ("_SYMBOL_",),
+   116	            "kwargs": {"freq": "quarterly", "curr_date": today},
+   117	        },
+   118	        {
+   119	            "method": "get_income_statement",
+   120	            "args": ("_SYMBOL_",),
+   121	            "kwargs": {"freq": "quarterly", "curr_date": today},
+   122	        },
+   123	        {
+   124	            "method": "get_news",
+   125	            "args": ("_SYMBOL_", start, today),
+   126	            "kwargs": {},
+   127	        },
+   128	        {
+   129	            "method": "get_realtime_quotes",
+   130	            "args": (["_SYMBOL_"],),
+   131	            "kwargs": {},
+   132	        },
+   133	    ]
+   134	
+   135	
+   180	        check.latency_ms = elapsed
+   181	        check.vendor = chain[0] if chain else ""
+   182	
+   183	        if result is None or (isinstance(result, str) and len(result.strip()) < 10):
+   184	            check.status = STATUS_STALE
+   185	            check.is_stale = True
+   186	            check.stale_reason = "empty_or_minimal_response"
+   187	        elif isinstance(result, str):
+   188	            lines = [l for l in result.strip().split("\n") if l.strip() and not l.startswith("#")]
+   189	            check.record_count = max(0, len(lines) - 1)
+   190	            check.status = STATUS_OK
+   191	            try:
+   192	                from .interface import get_last_hit_vendor
+   193	                actual_vendor = get_last_hit_vendor(method)
+   194	                if actual_vendor:
+   195	                    check.vendor = actual_vendor
+   196	            except Exception:
+   197	                pass
+   198	        else:
+   199	            check.status = STATUS_OK
+   200	    except Exception as exc:
+   201	        elapsed = (time.monotonic() - t0) * 1000
+   202	        check.latency_ms = elapsed
+     1	pid=37014
+     2	started_at=2026-05-29_13:49:10
+     3	repo=/Users/maybee/TradingAgents-AShare
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/dataflows/health_check.py | sed -n '224,242p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   224	    if symbols is None:
+   225	        symbols = DEFAULT_SAMPLE_SYMBOLS
+   226	    if endpoints is None:
+   227	        endpoints = _default_endpoints()
+   228	    if probe_fn is None:
+   229	        probe_fn = _probe_endpoint
+   230	
+   231	    symbol = symbols[0]
+   232	
+   233	    for ep in endpoints:
+   234	        check = probe_fn(
+   235	            method=ep["method"],
+   236	            args=ep.get("args", ()),
+   237	            kwargs=ep.get("kwargs", {}),
+   238	            symbol=symbol,
+   239	        )
+   240	        report.checks.append(check)
+   241	
+   242	    # Detect fallback: when the first vendor in chain differs from actual vendor
+
+codex
+The new health-check runner has functional issues in its default smoke path: one default probe always uses the wrong date format, only one of the intended sample symbols is checked, and required fund-flow/LHB sources are omitted. It also misreports fallback for stale responses and includes a generated lock artifact that can block future automation.
+
+Full review comments:
+
+- [P2] Use ISO dates for indicator probes — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/health_check.py:99-100
+  With the default health-check run, `get_indicators` receives `today` as `YYYYMMDD`, but the A-share indicator providers parse `curr_date` with `%Y-%m-%d`; this makes the indicator endpoint fail on every vendor with a date-format error and causes `scripts/run_health_check.py --dry-run` to exit nonzero even when the data source is healthy.
+
+- [P2] Probe all configured sample symbols — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/health_check.py:231-231
+  When callers pass the default two-symbol list or `--symbols 600519.SH,000001.SZ`, the runner discards every symbol except `symbols[0]`, so the M-008 requirement to default-test 2–3 sample stocks is not met and symbol-specific provider failures/fallbacks for the remaining samples are never observed.
+
+- [P2] Include fund-flow and LHB endpoints in the default checks — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/health_check.py:92-92
+  The default endpoint list omits the `cn_market_data` tools such as `get_board_fund_flow`, `get_individual_fund_flow`, `get_lhb_detail`, `get_zt_pool`, and `get_hot_stocks_xq`, even though M-008 explicitly covers funding/LHB observability. A report can therefore show all default endpoints healthy while the A-share fund-flow/LHB sources are broken or falling back.
+
+- [P2] Record the hit vendor before marking stale responses — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/health_check.py:183-186
+  If the primary provider fails and a fallback provider returns an empty or very short response, this branch marks the check `STALE` before reading `get_last_hit_vendor`, leaving `vendor` set to the configured primary and `fallback_from` empty. That hides fallback events for stale responses, which are one of the statuses this health report is supposed to diagnose.
+
+- [P2] Remove the generated auto-dev lock — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+  If this untracked `.auto_dev.lock` artifact is left in the workspace or committed, `scripts/auto_dev_loop.sh` will refuse the next non-dry-run task claim because it treats the directory as an active lock. This runtime lock should be removed from the reviewed changes once the current run is finished.
+The new health-check runner has functional issues in its default smoke path: one default probe always uses the wrong date format, only one of the intended sample symbols is checked, and required fund-flow/LHB sources are omitted. It also misreports fallback for stale responses and includes a generated lock artifact that can block future automation.
+
+Full review comments:
+
+- [P2] Use ISO dates for indicator probes — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/health_check.py:99-100
+  With the default health-check run, `get_indicators` receives `today` as `YYYYMMDD`, but the A-share indicator providers parse `curr_date` with `%Y-%m-%d`; this makes the indicator endpoint fail on every vendor with a date-format error and causes `scripts/run_health_check.py --dry-run` to exit nonzero even when the data source is healthy.
+
+- [P2] Probe all configured sample symbols — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/health_check.py:231-231
+  When callers pass the default two-symbol list or `--symbols 600519.SH,000001.SZ`, the runner discards every symbol except `symbols[0]`, so the M-008 requirement to default-test 2–3 sample stocks is not met and symbol-specific provider failures/fallbacks for the remaining samples are never observed.
+
+- [P2] Include fund-flow and LHB endpoints in the default checks — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/health_check.py:92-92
+  The default endpoint list omits the `cn_market_data` tools such as `get_board_fund_flow`, `get_individual_fund_flow`, `get_lhb_detail`, `get_zt_pool`, and `get_hot_stocks_xq`, even though M-008 explicitly covers funding/LHB observability. A report can therefore show all default endpoints healthy while the A-share fund-flow/LHB sources are broken or falling back.
+
+- [P2] Record the hit vendor before marking stale responses — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/health_check.py:183-186
+  If the primary provider fails and a fallback provider returns an empty or very short response, this branch marks the check `STALE` before reading `get_last_hit_vendor`, leaving `vendor` set to the configured primary and `fallback_from` empty. That hides fallback events for stale responses, which are one of the statuses this health report is supposed to diagnose.
+
+- [P2] Remove the generated auto-dev lock — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+  If this untracked `.auto_dev.lock` artifact is left in the workspace or committed, `scripts/auto_dev_loop.sh` will refuse the next non-dry-run task claim because it treats the directory as an active lock. This runtime lock should be removed from the reviewed changes once the current run is finished.

@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-05-29 | M-008 数据源健康检查与 fallback 可观测性
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：建立数据源健康检查，持续观察 AKShare、cn_astock、BaoStock、yfinance 等源的成功率、延迟和失败原因，记录 fallback 是否发生以及最终 vendor
+- **修改文件**：
+  - `tradingagents/dataflows/health_check.py`（新增，~280行）— [M-008] data_source_health
+    - `EndpointCheck` — 每个端点的检查结果：status(OK/FAILED/STALE/NOT_QUERIED)、vendor、fallback_from、latency_ms、error、chain、record_count
+    - `HealthReport` — 完整健康报告：run_at、date、checks、summary(OK/FAILED/STALE/fallback_count)
+    - `_default_endpoints()` — 默认检查 8 个端点：get_stock_data、get_indicators、get_fundamentals、get_balance_sheet、get_cashflow、get_income_statement、get_news、get_realtime_quotes
+    - `_probe_endpoint()` — 单端点探测：调用 route_to_vendor，记录延迟、记录数、fallback
+    - `run_health_check()` — 主入口：对默认 2-3 只样例股（600519.SH、000001.SZ）运行所有端点探测
+    - `render_report()` — 生成 Markdown 报告：Summary 表 + Endpoint Details 表 + Fallback Events + Failed Endpoints + Stale Responses
+    - `save_report()` — 写入 `docs/data_source_health/YYYY-MM-DD.md`
+    - 自动检测 fallback：当 chain 首位 vendor 与实际 hit vendor 不同时记录 fallback_from
+  - `scripts/run_health_check.py`（新增，~60行）— CLI 入口
+    - `--dry-run` 只打印不写文件
+    - `--output` 自定义输出路径
+    - `--symbols` 自定义样例股
+    - 非 dry-run 默认写入 `docs/data_source_health/YYYY-MM-DD.md`
+  - `tests/test_m008_health_check.py`（新增，~380行）— 44 个测试
+- **关键逻辑**：
+  1. 健康检查为纯观测层，不修改任何业务数据或配置
+  2. 每个端点记录完整的 vendor chain 和实际 hit vendor，fallback 时自动对比并标记
+  3. STALE 状态检测空响应/极短响应/None 返回
+  4. symbol 替换支持嵌套 list/tuple 参数（如 get_realtime_quotes 的 symbols 列表）
+  5. 所有测试 mock route_to_vendor，不依赖网络
+  6. live smoke 可通过 `python scripts/run_health_check.py --dry-run` 手动执行
+- **标记**：`# [M-008] data_source_health`
+- **测试结果**：
+  - M-008 专项测试：44 passed
+  - 关联 provider/tradeflow 测试：47 passed, 2 skipped
+
 ## 2026-05-29 | S-004 候选股博弈平衡解释
 
 - **执行者**：OpenCode (glm-5.1)
@@ -943,3 +975,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/S-004-20260529-round1.txt
 - **运行档案**: docs/task_runs/S-004-20260529-140753/
+
+## 2026-05-29 | AUTO-002 自动开发闭环
+
+- **任务**: M-008 — 数据源健康检查与 fallback 可观测性（P1）
+- **优先级**: P1
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/M-008-20260529-round1.txt
+- **运行档案**: docs/task_runs/M-008-20260529-142207/
