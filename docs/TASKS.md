@@ -24,7 +24,7 @@
 
 ### 当前优先队列
 
-1. `INF-001`：任务领取锁与 `in_progress` 状态流转（P0，in_progress，Codex 修复中）。
+1. `INF-001`：任务领取锁与 `in_progress` 状态流转（P0，done — commit 54a8292）。
 2. `N-005`：最终执行层 schema 化最小实现（P2，done — commit 4ec69ec / dd717ca）。
 3. `M-002`：任务运行档案索引与夜间日报聚合（P1，ready）。
 4. `M-008`：数据源健康检查与 fallback 可观测性（P1，ready）。
