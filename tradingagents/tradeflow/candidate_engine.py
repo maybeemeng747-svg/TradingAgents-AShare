@@ -18,10 +18,11 @@ from typing import Optional
 
 import pandas as pd
 
-from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES
+from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION  # [S-001]
 from .strategies.vcp import score_vcp
 from .strategies.pullback_support import score_pullback_support
 from .strategies.event_catalyst import score_event_catalyst
+from .policy_version_signal import detect_policy_version, PolicyVersionResult  # [S-001]
 
 
 # ── SQL for table creation ──
@@ -89,6 +90,16 @@ def init_db(db_path: str) -> None:
         conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
+    # [S-001] policy_version_signal — add policy version columns
+    for _col, _type in [
+        ("policy_tags_json", "TEXT DEFAULT '[]'"),
+        ("version_score", "REAL DEFAULT 0.0"),
+        ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 
@@ -301,6 +312,26 @@ def evaluate_symbol(
             if SIGNAL_TAG_LOCKUP_RISK in candidate.risk_flags:
                 candidate.score = round(candidate.score * 0.8, 2)
 
+    # [S-001] policy_version_signal — detect policy version and add bonus
+    policy_result: PolicyVersionResult = detect_policy_version(
+        event_texts=news_texts,
+    )
+    if policy_result.policy_tags:
+        candidate.policy_tags = policy_result.policy_tags
+        candidate.version_score = policy_result.version_score
+        candidate.policy_evidence_refs = policy_result.policy_evidence_refs
+        candidate.score = round(candidate.score + policy_result.version_score, 2)
+        candidate.strategy_tags = sorted(
+            set(candidate.strategy_tags) | {STRATEGY_POLICY_VERSION}
+        )
+        candidate.evidence["policy_version"] = {
+            "policy_tags": policy_result.policy_tags,
+            "version_score": policy_result.version_score,
+            "evidence_refs": policy_result.policy_evidence_refs,
+        }
+        if policy_result.version_score >= 15:
+            candidate.need_deep_ta = True
+
     return candidate, ""
 
 
@@ -313,21 +344,27 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "INSERT INTO tradeflow_candidates "
             "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
             "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
-            "evidence_json, risk_flags_json, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+            "policy_evidence_refs_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
             "trigger_price=excluded.trigger_price, "
             "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
             "need_deep_ta=excluded.need_deep_ta, evidence_json=excluded.evidence_json, "
-            "risk_flags_json=excluded.risk_flags_json, updated_at=excluded.updated_at",
+            "risk_flags_json=excluded.risk_flags_json, "
+            "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+            "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
+            "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
                 row["strategy_tags_json"], row["primary_strategy"],
                 row["score"], row["status"],
                 row["trigger_price"], row["support_price"], row["invalid_price"],
                 row["need_deep_ta"], row["evidence_json"], row["risk_flags_json"],
+                row["policy_tags_json"], row["version_score"],
+                row["policy_evidence_refs_json"],
                 candidate.created_at, row["updated_at"],
             ),
         )

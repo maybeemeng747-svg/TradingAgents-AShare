@@ -65,6 +65,9 @@ def _build_plan_entry(candidate: Candidate) -> dict:
         "reason": reason_str,
         "need_deep_ta": candidate.need_deep_ta,
         "risk_flags": candidate.risk_flags,
+        "policy_tags": candidate.policy_tags,  # [S-001] policy_version_signal
+        "version_score": candidate.version_score,  # [S-001]
+        "policy_evidence_refs": candidate.policy_evidence_refs,  # [S-001]
     }
 
 

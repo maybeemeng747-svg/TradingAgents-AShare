@@ -1,0 +1,3484 @@
+Task: S-001 — 政策版本因子进入 TradeFlow 候选池（P1）
+Date: 2026-05-29_12:54:47
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e7213-682c-7a92-a73b-8c8c057f14d9
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md && printf '\\n---TASKS---\\n' && sed -n '1,220p' docs/TASKS.md && printf '\\n---DECISIONS---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n---DEVLOG---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+---TASKS---
+# 任务池
+
+> 最后更新：2026-05-28
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；一个晚上默认只做一个任务。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `S-001`：政策版本因子进入 TradeFlow 候选池（P1，ready）。
+2. `S-002`：叙事质量评分，区分普通事件与可传播主线（P1，ready）。
+3. `S-003`：水下风险标签，给候选池做风险降权（P1，ready）。
+4. `S-004`：候选股博弈平衡解释，输出多空/监管/资金结构（P1，ready）。
+5. `M-008`：数据源健康检查与 fallback 可观测性（P1，ready）。
+6. `T-002/T-003`：小范围 Discovery / 资金异动池（P1，ready，排在选股逻辑增强之后）。
+
+---
+
+## S. TradeFlow 选股策略核心任务池（2026-05-29 新增）
+
+> 原则：先提高候选池质量，再扩大扫描范围。TA 深度分析只服务于已经有足够逻辑、事件、资金或风险结构支撑的候选股。
+
+### S-001: 政策版本因子进入 TradeFlow 候选池（P1）
+- **描述**：为 TradeFlow 增加政策版本因子，识别当前 A 股市场更容易被定价的政策/产业方向，让候选池从“技术形态先行”升级为“政策版本入池 + 技术确认”。
+- **优先级**：P1
+- **状态**：in_progress — claimed S-001-20260529-124731
+- **背景**：
+  - A 股很多阶段不是简单的业绩驱动，而是政策方向、产业版本和市场叙事共同驱动。
+  - 现在 TradeFlow 已有 VCP、事件催化、A 股标签，但缺少“当前版本需要什么标杆”的第一层判断。
+- **执行约束**：
+  - 不调用外部 LLM，不跑全市场扫描。
+  - 不改 `tradingagents/prompts/`。
+  - 不输出买入/卖出强建议。
+  - 只在 TradeFlow 候选池层做信号、标签、分数和证据引用。
+- **实现要点**：
+  1. 新增或扩展政策版本信号模块，输出 `policy_tags`、`version_score`、`policy_evidence_refs`。
+  2. 先用可维护关键词/规则覆盖：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革等。
+  3. 事件标题、公告摘要、行业标签命中政策版本时加分；无原始文本证据时不得加分。
+  4. 与现有 `event_source`、`event_catalyst`、`candidate_engine` 兼容，不破坏 VCP/回踩策略。
+  5. Daily Plan 中展示政策标签和证据摘要，但动作仍只能是 `OBSERVE/NEED_DEEP_TA` 等非强交易动作。
+- **验证方式**：
+  - 构造政策关键词事件，候选包含对应 `policy_tags` 和 evidence refs。
+  - 无政策证据时 `version_score` 不得凭空加分。
+  - 不同股票事件必须按 symbol 隔离，不能串票。
+  - `pytest tests/test_tradeflow_*.py -q` 或新增对应测试通过。
+- **代码标注要求**：`# [S-001] policy_version_signal`
+
+### S-002: 叙事质量评分（P1）
+- **描述**：给事件催化增加叙事质量评分，区分“普通公告/普通新闻”和“容易形成市场共识的主线事件”。
+- **优先级**：P1
+- **状态**：ready
+- **背景**：
+  - 选股不只看有没有事件，还要判断事件是否容易被市场理解、传播和接力。
+  - 目前事件催化更偏“是否存在”，缺少“事件质量与传播价值”。
+- **执行约束**：
+  - 第一阶段只做规则评分，不调用外部 LLM。
+  - 不做舆情全网抓取，不扫全市场。
+  - 评分只影响候选排序和 `need_deep_ta`，不直接生成交易建议。
+- **实现要点**：
+  1. 新增 `narrative_score`，分解为政策背书、产业落地、订单/回购/评级、传播清晰度、拥挤/过热扣分。
+  2. 回购、重大订单、中标、并购重组、业绩预告、评级变化等事件给不同基础分。
+  3. 多个事件叠加时做封顶，避免标题堆叠虚高。
+  4. 输出 `narrative_reasons` 和 evidence refs，便于日报解释“为什么进候选池”。
+- **验证方式**：
+  - 普通新闻低分，回购/订单/政策相关事件高分。
+  - 重复事件不会无限叠加。
+  - `narrative_score` 缺证据时为 0 或保守默认。
+- **代码标注要求**：`# [S-002] narrative_quality_score`
+
+### S-003: 水下风险标签与候选降权（P1）
+- **描述**：为 TradeFlow 候选池增加水下风险标签，识别解禁、减持、问询、财务异常、融资拥挤、龙虎榜过热等风险，对候选做降权或要求更严格技术确认。
+- **优先级**：P1
+- **状态**：ready
+- **背景**：
+  - 选对股票不只看上涨逻辑，也要避开“看起来有题材但水下结构很差”的票。
+  - 当前已有部分 A 股标签，但风险标签还不够系统，也没有形成候选池统一降权规则。
+- **执行约束**：
+  - 所有风险标签必须绑定原始字段或事件文本。
+  - 不把风险标签直接翻译成清仓/买入建议。
+  - 不写生产数据库 schema；如需持久化先用现有 TradeFlow 结构或输出方案。
+- **实现要点**：
+  1. 统一输出 `risk_flags`：`LOCKUP_RISK`、`REDUCE_HOLDING_RISK`、`INQUIRY_RISK`、`FINANCIAL_QUALITY_RISK`、`MARGIN_CROWDING_RISK`、`LHB_OVERHEAT_RISK`。
+  2. 风险标签进入候选分数降权和 `need_deep_ta` 门槛。
+  3. 解禁/减持/问询等公告类风险优先从 `event_source` 读取。
+  4. 龙虎榜和融资融券风险必须区分 `HAS_DATA/NOT_QUERIED/FAILED`，不得把未查询当作无风险。
+- **验证方式**：
+  - 构造解禁/减持/问询事件，候选出现对应 `risk_flags` 并降权。
+  - 龙虎榜未查询时不生成过热风险。
+  - 风险缺证据时不输出高置信风险标签。
+- **代码标注要求**：`# [S-003] underwater_risk_flags`
+
+### S-004: 候选股博弈平衡解释（P1）
+- **描述**：在 TradeFlow Plan 中为每个候选输出轻量博弈解释，说明多头为何可能买、空头为何可能卖、政策/监管/资金结构是否支持，避免只给策略标签而缺少交易对手视角。
+- **优先级**：P1
+- **状态**：ready
+- **背景**：
+  - A 股候选池要处理动态博弈：同一事件可能同时有多头叙事、风险压制和资金拥挤。
+  - 在 TA 深度分析前，候选池应先判断这只票是不是值得进一步消耗 token。
+- **执行约束**：
+  - 规则化生成，不调用外部 LLM。
+  - 不输出强买卖词。
+  - 不替代 TA 深度分析，只做候选池摘要。
+- **实现要点**：
+  1. 输出 `game_balance`：`favorable/neutral/crowded/fragile`。
+  2. 输出 `bull_case`、`bear_case`、`policy_case`、`fund_flow_case` 的短字段，来源必须来自已存在信号和证据。
+  3. 当政策/叙事/资金/技术至少两类共振时，可提高 `need_deep_ta` 优先级。
+  4. 当风险标签过多或信号拥挤时，降低候选排序或标记 `fragile`。
+- **验证方式**：
+  - 政策 + 事件 + VCP 共振时 `game_balance=favorable` 或 `neutral`。
+  - 风险标签过多时 `game_balance=fragile/crowded`。
+  - 输出中包含证据引用，不出现强买卖词。
+- **代码标注要求**：`# [S-004] candidate_game_balance`
+
+### S-005: 选股优先级整合与 need_deep_ta 门槛重排（P1）
+- **描述**：整合政策版本、叙事质量、水下风险、资金异动和技术形态，重排 TradeFlow 候选优先级，让 TA 深度分析优先消耗在真正值得分析的股票上。
+- **优先级**：P1
+- **状态**：blocked
+- **前置条件**：`S-001`、`S-002`、`S-003`、`S-004` 完成。
+- **执行约束**：
+  - 不自动调用 TA 深度分析。
+  - 不做全市场扫描。
+  - 不把单一信号直接提升为强结论。
+- **实现要点**：
+  1. 定义候选综合评分：政策版本、叙事质量、技术确认、资金验证、风险扣分、数据完整度。
+  2. `need_deep_ta=True` 至少需要两类正向信号，且无重大未解释风险。
+  3. Daily Plan 输出“为什么值得看/为什么暂不深挖/缺什么证据”。
+  4. 为后续 `M-003` universe 管理器和 `M-004` 策略配置提供统一字段。
+- **验证方式**：
+  - 只有技术形态但无逻辑证据的票排序下降。
+  - 政策/事件/技术/资金共振的票排序上升。
+  - 风险过高或数据缺失时不触发 `need_deep_ta`。
+- **代码标注要求**：`# [S-005] selection_priority_gate`
+
+---
+
+## M. 框架路线总任务池（2026-05-28 新增）
+
+### INF-001: 自动开发任务领取锁与 in_progress 状态流转（P0）
+- **描述**：给自动开发闭环增加任务领取锁，避免 OpenClaw/OpenCode/Codex 或多个夜间任务同时领取同一个 `ready` 任务。
+- **优先级**：P0
+- **状态**：done — commit 54a8292
+- **背景**：
+  - 当前已经出现并发/半成品 diff：代码改动先出现，但任务状态和运行档案未同步。
+  - 需要把“领取任务 → 标记 in_progress → 写运行档案 → PASS/FAIL 收口”固化进脚本。
+- **执行约束**：
+  - 只改 `scripts/auto_dev_loop.sh`、`docs/AUTO_DEV_PLAN.md`、测试或必要文档。
+  - 不改业务代码。
+  - 不 push / PR / merge。
+- **实现要点**：
+  1. 非 dry-run 领取任务后，先把 `docs/TASKS.md` 中该任务状态从 `ready` 改为 `in_progress`，写入运行档案。
+  2. 任务 PASS 后改为 `done — commit <hash>`。
+  3. 任务失败或超轮次后改为 `blocked — NEEDS_HUMAN` 或保留 `in_progress` 并写明原因，不能静默回到 `ready`。
+  4. 加锁文件例如 `.auto_dev.lock` 或 `docs/task_runs/.lock`，脚本异常退出时要有清理/提示机制。
+  5. dry-run 不得修改任务状态。
+- **验证方式**：
+  - `bash -n scripts/auto_dev_loop.sh` 通过。
+  - 新增或补充脚本测试/静态验证，确认 dry-run 不改文件。
+  - 模拟领取任务后，TASKS 状态变为 `in_progress`，PASS 后变为 `done`。
+- **代码标注要求**：`# [INF-001] task_claim_lock`
+
+### M-002: 任务运行档案索引与夜间日报聚合（P1）
+- **描述**：把 `docs/task_runs/` 中的运行档案汇总成可读索引，让第二天白天快速知道昨晚做了什么、成功/失败、风险在哪里。
+- **优先级**：P1
+- **状态**：done — commit 6a95046
+- **执行约束**：
+  - 不调用模型，不跑股票分析。
+  - 只读 `docs/task_runs/`、`docs/reviews/`、`git log`，输出文档/脚本。
+- **实现要点**：
+  1. 新增脚本，例如 `scripts/summarize_auto_dev_runs.py`，扫描最近 N 个 task run。
+  2. 生成 `docs/auto_dev_reports/YYYY-MM-DD.md`，包含任务、commit、测试、review、风险、下一步。
+  3. 自动开发日报中引用该报告路径。
+  4. 报告不得包含 API key、完整敏感日志。
+- **验证方式**：
+  - 构造最小 task_runs fixture，脚本能输出日报。
+  - `python scripts/summarize_auto_dev_runs.py --date YYYY-MM-DD --dry-run` 可运行。
+- **代码标注要求**：`# [M-002] auto_dev_report_index`
+
+### M-003: TradeFlow universe 管理器（P1）
+- **描述**：统一管理候选池来源：自选池、持仓池、手动行业池、事件池、资金异动池，避免每个策略各自拼 symbols。
+- **优先级**：P1
+- **状态**：blocked
+- **前置条件**：`N-004` 和 `T-002` 完成。
+- **执行约束**：
+  - 不做全市场扫描。
+  - 不写生产数据库 schema；如需表结构先输出迁移方案。
+- **实现要点**：
+  1. 定义 universe source 枚举：watchlist/holding/manual/event/fund_flow/industry。
+  2. 每个 symbol 记录来源、入池原因、时间戳、过滤原因。
+  3. 与 `generate_daily_plan()` 的现有 universe 构建兼容。
+- **验证方式**：
+  - 同一 symbol 来自多个来源时去重但保留来源列表。
+  - 无来源时不触发全市场扫描。
+- **代码标注要求**：`# [M-003] tradeflow_universe_manager`
+
+### M-004: TradeFlow 策略权重与阈值配置（P1）
+- **描述**：把 VCP、回踩、事件催化、资金异动、A股标签的权重和阈值集中配置，便于后续复盘调参。
+- **优先级**：P1
+- **状态**：blocked
+- **前置条件**：`N-004`、`T-003` 完成。
+- **执行约束**：
+  - 不让 LLM 动态改权重。
+  - 默认配置必须保守，不输出强买卖词。
+- **实现要点**：
+
+---DECISIONS---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+---DEVLOG---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-05-29 | S-001 政策版本因子进入 TradeFlow 候选池
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：为 TradeFlow 增加政策版本因子，识别 A 股市场政策/产业方向，让候选池从"技术形态先行"升级为"政策版本入池 + 技术确认"
+- **修改文件**：
+  - `tradingagents/tradeflow/policy_version_signal.py`（新增，~140行）— [S-001] policy_version_signal
+    - `detect_policy_version(event_texts, industry_tags)` — 检测事件文本中的政策版本关键词
+    - `PolicyVersionResult` — 输出 `policy_tags`、`version_score`（0-30分）、`policy_evidence_refs`
+    - 14 个政策版本主题：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革、半导体、新能源、人工智能、数据要素、军工
+    - 仅事件文本命中时给完整权重；行业标签命中给 30% 权重；无原始文本证据时不得加分
+    - 累计加分上限 30 分（`MAX_POLICY_BONUS`）
+  - `tradingagents/tradeflow/schemas.py` — [S-001]
+    - `Candidate` 新增 `policy_tags`、`version_score`、`policy_evidence_refs` 字段
+    - `STRATEGY_POLICY_VERSION = "POLICY_VERSION"` 策略常量，加入 `ALL_STRATEGIES`
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示政策标签和证据摘要
+  - `tradingagents/tradeflow/candidate_engine.py` — [S-001]
+    - `evaluate_symbol()` 在 N-004 信号标签之后调用 `detect_policy_version()`
+    - 政策版本命中时加分、加入 `strategy_tags`、写入 `evidence.policy_version`
+    - `version_score >= 15` 时设置 `need_deep_ta=True`
+    - `init_db()` 新增 `policy_tags_json`、`version_score`、`policy_evidence_refs_json` 列迁移
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+  - `tradingagents/tradeflow/plan_runner.py` — [S-001]
+    - `_build_plan_entry()` 输出 `policy_tags`、`version_score`、`policy_evidence_refs`
+  - `tests/test_s001_policy_version_signal.py`（新增，~280行）— 35 个测试
+- **关键逻辑**：
+  1. 政策版本信号作为 bonus 层叠加在 VCP/Pullback/Event 之上，不破坏现有策略
+  2. 无事件文本证据时 `version_score` 恒为 0，不凭空加分
+  3. 不同股票各自消费自己的事件文本，按 symbol 隔离
+  4. Daily Plan 展示政策标签和证据摘要，动作仍为 OBSERVE/NEED_DEEP_TA
+  5. 高政策版本得分（≥15）自动提升 need_deep_ta 优先级
+- **标记**：`# [S-001] policy_version_signal`
+- **测试结果**：
+  - S-001 专项测试：35 passed
+  - TradeFlow 全量测试：118 passed
+  - 扩展回归测试：370 passed, 2 skipped
+
+---
+
+## 2026-05-29 | TradeFlow 选股策略任务池重排
+
+- **执行者**：Codex
+- **任务**：根据“先选对股票，再做深度 TA”的策略目标，重排 TradeFlow 后续开发任务池
+- **修改文件**：
+  - `docs/TASKS.md` — 新增 `S-001` 至 `S-005` 选股策略核心任务，并把当前优先队列调整为政策版本、叙事质量、水下风险、博弈平衡优先
+  - `docs/AUTO_DEV_PLAN.md` — 同步自动开发路线，把 P1 当前最高业务优先级调整为候选池质量提升
+- **策略方向**：
+  - 候选池从“技术形态先行”升级为“政策版本入池 + 叙事质量评分 + 水下风险降权 + 技术/资金确认”
+  - 小范围 Discovery、资金异动池、Universe 管理器和策略权重配置排在 S 系列之后，避免先扩大扫描范围再产生低质量候选
+  - `need_deep_ta` 后续应优先给到政策/事件/技术/资金多类信号共振且风险可解释的股票
+- **注意**：
+  - 本次只调整任务池和自动开发路线，不改业务代码
+
+## 2026-05-29 | M-002 修复 portfolio_import 测试 SQLite 线程安全问题
+
+- **执行者**：OpenCode
+- **任务**：M-002 — 修复 `test_scheduled_job_uses_imported_position_context` 和 `test_scheduled_job_marks_failed_when_underlying_job_fails` 两个测试因 SQLite 线程安全导致的失败
+- **根因**：`tests/test_portfolio_import.py` 的 `db` fixture 创建内存 SQLite 引擎时未设置 `check_same_thread=False`，而 `_run_scheduled_job` 内部通过 `asyncio.to_thread()` 在工作线程中访问 DB session，触发 `sqlite3.ProgrammingError: SQLite objects created in a thread can only be used in that same thread`
+- **修改文件**：
+  - `tests/test_portfolio_import.py`（1 行改动）— `db` fixture 的 `create_engine` 添加 `connect_args={"check_same_thread": False}`
+- **标记**：`# [M-002] fix_sqlite_thread_safety`
+- **验证**：`pytest tests/test_portfolio_import.py -xvs` 12/12 passed
+
+---
+
+## 2026-05-29 | M-002 任务运行档案索引与夜间日报聚合
+
+- **执行者**：OpenCode
+- **任务**：M-002 — 把 `docs/task_runs/` 中的运行档案汇总成可读索引，生成夜间日报
+- **修改文件**：
+  - `scripts/summarize_auto_dev_runs.py`（新增，~300行）— 扫描 task_runs 目录，解析 task.md / summary.md，聚合 git log / reviews，生成 `docs/auto_dev_reports/YYYY-MM-DD.md` 日报；支持 `--date`、`--dry-run`、`--repo-dir` 参数；内置 API key 脱敏
+  - `tests/test_m002_summarize_runs.py`（新增，~280行）— 27 个测试覆盖：密钥脱敏、空目录扫描、日期过滤、PASS/NEEDS_HUMAN 状态解析、trace 文件收集、commit 展示、风险标记、dry-run vs 写文件、reviews 聚合与脱敏
+  - `docs/auto_dev_reports/` — 新建日报输出目录
+- **关键逻辑**：
+  1. `scan_task_runs()` 按 `--date` 过滤目录名中的日期部分，解析 `task.md` 和 `summary.md` 提取任务元数据
+  2. `get_git_log_for_date()` 调用 `git log --after --before` 获取当日提交
+  3. `collect_reviews()` 扫描 `docs/reviews/` 并做脱敏预览
+  4. `generate_report()` 生成 Markdown 日报，包含总览表、任务详情（可折叠 summary）、提交记录、Codex Reviews、风险提示和下一步
+  5. `redact()` 使用正则匹配 sk-key、Bearer token、api_key 等敏感信息并替换为 `[REDACTED]`
+- **标记**：`# [M-002] auto_dev_report_index`
+- **验证**：
+  - `python scripts/summarize_auto_dev_runs.py --date 2026-05-28 --dry-run` 可运行并输出日报
+  - `pytest tests/test_m002_summarize_runs.py -q` 全部通过
+
+---
+
+## 2026-05-29 | INF-001 自动开发领取锁与状态收口修复
+
+- **执行者**：Codex
+- **任务**：收口 2026-05-28 夜间 `INF-001` 自动开发失败，修复 `auto_dev_loop.sh` 失败路径和任务状态不同步问题
+- **修改文件**：
+  - `scripts/auto_dev_loop.sh` — 新增 `.auto_dev.lock` 目录锁、`update_task_status()` 状态流转函数；非 dry-run 领取后标记 `in_progress`，失败标记 `blocked — NEEDS_HUMAN`，通过后用独立文档提交写入准确 commit hash；修复 `OPENCODE_EXIT` 在中文括号旁触发的 `set -u` 变量展开问题
+  - `tests/test_auto_dev_loop_static.py` — 新增脚本语法、dry-run 不改 `TASKS.md`、锁与安全变量展开的静态测试
+  - `docs/TASKS.md` — 将 `INF-001` 标记为 Codex 修复中，将已完成的 `N-005` 对齐为 `done — commit 4ec69ec / dd717ca`
+  - `docs/AUTO_DEV_PLAN.md` — 同步 `INF-001` / `N-005` 当前状态
+  - `docs/task_runs/INF-001-20260528-200320/summary.md` — 补齐失败运行档案 summary
+- **运行档案**：`docs/task_runs/INF-001-20260528-200320/`
+- **标记**：`# [INF-001] task_claim_lock`
+
+## 2026-05-28 | N-003 cn_astock raw_evidence 溯源接入
+
+- **执行者**：OpenCode
+- **任务**：当 `cn_astock` 作为 fallback 数据源时，`raw_evidence.stock_data.vendor` 应反映实际数据源而非硬编码的 "akshare"
+- **修改文件**：
+  - `tradingagents/dataflows/interface.py` — 新增 `_last_hit_vendor` 模块级字典和 `get_last_hit_vendor()` 函数；在 `route_to_vendor()` 成功 hit 时记录 vendor
+  - `tradingagents/graph/data_collector.py` — `build_raw_evidence()` 中 `stock_data` 的 vendor 改为从 `get_last_hit_vendor("get_stock_data")` 读取实际值
+  - `tests/test_raw_evidence_vendor.py` — 新增测试：akshare hit / cn_astock fallback / 无追踪 / realtime patch 覆盖 / 非 stock_data 保持默认
+- **标记**：`# [N-003] cn_astock_raw_evidence`
+
+---
+
+## 2026-05-28 | 框架任务池与自动领取队列补齐
+
+- **执行者**：Codex
+- **任务**：根据当前开发进度补齐长期任务池，让夜间自动开发链路在跑通后有稳定任务来源，并明确领取规则和优先级
+- **修改文件**：
+  - `docs/TASKS.md` — 新增自动领取规则、当前优先队列、`M/INF` 框架路线总任务池
+  - `docs/TASKS.md` — `N-003` 标记为 `done — commit dd63bca`
+  - `docs/TASKS.md` — `N-004` 标记为 `done — commit 7fb535f`
+  - `docs/TASKS.md` — `T-001` 标记为已由 `b5131cd` + `3b232a3` 完成
+  - `docs/AUTO_DEV_PLAN.md` — 同步自动开发优先级，加入 `INF-001/M-002/M-008/M-003~M-010` 路线
+- **任务设计重点**：
+  - 自动开发先补任务领取锁，避免并发抢同一任务
+  - 当前队列推进到 `INF-001`、`N-005`、`M-002`、`M-008`、`T-002/T-003`
+  - 后续路线覆盖数据源健康、Universe 管理、策略配置、盘中 Observe、TA 调度、盘后 Review、前端面板和通知链路
+- **注意**：
+  - 本次只提交任务池/路线文档，不纳入当前未提交业务代码 diff
+
+---
+
+## 2026-05-28 | 自动开发时间调整为夜间
+
+- **执行者**：Codex
+- **任务**：将 OpenClaw 自动开发从白天 10:30 调整到晚上 20:00，利用夜间较低 token 成本，并让次日白天用于人工 review、决策和协作开发
+- **修改文件**：
+  - `docs/AUTO_DEV_PLAN.md` — 固定节奏改为每天 20:00 自动开发，次日白天 review
+- **自动任务**：
+  - Codex App automation `tradingagents-ashare` 已更新为工作日 20:00 触发
+- **注意**：
+  - 当前存在与本次无关的未提交代码改动，未纳入本次文档提交
+
+---
+
+## 2026-05-28 | 自动开发任务运行档案
+
+- **执行者**：Codex
+- **任务**：补齐自动开发链路的可回查审计记录，覆盖 OpenCode 领取任务、开发输出、测试、Codex review、最终 summary
+- **修改文件**：
+  - `scripts/auto_dev_loop.sh` — 每次非 dry-run 创建 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/`，保存 task、prompt、OpenCode 输出、测试输出、Codex review、summary；持久化日志前做基础 API key 脱敏
+  - `scripts/auto_dev_loop.sh` — 工作区不干净时不再忽略 untracked docs，避免失败日志被下一轮误带入提交
+  - `docs/AUTO_DEV_PLAN.md` — 新增任务运行日志与审计链路规范，明确 Codex 审核和任务布置职责
+- **规则**：
+  - 通过任务：运行档案随代码和文档一起提交
+  - 失败任务：不自动提交，留下运行档案和 DEVLOG，下一轮自动开发停住等人工处理
+- **任务池收口**：
+  - `N-002` 已由 commit `a0770bb` 完成，补充标记为 `done`
+  - `N-002` 完成早于本次运行档案机制，未伪造历史 `task_runs`
+
+---
+
+## 2026-05-28 | N-001 事件源接入候选扫描
+
+- **执行者**：OpenCode
+- **任务**：将 `event_source.fetch_daily_events()` 集成到候选扫描流程，使公告/回购/评级事件自动进入候选池
+- **修改文件**：
+  - `tradingagents/tradeflow/universe.py` — `build_universe()` 新增 `event_symbols` 参数，event-discovered symbols 以 `source="event_source"` 进入 universe
+  - `tradingagents/tradeflow/plan_runner.py` — `generate_daily_plan()` 新增 `use_event_source=False` 参数，启用后调用 `fetch_daily_events()` 并将每个 symbol 自身的事件标题作为 `news_texts` 传入 `evaluate_symbol()`
+  - `tests/test_event_source_integration.py` — 新增 13 个集成测试，覆盖 universe 扩展、事件隔离、默认关闭、空事件等场景
+- **标记**：`# [N-001] event_source_plan_integration`
+- **测试**：121 tests passed
+
+---
+
+## 2026-05-28 | V-001 验收任务延后
+
+- **执行者**：Codex
+- **任务**：调整明日自动开发顺序，避免在 `cn_astock` fallback / raw_evidence 接入前提前做 600584 端到端验收
+- **修改文件**：
+  - `docs/TASKS.md` — 将 `V-001` 从 `ready` 改回 `blocked`
+  - `docs/TASKS.md` — `V-001` 前置条件补充 `N-002`、`N-003`
+- **原因**：
+  - 明日自动开发应先吸收 Simon 数据源实践，完成 `N-002/N-003` 后再验收 600584
+
+---
+
+## 2026-05-28 | N-001 任务状态收口
+
+- **执行者**：Codex
+- **任务**：将已完成的 `N-001` 从 `ready` 改为 `done`，避免明日自动开发重复选择已完成任务
+- **修改文件**：
+  - `docs/TASKS.md` — `N-001` 状态标记为 `done — commit 3b232a3`
+- **验证**：
+  - 提交后运行 `./scripts/auto_dev_loop.sh --dry-run`，预期选中下一项 `N-002`
+
+---
+
+## 2026-05-28 | 自动开发无任务请求协议
+
+- **执行者**：Codex
+- **任务**：为明日自动开发链路补充无 ready 任务时的处理方式，避免 OpenClaw 空转或自由发挥开发
+- **修改文件**：
+  - `docs/AUTO_DEV_PLAN.md` — 增加 `REQUEST_TASKS` 协议
+- **协议要点**：
+  - 没有 `[ready]` 任务时，只做只读扫描和候选任务草案
+  - 候选任务状态只能是 `proposed`，不能自动变成 `ready`
+  - 如需 Codex 参与，只允许一次 read-only `codex exec` 任务规划请求
+  - 候选任务需等待孟或 Codex 确认后再进入任务池
+- **执行约束**：
+  - 不写代码
+  - 不跑股票分析
+  - 不自动调用外部数据源
+  - 不 push
+
+---
+
+exec
+/bin/zsh -lc 'git status --short --branch' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+## local/tradingagents-custom...myfork/local/tradingagents-custom [ahead 46, behind 1]
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/tradeflow/candidate_engine.py
+ M tradingagents/tradeflow/plan_runner.py
+ M tradingagents/tradeflow/schemas.py
+?? .auto_dev.lock/
+?? docs/task_runs/S-001-20260529-124731/
+?? tests/test_s001_policy_version_signal.py
+?? tradingagents/tradeflow/policy_version_signal.py
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- tradingagents/tradeflow/policy_version_signal.py tradingagents/tradeflow/schemas.py tradingagents/tradeflow/candidate_engine.py tradingagents/tradeflow/plan_runner.py tests/test_s001_policy_version_signal.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ docs/DEVLOG.md                              | 39 +++++++++++++++++++++++++
+ docs/TASKS.md                               |  2 +-
+ tradingagents/tradeflow/candidate_engine.py | 45 ++++++++++++++++++++++++++---
+ tradingagents/tradeflow/plan_runner.py      |  3 ++
+ tradingagents/tradeflow/schemas.py          | 22 +++++++++++++-
+ 5 files changed, 105 insertions(+), 6 deletions(-)
+diff --git a/tradingagents/tradeflow/candidate_engine.py b/tradingagents/tradeflow/candidate_engine.py
+index b7ae76e..3f07276 100644
+--- a/tradingagents/tradeflow/candidate_engine.py
++++ b/tradingagents/tradeflow/candidate_engine.py
+@@ -18,10 +18,11 @@ from typing import Optional
+ 
+ import pandas as pd
+ 
+-from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES
++from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION  # [S-001]
+ from .strategies.vcp import score_vcp
+ from .strategies.pullback_support import score_pullback_support
+ from .strategies.event_catalyst import score_event_catalyst
++from .policy_version_signal import detect_policy_version, PolicyVersionResult  # [S-001]
+ 
+ 
+ # ── SQL for table creation ──
+@@ -89,6 +90,16 @@ def init_db(db_path: str) -> None:
+         conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+     except sqlite3.OperationalError:
+         pass
++    # [S-001] policy_version_signal — add policy version columns
++    for _col, _type in [
++        ("policy_tags_json", "TEXT DEFAULT '[]'"),
++        ("version_score", "REAL DEFAULT 0.0"),
++        ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
++    ]:
++        try:
++            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
++        except sqlite3.OperationalError:
++            pass
+     conn.commit()
+     conn.close()
+ 
+@@ -301,6 +312,26 @@ def evaluate_symbol(
+             if SIGNAL_TAG_LOCKUP_RISK in candidate.risk_flags:
+                 candidate.score = round(candidate.score * 0.8, 2)
+ 
++    # [S-001] policy_version_signal — detect policy version and add bonus
++    policy_result: PolicyVersionResult = detect_policy_version(
++        event_texts=news_texts,
++    )
++    if policy_result.policy_tags:
++        candidate.policy_tags = policy_result.policy_tags
++        candidate.version_score = policy_result.version_score
++        candidate.policy_evidence_refs = policy_result.policy_evidence_refs
++        candidate.score = round(candidate.score + policy_result.version_score, 2)
++        candidate.strategy_tags = sorted(
++            set(candidate.strategy_tags) | {STRATEGY_POLICY_VERSION}
++        )
++        candidate.evidence["policy_version"] = {
++            "policy_tags": policy_result.policy_tags,
++            "version_score": policy_result.version_score,
++            "evidence_refs": policy_result.policy_evidence_refs,
++        }
++        if policy_result.version_score >= 15:
++            candidate.need_deep_ta = True
++
+     return candidate, ""
+ 
+ 
+@@ -313,21 +344,27 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
+             "INSERT INTO tradeflow_candidates "
+             "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+             "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+-            "evidence_json, risk_flags_json, created_at, updated_at) "
+-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
++            "evidence_json, risk_flags_json, policy_tags_json, version_score, "
++            "policy_evidence_refs_json, created_at, updated_at) "
++            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+             "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+             "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
+             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+             "trigger_price=excluded.trigger_price, "
+             "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+             "need_deep_ta=excluded.need_deep_ta, evidence_json=excluded.evidence_json, "
+-            "risk_flags_json=excluded.risk_flags_json, updated_at=excluded.updated_at",
++            "risk_flags_json=excluded.risk_flags_json, "
++            "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
++            "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
++            "updated_at=excluded.updated_at",
+             (
+                 row["trade_date"], row["symbol"], row["name"], row["source"],
+                 row["strategy_tags_json"], row["primary_strategy"],
+                 row["score"], row["status"],
+                 row["trigger_price"], row["support_price"], row["invalid_price"],
+                 row["need_deep_ta"], row["evidence_json"], row["risk_flags_json"],
++                row["policy_tags_json"], row["version_score"],
++                row["policy_evidence_refs_json"],
+                 candidate.created_at, row["updated_at"],
+             ),
+         )
+diff --git a/tradingagents/tradeflow/plan_runner.py b/tradingagents/tradeflow/plan_runner.py
+index 733f5c2..91a6637 100644
+--- a/tradingagents/tradeflow/plan_runner.py
++++ b/tradingagents/tradeflow/plan_runner.py
+@@ -65,6 +65,9 @@ def _build_plan_entry(candidate: Candidate) -> dict:
+         "reason": reason_str,
+         "need_deep_ta": candidate.need_deep_ta,
+         "risk_flags": candidate.risk_flags,
++        "policy_tags": candidate.policy_tags,  # [S-001] policy_version_signal
++        "version_score": candidate.version_score,  # [S-001]
++        "policy_evidence_refs": candidate.policy_evidence_refs,  # [S-001]
+     }
+ 
+ 
+diff --git a/tradingagents/tradeflow/schemas.py b/tradingagents/tradeflow/schemas.py
+index cf49708..f4226b5 100644
+--- a/tradingagents/tradeflow/schemas.py
++++ b/tradingagents/tradeflow/schemas.py
+@@ -15,7 +15,8 @@ FORBIDDEN_WORDS = {"立即买入", "重仓买入", "立即清仓", "满仓", "
+ STRATEGY_VCP = "VCP"
+ STRATEGY_PULLBACK = "PULLBACK_SUPPORT"
+ STRATEGY_EVENT = "EVENT_CATALYST"
+-ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT}
++STRATEGY_POLICY_VERSION = "POLICY_VERSION"  # [S-001] policy_version_signal
++ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION}
+ 
+ # [N-004] astock_signal_tags
+ SIGNAL_TAG_POLICY_CATALYST = "POLICY_CATALYST"
+@@ -60,6 +61,9 @@ class Candidate:
+ 
+     primary_strategy: str = ""
+     signals: list[CandidateSignal] = field(default_factory=list, repr=False)
++    policy_tags: list[str] = field(default_factory=list)  # [S-001] policy_version_signal
++    version_score: float = 0.0  # [S-001] policy_version_signal
++    policy_evidence_refs: list[dict] = field(default_factory=list)  # [S-001] policy_version_signal
+ 
+     def __post_init__(self):
+         if not self.trade_date:
+@@ -122,6 +126,9 @@ class Candidate:
+             "need_deep_ta": 1 if self.need_deep_ta else 0,
+             "evidence_json": json.dumps(self.evidence, ensure_ascii=False),
+             "risk_flags_json": json.dumps(self.risk_flags, ensure_ascii=False),
++            "policy_tags_json": json.dumps(self.policy_tags, ensure_ascii=False),  # [S-001]
++            "version_score": self.version_score,  # [S-001]
++            "policy_evidence_refs_json": json.dumps(self.policy_evidence_refs, ensure_ascii=False),  # [S-001]
+             "updated_at": datetime.now().isoformat(),
+         }
+ 
+@@ -144,6 +151,9 @@ class Candidate:
+             trade_date=row.get("trade_date", ""),
+             created_at=row.get("created_at", ""),
+             updated_at=row.get("updated_at", ""),
++            policy_tags=json.loads(row.get("policy_tags_json", "[]")),  # [S-001]
++            version_score=row.get("version_score", 0.0),  # [S-001]
++            policy_evidence_refs=json.loads(row.get("policy_evidence_refs_json", "[]")),  # [S-001]
+         )
+ 
+ 
+@@ -251,6 +261,16 @@ class DailyPlan:
+                 lines.append(f"  失效价: {invalid}")
+             if deep_ta:
+                 lines.append(f"  ⚠️ 需要深度 TA 分析")
++            # [S-001] policy_version_signal — display policy tags and evidence
++            policy_tags = c.get("policy_tags", [])
++            version_score = c.get("version_score", 0)
++            policy_refs = c.get("policy_evidence_refs", [])
++            if policy_tags:
++                lines.append(f"  政策版本: {', '.join(policy_tags)} (+{version_score}分)")
++                if policy_refs:
++                    for ref in policy_refs[:3]:
++                        snippet = ref.get("matched_text", "")[:60]
++                        lines.append(f"    - {snippet}")
+             lines.append("")
+ 
+         return "\n".join(lines)
+
+exec
+/bin/zsh -lc "sed -n '1,240p' tradingagents/tradeflow/policy_version_signal.py; printf '\\n---tests---\\n'; sed -n '1,360p' tests/test_s001_policy_version_signal.py; printf '\\n---candidate context---\\n'; sed -n '1,420p' tradingagents/tradeflow/candidate_engine.py; printf '\\n---schemas context---\\n'; sed -n '1,330p' tradingagents/tradeflow/schemas.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [S-001] policy_version_signal
+"""Policy Version Signal — identify policy-driven market themes for TradeFlow.
+
+Outputs:
+- policy_tags: list of matched policy theme tags (e.g. "新质生产力", "低空经济")
+- version_score: 0-30 bonus score (only when backed by raw text evidence)
+- policy_evidence_refs: list of {tag, matched_text, source} for audit trail
+
+Rules:
+- No external LLM calls.
+- Only keywords / regex matching against event texts and industry labels.
+- version_score is 0 when no raw text evidence is found — no speculation.
+- Score does NOT replace VCP/Pullback/Event strategies; it is a bonus layer.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+
+@dataclass
+class PolicyVersionResult:
+    policy_tags: list[str] = field(default_factory=list)
+    version_score: float = 0.0
+    policy_evidence_refs: list[dict] = field(default_factory=list)
+
+
+POLICY_VERSION_TOPICS: list[dict] = [
+    {
+        "tag": "新质生产力",
+        "keywords": re.compile(r"新质生产力|新质|新动能|转型升级|高质量发展"),
+        "weight": 10,
+    },
+    {
+        "tag": "算力",
+        "keywords": re.compile(r"算力|智算|智算中心|算力基础设施|东数西算|AI算力|GPU|国产算力"),
+        "weight": 10,
+    },
+    {
+        "tag": "低空经济",
+        "keywords": re.compile(r"低空经济|低空|eVTOL|无人机|飞行汽车|低空飞行"),
+        "weight": 10,
+    },
+    {
+        "tag": "机器人",
+        "keywords": re.compile(r"人形机器人|机器人产业|工业机器人|机器人|具身智能"),
+        "weight": 10,
+    },
+    {
+        "tag": "出海",
+        "keywords": re.compile(r"出海|一带一路|海外拓展|海外收入|跨境|国际化战略"),
+        "weight": 8,
+    },
+    {
+        "tag": "中特估",
+        "keywords": re.compile(r"中特估|中国特色估值|央企估值|国企价值|央国企改革"),
+        "weight": 8,
+    },
+    {
+        "tag": "国产替代",
+        "keywords": re.compile(r"国产替代|自主可控|国产化率|信创|国产芯片|国产软件|自主可控"),
+        "weight": 10,
+    },
+    {
+        "tag": "并购重组",
+        "keywords": re.compile(r"并购重组|重大资产重组|吸收合并|产业整合|战略重组"),
+        "weight": 8,
+    },
+    {
+        "tag": "国企改革",
+        "keywords": re.compile(r"国企改革|央企改革|混改|国资|股权激励.*国企|央企.*行动"),
+        "weight": 7,
+    },
+    {
+        "tag": "半导体",
+        "keywords": re.compile(r"半导体|芯片|集成电路|晶圆|光刻|EDA|封测|存储芯片"),
+        "weight": 9,
+    },
+    {
+        "tag": "新能源",
+        "keywords": re.compile(r"新能源|光伏|风电|储能|氢能|碳中和|碳达峰|绿色能源"),
+        "weight": 7,
+    },
+    {
+        "tag": "人工智能",
+        "keywords": re.compile(r"人工智能|AI大模型|大模型|AIGC|生成式AI|深度学习|智能驾驶"),
+        "weight": 9,
+    },
+    {
+        "tag": "数据要素",
+        "keywords": re.compile(r"数据要素|数据资产|数据交易|数据确权|数字经济"),
+        "weight": 8,
+    },
+    {
+        "tag": "军工",
+        "keywords": re.compile(r"国防|军工|武器装备|军用|国防科技|国防工业"),
+        "weight": 7,
+    },
+]
+
+MAX_POLICY_BONUS = 30.0
+
+
+def detect_policy_version(
+    event_texts: list[str] | None = None,
+    industry_tags: list[str] | None = None,
+) -> PolicyVersionResult:
+    """Detect policy version signals from event texts and industry tags.
+
+    Args:
+        event_texts: List of news/announcement title strings for this symbol.
+        industry_tags: List of industry/sector label strings.
+
+    Returns:
+        PolicyVersionResult with tags, score, and evidence refs.
+        Score is 0 when no raw text evidence matches any policy topic.
+    """
+    texts = [t for t in (event_texts or []) if t]
+    industries = [t for t in (industry_tags or []) if t]
+    combined_text = "\n".join(texts)
+
+    if not combined_text and not industries:
+        return PolicyVersionResult()
+
+    matched_tags: list[str] = []
+    evidence_refs: list[dict] = []
+    raw_score = 0.0
+
+    for topic in POLICY_VERSION_TOPICS:
+        tag = topic["tag"]
+        kw = topic["keywords"]
+        weight = topic["weight"]
+
+        matched_in_text = False
+        matched_snippets: list[str] = []
+
+        for text in texts:
+            m = kw.search(text)
+            if m:
+                matched_in_text = True
+                snippet = text[:120]
+                matched_snippets.append(snippet)
+
+        matched_in_industry = False
+        for ind in industries:
+            if kw.search(ind):
+                matched_in_industry = True
+                matched_snippets.append(f"[行业]{ind}")
+
+        if matched_in_text:
+            matched_tags.append(tag)
+            raw_score += weight
+            for s in matched_snippets:
+                evidence_refs.append({
+                    "tag": tag,
+                    "matched_text": s,
+                    "source": "event_text",
+                })
+        elif matched_in_industry:
+            matched_tags.append(tag)
+            raw_score += weight * 0.3
+            evidence_refs.append({
+                "tag": tag,
+                "matched_text": f"行业标签命中: {tag}",
+                "source": "industry_tag",
+            })
+
+    version_score = min(raw_score, MAX_POLICY_BONUS)
+
+    if not evidence_refs:
+        return PolicyVersionResult()
+
+    return PolicyVersionResult(
+        policy_tags=sorted(set(matched_tags)),
+        version_score=round(version_score, 2),
+        policy_evidence_refs=evidence_refs,
+    )
+
+---tests---
+# [S-001] policy_version_signal
+"""Tests for S-001: policy version signal for TradeFlow candidate pool."""
+
+import sys
+import os
+import tempfile
+import pytest
+import numpy as np
+import pandas as pd
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tradingagents.tradeflow.policy_version_signal import (
+    detect_policy_version,
+    PolicyVersionResult,
+    POLICY_VERSION_TOPICS,
+    MAX_POLICY_BONUS,
+)
+from tradingagents.tradeflow.schemas import Candidate, CandidateSignal, STRATEGY_POLICY_VERSION
+from tradingagents.tradeflow.candidate_engine import evaluate_symbol, init_db, save_candidate
+
+
+def _make_vcp_df():
+    np.random.seed(123)
+    n = 120
+    dates = pd.date_range("2026-01-01", periods=n, freq="B")
+    prices = [20.0]
+    for i in range(1, 80):
+        prices.append(prices[-1] * (1 + 0.004 + np.random.normal(0, 0.015)))
+    base = prices[-1]
+    for i in range(40):
+        amp = 0.03 * (1 - i / 40)
+        prices.append(base + amp * base * np.sin(i * 0.3) + np.random.normal(0, 0.005) * base)
+    prices = np.array(prices[:n])
+    volumes = np.concatenate([
+        np.random.uniform(8e6, 15e6, 80),
+        np.linspace(10e6, 3e6, 40),
+    ])
+    return pd.DataFrame({
+        "Date": dates,
+        "Open": prices, "High": prices * 1.01, "Low": prices * 0.99,
+        "Close": prices, "Volume": volumes,
+    })
+
+
+class TestPolicyVersionDetection:
+    def test_new_quality_productivity(self):
+        result = detect_policy_version(event_texts=["国务院发布新质生产力发展指导意见"])
+        assert "新质生产力" in result.policy_tags
+        assert result.version_score > 0
+        assert len(result.policy_evidence_refs) > 0
+        assert result.policy_evidence_refs[0]["tag"] == "新质生产力"
+        assert result.policy_evidence_refs[0]["source"] == "event_text"
+
+    def test_compute_power(self):
+        result = detect_policy_version(event_texts=["公司中标智算中心建设项目"])
+        assert "算力" in result.policy_tags
+        assert result.version_score > 0
+
+    def test_low_altitude_economy(self):
+        result = detect_policy_version(event_texts=["低空经济政策密集出台，eVTOL产业加速"])
+        assert "低空经济" in result.policy_tags
+
+    def test_robot(self):
+        result = detect_policy_version(event_texts=["人形机器人产业规划发布"])
+        assert "机器人" in result.policy_tags
+
+    def test_going_global(self):
+        result = detect_policy_version(event_texts=["公司加速出海布局，海外收入占比提升"])
+        assert "出海" in result.policy_tags
+
+    def test_china_special_valuation(self):
+        result = detect_policy_version(event_texts=["中特估行情持续演绎"])
+        assert "中特估" in result.policy_tags
+
+    def test_domestic_substitution(self):
+        result = detect_policy_version(event_texts=["国产替代加速，芯片自主可控突破"])
+        assert "国产替代" in result.policy_tags
+
+    def test_merger_restructuring(self):
+        result = detect_policy_version(event_texts=["公司公告重大资产重组方案"])
+        assert "并购重组" in result.policy_tags
+
+    def test_soe_reform(self):
+        result = detect_policy_version(event_texts=["央企改革深化提升行动方案出台"])
+        assert "国企改革" in result.policy_tags
+
+    def test_semiconductor(self):
+        result = detect_policy_version(event_texts=["半导体设备国产化率快速提升"])
+        assert "半导体" in result.policy_tags
+
+    def test_ai(self):
+        result = detect_policy_version(event_texts=["AI大模型商业化落地加速"])
+        assert "人工智能" in result.policy_tags
+
+    def test_data_elements(self):
+        result = detect_policy_version(event_texts=["数据要素市场化配置改革方案"])
+        assert "数据要素" in result.policy_tags
+
+
+class TestPolicyVersionScoring:
+    def test_no_evidence_zero_score(self):
+        result = detect_policy_version(event_texts=["今天天气不错"])
+        assert result.policy_tags == []
+        assert result.version_score == 0.0
+        assert result.policy_evidence_refs == []
+
+    def test_empty_texts_zero_score(self):
+        result = detect_policy_version(event_texts=[])
+        assert result.version_score == 0.0
+
+    def test_none_texts_zero_score(self):
+        result = detect_policy_version(event_texts=None)
+        assert result.version_score == 0.0
+
+    def test_none_both_zero_score(self):
+        result = detect_policy_version(event_texts=None, industry_tags=None)
+        assert result.version_score == 0.0
+
+    def test_score_capped_at_max(self):
+        texts = [
+            "新质生产力", "算力基础设施", "低空经济", "人形机器人",
+            "国产替代", "并购重组", "国企改革", "中特估",
+            "半导体", "人工智能", "数据要素", "出海",
+        ]
+        result = detect_policy_version(event_texts=texts)
+        assert result.version_score <= MAX_POLICY_BONUS
+        assert len(result.policy_tags) > 5
+
+    def test_multiple_hits_accumulate(self):
+        result = detect_policy_version(event_texts=["新质生产力与算力基础设施同步推进"])
+        assert len(result.policy_tags) >= 2
+        assert result.version_score > 10
+
+    def test_single_tag_weight(self):
+        result = detect_policy_version(event_texts=["新质生产力发展指导意见"])
+        assert result.version_score == 10  # weight for 新质生产力
+
+    def test_industry_tag_lower_weight(self):
+        result_text = detect_policy_version(event_texts=["新质生产力"])
+        result_ind = detect_policy_version(industry_tags=["新质生产力"])
+        assert result_text.version_score > result_ind.version_score
+        assert result_ind.version_score > 0
+
+    def test_industry_tag_source(self):
+        result = detect_policy_version(industry_tags=["人工智能"])
+        assert len(result.policy_evidence_refs) == 1
+        assert result.policy_evidence_refs[0]["source"] == "industry_tag"
+
+
+class TestPolicyVersionEvidence:
+    def test_evidence_contains_matched_text(self):
+        text = "国务院发布新质生产力发展指导意见，加快转型升级"
+        result = detect_policy_version(event_texts=[text])
+        assert any("新质生产力" in ref["matched_text"] for ref in result.policy_evidence_refs)
+
+    def test_evidence_contains_tag(self):
+        result = detect_policy_version(event_texts=["低空经济政策出台"])
+        assert all("tag" in ref for ref in result.policy_evidence_refs)
+
+    def test_evidence_contains_source(self):
+        result = detect_policy_version(event_texts=["算力基础设施规划"])
+        assert all("source" in ref for ref in result.policy_evidence_refs)
+
+    def test_no_speculation_without_evidence(self):
+        result = detect_policy_version(event_texts=["公司日常经营公告"])
+        assert result.version_score == 0.0
+        assert result.policy_tags == []
+
+    def test_blank_texts_no_score(self):
+        result = detect_policy_version(event_texts=["", None, "   "])
+        assert result.version_score == 0.0
+
+
+class TestPolicyVersionIntegration:
+    def test_policy_version_in_candidate(self):
+        df = _make_vcp_df()
+        c, reason = evaluate_symbol(
+            "TEST.SZ",
+            name="测试",
+            df=df,
+            news_texts=["公司公告新质生产力相关项目中标"],
+        )
+        if c is not None:
+            assert len(c.policy_tags) > 0
+            assert c.version_score > 0
+            assert STRATEGY_POLICY_VERSION in c.strategy_tags
+            assert "policy_version" in c.evidence
+
+    def test_policy_version_adds_to_score(self):
+        df = _make_vcp_df()
+        c_no_policy, _ = evaluate_symbol("TEST.SZ", name="测试", df=df, news_texts=["公司日常公告"])
+        c_with_policy, _ = evaluate_symbol(
+            "TEST.SZ", name="测试", df=df,
+            news_texts=["公司公告新质生产力相关项目"],
+        )
+        if c_with_policy is not None and c_no_policy is not None:
+            assert c_with_policy.score > c_no_policy.score or c_with_policy.version_score > 0
+
+    def test_no_policy_evidence_no_bonus(self):
+        df = _make_vcp_df()
+        c, reason = evaluate_symbol(
+            "TEST.SZ",
+            name="测试",
+            df=df,
+            news_texts=["今天天气不错"],
+        )
+        if c is not None:
+            assert c.version_score == 0.0
+            assert STRATEGY_POLICY_VERSION not in c.strategy_tags
+
+    def test_vcp_still_works_with_policy(self):
+        df = _make_vcp_df()
+        c, reason = evaluate_symbol(
+            "TEST.SZ",
+            name="测试",
+            df=df,
+            news_texts=["低空经济政策利好，公司布局eVTOL"],
+        )
+        if c is not None:
+            vcp_hit = "VCP" in c.strategy_tags
+            event_hit = "EVENT_CATALYST" in c.strategy_tags
+            policy_hit = STRATEGY_POLICY_VERSION in c.strategy_tags
+            assert vcp_hit or event_hit or policy_hit
+
+    def test_symbol_isolation(self):
+        df = _make_vcp_df()
+        c_a, _ = evaluate_symbol(
+            "AAA.SZ", name="测试A", df=df,
+            news_texts=["新质生产力"],
+        )
+        c_b, _ = evaluate_symbol(
+            "BBB.SZ", name="测试B", df=df,
+            news_texts=["日常公告"],
+        )
+        if c_a is not None:
+            assert len(c_a.policy_tags) > 0
+        if c_b is not None:
+            assert c_b.version_score == 0.0
+
+    def test_high_version_score_triggers_deep_ta(self):
+        df = _make_vcp_df()
+        c, _ = evaluate_symbol(
+            "TEST.SZ", name="测试", df=df,
+            news_texts=[
+                "新质生产力", "算力基础设施", "低空经济",
+                "人形机器人", "国产替代",
+            ],
+        )
+        if c is not None and c.version_score >= 15:
+            assert c.need_deep_ta is True
+
+    def test_policy_tags_in_db(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            init_db(db_path)
+            c = Candidate(
+                symbol="TEST.SZ",
+                policy_tags=["新质生产力", "算力"],
+                version_score=20.0,
+                policy_evidence_refs=[{"tag": "新质生产力", "matched_text": "xxx", "source": "event_text"}],
+                strategy_tags=["VCP", STRATEGY_POLICY_VERSION],
+                score=65.0,
+                trade_date="2026-05-29",
+                primary_strategy="VCP",
+            )
+            save_candidate(c, db_path)
+
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM tradeflow_candidates WHERE symbol='TEST.SZ'"
+            ).fetchone()
+            conn.close()
+
+            assert row is not None
+            import json
+            assert json.loads(row["policy_tags_json"]) == ["新质生产力", "算力"]
+            assert row["version_score"] == 20.0
+        finally:
+            os.unlink(db_path)
+
+
+class TestPolicyVersionPlanDisplay:
+    def test_render_text_shows_policy_tags(self):
+        from tradingagents.tradeflow.schemas import DailyPlan
+        plan = DailyPlan(
+            trade_date="2026-05-29",
+            candidates=[{
+                "symbol": "TEST.SZ",
+                "name": "测试",
+                "action": "NEED_DEEP_TA",
+                "primary_strategy": "EVENT_CATALYST",
+                "strategies": ["EVENT_CATALYST", STRATEGY_POLICY_VERSION],
+                "score": 75.0,
+                "trigger_price": 25.0,
+                "support_price": None,
+                "invalid_price": 22.0,
+                "reason": "事件催化",
+                "need_deep_ta": True,
+                "risk_flags": [],
+                "policy_tags": ["新质生产力", "算力"],
+                "version_score": 20.0,
+                "policy_evidence_refs": [
+                    {"tag": "新质生产力", "matched_text": "国务院发布新质生产力指导意见", "source": "event_text"},
+                ],
+            }],
+        )
+        text = plan.render_text()
+        assert "新质生产力" in text
+        assert "算力" in text
+        assert "+20" in text
+        assert "政策版本" in text
+
+    def test_render_text_no_policy_tags(self):
+        from tradingagents.tradeflow.schemas import DailyPlan
+        plan = DailyPlan(
+            trade_date="2026-05-29",
+            candidates=[{
+                "symbol": "TEST.SZ",
+                "name": "测试",
+                "action": "OBSERVE",
+                "primary_strategy": "VCP",
+                "strategies": ["VCP"],
+                "score": 50.0,
+                "reason": "VCP",
+                "need_deep_ta": False,
+                "risk_flags": [],
+                "policy_tags": [],
+                "version_score": 0.0,
+                "policy_evidence_refs": [],
+            }],
+        )
+        text = plan.render_text()
+        assert "政策版本" not in text
+
+---candidate context---
+"""TradeFlow Candidate Engine — runs strategies and produces candidates.
+
+Responsibilities:
+- Load price data for each symbol in the universe
+- Run all three strategies
+- Filter out ST / low-liquidity / data-missing stocks
+- Deduplicate multi-strategy hits
+- Mark need_deep_ta
+- Persist to tradeflow tables
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime
+from typing import Optional
+
+import pandas as pd
+
+from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION  # [S-001]
+from .strategies.vcp import score_vcp
+from .strategies.pullback_support import score_pullback_support
+from .strategies.event_catalyst import score_event_catalyst
+from .policy_version_signal import detect_policy_version, PolicyVersionResult  # [S-001]
+
+
+# ── SQL for table creation ──
+CREATE_CANDIDATES_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    source TEXT DEFAULT 'manual',
+    strategy_tags_json TEXT DEFAULT '[]',
+    primary_strategy TEXT DEFAULT '',
+    score REAL DEFAULT 0.0,
+    status TEXT DEFAULT 'active',
+    trigger_price REAL,
+    support_price REAL,
+    invalid_price REAL,
+    need_deep_ta INTEGER DEFAULT 0,
+    evidence_json TEXT DEFAULT '{}',
+    risk_flags_json TEXT DEFAULT '[]',
+    created_at TEXT,
+    updated_at TEXT,
+    UNIQUE(trade_date, symbol)
+);
+"""
+
+CREATE_SIGNALS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_time TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    signal_type TEXT NOT NULL,
+    signal_level TEXT DEFAULT 'info',
+    source TEXT DEFAULT 'tradeflow',
+    evidence_json TEXT DEFAULT '{}',
+    action_hint TEXT DEFAULT 'OBSERVE',
+    status TEXT DEFAULT 'new',
+    created_at TEXT
+);
+"""
+
+CREATE_DAILY_PLANS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_daily_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    mode TEXT DEFAULT 'pre_market',
+    summary TEXT DEFAULT '',
+    candidates_json TEXT DEFAULT '[]',
+    metadata_json TEXT DEFAULT '{}',
+    created_at TEXT,
+    UNIQUE(trade_date, mode)
+);
+"""
+
+
+def init_db(db_path: str) -> None:
+    """Create tradeflow tables if they don't exist."""
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        CREATE_CANDIDATES_TABLE
+        + CREATE_SIGNALS_TABLE
+        + CREATE_DAILY_PLANS_TABLE
+    )
+    try:
+        conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    # [S-001] policy_version_signal — add policy version columns
+    for _col, _type in [
+        ("policy_tags_json", "TEXT DEFAULT '[]'"),
+        ("version_score", "REAL DEFAULT 0.0"),
+        ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    conn.commit()
+    conn.close()
+
+
+def _fetch_price_data(symbol: str, days: int = 120) -> Optional[pd.DataFrame]:
+    """Fetch price data for a symbol using the project's data providers.
+
+    Uses cn_akshare → cn_astock → yfinance fallback chain.  [N-002] cn_astock_fallback
+    Returns DataFrame with Date, Open, High, Low, Close, Volume columns.
+    """
+    from datetime import timedelta
+    from io import StringIO
+
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    def _try_provider(provider_cls, source_name: str) -> Optional[pd.DataFrame]:
+        try:
+            provider = provider_cls()
+            csv_str = provider.get_stock_data(symbol, start, end)
+            if csv_str and "No data found" not in csv_str:
+                df = pd.read_csv(StringIO(csv_str), comment="#")
+                if {"Date", "Open", "High", "Low", "Close", "Volume"}.issubset(df.columns):
+                    df["Date"] = pd.to_datetime(df["Date"])
+                    df = df.sort_values("Date").reset_index(drop=True)
+                    for col in ["Open", "High", "Low", "Close", "Volume"]:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                    df = df.dropna(subset=["Close"])
+                    if len(df) > 0:
+                        df.attrs["price_source"] = source_name  # [N-002] cn_astock_fallback
+                        return df
+        except Exception:
+            pass
+        return None
+
+    # [N-002] cn_astock_fallback: cn_akshare → cn_astock → yfinance
+    try:
+        from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
+        result = _try_provider(CnAkshareProvider, "cn_akshare")
+        if result is not None:
+            return result
+    except Exception:
+        pass
+
+    # [N-002] cn_astock_fallback: middle fallback
+    try:
+        from tradingagents.dataflows.providers.cn_astock_provider import CnAstockProvider
+        result = _try_provider(CnAstockProvider, "cn_astock")
+        if result is not None:
+            return result
+    except Exception:
+        pass
+
+    # Final fallback: yfinance
+    try:
+        from tradingagents.dataflows.providers.yfinance_provider import YFinanceProvider
+        result = _try_provider(YFinanceProvider, "yfinance")
+        if result is not None:
+            return result
+    except Exception:
+        pass
+
+    return None
+
+
+def _is_st_symbol(symbol: str) -> bool:
+    """Check if symbol is ST/*ST."""
+    code = symbol.split(".")[0] if "." in symbol else symbol
+    # Can't determine ST from code alone — would need name lookup
+    # P0: skip this check, rely on risk_flags from data
+    return False
+
+
+def _calc_liquidity(df: pd.DataFrame) -> tuple[bool, float, float, float]:
+    """Check liquidity using Amount (turnover) as primary metric.
+
+    Returns (is_low, avg_amount, avg_volume, threshold).
+    - Uses Amount column if available, otherwise estimates via Close * Volume.
+    - Threshold: 30,000,000 (3000万).
+    """
+    AMOUNT_THRESHOLD = 30_000_000
+
+    if len(df) < 5:
+        avg_amount = 0.0
+        avg_volume = 0.0
+        return True, avg_amount, avg_volume, AMOUNT_THRESHOLD
+
+    tail = df.tail(10)
+    avg_volume = float(tail["Volume"].mean())
+
+    if "Amount" in tail.columns:
+        avg_amount = float(tail["Amount"].mean())
+    else:
+        avg_amount = float((tail["Close"] * tail["Volume"]).mean())
+
+    return avg_amount < AMOUNT_THRESHOLD, avg_amount, avg_volume, AMOUNT_THRESHOLD
+
+
+def filter_symbol(symbol: str, df: pd.DataFrame) -> tuple[bool, list[str]]:
+    """Check if a symbol should be filtered out.
+
+    Returns (should_filter, reason_list).
+    """
+    reasons = []
+
+    if df is None or len(df) == 0:
+        return True, ["数据缺失"]
+
+    if len(df) < 40:
+        return True, ["数据不足(需至少40日)"]
+
+    is_low, avg_amount, avg_volume, threshold = _calc_liquidity(df)
+    if is_low:
+        reasons.append(
+            f"流动性差(avg_amount={avg_amount/1e8:.2f}亿, "
+            f"avg_volume={avg_volume/1e4:.0f}万, "
+            f"threshold={threshold/1e8:.2f}亿)"
+        )
+
+    if reasons:
+        return True, reasons
+
+    return False, []
+
+
+def run_strategies(
+    symbol: str,
+    df: pd.DataFrame,
+    news_texts: Optional[list[str]] = None,
+    event_overrides: Optional[list[dict]] = None,
+) -> list[CandidateSignal]:
+    """Run all strategies on a symbol, return list of signals."""
+    signals = []
+
+    # VCP
+    vcp = score_vcp(df, symbol)
+    if vcp is not None:
+        signals.append(vcp)
+
+    # Pullback Support
+    pb = score_pullback_support(df, symbol)
+    if pb is not None:
+        signals.append(pb)
+
+    # Event Catalyst
+    latest_close = float(df["Close"].iloc[-1]) if len(df) > 0 else 0.0
+    ev = score_event_catalyst(symbol, news_texts, event_overrides, latest_close)
+    if ev is not None:
+        signals.append(ev)
+
+    return signals
+
+
+def evaluate_symbol(
+    symbol: str,
+    name: str = "",
+    source: str = "manual",
+    trade_date: str = "",
+    news_texts: Optional[list[str]] = None,
+    event_overrides: Optional[list[dict]] = None,
+    df: Optional[pd.DataFrame] = None,
+) -> tuple[Optional[Candidate], str]:
+    """Evaluate one symbol through all strategies.
+
+    Returns (Candidate, "") if any strategy hits, or (None, reason) if
+    filtered or no strategy matched.
+    """
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+
+    # Fetch data if not provided
+    if df is None:
+        df = _fetch_price_data(symbol)
+
+    # Filter check
+    filtered, reasons = filter_symbol(symbol, df)
+    if filtered:
+        return None, "；".join(reasons)
+
+    # Run strategies
+    signals = run_strategies(symbol, df, news_texts, event_overrides)
+
+    if not signals:
+        return None, "无策略命中"
+
+    # Build candidate
+    candidate = Candidate(
+        symbol=symbol,
+        name=name,
+        source=source,
+        trade_date=trade_date,
+        signals=signals,
+    )
+    candidate.merge_signals()
+
+    # [N-004] astock_signal_tags — merge extra tags from event_catalyst evidence
+    for sig in signals:
+        if not isinstance(sig.evidence, dict):
+            continue
+        extra_tags = sig.evidence.get("astock_tags", [])
+        extra_risks = sig.evidence.get("astock_risk_flags", [])
+        if extra_tags or extra_risks:
+            from .schemas import SIGNAL_TAG_LOCKUP_RISK  # [N-004] astock_signal_tags
+            candidate.strategy_tags = sorted(
+                set(candidate.strategy_tags) | set(extra_tags)
+            )
+            candidate.risk_flags = sorted(
+                set(candidate.risk_flags) | set(extra_risks)
+            )
+            if SIGNAL_TAG_LOCKUP_RISK in candidate.risk_flags:
+                candidate.score = round(candidate.score * 0.8, 2)
+
+    # [S-001] policy_version_signal — detect policy version and add bonus
+    policy_result: PolicyVersionResult = detect_policy_version(
+        event_texts=news_texts,
+    )
+    if policy_result.policy_tags:
+        candidate.policy_tags = policy_result.policy_tags
+        candidate.version_score = policy_result.version_score
+        candidate.policy_evidence_refs = policy_result.policy_evidence_refs
+        candidate.score = round(candidate.score + policy_result.version_score, 2)
+        candidate.strategy_tags = sorted(
+            set(candidate.strategy_tags) | {STRATEGY_POLICY_VERSION}
+        )
+        candidate.evidence["policy_version"] = {
+            "policy_tags": policy_result.policy_tags,
+            "version_score": policy_result.version_score,
+            "evidence_refs": policy_result.policy_evidence_refs,
+        }
+        if policy_result.version_score >= 15:
+            candidate.need_deep_ta = True
+
+    return candidate, ""
+
+
+def save_candidate(candidate: Candidate, db_path: str) -> int:
+    """Save a candidate to the database. Upsert on (trade_date, symbol)."""
+    conn = sqlite3.connect(db_path)
+    row = candidate.to_db_row()
+    try:
+        conn.execute(
+            "INSERT INTO tradeflow_candidates "
+            "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+            "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+            "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+            "policy_evidence_refs_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+            "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
+            "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+            "trigger_price=excluded.trigger_price, "
+            "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+            "need_deep_ta=excluded.need_deep_ta, evidence_json=excluded.evidence_json, "
+            "risk_flags_json=excluded.risk_flags_json, "
+            "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+            "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
+            "updated_at=excluded.updated_at",
+            (
+                row["trade_date"], row["symbol"], row["name"], row["source"],
+                row["strategy_tags_json"], row["primary_strategy"],
+                row["score"], row["status"],
+                row["trigger_price"], row["support_price"], row["invalid_price"],
+                row["need_deep_ta"], row["evidence_json"], row["risk_flags_json"],
+                row["policy_tags_json"], row["version_score"],
+                row["policy_evidence_refs_json"],
+                candidate.created_at, row["updated_at"],
+            ),
+        )
+        conn.commit()
+        row_id = conn.execute(
+            "SELECT id FROM tradeflow_candidates WHERE trade_date=? AND symbol=?",
+            (row["trade_date"], row["symbol"]),
+        ).fetchone()[0]
+        return row_id
+    finally:
+        conn.close()
+
+---schemas context---
+"""TradeFlow schemas — data models for candidates, signals, and daily plans."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from typing import Optional
+
+
+# ── Allowed actions ──
+ALLOWED_ACTIONS = {"OBSERVE", "WAIT_TRIGGER", "NEED_DEEP_TA", "REMOVE_FROM_WATCH"}
+FORBIDDEN_WORDS = {"立即买入", "重仓买入", "立即清仓", "满仓", "梭哈"}
+
+STRATEGY_VCP = "VCP"
+STRATEGY_PULLBACK = "PULLBACK_SUPPORT"
+STRATEGY_EVENT = "EVENT_CATALYST"
+STRATEGY_POLICY_VERSION = "POLICY_VERSION"  # [S-001] policy_version_signal
+ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION}
+
+# [N-004] astock_signal_tags
+SIGNAL_TAG_POLICY_CATALYST = "POLICY_CATALYST"
+SIGNAL_TAG_HOT_MONEY_LHB = "HOT_MONEY_LHB"
+SIGNAL_TAG_LOCKUP_RISK = "LOCKUP_RISK"
+SIGNAL_TAG_BUYBACK_EVENT = "BUYBACK_EVENT"
+SIGNAL_TAG_RATING_CHANGE = "RATING_CHANGE"
+
+
+@dataclass
+class CandidateSignal:
+    """One strategy hit on a symbol."""
+    strategy_tag: str
+    trigger_price: Optional[float] = None
+    support_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    score: float = 0.0
+    reason: str = ""
+    evidence: dict = field(default_factory=dict)
+    risk_flags: list[str] = field(default_factory=list)
+    need_deep_ta: bool = False
+
+
+@dataclass
+class Candidate:
+    """A tradeflow candidate — one row in tradeflow_candidates."""
+    symbol: str
+    name: str = ""
+    source: str = "manual"
+    strategy_tags: list[str] = field(default_factory=list)
+    score: float = 0.0
+    status: str = "active"
+    trigger_price: Optional[float] = None
+    support_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    need_deep_ta: bool = False
+    evidence: dict = field(default_factory=dict)
+    risk_flags: list[str] = field(default_factory=list)
+    trade_date: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+    primary_strategy: str = ""
+    signals: list[CandidateSignal] = field(default_factory=list, repr=False)
+    policy_tags: list[str] = field(default_factory=list)  # [S-001] policy_version_signal
+    version_score: float = 0.0  # [S-001] policy_version_signal
+    policy_evidence_refs: list[dict] = field(default_factory=list)  # [S-001] policy_version_signal
+
+    def __post_init__(self):
+        if not self.trade_date:
+            self.trade_date = datetime.now().strftime("%Y-%m-%d")
+        if not self.created_at:
+            self.created_at = datetime.now().isoformat()
+        if not self.updated_at:
+            self.updated_at = self.created_at
+
+    def merge_signals(self):
+        """Merge individual signals into aggregate candidate fields.
+
+        The signal with the highest score becomes the primary_signal.
+        trigger/support/invalid prices come ONLY from the primary signal,
+        preventing later strategies from silently overwriting them.
+        """
+        if not self.signals:
+            return
+
+        primary = max(self.signals, key=lambda s: s.score)
+        self.primary_strategy = primary.strategy_tag
+
+        tags = set()
+        best_score = 0.0
+        all_evidence = {}
+        all_risks = []
+        deep_ta = False
+
+        for sig in self.signals:
+            tags.add(sig.strategy_tag)
+            if sig.score > best_score:
+                best_score = sig.score
+            all_evidence[sig.strategy_tag] = sig.evidence
+            all_risks.extend(sig.risk_flags)
+            if sig.need_deep_ta:
+                deep_ta = True
+
+        self.strategy_tags = sorted(tags)
+        self.score = round(best_score, 2)
+        self.evidence = all_evidence
+        self.risk_flags = sorted(set(all_risks))
+        self.trigger_price = primary.trigger_price
+        self.support_price = primary.support_price
+        self.invalid_price = primary.invalid_price
+        self.need_deep_ta = deep_ta
+
+    def to_db_row(self) -> dict:
+        return {
+            "trade_date": self.trade_date,
+            "symbol": self.symbol,
+            "name": self.name,
+            "source": self.source,
+            "strategy_tags_json": json.dumps(self.strategy_tags, ensure_ascii=False),
+            "primary_strategy": self.primary_strategy,
+            "score": self.score,
+            "status": self.status,
+            "trigger_price": self.trigger_price,
+            "support_price": self.support_price,
+            "invalid_price": self.invalid_price,
+            "need_deep_ta": 1 if self.need_deep_ta else 0,
+            "evidence_json": json.dumps(self.evidence, ensure_ascii=False),
+            "risk_flags_json": json.dumps(self.risk_flags, ensure_ascii=False),
+            "policy_tags_json": json.dumps(self.policy_tags, ensure_ascii=False),  # [S-001]
+            "version_score": self.version_score,  # [S-001]
+            "policy_evidence_refs_json": json.dumps(self.policy_evidence_refs, ensure_ascii=False),  # [S-001]
+            "updated_at": datetime.now().isoformat(),
+        }
+
+    @classmethod
+    def from_db_row(cls, row: dict) -> "Candidate":
+        return cls(
+            symbol=row["symbol"],
+            name=row.get("name", ""),
+            source=row.get("source", "manual"),
+            strategy_tags=json.loads(row.get("strategy_tags_json", "[]")),
+            primary_strategy=row.get("primary_strategy", ""),
+            score=row.get("score", 0.0),
+            status=row.get("status", "active"),
+            trigger_price=row.get("trigger_price"),
+            support_price=row.get("support_price"),
+            invalid_price=row.get("invalid_price"),
+            need_deep_ta=bool(row.get("need_deep_ta", 0)),
+            evidence=json.loads(row.get("evidence_json", "{}")),
+            risk_flags=json.loads(row.get("risk_flags_json", "[]")),
+            trade_date=row.get("trade_date", ""),
+            created_at=row.get("created_at", ""),
+            updated_at=row.get("updated_at", ""),
+            policy_tags=json.loads(row.get("policy_tags_json", "[]")),  # [S-001]
+            version_score=row.get("version_score", 0.0),  # [S-001]
+            policy_evidence_refs=json.loads(row.get("policy_evidence_refs_json", "[]")),  # [S-001]
+        )
+
+
+@dataclass
+class Signal:
+    """One signal event — row in tradeflow_signals."""
+    symbol: str
+    signal_type: str
+    signal_level: str = "info"
+    source: str = "tradeflow"
+    evidence: dict = field(default_factory=dict)
+    action_hint: str = "OBSERVE"
+    status: str = "new"
+    signal_time: str = ""
+    created_at: str = ""
+
+    def __post_init__(self):
+        if not self.signal_time:
+            self.signal_time = datetime.now().isoformat()
+        if not self.created_at:
+            self.created_at = datetime.now().isoformat()
+        # validate action_hint
+        if self.action_hint not in ALLOWED_ACTIONS:
+            self.action_hint = "OBSERVE"
+
+    def to_db_row(self) -> dict:
+        return {
+            "signal_time": self.signal_time,
+            "symbol": self.symbol,
+            "signal_type": self.signal_type,
+            "signal_level": self.signal_level,
+            "source": self.source,
+            "evidence_json": json.dumps(self.evidence, ensure_ascii=False),
+            "action_hint": self.action_hint,
+            "status": self.status,
+        }
+
+
+@dataclass
+class DailyPlan:
+    """Daily pre-market plan — row in tradeflow_daily_plans."""
+    trade_date: str
+    mode: str = "pre_market"
+    summary: str = ""
+    candidates: list[dict] = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)
+    created_at: str = ""
+
+    def __post_init__(self):
+        if not self.created_at:
+            self.created_at = datetime.now().isoformat()
+
+    def validate(self) -> list[str]:
+        """Validate plan — return list of issues (empty = OK)."""
+        issues = []
+        for word in FORBIDDEN_WORDS:
+            if word in self.summary:
+                issues.append(f"Forbidden word in summary: {word}")
+        for c in self.candidates:
+            action = c.get("action", "")
+            if action and action not in ALLOWED_ACTIONS:
+                issues.append(f"Invalid action '{action}' for {c.get('symbol', '?')}")
+        return issues
+
+    def to_db_row(self) -> dict:
+        return {
+            "trade_date": self.trade_date,
+            "mode": self.mode,
+            "summary": self.summary,
+            "candidates_json": json.dumps(self.candidates, ensure_ascii=False),
+            "metadata_json": json.dumps(self.metadata, ensure_ascii=False),
+            "created_at": self.created_at,
+        }
+
+    def render_text(self) -> str:
+        """Render a human-readable plan text."""
+        lines = [
+            f"📊 盘前计划 {self.trade_date}",
+            "=" * 50,
+            "",
+            f"📋 摘要: {self.summary}",
+            "",
+        ]
+        if not self.candidates:
+            lines.append("（无候选）")
+        for i, c in enumerate(self.candidates, 1):
+            sym = c.get("symbol", "?")
+            name = c.get("name", "")
+            action = c.get("action", "OBSERVE")
+            strategies = c.get("strategies", [])
+            reason = c.get("reason", "")
+            trigger = c.get("trigger_price")
+            invalid = c.get("invalid_price")
+            deep_ta = c.get("need_deep_ta", False)
+
+            lines.append(f"--- 候选 {i}: {sym} {name} ---")
+            lines.append(f"  动作: {action}")
+            if strategies:
+                lines.append(f"  策略: {', '.join(strategies)}")
+            if reason:
+                lines.append(f"  原因: {reason}")
+            if trigger:
+                lines.append(f"  触发价: {trigger}")
+            if invalid:
+                lines.append(f"  失效价: {invalid}")
+            if deep_ta:
+                lines.append(f"  ⚠️ 需要深度 TA 分析")
+            # [S-001] policy_version_signal — display policy tags and evidence
+            policy_tags = c.get("policy_tags", [])
+            version_score = c.get("version_score", 0)
+            policy_refs = c.get("policy_evidence_refs", [])
+            if policy_tags:
+                lines.append(f"  政策版本: {', '.join(policy_tags)} (+{version_score}分)")
+                if policy_refs:
+                    for ref in policy_refs[:3]:
+                        snippet = ref.get("matched_text", "")[:60]
+                        lines.append(f"    - {snippet}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+exec
+/bin/zsh -lc "sed -n '1,130p' tradingagents/tradeflow/candidate_engine.py; sed -n '130,260p' tradingagents/tradeflow/candidate_engine.py; grep -R \"ALL_STRATEGIES\\|primary_strategy\\|policy_tags_json\\|from_db_row\\|SELECT \\* FROM tradeflow_candidates\" -n tradingagents tests | head -100" in /Users/maybee/TradingAgents-AShare
+ succeeded in 127ms:
+tradingagents/tradeflow/candidate_engine.py:21:from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION  # [S-001]
+tradingagents/tradeflow/candidate_engine.py:37:    primary_strategy TEXT DEFAULT '',
+tradingagents/tradeflow/candidate_engine.py:90:        conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+tradingagents/tradeflow/candidate_engine.py:95:        ("policy_tags_json", "TEXT DEFAULT '[]'"),
+tradingagents/tradeflow/candidate_engine.py:345:            "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+tradingagents/tradeflow/candidate_engine.py:347:            "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+tradingagents/tradeflow/candidate_engine.py:352:            "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+tradingagents/tradeflow/candidate_engine.py:357:            "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+tradingagents/tradeflow/candidate_engine.py:362:                row["strategy_tags_json"], row["primary_strategy"],
+tradingagents/tradeflow/candidate_engine.py:366:                row["policy_tags_json"], row["version_score"],
+tradingagents/tradeflow/plan_runner.py:59:        "primary_strategy": candidate.primary_strategy,
+Binary file tradingagents/tradeflow/__pycache__/schemas.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/candidate_engine.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/plan_runner.cpython-312.pyc matches
+tradingagents/tradeflow/schemas.py:19:ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION}
+tradingagents/tradeflow/schemas.py:62:    primary_strategy: str = ""
+tradingagents/tradeflow/schemas.py:87:        self.primary_strategy = primary.strategy_tag
+tradingagents/tradeflow/schemas.py:120:            "primary_strategy": self.primary_strategy,
+tradingagents/tradeflow/schemas.py:129:            "policy_tags_json": json.dumps(self.policy_tags, ensure_ascii=False),  # [S-001]
+tradingagents/tradeflow/schemas.py:136:    def from_db_row(cls, row: dict) -> "Candidate":
+tradingagents/tradeflow/schemas.py:142:            primary_strategy=row.get("primary_strategy", ""),
+tradingagents/tradeflow/schemas.py:154:            policy_tags=json.loads(row.get("policy_tags_json", "[]")),  # [S-001]
+tests/test_tradeflow_candidate_engine.py:112:            assert c.primary_strategy != ""
+tests/test_tradeflow_candidate_engine.py:169:                "SELECT * FROM tradeflow_candidates WHERE symbol='002353.SZ'"
+tests/test_tradeflow_candidate_engine.py:207:                          primary_strategy="VCP")
+tests/test_tradeflow_candidate_engine.py:213:                "SELECT need_deep_ta, primary_strategy FROM tradeflow_candidates WHERE symbol='TEST.SZ'"
+tests/test_tradeflow_candidate_engine.py:221:    def test_primary_strategy_migrated(self):
+tests/test_tradeflow_candidate_engine.py:230:            assert "primary_strategy" in cols
+tests/test_event_source_integration.py:41:    c.primary_strategy = "EVENT_CATALYST"
+Binary file tests/__pycache__/test_s001_policy_version_signal.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_tradeflow_candidate_engine.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_tradeflow_schemas.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_event_source_integration.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_tradeflow_plan_runner.cpython-312-pytest-9.0.2.pyc matches
+tests/test_tradeflow_plan_runner.py:40:        c.primary_strategy = "VCP"
+tests/test_tradeflow_plan_runner.py:45:        assert entry["primary_strategy"] == "VCP"
+tests/test_tradeflow_plan_runner.py:159:                "SELECT * FROM tradeflow_candidates WHERE symbol='002353.SZ' AND trade_date='2026-05-25'"
+tests/test_tradeflow_plan_runner.py:203:        mock_candidate.primary_strategy = "EVENT_CATALYST"
+tests/test_tradeflow_plan_runner.py:230:            mock_candidate.primary_strategy = "EVENT_CATALYST"
+tests/test_tradeflow_plan_runner.py:256:        mock_candidate.primary_strategy = "EVENT_CATALYST"
+tests/test_tradeflow_plan_runner.py:287:                c.primary_strategy = "EVENT_CATALYST"
+tests/test_tradeflow_plan_runner.py:295:                c.primary_strategy = "EVENT_CATALYST"
+tests/test_tradeflow_schemas.py:12:    ALLOWED_ACTIONS, FORBIDDEN_WORDS, ALL_STRATEGIES,
+tests/test_tradeflow_schemas.py:61:        assert c.primary_strategy == "PULLBACK_SUPPORT"
+tests/test_tradeflow_schemas.py:66:    def test_primary_strategy_prices_not_overwritten(self):
+tests/test_tradeflow_schemas.py:75:        assert c.primary_strategy == "VCP"
+tests/test_tradeflow_schemas.py:83:        c.primary_strategy = "VCP"
+tests/test_tradeflow_schemas.py:88:        assert row["primary_strategy"] == "VCP"
+tests/test_tradeflow_schemas.py:90:    def test_from_db_row(self):
+tests/test_tradeflow_schemas.py:96:            "primary_strategy": "PULLBACK_SUPPORT",
+tests/test_tradeflow_schemas.py:109:        c = Candidate.from_db_row(row)
+tests/test_tradeflow_schemas.py:112:        assert c.primary_strategy == "PULLBACK_SUPPORT"
+tests/test_tradeflow_schemas.py:207:        assert "VCP" in ALL_STRATEGIES
+tests/test_tradeflow_schemas.py:208:        assert "PULLBACK_SUPPORT" in ALL_STRATEGIES
+tests/test_tradeflow_schemas.py:209:        assert "EVENT_CATALYST" in ALL_STRATEGIES
+tests/test_s001_policy_version_signal.py:266:                primary_strategy="VCP",
+tests/test_s001_policy_version_signal.py:274:                "SELECT * FROM tradeflow_candidates WHERE symbol='TEST.SZ'"
+tests/test_s001_policy_version_signal.py:280:            assert json.loads(row["policy_tags_json"]) == ["新质生产力", "算力"]
+tests/test_s001_policy_version_signal.py:295:                "primary_strategy": "EVENT_CATALYST",
+tests/test_s001_policy_version_signal.py:325:                "primary_strategy": "VCP",
+
+exec
+/bin/zsh -lc "sed -n '1,380p' tradingagents/tradeflow/plan_runner.py; sed -n '130,260p' tests/test_tradeflow_plan_runner.py; sed -n '80,130p' tests/test_tradeflow_schemas.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""TradeFlow Plan Runner — generates pre-market daily plans.
+
+Reads candidates from tradeflow_candidates, produces a DailyPlan
+with only allowed actions: OBSERVE / WAIT_TRIGGER / NEED_DEEP_TA / REMOVE_FROM_WATCH.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime
+from typing import Optional
+
+from .schemas import (
+    DailyPlan, Candidate, ALLOWED_ACTIONS, FORBIDDEN_WORDS
+)
+from .candidate_engine import init_db, save_candidate, evaluate_symbol
+from .universe import build_universe
+
+
+def _action_for_candidate(candidate: Candidate) -> str:
+    """Determine the action for a candidate based on its signals."""
+    if candidate.need_deep_ta:
+        return "NEED_DEEP_TA"
+
+    # If score is high and trigger price is close to current price
+    evidence = candidate.evidence
+    for strategy, ev in evidence.items():
+        if isinstance(ev, dict):
+            latest = ev.get("latest_close", 0)
+            trigger = candidate.trigger_price or 0
+            if latest > 0 and trigger > 0:
+                distance = (trigger - latest) / latest
+                if distance < 0.02:  # within 2% of trigger
+                    return "WAIT_TRIGGER"
+
+    return "OBSERVE"
+
+
+def _build_plan_entry(candidate: Candidate) -> dict:
+    """Build a plan entry dict from a candidate."""
+    action = _action_for_candidate(candidate)
+
+    # Build reason — no forbidden words
+    reasons = []
+    for sig in candidate.signals:
+        reasons.append(f"[{sig.strategy_tag}] {sig.reason}")
+    reason_str = "; ".join(reasons) if reasons else "候选观察"
+
+    # Sanity check: no forbidden words
+    for word in FORBIDDEN_WORDS:
+        if word in reason_str:
+            reason_str = reason_str.replace(word, "***")
+
+    return {
+        "symbol": candidate.symbol,
+        "name": candidate.name,
+        "action": action,
+        "primary_strategy": candidate.primary_strategy,
+        "strategies": candidate.strategy_tags,
+        "score": candidate.score,
+        "trigger_price": candidate.trigger_price,
+        "support_price": candidate.support_price,
+        "invalid_price": candidate.invalid_price,
+        "reason": reason_str,
+        "need_deep_ta": candidate.need_deep_ta,
+        "risk_flags": candidate.risk_flags,
+        "policy_tags": candidate.policy_tags,  # [S-001] policy_version_signal
+        "version_score": candidate.version_score,  # [S-001]
+        "policy_evidence_refs": candidate.policy_evidence_refs,  # [S-001]
+    }
+
+
+def generate_daily_plan(
+    trade_date: Optional[str] = None,
+    symbols: Optional[list[str]] = None,
+    prod_db_path: str = "",
+    tf_db_path: str = "",
+    candidates: Optional[list[Candidate]] = None,
+    news_texts: Optional[list[str]] = None,
+    event_overrides: Optional[list[dict]] = None,
+    save_candidates: bool = False,
+    use_event_source: bool = False,  # [N-001] event_source_plan_integration
+) -> DailyPlan:
+    """Generate a pre-market daily plan.
+
+    Args:
+        trade_date: Trading date (default: today).
+        symbols: Specific symbols to evaluate (overrides universe).
+        prod_db_path: Path to production tradingagents.db.
+        tf_db_path: Path to tradeflow SQLite DB.
+        candidates: Pre-evaluated candidates (skip evaluation if provided).
+        news_texts: News/announcement texts for event catalyst detection.
+        event_overrides: Manual event overrides for event catalyst detection.
+        save_candidates: If True, persist evaluated candidates to tf_db_path.
+        use_event_source: [N-001] If True, fetch daily events and inject into universe.
+
+    Returns:
+        DailyPlan with validated entries.
+    """
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+
+    # [N-001] event_source_plan_integration — fetch events if enabled
+    events_map: dict[str, list[str]] = {}
+    if use_event_source:
+        from .event_source import fetch_daily_events
+        trade_date_compact = trade_date.replace("-", "")
+        events_map = fetch_daily_events(trade_date_compact)
+
+    if candidates is None:
+        # Build universe — pass event_symbols so event-discovered
+        # symbols enter the pool
+        universe = build_universe(
+            symbols=symbols,
+            prod_db_path=prod_db_path,
+            tf_db_path=tf_db_path,
+            event_overrides=event_overrides,
+            event_symbols=events_map if events_map else None,  # [N-001]
+        )
+
+        # Evaluate each symbol — filter event_overrides to only
+        # those matching the current symbol (or global overrides without symbol).
+        # [N-001] Each symbol gets its own event titles as news_texts.
+        candidates = []
+        for item in universe:
+            sym = item["symbol"]
+            if event_overrides:
+                filtered_overrides = [
+                    ev for ev in event_overrides
+                    if ev.get("symbol") is None or ev.get("symbol") == sym
+                ]
+            else:
+                filtered_overrides = None
+
+            # [N-001] event_source_plan_integration
+            sym_news = events_map.get(sym) if events_map else None
+
+            c, reason = evaluate_symbol(
+                symbol=sym,
+                name=item.get("name", ""),
+                source=item.get("source", "manual"),
+                trade_date=trade_date,
+                news_texts=sym_news or news_texts,
+                event_overrides=filtered_overrides,
+            )
+            if c is not None:
+                candidates.append(c)
+
+    # Build plan entries
+    plan_entries = []
+    for c in candidates:
+        entry = _build_plan_entry(c)
+        plan_entries.append(entry)
+
+    # Sort by score descending
+    plan_entries.sort(key=lambda x: x["score"], reverse=True)
+
+    # Build summary
+    n_total = len(plan_entries)
+    n_deep_ta = sum(1 for e in plan_entries if e["need_deep_ta"])
+    n_wait = sum(1 for e in plan_entries if e["action"] == "WAIT_TRIGGER")
+
+    summary_parts = [
+        f"共{n_total}只候选",
+        f"{n_deep_ta}只需要深度TA",
+        f"{n_wait}只接近触发",
+    ]
+    if symbols:
+        summary_parts.append(f"指定标的: {', '.join(symbols)}")
+
+    plan = DailyPlan(
+        trade_date=trade_date,
+        mode="pre_market",
+        summary="，".join(summary_parts) + "。",
+        candidates=plan_entries,
+        metadata={
+            "universe_size": len(plan_entries),
+            "generated_at": datetime.now().isoformat(),
+        },
+    )
+
+    # Validate
+    issues = plan.validate()
+    if issues:
+        plan.metadata["validation_issues"] = issues
+
+    # Optionally persist candidates  # [G-004] tradeflow_candidate_date
+    if save_candidates and tf_db_path:
+        for c in candidates:
+            if c.trade_date != trade_date:
+                c.trade_date = trade_date
+            save_candidate(c, tf_db_path)
+
+    return plan
+
+
+def save_plan(plan: DailyPlan, db_path: str) -> int:
+    """Save daily plan to DB."""
+    conn = sqlite3.connect(db_path)
+    row = plan.to_db_row()
+    try:
+        conn.execute(
+            "INSERT INTO tradeflow_daily_plans "
+            "(trade_date, mode, summary, candidates_json, metadata_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(trade_date, mode) DO UPDATE SET "
+            "summary=excluded.summary, candidates_json=excluded.candidates_json, "
+            "metadata_json=excluded.metadata_json",
+            (row["trade_date"], row["mode"], row["summary"],
+             row["candidates_json"], row["metadata_json"], row["created_at"]),
+        )
+        conn.commit()
+        row_id = conn.execute(
+            "SELECT id FROM tradeflow_daily_plans WHERE trade_date=? AND mode=?",
+            (row["trade_date"], row["mode"]),
+        ).fetchone()[0]
+        return row_id
+    finally:
+        conn.close()
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                "SELECT * FROM tradeflow_daily_plans WHERE trade_date='2026-05-25'"
+            ).fetchone()
+            conn.close()
+            assert row is not None
+        finally:
+            os.unlink(db_path)
+
+    def test_save_candidates_persisted(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            init_db(db_path)
+            candidates = [
+                _make_candidate("002353.SZ", ["VCP"], 55.0),
+            ]
+            plan = generate_daily_plan(
+                trade_date="2026-05-25",
+                candidates=candidates,
+                tf_db_path=db_path,
+                save_candidates=True,
+            )
+
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM tradeflow_candidates WHERE symbol='002353.SZ' AND trade_date='2026-05-25'"
+            ).fetchone()
+            conn.close()
+            assert row is not None
+            assert row["score"] == 55.0
+        finally:
+            os.unlink(db_path)
+
+    def test_save_candidates_disabled(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            init_db(db_path)
+            candidates = [
+                _make_candidate("002353.SZ", ["VCP"], 55.0),
+            ]
+            plan = generate_daily_plan(
+                trade_date="2026-05-25",
+                candidates=candidates,
+                tf_db_path=db_path,
+                save_candidates=False,
+            )
+
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            count = conn.execute(
+                "SELECT COUNT(*) FROM tradeflow_candidates WHERE symbol='002353.SZ'"
+            ).fetchone()[0]
+            conn.close()
+            assert count == 0
+        finally:
+            os.unlink(db_path)
+
+
+class TestEventOverridesInUniverse:
+    def test_event_overrides_enter_universe(self):
+        event_overrides = [
+            {"symbol": "999999.SZ", "name": "事件股", "event_type": "buyback", "direction": "bullish", "title": "回购"},
+        ]
+        mock_candidate = Candidate(
+            symbol="999999.SZ", name="事件股", source="event_catalyst",
+            strategy_tags=["EVENT_CATALYST"], score=60.0, trade_date="2026-05-25",
+        )
+        mock_candidate.signals = [CandidateSignal(strategy_tag="EVENT_CATALYST", score=60.0, reason="test")]
+        mock_candidate.primary_strategy = "EVENT_CATALYST"
+
+        with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol", return_value=(mock_candidate, "")):
+            plan = generate_daily_plan(
+                trade_date="2026-05-25",
+                symbols=None,
+                event_overrides=event_overrides,
+                candidates=None,
+            )
+        symbols_in_plan = [e["symbol"] for e in plan.candidates]
+        assert "999999.SZ" in symbols_in_plan
+
+    def test_event_overrides_symbol_not_in_watchlist(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            tf_db = f.name
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f2:
+            prod_db = f2.name
+        try:
+            init_db(tf_db)
+            event_overrides = [
+                {"symbol": "888888.SZ", "name": "纯事件股", "event_type": "earnings", "direction": "bullish", "title": "业绩超预期"},
+            ]
+            mock_candidate = Candidate(
+                symbol="888888.SZ", name="纯事件股", source="event_catalyst",
+                strategy_tags=["EVENT_CATALYST"], score=70.0, trade_date="2026-05-25",
+            )
+            mock_candidate.signals = [CandidateSignal(strategy_tag="EVENT_CATALYST", score=70.0, reason="test")]
+            mock_candidate.primary_strategy = "EVENT_CATALYST"
+
+            with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol", return_value=(mock_candidate, "")):
+                plan = generate_daily_plan(
+                    trade_date="2026-05-25",
+                    symbols=None,
+                    prod_db_path=prod_db,
+                    tf_db_path=tf_db,
+                    event_overrides=event_overrides,
+                    candidates=None,
+                )
+            symbols_in_plan = [e["symbol"] for e in plan.candidates]
+            assert "888888.SZ" in symbols_in_plan
+        finally:
+            os.unlink(tf_db)
+            os.unlink(prod_db)
+
+    def test_event_overrides_no_duplicate(self):
+        event_overrides = [
+            {"symbol": "002353.SZ", "name": "重复股", "event_type": "buyback", "direction": "bullish", "title": "回购"},
+        ]
+        mock_candidate = Candidate(
+            symbol="002353.SZ", name="重复股", source="event_catalyst",
+            strategy_tags=["EVENT_CATALYST"], score=65.0, trade_date="2026-05-25",
+        )
+        mock_candidate.signals = [CandidateSignal(strategy_tag="EVENT_CATALYST", score=65.0, reason="test")]
+        mock_candidate.primary_strategy = "EVENT_CATALYST"
+
+        with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol", return_value=(mock_candidate, "")):
+            plan = generate_daily_plan(
+                trade_date="2026-05-25",
+    def test_to_db_row(self):
+        c = Candidate(symbol="002353.SZ", name="杰恩设计", source="manual")
+        c.strategy_tags = ["VCP"]
+        c.primary_strategy = "VCP"
+        c.score = 55.0
+        row = c.to_db_row()
+        assert row["symbol"] == "002353.SZ"
+        assert json.loads(row["strategy_tags_json"]) == ["VCP"]
+        assert row["primary_strategy"] == "VCP"
+
+    def test_from_db_row(self):
+        row = {
+            "symbol": "603256.SH",
+            "name": "宏和科技",
+            "source": "watchlist",
+            "strategy_tags_json": '["VCP", "PULLBACK_SUPPORT"]',
+            "primary_strategy": "PULLBACK_SUPPORT",
+            "score": 70.0,
+            "status": "active",
+            "trigger_price": 100.0,
+            "support_price": 88.0,
+            "invalid_price": 85.0,
+            "need_deep_ta": 1,
+            "evidence_json": '{"VCP": {"range_ratio": 0.5}}',
+            "risk_flags_json": '["流动性差"]',
+            "trade_date": "2026-05-25",
+            "created_at": "2026-05-25T08:00:00",
+            "updated_at": "2026-05-25T08:00:00",
+        }
+        c = Candidate.from_db_row(row)
+        assert c.symbol == "603256.SH"
+        assert c.strategy_tags == ["VCP", "PULLBACK_SUPPORT"]
+        assert c.primary_strategy == "PULLBACK_SUPPORT"
+        assert c.need_deep_ta is True
+        assert c.evidence == {"VCP": {"range_ratio": 0.5}}
+
+
+class TestSignal:
+    def test_allowed_action(self):
+        s = Signal(symbol="002353.SZ", signal_type="breakout", action_hint="OBSERVE")
+        assert s.action_hint == "OBSERVE"
+
+    def test_invalid_action_fallback(self):
+        s = Signal(symbol="002353.SZ", signal_type="breakout", action_hint="立即买入")
+        assert s.action_hint == "OBSERVE"  # fallback
+
+    def test_allowed_actions_all_valid(self):
+        for action in ALLOWED_ACTIONS:
+            s = Signal(symbol="TEST", signal_type="test", action_hint=action)
+            assert s.action_hint == action
+
+
+exec
+/bin/zsh -lc "grep -R \"from_db_row\" -n . | head -50; grep -R \"policy_evidence_refs\\|version_score\\|policy_tags\" -n tradingagents frontend api scheduler | head -100" in /Users/maybee/TradingAgents-AShare
+2026-05-29T04:53:04.021417Z ERROR codex_core::tools::router: error=write_stdin failed: stdin is closed for this session; rerun exec_command with tty=true to keep stdin open
+ succeeded in 15430ms:
+./.pytest_cache/v/cache/nodeids:802:  "tests/test_tradeflow_schemas.py::TestCandidate::test_from_db_row",
+Binary file ./tests/__pycache__/test_tradeflow_schemas.cpython-312-pytest-9.0.2.pyc matches
+./tests/test_tradeflow_schemas.py:90:    def test_from_db_row(self):
+./tests/test_tradeflow_schemas.py:109:        c = Candidate.from_db_row(row)
+./docs/task_runs/S-001-20260529-124731/opencode-round1.txt:104:更新 `from_db_row` 以读取策略版本字段：
+./docs/task_runs/S-001-20260529-124731/opencode-round1.txt:413:tests/test_tradeflow_schemas.py::TestCandidate::test_from_db_row PASSED  [ 38%]
+./docs/task_runs/S-001-20260529-124731/opencode-round1.txt:534:+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+./docs/DEVLOG.md:21:    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+Binary file ./tradingagents/tradeflow/__pycache__/schemas.cpython-312.pyc matches
+./tradingagents/tradeflow/schemas.py:136:    def from_db_row(cls, row: dict) -> "Candidate":
+tradingagents/tradeflow/candidate_engine.py:95:        ("policy_tags_json", "TEXT DEFAULT '[]'"),
+tradingagents/tradeflow/candidate_engine.py:96:        ("version_score", "REAL DEFAULT 0.0"),
+tradingagents/tradeflow/candidate_engine.py:97:        ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+tradingagents/tradeflow/candidate_engine.py:319:    if policy_result.policy_tags:
+tradingagents/tradeflow/candidate_engine.py:320:        candidate.policy_tags = policy_result.policy_tags
+tradingagents/tradeflow/candidate_engine.py:321:        candidate.version_score = policy_result.version_score
+tradingagents/tradeflow/candidate_engine.py:322:        candidate.policy_evidence_refs = policy_result.policy_evidence_refs
+tradingagents/tradeflow/candidate_engine.py:323:        candidate.score = round(candidate.score + policy_result.version_score, 2)
+tradingagents/tradeflow/candidate_engine.py:328:            "policy_tags": policy_result.policy_tags,
+tradingagents/tradeflow/candidate_engine.py:329:            "version_score": policy_result.version_score,
+tradingagents/tradeflow/candidate_engine.py:330:            "evidence_refs": policy_result.policy_evidence_refs,
+tradingagents/tradeflow/candidate_engine.py:332:        if policy_result.version_score >= 15:
+tradingagents/tradeflow/candidate_engine.py:347:            "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+tradingagents/tradeflow/candidate_engine.py:348:            "policy_evidence_refs_json, created_at, updated_at) "
+tradingagents/tradeflow/candidate_engine.py:357:            "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+tradingagents/tradeflow/candidate_engine.py:358:            "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
+tradingagents/tradeflow/candidate_engine.py:366:                row["policy_tags_json"], row["version_score"],
+tradingagents/tradeflow/candidate_engine.py:367:                row["policy_evidence_refs_json"],
+tradingagents/tradeflow/plan_runner.py:68:        "policy_tags": candidate.policy_tags,  # [S-001] policy_version_signal
+tradingagents/tradeflow/plan_runner.py:69:        "version_score": candidate.version_score,  # [S-001]
+tradingagents/tradeflow/plan_runner.py:70:        "policy_evidence_refs": candidate.policy_evidence_refs,  # [S-001]
+Binary file tradingagents/tradeflow/__pycache__/schemas.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/candidate_engine.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/plan_runner.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/policy_version_signal.cpython-312.pyc matches
+tradingagents/tradeflow/schemas.py:64:    policy_tags: list[str] = field(default_factory=list)  # [S-001] policy_version_signal
+tradingagents/tradeflow/schemas.py:65:    version_score: float = 0.0  # [S-001] policy_version_signal
+tradingagents/tradeflow/schemas.py:66:    policy_evidence_refs: list[dict] = field(default_factory=list)  # [S-001] policy_version_signal
+tradingagents/tradeflow/schemas.py:129:            "policy_tags_json": json.dumps(self.policy_tags, ensure_ascii=False),  # [S-001]
+tradingagents/tradeflow/schemas.py:130:            "version_score": self.version_score,  # [S-001]
+tradingagents/tradeflow/schemas.py:131:            "policy_evidence_refs_json": json.dumps(self.policy_evidence_refs, ensure_ascii=False),  # [S-001]
+tradingagents/tradeflow/schemas.py:154:            policy_tags=json.loads(row.get("policy_tags_json", "[]")),  # [S-001]
+tradingagents/tradeflow/schemas.py:155:            version_score=row.get("version_score", 0.0),  # [S-001]
+tradingagents/tradeflow/schemas.py:156:            policy_evidence_refs=json.loads(row.get("policy_evidence_refs_json", "[]")),  # [S-001]
+tradingagents/tradeflow/schemas.py:265:            policy_tags = c.get("policy_tags", [])
+tradingagents/tradeflow/schemas.py:266:            version_score = c.get("version_score", 0)
+tradingagents/tradeflow/schemas.py:267:            policy_refs = c.get("policy_evidence_refs", [])
+tradingagents/tradeflow/schemas.py:268:            if policy_tags:
+tradingagents/tradeflow/schemas.py:269:                lines.append(f"  政策版本: {', '.join(policy_tags)} (+{version_score}分)")
+tradingagents/tradeflow/policy_version_signal.py:5:- policy_tags: list of matched policy theme tags (e.g. "新质生产力", "低空经济")
+tradingagents/tradeflow/policy_version_signal.py:6:- version_score: 0-30 bonus score (only when backed by raw text evidence)
+tradingagents/tradeflow/policy_version_signal.py:7:- policy_evidence_refs: list of {tag, matched_text, source} for audit trail
+tradingagents/tradeflow/policy_version_signal.py:12:- version_score is 0 when no raw text evidence is found — no speculation.
+tradingagents/tradeflow/policy_version_signal.py:24:    policy_tags: list[str] = field(default_factory=list)
+tradingagents/tradeflow/policy_version_signal.py:25:    version_score: float = 0.0
+tradingagents/tradeflow/policy_version_signal.py:26:    policy_evidence_refs: list[dict] = field(default_factory=list)
+tradingagents/tradeflow/policy_version_signal.py:169:    version_score = min(raw_score, MAX_POLICY_BONUS)
+tradingagents/tradeflow/policy_version_signal.py:175:        policy_tags=sorted(set(matched_tags)),
+tradingagents/tradeflow/policy_version_signal.py:176:        version_score=round(version_score, 2),
+tradingagents/tradeflow/policy_version_signal.py:177:        policy_evidence_refs=evidence_refs,
+
+exec
+/bin/zsh -lc "grep -R --exclude-dir='__pycache__' --exclude-dir='.git' --exclude-dir='.venv' \"from_db_row\" -n tradingagents api scheduler tests; grep -R --exclude-dir='__pycache__' --exclude-dir='.git' --exclude-dir='.venv' \"tradeflow_candidates\" -n tradingagents api scheduler tests | head -100" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/tradeflow/schemas.py:136:    def from_db_row(cls, row: dict) -> "Candidate":
+tests/test_tradeflow_schemas.py:90:    def test_from_db_row(self):
+tests/test_tradeflow_schemas.py:109:        c = Candidate.from_db_row(row)
+tradingagents/tradeflow/candidate_engine.py:30:CREATE TABLE IF NOT EXISTS tradeflow_candidates (
+tradingagents/tradeflow/candidate_engine.py:90:        conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+tradingagents/tradeflow/candidate_engine.py:100:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:344:            "INSERT INTO tradeflow_candidates "
+tradingagents/tradeflow/candidate_engine.py:373:            "SELECT id FROM tradeflow_candidates WHERE trade_date=? AND symbol=?",
+tradingagents/tradeflow/plan_runner.py:3:Reads candidates from tradeflow_candidates, produces a DailyPlan
+tradingagents/tradeflow/universe.py:69:            "FROM tradeflow_candidates WHERE trade_date = ? AND status = 'active'",
+tradingagents/tradeflow/schemas.py:45:    """A tradeflow candidate — one row in tradeflow_candidates."""
+tests/test_tradeflow_candidate_engine.py:140:            assert "tradeflow_candidates" in tables
+tests/test_tradeflow_candidate_engine.py:169:                "SELECT * FROM tradeflow_candidates WHERE symbol='002353.SZ'"
+tests/test_tradeflow_candidate_engine.py:193:                "SELECT COUNT(*) FROM tradeflow_candidates WHERE symbol='002353.SZ' AND trade_date='2026-05-25'"
+tests/test_tradeflow_candidate_engine.py:213:                "SELECT need_deep_ta, primary_strategy FROM tradeflow_candidates WHERE symbol='TEST.SZ'"
+tests/test_tradeflow_candidate_engine.py:228:            cols = [r[1] for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()]
+tests/test_tradeflow_plan_runner.py:159:                "SELECT * FROM tradeflow_candidates WHERE symbol='002353.SZ' AND trade_date='2026-05-25'"
+tests/test_tradeflow_plan_runner.py:185:                "SELECT COUNT(*) FROM tradeflow_candidates WHERE symbol='002353.SZ'"
+tests/test_s001_policy_version_signal.py:274:                "SELECT * FROM tradeflow_candidates WHERE symbol='TEST.SZ'"
+
+exec
+/bin/zsh -lc "sed -n '1,130p' tradingagents/tradeflow/universe.py; sed -n '1,130p' tests/test_tradeflow_schemas.py; git diff -- docs/TASKS.md docs/DEVLOG.md; find docs/task_runs/S-001-20260529-124731 -maxdepth 2 -type f -print -exec sed -n '1,120p' {} \\; ; find .auto_dev.lock -maxdepth 2 -type f -print -exec sed -n '1,80p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""TradeFlow universe — manages the watch universe from multiple sources.
+
+P0 sources:
+1. Current holdings (imported_portfolio_positions)
+2. Watchlist items
+3. Manual symbol specification
+4. Previously observed candidates from yesterday's review
+5. Event/catalyst triggered stocks
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from datetime import datetime, timedelta
+from typing import Optional
+
+
+def get_holdings(db_path: str) -> list[dict]:
+    """Load current holdings from imported_portfolio_positions."""
+    rows = []
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            "SELECT symbol, name, quantity, avg_cost, current_price, market_value "
+            "FROM imported_portfolio_positions WHERE quantity > 0"
+        )
+        for r in cur.fetchall():
+            rows.append({
+                "symbol": r["symbol"],
+                "name": r["name"],
+                "source": "holding",
+            })
+        conn.close()
+    except Exception:
+        pass
+    return rows
+
+
+def get_watchlist(db_path: str) -> list[dict]:
+    """Load watchlist items."""
+    rows = []
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute("SELECT symbol, name FROM watchlist_items")
+        for r in cur.fetchall():
+            rows.append({
+                "symbol": r["symbol"],
+                "name": r["name"],
+                "source": "watchlist",
+            })
+        conn.close()
+    except Exception:
+        pass
+    return rows
+
+
+def get_yesterday_observations(tf_db_path: str, trade_date: Optional[str] = None) -> list[dict]:
+    """Load candidates from yesterday that were kept for observation."""
+    if trade_date is None:
+        trade_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    rows = []
+    try:
+        conn = sqlite3.connect(tf_db_path)
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            "SELECT symbol, name, strategy_tags_json, trigger_price, invalid_price "
+            "FROM tradeflow_candidates WHERE trade_date = ? AND status = 'active'",
+            (trade_date,),
+        )
+        for r in cur.fetchall():
+            rows.append({
+                "symbol": r["symbol"],
+                "name": r["name"],
+                "source": "yesterday_observe",
+                "strategy_tags": r["strategy_tags_json"],
+                "trigger_price": r["trigger_price"],
+                "invalid_price": r["invalid_price"],
+            })
+        conn.close()
+    except Exception:
+        pass
+    return rows
+
+
+def build_universe(
+    symbols: Optional[list[str]] = None,
+    prod_db_path: str = "",
+    tf_db_path: str = "",
+    include_holdings: bool = True,
+    include_watchlist: bool = True,
+    include_yesterday: bool = True,
+    event_overrides: Optional[list[dict]] = None,
+    event_symbols: Optional[dict[str, list[str]]] = None,  # [N-001] event_source_plan_integration
+) -> list[dict]:
+    """Build the full universe of symbols to evaluate.
+
+    Returns a deduplicated list of {symbol, name, source} dicts.
+    """
+    universe: dict[str, dict] = {}
+
+    # 1. Holdings
+    if include_holdings and prod_db_path:
+        for item in get_holdings(prod_db_path):
+            universe.setdefault(item["symbol"], item)
+
+    # 2. Watchlist
+    if include_watchlist and prod_db_path:
+        for item in get_watchlist(prod_db_path):
+            universe.setdefault(item["symbol"], item)
+
+    # 3. Manual symbols
+    if symbols:
+        for sym in symbols:
+            sym = sym.strip()
+            if sym and sym not in universe:
+                universe[sym] = {"symbol": sym, "name": "", "source": "manual"}
+
+    # 4. Yesterday observations
+    if include_yesterday and tf_db_path:
+        for item in get_yesterday_observations(tf_db_path):
+            universe.setdefault(item["symbol"], item)
+
+    # 5. Event-triggered stocks from overrides
+    if event_overrides:
+        for ev in event_overrides:
+            sym = ev.get("symbol", "").strip()
+            if sym and sym not in universe:
+                universe[sym] = {
+"""Tests for TradeFlow schemas."""
+
+import sys
+import os
+import json
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tradingagents.tradeflow.schemas import (
+    Candidate, CandidateSignal, Signal, DailyPlan,
+    ALLOWED_ACTIONS, FORBIDDEN_WORDS, ALL_STRATEGIES,
+)
+
+
+class TestCandidateSignal:
+    def test_basic_creation(self):
+        sig = CandidateSignal(
+            strategy_tag="VCP",
+            trigger_price=100.0,
+            invalid_price=90.0,
+            score=60.0,
+            reason="缩量整理",
+        )
+        assert sig.strategy_tag == "VCP"
+        assert sig.trigger_price == 100.0
+        assert sig.score == 60.0
+
+    def test_default_values(self):
+        sig = CandidateSignal(strategy_tag="VCP")
+        assert sig.score == 0.0
+        assert sig.evidence == {}
+        assert sig.risk_flags == []
+        assert sig.need_deep_ta is False
+
+
+class TestCandidate:
+    def test_merge_single_signal(self):
+        c = Candidate(symbol="002353.SZ", name="杰恩设计")
+        c.signals = [CandidateSignal(
+            strategy_tag="VCP", score=55.0,
+            trigger_price=100.0, invalid_price=90.0,
+        )]
+        c.merge_signals()
+        assert c.strategy_tags == ["VCP"]
+        assert c.score == 55.0
+        assert c.trigger_price == 100.0
+
+    def test_merge_multiple_signals(self):
+        c = Candidate(symbol="002353.SZ")
+        c.signals = [
+            CandidateSignal(strategy_tag="VCP", score=50.0, trigger_price=100.0,
+                            support_price=80.0, invalid_price=75.0),
+            CandidateSignal(strategy_tag="PULLBACK_SUPPORT", score=65.0, trigger_price=95.0,
+                            support_price=88.0, invalid_price=82.0, need_deep_ta=True),
+        ]
+        c.merge_signals()
+        assert set(c.strategy_tags) == {"VCP", "PULLBACK_SUPPORT"}
+        assert c.score == 65.0
+        assert c.need_deep_ta is True
+        assert c.primary_strategy == "PULLBACK_SUPPORT"
+        assert c.trigger_price == 95.0
+        assert c.support_price == 88.0
+        assert c.invalid_price == 82.0
+
+    def test_primary_strategy_prices_not_overwritten(self):
+        c = Candidate(symbol="002353.SZ")
+        c.signals = [
+            CandidateSignal(strategy_tag="VCP", score=70.0, trigger_price=100.0,
+                            support_price=85.0, invalid_price=80.0),
+            CandidateSignal(strategy_tag="PULLBACK_SUPPORT", score=50.0, trigger_price=95.0,
+                            support_price=88.0, invalid_price=82.0),
+        ]
+        c.merge_signals()
+        assert c.primary_strategy == "VCP"
+        assert c.trigger_price == 100.0
+        assert c.support_price == 85.0
+        assert c.invalid_price == 80.0
+
+    def test_to_db_row(self):
+        c = Candidate(symbol="002353.SZ", name="杰恩设计", source="manual")
+        c.strategy_tags = ["VCP"]
+        c.primary_strategy = "VCP"
+        c.score = 55.0
+        row = c.to_db_row()
+        assert row["symbol"] == "002353.SZ"
+        assert json.loads(row["strategy_tags_json"]) == ["VCP"]
+        assert row["primary_strategy"] == "VCP"
+
+    def test_from_db_row(self):
+        row = {
+            "symbol": "603256.SH",
+            "name": "宏和科技",
+            "source": "watchlist",
+            "strategy_tags_json": '["VCP", "PULLBACK_SUPPORT"]',
+            "primary_strategy": "PULLBACK_SUPPORT",
+            "score": 70.0,
+            "status": "active",
+            "trigger_price": 100.0,
+            "support_price": 88.0,
+            "invalid_price": 85.0,
+            "need_deep_ta": 1,
+            "evidence_json": '{"VCP": {"range_ratio": 0.5}}',
+            "risk_flags_json": '["流动性差"]',
+            "trade_date": "2026-05-25",
+            "created_at": "2026-05-25T08:00:00",
+            "updated_at": "2026-05-25T08:00:00",
+        }
+        c = Candidate.from_db_row(row)
+        assert c.symbol == "603256.SH"
+        assert c.strategy_tags == ["VCP", "PULLBACK_SUPPORT"]
+        assert c.primary_strategy == "PULLBACK_SUPPORT"
+        assert c.need_deep_ta is True
+        assert c.evidence == {"VCP": {"range_ratio": 0.5}}
+
+
+class TestSignal:
+    def test_allowed_action(self):
+        s = Signal(symbol="002353.SZ", signal_type="breakout", action_hint="OBSERVE")
+        assert s.action_hint == "OBSERVE"
+
+    def test_invalid_action_fallback(self):
+        s = Signal(symbol="002353.SZ", signal_type="breakout", action_hint="立即买入")
+        assert s.action_hint == "OBSERVE"  # fallback
+
+    def test_allowed_actions_all_valid(self):
+        for action in ALLOWED_ACTIONS:
+            s = Signal(symbol="TEST", signal_type="test", action_hint=action)
+            assert s.action_hint == action
+
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 42d00a6..53d85fb 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,45 @@
+ 
+ ---
+ 
++## 2026-05-29 | S-001 政策版本因子进入 TradeFlow 候选池
++
++- **执行者**：OpenCode (glm-5.1)
++- **任务**：为 TradeFlow 增加政策版本因子，识别 A 股市场政策/产业方向，让候选池从"技术形态先行"升级为"政策版本入池 + 技术确认"
++- **修改文件**：
++  - `tradingagents/tradeflow/policy_version_signal.py`（新增，~140行）— [S-001] policy_version_signal
++    - `detect_policy_version(event_texts, industry_tags)` — 检测事件文本中的政策版本关键词
++    - `PolicyVersionResult` — 输出 `policy_tags`、`version_score`（0-30分）、`policy_evidence_refs`
++    - 14 个政策版本主题：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革、半导体、新能源、人工智能、数据要素、军工
++    - 仅事件文本命中时给完整权重；行业标签命中给 30% 权重；无原始文本证据时不得加分
++    - 累计加分上限 30 分（`MAX_POLICY_BONUS`）
++  - `tradingagents/tradeflow/schemas.py` — [S-001]
++    - `Candidate` 新增 `policy_tags`、`version_score`、`policy_evidence_refs` 字段
++    - `STRATEGY_POLICY_VERSION = "POLICY_VERSION"` 策略常量，加入 `ALL_STRATEGIES`
++    - `to_db_row()` / `from_db_row()` 支持新字段持久化
++    - `DailyPlan.render_text()` 展示政策标签和证据摘要
++  - `tradingagents/tradeflow/candidate_engine.py` — [S-001]
++    - `evaluate_symbol()` 在 N-004 信号标签之后调用 `detect_policy_version()`
++    - 政策版本命中时加分、加入 `strategy_tags`、写入 `evidence.policy_version`
++    - `version_score >= 15` 时设置 `need_deep_ta=True`
++    - `init_db()` 新增 `policy_tags_json`、`version_score`、`policy_evidence_refs_json` 列迁移
++    - `save_candidate()` INSERT/UPDATE 包含新字段
++  - `tradingagents/tradeflow/plan_runner.py` — [S-001]
++    - `_build_plan_entry()` 输出 `policy_tags`、`version_score`、`policy_evidence_refs`
++  - `tests/test_s001_policy_version_signal.py`（新增，~280行）— 35 个测试
++- **关键逻辑**：
++  1. 政策版本信号作为 bonus 层叠加在 VCP/Pullback/Event 之上，不破坏现有策略
++  2. 无事件文本证据时 `version_score` 恒为 0，不凭空加分
++  3. 不同股票各自消费自己的事件文本，按 symbol 隔离
++  4. Daily Plan 展示政策标签和证据摘要，动作仍为 OBSERVE/NEED_DEEP_TA
++  5. 高政策版本得分（≥15）自动提升 need_deep_ta 优先级
++- **标记**：`# [S-001] policy_version_signal`
++- **测试结果**：
++  - S-001 专项测试：35 passed
++  - TradeFlow 全量测试：118 passed
++  - 扩展回归测试：370 passed, 2 skipped
++
++---
++
+ ## 2026-05-29 | TradeFlow 选股策略任务池重排
+ 
+ - **执行者**：Codex
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 249492e..6c6f4a4 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -40,7 +40,7 @@
+ ### S-001: 政策版本因子进入 TradeFlow 候选池（P1）
+ - **描述**：为 TradeFlow 增加政策版本因子，识别当前 A 股市场更容易被定价的政策/产业方向，让候选池从“技术形态先行”升级为“政策版本入池 + 技术确认”。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：in_progress — claimed S-001-20260529-124731
+ - **背景**：
+   - A 股很多阶段不是简单的业绩驱动，而是政策方向、产业版本和市场叙事共同驱动。
+   - 现在 TradeFlow 已有 VCP、事件催化、A 股标签，但缺少“当前版本需要什么标杆”的第一层判断。
+docs/task_runs/S-001-20260529-124731/tests-round1.txt
+## pytest tests/test_tradeflow_*.py -q
+
+........................................................................ [ 86%]
+...........                                                              [100%]
+83 passed in 6.09s
+
+Exit code: 0
+
+docs/task_runs/S-001-20260529-124731/prompt-round1.md
+# 任务: S-001: 政策版本因子进入 TradeFlow 候选池（P1）
+
+请从 docs/TASKS.md 中读取任务 "S-001" 的完整描述，按要求实现。
+
+## 执行约束
+- 不改 tradingagents/prompts/
+- 不写入生产 tradingagents.db
+- 不跑全市场扫描或股票深度 TA
+- 不 push / PR / merge
+- **不要 git commit** — commit 由外层脚本统一执行
+- 修改后更新 docs/DEVLOG.md
+
+## 完成后输出
+- 修改了哪些文件
+- 关键逻辑说明
+- 测试结果（passed/failed 数量）
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/project-overview.md
+[0m
+[0m# [0mTodos
+[ ] Read existing TradeFlow codebase (candidate_engine, event_source, strategies, schemas, plan_runner)
+[ ] Create policy_version_signal module with policy_tags, version_score, policy_evidence_refs
+[ ] Integrate policy version signal into candidate_engine without breaking VCP/event flows
+[ ] Update plan_runner to display policy tags in Daily Plan
+[ ] Write tests for S-001 (policy keywords, evidence gating, symbol isolation)
+[ ] Run full test suite and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/tradeflow
+[0m✱ [0mGlob "tradingagents/tradeflow/**/*.py"[90m 11 matches[0m
+[0m→ [0mRead tradingagents/tradeflow/schemas.py
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py
+[0m→ [0mRead tradingagents/tradeflow/strategies/event_catalyst.py
+[0m→ [0mRead tradingagents/tradeflow/strategies/__init__.py
+[0m→ [0mRead tradingagents/tradeflow/strategies/vcp.py
+现在让我看看现有的 TradeFlow 测试以获取参考模式：
+[0m✱ [0mGlob "tests/test_tradeflow*.py"[90m 4 matches[0m
+[0m→ [0mRead tests/test_tradeflow_strategies.py
+[0m→ [0mRead tests/test_tradeflow_candidate_engine.py
+[0m
+[0m# [0mTodos
+[x] Read existing TradeFlow codebase (candidate_engine, event_source, strategies, schemas, plan_runner)
+[ ] Create policy_version_signal module with policy_tags, version_score, policy_evidence_refs
+[ ] Integrate policy version signal into candidate_engine without breaking VCP/event flows
+[ ] Update plan_runner to display policy tags in Daily Plan
+[ ] Write tests for S-001 (policy keywords, evidence gating, symbol isolation)
+[ ] Run full test suite and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+现在我已全面了解情况。接下来我将实现 S-001。
+首先，我来创建 `policy version signal` 模块：
+[0m← [0mWrite tradingagents/tradeflow/policy_version_signal.py
+Wrote file successfully.
+[0m
+现在更新 `schemas.py` 以添加 `POLICY_VERSION` 策略常量：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -14,9 +14,10 @@
+ 
+ STRATEGY_VCP = "VCP"
+ STRATEGY_PULLBACK = "PULLBACK_SUPPORT"
+ STRATEGY_EVENT = "EVENT_CATALYST"
+-ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT}
++STRATEGY_POLICY_VERSION = "POLICY_VERSION"  # [S-001] policy_version_signal
++ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION}
+ 
+ # [N-004] astock_signal_tags
+ SIGNAL_TAG_POLICY_CATALYST = "POLICY_CATALYST"
+ SIGNAL_TAG_HOT_MONEY_LHB = "HOT_MONEY_LHB"
+
+[0m
+现在更新 `Candidate` 数据类，以包含策略版本字段：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -60,8 +60,11 @@
+ updated_at: str = ""
+ 
+ primary_strategy: str = ""
+ signals: list[CandidateSignal] = field(default_factory=list, repr=False)
++policy_tags: list[str] = field(default_factory=list)  # [S-001] policy_version_signal
++version_score: float = 0.0  # [S-001] policy_version_signal
++policy_evidence_refs: list[dict] = field(default_factory=list)  # [S-001] policy_version_signal
+ 
+ def __post_init__(self):
+     if not self.trade_date:
+         self.trade_date = datetime.now().strftime("%Y-%m-%d")
+
+[0m
+更新 `to_db_row` 以包含策略版本字段：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -125,8 +125,11 @@
+         "invalid_price": self.invalid_price,
+         "need_deep_ta": 1 if self.need_deep_ta else 0,
+         "evidence_json": json.dumps(self.evidence, ensure_ascii=False),
+         "risk_flags_json": json.dumps(self.risk_flags, ensure_ascii=False),
++        "policy_tags_json": json.dumps(self.policy_tags, ensure_ascii=False),  # [S-001]
++        "version_score": self.version_score,  # [S-001]
++        "policy_evidence_refs_json": json.dumps(self.policy_evidence_refs, ensure_ascii=False),  # [S-001]
+         "updated_at": datetime.now().isoformat(),
+     }
+ 
+ @classmethod
+
+[0m
+更新 `from_db_row` 以读取策略版本字段：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -150,8 +150,11 @@
+             risk_flags=json.loads(row.get("risk_flags_json", "[]")),
+             trade_date=row.get("trade_date", ""),
+             created_at=row.get("created_at", ""),
+             updated_at=row.get("updated_at", ""),
++            policy_tags=json.loads(row.get("policy_tags_json", "[]")),  # [S-001]
++            version_score=row.get("version_score", 0.0),  # [S-001]
++            policy_evidence_refs=json.loads(row.get("policy_evidence_refs_json", "[]")),  # [S-001]
+         )
+ 
+ 
+docs/task_runs/S-001-20260529-124731/task.md
+# Auto Dev Task Run
+
+- Task: S-001 — 政策版本因子进入 TradeFlow 候选池（P1）
+- Priority: P1
+- Status: CLAIMED
+- Started at: 2026-05-29_12:47:31
+- Git HEAD: 9bc1aff
+- Test commands: pytest tests/test_tradeflow_*.py -q
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+.auto_dev.lock/owner
+pid=31740
+started_at=2026-05-29_12:47:31
+repo=/Users/maybee/TradingAgents-AShare
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/tradeflow/strategies/event_catalyst.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""Event Catalyst / 事件催化 strategy.
+
+入池逻辑：
+- 近期有公告、业绩预告、季报、回购、增持、中标、订单、并购等事件
+- 事件被分类为利好/利空/不确定
+- 需要市场价格确认
+
+P0 简化版：基于简单规则检测（不调用 LLM），仅匹配关键词模式。
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Optional
+
+
+@dataclass
+class EventCatalystSignal:
+    strategy_tag: str = "EVENT_CATALYST"
+    trigger_price: Optional[float] = None
+    support_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    score: float = 0.0
+    reason: str = ""
+    evidence: dict = field(default_factory=dict)
+    risk_flags: list[str] = field(default_factory=list)
+    need_deep_ta: bool = False
+    event_type: str = ""
+    event_direction: str = "neutral"  # bullish / bearish / neutral
+    verification_condition: str = ""
+
+
+# Event keyword patterns for P0
+EVENT_PATTERNS = [
+    ("earnings_preview", "业绩预告", "bullish", 60),
+    ("quarterly_report", "季报披露", "neutral", 50),
+    ("buyback", "回购", "bullish", 55),
+    ("insider_buy", "增持", "bullish", 55),
+    ("contract", "中标|大单|签约", "bullish", 50),
+    ("merger", "并购|重组", "bullish", 65),
+    ("dividend", "分红|派息", "bullish", 40),
+    ("delist_warning", r"退市风险|\*ST", "bearish", 80),
+    ("regulation", "处罚|监管警示", "bearish", 60),
+]
+
+# [N-004] astock_signal_tags — keyword patterns for A-share specific signal tags
+_POLICY_KEYWORDS = re.compile(
+    r"政策|补贴|扶持|产业政策|国务院|发改委|工信部|证监会|商务部|科技部|重点支持|国家战略"
+)
+_BUYBACK_KEYWORDS = re.compile(r"回购|回购进展|回购计划|回购实施")
+_RATING_CHANGE_KEYWORDS = re.compile(
+    r"评级上调|评级下调|目标价上调|目标价下调|首次覆盖|维持买入|维持增持"
+)
+_LOCKUP_KEYWORDS = re.compile(r"解禁|限售股解禁|解除限售|首发原股东限售股份")
+_LHB_KEYWORDS = re.compile(r"龙虎榜|游资|LHB|营业部")
+
+
+# [N-004] astock_signal_tags
+def extract_signal_tags(
+    event_texts: list[str],
+    lhb_status: str = "NOT_QUERIED",
+) -> tuple[list[str], list[str]]:
+    """Extract A-share specific signal tags from event text.
+
+    Args:
+        event_texts: List of news/announcement text snippets.
+        lhb_status: One of "HAS_DATA", "NOT_QUERIED", "NORMAL_NO_DATA".
+                    Only "HAS_DATA" enables HOT_MONEY_LHB tag.
+
+    Returns:
+        (strategy_tags, risk_flags) — LOCKUP_RISK goes ONLY to risk_flags.
+    """
+    combined = "\n".join(event_texts) if event_texts else ""
+
+    strategy_tags: list[str] = []
+    risk_flags: list[str] = []
+
+    from tradingagents.tradeflow.schemas import (
+        SIGNAL_TAG_POLICY_CATALYST,
+        SIGNAL_TAG_HOT_MONEY_LHB,
+        SIGNAL_TAG_LOCKUP_RISK,
+        SIGNAL_TAG_BUYBACK_EVENT,
+        SIGNAL_TAG_RATING_CHANGE,
+    )
+
+    if _POLICY_KEYWORDS.search(combined):
+        strategy_tags.append(SIGNAL_TAG_POLICY_CATALYST)
+
+    if _BUYBACK_KEYWORDS.search(combined):
+        strategy_tags.append(SIGNAL_TAG_BUYBACK_EVENT)
+
+    if _RATING_CHANGE_KEYWORDS.search(combined):
+        strategy_tags.append(SIGNAL_TAG_RATING_CHANGE)
+
+    if _LOCKUP_KEYWORDS.search(combined):
+        risk_flags.append(SIGNAL_TAG_LOCKUP_RISK)
+
+    if lhb_status == "HAS_DATA" and _LHB_KEYWORDS.search(combined):
+        strategy_tags.append(SIGNAL_TAG_HOT_MONEY_LHB)
+
+    return sorted(set(strategy_tags)), sorted(set(risk_flags))
+
+
+def score_event_catalyst(
+    symbol: str,
+    news_texts: Optional[list[str]] = None,
+    event_overrides: Optional[list[dict]] = None,
+    latest_close: float = 0.0,
+    lhb_status: str = "NOT_QUERIED",
+) -> Optional[EventCatalystSignal]:
+    """Score a stock for event-driven catalyst.
+
+    P0: Uses keyword matching on provided text. Does NOT call any LLM.
+
+    Args:
+        symbol: Stock symbol.
+        news_texts: List of news/announcement text snippets.
+        event_overrides: List of {"event_type", "direction", "title"} dicts
+                        for manual event specification.
+        latest_close: Latest close price for trigger/invalid calculation.
+        lhb_status: LHB data status, one of "HAS_DATA"/"NOT_QUERIED"/"NORMAL_NO_DATA".
+                    Controls HOT_MONEY_LHB tag.  [N-004] astock_signal_tags
+
+    Returns:
+        EventCatalystSignal if catalyst detected, None otherwise.
+    """
+    detected_events = []
+
+    # Check overrides first — only use overrides whose symbol matches,
+    # or overrides without a symbol field (global manual events).
+    if event_overrides:
+        for ev in event_overrides:
+            ev_symbol = ev.get("symbol")
+            if ev_symbol is not None and ev_symbol != symbol:
+                continue
+            detected_events.append({
+                "type": ev.get("event_type", "custom"),
+                "title": ev.get("title", ""),
+                "direction": ev.get("direction", "neutral"),
+                "score": ev.get("score", 50),
+            })
+
+    # Check news texts with keyword patterns
+    if news_texts:
+        for text in news_texts:
+            if not text:
+                continue
+            for event_type, pattern, direction, base_score in EVENT_PATTERNS:
+                if re.search(pattern, text):
+                    detected_events.append({
+                        "type": event_type,
+                        "title": text[:80],
+                        "direction": direction,
+                        "score": base_score,
+                    })
+
+    if not detected_events:
+        return None
+
+    # Aggregate: take the highest-impact event
+    best = max(detected_events, key=lambda x: x["score"])
+    all_types = list({e["type"] for e in detected_events})
+    has_bearish = any(e["direction"] == "bearish" for e in detected_events)
+    has_bullish = any(e["direction"] == "bullish" for e in detected_events)
+
+    direction = best["direction"]
+    if has_bearish and has_bullish:
+        direction = "mixed"
+
+    score = min(best["score"], 80)
+
+    risk_flags = []
+    if has_bearish:
+        risk_flags.append("含利空事件")
+
+    # Price-based triggers (simplified for P0)
+    trigger_price = round(latest_close * 1.03, 2) if latest_close > 0 else None
+    invalid_price = round(latest_close * 0.95, 2) if latest_close > 0 else None
+
+    need_deep_ta = score >= 60 or direction in ("mixed", "neutral")
+
+    verification = ""
+    if direction == "bullish":
+        verification = "需放量确认突破"
+    elif direction == "bearish":
+        verification = "需观察是否止跌企稳"
+    else:
+        verification = "需价格与成交量验证方向"
+
+    # [N-004] astock_signal_tags — extract A-share specific tags
+    all_texts = [t for t in (news_texts or []) if t]
+    extra_tags, extra_risks = extract_signal_tags(all_texts, lhb_status=lhb_status)
+
+    return EventCatalystSignal(
+        trigger_price=trigger_price,
+        support_price=None,
+        invalid_price=invalid_price,
+        score=score,
+        reason=f"有事件催化({best['type']})，但需价格与成交量验证",
+        evidence={
+            "events": detected_events,
+            "event_count": len(detected_events),
+            "best_event": best["type"],
+            "astock_tags": extra_tags,
+            "astock_risk_flags": extra_risks,
+        },
+        risk_flags=risk_flags + extra_risks,
+        need_deep_ta=need_deep_ta,
+        event_type=best["type"],
+        event_direction=direction,
+        verification_condition=verification,
+    )
+
+exec
+/bin/zsh -lc "grep -R --exclude-dir='__pycache__' --exclude-dir='.git' --exclude-dir='.venv' \"score.*100\\|<= 100\\|0-100\\|score\" -n docs tradingagents/tests tests tradingagents/tradeflow | head -100" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+grep: tradingagents/tests: No such file or directory
+docs/tradeflow-p0-task.md:110:id, trade_date, symbol, name, source, strategy_tags_json, score,
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:10:[ ] Create policy_version_signal module with policy_tags, version_score, policy_evidence_refs
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:32:[ ] Create policy_version_signal module with policy_tags, version_score, policy_evidence_refs
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:76:+version_score: float = 0.0  # [S-001] policy_version_signal
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:96:+        "version_score": self.version_score,  # [S-001]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:116:+            version_score=row.get("version_score", 0.0),  # [S-001]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:137: from .strategies.vcp import score_vcp
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:138: from .strategies.pullback_support import score_pullback_support
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:139: from .strategies.event_catalyst import score_event_catalyst
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:156:                 candidate.score = round(candidate.score * 0.8, 2)
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:164:+        candidate.version_score = policy_result.version_score
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:166:+        candidate.score = round(candidate.score + policy_result.version_score, 2)
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:172:+            "version_score": policy_result.version_score,
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:175:+        if policy_result.version_score >= 15:
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:198:+    ("version_score", "REAL DEFAULT 0.0"),
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:223:+        "version_score": candidate.version_score,  # [S-001]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:244:+    version_score = c.get("version_score", 0)
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:247:+        lines.append(f"  政策版本: {', '.join(policy_tags)} (+{version_score}分)")
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:267:     "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:270:+    "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:275:     "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:281:+    "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:287:         row["score"], row["status"],
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:290:+        row["policy_tags_json"], row["version_score"],
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:300:[x] Create policy_version_signal module with policy_tags, version_score, policy_evidence_refs
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:333:tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_no_evidence_zero_score PASSED [ 37%]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:334:tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_empty_texts_zero_score PASSED [ 40%]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:335:tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_none_texts_zero_score PASSED [ 42%]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:336:tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_none_both_zero_score PASSED [ 45%]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:337:tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_score_capped_at_max PASSED [ 48%]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:346:tests/test_s001_policy_version_signal.py::TestPolicyVersionEvidence::test_blank_texts_no_score PASSED [ 74%]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:348:tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_policy_version_adds_to_score PASSED [ 80%]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:352:tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_high_version_score_triggers_deep_ta PASSED [ 91%]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:451:tests/test_tradeflow_strategies.py::TestVCPScoring::test_strong_contraction_scores_higher PASSED [ 70%]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:464:tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_no_evidence_zero_score PASSED [ 81%]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:465:tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_empty_texts_zero_score PASSED [ 82%]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:466:tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_none_texts_zero_score PASSED [ 83%]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:467:tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_none_both_zero_score PASSED [ 83%]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:468:tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_score_capped_at_max PASSED [ 84%]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:477:tests/test_s001_policy_version_signal.py::TestPolicyVersionEvidence::test_blank_texts_no_score PASSED [ 92%]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:479:tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_policy_version_adds_to_score PASSED [ 94%]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:483:tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_high_version_score_triggers_deep_ta PASSED [ 97%]
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:491:[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tradeflow_*.py tests/test_s001_policy_version_signal.py tests/test_readiness_score.py tests/test_g001_three_layer.py tests/test_event_source*.py tests/test_cn_astock_provider.py tests/test_execution_schema.py -q 2>&1
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:502:[x] Create policy_version_signal module with policy_tags, version_score, policy_evidence_refs
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:527:+    - `PolicyVersionResult` — 输出 `policy_tags`、`version_score`（0-30分）、`policy_evidence_refs`
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:532:+    - `Candidate` 新增 `policy_tags`、`version_score`、`policy_evidence_refs` 字段
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:539:+    - `version_score >= 15` 时设置 `need_deep_ta=True`
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:540:+    - `init_db()` 新增 `policy_tags_json`、`version_score`、`policy_evidence_refs_json` 列迁移
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:543:+    - `_build_plan_entry()` 输出 `policy_tags`、`version_score`、`policy_evidence_refs`
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:547:+  2. 无事件文本证据时 `version_score` 恒为 0，不凭空加分
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:567:[x] Create policy_version_signal module with policy_tags, version_score, policy_evidence_refs
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:581:| `tradingagents/tradeflow/schemas.py` | 修改 | Candidate 新增 `policy_tags/version_score/policy_evidence_refs`；`STRATEGY_POLICY_VERSION` 常量；`render_text()` 展示政策标签 |
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:589:1. **证据门控**：无事件文本证据 → `version_score` 恒为 0，不凭空加分
+docs/task_runs/S-001-20260529-124731/opencode-round1.txt:592:4. **Deep TA 触发**：`version_score >= 15` 自动标记 `need_deep_ta=True`
+docs/task_runs/M-002-20260529-112320/opencode-round1.txt:483:[0m$ [0msource /Users/maybee/TradingAgents-AShare/.venv/bin/activate && pytest tests/test_m002_summarize_runs.py tests/test_auto_dev_loop_static.py tests/test_readiness_score.py -q --tb=short 2>&1
+docs/task_runs/M-002-20260529-112320/opencode-round1.txt:518:- `pytest tests/test_m002_summarize_runs.py tests/test_auto_dev_loop_static.py tests/test_readiness_score.py -q` → **140 passed**
+docs/DEVLOG.md:14:    - `PolicyVersionResult` — 输出 `policy_tags`、`version_score`（0-30分）、`policy_evidence_refs`
+docs/DEVLOG.md:19:    - `Candidate` 新增 `policy_tags`、`version_score`、`policy_evidence_refs` 字段
+docs/DEVLOG.md:26:    - `version_score >= 15` 时设置 `need_deep_ta=True`
+docs/DEVLOG.md:27:    - `init_db()` 新增 `policy_tags_json`、`version_score`、`policy_evidence_refs_json` 列迁移
+docs/DEVLOG.md:30:    - `_build_plan_entry()` 输出 `policy_tags`、`version_score`、`policy_evidence_refs`
+docs/DEVLOG.md:34:  2. 无事件文本证据时 `version_score` 恒为 0，不凭空加分
+docs/DEVLOG.md:303:  - `pytest tests/test_g007_fund_lhb_provenance.py tests/test_readiness_score.py -q` → 155 passed
+docs/DEVLOG.md:323:  - `tradingagents/agents/utils/readiness_score.py` — [G-007]
+docs/DEVLOG.md:333:  - `tests/test_readiness_score.py` — 更新 LHB 未触发测试断言为 NOT_QUERIED
+docs/DEVLOG.md:377:  - `tradingagents/agents/utils/readiness_score.py` — [G-006]
+docs/DEVLOG.md:388:  - 全量回归: 181 tests passed (含 test_readiness_score, test_e_series_fixes, test_data_collector, test_realtime_quote_provider)
+docs/DEVLOG.md:425:  - `pytest tests/test_g001_three_layer.py tests/test_readiness_score.py -q` → 163 passed
+docs/DEVLOG.md:489:  - `pytest tests/test_p0_p1_acceptance.py tests/test_g001_three_layer.py tests/test_readiness_score.py` → 175 passed
+docs/DEVLOG.md:538:  - `tradingagents/agents/utils/readiness_score.py` — [E-001] `format_readiness_score` 追加系统版本区块；[E-002] 新增 `validate_stock_name` 名称校验函数 + `get_strong_action_gate` 增加 `name_mismatch` 和 `no_execution_zone_conflict` 参数 + `calculate_risk_level`/`calculate_buy_level` Level 4 降级；[E-003] 扩展止损关键词(`止损红线/止损位/止损价/清仓线/止损线`) + 入场/减仓区间冲突检测 + `has_stop_loss`/`execution_zone_conflict` 信号；[E-004] `infer_evidence_statuses` 支持从 `raw_evidence` 结构化数据直接读取，fallback 到文本正则
+docs/DEVLOG.md:542:  - `tests/test_readiness_score.py` — 新增 26 个测试覆盖 E-001~E-004
+docs/DEVLOG.md:543:- **验证**：`pytest tests/test_readiness_score.py` 100 passed；`pytest -q` 294 passed, 4 pre-existing SQLite failures
+docs/DEVLOG.md:571:  - `tradingagents/agents/utils/readiness_score.py` — 新增 3 个函数 + 修改 1 个函数：
+docs/DEVLOG.md:577:  - `tests/test_readiness_score.py` — 从 32 项测试扩展至 74 项，覆盖全部 P1/P2 测试要求
+docs/DEVLOG.md:580:  - `tests/test_readiness_score.py`: 74 passed
+docs/DEVLOG.md:595:  - `tradingagents/agents/utils/readiness_score.py` — 大幅扩展：新增 source_coverage、evidence_coverage、get_strong_action_gate、calculate_risk_level、calculate_buy_level、calculate_opportunity_score、format_execution_block
+docs/DEVLOG.md:597:  - `tests/test_readiness_score.py` — 新建，32 个测试覆盖 D-001~D-004 全部 8 项测试要求
+docs/DEVLOG.md:598:- **测试结果**：32/32 passed（test_readiness_score.py），全项目 228 passed（2 个 pre-existing SQLite 线程安全失败不相关）
+docs/DEVLOG.md:603:  - D-004: Opportunity Score 0-100，5 维加权，风险事件降权；不单独决定买入
+docs/DEVLOG.md:617:  - `tradingagents/agents/utils/readiness_score.py` — 新建，C-008 报告质量评分
+docs/DEVLOG.md:668:7. 数据完整度与建议动作挂钩：<50% 禁止买入/加仓，50-79% 禁止加仓，≥80% 全部允许（readiness_score.py 新增 get_allowed_actions + 格式化输出包含允许/禁止动作）
+docs/DEVLOG.md:718:- **集成点**：`fetch_daily_events()` 返回格式直接兼容 `score_event_catalyst(news_texts=)`
+docs/DEVLOG.md:753:- **Schema 字段**：action, buy_level, risk_level, trigger_price, invalid_price, confidence, opportunity_score, source_coverage, evidence_coverage, strong_action_gate_passed, gate_failures, position_status, analysis_intent, horizon, data_quality_flags, evidence_refs, valuation_mismatch
+docs/DEVLOG.md:756:- **测试**：139 passed（含 readiness_score 测试）
+docs/TASKS.md:53:  1. 新增或扩展政策版本信号模块，输出 `policy_tags`、`version_score`、`policy_evidence_refs`。
+docs/TASKS.md:60:  - 无政策证据时 `version_score` 不得凭空加分。
+docs/TASKS.md:77:  1. 新增 `narrative_score`，分解为政策背书、产业落地、订单/回购/评级、传播清晰度、拥挤/过热扣分。
+docs/TASKS.md:84:  - `narrative_score` 缺证据时为 0 或保守默认。
+docs/TASKS.md:85:- **代码标注要求**：`# [S-002] narrative_quality_score`
+docs/TASKS.md:414:  - 相关改动涉及 `readiness_score.py`、`cn_akshare_provider.py`、`data_collector.py`、`tests/test_readiness_score.py`、`tests/test_g007_fund_lhb_provenance.py`。
+docs/TASKS.md:426:  - `pytest tests/test_g007_fund_lhb_provenance.py tests/test_readiness_score.py -q` 通过。
+docs/TASKS.md:451:  - `pytest tests/test_readiness_score.py -q` 通过。
+docs/TASKS.md:452:  - `pytest tests/test_g001_three_layer.py tests/test_readiness_score.py -q` 通过。
+docs/TASKS.md:755:  - `pytest tests/test_g001_three_layer.py tests/test_readiness_score.py -q` 通过。
+docs/TASKS.md:758:  - `pytest tests/test_g001_three_layer.py tests/test_readiness_score.py -q` → 163 passed
+docs/TASKS.md:952:### C-008: execution_readiness_score — 简化版（P2）
+docs/TASKS.md:955:  - `data_completeness` — 数据完整度（源数据覆盖了多少需要的字段，0-100%）
+docs/TASKS.md:961:- **代码标注要求**：`# [C-008] readiness_score`
+docs/TASKS.md:993:- **描述**：5 维加权 Opportunity Score 0-100；从报告文本提取趋势/资金共振/催化/盈亏比/入场质量信号传入计算
+docs/TASKS.md:1002:- **实现要点**：`api/main.py` 启动时用 `subprocess` 读 git hash 并缓存；`readiness_score.py` 的 `format_readiness_score` 调用 `_format_version_block()`
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest tests/test_tradeflow_*.py tests/test_s001_policy_version_signal.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 706ms:
+........................................................................ [ 61%]
+..............................................                           [100%]
+118 passed in 0.38s
+
+exec
+/bin/zsh -lc "grep -R \"auto_dev.lock\\|LOCK\" -n scripts/auto_dev_loop.sh .gitignore | head -80; ls -la .auto_dev.lock" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+scripts/auto_dev_loop.sh:27:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+scripts/auto_dev_loop.sh:33:HAVE_LOCK=false
+scripts/auto_dev_loop.sh:65:    if [ "$HAVE_LOCK" = true ]; then
+scripts/auto_dev_loop.sh:66:        rm -rf "$LOCK_DIR" 2>/dev/null || true
+scripts/auto_dev_loop.sh:74:    if mkdir "$LOCK_DIR" 2>/dev/null; then
+scripts/auto_dev_loop.sh:75:        HAVE_LOCK=true
+scripts/auto_dev_loop.sh:80:        } > "$LOCK_DIR/owner"
+scripts/auto_dev_loop.sh:84:    err "检测到自动开发锁，退出以避免重复领取任务：$LOCK_DIR"
+scripts/auto_dev_loop.sh:85:    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+scripts/auto_dev_loop.sh:133:if [ -d "$LOCK_DIR" ]; then
+scripts/auto_dev_loop.sh:134:    err "检测到自动开发锁，退出以避免重复领取任务：$LOCK_DIR"
+scripts/auto_dev_loop.sh:135:    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+total 8
+drwx------   3 maybee  staff    96 May 29 12:47 .
+drwx------  51 maybee  staff  1632 May 29 12:47 ..
+-rw-------   1 maybee  staff    81 May 29 12:47 owner
+
+exec
+/bin/zsh -lc "sed -n '120,145p' scripts/auto_dev_loop.sh" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+new_content = content[: match.start(1)] + new_section + content[match.end(1) :]
+with open(tasks_file, "w", encoding="utf-8") as f:
+    f.write(new_content)
+print(f"TASKS.md: {target_id} -> {status_text}")
+PYEOF
+}
+
+# ─── 0. 前置检查 ──────────────────────────────────────
+log "=== AUTO-002 自动开发闭环 v1.3 ==="
+log "仓库: $REPO_DIR"
+
+mkdir -p "$REVIEW_DIR" "$TASK_RUN_ROOT"
+
+if [ -d "$LOCK_DIR" ]; then
+    err "检测到自动开发锁，退出以避免重复领取任务：$LOCK_DIR"
+    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+    exit 1
+fi
+
+DIRTY=$(git status --porcelain | head -5 || true)
+if [ -n "$DIRTY" ]; then
+    err "工作区不干净，退出以避免覆盖用户改动："
+    echo "$DIRTY"
+    exit 1
+fi
+log "工作区干净 ✓"
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/candidate_engine.py | sed -n '306,320p'; nl -ba .auto_dev.lock/owner" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   306	            candidate.strategy_tags = sorted(
+   307	                set(candidate.strategy_tags) | set(extra_tags)
+   308	            )
+   309	            candidate.risk_flags = sorted(
+   310	                set(candidate.risk_flags) | set(extra_risks)
+   311	            )
+   312	            if SIGNAL_TAG_LOCKUP_RISK in candidate.risk_flags:
+   313	                candidate.score = round(candidate.score * 0.8, 2)
+   314	
+   315	    # [S-001] policy_version_signal — detect policy version and add bonus
+   316	    policy_result: PolicyVersionResult = detect_policy_version(
+   317	        event_texts=news_texts,
+   318	    )
+   319	    if policy_result.policy_tags:
+   320	        candidate.policy_tags = policy_result.policy_tags
+     1	pid=31740
+     2	started_at=2026-05-29_12:47:31
+     3	repo=/Users/maybee/TradingAgents-AShare
+
+exec
+/bin/zsh -lc "python - <<'PY'
+from tests.test_s001_policy_version_signal import _make_vcp_df
+from tradingagents.tradeflow.candidate_engine import evaluate_symbol
+c,_=evaluate_symbol('TEST.SZ', df=_make_vcp_df(), event_overrides=[{'symbol':'TEST.SZ','event_type':'custom','direction':'neutral','title':'低空经济政策支持'}])
+print(c is not None, c.policy_tags if c else None, c.strategy_tags if c else None)
+PY" in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: python
+
+exec
+/bin/zsh -lc "source .venv/bin/activate && python - <<'PY'
+from tests.test_s001_policy_version_signal import _make_vcp_df
+from tradingagents.tradeflow.candidate_engine import evaluate_symbol
+c,_=evaluate_symbol('TEST.SZ', df=_make_vcp_df(), event_overrides=[{'symbol':'TEST.SZ','event_type':'custom','direction':'neutral','title':'低空经济政策支持'}])
+print(c is not None, c.policy_tags if c else None, c.strategy_tags if c else None)
+PY" in /Users/maybee/TradingAgents-AShare
+ succeeded in 242ms:
+True [] ['EVENT_CATALYST', 'VCP']
+
+codex
+The policy signal misses a supported event input path, and the workspace includes a stale lock artifact that can block the automation loop. These should be fixed or removed before the changes are considered correct.
+
+Full review comments:
+
+- [P2] Pass override event titles to policy detection — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py:316-318
+  When candidates are created from `event_overrides` without `news_texts`, the policy-version detector only receives `news_texts`, so raw override titles such as `低空经济政策支持` or `重大资产重组` produce an `EVENT_CATALYST` candidate but no `policy_tags`, `version_score`, or evidence refs. This skips S-001 scoring for the manual/structured event path even though the policy evidence is present in the override title.
+
+- [P2] Remove stale auto-dev lock file — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+  If this untracked lock directory is committed or left in place after the task completes, `scripts/auto_dev_loop.sh` exits as soon as it sees `.auto_dev.lock`, so the next automatic run cannot claim S-002 or any other ready task. The lock artifact should be removed from the patch/workspace once the run is finished.
+The policy signal misses a supported event input path, and the workspace includes a stale lock artifact that can block the automation loop. These should be fixed or removed before the changes are considered correct.
+
+Full review comments:
+
+- [P2] Pass override event titles to policy detection — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py:316-318
+  When candidates are created from `event_overrides` without `news_texts`, the policy-version detector only receives `news_texts`, so raw override titles such as `低空经济政策支持` or `重大资产重组` produce an `EVENT_CATALYST` candidate but no `policy_tags`, `version_score`, or evidence refs. This skips S-001 scoring for the manual/structured event path even though the policy evidence is present in the override title.
+
+- [P2] Remove stale auto-dev lock file — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+  If this untracked lock directory is committed or left in place after the task completes, `scripts/auto_dev_loop.sh` exits as soon as it sees `.auto_dev.lock`, so the next automatic run cannot claim S-002 or any other ready task. The lock artifact should be removed from the patch/workspace once the run is finished.

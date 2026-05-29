@@ -15,7 +15,8 @@ FORBIDDEN_WORDS = {"立即买入", "重仓买入", "立即清仓", "满仓", "�
 STRATEGY_VCP = "VCP"
 STRATEGY_PULLBACK = "PULLBACK_SUPPORT"
 STRATEGY_EVENT = "EVENT_CATALYST"
-ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT}
+STRATEGY_POLICY_VERSION = "POLICY_VERSION"  # [S-001] policy_version_signal
+ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION}
 
 # [N-004] astock_signal_tags
 SIGNAL_TAG_POLICY_CATALYST = "POLICY_CATALYST"
@@ -60,6 +61,9 @@ class Candidate:
 
     primary_strategy: str = ""
     signals: list[CandidateSignal] = field(default_factory=list, repr=False)
+    policy_tags: list[str] = field(default_factory=list)  # [S-001] policy_version_signal
+    version_score: float = 0.0  # [S-001] policy_version_signal
+    policy_evidence_refs: list[dict] = field(default_factory=list)  # [S-001] policy_version_signal
 
     def __post_init__(self):
         if not self.trade_date:
@@ -122,6 +126,9 @@ class Candidate:
             "need_deep_ta": 1 if self.need_deep_ta else 0,
             "evidence_json": json.dumps(self.evidence, ensure_ascii=False),
             "risk_flags_json": json.dumps(self.risk_flags, ensure_ascii=False),
+            "policy_tags_json": json.dumps(self.policy_tags, ensure_ascii=False),  # [S-001]
+            "version_score": self.version_score,  # [S-001]
+            "policy_evidence_refs_json": json.dumps(self.policy_evidence_refs, ensure_ascii=False),  # [S-001]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -144,6 +151,9 @@ class Candidate:
             trade_date=row.get("trade_date", ""),
             created_at=row.get("created_at", ""),
             updated_at=row.get("updated_at", ""),
+            policy_tags=json.loads(row.get("policy_tags_json", "[]")),  # [S-001]
+            version_score=row.get("version_score", 0.0),  # [S-001]
+            policy_evidence_refs=json.loads(row.get("policy_evidence_refs_json", "[]")),  # [S-001]
         )
 
 
@@ -251,6 +261,16 @@ class DailyPlan:
                 lines.append(f"  失效价: {invalid}")
             if deep_ta:
                 lines.append(f"  ⚠️ 需要深度 TA 分析")
+            # [S-001] policy_version_signal — display policy tags and evidence
+            policy_tags = c.get("policy_tags", [])
+            version_score = c.get("version_score", 0)
+            policy_refs = c.get("policy_evidence_refs", [])
+            if policy_tags:
+                lines.append(f"  政策版本: {', '.join(policy_tags)} (+{version_score}分)")
+                if policy_refs:
+                    for ref in policy_refs[:3]:
+                        snippet = ref.get("matched_text", "")[:60]
+                        lines.append(f"    - {snippet}")
             lines.append("")
 
         return "\n".join(lines)

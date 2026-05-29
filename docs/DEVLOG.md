@@ -4,6 +4,45 @@
 
 ---
 
+## 2026-05-29 | S-001 政策版本因子进入 TradeFlow 候选池
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：为 TradeFlow 增加政策版本因子，识别 A 股市场政策/产业方向，让候选池从"技术形态先行"升级为"政策版本入池 + 技术确认"
+- **修改文件**：
+  - `tradingagents/tradeflow/policy_version_signal.py`（新增，~140行）— [S-001] policy_version_signal
+    - `detect_policy_version(event_texts, industry_tags)` — 检测事件文本中的政策版本关键词
+    - `PolicyVersionResult` — 输出 `policy_tags`、`version_score`（0-30分）、`policy_evidence_refs`
+    - 14 个政策版本主题：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革、半导体、新能源、人工智能、数据要素、军工
+    - 仅事件文本命中时给完整权重；行业标签命中给 30% 权重；无原始文本证据时不得加分
+    - 累计加分上限 30 分（`MAX_POLICY_BONUS`）
+  - `tradingagents/tradeflow/schemas.py` — [S-001]
+    - `Candidate` 新增 `policy_tags`、`version_score`、`policy_evidence_refs` 字段
+    - `STRATEGY_POLICY_VERSION = "POLICY_VERSION"` 策略常量，加入 `ALL_STRATEGIES`
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示政策标签和证据摘要
+  - `tradingagents/tradeflow/candidate_engine.py` — [S-001]
+    - `evaluate_symbol()` 在 N-004 信号标签之后调用 `detect_policy_version()`
+    - 政策版本命中时加分、加入 `strategy_tags`、写入 `evidence.policy_version`
+    - `version_score >= 15` 时设置 `need_deep_ta=True`
+    - `init_db()` 新增 `policy_tags_json`、`version_score`、`policy_evidence_refs_json` 列迁移
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+  - `tradingagents/tradeflow/plan_runner.py` — [S-001]
+    - `_build_plan_entry()` 输出 `policy_tags`、`version_score`、`policy_evidence_refs`
+  - `tests/test_s001_policy_version_signal.py`（新增，~280行）— 35 个测试
+- **关键逻辑**：
+  1. 政策版本信号作为 bonus 层叠加在 VCP/Pullback/Event 之上，不破坏现有策略
+  2. 无事件文本证据时 `version_score` 恒为 0，不凭空加分
+  3. 不同股票各自消费自己的事件文本，按 symbol 隔离
+  4. Daily Plan 展示政策标签和证据摘要，动作仍为 OBSERVE/NEED_DEEP_TA
+  5. 高政策版本得分（≥15）自动提升 need_deep_ta 优先级
+- **标记**：`# [S-001] policy_version_signal`
+- **测试结果**：
+  - S-001 专项测试：35 passed
+  - TradeFlow 全量测试：118 passed
+  - 扩展回归测试：370 passed, 2 skipped
+
+---
+
 ## 2026-05-29 | TradeFlow 选股策略任务池重排
 
 - **执行者**：Codex
@@ -727,3 +766,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/M-002-20260529-round2.txt
 - **运行档案**: docs/task_runs/M-002-20260529-112320/
+
+## 2026-05-29 | AUTO-002 自动开发闭环
+
+- **任务**: S-001 — 政策版本因子进入 TradeFlow 候选池（P1）
+- **优先级**: P1
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/S-001-20260529-round1.txt
+- **运行档案**: docs/task_runs/S-001-20260529-124731/

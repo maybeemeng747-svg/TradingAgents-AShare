@@ -1,0 +1,600 @@
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/project-overview.md
+[0m
+[0m# [0mTodos
+[ ] Read existing TradeFlow codebase (candidate_engine, event_source, strategies, schemas, plan_runner)
+[ ] Create policy_version_signal module with policy_tags, version_score, policy_evidence_refs
+[ ] Integrate policy version signal into candidate_engine without breaking VCP/event flows
+[ ] Update plan_runner to display policy tags in Daily Plan
+[ ] Write tests for S-001 (policy keywords, evidence gating, symbol isolation)
+[ ] Run full test suite and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/tradeflow
+[0m✱ [0mGlob "tradingagents/tradeflow/**/*.py"[90m 11 matches[0m
+[0m→ [0mRead tradingagents/tradeflow/schemas.py
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py
+[0m→ [0mRead tradingagents/tradeflow/strategies/event_catalyst.py
+[0m→ [0mRead tradingagents/tradeflow/strategies/__init__.py
+[0m→ [0mRead tradingagents/tradeflow/strategies/vcp.py
+现在让我看看现有的 TradeFlow 测试以获取参考模式：
+[0m✱ [0mGlob "tests/test_tradeflow*.py"[90m 4 matches[0m
+[0m→ [0mRead tests/test_tradeflow_strategies.py
+[0m→ [0mRead tests/test_tradeflow_candidate_engine.py
+[0m
+[0m# [0mTodos
+[x] Read existing TradeFlow codebase (candidate_engine, event_source, strategies, schemas, plan_runner)
+[ ] Create policy_version_signal module with policy_tags, version_score, policy_evidence_refs
+[ ] Integrate policy version signal into candidate_engine without breaking VCP/event flows
+[ ] Update plan_runner to display policy tags in Daily Plan
+[ ] Write tests for S-001 (policy keywords, evidence gating, symbol isolation)
+[ ] Run full test suite and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+现在我已全面了解情况。接下来我将实现 S-001。
+首先，我来创建 `policy version signal` 模块：
+[0m← [0mWrite tradingagents/tradeflow/policy_version_signal.py
+Wrote file successfully.
+[0m
+现在更新 `schemas.py` 以添加 `POLICY_VERSION` 策略常量：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -14,9 +14,10 @@
+ 
+ STRATEGY_VCP = "VCP"
+ STRATEGY_PULLBACK = "PULLBACK_SUPPORT"
+ STRATEGY_EVENT = "EVENT_CATALYST"
+-ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT}
++STRATEGY_POLICY_VERSION = "POLICY_VERSION"  # [S-001] policy_version_signal
++ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION}
+ 
+ # [N-004] astock_signal_tags
+ SIGNAL_TAG_POLICY_CATALYST = "POLICY_CATALYST"
+ SIGNAL_TAG_HOT_MONEY_LHB = "HOT_MONEY_LHB"
+
+[0m
+现在更新 `Candidate` 数据类，以包含策略版本字段：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -60,8 +60,11 @@
+ updated_at: str = ""
+ 
+ primary_strategy: str = ""
+ signals: list[CandidateSignal] = field(default_factory=list, repr=False)
++policy_tags: list[str] = field(default_factory=list)  # [S-001] policy_version_signal
++version_score: float = 0.0  # [S-001] policy_version_signal
++policy_evidence_refs: list[dict] = field(default_factory=list)  # [S-001] policy_version_signal
+ 
+ def __post_init__(self):
+     if not self.trade_date:
+         self.trade_date = datetime.now().strftime("%Y-%m-%d")
+
+[0m
+更新 `to_db_row` 以包含策略版本字段：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -125,8 +125,11 @@
+         "invalid_price": self.invalid_price,
+         "need_deep_ta": 1 if self.need_deep_ta else 0,
+         "evidence_json": json.dumps(self.evidence, ensure_ascii=False),
+         "risk_flags_json": json.dumps(self.risk_flags, ensure_ascii=False),
++        "policy_tags_json": json.dumps(self.policy_tags, ensure_ascii=False),  # [S-001]
++        "version_score": self.version_score,  # [S-001]
++        "policy_evidence_refs_json": json.dumps(self.policy_evidence_refs, ensure_ascii=False),  # [S-001]
+         "updated_at": datetime.now().isoformat(),
+     }
+ 
+ @classmethod
+
+[0m
+更新 `from_db_row` 以读取策略版本字段：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -150,8 +150,11 @@
+             risk_flags=json.loads(row.get("risk_flags_json", "[]")),
+             trade_date=row.get("trade_date", ""),
+             created_at=row.get("created_at", ""),
+             updated_at=row.get("updated_at", ""),
++            policy_tags=json.loads(row.get("policy_tags_json", "[]")),  # [S-001]
++            version_score=row.get("version_score", 0.0),  # [S-001]
++            policy_evidence_refs=json.loads(row.get("policy_evidence_refs_json", "[]")),  # [S-001]
+         )
+ 
+ 
+ @dataclass
+
+[0m
+现在更新 `candidate_engine.py`，将策略版本信号集成到 `evaluate_symbol` 中：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -17,12 +17,13 @@
+ from typing import Optional
+ 
+ import pandas as pd
+ 
+-from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES
++from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION  # [S-001]
+ from .strategies.vcp import score_vcp
+ from .strategies.pullback_support import score_pullback_support
+ from .strategies.event_catalyst import score_event_catalyst
++from .policy_version_signal import detect_policy_version, PolicyVersionResult  # [S-001]
+ 
+ 
+ # ── SQL for table creation ──
+ CREATE_CANDIDATES_TABLE = """
+
+[0m
+现在更新 `evaluate_symbol` 以应用策略版本加成：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -301,8 +301,28 @@
+             )
+             if SIGNAL_TAG_LOCKUP_RISK in candidate.risk_flags:
+                 candidate.score = round(candidate.score * 0.8, 2)
+ 
++    # [S-001] policy_version_signal — detect policy version and add bonus
++    policy_result: PolicyVersionResult = detect_policy_version(
++        event_texts=news_texts,
++    )
++    if policy_result.policy_tags:
++        candidate.policy_tags = policy_result.policy_tags
++        candidate.version_score = policy_result.version_score
++        candidate.policy_evidence_refs = policy_result.policy_evidence_refs
++        candidate.score = round(candidate.score + policy_result.version_score, 2)
++        candidate.strategy_tags = sorted(
++            set(candidate.strategy_tags) | {STRATEGY_POLICY_VERSION}
++        )
++        candidate.evidence["policy_version"] = {
++            "policy_tags": policy_result.policy_tags,
++            "version_score": policy_result.version_score,
++            "evidence_refs": policy_result.policy_evidence_refs,
++        }
++        if policy_result.version_score >= 15:
++            candidate.need_deep_ta = True
++
+     return candidate, ""
+ 
+ 
+ def save_candidate(candidate: Candidate, db_path: str) -> int:
+
+[0m
+为 `tradeflow_candidates` 表添加 DB 列迁移：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -89,8 +89,18 @@
+ try:
+     conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+ except sqlite3.OperationalError:
+     pass
++# [S-001] policy_version_signal — add policy version columns
++for _col, _type in [
++    ("policy_tags_json", "TEXT DEFAULT '[]'"),
++    ("version_score", "REAL DEFAULT 0.0"),
++    ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
++]:
++    try:
++        conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
++    except sqlite3.OperationalError:
++        pass
+ conn.commit()
+ conn.close()
+ 
+ 
+
+[0m
+现在更新 `plan_runner.py`，以便在每日计划和 `_build_plan_entry` 中显示策略标签：
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -64,8 +64,11 @@
+         "invalid_price": candidate.invalid_price,
+         "reason": reason_str,
+         "need_deep_ta": candidate.need_deep_ta,
+         "risk_flags": candidate.risk_flags,
++        "policy_tags": candidate.policy_tags,  # [S-001] policy_version_signal
++        "version_score": candidate.version_score,  # [S-001]
++        "policy_evidence_refs": candidate.policy_evidence_refs,  # [S-001]
+     }
+ 
+ 
+ def generate_daily_plan(
+
+[0m
+现在更新 `schemas.py` 中的 `render_text` 以显示策略标签：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -260,7 +260,17 @@
+     if invalid:
+         lines.append(f"  失效价: {invalid}")
+     if deep_ta:
+         lines.append(f"  ⚠️ 需要深度 TA 分析")
++    # [S-001] policy_version_signal — display policy tags and evidence
++    policy_tags = c.get("policy_tags", [])
++    version_score = c.get("version_score", 0)
++    policy_refs = c.get("policy_evidence_refs", [])
++    if policy_tags:
++        lines.append(f"  政策版本: {', '.join(policy_tags)} (+{version_score}分)")
++        if policy_refs:
++            for ref in policy_refs[:3]:
++                snippet = ref.get("matched_text", "")[:60]
++                lines.append(f"    - {snippet}")
+     lines.append("")
+ 
+ return "\n".join(lines)
+
+[0m
+现在更新 `save_candidate` 以包含新列：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -343,23 +343,29 @@
+ conn.execute(
+     "INSERT INTO tradeflow_candidates "
+     "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+     "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+-    "evidence_json, risk_flags_json, created_at, updated_at) "
+-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
++    "evidence_json, risk_flags_json, policy_tags_json, version_score, "
++    "policy_evidence_refs_json, created_at, updated_at) "
++    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+     "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+     "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
+     "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+     "trigger_price=excluded.trigger_price, "
+     "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+     "need_deep_ta=excluded.need_deep_ta, evidence_json=excluded.evidence_json, "
+-    "risk_flags_json=excluded.risk_flags_json, updated_at=excluded.updated_at",
++    "risk_flags_json=excluded.risk_flags_json, "
++    "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
++    "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
++    "updated_at=excluded.updated_at",
+     (
+         row["trade_date"], row["symbol"], row["name"], row["source"],
+         row["strategy_tags_json"], row["primary_strategy"],
+         row["score"], row["status"],
+         row["trigger_price"], row["support_price"], row["invalid_price"],
+         row["need_deep_ta"], row["evidence_json"], row["risk_flags_json"],
++        row["policy_tags_json"], row["version_score"],
++        row["policy_evidence_refs_json"],
+         candidate.created_at, row["updated_at"],
+     ),
+ )
+ conn.commit()
+
+[0m
+[0m# [0mTodos
+[x] Read existing TradeFlow codebase (candidate_engine, event_source, strategies, schemas, plan_runner)
+[x] Create policy_version_signal module with policy_tags, version_score, policy_evidence_refs
+[x] Integrate policy version signal into candidate_engine without breaking VCP/event flows
+[x] Update plan_runner to display policy tags in Daily Plan
+[ ] Write tests for S-001 (policy keywords, evidence gating, symbol isolation)
+[ ] Run full test suite and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+现在创建测试文件：
+[0m← [0mWrite tests/test_s001_policy_version_signal.py
+Wrote file successfully.
+[0m
+现在我们来运行测试：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_s001_policy_version_signal.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 35 items
+
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_new_quality_productivity PASSED [  2%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_compute_power PASSED [  5%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_low_altitude_economy PASSED [  8%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_robot PASSED [ 11%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_going_global PASSED [ 14%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_china_special_valuation PASSED [ 17%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_domestic_substitution PASSED [ 20%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_merger_restructuring PASSED [ 22%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_soe_reform PASSED [ 25%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_semiconductor PASSED [ 28%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_ai PASSED [ 31%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_data_elements PASSED [ 34%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_no_evidence_zero_score PASSED [ 37%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_empty_texts_zero_score PASSED [ 40%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_none_texts_zero_score PASSED [ 42%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_none_both_zero_score PASSED [ 45%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_score_capped_at_max PASSED [ 48%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_multiple_hits_accumulate PASSED [ 51%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_single_tag_weight PASSED [ 54%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_industry_tag_lower_weight PASSED [ 57%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_industry_tag_source PASSED [ 60%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionEvidence::test_evidence_contains_matched_text PASSED [ 62%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionEvidence::test_evidence_contains_tag PASSED [ 65%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionEvidence::test_evidence_contains_source PASSED [ 68%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionEvidence::test_no_speculation_without_evidence PASSED [ 71%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionEvidence::test_blank_texts_no_score PASSED [ 74%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_policy_version_in_candidate PASSED [ 77%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_policy_version_adds_to_score PASSED [ 80%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_no_policy_evidence_no_bonus PASSED [ 82%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_vcp_still_works_with_policy PASSED [ 85%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_symbol_isolation PASSED [ 88%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_high_version_score_triggers_deep_ta PASSED [ 91%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_policy_tags_in_db PASSED [ 94%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionPlanDisplay::test_render_text_shows_policy_tags PASSED [ 97%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionPlanDisplay::test_render_text_no_policy_tags PASSED [100%]
+
+============================== 35 passed in 0.26s ==============================
+[0m
+35/35 个测试通过。现在运行所有 TradeFlow 测试，以验证没有回归：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tradeflow_*.py tests/test_s001_policy_version_signal.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 118 items
+
+tests/test_tradeflow_candidate_engine.py::TestFiltering::test_st_symbol_filter PASSED [  0%]
+tests/test_tradeflow_candidate_engine.py::TestFiltering::test_low_liquidity_filter PASSED [  1%]
+tests/test_tradeflow_candidate_engine.py::TestFiltering::test_missing_data_filter PASSED [  2%]
+tests/test_tradeflow_candidate_engine.py::TestFiltering::test_short_data_filter PASSED [  3%]
+tests/test_tradeflow_candidate_engine.py::TestEvaluation::test_evaluate_with_data PASSED [  4%]
+tests/test_tradeflow_candidate_engine.py::TestEvaluation::test_evaluate_no_data PASSED [  5%]
+tests/test_tradeflow_candidate_engine.py::TestEvaluation::test_evaluate_with_events PASSED [  5%]
+tests/test_tradeflow_candidate_engine.py::TestEvaluation::test_evaluate_without_events PASSED [  6%]
+tests/test_tradeflow_candidate_engine.py::TestPersistence::test_init_db PASSED [  7%]
+tests/test_tradeflow_candidate_engine.py::TestPersistence::test_save_and_read_candidate PASSED [  8%]
+tests/test_tradeflow_candidate_engine.py::TestPersistence::test_upsert_candidate PASSED [  9%]
+tests/test_tradeflow_candidate_engine.py::TestPersistence::test_need_deep_ta_persisted PASSED [ 10%]
+tests/test_tradeflow_candidate_engine.py::TestPersistence::test_primary_strategy_migrated PASSED [ 11%]
+tests/test_tradeflow_candidate_engine.py::TestFilterReasons::test_filter_missing_data_returns_reason PASSED [ 11%]
+tests/test_tradeflow_candidate_engine.py::TestFilterReasons::test_filter_low_liquidity_returns_reason PASSED [ 12%]
+tests/test_tradeflow_candidate_engine.py::TestFilterReasons::test_no_strategy_hit_returns_reason PASSED [ 13%]
+tests/test_tradeflow_candidate_engine.py::TestLiquidityCalibration::test_high_price_low_volume_not_filtered PASSED [ 14%]
+tests/test_tradeflow_candidate_engine.py::TestLiquidityCalibration::test_low_price_high_volume_filtered PASSED [ 15%]
+tests/test_tradeflow_candidate_engine.py::TestLiquidityCalibration::test_amount_column_used_directly PASSED [ 16%]
+tests/test_tradeflow_candidate_engine.py::TestLiquidityCalibration::test_estimated_amount_when_no_amount_column PASSED [ 16%]
+tests/test_tradeflow_candidate_engine.py::TestLiquidityCalibration::test_filter_reason_shows_details PASSED [ 17%]
+tests/test_tradeflow_candidate_engine.py::TestLiquidityCalibration::test_short_data_is_low_liquidity PASSED [ 18%]
+tests/test_tradeflow_plan_runner.py::TestActionForCandidate::test_deep_ta_action PASSED [ 19%]
+tests/test_tradeflow_plan_runner.py::TestActionForCandidate::test_observe_action PASSED [ 20%]
+tests/test_tradeflow_plan_runner.py::TestBuildPlanEntry::test_entry_structure PASSED [ 21%]
+tests/test_tradeflow_plan_runner.py::TestBuildPlanEntry::test_no_forbidden_words_in_reason PASSED [ 22%]
+tests/test_tradeflow_plan_runner.py::TestGenerateDailyPlan::test_with_provided_candidates PASSED [ 22%]
+tests/test_tradeflow_plan_runner.py::TestGenerateDailyPlan::test_plan_no_forbidden_words PASSED [ 23%]
+tests/test_tradeflow_plan_runner.py::TestGenerateDailyPlan::test_plan_validates PASSED [ 24%]
+tests/test_tradeflow_plan_runner.py::TestGenerateDailyPlan::test_empty_candidates PASSED [ 25%]
+tests/test_tradeflow_plan_runner.py::TestGenerateDailyPlan::test_deep_ta_counted_in_summary PASSED [ 26%]
+tests/test_tradeflow_plan_runner.py::TestPlanPersistence::test_save_and_read_plan PASSED [ 27%]
+tests/test_tradeflow_plan_runner.py::TestPlanPersistence::test_save_candidates_persisted PASSED [ 27%]
+tests/test_tradeflow_plan_runner.py::TestPlanPersistence::test_save_candidates_disabled PASSED [ 28%]
+tests/test_tradeflow_plan_runner.py::TestEventOverridesInUniverse::test_event_overrides_enter_universe PASSED [ 29%]
+tests/test_tradeflow_plan_runner.py::TestEventOverridesInUniverse::test_event_overrides_symbol_not_in_watchlist PASSED [ 30%]
+tests/test_tradeflow_plan_runner.py::TestEventOverridesInUniverse::test_event_overrides_no_duplicate PASSED [ 31%]
+tests/test_tradeflow_plan_runner.py::TestEventOverridesSymbolFiltering::test_plan_multi_event_overrides_per_symbol PASSED [ 32%]
+tests/test_tradeflow_schemas.py::TestCandidateSignal::test_basic_creation PASSED [ 33%]
+tests/test_tradeflow_schemas.py::TestCandidateSignal::test_default_values PASSED [ 33%]
+tests/test_tradeflow_schemas.py::TestCandidate::test_merge_single_signal PASSED [ 34%]
+tests/test_tradeflow_schemas.py::TestCandidate::test_merge_multiple_signals PASSED [ 35%]
+tests/test_tradeflow_schemas.py::TestCandidate::test_primary_strategy_prices_not_overwritten PASSED [ 36%]
+tests/test_tradeflow_schemas.py::TestCandidate::test_to_db_row PASSED    [ 37%]
+tests/test_tradeflow_schemas.py::TestCandidate::test_from_db_row PASSED  [ 38%]
+tests/test_tradeflow_schemas.py::TestSignal::test_allowed_action PASSED  [ 38%]
+tests/test_tradeflow_schemas.py::TestSignal::test_invalid_action_fallback PASSED [ 39%]
+tests/test_tradeflow_schemas.py::TestSignal::test_allowed_actions_all_valid PASSED [ 40%]
+tests/test_tradeflow_schemas.py::TestDailyPlan::test_validate_clean PASSED [ 41%]
+tests/test_tradeflow_schemas.py::TestDailyPlan::test_validate_forbidden_words PASSED [ 42%]
+tests/test_tradeflow_schemas.py::TestDailyPlan::test_validate_invalid_action PASSED [ 43%]
+tests/test_tradeflow_schemas.py::TestDailyPlan::test_render_text PASSED  [ 44%]
+tests/test_tradeflow_schemas.py::TestConstants::test_allowed_actions PASSED [ 44%]
+tests/test_tradeflow_schemas.py::TestConstants::test_no_buy_sell_in_allowed PASSED [ 45%]
+tests/test_tradeflow_schemas.py::TestConstants::test_forbidden_words PASSED [ 46%]
+tests/test_tradeflow_schemas.py::TestConstants::test_all_strategies PASSED [ 47%]
+tests/test_tradeflow_strategies.py::TestVCP::test_vcp_hit PASSED         [ 48%]
+tests/test_tradeflow_strategies.py::TestVCP::test_vcp_no_hit_declining PASSED [ 49%]
+tests/test_tradeflow_strategies.py::TestVCP::test_vcp_no_hit_insufficient_data PASSED [ 50%]
+tests/test_tradeflow_strategies.py::TestVCP::test_vcp_none_on_empty PASSED [ 50%]
+tests/test_tradeflow_strategies.py::TestVCP::test_vcp_has_reason PASSED  [ 51%]
+tests/test_tradeflow_strategies.py::TestPullbackSupport::test_pullback_hit PASSED [ 52%]
+tests/test_tradeflow_strategies.py::TestPullbackSupport::test_pullback_no_hit_trending PASSED [ 53%]
+tests/test_tradeflow_strategies.py::TestPullbackSupport::test_pullback_no_hit_declining PASSED [ 54%]
+tests/test_tradeflow_strategies.py::TestPullbackSupport::test_pullback_insufficient_data PASSED [ 55%]
+tests/test_tradeflow_strategies.py::TestPullbackSupport::test_pullback_none_on_empty PASSED [ 55%]
+tests/test_tradeflow_strategies.py::TestEventCatalyst::test_event_hit_bullish PASSED [ 56%]
+tests/test_tradeflow_strategies.py::TestEventCatalyst::test_event_hit_bearish PASSED [ 57%]
+tests/test_tradeflow_strategies.py::TestEventCatalyst::test_event_no_hit PASSED [ 58%]
+tests/test_tradeflow_strategies.py::TestEventCatalyst::test_event_with_overrides PASSED [ 59%]
+tests/test_tradeflow_strategies.py::TestEventCatalyst::test_event_multiple_events PASSED [ 60%]
+tests/test_tradeflow_strategies.py::TestEventCatalyst::test_event_need_deep_ta PASSED [ 61%]
+tests/test_tradeflow_strategies.py::TestMultiStrategy::test_multiple_strategies_can_hit PASSED [ 61%]
+tests/test_tradeflow_strategies.py::TestMultiStrategy::test_strategies_deduplicate PASSED [ 62%]
+tests/test_tradeflow_strategies.py::TestMultiStrategy::test_no_event_input_no_hit PASSED [ 63%]
+tests/test_tradeflow_strategies.py::TestMultiStrategy::test_empty_news_no_hit PASSED [ 64%]
+tests/test_tradeflow_strategies.py::TestMultiStrategy::test_irrelevant_news_no_hit PASSED [ 65%]
+tests/test_tradeflow_strategies.py::TestMultiStrategy::test_event_overrides_filtered_by_symbol_mismatch PASSED [ 66%]
+tests/test_tradeflow_strategies.py::TestMultiStrategy::test_event_overrides_filtered_by_symbol_match PASSED [ 66%]
+tests/test_tradeflow_strategies.py::TestMultiStrategy::test_event_overrides_global_no_symbol PASSED [ 67%]
+tests/test_tradeflow_strategies.py::TestMultiStrategy::test_event_overrides_hit PASSED [ 68%]
+tests/test_tradeflow_strategies.py::TestMultiStrategy::test_no_event_vcp_only PASSED [ 69%]
+tests/test_tradeflow_strategies.py::TestVCPScoring::test_strong_contraction_scores_higher PASSED [ 70%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_new_quality_productivity PASSED [ 71%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_compute_power PASSED [ 72%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_low_altitude_economy PASSED [ 72%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_robot PASSED [ 73%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_going_global PASSED [ 74%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_china_special_valuation PASSED [ 75%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_domestic_substitution PASSED [ 76%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_merger_restructuring PASSED [ 77%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_soe_reform PASSED [ 77%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_semiconductor PASSED [ 78%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_ai PASSED [ 79%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionDetection::test_data_elements PASSED [ 80%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_no_evidence_zero_score PASSED [ 81%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_empty_texts_zero_score PASSED [ 82%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_none_texts_zero_score PASSED [ 83%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_none_both_zero_score PASSED [ 83%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_score_capped_at_max PASSED [ 84%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_multiple_hits_accumulate PASSED [ 85%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_single_tag_weight PASSED [ 86%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_industry_tag_lower_weight PASSED [ 87%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionScoring::test_industry_tag_source PASSED [ 88%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionEvidence::test_evidence_contains_matched_text PASSED [ 88%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionEvidence::test_evidence_contains_tag PASSED [ 89%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionEvidence::test_evidence_contains_source PASSED [ 90%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionEvidence::test_no_speculation_without_evidence PASSED [ 91%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionEvidence::test_blank_texts_no_score PASSED [ 92%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_policy_version_in_candidate PASSED [ 93%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_policy_version_adds_to_score PASSED [ 94%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_no_policy_evidence_no_bonus PASSED [ 94%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_vcp_still_works_with_policy PASSED [ 95%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_symbol_isolation PASSED [ 96%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_high_version_score_triggers_deep_ta PASSED [ 97%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionIntegration::test_policy_tags_in_db PASSED [ 98%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionPlanDisplay::test_render_text_shows_policy_tags PASSED [ 99%]
+tests/test_s001_policy_version_signal.py::TestPolicyVersionPlanDisplay::test_render_text_no_policy_tags PASSED [100%]
+
+============================= 118 passed in 5.40s ==============================
+[0m
+所有 118 个 TradeFlow 测试通过。现在运行更广泛的测试套件以检查是否存在回归：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tradeflow_*.py tests/test_s001_policy_version_signal.py tests/test_readiness_score.py tests/test_g001_three_layer.py tests/test_event_source*.py tests/test_cn_astock_provider.py tests/test_execution_schema.py -q 2>&1
+........................................................................ [ 19%]
+........................................................................ [ 38%]
+........................................................................ [ 58%]
+........................................................................ [ 77%]
+...........................................................ss........... [ 96%]
+............                                                             [100%]
+370 passed, 2 skipped in 17.84s
+[0m
+[0m# [0mTodos
+[x] Read existing TradeFlow codebase (candidate_engine, event_source, strategies, schemas, plan_runner)
+[x] Create policy_version_signal module with policy_tags, version_score, policy_evidence_refs
+[x] Integrate policy version signal into candidate_engine without breaking VCP/event flows
+[x] Update plan_runner to display policy tags in Daily Plan
+[x] Write tests for S-001 (policy keywords, evidence gating, symbol isolation)
+[x] Run full test suite and verify no regressions
+[ ] Update docs/DEVLOG.md
+[0m
+370 个通过，2 个跳过，0 个失败。现在更新 `DEVLOG.md`：
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,47 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-05-29 | S-001 政策版本因子进入 TradeFlow 候选池
++
++- **执行者**：OpenCode (glm-5.1)
++- **任务**：为 TradeFlow 增加政策版本因子，识别 A 股市场政策/产业方向，让候选池从"技术形态先行"升级为"政策版本入池 + 技术确认"
++- **修改文件**：
++  - `tradingagents/tradeflow/policy_version_signal.py`（新增，~140行）— [S-001] policy_version_signal
++    - `detect_policy_version(event_texts, industry_tags)` — 检测事件文本中的政策版本关键词
++    - `PolicyVersionResult` — 输出 `policy_tags`、`version_score`（0-30分）、`policy_evidence_refs`
++    - 14 个政策版本主题：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革、半导体、新能源、人工智能、数据要素、军工
++    - 仅事件文本命中时给完整权重；行业标签命中给 30% 权重；无原始文本证据时不得加分
++    - 累计加分上限 30 分（`MAX_POLICY_BONUS`）
++  - `tradingagents/tradeflow/schemas.py` — [S-001]
++    - `Candidate` 新增 `policy_tags`、`version_score`、`policy_evidence_refs` 字段
++    - `STRATEGY_POLICY_VERSION = "POLICY_VERSION"` 策略常量，加入 `ALL_STRATEGIES`
++    - `to_db_row()` / `from_db_row()` 支持新字段持久化
++    - `DailyPlan.render_text()` 展示政策标签和证据摘要
++  - `tradingagents/tradeflow/candidate_engine.py` — [S-001]
++    - `evaluate_symbol()` 在 N-004 信号标签之后调用 `detect_policy_version()`
++    - 政策版本命中时加分、加入 `strategy_tags`、写入 `evidence.policy_version`
++    - `version_score >= 15` 时设置 `need_deep_ta=True`
++    - `init_db()` 新增 `policy_tags_json`、`version_score`、`policy_evidence_refs_json` 列迁移
++    - `save_candidate()` INSERT/UPDATE 包含新字段
++  - `tradingagents/tradeflow/plan_runner.py` — [S-001]
++    - `_build_plan_entry()` 输出 `policy_tags`、`version_score`、`policy_evidence_refs`
++  - `tests/test_s001_policy_version_signal.py`（新增，~280行）— 35 个测试
++- **关键逻辑**：
++  1. 政策版本信号作为 bonus 层叠加在 VCP/Pullback/Event 之上，不破坏现有策略
++  2. 无事件文本证据时 `version_score` 恒为 0，不凭空加分
++  3. 不同股票各自消费自己的事件文本，按 symbol 隔离
++  4. Daily Plan 展示政策标签和证据摘要，动作仍为 OBSERVE/NEED_DEEP_TA
++  5. 高政策版本得分（≥15）自动提升 need_deep_ta 优先级
++- **标记**：`# [S-001] policy_version_signal`
++- **测试结果**：
++  - S-001 专项测试：35 passed
++  - TradeFlow 全量测试：118 passed
++  - 扩展回归测试：370 passed, 2 skipped
++
++---
++
+ ## 2026-05-29 | TradeFlow 选股策略任务池重排
+ 
+ - **执行者**：Codex
+ - **任务**：根据“先选对股票，再做深度 TA”的策略目标，重排 TradeFlow 后续开发任务池
+
+[0m
+[0m# [0mTodos
+[x] Read existing TradeFlow codebase (candidate_engine, event_source, strategies, schemas, plan_runner)
+[x] Create policy_version_signal module with policy_tags, version_score, policy_evidence_refs
+[x] Integrate policy version signal into candidate_engine without breaking VCP/event flows
+[x] Update plan_runner to display policy tags in Daily Plan
+[x] Write tests for S-001 (policy keywords, evidence gating, symbol isolation)
+[x] Run full test suite and verify no regressions
+[x] Update docs/DEVLOG.md
+[0m
+## S-001 完成总结
+
+### 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `tradingagents/tradeflow/policy_version_signal.py` | **新增** | 政策版本信号模块，14 个主题关键词，`detect_policy_version()` |
+| `tradingagents/tradeflow/schemas.py` | 修改 | Candidate 新增 `policy_tags/version_score/policy_evidence_refs`；`STRATEGY_POLICY_VERSION` 常量；`render_text()` 展示政策标签 |
+| `tradingagents/tradeflow/candidate_engine.py` | 修改 | `evaluate_symbol()` 集成政策版本加分；DB 列迁移；`save_candidate()` 包含新字段 |
+| `tradingagents/tradeflow/plan_runner.py` | 修改 | `_build_plan_entry()` 输出政策版本字段 |
+| `tests/test_s001_policy_version_signal.py` | **新增** | 35 个测试 |
+| `docs/DEVLOG.md` | 修改 | 记录 S-001 |
+
+### 关键逻辑
+
+1. **证据门控**：无事件文本证据 → `version_score` 恒为 0，不凭空加分
+2. **14 个政策主题**：新质生产力/算力/低空经济/机器人/出海/中特估/国产替代/并购重组/国企改革/半导体/新能源/人工智能/数据要素/军工
+3. **Bonus 层叠加**：不破坏 VCP/Pullback/Event 策略，最高 +30 分
+4. **Deep TA 触发**：`version_score >= 15` 自动标记 `need_deep_ta=True`
+5. **Symbol 隔离**：不同股票各自消费自己的事件文本，不串票
+6. **Daily Plan**：展示政策标签和证据摘要，动作仍为 OBSERVE/NEED_DEEP_TA
+
+### 测试结果
+
+- S-001 专项：**35 passed**
+- TradeFlow 全量：**118 passed**
+- 扩展回归（含 readiness/event_source/cn_astock/execution_schema）：**370 passed, 2 skipped, 0 failed**
