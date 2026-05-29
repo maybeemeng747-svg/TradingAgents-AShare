@@ -16,6 +16,7 @@ from .schemas import (
 )
 from .candidate_engine import init_db, save_candidate, evaluate_symbol
 from .universe import build_universe
+from .false_positive_audit import build_audit_report, AuditReport  # [S-006] candidate_false_positive_audit
 
 
 def _action_for_candidate(candidate: Candidate) -> str:
@@ -215,6 +216,18 @@ def generate_daily_plan(
             "generated_at": datetime.now().isoformat(),
         },
     )
+
+    # [S-006] candidate_false_positive_audit — generate audit report
+    audit = build_audit_report(
+        candidates=candidates,
+        trade_date=trade_date,
+    )
+    plan.metadata["audit_summary"] = {
+        "total_candidates": audit.summary.total_candidates if audit.summary else 0,
+        "by_category": audit.summary.by_category if audit.summary else {},
+        "common_evidence_gaps": audit.summary.common_evidence_gaps[:5] if audit.summary else [],
+        "common_risk_demotions": audit.summary.common_risk_demotions[:5] if audit.summary else [],
+    }
 
     # Validate
     issues = plan.validate()

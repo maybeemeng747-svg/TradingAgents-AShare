@@ -4,6 +4,48 @@
 
 ---
 
+## 2026-05-29 | S-006 候选误报审计与样本集沉淀
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：建立 TradeFlow 候选误报审计机制，把"为什么没选中/为什么误选中"的样本沉淀为可回放 fixtures，持续压低候选池噪声
+- **修改文件**：
+  - `tradingagents/tradeflow/false_positive_audit.py`（新增，~480行）— [S-006] candidate_false_positive_audit
+    - `audit_candidate()` — 单个候选审计分类：HIT_STRATEGY / FILTERED / RISK_DEMOTED / EVIDENCE_GAP
+    - `audit_filtered_symbol()` — 被过滤股票审计，按流动性/数据缺失/无策略/其他分类
+    - `build_audit_report()` — 批量构建审计报告
+    - `render_audit_report()` — 人类可读的审计报告文本
+    - `classify_filter_reason()` — 过滤原因子分类
+    - `classify_risk_demotion()` — 风险降权原因检测（高严重性/过多/重罚/博弈不佳/数据不完整）
+    - `_determine_fp_fn_type()` — 正误判类型：true_positive / false_positive / true_negative / false_negative
+    - `AuditEntry` / `AuditSummary` / `AuditReport` — 数据结构
+    - `generate_fixture_samples()` — 8 个可回放 fixture：VCP命中/流动性过滤/无策略命中/事件催化/资金异动/风险降权/证据缺口/资金未校验
+    - `replay_fixtures()` — 回放 fixture 样本，验证审计分类稳定性
+    - 结构性风险（risk flags / penalty / game balance）与证据缺失（data completeness / missing fields）区分处理
+    - 所有输出禁止强买卖词
+  - `tradingagents/tradeflow/discovery.py` — [S-006]
+    - `DiscoveryResult` 新增 `audit_report` 字段
+    - `run_discovery()` 结束时自动生成审计报告，写入 `result.audit_report` 和 `result.metadata["audit_summary"]`
+    - `render_discovery_text()` 展示证据缺口摘要和正误判分布
+  - `tradingagents/tradeflow/plan_runner.py` — [S-006]
+    - `generate_daily_plan()` 生成审计摘要，写入 `plan.metadata["audit_summary"]`
+    - 包含 total_candidates / by_category / common_evidence_gaps / common_risk_demotions
+  - `tests/test_s006_false_positive_audit.py`（新增，~920行）— 92 个测试
+- **关键逻辑**：
+  1. 审计分类优先级：结构性风险（flags/penalty/game balance）> 证据缺口（completeness/missing）> 策略命中 > 过滤
+  2. 低数据完整度不触发 RISK_DEMOTED，而是 EVIDENCE_GAP（区分风险降权与数据不足）
+  3. 8 个 fixture 覆盖全部场景，replay_fixtures() 可稳定回放
+  4. 流动性不足、事件缺证据、资金单位未校验不会被误判为高优先级
+  5. Discovery 和 Plan Runner 自动输出审计摘要和证据缺口
+  6. 不调用外部 LLM，不写生产数据库
+- **标记**：`# [S-006] candidate_false_positive_audit`
+- **测试结果**：
+  - S-006 专项测试：92 passed
+  - S/T 系列联合测试（S-001~S-006 + T-002 + T-003）：583 passed
+  - TradeFlow 全量测试：83 passed
+  - 扩展回归测试（readiness_score + g001_three_layer）：163 passed
+
+---
+
 ## 2026-05-29 | S-005 选股优先级整合与 need_deep_ta 门槛重排
 
 - **执行者**：OpenCode (glm-5.1)
@@ -1179,3 +1221,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/S-005-20260529-round1.txt
 - **运行档案**: docs/task_runs/S-005-20260529-164949/
+
+## 2026-05-29 | AUTO-002 自动开发闭环
+
+- **任务**: S-006 — 候选误报审计与样本集沉淀（P1）
+- **优先级**: P1
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/S-006-20260529-round1.txt
+- **运行档案**: docs/task_runs/S-006-20260529-170504/

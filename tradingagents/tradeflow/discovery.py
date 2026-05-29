@@ -22,6 +22,7 @@ from typing import Optional
 from .schemas import Candidate, DailyPlan, ALLOWED_ACTIONS, FORBIDDEN_WORDS
 from .candidate_engine import evaluate_symbol, init_db, filter_symbol
 from .universe import build_universe
+from .false_positive_audit import build_audit_report, render_audit_report, AuditReport  # [S-006] candidate_false_positive_audit
 
 
 SOURCE_WATCHLIST = "watchlist"
@@ -51,6 +52,7 @@ class DiscoveryResult:
     filtered: list[dict] = field(default_factory=list)
     summary: str = ""
     metadata: dict = field(default_factory=dict)
+    audit_report: Optional[AuditReport] = None  # [S-006] candidate_false_positive_audit
 
 
 def _build_discovery_universe(
@@ -241,6 +243,20 @@ def run_discovery(
                 c.trade_date = trade_date
             save_candidate(c, tf_db_path)
 
+    # [S-006] candidate_false_positive_audit — generate audit report
+    audit = build_audit_report(
+        candidates=top_candidates,
+        filtered_symbols=[asdict(f) for f in filtered],
+        trade_date=trade_date,
+    )
+    result.audit_report = audit
+    result.metadata["audit_summary"] = {
+        "total_candidates": audit.summary.total_candidates if audit.summary else 0,
+        "total_filtered": audit.summary.total_filtered if audit.summary else 0,
+        "by_category": audit.summary.by_category if audit.summary else {},
+        "common_evidence_gaps": audit.summary.common_evidence_gaps[:5] if audit.summary else [],
+    }
+
     return result
 
 
@@ -412,5 +428,19 @@ def render_discovery_text(result: DiscoveryResult) -> str:
             lines.append(f"  {f['symbol']} {f.get('name', '')}: {f['reason']}")
         if len(result.filtered) > 20:
             lines.append(f"  ... 共{len(result.filtered)}只，仅显示前20只")
+
+    # [S-006] candidate_false_positive_audit — evidence gap summary
+    if result.audit_report and result.audit_report.summary:
+        s = result.audit_report.summary
+        if s.common_evidence_gaps:
+            lines.append("")
+            lines.append("--- 证据缺口摘要 ---")
+            for item in s.common_evidence_gaps[:5]:
+                lines.append(f"  - {item['gap']} ({item['count']}只)")
+        if s.by_fp_type:
+            lines.append("")
+            lines.append("--- 正误判分布 ---")
+            for t, cnt in sorted(s.by_fp_type.items()):
+                lines.append(f"  - {t}: {cnt}只")
 
     return "\n".join(lines)
