@@ -194,7 +194,7 @@ def run_discovery(
                 reason=reason,
             ))
 
-    candidates.sort(key=lambda c: c.score, reverse=True)
+    candidates.sort(key=lambda c: (c.composite_score, c.score), reverse=True)
     top_candidates = candidates[:top_n]
 
     plan_entries = []
@@ -291,6 +291,14 @@ def _build_discovery_entry(candidate: Candidate) -> dict:
         "fund_flow_unit_verified": candidate.fund_flow_unit_verified,  # [T-003]
         "fund_flow_individual_summary": candidate.fund_flow_individual_summary,  # [T-003]
         "fund_flow_board_summary": candidate.fund_flow_board_summary,  # [T-003]
+        "composite_score": candidate.composite_score,  # [S-005] selection_priority_gate
+        "signal_category_hits": candidate.signal_category_hits,  # [S-005]
+        "positive_category_count": candidate.positive_category_count,  # [S-005]
+        "data_completeness": candidate.data_completeness,  # [S-005]
+        "missing_evidence": candidate.missing_evidence,  # [S-005]
+        "why_deep_ta": candidate.why_deep_ta,  # [S-005]
+        "why_not_deep_ta": candidate.why_not_deep_ta,  # [S-005]
+        "priority_rank": candidate.priority_rank,  # [S-005]
     }
 
 
@@ -373,6 +381,23 @@ def render_discovery_text(result: DiscoveryResult) -> str:
                 lines.append(f"    个股: {ff_ind}")
             if ff_board:
                 lines.append(f"    板块: {ff_board}")
+
+        # [S-005] selection_priority_gate — display priority gate results
+        priority_rank = c.get("priority_rank", "")
+        composite_score_val = c.get("composite_score", 0)
+        why_deep = c.get("why_deep_ta", "")
+        why_not_deep = c.get("why_not_deep_ta", "")
+        missing_ev = c.get("missing_evidence", [])
+        data_comp = c.get("data_completeness", 0)
+        if priority_rank:
+            rank_emoji = {"A": "🟢", "B": "🟡", "C": "🔴"}
+            lines.append(f"  优先级: {rank_emoji.get(priority_rank, '')} {priority_rank}层 | 综合分: {composite_score_val:.1f} | 完整度: {data_comp:.0%}")
+            if why_deep:
+                lines.append(f"    值得深挖: {why_deep}")
+            if why_not_deep:
+                lines.append(f"    暂不深挖: {why_not_deep}")
+            if missing_ev:
+                lines.append(f"    缺少证据: {', '.join(missing_ev[:5])}")
 
         lines.append("")
 

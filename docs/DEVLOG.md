@@ -4,6 +4,54 @@
 
 ---
 
+## 2026-05-29 | S-005 选股优先级整合与 need_deep_ta 门槛重排
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：整合政策版本、叙事质量、水下风险、资金异动和技术形态，重排 TradeFlow 候选优先级，让 TA 深度分析优先消耗在真正值得分析的股票上
+- **修改文件**：
+  - `tradingagents/tradeflow/selection_priority_gate.py`（新增，~230行）— [S-005] selection_priority_gate
+    - `run_selection_priority_gate()` — 统一优先级门控主入口
+    - `SelectionPriorityResult` — 输出 `composite_score`、`signal_category_hits`、`positive_category_count`、`data_completeness`、`missing_evidence`、`why_deep_ta`、`why_not_deep_ta`、`gate_passed`、`priority_rank`、`gate_refs`
+    - 综合评分 = 技术分 + 政策版本分 + 叙事质量分 + 资金异动分 + 风险罚分 + 数据完整度奖励
+    - 四类正向信号：policy / narrative / tech / fund
+    - `need_deep_ta=True` 至少需要 2 类正向信号，且无高风险标签、风险标签不过多、风险罚分不重、博弈平衡非 fragile/crowded、数据完整度 ≥ 50%
+    - 优先级分层：A（≥3类 + 高分 + 完整度≥70%）、B（≥2类 + 中等分）、C（弱信号或风险过高）
+    - 输出"为什么值得看/为什么暂不深挖/缺什么证据"
+    - 为 M-003 universe 管理器和 M-004 策略配置提供统一字段
+  - `tradingagents/tradeflow/schemas.py` — [S-005]
+    - `Candidate` 新增 9 个字段：composite_score、signal_category_hits、positive_category_count、data_completeness、missing_evidence、why_deep_ta、why_not_deep_ta、priority_rank
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示优先级分层、综合分、完整度、值得/暂不深挖、缺少证据
+  - `tradingagents/tradeflow/candidate_engine.py` — [S-005]
+    - `evaluate_symbol()` 在 T-003 资金异动之后调用 `run_selection_priority_gate()`
+    - 门控结果写入 `candidate.evidence["selection_priority_gate"]`
+    - `candidate.need_deep_ta` 统一由门控结果覆盖（S-001~S-004 各模块的 need_deep_ta 设置被整合）
+    - `init_db()` 新增 8 列迁移：composite_score、signal_category_hits_json、positive_category_count、data_completeness、missing_evidence_json、why_deep_ta、why_not_deep_ta、priority_rank
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+  - `tradingagents/tradeflow/plan_runner.py` — [S-005]
+    - `_build_plan_entry()` 输出门控全部字段
+    - 候选排序改用 `composite_score` 降序
+  - `tradingagents/tradeflow/discovery.py` — [S-005]
+    - `_build_discovery_entry()` 输出门控全部字段
+    - 候选排序改用 `composite_score` 降序
+    - `render_discovery_text()` 展示优先级分层和深挖/不深挖原因
+  - `tests/test_s005_selection_priority_gate.py`（新增，~640行）— 74 个测试
+- **关键逻辑**：
+  1. 综合评分整合所有正向信号和风险惩罚，加上数据完整度奖励（完整度 × 5 分）
+  2. 仅技术形态但无逻辑证据的票：composite_score 较低，排序下降
+  3. 政策/事件/技术/资金共振的票：positive_category_count ≥ 2，gate_passed=True，排序上升
+  4. 风险过高（高风险标签、风险标签过多、罚分过重、博弈 fragile/crowded）不触发 need_deep_ta
+  5. 数据缺失（完整度 < 50%）不触发 need_deep_ta
+  6. need_deep_ta 由门控统一裁决，覆盖 S-001~S-004 各模块的独立 need_deep_ta 设置
+  7. Daily Plan 和 Discovery 报告展示优先级分层、综合分、完整度和深挖原因
+- **标记**：`# [S-005] selection_priority_gate`
+- **测试结果**：
+  - S-005 专项测试：74 passed
+  - TradeFlow 全量测试：547 passed
+  - 扩展回归测试（readiness_score + g001_three_layer）：163 passed
+
+---
+
 ## 2026-05-29 | 自动开发任务池补充与夜间 4 小时窗口准备
 
 - **执行者**：Codex
@@ -1120,3 +1168,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/T-003-20260529-round1.txt
 - **运行档案**: docs/task_runs/T-003-20260529-144007/
+
+## 2026-05-29 | AUTO-002 自动开发闭环
+
+- **任务**: S-005 — 选股优先级整合与 need_deep_ta 门槛重排（P1）
+- **优先级**: P1
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/S-005-20260529-round1.txt
+- **运行档案**: docs/task_runs/S-005-20260529-164949/

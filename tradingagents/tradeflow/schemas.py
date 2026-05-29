@@ -85,6 +85,14 @@ class Candidate:
     fund_flow_unit_verified: bool = False  # [T-003]
     fund_flow_individual_summary: str = ""  # [T-003]
     fund_flow_board_summary: str = ""  # [T-003]
+    composite_score: float = 0.0  # [S-005] selection_priority_gate
+    signal_category_hits: list[str] = field(default_factory=list)  # [S-005]
+    positive_category_count: int = 0  # [S-005]
+    data_completeness: float = 0.0  # [S-005]
+    missing_evidence: list[str] = field(default_factory=list)  # [S-005]
+    why_deep_ta: str = ""  # [S-005]
+    why_not_deep_ta: str = ""  # [S-005]
+    priority_rank: str = ""  # [S-005]
 
     def __post_init__(self):
         if not self.trade_date:
@@ -169,6 +177,14 @@ class Candidate:
             "fund_flow_unit_verified": 1 if self.fund_flow_unit_verified else 0,  # [T-003]
             "fund_flow_individual_summary": self.fund_flow_individual_summary,  # [T-003]
             "fund_flow_board_summary": self.fund_flow_board_summary,  # [T-003]
+            "composite_score": self.composite_score,  # [S-005] selection_priority_gate
+            "signal_category_hits_json": json.dumps(self.signal_category_hits, ensure_ascii=False),  # [S-005]
+            "positive_category_count": self.positive_category_count,  # [S-005]
+            "data_completeness": self.data_completeness,  # [S-005]
+            "missing_evidence_json": json.dumps(self.missing_evidence, ensure_ascii=False),  # [S-005]
+            "why_deep_ta": self.why_deep_ta,  # [S-005]
+            "why_not_deep_ta": self.why_not_deep_ta,  # [S-005]
+            "priority_rank": self.priority_rank,  # [S-005]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -213,6 +229,14 @@ class Candidate:
             fund_flow_unit_verified=bool(row.get("fund_flow_unit_verified", 0)),  # [T-003]
             fund_flow_individual_summary=row.get("fund_flow_individual_summary", ""),  # [T-003]
             fund_flow_board_summary=row.get("fund_flow_board_summary", ""),  # [T-003]
+            composite_score=row.get("composite_score", 0.0),  # [S-005] selection_priority_gate
+            signal_category_hits=json.loads(row.get("signal_category_hits_json", "[]")),  # [S-005]
+            positive_category_count=row.get("positive_category_count", 0),  # [S-005]
+            data_completeness=row.get("data_completeness", 0.0),  # [S-005]
+            missing_evidence=json.loads(row.get("missing_evidence_json", "[]")),  # [S-005]
+            why_deep_ta=row.get("why_deep_ta", ""),  # [S-005]
+            why_not_deep_ta=row.get("why_not_deep_ta", ""),  # [S-005]
+            priority_rank=row.get("priority_rank", ""),  # [S-005]
         )
 
 
@@ -375,6 +399,22 @@ class DailyPlan:
                     lines.append(f"    个股: {ff_ind}")
                 if ff_board:
                     lines.append(f"    板块: {ff_board}")
+            # [S-005] selection_priority_gate — display priority gate results
+            priority_rank = c.get("priority_rank", "")
+            composite_score_val = c.get("composite_score", 0)
+            why_deep = c.get("why_deep_ta", "")
+            why_not_deep = c.get("why_not_deep_ta", "")
+            missing_ev = c.get("missing_evidence", [])
+            data_comp = c.get("data_completeness", 0)
+            if priority_rank:
+                rank_emoji = {"A": "🟢", "B": "🟡", "C": "🔴"}
+                lines.append(f"  优先级: {rank_emoji.get(priority_rank, '')} {priority_rank}层 | 综合分: {composite_score_val:.1f} | 完整度: {data_comp:.0%}")
+                if why_deep:
+                    lines.append(f"    值得深挖: {why_deep}")
+                if why_not_deep:
+                    lines.append(f"    暂不深挖: {why_not_deep}")
+                if missing_ev:
+                    lines.append(f"    缺少证据: {', '.join(missing_ev[:5])}")
             lines.append("")
 
         return "\n".join(lines)

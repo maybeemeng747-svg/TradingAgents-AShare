@@ -87,6 +87,14 @@ def _build_plan_entry(candidate: Candidate) -> dict:
         "fund_flow_unit_verified": candidate.fund_flow_unit_verified,  # [T-003]
         "fund_flow_individual_summary": candidate.fund_flow_individual_summary,  # [T-003]
         "fund_flow_board_summary": candidate.fund_flow_board_summary,  # [T-003]
+        "composite_score": candidate.composite_score,  # [S-005] selection_priority_gate
+        "signal_category_hits": candidate.signal_category_hits,  # [S-005]
+        "positive_category_count": candidate.positive_category_count,  # [S-005]
+        "data_completeness": candidate.data_completeness,  # [S-005]
+        "missing_evidence": candidate.missing_evidence,  # [S-005]
+        "why_deep_ta": candidate.why_deep_ta,  # [S-005]
+        "why_not_deep_ta": candidate.why_not_deep_ta,  # [S-005]
+        "priority_rank": candidate.priority_rank,  # [S-005]
     }
 
 
@@ -181,8 +189,8 @@ def generate_daily_plan(
         entry = _build_plan_entry(c)
         plan_entries.append(entry)
 
-    # Sort by score descending
-    plan_entries.sort(key=lambda x: x["score"], reverse=True)
+    # Sort by composite_score descending (S-005 priority gate), fallback to score
+    plan_entries.sort(key=lambda x: (x.get("composite_score", 0) or 0, x.get("score", 0)), reverse=True)
 
     # Build summary
     n_total = len(plan_entries)

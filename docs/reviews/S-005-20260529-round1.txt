@@ -1,0 +1,3291 @@
+Task: S-005 — 选股优先级整合与 need_deep_ta 门槛重排（P1）
+Date: 2026-05-29_17:05:03
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e72f9-e36f-70d3-9b11-f7674cfe6cb1
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md && printf '\\n---TASKS---\\n' && sed -n '1,220p' docs/TASKS.md && printf '\\n---DECISIONS---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n---DEVLOG---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+---TASKS---
+# 任务池
+
+> 最后更新：2026-05-29
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `S-005`：选股优先级整合与 `need_deep_ta` 门槛重排（P1，ready）。
+2. `M-003`：TradeFlow universe 管理器（P1，ready）。
+3. `M-004`：TradeFlow 策略权重与阈值配置（P1，ready）。
+4. `T-006`：事件源自动接入 Discovery / Daily Plan（P1，ready）。
+5. `V-002`：夜间自动开发验收报告与候选样本回放（P1，ready）。
+6. `S-006`：候选误报审计与样本集沉淀（P1，ready）。
+7. 第二梯队：`S-007/S-008/M-005/M-006`，用于延长夜间窗口并继续围绕候选质量、触发状态和 TA 成本门控推进。
+
+---
+
+## S. TradeFlow 选股策略核心任务池（2026-05-29 新增）
+
+> 原则：先提高候选池质量，再扩大扫描范围。TA 深度分析只服务于已经有足够逻辑、事件、资金或风险结构支撑的候选股。
+
+### S-001: 政策版本因子进入 TradeFlow 候选池（P1）
+- **描述**：为 TradeFlow 增加政策版本因子，识别当前 A 股市场更容易被定价的政策/产业方向，让候选池从“技术形态先行”升级为“政策版本入池 + 技术确认”。
+- **优先级**：P1
+- **状态**：done — commit a4d06d4 + cf7d928
+- **背景**：
+  - A 股很多阶段不是简单的业绩驱动，而是政策方向、产业版本和市场叙事共同驱动。
+  - 现在 TradeFlow 已有 VCP、事件催化、A 股标签，但缺少“当前版本需要什么标杆”的第一层判断。
+- **执行约束**：
+  - 不调用外部 LLM，不跑全市场扫描。
+  - 不改 `tradingagents/prompts/`。
+  - 不输出买入/卖出强建议。
+  - 只在 TradeFlow 候选池层做信号、标签、分数和证据引用。
+- **实现要点**：
+  1. 新增或扩展政策版本信号模块，输出 `policy_tags`、`version_score`、`policy_evidence_refs`。
+  2. 先用可维护关键词/规则覆盖：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革等。
+  3. 事件标题、公告摘要、行业标签命中政策版本时加分；无原始文本证据时不得加分。
+  4. 与现有 `event_source`、`event_catalyst`、`candidate_engine` 兼容，不破坏 VCP/回踩策略。
+  5. Daily Plan 中展示政策标签和证据摘要，但动作仍只能是 `OBSERVE/NEED_DEEP_TA` 等非强交易动作。
+- **验证方式**：
+  - 构造政策关键词事件，候选包含对应 `policy_tags` 和 evidence refs。
+  - 无政策证据时 `version_score` 不得凭空加分。
+  - 不同股票事件必须按 symbol 隔离，不能串票。
+  - `pytest tests/test_tradeflow_*.py -q` 或新增对应测试通过。
+- **代码标注要求**：`# [S-001] policy_version_signal`
+
+### S-002: 叙事质量评分（P1）
+- **描述**：给事件催化增加叙事质量评分，区分“普通公告/普通新闻”和“容易形成市场共识的主线事件”。
+- **优先级**：P1
+- **状态**：done — commit 9825e22
+- **背景**：
+  - 选股不只看有没有事件，还要判断事件是否容易被市场理解、传播和接力。
+  - 目前事件催化更偏“是否存在”，缺少“事件质量与传播价值”。
+- **执行约束**：
+  - 第一阶段只做规则评分，不调用外部 LLM。
+  - 不做舆情全网抓取，不扫全市场。
+  - 评分只影响候选排序和 `need_deep_ta`，不直接生成交易建议。
+- **实现要点**：
+  1. 新增 `narrative_score`，分解为政策背书、产业落地、订单/回购/评级、传播清晰度、拥挤/过热扣分。
+  2. 回购、重大订单、中标、并购重组、业绩预告、评级变化等事件给不同基础分。
+  3. 多个事件叠加时做封顶，避免标题堆叠虚高。
+  4. 输出 `narrative_reasons` 和 evidence refs，便于日报解释“为什么进候选池”。
+- **验证方式**：
+  - 普通新闻低分，回购/订单/政策相关事件高分。
+  - 重复事件不会无限叠加。
+  - `narrative_score` 缺证据时为 0 或保守默认。
+- **代码标注要求**：`# [S-002] narrative_quality_score`
+
+### S-003: 水下风险标签与候选降权（P1）
+- **描述**：为 TradeFlow 候选池增加水下风险标签，识别解禁、减持、问询、财务异常、融资拥挤、龙虎榜过热等风险，对候选做降权或要求更严格技术确认。
+- **优先级**：P1
+- **状态**：done — commit a95c3d7
+- **背景**：
+  - 选对股票不只看上涨逻辑，也要避开“看起来有题材但水下结构很差”的票。
+  - 当前已有部分 A 股标签，但风险标签还不够系统，也没有形成候选池统一降权规则。
+- **执行约束**：
+  - 所有风险标签必须绑定原始字段或事件文本。
+  - 不把风险标签直接翻译成清仓/买入建议。
+  - 不写生产数据库 schema；如需持久化先用现有 TradeFlow 结构或输出方案。
+- **实现要点**：
+  1. 统一输出 `risk_flags`：`LOCKUP_RISK`、`REDUCE_HOLDING_RISK`、`INQUIRY_RISK`、`FINANCIAL_QUALITY_RISK`、`MARGIN_CROWDING_RISK`、`LHB_OVERHEAT_RISK`。
+  2. 风险标签进入候选分数降权和 `need_deep_ta` 门槛。
+  3. 解禁/减持/问询等公告类风险优先从 `event_source` 读取。
+  4. 龙虎榜和融资融券风险必须区分 `HAS_DATA/NOT_QUERIED/FAILED`，不得把未查询当作无风险。
+- **验证方式**：
+  - 构造解禁/减持/问询事件，候选出现对应 `risk_flags` 并降权。
+  - 龙虎榜未查询时不生成过热风险。
+  - 风险缺证据时不输出高置信风险标签。
+- **代码标注要求**：`# [S-003] underwater_risk_flags`
+
+### S-004: 候选股博弈平衡解释（P1）
+- **描述**：在 TradeFlow Plan 中为每个候选输出轻量博弈解释，说明多头为何可能买、空头为何可能卖、政策/监管/资金结构是否支持，避免只给策略标签而缺少交易对手视角。
+- **优先级**：P1
+- **状态**：done — commit c92e626
+- **背景**：
+  - A 股候选池要处理动态博弈：同一事件可能同时有多头叙事、风险压制和资金拥挤。
+  - 在 TA 深度分析前，候选池应先判断这只票是不是值得进一步消耗 token。
+- **执行约束**：
+  - 规则化生成，不调用外部 LLM。
+  - 不输出强买卖词。
+  - 不替代 TA 深度分析，只做候选池摘要。
+- **实现要点**：
+  1. 输出 `game_balance`：`favorable/neutral/crowded/fragile`。
+  2. 输出 `bull_case`、`bear_case`、`policy_case`、`fund_flow_case` 的短字段，来源必须来自已存在信号和证据。
+  3. 当政策/叙事/资金/技术至少两类共振时，可提高 `need_deep_ta` 优先级。
+  4. 当风险标签过多或信号拥挤时，降低候选排序或标记 `fragile`。
+- **验证方式**：
+  - 政策 + 事件 + VCP 共振时 `game_balance=favorable` 或 `neutral`。
+  - 风险标签过多时 `game_balance=fragile/crowded`。
+  - 输出中包含证据引用，不出现强买卖词。
+- **代码标注要求**：`# [S-004] candidate_game_balance`
+
+### S-005: 选股优先级整合与 need_deep_ta 门槛重排（P1）
+- **描述**：整合政策版本、叙事质量、水下风险、资金异动和技术形态，重排 TradeFlow 候选优先级，让 TA 深度分析优先消耗在真正值得分析的股票上。
+- **优先级**：P1
+- **状态**：in_progress — claimed S-005-20260529-164949
+- **前置条件**：`S-001`、`S-002`、`S-003`、`S-004` 完成。
+- **执行约束**：
+  - 不自动调用 TA 深度分析。
+  - 不做全市场扫描。
+  - 不把单一信号直接提升为强结论。
+- **实现要点**：
+  1. 定义候选综合评分：政策版本、叙事质量、技术确认、资金验证、风险扣分、数据完整度。
+  2. `need_deep_ta=True` 至少需要两类正向信号，且无重大未解释风险。
+  3. Daily Plan 输出“为什么值得看/为什么暂不深挖/缺什么证据”。
+  4. 为后续 `M-003` universe 管理器和 `M-004` 策略配置提供统一字段。
+- **验证方式**：
+  - 只有技术形态但无逻辑证据的票排序下降。
+  - 政策/事件/技术/资金共振的票排序上升。
+  - 风险过高或数据缺失时不触发 `need_deep_ta`。
+- **代码标注要求**：`# [S-005] selection_priority_gate`
+
+### S-006: 候选误报审计与样本集沉淀（P1）
+- **描述**：建立 TradeFlow 候选误报审计机制，把“为什么没选中/为什么误选中”的样本沉淀为可回放 fixtures，持续压低候选池噪声。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`T-002`、`T-003`、`S-002`、`S-003` 完成。
+- **执行约束**：
+  - 不调用外部 LLM。
+  - 不跑全市场扫描。
+  - 不写生产数据库，只新增测试 fixtures 或本地报告脚本。
+- **实现要点**：
+  1. 新增候选审计报告，按“命中策略/过滤原因/风险降权/证据缺口”分类。
+  2. 将最近人工验证过的样本沉淀为小型 fixtures，覆盖 VCP 命中、流动性过滤、无策略命中、事件催化、资金异动。
+  3. 输出误报/漏报原因字段，便于后续调参。
+  4. Daily Plan 或 discovery 报告增加“证据缺口”摘要，但不输出强交易建议。
+- **验证方式**：
+  - fixtures 可稳定回放，输出固定候选数量和过滤原因。
+  - 流动性不足、事件缺证据、资金单位未校验等场景不会被误判为高优先级。
+  - `pytest tests/test_tradeflow_*.py -q` 通过。
+- **代码标注要求**：`# [S-006] candidate_false_positive_audit`
+
+### S-007: 候选分层与 TA token 预算分配（P1）
+- **描述**：把候选池分为 A/B/C 三层，明确哪些值得优先深度 TA、哪些只观察、哪些淘汰，避免把 token 消耗在弱候选上。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`S-005` 完成。
+- **执行约束**：
+  - 不自动调用 TA。
+  - 不输出强买卖词。
+  - 不接入真实扣费 API，只输出预算建议和原因。
+- **实现要点**：
+  1. 定义候选等级：A=优先深挖、B=观察等待证据、C=淘汰/暂不关注。
+  2. 结合综合评分、风险标签、数据完整度、策略共振数量生成等级。
+  3. 输出 `ta_budget_priority`、`missing_evidence`、`why_not_deep_ta`。
+  4. Daily Plan 按等级排序，A 层数量设上限，防止一天候选过多。
+- **验证方式**：
+  - 单一弱信号不得进入 A 层。
+  - 两类以上强证据且风险可控时可进入 A 层。
+  - 高风险/低完整度候选最多 B/C。
+- **代码标注要求**：`# [S-007] candidate_tier_budget`
+
+### S-008: TradeFlow 证据完整度门禁（P1）
+- **描述**：给候选池增加轻量证据完整度门禁，避免缺行情、缺资金、缺事件来源时分数虚高。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`M-008`、`T-002`、`T-003` 完成。
+- **执行约束**：
+  - 不改 TA 深度报告 readiness 逻辑，只在 TradeFlow 候选层做门禁。
+  - 数据缺失只能降权或标记缺口，不能编造补全。
+- **实现要点**：
+  1. 输出 `tradeflow_data_completeness` 和 `missing_data_fields`。
+  2. 至少覆盖行情 OHLCV、流动性、事件来源、资金流单位校验、风险标签证据。
+  3. 完整度低于阈值时禁止 A 层和 `need_deep_ta=True`。
+  4. 报告中展示“缺什么证据才能升级”。
+- **验证方式**：
+  - 缺资金单位校验时不触发高置信资金异动。
+  - 缺行情/流动性数据时不进入 A 层。
+  - 完整数据样本不被误降级。
+- **代码标注要求**：`# [S-008] tradeflow_evidence_gate`
+
+---
+
+## M. 框架路线总任务池（2026-05-28 新增）
+
+### INF-001: 自动开发任务领取锁与 in_progress 状态流转（P0）
+- **描述**：给自动开发闭环增加任务领取锁，避免 OpenClaw/OpenCode/Codex 或多个夜间任务同时领取同一个 `ready` 任务。
+- **优先级**：P0
+- **状态**：done — commit 54a8292
+- **背景**：
+  - 当前已经出现并发/半成品 diff：代码改动先出现，但任务状态和运行档案未同步。
+
+---DECISIONS---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+---DEVLOG---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-05-29 | S-005 选股优先级整合与 need_deep_ta 门槛重排
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：整合政策版本、叙事质量、水下风险、资金异动和技术形态，重排 TradeFlow 候选优先级，让 TA 深度分析优先消耗在真正值得分析的股票上
+- **修改文件**：
+  - `tradingagents/tradeflow/selection_priority_gate.py`（新增，~230行）— [S-005] selection_priority_gate
+    - `run_selection_priority_gate()` — 统一优先级门控主入口
+    - `SelectionPriorityResult` — 输出 `composite_score`、`signal_category_hits`、`positive_category_count`、`data_completeness`、`missing_evidence`、`why_deep_ta`、`why_not_deep_ta`、`gate_passed`、`priority_rank`、`gate_refs`
+    - 综合评分 = 技术分 + 政策版本分 + 叙事质量分 + 资金异动分 + 风险罚分 + 数据完整度奖励
+    - 四类正向信号：policy / narrative / tech / fund
+    - `need_deep_ta=True` 至少需要 2 类正向信号，且无高风险标签、风险标签不过多、风险罚分不重、博弈平衡非 fragile/crowded、数据完整度 ≥ 50%
+    - 优先级分层：A（≥3类 + 高分 + 完整度≥70%）、B（≥2类 + 中等分）、C（弱信号或风险过高）
+    - 输出"为什么值得看/为什么暂不深挖/缺什么证据"
+    - 为 M-003 universe 管理器和 M-004 策略配置提供统一字段
+  - `tradingagents/tradeflow/schemas.py` — [S-005]
+    - `Candidate` 新增 9 个字段：composite_score、signal_category_hits、positive_category_count、data_completeness、missing_evidence、why_deep_ta、why_not_deep_ta、priority_rank
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示优先级分层、综合分、完整度、值得/暂不深挖、缺少证据
+  - `tradingagents/tradeflow/candidate_engine.py` — [S-005]
+    - `evaluate_symbol()` 在 T-003 资金异动之后调用 `run_selection_priority_gate()`
+    - 门控结果写入 `candidate.evidence["selection_priority_gate"]`
+    - `candidate.need_deep_ta` 统一由门控结果覆盖（S-001~S-004 各模块的 need_deep_ta 设置被整合）
+    - `init_db()` 新增 8 列迁移：composite_score、signal_category_hits_json、positive_category_count、data_completeness、missing_evidence_json、why_deep_ta、why_not_deep_ta、priority_rank
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+  - `tradingagents/tradeflow/plan_runner.py` — [S-005]
+    - `_build_plan_entry()` 输出门控全部字段
+    - 候选排序改用 `composite_score` 降序
+  - `tradingagents/tradeflow/discovery.py` — [S-005]
+    - `_build_discovery_entry()` 输出门控全部字段
+    - 候选排序改用 `composite_score` 降序
+    - `render_discovery_text()` 展示优先级分层和深挖/不深挖原因
+  - `tests/test_s005_selection_priority_gate.py`（新增，~640行）— 74 个测试
+- **关键逻辑**：
+  1. 综合评分整合所有正向信号和风险惩罚，加上数据完整度奖励（完整度 × 5 分）
+  2. 仅技术形态但无逻辑证据的票：composite_score 较低，排序下降
+  3. 政策/事件/技术/资金共振的票：positive_category_count ≥ 2，gate_passed=True，排序上升
+  4. 风险过高（高风险标签、风险标签过多、罚分过重、博弈 fragile/crowded）不触发 need_deep_ta
+  5. 数据缺失（完整度 < 50%）不触发 need_deep_ta
+  6. need_deep_ta 由门控统一裁决，覆盖 S-001~S-004 各模块的独立 need_deep_ta 设置
+  7. Daily Plan 和 Discovery 报告展示优先级分层、综合分、完整度和深挖原因
+- **标记**：`# [S-005] selection_priority_gate`
+- **测试结果**：
+  - S-005 专项测试：74 passed
+  - TradeFlow 全量测试：547 passed
+  - 扩展回归测试（readiness_score + g001_three_layer）：163 passed
+
+---
+
+## 2026-05-29 | 自动开发任务池补充与夜间 4 小时窗口准备
+
+- **执行者**：Codex
+- **背景**：夜间自动开发批量完成 6 个任务后，`./scripts/auto_dev_loop.sh --dry-run` 显示无 `ready` 任务，4 小时窗口存在空转风险。
+- **修改文件**：
+  - `docs/TASKS.md`
+    - 将顶部当前优先队列更新为下一批任务。
+    - 将前置条件已满足的 `S-005`、`M-003`、`M-004` 从 `blocked` 解锁为 `ready`。
+    - 新增 `S-006` 候选误报审计与样本集沉淀。
+    - 新增 `S-007` 候选分层与 TA token 预算分配。
+    - 新增 `S-008` TradeFlow 证据完整度门禁。
+    - 将 `M-005` 盘中 Observe 状态机、`M-006` OpenClaw 自动触发 TA 深度分析门控纳入第二梯队 ready 队列。
+    - 新增 `T-006` 事件源自动接入 Discovery / Daily Plan。
+    - 新增 `V-002` 夜间自动开发验收报告与候选样本回放。
+    - 更新自动领取规则，说明批量模式会连续领取任务，直到无任务或失败。
+- **验证结果**：
+  - TradeFlow 专项测试：83 passed。
+  - S/T/M 相关新增测试集合：334 passed。
+  - `auto_dev_loop --dry-run` 在修改前显示任务池为空；修改后应选择 `S-005` 作为下一任务。
+
+## 2026-05-29 | T-003 TradeFlow P1 资金异动池
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：新增资金异动候选池，将主力资金连续流入、资金占比异常、个股/板块资金共振作为候选入池信号
+- **修改文件**：
+  - `tradingagents/tradeflow/fund_flow_anomaly.py`（新增，~310行）— [T-003] fund_flow_anomaly_pool
+    - `detect_fund_flow_anomaly()` — 资金异动检测主入口
+    - `FundFlowAnomalyResult` — 输出 `fund_flow_anomaly_score`（0-25分）、`fund_flow_anomaly_tags`、`fund_flow_anomaly_refs`、`fund_flow_unit_verified`、`fund_flow_individual_summary`、`fund_flow_board_summary`
+    - 五类异常信号：CONSECUTIVE_INFLOW、HIGH_PROPORTION、BOARD_RESONANCE、LARGE_SINGLE_DAY、NET_OUTFLOW_DOMINANT
+    - 个股资金与板块资金分开记录，禁止混用
+    - 单位未校验时不输出高置信资金信号（HIGH_PROPORTION、LARGE_SINGLE_DAY、BOARD_RESONANCE降级）
+    - 资金异动只做加分项，不单独触发强结论
+    - 列式解析：识别"主力净流入-净额"列索引，精确提取净流入值
+  - `tradingagents/tradeflow/schemas.py` — [T-003]
+    - `STRATEGY_FUND_FLOW = "FUND_FLOW_ANOMALY"` 策略常量，加入 `ALL_STRATEGIES`
+    - `Candidate` 新增 6 个字段：fund_flow_anomaly_score、fund_flow_anomaly_tags、fund_flow_anomaly_refs、fund_flow_unit_verified、fund_flow_individual_summary、fund_flow_board_summary
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示资金异动标签、个股/板块摘要、单位校验状态
+  - `tradingagents/tradeflow/candidate_engine.py` — [T-003]
+    - `evaluate_symbol()` 新增 `fund_flow_individual` 和 `fund_flow_board` 参数
+    - 在 S-004 博弈平衡之后调用 `detect_fund_flow_anomaly()`
+    - 正向资金异动标签（非 NET_OUTFLOW_DOMINANT）加分并加入 strategy_tags
+    - NET_OUTFLOW_DOMINANT 记录但不加分
+    - 单位已校验 + 正向标签 + 分数 >= 10 时提升 need_deep_ta
+    - `init_db()` 新增 6 列迁移
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+  - `tradingagents/tradeflow/plan_runner.py` — [T-003]
+    - `generate_daily_plan()` 新增 `fund_flow_map` 参数（symbol → {individual, board}）
+    - `_build_plan_entry()` 输出资金异动全部字段
+  - `tradingagents/tradeflow/discovery.py` — [T-003]
+    - `SOURCE_FUND_FLOW = "fund_flow_pool"` 新来源常量
+    - `run_discovery()` 新增 `fund_flow_map` 参数
+    - `_build_discovery_universe()` 新增 `fund_flow_symbols` 参数，资金异动池股票可进入 universe
+    - `_build_discovery_entry()` 输出资金异动字段
+    - `render_discovery_text()` 展示资金异动标签和个股/板块摘要
+  - `tests/test_t003_fund_flow_anomaly.py`（新增，~530行）— 71 个测试
+- **关键逻辑**：
+  1. 列式解析：从表头找到"主力净流入-净额"列索引，精确提取净流入值，避免日期/收盘价/占比干扰
+  2. 单位校验：检查文本中是否包含"万元"、"净额"等单位提示；未校验时降级 HIGH_PROPORTION、LARGE_SINGLE_DAY、BOARD_RESONANCE
+  3. 个股/板块分离：individual_summary 和 board_summary 完全独立，个股资金流与板块资金流分开记录
+  4. 资金异动仅为加分项：不单独创建候选，必须至少有一个 VCP/Pullback/Event 策略命中
+  5. NET_OUTFLOW_DOMINANT 不加分、不加策略标签，仅作为观察记录
+  6. 与 S-001~S-004 兼容：资金异动在博弈平衡之后检测，正向信号可提升 need_deep_ta
+- **标记**：`# [T-003] fund_flow_anomaly_pool`
+- **测试结果**：
+  - T-003 专项测试：71 passed
+  - TradeFlow 全量测试：83 passed
+  - S/T 系列联合测试（S-001~S-004 + T-002 + T-003）：325 passed
+  - 扩展回归测试（readiness_score + g001_three_layer）：163 passed
+
+---
+
+## 2026-05-29 | T-002 TradeFlow P1 小范围 Discovery
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：在小范围股票池（自选/持仓/手动/行业试点/事件源）上运行候选发现，输出 TopN 候选、过滤原因和策略标签，不自动调用 TA 深度分析
+- **修改文件**：
+  - `tradingagents/tradeflow/discovery.py`（新增，~260行）— [T-002] discovery
+    - `run_discovery()` — 小范围候选扫描主入口
+    - `DiscoveryResult` — 输出候选列表、被过滤列表、摘要、metadata
+    - `FilteredSymbol` — 被过滤股票记录（symbol, name, source, reason）
+    - `_build_discovery_universe()` — 扩展 universe 构建，增加行业池（industry_symbols）
+    - `_build_discovery_entry()` — 构建候选计划条目
+    - `_classify_filter_reasons()` — 将过滤原因分类为：流动性差/数据缺失/无策略命中/其他
+    - `render_discovery_text()` — 人类可读的 Discovery 报告
+    - 支持 5 种来源：watchlist / holding / manual / industry_pool / event_source
+    - 支持 TopN 截断，默认 20 只
+    - 过滤原因分类统计进入 metadata.filter_breakdown
+    - 所有输出无强买卖词
+  - `scripts/run_tradeflow_plan.py`（重写）— [T-002] CLI 扩展
+    - 新增 `--discover` 模式切换
+    - 新增 `--industry-symbols` 行业池标的
+    - 新增 `--top-n` 候选截断数
+    - 新增 `--use-event-source` 事件源开关
+    - 新增 `--no-holdings` / `--no-watchlist` 排除选项
+    - 保留原有 `--symbols` / `--date` / `--db` / `--save-candidates` / `--news` 功能
+  - `tests/test_t002_discovery.py`（新增，~370行）— 39 个测试
+- **关键逻辑**：
+  1. Discovery 模式与原有 Plan 模式并行，不影响现有 `generate_daily_plan()` 路径
+  2. 行业池作为独立 universe 来源（`industry_pool`），与 manual/watchlist/holding/event_source 去重
+  3. 每只被过滤股票记录具体原因，统计为 4 类（流动性差/数据缺失/无策略命中/其他）
+  4. 不自动调用 TA 深度分析，只标记 `need_deep_ta`
+  5. 事件源按 symbol 隔离，每只股票只消费自己的事件标题
+  6. 输出中无强买卖词，自动 sanitize
+- **标记**：`# [T-002] discovery`
+- **测试结果**：
+  - T-002 专项测试：39 passed
+  - TradeFlow 全量测试：122 passed
+  - 扩展回归测试：519 passed, 2 skipped
+
+---
+
+## 2026-05-29 | M-008 数据源健康检查与 fallback 可观测性
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：建立数据源健康检查，持续观察 AKShare、cn_astock、BaoStock、yfinance 等源的成功率、延迟和失败原因，记录 fallback 是否发生以及最终 vendor
+- **修改文件**：
+  - `tradingagents/dataflows/health_check.py`（新增，~280行）— [M-008] data_source_health
+    - `EndpointCheck` — 每个端点的检查结果：status(OK/FAILED/STALE/NOT_QUERIED)、vendor、fallback_from、latency_ms、error、chain、record_count
+    - `HealthReport` — 完整健康报告：run_at、date、checks、summary(OK/FAILED/STALE/fallback_count)
+    - `_default_endpoints()` — 默认检查 8 个端点：get_stock_data、get_indicators、get_fundamentals、get_balance_sheet、get_cashflow、get_income_statement、get_news、get_realtime_quotes
+    - `_probe_endpoint()` — 单端点探测：调用 route_to_vendor，记录延迟、记录数、fallback
+    - `run_health_check()` — 主入口：对默认 2-3 只样例股（600519.SH、000001.SZ）运行所有端点探测
+    - `render_report()` — 生成 Markdown 报告：Summary 表 + Endpoint Details 表 + Fallback Events + Failed Endpoints + Stale Responses
+    - `save_report()` — 写入 `docs/data_source_health/YYYY-MM-DD.md`
+    - 自动检测 fallback：当 chain 首位 vendor 与实际 hit vendor 不同时记录 fallback_from
+  - `scripts/run_health_check.py`（新增，~60行）— CLI 入口
+    - `--dry-run` 只打印不写文件
+    - `--output` 自定义输出路径
+    - `--symbols` 自定义样例股
+    - 非 dry-run 默认写入 `docs/data_source_health/YYYY-MM-DD.md`
+  - `tests/test_m008_health_check.py`（新增，~380行）— 44 个测试
+- **关键逻辑**：
+  1. 健康检查为纯观测层，不修改任何业务数据或配置
+  2. 每个端点记录完整的 vendor chain 和实际 hit vendor，fallback 时自动对比并标记
+  3. STALE 状态检测空响应/极短响应/None 返回
+  4. symbol 替换支持嵌套 list/tuple 参数（如 get_realtime_quotes 的 symbols 列表）
+  5. 所有测试 mock route_to_vendor，不依赖网络
+  6. live smoke 可通过 `python scripts/run_health_check.py --dry-run` 手动执行
+- **标记**：`# [M-008] data_source_health`
+- **测试结果**：
+  - M-008 专项测试：44 passed
+  - 关联 provider/tradeflow 测试：47 passed, 2 skipped
+
+## 2026-05-29 | S-004 候选股博弈平衡解释
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：在 TradeFlow Plan 中为每个候选输出轻量博弈解释，说明多头为何可能买、空头为何可能卖、政策/监管/资金结构是否支持
+- **修改文件**：
+  - `tradingagents/tradeflow/game_balance.py`（新增，~210行）— [S-004] candidate_game_balance
+    - `assess_game_balance(strategy_tags, score, policy_tags, version_score, ...)` — 规则化博弈平衡评估
+    - `GameBalanceResult` — 输出 `game_balance`(favorable/neutral/crowded/fragile)、`bull_case`、`bear_case`、`policy_case`、`fund_flow_case`、`resonance_count`、`game_balance_refs`
+    - 四类信号共振计数：政策(policy)、叙事/事件(narrative)、技术(tech)、资金(fund)
+    - 共振 >= 2 类且风险可控时标记 `favorable` 或 `neutral`，并提升 `need_deep_ta`
+    - 高严重性风险(INQUIRY_RISK/FINANCIAL_QUALITY_RISK)或风险标签 >= 3 个时标记 `fragile`
+    - 资金冲突(正负同时) + 风险标签 >= 2 时标记 `crowded`
+    - 所有输出文本禁止强买卖词，自动 sanitize
+    - 所有 case 字段来源必须来自已有信号和证据，不调用外部 LLM
+  - `tradingagents/tradeflow/schemas.py` — [S-004]
+    - `Candidate` 新增 `game_balance`、`bull_case`、`bear_case`、`policy_case`、`fund_flow_case`、`resonance_count`、`game_balance_refs` 字段
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示博弈平衡 verdict + 多空/政策/资金四维视角
+  - `tradingagents/tradeflow/candidate_engine.py` — [S-004]
+    - `evaluate_symbol()` 在 S-003 水下风险之后调用 `assess_game_balance()`
+    - 博弈平衡结果写入 `candidate.evidence["game_balance"]`
+    - 共振 >= 2 + 风险可控时自动提升 `need_deep_ta`
+
+exec
+/bin/zsh -lc 'git status --short --branch' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+## local/tradingagents-custom...myfork/local/tradingagents-custom [ahead 66, behind 1]
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/tradeflow/candidate_engine.py
+ M tradingagents/tradeflow/discovery.py
+ M tradingagents/tradeflow/plan_runner.py
+ M tradingagents/tradeflow/schemas.py
+?? .auto_dev.lock/
+?? docs/task_runs/S-005-20260529-164949/
+?? tests/test_s005_selection_priority_gate.py
+?? tradingagents/tradeflow/selection_priority_gate.py
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- tradingagents/tradeflow/selection_priority_gate.py tradingagents/tradeflow/schemas.py tradingagents/tradeflow/candidate_engine.py tradingagents/tradeflow/plan_runner.py tradingagents/tradeflow/discovery.py tests/test_s005_selection_priority_gate.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ docs/DEVLOG.md                              | 48 +++++++++++++++++++
+ docs/TASKS.md                               |  2 +-
+ tradingagents/tradeflow/candidate_engine.py | 73 ++++++++++++++++++++++++++++-
+ tradingagents/tradeflow/discovery.py        | 27 ++++++++++-
+ tradingagents/tradeflow/plan_runner.py      | 12 ++++-
+ tradingagents/tradeflow/schemas.py          | 40 ++++++++++++++++
+ 6 files changed, 197 insertions(+), 5 deletions(-)
+diff --git a/tradingagents/tradeflow/candidate_engine.py b/tradingagents/tradeflow/candidate_engine.py
+index cc102c0..998d418 100644
+--- a/tradingagents/tradeflow/candidate_engine.py
++++ b/tradingagents/tradeflow/candidate_engine.py
+@@ -27,6 +27,7 @@ from .narrative_quality import score_narrative_quality, NarrativeQualityResult
+ from .underwater_risk_flags import detect_underwater_risks, UnderwaterRiskResult, ALL_RISK_FLAGS  # [S-003]
+ from .game_balance import assess_game_balance, GameBalanceResult  # [S-004] candidate_game_balance
+ from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult, FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT  # [T-003] fund_flow_anomaly_pool
++from .selection_priority_gate import run_selection_priority_gate, SelectionPriorityResult  # [S-005] selection_priority_gate
+ 
+ 
+ # ── SQL for table creation ──
+@@ -151,6 +152,21 @@ def init_db(db_path: str) -> None:
+             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+         except sqlite3.OperationalError:
+             pass
++    # [S-005] selection_priority_gate — add priority gate columns
++    for _col, _type in [
++        ("composite_score", "REAL DEFAULT 0.0"),
++        ("signal_category_hits_json", "TEXT DEFAULT '[]'"),
++        ("positive_category_count", "INTEGER DEFAULT 0"),
++        ("data_completeness", "REAL DEFAULT 0.0"),
++        ("missing_evidence_json", "TEXT DEFAULT '[]'"),
++        ("why_deep_ta", "TEXT DEFAULT ''"),
++        ("why_not_deep_ta", "TEXT DEFAULT ''"),
++        ("priority_rank", "TEXT DEFAULT ''"),
++    ]:
++        try:
++            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
++        except sqlite3.OperationalError:
++            pass
+     conn.commit()
+     conn.close()
+ 
+@@ -504,6 +520,47 @@ def evaluate_symbol(
+             candidate.need_deep_ta = True
+         # Net outflow dominant does not add score but records as observation
+ 
++    # [S-005] selection_priority_gate — unified composite score and need_deep_ta gate
++    gate_result: SelectionPriorityResult = run_selection_priority_gate(
++        score=candidate.score,
++        strategy_tags=candidate.strategy_tags,
++        policy_tags=candidate.policy_tags,
++        version_score=candidate.version_score,
++        narrative_score=candidate.narrative_score,
++        fund_flow_anomaly_score=candidate.fund_flow_anomaly_score,
++        fund_flow_anomaly_tags=candidate.fund_flow_anomaly_tags,
++        fund_flow_unit_verified=candidate.fund_flow_unit_verified,
++        risk_flags=candidate.risk_flags,
++        risk_penalty=candidate.risk_penalty,
++        resonance_count=candidate.resonance_count,
++        game_balance=candidate.game_balance,
++        has_price_data=True,
++        has_event_data=bool(all_event_texts),
++        has_fund_flow_data=bool(fund_flow_individual or fund_flow_board),
++        has_risk_assessment=True,
++    )
++    candidate.composite_score = gate_result.composite_score
++    candidate.signal_category_hits = gate_result.signal_category_hits
++    candidate.positive_category_count = gate_result.positive_category_count
++    candidate.data_completeness = gate_result.data_completeness
++    candidate.missing_evidence = gate_result.missing_evidence
++    candidate.why_deep_ta = gate_result.why_deep_ta
++    candidate.why_not_deep_ta = gate_result.why_not_deep_ta
++    candidate.priority_rank = gate_result.priority_rank
++    candidate.evidence["selection_priority_gate"] = {
++        "composite_score": gate_result.composite_score,
++        "signal_category_hits": gate_result.signal_category_hits,
++        "positive_category_count": gate_result.positive_category_count,
++        "data_completeness": gate_result.data_completeness,
++        "missing_evidence": gate_result.missing_evidence,
++        "why_deep_ta": gate_result.why_deep_ta,
++        "why_not_deep_ta": gate_result.why_not_deep_ta,
++        "gate_passed": gate_result.gate_passed,
++        "priority_rank": gate_result.priority_rank,
++        "refs": gate_result.gate_refs,
++    }
++    candidate.need_deep_ta = gate_result.gate_passed
++
+     return candidate, ""
+ 
+ 
+@@ -524,8 +581,11 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
+             "fund_flow_anomaly_score, fund_flow_anomaly_tags_json, "
+             "fund_flow_anomaly_refs_json, fund_flow_unit_verified, "
+             "fund_flow_individual_summary, fund_flow_board_summary, "
++            "composite_score, signal_category_hits_json, positive_category_count, "
++            "data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta, "
++            "priority_rank, "
+             "created_at, updated_at) "
+-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
++            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+             "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+             "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
+             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+@@ -552,6 +612,13 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
+             "fund_flow_unit_verified=excluded.fund_flow_unit_verified, "
+             "fund_flow_individual_summary=excluded.fund_flow_individual_summary, "
+             "fund_flow_board_summary=excluded.fund_flow_board_summary, "
++            "composite_score=excluded.composite_score, "
++            "signal_category_hits_json=excluded.signal_category_hits_json, "
++            "positive_category_count=excluded.positive_category_count, "
++            "data_completeness=excluded.data_completeness, "
++            "missing_evidence_json=excluded.missing_evidence_json, "
++            "why_deep_ta=excluded.why_deep_ta, why_not_deep_ta=excluded.why_not_deep_ta, "
++            "priority_rank=excluded.priority_rank, "
+             "updated_at=excluded.updated_at",
+             (
+                 row["trade_date"], row["symbol"], row["name"], row["source"],
+@@ -571,6 +638,10 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
+                 row["fund_flow_anomaly_score"], row["fund_flow_anomaly_tags_json"],
+                 row["fund_flow_anomaly_refs_json"], row["fund_flow_unit_verified"],
+                 row["fund_flow_individual_summary"], row["fund_flow_board_summary"],
++                row["composite_score"], row["signal_category_hits_json"],
++                row["positive_category_count"], row["data_completeness"],
++                row["missing_evidence_json"], row["why_deep_ta"], row["why_not_deep_ta"],
++                row["priority_rank"],
+                 candidate.created_at, row["updated_at"],
+             ),
+         )
+diff --git a/tradingagents/tradeflow/discovery.py b/tradingagents/tradeflow/discovery.py
+index 4fa4486..026f8d9 100644
+--- a/tradingagents/tradeflow/discovery.py
++++ b/tradingagents/tradeflow/discovery.py
+@@ -194,7 +194,7 @@ def run_discovery(
+                 reason=reason,
+             ))
+ 
+-    candidates.sort(key=lambda c: c.score, reverse=True)
++    candidates.sort(key=lambda c: (c.composite_score, c.score), reverse=True)
+     top_candidates = candidates[:top_n]
+ 
+     plan_entries = []
+@@ -291,6 +291,14 @@ def _build_discovery_entry(candidate: Candidate) -> dict:
+         "fund_flow_unit_verified": candidate.fund_flow_unit_verified,  # [T-003]
+         "fund_flow_individual_summary": candidate.fund_flow_individual_summary,  # [T-003]
+         "fund_flow_board_summary": candidate.fund_flow_board_summary,  # [T-003]
++        "composite_score": candidate.composite_score,  # [S-005] selection_priority_gate
++        "signal_category_hits": candidate.signal_category_hits,  # [S-005]
++        "positive_category_count": candidate.positive_category_count,  # [S-005]
++        "data_completeness": candidate.data_completeness,  # [S-005]
++        "missing_evidence": candidate.missing_evidence,  # [S-005]
++        "why_deep_ta": candidate.why_deep_ta,  # [S-005]
++        "why_not_deep_ta": candidate.why_not_deep_ta,  # [S-005]
++        "priority_rank": candidate.priority_rank,  # [S-005]
+     }
+ 
+ 
+@@ -374,6 +382,23 @@ def render_discovery_text(result: DiscoveryResult) -> str:
+             if ff_board:
+                 lines.append(f"    板块: {ff_board}")
+ 
++        # [S-005] selection_priority_gate — display priority gate results
++        priority_rank = c.get("priority_rank", "")
++        composite_score_val = c.get("composite_score", 0)
++        why_deep = c.get("why_deep_ta", "")
++        why_not_deep = c.get("why_not_deep_ta", "")
++        missing_ev = c.get("missing_evidence", [])
++        data_comp = c.get("data_completeness", 0)
++        if priority_rank:
++            rank_emoji = {"A": "🟢", "B": "🟡", "C": "🔴"}
++            lines.append(f"  优先级: {rank_emoji.get(priority_rank, '')} {priority_rank}层 | 综合分: {composite_score_val:.1f} | 完整度: {data_comp:.0%}")
++            if why_deep:
++                lines.append(f"    值得深挖: {why_deep}")
++            if why_not_deep:
++                lines.append(f"    暂不深挖: {why_not_deep}")
++            if missing_ev:
++                lines.append(f"    缺少证据: {', '.join(missing_ev[:5])}")
++
+         lines.append("")
+ 
+     if result.filtered:
+diff --git a/tradingagents/tradeflow/plan_runner.py b/tradingagents/tradeflow/plan_runner.py
+index 256b645..a504031 100644
+--- a/tradingagents/tradeflow/plan_runner.py
++++ b/tradingagents/tradeflow/plan_runner.py
+@@ -87,6 +87,14 @@ def _build_plan_entry(candidate: Candidate) -> dict:
+         "fund_flow_unit_verified": candidate.fund_flow_unit_verified,  # [T-003]
+         "fund_flow_individual_summary": candidate.fund_flow_individual_summary,  # [T-003]
+         "fund_flow_board_summary": candidate.fund_flow_board_summary,  # [T-003]
++        "composite_score": candidate.composite_score,  # [S-005] selection_priority_gate
++        "signal_category_hits": candidate.signal_category_hits,  # [S-005]
++        "positive_category_count": candidate.positive_category_count,  # [S-005]
++        "data_completeness": candidate.data_completeness,  # [S-005]
++        "missing_evidence": candidate.missing_evidence,  # [S-005]
++        "why_deep_ta": candidate.why_deep_ta,  # [S-005]
++        "why_not_deep_ta": candidate.why_not_deep_ta,  # [S-005]
++        "priority_rank": candidate.priority_rank,  # [S-005]
+     }
+ 
+ 
+@@ -181,8 +189,8 @@ def generate_daily_plan(
+         entry = _build_plan_entry(c)
+         plan_entries.append(entry)
+ 
+-    # Sort by score descending
+-    plan_entries.sort(key=lambda x: x["score"], reverse=True)
++    # Sort by composite_score descending (S-005 priority gate), fallback to score
++    plan_entries.sort(key=lambda x: (x.get("composite_score", 0) or 0, x.get("score", 0)), reverse=True)
+ 
+     # Build summary
+     n_total = len(plan_entries)
+diff --git a/tradingagents/tradeflow/schemas.py b/tradingagents/tradeflow/schemas.py
+index 842def1..735e8b3 100644
+--- a/tradingagents/tradeflow/schemas.py
++++ b/tradingagents/tradeflow/schemas.py
+@@ -85,6 +85,14 @@ class Candidate:
+     fund_flow_unit_verified: bool = False  # [T-003]
+     fund_flow_individual_summary: str = ""  # [T-003]
+     fund_flow_board_summary: str = ""  # [T-003]
++    composite_score: float = 0.0  # [S-005] selection_priority_gate
++    signal_category_hits: list[str] = field(default_factory=list)  # [S-005]
++    positive_category_count: int = 0  # [S-005]
++    data_completeness: float = 0.0  # [S-005]
++    missing_evidence: list[str] = field(default_factory=list)  # [S-005]
++    why_deep_ta: str = ""  # [S-005]
++    why_not_deep_ta: str = ""  # [S-005]
++    priority_rank: str = ""  # [S-005]
+ 
+     def __post_init__(self):
+         if not self.trade_date:
+@@ -169,6 +177,14 @@ class Candidate:
+             "fund_flow_unit_verified": 1 if self.fund_flow_unit_verified else 0,  # [T-003]
+             "fund_flow_individual_summary": self.fund_flow_individual_summary,  # [T-003]
+             "fund_flow_board_summary": self.fund_flow_board_summary,  # [T-003]
++            "composite_score": self.composite_score,  # [S-005] selection_priority_gate
++            "signal_category_hits_json": json.dumps(self.signal_category_hits, ensure_ascii=False),  # [S-005]
++            "positive_category_count": self.positive_category_count,  # [S-005]
++            "data_completeness": self.data_completeness,  # [S-005]
++            "missing_evidence_json": json.dumps(self.missing_evidence, ensure_ascii=False),  # [S-005]
++            "why_deep_ta": self.why_deep_ta,  # [S-005]
++            "why_not_deep_ta": self.why_not_deep_ta,  # [S-005]
++            "priority_rank": self.priority_rank,  # [S-005]
+             "updated_at": datetime.now().isoformat(),
+         }
+ 
+@@ -213,6 +229,14 @@ class Candidate:
+             fund_flow_unit_verified=bool(row.get("fund_flow_unit_verified", 0)),  # [T-003]
+             fund_flow_individual_summary=row.get("fund_flow_individual_summary", ""),  # [T-003]
+             fund_flow_board_summary=row.get("fund_flow_board_summary", ""),  # [T-003]
++            composite_score=row.get("composite_score", 0.0),  # [S-005] selection_priority_gate
++            signal_category_hits=json.loads(row.get("signal_category_hits_json", "[]")),  # [S-005]
++            positive_category_count=row.get("positive_category_count", 0),  # [S-005]
++            data_completeness=row.get("data_completeness", 0.0),  # [S-005]
++            missing_evidence=json.loads(row.get("missing_evidence_json", "[]")),  # [S-005]
++            why_deep_ta=row.get("why_deep_ta", ""),  # [S-005]
++            why_not_deep_ta=row.get("why_not_deep_ta", ""),  # [S-005]
++            priority_rank=row.get("priority_rank", ""),  # [S-005]
+         )
+ 
+ 
+@@ -375,6 +399,22 @@ class DailyPlan:
+                     lines.append(f"    个股: {ff_ind}")
+                 if ff_board:
+                     lines.append(f"    板块: {ff_board}")
++            # [S-005] selection_priority_gate — display priority gate results
++            priority_rank = c.get("priority_rank", "")
++            composite_score_val = c.get("composite_score", 0)
++            why_deep = c.get("why_deep_ta", "")
++            why_not_deep = c.get("why_not_deep_ta", "")
++            missing_ev = c.get("missing_evidence", [])
++            data_comp = c.get("data_completeness", 0)
++            if priority_rank:
++                rank_emoji = {"A": "🟢", "B": "🟡", "C": "🔴"}
++                lines.append(f"  优先级: {rank_emoji.get(priority_rank, '')} {priority_rank}层 | 综合分: {composite_score_val:.1f} | 完整度: {data_comp:.0%}")
++                if why_deep:
++                    lines.append(f"    值得深挖: {why_deep}")
++                if why_not_deep:
++                    lines.append(f"    暂不深挖: {why_not_deep}")
++                if missing_ev:
++                    lines.append(f"    缺少证据: {', '.join(missing_ev[:5])}")
+             lines.append("")
+ 
+         return "\n".join(lines)
+
+exec
+/bin/zsh -lc "sed -n '1,280p' tradingagents/tradeflow/selection_priority_gate.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [S-005] selection_priority_gate
+"""Selection Priority Gate — integrates all S-series signals into a unified composite
+score, re-ranks candidates, and applies a strict need_deep_ta gate.
+
+Responsibilities:
+1. Compute composite_score from policy_version, narrative_quality, tech (VCP/Pullback),
+   fund_flow_anomaly, risk_penalty, and data_completeness.
+2. Determine whether need_deep_ta should be True (requires >= 2 positive signal categories
+   AND no major unexplained risks).
+3. Output why_deep_ta / why_not_deep_ta / missing_evidence for Daily Plan display.
+4. Provide stable fields for M-003 universe manager and M-004 strategy config.
+
+Design constraints:
+- No external LLM calls.
+- No strong buy/sell words.
+- No full-market scan.
+- Single signal alone cannot trigger need_deep_ta=True.
+- Risk-heavy or data-incomplete candidates must NOT get need_deep_ta=True.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Optional
+
+
+_STRONG_BUY_SELL_WORDS = {
+    "立即买入", "重仓买入", "立即清仓", "满仓", "梭哈",
+    "强力买入", "强烈推荐", "必买", "抄底", "追涨", "杀跌",
+}
+
+_SEVERITY_HIGH_RISK_FLAGS = {"INQUIRY_RISK", "FINANCIAL_QUALITY_RISK"}
+
+MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA = 2
+
+MAX_COMPOSITE_SCORE = 200.0
+
+
+@dataclass
+class SelectionPriorityResult:
+    composite_score: float = 0.0
+    signal_category_hits: list[str] = field(default_factory=list)
+    positive_category_count: int = 0
+    data_completeness: float = 0.0
+    missing_evidence: list[str] = field(default_factory=list)
+    why_deep_ta: str = ""
+    why_not_deep_ta: str = ""
+    gate_passed: bool = False
+    priority_rank: str = ""
+    gate_refs: list[dict] = field(default_factory=list)
+
+
+def _sanitize(text: str) -> str:
+    for w in _STRONG_BUY_SELL_WORDS:
+        if w in text:
+            text = text.replace(w, "***")
+    return text
+
+
+def _compute_data_completeness(
+    has_price_data: bool = False,
+    has_event_data: bool = False,
+    has_fund_flow_data: bool = False,
+    has_fund_flow_unit_verified: bool = False,
+    has_technical_signal: bool = False,
+    has_policy_signal: bool = False,
+    has_narrative_signal: bool = False,
+    has_risk_assessment: bool = False,
+) -> tuple[float, list[str]]:
+    total_fields = 8
+    present = 0
+    missing: list[str] = []
+
+    if has_price_data:
+        present += 1
+    else:
+        missing.append("行情数据")
+
+    if has_event_data:
+        present += 1
+    else:
+        missing.append("事件/新闻数据")
+
+    if has_fund_flow_data:
+        present += 1
+    else:
+        missing.append("资金流数据")
+
+    if has_fund_flow_unit_verified:
+        present += 1
+    else:
+        missing.append("资金单位校验")
+
+    if has_technical_signal:
+        present += 1
+    else:
+        missing.append("技术形态信号")
+
+    if has_policy_signal:
+        present += 1
+    else:
+        missing.append("政策版本信号")
+
+    if has_narrative_signal:
+        present += 1
+    else:
+        missing.append("叙事质量信号")
+
+    if has_risk_assessment:
+        present += 1
+    else:
+        missing.append("风险评估")
+
+    completeness = present / total_fields if total_fields > 0 else 0.0
+    return round(completeness, 3), missing
+
+
+def run_selection_priority_gate(
+    score: float = 0.0,
+    strategy_tags: Optional[list[str]] = None,
+    policy_tags: Optional[list[str]] = None,
+    version_score: float = 0.0,
+    narrative_score: float = 0.0,
+    fund_flow_anomaly_score: float = 0.0,
+    fund_flow_anomaly_tags: Optional[list[str]] = None,
+    fund_flow_unit_verified: bool = False,
+    risk_flags: Optional[list[str]] = None,
+    risk_penalty: float = 0.0,
+    resonance_count: int = 0,
+    game_balance: str = "",
+    has_price_data: bool = True,
+    has_event_data: bool = False,
+    has_fund_flow_data: bool = False,
+    has_risk_assessment: bool = False,
+) -> SelectionPriorityResult:
+    """Run the unified selection priority gate on a candidate.
+
+    Args:
+        score: Aggregate tech + event + pullback score from merge_signals().
+        strategy_tags: All strategy tags on the candidate.
+        policy_tags: Policy version tags (S-001).
+        version_score: Policy version score (S-001).
+        narrative_score: Narrative quality score (S-002).
+        fund_flow_anomaly_score: Fund flow anomaly score (T-003).
+        fund_flow_anomaly_tags: Fund flow anomaly tags (T-003).
+        fund_flow_unit_verified: Whether fund flow unit was verified (T-003).
+        risk_flags: Risk flags (S-003).
+        risk_penalty: Risk penalty score (negative, S-003).
+        resonance_count: Resonance count across categories (S-004).
+        game_balance: Game balance verdict (S-004).
+        has_price_data: Whether price data was available.
+        has_event_data: Whether event/news data was available.
+        has_fund_flow_data: Whether fund flow data was provided.
+        has_risk_assessment: Whether risk assessment was performed.
+
+    Returns:
+        SelectionPriorityResult with composite score, gate verdict, and explanations.
+    """
+    tags = set(strategy_tags or [])
+    p_tags = list(policy_tags or [])
+    r_flags = set(risk_flags or [])
+    ff_tags = set(fund_flow_anomaly_tags or [])
+
+    refs: list[dict] = []
+
+    has_policy = version_score > 0 or len(p_tags) > 0
+    has_narrative = narrative_score > 0 or "EVENT_CATALYST" in tags or "NARRATIVE_QUALITY" in tags
+    has_tech = "VCP" in tags or "PULLBACK_SUPPORT" in tags
+    has_fund = bool(ff_tags - {"NET_OUTFLOW_DOMINANT"}) and fund_flow_anomaly_score > 0
+
+    category_hits: list[str] = []
+    if has_policy:
+        category_hits.append("policy")
+        refs.append({"field": "signal_category", "value": "policy", "source": "version_score", "score": version_score})
+    if has_narrative:
+        category_hits.append("narrative")
+        refs.append({"field": "signal_category", "value": "narrative", "source": "narrative_score", "score": narrative_score})
+    if has_tech:
+        category_hits.append("tech")
+        refs.append({"field": "signal_category", "value": "tech", "source": "strategy_tags", "score": score})
+    if has_fund:
+        category_hits.append("fund")
+        refs.append({"field": "signal_category", "value": "fund", "source": "fund_flow_anomaly", "score": fund_flow_anomaly_score})
+
+    positive_category_count = len(category_hits)
+
+    data_completeness, missing_evidence = _compute_data_completeness(
+        has_price_data=has_price_data,
+        has_event_data=has_event_data,
+        has_fund_flow_data=has_fund_flow_data,
+        has_fund_flow_unit_verified=fund_flow_unit_verified,
+        has_technical_signal=has_tech,
+        has_policy_signal=has_policy,
+        has_narrative_signal=has_narrative,
+        has_risk_assessment=has_risk_assessment,
+    )
+
+    completeness_bonus = round(data_completeness * 5.0, 2)
+
+    composite_score = score + version_score + narrative_score + fund_flow_anomaly_score + risk_penalty + completeness_bonus
+    composite_score = max(0.0, min(composite_score, MAX_COMPOSITE_SCORE))
+    composite_score = round(composite_score, 2)
+
+    has_high_risk = bool(r_flags & _SEVERITY_HIGH_RISK_FLAGS)
+    many_risks = len(r_flags) >= 3
+    heavy_penalty = risk_penalty <= -15
+
+    fragile_or_crowded = game_balance in {"fragile", "crowded"}
+    favorable_or_neutral = game_balance in {"favorable", "neutral"}
+
+    gate_passed = False
+    why_deep_ta = ""
+    why_not_deep_ta = ""
+
+    can_pass_gate = (
+        positive_category_count >= MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA
+        and not has_high_risk
+        and not many_risks
+        and not heavy_penalty
+        and not fragile_or_crowded
+        and data_completeness >= 0.5
+    )
+
+    if can_pass_gate:
+        gate_passed = True
+        reasons = []
+        if has_policy:
+            reasons.append(f"政策版本({', '.join(p_tags[:2])})")
+        if has_narrative:
+            reasons.append(f"叙事质量({narrative_score:.0f}分)")
+        if has_tech:
+            tech_tags = [t for t in ["VCP", "PULLBACK_SUPPORT"] if t in tags]
+            reasons.append(f"技术形态({', '.join(tech_tags)})")
+        if has_fund:
+            reasons.append("资金异动")
+        reasons_str = " + ".join(reasons)
+        why_deep_ta = f"{positive_category_count}类信号共振({reasons_str})，风险可控，值得深度分析"
+        refs.append({"field": "gate_passed", "value": True, "reason": f"{positive_category_count} categories, risk manageable"})
+    else:
+        blockers: list[str] = []
+        if positive_category_count < MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA:
+            blockers.append(f"仅{positive_category_count}类正向信号(需≥{MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA})")
+            refs.append({"field": "gate_blocked", "value": "insufficient_categories", "detail": f"{positive_category_count}/{MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA}"})
+        if has_high_risk:
+            blockers.append(f"高风险标签({', '.join(r_flags & _SEVERITY_HIGH_RISK_FLAGS)})")
+            refs.append({"field": "gate_blocked", "value": "high_risk_flags"})
+        if many_risks:
+            blockers.append(f"风险标签过多({len(r_flags)}个)")
+            refs.append({"field": "gate_blocked", "value": "too_many_risks"})
+        if heavy_penalty:
+            blockers.append(f"风险罚分过重({risk_penalty})")
+            refs.append({"field": "gate_blocked", "value": "heavy_penalty"})
+        if fragile_or_crowded:
+            blockers.append(f"博弈平衡不佳({game_balance})")
+            refs.append({"field": "gate_blocked", "value": "bad_game_balance"})
+        if data_completeness < 0.5:
+            blockers.append(f"数据完整度不足({data_completeness:.0%})")
+            refs.append({"field": "gate_blocked", "value": "low_data_completeness"})
+        why_not_deep_ta = "；".join(blockers)
+
+    if positive_category_count >= 3 and composite_score >= 60 and data_completeness >= 0.7:
+        priority_rank = "A"
+    elif positive_category_count >= 2 and composite_score >= 30:
+        priority_rank = "B"
+    else:
+        priority_rank = "C"
+
+    if has_high_risk or many_risks:
+        priority_rank = "C"
+
+    why_deep_ta = _sanitize(why_deep_ta)
+    why_not_deep_ta = _sanitize(why_not_deep_ta)
+
+    return SelectionPriorityResult(
+        composite_score=composite_score,
+        signal_category_hits=category_hits,
+        positive_category_count=positive_category_count,
+        data_completeness=data_completeness,
+        missing_evidence=missing_evidence,
+
+exec
+/bin/zsh -lc "sed -n '1,760p' tests/test_s005_selection_priority_gate.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [S-005] selection_priority_gate — tests
+"""Tests for the selection priority gate module.
+
+Covers:
+- Composite score computation: policy + narrative + tech + fund + risk + completeness
+- Signal category detection: policy / narrative / tech / fund
+- need_deep_ta gate: requires >= 2 positive categories, no major risks
+- Priority rank: A / B / C tiers
+- Data completeness: 8 fields, missing_evidence output
+- why_deep_ta / why_not_deep_ta explanations
+- Evidence refs trace back to input signals
+- No strong buy/sell words in output
+- Integration with Candidate / evaluate_symbol / plan_runner / discovery
+- DB persistence round-trip for S-005 fields
+- Sorting by composite_score in plans
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+
+import pytest
+
+from tradingagents.tradeflow.selection_priority_gate import (
+    run_selection_priority_gate,
+    SelectionPriorityResult,
+    _compute_data_completeness,
+    _sanitize,
+    MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA,
+    MAX_COMPOSITE_SCORE,
+)
+from tradingagents.tradeflow.schemas import (
+    Candidate,
+    CandidateSignal,
+    DailyPlan,
+    STRATEGY_VCP,
+    STRATEGY_PULLBACK,
+    STRATEGY_EVENT,
+    STRATEGY_POLICY_VERSION,
+    STRATEGY_NARRATIVE,
+    STRATEGY_FUND_FLOW,
+    FORBIDDEN_WORDS,
+)
+from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
+
+
+# ═══════════════════════════════════════════════════════════════
+# Unit tests: run_selection_priority_gate()
+# ═══════════════════════════════════════════════════════════════
+
+class TestCompositeScore:
+    def test_empty_inputs_near_zero(self):
+        r = run_selection_priority_gate(has_price_data=False)
+        assert r.composite_score == 0.0
+
+    def test_tech_only(self):
+        r = run_selection_priority_gate(score=45.0, strategy_tags=["VCP"])
+        assert r.composite_score >= 45.0
+
+    def test_policy_only(self):
+        r = run_selection_priority_gate(version_score=20.0, policy_tags=["低空经济"])
+        assert r.composite_score >= 20.0
+
+    def test_narrative_only(self):
+        r = run_selection_priority_gate(narrative_score=25.0)
+        assert r.composite_score >= 25.0
+
+    def test_fund_flow_only(self):
+        r = run_selection_priority_gate(
+            fund_flow_anomaly_score=15.0,
+            fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+        )
+        assert r.composite_score >= 15.0
+
+    def test_all_positive_signals_summed(self):
+        r = run_selection_priority_gate(
+            score=40.0,
+            version_score=20.0,
+            narrative_score=25.0,
+            fund_flow_anomaly_score=15.0,
+            fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+            strategy_tags=["VCP"],
+            policy_tags=["算力"],
+            has_event_data=True,
+            has_fund_flow_data=True,
+            has_risk_assessment=True,
+        )
+        assert r.composite_score >= 100.0
+
+    def test_risk_penalty_reduces_score(self):
+        r_no_risk = run_selection_priority_gate(
+            score=50.0, strategy_tags=["VCP"],
+            has_event_data=True, has_fund_flow_data=True,
+        )
+        r_with_risk = run_selection_priority_gate(
+            score=50.0, strategy_tags=["VCP"],
+            risk_penalty=-20.0,
+            has_event_data=True, has_fund_flow_data=True,
+        )
+        assert r_with_risk.composite_score < r_no_risk.composite_score
+
+    def test_composite_score_capped_at_max(self):
+        r = run_selection_priority_gate(
+            score=200.0, version_score=50.0, narrative_score=50.0,
+            fund_flow_anomaly_score=50.0,
+            fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+            strategy_tags=["VCP"],
+            has_event_data=True, has_fund_flow_data=True,
+            has_risk_assessment=True,
+        )
+        assert r.composite_score <= MAX_COMPOSITE_SCORE
+
+    def test_composite_score_non_negative(self):
+        r = run_selection_priority_gate(
+            score=5.0, risk_penalty=-50.0,
+        )
+        assert r.composite_score >= 0.0
+
+
+class TestSignalCategories:
+    def test_no_categories(self):
+        r = run_selection_priority_gate()
+        assert r.positive_category_count == 0
+        assert r.signal_category_hits == []
+
+    def test_policy_category(self):
+        r = run_selection_priority_gate(policy_tags=["低空经济"], version_score=10.0)
+        assert "policy" in r.signal_category_hits
+        assert r.positive_category_count >= 1
+
+    def test_narrative_category_from_score(self):
+        r = run_selection_priority_gate(narrative_score=20.0)
+        assert "narrative" in r.signal_category_hits
+
+    def test_narrative_category_from_event_tag(self):
+        r = run_selection_priority_gate(strategy_tags=["EVENT_CATALYST"])
+        assert "narrative" in r.signal_category_hits
+
+    def test_tech_category_vcp(self):
+        r = run_selection_priority_gate(strategy_tags=["VCP"])
+        assert "tech" in r.signal_category_hits
+
+    def test_tech_category_pullback(self):
+        r = run_selection_priority_gate(strategy_tags=["PULLBACK_SUPPORT"])
+        assert "tech" in r.signal_category_hits
+
+    def test_fund_category(self):
+        r = run_selection_priority_gate(
+            fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+            fund_flow_anomaly_score=10.0,
+        )
+        assert "fund" in r.signal_category_hits
+
+    def test_fund_category_excludes_net_outflow(self):
+        r = run_selection_priority_gate(
+            fund_flow_anomaly_tags=["NET_OUTFLOW_DOMINANT"],
+            fund_flow_anomaly_score=10.0,
+        )
+        assert "fund" not in r.signal_category_hits
+
+    def test_all_four_categories(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP", "EVENT_CATALYST"],
+            policy_tags=["算力"],
+            version_score=15.0,
+            narrative_score=20.0,
+            fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+            fund_flow_anomaly_score=10.0,
+        )
+        assert set(r.signal_category_hits) == {"policy", "narrative", "tech", "fund"}
+        assert r.positive_category_count == 4
+
+
+class TestNeedDeepTaGate:
+    def test_single_category_does_not_pass(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"], score=80.0,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert not r.gate_passed
+        assert not r.why_deep_ta
+        assert r.why_not_deep_ta != ""
+
+    def test_two_categories_pass(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=40.0,
+            policy_tags=["低空经济"],
+            version_score=15.0,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert r.gate_passed
+        assert r.why_deep_ta != ""
+
+    def test_high_risk_blocks_gate(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=40.0,
+            policy_tags=["低空经济"],
+            version_score=15.0,
+            risk_flags=["INQUIRY_RISK"],
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert not r.gate_passed
+        assert "INQUIRY_RISK" in r.why_not_deep_ta or "高风险" in r.why_not_deep_ta
+
+    def test_financial_quality_risk_blocks(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=40.0,
+            policy_tags=["低空经济"],
+            version_score=15.0,
+            risk_flags=["FINANCIAL_QUALITY_RISK"],
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert not r.gate_passed
+
+    def test_many_risks_blocks_gate(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=40.0,
+            policy_tags=["低空经济"],
+            version_score=15.0,
+            risk_flags=["LOCKUP_RISK", "REDUCE_HOLDING_RISK", "MARGIN_CROWDING_RISK"],
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert not r.gate_passed
+
+    def test_heavy_penalty_blocks_gate(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=40.0,
+            policy_tags=["低空经济"],
+            version_score=15.0,
+            risk_penalty=-20.0,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert not r.gate_passed
+
+    def test_fragile_game_balance_blocks(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=40.0,
+            policy_tags=["低空经济"],
+            version_score=15.0,
+            game_balance="fragile",
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert not r.gate_passed
+
+    def test_crowded_game_balance_blocks(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=40.0,
+            policy_tags=["低空经济"],
+            version_score=15.0,
+            game_balance="crowded",
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert not r.gate_passed
+
+    def test_low_data_completeness_blocks_gate(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=40.0,
+            policy_tags=["低空经济"],
+            version_score=15.0,
+            has_price_data=False,
+            has_event_data=False,
+            has_fund_flow_data=False,
+            has_risk_assessment=False,
+        )
+        assert not r.gate_passed
+
+    def test_favorable_game_balance_allows_gate(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=40.0,
+            policy_tags=["低空经济"],
+            version_score=15.0,
+            game_balance="favorable",
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert r.gate_passed
+
+    def test_neutral_game_balance_allows_gate(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=40.0,
+            policy_tags=["低空经济"],
+            version_score=15.0,
+            game_balance="neutral",
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert r.gate_passed
+
+
+class TestPriorityRank:
+    def test_tech_only_gets_c(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"], score=50.0,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert r.priority_rank == "C"
+
+    def test_two_categories_moderate_score_gets_b(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=40.0,
+            policy_tags=["低空经济"],
+            version_score=20.0,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert r.priority_rank in {"B", "A"}
+
+    def test_three_categories_high_score_gets_a(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP", "EVENT_CATALYST"],
+            score=60.0,
+            policy_tags=["算力"],
+            version_score=25.0,
+            narrative_score=30.0,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert r.priority_rank == "A"
+
+    def test_high_risk_forces_c(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP", "EVENT_CATALYST"],
+            score=80.0,
+            policy_tags=["算力"],
+            version_score=25.0,
+            risk_flags=["INQUIRY_RISK"],
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert r.priority_rank == "C"
+
+    def test_many_risks_forces_c(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP", "EVENT_CATALYST"],
+            score=80.0,
+            policy_tags=["算力"],
+            version_score=25.0,
+            risk_flags=["LOCKUP_RISK", "REDUCE_HOLDING_RISK", "MARGIN_CROWDING_RISK"],
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert r.priority_rank == "C"
+
+
+class TestDataCompleteness:
+    def test_all_fields_present(self):
+        completeness, missing = _compute_data_completeness(
+            has_price_data=True,
+            has_event_data=True,
+            has_fund_flow_data=True,
+            has_fund_flow_unit_verified=True,
+            has_technical_signal=True,
+            has_policy_signal=True,
+            has_narrative_signal=True,
+            has_risk_assessment=True,
+        )
+        assert completeness == 1.0
+        assert missing == []
+
+    def test_no_fields_present(self):
+        completeness, missing = _compute_data_completeness()
+        assert completeness == 0.0
+        assert len(missing) == 8
+
+    def test_partial_completeness(self):
+        completeness, missing = _compute_data_completeness(
+            has_price_data=True,
+            has_event_data=True,
+            has_technical_signal=True,
+        )
+        assert completeness == 3 / 8
+        assert len(missing) == 5
+
+    def test_missing_evidence_descriptions(self):
+        _, missing = _compute_data_completeness()
+        assert "行情数据" in missing
+        assert "事件/新闻数据" in missing
+        assert "资金流数据" in missing
+        assert "资金单位校验" in missing
+        assert "技术形态信号" in missing
+        assert "政策版本信号" in missing
+        assert "叙事质量信号" in missing
+        assert "风险评估" in missing
+
+
+class TestExplanations:
+    def test_why_deep_ta_contains_category_info(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=40.0,
+            policy_tags=["低空经济"],
+            version_score=15.0,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert r.gate_passed
+        assert "2类信号共振" in r.why_deep_ta
+
+    def test_why_not_deep_ta_lists_blockers(self):
+        r = run_selection_priority_gate()
+        assert r.why_not_deep_ta != ""
+        assert "0类正向信号" in r.why_not_deep_ta
+
+    def test_why_not_deep_ta_multiple_blockers(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=40.0,
+            policy_tags=["低空经济"],
+            version_score=15.0,
+            risk_flags=["INQUIRY_RISK", "FINANCIAL_QUALITY_RISK", "LOCKUP_RISK"],
+            game_balance="fragile",
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert not r.gate_passed
+        assert "高风险" in r.why_not_deep_ta
+        assert "风险标签过多" in r.why_not_deep_ta
+
+    def test_missing_evidence_list(self):
+        r = run_selection_priority_gate()
+        assert len(r.missing_evidence) > 0
+
+    def test_gate_passed_candidate_has_no_why_not(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=40.0,
+            policy_tags=["低空经济"],
+            version_score=15.0,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert r.gate_passed
+        assert r.why_deep_ta != ""
+        assert r.why_not_deep_ta == ""
+
+
+class TestNoForbiddenWords:
+    @pytest.mark.parametrize("word", FORBIDDEN_WORDS)
+    def test_no_forbidden_words_in_why_deep_ta(self, word):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=50.0,
+            policy_tags=["低空经济"],
+            version_score=20.0,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert word not in r.why_deep_ta
+        assert word not in r.why_not_deep_ta
+
+    def test_sanitize_replaces_forbidden(self):
+        text = "建议立即买入，满仓梭哈"
+        sanitized = _sanitize(text)
+        assert "立即买入" not in sanitized
+        assert "满仓" not in sanitized
+        assert "梭哈" not in sanitized
+
+
+class TestGateRefs:
+    def test_refs_include_signal_categories(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            policy_tags=["低空经济"],
+            version_score=15.0,
+        )
+        fields = [ref["field"] for ref in r.gate_refs]
+        assert "signal_category" in fields
+
+    def test_refs_include_gate_result(self):
+        r = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            policy_tags=["低空经济"],
+            version_score=15.0,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        fields = [ref["field"] for ref in r.gate_refs]
+        assert "gate_passed" in fields or "gate_blocked" in fields
+
+    def test_refs_include_blocker_detail(self):
+        r = run_selection_priority_gate(
+            risk_flags=["INQUIRY_RISK"],
+            strategy_tags=["VCP"],
+            policy_tags=["低空经济"],
+            version_score=15.0,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        blocker_refs = [ref for ref in r.gate_refs if ref.get("value") == "high_risk_flags"]
+        assert len(blocker_refs) > 0
+
+
+# ═══════════════════════════════════════════════════════════════
+# Integration tests: Candidate + evaluate_symbol
+# ═══════════════════════════════════════════════════════════════
+
+class TestCandidateIntegration:
+    def test_candidate_has_s005_fields(self):
+        c = Candidate(symbol="000001.SZ")
+        assert hasattr(c, "composite_score")
+        assert hasattr(c, "signal_category_hits")
+        assert hasattr(c, "positive_category_count")
+        assert hasattr(c, "data_completeness")
+        assert hasattr(c, "missing_evidence")
+        assert hasattr(c, "why_deep_ta")
+        assert hasattr(c, "why_not_deep_ta")
+        assert hasattr(c, "priority_rank")
+
+    def test_candidate_defaults(self):
+        c = Candidate(symbol="000001.SZ")
+        assert c.composite_score == 0.0
+        assert c.signal_category_hits == []
+        assert c.positive_category_count == 0
+        assert c.data_completeness == 0.0
+        assert c.missing_evidence == []
+        assert c.why_deep_ta == ""
+        assert c.why_not_deep_ta == ""
+        assert c.priority_rank == ""
+
+    def test_evaluate_symbol_sets_composite_score(self):
+        from unittest.mock import patch, MagicMock
+        import pandas as pd
+        import numpy as np
+
+        dates = pd.date_range("2026-01-01", periods=120, freq="B")
+        df = pd.DataFrame({
+            "Date": dates,
+            "Open": np.random.uniform(10, 15, 120),
+            "High": np.random.uniform(15, 20, 120),
+            "Low": np.random.uniform(5, 10, 120),
+            "Close": np.linspace(10, 20, 120) + np.random.normal(0, 0.5, 120),
+            "Volume": np.random.uniform(1e7, 1e8, 120),
+            "Amount": np.random.uniform(5e7, 5e8, 120),
+        })
+
+        with patch("tradingagents.tradeflow.candidate_engine._fetch_price_data", return_value=df):
+            from tradingagents.tradeflow.candidate_engine import evaluate_symbol
+            c, reason = evaluate_symbol(
+                symbol="000001.SZ",
+                name="测试",
+                source="manual",
+                trade_date="2026-05-29",
+                news_texts=["回购进展公告", "低空经济政策支持"],
+            )
+        if c is not None:
+            assert c.composite_score > 0
+
+    def test_evaluate_symbol_sets_priority_rank(self):
+        from unittest.mock import patch
+        import pandas as pd
+        import numpy as np
+
+        dates = pd.date_range("2026-01-01", periods=120, freq="B")
+        df = pd.DataFrame({
+            "Date": dates,
+            "Open": np.random.uniform(10, 15, 120),
+            "High": np.random.uniform(15, 20, 120),
+            "Low": np.random.uniform(5, 10, 120),
+            "Close": np.linspace(10, 20, 120) + np.random.normal(0, 0.5, 120),
+            "Volume": np.random.uniform(1e7, 1e8, 120),
+            "Amount": np.random.uniform(5e7, 5e8, 120),
+        })
+
+        with patch("tradingagents.tradeflow.candidate_engine._fetch_price_data", return_value=df):
+            from tradingagents.tradeflow.candidate_engine import evaluate_symbol
+            c, reason = evaluate_symbol(
+                symbol="000001.SZ",
+                name="测试",
+                source="manual",
+                trade_date="2026-05-29",
+            )
+        if c is not None:
+            assert c.priority_rank in {"A", "B", "C", ""}
+
+
+class TestDBPersistence:
+    def test_save_and_load_s005_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_tradeflow.db")
+            init_db(db_path)
+
+            c = Candidate(
+                symbol="000001.SZ",
+                name="测试",
+                source="manual",
+                trade_date="2026-05-29",
+                strategy_tags=["VCP", "POLICY_VERSION"],
+                score=45.0,
+                policy_tags=["低空经济"],
+                version_score=20.0,
+                narrative_score=25.0,
+                risk_penalty=-5.0,
+                composite_score=85.0,
+                signal_category_hits=["policy", "narrative", "tech"],
+                positive_category_count=3,
+                data_completeness=0.875,
+                missing_evidence=["资金单位校验"],
+                why_deep_ta="3类信号共振(政策版本(低空经济) + 叙事质量(25分) + 技术形态(VCP))，风险可控，值得深度分析",
+                why_not_deep_ta="",
+                priority_rank="A",
+                need_deep_ta=True,
+            )
+            c.evidence = {"selection_priority_gate": {"test": True}}
+            c.primary_strategy = "VCP"
+
+            row_id = save_candidate(c, db_path)
+            assert row_id > 0
+
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM tradeflow_candidates WHERE trade_date=? AND symbol=?",
+                ("2026-05-29", "000001.SZ"),
+            ).fetchone()
+            conn.close()
+
+            assert row is not None
+            assert row["composite_score"] == 85.0
+            assert row["positive_category_count"] == 3
+            assert row["data_completeness"] == 0.875
+            assert row["why_deep_ta"] != ""
+            assert row["priority_rank"] == "A"
+            assert json.loads(row["signal_category_hits_json"]) == ["policy", "narrative", "tech"]
+            assert json.loads(row["missing_evidence_json"]) == ["资金单位校验"]
+
+    def test_db_round_trip_from_db_row(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_tradeflow.db")
+            init_db(db_path)
+
+            c = Candidate(
+                symbol="600519.SH",
+                name="贵州茅台",
+                source="watchlist",
+                trade_date="2026-05-29",
+                composite_score=120.5,
+                signal_category_hits=["policy", "tech", "fund"],
+                positive_category_count=3,
+                data_completeness=1.0,
+                missing_evidence=[],
+                why_deep_ta="3类信号共振",
+                why_not_deep_ta="",
+                priority_rank="A",
+                need_deep_ta=True,
+            )
+            c.primary_strategy = "VCP"
+            c.evidence = {"selection_priority_gate": {"test": True}}
+
+            save_candidate(c, db_path)
+
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            row = dict(conn.execute(
+                "SELECT * FROM tradeflow_candidates WHERE trade_date=? AND symbol=?",
+                ("2026-05-29", "600519.SH"),
+            ).fetchone())
+            conn.close()
+
+            c2 = Candidate.from_db_row(row)
+            assert c2.composite_score == 120.5
+            assert c2.signal_category_hits == ["policy", "tech", "fund"]
+            assert c2.positive_category_count == 3
+            assert c2.data_completeness == 1.0
+            assert c2.missing_evidence == []
+            assert "3类信号共振" in c2.why_deep_ta
+            assert c2.priority_rank == "A"
+
+
+class TestPlanRunnerIntegration:
+    def test_plan_entries_sorted_by_composite_score(self):
+        from tradingagents.tradeflow.plan_runner import _build_plan_entry
+
+        c1 = Candidate(
+            symbol="000001.SZ", trade_date="2026-05-29",
+            strategy_tags=["VCP"], score=30.0,
+            composite_score=30.0, priority_rank="C",
+        )
+        c1.primary_strategy = "VCP"
+        c1.need_deep_ta = False
+
+        c2 = Candidate(
+            symbol="600519.SH", trade_date="2026-05-29",
+            strategy_tags=["VCP", "POLICY_VERSION"], score=50.0,
+            policy_tags=["算力"], version_score=20.0,
+            composite_score=75.0, priority_rank="A",
+        )
+        c2.primary_strategy = "VCP"
+        c2.need_deep_ta = True
+
+        entries = [_build_plan_entry(c1), _build_plan_entry(c2)]
+        entries.sort(key=lambda x: (x.get("composite_score", 0), x.get("score", 0)), reverse=True)
+
+        assert entries[0]["symbol"] == "600519.SH"
+        assert entries[0]["composite_score"] == 75.0
+        assert entries[1]["symbol"] == "000001.SZ"
+        assert entries[1]["composite_score"] == 30.0
+
+    def test_plan_entry_has_s005_fields(self):
+        from tradingagents.tradeflow.plan_runner import _build_plan_entry
+
+        c = Candidate(
+            symbol="000001.SZ", trade_date="2026-05-29",
+            composite_score=85.0,
+            signal_category_hits=["policy", "tech"],
+            positive_category_count=2,
+            data_completeness=0.75,
+            missing_evidence=["资金单位校验", "叙事质量信号"],
+            why_deep_ta="2类信号共振",
+            why_not_deep_ta="",
+            priority_rank="A",
+            need_deep_ta=True,
+        )
+        c.primary_strategy = "VCP"
+
+        entry = _build_plan_entry(c)
+        assert entry["composite_score"] == 85.0
+        assert entry["signal_category_hits"] == ["policy", "tech"]
+        assert entry["positive_category_count"] == 2
+        assert entry["data_completeness"] == 0.75
+        assert entry["missing_evidence"] == ["资金单位校验", "叙事质量信号"]
+        assert entry["why_deep_ta"] == "2类信号共振"
+        assert entry["priority_rank"] == "A"
+
+
+class TestDiscoveryIntegration:
+    def test_discovery_entry_has_s005_fields(self):
+        from tradingagents.tradeflow.discovery import _build_discovery_entry
+
+        c = Candidate(
+            symbol="000001.SZ", trade_date="2026-05-29",
+            composite_score=85.0,
+            signal_category_hits=["policy", "tech", "fund"],
+            positive_category_count=3,
+            data_completeness=1.0,
+            missing_evidence=[],
+            why_deep_ta="3类信号共振",
+            why_not_deep_ta="",
+            priority_rank="A",
+            need_deep_ta=True,
+        )
+
+        entry = _build_discovery_entry(c)
+        assert entry["composite_score"] == 85.0
+        assert entry["signal_category_hits"] == ["policy", "tech", "fund"]
+        assert entry["positive_category_count"] == 3
+        assert entry["data_completeness"] == 1.0
+        assert entry["missing_evidence"] == []
+        assert entry["why_deep_ta"] == "3类信号共振"
+        assert entry["priority_rank"] == "A"
+
+    def test_discovery_candidates_sorted_by_composite_score(self):
+        from tradingagents.tradeflow.discovery import _build_discovery_entry
+
+        c1 = Candidate(
+            symbol="000001.SZ", trade_date="2026-05-29",
+            score=30.0, composite_score=30.0, priority_rank="C",
+        )
+
+exec
+/bin/zsh -lc "find docs/task_runs/S-005-20260529-164949 -maxdepth 2 -type f -print -exec sed -n '1,120p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+docs/task_runs/S-005-20260529-164949/tests-round1.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  5%]
+.........................................ss............................. [ 11%]
+........................................................................ [ 17%]
+........................................................................ [ 22%]
+........................................................................ [ 28%]
+..........................................sssssssss..................... [ 34%]
+........................................................................ [ 40%]
+........................................................................ [ 45%]
+........................................................................ [ 51%]
+........................................................................ [ 57%]
+........................................................................ [ 63%]
+........................................................................ [ 68%]
+........................................................................ [ 74%]
+........................................................................ [ 80%]
+........................................................................ [ 85%]
+........................................................................ [ 91%]
+........................................................................ [ 97%]
+.................................                                        [100%]
+1246 passed, 11 skipped in 53.97s
+
+Exit code: 0
+docs/task_runs/S-005-20260529-164949/prompt-round1.md
+# 任务: S-005: 选股优先级整合与 need_deep_ta 门槛重排（P1）
+
+请从 docs/TASKS.md 中读取任务 "S-005" 的完整描述，按要求实现。
+
+## 执行约束
+- 不改 tradingagents/prompts/
+- 不写入生产 tradingagents.db
+- 不跑全市场扫描或股票深度 TA
+- 不 push / PR / merge
+- **不要 git commit** — commit 由外层脚本统一执行
+- 修改后更新 docs/DEVLOG.md
+
+## 完成后输出
+- 修改了哪些文件
+- 关键逻辑说明
+- 测试结果（passed/failed 数量）
+docs/task_runs/S-005-20260529-164949/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/project-overview.md
+[0m
+[0m# [0mTodos
+[ ] Read and understand existing TradeFlow modules (candidate_engine, schemas, plan_runner, discovery)
+[ ] Implement selection_priority_gate.py - composite score + need_deep_ta gate
+[ ] Integrate into candidate_engine.py - wire composite score and need_deep_ta gate
+[ ] Update schemas.py with new fields
+[ ] Update plan_runner.py and discovery.py to output gate results
+[ ] Write tests for S-005
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/tradeflow
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py
+[0m→ [0mRead tradingagents/tradeflow/schemas.py
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py
+[0m→ [0mRead tradingagents/tradeflow/discovery.py
+现在让我阅读 `plan_runner.py` 和 `discovery.py` 以了解完整的集成点：
+[0m✱ [0mGlob "tests/test_s00*.py"[90m 4 matches[0m
+[0m→ [0mRead tradingagents/tradeflow/game_balance.py
+现在我来查看现有的测试模式：
+[0m→ [0mRead tests/test_s004_game_balance.py[90m [limit=80][0m
+现在我对代码库有了全面的了解。让我快速查看一下现有测试模式：
+[0m
+[0m# [0mTodos
+[x] Read and understand existing TradeFlow modules (candidate_engine, schemas, plan_runner, discovery)
+[ ] Implement selection_priority_gate.py - composite score + need_deep_ta gate
+[ ] Integrate into candidate_engine.py - wire composite score and need_deep_ta gate
+[ ] Update schemas.py with new fields
+[ ] Update plan_runner.py and discovery.py to output gate results
+[ ] Write tests for S-005
+[ ] Update docs/DEVLOG.md
+[0m
+我现在对 S-005 需要做什么有了全面的理解。让我来实现 `selection_priority_gate` 模块：
+
+**S-005 的关键设计决策：**
+1. **综合评分** = 政策版本 + 叙事质量 + 技术评分 + 资金流异常 + 风险惩罚 + 数据完整性奖励
+2. **`need_deep_ta` 门控**：至少需要 2 类正向信号，且无重大风险标志
+3. **输出**：“为什么值得关注” / “为什么暂不深入研究” / “缺少哪些证据”
+4. 与 `M-003` (universe manager) 和 `M-004` (strategy config) 兼容的字段
+[0m← [0mWrite tradingagents/tradeflow/selection_priority_gate.py
+Wrote file successfully.
+[0m
+现在让我更新 `schemas.py` 以添加 `S-005` 字段：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -84,8 +84,16 @@
+ fund_flow_anomaly_refs: list[dict] = field(default_factory=list)  # [T-003]
+ fund_flow_unit_verified: bool = False  # [T-003]
+ fund_flow_individual_summary: str = ""  # [T-003]
+ fund_flow_board_summary: str = ""  # [T-003]
++composite_score: float = 0.0  # [S-005] selection_priority_gate
++signal_category_hits: list[str] = field(default_factory=list)  # [S-005]
++positive_category_count: int = 0  # [S-005]
++data_completeness: float = 0.0  # [S-005]
++missing_evidence: list[str] = field(default_factory=list)  # [S-005]
++why_deep_ta: str = ""  # [S-005]
++why_not_deep_ta: str = ""  # [S-005]
++priority_rank: str = ""  # [S-005]
+ 
+ def __post_init__(self):
+     if not self.trade_date:
+         self.trade_date = datetime.now().strftime("%Y-%m-%d")
+
+[0m
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -176,8 +176,16 @@
+         "fund_flow_anomaly_refs_json": json.dumps(self.fund_flow_anomaly_refs, ensure_ascii=False),  # [T-003]
+         "fund_flow_unit_verified": 1 if self.fund_flow_unit_verified else 0,  # [T-003]
+         "fund_flow_individual_summary": self.fund_flow_individual_summary,  # [T-003]
+         "fund_flow_board_summary": self.fund_flow_board_summary,  # [T-003]
++        "composite_score": self.composite_score,  # [S-005] selection_priority_gate
++        "signal_category_hits_json": json.dumps(self.signal_category_hits, ensure_ascii=False),  # [S-005]
++        "positive_category_count": self.positive_category_count,  # [S-005]
++        "data_completeness": self.data_completeness,  # [S-005]
++        "missing_evidence_json": json.dumps(self.missing_evidence, ensure_ascii=False),  # [S-005]
++        "why_deep_ta": self.why_deep_ta,  # [S-005]
++        "why_not_deep_ta": self.why_not_deep_ta,  # [S-005]
++        "priority_rank": self.priority_rank,  # [S-005]
+         "updated_at": datetime.now().isoformat(),
+     }
+ 
+ @classmethod
+
+[0m
+现在更新 `to_db_row` 方法：
+现在更新 `from_db_row`:
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -228,8 +228,16 @@
+             fund_flow_anomaly_refs=json.loads(row.get("fund_flow_anomaly_refs_json", "[]")),  # [T-003]
+             fund_flow_unit_verified=bool(row.get("fund_flow_unit_verified", 0)),  # [T-003]
+             fund_flow_individual_summary=row.get("fund_flow_individual_summary", ""),  # [T-003]
+             fund_flow_board_summary=row.get("fund_flow_board_summary", ""),  # [T-003]
++            composite_score=row.get("composite_score", 0.0),  # [S-005] selection_priority_gate
++            signal_category_hits=json.loads(row.get("signal_category_hits_json", "[]")),  # [S-005]
++            positive_category_count=row.get("positive_category_count", 0),  # [S-005]
++            data_completeness=row.get("data_completeness", 0.0),  # [S-005]
++            missing_evidence=json.loads(row.get("missing_evidence_json", "[]")),  # [S-005]
++            why_deep_ta=row.get("why_deep_ta", ""),  # [S-005]
++            why_not_deep_ta=row.get("why_not_deep_ta", ""),  # [S-005]
++            priority_rank=row.get("priority_rank", ""),  # [S-005]
+         )
+ 
+ 
+ @dataclass
+docs/task_runs/S-005-20260529-164949/task.md
+# Auto Dev Task Run
+
+- Task: S-005 — 选股优先级整合与 need_deep_ta 门槛重排（P1）
+- Priority: P1
+- Status: CLAIMED
+- Started at: 2026-05-29_16:49:49
+- Git HEAD: c723ab6
+- Test commands: pytest tests/ -q --tb=short
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+
+exec
+/bin/zsh -lc "sed -n '280,420p' tradingagents/tradeflow/selection_priority_gate.py && sed -n '760,980p' tests/test_s005_selection_priority_gate.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        missing_evidence=missing_evidence,
+        why_deep_ta=why_deep_ta,
+        why_not_deep_ta=why_not_deep_ta,
+        gate_passed=gate_passed,
+        priority_rank=priority_rank,
+        gate_refs=refs,
+    )
+        )
+        c2 = Candidate(
+            symbol="600519.SH", trade_date="2026-05-29",
+            score=50.0, composite_score=75.0, priority_rank="A",
+        )
+        c3 = Candidate(
+            symbol="000002.SZ", trade_date="2026-05-29",
+            score=40.0, composite_score=50.0, priority_rank="B",
+        )
+
+        candidates = [c1, c2, c3]
+        candidates.sort(key=lambda c: (c.composite_score, c.score), reverse=True)
+
+        assert candidates[0].symbol == "600519.SH"
+        assert candidates[1].symbol == "000002.SZ"
+        assert candidates[2].symbol == "000001.SZ"
+
+
+class TestRenderText:
+    def test_daily_plan_render_shows_priority(self):
+        plan = DailyPlan(
+            trade_date="2026-05-29",
+            summary="共1只候选",
+            candidates=[{
+                "symbol": "000001.SZ",
+                "name": "测试",
+                "action": "NEED_DEEP_TA",
+                "score": 50.0,
+                "strategies": ["VCP", "POLICY_VERSION"],
+                "need_deep_ta": True,
+                "risk_flags": [],
+                "priority_rank": "A",
+                "composite_score": 85.0,
+                "data_completeness": 0.875,
+                "why_deep_ta": "3类信号共振",
+                "why_not_deep_ta": "",
+                "missing_evidence": ["资金单位校验"],
+            }],
+        )
+        text = plan.render_text()
+        assert "优先级" in text
+        assert "A" in text
+        assert "综合分" in text
+        assert "值得深挖" in text
+        assert "完整度" in text
+
+    def test_daily_plan_render_shows_why_not(self):
+        plan = DailyPlan(
+            trade_date="2026-05-29",
+            summary="共1只候选",
+            candidates=[{
+                "symbol": "000001.SZ",
+                "name": "测试",
+                "action": "OBSERVE",
+                "score": 30.0,
+                "strategies": ["VCP"],
+                "need_deep_ta": False,
+                "risk_flags": [],
+                "priority_rank": "C",
+                "composite_score": 30.0,
+                "data_completeness": 0.375,
+                "why_deep_ta": "",
+                "why_not_deep_ta": "仅1类正向信号(需≥2)",
+                "missing_evidence": ["事件/新闻数据", "资金流数据"],
+            }],
+        )
+        text = plan.render_text()
+        assert "暂不深挖" in text
+        assert "缺少证据" in text
+
+    def test_render_discovery_text_shows_priority(self):
+        from tradingagents.tradeflow.discovery import render_discovery_text, DiscoveryResult
+
+        result = DiscoveryResult(
+            trade_date="2026-05-29",
+            universe_size=5,
+            candidates=[{
+                "symbol": "000001.SZ",
+                "name": "测试",
+                "source": "manual",
+                "action": "NEED_DEEP_TA",
+                "score": 50.0,
+                "strategies": ["VCP"],
+                "need_deep_ta": True,
+                "priority_rank": "A",
+                "composite_score": 85.0,
+                "data_completeness": 0.875,
+                "why_deep_ta": "2类信号共振",
+                "why_not_deep_ta": "",
+                "missing_evidence": [],
+            }],
+            summary="共5只，1只候选",
+        )
+        text = render_discovery_text(result)
+        assert "优先级" in text
+        assert "值得深挖" in text
+
+
+class TestSortingBehavior:
+    def test_tech_only_ranks_lower_than_resonance(self):
+        r_tech = run_selection_priority_gate(
+            strategy_tags=["VCP"], score=50.0,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        r_resonance = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=50.0,
+            policy_tags=["低空经济"],
+            version_score=20.0,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert r_resonance.composite_score > r_tech.composite_score
+
+    def test_risk_heavy_demotes_ranking(self):
+        r_no_risk = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=50.0,
+            policy_tags=["低空经济"],
+            version_score=20.0,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        r_with_risk = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=50.0,
+            policy_tags=["低空经济"],
+            version_score=20.0,
+            risk_flags=["LOCKUP_RISK", "REDUCE_HOLDING_RISK", "MARGIN_CROWDING_RISK"],
+            risk_penalty=-15.0,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        assert r_with_risk.composite_score < r_no_risk.composite_score
+
+    def test_data_incomplete_demotes_ranking(self):
+        r_full = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=50.0,
+            policy_tags=["低空经济"],
+            version_score=20.0,
+            has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+        )
+        r_sparse = run_selection_priority_gate(
+            strategy_tags=["VCP"],
+            score=50.0,
+            policy_tags=["低空经济"],
+            version_score=20.0,
+            has_event_data=False, has_fund_flow_data=False, has_risk_assessment=False,
+        )
+        assert r_sparse.composite_score < r_full.composite_score
+
+
+class TestEdgeCases:
+    def test_none_inputs(self):
+        r = run_selection_priority_gate(
+            strategy_tags=None,
+            policy_tags=None,
+            risk_flags=None,
+            fund_flow_anomaly_tags=None,
+        )
+        assert r.composite_score >= 0.0
+
+    def test_empty_lists(self):
+        r = run_selection_priority_gate(
+            strategy_tags=[],
+            policy_tags=[],
+            risk_flags=[],
+            fund_flow_anomaly_tags=[],
+        )
+        assert r.positive_category_count == 0
+
+    def test_min_categories_constant(self):
+        assert MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA == 2
+
+    def test_max_composite_score_constant(self):
+        assert MAX_COMPOSITE_SCORE == 200.0
+
+    def test_negative_score_with_large_penalty(self):
+        r = run_selection_priority_gate(
+            score=5.0, risk_penalty=-100.0,
+        )
+        assert r.composite_score == 0.0
+
+    def test_fund_flow_score_zero_excludes_fund_category(self):
+        r = run_selection_priority_gate(
+            fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+            fund_flow_anomaly_score=0.0,
+        )
+        assert "fund" not in r.signal_category_hits
+
+exec
+/bin/zsh -lc "sed -n '1,720p' tradingagents/tradeflow/candidate_engine.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""TradeFlow Candidate Engine — runs strategies and produces candidates.
+
+Responsibilities:
+- Load price data for each symbol in the universe
+- Run all three strategies
+- Filter out ST / low-liquidity / data-missing stocks
+- Deduplicate multi-strategy hits
+- Mark need_deep_ta
+- Persist to tradeflow tables
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime
+from typing import Optional
+
+import pandas as pd
+
+from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE, STRATEGY_FUND_FLOW  # [S-001] [S-002] [T-003]
+from .strategies.vcp import score_vcp
+from .strategies.pullback_support import score_pullback_support
+from .strategies.event_catalyst import score_event_catalyst
+from .policy_version_signal import detect_policy_version, PolicyVersionResult  # [S-001]
+from .narrative_quality import score_narrative_quality, NarrativeQualityResult  # [S-002]
+from .underwater_risk_flags import detect_underwater_risks, UnderwaterRiskResult, ALL_RISK_FLAGS  # [S-003]
+from .game_balance import assess_game_balance, GameBalanceResult  # [S-004] candidate_game_balance
+from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult, FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT  # [T-003] fund_flow_anomaly_pool
+from .selection_priority_gate import run_selection_priority_gate, SelectionPriorityResult  # [S-005] selection_priority_gate
+
+
+# ── SQL for table creation ──
+CREATE_CANDIDATES_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    source TEXT DEFAULT 'manual',
+    strategy_tags_json TEXT DEFAULT '[]',
+    primary_strategy TEXT DEFAULT '',
+    score REAL DEFAULT 0.0,
+    status TEXT DEFAULT 'active',
+    trigger_price REAL,
+    support_price REAL,
+    invalid_price REAL,
+    need_deep_ta INTEGER DEFAULT 0,
+    evidence_json TEXT DEFAULT '{}',
+    risk_flags_json TEXT DEFAULT '[]',
+    created_at TEXT,
+    updated_at TEXT,
+    UNIQUE(trade_date, symbol)
+);
+"""
+
+CREATE_SIGNALS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_time TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    signal_type TEXT NOT NULL,
+    signal_level TEXT DEFAULT 'info',
+    source TEXT DEFAULT 'tradeflow',
+    evidence_json TEXT DEFAULT '{}',
+    action_hint TEXT DEFAULT 'OBSERVE',
+    status TEXT DEFAULT 'new',
+    created_at TEXT
+);
+"""
+
+CREATE_DAILY_PLANS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_daily_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    mode TEXT DEFAULT 'pre_market',
+    summary TEXT DEFAULT '',
+    candidates_json TEXT DEFAULT '[]',
+    metadata_json TEXT DEFAULT '{}',
+    created_at TEXT,
+    UNIQUE(trade_date, mode)
+);
+"""
+
+
+def init_db(db_path: str) -> None:
+    """Create tradeflow tables if they don't exist."""
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        CREATE_CANDIDATES_TABLE
+        + CREATE_SIGNALS_TABLE
+        + CREATE_DAILY_PLANS_TABLE
+    )
+    try:
+        conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    # [S-001] policy_version_signal — add policy version columns
+    for _col, _type in [
+        ("policy_tags_json", "TEXT DEFAULT '[]'"),
+        ("version_score", "REAL DEFAULT 0.0"),
+        ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-002] narrative_quality_score — add narrative quality columns
+    for _col, _type in [
+        ("narrative_score", "REAL DEFAULT 0.0"),
+        ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
+        ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-003] underwater_risk_flags — add risk penalty columns
+    for _col, _type in [
+        ("risk_penalty", "REAL DEFAULT 0.0"),
+        ("risk_evidence_refs_json", "TEXT DEFAULT '[]'"),
+        ("risk_reasons_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-004] candidate_game_balance — add game balance columns
+    for _col, _type in [
+        ("game_balance", "TEXT DEFAULT ''"),
+        ("bull_case", "TEXT DEFAULT ''"),
+        ("bear_case", "TEXT DEFAULT ''"),
+        ("policy_case", "TEXT DEFAULT ''"),
+        ("fund_flow_case", "TEXT DEFAULT ''"),
+        ("resonance_count", "INTEGER DEFAULT 0"),
+        ("game_balance_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [T-003] fund_flow_anomaly_pool — add fund flow anomaly columns
+    for _col, _type in [
+        ("fund_flow_anomaly_score", "REAL DEFAULT 0.0"),
+        ("fund_flow_anomaly_tags_json", "TEXT DEFAULT '[]'"),
+        ("fund_flow_anomaly_refs_json", "TEXT DEFAULT '[]'"),
+        ("fund_flow_unit_verified", "INTEGER DEFAULT 0"),
+        ("fund_flow_individual_summary", "TEXT DEFAULT ''"),
+        ("fund_flow_board_summary", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-005] selection_priority_gate — add priority gate columns
+    for _col, _type in [
+        ("composite_score", "REAL DEFAULT 0.0"),
+        ("signal_category_hits_json", "TEXT DEFAULT '[]'"),
+        ("positive_category_count", "INTEGER DEFAULT 0"),
+        ("data_completeness", "REAL DEFAULT 0.0"),
+        ("missing_evidence_json", "TEXT DEFAULT '[]'"),
+        ("why_deep_ta", "TEXT DEFAULT ''"),
+        ("why_not_deep_ta", "TEXT DEFAULT ''"),
+        ("priority_rank", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    conn.commit()
+    conn.close()
+
+
+def _fetch_price_data(symbol: str, days: int = 120) -> Optional[pd.DataFrame]:
+    """Fetch price data for a symbol using the project's data providers.
+
+    Uses cn_akshare → cn_astock → yfinance fallback chain.  [N-002] cn_astock_fallback
+    Returns DataFrame with Date, Open, High, Low, Close, Volume columns.
+    """
+    from datetime import timedelta
+    from io import StringIO
+
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    def _try_provider(provider_cls, source_name: str) -> Optional[pd.DataFrame]:
+        try:
+            provider = provider_cls()
+            csv_str = provider.get_stock_data(symbol, start, end)
+            if csv_str and "No data found" not in csv_str:
+                df = pd.read_csv(StringIO(csv_str), comment="#")
+                if {"Date", "Open", "High", "Low", "Close", "Volume"}.issubset(df.columns):
+                    df["Date"] = pd.to_datetime(df["Date"])
+                    df = df.sort_values("Date").reset_index(drop=True)
+                    for col in ["Open", "High", "Low", "Close", "Volume"]:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                    df = df.dropna(subset=["Close"])
+                    if len(df) > 0:
+                        df.attrs["price_source"] = source_name  # [N-002] cn_astock_fallback
+                        return df
+        except Exception:
+            pass
+        return None
+
+    # [N-002] cn_astock_fallback: cn_akshare → cn_astock → yfinance
+    try:
+        from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
+        result = _try_provider(CnAkshareProvider, "cn_akshare")
+        if result is not None:
+            return result
+    except Exception:
+        pass
+
+    # [N-002] cn_astock_fallback: middle fallback
+    try:
+        from tradingagents.dataflows.providers.cn_astock_provider import CnAstockProvider
+        result = _try_provider(CnAstockProvider, "cn_astock")
+        if result is not None:
+            return result
+    except Exception:
+        pass
+
+    # Final fallback: yfinance
+    try:
+        from tradingagents.dataflows.providers.yfinance_provider import YFinanceProvider
+        result = _try_provider(YFinanceProvider, "yfinance")
+        if result is not None:
+            return result
+    except Exception:
+        pass
+
+    return None
+
+
+def _is_st_symbol(symbol: str) -> bool:
+    """Check if symbol is ST/*ST."""
+    code = symbol.split(".")[0] if "." in symbol else symbol
+    # Can't determine ST from code alone — would need name lookup
+    # P0: skip this check, rely on risk_flags from data
+    return False
+
+
+def _calc_liquidity(df: pd.DataFrame) -> tuple[bool, float, float, float]:
+    """Check liquidity using Amount (turnover) as primary metric.
+
+    Returns (is_low, avg_amount, avg_volume, threshold).
+    - Uses Amount column if available, otherwise estimates via Close * Volume.
+    - Threshold: 30,000,000 (3000万).
+    """
+    AMOUNT_THRESHOLD = 30_000_000
+
+    if len(df) < 5:
+        avg_amount = 0.0
+        avg_volume = 0.0
+        return True, avg_amount, avg_volume, AMOUNT_THRESHOLD
+
+    tail = df.tail(10)
+    avg_volume = float(tail["Volume"].mean())
+
+    if "Amount" in tail.columns:
+        avg_amount = float(tail["Amount"].mean())
+    else:
+        avg_amount = float((tail["Close"] * tail["Volume"]).mean())
+
+    return avg_amount < AMOUNT_THRESHOLD, avg_amount, avg_volume, AMOUNT_THRESHOLD
+
+
+def filter_symbol(symbol: str, df: pd.DataFrame) -> tuple[bool, list[str]]:
+    """Check if a symbol should be filtered out.
+
+    Returns (should_filter, reason_list).
+    """
+    reasons = []
+
+    if df is None or len(df) == 0:
+        return True, ["数据缺失"]
+
+    if len(df) < 40:
+        return True, ["数据不足(需至少40日)"]
+
+    is_low, avg_amount, avg_volume, threshold = _calc_liquidity(df)
+    if is_low:
+        reasons.append(
+            f"流动性差(avg_amount={avg_amount/1e8:.2f}亿, "
+            f"avg_volume={avg_volume/1e4:.0f}万, "
+            f"threshold={threshold/1e8:.2f}亿)"
+        )
+
+    if reasons:
+        return True, reasons
+
+    return False, []
+
+
+def run_strategies(
+    symbol: str,
+    df: pd.DataFrame,
+    news_texts: Optional[list[str]] = None,
+    event_overrides: Optional[list[dict]] = None,
+) -> list[CandidateSignal]:
+    """Run all strategies on a symbol, return list of signals."""
+    signals = []
+
+    # VCP
+    vcp = score_vcp(df, symbol)
+    if vcp is not None:
+        signals.append(vcp)
+
+    # Pullback Support
+    pb = score_pullback_support(df, symbol)
+    if pb is not None:
+        signals.append(pb)
+
+    # Event Catalyst
+    latest_close = float(df["Close"].iloc[-1]) if len(df) > 0 else 0.0
+    ev = score_event_catalyst(symbol, news_texts, event_overrides, latest_close)
+    if ev is not None:
+        signals.append(ev)
+
+    return signals
+
+
+def evaluate_symbol(
+    symbol: str,
+    name: str = "",
+    source: str = "manual",
+    trade_date: str = "",
+    news_texts: Optional[list[str]] = None,
+    event_overrides: Optional[list[dict]] = None,
+    df: Optional[pd.DataFrame] = None,
+    fund_flow_individual: Optional[str] = None,  # [T-003] fund_flow_anomaly_pool
+    fund_flow_board: Optional[str] = None,  # [T-003] fund_flow_anomaly_pool
+) -> tuple[Optional[Candidate], str]:
+    """Evaluate one symbol through all strategies.
+
+    Returns (Candidate, "") if any strategy hits, or (None, reason) if
+    filtered or no strategy matched.
+    """
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+
+    # Fetch data if not provided
+    if df is None:
+        df = _fetch_price_data(symbol)
+
+    # Filter check
+    filtered, reasons = filter_symbol(symbol, df)
+    if filtered:
+        return None, "；".join(reasons)
+
+    # Run strategies
+    signals = run_strategies(symbol, df, news_texts, event_overrides)
+
+    if not signals:
+        return None, "无策略命中"
+
+    # Build candidate
+    candidate = Candidate(
+        symbol=symbol,
+        name=name,
+        source=source,
+        trade_date=trade_date,
+        signals=signals,
+    )
+    candidate.merge_signals()
+
+    # [N-004] astock_signal_tags — merge extra tags from event_catalyst evidence
+    for sig in signals:
+        if not isinstance(sig.evidence, dict):
+            continue
+        extra_tags = sig.evidence.get("astock_tags", [])
+        extra_risks = sig.evidence.get("astock_risk_flags", [])
+        if extra_tags or extra_risks:
+            from .schemas import SIGNAL_TAG_LOCKUP_RISK  # [N-004] astock_signal_tags
+            candidate.strategy_tags = sorted(
+                set(candidate.strategy_tags) | set(extra_tags)
+            )
+            candidate.risk_flags = sorted(
+                set(candidate.risk_flags) | set(extra_risks)
+            )
+            if SIGNAL_TAG_LOCKUP_RISK in candidate.risk_flags:
+                candidate.score = round(candidate.score * 0.8, 2)
+
+    # [S-001] policy_version_signal — detect policy version and add bonus
+    # Collect all available text sources: news_texts + event_override titles
+    all_event_texts = list(news_texts) if news_texts else []
+    if event_overrides:
+        for ev in event_overrides:
+            title = ev.get("title", "") or ev.get("headline", "")
+            if title:
+                all_event_texts.append(title)
+    policy_result: PolicyVersionResult = detect_policy_version(
+        event_texts=all_event_texts if all_event_texts else None,
+    )
+    if policy_result.policy_tags:
+        candidate.policy_tags = policy_result.policy_tags
+        candidate.version_score = policy_result.version_score
+        candidate.policy_evidence_refs = policy_result.policy_evidence_refs
+        candidate.score = round(candidate.score + policy_result.version_score, 2)
+        candidate.strategy_tags = sorted(
+            set(candidate.strategy_tags) | {STRATEGY_POLICY_VERSION}
+        )
+        candidate.evidence["policy_version"] = {
+            "policy_tags": policy_result.policy_tags,
+            "version_score": policy_result.version_score,
+            "evidence_refs": policy_result.policy_evidence_refs,
+        }
+        if policy_result.version_score >= 15:
+            candidate.need_deep_ta = True
+
+    # [S-002] narrative_quality_score — assess event narrative quality
+    narrative_result: NarrativeQualityResult = score_narrative_quality(
+        event_texts=all_event_texts if all_event_texts else None,
+    )
+    if narrative_result.narrative_score > 0:
+        candidate.narrative_score = narrative_result.narrative_score
+        candidate.narrative_reasons = narrative_result.narrative_reasons
+        candidate.narrative_evidence_refs = narrative_result.narrative_evidence_refs
+        candidate.score = round(candidate.score + narrative_result.narrative_score, 2)
+        candidate.strategy_tags = sorted(
+            set(candidate.strategy_tags) | {STRATEGY_NARRATIVE}
+        )
+        candidate.evidence["narrative_quality"] = {
+            "narrative_score": narrative_result.narrative_score,
+            "narrative_reasons": narrative_result.narrative_reasons,
+            "evidence_refs": narrative_result.narrative_evidence_refs,
+        }
+        if narrative_result.narrative_score >= 20:
+            candidate.need_deep_ta = True
+
+    # [S-003] underwater_risk_flags — detect hidden structural risks
+    risk_result: UnderwaterRiskResult = detect_underwater_risks(
+        event_texts=all_event_texts if all_event_texts else None,
+    )
+    if risk_result.risk_flags:
+        candidate.risk_flags = sorted(
+            set(candidate.risk_flags) | set(risk_result.risk_flags)
+        )
+        candidate.risk_penalty = risk_result.risk_penalty
+        candidate.risk_evidence_refs = risk_result.risk_evidence_refs
+        candidate.risk_reasons = risk_result.risk_reasons
+        candidate.score = round(candidate.score + risk_result.risk_penalty, 2)
+        candidate.evidence["underwater_risk"] = {
+            "risk_flags": risk_result.risk_flags,
+            "risk_penalty": risk_result.risk_penalty,
+            "risk_evidence_refs": risk_result.risk_evidence_refs,
+            "risk_reasons": risk_result.risk_reasons,
+        }
+        high_risk_flags = {f for f in risk_result.risk_flags
+                           if f in {"INQUIRY_RISK", "FINANCIAL_QUALITY_RISK"}}
+        if len(risk_result.risk_flags) >= 3 or high_risk_flags:
+            candidate.need_deep_ta = False
+
+    # [S-004] candidate_game_balance — assess bull/bear/policy/fund perspective
+    gb_result: GameBalanceResult = assess_game_balance(
+        strategy_tags=candidate.strategy_tags,
+        score=candidate.score,
+        policy_tags=candidate.policy_tags,
+        version_score=candidate.version_score,
+        policy_evidence_refs=candidate.policy_evidence_refs,
+        narrative_score=candidate.narrative_score,
+        narrative_reasons=candidate.narrative_reasons,
+        risk_flags=candidate.risk_flags,
+        risk_penalty=candidate.risk_penalty,
+        risk_reasons=candidate.risk_reasons,
+        event_texts=all_event_texts if all_event_texts else None,
+    )
+    candidate.game_balance = gb_result.game_balance
+    candidate.bull_case = gb_result.bull_case
+    candidate.bear_case = gb_result.bear_case
+    candidate.policy_case = gb_result.policy_case
+    candidate.fund_flow_case = gb_result.fund_flow_case
+    candidate.resonance_count = gb_result.resonance_count
+    candidate.game_balance_refs = gb_result.game_balance_refs
+    candidate.evidence["game_balance"] = {
+        "game_balance": gb_result.game_balance,
+        "bull_case": gb_result.bull_case,
+        "bear_case": gb_result.bear_case,
+        "policy_case": gb_result.policy_case,
+        "fund_flow_case": gb_result.fund_flow_case,
+        "resonance_count": gb_result.resonance_count,
+        "refs": gb_result.game_balance_refs,
+    }
+    # When >= 2 categories resonate and risk manageable, boost need_deep_ta
+    if gb_result.resonance_count >= 2 and gb_result.game_balance in {"favorable", "neutral"}:
+        candidate.need_deep_ta = True
+    # When fragile or crowded with too many risks, demote need_deep_ta
+    if gb_result.game_balance in {"fragile", "crowded"} and len(candidate.risk_flags) >= 2:
+        candidate.need_deep_ta = False
+
+    # [T-003] fund_flow_anomaly_pool — detect capital anomaly
+    ff_result: FundFlowAnomalyResult = detect_fund_flow_anomaly(
+        fund_flow_individual=fund_flow_individual,
+        fund_flow_board=fund_flow_board,
+    )
+    if ff_result.fund_flow_anomaly_tags:
+        candidate.fund_flow_anomaly_score = ff_result.fund_flow_anomaly_score
+        candidate.fund_flow_anomaly_tags = ff_result.fund_flow_anomaly_tags
+        candidate.fund_flow_anomaly_refs = ff_result.fund_flow_anomaly_refs
+        candidate.fund_flow_unit_verified = ff_result.fund_flow_unit_verified
+        candidate.fund_flow_individual_summary = ff_result.fund_flow_individual_summary
+        candidate.fund_flow_board_summary = ff_result.fund_flow_board_summary
+        # Fund flow anomaly only adds bonus, does not trigger strong conclusions
+        positive_ff_tags = set(ff_result.fund_flow_anomaly_tags) - {FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT}
+        if positive_ff_tags:
+            candidate.score = round(candidate.score + ff_result.fund_flow_anomaly_score, 2)
+            candidate.strategy_tags = sorted(
+                set(candidate.strategy_tags) | {STRATEGY_FUND_FLOW}
+            )
+        candidate.evidence["fund_flow_anomaly"] = {
+            "anomaly_score": ff_result.fund_flow_anomaly_score,
+            "anomaly_tags": ff_result.fund_flow_anomaly_tags,
+            "anomaly_refs": ff_result.fund_flow_anomaly_refs,
+            "unit_verified": ff_result.fund_flow_unit_verified,
+            "individual_summary": ff_result.fund_flow_individual_summary,
+            "board_summary": ff_result.fund_flow_board_summary,
+        }
+        # Unit unverified: do not boost need_deep_ta from fund flow alone
+        if ff_result.fund_flow_unit_verified and positive_ff_tags and ff_result.fund_flow_anomaly_score >= 10:
+            candidate.need_deep_ta = True
+        # Net outflow dominant does not add score but records as observation
+
+    # [S-005] selection_priority_gate — unified composite score and need_deep_ta gate
+    gate_result: SelectionPriorityResult = run_selection_priority_gate(
+        score=candidate.score,
+        strategy_tags=candidate.strategy_tags,
+        policy_tags=candidate.policy_tags,
+        version_score=candidate.version_score,
+        narrative_score=candidate.narrative_score,
+        fund_flow_anomaly_score=candidate.fund_flow_anomaly_score,
+        fund_flow_anomaly_tags=candidate.fund_flow_anomaly_tags,
+        fund_flow_unit_verified=candidate.fund_flow_unit_verified,
+        risk_flags=candidate.risk_flags,
+        risk_penalty=candidate.risk_penalty,
+        resonance_count=candidate.resonance_count,
+        game_balance=candidate.game_balance,
+        has_price_data=True,
+        has_event_data=bool(all_event_texts),
+        has_fund_flow_data=bool(fund_flow_individual or fund_flow_board),
+        has_risk_assessment=True,
+    )
+    candidate.composite_score = gate_result.composite_score
+    candidate.signal_category_hits = gate_result.signal_category_hits
+    candidate.positive_category_count = gate_result.positive_category_count
+    candidate.data_completeness = gate_result.data_completeness
+    candidate.missing_evidence = gate_result.missing_evidence
+    candidate.why_deep_ta = gate_result.why_deep_ta
+    candidate.why_not_deep_ta = gate_result.why_not_deep_ta
+    candidate.priority_rank = gate_result.priority_rank
+    candidate.evidence["selection_priority_gate"] = {
+        "composite_score": gate_result.composite_score,
+        "signal_category_hits": gate_result.signal_category_hits,
+        "positive_category_count": gate_result.positive_category_count,
+        "data_completeness": gate_result.data_completeness,
+        "missing_evidence": gate_result.missing_evidence,
+        "why_deep_ta": gate_result.why_deep_ta,
+        "why_not_deep_ta": gate_result.why_not_deep_ta,
+        "gate_passed": gate_result.gate_passed,
+        "priority_rank": gate_result.priority_rank,
+        "refs": gate_result.gate_refs,
+    }
+    candidate.need_deep_ta = gate_result.gate_passed
+
+    return candidate, ""
+
+
+def save_candidate(candidate: Candidate, db_path: str) -> int:
+    """Save a candidate to the database. Upsert on (trade_date, symbol)."""
+    conn = sqlite3.connect(db_path)
+    row = candidate.to_db_row()
+    try:
+        conn.execute(
+            "INSERT INTO tradeflow_candidates "
+            "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+            "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+            "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+            "policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
+            "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+            "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
+            "fund_flow_case, resonance_count, game_balance_refs_json, "
+            "fund_flow_anomaly_score, fund_flow_anomaly_tags_json, "
+            "fund_flow_anomaly_refs_json, fund_flow_unit_verified, "
+            "fund_flow_individual_summary, fund_flow_board_summary, "
+            "composite_score, signal_category_hits_json, positive_category_count, "
+            "data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta, "
+            "priority_rank, "
+            "created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+            "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
+            "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+            "trigger_price=excluded.trigger_price, "
+            "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+            "need_deep_ta=excluded.need_deep_ta, evidence_json=excluded.evidence_json, "
+            "risk_flags_json=excluded.risk_flags_json, "
+            "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+            "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
+            "narrative_score=excluded.narrative_score, "
+            "narrative_reasons_json=excluded.narrative_reasons_json, "
+            "narrative_evidence_refs_json=excluded.narrative_evidence_refs_json, "
+            "risk_penalty=excluded.risk_penalty, "
+            "risk_evidence_refs_json=excluded.risk_evidence_refs_json, "
+            "risk_reasons_json=excluded.risk_reasons_json, "
+            "game_balance=excluded.game_balance, "
+            "bull_case=excluded.bull_case, bear_case=excluded.bear_case, "
+            "policy_case=excluded.policy_case, fund_flow_case=excluded.fund_flow_case, "
+            "resonance_count=excluded.resonance_count, "
+            "game_balance_refs_json=excluded.game_balance_refs_json, "
+            "fund_flow_anomaly_score=excluded.fund_flow_anomaly_score, "
+            "fund_flow_anomaly_tags_json=excluded.fund_flow_anomaly_tags_json, "
+            "fund_flow_anomaly_refs_json=excluded.fund_flow_anomaly_refs_json, "
+            "fund_flow_unit_verified=excluded.fund_flow_unit_verified, "
+            "fund_flow_individual_summary=excluded.fund_flow_individual_summary, "
+            "fund_flow_board_summary=excluded.fund_flow_board_summary, "
+            "composite_score=excluded.composite_score, "
+            "signal_category_hits_json=excluded.signal_category_hits_json, "
+            "positive_category_count=excluded.positive_category_count, "
+            "data_completeness=excluded.data_completeness, "
+            "missing_evidence_json=excluded.missing_evidence_json, "
+            "why_deep_ta=excluded.why_deep_ta, why_not_deep_ta=excluded.why_not_deep_ta, "
+            "priority_rank=excluded.priority_rank, "
+            "updated_at=excluded.updated_at",
+            (
+                row["trade_date"], row["symbol"], row["name"], row["source"],
+                row["strategy_tags_json"], row["primary_strategy"],
+                row["score"], row["status"],
+                row["trigger_price"], row["support_price"], row["invalid_price"],
+                row["need_deep_ta"], row["evidence_json"], row["risk_flags_json"],
+                row["policy_tags_json"], row["version_score"],
+                row["policy_evidence_refs_json"],
+                row["narrative_score"], row["narrative_reasons_json"],
+                row["narrative_evidence_refs_json"],
+                row["risk_penalty"], row["risk_evidence_refs_json"],
+                row["risk_reasons_json"],
+                row["game_balance"], row["bull_case"], row["bear_case"],
+                row["policy_case"], row["fund_flow_case"],
+                row["resonance_count"], row["game_balance_refs_json"],
+                row["fund_flow_anomaly_score"], row["fund_flow_anomaly_tags_json"],
+                row["fund_flow_anomaly_refs_json"], row["fund_flow_unit_verified"],
+                row["fund_flow_individual_summary"], row["fund_flow_board_summary"],
+                row["composite_score"], row["signal_category_hits_json"],
+                row["positive_category_count"], row["data_completeness"],
+                row["missing_evidence_json"], row["why_deep_ta"], row["why_not_deep_ta"],
+                row["priority_rank"],
+                candidate.created_at, row["updated_at"],
+            ),
+        )
+        conn.commit()
+        row_id = conn.execute(
+            "SELECT id FROM tradeflow_candidates WHERE trade_date=? AND symbol=?",
+            (row["trade_date"], row["symbol"]),
+        ).fetchone()[0]
+        return row_id
+    finally:
+        conn.close()
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/selection_priority_gate.py | sed -n '120,220p' && nl -ba tradingagents/tradeflow/candidate_engine.py | sed -n '470,550p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   120	    score: float = 0.0,
+   121	    strategy_tags: Optional[list[str]] = None,
+   122	    policy_tags: Optional[list[str]] = None,
+   123	    version_score: float = 0.0,
+   124	    narrative_score: float = 0.0,
+   125	    fund_flow_anomaly_score: float = 0.0,
+   126	    fund_flow_anomaly_tags: Optional[list[str]] = None,
+   127	    fund_flow_unit_verified: bool = False,
+   128	    risk_flags: Optional[list[str]] = None,
+   129	    risk_penalty: float = 0.0,
+   130	    resonance_count: int = 0,
+   131	    game_balance: str = "",
+   132	    has_price_data: bool = True,
+   133	    has_event_data: bool = False,
+   134	    has_fund_flow_data: bool = False,
+   135	    has_risk_assessment: bool = False,
+   136	) -> SelectionPriorityResult:
+   137	    """Run the unified selection priority gate on a candidate.
+   138	
+   139	    Args:
+   140	        score: Aggregate tech + event + pullback score from merge_signals().
+   141	        strategy_tags: All strategy tags on the candidate.
+   142	        policy_tags: Policy version tags (S-001).
+   143	        version_score: Policy version score (S-001).
+   144	        narrative_score: Narrative quality score (S-002).
+   145	        fund_flow_anomaly_score: Fund flow anomaly score (T-003).
+   146	        fund_flow_anomaly_tags: Fund flow anomaly tags (T-003).
+   147	        fund_flow_unit_verified: Whether fund flow unit was verified (T-003).
+   148	        risk_flags: Risk flags (S-003).
+   149	        risk_penalty: Risk penalty score (negative, S-003).
+   150	        resonance_count: Resonance count across categories (S-004).
+   151	        game_balance: Game balance verdict (S-004).
+   152	        has_price_data: Whether price data was available.
+   153	        has_event_data: Whether event/news data was available.
+   154	        has_fund_flow_data: Whether fund flow data was provided.
+   155	        has_risk_assessment: Whether risk assessment was performed.
+   156	
+   157	    Returns:
+   158	        SelectionPriorityResult with composite score, gate verdict, and explanations.
+   159	    """
+   160	    tags = set(strategy_tags or [])
+   161	    p_tags = list(policy_tags or [])
+   162	    r_flags = set(risk_flags or [])
+   163	    ff_tags = set(fund_flow_anomaly_tags or [])
+   164	
+   165	    refs: list[dict] = []
+   166	
+   167	    has_policy = version_score > 0 or len(p_tags) > 0
+   168	    has_narrative = narrative_score > 0 or "EVENT_CATALYST" in tags or "NARRATIVE_QUALITY" in tags
+   169	    has_tech = "VCP" in tags or "PULLBACK_SUPPORT" in tags
+   170	    has_fund = bool(ff_tags - {"NET_OUTFLOW_DOMINANT"}) and fund_flow_anomaly_score > 0
+   171	
+   172	    category_hits: list[str] = []
+   173	    if has_policy:
+   174	        category_hits.append("policy")
+   175	        refs.append({"field": "signal_category", "value": "policy", "source": "version_score", "score": version_score})
+   176	    if has_narrative:
+   177	        category_hits.append("narrative")
+   178	        refs.append({"field": "signal_category", "value": "narrative", "source": "narrative_score", "score": narrative_score})
+   179	    if has_tech:
+   180	        category_hits.append("tech")
+   181	        refs.append({"field": "signal_category", "value": "tech", "source": "strategy_tags", "score": score})
+   182	    if has_fund:
+   183	        category_hits.append("fund")
+   184	        refs.append({"field": "signal_category", "value": "fund", "source": "fund_flow_anomaly", "score": fund_flow_anomaly_score})
+   185	
+   186	    positive_category_count = len(category_hits)
+   187	
+   188	    data_completeness, missing_evidence = _compute_data_completeness(
+   189	        has_price_data=has_price_data,
+   190	        has_event_data=has_event_data,
+   191	        has_fund_flow_data=has_fund_flow_data,
+   192	        has_fund_flow_unit_verified=fund_flow_unit_verified,
+   193	        has_technical_signal=has_tech,
+   194	        has_policy_signal=has_policy,
+   195	        has_narrative_signal=has_narrative,
+   196	        has_risk_assessment=has_risk_assessment,
+   197	    )
+   198	
+   199	    completeness_bonus = round(data_completeness * 5.0, 2)
+   200	
+   201	    composite_score = score + version_score + narrative_score + fund_flow_anomaly_score + risk_penalty + completeness_bonus
+   202	    composite_score = max(0.0, min(composite_score, MAX_COMPOSITE_SCORE))
+   203	    composite_score = round(composite_score, 2)
+   204	
+   205	    has_high_risk = bool(r_flags & _SEVERITY_HIGH_RISK_FLAGS)
+   206	    many_risks = len(r_flags) >= 3
+   207	    heavy_penalty = risk_penalty <= -15
+   208	
+   209	    fragile_or_crowded = game_balance in {"fragile", "crowded"}
+   210	    favorable_or_neutral = game_balance in {"favorable", "neutral"}
+   211	
+   212	    gate_passed = False
+   213	    why_deep_ta = ""
+   214	    why_not_deep_ta = ""
+   215	
+   216	    can_pass_gate = (
+   217	        positive_category_count >= MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA
+   218	        and not has_high_risk
+   219	        and not many_risks
+   220	        and not heavy_penalty
+   470	    candidate.bear_case = gb_result.bear_case
+   471	    candidate.policy_case = gb_result.policy_case
+   472	    candidate.fund_flow_case = gb_result.fund_flow_case
+   473	    candidate.resonance_count = gb_result.resonance_count
+   474	    candidate.game_balance_refs = gb_result.game_balance_refs
+   475	    candidate.evidence["game_balance"] = {
+   476	        "game_balance": gb_result.game_balance,
+   477	        "bull_case": gb_result.bull_case,
+   478	        "bear_case": gb_result.bear_case,
+   479	        "policy_case": gb_result.policy_case,
+   480	        "fund_flow_case": gb_result.fund_flow_case,
+   481	        "resonance_count": gb_result.resonance_count,
+   482	        "refs": gb_result.game_balance_refs,
+   483	    }
+   484	    # When >= 2 categories resonate and risk manageable, boost need_deep_ta
+   485	    if gb_result.resonance_count >= 2 and gb_result.game_balance in {"favorable", "neutral"}:
+   486	        candidate.need_deep_ta = True
+   487	    # When fragile or crowded with too many risks, demote need_deep_ta
+   488	    if gb_result.game_balance in {"fragile", "crowded"} and len(candidate.risk_flags) >= 2:
+   489	        candidate.need_deep_ta = False
+   490	
+   491	    # [T-003] fund_flow_anomaly_pool — detect capital anomaly
+   492	    ff_result: FundFlowAnomalyResult = detect_fund_flow_anomaly(
+   493	        fund_flow_individual=fund_flow_individual,
+   494	        fund_flow_board=fund_flow_board,
+   495	    )
+   496	    if ff_result.fund_flow_anomaly_tags:
+   497	        candidate.fund_flow_anomaly_score = ff_result.fund_flow_anomaly_score
+   498	        candidate.fund_flow_anomaly_tags = ff_result.fund_flow_anomaly_tags
+   499	        candidate.fund_flow_anomaly_refs = ff_result.fund_flow_anomaly_refs
+   500	        candidate.fund_flow_unit_verified = ff_result.fund_flow_unit_verified
+   501	        candidate.fund_flow_individual_summary = ff_result.fund_flow_individual_summary
+   502	        candidate.fund_flow_board_summary = ff_result.fund_flow_board_summary
+   503	        # Fund flow anomaly only adds bonus, does not trigger strong conclusions
+   504	        positive_ff_tags = set(ff_result.fund_flow_anomaly_tags) - {FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT}
+   505	        if positive_ff_tags:
+   506	            candidate.score = round(candidate.score + ff_result.fund_flow_anomaly_score, 2)
+   507	            candidate.strategy_tags = sorted(
+   508	                set(candidate.strategy_tags) | {STRATEGY_FUND_FLOW}
+   509	            )
+   510	        candidate.evidence["fund_flow_anomaly"] = {
+   511	            "anomaly_score": ff_result.fund_flow_anomaly_score,
+   512	            "anomaly_tags": ff_result.fund_flow_anomaly_tags,
+   513	            "anomaly_refs": ff_result.fund_flow_anomaly_refs,
+   514	            "unit_verified": ff_result.fund_flow_unit_verified,
+   515	            "individual_summary": ff_result.fund_flow_individual_summary,
+   516	            "board_summary": ff_result.fund_flow_board_summary,
+   517	        }
+   518	        # Unit unverified: do not boost need_deep_ta from fund flow alone
+   519	        if ff_result.fund_flow_unit_verified and positive_ff_tags and ff_result.fund_flow_anomaly_score >= 10:
+   520	            candidate.need_deep_ta = True
+   521	        # Net outflow dominant does not add score but records as observation
+   522	
+   523	    # [S-005] selection_priority_gate — unified composite score and need_deep_ta gate
+   524	    gate_result: SelectionPriorityResult = run_selection_priority_gate(
+   525	        score=candidate.score,
+   526	        strategy_tags=candidate.strategy_tags,
+   527	        policy_tags=candidate.policy_tags,
+   528	        version_score=candidate.version_score,
+   529	        narrative_score=candidate.narrative_score,
+   530	        fund_flow_anomaly_score=candidate.fund_flow_anomaly_score,
+   531	        fund_flow_anomaly_tags=candidate.fund_flow_anomaly_tags,
+   532	        fund_flow_unit_verified=candidate.fund_flow_unit_verified,
+   533	        risk_flags=candidate.risk_flags,
+   534	        risk_penalty=candidate.risk_penalty,
+   535	        resonance_count=candidate.resonance_count,
+   536	        game_balance=candidate.game_balance,
+   537	        has_price_data=True,
+   538	        has_event_data=bool(all_event_texts),
+   539	        has_fund_flow_data=bool(fund_flow_individual or fund_flow_board),
+   540	        has_risk_assessment=True,
+   541	    )
+   542	    candidate.composite_score = gate_result.composite_score
+   543	    candidate.signal_category_hits = gate_result.signal_category_hits
+   544	    candidate.positive_category_count = gate_result.positive_category_count
+   545	    candidate.data_completeness = gate_result.data_completeness
+   546	    candidate.missing_evidence = gate_result.missing_evidence
+   547	    candidate.why_deep_ta = gate_result.why_deep_ta
+   548	    candidate.why_not_deep_ta = gate_result.why_not_deep_ta
+   549	    candidate.priority_rank = gate_result.priority_rank
+   550	    candidate.evidence["selection_priority_gate"] = {
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/selection_priority_gate.py | sed -n '216,270p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   216	    can_pass_gate = (
+   217	        positive_category_count >= MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA
+   218	        and not has_high_risk
+   219	        and not many_risks
+   220	        and not heavy_penalty
+   221	        and not fragile_or_crowded
+   222	        and data_completeness >= 0.5
+   223	    )
+   224	
+   225	    if can_pass_gate:
+   226	        gate_passed = True
+   227	        reasons = []
+   228	        if has_policy:
+   229	            reasons.append(f"政策版本({', '.join(p_tags[:2])})")
+   230	        if has_narrative:
+   231	            reasons.append(f"叙事质量({narrative_score:.0f}分)")
+   232	        if has_tech:
+   233	            tech_tags = [t for t in ["VCP", "PULLBACK_SUPPORT"] if t in tags]
+   234	            reasons.append(f"技术形态({', '.join(tech_tags)})")
+   235	        if has_fund:
+   236	            reasons.append("资金异动")
+   237	        reasons_str = " + ".join(reasons)
+   238	        why_deep_ta = f"{positive_category_count}类信号共振({reasons_str})，风险可控，值得深度分析"
+   239	        refs.append({"field": "gate_passed", "value": True, "reason": f"{positive_category_count} categories, risk manageable"})
+   240	    else:
+   241	        blockers: list[str] = []
+   242	        if positive_category_count < MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA:
+   243	            blockers.append(f"仅{positive_category_count}类正向信号(需≥{MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA})")
+   244	            refs.append({"field": "gate_blocked", "value": "insufficient_categories", "detail": f"{positive_category_count}/{MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA}"})
+   245	        if has_high_risk:
+   246	            blockers.append(f"高风险标签({', '.join(r_flags & _SEVERITY_HIGH_RISK_FLAGS)})")
+   247	            refs.append({"field": "gate_blocked", "value": "high_risk_flags"})
+   248	        if many_risks:
+   249	            blockers.append(f"风险标签过多({len(r_flags)}个)")
+   250	            refs.append({"field": "gate_blocked", "value": "too_many_risks"})
+   251	        if heavy_penalty:
+   252	            blockers.append(f"风险罚分过重({risk_penalty})")
+   253	            refs.append({"field": "gate_blocked", "value": "heavy_penalty"})
+   254	        if fragile_or_crowded:
+   255	            blockers.append(f"博弈平衡不佳({game_balance})")
+   256	            refs.append({"field": "gate_blocked", "value": "bad_game_balance"})
+   257	        if data_completeness < 0.5:
+   258	            blockers.append(f"数据完整度不足({data_completeness:.0%})")
+   259	            refs.append({"field": "gate_blocked", "value": "low_data_completeness"})
+   260	        why_not_deep_ta = "；".join(blockers)
+   261	
+   262	    if positive_category_count >= 3 and composite_score >= 60 and data_completeness >= 0.7:
+   263	        priority_rank = "A"
+   264	    elif positive_category_count >= 2 and composite_score >= 30:
+   265	        priority_rank = "B"
+   266	    else:
+   267	        priority_rank = "C"
+   268	
+   269	    if has_high_risk or many_risks:
+   270	        priority_rank = "C"
+
+exec
+/bin/zsh -lc "python - <<'PY'
+from tradingagents.tradeflow.selection_priority_gate import run_selection_priority_gate
+r=run_selection_priority_gate(score=50,strategy_tags=['VCP','FUND_FLOW_ANOMALY'],fund_flow_anomaly_score=10,fund_flow_anomaly_tags=['CONSECUTIVE_INFLOW'],fund_flow_unit_verified=False,has_fund_flow_data=True,has_risk_assessment=True)
+print(r)
+PY" in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: python
+
+exec
+/bin/zsh -lc ". .venv/bin/activate && python - <<'PY'
+from tradingagents.tradeflow.selection_priority_gate import run_selection_priority_gate
+r=run_selection_priority_gate(score=50,strategy_tags=['VCP','FUND_FLOW_ANOMALY'],fund_flow_anomaly_score=10,fund_flow_anomaly_tags=['CONSECUTIVE_INFLOW'],fund_flow_unit_verified=False,has_fund_flow_data=True,has_risk_assessment=True)
+print(r.gate_passed,r.positive_category_count,r.data_completeness,r.why_deep_ta,r.why_not_deep_ta)
+PY" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+True 2 0.5 2类信号共振(技术形态(VCP) + 资金异动)，风险可控，值得深度分析 
+
+codex
+The new gate can produce inflated composite scores and can promote candidates based on unverified fund-flow data, both of which directly affect candidate priority and `need_deep_ta` decisions.
+
+Full review comments:
+
+- [P2] Avoid double-counting bonus signals in composite score — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/selection_priority_gate.py:201-201
+  When called from `evaluate_symbol`, `score` is already the mutated `candidate.score` after policy, narrative, fund-flow, and risk adjustments have been added, so this formula adds `version_score`, `narrative_score`, `fund_flow_anomaly_score`, and `risk_penalty` a second time. For candidates with event/policy/fund signals this inflates `composite_score` and can incorrectly change sorting and A/B/C ranking; pass a base technical score here or stop re-adding fields already included in `score`.
+
+- [P2] Require verified fund-flow units before counting fund signal — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/selection_priority_gate.py:170-170
+  For a tech hit plus positive fund-flow text whose units were not verified, `has_fund` still becomes true and the gate can pass at exactly 50% completeness (`price + tech + fund data + risk assessment`), overriding the earlier T-003 guard that unverified fund flow must not boost `need_deep_ta`. This makes unverified fund-flow evidence enough to trigger deep TA when paired with a single technical signal; count the fund category only when `fund_flow_unit_verified` is true or explicitly block the gate on missing unit verification.
+The new gate can produce inflated composite scores and can promote candidates based on unverified fund-flow data, both of which directly affect candidate priority and `need_deep_ta` decisions.
+
+Full review comments:
+
+- [P2] Avoid double-counting bonus signals in composite score — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/selection_priority_gate.py:201-201
+  When called from `evaluate_symbol`, `score` is already the mutated `candidate.score` after policy, narrative, fund-flow, and risk adjustments have been added, so this formula adds `version_score`, `narrative_score`, `fund_flow_anomaly_score`, and `risk_penalty` a second time. For candidates with event/policy/fund signals this inflates `composite_score` and can incorrectly change sorting and A/B/C ranking; pass a base technical score here or stop re-adding fields already included in `score`.
+
+- [P2] Require verified fund-flow units before counting fund signal — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/selection_priority_gate.py:170-170
+  For a tech hit plus positive fund-flow text whose units were not verified, `has_fund` still becomes true and the gate can pass at exactly 50% completeness (`price + tech + fund data + risk assessment`), overriding the earlier T-003 guard that unverified fund flow must not boost `need_deep_ta`. This makes unverified fund-flow evidence enough to trigger deep TA when paired with a single technical signal; count the fund category only when `fund_flow_unit_verified` is true or explicitly block the gate on missing unit verification.

@@ -1,0 +1,778 @@
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/project-overview.md
+[0m
+[0m# [0mTodos
+[ ] Read and understand existing TradeFlow modules (candidate_engine, schemas, plan_runner, discovery)
+[ ] Implement selection_priority_gate.py - composite score + need_deep_ta gate
+[ ] Integrate into candidate_engine.py - wire composite score and need_deep_ta gate
+[ ] Update schemas.py with new fields
+[ ] Update plan_runner.py and discovery.py to output gate results
+[ ] Write tests for S-005
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/tradeflow
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py
+[0m→ [0mRead tradingagents/tradeflow/schemas.py
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py
+[0m→ [0mRead tradingagents/tradeflow/discovery.py
+现在让我阅读 `plan_runner.py` 和 `discovery.py` 以了解完整的集成点：
+[0m✱ [0mGlob "tests/test_s00*.py"[90m 4 matches[0m
+[0m→ [0mRead tradingagents/tradeflow/game_balance.py
+现在我来查看现有的测试模式：
+[0m→ [0mRead tests/test_s004_game_balance.py[90m [limit=80][0m
+现在我对代码库有了全面的了解。让我快速查看一下现有测试模式：
+[0m
+[0m# [0mTodos
+[x] Read and understand existing TradeFlow modules (candidate_engine, schemas, plan_runner, discovery)
+[ ] Implement selection_priority_gate.py - composite score + need_deep_ta gate
+[ ] Integrate into candidate_engine.py - wire composite score and need_deep_ta gate
+[ ] Update schemas.py with new fields
+[ ] Update plan_runner.py and discovery.py to output gate results
+[ ] Write tests for S-005
+[ ] Update docs/DEVLOG.md
+[0m
+我现在对 S-005 需要做什么有了全面的理解。让我来实现 `selection_priority_gate` 模块：
+
+**S-005 的关键设计决策：**
+1. **综合评分** = 政策版本 + 叙事质量 + 技术评分 + 资金流异常 + 风险惩罚 + 数据完整性奖励
+2. **`need_deep_ta` 门控**：至少需要 2 类正向信号，且无重大风险标志
+3. **输出**：“为什么值得关注” / “为什么暂不深入研究” / “缺少哪些证据”
+4. 与 `M-003` (universe manager) 和 `M-004` (strategy config) 兼容的字段
+[0m← [0mWrite tradingagents/tradeflow/selection_priority_gate.py
+Wrote file successfully.
+[0m
+现在让我更新 `schemas.py` 以添加 `S-005` 字段：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -84,8 +84,16 @@
+ fund_flow_anomaly_refs: list[dict] = field(default_factory=list)  # [T-003]
+ fund_flow_unit_verified: bool = False  # [T-003]
+ fund_flow_individual_summary: str = ""  # [T-003]
+ fund_flow_board_summary: str = ""  # [T-003]
++composite_score: float = 0.0  # [S-005] selection_priority_gate
++signal_category_hits: list[str] = field(default_factory=list)  # [S-005]
++positive_category_count: int = 0  # [S-005]
++data_completeness: float = 0.0  # [S-005]
++missing_evidence: list[str] = field(default_factory=list)  # [S-005]
++why_deep_ta: str = ""  # [S-005]
++why_not_deep_ta: str = ""  # [S-005]
++priority_rank: str = ""  # [S-005]
+ 
+ def __post_init__(self):
+     if not self.trade_date:
+         self.trade_date = datetime.now().strftime("%Y-%m-%d")
+
+[0m
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -176,8 +176,16 @@
+         "fund_flow_anomaly_refs_json": json.dumps(self.fund_flow_anomaly_refs, ensure_ascii=False),  # [T-003]
+         "fund_flow_unit_verified": 1 if self.fund_flow_unit_verified else 0,  # [T-003]
+         "fund_flow_individual_summary": self.fund_flow_individual_summary,  # [T-003]
+         "fund_flow_board_summary": self.fund_flow_board_summary,  # [T-003]
++        "composite_score": self.composite_score,  # [S-005] selection_priority_gate
++        "signal_category_hits_json": json.dumps(self.signal_category_hits, ensure_ascii=False),  # [S-005]
++        "positive_category_count": self.positive_category_count,  # [S-005]
++        "data_completeness": self.data_completeness,  # [S-005]
++        "missing_evidence_json": json.dumps(self.missing_evidence, ensure_ascii=False),  # [S-005]
++        "why_deep_ta": self.why_deep_ta,  # [S-005]
++        "why_not_deep_ta": self.why_not_deep_ta,  # [S-005]
++        "priority_rank": self.priority_rank,  # [S-005]
+         "updated_at": datetime.now().isoformat(),
+     }
+ 
+ @classmethod
+
+[0m
+现在更新 `to_db_row` 方法：
+现在更新 `from_db_row`:
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -228,8 +228,16 @@
+             fund_flow_anomaly_refs=json.loads(row.get("fund_flow_anomaly_refs_json", "[]")),  # [T-003]
+             fund_flow_unit_verified=bool(row.get("fund_flow_unit_verified", 0)),  # [T-003]
+             fund_flow_individual_summary=row.get("fund_flow_individual_summary", ""),  # [T-003]
+             fund_flow_board_summary=row.get("fund_flow_board_summary", ""),  # [T-003]
++            composite_score=row.get("composite_score", 0.0),  # [S-005] selection_priority_gate
++            signal_category_hits=json.loads(row.get("signal_category_hits_json", "[]")),  # [S-005]
++            positive_category_count=row.get("positive_category_count", 0),  # [S-005]
++            data_completeness=row.get("data_completeness", 0.0),  # [S-005]
++            missing_evidence=json.loads(row.get("missing_evidence_json", "[]")),  # [S-005]
++            why_deep_ta=row.get("why_deep_ta", ""),  # [S-005]
++            why_not_deep_ta=row.get("why_not_deep_ta", ""),  # [S-005]
++            priority_rank=row.get("priority_rank", ""),  # [S-005]
+         )
+ 
+ 
+ @dataclass
+
+[0m
+现在更新 `DailyPlan` 中的 `render_text`，以显示 S-005 门控结果：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -398,7 +398,23 @@
+         if ff_ind:
+             lines.append(f"    个股: {ff_ind}")
+         if ff_board:
+             lines.append(f"    板块: {ff_board}")
++    # [S-005] selection_priority_gate — display priority gate results
++    priority_rank = c.get("priority_rank", "")
++    composite_score_val = c.get("composite_score", 0)
++    why_deep = c.get("why_deep_ta", "")
++    why_not_deep = c.get("why_not_deep_ta", "")
++    missing_ev = c.get("missing_evidence", [])
++    data_comp = c.get("data_completeness", 0)
++    if priority_rank:
++        rank_emoji = {"A": "🟢", "B": "🟡", "C": "🔴"}
++        lines.append(f"  优先级: {rank_emoji.get(priority_rank, '')} {priority_rank}层 | 综合分: {composite_score_val:.1f} | 完整度: {data_comp:.0%}")
++        if why_deep:
++            lines.append(f"    值得深挖: {why_deep}")
++        if why_not_deep:
++            lines.append(f"    暂不深挖: {why_not_deep}")
++        if missing_ev:
++            lines.append(f"    缺少证据: {', '.join(missing_ev[:5])}")
+     lines.append("")
+ 
+ return "\n".join(lines)
+
+[0m
+现在将 S-005 集成到 `candidate_engine.py` 中：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -26,8 +26,9 @@
+ from .narrative_quality import score_narrative_quality, NarrativeQualityResult  # [S-002]
+ from .underwater_risk_flags import detect_underwater_risks, UnderwaterRiskResult, ALL_RISK_FLAGS  # [S-003]
+ from .game_balance import assess_game_balance, GameBalanceResult  # [S-004] candidate_game_balance
+ from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult, FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT  # [T-003] fund_flow_anomaly_pool
++from .selection_priority_gate import run_selection_priority_gate, SelectionPriorityResult  # [S-005] selection_priority_gate
+ 
+ 
+ # ── SQL for table creation ──
+ CREATE_CANDIDATES_TABLE = """
+
+[0m
+[0m✗ [0medit failed
+[91m[1mError: [0mCould not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.
+现在添加用于新列的 DB 迁移：
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [offset=140, limit=25][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -151,8 +151,23 @@
+     try:
+         conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+     except sqlite3.OperationalError:
+         pass
++# [S-005] selection_priority_gate — add priority gate columns
++for _col, _type in [
++    ("composite_score", "REAL DEFAULT 0.0"),
++    ("signal_category_hits_json", "TEXT DEFAULT '[]'"),
++    ("positive_category_count", "INTEGER DEFAULT 0"),
++    ("data_completeness", "REAL DEFAULT 0.0"),
++    ("missing_evidence_json", "TEXT DEFAULT '[]'"),
++    ("why_deep_ta", "TEXT DEFAULT ''"),
++    ("why_not_deep_ta", "TEXT DEFAULT ''"),
++    ("priority_rank", "TEXT DEFAULT ''"),
++]:
++    try:
++        conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
++    except sqlite3.OperationalError:
++        pass
+ conn.commit()
+ conn.close()
+ 
+ 
+
+[0m
+现在在 `evaluate_symbol` 中集成 `S-005` 选股优先级筛选模块 — 在资金异动（T-003）之后，以及最终返回之前添加它：
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [offset=500][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -519,8 +519,49 @@
+         if ff_result.fund_flow_unit_verified and positive_ff_tags and ff_result.fund_flow_anomaly_score >= 10:
+             candidate.need_deep_ta = True
+         # Net outflow dominant does not add score but records as observation
+ 
++    # [S-005] selection_priority_gate — unified composite score and need_deep_ta gate
++    gate_result: SelectionPriorityResult = run_selection_priority_gate(
++        score=candidate.score,
++        strategy_tags=candidate.strategy_tags,
++        policy_tags=candidate.policy_tags,
++        version_score=candidate.version_score,
++        narrative_score=candidate.narrative_score,
++        fund_flow_anomaly_score=candidate.fund_flow_anomaly_score,
++        fund_flow_anomaly_tags=candidate.fund_flow_anomaly_tags,
++        fund_flow_unit_verified=candidate.fund_flow_unit_verified,
++        risk_flags=candidate.risk_flags,
++        risk_penalty=candidate.risk_penalty,
++        resonance_count=candidate.resonance_count,
++        game_balance=candidate.game_balance,
++        has_price_data=True,
++        has_event_data=bool(all_event_texts),
++        has_fund_flow_data=bool(fund_flow_individual or fund_flow_board),
++        has_risk_assessment=True,
++    )
++    candidate.composite_score = gate_result.composite_score
++    candidate.signal_category_hits = gate_result.signal_category_hits
++    candidate.positive_category_count = gate_result.positive_category_count
++    candidate.data_completeness = gate_result.data_completeness
++    candidate.missing_evidence = gate_result.missing_evidence
++    candidate.why_deep_ta = gate_result.why_deep_ta
++    candidate.why_not_deep_ta = gate_result.why_not_deep_ta
++    candidate.priority_rank = gate_result.priority_rank
++    candidate.evidence["selection_priority_gate"] = {
++        "composite_score": gate_result.composite_score,
++        "signal_category_hits": gate_result.signal_category_hits,
++        "positive_category_count": gate_result.positive_category_count,
++        "data_completeness": gate_result.data_completeness,
++        "missing_evidence": gate_result.missing_evidence,
++        "why_deep_ta": gate_result.why_deep_ta,
++        "why_not_deep_ta": gate_result.why_not_deep_ta,
++        "gate_passed": gate_result.gate_passed,
++        "priority_rank": gate_result.priority_rank,
++        "refs": gate_result.gate_refs,
++    }
++    candidate.need_deep_ta = gate_result.gate_passed
++
+     return candidate, ""
+ 
+ 
+ def save_candidate(candidate: Candidate, db_path: str) -> int:
+
+[0m
+现在更新 `save_candidate` SQL 以包含 S-005 字段：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -580,10 +580,13 @@
+ "fund_flow_case, resonance_count, game_balance_refs_json, "
+ "fund_flow_anomaly_score, fund_flow_anomaly_tags_json, "
+ "fund_flow_anomaly_refs_json, fund_flow_unit_verified, "
+ "fund_flow_individual_summary, fund_flow_board_summary, "
++"composite_score, signal_category_hits_json, positive_category_count, "
++"data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta, "
++"priority_rank, "
+ "created_at, updated_at) "
+-"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
++"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+ "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+ "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
+ "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+ "trigger_price=excluded.trigger_price, "
+
+[0m
+现在更新 `ON CONFLICT` 子句和 `VALUES` 元组：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -611,8 +611,15 @@
+ "fund_flow_anomaly_refs_json=excluded.fund_flow_anomaly_refs_json, "
+ "fund_flow_unit_verified=excluded.fund_flow_unit_verified, "
+ "fund_flow_individual_summary=excluded.fund_flow_individual_summary, "
+ "fund_flow_board_summary=excluded.fund_flow_board_summary, "
++"composite_score=excluded.composite_score, "
++"signal_category_hits_json=excluded.signal_category_hits_json, "
++"positive_category_count=excluded.positive_category_count, "
++"data_completeness=excluded.data_completeness, "
++"missing_evidence_json=excluded.missing_evidence_json, "
++"why_deep_ta=excluded.why_deep_ta, why_not_deep_ta=excluded.why_not_deep_ta, "
++"priority_rank=excluded.priority_rank, "
+ "updated_at=excluded.updated_at",
+ (
+     row["trade_date"], row["symbol"], row["name"], row["source"],
+     row["strategy_tags_json"], row["primary_strategy"],
+
+[0m
+现在更新 `VALUES` 元组：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -637,8 +637,12 @@
+         row["resonance_count"], row["game_balance_refs_json"],
+         row["fund_flow_anomaly_score"], row["fund_flow_anomaly_tags_json"],
+         row["fund_flow_anomaly_refs_json"], row["fund_flow_unit_verified"],
+         row["fund_flow_individual_summary"], row["fund_flow_board_summary"],
++        row["composite_score"], row["signal_category_hits_json"],
++        row["positive_category_count"], row["data_completeness"],
++        row["missing_evidence_json"], row["why_deep_ta"], row["why_not_deep_ta"],
++        row["priority_rank"],
+         candidate.created_at, row["updated_at"],
+     ),
+ )
+ conn.commit()
+
+[0m
+现在更新 `plan_runner.py` 以输出 S-005 字段:
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -86,8 +86,16 @@
+         "fund_flow_anomaly_refs": candidate.fund_flow_anomaly_refs,  # [T-003]
+         "fund_flow_unit_verified": candidate.fund_flow_unit_verified,  # [T-003]
+         "fund_flow_individual_summary": candidate.fund_flow_individual_summary,  # [T-003]
+         "fund_flow_board_summary": candidate.fund_flow_board_summary,  # [T-003]
++        "composite_score": candidate.composite_score,  # [S-005] selection_priority_gate
++        "signal_category_hits": candidate.signal_category_hits,  # [S-005]
++        "positive_category_count": candidate.positive_category_count,  # [S-005]
++        "data_completeness": candidate.data_completeness,  # [S-005]
++        "missing_evidence": candidate.missing_evidence,  # [S-005]
++        "why_deep_ta": candidate.why_deep_ta,  # [S-005]
++        "why_not_deep_ta": candidate.why_not_deep_ta,  # [S-005]
++        "priority_rank": candidate.priority_rank,  # [S-005]
+     }
+ 
+ 
+ def generate_daily_plan(
+
+[0m
+现在按 `composite_score` (S-005) 进行排序，而不是仅按 `score` 排序。
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -188,10 +188,10 @@
+ for c in candidates:
+     entry = _build_plan_entry(c)
+     plan_entries.append(entry)
+ 
+-# Sort by score descending
+-plan_entries.sort(key=lambda x: x["score"], reverse=True)
++# Sort by composite_score descending (S-005 priority gate), fallback to score
++plan_entries.sort(key=lambda x: (x.get("composite_score", 0) or 0, x.get("score", 0)), reverse=True)
+ 
+ # Build summary
+ n_total = len(plan_entries)
+ n_deep_ta = sum(1 for e in plan_entries if e["need_deep_ta"])
+
+[0m
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -290,8 +290,16 @@
+         "fund_flow_anomaly_tags": candidate.fund_flow_anomaly_tags,  # [T-003]
+         "fund_flow_unit_verified": candidate.fund_flow_unit_verified,  # [T-003]
+         "fund_flow_individual_summary": candidate.fund_flow_individual_summary,  # [T-003]
+         "fund_flow_board_summary": candidate.fund_flow_board_summary,  # [T-003]
++        "composite_score": candidate.composite_score,  # [S-005] selection_priority_gate
++        "signal_category_hits": candidate.signal_category_hits,  # [S-005]
++        "positive_category_count": candidate.positive_category_count,  # [S-005]
++        "data_completeness": candidate.data_completeness,  # [S-005]
++        "missing_evidence": candidate.missing_evidence,  # [S-005]
++        "why_deep_ta": candidate.why_deep_ta,  # [S-005]
++        "why_not_deep_ta": candidate.why_not_deep_ta,  # [S-005]
++        "priority_rank": candidate.priority_rank,  # [S-005]
+     }
+ 
+ 
+ def _classify_filter_reasons(filtered: list[FilteredSymbol]) -> dict[str, int]:
+
+[0m
+现在更新 `discovery.py` 来输出 S-005 字段：
+现在更新发现排序，使其使用 `composite_score`：
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -193,9 +193,9 @@
+             source=sym_source,
+             reason=reason,
+         ))
+ 
+-candidates.sort(key=lambda c: c.score, reverse=True)
++candidates.sort(key=lambda c: (c.composite_score, c.score), reverse=True)
+ top_candidates = candidates[:top_n]
+ 
+ plan_entries = []
+ for c in top_candidates:
+
+[0m
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -381,8 +381,25 @@
+             lines.append(f"    个股: {ff_ind}")
+         if ff_board:
+             lines.append(f"    板块: {ff_board}")
+ 
++    # [S-005] selection_priority_gate — display priority gate results
++    priority_rank = c.get("priority_rank", "")
++    composite_score_val = c.get("composite_score", 0)
++    why_deep = c.get("why_deep_ta", "")
++    why_not_deep = c.get("why_not_deep_ta", "")
++    missing_ev = c.get("missing_evidence", [])
++    data_comp = c.get("data_completeness", 0)
++    if priority_rank:
++        rank_emoji = {"A": "🟢", "B": "🟡", "C": "🔴"}
++        lines.append(f"  优先级: {rank_emoji.get(priority_rank, '')} {priority_rank}层 | 综合分: {composite_score_val:.1f} | 完整度: {data_comp:.0%}")
++        if why_deep:
++            lines.append(f"    值得深挖: {why_deep}")
++        if why_not_deep:
++            lines.append(f"    暂不深挖: {why_not_deep}")
++        if missing_ev:
++            lines.append(f"    缺少证据: {', '.join(missing_ev[:5])}")
++
+     lines.append("")
+ 
+ if result.filtered:
+     lines.append(f"--- 被过滤 ({len(result.filtered)}只) ---")
+
+[0m
+现在更新 `discovery.py` 中的 `render_discovery_text` 以显示 S-005 结果：
+[0m# [0mTodos
+[x] Read and understand existing TradeFlow modules (candidate_engine, schemas, plan_runner, discovery)
+[x] Implement selection_priority_gate.py - composite score + need_deep_ta gate
+[x] Integrate into candidate_engine.py - wire composite score and need_deep_ta gate
+[x] Update schemas.py with new fields
+[x] Update plan_runner.py and discovery.py to output gate results
+[ ] Write tests for S-005
+[ ] Update docs/DEVLOG.md
+[0m
+现在编写全面的测试：
+[0m← [0mWrite tests/test_s005_selection_priority_gate.py
+Wrote file successfully.
+[0m
+现在我来运行测试：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_s005_selection_priority_gate.py -v --tb=short 2>&1 | tail -100
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 74 items
+
+tests/test_s005_selection_priority_gate.py::TestCompositeScore::test_empty_inputs_zero FAILED [  1%]
+tests/test_s005_selection_priority_gate.py::TestCompositeScore::test_tech_only PASSED [  2%]
+tests/test_s005_selection_priority_gate.py::TestCompositeScore::test_policy_only PASSED [  4%]
+tests/test_s005_selection_priority_gate.py::TestCompositeScore::test_narrative_only PASSED [  5%]
+tests/test_s005_selection_priority_gate.py::TestCompositeScore::test_fund_flow_only PASSED [  6%]
+tests/test_s005_selection_priority_gate.py::TestCompositeScore::test_all_positive_signals_summed PASSED [  8%]
+tests/test_s005_selection_priority_gate.py::TestCompositeScore::test_risk_penalty_reduces_score PASSED [  9%]
+tests/test_s005_selection_priority_gate.py::TestCompositeScore::test_composite_score_capped_at_max PASSED [ 10%]
+tests/test_s005_selection_priority_gate.py::TestCompositeScore::test_composite_score_non_negative PASSED [ 12%]
+tests/test_s005_selection_priority_gate.py::TestSignalCategories::test_no_categories PASSED [ 13%]
+tests/test_s005_selection_priority_gate.py::TestSignalCategories::test_policy_category PASSED [ 14%]
+tests/test_s005_selection_priority_gate.py::TestSignalCategories::test_narrative_category_from_score PASSED [ 16%]
+tests/test_s005_selection_priority_gate.py::TestSignalCategories::test_narrative_category_from_event_tag PASSED [ 17%]
+tests/test_s005_selection_priority_gate.py::TestSignalCategories::test_tech_category_vcp PASSED [ 18%]
+tests/test_s005_selection_priority_gate.py::TestSignalCategories::test_tech_category_pullback PASSED [ 20%]
+tests/test_s005_selection_priority_gate.py::TestSignalCategories::test_fund_category PASSED [ 21%]
+tests/test_s005_selection_priority_gate.py::TestSignalCategories::test_fund_category_excludes_net_outflow PASSED [ 22%]
+tests/test_s005_selection_priority_gate.py::TestSignalCategories::test_all_four_categories PASSED [ 24%]
+tests/test_s005_selection_priority_gate.py::TestNeedDeepTaGate::test_single_category_does_not_pass PASSED [ 25%]
+tests/test_s005_selection_priority_gate.py::TestNeedDeepTaGate::test_two_categories_pass PASSED [ 27%]
+tests/test_s005_selection_priority_gate.py::TestNeedDeepTaGate::test_high_risk_blocks_gate PASSED [ 28%]
+tests/test_s005_selection_priority_gate.py::TestNeedDeepTaGate::test_financial_quality_risk_blocks PASSED [ 29%]
+tests/test_s005_selection_priority_gate.py::TestNeedDeepTaGate::test_many_risks_blocks_gate PASSED [ 31%]
+tests/test_s005_selection_priority_gate.py::TestNeedDeepTaGate::test_heavy_penalty_blocks_gate PASSED [ 32%]
+tests/test_s005_selection_priority_gate.py::TestNeedDeepTaGate::test_fragile_game_balance_blocks PASSED [ 33%]
+tests/test_s005_selection_priority_gate.py::TestNeedDeepTaGate::test_crowded_game_balance_blocks PASSED [ 35%]
+tests/test_s005_selection_priority_gate.py::TestNeedDeepTaGate::test_low_data_completeness_blocks_gate PASSED [ 36%]
+tests/test_s005_selection_priority_gate.py::TestNeedDeepTaGate::test_favorable_game_balance_allows_gate PASSED [ 37%]
+tests/test_s005_selection_priority_gate.py::TestNeedDeepTaGate::test_neutral_game_balance_allows_gate PASSED [ 39%]
+tests/test_s005_selection_priority_gate.py::TestPriorityRank::test_tech_only_gets_c PASSED [ 40%]
+tests/test_s005_selection_priority_gate.py::TestPriorityRank::test_two_categories_moderate_score_gets_b PASSED [ 41%]
+tests/test_s005_selection_priority_gate.py::TestPriorityRank::test_three_categories_high_score_gets_a PASSED [ 43%]
+tests/test_s005_selection_priority_gate.py::TestPriorityRank::test_high_risk_forces_c PASSED [ 44%]
+tests/test_s005_selection_priority_gate.py::TestPriorityRank::test_many_risks_forces_c PASSED [ 45%]
+tests/test_s005_selection_priority_gate.py::TestDataCompleteness::test_all_fields_present PASSED [ 47%]
+tests/test_s005_selection_priority_gate.py::TestDataCompleteness::test_no_fields_present PASSED [ 48%]
+tests/test_s005_selection_priority_gate.py::TestDataCompleteness::test_partial_completeness PASSED [ 50%]
+tests/test_s005_selection_priority_gate.py::TestDataCompleteness::test_missing_evidence_descriptions PASSED [ 51%]
+tests/test_s005_selection_priority_gate.py::TestExplanations::test_why_deep_ta_contains_category_info PASSED [ 52%]
+tests/test_s005_selection_priority_gate.py::TestExplanations::test_why_not_deep_ta_lists_blockers PASSED [ 54%]
+tests/test_s005_selection_priority_gate.py::TestExplanations::test_why_not_deep_ta_multiple_blockers PASSED [ 55%]
+tests/test_s005_selection_priority_gate.py::TestExplanations::test_missing_evidence_list PASSED [ 56%]
+tests/test_s005_selection_priority_gate.py::TestExplanations::test_gate_passed_candidate_has_no_why_not PASSED [ 58%]
+tests/test_s005_selection_priority_gate.py::TestNoForbiddenWords::test_no_forbidden_words_in_why_deep_ta[\u6ee1\u4ed3] PASSED [ 59%]
+tests/test_s005_selection_priority_gate.py::TestNoForbiddenWords::test_no_forbidden_words_in_why_deep_ta[\u7acb\u5373\u6e05\u4ed3] PASSED [ 60%]
+tests/test_s005_selection_priority_gate.py::TestNoForbiddenWords::test_no_forbidden_words_in_why_deep_ta[\u7acb\u5373\u4e70\u5165] PASSED [ 62%]
+tests/test_s005_selection_priority_gate.py::TestNoForbiddenWords::test_no_forbidden_words_in_why_deep_ta[\u68ad\u54c8] PASSED [ 63%]
+tests/test_s005_selection_priority_gate.py::TestNoForbiddenWords::test_no_forbidden_words_in_why_deep_ta[\u91cd\u4ed3\u4e70\u5165] PASSED [ 64%]
+tests/test_s005_selection_priority_gate.py::TestNoForbiddenWords::test_sanitize_replaces_forbidden PASSED [ 66%]
+tests/test_s005_selection_priority_gate.py::TestGateRefs::test_refs_include_signal_categories PASSED [ 67%]
+tests/test_s005_selection_priority_gate.py::TestGateRefs::test_refs_include_gate_result PASSED [ 68%]
+tests/test_s005_selection_priority_gate.py::TestGateRefs::test_refs_include_blocker_detail PASSED [ 70%]
+tests/test_s005_selection_priority_gate.py::TestCandidateIntegration::test_candidate_has_s005_fields PASSED [ 71%]
+tests/test_s005_selection_priority_gate.py::TestCandidateIntegration::test_candidate_defaults PASSED [ 72%]
+tests/test_s005_selection_priority_gate.py::TestCandidateIntegration::test_evaluate_symbol_sets_composite_score PASSED [ 74%]
+tests/test_s005_selection_priority_gate.py::TestCandidateIntegration::test_evaluate_symbol_sets_priority_rank PASSED [ 75%]
+tests/test_s005_selection_priority_gate.py::TestDBPersistence::test_save_and_load_s005_fields PASSED [ 77%]
+tests/test_s005_selection_priority_gate.py::TestDBPersistence::test_db_round_trip_from_db_row PASSED [ 78%]
+tests/test_s005_selection_priority_gate.py::TestPlanRunnerIntegration::test_plan_entries_sorted_by_composite_score PASSED [ 79%]
+tests/test_s005_selection_priority_gate.py::TestPlanRunnerIntegration::test_plan_entry_has_s005_fields PASSED [ 81%]
+tests/test_s005_selection_priority_gate.py::TestDiscoveryIntegration::test_discovery_entry_has_s005_fields PASSED [ 82%]
+tests/test_s005_selection_priority_gate.py::TestDiscoveryIntegration::test_discovery_candidates_sorted_by_composite_score PASSED [ 83%]
+tests/test_s005_selection_priority_gate.py::TestRenderText::test_daily_plan_render_shows_priority PASSED [ 85%]
+tests/test_s005_selection_priority_gate.py::TestRenderText::test_daily_plan_render_shows_why_not PASSED [ 86%]
+tests/test_s005_selection_priority_gate.py::TestRenderText::test_render_discovery_text_shows_priority PASSED [ 87%]
+tests/test_s005_selection_priority_gate.py::TestSortingBehavior::test_tech_only_ranks_lower_than_resonance PASSED [ 89%]
+tests/test_s005_selection_priority_gate.py::TestSortingBehavior::test_risk_heavy_demotes_ranking FAILED [ 90%]
+tests/test_s005_selection_priority_gate.py::TestSortingBehavior::test_data_incomplete_demotes_ranking PASSED [ 91%]
+tests/test_s005_selection_priority_gate.py::TestEdgeCases::test_none_inputs PASSED [ 93%]
+tests/test_s005_selection_priority_gate.py::TestEdgeCases::test_empty_lists PASSED [ 94%]
+tests/test_s005_selection_priority_gate.py::TestEdgeCases::test_min_categories_constant PASSED [ 95%]
+tests/test_s005_selection_priority_gate.py::TestEdgeCases::test_max_composite_score_constant PASSED [ 97%]
+tests/test_s005_selection_priority_gate.py::TestEdgeCases::test_negative_score_with_large_penalty PASSED [ 98%]
+tests/test_s005_selection_priority_gate.py::TestEdgeCases::test_fund_flow_score_zero_excludes_fund_category PASSED [100%]
+
+=================================== FAILURES ===================================
+__________________ TestCompositeScore.test_empty_inputs_zero ___________________
+tests/test_s005_selection_priority_gate.py:56: in test_empty_inputs_zero
+    assert r.composite_score == 0.0
+E   AssertionError: assert 0.62 == 0.0
+E    +  where 0.62 = SelectionPriorityResult(composite_score=0.62, signal_category_hits=[], positive_category_count=0, data_completeness=0.125, missing_evidence=['事件/新闻数据', '资金流数据', '资金单位校验', '技术形态信号', '政策版本信号', '叙事质量信号', '风险评估'], why_deep_ta='', why_not_deep_ta='仅0类正向信号(需≥2)；数据完整度不足(12%)', gate_passed=False, priority_rank='C', gate_refs=[{'field': 'gate_blocked', 'value': 'insufficient_categories', 'detail': '0/2'}, {'field': 'gate_blocked', 'value': 'low_data_completeness'}]).composite_score
+_____________ TestSortingBehavior.test_risk_heavy_demotes_ranking ______________
+tests/test_s005_selection_priority_gate.py:889: in test_risk_heavy_demotes_ranking
+    assert r_with_risk.composite_score < r_no_risk.composite_score
+E   AssertionError: assert 73.75 < 73.75
+E    +  where 73.75 = SelectionPriorityResult(composite_score=73.75, signal_category_hits=['policy', 'tech'], positive_category_count=2, data_completeness=0.75, missing_evidence=['资金单位校验', '叙事质量信号'], why_deep_ta='', why_not_deep_ta='风险标签过多(3个)', gate_passed=False, priority_rank='C', gate_refs=[{'field': 'signal_category', 'value': 'policy', 'source': 'version_score', 'score': 20.0}, {'field': 'signal_category', 'value': 'tech', 'source': 'strategy_tags', 'score': 50.0}, {'field': 'gate_blocked', 'value': 'too_many_risks'}]).composite_score
+E    +  and   73.75 = SelectionPriorityResult(composite_score=73.75, signal_category_hits=['policy', 'tech'], positive_category_count=2, data_completeness=0.75, missing_evidence=['资金单位校验', '叙事质量信号'], why_deep_ta='2类信号共振(政策版本(低空经济) + 技术形态(VCP))，风险可控，值得深度分析', why_not_deep_ta='', gate_passed=True, priority_rank='B', gate_refs=[{'field': 'signal_category', 'value': 'policy', 'source': 'version_score', 'score': 20.0}, {'field': 'signal_category', 'value': 'tech', 'source': 'strategy_tags', 'score': 50.0}, {'field': 'gate_passed', 'value': True, 'reason': '2 categories, risk manageable'}]).composite_score
+=========================== short test summary info ============================
+FAILED tests/test_s005_selection_priority_gate.py::TestCompositeScore::test_empty_inputs_zero
+FAILED tests/test_s005_selection_priority_gate.py::TestSortingBehavior::test_risk_heavy_demotes_ranking
+========================= 2 failed, 72 passed in 0.34s =========================
+[0m
+有两个测试失败需要修复。空输入的测试失败是因为当 `has_price_data=True`（默认值）时，数据完整度奖励会产生一个小的正向分数。而风险测试的失败是因为我们使用了 `risk_flags`，但没有应用 `risk_penalty`。让我来修复这些测试：
+[0m← [0mEdit tests/test_s005_selection_priority_gate.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_s005_selection_priority_gate.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_s005_selection_priority_gate.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_s005_selection_priority_gate.py
+@@ -50,10 +50,10 @@
+ # Unit tests: run_selection_priority_gate()
+ # ═══════════════════════════════════════════════════════════════
+ 
+ class TestCompositeScore:
+-    def test_empty_inputs_zero(self):
+-        r = run_selection_priority_gate()
++    def test_empty_inputs_near_zero(self):
++        r = run_selection_priority_gate(has_price_data=False)
+         assert r.composite_score == 0.0
+ 
+     def test_tech_only(self):
+         r = run_selection_priority_gate(score=45.0, strategy_tags=["VCP"])
+
+[0m
+[0m← [0mEdit tests/test_s005_selection_priority_gate.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_s005_selection_priority_gate.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_s005_selection_priority_gate.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_s005_selection_priority_gate.py
+@@ -883,8 +883,9 @@
+     score=50.0,
+     policy_tags=["低空经济"],
+     version_score=20.0,
+     risk_flags=["LOCKUP_RISK", "REDUCE_HOLDING_RISK", "MARGIN_CROWDING_RISK"],
++    risk_penalty=-15.0,
+     has_event_data=True, has_fund_flow_data=True, has_risk_assessment=True,
+ )
+ assert r_with_risk.composite_score < r_no_risk.composite_score
+ 
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_s005_selection_priority_gate.py -v --tb=short 2>&1 | tail -30
+tests/test_s005_selection_priority_gate.py::TestNoForbiddenWords::test_no_forbidden_words_in_why_deep_ta[\u68ad\u54c8] PASSED [ 63%]
+tests/test_s005_selection_priority_gate.py::TestNoForbiddenWords::test_no_forbidden_words_in_why_deep_ta[\u7acb\u5373\u6e05\u4ed3] PASSED [ 64%]
+tests/test_s005_selection_priority_gate.py::TestNoForbiddenWords::test_sanitize_replaces_forbidden PASSED [ 66%]
+tests/test_s005_selection_priority_gate.py::TestGateRefs::test_refs_include_signal_categories PASSED [ 67%]
+tests/test_s005_selection_priority_gate.py::TestGateRefs::test_refs_include_gate_result PASSED [ 68%]
+tests/test_s005_selection_priority_gate.py::TestGateRefs::test_refs_include_blocker_detail PASSED [ 70%]
+tests/test_s005_selection_priority_gate.py::TestCandidateIntegration::test_candidate_has_s005_fields PASSED [ 71%]
+tests/test_s005_selection_priority_gate.py::TestCandidateIntegration::test_candidate_defaults PASSED [ 72%]
+tests/test_s005_selection_priority_gate.py::TestCandidateIntegration::test_evaluate_symbol_sets_composite_score PASSED [ 74%]
+tests/test_s005_selection_priority_gate.py::TestCandidateIntegration::test_evaluate_symbol_sets_priority_rank PASSED [ 75%]
+tests/test_s005_selection_priority_gate.py::TestDBPersistence::test_save_and_load_s005_fields PASSED [ 77%]
+tests/test_s005_selection_priority_gate.py::TestDBPersistence::test_db_round_trip_from_db_row PASSED [ 78%]
+tests/test_s005_selection_priority_gate.py::TestPlanRunnerIntegration::test_plan_entries_sorted_by_composite_score PASSED [ 79%]
+tests/test_s005_selection_priority_gate.py::TestPlanRunnerIntegration::test_plan_entry_has_s005_fields PASSED [ 81%]
+tests/test_s005_selection_priority_gate.py::TestDiscoveryIntegration::test_discovery_entry_has_s005_fields PASSED [ 82%]
+tests/test_s005_selection_priority_gate.py::TestDiscoveryIntegration::test_discovery_candidates_sorted_by_composite_score PASSED [ 83%]
+tests/test_s005_selection_priority_gate.py::TestRenderText::test_daily_plan_render_shows_priority PASSED [ 85%]
+tests/test_s005_selection_priority_gate.py::TestRenderText::test_daily_plan_render_shows_why_not PASSED [ 86%]
+tests/test_s005_selection_priority_gate.py::TestRenderText::test_render_discovery_text_shows_priority PASSED [ 87%]
+tests/test_s005_selection_priority_gate.py::TestSortingBehavior::test_tech_only_ranks_lower_than_resonance PASSED [ 89%]
+tests/test_s005_selection_priority_gate.py::TestSortingBehavior::test_risk_heavy_demotes_ranking PASSED [ 90%]
+tests/test_s005_selection_priority_gate.py::TestSortingBehavior::test_data_incomplete_demotes_ranking PASSED [ 91%]
+tests/test_s005_selection_priority_gate.py::TestEdgeCases::test_none_inputs PASSED [ 93%]
+tests/test_s005_selection_priority_gate.py::TestEdgeCases::test_empty_lists PASSED [ 94%]
+tests/test_s005_selection_priority_gate.py::TestEdgeCases::test_min_categories_constant PASSED [ 95%]
+tests/test_s005_selection_priority_gate.py::TestEdgeCases::test_max_composite_score_constant PASSED [ 97%]
+tests/test_s005_selection_priority_gate.py::TestEdgeCases::test_negative_score_with_large_penalty PASSED [ 98%]
+tests/test_s005_selection_priority_gate.py::TestEdgeCases::test_fund_flow_score_zero_excludes_fund_category PASSED [100%]
+
+============================== 74 passed in 0.23s ==============================
+[0m
+所有 74 个测试通过。现在我来运行完整的 TradeFlow 测试套件：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tradeflow_*.py tests/test_s00*.py tests/test_t0*.py tests/test_m0*.py -q --tb=short 2>&1 | tail -30
+........................................................................ [ 13%]
+........................................................................ [ 26%]
+........................................................................ [ 39%]
+........................................................................ [ 52%]
+........................................................................ [ 65%]
+........................................................................ [ 78%]
+........................................................................ [ 92%]
+...........................................                              [100%]
+547 passed in 5.56s
+[0m
+547个通过。现在，我来运行扩展回归测试套件：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_readiness_score.py tests/test_g001_three_layer.py -q --tb=short 2>&1 | tail -10
+........................................................................ [ 44%]
+........................................................................ [ 88%]
+...................                                                      [100%]
+163 passed in 40.82s
+[0m
+[0m# [0mTodos
+[x] Read and understand existing TradeFlow modules (candidate_engine, schemas, plan_runner, discovery)
+[x] Implement selection_priority_gate.py - composite score + need_deep_ta gate
+[x] Integrate into candidate_engine.py - wire composite score and need_deep_ta gate
+[x] Update schemas.py with new fields
+[x] Update plan_runner.py and discovery.py to output gate results
+[x] Write tests for S-005
+[ ] Update docs/DEVLOG.md
+[0m
+所有回归测试均通过。现在更新 DEVLOG：
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=10][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,56 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-05-29 | S-005 选股优先级整合与 need_deep_ta 门槛重排
++
++- **执行者**：OpenCode (glm-5.1)
++- **任务**：整合政策版本、叙事质量、水下风险、资金异动和技术形态，重排 TradeFlow 候选优先级，让 TA 深度分析优先消耗在真正值得分析的股票上
++- **修改文件**：
++  - `tradingagents/tradeflow/selection_priority_gate.py`（新增，~230行）— [S-005] selection_priority_gate
++    - `run_selection_priority_gate()` — 统一优先级门控主入口
++    - `SelectionPriorityResult` — 输出 `composite_score`、`signal_category_hits`、`positive_category_count`、`data_completeness`、`missing_evidence`、`why_deep_ta`、`why_not_deep_ta`、`gate_passed`、`priority_rank`、`gate_refs`
++    - 综合评分 = 技术分 + 政策版本分 + 叙事质量分 + 资金异动分 + 风险罚分 + 数据完整度奖励
++    - 四类正向信号：policy / narrative / tech / fund
++    - `need_deep_ta=True` 至少需要 2 类正向信号，且无高风险标签、风险标签不过多、风险罚分不重、博弈平衡非 fragile/crowded、数据完整度 ≥ 50%
++    - 优先级分层：A（≥3类 + 高分 + 完整度≥70%）、B（≥2类 + 中等分）、C（弱信号或风险过高）
++    - 输出"为什么值得看/为什么暂不深挖/缺什么证据"
++    - 为 M-003 universe 管理器和 M-004 策略配置提供统一字段
++  - `tradingagents/tradeflow/schemas.py` — [S-005]
++    - `Candidate` 新增 9 个字段：composite_score、signal_category_hits、positive_category_count、data_completeness、missing_evidence、why_deep_ta、why_not_deep_ta、priority_rank
++    - `to_db_row()` / `from_db_row()` 支持新字段持久化
++    - `DailyPlan.render_text()` 展示优先级分层、综合分、完整度、值得/暂不深挖、缺少证据
++  - `tradingagents/tradeflow/candidate_engine.py` — [S-005]
++    - `evaluate_symbol()` 在 T-003 资金异动之后调用 `run_selection_priority_gate()`
++    - 门控结果写入 `candidate.evidence["selection_priority_gate"]`
++    - `candidate.need_deep_ta` 统一由门控结果覆盖（S-001~S-004 各模块的 need_deep_ta 设置被整合）
++    - `init_db()` 新增 8 列迁移：composite_score、signal_category_hits_json、positive_category_count、data_completeness、missing_evidence_json、why_deep_ta、why_not_deep_ta、priority_rank
++    - `save_candidate()` INSERT/UPDATE 包含新字段
++  - `tradingagents/tradeflow/plan_runner.py` — [S-005]
++    - `_build_plan_entry()` 输出门控全部字段
++    - 候选排序改用 `composite_score` 降序
++  - `tradingagents/tradeflow/discovery.py` — [S-005]
++    - `_build_discovery_entry()` 输出门控全部字段
++    - 候选排序改用 `composite_score` 降序
++    - `render_discovery_text()` 展示优先级分层和深挖/不深挖原因
++  - `tests/test_s005_selection_priority_gate.py`（新增，~640行）— 74 个测试
++- **关键逻辑**：
++  1. 综合评分整合所有正向信号和风险惩罚，加上数据完整度奖励（完整度 × 5 分）
++  2. 仅技术形态但无逻辑证据的票：composite_score 较低，排序下降
++  3. 政策/事件/技术/资金共振的票：positive_category_count ≥ 2，gate_passed=True，排序上升
++  4. 风险过高（高风险标签、风险标签过多、罚分过重、博弈 fragile/crowded）不触发 need_deep_ta
++  5. 数据缺失（完整度 < 50%）不触发 need_deep_ta
++  6. need_deep_ta 由门控统一裁决，覆盖 S-001~S-004 各模块的独立 need_deep_ta 设置
++  7. Daily Plan 和 Discovery 报告展示优先级分层、综合分、完整度和深挖原因
++- **标记**：`# [S-005] selection_priority_gate`
++- **测试结果**：
++  - S-005 专项测试：74 passed
++  - TradeFlow 全量测试：547 passed
++  - 扩展回归测试（readiness_score + g001_three_layer）：163 passed
++
++---
++
+ ## 2026-05-29 | 自动开发任务池补充与夜间 4 小时窗口准备
+ 
+ - **执行者**：Codex
+ - **背景**：夜间自动开发批量完成 6 个任务后，`./scripts/auto_dev_loop.sh --dry-run` 显示无 `ready` 任务，4 小时窗口存在空转风险。
+
+[0m
+[0m# [0mTodos
+[x] Read and understand existing TradeFlow modules (candidate_engine, schemas, plan_runner, discovery)
+[x] Implement selection_priority_gate.py - composite score + need_deep_ta gate
+[x] Integrate into candidate_engine.py - wire composite score and need_deep_ta gate
+[x] Update schemas.py with new fields
+[x] Update plan_runner.py and discovery.py to output gate results
+[x] Write tests for S-005
+[x] Update docs/DEVLOG.md
+[0m
+## 完成输出
+
+### 修改文件列表
+
+| 文件 | 变更 |
+|------|------|
+| `tradingagents/tradeflow/selection_priority_gate.py` | **新增** — 统一优先级门控模块（~230行） |
+| `tradingagents/tradeflow/schemas.py` | `Candidate` +9 字段，`to_db_row`/`from_db_row` 持久化，`render_text` 展示 |
+| `tradingagents/tradeflow/candidate_engine.py` | 集成门控（`evaluate_symbol` 末尾），DB 迁移 +8 列，`save_candidate` SQL 扩展 |
+| `tradingagents/tradeflow/plan_runner.py` | `_build_plan_entry` 输出 S-005 字段，排序改用 `composite_score` |
+| `tradingagents/tradeflow/discovery.py` | `_build_discovery_entry` 输出 S-005 字段，排序改用 `composite_score`，render 展示 |
+| `tests/test_s005_selection_priority_gate.py` | **新增** — 74 个测试 |
+| `docs/DEVLOG.md` | 记录 S-005 完成条目 |
+
+### 关键逻辑
+
+1. **综合评分** = tech + policy + narrative + fund + risk_penalty + data_completeness×5
+2. **need_deep_ta 门控**：≥2 类正向信号 + 无高风险 + 数据完整度≥50% → gate_passed=True；否则列出阻塞原因
+3. **优先级分层**：A（≥3类+高分+完整）> B（≥2类）> C（弱信号/高风险）
+4. **排序重排**：plan 和 discovery 统一按 `composite_score` 降序，替代原来的 `score`
+5. `need_deep_ta` 由 S-005 门控统一裁决，S-001~S-004 各模块独立设置被覆盖
+
+### 测试结果
+
+| 测试集 | 结果 |
+|--------|------|
+| S-005 专项 | **74 passed** |
+| TradeFlow 全量 | **547 passed** |
+| 回归（readiness + g001） | **163 passed** |

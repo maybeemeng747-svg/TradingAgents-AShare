@@ -27,6 +27,7 @@ from .narrative_quality import score_narrative_quality, NarrativeQualityResult  
 from .underwater_risk_flags import detect_underwater_risks, UnderwaterRiskResult, ALL_RISK_FLAGS  # [S-003]
 from .game_balance import assess_game_balance, GameBalanceResult  # [S-004] candidate_game_balance
 from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult, FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT  # [T-003] fund_flow_anomaly_pool
+from .selection_priority_gate import run_selection_priority_gate, SelectionPriorityResult  # [S-005] selection_priority_gate
 
 
 # ── SQL for table creation ──
@@ -146,6 +147,21 @@ def init_db(db_path: str) -> None:
         ("fund_flow_unit_verified", "INTEGER DEFAULT 0"),
         ("fund_flow_individual_summary", "TEXT DEFAULT ''"),
         ("fund_flow_board_summary", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-005] selection_priority_gate — add priority gate columns
+    for _col, _type in [
+        ("composite_score", "REAL DEFAULT 0.0"),
+        ("signal_category_hits_json", "TEXT DEFAULT '[]'"),
+        ("positive_category_count", "INTEGER DEFAULT 0"),
+        ("data_completeness", "REAL DEFAULT 0.0"),
+        ("missing_evidence_json", "TEXT DEFAULT '[]'"),
+        ("why_deep_ta", "TEXT DEFAULT ''"),
+        ("why_not_deep_ta", "TEXT DEFAULT ''"),
+        ("priority_rank", "TEXT DEFAULT ''"),
     ]:
         try:
             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
@@ -504,6 +520,47 @@ def evaluate_symbol(
             candidate.need_deep_ta = True
         # Net outflow dominant does not add score but records as observation
 
+    # [S-005] selection_priority_gate — unified composite score and need_deep_ta gate
+    gate_result: SelectionPriorityResult = run_selection_priority_gate(
+        score=candidate.score,
+        strategy_tags=candidate.strategy_tags,
+        policy_tags=candidate.policy_tags,
+        version_score=candidate.version_score,
+        narrative_score=candidate.narrative_score,
+        fund_flow_anomaly_score=candidate.fund_flow_anomaly_score,
+        fund_flow_anomaly_tags=candidate.fund_flow_anomaly_tags,
+        fund_flow_unit_verified=candidate.fund_flow_unit_verified,
+        risk_flags=candidate.risk_flags,
+        risk_penalty=candidate.risk_penalty,
+        resonance_count=candidate.resonance_count,
+        game_balance=candidate.game_balance,
+        has_price_data=True,
+        has_event_data=bool(all_event_texts),
+        has_fund_flow_data=bool(fund_flow_individual or fund_flow_board),
+        has_risk_assessment=True,
+    )
+    candidate.composite_score = gate_result.composite_score
+    candidate.signal_category_hits = gate_result.signal_category_hits
+    candidate.positive_category_count = gate_result.positive_category_count
+    candidate.data_completeness = gate_result.data_completeness
+    candidate.missing_evidence = gate_result.missing_evidence
+    candidate.why_deep_ta = gate_result.why_deep_ta
+    candidate.why_not_deep_ta = gate_result.why_not_deep_ta
+    candidate.priority_rank = gate_result.priority_rank
+    candidate.evidence["selection_priority_gate"] = {
+        "composite_score": gate_result.composite_score,
+        "signal_category_hits": gate_result.signal_category_hits,
+        "positive_category_count": gate_result.positive_category_count,
+        "data_completeness": gate_result.data_completeness,
+        "missing_evidence": gate_result.missing_evidence,
+        "why_deep_ta": gate_result.why_deep_ta,
+        "why_not_deep_ta": gate_result.why_not_deep_ta,
+        "gate_passed": gate_result.gate_passed,
+        "priority_rank": gate_result.priority_rank,
+        "refs": gate_result.gate_refs,
+    }
+    candidate.need_deep_ta = gate_result.gate_passed
+
     return candidate, ""
 
 
@@ -524,8 +581,11 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "fund_flow_anomaly_score, fund_flow_anomaly_tags_json, "
             "fund_flow_anomaly_refs_json, fund_flow_unit_verified, "
             "fund_flow_individual_summary, fund_flow_board_summary, "
+            "composite_score, signal_category_hits_json, positive_category_count, "
+            "data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta, "
+            "priority_rank, "
             "created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
@@ -552,6 +612,13 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "fund_flow_unit_verified=excluded.fund_flow_unit_verified, "
             "fund_flow_individual_summary=excluded.fund_flow_individual_summary, "
             "fund_flow_board_summary=excluded.fund_flow_board_summary, "
+            "composite_score=excluded.composite_score, "
+            "signal_category_hits_json=excluded.signal_category_hits_json, "
+            "positive_category_count=excluded.positive_category_count, "
+            "data_completeness=excluded.data_completeness, "
+            "missing_evidence_json=excluded.missing_evidence_json, "
+            "why_deep_ta=excluded.why_deep_ta, why_not_deep_ta=excluded.why_not_deep_ta, "
+            "priority_rank=excluded.priority_rank, "
             "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
@@ -571,6 +638,10 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
                 row["fund_flow_anomaly_score"], row["fund_flow_anomaly_tags_json"],
                 row["fund_flow_anomaly_refs_json"], row["fund_flow_unit_verified"],
                 row["fund_flow_individual_summary"], row["fund_flow_board_summary"],
+                row["composite_score"], row["signal_category_hits_json"],
+                row["positive_category_count"], row["data_completeness"],
+                row["missing_evidence_json"], row["why_deep_ta"], row["why_not_deep_ta"],
+                row["priority_rank"],
                 candidate.created_at, row["updated_at"],
             ),
         )
