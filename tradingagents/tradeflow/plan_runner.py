@@ -74,6 +74,13 @@ def _build_plan_entry(candidate: Candidate) -> dict:
         "risk_penalty": candidate.risk_penalty,  # [S-003] underwater_risk_flags
         "risk_evidence_refs": candidate.risk_evidence_refs,  # [S-003]
         "risk_reasons": candidate.risk_reasons,  # [S-003]
+        "game_balance": candidate.game_balance,  # [S-004] candidate_game_balance
+        "bull_case": candidate.bull_case,  # [S-004]
+        "bear_case": candidate.bear_case,  # [S-004]
+        "policy_case": candidate.policy_case,  # [S-004]
+        "fund_flow_case": candidate.fund_flow_case,  # [S-004]
+        "resonance_count": candidate.resonance_count,  # [S-004]
+        "game_balance_refs": candidate.game_balance_refs,  # [S-004]
     }
 
 

@@ -4,6 +4,48 @@
 
 ---
 
+## 2026-05-29 | S-004 候选股博弈平衡解释
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：在 TradeFlow Plan 中为每个候选输出轻量博弈解释，说明多头为何可能买、空头为何可能卖、政策/监管/资金结构是否支持
+- **修改文件**：
+  - `tradingagents/tradeflow/game_balance.py`（新增，~210行）— [S-004] candidate_game_balance
+    - `assess_game_balance(strategy_tags, score, policy_tags, version_score, ...)` — 规则化博弈平衡评估
+    - `GameBalanceResult` — 输出 `game_balance`(favorable/neutral/crowded/fragile)、`bull_case`、`bear_case`、`policy_case`、`fund_flow_case`、`resonance_count`、`game_balance_refs`
+    - 四类信号共振计数：政策(policy)、叙事/事件(narrative)、技术(tech)、资金(fund)
+    - 共振 >= 2 类且风险可控时标记 `favorable` 或 `neutral`，并提升 `need_deep_ta`
+    - 高严重性风险(INQUIRY_RISK/FINANCIAL_QUALITY_RISK)或风险标签 >= 3 个时标记 `fragile`
+    - 资金冲突(正负同时) + 风险标签 >= 2 时标记 `crowded`
+    - 所有输出文本禁止强买卖词，自动 sanitize
+    - 所有 case 字段来源必须来自已有信号和证据，不调用外部 LLM
+  - `tradingagents/tradeflow/schemas.py` — [S-004]
+    - `Candidate` 新增 `game_balance`、`bull_case`、`bear_case`、`policy_case`、`fund_flow_case`、`resonance_count`、`game_balance_refs` 字段
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示博弈平衡 verdict + 多空/政策/资金四维视角
+  - `tradingagents/tradeflow/candidate_engine.py` — [S-004]
+    - `evaluate_symbol()` 在 S-003 水下风险之后调用 `assess_game_balance()`
+    - 博弈平衡结果写入 `candidate.evidence["game_balance"]`
+    - 共振 >= 2 + 风险可控时自动提升 `need_deep_ta`
+    - fragile/crowded + 风险标签 >= 2 时关闭 `need_deep_ta`
+    - `init_db()` 新增 7 列迁移：game_balance, bull_case, bear_case, policy_case, fund_flow_case, resonance_count, game_balance_refs_json
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+  - `tradingagents/tradeflow/plan_runner.py` — [S-004]
+    - `_build_plan_entry()` 输出博弈平衡全部字段
+  - `tests/test_s004_game_balance.py`（新增，~470行）— 68 个测试
+- **关键逻辑**：
+  1. 博弈平衡作为总结层叠加在所有正向策略和风险标签之上，不破坏现有逻辑
+  2. 四类信号共振计数（政策/叙事/技术/资金），>= 2 类共振 + 风险可控 → favorable/neutral
+  3. 高严重性风险（问询/财务异常）或风险标签过多 → fragile，不进入深度 TA
+  4. 资金冲突 + 风险标签拥挤 → crowded
+  5. 所有 case 文本引用已有信号和证据，不凭空生成
+  6. 输出中包含 evidence refs，可追溯到 policy_evidence、narrative_reasons、risk_reasons、event_text
+  7. 不出现强买卖词
+- **标记**：`# [S-004] candidate_game_balance`
+- **测试结果**：
+  - S-004 专项测试：68 passed
+  - TradeFlow 全量测试：83 passed
+  - 扩展回归测试（S-001 + S-002 + S-003 + S-004 + readiness_score）：331 passed
+
 ## 2026-05-29 | S-003 水下风险标签与候选降权
 
 - **执行者**：OpenCode (glm-5.1)
@@ -890,3 +932,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/S-003-20260529-round1.txt
 - **运行档案**: docs/task_runs/S-003-20260529-135829/
+
+## 2026-05-29 | AUTO-002 自动开发闭环
+
+- **任务**: S-004 — 候选股博弈平衡解释（P1）
+- **优先级**: P1
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/S-004-20260529-round1.txt
+- **运行档案**: docs/task_runs/S-004-20260529-140753/

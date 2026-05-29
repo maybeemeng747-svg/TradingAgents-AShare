@@ -1,0 +1,1095 @@
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/project-overview.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m
+[0m# [0mTodos
+[ ] Read existing TradeFlow code (schemas, candidate_engine, plan_runner, S-001/S-002/S-003 modules)
+[ ] Create game_balance.py module with rule-based logic
+[ ] Update schemas.py with game_balance fields
+[ ] Integrate into candidate_engine.py evaluate_symbol()
+[ ] Update plan_runner.py _build_plan_entry()
+[ ] Write tests/test_s004_game_balance.py
+[ ] Run all TradeFlow tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/tradeflow
+[0m→ [0mRead tradingagents/tradeflow/schemas.py
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py
+现在我来阅读剩余的关键文件：
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py
+[0m→ [0mRead tradingagents/tradeflow/policy_version_signal.py
+[0m→ [0mRead tradingagents/tradeflow/underwater_risk_flags.py
+[0m→ [0mRead tradingagents/tradeflow/narrative_quality.py
+我还需要检查一下 `narrative_quality` 模块和现有测试：
+[0m✱ [0mGlob "tests/test_s00*.py"[90m 3 matches[0m
+[0m
+[0m# [0mTodos
+[x] Read existing TradeFlow code (schemas, candidate_engine, plan_runner, S-001/S-002/S-003 modules)
+[ ] Create game_balance.py module with rule-based logic
+[ ] Update schemas.py with game_balance fields
+[ ] Integrate into candidate_engine.py evaluate_symbol()
+[ ] Update plan_runner.py _build_plan_entry()
+[ ] Write tests/test_s004_game_balance.py
+[ ] Run all TradeFlow tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+现在我已充分理解上下文。让我开始实现吧。
+[0m← [0mWrite tradingagents/tradeflow/game_balance.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[x] Read existing TradeFlow code (schemas, candidate_engine, plan_runner, S-001/S-002/S-003 modules)
+[x] Create game_balance.py module with rule-based logic
+[ ] Update schemas.py with game_balance fields
+[ ] Integrate into candidate_engine.py evaluate_symbol()
+[ ] Update plan_runner.py _build_plan_entry()
+[ ] Write tests/test_s004_game_balance.py
+[ ] Run all TradeFlow tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+现在更新 schemas.py 以添加博弈平衡字段：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -70,8 +70,15 @@
+ narrative_evidence_refs: list[dict] = field(default_factory=list)  # [S-002] narrative_quality_score
+ risk_penalty: float = 0.0  # [S-003] underwater_risk_flags
+ risk_evidence_refs: list[dict] = field(default_factory=list)  # [S-003] underwater_risk_flags
+ risk_reasons: list[str] = field(default_factory=list)  # [S-003] underwater_risk_flags
++game_balance: str = ""  # [S-004] candidate_game_balance
++bull_case: str = ""  # [S-004] candidate_game_balance
++bear_case: str = ""  # [S-004] candidate_game_balance
++policy_case: str = ""  # [S-004] candidate_game_balance
++fund_flow_case: str = ""  # [S-004] candidate_game_balance
++resonance_count: int = 0  # [S-004] candidate_game_balance
++game_balance_refs: list[dict] = field(default_factory=list)  # [S-004] candidate_game_balance
+ 
+ def __post_init__(self):
+     if not self.trade_date:
+         self.trade_date = datetime.now().strftime("%Y-%m-%d")
+
+[0m
+现在更新 `Candidate` 中的 `to_db_row()` 方法：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -148,8 +148,15 @@
+         "narrative_evidence_refs_json": json.dumps(self.narrative_evidence_refs, ensure_ascii=False),  # [S-002]
+         "risk_penalty": self.risk_penalty,  # [S-003] underwater_risk_flags
+         "risk_evidence_refs_json": json.dumps(self.risk_evidence_refs, ensure_ascii=False),  # [S-003]
+         "risk_reasons_json": json.dumps(self.risk_reasons, ensure_ascii=False),  # [S-003]
++        "game_balance": self.game_balance,  # [S-004] candidate_game_balance
++        "bull_case": self.bull_case,  # [S-004]
++        "bear_case": self.bear_case,  # [S-004]
++        "policy_case": self.policy_case,  # [S-004]
++        "fund_flow_case": self.fund_flow_case,  # [S-004]
++        "resonance_count": self.resonance_count,  # [S-004]
++        "game_balance_refs_json": json.dumps(self.game_balance_refs, ensure_ascii=False),  # [S-004]
+         "updated_at": datetime.now().isoformat(),
+     }
+ 
+ @classmethod
+
+[0m
+现在更新 `from_db_row()`:
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -186,8 +186,15 @@
+             narrative_evidence_refs=json.loads(row.get("narrative_evidence_refs_json", "[]")),  # [S-002]
+             risk_penalty=row.get("risk_penalty", 0.0),  # [S-003] underwater_risk_flags
+             risk_evidence_refs=json.loads(row.get("risk_evidence_refs_json", "[]")),  # [S-003]
+             risk_reasons=json.loads(row.get("risk_reasons_json", "[]")),  # [S-003]
++            game_balance=row.get("game_balance", ""),  # [S-004] candidate_game_balance
++            bull_case=row.get("bull_case", ""),  # [S-004]
++            bear_case=row.get("bear_case", ""),  # [S-004]
++            policy_case=row.get("policy_case", ""),  # [S-004]
++            fund_flow_case=row.get("fund_flow_case", ""),  # [S-004]
++            resonance_count=row.get("resonance_count", 0),  # [S-004]
++            game_balance_refs=json.loads(row.get("game_balance_refs_json", "[]")),  # [S-004]
+         )
+ 
+ 
+ @dataclass
+
+[0m
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -325,7 +325,24 @@
+     if risk_flags:
+         lines.append(f"  ⚠️ 水下风险: {', '.join(risk_flags)} ({risk_penalty}分)")
+         if risk_reasons:
+             lines.append(f"    {'; '.join(risk_reasons)}")
++    # [S-004] candidate_game_balance — display game balance perspective
++    game_balance = c.get("game_balance", "")
++    bull_case = c.get("bull_case", "")
++    bear_case = c.get("bear_case", "")
++    policy_case = c.get("policy_case", "")
++    fund_flow_case = c.get("fund_flow_case", "")
++    if game_balance:
++        balance_emoji = {"favorable": "🟢", "neutral": "🟡", "crowded": "🟠", "fragile": "🔴"}
++        lines.append(f"  博弈平衡: {balance_emoji.get(game_balance, '')} {game_balance}")
++        if bull_case:
++            lines.append(f"    多头视角: {bull_case}")
++        if bear_case:
++            lines.append(f"    空头视角: {bear_case}")
++        if policy_case:
++            lines.append(f"    政策/监管: {policy_case}")
++        if fund_flow_case:
++            lines.append(f"    资金结构: {fund_flow_case}")
+     lines.append("")
+ 
+ return "\n".join(lines)
+
+[0m
+现在将博弈平衡显示添加到`render_text()`中：
+[0m# [0mTodos
+[x] Read existing TradeFlow code (schemas, candidate_engine, plan_runner, S-001/S-002/S-003 modules)
+[x] Create game_balance.py module with rule-based logic
+[x] Update schemas.py with game_balance fields
+[ ] Integrate into candidate_engine.py evaluate_symbol()
+[ ] Update plan_runner.py _build_plan_entry()
+[ ] Write tests/test_s004_game_balance.py
+[ ] Run all TradeFlow tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+现在集成到 `candidate_engine.py` 中：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -24,8 +24,9 @@
+ from .strategies.event_catalyst import score_event_catalyst
+ from .policy_version_signal import detect_policy_version, PolicyVersionResult  # [S-001]
+ from .narrative_quality import score_narrative_quality, NarrativeQualityResult  # [S-002]
+ from .underwater_risk_flags import detect_underwater_risks, UnderwaterRiskResult, ALL_RISK_FLAGS  # [S-003]
++from .game_balance import assess_game_balance, GameBalanceResult  # [S-004] candidate_game_balance
+ 
+ 
+ # ── SQL for table creation ──
+ CREATE_CANDIDATES_TABLE = """
+
+[0m
+现在为 `game_balance` 字段添加 DB 迁移，并在 `evaluate_symbol()` 中添加调用：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -122,8 +122,22 @@
+     try:
+         conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+     except sqlite3.OperationalError:
+         pass
++# [S-004] candidate_game_balance — add game balance columns
++for _col, _type in [
++    ("game_balance", "TEXT DEFAULT ''"),
++    ("bull_case", "TEXT DEFAULT ''"),
++    ("bear_case", "TEXT DEFAULT ''"),
++    ("policy_case", "TEXT DEFAULT ''"),
++    ("fund_flow_case", "TEXT DEFAULT ''"),
++    ("resonance_count", "INTEGER DEFAULT 0"),
++    ("game_balance_refs_json", "TEXT DEFAULT '[]'"),
++]:
++    try:
++        conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
++    except sqlite3.OperationalError:
++        pass
+ conn.commit()
+ conn.close()
+ 
+ 
+
+[0m
+现在在 `evaluate_symbol()` 的末尾添加博弈平衡评估——就在 `S-003` 风险模块之后：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -414,12 +414,49 @@
+             "risk_evidence_refs": risk_result.risk_evidence_refs,
+             "risk_reasons": risk_result.risk_reasons,
+         }
+         high_risk_flags = {f for f in risk_result.risk_flags
+-                          if f in {"INQUIRY_RISK", "FINANCIAL_QUALITY_RISK"}}
++                           if f in {"INQUIRY_RISK", "FINANCIAL_QUALITY_RISK"}}
+         if len(risk_result.risk_flags) >= 3 or high_risk_flags:
+             candidate.need_deep_ta = False
+ 
++    # [S-004] candidate_game_balance — assess bull/bear/policy/fund perspective
++    gb_result: GameBalanceResult = assess_game_balance(
++        strategy_tags=candidate.strategy_tags,
++        score=candidate.score,
++        policy_tags=candidate.policy_tags,
++        version_score=candidate.version_score,
++        policy_evidence_refs=candidate.policy_evidence_refs,
++        narrative_score=candidate.narrative_score,
++        narrative_reasons=candidate.narrative_reasons,
++        risk_flags=candidate.risk_flags,
++        risk_penalty=candidate.risk_penalty,
++        risk_reasons=candidate.risk_reasons,
++        event_texts=all_event_texts if all_event_texts else None,
++    )
++    candidate.game_balance = gb_result.game_balance
++    candidate.bull_case = gb_result.bull_case
++    candidate.bear_case = gb_result.bear_case
++    candidate.policy_case = gb_result.policy_case
++    candidate.fund_flow_case = gb_result.fund_flow_case
++    candidate.resonance_count = gb_result.resonance_count
++    candidate.game_balance_refs = gb_result.game_balance_refs
++    candidate.evidence["game_balance"] = {
++        "game_balance": gb_result.game_balance,
++        "bull_case": gb_result.bull_case,
++        "bear_case": gb_result.bear_case,
++        "policy_case": gb_result.policy_case,
++        "fund_flow_case": gb_result.fund_flow_case,
++        "resonance_count": gb_result.resonance_count,
++        "refs": gb_result.game_balance_refs,
++    }
++    # When >= 2 categories resonate and risk manageable, boost need_deep_ta
++    if gb_result.resonance_count >= 2 and gb_result.game_balance in {"favorable", "neutral"}:
++        candidate.need_deep_ta = True
++    # When fragile or crowded with too many risks, demote need_deep_ta
++    if gb_result.game_balance in {"fragile", "crowded"} and len(candidate.risk_flags) >= 2:
++        candidate.need_deep_ta = False
++
+     return candidate, ""
+ 
+ 
+ def save_candidate(candidate: Candidate, db_path: str) -> int:
+
+[0m
+现在更新 `save_candidate()` 以包含新的列：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -470,10 +470,13 @@
+     "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+     "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+     "policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
+     "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+-    "risk_reasons_json, created_at, updated_at) "
+-    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
++    "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
++    "fund_flow_case, resonance_count, game_balance_refs_json, "
++    "created_at, updated_at) "
++    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
++    "?, ?, ?, ?, ?, ?, ?, ?, ?) "
+     "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+     "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
+     "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+     "trigger_price=excluded.trigger_price, "
+@@ -487,8 +490,13 @@
+     "narrative_evidence_refs_json=excluded.narrative_evidence_refs_json, "
+     "risk_penalty=excluded.risk_penalty, "
+     "risk_evidence_refs_json=excluded.risk_evidence_refs_json, "
+     "risk_reasons_json=excluded.risk_reasons_json, "
++    "game_balance=excluded.game_balance, "
++    "bull_case=excluded.bull_case, bear_case=excluded.bear_case, "
++    "policy_case=excluded.policy_case, fund_flow_case=excluded.fund_flow_case, "
++    "resonance_count=excluded.resonance_count, "
++    "game_balance_refs_json=excluded.game_balance_refs_json, "
+     "updated_at=excluded.updated_at",
+     (
+         row["trade_date"], row["symbol"], row["name"], row["source"],
+         row["strategy_tags_json"], row["primary_strategy"],
+@@ -500,8 +508,11 @@
+         row["narrative_score"], row["narrative_reasons_json"],
+         row["narrative_evidence_refs_json"],
+         row["risk_penalty"], row["risk_evidence_refs_json"],
+         row["risk_reasons_json"],
++        row["game_balance"], row["bull_case"], row["bear_case"],
++        row["policy_case"], row["fund_flow_case"],
++        row["resonance_count"], row["game_balance_refs_json"],
+         candidate.created_at, row["updated_at"],
+     ),
+ )
+ conn.commit()
+
+[0m
+现在更新 `plan_runner.py` 中的 `_build_plan_entry()`：
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -73,8 +73,15 @@
+         "narrative_evidence_refs": candidate.narrative_evidence_refs,  # [S-002]
+         "risk_penalty": candidate.risk_penalty,  # [S-003] underwater_risk_flags
+         "risk_evidence_refs": candidate.risk_evidence_refs,  # [S-003]
+         "risk_reasons": candidate.risk_reasons,  # [S-003]
++        "game_balance": candidate.game_balance,  # [S-004] candidate_game_balance
++        "bull_case": candidate.bull_case,  # [S-004]
++        "bear_case": candidate.bear_case,  # [S-004]
++        "policy_case": candidate.policy_case,  # [S-004]
++        "fund_flow_case": candidate.fund_flow_case,  # [S-004]
++        "resonance_count": candidate.resonance_count,  # [S-004]
++        "game_balance_refs": candidate.game_balance_refs,  # [S-004]
+     }
+ 
+ 
+ def generate_daily_plan(
+
+[0m
+[0m# [0mTodos
+[x] Read existing TradeFlow code (schemas, candidate_engine, plan_runner, S-001/S-002/S-003 modules)
+[x] Create game_balance.py module with rule-based logic
+[x] Update schemas.py with game_balance fields
+[x] Integrate into candidate_engine.py evaluate_symbol()
+[x] Update plan_runner.py _build_plan_entry()
+[ ] Write tests/test_s004_game_balance.py
+[ ] Run all TradeFlow tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+现在编写测试：
+[0m← [0mWrite tests/test_s004_game_balance.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[x] Read existing TradeFlow code (schemas, candidate_engine, plan_runner, S-001/S-002/S-003 modules)
+[x] Create game_balance.py module with rule-based logic
+[x] Update schemas.py with game_balance fields
+[x] Integrate into candidate_engine.py evaluate_symbol()
+[x] Update plan_runner.py _build_plan_entry()
+[x] Write tests/test_s004_game_balance.py
+[ ] Run all TradeFlow tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+现在，让我们运行测试：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_s004_game_balance.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 68 items
+
+tests/test_s004_game_balance.py::TestGameBalanceBasic::test_empty_inputs_returns_neutral PASSED [  1%]
+tests/test_s004_game_balance.py::TestGameBalanceBasic::test_no_signals_no_risk PASSED [  2%]
+tests/test_s004_game_balance.py::TestGameBalanceBasic::test_all_game_balances_valid PASSED [  4%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_policy_only PASSED [  5%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_narrative_only PASSED [  7%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_tech_only_vcp PASSED [  8%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_tech_only_pullback PASSED [ 10%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_fund_flow_positive PASSED [ 11%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_fund_flow_hot_money_tag PASSED [ 13%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_two_categories_resonate PASSED [ 14%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_three_categories_resonate PASSED [ 16%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_four_categories_resonate PASSED [ 17%]
+tests/test_s004_game_balance.py::TestFavorableBalance::test_policy_event_vcp_resonance_favorable PASSED [ 19%]
+tests/test_s004_game_balance.py::TestFavorableBalance::test_three_resonance_high_score_favorable PASSED [ 20%]
+tests/test_s004_game_balance.py::TestFavorableBalance::test_two_resonance_moderate_risk_neutral PASSED [ 22%]
+tests/test_s004_game_balance.py::TestFragileBalance::test_inquiry_risk_fragile PASSED [ 23%]
+tests/test_s004_game_balance.py::TestFragileBalance::test_financial_quality_risk_fragile PASSED [ 25%]
+tests/test_s004_game_balance.py::TestFragileBalance::test_many_risks_fragile PASSED [ 26%]
+tests/test_s004_game_balance.py::TestFragileBalance::test_heavy_penalty_fragile PASSED [ 27%]
+tests/test_s004_game_balance.py::TestFragileBalance::test_favorable_downgraded_by_risks PASSED [ 29%]
+tests/test_s004_game_balance.py::TestCrowdedBalance::test_fund_conflict_with_risks_crowded PASSED [ 30%]
+tests/test_s004_game_balance.py::TestBullCase::test_bull_case_with_policy PASSED [ 32%]
+tests/test_s004_game_balance.py::TestBullCase::test_bull_case_with_tech PASSED [ 33%]
+tests/test_s004_game_balance.py::TestBullCase::test_bull_case_with_narrative PASSED [ 35%]
+tests/test_s004_game_balance.py::TestBullCase::test_bull_case_with_fund_positive PASSED [ 36%]
+tests/test_s004_game_balance.py::TestBearCase::test_bear_case_with_risks PASSED [ 38%]
+tests/test_s004_game_balance.py::TestBearCase::test_bear_case_heavy_penalty PASSED [ 39%]
+tests/test_s004_game_balance.py::TestBearCase::test_bear_case_fund_negative PASSED [ 41%]
+tests/test_s004_game_balance.py::TestBearCase::test_bear_case_no_risk_no_bull PASSED [ 42%]
+tests/test_s004_game_balance.py::TestBearCase::test_bear_case_no_risk_has_bull PASSED [ 44%]
+tests/test_s004_game_balance.py::TestPolicyCase::test_policy_case_with_tags PASSED [ 45%]
+tests/test_s004_game_balance.py::TestPolicyCase::test_policy_case_without_tags PASSED [ 47%]
+tests/test_s004_game_balance.py::TestPolicyCase::test_policy_case_with_evidence_refs PASSED [ 48%]
+tests/test_s004_game_balance.py::TestFundFlowCase::test_fund_positive PASSED [ 50%]
+tests/test_s004_game_balance.py::TestFundFlowCase::test_fund_negative PASSED [ 51%]
+tests/test_s004_game_balance.py::TestFundFlowCase::test_fund_both PASSED [ 52%]
+tests/test_s004_game_balance.py::TestFundFlowCase::test_fund_hot_money PASSED [ 54%]
+tests/test_s004_game_balance.py::TestFundFlowCase::test_fund_no_signal PASSED [ 55%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u6740\u8dcc] PASSED [ 57%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u5f3a\u529b\u4e70\u5165] PASSED [ 58%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u5fc5\u4e70] PASSED [ 60%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u8ffd\u6da8] PASSED [ 61%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u6ee1\u4ed3] PASSED [ 63%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u6284\u5e95] PASSED [ 64%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u7acb\u5373\u4e70\u5165] PASSED [ 66%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u91cd\u4ed3\u4e70\u5165] PASSED [ 67%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u68ad\u54c8] PASSED [ 69%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u5f3a\u70c8\u63a8\u8350] PASSED [ 70%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u7acb\u5373\u6e05\u4ed3] PASSED [ 72%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_sanitized_if_input_contains_forbidden PASSED [ 73%]
+tests/test_s004_game_balance.py::TestEvidenceRefs::test_refs_trace_policy_evidence PASSED [ 75%]
+tests/test_s004_game_balance.py::TestEvidenceRefs::test_refs_trace_narrative PASSED [ 76%]
+tests/test_s004_game_balance.py::TestEvidenceRefs::test_refs_trace_risks PASSED [ 77%]
+tests/test_s004_game_balance.py::TestEvidenceRefs::test_refs_trace_fund_flow PASSED [ 79%]
+tests/test_s004_game_balance.py::TestCandidateGameBalanceFields::test_candidate_default_fields PASSED [ 80%]
+tests/test_s004_game_balance.py::TestCandidateGameBalanceFields::test_candidate_to_db_row_has_game_balance PASSED [ 82%]
+tests/test_s004_game_balance.py::TestCandidateGameBalanceFields::test_candidate_from_db_row_game_balance PASSED [ 83%]
+tests/test_s004_game_balance.py::TestDBPersistence::test_init_db_has_game_balance_columns PASSED [ 85%]
+tests/test_s004_game_balance.py::TestDBPersistence::test_save_and_load_game_balance FAILED [ 86%]
+tests/test_s004_game_balance.py::TestDBPersistence::test_save_and_roundtrip_game_balance FAILED [ 88%]
+tests/test_s004_game_balance.py::TestDailyPlanRender::test_render_includes_game_balance PASSED [ 89%]
+tests/test_s004_game_balance.py::TestDailyPlanRender::test_render_no_game_balance PASSED [ 91%]
+tests/test_s004_game_balance.py::TestDailyPlanRender::test_render_fragile_emoji PASSED [ 92%]
+tests/test_s004_game_balance.py::TestEvaluateSymbolIntegration::test_game_balance_set_on_candidate PASSED [ 94%]
+tests/test_s004_game_balance.py::TestEvaluateSymbolIntegration::test_game_balance_in_evidence PASSED [ 95%]
+tests/test_s004_game_balance.py::TestPlanRunnerIntegration::test_build_plan_entry_includes_game_balance PASSED [ 97%]
+tests/test_s004_game_balance.py::TestResonanceBoostsDeepTA::test_two_resonance_no_risk_boosts_deep_ta PASSED [ 98%]
+tests/test_s004_game_balance.py::TestResonanceBoostsDeepTA::test_fragile_demotes_deep_ta PASSED [100%]
+
+=================================== FAILURES ===================================
+______________ TestDBPersistence.test_save_and_load_game_balance _______________
+
+self = <tests.test_s004_game_balance.TestDBPersistence object at 0x10af6a0f0>
+
+    def test_save_and_load_game_balance(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            init_db(db_path)
+            c = Candidate(
+                symbol="600519.SH",
+                name="贵州茅台",
+                trade_date="2026-05-29",
+                game_balance="favorable",
+                bull_case="政策方向支持(低空经济)",
+                bear_case="无明显看空信号",
+                policy_case="政策版本: 低空经济 (+10分)",
+                fund_flow_case="无明确资金流信号",
+                resonance_count=2,
+                game_balance_refs=[{"field": "bull_case", "matched_text": "test"}],
+            )
+>           save_candidate(c, db_path)
+
+tests/test_s004_game_balance.py:459: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+candidate = Candidate(symbol='600519.SH', name='贵州茅台', source='manual', strategy_tags=[], score=0.0, status='active', trigger_pric...0分)', fund_flow_case='无明确资金流信号', resonance_count=2, game_balance_refs=[{'field': 'bull_case', 'matched_text': 'test'}])
+db_path = '/Users/maybee/.openclaw/tmp/tmpo_cp3q9n.db'
+
+    def save_candidate(candidate: Candidate, db_path: str) -> int:
+        """Save a candidate to the database. Upsert on (trade_date, symbol)."""
+        conn = sqlite3.connect(db_path)
+        row = candidate.to_db_row()
+        try:
+>           conn.execute(
+                "INSERT INTO tradeflow_candidates "
+                "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+                "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+                "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+                "policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
+                "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+                "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
+                "fund_flow_case, resonance_count, game_balance_refs_json, "
+                "created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+                "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
+                "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+                "trigger_price=excluded.trigger_price, "
+                "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+                "need_deep_ta=excluded.need_deep_ta, evidence_json=excluded.evidence_json, "
+                "risk_flags_json=excluded.risk_flags_json, "
+                "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+                "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
+                "narrative_score=excluded.narrative_score, "
+                "narrative_reasons_json=excluded.narrative_reasons_json, "
+                "narrative_evidence_refs_json=excluded.narrative_evidence_refs_json, "
+                "risk_penalty=excluded.risk_penalty, "
+                "risk_evidence_refs_json=excluded.risk_evidence_refs_json, "
+                "risk_reasons_json=excluded.risk_reasons_json, "
+                "game_balance=excluded.game_balance, "
+                "bull_case=excluded.bull_case, bear_case=excluded.bear_case, "
+                "policy_case=excluded.policy_case, fund_flow_case=excluded.fund_flow_case, "
+                "resonance_count=excluded.resonance_count, "
+                "game_balance_refs_json=excluded.game_balance_refs_json, "
+                "updated_at=excluded.updated_at",
+                (
+                    row["trade_date"], row["symbol"], row["name"], row["source"],
+                    row["strategy_tags_json"], row["primary_strategy"],
+                    row["score"], row["status"],
+                    row["trigger_price"], row["support_price"], row["invalid_price"],
+                    row["need_deep_ta"], row["evidence_json"], row["risk_flags_json"],
+                    row["policy_tags_json"], row["version_score"],
+                    row["policy_evidence_refs_json"],
+                    row["narrative_score"], row["narrative_reasons_json"],
+                    row["narrative_evidence_refs_json"],
+                    row["risk_penalty"], row["risk_evidence_refs_json"],
+                    row["risk_reasons_json"],
+                    row["game_balance"], row["bull_case"], row["bear_case"],
+                    row["policy_case"], row["fund_flow_case"],
+                    row["resonance_count"], row["game_balance_refs_json"],
+                    candidate.created_at, row["updated_at"],
+                ),
+            )
+E           sqlite3.OperationalError: 31 values for 32 columns
+
+tradingagents/tradeflow/candidate_engine.py:467: OperationalError
+____________ TestDBPersistence.test_save_and_roundtrip_game_balance ____________
+
+self = <tests.test_s004_game_balance.TestDBPersistence object at 0x10af37e00>
+
+    def test_save_and_roundtrip_game_balance(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            init_db(db_path)
+            refs = [{"field": "policy_case", "matched_text": "低空经济政策支持", "source": "policy_evidence"}]
+            c = Candidate(
+                symbol="002138.SZ",
+                trade_date="2026-05-29",
+                game_balance="neutral",
+                bull_case="叙事质量+20",
+                bear_case="无明显看空信号",
+                policy_case="无明确政策版本信号",
+                fund_flow_case="无明确资金流信号",
+                resonance_count=1,
+                game_balance_refs=refs,
+            )
+>           save_candidate(c, db_path)
+
+tests/test_s004_game_balance.py:491: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+candidate = Candidate(symbol='002138.SZ', name='', source='manual', strategy_tags=[], score=0.0, status='active', trigger_price=No...sonance_count=1, game_balance_refs=[{'field': 'policy_case', 'matched_text': '低空经济政策支持', 'source': 'policy_evidence'}])
+db_path = '/Users/maybee/.openclaw/tmp/tmp5yh42sso.db'
+
+    def save_candidate(candidate: Candidate, db_path: str) -> int:
+        """Save a candidate to the database. Upsert on (trade_date, symbol)."""
+        conn = sqlite3.connect(db_path)
+        row = candidate.to_db_row()
+        try:
+>           conn.execute(
+                "INSERT INTO tradeflow_candidates "
+                "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+                "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+                "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+                "policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
+                "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+                "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
+                "fund_flow_case, resonance_count, game_balance_refs_json, "
+                "created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+                "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
+                "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+                "trigger_price=excluded.trigger_price, "
+                "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+                "need_deep_ta=excluded.need_deep_ta, evidence_json=excluded.evidence_json, "
+                "risk_flags_json=excluded.risk_flags_json, "
+                "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+                "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
+                "narrative_score=excluded.narrative_score, "
+                "narrative_reasons_json=excluded.narrative_reasons_json, "
+                "narrative_evidence_refs_json=excluded.narrative_evidence_refs_json, "
+                "risk_penalty=excluded.risk_penalty, "
+                "risk_evidence_refs_json=excluded.risk_evidence_refs_json, "
+                "risk_reasons_json=excluded.risk_reasons_json, "
+                "game_balance=excluded.game_balance, "
+                "bull_case=excluded.bull_case, bear_case=excluded.bear_case, "
+                "policy_case=excluded.policy_case, fund_flow_case=excluded.fund_flow_case, "
+                "resonance_count=excluded.resonance_count, "
+                "game_balance_refs_json=excluded.game_balance_refs_json, "
+                "updated_at=excluded.updated_at",
+                (
+                    row["trade_date"], row["symbol"], row["name"], row["source"],
+                    row["strategy_tags_json"], row["primary_strategy"],
+                    row["score"], row["status"],
+                    row["trigger_price"], row["support_price"], row["invalid_price"],
+                    row["need_deep_ta"], row["evidence_json"], row["risk_flags_json"],
+                    row["policy_tags_json"], row["version_score"],
+                    row["policy_evidence_refs_json"],
+                    row["narrative_score"], row["narrative_reasons_json"],
+                    row["narrative_evidence_refs_json"],
+                    row["risk_penalty"], row["risk_evidence_refs_json"],
+                    row["risk_reasons_json"],
+                    row["game_balance"], row["bull_case"], row["bear_case"],
+                    row["policy_case"], row["fund_flow_case"],
+                    row["resonance_count"], row["game_balance_refs_json"],
+                    candidate.created_at, row["updated_at"],
+                ),
+            )
+E           sqlite3.OperationalError: 31 values for 32 columns
+
+tradingagents/tradeflow/candidate_engine.py:467: OperationalError
+=========================== short test summary info ============================
+FAILED tests/test_s004_game_balance.py::TestDBPersistence::test_save_and_load_game_balance
+FAILED tests/test_s004_game_balance.py::TestDBPersistence::test_save_and_roundtrip_game_balance
+========================= 2 failed, 66 passed in 0.30s =========================
+[0m
+插入操作存在一个计数不匹配问题。让我验证并修复：
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [offset=455, limit=60][0m
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [offset=515][0m
+[0m
+[0m$ [0msource .venv/bin/activate && python3 -c "
+import sqlite3, tempfile, os
+from tradingagents.tradeflow.candidate_engine import init_db
+from tradingagents.tradeflow.schemas import Candidate
+
+# Count columns in INSERT statement
+sql = '''INSERT INTO tradeflow_candidates
+(trade_date, symbol, name, source, strategy_tags_json, primary_strategy,
+score, status, trigger_price, support_price, invalid_price, need_deep_ta,
+evidence_json, risk_flags_json, policy_tags_json, version_score,
+policy_evidence_refs_json, narrative_score, narrative_reasons_json,
+narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json,
+risk_reasons_json, game_balance, bull_case, bear_case, policy_case,
+fund_flow_case, resonance_count, game_balance_refs_json,
+created_at, updated_at)
+VALUES'''
+cols = [c.strip() for c in sql.split('(')[1].split(')')[0].split(',')]
+print(f'Columns: {len(cols)}')
+
+# Count placeholders
+vals = 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+placeholders = vals.count('?')
+print(f'Placeholders: {placeholders}')
+"
+
+Columns: 32
+Placeholders: 32
+[0m
+[0m$ [0msource .venv/bin/activate && python3 -c "
+with open('tradingagents/tradeflow/candidate_engine.py') as f:
+    content = f.read()
+
+# Find the INSERT statement
+import re
+# Extract the VALUES clause
+m = re.search(r'VALUES \((.*?)\)', content, re.DOTALL)
+if m:
+    vals = m.group(1)
+    count = vals.count('?')
+    print(f'Actual ? count in file: {count}')
+    
+# Also count column names
+m2 = re.search(r'INSERT INTO tradeflow_candidates\s*\((.*?)\)\s*VALUES', content, re.DOTALL)
+if m2:
+    cols_text = m2.group(1)
+    cols = [c.strip() for c in cols_text.split(',') if c.strip()]
+    print(f'Actual column count in file: {len(cols)}')
+"
+
+Actual ? count in file: 31
+[0m
+[0m$ [0msource .venv/bin/activate && python3 -c "
+with open('tradingagents/tradeflow/candidate_engine.py') as f:
+    lines = f.readlines()
+
+# Print lines 476-478 (0-indexed 475-477)
+for i in range(476, 479):
+    print(f'{i+1}: {repr(lines[i])}')"
+
+477: '            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "\n'
+478: '            "?, ?, ?, ?, ?, ?, ?, ?, ?) "\n'
+479: '            "ON CONFLICT(trade_date, symbol) DO UPDATE SET "\n'
+[0m
+[0m$ [0msource .venv/bin/activate && python3 -c "
+with open('tradingagents/tradeflow/candidate_engine.py') as f:
+    content = f.read()
+import re
+for m in re.finditer(r'VALUES \((.*?)\)', content, re.DOTALL):
+    count = m.group(1).count('?')
+    start = m.start()
+    line_num = content[:start].count('\n') + 1
+    print(f'Line {line_num}: {count} placeholders')
+"
+
+Line 477: 31 placeholders
+[0m
+[0m$ [0msource .venv/bin/activate && python3 << 'EOF'
+with open('tradingagents/tradeflow/candidate_engine.py') as f:
+    lines = f.readlines()
+
+# Extract lines 476-478 (0-indexed)
+vals_line = lines[476] + lines[477]
+print("RAW:")
+print(repr(vals_line))
+print()
+# Count ? characters
+count = vals_line.count('?')
+print(f"Count of ?: {count}")
+EOF
+
+RAW:
+'            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "\n            "?, ?, ?, ?, ?, ?, ?, ?, ?) "\n'
+
+Count of ?: 31
+[0m
+[0m$ [0mpython3 -c "
+s = 'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) '
+print(f'Count: {s.count(\"?\")}')"
+
+Count: 30
+[0m
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -473,10 +473,9 @@
+ "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+ "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
+ "fund_flow_case, resonance_count, game_balance_refs_json, "
+ "created_at, updated_at) "
+-"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+-"?, ?, ?, ?, ?, ?, ?, ?, ?) "
++"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,,,,,) "
+ "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+ "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
+ "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+ "trigger_price=excluded.trigger_price, "
+
+[0m
+问题在于 `VALUES` 子句中的 `?` 数量有误。让我来修复它：
+嗯，这不对。让我好好处理一下：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -473,9 +473,9 @@
+ "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+ "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
+ "fund_flow_case, resonance_count, game_balance_refs_json, "
+ "created_at, updated_at) "
+-"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,,,,,) "
++"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+ "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+ "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
+ "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+ "trigger_price=excluded.trigger_price, "
+
+[0m
+[0m$ [0msource .venv/bin/activate && python3 -c "
+with open('tradingagents/tradeflow/candidate_engine.py') as f:
+    content = f.read()
+import re
+for m in re.finditer(r'VALUES \((.*?)\)', content, re.DOTALL):
+    count = m.group(1).count('?')
+    start = m.start()
+    line_num = content[:start].count('\n') + 1
+    print(f'Line {line_num}: {count} placeholders')
+"
+
+Line 477: 33 placeholders
+[0m
+[0m$ [0mpython3 -c "placeholders = ','.join(['?'] * 32); print(f'({placeholders})')"
+
+(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+[0m
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -473,9 +473,9 @@
+ "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+ "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
+ "fund_flow_case, resonance_count, game_balance_refs_json, "
+ "created_at, updated_at) "
+-"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
++"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+ "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+ "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
+ "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+ "trigger_price=excluded.trigger_price, "
+
+[0m
+[0m$ [0msource .venv/bin/activate && python3 -c "
+with open('tradingagents/tradeflow/candidate_engine.py') as f:
+    content = f.read()
+import re
+for m in re.finditer(r'VALUES \((.*?)\)', content, re.DOTALL):
+    count = m.group(1).count('?')
+    start = m.start()
+    line_num = content[:start].count('\n') + 1
+    print(f'Line {line_num}: {count} placeholders')
+"
+
+Line 477: 32 placeholders
+[0m
+现在重新运行测试：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_s004_game_balance.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 68 items
+
+tests/test_s004_game_balance.py::TestGameBalanceBasic::test_empty_inputs_returns_neutral PASSED [  1%]
+tests/test_s004_game_balance.py::TestGameBalanceBasic::test_no_signals_no_risk PASSED [  2%]
+tests/test_s004_game_balance.py::TestGameBalanceBasic::test_all_game_balances_valid PASSED [  4%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_policy_only PASSED [  5%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_narrative_only PASSED [  7%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_tech_only_vcp PASSED [  8%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_tech_only_pullback PASSED [ 10%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_fund_flow_positive PASSED [ 11%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_fund_flow_hot_money_tag PASSED [ 13%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_two_categories_resonate PASSED [ 14%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_three_categories_resonate PASSED [ 16%]
+tests/test_s004_game_balance.py::TestResonanceCount::test_four_categories_resonate PASSED [ 17%]
+tests/test_s004_game_balance.py::TestFavorableBalance::test_policy_event_vcp_resonance_favorable PASSED [ 19%]
+tests/test_s004_game_balance.py::TestFavorableBalance::test_three_resonance_high_score_favorable PASSED [ 20%]
+tests/test_s004_game_balance.py::TestFavorableBalance::test_two_resonance_moderate_risk_neutral PASSED [ 22%]
+tests/test_s004_game_balance.py::TestFragileBalance::test_inquiry_risk_fragile PASSED [ 23%]
+tests/test_s004_game_balance.py::TestFragileBalance::test_financial_quality_risk_fragile PASSED [ 25%]
+tests/test_s004_game_balance.py::TestFragileBalance::test_many_risks_fragile PASSED [ 26%]
+tests/test_s004_game_balance.py::TestFragileBalance::test_heavy_penalty_fragile PASSED [ 27%]
+tests/test_s004_game_balance.py::TestFragileBalance::test_favorable_downgraded_by_risks PASSED [ 29%]
+tests/test_s004_game_balance.py::TestCrowdedBalance::test_fund_conflict_with_risks_crowded PASSED [ 30%]
+tests/test_s004_game_balance.py::TestBullCase::test_bull_case_with_policy PASSED [ 32%]
+tests/test_s004_game_balance.py::TestBullCase::test_bull_case_with_tech PASSED [ 33%]
+tests/test_s004_game_balance.py::TestBullCase::test_bull_case_with_narrative PASSED [ 35%]
+tests/test_s004_game_balance.py::TestBullCase::test_bull_case_with_fund_positive PASSED [ 36%]
+tests/test_s004_game_balance.py::TestBearCase::test_bear_case_with_risks PASSED [ 38%]
+tests/test_s004_game_balance.py::TestBearCase::test_bear_case_heavy_penalty PASSED [ 39%]
+tests/test_s004_game_balance.py::TestBearCase::test_bear_case_fund_negative PASSED [ 41%]
+tests/test_s004_game_balance.py::TestBearCase::test_bear_case_no_risk_no_bull PASSED [ 42%]
+tests/test_s004_game_balance.py::TestBearCase::test_bear_case_no_risk_has_bull PASSED [ 44%]
+tests/test_s004_game_balance.py::TestPolicyCase::test_policy_case_with_tags PASSED [ 45%]
+tests/test_s004_game_balance.py::TestPolicyCase::test_policy_case_without_tags PASSED [ 47%]
+tests/test_s004_game_balance.py::TestPolicyCase::test_policy_case_with_evidence_refs PASSED [ 48%]
+tests/test_s004_game_balance.py::TestFundFlowCase::test_fund_positive PASSED [ 50%]
+tests/test_s004_game_balance.py::TestFundFlowCase::test_fund_negative PASSED [ 51%]
+tests/test_s004_game_balance.py::TestFundFlowCase::test_fund_both PASSED [ 52%]
+tests/test_s004_game_balance.py::TestFundFlowCase::test_fund_hot_money PASSED [ 54%]
+tests/test_s004_game_balance.py::TestFundFlowCase::test_fund_no_signal PASSED [ 55%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u6740\u8dcc] PASSED [ 57%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u5f3a\u70c8\u63a8\u8350] PASSED [ 58%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u6ee1\u4ed3] PASSED [ 60%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u91cd\u4ed3\u4e70\u5165] PASSED [ 61%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u5fc5\u4e70] PASSED [ 63%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u5f3a\u529b\u4e70\u5165] PASSED [ 64%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u7acb\u5373\u6e05\u4ed3] PASSED [ 66%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u68ad\u54c8] PASSED [ 67%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u6284\u5e95] PASSED [ 69%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u7acb\u5373\u4e70\u5165] PASSED [ 70%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_bull_case_no_forbidden_words[\u8ffd\u6da8] PASSED [ 72%]
+tests/test_s004_game_balance.py::TestNoStrongBuySellWords::test_sanitized_if_input_contains_forbidden PASSED [ 73%]
+tests/test_s004_game_balance.py::TestEvidenceRefs::test_refs_trace_policy_evidence PASSED [ 75%]
+tests/test_s004_game_balance.py::TestEvidenceRefs::test_refs_trace_narrative PASSED [ 76%]
+tests/test_s004_game_balance.py::TestEvidenceRefs::test_refs_trace_risks PASSED [ 77%]
+tests/test_s004_game_balance.py::TestEvidenceRefs::test_refs_trace_fund_flow PASSED [ 79%]
+tests/test_s004_game_balance.py::TestCandidateGameBalanceFields::test_candidate_default_fields PASSED [ 80%]
+tests/test_s004_game_balance.py::TestCandidateGameBalanceFields::test_candidate_to_db_row_has_game_balance PASSED [ 82%]
+tests/test_s004_game_balance.py::TestCandidateGameBalanceFields::test_candidate_from_db_row_game_balance PASSED [ 83%]
+tests/test_s004_game_balance.py::TestDBPersistence::test_init_db_has_game_balance_columns PASSED [ 85%]
+tests/test_s004_game_balance.py::TestDBPersistence::test_save_and_load_game_balance FAILED [ 86%]
+tests/test_s004_game_balance.py::TestDBPersistence::test_save_and_roundtrip_game_balance PASSED [ 88%]
+tests/test_s004_game_balance.py::TestDailyPlanRender::test_render_includes_game_balance PASSED [ 89%]
+tests/test_s004_game_balance.py::TestDailyPlanRender::test_render_no_game_balance PASSED [ 91%]
+tests/test_s004_game_balance.py::TestDailyPlanRender::test_render_fragile_emoji PASSED [ 92%]
+tests/test_s004_game_balance.py::TestEvaluateSymbolIntegration::test_game_balance_set_on_candidate PASSED [ 94%]
+tests/test_s004_game_balance.py::TestEvaluateSymbolIntegration::test_game_balance_in_evidence PASSED [ 95%]
+tests/test_s004_game_balance.py::TestPlanRunnerIntegration::test_build_plan_entry_includes_game_balance PASSED [ 97%]
+tests/test_s004_game_balance.py::TestResonanceBoostsDeepTA::test_two_resonance_no_risk_boosts_deep_ta PASSED [ 98%]
+tests/test_s004_game_balance.py::TestResonanceBoostsDeepTA::test_fragile_demotes_deep_ta PASSED [100%]
+
+=================================== FAILURES ===================================
+______________ TestDBPersistence.test_save_and_load_game_balance _______________
+
+self = <tests.test_s004_game_balance.TestDBPersistence object at 0x10d242060>
+
+    def test_save_and_load_game_balance(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            init_db(db_path)
+            c = Candidate(
+                symbol="600519.SH",
+                name="贵州茅台",
+                trade_date="2026-05-29",
+                game_balance="favorable",
+                bull_case="政策方向支持(低空经济)",
+                bear_case="无明显看空信号",
+                policy_case="政策版本: 低空经济 (+10分)",
+                fund_flow_case="无明确资金流信号",
+                resonance_count=2,
+                game_balance_refs=[{"field": "bull_case", "matched_text": "test"}],
+            )
+            save_candidate(c, db_path)
+    
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                "SELECT * FROM tradeflow_candidates WHERE symbol=?",
+                ("600519.SH",),
+            ).fetchone()
+            conn.close()
+    
+            assert row is not None
+>           cols = [desc[0] for desc in conn.execute("SELECT * FROM tradeflow_candidates WHERE symbol=?", ("600519.SH",)).description] if row else []
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           sqlite3.ProgrammingError: Cannot operate on a closed database.
+
+tests/test_s004_game_balance.py:470: ProgrammingError
+=========================== short test summary info ============================
+FAILED tests/test_s004_game_balance.py::TestDBPersistence::test_save_and_load_game_balance
+========================= 1 failed, 67 passed in 0.22s =========================
+[0m
+[0m← [0mEdit tests/test_s004_game_balance.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_s004_game_balance.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_s004_game_balance.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_s004_game_balance.py
+@@ -463,12 +463,12 @@
+         row = conn.execute(
+             "SELECT * FROM tradeflow_candidates WHERE symbol=?",
+             ("600519.SH",),
+         ).fetchone()
+-        conn.close()
+-
+         assert row is not None
+-        cols = [desc[0] for desc in conn.execute("SELECT * FROM tradeflow_candidates WHERE symbol=?", ("600519.SH",)).description] if row else []
++        cols = [desc[0] for desc in conn.execute("SELECT * FROM tradeflow_candidates WHERE symbol=?", ("600519.SH",)).description]
++        conn.close()
++        assert "game_balance" in cols
+     finally:
+         os.unlink(db_path)
+ 
+ def test_save_and_roundtrip_game_balance(self):
+
+[0m
+几乎完成——一个测试 bug（在关闭连接后使用了 `conn`）。我来修复它：
+现在运行 S-004 测试以及完整的 TradeFlow 套件：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_s004_game_balance.py -q 2>&1
+....................................................................     [100%]
+68 passed in 0.27s
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tradeflow_*.py -q 2>&1
+........................................................................ [ 86%]
+...........                                                              [100%]
+83 passed in 5.35s
+[0m
+所有 68 个 S-004 测试通过，所有 83 个 TradeFlow 测试通过。现在我来运行更广泛的回归测试：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_s001_policy_version_signal.py tests/test_s002_narrative_quality.py tests/test_s003_underwater_risk_flags.py tests/test_s004_game_balance.py tests/test_readiness_score.py -q 2>&1
+........................................................................ [ 21%]
+........................................................................ [ 43%]
+........................................................................ [ 65%]
+........................................................................ [ 87%]
+...........................................                              [100%]
+331 passed in 41.83s
+[0m
+[0m# [0mTodos
+[x] Read existing TradeFlow code (schemas, candidate_engine, plan_runner, S-001/S-002/S-003 modules)
+[x] Create game_balance.py module with rule-based logic
+[x] Update schemas.py with game_balance fields
+[x] Integrate into candidate_engine.py evaluate_symbol()
+[x] Update plan_runner.py _build_plan_entry()
+[x] Write tests/test_s004_game_balance.py
+[x] Run all TradeFlow tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+331个已通过。现在更新 DEVLOG：
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,50 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-05-29 | S-004 候选股博弈平衡解释
++
++- **执行者**：OpenCode (glm-5.1)
++- **任务**：在 TradeFlow Plan 中为每个候选输出轻量博弈解释，说明多头为何可能买、空头为何可能卖、政策/监管/资金结构是否支持
++- **修改文件**：
++  - `tradingagents/tradeflow/game_balance.py`（新增，~210行）— [S-004] candidate_game_balance
++    - `assess_game_balance(strategy_tags, score, policy_tags, version_score, ...)` — 规则化博弈平衡评估
++    - `GameBalanceResult` — 输出 `game_balance`(favorable/neutral/crowded/fragile)、`bull_case`、`bear_case`、`policy_case`、`fund_flow_case`、`resonance_count`、`game_balance_refs`
++    - 四类信号共振计数：政策(policy)、叙事/事件(narrative)、技术(tech)、资金(fund)
++    - 共振 >= 2 类且风险可控时标记 `favorable` 或 `neutral`，并提升 `need_deep_ta`
++    - 高严重性风险(INQUIRY_RISK/FINANCIAL_QUALITY_RISK)或风险标签 >= 3 个时标记 `fragile`
++    - 资金冲突(正负同时) + 风险标签 >= 2 时标记 `crowded`
++    - 所有输出文本禁止强买卖词，自动 sanitize
++    - 所有 case 字段来源必须来自已有信号和证据，不调用外部 LLM
++  - `tradingagents/tradeflow/schemas.py` — [S-004]
++    - `Candidate` 新增 `game_balance`、`bull_case`、`bear_case`、`policy_case`、`fund_flow_case`、`resonance_count`、`game_balance_refs` 字段
++    - `to_db_row()` / `from_db_row()` 支持新字段持久化
++    - `DailyPlan.render_text()` 展示博弈平衡 verdict + 多空/政策/资金四维视角
++  - `tradingagents/tradeflow/candidate_engine.py` — [S-004]
++    - `evaluate_symbol()` 在 S-003 水下风险之后调用 `assess_game_balance()`
++    - 博弈平衡结果写入 `candidate.evidence["game_balance"]`
++    - 共振 >= 2 + 风险可控时自动提升 `need_deep_ta`
++    - fragile/crowded + 风险标签 >= 2 时关闭 `need_deep_ta`
++    - `init_db()` 新增 7 列迁移：game_balance, bull_case, bear_case, policy_case, fund_flow_case, resonance_count, game_balance_refs_json
++    - `save_candidate()` INSERT/UPDATE 包含新字段
++  - `tradingagents/tradeflow/plan_runner.py` — [S-004]
++    - `_build_plan_entry()` 输出博弈平衡全部字段
++  - `tests/test_s004_game_balance.py`（新增，~470行）— 68 个测试
++- **关键逻辑**：
++  1. 博弈平衡作为总结层叠加在所有正向策略和风险标签之上，不破坏现有逻辑
++  2. 四类信号共振计数（政策/叙事/技术/资金），>= 2 类共振 + 风险可控 → favorable/neutral
++  3. 高严重性风险（问询/财务异常）或风险标签过多 → fragile，不进入深度 TA
++  4. 资金冲突 + 风险标签拥挤 → crowded
++  5. 所有 case 文本引用已有信号和证据，不凭空生成
++  6. 输出中包含 evidence refs，可追溯到 policy_evidence、narrative_reasons、risk_reasons、event_text
++  7. 不出现强买卖词
++- **标记**：`# [S-004] candidate_game_balance`
++- **测试结果**：
++  - S-004 专项测试：68 passed
++  - TradeFlow 全量测试：83 passed
++  - 扩展回归测试（S-001 + S-002 + S-003 + S-004 + readiness_score）：331 passed
++
+ ## 2026-05-29 | S-003 水下风险标签与候选降权
+ 
+ - **执行者**：OpenCode (glm-5.1)
+ - **任务**：为 TradeFlow 候选池增加水下风险标签，识别解禁、减持、问询、财务异常、融资拥挤、龙虎榜过热等风险，对候选做降权或要求更严格技术确认
+
+[0m
+[0m# [0mTodos
+[x] Read existing TradeFlow code (schemas, candidate_engine, plan_runner, S-001/S-002/S-003 modules)
+[x] Create game_balance.py module with rule-based logic
+[x] Update schemas.py with game_balance fields
+[x] Integrate into candidate_engine.py evaluate_symbol()
+[x] Update plan_runner.py _build_plan_entry()
+[x] Write tests/test_s004_game_balance.py
+[x] Run all TradeFlow tests and verify
+[x] Update docs/DEVLOG.md
+[0m
+## 完成输出
+
+### 修改文件
+
+| 文件 | 变更类型 | 说明 |
+|------|----------|------|
+| `tradingagents/tradeflow/game_balance.py` | 新增 | 博弈平衡评估模块，`assess_game_balance()` 函数 |
+| `tradingagents/tradeflow/schemas.py` | 修改 | Candidate 新增 7 个博弈平衡字段 + to_db_row/from_db_row/render_text |
+| `tradingagents/tradeflow/candidate_engine.py` | 修改 | evaluate_symbol 集成博弈平衡 + init_db 迁移 + save_candidate 扩展 |
+| `tradingagents/tradeflow/plan_runner.py` | 修改 | _build_plan_entry 输出博弈平衡字段 |
+| `tests/test_s004_game_balance.py` | 新增 | 68 个测试 |
+| `docs/DEVLOG.md` | 修改 | 记录 S-004 完成 |
+
+### 关键逻辑
+
+1. **四维共振计数**：政策(policy) / 叙事(narrative) / 技术(tech) / 资金(fund) 四类信号，>= 2 类共振 + 风险可控 → `favorable`/`neutral`，自动提升 `need_deep_ta`
+2. **风险压倒**：INQUIRY_RISK / FINANCIAL_QUALITY_RISK 或风险标签 >= 3 个 → `fragile`，关闭 `need_deep_ta`
+3. **拥挤检测**：资金正负冲突 + 风险标签 >= 2 → `crowded`
+4. **证据溯源**：所有 bull/bear/policy/fund_case 文本均来自已有信号字段，输出 `game_balance_refs` 可追溯
+5. **禁止强买卖词**：自动 sanitize 输出文本
+
+### 测试结果
+
+- S-004 专项：**68 passed**
+- TradeFlow 全量：**83 passed**
+- 扩展回归（S-001~S-004 + readiness_score）：**331 passed**

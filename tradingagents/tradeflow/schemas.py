@@ -71,6 +71,13 @@ class Candidate:
     risk_penalty: float = 0.0  # [S-003] underwater_risk_flags
     risk_evidence_refs: list[dict] = field(default_factory=list)  # [S-003] underwater_risk_flags
     risk_reasons: list[str] = field(default_factory=list)  # [S-003] underwater_risk_flags
+    game_balance: str = ""  # [S-004] candidate_game_balance
+    bull_case: str = ""  # [S-004] candidate_game_balance
+    bear_case: str = ""  # [S-004] candidate_game_balance
+    policy_case: str = ""  # [S-004] candidate_game_balance
+    fund_flow_case: str = ""  # [S-004] candidate_game_balance
+    resonance_count: int = 0  # [S-004] candidate_game_balance
+    game_balance_refs: list[dict] = field(default_factory=list)  # [S-004] candidate_game_balance
 
     def __post_init__(self):
         if not self.trade_date:
@@ -142,6 +149,13 @@ class Candidate:
             "risk_penalty": self.risk_penalty,  # [S-003] underwater_risk_flags
             "risk_evidence_refs_json": json.dumps(self.risk_evidence_refs, ensure_ascii=False),  # [S-003]
             "risk_reasons_json": json.dumps(self.risk_reasons, ensure_ascii=False),  # [S-003]
+            "game_balance": self.game_balance,  # [S-004] candidate_game_balance
+            "bull_case": self.bull_case,  # [S-004]
+            "bear_case": self.bear_case,  # [S-004]
+            "policy_case": self.policy_case,  # [S-004]
+            "fund_flow_case": self.fund_flow_case,  # [S-004]
+            "resonance_count": self.resonance_count,  # [S-004]
+            "game_balance_refs_json": json.dumps(self.game_balance_refs, ensure_ascii=False),  # [S-004]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -173,6 +187,13 @@ class Candidate:
             risk_penalty=row.get("risk_penalty", 0.0),  # [S-003] underwater_risk_flags
             risk_evidence_refs=json.loads(row.get("risk_evidence_refs_json", "[]")),  # [S-003]
             risk_reasons=json.loads(row.get("risk_reasons_json", "[]")),  # [S-003]
+            game_balance=row.get("game_balance", ""),  # [S-004] candidate_game_balance
+            bull_case=row.get("bull_case", ""),  # [S-004]
+            bear_case=row.get("bear_case", ""),  # [S-004]
+            policy_case=row.get("policy_case", ""),  # [S-004]
+            fund_flow_case=row.get("fund_flow_case", ""),  # [S-004]
+            resonance_count=row.get("resonance_count", 0),  # [S-004]
+            game_balance_refs=json.loads(row.get("game_balance_refs_json", "[]")),  # [S-004]
         )
 
 
@@ -305,6 +326,23 @@ class DailyPlan:
                 lines.append(f"  ⚠️ 水下风险: {', '.join(risk_flags)} ({risk_penalty}分)")
                 if risk_reasons:
                     lines.append(f"    {'; '.join(risk_reasons)}")
+            # [S-004] candidate_game_balance — display game balance perspective
+            game_balance = c.get("game_balance", "")
+            bull_case = c.get("bull_case", "")
+            bear_case = c.get("bear_case", "")
+            policy_case = c.get("policy_case", "")
+            fund_flow_case = c.get("fund_flow_case", "")
+            if game_balance:
+                balance_emoji = {"favorable": "🟢", "neutral": "🟡", "crowded": "🟠", "fragile": "🔴"}
+                lines.append(f"  博弈平衡: {balance_emoji.get(game_balance, '')} {game_balance}")
+                if bull_case:
+                    lines.append(f"    多头视角: {bull_case}")
+                if bear_case:
+                    lines.append(f"    空头视角: {bear_case}")
+                if policy_case:
+                    lines.append(f"    政策/监管: {policy_case}")
+                if fund_flow_case:
+                    lines.append(f"    资金结构: {fund_flow_case}")
             lines.append("")
 
         return "\n".join(lines)

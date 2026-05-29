@@ -25,6 +25,7 @@ from .strategies.event_catalyst import score_event_catalyst
 from .policy_version_signal import detect_policy_version, PolicyVersionResult  # [S-001]
 from .narrative_quality import score_narrative_quality, NarrativeQualityResult  # [S-002]
 from .underwater_risk_flags import detect_underwater_risks, UnderwaterRiskResult, ALL_RISK_FLAGS  # [S-003]
+from .game_balance import assess_game_balance, GameBalanceResult  # [S-004] candidate_game_balance
 
 
 # ── SQL for table creation ──
@@ -117,6 +118,20 @@ def init_db(db_path: str) -> None:
         ("risk_penalty", "REAL DEFAULT 0.0"),
         ("risk_evidence_refs_json", "TEXT DEFAULT '[]'"),
         ("risk_reasons_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-004] candidate_game_balance — add game balance columns
+    for _col, _type in [
+        ("game_balance", "TEXT DEFAULT ''"),
+        ("bull_case", "TEXT DEFAULT ''"),
+        ("bear_case", "TEXT DEFAULT ''"),
+        ("policy_case", "TEXT DEFAULT ''"),
+        ("fund_flow_case", "TEXT DEFAULT ''"),
+        ("resonance_count", "INTEGER DEFAULT 0"),
+        ("game_balance_refs_json", "TEXT DEFAULT '[]'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
@@ -400,9 +415,46 @@ def evaluate_symbol(
             "risk_reasons": risk_result.risk_reasons,
         }
         high_risk_flags = {f for f in risk_result.risk_flags
-                          if f in {"INQUIRY_RISK", "FINANCIAL_QUALITY_RISK"}}
+                           if f in {"INQUIRY_RISK", "FINANCIAL_QUALITY_RISK"}}
         if len(risk_result.risk_flags) >= 3 or high_risk_flags:
             candidate.need_deep_ta = False
+
+    # [S-004] candidate_game_balance — assess bull/bear/policy/fund perspective
+    gb_result: GameBalanceResult = assess_game_balance(
+        strategy_tags=candidate.strategy_tags,
+        score=candidate.score,
+        policy_tags=candidate.policy_tags,
+        version_score=candidate.version_score,
+        policy_evidence_refs=candidate.policy_evidence_refs,
+        narrative_score=candidate.narrative_score,
+        narrative_reasons=candidate.narrative_reasons,
+        risk_flags=candidate.risk_flags,
+        risk_penalty=candidate.risk_penalty,
+        risk_reasons=candidate.risk_reasons,
+        event_texts=all_event_texts if all_event_texts else None,
+    )
+    candidate.game_balance = gb_result.game_balance
+    candidate.bull_case = gb_result.bull_case
+    candidate.bear_case = gb_result.bear_case
+    candidate.policy_case = gb_result.policy_case
+    candidate.fund_flow_case = gb_result.fund_flow_case
+    candidate.resonance_count = gb_result.resonance_count
+    candidate.game_balance_refs = gb_result.game_balance_refs
+    candidate.evidence["game_balance"] = {
+        "game_balance": gb_result.game_balance,
+        "bull_case": gb_result.bull_case,
+        "bear_case": gb_result.bear_case,
+        "policy_case": gb_result.policy_case,
+        "fund_flow_case": gb_result.fund_flow_case,
+        "resonance_count": gb_result.resonance_count,
+        "refs": gb_result.game_balance_refs,
+    }
+    # When >= 2 categories resonate and risk manageable, boost need_deep_ta
+    if gb_result.resonance_count >= 2 and gb_result.game_balance in {"favorable", "neutral"}:
+        candidate.need_deep_ta = True
+    # When fragile or crowded with too many risks, demote need_deep_ta
+    if gb_result.game_balance in {"fragile", "crowded"} and len(candidate.risk_flags) >= 2:
+        candidate.need_deep_ta = False
 
     return candidate, ""
 
@@ -419,8 +471,10 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "evidence_json, risk_flags_json, policy_tags_json, version_score, "
             "policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
             "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
-            "risk_reasons_json, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
+            "fund_flow_case, resonance_count, game_balance_refs_json, "
+            "created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
@@ -436,6 +490,11 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "risk_penalty=excluded.risk_penalty, "
             "risk_evidence_refs_json=excluded.risk_evidence_refs_json, "
             "risk_reasons_json=excluded.risk_reasons_json, "
+            "game_balance=excluded.game_balance, "
+            "bull_case=excluded.bull_case, bear_case=excluded.bear_case, "
+            "policy_case=excluded.policy_case, fund_flow_case=excluded.fund_flow_case, "
+            "resonance_count=excluded.resonance_count, "
+            "game_balance_refs_json=excluded.game_balance_refs_json, "
             "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
@@ -449,6 +508,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
                 row["narrative_evidence_refs_json"],
                 row["risk_penalty"], row["risk_evidence_refs_json"],
                 row["risk_reasons_json"],
+                row["game_balance"], row["bull_case"], row["bear_case"],
+                row["policy_case"], row["fund_flow_case"],
+                row["resonance_count"], row["game_balance_refs_json"],
                 candidate.created_at, row["updated_at"],
             ),
         )
