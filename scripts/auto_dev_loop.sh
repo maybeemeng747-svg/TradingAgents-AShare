@@ -658,11 +658,13 @@ if [ ${#ISSUES_LOG[@]} -gt 0 ]; then
     echo "========================================"
 fi
 
-# ─── 计数并继续下一个任务 ──────────────────────────
+# ─── 计数并决定是否继续 ──────────────────────────
 if [ "$RESULT_STATUS" = "DONE" ]; then
     COMPLETED_TASKS=$((COMPLETED_TASKS + 1))
+    log "--- 任务 $TASK_ID 完成，继续下一个 ---"
 else
     FAILED_TASKS=$((FAILED_TASKS + 1))
+    err "--- 任务 $TASK_ID 失败，停止批量执行，等待人工介入 ---"
 fi
 
 # 重置 per-task 变量
@@ -672,7 +674,10 @@ LAST_FAILURE_REASON=""
 COMMIT_HASH=""
 ISSUES_LOG=()
 
-log "--- 任务 $TASK_ID 完成，继续下一个 ---"
+# 失败即停止
+if [ $FAILED_TASKS -gt 0 ]; then
+    break
+fi
 
 
 done
