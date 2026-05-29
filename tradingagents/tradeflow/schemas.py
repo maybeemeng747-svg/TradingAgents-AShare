@@ -97,6 +97,10 @@ class Candidate:
     ta_budget_priority: int = 0  # [S-007] candidate_tier_budget
     tier_reason: str = ""  # [S-007] candidate_tier_budget
     missing_evidence_for_upgrade: list[str] = field(default_factory=list)  # [S-007]
+    tradeflow_data_completeness: float = 0.0  # [S-008] tradeflow_evidence_gate
+    missing_data_fields: list[str] = field(default_factory=list)  # [S-008]
+    what_to_upgrade: list[str] = field(default_factory=list)  # [S-008]
+    evidence_gate_applied: bool = False  # [S-008]
 
     def __post_init__(self):
         if not self.trade_date:
@@ -193,6 +197,10 @@ class Candidate:
             "ta_budget_priority": self.ta_budget_priority,  # [S-007]
             "tier_reason": self.tier_reason,  # [S-007]
             "missing_evidence_for_upgrade_json": json.dumps(self.missing_evidence_for_upgrade, ensure_ascii=False),  # [S-007]
+            "tradeflow_data_completeness": self.tradeflow_data_completeness,  # [S-008] tradeflow_evidence_gate
+            "missing_data_fields_json": json.dumps(self.missing_data_fields, ensure_ascii=False),  # [S-008]
+            "what_to_upgrade_json": json.dumps(self.what_to_upgrade, ensure_ascii=False),  # [S-008]
+            "evidence_gate_applied": 1 if self.evidence_gate_applied else 0,  # [S-008]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -249,6 +257,10 @@ class Candidate:
             ta_budget_priority=row.get("ta_budget_priority", 0),  # [S-007]
             tier_reason=row.get("tier_reason", ""),  # [S-007]
             missing_evidence_for_upgrade=json.loads(row.get("missing_evidence_for_upgrade_json", "[]")),  # [S-007]
+            tradeflow_data_completeness=row.get("tradeflow_data_completeness", 0.0),  # [S-008] tradeflow_evidence_gate
+            missing_data_fields=json.loads(row.get("missing_data_fields_json", "[]")),  # [S-008]
+            what_to_upgrade=json.loads(row.get("what_to_upgrade_json", "[]")),  # [S-008]
+            evidence_gate_applied=bool(row.get("evidence_gate_applied", 0)),  # [S-008]
         )
 
 
@@ -439,6 +451,18 @@ class DailyPlan:
                     lines.append(f"    分层原因: {tier_reason_text}")
                 if missing_upgrade:
                     lines.append(f"    升级所需: {'; '.join(missing_upgrade[:4])}")
+            # [S-008] tradeflow_evidence_gate — display evidence completeness gate
+            tf_comp = c.get("tradeflow_data_completeness", 0)
+            missing_df = c.get("missing_data_fields", [])
+            what_up = c.get("what_to_upgrade", [])
+            gate_applied = c.get("evidence_gate_applied", False)
+            if tf_comp > 0 or missing_df or gate_applied:
+                gate_mark = "⚠门禁降级" if gate_applied else ""
+                lines.append(f"  证据完整度: {tf_comp:.0%} {gate_mark}")
+                if missing_df:
+                    lines.append(f"    缺失字段: {', '.join(missing_df[:5])}")
+                if what_up:
+                    lines.append(f"    升级所需: {'; '.join(what_up[:4])}")
             lines.append("")
 
         return "\n".join(lines)

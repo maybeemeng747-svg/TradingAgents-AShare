@@ -1,0 +1,641 @@
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/project-overview.md
+[0m
+[0m# [0mTodos
+[x] Read S-008 task requirements and understand existing codebase
+[ ] Explore existing TradeFlow modules (schemas, candidate_engine, selection_priority_gate, tier_budget)
+[ ] Implement tradeflow_data_completeness and missing_data_fields in candidate_engine
+[ ] Add completeness gate to tier A and need_deep_ta logic
+[ ] Update schemas.py for new fields
+[ ] Update plan_runner.py and discovery.py for completeness output
+[ ] Write tests for S-008
+[ ] Run all TradeFlow tests to verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/tradeflow
+[0m→ [0mRead tradingagents/tradeflow/schemas.py
+现在让我探索现有代码库，以了解现有结构：
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py
+[0m→ [0mRead tradingagents/tradeflow/selection_priority_gate.py
+[0m→ [0mRead tradingagents/tradeflow/tier_budget.py
+现在让我阅读现有的 `selection_priority_gate` 和 `tier_budget` 模块，以了解当前的完整度逻辑：
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py
+[0m→ [0mRead tradingagents/tradeflow/discovery.py
+现在我也来读取 `plan_runner` 和 `discovery` 模块：
+[0m
+[0m# [0mTodos
+[x] Read S-008 task requirements and understand existing codebase
+[x] Explore existing TradeFlow modules (schemas, candidate_engine, selection_priority_gate, tier_budget)
+[ ] Implement evidence_gate.py module with completeness computation and gate logic
+[ ] Add S-008 fields to schemas.py (Candidate + render_text)
+[ ] Integrate evidence gate into candidate_engine.py evaluate_symbol()
+[ ] Update plan_runner.py and discovery.py for evidence gate output
+[ ] Write tests for S-008
+[ ] Run all TradeFlow tests to verify
+[ ] Update docs/DEVLOG.md
+[0m
+现在我对任务有了全面的理解。S-008 需要以下内容：
+
+1. 一个新的 `evidence_gate.py` 模块，用于计算 `tradeflow_data_completeness` 和 `missing_data_fields`
+2. 它至少涵盖：行情 OHLCV、流动性、事件来源、资金流单位验证、风险标签证据
+3. 当完整度低于阈值时，阻止 A 层和 `need_deep_ta=True`
+4. 显示“缺少什么证据才能升级”
+
+关键在于，S-005 已经在 `_compute_data_completeness()` 中实现了 `data_completeness` 和 `missing_evidence`。S-008 构建在此之上，增加了 **交易流级别** 的证据门控（更全面：检查数据是否确实存在且有效，而不仅仅是布尔标志），并强制执行严格的 **门控** 以防止在数据缺失时进入 A 层或 `need_deep_ta`。
+
+让我来实施：
+[0m← [0mWrite tradingagents/tradeflow/evidence_gate.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[x] Read S-008 task requirements and understand existing codebase
+[x] Explore existing TradeFlow modules (schemas, candidate_engine, selection_priority_gate, tier_budget)
+[x] Implement evidence_gate.py module with completeness computation and gate logic
+[ ] Add S-008 fields to schemas.py (Candidate + render_text)
+[ ] Integrate evidence gate into candidate_engine.py evaluate_symbol()
+[ ] Update plan_runner.py and discovery.py for evidence gate output
+[ ] Write tests for S-008
+[ ] Run all TradeFlow tests to verify
+[ ] Update docs/DEVLOG.md
+[0m
+现在向 `schemas.py` 中的 `Candidate` 添加字段：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -96,8 +96,12 @@
+ tier: str = ""  # [S-007] candidate_tier_budget
+ ta_budget_priority: int = 0  # [S-007] candidate_tier_budget
+ tier_reason: str = ""  # [S-007] candidate_tier_budget
+ missing_evidence_for_upgrade: list[str] = field(default_factory=list)  # [S-007]
++tradeflow_data_completeness: float = 0.0  # [S-008] tradeflow_evidence_gate
++missing_data_fields: list[str] = field(default_factory=list)  # [S-008]
++what_to_upgrade: list[str] = field(default_factory=list)  # [S-008]
++evidence_gate_applied: bool = False  # [S-008]
+ 
+ def __post_init__(self):
+     if not self.trade_date:
+         self.trade_date = datetime.now().strftime("%Y-%m-%d")
+
+[0m
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -196,8 +196,12 @@
+         "tier": self.tier,  # [S-007] candidate_tier_budget
+         "ta_budget_priority": self.ta_budget_priority,  # [S-007]
+         "tier_reason": self.tier_reason,  # [S-007]
+         "missing_evidence_for_upgrade_json": json.dumps(self.missing_evidence_for_upgrade, ensure_ascii=False),  # [S-007]
++        "tradeflow_data_completeness": self.tradeflow_data_completeness,  # [S-008] tradeflow_evidence_gate
++        "missing_data_fields_json": json.dumps(self.missing_data_fields, ensure_ascii=False),  # [S-008]
++        "what_to_upgrade_json": json.dumps(self.what_to_upgrade, ensure_ascii=False),  # [S-008]
++        "evidence_gate_applied": 1 if self.evidence_gate_applied else 0,  # [S-008]
+         "updated_at": datetime.now().isoformat(),
+     }
+ 
+ @classmethod
+
+[0m
+现在更新 `schemas.py` 中的 `to_db_row()`：
+现在更新 `schemas.py` 中的 `from_db_row()`:
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -256,8 +256,12 @@
+             tier=row.get("tier", ""),  # [S-007] candidate_tier_budget
+             ta_budget_priority=row.get("ta_budget_priority", 0),  # [S-007]
+             tier_reason=row.get("tier_reason", ""),  # [S-007]
+             missing_evidence_for_upgrade=json.loads(row.get("missing_evidence_for_upgrade_json", "[]")),  # [S-007]
++            tradeflow_data_completeness=row.get("tradeflow_data_completeness", 0.0),  # [S-008] tradeflow_evidence_gate
++            missing_data_fields=json.loads(row.get("missing_data_fields_json", "[]")),  # [S-008]
++            what_to_upgrade=json.loads(row.get("what_to_upgrade_json", "[]")),  # [S-008]
++            evidence_gate_applied=bool(row.get("evidence_gate_applied", 0)),  # [S-008]
+         )
+ 
+ 
+ @dataclass
+
+[0m
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -450,7 +450,19 @@
+         if tier_reason_text:
+             lines.append(f"    分层原因: {tier_reason_text}")
+         if missing_upgrade:
+             lines.append(f"    升级所需: {'; '.join(missing_upgrade[:4])}")
++    # [S-008] tradeflow_evidence_gate — display evidence completeness gate
++    tf_comp = c.get("tradeflow_data_completeness", 0)
++    missing_df = c.get("missing_data_fields", [])
++    what_up = c.get("what_to_upgrade", [])
++    gate_applied = c.get("evidence_gate_applied", False)
++    if tf_comp > 0 or missing_df or gate_applied:
++        gate_mark = "⚠门禁降级" if gate_applied else ""
++        lines.append(f"  证据完整度: {tf_comp:.0%} {gate_mark}")
++        if missing_df:
++            lines.append(f"    缺失字段: {', '.join(missing_df[:5])}")
++        if what_up:
++            lines.append(f"    升级所需: {'; '.join(what_up[:4])}")
+     lines.append("")
+ 
+ return "\n".join(lines)
+
+[0m
+现在将 S-008 渲染添加到 `DailyPlan` 中的 `render_text()` 中：
+[0m# [0mTodos
+[x] Read S-008 task requirements and understand existing codebase
+[x] Explore existing TradeFlow modules (schemas, candidate_engine, selection_priority_gate, tier_budget)
+[x] Implement evidence_gate.py module with completeness computation and gate logic
+[x] Add S-008 fields to schemas.py (Candidate + render_text)
+[ ] Integrate evidence gate into candidate_engine.py evaluate_symbol()
+[ ] Update plan_runner.py and discovery.py for evidence gate output
+[ ] Write tests for S-008
+[ ] Run all TradeFlow tests to verify
+[ ] Update docs/DEVLOG.md
+[0m
+现在将证据门整合到 `candidate_engine.py` 中：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -28,8 +28,9 @@
+ from .game_balance import assess_game_balance, GameBalanceResult  # [S-004] candidate_game_balance
+ from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult, FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT  # [T-003] fund_flow_anomaly_pool
+ from .selection_priority_gate import run_selection_priority_gate, SelectionPriorityResult  # [S-005] selection_priority_gate
+ from .tier_budget import classify_candidate_tier, TierBudgetResult  # [S-007] candidate_tier_budget
++from .evidence_gate import compute_evidence_completeness, apply_evidence_gate, EvidenceGateResult  # [S-008] tradeflow_evidence_gate
+ 
+ 
+ # ── SQL for table creation ──
+ CREATE_CANDIDATES_TABLE = """
+
+[0m
+现在为 S-008 新字段添加数据库迁移列：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -179,8 +179,19 @@
+     try:
+         conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+     except sqlite3.OperationalError:
+         pass
++# [S-008] tradeflow_evidence_gate — add evidence gate columns
++for _col, _type in [
++    ("tradeflow_data_completeness", "REAL DEFAULT 0.0"),
++    ("missing_data_fields_json", "TEXT DEFAULT '[]'"),
++    ("what_to_upgrade_json", "TEXT DEFAULT '[]'"),
++    ("evidence_gate_applied", "INTEGER DEFAULT 0"),
++]:
++    try:
++        conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
++    except sqlite3.OperationalError:
++        pass
+ conn.commit()
+ conn.close()
+ 
+ 
+
+[0m
+现在将证据门调用添加到 `evaluate_symbol()` 中，在 S-007 之后：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -609,8 +609,67 @@
+         "missing_evidence_for_upgrade": tier_result.missing_evidence_for_upgrade,
+         "why_not_deep_ta": tier_result.why_not_deep_ta,
+     }
+ 
++    # [S-008] tradeflow_evidence_gate — compute evidence completeness and apply gate
++    has_ohlcv = df is not None and len(df) >= 40
++    is_low_liquidity, _, _, _ = _calc_liquidity(df) if df is not None and len(df) >= 5 else (True, 0.0, 0.0, 0.0)
++    has_liquidity = not is_low_liquidity
++    has_event_source = bool(all_event_texts)
++    has_fund_flow_unit = candidate.fund_flow_unit_verified
++    has_risk_labels = len(candidate.risk_flags) > 0 or candidate.risk_penalty != 0.0
++    has_tech_signal = "VCP" in set(candidate.strategy_tags) or "PULLBACK_SUPPORT" in set(candidate.strategy_tags)
++    has_policy_signal = candidate.version_score > 0 or len(candidate.policy_tags) > 0
++    has_narrative_signal = candidate.narrative_score > 0
++    positive_ff_tags = set(candidate.fund_flow_anomaly_tags) - {"NET_OUTFLOW_DOMINANT"}
++    has_fund_signal = bool(positive_ff_tags) and candidate.fund_flow_anomaly_score > 0
++    has_game_assessment = bool(candidate.game_balance)
++
++    eg_result: EvidenceGateResult = compute_evidence_completeness(
++        has_ohlcv=has_ohlcv,
++        has_liquidity=has_liquidity,
++        has_event_source=has_event_source,
++        has_fund_flow_unit=has_fund_flow_unit,
++        has_risk_labels=has_risk_labels,
++        has_tech_signal=has_tech_signal,
++        has_policy_signal=has_policy_signal,
++        has_narrative_signal=has_narrative_signal,
++        has_fund_signal=has_fund_signal,
++        has_game_assessment=has_game_assessment,
++    )
++    gate_override = apply_evidence_gate(
++        candidate_completeness=eg_result.tradeflow_data_completeness,
++        candidate_tier=candidate.tier,
++        candidate_need_deep_ta=candidate.need_deep_ta,
++        can_enter_a_tier=eg_result.can_enter_a_tier,
++        can_trigger_deep_ta=eg_result.can_trigger_deep_ta,
++        what_to_upgrade=eg_result.what_to_upgrade,
++        missing_data_fields=eg_result.missing_data_fields,
++    )
++    candidate.tradeflow_data_completeness = eg_result.tradeflow_data_completeness
++    candidate.missing_data_fields = eg_result.missing_data_fields
++    candidate.what_to_upgrade = gate_override["what_to_upgrade"]
++    candidate.evidence_gate_applied = gate_override["gate_applied"]
++    if gate_override["gate_applied"]:
++        if gate_override["tier"] != candidate.tier:
++            candidate.tier = gate_override["tier"]
++            candidate.ta_budget_priority = gate_override["ta_budget_priority"]
++            if gate_override["tier_reason_addition"]:
++                candidate.tier_reason = f"{gate_override['tier_reason_addition']}；{candidate.tier_reason}" if candidate.tier_reason else gate_override["tier_reason_addition"]
++        if not gate_override["need_deep_ta"] and candidate.need_deep_ta:
++            candidate.need_deep_ta = False
++            if gate_override["why_not_deep_ta_addition"]:
++                candidate.why_not_deep_ta = f"{gate_override['why_not_deep_ta_addition']}；{candidate.why_not_deep_ta}" if candidate.why_not_deep_ta else gate_override["why_not_deep_ta_addition"]
++    candidate.evidence["evidence_gate"] = {
++        "tradeflow_data_completeness": eg_result.tradeflow_data_completeness,
++        "missing_data_fields": eg_result.missing_data_fields,
++        "can_enter_a_tier": eg_result.can_enter_a_tier,
++        "can_trigger_deep_ta": eg_result.can_trigger_deep_ta,
++        "what_to_upgrade": eg_result.what_to_upgrade,
++        "gate_applied": gate_override["gate_applied"],
++        "refs": eg_result.evidence_gate_refs,
++    }
++
+     return candidate, ""
+ 
+ 
+ def save_candidate(candidate: Candidate, db_path: str) -> int:
+
+[0m
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -692,10 +692,11 @@
+ "composite_score, signal_category_hits_json, positive_category_count, "
+ "data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta, "
+ "priority_rank, "
+ "tier, ta_budget_priority, tier_reason, missing_evidence_for_upgrade_json, "
++"tradeflow_data_completeness, missing_data_fields_json, what_to_upgrade_json, evidence_gate_applied, "
+ "created_at, updated_at) "
+-"VALUES ({}) ".format(",".join(["?"] * 50))
++"VALUES ({}) ".format(",".join(["?"] * 54))
+ + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+ "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+ "trigger_price=excluded.trigger_price, "
+ "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+
+[0m
+现在更新 `save_candidate` SQL，以包含 S-008 字段：
+现在，更新冲突操作的 SET 子句：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -730,8 +730,12 @@
+ "priority_rank=excluded.priority_rank, "
+ "tier=excluded.tier, ta_budget_priority=excluded.ta_budget_priority, "
+ "tier_reason=excluded.tier_reason, "
+ "missing_evidence_for_upgrade_json=excluded.missing_evidence_for_upgrade_json, "
++"tradeflow_data_completeness=excluded.tradeflow_data_completeness, "
++"missing_data_fields_json=excluded.missing_data_fields_json, "
++"what_to_upgrade_json=excluded.what_to_upgrade_json, "
++"evidence_gate_applied=excluded.evidence_gate_applied, "
+ "updated_at=excluded.updated_at",
+ (
+     row["trade_date"], row["symbol"], row["name"], row["source"],
+     row["strategy_tags_json"], row["primary_strategy"],
+
+[0m
+现在更新 `VALUES` 元组，使其包含新的字段：
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -759,8 +759,10 @@
+         row["missing_evidence_json"], row["why_deep_ta"], row["why_not_deep_ta"],
+         row["priority_rank"],
+         row["tier"], row["ta_budget_priority"],
+         row["tier_reason"], row["missing_evidence_for_upgrade_json"],
++        row["tradeflow_data_completeness"], row["missing_data_fields_json"],
++        row["what_to_upgrade_json"], row["evidence_gate_applied"],
+         candidate.created_at, row["updated_at"],
+     ),
+ )
+ conn.commit()
+
+[0m
+[0m# [0mTodos
+[x] Read S-008 task requirements and understand existing codebase
+[x] Explore existing TradeFlow modules (schemas, candidate_engine, selection_priority_gate, tier_budget)
+[x] Implement evidence_gate.py module with completeness computation and gate logic
+[x] Add S-008 fields to schemas.py (Candidate + render_text)
+[x] Integrate evidence gate into candidate_engine.py evaluate_symbol()
+[ ] Update plan_runner.py and discovery.py for evidence gate output
+[ ] Write tests for S-008
+[ ] Run all TradeFlow tests to verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -100,8 +100,12 @@
+         "tier": candidate.tier,  # [S-007] candidate_tier_budget
+         "ta_budget_priority": candidate.ta_budget_priority,  # [S-007]
+         "tier_reason": candidate.tier_reason,  # [S-007]
+         "missing_evidence_for_upgrade": candidate.missing_evidence_for_upgrade,  # [S-007]
++        "tradeflow_data_completeness": candidate.tradeflow_data_completeness,  # [S-008] tradeflow_evidence_gate
++        "missing_data_fields": candidate.missing_data_fields,  # [S-008]
++        "what_to_upgrade": candidate.what_to_upgrade,  # [S-008]
++        "evidence_gate_applied": candidate.evidence_gate_applied,  # [S-008]
+     }
+ 
+ 
+ def generate_daily_plan(
+
+[0m
+现在更新 `plan_runner.py` 以在计划条目中包含 S-008 字段：
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -352,8 +352,12 @@
+         "tier": candidate.tier,  # [S-007] candidate_tier_budget
+         "ta_budget_priority": candidate.ta_budget_priority,  # [S-007]
+         "tier_reason": candidate.tier_reason,  # [S-007]
+         "missing_evidence_for_upgrade": candidate.missing_evidence_for_upgrade,  # [S-007]
++        "tradeflow_data_completeness": candidate.tradeflow_data_completeness,  # [S-008] tradeflow_evidence_gate
++        "missing_data_fields": candidate.missing_data_fields,  # [S-008]
++        "what_to_upgrade": candidate.what_to_upgrade,  # [S-008]
++        "evidence_gate_applied": candidate.evidence_gate_applied,  # [S-008]
+     }
+ 
+ 
+ def _classify_filter_reasons(filtered: list[FilteredSymbol]) -> dict[str, int]:
+
+[0m
+现在更新 `discovery.py` 中的 `_build_discovery_entry`：
+现在更新 `discovery.py` 中 S-008 显示的 `render_discovery_text`：
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -469,8 +469,21 @@
+             lines.append(f"    分层原因: {tier_reason_text}")
+         if missing_upgrade:
+             lines.append(f"    升级所需: {'; '.join(missing_upgrade[:4])}")
+ 
++    # [S-008] tradeflow_evidence_gate — display evidence completeness
++    tf_comp = c.get("tradeflow_data_completeness", 0)
++    missing_df = c.get("missing_data_fields", [])
++    what_up = c.get("what_to_upgrade", [])
++    gate_applied = c.get("evidence_gate_applied", False)
++    if tf_comp > 0 or missing_df or gate_applied:
++        gate_mark = "⚠门禁降级" if gate_applied else ""
++        lines.append(f"  证据完整度: {tf_comp:.0%} {gate_mark}")
++        if missing_df:
++            lines.append(f"    缺失字段: {', '.join(missing_df[:5])}")
++        if what_up:
++            lines.append(f"    升级所需: {'; '.join(what_up[:4])}")
++
+     lines.append("")
+ 
+ if result.filtered:
+     lines.append(f"--- 被过滤 ({len(result.filtered)}只) ---")
+
+[0m
+现在，更新 `discovery.py` 中的元数据部分，以包含证据门摘要：
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -290,8 +290,17 @@
+         "demoted_count": len(budget_allocation.demoted_symbols),
+     }
+     result.metadata["tier_budget_summary"] = render_tier_budget_summary(budget_allocation)
+ 
++    # [S-008] tradeflow_evidence_gate — add evidence gate summary to metadata
++    gate_blocked_count = sum(1 for e in plan_entries if e.get("evidence_gate_applied"))
++    gate_deep_ta_blocked = sum(1 for e in plan_entries if e.get("evidence_gate_applied") and not e.get("need_deep_ta"))
++    result.metadata["evidence_gate"] = {
++        "gate_blocked_count": gate_blocked_count,
++        "deep_ta_blocked_count": gate_deep_ta_blocked,
++        "avg_completeness": round(sum(e.get("tradeflow_data_completeness", 0) for e in plan_entries) / max(len(plan_entries), 1), 3),
++    }
++
+     return result
+ 
+ 
+ def _build_discovery_entry(candidate: Candidate) -> dict:
+
+[0m
+现在，也为 `plan_runner.py` 的元数据添加一个类似的证据门控总结：
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -271,8 +271,17 @@
+     "demoted_count": len(budget_allocation.demoted_symbols),
+ }
+ plan.metadata["tier_budget_summary"] = render_tier_budget_summary(budget_allocation)
+ 
++# [S-008] tradeflow_evidence_gate — add evidence gate summary to metadata
++gate_blocked_count = sum(1 for e in plan_entries if e.get("evidence_gate_applied"))
++gate_deep_ta_blocked = sum(1 for e in plan_entries if e.get("evidence_gate_applied") and not e.get("need_deep_ta"))
++plan.metadata["evidence_gate"] = {
++    "gate_blocked_count": gate_blocked_count,
++    "deep_ta_blocked_count": gate_deep_ta_blocked,
++    "avg_completeness": round(sum(e.get("tradeflow_data_completeness", 0) for e in plan_entries) / max(len(plan_entries), 1), 3),
++}
++
+ # Validate
+ issues = plan.validate()
+ if issues:
+     plan.metadata["validation_issues"] = issues
+
+[0m
+[0m# [0mTodos
+[x] Read S-008 task requirements and understand existing codebase
+[x] Explore existing TradeFlow modules (schemas, candidate_engine, selection_priority_gate, tier_budget)
+[x] Implement evidence_gate.py module with completeness computation and gate logic
+[x] Add S-008 fields to schemas.py (Candidate + render_text)
+[x] Integrate evidence gate into candidate_engine.py evaluate_symbol()
+[x] Update plan_runner.py and discovery.py for evidence gate output
+[ ] Write tests for S-008
+[ ] Run all TradeFlow tests to verify
+[ ] Update docs/DEVLOG.md
+[0m
+现在编写 S-008 的综合测试文件：
+[0m← [0mWrite tests/test_s008_evidence_gate.py
+Wrote file successfully.
+[0m
+现在让我们运行 S-008 专项测试：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_s008_evidence_gate.py -q 2>&1
+............................ssss.........................                [100%]
+53 passed, 4 skipped in 0.23s
+[0m
+现在运行完整的 TradeFlow 测试套件，以检查是否存在回归：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tradeflow_*.py tests/test_s0*.py tests/test_t0*.py tests/test_m0*.py -q 2>&1
+........................................................................ [  9%]
+........................................................................ [ 18%]
+........................................................................ [ 28%]
+........................................................................ [ 37%]
+........................................................................ [ 47%]
+........................................................................ [ 56%]
+........................................................................ [ 66%]
+..ss.................................................ssss............... [ 75%]
+........................................................................ [ 85%]
+........................................................................ [ 94%]
+.........................................                                [100%]
+755 passed, 6 skipped in 5.86s
+[0m
+所有测试通过。现在我来运行扩展的回归测试：
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_readiness_score.py tests/test_g001_three_layer.py -q 2>&1
+........................................................................ [ 44%]
+........................................................................ [ 88%]
+...................                                                      [100%]
+163 passed in 66.44s (0:01:06)
+[0m
+[0m# [0mTodos
+[x] Read S-008 task requirements and understand existing codebase
+[x] Explore existing TradeFlow modules (schemas, candidate_engine, selection_priority_gate, tier_budget)
+[x] Implement evidence_gate.py module with completeness computation and gate logic
+[x] Add S-008 fields to schemas.py (Candidate + render_text)
+[x] Integrate evidence gate into candidate_engine.py evaluate_symbol()
+[x] Update plan_runner.py and discovery.py for evidence gate output
+[x] Write tests for S-008
+[x] Run all TradeFlow tests to verify
+[ ] Update docs/DEVLOG.md
+[0m
+所有测试均通过。现在更新 `docs/DEVLOG.md`：
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,56 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-05-29 | S-008 TradeFlow 证据完整度门禁
++
++- **执行者**：OpenCode (glm-5.1)
++- **任务**：给候选池增加轻量证据完整度门禁，避免缺行情、缺资金、缺事件来源时分数虚高
++- **修改文件**：
++  - `tradingagents/tradeflow/evidence_gate.py`（新增，~230行）— [S-008] tradeflow_evidence_gate
++    - `compute_evidence_completeness()` — 10 维度证据完整度计算
++    - `EvidenceGateResult` — 输出 `tradeflow_data_completeness`、`missing_data_fields`、`present_data_fields`、`can_enter_a_tier`、`can_trigger_deep_ta`、`what_to_upgrade`、`evidence_gate_refs`
++    - 10 个证据维度：ohlcv、liquidity、event_source、fund_flow_unit、risk_labels、tech_signal、policy_signal、narrative_signal、fund_signal、game_assessment
++    - `apply_evidence_gate()` — 对 S-005/S-007 已分配的 tier 和 need_deep_ta 做门禁覆写
++    - A 层门禁阈值：完整度 ≥ 60%；深挖门禁阈值：完整度 ≥ 50%
++    - 关键维度缺失（ohlcv/liquidity/risk_labels）时生成升级提示
++    - 信号维度不足（≥3 类缺失）时生成信号补充提示
++    - 数据缺失只能降权或标记缺口，不能编造补全
++    - 所有输出禁止强买卖词
++  - `tradingagents/tradeflow/schemas.py` — [S-008]
++    - `Candidate` 新增 4 个字段：tradeflow_data_completeness、missing_data_fields、what_to_upgrade、evidence_gate_applied
++    - `to_db_row()` / `from_db_row()` 支持新字段持久化
++    - `DailyPlan.render_text()` 展示证据完整度、缺失字段、门禁降级标记、升级提示
++  - `tradingagents/tradeflow/candidate_engine.py` — [S-008]
++    - `evaluate_symbol()` 在 S-007 分层之后调用 `compute_evidence_completeness()` 和 `apply_evidence_gate()`
++    - 门禁结果覆写 tier（A→B）和 need_deep_ta（True→False）
++    - `init_db()` 新增 4 列迁移
++    - `save_candidate()` INSERT/UPDATE 包含新字段
++  - `tradingagents/tradeflow/plan_runner.py` — [S-008]
++    - `_build_plan_entry()` 输出门禁全部字段
++    - `generate_daily_plan()` metadata 增加 `evidence_gate` 摘要
++  - `tradingagents/tradeflow/discovery.py` — [S-008]
++    - `_build_discovery_entry()` 输出门禁全部字段
++    - `render_discovery_text()` 展示证据完整度和门禁降级
++    - `run_discovery()` metadata 增加 `evidence_gate` 摘要
++  - `tests/test_s008_evidence_gate.py`（新增，~480行）— 53 个测试 + 4 skip
++- **关键逻辑**：
++  1. 10 维度细粒度证据检查，超越 S-005 的布尔标志，检查数据是否真实存在
++  2. 缺资金单位校验时不触发高置信资金异动（missing_data_fields 包含"资金流单位校验"）
++  3. 缺行情/流动性数据时不进入 A 层（can_enter_a_tier=False）
++  4. 完整数据样本不被误降级（can_enter_a_tier=True，gate_applied=False）
++  5. A 层门禁阈值 60%，深挖门禁阈值 50%，与 S-005/S-007 保持一致
++  6. 门禁在 S-007 分层之后执行，可覆写 S-007 的 tier 分配
++  7. 不改 TA 深度报告 readiness 逻辑，只在 TradeFlow 候选层做门禁
++- **标记**：`# [S-008] tradeflow_evidence_gate`
++- **测试结果**：
++  - S-008 专项测试：53 passed, 4 skipped
++  - S/T/M 系列联合测试（S-001~S-008 + T-002 + T-003）：755 passed, 6 skipped
++  - 扩展回归测试（readiness_score + g001_three_layer）：163 passed
++
++---
++
+ ## 2026-05-29 | S-007 候选分层与 TA token 预算分配
+ 
+ - **执行者**：OpenCode (glm-5.1)
+ - **任务**：把候选池分为 A/B/C 三层，明确哪些值得优先深度 TA、哪些只观察、哪些淘汰，避免把 token 消耗在弱候选上
+
+[0m
+[0m# [0mTodos
+[x] Read S-008 task requirements and understand existing codebase
+[x] Explore existing TradeFlow modules (schemas, candidate_engine, selection_priority_gate, tier_budget)
+[x] Implement evidence_gate.py module with completeness computation and gate logic
+[x] Add S-008 fields to schemas.py (Candidate + render_text)
+[x] Integrate evidence gate into candidate_engine.py evaluate_symbol()
+[x] Update plan_runner.py and discovery.py for evidence gate output
+[x] Write tests for S-008
+[x] Run all TradeFlow tests to verify
+[x] Update docs/DEVLOG.md
+[0m
+## 完成总结
+
+### 修改文件
+
+| 文件 | 变更 |
+|------|------|
+| `tradingagents/tradeflow/evidence_gate.py` | **新增** (~230行) — 10维度证据完整度计算 + 门禁覆写逻辑 |
+| `tradingagents/tradeflow/schemas.py` | Candidate 新增 4 字段 + to_db_row/from_db_row + render_text 展示 |
+| `tradingagents/tradeflow/candidate_engine.py` | evaluate_symbol() 集成门禁 + init_db 迁移 + save_candidate |
+| `tradingagents/tradeflow/plan_runner.py` | _build_plan_entry + metadata evidence_gate 摘要 |
+| `tradingagents/tradeflow/discovery.py` | _build_discovery_entry + render_discovery_text + metadata |
+| `tests/test_s008_evidence_gate.py` | **新增** (~480行) — 53 个测试 |
+| `docs/DEVLOG.md` | 新增 S-008 条目 |
+
+### 关键逻辑
+
+1. **10 维度证据检查**：ohlcv、liquidity、event_source、fund_flow_unit、risk_labels、tech_signal、policy_signal、narrative_signal、fund_signal、game_assessment
+2. **门禁阈值**：A 层 ≥ 60%，deep_ta ≥ 50%，与 S-005/S-007 一致
+3. **覆写逻辑**：门禁在 S-007 分层之后执行，可覆写 tier（A→B）和 need_deep_ta（True→False）
+4. **数据缺失只降权不编造**：missing_data_fields 明确列出缺失维度，what_to_upgrade 给出升级建议
+
+### 测试结果
+
+| 测试集 | 结果 |
+|--------|------|
+| S-008 专项 | **53 passed**, 4 skipped |
+| S/T/M 联合 | **755 passed**, 6 skipped |
+| 回归 (readiness + g001) | **163 passed** |

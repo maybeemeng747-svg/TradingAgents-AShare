@@ -291,6 +291,15 @@ def run_discovery(
     }
     result.metadata["tier_budget_summary"] = render_tier_budget_summary(budget_allocation)
 
+    # [S-008] tradeflow_evidence_gate — add evidence gate summary to metadata
+    gate_blocked_count = sum(1 for e in plan_entries if e.get("evidence_gate_applied"))
+    gate_deep_ta_blocked = sum(1 for e in plan_entries if e.get("evidence_gate_applied") and not e.get("need_deep_ta"))
+    result.metadata["evidence_gate"] = {
+        "gate_blocked_count": gate_blocked_count,
+        "deep_ta_blocked_count": gate_deep_ta_blocked,
+        "avg_completeness": round(sum(e.get("tradeflow_data_completeness", 0) for e in plan_entries) / max(len(plan_entries), 1), 3),
+    }
+
     return result
 
 
@@ -353,6 +362,10 @@ def _build_discovery_entry(candidate: Candidate) -> dict:
         "ta_budget_priority": candidate.ta_budget_priority,  # [S-007]
         "tier_reason": candidate.tier_reason,  # [S-007]
         "missing_evidence_for_upgrade": candidate.missing_evidence_for_upgrade,  # [S-007]
+        "tradeflow_data_completeness": candidate.tradeflow_data_completeness,  # [S-008] tradeflow_evidence_gate
+        "missing_data_fields": candidate.missing_data_fields,  # [S-008]
+        "what_to_upgrade": candidate.what_to_upgrade,  # [S-008]
+        "evidence_gate_applied": candidate.evidence_gate_applied,  # [S-008]
     }
 
 
@@ -465,6 +478,19 @@ def render_discovery_text(result: DiscoveryResult) -> str:
                 lines.append(f"    分层原因: {tier_reason_text}")
             if missing_upgrade:
                 lines.append(f"    升级所需: {'; '.join(missing_upgrade[:4])}")
+
+        # [S-008] tradeflow_evidence_gate — display evidence completeness
+        tf_comp = c.get("tradeflow_data_completeness", 0)
+        missing_df = c.get("missing_data_fields", [])
+        what_up = c.get("what_to_upgrade", [])
+        gate_applied = c.get("evidence_gate_applied", False)
+        if tf_comp > 0 or missing_df or gate_applied:
+            gate_mark = "⚠门禁降级" if gate_applied else ""
+            lines.append(f"  证据完整度: {tf_comp:.0%} {gate_mark}")
+            if missing_df:
+                lines.append(f"    缺失字段: {', '.join(missing_df[:5])}")
+            if what_up:
+                lines.append(f"    升级所需: {'; '.join(what_up[:4])}")
 
         lines.append("")
 

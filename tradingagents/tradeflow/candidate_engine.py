@@ -29,6 +29,7 @@ from .game_balance import assess_game_balance, GameBalanceResult  # [S-004] cand
 from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult, FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT  # [T-003] fund_flow_anomaly_pool
 from .selection_priority_gate import run_selection_priority_gate, SelectionPriorityResult  # [S-005] selection_priority_gate
 from .tier_budget import classify_candidate_tier, TierBudgetResult  # [S-007] candidate_tier_budget
+from .evidence_gate import compute_evidence_completeness, apply_evidence_gate, EvidenceGateResult  # [S-008] tradeflow_evidence_gate
 
 
 # ── SQL for table creation ──
@@ -174,6 +175,17 @@ def init_db(db_path: str) -> None:
         ("ta_budget_priority", "INTEGER DEFAULT 0"),
         ("tier_reason", "TEXT DEFAULT ''"),
         ("missing_evidence_for_upgrade_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-008] tradeflow_evidence_gate — add evidence gate columns
+    for _col, _type in [
+        ("tradeflow_data_completeness", "REAL DEFAULT 0.0"),
+        ("missing_data_fields_json", "TEXT DEFAULT '[]'"),
+        ("what_to_upgrade_json", "TEXT DEFAULT '[]'"),
+        ("evidence_gate_applied", "INTEGER DEFAULT 0"),
     ]:
         try:
             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
@@ -598,6 +610,65 @@ def evaluate_symbol(
         "why_not_deep_ta": tier_result.why_not_deep_ta,
     }
 
+    # [S-008] tradeflow_evidence_gate — compute evidence completeness and apply gate
+    has_ohlcv = df is not None and len(df) >= 40
+    is_low_liquidity, _, _, _ = _calc_liquidity(df) if df is not None and len(df) >= 5 else (True, 0.0, 0.0, 0.0)
+    has_liquidity = not is_low_liquidity
+    has_event_source = bool(all_event_texts)
+    has_fund_flow_unit = candidate.fund_flow_unit_verified
+    has_risk_labels = len(candidate.risk_flags) > 0 or candidate.risk_penalty != 0.0
+    has_tech_signal = "VCP" in set(candidate.strategy_tags) or "PULLBACK_SUPPORT" in set(candidate.strategy_tags)
+    has_policy_signal = candidate.version_score > 0 or len(candidate.policy_tags) > 0
+    has_narrative_signal = candidate.narrative_score > 0
+    positive_ff_tags = set(candidate.fund_flow_anomaly_tags) - {"NET_OUTFLOW_DOMINANT"}
+    has_fund_signal = bool(positive_ff_tags) and candidate.fund_flow_anomaly_score > 0
+    has_game_assessment = bool(candidate.game_balance)
+
+    eg_result: EvidenceGateResult = compute_evidence_completeness(
+        has_ohlcv=has_ohlcv,
+        has_liquidity=has_liquidity,
+        has_event_source=has_event_source,
+        has_fund_flow_unit=has_fund_flow_unit,
+        has_risk_labels=has_risk_labels,
+        has_tech_signal=has_tech_signal,
+        has_policy_signal=has_policy_signal,
+        has_narrative_signal=has_narrative_signal,
+        has_fund_signal=has_fund_signal,
+        has_game_assessment=has_game_assessment,
+    )
+    gate_override = apply_evidence_gate(
+        candidate_completeness=eg_result.tradeflow_data_completeness,
+        candidate_tier=candidate.tier,
+        candidate_need_deep_ta=candidate.need_deep_ta,
+        can_enter_a_tier=eg_result.can_enter_a_tier,
+        can_trigger_deep_ta=eg_result.can_trigger_deep_ta,
+        what_to_upgrade=eg_result.what_to_upgrade,
+        missing_data_fields=eg_result.missing_data_fields,
+    )
+    candidate.tradeflow_data_completeness = eg_result.tradeflow_data_completeness
+    candidate.missing_data_fields = eg_result.missing_data_fields
+    candidate.what_to_upgrade = gate_override["what_to_upgrade"]
+    candidate.evidence_gate_applied = gate_override["gate_applied"]
+    if gate_override["gate_applied"]:
+        if gate_override["tier"] != candidate.tier:
+            candidate.tier = gate_override["tier"]
+            candidate.ta_budget_priority = gate_override["ta_budget_priority"]
+            if gate_override["tier_reason_addition"]:
+                candidate.tier_reason = f"{gate_override['tier_reason_addition']}；{candidate.tier_reason}" if candidate.tier_reason else gate_override["tier_reason_addition"]
+        if not gate_override["need_deep_ta"] and candidate.need_deep_ta:
+            candidate.need_deep_ta = False
+            if gate_override["why_not_deep_ta_addition"]:
+                candidate.why_not_deep_ta = f"{gate_override['why_not_deep_ta_addition']}；{candidate.why_not_deep_ta}" if candidate.why_not_deep_ta else gate_override["why_not_deep_ta_addition"]
+    candidate.evidence["evidence_gate"] = {
+        "tradeflow_data_completeness": eg_result.tradeflow_data_completeness,
+        "missing_data_fields": eg_result.missing_data_fields,
+        "can_enter_a_tier": eg_result.can_enter_a_tier,
+        "can_trigger_deep_ta": eg_result.can_trigger_deep_ta,
+        "what_to_upgrade": eg_result.what_to_upgrade,
+        "gate_applied": gate_override["gate_applied"],
+        "refs": eg_result.evidence_gate_refs,
+    }
+
     return candidate, ""
 
 
@@ -622,8 +693,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta, "
             "priority_rank, "
             "tier, ta_budget_priority, tier_reason, missing_evidence_for_upgrade_json, "
+            "tradeflow_data_completeness, missing_data_fields_json, what_to_upgrade_json, evidence_gate_applied, "
             "created_at, updated_at) "
-            "VALUES ({}) ".format(",".join(["?"] * 50))
+            "VALUES ({}) ".format(",".join(["?"] * 54))
             + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
             "trigger_price=excluded.trigger_price, "
@@ -659,6 +731,10 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "tier=excluded.tier, ta_budget_priority=excluded.ta_budget_priority, "
             "tier_reason=excluded.tier_reason, "
             "missing_evidence_for_upgrade_json=excluded.missing_evidence_for_upgrade_json, "
+            "tradeflow_data_completeness=excluded.tradeflow_data_completeness, "
+            "missing_data_fields_json=excluded.missing_data_fields_json, "
+            "what_to_upgrade_json=excluded.what_to_upgrade_json, "
+            "evidence_gate_applied=excluded.evidence_gate_applied, "
             "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
@@ -684,6 +760,8 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
                 row["priority_rank"],
                 row["tier"], row["ta_budget_priority"],
                 row["tier_reason"], row["missing_evidence_for_upgrade_json"],
+                row["tradeflow_data_completeness"], row["missing_data_fields_json"],
+                row["what_to_upgrade_json"], row["evidence_gate_applied"],
                 candidate.created_at, row["updated_at"],
             ),
         )

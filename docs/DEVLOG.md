@@ -4,6 +4,54 @@
 
 ---
 
+## 2026-05-29 | S-008 TradeFlow 证据完整度门禁
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：给候选池增加轻量证据完整度门禁，避免缺行情、缺资金、缺事件来源时分数虚高
+- **修改文件**：
+  - `tradingagents/tradeflow/evidence_gate.py`（新增，~230行）— [S-008] tradeflow_evidence_gate
+    - `compute_evidence_completeness()` — 10 维度证据完整度计算
+    - `EvidenceGateResult` — 输出 `tradeflow_data_completeness`、`missing_data_fields`、`present_data_fields`、`can_enter_a_tier`、`can_trigger_deep_ta`、`what_to_upgrade`、`evidence_gate_refs`
+    - 10 个证据维度：ohlcv、liquidity、event_source、fund_flow_unit、risk_labels、tech_signal、policy_signal、narrative_signal、fund_signal、game_assessment
+    - `apply_evidence_gate()` — 对 S-005/S-007 已分配的 tier 和 need_deep_ta 做门禁覆写
+    - A 层门禁阈值：完整度 ≥ 60%；深挖门禁阈值：完整度 ≥ 50%
+    - 关键维度缺失（ohlcv/liquidity/risk_labels）时生成升级提示
+    - 信号维度不足（≥3 类缺失）时生成信号补充提示
+    - 数据缺失只能降权或标记缺口，不能编造补全
+    - 所有输出禁止强买卖词
+  - `tradingagents/tradeflow/schemas.py` — [S-008]
+    - `Candidate` 新增 4 个字段：tradeflow_data_completeness、missing_data_fields、what_to_upgrade、evidence_gate_applied
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示证据完整度、缺失字段、门禁降级标记、升级提示
+  - `tradingagents/tradeflow/candidate_engine.py` — [S-008]
+    - `evaluate_symbol()` 在 S-007 分层之后调用 `compute_evidence_completeness()` 和 `apply_evidence_gate()`
+    - 门禁结果覆写 tier（A→B）和 need_deep_ta（True→False）
+    - `init_db()` 新增 4 列迁移
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+  - `tradingagents/tradeflow/plan_runner.py` — [S-008]
+    - `_build_plan_entry()` 输出门禁全部字段
+    - `generate_daily_plan()` metadata 增加 `evidence_gate` 摘要
+  - `tradingagents/tradeflow/discovery.py` — [S-008]
+    - `_build_discovery_entry()` 输出门禁全部字段
+    - `render_discovery_text()` 展示证据完整度和门禁降级
+    - `run_discovery()` metadata 增加 `evidence_gate` 摘要
+  - `tests/test_s008_evidence_gate.py`（新增，~480行）— 53 个测试 + 4 skip
+- **关键逻辑**：
+  1. 10 维度细粒度证据检查，超越 S-005 的布尔标志，检查数据是否真实存在
+  2. 缺资金单位校验时不触发高置信资金异动（missing_data_fields 包含"资金流单位校验"）
+  3. 缺行情/流动性数据时不进入 A 层（can_enter_a_tier=False）
+  4. 完整数据样本不被误降级（can_enter_a_tier=True，gate_applied=False）
+  5. A 层门禁阈值 60%，深挖门禁阈值 50%，与 S-005/S-007 保持一致
+  6. 门禁在 S-007 分层之后执行，可覆写 S-007 的 tier 分配
+  7. 不改 TA 深度报告 readiness 逻辑，只在 TradeFlow 候选层做门禁
+- **标记**：`# [S-008] tradeflow_evidence_gate`
+- **测试结果**：
+  - S-008 专项测试：53 passed, 4 skipped
+  - S/T/M 系列联合测试（S-001~S-008 + T-002 + T-003）：755 passed, 6 skipped
+  - 扩展回归测试（readiness_score + g001_three_layer）：163 passed
+
+---
+
 ## 2026-05-29 | S-007 候选分层与 TA token 预算分配
 
 - **执行者**：OpenCode (glm-5.1)
@@ -1290,3 +1338,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/S-007-20260529-round1.txt
 - **运行档案**: docs/task_runs/S-007-20260529-171709/
+
+## 2026-05-29 | AUTO-002 自动开发闭环
+
+- **任务**: S-008 — TradeFlow 证据完整度门禁（P1）
+- **优先级**: P1
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/S-008-20260529-round1.txt
+- **运行档案**: docs/task_runs/S-008-20260529-173311/

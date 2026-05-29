@@ -101,6 +101,10 @@ def _build_plan_entry(candidate: Candidate) -> dict:
         "ta_budget_priority": candidate.ta_budget_priority,  # [S-007]
         "tier_reason": candidate.tier_reason,  # [S-007]
         "missing_evidence_for_upgrade": candidate.missing_evidence_for_upgrade,  # [S-007]
+        "tradeflow_data_completeness": candidate.tradeflow_data_completeness,  # [S-008] tradeflow_evidence_gate
+        "missing_data_fields": candidate.missing_data_fields,  # [S-008]
+        "what_to_upgrade": candidate.what_to_upgrade,  # [S-008]
+        "evidence_gate_applied": candidate.evidence_gate_applied,  # [S-008]
     }
 
 
@@ -267,6 +271,15 @@ def generate_daily_plan(
         "demoted_count": len(budget_allocation.demoted_symbols),
     }
     plan.metadata["tier_budget_summary"] = render_tier_budget_summary(budget_allocation)
+
+    # [S-008] tradeflow_evidence_gate — add evidence gate summary to metadata
+    gate_blocked_count = sum(1 for e in plan_entries if e.get("evidence_gate_applied"))
+    gate_deep_ta_blocked = sum(1 for e in plan_entries if e.get("evidence_gate_applied") and not e.get("need_deep_ta"))
+    plan.metadata["evidence_gate"] = {
+        "gate_blocked_count": gate_blocked_count,
+        "deep_ta_blocked_count": gate_deep_ta_blocked,
+        "avg_completeness": round(sum(e.get("tradeflow_data_completeness", 0) for e in plan_entries) / max(len(plan_entries), 1), 3),
+    }
 
     # Validate
     issues = plan.validate()
