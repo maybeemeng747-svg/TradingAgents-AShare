@@ -4,6 +4,53 @@
 
 ---
 
+## 2026-05-29 | S-007 候选分层与 TA token 预算分配
+
+- **执行者**：OpenCode (glm-5.1)
+- **任务**：把候选池分为 A/B/C 三层，明确哪些值得优先深度 TA、哪些只观察、哪些淘汰，避免把 token 消耗在弱候选上
+- **修改文件**：
+  - `tradingagents/tradeflow/tier_budget.py`（新增，~200行）— [S-007] candidate_tier_budget
+    - `classify_candidate_tier()` — 单个候选分层主入口
+    - `TierBudgetResult` — 输出 `tier`(A/B/C)、`ta_budget_priority`(100/30/0)、`tier_reason`、`missing_evidence_for_upgrade`、`why_not_deep_ta`
+    - `allocate_tier_budget()` — 批量执行 A 层上限（默认 5 只），超出降级为 B
+    - `render_tier_budget_summary()` — 人类可读的预算分配摘要
+    - A 层条件：≥3 类信号或(≥2 类 + 综合分 ≥ 50) + 完整度 ≥ 60% + 无高风险 + 博弈 favorable/neutral + 门控通过
+    - C 层条件：高风险 / 风险标签过多(≥3) / 博弈 fragile / 无信号 / 数据严重不足(<30%) / 罚分过重
+    - B 层：不满足 A 也不落入 C 的候选
+    - 所有输出禁止强买卖词
+  - `tradingagents/tradeflow/schemas.py` — [S-007]
+    - `Candidate` 新增 4 个字段：tier、ta_budget_priority、tier_reason、missing_evidence_for_upgrade
+    - `to_db_row()` / `from_db_row()` 支持新字段持久化
+    - `DailyPlan.render_text()` 展示分层、TA 预算、分层原因、升级所需证据
+  - `tradingagents/tradeflow/candidate_engine.py` — [S-007]
+    - `evaluate_symbol()` 在 S-005 门控之后调用 `classify_candidate_tier()`
+    - 分层结果写入 `candidate.evidence["tier_budget"]`
+    - `init_db()` 新增 4 列迁移：tier、ta_budget_priority、tier_reason、missing_evidence_for_upgrade_json
+    - `save_candidate()` INSERT/UPDATE 包含新字段
+  - `tradingagents/tradeflow/plan_runner.py` — [S-007]
+    - `_build_plan_entry()` 输出 tier 全部字段
+    - `generate_daily_plan()` 候选按分层排序(A→B→C)，执行 A 层上限，预算摘要写入 metadata
+  - `tradingagents/tradeflow/discovery.py` — [S-007]
+    - `_build_discovery_entry()` 输出 tier 全部字段
+    - `run_discovery()` 候选按分层排序，执行 A 层上限，预算摘要写入 metadata
+    - `render_discovery_text()` 展示分层信息和预算摘要
+  - `tests/test_s007_tier_budget.py`（新增，~510行）— 63 个测试 + 2 skip
+- **关键逻辑**：
+  1. 分层独立于 S-005 priority_rank，有更严格的准入条件（完整度≥60%、博弈须 favorable/neutral）
+  2. 单一弱信号不得进入 A 层（需 ≥2 类信号 + 综合分 ≥ 50）
+  3. 两类以上强证据且风险可控时可进入 A 层
+  4. A 层默认上限 5 只，超出按排序降级为 B，原因标注"A层已满"
+  5. 每层对应不同 TA 预算建议：A=100 tokens、B=30 tokens、C=0 tokens
+  6. `missing_evidence_for_upgrade` 明确指出升级到 A 层所需的证据缺口
+  7. 不接入真实扣费 API，只输出预算建议和原因
+- **标记**：`# [S-007] candidate_tier_budget`
+- **测试结果**：
+  - S-007 专项测试：63 passed, 2 skipped
+  - S/T 系列联合测试（S-001~S-007 + T-002 + T-003）：637 passed, 2 skipped
+  - 扩展回归测试（readiness_score + g001_three_layer）：163 passed
+
+---
+
 ## 2026-05-29 | S-006 候选误报审计与样本集沉淀
 
 - **执行者**：OpenCode (glm-5.1)
@@ -1232,3 +1279,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/S-006-20260529-round1.txt
 - **运行档案**: docs/task_runs/S-006-20260529-170504/
+
+## 2026-05-29 | AUTO-002 自动开发闭环
+
+- **任务**: S-007 — 候选分层与 TA token 预算分配（P1）
+- **优先级**: P1
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/S-007-20260529-round1.txt
+- **运行档案**: docs/task_runs/S-007-20260529-171709/

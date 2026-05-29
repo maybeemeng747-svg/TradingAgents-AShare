@@ -1,0 +1,2459 @@
+Task: S-007 — 候选分层与 TA token 预算分配（P1）
+Date: 2026-05-29_17:33:11
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e7313-3436-74d2-9181-d50510f6d89c
+--------
+user
+current changes
+exec
+/bin/zsh -lc 'cat docs/project-overview.md docs/TASKS.md docs/DECISIONS.md docs/DEVLOG.md >/tmp/project_context_review.txt && wc -c /tmp/project_context_review.txt' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+  153634 /tmp/project_context_review.txt
+
+exec
+/bin/zsh -lc 'git status --short && git diff --stat && git diff --cached --stat' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/tradeflow/candidate_engine.py
+ M tradingagents/tradeflow/discovery.py
+ M tradingagents/tradeflow/plan_runner.py
+ M tradingagents/tradeflow/schemas.py
+?? .auto_dev.lock/
+?? docs/task_runs/S-007-20260529-171709/
+?? tests/test_s007_tier_budget.py
+?? tradingagents/tradeflow/tier_budget.py
+ docs/DEVLOG.md                              | 47 ++++++++++++++++++++++++
+ docs/TASKS.md                               |  2 +-
+ tradingagents/tradeflow/candidate_engine.py | 48 ++++++++++++++++++++++--
+ tradingagents/tradeflow/discovery.py        | 57 +++++++++++++++++++++++++++++
+ tradingagents/tradeflow/plan_runner.py      | 39 ++++++++++++++++++++
+ tradingagents/tradeflow/schemas.py          | 24 ++++++++++++
+ 6 files changed, 213 insertions(+), 4 deletions(-)
+
+exec
+/bin/zsh -lc "git diff -- tradingagents/tradeflow/candidate_engine.py tradingagents/tradeflow/discovery.py tradingagents/tradeflow/plan_runner.py tradingagents/tradeflow/schemas.py docs/TASKS.md docs/DEVLOG.md && sed -n '1,240p' tradingagents/tradeflow/tier_budget.py && sed -n '1,260p' tests/test_s007_tier_budget.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 95145a4..4d77cd4 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,53 @@
+ 
+ ---
+ 
++## 2026-05-29 | S-007 候选分层与 TA token 预算分配
++
++- **执行者**：OpenCode (glm-5.1)
++- **任务**：把候选池分为 A/B/C 三层，明确哪些值得优先深度 TA、哪些只观察、哪些淘汰，避免把 token 消耗在弱候选上
++- **修改文件**：
++  - `tradingagents/tradeflow/tier_budget.py`（新增，~200行）— [S-007] candidate_tier_budget
++    - `classify_candidate_tier()` — 单个候选分层主入口
++    - `TierBudgetResult` — 输出 `tier`(A/B/C)、`ta_budget_priority`(100/30/0)、`tier_reason`、`missing_evidence_for_upgrade`、`why_not_deep_ta`
++    - `allocate_tier_budget()` — 批量执行 A 层上限（默认 5 只），超出降级为 B
++    - `render_tier_budget_summary()` — 人类可读的预算分配摘要
++    - A 层条件：≥3 类信号或(≥2 类 + 综合分 ≥ 50) + 完整度 ≥ 60% + 无高风险 + 博弈 favorable/neutral + 门控通过
++    - C 层条件：高风险 / 风险标签过多(≥3) / 博弈 fragile / 无信号 / 数据严重不足(<30%) / 罚分过重
++    - B 层：不满足 A 也不落入 C 的候选
++    - 所有输出禁止强买卖词
++  - `tradingagents/tradeflow/schemas.py` — [S-007]
++    - `Candidate` 新增 4 个字段：tier、ta_budget_priority、tier_reason、missing_evidence_for_upgrade
++    - `to_db_row()` / `from_db_row()` 支持新字段持久化
++    - `DailyPlan.render_text()` 展示分层、TA 预算、分层原因、升级所需证据
++  - `tradingagents/tradeflow/candidate_engine.py` — [S-007]
++    - `evaluate_symbol()` 在 S-005 门控之后调用 `classify_candidate_tier()`
++    - 分层结果写入 `candidate.evidence["tier_budget"]`
++    - `init_db()` 新增 4 列迁移：tier、ta_budget_priority、tier_reason、missing_evidence_for_upgrade_json
++    - `save_candidate()` INSERT/UPDATE 包含新字段
++  - `tradingagents/tradeflow/plan_runner.py` — [S-007]
++    - `_build_plan_entry()` 输出 tier 全部字段
++    - `generate_daily_plan()` 候选按分层排序(A→B→C)，执行 A 层上限，预算摘要写入 metadata
++  - `tradingagents/tradeflow/discovery.py` — [S-007]
++    - `_build_discovery_entry()` 输出 tier 全部字段
++    - `run_discovery()` 候选按分层排序，执行 A 层上限，预算摘要写入 metadata
++    - `render_discovery_text()` 展示分层信息和预算摘要
++  - `tests/test_s007_tier_budget.py`（新增，~510行）— 63 个测试 + 2 skip
++- **关键逻辑**：
++  1. 分层独立于 S-005 priority_rank，有更严格的准入条件（完整度≥60%、博弈须 favorable/neutral）
++  2. 单一弱信号不得进入 A 层（需 ≥2 类信号 + 综合分 ≥ 50）
++  3. 两类以上强证据且风险可控时可进入 A 层
++  4. A 层默认上限 5 只，超出按排序降级为 B，原因标注"A层已满"
++  5. 每层对应不同 TA 预算建议：A=100 tokens、B=30 tokens、C=0 tokens
++  6. `missing_evidence_for_upgrade` 明确指出升级到 A 层所需的证据缺口
++  7. 不接入真实扣费 API，只输出预算建议和原因
++- **标记**：`# [S-007] candidate_tier_budget`
++- **测试结果**：
++  - S-007 专项测试：63 passed, 2 skipped
++  - S/T 系列联合测试（S-001~S-007 + T-002 + T-003）：637 passed, 2 skipped
++  - 扩展回归测试（readiness_score + g001_three_layer）：163 passed
++
++---
++
+ ## 2026-05-29 | S-006 候选误报审计与样本集沉淀
+ 
+ - **执行者**：OpenCode (glm-5.1)
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index c128c4c..936a1d1 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -172,7 +172,7 @@
+ ### S-007: 候选分层与 TA token 预算分配（P1）
+ - **描述**：把候选池分为 A/B/C 三层，明确哪些值得优先深度 TA、哪些只观察、哪些淘汰，避免把 token 消耗在弱候选上。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：in_progress — claimed S-007-20260529-171709
+ - **前置条件**：`S-005` 完成。
+ - **执行约束**：
+   - 不自动调用 TA。
+diff --git a/tradingagents/tradeflow/candidate_engine.py b/tradingagents/tradeflow/candidate_engine.py
+index 998d418..06c76ec 100644
+--- a/tradingagents/tradeflow/candidate_engine.py
++++ b/tradingagents/tradeflow/candidate_engine.py
+@@ -28,6 +28,7 @@ from .underwater_risk_flags import detect_underwater_risks, UnderwaterRiskResult
+ from .game_balance import assess_game_balance, GameBalanceResult  # [S-004] candidate_game_balance
+ from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult, FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT  # [T-003] fund_flow_anomaly_pool
+ from .selection_priority_gate import run_selection_priority_gate, SelectionPriorityResult  # [S-005] selection_priority_gate
++from .tier_budget import classify_candidate_tier, TierBudgetResult  # [S-007] candidate_tier_budget
+ 
+ 
+ # ── SQL for table creation ──
+@@ -167,6 +168,17 @@ def init_db(db_path: str) -> None:
+             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+         except sqlite3.OperationalError:
+             pass
++    # [S-007] candidate_tier_budget — add tier budget columns
++    for _col, _type in [
++        ("tier", "TEXT DEFAULT ''"),
++        ("ta_budget_priority", "INTEGER DEFAULT 0"),
++        ("tier_reason", "TEXT DEFAULT ''"),
++        ("missing_evidence_for_upgrade_json", "TEXT DEFAULT '[]'"),
++    ]:
++        try:
++            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
++        except sqlite3.OperationalError:
++            pass
+     conn.commit()
+     conn.close()
+ 
+@@ -561,6 +573,31 @@ def evaluate_symbol(
+     }
+     candidate.need_deep_ta = gate_result.gate_passed
+ 
++    # [S-007] candidate_tier_budget — classify into A/B/C tier with budget
++    tier_result: TierBudgetResult = classify_candidate_tier(
++        priority_rank=gate_result.priority_rank,
++        composite_score=gate_result.composite_score,
++        positive_category_count=gate_result.positive_category_count,
++        data_completeness=gate_result.data_completeness,
++        missing_evidence=gate_result.missing_evidence,
++        risk_flags=candidate.risk_flags,
++        risk_penalty=candidate.risk_penalty,
++        game_balance=candidate.game_balance,
++        gate_passed=gate_result.gate_passed,
++        why_not_deep_ta=gate_result.why_not_deep_ta,
++    )
++    candidate.tier = tier_result.tier
++    candidate.ta_budget_priority = tier_result.ta_budget_priority
++    candidate.tier_reason = tier_result.tier_reason
++    candidate.missing_evidence_for_upgrade = tier_result.missing_evidence_for_upgrade
++    candidate.evidence["tier_budget"] = {
++        "tier": tier_result.tier,
++        "ta_budget_priority": tier_result.ta_budget_priority,
++        "tier_reason": tier_result.tier_reason,
++        "missing_evidence_for_upgrade": tier_result.missing_evidence_for_upgrade,
++        "why_not_deep_ta": tier_result.why_not_deep_ta,
++    }
++
+     return candidate, ""
+ 
+ 
+@@ -584,10 +621,10 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
+             "composite_score, signal_category_hits_json, positive_category_count, "
+             "data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta, "
+             "priority_rank, "
++            "tier, ta_budget_priority, tier_reason, missing_evidence_for_upgrade_json, "
+             "created_at, updated_at) "
+-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+-            "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+-            "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
++            "VALUES ({}) ".format(",".join(["?"] * 50))
++            + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+             "trigger_price=excluded.trigger_price, "
+             "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+@@ -619,6 +656,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
+             "missing_evidence_json=excluded.missing_evidence_json, "
+             "why_deep_ta=excluded.why_deep_ta, why_not_deep_ta=excluded.why_not_deep_ta, "
+             "priority_rank=excluded.priority_rank, "
++            "tier=excluded.tier, ta_budget_priority=excluded.ta_budget_priority, "
++            "tier_reason=excluded.tier_reason, "
++            "missing_evidence_for_upgrade_json=excluded.missing_evidence_for_upgrade_json, "
+             "updated_at=excluded.updated_at",
+             (
+                 row["trade_date"], row["symbol"], row["name"], row["source"],
+@@ -642,6 +682,8 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
+                 row["positive_category_count"], row["data_completeness"],
+                 row["missing_evidence_json"], row["why_deep_ta"], row["why_not_deep_ta"],
+                 row["priority_rank"],
++                row["tier"], row["ta_budget_priority"],
++                row["tier_reason"], row["missing_evidence_for_upgrade_json"],
+                 candidate.created_at, row["updated_at"],
+             ),
+         )
+diff --git a/tradingagents/tradeflow/discovery.py b/tradingagents/tradeflow/discovery.py
+index 69b4b64..abb2231 100644
+--- a/tradingagents/tradeflow/discovery.py
++++ b/tradingagents/tradeflow/discovery.py
+@@ -23,6 +23,7 @@ from .schemas import Candidate, DailyPlan, ALLOWED_ACTIONS, FORBIDDEN_WORDS
+ from .candidate_engine import evaluate_symbol, init_db, filter_symbol
+ from .universe import build_universe
+ from .false_positive_audit import build_audit_report, render_audit_report, AuditReport  # [S-006] candidate_false_positive_audit
++from .tier_budget import allocate_tier_budget, render_tier_budget_summary  # [S-007] candidate_tier_budget
+ 
+ 
+ SOURCE_WATCHLIST = "watchlist"
+@@ -204,6 +205,28 @@ def run_discovery(
+         entry = _build_discovery_entry(c)
+         plan_entries.append(entry)
+ 
++    # [S-007] candidate_tier_budget — sort by tier (A first, then B, then C)
++    tier_order = {"A": 0, "B": 1, "C": 2, "": 3}
++    plan_entries.sort(key=lambda x: (tier_order.get(x.get("tier", ""), 3), -(x.get("composite_score", 0) or 0)))
++
++    # [S-007] candidate_tier_budget — enforce A-tier cap and compute budget summary
++    from .tier_budget import TierBudgetResult
++    tier_results = []
++    for e in plan_entries:
++        tier_results.append(TierBudgetResult(
++            tier=e.get("tier", "C"),
++            ta_budget_priority=e.get("ta_budget_priority", 0),
++            tier_reason=e.get("tier_reason", ""),
++            missing_evidence_for_upgrade=e.get("missing_evidence_for_upgrade", []),
++            why_not_deep_ta=e.get("why_not_deep_ta", ""),
++        ))
++    budget_allocation = allocate_tier_budget(tier_results)
++    for i, tr in enumerate(tier_results):
++        if i < len(plan_entries):
++            plan_entries[i]["tier"] = tr.tier
++            plan_entries[i]["ta_budget_priority"] = tr.ta_budget_priority
++            plan_entries[i]["tier_reason"] = tr.tier_reason
++
+     n_total = len(plan_entries)
+     n_deep_ta = sum(1 for e in plan_entries if e.get("need_deep_ta"))
+     n_filtered = len(filtered)
+@@ -257,6 +280,17 @@ def run_discovery(
+         "common_evidence_gaps": audit.summary.common_evidence_gaps[:5] if audit.summary else [],
+     }
+ 
++    # [S-007] candidate_tier_budget — add budget allocation to metadata
++    result.metadata["tier_budget"] = {
++        "tier_a_count": budget_allocation.tier_a_count,
++        "tier_b_count": budget_allocation.tier_b_count,
++        "tier_c_count": budget_allocation.tier_c_count,
++        "total_budget": budget_allocation.total_budget,
++        "a_tier_cap_applied": budget_allocation.a_tier_cap_applied,
++        "demoted_count": len(budget_allocation.demoted_symbols),
++    }
++    result.metadata["tier_budget_summary"] = render_tier_budget_summary(budget_allocation)
++
+     return result
+ 
+ 
+@@ -315,6 +349,10 @@ def _build_discovery_entry(candidate: Candidate) -> dict:
+         "why_deep_ta": candidate.why_deep_ta,  # [S-005]
+         "why_not_deep_ta": candidate.why_not_deep_ta,  # [S-005]
+         "priority_rank": candidate.priority_rank,  # [S-005]
++        "tier": candidate.tier,  # [S-007] candidate_tier_budget
++        "ta_budget_priority": candidate.ta_budget_priority,  # [S-007]
++        "tier_reason": candidate.tier_reason,  # [S-007]
++        "missing_evidence_for_upgrade": candidate.missing_evidence_for_upgrade,  # [S-007]
+     }
+ 
+ 
+@@ -415,6 +453,19 @@ def render_discovery_text(result: DiscoveryResult) -> str:
+             if missing_ev:
+                 lines.append(f"    缺少证据: {', '.join(missing_ev[:5])}")
+ 
++        # [S-007] candidate_tier_budget — display tier and budget allocation
++        tier = c.get("tier", "")
++        ta_budget = c.get("ta_budget_priority", 0)
++        tier_reason_text = c.get("tier_reason", "")
++        missing_upgrade = c.get("missing_evidence_for_upgrade", [])
++        if tier:
++            tier_label = {"A": "优先深挖", "B": "观察等待", "C": "暂不关注"}.get(tier, "")
++            lines.append(f"  分层: {tier}层({tier_label}) | TA预算: {ta_budget} tokens")
++            if tier_reason_text:
++                lines.append(f"    分层原因: {tier_reason_text}")
++            if missing_upgrade:
++                lines.append(f"    升级所需: {'; '.join(missing_upgrade[:4])}")
++
+         lines.append("")
+ 
+     if result.filtered:
+@@ -443,4 +494,10 @@ def render_discovery_text(result: DiscoveryResult) -> str:
+             for t, cnt in sorted(s.by_fp_type.items()):
+                 lines.append(f"  - {t}: {cnt}只")
+ 
++    # [S-007] candidate_tier_budget — tier budget summary
++    tier_budget_summary = result.metadata.get("tier_budget_summary", "")
++    if tier_budget_summary:
++        lines.append("")
++        lines.append(tier_budget_summary)
++
+     return "\n".join(lines)
+diff --git a/tradingagents/tradeflow/plan_runner.py b/tradingagents/tradeflow/plan_runner.py
+index 4a76aaf..b29435f 100644
+--- a/tradingagents/tradeflow/plan_runner.py
++++ b/tradingagents/tradeflow/plan_runner.py
+@@ -17,6 +17,7 @@ from .schemas import (
+ from .candidate_engine import init_db, save_candidate, evaluate_symbol
+ from .universe import build_universe
+ from .false_positive_audit import build_audit_report, AuditReport  # [S-006] candidate_false_positive_audit
++from .tier_budget import classify_candidate_tier, allocate_tier_budget, render_tier_budget_summary  # [S-007] candidate_tier_budget
+ 
+ 
+ def _action_for_candidate(candidate: Candidate) -> str:
+@@ -96,6 +97,10 @@ def _build_plan_entry(candidate: Candidate) -> dict:
+         "why_deep_ta": candidate.why_deep_ta,  # [S-005]
+         "why_not_deep_ta": candidate.why_not_deep_ta,  # [S-005]
+         "priority_rank": candidate.priority_rank,  # [S-005]
++        "tier": candidate.tier,  # [S-007] candidate_tier_budget
++        "ta_budget_priority": candidate.ta_budget_priority,  # [S-007]
++        "tier_reason": candidate.tier_reason,  # [S-007]
++        "missing_evidence_for_upgrade": candidate.missing_evidence_for_upgrade,  # [S-007]
+     }
+ 
+ 
+@@ -193,6 +198,29 @@ def generate_daily_plan(
+     # Sort by composite_score descending (S-005 priority gate), fallback to score
+     plan_entries.sort(key=lambda x: (x.get("composite_score", 0) or 0, x.get("score", 0)), reverse=True)
+ 
++    # [S-007] candidate_tier_budget — sort by tier (A first, then B, then C)
++    tier_order = {"A": 0, "B": 1, "C": 2, "": 3}
++    plan_entries.sort(key=lambda x: (tier_order.get(x.get("tier", ""), 3), -(x.get("composite_score", 0) or 0)))
++
++    # [S-007] candidate_tier_budget — enforce A-tier cap and compute budget summary
++    from .tier_budget import TierBudgetResult
++    tier_results = []
++    for e in plan_entries:
++        tier_results.append(TierBudgetResult(
++            tier=e.get("tier", "C"),
++            ta_budget_priority=e.get("ta_budget_priority", 0),
++            tier_reason=e.get("tier_reason", ""),
++            missing_evidence_for_upgrade=e.get("missing_evidence_for_upgrade", []),
++            why_not_deep_ta=e.get("why_not_deep_ta", ""),
++        ))
++    budget_allocation = allocate_tier_budget(tier_results)
++    # Update entries if any were demoted by the cap
++    for i, tr in enumerate(tier_results):
++        if i < len(plan_entries):
++            plan_entries[i]["tier"] = tr.tier
++            plan_entries[i]["ta_budget_priority"] = tr.ta_budget_priority
++            plan_entries[i]["tier_reason"] = tr.tier_reason
++
+     # Build summary
+     n_total = len(plan_entries)
+     n_deep_ta = sum(1 for e in plan_entries if e["need_deep_ta"])
+@@ -229,6 +257,17 @@ def generate_daily_plan(
+         "common_risk_demotions": audit.summary.common_risk_demotions[:5] if audit.summary else [],
+     }
+ 
++    # [S-007] candidate_tier_budget — add budget allocation to metadata
++    plan.metadata["tier_budget"] = {
++        "tier_a_count": budget_allocation.tier_a_count,
++        "tier_b_count": budget_allocation.tier_b_count,
++        "tier_c_count": budget_allocation.tier_c_count,
++        "total_budget": budget_allocation.total_budget,
++        "a_tier_cap_applied": budget_allocation.a_tier_cap_applied,
++        "demoted_count": len(budget_allocation.demoted_symbols),
++    }
++    plan.metadata["tier_budget_summary"] = render_tier_budget_summary(budget_allocation)
++
+     # Validate
+     issues = plan.validate()
+     if issues:
+diff --git a/tradingagents/tradeflow/schemas.py b/tradingagents/tradeflow/schemas.py
+index 735e8b3..7fa9a71 100644
+--- a/tradingagents/tradeflow/schemas.py
++++ b/tradingagents/tradeflow/schemas.py
+@@ -93,6 +93,10 @@ class Candidate:
+     why_deep_ta: str = ""  # [S-005]
+     why_not_deep_ta: str = ""  # [S-005]
+     priority_rank: str = ""  # [S-005]
++    tier: str = ""  # [S-007] candidate_tier_budget
++    ta_budget_priority: int = 0  # [S-007] candidate_tier_budget
++    tier_reason: str = ""  # [S-007] candidate_tier_budget
++    missing_evidence_for_upgrade: list[str] = field(default_factory=list)  # [S-007]
+ 
+     def __post_init__(self):
+         if not self.trade_date:
+@@ -185,6 +189,10 @@ class Candidate:
+             "why_deep_ta": self.why_deep_ta,  # [S-005]
+             "why_not_deep_ta": self.why_not_deep_ta,  # [S-005]
+             "priority_rank": self.priority_rank,  # [S-005]
++            "tier": self.tier,  # [S-007] candidate_tier_budget
++            "ta_budget_priority": self.ta_budget_priority,  # [S-007]
++            "tier_reason": self.tier_reason,  # [S-007]
++            "missing_evidence_for_upgrade_json": json.dumps(self.missing_evidence_for_upgrade, ensure_ascii=False),  # [S-007]
+             "updated_at": datetime.now().isoformat(),
+         }
+ 
+@@ -237,6 +245,10 @@ class Candidate:
+             why_deep_ta=row.get("why_deep_ta", ""),  # [S-005]
+             why_not_deep_ta=row.get("why_not_deep_ta", ""),  # [S-005]
+             priority_rank=row.get("priority_rank", ""),  # [S-005]
++            tier=row.get("tier", ""),  # [S-007] candidate_tier_budget
++            ta_budget_priority=row.get("ta_budget_priority", 0),  # [S-007]
++            tier_reason=row.get("tier_reason", ""),  # [S-007]
++            missing_evidence_for_upgrade=json.loads(row.get("missing_evidence_for_upgrade_json", "[]")),  # [S-007]
+         )
+ 
+ 
+@@ -415,6 +427,18 @@ class DailyPlan:
+                     lines.append(f"    暂不深挖: {why_not_deep}")
+                 if missing_ev:
+                     lines.append(f"    缺少证据: {', '.join(missing_ev[:5])}")
++            # [S-007] candidate_tier_budget — display tier and budget allocation
++            tier = c.get("tier", "")
++            ta_budget = c.get("ta_budget_priority", 0)
++            tier_reason_text = c.get("tier_reason", "")
++            missing_upgrade = c.get("missing_evidence_for_upgrade", [])
++            if tier:
++                tier_label = {"A": "优先深挖", "B": "观察等待", "C": "暂不关注"}.get(tier, "")
++                lines.append(f"  分层: {tier}层({tier_label}) | TA预算: {ta_budget} tokens")
++                if tier_reason_text:
++                    lines.append(f"    分层原因: {tier_reason_text}")
++                if missing_upgrade:
++                    lines.append(f"    升级所需: {'; '.join(missing_upgrade[:4])}")
+             lines.append("")
+ 
+         return "\n".join(lines)
+# [S-007] candidate_tier_budget
+"""Candidate Tier Classification & TA Token Budget Allocation.
+
+Responsibilities:
+1. Classify candidates into A (priority deep dive) / B (observe, wait for
+   evidence) / C (eliminate / deprioritize) tiers based on the composite
+   score, risk flags, data completeness, and strategy resonance already
+   computed by the selection_priority_gate (S-005).
+2. Assign a ``ta_budget_priority`` token budget suggestion per tier.
+3. Explain ``missing_evidence_for_upgrade`` so the Daily Plan can show
+   "what evidence is needed to promote this candidate".
+4. Enforce a hard cap on the number of A-tier candidates per day so that
+   TA token consumption stays bounded.
+
+Design constraints:
+- No external LLM calls.
+- No strong buy/sell words.
+- Does not auto-invoke TA.
+- Does not connect to real billing APIs; only outputs budget *suggestions*.
+- Single weak signal alone must NOT enter A tier.
+- Two or more strong evidence categories with manageable risk CAN enter A.
+- High-risk / low-completeness candidates at most B or C.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Optional
+
+
+_STRONG_BUY_SELL_WORDS = {
+    "立即买入", "重仓买入", "立即清仓", "满仓", "梭哈",
+    "强力买入", "强烈推荐", "必买", "抄底", "追涨", "杀跌",
+}
+
+TIER_A = "A"
+TIER_B = "B"
+TIER_C = "C"
+ALL_TIERS = {TIER_A, TIER_B, TIER_C}
+
+TIER_BUDGET_MAP = {
+    TIER_A: 100,
+    TIER_B: 30,
+    TIER_C: 0,
+}
+
+TIER_LABELS = {
+    TIER_A: "优先深挖",
+    TIER_B: "观察等待证据",
+    TIER_C: "淘汰/暂不关注",
+}
+
+A_TIER_HARD_CAP = 5
+
+_SEVERITY_HIGH_RISK_FLAGS = {"INQUIRY_RISK", "FINANCIAL_QUALITY_RISK"}
+
+
+@dataclass
+class TierBudgetResult:
+    tier: str = TIER_C
+    ta_budget_priority: int = 0
+    tier_reason: str = ""
+    missing_evidence_for_upgrade: list[str] = field(default_factory=list)
+    why_not_deep_ta: str = ""
+
+
+@dataclass
+class TierBudgetAllocation:
+    tier_a_count: int = 0
+    tier_b_count: int = 0
+    tier_c_count: int = 0
+    total_budget: int = 0
+    a_tier_cap_applied: bool = False
+    demoted_symbols: list[str] = field(default_factory=list)
+
+
+def _sanitize(text: str) -> str:
+    for w in _STRONG_BUY_SELL_WORDS:
+        if w in text:
+            text = text.replace(w, "***")
+    return text
+
+
+def classify_candidate_tier(
+    priority_rank: str = "",
+    composite_score: float = 0.0,
+    positive_category_count: int = 0,
+    data_completeness: float = 0.0,
+    missing_evidence: Optional[list[str]] = None,
+    risk_flags: Optional[list[str]] = None,
+    risk_penalty: float = 0.0,
+    game_balance: str = "",
+    gate_passed: bool = False,
+    why_not_deep_ta: str = "",
+) -> TierBudgetResult:
+    """Classify a single candidate into A / B / C tier.
+
+    The classification builds on the S-005 ``priority_rank`` but adds
+    stricter guardrails:
+
+    * **Tier A** requires:
+      - ``positive_category_count >= 3`` **or**
+        (``positive_category_count >= 2`` **and** ``composite_score >= 50``)
+      - ``data_completeness >= 0.6``
+      - No high-severity risk flags
+      - Fewer than 3 risk flags in total
+      - ``game_balance`` is ``favorable`` or ``neutral``
+      - ``gate_passed`` is True
+    * **Tier C** is assigned when:
+      - High-severity risk flags are present **or**
+      - 3 or more risk flags **or**
+      - ``data_completeness < 0.3`` **or**
+      - ``game_balance`` is ``fragile`` **or**
+      - ``positive_category_count < 1``
+    * **Tier B** covers everything else.
+
+    Returns:
+        ``TierBudgetResult`` with tier, budget, reason, and upgrade hints.
+    """
+    r_flags = set(risk_flags or [])
+    missing = list(missing_evidence or [])
+
+    has_high_risk = bool(r_flags & _SEVERITY_HIGH_RISK_FLAGS)
+    many_risks = len(r_flags) >= 3
+    heavy_penalty = risk_penalty <= -15
+    fragile = game_balance == "fragile"
+    favorable_or_neutral = game_balance in {"favorable", "neutral"}
+
+    missing_for_upgrade: list[str] = []
+    tier = TIER_C
+    reason = ""
+
+    # --- Tier A conditions ---
+    meets_a_signals = (
+        positive_category_count >= 3
+        or (positive_category_count >= 2 and composite_score >= 50)
+    )
+    meets_a_completeness = data_completeness >= 0.6
+    meets_a_risk = not has_high_risk and not many_risks and not heavy_penalty
+    meets_a_game = favorable_or_neutral
+    meets_a_gate = gate_passed
+
+    if meets_a_signals and meets_a_completeness and meets_a_risk and meets_a_game and meets_a_gate:
+        tier = TIER_A
+        cat_desc = f"{positive_category_count}类信号共振"
+        reason = f"{cat_desc}，综合分{composite_score:.0f}，风险可控，建议优先深度分析"
+    else:
+        # Build upgrade hints
+        if not meets_a_signals:
+            if positive_category_count < 2:
+                missing_for_upgrade.append(f"需至少2类正向信号(当前{positive_category_count}类)")
+            else:
+                missing_for_upgrade.append(f"信号数{positive_category_count}类+综合分需≥50(当前{composite_score:.0f})")
+        if not meets_a_completeness:
+            missing_for_upgrade.append(f"数据完整度需≥60%(当前{data_completeness:.0%})")
+        if not meets_a_risk:
+            if has_high_risk:
+                missing_for_upgrade.append(f"高风险标签需解除({', '.join(r_flags & _SEVERITY_HIGH_RISK_FLAGS)})")
+            if many_risks:
+                missing_for_upgrade.append(f"风险标签过多({len(r_flags)}个，需<3)")
+            if heavy_penalty:
+                missing_for_upgrade.append(f"风险罚分过重({risk_penalty}，需>-15)")
+        if not meets_a_game:
+            missing_for_upgrade.append(f"博弈平衡需改善(当前{game_balance or '未评估'})")
+        if not meets_a_gate:
+            missing_for_upgrade.append("S-005门控未通过")
+
+        # --- Tier B or C ---
+        meets_b_signals = positive_category_count >= 1
+        meets_b_completeness = data_completeness >= 0.3
+        meets_b_risk = not has_high_risk and not many_risks and not heavy_penalty
+        not_fragile = not fragile
+
+        if (
+            meets_b_signals
+            and meets_b_completeness
+            and meets_b_risk
+            and not_fragile
+            and positive_category_count >= 1
+        ):
+            tier = TIER_B
+            reason_parts = []
+            if positive_category_count < 2:
+                reason_parts.append(f"信号不足({positive_category_count}类)")
+            elif not meets_a_completeness:
+                reason_parts.append(f"完整度不足({data_completeness:.0%})")
+            elif not favorable_or_neutral:
+                reason_parts.append(f"博弈不佳({game_balance})")
+            elif not gate_passed:
+                reason_parts.append("门控未通过")
+            else:
+                reason_parts.append("综合条件接近A层但未完全满足")
+            if missing:
+                reason_parts.append(f"缺: {', '.join(missing[:3])}")
+            reason = "；".join(reason_parts) if reason_parts else "观察等待更多证据"
+        else:
+            tier = TIER_C
+            c_reasons = []
+            if has_high_risk:
+                c_reasons.append(f"高风险({', '.join(r_flags & _SEVERITY_HIGH_RISK_FLAGS)})")
+            if many_risks:
+                c_reasons.append(f"风险标签多({len(r_flags)}个)")
+            if fragile:
+                c_reasons.append("博弈fragile")
+            if positive_category_count < 1:
+                c_reasons.append("无正向信号")
+            if data_completeness < 0.3:
+                c_reasons.append(f"数据严重不足({data_completeness:.0%})")
+            elif data_completeness < 0.5:
+                c_reasons.append(f"数据不足({data_completeness:.0%})")
+            if heavy_penalty:
+                c_reasons.append(f"风险罚分重({risk_penalty})")
+            reason = "；".join(c_reasons) if c_reasons else "综合条件不足"
+
+    budget = TIER_BUDGET_MAP.get(tier, 0)
+    not_deep = why_not_deep_ta if tier != TIER_A else ""
+
+    reason = _sanitize(reason)
+    not_deep = _sanitize(not_deep)
+    for i, hint in enumerate(missing_for_upgrade):
+        missing_for_upgrade[i] = _sanitize(hint)
+
+    return TierBudgetResult(
+        tier=tier,
+        ta_budget_priority=budget,
+        tier_reason=reason,
+        missing_evidence_for_upgrade=missing_for_upgrade,
+        why_not_deep_ta=not_deep,
+    )
+
+
+def allocate_tier_budget(
+    results: list[TierBudgetResult],
+    a_tier_cap: int = A_TIER_HARD_CAP,
+) -> TierBudgetAllocation:
+    """Enforce the A-tier cap and compute aggregate budget.
+
+    When more candidates qualify for tier A than ``a_tier_cap``, the
+    lowest-scoring A-tier candidates are demoted to B.  The caller
+    should pre-sort ``results`` so that index 0 is the strongest
+# [S-007] candidate_tier_budget — tests
+"""Tests for candidate tier classification and TA token budget allocation.
+
+Covers:
+- Tier A / B / C classification rules
+- ta_budget_priority assignment
+- missing_evidence_for_upgrade hints
+- A-tier cap enforcement (allocate_tier_budget)
+- tier_reason and why_not_deep_ta text
+- Strong buy/sell word sanitization
+- Integration with candidate_engine, plan_runner, discovery
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+
+import pandas as pd
+import pytest
+
+from tradingagents.tradeflow.tier_budget import (
+    classify_candidate_tier,
+    allocate_tier_budget,
+    render_tier_budget_summary,
+    TierBudgetResult,
+    TierBudgetAllocation,
+    TIER_A,
+    TIER_B,
+    TIER_C,
+    TIER_BUDGET_MAP,
+    A_TIER_HARD_CAP,
+    ALL_TIERS,
+)
+from tradingagents.tradeflow.schemas import Candidate, DailyPlan
+from tradingagents.tradeflow.candidate_engine import (
+    evaluate_symbol,
+    init_db,
+    save_candidate,
+)
+from tradingagents.tradeflow.plan_runner import generate_daily_plan
+from tradingagents.tradeflow.discovery import run_discovery, render_discovery_text
+
+
+# ── Fixtures ──
+
+def _make_df(close=100.0, n=80, flat=False):
+    dates = pd.date_range("2026-01-01", periods=n, freq="B")
+    if flat:
+        return pd.DataFrame({
+            "Date": dates,
+            "Open": [close - 1] * n,
+            "High": [close + 2] * n,
+            "Low": [close - 2] * n,
+            "Close": [close] * n,
+            "Volume": [1_000_000] * n,
+        })
+    import numpy as np
+    np.random.seed(42)
+    closes = close + np.cumsum(np.random.randn(n) * 0.5)
+    closes = np.maximum(closes, 1.0)
+    return pd.DataFrame({
+        "Date": dates,
+        "Open": closes - 0.5,
+        "High": closes + 1.0,
+        "Low": closes - 1.0,
+        "Close": closes,
+        "Volume": [5_000_000] * n,
+    })
+
+
+def _make_tier_result(**kwargs):
+    defaults = {
+        "priority_rank": "A",
+        "composite_score": 80.0,
+        "positive_category_count": 3,
+        "data_completeness": 0.8,
+        "missing_evidence": [],
+        "risk_flags": [],
+        "risk_penalty": 0.0,
+        "game_balance": "favorable",
+        "gate_passed": True,
+        "why_not_deep_ta": "",
+    }
+    defaults.update(kwargs)
+    return classify_candidate_tier(**defaults)
+
+
+# ═══════════════════════════════════════════════════════════════
+# 1. Tier A classification
+# ═══════════════════════════════════════════════════════════════
+
+class TestTierAClassification:
+    def test_strong_candidate_tier_a(self):
+        r = _make_tier_result(
+            positive_category_count=3,
+            composite_score=80,
+            data_completeness=0.8,
+            game_balance="favorable",
+            gate_passed=True,
+        )
+        assert r.tier == TIER_A
+        assert r.ta_budget_priority == TIER_BUDGET_MAP[TIER_A]
+
+    def test_two_categories_high_score_tier_a(self):
+        r = _make_tier_result(
+            positive_category_count=2,
+            composite_score=55,
+            data_completeness=0.7,
+            game_balance="neutral",
+            gate_passed=True,
+        )
+        assert r.tier == TIER_A
+
+    def test_tier_a_reason_contains_signal_count(self):
+        r = _make_tier_result(positive_category_count=3, composite_score=80)
+        assert "3类信号共振" in r.tier_reason
+
+    def test_tier_a_no_missing_upgrade(self):
+        r = _make_tier_result(positive_category_count=3, composite_score=80)
+        assert r.missing_evidence_for_upgrade == []
+
+    def test_tier_a_empty_why_not_deep_ta(self):
+        r = _make_tier_result(positive_category_count=3, composite_score=80)
+        assert r.why_not_deep_ta == ""
+
+    def test_neutral_game_balance_allows_a(self):
+        r = _make_tier_result(game_balance="neutral")
+        assert r.tier == TIER_A
+
+    def test_gate_passed_false_blocks_a(self):
+        r = _make_tier_result(gate_passed=False)
+        assert r.tier != TIER_A
+
+    def test_two_categories_low_score_blocks_a(self):
+        r = _make_tier_result(positive_category_count=2, composite_score=40)
+        assert r.tier != TIER_A
+
+    def test_low_completeness_blocks_a(self):
+        r = _make_tier_result(data_completeness=0.5)
+        assert r.tier != TIER_A
+
+    def test_high_risk_blocks_a(self):
+        r = _make_tier_result(risk_flags=["INQUIRY_RISK"])
+        assert r.tier != TIER_A
+
+    def test_many_risks_blocks_a(self):
+        r = _make_tier_result(risk_flags=["LOCKUP_RISK", "REDUCE_HOLDING_RISK", "MARGIN_CROWDING_RISK"])
+        assert r.tier != TIER_A
+
+    def test_heavy_penalty_blocks_a(self):
+        r = _make_tier_result(risk_penalty=-20)
+        assert r.tier != TIER_A
+
+    def test_crowded_game_balance_allows_a_if_otherwise(self):
+        r = _make_tier_result(game_balance="crowded")
+        assert r.tier != TIER_A
+
+    def test_fragile_game_balance_blocks_a(self):
+        r = _make_tier_result(game_balance="fragile")
+        assert r.tier != TIER_A
+
+
+# ═══════════════════════════════════════════════════════════════
+# 2. Tier B classification
+# ═══════════════════════════════════════════════════════════════
+
+class TestTierBClassification:
+    def test_one_signal_decent_completeness(self):
+        r = _make_tier_result(
+            positive_category_count=1,
+            composite_score=30,
+            data_completeness=0.5,
+            game_balance="neutral",
+            gate_passed=False,
+            priority_rank="B",
+        )
+        assert r.tier == TIER_B
+
+    def test_two_signals_low_completeness(self):
+        r = _make_tier_result(
+            positive_category_count=2,
+            composite_score=40,
+            data_completeness=0.5,
+            game_balance="neutral",
+            gate_passed=False,
+            priority_rank="B",
+        )
+        assert r.tier == TIER_B
+
+    def test_tier_b_budget_is_30(self):
+        r = _make_tier_result(
+            positive_category_count=1,
+            composite_score=30,
+            data_completeness=0.5,
+            game_balance="neutral",
+            gate_passed=False,
+            priority_rank="B",
+        )
+        assert r.ta_budget_priority == TIER_BUDGET_MAP[TIER_B]
+
+    def test_tier_b_has_upgrade_hints(self):
+        r = _make_tier_result(
+            positive_category_count=1,
+            composite_score=30,
+            data_completeness=0.5,
+            game_balance="neutral",
+            gate_passed=False,
+            priority_rank="B",
+        )
+        assert len(r.missing_evidence_for_upgrade) > 0
+
+    def test_tier_b_reason_not_empty(self):
+        r = _make_tier_result(
+            positive_category_count=1,
+            composite_score=30,
+            data_completeness=0.5,
+            game_balance="neutral",
+            gate_passed=False,
+            priority_rank="B",
+        )
+        assert r.tier_reason != ""
+
+    def test_single_signal_no_high_risk_not_fragile(self):
+        r = _make_tier_result(
+            positive_category_count=1,
+            composite_score=25,
+            data_completeness=0.4,
+            game_balance="neutral",
+            gate_passed=False,
+            risk_flags=[],
+            priority_rank="B",
+        )
+        assert r.tier == TIER_B
+
+    def test_crowded_with_one_signal(self):
+        r = _make_tier_result(
+            positive_category_count=1,
+            composite_score=25,
+            data_completeness=0.5,
+            game_balance="crowded",
+            gate_passed=False,
+            risk_flags=[],
+            priority_rank="B",
+        )
+        assert r.tier == TIER_B
+
+
+# ═══════════════════════════════════════════════════════════════
+# 3. Tier C classification
+# ═══════════════════════════════════════════════════════════════
+
+class TestTierCClassification:
+    def test_no_signals(self):
+        r = _make_tier_result(positive_category_count=0, composite_score=0, data_completeness=0.3, game_balance="", gate_passed=False, priority_rank="C")
+        assert r.tier == TIER_C
+
+    def test_high_risk_flag(self):
+        r = _make_tier_result(risk_flags=["INQUIRY_RISK"], positive_category_count=2, composite_score=50, priority_rank="C")
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/tier_budget.py | sed -n '1,260p'
+nl -ba tradingagents/tradeflow/candidate_engine.py | sed -n '600,700p'
+nl -ba tradingagents/tradeflow/plan_runner.py | sed -n '180,270p'
+nl -ba tradingagents/tradeflow/discovery.py | sed -n '195,290p'
+nl -ba tradingagents/tradeflow/schemas.py | sed -n '220,255p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+     1	# [S-007] candidate_tier_budget
+     2	"""Candidate Tier Classification & TA Token Budget Allocation.
+     3	
+     4	Responsibilities:
+     5	1. Classify candidates into A (priority deep dive) / B (observe, wait for
+     6	   evidence) / C (eliminate / deprioritize) tiers based on the composite
+     7	   score, risk flags, data completeness, and strategy resonance already
+     8	   computed by the selection_priority_gate (S-005).
+     9	2. Assign a ``ta_budget_priority`` token budget suggestion per tier.
+    10	3. Explain ``missing_evidence_for_upgrade`` so the Daily Plan can show
+    11	   "what evidence is needed to promote this candidate".
+    12	4. Enforce a hard cap on the number of A-tier candidates per day so that
+    13	   TA token consumption stays bounded.
+    14	
+    15	Design constraints:
+    16	- No external LLM calls.
+    17	- No strong buy/sell words.
+    18	- Does not auto-invoke TA.
+    19	- Does not connect to real billing APIs; only outputs budget *suggestions*.
+    20	- Single weak signal alone must NOT enter A tier.
+    21	- Two or more strong evidence categories with manageable risk CAN enter A.
+    22	- High-risk / low-completeness candidates at most B or C.
+    23	"""
+    24	
+    25	from __future__ import annotations
+    26	
+    27	from dataclasses import dataclass, field
+    28	from typing import Optional
+    29	
+    30	
+    31	_STRONG_BUY_SELL_WORDS = {
+    32	    "立即买入", "重仓买入", "立即清仓", "满仓", "梭哈",
+    33	    "强力买入", "强烈推荐", "必买", "抄底", "追涨", "杀跌",
+    34	}
+    35	
+    36	TIER_A = "A"
+    37	TIER_B = "B"
+    38	TIER_C = "C"
+    39	ALL_TIERS = {TIER_A, TIER_B, TIER_C}
+    40	
+    41	TIER_BUDGET_MAP = {
+    42	    TIER_A: 100,
+    43	    TIER_B: 30,
+    44	    TIER_C: 0,
+    45	}
+    46	
+    47	TIER_LABELS = {
+    48	    TIER_A: "优先深挖",
+    49	    TIER_B: "观察等待证据",
+    50	    TIER_C: "淘汰/暂不关注",
+    51	}
+    52	
+    53	A_TIER_HARD_CAP = 5
+    54	
+    55	_SEVERITY_HIGH_RISK_FLAGS = {"INQUIRY_RISK", "FINANCIAL_QUALITY_RISK"}
+    56	
+    57	
+    58	@dataclass
+    59	class TierBudgetResult:
+    60	    tier: str = TIER_C
+    61	    ta_budget_priority: int = 0
+    62	    tier_reason: str = ""
+    63	    missing_evidence_for_upgrade: list[str] = field(default_factory=list)
+    64	    why_not_deep_ta: str = ""
+    65	
+    66	
+    67	@dataclass
+    68	class TierBudgetAllocation:
+    69	    tier_a_count: int = 0
+    70	    tier_b_count: int = 0
+    71	    tier_c_count: int = 0
+    72	    total_budget: int = 0
+    73	    a_tier_cap_applied: bool = False
+    74	    demoted_symbols: list[str] = field(default_factory=list)
+    75	
+    76	
+    77	def _sanitize(text: str) -> str:
+    78	    for w in _STRONG_BUY_SELL_WORDS:
+    79	        if w in text:
+    80	            text = text.replace(w, "***")
+    81	    return text
+    82	
+    83	
+    84	def classify_candidate_tier(
+    85	    priority_rank: str = "",
+    86	    composite_score: float = 0.0,
+    87	    positive_category_count: int = 0,
+    88	    data_completeness: float = 0.0,
+    89	    missing_evidence: Optional[list[str]] = None,
+    90	    risk_flags: Optional[list[str]] = None,
+    91	    risk_penalty: float = 0.0,
+    92	    game_balance: str = "",
+    93	    gate_passed: bool = False,
+    94	    why_not_deep_ta: str = "",
+    95	) -> TierBudgetResult:
+    96	    """Classify a single candidate into A / B / C tier.
+    97	
+    98	    The classification builds on the S-005 ``priority_rank`` but adds
+    99	    stricter guardrails:
+   100	
+   101	    * **Tier A** requires:
+   102	      - ``positive_category_count >= 3`` **or**
+   103	        (``positive_category_count >= 2`` **and** ``composite_score >= 50``)
+   104	      - ``data_completeness >= 0.6``
+   105	      - No high-severity risk flags
+   106	      - Fewer than 3 risk flags in total
+   107	      - ``game_balance`` is ``favorable`` or ``neutral``
+   108	      - ``gate_passed`` is True
+   109	    * **Tier C** is assigned when:
+   110	      - High-severity risk flags are present **or**
+   111	      - 3 or more risk flags **or**
+   112	      - ``data_completeness < 0.3`` **or**
+   113	      - ``game_balance`` is ``fragile`` **or**
+   114	      - ``positive_category_count < 1``
+   115	    * **Tier B** covers everything else.
+   116	
+   117	    Returns:
+   118	        ``TierBudgetResult`` with tier, budget, reason, and upgrade hints.
+   119	    """
+   120	    r_flags = set(risk_flags or [])
+   121	    missing = list(missing_evidence or [])
+   122	
+   123	    has_high_risk = bool(r_flags & _SEVERITY_HIGH_RISK_FLAGS)
+   124	    many_risks = len(r_flags) >= 3
+   125	    heavy_penalty = risk_penalty <= -15
+   126	    fragile = game_balance == "fragile"
+   127	    favorable_or_neutral = game_balance in {"favorable", "neutral"}
+   128	
+   129	    missing_for_upgrade: list[str] = []
+   130	    tier = TIER_C
+   131	    reason = ""
+   132	
+   133	    # --- Tier A conditions ---
+   134	    meets_a_signals = (
+   135	        positive_category_count >= 3
+   136	        or (positive_category_count >= 2 and composite_score >= 50)
+   137	    )
+   138	    meets_a_completeness = data_completeness >= 0.6
+   139	    meets_a_risk = not has_high_risk and not many_risks and not heavy_penalty
+   140	    meets_a_game = favorable_or_neutral
+   141	    meets_a_gate = gate_passed
+   142	
+   143	    if meets_a_signals and meets_a_completeness and meets_a_risk and meets_a_game and meets_a_gate:
+   144	        tier = TIER_A
+   145	        cat_desc = f"{positive_category_count}类信号共振"
+   146	        reason = f"{cat_desc}，综合分{composite_score:.0f}，风险可控，建议优先深度分析"
+   147	    else:
+   148	        # Build upgrade hints
+   149	        if not meets_a_signals:
+   150	            if positive_category_count < 2:
+   151	                missing_for_upgrade.append(f"需至少2类正向信号(当前{positive_category_count}类)")
+   152	            else:
+   153	                missing_for_upgrade.append(f"信号数{positive_category_count}类+综合分需≥50(当前{composite_score:.0f})")
+   154	        if not meets_a_completeness:
+   155	            missing_for_upgrade.append(f"数据完整度需≥60%(当前{data_completeness:.0%})")
+   156	        if not meets_a_risk:
+   157	            if has_high_risk:
+   158	                missing_for_upgrade.append(f"高风险标签需解除({', '.join(r_flags & _SEVERITY_HIGH_RISK_FLAGS)})")
+   159	            if many_risks:
+   160	                missing_for_upgrade.append(f"风险标签过多({len(r_flags)}个，需<3)")
+   161	            if heavy_penalty:
+   162	                missing_for_upgrade.append(f"风险罚分过重({risk_penalty}，需>-15)")
+   163	        if not meets_a_game:
+   164	            missing_for_upgrade.append(f"博弈平衡需改善(当前{game_balance or '未评估'})")
+   165	        if not meets_a_gate:
+   166	            missing_for_upgrade.append("S-005门控未通过")
+   167	
+   168	        # --- Tier B or C ---
+   169	        meets_b_signals = positive_category_count >= 1
+   170	        meets_b_completeness = data_completeness >= 0.3
+   171	        meets_b_risk = not has_high_risk and not many_risks and not heavy_penalty
+   172	        not_fragile = not fragile
+   173	
+   174	        if (
+   175	            meets_b_signals
+   176	            and meets_b_completeness
+   177	            and meets_b_risk
+   178	            and not_fragile
+   179	            and positive_category_count >= 1
+   180	        ):
+   181	            tier = TIER_B
+   182	            reason_parts = []
+   183	            if positive_category_count < 2:
+   184	                reason_parts.append(f"信号不足({positive_category_count}类)")
+   185	            elif not meets_a_completeness:
+   186	                reason_parts.append(f"完整度不足({data_completeness:.0%})")
+   187	            elif not favorable_or_neutral:
+   188	                reason_parts.append(f"博弈不佳({game_balance})")
+   189	            elif not gate_passed:
+   190	                reason_parts.append("门控未通过")
+   191	            else:
+   192	                reason_parts.append("综合条件接近A层但未完全满足")
+   193	            if missing:
+   194	                reason_parts.append(f"缺: {', '.join(missing[:3])}")
+   195	            reason = "；".join(reason_parts) if reason_parts else "观察等待更多证据"
+   196	        else:
+   197	            tier = TIER_C
+   198	            c_reasons = []
+   199	            if has_high_risk:
+   200	                c_reasons.append(f"高风险({', '.join(r_flags & _SEVERITY_HIGH_RISK_FLAGS)})")
+   201	            if many_risks:
+   202	                c_reasons.append(f"风险标签多({len(r_flags)}个)")
+   203	            if fragile:
+   204	                c_reasons.append("博弈fragile")
+   205	            if positive_category_count < 1:
+   206	                c_reasons.append("无正向信号")
+   207	            if data_completeness < 0.3:
+   208	                c_reasons.append(f"数据严重不足({data_completeness:.0%})")
+   209	            elif data_completeness < 0.5:
+   210	                c_reasons.append(f"数据不足({data_completeness:.0%})")
+   211	            if heavy_penalty:
+   212	                c_reasons.append(f"风险罚分重({risk_penalty})")
+   213	            reason = "；".join(c_reasons) if c_reasons else "综合条件不足"
+   214	
+   215	    budget = TIER_BUDGET_MAP.get(tier, 0)
+   216	    not_deep = why_not_deep_ta if tier != TIER_A else ""
+   217	
+   218	    reason = _sanitize(reason)
+   219	    not_deep = _sanitize(not_deep)
+   220	    for i, hint in enumerate(missing_for_upgrade):
+   221	        missing_for_upgrade[i] = _sanitize(hint)
+   222	
+   223	    return TierBudgetResult(
+   224	        tier=tier,
+   225	        ta_budget_priority=budget,
+   226	        tier_reason=reason,
+   227	        missing_evidence_for_upgrade=missing_for_upgrade,
+   228	        why_not_deep_ta=not_deep,
+   229	    )
+   230	
+   231	
+   232	def allocate_tier_budget(
+   233	    results: list[TierBudgetResult],
+   234	    a_tier_cap: int = A_TIER_HARD_CAP,
+   235	) -> TierBudgetAllocation:
+   236	    """Enforce the A-tier cap and compute aggregate budget.
+   237	
+   238	    When more candidates qualify for tier A than ``a_tier_cap``, the
+   239	    lowest-scoring A-tier candidates are demoted to B.  The caller
+   240	    should pre-sort ``results`` so that index 0 is the strongest
+   241	    candidate.
+   242	
+   243	    Args:
+   244	        results: Pre-sorted list of TierBudgetResult (strongest first).
+   245	        a_tier_cap: Maximum number of A-tier candidates allowed.
+   246	
+   247	    Returns:
+   248	        TierBudgetAllocation with aggregate stats and demotion info.
+   249	    """
+   250	    a_indices = [i for i, r in enumerate(results) if r.tier == TIER_A]
+   251	
+   252	    cap_applied = False
+   253	    demoted: list[str] = []
+   254	
+   255	    if len(a_indices) > a_tier_cap:
+   256	        cap_applied = True
+   257	        for idx in a_indices[a_tier_cap:]:
+   258	            old = results[idx]
+   259	            old.tier = TIER_B
+   260	            old.ta_budget_priority = TIER_BUDGET_MAP[TIER_B]
+   600	
+   601	    return candidate, ""
+   602	
+   603	
+   604	def save_candidate(candidate: Candidate, db_path: str) -> int:
+   605	    """Save a candidate to the database. Upsert on (trade_date, symbol)."""
+   606	    conn = sqlite3.connect(db_path)
+   607	    row = candidate.to_db_row()
+   608	    try:
+   609	        conn.execute(
+   610	            "INSERT INTO tradeflow_candidates "
+   611	            "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+   612	            "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+   613	            "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+   614	            "policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
+   615	            "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+   616	            "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
+   617	            "fund_flow_case, resonance_count, game_balance_refs_json, "
+   618	            "fund_flow_anomaly_score, fund_flow_anomaly_tags_json, "
+   619	            "fund_flow_anomaly_refs_json, fund_flow_unit_verified, "
+   620	            "fund_flow_individual_summary, fund_flow_board_summary, "
+   621	            "composite_score, signal_category_hits_json, positive_category_count, "
+   622	            "data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta, "
+   623	            "priority_rank, "
+   624	            "tier, ta_budget_priority, tier_reason, missing_evidence_for_upgrade_json, "
+   625	            "created_at, updated_at) "
+   626	            "VALUES ({}) ".format(",".join(["?"] * 50))
+   627	            + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+   628	            "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+   629	            "trigger_price=excluded.trigger_price, "
+   630	            "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+   631	            "need_deep_ta=excluded.need_deep_ta, evidence_json=excluded.evidence_json, "
+   632	            "risk_flags_json=excluded.risk_flags_json, "
+   633	            "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+   634	            "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
+   635	            "narrative_score=excluded.narrative_score, "
+   636	            "narrative_reasons_json=excluded.narrative_reasons_json, "
+   637	            "narrative_evidence_refs_json=excluded.narrative_evidence_refs_json, "
+   638	            "risk_penalty=excluded.risk_penalty, "
+   639	            "risk_evidence_refs_json=excluded.risk_evidence_refs_json, "
+   640	            "risk_reasons_json=excluded.risk_reasons_json, "
+   641	            "game_balance=excluded.game_balance, "
+   642	            "bull_case=excluded.bull_case, bear_case=excluded.bear_case, "
+   643	            "policy_case=excluded.policy_case, fund_flow_case=excluded.fund_flow_case, "
+   644	            "resonance_count=excluded.resonance_count, "
+   645	            "game_balance_refs_json=excluded.game_balance_refs_json, "
+   646	            "fund_flow_anomaly_score=excluded.fund_flow_anomaly_score, "
+   647	            "fund_flow_anomaly_tags_json=excluded.fund_flow_anomaly_tags_json, "
+   648	            "fund_flow_anomaly_refs_json=excluded.fund_flow_anomaly_refs_json, "
+   649	            "fund_flow_unit_verified=excluded.fund_flow_unit_verified, "
+   650	            "fund_flow_individual_summary=excluded.fund_flow_individual_summary, "
+   651	            "fund_flow_board_summary=excluded.fund_flow_board_summary, "
+   652	            "composite_score=excluded.composite_score, "
+   653	            "signal_category_hits_json=excluded.signal_category_hits_json, "
+   654	            "positive_category_count=excluded.positive_category_count, "
+   655	            "data_completeness=excluded.data_completeness, "
+   656	            "missing_evidence_json=excluded.missing_evidence_json, "
+   657	            "why_deep_ta=excluded.why_deep_ta, why_not_deep_ta=excluded.why_not_deep_ta, "
+   658	            "priority_rank=excluded.priority_rank, "
+   659	            "tier=excluded.tier, ta_budget_priority=excluded.ta_budget_priority, "
+   660	            "tier_reason=excluded.tier_reason, "
+   661	            "missing_evidence_for_upgrade_json=excluded.missing_evidence_for_upgrade_json, "
+   662	            "updated_at=excluded.updated_at",
+   663	            (
+   664	                row["trade_date"], row["symbol"], row["name"], row["source"],
+   665	                row["strategy_tags_json"], row["primary_strategy"],
+   666	                row["score"], row["status"],
+   667	                row["trigger_price"], row["support_price"], row["invalid_price"],
+   668	                row["need_deep_ta"], row["evidence_json"], row["risk_flags_json"],
+   669	                row["policy_tags_json"], row["version_score"],
+   670	                row["policy_evidence_refs_json"],
+   671	                row["narrative_score"], row["narrative_reasons_json"],
+   672	                row["narrative_evidence_refs_json"],
+   673	                row["risk_penalty"], row["risk_evidence_refs_json"],
+   674	                row["risk_reasons_json"],
+   675	                row["game_balance"], row["bull_case"], row["bear_case"],
+   676	                row["policy_case"], row["fund_flow_case"],
+   677	                row["resonance_count"], row["game_balance_refs_json"],
+   678	                row["fund_flow_anomaly_score"], row["fund_flow_anomaly_tags_json"],
+   679	                row["fund_flow_anomaly_refs_json"], row["fund_flow_unit_verified"],
+   680	                row["fund_flow_individual_summary"], row["fund_flow_board_summary"],
+   681	                row["composite_score"], row["signal_category_hits_json"],
+   682	                row["positive_category_count"], row["data_completeness"],
+   683	                row["missing_evidence_json"], row["why_deep_ta"], row["why_not_deep_ta"],
+   684	                row["priority_rank"],
+   685	                row["tier"], row["ta_budget_priority"],
+   686	                row["tier_reason"], row["missing_evidence_for_upgrade_json"],
+   687	                candidate.created_at, row["updated_at"],
+   688	            ),
+   689	        )
+   690	        conn.commit()
+   691	        row_id = conn.execute(
+   692	            "SELECT id FROM tradeflow_candidates WHERE trade_date=? AND symbol=?",
+   693	            (row["trade_date"], row["symbol"]),
+   694	        ).fetchone()[0]
+   695	        return row_id
+   696	    finally:
+   697	        conn.close()
+   180	                symbol=sym,
+   181	                name=item.get("name", ""),
+   182	                source=item.get("source", "manual"),
+   183	                trade_date=trade_date,
+   184	                news_texts=sym_news or news_texts,
+   185	                event_overrides=filtered_overrides,
+   186	                fund_flow_individual=sym_ff_individual,  # [T-003]
+   187	                fund_flow_board=sym_ff_board,  # [T-003]
+   188	            )
+   189	            if c is not None:
+   190	                candidates.append(c)
+   191	
+   192	    # Build plan entries
+   193	    plan_entries = []
+   194	    for c in candidates:
+   195	        entry = _build_plan_entry(c)
+   196	        plan_entries.append(entry)
+   197	
+   198	    # Sort by composite_score descending (S-005 priority gate), fallback to score
+   199	    plan_entries.sort(key=lambda x: (x.get("composite_score", 0) or 0, x.get("score", 0)), reverse=True)
+   200	
+   201	    # [S-007] candidate_tier_budget — sort by tier (A first, then B, then C)
+   202	    tier_order = {"A": 0, "B": 1, "C": 2, "": 3}
+   203	    plan_entries.sort(key=lambda x: (tier_order.get(x.get("tier", ""), 3), -(x.get("composite_score", 0) or 0)))
+   204	
+   205	    # [S-007] candidate_tier_budget — enforce A-tier cap and compute budget summary
+   206	    from .tier_budget import TierBudgetResult
+   207	    tier_results = []
+   208	    for e in plan_entries:
+   209	        tier_results.append(TierBudgetResult(
+   210	            tier=e.get("tier", "C"),
+   211	            ta_budget_priority=e.get("ta_budget_priority", 0),
+   212	            tier_reason=e.get("tier_reason", ""),
+   213	            missing_evidence_for_upgrade=e.get("missing_evidence_for_upgrade", []),
+   214	            why_not_deep_ta=e.get("why_not_deep_ta", ""),
+   215	        ))
+   216	    budget_allocation = allocate_tier_budget(tier_results)
+   217	    # Update entries if any were demoted by the cap
+   218	    for i, tr in enumerate(tier_results):
+   219	        if i < len(plan_entries):
+   220	            plan_entries[i]["tier"] = tr.tier
+   221	            plan_entries[i]["ta_budget_priority"] = tr.ta_budget_priority
+   222	            plan_entries[i]["tier_reason"] = tr.tier_reason
+   223	
+   224	    # Build summary
+   225	    n_total = len(plan_entries)
+   226	    n_deep_ta = sum(1 for e in plan_entries if e["need_deep_ta"])
+   227	    n_wait = sum(1 for e in plan_entries if e["action"] == "WAIT_TRIGGER")
+   228	
+   229	    summary_parts = [
+   230	        f"共{n_total}只候选",
+   231	        f"{n_deep_ta}只需要深度TA",
+   232	        f"{n_wait}只接近触发",
+   233	    ]
+   234	    if symbols:
+   235	        summary_parts.append(f"指定标的: {', '.join(symbols)}")
+   236	
+   237	    plan = DailyPlan(
+   238	        trade_date=trade_date,
+   239	        mode="pre_market",
+   240	        summary="，".join(summary_parts) + "。",
+   241	        candidates=plan_entries,
+   242	        metadata={
+   243	            "universe_size": len(plan_entries),
+   244	            "generated_at": datetime.now().isoformat(),
+   245	        },
+   246	    )
+   247	
+   248	    # [S-006] candidate_false_positive_audit — generate audit report
+   249	    audit = build_audit_report(
+   250	        candidates=candidates,
+   251	        trade_date=trade_date,
+   252	    )
+   253	    plan.metadata["audit_summary"] = {
+   254	        "total_candidates": audit.summary.total_candidates if audit.summary else 0,
+   255	        "by_category": audit.summary.by_category if audit.summary else {},
+   256	        "common_evidence_gaps": audit.summary.common_evidence_gaps[:5] if audit.summary else [],
+   257	        "common_risk_demotions": audit.summary.common_risk_demotions[:5] if audit.summary else [],
+   258	    }
+   259	
+   260	    # [S-007] candidate_tier_budget — add budget allocation to metadata
+   261	    plan.metadata["tier_budget"] = {
+   262	        "tier_a_count": budget_allocation.tier_a_count,
+   263	        "tier_b_count": budget_allocation.tier_b_count,
+   264	        "tier_c_count": budget_allocation.tier_c_count,
+   265	        "total_budget": budget_allocation.total_budget,
+   266	        "a_tier_cap_applied": budget_allocation.a_tier_cap_applied,
+   267	        "demoted_count": len(budget_allocation.demoted_symbols),
+   268	    }
+   269	    plan.metadata["tier_budget_summary"] = render_tier_budget_summary(budget_allocation)
+   270	
+   195	                name=sym_name,
+   196	                source=sym_source,
+   197	                reason=reason,
+   198	            ))
+   199	
+   200	    candidates.sort(key=lambda c: (c.composite_score, c.score), reverse=True)
+   201	    top_candidates = candidates[:top_n]
+   202	
+   203	    plan_entries = []
+   204	    for c in top_candidates:
+   205	        entry = _build_discovery_entry(c)
+   206	        plan_entries.append(entry)
+   207	
+   208	    # [S-007] candidate_tier_budget — sort by tier (A first, then B, then C)
+   209	    tier_order = {"A": 0, "B": 1, "C": 2, "": 3}
+   210	    plan_entries.sort(key=lambda x: (tier_order.get(x.get("tier", ""), 3), -(x.get("composite_score", 0) or 0)))
+   211	
+   212	    # [S-007] candidate_tier_budget — enforce A-tier cap and compute budget summary
+   213	    from .tier_budget import TierBudgetResult
+   214	    tier_results = []
+   215	    for e in plan_entries:
+   216	        tier_results.append(TierBudgetResult(
+   217	            tier=e.get("tier", "C"),
+   218	            ta_budget_priority=e.get("ta_budget_priority", 0),
+   219	            tier_reason=e.get("tier_reason", ""),
+   220	            missing_evidence_for_upgrade=e.get("missing_evidence_for_upgrade", []),
+   221	            why_not_deep_ta=e.get("why_not_deep_ta", ""),
+   222	        ))
+   223	    budget_allocation = allocate_tier_budget(tier_results)
+   224	    for i, tr in enumerate(tier_results):
+   225	        if i < len(plan_entries):
+   226	            plan_entries[i]["tier"] = tr.tier
+   227	            plan_entries[i]["ta_budget_priority"] = tr.ta_budget_priority
+   228	            plan_entries[i]["tier_reason"] = tr.tier_reason
+   229	
+   230	    n_total = len(plan_entries)
+   231	    n_deep_ta = sum(1 for e in plan_entries if e.get("need_deep_ta"))
+   232	    n_filtered = len(filtered)
+   233	    n_universe = len(universe)
+   234	
+   235	    filter_breakdown = _classify_filter_reasons(filtered)
+   236	
+   237	    summary_parts = [
+   238	        f"共扫描{n_universe}只",
+   239	        f"{n_total}只候选(Top{top_n})",
+   240	        f"{n_deep_ta}只需要深度TA",
+   241	        f"{n_filtered}只被过滤",
+   242	    ]
+   243	    if filter_breakdown:
+   244	        for cat, cnt in filter_breakdown.items():
+   245	            summary_parts.append(f"{cat}{cnt}只")
+   246	
+   247	    result = DiscoveryResult(
+   248	        trade_date=trade_date,
+   249	        universe_size=n_universe,
+   250	        candidates=plan_entries,
+   251	        filtered=[asdict(f) for f in filtered],
+   252	        summary="，".join(summary_parts) + "。",
+   253	        metadata={
+   254	            "top_n": top_n,
+   255	            "generated_at": datetime.now().isoformat(),
+   256	            "filter_breakdown": filter_breakdown,
+   257	            "sources": list({item.get("source", "manual") for item in universe}),
+   258	        },
+   259	    )
+   260	
+   261	    if save_candidates and tf_db_path:
+   262	        init_db(tf_db_path)
+   263	        from .candidate_engine import save_candidate
+   264	        for c in top_candidates:
+   265	            if c.trade_date != trade_date:
+   266	                c.trade_date = trade_date
+   267	            save_candidate(c, tf_db_path)
+   268	
+   269	    # [S-006] candidate_false_positive_audit — generate audit report
+   270	    audit = build_audit_report(
+   271	        candidates=top_candidates,
+   272	        filtered_symbols=[asdict(f) for f in filtered],
+   273	        trade_date=trade_date,
+   274	    )
+   275	    result.audit_report = audit
+   276	    result.metadata["audit_summary"] = {
+   277	        "total_candidates": audit.summary.total_candidates if audit.summary else 0,
+   278	        "total_filtered": audit.summary.total_filtered if audit.summary else 0,
+   279	        "by_category": audit.summary.by_category if audit.summary else {},
+   280	        "common_evidence_gaps": audit.summary.common_evidence_gaps[:5] if audit.summary else [],
+   281	    }
+   282	
+   283	    # [S-007] candidate_tier_budget — add budget allocation to metadata
+   284	    result.metadata["tier_budget"] = {
+   285	        "tier_a_count": budget_allocation.tier_a_count,
+   286	        "tier_b_count": budget_allocation.tier_b_count,
+   287	        "tier_c_count": budget_allocation.tier_c_count,
+   288	        "total_budget": budget_allocation.total_budget,
+   289	        "a_tier_cap_applied": budget_allocation.a_tier_cap_applied,
+   290	        "demoted_count": len(budget_allocation.demoted_symbols),
+   220	            policy_evidence_refs=json.loads(row.get("policy_evidence_refs_json", "[]")),  # [S-001]
+   221	            narrative_score=row.get("narrative_score", 0.0),  # [S-002] narrative_quality_score
+   222	            narrative_reasons=json.loads(row.get("narrative_reasons_json", "[]")),  # [S-002]
+   223	            narrative_evidence_refs=json.loads(row.get("narrative_evidence_refs_json", "[]")),  # [S-002]
+   224	            risk_penalty=row.get("risk_penalty", 0.0),  # [S-003] underwater_risk_flags
+   225	            risk_evidence_refs=json.loads(row.get("risk_evidence_refs_json", "[]")),  # [S-003]
+   226	            risk_reasons=json.loads(row.get("risk_reasons_json", "[]")),  # [S-003]
+   227	            game_balance=row.get("game_balance", ""),  # [S-004] candidate_game_balance
+   228	            bull_case=row.get("bull_case", ""),  # [S-004]
+   229	            bear_case=row.get("bear_case", ""),  # [S-004]
+   230	            policy_case=row.get("policy_case", ""),  # [S-004]
+   231	            fund_flow_case=row.get("fund_flow_case", ""),  # [S-004]
+   232	            resonance_count=row.get("resonance_count", 0),  # [S-004]
+   233	            game_balance_refs=json.loads(row.get("game_balance_refs_json", "[]")),  # [S-004]
+   234	            fund_flow_anomaly_score=row.get("fund_flow_anomaly_score", 0.0),  # [T-003] fund_flow_anomaly_pool
+   235	            fund_flow_anomaly_tags=json.loads(row.get("fund_flow_anomaly_tags_json", "[]")),  # [T-003]
+   236	            fund_flow_anomaly_refs=json.loads(row.get("fund_flow_anomaly_refs_json", "[]")),  # [T-003]
+   237	            fund_flow_unit_verified=bool(row.get("fund_flow_unit_verified", 0)),  # [T-003]
+   238	            fund_flow_individual_summary=row.get("fund_flow_individual_summary", ""),  # [T-003]
+   239	            fund_flow_board_summary=row.get("fund_flow_board_summary", ""),  # [T-003]
+   240	            composite_score=row.get("composite_score", 0.0),  # [S-005] selection_priority_gate
+   241	            signal_category_hits=json.loads(row.get("signal_category_hits_json", "[]")),  # [S-005]
+   242	            positive_category_count=row.get("positive_category_count", 0),  # [S-005]
+   243	            data_completeness=row.get("data_completeness", 0.0),  # [S-005]
+   244	            missing_evidence=json.loads(row.get("missing_evidence_json", "[]")),  # [S-005]
+   245	            why_deep_ta=row.get("why_deep_ta", ""),  # [S-005]
+   246	            why_not_deep_ta=row.get("why_not_deep_ta", ""),  # [S-005]
+   247	            priority_rank=row.get("priority_rank", ""),  # [S-005]
+   248	            tier=row.get("tier", ""),  # [S-007] candidate_tier_budget
+   249	            ta_budget_priority=row.get("ta_budget_priority", 0),  # [S-007]
+   250	            tier_reason=row.get("tier_reason", ""),  # [S-007]
+   251	            missing_evidence_for_upgrade=json.loads(row.get("missing_evidence_for_upgrade_json", "[]")),  # [S-007]
+   252	        )
+   253	
+   254	
+   255	@dataclass
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/tier_budget.py | sed -n '250,380p'
+python - <<'PY'
+import re
+s=open('tradingagents/tradeflow/candidate_engine.py').read()
+start=s.find('CREATE TABLE')
+print(s[start:start+3000])
+PY" in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+   250	    a_indices = [i for i, r in enumerate(results) if r.tier == TIER_A]
+   251	
+   252	    cap_applied = False
+   253	    demoted: list[str] = []
+   254	
+   255	    if len(a_indices) > a_tier_cap:
+   256	        cap_applied = True
+   257	        for idx in a_indices[a_tier_cap:]:
+   258	            old = results[idx]
+   259	            old.tier = TIER_B
+   260	            old.ta_budget_priority = TIER_BUDGET_MAP[TIER_B]
+   261	            old.tier_reason = f"A层已满(上限{a_tier_cap})，降为B层观察；{old.tier_reason}"
+   262	            old.why_not_deep_ta = f"A层名额已满({a_tier_cap})，降为观察"
+   263	            demoted.append(f"slot_{idx}")
+   264	
+   265	    counts = {TIER_A: 0, TIER_B: 0, TIER_C: 0}
+   266	    total = 0
+   267	    for r in results:
+   268	        counts[r.tier] = counts.get(r.tier, 0) + 1
+   269	        total += r.ta_budget_priority
+   270	
+   271	    return TierBudgetAllocation(
+   272	        tier_a_count=counts.get(TIER_A, 0),
+   273	        tier_b_count=counts.get(TIER_B, 0),
+   274	        tier_c_count=counts.get(TIER_C, 0),
+   275	        total_budget=total,
+   276	        a_tier_cap_applied=cap_applied,
+   277	        demoted_symbols=demoted,
+   278	    )
+   279	
+   280	
+   281	def render_tier_budget_summary(allocation: TierBudgetAllocation) -> str:
+   282	    """Render a human-readable tier budget summary for Daily Plan."""
+   283	    lines = [
+   284	        f"📊 TA Token 预算分配",
+   285	        f"  A层(优先深挖): {allocation.tier_a_count}只 × 100 tokens",
+   286	        f"  B层(观察等待): {allocation.tier_b_count}只 × 30 tokens",
+   287	        f"  C层(暂不关注): {allocation.tier_c_count}只 × 0 tokens",
+   288	        f"  总预算建议: {allocation.total_budget} tokens",
+   289	    ]
+   290	    if allocation.a_tier_cap_applied:
+   291	        lines.append(f"  ⚠️ A层上限{A_TIER_HARD_CAP}已触发，{len(allocation.demoted_symbols)}只降为B层")
+   292	    return "\n".join(lines)
+zsh:2: command not found: python
+
+exec
+/bin/zsh -lc "python3 - <<'PY'
+s=open('tradingagents/tradeflow/candidate_engine.py').read()
+start=s.find('CREATE TABLE')
+print(s[start:start+3500])
+PY
+sed -n '1,180p' tradingagents/tradeflow/candidate_engine.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+CREATE TABLE IF NOT EXISTS tradeflow_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    source TEXT DEFAULT 'manual',
+    strategy_tags_json TEXT DEFAULT '[]',
+    primary_strategy TEXT DEFAULT '',
+    score REAL DEFAULT 0.0,
+    status TEXT DEFAULT 'active',
+    trigger_price REAL,
+    support_price REAL,
+    invalid_price REAL,
+    need_deep_ta INTEGER DEFAULT 0,
+    evidence_json TEXT DEFAULT '{}',
+    risk_flags_json TEXT DEFAULT '[]',
+    created_at TEXT,
+    updated_at TEXT,
+    UNIQUE(trade_date, symbol)
+);
+"""
+
+CREATE_SIGNALS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_time TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    signal_type TEXT NOT NULL,
+    signal_level TEXT DEFAULT 'info',
+    source TEXT DEFAULT 'tradeflow',
+    evidence_json TEXT DEFAULT '{}',
+    action_hint TEXT DEFAULT 'OBSERVE',
+    status TEXT DEFAULT 'new',
+    created_at TEXT
+);
+"""
+
+CREATE_DAILY_PLANS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_daily_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    mode TEXT DEFAULT 'pre_market',
+    summary TEXT DEFAULT '',
+    candidates_json TEXT DEFAULT '[]',
+    metadata_json TEXT DEFAULT '{}',
+    created_at TEXT,
+    UNIQUE(trade_date, mode)
+);
+"""
+
+
+def init_db(db_path: str) -> None:
+    """Create tradeflow tables if they don't exist."""
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        CREATE_CANDIDATES_TABLE
+        + CREATE_SIGNALS_TABLE
+        + CREATE_DAILY_PLANS_TABLE
+    )
+    try:
+        conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    # [S-001] policy_version_signal — add policy version columns
+    for _col, _type in [
+        ("policy_tags_json", "TEXT DEFAULT '[]'"),
+        ("version_score", "REAL DEFAULT 0.0"),
+        ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-002] narrative_quality_score — add narrative quality columns
+    for _col, _type in [
+        ("narrative_score", "REAL DEFAULT 0.0"),
+        ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
+        ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-003] underwater_risk_flags — add risk penalty columns
+    for _col, _type in [
+        ("risk_penalty", "REAL DEFAULT 0.0"),
+        ("risk_evidence_refs_json", "TEXT DEFAULT '[]'"),
+        ("risk_reasons_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-004] candidate_game_balance — add game balance columns
+    for _col, _type in [
+        ("game_balance", "TEXT DEFAULT ''"),
+        ("bull_case", "TEXT DEFAULT ''"),
+        ("bear_case", "TEXT DEFAULT ''"),
+        ("policy_case", "TEXT DEFAULT ''"),
+        ("fund_flow_case", "TEXT DEFAULT ''"),
+        ("resonance_count", "INTEGER DEFAULT 0"),
+        ("game_balance_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            
+"""TradeFlow Candidate Engine — runs strategies and produces candidates.
+
+Responsibilities:
+- Load price data for each symbol in the universe
+- Run all three strategies
+- Filter out ST / low-liquidity / data-missing stocks
+- Deduplicate multi-strategy hits
+- Mark need_deep_ta
+- Persist to tradeflow tables
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime
+from typing import Optional
+
+import pandas as pd
+
+from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE, STRATEGY_FUND_FLOW  # [S-001] [S-002] [T-003]
+from .strategies.vcp import score_vcp
+from .strategies.pullback_support import score_pullback_support
+from .strategies.event_catalyst import score_event_catalyst
+from .policy_version_signal import detect_policy_version, PolicyVersionResult  # [S-001]
+from .narrative_quality import score_narrative_quality, NarrativeQualityResult  # [S-002]
+from .underwater_risk_flags import detect_underwater_risks, UnderwaterRiskResult, ALL_RISK_FLAGS  # [S-003]
+from .game_balance import assess_game_balance, GameBalanceResult  # [S-004] candidate_game_balance
+from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult, FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT  # [T-003] fund_flow_anomaly_pool
+from .selection_priority_gate import run_selection_priority_gate, SelectionPriorityResult  # [S-005] selection_priority_gate
+from .tier_budget import classify_candidate_tier, TierBudgetResult  # [S-007] candidate_tier_budget
+
+
+# ── SQL for table creation ──
+CREATE_CANDIDATES_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    source TEXT DEFAULT 'manual',
+    strategy_tags_json TEXT DEFAULT '[]',
+    primary_strategy TEXT DEFAULT '',
+    score REAL DEFAULT 0.0,
+    status TEXT DEFAULT 'active',
+    trigger_price REAL,
+    support_price REAL,
+    invalid_price REAL,
+    need_deep_ta INTEGER DEFAULT 0,
+    evidence_json TEXT DEFAULT '{}',
+    risk_flags_json TEXT DEFAULT '[]',
+    created_at TEXT,
+    updated_at TEXT,
+    UNIQUE(trade_date, symbol)
+);
+"""
+
+CREATE_SIGNALS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_time TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    signal_type TEXT NOT NULL,
+    signal_level TEXT DEFAULT 'info',
+    source TEXT DEFAULT 'tradeflow',
+    evidence_json TEXT DEFAULT '{}',
+    action_hint TEXT DEFAULT 'OBSERVE',
+    status TEXT DEFAULT 'new',
+    created_at TEXT
+);
+"""
+
+CREATE_DAILY_PLANS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_daily_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    mode TEXT DEFAULT 'pre_market',
+    summary TEXT DEFAULT '',
+    candidates_json TEXT DEFAULT '[]',
+    metadata_json TEXT DEFAULT '{}',
+    created_at TEXT,
+    UNIQUE(trade_date, mode)
+);
+"""
+
+
+def init_db(db_path: str) -> None:
+    """Create tradeflow tables if they don't exist."""
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        CREATE_CANDIDATES_TABLE
+        + CREATE_SIGNALS_TABLE
+        + CREATE_DAILY_PLANS_TABLE
+    )
+    try:
+        conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    # [S-001] policy_version_signal — add policy version columns
+    for _col, _type in [
+        ("policy_tags_json", "TEXT DEFAULT '[]'"),
+        ("version_score", "REAL DEFAULT 0.0"),
+        ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-002] narrative_quality_score — add narrative quality columns
+    for _col, _type in [
+        ("narrative_score", "REAL DEFAULT 0.0"),
+        ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
+        ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-003] underwater_risk_flags — add risk penalty columns
+    for _col, _type in [
+        ("risk_penalty", "REAL DEFAULT 0.0"),
+        ("risk_evidence_refs_json", "TEXT DEFAULT '[]'"),
+        ("risk_reasons_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-004] candidate_game_balance — add game balance columns
+    for _col, _type in [
+        ("game_balance", "TEXT DEFAULT ''"),
+        ("bull_case", "TEXT DEFAULT ''"),
+        ("bear_case", "TEXT DEFAULT ''"),
+        ("policy_case", "TEXT DEFAULT ''"),
+        ("fund_flow_case", "TEXT DEFAULT ''"),
+        ("resonance_count", "INTEGER DEFAULT 0"),
+        ("game_balance_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [T-003] fund_flow_anomaly_pool — add fund flow anomaly columns
+    for _col, _type in [
+        ("fund_flow_anomaly_score", "REAL DEFAULT 0.0"),
+        ("fund_flow_anomaly_tags_json", "TEXT DEFAULT '[]'"),
+        ("fund_flow_anomaly_refs_json", "TEXT DEFAULT '[]'"),
+        ("fund_flow_unit_verified", "INTEGER DEFAULT 0"),
+        ("fund_flow_individual_summary", "TEXT DEFAULT ''"),
+        ("fund_flow_board_summary", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-005] selection_priority_gate — add priority gate columns
+    for _col, _type in [
+        ("composite_score", "REAL DEFAULT 0.0"),
+        ("signal_category_hits_json", "TEXT DEFAULT '[]'"),
+        ("positive_category_count", "INTEGER DEFAULT 0"),
+        ("data_completeness", "REAL DEFAULT 0.0"),
+        ("missing_evidence_json", "TEXT DEFAULT '[]'"),
+        ("why_deep_ta", "TEXT DEFAULT ''"),
+        ("why_not_deep_ta", "TEXT DEFAULT ''"),
+        ("priority_rank", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-007] candidate_tier_budget — add tier budget columns
+    for _col, _type in [
+        ("tier", "TEXT DEFAULT ''"),
+        ("ta_budget_priority", "INTEGER DEFAULT 0"),
+        ("tier_reason", "TEXT DEFAULT ''"),
+        ("missing_evidence_for_upgrade_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+
+exec
+/bin/zsh -lc "python3 - <<'PY'
+cols='''trade_date, symbol, name, source, strategy_tags_json, primary_strategy, score, status, trigger_price, support_price, invalid_price, need_deep_ta, evidence_json, risk_flags_json, policy_tags_json, version_score, policy_evidence_refs_json, narrative_score, narrative_reasons_json, narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, risk_reasons_json, game_balance, bull_case, bear_case, policy_case, fund_flow_case, resonance_count, game_balance_refs_json, fund_flow_anomaly_score, fund_flow_anomaly_tags_json, fund_flow_anomaly_refs_json, fund_flow_unit_verified, fund_flow_individual_summary, fund_flow_board_summary, composite_score, signal_category_hits_json, positive_category_count, data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta, priority_rank, tier, ta_budget_priority, tier_reason, missing_evidence_for_upgrade_json, created_at, updated_at'''.split(',')
+print(len(cols))
+PY
+rg \"from_db_row|save_candidate|tradeflow_candidates|SELECT\" -n tradingagents tests | head -80" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+50
+tests/test_tradeflow_plan_runner.py:133:                "SELECT * FROM tradeflow_daily_plans WHERE trade_date='2026-05-25'"
+tests/test_tradeflow_plan_runner.py:140:    def test_save_candidates_persisted(self):
+tests/test_tradeflow_plan_runner.py:152:                save_candidates=True,
+tests/test_tradeflow_plan_runner.py:159:                "SELECT * FROM tradeflow_candidates WHERE symbol='002353.SZ' AND trade_date='2026-05-25'"
+tests/test_tradeflow_plan_runner.py:167:    def test_save_candidates_disabled(self):
+tests/test_tradeflow_plan_runner.py:179:                save_candidates=False,
+tests/test_tradeflow_plan_runner.py:185:                "SELECT COUNT(*) FROM tradeflow_candidates WHERE symbol='002353.SZ'"
+tests/test_t003_fund_flow_anomaly.py:53:    save_candidate,
+tests/test_t003_fund_flow_anomaly.py:546:            save_candidate(c, db_path)
+tests/test_t003_fund_flow_anomaly.py:552:                "SELECT * FROM tradeflow_candidates WHERE symbol='600519.SH'"
+tests/test_t003_fund_flow_anomaly.py:565:    def test_from_db_row_round_trip(self):
+tests/test_t003_fund_flow_anomaly.py:606:        c = Candidate.from_db_row(row)
+tests/test_s004_game_balance.py:42:from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
+tests/test_s004_game_balance.py:379:    def test_candidate_from_db_row_game_balance(self):
+tests/test_s004_game_balance.py:414:        c = Candidate.from_db_row(row)
+tests/test_s004_game_balance.py:429:            cursor = conn.execute("PRAGMA table_info(tradeflow_candidates)")
+tests/test_s004_game_balance.py:459:            save_candidate(c, db_path)
+tests/test_s004_game_balance.py:464:                "SELECT * FROM tradeflow_candidates WHERE symbol=?",
+tests/test_s004_game_balance.py:468:            cols = [desc[0] for desc in conn.execute("SELECT * FROM tradeflow_candidates WHERE symbol=?", ("600519.SH",)).description]
+tests/test_s004_game_balance.py:491:            save_candidate(c, db_path)
+tests/test_s004_game_balance.py:496:                "SELECT game_balance, bull_case, bear_case, resonance_count, "
+tests/test_s004_game_balance.py:497:                "game_balance_refs_json FROM tradeflow_candidates WHERE symbol=?",
+tests/test_s001_policy_version_signal.py:20:from tradingagents.tradeflow.candidate_engine import evaluate_symbol, init_db, save_candidate
+tests/test_s001_policy_version_signal.py:268:            save_candidate(c, db_path)
+tests/test_s001_policy_version_signal.py:274:                "SELECT * FROM tradeflow_candidates WHERE symbol='TEST.SZ'"
+tests/test_t002_discovery.py:385:    def test_save_candidates(self):
+tests/test_t002_discovery.py:397:                    save_candidates=True,
+tests/test_t002_discovery.py:405:                "SELECT * FROM tradeflow_candidates WHERE symbol='A.SZ' AND trade_date='2026-05-29'"
+tests/test_t002_discovery.py:424:                    save_candidates=False,
+tests/test_t002_discovery.py:432:                "SELECT COUNT(*) FROM tradeflow_candidates WHERE symbol='A.SZ'"
+tests/test_s002_narrative_quality.py:27:from tradingagents.tradeflow.candidate_engine import evaluate_symbol, init_db, save_candidate
+tests/test_s002_narrative_quality.py:362:            save_candidate(c, db_path)
+tests/test_s002_narrative_quality.py:368:                "SELECT * FROM tradeflow_candidates WHERE symbol='TEST.SZ'"
+tests/test_s002_narrative_quality.py:392:            save_candidate(c, db_path)
+tests/test_s002_narrative_quality.py:398:                "SELECT * FROM tradeflow_candidates WHERE symbol='RT.SZ'"
+tests/test_s002_narrative_quality.py:402:            restored = Candidate.from_db_row(dict(row))
+tests/test_s005_selection_priority_gate.py:46:from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
+tests/test_s005_selection_priority_gate.py:607:            row_id = save_candidate(c, db_path)
+tests/test_s005_selection_priority_gate.py:614:                "SELECT * FROM tradeflow_candidates WHERE trade_date=? AND symbol=?",
+tests/test_s005_selection_priority_gate.py:628:    def test_db_round_trip_from_db_row(self):
+tests/test_s005_selection_priority_gate.py:651:            save_candidate(c, db_path)
+tests/test_s005_selection_priority_gate.py:657:                "SELECT * FROM tradeflow_candidates WHERE trade_date=? AND symbol=?",
+tests/test_s005_selection_priority_gate.py:662:            c2 = Candidate.from_db_row(row)
+tests/test_tradeflow_candidate_engine.py:14:    save_candidate, _calc_liquidity,
+tests/test_tradeflow_candidate_engine.py:137:                "SELECT name FROM sqlite_master WHERE type='table'"
+tests/test_tradeflow_candidate_engine.py:140:            assert "tradeflow_candidates" in tables
+tests/test_tradeflow_candidate_engine.py:161:            row_id = save_candidate(c, db_path)
+tests/test_tradeflow_candidate_engine.py:169:                "SELECT * FROM tradeflow_candidates WHERE symbol='002353.SZ'"
+tests/test_tradeflow_candidate_engine.py:185:            save_candidate(c1, db_path)
+tests/test_tradeflow_candidate_engine.py:188:            save_candidate(c2, db_path)
+tests/test_tradeflow_candidate_engine.py:193:                "SELECT COUNT(*) FROM tradeflow_candidates WHERE symbol='002353.SZ' AND trade_date='2026-05-25'"
+tests/test_tradeflow_candidate_engine.py:208:            save_candidate(c, db_path)
+tests/test_tradeflow_candidate_engine.py:213:                "SELECT need_deep_ta, primary_strategy FROM tradeflow_candidates WHERE symbol='TEST.SZ'"
+tests/test_tradeflow_candidate_engine.py:228:            cols = [r[1] for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()]
+tests/test_tradeflow_schemas.py:90:    def test_from_db_row(self):
+tests/test_tradeflow_schemas.py:109:        c = Candidate.from_db_row(row)
+tests/test_s007_tier_budget.py:40:    save_candidate,
+tests/test_s007_tier_budget.py:512:            row_id = save_candidate(c, db_path)
+tests/test_s007_tier_budget.py:519:                "SELECT * FROM tradeflow_candidates WHERE symbol=?", ("600519.SH",)
+tests/test_s007_tier_budget.py:537:                CREATE TABLE tradeflow_candidates (
+tests/test_s007_tier_budget.py:550:            cols = [r[1] for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()]
+tests/test_s007_tier_budget.py:722:        c2 = Candidate.from_db_row(row)
+tests/test_s003_underwater_risk_flags.py:26:    save_candidate,
+tests/test_s003_underwater_risk_flags.py:356:    def test_from_db_row_roundtrip(self):
+tests/test_s003_underwater_risk_flags.py:369:        c2 = Candidate.from_db_row(row)
+tests/test_s003_underwater_risk_flags.py:382:            cursor = conn.execute("PRAGMA table_info(tradeflow_candidates)")
+tests/test_s003_underwater_risk_flags.py:404:            save_candidate(c, db_path)
+tests/test_s003_underwater_risk_flags.py:407:                "SELECT * FROM tradeflow_candidates WHERE symbol='002138.SZ'"
+tests/test_s003_underwater_risk_flags.py:410:                "SELECT * FROM tradeflow_candidates WHERE symbol='002138.SZ'"
+tradingagents/tradeflow/candidate_engine.py:36:CREATE TABLE IF NOT EXISTS tradeflow_candidates (
+tradingagents/tradeflow/candidate_engine.py:96:        conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+tradingagents/tradeflow/candidate_engine.py:106:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:116:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:126:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:140:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:153:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:168:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:179:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:604:def save_candidate(candidate: Candidate, db_path: str) -> int:
+tradingagents/tradeflow/candidate_engine.py:610:            "INSERT INTO tradeflow_candidates "
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest -q tests/test_s007_tier_budget.py tests/test_tradeflow_candidate_engine.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 639ms:
+..........................................ss............................ [ 82%]
+...............                                                          [100%]
+85 passed, 2 skipped in 0.37s
+
+exec
+/bin/zsh -lc "sed -n '120,190p' tradingagents/tradeflow/plan_runner.py && sed -n '270,340p' tradingagents/tradeflow/plan_runner.py && sed -n '150,230p' tradingagents/tradeflow/discovery.py && sed -n '290,330p' tradingagents/tradeflow/discovery.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+
+    Args:
+        trade_date: Trading date (default: today).
+        symbols: Specific symbols to evaluate (overrides universe).
+        prod_db_path: Path to production tradingagents.db.
+        tf_db_path: Path to tradeflow SQLite DB.
+        candidates: Pre-evaluated candidates (skip evaluation if provided).
+        news_texts: News/announcement texts for event catalyst detection.
+        event_overrides: Manual event overrides for event catalyst detection.
+        save_candidates: If True, persist evaluated candidates to tf_db_path.
+        use_event_source: [N-001] If True, fetch daily events and inject into universe.
+        fund_flow_map: [T-003] Optional dict mapping symbol → {"individual": str, "board": str}.
+
+    Returns:
+        DailyPlan with validated entries.
+    """
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+
+    # [N-001] event_source_plan_integration — fetch events if enabled
+    events_map: dict[str, list[str]] = {}
+    if use_event_source:
+        from .event_source import fetch_daily_events
+        trade_date_compact = trade_date.replace("-", "")
+        events_map = fetch_daily_events(trade_date_compact)
+
+    if candidates is None:
+        # Build universe — pass event_symbols so event-discovered
+        # symbols enter the pool
+        universe = build_universe(
+            symbols=symbols,
+            prod_db_path=prod_db_path,
+            tf_db_path=tf_db_path,
+            event_overrides=event_overrides,
+            event_symbols=events_map if events_map else None,  # [N-001]
+        )
+
+        # Evaluate each symbol — filter event_overrides to only
+        # those matching the current symbol (or global overrides without symbol).
+        # [N-001] Each symbol gets its own event titles as news_texts.
+        candidates = []
+        for item in universe:
+            sym = item["symbol"]
+            if event_overrides:
+                filtered_overrides = [
+                    ev for ev in event_overrides
+                    if ev.get("symbol") is None or ev.get("symbol") == sym
+                ]
+            else:
+                filtered_overrides = None
+
+            # [N-001] event_source_plan_integration
+            sym_news = events_map.get(sym) if events_map else None
+
+            # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
+            sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
+            sym_ff_individual = sym_ff.get("individual") if sym_ff else None
+            sym_ff_board = sym_ff.get("board") if sym_ff else None
+
+            c, reason = evaluate_symbol(
+                symbol=sym,
+                name=item.get("name", ""),
+                source=item.get("source", "manual"),
+                trade_date=trade_date,
+                news_texts=sym_news or news_texts,
+                event_overrides=filtered_overrides,
+                fund_flow_individual=sym_ff_individual,  # [T-003]
+                fund_flow_board=sym_ff_board,  # [T-003]
+            )
+            if c is not None:
+                candidates.append(c)
+
+    # Validate
+    issues = plan.validate()
+    if issues:
+        plan.metadata["validation_issues"] = issues
+
+    # Optionally persist candidates  # [G-004] tradeflow_candidate_date
+    if save_candidates and tf_db_path:
+        for c in candidates:
+            if c.trade_date != trade_date:
+                c.trade_date = trade_date
+            save_candidate(c, tf_db_path)
+
+    return plan
+
+
+def save_plan(plan: DailyPlan, db_path: str) -> int:
+    """Save daily plan to DB."""
+    conn = sqlite3.connect(db_path)
+    row = plan.to_db_row()
+    try:
+        conn.execute(
+            "INSERT INTO tradeflow_daily_plans "
+            "(trade_date, mode, summary, candidates_json, metadata_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(trade_date, mode) DO UPDATE SET "
+            "summary=excluded.summary, candidates_json=excluded.candidates_json, "
+            "metadata_json=excluded.metadata_json",
+            (row["trade_date"], row["mode"], row["summary"],
+             row["candidates_json"], row["metadata_json"], row["created_at"]),
+        )
+        conn.commit()
+        row_id = conn.execute(
+            "SELECT id FROM tradeflow_daily_plans WHERE trade_date=? AND mode=?",
+            (row["trade_date"], row["mode"]),
+        ).fetchone()[0]
+        return row_id
+    finally:
+        conn.close()
+        include_holdings=include_holdings,
+        include_watchlist=include_watchlist,
+        include_yesterday=False,
+        event_symbols=events_map if events_map else None,
+        fund_flow_symbols=list(fund_flow_map.keys()) if fund_flow_map else None,  # [T-003]
+    )
+
+    candidates: list[Candidate] = []
+    filtered: list[FilteredSymbol] = []
+
+    for item in universe:
+        sym = item["symbol"]
+        sym_name = item.get("name", "")
+        sym_source = item.get("source", "manual")
+
+        if event_overrides:
+            filtered_overrides = [
+                ev for ev in event_overrides
+                if ev.get("symbol") is None or ev.get("symbol") == sym
+            ]
+        else:
+            filtered_overrides = None
+
+        sym_news = events_map.get(sym) if events_map else None
+
+        # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
+        sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
+        sym_ff_individual = sym_ff.get("individual") if sym_ff else None
+        sym_ff_board = sym_ff.get("board") if sym_ff else None
+
+        c, reason = evaluate_symbol(
+            symbol=sym,
+            name=sym_name,
+            source=sym_source,
+            trade_date=trade_date,
+            news_texts=sym_news or news_texts,
+            event_overrides=filtered_overrides,
+            fund_flow_individual=sym_ff_individual,  # [T-003]
+            fund_flow_board=sym_ff_board,  # [T-003]
+        )
+        if c is not None:
+            candidates.append(c)
+        else:
+            filtered.append(FilteredSymbol(
+                symbol=sym,
+                name=sym_name,
+                source=sym_source,
+                reason=reason,
+            ))
+
+    candidates.sort(key=lambda c: (c.composite_score, c.score), reverse=True)
+    top_candidates = candidates[:top_n]
+
+    plan_entries = []
+    for c in top_candidates:
+        entry = _build_discovery_entry(c)
+        plan_entries.append(entry)
+
+    # [S-007] candidate_tier_budget — sort by tier (A first, then B, then C)
+    tier_order = {"A": 0, "B": 1, "C": 2, "": 3}
+    plan_entries.sort(key=lambda x: (tier_order.get(x.get("tier", ""), 3), -(x.get("composite_score", 0) or 0)))
+
+    # [S-007] candidate_tier_budget — enforce A-tier cap and compute budget summary
+    from .tier_budget import TierBudgetResult
+    tier_results = []
+    for e in plan_entries:
+        tier_results.append(TierBudgetResult(
+            tier=e.get("tier", "C"),
+            ta_budget_priority=e.get("ta_budget_priority", 0),
+            tier_reason=e.get("tier_reason", ""),
+            missing_evidence_for_upgrade=e.get("missing_evidence_for_upgrade", []),
+            why_not_deep_ta=e.get("why_not_deep_ta", ""),
+        ))
+    budget_allocation = allocate_tier_budget(tier_results)
+    for i, tr in enumerate(tier_results):
+        if i < len(plan_entries):
+            plan_entries[i]["tier"] = tr.tier
+            plan_entries[i]["ta_budget_priority"] = tr.ta_budget_priority
+            plan_entries[i]["tier_reason"] = tr.tier_reason
+
+    n_total = len(plan_entries)
+        "demoted_count": len(budget_allocation.demoted_symbols),
+    }
+    result.metadata["tier_budget_summary"] = render_tier_budget_summary(budget_allocation)
+
+    return result
+
+
+def _build_discovery_entry(candidate: Candidate) -> dict:
+    """Build a discovery plan entry from a candidate."""
+    if candidate.need_deep_ta:
+        action = "NEED_DEEP_TA"
+    else:
+        action = "OBSERVE"
+
+    reasons = []
+    for sig in candidate.signals:
+        reasons.append(f"[{sig.strategy_tag}] {sig.reason}")
+    reason_str = "; ".join(reasons) if reasons else "候选观察"
+
+    for word in FORBIDDEN_WORDS:
+        if word in reason_str:
+            reason_str = reason_str.replace(word, "***")
+
+    return {
+        "symbol": candidate.symbol,
+        "name": candidate.name,
+        "source": candidate.source,
+        "action": action,
+        "primary_strategy": candidate.primary_strategy,
+        "strategies": candidate.strategy_tags,
+        "score": candidate.score,
+        "trigger_price": candidate.trigger_price,
+        "support_price": candidate.support_price,
+        "invalid_price": candidate.invalid_price,
+        "reason": reason_str,
+        "need_deep_ta": candidate.need_deep_ta,
+        "risk_flags": candidate.risk_flags,
+        "policy_tags": candidate.policy_tags,
+        "version_score": candidate.version_score,
+        "narrative_score": candidate.narrative_score,
+        "narrative_reasons": candidate.narrative_reasons,
+
+exec
+/bin/zsh -lc "sed -n '1,120p' tradingagents/tradeflow/plan_runner.py && rg \"tier_budget|need_deep_ta|ta_budget\" -n tests/test_s007_tier_budget.py | head -80" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""TradeFlow Plan Runner — generates pre-market daily plans.
+
+Reads candidates from tradeflow_candidates, produces a DailyPlan
+with only allowed actions: OBSERVE / WAIT_TRIGGER / NEED_DEEP_TA / REMOVE_FROM_WATCH.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime
+from typing import Optional
+
+from .schemas import (
+    DailyPlan, Candidate, ALLOWED_ACTIONS, FORBIDDEN_WORDS
+)
+from .candidate_engine import init_db, save_candidate, evaluate_symbol
+from .universe import build_universe
+from .false_positive_audit import build_audit_report, AuditReport  # [S-006] candidate_false_positive_audit
+from .tier_budget import classify_candidate_tier, allocate_tier_budget, render_tier_budget_summary  # [S-007] candidate_tier_budget
+
+
+def _action_for_candidate(candidate: Candidate) -> str:
+    """Determine the action for a candidate based on its signals."""
+    if candidate.need_deep_ta:
+        return "NEED_DEEP_TA"
+
+    # If score is high and trigger price is close to current price
+    evidence = candidate.evidence
+    for strategy, ev in evidence.items():
+        if isinstance(ev, dict):
+            latest = ev.get("latest_close", 0)
+            trigger = candidate.trigger_price or 0
+            if latest > 0 and trigger > 0:
+                distance = (trigger - latest) / latest
+                if distance < 0.02:  # within 2% of trigger
+                    return "WAIT_TRIGGER"
+
+    return "OBSERVE"
+
+
+def _build_plan_entry(candidate: Candidate) -> dict:
+    """Build a plan entry dict from a candidate."""
+    action = _action_for_candidate(candidate)
+
+    # Build reason — no forbidden words
+    reasons = []
+    for sig in candidate.signals:
+        reasons.append(f"[{sig.strategy_tag}] {sig.reason}")
+    reason_str = "; ".join(reasons) if reasons else "候选观察"
+
+    # Sanity check: no forbidden words
+    for word in FORBIDDEN_WORDS:
+        if word in reason_str:
+            reason_str = reason_str.replace(word, "***")
+
+    return {
+        "symbol": candidate.symbol,
+        "name": candidate.name,
+        "action": action,
+        "primary_strategy": candidate.primary_strategy,
+        "strategies": candidate.strategy_tags,
+        "score": candidate.score,
+        "trigger_price": candidate.trigger_price,
+        "support_price": candidate.support_price,
+        "invalid_price": candidate.invalid_price,
+        "reason": reason_str,
+        "need_deep_ta": candidate.need_deep_ta,
+        "risk_flags": candidate.risk_flags,
+        "policy_tags": candidate.policy_tags,  # [S-001] policy_version_signal
+        "version_score": candidate.version_score,  # [S-001]
+        "policy_evidence_refs": candidate.policy_evidence_refs,  # [S-001]
+        "narrative_score": candidate.narrative_score,  # [S-002] narrative_quality_score
+        "narrative_reasons": candidate.narrative_reasons,  # [S-002]
+        "narrative_evidence_refs": candidate.narrative_evidence_refs,  # [S-002]
+        "risk_penalty": candidate.risk_penalty,  # [S-003] underwater_risk_flags
+        "risk_evidence_refs": candidate.risk_evidence_refs,  # [S-003]
+        "risk_reasons": candidate.risk_reasons,  # [S-003]
+        "game_balance": candidate.game_balance,  # [S-004] candidate_game_balance
+        "bull_case": candidate.bull_case,  # [S-004]
+        "bear_case": candidate.bear_case,  # [S-004]
+        "policy_case": candidate.policy_case,  # [S-004]
+        "fund_flow_case": candidate.fund_flow_case,  # [S-004]
+        "resonance_count": candidate.resonance_count,  # [S-004]
+        "game_balance_refs": candidate.game_balance_refs,  # [S-004]
+        "fund_flow_anomaly_score": candidate.fund_flow_anomaly_score,  # [T-003] fund_flow_anomaly_pool
+        "fund_flow_anomaly_tags": candidate.fund_flow_anomaly_tags,  # [T-003]
+        "fund_flow_anomaly_refs": candidate.fund_flow_anomaly_refs,  # [T-003]
+        "fund_flow_unit_verified": candidate.fund_flow_unit_verified,  # [T-003]
+        "fund_flow_individual_summary": candidate.fund_flow_individual_summary,  # [T-003]
+        "fund_flow_board_summary": candidate.fund_flow_board_summary,  # [T-003]
+        "composite_score": candidate.composite_score,  # [S-005] selection_priority_gate
+        "signal_category_hits": candidate.signal_category_hits,  # [S-005]
+        "positive_category_count": candidate.positive_category_count,  # [S-005]
+        "data_completeness": candidate.data_completeness,  # [S-005]
+        "missing_evidence": candidate.missing_evidence,  # [S-005]
+        "why_deep_ta": candidate.why_deep_ta,  # [S-005]
+        "why_not_deep_ta": candidate.why_not_deep_ta,  # [S-005]
+        "priority_rank": candidate.priority_rank,  # [S-005]
+        "tier": candidate.tier,  # [S-007] candidate_tier_budget
+        "ta_budget_priority": candidate.ta_budget_priority,  # [S-007]
+        "tier_reason": candidate.tier_reason,  # [S-007]
+        "missing_evidence_for_upgrade": candidate.missing_evidence_for_upgrade,  # [S-007]
+    }
+
+
+def generate_daily_plan(
+    trade_date: Optional[str] = None,
+    symbols: Optional[list[str]] = None,
+    prod_db_path: str = "",
+    tf_db_path: str = "",
+    candidates: Optional[list[Candidate]] = None,
+    news_texts: Optional[list[str]] = None,
+    event_overrides: Optional[list[dict]] = None,
+    save_candidates: bool = False,
+    use_event_source: bool = False,  # [N-001] event_source_plan_integration
+    fund_flow_map: Optional[dict[str, dict]] = None,  # [T-003] fund_flow_anomaly_pool
+) -> DailyPlan:
+    """Generate a pre-market daily plan.
+
+1:# [S-007] candidate_tier_budget — tests
+6:- ta_budget_priority assignment
+8:- A-tier cap enforcement (allocate_tier_budget)
+23:from tradingagents.tradeflow.tier_budget import (
+25:    allocate_tier_budget,
+26:    render_tier_budget_summary,
+104:        assert r.ta_budget_priority == TIER_BUDGET_MAP[TIER_A]
+201:        assert r.ta_budget_priority == TIER_BUDGET_MAP[TIER_B]
+277:        assert r.ta_budget_priority == 0
+294:        alloc = allocate_tier_budget([])
+299:        results = [TierBudgetResult(tier=TIER_A, ta_budget_priority=100)] * 3
+300:        alloc = allocate_tier_budget(results)
+307:            TierBudgetResult(tier=TIER_A, ta_budget_priority=100),
+308:            TierBudgetResult(tier=TIER_A, ta_budget_priority=100),
+309:            TierBudgetResult(tier=TIER_A, ta_budget_priority=100),
+310:            TierBudgetResult(tier=TIER_A, ta_budget_priority=100),
+311:            TierBudgetResult(tier=TIER_A, ta_budget_priority=100),
+312:            TierBudgetResult(tier=TIER_A, ta_budget_priority=100),
+314:        alloc = allocate_tier_budget(results, a_tier_cap=5)
+319:        assert results[5].ta_budget_priority == TIER_BUDGET_MAP[TIER_B]
+323:            TierBudgetResult(tier=TIER_A, ta_budget_priority=100),
+324:            TierBudgetResult(tier=TIER_B, ta_budget_priority=30),
+325:            TierBudgetResult(tier=TIER_C, ta_budget_priority=0),
+327:        alloc = allocate_tier_budget(results)
+334:        results = [TierBudgetResult(tier=TIER_A, ta_budget_priority=100)] * 5
+335:        alloc = allocate_tier_budget(results)
+340:        results = [TierBudgetResult(tier=TIER_A, ta_budget_priority=100) for _ in range(3)]
+341:        alloc = allocate_tier_budget(results, a_tier_cap=2)
+347:        results = [TierBudgetResult(tier=TIER_A, ta_budget_priority=100) for _ in range(4)]
+348:        allocate_tier_budget(results, a_tier_cap=2)
+354:# 5. render_tier_budget_summary
+360:        text = render_tier_budget_summary(alloc)
+372:        text = render_tier_budget_summary(alloc)
+378:        text = render_tier_budget_summary(alloc)
+424:        assert r.ta_budget_priority == 0
+449:        assert isinstance(c.ta_budget_priority, int)
+452:        assert "tier_budget" in c.evidence
+508:                ta_budget_priority=100,
+524:            assert row["ta_budget_priority"] == 100
+553:            assert "ta_budget_priority" in cols
+565:    def test_plan_includes_tier_budget_metadata(self):
+566:        c1 = Candidate(symbol="000001.SZ", name="A", tier=TIER_A, ta_budget_priority=100, tier_reason="test", composite_score=80)
+567:        c2 = Candidate(symbol="000002.SZ", name="B", tier=TIER_B, ta_budget_priority=30, tier_reason="test", composite_score=40)
+572:        assert "tier_budget" in plan.metadata
+573:        assert plan.metadata["tier_budget"]["tier_a_count"] == 1
+574:        assert plan.metadata["tier_budget"]["tier_b_count"] == 1
+575:        assert "tier_budget_summary" in plan.metadata
+578:        c1 = Candidate(symbol="000001.SZ", name="A", tier=TIER_A, ta_budget_priority=100, tier_reason="test", composite_score=80)
+582:        assert "ta_budget_priority" in entry
+587:        c_a = Candidate(symbol="000001.SZ", name="A", tier=TIER_A, ta_budget_priority=100, tier_reason="", composite_score=80)
+588:        c_c = Candidate(symbol="000003.SZ", name="C", tier=TIER_C, ta_budget_priority=0, tier_reason="", composite_score=10)
+589:        c_b = Candidate(symbol="000002.SZ", name="B", tier=TIER_B, ta_budget_priority=30, tier_reason="", composite_score=40)
+595:        c1 = Candidate(symbol="000001.SZ", name="A", tier=TIER_A, ta_budget_priority=100, tier_reason="3类信号共振", composite_score=80)
+603:    def test_discovery_result_has_tier_budget_metadata(self):
+605:        c1 = Candidate(symbol="000001.SZ", name="A", tier=TIER_A, ta_budget_priority=100, tier_reason="test", composite_score=80)
+615:        assert "tier_budget" in result.metadata
+619:        c1 = Candidate(symbol="000001.SZ", name="A", tier=TIER_A, ta_budget_priority=100, tier_reason="3类信号共振", composite_score=80)
+690:        text = render_tier_budget_summary(alloc)
+695:        results = [TierBudgetResult(tier=TIER_B, ta_budget_priority=30)] * 10
+696:        alloc = allocate_tier_budget(results)
+704:        assert c.ta_budget_priority == 0
+712:            ta_budget_priority=100,
+718:        assert row["ta_budget_priority"] == 100
+724:        assert c2.ta_budget_priority == 100
+
+exec
+/bin/zsh -lc "sed -n '175,205p' tests/test_tradeflow_candidate_engine.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        finally:
+            os.unlink(db_path)
+
+    def test_upsert_candidate(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            init_db(db_path)
+            c1 = Candidate(symbol="002353.SZ", name="测试", strategy_tags=["VCP"],
+                           score=50.0, trade_date="2026-05-25")
+            save_candidate(c1, db_path)
+            c2 = Candidate(symbol="002353.SZ", name="测试", strategy_tags=["VCP", "PULLBACK_SUPPORT"],
+                           score=65.0, trade_date="2026-05-25")
+            save_candidate(c2, db_path)
+
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            count = conn.execute(
+                "SELECT COUNT(*) FROM tradeflow_candidates WHERE symbol='002353.SZ' AND trade_date='2026-05-25'"
+            ).fetchone()[0]
+            conn.close()
+            assert count == 1  # Upserted, not duplicated
+        finally:
+            os.unlink(db_path)
+
+    def test_need_deep_ta_persisted(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            init_db(db_path)
+            c = Candidate(symbol="TEST.SZ", strategy_tags=["VCP"],
+
+codex
+The tier-budget feature has functional issues around A-tier cap enforcement and discovery prioritization, and the database upsert now leaves key candidate fields stale. These are not just style issues and can produce incorrect plans or persisted candidate records.
+
+Full review comments:
+
+- [P2] Keep capped B-tier entries from requesting deep TA — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py:218-222
+  When more than 5 candidates qualify for A tier, the extra entries are demoted to B here, but only `tier`, `ta_budget_priority`, and `tier_reason` are copied back. Because every original A-tier candidate has `gate_passed=True`, `_build_plan_entry()` already set `need_deep_ta=True` and `action="NEED_DEEP_TA"`, so capped B-tier rows still show up as deep-TA work despite having a B budget. This also means saved `Candidate` objects remain uncapped if `save_candidates` is enabled.
+
+- [P2] Apply tier ordering before truncating discovery results — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py:208-210
+  In discovery mode, `top_candidates = candidates[:top_n]` is still chosen by composite score before this new tier sort runs, so an A-tier candidate with a lower composite score can be dropped from a small `top_n` result in favor of B/C candidates. That defeats the new A→B→C prioritization for the discovery output and budget allocation; the tier sort needs to happen before the Top-N cutoff.
+
+- [P2] Restore upsert updates for identity fields — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py:627-628
+  The conflict update clause no longer updates `name`, `source`, or `strategy_tags_json`. When the same symbol/date is rescanned from a different source or with additional strategy hits, the row is upserted but those fields stay stale from the first insert, while the rest of the candidate data is refreshed.
+The tier-budget feature has functional issues around A-tier cap enforcement and discovery prioritization, and the database upsert now leaves key candidate fields stale. These are not just style issues and can produce incorrect plans or persisted candidate records.
+
+Full review comments:
+
+- [P2] Keep capped B-tier entries from requesting deep TA — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py:218-222
+  When more than 5 candidates qualify for A tier, the extra entries are demoted to B here, but only `tier`, `ta_budget_priority`, and `tier_reason` are copied back. Because every original A-tier candidate has `gate_passed=True`, `_build_plan_entry()` already set `need_deep_ta=True` and `action="NEED_DEEP_TA"`, so capped B-tier rows still show up as deep-TA work despite having a B budget. This also means saved `Candidate` objects remain uncapped if `save_candidates` is enabled.
+
+- [P2] Apply tier ordering before truncating discovery results — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py:208-210
+  In discovery mode, `top_candidates = candidates[:top_n]` is still chosen by composite score before this new tier sort runs, so an A-tier candidate with a lower composite score can be dropped from a small `top_n` result in favor of B/C candidates. That defeats the new A→B→C prioritization for the discovery output and budget allocation; the tier sort needs to happen before the Top-N cutoff.
+
+- [P2] Restore upsert updates for identity fields — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py:627-628
+  The conflict update clause no longer updates `name`, `source`, or `strategy_tags_json`. When the same symbol/date is rescanned from a different source or with additional strategy hits, the row is upserted but those fields stay stale from the first insert, while the rest of the candidate data is refreshed.

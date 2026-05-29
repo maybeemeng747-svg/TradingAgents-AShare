@@ -28,6 +28,7 @@ from .underwater_risk_flags import detect_underwater_risks, UnderwaterRiskResult
 from .game_balance import assess_game_balance, GameBalanceResult  # [S-004] candidate_game_balance
 from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult, FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT  # [T-003] fund_flow_anomaly_pool
 from .selection_priority_gate import run_selection_priority_gate, SelectionPriorityResult  # [S-005] selection_priority_gate
+from .tier_budget import classify_candidate_tier, TierBudgetResult  # [S-007] candidate_tier_budget
 
 
 # ── SQL for table creation ──
@@ -162,6 +163,17 @@ def init_db(db_path: str) -> None:
         ("why_deep_ta", "TEXT DEFAULT ''"),
         ("why_not_deep_ta", "TEXT DEFAULT ''"),
         ("priority_rank", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-007] candidate_tier_budget — add tier budget columns
+    for _col, _type in [
+        ("tier", "TEXT DEFAULT ''"),
+        ("ta_budget_priority", "INTEGER DEFAULT 0"),
+        ("tier_reason", "TEXT DEFAULT ''"),
+        ("missing_evidence_for_upgrade_json", "TEXT DEFAULT '[]'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
@@ -561,6 +573,31 @@ def evaluate_symbol(
     }
     candidate.need_deep_ta = gate_result.gate_passed
 
+    # [S-007] candidate_tier_budget — classify into A/B/C tier with budget
+    tier_result: TierBudgetResult = classify_candidate_tier(
+        priority_rank=gate_result.priority_rank,
+        composite_score=gate_result.composite_score,
+        positive_category_count=gate_result.positive_category_count,
+        data_completeness=gate_result.data_completeness,
+        missing_evidence=gate_result.missing_evidence,
+        risk_flags=candidate.risk_flags,
+        risk_penalty=candidate.risk_penalty,
+        game_balance=candidate.game_balance,
+        gate_passed=gate_result.gate_passed,
+        why_not_deep_ta=gate_result.why_not_deep_ta,
+    )
+    candidate.tier = tier_result.tier
+    candidate.ta_budget_priority = tier_result.ta_budget_priority
+    candidate.tier_reason = tier_result.tier_reason
+    candidate.missing_evidence_for_upgrade = tier_result.missing_evidence_for_upgrade
+    candidate.evidence["tier_budget"] = {
+        "tier": tier_result.tier,
+        "ta_budget_priority": tier_result.ta_budget_priority,
+        "tier_reason": tier_result.tier_reason,
+        "missing_evidence_for_upgrade": tier_result.missing_evidence_for_upgrade,
+        "why_not_deep_ta": tier_result.why_not_deep_ta,
+    }
+
     return candidate, ""
 
 
@@ -584,10 +621,10 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "composite_score, signal_category_hits_json, positive_category_count, "
             "data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta, "
             "priority_rank, "
+            "tier, ta_budget_priority, tier_reason, missing_evidence_for_upgrade_json, "
             "created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
-            "name=excluded.name, source=excluded.source, strategy_tags_json=excluded.strategy_tags_json, "
+            "VALUES ({}) ".format(",".join(["?"] * 50))
+            + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
             "trigger_price=excluded.trigger_price, "
             "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
@@ -619,6 +656,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "missing_evidence_json=excluded.missing_evidence_json, "
             "why_deep_ta=excluded.why_deep_ta, why_not_deep_ta=excluded.why_not_deep_ta, "
             "priority_rank=excluded.priority_rank, "
+            "tier=excluded.tier, ta_budget_priority=excluded.ta_budget_priority, "
+            "tier_reason=excluded.tier_reason, "
+            "missing_evidence_for_upgrade_json=excluded.missing_evidence_for_upgrade_json, "
             "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
@@ -642,6 +682,8 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
                 row["positive_category_count"], row["data_completeness"],
                 row["missing_evidence_json"], row["why_deep_ta"], row["why_not_deep_ta"],
                 row["priority_rank"],
+                row["tier"], row["ta_budget_priority"],
+                row["tier_reason"], row["missing_evidence_for_upgrade_json"],
                 candidate.created_at, row["updated_at"],
             ),
         )

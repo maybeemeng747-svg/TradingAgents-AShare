@@ -93,6 +93,10 @@ class Candidate:
     why_deep_ta: str = ""  # [S-005]
     why_not_deep_ta: str = ""  # [S-005]
     priority_rank: str = ""  # [S-005]
+    tier: str = ""  # [S-007] candidate_tier_budget
+    ta_budget_priority: int = 0  # [S-007] candidate_tier_budget
+    tier_reason: str = ""  # [S-007] candidate_tier_budget
+    missing_evidence_for_upgrade: list[str] = field(default_factory=list)  # [S-007]
 
     def __post_init__(self):
         if not self.trade_date:
@@ -185,6 +189,10 @@ class Candidate:
             "why_deep_ta": self.why_deep_ta,  # [S-005]
             "why_not_deep_ta": self.why_not_deep_ta,  # [S-005]
             "priority_rank": self.priority_rank,  # [S-005]
+            "tier": self.tier,  # [S-007] candidate_tier_budget
+            "ta_budget_priority": self.ta_budget_priority,  # [S-007]
+            "tier_reason": self.tier_reason,  # [S-007]
+            "missing_evidence_for_upgrade_json": json.dumps(self.missing_evidence_for_upgrade, ensure_ascii=False),  # [S-007]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -237,6 +245,10 @@ class Candidate:
             why_deep_ta=row.get("why_deep_ta", ""),  # [S-005]
             why_not_deep_ta=row.get("why_not_deep_ta", ""),  # [S-005]
             priority_rank=row.get("priority_rank", ""),  # [S-005]
+            tier=row.get("tier", ""),  # [S-007] candidate_tier_budget
+            ta_budget_priority=row.get("ta_budget_priority", 0),  # [S-007]
+            tier_reason=row.get("tier_reason", ""),  # [S-007]
+            missing_evidence_for_upgrade=json.loads(row.get("missing_evidence_for_upgrade_json", "[]")),  # [S-007]
         )
 
 
@@ -415,6 +427,18 @@ class DailyPlan:
                     lines.append(f"    暂不深挖: {why_not_deep}")
                 if missing_ev:
                     lines.append(f"    缺少证据: {', '.join(missing_ev[:5])}")
+            # [S-007] candidate_tier_budget — display tier and budget allocation
+            tier = c.get("tier", "")
+            ta_budget = c.get("ta_budget_priority", 0)
+            tier_reason_text = c.get("tier_reason", "")
+            missing_upgrade = c.get("missing_evidence_for_upgrade", [])
+            if tier:
+                tier_label = {"A": "优先深挖", "B": "观察等待", "C": "暂不关注"}.get(tier, "")
+                lines.append(f"  分层: {tier}层({tier_label}) | TA预算: {ta_budget} tokens")
+                if tier_reason_text:
+                    lines.append(f"    分层原因: {tier_reason_text}")
+                if missing_upgrade:
+                    lines.append(f"    升级所需: {'; '.join(missing_upgrade[:4])}")
             lines.append("")
 
         return "\n".join(lines)

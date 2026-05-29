@@ -17,6 +17,7 @@ from .schemas import (
 from .candidate_engine import init_db, save_candidate, evaluate_symbol
 from .universe import build_universe
 from .false_positive_audit import build_audit_report, AuditReport  # [S-006] candidate_false_positive_audit
+from .tier_budget import classify_candidate_tier, allocate_tier_budget, render_tier_budget_summary  # [S-007] candidate_tier_budget
 
 
 def _action_for_candidate(candidate: Candidate) -> str:
@@ -96,6 +97,10 @@ def _build_plan_entry(candidate: Candidate) -> dict:
         "why_deep_ta": candidate.why_deep_ta,  # [S-005]
         "why_not_deep_ta": candidate.why_not_deep_ta,  # [S-005]
         "priority_rank": candidate.priority_rank,  # [S-005]
+        "tier": candidate.tier,  # [S-007] candidate_tier_budget
+        "ta_budget_priority": candidate.ta_budget_priority,  # [S-007]
+        "tier_reason": candidate.tier_reason,  # [S-007]
+        "missing_evidence_for_upgrade": candidate.missing_evidence_for_upgrade,  # [S-007]
     }
 
 
@@ -193,6 +198,29 @@ def generate_daily_plan(
     # Sort by composite_score descending (S-005 priority gate), fallback to score
     plan_entries.sort(key=lambda x: (x.get("composite_score", 0) or 0, x.get("score", 0)), reverse=True)
 
+    # [S-007] candidate_tier_budget — sort by tier (A first, then B, then C)
+    tier_order = {"A": 0, "B": 1, "C": 2, "": 3}
+    plan_entries.sort(key=lambda x: (tier_order.get(x.get("tier", ""), 3), -(x.get("composite_score", 0) or 0)))
+
+    # [S-007] candidate_tier_budget — enforce A-tier cap and compute budget summary
+    from .tier_budget import TierBudgetResult
+    tier_results = []
+    for e in plan_entries:
+        tier_results.append(TierBudgetResult(
+            tier=e.get("tier", "C"),
+            ta_budget_priority=e.get("ta_budget_priority", 0),
+            tier_reason=e.get("tier_reason", ""),
+            missing_evidence_for_upgrade=e.get("missing_evidence_for_upgrade", []),
+            why_not_deep_ta=e.get("why_not_deep_ta", ""),
+        ))
+    budget_allocation = allocate_tier_budget(tier_results)
+    # Update entries if any were demoted by the cap
+    for i, tr in enumerate(tier_results):
+        if i < len(plan_entries):
+            plan_entries[i]["tier"] = tr.tier
+            plan_entries[i]["ta_budget_priority"] = tr.ta_budget_priority
+            plan_entries[i]["tier_reason"] = tr.tier_reason
+
     # Build summary
     n_total = len(plan_entries)
     n_deep_ta = sum(1 for e in plan_entries if e["need_deep_ta"])
@@ -228,6 +256,17 @@ def generate_daily_plan(
         "common_evidence_gaps": audit.summary.common_evidence_gaps[:5] if audit.summary else [],
         "common_risk_demotions": audit.summary.common_risk_demotions[:5] if audit.summary else [],
     }
+
+    # [S-007] candidate_tier_budget — add budget allocation to metadata
+    plan.metadata["tier_budget"] = {
+        "tier_a_count": budget_allocation.tier_a_count,
+        "tier_b_count": budget_allocation.tier_b_count,
+        "tier_c_count": budget_allocation.tier_c_count,
+        "total_budget": budget_allocation.total_budget,
+        "a_tier_cap_applied": budget_allocation.a_tier_cap_applied,
+        "demoted_count": len(budget_allocation.demoted_symbols),
+    }
+    plan.metadata["tier_budget_summary"] = render_tier_budget_summary(budget_allocation)
 
     # Validate
     issues = plan.validate()

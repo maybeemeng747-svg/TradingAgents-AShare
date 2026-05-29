@@ -23,6 +23,7 @@ from .schemas import Candidate, DailyPlan, ALLOWED_ACTIONS, FORBIDDEN_WORDS
 from .candidate_engine import evaluate_symbol, init_db, filter_symbol
 from .universe import build_universe
 from .false_positive_audit import build_audit_report, render_audit_report, AuditReport  # [S-006] candidate_false_positive_audit
+from .tier_budget import allocate_tier_budget, render_tier_budget_summary  # [S-007] candidate_tier_budget
 
 
 SOURCE_WATCHLIST = "watchlist"
@@ -204,6 +205,28 @@ def run_discovery(
         entry = _build_discovery_entry(c)
         plan_entries.append(entry)
 
+    # [S-007] candidate_tier_budget — sort by tier (A first, then B, then C)
+    tier_order = {"A": 0, "B": 1, "C": 2, "": 3}
+    plan_entries.sort(key=lambda x: (tier_order.get(x.get("tier", ""), 3), -(x.get("composite_score", 0) or 0)))
+
+    # [S-007] candidate_tier_budget — enforce A-tier cap and compute budget summary
+    from .tier_budget import TierBudgetResult
+    tier_results = []
+    for e in plan_entries:
+        tier_results.append(TierBudgetResult(
+            tier=e.get("tier", "C"),
+            ta_budget_priority=e.get("ta_budget_priority", 0),
+            tier_reason=e.get("tier_reason", ""),
+            missing_evidence_for_upgrade=e.get("missing_evidence_for_upgrade", []),
+            why_not_deep_ta=e.get("why_not_deep_ta", ""),
+        ))
+    budget_allocation = allocate_tier_budget(tier_results)
+    for i, tr in enumerate(tier_results):
+        if i < len(plan_entries):
+            plan_entries[i]["tier"] = tr.tier
+            plan_entries[i]["ta_budget_priority"] = tr.ta_budget_priority
+            plan_entries[i]["tier_reason"] = tr.tier_reason
+
     n_total = len(plan_entries)
     n_deep_ta = sum(1 for e in plan_entries if e.get("need_deep_ta"))
     n_filtered = len(filtered)
@@ -256,6 +279,17 @@ def run_discovery(
         "by_category": audit.summary.by_category if audit.summary else {},
         "common_evidence_gaps": audit.summary.common_evidence_gaps[:5] if audit.summary else [],
     }
+
+    # [S-007] candidate_tier_budget — add budget allocation to metadata
+    result.metadata["tier_budget"] = {
+        "tier_a_count": budget_allocation.tier_a_count,
+        "tier_b_count": budget_allocation.tier_b_count,
+        "tier_c_count": budget_allocation.tier_c_count,
+        "total_budget": budget_allocation.total_budget,
+        "a_tier_cap_applied": budget_allocation.a_tier_cap_applied,
+        "demoted_count": len(budget_allocation.demoted_symbols),
+    }
+    result.metadata["tier_budget_summary"] = render_tier_budget_summary(budget_allocation)
 
     return result
 
@@ -315,6 +349,10 @@ def _build_discovery_entry(candidate: Candidate) -> dict:
         "why_deep_ta": candidate.why_deep_ta,  # [S-005]
         "why_not_deep_ta": candidate.why_not_deep_ta,  # [S-005]
         "priority_rank": candidate.priority_rank,  # [S-005]
+        "tier": candidate.tier,  # [S-007] candidate_tier_budget
+        "ta_budget_priority": candidate.ta_budget_priority,  # [S-007]
+        "tier_reason": candidate.tier_reason,  # [S-007]
+        "missing_evidence_for_upgrade": candidate.missing_evidence_for_upgrade,  # [S-007]
     }
 
 
@@ -415,6 +453,19 @@ def render_discovery_text(result: DiscoveryResult) -> str:
             if missing_ev:
                 lines.append(f"    缺少证据: {', '.join(missing_ev[:5])}")
 
+        # [S-007] candidate_tier_budget — display tier and budget allocation
+        tier = c.get("tier", "")
+        ta_budget = c.get("ta_budget_priority", 0)
+        tier_reason_text = c.get("tier_reason", "")
+        missing_upgrade = c.get("missing_evidence_for_upgrade", [])
+        if tier:
+            tier_label = {"A": "优先深挖", "B": "观察等待", "C": "暂不关注"}.get(tier, "")
+            lines.append(f"  分层: {tier}层({tier_label}) | TA预算: {ta_budget} tokens")
+            if tier_reason_text:
+                lines.append(f"    分层原因: {tier_reason_text}")
+            if missing_upgrade:
+                lines.append(f"    升级所需: {'; '.join(missing_upgrade[:4])}")
+
         lines.append("")
 
     if result.filtered:
@@ -442,5 +493,11 @@ def render_discovery_text(result: DiscoveryResult) -> str:
             lines.append("--- 正误判分布 ---")
             for t, cnt in sorted(s.by_fp_type.items()):
                 lines.append(f"  - {t}: {cnt}只")
+
+    # [S-007] candidate_tier_budget — tier budget summary
+    tier_budget_summary = result.metadata.get("tier_budget_summary", "")
+    if tier_budget_summary:
+        lines.append("")
+        lines.append(tier_budget_summary)
 
     return "\n".join(lines)
