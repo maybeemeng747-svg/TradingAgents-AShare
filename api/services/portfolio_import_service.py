@@ -33,7 +33,7 @@ def sync_positions(
     user_id: str,
     positions: list[dict[str, Any]],
     source: str = "manual",
-    auto_apply_scheduled: bool = True,
+    auto_apply_scheduled: bool = False,
 ) -> dict[str, Any]:
     """Replace the position snapshot for *source* with *positions*.
 
@@ -122,7 +122,7 @@ def get_import_state(
 ) -> dict[str, Any]:
     positions = list_imported_positions(db, user_id)
     return {
-        "auto_apply_scheduled": True,
+        "auto_apply_scheduled": False,
         "last_synced_at": _latest_imported_at(positions),
         "last_error": None,
         "summary": {"positions": len(positions)},

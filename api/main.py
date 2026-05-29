@@ -991,6 +991,24 @@ class RuntimeWarmupResult(BaseModel):
     error: Optional[str] = None
 
 
+class ModelApiCatalogItem(BaseModel):
+    id: str
+    label: str
+    provider: str
+    protocol: str
+    base_url: str = ""
+    quick_model: str = ""
+    deep_model: str = ""
+    key_scope: str
+    status: str
+    cost_note: str = ""
+
+
+class ModelApiCatalogResponse(BaseModel):
+    version: str
+    items: List[ModelApiCatalogItem]
+
+
 class UserRuntimeWarmupResponse(BaseModel):
     prompt: str
     results: List[RuntimeWarmupResult]
@@ -1031,7 +1049,7 @@ class PortfolioPositionItem(BaseModel):
 class PortfolioImportSyncRequest(BaseModel):
     positions: List[PortfolioPositionItem] = Field(..., description="持仓列表")
     source: str = Field("manual", description="持仓来源标识")
-    auto_apply_scheduled: bool = Field(True, description="是否自动将持仓股票加入定时任务")
+    auto_apply_scheduled: bool = Field(False, description="是否自动将持仓股票加入定时任务")
 
 
 class UserTokenResponse(BaseModel):
@@ -4002,6 +4020,16 @@ def get_runtime_config(
 ):
     """获取当前用户运行时配置。"""
     return _config_response_for_user(current_user, db)
+
+
+@app.get("/v1/config/model-catalog", response_model=ModelApiCatalogResponse)
+def get_model_api_catalog_endpoint(
+    current_user: UserDB = Depends(_require_web_user),
+):
+    """返回项目已整理的模型/API 端点目录，不包含任何密钥。"""
+    from tradingagents.llm_clients import get_model_api_catalog
+
+    return get_model_api_catalog()
 
 
 @app.patch("/v1/config")

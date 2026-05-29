@@ -86,6 +86,20 @@ class TestPortfolioImportService:
             ("300750.SZ", "20:00"),
         ]
 
+    def test_sync_positions_default_does_not_create_scheduled_tasks(self, db):
+        from api.services import portfolio_import_service
+
+        result = portfolio_import_service.sync_positions(
+            db=db,
+            user_id="user-no-auto-scheduled",
+            positions=[
+                {"symbol": "600519.SH", "current_position": 500, "market_value": 850000.0},
+            ],
+        )
+
+        assert result["auto_apply_scheduled"] is False
+        assert scheduled_service.list_scheduled(db, "user-no-auto-scheduled") == []
+
     def test_sync_positions_normalizes_bare_codes(self, db):
         from api.services import portfolio_import_service
 

@@ -188,7 +188,7 @@ export default function TrackingBoardPanel() {
         setImportSaving(true)
         setImportFeedback(null)
         try {
-            await api.syncPortfolioImport({ positions, auto_apply_scheduled: true })
+            await api.syncPortfolioImport({ positions, auto_apply_scheduled: false })
             setImportFeedback({ tone: 'success', message: `已保存 ${positions.length} 只持仓` })
             setPositionText('')
             setShowImportSection(false)

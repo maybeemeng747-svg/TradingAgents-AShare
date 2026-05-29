@@ -20,6 +20,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TASKS_FILE="$REPO_DIR/docs/TASKS.md"
 DEVLOG_FILE="$REPO_DIR/docs/DEVLOG.md"
 REVIEW_DIR="$REPO_DIR/docs/reviews"
@@ -31,6 +32,25 @@ PROMPT_FILE=""
 OPENCODE_LOG=""
 REVIEW_FILE=""
 HAVE_LOCK=false
+
+# 智谱 API Key（用于额度检查）
+ZAI_API_KEY="${ZAI_API_KEY:-}"
+if [[ -z "$ZAI_API_KEY" ]]; then
+    OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
+    if [[ -f "$OPENCLAW_CONFIG" ]]; then
+        ZAI_API_KEY=$(python3 -c "
+import json
+with open('$OPENCLAW_CONFIG') as f:
+    cfg = json.load(f)
+providers = cfg.get('models', {}).get('providers', {})
+for name, prov in providers.items():
+    if 'zai' in name.upper():
+        print(prov.get('apiKey', ''))
+        break
+" 2>/dev/null || echo "")
+    fi
+fi
+export ZAI_API_KEY
 
 # ─── 参数解析 ─────────────────────────────────────────
 for arg in "$@"; do
@@ -215,6 +235,26 @@ PYEOF
 COMPLETED_TASKS=0
 FAILED_TASKS=0
 
+# 额度检查函数（智谱 API）
+check_zai_quota() {
+    if [[ -x "${SCRIPT_DIR}/check_zai_quota.sh" ]]; then
+        local result
+        result=$(ZAI_API_KEY="${ZAI_API_KEY:-}" bash "${SCRIPT_DIR}/check_zai_quota.sh" --json 2>/dev/null || echo '{"status":"ERROR"}')
+        local status
+        status=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('status','ERROR'))" 2>/dev/null || echo "ERROR")
+        if [[ "$status" == "EXHAUSTED" ]]; then
+            local reset_time msg
+            reset_time=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('reset_time',''))" 2>/dev/null || echo "")
+            msg=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('message',''))" 2>/dev/null || echo "")
+            err "[QUOTA] 智谱 API 额度耗尽！"
+            [[ -n "$reset_time" ]] && err "[QUOTA] 下次刷新: $reset_time"
+            [[ -n "$msg" ]] && err "[QUOTA] 详情: $msg"
+            return 1
+        fi
+    fi
+    return 0
+}
+
 while true; do
 
 TASK_LINE=$(parse_ready_tasks)
@@ -309,6 +349,20 @@ while [ $ROUND -lt $MAX_FIX_ROUNDS ]; do
     # 3a. 运行 OpenCode
     log "启动 OpenCode..."
     OPENCODE_LOG=$(mktemp -t auto-dev-opencode.XXXXXX)
+    
+    # 额度预检：如果额度耗尽，暂停等待
+    if ! check_zai_quota; then
+        err "[QUOTA] 额度耗尽，等待 10 分钟后重试..."
+        sleep 600
+        if ! check_zai_quota; then
+            err "[QUOTA] 10 分钟后额度仍不可用，终止本轮任务"
+            LAST_FAILURE_REASON="智谱 API 额度耗尽"
+            ISSUES_LOG+=("[Round $ROUND] 智谱 API 额度耗尽，无法继续")
+            RESULT_STATUS="QUOTA_EXHAUSTED"
+            break
+        fi
+    fi
+    
     set +e
     opencode run < "$PROMPT_FILE" > "$OPENCODE_LOG" 2>&1
     OPENCODE_EXIT=$?
@@ -317,6 +371,15 @@ while [ $ROUND -lt $MAX_FIX_ROUNDS ]; do
     redact_log < "$OPENCODE_LOG" > "$RUN_DIR/opencode-round${ROUND}.txt"
 
     if [ $OPENCODE_EXIT -ne 0 ]; then
+        # 检查是否因额度耗尽失败
+        if grep -qi "429\|rate.limit\|quota\|exhausted\|too many requests" "$OPENCODE_LOG" 2>/dev/null; then
+            err "[QUOTA] OpenCode 失败原因：智谱 API 额度耗尽"
+            check_zai_quota  # 显示详细信息
+            LAST_FAILURE_REASON="智谱 API 额度耗尽（429）"
+            ISSUES_LOG+=("[Round $ROUND] 智谱 API 额度耗尽")
+            RESULT_STATUS="QUOTA_EXHAUSTED"
+            break
+        fi
         LAST_FAILURE_REASON="OpenCode failed with exit ${OPENCODE_EXIT}"
         ISSUES_LOG+=("[Round $ROUND] OpenCode 退出码 $OPENCODE_EXIT：$(tail -5 "$OPENCODE_LOG" | tr '\n' ' ')")
         err "OpenCode 执行失败（exit=${OPENCODE_EXIT}）"
@@ -662,6 +725,10 @@ fi
 if [ "$RESULT_STATUS" = "DONE" ]; then
     COMPLETED_TASKS=$((COMPLETED_TASKS + 1))
     log "--- 任务 $TASK_ID 完成，继续下一个 ---"
+elif [ "$RESULT_STATUS" = "QUOTA_EXHAUSTED" ]; then
+    FAILED_TASKS=$((FAILED_TASKS + 1))
+    err "--- 任务 $TASK_ID 因额度耗尽失败，停止批量执行 ---"
+    err "--- 等待额度恢复后可重新运行 ---"
 else
     FAILED_TASKS=$((FAILED_TASKS + 1))
     err "--- 任务 $TASK_ID 失败，停止批量执行，等待人工介入 ---"

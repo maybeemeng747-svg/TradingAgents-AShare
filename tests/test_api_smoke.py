@@ -278,6 +278,11 @@ class TestOpenAPISchema:
         assert r.status_code == 200
         assert r.json()["status"] == "ok"
 
+    def test_model_catalog_requires_auth(self):
+        client = _get_client()
+        r = client.get("/v1/config/model-catalog")
+        assert r.status_code in (401, 403)
+
 
 class TestRuntimeConfigWarmup:
     @pytest.fixture(autouse=True)
@@ -299,6 +304,16 @@ class TestRuntimeConfigWarmup:
         assert body["warmup"]["triggered"] is True
         assert model_name in body["warmup"]["models"]
         warmup.assert_called_once()
+
+    def test_model_catalog_returns_supported_endpoints(self):
+        r = self.client.get("/v1/config/model-catalog", headers=self.headers)
+        assert r.status_code == 200
+        body = r.json()
+        items = {item["id"]: item for item in body["items"]}
+        assert "zhipu-coding" in items
+        assert items["zhipu-coding"]["base_url"] == "https://open.bigmodel.cn/api/coding/paas/v4"
+        assert items["zhipu-coding"]["deep_model"] == "glm-5-turbo"
+        assert "deepseek" in items
 
     def test_non_model_change_skips_warmup(self):
         with patch("api.main._run_config_warmup") as warmup:

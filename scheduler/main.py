@@ -38,8 +38,38 @@ def _log(msg: str):
     logger.info(msg)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("[Scheduler] Invalid %s=%r, using %s", name, value, default)
+        return default
+
+
+def _env_time_allowlist(name: str) -> set[str]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return set()
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
 # ── Concurrency ──────────────────────────────────────────────────────────────
-SCHEDULER_CONCURRENCY = int(os.getenv("SCHEDULER_CONCURRENCY", "1"))
+SCHEDULER_ENABLED = _env_bool("SCHEDULER_ENABLED", True)
+SCHEDULER_DRY_RUN = _env_bool("SCHEDULER_DRY_RUN", False)
+SCHEDULER_CONCURRENCY = _env_int("SCHEDULER_CONCURRENCY", 1)
+SCHEDULER_MAX_TASKS_PER_TICK = _env_int("SCHEDULER_MAX_TASKS_PER_TICK", 1)
+SCHEDULER_RUN_INTRADAY = _env_bool("SCHEDULER_RUN_INTRADAY", True)
+SCHEDULER_ALLOWED_TRIGGER_TIMES = _env_time_allowlist("SCHEDULER_ALLOWED_TRIGGER_TIMES")
 
 _semaphore: Optional[asyncio.Semaphore] = None
 _executor: Optional[ThreadPoolExecutor] = None
@@ -301,10 +331,12 @@ async def _scheduler_loop():
             today = now.strftime("%Y-%m-%d")
             current_hhmm = now.strftime("%H:%M")
 
+            if not SCHEDULER_ENABLED:
+                continue
             if not is_cn_trading_day(today):
                 continue
             time_val = now.hour * 60 + now.minute
-            if 8 * 60 < time_val < 20 * 60:
+            if not SCHEDULER_RUN_INTRADAY and 8 * 60 < time_val < 20 * 60:
                 continue
 
             def _claim_pending_tasks():
@@ -312,22 +344,47 @@ async def _scheduler_loop():
                     tasks = scheduled_service.get_pending_tasks(db, today, current_hhmm)
                     if not tasks:
                         return []
-                    for task in tasks:
-                        task.last_run_date = today
-                        task.last_run_status = "running"
-                    db.commit()
-                    return [
+                    if SCHEDULER_ALLOWED_TRIGGER_TIMES:
+                        tasks = [
+                            task for task in tasks
+                            if (task.trigger_time or "20:00") in SCHEDULER_ALLOWED_TRIGGER_TIMES
+                        ]
+                    if SCHEDULER_MAX_TASKS_PER_TICK > 0:
+                        tasks = tasks[:SCHEDULER_MAX_TASKS_PER_TICK]
+                    if not tasks:
+                        return []
+                    snapshots = [
                         {
                             "id": task.id,
                             "user_id": task.user_id,
                             "symbol": task.symbol,
                             "horizon": task.horizon,
+                            "trigger_time": task.trigger_time or "20:00",
                         }
                         for task in tasks
                     ]
+                    if SCHEDULER_DRY_RUN:
+                        return snapshots
+                    for task in tasks:
+                        task.last_run_date = today
+                        task.last_run_status = "running"
+                    db.commit()
+                    return snapshots
 
             task_snapshots = await asyncio.to_thread(_claim_pending_tasks)
             if not task_snapshots:
+                continue
+            if SCHEDULER_DRY_RUN:
+                _log(
+                    "[Scheduler] Dry run: would launch %s task(s): %s"
+                    % (
+                        len(task_snapshots),
+                        ", ".join(
+                            f"{snap['symbol']}@{snap.get('trigger_time', '20:00')}"
+                            for snap in task_snapshots
+                        ),
+                    )
+                )
                 continue
 
             _log(f"[Scheduler] Launching {len(task_snapshots)} tasks (staggered)")
@@ -414,7 +471,18 @@ async def _startup():
     _log("Database initialized.")
 
     _semaphore = asyncio.Semaphore(SCHEDULER_CONCURRENCY)
-    _log(f"[Scheduler] Concurrency limit set to {SCHEDULER_CONCURRENCY}")
+    _log(
+        "[Scheduler] Config enabled=%s dry_run=%s concurrency=%s max_per_tick=%s "
+        "run_intraday=%s allowed_times=%s"
+        % (
+            SCHEDULER_ENABLED,
+            SCHEDULER_DRY_RUN,
+            SCHEDULER_CONCURRENCY,
+            SCHEDULER_MAX_TASKS_PER_TICK,
+            SCHEDULER_RUN_INTRADAY,
+            sorted(SCHEDULER_ALLOWED_TRIGGER_TIMES) or "all",
+        )
+    )
 
     _executor = ThreadPoolExecutor(max_workers=SCHEDULER_CONCURRENCY + 2)
 

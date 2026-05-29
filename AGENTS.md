@@ -34,6 +34,7 @@ A股智能投研多智能体系统，基于 LangGraph + LangChain 构建，模�
 3. `docs/TASKS.md`（当前任务池）
 4. `docs/DECISIONS.md`（架构决策记录）
 5. `docs/DEVLOG.md`（最近修改日志）
+6. 涉及模型/API 调用时，必须读 `docs/MODEL_API_CATALOG.md` 和 `docs/LLM_API_USAGE.md`，并可运行 `python scripts/audit_llm_config.py` 查看脱敏配置
 
 ## 项目目录结构
 
@@ -88,6 +89,8 @@ TradingAgents-AShare/
 - 不直接修改 `tradingagents/prompts/` 中的提示词模板（需走审批）
 - 不删除 `logs/` 中的历史日志
 - 测试数据不得写入生产数据库
+- 不读取、解密、打印、提交任何模型 API Key 明文；只能使用 `HAS_KEY/NO_KEY` 级别的脱敏状态
+- 除用户主动发起的分析/定时任务外，任何 live LLM API 调用前都要说明 provider、base_url、模型名和预计调用次数，并征得用户确认
 
 ## 技术栈
 
