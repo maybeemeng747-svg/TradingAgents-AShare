@@ -8,9 +8,9 @@
 #   - ERROR: 无法检测（网络错误等）
 #
 # 检测逻辑:
-#   1. 向智谱 API 发送一个最小请求
-#   2. 如果返回 429 → 额度耗尽
-#   3. 如果返回 200/401 → 额度正常
+#   1. 用实际使用的模型 (GLM-5.1) 发送最小请求
+#   2. 如果返回 1308 或 429 → 额度耗尽
+#   3. 如果返回 200 且响应正常 → 额度正常
 #   4. 解析响应中的刷新时间信息
 
 set -euo pipefail
@@ -23,17 +23,17 @@ fi
 # ── 配置 ──
 ZAI_BASE_URL="${ZAI_BASE_URL:-https://open.bigmodel.cn/api/coding/paas/v4}"
 ZAI_API_KEY="${ZAI_API_KEY:-${GLM_API_KEY:-}}"
+# 用 GLM-5.1 测试（我们实际使用的模型，受5小时额度限制）
+ZAI_TEST_MODEL="${ZAI_TEST_MODEL:-glm-5.1}"
 
 # 如果没有 API key，尝试从 openclaw.json 读取
 if [[ -z "$ZAI_API_KEY" ]]; then
     OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
     if [[ -f "$OPENCLAW_CONFIG" ]]; then
-        # 尝试提取 zai 相关的 API key
         ZAI_API_KEY=$(python3 -c "
 import json
 with open('$OPENCLAW_CONFIG') as f:
     cfg = json.load(f)
-# 搜索 models.providers 中的 ZAI 配置
 providers = cfg.get('models', {}).get('providers', {})
 for name, prov in providers.items():
     if name.upper() == 'ZAI':
@@ -54,24 +54,58 @@ if [[ -z "$ZAI_API_KEY" ]]; then
     exit 1
 fi
 
-# ── 发送测试请求 ──
+# ── 发送测试请求（用实际使用的模型） ──
 RESPONSE_FILE=$(mktemp)
 HTTP_CODE=$(curl -s -w "%{http_code}" -o "$RESPONSE_FILE" \
     -X POST "${ZAI_BASE_URL}/chat/completions" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${ZAI_API_KEY}" \
-    -d '{
-        "model": "glm-4-flash",
-        "messages": [{"role": "user", "content": "hi"}],
-        "max_tokens": 1
-    }' 2>/dev/null || echo "000")
+    -d "{\"model\": \"${ZAI_TEST_MODEL}\", \"messages\": [{\"role\": \"user\", \"content\": \"say ok\"}], \"max_tokens\": 5}" 2>/dev/null || echo "000")
 
 RESPONSE_BODY=$(cat "$RESPONSE_FILE" 2>/dev/null || echo "{}")
 rm -f "$RESPONSE_FILE"
 
+# ── 解析函数 ──
+parse_quota_error() {
+    local body="$1"
+    python3 -c "
+import json, re, sys
+try:
+    data = json.loads('''$body''')
+    err = data.get('error', {})
+    msg = err.get('message', '') or data.get('message', '') or str(data)
+    code = str(err.get('code', ''))
+    # 提取时间：2026-05-29 21:49:56 或 21:49
+    time_match = re.search(r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', msg)
+    if not time_match:
+        time_match = re.search(r'(\d{1,2}:\d{2})', msg)
+    reset_time = time_match.group(1) if time_match else ''
+    print(json.dumps({'message': msg, 'reset_time': reset_time, 'code': code}))
+except:
+    print(json.dumps({'message': '', 'reset_time': '', 'code': ''}))
+" 2>/dev/null || echo '{"message":"","reset_time":"","code":""}'
+}
+
 # ── 解析结果 ──
 case "$HTTP_CODE" in
     200)
+        # 检查响应体是否包含额度错误（有时 HTTP 200 但 body 里有错误）
+        if echo "$RESPONSE_BODY" | grep -q '"code".*1308\|已达.*上限\|exhausted\|5 小时' 2>/dev/null; then
+            PARSED=$(parse_quota_error "$RESPONSE_BODY")
+            ERROR_MSG=$(echo "$PARSED" | python3 -c "import json,sys; print(json.load(sys.stdin).get('message',''))" 2>/dev/null || echo "")
+            RESET_TIME=$(echo "$PARSED" | python3 -c "import json,sys; print(json.load(sys.stdin).get('reset_time',''))" 2>/dev/null || echo "")
+            ERROR_CODE=$(echo "$PARSED" | python3 -c "import json,sys; print(json.load(sys.stdin).get('code','1308'))" 2>/dev/null || echo "1308")
+
+            if $JSON_MODE; then
+                echo "{\"status\":\"EXHAUSTED\",\"error_code\":\"$ERROR_CODE\",\"reset_time\":\"$RESET_TIME\",\"message\":\"$ERROR_MSG\"}"
+            else
+                echo "[QUOTA] EXHAUSTED: 智谱 API 额度耗尽 (错误码 $ERROR_CODE)"
+                [[ -n "$RESET_TIME" ]] && echo "[QUOTA] 下次刷新: $RESET_TIME"
+                [[ -n "$ERROR_MSG" ]] && echo "[QUOTA] 详情: $ERROR_MSG"
+            fi
+            exit 2
+        fi
+        # 真正的 200 OK
         if $JSON_MODE; then
             echo '{"status":"OK","http_code":200}'
         else
@@ -87,39 +121,19 @@ case "$HTTP_CODE" in
         fi
         exit 0
         ;;
-    429)
-        # 额度耗尽，尝试解析刷新时间
-        RESET_TIME=""
-        ERROR_MSG=""
-        
-        # 尝试从 response body 解析
-        if command -v python3 &>/dev/null; then
-            PARSED=$(python3 -c "
-import json, re, sys
-try:
-    data = json.loads('''$RESPONSE_BODY''')
-    msg = data.get('error', {}).get('message', '') or data.get('message', '') or str(data)
-    # 尝试提取时间信息
-    time_match = re.search(r'(\d{1,2}:\d{2})', msg)
-    reset_time = time_match.group(1) if time_match else ''
-    print(json.dumps({'message': msg, 'reset_time': reset_time}))
-except:
-    print(json.dumps({'message': '$RESPONSE_BODY', 'reset_time': ''}))
-" 2>/dev/null || echo '{"message":"解析失败","reset_time":""}')
-            ERROR_MSG=$(echo "$PARSED" | python3 -c "import json,sys; print(json.load(sys.stdin).get('message',''))" 2>/dev/null || echo "")
-            RESET_TIME=$(echo "$PARSED" | python3 -c "import json,sys; print(json.load(sys.stdin).get('reset_time',''))" 2>/dev/null || echo "")
-        fi
-        
+    429|1308)
+        # 额度耗尽
+        PARSED=$(parse_quota_error "$RESPONSE_BODY")
+        ERROR_MSG=$(echo "$PARSED" | python3 -c "import json,sys; print(json.load(sys.stdin).get('message',''))" 2>/dev/null || echo "")
+        RESET_TIME=$(echo "$PARSED" | python3 -c "import json,sys; print(json.load(sys.stdin).get('reset_time',''))" 2>/dev/null || echo "")
+        ERROR_CODE=$(echo "$PARSED" | python3 -c "import json,sys; print(json.load(sys.stdin).get('code',''))" 2>/dev/null || echo "")
+
         if $JSON_MODE; then
-            echo "{\"status\":\"EXHAUSTED\",\"http_code\":429,\"reset_time\":\"$RESET_TIME\",\"message\":\"$ERROR_MSG\"}"
+            echo "{\"status\":\"EXHAUSTED\",\"error_code\":\"${ERROR_CODE:-$HTTP_CODE}\",\"reset_time\":\"$RESET_TIME\",\"message\":\"$ERROR_MSG\"}"
         else
-            echo "[QUOTA] EXHAUSTED: 额度耗尽 (HTTP 429)"
-            if [[ -n "$RESET_TIME" ]]; then
-                echo "[QUOTA] 下次刷新: $RESET_TIME"
-            fi
-            if [[ -n "$ERROR_MSG" ]]; then
-                echo "[QUOTA] 详情: $ERROR_MSG"
-            fi
+            echo "[QUOTA] EXHAUSTED: 智谱 API 额度耗尽 (错误码 ${ERROR_CODE:-$HTTP_CODE})"
+            [[ -n "$RESET_TIME" ]] && echo "[QUOTA] 下次刷新: $RESET_TIME"
+            [[ -n "$ERROR_MSG" ]] && echo "[QUOTA] 详情: $ERROR_MSG"
         fi
         exit 2
         ;;
@@ -132,6 +146,21 @@ except:
         exit 1
         ;;
     *)
+        # 检查响应体是否包含额度错误
+        if echo "$RESPONSE_BODY" | grep -q '1308\|已达.*上限\|5 小时' 2>/dev/null; then
+            PARSED=$(parse_quota_error "$RESPONSE_BODY")
+            ERROR_MSG=$(echo "$PARSED" | python3 -c "import json,sys; print(json.load(sys.stdin).get('message',''))" 2>/dev/null || echo "")
+            RESET_TIME=$(echo "$PARSED" | python3 -c "import json,sys; print(json.load(sys.stdin).get('reset_time',''))" 2>/dev/null || echo "")
+
+            if $JSON_MODE; then
+                echo "{\"status\":\"EXHAUSTED\",\"error_code\":\"1308\",\"reset_time\":\"$RESET_TIME\",\"message\":\"$ERROR_MSG\"}"
+            else
+                echo "[QUOTA] EXHAUSTED: 智谱 API 额度耗尽"
+                [[ -n "$RESET_TIME" ]] && echo "[QUOTA] 下次刷新: $RESET_TIME"
+                [[ -n "$ERROR_MSG" ]] && echo "[QUOTA] 详情: $ERROR_MSG"
+            fi
+            exit 2
+        fi
         if $JSON_MODE; then
             echo "{\"status\":\"ERROR\",\"http_code\":$HTTP_CODE,\"message\":\"$RESPONSE_BODY\"}"
         else
