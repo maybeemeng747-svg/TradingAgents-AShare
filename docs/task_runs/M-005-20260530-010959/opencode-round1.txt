@@ -1,0 +1,435 @@
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/project-overview.md
+[0m
+[0m# [0mTodos
+[ ] Explore existing TradeFlow structure (schemas, candidate_engine, plan_runner, strategy_config)
+[ ] Implement IntradayObserveState enum and ObserveTracker class
+[ ] Integrate observe state into candidate_engine and plan_runner
+[ ] Write comprehensive tests for M-005
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/tradeflow
+[0m→ [0mRead tradingagents/tradeflow/schemas.py
+[0m→ [0mRead tradingagents/tradeflow/strategy_config.py
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py
+[0m→ [0mRead tradingagents/tradeflow/__init__.py
+现在让我看看 `plan_runner`、一些现有的测试以及 `__init__.py`：
+[0m✱ [0mGlob "tests/test_tradeflow_*.py"[90m 5 matches[0m
+[0m→ [0mRead tests/test_tradeflow_schemas.py[90m [limit=50][0m
+我来阅读一个现有的测试文件，了解一下测试模式：
+[0m→ [0mRead tradingagents/tradeflow/tier_budget.py[90m [limit=50][0m
+[0m
+[0m# [0mTodos
+[x] Explore existing TradeFlow structure (schemas, candidate_engine, plan_runner, strategy_config)
+[ ] Implement IntradayObserveState enum and ObserveTracker class
+[ ] Integrate observe state into candidate_engine and plan_runner
+[ ] Write comprehensive tests for M-005
+[ ] Update docs/DEVLOG.md
+[0m
+现在我对代码库有了清晰的了解。接下来我将实现 M-005：盘中观察状态机。实现内容如下：
+
+1.  **`tradingagents/tradeflow/intraday_observe.py`** — 核心模块，包含状态枚举、快照/跟踪器数据类以及 `run_observe_check` 函数
+2.  **`tradingagents/tradeflow/schemas.py`** — 向 `Candidate` 添加 `observe_state` 字段
+3.  **`tradingagents/tradeflow/candidate_engine.py`** — 添加 DB 列 + `observe_state` 字段
+4.  **`tradingagents/tradeflow/plan_runner.py`** — 将 `observe_state` 传递到计划条目中
+5.  **`tradingagents/tradeflow/strategy_config.py`** — 添加观察相关的配置字段
+6.  **`tests/test_m005_intraday_observe.py`** — 综合测试
+[0m← [0mWrite tradingagents/tradeflow/intraday_observe.py
+Wrote file successfully.
+[0m
+现在将 `observe_state` 添加到 `Candidate` schema 中，并添加策略配置字段：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -101,8 +101,11 @@
+ missing_data_fields: list[str] = field(default_factory=list)  # [S-008]
+ what_to_upgrade: list[str] = field(default_factory=list)  # [S-008]
+ evidence_gate_applied: bool = False  # [S-008]
+ universe_sources: list[str] = field(default_factory=list)  # [M-003] tradeflow_universe_manager
++observe_state: str = "WAITING"  # [M-005] intraday_observe_state
++observe_trigger_count: int = 0  # [M-005] intraday_observe_state
++observe_first_trigger_time: str = ""  # [M-005] intraday_observe_state
+ 
+ def __post_init__(self):
+     if not self.trade_date:
+         self.trade_date = datetime.now().strftime("%Y-%m-%d")
+
+[0m
+现在将 `observe_state` 添加到 `to_db_row` 中：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -205,8 +205,11 @@
+         "missing_data_fields_json": json.dumps(self.missing_data_fields, ensure_ascii=False),  # [S-008]
+         "what_to_upgrade_json": json.dumps(self.what_to_upgrade, ensure_ascii=False),  # [S-008]
+         "evidence_gate_applied": 1 if self.evidence_gate_applied else 0,  # [S-008]
+         "universe_sources_json": json.dumps(self.universe_sources, ensure_ascii=False),  # [M-003]
++        "observe_state": self.observe_state,  # [M-005] intraday_observe_state
++        "observe_trigger_count": self.observe_trigger_count,  # [M-005]
++        "observe_first_trigger_time": self.observe_first_trigger_time,  # [M-005]
+         "updated_at": datetime.now().isoformat(),
+     }
+ 
+ @classmethod
+
+[0m
+现在添加到 `from_db_row` 中：
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -269,8 +269,11 @@
+             missing_data_fields=json.loads(row.get("missing_data_fields_json", "[]")),  # [S-008]
+             what_to_upgrade=json.loads(row.get("what_to_upgrade_json", "[]")),  # [S-008]
+             evidence_gate_applied=bool(row.get("evidence_gate_applied", 0)),  # [S-008]
+             universe_sources=json.loads(row.get("universe_sources_json", "[]")),  # [M-003]
++            observe_state=row.get("observe_state", "WAITING"),  # [M-005] intraday_observe_state
++            observe_trigger_count=row.get("observe_trigger_count", 0),  # [M-005]
++            observe_first_trigger_time=row.get("observe_first_trigger_time", ""),  # [M-005]
+         )
+ 
+ 
+ @dataclass
+
+[0m
+现在，为 `observe` 添加配置字段到 `StrategyConfig` 中：
+[0m← [0mEdit tradingagents/tradeflow/strategy_config.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/strategy_config.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/strategy_config.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/strategy_config.py
+@@ -124,8 +124,13 @@
+ evidence_total_dimensions: int = 10
+ evidence_completeness_for_a_tier: float = 0.6
+ evidence_completeness_for_deep_ta: float = 0.5
+ 
++# ── Intraday Observe [M-005] ──
++observe_max_daily_triggers: int = 3
++observe_trigger_breach_pct: float = 0.0
++observe_invalidate_breach_pct: float = 0.0
++
+ def to_dict(self) -> dict:
+     d = asdict(self)
+     d["risk_high_severity_flags"] = list(self.risk_high_severity_flags)
+     return d
+
+[0m
+现在将 DB 列添加到 `candidate_engine.py`:
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -199,8 +199,18 @@
+     try:
+         conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+     except sqlite3.OperationalError:
+         pass
++# [M-005] intraday_observe_state — add observe state columns
++for _col, _type in [
++    ("observe_state", "TEXT DEFAULT 'WAITING'"),
++    ("observe_trigger_count", "INTEGER DEFAULT 0"),
++    ("observe_first_trigger_time", "TEXT DEFAULT ''"),
++]:
++    try:
++        conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
++    except sqlite3.OperationalError:
++        pass
+ conn.commit()
+ conn.close()
+ 
+ 
+
+[0m
+现在更新 `save_candidate` SQL 以包含新的列。让我读取当前的 `save_candidate`：
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [offset=697][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -726,10 +726,11 @@
+     "priority_rank, "
+     "tier, ta_budget_priority, tier_reason, missing_evidence_for_upgrade_json, "
+     "tradeflow_data_completeness, missing_data_fields_json, what_to_upgrade_json, evidence_gate_applied, "
+     "universe_sources_json, "
++    "observe_state, observe_trigger_count, observe_first_trigger_time, "
+     "created_at, updated_at) "
+-    "VALUES ({}) ".format(",".join(["?"] * 55))
++    "VALUES ({}) ".format(",".join(["?"] * 58))
+     + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+     "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+     "trigger_price=excluded.trigger_price, "
+     "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+@@ -768,8 +769,11 @@
+     "missing_data_fields_json=excluded.missing_data_fields_json, "
+     "what_to_upgrade_json=excluded.what_to_upgrade_json, "
+     "evidence_gate_applied=excluded.evidence_gate_applied, "
+     "universe_sources_json=excluded.universe_sources_json, "
++    "observe_state=excluded.observe_state, "
++    "observe_trigger_count=excluded.observe_trigger_count, "
++    "observe_first_trigger_time=excluded.observe_first_trigger_time, "
+     "updated_at=excluded.updated_at",
+     (
+         row["trade_date"], row["symbol"], row["name"], row["source"],
+         row["strategy_tags_json"], row["primary_strategy"],
+@@ -796,8 +800,10 @@
+         row["tier_reason"], row["missing_evidence_for_upgrade_json"],
+         row["tradeflow_data_completeness"], row["missing_data_fields_json"],
+         row["what_to_upgrade_json"], row["evidence_gate_applied"],
+         row["universe_sources_json"],
++        row["observe_state"], row["observe_trigger_count"],
++        row["observe_first_trigger_time"],
+         candidate.created_at, row["updated_at"],
+     ),
+ )
+ conn.commit()
+
+[0m
+现在更新 `plan_runner.py`，以便在计划条目中包含 `observe_state`：
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -106,8 +106,11 @@
+         "missing_data_fields": candidate.missing_data_fields,  # [S-008]
+         "what_to_upgrade": candidate.what_to_upgrade,  # [S-008]
+         "evidence_gate_applied": candidate.evidence_gate_applied,  # [S-008]
+         "universe_sources": candidate.universe_sources,  # [M-003] tradeflow_universe_manager
++        "observe_state": candidate.observe_state,  # [M-005] intraday_observe_state
++        "observe_trigger_count": candidate.observe_trigger_count,  # [M-005]
++        "observe_first_trigger_time": candidate.observe_first_trigger_time,  # [M-005]
+     }
+ 
+ 
+ def generate_daily_plan(
+
+[0m
+现在更新 `schemas.py` 中的 `render_text`，以便在计划中显示观察状态：
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [offset=455][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -474,7 +474,16 @@
+         if missing_df:
+             lines.append(f"    缺失字段: {', '.join(missing_df[:5])}")
+         if what_up:
+             lines.append(f"    升级所需: {'; '.join(what_up[:4])}")
++    # [M-005] intraday_observe_state — display observe state
++    obs_state = c.get("observe_state", "")
++    obs_count = c.get("observe_trigger_count", 0)
++    obs_time = c.get("observe_first_trigger_time", "")
++    if obs_state and obs_state != "WAITING":
++        state_label = {"TRIGGERED": "已触发", "INVALIDATED": "已失效", "EXPIRED": "已到期"}.get(obs_state, obs_state)
++        lines.append(f"  盘中观察: {state_label} (触发{obs_count}次)")
++        if obs_time:
++            lines.append(f"    首次触发: {obs_time}")
+     lines.append("")
+ 
+ return "\n".join(lines)
+
+[0m
+[0m# [0mTodos
+[x] Explore existing TradeFlow structure (schemas, candidate_engine, plan_runner, strategy_config)
+[x] Implement IntradayObserveState enum and ObserveTracker class
+[x] Integrate observe state into candidate_engine and plan_runner
+[ ] Write comprehensive tests for M-005
+[ ] Update docs/DEVLOG.md
+[0m
+现在编写测试：
+[0m← [0mWrite tests/test_m005_intraday_observe.py
+Wrote file successfully.
+[0m
+现在我们来运行测试：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_m005_intraday_observe.py -v 2>&1 | tail -50
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 40 items
+
+tests/test_m005_intraday_observe.py::TestObserveState::test_enum_values PASSED [  2%]
+tests/test_m005_intraday_observe.py::TestObserveState::test_all_states PASSED [  5%]
+tests/test_m005_intraday_observe.py::TestObserveSnapshot::test_basic_creation PASSED [  7%]
+tests/test_m005_intraday_observe.py::TestObserveSnapshot::test_auto_timestamp PASSED [ 10%]
+tests/test_m005_intraday_observe.py::TestObserveTracker::test_default_state PASSED [ 12%]
+tests/test_m005_intraday_observe.py::TestObserveTracker::test_custom_trade_date PASSED [ 15%]
+tests/test_m005_intraday_observe.py::TestRunObserveCheck::test_price_below_trigger_stays_waiting PASSED [ 17%]
+tests/test_m005_intraday_observe.py::TestRunObserveCheck::test_price_breaks_trigger_becomes_triggered PASSED [ 20%]
+tests/test_m005_intraday_observe.py::TestRunObserveCheck::test_price_exactly_at_trigger_is_triggered PASSED [ 22%]
+tests/test_m005_intraday_observe.py::TestRunObserveCheck::test_price_drops_below_invalid_becomes_invalidated PASSED [ 25%]
+tests/test_m005_intraday_observe.py::TestRunObserveCheck::test_price_exactly_at_invalid_is_invalidated PASSED [ 27%]
+tests/test_m005_intraday_observe.py::TestRunObserveCheck::test_invalidation_checked_before_trigger PASSED [ 30%]
+tests/test_m005_intraday_observe.py::TestRunObserveCheck::test_no_trigger_price_stays_waiting PASSED [ 32%]
+tests/test_m005_intraday_observe.py::TestRunObserveCheck::test_no_invalid_price_stays_waiting PASSED [ 35%]
+tests/test_m005_intraday_observe.py::TestRunObserveCheck::test_no_prices_stays_waiting PASSED [ 37%]
+tests/test_m005_intraday_observe.py::TestRunObserveCheck::test_volume_and_amount_recorded PASSED [ 40%]
+tests/test_m005_intraday_observe.py::TestRunObserveCheck::test_daily_trigger_cap PASSED [ 42%]
+tests/test_m005_intraday_observe.py::TestRunObserveCheck::test_history_recorded PASSED [ 45%]
+tests/test_m005_intraday_observe.py::TestRunObserveCheck::test_default_config_cap_is_3 PASSED [ 47%]
+tests/test_m005_intraday_observe.py::TestTerminalStates::test_triggered_stays_triggered PASSED [ 50%]
+tests/test_m005_intraday_observe.py::TestTerminalStates::test_invalidated_stays_invalidated PASSED [ 52%]
+tests/test_m005_intraday_observe.py::TestTerminalStates::test_expired_stays_expired PASSED [ 55%]
+tests/test_m005_intraday_observe.py::TestExpireTracker::test_waiting_becomes_expired PASSED [ 57%]
+tests/test_m005_intraday_observe.py::TestExpireTracker::test_triggered_stays_triggered_on_expire PASSED [ 60%]
+tests/test_m005_intraday_observe.py::TestExpireTracker::test_invalidated_stays_invalidated_on_expire PASSED [ 62%]
+tests/test_m005_intraday_observe.py::TestCandidateObserveIntegration::test_candidate_default_observe_state PASSED [ 65%]
+tests/test_m005_intraday_observe.py::TestCandidateObserveIntegration::test_candidate_to_db_row_includes_observe PASSED [ 67%]
+tests/test_m005_intraday_observe.py::TestCandidateObserveIntegration::test_candidate_from_db_row_includes_observe PASSED [ 70%]
+tests/test_m005_intraday_observe.py::TestCandidateObserveIntegration::test_candidate_from_db_row_defaults PASSED [ 72%]
+tests/test_m005_intraday_observe.py::TestDbPersistence::test_save_and_read_observe_state PASSED [ 75%]
+tests/test_m005_intraday_observe.py::TestDbPersistence::test_upsert_observe_state PASSED [ 77%]
+tests/test_m005_intraday_observe.py::TestTrackerToCandidateSync::test_sync_triggered_tracker_to_candidate PASSED [ 80%]
+tests/test_m005_intraday_observe.py::TestTrackerToCandidateSync::test_sync_invalidated_tracker_to_candidate PASSED [ 82%]
+tests/test_m005_intraday_observe.py::TestTrackerToCandidateSync::test_sync_waiting_tracker_to_candidate PASSED [ 85%]
+tests/test_m005_intraday_observe.py::TestStrategyConfigObserve::test_default_observe_config PASSED [ 87%]
+tests/test_m005_intraday_observe.py::TestStrategyConfigObserve::test_custom_observe_config PASSED [ 90%]
+tests/test_m005_intraday_observe.py::TestFullObserveWorkflow::test_full_day_workflow PASSED [ 92%]
+tests/test_m005_intraday_observe.py::TestFullObserveWorkflow::test_invalidation_workflow PASSED [ 95%]
+tests/test_m005_intraday_observe.py::TestFullObserveWorkflow::test_untriggered_no_output PASSED [ 97%]
+tests/test_m005_intraday_observe.py::TestFullObserveWorkflow::test_multiple_symbols_isolated PASSED [100%]
+
+============================== 40 passed in 0.23s ==============================
+[0m
+所有 40 个测试通过。现在让我们运行完整的 TradeFlow 测试套件，以确保没有引入任何问题：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tradeflow_*.py -v --tb=short 2>&1 | tail -30
+tests/test_tradeflow_universe.py::TestUniverseManagerBasic::test_add_duplicate_source_no_duplication PASSED [ 77%]
+tests/test_tradeflow_universe.py::TestUniverseManagerBasic::test_add_same_symbol_different_sources PASSED [ 78%]
+tests/test_tradeflow_universe.py::TestUniverseManagerBasic::test_name_updated_on_first_set PASSED [ 79%]
+tests/test_tradeflow_universe.py::TestUniverseManagerBasic::test_name_not_overwritten_if_already_set PASSED [ 80%]
+tests/test_tradeflow_universe.py::TestUniverseManagerRemove::test_remove_symbol PASSED [ 80%]
+tests/test_tradeflow_universe.py::TestUniverseManagerRemove::test_get_active_excludes_filtered PASSED [ 81%]
+tests/test_tradeflow_universe.py::TestUniverseManagerSummary::test_source_summary PASSED [ 82%]
+tests/test_tradeflow_universe.py::TestUniverseManagerBulkAdd::test_add_manual PASSED [ 83%]
+tests/test_tradeflow_universe.py::TestUniverseManagerBulkAdd::test_add_from_events_overrides PASSED [ 84%]
+tests/test_tradeflow_universe.py::TestUniverseManagerBulkAdd::test_add_from_events_symbols PASSED [ 85%]
+tests/test_tradeflow_universe.py::TestUniverseManagerBulkAdd::test_add_from_fund_flow PASSED [ 85%]
+tests/test_tradeflow_universe.py::TestUniverseManagerBulkAdd::test_add_from_industry PASSED [ 86%]
+tests/test_tradeflow_universe.py::TestBuildUniverseBackwardCompat::test_basic_build_universe PASSED [ 87%]
+tests/test_tradeflow_universe.py::TestBuildUniverseBackwardCompat::test_build_universe_returns_new_fields PASSED [ 88%]
+tests/test_tradeflow_universe.py::TestBuildUniverseBackwardCompat::test_build_universe_with_events PASSED [ 89%]
+tests/test_tradeflow_universe.py::TestBuildUniverseBackwardCompat::test_build_universe_dedup_keeps_all_sources PASSED [ 90%]
+tests/test_tradeflow_universe.py::TestBuildUniverseBackwardCompat::test_build_universe_with_industry_and_fund_flow PASSED [ 90%]
+tests/test_tradeflow_universe.py::TestBuildUniverseBackwardCompat::test_empty_sources_returns_empty PASSED [ 91%]
+tests/test_tradeflow_universe.py::TestBuildUniverseWithDB::test_holdings_and_watchlist PASSED [ 92%]
+tests/test_tradeflow_universe.py::TestBuildUniverseWithDB::test_empty_db_no_crash PASSED [ 93%]
+tests/test_tradeflow_universe.py::TestPlanRunnerIntegration::test_universe_sources_passed_to_candidates PASSED [ 94%]
+tests/test_tradeflow_universe.py::TestDiscoveryIntegration::test_discovery_uses_universe_manager PASSED [ 95%]
+tests/test_tradeflow_universe.py::TestNoFullMarketScan::test_empty_inputs_return_empty PASSED [ 95%]
+tests/test_tradeflow_universe.py::TestNoFullMarketScan::test_manager_never_scans_market PASSED [ 96%]
+tests/test_tradeflow_universe.py::TestCandidateUniverseSourcesField::test_default_empty PASSED [ 97%]
+tests/test_tradeflow_universe.py::TestCandidateUniverseSourcesField::test_set_and_read PASSED [ 98%]
+tests/test_tradeflow_universe.py::TestCandidateUniverseSourcesField::test_to_db_row_includes_field PASSED [ 99%]
+tests/test_tradeflow_universe.py::TestCandidateUniverseSourcesField::test_from_db_row_reads_field PASSED [100%]
+
+============================= 121 passed in 4.16s ==============================
+[0m
+[0m# [0mTodos
+[x] Explore existing TradeFlow structure (schemas, candidate_engine, plan_runner, strategy_config)
+[x] Implement IntradayObserveState enum and ObserveTracker class
+[x] Integrate observe state into candidate_engine and plan_runner
+[x] Write comprehensive tests for M-005
+[ ] Update docs/DEVLOG.md
+[0m
+所有 121 个现有 TradeFlow 测试仍然通过。现在我们来更新 DEVLOG：
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,47 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-05-30 | M-005: 盘中 Observe 状态机
++
++- **执行者**：OpenCode
++- **任务**：M-005 — 对盘前候选做低频盘中观察，记录触发价、失效价、放量、跌破等状态
++- **修改文件**：
++  - `tradingagents/tradeflow/intraday_observe.py` — 新建：[M-005] 盘中观察状态机核心模块
++    - `ObserveState` 枚举：WAITING / TRIGGERED / INVALIDATED / EXPIRED
++    - `ObserveSnapshot` 数据类：单次检查快照，记录价量证据和触发原因
++    - `ObserveTracker` 数据类：跟踪器，维护状态、触发次数、检查历史
++    - `run_observe_check()` — 核心检查函数：价格突破触发价→TRIGGERED，跌破失效价→INVALIDATED，支持单日触发次数上限
++    - `expire_tracker()` — 收盘到期处理
++  - `tradingagents/tradeflow/schemas.py` — Candidate 新增 3 个字段：`observe_state`、`observe_trigger_count`、`observe_first_trigger_time`；`to_db_row()`/`from_db_row()` 同步；`render_text()` 显示盘中观察状态
++  - `tradingagents/tradeflow/strategy_config.py` — StrategyConfig 新增 3 个 observe 配置：`observe_max_daily_triggers`(默认3)、`observe_trigger_breach_pct`、`observe_invalidate_breach_pct`
++  - `tradingagents/tradeflow/candidate_engine.py` — `init_db()` 新增 3 列；`save_candidate()` INSERT/UPDATE 包含新列（55→58 字段）
++  - `tradingagents/tradeflow/plan_runner.py` — `_build_plan_entry()` 输出 observe_state/observe_trigger_count/observe_first_trigger_time
++  - `tests/test_m005_intraday_observe.py` — 新建，40 个测试覆盖：
++    - TestObserveState (2): 枚举值、完整枚举集合
++    - TestObserveSnapshot (2): 基本创建、自动时间戳
++    - TestObserveTracker (2): 默认状态、自定义日期
++    - TestRunObserveCheck (11): 价格低于触发价/WAITING、突破触发价/TRIGGERED、恰好触发价/TRIGGERED、跌破失效价/INVALIDATED、恰好失效价/INVALIDATED、失效优先于触发检查、无触发价、无失效价、无价格、量价记录、单日触发上限
++    - TestTerminalStates (3): TRIGGERED 终态保持、INVALIDATED 终态保持、EXPIRED 终态保持
++    - TestExpireTracker (3): WAITING→EXPIRED、TRIGGERED 保持、INVALIDATED 保持
++    - TestCandidateObserveIntegration (4): 默认值、to_db_row、from_db_row、from_db_row 默认值
++    - TestDbPersistence (2): 保存并读取 observe 状态、upsert 覆盖
++    - TestTrackerToCandidateSync (3): 同步 TRIGGERED/INVALIDATED/WAITING
++    - TestStrategyConfigObserve (2): 默认配置、自定义配置
++    - TestFullObserveWorkflow (4): 完整日间流程、失效流程、未触发无输出、多 symbol 隔离
++- **测试结果**：40 passed (M-005)；TradeFlow 全部 121 passed；0 failed
++- **关键逻辑**：
++  - `run_observe_check()` 先检查失效价（INVALIDATED），再检查触发价（TRIGGERED），失效优先于触发
++  - 单日触发次数上限由 `StrategyConfig.observe_max_daily_triggers` 控制（默认3），超出上限后价格虽突破但不再触发
++  - 终态（TRIGGERED/INVALIDATED/EXPIRED）为不可逆状态，后续检查只记录快照不改变状态
++  - `expire_tracker()` 收盘时将 WAITING 状态转为 EXPIRED，已触发/已失效保持不变
++  - 每次 `run_observe_check()` 自动追加到 `tracker.check_history`，保存完整检查历史
++  - 多 symbol 完全隔离，互不影响
++- **风险点**：无；所有改动向后兼容，observe_state 默认 WAITING，不触发任何自动动作
++
++
++
+ ## 2026-05-30 | V-002: 夜间自动开发验收报告与候选样本回放
+ 
+ - **执行者**：OpenCode
+ - **任务**：V-002 — 为夜间自动开发增加固定样本回放和验收报告
+
+[0m
+[0m# [0mTodos
+[x] Explore existing TradeFlow structure (schemas, candidate_engine, plan_runner, strategy_config)
+[x] Implement IntradayObserveState enum and ObserveTracker class
+[x] Integrate observe state into candidate_engine and plan_runner
+[x] Write comprehensive tests for M-005
+[x] Update docs/DEVLOG.md
+[0m
+## 完成输出
+
+### 修改文件
+| 文件 | 操作 |
+|---|---|
+| `tradingagents/tradeflow/intraday_observe.py` | **新建** — 盘中观察状态机核心模块 |
+| `tradingagents/tradeflow/schemas.py` | 修改 — Candidate 新增 3 个 observe 字段 + render_text 展示 |
+| `tradingagents/tradeflow/strategy_config.py` | 修改 — 新增 3 个 observe 配置阈值 |
+| `tradingagents/tradeflow/candidate_engine.py` | 修改 — init_db 新增 3 列，save_candidate 55→58 字段 |
+| `tradingagents/tradeflow/plan_runner.py` | 修改 — plan entry 输出 observe 字段 |
+| `tests/test_m005_intraday_observe.py` | **新建** — 40 个测试 |
+| `docs/DEVLOG.md` | 更新 |
+
+### 关键逻辑
+- **4 个状态**：`WAITING → TRIGGERED / INVALIDATED → EXPIRED`
+- `run_observe_check()` **先检查失效价**（跌破→INVALIDATED），再检查触发价（突破→TRIGGERED）
+- 终态不可逆，单日触发上限默认 3 次（`StrategyConfig.observe_max_daily_triggers`），超出后不再触发
+- 不自动推送、不自动调用 TA、不改 prompts、不写生产 DB
+
+### 测试结果
+- **M-005 测试**：40 passed
+- **TradeFlow 全量测试**：121 passed, 0 failed

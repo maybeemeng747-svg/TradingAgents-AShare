@@ -102,6 +102,9 @@ class Candidate:
     what_to_upgrade: list[str] = field(default_factory=list)  # [S-008]
     evidence_gate_applied: bool = False  # [S-008]
     universe_sources: list[str] = field(default_factory=list)  # [M-003] tradeflow_universe_manager
+    observe_state: str = "WAITING"  # [M-005] intraday_observe_state
+    observe_trigger_count: int = 0  # [M-005] intraday_observe_state
+    observe_first_trigger_time: str = ""  # [M-005] intraday_observe_state
 
     def __post_init__(self):
         if not self.trade_date:
@@ -203,6 +206,9 @@ class Candidate:
             "what_to_upgrade_json": json.dumps(self.what_to_upgrade, ensure_ascii=False),  # [S-008]
             "evidence_gate_applied": 1 if self.evidence_gate_applied else 0,  # [S-008]
             "universe_sources_json": json.dumps(self.universe_sources, ensure_ascii=False),  # [M-003]
+            "observe_state": self.observe_state,  # [M-005] intraday_observe_state
+            "observe_trigger_count": self.observe_trigger_count,  # [M-005]
+            "observe_first_trigger_time": self.observe_first_trigger_time,  # [M-005]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -264,6 +270,9 @@ class Candidate:
             what_to_upgrade=json.loads(row.get("what_to_upgrade_json", "[]")),  # [S-008]
             evidence_gate_applied=bool(row.get("evidence_gate_applied", 0)),  # [S-008]
             universe_sources=json.loads(row.get("universe_sources_json", "[]")),  # [M-003]
+            observe_state=row.get("observe_state", "WAITING"),  # [M-005] intraday_observe_state
+            observe_trigger_count=row.get("observe_trigger_count", 0),  # [M-005]
+            observe_first_trigger_time=row.get("observe_first_trigger_time", ""),  # [M-005]
         )
 
 
@@ -466,6 +475,15 @@ class DailyPlan:
                     lines.append(f"    缺失字段: {', '.join(missing_df[:5])}")
                 if what_up:
                     lines.append(f"    升级所需: {'; '.join(what_up[:4])}")
+            # [M-005] intraday_observe_state — display observe state
+            obs_state = c.get("observe_state", "")
+            obs_count = c.get("observe_trigger_count", 0)
+            obs_time = c.get("observe_first_trigger_time", "")
+            if obs_state and obs_state != "WAITING":
+                state_label = {"TRIGGERED": "已触发", "INVALIDATED": "已失效", "EXPIRED": "已到期"}.get(obs_state, obs_state)
+                lines.append(f"  盘中观察: {state_label} (触发{obs_count}次)")
+                if obs_time:
+                    lines.append(f"    首次触发: {obs_time}")
             lines.append("")
 
         return "\n".join(lines)

@@ -1,0 +1,2508 @@
+Task: M-005 — 盘中 Observe 状态机（P2）
+Date: 2026-05-30_01:15:53
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e74bb-25b1-73f0-8d4d-6bae0b04378a
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,160p' docs/DECISIONS.md && sed -n '1,120p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-05-30 | M-005: 盘中 Observe 状态机
+
+- **执行者**：OpenCode
+- **任务**：M-005 — 对盘前候选做低频盘中观察，记录触发价、失效价、放量、跌破等状态
+- **修改文件**：
+  - `tradingagents/tradeflow/intraday_observe.py` — 新建：[M-005] 盘中观察状态机核心模块
+    - `ObserveState` 枚举：WAITING / TRIGGERED / INVALIDATED / EXPIRED
+    - `ObserveSnapshot` 数据类：单次检查快照，记录价量证据和触发原因
+    - `ObserveTracker` 数据类：跟踪器，维护状态、触发次数、检查历史
+    - `run_observe_check()` — 核心检查函数：价格突破触发价→TRIGGERED，跌破失效价→INVALIDATED，支持单日触发次数上限
+    - `expire_tracker()` — 收盘到期处理
+  - `tradingagents/tradeflow/schemas.py` — Candidate 新增 3 个字段：`observe_state`、`observe_trigger_count`、`observe_first_trigger_time`；`to_db_row()`/`from_db_row()` 同步；`render_text()` 显示盘中观察状态
+  - `tradingagents/tradeflow/strategy_config.py` — StrategyConfig 新增 3 个 observe 配置：`observe_max_daily_triggers`(默认3)、`observe_trigger_breach_pct`、`observe_invalidate_breach_pct`
+  - `tradingagents/tradeflow/candidate_engine.py` — `init_db()` 新增 3 列；`save_candidate()` INSERT/UPDATE 包含新列（55→58 字段）
+  - `tradingagents/tradeflow/plan_runner.py` — `_build_plan_entry()` 输出 observe_state/observe_trigger_count/observe_first_trigger_time
+  - `tests/test_m005_intraday_observe.py` — 新建，40 个测试覆盖：
+    - TestObserveState (2): 枚举值、完整枚举集合
+    - TestObserveSnapshot (2): 基本创建、自动时间戳
+    - TestObserveTracker (2): 默认状态、自定义日期
+    - TestRunObserveCheck (11): 价格低于触发价/WAITING、突破触发价/TRIGGERED、恰好触发价/TRIGGERED、跌破失效价/INVALIDATED、恰好失效价/INVALIDATED、失效优先于触发检查、无触发价、无失效价、无价格、量价记录、单日触发上限
+    - TestTerminalStates (3): TRIGGERED 终态保持、INVALIDATED 终态保持、EXPIRED 终态保持
+    - TestExpireTracker (3): WAITING→EXPIRED、TRIGGERED 保持、INVALIDATED 保持
+    - TestCandidateObserveIntegration (4): 默认值、to_db_row、from_db_row、from_db_row 默认值
+    - TestDbPersistence (2): 保存并读取 observe 状态、upsert 覆盖
+    - TestTrackerToCandidateSync (3): 同步 TRIGGERED/INVALIDATED/WAITING
+    - TestStrategyConfigObserve (2): 默认配置、自定义配置
+    - TestFullObserveWorkflow (4): 完整日间流程、失效流程、未触发无输出、多 symbol 隔离
+- **测试结果**：40 passed (M-005)；TradeFlow 全部 121 passed；0 failed
+- **关键逻辑**：
+  - `run_observe_check()` 先检查失效价（INVALIDATED），再检查触发价（TRIGGERED），失效优先于触发
+  - 单日触发次数上限由 `StrategyConfig.observe_max_daily_triggers` 控制（默认3），超出上限后价格虽突破但不再触发
+  - 终态（TRIGGERED/INVALIDATED/EXPIRED）为不可逆状态，后续检查只记录快照不改变状态
+  - `expire_tracker()` 收盘时将 WAITING 状态转为 EXPIRED，已触发/已失效保持不变
+  - 每次 `run_observe_check()` 自动追加到 `tracker.check_history`，保存完整检查历史
+  - 多 symbol 完全隔离，互不影响
+- **风险点**：无；所有改动向后兼容，observe_state 默认 WAITING，不触发任何自动动作
+
+
+
+## 2026-05-30 | V-002: 夜间自动开发验收报告与候选样本回放
+
+- **执行者**：OpenCode
+- **任务**：V-002 — 为夜间自动开发增加固定样本回放和验收报告
+- **修改文件**：
+  - `scripts/summarize_auto_dev_runs.py` — [V-002] 扩展 M-002 夜间日报脚本，新增候选样本回放、Ready 队列解析、测试结果解析、敏感数据过滤
+    - `parse_ready_queue()` — 从 TASKS.md 解析 status=ready 的任务列表
+    - `parse_test_summary_from_logs()` — 从 task_runs 中的 tests-round*.txt 提取 passed/failed/skipped
+    - `run_sample_replay()` — 调用 false_positive_audit 的 8 个固定 fixture 进行候选池质量回放
+    - `format_sample_replay()` — 将回放结果格式化为 markdown 表格
+    - `generate_report()` 扩展 — 新增 ready_queue 和 replay_results 参数，输出测试汇总、Ready 队列（含"任务池不足"警告）、候选样本回放
+    - `redact()` 增强 — 新增 password/secret 脱敏模式
+    - `main()` 扩展 — 新增 `--with-sample-replay` 参数，最终报告整体脱敏
+  - `tests/test_v002_nightly_acceptance.py` — 新建，33 个测试覆盖：
+    - TestRedact (8): sk-key/api-key/bearer/token/password/secret/正常文本/环境变量 脱敏
+    - TestParseReadyQueue (5): 单个/多个/空/无文件/blocked+proposed 过滤
+    - TestParseTestSummaryFromLogs (5): 标准输出/含失败/无测试文件/含错误/最新轮次
+    - TestSampleReplay (5): 返回结果/覆盖 6 个必须场景/全部通过/markdown 格式/空回放
+    - TestGenerateReportV002 (9): 非空队列/空队列警告/无队列/含回放/含测试/无泄露/完整报告/队列计数
+    - TestDryRunIntegration (2): dry-run 含回放/dry-run 不含回放
+- **测试结果**：33 passed (V-002)；全项目 1570 passed, 17 skipped, 0 failed
+- **关键逻辑**：
+  - 候选样本回放复用 `false_positive_audit.generate_fixture_samples()` 的 8 个 fixture，覆盖：VCP 命中、事件催化、资金异动、流动性过滤、无策略命中、风险降权、证据缺口、资金单位未校验
+  - Ready 队列为空时报告必须显示"任务池不足"警告，防止 cron 空转
+  - 报告最终输出前经过整体 `redact()` 脱敏，防止 API key/secret 泄露
+  - `--with-sample-replay` 参数控制是否执行回放，默认关闭保持向后兼容
+- **风险点**：无；所有改动向后兼容，不影响现有 M-002 功能
+
+## 2026-05-30 | M-004: TradeFlow 策略权重与阈值配置
+
+- **执行者**：OpenCode
+- **任务**：M-004 — 把 VCP、回踩、事件催化、资金异动、A股标签的权重和阈值集中配置，便于后续复盘调参
+- **修改文件**：
+  - `tradingagents/tradeflow/strategy_config.py` — 新建：`StrategyConfig` 数据类（60+ 可配阈值），`DEFAULT_STRATEGY_CONFIG` 单例，`STRATEGY_CONFIG_VERSION="v1.0"`，`to_dict()` 序列化方法
+  - `tradingagents/tradeflow/strategies/vcp.py` — `score_vcp()` 新增 `cfg` 参数，8 个阈值从 config 读取（min_data_len/range_ratio/vol_ratio/price_position/ma20_break/score_max/need_deep_ta）
+  - `tradingagents/tradeflow/strategies/pullback_support.py` — `score_pullback_support()` 新增 `cfg` 参数，10 个阈值从 config 读取
+  - `tradingagents/tradeflow/strategies/event_catalyst.py` — `score_event_catalyst()` 新增 `cfg` 参数，score_max 和 need_deep_ta_score 从 config 读取
+  - `tradingagents/tradeflow/policy_version_signal.py` — `detect_policy_version()` 新增 `cfg` 参数，max_bonus/industry_weight/need_deep_ta 从 config 读取
+  - `tradingagents/tradeflow/narrative_quality.py` — `score_narrative_quality()` 新增 `cfg` 参数，max_score 从 config 读取
+  - `tradingagents/tradeflow/underwater_risk_flags.py` — `detect_underwater_risks()` 新增 `cfg` 参数，max_penalty 从 config 读取
+  - `tradingagents/tradeflow/fund_flow_anomaly.py` — `detect_fund_flow_anomaly()` 新增 `cfg` 参数，5 个阈值从 config 读取；内部辅助函数参数化
+  - `tradingagents/tradeflow/game_balance.py` — `assess_game_balance()` 新增 `cfg` 参数，3 个阈值从 config 读取
+  - `tradingagents/tradeflow/selection_priority_gate.py` — `run_selection_priority_gate()` 新增 `cfg` 参数，9 个阈值从 config 读取
+  - `tradingagents/tradeflow/tier_budget.py` — `classify_candidate_tier()` + `allocate_tier_budget()` 新增 `cfg` 参数，7 个阈值从 config 读取
+  - `tradingagents/tradeflow/evidence_gate.py` — `compute_evidence_completeness()` + `apply_evidence_gate()` 新增 `cfg` 参数，3 个阈值从 config 读取
+  - `tradingagents/tradeflow/candidate_engine.py` — `evaluate_symbol()` + `run_strategies()` + `filter_symbol()` + `_calc_liquidity()` 新增 `cfg` 参数并向下传递
+  - `tradingagents/tradeflow/plan_runner.py` — `generate_daily_plan()` 新增 `cfg` 参数，plan.metadata 新增 `strategy_config_version` 字段
+  - `tests/test_strategy_config.py` — 新建，42 个测试覆盖默认值、None 回退、阈值覆盖可预测性、config_version 输出
+- **测试结果**：1451 passed, 15 skipped, 0 failed
+- **关键逻辑**：
+  - 所有策略模块接受可选 `cfg: StrategyConfig = None`，None 时自动使用 `DEFAULT_STRATEGY_CONFIG`
+  - `DEFAULT_STRATEGY_CONFIG` 的默认值与重构前硬编码常量完全一致，确保向后兼容
+  - `generate_daily_plan()` 输出的 `plan.metadata["strategy_config_version"]` 记录配置版本，便于审计
+  - `StrategyConfig.to_dict()` 支持序列化输出（risk_high_severity_flags 转 list）
+- **风险点**：无；所有改动向后兼容，现有 121 个 tradeflow 测试全部通过
+
+## 2026-05-30 | M-003 fix: 枚举值对齐 + fund_flow 去重
+
+- **执行者**：OpenCode
+- **任务**：M-003 — 修复 3 个测试失败
+- **修改文件**：
+  - `tradingagents/tradeflow/universe.py` — `UniverseSource.INDUSTRY` 值 `"industry"` → `"industry_pool"`；`UniverseSource.FUND_FLOW` 值 `"fund_flow"` → `"fund_flow_pool"`，与 discovery 模块常量对齐
+  - `tradingagents/tradeflow/discovery.py` — `_build_discovery_universe()` 新增 fund_flow_symbols 独立去重逻辑：当 `build_universe` 被 mock 或 fund_flow 符号不在已有 universe 中时，补充添加
+  - `tests/test_tradeflow_universe.py` — 更新 4 处断言使用新枚举值 `"industry_pool"` / `"fund_flow_pool"`
+- **测试结果**：1495 passed, 17 skipped, 0 failed（原 3 failed → 0）
+- **根因**：UniverseSource 枚举值与 discovery 模块 SOURCE_* 常量不一致；`_build_discovery_universe` 未对 fund_flow_symbols 做独立去重补充
+
+## 2026-05-30 | M-003: TradeFlow universe 管理器
+
+- **执行者**：OpenCode
+- **任务**：M-003 — 统一管理候选池来源，避免每个策略各自拼 symbols
+- **修改文件**：
+  - `tradingagents/tradeflow/universe.py` — 重构：新增 `UniverseSource` 枚举（8 种来源）、`SourceRecord`/`UniverseEntry` 数据类、`UniverseManager` 类；`build_universe()` 改用 `UniverseManager` 内部聚合，新增 `industry_symbols`/`fund_flow_symbols` 参数；向后兼容
+  - `tradingagents/tradeflow/schemas.py` — Candidate 新增 `universe_sources: list[str]` 字段，`to_db_row()`/`from_db_row()` 同步
+  - `tradingagents/tradeflow/plan_runner.py` — `generate_daily_plan()` 将 universe 条目的 `universe_sources` 传递给 Candidate；`_build_plan_entry()` 输出新字段
+
+exec
+/bin/zsh -lc "git status --short --branch && sed -n '1,160p' docs/project-overview.md && sed -n '1,120p' docs/TASKS.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+## local/tradingagents-custom...myfork/local/tradingagents-custom [ahead 83, behind 1]
+ M .zai_quota_state.json
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/tradeflow/candidate_engine.py
+ M tradingagents/tradeflow/plan_runner.py
+ M tradingagents/tradeflow/schemas.py
+ M tradingagents/tradeflow/strategy_config.py
+?? .auto_dev.lock/
+?? docs/task_runs/M-005-20260530-010959/
+?? tests/test_m005_intraday_observe.py
+?? tradingagents/tradeflow/intraday_observe.py
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+# 任务池
+
+> 最后更新：2026-05-29
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `S-005`：选股优先级整合与 `need_deep_ta` 门槛重排（P1，ready）。
+2. `M-003`：TradeFlow universe 管理器（P1，ready）。
+3. `M-004`：TradeFlow 策略权重与阈值配置（P1，ready）。
+4. `T-006`：事件源自动接入 Discovery / Daily Plan（P1，ready）。
+5. `V-002`：夜间自动开发验收报告与候选样本回放（P1，ready）。
+6. `S-006`：候选误报审计与样本集沉淀（P1，ready）。
+7. 第二梯队：`S-007/S-008/M-005/M-006`，用于延长夜间窗口并继续围绕候选质量、触发状态和 TA 成本门控推进。
+
+---
+
+## S. TradeFlow 选股策略核心任务池（2026-05-29 新增）
+
+> 原则：先提高候选池质量，再扩大扫描范围。TA 深度分析只服务于已经有足够逻辑、事件、资金或风险结构支撑的候选股。
+
+### S-001: 政策版本因子进入 TradeFlow 候选池（P1）
+- **描述**：为 TradeFlow 增加政策版本因子，识别当前 A 股市场更容易被定价的政策/产业方向，让候选池从“技术形态先行”升级为“政策版本入池 + 技术确认”。
+- **优先级**：P1
+- **状态**：done — commit a4d06d4 + cf7d928
+- **背景**：
+  - A 股很多阶段不是简单的业绩驱动，而是政策方向、产业版本和市场叙事共同驱动。
+  - 现在 TradeFlow 已有 VCP、事件催化、A 股标签，但缺少“当前版本需要什么标杆”的第一层判断。
+- **执行约束**：
+  - 不调用外部 LLM，不跑全市场扫描。
+  - 不改 `tradingagents/prompts/`。
+  - 不输出买入/卖出强建议。
+  - 只在 TradeFlow 候选池层做信号、标签、分数和证据引用。
+- **实现要点**：
+  1. 新增或扩展政策版本信号模块，输出 `policy_tags`、`version_score`、`policy_evidence_refs`。
+  2. 先用可维护关键词/规则覆盖：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革等。
+  3. 事件标题、公告摘要、行业标签命中政策版本时加分；无原始文本证据时不得加分。
+  4. 与现有 `event_source`、`event_catalyst`、`candidate_engine` 兼容，不破坏 VCP/回踩策略。
+  5. Daily Plan 中展示政策标签和证据摘要，但动作仍只能是 `OBSERVE/NEED_DEEP_TA` 等非强交易动作。
+- **验证方式**：
+  - 构造政策关键词事件，候选包含对应 `policy_tags` 和 evidence refs。
+  - 无政策证据时 `version_score` 不得凭空加分。
+  - 不同股票事件必须按 symbol 隔离，不能串票。
+  - `pytest tests/test_tradeflow_*.py -q` 或新增对应测试通过。
+- **代码标注要求**：`# [S-001] policy_version_signal`
+
+### S-002: 叙事质量评分（P1）
+- **描述**：给事件催化增加叙事质量评分，区分“普通公告/普通新闻”和“容易形成市场共识的主线事件”。
+- **优先级**：P1
+- **状态**：done — commit 9825e22
+- **背景**：
+  - 选股不只看有没有事件，还要判断事件是否容易被市场理解、传播和接力。
+  - 目前事件催化更偏“是否存在”，缺少“事件质量与传播价值”。
+- **执行约束**：
+  - 第一阶段只做规则评分，不调用外部 LLM。
+  - 不做舆情全网抓取，不扫全市场。
+  - 评分只影响候选排序和 `need_deep_ta`，不直接生成交易建议。
+- **实现要点**：
+  1. 新增 `narrative_score`，分解为政策背书、产业落地、订单/回购/评级、传播清晰度、拥挤/过热扣分。
+  2. 回购、重大订单、中标、并购重组、业绩预告、评级变化等事件给不同基础分。
+  3. 多个事件叠加时做封顶，避免标题堆叠虚高。
+  4. 输出 `narrative_reasons` 和 evidence refs，便于日报解释“为什么进候选池”。
+- **验证方式**：
+  - 普通新闻低分，回购/订单/政策相关事件高分。
+  - 重复事件不会无限叠加。
+  - `narrative_score` 缺证据时为 0 或保守默认。
+- **代码标注要求**：`# [S-002] narrative_quality_score`
+
+### S-003: 水下风险标签与候选降权（P1）
+- **描述**：为 TradeFlow 候选池增加水下风险标签，识别解禁、减持、问询、财务异常、融资拥挤、龙虎榜过热等风险，对候选做降权或要求更严格技术确认。
+- **优先级**：P1
+- **状态**：done — commit a95c3d7
+- **背景**：
+  - 选对股票不只看上涨逻辑，也要避开“看起来有题材但水下结构很差”的票。
+  - 当前已有部分 A 股标签，但风险标签还不够系统，也没有形成候选池统一降权规则。
+- **执行约束**：
+  - 所有风险标签必须绑定原始字段或事件文本。
+  - 不把风险标签直接翻译成清仓/买入建议。
+  - 不写生产数据库 schema；如需持久化先用现有 TradeFlow 结构或输出方案。
+- **实现要点**：
+  1. 统一输出 `risk_flags`：`LOCKUP_RISK`、`REDUCE_HOLDING_RISK`、`INQUIRY_RISK`、`FINANCIAL_QUALITY_RISK`、`MARGIN_CROWDING_RISK`、`LHB_OVERHEAT_RISK`。
+  2. 风险标签进入候选分数降权和 `need_deep_ta` 门槛。
+  3. 解禁/减持/问询等公告类风险优先从 `event_source` 读取。
+  4. 龙虎榜和融资融券风险必须区分 `HAS_DATA/NOT_QUERIED/FAILED`，不得把未查询当作无风险。
+- **验证方式**：
+  - 构造解禁/减持/问询事件，候选出现对应 `risk_flags` 并降权。
+  - 龙虎榜未查询时不生成过热风险。
+  - 风险缺证据时不输出高置信风险标签。
+- **代码标注要求**：`# [S-003] underwater_risk_flags`
+
+### S-004: 候选股博弈平衡解释（P1）
+- **描述**：在 TradeFlow Plan 中为每个候选输出轻量博弈解释，说明多头为何可能买、空头为何可能卖、政策/监管/资金结构是否支持，避免只给策略标签而缺少交易对手视角。
+- **优先级**：P1
+- **状态**：done — commit c92e626
+- **背景**：
+  - A 股候选池要处理动态博弈：同一事件可能同时有多头叙事、风险压制和资金拥挤。
+  - 在 TA 深度分析前，候选池应先判断这只票是不是值得进一步消耗 token。
+- **执行约束**：
+  - 规则化生成，不调用外部 LLM。
+  - 不输出强买卖词。
+  - 不替代 TA 深度分析，只做候选池摘要。
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- tradingagents/tradeflow/intraday_observe.py tradingagents/tradeflow/schemas.py tradingagents/tradeflow/candidate_engine.py tradingagents/tradeflow/plan_runner.py tradingagents/tradeflow/strategy_config.py tests/test_m005_intraday_observe.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ .zai_quota_state.json                       | 11 +++-----
+ docs/DEVLOG.md                              | 39 +++++++++++++++++++++++++++++
+ docs/TASKS.md                               |  2 +-
+ tradingagents/tradeflow/candidate_engine.py | 18 ++++++++++++-
+ tradingagents/tradeflow/plan_runner.py      |  3 +++
+ tradingagents/tradeflow/schemas.py          | 18 +++++++++++++
+ tradingagents/tradeflow/strategy_config.py  |  5 ++++
+ 7 files changed, 87 insertions(+), 9 deletions(-)
+diff --git a/tradingagents/tradeflow/candidate_engine.py b/tradingagents/tradeflow/candidate_engine.py
+index ff45980..c1714e9 100644
+--- a/tradingagents/tradeflow/candidate_engine.py
++++ b/tradingagents/tradeflow/candidate_engine.py
+@@ -200,6 +200,16 @@ def init_db(db_path: str) -> None:
+             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+         except sqlite3.OperationalError:
+             pass
++    # [M-005] intraday_observe_state — add observe state columns
++    for _col, _type in [
++        ("observe_state", "TEXT DEFAULT 'WAITING'"),
++        ("observe_trigger_count", "INTEGER DEFAULT 0"),
++        ("observe_first_trigger_time", "TEXT DEFAULT ''"),
++    ]:
++        try:
++            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
++        except sqlite3.OperationalError:
++            pass
+     conn.commit()
+     conn.close()
+ 
+@@ -717,8 +727,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
+             "tier, ta_budget_priority, tier_reason, missing_evidence_for_upgrade_json, "
+             "tradeflow_data_completeness, missing_data_fields_json, what_to_upgrade_json, evidence_gate_applied, "
+             "universe_sources_json, "
++            "observe_state, observe_trigger_count, observe_first_trigger_time, "
+             "created_at, updated_at) "
+-            "VALUES ({}) ".format(",".join(["?"] * 55))
++            "VALUES ({}) ".format(",".join(["?"] * 58))
+             + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+             "trigger_price=excluded.trigger_price, "
+@@ -759,6 +770,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
+             "what_to_upgrade_json=excluded.what_to_upgrade_json, "
+             "evidence_gate_applied=excluded.evidence_gate_applied, "
+             "universe_sources_json=excluded.universe_sources_json, "
++            "observe_state=excluded.observe_state, "
++            "observe_trigger_count=excluded.observe_trigger_count, "
++            "observe_first_trigger_time=excluded.observe_first_trigger_time, "
+             "updated_at=excluded.updated_at",
+             (
+                 row["trade_date"], row["symbol"], row["name"], row["source"],
+@@ -787,6 +801,8 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
+                 row["tradeflow_data_completeness"], row["missing_data_fields_json"],
+                 row["what_to_upgrade_json"], row["evidence_gate_applied"],
+                 row["universe_sources_json"],
++                row["observe_state"], row["observe_trigger_count"],
++                row["observe_first_trigger_time"],
+                 candidate.created_at, row["updated_at"],
+             ),
+         )
+diff --git a/tradingagents/tradeflow/plan_runner.py b/tradingagents/tradeflow/plan_runner.py
+index e14f6bf..41c4a47 100644
+--- a/tradingagents/tradeflow/plan_runner.py
++++ b/tradingagents/tradeflow/plan_runner.py
+@@ -107,6 +107,9 @@ def _build_plan_entry(candidate: Candidate) -> dict:
+         "what_to_upgrade": candidate.what_to_upgrade,  # [S-008]
+         "evidence_gate_applied": candidate.evidence_gate_applied,  # [S-008]
+         "universe_sources": candidate.universe_sources,  # [M-003] tradeflow_universe_manager
++        "observe_state": candidate.observe_state,  # [M-005] intraday_observe_state
++        "observe_trigger_count": candidate.observe_trigger_count,  # [M-005]
++        "observe_first_trigger_time": candidate.observe_first_trigger_time,  # [M-005]
+     }
+ 
+ 
+diff --git a/tradingagents/tradeflow/schemas.py b/tradingagents/tradeflow/schemas.py
+index 0cf2143..01a5249 100644
+--- a/tradingagents/tradeflow/schemas.py
++++ b/tradingagents/tradeflow/schemas.py
+@@ -102,6 +102,9 @@ class Candidate:
+     what_to_upgrade: list[str] = field(default_factory=list)  # [S-008]
+     evidence_gate_applied: bool = False  # [S-008]
+     universe_sources: list[str] = field(default_factory=list)  # [M-003] tradeflow_universe_manager
++    observe_state: str = "WAITING"  # [M-005] intraday_observe_state
++    observe_trigger_count: int = 0  # [M-005] intraday_observe_state
++    observe_first_trigger_time: str = ""  # [M-005] intraday_observe_state
+ 
+     def __post_init__(self):
+         if not self.trade_date:
+@@ -203,6 +206,9 @@ class Candidate:
+             "what_to_upgrade_json": json.dumps(self.what_to_upgrade, ensure_ascii=False),  # [S-008]
+             "evidence_gate_applied": 1 if self.evidence_gate_applied else 0,  # [S-008]
+             "universe_sources_json": json.dumps(self.universe_sources, ensure_ascii=False),  # [M-003]
++            "observe_state": self.observe_state,  # [M-005] intraday_observe_state
++            "observe_trigger_count": self.observe_trigger_count,  # [M-005]
++            "observe_first_trigger_time": self.observe_first_trigger_time,  # [M-005]
+             "updated_at": datetime.now().isoformat(),
+         }
+ 
+@@ -264,6 +270,9 @@ class Candidate:
+             what_to_upgrade=json.loads(row.get("what_to_upgrade_json", "[]")),  # [S-008]
+             evidence_gate_applied=bool(row.get("evidence_gate_applied", 0)),  # [S-008]
+             universe_sources=json.loads(row.get("universe_sources_json", "[]")),  # [M-003]
++            observe_state=row.get("observe_state", "WAITING"),  # [M-005] intraday_observe_state
++            observe_trigger_count=row.get("observe_trigger_count", 0),  # [M-005]
++            observe_first_trigger_time=row.get("observe_first_trigger_time", ""),  # [M-005]
+         )
+ 
+ 
+@@ -466,6 +475,15 @@ class DailyPlan:
+                     lines.append(f"    缺失字段: {', '.join(missing_df[:5])}")
+                 if what_up:
+                     lines.append(f"    升级所需: {'; '.join(what_up[:4])}")
++            # [M-005] intraday_observe_state — display observe state
++            obs_state = c.get("observe_state", "")
++            obs_count = c.get("observe_trigger_count", 0)
++            obs_time = c.get("observe_first_trigger_time", "")
++            if obs_state and obs_state != "WAITING":
++                state_label = {"TRIGGERED": "已触发", "INVALIDATED": "已失效", "EXPIRED": "已到期"}.get(obs_state, obs_state)
++                lines.append(f"  盘中观察: {state_label} (触发{obs_count}次)")
++                if obs_time:
++                    lines.append(f"    首次触发: {obs_time}")
+             lines.append("")
+ 
+         return "\n".join(lines)
+diff --git a/tradingagents/tradeflow/strategy_config.py b/tradingagents/tradeflow/strategy_config.py
+index a0213b9..5a05d11 100644
+--- a/tradingagents/tradeflow/strategy_config.py
++++ b/tradingagents/tradeflow/strategy_config.py
+@@ -125,6 +125,11 @@ class StrategyConfig:
+     evidence_completeness_for_a_tier: float = 0.6
+     evidence_completeness_for_deep_ta: float = 0.5
+ 
++    # ── Intraday Observe [M-005] ──
++    observe_max_daily_triggers: int = 3
++    observe_trigger_breach_pct: float = 0.0
++    observe_invalidate_breach_pct: float = 0.0
++
+     def to_dict(self) -> dict:
+         d = asdict(self)
+         d["risk_high_severity_flags"] = list(self.risk_high_severity_flags)
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/tradeflow/intraday_observe.py && sed -n '1,260p' tests/test_m005_intraday_observe.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [M-005] intraday_observe_state
+"""Intraday Observe State Machine for TradeFlow candidates.
+
+Responsibilities:
+1. Define observe states: WAITING / TRIGGERED / INVALIDATED / EXPIRED.
+2. Check current price/volume against trigger_price and invalid_price from
+   pre-market candidates.
+3. Record raw price-volume evidence and trigger reason for each check.
+4. Enforce a per-symbol daily trigger cap to prevent noise.
+
+Design constraints:
+- Low-frequency checks (every 30 minutes or less).
+- Does NOT auto-push to Feishu.
+- Does NOT auto-invoke deep TA.
+- Each check saves raw price-volume evidence and trigger reason.
+- Single-day trigger count capped per symbol.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import Optional
+
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
+
+class ObserveState(str, Enum):
+    WAITING = "WAITING"
+    TRIGGERED = "TRIGGERED"
+    INVALIDATED = "INVALIDATED"
+    EXPIRED = "EXPIRED"
+
+
+@dataclass
+class ObserveSnapshot:
+    symbol: str
+    observe_state: ObserveState
+    check_time: str = ""
+    current_price: Optional[float] = None
+    current_volume: Optional[float] = None
+    current_amount: Optional[float] = None
+    trigger_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    trigger_reason: str = ""
+    price_evidence: dict = field(default_factory=dict)
+    daily_trigger_count: int = 0
+
+    def __post_init__(self):
+        if not self.check_time:
+            self.check_time = datetime.now().isoformat()
+
+
+@dataclass
+class ObserveTracker:
+    symbol: str
+    state: ObserveState = ObserveState.WAITING
+    trigger_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    daily_trigger_count: int = 0
+    check_history: list[ObserveSnapshot] = field(default_factory=list)
+    trade_date: str = ""
+    first_trigger_time: Optional[str] = None
+    first_invalidation_time: Optional[str] = None
+
+    def __post_init__(self):
+        if not self.trade_date:
+            self.trade_date = datetime.now().strftime("%Y-%m-%d")
+
+
+def run_observe_check(
+    tracker: ObserveTracker,
+    current_price: float,
+    current_volume: Optional[float] = None,
+    current_amount: Optional[float] = None,
+    cfg: Optional[StrategyConfig] = None,
+) -> ObserveSnapshot:
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
+    max_daily_triggers: int = getattr(cfg, "observe_max_daily_triggers", 3)
+
+    if tracker.state in (ObserveState.TRIGGERED, ObserveState.INVALIDATED, ObserveState.EXPIRED):
+        return _make_terminal_snapshot(tracker, current_price, current_volume, current_amount)
+
+    trigger_price = tracker.trigger_price
+    invalid_price = tracker.invalid_price
+    reason = ""
+    new_state = ObserveState.WAITING
+    price_evidence: dict = {}
+
+    if invalid_price is not None and current_price <= invalid_price:
+        new_state = ObserveState.INVALIDATED
+        reason = f"价格{current_price:.2f}跌破失效价{invalid_price:.2f}"
+        price_evidence = {
+            "current_price": current_price,
+            "invalid_price": invalid_price,
+            "breach_pct": round((invalid_price - current_price) / invalid_price * 100, 2) if invalid_price else 0,
+            "current_volume": current_volume,
+            "current_amount": current_amount,
+        }
+        tracker.state = new_state
+        tracker.first_invalidation_time = tracker.first_invalidation_time or datetime.now().isoformat()
+    elif trigger_price is not None and current_price >= trigger_price:
+        if tracker.daily_trigger_count < max_daily_triggers:
+            new_state = ObserveState.TRIGGERED
+            tracker.daily_trigger_count += 1
+            rise_pct = (current_price - trigger_price) / trigger_price * 100 if trigger_price else 0
+            reason = f"价格{current_price:.2f}突破触发价{trigger_price:.2f}(+{rise_pct:.2f}%)"
+            price_evidence = {
+                "current_price": current_price,
+                "trigger_price": trigger_price,
+                "rise_pct": round(rise_pct, 2),
+                "current_volume": current_volume,
+                "current_amount": current_amount,
+            }
+            tracker.state = new_state
+            tracker.first_trigger_time = tracker.first_trigger_time or datetime.now().isoformat()
+        else:
+            reason = f"已达到单日触发上限({max_daily_triggers}次)，价格{current_price:.2f}虽突破触发价{trigger_price:.2f}但不再触发"
+
+    snapshot = ObserveSnapshot(
+        symbol=tracker.symbol,
+        observe_state=new_state,
+        current_price=current_price,
+        current_volume=current_volume,
+        current_amount=current_amount,
+        trigger_price=trigger_price,
+        invalid_price=invalid_price,
+        trigger_reason=reason,
+        price_evidence=price_evidence,
+        daily_trigger_count=tracker.daily_trigger_count,
+    )
+    tracker.check_history.append(snapshot)
+    return snapshot
+
+
+def expire_tracker(tracker: ObserveTracker) -> ObserveSnapshot:
+    if tracker.state not in (ObserveState.TRIGGERED, ObserveState.INVALIDATED):
+        tracker.state = ObserveState.EXPIRED
+    snapshot = ObserveSnapshot(
+        symbol=tracker.symbol,
+        observe_state=tracker.state,
+        trigger_reason="收盘到期",
+        daily_trigger_count=tracker.daily_trigger_count,
+    )
+    tracker.check_history.append(snapshot)
+    return snapshot
+
+
+def _make_terminal_snapshot(
+    tracker: ObserveTracker,
+    current_price: float,
+    current_volume: Optional[float],
+    current_amount: Optional[float],
+) -> ObserveSnapshot:
+    reason = ""
+    if tracker.state == ObserveState.TRIGGERED:
+        reason = "已触发，等待盘后处理"
+    elif tracker.state == ObserveState.INVALIDATED:
+        reason = "已失效"
+    elif tracker.state == ObserveState.EXPIRED:
+        reason = "已到期"
+
+    snapshot = ObserveSnapshot(
+        symbol=tracker.symbol,
+        observe_state=tracker.state,
+        current_price=current_price,
+        current_volume=current_volume,
+        current_amount=current_amount,
+        trigger_price=tracker.trigger_price,
+        invalid_price=tracker.invalid_price,
+        trigger_reason=reason,
+        daily_trigger_count=tracker.daily_trigger_count,
+    )
+    tracker.check_history.append(snapshot)
+    return snapshot
+"""Tests for M-005: Intraday Observe State Machine."""
+
+import sys
+import os
+import tempfile
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tradingagents.tradeflow.intraday_observe import (
+    ObserveState,
+    ObserveSnapshot,
+    ObserveTracker,
+    run_observe_check,
+    expire_tracker,
+)
+from tradingagents.tradeflow.schemas import Candidate
+from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
+from tradingagents.tradeflow.strategy_config import StrategyConfig
+
+
+class TestObserveState:
+    def test_enum_values(self):
+        assert ObserveState.WAITING == "WAITING"
+        assert ObserveState.TRIGGERED == "TRIGGERED"
+        assert ObserveState.INVALIDATED == "INVALIDATED"
+        assert ObserveState.EXPIRED == "EXPIRED"
+
+    def test_all_states(self):
+        expected = {"WAITING", "TRIGGERED", "INVALIDATED", "EXPIRED"}
+        assert set(s.value for s in ObserveState) == expected
+
+
+class TestObserveSnapshot:
+    def test_basic_creation(self):
+        snap = ObserveSnapshot(
+            symbol="002353.SZ",
+            observe_state=ObserveState.WAITING,
+            current_price=95.0,
+            trigger_price=100.0,
+            invalid_price=90.0,
+        )
+        assert snap.symbol == "002353.SZ"
+        assert snap.observe_state == ObserveState.WAITING
+        assert snap.current_price == 95.0
+        assert snap.check_time != ""
+
+    def test_auto_timestamp(self):
+        snap = ObserveSnapshot(
+            symbol="600519.SH",
+            observe_state=ObserveState.WAITING,
+        )
+        assert snap.check_time != ""
+        assert "T" in snap.check_time or "-" in snap.check_time
+
+
+class TestObserveTracker:
+    def test_default_state(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        assert t.state == ObserveState.WAITING
+        assert t.daily_trigger_count == 0
+        assert t.check_history == []
+        assert t.trade_date != ""
+
+    def test_custom_trade_date(self):
+        t = ObserveTracker(symbol="002353.SZ", trade_date="2026-05-30")
+        assert t.trade_date == "2026-05-30"
+
+
+class TestRunObserveCheck:
+    def test_price_below_trigger_stays_waiting(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        snap = run_observe_check(t, current_price=95.0)
+        assert snap.observe_state == ObserveState.WAITING
+        assert t.state == ObserveState.WAITING
+        assert snap.trigger_reason == ""
+
+    def test_price_breaks_trigger_becomes_triggered(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        snap = run_observe_check(t, current_price=101.0)
+        assert snap.observe_state == ObserveState.TRIGGERED
+        assert t.state == ObserveState.TRIGGERED
+        assert "突破触发价" in snap.trigger_reason
+        assert t.daily_trigger_count == 1
+        assert snap.price_evidence["current_price"] == 101.0
+        assert snap.price_evidence["trigger_price"] == 100.0
+        assert snap.price_evidence["rise_pct"] > 0
+
+    def test_price_exactly_at_trigger_is_triggered(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        snap = run_observe_check(t, current_price=100.0)
+        assert snap.observe_state == ObserveState.TRIGGERED
+        assert t.daily_trigger_count == 1
+
+    def test_price_drops_below_invalid_becomes_invalidated(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        snap = run_observe_check(t, current_price=89.0)
+        assert snap.observe_state == ObserveState.INVALIDATED
+        assert t.state == ObserveState.INVALIDATED
+        assert "跌破失效价" in snap.trigger_reason
+        assert snap.price_evidence["breach_pct"] > 0
+
+    def test_price_exactly_at_invalid_is_invalidated(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        snap = run_observe_check(t, current_price=90.0)
+        assert snap.observe_state == ObserveState.INVALIDATED
+
+    def test_invalidation_checked_before_trigger(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=95.0)
+        snap = run_observe_check(t, current_price=94.0)
+        assert snap.observe_state == ObserveState.INVALIDATED
+        assert "跌破失效价" in snap.trigger_reason
+
+    def test_no_trigger_price_stays_waiting(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=None, invalid_price=90.0)
+        snap = run_observe_check(t, current_price=95.0)
+        assert snap.observe_state == ObserveState.WAITING
+
+    def test_no_invalid_price_stays_waiting(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=None)
+        snap = run_observe_check(t, current_price=95.0)
+        assert snap.observe_state == ObserveState.WAITING
+
+    def test_no_prices_stays_waiting(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=None, invalid_price=None)
+        snap = run_observe_check(t, current_price=95.0)
+        assert snap.observe_state == ObserveState.WAITING
+
+    def test_volume_and_amount_recorded(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        snap = run_observe_check(t, current_price=101.0, current_volume=500000.0, current_amount=50500000.0)
+        assert snap.current_volume == 500000.0
+        assert snap.current_amount == 50500000.0
+        assert snap.price_evidence["current_volume"] == 500000.0
+        assert snap.price_evidence["current_amount"] == 50500000.0
+
+    def test_daily_trigger_cap(self):
+        cfg = StrategyConfig(observe_max_daily_triggers=2)
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+
+        snap1 = run_observe_check(t, current_price=101.0, cfg=cfg)
+        assert snap1.observe_state == ObserveState.TRIGGERED
+        assert t.daily_trigger_count == 1
+
+        t.state = ObserveState.WAITING
+        snap2 = run_observe_check(t, current_price=102.0, cfg=cfg)
+        assert snap2.observe_state == ObserveState.TRIGGERED
+        assert t.daily_trigger_count == 2
+
+        t.state = ObserveState.WAITING
+        snap3 = run_observe_check(t, current_price=103.0, cfg=cfg)
+        assert snap3.observe_state == ObserveState.WAITING
+        assert "上限" in snap3.trigger_reason
+        assert t.daily_trigger_count == 2
+
+    def test_history_recorded(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        run_observe_check(t, current_price=95.0)
+        run_observe_check(t, current_price=96.0)
+        assert len(t.check_history) == 2
+        assert t.check_history[0].current_price == 95.0
+        assert t.check_history[1].current_price == 96.0
+
+    def test_default_config_cap_is_3(self):
+        cfg = StrategyConfig()
+        assert cfg.observe_max_daily_triggers == 3
+
+
+class TestTerminalStates:
+    def test_triggered_stays_triggered(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        run_observe_check(t, current_price=101.0)
+        assert t.state == ObserveState.TRIGGERED
+
+        snap = run_observe_check(t, current_price=95.0)
+        assert snap.observe_state == ObserveState.TRIGGERED
+        assert "已触发" in snap.trigger_reason
+
+    def test_invalidated_stays_invalidated(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        run_observe_check(t, current_price=89.0)
+        assert t.state == ObserveState.INVALIDATED
+
+        snap = run_observe_check(t, current_price=95.0)
+        assert snap.observe_state == ObserveState.INVALIDATED
+        assert "已失效" in snap.trigger_reason
+
+    def test_expired_stays_expired(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        expire_tracker(t)
+        assert t.state == ObserveState.EXPIRED
+
+        snap = run_observe_check(t, current_price=101.0)
+        assert snap.observe_state == ObserveState.EXPIRED
+
+
+class TestExpireTracker:
+    def test_waiting_becomes_expired(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        snap = expire_tracker(t)
+        assert snap.observe_state == ObserveState.EXPIRED
+        assert t.state == ObserveState.EXPIRED
+        assert "收盘到期" in snap.trigger_reason
+
+    def test_triggered_stays_triggered_on_expire(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        run_observe_check(t, current_price=101.0)
+        assert t.state == ObserveState.TRIGGERED
+        snap = expire_tracker(t)
+        assert snap.observe_state == ObserveState.TRIGGERED
+        assert "收盘到期" in snap.trigger_reason
+
+    def test_invalidated_stays_invalidated_on_expire(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        run_observe_check(t, current_price=89.0)
+        assert t.state == ObserveState.INVALIDATED
+        snap = expire_tracker(t)
+        assert snap.observe_state == ObserveState.INVALIDATED
+
+
+class TestCandidateObserveIntegration:
+    def test_candidate_default_observe_state(self):
+        c = Candidate(symbol="002353.SZ", name="杰恩设计")
+        assert c.observe_state == "WAITING"
+        assert c.observe_trigger_count == 0
+        assert c.observe_first_trigger_time == ""
+
+    def test_candidate_to_db_row_includes_observe(self):
+        c = Candidate(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        c.observe_state = "TRIGGERED"
+        c.observe_trigger_count = 1
+        c.observe_first_trigger_time = "2026-05-30T10:30:00"
+        row = c.to_db_row()
+        assert row["observe_state"] == "TRIGGERED"
+        assert row["observe_trigger_count"] == 1
+        assert row["observe_first_trigger_time"] == "2026-05-30T10:30:00"
+
+    def test_candidate_from_db_row_includes_observe(self):
+        row = {
+            "symbol": "002353.SZ",
+            "name": "杰恩设计",
+            "source": "manual",
+            "strategy_tags_json": "[]",
+            "primary_strategy": "",
+            "score": 0.0,
+            "status": "active",
+            "trigger_price": 100.0,
+            "support_price": None,
+            "invalid_price": 90.0,
+            "need_deep_ta": 0,
+            "evidence_json": "{}",
+            "risk_flags_json": "[]",
+            "trade_date": "2026-05-30",
+            "created_at": "2026-05-30T09:00:00",
+            "updated_at": "2026-05-30T09:00:00",
+            "observe_state": "TRIGGERED",
+            "observe_trigger_count": 2,
+            "observe_first_trigger_time": "2026-05-30T10:30:00",
+        }
+        c = Candidate.from_db_row(row)
+
+exec
+/bin/zsh -lc "sed -n '260,620p' tests/test_m005_intraday_observe.py && sed -n '1,880p' tradingagents/tradeflow/schemas.py | nl -ba | sed -n '1,330p' && sed -n '680,830p' tradingagents/tradeflow/candidate_engine.py | nl -ba | sed -n '1,180p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        c = Candidate.from_db_row(row)
+        assert c.observe_state == "TRIGGERED"
+        assert c.observe_trigger_count == 2
+        assert c.observe_first_trigger_time == "2026-05-30T10:30:00"
+
+    def test_candidate_from_db_row_defaults(self):
+        row = {
+            "symbol": "002353.SZ",
+            "trade_date": "2026-05-30",
+            "created_at": "2026-05-30T09:00:00",
+        }
+        c = Candidate.from_db_row(row)
+        assert c.observe_state == "WAITING"
+        assert c.observe_trigger_count == 0
+        assert c.observe_first_trigger_time == ""
+
+
+class TestDbPersistence:
+    def test_save_and_read_observe_state(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+
+        try:
+            init_db(db_path)
+            c = Candidate(
+                symbol="002353.SZ",
+                name="杰恩设计",
+                trigger_price=100.0,
+                invalid_price=90.0,
+                observe_state="TRIGGERED",
+                observe_trigger_count=1,
+                observe_first_trigger_time="2026-05-30T10:30:00",
+            )
+            save_candidate(c, db_path)
+
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                "SELECT observe_state, observe_trigger_count, observe_first_trigger_time "
+                "FROM tradeflow_candidates WHERE symbol='002353.SZ'"
+            ).fetchone()
+            conn.close()
+
+            assert row[0] == "TRIGGERED"
+            assert row[1] == 1
+            assert row[2] == "2026-05-30T10:30:00"
+        finally:
+            os.unlink(db_path)
+
+    def test_upsert_observe_state(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+
+        try:
+            init_db(db_path)
+            c1 = Candidate(symbol="002353.SZ", name="杰恩设计", trigger_price=100.0)
+            save_candidate(c1, db_path)
+
+            c2 = Candidate(
+                symbol="002353.SZ",
+                name="杰恩设计",
+                trigger_price=100.0,
+                observe_state="TRIGGERED",
+                observe_trigger_count=1,
+            )
+            save_candidate(c2, db_path)
+
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                "SELECT observe_state, observe_trigger_count FROM tradeflow_candidates WHERE symbol='002353.SZ'"
+            ).fetchone()
+            conn.close()
+
+            assert row[0] == "TRIGGERED"
+            assert row[1] == 1
+        finally:
+            os.unlink(db_path)
+
+
+class TestTrackerToCandidateSync:
+    def test_sync_triggered_tracker_to_candidate(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        run_observe_check(t, current_price=101.0)
+
+        c = Candidate(symbol="002353.SZ", name="杰恩设计", trigger_price=100.0, invalid_price=90.0)
+        c.observe_state = t.state.value
+        c.observe_trigger_count = t.daily_trigger_count
+        c.observe_first_trigger_time = t.first_trigger_time or ""
+
+        assert c.observe_state == "TRIGGERED"
+        assert c.observe_trigger_count == 1
+        assert c.observe_first_trigger_time != ""
+
+    def test_sync_invalidated_tracker_to_candidate(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        run_observe_check(t, current_price=89.0)
+
+        c = Candidate(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        c.observe_state = t.state.value
+        c.observe_trigger_count = t.daily_trigger_count
+
+        assert c.observe_state == "INVALIDATED"
+
+    def test_sync_waiting_tracker_to_candidate(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        run_observe_check(t, current_price=95.0)
+
+        c = Candidate(symbol="002353.SZ")
+        c.observe_state = t.state.value
+
+        assert c.observe_state == "WAITING"
+
+
+class TestStrategyConfigObserve:
+    def test_default_observe_config(self):
+        cfg = StrategyConfig()
+        assert cfg.observe_max_daily_triggers == 3
+        assert cfg.observe_trigger_breach_pct == 0.0
+        assert cfg.observe_invalidate_breach_pct == 0.0
+
+    def test_custom_observe_config(self):
+        cfg = StrategyConfig(observe_max_daily_triggers=5)
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        for i in range(5):
+            if i > 0:
+                t.state = ObserveState.WAITING
+            snap = run_observe_check(t, current_price=101.0, cfg=cfg)
+            assert snap.observe_state == ObserveState.TRIGGERED
+
+        t.state = ObserveState.WAITING
+        snap6 = run_observe_check(t, current_price=102.0, cfg=cfg)
+        assert snap6.observe_state == ObserveState.WAITING
+        assert "上限" in snap6.trigger_reason
+
+
+class TestFullObserveWorkflow:
+    def test_full_day_workflow(self):
+        cfg = StrategyConfig(observe_max_daily_triggers=3)
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+
+        snap1 = run_observe_check(t, current_price=95.0, cfg=cfg)
+        assert snap1.observe_state == ObserveState.WAITING
+
+        snap2 = run_observe_check(t, current_price=97.0, cfg=cfg)
+        assert snap2.observe_state == ObserveState.WAITING
+
+        snap3 = run_observe_check(t, current_price=101.0, cfg=cfg)
+        assert snap3.observe_state == ObserveState.TRIGGERED
+        assert t.daily_trigger_count == 1
+        assert t.first_trigger_time is not None
+
+        assert len(t.check_history) == 3
+
+    def test_invalidation_workflow(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+
+        run_observe_check(t, current_price=95.0)
+        assert t.state == ObserveState.WAITING
+
+        run_observe_check(t, current_price=89.5)
+        assert t.state == ObserveState.INVALIDATED
+        assert t.first_invalidation_time is not None
+
+        snap = run_observe_check(t, current_price=95.0)
+        assert snap.observe_state == ObserveState.INVALIDATED
+        assert "已失效" in snap.trigger_reason
+
+        expire_snap = expire_tracker(t)
+        assert expire_snap.observe_state == ObserveState.INVALIDATED
+
+    def test_untriggered_no_output(self):
+        t = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        for _ in range(5):
+            snap = run_observe_check(t, current_price=95.0)
+            assert snap.observe_state == ObserveState.WAITING
+            assert snap.trigger_reason == ""
+        assert t.daily_trigger_count == 0
+
+    def test_multiple_symbols_isolated(self):
+        t1 = ObserveTracker(symbol="002353.SZ", trigger_price=100.0, invalid_price=90.0)
+        t2 = ObserveTracker(symbol="600519.SH", trigger_price=1800.0, invalid_price=1700.0)
+
+        run_observe_check(t1, current_price=101.0)
+        assert t1.state == ObserveState.TRIGGERED
+        assert t2.state == ObserveState.WAITING
+
+        run_observe_check(t2, current_price=1690.0)
+        assert t2.state == ObserveState.INVALIDATED
+        assert t1.state == ObserveState.TRIGGERED
+     1	"""TradeFlow schemas — data models for candidates, signals, and daily plans."""
+     2	
+     3	from __future__ import annotations
+     4	
+     5	import json
+     6	from dataclasses import dataclass, field, asdict
+     7	from datetime import datetime
+     8	from typing import Optional
+     9	
+    10	
+    11	# ── Allowed actions ──
+    12	ALLOWED_ACTIONS = {"OBSERVE", "WAIT_TRIGGER", "NEED_DEEP_TA", "REMOVE_FROM_WATCH"}
+    13	FORBIDDEN_WORDS = {"立即买入", "重仓买入", "立即清仓", "满仓", "梭哈"}
+    14	
+    15	STRATEGY_VCP = "VCP"
+    16	STRATEGY_PULLBACK = "PULLBACK_SUPPORT"
+    17	STRATEGY_EVENT = "EVENT_CATALYST"
+    18	STRATEGY_POLICY_VERSION = "POLICY_VERSION"  # [S-001] policy_version_signal
+    19	STRATEGY_NARRATIVE = "NARRATIVE_QUALITY"  # [S-002] narrative_quality_score
+    20	STRATEGY_FUND_FLOW = "FUND_FLOW_ANOMALY"  # [T-003] fund_flow_anomaly_pool
+    21	ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE, STRATEGY_FUND_FLOW}
+    22	
+    23	# [N-004] astock_signal_tags
+    24	SIGNAL_TAG_POLICY_CATALYST = "POLICY_CATALYST"
+    25	SIGNAL_TAG_HOT_MONEY_LHB = "HOT_MONEY_LHB"
+    26	SIGNAL_TAG_LOCKUP_RISK = "LOCKUP_RISK"
+    27	SIGNAL_TAG_BUYBACK_EVENT = "BUYBACK_EVENT"
+    28	SIGNAL_TAG_RATING_CHANGE = "RATING_CHANGE"
+    29	
+    30	
+    31	@dataclass
+    32	class CandidateSignal:
+    33	    """One strategy hit on a symbol."""
+    34	    strategy_tag: str
+    35	    trigger_price: Optional[float] = None
+    36	    support_price: Optional[float] = None
+    37	    invalid_price: Optional[float] = None
+    38	    score: float = 0.0
+    39	    reason: str = ""
+    40	    evidence: dict = field(default_factory=dict)
+    41	    risk_flags: list[str] = field(default_factory=list)
+    42	    need_deep_ta: bool = False
+    43	
+    44	
+    45	@dataclass
+    46	class Candidate:
+    47	    """A tradeflow candidate — one row in tradeflow_candidates."""
+    48	    symbol: str
+    49	    name: str = ""
+    50	    source: str = "manual"
+    51	    strategy_tags: list[str] = field(default_factory=list)
+    52	    score: float = 0.0
+    53	    status: str = "active"
+    54	    trigger_price: Optional[float] = None
+    55	    support_price: Optional[float] = None
+    56	    invalid_price: Optional[float] = None
+    57	    need_deep_ta: bool = False
+    58	    evidence: dict = field(default_factory=dict)
+    59	    risk_flags: list[str] = field(default_factory=list)
+    60	    trade_date: str = ""
+    61	    created_at: str = ""
+    62	    updated_at: str = ""
+    63	
+    64	    primary_strategy: str = ""
+    65	    signals: list[CandidateSignal] = field(default_factory=list, repr=False)
+    66	    policy_tags: list[str] = field(default_factory=list)  # [S-001] policy_version_signal
+    67	    version_score: float = 0.0  # [S-001] policy_version_signal
+    68	    policy_evidence_refs: list[dict] = field(default_factory=list)  # [S-001] policy_version_signal
+    69	    narrative_score: float = 0.0  # [S-002] narrative_quality_score
+    70	    narrative_reasons: list[str] = field(default_factory=list)  # [S-002] narrative_quality_score
+    71	    narrative_evidence_refs: list[dict] = field(default_factory=list)  # [S-002] narrative_quality_score
+    72	    risk_penalty: float = 0.0  # [S-003] underwater_risk_flags
+    73	    risk_evidence_refs: list[dict] = field(default_factory=list)  # [S-003] underwater_risk_flags
+    74	    risk_reasons: list[str] = field(default_factory=list)  # [S-003] underwater_risk_flags
+    75	    game_balance: str = ""  # [S-004] candidate_game_balance
+    76	    bull_case: str = ""  # [S-004] candidate_game_balance
+    77	    bear_case: str = ""  # [S-004] candidate_game_balance
+    78	    policy_case: str = ""  # [S-004] candidate_game_balance
+    79	    fund_flow_case: str = ""  # [S-004] candidate_game_balance
+    80	    resonance_count: int = 0  # [S-004] candidate_game_balance
+    81	    game_balance_refs: list[dict] = field(default_factory=list)  # [S-004] candidate_game_balance
+    82	    fund_flow_anomaly_score: float = 0.0  # [T-003] fund_flow_anomaly_pool
+    83	    fund_flow_anomaly_tags: list[str] = field(default_factory=list)  # [T-003]
+    84	    fund_flow_anomaly_refs: list[dict] = field(default_factory=list)  # [T-003]
+    85	    fund_flow_unit_verified: bool = False  # [T-003]
+    86	    fund_flow_individual_summary: str = ""  # [T-003]
+    87	    fund_flow_board_summary: str = ""  # [T-003]
+    88	    composite_score: float = 0.0  # [S-005] selection_priority_gate
+    89	    signal_category_hits: list[str] = field(default_factory=list)  # [S-005]
+    90	    positive_category_count: int = 0  # [S-005]
+    91	    data_completeness: float = 0.0  # [S-005]
+    92	    missing_evidence: list[str] = field(default_factory=list)  # [S-005]
+    93	    why_deep_ta: str = ""  # [S-005]
+    94	    why_not_deep_ta: str = ""  # [S-005]
+    95	    priority_rank: str = ""  # [S-005]
+    96	    tier: str = ""  # [S-007] candidate_tier_budget
+    97	    ta_budget_priority: int = 0  # [S-007] candidate_tier_budget
+    98	    tier_reason: str = ""  # [S-007] candidate_tier_budget
+    99	    missing_evidence_for_upgrade: list[str] = field(default_factory=list)  # [S-007]
+   100	    tradeflow_data_completeness: float = 0.0  # [S-008] tradeflow_evidence_gate
+   101	    missing_data_fields: list[str] = field(default_factory=list)  # [S-008]
+   102	    what_to_upgrade: list[str] = field(default_factory=list)  # [S-008]
+   103	    evidence_gate_applied: bool = False  # [S-008]
+   104	    universe_sources: list[str] = field(default_factory=list)  # [M-003] tradeflow_universe_manager
+   105	    observe_state: str = "WAITING"  # [M-005] intraday_observe_state
+   106	    observe_trigger_count: int = 0  # [M-005] intraday_observe_state
+   107	    observe_first_trigger_time: str = ""  # [M-005] intraday_observe_state
+   108	
+   109	    def __post_init__(self):
+   110	        if not self.trade_date:
+   111	            self.trade_date = datetime.now().strftime("%Y-%m-%d")
+   112	        if not self.created_at:
+   113	            self.created_at = datetime.now().isoformat()
+   114	        if not self.updated_at:
+   115	            self.updated_at = self.created_at
+   116	
+   117	    def merge_signals(self):
+   118	        """Merge individual signals into aggregate candidate fields.
+   119	
+   120	        The signal with the highest score becomes the primary_signal.
+   121	        trigger/support/invalid prices come ONLY from the primary signal,
+   122	        preventing later strategies from silently overwriting them.
+   123	        """
+   124	        if not self.signals:
+   125	            return
+   126	
+   127	        primary = max(self.signals, key=lambda s: s.score)
+   128	        self.primary_strategy = primary.strategy_tag
+   129	
+   130	        tags = set()
+   131	        best_score = 0.0
+   132	        all_evidence = {}
+   133	        all_risks = []
+   134	        deep_ta = False
+   135	
+   136	        for sig in self.signals:
+   137	            tags.add(sig.strategy_tag)
+   138	            if sig.score > best_score:
+   139	                best_score = sig.score
+   140	            all_evidence[sig.strategy_tag] = sig.evidence
+   141	            all_risks.extend(sig.risk_flags)
+   142	            if sig.need_deep_ta:
+   143	                deep_ta = True
+   144	
+   145	        self.strategy_tags = sorted(tags)
+   146	        self.score = round(best_score, 2)
+   147	        self.evidence = all_evidence
+   148	        self.risk_flags = sorted(set(all_risks))
+   149	        self.trigger_price = primary.trigger_price
+   150	        self.support_price = primary.support_price
+   151	        self.invalid_price = primary.invalid_price
+   152	        self.need_deep_ta = deep_ta
+   153	
+   154	    def to_db_row(self) -> dict:
+   155	        return {
+   156	            "trade_date": self.trade_date,
+   157	            "symbol": self.symbol,
+   158	            "name": self.name,
+   159	            "source": self.source,
+   160	            "strategy_tags_json": json.dumps(self.strategy_tags, ensure_ascii=False),
+   161	            "primary_strategy": self.primary_strategy,
+   162	            "score": self.score,
+   163	            "status": self.status,
+   164	            "trigger_price": self.trigger_price,
+   165	            "support_price": self.support_price,
+   166	            "invalid_price": self.invalid_price,
+   167	            "need_deep_ta": 1 if self.need_deep_ta else 0,
+   168	            "evidence_json": json.dumps(self.evidence, ensure_ascii=False),
+   169	            "risk_flags_json": json.dumps(self.risk_flags, ensure_ascii=False),
+   170	            "policy_tags_json": json.dumps(self.policy_tags, ensure_ascii=False),  # [S-001]
+   171	            "version_score": self.version_score,  # [S-001]
+   172	            "policy_evidence_refs_json": json.dumps(self.policy_evidence_refs, ensure_ascii=False),  # [S-001]
+   173	            "narrative_score": self.narrative_score,  # [S-002] narrative_quality_score
+   174	            "narrative_reasons_json": json.dumps(self.narrative_reasons, ensure_ascii=False),  # [S-002]
+   175	            "narrative_evidence_refs_json": json.dumps(self.narrative_evidence_refs, ensure_ascii=False),  # [S-002]
+   176	            "risk_penalty": self.risk_penalty,  # [S-003] underwater_risk_flags
+   177	            "risk_evidence_refs_json": json.dumps(self.risk_evidence_refs, ensure_ascii=False),  # [S-003]
+   178	            "risk_reasons_json": json.dumps(self.risk_reasons, ensure_ascii=False),  # [S-003]
+   179	            "game_balance": self.game_balance,  # [S-004] candidate_game_balance
+   180	            "bull_case": self.bull_case,  # [S-004]
+   181	            "bear_case": self.bear_case,  # [S-004]
+   182	            "policy_case": self.policy_case,  # [S-004]
+   183	            "fund_flow_case": self.fund_flow_case,  # [S-004]
+   184	            "resonance_count": self.resonance_count,  # [S-004]
+   185	            "game_balance_refs_json": json.dumps(self.game_balance_refs, ensure_ascii=False),  # [S-004]
+   186	            "fund_flow_anomaly_score": self.fund_flow_anomaly_score,  # [T-003] fund_flow_anomaly_pool
+   187	            "fund_flow_anomaly_tags_json": json.dumps(self.fund_flow_anomaly_tags, ensure_ascii=False),  # [T-003]
+   188	            "fund_flow_anomaly_refs_json": json.dumps(self.fund_flow_anomaly_refs, ensure_ascii=False),  # [T-003]
+   189	            "fund_flow_unit_verified": 1 if self.fund_flow_unit_verified else 0,  # [T-003]
+   190	            "fund_flow_individual_summary": self.fund_flow_individual_summary,  # [T-003]
+   191	            "fund_flow_board_summary": self.fund_flow_board_summary,  # [T-003]
+   192	            "composite_score": self.composite_score,  # [S-005] selection_priority_gate
+   193	            "signal_category_hits_json": json.dumps(self.signal_category_hits, ensure_ascii=False),  # [S-005]
+   194	            "positive_category_count": self.positive_category_count,  # [S-005]
+   195	            "data_completeness": self.data_completeness,  # [S-005]
+   196	            "missing_evidence_json": json.dumps(self.missing_evidence, ensure_ascii=False),  # [S-005]
+   197	            "why_deep_ta": self.why_deep_ta,  # [S-005]
+   198	            "why_not_deep_ta": self.why_not_deep_ta,  # [S-005]
+   199	            "priority_rank": self.priority_rank,  # [S-005]
+   200	            "tier": self.tier,  # [S-007] candidate_tier_budget
+   201	            "ta_budget_priority": self.ta_budget_priority,  # [S-007]
+   202	            "tier_reason": self.tier_reason,  # [S-007]
+   203	            "missing_evidence_for_upgrade_json": json.dumps(self.missing_evidence_for_upgrade, ensure_ascii=False),  # [S-007]
+   204	            "tradeflow_data_completeness": self.tradeflow_data_completeness,  # [S-008] tradeflow_evidence_gate
+   205	            "missing_data_fields_json": json.dumps(self.missing_data_fields, ensure_ascii=False),  # [S-008]
+   206	            "what_to_upgrade_json": json.dumps(self.what_to_upgrade, ensure_ascii=False),  # [S-008]
+   207	            "evidence_gate_applied": 1 if self.evidence_gate_applied else 0,  # [S-008]
+   208	            "universe_sources_json": json.dumps(self.universe_sources, ensure_ascii=False),  # [M-003]
+   209	            "observe_state": self.observe_state,  # [M-005] intraday_observe_state
+   210	            "observe_trigger_count": self.observe_trigger_count,  # [M-005]
+   211	            "observe_first_trigger_time": self.observe_first_trigger_time,  # [M-005]
+   212	            "updated_at": datetime.now().isoformat(),
+   213	        }
+   214	
+   215	    @classmethod
+   216	    def from_db_row(cls, row: dict) -> "Candidate":
+   217	        return cls(
+   218	            symbol=row["symbol"],
+   219	            name=row.get("name", ""),
+   220	            source=row.get("source", "manual"),
+   221	            strategy_tags=json.loads(row.get("strategy_tags_json", "[]")),
+   222	            primary_strategy=row.get("primary_strategy", ""),
+   223	            score=row.get("score", 0.0),
+   224	            status=row.get("status", "active"),
+   225	            trigger_price=row.get("trigger_price"),
+   226	            support_price=row.get("support_price"),
+   227	            invalid_price=row.get("invalid_price"),
+   228	            need_deep_ta=bool(row.get("need_deep_ta", 0)),
+   229	            evidence=json.loads(row.get("evidence_json", "{}")),
+   230	            risk_flags=json.loads(row.get("risk_flags_json", "[]")),
+   231	            trade_date=row.get("trade_date", ""),
+   232	            created_at=row.get("created_at", ""),
+   233	            updated_at=row.get("updated_at", ""),
+   234	            policy_tags=json.loads(row.get("policy_tags_json", "[]")),  # [S-001]
+   235	            version_score=row.get("version_score", 0.0),  # [S-001]
+   236	            policy_evidence_refs=json.loads(row.get("policy_evidence_refs_json", "[]")),  # [S-001]
+   237	            narrative_score=row.get("narrative_score", 0.0),  # [S-002] narrative_quality_score
+   238	            narrative_reasons=json.loads(row.get("narrative_reasons_json", "[]")),  # [S-002]
+   239	            narrative_evidence_refs=json.loads(row.get("narrative_evidence_refs_json", "[]")),  # [S-002]
+   240	            risk_penalty=row.get("risk_penalty", 0.0),  # [S-003] underwater_risk_flags
+   241	            risk_evidence_refs=json.loads(row.get("risk_evidence_refs_json", "[]")),  # [S-003]
+   242	            risk_reasons=json.loads(row.get("risk_reasons_json", "[]")),  # [S-003]
+   243	            game_balance=row.get("game_balance", ""),  # [S-004] candidate_game_balance
+   244	            bull_case=row.get("bull_case", ""),  # [S-004]
+   245	            bear_case=row.get("bear_case", ""),  # [S-004]
+   246	            policy_case=row.get("policy_case", ""),  # [S-004]
+   247	            fund_flow_case=row.get("fund_flow_case", ""),  # [S-004]
+   248	            resonance_count=row.get("resonance_count", 0),  # [S-004]
+   249	            game_balance_refs=json.loads(row.get("game_balance_refs_json", "[]")),  # [S-004]
+   250	            fund_flow_anomaly_score=row.get("fund_flow_anomaly_score", 0.0),  # [T-003] fund_flow_anomaly_pool
+   251	            fund_flow_anomaly_tags=json.loads(row.get("fund_flow_anomaly_tags_json", "[]")),  # [T-003]
+   252	            fund_flow_anomaly_refs=json.loads(row.get("fund_flow_anomaly_refs_json", "[]")),  # [T-003]
+   253	            fund_flow_unit_verified=bool(row.get("fund_flow_unit_verified", 0)),  # [T-003]
+   254	            fund_flow_individual_summary=row.get("fund_flow_individual_summary", ""),  # [T-003]
+   255	            fund_flow_board_summary=row.get("fund_flow_board_summary", ""),  # [T-003]
+   256	            composite_score=row.get("composite_score", 0.0),  # [S-005] selection_priority_gate
+   257	            signal_category_hits=json.loads(row.get("signal_category_hits_json", "[]")),  # [S-005]
+   258	            positive_category_count=row.get("positive_category_count", 0),  # [S-005]
+   259	            data_completeness=row.get("data_completeness", 0.0),  # [S-005]
+   260	            missing_evidence=json.loads(row.get("missing_evidence_json", "[]")),  # [S-005]
+   261	            why_deep_ta=row.get("why_deep_ta", ""),  # [S-005]
+   262	            why_not_deep_ta=row.get("why_not_deep_ta", ""),  # [S-005]
+   263	            priority_rank=row.get("priority_rank", ""),  # [S-005]
+   264	            tier=row.get("tier", ""),  # [S-007] candidate_tier_budget
+   265	            ta_budget_priority=row.get("ta_budget_priority", 0),  # [S-007]
+   266	            tier_reason=row.get("tier_reason", ""),  # [S-007]
+   267	            missing_evidence_for_upgrade=json.loads(row.get("missing_evidence_for_upgrade_json", "[]")),  # [S-007]
+   268	            tradeflow_data_completeness=row.get("tradeflow_data_completeness", 0.0),  # [S-008] tradeflow_evidence_gate
+   269	            missing_data_fields=json.loads(row.get("missing_data_fields_json", "[]")),  # [S-008]
+   270	            what_to_upgrade=json.loads(row.get("what_to_upgrade_json", "[]")),  # [S-008]
+   271	            evidence_gate_applied=bool(row.get("evidence_gate_applied", 0)),  # [S-008]
+   272	            universe_sources=json.loads(row.get("universe_sources_json", "[]")),  # [M-003]
+   273	            observe_state=row.get("observe_state", "WAITING"),  # [M-005] intraday_observe_state
+   274	            observe_trigger_count=row.get("observe_trigger_count", 0),  # [M-005]
+   275	            observe_first_trigger_time=row.get("observe_first_trigger_time", ""),  # [M-005]
+   276	        )
+   277	
+   278	
+   279	@dataclass
+   280	class Signal:
+   281	    """One signal event — row in tradeflow_signals."""
+   282	    symbol: str
+   283	    signal_type: str
+   284	    signal_level: str = "info"
+   285	    source: str = "tradeflow"
+   286	    evidence: dict = field(default_factory=dict)
+   287	    action_hint: str = "OBSERVE"
+   288	    status: str = "new"
+   289	    signal_time: str = ""
+   290	    created_at: str = ""
+   291	
+   292	    def __post_init__(self):
+   293	        if not self.signal_time:
+   294	            self.signal_time = datetime.now().isoformat()
+   295	        if not self.created_at:
+   296	            self.created_at = datetime.now().isoformat()
+   297	        # validate action_hint
+   298	        if self.action_hint not in ALLOWED_ACTIONS:
+   299	            self.action_hint = "OBSERVE"
+   300	
+   301	    def to_db_row(self) -> dict:
+   302	        return {
+   303	            "signal_time": self.signal_time,
+   304	            "symbol": self.symbol,
+   305	            "signal_type": self.signal_type,
+   306	            "signal_level": self.signal_level,
+   307	            "source": self.source,
+   308	            "evidence_json": json.dumps(self.evidence, ensure_ascii=False),
+   309	            "action_hint": self.action_hint,
+   310	            "status": self.status,
+   311	        }
+   312	
+   313	
+   314	@dataclass
+   315	class DailyPlan:
+   316	    """Daily pre-market plan — row in tradeflow_daily_plans."""
+   317	    trade_date: str
+   318	    mode: str = "pre_market"
+   319	    summary: str = ""
+   320	    candidates: list[dict] = field(default_factory=list)
+   321	    metadata: dict = field(default_factory=dict)
+   322	    created_at: str = ""
+   323	
+   324	    def __post_init__(self):
+   325	        if not self.created_at:
+   326	            self.created_at = datetime.now().isoformat()
+   327	
+   328	    def validate(self) -> list[str]:
+   329	        """Validate plan — return list of issues (empty = OK)."""
+   330	        issues = []
+     1	    candidate.tradeflow_data_completeness = eg_result.tradeflow_data_completeness
+     2	    candidate.missing_data_fields = eg_result.missing_data_fields
+     3	    candidate.what_to_upgrade = gate_override["what_to_upgrade"]
+     4	    candidate.evidence_gate_applied = gate_override["gate_applied"]
+     5	    if gate_override["gate_applied"]:
+     6	        if gate_override["tier"] != candidate.tier:
+     7	            candidate.tier = gate_override["tier"]
+     8	            candidate.ta_budget_priority = gate_override["ta_budget_priority"]
+     9	            if gate_override["tier_reason_addition"]:
+    10	                candidate.tier_reason = f"{gate_override['tier_reason_addition']}；{candidate.tier_reason}" if candidate.tier_reason else gate_override["tier_reason_addition"]
+    11	        if not gate_override["need_deep_ta"] and candidate.need_deep_ta:
+    12	            candidate.need_deep_ta = False
+    13	            if gate_override["why_not_deep_ta_addition"]:
+    14	                candidate.why_not_deep_ta = f"{gate_override['why_not_deep_ta_addition']}；{candidate.why_not_deep_ta}" if candidate.why_not_deep_ta else gate_override["why_not_deep_ta_addition"]
+    15	    candidate.evidence["evidence_gate"] = {
+    16	        "tradeflow_data_completeness": eg_result.tradeflow_data_completeness,
+    17	        "missing_data_fields": eg_result.missing_data_fields,
+    18	        "can_enter_a_tier": eg_result.can_enter_a_tier,
+    19	        "can_trigger_deep_ta": eg_result.can_trigger_deep_ta,
+    20	        "what_to_upgrade": eg_result.what_to_upgrade,
+    21	        "gate_applied": gate_override["gate_applied"],
+    22	        "refs": eg_result.evidence_gate_refs,
+    23	    }
+    24	
+    25	    return candidate, ""
+    26	
+    27	
+    28	def save_candidate(candidate: Candidate, db_path: str) -> int:
+    29	    """Save a candidate to the database. Upsert on (trade_date, symbol)."""
+    30	    conn = sqlite3.connect(db_path)
+    31	    row = candidate.to_db_row()
+    32	    try:
+    33	        conn.execute(
+    34	            "INSERT INTO tradeflow_candidates "
+    35	            "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+    36	            "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+    37	            "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+    38	            "policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
+    39	            "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+    40	            "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
+    41	            "fund_flow_case, resonance_count, game_balance_refs_json, "
+    42	            "fund_flow_anomaly_score, fund_flow_anomaly_tags_json, "
+    43	            "fund_flow_anomaly_refs_json, fund_flow_unit_verified, "
+    44	            "fund_flow_individual_summary, fund_flow_board_summary, "
+    45	            "composite_score, signal_category_hits_json, positive_category_count, "
+    46	            "data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta, "
+    47	            "priority_rank, "
+    48	            "tier, ta_budget_priority, tier_reason, missing_evidence_for_upgrade_json, "
+    49	            "tradeflow_data_completeness, missing_data_fields_json, what_to_upgrade_json, evidence_gate_applied, "
+    50	            "universe_sources_json, "
+    51	            "observe_state, observe_trigger_count, observe_first_trigger_time, "
+    52	            "created_at, updated_at) "
+    53	            "VALUES ({}) ".format(",".join(["?"] * 58))
+    54	            + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+    55	            "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+    56	            "trigger_price=excluded.trigger_price, "
+    57	            "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+    58	            "need_deep_ta=excluded.need_deep_ta, evidence_json=excluded.evidence_json, "
+    59	            "risk_flags_json=excluded.risk_flags_json, "
+    60	            "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+    61	            "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
+    62	            "narrative_score=excluded.narrative_score, "
+    63	            "narrative_reasons_json=excluded.narrative_reasons_json, "
+    64	            "narrative_evidence_refs_json=excluded.narrative_evidence_refs_json, "
+    65	            "risk_penalty=excluded.risk_penalty, "
+    66	            "risk_evidence_refs_json=excluded.risk_evidence_refs_json, "
+    67	            "risk_reasons_json=excluded.risk_reasons_json, "
+    68	            "game_balance=excluded.game_balance, "
+    69	            "bull_case=excluded.bull_case, bear_case=excluded.bear_case, "
+    70	            "policy_case=excluded.policy_case, fund_flow_case=excluded.fund_flow_case, "
+    71	            "resonance_count=excluded.resonance_count, "
+    72	            "game_balance_refs_json=excluded.game_balance_refs_json, "
+    73	            "fund_flow_anomaly_score=excluded.fund_flow_anomaly_score, "
+    74	            "fund_flow_anomaly_tags_json=excluded.fund_flow_anomaly_tags_json, "
+    75	            "fund_flow_anomaly_refs_json=excluded.fund_flow_anomaly_refs_json, "
+    76	            "fund_flow_unit_verified=excluded.fund_flow_unit_verified, "
+    77	            "fund_flow_individual_summary=excluded.fund_flow_individual_summary, "
+    78	            "fund_flow_board_summary=excluded.fund_flow_board_summary, "
+    79	            "composite_score=excluded.composite_score, "
+    80	            "signal_category_hits_json=excluded.signal_category_hits_json, "
+    81	            "positive_category_count=excluded.positive_category_count, "
+    82	            "data_completeness=excluded.data_completeness, "
+    83	            "missing_evidence_json=excluded.missing_evidence_json, "
+    84	            "why_deep_ta=excluded.why_deep_ta, why_not_deep_ta=excluded.why_not_deep_ta, "
+    85	            "priority_rank=excluded.priority_rank, "
+    86	            "tier=excluded.tier, ta_budget_priority=excluded.ta_budget_priority, "
+    87	            "tier_reason=excluded.tier_reason, "
+    88	            "missing_evidence_for_upgrade_json=excluded.missing_evidence_for_upgrade_json, "
+    89	            "tradeflow_data_completeness=excluded.tradeflow_data_completeness, "
+    90	            "missing_data_fields_json=excluded.missing_data_fields_json, "
+    91	            "what_to_upgrade_json=excluded.what_to_upgrade_json, "
+    92	            "evidence_gate_applied=excluded.evidence_gate_applied, "
+    93	            "universe_sources_json=excluded.universe_sources_json, "
+    94	            "observe_state=excluded.observe_state, "
+    95	            "observe_trigger_count=excluded.observe_trigger_count, "
+    96	            "observe_first_trigger_time=excluded.observe_first_trigger_time, "
+    97	            "updated_at=excluded.updated_at",
+    98	            (
+    99	                row["trade_date"], row["symbol"], row["name"], row["source"],
+   100	                row["strategy_tags_json"], row["primary_strategy"],
+   101	                row["score"], row["status"],
+   102	                row["trigger_price"], row["support_price"], row["invalid_price"],
+   103	                row["need_deep_ta"], row["evidence_json"], row["risk_flags_json"],
+   104	                row["policy_tags_json"], row["version_score"],
+   105	                row["policy_evidence_refs_json"],
+   106	                row["narrative_score"], row["narrative_reasons_json"],
+   107	                row["narrative_evidence_refs_json"],
+   108	                row["risk_penalty"], row["risk_evidence_refs_json"],
+   109	                row["risk_reasons_json"],
+   110	                row["game_balance"], row["bull_case"], row["bear_case"],
+   111	                row["policy_case"], row["fund_flow_case"],
+   112	                row["resonance_count"], row["game_balance_refs_json"],
+   113	                row["fund_flow_anomaly_score"], row["fund_flow_anomaly_tags_json"],
+   114	                row["fund_flow_anomaly_refs_json"], row["fund_flow_unit_verified"],
+   115	                row["fund_flow_individual_summary"], row["fund_flow_board_summary"],
+   116	                row["composite_score"], row["signal_category_hits_json"],
+   117	                row["positive_category_count"], row["data_completeness"],
+   118	                row["missing_evidence_json"], row["why_deep_ta"], row["why_not_deep_ta"],
+   119	                row["priority_rank"],
+   120	                row["tier"], row["ta_budget_priority"],
+   121	                row["tier_reason"], row["missing_evidence_for_upgrade_json"],
+   122	                row["tradeflow_data_completeness"], row["missing_data_fields_json"],
+   123	                row["what_to_upgrade_json"], row["evidence_gate_applied"],
+   124	                row["universe_sources_json"],
+   125	                row["observe_state"], row["observe_trigger_count"],
+   126	                row["observe_first_trigger_time"],
+   127	                candidate.created_at, row["updated_at"],
+   128	            ),
+   129	        )
+   130	        conn.commit()
+   131	        row_id = conn.execute(
+   132	            "SELECT id FROM tradeflow_candidates WHERE trade_date=? AND symbol=?",
+   133	            (row["trade_date"], row["symbol"]),
+   134	        ).fetchone()[0]
+   135	        return row_id
+   136	    finally:
+   137	        conn.close()
+
+exec
+/bin/zsh -lc "grep -R \"CREATE TABLE tradeflow_candidates\\|SELECT .*tradeflow_candidates\\|from_db_row\" -n tradingagents api scheduler tests | head -100 && sed -n '110,220p' tradingagents/tradeflow/candidate_engine.py | nl -ba" in /Users/maybee/TradingAgents-AShare
+ succeeded in 127ms:
+tradingagents/tradeflow/candidate_engine.py:811:            "SELECT id FROM tradeflow_candidates WHERE trade_date=? AND symbol=?",
+Binary file tradingagents/tradeflow/__pycache__/schemas.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/candidate_engine.cpython-314.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/candidate_engine.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/universe.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/universe_manager.cpython-312.pyc matches
+tradingagents/tradeflow/schemas.py:216:    def from_db_row(cls, row: dict) -> "Candidate":
+tests/test_tradeflow_candidate_engine.py:169:                "SELECT * FROM tradeflow_candidates WHERE symbol='002353.SZ'"
+tests/test_tradeflow_candidate_engine.py:193:                "SELECT COUNT(*) FROM tradeflow_candidates WHERE symbol='002353.SZ' AND trade_date='2026-05-25'"
+tests/test_tradeflow_candidate_engine.py:213:                "SELECT need_deep_ta, primary_strategy FROM tradeflow_candidates WHERE symbol='TEST.SZ'"
+tests/test_t002_discovery.py:405:                "SELECT * FROM tradeflow_candidates WHERE symbol='A.SZ' AND trade_date='2026-05-29'"
+tests/test_t002_discovery.py:432:                "SELECT COUNT(*) FROM tradeflow_candidates WHERE symbol='A.SZ'"
+tests/test_s008_evidence_gate.py:9:4. Schema persistence — to_db_row / from_db_row round-trip.
+tests/test_s008_evidence_gate.py:427:# 4. Schema persistence — to_db_row / from_db_row round-trip
+tests/test_s008_evidence_gate.py:445:        restored = Candidate.from_db_row(row)
+tests/test_s008_evidence_gate.py:474:                "SELECT * FROM tradeflow_candidates WHERE symbol=?", (c.symbol,)
+tests/test_s007_tier_budget.py:519:                "SELECT * FROM tradeflow_candidates WHERE symbol=?", ("600519.SH",)
+tests/test_s007_tier_budget.py:537:                CREATE TABLE tradeflow_candidates (
+tests/test_s007_tier_budget.py:722:        c2 = Candidate.from_db_row(row)
+tests/test_s004_game_balance.py:379:    def test_candidate_from_db_row_game_balance(self):
+tests/test_s004_game_balance.py:414:        c = Candidate.from_db_row(row)
+tests/test_s004_game_balance.py:464:                "SELECT * FROM tradeflow_candidates WHERE symbol=?",
+tests/test_s004_game_balance.py:468:            cols = [desc[0] for desc in conn.execute("SELECT * FROM tradeflow_candidates WHERE symbol=?", ("600519.SH",)).description]
+Binary file tests/__pycache__/test_t003_fund_flow_anomaly.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_m003_universe_manager.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_t002_discovery.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_s001_policy_version_signal.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_m005_intraday_observe.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_s005_selection_priority_gate.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_s001_policy_version_signal.cpython-312.pyc matches
+Binary file tests/__pycache__/test_s004_game_balance.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_tradeflow_universe.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_s002_narrative_quality.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_tradeflow_candidate_engine.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_s003_underwater_risk_flags.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_tradeflow_schemas.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_s008_evidence_gate.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_s007_tier_budget.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_tradeflow_plan_runner.cpython-312-pytest-9.0.2.pyc matches
+tests/test_tradeflow_plan_runner.py:159:                "SELECT * FROM tradeflow_candidates WHERE symbol='002353.SZ' AND trade_date='2026-05-25'"
+tests/test_tradeflow_plan_runner.py:185:                "SELECT COUNT(*) FROM tradeflow_candidates WHERE symbol='002353.SZ'"
+tests/test_tradeflow_universe.py:408:    def test_from_db_row_reads_field(self):
+tests/test_tradeflow_universe.py:416:        c = Candidate.from_db_row(row)
+tests/test_s003_underwater_risk_flags.py:356:    def test_from_db_row_roundtrip(self):
+tests/test_s003_underwater_risk_flags.py:369:        c2 = Candidate.from_db_row(row)
+tests/test_s003_underwater_risk_flags.py:407:                "SELECT * FROM tradeflow_candidates WHERE symbol='002138.SZ'"
+tests/test_s003_underwater_risk_flags.py:410:                "SELECT * FROM tradeflow_candidates WHERE symbol='002138.SZ'"
+tests/test_tradeflow_schemas.py:90:    def test_from_db_row(self):
+tests/test_tradeflow_schemas.py:109:        c = Candidate.from_db_row(row)
+tests/test_s002_narrative_quality.py:368:                "SELECT * FROM tradeflow_candidates WHERE symbol='TEST.SZ'"
+tests/test_s002_narrative_quality.py:398:                "SELECT * FROM tradeflow_candidates WHERE symbol='RT.SZ'"
+tests/test_s002_narrative_quality.py:402:            restored = Candidate.from_db_row(dict(row))
+tests/test_s005_selection_priority_gate.py:614:                "SELECT * FROM tradeflow_candidates WHERE trade_date=? AND symbol=?",
+tests/test_s005_selection_priority_gate.py:628:    def test_db_round_trip_from_db_row(self):
+tests/test_s005_selection_priority_gate.py:657:                "SELECT * FROM tradeflow_candidates WHERE trade_date=? AND symbol=?",
+tests/test_s005_selection_priority_gate.py:662:            c2 = Candidate.from_db_row(row)
+tests/test_m005_intraday_observe.py:238:    def test_candidate_from_db_row_includes_observe(self):
+tests/test_m005_intraday_observe.py:260:        c = Candidate.from_db_row(row)
+tests/test_m005_intraday_observe.py:265:    def test_candidate_from_db_row_defaults(self):
+tests/test_m005_intraday_observe.py:271:        c = Candidate.from_db_row(row)
+tests/test_m005_intraday_observe.py:330:                "SELECT observe_state, observe_trigger_count FROM tradeflow_candidates WHERE symbol='002353.SZ'"
+tests/test_s001_policy_version_signal.py:274:                "SELECT * FROM tradeflow_candidates WHERE symbol='TEST.SZ'"
+tests/test_t003_fund_flow_anomaly.py:552:                "SELECT * FROM tradeflow_candidates WHERE symbol='600519.SH'"
+tests/test_t003_fund_flow_anomaly.py:565:    def test_from_db_row_round_trip(self):
+tests/test_t003_fund_flow_anomaly.py:606:        c = Candidate.from_db_row(row)
+     1	            pass
+     2	    # [S-002] narrative_quality_score — add narrative quality columns
+     3	    for _col, _type in [
+     4	        ("narrative_score", "REAL DEFAULT 0.0"),
+     5	        ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
+     6	        ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
+     7	    ]:
+     8	        try:
+     9	            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+    10	        except sqlite3.OperationalError:
+    11	            pass
+    12	    # [S-003] underwater_risk_flags — add risk penalty columns
+    13	    for _col, _type in [
+    14	        ("risk_penalty", "REAL DEFAULT 0.0"),
+    15	        ("risk_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    16	        ("risk_reasons_json", "TEXT DEFAULT '[]'"),
+    17	    ]:
+    18	        try:
+    19	            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+    20	        except sqlite3.OperationalError:
+    21	            pass
+    22	    # [S-004] candidate_game_balance — add game balance columns
+    23	    for _col, _type in [
+    24	        ("game_balance", "TEXT DEFAULT ''"),
+    25	        ("bull_case", "TEXT DEFAULT ''"),
+    26	        ("bear_case", "TEXT DEFAULT ''"),
+    27	        ("policy_case", "TEXT DEFAULT ''"),
+    28	        ("fund_flow_case", "TEXT DEFAULT ''"),
+    29	        ("resonance_count", "INTEGER DEFAULT 0"),
+    30	        ("game_balance_refs_json", "TEXT DEFAULT '[]'"),
+    31	    ]:
+    32	        try:
+    33	            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+    34	        except sqlite3.OperationalError:
+    35	            pass
+    36	    # [T-003] fund_flow_anomaly_pool — add fund flow anomaly columns
+    37	    for _col, _type in [
+    38	        ("fund_flow_anomaly_score", "REAL DEFAULT 0.0"),
+    39	        ("fund_flow_anomaly_tags_json", "TEXT DEFAULT '[]'"),
+    40	        ("fund_flow_anomaly_refs_json", "TEXT DEFAULT '[]'"),
+    41	        ("fund_flow_unit_verified", "INTEGER DEFAULT 0"),
+    42	        ("fund_flow_individual_summary", "TEXT DEFAULT ''"),
+    43	        ("fund_flow_board_summary", "TEXT DEFAULT ''"),
+    44	    ]:
+    45	        try:
+    46	            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+    47	        except sqlite3.OperationalError:
+    48	            pass
+    49	    # [S-005] selection_priority_gate — add priority gate columns
+    50	    for _col, _type in [
+    51	        ("composite_score", "REAL DEFAULT 0.0"),
+    52	        ("signal_category_hits_json", "TEXT DEFAULT '[]'"),
+    53	        ("positive_category_count", "INTEGER DEFAULT 0"),
+    54	        ("data_completeness", "REAL DEFAULT 0.0"),
+    55	        ("missing_evidence_json", "TEXT DEFAULT '[]'"),
+    56	        ("why_deep_ta", "TEXT DEFAULT ''"),
+    57	        ("why_not_deep_ta", "TEXT DEFAULT ''"),
+    58	        ("priority_rank", "TEXT DEFAULT ''"),
+    59	    ]:
+    60	        try:
+    61	            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+    62	        except sqlite3.OperationalError:
+    63	            pass
+    64	    # [S-007] candidate_tier_budget — add tier budget columns
+    65	    for _col, _type in [
+    66	        ("tier", "TEXT DEFAULT ''"),
+    67	        ("ta_budget_priority", "INTEGER DEFAULT 0"),
+    68	        ("tier_reason", "TEXT DEFAULT ''"),
+    69	        ("missing_evidence_for_upgrade_json", "TEXT DEFAULT '[]'"),
+    70	    ]:
+    71	        try:
+    72	            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+    73	        except sqlite3.OperationalError:
+    74	            pass
+    75	    # [S-008] tradeflow_evidence_gate — add evidence gate columns
+    76	    for _col, _type in [
+    77	        ("tradeflow_data_completeness", "REAL DEFAULT 0.0"),
+    78	        ("missing_data_fields_json", "TEXT DEFAULT '[]'"),
+    79	        ("what_to_upgrade_json", "TEXT DEFAULT '[]'"),
+    80	        ("evidence_gate_applied", "INTEGER DEFAULT 0"),
+    81	    ]:
+    82	        try:
+    83	            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+    84	        except sqlite3.OperationalError:
+    85	            pass
+    86	    # [M-003] tradeflow_universe_manager — add universe_sources column
+    87	    for _col, _type in [
+    88	        ("universe_sources_json", "TEXT DEFAULT '[]'"),
+    89	    ]:
+    90	        try:
+    91	            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+    92	        except sqlite3.OperationalError:
+    93	            pass
+    94	    # [M-005] intraday_observe_state — add observe state columns
+    95	    for _col, _type in [
+    96	        ("observe_state", "TEXT DEFAULT 'WAITING'"),
+    97	        ("observe_trigger_count", "INTEGER DEFAULT 0"),
+    98	        ("observe_first_trigger_time", "TEXT DEFAULT ''"),
+    99	    ]:
+   100	        try:
+   101	            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+   102	        except sqlite3.OperationalError:
+   103	            pass
+   104	    conn.commit()
+   105	    conn.close()
+   106	
+   107	
+   108	def _fetch_price_data(symbol: str, days: int = 120) -> Optional[pd.DataFrame]:
+   109	    """Fetch price data for a symbol using the project's data providers.
+   110	
+   111	    Uses cn_akshare → cn_astock → yfinance fallback chain.  [N-002] cn_astock_fallback
+
+exec
+/bin/zsh -lc "sed -n '1,130p' tradingagents/tradeflow/candidate_engine.py | nl -ba" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+     1	"""TradeFlow Candidate Engine — runs strategies and produces candidates.
+     2	
+     3	Responsibilities:
+     4	- Load price data for each symbol in the universe
+     5	- Run all three strategies
+     6	- Filter out ST / low-liquidity / data-missing stocks
+     7	- Deduplicate multi-strategy hits
+     8	- Mark need_deep_ta
+     9	- Persist to tradeflow tables
+    10	"""
+    11	
+    12	from __future__ import annotations
+    13	
+    14	import json
+    15	import sqlite3
+    16	from datetime import datetime
+    17	from typing import Optional
+    18	
+    19	import pandas as pd
+    20	
+    21	from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE, STRATEGY_FUND_FLOW  # [S-001] [S-002] [T-003]
+    22	from .strategies.vcp import score_vcp
+    23	from .strategies.pullback_support import score_pullback_support
+    24	from .strategies.event_catalyst import score_event_catalyst
+    25	from .policy_version_signal import detect_policy_version, PolicyVersionResult  # [S-001]
+    26	from .narrative_quality import score_narrative_quality, NarrativeQualityResult  # [S-002]
+    27	from .underwater_risk_flags import detect_underwater_risks, UnderwaterRiskResult, ALL_RISK_FLAGS  # [S-003]
+    28	from .game_balance import assess_game_balance, GameBalanceResult  # [S-004] candidate_game_balance
+    29	from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult, FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT  # [T-003] fund_flow_anomaly_pool
+    30	from .selection_priority_gate import run_selection_priority_gate, SelectionPriorityResult  # [S-005] selection_priority_gate
+    31	from .tier_budget import classify_candidate_tier, TierBudgetResult  # [S-007] candidate_tier_budget
+    32	from .evidence_gate import compute_evidence_completeness, apply_evidence_gate, EvidenceGateResult  # [S-008] tradeflow_evidence_gate
+    33	from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+    34	
+    35	
+    36	# ── SQL for table creation ──
+    37	CREATE_CANDIDATES_TABLE = """
+    38	CREATE TABLE IF NOT EXISTS tradeflow_candidates (
+    39	    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    40	    trade_date TEXT NOT NULL,
+    41	    symbol TEXT NOT NULL,
+    42	    name TEXT DEFAULT '',
+    43	    source TEXT DEFAULT 'manual',
+    44	    strategy_tags_json TEXT DEFAULT '[]',
+    45	    primary_strategy TEXT DEFAULT '',
+    46	    score REAL DEFAULT 0.0,
+    47	    status TEXT DEFAULT 'active',
+    48	    trigger_price REAL,
+    49	    support_price REAL,
+    50	    invalid_price REAL,
+    51	    need_deep_ta INTEGER DEFAULT 0,
+    52	    evidence_json TEXT DEFAULT '{}',
+    53	    risk_flags_json TEXT DEFAULT '[]',
+    54	    created_at TEXT,
+    55	    updated_at TEXT,
+    56	    UNIQUE(trade_date, symbol)
+    57	);
+    58	"""
+    59	
+    60	CREATE_SIGNALS_TABLE = """
+    61	CREATE TABLE IF NOT EXISTS tradeflow_signals (
+    62	    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    63	    signal_time TEXT NOT NULL,
+    64	    symbol TEXT NOT NULL,
+    65	    signal_type TEXT NOT NULL,
+    66	    signal_level TEXT DEFAULT 'info',
+    67	    source TEXT DEFAULT 'tradeflow',
+    68	    evidence_json TEXT DEFAULT '{}',
+    69	    action_hint TEXT DEFAULT 'OBSERVE',
+    70	    status TEXT DEFAULT 'new',
+    71	    created_at TEXT
+    72	);
+    73	"""
+    74	
+    75	CREATE_DAILY_PLANS_TABLE = """
+    76	CREATE TABLE IF NOT EXISTS tradeflow_daily_plans (
+    77	    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    78	    trade_date TEXT NOT NULL,
+    79	    mode TEXT DEFAULT 'pre_market',
+    80	    summary TEXT DEFAULT '',
+    81	    candidates_json TEXT DEFAULT '[]',
+    82	    metadata_json TEXT DEFAULT '{}',
+    83	    created_at TEXT,
+    84	    UNIQUE(trade_date, mode)
+    85	);
+    86	"""
+    87	
+    88	
+    89	def init_db(db_path: str) -> None:
+    90	    """Create tradeflow tables if they don't exist."""
+    91	    conn = sqlite3.connect(db_path)
+    92	    conn.executescript(
+    93	        CREATE_CANDIDATES_TABLE
+    94	        + CREATE_SIGNALS_TABLE
+    95	        + CREATE_DAILY_PLANS_TABLE
+    96	    )
+    97	    try:
+    98	        conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+    99	    except sqlite3.OperationalError:
+   100	        pass
+   101	    # [S-001] policy_version_signal — add policy version columns
+   102	    for _col, _type in [
+   103	        ("policy_tags_json", "TEXT DEFAULT '[]'"),
+   104	        ("version_score", "REAL DEFAULT 0.0"),
+   105	        ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+   106	    ]:
+   107	        try:
+   108	            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+   109	        except sqlite3.OperationalError:
+   110	            pass
+   111	    # [S-002] narrative_quality_score — add narrative quality columns
+   112	    for _col, _type in [
+   113	        ("narrative_score", "REAL DEFAULT 0.0"),
+   114	        ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
+   115	        ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
+   116	    ]:
+   117	        try:
+   118	            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+   119	        except sqlite3.OperationalError:
+   120	            pass
+   121	    # [S-003] underwater_risk_flags — add risk penalty columns
+   122	    for _col, _type in [
+   123	        ("risk_penalty", "REAL DEFAULT 0.0"),
+   124	        ("risk_evidence_refs_json", "TEXT DEFAULT '[]'"),
+   125	        ("risk_reasons_json", "TEXT DEFAULT '[]'"),
+   126	    ]:
+   127	        try:
+   128	            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+   129	        except sqlite3.OperationalError:
+   130	            pass
+
+exec
+/bin/zsh -lc "grep -R \"observe_\\|run_observe_check\\|save_candidate(\" -n tradingagents api scheduler tests | head -200" in /Users/maybee/TradingAgents-AShare
+ succeeded in 108ms:
+tradingagents/tradeflow/candidate_engine.py:203:    # [M-005] intraday_observe_state — add observe state columns
+tradingagents/tradeflow/candidate_engine.py:205:        ("observe_state", "TEXT DEFAULT 'WAITING'"),
+tradingagents/tradeflow/candidate_engine.py:206:        ("observe_trigger_count", "INTEGER DEFAULT 0"),
+tradingagents/tradeflow/candidate_engine.py:207:        ("observe_first_trigger_time", "TEXT DEFAULT ''"),
+tradingagents/tradeflow/candidate_engine.py:707:def save_candidate(candidate: Candidate, db_path: str) -> int:
+tradingagents/tradeflow/candidate_engine.py:730:            "observe_state, observe_trigger_count, observe_first_trigger_time, "
+tradingagents/tradeflow/candidate_engine.py:773:            "observe_state=excluded.observe_state, "
+tradingagents/tradeflow/candidate_engine.py:774:            "observe_trigger_count=excluded.observe_trigger_count, "
+tradingagents/tradeflow/candidate_engine.py:775:            "observe_first_trigger_time=excluded.observe_first_trigger_time, "
+tradingagents/tradeflow/candidate_engine.py:804:                row["observe_state"], row["observe_trigger_count"],
+tradingagents/tradeflow/candidate_engine.py:805:                row["observe_first_trigger_time"],
+tradingagents/tradeflow/strategy_config.py:129:    observe_max_daily_triggers: int = 3
+tradingagents/tradeflow/strategy_config.py:130:    observe_trigger_breach_pct: float = 0.0
+tradingagents/tradeflow/strategy_config.py:131:    observe_invalidate_breach_pct: float = 0.0
+tradingagents/tradeflow/intraday_observe.py:1:# [M-005] intraday_observe_state
+tradingagents/tradeflow/intraday_observe.py:39:    observe_state: ObserveState
+tradingagents/tradeflow/intraday_observe.py:72:def run_observe_check(
+tradingagents/tradeflow/intraday_observe.py:82:    max_daily_triggers: int = getattr(cfg, "observe_max_daily_triggers", 3)
+tradingagents/tradeflow/intraday_observe.py:125:        observe_state=new_state,
+tradingagents/tradeflow/intraday_observe.py:144:        observe_state=tracker.state,
+tradingagents/tradeflow/intraday_observe.py:168:        observe_state=tracker.state,
+tradingagents/tradeflow/discovery.py:269:            save_candidate(c, tf_db_path)
+tradingagents/tradeflow/plan_runner.py:110:        "observe_state": candidate.observe_state,  # [M-005] intraday_observe_state
+tradingagents/tradeflow/plan_runner.py:111:        "observe_trigger_count": candidate.observe_trigger_count,  # [M-005]
+tradingagents/tradeflow/plan_runner.py:112:        "observe_first_trigger_time": candidate.observe_first_trigger_time,  # [M-005]
+tradingagents/tradeflow/plan_runner.py:307:            save_candidate(c, tf_db_path)
+Binary file tradingagents/tradeflow/__pycache__/schemas.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/strategy_config.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/candidate_engine.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/plan_runner.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/intraday_observe.cpython-312.pyc matches
+tradingagents/tradeflow/schemas.py:105:    observe_state: str = "WAITING"  # [M-005] intraday_observe_state
+tradingagents/tradeflow/schemas.py:106:    observe_trigger_count: int = 0  # [M-005] intraday_observe_state
+tradingagents/tradeflow/schemas.py:107:    observe_first_trigger_time: str = ""  # [M-005] intraday_observe_state
+tradingagents/tradeflow/schemas.py:209:            "observe_state": self.observe_state,  # [M-005] intraday_observe_state
+tradingagents/tradeflow/schemas.py:210:            "observe_trigger_count": self.observe_trigger_count,  # [M-005]
+tradingagents/tradeflow/schemas.py:211:            "observe_first_trigger_time": self.observe_first_trigger_time,  # [M-005]
+tradingagents/tradeflow/schemas.py:273:            observe_state=row.get("observe_state", "WAITING"),  # [M-005] intraday_observe_state
+tradingagents/tradeflow/schemas.py:274:            observe_trigger_count=row.get("observe_trigger_count", 0),  # [M-005]
+tradingagents/tradeflow/schemas.py:275:            observe_first_trigger_time=row.get("observe_first_trigger_time", ""),  # [M-005]
+tradingagents/tradeflow/schemas.py:478:            # [M-005] intraday_observe_state — display observe state
+tradingagents/tradeflow/schemas.py:479:            obs_state = c.get("observe_state", "")
+tradingagents/tradeflow/schemas.py:480:            obs_count = c.get("observe_trigger_count", 0)
+tradingagents/tradeflow/schemas.py:481:            obs_time = c.get("observe_first_trigger_time", "")
+tests/test_tradeflow_candidate_engine.py:161:            row_id = save_candidate(c, db_path)
+tests/test_tradeflow_candidate_engine.py:185:            save_candidate(c1, db_path)
+tests/test_tradeflow_candidate_engine.py:188:            save_candidate(c2, db_path)
+tests/test_tradeflow_candidate_engine.py:208:            save_candidate(c, db_path)
+tests/test_s008_evidence_gate.py:469:            save_candidate(c, db_path)
+tests/test_s007_tier_budget.py:512:            row_id = save_candidate(c, db_path)
+tests/test_s004_game_balance.py:459:            save_candidate(c, db_path)
+tests/test_s004_game_balance.py:491:            save_candidate(c, db_path)
+Binary file tests/__pycache__/test_m005_intraday_observe.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_tradeflow_plan_runner.cpython-312-pytest-9.0.2.pyc matches
+tests/test_tradeflow_plan_runner.py:30:    def test_observe_action(self):
+tests/test_s003_underwater_risk_flags.py:404:            save_candidate(c, db_path)
+tests/test_s002_narrative_quality.py:362:            save_candidate(c, db_path)
+tests/test_s002_narrative_quality.py:392:            save_candidate(c, db_path)
+tests/test_s005_selection_priority_gate.py:607:            row_id = save_candidate(c, db_path)
+tests/test_s005_selection_priority_gate.py:651:            save_candidate(c, db_path)
+tests/test_m005_intraday_observe.py:14:    run_observe_check,
+tests/test_m005_intraday_observe.py:38:            observe_state=ObserveState.WAITING,
+tests/test_m005_intraday_observe.py:44:        assert snap.observe_state == ObserveState.WAITING
+tests/test_m005_intraday_observe.py:51:            observe_state=ObserveState.WAITING,
+tests/test_m005_intraday_observe.py:73:        snap = run_observe_check(t, current_price=95.0)
+tests/test_m005_intraday_observe.py:74:        assert snap.observe_state == ObserveState.WAITING
+tests/test_m005_intraday_observe.py:80:        snap = run_observe_check(t, current_price=101.0)
+tests/test_m005_intraday_observe.py:81:        assert snap.observe_state == ObserveState.TRIGGERED
+tests/test_m005_intraday_observe.py:91:        snap = run_observe_check(t, current_price=100.0)
+tests/test_m005_intraday_observe.py:92:        assert snap.observe_state == ObserveState.TRIGGERED
+tests/test_m005_intraday_observe.py:97:        snap = run_observe_check(t, current_price=89.0)
+tests/test_m005_intraday_observe.py:98:        assert snap.observe_state == ObserveState.INVALIDATED
+tests/test_m005_intraday_observe.py:105:        snap = run_observe_check(t, current_price=90.0)
+tests/test_m005_intraday_observe.py:106:        assert snap.observe_state == ObserveState.INVALIDATED
+tests/test_m005_intraday_observe.py:110:        snap = run_observe_check(t, current_price=94.0)
+tests/test_m005_intraday_observe.py:111:        assert snap.observe_state == ObserveState.INVALIDATED
+tests/test_m005_intraday_observe.py:116:        snap = run_observe_check(t, current_price=95.0)
+tests/test_m005_intraday_observe.py:117:        assert snap.observe_state == ObserveState.WAITING
+tests/test_m005_intraday_observe.py:121:        snap = run_observe_check(t, current_price=95.0)
+tests/test_m005_intraday_observe.py:122:        assert snap.observe_state == ObserveState.WAITING
+tests/test_m005_intraday_observe.py:126:        snap = run_observe_check(t, current_price=95.0)
+tests/test_m005_intraday_observe.py:127:        assert snap.observe_state == ObserveState.WAITING
+tests/test_m005_intraday_observe.py:131:        snap = run_observe_check(t, current_price=101.0, current_volume=500000.0, current_amount=50500000.0)
+tests/test_m005_intraday_observe.py:138:        cfg = StrategyConfig(observe_max_daily_triggers=2)
+tests/test_m005_intraday_observe.py:141:        snap1 = run_observe_check(t, current_price=101.0, cfg=cfg)
+tests/test_m005_intraday_observe.py:142:        assert snap1.observe_state == ObserveState.TRIGGERED
+tests/test_m005_intraday_observe.py:146:        snap2 = run_observe_check(t, current_price=102.0, cfg=cfg)
+tests/test_m005_intraday_observe.py:147:        assert snap2.observe_state == ObserveState.TRIGGERED
+tests/test_m005_intraday_observe.py:151:        snap3 = run_observe_check(t, current_price=103.0, cfg=cfg)
+tests/test_m005_intraday_observe.py:152:        assert snap3.observe_state == ObserveState.WAITING
+tests/test_m005_intraday_observe.py:158:        run_observe_check(t, current_price=95.0)
+tests/test_m005_intraday_observe.py:159:        run_observe_check(t, current_price=96.0)
+tests/test_m005_intraday_observe.py:166:        assert cfg.observe_max_daily_triggers == 3
+tests/test_m005_intraday_observe.py:172:        run_observe_check(t, current_price=101.0)
+tests/test_m005_intraday_observe.py:175:        snap = run_observe_check(t, current_price=95.0)
+tests/test_m005_intraday_observe.py:176:        assert snap.observe_state == ObserveState.TRIGGERED
+tests/test_m005_intraday_observe.py:181:        run_observe_check(t, current_price=89.0)
+tests/test_m005_intraday_observe.py:184:        snap = run_observe_check(t, current_price=95.0)
+tests/test_m005_intraday_observe.py:185:        assert snap.observe_state == ObserveState.INVALIDATED
+tests/test_m005_intraday_observe.py:193:        snap = run_observe_check(t, current_price=101.0)
+tests/test_m005_intraday_observe.py:194:        assert snap.observe_state == ObserveState.EXPIRED
+tests/test_m005_intraday_observe.py:201:        assert snap.observe_state == ObserveState.EXPIRED
+tests/test_m005_intraday_observe.py:207:        run_observe_check(t, current_price=101.0)
+tests/test_m005_intraday_observe.py:210:        assert snap.observe_state == ObserveState.TRIGGERED
+tests/test_m005_intraday_observe.py:215:        run_observe_check(t, current_price=89.0)
+tests/test_m005_intraday_observe.py:218:        assert snap.observe_state == ObserveState.INVALIDATED
+tests/test_m005_intraday_observe.py:222:    def test_candidate_default_observe_state(self):
+tests/test_m005_intraday_observe.py:224:        assert c.observe_state == "WAITING"
+tests/test_m005_intraday_observe.py:225:        assert c.observe_trigger_count == 0
+tests/test_m005_intraday_observe.py:226:        assert c.observe_first_trigger_time == ""
+tests/test_m005_intraday_observe.py:230:        c.observe_state = "TRIGGERED"
+tests/test_m005_intraday_observe.py:231:        c.observe_trigger_count = 1
+tests/test_m005_intraday_observe.py:232:        c.observe_first_trigger_time = "2026-05-30T10:30:00"
+tests/test_m005_intraday_observe.py:234:        assert row["observe_state"] == "TRIGGERED"
+tests/test_m005_intraday_observe.py:235:        assert row["observe_trigger_count"] == 1
+tests/test_m005_intraday_observe.py:236:        assert row["observe_first_trigger_time"] == "2026-05-30T10:30:00"
+tests/test_m005_intraday_observe.py:256:            "observe_state": "TRIGGERED",
+tests/test_m005_intraday_observe.py:257:            "observe_trigger_count": 2,
+tests/test_m005_intraday_observe.py:258:            "observe_first_trigger_time": "2026-05-30T10:30:00",
+tests/test_m005_intraday_observe.py:261:        assert c.observe_state == "TRIGGERED"
+tests/test_m005_intraday_observe.py:262:        assert c.observe_trigger_count == 2
+tests/test_m005_intraday_observe.py:263:        assert c.observe_first_trigger_time == "2026-05-30T10:30:00"
+tests/test_m005_intraday_observe.py:272:        assert c.observe_state == "WAITING"
+tests/test_m005_intraday_observe.py:273:        assert c.observe_trigger_count == 0
+tests/test_m005_intraday_observe.py:274:        assert c.observe_first_trigger_time == ""
+tests/test_m005_intraday_observe.py:278:    def test_save_and_read_observe_state(self):
+tests/test_m005_intraday_observe.py:289:                observe_state="TRIGGERED",
+tests/test_m005_intraday_observe.py:290:                observe_trigger_count=1,
+tests/test_m005_intraday_observe.py:291:                observe_first_trigger_time="2026-05-30T10:30:00",
+tests/test_m005_intraday_observe.py:293:            save_candidate(c, db_path)
+tests/test_m005_intraday_observe.py:298:                "SELECT observe_state, observe_trigger_count, observe_first_trigger_time "
+tests/test_m005_intraday_observe.py:309:    def test_upsert_observe_state(self):
+tests/test_m005_intraday_observe.py:316:            save_candidate(c1, db_path)
+tests/test_m005_intraday_observe.py:322:                observe_state="TRIGGERED",
+tests/test_m005_intraday_observe.py:323:                observe_trigger_count=1,
+tests/test_m005_intraday_observe.py:325:            save_candidate(c2, db_path)
+tests/test_m005_intraday_observe.py:330:                "SELECT observe_state, observe_trigger_count FROM tradeflow_candidates WHERE symbol='002353.SZ'"
+tests/test_m005_intraday_observe.py:343:        run_observe_check(t, current_price=101.0)
+tests/test_m005_intraday_observe.py:346:        c.observe_state = t.state.value
+tests/test_m005_intraday_observe.py:347:        c.observe_trigger_count = t.daily_trigger_count
+tests/test_m005_intraday_observe.py:348:        c.observe_first_trigger_time = t.first_trigger_time or ""
+tests/test_m005_intraday_observe.py:350:        assert c.observe_state == "TRIGGERED"
+tests/test_m005_intraday_observe.py:351:        assert c.observe_trigger_count == 1
+tests/test_m005_intraday_observe.py:352:        assert c.observe_first_trigger_time != ""
+tests/test_m005_intraday_observe.py:356:        run_observe_check(t, current_price=89.0)
+tests/test_m005_intraday_observe.py:359:        c.observe_state = t.state.value
+tests/test_m005_intraday_observe.py:360:        c.observe_trigger_count = t.daily_trigger_count
+tests/test_m005_intraday_observe.py:362:        assert c.observe_state == "INVALIDATED"
+tests/test_m005_intraday_observe.py:366:        run_observe_check(t, current_price=95.0)
+tests/test_m005_intraday_observe.py:369:        c.observe_state = t.state.value
+tests/test_m005_intraday_observe.py:371:        assert c.observe_state == "WAITING"
+tests/test_m005_intraday_observe.py:375:    def test_default_observe_config(self):
+tests/test_m005_intraday_observe.py:377:        assert cfg.observe_max_daily_triggers == 3
+tests/test_m005_intraday_observe.py:378:        assert cfg.observe_trigger_breach_pct == 0.0
+tests/test_m005_intraday_observe.py:379:        assert cfg.observe_invalidate_breach_pct == 0.0
+tests/test_m005_intraday_observe.py:381:    def test_custom_observe_config(self):
+tests/test_m005_intraday_observe.py:382:        cfg = StrategyConfig(observe_max_daily_triggers=5)
+tests/test_m005_intraday_observe.py:387:            snap = run_observe_check(t, current_price=101.0, cfg=cfg)
+tests/test_m005_intraday_observe.py:388:            assert snap.observe_state == ObserveState.TRIGGERED
+tests/test_m005_intraday_observe.py:391:        snap6 = run_observe_check(t, current_price=102.0, cfg=cfg)
+tests/test_m005_intraday_observe.py:392:        assert snap6.observe_state == ObserveState.WAITING
+tests/test_m005_intraday_observe.py:398:        cfg = StrategyConfig(observe_max_daily_triggers=3)
+tests/test_m005_intraday_observe.py:401:        snap1 = run_observe_check(t, current_price=95.0, cfg=cfg)
+tests/test_m005_intraday_observe.py:402:        assert snap1.observe_state == ObserveState.WAITING
+tests/test_m005_intraday_observe.py:404:        snap2 = run_observe_check(t, current_price=97.0, cfg=cfg)
+tests/test_m005_intraday_observe.py:405:        assert snap2.observe_state == ObserveState.WAITING
+tests/test_m005_intraday_observe.py:407:        snap3 = run_observe_check(t, current_price=101.0, cfg=cfg)
+tests/test_m005_intraday_observe.py:408:        assert snap3.observe_state == ObserveState.TRIGGERED
+tests/test_m005_intraday_observe.py:417:        run_observe_check(t, current_price=95.0)
+tests/test_m005_intraday_observe.py:420:        run_observe_check(t, current_price=89.5)
+tests/test_m005_intraday_observe.py:424:        snap = run_observe_check(t, current_price=95.0)
+tests/test_m005_intraday_observe.py:425:        assert snap.observe_state == ObserveState.INVALIDATED
+tests/test_m005_intraday_observe.py:429:        assert expire_snap.observe_state == ObserveState.INVALIDATED
+tests/test_m005_intraday_observe.py:434:            snap = run_observe_check(t, current_price=95.0)
+tests/test_m005_intraday_observe.py:435:            assert snap.observe_state == ObserveState.WAITING
+tests/test_m005_intraday_observe.py:443:        run_observe_check(t1, current_price=101.0)
+tests/test_m005_intraday_observe.py:447:        run_observe_check(t2, current_price=1690.0)
+tests/test_s001_policy_version_signal.py:268:            save_candidate(c, db_path)
+tests/test_t003_fund_flow_anomaly.py:546:            save_candidate(c, db_path)
+
+exec
+/bin/zsh -lc 'git diff --cached --stat && git diff --cached --' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/intraday_observe.py | sed -n '70,120p'; nl -ba tradingagents/tradeflow/candidate_engine.py | sed -n '765,780p'; pwd" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    70	
+    71	
+    72	def run_observe_check(
+    73	    tracker: ObserveTracker,
+    74	    current_price: float,
+    75	    current_volume: Optional[float] = None,
+    76	    current_amount: Optional[float] = None,
+    77	    cfg: Optional[StrategyConfig] = None,
+    78	) -> ObserveSnapshot:
+    79	    if cfg is None:
+    80	        cfg = DEFAULT_STRATEGY_CONFIG
+    81	
+    82	    max_daily_triggers: int = getattr(cfg, "observe_max_daily_triggers", 3)
+    83	
+    84	    if tracker.state in (ObserveState.TRIGGERED, ObserveState.INVALIDATED, ObserveState.EXPIRED):
+    85	        return _make_terminal_snapshot(tracker, current_price, current_volume, current_amount)
+    86	
+    87	    trigger_price = tracker.trigger_price
+    88	    invalid_price = tracker.invalid_price
+    89	    reason = ""
+    90	    new_state = ObserveState.WAITING
+    91	    price_evidence: dict = {}
+    92	
+    93	    if invalid_price is not None and current_price <= invalid_price:
+    94	        new_state = ObserveState.INVALIDATED
+    95	        reason = f"价格{current_price:.2f}跌破失效价{invalid_price:.2f}"
+    96	        price_evidence = {
+    97	            "current_price": current_price,
+    98	            "invalid_price": invalid_price,
+    99	            "breach_pct": round((invalid_price - current_price) / invalid_price * 100, 2) if invalid_price else 0,
+   100	            "current_volume": current_volume,
+   101	            "current_amount": current_amount,
+   102	        }
+   103	        tracker.state = new_state
+   104	        tracker.first_invalidation_time = tracker.first_invalidation_time or datetime.now().isoformat()
+   105	    elif trigger_price is not None and current_price >= trigger_price:
+   106	        if tracker.daily_trigger_count < max_daily_triggers:
+   107	            new_state = ObserveState.TRIGGERED
+   108	            tracker.daily_trigger_count += 1
+   109	            rise_pct = (current_price - trigger_price) / trigger_price * 100 if trigger_price else 0
+   110	            reason = f"价格{current_price:.2f}突破触发价{trigger_price:.2f}(+{rise_pct:.2f}%)"
+   111	            price_evidence = {
+   112	                "current_price": current_price,
+   113	                "trigger_price": trigger_price,
+   114	                "rise_pct": round(rise_pct, 2),
+   115	                "current_volume": current_volume,
+   116	                "current_amount": current_amount,
+   117	            }
+   118	            tracker.state = new_state
+   119	            tracker.first_trigger_time = tracker.first_trigger_time or datetime.now().isoformat()
+   120	        else:
+   765	            "tier=excluded.tier, ta_budget_priority=excluded.ta_budget_priority, "
+   766	            "tier_reason=excluded.tier_reason, "
+   767	            "missing_evidence_for_upgrade_json=excluded.missing_evidence_for_upgrade_json, "
+   768	            "tradeflow_data_completeness=excluded.tradeflow_data_completeness, "
+   769	            "missing_data_fields_json=excluded.missing_data_fields_json, "
+   770	            "what_to_upgrade_json=excluded.what_to_upgrade_json, "
+   771	            "evidence_gate_applied=excluded.evidence_gate_applied, "
+   772	            "universe_sources_json=excluded.universe_sources_json, "
+   773	            "observe_state=excluded.observe_state, "
+   774	            "observe_trigger_count=excluded.observe_trigger_count, "
+   775	            "observe_first_trigger_time=excluded.observe_first_trigger_time, "
+   776	            "updated_at=excluded.updated_at",
+   777	            (
+   778	                row["trade_date"], row["symbol"], row["name"], row["source"],
+   779	                row["strategy_tags_json"], row["primary_strategy"],
+   780	                row["score"], row["status"],
+/Users/maybee/TradingAgents-AShare
+
+exec
+/bin/zsh -lc 'grep -n "M-005" -A80 docs/TASKS.md' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+33:7. 第二梯队：`S-007/S-008/M-005/M-006`，用于延长夜间窗口并继续围绕候选质量、触发状态和 TA 成本门控推进。
+34-
+35----
+36-
+37-## S. TradeFlow 选股策略核心任务池（2026-05-29 新增）
+38-
+39-> 原则：先提高候选池质量，再扩大扫描范围。TA 深度分析只服务于已经有足够逻辑、事件、资金或风险结构支撑的候选股。
+40-
+41-### S-001: 政策版本因子进入 TradeFlow 候选池（P1）
+42-- **描述**：为 TradeFlow 增加政策版本因子，识别当前 A 股市场更容易被定价的政策/产业方向，让候选池从“技术形态先行”升级为“政策版本入池 + 技术确认”。
+43-- **优先级**：P1
+44-- **状态**：done — commit a4d06d4 + cf7d928
+45-- **背景**：
+46-  - A 股很多阶段不是简单的业绩驱动，而是政策方向、产业版本和市场叙事共同驱动。
+47-  - 现在 TradeFlow 已有 VCP、事件催化、A 股标签，但缺少“当前版本需要什么标杆”的第一层判断。
+48-- **执行约束**：
+49-  - 不调用外部 LLM，不跑全市场扫描。
+50-  - 不改 `tradingagents/prompts/`。
+51-  - 不输出买入/卖出强建议。
+52-  - 只在 TradeFlow 候选池层做信号、标签、分数和证据引用。
+53-- **实现要点**：
+54-  1. 新增或扩展政策版本信号模块，输出 `policy_tags`、`version_score`、`policy_evidence_refs`。
+55-  2. 先用可维护关键词/规则覆盖：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革等。
+56-  3. 事件标题、公告摘要、行业标签命中政策版本时加分；无原始文本证据时不得加分。
+57-  4. 与现有 `event_source`、`event_catalyst`、`candidate_engine` 兼容，不破坏 VCP/回踩策略。
+58-  5. Daily Plan 中展示政策标签和证据摘要，但动作仍只能是 `OBSERVE/NEED_DEEP_TA` 等非强交易动作。
+59-- **验证方式**：
+60-  - 构造政策关键词事件，候选包含对应 `policy_tags` 和 evidence refs。
+61-  - 无政策证据时 `version_score` 不得凭空加分。
+62-  - 不同股票事件必须按 symbol 隔离，不能串票。
+63-  - `pytest tests/test_tradeflow_*.py -q` 或新增对应测试通过。
+64-- **代码标注要求**：`# [S-001] policy_version_signal`
+65-
+66-### S-002: 叙事质量评分（P1）
+67-- **描述**：给事件催化增加叙事质量评分，区分“普通公告/普通新闻”和“容易形成市场共识的主线事件”。
+68-- **优先级**：P1
+69-- **状态**：done — commit 9825e22
+70-- **背景**：
+71-  - 选股不只看有没有事件，还要判断事件是否容易被市场理解、传播和接力。
+72-  - 目前事件催化更偏“是否存在”，缺少“事件质量与传播价值”。
+73-- **执行约束**：
+74-  - 第一阶段只做规则评分，不调用外部 LLM。
+75-  - 不做舆情全网抓取，不扫全市场。
+76-  - 评分只影响候选排序和 `need_deep_ta`，不直接生成交易建议。
+77-- **实现要点**：
+78-  1. 新增 `narrative_score`，分解为政策背书、产业落地、订单/回购/评级、传播清晰度、拥挤/过热扣分。
+79-  2. 回购、重大订单、中标、并购重组、业绩预告、评级变化等事件给不同基础分。
+80-  3. 多个事件叠加时做封顶，避免标题堆叠虚高。
+81-  4. 输出 `narrative_reasons` 和 evidence refs，便于日报解释“为什么进候选池”。
+82-- **验证方式**：
+83-  - 普通新闻低分，回购/订单/政策相关事件高分。
+84-  - 重复事件不会无限叠加。
+85-  - `narrative_score` 缺证据时为 0 或保守默认。
+86-- **代码标注要求**：`# [S-002] narrative_quality_score`
+87-
+88-### S-003: 水下风险标签与候选降权（P1）
+89-- **描述**：为 TradeFlow 候选池增加水下风险标签，识别解禁、减持、问询、财务异常、融资拥挤、龙虎榜过热等风险，对候选做降权或要求更严格技术确认。
+90-- **优先级**：P1
+91-- **状态**：done — commit a95c3d7
+92-- **背景**：
+93-  - 选对股票不只看上涨逻辑，也要避开“看起来有题材但水下结构很差”的票。
+94-  - 当前已有部分 A 股标签，但风险标签还不够系统，也没有形成候选池统一降权规则。
+95-- **执行约束**：
+96-  - 所有风险标签必须绑定原始字段或事件文本。
+97-  - 不把风险标签直接翻译成清仓/买入建议。
+98-  - 不写生产数据库 schema；如需持久化先用现有 TradeFlow 结构或输出方案。
+99-- **实现要点**：
+100-  1. 统一输出 `risk_flags`：`LOCKUP_RISK`、`REDUCE_HOLDING_RISK`、`INQUIRY_RISK`、`FINANCIAL_QUALITY_RISK`、`MARGIN_CROWDING_RISK`、`LHB_OVERHEAT_RISK`。
+101-  2. 风险标签进入候选分数降权和 `need_deep_ta` 门槛。
+102-  3. 解禁/减持/问询等公告类风险优先从 `event_source` 读取。
+103-  4. 龙虎榜和融资融券风险必须区分 `HAS_DATA/NOT_QUERIED/FAILED`，不得把未查询当作无风险。
+104-- **验证方式**：
+105-  - 构造解禁/减持/问询事件，候选出现对应 `risk_flags` 并降权。
+106-  - 龙虎榜未查询时不生成过热风险。
+107-  - 风险缺证据时不输出高置信风险标签。
+108-- **代码标注要求**：`# [S-003] underwater_risk_flags`
+109-
+110-### S-004: 候选股博弈平衡解释（P1）
+111-- **描述**：在 TradeFlow Plan 中为每个候选输出轻量博弈解释，说明多头为何可能买、空头为何可能卖、政策/监管/资金结构是否支持，避免只给策略标签而缺少交易对手视角。
+112-- **优先级**：P1
+113-- **状态**：done — commit c92e626
+--
+289:### M-005: 盘中 Observe 状态机（P2）
+290-- **描述**：对盘前候选做低频盘中观察，记录触发价、失效价、放量、跌破等状态，不直接调用 TA。
+291-- **优先级**：P2
+292:- **状态**：in_progress — claimed M-005-20260530-010959
+293-- **前置条件**：`M-003`、`M-004` 完成。
+294-- **执行约束**：
+295-  - 每 30 分钟以内的低频观察，不做高频交易。
+296-  - 不自动推送飞书，不自动调用深度 TA。
+297-- **实现要点**：
+298-  1. 定义 observe 状态：WAITING/TRIGGERED/INVALIDATED/EXPIRED。
+299-  2. 每次检查保存原始价量证据和触发原因。
+300-  3. 单日触发次数上限，防止噪声。
+301-- **验证方式**：
+302-  - 价格突破触发价 → TRIGGERED。
+303-  - 跌破失效价 → INVALIDATED。
+304-  - 未触发时不输出提醒。
+305:- **代码标注要求**：`# [M-005] intraday_observe_state`
+306-
+307-### M-006: OpenClaw 自动触发 TA 深度分析门控（P2）
+308-- **描述**：在盘中 Observe 触发后，由 OpenClaw 决定是否调用 TA 深度分析，但必须有成本、模型、频率门控。
+309-- **优先级**：P2
+310-- **状态**：ready
+311:- **前置条件**：`M-005` 完成并稳定运行。
+312-- **执行约束**：
+313-  - 默认不调用 DeepSeek。
+314-  - 每日 TA 深度分析次数设置硬上限。
+315-  - 未持仓/已持仓必须带 position_context。
+316-- **实现要点**：
+317-  1. 定义 `need_deep_ta` 的可执行条件。
+318-  2. 记录触发 TA 的原因、模型、耗时、报告路径。
+319-  3. 失败时不重试无限循环。
+320-- **验证方式**：
+321-  - `need_deep_ta=False` 不调用 TA。
+322-  - 超出每日次数上限不调用 TA。
+323-- **代码标注要求**：`# [M-006] gated_deep_ta_dispatch`
+324-
+325-### M-007: 盘后 Review 与策略命中率复盘（P2）
+326-- **描述**：复盘盘前候选和盘中触发是否有效，输出命中率、误报率、移除理由，服务下一轮策略调参。
+327-- **优先级**：P2
+328-- **状态**：blocked
+329:- **前置条件**：`M-005` 稳定运行至少 3 个交易日。
+330-- **执行约束**：
+331-  - 不自动调整策略权重，只输出建议。
+332-  - 不生成投资建议，只做信号质量复盘。
+333-- **实现要点**：
+334-  1. 每个候选记录次日/3日/5日表现。
+335-  2. 统计各策略命中率和误报率。
+336-  3. 输出 `docs/tradeflow_reviews/YYYY-MM-DD.md`。
+337-- **验证方式**：
+338-  - 给定候选和行情 fixture，能生成复盘表。
+339-- **代码标注要求**：`# [M-007] post_market_review`
+340-
+341-### M-008: 数据源健康检查与 fallback 可观测性（P1）
+342-- **描述**：建立数据源健康检查，持续观察 AKShare、cn_astock、BaoStock、yfinance、公告/资金/LHB 等源的成功率、延迟和失败原因。
+343-- **优先级**：P1
+344-- **状态**：done — commit 4876cc8
+345-- **执行约束**：
+346-  - 只跑小样本 smoke，不扫全市场。
+347-  - 不保存 cookie/API key。
+348-  - live 测试必须可跳过。
+349-- **实现要点**：
+350-  1. 新增数据源 health check 脚本，默认测试 2-3 只样例股。
+351-  2. 输出每个 endpoint 的 `OK/FAILED/STALE/NOT_QUERIED`。
+352-  3. 记录 fallback 是否发生以及最终 vendor。
+353-  4. 生成 `docs/data_source_health/YYYY-MM-DD.md`。
+354-- **验证方式**：
+355-  - mock 主源失败时 health report 显示 fallback 命中。
+356-  - `pytest tests/test_*provider*.py -q` 或新增专门测试通过。
+357-- **代码标注要求**：`# [M-008] data_source_health`
+358-
+359-### M-009: TradeFlow 前端观察池面板（P2）
+360-- **描述**：在前端增加 TradeFlow 观察池/计划展示：候选、策略标签、触发价、失效价、过滤原因、是否需要 TA。
+361-- **优先级**：P2
+362-- **状态**：blocked
+363:- **前置条件**：`M-003`、`M-005` 数据结构稳定。
+364-- **执行约束**：
+365-  - 先做只读展示，不加一键交易。
+366-  - 不展示强买卖词。
+367-- **实现要点**：
+368-  1. 后端提供只读 API 或复用现有 plan 输出。
+369-  2. 前端表格支持按策略/状态/need_deep_ta 筛选。
+370-  3. 每个候选可展开 evidence。
+371-- **验证方式**：
+372-  - 前端类型检查通过。
+373-  - mock 数据展示不溢出、不误显示强动作。
+374-- **代码标注要求**：`# [M-009] tradeflow_dashboard`
+375-
+376-### M-010: 飞书/通知链路人工确认版（P2）
+377-- **描述**：把夜间日报、盘中触发、盘后复盘接入飞书，但第一阶段只生成草稿/本地预览，人工确认后再发。
+378-- **优先级**：P2
+379-- **状态**：blocked
+380-- **前置条件**：孟确认 webhook、推送格式和频率。
+381-- **执行约束**：
+382-  - 不自动推送真实 webhook。
+383-  - 不发送强买卖词。
+384-  - 不泄露 API key/token。
+385-- **实现要点**：
+386-  1. 统一通知 payload schema。
+387-  2. 支持 `--dry-run` 输出本地 markdown/json。
+388-  3. 真实发送需显式开关。
+389-- **验证方式**：
+390-  - dry-run 生成 payload。
+391-  - 未配置 webhook 时不报错、不发送。
+392-- **代码标注要求**：`# [M-010] notification_dry_run`
+393-
+394----
+395-
+396-## Z. 自动开发基础设施（2026-05-26 新增）
+397-
+398-### AUTO-001: 自动开发闭环 v1（P0）
+399-- **描述**：实现 `scripts/auto_dev_loop.sh`，串联 TASKS.md → OpenCode → 测试 → Codex review → commit 的单轮闭环
+400-- **优先级**：P0
+401-- **状态**：done
+402-- **实现要点**：
+403-  1. 解析 TASKS.md 找 status=ready 最高优先级任务
+404-  2. 工作区不干净时退出
+405-  3. OpenCode 实现 → 运行测试 → codex review --uncommitted
+406-  4. 测试通过 + review 无 P0/P1 → git commit
+407-  5. 单任务最多 2 轮修复，超过输出 NEEDS_HUMAN
+408-  6. 结果写入 DEVLOG.md
+409-- **验证方式**：
+410-  - 运行 `./scripts/auto_dev_loop.sh` 一轮后任务状态变为 done
+411-  - 工作区不干净时脚本退出
+412-  - 测试失败时进入修复循环
+413-  - NEEDS_HUMAN 时正确输出
+414-- **完成记录**：scripts/auto_dev_loop.sh 已创建
+415-
+416----
+417-
+418-## A. 当前进行中
+419-
+420-### F-001: TA研报执行层修复（P0-P2共10项）
+421-- **描述**：修复002837英维克报告暴露的10个问题，涉及止损价解析、估值sanity check、Opportunity Score封顶、未持仓语义、Buy/Risk Level冲突、舆情VERDICT矛盾、入场区间误识别、打法标签、A股做空措辞、Evidence Coverage保守化
+422-- **优先级**：P0（1-3）+ P1（4-7）+ P2（8-10）
+423-- **验收**：重跑002837报告，10项全部通过
+424-- **状态**：已派发OpenCode执行
+425-
+426-### R-001: 2026-05-26 自动开发收尾巡检（P0） ✅ 已完成
+427-- **描述**：对昨日 OpenClaw/OpenCode 自动开发结果做收口验收，先处理未提交 diff、临时文件、脚本可靠性和 G-008 接线问题，再允许进入新功能开发。
+428-- **优先级**：P0
+429-- **状态**：done
+430-- **背景**：
+431-  - 当前分支相对 `myfork/local/tradingagents-custom` 为 `ahead 13, behind 1`，不适合直接 push。
+432-  - 工作区存在 `G-007` 未提交代码改动、`tests/test_g007_fund_lhb_provenance.py` 未跟踪测试文件，以及多份 `G-008` 临时补丁/备份文件。
+433-  - `G-008` 已有 commit，但当前测试文件 `test_g008_valuation.py` 缺少 `Optional` import，且生产代码从 `state.get("raw_evidence")` 取值，可能无法读取实际的 `state.metadata.raw_evidence`。
+434-- **执行约束**：
+435-  - 不改 `tradingagents/prompts/`。
+436-  - 不写入生产 `tradingagents.db`。
+437-  - 不 push / PR / merge。
+438-  - 不自动跑全市场扫描或深度 TA。
+439-  - 每个子任务最多修复 2 轮，超过标记 `NEEDS_HUMAN`。
+440-- **验收方式**：
+441-  - `git status -sb` 只剩预期代码/文档变更，无临时补丁/备份文件。
+442-  - `G-007/G-008/AUTO-001` 各自有明确 PASS/FAIL 结论。
+443-  - 相关测试命令全部通过，或失败项明确标注为 pre-existing。
+
+codex
+The patch adds the observe state machinery, but candidate upserts can erase intraday state, and the newly exposed breach-threshold configuration has no effect. These issues can break expected observe behavior in normal refresh/tuning scenarios.
+
+Full review comments:
+
+- [P2] Preserve existing observe state on candidate refresh — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py:773-775
+  When `save_candidate()` is called again for the same `(trade_date, symbol)` with a freshly generated `Candidate`, the default `WAITING/0/''` observe fields overwrite any intraday `TRIGGERED` or `INVALIDATED` state already stored for that candidate. This can happen if the daily plan/discovery job is retried or refreshed after the observer has updated the row, causing the recorded trigger state and first trigger time to be lost.
+
+- [P2] Apply configured observe breach percentages — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/intraday_observe.py:93-105
+  If `StrategyConfig.observe_trigger_breach_pct` or `observe_invalidate_breach_pct` is set above zero, the observer still triggers exactly at `trigger_price` and invalidates exactly at `invalid_price` because these fields are never read here. That makes the new configuration knobs ineffective for users who tune the observe thresholds to avoid noisy boundary touches.
+The patch adds the observe state machinery, but candidate upserts can erase intraday state, and the newly exposed breach-threshold configuration has no effect. These issues can break expected observe behavior in normal refresh/tuning scenarios.
+
+Full review comments:
+
+- [P2] Preserve existing observe state on candidate refresh — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py:773-775
+  When `save_candidate()` is called again for the same `(trade_date, symbol)` with a freshly generated `Candidate`, the default `WAITING/0/''` observe fields overwrite any intraday `TRIGGERED` or `INVALIDATED` state already stored for that candidate. This can happen if the daily plan/discovery job is retried or refreshed after the observer has updated the row, causing the recorded trigger state and first trigger time to be lost.
+
+- [P2] Apply configured observe breach percentages — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/intraday_observe.py:93-105
+  If `StrategyConfig.observe_trigger_breach_pct` or `observe_invalidate_breach_pct` is set above zero, the observer still triggers exactly at `trigger_price` and invalidates exactly at `invalid_price` because these fields are never read here. That makes the new configuration knobs ineffective for users who tune the observe thresholds to avoid noisy boundary touches.

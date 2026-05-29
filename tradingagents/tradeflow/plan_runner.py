@@ -107,6 +107,9 @@ def _build_plan_entry(candidate: Candidate) -> dict:
         "what_to_upgrade": candidate.what_to_upgrade,  # [S-008]
         "evidence_gate_applied": candidate.evidence_gate_applied,  # [S-008]
         "universe_sources": candidate.universe_sources,  # [M-003] tradeflow_universe_manager
+        "observe_state": candidate.observe_state,  # [M-005] intraday_observe_state
+        "observe_trigger_count": candidate.observe_trigger_count,  # [M-005]
+        "observe_first_trigger_time": candidate.observe_first_trigger_time,  # [M-005]
     }
 
 

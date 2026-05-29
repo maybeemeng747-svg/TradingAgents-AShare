@@ -125,6 +125,11 @@ class StrategyConfig:
     evidence_completeness_for_a_tier: float = 0.6
     evidence_completeness_for_deep_ta: float = 0.5
 
+    # ── Intraday Observe [M-005] ──
+    observe_max_daily_triggers: int = 3
+    observe_trigger_breach_pct: float = 0.0
+    observe_invalidate_breach_pct: float = 0.0
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["risk_high_severity_flags"] = list(self.risk_high_severity_flags)

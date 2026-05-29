@@ -4,6 +4,45 @@
 
 ---
 
+## 2026-05-30 | M-005: 盘中 Observe 状态机
+
+- **执行者**：OpenCode
+- **任务**：M-005 — 对盘前候选做低频盘中观察，记录触发价、失效价、放量、跌破等状态
+- **修改文件**：
+  - `tradingagents/tradeflow/intraday_observe.py` — 新建：[M-005] 盘中观察状态机核心模块
+    - `ObserveState` 枚举：WAITING / TRIGGERED / INVALIDATED / EXPIRED
+    - `ObserveSnapshot` 数据类：单次检查快照，记录价量证据和触发原因
+    - `ObserveTracker` 数据类：跟踪器，维护状态、触发次数、检查历史
+    - `run_observe_check()` — 核心检查函数：价格突破触发价→TRIGGERED，跌破失效价→INVALIDATED，支持单日触发次数上限
+    - `expire_tracker()` — 收盘到期处理
+  - `tradingagents/tradeflow/schemas.py` — Candidate 新增 3 个字段：`observe_state`、`observe_trigger_count`、`observe_first_trigger_time`；`to_db_row()`/`from_db_row()` 同步；`render_text()` 显示盘中观察状态
+  - `tradingagents/tradeflow/strategy_config.py` — StrategyConfig 新增 3 个 observe 配置：`observe_max_daily_triggers`(默认3)、`observe_trigger_breach_pct`、`observe_invalidate_breach_pct`
+  - `tradingagents/tradeflow/candidate_engine.py` — `init_db()` 新增 3 列；`save_candidate()` INSERT/UPDATE 包含新列（55→58 字段）
+  - `tradingagents/tradeflow/plan_runner.py` — `_build_plan_entry()` 输出 observe_state/observe_trigger_count/observe_first_trigger_time
+  - `tests/test_m005_intraday_observe.py` — 新建，40 个测试覆盖：
+    - TestObserveState (2): 枚举值、完整枚举集合
+    - TestObserveSnapshot (2): 基本创建、自动时间戳
+    - TestObserveTracker (2): 默认状态、自定义日期
+    - TestRunObserveCheck (11): 价格低于触发价/WAITING、突破触发价/TRIGGERED、恰好触发价/TRIGGERED、跌破失效价/INVALIDATED、恰好失效价/INVALIDATED、失效优先于触发检查、无触发价、无失效价、无价格、量价记录、单日触发上限
+    - TestTerminalStates (3): TRIGGERED 终态保持、INVALIDATED 终态保持、EXPIRED 终态保持
+    - TestExpireTracker (3): WAITING→EXPIRED、TRIGGERED 保持、INVALIDATED 保持
+    - TestCandidateObserveIntegration (4): 默认值、to_db_row、from_db_row、from_db_row 默认值
+    - TestDbPersistence (2): 保存并读取 observe 状态、upsert 覆盖
+    - TestTrackerToCandidateSync (3): 同步 TRIGGERED/INVALIDATED/WAITING
+    - TestStrategyConfigObserve (2): 默认配置、自定义配置
+    - TestFullObserveWorkflow (4): 完整日间流程、失效流程、未触发无输出、多 symbol 隔离
+- **测试结果**：40 passed (M-005)；TradeFlow 全部 121 passed；0 failed
+- **关键逻辑**：
+  - `run_observe_check()` 先检查失效价（INVALIDATED），再检查触发价（TRIGGERED），失效优先于触发
+  - 单日触发次数上限由 `StrategyConfig.observe_max_daily_triggers` 控制（默认3），超出上限后价格虽突破但不再触发
+  - 终态（TRIGGERED/INVALIDATED/EXPIRED）为不可逆状态，后续检查只记录快照不改变状态
+  - `expire_tracker()` 收盘时将 WAITING 状态转为 EXPIRED，已触发/已失效保持不变
+  - 每次 `run_observe_check()` 自动追加到 `tracker.check_history`，保存完整检查历史
+  - 多 symbol 完全隔离，互不影响
+- **风险点**：无；所有改动向后兼容，observe_state 默认 WAITING，不触发任何自动动作
+
+
+
 ## 2026-05-30 | V-002: 夜间自动开发验收报告与候选样本回放
 
 - **执行者**：OpenCode
@@ -293,3 +332,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/V-002-20260530-round1.txt
 - **运行档案**: docs/task_runs/V-002-20260530-010220/
+
+## 2026-05-30 | AUTO-002 自动开发闭环
+
+- **任务**: M-005 — 盘中 Observe 状态机（P2）
+- **优先级**: P2
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/M-005-20260530-round1.txt
+- **运行档案**: docs/task_runs/M-005-20260530-010959/
