@@ -27,6 +27,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
 
 @dataclass
 class NarrativeQualityResult:
@@ -113,7 +115,11 @@ def _score_dimension(
 
 def score_narrative_quality(
     event_texts: list[str] | None = None,
+    cfg: StrategyConfig | None = None,  # [M-004]
 ) -> NarrativeQualityResult:
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
     if not event_texts:
         return NarrativeQualityResult()
 
@@ -205,7 +211,7 @@ def score_narrative_quality(
         all_refs.extend(crowd_refs)
         total_score -= crowd_deduction
 
-    total_score = max(0.0, min(total_score, MAX_NARRATIVE_SCORE))
+    total_score = max(0.0, min(total_score, cfg.narrative_max_score))  # [M-004]
     total_score = round(total_score, 2)
 
     if total_score <= 0 and not all_refs:

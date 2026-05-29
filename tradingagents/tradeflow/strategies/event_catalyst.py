@@ -14,6 +14,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from ..strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
 
 @dataclass
 class EventCatalystSignal:
@@ -108,6 +110,7 @@ def score_event_catalyst(
     event_overrides: Optional[list[dict]] = None,
     latest_close: float = 0.0,
     lhb_status: str = "NOT_QUERIED",
+    cfg: Optional[StrategyConfig] = None,  # [M-004]
 ) -> Optional[EventCatalystSignal]:
     """Score a stock for event-driven catalyst.
 
@@ -121,10 +124,13 @@ def score_event_catalyst(
         latest_close: Latest close price for trigger/invalid calculation.
         lhb_status: LHB data status, one of "HAS_DATA"/"NOT_QUERIED"/"NORMAL_NO_DATA".
                     Controls HOT_MONEY_LHB tag.  [N-004] astock_signal_tags
+        cfg: StrategyConfig with thresholds. Uses defaults when None.
 
     Returns:
         EventCatalystSignal if catalyst detected, None otherwise.
     """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
     detected_events = []
 
     # Check overrides first — only use overrides whose symbol matches,
@@ -168,7 +174,7 @@ def score_event_catalyst(
     if has_bearish and has_bullish:
         direction = "mixed"
 
-    score = min(best["score"], 80)
+    score = min(best["score"], cfg.event_score_max)  # [M-004]
 
     risk_flags = []
     if has_bearish:
@@ -178,7 +184,7 @@ def score_event_catalyst(
     trigger_price = round(latest_close * 1.03, 2) if latest_close > 0 else None
     invalid_price = round(latest_close * 0.95, 2) if latest_close > 0 else None
 
-    need_deep_ta = score >= 60 or direction in ("mixed", "neutral")
+    need_deep_ta = score >= cfg.event_need_deep_ta_score or direction in ("mixed", "neutral")  # [M-004]
 
     verification = ""
     if direction == "bullish":

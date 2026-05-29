@@ -18,6 +18,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
 
 @dataclass
 class PolicyVersionResult:
@@ -105,6 +107,7 @@ MAX_POLICY_BONUS = 30.0
 def detect_policy_version(
     event_texts: list[str] | None = None,
     industry_tags: list[str] | None = None,
+    cfg: StrategyConfig | None = None,  # [M-004]
 ) -> PolicyVersionResult:
     """Detect policy version signals from event texts and industry tags.
 
@@ -116,6 +119,9 @@ def detect_policy_version(
         PolicyVersionResult with tags, score, and evidence refs.
         Score is 0 when no raw text evidence matches any policy topic.
     """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
     texts = [t for t in (event_texts or []) if t]
     industries = [t for t in (industry_tags or []) if t]
     combined_text = "\n".join(texts)
@@ -159,14 +165,14 @@ def detect_policy_version(
                 })
         elif matched_in_industry:
             matched_tags.append(tag)
-            raw_score += weight * 0.3
+            raw_score += weight * cfg.policy_industry_weight_factor  # [M-004]
             evidence_refs.append({
                 "tag": tag,
                 "matched_text": f"行业标签命中: {tag}",
                 "source": "industry_tag",
             })
 
-    version_score = min(raw_score, MAX_POLICY_BONUS)
+    version_score = min(raw_score, cfg.policy_max_bonus)  # [M-004]
 
     if not evidence_refs:
         return PolicyVersionResult()

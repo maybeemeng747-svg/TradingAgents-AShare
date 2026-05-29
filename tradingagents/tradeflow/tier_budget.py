@@ -27,6 +27,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
 
 _STRONG_BUY_SELL_WORDS = {
     "立即买入", "重仓买入", "立即清仓", "满仓", "梭哈",
@@ -92,6 +94,7 @@ def classify_candidate_tier(
     game_balance: str = "",
     gate_passed: bool = False,
     why_not_deep_ta: str = "",
+    cfg: Optional[StrategyConfig] = None,  # [M-004]
 ) -> TierBudgetResult:
     """Classify a single candidate into A / B / C tier.
 
@@ -117,12 +120,15 @@ def classify_candidate_tier(
     Returns:
         ``TierBudgetResult`` with tier, budget, reason, and upgrade hints.
     """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
     r_flags = set(risk_flags or [])
     missing = list(missing_evidence or [])
 
-    has_high_risk = bool(r_flags & _SEVERITY_HIGH_RISK_FLAGS)
-    many_risks = len(r_flags) >= 3
-    heavy_penalty = risk_penalty <= -15
+    has_high_risk = bool(r_flags & set(cfg.risk_high_severity_flags))  # [M-004]
+    many_risks = len(r_flags) >= cfg.risk_many_flags_threshold
+    heavy_penalty = risk_penalty <= cfg.risk_heavy_penalty_threshold
     fragile = game_balance == "fragile"
     favorable_or_neutral = game_balance in {"favorable", "neutral"}
 
@@ -132,10 +138,10 @@ def classify_candidate_tier(
 
     # --- Tier A conditions ---
     meets_a_signals = (
-        positive_category_count >= 3
-        or (positive_category_count >= 2 and composite_score >= 50)
+        positive_category_count >= cfg.gate_rank_a_min_categories  # [M-004]
+        or (positive_category_count >= cfg.gate_rank_b_min_categories and composite_score >= cfg.tier_a_min_composite_for_2cat)
     )
-    meets_a_completeness = data_completeness >= 0.6
+    meets_a_completeness = data_completeness >= cfg.tier_a_min_completeness
     meets_a_risk = not has_high_risk and not many_risks and not heavy_penalty
     meets_a_game = favorable_or_neutral
     meets_a_gate = gate_passed
@@ -167,7 +173,7 @@ def classify_candidate_tier(
 
         # --- Tier B or C ---
         meets_b_signals = positive_category_count >= 1
-        meets_b_completeness = data_completeness >= 0.3
+        meets_b_completeness = data_completeness >= cfg.tier_b_min_completeness  # [M-004]
         meets_b_risk = not has_high_risk and not many_risks and not heavy_penalty
         not_fragile = not fragile
 
@@ -212,7 +218,7 @@ def classify_candidate_tier(
                 c_reasons.append(f"风险罚分重({risk_penalty})")
             reason = "；".join(c_reasons) if c_reasons else "综合条件不足"
 
-    budget = TIER_BUDGET_MAP.get(tier, 0)
+    budget = cfg.tier_a_budget if tier == TIER_A else (cfg.tier_b_budget if tier == TIER_B else cfg.tier_c_budget)  # [M-004]
     not_deep = why_not_deep_ta if tier != TIER_A else ""
 
     reason = _sanitize(reason)
@@ -231,7 +237,8 @@ def classify_candidate_tier(
 
 def allocate_tier_budget(
     results: list[TierBudgetResult],
-    a_tier_cap: int = A_TIER_HARD_CAP,
+    a_tier_cap: int = 0,  # [M-004] default 0 means use StrategyConfig default
+    cfg: Optional[StrategyConfig] = None,
 ) -> TierBudgetAllocation:
     """Enforce the A-tier cap and compute aggregate budget.
 
@@ -247,6 +254,13 @@ def allocate_tier_budget(
     Returns:
         TierBudgetAllocation with aggregate stats and demotion info.
     """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+    if a_tier_cap <= 0:
+        a_tier_cap = cfg.tier_a_hard_cap
+
+    tier_budget_map = {TIER_A: cfg.tier_a_budget, TIER_B: cfg.tier_b_budget, TIER_C: cfg.tier_c_budget}  # [M-004]
+
     a_indices = [i for i, r in enumerate(results) if r.tier == TIER_A]
 
     cap_applied = False
@@ -257,7 +271,7 @@ def allocate_tier_budget(
         for idx in a_indices[a_tier_cap:]:
             old = results[idx]
             old.tier = TIER_B
-            old.ta_budget_priority = TIER_BUDGET_MAP[TIER_B]
+            old.ta_budget_priority = tier_budget_map[TIER_B]
             old.tier_reason = f"A层已满(上限{a_tier_cap})，降为B层观察；{old.tier_reason}"
             old.why_not_deep_ta = f"A层名额已满({a_tier_cap})，降为观察"
             demoted.append(f"slot_{idx}")

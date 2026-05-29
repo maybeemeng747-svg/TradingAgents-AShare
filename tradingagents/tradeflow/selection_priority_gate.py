@@ -24,6 +24,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
 
 _STRONG_BUY_SELL_WORDS = {
     "立即买入", "重仓买入", "立即清仓", "满仓", "梭哈",
@@ -133,6 +135,7 @@ def run_selection_priority_gate(
     has_event_data: bool = False,
     has_fund_flow_data: bool = False,
     has_risk_assessment: bool = False,
+    cfg: Optional[StrategyConfig] = None,  # [M-004]
 ) -> SelectionPriorityResult:
     """Run the unified selection priority gate on a candidate.
 
@@ -157,6 +160,9 @@ def run_selection_priority_gate(
     Returns:
         SelectionPriorityResult with composite score, gate verdict, and explanations.
     """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
     tags = set(strategy_tags or [])
     p_tags = list(policy_tags or [])
     r_flags = set(risk_flags or [])
@@ -196,15 +202,15 @@ def run_selection_priority_gate(
         has_risk_assessment=has_risk_assessment,
     )
 
-    completeness_bonus = round(data_completeness * 5.0, 2)
+    completeness_bonus = round(data_completeness * cfg.gate_completeness_bonus_factor, 2)  # [M-004]
 
     composite_score = score + version_score + narrative_score + fund_flow_anomaly_score + risk_penalty + completeness_bonus
-    composite_score = max(0.0, min(composite_score, MAX_COMPOSITE_SCORE))
+    composite_score = max(0.0, min(composite_score, cfg.gate_max_composite_score))
     composite_score = round(composite_score, 2)
 
-    has_high_risk = bool(r_flags & _SEVERITY_HIGH_RISK_FLAGS)
-    many_risks = len(r_flags) >= 3
-    heavy_penalty = risk_penalty <= -15
+    has_high_risk = bool(r_flags & set(cfg.risk_high_severity_flags))  # [M-004]
+    many_risks = len(r_flags) >= cfg.risk_many_flags_threshold
+    heavy_penalty = risk_penalty <= cfg.risk_heavy_penalty_threshold
 
     fragile_or_crowded = game_balance in {"fragile", "crowded"}
     favorable_or_neutral = game_balance in {"favorable", "neutral"}
@@ -214,12 +220,12 @@ def run_selection_priority_gate(
     why_not_deep_ta = ""
 
     can_pass_gate = (
-        positive_category_count >= MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA
+        positive_category_count >= cfg.gate_min_positive_categories  # [M-004]
         and not has_high_risk
         and not many_risks
         and not heavy_penalty
         and not fragile_or_crowded
-        and data_completeness >= 0.5
+        and data_completeness >= cfg.gate_completeness_min
     )
 
     if can_pass_gate:
@@ -239,9 +245,9 @@ def run_selection_priority_gate(
         refs.append({"field": "gate_passed", "value": True, "reason": f"{positive_category_count} categories, risk manageable"})
     else:
         blockers: list[str] = []
-        if positive_category_count < MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA:
-            blockers.append(f"仅{positive_category_count}类正向信号(需≥{MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA})")
-            refs.append({"field": "gate_blocked", "value": "insufficient_categories", "detail": f"{positive_category_count}/{MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA}"})
+        if positive_category_count < cfg.gate_min_positive_categories:  # [M-004]
+            blockers.append(f"仅{positive_category_count}类正向信号(需≥{cfg.gate_min_positive_categories})")
+            refs.append({"field": "gate_blocked", "value": "insufficient_categories", "detail": f"{positive_category_count}/{cfg.gate_min_positive_categories}"})
         if has_high_risk:
             blockers.append(f"高风险标签({', '.join(r_flags & _SEVERITY_HIGH_RISK_FLAGS)})")
             refs.append({"field": "gate_blocked", "value": "high_risk_flags"})
@@ -254,14 +260,14 @@ def run_selection_priority_gate(
         if fragile_or_crowded:
             blockers.append(f"博弈平衡不佳({game_balance})")
             refs.append({"field": "gate_blocked", "value": "bad_game_balance"})
-        if data_completeness < 0.5:
+        if data_completeness < cfg.gate_completeness_min:  # [M-004]
             blockers.append(f"数据完整度不足({data_completeness:.0%})")
             refs.append({"field": "gate_blocked", "value": "low_data_completeness"})
         why_not_deep_ta = "；".join(blockers)
 
-    if positive_category_count >= 3 and composite_score >= 60 and data_completeness >= 0.7:
+    if positive_category_count >= cfg.gate_rank_a_min_categories and composite_score >= cfg.gate_rank_a_min_composite and data_completeness >= cfg.gate_rank_a_min_completeness:  # [M-004]
         priority_rank = "A"
-    elif positive_category_count >= 2 and composite_score >= 30:
+    elif positive_category_count >= cfg.gate_rank_b_min_categories and composite_score >= cfg.gate_rank_b_min_composite:
         priority_rank = "B"
     else:
         priority_rank = "C"

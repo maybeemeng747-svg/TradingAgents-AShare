@@ -1,0 +1,4169 @@
+Task: M-004 — TradeFlow 策略权重与阈值配置（P1）
+Date: 2026-05-30_01:02:20
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: workspace-write [workdir, /tmp, $TMPDIR, /Users/maybee/.codex/memories]
+reasoning effort: none
+reasoning summaries: none
+session id: 019e74ae-845c-7833-b929-d83fde17637d
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md && printf '\\n---TASKS---\\n' && sed -n '1,220p' docs/TASKS.md && printf '\\n---DECISIONS---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n---DEVLOG---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+---TASKS---
+# 任务池
+
+> 最后更新：2026-05-29
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `S-005`：选股优先级整合与 `need_deep_ta` 门槛重排（P1，ready）。
+2. `M-003`：TradeFlow universe 管理器（P1，ready）。
+3. `M-004`：TradeFlow 策略权重与阈值配置（P1，ready）。
+4. `T-006`：事件源自动接入 Discovery / Daily Plan（P1，ready）。
+5. `V-002`：夜间自动开发验收报告与候选样本回放（P1，ready）。
+6. `S-006`：候选误报审计与样本集沉淀（P1，ready）。
+7. 第二梯队：`S-007/S-008/M-005/M-006`，用于延长夜间窗口并继续围绕候选质量、触发状态和 TA 成本门控推进。
+
+---
+
+## S. TradeFlow 选股策略核心任务池（2026-05-29 新增）
+
+> 原则：先提高候选池质量，再扩大扫描范围。TA 深度分析只服务于已经有足够逻辑、事件、资金或风险结构支撑的候选股。
+
+### S-001: 政策版本因子进入 TradeFlow 候选池（P1）
+- **描述**：为 TradeFlow 增加政策版本因子，识别当前 A 股市场更容易被定价的政策/产业方向，让候选池从“技术形态先行”升级为“政策版本入池 + 技术确认”。
+- **优先级**：P1
+- **状态**：done — commit a4d06d4 + cf7d928
+- **背景**：
+  - A 股很多阶段不是简单的业绩驱动，而是政策方向、产业版本和市场叙事共同驱动。
+  - 现在 TradeFlow 已有 VCP、事件催化、A 股标签，但缺少“当前版本需要什么标杆”的第一层判断。
+- **执行约束**：
+  - 不调用外部 LLM，不跑全市场扫描。
+  - 不改 `tradingagents/prompts/`。
+  - 不输出买入/卖出强建议。
+  - 只在 TradeFlow 候选池层做信号、标签、分数和证据引用。
+- **实现要点**：
+  1. 新增或扩展政策版本信号模块，输出 `policy_tags`、`version_score`、`policy_evidence_refs`。
+  2. 先用可维护关键词/规则覆盖：新质生产力、算力、低空经济、机器人、出海、中特估、国产替代、并购重组、国企改革等。
+  3. 事件标题、公告摘要、行业标签命中政策版本时加分；无原始文本证据时不得加分。
+  4. 与现有 `event_source`、`event_catalyst`、`candidate_engine` 兼容，不破坏 VCP/回踩策略。
+  5. Daily Plan 中展示政策标签和证据摘要，但动作仍只能是 `OBSERVE/NEED_DEEP_TA` 等非强交易动作。
+- **验证方式**：
+  - 构造政策关键词事件，候选包含对应 `policy_tags` 和 evidence refs。
+  - 无政策证据时 `version_score` 不得凭空加分。
+  - 不同股票事件必须按 symbol 隔离，不能串票。
+  - `pytest tests/test_tradeflow_*.py -q` 或新增对应测试通过。
+- **代码标注要求**：`# [S-001] policy_version_signal`
+
+### S-002: 叙事质量评分（P1）
+- **描述**：给事件催化增加叙事质量评分，区分“普通公告/普通新闻”和“容易形成市场共识的主线事件”。
+- **优先级**：P1
+- **状态**：done — commit 9825e22
+- **背景**：
+  - 选股不只看有没有事件，还要判断事件是否容易被市场理解、传播和接力。
+  - 目前事件催化更偏“是否存在”，缺少“事件质量与传播价值”。
+- **执行约束**：
+  - 第一阶段只做规则评分，不调用外部 LLM。
+  - 不做舆情全网抓取，不扫全市场。
+  - 评分只影响候选排序和 `need_deep_ta`，不直接生成交易建议。
+- **实现要点**：
+  1. 新增 `narrative_score`，分解为政策背书、产业落地、订单/回购/评级、传播清晰度、拥挤/过热扣分。
+  2. 回购、重大订单、中标、并购重组、业绩预告、评级变化等事件给不同基础分。
+  3. 多个事件叠加时做封顶，避免标题堆叠虚高。
+  4. 输出 `narrative_reasons` 和 evidence refs，便于日报解释“为什么进候选池”。
+- **验证方式**：
+  - 普通新闻低分，回购/订单/政策相关事件高分。
+  - 重复事件不会无限叠加。
+  - `narrative_score` 缺证据时为 0 或保守默认。
+- **代码标注要求**：`# [S-002] narrative_quality_score`
+
+### S-003: 水下风险标签与候选降权（P1）
+- **描述**：为 TradeFlow 候选池增加水下风险标签，识别解禁、减持、问询、财务异常、融资拥挤、龙虎榜过热等风险，对候选做降权或要求更严格技术确认。
+- **优先级**：P1
+- **状态**：done — commit a95c3d7
+- **背景**：
+  - 选对股票不只看上涨逻辑，也要避开“看起来有题材但水下结构很差”的票。
+  - 当前已有部分 A 股标签，但风险标签还不够系统，也没有形成候选池统一降权规则。
+- **执行约束**：
+  - 所有风险标签必须绑定原始字段或事件文本。
+  - 不把风险标签直接翻译成清仓/买入建议。
+  - 不写生产数据库 schema；如需持久化先用现有 TradeFlow 结构或输出方案。
+- **实现要点**：
+  1. 统一输出 `risk_flags`：`LOCKUP_RISK`、`REDUCE_HOLDING_RISK`、`INQUIRY_RISK`、`FINANCIAL_QUALITY_RISK`、`MARGIN_CROWDING_RISK`、`LHB_OVERHEAT_RISK`。
+  2. 风险标签进入候选分数降权和 `need_deep_ta` 门槛。
+  3. 解禁/减持/问询等公告类风险优先从 `event_source` 读取。
+  4. 龙虎榜和融资融券风险必须区分 `HAS_DATA/NOT_QUERIED/FAILED`，不得把未查询当作无风险。
+- **验证方式**：
+  - 构造解禁/减持/问询事件，候选出现对应 `risk_flags` 并降权。
+  - 龙虎榜未查询时不生成过热风险。
+  - 风险缺证据时不输出高置信风险标签。
+- **代码标注要求**：`# [S-003] underwater_risk_flags`
+
+### S-004: 候选股博弈平衡解释（P1）
+- **描述**：在 TradeFlow Plan 中为每个候选输出轻量博弈解释，说明多头为何可能买、空头为何可能卖、政策/监管/资金结构是否支持，避免只给策略标签而缺少交易对手视角。
+- **优先级**：P1
+- **状态**：done — commit c92e626
+- **背景**：
+  - A 股候选池要处理动态博弈：同一事件可能同时有多头叙事、风险压制和资金拥挤。
+  - 在 TA 深度分析前，候选池应先判断这只票是不是值得进一步消耗 token。
+- **执行约束**：
+  - 规则化生成，不调用外部 LLM。
+  - 不输出强买卖词。
+  - 不替代 TA 深度分析，只做候选池摘要。
+- **实现要点**：
+  1. 输出 `game_balance`：`favorable/neutral/crowded/fragile`。
+  2. 输出 `bull_case`、`bear_case`、`policy_case`、`fund_flow_case` 的短字段，来源必须来自已存在信号和证据。
+  3. 当政策/叙事/资金/技术至少两类共振时，可提高 `need_deep_ta` 优先级。
+  4. 当风险标签过多或信号拥挤时，降低候选排序或标记 `fragile`。
+- **验证方式**：
+  - 政策 + 事件 + VCP 共振时 `game_balance=favorable` 或 `neutral`。
+  - 风险标签过多时 `game_balance=fragile/crowded`。
+  - 输出中包含证据引用，不出现强买卖词。
+- **代码标注要求**：`# [S-004] candidate_game_balance`
+
+### S-005: 选股优先级整合与 need_deep_ta 门槛重排（P1）
+- **描述**：整合政策版本、叙事质量、水下风险、资金异动和技术形态，重排 TradeFlow 候选优先级，让 TA 深度分析优先消耗在真正值得分析的股票上。
+- **优先级**：P1
+- **状态**：done — commit b503d63
+- **前置条件**：`S-001`、`S-002`、`S-003`、`S-004` 完成。
+- **执行约束**：
+  - 不自动调用 TA 深度分析。
+  - 不做全市场扫描。
+  - 不把单一信号直接提升为强结论。
+- **实现要点**：
+  1. 定义候选综合评分：政策版本、叙事质量、技术确认、资金验证、风险扣分、数据完整度。
+  2. `need_deep_ta=True` 至少需要两类正向信号，且无重大未解释风险。
+  3. Daily Plan 输出“为什么值得看/为什么暂不深挖/缺什么证据”。
+  4. 为后续 `M-003` universe 管理器和 `M-004` 策略配置提供统一字段。
+- **验证方式**：
+  - 只有技术形态但无逻辑证据的票排序下降。
+  - 政策/事件/技术/资金共振的票排序上升。
+  - 风险过高或数据缺失时不触发 `need_deep_ta`。
+- **代码标注要求**：`# [S-005] selection_priority_gate`
+
+### S-006: 候选误报审计与样本集沉淀（P1）
+- **描述**：建立 TradeFlow 候选误报审计机制，把“为什么没选中/为什么误选中”的样本沉淀为可回放 fixtures，持续压低候选池噪声。
+- **优先级**：P1
+- **状态**：done — commit e876172
+- **前置条件**：`T-002`、`T-003`、`S-002`、`S-003` 完成。
+- **执行约束**：
+  - 不调用外部 LLM。
+  - 不跑全市场扫描。
+  - 不写生产数据库，只新增测试 fixtures 或本地报告脚本。
+- **实现要点**：
+  1. 新增候选审计报告，按“命中策略/过滤原因/风险降权/证据缺口”分类。
+  2. 将最近人工验证过的样本沉淀为小型 fixtures，覆盖 VCP 命中、流动性过滤、无策略命中、事件催化、资金异动。
+  3. 输出误报/漏报原因字段，便于后续调参。
+  4. Daily Plan 或 discovery 报告增加“证据缺口”摘要，但不输出强交易建议。
+- **验证方式**：
+  - fixtures 可稳定回放，输出固定候选数量和过滤原因。
+  - 流动性不足、事件缺证据、资金单位未校验等场景不会被误判为高优先级。
+  - `pytest tests/test_tradeflow_*.py -q` 通过。
+- **代码标注要求**：`# [S-006] candidate_false_positive_audit`
+
+### S-007: 候选分层与 TA token 预算分配（P1）
+- **描述**：把候选池分为 A/B/C 三层，明确哪些值得优先深度 TA、哪些只观察、哪些淘汰，避免把 token 消耗在弱候选上。
+- **优先级**：P1
+- **状态**：done — commit c1c6a83
+- **前置条件**：`S-005` 完成。
+- **执行约束**：
+  - 不自动调用 TA。
+  - 不输出强买卖词。
+  - 不接入真实扣费 API，只输出预算建议和原因。
+- **实现要点**：
+  1. 定义候选等级：A=优先深挖、B=观察等待证据、C=淘汰/暂不关注。
+  2. 结合综合评分、风险标签、数据完整度、策略共振数量生成等级。
+  3. 输出 `ta_budget_priority`、`missing_evidence`、`why_not_deep_ta`。
+  4. Daily Plan 按等级排序，A 层数量设上限，防止一天候选过多。
+- **验证方式**：
+  - 单一弱信号不得进入 A 层。
+  - 两类以上强证据且风险可控时可进入 A 层。
+  - 高风险/低完整度候选最多 B/C。
+- **代码标注要求**：`# [S-007] candidate_tier_budget`
+
+### S-008: TradeFlow 证据完整度门禁（P1）
+- **描述**：给候选池增加轻量证据完整度门禁，避免缺行情、缺资金、缺事件来源时分数虚高。
+- **优先级**：P1
+- **状态**：done — commit d2875cd
+- **前置条件**：`M-008`、`T-002`、`T-003` 完成。
+- **执行约束**：
+  - 不改 TA 深度报告 readiness 逻辑，只在 TradeFlow 候选层做门禁。
+  - 数据缺失只能降权或标记缺口，不能编造补全。
+- **实现要点**：
+  1. 输出 `tradeflow_data_completeness` 和 `missing_data_fields`。
+  2. 至少覆盖行情 OHLCV、流动性、事件来源、资金流单位校验、风险标签证据。
+  3. 完整度低于阈值时禁止 A 层和 `need_deep_ta=True`。
+  4. 报告中展示“缺什么证据才能升级”。
+- **验证方式**：
+  - 缺资金单位校验时不触发高置信资金异动。
+  - 缺行情/流动性数据时不进入 A 层。
+  - 完整数据样本不被误降级。
+- **代码标注要求**：`# [S-008] tradeflow_evidence_gate`
+
+---
+
+## M. 框架路线总任务池（2026-05-28 新增）
+
+### INF-001: 自动开发任务领取锁与 in_progress 状态流转（P0）
+- **描述**：给自动开发闭环增加任务领取锁，避免 OpenClaw/OpenCode/Codex 或多个夜间任务同时领取同一个 `ready` 任务。
+- **优先级**：P0
+- **状态**：done — commit 54a8292
+- **背景**：
+  - 当前已经出现并发/半成品 diff：代码改动先出现，但任务状态和运行档案未同步。
+
+---DECISIONS---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+---DEVLOG---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-05-30 | M-004: TradeFlow 策略权重与阈值配置
+
+- **执行者**：OpenCode
+- **任务**：M-004 — 把 VCP、回踩、事件催化、资金异动、A股标签的权重和阈值集中配置，便于后续复盘调参
+- **修改文件**：
+  - `tradingagents/tradeflow/strategy_config.py` — 新建：`StrategyConfig` 数据类（60+ 可配阈值），`DEFAULT_STRATEGY_CONFIG` 单例，`STRATEGY_CONFIG_VERSION="v1.0"`，`to_dict()` 序列化方法
+  - `tradingagents/tradeflow/strategies/vcp.py` — `score_vcp()` 新增 `cfg` 参数，8 个阈值从 config 读取（min_data_len/range_ratio/vol_ratio/price_position/ma20_break/score_max/need_deep_ta）
+  - `tradingagents/tradeflow/strategies/pullback_support.py` — `score_pullback_support()` 新增 `cfg` 参数，10 个阈值从 config 读取
+  - `tradingagents/tradeflow/strategies/event_catalyst.py` — `score_event_catalyst()` 新增 `cfg` 参数，score_max 和 need_deep_ta_score 从 config 读取
+  - `tradingagents/tradeflow/policy_version_signal.py` — `detect_policy_version()` 新增 `cfg` 参数，max_bonus/industry_weight/need_deep_ta 从 config 读取
+  - `tradingagents/tradeflow/narrative_quality.py` — `score_narrative_quality()` 新增 `cfg` 参数，max_score 从 config 读取
+  - `tradingagents/tradeflow/underwater_risk_flags.py` — `detect_underwater_risks()` 新增 `cfg` 参数，max_penalty 从 config 读取
+  - `tradingagents/tradeflow/fund_flow_anomaly.py` — `detect_fund_flow_anomaly()` 新增 `cfg` 参数，5 个阈值从 config 读取；内部辅助函数参数化
+  - `tradingagents/tradeflow/game_balance.py` — `assess_game_balance()` 新增 `cfg` 参数，3 个阈值从 config 读取
+  - `tradingagents/tradeflow/selection_priority_gate.py` — `run_selection_priority_gate()` 新增 `cfg` 参数，9 个阈值从 config 读取
+  - `tradingagents/tradeflow/tier_budget.py` — `classify_candidate_tier()` + `allocate_tier_budget()` 新增 `cfg` 参数，7 个阈值从 config 读取
+  - `tradingagents/tradeflow/evidence_gate.py` — `compute_evidence_completeness()` + `apply_evidence_gate()` 新增 `cfg` 参数，3 个阈值从 config 读取
+  - `tradingagents/tradeflow/candidate_engine.py` — `evaluate_symbol()` + `run_strategies()` + `filter_symbol()` + `_calc_liquidity()` 新增 `cfg` 参数并向下传递
+  - `tradingagents/tradeflow/plan_runner.py` — `generate_daily_plan()` 新增 `cfg` 参数，plan.metadata 新增 `strategy_config_version` 字段
+  - `tests/test_strategy_config.py` — 新建，42 个测试覆盖默认值、None 回退、阈值覆盖可预测性、config_version 输出
+- **测试结果**：1451 passed, 15 skipped, 0 failed
+- **关键逻辑**：
+  - 所有策略模块接受可选 `cfg: StrategyConfig = None`，None 时自动使用 `DEFAULT_STRATEGY_CONFIG`
+  - `DEFAULT_STRATEGY_CONFIG` 的默认值与重构前硬编码常量完全一致，确保向后兼容
+  - `generate_daily_plan()` 输出的 `plan.metadata["strategy_config_version"]` 记录配置版本，便于审计
+  - `StrategyConfig.to_dict()` 支持序列化输出（risk_high_severity_flags 转 list）
+- **风险点**：无；所有改动向后兼容，现有 121 个 tradeflow 测试全部通过
+
+## 2026-05-30 | M-003 fix: 枚举值对齐 + fund_flow 去重
+
+- **执行者**：OpenCode
+- **任务**：M-003 — 修复 3 个测试失败
+- **修改文件**：
+  - `tradingagents/tradeflow/universe.py` — `UniverseSource.INDUSTRY` 值 `"industry"` → `"industry_pool"`；`UniverseSource.FUND_FLOW` 值 `"fund_flow"` → `"fund_flow_pool"`，与 discovery 模块常量对齐
+  - `tradingagents/tradeflow/discovery.py` — `_build_discovery_universe()` 新增 fund_flow_symbols 独立去重逻辑：当 `build_universe` 被 mock 或 fund_flow 符号不在已有 universe 中时，补充添加
+  - `tests/test_tradeflow_universe.py` — 更新 4 处断言使用新枚举值 `"industry_pool"` / `"fund_flow_pool"`
+- **测试结果**：1495 passed, 17 skipped, 0 failed（原 3 failed → 0）
+- **根因**：UniverseSource 枚举值与 discovery 模块 SOURCE_* 常量不一致；`_build_discovery_universe` 未对 fund_flow_symbols 做独立去重补充
+
+## 2026-05-30 | M-003: TradeFlow universe 管理器
+
+- **执行者**：OpenCode
+- **任务**：M-003 — 统一管理候选池来源，避免每个策略各自拼 symbols
+- **修改文件**：
+  - `tradingagents/tradeflow/universe.py` — 重构：新增 `UniverseSource` 枚举（8 种来源）、`SourceRecord`/`UniverseEntry` 数据类、`UniverseManager` 类；`build_universe()` 改用 `UniverseManager` 内部聚合，新增 `industry_symbols`/`fund_flow_symbols` 参数；向后兼容
+  - `tradingagents/tradeflow/schemas.py` — Candidate 新增 `universe_sources: list[str]` 字段，`to_db_row()`/`from_db_row()` 同步
+  - `tradingagents/tradeflow/plan_runner.py` — `generate_daily_plan()` 将 universe 条目的 `universe_sources` 传递给 Candidate；`_build_plan_entry()` 输出新字段
+  - `tradingagents/tradeflow/discovery.py` — `_build_discovery_universe()` 改用 `build_universe()` 统一入口（含 industry/fund_flow）；评估后传递 `universe_sources` 到 Candidate；`_build_discovery_entry()` 输出新字段
+  - `tradingagents/tradeflow/candidate_engine.py` — `init_db()` 新增 `universe_sources_json` 列；`save_candidate()` INSERT/UPDATE 包含新列（54→55 字段）
+  - `tests/test_tradeflow_universe.py` — 新建，38 个测试覆盖 UniverseSource 枚举、UniverseManager CRUD、去重保留多来源、DB 集成、plan_runner/discovery 集成、无来源不扫全市场、Candidate schema 字段
+- **测试结果**：`pytest tests/test_tradeflow_*.py` 121 passed；`pytest tests/test_tradeflow_*.py tests/test_readiness_score.py` 237 passed
+- **关键逻辑**：
+  - 同一 symbol 从多个来源（watchlist/holding/manual/event/fund_flow/industry）进入 universe 时，去重但保留完整来源列表 `universe_sources`
+  - 每个来源记录 `SourceRecord`（source、reason、timestamp、extra）
+  - `UniverseManager.add_symbol()` 幂等：同一来源重复添加不会重复记录
+  - `build_universe()` 保持向后兼容：只读 symbol/name/source 的调用方不受影响
+  - 无来源输入返回空列表，绝不触发全市场扫描
+- **风险点**：无；所有改动向后兼容，新增字段默认空列表
+
+## 2026-05-15 | 定时任务 Token 护栏与模型 API 目录
+
+- **执行者**：Codex
+- **任务**：检查定时任务与模型 API 调用，降低静默消耗 token 的风险
+- **修改文件**：
+  - `scheduler/main.py` — 新增 `SCHEDULER_ENABLED`、`SCHEDULER_DRY_RUN`、`SCHEDULER_RUN_INTRADAY`、`SCHEDULER_MAX_TASKS_PER_TICK`、`SCHEDULER_ALLOWED_TRIGGER_TIMES` 护栏；默认尊重用户主动创建的盘中/盘后定时任务，启动日志输出当前 scheduler 配置
+  - `api/services/portfolio_import_service.py` / `api/main.py` / `frontend/src/components/TrackingBoardPanel.tsx` — 持仓导入默认不再自动创建定时分析任务，避免保存持仓后静默开跑
+  - `tradingagents/llm_clients/model_catalog.py` — 新增统一模型/API 端点目录
+  - `api/main.py` — 新增 `GET /v1/config/model-catalog`，返回模型目录且不暴露密钥
+  - `scripts/audit_llm_config.py` — 新增只读脱敏审计脚本，输出当前 runtime 模型配置与 key scope 的 `HAS_KEY/NO_KEY`
+  - `AGENTS.md` / `docs/LLM_API_USAGE.md` — 新增多工具协作下的 LLM API 使用边界：定时任务允许消耗 token，普通 coding 工作禁止擅自调用付费 LLM；live LLM 测试需先问用户
+  - `.env.example` — 补充 scheduler token guard 环境变量
+  - `docs/SCHEDULER_TOKEN_GUARD.md` / `docs/MODEL_API_CATALOG.md` — 新增定时任务和模型调用说明
+  - `tests/test_portfolio_import.py` / `tests/test_api_smoke.py` — 补充默认不创建定时任务、模型目录接口测试
+- **现场审计**：
+  - 本地存在运行中的 `python -m scheduler.main` 进程
+  - `scheduled_analyses` 当前有 3 条 active 任务：`002138.SZ` 14:30/20:00、`603629.SZ` 22:00
+  - 主用户当前运行配置为智谱 Coding Plan：`glm-4.5-air` / `glm-5-turbo`
+- **风险点**：代码护栏需要重启 scheduler 进程后生效；已有 active 任务仍保留，是否停用由用户决定
+
+---
+
+## 2026-05-13 | E-001~E-004 基础设施修复
+
+- **执行者**：OpenCode
+- **任务**：TASK_BATCH_E.md — E 系列基础设施修复
+- **修改文件**：
+  - `api/main.py` — [E-001] 启动时读取 git commit hash 并缓存为 `_GIT_COMMIT_SHORT`，记录 `_BACKEND_START_TIME`
+  - `tradingagents/agents/utils/readiness_score.py` — [E-001] `format_readiness_score` 追加系统版本区块；[E-002] 新增 `validate_stock_name` 名称校验函数 + `get_strong_action_gate` 增加 `name_mismatch` 和 `no_execution_zone_conflict` 参数 + `calculate_risk_level`/`calculate_buy_level` Level 4 降级；[E-003] 扩展止损关键词(`止损红线/止损位/止损价/清仓线/止损线`) + 入场/减仓区间冲突检测 + `has_stop_loss`/`execution_zone_conflict` 信号；[E-004] `infer_evidence_statuses` 支持从 `raw_evidence` 结构化数据直接读取，fallback 到文本正则
+  - `tradingagents/agents/managers/risk_manager.py` — [E-002] 集成 `validate_stock_name`；[E-003] 传递 `execution_zone_conflict` 到 gate；[E-004] 传递 `raw_evidence` 到 `infer_evidence_statuses`
+  - `tradingagents/graph/data_collector.py` — [E-004] 新增 `build_raw_evidence()` 方法从缓存池构建证据摘要
+  - `tradingagents/graph/trading_graph.py` — [E-004] `propagate` 和 `propagate_async` 中将 `raw_evidence` 存入 state metadata
+  - `tests/test_readiness_score.py` — 新增 26 个测试覆盖 E-001~E-004
+- **验证**：`pytest tests/test_readiness_score.py` 100 passed；`pytest -q` 294 passed, 4 pre-existing SQLite failures
+
+---
+
+## 2026-05-13 | 自选股拖拽排序功能
+
+- **执行者**：OpenCode
+- **任务**：TASK_DRAG_SORT.md — 自选股列表拖拽排序
+- **修改文件**：
+  - `api/services/watchlist_service.py` — 新增 `reorder_watchlist()` 函数，批量更新 sort_order，含 id 归属校验和唯一性校验
+  - `api/main.py` — 新增 `PUT /v1/watchlist/reorder` 路由
+  - `frontend/src/services/api.ts` — 新增 `reorderWatchlist()` API 方法
+  - `frontend/src/pages/Portfolio.tsx` — 用 @dnd-kit 实现拖拽排序：SortableWatchlistItem 组件、DndContext 包裹、乐观更新+失败回滚
+  - `frontend/package.json` — 新增 @dnd-kit/core、@dnd-kit/sortable、@dnd-kit/utilities 依赖
+- **要点**：
+  - 拖拽手柄为左侧 ⠿ (GripVertical) 图标，避免误触
+  - PointerSensor 需移动 5px 才激活；TouchSensor 长按 200ms 触发
+  - 拖拽中半透明+阴影效果
+  - 乐观更新本地 state，API 失败时回滚并提示
+- **验证**：TypeScript 编译通过，`git diff --check` 无报错
+
+---
+
+## 2026-05-13 | D-001~D-004 修复：真降级、真证据、真信号、持仓未知语义
+
+- **执行者**：OpenCode
+- **任务**：TASK_BATCH_FIX.md 全部 P1/P2/P3 修复
+- **修改文件**：
+  - `tradingagents/agents/utils/readiness_score.py` — 新增 3 个函数 + 修改 1 个函数：
+    - `sanitize_forbidden_strong_actions()` — gate 未通过时真正移除/替换强动作文本，而非仅追加警告
+    - `infer_evidence_statuses()` — 基于报告文本正则匹配推断证据状态，不再因报告存在就标 HAS_DATA
+    - `extract_execution_signals()` — 从报告文本保守提取 14 项交易信号，传入 Buy/Risk/Opportunity 计算
+    - `get_strong_action_gate()` — 新增 `contains_strong_action` 参数，持仓未知+无强动作时 gate 通过
+  - `tradingagents/agents/managers/risk_manager.py` — 集成 3 个新函数，替换旧的 evidence 硬编码和信号缺失逻辑
+  - `tests/test_readiness_score.py` — 从 32 项测试扩展至 74 项，覆盖全部 P1/P2 测试要求
+  - `docs/DEVLOG.md` — 合并重复 D-001~D-004 记录，补充本次修复
+- **测试结果**：
+  - `tests/test_readiness_score.py`: 74 passed
+  - `pytest -q`: 270 passed, 9 skipped, 2 failed（pre-existing SQLite thread issue）
+- **关键变更**：
+  - P1-真降级：gate 未通过时 `立即清仓`/`重仓买入`/`追涨` 等强动作被替换为中性表达，原关键词不再出现在最终报告
+  - P1-真证据：evidence 不再因报告字符串存在就标 HAS_DATA，需匹配 OHLC 表格/成交量值/换手率等具体字段；龙虎榜根据文本判断状态；融资融券保持 NOT_QUERIED
+  - P1-真信号：从报告文本提取跌破支撑/主力资金流向/放量破位/趋势确认/量能健康等 14 项信号，传入 Buy/Risk Level 和 Opportunity Score 计算
+  - P2-持仓未知语义：gate 只在持仓未知+包含强动作时才失败，观察/中性报告不会因持仓未知被阻断
+
+---
+
+## 2026-05-13 | D-001~D-004: 修正评分、强动作门禁、双等级输出、机会评分
+
+- **执行者**：OpenCode
+- **任务**：TASK_BATCH.md 全部 4 个子任务（初始实现）
+- **修改文件**：
+  - `tradingagents/agents/utils/readiness_score.py` — 大幅扩展：新增 source_coverage、evidence_coverage、get_strong_action_gate、calculate_risk_level、calculate_buy_level、calculate_opportunity_score、format_execution_block
+  - `tradingagents/agents/managers/risk_manager.py` — 传入全部 8 项数据源、集成新评分模块、报告末尾追加执行等级区块
+  - `tests/test_readiness_score.py` — 新建，32 个测试覆盖 D-001~D-004 全部 8 项测试要求
+- **测试结果**：32/32 passed（test_readiness_score.py），全项目 228 passed（2 个 pre-existing SQLite 线程安全失败不相关）
+- **关键变更**：
+  - D-001: risk_manager 现传入 smart_money/volume_price/user_context/position 全部 8 项，不再卡在 50 分
+  - D-002: 新增 EvidenceStatus 区分"正常无数据"与"查询失败"；强动作门禁 7 项条件
+  - D-003: Risk Level 0-4 / Buy Level 0-4 双等级；Risk/Buy Level 4 需全部条件满足且 coverage>=85；持仓未知 Buy Level 上限 2
+  - D-004: Opportunity Score 0-100，5 维加权，风险事件降权；不单独决定买入
+- **风险点**：evidence_coverage 当前部分字段用默认值（margin_trading=not_queried），后续可接入实际数据源
+
+---
+
+## 2026-05-10 | 报告质量防线实现（C-001~C-008 全部完成）
+
+- **执行者**：OpenClaw（主控AI）
+- **任务**：实现 8 项报告质量防线
+- **修改/新增文件**：
+  - `tradingagents/agents/utils/trade_actions.py` — 新建，C-004 动作枚举
+  - `tradingagents/agents/utils/delta_check.py` — 新建，C-005 结论翻转检测
+  - `tradingagents/agents/utils/event_risk_gate.py` — 新建，C-007 事件风控门禁
+  - `tradingagents/agents/utils/financial_validator.py` — 新建，C-006 财务异常检测
+  - `tradingagents/agents/utils/readiness_score.py` — 新建，C-008 报告质量评分
+  - `tradingagents/default_config.py` — 修改，C-002 account_capability
+  - `tradingagents/agents/managers/research_manager.py` — 修改，C-001 position_validation_gate
+  - `tradingagents/agents/researchers/bear_researcher.py` — 修改，C-003 short_filter
+  - `docs/TASKS.md` — 更新，C-001~C-008 任务详情
+- **Commits**：
+  - `14e8e3d` — Phase 1 (C-001~C-004)
+  - `ed73926` — Phase 2+3 (C-005~C-008)
+  - `13dc562` — C-001 集成到 risk_manager.py
+  - `4231144` — C-005 集成到 risk_manager.py
+  - `2959a16` — C-007 集成到 risk_manager.py
+  - `e314d8d` — C-006 + C-008 集成到 risk_manager.py
+- **测试结果**：所有模块 import 成功
+- **风险点**：C-006 的财务数据目前传空值（需要从 fundamentals_report 中提取）
+- **下一步**：
+  - [ ] 端到端测试：运行一次完整分析验证防线生效
+  - [ ] C-006 需要从 fundamentals_report 中提取实际财务数据
+
+---
+
+## 2026-05-09 | 搭建项目协作工作流
+
+- **执行者**：OpenClaw（主控AI）
+- **任务**：创建项目协作基础设施，建立多工具协作规范
+- **修改文件**：
+  - `AGENTS.md` — 新建，项目协作规则、安全红线、执行流程
+  - `docs/project-overview.md` — 新建，项目背景 + 架构 + 目录结构
+  - `docs/TASKS.md` — 新建，任务池
+  - `docs/DECISIONS.md` — 新建，架构决策记录
+  - `docs/DEVLOG.md` — 新建，本文件
+  - `docs/CODE_REVIEW.md` — 新建，代码审查清单
+  - `.codex/config.toml` — 已弃用（Codex CLI → OpenCode 替换）
+- **测试结果**：不涉及代码修改
+- **风险点**：无
+- **下一步**：
+  - [ ] B-001: 接入小米 MiMo 模型
+  - [ ] B-002: 定时任务与 OpenClaw 联动
+
+---
+
+## 2026-05-11 — 报告质量改进（12项清单执行）
+
+### P0 — Prompt 层改动（已完成）
+1. 所有分析师 prompt 加「缺字段不输出对应结论」规则（市场/新闻/舆情/基本面/量价/smart_money）
+2. 所有分析师 prompt 加「引用数据必须附原始值」规则
+3. 所有分析师 prompt 加「所有数字标注来源，禁止 LLM 推算值不加标注」规则
+4. 基本面 prompt 补充：负债端字段缺失时禁止输出偿债能力结论
+
+
+exec
+/bin/zsh -lc 'git status --short --branch' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+## local/tradingagents-custom...myfork/local/tradingagents-custom [ahead 79, behind 1]
+ M .zai_quota_state.json
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/tradeflow/candidate_engine.py
+ M tradingagents/tradeflow/evidence_gate.py
+ M tradingagents/tradeflow/fund_flow_anomaly.py
+ M tradingagents/tradeflow/game_balance.py
+ M tradingagents/tradeflow/narrative_quality.py
+ M tradingagents/tradeflow/plan_runner.py
+ M tradingagents/tradeflow/policy_version_signal.py
+ M tradingagents/tradeflow/selection_priority_gate.py
+ M tradingagents/tradeflow/strategies/event_catalyst.py
+ M tradingagents/tradeflow/strategies/pullback_support.py
+ M tradingagents/tradeflow/strategies/vcp.py
+ M tradingagents/tradeflow/tier_budget.py
+ M tradingagents/tradeflow/underwater_risk_flags.py
+?? .auto_dev.lock/
+?? docs/task_runs/M-004-20260530-004038/
+?? tests/test_strategy_config.py
+?? tradingagents/tradeflow/strategy_config.py
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- tradingagents/tradeflow/strategy_config.py tradingagents/tradeflow/candidate_engine.py tradingagents/tradeflow/evidence_gate.py tradingagents/tradeflow/fund_flow_anomaly.py tradingagents/tradeflow/game_balance.py tradingagents/tradeflow/narrative_quality.py tradingagents/tradeflow/plan_runner.py tradingagents/tradeflow/policy_version_signal.py tradingagents/tradeflow/selection_priority_gate.py tradingagents/tradeflow/strategies/event_catalyst.py tradingagents/tradeflow/strategies/pullback_support.py tradingagents/tradeflow/strategies/vcp.py tradingagents/tradeflow/tier_budget.py tradingagents/tradeflow/underwater_risk_flags.py tests/test_strategy_config.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ .zai_quota_state.json                              | 11 ++--
+ docs/DEVLOG.md                                     | 28 ++++++++++
+ docs/TASKS.md                                      |  2 +-
+ tradingagents/tradeflow/candidate_engine.py        | 60 +++++++++++++---------
+ tradingagents/tradeflow/evidence_gate.py           | 30 +++++++----
+ tradingagents/tradeflow/fund_flow_anomaly.py       | 26 ++++++----
+ tradingagents/tradeflow/game_balance.py            | 18 ++++---
+ tradingagents/tradeflow/narrative_quality.py       |  8 ++-
+ tradingagents/tradeflow/plan_runner.py             |  9 +++-
+ tradingagents/tradeflow/policy_version_signal.py   | 10 +++-
+ tradingagents/tradeflow/selection_priority_gate.py | 32 +++++++-----
+ .../tradeflow/strategies/event_catalyst.py         | 10 +++-
+ .../tradeflow/strategies/pullback_support.py       | 22 +++++---
+ tradingagents/tradeflow/strategies/vcp.py          | 24 +++++----
+ tradingagents/tradeflow/tier_budget.py             | 34 ++++++++----
+ tradingagents/tradeflow/underwater_risk_flags.py   |  8 ++-
+ 16 files changed, 228 insertions(+), 104 deletions(-)
+diff --git a/tradingagents/tradeflow/candidate_engine.py b/tradingagents/tradeflow/candidate_engine.py
+index 5ce186b..ff45980 100644
+--- a/tradingagents/tradeflow/candidate_engine.py
++++ b/tradingagents/tradeflow/candidate_engine.py
+@@ -30,6 +30,7 @@ from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult,
+ from .selection_priority_gate import run_selection_priority_gate, SelectionPriorityResult  # [S-005] selection_priority_gate
+ from .tier_budget import classify_candidate_tier, TierBudgetResult  # [S-007] candidate_tier_budget
+ from .evidence_gate import compute_evidence_completeness, apply_evidence_gate, EvidenceGateResult  # [S-008] tradeflow_evidence_gate
++from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+ 
+ 
+ # ── SQL for table creation ──
+@@ -272,14 +273,13 @@ def _is_st_symbol(symbol: str) -> bool:
+     return False
+ 
+ 
+-def _calc_liquidity(df: pd.DataFrame) -> tuple[bool, float, float, float]:
++def _calc_liquidity(df: pd.DataFrame, cfg: StrategyConfig = DEFAULT_STRATEGY_CONFIG) -> tuple[bool, float, float, float]:  # [M-004]
+     """Check liquidity using Amount (turnover) as primary metric.
+ 
+     Returns (is_low, avg_amount, avg_volume, threshold).
+     - Uses Amount column if available, otherwise estimates via Close * Volume.
+-    - Threshold: 30,000,000 (3000万).
+     """
+-    AMOUNT_THRESHOLD = 30_000_000
++    AMOUNT_THRESHOLD = cfg.amount_threshold  # [M-004]
+ 
+     if len(df) < 5:
+         avg_amount = 0.0
+@@ -297,7 +297,7 @@ def _calc_liquidity(df: pd.DataFrame) -> tuple[bool, float, float, float]:
+     return avg_amount < AMOUNT_THRESHOLD, avg_amount, avg_volume, AMOUNT_THRESHOLD
+ 
+ 
+-def filter_symbol(symbol: str, df: pd.DataFrame) -> tuple[bool, list[str]]:
++def filter_symbol(symbol: str, df: pd.DataFrame, cfg: StrategyConfig = DEFAULT_STRATEGY_CONFIG) -> tuple[bool, list[str]]:  # [M-004]
+     """Check if a symbol should be filtered out.
+ 
+     Returns (should_filter, reason_list).
+@@ -310,7 +310,7 @@ def filter_symbol(symbol: str, df: pd.DataFrame) -> tuple[bool, list[str]]:
+     if len(df) < 40:
+         return True, ["数据不足(需至少40日)"]
+ 
+-    is_low, avg_amount, avg_volume, threshold = _calc_liquidity(df)
++    is_low, avg_amount, avg_volume, threshold = _calc_liquidity(df, cfg)  # [M-004]
+     if is_low:
+         reasons.append(
+             f"流动性差(avg_amount={avg_amount/1e8:.2f}亿, "
+@@ -329,23 +329,24 @@ def run_strategies(
+     df: pd.DataFrame,
+     news_texts: Optional[list[str]] = None,
+     event_overrides: Optional[list[dict]] = None,
++    cfg: StrategyConfig = DEFAULT_STRATEGY_CONFIG,  # [M-004]
+ ) -> list[CandidateSignal]:
+     """Run all strategies on a symbol, return list of signals."""
+     signals = []
+ 
+     # VCP
+-    vcp = score_vcp(df, symbol)
++    vcp = score_vcp(df, symbol, cfg=cfg)  # [M-004]
+     if vcp is not None:
+         signals.append(vcp)
+ 
+     # Pullback Support
+-    pb = score_pullback_support(df, symbol)
++    pb = score_pullback_support(df, symbol, cfg=cfg)  # [M-004]
+     if pb is not None:
+         signals.append(pb)
+ 
+     # Event Catalyst
+     latest_close = float(df["Close"].iloc[-1]) if len(df) > 0 else 0.0
+-    ev = score_event_catalyst(symbol, news_texts, event_overrides, latest_close)
++    ev = score_event_catalyst(symbol, news_texts, event_overrides, latest_close, cfg=cfg)  # [M-004]
+     if ev is not None:
+         signals.append(ev)
+ 
+@@ -362,12 +363,16 @@ def evaluate_symbol(
+     df: Optional[pd.DataFrame] = None,
+     fund_flow_individual: Optional[str] = None,  # [T-003] fund_flow_anomaly_pool
+     fund_flow_board: Optional[str] = None,  # [T-003] fund_flow_anomaly_pool
++    cfg: Optional[StrategyConfig] = None,  # [M-004]
+ ) -> tuple[Optional[Candidate], str]:
+     """Evaluate one symbol through all strategies.
+ 
+     Returns (Candidate, "") if any strategy hits, or (None, reason) if
+     filtered or no strategy matched.
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     if not trade_date:
+         trade_date = datetime.now().strftime("%Y-%m-%d")
+ 
+@@ -376,12 +381,12 @@ def evaluate_symbol(
+         df = _fetch_price_data(symbol)
+ 
+     # Filter check
+-    filtered, reasons = filter_symbol(symbol, df)
++    filtered, reasons = filter_symbol(symbol, df, cfg)  # [M-004]
+     if filtered:
+         return None, "；".join(reasons)
+ 
+     # Run strategies
+-    signals = run_strategies(symbol, df, news_texts, event_overrides)
++    signals = run_strategies(symbol, df, news_texts, event_overrides, cfg=cfg)  # [M-004]
+ 
+     if not signals:
+         return None, "无策略命中"
+@@ -411,7 +416,7 @@ def evaluate_symbol(
+                 set(candidate.risk_flags) | set(extra_risks)
+             )
+             if SIGNAL_TAG_LOCKUP_RISK in candidate.risk_flags:
+-                candidate.score = round(candidate.score * 0.8, 2)
++                candidate.score = round(candidate.score * cfg.risk_lockup_score_factor, 2)  # [M-004]
+ 
+     # [S-001] policy_version_signal — detect policy version and add bonus
+     # Collect all available text sources: news_texts + event_override titles
+@@ -421,8 +426,9 @@ def evaluate_symbol(
+             title = ev.get("title", "") or ev.get("headline", "")
+             if title:
+                 all_event_texts.append(title)
+-    policy_result: PolicyVersionResult = detect_policy_version(
++    policy_result: PolicyVersionResult = detect_policy_version(  # [M-004]
+         event_texts=all_event_texts if all_event_texts else None,
++        cfg=cfg,
+     )
+     if policy_result.policy_tags:
+         candidate.policy_tags = policy_result.policy_tags
+@@ -437,12 +443,13 @@ def evaluate_symbol(
+             "version_score": policy_result.version_score,
+             "evidence_refs": policy_result.policy_evidence_refs,
+         }
+-        if policy_result.version_score >= 15:
++        if policy_result.version_score >= cfg.policy_need_deep_ta_score:  # [M-004]
+             candidate.need_deep_ta = True
+ 
+     # [S-002] narrative_quality_score — assess event narrative quality
+-    narrative_result: NarrativeQualityResult = score_narrative_quality(
++    narrative_result: NarrativeQualityResult = score_narrative_quality(  # [M-004]
+         event_texts=all_event_texts if all_event_texts else None,
++        cfg=cfg,
+     )
+     if narrative_result.narrative_score > 0:
+         candidate.narrative_score = narrative_result.narrative_score
+@@ -457,12 +464,13 @@ def evaluate_symbol(
+             "narrative_reasons": narrative_result.narrative_reasons,
+             "evidence_refs": narrative_result.narrative_evidence_refs,
+         }
+-        if narrative_result.narrative_score >= 20:
++        if narrative_result.narrative_score >= cfg.narrative_need_deep_ta_score:  # [M-004]
+             candidate.need_deep_ta = True
+ 
+     # [S-003] underwater_risk_flags — detect hidden structural risks
+-    risk_result: UnderwaterRiskResult = detect_underwater_risks(
++    risk_result: UnderwaterRiskResult = detect_underwater_risks(  # [M-004]
+         event_texts=all_event_texts if all_event_texts else None,
++        cfg=cfg,
+     )
+     if risk_result.risk_flags:
+         candidate.risk_flags = sorted(
+@@ -484,7 +492,7 @@ def evaluate_symbol(
+             candidate.need_deep_ta = False
+ 
+     # [S-004] candidate_game_balance — assess bull/bear/policy/fund perspective
+-    gb_result: GameBalanceResult = assess_game_balance(
++    gb_result: GameBalanceResult = assess_game_balance(  # [M-004]
+         strategy_tags=candidate.strategy_tags,
+         score=candidate.score,
+         policy_tags=candidate.policy_tags,
+@@ -496,6 +504,7 @@ def evaluate_symbol(
+         risk_penalty=candidate.risk_penalty,
+         risk_reasons=candidate.risk_reasons,
+         event_texts=all_event_texts if all_event_texts else None,
++        cfg=cfg,
+     )
+     candidate.game_balance = gb_result.game_balance
+     candidate.bull_case = gb_result.bull_case
+@@ -521,9 +530,10 @@ def evaluate_symbol(
+         candidate.need_deep_ta = False
+ 
+     # [T-003] fund_flow_anomaly_pool — detect capital anomaly
+-    ff_result: FundFlowAnomalyResult = detect_fund_flow_anomaly(
++    ff_result: FundFlowAnomalyResult = detect_fund_flow_anomaly(  # [M-004]
+         fund_flow_individual=fund_flow_individual,
+         fund_flow_board=fund_flow_board,
++        cfg=cfg,
+     )
+     if ff_result.fund_flow_anomaly_tags:
+         candidate.fund_flow_anomaly_score = ff_result.fund_flow_anomaly_score
+@@ -548,12 +558,12 @@ def evaluate_symbol(
+             "board_summary": ff_result.fund_flow_board_summary,
+         }
+         # Unit unverified: do not boost need_deep_ta from fund flow alone
+-        if ff_result.fund_flow_unit_verified and positive_ff_tags and ff_result.fund_flow_anomaly_score >= 10:
++        if ff_result.fund_flow_unit_verified and positive_ff_tags and ff_result.fund_flow_anomaly_score >= cfg.fund_flow_need_deep_ta_score:  # [M-004]
+             candidate.need_deep_ta = True
+         # Net outflow dominant does not add score but records as observation
+ 
+     # [S-005] selection_priority_gate — unified composite score and need_deep_ta gate
+-    gate_result: SelectionPriorityResult = run_selection_priority_gate(
++    gate_result: SelectionPriorityResult = run_selection_priority_gate(  # [M-004]
+         score=candidate.score,
+         strategy_tags=candidate.strategy_tags,
+         policy_tags=candidate.policy_tags,
+@@ -570,6 +580,7 @@ def evaluate_symbol(
+         has_event_data=bool(all_event_texts),
+         has_fund_flow_data=bool(fund_flow_individual or fund_flow_board),
+         has_risk_assessment=True,
++        cfg=cfg,
+     )
+     candidate.composite_score = gate_result.composite_score
+     candidate.signal_category_hits = gate_result.signal_category_hits
+@@ -594,7 +605,7 @@ def evaluate_symbol(
+     candidate.need_deep_ta = gate_result.gate_passed
+ 
+     # [S-007] candidate_tier_budget — classify into A/B/C tier with budget
+-    tier_result: TierBudgetResult = classify_candidate_tier(
++    tier_result: TierBudgetResult = classify_candidate_tier(  # [M-004]
+         priority_rank=gate_result.priority_rank,
+         composite_score=gate_result.composite_score,
+         positive_category_count=gate_result.positive_category_count,
+@@ -605,6 +616,7 @@ def evaluate_symbol(
+         game_balance=candidate.game_balance,
+         gate_passed=gate_result.gate_passed,
+         why_not_deep_ta=gate_result.why_not_deep_ta,
++        cfg=cfg,
+     )
+     candidate.tier = tier_result.tier
+     candidate.ta_budget_priority = tier_result.ta_budget_priority
+@@ -620,7 +632,7 @@ def evaluate_symbol(
+ 
+     # [S-008] tradeflow_evidence_gate — compute evidence completeness and apply gate
+     has_ohlcv = df is not None and len(df) >= 40
+-    is_low_liquidity, _, _, _ = _calc_liquidity(df) if df is not None and len(df) >= 5 else (True, 0.0, 0.0, 0.0)
++    is_low_liquidity, _, _, _ = _calc_liquidity(df, cfg) if df is not None and len(df) >= 5 else (True, 0.0, 0.0, 0.0)  # [M-004]
+     has_liquidity = not is_low_liquidity
+     has_event_source = bool(all_event_texts)
+     has_fund_flow_unit = candidate.fund_flow_unit_verified
+@@ -632,7 +644,7 @@ def evaluate_symbol(
+     has_fund_signal = bool(positive_ff_tags) and candidate.fund_flow_anomaly_score > 0
+     has_game_assessment = bool(candidate.game_balance)
+ 
+-    eg_result: EvidenceGateResult = compute_evidence_completeness(
++    eg_result: EvidenceGateResult = compute_evidence_completeness(  # [M-004]
+         has_ohlcv=has_ohlcv,
+         has_liquidity=has_liquidity,
+         has_event_source=has_event_source,
+@@ -643,6 +655,7 @@ def evaluate_symbol(
+         has_narrative_signal=has_narrative_signal,
+         has_fund_signal=has_fund_signal,
+         has_game_assessment=has_game_assessment,
++        cfg=cfg,
+     )
+     gate_override = apply_evidence_gate(
+         candidate_completeness=eg_result.tradeflow_data_completeness,
+@@ -652,6 +665,7 @@ def evaluate_symbol(
+         can_trigger_deep_ta=eg_result.can_trigger_deep_ta,
+         what_to_upgrade=eg_result.what_to_upgrade,
+         missing_data_fields=eg_result.missing_data_fields,
++        cfg=cfg,
+     )
+     candidate.tradeflow_data_completeness = eg_result.tradeflow_data_completeness
+     candidate.missing_data_fields = eg_result.missing_data_fields
+diff --git a/tradingagents/tradeflow/evidence_gate.py b/tradingagents/tradeflow/evidence_gate.py
+index 9cde9ae..b55b4fe 100644
+--- a/tradingagents/tradeflow/evidence_gate.py
++++ b/tradingagents/tradeflow/evidence_gate.py
+@@ -40,6 +40,8 @@ from __future__ import annotations
+ from dataclasses import dataclass, field
+ from typing import Optional
+ 
++from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
++
+ 
+ _STRONG_BUY_SELL_WORDS = {
+     "立即买入", "重仓买入", "立即清仓", "满仓", "梭哈",
+@@ -95,6 +97,7 @@ def compute_evidence_completeness(
+     has_narrative_signal: bool = False,
+     has_fund_signal: bool = False,
+     has_game_assessment: bool = False,
++    cfg: Optional[StrategyConfig] = None,  # [M-004]
+ ) -> EvidenceGateResult:
+     """Compute evidence completeness for a TradeFlow candidate.
+ 
+@@ -124,6 +127,9 @@ def compute_evidence_completeness(
+     Returns:
+         EvidenceGateResult with completeness metrics and gate verdicts.
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     dimensions = {
+         "ohlcv": has_ohlcv,
+         "liquidity": has_liquidity,
+@@ -141,13 +147,13 @@ def compute_evidence_completeness(
+     missing_keys = [k for k, v in dimensions.items() if not v]
+ 
+     present_count = len(present_keys)
+-    completeness = round(present_count / TOTAL_EVIDENCE_DIMENSIONS, 3) if TOTAL_EVIDENCE_DIMENSIONS > 0 else 0.0
++    completeness = round(present_count / cfg.evidence_total_dimensions, 3) if cfg.evidence_total_dimensions > 0 else 0.0  # [M-004]
+ 
+     missing_fields = [EVIDENCE_DIMENSION_NAMES[k] for k in missing_keys]
+     present_fields = [EVIDENCE_DIMENSION_NAMES[k] for k in present_keys]
+ 
+-    can_enter_a = completeness >= COMPLETENESS_FOR_A_TIER
+-    can_deep_ta = completeness >= COMPLETENESS_FOR_DEEP_TA
++    can_enter_a = completeness >= cfg.evidence_completeness_for_a_tier  # [M-004]
++    can_deep_ta = completeness >= cfg.evidence_completeness_for_deep_ta
+ 
+     what_to_upgrade: list[str] = []
+ 
+@@ -164,23 +170,23 @@ def compute_evidence_completeness(
+         what_to_upgrade.append(f"信号维度不足: {'; '.join(labels)}")
+ 
+     if not can_enter_a:
+-        needed = max(1, int(TOTAL_EVIDENCE_DIMENSIONS * COMPLETENESS_FOR_A_TIER) - present_count)
++        needed = max(1, int(cfg.evidence_total_dimensions * cfg.evidence_completeness_for_a_tier) - present_count)  # [M-004]
+         if needed > 0:
+-            what_to_upgrade.append(f"完整度需≥{COMPLETENESS_FOR_A_TIER:.0%}(当前{completeness:.0%}，还需{needed}项)")
++            what_to_upgrade.append(f"完整度需≥{cfg.evidence_completeness_for_a_tier:.0%}(当前{completeness:.0%}，还需{needed}项)")
+ 
+     if not has_fund_flow_unit and not has_event_source:
+         what_to_upgrade.append("需补充资金单位校验或事件来源中至少一项")
+ 
+     refs: list[dict] = [
+         {"field": "tradeflow_data_completeness", "value": completeness,
+-         "present_count": present_count, "total": TOTAL_EVIDENCE_DIMENSIONS},
++         "present_count": present_count, "total": cfg.evidence_total_dimensions},  # [M-004]
+     ]
+     if not can_enter_a:
+         refs.append({"field": "evidence_gate_blocked", "value": "completeness_below_a_tier",
+-                      "threshold": COMPLETENESS_FOR_A_TIER, "actual": completeness})
++                      "threshold": cfg.evidence_completeness_for_a_tier, "actual": completeness})
+     if not can_deep_ta:
+         refs.append({"field": "evidence_gate_blocked", "value": "completeness_below_deep_ta",
+-                      "threshold": COMPLETENESS_FOR_DEEP_TA, "actual": completeness})
++                      "threshold": cfg.evidence_completeness_for_deep_ta, "actual": completeness})
+     for k in missing_keys:
+         refs.append({"field": "missing_dimension", "value": k,
+                       "label": EVIDENCE_DIMENSION_NAMES[k]})
+@@ -207,6 +213,7 @@ def apply_evidence_gate(
+     can_trigger_deep_ta: bool = True,
+     what_to_upgrade: Optional[list[str]] = None,
+     missing_data_fields: Optional[list[str]] = None,
++    cfg: Optional[StrategyConfig] = None,  # [M-004]
+ ) -> dict:
+     """Apply the evidence gate to a candidate's tier and need_deep_ta.
+ 
+@@ -227,6 +234,9 @@ def apply_evidence_gate(
+         - ``what_to_upgrade``: list[str]
+         - ``gate_applied``: bool
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     missing = list(missing_data_fields or [])
+     upgrade = list(what_to_upgrade or [])
+ 
+@@ -240,7 +250,7 @@ def apply_evidence_gate(
+         tier = "B"
+         gate_applied = True
+         tier_reason_additions.append(
+-            f"证据完整度不足({candidate_completeness:.0%}，A层需≥{COMPLETENESS_FOR_A_TIER:.0%})"
++            f"证据完整度不足({candidate_completeness:.0%}，A层需≥{cfg.evidence_completeness_for_a_tier:.0%})"  # [M-004]
+         )
+         why_not_additions.append(
+             f"证据完整度不足({candidate_completeness:.0%})，禁止A层"
+@@ -250,7 +260,7 @@ def apply_evidence_gate(
+         need_deep_ta = False
+         gate_applied = True
+         why_not_additions.append(
+-            f"证据完整度不足({candidate_completeness:.0%}，深挖需≥{COMPLETENESS_FOR_DEEP_TA:.0%})"
++            f"证据完整度不足({candidate_completeness:.0%}，深挖需≥{cfg.evidence_completeness_for_deep_ta:.0%})"  # [M-004]
+         )
+ 
+     ta_budget = {1: 100, 2: 30}.get({"A": 1, "B": 2, "C": 3}.get(tier, 3), 0)
+diff --git a/tradingagents/tradeflow/fund_flow_anomaly.py b/tradingagents/tradeflow/fund_flow_anomaly.py
+index 6d10205..1e8912f 100644
+--- a/tradingagents/tradeflow/fund_flow_anomaly.py
++++ b/tradingagents/tradeflow/fund_flow_anomaly.py
+@@ -28,6 +28,8 @@ import re
+ from dataclasses import dataclass, field
+ from typing import Optional
+ 
++from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
++
+ 
+ MAX_FUND_FLOW_BONUS = 25
+ 
+@@ -145,7 +147,7 @@ def _extract_net_flows(fund_flow_text: str) -> list[float]:
+     return values
+ 
+ 
+-def _detect_consecutive_inflow(net_flows: list[float], lookback: int = 5) -> tuple[bool, int, list[dict]]:
++def _detect_consecutive_inflow(net_flows: list[float], lookback: int = 5, min_days: int = 3) -> tuple[bool, int, list[dict]]:
+     """Detect consecutive main-capital net inflows in recent N days.
+ 
+     Returns (is_consecutive, streak_length, refs).
+@@ -163,7 +165,7 @@ def _detect_consecutive_inflow(net_flows: list[float], lookback: int = 5) -> tup
+         else:
+             break
+ 
+-    if streak >= _CONSECUTIVE_INFLOW_MIN_DAYS:
++    if streak >= min_days:
+         refs.append({
+             "field": "consecutive_inflow",
+             "matched_text": f"近{streak}日连续主力净流入",
+@@ -174,7 +176,7 @@ def _detect_consecutive_inflow(net_flows: list[float], lookback: int = 5) -> tup
+     return False, streak, []
+ 
+ 
+-def _detect_large_single_day(net_flows: list[float]) -> tuple[bool, float, list[dict]]:
++def _detect_large_single_day(net_flows: list[float], threshold: float = 50000.0) -> tuple[bool, float, list[dict]]:
+     """Detect a single day with unusually large net inflow/outflow.
+ 
+     Returns (is_large, max_abs_value, refs).
+@@ -183,7 +185,7 @@ def _detect_large_single_day(net_flows: list[float]) -> tuple[bool, float, list[
+         return False, 0.0, []
+ 
+     max_val = max(net_flows, key=abs)
+-    if abs(max_val) >= _ANOMALY_THRESHOLD_WAN:
++    if abs(max_val) >= threshold:
+         direction = "净流入" if max_val > 0 else "净流出"
+         refs = [{
+             "field": "large_single_day",
+@@ -195,7 +197,7 @@ def _detect_large_single_day(net_flows: list[float]) -> tuple[bool, float, list[
+     return False, max_val, []
+ 
+ 
+-def _detect_high_proportion(fund_flow_text: str) -> tuple[bool, float, list[dict]]:
++def _detect_high_proportion(fund_flow_text: str, threshold: float = 5.0) -> tuple[bool, float, list[dict]]:
+     """Detect abnormal capital proportion (占比 >= 5%).
+ 
+     Returns (is_high, max_proportion, refs).
+@@ -230,7 +232,7 @@ def _detect_high_proportion(fund_flow_text: str) -> tuple[bool, float, list[dict
+             except ValueError:
+                 continue
+ 
+-    if max_pct >= _HIGH_PROPORTION_THRESHOLD:
++    if max_pct >= threshold:
+         refs.append({
+             "field": "high_proportion",
+             "matched_text": f"主力资金占比 {max_pct:.1f}%",
+@@ -357,6 +359,7 @@ def detect_fund_flow_anomaly(
+     fund_flow_individual: Optional[str] = None,
+     fund_flow_board: Optional[str] = None,
+     lookback_days: int = 5,
++    cfg: Optional[StrategyConfig] = None,  # [M-004]
+ ) -> FundFlowAnomalyResult:
+     """Detect fund flow anomaly from individual and board fund flow data.
+ 
+@@ -368,6 +371,9 @@ def detect_fund_flow_anomaly(
+     Returns:
+         FundFlowAnomalyResult with anomaly tags, score, and summaries.
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     lookback_days = max(5, min(20, lookback_days))
+ 
+     individual_text = fund_flow_individual or ""
+@@ -381,20 +387,20 @@ def detect_fund_flow_anomaly(
+     refs: list[dict] = []
+     score = 0.0
+ 
+-    is_consecutive, streak, cons_refs = _detect_consecutive_inflow(net_flows, lookback_days)
++    is_consecutive, streak, cons_refs = _detect_consecutive_inflow(net_flows, lookback_days, cfg.fund_flow_consecutive_min_days)  # [M-004]
+     if is_consecutive:
+         tags.append(FUND_FLOW_TAG_CONSECUTIVE_INFLOW)
+         refs.extend(cons_refs)
+         bonus = min(streak * 3, 12)
+         score += bonus
+ 
+-    is_large, max_val, large_refs = _detect_large_single_day(net_flows)
++    is_large, max_val, large_refs = _detect_large_single_day(net_flows, cfg.fund_flow_anomaly_threshold_wan)  # [M-004]
+     if is_large and unit_verified:
+         tags.append(FUND_FLOW_TAG_LARGE_SINGLE_DAY)
+         refs.extend(large_refs)
+         score += 5
+ 
+-    is_high_prop, max_pct, prop_refs = _detect_high_proportion(individual_text)
++    is_high_prop, max_pct, prop_refs = _detect_high_proportion(individual_text, cfg.fund_flow_high_proportion_threshold)  # [M-004]
+     if is_high_prop and unit_verified:
+         tags.append(FUND_FLOW_TAG_HIGH_PROPORTION)
+         refs.extend(prop_refs)
+@@ -426,7 +432,7 @@ def detect_fund_flow_anomaly(
+                 "source": "fund_flow_unit_check",
+             })
+ 
+-    score = min(score, MAX_FUND_FLOW_BONUS)
++    score = min(score, cfg.fund_flow_max_bonus)  # [M-004]
+ 
+     ind_summary = _summarize_individual(individual_text, net_flows)
+     board_summary = _summarize_board(board_text)
+diff --git a/tradingagents/tradeflow/game_balance.py b/tradingagents/tradeflow/game_balance.py
+index f7c52a5..15f3aea 100644
+--- a/tradingagents/tradeflow/game_balance.py
++++ b/tradingagents/tradeflow/game_balance.py
+@@ -29,6 +29,8 @@ import re
+ from dataclasses import dataclass, field
+ from typing import Optional
+ 
++from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
++
+ 
+ GAME_BALANCE_FAVORABLE = "favorable"
+ GAME_BALANCE_NEUTRAL = "neutral"
+@@ -106,6 +108,7 @@ def assess_game_balance(
+     risk_penalty: float = 0.0,
+     risk_reasons: Optional[list[str]] = None,
+     event_texts: Optional[list[str]] = None,
++    cfg: Optional[StrategyConfig] = None,  # [M-004]
+ ) -> GameBalanceResult:
+     """Assess game balance from existing candidate signals.
+ 
+@@ -125,6 +128,9 @@ def assess_game_balance(
+     Returns:
+         GameBalanceResult with balance verdict and case summaries.
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     tags = set(strategy_tags or [])
+     p_tags = list(policy_tags or [])
+     r_flags = set(risk_flags or [])
+@@ -144,9 +150,9 @@ def assess_game_balance(
+ 
+     resonance = sum([has_policy, has_narrative, has_tech, has_fund])
+ 
+-    has_high_risk = bool(r_flags & _SEVERITY_HIGH_RISK_FLAGS)
+-    many_risks = len(r_flags) >= 3
+-    heavy_penalty = risk_penalty <= -15
++    has_high_risk = bool(r_flags & set(cfg.risk_high_severity_flags))  # [M-004]
++    many_risks = len(r_flags) >= cfg.game_balance_many_risks_threshold
++    heavy_penalty = risk_penalty <= cfg.game_balance_heavy_penalty_threshold
+ 
+     # ── Build policy_case ──
+     policy_parts: list[str] = []
+@@ -223,18 +229,18 @@ def assess_game_balance(
+         balance = GAME_BALANCE_FRAGILE
+     elif has_fund_flow_neg and has_fund_flow_pos and len(r_flags) >= 2:
+         balance = GAME_BALANCE_CROWDED
+-    elif resonance >= 2 and risk_penalty > -10:
++    elif resonance >= 2 and risk_penalty > cfg.game_balance_risk_penalty_threshold:  # [M-004]
+         if resonance >= 3 and score > 0:
+             balance = GAME_BALANCE_FAVORABLE
+         else:
+             balance = GAME_BALANCE_NEUTRAL
+-    elif resonance >= 1 and risk_penalty > -10:
++    elif resonance >= 1 and risk_penalty > cfg.game_balance_risk_penalty_threshold:
+         balance = GAME_BALANCE_NEUTRAL
+     else:
+         balance = GAME_BALANCE_NEUTRAL
+ 
+     if r_flags and balance == GAME_BALANCE_FAVORABLE:
+-        if len(r_flags) >= 2 or risk_penalty <= -10:
++        if len(r_flags) >= 2 or risk_penalty <= cfg.game_balance_risk_penalty_threshold:  # [M-004]
+             balance = GAME_BALANCE_NEUTRAL
+ 
+     bull_case = _sanitize(bull_case)
+diff --git a/tradingagents/tradeflow/narrative_quality.py b/tradingagents/tradeflow/narrative_quality.py
+index 1f08f3d..26b1185 100644
+--- a/tradingagents/tradeflow/narrative_quality.py
++++ b/tradingagents/tradeflow/narrative_quality.py
+@@ -27,6 +27,8 @@ from __future__ import annotations
+ import re
+ from dataclasses import dataclass, field
+ 
++from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
++
+ 
+ @dataclass
+ class NarrativeQualityResult:
+@@ -113,7 +115,11 @@ def _score_dimension(
+ 
+ def score_narrative_quality(
+     event_texts: list[str] | None = None,
++    cfg: StrategyConfig | None = None,  # [M-004]
+ ) -> NarrativeQualityResult:
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     if not event_texts:
+         return NarrativeQualityResult()
+ 
+@@ -205,7 +211,7 @@ def score_narrative_quality(
+         all_refs.extend(crowd_refs)
+         total_score -= crowd_deduction
+ 
+-    total_score = max(0.0, min(total_score, MAX_NARRATIVE_SCORE))
++    total_score = max(0.0, min(total_score, cfg.narrative_max_score))  # [M-004]
+     total_score = round(total_score, 2)
+ 
+     if total_score <= 0 and not all_refs:
+diff --git a/tradingagents/tradeflow/plan_runner.py b/tradingagents/tradeflow/plan_runner.py
+index f7b5890..e14f6bf 100644
+--- a/tradingagents/tradeflow/plan_runner.py
++++ b/tradingagents/tradeflow/plan_runner.py
+@@ -18,6 +18,7 @@ from .candidate_engine import init_db, save_candidate, evaluate_symbol
+ from .universe import build_universe
+ from .false_positive_audit import build_audit_report, AuditReport  # [S-006] candidate_false_positive_audit
+ from .tier_budget import classify_candidate_tier, allocate_tier_budget, render_tier_budget_summary  # [S-007] candidate_tier_budget
++from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+ 
+ 
+ def _action_for_candidate(candidate: Candidate) -> str:
+@@ -120,6 +121,7 @@ def generate_daily_plan(
+     save_candidates: bool = False,
+     use_event_source: bool = False,  # [N-001] event_source_plan_integration
+     fund_flow_map: Optional[dict[str, dict]] = None,  # [T-003] fund_flow_anomaly_pool
++    cfg: Optional[StrategyConfig] = None,  # [M-004]
+ ) -> DailyPlan:
+     """Generate a pre-market daily plan.
+ 
+@@ -138,6 +140,9 @@ def generate_daily_plan(
+     Returns:
+         DailyPlan with validated entries.
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     if not trade_date:
+         trade_date = datetime.now().strftime("%Y-%m-%d")
+ 
+@@ -190,6 +195,7 @@ def generate_daily_plan(
+                 event_overrides=filtered_overrides,
+                 fund_flow_individual=sym_ff_individual,  # [T-003]
+                 fund_flow_board=sym_ff_board,  # [T-003]
++                cfg=cfg,  # [M-004]
+             )
+             if c is not None:
+                 if item.get("universe_sources"):
+@@ -220,7 +226,7 @@ def generate_daily_plan(
+             missing_evidence_for_upgrade=e.get("missing_evidence_for_upgrade", []),
+             why_not_deep_ta=e.get("why_not_deep_ta", ""),
+         ))
+-    budget_allocation = allocate_tier_budget(tier_results)
++    budget_allocation = allocate_tier_budget(tier_results, cfg=cfg)  # [M-004]
+     # Update entries if any were demoted by the cap
+     for i, tr in enumerate(tier_results):
+         if i < len(plan_entries):
+@@ -249,6 +255,7 @@ def generate_daily_plan(
+         metadata={
+             "universe_size": len(plan_entries),
+             "generated_at": datetime.now().isoformat(),
++            "strategy_config_version": cfg.config_version,  # [M-004]
+         },
+     )
+ 
+diff --git a/tradingagents/tradeflow/policy_version_signal.py b/tradingagents/tradeflow/policy_version_signal.py
+index 5409765..186b019 100644
+--- a/tradingagents/tradeflow/policy_version_signal.py
++++ b/tradingagents/tradeflow/policy_version_signal.py
+@@ -18,6 +18,8 @@ from __future__ import annotations
+ import re
+ from dataclasses import dataclass, field
+ 
++from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
++
+ 
+ @dataclass
+ class PolicyVersionResult:
+@@ -105,6 +107,7 @@ MAX_POLICY_BONUS = 30.0
+ def detect_policy_version(
+     event_texts: list[str] | None = None,
+     industry_tags: list[str] | None = None,
++    cfg: StrategyConfig | None = None,  # [M-004]
+ ) -> PolicyVersionResult:
+     """Detect policy version signals from event texts and industry tags.
+ 
+@@ -116,6 +119,9 @@ def detect_policy_version(
+         PolicyVersionResult with tags, score, and evidence refs.
+         Score is 0 when no raw text evidence matches any policy topic.
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     texts = [t for t in (event_texts or []) if t]
+     industries = [t for t in (industry_tags or []) if t]
+     combined_text = "\n".join(texts)
+@@ -159,14 +165,14 @@ def detect_policy_version(
+                 })
+         elif matched_in_industry:
+             matched_tags.append(tag)
+-            raw_score += weight * 0.3
++            raw_score += weight * cfg.policy_industry_weight_factor  # [M-004]
+             evidence_refs.append({
+                 "tag": tag,
+                 "matched_text": f"行业标签命中: {tag}",
+                 "source": "industry_tag",
+             })
+ 
+-    version_score = min(raw_score, MAX_POLICY_BONUS)
++    version_score = min(raw_score, cfg.policy_max_bonus)  # [M-004]
+ 
+     if not evidence_refs:
+         return PolicyVersionResult()
+diff --git a/tradingagents/tradeflow/selection_priority_gate.py b/tradingagents/tradeflow/selection_priority_gate.py
+index a2b8a9e..866b11b 100644
+--- a/tradingagents/tradeflow/selection_priority_gate.py
++++ b/tradingagents/tradeflow/selection_priority_gate.py
+@@ -24,6 +24,8 @@ import re
+ from dataclasses import dataclass, field
+ from typing import Optional
+ 
++from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
++
+ 
+ _STRONG_BUY_SELL_WORDS = {
+     "立即买入", "重仓买入", "立即清仓", "满仓", "梭哈",
+@@ -133,6 +135,7 @@ def run_selection_priority_gate(
+     has_event_data: bool = False,
+     has_fund_flow_data: bool = False,
+     has_risk_assessment: bool = False,
++    cfg: Optional[StrategyConfig] = None,  # [M-004]
+ ) -> SelectionPriorityResult:
+     """Run the unified selection priority gate on a candidate.
+ 
+@@ -157,6 +160,9 @@ def run_selection_priority_gate(
+     Returns:
+         SelectionPriorityResult with composite score, gate verdict, and explanations.
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     tags = set(strategy_tags or [])
+     p_tags = list(policy_tags or [])
+     r_flags = set(risk_flags or [])
+@@ -196,15 +202,15 @@ def run_selection_priority_gate(
+         has_risk_assessment=has_risk_assessment,
+     )
+ 
+-    completeness_bonus = round(data_completeness * 5.0, 2)
++    completeness_bonus = round(data_completeness * cfg.gate_completeness_bonus_factor, 2)  # [M-004]
+ 
+     composite_score = score + version_score + narrative_score + fund_flow_anomaly_score + risk_penalty + completeness_bonus
+-    composite_score = max(0.0, min(composite_score, MAX_COMPOSITE_SCORE))
++    composite_score = max(0.0, min(composite_score, cfg.gate_max_composite_score))
+     composite_score = round(composite_score, 2)
+ 
+-    has_high_risk = bool(r_flags & _SEVERITY_HIGH_RISK_FLAGS)
+-    many_risks = len(r_flags) >= 3
+-    heavy_penalty = risk_penalty <= -15
++    has_high_risk = bool(r_flags & set(cfg.risk_high_severity_flags))  # [M-004]
++    many_risks = len(r_flags) >= cfg.risk_many_flags_threshold
++    heavy_penalty = risk_penalty <= cfg.risk_heavy_penalty_threshold
+ 
+     fragile_or_crowded = game_balance in {"fragile", "crowded"}
+     favorable_or_neutral = game_balance in {"favorable", "neutral"}
+@@ -214,12 +220,12 @@ def run_selection_priority_gate(
+     why_not_deep_ta = ""
+ 
+     can_pass_gate = (
+-        positive_category_count >= MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA
++        positive_category_count >= cfg.gate_min_positive_categories  # [M-004]
+         and not has_high_risk
+         and not many_risks
+         and not heavy_penalty
+         and not fragile_or_crowded
+-        and data_completeness >= 0.5
++        and data_completeness >= cfg.gate_completeness_min
+     )
+ 
+     if can_pass_gate:
+@@ -239,9 +245,9 @@ def run_selection_priority_gate(
+         refs.append({"field": "gate_passed", "value": True, "reason": f"{positive_category_count} categories, risk manageable"})
+     else:
+         blockers: list[str] = []
+-        if positive_category_count < MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA:
+-            blockers.append(f"仅{positive_category_count}类正向信号(需≥{MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA})")
+-            refs.append({"field": "gate_blocked", "value": "insufficient_categories", "detail": f"{positive_category_count}/{MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA}"})
++        if positive_category_count < cfg.gate_min_positive_categories:  # [M-004]
++            blockers.append(f"仅{positive_category_count}类正向信号(需≥{cfg.gate_min_positive_categories})")
++            refs.append({"field": "gate_blocked", "value": "insufficient_categories", "detail": f"{positive_category_count}/{cfg.gate_min_positive_categories}"})
+         if has_high_risk:
+             blockers.append(f"高风险标签({', '.join(r_flags & _SEVERITY_HIGH_RISK_FLAGS)})")
+             refs.append({"field": "gate_blocked", "value": "high_risk_flags"})
+@@ -254,14 +260,14 @@ def run_selection_priority_gate(
+         if fragile_or_crowded:
+             blockers.append(f"博弈平衡不佳({game_balance})")
+             refs.append({"field": "gate_blocked", "value": "bad_game_balance"})
+-        if data_completeness < 0.5:
++        if data_completeness < cfg.gate_completeness_min:  # [M-004]
+             blockers.append(f"数据完整度不足({data_completeness:.0%})")
+             refs.append({"field": "gate_blocked", "value": "low_data_completeness"})
+         why_not_deep_ta = "；".join(blockers)
+ 
+-    if positive_category_count >= 3 and composite_score >= 60 and data_completeness >= 0.7:
++    if positive_category_count >= cfg.gate_rank_a_min_categories and composite_score >= cfg.gate_rank_a_min_composite and data_completeness >= cfg.gate_rank_a_min_completeness:  # [M-004]
+         priority_rank = "A"
+-    elif positive_category_count >= 2 and composite_score >= 30:
++    elif positive_category_count >= cfg.gate_rank_b_min_categories and composite_score >= cfg.gate_rank_b_min_composite:
+         priority_rank = "B"
+     else:
+         priority_rank = "C"
+diff --git a/tradingagents/tradeflow/strategies/event_catalyst.py b/tradingagents/tradeflow/strategies/event_catalyst.py
+index c1eb639..a0d3877 100644
+--- a/tradingagents/tradeflow/strategies/event_catalyst.py
++++ b/tradingagents/tradeflow/strategies/event_catalyst.py
+@@ -14,6 +14,8 @@ import re
+ from dataclasses import dataclass, field
+ from typing import Optional
+ 
++from ..strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
++
+ 
+ @dataclass
+ class EventCatalystSignal:
+@@ -108,6 +110,7 @@ def score_event_catalyst(
+     event_overrides: Optional[list[dict]] = None,
+     latest_close: float = 0.0,
+     lhb_status: str = "NOT_QUERIED",
++    cfg: Optional[StrategyConfig] = None,  # [M-004]
+ ) -> Optional[EventCatalystSignal]:
+     """Score a stock for event-driven catalyst.
+ 
+@@ -121,10 +124,13 @@ def score_event_catalyst(
+         latest_close: Latest close price for trigger/invalid calculation.
+         lhb_status: LHB data status, one of "HAS_DATA"/"NOT_QUERIED"/"NORMAL_NO_DATA".
+                     Controls HOT_MONEY_LHB tag.  [N-004] astock_signal_tags
++        cfg: StrategyConfig with thresholds. Uses defaults when None.
+ 
+     Returns:
+         EventCatalystSignal if catalyst detected, None otherwise.
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
+     detected_events = []
+ 
+     # Check overrides first — only use overrides whose symbol matches,
+@@ -168,7 +174,7 @@ def score_event_catalyst(
+     if has_bearish and has_bullish:
+         direction = "mixed"
+ 
+-    score = min(best["score"], 80)
++    score = min(best["score"], cfg.event_score_max)  # [M-004]
+ 
+     risk_flags = []
+     if has_bearish:
+@@ -178,7 +184,7 @@ def score_event_catalyst(
+     trigger_price = round(latest_close * 1.03, 2) if latest_close > 0 else None
+     invalid_price = round(latest_close * 0.95, 2) if latest_close > 0 else None
+ 
+-    need_deep_ta = score >= 60 or direction in ("mixed", "neutral")
++    need_deep_ta = score >= cfg.event_need_deep_ta_score or direction in ("mixed", "neutral")  # [M-004]
+ 
+     verification = ""
+     if direction == "bullish":
+diff --git a/tradingagents/tradeflow/strategies/pullback_support.py b/tradingagents/tradeflow/strategies/pullback_support.py
+index 1dd4748..2e3c60a 100644
+--- a/tradingagents/tradeflow/strategies/pullback_support.py
++++ b/tradingagents/tradeflow/strategies/pullback_support.py
+@@ -15,6 +15,8 @@ from typing import Optional
+ 
+ import pandas as pd
+ 
++from ..strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
++
+ 
+ @dataclass
+ class PullbackSupportSignal:
+@@ -29,17 +31,21 @@ class PullbackSupportSignal:
+     need_deep_ta: bool = False
+ 
+ 
+-def score_pullback_support(df: pd.DataFrame, symbol: str = "") -> Optional[PullbackSupportSignal]:
++def score_pullback_support(df: pd.DataFrame, symbol: str = "", cfg: Optional[StrategyConfig] = None) -> Optional[PullbackSupportSignal]:  # [M-004]
+     """Score a stock for pullback-to-support pattern.
+ 
+     Args:
+         df: DataFrame with Date, Open, High, Low, Close, Volume.
+         symbol: Stock symbol for reporting.
++        cfg: StrategyConfig with thresholds. Uses defaults when None.
+ 
+     Returns:
+         PullbackSupportSignal if pattern detected, None otherwise.
+     """
+-    if df is None or len(df) < 60:
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
++    if df is None or len(df) < cfg.pullback_min_data_len:
+         return None
+ 
+     close = df["Close"].astype(float)
+@@ -62,7 +68,7 @@ def score_pullback_support(df: pd.DataFrame, symbol: str = "") -> Optional[Pullb
+     pullback_pct = (latest_close - high_20) / high_20
+ 
+     # Must have pulled back at least 3% but not more than 15%
+-    if pullback_pct > -0.03 or pullback_pct < -0.20:
++    if pullback_pct > cfg.pullback_min_pct or pullback_pct < cfg.pullback_max_pct:
+         return None
+ 
+     # ── 3. Volume declining during pullback ──
+@@ -72,7 +78,7 @@ def score_pullback_support(df: pd.DataFrame, symbol: str = "") -> Optional[Pullb
+     if vol_prior10 == 0:
+         return None
+     vol_ratio = vol_last5 / vol_prior10
+-    if vol_ratio > 1.0:
++    if vol_ratio > cfg.pullback_vol_ratio_max:
+         # Volume increasing during pullback — not ideal
+         return None
+ 
+@@ -88,7 +94,7 @@ def score_pullback_support(df: pd.DataFrame, symbol: str = "") -> Optional[Pullb
+         if len(ma_series.dropna()) > 0:
+             ma_val = float(ma_series.dropna().iloc[-1])
+             distance_pct = abs(latest_close - ma_val) / latest_close
+-            if distance_pct < 0.03 and ma_val <= latest_close * 1.02:
++            if distance_pct < cfg.pullback_ma_distance_max and ma_val <= latest_close * cfg.pullback_ma_above_max:
+                 support_price = round(ma_val, 2)
+                 support_label = label
+                 break
+@@ -96,7 +102,7 @@ def score_pullback_support(df: pd.DataFrame, symbol: str = "") -> Optional[Pullb
+     # Also check prior low as support
+     if support_price is None:
+         prior_low = float(df.tail(30)["Low"].min())
+-        if latest_close >= prior_low and (latest_close - prior_low) / latest_close < 0.05:
++        if latest_close >= prior_low and (latest_close - prior_low) / latest_close < cfg.pullback_prior_low_distance_max:
+             support_price = round(prior_low, 2)
+             support_label = "30日低点"
+ 
+@@ -128,12 +134,12 @@ def score_pullback_support(df: pd.DataFrame, symbol: str = "") -> Optional[Pullb
+     score += max(0, (1 + pullback_pct) * 20)
+     # Stabilization
+     score += 15
+-    score = min(score, 80)
++    score = min(score, cfg.pullback_score_max)
+ 
+     trigger_price = round(latest_close * 1.02, 2)  # reclaims 2% above current
+     invalid_price = round(support_price * 0.97, 2)  # 3% below support
+ 
+-    need_deep_ta = score >= 60 or support_distance < 0.01
++    need_deep_ta = score >= cfg.pullback_need_deep_ta_score or support_distance < cfg.pullback_need_deep_ta_support_dist
+ 
+     return PullbackSupportSignal(
+         trigger_price=trigger_price,
+diff --git a/tradingagents/tradeflow/strategies/vcp.py b/tradingagents/tradeflow/strategies/vcp.py
+index beba9ea..d387e67 100644
+--- a/tradingagents/tradeflow/strategies/vcp.py
++++ b/tradingagents/tradeflow/strategies/vcp.py
+@@ -17,6 +17,8 @@ from typing import Optional
+ import numpy as np
+ import pandas as pd
+ 
++from ..strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
++
+ 
+ @dataclass
+ class VCPSignal:
+@@ -41,18 +43,22 @@ def _compute_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int
+     return tr.rolling(period).mean()
+ 
+ 
+-def score_vcp(df: pd.DataFrame, symbol: str = "") -> Optional[VCPSignal]:
++def score_vcp(df: pd.DataFrame, symbol: str = "", cfg: Optional[StrategyConfig] = None) -> Optional[VCPSignal]:  # [M-004]
+     """Score a stock for VCP pattern.
+ 
+     Args:
+         df: DataFrame with columns: Date, Open, High, Low, Close, Volume.
+             Sorted by date ascending. Should have at least 40 rows.
+         symbol: Stock symbol for reporting.
++        cfg: StrategyConfig with thresholds. Uses defaults when None.
+ 
+     Returns:
+         VCPSignal if pattern detected, None otherwise.
+     """
+-    if df is None or len(df) < 40:
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
++    if df is None or len(df) < cfg.vcp_min_data_len:
+         return None
+ 
+     close = df["Close"].astype(float)
+@@ -82,7 +88,7 @@ def score_vcp(df: pd.DataFrame, symbol: str = "") -> Optional[VCPSignal]:
+         return None
+ 
+     range_ratio = recent_range / prior_range
+-    if range_ratio > 0.8:
++    if range_ratio > cfg.vcp_range_ratio_max:
+         # Not contracting enough
+         return None
+ 
+@@ -93,7 +99,7 @@ def score_vcp(df: pd.DataFrame, symbol: str = "") -> Optional[VCPSignal]:
+         return None
+ 
+     vol_ratio = recent_avg_vol / prior_avg_vol
+-    if vol_ratio > 0.9:
++    if vol_ratio > cfg.vcp_vol_ratio_max:
+         # Volume not declining enough
+         return None
+ 
+@@ -104,13 +110,13 @@ def score_vcp(df: pd.DataFrame, symbol: str = "") -> Optional[VCPSignal]:
+         return None
+ 
+     price_position = (latest_close - recent_low) / (recent_high - recent_low)
+-    if price_position < 0.5:
++    if price_position < cfg.vcp_price_position_min:
+         # Price closer to bottom than top
+         return None
+ 
+     # ── 5. Not breaking below key MA ──
+     ma20 = close.rolling(20).mean()
+-    if len(ma20.dropna()) > 0 and latest_close < float(ma20.dropna().iloc[-1]) * 0.97:
++    if len(ma20.dropna()) > 0 and latest_close < float(ma20.dropna().iloc[-1]) * cfg.vcp_ma20_break_pct:
+         return None
+ 
+     # ── Compute score ──
+@@ -118,15 +124,15 @@ def score_vcp(df: pd.DataFrame, symbol: str = "") -> Optional[VCPSignal]:
+     score += min((1 - range_ratio) * 50, 35)  # more contraction (lower ratio) → higher score
+     score += min((1 - vol_ratio) * 30, 25)  # more volume decline = higher
+     score += price_position * 20  # closer to top = higher
+-    score = min(score, 80)
++    score = min(score, cfg.vcp_score_max)
+ 
+     # trigger = recent high (breakout level)
+     trigger_price = round(recent_high, 2)
+     support_price = round(recent_low, 2)
+-    invalid_price = round(float(ma20.dropna().iloc[-1]) * 0.97, 2) if len(ma20.dropna()) > 0 else round(support_price * 0.95, 2)
++    invalid_price = round(float(ma20.dropna().iloc[-1]) * cfg.vcp_ma20_break_pct, 2) if len(ma20.dropna()) > 0 else round(support_price * 0.95, 2)
+ 
+     # need_deep_ta if score is high (near breakout)
+-    need_deep_ta = score >= 55 or price_position >= 0.8
++    need_deep_ta = score >= cfg.vcp_need_deep_ta_score or price_position >= cfg.vcp_need_deep_ta_position
+ 
+     return VCPSignal(
+         trigger_price=trigger_price,
+diff --git a/tradingagents/tradeflow/tier_budget.py b/tradingagents/tradeflow/tier_budget.py
+index f818bdf..1abdff8 100644
+--- a/tradingagents/tradeflow/tier_budget.py
++++ b/tradingagents/tradeflow/tier_budget.py
+@@ -27,6 +27,8 @@ from __future__ import annotations
+ from dataclasses import dataclass, field
+ from typing import Optional
+ 
++from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
++
+ 
+ _STRONG_BUY_SELL_WORDS = {
+     "立即买入", "重仓买入", "立即清仓", "满仓", "梭哈",
+@@ -92,6 +94,7 @@ def classify_candidate_tier(
+     game_balance: str = "",
+     gate_passed: bool = False,
+     why_not_deep_ta: str = "",
++    cfg: Optional[StrategyConfig] = None,  # [M-004]
+ ) -> TierBudgetResult:
+     """Classify a single candidate into A / B / C tier.
+ 
+@@ -117,12 +120,15 @@ def classify_candidate_tier(
+     Returns:
+         ``TierBudgetResult`` with tier, budget, reason, and upgrade hints.
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     r_flags = set(risk_flags or [])
+     missing = list(missing_evidence or [])
+ 
+-    has_high_risk = bool(r_flags & _SEVERITY_HIGH_RISK_FLAGS)
+-    many_risks = len(r_flags) >= 3
+-    heavy_penalty = risk_penalty <= -15
++    has_high_risk = bool(r_flags & set(cfg.risk_high_severity_flags))  # [M-004]
++    many_risks = len(r_flags) >= cfg.risk_many_flags_threshold
++    heavy_penalty = risk_penalty <= cfg.risk_heavy_penalty_threshold
+     fragile = game_balance == "fragile"
+     favorable_or_neutral = game_balance in {"favorable", "neutral"}
+ 
+@@ -132,10 +138,10 @@ def classify_candidate_tier(
+ 
+     # --- Tier A conditions ---
+     meets_a_signals = (
+-        positive_category_count >= 3
+-        or (positive_category_count >= 2 and composite_score >= 50)
++        positive_category_count >= cfg.gate_rank_a_min_categories  # [M-004]
++        or (positive_category_count >= cfg.gate_rank_b_min_categories and composite_score >= cfg.tier_a_min_composite_for_2cat)
+     )
+-    meets_a_completeness = data_completeness >= 0.6
++    meets_a_completeness = data_completeness >= cfg.tier_a_min_completeness
+     meets_a_risk = not has_high_risk and not many_risks and not heavy_penalty
+     meets_a_game = favorable_or_neutral
+     meets_a_gate = gate_passed
+@@ -167,7 +173,7 @@ def classify_candidate_tier(
+ 
+         # --- Tier B or C ---
+         meets_b_signals = positive_category_count >= 1
+-        meets_b_completeness = data_completeness >= 0.3
++        meets_b_completeness = data_completeness >= cfg.tier_b_min_completeness  # [M-004]
+         meets_b_risk = not has_high_risk and not many_risks and not heavy_penalty
+         not_fragile = not fragile
+ 
+@@ -212,7 +218,7 @@ def classify_candidate_tier(
+                 c_reasons.append(f"风险罚分重({risk_penalty})")
+             reason = "；".join(c_reasons) if c_reasons else "综合条件不足"
+ 
+-    budget = TIER_BUDGET_MAP.get(tier, 0)
++    budget = cfg.tier_a_budget if tier == TIER_A else (cfg.tier_b_budget if tier == TIER_B else cfg.tier_c_budget)  # [M-004]
+     not_deep = why_not_deep_ta if tier != TIER_A else ""
+ 
+     reason = _sanitize(reason)
+@@ -231,7 +237,8 @@ def classify_candidate_tier(
+ 
+ def allocate_tier_budget(
+     results: list[TierBudgetResult],
+-    a_tier_cap: int = A_TIER_HARD_CAP,
++    a_tier_cap: int = 0,  # [M-004] default 0 means use StrategyConfig default
++    cfg: Optional[StrategyConfig] = None,
+ ) -> TierBudgetAllocation:
+     """Enforce the A-tier cap and compute aggregate budget.
+ 
+@@ -247,6 +254,13 @@ def allocate_tier_budget(
+     Returns:
+         TierBudgetAllocation with aggregate stats and demotion info.
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++    if a_tier_cap <= 0:
++        a_tier_cap = cfg.tier_a_hard_cap
++
++    tier_budget_map = {TIER_A: cfg.tier_a_budget, TIER_B: cfg.tier_b_budget, TIER_C: cfg.tier_c_budget}  # [M-004]
++
+     a_indices = [i for i, r in enumerate(results) if r.tier == TIER_A]
+ 
+     cap_applied = False
+@@ -257,7 +271,7 @@ def allocate_tier_budget(
+         for idx in a_indices[a_tier_cap:]:
+             old = results[idx]
+             old.tier = TIER_B
+-            old.ta_budget_priority = TIER_BUDGET_MAP[TIER_B]
++            old.ta_budget_priority = tier_budget_map[TIER_B]
+             old.tier_reason = f"A层已满(上限{a_tier_cap})，降为B层观察；{old.tier_reason}"
+             old.why_not_deep_ta = f"A层名额已满({a_tier_cap})，降为观察"
+             demoted.append(f"slot_{idx}")
+diff --git a/tradingagents/tradeflow/underwater_risk_flags.py b/tradingagents/tradeflow/underwater_risk_flags.py
+index 30e9cdd..a3e5222 100644
+--- a/tradingagents/tradeflow/underwater_risk_flags.py
++++ b/tradingagents/tradeflow/underwater_risk_flags.py
+@@ -28,6 +28,8 @@ from __future__ import annotations
+ import re
+ from dataclasses import dataclass, field
+ 
++from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
++
+ 
+ @dataclass
+ class UnderwaterRiskResult:
+@@ -129,6 +131,7 @@ def detect_underwater_risks(
+     lhb_texts: list[str] | None = None,
+     margin_status: str = "NOT_QUERIED",
+     margin_texts: list[str] | None = None,
++    cfg: StrategyConfig | None = None,  # [M-004]
+ ) -> UnderwaterRiskResult:
+     """Detect underwater risk flags from event texts and data status.
+ 
+@@ -147,6 +150,9 @@ def detect_underwater_risks(
+         UnderwaterRiskResult with flags, penalty, evidence refs, and reasons.
+         All flags require raw text evidence; no speculation.
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     texts = [t for t in (event_texts or []) if t]
+     if not texts and lhb_status == "NOT_QUERIED" and margin_status == "NOT_QUERIED":
+         return UnderwaterRiskResult()
+@@ -221,7 +227,7 @@ def detect_underwater_risks(
+             all_reasons.append(f"龙虎榜过热风险(-{weight:.0f})")
+     # NOT_QUERIED / FAILED / NORMAL_NO_DATA → do NOT generate LHB risk
+ 
+-    total_penalty = min(total_penalty, MAX_RISK_PENALTY)
++    total_penalty = min(total_penalty, cfg.risk_max_penalty)  # [M-004]
+ 
+     if not all_flags:
+         return UnderwaterRiskResult()
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/tradeflow/strategy_config.py && printf '\\n--- fund_flow ---\\n' && sed -n '1,280p' tradingagents/tradeflow/fund_flow_anomaly.py && printf '\\n--- selection ---\\n' && sed -n '1,340p' tradingagents/tradeflow/selection_priority_gate.py && printf '\\n--- plan ---\\n' && sed -n '1,220p' tradingagents/tradeflow/plan_runner.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [M-004] strategy_config
+"""Centralized strategy weights and thresholds for TradeFlow.
+
+All strategy scoring, filtering, gating, and tier classification thresholds
+are defined here.  Modules should accept an optional ``StrategyConfig`` and
+fall back to ``DEFAULT_STRATEGY_CONFIG`` when none is provided.
+
+Design constraints:
+- Default values are conservative — no strong buy/sell words.
+- LLM must NOT dynamically change weights.
+- Config version is stamped into daily plan metadata for audit.
+- Missing config falls back to ``DEFAULT_STRATEGY_CONFIG``.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, asdict
+from typing import Optional
+
+
+STRATEGY_CONFIG_VERSION = "v1.0"
+
+
+@dataclass
+class StrategyConfig:
+    """Centralized weights and thresholds for TradeFlow strategies.
+
+    Groups:
+    - Liquidity: amount threshold for filtering low-liquidity stocks.
+    - VCP: Volatility Contraction Pattern scoring thresholds.
+    - Pullback: Pullback-to-Support scoring thresholds.
+    - Event: Event Catalyst scoring thresholds.
+    - Policy: Policy Version signal thresholds.
+    - Narrative: Narrative Quality scoring thresholds.
+    - Risk: Underwater Risk Flag thresholds.
+    - FundFlow: Fund Flow Anomaly detection thresholds.
+    - GameBalance: Game Balance assessment thresholds.
+    - Gate: Selection Priority Gate thresholds.
+    - Tier: Tier Budget classification thresholds.
+    - Evidence: Evidence Gate completeness thresholds.
+    """
+
+    config_version: str = STRATEGY_CONFIG_VERSION
+
+    # ── Liquidity ──
+    amount_threshold: float = 30_000_000.0
+
+    # ── VCP (Volatility Contraction Pattern) ──
+    vcp_min_data_len: int = 40
+    vcp_range_ratio_max: float = 0.8
+    vcp_vol_ratio_max: float = 0.9
+    vcp_price_position_min: float = 0.5
+    vcp_ma20_break_pct: float = 0.97
+    vcp_score_max: float = 80.0
+    vcp_need_deep_ta_score: float = 55.0
+    vcp_need_deep_ta_position: float = 0.8
+
+    # ── Pullback Support ──
+    pullback_min_data_len: int = 60
+    pullback_min_pct: float = -0.03
+    pullback_max_pct: float = -0.20
+    pullback_vol_ratio_max: float = 1.0
+    pullback_ma_distance_max: float = 0.03
+    pullback_ma_above_max: float = 1.02
+    pullback_prior_low_distance_max: float = 0.05
+    pullback_score_max: float = 80.0
+    pullback_need_deep_ta_score: float = 60.0
+    pullback_need_deep_ta_support_dist: float = 0.01
+
+    # ── Event Catalyst ──
+    event_score_max: float = 80.0
+    event_need_deep_ta_score: float = 60.0
+
+    # ── Policy Version Signal ──
+    policy_max_bonus: float = 30.0
+    policy_industry_weight_factor: float = 0.3
+    policy_need_deep_ta_score: float = 15.0
+
+    # ── Narrative Quality ──
+    narrative_max_score: float = 40.0
+    narrative_need_deep_ta_score: float = 20.0
+
+    # ── Underwater Risk Flags ──
+    risk_max_penalty: float = 30.0
+    risk_lockup_score_factor: float = 0.8
+    risk_many_flags_threshold: int = 3
+    risk_heavy_penalty_threshold: float = -15.0
+    risk_high_severity_flags: tuple = ("INQUIRY_RISK", "FINANCIAL_QUALITY_RISK")
+
+    # ── Fund Flow Anomaly ──
+    fund_flow_max_bonus: float = 25.0
+    fund_flow_anomaly_threshold_wan: float = 50000.0
+    fund_flow_consecutive_min_days: int = 3
+    fund_flow_high_proportion_threshold: float = 5.0
+    fund_flow_need_deep_ta_score: float = 10.0
+    fund_flow_lookback_default: int = 5
+
+    # ── Game Balance ──
+    game_balance_risk_penalty_threshold: float = -10.0
+    game_balance_many_risks_threshold: int = 3
+    game_balance_heavy_penalty_threshold: float = -15.0
+
+    # ── Selection Priority Gate ──
+    gate_min_positive_categories: int = 2
+    gate_max_composite_score: float = 200.0
+    gate_completeness_bonus_factor: float = 5.0
+    gate_completeness_min: float = 0.5
+    gate_rank_a_min_categories: int = 3
+    gate_rank_a_min_composite: float = 60.0
+    gate_rank_a_min_completeness: float = 0.7
+    gate_rank_b_min_categories: int = 2
+    gate_rank_b_min_composite: float = 30.0
+
+    # ── Tier Budget ──
+    tier_a_hard_cap: int = 5
+    tier_a_budget: int = 100
+    tier_b_budget: int = 30
+    tier_c_budget: int = 0
+    tier_a_min_completeness: float = 0.6
+    tier_b_min_completeness: float = 0.3
+    tier_a_min_composite_for_2cat: float = 50.0
+
+    # ── Evidence Gate ──
+    evidence_total_dimensions: int = 10
+    evidence_completeness_for_a_tier: float = 0.6
+    evidence_completeness_for_deep_ta: float = 0.5
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["risk_high_severity_flags"] = list(self.risk_high_severity_flags)
+        return d
+
+
+DEFAULT_STRATEGY_CONFIG = StrategyConfig()
+
+--- fund_flow ---
+# [T-003] fund_flow_anomaly_pool
+"""Fund Flow Anomaly Detection — detect capital anomaly for TradeFlow candidates.
+
+Uses individual stock fund flow data (近5-20日) to identify:
+- Consecutive main-capital net inflows
+- Abnormal capital proportion
+- Individual/sector fund flow resonance
+
+Outputs:
+- fund_flow_anomaly_score: 0 to 25 bonus points
+- fund_flow_anomaly_tags: e.g. CONSECUTIVE_INFLOW, HIGH_PROPORTION, BOARD_RESONANCE
+- fund_flow_anomaly_refs: evidence references
+- fund_flow_unit_verified: whether unit has been validated
+- fund_flow_individual_summary: individual fund flow summary
+- fund_flow_board_summary: board fund flow summary (separate from individual)
+
+Design constraints:
+- Individual fund flow and board fund flow MUST be recorded separately.
+- Fund flow anomaly is only a bonus; does NOT trigger strong conclusions alone.
+- When unit is unverified, no high-confidence fund flow signal is output.
+- No external LLM calls.
+- No strong buy/sell words.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Optional
+
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
+
+MAX_FUND_FLOW_BONUS = 25
+
+FUND_FLOW_TAG_CONSECUTIVE_INFLOW = "CONSECUTIVE_INFLOW"
+FUND_FLOW_TAG_HIGH_PROPORTION = "HIGH_PROPORTION"
+FUND_FLOW_TAG_BOARD_RESONANCE = "BOARD_RESONANCE"
+FUND_FLOW_TAG_LARGE_SINGLE_DAY = "LARGE_SINGLE_DAY"
+FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT = "NET_OUTFLOW_DOMINANT"
+ALL_FUND_FLOW_TAGS = {
+    FUND_FLOW_TAG_CONSECUTIVE_INFLOW,
+    FUND_FLOW_TAG_HIGH_PROPORTION,
+    FUND_FLOW_TAG_BOARD_RESONANCE,
+    FUND_FLOW_TAG_LARGE_SINGLE_DAY,
+    FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT,
+}
+
+_INDIVIDUAL_FUND_FLOW_PATTERN = re.compile(
+    r"近\d+日主力资金净流向|主力净流入|净流入-净额|主力净流入-净额"
+)
+_BOARD_FUND_FLOW_PATTERN = re.compile(
+    r"板块资金流向|行业.*资金流|stock_board_industry_fund_flow"
+)
+
+_ANOMALY_THRESHOLD_WAN = 50000  # 5000万 = 50,000 万元
+_CONSECUTIVE_INFLOW_MIN_DAYS = 3
+_HIGH_PROPORTION_THRESHOLD = 5.0  # 5%
+
+_STRONG_BUY_SELL_WORDS = {
+    "立即买入", "重仓买入", "立即清仓", "满仓", "梭哈",
+    "强力买入", "强烈推荐", "必买", "抄底", "追涨", "杀跌",
+}
+
+
+@dataclass
+class FundFlowAnomalyResult:
+    fund_flow_anomaly_score: float = 0.0
+    fund_flow_anomaly_tags: list[str] = field(default_factory=list)
+    fund_flow_anomaly_refs: list[dict] = field(default_factory=list)
+    fund_flow_unit_verified: bool = False
+    fund_flow_individual_summary: str = ""
+    fund_flow_board_summary: str = ""
+
+
+def _sanitize(text: str) -> str:
+    for w in _STRONG_BUY_SELL_WORDS:
+        if w in text:
+            text = text.replace(w, "***")
+    return text
+
+
+def _extract_net_flows(fund_flow_text: str) -> list[float]:
+    """Extract main capital net flow values from individual fund flow text.
+
+    Strategy:
+    1. If header has '主力净流入-净额' or '主力净流入' column, extract that column.
+    2. Fallback: scan lines after header for large absolute values.
+
+    Returns list of net flow values (positive = inflow, negative = outflow).
+    """
+    if not fund_flow_text or "获取失败" in fund_flow_text or "不可用" in fund_flow_text:
+        return []
+
+    lines = [l.strip() for l in fund_flow_text.split("\n") if l.strip()]
+    if not lines:
+        return []
+
+    header_line = ""
+    header_idx = -1
+    for i, line in enumerate(lines):
+        if ("主力" in line or "净流入" in line or "净流出" in line) and "净额" in line:
+            header_line = line
+            header_idx = i
+            break
+
+    if header_idx < 0:
+        for i, line in enumerate(lines):
+            if "主力" in line or "净流入" in line or "净流出" in line:
+                parts = line.split()
+                if len(parts) >= 4:
+                    header_line = line
+                    header_idx = i
+                    break
+
+    if header_idx < 0:
+        return []
+
+    target_col_idx = -1
+    parts = header_line.split()
+    for j, part in enumerate(parts):
+        if "主力净流入" in part:
+            target_col_idx = j
+            break
+
+    values: list[float] = []
+
+    for line in lines[header_idx + 1:]:
+        row_parts = line.split()
+        if len(row_parts) < 2:
+            continue
+        if target_col_idx >= 0 and target_col_idx < len(row_parts):
+            raw = row_parts[target_col_idx].replace(',', '').replace('–', '-')
+            try:
+                values.append(float(raw))
+            except ValueError:
+                continue
+        else:
+            for part in row_parts:
+                try:
+                    val = float(part.replace(',', '').replace('–', '-'))
+                    if abs(val) >= 100:
+                        values.append(val)
+                except ValueError:
+                    continue
+
+    return values
+
+
+def _detect_consecutive_inflow(net_flows: list[float], lookback: int = 5, min_days: int = 3) -> tuple[bool, int, list[dict]]:
+    """Detect consecutive main-capital net inflows in recent N days.
+
+    Returns (is_consecutive, streak_length, refs).
+    """
+    if not net_flows:
+        return False, 0, []
+
+    recent = net_flows[:lookback]
+    streak = 0
+    refs: list[dict] = []
+
+    for i, val in enumerate(recent):
+        if val > 0:
+            streak += 1
+        else:
+            break
+
+    if streak >= min_days:
+        refs.append({
+            "field": "consecutive_inflow",
+            "matched_text": f"近{streak}日连续主力净流入",
+            "source": "individual_fund_flow",
+        })
+        return True, streak, refs
+
+    return False, streak, []
+
+
+def _detect_large_single_day(net_flows: list[float], threshold: float = 50000.0) -> tuple[bool, float, list[dict]]:
+    """Detect a single day with unusually large net inflow/outflow.
+
+    Returns (is_large, max_abs_value, refs).
+    """
+    if not net_flows:
+        return False, 0.0, []
+
+    max_val = max(net_flows, key=abs)
+    if abs(max_val) >= threshold:
+        direction = "净流入" if max_val > 0 else "净流出"
+        refs = [{
+            "field": "large_single_day",
+            "matched_text": f"单日主力{direction} {abs(max_val):.0f} 万元",
+            "source": "individual_fund_flow",
+        }]
+        return True, max_val, refs
+
+    return False, max_val, []
+
+
+def _detect_high_proportion(fund_flow_text: str, threshold: float = 5.0) -> tuple[bool, float, list[dict]]:
+    """Detect abnormal capital proportion (占比 >= 5%).
+
+    Returns (is_high, max_proportion, refs).
+    """
+    if not fund_flow_text or "获取失败" in fund_flow_text:
+        return False, 0.0, []
+
+    max_pct = 0.0
+    refs: list[dict] = []
+
+    explicit_pct = re.findall(r'[-–+]?(\d+\.?\d*)%', fund_flow_text)
+    for pct_str in explicit_pct:
+        try:
+            pct = abs(float(pct_str))
+            if pct > max_pct:
+                max_pct = pct
+        except ValueError:
+            continue
+
+    proportion_lines = []
+    for line in fund_flow_text.split("\n"):
+        if "占比" in line or "净占比" in line:
+            proportion_lines.append(line)
+
+    for line in proportion_lines:
+        numbers = re.findall(r'[-–+]?[\d,]+\.?\d*', line)
+        for num_str in numbers:
+            try:
+                val = abs(float(num_str.replace(',', '').replace('–', '-')))
+                if val >= 1.0 and val < 100 and val > max_pct:
+                    max_pct = val
+            except ValueError:
+                continue
+
+    if max_pct >= threshold:
+        refs.append({
+            "field": "high_proportion",
+            "matched_text": f"主力资金占比 {max_pct:.1f}%",
+            "source": "individual_fund_flow",
+        })
+        return True, max_pct, refs
+
+    return False, max_pct, []
+
+
+def _detect_board_resonance(
+    individual_text: str,
+    board_text: str,
+) -> tuple[bool, list[dict]]:
+    """Detect if individual stock fund flow resonates with sector board fund flow.
+
+    Both individual inflow AND sector inflow must be positive.
+    Returns (is_resonance, refs).
+    """
+    if not individual_text or not board_text:
+        return False, []
+    if "获取失败" in individual_text or "获取失败" in board_text:
+        return False, []
+
+    ind_values = _extract_net_flows(individual_text)
+    if not ind_values:
+        return False, []
+
+    recent_ind = ind_values[:3]
+    ind_positive = sum(1 for v in recent_ind if v > 0)
+    if ind_positive < 2:
+        return False, []
+
+    board_positive_kw = re.compile(r"主力.*净流入|净流入.*\d+")
+    board_negative_kw = re.compile(r"主力.*净流出|净流出.*\d+")
+
+    board_has_inflow = False
+    board_sector_name = ""
+    for line in board_text.split("\n"):
+        if board_positive_kw.search(line) and not board_negative_kw.search(line):
+            board_has_inflow = True
+            parts = line.split()
+            if parts:
+                board_sector_name = parts[0][:20]
+            break
+
+--- selection ---
+# [S-005] selection_priority_gate
+"""Selection Priority Gate — integrates all S-series signals into a unified composite
+score, re-ranks candidates, and applies a strict need_deep_ta gate.
+
+Responsibilities:
+1. Compute composite_score from policy_version, narrative_quality, tech (VCP/Pullback),
+   fund_flow_anomaly, risk_penalty, and data_completeness.
+2. Determine whether need_deep_ta should be True (requires >= 2 positive signal categories
+   AND no major unexplained risks).
+3. Output why_deep_ta / why_not_deep_ta / missing_evidence for Daily Plan display.
+4. Provide stable fields for M-003 universe manager and M-004 strategy config.
+
+Design constraints:
+- No external LLM calls.
+- No strong buy/sell words.
+- No full-market scan.
+- Single signal alone cannot trigger need_deep_ta=True.
+- Risk-heavy or data-incomplete candidates must NOT get need_deep_ta=True.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Optional
+
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
+
+_STRONG_BUY_SELL_WORDS = {
+    "立即买入", "重仓买入", "立即清仓", "满仓", "梭哈",
+    "强力买入", "强烈推荐", "必买", "抄底", "追涨", "杀跌",
+}
+
+_SEVERITY_HIGH_RISK_FLAGS = {"INQUIRY_RISK", "FINANCIAL_QUALITY_RISK"}
+
+MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA = 2
+
+MAX_COMPOSITE_SCORE = 200.0
+
+
+@dataclass
+class SelectionPriorityResult:
+    composite_score: float = 0.0
+    signal_category_hits: list[str] = field(default_factory=list)
+    positive_category_count: int = 0
+    data_completeness: float = 0.0
+    missing_evidence: list[str] = field(default_factory=list)
+    why_deep_ta: str = ""
+    why_not_deep_ta: str = ""
+    gate_passed: bool = False
+    priority_rank: str = ""
+    gate_refs: list[dict] = field(default_factory=list)
+
+
+def _sanitize(text: str) -> str:
+    for w in _STRONG_BUY_SELL_WORDS:
+        if w in text:
+            text = text.replace(w, "***")
+    return text
+
+
+def _compute_data_completeness(
+    has_price_data: bool = False,
+    has_event_data: bool = False,
+    has_fund_flow_data: bool = False,
+    has_fund_flow_unit_verified: bool = False,
+    has_technical_signal: bool = False,
+    has_policy_signal: bool = False,
+    has_narrative_signal: bool = False,
+    has_risk_assessment: bool = False,
+) -> tuple[float, list[str]]:
+    total_fields = 8
+    present = 0
+    missing: list[str] = []
+
+    if has_price_data:
+        present += 1
+    else:
+        missing.append("行情数据")
+
+    if has_event_data:
+        present += 1
+    else:
+        missing.append("事件/新闻数据")
+
+    if has_fund_flow_data:
+        present += 1
+    else:
+        missing.append("资金流数据")
+
+    if has_fund_flow_unit_verified:
+        present += 1
+    else:
+        missing.append("资金单位校验")
+
+    if has_technical_signal:
+        present += 1
+    else:
+        missing.append("技术形态信号")
+
+    if has_policy_signal:
+        present += 1
+    else:
+        missing.append("政策版本信号")
+
+    if has_narrative_signal:
+        present += 1
+    else:
+        missing.append("叙事质量信号")
+
+    if has_risk_assessment:
+        present += 1
+    else:
+        missing.append("风险评估")
+
+    completeness = present / total_fields if total_fields > 0 else 0.0
+    return round(completeness, 3), missing
+
+
+def run_selection_priority_gate(
+    score: float = 0.0,
+    strategy_tags: Optional[list[str]] = None,
+    policy_tags: Optional[list[str]] = None,
+    version_score: float = 0.0,
+    narrative_score: float = 0.0,
+    fund_flow_anomaly_score: float = 0.0,
+    fund_flow_anomaly_tags: Optional[list[str]] = None,
+    fund_flow_unit_verified: bool = False,
+    risk_flags: Optional[list[str]] = None,
+    risk_penalty: float = 0.0,
+    resonance_count: int = 0,
+    game_balance: str = "",
+    has_price_data: bool = True,
+    has_event_data: bool = False,
+    has_fund_flow_data: bool = False,
+    has_risk_assessment: bool = False,
+    cfg: Optional[StrategyConfig] = None,  # [M-004]
+) -> SelectionPriorityResult:
+    """Run the unified selection priority gate on a candidate.
+
+    Args:
+        score: Aggregate tech + event + pullback score from merge_signals().
+        strategy_tags: All strategy tags on the candidate.
+        policy_tags: Policy version tags (S-001).
+        version_score: Policy version score (S-001).
+        narrative_score: Narrative quality score (S-002).
+        fund_flow_anomaly_score: Fund flow anomaly score (T-003).
+        fund_flow_anomaly_tags: Fund flow anomaly tags (T-003).
+        fund_flow_unit_verified: Whether fund flow unit was verified (T-003).
+        risk_flags: Risk flags (S-003).
+        risk_penalty: Risk penalty score (negative, S-003).
+        resonance_count: Resonance count across categories (S-004).
+        game_balance: Game balance verdict (S-004).
+        has_price_data: Whether price data was available.
+        has_event_data: Whether event/news data was available.
+        has_fund_flow_data: Whether fund flow data was provided.
+        has_risk_assessment: Whether risk assessment was performed.
+
+    Returns:
+        SelectionPriorityResult with composite score, gate verdict, and explanations.
+    """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
+    tags = set(strategy_tags or [])
+    p_tags = list(policy_tags or [])
+    r_flags = set(risk_flags or [])
+    ff_tags = set(fund_flow_anomaly_tags or [])
+
+    refs: list[dict] = []
+
+    has_policy = version_score > 0 or len(p_tags) > 0
+    has_narrative = narrative_score > 0 or "EVENT_CATALYST" in tags or "NARRATIVE_QUALITY" in tags
+    has_tech = "VCP" in tags or "PULLBACK_SUPPORT" in tags
+    has_fund = bool(ff_tags - {"NET_OUTFLOW_DOMINANT"}) and fund_flow_anomaly_score > 0
+
+    category_hits: list[str] = []
+    if has_policy:
+        category_hits.append("policy")
+        refs.append({"field": "signal_category", "value": "policy", "source": "version_score", "score": version_score})
+    if has_narrative:
+        category_hits.append("narrative")
+        refs.append({"field": "signal_category", "value": "narrative", "source": "narrative_score", "score": narrative_score})
+    if has_tech:
+        category_hits.append("tech")
+        refs.append({"field": "signal_category", "value": "tech", "source": "strategy_tags", "score": score})
+    if has_fund:
+        category_hits.append("fund")
+        refs.append({"field": "signal_category", "value": "fund", "source": "fund_flow_anomaly", "score": fund_flow_anomaly_score})
+
+    positive_category_count = len(category_hits)
+
+    data_completeness, missing_evidence = _compute_data_completeness(
+        has_price_data=has_price_data,
+        has_event_data=has_event_data,
+        has_fund_flow_data=has_fund_flow_data,
+        has_fund_flow_unit_verified=fund_flow_unit_verified,
+        has_technical_signal=has_tech,
+        has_policy_signal=has_policy,
+        has_narrative_signal=has_narrative,
+        has_risk_assessment=has_risk_assessment,
+    )
+
+    completeness_bonus = round(data_completeness * cfg.gate_completeness_bonus_factor, 2)  # [M-004]
+
+    composite_score = score + version_score + narrative_score + fund_flow_anomaly_score + risk_penalty + completeness_bonus
+    composite_score = max(0.0, min(composite_score, cfg.gate_max_composite_score))
+    composite_score = round(composite_score, 2)
+
+    has_high_risk = bool(r_flags & set(cfg.risk_high_severity_flags))  # [M-004]
+    many_risks = len(r_flags) >= cfg.risk_many_flags_threshold
+    heavy_penalty = risk_penalty <= cfg.risk_heavy_penalty_threshold
+
+    fragile_or_crowded = game_balance in {"fragile", "crowded"}
+    favorable_or_neutral = game_balance in {"favorable", "neutral"}
+
+    gate_passed = False
+    why_deep_ta = ""
+    why_not_deep_ta = ""
+
+    can_pass_gate = (
+        positive_category_count >= cfg.gate_min_positive_categories  # [M-004]
+        and not has_high_risk
+        and not many_risks
+        and not heavy_penalty
+        and not fragile_or_crowded
+        and data_completeness >= cfg.gate_completeness_min
+    )
+
+    if can_pass_gate:
+        gate_passed = True
+        reasons = []
+        if has_policy:
+            reasons.append(f"政策版本({', '.join(p_tags[:2])})")
+        if has_narrative:
+            reasons.append(f"叙事质量({narrative_score:.0f}分)")
+        if has_tech:
+            tech_tags = [t for t in ["VCP", "PULLBACK_SUPPORT"] if t in tags]
+            reasons.append(f"技术形态({', '.join(tech_tags)})")
+        if has_fund:
+            reasons.append("资金异动")
+        reasons_str = " + ".join(reasons)
+        why_deep_ta = f"{positive_category_count}类信号共振({reasons_str})，风险可控，值得深度分析"
+        refs.append({"field": "gate_passed", "value": True, "reason": f"{positive_category_count} categories, risk manageable"})
+    else:
+        blockers: list[str] = []
+        if positive_category_count < cfg.gate_min_positive_categories:  # [M-004]
+            blockers.append(f"仅{positive_category_count}类正向信号(需≥{cfg.gate_min_positive_categories})")
+            refs.append({"field": "gate_blocked", "value": "insufficient_categories", "detail": f"{positive_category_count}/{cfg.gate_min_positive_categories}"})
+        if has_high_risk:
+            blockers.append(f"高风险标签({', '.join(r_flags & _SEVERITY_HIGH_RISK_FLAGS)})")
+            refs.append({"field": "gate_blocked", "value": "high_risk_flags"})
+        if many_risks:
+            blockers.append(f"风险标签过多({len(r_flags)}个)")
+            refs.append({"field": "gate_blocked", "value": "too_many_risks"})
+        if heavy_penalty:
+            blockers.append(f"风险罚分过重({risk_penalty})")
+            refs.append({"field": "gate_blocked", "value": "heavy_penalty"})
+        if fragile_or_crowded:
+            blockers.append(f"博弈平衡不佳({game_balance})")
+            refs.append({"field": "gate_blocked", "value": "bad_game_balance"})
+        if data_completeness < cfg.gate_completeness_min:  # [M-004]
+            blockers.append(f"数据完整度不足({data_completeness:.0%})")
+            refs.append({"field": "gate_blocked", "value": "low_data_completeness"})
+        why_not_deep_ta = "；".join(blockers)
+
+    if positive_category_count >= cfg.gate_rank_a_min_categories and composite_score >= cfg.gate_rank_a_min_composite and data_completeness >= cfg.gate_rank_a_min_completeness:  # [M-004]
+        priority_rank = "A"
+    elif positive_category_count >= cfg.gate_rank_b_min_categories and composite_score >= cfg.gate_rank_b_min_composite:
+        priority_rank = "B"
+    else:
+        priority_rank = "C"
+
+    if has_high_risk or many_risks:
+        priority_rank = "C"
+
+    why_deep_ta = _sanitize(why_deep_ta)
+    why_not_deep_ta = _sanitize(why_not_deep_ta)
+
+    return SelectionPriorityResult(
+        composite_score=composite_score,
+        signal_category_hits=category_hits,
+        positive_category_count=positive_category_count,
+        data_completeness=data_completeness,
+        missing_evidence=missing_evidence,
+        why_deep_ta=why_deep_ta,
+        why_not_deep_ta=why_not_deep_ta,
+        gate_passed=gate_passed,
+        priority_rank=priority_rank,
+        gate_refs=refs,
+    )
+
+--- plan ---
+"""TradeFlow Plan Runner — generates pre-market daily plans.
+
+Reads candidates from tradeflow_candidates, produces a DailyPlan
+with only allowed actions: OBSERVE / WAIT_TRIGGER / NEED_DEEP_TA / REMOVE_FROM_WATCH.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime
+from typing import Optional
+
+from .schemas import (
+    DailyPlan, Candidate, ALLOWED_ACTIONS, FORBIDDEN_WORDS
+)
+from .candidate_engine import init_db, save_candidate, evaluate_symbol
+from .universe import build_universe
+from .false_positive_audit import build_audit_report, AuditReport  # [S-006] candidate_false_positive_audit
+from .tier_budget import classify_candidate_tier, allocate_tier_budget, render_tier_budget_summary  # [S-007] candidate_tier_budget
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
+
+def _action_for_candidate(candidate: Candidate) -> str:
+    """Determine the action for a candidate based on its signals."""
+    if candidate.need_deep_ta:
+        return "NEED_DEEP_TA"
+
+    # If score is high and trigger price is close to current price
+    evidence = candidate.evidence
+    for strategy, ev in evidence.items():
+        if isinstance(ev, dict):
+            latest = ev.get("latest_close", 0)
+            trigger = candidate.trigger_price or 0
+            if latest > 0 and trigger > 0:
+                distance = (trigger - latest) / latest
+                if distance < 0.02:  # within 2% of trigger
+                    return "WAIT_TRIGGER"
+
+    return "OBSERVE"
+
+
+def _build_plan_entry(candidate: Candidate) -> dict:
+    """Build a plan entry dict from a candidate."""
+    action = _action_for_candidate(candidate)
+
+    # Build reason — no forbidden words
+    reasons = []
+    for sig in candidate.signals:
+        reasons.append(f"[{sig.strategy_tag}] {sig.reason}")
+    reason_str = "; ".join(reasons) if reasons else "候选观察"
+
+    # Sanity check: no forbidden words
+    for word in FORBIDDEN_WORDS:
+        if word in reason_str:
+            reason_str = reason_str.replace(word, "***")
+
+    return {
+        "symbol": candidate.symbol,
+        "name": candidate.name,
+        "action": action,
+        "primary_strategy": candidate.primary_strategy,
+        "strategies": candidate.strategy_tags,
+        "score": candidate.score,
+        "trigger_price": candidate.trigger_price,
+        "support_price": candidate.support_price,
+        "invalid_price": candidate.invalid_price,
+        "reason": reason_str,
+        "need_deep_ta": candidate.need_deep_ta,
+        "risk_flags": candidate.risk_flags,
+        "policy_tags": candidate.policy_tags,  # [S-001] policy_version_signal
+        "version_score": candidate.version_score,  # [S-001]
+        "policy_evidence_refs": candidate.policy_evidence_refs,  # [S-001]
+        "narrative_score": candidate.narrative_score,  # [S-002] narrative_quality_score
+        "narrative_reasons": candidate.narrative_reasons,  # [S-002]
+        "narrative_evidence_refs": candidate.narrative_evidence_refs,  # [S-002]
+        "risk_penalty": candidate.risk_penalty,  # [S-003] underwater_risk_flags
+        "risk_evidence_refs": candidate.risk_evidence_refs,  # [S-003]
+        "risk_reasons": candidate.risk_reasons,  # [S-003]
+        "game_balance": candidate.game_balance,  # [S-004] candidate_game_balance
+        "bull_case": candidate.bull_case,  # [S-004]
+        "bear_case": candidate.bear_case,  # [S-004]
+        "policy_case": candidate.policy_case,  # [S-004]
+        "fund_flow_case": candidate.fund_flow_case,  # [S-004]
+        "resonance_count": candidate.resonance_count,  # [S-004]
+        "game_balance_refs": candidate.game_balance_refs,  # [S-004]
+        "fund_flow_anomaly_score": candidate.fund_flow_anomaly_score,  # [T-003] fund_flow_anomaly_pool
+        "fund_flow_anomaly_tags": candidate.fund_flow_anomaly_tags,  # [T-003]
+        "fund_flow_anomaly_refs": candidate.fund_flow_anomaly_refs,  # [T-003]
+        "fund_flow_unit_verified": candidate.fund_flow_unit_verified,  # [T-003]
+        "fund_flow_individual_summary": candidate.fund_flow_individual_summary,  # [T-003]
+        "fund_flow_board_summary": candidate.fund_flow_board_summary,  # [T-003]
+        "composite_score": candidate.composite_score,  # [S-005] selection_priority_gate
+        "signal_category_hits": candidate.signal_category_hits,  # [S-005]
+        "positive_category_count": candidate.positive_category_count,  # [S-005]
+        "data_completeness": candidate.data_completeness,  # [S-005]
+        "missing_evidence": candidate.missing_evidence,  # [S-005]
+        "why_deep_ta": candidate.why_deep_ta,  # [S-005]
+        "why_not_deep_ta": candidate.why_not_deep_ta,  # [S-005]
+        "priority_rank": candidate.priority_rank,  # [S-005]
+        "tier": candidate.tier,  # [S-007] candidate_tier_budget
+        "ta_budget_priority": candidate.ta_budget_priority,  # [S-007]
+        "tier_reason": candidate.tier_reason,  # [S-007]
+        "missing_evidence_for_upgrade": candidate.missing_evidence_for_upgrade,  # [S-007]
+        "tradeflow_data_completeness": candidate.tradeflow_data_completeness,  # [S-008] tradeflow_evidence_gate
+        "missing_data_fields": candidate.missing_data_fields,  # [S-008]
+        "what_to_upgrade": candidate.what_to_upgrade,  # [S-008]
+        "evidence_gate_applied": candidate.evidence_gate_applied,  # [S-008]
+        "universe_sources": candidate.universe_sources,  # [M-003] tradeflow_universe_manager
+    }
+
+
+def generate_daily_plan(
+    trade_date: Optional[str] = None,
+    symbols: Optional[list[str]] = None,
+    prod_db_path: str = "",
+    tf_db_path: str = "",
+    candidates: Optional[list[Candidate]] = None,
+    news_texts: Optional[list[str]] = None,
+    event_overrides: Optional[list[dict]] = None,
+    save_candidates: bool = False,
+    use_event_source: bool = False,  # [N-001] event_source_plan_integration
+    fund_flow_map: Optional[dict[str, dict]] = None,  # [T-003] fund_flow_anomaly_pool
+    cfg: Optional[StrategyConfig] = None,  # [M-004]
+) -> DailyPlan:
+    """Generate a pre-market daily plan.
+
+    Args:
+        trade_date: Trading date (default: today).
+        symbols: Specific symbols to evaluate (overrides universe).
+        prod_db_path: Path to production tradingagents.db.
+        tf_db_path: Path to tradeflow SQLite DB.
+        candidates: Pre-evaluated candidates (skip evaluation if provided).
+        news_texts: News/announcement texts for event catalyst detection.
+        event_overrides: Manual event overrides for event catalyst detection.
+        save_candidates: If True, persist evaluated candidates to tf_db_path.
+        use_event_source: [N-001] If True, fetch daily events and inject into universe.
+        fund_flow_map: [T-003] Optional dict mapping symbol → {"individual": str, "board": str}.
+
+    Returns:
+        DailyPlan with validated entries.
+    """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
+    if not trade_date:
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+
+    # [N-001] event_source_plan_integration — fetch events if enabled
+    events_map: dict[str, list[str]] = {}
+    if use_event_source:
+        from .event_source import fetch_daily_events
+        trade_date_compact = trade_date.replace("-", "")
+        events_map = fetch_daily_events(trade_date_compact)
+
+    if candidates is None:
+        # Build universe — pass event_symbols so event-discovered
+        # symbols enter the pool
+        universe = build_universe(
+            symbols=symbols,
+            prod_db_path=prod_db_path,
+            tf_db_path=tf_db_path,
+            event_overrides=event_overrides,
+            event_symbols=events_map if events_map else None,  # [N-001]
+        )
+
+        # Evaluate each symbol — filter event_overrides to only
+        # those matching the current symbol (or global overrides without symbol).
+        # [N-001] Each symbol gets its own event titles as news_texts.
+        candidates = []
+        for item in universe:
+            sym = item["symbol"]
+            if event_overrides:
+                filtered_overrides = [
+                    ev for ev in event_overrides
+                    if ev.get("symbol") is None or ev.get("symbol") == sym
+                ]
+            else:
+                filtered_overrides = None
+
+            # [N-001] event_source_plan_integration
+            sym_news = events_map.get(sym) if events_map else None
+
+            # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
+            sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
+            sym_ff_individual = sym_ff.get("individual") if sym_ff else None
+            sym_ff_board = sym_ff.get("board") if sym_ff else None
+
+            c, reason = evaluate_symbol(
+                symbol=sym,
+                name=item.get("name", ""),
+                source=item.get("source", "manual"),
+                trade_date=trade_date,
+                news_texts=sym_news or news_texts,
+                event_overrides=filtered_overrides,
+                fund_flow_individual=sym_ff_individual,  # [T-003]
+                fund_flow_board=sym_ff_board,  # [T-003]
+                cfg=cfg,  # [M-004]
+            )
+            if c is not None:
+                if item.get("universe_sources"):
+                    c.universe_sources = item["universe_sources"]  # [M-003]
+                candidates.append(c)
+
+    # Build plan entries
+    plan_entries = []
+    for c in candidates:
+        entry = _build_plan_entry(c)
+        plan_entries.append(entry)
+
+    # Sort by composite_score descending (S-005 priority gate), fallback to score
+    plan_entries.sort(key=lambda x: (x.get("composite_score", 0) or 0, x.get("score", 0)), reverse=True)
+
+    # [S-007] candidate_tier_budget — sort by tier (A first, then B, then C)
+    tier_order = {"A": 0, "B": 1, "C": 2, "": 3}
+    plan_entries.sort(key=lambda x: (tier_order.get(x.get("tier", ""), 3), -(x.get("composite_score", 0) or 0)))
+
+    # [S-007] candidate_tier_budget — enforce A-tier cap and compute budget summary
+    from .tier_budget import TierBudgetResult
+    tier_results = []
+
+exec
+/bin/zsh -lc "sed -n '220,520p' tradingagents/tradeflow/plan_runner.py && sed -n '260,380p' tradingagents/tradeflow/tier_budget.py && sed -n '220,360p' tradingagents/tradeflow/fund_flow_anomaly.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    tier_results = []
+    for e in plan_entries:
+        tier_results.append(TierBudgetResult(
+            tier=e.get("tier", "C"),
+            ta_budget_priority=e.get("ta_budget_priority", 0),
+            tier_reason=e.get("tier_reason", ""),
+            missing_evidence_for_upgrade=e.get("missing_evidence_for_upgrade", []),
+            why_not_deep_ta=e.get("why_not_deep_ta", ""),
+        ))
+    budget_allocation = allocate_tier_budget(tier_results, cfg=cfg)  # [M-004]
+    # Update entries if any were demoted by the cap
+    for i, tr in enumerate(tier_results):
+        if i < len(plan_entries):
+            plan_entries[i]["tier"] = tr.tier
+            plan_entries[i]["ta_budget_priority"] = tr.ta_budget_priority
+            plan_entries[i]["tier_reason"] = tr.tier_reason
+
+    # Build summary
+    n_total = len(plan_entries)
+    n_deep_ta = sum(1 for e in plan_entries if e["need_deep_ta"])
+    n_wait = sum(1 for e in plan_entries if e["action"] == "WAIT_TRIGGER")
+
+    summary_parts = [
+        f"共{n_total}只候选",
+        f"{n_deep_ta}只需要深度TA",
+        f"{n_wait}只接近触发",
+    ]
+    if symbols:
+        summary_parts.append(f"指定标的: {', '.join(symbols)}")
+
+    plan = DailyPlan(
+        trade_date=trade_date,
+        mode="pre_market",
+        summary="，".join(summary_parts) + "。",
+        candidates=plan_entries,
+        metadata={
+            "universe_size": len(plan_entries),
+            "generated_at": datetime.now().isoformat(),
+            "strategy_config_version": cfg.config_version,  # [M-004]
+        },
+    )
+
+    # [S-006] candidate_false_positive_audit — generate audit report
+    audit = build_audit_report(
+        candidates=candidates,
+        trade_date=trade_date,
+    )
+    plan.metadata["audit_summary"] = {
+        "total_candidates": audit.summary.total_candidates if audit.summary else 0,
+        "by_category": audit.summary.by_category if audit.summary else {},
+        "common_evidence_gaps": audit.summary.common_evidence_gaps[:5] if audit.summary else [],
+        "common_risk_demotions": audit.summary.common_risk_demotions[:5] if audit.summary else [],
+    }
+
+    # [S-007] candidate_tier_budget — add budget allocation to metadata
+    plan.metadata["tier_budget"] = {
+        "tier_a_count": budget_allocation.tier_a_count,
+        "tier_b_count": budget_allocation.tier_b_count,
+        "tier_c_count": budget_allocation.tier_c_count,
+        "total_budget": budget_allocation.total_budget,
+        "a_tier_cap_applied": budget_allocation.a_tier_cap_applied,
+        "demoted_count": len(budget_allocation.demoted_symbols),
+    }
+    plan.metadata["tier_budget_summary"] = render_tier_budget_summary(budget_allocation)
+
+    # [S-008] tradeflow_evidence_gate — add evidence gate summary to metadata
+    gate_blocked_count = sum(1 for e in plan_entries if e.get("evidence_gate_applied"))
+    gate_deep_ta_blocked = sum(1 for e in plan_entries if e.get("evidence_gate_applied") and not e.get("need_deep_ta"))
+    plan.metadata["evidence_gate"] = {
+        "gate_blocked_count": gate_blocked_count,
+        "deep_ta_blocked_count": gate_deep_ta_blocked,
+        "avg_completeness": round(sum(e.get("tradeflow_data_completeness", 0) for e in plan_entries) / max(len(plan_entries), 1), 3),
+    }
+
+    # Validate
+    issues = plan.validate()
+    if issues:
+        plan.metadata["validation_issues"] = issues
+
+    # Optionally persist candidates  # [G-004] tradeflow_candidate_date
+    if save_candidates and tf_db_path:
+        for c in candidates:
+            if c.trade_date != trade_date:
+                c.trade_date = trade_date
+            save_candidate(c, tf_db_path)
+
+    return plan
+
+
+def save_plan(plan: DailyPlan, db_path: str) -> int:
+    """Save daily plan to DB."""
+    conn = sqlite3.connect(db_path)
+    row = plan.to_db_row()
+    try:
+        conn.execute(
+            "INSERT INTO tradeflow_daily_plans "
+            "(trade_date, mode, summary, candidates_json, metadata_json, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(trade_date, mode) DO UPDATE SET "
+            "summary=excluded.summary, candidates_json=excluded.candidates_json, "
+            "metadata_json=excluded.metadata_json",
+            (row["trade_date"], row["mode"], row["summary"],
+             row["candidates_json"], row["metadata_json"], row["created_at"]),
+        )
+        conn.commit()
+        row_id = conn.execute(
+            "SELECT id FROM tradeflow_daily_plans WHERE trade_date=? AND mode=?",
+            (row["trade_date"], row["mode"]),
+        ).fetchone()[0]
+        return row_id
+    finally:
+        conn.close()
+        a_tier_cap = cfg.tier_a_hard_cap
+
+    tier_budget_map = {TIER_A: cfg.tier_a_budget, TIER_B: cfg.tier_b_budget, TIER_C: cfg.tier_c_budget}  # [M-004]
+
+    a_indices = [i for i, r in enumerate(results) if r.tier == TIER_A]
+
+    cap_applied = False
+    demoted: list[str] = []
+
+    if len(a_indices) > a_tier_cap:
+        cap_applied = True
+        for idx in a_indices[a_tier_cap:]:
+            old = results[idx]
+            old.tier = TIER_B
+            old.ta_budget_priority = tier_budget_map[TIER_B]
+            old.tier_reason = f"A层已满(上限{a_tier_cap})，降为B层观察；{old.tier_reason}"
+            old.why_not_deep_ta = f"A层名额已满({a_tier_cap})，降为观察"
+            demoted.append(f"slot_{idx}")
+
+    counts = {TIER_A: 0, TIER_B: 0, TIER_C: 0}
+    total = 0
+    for r in results:
+        counts[r.tier] = counts.get(r.tier, 0) + 1
+        total += r.ta_budget_priority
+
+    return TierBudgetAllocation(
+        tier_a_count=counts.get(TIER_A, 0),
+        tier_b_count=counts.get(TIER_B, 0),
+        tier_c_count=counts.get(TIER_C, 0),
+        total_budget=total,
+        a_tier_cap_applied=cap_applied,
+        demoted_symbols=demoted,
+    )
+
+
+def render_tier_budget_summary(allocation: TierBudgetAllocation) -> str:
+    """Render a human-readable tier budget summary for Daily Plan."""
+    lines = [
+        f"📊 TA Token 预算分配",
+        f"  A层(优先深挖): {allocation.tier_a_count}只 × 100 tokens",
+        f"  B层(观察等待): {allocation.tier_b_count}只 × 30 tokens",
+        f"  C层(暂不关注): {allocation.tier_c_count}只 × 0 tokens",
+        f"  总预算建议: {allocation.total_budget} tokens",
+    ]
+    if allocation.a_tier_cap_applied:
+        lines.append(f"  ⚠️ A层上限{A_TIER_HARD_CAP}已触发，{len(allocation.demoted_symbols)}只降为B层")
+    return "\n".join(lines)
+    proportion_lines = []
+    for line in fund_flow_text.split("\n"):
+        if "占比" in line or "净占比" in line:
+            proportion_lines.append(line)
+
+    for line in proportion_lines:
+        numbers = re.findall(r'[-–+]?[\d,]+\.?\d*', line)
+        for num_str in numbers:
+            try:
+                val = abs(float(num_str.replace(',', '').replace('–', '-')))
+                if val >= 1.0 and val < 100 and val > max_pct:
+                    max_pct = val
+            except ValueError:
+                continue
+
+    if max_pct >= threshold:
+        refs.append({
+            "field": "high_proportion",
+            "matched_text": f"主力资金占比 {max_pct:.1f}%",
+            "source": "individual_fund_flow",
+        })
+        return True, max_pct, refs
+
+    return False, max_pct, []
+
+
+def _detect_board_resonance(
+    individual_text: str,
+    board_text: str,
+) -> tuple[bool, list[dict]]:
+    """Detect if individual stock fund flow resonates with sector board fund flow.
+
+    Both individual inflow AND sector inflow must be positive.
+    Returns (is_resonance, refs).
+    """
+    if not individual_text or not board_text:
+        return False, []
+    if "获取失败" in individual_text or "获取失败" in board_text:
+        return False, []
+
+    ind_values = _extract_net_flows(individual_text)
+    if not ind_values:
+        return False, []
+
+    recent_ind = ind_values[:3]
+    ind_positive = sum(1 for v in recent_ind if v > 0)
+    if ind_positive < 2:
+        return False, []
+
+    board_positive_kw = re.compile(r"主力.*净流入|净流入.*\d+")
+    board_negative_kw = re.compile(r"主力.*净流出|净流出.*\d+")
+
+    board_has_inflow = False
+    board_sector_name = ""
+    for line in board_text.split("\n"):
+        if board_positive_kw.search(line) and not board_negative_kw.search(line):
+            board_has_inflow = True
+            parts = line.split()
+            if parts:
+                board_sector_name = parts[0][:20]
+            break
+
+    if not board_has_inflow:
+        return False, []
+
+    refs = [{
+        "field": "board_resonance",
+        "matched_text": f"个股主力流入+板块资金共振(板块: {board_sector_name})",
+        "source": "board_fund_flow+individual_fund_flow",
+    }]
+    return True, refs
+
+
+def _detect_net_outflow_dominant(net_flows: list[float], lookback: int = 10) -> tuple[bool, int, list[dict]]:
+    """Detect if net outflows dominate in recent N days.
+
+    Returns (is_dominant, outflow_count, refs).
+    """
+    if not net_flows:
+        return False, 0, []
+
+    recent = net_flows[:lookback]
+    outflow_count = sum(1 for v in recent if v < 0)
+    total = len(recent)
+
+    if total >= 5 and outflow_count >= total * 0.7:
+        refs = [{
+            "field": "net_outflow_dominant",
+            "matched_text": f"近{total}日中{outflow_count}日主力净流出",
+            "source": "individual_fund_flow",
+        }]
+        return True, outflow_count, refs
+
+    return False, outflow_count, []
+
+
+def _verify_unit(fund_flow_text: str) -> bool:
+    """Verify the unit of fund flow data.
+
+    Returns True if unit is confirmed as 万元 (the AKShare standard).
+    Returns False if unit cannot be confirmed.
+    """
+    if not fund_flow_text or "获取失败" in fund_flow_text:
+        return False
+
+    unit_hints = ("万元", "万", "净额", "主力净流入-净额", "净流入-净额")
+    return any(h in fund_flow_text for h in unit_hints)
+
+
+def _summarize_individual(fund_flow_text: str, net_flows: list[float]) -> str:
+    """Create a brief summary of individual fund flow."""
+    if not fund_flow_text or "获取失败" in fund_flow_text:
+        return "个股资金流数据不可用"
+
+    if not net_flows:
+        return "个股资金流无可解析数据"
+
+    total = sum(net_flows[:5])
+    pos_days = sum(1 for v in net_flows[:5] if v > 0)
+    direction = "净流入" if total > 0 else "净流出"
+    return f"个股近{min(5, len(net_flows))}日主力合计{direction} {abs(total):.0f} 万元，{pos_days}/{min(5, len(net_flows))}日为正值"
+
+
+def _summarize_board(board_text: str) -> str:
+    """Create a brief summary of board fund flow."""
+    if not board_text or "获取失败" in board_text:
+        return "板块资金流数据不可用"
+
+    if "不可用" in board_text:
+        return "板块资金流数据暂不可用"
+
+    lines = board_text.strip().split("\n")
+    if len(lines) <= 2:
+        return "板块资金流数据不足"
+
+    return f"板块资金流可用（{len(lines)}行数据）"
+
+
+def detect_fund_flow_anomaly(
+    fund_flow_individual: Optional[str] = None,
+    fund_flow_board: Optional[str] = None,
+
+exec
+/bin/zsh -lc "sed -n '360,560p' tradingagents/tradeflow/fund_flow_anomaly.py && nl -ba tradingagents/tradeflow/tier_budget.py | sed -n '230,340p' && nl -ba tradingagents/tradeflow/plan_runner.py | sed -n '210,255p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    fund_flow_board: Optional[str] = None,
+    lookback_days: int = 5,
+    cfg: Optional[StrategyConfig] = None,  # [M-004]
+) -> FundFlowAnomalyResult:
+    """Detect fund flow anomaly from individual and board fund flow data.
+
+    Args:
+        fund_flow_individual: Individual stock fund flow text (近5-20日).
+        fund_flow_board: Board/sector fund flow text.
+        lookback_days: Number of recent days to analyze (5-20).
+
+    Returns:
+        FundFlowAnomalyResult with anomaly tags, score, and summaries.
+    """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
+    lookback_days = max(5, min(20, lookback_days))
+
+    individual_text = fund_flow_individual or ""
+    board_text = fund_flow_board or ""
+
+    unit_verified = _verify_unit(individual_text)
+
+    net_flows = _extract_net_flows(individual_text)
+
+    tags: list[str] = []
+    refs: list[dict] = []
+    score = 0.0
+
+    is_consecutive, streak, cons_refs = _detect_consecutive_inflow(net_flows, lookback_days, cfg.fund_flow_consecutive_min_days)  # [M-004]
+    if is_consecutive:
+        tags.append(FUND_FLOW_TAG_CONSECUTIVE_INFLOW)
+        refs.extend(cons_refs)
+        bonus = min(streak * 3, 12)
+        score += bonus
+
+    is_large, max_val, large_refs = _detect_large_single_day(net_flows, cfg.fund_flow_anomaly_threshold_wan)  # [M-004]
+    if is_large and unit_verified:
+        tags.append(FUND_FLOW_TAG_LARGE_SINGLE_DAY)
+        refs.extend(large_refs)
+        score += 5
+
+    is_high_prop, max_pct, prop_refs = _detect_high_proportion(individual_text, cfg.fund_flow_high_proportion_threshold)  # [M-004]
+    if is_high_prop and unit_verified:
+        tags.append(FUND_FLOW_TAG_HIGH_PROPORTION)
+        refs.extend(prop_refs)
+        score += 5
+
+    is_resonance, resonance_refs = _detect_board_resonance(individual_text, board_text)
+    if is_resonance and unit_verified:
+        tags.append(FUND_FLOW_TAG_BOARD_RESONANCE)
+        refs.extend(resonance_refs)
+        score += 5
+
+    is_outflow, outflow_count, outflow_refs = _detect_net_outflow_dominant(net_flows, lookback_days)
+    if is_outflow:
+        tags.append(FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT)
+        refs.extend(outflow_refs)
+
+    if not unit_verified and tags:
+        verified_tags = [t for t in tags if t in {
+            FUND_FLOW_TAG_CONSECUTIVE_INFLOW,
+            FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT,
+        }]
+        dropped = set(tags) - set(verified_tags)
+        tags = verified_tags
+        score = min(streak * 3, 12) if is_consecutive else 0
+        if dropped:
+            refs.append({
+                "field": "unit_verification",
+                "matched_text": f"单位未校验，降级以下标签: {', '.join(sorted(dropped))}",
+                "source": "fund_flow_unit_check",
+            })
+
+    score = min(score, cfg.fund_flow_max_bonus)  # [M-004]
+
+    ind_summary = _summarize_individual(individual_text, net_flows)
+    board_summary = _summarize_board(board_text)
+
+    return FundFlowAnomalyResult(
+        fund_flow_anomaly_score=round(score, 2),
+        fund_flow_anomaly_tags=sorted(tags),
+        fund_flow_anomaly_refs=refs,
+        fund_flow_unit_verified=unit_verified,
+        fund_flow_individual_summary=_sanitize(ind_summary),
+        fund_flow_board_summary=_sanitize(board_summary),
+    )
+   230	        tier=tier,
+   231	        ta_budget_priority=budget,
+   232	        tier_reason=reason,
+   233	        missing_evidence_for_upgrade=missing_for_upgrade,
+   234	        why_not_deep_ta=not_deep,
+   235	    )
+   236	
+   237	
+   238	def allocate_tier_budget(
+   239	    results: list[TierBudgetResult],
+   240	    a_tier_cap: int = 0,  # [M-004] default 0 means use StrategyConfig default
+   241	    cfg: Optional[StrategyConfig] = None,
+   242	) -> TierBudgetAllocation:
+   243	    """Enforce the A-tier cap and compute aggregate budget.
+   244	
+   245	    When more candidates qualify for tier A than ``a_tier_cap``, the
+   246	    lowest-scoring A-tier candidates are demoted to B.  The caller
+   247	    should pre-sort ``results`` so that index 0 is the strongest
+   248	    candidate.
+   249	
+   250	    Args:
+   251	        results: Pre-sorted list of TierBudgetResult (strongest first).
+   252	        a_tier_cap: Maximum number of A-tier candidates allowed.
+   253	
+   254	    Returns:
+   255	        TierBudgetAllocation with aggregate stats and demotion info.
+   256	    """
+   257	    if cfg is None:
+   258	        cfg = DEFAULT_STRATEGY_CONFIG
+   259	    if a_tier_cap <= 0:
+   260	        a_tier_cap = cfg.tier_a_hard_cap
+   261	
+   262	    tier_budget_map = {TIER_A: cfg.tier_a_budget, TIER_B: cfg.tier_b_budget, TIER_C: cfg.tier_c_budget}  # [M-004]
+   263	
+   264	    a_indices = [i for i, r in enumerate(results) if r.tier == TIER_A]
+   265	
+   266	    cap_applied = False
+   267	    demoted: list[str] = []
+   268	
+   269	    if len(a_indices) > a_tier_cap:
+   270	        cap_applied = True
+   271	        for idx in a_indices[a_tier_cap:]:
+   272	            old = results[idx]
+   273	            old.tier = TIER_B
+   274	            old.ta_budget_priority = tier_budget_map[TIER_B]
+   275	            old.tier_reason = f"A层已满(上限{a_tier_cap})，降为B层观察；{old.tier_reason}"
+   276	            old.why_not_deep_ta = f"A层名额已满({a_tier_cap})，降为观察"
+   277	            demoted.append(f"slot_{idx}")
+   278	
+   279	    counts = {TIER_A: 0, TIER_B: 0, TIER_C: 0}
+   280	    total = 0
+   281	    for r in results:
+   282	        counts[r.tier] = counts.get(r.tier, 0) + 1
+   283	        total += r.ta_budget_priority
+   284	
+   285	    return TierBudgetAllocation(
+   286	        tier_a_count=counts.get(TIER_A, 0),
+   287	        tier_b_count=counts.get(TIER_B, 0),
+   288	        tier_c_count=counts.get(TIER_C, 0),
+   289	        total_budget=total,
+   290	        a_tier_cap_applied=cap_applied,
+   291	        demoted_symbols=demoted,
+   292	    )
+   293	
+   294	
+   295	def render_tier_budget_summary(allocation: TierBudgetAllocation) -> str:
+   296	    """Render a human-readable tier budget summary for Daily Plan."""
+   297	    lines = [
+   298	        f"📊 TA Token 预算分配",
+   299	        f"  A层(优先深挖): {allocation.tier_a_count}只 × 100 tokens",
+   300	        f"  B层(观察等待): {allocation.tier_b_count}只 × 30 tokens",
+   301	        f"  C层(暂不关注): {allocation.tier_c_count}只 × 0 tokens",
+   302	        f"  总预算建议: {allocation.total_budget} tokens",
+   303	    ]
+   304	    if allocation.a_tier_cap_applied:
+   305	        lines.append(f"  ⚠️ A层上限{A_TIER_HARD_CAP}已触发，{len(allocation.demoted_symbols)}只降为B层")
+   306	    return "\n".join(lines)
+   210	
+   211	    # Sort by composite_score descending (S-005 priority gate), fallback to score
+   212	    plan_entries.sort(key=lambda x: (x.get("composite_score", 0) or 0, x.get("score", 0)), reverse=True)
+   213	
+   214	    # [S-007] candidate_tier_budget — sort by tier (A first, then B, then C)
+   215	    tier_order = {"A": 0, "B": 1, "C": 2, "": 3}
+   216	    plan_entries.sort(key=lambda x: (tier_order.get(x.get("tier", ""), 3), -(x.get("composite_score", 0) or 0)))
+   217	
+   218	    # [S-007] candidate_tier_budget — enforce A-tier cap and compute budget summary
+   219	    from .tier_budget import TierBudgetResult
+   220	    tier_results = []
+   221	    for e in plan_entries:
+   222	        tier_results.append(TierBudgetResult(
+   223	            tier=e.get("tier", "C"),
+   224	            ta_budget_priority=e.get("ta_budget_priority", 0),
+   225	            tier_reason=e.get("tier_reason", ""),
+   226	            missing_evidence_for_upgrade=e.get("missing_evidence_for_upgrade", []),
+   227	            why_not_deep_ta=e.get("why_not_deep_ta", ""),
+   228	        ))
+   229	    budget_allocation = allocate_tier_budget(tier_results, cfg=cfg)  # [M-004]
+   230	    # Update entries if any were demoted by the cap
+   231	    for i, tr in enumerate(tier_results):
+   232	        if i < len(plan_entries):
+   233	            plan_entries[i]["tier"] = tr.tier
+   234	            plan_entries[i]["ta_budget_priority"] = tr.ta_budget_priority
+   235	            plan_entries[i]["tier_reason"] = tr.tier_reason
+   236	
+   237	    # Build summary
+   238	    n_total = len(plan_entries)
+   239	    n_deep_ta = sum(1 for e in plan_entries if e["need_deep_ta"])
+   240	    n_wait = sum(1 for e in plan_entries if e["action"] == "WAIT_TRIGGER")
+   241	
+   242	    summary_parts = [
+   243	        f"共{n_total}只候选",
+   244	        f"{n_deep_ta}只需要深度TA",
+   245	        f"{n_wait}只接近触发",
+   246	    ]
+   247	    if symbols:
+   248	        summary_parts.append(f"指定标的: {', '.join(symbols)}")
+   249	
+   250	    plan = DailyPlan(
+   251	        trade_date=trade_date,
+   252	        mode="pre_market",
+   253	        summary="，".join(summary_parts) + "。",
+   254	        candidates=plan_entries,
+   255	        metadata={
+
+exec
+/bin/zsh -lc "git diff --cached --stat && sed -n '1,260p' tests/test_strategy_config.py && grep -R \"allocate_tier_budget\" -n tests tradingagents | head -20" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [M-004] strategy_config tests
+"""Tests for centralized StrategyConfig and its integration across TradeFlow modules.
+
+Covers:
+1. Default config values match previous hardcoded constants.
+2. Strategies read thresholds from config.
+3. Modifying config thresholds changes results predictably.
+4. None cfg falls back to DEFAULT_STRATEGY_CONFIG.
+5. Daily plan output includes config_version in metadata.
+"""
+
+import sys
+import os
+import pytest
+import numpy as np
+import pandas as pd
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tradingagents.tradeflow.strategy_config import (
+    StrategyConfig,
+    DEFAULT_STRATEGY_CONFIG,
+    STRATEGY_CONFIG_VERSION,
+)
+from tradingagents.tradeflow.strategies.vcp import score_vcp
+from tradingagents.tradeflow.strategies.pullback_support import score_pullback_support
+from tradingagents.tradeflow.strategies.event_catalyst import score_event_catalyst
+from tradingagents.tradeflow.policy_version_signal import detect_policy_version
+from tradingagents.tradeflow.narrative_quality import score_narrative_quality
+from tradingagents.tradeflow.underwater_risk_flags import detect_underwater_risks
+from tradingagents.tradeflow.fund_flow_anomaly import detect_fund_flow_anomaly
+from tradingagents.tradeflow.selection_priority_gate import run_selection_priority_gate
+from tradingagents.tradeflow.tier_budget import classify_candidate_tier, allocate_tier_budget
+from tradingagents.tradeflow.evidence_gate import compute_evidence_completeness
+from tradingagents.tradeflow.game_balance import assess_game_balance
+from tradingagents.tradeflow.candidate_engine import evaluate_symbol
+from tradingagents.tradeflow.plan_runner import generate_daily_plan
+
+
+def _make_vcp_df():
+    np.random.seed(123)
+    n = 120
+    dates = pd.date_range("2026-01-01", periods=n, freq="B")
+    prices = [20.0]
+    for i in range(1, 80):
+        ret = 0.004 + np.random.normal(0, 0.015)
+        prices.append(prices[-1] * (1 + ret))
+    base = prices[-1]
+    for i in range(40):
+        amp = 0.03 * (1 - i / 40)
+        price = base + amp * base * np.sin(i * 0.3) + np.random.normal(0, 0.005) * base
+        prices.append(max(price, base * 0.95))
+    prices = np.array(prices[:n])
+    volumes = np.concatenate([
+        np.random.uniform(8e6, 15e6, 80),
+        np.linspace(10e6, 3e6, 40),
+    ])
+    return pd.DataFrame({
+        "Date": dates,
+        "Open": prices * (1 + np.random.uniform(-0.003, 0.003, n)),
+        "High": prices * (1 + np.random.uniform(0.005, 0.015, n)),
+        "Low": prices * (1 - np.random.uniform(0.005, 0.015, n)),
+        "Close": prices,
+        "Volume": volumes,
+    })
+
+
+def _make_pullback_df():
+    np.random.seed(456)
+    n = 120
+    dates = pd.date_range("2026-01-01", periods=n, freq="B")
+    prices = [20.0]
+    for i in range(1, 100):
+        ret = 0.003 + np.random.normal(0, 0.012)
+        prices.append(prices[-1] * (1 + ret))
+    peak = prices[-1]
+    for i in range(20):
+        ret = -0.004 + np.random.normal(0, 0.008)
+        prices.append(prices[-1] * (1 + ret))
+    prices = np.array(prices[:n])
+    volumes = np.concatenate([
+        np.random.uniform(8e6, 15e6, 100),
+        np.linspace(12e6, 5e6, 20),
+    ])
+    return pd.DataFrame({
+        "Date": dates,
+        "Open": prices * (1 + np.random.uniform(-0.003, 0.003, n)),
+        "High": prices * (1 + np.random.uniform(0.005, 0.015, n)),
+        "Low": prices * (1 - np.random.uniform(0.005, 0.015, n)),
+        "Close": prices,
+        "Volume": volumes,
+    })
+
+
+class TestStrategyConfigDefaults:
+    def test_default_config_exists(self):
+        assert DEFAULT_STRATEGY_CONFIG is not None
+        assert isinstance(DEFAULT_STRATEGY_CONFIG, StrategyConfig)
+
+    def test_config_version(self):
+        assert DEFAULT_STRATEGY_CONFIG.config_version == STRATEGY_CONFIG_VERSION
+        assert DEFAULT_STRATEGY_CONFIG.config_version == "v1.0"
+
+    def test_liquidity_threshold(self):
+        assert DEFAULT_STRATEGY_CONFIG.amount_threshold == 30_000_000.0
+
+    def test_vcp_thresholds(self):
+        assert DEFAULT_STRATEGY_CONFIG.vcp_min_data_len == 40
+        assert DEFAULT_STRATEGY_CONFIG.vcp_range_ratio_max == 0.8
+        assert DEFAULT_STRATEGY_CONFIG.vcp_vol_ratio_max == 0.9
+        assert DEFAULT_STRATEGY_CONFIG.vcp_price_position_min == 0.5
+        assert DEFAULT_STRATEGY_CONFIG.vcp_ma20_break_pct == 0.97
+        assert DEFAULT_STRATEGY_CONFIG.vcp_score_max == 80.0
+        assert DEFAULT_STRATEGY_CONFIG.vcp_need_deep_ta_score == 55.0
+        assert DEFAULT_STRATEGY_CONFIG.vcp_need_deep_ta_position == 0.8
+
+    def test_pullback_thresholds(self):
+        assert DEFAULT_STRATEGY_CONFIG.pullback_min_data_len == 60
+        assert DEFAULT_STRATEGY_CONFIG.pullback_min_pct == -0.03
+        assert DEFAULT_STRATEGY_CONFIG.pullback_max_pct == -0.20
+        assert DEFAULT_STRATEGY_CONFIG.pullback_vol_ratio_max == 1.0
+        assert DEFAULT_STRATEGY_CONFIG.pullback_score_max == 80.0
+        assert DEFAULT_STRATEGY_CONFIG.pullback_need_deep_ta_score == 60.0
+
+    def test_event_thresholds(self):
+        assert DEFAULT_STRATEGY_CONFIG.event_score_max == 80.0
+        assert DEFAULT_STRATEGY_CONFIG.event_need_deep_ta_score == 60.0
+
+    def test_policy_thresholds(self):
+        assert DEFAULT_STRATEGY_CONFIG.policy_max_bonus == 30.0
+        assert DEFAULT_STRATEGY_CONFIG.policy_industry_weight_factor == 0.3
+        assert DEFAULT_STRATEGY_CONFIG.policy_need_deep_ta_score == 15.0
+
+    def test_narrative_thresholds(self):
+        assert DEFAULT_STRATEGY_CONFIG.narrative_max_score == 40.0
+        assert DEFAULT_STRATEGY_CONFIG.narrative_need_deep_ta_score == 20.0
+
+    def test_risk_thresholds(self):
+        assert DEFAULT_STRATEGY_CONFIG.risk_max_penalty == 30.0
+        assert DEFAULT_STRATEGY_CONFIG.risk_lockup_score_factor == 0.8
+        assert DEFAULT_STRATEGY_CONFIG.risk_many_flags_threshold == 3
+        assert DEFAULT_STRATEGY_CONFIG.risk_heavy_penalty_threshold == -15.0
+        assert "INQUIRY_RISK" in DEFAULT_STRATEGY_CONFIG.risk_high_severity_flags
+        assert "FINANCIAL_QUALITY_RISK" in DEFAULT_STRATEGY_CONFIG.risk_high_severity_flags
+
+    def test_fund_flow_thresholds(self):
+        assert DEFAULT_STRATEGY_CONFIG.fund_flow_max_bonus == 25.0
+        assert DEFAULT_STRATEGY_CONFIG.fund_flow_anomaly_threshold_wan == 50000.0
+        assert DEFAULT_STRATEGY_CONFIG.fund_flow_consecutive_min_days == 3
+        assert DEFAULT_STRATEGY_CONFIG.fund_flow_high_proportion_threshold == 5.0
+        assert DEFAULT_STRATEGY_CONFIG.fund_flow_need_deep_ta_score == 10.0
+
+    def test_gate_thresholds(self):
+        assert DEFAULT_STRATEGY_CONFIG.gate_min_positive_categories == 2
+        assert DEFAULT_STRATEGY_CONFIG.gate_max_composite_score == 200.0
+        assert DEFAULT_STRATEGY_CONFIG.gate_completeness_bonus_factor == 5.0
+        assert DEFAULT_STRATEGY_CONFIG.gate_completeness_min == 0.5
+
+    def test_tier_thresholds(self):
+        assert DEFAULT_STRATEGY_CONFIG.tier_a_hard_cap == 5
+        assert DEFAULT_STRATEGY_CONFIG.tier_a_budget == 100
+        assert DEFAULT_STRATEGY_CONFIG.tier_b_budget == 30
+        assert DEFAULT_STRATEGY_CONFIG.tier_c_budget == 0
+        assert DEFAULT_STRATEGY_CONFIG.tier_a_min_completeness == 0.6
+
+    def test_evidence_thresholds(self):
+        assert DEFAULT_STRATEGY_CONFIG.evidence_total_dimensions == 10
+        assert DEFAULT_STRATEGY_CONFIG.evidence_completeness_for_a_tier == 0.6
+        assert DEFAULT_STRATEGY_CONFIG.evidence_completeness_for_deep_ta == 0.5
+
+    def test_to_dict(self):
+        d = DEFAULT_STRATEGY_CONFIG.to_dict()
+        assert isinstance(d, dict)
+        assert d["config_version"] == "v1.0"
+        assert isinstance(d["risk_high_severity_flags"], list)
+
+
+class TestConfigNoneFallback:
+    """All functions should work with cfg=None, using DEFAULT_STRATEGY_CONFIG."""
+
+    def test_vcp_none_cfg(self):
+        df = _make_vcp_df()
+        result = score_vcp(df, "TEST.SZ", cfg=None)
+        assert result is not None
+        assert result.strategy_tag == "VCP"
+
+    def test_pullback_none_cfg(self):
+        df = _make_pullback_df()
+        result = score_pullback_support(df, "TEST.SZ", cfg=None)
+        assert result is not None
+        assert result.strategy_tag == "PULLBACK_SUPPORT"
+
+    def test_event_none_cfg(self):
+        result = score_event_catalyst("TEST.SZ", news_texts=["并购重组"], latest_close=25.0, cfg=None)
+        assert result is not None
+
+    def test_policy_none_cfg(self):
+        result = detect_policy_version(event_texts=["新质生产力发展"], cfg=None)
+        assert len(result.policy_tags) > 0
+
+    def test_narrative_none_cfg(self):
+        result = score_narrative_quality(event_texts=["回购计划，重大订单"], cfg=None)
+        assert result.narrative_score > 0
+
+    def test_risk_none_cfg(self):
+        result = detect_underwater_risks(event_texts=["解禁限售股上市"], cfg=None)
+        assert "LOCKUP_RISK" in result.risk_flags
+
+    def test_fund_flow_none_cfg(self):
+        result = detect_fund_flow_anomaly(
+            fund_flow_individual="主力净流入-净额\n100000\n200000\n300000\n400000\n500000",
+            cfg=None,
+        )
+        assert result.fund_flow_unit_verified is True
+
+    def test_gate_none_cfg(self):
+        result = run_selection_priority_gate(
+            score=50, strategy_tags=["VCP", "POLICY_VERSION"],
+            cfg=None,
+        )
+        assert result.composite_score > 0
+
+    def test_tier_none_cfg(self):
+        result = classify_candidate_tier(
+            priority_rank="A", composite_score=70,
+            positive_category_count=3, data_completeness=0.8,
+            game_balance="favorable", gate_passed=True, cfg=None,
+        )
+        assert result.tier == "A"
+
+    def test_evidence_none_cfg(self):
+        result = compute_evidence_completeness(
+            has_ohlcv=True, has_liquidity=True, cfg=None,
+        )
+        assert result.tradeflow_data_completeness >= 0.2
+
+
+class TestConfigOverridePredictable:
+    """Changing config thresholds should produce predictable changes in results."""
+
+    def test_vcp_score_cap_override(self):
+        df = _make_vcp_df()
+        result_default = score_vcp(df, "TEST.SZ")
+        assert result_default is not None
+
+        low_cap_cfg = StrategyConfig(vcp_score_max=30.0)
+        result_low = score_vcp(df, "TEST.SZ", cfg=low_cap_cfg)
+        assert result_low is not None
+        assert result_low.score <= 30.0
+        assert result_low.score <= result_default.score
+
+    def test_vcp_need_deep_ta_threshold(self):
+        df = _make_vcp_df()
+        result_default = score_vcp(df, "TEST.SZ")
+        assert result_default is not None
+        default_deep_ta = result_default.need_deep_ta
+
+        high_threshold_cfg = StrategyConfig(vcp_need_deep_ta_score=100.0, vcp_need_deep_ta_position=1.0)
+        result_high = score_vcp(df, "TEST.SZ", cfg=high_threshold_cfg)
+        assert result_high is not None
+tests/test_s007_tier_budget.py:8:- A-tier cap enforcement (allocate_tier_budget)
+tests/test_s007_tier_budget.py:25:    allocate_tier_budget,
+tests/test_s007_tier_budget.py:294:        alloc = allocate_tier_budget([])
+tests/test_s007_tier_budget.py:300:        alloc = allocate_tier_budget(results)
+tests/test_s007_tier_budget.py:314:        alloc = allocate_tier_budget(results, a_tier_cap=5)
+tests/test_s007_tier_budget.py:327:        alloc = allocate_tier_budget(results)
+tests/test_s007_tier_budget.py:335:        alloc = allocate_tier_budget(results)
+tests/test_s007_tier_budget.py:341:        alloc = allocate_tier_budget(results, a_tier_cap=2)
+tests/test_s007_tier_budget.py:348:        allocate_tier_budget(results, a_tier_cap=2)
+tests/test_s007_tier_budget.py:696:        alloc = allocate_tier_budget(results)
+Binary file tests/__pycache__/test_s007_tier_budget.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_strategy_config.cpython-312-pytest-9.0.2.pyc matches
+tests/test_strategy_config.py:33:from tradingagents.tradeflow.tier_budget import classify_candidate_tier, allocate_tier_budget
+tradingagents/tradeflow/discovery.py:26:from .tier_budget import allocate_tier_budget, render_tier_budget_summary  # [S-007] candidate_tier_budget
+tradingagents/tradeflow/discovery.py:225:    budget_allocation = allocate_tier_budget(tier_results)
+tradingagents/tradeflow/plan_runner.py:20:from .tier_budget import classify_candidate_tier, allocate_tier_budget, render_tier_budget_summary  # [S-007] candidate_tier_budget
+tradingagents/tradeflow/plan_runner.py:229:    budget_allocation = allocate_tier_budget(tier_results, cfg=cfg)  # [M-004]
+Binary file tradingagents/tradeflow/__pycache__/discovery.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/plan_runner.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/tier_budget.cpython-312.pyc matches
+
+exec
+/bin/zsh -lc 'pytest tests/test_strategy_config.py tests/test_s007_tier_budget.py -q' in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: pytest
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest tests/test_strategy_config.py tests/test_s007_tier_budget.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 454ms:
+........................................................................ [ 67%]
+............ss.....................                                      [100%]
+105 passed, 2 skipped in 0.23s
+
+exec
+/bin/zsh -lc 'git diff -- tradingagents/tradeflow/policy_version_signal.py tradingagents/tradeflow/narrative_quality.py tradingagents/tradeflow/game_balance.py tradingagents/tradeflow/evidence_gate.py tradingagents/tradeflow/tier_budget.py tradingagents/tradeflow/selection_priority_gate.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/tradingagents/tradeflow/evidence_gate.py b/tradingagents/tradeflow/evidence_gate.py
+index 9cde9ae..b55b4fe 100644
+--- a/tradingagents/tradeflow/evidence_gate.py
++++ b/tradingagents/tradeflow/evidence_gate.py
+@@ -40,6 +40,8 @@ from __future__ import annotations
+ from dataclasses import dataclass, field
+ from typing import Optional
+ 
++from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
++
+ 
+ _STRONG_BUY_SELL_WORDS = {
+     "立即买入", "重仓买入", "立即清仓", "满仓", "梭哈",
+@@ -95,6 +97,7 @@ def compute_evidence_completeness(
+     has_narrative_signal: bool = False,
+     has_fund_signal: bool = False,
+     has_game_assessment: bool = False,
++    cfg: Optional[StrategyConfig] = None,  # [M-004]
+ ) -> EvidenceGateResult:
+     """Compute evidence completeness for a TradeFlow candidate.
+ 
+@@ -124,6 +127,9 @@ def compute_evidence_completeness(
+     Returns:
+         EvidenceGateResult with completeness metrics and gate verdicts.
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     dimensions = {
+         "ohlcv": has_ohlcv,
+         "liquidity": has_liquidity,
+@@ -141,13 +147,13 @@ def compute_evidence_completeness(
+     missing_keys = [k for k, v in dimensions.items() if not v]
+ 
+     present_count = len(present_keys)
+-    completeness = round(present_count / TOTAL_EVIDENCE_DIMENSIONS, 3) if TOTAL_EVIDENCE_DIMENSIONS > 0 else 0.0
++    completeness = round(present_count / cfg.evidence_total_dimensions, 3) if cfg.evidence_total_dimensions > 0 else 0.0  # [M-004]
+ 
+     missing_fields = [EVIDENCE_DIMENSION_NAMES[k] for k in missing_keys]
+     present_fields = [EVIDENCE_DIMENSION_NAMES[k] for k in present_keys]
+ 
+-    can_enter_a = completeness >= COMPLETENESS_FOR_A_TIER
+-    can_deep_ta = completeness >= COMPLETENESS_FOR_DEEP_TA
++    can_enter_a = completeness >= cfg.evidence_completeness_for_a_tier  # [M-004]
++    can_deep_ta = completeness >= cfg.evidence_completeness_for_deep_ta
+ 
+     what_to_upgrade: list[str] = []
+ 
+@@ -164,23 +170,23 @@ def compute_evidence_completeness(
+         what_to_upgrade.append(f"信号维度不足: {'; '.join(labels)}")
+ 
+     if not can_enter_a:
+-        needed = max(1, int(TOTAL_EVIDENCE_DIMENSIONS * COMPLETENESS_FOR_A_TIER) - present_count)
++        needed = max(1, int(cfg.evidence_total_dimensions * cfg.evidence_completeness_for_a_tier) - present_count)  # [M-004]
+         if needed > 0:
+-            what_to_upgrade.append(f"完整度需≥{COMPLETENESS_FOR_A_TIER:.0%}(当前{completeness:.0%}，还需{needed}项)")
++            what_to_upgrade.append(f"完整度需≥{cfg.evidence_completeness_for_a_tier:.0%}(当前{completeness:.0%}，还需{needed}项)")
+ 
+     if not has_fund_flow_unit and not has_event_source:
+         what_to_upgrade.append("需补充资金单位校验或事件来源中至少一项")
+ 
+     refs: list[dict] = [
+         {"field": "tradeflow_data_completeness", "value": completeness,
+-         "present_count": present_count, "total": TOTAL_EVIDENCE_DIMENSIONS},
++         "present_count": present_count, "total": cfg.evidence_total_dimensions},  # [M-004]
+     ]
+     if not can_enter_a:
+         refs.append({"field": "evidence_gate_blocked", "value": "completeness_below_a_tier",
+-                      "threshold": COMPLETENESS_FOR_A_TIER, "actual": completeness})
++                      "threshold": cfg.evidence_completeness_for_a_tier, "actual": completeness})
+     if not can_deep_ta:
+         refs.append({"field": "evidence_gate_blocked", "value": "completeness_below_deep_ta",
+-                      "threshold": COMPLETENESS_FOR_DEEP_TA, "actual": completeness})
++                      "threshold": cfg.evidence_completeness_for_deep_ta, "actual": completeness})
+     for k in missing_keys:
+         refs.append({"field": "missing_dimension", "value": k,
+                       "label": EVIDENCE_DIMENSION_NAMES[k]})
+@@ -207,6 +213,7 @@ def apply_evidence_gate(
+     can_trigger_deep_ta: bool = True,
+     what_to_upgrade: Optional[list[str]] = None,
+     missing_data_fields: Optional[list[str]] = None,
++    cfg: Optional[StrategyConfig] = None,  # [M-004]
+ ) -> dict:
+     """Apply the evidence gate to a candidate's tier and need_deep_ta.
+ 
+@@ -227,6 +234,9 @@ def apply_evidence_gate(
+         - ``what_to_upgrade``: list[str]
+         - ``gate_applied``: bool
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     missing = list(missing_data_fields or [])
+     upgrade = list(what_to_upgrade or [])
+ 
+@@ -240,7 +250,7 @@ def apply_evidence_gate(
+         tier = "B"
+         gate_applied = True
+         tier_reason_additions.append(
+-            f"证据完整度不足({candidate_completeness:.0%}，A层需≥{COMPLETENESS_FOR_A_TIER:.0%})"
++            f"证据完整度不足({candidate_completeness:.0%}，A层需≥{cfg.evidence_completeness_for_a_tier:.0%})"  # [M-004]
+         )
+         why_not_additions.append(
+             f"证据完整度不足({candidate_completeness:.0%})，禁止A层"
+@@ -250,7 +260,7 @@ def apply_evidence_gate(
+         need_deep_ta = False
+         gate_applied = True
+         why_not_additions.append(
+-            f"证据完整度不足({candidate_completeness:.0%}，深挖需≥{COMPLETENESS_FOR_DEEP_TA:.0%})"
++            f"证据完整度不足({candidate_completeness:.0%}，深挖需≥{cfg.evidence_completeness_for_deep_ta:.0%})"  # [M-004]
+         )
+ 
+     ta_budget = {1: 100, 2: 30}.get({"A": 1, "B": 2, "C": 3}.get(tier, 3), 0)
+diff --git a/tradingagents/tradeflow/game_balance.py b/tradingagents/tradeflow/game_balance.py
+index f7c52a5..15f3aea 100644
+--- a/tradingagents/tradeflow/game_balance.py
++++ b/tradingagents/tradeflow/game_balance.py
+@@ -29,6 +29,8 @@ import re
+ from dataclasses import dataclass, field
+ from typing import Optional
+ 
++from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
++
+ 
+ GAME_BALANCE_FAVORABLE = "favorable"
+ GAME_BALANCE_NEUTRAL = "neutral"
+@@ -106,6 +108,7 @@ def assess_game_balance(
+     risk_penalty: float = 0.0,
+     risk_reasons: Optional[list[str]] = None,
+     event_texts: Optional[list[str]] = None,
++    cfg: Optional[StrategyConfig] = None,  # [M-004]
+ ) -> GameBalanceResult:
+     """Assess game balance from existing candidate signals.
+ 
+@@ -125,6 +128,9 @@ def assess_game_balance(
+     Returns:
+         GameBalanceResult with balance verdict and case summaries.
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     tags = set(strategy_tags or [])
+     p_tags = list(policy_tags or [])
+     r_flags = set(risk_flags or [])
+@@ -144,9 +150,9 @@ def assess_game_balance(
+ 
+     resonance = sum([has_policy, has_narrative, has_tech, has_fund])
+ 
+-    has_high_risk = bool(r_flags & _SEVERITY_HIGH_RISK_FLAGS)
+-    many_risks = len(r_flags) >= 3
+-    heavy_penalty = risk_penalty <= -15
++    has_high_risk = bool(r_flags & set(cfg.risk_high_severity_flags))  # [M-004]
++    many_risks = len(r_flags) >= cfg.game_balance_many_risks_threshold
++    heavy_penalty = risk_penalty <= cfg.game_balance_heavy_penalty_threshold
+ 
+     # ── Build policy_case ──
+     policy_parts: list[str] = []
+@@ -223,18 +229,18 @@ def assess_game_balance(
+         balance = GAME_BALANCE_FRAGILE
+     elif has_fund_flow_neg and has_fund_flow_pos and len(r_flags) >= 2:
+         balance = GAME_BALANCE_CROWDED
+-    elif resonance >= 2 and risk_penalty > -10:
++    elif resonance >= 2 and risk_penalty > cfg.game_balance_risk_penalty_threshold:  # [M-004]
+         if resonance >= 3 and score > 0:
+             balance = GAME_BALANCE_FAVORABLE
+         else:
+             balance = GAME_BALANCE_NEUTRAL
+-    elif resonance >= 1 and risk_penalty > -10:
++    elif resonance >= 1 and risk_penalty > cfg.game_balance_risk_penalty_threshold:
+         balance = GAME_BALANCE_NEUTRAL
+     else:
+         balance = GAME_BALANCE_NEUTRAL
+ 
+     if r_flags and balance == GAME_BALANCE_FAVORABLE:
+-        if len(r_flags) >= 2 or risk_penalty <= -10:
++        if len(r_flags) >= 2 or risk_penalty <= cfg.game_balance_risk_penalty_threshold:  # [M-004]
+             balance = GAME_BALANCE_NEUTRAL
+ 
+     bull_case = _sanitize(bull_case)
+diff --git a/tradingagents/tradeflow/narrative_quality.py b/tradingagents/tradeflow/narrative_quality.py
+index 1f08f3d..26b1185 100644
+--- a/tradingagents/tradeflow/narrative_quality.py
++++ b/tradingagents/tradeflow/narrative_quality.py
+@@ -27,6 +27,8 @@ from __future__ import annotations
+ import re
+ from dataclasses import dataclass, field
+ 
++from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
++
+ 
+ @dataclass
+ class NarrativeQualityResult:
+@@ -113,7 +115,11 @@ def _score_dimension(
+ 
+ def score_narrative_quality(
+     event_texts: list[str] | None = None,
++    cfg: StrategyConfig | None = None,  # [M-004]
+ ) -> NarrativeQualityResult:
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     if not event_texts:
+         return NarrativeQualityResult()
+ 
+@@ -205,7 +211,7 @@ def score_narrative_quality(
+         all_refs.extend(crowd_refs)
+         total_score -= crowd_deduction
+ 
+-    total_score = max(0.0, min(total_score, MAX_NARRATIVE_SCORE))
++    total_score = max(0.0, min(total_score, cfg.narrative_max_score))  # [M-004]
+     total_score = round(total_score, 2)
+ 
+     if total_score <= 0 and not all_refs:
+diff --git a/tradingagents/tradeflow/policy_version_signal.py b/tradingagents/tradeflow/policy_version_signal.py
+index 5409765..186b019 100644
+--- a/tradingagents/tradeflow/policy_version_signal.py
++++ b/tradingagents/tradeflow/policy_version_signal.py
+@@ -18,6 +18,8 @@ from __future__ import annotations
+ import re
+ from dataclasses import dataclass, field
+ 
++from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
++
+ 
+ @dataclass
+ class PolicyVersionResult:
+@@ -105,6 +107,7 @@ MAX_POLICY_BONUS = 30.0
+ def detect_policy_version(
+     event_texts: list[str] | None = None,
+     industry_tags: list[str] | None = None,
++    cfg: StrategyConfig | None = None,  # [M-004]
+ ) -> PolicyVersionResult:
+     """Detect policy version signals from event texts and industry tags.
+ 
+@@ -116,6 +119,9 @@ def detect_policy_version(
+         PolicyVersionResult with tags, score, and evidence refs.
+         Score is 0 when no raw text evidence matches any policy topic.
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     texts = [t for t in (event_texts or []) if t]
+     industries = [t for t in (industry_tags or []) if t]
+     combined_text = "\n".join(texts)
+@@ -159,14 +165,14 @@ def detect_policy_version(
+                 })
+         elif matched_in_industry:
+             matched_tags.append(tag)
+-            raw_score += weight * 0.3
++            raw_score += weight * cfg.policy_industry_weight_factor  # [M-004]
+             evidence_refs.append({
+                 "tag": tag,
+                 "matched_text": f"行业标签命中: {tag}",
+                 "source": "industry_tag",
+             })
+ 
+-    version_score = min(raw_score, MAX_POLICY_BONUS)
++    version_score = min(raw_score, cfg.policy_max_bonus)  # [M-004]
+ 
+     if not evidence_refs:
+         return PolicyVersionResult()
+diff --git a/tradingagents/tradeflow/selection_priority_gate.py b/tradingagents/tradeflow/selection_priority_gate.py
+index a2b8a9e..866b11b 100644
+--- a/tradingagents/tradeflow/selection_priority_gate.py
++++ b/tradingagents/tradeflow/selection_priority_gate.py
+@@ -24,6 +24,8 @@ import re
+ from dataclasses import dataclass, field
+ from typing import Optional
+ 
++from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
++
+ 
+ _STRONG_BUY_SELL_WORDS = {
+     "立即买入", "重仓买入", "立即清仓", "满仓", "梭哈",
+@@ -133,6 +135,7 @@ def run_selection_priority_gate(
+     has_event_data: bool = False,
+     has_fund_flow_data: bool = False,
+     has_risk_assessment: bool = False,
++    cfg: Optional[StrategyConfig] = None,  # [M-004]
+ ) -> SelectionPriorityResult:
+     """Run the unified selection priority gate on a candidate.
+ 
+@@ -157,6 +160,9 @@ def run_selection_priority_gate(
+     Returns:
+         SelectionPriorityResult with composite score, gate verdict, and explanations.
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     tags = set(strategy_tags or [])
+     p_tags = list(policy_tags or [])
+     r_flags = set(risk_flags or [])
+@@ -196,15 +202,15 @@ def run_selection_priority_gate(
+         has_risk_assessment=has_risk_assessment,
+     )
+ 
+-    completeness_bonus = round(data_completeness * 5.0, 2)
++    completeness_bonus = round(data_completeness * cfg.gate_completeness_bonus_factor, 2)  # [M-004]
+ 
+     composite_score = score + version_score + narrative_score + fund_flow_anomaly_score + risk_penalty + completeness_bonus
+-    composite_score = max(0.0, min(composite_score, MAX_COMPOSITE_SCORE))
++    composite_score = max(0.0, min(composite_score, cfg.gate_max_composite_score))
+     composite_score = round(composite_score, 2)
+ 
+-    has_high_risk = bool(r_flags & _SEVERITY_HIGH_RISK_FLAGS)
+-    many_risks = len(r_flags) >= 3
+-    heavy_penalty = risk_penalty <= -15
++    has_high_risk = bool(r_flags & set(cfg.risk_high_severity_flags))  # [M-004]
++    many_risks = len(r_flags) >= cfg.risk_many_flags_threshold
++    heavy_penalty = risk_penalty <= cfg.risk_heavy_penalty_threshold
+ 
+     fragile_or_crowded = game_balance in {"fragile", "crowded"}
+     favorable_or_neutral = game_balance in {"favorable", "neutral"}
+@@ -214,12 +220,12 @@ def run_selection_priority_gate(
+     why_not_deep_ta = ""
+ 
+     can_pass_gate = (
+-        positive_category_count >= MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA
++        positive_category_count >= cfg.gate_min_positive_categories  # [M-004]
+         and not has_high_risk
+         and not many_risks
+         and not heavy_penalty
+         and not fragile_or_crowded
+-        and data_completeness >= 0.5
++        and data_completeness >= cfg.gate_completeness_min
+     )
+ 
+     if can_pass_gate:
+@@ -239,9 +245,9 @@ def run_selection_priority_gate(
+         refs.append({"field": "gate_passed", "value": True, "reason": f"{positive_category_count} categories, risk manageable"})
+     else:
+         blockers: list[str] = []
+-        if positive_category_count < MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA:
+-            blockers.append(f"仅{positive_category_count}类正向信号(需≥{MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA})")
+-            refs.append({"field": "gate_blocked", "value": "insufficient_categories", "detail": f"{positive_category_count}/{MIN_POSITIVE_CATEGORIES_FOR_DEEP_TA}"})
++        if positive_category_count < cfg.gate_min_positive_categories:  # [M-004]
++            blockers.append(f"仅{positive_category_count}类正向信号(需≥{cfg.gate_min_positive_categories})")
++            refs.append({"field": "gate_blocked", "value": "insufficient_categories", "detail": f"{positive_category_count}/{cfg.gate_min_positive_categories}"})
+         if has_high_risk:
+             blockers.append(f"高风险标签({', '.join(r_flags & _SEVERITY_HIGH_RISK_FLAGS)})")
+             refs.append({"field": "gate_blocked", "value": "high_risk_flags"})
+@@ -254,14 +260,14 @@ def run_selection_priority_gate(
+         if fragile_or_crowded:
+             blockers.append(f"博弈平衡不佳({game_balance})")
+             refs.append({"field": "gate_blocked", "value": "bad_game_balance"})
+-        if data_completeness < 0.5:
++        if data_completeness < cfg.gate_completeness_min:  # [M-004]
+             blockers.append(f"数据完整度不足({data_completeness:.0%})")
+             refs.append({"field": "gate_blocked", "value": "low_data_completeness"})
+         why_not_deep_ta = "；".join(blockers)
+ 
+-    if positive_category_count >= 3 and composite_score >= 60 and data_completeness >= 0.7:
++    if positive_category_count >= cfg.gate_rank_a_min_categories and composite_score >= cfg.gate_rank_a_min_composite and data_completeness >= cfg.gate_rank_a_min_completeness:  # [M-004]
+         priority_rank = "A"
+-    elif positive_category_count >= 2 and composite_score >= 30:
++    elif positive_category_count >= cfg.gate_rank_b_min_categories and composite_score >= cfg.gate_rank_b_min_composite:
+         priority_rank = "B"
+     else:
+         priority_rank = "C"
+diff --git a/tradingagents/tradeflow/tier_budget.py b/tradingagents/tradeflow/tier_budget.py
+index f818bdf..1abdff8 100644
+--- a/tradingagents/tradeflow/tier_budget.py
++++ b/tradingagents/tradeflow/tier_budget.py
+@@ -27,6 +27,8 @@ from __future__ import annotations
+ from dataclasses import dataclass, field
+ from typing import Optional
+ 
++from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
++
+ 
+ _STRONG_BUY_SELL_WORDS = {
+     "立即买入", "重仓买入", "立即清仓", "满仓", "梭哈",
+@@ -92,6 +94,7 @@ def classify_candidate_tier(
+     game_balance: str = "",
+     gate_passed: bool = False,
+     why_not_deep_ta: str = "",
++    cfg: Optional[StrategyConfig] = None,  # [M-004]
+ ) -> TierBudgetResult:
+     """Classify a single candidate into A / B / C tier.
+ 
+@@ -117,12 +120,15 @@ def classify_candidate_tier(
+     Returns:
+         ``TierBudgetResult`` with tier, budget, reason, and upgrade hints.
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++
+     r_flags = set(risk_flags or [])
+     missing = list(missing_evidence or [])
+ 
+-    has_high_risk = bool(r_flags & _SEVERITY_HIGH_RISK_FLAGS)
+-    many_risks = len(r_flags) >= 3
+-    heavy_penalty = risk_penalty <= -15
++    has_high_risk = bool(r_flags & set(cfg.risk_high_severity_flags))  # [M-004]
++    many_risks = len(r_flags) >= cfg.risk_many_flags_threshold
++    heavy_penalty = risk_penalty <= cfg.risk_heavy_penalty_threshold
+     fragile = game_balance == "fragile"
+     favorable_or_neutral = game_balance in {"favorable", "neutral"}
+ 
+@@ -132,10 +138,10 @@ def classify_candidate_tier(
+ 
+     # --- Tier A conditions ---
+     meets_a_signals = (
+-        positive_category_count >= 3
+-        or (positive_category_count >= 2 and composite_score >= 50)
++        positive_category_count >= cfg.gate_rank_a_min_categories  # [M-004]
++        or (positive_category_count >= cfg.gate_rank_b_min_categories and composite_score >= cfg.tier_a_min_composite_for_2cat)
+     )
+-    meets_a_completeness = data_completeness >= 0.6
++    meets_a_completeness = data_completeness >= cfg.tier_a_min_completeness
+     meets_a_risk = not has_high_risk and not many_risks and not heavy_penalty
+     meets_a_game = favorable_or_neutral
+     meets_a_gate = gate_passed
+@@ -167,7 +173,7 @@ def classify_candidate_tier(
+ 
+         # --- Tier B or C ---
+         meets_b_signals = positive_category_count >= 1
+-        meets_b_completeness = data_completeness >= 0.3
++        meets_b_completeness = data_completeness >= cfg.tier_b_min_completeness  # [M-004]
+         meets_b_risk = not has_high_risk and not many_risks and not heavy_penalty
+         not_fragile = not fragile
+ 
+@@ -212,7 +218,7 @@ def classify_candidate_tier(
+                 c_reasons.append(f"风险罚分重({risk_penalty})")
+             reason = "；".join(c_reasons) if c_reasons else "综合条件不足"
+ 
+-    budget = TIER_BUDGET_MAP.get(tier, 0)
++    budget = cfg.tier_a_budget if tier == TIER_A else (cfg.tier_b_budget if tier == TIER_B else cfg.tier_c_budget)  # [M-004]
+     not_deep = why_not_deep_ta if tier != TIER_A else ""
+ 
+     reason = _sanitize(reason)
+@@ -231,7 +237,8 @@ def classify_candidate_tier(
+ 
+ def allocate_tier_budget(
+     results: list[TierBudgetResult],
+-    a_tier_cap: int = A_TIER_HARD_CAP,
++    a_tier_cap: int = 0,  # [M-004] default 0 means use StrategyConfig default
++    cfg: Optional[StrategyConfig] = None,
+ ) -> TierBudgetAllocation:
+     """Enforce the A-tier cap and compute aggregate budget.
+ 
+@@ -247,6 +254,13 @@ def allocate_tier_budget(
+     Returns:
+         TierBudgetAllocation with aggregate stats and demotion info.
+     """
++    if cfg is None:
++        cfg = DEFAULT_STRATEGY_CONFIG
++    if a_tier_cap <= 0:
++        a_tier_cap = cfg.tier_a_hard_cap
++
++    tier_budget_map = {TIER_A: cfg.tier_a_budget, TIER_B: cfg.tier_b_budget, TIER_C: cfg.tier_c_budget}  # [M-004]
++
+     a_indices = [i for i, r in enumerate(results) if r.tier == TIER_A]
+ 
+     cap_applied = False
+@@ -257,7 +271,7 @@ def allocate_tier_budget(
+         for idx in a_indices[a_tier_cap:]:
+             old = results[idx]
+             old.tier = TIER_B
+-            old.ta_budget_priority = TIER_BUDGET_MAP[TIER_B]
++            old.ta_budget_priority = tier_budget_map[TIER_B]
+             old.tier_reason = f"A层已满(上限{a_tier_cap})，降为B层观察；{old.tier_reason}"
+             old.why_not_deep_ta = f"A层名额已满({a_tier_cap})，降为观察"
+             demoted.append(f"slot_{idx}")
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/evidence_gate.py | sed -n '238,270p' && grep -R \"ta_budget_priority\" -n tradingagents/tradeflow/evidence_gate.py tests/test_strategy_config.py | head -30" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   238	        cfg = DEFAULT_STRATEGY_CONFIG
+   239	
+   240	    missing = list(missing_data_fields or [])
+   241	    upgrade = list(what_to_upgrade or [])
+   242	
+   243	    tier = candidate_tier
+   244	    need_deep_ta = candidate_need_deep_ta
+   245	    gate_applied = False
+   246	    tier_reason_additions: list[str] = []
+   247	    why_not_additions: list[str] = []
+   248	
+   249	    if tier == "A" and not can_enter_a_tier:
+   250	        tier = "B"
+   251	        gate_applied = True
+   252	        tier_reason_additions.append(
+   253	            f"证据完整度不足({candidate_completeness:.0%}，A层需≥{cfg.evidence_completeness_for_a_tier:.0%})"  # [M-004]
+   254	        )
+   255	        why_not_additions.append(
+   256	            f"证据完整度不足({candidate_completeness:.0%})，禁止A层"
+   257	        )
+   258	
+   259	    if need_deep_ta and not can_trigger_deep_ta:
+   260	        need_deep_ta = False
+   261	        gate_applied = True
+   262	        why_not_additions.append(
+   263	            f"证据完整度不足({candidate_completeness:.0%}，深挖需≥{cfg.evidence_completeness_for_deep_ta:.0%})"  # [M-004]
+   264	        )
+   265	
+   266	    ta_budget = {1: 100, 2: 30}.get({"A": 1, "B": 2, "C": 3}.get(tier, 3), 0)
+   267	
+   268	    tier_reason_combined = "；".join(tier_reason_additions) if tier_reason_additions else ""
+   269	    why_not_combined = "；".join(why_not_additions) if why_not_additions else ""
+   270	
+tradingagents/tradeflow/evidence_gate.py:229:        - ``ta_budget_priority``: int
+tradingagents/tradeflow/evidence_gate.py:273:        "ta_budget_priority": ta_budget,
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest tests/test_tradeflow_*.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 691ms:
+........................................................................ [ 59%]
+.................................................                        [100%]
+121 passed in 0.43s
+
+exec
+/bin/zsh -lc "python - <<'PY'
+import ast, pathlib
+fields=[]
+mod=ast.parse(pathlib.Path('tradingagents/tradeflow/strategy_config.py').read_text())
+for node in mod.body:
+    if isinstance(node, ast.ClassDef) and node.name=='StrategyConfig':
+        for stmt in node.body:
+            if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                fields.append(stmt.target.id)
+text='\\n'.join(p.read_text() for p in pathlib.Path('tradingagents/tradeflow').rglob('*.py') if p.name"'!='"'strategy_config.py')
+for f in fields:
+    if f"'!='"'config_version' and f not in text:
+        print('unused', f)
+PY" in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: python
+
+exec
+/bin/zsh -lc "source .venv/bin/activate && python - <<'PY'
+import ast, pathlib
+fields=[]
+mod=ast.parse(pathlib.Path('tradingagents/tradeflow/strategy_config.py').read_text())
+for node in mod.body:
+    if isinstance(node, ast.ClassDef) and node.name=='StrategyConfig':
+        for stmt in node.body:
+            if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                fields.append(stmt.target.id)
+text='\\n'.join(p.read_text() for p in pathlib.Path('tradingagents/tradeflow').rglob('*.py') if p.name"'!='"'strategy_config.py')
+for f in fields:
+    if f"'!='"'config_version' and f not in text:
+        print('unused', f)
+PY" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+unused fund_flow_lookback_default
+
+exec
+/bin/zsh -lc "source .venv/bin/activate && python - <<'PY'
+from tradingagents.tradeflow.evidence_gate import apply_evidence_gate, compute_evidence_completeness
+from tradingagents.tradeflow.strategy_config import StrategyConfig
+cfg=StrategyConfig(tier_b_budget=7, tier_a_budget=99)
+print(apply_evidence_gate(candidate_tier='B', candidate_need_deep_ta=False, cfg=cfg)['ta_budget_priority'])
+print(compute_evidence_completeness(has_ohlcv=True, has_liquidity=True, has_event_source=True, has_fund_flow_unit=True, cfg=StrategyConfig(evidence_total_dimensions=5)).tradeflow_data_completeness)
+PY" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+30
+0.8
+
+codex
+The default-path tests pass, but custom StrategyConfig values can be ignored or distort evidence gating, which undermines the central configuration feature added by this patch.
+
+Full review comments:
+
+- [P2] Honor configured tier budgets in evidence gate — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/evidence_gate.py:213-213
+  When callers pass a custom `StrategyConfig` with non-default `tier_a_budget`/`tier_b_budget`, `apply_evidence_gate()` accepts the config but still returns hard-coded budgets (`100`/`30`) for `ta_budget_priority`. Any candidate that passes through this gate can therefore overwrite the configured budget from `classify_candidate_tier()`, making M-004's centralized budget configuration unreliable for custom tuning.
+
+- [P2] Derive evidence completeness from actual dimensions — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/evidence_gate.py:147-147
+  If `evidence_total_dimensions` is configured away from the fixed 10 booleans in `dimensions`, completeness is computed against the wrong denominator; for example, setting it to 5 makes 4 present dimensions report 80% completeness and can allow A-tier/deep-TA gates despite 6 missing dimensions. Since the evidence dimensions are hard-coded here, the denominator should be tied to `len(dimensions)` or kept consistent instead of independently configurable.
+The default-path tests pass, but custom StrategyConfig values can be ignored or distort evidence gating, which undermines the central configuration feature added by this patch.
+
+Full review comments:
+
+- [P2] Honor configured tier budgets in evidence gate — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/evidence_gate.py:213-213
+  When callers pass a custom `StrategyConfig` with non-default `tier_a_budget`/`tier_b_budget`, `apply_evidence_gate()` accepts the config but still returns hard-coded budgets (`100`/`30`) for `ta_budget_priority`. Any candidate that passes through this gate can therefore overwrite the configured budget from `classify_candidate_tier()`, making M-004's centralized budget configuration unreliable for custom tuning.
+
+- [P2] Derive evidence completeness from actual dimensions — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/evidence_gate.py:147-147
+  If `evidence_total_dimensions` is configured away from the fixed 10 booleans in `dimensions`, completeness is computed against the wrong denominator; for example, setting it to 5 makes 4 present dimensions report 80% completeness and can allow A-tier/deep-TA gates despite 6 missing dimensions. Since the evidence dimensions are hard-coded here, the denominator should be tied to `len(dimensions)` or kept consistent instead of independently configurable.

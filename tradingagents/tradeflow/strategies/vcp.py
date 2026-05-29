@@ -17,6 +17,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from ..strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
 
 @dataclass
 class VCPSignal:
@@ -41,18 +43,22 @@ def _compute_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int 
     return tr.rolling(period).mean()
 
 
-def score_vcp(df: pd.DataFrame, symbol: str = "") -> Optional[VCPSignal]:
+def score_vcp(df: pd.DataFrame, symbol: str = "", cfg: Optional[StrategyConfig] = None) -> Optional[VCPSignal]:  # [M-004]
     """Score a stock for VCP pattern.
 
     Args:
         df: DataFrame with columns: Date, Open, High, Low, Close, Volume.
             Sorted by date ascending. Should have at least 40 rows.
         symbol: Stock symbol for reporting.
+        cfg: StrategyConfig with thresholds. Uses defaults when None.
 
     Returns:
         VCPSignal if pattern detected, None otherwise.
     """
-    if df is None or len(df) < 40:
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
+    if df is None or len(df) < cfg.vcp_min_data_len:
         return None
 
     close = df["Close"].astype(float)
@@ -82,7 +88,7 @@ def score_vcp(df: pd.DataFrame, symbol: str = "") -> Optional[VCPSignal]:
         return None
 
     range_ratio = recent_range / prior_range
-    if range_ratio > 0.8:
+    if range_ratio > cfg.vcp_range_ratio_max:
         # Not contracting enough
         return None
 
@@ -93,7 +99,7 @@ def score_vcp(df: pd.DataFrame, symbol: str = "") -> Optional[VCPSignal]:
         return None
 
     vol_ratio = recent_avg_vol / prior_avg_vol
-    if vol_ratio > 0.9:
+    if vol_ratio > cfg.vcp_vol_ratio_max:
         # Volume not declining enough
         return None
 
@@ -104,13 +110,13 @@ def score_vcp(df: pd.DataFrame, symbol: str = "") -> Optional[VCPSignal]:
         return None
 
     price_position = (latest_close - recent_low) / (recent_high - recent_low)
-    if price_position < 0.5:
+    if price_position < cfg.vcp_price_position_min:
         # Price closer to bottom than top
         return None
 
     # ── 5. Not breaking below key MA ──
     ma20 = close.rolling(20).mean()
-    if len(ma20.dropna()) > 0 and latest_close < float(ma20.dropna().iloc[-1]) * 0.97:
+    if len(ma20.dropna()) > 0 and latest_close < float(ma20.dropna().iloc[-1]) * cfg.vcp_ma20_break_pct:
         return None
 
     # ── Compute score ──
@@ -118,15 +124,15 @@ def score_vcp(df: pd.DataFrame, symbol: str = "") -> Optional[VCPSignal]:
     score += min((1 - range_ratio) * 50, 35)  # more contraction (lower ratio) → higher score
     score += min((1 - vol_ratio) * 30, 25)  # more volume decline = higher
     score += price_position * 20  # closer to top = higher
-    score = min(score, 80)
+    score = min(score, cfg.vcp_score_max)
 
     # trigger = recent high (breakout level)
     trigger_price = round(recent_high, 2)
     support_price = round(recent_low, 2)
-    invalid_price = round(float(ma20.dropna().iloc[-1]) * 0.97, 2) if len(ma20.dropna()) > 0 else round(support_price * 0.95, 2)
+    invalid_price = round(float(ma20.dropna().iloc[-1]) * cfg.vcp_ma20_break_pct, 2) if len(ma20.dropna()) > 0 else round(support_price * 0.95, 2)
 
     # need_deep_ta if score is high (near breakout)
-    need_deep_ta = score >= 55 or price_position >= 0.8
+    need_deep_ta = score >= cfg.vcp_need_deep_ta_score or price_position >= cfg.vcp_need_deep_ta_position
 
     return VCPSignal(
         trigger_price=trigger_price,

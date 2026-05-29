@@ -29,6 +29,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
 
 GAME_BALANCE_FAVORABLE = "favorable"
 GAME_BALANCE_NEUTRAL = "neutral"
@@ -106,6 +108,7 @@ def assess_game_balance(
     risk_penalty: float = 0.0,
     risk_reasons: Optional[list[str]] = None,
     event_texts: Optional[list[str]] = None,
+    cfg: Optional[StrategyConfig] = None,  # [M-004]
 ) -> GameBalanceResult:
     """Assess game balance from existing candidate signals.
 
@@ -125,6 +128,9 @@ def assess_game_balance(
     Returns:
         GameBalanceResult with balance verdict and case summaries.
     """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
     tags = set(strategy_tags or [])
     p_tags = list(policy_tags or [])
     r_flags = set(risk_flags or [])
@@ -144,9 +150,9 @@ def assess_game_balance(
 
     resonance = sum([has_policy, has_narrative, has_tech, has_fund])
 
-    has_high_risk = bool(r_flags & _SEVERITY_HIGH_RISK_FLAGS)
-    many_risks = len(r_flags) >= 3
-    heavy_penalty = risk_penalty <= -15
+    has_high_risk = bool(r_flags & set(cfg.risk_high_severity_flags))  # [M-004]
+    many_risks = len(r_flags) >= cfg.game_balance_many_risks_threshold
+    heavy_penalty = risk_penalty <= cfg.game_balance_heavy_penalty_threshold
 
     # ── Build policy_case ──
     policy_parts: list[str] = []
@@ -223,18 +229,18 @@ def assess_game_balance(
         balance = GAME_BALANCE_FRAGILE
     elif has_fund_flow_neg and has_fund_flow_pos and len(r_flags) >= 2:
         balance = GAME_BALANCE_CROWDED
-    elif resonance >= 2 and risk_penalty > -10:
+    elif resonance >= 2 and risk_penalty > cfg.game_balance_risk_penalty_threshold:  # [M-004]
         if resonance >= 3 and score > 0:
             balance = GAME_BALANCE_FAVORABLE
         else:
             balance = GAME_BALANCE_NEUTRAL
-    elif resonance >= 1 and risk_penalty > -10:
+    elif resonance >= 1 and risk_penalty > cfg.game_balance_risk_penalty_threshold:
         balance = GAME_BALANCE_NEUTRAL
     else:
         balance = GAME_BALANCE_NEUTRAL
 
     if r_flags and balance == GAME_BALANCE_FAVORABLE:
-        if len(r_flags) >= 2 or risk_penalty <= -10:
+        if len(r_flags) >= 2 or risk_penalty <= cfg.game_balance_risk_penalty_threshold:  # [M-004]
             balance = GAME_BALANCE_NEUTRAL
 
     bull_case = _sanitize(bull_case)

@@ -28,6 +28,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
 
 MAX_FUND_FLOW_BONUS = 25
 
@@ -145,7 +147,7 @@ def _extract_net_flows(fund_flow_text: str) -> list[float]:
     return values
 
 
-def _detect_consecutive_inflow(net_flows: list[float], lookback: int = 5) -> tuple[bool, int, list[dict]]:
+def _detect_consecutive_inflow(net_flows: list[float], lookback: int = 5, min_days: int = 3) -> tuple[bool, int, list[dict]]:
     """Detect consecutive main-capital net inflows in recent N days.
 
     Returns (is_consecutive, streak_length, refs).
@@ -163,7 +165,7 @@ def _detect_consecutive_inflow(net_flows: list[float], lookback: int = 5) -> tup
         else:
             break
 
-    if streak >= _CONSECUTIVE_INFLOW_MIN_DAYS:
+    if streak >= min_days:
         refs.append({
             "field": "consecutive_inflow",
             "matched_text": f"近{streak}日连续主力净流入",
@@ -174,7 +176,7 @@ def _detect_consecutive_inflow(net_flows: list[float], lookback: int = 5) -> tup
     return False, streak, []
 
 
-def _detect_large_single_day(net_flows: list[float]) -> tuple[bool, float, list[dict]]:
+def _detect_large_single_day(net_flows: list[float], threshold: float = 50000.0) -> tuple[bool, float, list[dict]]:
     """Detect a single day with unusually large net inflow/outflow.
 
     Returns (is_large, max_abs_value, refs).
@@ -183,7 +185,7 @@ def _detect_large_single_day(net_flows: list[float]) -> tuple[bool, float, list[
         return False, 0.0, []
 
     max_val = max(net_flows, key=abs)
-    if abs(max_val) >= _ANOMALY_THRESHOLD_WAN:
+    if abs(max_val) >= threshold:
         direction = "净流入" if max_val > 0 else "净流出"
         refs = [{
             "field": "large_single_day",
@@ -195,7 +197,7 @@ def _detect_large_single_day(net_flows: list[float]) -> tuple[bool, float, list[
     return False, max_val, []
 
 
-def _detect_high_proportion(fund_flow_text: str) -> tuple[bool, float, list[dict]]:
+def _detect_high_proportion(fund_flow_text: str, threshold: float = 5.0) -> tuple[bool, float, list[dict]]:
     """Detect abnormal capital proportion (占比 >= 5%).
 
     Returns (is_high, max_proportion, refs).
@@ -230,7 +232,7 @@ def _detect_high_proportion(fund_flow_text: str) -> tuple[bool, float, list[dict
             except ValueError:
                 continue
 
-    if max_pct >= _HIGH_PROPORTION_THRESHOLD:
+    if max_pct >= threshold:
         refs.append({
             "field": "high_proportion",
             "matched_text": f"主力资金占比 {max_pct:.1f}%",
@@ -357,6 +359,7 @@ def detect_fund_flow_anomaly(
     fund_flow_individual: Optional[str] = None,
     fund_flow_board: Optional[str] = None,
     lookback_days: int = 5,
+    cfg: Optional[StrategyConfig] = None,  # [M-004]
 ) -> FundFlowAnomalyResult:
     """Detect fund flow anomaly from individual and board fund flow data.
 
@@ -368,6 +371,9 @@ def detect_fund_flow_anomaly(
     Returns:
         FundFlowAnomalyResult with anomaly tags, score, and summaries.
     """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
     lookback_days = max(5, min(20, lookback_days))
 
     individual_text = fund_flow_individual or ""
@@ -381,20 +387,20 @@ def detect_fund_flow_anomaly(
     refs: list[dict] = []
     score = 0.0
 
-    is_consecutive, streak, cons_refs = _detect_consecutive_inflow(net_flows, lookback_days)
+    is_consecutive, streak, cons_refs = _detect_consecutive_inflow(net_flows, lookback_days, cfg.fund_flow_consecutive_min_days)  # [M-004]
     if is_consecutive:
         tags.append(FUND_FLOW_TAG_CONSECUTIVE_INFLOW)
         refs.extend(cons_refs)
         bonus = min(streak * 3, 12)
         score += bonus
 
-    is_large, max_val, large_refs = _detect_large_single_day(net_flows)
+    is_large, max_val, large_refs = _detect_large_single_day(net_flows, cfg.fund_flow_anomaly_threshold_wan)  # [M-004]
     if is_large and unit_verified:
         tags.append(FUND_FLOW_TAG_LARGE_SINGLE_DAY)
         refs.extend(large_refs)
         score += 5
 
-    is_high_prop, max_pct, prop_refs = _detect_high_proportion(individual_text)
+    is_high_prop, max_pct, prop_refs = _detect_high_proportion(individual_text, cfg.fund_flow_high_proportion_threshold)  # [M-004]
     if is_high_prop and unit_verified:
         tags.append(FUND_FLOW_TAG_HIGH_PROPORTION)
         refs.extend(prop_refs)
@@ -426,7 +432,7 @@ def detect_fund_flow_anomaly(
                 "source": "fund_flow_unit_check",
             })
 
-    score = min(score, MAX_FUND_FLOW_BONUS)
+    score = min(score, cfg.fund_flow_max_bonus)  # [M-004]
 
     ind_summary = _summarize_individual(individual_text, net_flows)
     board_summary = _summarize_board(board_text)

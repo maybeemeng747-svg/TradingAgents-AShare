@@ -40,6 +40,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
 
 _STRONG_BUY_SELL_WORDS = {
     "立即买入", "重仓买入", "立即清仓", "满仓", "梭哈",
@@ -95,6 +97,7 @@ def compute_evidence_completeness(
     has_narrative_signal: bool = False,
     has_fund_signal: bool = False,
     has_game_assessment: bool = False,
+    cfg: Optional[StrategyConfig] = None,  # [M-004]
 ) -> EvidenceGateResult:
     """Compute evidence completeness for a TradeFlow candidate.
 
@@ -124,6 +127,9 @@ def compute_evidence_completeness(
     Returns:
         EvidenceGateResult with completeness metrics and gate verdicts.
     """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
     dimensions = {
         "ohlcv": has_ohlcv,
         "liquidity": has_liquidity,
@@ -141,13 +147,13 @@ def compute_evidence_completeness(
     missing_keys = [k for k, v in dimensions.items() if not v]
 
     present_count = len(present_keys)
-    completeness = round(present_count / TOTAL_EVIDENCE_DIMENSIONS, 3) if TOTAL_EVIDENCE_DIMENSIONS > 0 else 0.0
+    completeness = round(present_count / cfg.evidence_total_dimensions, 3) if cfg.evidence_total_dimensions > 0 else 0.0  # [M-004]
 
     missing_fields = [EVIDENCE_DIMENSION_NAMES[k] for k in missing_keys]
     present_fields = [EVIDENCE_DIMENSION_NAMES[k] for k in present_keys]
 
-    can_enter_a = completeness >= COMPLETENESS_FOR_A_TIER
-    can_deep_ta = completeness >= COMPLETENESS_FOR_DEEP_TA
+    can_enter_a = completeness >= cfg.evidence_completeness_for_a_tier  # [M-004]
+    can_deep_ta = completeness >= cfg.evidence_completeness_for_deep_ta
 
     what_to_upgrade: list[str] = []
 
@@ -164,23 +170,23 @@ def compute_evidence_completeness(
         what_to_upgrade.append(f"信号维度不足: {'; '.join(labels)}")
 
     if not can_enter_a:
-        needed = max(1, int(TOTAL_EVIDENCE_DIMENSIONS * COMPLETENESS_FOR_A_TIER) - present_count)
+        needed = max(1, int(cfg.evidence_total_dimensions * cfg.evidence_completeness_for_a_tier) - present_count)  # [M-004]
         if needed > 0:
-            what_to_upgrade.append(f"完整度需≥{COMPLETENESS_FOR_A_TIER:.0%}(当前{completeness:.0%}，还需{needed}项)")
+            what_to_upgrade.append(f"完整度需≥{cfg.evidence_completeness_for_a_tier:.0%}(当前{completeness:.0%}，还需{needed}项)")
 
     if not has_fund_flow_unit and not has_event_source:
         what_to_upgrade.append("需补充资金单位校验或事件来源中至少一项")
 
     refs: list[dict] = [
         {"field": "tradeflow_data_completeness", "value": completeness,
-         "present_count": present_count, "total": TOTAL_EVIDENCE_DIMENSIONS},
+         "present_count": present_count, "total": cfg.evidence_total_dimensions},  # [M-004]
     ]
     if not can_enter_a:
         refs.append({"field": "evidence_gate_blocked", "value": "completeness_below_a_tier",
-                      "threshold": COMPLETENESS_FOR_A_TIER, "actual": completeness})
+                      "threshold": cfg.evidence_completeness_for_a_tier, "actual": completeness})
     if not can_deep_ta:
         refs.append({"field": "evidence_gate_blocked", "value": "completeness_below_deep_ta",
-                      "threshold": COMPLETENESS_FOR_DEEP_TA, "actual": completeness})
+                      "threshold": cfg.evidence_completeness_for_deep_ta, "actual": completeness})
     for k in missing_keys:
         refs.append({"field": "missing_dimension", "value": k,
                       "label": EVIDENCE_DIMENSION_NAMES[k]})
@@ -207,6 +213,7 @@ def apply_evidence_gate(
     can_trigger_deep_ta: bool = True,
     what_to_upgrade: Optional[list[str]] = None,
     missing_data_fields: Optional[list[str]] = None,
+    cfg: Optional[StrategyConfig] = None,  # [M-004]
 ) -> dict:
     """Apply the evidence gate to a candidate's tier and need_deep_ta.
 
@@ -227,6 +234,9 @@ def apply_evidence_gate(
         - ``what_to_upgrade``: list[str]
         - ``gate_applied``: bool
     """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
     missing = list(missing_data_fields or [])
     upgrade = list(what_to_upgrade or [])
 
@@ -240,7 +250,7 @@ def apply_evidence_gate(
         tier = "B"
         gate_applied = True
         tier_reason_additions.append(
-            f"证据完整度不足({candidate_completeness:.0%}，A层需≥{COMPLETENESS_FOR_A_TIER:.0%})"
+            f"证据完整度不足({candidate_completeness:.0%}，A层需≥{cfg.evidence_completeness_for_a_tier:.0%})"  # [M-004]
         )
         why_not_additions.append(
             f"证据完整度不足({candidate_completeness:.0%})，禁止A层"
@@ -250,7 +260,7 @@ def apply_evidence_gate(
         need_deep_ta = False
         gate_applied = True
         why_not_additions.append(
-            f"证据完整度不足({candidate_completeness:.0%}，深挖需≥{COMPLETENESS_FOR_DEEP_TA:.0%})"
+            f"证据完整度不足({candidate_completeness:.0%}，深挖需≥{cfg.evidence_completeness_for_deep_ta:.0%})"  # [M-004]
         )
 
     ta_budget = {1: 100, 2: 30}.get({"A": 1, "B": 2, "C": 3}.get(tier, 3), 0)

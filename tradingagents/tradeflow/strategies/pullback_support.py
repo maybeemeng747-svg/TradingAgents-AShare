@@ -15,6 +15,8 @@ from typing import Optional
 
 import pandas as pd
 
+from ..strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
 
 @dataclass
 class PullbackSupportSignal:
@@ -29,17 +31,21 @@ class PullbackSupportSignal:
     need_deep_ta: bool = False
 
 
-def score_pullback_support(df: pd.DataFrame, symbol: str = "") -> Optional[PullbackSupportSignal]:
+def score_pullback_support(df: pd.DataFrame, symbol: str = "", cfg: Optional[StrategyConfig] = None) -> Optional[PullbackSupportSignal]:  # [M-004]
     """Score a stock for pullback-to-support pattern.
 
     Args:
         df: DataFrame with Date, Open, High, Low, Close, Volume.
         symbol: Stock symbol for reporting.
+        cfg: StrategyConfig with thresholds. Uses defaults when None.
 
     Returns:
         PullbackSupportSignal if pattern detected, None otherwise.
     """
-    if df is None or len(df) < 60:
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
+    if df is None or len(df) < cfg.pullback_min_data_len:
         return None
 
     close = df["Close"].astype(float)
@@ -62,7 +68,7 @@ def score_pullback_support(df: pd.DataFrame, symbol: str = "") -> Optional[Pullb
     pullback_pct = (latest_close - high_20) / high_20
 
     # Must have pulled back at least 3% but not more than 15%
-    if pullback_pct > -0.03 or pullback_pct < -0.20:
+    if pullback_pct > cfg.pullback_min_pct or pullback_pct < cfg.pullback_max_pct:
         return None
 
     # ── 3. Volume declining during pullback ──
@@ -72,7 +78,7 @@ def score_pullback_support(df: pd.DataFrame, symbol: str = "") -> Optional[Pullb
     if vol_prior10 == 0:
         return None
     vol_ratio = vol_last5 / vol_prior10
-    if vol_ratio > 1.0:
+    if vol_ratio > cfg.pullback_vol_ratio_max:
         # Volume increasing during pullback — not ideal
         return None
 
@@ -88,7 +94,7 @@ def score_pullback_support(df: pd.DataFrame, symbol: str = "") -> Optional[Pullb
         if len(ma_series.dropna()) > 0:
             ma_val = float(ma_series.dropna().iloc[-1])
             distance_pct = abs(latest_close - ma_val) / latest_close
-            if distance_pct < 0.03 and ma_val <= latest_close * 1.02:
+            if distance_pct < cfg.pullback_ma_distance_max and ma_val <= latest_close * cfg.pullback_ma_above_max:
                 support_price = round(ma_val, 2)
                 support_label = label
                 break
@@ -96,7 +102,7 @@ def score_pullback_support(df: pd.DataFrame, symbol: str = "") -> Optional[Pullb
     # Also check prior low as support
     if support_price is None:
         prior_low = float(df.tail(30)["Low"].min())
-        if latest_close >= prior_low and (latest_close - prior_low) / latest_close < 0.05:
+        if latest_close >= prior_low and (latest_close - prior_low) / latest_close < cfg.pullback_prior_low_distance_max:
             support_price = round(prior_low, 2)
             support_label = "30日低点"
 
@@ -128,12 +134,12 @@ def score_pullback_support(df: pd.DataFrame, symbol: str = "") -> Optional[Pullb
     score += max(0, (1 + pullback_pct) * 20)
     # Stabilization
     score += 15
-    score = min(score, 80)
+    score = min(score, cfg.pullback_score_max)
 
     trigger_price = round(latest_close * 1.02, 2)  # reclaims 2% above current
     invalid_price = round(support_price * 0.97, 2)  # 3% below support
 
-    need_deep_ta = score >= 60 or support_distance < 0.01
+    need_deep_ta = score >= cfg.pullback_need_deep_ta_score or support_distance < cfg.pullback_need_deep_ta_support_dist
 
     return PullbackSupportSignal(
         trigger_price=trigger_price,

@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-05-30 | M-004: TradeFlow 策略权重与阈值配置
+
+- **执行者**：OpenCode
+- **任务**：M-004 — 把 VCP、回踩、事件催化、资金异动、A股标签的权重和阈值集中配置，便于后续复盘调参
+- **修改文件**：
+  - `tradingagents/tradeflow/strategy_config.py` — 新建：`StrategyConfig` 数据类（60+ 可配阈值），`DEFAULT_STRATEGY_CONFIG` 单例，`STRATEGY_CONFIG_VERSION="v1.0"`，`to_dict()` 序列化方法
+  - `tradingagents/tradeflow/strategies/vcp.py` — `score_vcp()` 新增 `cfg` 参数，8 个阈值从 config 读取（min_data_len/range_ratio/vol_ratio/price_position/ma20_break/score_max/need_deep_ta）
+  - `tradingagents/tradeflow/strategies/pullback_support.py` — `score_pullback_support()` 新增 `cfg` 参数，10 个阈值从 config 读取
+  - `tradingagents/tradeflow/strategies/event_catalyst.py` — `score_event_catalyst()` 新增 `cfg` 参数，score_max 和 need_deep_ta_score 从 config 读取
+  - `tradingagents/tradeflow/policy_version_signal.py` — `detect_policy_version()` 新增 `cfg` 参数，max_bonus/industry_weight/need_deep_ta 从 config 读取
+  - `tradingagents/tradeflow/narrative_quality.py` — `score_narrative_quality()` 新增 `cfg` 参数，max_score 从 config 读取
+  - `tradingagents/tradeflow/underwater_risk_flags.py` — `detect_underwater_risks()` 新增 `cfg` 参数，max_penalty 从 config 读取
+  - `tradingagents/tradeflow/fund_flow_anomaly.py` — `detect_fund_flow_anomaly()` 新增 `cfg` 参数，5 个阈值从 config 读取；内部辅助函数参数化
+  - `tradingagents/tradeflow/game_balance.py` — `assess_game_balance()` 新增 `cfg` 参数，3 个阈值从 config 读取
+  - `tradingagents/tradeflow/selection_priority_gate.py` — `run_selection_priority_gate()` 新增 `cfg` 参数，9 个阈值从 config 读取
+  - `tradingagents/tradeflow/tier_budget.py` — `classify_candidate_tier()` + `allocate_tier_budget()` 新增 `cfg` 参数，7 个阈值从 config 读取
+  - `tradingagents/tradeflow/evidence_gate.py` — `compute_evidence_completeness()` + `apply_evidence_gate()` 新增 `cfg` 参数，3 个阈值从 config 读取
+  - `tradingagents/tradeflow/candidate_engine.py` — `evaluate_symbol()` + `run_strategies()` + `filter_symbol()` + `_calc_liquidity()` 新增 `cfg` 参数并向下传递
+  - `tradingagents/tradeflow/plan_runner.py` — `generate_daily_plan()` 新增 `cfg` 参数，plan.metadata 新增 `strategy_config_version` 字段
+  - `tests/test_strategy_config.py` — 新建，42 个测试覆盖默认值、None 回退、阈值覆盖可预测性、config_version 输出
+- **测试结果**：1451 passed, 15 skipped, 0 failed
+- **关键逻辑**：
+  - 所有策略模块接受可选 `cfg: StrategyConfig = None`，None 时自动使用 `DEFAULT_STRATEGY_CONFIG`
+  - `DEFAULT_STRATEGY_CONFIG` 的默认值与重构前硬编码常量完全一致，确保向后兼容
+  - `generate_daily_plan()` 输出的 `plan.metadata["strategy_config_version"]` 记录配置版本，便于审计
+  - `StrategyConfig.to_dict()` 支持序列化输出（risk_high_severity_flags 转 list）
+- **风险点**：无；所有改动向后兼容，现有 121 个 tradeflow 测试全部通过
+
 ## 2026-05-30 | M-003 fix: 枚举值对齐 + fund_flow 去重
 
 - **执行者**：OpenCode
@@ -215,3 +243,14 @@
 - **Codex Review**: 无 P0/P1 findings
 - **Review 文件**: docs/reviews/M-003-20260530-round2.txt
 - **运行档案**: docs/task_runs/M-003-20260530-002721/
+
+## 2026-05-30 | AUTO-002 自动开发闭环
+
+- **任务**: M-004 — TradeFlow 策略权重与阈值配置（P1）
+- **优先级**: P1
+- **轮次**: 1
+- **状态**: ✅ PASS
+- **测试**: 通过
+- **Codex Review**: 无 P0/P1 findings
+- **Review 文件**: docs/reviews/M-004-20260530-round1.txt
+- **运行档案**: docs/task_runs/M-004-20260530-004038/

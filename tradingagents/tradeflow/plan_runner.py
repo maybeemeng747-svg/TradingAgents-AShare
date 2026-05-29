@@ -18,6 +18,7 @@ from .candidate_engine import init_db, save_candidate, evaluate_symbol
 from .universe import build_universe
 from .false_positive_audit import build_audit_report, AuditReport  # [S-006] candidate_false_positive_audit
 from .tier_budget import classify_candidate_tier, allocate_tier_budget, render_tier_budget_summary  # [S-007] candidate_tier_budget
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
 
 
 def _action_for_candidate(candidate: Candidate) -> str:
@@ -120,6 +121,7 @@ def generate_daily_plan(
     save_candidates: bool = False,
     use_event_source: bool = False,  # [N-001] event_source_plan_integration
     fund_flow_map: Optional[dict[str, dict]] = None,  # [T-003] fund_flow_anomaly_pool
+    cfg: Optional[StrategyConfig] = None,  # [M-004]
 ) -> DailyPlan:
     """Generate a pre-market daily plan.
 
@@ -138,6 +140,9 @@ def generate_daily_plan(
     Returns:
         DailyPlan with validated entries.
     """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
     if not trade_date:
         trade_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -190,6 +195,7 @@ def generate_daily_plan(
                 event_overrides=filtered_overrides,
                 fund_flow_individual=sym_ff_individual,  # [T-003]
                 fund_flow_board=sym_ff_board,  # [T-003]
+                cfg=cfg,  # [M-004]
             )
             if c is not None:
                 if item.get("universe_sources"):
@@ -220,7 +226,7 @@ def generate_daily_plan(
             missing_evidence_for_upgrade=e.get("missing_evidence_for_upgrade", []),
             why_not_deep_ta=e.get("why_not_deep_ta", ""),
         ))
-    budget_allocation = allocate_tier_budget(tier_results)
+    budget_allocation = allocate_tier_budget(tier_results, cfg=cfg)  # [M-004]
     # Update entries if any were demoted by the cap
     for i, tr in enumerate(tier_results):
         if i < len(plan_entries):
@@ -249,6 +255,7 @@ def generate_daily_plan(
         metadata={
             "universe_size": len(plan_entries),
             "generated_at": datetime.now().isoformat(),
+            "strategy_config_version": cfg.config_version,  # [M-004]
         },
     )
 

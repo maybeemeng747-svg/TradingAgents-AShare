@@ -30,6 +30,7 @@ from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult, 
 from .selection_priority_gate import run_selection_priority_gate, SelectionPriorityResult  # [S-005] selection_priority_gate
 from .tier_budget import classify_candidate_tier, TierBudgetResult  # [S-007] candidate_tier_budget
 from .evidence_gate import compute_evidence_completeness, apply_evidence_gate, EvidenceGateResult  # [S-008] tradeflow_evidence_gate
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
 
 
 # ── SQL for table creation ──
@@ -272,14 +273,13 @@ def _is_st_symbol(symbol: str) -> bool:
     return False
 
 
-def _calc_liquidity(df: pd.DataFrame) -> tuple[bool, float, float, float]:
+def _calc_liquidity(df: pd.DataFrame, cfg: StrategyConfig = DEFAULT_STRATEGY_CONFIG) -> tuple[bool, float, float, float]:  # [M-004]
     """Check liquidity using Amount (turnover) as primary metric.
 
     Returns (is_low, avg_amount, avg_volume, threshold).
     - Uses Amount column if available, otherwise estimates via Close * Volume.
-    - Threshold: 30,000,000 (3000万).
     """
-    AMOUNT_THRESHOLD = 30_000_000
+    AMOUNT_THRESHOLD = cfg.amount_threshold  # [M-004]
 
     if len(df) < 5:
         avg_amount = 0.0
@@ -297,7 +297,7 @@ def _calc_liquidity(df: pd.DataFrame) -> tuple[bool, float, float, float]:
     return avg_amount < AMOUNT_THRESHOLD, avg_amount, avg_volume, AMOUNT_THRESHOLD
 
 
-def filter_symbol(symbol: str, df: pd.DataFrame) -> tuple[bool, list[str]]:
+def filter_symbol(symbol: str, df: pd.DataFrame, cfg: StrategyConfig = DEFAULT_STRATEGY_CONFIG) -> tuple[bool, list[str]]:  # [M-004]
     """Check if a symbol should be filtered out.
 
     Returns (should_filter, reason_list).
@@ -310,7 +310,7 @@ def filter_symbol(symbol: str, df: pd.DataFrame) -> tuple[bool, list[str]]:
     if len(df) < 40:
         return True, ["数据不足(需至少40日)"]
 
-    is_low, avg_amount, avg_volume, threshold = _calc_liquidity(df)
+    is_low, avg_amount, avg_volume, threshold = _calc_liquidity(df, cfg)  # [M-004]
     if is_low:
         reasons.append(
             f"流动性差(avg_amount={avg_amount/1e8:.2f}亿, "
@@ -329,23 +329,24 @@ def run_strategies(
     df: pd.DataFrame,
     news_texts: Optional[list[str]] = None,
     event_overrides: Optional[list[dict]] = None,
+    cfg: StrategyConfig = DEFAULT_STRATEGY_CONFIG,  # [M-004]
 ) -> list[CandidateSignal]:
     """Run all strategies on a symbol, return list of signals."""
     signals = []
 
     # VCP
-    vcp = score_vcp(df, symbol)
+    vcp = score_vcp(df, symbol, cfg=cfg)  # [M-004]
     if vcp is not None:
         signals.append(vcp)
 
     # Pullback Support
-    pb = score_pullback_support(df, symbol)
+    pb = score_pullback_support(df, symbol, cfg=cfg)  # [M-004]
     if pb is not None:
         signals.append(pb)
 
     # Event Catalyst
     latest_close = float(df["Close"].iloc[-1]) if len(df) > 0 else 0.0
-    ev = score_event_catalyst(symbol, news_texts, event_overrides, latest_close)
+    ev = score_event_catalyst(symbol, news_texts, event_overrides, latest_close, cfg=cfg)  # [M-004]
     if ev is not None:
         signals.append(ev)
 
@@ -362,12 +363,16 @@ def evaluate_symbol(
     df: Optional[pd.DataFrame] = None,
     fund_flow_individual: Optional[str] = None,  # [T-003] fund_flow_anomaly_pool
     fund_flow_board: Optional[str] = None,  # [T-003] fund_flow_anomaly_pool
+    cfg: Optional[StrategyConfig] = None,  # [M-004]
 ) -> tuple[Optional[Candidate], str]:
     """Evaluate one symbol through all strategies.
 
     Returns (Candidate, "") if any strategy hits, or (None, reason) if
     filtered or no strategy matched.
     """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
     if not trade_date:
         trade_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -376,12 +381,12 @@ def evaluate_symbol(
         df = _fetch_price_data(symbol)
 
     # Filter check
-    filtered, reasons = filter_symbol(symbol, df)
+    filtered, reasons = filter_symbol(symbol, df, cfg)  # [M-004]
     if filtered:
         return None, "；".join(reasons)
 
     # Run strategies
-    signals = run_strategies(symbol, df, news_texts, event_overrides)
+    signals = run_strategies(symbol, df, news_texts, event_overrides, cfg=cfg)  # [M-004]
 
     if not signals:
         return None, "无策略命中"
@@ -411,7 +416,7 @@ def evaluate_symbol(
                 set(candidate.risk_flags) | set(extra_risks)
             )
             if SIGNAL_TAG_LOCKUP_RISK in candidate.risk_flags:
-                candidate.score = round(candidate.score * 0.8, 2)
+                candidate.score = round(candidate.score * cfg.risk_lockup_score_factor, 2)  # [M-004]
 
     # [S-001] policy_version_signal — detect policy version and add bonus
     # Collect all available text sources: news_texts + event_override titles
@@ -421,8 +426,9 @@ def evaluate_symbol(
             title = ev.get("title", "") or ev.get("headline", "")
             if title:
                 all_event_texts.append(title)
-    policy_result: PolicyVersionResult = detect_policy_version(
+    policy_result: PolicyVersionResult = detect_policy_version(  # [M-004]
         event_texts=all_event_texts if all_event_texts else None,
+        cfg=cfg,
     )
     if policy_result.policy_tags:
         candidate.policy_tags = policy_result.policy_tags
@@ -437,12 +443,13 @@ def evaluate_symbol(
             "version_score": policy_result.version_score,
             "evidence_refs": policy_result.policy_evidence_refs,
         }
-        if policy_result.version_score >= 15:
+        if policy_result.version_score >= cfg.policy_need_deep_ta_score:  # [M-004]
             candidate.need_deep_ta = True
 
     # [S-002] narrative_quality_score — assess event narrative quality
-    narrative_result: NarrativeQualityResult = score_narrative_quality(
+    narrative_result: NarrativeQualityResult = score_narrative_quality(  # [M-004]
         event_texts=all_event_texts if all_event_texts else None,
+        cfg=cfg,
     )
     if narrative_result.narrative_score > 0:
         candidate.narrative_score = narrative_result.narrative_score
@@ -457,12 +464,13 @@ def evaluate_symbol(
             "narrative_reasons": narrative_result.narrative_reasons,
             "evidence_refs": narrative_result.narrative_evidence_refs,
         }
-        if narrative_result.narrative_score >= 20:
+        if narrative_result.narrative_score >= cfg.narrative_need_deep_ta_score:  # [M-004]
             candidate.need_deep_ta = True
 
     # [S-003] underwater_risk_flags — detect hidden structural risks
-    risk_result: UnderwaterRiskResult = detect_underwater_risks(
+    risk_result: UnderwaterRiskResult = detect_underwater_risks(  # [M-004]
         event_texts=all_event_texts if all_event_texts else None,
+        cfg=cfg,
     )
     if risk_result.risk_flags:
         candidate.risk_flags = sorted(
@@ -484,7 +492,7 @@ def evaluate_symbol(
             candidate.need_deep_ta = False
 
     # [S-004] candidate_game_balance — assess bull/bear/policy/fund perspective
-    gb_result: GameBalanceResult = assess_game_balance(
+    gb_result: GameBalanceResult = assess_game_balance(  # [M-004]
         strategy_tags=candidate.strategy_tags,
         score=candidate.score,
         policy_tags=candidate.policy_tags,
@@ -496,6 +504,7 @@ def evaluate_symbol(
         risk_penalty=candidate.risk_penalty,
         risk_reasons=candidate.risk_reasons,
         event_texts=all_event_texts if all_event_texts else None,
+        cfg=cfg,
     )
     candidate.game_balance = gb_result.game_balance
     candidate.bull_case = gb_result.bull_case
@@ -521,9 +530,10 @@ def evaluate_symbol(
         candidate.need_deep_ta = False
 
     # [T-003] fund_flow_anomaly_pool — detect capital anomaly
-    ff_result: FundFlowAnomalyResult = detect_fund_flow_anomaly(
+    ff_result: FundFlowAnomalyResult = detect_fund_flow_anomaly(  # [M-004]
         fund_flow_individual=fund_flow_individual,
         fund_flow_board=fund_flow_board,
+        cfg=cfg,
     )
     if ff_result.fund_flow_anomaly_tags:
         candidate.fund_flow_anomaly_score = ff_result.fund_flow_anomaly_score
@@ -548,12 +558,12 @@ def evaluate_symbol(
             "board_summary": ff_result.fund_flow_board_summary,
         }
         # Unit unverified: do not boost need_deep_ta from fund flow alone
-        if ff_result.fund_flow_unit_verified and positive_ff_tags and ff_result.fund_flow_anomaly_score >= 10:
+        if ff_result.fund_flow_unit_verified and positive_ff_tags and ff_result.fund_flow_anomaly_score >= cfg.fund_flow_need_deep_ta_score:  # [M-004]
             candidate.need_deep_ta = True
         # Net outflow dominant does not add score but records as observation
 
     # [S-005] selection_priority_gate — unified composite score and need_deep_ta gate
-    gate_result: SelectionPriorityResult = run_selection_priority_gate(
+    gate_result: SelectionPriorityResult = run_selection_priority_gate(  # [M-004]
         score=candidate.score,
         strategy_tags=candidate.strategy_tags,
         policy_tags=candidate.policy_tags,
@@ -570,6 +580,7 @@ def evaluate_symbol(
         has_event_data=bool(all_event_texts),
         has_fund_flow_data=bool(fund_flow_individual or fund_flow_board),
         has_risk_assessment=True,
+        cfg=cfg,
     )
     candidate.composite_score = gate_result.composite_score
     candidate.signal_category_hits = gate_result.signal_category_hits
@@ -594,7 +605,7 @@ def evaluate_symbol(
     candidate.need_deep_ta = gate_result.gate_passed
 
     # [S-007] candidate_tier_budget — classify into A/B/C tier with budget
-    tier_result: TierBudgetResult = classify_candidate_tier(
+    tier_result: TierBudgetResult = classify_candidate_tier(  # [M-004]
         priority_rank=gate_result.priority_rank,
         composite_score=gate_result.composite_score,
         positive_category_count=gate_result.positive_category_count,
@@ -605,6 +616,7 @@ def evaluate_symbol(
         game_balance=candidate.game_balance,
         gate_passed=gate_result.gate_passed,
         why_not_deep_ta=gate_result.why_not_deep_ta,
+        cfg=cfg,
     )
     candidate.tier = tier_result.tier
     candidate.ta_budget_priority = tier_result.ta_budget_priority
@@ -620,7 +632,7 @@ def evaluate_symbol(
 
     # [S-008] tradeflow_evidence_gate — compute evidence completeness and apply gate
     has_ohlcv = df is not None and len(df) >= 40
-    is_low_liquidity, _, _, _ = _calc_liquidity(df) if df is not None and len(df) >= 5 else (True, 0.0, 0.0, 0.0)
+    is_low_liquidity, _, _, _ = _calc_liquidity(df, cfg) if df is not None and len(df) >= 5 else (True, 0.0, 0.0, 0.0)  # [M-004]
     has_liquidity = not is_low_liquidity
     has_event_source = bool(all_event_texts)
     has_fund_flow_unit = candidate.fund_flow_unit_verified
@@ -632,7 +644,7 @@ def evaluate_symbol(
     has_fund_signal = bool(positive_ff_tags) and candidate.fund_flow_anomaly_score > 0
     has_game_assessment = bool(candidate.game_balance)
 
-    eg_result: EvidenceGateResult = compute_evidence_completeness(
+    eg_result: EvidenceGateResult = compute_evidence_completeness(  # [M-004]
         has_ohlcv=has_ohlcv,
         has_liquidity=has_liquidity,
         has_event_source=has_event_source,
@@ -643,6 +655,7 @@ def evaluate_symbol(
         has_narrative_signal=has_narrative_signal,
         has_fund_signal=has_fund_signal,
         has_game_assessment=has_game_assessment,
+        cfg=cfg,
     )
     gate_override = apply_evidence_gate(
         candidate_completeness=eg_result.tradeflow_data_completeness,
@@ -652,6 +665,7 @@ def evaluate_symbol(
         can_trigger_deep_ta=eg_result.can_trigger_deep_ta,
         what_to_upgrade=eg_result.what_to_upgrade,
         missing_data_fields=eg_result.missing_data_fields,
+        cfg=cfg,
     )
     candidate.tradeflow_data_completeness = eg_result.tradeflow_data_completeness
     candidate.missing_data_fields = eg_result.missing_data_fields

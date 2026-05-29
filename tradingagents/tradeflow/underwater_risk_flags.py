@@ -28,6 +28,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+
 
 @dataclass
 class UnderwaterRiskResult:
@@ -129,6 +131,7 @@ def detect_underwater_risks(
     lhb_texts: list[str] | None = None,
     margin_status: str = "NOT_QUERIED",
     margin_texts: list[str] | None = None,
+    cfg: StrategyConfig | None = None,  # [M-004]
 ) -> UnderwaterRiskResult:
     """Detect underwater risk flags from event texts and data status.
 
@@ -147,6 +150,9 @@ def detect_underwater_risks(
         UnderwaterRiskResult with flags, penalty, evidence refs, and reasons.
         All flags require raw text evidence; no speculation.
     """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
     texts = [t for t in (event_texts or []) if t]
     if not texts and lhb_status == "NOT_QUERIED" and margin_status == "NOT_QUERIED":
         return UnderwaterRiskResult()
@@ -221,7 +227,7 @@ def detect_underwater_risks(
             all_reasons.append(f"龙虎榜过热风险(-{weight:.0f})")
     # NOT_QUERIED / FAILED / NORMAL_NO_DATA → do NOT generate LHB risk
 
-    total_penalty = min(total_penalty, MAX_RISK_PENALTY)
+    total_penalty = min(total_penalty, cfg.risk_max_penalty)  # [M-004]
 
     if not all_flags:
         return UnderwaterRiskResult()
