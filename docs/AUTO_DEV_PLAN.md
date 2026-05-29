@@ -7,7 +7,8 @@
 ```
 P0  ✅ TradeFlow 候选池最小闭环
 P0.5 ✅ 过滤阈值校准、可观测性
-P1   → 真实事件源 + 小范围 Discovery
+P1   → 选股策略核心：政策版本 + 叙事质量 + 水下风险 + 博弈平衡
+P1.5 → 小范围 Discovery + 数据源健康
 P2   → 盘中 Observe + OpenClaw 自动触发 TA
 P3   → 盘后 Review + 策略命中率复盘
 ```
@@ -126,12 +127,24 @@ Codex 审核时不只看 diff，还要同时检查：
 [ready]    定时任务/后台进程/token 消耗风险巡检
 ```
 
-### P1 — 真实事件源（当前优先）
+### P1 — 选股策略核心（当前最高业务优先级）
+
+> 原则：后面分析再细，也不能弥补第一步选错股票。TradeFlow 的第一目标是提高候选池质量，让 TA 深度分析只消耗在真正值得分析的票上。
+
+```
+[ready]   S-001: 政策版本因子进入 TradeFlow 候选池
+[ready]   S-002: 叙事质量评分，区分普通事件与可传播主线
+[ready]   S-003: 水下风险标签，给候选池做风险降权
+[ready]   S-004: 候选股博弈平衡解释
+[blocked] S-005: 选股优先级整合与 need_deep_ta 门槛重排
+```
+
+### P1 — 真实事件源（支撑选股策略）
 
 ```
 [done]    接入 akshare 公告接口（沪深公告、业绩预告、回购、增持） — commit b5131cd
 [done]    N-001: 将 fetch_daily_events 接入 generate_daily_plan / candidate_engine — commit 3b232a3
-[ready]   接入东财新闻关键词匹配（利好/利空分类）
+[blocked] 接入东财新闻关键词匹配（先完成 S-001/S-002 后再补，避免先扩源后低质入池）
 [blocked]  飞书 webhook 推送（需孟确认推送格式）
 [blocked]  全市场 Discovery（需事件源先跑通）
 ```
@@ -145,14 +158,14 @@ Codex 审核时不只看 diff，还要同时检查：
 [done]     N-005: 最终执行层 schema 化最小实现 — commit 4ec69ec / dd717ca
 ```
 
-### P1 — 小范围 Discovery
+### P1.5 — 小范围 Discovery
 
 ```
-[ready]    行业池：按申万二级行业扫描（先做 1-2 个行业试点）
-[ready]    资金异动池：主力资金净流入 Top N
+[ready]    行业池：按申万二级行业扫描（先做 1-2 个行业试点；排在 S-001~S-004 之后）
+[ready]    资金异动池：主力资金净流入 Top N（排在 S-001~S-004 之后）
 [ready]    M-008: 数据源健康检查与 fallback 可观测性
-[blocked]  M-003: TradeFlow universe 管理器
-[blocked]  M-004: TradeFlow 策略权重与阈值配置
+[blocked]  M-003: TradeFlow universe 管理器（需 S-005 后统一字段）
+[blocked]  M-004: TradeFlow 策略权重与阈值配置（需 S-005 后统一权重）
 [blocked]  全市场扫描（需先验证小范围逻辑）
 ```
 
@@ -177,12 +190,14 @@ Codex 审核时不只看 diff，还要同时检查：
 
 ### TradeFlow 相关
 
-1. 候选是否虚假命中
-2. 过滤原因是否准确（流动性差/无策略命中/ST/数据缺失）
-3. 事件是否串票（event_overrides 按 symbol 过滤）
-4. 触发价/失效价是否被覆盖（primary_strategy 保护）
-5. need_deep_ta 是否合理
-6. 是否输出强买卖词（禁止）
+1. 候选是否站在政策版本、产业叙事、事件或资金逻辑上，而不是只有裸技术形态
+2. 候选是否虚假命中
+3. 过滤原因是否准确（流动性差/无策略命中/ST/数据缺失）
+4. 事件是否串票（event_overrides 按 symbol 过滤）
+5. 政策标签、叙事评分、水下风险和博弈平衡是否有原始证据
+6. 触发价/失效价是否被覆盖（primary_strategy 保护）
+7. need_deep_ta 是否合理，是否优先给到多类信号共振的票
+8. 是否输出强买卖词（禁止）
 
 ### TA 深度分析相关
 
