@@ -211,6 +211,12 @@ else:
 PYEOF
 }
 
+# ─── 主循环：连续执行直到没有 ready 任务 ────────────────
+COMPLETED_TASKS=0
+FAILED_TASKS=0
+
+while true; do
+
 TASK_LINE=$(parse_ready_tasks)
 TASK_ID=$(echo "$TASK_LINE" | cut -d'|' -f1)
 TASK_TITLE=$(echo "$TASK_LINE" | cut -d'|' -f2)
@@ -219,7 +225,7 @@ TASK_TESTS=$(echo "$TASK_LINE" | cut -d'|' -f4)
 
 if [ "$TASK_ID" = "NONE" ]; then
     log "没有 status=ready 的可开发任务，退出。"
-    exit 0
+    break
 fi
 
 log "选中任务: [$TASK_PRIO] $TASK_ID: $TASK_TITLE"
@@ -236,7 +242,7 @@ if [ "$DRY_RUN" = true ]; then
     echo "  优先级:    $TASK_PRIO"
     echo "  测试命令:  ${TASK_TESTS:-（默认 pytest）}"
     echo "========================================"
-    exit 0
+    break
 fi
 
 # ─── 2a. 建立任务运行档案 ──────────────────────────────
@@ -652,4 +658,33 @@ if [ ${#ISSUES_LOG[@]} -gt 0 ]; then
     echo "========================================"
 fi
 
-exit $([ "$RESULT_STATUS" = "DONE" ] && echo 0 || echo 1)
+# ─── 计数并继续下一个任务 ──────────────────────────
+if [ "$RESULT_STATUS" = "DONE" ]; then
+    COMPLETED_TASKS=$((COMPLETED_TASKS + 1))
+else
+    FAILED_TASKS=$((FAILED_TASKS + 1))
+fi
+
+# 重置 per-task 变量
+RESULT_STATUS=""
+ROUND=0
+LAST_FAILURE_REASON=""
+COMMIT_HASH=""
+ISSUES_LOG=()
+
+log "--- 任务 $TASK_ID 完成，继续下一个 ---"
+
+
+done
+
+# ─── 批量汇总 ──────────────────────────────────────
+echo ""
+echo "========================================"
+echo "  AUTO-002 批量执行汇总"
+echo "========================================"
+echo "  完成: $COMPLETED_TASKS 个"
+echo "  失败: $FAILED_TASKS 个"
+echo "  总计: $((COMPLETED_TASKS + FAILED_TASKS)) 个"
+echo "========================================"
+
+exit $([ $FAILED_TASKS -eq 0 ] && echo 0 || echo 1)
