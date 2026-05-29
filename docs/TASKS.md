@@ -360,7 +360,7 @@
 ### M-011: 修复 M-003 universe 兼容性与来源 extra 序列化（P1）
 - **描述**：修复 Codex review 指出的 universe manager 兼容性问题：事件覆盖来源标签变化，以及 `SourceRecord.extra` 被收集但序列化丢失。
 - **优先级**：P1
-- **状态**：in_progress — claimed M-011-20260530-022843
+- **状态**：done — commit 9bb3dd8
 - **前置条件**：`M-003` 完成。
 - **执行约束**：
   - 不做全市场扫描。
