@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-06-01 | VLM-001 补修：自选备注保存问题
+
+- **执行者**：OpenCode
+- **任务**：修复自选备注保存的三个问题：重复股票 notes 不更新、前端备注编辑缺少保存/取消按钮、`update_watchlist_notes` 的 clear 参数未暴露到 API
+- **修改文件**：
+  - `api/services/watchlist_service.py` — [VLM-001] watchlist_notes_protection：`add_watchlist_items_with_notes()` 遇到重复股票时，根据新/旧 notes 情况自动合并（空→写入，非空→用 ｜ 分隔追加）；新增 `_merge_notes()` 辅助函数
+  - `api/main.py` — [VLM-001] watchlist_notes_protection：`WatchlistNotesUpdate` 增加 `clear: bool = False` 字段；`update_watchlist_notes` endpoint 传递 `clear` 参数到 service
+  - `frontend/src/pages/Portfolio.tsx` — [VLM-001] watchlist_notes_protection：备注编辑状态下显示"保存"和"取消"按钮；Enter 仍可保存；Escape 取消；失焦不自动保存
+- **验证**：`pytest tests/test_vlm*.py tests/test_ui001*.py -q` 58 passed；`npm run build` 零错误
+
+---
+
 ## 2026-05-31 | VLM-001: 自选截图解析 v2 — 候选表格识别
 
 - **执行者**：OpenCode

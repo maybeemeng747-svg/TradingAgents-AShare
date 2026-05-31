@@ -87,13 +87,28 @@ def add_watchlist_items(db: Session, user_id: str, symbols: List[str]) -> List[d
     return results
 
 
-# [VLM-001] watchlist_table_parser
+# [VLM-001] watchlist_notes_protection
+def _merge_notes(existing_notes: str | None, new_notes: str | None) -> str | None:
+    if not new_notes:
+        return existing_notes
+    if not existing_notes:
+        return new_notes
+    return f"{existing_notes}｜{new_notes}"
+
+
+# [VLM-001] watchlist_notes_protection
 def add_watchlist_items_with_notes(
     db: Session,
     user_id: str,
     entries: List[dict],
 ) -> List[dict]:
-    """Add multiple stocks with optional notes. Each entry: {symbol, notes?}."""
+    """Add multiple stocks with optional notes. Each entry: {symbol, notes?}.
+
+    When a stock already exists (duplicate):
+    - If new notes provided and existing notes empty → write notes directly
+    - If new notes provided and existing notes non-empty → append with ｜ separator
+    - If no new notes → leave unchanged
+    """
     results: List[dict] = []
     for entry in entries:
         symbol = entry.get("symbol", "")
@@ -109,10 +124,32 @@ def add_watchlist_items_with_notes(
         except ValueError as exc:
             message = str(exc)
             status = "duplicate" if "已在自选列表" in message else "failed"
+            merged_notes = None
+            updated_item = None
+            if status == "duplicate" and notes:
+                existing = (
+                    db.query(WatchlistItemDB)
+                    .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol)
+                    .first()
+                )
+                if existing:
+                    merged_notes = _merge_notes(existing.notes, notes)
+                    if merged_notes != existing.notes:
+                        existing.notes = merged_notes
+                        db.commit()
+                        db.refresh(existing)
+                    updated_item = {
+                        "id": existing.id,
+                        "symbol": existing.symbol,
+                        "sort_order": existing.sort_order,
+                        "notes": existing.notes,
+                        "created_at": existing.created_at.isoformat() if existing.created_at else None,
+                    }
             results.append({
                 "symbol": symbol,
                 "status": status,
-                "message": message,
+                "message": message if not merged_notes else f"{message}（备注已追加）",
+                **({"item": updated_item} if updated_item else {}),
             })
     return results
 

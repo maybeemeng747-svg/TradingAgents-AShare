@@ -148,15 +148,27 @@ function SortableWatchlistItem({
                 )}
                 <div className="mt-1">
                     {editingNotesId === item.id ? (
-                        <input
-                            type="text"
-                            value={editingNotesText}
-                            onChange={e => onSetEditingNotesText(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter') onSaveNotes(item.id); if (e.key === 'Escape') onSetEditingNotesId(null) }}
-                            placeholder="备注..."
-                            className="w-full max-w-xs text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded px-2 py-1 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-400"
-                            autoFocus
-                        />
+                        <div className="flex items-center gap-1.5 max-w-xs">
+                            <input
+                                type="text"
+                                value={editingNotesText}
+                                onChange={e => onSetEditingNotesText(e.target.value)}
+                                onKeyDown={e => { if (e.key === 'Enter') onSaveNotes(item.id); if (e.key === 'Escape') onSetEditingNotesId(null) }}
+                                placeholder="备注..."
+                                className="flex-1 min-w-0 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded px-2 py-1 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                                autoFocus
+                            />
+                            <button
+                                type="button"
+                                onClick={() => onSaveNotes(item.id)}
+                                className="shrink-0 px-1.5 py-1 text-[10px] font-medium rounded bg-blue-500 text-white hover:bg-blue-600 transition-colors"
+                            >保存</button>
+                            <button
+                                type="button"
+                                onClick={() => onSetEditingNotesId(null)}
+                                className="shrink-0 px-1.5 py-1 text-[10px] font-medium rounded border border-slate-300 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                            >取消</button>
+                        </div>
                     ) : (
                         <button
                             onClick={() => onStartEditNotes(item)}

@@ -4593,8 +4593,10 @@ def delete_from_watchlist(
         raise HTTPException(404, "未找到该自选股")
 
 
+# [VLM-001] watchlist_notes_protection
 class WatchlistNotesUpdate(BaseModel):
     notes: str
+    clear: bool = False
 
 
 class WatchlistReorderRequest(BaseModel):
@@ -4621,7 +4623,7 @@ def update_watchlist_notes(
     current_user: UserDB = Depends(_require_api_user),
     db: Session = Depends(get_db),
 ):
-    result = watchlist_service.update_watchlist_notes(db, current_user.id, item_id, body.notes)
+    result = watchlist_service.update_watchlist_notes(db, current_user.id, item_id, body.notes, clear=body.clear)
     if not result:
         raise HTTPException(404, "未找到该自选股")
     return result
