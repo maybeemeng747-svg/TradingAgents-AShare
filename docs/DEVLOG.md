@@ -782,3 +782,21 @@
 ### 下一步
 - UI-006 数据源健康前端面板 (P2, ready)
 - CodeGraph 可作为 OpenCode 任务前的辅助工具
+
+## 2026-05-31 | UI-008 TradeFlow 候选字段规范化与名称回填
+
+### 新增模块
+- `tradingagents/tradeflow/symbol_utils.py`: `normalize_tradeflow_symbol()` / `resolve_tradeflow_name()` / `symbol_bare_code()` / `StockNameResolver`
+
+### 修改文件
+- `tradingagents/tradeflow/universe.py`: UniverseManager.add_symbol/add_manual/add_from_events/add_from_fund_flow/add_from_industry 规范化 symbol 并解析 name
+- `tradingagents/tradeflow/candidate_engine.py`: evaluate_symbol/save_candidate 落库前兜底规范化
+- `tradingagents/tradeflow/discovery.py`: 事件源 bare code 查找兼容，fund_flow symbol 规范化
+- `api/services/tradeflow_service.py`: _row_to_candidate_item/get_daily_plan/get_observe/get_ta_queue/run_discovery_scan 全链路规范化
+- `frontend/src/pages/TradeFlow.tsx`: 候选表/观察表/TA队列表名称空值显示 `--`
+- `frontend/src/components/TradeFlowCandidateDrawer.tsx`: 详情抽屉名称空值显示 `--`
+
+### 测试
+- 新增 `tests/test_ui008_tradeflow_field_normalization.py`: 39 tests (symbol normalization, name resolution, universe/engine/API integration)
+- 全量通过: 201 passed (162 existing + 39 new)
+- 前端构建通过: npm run build 零错误

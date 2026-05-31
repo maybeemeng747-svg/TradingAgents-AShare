@@ -13,6 +13,11 @@ import sqlite3
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from tradingagents.tradeflow.symbol_utils import (  # [UI-008] tradeflow_field_normalization
+    normalize_tradeflow_symbol,
+    resolve_tradeflow_name,
+)
+
 
 def _get_project_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -72,9 +77,12 @@ def _rget(row: sqlite3.Row, col: str, default: Any = None) -> Any:
 
 
 def _row_to_candidate_item(row: sqlite3.Row) -> dict:
+    symbol = normalize_tradeflow_symbol(row["symbol"])  # [UI-008]
+    raw_name = _rget(row, "name", "")
+    name = resolve_tradeflow_name(symbol, raw_name)  # [UI-008]
     return {
-        "symbol": row["symbol"],
-        "name": _rget(row, "name", ""),
+        "symbol": symbol,
+        "name": name,
         "tier": _rget(row, "tier", ""),
         "composite_score": _rget(row, "composite_score", 0.0) or 0.0,
         "score": _rget(row, "score", 0.0) or 0.0,
@@ -192,9 +200,12 @@ def get_daily_plan(trade_date: str, tf_db_path: str = "") -> dict:
 
         candidate_items = []
         for entry in candidates_json:
+            sym = normalize_tradeflow_symbol(entry.get("symbol", ""))  # [UI-008]
+            raw_name = entry.get("name", "")
+            n = resolve_tradeflow_name(sym, raw_name)  # [UI-008]
             item = {
-                "symbol": entry.get("symbol", ""),
-                "name": entry.get("name", ""),
+                "symbol": sym,
+                "name": n,
                 "tier": entry.get("tier", ""),
                 "composite_score": entry.get("composite_score", 0.0) or 0.0,
                 "score": entry.get("score", 0.0) or 0.0,
@@ -359,9 +370,11 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
         waiting = 0
         for r in rows:
             state = _rget(r, "observe_state", "WAITING")
+            sym = normalize_tradeflow_symbol(r["symbol"])  # [UI-008]
+            raw_n = _rget(r, "name", "")
             item = {
-                "symbol": r["symbol"],
-                "name": _rget(r, "name", ""),
+                "symbol": sym,
+                "name": resolve_tradeflow_name(sym, raw_n),  # [UI-008]
                 "observe_state": state,
                 "trigger_price": _rget(r, "trigger_price"),
                 "invalid_price": _rget(r, "invalid_price"),
@@ -419,9 +432,11 @@ def get_ta_queue(trade_date: str, tf_db_path: str = "") -> dict:
         pending = 0
         for r in rows:
             status_val = _rget(r, "deep_ta_status", "")
+            sym = normalize_tradeflow_symbol(r["symbol"])  # [UI-008]
+            raw_n = _rget(r, "name", "")
             item = {
-                "symbol": r["symbol"],
-                "name": _rget(r, "name", ""),
+                "symbol": sym,
+                "name": resolve_tradeflow_name(sym, raw_n),  # [UI-008]
                 "tier": _rget(r, "tier", ""),
                 "ta_budget_priority": _rget(r, "ta_budget_priority", 0) or 0,
                 "need_deep_ta": bool(_rget(r, "need_deep_ta", 0)),
@@ -613,7 +628,7 @@ def run_discovery_scan(
     tf_db = tf_db_path or _get_tradeflow_db_path()
     prod_db = prod_db_path or _get_prod_db_path()
     top_n = max(1, min(int(top_n or 20), 100))
-    symbols = [s.strip() for s in (symbols or []) if s and s.strip()]
+    symbols = [normalize_tradeflow_symbol(s.strip()) for s in (symbols or []) if s and s.strip()]  # [UI-008]
     news_texts = [t.strip() for t in (news_texts or []) if t and t.strip()]
 
     init_db(tf_db)

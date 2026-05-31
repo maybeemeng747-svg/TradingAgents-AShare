@@ -31,6 +31,7 @@ from .selection_priority_gate import run_selection_priority_gate, SelectionPrior
 from .tier_budget import classify_candidate_tier, TierBudgetResult  # [S-007] candidate_tier_budget
 from .evidence_gate import compute_evidence_completeness, apply_evidence_gate, EvidenceGateResult  # [S-008] tradeflow_evidence_gate
 from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+from .symbol_utils import normalize_tradeflow_symbol, resolve_tradeflow_name  # [UI-008] tradeflow_field_normalization
 
 
 # ── SQL for table creation ──
@@ -396,6 +397,9 @@ def evaluate_symbol(
     if cfg is None:
         cfg = DEFAULT_STRATEGY_CONFIG
 
+    symbol = normalize_tradeflow_symbol(symbol)  # [UI-008] tradeflow_field_normalization
+    name = resolve_tradeflow_name(symbol, name)  # [UI-008]
+
     if not trade_date:
         trade_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -722,6 +726,9 @@ def evaluate_symbol(
 
 def save_candidate(candidate: Candidate, db_path: str) -> int:
     """Save a candidate to the database. Upsert on (trade_date, symbol)."""
+    candidate.symbol = normalize_tradeflow_symbol(candidate.symbol)  # [UI-008]
+    if not candidate.name or candidate.name == "--":
+        candidate.name = resolve_tradeflow_name(candidate.symbol, candidate.name)  # [UI-008]
     conn = sqlite3.connect(db_path)
     row = candidate.to_db_row()
     try:

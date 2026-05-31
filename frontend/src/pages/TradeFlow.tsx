@@ -165,7 +165,7 @@ function ObserveTable({ items }: { items: TradeFlowObserveItem[] }) {
                                 className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
                             >
                                 <td className="px-4 py-2.5 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{item.symbol}</td>
-                                <td className="max-w-[120px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{item.name}</td>
+                                <td className="max-w-[120px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{item.name || '--'}</td>
                                 <td className="px-4 py-2.5">
                                     <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${observeStateBg(item.observe_state)}`}>
                                         {item.observe_state === 'WAITING' && <Eye className="h-3 w-3" />}
@@ -232,7 +232,7 @@ function TAQueueTable({ items, meta }: { items: TradeFlowTAQueueItem[]; meta: Tr
                                         className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
                                     >
                                         <td className="px-4 py-2.5 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{item.symbol}</td>
-                                        <td className="max-w-[120px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{item.name}</td>
+                                        <td className="max-w-[120px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{item.name || '--'}</td>
                                         <td className="px-4 py-2.5">
                                             <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-bold ${tierBadgeClass(item.tier)}`}>{item.tier || '-'}</span>
                                         </td>
@@ -471,7 +471,7 @@ function ReviewTab({ data }: { data: TradeFlowReviewResponse }) {
                         {removalReasons.map(item => (
                             <li key={item.symbol} className="flex items-center gap-3 px-4 py-2.5 text-sm">
                                 <span className="font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{item.symbol}</span>
-                                <span className="max-w-[120px] truncate text-slate-700 dark:text-slate-300">{item.name}</span>
+                                <span className="max-w-[120px] truncate text-slate-700 dark:text-slate-300">{item.name || '--'}</span>
                                 <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-bold ${tierBadgeClass(item.tier)}`}>{item.tier || '-'}</span>
                                 <span className="text-slate-500 dark:text-slate-400">{item.reason}</span>
                             </li>
@@ -846,7 +846,7 @@ export default function TradeFlow() {
                                         onClick={() => handleRowClick(c)}
                                     >
                                         <td className="px-4 py-2.5 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{c.symbol}</td>
-                                        <td className="max-w-[120px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{c.name}</td>
+                                        <td className="max-w-[120px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{c.name || '--'}</td>
                                         <td className="px-4 py-2.5">
                                             <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-bold ${tierBadgeClass(c.tier)}`}>{c.tier || '-'}</span>
                                         </td>

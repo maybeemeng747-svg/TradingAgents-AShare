@@ -24,6 +24,8 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Optional
 
+from .symbol_utils import normalize_tradeflow_symbol, resolve_tradeflow_name  # [UI-008] tradeflow_field_normalization
+
 
 class UniverseSource(Enum):
     WATCHLIST = "watchlist"
@@ -113,16 +115,18 @@ class UniverseManager:
         reason: str = "",
         extra: Optional[dict] = None,
     ) -> UniverseEntry:
-        symbol = symbol.strip()
+        symbol = normalize_tradeflow_symbol(symbol.strip())  # [UI-008] tradeflow_field_normalization
         if not symbol:
             return self._entries.get("", UniverseEntry(symbol=""))
 
         entry = self._entries.get(symbol)
         if entry is None:
-            entry = UniverseEntry(symbol=symbol, name=name)
+            resolved_name = resolve_tradeflow_name(symbol, name)  # [UI-008]
+            entry = UniverseEntry(symbol=symbol, name=resolved_name)
             self._entries[symbol] = entry
-        if name and not entry.name:
-            entry.name = name
+        if name and not entry.name or entry.name == "--":
+            resolved = resolve_tradeflow_name(symbol, name)  # [UI-008]
+            entry.name = resolved
 
         existing_sources = {sr.source for sr in entry.sources}
         if source not in existing_sources:
@@ -219,7 +223,7 @@ class UniverseManager:
     ) -> int:
         count = 0
         for sym in symbols:
-            sym = sym.strip()
+            sym = normalize_tradeflow_symbol(sym.strip())  # [UI-008] tradeflow_field_normalization
             if sym:
                 self.add_symbol(
                     symbol=sym,
@@ -238,7 +242,7 @@ class UniverseManager:
 
         if event_overrides:
             for ev in event_overrides:
-                sym = ev.get("symbol", "").strip()
+                sym = normalize_tradeflow_symbol(ev.get("symbol", "").strip())  # [UI-008]
                 if sym:
                     self.add_symbol(
                         symbol=sym,
@@ -250,7 +254,7 @@ class UniverseManager:
 
         if event_symbols:
             for sym, titles in event_symbols.items():
-                sym = sym.strip()
+                sym = normalize_tradeflow_symbol(sym.strip())  # [UI-008]
                 if sym:
                     title_preview = "; ".join(titles[:3]) if titles else ""
                     self.add_symbol(
@@ -269,7 +273,7 @@ class UniverseManager:
     ) -> int:
         count = 0
         for sym in symbols:
-            sym = sym.strip()
+            sym = normalize_tradeflow_symbol(sym.strip())  # [UI-008]
             if sym:
                 self.add_symbol(
                     symbol=sym,
@@ -288,7 +292,7 @@ class UniverseManager:
         count = 0
         reason_text = f"{reason}: {industry_name}" if industry_name else reason
         for sym in symbols:
-            sym = sym.strip()
+            sym = normalize_tradeflow_symbol(sym.strip())  # [UI-008]
             if sym:
                 self.add_symbol(
                     symbol=sym,

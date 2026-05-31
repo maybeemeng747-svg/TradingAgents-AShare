@@ -24,6 +24,7 @@ from .candidate_engine import evaluate_symbol, init_db, filter_symbol
 from .universe import build_universe
 from .false_positive_audit import build_audit_report, render_audit_report, AuditReport  # [S-006] candidate_false_positive_audit
 from .tier_budget import allocate_tier_budget, render_tier_budget_summary  # [S-007] candidate_tier_budget
+from .symbol_utils import normalize_tradeflow_symbol, symbol_bare_code  # [UI-008] tradeflow_field_normalization
 
 
 SOURCE_WATCHLIST = "watchlist"
@@ -83,7 +84,7 @@ def _build_discovery_universe(
     if fund_flow_symbols:
         existing = {item["symbol"] for item in universe}
         for sym in fund_flow_symbols:
-            sym = sym.strip()
+            sym = normalize_tradeflow_symbol(sym.strip())  # [UI-008]
             if sym and sym not in existing:
                 universe.append({
                     "symbol": sym,
@@ -184,8 +185,9 @@ def run_discovery(
 
         # [T-006] event_source_discovery — generate event_overrides from EventItem data
         sym_event_overrides = list(filtered_overrides) if filtered_overrides else []
-        if sym in event_items_by_symbol:
-            for ev_item in event_items_by_symbol[sym]:
+        sym_bare = symbol_bare_code(sym)  # [UI-008] event map uses bare codes
+        if sym_bare in event_items_by_symbol:
+            for ev_item in event_items_by_symbol[sym_bare]:
                 sym_event_overrides.append({
                     "symbol": sym,
                     "title": ev_item.title,
@@ -196,7 +198,7 @@ def run_discovery(
                 })
         sym_event_overrides_final = sym_event_overrides if sym_event_overrides else None
 
-        sym_news = events_map.get(sym) if events_map else None
+        sym_news = events_map.get(sym_bare) if events_map else None  # [UI-008] bare code lookup
 
         # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
         sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
@@ -217,8 +219,8 @@ def run_discovery(
             if item.get("universe_sources"):
                 c.universe_sources = item["universe_sources"]  # [M-003]
             # [T-006] event_source_discovery — attach event items for discovery entry
-            if sym in event_items_by_symbol:
-                c._event_items = event_items_by_symbol[sym]  # type: ignore[attr-defined]
+            if sym_bare in event_items_by_symbol:
+                c._event_items = event_items_by_symbol[sym_bare]  # type: ignore[attr-defined]
             candidates.append(c)
         else:
             filtered.append(FilteredSymbol(

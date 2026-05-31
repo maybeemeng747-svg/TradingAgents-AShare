@@ -31,7 +31,7 @@
 5. `UI-005`：盘后 Review 前端页面（P2，done 401fb7c）。
 6. `UI-006`：数据源健康前端面板（P2，done 52d5f5e）。
 7. `UI-007`：TradeFlow 被过滤候选可追溯展示（P1，ready）。
-8. `UI-008`：TradeFlow 候选字段规范化与名称回填（P1，ready，排在 UI-007 后）。
+8. `UI-008`：TradeFlow 候选字段规范化与名称回填（P1，done）。
 
 ---
 
@@ -607,7 +607,8 @@
 ### UI-008: TradeFlow 候选字段规范化与名称回填（P1）
 - **描述**：修复 TradeFlow 候选池里股票名称为空、事件源候选代码缺少交易所后缀、部分字段显示兜底不足的问题，确保前端候选池、详情抽屉、TA 队列和后续 TA 调度使用同一套规范字段。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done
+- **Commit**: pending (UI-008 tradeflow_field_normalization)
 - **前置条件**：`UI-001` 到 `UI-006` 完成；建议在 `UI-007` 后执行，便于 filtered 列表也复用同一套字段规范化逻辑。
 - **已观察到的问题**：
   - `tradeflow_candidates.name` 大量为空，前端名称列只能显示空白。

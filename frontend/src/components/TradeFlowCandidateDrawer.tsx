@@ -123,7 +123,7 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
                     <div>
                         <div className="flex items-center gap-2">
                             <span className="font-mono text-sm font-bold text-slate-900 dark:text-slate-100">{candidate.symbol}</span>
-                            <span className="text-sm text-slate-600 dark:text-slate-400">{candidate.name}</span>
+                            <span className="text-sm text-slate-600 dark:text-slate-400">{candidate.name || '--'}</span>
                         </div>
                         <div className="mt-1 flex items-center gap-2">
                             <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-bold ${
