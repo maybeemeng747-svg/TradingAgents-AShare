@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-05-31 | UI-007 完成：TradeFlow 被过滤候选可追溯展示
+
+- **执行者**：OpenCode
+- **背景**：候选池生成后，Discovery 返回的 filtered 列表刷新后丢失，用户无法追溯股票被过滤的原因（流动性差/数据缺失/无策略命中）。前端候选数量与 daily plan/输入股票池不一致时，无法区分是未显示、未落库还是被策略过滤。
+- **变更**：
+  - `tradingagents/tradeflow/candidate_engine.py`：新增 `tradeflow_filtered_symbols` 表（字段：trade_date, symbol, name, source, reason, run_id, created_at）；新增 `save_filtered_symbols()` 和 `get_filtered_symbols()` 函数。
+  - `tradingagents/tradeflow/discovery.py`：`run_discovery()` 在候选池生成后持久化 filtered 结果，同日期扫描自动覆盖旧数据。
+  - `api/services/tradeflow_service.py`：新增 `get_filtered()` 服务函数，按日期查询 filtered 列表及过滤分类统计。
+  - `api/tradeflow_schemas.py`：新增 `TradeFlowFilteredItem` 和 `TradeFlowFilteredResponse` Pydantic 模型。
+  - `api/main.py`：新增 `GET /v1/tradeflow/filtered?date=YYYY-MM-DD` 只读接口。
+  - `frontend/src/types/index.ts`：新增 `TradeFlowFilteredItem` 和 `TradeFlowFilteredResponse` TypeScript 类型。
+  - `frontend/src/services/api.ts`：新增 `getTradeFlowFiltered()` API 方法。
+  - `frontend/src/pages/TradeFlow.tsx`：新增"被过滤"Tab（FilteredTab 组件），含过滤摘要（总扫描/入池/过滤/入池率）、分类统计、被过滤股票表格（可按原因筛选）、空状态区分（未生成/全部过滤/接口失败）。
+  - `tests/test_ui001_tradeflow_api.py`：新增 10 个测试（TestFilteredSymbols 5个 + TestFilteredAPI 3个 + TestDiscoveryPersistsFiltered 2个），覆盖持久化、查询、覆盖、空数据、集成场景。
+- **测试结果**：42 tests passed（API 测试），130 tests passed（全部 tradeflow 测试），前端构建通过。
+- **执行边界**：未触发深度 TA，未调用 LLM，未输出强买卖词，未改 `tradingagents.db` schema。
+
+---
+
 ## 2026-05-31 | UI-008 任务释放：TradeFlow 字段规范化与名称回填
 
 - **执行者**：Codex

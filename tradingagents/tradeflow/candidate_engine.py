@@ -86,6 +86,21 @@ CREATE TABLE IF NOT EXISTS tradeflow_daily_plans (
 );
 """
 
+# [UI-007] tradeflow_filtered_trace
+CREATE_FILTERED_SYMBOLS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_filtered_symbols (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    source TEXT DEFAULT '',
+    reason TEXT DEFAULT '',
+    run_id TEXT DEFAULT '',
+    created_at TEXT,
+    UNIQUE(trade_date, symbol, reason)
+);
+"""
+
 
 def init_db(db_path: str) -> None:
     """Create tradeflow tables if they don't exist."""
@@ -94,6 +109,7 @@ def init_db(db_path: str) -> None:
         CREATE_CANDIDATES_TABLE
         + CREATE_SIGNALS_TABLE
         + CREATE_DAILY_PLANS_TABLE
+        + CREATE_FILTERED_SYMBOLS_TABLE  # [UI-007] tradeflow_filtered_trace
     )
     try:
         conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
@@ -846,5 +862,86 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             (row["trade_date"], row["symbol"]),
         ).fetchone()[0]
         return row_id
+    finally:
+        conn.close()
+
+
+# [UI-007] tradeflow_filtered_trace
+def save_filtered_symbols(
+    filtered: list[dict],
+    trade_date: str,
+    run_id: str,
+    db_path: str,
+) -> int:
+    """Persist filtered symbols for a given trade_date and run_id.
+
+    Deletes old filtered records for the same trade_date before inserting.
+    Returns the number of inserted rows.
+    """
+    if not filtered:
+        return 0
+    now = datetime.now().isoformat()
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "DELETE FROM tradeflow_filtered_symbols WHERE trade_date = ?",
+            (trade_date,),
+        )
+        count = 0
+        for f in filtered:
+            sym = normalize_tradeflow_symbol(f.get("symbol", ""))
+            if not sym:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO tradeflow_filtered_symbols "
+                "(trade_date, symbol, name, source, reason, run_id, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    trade_date,
+                    sym,
+                    f.get("name", ""),
+                    f.get("source", ""),
+                    f.get("reason", ""),
+                    run_id,
+                    now,
+                ),
+            )
+            count += 1
+        conn.commit()
+        return count
+    finally:
+        conn.close()
+
+
+def get_filtered_symbols(trade_date: str, db_path: str) -> list[dict]:
+    """Retrieve filtered symbols for a given trade_date from the latest run_id.
+
+    Returns list of dicts with keys: symbol, name, source, reason, run_id, created_at.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if "tradeflow_filtered_symbols" not in tables:
+            return []
+        rows = conn.execute(
+            "SELECT symbol, name, source, reason, run_id, created_at "
+            "FROM tradeflow_filtered_symbols WHERE trade_date = ? "
+            "ORDER BY created_at DESC",
+            (trade_date,),
+        ).fetchall()
+        return [
+            {
+                "symbol": r["symbol"],
+                "name": r["name"],
+                "source": r["source"],
+                "reason": r["reason"],
+                "run_id": r["run_id"],
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
     finally:
         conn.close()

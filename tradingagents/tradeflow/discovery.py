@@ -20,7 +20,8 @@ from datetime import datetime
 from typing import Optional
 
 from .schemas import Candidate, DailyPlan, ALLOWED_ACTIONS, FORBIDDEN_WORDS
-from .candidate_engine import evaluate_symbol, init_db, filter_symbol
+from .candidate_engine import evaluate_symbol, init_db, filter_symbol  # [UI-007]
+from .candidate_engine import save_filtered_symbols as _save_filtered_symbols  # [UI-007] tradeflow_filtered_trace
 from .universe import build_universe
 from .false_positive_audit import build_audit_report, render_audit_report, AuditReport  # [S-006] candidate_false_positive_audit
 from .tier_budget import allocate_tier_budget, render_tier_budget_summary  # [S-007] candidate_tier_budget
@@ -307,6 +308,29 @@ def run_discovery(
             if c.trade_date != trade_date:
                 c.trade_date = trade_date
             save_candidate(c, tf_db_path)
+
+    # [UI-007] tradeflow_filtered_trace — persist filtered symbols
+    run_id = datetime.now().strftime("%Y%m%d%H%M%S")
+    if tf_db_path and filtered:
+        init_db(tf_db_path)
+        _save_filtered_symbols(
+            filtered=[asdict(f) for f in filtered],
+            trade_date=trade_date,
+            run_id=run_id,
+            db_path=tf_db_path,
+        )
+    elif tf_db_path and not filtered:
+        init_db(tf_db_path)
+        import sqlite3
+        conn = sqlite3.connect(tf_db_path)
+        try:
+            conn.execute(
+                "DELETE FROM tradeflow_filtered_symbols WHERE trade_date = ?",
+                (trade_date,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     # [S-006] candidate_false_positive_audit — generate audit report
     audit = build_audit_report(

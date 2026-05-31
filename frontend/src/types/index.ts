@@ -931,3 +931,20 @@ export interface TradeFlowDataHealthResponse {
     total_candidates_today: number
     total_signals_today: number
 }
+
+// [UI-007] tradeflow_filtered_trace
+export interface TradeFlowFilteredItem {
+    symbol: string
+    name: string
+    source: string
+    reason: string
+    run_id: string
+    created_at: string
+}
+
+export interface TradeFlowFilteredResponse {
+    status: string
+    trade_date: string
+    filtered: TradeFlowFilteredItem[]
+    filter_breakdown: Record<string, number>
+}

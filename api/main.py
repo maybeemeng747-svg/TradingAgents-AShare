@@ -4999,6 +4999,7 @@ from api.tradeflow_schemas import (
     TradeFlowTAQueueResponse,
     TradeFlowReviewResponse,
     TradeFlowDataHealthResponse,
+    TradeFlowFilteredResponse,  # [UI-007] tradeflow_filtered_trace
 )
 from api.services.tradeflow_service import (
     get_daily_plan as _tf_get_daily_plan,
@@ -5009,6 +5010,7 @@ from api.services.tradeflow_service import (
     get_review as _tf_get_review,
     get_data_health as _tf_get_data_health,
     run_discovery_scan as _tf_run_discovery_scan,
+    get_filtered as _tf_get_filtered,  # [UI-007] tradeflow_filtered_trace
 )
 
 # [UI-001] tradeflow_api — read-only endpoints
@@ -5065,6 +5067,12 @@ def tradeflow_review(date: str = Query(..., description="交易日期 YYYY-MM-DD
 @app.get("/v1/tradeflow/data-health", response_model=TradeFlowDataHealthResponse)
 def tradeflow_data_health():
     return _tf_get_data_health()
+
+
+# [UI-007] tradeflow_filtered_trace
+@app.get("/v1/tradeflow/filtered", response_model=TradeFlowFilteredResponse)
+def tradeflow_filtered(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_filtered(date)
 
 
 @app.post("/v1/tradeflow/discovery")

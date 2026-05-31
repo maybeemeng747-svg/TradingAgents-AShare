@@ -200,3 +200,20 @@ class TradeFlowDataHealthResponse(BaseModel):
     latest_candidates_date: Optional[str] = None
     total_candidates_today: int = 0
     total_signals_today: int = 0
+
+
+# [UI-007] tradeflow_filtered_trace
+class TradeFlowFilteredItem(BaseModel):
+    symbol: str
+    name: str = ""
+    source: str = ""
+    reason: str = ""
+    run_id: str = ""
+    created_at: str = ""
+
+
+class TradeFlowFilteredResponse(BaseModel):
+    status: str = "ok"
+    trade_date: str = ""
+    filtered: List[TradeFlowFilteredItem] = Field(default_factory=list)
+    filter_breakdown: Dict[str, int] = Field(default_factory=dict)

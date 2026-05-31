@@ -17,6 +17,7 @@ from tradingagents.tradeflow.symbol_utils import (  # [UI-008] tradeflow_field_n
     normalize_tradeflow_symbol,
     resolve_tradeflow_name,
 )
+from tradingagents.tradeflow.candidate_engine import get_filtered_symbols as _get_filtered_symbols  # [UI-007] tradeflow_filtered_trace
 
 
 def _get_project_root() -> str:
@@ -603,6 +604,36 @@ def get_data_health(tf_db_path: str = "") -> dict:
         "total_candidates_today": total_candidates_today,
         "total_signals_today": total_signals_today,
     }
+
+
+def get_filtered(trade_date: str, tf_db_path: str = "") -> dict:  # [UI-007] tradeflow_filtered_trace
+    db_path = tf_db_path or _get_tradeflow_db_path()
+    if not os.path.exists(db_path):
+        return {"status": "ok", "trade_date": trade_date, "filtered": [], "filter_breakdown": {}}
+    try:
+        from tradingagents.tradeflow.candidate_engine import init_db
+        init_db(db_path)
+        items = _get_filtered_symbols(trade_date, db_path)
+        breakdown: dict[str, int] = {}
+        for it in items:
+            reason = it.get("reason", "")
+            if "流动性" in reason:
+                cat = "流动性差"
+            elif "数据" in reason:
+                cat = "数据缺失"
+            elif "无策略" in reason:
+                cat = "无策略命中"
+            else:
+                cat = "其他"
+            breakdown[cat] = breakdown.get(cat, 0) + 1
+        return {
+            "status": "ok",
+            "trade_date": trade_date,
+            "filtered": items,
+            "filter_breakdown": breakdown,
+        }
+    except Exception:
+        return {"status": "ok", "trade_date": trade_date, "filtered": [], "filter_breakdown": {}}
 
 
 def run_discovery_scan(

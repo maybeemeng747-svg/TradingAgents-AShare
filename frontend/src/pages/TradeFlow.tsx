@@ -1,6 +1,6 @@
 // [UI-005] tradeflow_review_page
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search } from 'lucide-react'
+import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX } from 'lucide-react'
 import { api } from '@/services/api'
 import type {
     TradeFlowCandidateItem,
@@ -13,10 +13,11 @@ import type {
     TradeFlowTAQueueItem,
     TradeFlowTAQueueResponse,
     TradeFlowReviewResponse,
+    TradeFlowFilteredResponse,
 } from '@/types'
 import TradeFlowCandidateDrawer from '@/components/TradeFlowCandidateDrawer'
 
-type TabKey = 'candidates' | 'observe' | 'ta-queue' | 'review' | 'data-health'
+type TabKey = 'candidates' | 'observe' | 'ta-queue' | 'review' | 'filtered' | 'data-health'
 
 function todayStr(): string {
     return new Date().toISOString().slice(0, 10)
@@ -263,6 +264,7 @@ const TABS: { key: TabKey; label: string; icon: typeof Target }[] = [
     { key: 'observe', label: '盘中观察', icon: Eye },
     { key: 'ta-queue', label: 'TA 队列', icon: ListOrdered },
     { key: 'review', label: '盘后 Review', icon: BarChart3 },
+    { key: 'filtered', label: '被过滤', icon: FilterX },
     { key: 'data-health', label: '数据健康', icon: Activity },
 ]
 
@@ -495,6 +497,151 @@ function ReviewTab({ data }: { data: TradeFlowReviewResponse }) {
     )
 }
 
+// [UI-007] tradeflow_filtered_trace
+function FilteredTab({ data, candidateCount }: { data: TradeFlowFilteredResponse; candidateCount: number }) {
+    const [reasonFilter, setReasonFilter] = useState('')
+    const filtered = data.filtered
+    const breakdown = data.filter_breakdown
+    const totalScanned = filtered.length + candidateCount
+
+    const filteredItems = reasonFilter
+        ? filtered.filter(f => {
+            const reason = f.reason
+            if (reasonFilter === '流动性差') return reason.includes('流动性')
+            if (reasonFilter === '数据缺失') return reason.includes('数据')
+            if (reasonFilter === '无策略命中') return reason.includes('无策略')
+            return !reason.includes('流动性') && !reason.includes('数据') && !reason.includes('无策略')
+        })
+        : filtered
+
+    const isEmpty = candidateCount === 0 && filtered.length === 0
+
+    return (
+        <div className="space-y-4 p-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <div className="card p-4">
+                    <div className="text-xs text-slate-500 dark:text-slate-400">总扫描数</div>
+                    <div className="mt-1 text-2xl font-semibold tabular-nums text-slate-900 dark:text-slate-100">{totalScanned}</div>
+                </div>
+                <div className="card p-4">
+                    <div className="text-xs text-slate-500 dark:text-slate-400">入池数</div>
+                    <div className="mt-1 text-2xl font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">{candidateCount}</div>
+                </div>
+                <div className="card p-4">
+                    <div className="text-xs text-slate-500 dark:text-slate-400">过滤数</div>
+                    <div className="mt-1 text-2xl font-semibold tabular-nums text-red-600 dark:text-red-400">{filtered.length}</div>
+                </div>
+                <div className="card p-4">
+                    <div className="text-xs text-slate-500 dark:text-slate-400">入池率</div>
+                    <div className="mt-1 text-2xl font-semibold tabular-nums text-blue-600 dark:text-blue-400">
+                        {totalScanned > 0 ? ((candidateCount / totalScanned) * 100).toFixed(1) + '%' : '-'}
+                    </div>
+                </div>
+            </div>
+
+            {Object.keys(breakdown).length > 0 && (
+                <div className="card p-4">
+                    <div className="mb-2 text-sm font-medium text-slate-700 dark:text-slate-300">过滤分类</div>
+                    <div className="flex flex-wrap gap-3">
+                        {Object.entries(breakdown).map(([cat, cnt]) => (
+                            <span
+                                key={cat}
+                                className={`inline-flex items-center gap-1 rounded px-2.5 py-1 text-sm font-medium ${
+                                    cat === '流动性差'
+                                        ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                                        : cat === '数据缺失'
+                                        ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                                        : cat === '无策略命中'
+                                        ? 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300'
+                                        : 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300'
+                                }`}
+                            >
+                                {cat}: {cnt}只
+                            </span>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {isEmpty && (
+                <div className="py-12 text-center text-sm text-slate-400">
+                    <FilterX className="mx-auto mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
+                    尚未生成候选池，暂无过滤记录
+                    <div className="mt-2 text-xs text-slate-400">daily plan 是计划记录，不等同于候选股票数量</div>
+                </div>
+            )}
+
+            {!isEmpty && candidateCount === 0 && filtered.length > 0 && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                    已扫描但全部被过滤，无入池候选
+                </div>
+            )}
+
+            {filtered.length > 0 && (
+                <div className="card">
+                    <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-700">
+                        <span className="text-sm font-medium text-slate-700 dark:text-slate-300">被过滤股票</span>
+                        <select
+                            value={reasonFilter}
+                            onChange={e => setReasonFilter(e.target.value)}
+                            className="rounded border border-slate-200 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                        >
+                            <option value="">全部原因</option>
+                            <option value="流动性差">流动性差</option>
+                            <option value="数据缺失">数据缺失</option>
+                            <option value="无策略命中">无策略命中</option>
+                            <option value="其他">其他</option>
+                        </select>
+                        <span className="ml-auto text-xs text-slate-400">{filteredItems.length} 条记录</span>
+                    </div>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                            <thead>
+                                <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+                                    <th className="px-4 py-2.5 font-medium">代码</th>
+                                    <th className="px-4 py-2.5 font-medium">名称</th>
+                                    <th className="px-4 py-2.5 font-medium">来源</th>
+                                    <th className="px-4 py-2.5 font-medium">过滤原因</th>
+                                    <th className="px-4 py-2.5 font-medium">扫描时间</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {filteredItems.map(item => {
+                                    const reason = item.reason
+                                    let reasonCls = 'text-slate-600 dark:text-slate-400'
+                                    if (reason.includes('流动性')) reasonCls = 'text-amber-600 dark:text-amber-400'
+                                    else if (reason.includes('数据')) reasonCls = 'text-red-500 dark:text-red-400'
+                                    else if (reason.includes('无策略')) reasonCls = 'text-slate-500 dark:text-slate-400'
+                                    return (
+                                        <tr
+                                            key={`${item.symbol}-${item.reason}`}
+                                            className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
+                                        >
+                                            <td className="px-4 py-2.5 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{item.symbol}</td>
+                                            <td className="max-w-[120px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{item.name || '--'}</td>
+                                            <td className="px-4 py-2.5">
+                                                <span className="inline-block rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600 dark:bg-slate-700 dark:text-slate-300">{item.source || '-'}</span>
+                                            </td>
+                                            <td className={`max-w-[300px] truncate px-4 py-2.5 text-xs ${reasonCls}`} title={item.reason}>
+                                                {item.reason || '-'}
+                                            </td>
+                                            <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{item.created_at || '-'}</td>
+                                        </tr>
+                                    )
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
+
+            <div className="text-xs text-slate-400">
+                daily plan 是计划记录，不等同于候选股票数量。被过滤记录来自最近一次 Discovery 扫描。
+            </div>
+        </div>
+    )
+}
+
 function deriveHealthStatus(s: DataHealthSource): DataHealthStatus {
     if (s.status) return s.status
     if (s.available && !s.error) return 'OK'
@@ -648,6 +795,7 @@ export default function TradeFlow() {
     const [observeData, setObserveData] = useState<TradeFlowObserveResponse | null>(null)
     const [taQueueData, setTaQueueData] = useState<TradeFlowTAQueueResponse | null>(null)
     const [reviewData, setReviewData] = useState<TradeFlowReviewResponse | null>(null)
+    const [filteredData, setFilteredData] = useState<TradeFlowFilteredResponse | null>(null)  // [UI-007] tradeflow_filtered_trace
 
     const fetchCandidates = useCallback(async (date: string) => {
         setLoading(true)
@@ -729,6 +877,20 @@ export default function TradeFlow() {
         }
     }, [])
 
+    // [UI-007] tradeflow_filtered_trace
+    const fetchFiltered = useCallback(async (date: string) => {
+        setLoading(true)
+        setError(null)
+        try {
+            const res = await api.getTradeFlowFiltered(date)
+            setFilteredData(res)
+        } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : '加载失败')
+        } finally {
+            setLoading(false)
+        }
+    }, [])
+
     const fetchData = useCallback(async (date: string) => {
         if (activeTab === 'candidates') {
             await fetchCandidates(date)
@@ -738,10 +900,12 @@ export default function TradeFlow() {
             await fetchTaQueue(date)
         } else if (activeTab === 'review') {
             await fetchReview(date)
+        } else if (activeTab === 'filtered') {
+            await fetchFiltered(date)
         } else if (activeTab === 'data-health') {
             await fetchDataHealth()
         }
-    }, [activeTab, fetchCandidates, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth])
+    }, [activeTab, fetchCandidates, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth, fetchFiltered])
 
     useEffect(() => {
         void fetchData(tradeDate)
@@ -781,6 +945,7 @@ export default function TradeFlow() {
             setScanMessage(`${res.summary} 已保存候选 ${res.candidate_count} 只，过滤 ${res.filtered_count} 只。`)
             setActiveTab('candidates')
             await fetchCandidates(tradeDate)
+            await fetchFiltered(tradeDate)  // [UI-007] tradeflow_filtered_trace
         } catch (e: unknown) {
             setError(e instanceof Error ? e.message : '筛选失败')
         } finally {
@@ -812,7 +977,13 @@ export default function TradeFlow() {
 
         if (activeTab === 'candidates') {
             if (status === 'no_data') {
-                return <div className="py-20 text-center text-sm text-slate-400">{tradeDate} 暂无候选数据</div>
+                return (
+                    <div className="py-20 text-center text-sm text-slate-400">
+                        <Target className="mx-auto mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
+                        {tradeDate} 暂无候选数据
+                        <div className="mt-2 text-xs text-slate-400">尚未生成候选池，或接口/数据源暂时不可用</div>
+                    </div>
+                )
             }
             if (candidates.length === 0) {
                 return <div className="py-20 text-center text-sm text-slate-400">无匹配候选</div>
@@ -907,6 +1078,13 @@ export default function TradeFlow() {
                 return <div className="py-20 text-center text-sm text-slate-400">{tradeDate} 暂无复盘数据</div>
             }
             return <ReviewTab data={reviewData} />
+        }
+
+        if (activeTab === 'filtered') {
+            if (!filteredData) {
+                return <div className="py-20 text-center text-sm text-slate-400">加载中...</div>
+            }
+            return <FilteredTab data={filteredData} candidateCount={candidates.length} />
         }
 
         if (activeTab === 'data-health') {

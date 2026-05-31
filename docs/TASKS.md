@@ -30,7 +30,7 @@
 4. `UI-004`：盘中 Observe 与 TA 队列只读面板（P2，done fa75389）。
 5. `UI-005`：盘后 Review 前端页面（P2，done 401fb7c）。
 6. `UI-006`：数据源健康前端面板（P2，done 52d5f5e）。
-7. `UI-007`：TradeFlow 被过滤候选可追溯展示（P1，ready）。
+7. `UI-007`：TradeFlow 被过滤候选可追溯展示（P1，done）。
 8. `UI-008`：TradeFlow 候选字段规范化与名称回填（P1，done）。
 
 ---
@@ -565,9 +565,9 @@
 - **代码标注要求**：`// [UI-006] tradeflow_data_health`
 
 ### UI-007: TradeFlow 被过滤候选可追溯展示（P1）
-- **描述**：候选池生成后，前端必须展示“哪些股票被过滤、为什么没进候选池”。解决用户看到 daily plan/输入股票池与候选表数量不一致时，无法判断是未显示、未落库还是被策略过滤的问题。
+- **描述**：候选池生成后，前端必须展示"哪些股票被过滤、为什么没进候选池"。解决用户看到 daily plan/输入股票池与候选表数量不一致时，无法判断是未显示、未落库还是被策略过滤的问题。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done
 - **前置条件**：`UI-001` 到 `UI-006` 完成；`feat(tradeflow): add candidate discovery trigger` 已完成。
 - **背景**：
   - 当前 `tradeflow_daily_plans` 只保存最终候选摘要，`tradeflow_candidates` 只保存入池股票。

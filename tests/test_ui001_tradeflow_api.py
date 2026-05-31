@@ -27,6 +27,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
+from tradingagents.tradeflow.candidate_engine import save_filtered_symbols, get_filtered_symbols  # [UI-007] tradeflow_filtered_trace
 from tradingagents.tradeflow.schemas import Candidate, CandidateSignal
 from tradingagents.tradeflow.plan_runner import save_plan, DailyPlan
 
@@ -40,6 +41,7 @@ from api.services.tradeflow_service import (
     get_review,
     get_data_health,
     run_discovery_scan,
+    get_filtered,  # [UI-007] tradeflow_filtered_trace
 )
 
 
@@ -467,3 +469,165 @@ class TestNoForbiddenWords:
         for c in result["candidates"]:
             for word in FORBIDDEN_WORDS:
                 assert word not in c.get("reason", "")
+
+
+# [UI-007] tradeflow_filtered_trace
+class TestFilteredSymbols:
+    def test_save_and_retrieve_filtered(self, tf_db):
+        filtered = [
+            {"symbol": "000001.SZ", "name": "平安银行", "source": "manual", "reason": "流动性差(avg_amount=0.01亿)"},
+            {"symbol": "000002.SZ", "name": "万科A", "source": "watchlist", "reason": "数据缺失"},
+            {"symbol": "600000.SH", "name": "浦发银行", "source": "holding", "reason": "无策略命中"},
+        ]
+        count = save_filtered_symbols(filtered, "2026-05-31", "run001", tf_db)
+        assert count == 3
+
+        results = get_filtered_symbols("2026-05-31", tf_db)
+        assert len(results) == 3
+        symbols = {r["symbol"] for r in results}
+        assert symbols == {"000001.SZ", "000002.SZ", "600000.SH"}
+        for r in results:
+            assert "reason" in r
+            assert "source" in r
+            assert r["run_id"] == "run001"
+
+    def test_query_by_date(self, tf_db):
+        save_filtered_symbols(
+            [{"symbol": "000001.SZ", "name": "", "source": "manual", "reason": "test"}],
+            "2026-05-31", "run1", tf_db,
+        )
+        save_filtered_symbols(
+            [{"symbol": "000002.SZ", "name": "", "source": "manual", "reason": "test"}],
+            "2026-06-01", "run2", tf_db,
+        )
+        assert len(get_filtered_symbols("2026-05-31", tf_db)) == 1
+        assert len(get_filtered_symbols("2026-06-01", tf_db)) == 1
+
+    def test_overwrite_same_date(self, tf_db):
+        save_filtered_symbols(
+            [{"symbol": "000001.SZ", "name": "", "source": "manual", "reason": "old"}],
+            "2026-05-31", "run1", tf_db,
+        )
+        assert len(get_filtered_symbols("2026-05-31", tf_db)) == 1
+
+        save_filtered_symbols(
+            [
+                {"symbol": "000002.SZ", "name": "", "source": "manual", "reason": "new1"},
+                {"symbol": "000003.SZ", "name": "", "source": "manual", "reason": "new2"},
+            ],
+            "2026-05-31", "run2", tf_db,
+        )
+        results = get_filtered_symbols("2026-05-31", tf_db)
+        assert len(results) == 2
+        symbols = {r["symbol"] for r in results}
+        assert symbols == {"000002.SZ", "000003.SZ"}
+
+    def test_empty_data(self, tf_db):
+        results = get_filtered_symbols("2026-05-31", tf_db)
+        assert results == []
+
+    def test_empty_filtered_list(self, tf_db):
+        count = save_filtered_symbols([], "2026-05-31", "run1", tf_db)
+        assert count == 0
+
+
+class TestFilteredAPI:
+    def test_no_db_returns_ok_empty(self):
+        result = get_filtered("2026-05-31", tf_db_path="/nonexistent/path.db")
+        assert result["status"] == "ok"
+        assert result["filtered"] == []
+        assert result["filter_breakdown"] == {}
+
+    def test_returns_filtered_with_breakdown(self, tf_db):
+        filtered = [
+            {"symbol": "000001.SZ", "name": "平安银行", "source": "manual", "reason": "流动性差(avg_amount=0.01亿)"},
+            {"symbol": "000002.SZ", "name": "万科A", "source": "watchlist", "reason": "数据不足(需至少40日)"},
+            {"symbol": "600000.SH", "name": "浦发银行", "source": "holding", "reason": "无策略命中"},
+            {"symbol": "601398.SH", "name": "工商银行", "source": "manual", "reason": "流动性差(avg_amount=0.02亿)"},
+        ]
+        save_filtered_symbols(filtered, "2026-05-31", "run001", tf_db)
+
+        result = get_filtered("2026-05-31", tf_db_path=tf_db)
+        assert result["status"] == "ok"
+        assert len(result["filtered"]) == 4
+        assert result["filter_breakdown"]["流动性差"] == 2
+        assert result["filter_breakdown"]["数据缺失"] == 1
+        assert result["filter_breakdown"]["无策略命中"] == 1
+
+    def test_empty_date(self, tf_db):
+        result = get_filtered("2020-01-01", tf_db_path=tf_db)
+        assert result["status"] == "ok"
+        assert result["filtered"] == []
+
+
+class TestDiscoveryPersistsFiltered:
+    def test_discovery_persists_filtered_symbols(self, tf_db, monkeypatch):
+        def fake_evaluate_symbol(**kwargs):
+            sym = kwargs.get("symbol", "")
+            if sym == "000001.SZ":
+                c = Candidate(
+                    symbol="000001.SZ", name="平安银行", source="manual",
+                    strategy_tags=["VCP"], score=60.0, composite_score=70.0,
+                    trade_date="2026-05-31", tier="B",
+                )
+                c.signals = [CandidateSignal(strategy_tag="VCP", score=60.0, reason="test")]
+                return c, ""
+            if sym == "000002.SZ":
+                return None, "流动性差(avg_amount=0.01亿)"
+            if sym == "600000.SH":
+                return None, "无策略命中"
+            return None, "数据缺失"
+
+        monkeypatch.setattr("tradingagents.tradeflow.discovery.evaluate_symbol", fake_evaluate_symbol)
+
+        result = run_discovery_scan(
+            trade_date="2026-05-31",
+            symbols=["000001.SZ", "000002.SZ", "600000.SH"],
+            top_n=10,
+            include_holdings=False,
+            include_watchlist=False,
+            tf_db_path=tf_db,
+            prod_db_path="/nonexistent/tradingagents.db",
+        )
+
+        assert result["status"] == "ok"
+        assert result["candidate_count"] == 1
+        assert result["filtered_count"] == 2
+
+        filtered_result = get_filtered("2026-05-31", tf_db_path=tf_db)
+        assert filtered_result["status"] == "ok"
+        assert len(filtered_result["filtered"]) == 2
+        symbols = {f["symbol"] for f in filtered_result["filtered"]}
+        assert "000002.SZ" in symbols
+        assert "600000.SH" in symbols
+
+    def test_second_discovery_overwrites_filtered(self, tf_db, monkeypatch):
+        def fake_evaluate_v1(**kwargs):
+            sym = kwargs.get("symbol", "")
+            if sym == "000001.SZ":
+                c = Candidate(symbol="000001.SZ", name="test", strategy_tags=["VCP"], score=60.0, composite_score=70.0, trade_date="2026-05-31")
+                c.signals = [CandidateSignal(strategy_tag="VCP", score=60.0, reason="test")]
+                return c, ""
+            return None, "流动性差"
+
+        monkeypatch.setattr("tradingagents.tradeflow.discovery.evaluate_symbol", fake_evaluate_v1)
+        run_discovery_scan(
+            trade_date="2026-05-31", symbols=["000001.SZ", "000002.SZ"],
+            top_n=10, include_holdings=False, include_watchlist=False,
+            tf_db_path=tf_db, prod_db_path="/nonexistent/tradingagents.db",
+        )
+        assert len(get_filtered("2026-05-31", tf_db_path=tf_db)["filtered"]) == 1
+
+        def fake_evaluate_v2(**kwargs):
+            return None, "数据缺失"
+
+        monkeypatch.setattr("tradingagents.tradeflow.discovery.evaluate_symbol", fake_evaluate_v2)
+        run_discovery_scan(
+            trade_date="2026-05-31", symbols=["000001.SZ", "000002.SZ", "000003.SZ"],
+            top_n=10, include_holdings=False, include_watchlist=False,
+            tf_db_path=tf_db, prod_db_path="/nonexistent/tradingagents.db",
+        )
+
+        filtered_result = get_filtered("2026-05-31", tf_db_path=tf_db)
+        assert len(filtered_result["filtered"]) == 3
+        assert all(f["reason"] == "数据缺失" for f in filtered_result["filtered"])

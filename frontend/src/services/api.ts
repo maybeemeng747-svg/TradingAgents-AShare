@@ -1,4 +1,4 @@
-import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse } from '@/types'
+import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse } from '@/types'
 
 export function getBaseUrl(): string {
     const envUrl = (import.meta.env.VITE_API_URL as string) || ''
@@ -397,6 +397,11 @@ class ApiService {
 
     async getTradeFlowDataHealth(): Promise<TradeFlowDataHealthResponse> {
         return this.request<TradeFlowDataHealthResponse>('/v1/tradeflow/data-health')
+    }
+
+    // [UI-007] tradeflow_filtered_trace
+    async getTradeFlowFiltered(date: string): Promise<TradeFlowFilteredResponse> {
+        return this.request<TradeFlowFilteredResponse>(`/v1/tradeflow/filtered?date=${encodeURIComponent(date)}`)
     }
 
     async runTradeFlowDiscovery(request: TradeFlowDiscoveryRequest): Promise<TradeFlowDiscoveryResponse> {
