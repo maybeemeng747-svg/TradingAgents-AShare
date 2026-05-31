@@ -1,6 +1,6 @@
-// [UI-004] tradeflow_observe_queue
-import { useState, useEffect, useCallback } from 'react'
-import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList } from 'lucide-react'
+// [UI-005] tradeflow_review_page
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3 } from 'lucide-react'
 import { api } from '@/services/api'
 import type {
     TradeFlowCandidateItem,
@@ -10,10 +10,11 @@ import type {
     TradeFlowObserveResponse,
     TradeFlowTAQueueItem,
     TradeFlowTAQueueResponse,
+    TradeFlowReviewResponse,
 } from '@/types'
 import TradeFlowCandidateDrawer from '@/components/TradeFlowCandidateDrawer'
 
-type TabKey = 'candidates' | 'observe' | 'ta-queue'
+type TabKey = 'candidates' | 'observe' | 'ta-queue' | 'review'
 
 function todayStr(): string {
     return new Date().toISOString().slice(0, 10)
@@ -259,7 +260,237 @@ const TABS: { key: TabKey; label: string; icon: typeof Target }[] = [
     { key: 'candidates', label: '候选池', icon: Target },
     { key: 'observe', label: '盘中观察', icon: Eye },
     { key: 'ta-queue', label: 'TA 队列', icon: ListOrdered },
+    { key: 'review', label: '盘后 Review', icon: BarChart3 },
 ]
+
+function fmtPct(v: number | null | undefined): string {
+    if (v == null || isNaN(v)) return '0.0%'
+    return `${v.toFixed(1)}%`
+}
+
+interface StrategyRow {
+    strategy: string
+    total: number
+    hit: number
+    miss: number
+    noData: number
+    invalidated: number
+    hitRate: number
+    missRate: number
+}
+
+interface TierRow {
+    tier: string
+    total: number
+    hit: number
+    miss: number
+    noData: number
+    invalidated: number
+}
+
+function ReviewTab({ data }: { data: TradeFlowReviewResponse }) {
+    const items = data.results
+    const agg = data.summary_agg
+
+    const total = items.length
+    const hitCount = items.filter(i => i.observe_state === 'TRIGGERED').length
+    const invalidatedCount = items.filter(i => i.observe_state === 'INVALIDATED').length
+    const waitingCount = items.filter(i => i.observe_state === 'WAITING').length
+    const removedCount = items.filter(i => i.plan_action === 'REMOVE_FROM_WATCH').length
+    const hitRate = total > 0 ? (hitCount / total) * 100 : 0
+    const invalidatedRate = total > 0 ? (invalidatedCount / total) * 100 : 0
+
+    const tierStats = useMemo<TierRow[]>(() => {
+        const map = new Map<string, { hit: number; miss: number; noData: number; invalidated: number; total: number }>()
+        for (const item of items) {
+            const tier = item.tier || '-'
+            const row = map.get(tier) || { hit: 0, miss: 0, noData: 0, invalidated: 0, total: 0 }
+            row.total++
+            if (item.observe_state === 'TRIGGERED') row.hit++
+            else if (item.observe_state === 'INVALIDATED') row.invalidated++
+            else if (item.plan_action === 'REMOVE_FROM_WATCH') row.miss++
+            else row.noData++
+            map.set(tier, row)
+        }
+        const order = ['A', 'B', 'C', '-']
+        return order.filter(t => map.has(t)).map(tier => ({ tier, ...map.get(tier)! }))
+    }, [items])
+
+    const strategyStats = useMemo<StrategyRow[]>(() => {
+        const map = new Map<string, { hit: number; miss: number; noData: number; invalidated: number; total: number }>()
+        for (const item of items) {
+            const tags = item.strategy_tags.length > 0 ? item.strategy_tags : ['未分类']
+            for (const tag of tags) {
+                const row = map.get(tag) || { hit: 0, miss: 0, noData: 0, invalidated: 0, total: 0 }
+                row.total++
+                if (item.observe_state === 'TRIGGERED') row.hit++
+                else if (item.observe_state === 'INVALIDATED') row.invalidated++
+                else if (item.plan_action === 'REMOVE_FROM_WATCH') row.miss++
+                else row.noData++
+                map.set(tag, row)
+            }
+        }
+        const rows: StrategyRow[] = []
+        for (const [strategy, row] of map) {
+            rows.push({
+                strategy,
+                total: row.total,
+                hit: row.hit,
+                miss: row.miss,
+                noData: row.noData,
+                invalidated: row.invalidated,
+                hitRate: row.total > 0 ? (row.hit / row.total) * 100 : 0,
+                missRate: row.total > 0 ? (row.miss / row.total) * 100 : 0,
+            })
+        }
+        rows.sort((a, b) => b.hitRate - a.hitRate)
+        return rows
+    }, [items])
+
+    const removalReasons = useMemo(() => {
+        return items.filter(i => i.plan_action === 'REMOVE_FROM_WATCH' && i.reason)
+    }, [items])
+
+    const suggestions = useMemo(() => {
+        const list: string[] = []
+        if (invalidatedRate > 50) list.push('失效占比偏高，建议收紧触发条件或优化失效价设置')
+        if (hitRate < 20 && total > 5) list.push('命中率偏低，建议检查策略筛选阈值')
+        const lowComp = agg.avg_completeness < 0.5
+        if (lowComp) list.push('平均完整度较低，建议补充数据源以提升候选质量')
+        const highRemove = removedCount > total * 0.3
+        if (highRemove) list.push('移除比例较高，建议优化候选池准入条件')
+        if (waitingCount === total && total > 0) list.push('所有候选均处于等待状态，尚未触发')
+        if (list.length === 0) list.push('当前策略运行正常，继续保持')
+        return list
+    }, [invalidatedRate, hitRate, total, agg, removedCount, waitingCount])
+
+    return (
+        <div className="space-y-6 p-4">
+            <div className="text-xs text-slate-400">复盘时间: {data.reviewed_at || '-'}</div>
+
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+                {[
+                    { label: '总候选数', value: total, color: 'text-slate-900 dark:text-slate-100' },
+                    { label: '命中(TRIGGERED)', value: hitCount, color: 'text-emerald-600 dark:text-emerald-400' },
+                    { label: '失效(INVALIDATED)', value: invalidatedCount, color: 'text-red-600 dark:text-red-400' },
+                    { label: '命中率', value: fmtPct(hitRate), color: 'text-blue-600 dark:text-blue-400' },
+                    { label: '失效占比', value: fmtPct(invalidatedRate), color: 'text-amber-600 dark:text-amber-400' },
+                ].map(c => (
+                    <div key={c.label} className="card p-4">
+                        <div className="text-xs text-slate-500 dark:text-slate-400">{c.label}</div>
+                        <div className={`mt-1 text-2xl font-semibold tabular-nums ${c.color}`}>{c.value}</div>
+                    </div>
+                ))}
+                {[
+                    { label: 'A级', value: agg.tier_a_count, color: 'text-emerald-600 dark:text-emerald-400' },
+                    { label: 'B级', value: agg.tier_b_count, color: 'text-amber-600 dark:text-amber-400' },
+                    { label: 'C级', value: agg.tier_c_count, color: 'text-red-600 dark:text-red-400' },
+                    { label: '需深度TA', value: agg.need_deep_ta_count, color: 'text-purple-600 dark:text-purple-400' },
+                    { label: '平均完整度', value: fmtPct(agg.avg_completeness * 100), color: 'text-blue-600 dark:text-blue-400' },
+                ].map(c => (
+                    <div key={c.label} className="card p-4">
+                        <div className="text-xs text-slate-500 dark:text-slate-400">{c.label}</div>
+                        <div className={`mt-1 text-2xl font-semibold tabular-nums ${c.color}`}>{c.value}</div>
+                    </div>
+                ))}
+            </div>
+
+            {strategyStats.length > 0 && (
+                <div className="card overflow-x-auto">
+                    <div className="border-b border-slate-100 px-4 py-3 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-300">策略命中率</div>
+                    <table className="w-full text-sm">
+                        <thead>
+                            <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+                                <th className="px-4 py-2.5 font-medium">策略</th>
+                                <th className="px-4 py-2.5 font-medium">总数</th>
+                                <th className="px-4 py-2.5 font-medium">命中</th>
+                                <th className="px-4 py-2.5 font-medium">误报</th>
+                                <th className="px-4 py-2.5 font-medium">无数据</th>
+                                <th className="px-4 py-2.5 font-medium">失效</th>
+                                <th className="px-4 py-2.5 font-medium">命中率</th>
+                                <th className="px-4 py-2.5 font-medium">误报率</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {strategyStats.map(row => (
+                                <tr key={row.strategy} className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50">
+                                    <td className="px-4 py-2.5 font-medium text-slate-700 dark:text-slate-300">{row.strategy}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{row.total}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-emerald-600 dark:text-emerald-400">{row.hit}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-amber-600 dark:text-amber-400">{row.miss}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-slate-500">{row.noData}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-red-500">{row.invalidated}</td>
+                                    <td className="px-4 py-2.5 tabular-nums font-medium">{fmtPct(row.hitRate)}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-amber-600 dark:text-amber-400">{fmtPct(row.missRate)}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            )}
+
+            {tierStats.length > 0 && (
+                <div className="card overflow-x-auto">
+                    <div className="border-b border-slate-100 px-4 py-3 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-300">分层统计</div>
+                    <table className="w-full text-sm">
+                        <thead>
+                            <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+                                <th className="px-4 py-2.5 font-medium">层级</th>
+                                <th className="px-4 py-2.5 font-medium">总数</th>
+                                <th className="px-4 py-2.5 font-medium">命中</th>
+                                <th className="px-4 py-2.5 font-medium">误报</th>
+                                <th className="px-4 py-2.5 font-medium">无数据</th>
+                                <th className="px-4 py-2.5 font-medium">失效</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {tierStats.map(row => (
+                                <tr key={row.tier} className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50">
+                                    <td className="px-4 py-2.5">
+                                        <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-bold ${tierBadgeClass(row.tier)}`}>{row.tier}</span>
+                                    </td>
+                                    <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{row.total}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-emerald-600 dark:text-emerald-400">{row.hit}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-amber-600 dark:text-amber-400">{row.miss}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-slate-500">{row.noData}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-red-500">{row.invalidated}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            )}
+
+            {removalReasons.length > 0 && (
+                <div className="card">
+                    <div className="border-b border-slate-100 px-4 py-3 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-300">移除理由</div>
+                    <ul className="divide-y divide-slate-50 dark:divide-slate-800">
+                        {removalReasons.map(item => (
+                            <li key={item.symbol} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+                                <span className="font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{item.symbol}</span>
+                                <span className="max-w-[120px] truncate text-slate-700 dark:text-slate-300">{item.name}</span>
+                                <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-bold ${tierBadgeClass(item.tier)}`}>{item.tier || '-'}</span>
+                                <span className="text-slate-500 dark:text-slate-400">{item.reason}</span>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
+
+            <div className="card">
+                <div className="border-b border-slate-100 px-4 py-3 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-300">调参建议</div>
+                <ul className="divide-y divide-slate-50 dark:divide-slate-800">
+                    {suggestions.map((s, i) => (
+                        <li key={i} className="flex items-start gap-2 px-4 py-2.5 text-sm text-slate-600 dark:text-slate-400">
+                            <span className="mt-0.5 inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full bg-blue-500" />
+                            {s}
+                        </li>
+                    ))}
+                </ul>
+            </div>
+        </div>
+    )
+}
 
 export default function TradeFlow() {
     const [activeTab, setActiveTab] = useState<TabKey>('candidates')
@@ -282,6 +513,7 @@ export default function TradeFlow() {
 
     const [observeData, setObserveData] = useState<TradeFlowObserveResponse | null>(null)
     const [taQueueData, setTaQueueData] = useState<TradeFlowTAQueueResponse | null>(null)
+    const [reviewData, setReviewData] = useState<TradeFlowReviewResponse | null>(null)
 
     const fetchCandidates = useCallback(async (date: string) => {
         setLoading(true)
@@ -337,15 +569,30 @@ export default function TradeFlow() {
         }
     }, [])
 
+    const fetchReview = useCallback(async (date: string) => {
+        setLoading(true)
+        setError(null)
+        try {
+            const res = await api.getTradeFlowReview(date)
+            setReviewData(res)
+        } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : '加载失败')
+        } finally {
+            setLoading(false)
+        }
+    }, [])
+
     const fetchData = useCallback(async (date: string) => {
         if (activeTab === 'candidates') {
             await fetchCandidates(date)
         } else if (activeTab === 'observe') {
             await fetchObserve(date)
-        } else {
+        } else if (activeTab === 'ta-queue') {
             await fetchTaQueue(date)
+        } else if (activeTab === 'review') {
+            await fetchReview(date)
         }
-    }, [activeTab, fetchCandidates, fetchObserve, fetchTaQueue])
+    }, [activeTab, fetchCandidates, fetchObserve, fetchTaQueue, fetchReview])
 
     useEffect(() => {
         void fetchData(tradeDate)
@@ -472,6 +719,13 @@ export default function TradeFlow() {
                 return <div className="py-20 text-center text-sm text-slate-400">暂无 TA 队列数据</div>
             }
             return <TAQueueTable items={taQueueData.queue} meta={taQueueData} />
+        }
+
+        if (activeTab === 'review') {
+            if (!reviewData || reviewData.status === 'no_data') {
+                return <div className="py-20 text-center text-sm text-slate-400">{tradeDate} 暂无复盘数据</div>
+            }
+            return <ReviewTab data={reviewData} />
         }
 
         return null
