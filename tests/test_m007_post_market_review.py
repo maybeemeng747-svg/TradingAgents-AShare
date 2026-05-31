@@ -495,6 +495,26 @@ class TestRunPostMarketReview:
         assert summary.total_candidates == 0
         assert summary.overall_hit_rate is None
 
+    def test_review_auto_computes_returns(self):
+        """run_post_market_review must call compute_returns() internally."""
+        perfs = [
+            CandidatePerformance(
+                symbol="000001.SZ", trade_date="2026-05-29",
+                entry_price=10.0, trigger_price=None, invalid_price=None,
+                strategy_tags=["VCP"], tier="A", next_day_close=10.5,
+            ),
+            CandidatePerformance(
+                symbol="000002.SZ", trade_date="2026-05-29",
+                entry_price=10.0, trigger_price=None, invalid_price=None,
+                strategy_tags=["VCP"], tier="A", next_day_close=9.5,
+            ),
+        ]
+        # Do NOT call compute_returns() — run_post_market_review should do it
+        summary = run_post_market_review(perfs, candidate_date="2026-05-29")
+        assert summary.overall_hit_count == 1
+        assert summary.overall_miss_count == 1
+        assert summary.avg_next_day_return is not None
+
     def test_review_auto_date(self):
         perfs = [
             CandidatePerformance(
@@ -590,6 +610,25 @@ class TestRenderReviewMarkdown:
         md = render_review_markdown(summary)
         assert "总候选数 | 0" in md
         assert "N/A" in md
+
+    def test_render_zero_percent_not_na(self):
+        """0.0% must render as '0.0%', not 'N/A%'. N/A is ok for genuinely missing data."""
+        perfs = [
+            CandidatePerformance(
+                symbol="000001.SZ", trade_date="2026-05-29",
+                entry_price=10.0, trigger_price=None, invalid_price=None,
+                strategy_tags=["VCP"], tier="A", next_day_close=10.0,  # 0% return
+            ),
+        ]
+        summary = run_post_market_review(perfs, candidate_date="2026-05-29", review_date="2026-05-30")
+        md = render_review_markdown(summary)
+        # 0.0% values must show as 0.0%, not N/A%
+        assert "总命中率 | 0.0%" in md
+        assert "平均次日收益 | 0.0%" in md
+        assert "| 0.0% | 100.0% | 0.0%" in md  # strategy row
+        # N/A is acceptable for genuinely missing 3d/5d data
+        assert "平均3日收益 | N/A%" in md
+        assert "平均5日收益 | N/A%" in md
 
     def test_render_strategy_table(self):
         perfs = [

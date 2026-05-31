@@ -302,6 +302,10 @@ def run_post_market_review(
     elif not candidate_date:
         candidate_date = review_date
 
+    # [M-007-fix] auto-compute returns before aggregation
+    for p in performances:
+        p.compute_returns()
+
     strategy_stats = compute_strategy_stats(performances)
     tier_stats = compute_tier_stats(performances)
 
@@ -360,11 +364,11 @@ def render_review_markdown(summary: ReviewSummary) -> str:
         f"| 命中数 | {summary.overall_hit_count} |",
         f"| 误报数 | {summary.overall_miss_count} |",
         f"| 失效数 | {summary.overall_invalidated_count} |",
-        f"| 总命中率 | {summary.overall_hit_rate or 'N/A'}% |",
-        f"| 总误报率 | {summary.overall_false_positive_rate or 'N/A'}% |",
-        f"| 平均次日收益 | {summary.avg_next_day_return or 'N/A'}% |",
-        f"| 平均3日收益 | {summary.avg_day3_return or 'N/A'}% |",
-        f"| 平均5日收益 | {summary.avg_day5_return or 'N/A'}% |",
+        f"| 总命中率 | {summary.overall_hit_rate if summary.overall_hit_rate is not None else 'N/A'}% |",
+        f"| 总误报率 | {summary.overall_false_positive_rate if summary.overall_false_positive_rate is not None else 'N/A'}% |",
+        f"| 平均次日收益 | {summary.avg_next_day_return if summary.avg_next_day_return is not None else 'N/A'}% |",
+        f"| 平均3日收益 | {summary.avg_day3_return if summary.avg_day3_return is not None else 'N/A'}% |",
+        f"| 平均5日收益 | {summary.avg_day5_return if summary.avg_day5_return is not None else 'N/A'}% |",
         "",
     ]
 
@@ -377,9 +381,9 @@ def render_review_markdown(summary: ReviewSummary) -> str:
         lines.append(
             f"| {tag} | {st.total_candidates} | {st.hit_count} | {st.miss_count} "
             f"| {st.no_data_count} | {st.invalidated_count} "
-            f"| {st.hit_rate or 'N/A'}% | {st.false_positive_rate or 'N/A'}% "
-            f"| {st.avg_next_day_return or 'N/A'}% | {st.avg_day3_return or 'N/A'}% "
-            f"| {st.avg_day5_return or 'N/A'}% |"
+            f"| {st.hit_rate if st.hit_rate is not None else 'N/A'}% | {st.false_positive_rate if st.false_positive_rate is not None else 'N/A'}% "
+            f"| {st.avg_next_day_return if st.avg_next_day_return is not None else 'N/A'}% | {st.avg_day3_return if st.avg_day3_return is not None else 'N/A'}% "
+            f"| {st.avg_day5_return if st.avg_day5_return is not None else 'N/A'}% |"
         )
     lines.append("")
 
