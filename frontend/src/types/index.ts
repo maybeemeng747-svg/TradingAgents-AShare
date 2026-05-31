@@ -711,3 +711,196 @@ export interface DebateMessage {
     isVerdict?: boolean
     horizon?: string
 }
+
+// TradeFlow Types
+export interface TradeFlowCandidateItem {
+    symbol: string
+    name: string
+    tier: string
+    composite_score: number
+    score: number
+    strategy_tags: string[]
+    primary_strategy: string
+    trigger_price: number | null
+    support_price: number | null
+    invalid_price: number | null
+    need_deep_ta: boolean
+    action: string
+    reason: string
+    observe_state: string
+    observe_trigger_count: number
+    observe_first_trigger_time: string
+    tradeflow_data_completeness: number
+    missing_data_fields: string[]
+    data_completeness: number
+    missing_evidence: string[]
+    game_balance: string
+    bull_case: string
+    bear_case: string
+    policy_case: string
+    fund_flow_case: string
+    why_deep_ta: string
+    why_not_deep_ta: string
+    risk_flags: string[]
+    policy_tags: string[]
+    version_score: number
+    narrative_score: number
+    fund_flow_anomaly_score: number
+    fund_flow_anomaly_tags: string[]
+    fund_flow_unit_verified: boolean
+    evidence_gate_applied: boolean
+    deep_ta_status: string
+    deep_ta_dispatch_reason: string
+    deep_ta_model: string
+    source: string
+    universe_sources: string[]
+    resonance_count: number
+    ta_budget_priority: number
+    tier_reason: string
+    missing_evidence_for_upgrade: string[]
+    created_at: string
+    updated_at: string
+}
+
+export interface TradeFlowCandidateDetail extends TradeFlowCandidateItem {
+    evidence: Record<string, unknown>
+    policy_evidence_refs: Array<Record<string, unknown>>
+    narrative_evidence_refs: Array<Record<string, unknown>>
+    narrative_reasons: string[]
+    risk_evidence_refs: Array<Record<string, unknown>>
+    risk_reasons: string[]
+    game_balance_refs: Array<Record<string, unknown>>
+    fund_flow_anomaly_refs: Array<Record<string, unknown>>
+    fund_flow_individual_summary: string
+    fund_flow_board_summary: string
+    signal_category_hits: string[]
+    positive_category_count: number
+    what_to_upgrade: string[]
+    deep_ta_report_path: string
+    deep_ta_dispatch_time: string
+    deep_ta_position_context: string
+}
+
+export interface TradeFlowSummary {
+    total_candidates: number
+    tier_a_count: number
+    tier_b_count: number
+    tier_c_count: number
+    need_deep_ta_count: number
+    avg_completeness: number
+}
+
+export interface TradeFlowDailyPlanResponse {
+    status: string
+    trade_date: string
+    mode: string
+    summary: string
+    candidates: TradeFlowCandidateItem[]
+    metadata: Record<string, unknown>
+    summary_agg: TradeFlowSummary
+    created_at: string
+}
+
+export interface TradeFlowCandidatesResponse {
+    status: string
+    trade_date: string
+    candidates: TradeFlowCandidateItem[]
+    summary_agg: TradeFlowSummary
+}
+
+export interface TradeFlowCandidateDetailResponse {
+    status: string
+    trade_date: string
+    candidate: TradeFlowCandidateDetail | null
+}
+
+export interface TradeFlowObserveItem {
+    symbol: string
+    name: string
+    observe_state: string
+    trigger_price: number | null
+    invalid_price: number | null
+    observe_trigger_count: number
+    observe_first_trigger_time: string
+    tier: string
+    composite_score: number
+    current_price: number | null
+    trigger_reason: string
+    strategy_tags: string[]
+}
+
+export interface TradeFlowObserveResponse {
+    status: string
+    trade_date: string
+    observe_items: TradeFlowObserveItem[]
+    triggered_count: number
+    invalidated_count: number
+    waiting_count: number
+}
+
+export interface TradeFlowTAQueueItem {
+    symbol: string
+    name: string
+    tier: string
+    ta_budget_priority: number
+    need_deep_ta: boolean
+    deep_ta_status: string
+    deep_ta_dispatch_reason: string
+    deep_ta_model: string
+    why_deep_ta: string
+    why_not_deep_ta: string
+    composite_score: number
+    tradeflow_data_completeness: number
+    evidence_gate_applied: boolean
+}
+
+export interface TradeFlowTAQueueResponse {
+    status: string
+    trade_date: string
+    queue: TradeFlowTAQueueItem[]
+    total_in_queue: number
+    dispatched_count: number
+    blocked_count: number
+    pending_count: number
+}
+
+export interface TradeFlowReviewItem {
+    symbol: string
+    name: string
+    plan_action: string
+    keep_observing: boolean
+    reason: string
+    tier: string
+    composite_score: number
+    strategy_tags: string[]
+    trigger_price: number | null
+    invalid_price: number | null
+    observe_state: string
+}
+
+export interface TradeFlowReviewResponse {
+    status: string
+    trade_date: string
+    reviewed_at: string
+    results: TradeFlowReviewItem[]
+    summary_agg: TradeFlowSummary
+}
+
+export interface DataHealthSource {
+    name: string
+    available: boolean
+    last_updated: string | null
+    record_count: number
+    error: string
+}
+
+export interface TradeFlowDataHealthResponse {
+    status: string
+    tradeflow_db_available: boolean
+    tradeflow_db_path: string
+    sources: DataHealthSource[]
+    latest_plan_date: string | null
+    latest_candidates_date: string | null
+    total_candidates_today: number
+    total_signals_today: number
+}

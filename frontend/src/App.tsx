@@ -8,6 +8,7 @@ import Reports from './pages/Reports'
 import Settings from './pages/Settings'
 import Portfolio from './pages/Portfolio'
 import TrackingBoard from './pages/TrackingBoard'
+import TradeFlow from './pages/TradeFlow'
 import Login from './pages/Login'
 import Feedback from './pages/Feedback'
 import Sponsor from './pages/Sponsor'
@@ -58,6 +59,7 @@ function App() {
                   <Route path="/tracking-board" element={<TrackingBoard />} />
                   <Route path="/analysis" element={<Analysis />} />
                   <Route path="/reports" element={<Reports />} />
+                  <Route path="/tradeflow" element={<TradeFlow />} />
                   <Route path="/portfolio" element={<Portfolio />} />
                   <Route path="/settings" element={<Settings />} />
                   <Route path="/feedback" element={<Feedback />} />
