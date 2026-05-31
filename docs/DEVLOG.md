@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-05-31 | TradeFlow 打不开排查：重启后端并修复默认 DB 路径
+
+- **执行者**：Codex
+- **问题**：
+  1. 8000 端口 uvicorn 仍是旧进程，`/v1/tradeflow/*` 未注册，请求被 SPA 兜底返回 HTML。
+  2. TradeFlow API 默认数据库路径误指向 `api/tradeflow.db`，实际数据库在项目根目录 `tradeflow.db`。
+  3. 根目录旧版 `tradeflow.db` 缺少 `composite_score` 等新字段，候选池查询直接 500。
+- **修改文件**：
+  - `api/services/tradeflow_service.py` — 默认 TradeFlow DB 路径改为项目根目录；候选池/Observe/TA 队列查询兼容旧表结构。
+  - `tests/test_ui001_tradeflow_api.py` — 增加默认 DB 路径与旧表结构回归测试。
+- **测试结果**：`pytest tests/test_ui001_tradeflow_api.py tests/test_tradeflow_*.py -q` 160 passed；`npm run build` 通过。
+
+---
+
 ## 2026-05-31 | UI-006 验收补修：TradeFlow 前端参数与数据健康字段对齐
 
 - **执行者**：Codex

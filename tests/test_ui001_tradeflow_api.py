@@ -31,6 +31,7 @@ from tradingagents.tradeflow.schemas import Candidate, CandidateSignal
 from tradingagents.tradeflow.plan_runner import save_plan, DailyPlan
 
 from api.services.tradeflow_service import (
+    _get_tradeflow_db_path,
     get_daily_plan,
     get_candidates,
     get_candidate_detail,
@@ -83,6 +84,61 @@ def sample_candidate():
     )
     c.signals = [CandidateSignal(strategy_tag="VCP", score=65.0, reason="VCP形态确认")]
     return c
+
+
+def test_default_tradeflow_db_path_points_to_project_root():
+    assert _get_tradeflow_db_path().endswith("TradingAgents-AShare/tradeflow.db")
+    assert not _get_tradeflow_db_path().endswith("TradingAgents-AShare/api/tradeflow.db")
+
+
+def test_legacy_tradeflow_candidate_schema_does_not_500(tmp_path):
+    db_path = str(tmp_path / "legacy_tradeflow.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE tradeflow_candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_date TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            name TEXT DEFAULT '',
+            source TEXT DEFAULT 'manual',
+            strategy_tags_json TEXT DEFAULT '[]',
+            score REAL DEFAULT 0.0,
+            status TEXT DEFAULT 'active',
+            trigger_price REAL,
+            support_price REAL,
+            invalid_price REAL,
+            need_deep_ta INTEGER DEFAULT 0,
+            evidence_json TEXT DEFAULT '{}',
+            risk_flags_json TEXT DEFAULT '[]',
+            created_at TEXT,
+            updated_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO tradeflow_candidates (
+            trade_date, symbol, name, strategy_tags_json, score, trigger_price, need_deep_ta, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("2026-05-31", "002353.SZ", "杰瑞股份", '["VCP"]', 55.0, 36.77, 1, "2026-05-31", "2026-05-31"),
+    )
+    conn.commit()
+    conn.close()
+
+    candidates = get_candidates("2026-05-31", tf_db_path=db_path)
+    observe = get_observe("2026-05-31", tf_db_path=db_path)
+    queue = get_ta_queue("2026-05-31", tf_db_path=db_path)
+
+    assert candidates["status"] == "ok"
+    assert candidates["candidates"][0]["symbol"] == "002353.SZ"
+    assert candidates["candidates"][0]["composite_score"] == 0.0
+    assert candidates["candidates"][0]["score"] == 55.0
+    assert observe["status"] == "ok"
+    assert observe["observe_items"][0]["symbol"] == "002353.SZ"
+    assert queue["status"] == "ok"
+    assert queue["queue"][0]["symbol"] == "002353.SZ"
 
 
 @pytest.fixture

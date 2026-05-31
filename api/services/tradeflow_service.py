@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 
 def _get_tradeflow_db_path() -> str:
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     env_path = os.environ.get("TRADEFLOW_DB_PATH", "")
     if env_path:
         return env_path
@@ -32,6 +32,14 @@ def _connect(tf_db_path: str = "") -> Optional[sqlite3.Connection]:
         return conn
     except Exception:
         return None
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return {row["name"] for row in rows}
+    except Exception:
+        return set()
 
 
 def _parse_json(value: Any, default: Any = None) -> Any:
@@ -249,22 +257,34 @@ def get_candidates(
         return {"status": "no_data", "trade_date": trade_date}
 
     try:
+        columns = _table_columns(conn, "tradeflow_candidates")
         conditions = ["trade_date = ?"]
         params: list = [trade_date]
-        if tier:
+        filter_tier_in_python = False
+        if tier and "tier" in columns:
             conditions.append("tier = ?")
             params.append(tier)
+        elif tier:
+            filter_tier_in_python = True
         if need_deep_ta is not None:
             conditions.append("need_deep_ta = ?")
             params.append(1 if need_deep_ta else 0)
 
+        order_cols = []
+        if "composite_score" in columns:
+            order_cols.append("composite_score DESC")
+        if "score" in columns:
+            order_cols.append("score DESC")
+        order_clause = f" ORDER BY {', '.join(order_cols)}" if order_cols else " ORDER BY updated_at DESC, created_at DESC"
         where = " AND ".join(conditions)
         rows = conn.execute(
-            f"SELECT * FROM tradeflow_candidates WHERE {where} ORDER BY composite_score DESC, score DESC",
+            f"SELECT * FROM tradeflow_candidates WHERE {where}{order_clause}",
             params,
         ).fetchall()
 
         items = [_row_to_candidate_item(r) for r in rows]
+        if filter_tier_in_python:
+            items = [it for it in items if it.get("tier") == tier]
         for it in items:
             it["action"] = _compute_action(it)
             it["reason"] = it.get("why_deep_ta") or it.get("why_not_deep_ta") or "候选观察"
@@ -312,9 +332,15 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
         return {"status": "no_data", "trade_date": trade_date}
 
     try:
+        columns = _table_columns(conn, "tradeflow_candidates")
+        conditions = ["trade_date = ?"]
+        params: list = [trade_date]
+        if "status" in columns:
+            conditions.append("status = 'active'")
+        order_clause = " ORDER BY composite_score DESC" if "composite_score" in columns else " ORDER BY updated_at DESC, created_at DESC"
         rows = conn.execute(
-            "SELECT * FROM tradeflow_candidates WHERE trade_date = ? AND status = 'active' ORDER BY composite_score DESC",
-            (trade_date,),
+            f"SELECT * FROM tradeflow_candidates WHERE {' AND '.join(conditions)}{order_clause}",
+            params,
         ).fetchall()
 
         items = []
@@ -363,8 +389,17 @@ def get_ta_queue(trade_date: str, tf_db_path: str = "") -> dict:
         return {"status": "no_data", "trade_date": trade_date}
 
     try:
+        columns = _table_columns(conn, "tradeflow_candidates")
+        order_cols = []
+        if "ta_budget_priority" in columns:
+            order_cols.append("ta_budget_priority DESC")
+        if "composite_score" in columns:
+            order_cols.append("composite_score DESC")
+        if "score" in columns:
+            order_cols.append("score DESC")
+        order_clause = f" ORDER BY {', '.join(order_cols)}" if order_cols else " ORDER BY updated_at DESC, created_at DESC"
         rows = conn.execute(
-            "SELECT * FROM tradeflow_candidates WHERE trade_date = ? AND need_deep_ta = 1 ORDER BY ta_budget_priority DESC, composite_score DESC",
+            f"SELECT * FROM tradeflow_candidates WHERE trade_date = ? AND need_deep_ta = 1{order_clause}",
             (trade_date,),
         ).fetchall()
 
