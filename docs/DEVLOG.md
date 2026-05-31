@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-05-31 | T-000: 自动开发巡检基线脚本
+
+- **执行者**：OpenCode
+- **任务**：T-000 — 为 OpenClaw 自动开发建立每日/每轮固定巡检清单
+- **修改文件**：
+  - `scripts/preflight_check.sh` — 新建：[T-000] 自动开发巡检基线脚本
+    - 7 个巡检模块：Git 状态、变更摘要与敏感风险标记、测试健康、数据库安全、Token/API 消耗风险、运行产物清理、文档一致性
+    - Exit code: 0=通过, 1=有风险需人工确认, 2=严重风险禁止继续
+    - 支持 `--skip-tests`（跳过测试）和 `--quiet`（减少输出）
+    - 敏感文件检测：prompts/、tradingagents.db、.env、eval_results/、logs/、模型配置、scheduler/
+    - LLM 调用模式扫描：检测未提交变更中新增的 ChatOpenAI/langchain/anthropic/zhipuai 调用
+    - 高成本模型引用检测：deepseek/gpt-4/claude-3
+    - Scheduler 进程检测与 OpenClaw cron 扫描
+    - 测试模块感知：TradeFlow 改动运行 tradeflow 测试、执行层改动运行 readiness/G001 测试
+  - `docs/TASKS.md` — T-000 状态从 `ready` 更新为 `done`
+- **验证**：`bash -n scripts/preflight_check.sh` 无语法错误；脚本在当前工作区运行输出正确报告，exit code 1（scheduler 运行中为 WARN 级别）
+
+---
+
 ## 2026-05-31 | UI-007 完成：TradeFlow 被过滤候选可追溯展示
 
 - **执行者**：OpenCode

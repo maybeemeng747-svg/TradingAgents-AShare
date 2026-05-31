@@ -156,6 +156,23 @@ if [ -d "$LOCK_DIR" ]; then
     exit 1
 fi
 
+# ─── 0a. 巡检基线（T-000）────────────────────────────────
+if [ -x "${SCRIPT_DIR}/preflight_check.sh" ]; then
+    log "运行巡检基线检查..."
+    set +e
+    "${SCRIPT_DIR}/preflight_check.sh" --skip-tests --quiet
+    PREFLIGHT_EXIT=$?
+    set -e
+    if [ $PREFLIGHT_EXIT -eq 2 ]; then
+        err "巡检基线检查发现严重风险（exit=2），禁止继续"
+        exit 1
+    fi
+    if [ $PREFLIGHT_EXIT -eq 1 ]; then
+        warn "巡检基线检查发现风险项（exit=1），继续但需注意"
+    fi
+    log "巡检基线检查完成（exit=$PREFLIGHT_EXIT）"
+fi
+
 DIRTY=$(git status --porcelain | head -5 || true)
 if [ -n "$DIRTY" ]; then
     err "工作区不干净，退出以避免覆盖用户改动："
