@@ -24,14 +24,212 @@
 
 ### 当前优先队列
 
-1. `UI-001`：TradeFlow 只读 API 查询层（P1，done e6d3269）。
-2. `UI-002`：前端 TradeFlow 页面骨架与候选池表格（P1，done edf69d9）。
-3. `UI-003`：候选详情抽屉：证据、博弈、门禁解释（P1，done 9ee6aea）。
-4. `UI-004`：盘中 Observe 与 TA 队列只读面板（P2，done fa75389）。
-5. `UI-005`：盘后 Review 前端页面（P2，done 401fb7c）。
-6. `UI-006`：数据源健康前端面板（P2，done 52d5f5e）。
-7. `UI-007`：TradeFlow 被过滤候选可追溯展示（P1，done）。
-8. `UI-008`：TradeFlow 候选字段规范化与名称回填（P1，done）。
+1. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，ready）。
+2. `H-002`：政策连续性与级别权重评分（P1，ready，依赖 H-001）。
+3. `H-003`：产业链受益路径与标杆候选映射（P1，ready，依赖 H-001）。
+4. `H-004`：左侧埋伏评分与候选类型分流（P1，ready，依赖 H-002/H-003）。
+5. `H-005`：TradeFlow 前端昊天候选池视图（P2，ready，依赖 H-004）。
+6. `H-006`：昊天候选池回放评估与反证机制（P2，ready，依赖 H-004）。
+
+---
+
+## H. 昊天雷达 / 政策左侧埋伏任务池（2026-05-31 新增）
+
+> 目标：把 TradeFlow 的主目标从“技术形态候选池”升级为“政策版本下的中线候选识别”。技术信号只作为执行层确认，不作为第一性筛选。所有结论必须绑定政策/事件/产业/公司证据，不允许凭空揣测。
+
+### H-001: 昊天雷达 v0 数据模型与信号分类（P1）
+- **描述**：新增政策意图识别的基础数据结构，把政策/事件/产业/公司证据统一归档为可评分的 `MandateSignal`，为后续“昊天意志评分”提供输入。
+- **优先级**：P1
+- **状态**：ready
+- **背景**：
+  - 当前 TradeFlow 已有 `POLICY_VERSION`，但还是关键词加分，不能表达政策级别、连续性、产业链位置和公司受益路径。
+  - 昊天战法第一步不是看 K 线，而是识别“当前版本要扶什么方向、哪些公司可能成为标杆”。
+- **执行约束**：
+  - 不调用 LLM。
+  - 不触发 TA。
+  - 不输出买卖建议。
+  - 不改 `tradingagents/prompts/`。
+  - 不改生产 `tradingagents.db` schema；新增数据优先放在 TradeFlow 自有模块/SQLite 表或纯函数结构中。
+- **实现要点**：
+  1. 新增 `tradingagents/tradeflow/mandate_signal.py` 或同等模块。
+  2. 定义 `MandateSignal` 字段：
+     - `symbol/topic/title/source/source_level/date/evidence_text/evidence_url/event_type/direction/confidence`
+     - `policy_tags/industry_tags/company_role/raw_refs`
+  3. 定义来源级别枚举：
+     - `CENTRAL`、`STATE_COUNCIL`、`MINISTRY`、`LOCAL_GOV`、`EXCHANGE`、`SOE_GROUP`、`COMPANY_NOTICE`、`MEDIA`
+  4. 定义信号类型：
+     - `POLICY_DOCUMENT`、`MEETING_SIGNAL`、`INDUSTRY_PLAN`、`SUBSIDY_SUPPORT`、`PROCUREMENT_ORDER`、`LICENSE_APPROVAL`、`M_AND_A_RESTRUCTURING`、`SOE_REFORM`、`BUYBACK_RATING`
+  5. 从现有 event source / manual event overrides 转换出 `MandateSignal`，不能丢失原始 title/source/date。
+  6. 所有无法识别来源级别的信号默认低权重，不得按高级别政策处理。
+- **验收方式**：
+  - 构造国务院/工信部/地方/公司公告四类事件，能生成不同 `source_level`。
+  - 无来源、无日期、无原文标题的事件不得生成高置信信号。
+  - 同一事件按 symbol 隔离，不串票。
+  - `pytest tests/test_h001_mandate_signal.py -q` 或新增同等测试通过。
+- **代码标注要求**：`# [H-001] mandate_signal_model`
+
+### H-002: 政策连续性与级别权重评分（P1）
+- **描述**：实现 `Mandate Score` 的第一层：识别某个政策/产业主题是否持续升温，以及其信号来自什么级别的来源。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`H-001` 完成。
+- **执行约束**：
+  - 规则评分，不调用 LLM。
+  - 不做全网抓取；只消费已有 event source/manual events/公告标题。
+  - 缺少原始证据不得给高分。
+- **实现要点**：
+  1. 新增 `mandate_score.py`，输出：
+     - `mandate_score`
+     - `policy_continuity_score`
+     - `source_authority_score`
+     - `topic_heat_delta`
+     - `mandate_reasons`
+     - `mandate_evidence_refs`
+  2. 级别权重建议：
+     - 中央/国务院 > 部委 > 交易所/国资体系 > 地方政府 > 公司公告 > 媒体。
+  3. 连续性规则：
+     - 同主题多日、多来源、多层级重复出现加分。
+     - 单日孤立标题不进入高分。
+     - 重复转载/同源重复不得无限叠加。
+  4. 支持主题词表 v0：
+     - 新质生产力、低空经济、机器人、算力、军工、半导体、国产替代、并购重组、国企改革、出海、中特估、AI 应用、数据要素。
+  5. 输出“为什么是当前版本方向/为什么只是噪声”的可解释字段。
+- **验收方式**：
+  - 多来源同主题信号分数高于单一公司公告。
+  - 同源重复标题不会无限加分。
+  - 媒体标题无政策原文时不得高置信。
+  - 结果包含 evidence refs。
+- **代码标注要求**：`# [H-002] mandate_policy_continuity`
+
+### H-003: 产业链受益路径与标杆候选映射（P1）
+- **描述**：把政策主题映射到产业链环节和公司角色，区分真正受益、间接受益和蹭概念，让昊天候选池不是只靠题材关键词。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`H-001` 完成。
+- **执行约束**：
+  - 第一版使用可维护静态映射 + 事件证据，不调用 LLM。
+  - 不声称公司必然受益，只输出 `beneficiary_path` 与证据强弱。
+  - 不改 prompts。
+- **实现要点**：
+  1. 新增 `industry_mandate_map.py`，维护主题到产业链环节的映射：
+     - 例如低空经济：整机、空管、运营、材料、导航、基础设施。
+     - 机器人：减速器、伺服、控制器、本体、传感器、应用场景。
+     - 算力：芯片、服务器、液冷、IDC、光模块、电源。
+  2. 输出公司角色：
+     - `LEADER`、`CORE_SUPPLIER`、`INFRA_PROVIDER`、`APPLICATION_SCENE`、`PERIPHERAL`、`CONCEPT_ONLY`、`UNKNOWN`
+  3. 从公司公告/事件标题/行业标签中提取受益路径证据。
+  4. 没有公司层证据时，只能标记 `UNKNOWN/CONCEPT_ONLY`，不得直接进入高优先级。
+  5. 为 Candidate 增加或复用字段：
+     - `beneficiary_path`
+     - `company_role`
+     - `mandate_topic`
+     - `mandate_evidence_refs`
+- **验收方式**：
+  - 构造低空经济核心供应商事件，输出明确 `beneficiary_path`。
+  - 只有“涉足/布局/关注”等弱词时标记为 `CONCEPT_ONLY` 或低置信。
+  - 无公司证据时不进入 A 层。
+- **代码标注要求**：`# [H-003] mandate_beneficiary_map`
+
+### H-004: 左侧埋伏评分与候选类型分流（P1）
+- **描述**：引入昊天候选池的核心分类：把候选分为政策左侧埋伏、政策右侧确认、技术交易、伪政策题材、过热不追。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`H-002`、`H-003` 完成。
+- **执行约束**：
+  - 不输出买入/卖出强建议。
+  - 不自动触发 TA。
+  - 不把纯技术票混入政策左侧池。
+  - 所有高分必须有证据 refs。
+- **实现要点**：
+  1. 新增候选类型字段：
+     - `POLICY_AMBUSH`
+     - `POLICY_CONFIRM`
+     - `TECH_TRADE`
+     - `EVENT_WATCH`
+     - `PSEUDO_POLICY`
+     - `OVERHEATED_AVOID`
+  2. 新增左侧埋伏评分：
+     - `ambush_score`
+     - `mandate_score`
+     - `beneficiary_score`
+     - `pricing_gap_score`
+     - `overheat_penalty`
+  3. 左侧埋伏可以不要求突破，但必须满足：
+     - 政策连续性足够。
+     - 公司受益路径不为空。
+     - 风险标签不过重。
+     - 未明显过热。
+  4. 右侧确认由技术/资金确认辅助，不再作为主筛选第一性。
+  5. `need_deep_ta` 分流：
+     - `POLICY_AMBUSH`：优先进入“中线研究/政策验证”队列。
+     - `POLICY_CONFIRM`：可进入 TA 深度分析队列。
+     - `TECH_TRADE`：标记为短线/做 T，不混入主池。
+- **验收方式**：
+  - 政策强、公司路径明确、技术未突破的样本进入 `POLICY_AMBUSH`。
+  - 纯 VCP 无政策证据的样本只能是 `TECH_TRADE` 或 B/C 观察。
+  - 过热/高位/风险拥挤样本标记 `OVERHEATED_AVOID` 或降级。
+  - Daily Plan 与 candidates API 返回候选类型和评分。
+- **代码标注要求**：`# [H-004] mandate_ambush_score`
+
+### H-005: TradeFlow 前端昊天候选池视图（P2）
+- **描述**：在 TradeFlow 前端增加“昊天雷达/政策左侧”视图，把政策主题、受益路径、候选类型、证据和下一步验证条件展示出来。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：`H-004` 完成。
+- **执行约束**：
+  - 不做花哨营销页，保持工作台信息密度。
+  - 不出现强买卖词。
+  - 不隐藏证据缺口。
+- **实现要点**：
+  1. 候选池增加模式筛选：
+     - 全部、昊天左侧、政策确认、技术交易、事件观察、过热规避。
+  2. 表格新增列：
+     - `candidate_type`
+     - `mandate_score`
+     - `ambush_score`
+     - `mandate_topic`
+     - `company_role`
+     - `beneficiary_path`
+  3. 详情抽屉新增“政策逻辑”区：
+     - 政策来源级别
+     - 连续性证据
+     - 公司受益路径
+     - 缺什么验证
+     - 为什么不是单纯技术交易
+  4. 空状态说明：如果无昊天候选，显示是政策源不足、公司路径不足、还是都已过热。
+- **验收方式**：
+  - mock 三类候选分别正确展示。
+  - 长文本不撑破表格。
+  - `npm run build` 通过。
+- **代码标注要求**：`// [H-005] mandate_radar_ui`
+
+### H-006: 昊天候选池回放评估与反证机制（P2）
+- **描述**：建立昊天候选池的回放验证机制，避免系统越做越玄。每个高分政策候选都要能被后续走势、公告兑现、政策延续或反证记录检验。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：`H-004` 完成。
+- **执行约束**：
+  - 不做收益承诺。
+  - 不写生产历史回测结果目录 `eval_results/`。
+  - 不调用 LLM。
+- **实现要点**：
+  1. 新增回放脚本或服务：
+     - 输入某日昊天候选池。
+     - 观察 5/10/20/60 日后表现。
+     - 记录是否出现政策二次确认、公告兑现、趋势确认、风险反证。
+  2. 指标：
+     - 后续最大涨幅/最大回撤。
+     - 是否跑赢行业/指数。
+     - 政策信号是否延续。
+     - 公司受益是否兑现。
+  3. 输出反证原因：
+     - 政策消退、公司路径伪、过热回撤、基本面雷、资金不认。
+  4. 形成 fixtures，持续修正 `H-002/H-003/H-004` 权重。
+- **验收方式**：
+  - 用固定 fixtures 回放，输出稳定指标。
+  - 0% 显示为 `0.0%`，无数据显示为 `N/A`。
+  - 不修改 `eval_results/`。
+- **代码标注要求**：`# [H-006] mandate_replay_eval`
 
 ---
 
