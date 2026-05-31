@@ -13,6 +13,8 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Optional
 
+from .symbol_utils import normalize_tradeflow_symbol  # [UI-008] tradeflow_field_normalization
+
 logger = logging.getLogger(__name__)
 
 
@@ -66,10 +68,8 @@ def _bypass_proxy() -> None:
 
 
 def _normalize_symbol(code: str) -> str:
-    raw = code.strip()
-    if "." in raw:
-        return raw.split(".")[0]
-    return raw
+    # [UI-008] tradeflow_field_normalization — use unified normalization
+    return normalize_tradeflow_symbol(code.strip())
 
 
 def _date_str(ymd: str) -> str:
@@ -390,7 +390,7 @@ def fetch_daily_events_detailed(date: str) -> EventSourceResult:
     # Deduplicate and group by symbol
     seen_titles_by_symbol: dict[str, set[str]] = {}
     for item in all_items:
-        sym = item.symbol
+        sym = normalize_tradeflow_symbol(item.symbol)  # [UI-008] tradeflow_field_normalization
         if not sym:
             continue
         if sym not in result.items_by_symbol:

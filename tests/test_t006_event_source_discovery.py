@@ -35,9 +35,9 @@ from tradingagents.tradeflow.discovery import run_discovery
 
 
 MOCK_EVENT_ITEMS = {
-    "002138": [
+    "002138.SZ": [
         EventItem(
-            symbol="002138",
+            symbol="002138.SZ",
             name="顺络电子",
             event_type="buyback",
             title="回购进展公告",
@@ -46,7 +46,7 @@ MOCK_EVENT_ITEMS = {
             source="eastmoney",
         ),
         EventItem(
-            symbol="002138",
+            symbol="002138.SZ",
             name="顺络电子",
             event_type="notice",
             title="关于回购实施进展",
@@ -55,9 +55,9 @@ MOCK_EVENT_ITEMS = {
             source="eastmoney",
         ),
     ],
-    "600519": [
+    "600519.SH": [
         EventItem(
-            symbol="600519",
+            symbol="600519.SH",
             name="贵州茅台",
             event_type="rating",
             title="减持评级",
@@ -167,28 +167,28 @@ class TestFetchDailyEventsDetailed:
 
     def test_dedup_by_title(self):
         items = [
-            EventItem(symbol="002138", title="回购进展", event_type="buyback", source="eastmoney"),
-            EventItem(symbol="002138", title="回购进展", event_type="buyback", source="eastmoney"),
-            EventItem(symbol="002138", title="季报披露", event_type="notice", source="eastmoney"),
+            EventItem(symbol="002138.SZ", title="回购进展", event_type="buyback", source="eastmoney"),
+            EventItem(symbol="002138.SZ", title="回购进展", event_type="buyback", source="eastmoney"),
+            EventItem(symbol="002138.SZ", title="季报披露", event_type="notice", source="eastmoney"),
         ]
         with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw", return_value=items):
             with patch("tradingagents.tradeflow.event_source._fetch_buyback_events_raw", return_value=[]):
                 with patch("tradingagents.tradeflow.event_source._fetch_rating_events_raw", return_value=[]):
                     result = fetch_daily_events_detailed("20260528")
         assert result.status == EventSourceStatus.OK
-        assert len(result.items_by_symbol["002138"]) == 2
-        assert result.events_map["002138"] == ["回购进展", "季报披露"]
+        assert len(result.items_by_symbol["002138.SZ"]) == 2
+        assert result.events_map["002138.SZ"] == ["回购进展", "季报披露"]
 
     def test_items_grouped_by_symbol(self):
         items = [
-            EventItem(symbol="002138", title="回购", event_type="buyback", source="eastmoney"),
-            EventItem(symbol="600519", title="评级", event_type="rating", source="cninfo"),
+            EventItem(symbol="002138.SZ", title="回购", event_type="buyback", source="eastmoney"),
+            EventItem(symbol="600519.SH", title="评级", event_type="rating", source="cninfo"),
         ]
         with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw", return_value=items):
             with patch("tradingagents.tradeflow.event_source._fetch_buyback_events_raw", return_value=[]):
                 with patch("tradingagents.tradeflow.event_source._fetch_rating_events_raw", return_value=[]):
                     result = fetch_daily_events_detailed("20260528")
-        assert set(result.items_by_symbol.keys()) == {"002138", "600519"}
+        assert set(result.items_by_symbol.keys()) == {"002138.SZ", "600519.SH"}
         assert result.symbols_count == 2
 
 
@@ -204,7 +204,7 @@ class TestPlanRunnerEventSourceFailure:
                 mock_eval.return_value = (None, "无策略命中")
                 plan = generate_daily_plan(
                     trade_date="2026-05-28",
-                    symbols=["002138"],
+                    symbols=["002138.SZ"],
                     candidates=None,
                     use_event_source=True,
                 )
@@ -220,15 +220,15 @@ class TestPlanRunnerEventSourceFailure:
                 error_message="timeout",
             )
             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
-                mock_eval.return_value = (_mock_candidate("002138", score=70.0), "")
+                mock_eval.return_value = (_mock_candidate("002138.SZ", score=70.0), "")
                 plan = generate_daily_plan(
                     trade_date="2026-05-28",
-                    symbols=["002138"],
+                    symbols=["002138.SZ"],
                     candidates=None,
                     use_event_source=True,
                 )
         plan_symbols = {e["symbol"] for e in plan.candidates}
-        assert "002138" in plan_symbols
+        assert "002138.SZ" in plan_symbols
 
     def test_no_event_source_status_not_queried(self):
         """When use_event_source=False, status should be NOT_QUERIED."""
@@ -236,7 +236,7 @@ class TestPlanRunnerEventSourceFailure:
             mock_eval.return_value = (None, "无策略命中")
             plan = generate_daily_plan(
                 trade_date="2026-05-28",
-                symbols=["002138"],
+                symbols=["002138.SZ"],
                 candidates=None,
                 use_event_source=False,
             )
@@ -261,7 +261,7 @@ class TestPlanRunnerEventMetadata:
                     use_event_source=True,
                 )
         entries_by_sym = {e["symbol"]: e for e in plan.candidates}
-        entry_002138 = entries_by_sym.get("002138")
+        entry_002138 = entries_by_sym.get("002138.SZ")
         assert entry_002138 is not None
         assert "event_titles" in entry_002138
         assert "回购进展公告" in entry_002138["event_titles"]
@@ -277,7 +277,7 @@ class TestPlanRunnerEventMetadata:
             mock_fetch.return_value = _make_event_result()
             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
                 def fake_eval(symbol, **kwargs):
-                    if symbol == "600519":
+                    if symbol == "600519.SH":
                         return _mock_candidate(symbol, score=55.0), ""
                     return None, "无策略命中"
                 mock_eval.side_effect = fake_eval
@@ -288,7 +288,7 @@ class TestPlanRunnerEventMetadata:
                     use_event_source=True,
                 )
         entries_by_sym = {e["symbol"]: e for e in plan.candidates}
-        entry = entries_by_sym.get("600519")
+        entry = entries_by_sym.get("600519.SH")
         assert entry is not None
         details = entry["event_details"]
         assert len(details) == 1
@@ -306,12 +306,12 @@ class TestPlanRunnerEventMetadata:
                 mock_eval.side_effect = fake_eval
                 plan = generate_daily_plan(
                     trade_date="2026-05-28",
-                    symbols=["300999"],
+                    symbols=["300999.SZ"],
                     candidates=None,
                     use_event_source=True,
                 )
         entries_by_sym = {e["symbol"]: e for e in plan.candidates}
-        entry = entries_by_sym.get("300999")
+        entry = entries_by_sym.get("300999.SZ")
         assert entry is not None
         assert "event_titles" not in entry
         assert "event_count" not in entry
@@ -349,13 +349,13 @@ class TestPlanRunnerEventOverrides:
             for call_item in mock_eval.call_args_list:
                 sym = call_item.kwargs.get("symbol", "")
                 ev_overrides = call_item.kwargs.get("event_overrides")
-                if sym == "002138":
+                if sym == "002138.SZ":
                     assert ev_overrides is not None
                     titles = [ev["title"] for ev in ev_overrides]
                     assert "回购进展公告" in titles
                     types = [ev["event_type"] for ev in ev_overrides]
                     assert "buyback" in types
-                elif sym == "600519":
+                elif sym == "600519.SH":
                     assert ev_overrides is not None
                     assert any(ev["direction"] == "bearish" for ev in ev_overrides)
 
@@ -367,7 +367,7 @@ class TestPlanRunnerEventOverrides:
                 mock_eval.return_value = (None, "无策略命中")
                 plan = generate_daily_plan(
                     trade_date="2026-05-28",
-                    symbols=["002138", "600519"],
+                    symbols=["002138.SZ", "600519.SH"],
                     candidates=None,
                     use_event_source=True,
                 )
@@ -375,7 +375,7 @@ class TestPlanRunnerEventOverrides:
                 sym = call_item.kwargs.get("symbol", "")
                 ev_overrides = call_item.kwargs.get("event_overrides") or []
                 override_syms = {ev.get("symbol", "") for ev in ev_overrides}
-                if sym in ("002138", "600519"):
+                if sym in ("002138.SZ", "600519.SH"):
                     assert override_syms == {sym}, f"{sym} has cross-contamination: {override_syms}"
 
 
@@ -391,7 +391,7 @@ class TestDiscoveryEventSourceFailure:
                 mock_eval.return_value = (None, "无策略命中")
                 result = run_discovery(
                     trade_date="2026-05-28",
-                    symbols=["002138"],
+                    symbols=["002138.SZ"],
                     use_event_source=True,
                 )
         assert result is not None
@@ -417,7 +417,7 @@ class TestDiscoveryEventSourceFailure:
             mock_fetch.return_value = _make_event_result()
             with patch("tradingagents.tradeflow.discovery.evaluate_symbol") as mock_eval:
                 def fake_eval(symbol, **kwargs):
-                    if symbol == "002138":
+                    if symbol == "002138.SZ":
                         return _mock_candidate(symbol, score=65.0), ""
                     return None, "无策略命中"
                 mock_eval.side_effect = fake_eval
@@ -427,7 +427,7 @@ class TestDiscoveryEventSourceFailure:
                     use_event_source=True,
                 )
         entries_by_sym = {e["symbol"]: e for e in result.candidates}
-        entry = entries_by_sym.get("002138")
+        entry = entries_by_sym.get("002138.SZ")
         assert entry is not None
         assert "event_titles" in entry
         assert len(entry["event_titles"]) == 2
@@ -440,7 +440,7 @@ class TestDiscoveryEventSourceFailure:
             mock_eval.return_value = (None, "无策略命中")
             result = run_discovery(
                 trade_date="2026-05-28",
-                symbols=["002138"],
+                symbols=["002138.SZ"],
                 use_event_source=False,
             )
         assert result.metadata["event_source"]["status"] == "NOT_QUERIED"
@@ -461,7 +461,7 @@ class TestDiscoveryEventOverrides:
             for call_item in mock_eval.call_args_list:
                 sym = call_item.kwargs.get("symbol", "")
                 ev_overrides = call_item.kwargs.get("event_overrides")
-                if sym == "600519" and ev_overrides:
+                if sym == "600519.SH" and ev_overrides:
                     assert any(ev["direction"] == "bearish" for ev in ev_overrides)
                     assert any(ev["event_type"] == "rating" for ev in ev_overrides)
 
@@ -473,14 +473,14 @@ class TestDiscoveryEventOverrides:
                 mock_eval.return_value = (None, "无策略命中")
                 result = run_discovery(
                     trade_date="2026-05-28",
-                    symbols=["002138", "600519"],
+                    symbols=["002138.SZ", "600519.SH"],
                     use_event_source=True,
                 )
             for call_item in mock_eval.call_args_list:
                 sym = call_item.kwargs.get("symbol", "")
                 ev_overrides = call_item.kwargs.get("event_overrides") or []
                 override_syms = {ev.get("symbol", "") for ev in ev_overrides}
-                if sym in ("002138", "600519"):
+                if sym in ("002138.SZ", "600519.SH"):
                     assert override_syms == {sym}
 
 
@@ -490,13 +490,13 @@ class TestDiscoveryEventOverrides:
 def _make_partial_result():
     """Event source result with partial failure (notice failed, buyback/rating OK)."""
     items = [
-        EventItem(symbol="002138", title="回购进展", event_type="buyback",
+        EventItem(symbol="002138.SZ", title="回购进展", event_type="buyback",
                   direction="bullish", source="eastmoney", date="2026-05-28"),
     ]
     return EventSourceResult(
         status=EventSourceStatus.PARTIAL,
-        events_map={"002138": ["回购进展"]},
-        items_by_symbol={"002138": items},
+        events_map={"002138.SZ": ["回购进展"]},
+        items_by_symbol={"002138.SZ": items},
         error_message="notice: timeout",
         event_count=1,
         symbols_count=1,
@@ -571,9 +571,9 @@ class TestT007SubFetchFailureStatus:
     def test_all_succeed_with_events_returns_ok(self):
         """All sub-fetches succeed and return events → OK with events."""
         items = [
-            EventItem(symbol="002138", title="回购", event_type="buyback",
+            EventItem(symbol="002138.SZ", title="回购", event_type="buyback",
                       direction="bullish", source="eastmoney"),
-            EventItem(symbol="600519", title="评级", event_type="rating",
+            EventItem(symbol="600519.SH", title="评级", event_type="rating",
                       direction="bearish", source="cninfo"),
         ]
         with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw", return_value=items):
@@ -587,7 +587,7 @@ class TestT007SubFetchFailureStatus:
     def test_failed_sub_fetch_items_still_included(self):
         """Items from successful sub-fetches are still included even when some fail."""
         notice_items = [
-            EventItem(symbol="002138", title="公告", event_type="notice",
+            EventItem(symbol="002138.SZ", title="公告", event_type="notice",
                       direction="neutral", source="eastmoney"),
         ]
         with patch("tradingagents.tradeflow.event_source._fetch_notice_events_raw", return_value=notice_items):
@@ -595,7 +595,7 @@ class TestT007SubFetchFailureStatus:
                 with patch("tradingagents.tradeflow.event_source._fetch_rating_events_raw", return_value=[]):
                     result = fetch_daily_events_detailed("20260528")
         assert result.status == EventSourceStatus.PARTIAL
-        assert "002138" in result.items_by_symbol
+        assert "002138.SZ" in result.items_by_symbol
         assert result.event_count == 1
 
     def test_source_statuses_always_has_three_entries(self):
@@ -628,7 +628,7 @@ class TestT007PlanRunnerMetadata:
                 mock_eval.return_value = (None, "无策略命中")
                 plan = generate_daily_plan(
                     trade_date="2026-05-28",
-                    symbols=["002138"],
+                    symbols=["002138.SZ"],
                     candidates=None,
                     use_event_source=True,
                 )
@@ -647,7 +647,7 @@ class TestT007PlanRunnerMetadata:
                 mock_eval.return_value = (None, "无策略命中")
                 plan = generate_daily_plan(
                     trade_date="2026-05-28",
-                    symbols=["002138"],
+                    symbols=["002138.SZ"],
                     candidates=None,
                     use_event_source=True,
                 )
@@ -678,7 +678,7 @@ class TestT007PlanRunnerMetadata:
             mock_eval.return_value = (None, "无策略命中")
             plan = generate_daily_plan(
                 trade_date="2026-05-28",
-                symbols=["002138"],
+                symbols=["002138.SZ"],
                 candidates=None,
                 use_event_source=False,
             )
@@ -699,7 +699,7 @@ class TestT007DiscoveryMetadata:
                 mock_eval.return_value = (None, "无策略命中")
                 result = run_discovery(
                     trade_date="2026-05-28",
-                    symbols=["002138"],
+                    symbols=["002138.SZ"],
                     use_event_source=True,
                 )
         es = result.metadata["event_source"]
@@ -715,7 +715,7 @@ class TestT007DiscoveryMetadata:
                 mock_eval.return_value = (None, "无策略命中")
                 result = run_discovery(
                     trade_date="2026-05-28",
-                    symbols=["002138"],
+                    symbols=["002138.SZ"],
                     use_event_source=True,
                 )
         es = result.metadata["event_source"]
@@ -744,7 +744,7 @@ class TestT007DiscoveryMetadata:
             mock_eval.return_value = (None, "无策略命中")
             result = run_discovery(
                 trade_date="2026-05-28",
-                symbols=["002138"],
+                symbols=["002138.SZ"],
                 use_event_source=False,
             )
         es = result.metadata["event_source"]

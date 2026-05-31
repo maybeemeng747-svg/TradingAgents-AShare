@@ -186,9 +186,9 @@ def run_discovery(
 
         # [T-006] event_source_discovery — generate event_overrides from EventItem data
         sym_event_overrides = list(filtered_overrides) if filtered_overrides else []
-        sym_bare = symbol_bare_code(sym)  # [UI-008] event map uses bare codes
-        if sym_bare in event_items_by_symbol:
-            for ev_item in event_items_by_symbol[sym_bare]:
+        # [UI-008] event map now uses normalized symbols
+        if sym in event_items_by_symbol:
+            for ev_item in event_items_by_symbol[sym]:
                 sym_event_overrides.append({
                     "symbol": sym,
                     "title": ev_item.title,
@@ -199,7 +199,7 @@ def run_discovery(
                 })
         sym_event_overrides_final = sym_event_overrides if sym_event_overrides else None
 
-        sym_news = events_map.get(sym_bare) if events_map else None  # [UI-008] bare code lookup
+        sym_news = events_map.get(sym) if events_map else None  # [UI-008] normalized symbol lookup
 
         # [T-003] fund_flow_anomaly_pool — get per-symbol fund flow data
         sym_ff = fund_flow_map.get(sym, {}) if fund_flow_map else {}
@@ -220,8 +220,8 @@ def run_discovery(
             if item.get("universe_sources"):
                 c.universe_sources = item["universe_sources"]  # [M-003]
             # [T-006] event_source_discovery — attach event items for discovery entry
-            if sym_bare in event_items_by_symbol:
-                c._event_items = event_items_by_symbol[sym_bare]  # type: ignore[attr-defined]
+            if sym in event_items_by_symbol:
+                c._event_items = event_items_by_symbol[sym]  # type: ignore[attr-defined]
             candidates.append(c)
         else:
             filtered.append(FilteredSymbol(

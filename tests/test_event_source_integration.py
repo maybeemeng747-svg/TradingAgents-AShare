@@ -24,13 +24,13 @@ from tradingagents.tradeflow.event_source import EventItem, EventSourceResult, E
 
 
 MOCK_EVENTS = {
-    "002138": ["回购进展公告"],
-    "600519": ["减持评级"],
+    "002138.SZ": ["回购进展公告"],
+    "600519.SH": ["减持评级"],
 }
 
 MOCK_ITEMS_BY_SYMBOL = {
-    "002138": [EventItem(symbol="002138", title="回购进展公告", event_type="buyback", direction="bullish", source="eastmoney")],
-    "600519": [EventItem(symbol="600519", title="减持评级", event_type="rating", direction="bearish", source="cninfo")],
+    "002138.SZ": [EventItem(symbol="002138.SZ", title="回购进展公告", event_type="buyback", direction="bullish", source="eastmoney")],
+    "600519.SH": [EventItem(symbol="600519.SH", title="减持评级", event_type="rating", direction="bearish", source="cninfo")],
 }
 
 
@@ -70,8 +70,8 @@ class TestUniverseEventSymbols:
             event_symbols=MOCK_EVENTS,
         )
         syms = {item["symbol"] for item in universe}
-        assert "002138" in syms
-        assert "600519" in syms
+        assert "002138.SZ" in syms
+        assert "600519.SH" in syms
 
     def test_event_symbols_source_tag(self):
         """Event-discovered symbols have source='event_source'."""
@@ -80,31 +80,31 @@ class TestUniverseEventSymbols:
             event_symbols=MOCK_EVENTS,
         )
         by_sym = {item["symbol"]: item for item in universe}
-        assert by_sym["002138"]["source"] == "event_source"
-        assert by_sym["600519"]["source"] == "event_source"
+        assert by_sym["002138.SZ"]["source"] == "event_source"
+        assert by_sym["600519.SH"]["source"] == "event_source"
 
     def test_event_symbols_no_duplicate_with_manual(self):
         """If symbol already in universe via manual list, don't duplicate."""
         universe = build_universe(
-            symbols=["002138"],
+            symbols=["002138.SZ"],
             event_symbols=MOCK_EVENTS,
         )
-        count = sum(1 for item in universe if item["symbol"] == "002138")
+        count = sum(1 for item in universe if item["symbol"] == "002138.SZ")
         assert count == 1
 
     def test_event_symbols_none_default(self):
         """Passing None (default) doesn't break anything."""
         universe = build_universe(
-            symbols=["002138"],
+            symbols=["002138.SZ"],
             event_symbols=None,
         )
         assert len(universe) == 1
-        assert universe[0]["symbol"] == "002138"
+        assert universe[0]["symbol"] == "002138.SZ"
 
     def test_event_symbols_empty_dict(self):
         """Empty event_symbols dict doesn't break anything."""
         universe = build_universe(
-            symbols=["002138"],
+            symbols=["002138.SZ"],
             event_symbols={},
         )
         assert len(universe) == 1
@@ -112,12 +112,12 @@ class TestUniverseEventSymbols:
     def test_event_symbols_no_overlap_with_holdings(self):
         """Manual symbol keeps its original source, event symbol adds new."""
         universe = build_universe(
-            symbols=["002138"],
-            event_symbols={"600519": ["评级"]},
+            symbols=["002138.SZ"],
+            event_symbols={"600519.SH": ["评级"]},
         )
         by_sym = {item["symbol"]: item for item in universe}
-        assert by_sym["002138"]["source"] == "manual"
-        assert by_sym["600519"]["source"] == "event_source"
+        assert by_sym["002138.SZ"]["source"] == "manual"
+        assert by_sym["600519.SH"]["source"] == "event_source"
 
 
 class TestPlanRunnerEventSource:
@@ -128,7 +128,7 @@ class TestPlanRunnerEventSource:
                 mock_eval.return_value = (None, "无策略命中")
                 plan = generate_daily_plan(
                     trade_date="2026-05-28",
-                    symbols=["002138"],
+                    symbols=["002138.SZ"],
                     candidates=None,
                 )
             mock_fetch.assert_not_called()
@@ -160,8 +160,8 @@ class TestPlanRunnerEventSource:
                     use_event_source=True,
                 )
             evaluated_symbols = [c.kwargs["symbol"] for c in mock_eval.call_args_list]
-            assert "002138" in evaluated_symbols
-            assert "600519" in evaluated_symbols
+            assert "002138.SZ" in evaluated_symbols
+            assert "600519.SH" in evaluated_symbols
 
     def test_each_symbol_gets_own_events_only(self):
         """Each symbol should only receive its own event titles — no cross-contamination."""
@@ -178,9 +178,9 @@ class TestPlanRunnerEventSource:
             for call_item in mock_eval.call_args_list:
                 sym = call_item.kwargs.get("symbol", call_item.args[0] if call_item.args else "")
                 news = call_item.kwargs.get("news_texts")
-                if sym == "002138":
+                if sym == "002138.SZ":
                     assert news == ["回购进展公告"]
-                elif sym == "600519":
+                elif sym == "600519.SH":
                     assert news == ["减持评级"]
 
     def test_empty_events_map_does_not_break(self):
@@ -191,7 +191,7 @@ class TestPlanRunnerEventSource:
                 mock_eval.return_value = (None, "无策略命中")
                 plan = generate_daily_plan(
                     trade_date="2026-05-28",
-                    symbols=["002138"],
+                    symbols=["002138.SZ"],
                     candidates=None,
                     use_event_source=True,
                 )
@@ -204,7 +204,7 @@ class TestPlanRunnerEventSource:
             mock_fetch.return_value = _make_event_result(MOCK_EVENTS, MOCK_ITEMS_BY_SYMBOL)
             with patch("tradingagents.tradeflow.plan_runner.evaluate_symbol") as mock_eval:
                 def fake_eval(symbol, **kwargs):
-                    if symbol in ("002138", "600519"):
+                    if symbol in ("002138.SZ", "600519.SH"):
                         c = _mock_candidate(symbol, score=65.0)
                         return c, ""
                     return None, "无策略命中"
@@ -216,14 +216,14 @@ class TestPlanRunnerEventSource:
                     use_event_source=True,
                 )
             plan_symbols = {e["symbol"] for e in plan.candidates}
-            assert "002138" in plan_symbols
-            assert "600519" in plan_symbols
+            assert "002138.SZ" in plan_symbols
+            assert "600519.SH" in plan_symbols
 
     def test_manual_symbols_still_evaluated_with_events(self):
         """Manual symbols still get evaluated, and also receive their events if present."""
-        mixed_events = {"002138": ["回购进展公告"], "300999": ["新股事件"]}
+        mixed_events = {"002138.SZ": ["回购进展公告"], "300999": ["新股事件"]}
         mixed_items = {
-            "002138": [EventItem(symbol="002138", title="回购进展公告", event_type="buyback", direction="bullish", source="eastmoney")],
+            "002138.SZ": [EventItem(symbol="002138.SZ", title="回购进展公告", event_type="buyback", direction="bullish", source="eastmoney")],
             "300999": [EventItem(symbol="300999", title="新股事件", event_type="notice", direction="neutral", source="eastmoney")],
         }
         with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
@@ -235,23 +235,23 @@ class TestPlanRunnerEventSource:
                 mock_eval.side_effect = fake_eval
                 plan = generate_daily_plan(
                     trade_date="2026-05-28",
-                    symbols=["002138", "300999"],
+                    symbols=["002138.SZ", "300999"],
                     candidates=None,
                     use_event_source=True,
                 )
             for call_item in mock_eval.call_args_list:
                 sym = call_item.kwargs.get("symbol", call_item.args[0] if call_item.args else "")
                 news = call_item.kwargs.get("news_texts")
-                if sym == "002138":
+                if sym == "002138.SZ":
                     assert news == ["回购进展公告"]
                 elif sym == "300999":
                     assert news == ["新股事件"]
 
     def test_symbol_without_events_gets_none_news(self):
         """Symbol in universe without events in the map gets no event news_texts."""
-        events_only_one = {"002138": ["回购进展公告"]}
+        events_only_one = {"002138.SZ": ["回购进展公告"]}
         items_only_one = {
-            "002138": [EventItem(symbol="002138", title="回购进展公告", event_type="buyback", direction="bullish", source="eastmoney")],
+            "002138.SZ": [EventItem(symbol="002138.SZ", title="回购进展公告", event_type="buyback", direction="bullish", source="eastmoney")],
         }
         with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed") as mock_fetch:
             mock_fetch.return_value = _make_event_result(events_only_one, items_only_one)
@@ -259,12 +259,12 @@ class TestPlanRunnerEventSource:
                 mock_eval.return_value = (None, "无策略命中")
                 plan = generate_daily_plan(
                     trade_date="2026-05-28",
-                    symbols=["002138", "600519"],
+                    symbols=["002138.SZ", "600519.SH"],
                     candidates=None,
                     use_event_source=True,
                 )
             for call_item in mock_eval.call_args_list:
                 sym = call_item.kwargs.get("symbol", call_item.args[0] if call_item.args else "")
                 news = call_item.kwargs.get("news_texts")
-                if sym == "600519":
+                if sym == "600519.SH":
                     assert news is None

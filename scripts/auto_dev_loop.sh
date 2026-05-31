@@ -163,11 +163,11 @@ if [ -x "${SCRIPT_DIR}/preflight_check.sh" ]; then
     "${SCRIPT_DIR}/preflight_check.sh" --skip-tests --quiet
     PREFLIGHT_EXIT=$?
     set -e
-    if [ $PREFLIGHT_EXIT -eq 2 ]; then
+    if [ ${PREFLIGHT_EXIT} -eq 2 ]; then
         err "巡检基线检查发现严重风险（exit=2），禁止继续"
         exit 1
     fi
-    if [ $PREFLIGHT_EXIT -eq 1 ]; then
+    if [ ${PREFLIGHT_EXIT} -eq 1 ]; then
         warn "巡检基线检查发现风险项（exit=1），继续但需注意"
     fi
     log "巡检基线检查完成（exit=$PREFLIGHT_EXIT）"
