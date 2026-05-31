@@ -509,14 +509,36 @@ FIX_EOF
 
     log "测试通过 ✓"
 
-    # 3c. 运行 Codex review
-    log "运行 Codex review..."
-    REVIEW_FILE=$(mktemp -t auto-dev-review.XXXXXX)
+    # 3c. 运行 Codex review（含 token 可用性检测）
+    CODEX_AVAILABLE=true
+    REVIEW_SKIPPED=false
     set +e
-    codex review --uncommitted > "$REVIEW_FILE" 2>&1
-    CODEX_EXIT=$?
+    codex review --help > /dev/null 2>&1
+    CODEX_HELP_EXIT=$?
     set -e
-    log "Codex 退出码: $CODEX_EXIT"
+    if [ $CODEX_HELP_EXIT -ne 0 ]; then
+        CODEX_AVAILABLE=false
+        warn "Codex 不可用（exit=$CODEX_HELP_EXIT），跳过 review"
+        REVIEW_SKIPPED=true
+    fi
+
+    REVIEW_FILE=$(mktemp -t auto-dev-review.XXXXXX)
+    if [ "$CODEX_AVAILABLE" = true ]; then
+        log "运行 Codex review..."
+        set +e
+        timeout 120 codex review --uncommitted > "$REVIEW_FILE" 2>&1
+        CODEX_EXIT=$?
+        set -e
+        log "Codex 退出码: $CODEX_EXIT"
+        if [ $CODEX_EXIT -ne 0 ]; then
+            REVIEW_ERR=$(cat "$REVIEW_FILE" 2>/dev/null || echo "")
+            if echo "$REVIEW_ERR" | grep -qiE "(auth|token|quota|rate.limit|401|403|429|unauthorized|billing)"; then
+                warn "Codex token/auth 错误，跳过 review 并标记未审查"
+                CODEX_AVAILABLE=false
+                REVIEW_SKIPPED=true
+            fi
+        fi
+    fi
 
     REVIEW_CONTENT=$(cat "$REVIEW_FILE" 2>/dev/null || echo "")
 
@@ -532,6 +554,14 @@ FIX_EOF
     } > "$REVIEW_SAVE_PATH"
     cp "$REVIEW_SAVE_PATH" "$RUN_DIR/codex-review-round${ROUND}.txt"
     log "Review 已保存: $REVIEW_SAVE_PATH"
+
+    # Review 被跳过（token 不可用）→ 标记未审查，直接通过
+    if [ "$REVIEW_SKIPPED" = true ]; then
+        warn "Codex review 已跳过（token 不可用），标记为未审查"
+        REVIEW_OUTPUT="[REVIEW SKIPPED — Codex token 不可用]"
+        RESULT_STATUS="PASS_UNREVIEWED"
+        break
+    fi
 
     # Codex review 失败 → 不信任结果，进入修复或 NEEDS_HUMAN
     if [ $CODEX_EXIT -ne 0 ]; then
@@ -591,16 +621,20 @@ done
 # ─── 4. 处理结果 ──────────────────────────────────────
 COMMIT_HASH=""
 
-if [ "$RESULT_STATUS" = "PASS" ]; then
+if [ "$RESULT_STATUS" = "PASS" ] || [ "$RESULT_STATUS" = "PASS_UNREVIEWED" ]; then
+    REVIEW_NOTE="no P0/P1 findings"
+    if [ "$RESULT_STATUS" = "PASS_UNREVIEWED" ]; then
+        REVIEW_NOTE="SKIPPED — Codex token 不可用，未审查"
+    fi
     cat > "$RUN_DIR/summary.md" <<SUMMARY_EOF
 # Auto Dev Summary
 
 - Task: $TASK_ID — $TASK_TITLE
 - Priority: $TASK_PRIO
-- Final status: PASS
+- Final status: $RESULT_STATUS
 - Rounds: $ROUND
 - Tests: PASS
-- Codex review: no P0/P1 findings
+- Codex review: $REVIEW_NOTE
 - Review file: docs/reviews/${TASK_ID}-$(date +%Y%m%d)-round${ROUND}.txt
 - Run directory: docs/task_runs/$RUN_ID
 - Finished at: $(date +%Y-%m-%d_%H:%M:%S)
@@ -644,7 +678,13 @@ SUMMARY_EOF
     fi
 fi
 
-if [ "$RESULT_STATUS" = "PASS" ]; then
+if [ "$RESULT_STATUS" = "PASS" ] || [ "$RESULT_STATUS" = "PASS_UNREVIEWED" ]; then
+    REVIEW_DEVLOG_NOTE="无 P0/P1 findings"
+    REVIEW_COMMIT_NOTE=""
+    if [ "$RESULT_STATUS" = "PASS_UNREVIEWED" ]; then
+        REVIEW_DEVLOG_NOTE="SKIPPED — Codex token 不可用，未审查"
+        REVIEW_COMMIT_NOTE=" [unreviewed]"
+    fi
     # 4d. 写入 DEVLOG（commit 前，将包含在 commit 中）
     cat >> "$DEVLOG_FILE" <<DEVLOG_EOF
 
@@ -653,9 +693,9 @@ if [ "$RESULT_STATUS" = "PASS" ]; then
 - **任务**: $TASK_ID — $TASK_TITLE
 - **优先级**: $TASK_PRIO
 - **轮次**: $ROUND
-- **状态**: ✅ PASS
+- **状态**: ✅ $RESULT_STATUS
 - **测试**: 通过
-- **Codex Review**: 无 P0/P1 findings
+- **Codex Review**: $REVIEW_DEVLOG_NOTE
 - **Review 文件**: docs/reviews/${TASK_ID}-$(date +%Y%m%d)-round${ROUND}.txt
 - **运行档案**: docs/task_runs/$RUN_ID/
 DEVLOG_EOF
@@ -665,7 +705,7 @@ DEVLOG_EOF
     git add docs/
 
     # 4f. 提交实现与运行档案。
-    COMMIT_MSG="auto: $TASK_ID $TASK_TITLE [AUTO-002]"
+    COMMIT_MSG="auto: $TASK_ID $TASK_TITLE [AUTO-002]${REVIEW_COMMIT_NOTE}"
     git commit -m "$COMMIT_MSG"
     COMMIT_HASH=$(git rev-parse --short HEAD)
     log "已提交: $COMMIT_HASH"
