@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw } from 'lucide-react'
 import { api } from '@/services/api'
 import type { TradeFlowCandidateItem, TradeFlowSummary, TradeFlowDataHealthResponse } from '@/types'
+import TradeFlowCandidateDrawer from '@/components/TradeFlowCandidateDrawer'
 
 function todayStr(): string {
     return new Date().toISOString().slice(0, 10)
@@ -94,6 +95,8 @@ export default function TradeFlow() {
     const [tierFilter, setTierFilter] = useState<string>('')
     const [deepTaFilter, setDeepTaFilter] = useState<string>('')
     const [observeFilter, setObserveFilter] = useState<string>('')
+    const [drawerOpen, setDrawerOpen] = useState(false)
+    const [selectedCandidate, setSelectedCandidate] = useState<TradeFlowCandidateItem | null>(null)
 
     const fetchData = useCallback(async (date: string) => {
         setLoading(true)
@@ -129,6 +132,15 @@ export default function TradeFlow() {
 
     const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         setTradeDate(e.target.value)
+    }
+
+    const handleRowClick = (c: TradeFlowCandidateItem) => {
+        setSelectedCandidate(c)
+        setDrawerOpen(true)
+    }
+
+    const handleDrawerClose = () => {
+        setDrawerOpen(false)
     }
 
     return (
@@ -241,7 +253,8 @@ export default function TradeFlow() {
                                     return (
                                         <tr
                                             key={c.symbol}
-                                            className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
+                                            className="cursor-pointer border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
+                                            onClick={() => handleRowClick(c)}
                                         >
                                             <td className="px-4 py-2.5 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{c.symbol}</td>
                                             <td className="max-w-[120px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{c.name}</td>
@@ -296,6 +309,15 @@ export default function TradeFlow() {
                     </div>
                 )}
             </div>
+
+            {selectedCandidate && (
+                <TradeFlowCandidateDrawer
+                    candidate={selectedCandidate}
+                    tradeDate={tradeDate}
+                    open={drawerOpen}
+                    onClose={handleDrawerClose}
+                />
+            )}
         </div>
     )
 }
