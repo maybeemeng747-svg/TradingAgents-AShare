@@ -14,12 +14,22 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 
+def _get_project_root() -> str:
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
 def _get_tradeflow_db_path() -> str:
-    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     env_path = os.environ.get("TRADEFLOW_DB_PATH", "")
     if env_path:
         return env_path
-    return os.path.join(project_root, "tradeflow.db")
+    return os.path.join(_get_project_root(), "tradeflow.db")
+
+
+def _get_prod_db_path() -> str:
+    env_path = os.environ.get("DATABASE_URL", "")
+    if env_path.startswith("sqlite:///"):
+        return env_path.replace("sqlite:///", "", 1)
+    return os.path.join(_get_project_root(), "tradingagents.db")
 
 
 def _connect(tf_db_path: str = "") -> Optional[sqlite3.Connection]:
@@ -577,4 +587,57 @@ def get_data_health(tf_db_path: str = "") -> dict:
         "latest_candidates_date": latest_candidates_date,
         "total_candidates_today": total_candidates_today,
         "total_signals_today": total_signals_today,
+    }
+
+
+def run_discovery_scan(
+    trade_date: str,
+    symbols: Optional[List[str]] = None,
+    top_n: int = 20,
+    include_holdings: bool = True,
+    include_watchlist: bool = True,
+    use_event_source: bool = False,
+    news_texts: Optional[List[str]] = None,
+    save_candidates: bool = True,
+    tf_db_path: str = "",
+    prod_db_path: str = "",
+) -> dict:
+    """Run a bounded TradeFlow discovery scan for UI-triggered candidate generation.
+
+    This only evaluates and persists TradeFlow candidates. It does not invoke
+    deep TA or any LLM-backed analysis path.
+    """
+    from tradingagents.tradeflow.candidate_engine import init_db
+    from tradingagents.tradeflow.discovery import run_discovery
+
+    tf_db = tf_db_path or _get_tradeflow_db_path()
+    prod_db = prod_db_path or _get_prod_db_path()
+    top_n = max(1, min(int(top_n or 20), 100))
+    symbols = [s.strip() for s in (symbols or []) if s and s.strip()]
+    news_texts = [t.strip() for t in (news_texts or []) if t and t.strip()]
+
+    init_db(tf_db)
+    result = run_discovery(
+        trade_date=trade_date,
+        symbols=symbols or None,
+        prod_db_path=prod_db,
+        tf_db_path=tf_db,
+        top_n=top_n,
+        include_holdings=include_holdings,
+        include_watchlist=include_watchlist,
+        news_texts=news_texts or None,
+        use_event_source=use_event_source,
+        save_candidates=save_candidates,
+    )
+
+    return {
+        "status": "ok",
+        "trade_date": result.trade_date,
+        "summary": result.summary,
+        "universe_size": result.universe_size,
+        "candidate_count": len(result.candidates),
+        "filtered_count": len(result.filtered),
+        "candidates": result.candidates,
+        "filtered": result.filtered[:50],
+        "metadata": result.metadata,
     }

@@ -39,6 +39,7 @@ from api.services.tradeflow_service import (
     get_ta_queue,
     get_review,
     get_data_health,
+    run_discovery_scan,
 )
 
 
@@ -266,6 +267,46 @@ class TestCandidatesWithData:
         for c in result["candidates"]:
             assert "action" in c
             assert c["action"] in {"OBSERVE", "WAIT_TRIGGER", "NEED_DEEP_TA", "REMOVE_FROM_WATCH"}
+
+
+class TestRunDiscoveryScan:
+    def test_discovery_scan_persists_candidates(self, tf_db, monkeypatch):
+        c = Candidate(
+            symbol="002353.SZ",
+            name="杰瑞股份",
+            strategy_tags=["VCP"],
+            primary_strategy="VCP",
+            score=60.0,
+            composite_score=70.0,
+            trigger_price=36.77,
+            invalid_price=33.91,
+            need_deep_ta=True,
+            trade_date="2026-05-31",
+            tier="A",
+            tradeflow_data_completeness=0.8,
+        )
+        c.signals = [CandidateSignal(strategy_tag="VCP", score=60.0, reason="缩量整理")]
+
+        def fake_evaluate_symbol(**kwargs):
+            return c, ""
+
+        monkeypatch.setattr("tradingagents.tradeflow.discovery.evaluate_symbol", fake_evaluate_symbol)
+
+        result = run_discovery_scan(
+            trade_date="2026-05-31",
+            symbols=["002353.SZ"],
+            top_n=10,
+            include_holdings=False,
+            include_watchlist=False,
+            tf_db_path=tf_db,
+            prod_db_path="/nonexistent/tradingagents.db",
+        )
+
+        assert result["status"] == "ok"
+        assert result["candidate_count"] == 1
+        saved = get_candidates("2026-05-31", tf_db_path=tf_db)
+        assert saved["status"] == "ok"
+        assert saved["candidates"][0]["symbol"] == "002353.SZ"
 
 
 class TestCandidateDetail:

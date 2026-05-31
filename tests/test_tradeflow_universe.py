@@ -310,6 +310,38 @@ class TestBuildUniverseWithDB:
         finally:
             os.unlink(db_path)
 
+    def test_current_app_schema_holdings_and_watchlist(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "CREATE TABLE imported_portfolio_positions "
+                "(symbol TEXT, security_name TEXT, current_position REAL, "
+                "average_cost REAL, market_value REAL)"
+            )
+            conn.execute(
+                "INSERT INTO imported_portfolio_positions VALUES (?, ?, ?, ?, ?)",
+                ("002353.SZ", "杰瑞股份", 100, 33.0, 3300.0),
+            )
+            conn.execute(
+                "CREATE TABLE watchlist_items (symbol TEXT, notes TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO watchlist_items VALUES (?, ?)",
+                ("603256.SH", "观察"),
+            )
+            conn.commit()
+            conn.close()
+
+            universe = build_universe(prod_db_path=db_path)
+            by_sym = {u["symbol"]: u for u in universe}
+            assert by_sym["002353.SZ"]["source"] == "holding"
+            assert by_sym["002353.SZ"]["name"] == "杰瑞股份"
+            assert by_sym["603256.SH"]["source"] == "watchlist"
+        finally:
+            os.unlink(db_path)
+
     def test_empty_db_no_crash(self):
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name

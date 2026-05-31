@@ -5008,9 +5008,21 @@ from api.services.tradeflow_service import (
     get_ta_queue as _tf_get_ta_queue,
     get_review as _tf_get_review,
     get_data_health as _tf_get_data_health,
+    run_discovery_scan as _tf_run_discovery_scan,
 )
 
 # [UI-001] tradeflow_api — read-only endpoints
+
+
+class TradeFlowDiscoveryRequest(BaseModel):
+    date: str = Field(..., description="交易日期 YYYY-MM-DD")
+    symbols: List[str] = Field(default_factory=list, description="手动股票池")
+    top_n: int = Field(default=20, ge=1, le=100, description="最多返回候选数")
+    include_holdings: bool = Field(default=True, description="纳入持仓")
+    include_watchlist: bool = Field(default=True, description="纳入自选股")
+    use_event_source: bool = Field(default=False, description="接入公告/评级等事件源")
+    news_texts: List[str] = Field(default_factory=list, description="手动事件文本")
+    save_candidates: bool = Field(default=True, description="保存候选到 TradeFlow DB")
 
 
 @app.get("/v1/tradeflow/daily-plan", response_model=TradeFlowDailyPlanResponse)
@@ -5053,6 +5065,20 @@ def tradeflow_review(date: str = Query(..., description="交易日期 YYYY-MM-DD
 @app.get("/v1/tradeflow/data-health", response_model=TradeFlowDataHealthResponse)
 def tradeflow_data_health():
     return _tf_get_data_health()
+
+
+@app.post("/v1/tradeflow/discovery")
+def tradeflow_discovery(request: TradeFlowDiscoveryRequest):
+    return _tf_run_discovery_scan(
+        trade_date=request.date,
+        symbols=request.symbols,
+        top_n=request.top_n,
+        include_holdings=request.include_holdings,
+        include_watchlist=request.include_watchlist,
+        use_event_source=request.use_event_source,
+        news_texts=request.news_texts,
+        save_candidates=request.save_candidates,
+    )
 
 
 # ─── Static Files & SPA Routing ──────────────────────────────────────────────

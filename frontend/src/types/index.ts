@@ -808,6 +808,29 @@ export interface TradeFlowCandidatesResponse {
     summary_agg: TradeFlowSummary
 }
 
+export interface TradeFlowDiscoveryRequest {
+    date: string
+    symbols: string[]
+    top_n: number
+    include_holdings: boolean
+    include_watchlist: boolean
+    use_event_source: boolean
+    news_texts: string[]
+    save_candidates: boolean
+}
+
+export interface TradeFlowDiscoveryResponse {
+    status: string
+    trade_date: string
+    summary: string
+    universe_size: number
+    candidate_count: number
+    filtered_count: number
+    candidates: TradeFlowCandidateItem[]
+    filtered: Array<{ symbol: string; name: string; source: string; reason: string }>
+    metadata: Record<string, unknown>
+}
+
 export interface TradeFlowCandidateDetailResponse {
     status: string
     trade_date: string

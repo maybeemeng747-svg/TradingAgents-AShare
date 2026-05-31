@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-05-31 | TradeFlow 候选池生成入口
+
+- **执行者**：Codex
+- **背景**：TradeFlow 前端只能查看候选结果，无法从 UI 触发候选池筛选，导致用户看到空池后只能回命令行运行脚本。
+- **修改文件**：
+  - `api/main.py` — 新增 `POST /v1/tradeflow/discovery`，支持按日期、手动股票池、TopN、自选股、持仓、事件源生成候选。
+  - `api/services/tradeflow_service.py` — 新增 `run_discovery_scan()`，只运行 TradeFlow Discovery 并保存候选，不触发深度 TA，不调用 LLM。
+  - `frontend/src/services/api.ts`、`frontend/src/types/index.ts` — 新增 Discovery 请求/响应类型与 API 客户端方法。
+  - `frontend/src/pages/TradeFlow.tsx` — 候选池页新增“生成候选池”面板，可输入股票池、选择 TopN、自选股、持仓和事件源。
+  - `tradingagents/tradeflow/universe.py` — 兼容当前生产库的持仓/自选字段，避免 universe 读取为空。
+  - `tests/test_ui001_tradeflow_api.py`、`tests/test_tradeflow_universe.py` — 增加 Discovery 保存候选与当前生产库字段兼容回归测试。
+- **测试结果**：`pytest tests/test_ui001_tradeflow_api.py tests/test_tradeflow_universe.py tests/test_tradeflow_*.py -q` 162 passed；`npm run build` 通过。
+
+---
+
 ## 2026-05-31 | TradeFlow 打不开排查：重启后端并修复默认 DB 路径
 
 - **执行者**：Codex

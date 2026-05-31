@@ -304,14 +304,27 @@ def get_holdings(db_path: str) -> list[dict]:
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(imported_portfolio_positions)").fetchall()}
+        if "symbol" not in columns:
+            conn.close()
+            return rows
+
+        name_expr = "security_name AS name" if "security_name" in columns else ("name" if "name" in columns else "'' AS name")
+        if "current_position" in columns:
+            position_expr = "current_position"
+        elif "quantity" in columns:
+            position_expr = "quantity"
+        else:
+            position_expr = "0"
+
         cur = conn.execute(
-            "SELECT symbol, name, quantity, avg_cost, current_price, market_value "
-            "FROM imported_portfolio_positions WHERE quantity > 0"
+            f"SELECT symbol, {name_expr} FROM imported_portfolio_positions "
+            f"WHERE COALESCE({position_expr}, 0) > 0"
         )
         for r in cur.fetchall():
             rows.append({
                 "symbol": r["symbol"],
-                "name": r["name"],
+                "name": r["name"] or "",
                 "source": "holding",
             })
         conn.close()
@@ -325,11 +338,17 @@ def get_watchlist(db_path: str) -> list[dict]:
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-        cur = conn.execute("SELECT symbol, name FROM watchlist_items")
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(watchlist_items)").fetchall()}
+        if "symbol" not in columns:
+            conn.close()
+            return rows
+
+        name_expr = "name" if "name" in columns else "symbol AS name"
+        cur = conn.execute(f"SELECT symbol, {name_expr} FROM watchlist_items")
         for r in cur.fetchall():
             rows.append({
                 "symbol": r["symbol"],
-                "name": r["name"],
+                "name": r["name"] or "",
                 "source": "watchlist",
             })
         conn.close()

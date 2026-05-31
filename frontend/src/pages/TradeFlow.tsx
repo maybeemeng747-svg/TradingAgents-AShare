@@ -1,6 +1,6 @@
 // [UI-005] tradeflow_review_page
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity } from 'lucide-react'
+import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search } from 'lucide-react'
 import { api } from '@/services/api'
 import type {
     TradeFlowCandidateItem,
@@ -631,6 +631,13 @@ export default function TradeFlow() {
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [status, setStatus] = useState<string>('')
+    const [scanLoading, setScanLoading] = useState(false)
+    const [scanSymbols, setScanSymbols] = useState('')
+    const [scanTopN, setScanTopN] = useState(20)
+    const [scanUseEventSource, setScanUseEventSource] = useState(false)
+    const [scanIncludeWatchlist, setScanIncludeWatchlist] = useState(true)
+    const [scanIncludeHoldings, setScanIncludeHoldings] = useState(true)
+    const [scanMessage, setScanMessage] = useState('')
 
     const [tierFilter, setTierFilter] = useState<string>('')
     const [deepTaFilter, setDeepTaFilter] = useState<string>('')
@@ -747,6 +754,38 @@ export default function TradeFlow() {
     const handleRowClick = (c: TradeFlowCandidateItem) => {
         setSelectedCandidate(c)
         setDrawerOpen(true)
+    }
+
+    const parseSymbolInput = (value: string) => (
+        value
+            .split(/[\s,，;；]+/)
+            .map(s => s.trim().toUpperCase())
+            .filter(Boolean)
+    )
+
+    const handleRunDiscovery = async () => {
+        setScanLoading(true)
+        setError(null)
+        setScanMessage('')
+        try {
+            const res = await api.runTradeFlowDiscovery({
+                date: tradeDate,
+                symbols: parseSymbolInput(scanSymbols),
+                top_n: scanTopN,
+                include_holdings: scanIncludeHoldings,
+                include_watchlist: scanIncludeWatchlist,
+                use_event_source: scanUseEventSource,
+                news_texts: [],
+                save_candidates: true,
+            })
+            setScanMessage(`${res.summary} 已保存候选 ${res.candidate_count} 只，过滤 ${res.filtered_count} 只。`)
+            setActiveTab('candidates')
+            await fetchCandidates(tradeDate)
+        } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : '筛选失败')
+        } finally {
+            setScanLoading(false)
+        }
     }
 
     const handleDrawerClose = () => {
@@ -906,6 +945,54 @@ export default function TradeFlow() {
 
             {activeTab === 'candidates' && (
                 <SummaryCards summary={summary} dataHealth={dataHealth} />
+            )}
+
+            {activeTab === 'candidates' && (
+                <div className="card p-4">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+                        <div className="min-w-0 flex-1">
+                            <label className="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">股票池</label>
+                            <input
+                                value={scanSymbols}
+                                onChange={e => setScanSymbols(e.target.value)}
+                                placeholder="可空；或输入 002353.SZ, 603256.SH"
+                                className="w-full rounded border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                            />
+                        </div>
+                        <div>
+                            <label className="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">TopN</label>
+                            <input
+                                type="number"
+                                min={1}
+                                max={100}
+                                value={scanTopN}
+                                onChange={e => setScanTopN(Math.max(1, Math.min(100, Number(e.target.value) || 20)))}
+                                className="w-20 rounded border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                            />
+                        </div>
+                        <label className="flex items-center gap-2 rounded border border-slate-200 px-3 py-2 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300">
+                            <input type="checkbox" checked={scanIncludeWatchlist} onChange={e => setScanIncludeWatchlist(e.target.checked)} />
+                            自选股
+                        </label>
+                        <label className="flex items-center gap-2 rounded border border-slate-200 px-3 py-2 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300">
+                            <input type="checkbox" checked={scanIncludeHoldings} onChange={e => setScanIncludeHoldings(e.target.checked)} />
+                            持仓
+                        </label>
+                        <label className="flex items-center gap-2 rounded border border-slate-200 px-3 py-2 text-sm text-slate-600 dark:border-slate-700 dark:text-slate-300">
+                            <input type="checkbox" checked={scanUseEventSource} onChange={e => setScanUseEventSource(e.target.checked)} />
+                            事件源
+                        </label>
+                        <button
+                            onClick={() => void handleRunDiscovery()}
+                            disabled={scanLoading}
+                            className="inline-flex items-center justify-center gap-1.5 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                            {scanLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                            生成候选池
+                        </button>
+                    </div>
+                    {scanMessage && <div className="mt-3 text-xs text-emerald-600 dark:text-emerald-400">{scanMessage}</div>}
+                </div>
             )}
 
             <div className="card">
