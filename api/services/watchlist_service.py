@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from api.database import WatchlistItemDB, ScheduledAnalysisDB
 
-MAX_WATCHLIST_ITEMS = 50
+MAX_WATCHLIST_ITEMS = 300
 
 
 def list_watchlist(db: Session, user_id: str) -> List[dict]:
@@ -117,8 +117,11 @@ def add_watchlist_items_with_notes(
     return results
 
 
-def update_watchlist_notes(db: Session, user_id: str, item_id: str, notes: str) -> dict | None:
-    """Update notes for a watchlist item. Returns updated item or None if not found."""
+def update_watchlist_notes(db: Session, user_id: str, item_id: str, notes: str, clear: bool = False) -> dict | None:
+    """Update notes for a watchlist item. Returns updated item or None if not found.
+
+    Protection: empty notes won't overwrite existing notes unless clear=True.
+    """
     item = (
         db.query(WatchlistItemDB)
         .filter(WatchlistItemDB.id == item_id, WatchlistItemDB.user_id == user_id)
@@ -126,7 +129,16 @@ def update_watchlist_notes(db: Session, user_id: str, item_id: str, notes: str) 
     )
     if not item:
         return None
-    item.notes = notes
+    # 防误清空：空备注不覆盖已有备注，除非明确要求清空
+    if not notes and not clear and item.notes:
+        return {
+            "id": item.id,
+            "symbol": item.symbol,
+            "sort_order": item.sort_order,
+            "notes": item.notes,
+            "created_at": item.created_at.isoformat() if item.created_at else None,
+        }
+    item.notes = notes if notes else None
     db.commit()
     db.refresh(item)
     return {

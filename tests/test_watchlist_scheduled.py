@@ -6,6 +6,7 @@ from sqlalchemy.orm import sessionmaker
 
 from api.database import Base
 from api.services import watchlist_service, scheduled_service
+from api.services.watchlist_service import MAX_WATCHLIST_ITEMS
 
 
 @pytest.fixture
@@ -31,7 +32,7 @@ class TestWatchlist:
             watchlist_service.add_watchlist_item(db, "user1", "300750.SZ")
 
     def test_max_limit(self, db):
-        for i in range(50):
+        for i in range(MAX_WATCHLIST_ITEMS):
             watchlist_service.add_watchlist_item(db, "user1", f"{600000 + i}.SH")
         with pytest.raises(ValueError, match="上限"):
             watchlist_service.add_watchlist_item(db, "user1", "000001.SZ")
@@ -75,7 +76,7 @@ class TestWatchlist:
         assert [item["status"] for item in results] == ["duplicate", "added", "duplicate"]
 
     def test_batch_add_marks_limit_failures(self, db):
-        for i in range(49):
+        for i in range(MAX_WATCHLIST_ITEMS - 1):
             watchlist_service.add_watchlist_item(db, "user1", f"{600000 + i}.SH")
         results = watchlist_service.add_watchlist_items(
             db,

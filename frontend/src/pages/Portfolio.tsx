@@ -20,7 +20,7 @@ import { CSS } from '@dnd-kit/utilities'
 import {
     Briefcase, Plus, Trash2, TrendingUp, Activity, Search,
     Clock, AlertTriangle, CheckCircle2, XCircle, Loader2, Timer,
-    Database, ImagePlus, GripVertical,
+    Database, ImagePlus, GripVertical, ChevronsUp, ChevronsDown,
 } from 'lucide-react'
 import { api } from '@/services/api'
 import type { WatchlistItem, WatchlistTableItem, ScheduledAnalysis, StockSearchResult, Report } from '@/types'
@@ -91,6 +91,8 @@ function SortableWatchlistItem({
     onSetEditingNotesText,
     onSetEditingNotesId,
     onToggleScheduled,
+    onMoveToTop,
+    onMoveToBottom,
 }: {
     item: WatchlistItem
     report: Report | undefined
@@ -103,6 +105,8 @@ function SortableWatchlistItem({
     onSetEditingNotesText: (text: string) => void
     onSetEditingNotesId: (id: string | null) => void
     onToggleScheduled: (symbol: string, hasScheduled: boolean) => void
+    onMoveToTop: (id: string) => void
+    onMoveToBottom: (id: string) => void
 }) {
     const {
         attributes,
@@ -150,13 +154,13 @@ function SortableWatchlistItem({
                             onChange={e => onSetEditingNotesText(e.target.value)}
                             onKeyDown={e => { if (e.key === 'Enter') onSaveNotes(item.id); if (e.key === 'Escape') onSetEditingNotesId(null) }}
                             placeholder="备注..."
-                            className="w-48 text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded px-2 py-1 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                            className="w-full max-w-xs text-xs bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded px-2 py-1 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-400"
                             autoFocus
                         />
                     ) : (
                         <button
                             onClick={() => onStartEditNotes(item)}
-                            className="w-48 text-left text-xs truncate px-1 py-0.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                            className="w-full max-w-xs text-left text-xs px-1 py-0.5 rounded hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
                             title={item.notes || '添加备注'}
                         >
                             {item.notes ? (
@@ -186,6 +190,20 @@ function SortableWatchlistItem({
             >
                 <Activity className="w-3 h-3" />
                 分析
+            </button>
+            <button
+                onClick={() => onMoveToTop(item.id)}
+                className="p-1.5 text-slate-400 hover:text-orange-500 transition-colors"
+                title="置顶"
+            >
+                <ChevronsUp className="w-3.5 h-3.5" />
+            </button>
+            <button
+                onClick={() => onMoveToBottom(item.id)}
+                className="p-1.5 text-slate-400 hover:text-blue-500 transition-colors"
+                title="沉底"
+            >
+                <ChevronsDown className="w-3.5 h-3.5" />
             </button>
             <button
                 onClick={() => onRemove(item.id)}
@@ -400,30 +418,42 @@ export default function Portfolio() {
     }
 
     const handleWatchlistImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0]
-        if (!file) return
+        const files = Array.from(e.target.files || [])
+        if (files.length === 0) return
         e.target.value = ''
 
         setVlmParsing(true)
         setWatchlistFeedback(null)
         setPendingWatchlistItems([])
         try {
-            // [VLM-001] watchlist_table_parser — try watchlist mode first
-            const result = await api.parsePositionImage(file, 'watchlist')
-            if ('mode' in result && result.mode === 'watchlist' && result.items.length > 0) {
-                setPendingWatchlistItems(result.items)
+            // [VLM-001] watchlist_table_parser — support multiple images
+            const allItems: Array<{symbol: string; name?: string; business?: string; sector?: string; bullish_score?: number | null; consensus?: number | null; notes?: string}> = []
+            const allSymbols: string[] = []
+            let hasWatchlist = false
+
+            for (const file of files) {
+                const result = await api.parsePositionImage(file, 'watchlist')
+                if ('mode' in result && result.mode === 'watchlist' && result.items.length > 0) {
+                    hasWatchlist = true
+                    allItems.push(...result.items)
+                } else if ('positions' in result && result.positions.length > 0) {
+                    result.positions.forEach(p => allSymbols.push(p.symbol))
+                }
+            }
+
+            if (hasWatchlist) {
+                setPendingWatchlistItems(allItems)
                 setWatchlistFeedback({
                     tone: 'success',
-                    message: `识别到 ${result.items.length} 只候选股票，请确认添加`,
-                    details: result.items.map(p => `${p.symbol} ${p.name || ''}${p.notes ? ` — ${p.notes}` : ''}`).slice(0, 10),
+                    message: `识别到 ${allItems.length} 只候选股票，请确认添加`,
+                    details: allItems.map(p => `${p.symbol} ${p.name || ''}${p.notes ? ` — ${p.notes}` : ''}`).slice(0, 10),
                 })
-            } else if ('positions' in result && result.positions.length > 0) {
-                const symbols = result.positions.map(p => p.symbol).join(',')
-                setSearchQuery(symbols)
+            } else if (allSymbols.length > 0) {
+                setSearchQuery(allSymbols.join(','))
                 setWatchlistFeedback({
                     tone: 'success',
-                    message: `已识别 ${result.positions.length} 只股票，请点击"批量添加"确认`,
-                    details: result.positions.map(p => `${p.symbol} ${p.name || ''}`).slice(0, 10),
+                    message: `已识别 ${allSymbols.length} 只股票，请点击"批量添加"确认`,
+                    details: allSymbols.slice(0, 10),
                 })
             } else {
                 setWatchlistFeedback({ tone: 'error', message: '未从截图中识别到股票信息', details: [] })
@@ -478,6 +508,26 @@ export default function Portfolio() {
         } catch (error) {
             console.error('Failed to remove watchlist item:', error)
             alert(error instanceof Error ? error.message : '移除自选失败')
+        }
+    }
+
+    const moveWatchlistItem = async (id: string, position: 'top' | 'bottom') => {
+        const reordered = [...watchlist]
+        const idx = reordered.findIndex(i => i.id === id)
+        if (idx === -1) return
+        const [moved] = reordered.splice(idx, 1)
+        if (position === 'top') {
+            reordered.unshift(moved)
+        } else {
+            reordered.push(moved)
+        }
+        setWatchlist(reordered)
+        const items = reordered.map((item, idx) => ({ id: item.id, sort_order: idx }))
+        try {
+            await api.reorderWatchlist(items)
+        } catch (error) {
+            console.error('Failed to persist reorder:', error)
+            await fetchAll()
         }
     }
 
@@ -838,6 +888,7 @@ export default function Portfolio() {
                                         ref={watchlistFileInputRef}
                                         type="file"
                                         accept="image/*"
+                                        multiple
                                         className="hidden"
                                         onChange={handleWatchlistImageUpload}
                                     />
@@ -930,7 +981,7 @@ export default function Portfolio() {
                     <div className="card">
                         <div className="flex items-center gap-2 mb-4">
                             <Briefcase className="w-5 h-5 text-purple-500" />
-                            <h2 className="font-semibold text-slate-900 dark:text-slate-100">自选列表 ({watchlist.length}/50)</h2>
+                            <h2 className="font-semibold text-slate-900 dark:text-slate-100">自选列表 ({watchlist.length}/300)</h2>
                         </div>
 
                         {watchlist.length === 0 ? (
@@ -961,6 +1012,8 @@ export default function Portfolio() {
                                                 onSetEditingNotesText={setEditingNotesText}
                                                 onSetEditingNotesId={setEditingNotesId}
                                                 onToggleScheduled={toggleScheduled}
+                                                onMoveToTop={(id) => moveWatchlistItem(id, 'top')}
+                                                onMoveToBottom={(id) => moveWatchlistItem(id, 'bottom')}
                                             />
                                         ))}
                                     </div>
