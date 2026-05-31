@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-05-31 | VLM-001: 自选截图解析 v2 — 候选表格识别
+
+- **执行者**：OpenCode
+- **任务**：VLM-001 — 升级 VLM 截图解析，支持识别"自选候选表格"
+- **修改文件**：
+  - `api/services/vlm_position_parser.py` — [VLM-001] 新增 `WATCHLIST_TABLE_PROMPT`、`parse_watchlist_table_image()`、`_parse_watchlist_response()`、`_build_watchlist_notes()`、`_extract_6digit_code()`、`_to_int()` 等函数
+  - `api/services/watchlist_service.py` — [VLM-001] `add_watchlist_item()` 增加 `notes` 参数，新增 `add_watchlist_items_with_notes()` 批量带备注添加
+  - `api/main.py` — [VLM-001] `POST /v1/portfolio/parse-image` 增加 `mode` 参数（position/watchlist），新增 `POST /v1/watchlist/batch-notes` 端点，添加 `Form` import
+  - `frontend/src/types/index.ts` — [VLM-001] 新增 `WatchlistTableItem`、`WatchlistTableParseResponse` 类型
+  - `frontend/src/services/api.ts` — [VLM-001] `parsePositionImage()` 增加 `mode` 参数，新增 `addToWatchlistBatchNotes()` 方法
+  - `frontend/src/pages/Portfolio.tsx` — [VLM-001] 上传截图优先尝试 watchlist 模式，新增候选表格预览与确认添加 UI
+  - `frontend/src/components/TrackingBoardPanel.tsx` — 适配 `parsePositionImage()` 新签名
+  - `tests/test_vlm_position_parser.py` — [VLM-001] 新增 11 个 watchlist table 相关测试用例
+- **验证**：`pytest tests/test_vlm*.py -q` 16 passed；`npm run build` 零错误
+
+---
+
 ## 2026-05-31 | T-000: 自动开发巡检基线脚本
 
 - **执行者**：OpenCode

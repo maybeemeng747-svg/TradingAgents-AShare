@@ -23,7 +23,7 @@ import {
     Database, ImagePlus, GripVertical,
 } from 'lucide-react'
 import { api } from '@/services/api'
-import type { WatchlistItem, ScheduledAnalysis, StockSearchResult, Report } from '@/types'
+import type { WatchlistItem, WatchlistTableItem, ScheduledAnalysis, StockSearchResult, Report } from '@/types'
 
 const HORIZON_LABELS: Record<string, string> = { short: '短线', medium: '中线' }
 const WATCHLIST_BATCH_SPLIT_RE = /[,\s，、；;]+/
@@ -231,6 +231,9 @@ export default function Portfolio() {
     } | null>(null)
     const [editingNotesId, setEditingNotesId] = useState<string | null>(null)
     const [editingNotesText, setEditingNotesText] = useState('')
+    // [VLM-001] watchlist_table_parser
+    const [pendingWatchlistItems, setPendingWatchlistItems] = useState<WatchlistTableItem[]>([])
+    const [addingWatchlistNotes, setAddingWatchlistNotes] = useState(false)
     const searchTimerRef = useRef<ReturnType<typeof setTimeout>>()
     const dropdownRef = useRef<HTMLDivElement>(null)
     const scheduledAddTimerRef = useRef<ReturnType<typeof setTimeout>>()
@@ -403,19 +406,28 @@ export default function Portfolio() {
 
         setVlmParsing(true)
         setWatchlistFeedback(null)
+        setPendingWatchlistItems([])
         try {
-            const result = await api.parsePositionImage(file)
-            if (result.positions.length === 0) {
+            // [VLM-001] watchlist_table_parser — try watchlist mode first
+            const result = await api.parsePositionImage(file, 'watchlist')
+            if ('mode' in result && result.mode === 'watchlist' && result.items.length > 0) {
+                setPendingWatchlistItems(result.items)
+                setWatchlistFeedback({
+                    tone: 'success',
+                    message: `识别到 ${result.items.length} 只候选股票，请确认添加`,
+                    details: result.items.map(p => `${p.symbol} ${p.name || ''}${p.notes ? ` — ${p.notes}` : ''}`).slice(0, 10),
+                })
+            } else if ('positions' in result && result.positions.length > 0) {
+                const symbols = result.positions.map(p => p.symbol).join(',')
+                setSearchQuery(symbols)
+                setWatchlistFeedback({
+                    tone: 'success',
+                    message: `已识别 ${result.positions.length} 只股票，请点击"批量添加"确认`,
+                    details: result.positions.map(p => `${p.symbol} ${p.name || ''}`).slice(0, 10),
+                })
+            } else {
                 setWatchlistFeedback({ tone: 'error', message: '未从截图中识别到股票信息', details: [] })
-                return
             }
-            const symbols = result.positions.map(p => p.symbol).join(',')
-            setSearchQuery(symbols)
-            setWatchlistFeedback({
-                tone: 'success',
-                message: `已识别 ${result.positions.length} 只股票，请点击"批量添加"确认`,
-                details: result.positions.map(p => `${p.symbol} ${p.name || ''}`).slice(0, 10),
-            })
         } catch (err) {
             setWatchlistFeedback({
                 tone: 'error',
@@ -424,6 +436,38 @@ export default function Portfolio() {
             })
         } finally {
             setVlmParsing(false)
+        }
+    }
+
+    // [VLM-001] watchlist_table_parser
+    const confirmWatchlistTableAdd = async () => {
+        if (pendingWatchlistItems.length === 0) return
+        setAddingWatchlistNotes(true)
+        try {
+            const entries = pendingWatchlistItems.map(item => ({
+                symbol: item.symbol,
+                notes: item.notes || undefined,
+            }))
+            const response = await api.addToWatchlistBatchNotes(entries)
+            const details = response.results
+                .filter(r => r.status !== 'added')
+                .slice(0, 6)
+                .map(r => `${r.symbol}：${r.message}`)
+            const tone =
+                response.summary.failed > 0 && response.summary.added === 0 && response.summary.duplicate === 0
+                    ? 'error'
+                    : response.summary.failed > 0 || response.summary.duplicate > 0
+                        ? 'warning'
+                        : 'success'
+            setWatchlistFeedback({ tone, message: response.message, details })
+            setPendingWatchlistItems([])
+            if (response.summary.added > 0) {
+                await fetchAll()
+            }
+        } catch (e) {
+            alert(e instanceof Error ? e.message : '批量添加失败')
+        } finally {
+            setAddingWatchlistNotes(false)
         }
     }
 
@@ -826,6 +870,40 @@ export default function Portfolio() {
                                             ))}
                                         </div>
                                     )}
+                                </div>
+                            )}
+
+                            {/* [VLM-001] watchlist_table_parser — preview & confirm */}
+                            {pendingWatchlistItems.length > 0 && (
+                                <div className="rounded-xl border border-indigo-200 bg-indigo-50/50 px-3 py-3 text-sm dark:border-indigo-500/20 dark:bg-indigo-500/10">
+                                    <div className="font-medium text-indigo-700 dark:text-indigo-300 mb-2">候选表格预览</div>
+                                    <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                                        {pendingWatchlistItems.map((item, idx) => (
+                                            <div key={item.symbol + idx} className="flex items-start gap-2 text-xs">
+                                                <span className="font-medium text-slate-700 dark:text-slate-200 shrink-0">{item.symbol}</span>
+                                                <span className="text-slate-500 dark:text-slate-300 shrink-0">{item.name}</span>
+                                                {item.notes && <span className="text-amber-600 dark:text-amber-400 truncate">{item.notes}</span>}
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="flex items-center gap-2 mt-3">
+                                        <button
+                                            type="button"
+                                            onClick={confirmWatchlistTableAdd}
+                                            disabled={addingWatchlistNotes}
+                                            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-600 disabled:opacity-50"
+                                        >
+                                            {addingWatchlistNotes ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                                            确认添加 {pendingWatchlistItems.length} 只
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => { setPendingWatchlistItems([]); setWatchlistFeedback(null) }}
+                                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                                        >
+                                            取消
+                                        </button>
+                                    </div>
                                 </div>
                             )}
 

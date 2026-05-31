@@ -505,6 +505,24 @@ export interface PortfolioPositionInput {
     current_position_pct?: number | null
 }
 
+// [VLM-001] watchlist_table_parser
+export interface WatchlistTableItem {
+    symbol: string
+    name?: string
+    business?: string
+    sector?: string
+    bullish_score?: number | null
+    startup_eta?: string
+    holding_period?: string
+    consensus?: number | null
+    notes?: string
+}
+
+export interface WatchlistTableParseResponse {
+    mode: 'watchlist'
+    items: WatchlistTableItem[]
+}
+
 export interface PortfolioOverviewResponse {
     watchlist: WatchlistItem[]
     scheduled: ScheduledAnalysis[]

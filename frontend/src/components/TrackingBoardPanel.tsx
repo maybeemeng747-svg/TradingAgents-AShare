@@ -225,13 +225,13 @@ export default function TrackingBoardPanel() {
         setVlmParsing(true)
         setImportFeedback(null)
         try {
-            const result = await api.parsePositionImage(file)
-            if (result.positions.length === 0) {
+            const result = await api.parsePositionImage(file, 'position')
+            if (!('positions' in result) || result.positions.length === 0) {
                 setImportFeedback({ tone: 'error', message: '未从截图中识别到持仓信息' })
                 return
             }
             // Populate textarea for user review
-            const lines = result.positions.map(p => {
+            const lines = result.positions.map((p: { symbol: string; name?: string; current_position?: number | null; average_cost?: number | null; market_value?: number | null }) => {
                 const parts = [p.symbol, p.name || '']
                 if (p.current_position != null) parts.push(String(p.current_position))
                 if (p.average_cost != null) parts.push(String(p.average_cost))
@@ -239,8 +239,7 @@ export default function TrackingBoardPanel() {
                 return parts.join(' ')
             })
             setPositionText(lines.join('\n'))
-            setImportFeedback({ tone: 'success', message: `已从截图识别 ${result.positions.length} 只持仓，请确认后保存` })
-        } catch (e) {
+            setImportFeedback({ tone: 'success', message: `已从截图识别 ${result.positions.length} 只持仓，请确认后保存` })        } catch (e) {
             setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '图片解析失败' })
         } finally {
             setVlmParsing(false)

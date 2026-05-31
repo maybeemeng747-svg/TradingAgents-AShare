@@ -31,7 +31,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, File, HTTPException, Depends, Query, Request, UploadFile, status, BackgroundTasks
+from fastapi import FastAPI, File, Form, HTTPException, Depends, Query, Request, UploadFile, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -4392,11 +4392,15 @@ def clear_portfolio_import_state(
 @app.post("/v1/portfolio/parse-image")
 async def parse_position_image_endpoint(
     file: UploadFile = File(...),
+    mode: str = Form("position"),
     current_user: UserDB = Depends(_require_api_user),
 ):
-    """Parse a broker position screenshot using server-side VLM."""
-    from api.services.vlm_position_parser import parse_position_image
+    """Parse a broker position screenshot using server-side VLM.
 
+    # [VLM-001] watchlist_table_parser
+    mode='position' (default): existing position parsing.
+    mode='watchlist': candidate table parsing with notes.
+    """
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(400, "只支持图片文件")
 
@@ -4405,15 +4409,22 @@ async def parse_position_image_endpoint(
         raise HTTPException(400, "图片不能超过 10MB")
 
     try:
-        positions = await asyncio.to_thread(parse_position_image, image_bytes, file.content_type)
-        positions = await asyncio.to_thread(_repair_portfolio_position_symbols, positions)
+        if mode == "watchlist":
+            # [VLM-001] watchlist_table_parser
+            from api.services.vlm_position_parser import parse_watchlist_table_image
+            items = await asyncio.to_thread(parse_watchlist_table_image, image_bytes, file.content_type)
+            items = await asyncio.to_thread(_repair_portfolio_position_symbols, items)
+            return {"mode": "watchlist", "items": items}
+        else:
+            from api.services.vlm_position_parser import parse_position_image
+            positions = await asyncio.to_thread(parse_position_image, image_bytes, file.content_type)
+            positions = await asyncio.to_thread(_repair_portfolio_position_symbols, positions)
+            return {"positions": positions}
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         logger.warning("[parse-image] VLM parsing failed: %s", exc)
         raise HTTPException(500, "图片解析失败，请稍后重试") from exc
-
-    return {"positions": positions}
 
 
 @app.get("/v1/dashboard/tracking-board")
@@ -4512,6 +4523,63 @@ def add_to_watchlist(
         "message": "，".join(message_parts),
         "summary": summary,
         "results": results,
+    }
+
+
+# [VLM-001] watchlist_table_parser
+class WatchlistBatchWithNotesRequest(BaseModel):
+    entries: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+@app.post("/v1/watchlist/batch-notes")
+def add_to_watchlist_batch_notes(
+    body: WatchlistBatchWithNotesRequest,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    """Batch-add watchlist items with optional notes (from VLM watchlist table parsing)."""
+    if not body.entries:
+        raise HTTPException(400, "entries is required")
+
+    name_to_code = _load_cn_stock_map()
+    code_to_name = _get_reverse_stock_map()
+
+    resolved: List[Dict[str, Any]] = []
+    for entry in body.entries:
+        symbol_raw = str(entry.get("symbol", "")).strip()
+        notes = entry.get("notes")
+        symbol, name, _ = _resolve_watchlist_identifier(symbol_raw, name_to_code, code_to_name)
+        if not symbol:
+            symbol = symbol_raw
+        if not name:
+            name = code_to_name.get(symbol, symbol)
+        resolved.append({"symbol": symbol, "name": name, "notes": notes})
+
+    add_results = watchlist_service.add_watchlist_items_with_notes(
+        db, current_user.id, resolved
+    )
+    for entry, result in zip(resolved, add_results):
+        item = result.get("item")
+        if item:
+            item["name"] = entry["name"]
+            item["has_scheduled"] = False
+        result["name"] = entry["name"]
+
+    added = sum(1 for r in add_results if r["status"] == "added")
+    duplicate = sum(1 for r in add_results if r["status"] == "duplicate")
+    failed = sum(1 for r in add_results if r["status"] == "failed")
+    message_parts = [f"共处理 {len(add_results)} 项"]
+    if added:
+        message_parts.append(f"新增 {added} 项")
+    if duplicate:
+        message_parts.append(f"重复 {duplicate} 项")
+    if failed:
+        message_parts.append(f"失败 {failed} 项")
+
+    return {
+        "message": "，".join(message_parts),
+        "summary": {"total": len(add_results), "added": added, "duplicate": duplicate, "failed": failed},
+        "results": add_results,
     }
 
 

@@ -1786,3 +1786,26 @@ Phase 3（优化期）：C-006 + C-008
 - **描述**：`infer_evidence_statuses` 优先从 DataCollector 缓存池的结构化数据读取证据状态，fallback 到文本正则
 - **实现要点**：DataCollector 新增 `build_raw_evidence()` 方法；`trading_graph.py` 将 raw_evidence 存入 state metadata；`infer_evidence_statuses` 接受 `raw_evidence` 参数
 - **验证方式**：有 raw_evidence 时直接从结构化数据判断 OHLCV/fund_flow/lhb/news 状态；无 raw_evidence 时 fallback 到文本正则
+
+### VLM-001: 自选截图解析 v2 — 候选表格识别（P1）
+- **描述**：升级 VLM 截图解析，支持识别"自选候选表格"（含核心业务、所属板块、利好度、启动时间、周期、共识度），解析结果写入 watchlist_items.notes。
+- **优先级**：P1
+- **状态**：done
+- **前置条件**：现有 VLM 链路可用（TA_VLM_* 环境变量）
+- **现有链路**：`Portfolio.tsx` → `POST /v1/portfolio/parse-image` → `vlm_position_parser.py` → `vlm_service.py`
+- **实现要点**：
+  1. 新增 `WATCHLIST_TABLE_PROMPT`，专门识别"自选候选表格"格式，字段：symbol/name/business/sector/bullish_score/startup_eta/holding_period/consensus
+  2. 新增 `parse_watchlist_table_image()` 函数，返回带 notes 的结构化数据
+  3. notes 格式：`半导体设备｜刻蚀/沉积设备｜利好9.3｜启动几天｜周期1月｜共识92`
+  4. 前端上传后展示"识别到 N 只，备注预览"，确认后批量添加
+  5. 批量添加自选时支持 `{ symbol, notes }`，自动写入 notes 字段
+- **验收方式**：
+  - 上传半导体分析表格截图，返回 7 条记录（6 股 + 1 ETF）
+  - 每条记录包含 symbol/name/business/sector/bullish_score/startup_eta/holding_period/consensus/notes
+  - notes 格式正确：`板块｜业务｜利好X｜启动X｜周期X｜共识X`
+  - 前端预览正确，确认后批量添加到 watchlist 并写入 notes
+  - `npm run build` 零错误
+  - `pytest tests/test_vlm*.py -q` 通过
+- **代码标注要求**：`# [VLM-001] watchlist_table_parser`
+- **完成记录**：2026-05-31, commit f52aa21
+

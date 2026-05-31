@@ -1,4 +1,4 @@
-import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse } from '@/types'
+import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse } from '@/types'
 
 export function getBaseUrl(): string {
     const envUrl = (import.meta.env.VITE_API_URL as string) || ''
@@ -247,9 +247,10 @@ class ApiService {
         await this.request('/v1/portfolio/imports', { method: 'DELETE' })
     }
 
-    async parsePositionImage(file: File): Promise<{ positions: PortfolioPositionInput[] }> {
+    async parsePositionImage(file: File, mode: 'position' | 'watchlist' = 'position'): Promise<{ positions: PortfolioPositionInput[] } | WatchlistTableParseResponse> {
         const formData = new FormData()
         formData.append('file', file)
+        formData.append('mode', mode)
         const url = `${getBaseUrl()}/v1/portfolio/parse-image`
         const token = getAuthToken()
         const response = await fetch(url, {
@@ -264,6 +265,14 @@ class ApiService {
             throw new Error(error.detail || '图片解析失败')
         }
         return response.json()
+    }
+
+    // [VLM-001] watchlist_table_parser
+    async addToWatchlistBatchNotes(entries: Array<{ symbol: string; notes?: string }>): Promise<WatchlistBatchResponse> {
+        return this.request<WatchlistBatchResponse>('/v1/watchlist/batch-notes', {
+            method: 'POST',
+            body: JSON.stringify({ entries }),
+        })
     }
 
     async getDashboardTrackingBoard(): Promise<TrackingBoardResponse> {
