@@ -30,6 +30,7 @@
 4. `UI-004`：盘中 Observe 与 TA 队列只读面板（P2，done fa75389）。
 5. `UI-005`：盘后 Review 前端页面（P2，done 401fb7c）。
 6. `UI-006`：数据源健康前端面板（P2，done 52d5f5e）。
+7. `UI-007`：TradeFlow 被过滤候选可追溯展示（P1，ready）。
 
 ---
 
@@ -561,6 +562,46 @@
   - mock OK/PARTIAL/FAILED/STALE 状态均能正确展示。
   - 没有健康数据时显示“未生成健康检查”，而不是报错。
 - **代码标注要求**：`// [UI-006] tradeflow_data_health`
+
+### UI-007: TradeFlow 被过滤候选可追溯展示（P1）
+- **描述**：候选池生成后，前端必须展示“哪些股票被过滤、为什么没进候选池”。解决用户看到 daily plan/输入股票池与候选表数量不一致时，无法判断是未显示、未落库还是被策略过滤的问题。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`UI-001` 到 `UI-006` 完成；`feat(tradeflow): add candidate discovery trigger` 已完成。
+- **背景**：
+  - 当前 `tradeflow_daily_plans` 只保存最终候选摘要，`tradeflow_candidates` 只保存入池股票。
+  - Discovery 接口返回 `filtered` 列表，但刷新页面后过滤原因丢失。
+  - 用户误以为 “daily plan 有两条/输入了多只股票，所以前端应显示多只”，实际很多票已被流动性、数据缺失或无策略命中过滤。
+- **执行约束**：
+  - 不触发深度 TA。
+  - 不调用 LLM。
+  - 不输出强买卖词。
+  - 不写 `tradingagents.db` schema；如需持久化，优先写 TradeFlow 自有 SQLite 表或 daily plan metadata。
+  - 不暴露 API key/token/内部路径。
+- **实现要点**：
+  1. 后端新增或扩展 TradeFlow 只读接口，能按 `date` 返回最近一次 Discovery/Plan 的 `filtered` 列表。
+     - 推荐方案：新增 `tradeflow_filtered_symbols` 表，字段至少包含 `trade_date/symbol/name/source/reason/run_id/created_at`。
+     - 备选方案：把 filtered 写入 `daily_plans.metadata.filtered`，但需避免 metadata 过大。
+  2. `run_discovery_scan()` 在生成候选池时持久化 filtered 结果，并在新一轮同日期扫描前清理/覆盖该日期旧 filtered。
+  3. 前端 TradeFlow 候选池页在“生成候选池”后显示过滤摘要：
+     - 总扫描数、入池数、过滤数。
+     - 过滤分类：流动性差、数据缺失、无策略命中、其他。
+  4. 前端增加“被过滤”折叠表或 Tab，字段：
+     - `symbol/name/source/reason`
+     - 可按过滤原因筛选。
+  5. 空候选时，页面要区分：
+     - “尚未生成候选池”
+     - “已扫描，但全部被过滤”
+     - “接口/数据源失败”
+  6. 文案说明 `daily_plans` 是计划记录，不等同于候选股票数量。
+- **验收方式**：
+  - 构造 3 只股票：1 只入池、1 只流动性差、1 只无策略命中；前端显示 1 只候选 + 2 只过滤原因。
+  - 刷新页面后，被过滤列表仍可查询。
+  - 同一日期二次生成时，过滤列表不会重复累积旧数据。
+  - API 测试覆盖：filtered 持久化、按日期查询、同日覆盖、空数据返回。
+  - 前端构建通过：`npm run build`。
+  - 后端测试通过：`pytest tests/test_ui001_tradeflow_api.py tests/test_tradeflow_*.py -q`。
+- **代码标注要求**：`# [UI-007] tradeflow_filtered_trace` / `// [UI-007] tradeflow_filtered_trace`
 
 ---
 

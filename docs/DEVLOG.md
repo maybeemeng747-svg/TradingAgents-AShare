@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-05-31 | UI-007 任务释放：TradeFlow 被过滤候选可追溯
+
+- **执行者**：Codex
+- **背景**：排查发现 `daily_plans` 是计划记录，`tradeflow_candidates` 只保存入池候选；未入池股票的过滤原因只在 Discovery 返回瞬间存在，刷新后不可追溯，容易让用户误判为前端漏显示。
+- **变更**：
+  - 更新 `docs/TASKS.md` 当前优先队列，新增 `UI-007` 为 P1 ready。
+  - 明确验收目标：候选池生成后展示并持久化 filtered 列表，刷新后仍可查看过滤原因。
+- **执行边界**：不触发深度 TA，不调用 LLM，不输出强买卖词，不改生产 `tradingagents.db` schema。
+
+---
+
 ## 2026-05-31 | TradeFlow 候选池生成入口
 
 - **执行者**：Codex
