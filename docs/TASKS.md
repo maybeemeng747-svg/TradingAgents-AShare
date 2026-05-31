@@ -31,6 +31,7 @@
 5. `UI-005`：盘后 Review 前端页面（P2，done 401fb7c）。
 6. `UI-006`：数据源健康前端面板（P2，done 52d5f5e）。
 7. `UI-007`：TradeFlow 被过滤候选可追溯展示（P1，ready）。
+8. `UI-008`：TradeFlow 候选字段规范化与名称回填（P1，ready，排在 UI-007 后）。
 
 ---
 
@@ -602,6 +603,56 @@
   - 前端构建通过：`npm run build`。
   - 后端测试通过：`pytest tests/test_ui001_tradeflow_api.py tests/test_tradeflow_*.py -q`。
 - **代码标注要求**：`# [UI-007] tradeflow_filtered_trace` / `// [UI-007] tradeflow_filtered_trace`
+
+### UI-008: TradeFlow 候选字段规范化与名称回填（P1）
+- **描述**：修复 TradeFlow 候选池里股票名称为空、事件源候选代码缺少交易所后缀、部分字段显示兜底不足的问题，确保前端候选池、详情抽屉、TA 队列和后续 TA 调度使用同一套规范字段。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`UI-001` 到 `UI-006` 完成；建议在 `UI-007` 后执行，便于 filtered 列表也复用同一套字段规范化逻辑。
+- **已观察到的问题**：
+  - `tradeflow_candidates.name` 大量为空，前端名称列只能显示空白。
+  - 事件源候选出现无交易所后缀代码，例如 `002600`、`000338`、`688617`，而 TA/行情/报告链路通常需要 `002600.SZ`、`688617.SH` 这种规范代码。
+  - 手动输入、事件源、自选股、持仓、昨日观察池的 `symbol/name/source/universe_sources` 来源不同，字段完整度不一致。
+  - `daily_plan.candidates_json` 与 `tradeflow_candidates` 可能字段不一致，前端不同 Tab 容易显示出不同值。
+- **执行约束**：
+  - 不触发深度 TA。
+  - 不调用 LLM。
+  - 不输出强买卖词。
+  - 不改 `tradingagents.db` schema。
+  - 不暴露 API key/token/内部路径。
+- **实现要点**：
+  1. 新增统一字段规范化 helper，例如 `normalize_tradeflow_symbol()` / `resolve_tradeflow_name()`：
+     - `6/5/9` 开头默认补 `.SH`。
+     - `0/2/3` 开头默认补 `.SZ`。
+     - `4/8` 开头按北交所规则补 `.BJ` 或保持既有项目规范。
+     - 已带 `.SH/.SZ/.BJ` 的不得重复补。
+  2. 股票名称回填优先级：
+     - universe/source 自带名称。
+     - 生产库自选股/持仓名称。
+     - 项目股票映射缓存，如 `_load_cn_stock_map()` / reverse map 或 dataflow 内已有 stock map。
+     - 仍找不到时前端显示 `--`，不留空白。
+  3. 在候选生成链路统一应用：
+     - `build_universe()` 输出前规范化 symbol/name。
+     - `event_source` 或 event_symbols 入池时规范化 symbol。
+     - `evaluate_symbol()` 创建 Candidate 前确保 `symbol/name` 已规范。
+     - `save_candidate()` 落库前兜底规范化，防止旧调用绕过。
+  4. 在 API 层兜底：
+     - `_row_to_candidate_item()` 如果 `name` 为空，返回 `--` 或通过映射回填。
+     - `daily_plan` JSON 转候选时也走同一套字段补齐。
+  5. 前端显示兜底：
+     - 候选表、详情抽屉、Observe、TA 队列、filtered 列表都不要显示空名称。
+     - 代码列统一展示规范 symbol。
+  6. 做一次字段审计，确认以下字段在候选表/详情/API/前端一致：
+     - `symbol/name/source/universe_sources/strategy_tags/primary_strategy/tier/composite_score/score/tradeflow_data_completeness/created_at/updated_at`。
+- **验收方式**：
+  - 构造事件源输入 `002600`，落库和 API 返回为 `002600.SZ`，名称可回填或显示 `--`。
+  - 构造 `688617`，落库和 API 返回为 `688617.SH`。
+  - 自选股/持仓已有名称时，候选池显示真实名称。
+  - 手动输入带后缀代码不会被重复补后缀。
+  - `daily-plan` API 与 `candidates` API 对同一候选的 `symbol/name/strategy_tags/tier/composite_score` 保持一致。
+  - 前端构建通过：`npm run build`。
+  - 后端测试通过：`pytest tests/test_ui001_tradeflow_api.py tests/test_tradeflow_universe.py tests/test_tradeflow_*.py -q`。
+- **代码标注要求**：`# [UI-008] tradeflow_field_normalization` / `// [UI-008] tradeflow_field_normalization`
 
 ---
 

@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-05-31 | UI-008 任务释放：TradeFlow 字段规范化与名称回填
+
+- **执行者**：Codex
+- **背景**：检查当前 TradeFlow 候选数据发现，`tradeflow_candidates.name` 大量为空，事件源候选还存在无交易所后缀代码（如 `002600`、`688617`），会影响前端展示、详情抽屉、TA 队列和后续 TA 调度一致性。
+- **变更**：
+  - 更新 `docs/TASKS.md` 当前优先队列，新增 `UI-008` 为 P1 ready。
+  - 明确修复范围：symbol 规范化、名称回填、API/前端字段兜底、候选表与 daily plan 字段一致性审计。
+- **执行边界**：不触发深度 TA，不调用 LLM，不改生产 `tradingagents.db` schema。
+
+---
+
 ## 2026-05-31 | UI-007 任务释放：TradeFlow 被过滤候选可追溯
 
 - **执行者**：Codex
