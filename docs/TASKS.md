@@ -24,11 +24,11 @@
 
 ### 当前优先队列
 
-1. `UI-001`：TradeFlow 只读 API 查询层（P1，ready）。
-2. `UI-002`：前端 TradeFlow 页面骨架与候选池表格（P1，ready）。
-3. `UI-003`：候选详情抽屉：证据、博弈、门禁解释（P1，ready）。
-4. `UI-004`：盘中 Observe 与 TA 队列只读面板（P2，ready）。
-5. `UI-005`：盘后 Review 前端页面（P2，ready）。
+1. `UI-001`：TradeFlow 只读 API 查询层（P1，done e6d3269）。
+2. `UI-002`：前端 TradeFlow 页面骨架与候选池表格（P1，done edf69d9）。
+3. `UI-003`：候选详情抽屉：证据、博弈、门禁解释（P1，done 9ee6aea）。
+4. `UI-004`：盘中 Observe 与 TA 队列只读面板（P2，done fa75389）。
+5. `UI-005`：盘后 Review 前端页面（P2，done 401fb7c）。
 6. `UI-006`：数据源健康前端面板（P2，ready）。
 
 ---
@@ -441,7 +441,7 @@
 ### UI-001: TradeFlow 只读 API 查询层（P1）
 - **描述**：新增 TradeFlow 前端所需的只读 API，让前端能查询每日计划、候选池、候选详情、盘中 Observe、TA 队列、盘后 Review 和数据健康状态。
 - **优先级**：P1
-- **状态**：done — commit pending
+- **状态**：done — commit e6d3269
 - **前置条件**：`S-009`、`M-011`、`T-007`、`M-007` 已完成。
 - **执行约束**：
   - 只读接口优先，不触发 TA，不跑全市场扫描，不调用 LLM。
@@ -470,7 +470,7 @@
 ### UI-002: 前端 TradeFlow 页面骨架与候选池表格（P1）
 - **描述**：新增 `/tradeflow` 页面和侧边栏入口，展示 TradeFlow 摘要卡片和候选池表格，让用户能直接看到“今天哪些票值得看、为什么进池、是否需要深度 TA”。
 - **优先级**：P1
-- **状态**：in_progress — OpenCode 执行中
+- **状态**：done — commit edf69d9
 - **前置条件**：`UI-001` 完成；若 API 未完成，可用 typed mock/fallback，但必须保留真实 API 接入路径。
 - **执行约束**：
   - 只做只读展示，不做一键交易。
@@ -529,7 +529,7 @@
 ### UI-005: 盘后 Review 前端页面（P2）
 - **描述**：把 M-007 盘后复盘结果展示到前端，按策略、层级、候选日期统计命中率、误报率、失效率和后续调参建议。
 - **优先级**：P2
-- **状态**：in_progress — OpenCode 执行中
+- **状态**：done — commit 401fb7c
 - **前置条件**：`M-007` 补修完成，`UI-001` review API 可用。
 - **执行约束**：
   - 只做策略质量复盘，不做个股买卖建议。

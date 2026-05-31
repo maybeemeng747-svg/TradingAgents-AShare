@@ -696,3 +696,24 @@
   3. 补齐 task_runs/M-007-20260530-030217/ 全部文件
 - **测试**: 193 passed
 - **工作区**: 干净
+
+## 2026-05-31 | UI 任务收口 + CodeGraph 评估
+
+### CodeGraph 评估
+- 工具: colbymchenry/codegraph v0.9.7
+- 扫描: 255 文件, 6195 节点, 12658 边, 1.3s
+- 支持 Python(204) + TypeScript(42), 100% 本地
+- 结论: 适合集成自动开发流程 (impact/callers/context)
+- Commit: b157b36
+
+### UI-001~UI-005 状态收口
+- UI-001: e6d3269 — TradeFlow API 层 (29 passed)
+- UI-002: edf69d9 — TradeFlow 前端骨架 (build 零错误)
+- UI-003: 9ee6aea — 候选详情抽屉
+- UI-004: fa75389 — 盘中 Observe 面板
+- UI-005: 401fb7c — 盘后 Review 页面
+- task_runs 临时文件已整理进标准目录
+
+### 下一步
+- UI-006 数据源健康前端面板 (P2, ready)
+- CodeGraph 可作为 OpenCode 任务前的辅助工具
