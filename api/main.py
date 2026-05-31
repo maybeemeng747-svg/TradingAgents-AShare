@@ -4990,6 +4990,71 @@ def mark_feedback_read(
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
+# [UI-001] tradeflow_api — imports
+from api.tradeflow_schemas import (
+    TradeFlowDailyPlanResponse,
+    TradeFlowCandidatesResponse,
+    TradeFlowCandidateDetailResponse,
+    TradeFlowObserveResponse,
+    TradeFlowTAQueueResponse,
+    TradeFlowReviewResponse,
+    TradeFlowDataHealthResponse,
+)
+from api.services.tradeflow_service import (
+    get_daily_plan as _tf_get_daily_plan,
+    get_candidates as _tf_get_candidates,
+    get_candidate_detail as _tf_get_candidate_detail,
+    get_observe as _tf_get_observe,
+    get_ta_queue as _tf_get_ta_queue,
+    get_review as _tf_get_review,
+    get_data_health as _tf_get_data_health,
+)
+
+# [UI-001] tradeflow_api — read-only endpoints
+
+
+@app.get("/v1/tradeflow/daily-plan", response_model=TradeFlowDailyPlanResponse)
+def tradeflow_daily_plan(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_daily_plan(date)
+
+
+@app.get("/v1/tradeflow/candidates", response_model=TradeFlowCandidatesResponse)
+def tradeflow_candidates(
+    date: str = Query(..., description="交易日期 YYYY-MM-DD"),
+    tier: Optional[str] = Query(None, description="层级过滤 A/B/C"),
+    need_deep_ta: Optional[bool] = Query(None, description="是否需要深度TA"),
+):
+    return _tf_get_candidates(date, tier=tier, need_deep_ta=need_deep_ta)
+
+
+@app.get("/v1/tradeflow/candidates/{symbol}", response_model=TradeFlowCandidateDetailResponse)
+def tradeflow_candidate_detail(
+    symbol: str,
+    date: str = Query(..., description="交易日期 YYYY-MM-DD"),
+):
+    return _tf_get_candidate_detail(symbol, date)
+
+
+@app.get("/v1/tradeflow/observe", response_model=TradeFlowObserveResponse)
+def tradeflow_observe(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_observe(date)
+
+
+@app.get("/v1/tradeflow/ta-queue", response_model=TradeFlowTAQueueResponse)
+def tradeflow_ta_queue(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_ta_queue(date)
+
+
+@app.get("/v1/tradeflow/review", response_model=TradeFlowReviewResponse)
+def tradeflow_review(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_review(date)
+
+
+@app.get("/v1/tradeflow/data-health", response_model=TradeFlowDataHealthResponse)
+def tradeflow_data_health():
+    return _tf_get_data_health()
+
+
 # ─── Static Files & SPA Routing ──────────────────────────────────────────────
 
 # Serve uploaded files (avatars etc.) from shared uploads directory

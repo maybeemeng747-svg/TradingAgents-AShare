@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-05-31 | UI-001: TradeFlow 只读 API 查询层
+
+- **执行者**：OpenCode
+- **任务**：UI-001 — 新增 TradeFlow 前端所需的 7 个只读 API 端点
+- **修改文件**：
+  - `api/tradeflow_schemas.py` — 新增 Pydantic 响应模型（CandidateItem/Detail/DailyPlan/Candidates/Observe/TAQueue/Review/DataHealth）
+  - `api/services/tradeflow_service.py` — 新增只读数据查询层（从 tradeflow SQLite 读取 candidates/plans/signals）
+  - `api/main.py` — 新增 7 个 GET 端点：
+    - `GET /v1/tradeflow/daily-plan?date=YYYY-MM-DD`
+    - `GET /v1/tradeflow/candidates?date=YYYY-MM-DD&tier=A&need_deep_ta=true`
+    - `GET /v1/tradeflow/candidates/{symbol}?date=YYYY-MM-DD`
+    - `GET /v1/tradeflow/observe?date=YYYY-MM-DD`
+    - `GET /v1/tradeflow/ta-queue?date=YYYY-MM-DD`
+    - `GET /v1/tradeflow/review?date=YYYY-MM-DD`
+    - `GET /v1/tradeflow/data-health`
+  - `tests/test_ui001_tradeflow_api.py` — 29 个单测覆盖空数据、候选数据、详情、Observe、TA 队列、Review、DataHealth、禁止词校验
+- **测试结果**：`pytest tests/test_ui001_tradeflow_api.py` 29 passed，`pytest tests/test_tradeflow_*.py` 129 passed
+- **约束遵守**：只读、不触发 TA、不调用 LLM、不写生产 DB、不返回 API key、不返回强买卖词
+
+---
+
 ## 2026-05-31 | TradeFlow 前端工作台任务释放
 
 - **背景**：用户确认候选池当前前端不可见，需要把 TradeFlow 的候选、证据、Observe、TA 队列、盘后 Review 和数据健康展示到 UI。
