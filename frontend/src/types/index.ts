@@ -886,12 +886,16 @@ export interface TradeFlowReviewResponse {
     summary_agg: TradeFlowSummary
 }
 
+export type DataHealthStatus = 'OK' | 'PARTIAL' | 'FAILED' | 'STALE' | 'NOT_QUERIED'
+
 export interface DataHealthSource {
     name: string
     available: boolean
     last_updated: string | null
     record_count: number
     error: string
+    status?: DataHealthStatus
+    fallback_vendor?: string | null
 }
 
 export interface TradeFlowDataHealthResponse {

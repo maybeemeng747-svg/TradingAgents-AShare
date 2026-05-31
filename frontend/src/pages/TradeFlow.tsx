@@ -1,11 +1,13 @@
 // [UI-005] tradeflow_review_page
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3 } from 'lucide-react'
+import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity } from 'lucide-react'
 import { api } from '@/services/api'
 import type {
     TradeFlowCandidateItem,
     TradeFlowSummary,
     TradeFlowDataHealthResponse,
+    DataHealthSource,
+    DataHealthStatus,
     TradeFlowObserveItem,
     TradeFlowObserveResponse,
     TradeFlowTAQueueItem,
@@ -14,7 +16,7 @@ import type {
 } from '@/types'
 import TradeFlowCandidateDrawer from '@/components/TradeFlowCandidateDrawer'
 
-type TabKey = 'candidates' | 'observe' | 'ta-queue' | 'review'
+type TabKey = 'candidates' | 'observe' | 'ta-queue' | 'review' | 'data-health'
 
 function todayStr(): string {
     return new Date().toISOString().slice(0, 10)
@@ -96,19 +98,19 @@ function SummaryCards({ summary, dataHealth }: SummaryCardsProps) {
                 <div className="card p-4 sm:col-span-3 lg:col-span-6">
                     <div className="text-xs text-slate-500 dark:text-slate-400">数据源状态</div>
                     <div className="mt-1 flex flex-wrap gap-2">
-                        {dataHealth.sources.map(s => (
-                            <span
-                                key={s.name}
-                                className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${
-                                    s.available
-                                        ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
-                                        : 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'
-                                }`}
-                            >
-                                <span className={`h-1.5 w-1.5 rounded-full ${s.available ? 'bg-emerald-500' : 'bg-red-500'}`} />
-                                {s.name} ({s.record_count})
-                            </span>
-                        ))}
+                        {dataHealth.sources.map(s => {
+                            const derived = deriveHealthStatus(s)
+                            const badge = healthStatusBadge(derived)
+                            return (
+                                <span
+                                    key={s.name}
+                                    className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${badge.cls}`}
+                                >
+                                    <span className={`h-1.5 w-1.5 rounded-full ${badge.dot}`} />
+                                    {s.name} ({s.record_count})
+                                </span>
+                            )
+                        })}
                     </div>
                 </div>
             )}
@@ -261,6 +263,7 @@ const TABS: { key: TabKey; label: string; icon: typeof Target }[] = [
     { key: 'observe', label: '盘中观察', icon: Eye },
     { key: 'ta-queue', label: 'TA 队列', icon: ListOrdered },
     { key: 'review', label: '盘后 Review', icon: BarChart3 },
+    { key: 'data-health', label: '数据健康', icon: Activity },
 ]
 
 function fmtPct(v: number | null | undefined): string {
@@ -492,6 +495,130 @@ function ReviewTab({ data }: { data: TradeFlowReviewResponse }) {
     )
 }
 
+function deriveHealthStatus(s: DataHealthSource): DataHealthStatus {
+    if (s.status) return s.status
+    if (s.available && !s.error) return 'OK'
+    if (s.available && s.error) return 'PARTIAL'
+    if (!s.available && s.error) return 'FAILED'
+    if (!s.available && !s.last_updated) return 'NOT_QUERIED'
+    return 'STALE'
+}
+
+function healthStatusBadge(status: DataHealthStatus): { text: string; cls: string; dot: string } {
+    switch (status) {
+        case 'OK': return { text: '正常', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300', dot: 'bg-emerald-500' }
+        case 'PARTIAL': return { text: '部分可用', cls: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300', dot: 'bg-yellow-500' }
+        case 'FAILED': return { text: '故障', cls: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300', dot: 'bg-red-500' }
+        case 'STALE': return { text: '过期', cls: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300', dot: 'bg-orange-500' }
+        case 'NOT_QUERIED': return { text: '未查询', cls: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400', dot: 'bg-slate-400' }
+        default: return { text: '未知', cls: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-400', dot: 'bg-slate-400' }
+    }
+}
+
+function DataHealthPanel({ data }: { data: TradeFlowDataHealthResponse | null }) {
+    if (!data || data.sources.length === 0) {
+        return (
+            <div className="py-20 text-center text-sm text-slate-400">
+                <Activity className="mx-auto mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
+                未生成健康检查
+            </div>
+        )
+    }
+
+    const sourcesWithStatus = data.sources.map(s => ({
+        ...s,
+        derivedStatus: deriveHealthStatus(s),
+    }))
+
+    const okCount = sourcesWithStatus.filter(s => s.derivedStatus === 'OK').length
+    const failedCount = sourcesWithStatus.filter(s => s.derivedStatus === 'FAILED').length
+    const degradedCount = sourcesWithStatus.filter(s => s.derivedStatus !== 'OK' && s.derivedStatus !== 'NOT_QUERIED' && s.derivedStatus !== 'FAILED').length
+
+    let bannerIcon: string
+    let bannerText: string
+    let bannerCls: string
+    if (failedCount > 0) {
+        bannerIcon = '\u274C'
+        bannerText = `数据源故障（${failedCount} 个）`
+        bannerCls = 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+    } else if (degradedCount > 0) {
+        bannerIcon = '\u26A0\uFE0F'
+        bannerText = `部分数据源异常（${degradedCount} 个）`
+        bannerCls = 'bg-yellow-50 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
+    } else if (okCount === sourcesWithStatus.length) {
+        bannerIcon = '\u2705'
+        bannerText = '数据源全部正常'
+        bannerCls = 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+    } else {
+        bannerIcon = '\u2139\uFE0F'
+        bannerText = '今日未生成健康检查'
+        bannerCls = 'bg-slate-50 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+    }
+
+    return (
+        <div className="space-y-4 p-4">
+            <div className={`flex items-center gap-2 rounded-lg px-4 py-3 text-sm font-medium ${bannerCls}`}>
+                <span>{bannerIcon}</span>
+                {bannerText}
+            </div>
+
+            {data.latest_plan_date && (
+                <div className="flex flex-wrap gap-3 text-xs text-slate-500">
+                    {data.latest_plan_date && <span>最新计划: <span className="font-medium text-slate-700 dark:text-slate-300">{data.latest_plan_date}</span></span>}
+                    {data.latest_candidates_date && <span>最新候选: <span className="font-medium text-slate-700 dark:text-slate-300">{data.latest_candidates_date}</span></span>}
+                    {data.total_candidates_today > 0 && <span>今日候选: <span className="font-medium text-slate-700 dark:text-slate-300">{data.total_candidates_today}</span></span>}
+                    {data.total_signals_today > 0 && <span>今日信号: <span className="font-medium text-slate-700 dark:text-slate-300">{data.total_signals_today}</span></span>}
+                </div>
+            )}
+
+            <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                    <thead>
+                        <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+                            <th className="px-4 py-2.5 font-medium">数据源</th>
+                            <th className="px-4 py-2.5 font-medium">状态</th>
+                            <th className="px-4 py-2.5 font-medium">记录数</th>
+                            <th className="px-4 py-2.5 font-medium">备用源</th>
+                            <th className="px-4 py-2.5 font-medium">最近更新</th>
+                            <th className="px-4 py-2.5 font-medium">错误信息</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {sourcesWithStatus.map(s => {
+                            const badge = healthStatusBadge(s.derivedStatus)
+                            return (
+                                <tr
+                                    key={s.name}
+                                    className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
+                                >
+                                    <td className="px-4 py-2.5 font-medium text-slate-700 dark:text-slate-300">{s.name}</td>
+                                    <td className="px-4 py-2.5">
+                                        <span className={`inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium ${badge.cls}`}>
+                                            <span className={`h-1.5 w-1.5 rounded-full ${badge.dot}`} />
+                                            {badge.text}
+                                        </span>
+                                    </td>
+                                    <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{s.record_count}</td>
+                                    <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{s.fallback_vendor || '-'}</td>
+                                    <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{s.last_updated || '-'}</td>
+                                    <td className="max-w-[300px] truncate px-4 py-2.5 text-xs text-red-500" title={s.error}>
+                                        {s.error || <span className="text-slate-400">-</span>}
+                                    </td>
+                                </tr>
+                            )
+                        })}
+                    </tbody>
+                </table>
+            </div>
+
+            <div className="text-xs text-slate-400">
+                数据库: {data.tradeflow_db_available ? '可用' : '不可用'}
+                {data.tradeflow_db_path && <span className="ml-2">({data.tradeflow_db_path})</span>}
+            </div>
+        </div>
+    )
+}
+
 export default function TradeFlow() {
     const [activeTab, setActiveTab] = useState<TabKey>('candidates')
     const [tradeDate, setTradeDate] = useState(todayStr)
@@ -582,6 +709,19 @@ export default function TradeFlow() {
         }
     }, [])
 
+    const fetchDataHealth = useCallback(async () => {
+        setLoading(true)
+        setError(null)
+        try {
+            const res = await api.getTradeFlowDataHealth()
+            setDataHealth(res)
+        } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : '加载失败')
+        } finally {
+            setLoading(false)
+        }
+    }, [])
+
     const fetchData = useCallback(async (date: string) => {
         if (activeTab === 'candidates') {
             await fetchCandidates(date)
@@ -591,8 +731,10 @@ export default function TradeFlow() {
             await fetchTaQueue(date)
         } else if (activeTab === 'review') {
             await fetchReview(date)
+        } else if (activeTab === 'data-health') {
+            await fetchDataHealth()
         }
-    }, [activeTab, fetchCandidates, fetchObserve, fetchTaQueue, fetchReview])
+    }, [activeTab, fetchCandidates, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth])
 
     useEffect(() => {
         void fetchData(tradeDate)
@@ -726,6 +868,10 @@ export default function TradeFlow() {
                 return <div className="py-20 text-center text-sm text-slate-400">{tradeDate} 暂无复盘数据</div>
             }
             return <ReviewTab data={reviewData} />
+        }
+
+        if (activeTab === 'data-health') {
+            return <DataHealthPanel data={dataHealth} />
         }
 
         return null
