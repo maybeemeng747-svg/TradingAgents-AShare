@@ -453,7 +453,7 @@ def get_data_health(tf_db_path: str = "") -> dict:
     db_path = tf_db_path or _get_tradeflow_db_path()
     db_available = os.path.exists(db_path)
 
-    sources = []
+    sources: List[Dict[str, Any]] = []
     latest_plan_date = None
     latest_candidates_date = None
     total_candidates_today = 0
@@ -490,13 +490,48 @@ def get_data_health(tf_db_path: str = "") -> dict:
                 if sig_row:
                     total_signals_today = sig_row["cnt"]
 
-                sources.append({"name": "tradeflow_daily_plans", "available": True, "record_count": conn.execute("SELECT COUNT(*) FROM tradeflow_daily_plans").fetchone()[0]})
-                sources.append({"name": "tradeflow_candidates", "available": True, "record_count": conn.execute("SELECT COUNT(*) FROM tradeflow_candidates").fetchone()[0]})
-                sources.append({"name": "tradeflow_signals", "available": True, "record_count": conn.execute("SELECT COUNT(*) FROM tradeflow_signals").fetchone()[0]})
+                sources.append({
+                    "name": "tradeflow_daily_plans",
+                    "available": True,
+                    "status": "OK",
+                    "fallback_vendor": "",
+                    "last_updated": latest_plan_date,
+                    "record_count": conn.execute("SELECT COUNT(*) FROM tradeflow_daily_plans").fetchone()[0],
+                })
+                sources.append({
+                    "name": "tradeflow_candidates",
+                    "available": True,
+                    "status": "OK",
+                    "fallback_vendor": "",
+                    "last_updated": latest_candidates_date,
+                    "record_count": conn.execute("SELECT COUNT(*) FROM tradeflow_candidates").fetchone()[0],
+                })
+                sources.append({
+                    "name": "tradeflow_signals",
+                    "available": True,
+                    "status": "OK",
+                    "fallback_vendor": "",
+                    "last_updated": today if total_signals_today else None,
+                    "record_count": conn.execute("SELECT COUNT(*) FROM tradeflow_signals").fetchone()[0],
+                })
             except Exception:
-                sources.append({"name": "tradeflow_db", "available": True, "error": "query failed"})
+                sources.append({
+                    "name": "tradeflow_db",
+                    "available": False,
+                    "status": "FAILED",
+                    "fallback_vendor": "",
+                    "error": "query failed",
+                })
             finally:
                 conn.close()
+    else:
+        sources.append({
+            "name": "tradeflow_db",
+            "available": False,
+            "status": "FAILED",
+            "fallback_vendor": "",
+            "error": "database not found",
+        })
 
     return {
         "status": "ok",

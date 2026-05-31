@@ -335,6 +335,7 @@ class TestDataHealth:
         result = get_data_health(tf_db_path="/nonexistent/path.db")
         assert result["status"] == "ok"
         assert result["tradeflow_db_available"] is False
+        assert result["sources"][0]["status"] == "FAILED"
 
     def test_with_db(self, populated_db):
         result = get_data_health(tf_db_path=populated_db)
@@ -345,6 +346,8 @@ class TestDataHealth:
         assert "tradeflow_daily_plans" in source_names
         assert "tradeflow_candidates" in source_names
         assert "tradeflow_signals" in source_names
+        assert all(s["status"] == "OK" for s in result["sources"])
+        assert all("fallback_vendor" in s for s in result["sources"])
 
     def test_latest_dates(self, populated_db):
         result = get_data_health(tf_db_path=populated_db)

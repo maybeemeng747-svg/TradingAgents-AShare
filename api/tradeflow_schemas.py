@@ -184,6 +184,8 @@ class TradeFlowReviewResponse(BaseModel):
 class DataHealthSource(BaseModel):
     name: str
     available: bool = False
+    status: str = "NOT_QUERIED"
+    fallback_vendor: str = ""
     last_updated: Optional[str] = None
     record_count: int = 0
     error: str = ""

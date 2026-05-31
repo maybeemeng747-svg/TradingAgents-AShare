@@ -369,30 +369,30 @@ class ApiService {
 
     // TradeFlow
     async getTradeFlowDailyPlan(date: string): Promise<TradeFlowDailyPlanResponse> {
-        return this.request<TradeFlowDailyPlanResponse>(`/v1/tradeflow/daily-plan?trade_date=${encodeURIComponent(date)}`)
+        return this.request<TradeFlowDailyPlanResponse>(`/v1/tradeflow/daily-plan?date=${encodeURIComponent(date)}`)
     }
 
     async getTradeFlowCandidates(date: string, tier?: string, needDeepTa?: boolean): Promise<TradeFlowCandidatesResponse> {
-        const params = new URLSearchParams({ trade_date: date })
+        const params = new URLSearchParams({ date })
         if (tier) params.append('tier', tier)
         if (needDeepTa !== undefined) params.append('need_deep_ta', String(needDeepTa))
         return this.request<TradeFlowCandidatesResponse>(`/v1/tradeflow/candidates?${params}`)
     }
 
     async getTradeFlowCandidateDetail(symbol: string, date: string): Promise<TradeFlowCandidateDetailResponse> {
-        return this.request<TradeFlowCandidateDetailResponse>(`/v1/tradeflow/candidates/${encodeURIComponent(symbol)}?trade_date=${encodeURIComponent(date)}`)
+        return this.request<TradeFlowCandidateDetailResponse>(`/v1/tradeflow/candidates/${encodeURIComponent(symbol)}?date=${encodeURIComponent(date)}`)
     }
 
     async getTradeFlowObserve(date: string): Promise<TradeFlowObserveResponse> {
-        return this.request<TradeFlowObserveResponse>(`/v1/tradeflow/observe?trade_date=${encodeURIComponent(date)}`)
+        return this.request<TradeFlowObserveResponse>(`/v1/tradeflow/observe?date=${encodeURIComponent(date)}`)
     }
 
     async getTradeFlowTaQueue(date: string): Promise<TradeFlowTAQueueResponse> {
-        return this.request<TradeFlowTAQueueResponse>(`/v1/tradeflow/ta-queue?trade_date=${encodeURIComponent(date)}`)
+        return this.request<TradeFlowTAQueueResponse>(`/v1/tradeflow/ta-queue?date=${encodeURIComponent(date)}`)
     }
 
     async getTradeFlowReview(date: string): Promise<TradeFlowReviewResponse> {
-        return this.request<TradeFlowReviewResponse>(`/v1/tradeflow/review?trade_date=${encodeURIComponent(date)}`)
+        return this.request<TradeFlowReviewResponse>(`/v1/tradeflow/review?date=${encodeURIComponent(date)}`)
     }
 
     async getTradeFlowDataHealth(): Promise<TradeFlowDataHealthResponse> {

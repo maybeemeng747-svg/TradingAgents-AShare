@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-05-31 | UI-006 验收补修：TradeFlow 前端参数与数据健康字段对齐
+
+- **执行者**：Codex
+- **背景**：UI-001 后端端点使用 `date=YYYY-MM-DD`，UI-002~UI-006 前端请求误用 `trade_date`，会导致 TradeFlow 候选池、详情、Observe、TA 队列和 Review 请求 422。
+- **修改文件**：
+  - `frontend/src/services/api.ts` — TradeFlow 6 个带日期请求统一改为 `date` 参数。
+  - `api/tradeflow_schemas.py` — `DataHealthSource` 补齐 `status` 与 `fallback_vendor` 字段。
+  - `api/services/tradeflow_service.py` — 数据健康接口为各 TradeFlow 表返回 `OK/FAILED` 状态、更新时间和备用源字段。
+  - `tests/test_ui001_tradeflow_api.py` — 增加数据健康状态字段断言。
+- **测试结果**：`pytest tests/test_ui001_tradeflow_api.py tests/test_tradeflow_*.py -q` 158 passed；`npm run build` 通过。
+- **约束遵守**：只读 API 与前端展示修复，不触发 TA、不调用 LLM、不写生产 DB。
+
+---
+
 ## 2026-05-31 | UI-001: TradeFlow 只读 API 查询层
 
 - **执行者**：OpenCode
