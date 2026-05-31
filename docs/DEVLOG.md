@@ -868,3 +868,17 @@
 - 新增 `tests/test_ui008_tradeflow_field_normalization.py`: 39 tests (symbol normalization, name resolution, universe/engine/API integration)
 - 全量通过: 201 passed (162 existing + 39 new)
 - 前端构建通过: npm run build 零错误
+
+## 2026-05-31 | Simon 数据 Skill 思路吸收进数据源治理路线
+
+### 背景
+- 用户要求参考 SimonLin1212 GitHub 实践，重点吸收 A 股数据源 Skill 的有用部分。
+- 结论：不替换本项目 TA/TradeFlow/风控门禁，只吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约、fixture replay”。
+
+### 修改
+- `docs/ROADMAP.md`: Data Layer 增加 source router/provenance，Phase 6 增加 A-stock source integration、实时补丁和数据契约任务方向。
+- `docs/TASKS.md`: 新增 `DATA-001`~`DATA-005` 数据源治理任务池，状态全部为 `proposed`，避免抢占当前 `H-001` 主线。
+
+### 后续
+- 当前唯一 ready 仍为 `H-001`。
+- 待 H-001 定义 MandateSignal 后，可把 `DATA-003` 转为 ready，服务昊天雷达事件源归一化。

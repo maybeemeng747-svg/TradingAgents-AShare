@@ -25,6 +25,8 @@ Data Layer
   ├─ Market data: OHLCV, volume, turnover, liquidity
   ├─ Event data: announcements, buybacks, ratings, policy/news titles
   ├─ Capital flow: individual fund flow, board flow, LHB, margin data
+  ├─ Source router: vendor capability matrix, fallback order, freshness checks
+  ├─ Provenance: vendor, endpoint, as_of, fetched_at, unit, status, source_url
   └─ User data: watchlist, holdings, manual pools
 
 Mandate Radar
@@ -199,16 +201,21 @@ Goal: improve truthfulness and stability.
 
 Potential tasks:
 
+- A-stock source integration: absorb the useful parts of SimonLin1212 `a-stock-data` style source skills without replacing this system.
+- Vendor capability catalog: Tencent/mootdx for realtime quotes, Eastmoney/AkShare for broad data, Sina/financial endpoints, Juchao/CNInfo for announcements, Cailianshe/news for events, BaoStock/yfinance as historical/fallback sources.
+- Realtime quote patching: detect stale daily bars and explicitly patch current price/volume from a realtime source with `is_realtime_patched`.
 - More stable announcement source fallback.
 - Better industry and concept mapping.
 - Board fund flow and individual fund flow consistency.
 - LHB/margin availability classification.
 - Data freshness and stale detection in UI.
+- Data contract fixtures: per endpoint field/unit/freshness tests, including failure and rate-limit states.
 
 Exit criteria:
 
 - Candidate confidence reflects data completeness.
 - Data source failures are visible instead of silently lowering quality.
+- Every important candidate can explain which vendor/endpoint produced each key field.
 
 ## Task Policy
 
@@ -218,6 +225,7 @@ Tasks should be added in these buckets:
 - `S-*`: TradeFlow scoring and strategy quality.
 - `T-*`: Discovery, event source, and candidate generation.
 - `M-*`: State management, review, data health, and infrastructure inside TradeFlow.
+- `DATA-*`: Data source routing, provenance, freshness, and vendor fallback.
 - `UI-*`: Frontend and API visibility.
 - `AUTO-*`: Automation loop and toolchain.
 - `V-*`: End-to-end validation and replay.

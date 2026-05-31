@@ -31,11 +31,146 @@
 5. `H-005`：TradeFlow 前端昊天候选池视图（P2，proposed，依赖 H-004）。
 6. `H-006`：昊天候选池回放评估与反证机制（P2，proposed，依赖 H-004）。
 
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，proposed）。
+2. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，proposed）。
+3. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，proposed，依赖 H-001）。
+4. `DATA-004`：raw_evidence 来源契约升级（P1，proposed）。
+5. `DATA-005`：数据源 fixture replay 与限流/失败回放（P2，proposed）。
+
 ### 总体路线图
 
 - 详见 `docs/ROADMAP.md`。
 - 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入 TA 和回放评估。
 - 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## DATA. 数据源治理 / Simon 数据 Skill 吸收任务池（2026-05-31 新增）
+
+> 目标：把外部 A 股数据 Skill 的优点吸收进本项目 Data Layer，让候选池和 TA 报告更真实、更实时、更可追溯。第一阶段只做数据治理和证据链，不新增 LLM Agent，不替换现有 TA 主链路。
+
+### DATA-001: A股数据源能力目录与 fallback 矩阵（P1）
+- **描述**：建立本项目统一的数据源能力目录，明确每个 vendor/endpoint 能提供什么字段、适用场景、freshness、限流风险和 fallback 顺序。
+- **优先级**：P1
+- **状态**：proposed
+- **背景**：
+  - SimonLin1212 `a-stock-data` 的核心启发不是 Agent 数量，而是把腾讯/东财/新浪/巨潮/财联社等数据源做成可调用、可组合的端点目录。
+  - 本项目已有 AKShare、BaoStock、yfinance、cn_astock、event_source，但调用关系和 fallback 口径还不够透明。
+- **执行约束**：
+  - 不保存 API key/cookie。
+  - 不做全市场 live 压测。
+  - 不把任何单一第三方源设为唯一真相。
+  - 不改生产数据库。
+- **实现要点**：
+  1. 新增或完善数据源能力配置，例如 `tradingagents/dataflows/source_catalog.py`。
+  2. 至少覆盖：
+     - 行情/OHLCV/实时价：AKShare、cn_astock/Tencent、BaoStock、yfinance。
+     - 资金流/板块资金：AKShare/Eastmoney 类接口。
+     - 龙虎榜/融资融券：AKShare/Eastmoney 类接口。
+     - 公告/研报/评级/回购：event_source、CNInfo/Juchao、Eastmoney、Cailianshe 类接口。
+  3. 每个 source 记录：
+     - `vendor`、`endpoint`、`data_type`、`fields`、`unit`、`freshness`、`rate_limit_risk`、`fallback_priority`、`known_gaps`。
+  4. 输出统一 helper：按 `data_type` 查询候选 source 和 fallback 顺序。
+- **验收方式**：
+  - 单测覆盖按 `data_type=quote/fund_flow/notice/report` 返回正确 source 顺序。
+  - 缺少字段或单位未知的数据源不得标为 `primary`。
+  - `pytest tests/test_data_source_catalog.py -q` 或同等测试通过。
+- **代码标注要求**：`# [DATA-001] source_catalog`
+
+### DATA-002: 实时行情 freshness 检测与补丁标注（P1）
+- **描述**：解决“当天实时数据没有/日线滞后”的问题：检测日线数据是否 stale，并用实时行情源补 current price、volume、amount，同时明确标注补丁来源。
+- **优先级**：P1
+- **状态**：proposed
+- **前置条件**：`DATA-001` 完成或至少有 source catalog 雏形。
+- **执行约束**：
+  - 不把实时补丁伪装成完整日 K。
+  - 不用补丁数据覆盖历史原始 OHLCV。
+  - 不输出强买卖动作。
+- **实现要点**：
+  1. 新增 freshness 判断：交易日、当前时间、最新 bar 日期、更新时间窗口。
+  2. 当日线缺当天数据时，从 realtime quote 源补：
+     - `current_price`、`current_volume`、`current_amount`、`quote_time`、`realtime_vendor`。
+  3. 在 raw_evidence / candidate evidence 写入：
+     - `is_realtime_patched=True`
+     - `patch_fields=[...]`
+     - `patch_source`
+     - `patch_as_of`
+  4. 前端数据健康面板显示：历史数据正常但实时补丁存在，避免误以为全字段都是日线原始值。
+- **验收方式**：
+  - 构造最新日线停留在昨日、实时 quote 有今日数据，候选 evidence 显示 patch。
+  - 构造非交易时段/实时 quote 失败，不错误 patch。
+  - 单测验证成交额/成交量单位不混淆。
+- **代码标注要求**：`# [DATA-002] realtime_freshness_patch`
+
+### DATA-003: 公告/研报/政策事件源归一化接入昊天雷达（P1）
+- **描述**：把公告、回购、评级、研报标题、政策新闻等事件源统一转换为 `MandateSignal`，让昊天雷达能消费真实事件，而不是只靠关键词。
+- **优先级**：P1
+- **状态**：proposed
+- **前置条件**：`H-001` 完成。
+- **执行约束**：
+  - 不自动相信媒体标题；必须保留来源级别和原始标题。
+  - 不抓取大规模全文；第一版以标题/摘要/链接/日期为主。
+  - 不调用 LLM。
+- **实现要点**：
+  1. 对接现有 `event_source.fetch_daily_events()` 和 cn_astock/CNInfo 类公告能力。
+  2. 统一输出字段：
+     - `symbol`、`title`、`source`、`source_level`、`date`、`url`、`event_type`、`topic_tags`、`direction`。
+  3. 区分：
+     - 政策原文/部委会议/地方政策/公司公告/券商研报/媒体新闻。
+  4. 研报只能作为“观点/线索”，不能替代公告或政策原文。
+  5. 同一标题多源转载去重，保留最高权威来源和所有 raw refs。
+- **验收方式**：
+  - 同一政策事件多源转载不会重复加分。
+  - 券商研报标题不会被当作中央政策。
+  - 公司公告可以生成公司层证据，但不能自动提升为政策级别。
+- **代码标注要求**：`# [DATA-003] mandate_event_normalization`
+
+### DATA-004: raw_evidence 来源契约升级（P1）
+- **描述**：把所有关键字段的来源、端点、时间、单位、状态纳入 raw_evidence，使报告和前端都能回答“这个数从哪里来、是否实时、单位是什么、是否 fallback”。
+- **优先级**：P1
+- **状态**：proposed
+- **前置条件**：`DATA-001` 完成。
+- **执行约束**：
+  - 不提交任何明文密钥。
+  - 不大改报告 prompt。
+  - 不把缺失数据用推测值填满。
+- **实现要点**：
+  1. 定义最小 evidence contract：
+     - `field`、`value`、`unit`、`vendor`、`endpoint`、`as_of`、`fetched_at`、`status`、`fallback_from`、`source_url`、`error`。
+  2. 覆盖关键字段：
+     - OHLCV、成交量、成交额、换手率、量比、资金流、龙虎榜、两融、公告、研报/评级。
+  3. 数据完整度评分从 contract 读取，不再只看文本是否出现。
+  4. 报告底部数据源摘要和前端数据健康面板共用该 contract。
+- **验收方式**：
+  - fallback 命中时 raw_evidence 显示实际 vendor，而不是默认 akshare。
+  - 单位未知或字段冲突时完整度降级。
+  - `pytest tests/test_g006_raw_evidence_snapshot.py tests/test_tradeflow_*data*.py -q` 通过。
+- **代码标注要求**：`# [DATA-004] raw_evidence_contract`
+
+### DATA-005: 数据源 fixture replay 与限流/失败回放（P2）
+- **描述**：建立可重复的数据源回放测试，覆盖正常、缺字段、限流、超时、来源冲突、当天实时缺失等场景，避免夜间自动开发误判数据源质量。
+- **优先级**：P2
+- **状态**：proposed
+- **前置条件**：`DATA-001`、`DATA-004` 完成。
+- **执行约束**：
+  - fixture 不包含 cookie/key。
+  - live smoke 默认跳过，必须显式开启。
+  - 不依赖真实当天市场状态才能通过。
+- **实现要点**：
+  1. 增加 fixtures：
+     - 正常行情、日线 stale、实时 quote 成功、实时 quote 失败、资金流单位异常、龙虎榜无触发、公告源失败。
+  2. 增加 replay runner，输出数据源健康报告。
+  3. 自动开发夜间巡检可运行 fixture replay，不跑高成本 live 请求。
+  4. 失败时写入 `docs/data_source_reports/YYYY-MM-DD.md`。
+- **验收方式**：
+  - 所有 fixture 输出稳定。
+  - 限流/超时不会被当作“无数据”。
+  - fixture replay 可被 `scripts/auto_dev_loop.sh` 或 OpenClaw 巡检调用。
+- **代码标注要求**：`# [DATA-005] data_source_replay`
 
 ---
 
