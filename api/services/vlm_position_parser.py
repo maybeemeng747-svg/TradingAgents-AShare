@@ -28,7 +28,7 @@ POSITION_PROMPT = """你是一个股票截图解析助手。用户会上传券�
 
 # [VLM-001] watchlist_table_parser
 WATCHLIST_TABLE_PROMPT = """你是一个投资分析表格解析助手。用户会上传一张投资分析/自选候选表格的截图，包含以下列：
-股票代码、股票名称、核心业务、所属板块、利好度、预计启动时间、期待周期、市场共识度。
+股票代码、股票名称、核心业务、所属板块、利好度、市场共识度。
 
 请从图片中提取所有股票信息，返回 JSON 数组，每个元素包含：
 - symbol: 股票代码（6位纯数字，去掉后缀，如 "002371"）
@@ -36,8 +36,6 @@ WATCHLIST_TABLE_PROMPT = """你是一个投资分析表格解析助手。用户�
 - business: 核心业务（如 "半导体刻蚀、沉积等关键设备"）
 - sector: 所属板块（如 "半导体设备"）
 - bullish_score: 利好度，浮点数（如 9.3）
-- startup_eta: 预计启动时间，保持原文（如 "几天"、"一周"）
-- holding_period: 期待周期，保持原文（如 "一个月"、"一个半月"）
 - consensus: 市场共识度，整数（如 92）
 
 注意：
@@ -126,10 +124,8 @@ def _parse_watchlist_response(raw: str) -> list[dict[str, Any]]:
         business = item.get("business")
         sector = item.get("sector")
         bullish_score = _to_float(item.get("bullish_score"))
-        startup_eta = item.get("startup_eta")
-        holding_period = item.get("holding_period")
         consensus = _to_int(item.get("consensus"))
-        notes = _build_watchlist_notes(sector, business, bullish_score, startup_eta, holding_period, consensus)
+        notes = _build_watchlist_notes(sector, business, bullish_score, consensus)
 
         result.append({
             "symbol": symbol,
@@ -137,8 +133,6 @@ def _parse_watchlist_response(raw: str) -> list[dict[str, Any]]:
             "business": business,
             "sector": sector,
             "bullish_score": bullish_score,
-            "startup_eta": startup_eta,
-            "holding_period": holding_period,
             "consensus": consensus,
             "notes": notes,
         })
@@ -166,8 +160,6 @@ def _build_watchlist_notes(
     sector: str | None,
     business: str | None,
     bullish_score: float | None,
-    startup_eta: str | None,
-    holding_period: str | None,
     consensus: int | None,
 ) -> str:
     parts = []
@@ -177,10 +169,6 @@ def _build_watchlist_notes(
         parts.append(business[:20])
     if bullish_score is not None:
         parts.append(f"利好{bullish_score:g}")
-    if startup_eta:
-        parts.append(f"启动{startup_eta}")
-    if holding_period:
-        parts.append(f"周期{holding_period}")
     if consensus is not None:
         parts.append(f"共识{consensus}")
     return "｜".join(parts)

@@ -512,8 +512,6 @@ export interface WatchlistTableItem {
     business?: string
     sector?: string
     bullish_score?: number | null
-    startup_eta?: string
-    holding_period?: string
     consensus?: number | null
     notes?: string
 }

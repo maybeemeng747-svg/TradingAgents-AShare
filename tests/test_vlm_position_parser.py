@@ -75,8 +75,6 @@ def test_parse_watchlist_table_returns_items():
             "business": "半导体刻蚀、沉积等关键设备",
             "sector": "半导体设备",
             "bullish_score": 9.3,
-            "startup_eta": "几天",
-            "holding_period": "一个月",
             "consensus": 92,
         },
         {
@@ -85,8 +83,6 @@ def test_parse_watchlist_table_returns_items():
             "business": "晶圆代工",
             "sector": "半导体制造",
             "bullish_score": 8.5,
-            "startup_eta": "一周",
-            "holding_period": "一个半月",
             "consensus": 88,
         },
     ])
@@ -101,8 +97,6 @@ def test_parse_watchlist_table_returns_items():
     assert result[0]["business"] == "半导体刻蚀、沉积等关键设备"
     assert result[0]["sector"] == "半导体设备"
     assert result[0]["bullish_score"] == 9.3
-    assert result[0]["startup_eta"] == "几天"
-    assert result[0]["holding_period"] == "一个月"
     assert result[0]["consensus"] == 92
     assert "半导体设备" in result[0]["notes"]
     assert "利好9.3" in result[0]["notes"]
@@ -119,8 +113,6 @@ def test_parse_watchlist_table_strips_suffix():
             "business": "半导体设备",
             "sector": "半导体设备",
             "bullish_score": 9.0,
-            "startup_eta": "几天",
-            "holding_period": "一个月",
             "consensus": 90,
         },
     ])
@@ -146,7 +138,7 @@ def test_parse_watchlist_table_empty_response():
 def test_parse_watchlist_table_handles_markdown_fences():
     from api.services.vlm_position_parser import parse_watchlist_table_image
 
-    raw = '```json\n[{"symbol": "002371", "name": "北方华创", "business": "半导体", "sector": "半导体设备", "bullish_score": 9.0, "startup_eta": "几天", "holding_period": "一个月", "consensus": 90}]\n```'
+    raw = '```json\n[{"symbol": "002371", "name": "北方华创", "business": "半导体", "sector": "半导体设备", "bullish_score": 9.0, "consensus": 90}]\n```'
 
     with patch("api.services.vlm_position_parser.call_vlm") as mock_vlm:
         mock_vlm.return_value = raw
@@ -170,7 +162,6 @@ def test_parse_watchlist_table_skips_items_without_symbol():
     from api.services.vlm_position_parser import parse_watchlist_table_image
 
     raw = json.dumps([
-        {"symbol": "002371", "name": "北方华创", "business": "半导体", "sector": "半导体设备", "bullish_score": 9.0, "startup_eta": "几天", "holding_period": "一个月", "consensus": 90},
         {"name": "无代码"},
         {"symbol": "", "name": "空代码"},
     ])
@@ -179,28 +170,27 @@ def test_parse_watchlist_table_skips_items_without_symbol():
         mock_vlm.return_value = raw
         result = parse_watchlist_table_image(b"fake_image_bytes", "image/png")
 
-    assert len(result) == 1
-    assert result[0]["symbol"] == "002371"
+    assert len(result) == 0
 
 
 def test_build_watchlist_notes_format():
     from api.services.vlm_position_parser import _build_watchlist_notes
 
-    notes = _build_watchlist_notes("半导体设备", "刻蚀/沉积设备", 9.3, "几天", "一个月", 92)
-    assert notes == "半导体设备｜刻蚀/沉积设备｜利好9.3｜启动几天｜周期一个月｜共识92"
+    notes = _build_watchlist_notes("半导体设备", "刻蚀/沉积设备", 9.3, 92)
+    assert notes == "半导体设备｜刻蚀/沉积设备｜利好9.3｜共识92"
 
 
 def test_build_watchlist_notes_partial():
     from api.services.vlm_position_parser import _build_watchlist_notes
 
-    notes = _build_watchlist_notes("半导体设备", None, None, None, None, None)
+    notes = _build_watchlist_notes("半导体设备", None, None, None)
     assert notes == "半导体设备"
 
 
 def test_build_watchlist_notes_empty():
     from api.services.vlm_position_parser import _build_watchlist_notes
 
-    notes = _build_watchlist_notes(None, None, None, None, None, None)
+    notes = _build_watchlist_notes(None, None, None, None)
     assert notes == ""
 
 
@@ -223,8 +213,6 @@ def test_parse_watchlist_table_handles_null_scores():
             "business": "银行",
             "sector": "银行",
             "bullish_score": None,
-            "startup_eta": None,
-            "holding_period": None,
             "consensus": None,
         },
     ])
