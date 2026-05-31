@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-05-29
+> 最后更新：2026-05-31
 
 ---
 
@@ -24,11 +24,12 @@
 
 ### 当前优先队列
 
-1. `S-009`：修复 S-005 选股门控双重计分与资金单位校验（P1，ready）。
-2. `M-011`：修复 M-003 universe 兼容性与来源 extra 序列化（P1，ready）。
-3. `T-007`：修复 T-006 事件源底层失败可观测性（P1，ready）。
-4. `V-003`：TradeFlow 端到端候选质量回放验收（P1，ready）。
-5. `M-007`：盘后 Review 与策略命中率复盘（P2，ready）。
+1. `UI-001`：TradeFlow 只读 API 查询层（P1，ready）。
+2. `UI-002`：前端 TradeFlow 页面骨架与候选池表格（P1，ready）。
+3. `UI-003`：候选详情抽屉：证据、博弈、门禁解释（P1，ready）。
+4. `UI-004`：盘中 Observe 与 TA 队列只读面板（P2，ready）。
+5. `UI-005`：盘后 Review 前端页面（P2，ready）。
+6. `UI-006`：数据源健康前端面板（P2，ready）。
 
 ---
 
@@ -430,6 +431,136 @@
   - dry-run 生成 payload。
   - 未配置 webhook 时不报错、不发送。
 - **代码标注要求**：`# [M-010] notification_dry_run`
+
+---
+
+## UI. TradeFlow 前端工作台任务池（2026-05-31 新增）
+
+> 目标：把已经建好的 TradeFlow 候选池、分层、证据门禁、盘中 Observe、TA 队列和盘后 Review 露给用户。第一阶段只做可解释展示和人工触发入口，不做交易指令，不自动调用高成本 LLM。
+
+### UI-001: TradeFlow 只读 API 查询层（P1）
+- **描述**：新增 TradeFlow 前端所需的只读 API，让前端能查询每日计划、候选池、候选详情、盘中 Observe、TA 队列、盘后 Review 和数据健康状态。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`S-009`、`M-011`、`T-007`、`M-007` 已完成。
+- **执行约束**：
+  - 只读接口优先，不触发 TA，不跑全市场扫描，不调用 LLM。
+  - 不写生产 `tradingagents.db`，除非复用既有只读查询。
+  - 不读取、打印、返回任何 API key/token。
+  - 不返回强买卖词；动作字段保持 `OBSERVE/WAIT_TRIGGER/NEED_DEEP_TA/REMOVE_FROM_WATCH`。
+- **建议接口**：
+  1. `GET /v1/tradeflow/daily-plan?date=YYYY-MM-DD`
+  2. `GET /v1/tradeflow/candidates?date=YYYY-MM-DD&tier=A&need_deep_ta=true`
+  3. `GET /v1/tradeflow/candidates/{symbol}?date=YYYY-MM-DD`
+  4. `GET /v1/tradeflow/observe?date=YYYY-MM-DD`
+  5. `GET /v1/tradeflow/ta-queue?date=YYYY-MM-DD`
+  6. `GET /v1/tradeflow/review?date=YYYY-MM-DD`
+  7. `GET /v1/tradeflow/data-health`
+- **实现要点**：
+  1. 新增 Pydantic response schema，字段覆盖 `tier/composite_score/strategy_tags/trigger_price/invalid_price/need_deep_ta/observe_state/tradeflow_data_completeness/missing_data_fields/game_balance/why_deep_ta/why_not_deep_ta`。
+  2. API 可先从 TradeFlow SQLite 表、DailyPlan JSON、review markdown/对象或已有服务层读取；没有数据时返回空列表和明确 metadata，不报 500。
+  3. 候选详情必须包含 evidence refs、bull/bear/policy/fund case、数据缺失字段、资金单位校验状态。
+  4. 为 UI 提供 summary 聚合：总候选数、A/B/C 数量、need_deep_ta 数量、平均完整度、事件源状态。
+- **验证方式**：
+  - 新增 API 单测覆盖空数据、候选数据、详情数据、review 数据。
+  - `pytest tests/test_tradeflow_*.py -q` 通过。
+  - `pytest tests/test_api*.py -q` 或新增对应 API 测试通过。
+- **代码标注要求**：`# [UI-001] tradeflow_api`
+
+### UI-002: 前端 TradeFlow 页面骨架与候选池表格（P1）
+- **描述**：新增 `/tradeflow` 页面和侧边栏入口，展示 TradeFlow 摘要卡片和候选池表格，让用户能直接看到“今天哪些票值得看、为什么进池、是否需要深度 TA”。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`UI-001` 完成；若 API 未完成，可用 typed mock/fallback，但必须保留真实 API 接入路径。
+- **执行约束**：
+  - 只做只读展示，不做一键交易。
+  - 不展示“立即买入/重仓/清仓”等强动作词。
+  - 设计风格保持现有后台工具风格：信息密度高、少装饰、不做营销式 hero。
+- **实现要点**：
+  1. `frontend/src/services/api.ts` 增加 TradeFlow API client。
+  2. `frontend/src/types/index.ts` 增加 TradeFlow 类型。
+  3. 新增 `frontend/src/pages/TradeFlow.tsx` 或组件目录，包含摘要栏和候选表格。
+  4. 候选表格字段：symbol/name/tier/composite_score/strategy_tags/trigger_price/invalid_price/tradeflow_data_completeness/need_deep_ta/observe_state/action。
+  5. 支持按 tier、策略标签、need_deep_ta、observe_state 筛选。
+  6. loading/empty/error 状态要完整，空候选时解释“无候选/数据未生成/接口无数据”。
+- **验证方式**：
+  - `npm test` 或现有前端测试命令通过。
+  - 新增 sidebar/router 测试，确认 `/tradeflow` 入口存在。
+  - 表格最长字段不溢出，移动端可横向滚动或响应式折叠。
+- **代码标注要求**：`// [UI-002] tradeflow_page`
+
+### UI-003: 候选详情抽屉：证据、博弈、门禁解释（P1）
+- **描述**：为 TradeFlow 候选池增加右侧详情抽屉，展示入池理由、多空博弈、证据质检、门禁解释和后续升级条件。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`UI-002` 完成。
+- **执行约束**：
+  - 详情抽屉只解释信号质量，不生成投资建议。
+  - 所有强结论必须绑定 evidence refs；缺证据时显示“缺失/未查询/失败”。
+- **实现要点**：
+  1. 展示策略命中：VCP、PULLBACK_SUPPORT、EVENT_CATALYST、POLICY_VERSION、NARRATIVE_QUALITY、FUND_FLOW_ANOMALY。
+  2. 展示 `bull_case/bear_case/policy_case/fund_flow_case/game_balance/resonance_count`。
+  3. 展示证据门禁：完整度、缺失字段、资金流单位是否校验、事件源状态、LHB/融资融券状态。
+  4. 展示 `why_deep_ta/why_not_deep_ta/what_to_upgrade/missing_evidence_for_upgrade`。
+  5. 抽屉内提供“加入自选/复制摘要/查看 TA 报告路径”的只读或轻操作入口；真实触发 TA 放到后续任务。
+- **验证方式**：
+  - 组件测试覆盖有证据、缺证据、风险拥挤、数据失败四类候选。
+  - 文案不包含强买卖词。
+- **代码标注要求**：`// [UI-003] tradeflow_candidate_drawer`
+
+### UI-004: 盘中 Observe 与 TA 队列只读面板（P2）
+- **描述**：在 TradeFlow 页面增加“盘中观察”和“TA 队列”Tab，展示候选状态、触发价/失效价、TA 调度状态和成本门禁原因。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：`M-005`、`M-006`、`UI-001` 完成。
+- **执行约束**：
+  - 第一版只读，不自动触发 TA。
+  - 不调用 DeepSeek，不绕过 TA 预算门禁。
+- **实现要点**：
+  1. 展示 `WAITING/TRIGGERED/EXPIRED/INVALIDATED` 状态。
+  2. 展示 current price/trigger price/invalid price 的相对距离；无实时价格时明确显示“实时行情不可用”。
+  3. 展示 `deep_ta_status/deep_ta_dispatch_reason/deep_ta_model/deep_ta_report_path/deep_ta_position_context`。
+  4. 展示今日 TA 调度数量、上限、剩余额度。
+- **验证方式**：
+  - mock 状态机数据下展示正确。
+  - 无实时行情时不误判触发。
+- **代码标注要求**：`// [UI-004] tradeflow_observe_queue`
+
+### UI-005: 盘后 Review 前端页面（P2）
+- **描述**：把 M-007 盘后复盘结果展示到前端，按策略、层级、候选日期统计命中率、误报率、失效率和后续调参建议。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：`M-007` 补修完成，`UI-001` review API 可用。
+- **执行约束**：
+  - 只做策略质量复盘，不做个股买卖建议。
+  - 0% 必须显示为 `0.0%`，不能显示 `N/A%`。
+- **实现要点**：
+  1. 展示总体概览：总候选、有评分、无数据、命中、误报、失效、平均次日/3日/5日收益。
+  2. 展示策略命中率表：策略、总数、命中、误报、无数据、失效、命中率、误报率。
+  3. 展示分层统计：A/B/C 层表现。
+  4. 展示移除理由和调参建议。
+- **验证方式**：
+  - 覆盖 0%、100%、N/A 三种展示。
+  - 前端测试通过。
+- **代码标注要求**：`// [UI-005] tradeflow_review_page`
+
+### UI-006: 数据源健康前端面板（P2）
+- **描述**：把 M-008/T-007 的数据源健康状态露出到前端，帮助用户判断候选池质量问题来自策略还是数据源。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：`M-008`、`T-007`、`UI-001` 完成。
+- **执行约束**：
+  - 不暴露 API key、cookie、内部 token。
+  - 不主动发起高频 live 数据探测；只展示后端已有 health/check 结果。
+- **实现要点**：
+  1. 展示行情、资金流、龙虎榜、公告、事件源、融资融券等源的 `OK/PARTIAL/FAILED/STALE/NOT_QUERIED`。
+  2. 展示最近更新时间、失败原因、fallback vendor。
+  3. 在 TradeFlow 候选页顶部显示数据健康摘要和异常提示。
+  4. 与候选详情中的证据缺失字段联动。
+- **验证方式**：
+  - mock OK/PARTIAL/FAILED/STALE 状态均能正确展示。
+  - 没有健康数据时显示“未生成健康检查”，而不是报错。
+- **代码标注要求**：`// [UI-006] tradeflow_data_health`
 
 ---
 
