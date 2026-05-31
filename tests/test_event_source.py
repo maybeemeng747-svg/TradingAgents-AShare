@@ -56,10 +56,10 @@ class TestDirectionMapping:
 
 class TestHelpers:
     def test_normalize_symbol_plain(self):
-        assert _normalize_symbol("002138") == "002138"
+        assert _normalize_symbol("002138") == "002138.SZ"
 
     def test_normalize_symbol_with_suffix(self):
-        assert _normalize_symbol("002138.SZ") == "002138"
+        assert _normalize_symbol("002138.SZ") == "002138.SZ"
 
     def test_date_str_8digit(self):
         assert _date_str("20260528") == "2026-05-28"
@@ -121,7 +121,7 @@ class TestFetchNoticeEvents:
                     items = fetch_notice_events("20260528")
         mock_bp.assert_called_once()
         assert len(items) == 3
-        assert items[0].symbol == "002138"
+        assert items[0].symbol == "002138.SZ"
         assert items[0].event_type == "notice"
         assert items[0].direction == "bullish"
         assert items[2].direction == "bearish"
@@ -148,7 +148,7 @@ class TestFetchBuybackEvents:
             items = fetch_buyback_events()
         mock_bp.assert_called_once()
         assert len(items) == 1
-        assert items[0].symbol == "002138"
+        assert items[0].symbol == "002138.SZ"
         assert items[0].direction == "bullish"
         assert items[0].event_type == "buyback"
 

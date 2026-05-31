@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Optional
 
-from .symbol_utils import normalize_tradeflow_symbol  # [UI-008] tradeflow_field_normalization
+from .symbol_utils import normalize_tradeflow_symbol, symbol_bare_code  # [UI-008] tradeflow_field_normalization
 
 logger = logging.getLogger(__name__)
 
@@ -420,7 +420,13 @@ def _sanitize_error(error: str) -> str:  # [T-007] event_source_failure_status
 
 
 def fetch_events_for_symbol(symbol: str, date: str) -> list[str]:
-    """获取单只股票的事件标题列表。用于候选引擎按需查询。"""
+    """Get event titles for a single symbol. Used by candidate engine for on-demand queries."""
     raw_sym = _normalize_symbol(symbol)
     daily = fetch_daily_events(date)
-    return daily.get(raw_sym, [])
+    # Try normalized key first (e.g. 002138.SZ), then bare code (e.g. 002138)
+    # for backward compatibility with callers passing bare codes.
+    result = daily.get(raw_sym)
+    if result is None:
+        bare = symbol_bare_code(raw_sym)
+        result = daily.get(bare, [])
+    return result
