@@ -646,3 +646,14 @@
 - **测试**: 62 passed (unit) + 129 passed (tradeflow)
 - **Commit**: 6c5b23a
 - **运行档案**: docs/task_runs/M-007-20260530-030217/
+
+## 2026-05-31 | M-007 补修
+
+- **原因**: 用户审核发现 P1(工作区脏) + P2(0%显示N/A) + P2(auto-compute)
+- **Commit**: 54ab806
+- **修复项**:
+  1. render_review_markdown `or 'N/A'` → `is not None`
+  2. run_post_market_review 聚合前自动 compute_returns()
+  3. 补齐 task_runs/M-007-20260530-030217/ 全部文件
+- **测试**: 193 passed
+- **工作区**: 干净
