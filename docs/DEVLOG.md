@@ -4,6 +4,58 @@
 
 ---
 
+## 2026-06-02 | DATA-003: 公告/研报/政策事件源归一化接入昊天雷达
+
+- **执行者**：OpenCode
+- **任务**：DATA-003 — 把公告、回购、评级、研报标题、政策新闻等事件源统一转换为 `MandateSignal`，让昊天雷达能消费真实事件
+- **修改文件**：
+  - `tradingagents/tradeflow/mandate_event_normalizer.py` — 新建：[DATA-003] mandate_event_normalization
+    - `NormalizedEventBatch` 数据类：signals / total_raw / duplicates_removed / by_symbol / by_source_level / by_event_type / dedup_groups
+    - `_classify_source_level_enhanced()`：增强来源分类——研报强制 MEDIA、回购强制 COMPANY_NOTICE、notice 区分政策/公司
+    - `_infer_direction()`：基于 event_type_hint 和关键词推断方向（bullish/bearish/neutral）
+    - `_topic_tags_from_title()`：复用 H-002 topic 关键词表为事件自动打 policy_tags
+    - `_raw_event_to_mandate_signal()`：统一入口，接受 dict / EventItem / 任意对象
+    - `_merge_duplicate_signals()`：同 symbol + 标题去重，保留最高权威来源，合并 raw_refs 和 policy_tags
+    - `normalize_events()`：核心函数——原始事件列表 → 去重 → 分组 → NormalizedEventBatch
+    - `normalize_event_source_result()`：直接消费 `EventSourceResult`（event_source 模块产出）
+    - `normalize_event_items_by_symbol()`：直接消费 `items_by_symbol` dict
+    - `normalize_raw_dicts()`：直接消费原始 dict 列表
+    - `is_research_report()` / `is_company_announcement()` / `is_policy_document()`：判断辅助
+    - 研报标题（含券商/研究所关键词）→ source_level 强制 MEDIA，不会因为标题含"国务院"而被提升为 CENTRAL
+    - 公司公告（event_type=notice 且无政策关键词）→ COMPANY_NOTICE，不自动提升为政策级别
+    - 回购事件 → COMPANY_NOTICE + bullish
+    - 评级事件 → MEDIA + BUYBACK_RATING event_type
+    - 同标题多源转载去重：保留最高权威来源 + 合并所有 raw_refs
+  - `tests/test_data003_mandate_event_normalizer.py` — 新建，93 个测试覆盖：
+    - `TestTitleDedupKey` (4): 基础/空白/截断/大小写
+    - `TestClassifySourceLevelEnhanced` (10): 研报→MEDIA/rating→MEDIA/buyback→COMPANY_NOTICE/notice政策→MINISTRY/notice公司→COMPANY_NOTICE/国务院→STATE_COUNCIL/党中央→CENTRAL/fallback
+    - `TestInferDirection` (11): buyback/rating买入/rating卖出/rating中性/notice利空/notice利好/notice中性/generic利空/generic利好/generic中性
+    - `TestTopicTagsFromTitle` (4): 低空/多主题/无匹配/空
+    - `TestRawEventToMandateSignal` (14): dict/空标题/nan/EventItem/空EventItem/研报MEDIA/研报不能变CENTRAL/公司公告COMPANY_NOTICE/公司公告不能变政策/政策notice是MINISTRY/URL从detail/主题标签/低置信度/raw_refs保留
+    - `TestMergeDuplicateSignals` (7): 无重复/同标题同symbol去重/同标题不同symbol保留/最高权威/raw_refs去重/policy_tags合并/空列表
+    - `TestNormalizeEvents` (10): 基础dict/去重计数/by_symbol/by_source_level/by_event_type/空输入/全空标题/混合类型/to_dict
+    - `TestNormalizeRawDicts` (2): 基础/默认symbol
+    - `TestNormalizeEventSourceResult` (2): 基础/空结果
+    - `TestNormalizeEventItemsBySymbol` (2): 基础/空输入
+    - `TestIsResearchReport` (3): 研究机构/非研究/标题含研报关键词
+    - `TestIsCompanyAnnouncement` (4): notice类型/notice含政策/非notice公司公告/非notice含政策
+    - `TestIsPolicyDocument` (3): 国务院/部委/非政策
+    - `TestAcceptanceData003` (9): 多源同政策不去重计分/研报不是中央政策/公司公告不能提政策/政策notice正确级别/回购始终COMPANY_NOTICE/评级始终MEDIA/混合事件正确级别/主题标签/方向正确
+    - `TestIntegrationWithData003` (5): EventSourceResult→MandateSignal/H-001管线兼容/批次统计完整/跨源去重最高权威/无证据低置信
+    - `TestEdgeCases` (6): None/缺字段/长标题/Unicode/空白去重/大批量
+- **测试结果**：93 passed (DATA-003)；1047 passed (tradeflow 全部 + DATA-003)；239 passed (数据源 + 事件源 + DATA-003)；0 failed
+- **关键逻辑**：
+  - 多源归一化：EventItem / raw dict / 任意属性对象统一通过 `_raw_event_to_mandate_signal()` 转换
+  - 研报隔离：`_RESEARCH_ORG_KEYWORDS` 匹配 30+ 券商/研究所关键词，强制 source_level=MEDIA
+  - 公司公告隔离：event_type=notice 且无 `_POLICY_SOURCE_KEYWORDS` 匹配时，强制 source_level=COMPANY_NOTICE
+  - 标题去重：`(symbol, normalized_title[:60].lower())` 作为去重键，合并 raw_refs 和 policy_tags
+  - 最高权威保留：按 `_SOURCE_LEVEL_WEIGHT` 排序，最高权威的 signal 作为主 signal
+  - 主题标签：复用 H-002 `match_topics()` 为每条事件自动打 policy_tags
+  - 方向推断：先看 event_type_hint（buyback→bullish, rating→看关键词），再看标题关键词
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未改生产 `tradingagents.db` schema
+
+---
+
 ## 2026-06-02 | DATA-002 Codex Review Fix: 移除 auto_dev.lock 残留
 
 - **执行者**：OpenCode
@@ -1345,3 +1397,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-002-20260602-round2.txt
 - **Run archive**: docs/task_runs/DATA-002-20260602-005310/
+
+## 2026-06-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-003 - 公告/研报/政策事件源归一化接入昊天雷达（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-003-20260602-round1.txt
+- **Run archive**: docs/task_runs/DATA-003-20260602-010127/
