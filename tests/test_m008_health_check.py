@@ -242,7 +242,7 @@ class TestRunHealthCheck:
         assert report.summary[STATUS_OK] == 0
 
     def test_mixed_statuses(self):
-        statuses = [STATUS_OK, STATUS_FAILED, STATUS_OK, STATUS_STALE, STATUS_OK, STATUS_OK, STATUS_OK, STATUS_OK]
+        statuses = [STATUS_OK, STATUS_FAILED, STATUS_OK, STATUS_STALE, STATUS_OK, STATUS_OK, STATUS_OK, STATUS_OK, STATUS_OK, STATUS_OK, STATUS_OK]
         idx = [0]
 
         def probe_fn(method, args, kwargs, symbol):
@@ -251,7 +251,7 @@ class TestRunHealthCheck:
             return _make_check(status=s, method=method, error="err" if s == STATUS_FAILED else "")
 
         report = run_health_check(symbols=["600519.SH"], probe_fn=probe_fn)
-        assert report.summary[STATUS_OK] == 6
+        assert report.summary[STATUS_OK] == 9
         assert report.summary[STATUS_FAILED] == 1
         assert report.summary[STATUS_STALE] == 1
 

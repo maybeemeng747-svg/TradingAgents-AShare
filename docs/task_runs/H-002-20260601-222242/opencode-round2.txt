@@ -1,0 +1,322 @@
+[0m
+> build · glm-5.1
+[0m
+[0m# [0mTodos
+[ ] Fix test_runner_contains_claim_lock_and_safe_exit_expansion
+[ ] Fix TestRunHealthCheck::test_mixed_statuses (expected 6 OK, got 8)
+[ ] Fix TestRunDiscoveryWithEvents::test_event_source_integration (0 candidates)
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tests/test_auto_dev_loop_static.py
+[0m→ [0mRead tests/test_t002_discovery.py
+[0m→ [0mRead tests/test_m008_health_check.py
+[0m→ [0mRead scripts/auto_dev_loop.sh
+[0m→ [0mRead tradingagents/dataflows/health_check.py
+[0m→ [0mRead tradingagents/tradeflow/discovery.py
+Now let me read the relevant source files:
+[0m
+[0m# [0mTodos
+[•] Fix test_runner_contains_claim_lock_and_safe_exit_expansion
+[ ] Fix TestRunHealthCheck::test_mixed_statuses (expected 6 OK, got 8)
+[ ] Fix TestRunDiscoveryWithEvents::test_event_source_integration (0 candidates)
+[ ] Update docs/DEVLOG.md
+[0m
+[0m• [0mFind universe build logic[90m Explore Agent[0m
+[0m✓ [0mFind universe build logic[90m Explore Agent[0m
+[0m
+[0m← [0mEdit scripts/auto_dev_loop.sh
+Index: /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
++++ /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
+@@ -315,9 +315,9 @@
+ # --- 2a. Create task run archive ---
+ RUN_ID="${TASK_ID}-$(date +%Y%m%d-%H%M%S)"
+ RUN_DIR="$TASK_RUN_ROOT/$RUN_ID"
+ mkdir -p "$RUN_DIR"
+-update_task_status "in_progress -- claimed $RUN_ID"
++update_task_status "in_progress — claimed $RUN_ID"
+ 
+ cat > "$RUN_DIR/task.md" <<TASK_META_EOF
+ # Auto Dev Task Run
+ 
+
+[0m
+[0m← [0mEdit scripts/auto_dev_loop.sh
+Index: /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
++++ /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
+@@ -757,9 +757,9 @@
+     fi
+     echo "" >> "$RUN_DIR/summary.md"
+     echo "Before manual intervention, check OpenCode, test, and Codex review logs in this directory." >> "$RUN_DIR/summary.md"
+ 
+-    update_task_status "blocked -- NEEDS_HUMAN, see docs/task_runs/$RUN_ID"
++    update_task_status "blocked — NEEDS_HUMAN, see docs/task_runs/$RUN_ID"
+ 
+     cat >> "$DEVLOG_FILE" <<DEVLOG_EOF
+ 
+ ## $(date +%Y-%m-%d) | AUTO-002 Auto Dev Loop
+
+[0m
+Now I understand all three issues. Let me fix them.
+
+**Issue 1**: Script uses `--` but test expects `—` (em dash); also needs `exit=${OPENCODE_EXIT}` pattern.
+
+**Issue 2**: `_default_endpoints()` was expanded from 8→11, but test still expects 8 statuses.
+
+**Issue 3**: `events_map` uses bare code `"002138"` but universe normalizes to `"002138.SZ"`, so lookups fail.
+[0m← [0mEdit scripts/auto_dev_loop.sh
+Index: /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
++++ /Users/maybee/TradingAgents-AShare/scripts/auto_dev_loop.sh
+@@ -393,9 +393,9 @@
+ set +e
+ opencode run < "$PROMPT_FILE" > "$OPENCODE_LOG" 2>&1
+ OPENCODE_EXIT=$?
+ set -e
+-log "OpenCode exit code: $OPENCODE_EXIT"
++log "OpenCode exit=${OPENCODE_EXIT}"
+ redact_log < "$OPENCODE_LOG" > "$RUN_DIR/opencode-round${ROUND}.txt"
+ 
+ if [ $OPENCODE_EXIT -ne 0 ]; then
+     # Check if failure is due to quota exhaustion
+
+[0m
+Now fix test_mixed_statuses - extend the status list to match 11 endpoints:
+[0m← [0mEdit tests/test_m008_health_check.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_m008_health_check.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_m008_health_check.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_m008_health_check.py
+@@ -241,18 +241,18 @@
+     assert report.summary[STATUS_FAILED] == report.summary["total"]
+     assert report.summary[STATUS_OK] == 0
+ 
+ def test_mixed_statuses(self):
+-    statuses = [STATUS_OK, STATUS_FAILED, STATUS_OK, STATUS_STALE, STATUS_OK, STATUS_OK, STATUS_OK, STATUS_OK]
++    statuses = [STATUS_OK, STATUS_FAILED, STATUS_OK, STATUS_STALE, STATUS_OK, STATUS_OK, STATUS_OK, STATUS_OK, STATUS_OK, STATUS_OK, STATUS_OK]
+     idx = [0]
+ 
+     def probe_fn(method, args, kwargs, symbol):
+         s = statuses[idx[0] % len(statuses)]
+         idx[0] += 1
+         return _make_check(status=s, method=method, error="err" if s == STATUS_FAILED else "")
+ 
+     report = run_health_check(symbols=["600519.SH"], probe_fn=probe_fn)
+-    assert report.summary[STATUS_OK] == 6
++    assert report.summary[STATUS_OK] == 9
+     assert report.summary[STATUS_FAILED] == 1
+     assert report.summary[STATUS_STALE] == 1
+ 
+ def test_fallback_detected(self):
+
+[0m
+Now fix the event source integration test. The problem is that `events_map` and `items_by_symbol` use bare codes but the universe returns suffixed symbols. I need to normalize the lookup in `discovery.py`:
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -153,10 +153,16 @@
+ if use_event_source:
+     from .event_source import fetch_daily_events_detailed, EventSourceStatus  # [T-006]
+     trade_date_compact = trade_date.replace("-", "")
+     event_result = fetch_daily_events_detailed(trade_date_compact)  # [T-006]
+-    events_map = event_result.events_map
+-    event_items_by_symbol = event_result.items_by_symbol  # [T-006]
++    events_map = {
++        normalize_tradeflow_symbol(k): v
++        for k, v in event_result.events_map.items()
++    }
++    event_items_by_symbol = {
++        normalize_tradeflow_symbol(k): v
++        for k, v in event_result.items_by_symbol.items()
++    }  # [T-006]
+     event_source_status = event_result.status.value  # [T-006]
+     event_source_error = event_result.error_message  # [T-006]
+     event_source_failed = event_result.failed_sources  # [T-007]
+     event_source_per_source = event_result.source_statuses  # [T-007]
+
+[0m
+Now run the three failing tests:
+[0m$ [0msource .venv/bin/activate && pytest tests/test_auto_dev_loop_static.py::test_runner_contains_claim_lock_and_safe_exit_expansion tests/test_m008_health_check.py::TestRunHealthCheck::test_mixed_statuses tests/test_t002_discovery.py::TestRunDiscoveryWithEvents::test_event_source_integration -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 3 items
+
+tests/test_auto_dev_loop_static.py::test_runner_contains_claim_lock_and_safe_exit_expansion PASSED [ 33%]
+tests/test_m008_health_check.py::TestRunHealthCheck::test_mixed_statuses PASSED [ 66%]
+tests/test_t002_discovery.py::TestRunDiscoveryWithEvents::test_event_source_integration FAILED [100%]
+
+=================================== FAILURES ===================================
+___________ TestRunDiscoveryWithEvents.test_event_source_integration ___________
+
+self = <tests.test_t002_discovery.TestRunDiscoveryWithEvents object at 0x10b765340>
+
+    def test_event_source_integration(self):
+        from tradingagents.tradeflow.event_source import EventItem, EventSourceResult, EventSourceStatus
+        c = _make_candidate("002138.SZ", score=65.0)
+    
+        def fake_evaluate(symbol, **kwargs):
+            news = kwargs.get("news_texts")
+            if symbol == "002138" and news:
+                return c, ""
+            return None, "无策略命中"
+    
+        event_result = EventSourceResult(
+            status=EventSourceStatus.OK,
+            events_map={"002138": ["回购进展"]},
+            items_by_symbol={"002138": [EventItem(symbol="002138", title="回购进展", event_type="buyback", direction="bullish", source="eastmoney")]},
+            event_count=1, symbols_count=1,
+        )
+        with patch("tradingagents.tradeflow.event_source.fetch_daily_events_detailed",
+                    return_value=event_result):
+            with patch("tradingagents.tradeflow.discovery.evaluate_symbol", side_effect=fake_evaluate):
+                result = run_discovery(
+                    trade_date="2026-05-29",
+                    use_event_source=True,
+                    include_holdings=False,
+                    include_watchlist=False,
+                )
+>       assert len(result.candidates) >= 1
+E       AssertionError: assert 0 >= 1
+E        +  where 0 = len([])
+E        +    where [] = DiscoveryResult(trade_date='2026-05-29', universe_size=1, candidates=[], filtered=[{'symbol': '002138.SZ', 'name': '顺络电子', 'source': 'event_source', 'reason': '无策略命中'}], summary='共扫描1只，0只候选(Top20)，0只需要深度TA，1只被过滤，无策略命中1只。', metadata={'top_n': 20, 'generated_at': '2026-06-01T22:36:11.762525', 'filter_breakdown': {'无策略命中': 1}, 'sources': ['event_source'], 'event_source': {'status': 'OK', 'error_message': '', 'event_count': 1, 'symbols_count': 1, 'failed_sources': [], 'source_statuses': {}}, 'audit_summary': {'total_candidates': 0, 'total_filtered': 1, 'by_category': {'FILTERED': 1}, 'common_evidence_gaps': []}, 'tier_budget': {'tier_a_count': 0, 'tier_b_count': 0, 'tier_c_count': 0, 'total_budget': 0, 'a_tier_cap_applied': False, 'demoted_count': 0}, 'tier_budget_summary': '📊 TA Token 预算分配\n  A层(优先深挖): 0只 × 100 tokens\n  B层(观察等待): 0只 × 30 tokens\n  C层(暂不关注): 0只 × 0 tokens\n  总预算建议: 0 tokens', 'evidence_gate': {'gate_blocked_count': 0, 'deep_ta_blocked_count': 0, 'avg_completeness': 0.0}}, audit_report=AuditReport(trade_date='2026-05-29', generated_at='2026-06-01T22:36:11.762560', entries=[AuditEntry(symbol='002138.SZ', name='顺络电子', audit_category='FILTERED', hit_strategies=[], filter_reason='无策略命中', filter_subcategory='无策略命中', risk_flags=[], risk_penalty=0.0, risk_demotion_reasons=[], evidence_gaps=[], composite_score=0.0, priority_rank='', need_deep_ta=False, fp_type='', fn_type='true_negative', data_completeness=0.0, game_balance='', refs=[{'field': 'filter_reason', 'value': '无策略命中'}, {'field': 'filter_subcategory', 'value': '无策略命中'}, {'field': 'source', 'value': 'event_source'}])], summary=AuditSummary(total_candidates=0, total_filtered=1, by_category={'FILTERED': 1}, by_filter_subcategory={'无策略命中': 1}, by_strategy={}, by_priority_rank={}, by_fp_type={}, common_evidence_gaps=[], common_risk_demotions=[]))).candidates
+
+tests/test_t002_discovery.py:376: AssertionError
+----------------------------- Captured stderr call -----------------------------
+  0%|          | 0/16 [00:00<?, ?it/s]  6%|▋         | 1/16 [00:00<00:03,  4.78it/s] 12%|█▎        | 2/16 [00:00<00:03,  4.54it/s] 19%|█▉        | 3/16 [00:00<00:02,  4.51it/s] 25%|██▌       | 4/16 [00:00<00:02,  4.67it/s] 31%|███▏      | 5/16 [00:01<00:02,  4.74it/s] 38%|███▊      | 6/16 [00:01<00:02,  4.74it/s] 44%|████▍     | 7/16 [00:01<00:01,  4.83it/s] 50%|█████     | 8/16 [00:01<00:01,  4.81it/s] 56%|█████▋    | 9/16 [00:01<00:01,  4.56it/s] 62%|██████▎   | 10/16 [00:02<00:01,  4.37it/s] 69%|██████▉   | 11/16 [00:02<00:01,  4.45it/s] 75%|███████▌  | 12/16 [00:02<00:00,  4.48it/s] 81%|████████▏ | 13/16 [00:02<00:00,  4.29it/s] 88%|████████▊ | 14/16 [00:03<00:00,  4.37it/s] 94%|█████████▍| 15/16 [00:03<00:00,  4.43it/s]100%|██████████| 16/16 [00:03<00:00,  4.25it/s]                                               
+=========================== short test summary info ============================
+FAILED tests/test_t002_discovery.py::TestRunDiscoveryWithEvents::test_event_source_integration
+========================= 1 failed, 2 passed in 12.77s =========================
+[0m
+[0m← [0mEdit tests/test_t002_discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_t002_discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_t002_discovery.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_t002_discovery.py
+@@ -353,9 +353,9 @@
+ c = _make_candidate("002138.SZ", score=65.0)
+ 
+ def fake_evaluate(symbol, **kwargs):
+     news = kwargs.get("news_texts")
+-    if symbol == "002138" and news:
++    if symbol == "002138.SZ" and news:
+         return c, ""
+     return None, "无策略命中"
+ 
+ event_result = EventSourceResult(
+
+[0m
+The universe now correctly produces `"002138.SZ"` and `news` is properly passed, but `fake_evaluate` compares against bare `"002138"`. Fix the test to match the normalized symbol:
+[0m$ [0msource .venv/bin/activate && pytest tests/test_auto_dev_loop_static.py::test_runner_contains_claim_lock_and_safe_exit_expansion tests/test_m008_health_check.py::TestRunHealthCheck::test_mixed_statuses tests/test_t002_discovery.py::TestRunDiscoveryWithEvents::test_event_source_integration -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 3 items
+
+tests/test_auto_dev_loop_static.py::test_runner_contains_claim_lock_and_safe_exit_expansion PASSED [ 33%]
+tests/test_m008_health_check.py::TestRunHealthCheck::test_mixed_statuses PASSED [ 66%]
+tests/test_t002_discovery.py::TestRunDiscoveryWithEvents::test_event_source_integration PASSED [100%]
+
+============================== 3 passed in 40.07s ==============================
+[0m
+All 3 tests pass. Now run the full test suite to make sure nothing else broke:
+[0m$ [0msource .venv/bin/activate && pytest tests/ -q --tb=short 2>&1
+........................................................................ [  3%]
+...........................................ss........................... [  6%]
+........................................................................ [  9%]
+........................................................................ [ 12%]
+........................................................................ [ 15%]
+........................................................................ [ 18%]
+........................................................................ [ 21%]
+........................................................................ [ 24%]
+........................................................................ [ 27%]
+....................................................sssssssss........... [ 31%]
+........................................................................ [ 34%]
+........................................................................ [ 37%]
+........................................................................ [ 40%]
+........................................................................ [ 43%]
+........................................................................ [ 46%]
+........................................................................ [ 49%]
+........................................................................ [ 52%]
+........................................................................ [ 55%]
+........................................................................ [ 58%]
+........................................................................ [ 62%]
+........................................................................ [ 65%]
+........................................................................ [ 68%]
+...................ss.................................................ss [ 71%]
+ss...................................................................... [ 74%]
+........................................................................ [ 77%]
+........................................................................ [ 80%]
+........................................................................ [ 83%]
+........................................................................ [ 86%]
+........................................................................ [ 89%]
+........................................................................ [ 93%]
+........................................................................ [ 96%]
+........................................................................ [ 99%]
+..................                                                       [100%]
+2305 passed, 17 skipped in 69.97s (0:01:09)
+[0m
+[0m# [0mTodos
+[✓] Fix test_runner_contains_claim_lock_and_safe_exit_expansion
+[✓] Fix TestRunHealthCheck::test_mixed_statuses (expected 6 OK, got 8)
+[✓] Fix TestRunDiscoveryWithEvents::test_event_source_integration (0 candidates)
+[•] Update docs/DEVLOG.md
+[0m
+All 2305 tests pass, 17 skipped, 0 failures. Now update DEVLOG:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=20][0m
+[0m✗ [0mEdit docs/DEVLOG.md failed
+[91m[1mError: [0mFound multiple matches for oldString. Provide more surrounding context to make the match unique.
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,21 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-01 | H-002 fix: 3 test failures
++
++- **执行者**：OpenCode
++- **任务**：H-002 — fix 3 failing tests
++- **修改文件**：
++  - `scripts/auto_dev_loop.sh` — 将 `update_task_status` 中的 `--` 改为 `—`（em dash）；将日志行改为 `exit=${OPENCODE_EXIT}` 以满足 safe expansion 测试
++  - `tests/test_m008_health_check.py` — `test_mixed_statuses` 扩展 statuses 列表从 8→11 匹配新增的 3 个默认端点（fund_flow/lhb/announcements）
++  - `tradingagents/tradeflow/discovery.py` — `run_discovery` 中将 `events_map` 和 `items_by_symbol` 的 key 通过 `normalize_tradeflow_symbol` 转为带后缀格式，与 universe 符号一致
++  - `tests/test_t002_discovery.py` — `test_event_source_integration` 中 `fake_evaluate` 的 symbol 比较从 `"002138"` 改为 `"002138.SZ"` 匹配归一化后的符号
++- **测试**：2305 passed, 17 skipped, 0 failed
++
++---
++
+ ## 2026-06-01 | H-002: 政策连续性与级别权重评分
+ 
+ - **执行者**：OpenCode
+ - **任务**：H-002 — 实现 Mandate Score 第一层：识别政策/产业主题是否持续升温，以及信号来源级别的权威权重评分
+
+[0m
+[0m# [0mTodos
+[✓] Fix test_runner_contains_claim_lock_and_safe_exit_expansion
+[✓] Fix TestRunHealthCheck::test_mixed_statuses (expected 6 OK, got 8)
+[✓] Fix TestRunDiscoveryWithEvents::test_event_source_integration (0 candidates)
+[✓] Update docs/DEVLOG.md
+[0m
+All 3 fixes applied, 2305 tests pass. Summary of changes:
+
+1. **`scripts/auto_dev_loop.sh`** — Changed `--` to `—` (em dash) in `update_task_status` calls; changed log to `exit=${OPENCODE_EXIT}` for safe expansion
+2. **`tests/test_m008_health_check.py`** — Extended statuses list from 8→11 to match the 3 new default endpoints
+3. **`tradingagents/tradeflow/discovery.py`** — Normalized `events_map`/`items_by_symbol` keys via `normalize_tradeflow_symbol` so bare codes like `"002138"` become `"002138.SZ"` matching universe symbols
+4. **`tests/test_t002_discovery.py`** — Updated `fake_evaluate` symbol comparison to `"002138.SZ"`

@@ -4,6 +4,70 @@
 
 ---
 
+## 2026-06-01 | H-002 fix: 3 test failures
+
+- **执行者**：OpenCode
+- **任务**：H-002 — fix 3 failing tests
+- **修改文件**：
+  - `scripts/auto_dev_loop.sh` — 将 `update_task_status` 中的 `--` 改为 `—`（em dash）；将日志行改为 `exit=${OPENCODE_EXIT}` 以满足 safe expansion 测试
+  - `tests/test_m008_health_check.py` — `test_mixed_statuses` 扩展 statuses 列表从 8→11 匹配新增的 3 个默认端点（fund_flow/lhb/announcements）
+  - `tradingagents/tradeflow/discovery.py` — `run_discovery` 中将 `events_map` 和 `items_by_symbol` 的 key 通过 `normalize_tradeflow_symbol` 转为带后缀格式，与 universe 符号一致
+  - `tests/test_t002_discovery.py` — `test_event_source_integration` 中 `fake_evaluate` 的 symbol 比较从 `"002138"` 改为 `"002138.SZ"` 匹配归一化后的符号
+- **测试**：2305 passed, 17 skipped, 0 failed
+
+---
+
+## 2026-06-01 | H-002: 政策连续性与级别权重评分
+
+- **执行者**：OpenCode
+- **任务**：H-002 — 实现 Mandate Score 第一层：识别政策/产业主题是否持续升温，以及信号来源级别的权威权重评分
+- **修改文件**：
+  - `tradingagents/tradeflow/mandate_score.py` — 新建：[H-002] mandate_policy_continuity
+    - `_TOPIC_KEYWORDS_V0`：13 个政策主题词表（新质生产力/低空经济/机器人/算力/军工/半导体/国产替代/并购重组/国企改革/出海/中特估/AI应用/数据要素）
+    - `match_topics(text)`：从文本中匹配主题词，长关键词优先
+    - `MandateScoreResult` 数据类：mandate_score / policy_continuity_score / source_authority_score / topic_heat_delta / mandate_reasons / mandate_evidence_refs / topic / signal_count / unique_dates / unique_sources / unique_source_levels / has_policy_document / has_high_authority / is_noise
+    - `compute_mandate_score(signals, topic, historical_signals)`：核心评分函数
+      - 信号去重（同标题/来源/日期）
+      - 来源权威分（base=最高级别权重×60 + 多级别多样性加分 + 同级别数量递减加分）
+      - 政策连续性分（多日/多源/多级别/政策文件类型加分；单日惩罚×0.5）
+      - 主题热度增量（当前信号 vs 历史信号加权差值）
+      - 综合分 = (权威分×0.5 + 连续性分×0.3 + 热度×0.2) × 证据因子
+      - 噪声检测：单日+单源+无高权威=噪声
+      - 低平均置信度封顶50
+    - `compute_mandate_scores_by_topic(signals)`：按主题分组评分，支持自动主题检测和未分配归类
+    - `_collect_evidence_refs()`：收集去重后的证据引用
+    - `_deduplicate_signals()`：按(title, source, date)三元组去重
+    - `_compute_source_authority_score()`：来源权威评分，同源重复递减
+    - `_compute_policy_continuity_score()`：政策连续性评分
+    - `_compute_topic_heat_delta()`：主题热度增量计算
+  - `tests/test_h002_mandate_score.py` — 新建，91 个测试覆盖：
+    - `TestMatchTopics` (17): 空文本/低空经济/机器人/算力/半导体/军工/国企改革/并购重组/AI应用/数据要素/出海/多主题/无匹配/中特估/新质生产力/长优先/关键词覆盖
+    - `TestTopicKeywordsV0` (3): 13个主题/关键词非空/主题集合完整
+    - `TestSourceAuthorityWeights` (4): 层级排序/中央最高/媒体最低/全覆盖
+    - `TestDeduplicateSignals` (6): 无重复/完全重复/同标题不同源/同标题不同日期/空列表/空白处理
+    - `TestCollectEvidenceRefs` (4): 基本引用/标题去重/空信号/raw_refs保留
+    - `TestComputeSourceAuthorityScore` (7): 中央/媒体/中央>媒体/空信号/多级别>单级别/同源递减
+    - `TestComputePolicyContinuityScore` (9): 单日惩罚/多日更高/多源加分/政策文件加分/会议信号加分/空信号/多级别加分/封顶
+    - `TestComputeTopicHeatDelta` (4): 空当前/无历史/当前>历史/封顶100
+    - `TestMandateScoreResult` (3): 默认值/to_dict/四舍五入
+    - `TestComputeMandateScore` (14): 空信号/国务院信号/多源>单公司/重复不无限叠加/媒体低分/证据引用/噪声检测/多日非噪声/高权威非噪声/自动主题检测/封顶/历史热度
+    - `TestComputeMandateScoresByTopic` (6): 分主题/自动主题/未分配/空信号/同主题多信号/多主题匹配
+    - `TestH002Acceptance` (6): 多源>单公司/同源不无限叠加/媒体无政策低分/证据引用/方向解释/噪声解释
+    - `TestH002Integration` (9): H-001→H-002流水线/四级来源层级/低置信度封顶/政策>回购/5日连续性/空信号/历史热度/13主题全覆盖
+    - `TestEdgeCases` (4): 零置信度/无source_level/空字符串/大量信号
+- **测试结果**：91 passed (H-002)；186 passed (H-001+H-002)；316 passed (全部 tradeflow)；0 failed
+- **关键逻辑**：
+  - 来源权威分 = 最高级别权重×60 + 多样性加分（每额外级别×12，封顶25）+ 数量加分（同级别递减×8，封顶15）
+  - 政策连续性分 = 日期分（每日期×25，封顶50）+ 来源多样性（每源×10，封顶25）+ 级别多样性（每级×8，封顶25）+ 政策/会议类型加10分；单日×0.5
+  - 综合分 = (权威×0.5 + 连续性×0.3 + 热度×0.2) × min(avg_confidence×1.5, 1.0)
+  - 噪声检测：单日 + 单源 + 无高权威 = 噪声
+  - 低置信度封顶：avg_confidence < 0.4 时综合分封顶50
+  - 同源重复递减：同标题/来源/日期三元组去重；同级别多次出现用几何递减（0.5^i）
+  - 媒体标题无政策原文时不得高置信：MEDIA权重=0.15，单日+单源+无高权威判定为噪声
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未改生产 `tradingagents.db` schema
+
+---
+
 ## 2026-06-01 | DATA-001: A股数据源能力目录与 fallback 矩阵
 
 - **执行者**：OpenCode
@@ -1123,3 +1187,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-001-20260601-round1.txt
 - **Run archive**: docs/task_runs/DATA-001-20260601-221610/
+
+## 2026-06-01 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-002 - 政策连续性与级别权重评分（P1）
+- **Priority**: P1
+- **Rounds**: 2
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/H-002-20260601-round2.txt
+- **Run archive**: docs/task_runs/H-002-20260601-222242/

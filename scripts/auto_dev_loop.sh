@@ -316,7 +316,7 @@ fi
 RUN_ID="${TASK_ID}-$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="$TASK_RUN_ROOT/$RUN_ID"
 mkdir -p "$RUN_DIR"
-update_task_status "in_progress -- claimed $RUN_ID"
+update_task_status "in_progress — claimed $RUN_ID"
 
 cat > "$RUN_DIR/task.md" <<TASK_META_EOF
 # Auto Dev Task Run
@@ -394,7 +394,7 @@ while [ $ROUND -lt $MAX_FIX_ROUNDS ]; do
     opencode run < "$PROMPT_FILE" > "$OPENCODE_LOG" 2>&1
     OPENCODE_EXIT=$?
     set -e
-    log "OpenCode exit code: $OPENCODE_EXIT"
+    log "OpenCode exit=${OPENCODE_EXIT}"
     redact_log < "$OPENCODE_LOG" > "$RUN_DIR/opencode-round${ROUND}.txt"
 
     if [ $OPENCODE_EXIT -ne 0 ]; then
@@ -758,7 +758,7 @@ SUMMARY_EOF
     echo "" >> "$RUN_DIR/summary.md"
     echo "Before manual intervention, check OpenCode, test, and Codex review logs in this directory." >> "$RUN_DIR/summary.md"
 
-    update_task_status "blocked -- NEEDS_HUMAN, see docs/task_runs/$RUN_ID"
+    update_task_status "blocked — NEEDS_HUMAN, see docs/task_runs/$RUN_ID"
 
     cat >> "$DEVLOG_FILE" <<DEVLOG_EOF
 

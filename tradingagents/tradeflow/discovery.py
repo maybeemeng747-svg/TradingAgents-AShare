@@ -154,8 +154,14 @@ def run_discovery(
         from .event_source import fetch_daily_events_detailed, EventSourceStatus  # [T-006]
         trade_date_compact = trade_date.replace("-", "")
         event_result = fetch_daily_events_detailed(trade_date_compact)  # [T-006]
-        events_map = event_result.events_map
-        event_items_by_symbol = event_result.items_by_symbol  # [T-006]
+        events_map = {
+            normalize_tradeflow_symbol(k): v
+            for k, v in event_result.events_map.items()
+        }
+        event_items_by_symbol = {
+            normalize_tradeflow_symbol(k): v
+            for k, v in event_result.items_by_symbol.items()
+        }  # [T-006]
         event_source_status = event_result.status.value  # [T-006]
         event_source_error = event_result.error_message  # [T-006]
         event_source_failed = event_result.failed_sources  # [T-007]

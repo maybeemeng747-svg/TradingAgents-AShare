@@ -354,7 +354,7 @@ class TestRunDiscoveryWithEvents:
 
         def fake_evaluate(symbol, **kwargs):
             news = kwargs.get("news_texts")
-            if symbol == "002138" and news:
+            if symbol == "002138.SZ" and news:
                 return c, ""
             return None, "无策略命中"
 
