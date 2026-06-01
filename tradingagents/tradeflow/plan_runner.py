@@ -134,6 +134,9 @@ def _build_plan_entry(candidate: Candidate, event_items: Optional[list] = None) 
         "deep_ta_route_reason": candidate.deep_ta_route_reason,  # [H-004]
         "ambush_reasons": candidate.ambush_reasons,  # [H-004]
         "ambush_evidence_refs": candidate.ambush_evidence_refs,  # [H-004]
+        "research_queue": candidate.research_queue,  # [H-007] mandate_ta_queue_router
+        "research_intent": candidate.research_intent,  # [H-007] mandate_ta_queue_router
+        "research_route_reason": candidate.research_route_reason,  # [H-007] mandate_ta_queue_router
     }
 
     # [T-006] event_source_discovery — add event metadata to plan entry

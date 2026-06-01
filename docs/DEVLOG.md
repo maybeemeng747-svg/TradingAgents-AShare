@@ -4,6 +4,60 @@
 
 ---
 
+## 2026-06-02 | H-007: 昊天候选到 TA 中线研究队列分流
+
+- **执行者**：OpenCode
+- **任务**：H-007 — 把 H-004 产生的 POLICY_AMBUSH/POLICY_CONFIRM/TECH_TRADE 候选分流到不同研究队列，避免左侧中线候选被短线 TA 逻辑误判
+- **修改文件**：
+  - `tradingagents/tradeflow/mandate_ta_queue_router.py` — 新建：[H-007] mandate_ta_queue_router
+    - `ResearchQueue` 枚举：MIDLINE_POLICY / TA_CONFIRM / SHORT_TERM_TRADE / WATCH_ONLY / REJECTED
+    - `ResearchIntent` 枚举：policy_validation / trend_confirmation / risk_review
+    - `QueueRouteResult` 数据类：research_queue / research_intent / route_reason / queue_priority
+    - `QueueStatistics` 数据类：聚合统计 by_queue / by_intent + 各队列标的列表
+    - `route_to_research_queue()`：核心分流函数
+      - POLICY_AMBUSH → MIDLINE_POLICY (policy_validation)
+      - POLICY_CONFIRM → TA_CONFIRM (trend_confirmation)
+      - TECH_TRADE → SHORT_TERM_TRADE (trend_confirmation)
+      - EVENT_WATCH → WATCH_ONLY (policy_validation if ambush>=30+policy, else risk_review)
+      - PSEUDO_POLICY → REJECTED if high_risk/fragile, else WATCH_ONLY
+      - OVERHEATED_AVOID → REJECTED
+    - `compute_queue_statistics()`：批量路由结果聚合
+    - `render_queue_report()`：Markdown 渲染队列统计报告
+  - `tradingagents/tradeflow/schemas.py` — [H-007] Candidate 新增 3 个字段
+    - `research_queue: str` / `research_intent: str` / `research_route_reason: str`
+    - `to_db_row()` / `from_db_row()` 同步更新
+    - `render_text()` 新增研究队列显示区
+  - `tradingagents/tradeflow/candidate_engine.py` — [H-007]
+    - `init_db()` 新增 3 列 DB migration
+    - `evaluate_symbol()` 新增 H-007 routing 调用，wire 到 candidate 字段
+    - `save_candidate()` SQL INSERT/UPDATE 新增 3 列
+  - `tradingagents/tradeflow/plan_runner.py` — [H-007] plan entry 新增 3 个字段
+  - `api/tradeflow_schemas.py` — [H-007] TradeFlowCandidateItem 新增 3 个字段
+  - `api/services/tradeflow_service.py` — [H-007] `_row_to_candidate_item()` 新增 3 列读取
+  - `frontend/src/types/index.ts` — [H-007] TradeFlowCandidateItem 新增 3 个字段
+  - `tests/test_h007_ta_queue_router.py` — 新建，64 个测试覆盖：
+    - `TestResearchQueueEnum` (4): 全部值/数量/字符串构造/非法值
+    - `TestResearchIntentEnum` (4): 全部值/数量/字符串构造/非法值
+    - `TestLabels` (2): queue 标签完整/intent 标签完整
+    - `TestQueueRouteResult` (3): 默认值/自定义值/to_dict
+    - `TestQueueStatistics` (2): 默认值/to_dict
+    - `TestRouteToResearchQueue` (16): 空类型/POLICY_AMBUSH(3)/POLICY_CONFIRM(3)/TECH_TRADE/EVENT_WATCH(2)/PSEUDO_POLICY(3)/OVERHEATED_AVOID(2)/未知类型
+    - `TestAcceptanceH007` (9): 四类分流/无强交易词/稳定/不覆盖持仓/不冲突analysis_intent
+    - `TestComputeQueueStatistics` (6): 空/单一/混合/intent计数/缺失字段/无symbol
+    - `TestRenderQueueReport` (5): 基础渲染/空报告/无强交易词/全部队列/全部意图
+    - `TestH007Integration` (8): 枚举对齐/完整流水线/统计聚合/to_dict往返/schema字段/to_db_row/from_db_row
+    - `TestEdgeCases` (6): None/空/零分/高分/多风险/优先级排序
+- **测试结果**：64 passed (H-007)；1127 passed (H-series + tradeflow 全部)；47 passed (API)；6 skipped；0 failed；npm run build 通过
+- **关键逻辑**：
+  - 分流规则明确：POLICY_AMBUSH→MIDLINE_POLICY / POLICY_CONFIRM→TA_CONFIRM / TECH_TRADE→SHORT_TERM_TRADE / OVERHEATED_AVOID→REJECTED
+  - PSEUDO_POLICY 双路径：高风险/fragile→REJECTED，否则→WATCH_ONLY
+  - EVENT_WATCH 条件升级：ambush>=30 + 有政策信号时 intent 升级为 policy_validation
+  - queue_priority 排序：MIDLINE_POLICY(1) > TA_CONFIRM(2) > SHORT_TERM_TRADE(3) > WATCH_ONLY(4) > REJECTED(5)
+  - 不输出强买卖词，不覆盖 G-001 analysis_intent/position_context
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-02 | H-006: 昊天候选池回放评估与反证机制
 
 - **执行者**：OpenCode
@@ -1687,3 +1741,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/H-006-20260602-round1.txt
 - **Run archive**: docs/task_runs/H-006-20260602-023130/
+
+## 2026-06-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-007 - 昊天候选到 TA 中线研究队列分流（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/H-007-20260602-round1.txt
+- **Run archive**: docs/task_runs/H-007-20260602-024058/

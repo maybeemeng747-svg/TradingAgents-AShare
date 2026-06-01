@@ -129,6 +129,9 @@ class Candidate:
     deep_ta_route_reason: str = ""  # [H-004] mandate_ambush_score
     ambush_reasons: list[str] = field(default_factory=list)  # [H-004] mandate_ambush_score
     ambush_evidence_refs: list[dict] = field(default_factory=list)  # [H-004] mandate_ambush_score
+    research_queue: str = ""  # [H-007] mandate_ta_queue_router
+    research_intent: str = ""  # [H-007] mandate_ta_queue_router
+    research_route_reason: str = ""  # [H-007] mandate_ta_queue_router
 
     def __post_init__(self):
         if not self.trade_date:
@@ -257,6 +260,9 @@ class Candidate:
             "deep_ta_route_reason": self.deep_ta_route_reason,  # [H-004]
             "ambush_reasons_json": json.dumps(self.ambush_reasons, ensure_ascii=False),  # [H-004]
             "ambush_evidence_refs_json": json.dumps(self.ambush_evidence_refs, ensure_ascii=False),  # [H-004]
+            "research_queue": self.research_queue,  # [H-007] mandate_ta_queue_router
+            "research_intent": self.research_intent,  # [H-007] mandate_ta_queue_router
+            "research_route_reason": self.research_route_reason,  # [H-007] mandate_ta_queue_router
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -345,6 +351,9 @@ class Candidate:
             deep_ta_route_reason=row.get("deep_ta_route_reason", ""),  # [H-004]
             ambush_reasons=json.loads(row.get("ambush_reasons_json", "[]")),  # [H-004]
             ambush_evidence_refs=json.loads(row.get("ambush_evidence_refs_json", "[]")),  # [H-004]
+            research_queue=row.get("research_queue", ""),  # [H-007] mandate_ta_queue_router
+            research_intent=row.get("research_intent", ""),  # [H-007] mandate_ta_queue_router
+            research_route_reason=row.get("research_route_reason", ""),  # [H-007] mandate_ta_queue_router
         )
 
 
@@ -614,6 +623,26 @@ class DailyPlan:
                         "skip": "跳过",
                     }.get(ta_route, ta_route)
                     lines.append(f"    TA路由: {route_label} — {ta_route_reason}")
+            # [H-007] mandate_ta_queue_router — display research queue
+            r_queue = c.get("research_queue", "")
+            r_intent = c.get("research_intent", "")
+            r_reason = c.get("research_route_reason", "")
+            if r_queue:
+                queue_label = {
+                    "MIDLINE_POLICY": "中线政策研究",
+                    "TA_CONFIRM": "TA深度确认",
+                    "SHORT_TERM_TRADE": "短线交易",
+                    "WATCH_ONLY": "仅观察",
+                    "REJECTED": "已拒绝",
+                }.get(r_queue, r_queue)
+                intent_label = {
+                    "policy_validation": "政策验证",
+                    "trend_confirmation": "趋势确认",
+                    "risk_review": "风控审查",
+                }.get(r_intent, r_intent)
+                lines.append(f"  研究队列: {queue_label} ({intent_label})")
+                if r_reason:
+                    lines.append(f"    分流原因: {r_reason}")
             lines.append("")
 
         return "\n".join(lines)

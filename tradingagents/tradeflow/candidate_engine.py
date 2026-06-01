@@ -33,6 +33,7 @@ from .evidence_gate import compute_evidence_completeness, apply_evidence_gate, E
 from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
 from .symbol_utils import normalize_tradeflow_symbol, resolve_tradeflow_name  # [UI-008] tradeflow_field_normalization
 from .ambush_score import compute_ambush_score, AmbushScoreResult  # [H-004] mandate_ambush_score
+from .mandate_ta_queue_router import route_to_research_queue, QueueRouteResult  # [H-007] mandate_ta_queue_router
 
 
 # ── SQL for table creation ──
@@ -294,6 +295,16 @@ def init_db(db_path: str) -> None:
         ("deep_ta_route_reason", "TEXT DEFAULT ''"),
         ("ambush_reasons_json", "TEXT DEFAULT '[]'"),
         ("ambush_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [H-007] mandate_ta_queue_router — add research queue columns
+    for _col, _type in [
+        ("research_queue", "TEXT DEFAULT ''"),
+        ("research_intent", "TEXT DEFAULT ''"),
+        ("research_route_reason", "TEXT DEFAULT ''"),
     ]:
         try:
             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
@@ -860,6 +871,28 @@ def evaluate_symbol(
         "ambush_reasons": ambush_result.ambush_reasons,
     }
 
+    # [H-007] mandate_ta_queue_router — route candidate to research queue
+    queue_result: QueueRouteResult = route_to_research_queue(
+        candidate_type=ambush_result.candidate_type,
+        ambush_score=ambush_result.ambush_score,
+        mandate_score_component=ambush_result.mandate_score_component,
+        beneficiary_score_component=ambush_result.beneficiary_score_component,
+        overheat_penalty=ambush_result.overheat_penalty,
+        risk_flags=candidate.risk_flags,
+        game_balance=candidate.game_balance,
+        has_beneficiary_path=bool(candidate.beneficiary_path and candidate.company_role not in ("", "UNKNOWN", "CONCEPT_ONLY")),
+        has_policy=bool(candidate.policy_tags or candidate.version_score > 0),
+    )
+    candidate.research_queue = queue_result.research_queue
+    candidate.research_intent = queue_result.research_intent
+    candidate.research_route_reason = queue_result.route_reason
+    candidate.evidence["ta_queue_router"] = {
+        "research_queue": queue_result.research_queue,
+        "research_intent": queue_result.research_intent,
+        "route_reason": queue_result.route_reason,
+        "queue_priority": queue_result.queue_priority,
+    }
+
     return candidate, ""
 
 
@@ -898,8 +931,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "pricing_gap_score, overheat_penalty, candidate_type_reason, "
             "deep_ta_route, deep_ta_route_reason, "
             "ambush_reasons_json, ambush_evidence_refs_json, "
+            "research_queue, research_intent, research_route_reason, "
             "created_at, updated_at) "
-            "VALUES ({}) ".format(",".join(["?"] * 82))
+            "VALUES ({}) ".format(",".join(["?"] * 85))
             + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
             "trigger_price=excluded.trigger_price, "
@@ -967,6 +1001,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "deep_ta_route_reason=excluded.deep_ta_route_reason, "
             "ambush_reasons_json=excluded.ambush_reasons_json, "
             "ambush_evidence_refs_json=excluded.ambush_evidence_refs_json, "
+            "research_queue=excluded.research_queue, "
+            "research_intent=excluded.research_intent, "
+            "research_route_reason=excluded.research_route_reason, "
             "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
@@ -1009,6 +1046,7 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
                 row["candidate_type_reason"],
                 row["deep_ta_route"], row["deep_ta_route_reason"],
                 row["ambush_reasons_json"], row["ambush_evidence_refs_json"],
+                row["research_queue"], row["research_intent"], row["research_route_reason"],
                 candidate.created_at, row["updated_at"],
             ),
         )
