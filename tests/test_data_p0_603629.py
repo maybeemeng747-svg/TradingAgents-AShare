@@ -166,6 +166,15 @@ class TestLHBForceConditions:
     def test_force_on_volume_ratio_keyword(self):
         assert _should_force_lhb("量比超过5", "") is True
 
+    def test_force_on_stock_data_volume_ratio(self):
+        assert _should_force_lhb("", "量比超过3") is True
+
+    def test_force_on_stock_data_amount(self):
+        assert _should_force_lhb("", "成交额超5000万") is True
+
+    def test_no_force_on_stock_data_normal(self):
+        assert _should_force_lhb("", "公司发布季报") is False
+
 
 class TestRealtimeQuoteEnrichment:
     """Test that cn_astock realtime quotes include turnover_rate, volume_ratio, etc."""

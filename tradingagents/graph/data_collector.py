@@ -294,8 +294,6 @@ def _should_force_lhb(news_text: str, stock_data_text: str) -> bool:
     - Stock data shows limit-up/down patterns
     """
     import re
-    if not news_text:
-        return False
 
     force_keywords = [
         r"龙虎榜",

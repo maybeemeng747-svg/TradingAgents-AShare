@@ -24,10 +24,10 @@
 
 ### 当前优先队列
 
-1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，ready）。
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
 2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
-3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，ready，依赖 TF-DATE-001）。
-4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，ready）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，ready，依赖 TF-DATE-001 ✓）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
 5. `H-002`：政策连续性与级别权重评分（P1，proposed，依赖 H-001）。
 6. `H-003`：产业链受益路径与标杆候选映射（P1，proposed，依赖 H-001）。
 7. `H-004`：左侧埋伏评分与候选类型分流（P1，proposed，依赖 H-002/H-003）。
@@ -38,7 +38,7 @@
 
 > 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
 
-1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，ready）。
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
 2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，proposed）。
 3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，proposed）。
 4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，proposed，依赖 H-001）。
@@ -60,7 +60,7 @@
 ### TF-DATE-001: TradeFlow 日期语义拆分与非交易日计划生效（P0）
 - **描述**：修复 `trade_date` 同时表示“候选池生成日期/计划生效交易日/盘中观察日期”的问题，支持 2026-05-31 这类非交易日生成候选池，并在 2026-06-01 盘中继续观察。
 - **优先级**：P0
-- **状态**：done -- commit pending
+- **状态**：done -- commit a200103
 - **背景**：
   - 用户可以在周末、节假日或交易日收盘后生成候选池，这些候选应在下一个 A 股交易日进入 Observe，而不是被锁在生成日。
   - 当前 `tradeflow_daily_plans` 和 `tradeflow_candidates` 主要按 `trade_date` 查询，导致前端选择 2026-06-01 的 Observe 时查不到 2026-05-31 生成的候选。
@@ -112,8 +112,8 @@
 ### TF-OBS-001: TradeFlow 盘中观察执行器与信号落库（P0）
 - **描述**：在 TF-DATE-001 之后，把现有 `run_observe_check()` 状态机接入真实执行链路，定时读取当日生效候选、拉取实时价格、更新观察状态并写入信号表。
 - **优先级**：P0
-- **状态**：proposed
-- **前置条件**：`TF-DATE-001` 完成。
+- **状态**：ready
+- **前置条件**：`TF-DATE-001` 完成 ✓
 - **背景**：
   - 当前 M-005 已有 Observe 状态机，前端也能展示 Observe Tab，但没有 runner 定时执行，所以 `observe_state` 长期停留在 `WAITING`，`tradeflow_signals` 为空。
   - Deep TA 门控依赖 `observe_state=TRIGGERED`，因此盘中观察不落地会连带阻塞 TA 队列。
@@ -155,7 +155,7 @@
 ### DATA-P0-603629: TA A股关键数据源补强与假可用修复（P0）
 - **描述**：基于 603629.SH 最新 TA 报告暴露的问题，补强 A 股关键数据源路由，修复“正文说数据缺失、底部却显示数据源可用”的假可用问题。
 - **优先级**：P0
-- **状态**：done -- commit pending
+- **状态**：done -- commit a6d4802
 - **背景**：
   - 603629.SH 报告中个股资金流 `ConnectionError`，近 20 日主力净流入/流出缺失。
   - 龙虎榜仅依赖“资金流异常触发”，导致资金流失败后龙虎榜也未强制查询；但该股存在严重异常波动、新闻明确提及龙虎榜、6月1日一字跌停等高风险特征。
