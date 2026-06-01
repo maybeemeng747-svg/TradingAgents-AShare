@@ -200,6 +200,8 @@ class TradeFlowDataHealthResponse(BaseModel):
     latest_candidates_date: Optional[str] = None
     total_candidates_today: int = 0
     total_signals_today: int = 0
+    latest_observe_check_time: Optional[str] = None
+    latest_signal_time: Optional[str] = None
 
 
 # [UI-007] tradeflow_filtered_trace

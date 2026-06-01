@@ -5081,6 +5081,7 @@ from api.services.tradeflow_service import (
     get_data_health as _tf_get_data_health,
     run_discovery_scan as _tf_run_discovery_scan,
     get_filtered as _tf_get_filtered,  # [UI-007] tradeflow_filtered_trace
+    run_observe_check as _tf_run_observe_check,  # [TF-OBS-001] tradeflow_observe_runner
 )
 
 # [UI-001] tradeflow_api — read-only endpoints
@@ -5157,6 +5158,12 @@ def tradeflow_discovery(request: TradeFlowDiscoveryRequest):
         news_texts=request.news_texts,
         save_candidates=request.save_candidates,
     )
+
+
+# [TF-OBS-001] tradeflow_observe_runner
+@app.post("/v1/tradeflow/observe/run")
+def tradeflow_observe_run(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_run_observe_check(date)
 
 
 # ─── Static Files & SPA Routing ──────────────────────────────────────────────

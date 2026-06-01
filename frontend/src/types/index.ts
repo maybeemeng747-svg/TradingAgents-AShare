@@ -946,6 +946,8 @@ export interface TradeFlowDataHealthResponse {
     latest_candidates_date: string | null
     total_candidates_today: number
     total_signals_today: number
+    latest_observe_check_time: string | null
+    latest_signal_time: string | null
 }
 
 // [UI-007] tradeflow_filtered_trace
@@ -963,4 +965,27 @@ export interface TradeFlowFilteredResponse {
     trade_date: string
     filtered: TradeFlowFilteredItem[]
     filter_breakdown: Record<string, number>
+}
+
+// [TF-OBS-001] tradeflow_observe_runner
+export interface TradeFlowObserveRunResponse {
+    status: string
+    trade_date: string
+    checked: number
+    triggered: number
+    invalidated: number
+    waiting: number
+    skipped: number
+    signals_written: number
+    errors: string[]
+    skipped_reason: string
+    run_time: string
+    details: {
+        symbol: string
+        observe_state?: string
+        current_price?: number
+        trigger_reason?: string
+        status?: string
+        reason?: string
+    }[]
 }

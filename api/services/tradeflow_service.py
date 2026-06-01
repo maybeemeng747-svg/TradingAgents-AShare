@@ -428,6 +428,25 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
             state = _rget(r, "observe_state", "WAITING")
             sym = normalize_tradeflow_symbol(r["symbol"])  # [UI-008]
             raw_n = _rget(r, "name", "")
+
+            # [TF-OBS-001] tradeflow_observe_runner — populate current_price/trigger_reason from latest signal
+            current_price = None
+            trigger_reason = ""
+            try:
+                sig_rows = conn.execute(
+                    "SELECT evidence_json FROM tradeflow_signals WHERE symbol = ? AND signal_type LIKE 'observe_%' ORDER BY signal_time DESC LIMIT 20",
+                    (sym,),
+                ).fetchall()
+                for sig_row in sig_rows:
+                    ev = _parse_json(_rget(sig_row, "evidence_json", "{}"), {})
+                    if ev.get("trade_date") != trade_date:
+                        continue
+                    current_price = ev.get("current_price")
+                    trigger_reason = ev.get("trigger_reason", "")
+                    break
+            except Exception:
+                pass
+
             item = {
                 "symbol": sym,
                 "name": resolve_tradeflow_name(sym, raw_n),  # [UI-008]
@@ -438,8 +457,8 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
                 "observe_first_trigger_time": _rget(r, "observe_first_trigger_time", ""),
                 "tier": _rget(r, "tier", ""),
                 "composite_score": _rget(r, "composite_score", 0.0) or 0.0,
-                "current_price": None,
-                "trigger_reason": "",
+                "current_price": current_price,
+                "trigger_reason": trigger_reason,
                 "strategy_tags": _parse_json(_rget(r, "strategy_tags_json"), []),
             }
             items.append(item)
@@ -577,6 +596,8 @@ def get_data_health(tf_db_path: str = "") -> dict:
     latest_obs_date = None  # [TF-DATE-001]
     total_candidates_today = 0
     total_signals_today = 0
+    latest_observe_check_time = None  # [TF-OBS-001]
+    latest_signal_time = None  # [TF-OBS-001]
     today = datetime.now().strftime("%Y-%m-%d")
 
     if db_available:
@@ -621,6 +642,18 @@ def get_data_health(tf_db_path: str = "") -> dict:
                 ).fetchone()
                 if sig_row:
                     total_signals_today = sig_row["cnt"]
+
+                # [TF-OBS-001] tradeflow_observe_runner — latest observe check and signal times
+                obs_check_row = conn.execute(
+                    "SELECT signal_time FROM tradeflow_signals WHERE signal_type LIKE 'observe_%' ORDER BY signal_time DESC LIMIT 1"
+                ).fetchone()
+                if obs_check_row:
+                    latest_observe_check_time = obs_check_row["signal_time"]
+                sig_time_row = conn.execute(
+                    "SELECT signal_time FROM tradeflow_signals ORDER BY signal_time DESC LIMIT 1"
+                ).fetchone()
+                if sig_time_row:
+                    latest_signal_time = sig_time_row["signal_time"]
 
                 sources.append({
                     "name": "tradeflow_daily_plans",
@@ -676,6 +709,8 @@ def get_data_health(tf_db_path: str = "") -> dict:
         "latest_observe_date": latest_obs_date,  # [TF-DATE-001]
         "total_candidates_today": total_candidates_today,
         "total_signals_today": total_signals_today,
+        "latest_observe_check_time": latest_observe_check_time,  # [TF-OBS-001]
+        "latest_signal_time": latest_signal_time,  # [TF-OBS-001]
     }
 
 
@@ -759,4 +794,39 @@ def run_discovery_scan(
         "candidates": result.candidates,
         "filtered": result.filtered[:50],
         "metadata": result.metadata,
+    }
+
+
+# [TF-OBS-001] tradeflow_observe_runner
+def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
+    """Run intraday observe check for all active candidates on trade_date.
+
+    This reads candidates, fetches realtime quotes, runs observe checks,
+    updates candidate observe state, and writes signals.
+    Does NOT invoke deep TA or LLM.
+    """
+    from tradingagents.tradeflow.candidate_engine import init_db
+    from tradingagents.tradeflow.observe_runner import run_observe
+
+    tf_db = tf_db_path or _get_tradeflow_db_path()
+    init_db(tf_db)
+
+    result = run_observe(
+        trade_date=trade_date,
+        db_path=tf_db,
+    )
+
+    return {
+        "status": "skipped" if result.skipped_reason else "ok",
+        "trade_date": trade_date,
+        "checked": result.checked,
+        "triggered": result.triggered,
+        "invalidated": result.invalidated,
+        "waiting": result.waiting,
+        "skipped": result.skipped,
+        "signals_written": result.signals_written,
+        "errors": result.errors,
+        "skipped_reason": result.skipped_reason,
+        "run_time": result.run_time,
+        "details": result.details,
     }

@@ -41,8 +41,10 @@ from api.services.tradeflow_service import (
     get_review,
     get_data_health,
     run_discovery_scan,
+    run_observe_check,  # [TF-OBS-001] tradeflow_observe_runner
     get_filtered,  # [UI-007] tradeflow_filtered_trace
 )
+from api.tradeflow_schemas import TradeFlowDataHealthResponse  # [TF-OBS-001]
 
 
 @pytest.fixture
@@ -362,6 +364,109 @@ class TestObserve:
         assert "trigger_price" in item
         assert "strategy_tags" in item
 
+    def test_observe_item_uses_signal_for_same_trade_date(self, populated_db):
+        conn = sqlite3.connect(populated_db)
+        conn.execute(
+            """
+            INSERT INTO tradeflow_signals (
+                signal_time, symbol, signal_type, signal_level, source, evidence_json, action_hint, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2026-05-30T10:30:00",
+                "002353.SZ",
+                "observe_triggered",
+                "warning",
+                "observe_runner",
+                json.dumps({"trade_date": "2026-05-30", "current_price": 45.6, "trigger_reason": "放量突破触发价"}),
+                "OBSERVE",
+                "new",
+                "2026-05-30T10:30:00",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        result = get_observe("2026-05-30", tf_db_path=populated_db)
+        item = next(i for i in result["observe_items"] if i["symbol"] == "002353.SZ")
+        assert item["current_price"] == 45.6
+        assert item["trigger_reason"] == "放量突破触发价"
+
+    def test_observe_item_ignores_signal_from_other_trade_date(self, populated_db):
+        conn = sqlite3.connect(populated_db)
+        conn.execute(
+            """
+            INSERT INTO tradeflow_signals (
+                signal_time, symbol, signal_type, signal_level, source, evidence_json, action_hint, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2026-05-31T10:30:00",
+                "002353.SZ",
+                "observe_triggered",
+                "warning",
+                "observe_runner",
+                json.dumps({"trade_date": "2026-05-31", "current_price": 99.9, "trigger_reason": "其他日期信号"}),
+                "OBSERVE",
+                "new",
+                "2026-05-31T10:30:00",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        result = get_observe("2026-05-30", tf_db_path=populated_db)
+        item = next(i for i in result["observe_items"] if i["symbol"] == "002353.SZ")
+        assert item["current_price"] is None
+        assert item["trigger_reason"] == ""
+
+
+class TestObserveRun:
+    def test_run_observe_check_returns_runner_summary(self, tf_db, monkeypatch):
+        class DummyResult:
+            checked = 2
+            triggered = 1
+            invalidated = 0
+            waiting = 1
+            skipped = 0
+            signals_written = 2
+            errors = []
+            skipped_reason = ""
+            run_time = "2026-05-30T10:30:00"
+            details = [{"symbol": "002353.SZ", "observe_state": "TRIGGERED"}]
+
+        def fake_run_observe(trade_date, db_path):
+            assert trade_date == "2026-05-30"
+            assert db_path == tf_db
+            return DummyResult()
+
+        monkeypatch.setattr("tradingagents.tradeflow.observe_runner.run_observe", fake_run_observe)
+
+        result = run_observe_check("2026-05-30", tf_db_path=tf_db)
+        assert result["status"] == "ok"
+        assert result["checked"] == 2
+        assert result["triggered"] == 1
+        assert result["signals_written"] == 2
+
+    def test_run_observe_check_surfaces_skipped_status(self, tf_db, monkeypatch):
+        class DummyResult:
+            checked = 0
+            triggered = 0
+            invalidated = 0
+            waiting = 0
+            skipped = 0
+            signals_written = 0
+            errors = []
+            skipped_reason = "2026-05-31 非交易日，跳过实时观察"
+            run_time = "2026-05-31T10:30:00"
+            details = []
+
+        monkeypatch.setattr("tradingagents.tradeflow.observe_runner.run_observe", lambda trade_date, db_path: DummyResult())
+
+        result = run_observe_check("2026-05-31", tf_db_path=tf_db)
+        assert result["status"] == "skipped"
+        assert result["skipped_reason"] == "2026-05-31 非交易日，跳过实时观察"
+
 
 class TestTAQueue:
     def test_no_db_returns_no_data(self):
@@ -456,6 +561,37 @@ class TestDataHealth:
         result = get_data_health(tf_db_path=populated_db)
         assert result["latest_plan_date"] == "2026-05-30"
         assert result["latest_candidates_date"] == "2026-05-30"
+
+    def test_signal_times_are_exposed_and_schema_preserves_them(self, populated_db):
+        conn = sqlite3.connect(populated_db)
+        conn.execute(
+            """
+            INSERT INTO tradeflow_signals (
+                signal_time, symbol, signal_type, signal_level, source, evidence_json, action_hint, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2026-05-30T10:30:00",
+                "002353.SZ",
+                "observe_check",
+                "info",
+                "observe_runner",
+                json.dumps({"trade_date": "2026-05-30", "current_price": 44.2}),
+                "OBSERVE",
+                "new",
+                "2026-05-30T10:30:00",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        result = get_data_health(tf_db_path=populated_db)
+        assert result["latest_observe_check_time"] == "2026-05-30T10:30:00"
+        assert result["latest_signal_time"] == "2026-05-30T10:30:00"
+
+        model = TradeFlowDataHealthResponse(**result)
+        assert model.latest_observe_check_time == "2026-05-30T10:30:00"
+        assert model.latest_signal_time == "2026-05-30T10:30:00"
 
 
 class TestNoForbiddenWords:

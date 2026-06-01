@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-06-01 | TF-OBS-001 follow-up: API/UI changes commit gap
+
+- **执行者**：Codex
+- **背景**：自动开发标记 TF-OBS-001 完成后，仍有 5 个前端/API 文件处于未提交状态；检查确认它们属于盘中观察人工触发入口与展示增强。
+- **修复**：
+  - 补齐 `api/tradeflow_schemas.py` 的 `latest_observe_check_time` / `latest_signal_time` 字段，避免 FastAPI `response_model` 过滤服务层返回值。
+  - `get_observe()` 读取最新 observe signal 时按 `evidence_json.trade_date` 匹配当前观察日期，避免跨日期信号串台。
+  - 修正 `docs/TASKS.md` 顶部队列中 `H-003` 仍显示 `in_progress` 的状态不一致。
+  - 补充 `tests/test_ui001_tradeflow_api.py` 覆盖 observe run service、同日信号展示、跨日信号隔离和 data-health schema 保留字段。
+- **验证**：
+  - `.venv/bin/python -m pytest tests/test_ui001_tradeflow_api.py tests/test_tf_obs_001_observe_runner.py tests/test_tradeflow_*.py -q` → 212 passed。
+  - `npm run build` → passed（仅保留 Vite chunk size warning）。
+
 ## 2026-06-01 | H-003: 产业链受益路径与标杆候选映射
 
 - **执行者**：OpenCode

@@ -10,6 +10,7 @@ import type {
     DataHealthStatus,
     TradeFlowObserveItem,
     TradeFlowObserveResponse,
+    TradeFlowObserveRunResponse,
     TradeFlowTAQueueItem,
     TradeFlowTAQueueResponse,
     TradeFlowReviewResponse,
@@ -133,13 +134,55 @@ function CompletenessBar({ value }: { value: number }) {
     )
 }
 
-function ObserveTable({ items }: { items: TradeFlowObserveItem[] }) {
-    if (items.length === 0) {
-        return <div className="py-20 text-center text-sm text-slate-400">暂无盘中观察数据</div>
-    }
+function ObserveTable({ items, onRun, running, runResult }: { items: TradeFlowObserveItem[]; onRun: () => void; running: boolean; runResult: TradeFlowObserveRunResponse | null }) {
+    const [showResult, setShowResult] = useState(false)
     return (
-        <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+        <div>
+            <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-700">
+                <span className="text-sm font-medium text-slate-700 dark:text-slate-300">盘中观察</span>
+                <button
+                    onClick={() => { onRun(); setShowResult(true) }}
+                    disabled={running}
+                    className="ml-auto inline-flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                    {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                    {running ? '执行中...' : '执行观察'}
+                </button>
+            </div>
+            {showResult && runResult && (
+                <div className={`mx-4 mt-3 rounded-lg border px-4 py-3 text-sm ${
+                    runResult.status === 'skipped'
+                        ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300'
+                        : runResult.errors.length > 0
+                        ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300'
+                        : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300'
+                }`}>
+                    {runResult.status === 'skipped' ? (
+                        <span>跳过: {runResult.skipped_reason}</span>
+                    ) : (
+                        <div className="flex flex-wrap gap-4">
+                            <span>检查: {runResult.checked}</span>
+                            <span className="text-emerald-600 dark:text-emerald-400">触发: {runResult.triggered}</span>
+                            <span className="text-red-500">失效: {runResult.invalidated}</span>
+                            <span>等待: {runResult.waiting}</span>
+                            <span className="text-slate-500">无行情: {runResult.skipped}</span>
+                            <span>信号: {runResult.signals_written}</span>
+                        </div>
+                    )}
+                    {runResult.errors.length > 0 && (
+                        <div className="mt-2 text-xs">{runResult.errors.join('; ')}</div>
+                    )}
+                    <div className="mt-1 text-xs opacity-70">执行时间: {runResult.run_time}</div>
+                </div>
+            )}
+            {items.length === 0 && !runResult ? (
+                <div className="py-20 text-center text-sm text-slate-400">
+                    <div className="mb-3">暂无盘中观察数据</div>
+                    <div className="text-xs">点击"执行观察"按钮手动触发盘中检查</div>
+                </div>
+            ) : items.length === 0 ? null : (
+            <div className="overflow-x-auto">
+                <table className="w-full text-sm">
                 <thead>
                     <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
                         <th className="px-4 py-2.5 font-medium">代码</th>
@@ -151,6 +194,7 @@ function ObserveTable({ items }: { items: TradeFlowObserveItem[] }) {
                         <th className="px-4 py-2.5 font-medium">触发距离</th>
                         <th className="px-4 py-2.5 font-medium">触发次数</th>
                         <th className="px-4 py-2.5 font-medium">首次触发时间</th>
+                        <th className="px-4 py-2.5 font-medium">触发原因</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -189,11 +233,14 @@ function ObserveTable({ items }: { items: TradeFlowObserveItem[] }) {
                                 </td>
                                 <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{item.observe_trigger_count}</td>
                                 <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{item.observe_first_trigger_time || '-'}</td>
+                                <td className="max-w-[200px] truncate px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400" title={item.trigger_reason}>{item.trigger_reason || '-'}</td>
                             </tr>
                         )
                     })}
                 </tbody>
             </table>
+            </div>
+            )}
         </div>
     )
 }
@@ -715,6 +762,8 @@ function DataHealthPanel({ data }: { data: TradeFlowDataHealthResponse | null })
                     {data.latest_candidates_date && <span>最新候选: <span className="font-medium text-slate-700 dark:text-slate-300">{data.latest_candidates_date}</span></span>}
                     {data.total_candidates_today > 0 && <span>今日候选: <span className="font-medium text-slate-700 dark:text-slate-300">{data.total_candidates_today}</span></span>}
                     {data.total_signals_today > 0 && <span>今日信号: <span className="font-medium text-slate-700 dark:text-slate-300">{data.total_signals_today}</span></span>}
+                    {data.latest_observe_check_time && <span>最新观察: <span className="font-medium text-slate-700 dark:text-slate-300">{data.latest_observe_check_time}</span></span>}
+                    {data.latest_signal_time && <span>最新信号时间: <span className="font-medium text-slate-700 dark:text-slate-300">{data.latest_signal_time}</span></span>}
                 </div>
             )}
 
@@ -793,6 +842,8 @@ export default function TradeFlow() {
     const [selectedCandidate, setSelectedCandidate] = useState<TradeFlowCandidateItem | null>(null)
 
     const [observeData, setObserveData] = useState<TradeFlowObserveResponse | null>(null)
+    const [observeRunLoading, setObserveRunLoading] = useState(false)  // [TF-OBS-001]
+    const [observeRunResult, setObserveRunResult] = useState<TradeFlowObserveRunResponse | null>(null)  // [TF-OBS-001]
     const [taQueueData, setTaQueueData] = useState<TradeFlowTAQueueResponse | null>(null)
     const [reviewData, setReviewData] = useState<TradeFlowReviewResponse | null>(null)
     const [filteredData, setFilteredData] = useState<TradeFlowFilteredResponse | null>(null)  // [UI-007] tradeflow_filtered_trace
@@ -837,6 +888,21 @@ export default function TradeFlow() {
             setLoading(false)
         }
     }, [])
+
+    // [TF-OBS-001] tradeflow_observe_runner
+    const handleRunObserve = useCallback(async () => {
+        setObserveRunLoading(true)
+        setObserveRunResult(null)
+        try {
+            const res = await api.runTradeFlowObserve(tradeDate)
+            setObserveRunResult(res)
+            await fetchObserve(tradeDate)
+        } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : '执行观察失败')
+        } finally {
+            setObserveRunLoading(false)
+        }
+    }, [tradeDate, fetchObserve])
 
     const fetchTaQueue = useCallback(async (date: string) => {
         setLoading(true)
@@ -1063,7 +1129,7 @@ export default function TradeFlow() {
         }
 
         if (activeTab === 'observe') {
-            return <ObserveTable items={observeData?.observe_items ?? []} />
+            return <ObserveTable items={observeData?.observe_items ?? []} onRun={handleRunObserve} running={observeRunLoading} runResult={observeRunResult} />
         }
 
         if (activeTab === 'ta-queue') {
