@@ -4,6 +4,59 @@
 
 ---
 
+## 2026-06-02 | H-006: 昊天候选池回放评估与反证机制
+
+- **执行者**：OpenCode
+- **任务**：H-006 — 建立昊天候选池的回放验证机制，每个高分政策候选都要能被后续走势、公告兑现、政策延续或反证记录检验
+- **修改文件**：
+  - `tradingagents/tradeflow/mandate_replay_eval.py` — 新建：[H-006] mandate_replay_eval
+    - `PriceSnapshot` 数据类：entry_price / prices(5/10/20/60d) / index_prices / industry_prices + 收益率/最大涨幅/最大回撤/超额收益计算
+    - `PostEventCheck` 数据类：policy_reconfirmed / announcement_fulfilled / trend_confirmed / risk_counter_evidence + 持续性/兑现评分
+    - `CounterEvidence` 数据类：counter_type / description / horizon / severity
+    - `ReplayFixture` 数据类：完整候选快照 + 价格 + 事件 + 反证
+    - `ReplayEvaluation` 数据类：verdict / verdict_score / returns / beat_index / calibration_hints
+    - `ReplayReport` 数据类：聚合评估结果 + 按类型/反证类型统计 + 校准建议汇总
+    - 5 类反证：`policy_faded` / `false_path` / `overheat_reversal` / `fundamental_risk` / `capital_not_recognizing`
+    - 4 个时间窗口：5 / 10 / 20 / 60 日
+    - 10 个 fixture 覆盖全部 6 种 CandidateType + 全部 5 种反证
+    - `evaluate_fixture()`：单个 fixture 评估——收益率计算、跑赢指数判定、verdict 判定、校准建议生成
+    - `run_replay_evaluation()`：批量评估，输出 ReplayReport
+    - `render_replay_report()`：Markdown 渲染
+    - `save_replay_report()` / `run_replay_and_save()`：文件输出到 `docs/mandate_replay_reports/`
+    - 校准建议自动关联 H-002/H-003/H-004 权重
+    - 0% 显示为 `0.0%`，无数据显示为 `N/A`
+    - 不写 `eval_results/`，不调用 LLM
+  - `tests/test_h006_mandate_replay_eval.py` — 新建，109 个测试覆盖：
+    - `TestPriceSnapshot` (15): 默认值/收益率正负/零价/缺失/指数收益/超额/最大涨幅/最大回撤/to_dict
+    - `TestPostEventCheck` (2): 默认值/to_dict
+    - `TestCounterEvidence` (2): 默认值/to_dict
+    - `TestReplayFixture` (2): 默认值/to_dict
+    - `TestReplayEvaluation` (2): 默认值/to_dict(含N/A)
+    - `TestReplayReport` (2): 默认值/to_dict
+    - `TestCounterTypes` (3): 5类/标签完整/已知类型
+    - `TestHorizons` (2): 4窗口/数量
+    - `TestFixtureIDs` (3): 10个/注册完整/唯一
+    - `TestGetFixture` (4): 已知/未知/全部可获取/get_all
+    - `TestFixtureContent` (14): 10个fixture内容验证/价格完整性/时间窗口/severity范围
+    - `TestEvaluateFixture` (14): 成功/失败/收益率/反证/beat_index/校准建议
+    - `TestRunReplayEvaluation` (8): 全量/按类型/按反证/选择性/自定义/空输入/未知ID
+    - `TestRenderReplayReport` (5): 完整渲染/包含所有fixture/反证/百分比/空报告
+    - `TestSaveReplayReport` (3): 创建文件/文件名/run_and_save
+    - `TestAcceptanceH006` (9): fixture稳定输出/0%显示/N/A显示/不写eval_results/6类覆盖/5反证覆盖/4窗口覆盖/反证类型合法/报告稳定
+    - `TestCalibrationHints` (6): policy_fade→H-002/false_path→H-003/overheated→H-004/capital_ignore→fund_flow/高政策低兑现/LEADER失败
+    - `TestIntegration` (5): fixture/evaluation/report to_dict往返/ambush_score集成/枚举对齐
+    - `TestEdgeCases` (6): 零价/单窗口/无反证/无反证渲染/全通过标志/负收益格式
+- **测试结果**：109 passed (H-006)；555 passed (H-series + tradeflow 全部)；0 failed
+- **关键逻辑**：
+  - 10 个 fixture 覆盖：POLICY_AMBUSH 成功/反证、POLICY_CONFIRM 成功、TECH_TRADE 短线、EVENT_WATCH 无后续、PSEUDO_POLICY 伪题材、OVERHEATED_AVOID 暴跌、政策消退、公司路径伪、资金不认
+  - 5 类反证机制：policy_faded(政策消退)、false_path(公司路径伪)、overheat_reversal(过热回撤)、fundamental_risk(基本面雷)、capital_not_recognizing(资金不认)
+  - 校准建议自动关联 H-002/H-003/H-004 权重参数，如"policy_continuity_score 权重可能需上调"
+  - verdict 判定逻辑按 candidate_type 分流：POLICY_AMBUSH 看政策延续+兑现+收益；TECH_TRADE 只看短线脉冲；OVERHEATED_AVOID 看回撤验证
+  - 0% 显示为 `0.0%`，无数据显示为 `N/A`，不写 `eval_results/`
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未写 `eval_results/`
+
+---
+
 ## 2026-06-02 | H-005: TradeFlow 前端昊天候选池视图
 
 - **执行者**：OpenCode
@@ -1623,3 +1676,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/H-005-20260602-round1.txt
 - **Run archive**: docs/task_runs/H-005-20260602-022257/
+
+## 2026-06-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-006 - 昊天候选池回放评估与反证机制（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/H-006-20260602-round1.txt
+- **Run archive**: docs/task_runs/H-006-20260602-023130/
