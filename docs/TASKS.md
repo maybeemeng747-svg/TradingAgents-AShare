@@ -28,18 +28,19 @@
 2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
 3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，ready，依赖 TF-DATE-001 ✓）。
 4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
-5. `H-002`：政策连续性与级别权重评分（P1，proposed，依赖 H-001）。
-6. `H-003`：产业链受益路径与标杆候选映射（P1，proposed，依赖 H-001）。
-7. `H-004`：左侧埋伏评分与候选类型分流（P1，proposed，依赖 H-002/H-003）。
-8. `H-005`：TradeFlow 前端昊天候选池视图（P2，proposed，依赖 H-004）。
-9. `H-006`：昊天候选池回放评估与反证机制（P2，proposed，依赖 H-004）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，ready，支撑后续 DATA/H 任务）。
+6. `H-002`：政策连续性与级别权重评分（P1，ready，依赖 H-001 ✓）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，ready，依赖 H-001 ✓）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P1，proposed，依赖 H-002/H-003）。
+9. `H-005`：TradeFlow 前端昊天候选池视图（P2，proposed，依赖 H-004）。
+10. `H-006`：昊天候选池回放评估与反证机制（P2，proposed，依赖 H-004）。
 
 ### 数据源治理候选队列
 
 > 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
 
 1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
-2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，proposed）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，ready）。
 3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，proposed）。
 4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，proposed，依赖 H-001）。
 5. `DATA-004`：raw_evidence 来源契约升级（P1，proposed）。
@@ -206,7 +207,7 @@
 ### DATA-001: A股数据源能力目录与 fallback 矩阵（P1）
 - **描述**：建立本项目统一的数据源能力目录，明确每个 vendor/endpoint 能提供什么字段、适用场景、freshness、限流风险和 fallback 顺序。
 - **优先级**：P1
-- **状态**：proposed
+- **状态**：ready
 - **背景**：
   - SimonLin1212 `a-stock-data` 的核心启发不是 Agent 数量，而是把腾讯/东财/新浪/巨潮/财联社等数据源做成可调用、可组合的端点目录。
   - 本项目已有 AKShare、BaoStock、yfinance、cn_astock、event_source，但调用关系和 fallback 口径还不够透明。
@@ -362,8 +363,8 @@
 ### H-002: 政策连续性与级别权重评分（P1）
 - **描述**：实现 `Mandate Score` 的第一层：识别某个政策/产业主题是否持续升温，以及其信号来自什么级别的来源。
 - **优先级**：P1
-- **状态**：proposed
-- **前置条件**：`H-001` 完成。
+- **状态**：ready
+- **前置条件**：`H-001` 完成 ✓。
 - **执行约束**：
   - 规则评分，不调用 LLM。
   - 不做全网抓取；只消费已有 event source/manual events/公告标题。
@@ -395,8 +396,8 @@
 ### H-003: 产业链受益路径与标杆候选映射（P1）
 - **描述**：把政策主题映射到产业链环节和公司角色，区分真正受益、间接受益和蹭概念，让昊天候选池不是只靠题材关键词。
 - **优先级**：P1
-- **状态**：proposed
-- **前置条件**：`H-001` 完成。
+- **状态**：ready
+- **前置条件**：`H-001` 完成 ✓。
 - **执行约束**：
   - 第一版使用可维护静态映射 + 事件证据，不调用 LLM。
   - 不声称公司必然受益，只输出 `beneficiary_path` 与证据强弱。

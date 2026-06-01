@@ -985,3 +985,10 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/H-001-20260601-round1.txt
 - **Run archive**: docs/task_runs/H-001-20260601-182415/
+
+## 2026-06-01 | Task Pool Queue Refresh
+
+- **Purpose**: Keep the 20:00 auto-dev window from stopping after a single ready task.
+- **Ready queue**: `TF-OBS-001`, `DATA-001`, `H-002`, `H-003`.
+- **Dependency rule**: `H-004` remains proposed until both `H-002` and `H-003` are done; `DATA-002` remains proposed until `DATA-001` is done.
+- **Note**: Scheduler warning during dry-run is expected because user-approved scheduled analysis is running.
