@@ -4,6 +4,56 @@
 
 ---
 
+## 2026-06-01 | H-003: 产业链受益路径与标杆候选映射
+
+- **执行者**：OpenCode
+- **任务**：H-003 — 把政策主题映射到产业链环节和公司角色，区分真正受益、间接受益和蹭概念
+- **修改文件**：
+  - `tradingagents/tradeflow/industry_mandate_map.py` — 新建：[H-003] mandate_beneficiary_map
+    - `CompanyRole` 枚举：LEADER / CORE_SUPPLIER / INFRA_PROVIDER / APPLICATION_SCENE / PERIPHERAL / CONCEPT_ONLY / UNKNOWN（7 级角色）
+    - `IndustryChainLink` 数据类：segment / keywords / roles
+    - `_INDUSTRY_CHAIN_MAP`：13 个政策主题的静态产业链映射（低空经济/机器人/算力/军工/半导体/AI应用/新质生产力/数据要素/国产替代/并购重组/国企改革/出海/中特估），共 73 个产业环节
+    - `_ROLE_KEYWORD_PATTERNS`：角色关键词正则（优先级：核心供应商 > 龙头 > 基础设施 > 应用场景 > 涉足布局）
+    - `BeneficiaryPathResult` 数据类：beneficiary_path / company_role / mandate_topic / mandate_evidence_refs / path_confidence / path_reasons / chain_segments_matched / has_company_evidence
+    - `get_industry_chain(topic)` / `get_all_topics()`：查询产业链映射
+    - `classify_company_role(title, tags)`：从文本推断公司角色
+    - `_match_chain_segments(topic, signals)`：从信号文本匹配产业链环节
+    - `_infer_role_from_segments(segments, topic, signals)`：从匹配环节推断角色
+    - `_collect_path_evidence_refs(signals, segments)`：收集去重证据引用
+    - `compute_beneficiary_path(topic, signals, symbol)`：核心函数——匹配产业链、推断角色、计算路径置信度
+    - `compute_beneficiary_paths_for_signals(signals, topics)`：批量计算
+    - 弱词检测：涉足/布局/关注/探索/跟踪/有望/可能 → CONCEPT_ONLY
+    - 无公司证据 → 角色封顶 CONCEPT_ONLY / UNKNOWN，置信度封顶 0.4
+    - 弱证据（低置信度/MEDIA）→ 核心角色降级为 PERIPHERAL
+  - `tradingagents/tradeflow/schemas.py` — [H-003] Candidate 新增 4 个字段：
+    - `beneficiary_path: list[str]`
+    - `company_role: str`
+    - `mandate_topic: str`
+    - `mandate_evidence_refs: list[dict]`
+    - `to_db_row()` / `from_db_row()` 同步更新
+  - `tests/test_h003_industry_mandate_map.py` — 新建，70 个测试覆盖：
+    - `TestCompanyRoleEnum` (4): 全部值/数量/字符串构造/非法值
+    - `TestIndustryChainLink` (2): 默认值/to_dict
+    - `TestIndustryChainMap` (12): 13个主题覆盖/关键产业链验证/每个环节有keywords和roles/未知主题/所有roles合法
+    - `TestGetAllTopics` (2): 排序/关键主题
+    - `TestClassifyCompanyRole` (12): 龙头/核心供应商/基础设施/应用场景/弱词/空值/tags/组合/优先级/关注
+    - `TestComputeBeneficiaryPath` (17): 空信号/空主题/低空核心/机器人减速器/算力芯片/弱词CONCEPT_ONLY/探索/无公司证据/媒体低置信/证据引用/多环节/封顶/未知主题/to_dict/默认值
+    - `TestH003Acceptance` (5): 核心供应商明确路径/弱词CONCEPT_ONLY/无公司证据不高优先/减速器环节匹配/强弱对比
+    - `TestComputeBeneficiaryPathsForSignals` (5): 空信号/单主题/多主题/自动检测/多symbol
+    - `TestH003Integration` (5): H-001→H-003流水线/H-002主题全覆盖/完整政策到路径管道/Candidate schema字段/DB往返
+    - `TestEdgeCases` (6): 零置信/无source_level/空标题/大量信号/13主题全覆盖/去重
+- **测试结果**：70 passed (H-003)；524 passed (H-001+H-002+H-003+tradeflow 全部)；0 failed
+- **关键逻辑**：
+  - 产业链映射：13 个主题 × 平均 5.6 个环节 = 73 个 IndustryChainLink，每个含 keywords 和候选 roles
+  - 角色推断：先匹配产业链环节→从环节 roles 中统计角色得分→选择最高得分角色
+  - 弱词检测：涉足/布局/关注/探索/跟踪 → CONCEPT_ONLY，即使有公司证据也覆盖
+  - 无公司证据处理：无 symbol 匹配且无 COMPANY_NOTICE 来源 → 角色封顶 CONCEPT_ONLY/UNKNOWN，置信度封顶 0.4
+  - 弱证据降级：LEADER/CORE_SUPPLIER 角色但全部信号为 MEDIA 来源 → 降级为 PERIPHERAL
+  - 置信度公式：segments×0.15 + has_company_evidence×0.3 + avg_confidence×0.25，封顶 1.0；无公司证据封顶 0.4
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未改生产 `tradingagents.db` schema
+
+---
+
 ## 2026-06-01 | H-002 fix: 3 test failures
 
 - **执行者**：OpenCode
@@ -1198,3 +1248,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/H-002-20260601-round2.txt
 - **Run archive**: docs/task_runs/H-002-20260601-222242/
+
+## 2026-06-01 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-003 - 产业链受益路径与标杆候选映射（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/H-003-20260601-round1.txt
+- **Run archive**: docs/task_runs/H-003-20260601-224256/

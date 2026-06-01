@@ -114,6 +114,10 @@ class Candidate:
     plan_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
     effective_trade_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
     observe_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+    beneficiary_path: list[str] = field(default_factory=list)  # [H-003] mandate_beneficiary_map
+    company_role: str = ""  # [H-003] mandate_beneficiary_map
+    mandate_topic: str = ""  # [H-003] mandate_beneficiary_map
+    mandate_evidence_refs: list[dict] = field(default_factory=list)  # [H-003] mandate_beneficiary_map
 
     def __post_init__(self):
         if not self.trade_date:
@@ -227,6 +231,10 @@ class Candidate:
             "plan_date": self.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
             "effective_trade_date": self.effective_trade_date,  # [TF-DATE-001]
             "observe_date": self.observe_date,  # [TF-DATE-001]
+            "beneficiary_path_json": json.dumps(self.beneficiary_path, ensure_ascii=False),  # [H-003]
+            "company_role": self.company_role,  # [H-003]
+            "mandate_topic": self.mandate_topic,  # [H-003]
+            "mandate_evidence_refs_json": json.dumps(self.mandate_evidence_refs, ensure_ascii=False),  # [H-003]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -300,6 +308,10 @@ class Candidate:
             plan_date=row.get("plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
             effective_trade_date=row.get("effective_trade_date", ""),  # [TF-DATE-001]
             observe_date=row.get("observe_date", ""),  # [TF-DATE-001]
+            beneficiary_path=json.loads(row.get("beneficiary_path_json", "[]")),  # [H-003]
+            company_role=row.get("company_role", ""),  # [H-003]
+            mandate_topic=row.get("mandate_topic", ""),  # [H-003]
+            mandate_evidence_refs=json.loads(row.get("mandate_evidence_refs_json", "[]")),  # [H-003]
         )
 
 

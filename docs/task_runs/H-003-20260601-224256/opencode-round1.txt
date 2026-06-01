@@ -1,0 +1,829 @@
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/project-overview.md
+[0m→ [0mRead tradingagents/tradeflow/mandate_signal.py
+Now let me read the H-003 task details carefully and examine the existing H-001/H-002 implementations to understand the patterns:
+[0m→ [0mRead tradingagents/tradeflow/mandate_score.py
+[0m✱ [0mGlob "tradingagents/tradeflow/*.py"[90m 27 matches[0m
+[0m
+[0m# [0mTodos
+[•] Create tradingagents/tradeflow/industry_mandate_map.py with topic-to-chain mapping and company role classification
+[ ] Create tests/test_h003_industry_mandate_map.py with comprehensive test coverage
+[ ] Run all tests to verify correctness
+[ ] Update docs/DEVLOG.md with H-003 changes
+[0m
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [limit=100][0m
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [limit=80][0m
+Let me also look at the existing test files for H-001 and H-002 to understand the test patterns, and check the candidate engine to understand how `beneficiary_path`/`company_role`/`mandate_topic`/`mandate_evidence_refs` should integrate:
+[0m→ [0mRead tradingagents/tradeflow/policy_version_signal.py[90m [limit=50][0m
+[0m→ [0mRead tests/test_h002_mandate_score.py[90m [limit=80][0m
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [offset=81, limit=100][0m
+[0m→ [0mRead tests/test_h001_mandate_signal.py[90m [limit=80][0m
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [offset=181, limit=200][0m
+Now let me check the rest of the schemas to see if beneficiary_path/company_role/mandate_topic fields already exist:
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_h001_mandate_signal.py tests/test_h002_mandate_score.py -q --tb=no 2>&1 | tail -5
+........................................................................ [ 38%]
+........................................................................ [ 77%]
+..........................................                               [100%]
+186 passed in 0.05s
+[0m
+Good. Now I have a thorough understanding of the codebase. Let me create the H-003 implementation. I'll create:
+
+1. `tradingagents/tradeflow/industry_mandate_map.py` - the core module
+2. Add `beneficiary_path`/`company_role`/`mandate_topic`/`mandate_evidence_refs` fields to Candidate schema
+3. Comprehensive test file
+[0m← [0mWrite tradingagents/tradeflow/industry_mandate_map.py
+Wrote file successfully.
+[0m
+Now add the H-003 fields to the Candidate schema:
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [limit=20, offset=113][0m
+[0m✗ [0mEdit tradingagents/tradeflow/schemas.py failed
+[91m[1mError: [0mFound multiple matches for oldString. Provide more surrounding context to make the match unique.
+[0m
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -113,8 +113,12 @@
+ deep_ta_position_context: str = ""  # [M-006] gated_deep_ta_dispatch
+ plan_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+ effective_trade_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+ observe_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
++beneficiary_path: list[str] = field(default_factory=list)  # [H-003] mandate_beneficiary_map
++company_role: str = ""  # [H-003] mandate_beneficiary_map
++mandate_topic: str = ""  # [H-003] mandate_beneficiary_map
++mandate_evidence_refs: list[dict] = field(default_factory=list)  # [H-003] mandate_beneficiary_map
+ 
+ def __post_init__(self):
+     if not self.trade_date:
+         self.trade_date = datetime.now().strftime("%Y-%m-%d")
+
+[0m
+Now add the H-003 fields to `to_db_row()` and `from_db_row()`:
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -230,8 +230,12 @@
+         "deep_ta_position_context": self.deep_ta_position_context,  # [M-006]
+         "plan_date": self.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
+         "effective_trade_date": self.effective_trade_date,  # [TF-DATE-001]
+         "observe_date": self.observe_date,  # [TF-DATE-001]
++        "beneficiary_path_json": json.dumps(self.beneficiary_path, ensure_ascii=False),  # [H-003]
++        "company_role": self.company_role,  # [H-003]
++        "mandate_topic": self.mandate_topic,  # [H-003]
++        "mandate_evidence_refs_json": json.dumps(self.mandate_evidence_refs, ensure_ascii=False),  # [H-003]
+         "updated_at": datetime.now().isoformat(),
+     }
+ 
+ @classmethod
+
+[0m
+Now update `from_db_row`:
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -307,8 +307,12 @@
+             deep_ta_position_context=row.get("deep_ta_position_context", ""),  # [M-006]
+             plan_date=row.get("plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
+             effective_trade_date=row.get("effective_trade_date", ""),  # [TF-DATE-001]
+             observe_date=row.get("observe_date", ""),  # [TF-DATE-001]
++            beneficiary_path=json.loads(row.get("beneficiary_path_json", "[]")),  # [H-003]
++            company_role=row.get("company_role", ""),  # [H-003]
++            mandate_topic=row.get("mandate_topic", ""),  # [H-003]
++            mandate_evidence_refs=json.loads(row.get("mandate_evidence_refs_json", "[]")),  # [H-003]
+         )
+ 
+ 
+ @dataclass
+
+[0m
+[0m# [0mTodos
+[✓] Create tradingagents/tradeflow/industry_mandate_map.py with topic-to-chain mapping and company role classification
+[•] Create tests/test_h003_industry_mandate_map.py with comprehensive test coverage
+[ ] Run all tests to verify correctness
+[ ] Update docs/DEVLOG.md with H-003 changes
+[0m
+Now let's create the comprehensive test file:
+[0m← [0mWrite tests/test_h003_industry_mandate_map.py
+Wrote file successfully.
+[0m
+I notice a typo in the test file — `compute_beficiary_path` (missing 'n'). Let me fix that:
+[0m← [0mEdit tests/test_h003_industry_mandate_map.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_h003_industry_mandate_map.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_h003_industry_mandate_map.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_h003_industry_mandate_map.py
+@@ -271,9 +271,9 @@
+         source_level="COMPANY_NOTICE",
+         confidence=0.4,
+         topic="低空经济",
+     )
+-    result = compute_beficiary_path("低空经济", [sig], symbol="000002.SZ")
++    result = compute_beneficiary_path("低空经济", [sig], symbol="000002.SZ")
+     assert result.company_role == CompanyRole.CONCEPT_ONLY.value
+ 
+ def test_concept_only_exploring(self):
+     sig = _make_signal(
+
+[0m
+[0m# [0mTodos
+[✓] Create tradingagents/tradeflow/industry_mandate_map.py with topic-to-chain mapping and company role classification
+[✓] Create tests/test_h003_industry_mandate_map.py with comprehensive test coverage
+[•] Run all tests to verify correctness
+[ ] Update docs/DEVLOG.md with H-003 changes
+[0m
+Now let's run the tests:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_h003_industry_mandate_map.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 69 items
+
+tests/test_h003_industry_mandate_map.py::TestCompanyRoleEnum::test_all_values PASSED [  1%]
+tests/test_h003_industry_mandate_map.py::TestCompanyRoleEnum::test_seven_roles PASSED [  2%]
+tests/test_h003_industry_mandate_map.py::TestCompanyRoleEnum::test_from_string PASSED [  4%]
+tests/test_h003_industry_mandate_map.py::TestCompanyRoleEnum::test_invalid_string_raises PASSED [  5%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainLink::test_default PASSED [  7%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainLink::test_to_dict PASSED [  8%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_topics_covered PASSED [ 10%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_thirteen_topics PASSED [ 11%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_low_altitude_economy_chain PASSED [ 13%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_robot_chain PASSED [ 14%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_compute_chain PASSED [ 15%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_military_chain PASSED [ 17%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_semiconductor_chain PASSED [ 18%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_each_link_has_keywords PASSED [ 20%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_each_link_has_roles PASSED [ 21%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_unknown_topic_returns_empty PASSED [ 23%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_all_roles_are_valid PASSED [ 24%]
+tests/test_h003_industry_mandate_map.py::TestGetAllTopics::test_returns_sorted PASSED [ 26%]
+tests/test_h003_industry_mandate_map.py::TestGetAllTopics::test_includes_key_topics PASSED [ 27%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_leader_keyword PASSED [ 28%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_core_supplier_keyword FAILED [ 30%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_infra_provider_keyword PASSED [ 31%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_application_scene_keyword PASSED [ 33%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_concept_only_weak_word PASSED [ 34%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_concept_only_layout PASSED [ 36%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_unknown_no_match PASSED [ 37%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_empty_string PASSED [ 39%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_with_tags FAILED [ 40%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_title_and_tags_combined PASSED [ 42%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_priority_order PASSED [ 43%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_concept_only_attention PASSED [ 44%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_empty_signals PASSED [ 46%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_empty_topic PASSED [ 47%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_low_altitude_core_supplier PASSED [ 49%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_robot_core_supplier PASSED [ 50%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_compute_power_chain PASSED [ 52%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_concept_only_weak_word FAILED [ 53%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_concept_only_exploring PASSED [ 55%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_no_company_evidence_concept_only FAILED [ 56%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_media_only_low_confidence PASSED [ 57%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_evidence_refs_populated PASSED [ 59%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_multiple_segments_matched PASSED [ 60%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_path_confidence_capped PASSED [ 62%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_no_company_evidence_caps_confidence FAILED [ 63%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_unknown_topic PASSED [ 65%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_result_to_dict PASSED [ 66%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_beneficiary_path_result_defaults PASSED [ 68%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_beneficiary_path_result_to_dict PASSED [ 69%]
+tests/test_h003_industry_mandate_map.py::TestH003Acceptance::test_core_supplier_clear_path PASSED [ 71%]
+tests/test_h003_industry_mandate_map.py::TestH003Acceptance::test_weak_word_concept_only FAILED [ 72%]
+tests/test_h003_industry_mandate_map.py::TestH003Acceptance::test_no_company_evidence_not_high_priority FAILED [ 73%]
+tests/test_h003_industry_mandate_map.py::TestH003Acceptance::test_core_supplier_with_segment_match PASSED [ 75%]
+tests/test_h003_industry_mandate_map.py::TestH003Acceptance::test_strong_vs_weak_evidence PASSED [ 76%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPathsForSignals::test_empty_signals PASSED [ 78%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPathsForSignals::test_single_topic_single_symbol PASSED [ 79%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPathsForSignals::test_multiple_topics PASSED [ 81%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPathsForSignals::test_auto_topic_detection PASSED [ 82%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPathsForSignals::test_multiple_symbols_same_topic PASSED [ 84%]
+tests/test_h003_industry_mandate_map.py::TestH003Integration::test_h001_signal_to_h003_path PASSED [ 85%]
+tests/test_h003_industry_mandate_map.py::TestH003Integration::test_h002_topics_covered PASSED [ 86%]
+tests/test_h003_industry_mandate_map.py::TestH003Integration::test_full_pipeline_policy_to_path FAILED [ 88%]
+tests/test_h003_industry_mandate_map.py::TestH003Integration::test_candidate_schema_fields PASSED [ 89%]
+tests/test_h003_industry_mandate_map.py::TestH003Integration::test_candidate_to_db_round_trip PASSED [ 91%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_zero_confidence PASSED [ 92%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_no_source_level PASSED [ 94%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_empty_title PASSED [ 95%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_many_signals PASSED [ 97%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_all_13_topics_have_chain PASSED [ 98%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_semicolon_chain_segments_unique PASSED [100%]
+
+=================================== FAILURES ===================================
+______________ TestClassifyCompanyRole.test_core_supplier_keyword ______________
+
+self = <tests.test_h003_industry_mandate_map.TestClassifyCompanyRole object at 0x10a11a2a0>
+
+    def test_core_supplier_keyword(self):
+>       assert classify_company_role("公司是机器人核心供应商") == CompanyRole.CORE_SUPPLIER
+E       AssertionError: assert <CompanyRole.LEADER: 'LEADER'> == <CompanyRole.CORE_SUPPLIER: 'CORE_SUPPLIER'>
+E        +  where <CompanyRole.LEADER: 'LEADER'> = classify_company_role('公司是机器人核心供应商')
+E        +  and   <CompanyRole.CORE_SUPPLIER: 'CORE_SUPPLIER'> = CompanyRole.CORE_SUPPLIER
+
+tests/test_h003_industry_mandate_map.py:159: AssertionError
+____________________ TestClassifyCompanyRole.test_with_tags ____________________
+
+self = <tests.test_h003_industry_mandate_map.TestClassifyCompanyRole object at 0x10a0fb440>
+
+    def test_with_tags(self):
+>       assert classify_company_role("", tags=["核心供应商"]) == CompanyRole.CORE_SUPPLIER
+E       AssertionError: assert <CompanyRole.LEADER: 'LEADER'> == <CompanyRole.CORE_SUPPLIER: 'CORE_SUPPLIER'>
+E        +  where <CompanyRole.LEADER: 'LEADER'> = classify_company_role('', tags=['核心供应商'])
+E        +  and   <CompanyRole.CORE_SUPPLIER: 'CORE_SUPPLIER'> = CompanyRole.CORE_SUPPLIER
+
+tests/test_h003_industry_mandate_map.py:180: AssertionError
+____________ TestComputeBeneficiaryPath.test_concept_only_weak_word ____________
+
+self = <tests.test_h003_industry_mandate_map.TestComputeBeneficiaryPath object at 0x10a118680>
+
+    def test_concept_only_weak_word(self):
+        sig = _make_signal(
+            title="公司涉足低空经济布局",
+            symbol="000002.SZ",
+            source_level="COMPANY_NOTICE",
+            confidence=0.4,
+            topic="低空经济",
+        )
+        result = compute_beneficiary_path("低空经济", [sig], symbol="000002.SZ")
+>       assert result.company_role == CompanyRole.CONCEPT_ONLY.value
+E       AssertionError: assert 'UNKNOWN' == 'CONCEPT_ONLY'
+E         
+E         - CONCEPT_ONLY
+E         + UNKNOWN
+
+tests/test_h003_industry_mandate_map.py:276: AssertionError
+_______ TestComputeBeneficiaryPath.test_no_company_evidence_concept_only _______
+
+self = <tests.test_h003_industry_mandate_map.TestComputeBeneficiaryPath object at 0x10a0faa50>
+
+    def test_no_company_evidence_concept_only(self):
+        sig = _make_signal(
+            title="国务院发布低空经济发展规划",
+            symbol="",
+            source_level="STATE_COUNCIL",
+            confidence=0.9,
+            topic="低空经济",
+        )
+        result = compute_beneficiary_path("低空经济", [sig])
+>       assert result.has_company_evidence is False
+E       AssertionError: assert True is False
+E        +  where True = BeneficiaryPathResult(beneficiary_path=[], company_role='UNKNOWN', mandate_topic='低空经济', mandate_evidence_refs=[{'title': '国务院发布低空经济发展规划', 'source': 'test_source', 'source_level': 'STATE_COUNCIL', 'date': '2026-06-01', 'confidence': 0.9}], path_confidence=0.525, path_reasons=['has_company_level_evidence', 'inferred_role:UNKNOWN'], chain_segments_matched=[], has_company_evidence=True).has_company_evidence
+
+tests/test_h003_industry_mandate_map.py:301: AssertionError
+_____ TestComputeBeneficiaryPath.test_no_company_evidence_caps_confidence ______
+
+self = <tests.test_h003_industry_mandate_map.TestComputeBeneficiaryPath object at 0x10a0fa8a0>
+
+    def test_no_company_evidence_caps_confidence(self):
+        sig = _make_signal(
+            title="国务院算力规划发布",
+            symbol="",
+            source_level="STATE_COUNCIL",
+            confidence=0.9,
+            topic="算力",
+        )
+        result = compute_beneficiary_path("算力", [sig])
+>       assert result.path_confidence <= 0.4
+E       AssertionError: assert 0.525 <= 0.4
+E        +  where 0.525 = BeneficiaryPathResult(beneficiary_path=[], company_role='UNKNOWN', mandate_topic='算力', mandate_evidence_refs=[{'title': '国务院算力规划发布', 'source': 'test_source', 'source_level': 'STATE_COUNCIL', 'date': '2026-06-01', 'confidence': 0.9}], path_confidence=0.525, path_reasons=['has_company_level_evidence', 'inferred_role:UNKNOWN'], chain_segments_matched=[], has_company_evidence=True).path_confidence
+
+tests/test_h003_industry_mandate_map.py:367: AssertionError
+________________ TestH003Acceptance.test_weak_word_concept_only ________________
+
+self = <tests.test_h003_industry_mandate_map.TestH003Acceptance object at 0x10a16d9a0>
+
+    def test_weak_word_concept_only(self):
+        sig = _make_signal(
+            title="公司涉足低空经济相关业务",
+            symbol="000001.SZ",
+            source_level="COMPANY_NOTICE",
+            confidence=0.4,
+            topic="低空经济",
+        )
+        result = compute_beneficiary_path("低空经济", [sig], symbol="000001.SZ")
+>       assert result.company_role == CompanyRole.CONCEPT_ONLY.value
+E       AssertionError: assert 'UNKNOWN' == 'CONCEPT_ONLY'
+E         
+E         - CONCEPT_ONLY
+E         + UNKNOWN
+
+tests/test_h003_industry_mandate_map.py:431: AssertionError
+________ TestH003Acceptance.test_no_company_evidence_not_high_priority _________
+
+self = <tests.test_h003_industry_mandate_map.TestH003Acceptance object at 0x10a0fa720>
+
+    def test_no_company_evidence_not_high_priority(self):
+        sig = _make_signal(
+            title="国务院发布低空经济发展规划",
+            symbol="",
+            source_level="STATE_COUNCIL",
+            confidence=0.9,
+            topic="低空经济",
+        )
+        result = compute_beneficiary_path("低空经济", [sig])
+>       assert result.has_company_evidence is False
+E       AssertionError: assert True is False
+E        +  where True = BeneficiaryPathResult(beneficiary_path=[], company_role='UNKNOWN', mandate_topic='低空经济', mandate_evidence_refs=[{'title': '国务院发布低空经济发展规划', 'source': 'test_source', 'source_level': 'STATE_COUNCIL', 'date': '2026-06-01', 'confidence': 0.9}], path_confidence=0.525, path_reasons=['has_company_level_evidence', 'inferred_role:UNKNOWN'], chain_segments_matched=[], has_company_evidence=True).has_company_evidence
+
+tests/test_h003_industry_mandate_map.py:442: AssertionError
+____________ TestH003Integration.test_full_pipeline_policy_to_path _____________
+
+self = <tests.test_h003_industry_mandate_map.TestH003Integration object at 0x10a16d040>
+
+    def test_full_pipeline_policy_to_path(self):
+        sigs = [
+            MandateSignal(
+                symbol="300001.SZ",
+                topic="低空经济",
+                title="国务院发布低空经济发展规划",
+                source="国务院",
+                source_level="STATE_COUNCIL",
+                date="2026-05-20",
+                confidence=0.9,
+            ),
+            MandateSignal(
+                symbol="300001.SZ",
+                topic="低空经济",
+                title="公司获eVTOL整机订单",
+                source="公司公告",
+                source_level="COMPANY_NOTICE",
+                date="2026-05-25",
+                confidence=0.7,
+                industry_tags=["eVTOL"],
+            ),
+            MandateSignal(
+                symbol="300001.SZ",
+                topic="低空经济",
+                title="工信部召开低空经济座谈会",
+                source="工信部",
+                source_level="MINISTRY",
+                date="2026-06-01",
+                confidence=0.8,
+            ),
+        ]
+        from tradingagents.tradeflow.mandate_score import compute_mandate_score
+        mandate_result = compute_mandate_score(sigs, topic="低空经济")
+        path_result = compute_beneficiary_path("低空经济", sigs, symbol="300001.SZ")
+    
+        assert mandate_result.mandate_score > 0
+>       assert mandate_result.has_policy_document is True
+E       AssertionError: assert False is True
+E        +  where False = MandateScoreResult(mandate_score=71.62, policy_continuity_score=99, source_authority_score=70.2, topic_heat_delta=34.1, mandate_reasons=['high_authority_source:STATE_COUNCIL', 'source_levels:[STATE_COUNCIL, MINISTRY, COMPANY_NOTICE]', 'multi_day_continuity:3_days', 'multi_source:3_sources', 'multi_level:3_levels', 'has_high_authority_source', 'continuous_across_3_days'], mandate_evidence_refs=[{'title': '国务院发布低空经济发展规划', 'source': '国务院', 'source_level': 'STATE_COUNCIL', 'date': '2026-05-20', 'confidence': 0.9}, {'title': '公司获eVTOL整机订单', 'source': '公司公告', 'source_level': 'COMPANY_NOTICE', 'date': '2026-05-25', 'confidence': 0.7}, {'title': '工信部召开低空经济座谈会', 'source': '工信部', 'source_level': 'MINISTRY', 'date': '2026-06-01', 'confidence': 0.8}], topic='低空经济', signal_count=3, unique_dates=3, unique_sources=3, unique_source_levels=3, has_policy_document=False, has_high_authority=True, is_noise=False).has_policy_document
+
+tests/test_h003_industry_mandate_map.py:615: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_core_supplier_keyword
+FAILED tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_with_tags
+FAILED tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_concept_only_weak_word
+FAILED tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_no_company_evidence_concept_only
+FAILED tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_no_company_evidence_caps_confidence
+FAILED tests/test_h003_industry_mandate_map.py::TestH003Acceptance::test_weak_word_concept_only
+FAILED tests/test_h003_industry_mandate_map.py::TestH003Acceptance::test_no_company_evidence_not_high_priority
+FAILED tests/test_h003_industry_mandate_map.py::TestH003Integration::test_full_pipeline_policy_to_path
+========================= 8 failed, 61 passed in 0.10s =========================
+[0m
+I need to fix several issues:
+
+1. `classify_company_role` — "核心" in "核心供应商" matches LEADER pattern first (due to "核心" keyword). Need to reorder patterns or refine regex.
+2. `has_company_evidence` — should require symbol match, not just high source level
+3. Weak word signals without chain match need to get CONCEPT_ONLY
+4. Test for `has_policy_document` — the event_type is "POLICY_DOCUMENT" but signals lack `event_type` field
+[0m→ [0mRead tradingagents/tradeflow/industry_mandate_map.py[90m [limit=30, offset=150][0m
+The issue is that the LEADER regex has "核心" which matches "核心供应商" before the CORE_SUPPLIER regex. I need to reorder: put more specific patterns first (CORE_SUPPLIER with "核心供应商" before LEADER with "核心"). Also need to fix `has_company_evidence` logic.
+[0m
+[0m← [0mEdit tradingagents/tradeflow/industry_mandate_map.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/industry_mandate_map.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/industry_mandate_map.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/industry_mandate_map.py
+@@ -151,11 +151,13 @@
+     ],
+ }
+ 
+ _ROLE_KEYWORD_PATTERNS: list[tuple[re.Pattern, CompanyRole]] = [
+-    (re.compile(r"龙头|标的|核心|领军|领先|领军企业|核心标的|龙头企业"), CompanyRole.LEADER),
+-    (re.compile(r"核心供应商|供应商|主要供应商|供货|产业链核心|核心零部件"), CompanyRole.CORE_SUPPLIER),
+-    (re.compile(r"基础设施|IDC|数据中心|算力中心|平台|基础设施提供商"), CompanyRole.INFRA_PROVIDER),
++    (re.compile(r"核心供应商|主要供应商|产业链核心|核心零部件"), CompanyRole.CORE_SUPPLIER),
++    (re.compile(r"供应商|供货"), CompanyRole.CORE_SUPPLIER),
++    (re.compile(r"龙头|核心标的|领军企业|龙头企业|领军|领先"), CompanyRole.LEADER),
++    (re.compile(r"基础设施提供商|IDC|数据中心|算力中心"), CompanyRole.INFRA_PROVIDER),
++    (re.compile(r"基础设施|平台"), CompanyRole.INFRA_PROVIDER),
+     (re.compile(r"应用场景|系统集成|下游应用|场景落地|应用端|解决方案"), CompanyRole.APPLICATION_SCENE),
+     (re.compile(r"涉足|布局|关注|探索|跟踪|有望|可能|研究|潜力"), CompanyRole.CONCEPT_ONLY),
+ ]
+ 
+
+[0m
+Now fix the `has_company_evidence` logic — it should require a matching symbol or be a company-level source:
+[0m← [0mEdit tradingagents/tradeflow/industry_mandate_map.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/industry_mandate_map.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/industry_mandate_map.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/industry_mandate_map.py
+@@ -329,15 +329,18 @@
+         path_reasons=["no_topic" if not topic else "no_signals"],
+     )
+ 
+ has_company_evidence = False
+-for sig in signals:
+-    if sig.symbol and sig.symbol == symbol and sig.confidence >= 0.3:
+-        has_company_evidence = True
+-        break
+-    if sig.source_level not in ("MEDIA",) and sig.confidence >= 0.3:
+-        has_company_evidence = True
+-        break
++if symbol:
++    for sig in signals:
++        if sig.symbol == symbol and sig.confidence >= 0.3:
++            has_company_evidence = True
++            break
++if not has_company_evidence:
++    for sig in signals:
++        if sig.source_level == "COMPANY_NOTICE" and sig.confidence >= 0.3:
++            has_company_evidence = True
++            break
+ 
+ segments, seg_reasons = _match_chain_segments(topic, signals)
+ 
+ inferred_role = _infer_role_from_segments(segments, topic, signals)
+
+[0m
+Now fix the weak word / CONCEPT_ONLY detection. When text has weak words and there are no matched chain segments, the role should be CONCEPT_ONLY:
+[0m→ [0mRead tradingagents/tradeflow/industry_mandate_map.py[90m [limit=60, offset=240][0m
+The weak role indicator logic is too complex and not working correctly. Let me simplify the whole `_infer_role_from_segments` and the main `compute_beneficiary_path` function:
+[0m
+[0m← [0mEdit tradingagents/tradeflow/industry_mandate_map.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/industry_mandate_map.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/industry_mandate_map.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/industry_mandate_map.py
+@@ -261,22 +261,8 @@
+                 role_scores[role] = role_scores.get(role, 0.0) + 1.0
+             except ValueError:
+                 pass
+ 
+-all_text = " ".join(
+-    f"{sig.title} {sig.evidence_text}"
+-    for sig in signals
+-    if sig.title or sig.evidence_text
+-)
+-
+-if _WEAK_ROLE_INDICATORS.search(all_text):
+-    for sig in signals:
+-        if sig.source_level in ("COMPANY_NOTICE", "MEDIA") and sig.confidence >= 0.3:
+-            if not _WEAK_ROLE_INDICATORS.search(sig.title):
+-                pass
+-            else:
+-                return CompanyRole.CONCEPT_ONLY
+-
+ if role_scores:
+     best_role = max(role_scores, key=lambda r: role_scores[r])
+     if best_role in (CompanyRole.LEADER, CompanyRole.CORE_SUPPLIER):
+         has_strong_evidence = any(
+
+[0m
+Now fix the `compute_beneficiary_path` function — the weak word / CONCEPT_ONLY handling needs to check weak words from signals text directly:
+[0m→ [0mRead tradingagents/tradeflow/industry_mandate_map.py[90m [limit=80, offset=295][0m
+The issue is that the CONCEPT_ONLY detection in the "weak word" tests isn't working because:
+1. "涉足" is a weak word but `classify_company_role` returns CONCEPT_ONLY when weak words are detected
+2. But in `compute_beneficiary_path`, the signal has `source_level="COMPANY_NOTICE"` and `confidence=0.4` and `symbol="000002.SZ"`, so `has_company_evidence=True`
+3. When `has_company_evidence=True`, the CONCEPT_ONLY override doesn't kick in
+
+The fix: when the signal text contains weak words, even with company evidence, we should still check for CONCEPT_ONLY:
+[0m
+[0m← [0mEdit tradingagents/tradeflow/industry_mandate_map.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/industry_mandate_map.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/industry_mandate_map.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/industry_mandate_map.py
+@@ -330,27 +330,24 @@
+ segments, seg_reasons = _match_chain_segments(topic, signals)
+ 
+ inferred_role = _infer_role_from_segments(segments, topic, signals)
+ 
+-if not has_company_evidence:
+-    title_role = classify_company_role(
+-        " ".join(sig.title for sig in signals if sig.title),
+-        list(set(tag for sig in signals for tag in sig.industry_tags)),
+-    )
+-    if title_role == CompanyRole.CONCEPT_ONLY:
+-        inferred_role = CompanyRole.CONCEPT_ONLY
+-    elif inferred_role != CompanyRole.UNKNOWN:
+-        inferred_role = CompanyRole.CONCEPT_ONLY
+-
+ all_text = " ".join(
+     f"{sig.title} {sig.evidence_text} {' '.join(sig.industry_tags)}"
+     for sig in signals
+     if sig.title or sig.evidence_text
+ )
+ direct_role = classify_company_role(all_text)
+-if direct_role == CompanyRole.CONCEPT_ONLY and not has_company_evidence:
+-    inferred_role = CompanyRole.CONCEPT_ONLY
+ 
++if not has_company_evidence:
++    if direct_role == CompanyRole.CONCEPT_ONLY:
++        inferred_role = CompanyRole.CONCEPT_ONLY
++    elif inferred_role != CompanyRole.UNKNOWN:
++        inferred_role = CompanyRole.CONCEPT_ONLY
++else:
++    if direct_role == CompanyRole.CONCEPT_ONLY:
++        inferred_role = CompanyRole.CONCEPT_ONLY
++
+ evidence_refs = _collect_path_evidence_refs(signals, segments)
+ 
+ path_confidence = 0.0
+ if segments:
+
+[0m
+Now fix the test for `has_policy_document` — the signals in the integration test don't have `event_type` set, so the mandate_score doesn't detect policy document. Let me fix the test instead:
+[0m← [0mEdit tests/test_h003_industry_mandate_map.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_h003_industry_mandate_map.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_h003_industry_mandate_map.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_h003_industry_mandate_map.py
+@@ -585,8 +585,9 @@
+     source="国务院",
+     source_level="STATE_COUNCIL",
+     date="2026-05-20",
+     confidence=0.9,
++    event_type="POLICY_DOCUMENT",
+ ),
+ MandateSignal(
+     symbol="300001.SZ",
+     topic="低空经济",
+
+[0m
+Now also fix the test for `test_core_supplier_keyword` — the word "核心" in "核心供应商" was matching LEADER. Let me verify the new pattern ordering:
+[0m$ [0msource .venv/bin/activate && python -c "
+from tradingagents.tradeflow.industry_mandate_map import classify_company_role, CompanyRole
+print(classify_company_role('公司是机器人核心供应商'))
+print(classify_company_role('', tags=['核心供应商']))
+print(classify_company_role('公司涉足低空经济布局'))
+print(classify_company_role('公司涉足低空经济相关业务'))
+"
+CompanyRole.CORE_SUPPLIER
+CompanyRole.CORE_SUPPLIER
+CompanyRole.CONCEPT_ONLY
+CompanyRole.CONCEPT_ONLY
+[0m
+Good. Now run the tests again:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_h003_industry_mandate_map.py -v --tb=short 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 69 items
+
+tests/test_h003_industry_mandate_map.py::TestCompanyRoleEnum::test_all_values PASSED [  1%]
+tests/test_h003_industry_mandate_map.py::TestCompanyRoleEnum::test_seven_roles PASSED [  2%]
+tests/test_h003_industry_mandate_map.py::TestCompanyRoleEnum::test_from_string PASSED [  4%]
+tests/test_h003_industry_mandate_map.py::TestCompanyRoleEnum::test_invalid_string_raises PASSED [  5%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainLink::test_default PASSED [  7%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainLink::test_to_dict PASSED [  8%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_topics_covered PASSED [ 10%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_thirteen_topics PASSED [ 11%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_low_altitude_economy_chain PASSED [ 13%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_robot_chain PASSED [ 14%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_compute_chain PASSED [ 15%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_military_chain PASSED [ 17%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_semiconductor_chain PASSED [ 18%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_each_link_has_keywords PASSED [ 20%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_each_link_has_roles PASSED [ 21%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_unknown_topic_returns_empty PASSED [ 23%]
+tests/test_h003_industry_mandate_map.py::TestIndustryChainMap::test_all_roles_are_valid PASSED [ 24%]
+tests/test_h003_industry_mandate_map.py::TestGetAllTopics::test_returns_sorted PASSED [ 26%]
+tests/test_h003_industry_mandate_map.py::TestGetAllTopics::test_includes_key_topics PASSED [ 27%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_leader_keyword PASSED [ 28%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_core_supplier_keyword PASSED [ 30%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_infra_provider_keyword PASSED [ 31%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_application_scene_keyword PASSED [ 33%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_concept_only_weak_word PASSED [ 34%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_concept_only_layout PASSED [ 36%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_unknown_no_match PASSED [ 37%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_empty_string PASSED [ 39%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_with_tags PASSED [ 40%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_title_and_tags_combined PASSED [ 42%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_priority_order FAILED [ 43%]
+tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_concept_only_attention PASSED [ 44%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_empty_signals PASSED [ 46%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_empty_topic PASSED [ 47%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_low_altitude_core_supplier PASSED [ 49%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_robot_core_supplier PASSED [ 50%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_compute_power_chain PASSED [ 52%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_concept_only_weak_word PASSED [ 53%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_concept_only_exploring PASSED [ 55%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_no_company_evidence_concept_only PASSED [ 56%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_media_only_low_confidence PASSED [ 57%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_evidence_refs_populated PASSED [ 59%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_multiple_segments_matched PASSED [ 60%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_path_confidence_capped PASSED [ 62%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_no_company_evidence_caps_confidence PASSED [ 63%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_unknown_topic PASSED [ 65%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_result_to_dict PASSED [ 66%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_beneficiary_path_result_defaults PASSED [ 68%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_beneficiary_path_result_to_dict PASSED [ 69%]
+tests/test_h003_industry_mandate_map.py::TestH003Acceptance::test_core_supplier_clear_path PASSED [ 71%]
+tests/test_h003_industry_mandate_map.py::TestH003Acceptance::test_weak_word_concept_only PASSED [ 72%]
+tests/test_h003_industry_mandate_map.py::TestH003Acceptance::test_no_company_evidence_not_high_priority PASSED [ 73%]
+tests/test_h003_industry_mandate_map.py::TestH003Acceptance::test_core_supplier_with_segment_match PASSED [ 75%]
+tests/test_h003_industry_mandate_map.py::TestH003Acceptance::test_strong_vs_weak_evidence PASSED [ 76%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPathsForSignals::test_empty_signals PASSED [ 78%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPathsForSignals::test_single_topic_single_symbol PASSED [ 79%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPathsForSignals::test_multiple_topics PASSED [ 81%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPathsForSignals::test_auto_topic_detection PASSED [ 82%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPathsForSignals::test_multiple_symbols_same_topic PASSED [ 84%]
+tests/test_h003_industry_mandate_map.py::TestH003Integration::test_h001_signal_to_h003_path PASSED [ 85%]
+tests/test_h003_industry_mandate_map.py::TestH003Integration::test_h002_topics_covered PASSED [ 86%]
+tests/test_h003_industry_mandate_map.py::TestH003Integration::test_full_pipeline_policy_to_path PASSED [ 88%]
+tests/test_h003_industry_mandate_map.py::TestH003Integration::test_candidate_schema_fields PASSED [ 89%]
+tests/test_h003_industry_mandate_map.py::TestH003Integration::test_candidate_to_db_round_trip PASSED [ 91%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_zero_confidence PASSED [ 92%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_no_source_level PASSED [ 94%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_empty_title PASSED [ 95%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_many_signals PASSED [ 97%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_all_13_topics_have_chain PASSED [ 98%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_semicolon_chain_segments_unique PASSED [100%]
+
+=================================== FAILURES ===================================
+_________________ TestClassifyCompanyRole.test_priority_order __________________
+tests/test_h003_industry_mandate_map.py:187: in test_priority_order
+    assert classify_company_role("龙头企业核心供应商") == CompanyRole.LEADER
+E   AssertionError: assert <CompanyRole.CORE_SUPPLIER: 'CORE_SUPPLIER'> == <CompanyRole.LEADER: 'LEADER'>
+E    +  where <CompanyRole.CORE_SUPPLIER: 'CORE_SUPPLIER'> = classify_company_role('龙头企业核心供应商')
+E    +  and   <CompanyRole.LEADER: 'LEADER'> = CompanyRole.LEADER
+=========================== short test summary info ============================
+FAILED tests/test_h003_industry_mandate_map.py::TestClassifyCompanyRole::test_priority_order
+========================= 1 failed, 68 passed in 0.07s =========================
+[0m
+Just 1 failure left — the priority test. Since "核心供应商" is now checked before "龙头", it matches first. The test expectation is wrong — in real text "龙头企业核心供应商", the more specific match (CORE_SUPPLIER) is correct since "核心供应商" is more specific than "龙头". Let me fix the test:
+[0m← [0mEdit tests/test_h003_industry_mandate_map.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_h003_industry_mandate_map.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_h003_industry_mandate_map.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_h003_industry_mandate_map.py
+@@ -183,10 +183,13 @@
+     role = classify_company_role("低空经济", tags=["龙头企业"])
+     assert role == CompanyRole.LEADER
+ 
+ def test_priority_order(self):
+-    assert classify_company_role("龙头企业核心供应商") == CompanyRole.LEADER
++    assert classify_company_role("龙头企业核心供应商") == CompanyRole.CORE_SUPPLIER
+ 
++def test_leader_wins_over_generic(self):
++    assert classify_company_role("公司是行业领军企业") == CompanyRole.LEADER
++
+ def test_concept_only_attention(self):
+     assert classify_company_role("公司关注机器人发展") == CompanyRole.CONCEPT_ONLY
+ 
+ 
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_h003_industry_mandate_map.py -q --tb=no 2>&1
+......................................................................   [100%]
+70 passed in 0.05s
+[0m
+All 70 tests pass. Now let's run the broader test suite to make sure nothing is broken:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_h001_mandate_signal.py tests/test_h002_mandate_score.py tests/test_h003_industry_mandate_map.py tests/test_tradeflow_*.py tests/test_s005_selection_priority_gate.py tests/test_s008_evidence_gate.py -q --tb=short 2>&1
+........................................................................ [ 13%]
+........................................................................ [ 27%]
+........................................................................ [ 40%]
+........................................................................ [ 54%]
+........................................................................ [ 68%]
+........................................................................ [ 81%]
+...................................................................ssss. [ 95%]
+........................                                                 [100%]
+524 passed, 4 skipped in 15.20s
+[0m
+[0m# [0mTodos
+[✓] Create tradingagents/tradeflow/industry_mandate_map.py with topic-to-chain mapping and company role classification
+[✓] Create tests/test_h003_industry_mandate_map.py with comprehensive test coverage
+[✓] Run all tests to verify correctness
+[•] Update docs/DEVLOG.md with H-003 changes
+[0m
+All 524 passed, 4 skipped, 0 failed. Now update the TASKS.md status and DEVLOG:
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -29,9 +29,9 @@
+ 3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+ 4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+ 5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+ 6. `H-002`：政策连续性与级别权重评分（P1，done）。
+-7. `H-003`：产业链受益路径与标杆候选映射（P1，ready，依赖 H-001 ✓）。
++7. `H-003`：产业链受益路径与标杆候选映射（P1，in_progress -- claimed H-003-20260601-224256）。
+ 8. `H-004`：左侧埋伏评分与候选类型分流（P1，proposed，依赖 H-002/H-003）。
+ 9. `H-005`：TradeFlow 前端昊天候选池视图（P2，proposed，依赖 H-004）。
+ 10. `H-006`：昊天候选池回放评估与反证机制（P2，proposed，依赖 H-004）。
+ 
+
+[0m
+Now update DEVLOG:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=5][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,58 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-01 | H-003: 产业链受益路径与标杆候选映射
++
++- **执行者**：OpenCode
++- **任务**：H-003 — 把政策主题映射到产业链环节和公司角色，区分真正受益、间接受益和蹭概念
++- **修改文件**：
++  - `tradingagents/tradeflow/industry_mandate_map.py` — 新建：[H-003] mandate_beneficiary_map
++    - `CompanyRole` 枚举：LEADER / CORE_SUPPLIER / INFRA_PROVIDER / APPLICATION_SCENE / PERIPHERAL / CONCEPT_ONLY / UNKNOWN（7 级角色）
++    - `IndustryChainLink` 数据类：segment / keywords / roles
++    - `_INDUSTRY_CHAIN_MAP`：13 个政策主题的静态产业链映射（低空经济/机器人/算力/军工/半导体/AI应用/新质生产力/数据要素/国产替代/并购重组/国企改革/出海/中特估），共 73 个产业环节
++    - `_ROLE_KEYWORD_PATTERNS`：角色关键词正则（优先级：核心供应商 > 龙头 > 基础设施 > 应用场景 > 涉足布局）
++    - `BeneficiaryPathResult` 数据类：beneficiary_path / company_role / mandate_topic / mandate_evidence_refs / path_confidence / path_reasons / chain_segments_matched / has_company_evidence
++    - `get_industry_chain(topic)` / `get_all_topics()`：查询产业链映射
++    - `classify_company_role(title, tags)`：从文本推断公司角色
++    - `_match_chain_segments(topic, signals)`：从信号文本匹配产业链环节
++    - `_infer_role_from_segments(segments, topic, signals)`：从匹配环节推断角色
++    - `_collect_path_evidence_refs(signals, segments)`：收集去重证据引用
++    - `compute_beneficiary_path(topic, signals, symbol)`：核心函数——匹配产业链、推断角色、计算路径置信度
++    - `compute_beneficiary_paths_for_signals(signals, topics)`：批量计算
++    - 弱词检测：涉足/布局/关注/探索/跟踪/有望/可能 → CONCEPT_ONLY
++    - 无公司证据 → 角色封顶 CONCEPT_ONLY / UNKNOWN，置信度封顶 0.4
++    - 弱证据（低置信度/MEDIA）→ 核心角色降级为 PERIPHERAL
++  - `tradingagents/tradeflow/schemas.py` — [H-003] Candidate 新增 4 个字段：
++    - `beneficiary_path: list[str]`
++    - `company_role: str`
++    - `mandate_topic: str`
++    - `mandate_evidence_refs: list[dict]`
++    - `to_db_row()` / `from_db_row()` 同步更新
++  - `tests/test_h003_industry_mandate_map.py` — 新建，70 个测试覆盖：
++    - `TestCompanyRoleEnum` (4): 全部值/数量/字符串构造/非法值
++    - `TestIndustryChainLink` (2): 默认值/to_dict
++    - `TestIndustryChainMap` (12): 13个主题覆盖/关键产业链验证/每个环节有keywords和roles/未知主题/所有roles合法
++    - `TestGetAllTopics` (2): 排序/关键主题
++    - `TestClassifyCompanyRole` (12): 龙头/核心供应商/基础设施/应用场景/弱词/空值/tags/组合/优先级/关注
++    - `TestComputeBeneficiaryPath` (17): 空信号/空主题/低空核心/机器人减速器/算力芯片/弱词CONCEPT_ONLY/探索/无公司证据/媒体低置信/证据引用/多环节/封顶/未知主题/to_dict/默认值
++    - `TestH003Acceptance` (5): 核心供应商明确路径/弱词CONCEPT_ONLY/无公司证据不高优先/减速器环节匹配/强弱对比
++    - `TestComputeBeneficiaryPathsForSignals` (5): 空信号/单主题/多主题/自动检测/多symbol
++    - `TestH003Integration` (5): H-001→H-003流水线/H-002主题全覆盖/完整政策到路径管道/Candidate schema字段/DB往返
++    - `TestEdgeCases` (6): 零置信/无source_level/空标题/大量信号/13主题全覆盖/去重
++- **测试结果**：70 passed (H-003)；524 passed (H-001+H-002+H-003+tradeflow 全部)；0 failed
++- **关键逻辑**：
++  - 产业链映射：13 个主题 × 平均 5.6 个环节 = 73 个 IndustryChainLink，每个含 keywords 和候选 roles
++  - 角色推断：先匹配产业链环节→从环节 roles 中统计角色得分→选择最高得分角色
++  - 弱词检测：涉足/布局/关注/探索/跟踪 → CONCEPT_ONLY，即使有公司证据也覆盖
++  - 无公司证据处理：无 symbol 匹配且无 COMPANY_NOTICE 来源 → 角色封顶 CONCEPT_ONLY/UNKNOWN，置信度封顶 0.4
++  - 弱证据降级：LEADER/CORE_SUPPLIER 角色但全部信号为 MEDIA 来源 → 降级为 PERIPHERAL
++  - 置信度公式：segments×0.15 + has_company_evidence×0.3 + avg_confidence×0.25，封顶 1.0；无公司证据封顶 0.4
++- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未改生产 `tradingagents.db` schema
++
++---
++
+ ## 2026-06-01 | H-002 fix: 3 test failures
+ 
+ - **执行者**：OpenCode
+ - **任务**：H-002 — fix 3 failing tests
+
+[0m
+[0m# [0mTodos
+[✓] Create tradingagents/tradeflow/industry_mandate_map.py with topic-to-chain mapping and company role classification
+[✓] Create tests/test_h003_industry_mandate_map.py with comprehensive test coverage
+[✓] Run all tests to verify correctness
+[✓] Update docs/DEVLOG.md with H-003 changes
+[0m
+## H-003 完成
+
+### 修改文件
+- **`tradingagents/tradeflow/industry_mandate_map.py`** — 新建：13 个政策主题 × 73 个产业链环节的静态映射，7 级公司角色分类，受益路径推断
+- **`tradingagents/tradeflow/schemas.py`** — Candidate 新增 `beneficiary_path`/`company_role`/`mandate_topic`/`mandate_evidence_refs` 字段 + DB 序列化/反序列化
+- **`tests/test_h003_industry_mandate_map.py`** — 新建：70 个测试
+- **`docs/DEVLOG.md`** — 更新日志
+- **`docs/TASKS.md`** — 状态更新为 in_progress
+
+### 关键逻辑
+- 产业链映射（低空经济/机器人/算力/军工/半导体等 13 主题）→ 信号文本关键词匹配环节 → 从环节推断角色（LEADER/CORE_SUPPLIER/INFRA_PROVIDER/APPLICATION_SCENE/PERIPHERAL）
+- 弱词（涉足/布局/关注/探索）→ 强制 CONCEPT_ONLY，即使有公司证据
+- 无公司证据 → 角色封顶 CONCEPT_ONLY/UNKNOWN，置信度封顶 0.4
+- 弱证据（纯 MEDIA）→ 核心角色降级为 PERIPHERAL
+
+### 测试结果
+- H-003: **70 passed**, 0 failed
+- H-001 + H-002 + H-003 + tradeflow 全部: **524 passed**, 4 skipped, **0 failed**
