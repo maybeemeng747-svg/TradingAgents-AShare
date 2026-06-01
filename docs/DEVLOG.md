@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-06-02 | DATA-002 Codex Review Fix: 移除 auto_dev.lock 残留
+
+- **执行者**：OpenCode
+- **任务**：修复 Codex review 发现的 P2 问题 — `.auto_dev.lock/` 目录残留阻塞后续自动开发
+- **问题**：DATA-002 自动开发首轮（DATA-002-20260602-005310）在探索阶段异常退出，`.auto_dev.lock/` 目录未被清理，导致后续 `auto_dev_loop.sh` 检测到锁后直接退出；该目录未在 `.gitignore` 中
+- **修改文件**：
+  - `.gitignore` — 新增 `.auto_dev.lock/` 条目，防止运行时锁文件被 git 追踪
+  - `docs/TASKS.md` — DATA-002 状态从 `in_progress` 回退为 `ready`（实际未产出代码变更）
+- **清理**：
+  - 删除 `.auto_dev.lock/` 目录
+  - 保留 `docs/task_runs/DATA-002-20260602-005310/` 和 `docs/reviews/DATA-002-20260602-round1.txt` 作为运行档案
+- **执行边界**：未改 `tradingagents/prompts/`、未写生产 DB、未 push
+
 ## 2026-06-02 | H-004: 左侧埋伏评分与候选类型分流
 
 - **执行者**：OpenCode
@@ -1321,3 +1334,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/H-004-20260602-round1.txt
 - **Run archive**: docs/task_runs/H-004-20260602-003706/
+
+## 2026-06-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-002 - 实时行情 freshness 检测与补丁标注（P1）
+- **Priority**: P1
+- **Rounds**: 2
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-002-20260602-round2.txt
+- **Run archive**: docs/task_runs/DATA-002-20260602-005310/

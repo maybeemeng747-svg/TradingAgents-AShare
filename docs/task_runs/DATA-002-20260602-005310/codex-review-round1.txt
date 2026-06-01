@@ -1,0 +1,835 @@
+Task: DATA-002 - 实时行情 freshness 检测与补丁标注（P1）
+Date: 2026-06-02_00:56:21
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019e841c-c5a9-78d2-973b-8be1f0456b8e
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,160p' docs/DECISIONS.md && sed -n '1,160p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-02 | H-004: 左侧埋伏评分与候选类型分流
+
+- **执行者**：OpenCode
+- **任务**：H-004 — 引入昊天候选池核心分类，把候选分为政策左侧埋伏、政策右侧确认、技术交易、伪政策题材、过热不追
+- **修改文件**：
+  - `tradingagents/tradeflow/ambush_score.py` — 新建：[H-004] mandate_ambush_score
+    - `CandidateType` 枚举：POLICY_AMBUSH / POLICY_CONFIRM / TECH_TRADE / EVENT_WATCH / PSEUDO_POLICY / OVERHEATED_AVOID
+    - `AmbushScoreResult` 数据类：ambush_score + 4 个子分 + candidate_type + deep_ta_route
+    - `compute_ambush_score()`：主评分函数，加权 mandate 35% + beneficiary 30% + pricing_gap 20% - overheat 15%
+    - `classify_candidate_type()`：6 类分流决策逻辑
+    - `route_deep_ta()`：基于 candidate_type 的 TA 路由（policy_verify / deep_ta / short_term / observe / skip）
+    - 左侧埋伏不要求突破，但必须满足政策连续性 + 受益路径 + 风险可控 + 未过热
+    - 所有过热/高风险/fragile 样本一律 OVERHEATED_AVOID
+    - 纯技术票不混入政策池（TECH_TRADE → short_term）
+  - `tradingagents/tradeflow/schemas.py` — Candidate 新增 12 个 H-004 字段 + DailyPlan render 展示
+  - `tradingagents/tradeflow/candidate_engine.py` — wire H-004 到 evaluate_symbol()；DB schema 新增 11 列 + H-003 beneficiary 4 列；save_candidate INSERT 更新
+  - `tradingagents/tradeflow/plan_runner.py` — plan entry 暴露 H-003 + H-004 字段
+  - `tests/test_h004_ambush_score.py` — 新建：60 个测试用例
+- **验证**：
+  - `pytest tests/test_h004_ambush_score.py -v` → 60 passed
+  - `pytest tests/test_tradeflow_*.py tests/test_h0*.py tests/test_s0*.py -q` → 954 passed, 6 skipped
+- **关键验收场景**：
+  - 政策强 + 公司路径明确 + 未突破 → POLICY_AMBUSH（埋伏分 > 40）
+  - 政策强 + 受益路径 + 已突破 → POLICY_CONFIRM → deep_ta
+  - 纯 VCP 无政策 → TECH_TRADE → short_term
+  - 过热/高位/风险拥挤 → OVERHEATED_AVOID → skip
+
+## 2026-06-01 | Task Pool Queue Refresh after AUTO batch
+
+- **执行者**：Codex
+- **背景**：`TF-OBS-001`、`DATA-001`、`H-002`、`H-003` 已由自动开发链完成，任务池无 ready 项，夜间链路会空转。
+- **释放任务**：
+  - `H-004`：左侧埋伏评分与候选类型分流（P0，依赖 `H-002/H-003`，已满足；作为下一轮优先任务）。
+  - `DATA-002`：实时行情 freshness 检测与补丁标注（依赖 `DATA-001`，已满足）。
+  - `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（依赖 `H-001`，已满足）。
+  - `DATA-004`：raw_evidence 来源契约升级（依赖 `DATA-001`，已满足）。
+- **保持 proposed**：`H-005/H-006` 继续等待 `H-004` 完成，避免前端/回放提前绑定未稳定字段。
+
+## 2026-06-01 | TF-OBS-001 follow-up: API/UI changes commit gap
+
+- **执行者**：Codex
+- **背景**：自动开发标记 TF-OBS-001 完成后，仍有 5 个前端/API 文件处于未提交状态；检查确认它们属于盘中观察人工触发入口与展示增强。
+- **修复**：
+  - 补齐 `api/tradeflow_schemas.py` 的 `latest_observe_check_time` / `latest_signal_time` 字段，避免 FastAPI `response_model` 过滤服务层返回值。
+  - `get_observe()` 读取最新 observe signal 时按 `evidence_json.trade_date` 匹配当前观察日期，避免跨日期信号串台。
+  - 修正 `docs/TASKS.md` 顶部队列中 `H-003` 仍显示 `in_progress` 的状态不一致。
+  - 补充 `tests/test_ui001_tradeflow_api.py` 覆盖 observe run service、同日信号展示、跨日信号隔离和 data-health schema 保留字段。
+- **验证**：
+  - `.venv/bin/python -m pytest tests/test_ui001_tradeflow_api.py tests/test_tf_obs_001_observe_runner.py tests/test_tradeflow_*.py -q` → 212 passed。
+  - `npm run build` → passed（仅保留 Vite chunk size warning）。
+
+## 2026-06-01 | H-003: 产业链受益路径与标杆候选映射
+
+- **执行者**：OpenCode
+- **任务**：H-003 — 把政策主题映射到产业链环节和公司角色，区分真正受益、间接受益和蹭概念
+- **修改文件**：
+  - `tradingagents/tradeflow/industry_mandate_map.py` — 新建：[H-003] mandate_beneficiary_map
+    - `CompanyRole` 枚举：LEADER / CORE_SUPPLIER / INFRA_PROVIDER / APPLICATION_SCENE / PERIPHERAL / CONCEPT_ONLY / UNKNOWN（7 级角色）
+    - `IndustryChainLink` 数据类：segment / keywords / roles
+    - `_INDUSTRY_CHAIN_MAP`：13 个政策主题的静态产业链映射（低空经济/机器人/算力/军工/半导体/AI应用/新质生产力/数据要素/国产替代/并购重组/国企改革/出海/中特估），共 73 个产业环节
+    - `_ROLE_KEYWORD_PATTERNS`：角色关键词正则（优先级：核心供应商 > 龙头 > 基础设施 > 应用场景 > 涉足布局）
+    - `BeneficiaryPathResult` 数据类：beneficiary_path / company_role / mandate_topic / mandate_evidence_refs / path_confidence / path_reasons / chain_segments_matched / has_company_evidence
+    - `get_industry_chain(topic)` / `get_all_topics()`：查询产业链映射
+    - `classify_company_role(title, tags)`：从文本推断公司角色
+    - `_match_chain_segments(topic, signals)`：从信号文本匹配产业链环节
+    - `_infer_role_from_segments(segments, topic, signals)`：从匹配环节推断角色
+    - `_collect_path_evidence_refs(signals, segments)`：收集去重证据引用
+    - `compute_beneficiary_path(topic, signals, symbol)`：核心函数——匹配产业链、推断角色、计算路径置信度
+    - `compute_beneficiary_paths_for_signals(signals, topics)`：批量计算
+    - 弱词检测：涉足/布局/关注/探索/跟踪/有望/可能 → CONCEPT_ONLY
+    - 无公司证据 → 角色封顶 CONCEPT_ONLY / UNKNOWN，置信度封顶 0.4
+    - 弱证据（低置信度/MEDIA）→ 核心角色降级为 PERIPHERAL
+  - `tradingagents/tradeflow/schemas.py` — [H-003] Candidate 新增 4 个字段：
+    - `beneficiary_path: list[str]`
+    - `company_role: str`
+    - `mandate_topic: str`
+    - `mandate_evidence_refs: list[dict]`
+    - `to_db_row()` / `from_db_row()` 同步更新
+  - `tests/test_h003_industry_mandate_map.py` — 新建，70 个测试覆盖：
+    - `TestCompanyRoleEnum` (4): 全部值/数量/字符串构造/非法值
+    - `TestIndustryChainLink` (2): 默认值/to_dict
+    - `TestIndustryChainMap` (12): 13个主题覆盖/关键产业链验证/每个环节有keywords和roles/未知主题/所有roles合法
+    - `TestGetAllTopics` (2): 排序/关键主题
+    - `TestClassifyCompanyRole` (12): 龙头/核心供应商/基础设施/应用场景/弱词/空值/tags/组合/优先级/关注
+    - `TestComputeBeneficiaryPath` (17): 空信号/空主题/低空核心/机器人减速器/算力芯片/弱词CONCEPT_ONLY/探索/无公司证据/媒体低置信/证据引用/多环节/封顶/未知主题/to_dict/默认值
+    - `TestH003Acceptance` (5): 核心供应商明确路径/弱词CONCEPT_ONLY/无公司证据不高优先/减速器环节匹配/强弱对比
+    - `TestComputeBeneficiaryPathsForSignals` (5): 空信号/单主题/多主题/自动检测/多symbol
+    - `TestH003Integration` (5): H-001→H-003流水线/H-002主题全覆盖/完整政策到路径管道/Candidate schema字段/DB往返
+    - `TestEdgeCases` (6): 零置信/无source_level/空标题/大量信号/13主题全覆盖/去重
+- **测试结果**：70 passed (H-003)；524 passed (H-001+H-002+H-003+tradeflow 全部)；0 failed
+- **关键逻辑**：
+  - 产业链映射：13 个主题 × 平均 5.6 个环节 = 73 个 IndustryChainLink，每个含 keywords 和候选 roles
+  - 角色推断：先匹配产业链环节→从环节 roles 中统计角色得分→选择最高得分角色
+  - 弱词检测：涉足/布局/关注/探索/跟踪 → CONCEPT_ONLY，即使有公司证据也覆盖
+  - 无公司证据处理：无 symbol 匹配且无 COMPANY_NOTICE 来源 → 角色封顶 CONCEPT_ONLY/UNKNOWN，置信度封顶 0.4
+  - 弱证据降级：LEADER/CORE_SUPPLIER 角色但全部信号为 MEDIA 来源 → 降级为 PERIPHERAL
+  - 置信度公式：segments×0.15 + has_company_evidence×0.3 + avg_confidence×0.25，封顶 1.0；无公司证据封顶 0.4
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未改生产 `tradingagents.db` schema
+
+---
+
+## 2026-06-01 | H-002 fix: 3 test failures
+
+- **执行者**：OpenCode
+- **任务**：H-002 — fix 3 failing tests
+- **修改文件**：
+  - `scripts/auto_dev_loop.sh` — 将 `update_task_status` 中的 `--` 改为 `—`（em dash）；将日志行改为 `exit=${OPENCODE_EXIT}` 以满足 safe expansion 测试
+  - `tests/test_m008_health_check.py` — `test_mixed_statuses` 扩展 statuses 列表从 8→11 匹配新增的 3 个默认端点（fund_flow/lhb/announcements）
+  - `tradingagents/tradeflow/discovery.py` — `run_discovery` 中将 `events_map` 和 `items_by_symbol` 的 key 通过 `normalize_tradeflow_symbol` 转为带后缀格式，与 universe 符号一致
+  - `tests/test_t002_discovery.py` — `test_event_source_integration` 中 `fake_evaluate` 的 symbol 比较从 `"002138"` 改为 `"002138.SZ"` 匹配归一化后的符号
+- **测试**：2305 passed, 17 skipped, 0 failed
+
+---
+
+## 2026-06-01 | H-002: 政策连续性与级别权重评分
+
+- **执行者**：OpenCode
+- **任务**：H-002 — 实现 Mandate Score 第一层：识别政策/产业主题是否持续升温，以及信号来源级别的权威权重评分
+- **修改文件**：
+  - `tradingagents/tradeflow/mandate_score.py` — 新建：[H-002] mandate_policy_continuity
+    - `_TOPIC_KEYWORDS_V0`：13 个政策主题词表（新质生产力/低空经济/机器人/算力/军工/半导体/国产替代/并购重组/国企改革/出海/中特估/AI应用/数据要素）
+    - `match_topics(text)`：从文本中匹配主题词，长关键词优先
+    - `MandateScoreResult` 数据类：mandate_score / policy_continuity_score / source_authority_score / topic_heat_delta / mandate_reasons / mandate_evidence_refs / topic / signal_count / unique_dates / unique_sources / unique_source_levels / has_policy_document / has_high_authority / is_noise
+    - `compute_mandate_score(signals, topic, historical_signals)`：核心评分函数
+      - 信号去重（同标题/来源/日期）
+      - 来源权威分（base=最高级别权重×60 + 多级别多样性加分 + 同级别数量递减加分）
+      - 政策连续性分（多日/多源/多级别/政策文件类型加分；单日惩罚×0.5）
+      - 主题热度增量（当前信号 vs 历史信号加权差值）
+      - 综合分 = (权威分×0.5 + 连续性分×0.3 + 热度×0.2) × 证据因子
+      - 噪声检测：单日+单源+无高权威=噪声
+      - 低平均置信度封顶50
+    - `compute_mandate_scores_by_topic(signals)`：按主题分组评分，支持自动主题检测和未分配归类
+    - `_collect_evidence_refs()`：收集去重后的证据引用
+    - `_deduplicate_signals()`：按(title, source, date)三元组去重
+    - `_compute_source_authority_score()`：来源权威评分，同源重复递减
+    - `_compute_policy_continuity_score()`：政策连续性评分
+    - `_compute_topic_heat_delta()`：主题热度增量计算
+  - `tests/test_h002_mandate_score.py` — 新建，91 个测试覆盖：
+    - `TestMatchTopics` (17): 空文本/低空经济/机器人/算力/半导体/军工/国企改革/并购重组/AI应用/数据要素/出海/多主题/无匹配/中特估/新质生产力/长优先/关键词覆盖
+    - `TestTopicKeywordsV0` (3): 13个主题/关键词非空/主题集合完整
+    - `TestSourceAuthorityWeights` (4): 层级排序/中央最高/媒体最低/全覆盖
+    - `TestDeduplicateSignals` (6): 无重复/完全重复/同标题不同源/同标题不同日期/空列表/空白处理
+    - `TestCollectEvidenceRefs` (4): 基本引用/标题去重/空信号/raw_refs保留
+    - `TestComputeSourceAuthorityScore` (7): 中央/媒体/中央>媒体/空信号/多级别>单级别/同源递减
+    - `TestComputePolicyContinuityScore` (9): 单日惩罚/多日更高/多源加分/政策文件加分/会议信号加分/空信号/多级别加分/封顶
+    - `TestComputeTopicHeatDelta` (4): 空当前/无历史/当前>历史/封顶100
+    - `TestMandateScoreResult` (3): 默认值/to_dict/四舍五入
+    - `TestComputeMandateScore` (14): 空信号/国务院信号/多源>单公司/重复不无限叠加/媒体低分/证据引用/噪声检测/多日非噪声/高权威非噪声/自动主题检测/封顶/历史热度
+    - `TestComputeMandateScoresByTopic` (6): 分主题/自动主题/未分配/空信号/同主题多信号/多主题匹配
+    - `TestH002Acceptance` (6): 多源>单公司/同源不无限叠加/媒体无政策低分/证据引用/方向解释/噪声解释
+    - `TestH002Integration` (9): H-001→H-002流水线/四级来源层级/低置信度封顶/政策>回购/5日连续性/空信号/历史热度/13主题全覆盖
+    - `TestEdgeCases` (4): 零置信度/无source_level/空字符串/大量信号
+- **测试结果**：91 passed (H-002)；186 passed (H-001+H-002)；316 passed (全部 tradeflow)；0 failed
+- **关键逻辑**：
+
+exec
+/bin/zsh -lc "git status --short --branch && sed -n '1,160p' docs/project-overview.md && sed -n '1,160p' docs/TASKS.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+## local/tradingagents-custom...myfork/local/tradingagents-custom [ahead 22]
+ M docs/TASKS.md
+?? .auto_dev.lock/
+?? docs/task_runs/DATA-002-20260602-005310/
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+# 任务池
+
+> 最后更新：2026-06-01
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，ready，依赖 H-002/H-003 ✓）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，ready，依赖 DATA-001 ✓）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，ready，依赖 H-001 ✓）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，ready，依赖 DATA-001 ✓）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P2，proposed，依赖 H-004）。
+13. `H-006`：昊天候选池回放评估与反证机制（P2，proposed，依赖 H-004）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，ready）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，ready，依赖 H-001 ✓）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，ready）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P2，proposed）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入 TA 和回放评估。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## TF. TradeFlow 主链路稳定任务池（2026-06-01 新增）
+
+> 目标：先把 TradeFlow 的时间语义和盘中观察闭环打通，再继续建设昊天雷达。TradeFlow 允许周末/盘后生成候选池，并在下一个 A 股交易日观察；不能把候选生成日期、计划生效日期和实际观察日期混成同一个字段。
+
+### TF-DATE-001: TradeFlow 日期语义拆分与非交易日计划生效（P0）
+- **描述**：修复 `trade_date` 同时表示“候选池生成日期/计划生效交易日/盘中观察日期”的问题，支持 2026-05-31 这类非交易日生成候选池，并在 2026-06-01 盘中继续观察。
+- **优先级**：P0
+- **状态**：done -- commit a200103
+- **背景**：
+  - 用户可以在周末、节假日或交易日收盘后生成候选池，这些候选应在下一个 A 股交易日进入 Observe，而不是被锁在生成日。
+  - 当前 `tradeflow_daily_plans` 和 `tradeflow_candidates` 主要按 `trade_date` 查询，导致前端选择 2026-06-01 的 Observe 时查不到 2026-05-31 生成的候选。
+  - 这会阻塞“周末研究/盘前计划/次日盯盘”的实际工作流。
+- **日期语义定义**：
+  1. `plan_date`：候选池生成日期，周末/节假日也允许。
+  2. `effective_trade_date`：计划生效交易日，用于盘中观察和 TA 队列。
+  3. `observe_date`：实际观察日期；第一版可等同 `effective_trade_date`，但 API/前端命名要预留。
+- **执行约束**：
+  - 不写生产 `tradingagents.db` schema；只允许修改 TradeFlow 自有 SQLite 表、兼容迁移或服务层查询。
+  - 不触发真实 TA/LLM 调用。
+  - 不删除现有 `tradeflow.db` 历史数据。
+  - 保持旧数据兼容：没有新字段的旧行仍可按原 `trade_date` 查询。
+- **实现要点**：
+  1. 新增日期 helper，例如 `resolve_effective_trade_date(plan_date, now=None)`：
+     - 非交易日生成：`effective_trade_date = 下一个 A 股交易日`。
+     - 交易日盘前生成：`effective_trade_date = 当天`。
+     - 交易日盘中生成：默认 `effective_trade_date = 当天`。
+     - 交易日收盘后生成：`effective_trade_date = 下一个 A 股交易日`。
+  2. `tradeflow_daily_plans` / `tradeflow_candidates` 兼容新增字段：
+     - `plan_date`
+     - `effective_trade_date`
+     - `observe_date`
+  3. 生成候选池时：
+     - `trade_date` 保持兼容旧字段，可暂等于 `plan_date`。
+     - 新字段必须写入 DB 和 daily plan metadata/candidates_json。
+  4. Observe / TA Queue / Review 查询时：
+     - 优先按 `effective_trade_date` 或 `observe_date` 查询。
+     - 如果新字段不存在或为空，fallback 到旧 `trade_date`。
+     - 查询 `2026-06-01` Observe 时，应能找到 `plan_date=2026-05-31, effective_trade_date=2026-06-01` 的候选。
+  5. 前端 TradeFlow 显示：
+     - 候选池日期：`plan_date`
+     - 生效交易日：`effective_trade_date`
+     - 观察日期：`observe_date`
+     - 当三者不同，显示提示：“该候选池由 5月31日生成，将在 6月1日观察”。
+  6. 数据健康页补充：
+     - `latest_plan_date`
+     - `latest_effective_trade_date`
+     - `latest_observe_date`
+- **验收方式**：
+  - 构造 2026-05-31 非交易日生成候选池，`effective_trade_date` 自动为 2026-06-01。
+  - `GET /v1/tradeflow/observe?date=2026-06-01` 能返回 2026-05-31 生成的候选。
+  - `GET /v1/tradeflow/candidates?date=2026-05-31` 仍能看到候选池本身。
+  - 交易日盘前、盘中、盘后三种场景有单测覆盖。
+  - 旧库无新字段时 API 不报 500。
+  - `pytest tests/test_ui001_tradeflow_api.py tests/test_tradeflow_*.py -q` 通过；前端构建通过。
+- **代码标注要求**：`# [TF-DATE-001] tradeflow_date_semantics` / `// [TF-DATE-001] tradeflow_date_semantics`
+
+### TF-OBS-001: TradeFlow 盘中观察执行器与信号落库（P0）
+- **描述**：在 TF-DATE-001 之后，把现有 `run_observe_check()` 状态机接入真实执行链路，定时读取当日生效候选、拉取实时价格、更新观察状态并写入信号表。
+- **优先级**：P0
+- **状态**：done -- commit f8db3de
+- **前置条件**：`TF-DATE-001` 完成 ✓
+- **背景**：
+  - 当前 M-005 已有 Observe 状态机，前端也能展示 Observe Tab，但没有 runner 定时执行，所以 `observe_state` 长期停留在 `WAITING`，`tradeflow_signals` 为空。
+  - Deep TA 门控依赖 `observe_state=TRIGGERED`，因此盘中观察不落地会连带阻塞 TA 队列。
+- **执行约束**：
+  - 不自动调用高成本 LLM。
+  - 不自动输出强买卖词。
+  - 盘中检查频率第一版保持低频，默认 30 分钟或人工触发。
+  - 非交易日不执行实时观察，只输出明确状态。
+- **实现要点**：
+  1. 新增 observe runner/service：
+     - 读取 `effective_trade_date = today` 且 `status='active'` 的候选。
+     - 拉取实时 `current_price/current_volume/current_amount/quote_time/source`。
+     - 调用 `run_observe_check()`。
+     - 更新 `tradeflow_candidates.observe_state/observe_trigger_count/observe_first_trigger_time`。
+     - 写入 `tradeflow_signals` 保存每次检查快照和原始证据。
+  2. API 增加人工触发入口或 scheduler 可调用函数：
+     - 第一版可仅内部函数 + CLI，不必自动 cron。
+  3. 前端 Observe Tab 增加状态：
+     - 未运行
+     - 已运行但无触发
+     - 已触发
+     - 已失效
+     - 非交易日/无实时行情
+  4. Data Health 显示最新 observe 检查时间和最新 signal 时间。
+- **验收方式**：
+  - 构造候选触发价 10、实时价 10.1，执行后 `observe_state=TRIGGERED` 且 signal 落库。
+  - 构造实时价跌破失效价，执行后 `observe_state=INVALIDATED`。
+  - 构造非交易日，runner 不拉实时行情，返回明确 skip reason。
+  - `tradeflow_signals` 有记录，前端 Observe 能显示 `current_price` 和 `trigger_reason`。
+  - `pytest tests/test_m005_intraday_observe.py tests/test_ui001_tradeflow_api.py tests/test_tradeflow_*.py -q` 通过。
+- **代码标注要求**：`# [TF-OBS-001] tradeflow_observe_runner` / `// [TF-OBS-001] tradeflow_observe_runner`
+
+---
+
+## DATA. 数据源治理 / Simon 数据 Skill 吸收任务池（2026-05-31 新增）
+
+> 目标：把外部 A 股数据 Skill 的优点吸收进本项目 Data Layer，让候选池和 TA 报告更真实、更实时、更可追溯。第一阶段只做数据治理和证据链，不新增 LLM Agent，不替换现有 TA 主链路。
+
+### DATA-P0-603629: TA A股关键数据源补强与假可用修复（P0）
+- **描述**：基于 603629.SH 最新 TA 报告暴露的问题，补强 A 股关键数据源路由，修复“正文说数据缺失、底部却显示数据源可用”的假可用问题。
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- docs/TASKS.md && find .auto_dev.lock docs/task_runs/DATA-002-20260602-005310 -maxdepth 3 -type f -print' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ docs/TASKS.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 592479a..beb4f40 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -238,7 +238,7 @@
+ ### DATA-002: 实时行情 freshness 检测与补丁标注（P1）
+ - **描述**：解决“当天实时数据没有/日线滞后”的问题：检测日线数据是否 stale，并用实时行情源补 current price、volume、amount，同时明确标注补丁来源。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：in_progress — claimed DATA-002-20260602-005310
+ - **前置条件**：`DATA-001` 完成 ✓。
+ - **执行约束**：
+   - 不把实时补丁伪装成完整日 K。
+.auto_dev.lock/owner
+docs/task_runs/DATA-002-20260602-005310/tests-round1.txt
+docs/task_runs/DATA-002-20260602-005310/prompt-round1.md
+docs/task_runs/DATA-002-20260602-005310/opencode-round1.txt
+docs/task_runs/DATA-002-20260602-005310/task.md
+
+exec
+/bin/zsh -lc "for f in .auto_dev.lock/owner docs/task_runs/DATA-002-20260602-005310/*; do echo '---' "'$f; sed -n '"'1,220p' \""'$f"; done' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+--- .auto_dev.lock/owner
+pid=84799
+started_at=2026-06-02_00:37:06
+repo=/Users/maybee/TradingAgents-AShare
+--- docs/task_runs/DATA-002-20260602-005310/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/project-overview.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m
+[0m# [0mTodos
+[•] Read DATA-002 task spec and explore existing source_catalog.py & dataflows
+[ ] Implement freshness detection logic (trading day check, staleness detection)
+[ ] Implement realtime quote patch logic with proper annotations
+[ ] Integrate freshness patch into evidence/candidate flow
+[ ] Write comprehensive tests for DATA-002
+[ ] Update docs/DEVLOG.md and TASKS.md
+[0m
+[0m→ [0mRead tradingagents/dataflows
+[0m→ [0mRead tradingagents/dataflows/source_catalog.py
+[0m✱ [0mGlob "tradingagents/dataflows/**/*.py"[90m 25 matches[0m
+[0m→ [0mRead tradingagents/dataflows/trade_calendar.py
+[0m→ [0mRead tradingagents/dataflows/interface.py
+[0m→ [0mRead tradingagents/dataflows/providers/registry.py
+[0m→ [0mRead tradingagents/tradeflow/observe_runner.py
+Now let me look at existing realtime quote functionality and the observe runner (which already does realtime fetching):
+[0m✱ [0mGrep "get_realtime_quotes"[90m 30 matches[0m
+[0m→ [0mRead tests/test_g005_realtime_ohlcv_patch.py
+Now let me look at existing G-005 realtime OHLCV patch tests and the existing stock data fetching:
+[0m→ [0mRead tradingagents/dataflows/providers/cn_akshare_provider.py[90m [offset=380, limit=100][0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_akshare_provider.py[90m [offset=473, limit=150][0m
+[0m✱ [0mGrep "realtime_patched|is_realtime_patched|patch_source|patch_as_of|patch_fields"[90m in tradingagents · 15 matches[0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [offset=540, limit=100][0m
+Now let me look at the data_collector.py to understand the current evidence flow:
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [limit=80][0m
+--- docs/task_runs/DATA-002-20260602-005310/prompt-round1.md
+# Task: DATA-002: 实时行情 freshness 检测与补丁标注（P1）
+
+Read task "DATA-002" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+--- docs/task_runs/DATA-002-20260602-005310/task.md
+# Auto Dev Task Run
+
+- Task: DATA-002 - 实时行情 freshness 检测与补丁标注（P1）
+- Priority: P1
+- Status: CLAIMED
+- Started at: 2026-06-02_00:53:11
+- Git HEAD: ae34c76
+- Test commands: pytest tests/ -q --tb=short
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+--- docs/task_runs/DATA-002-20260602-005310/tests-round1.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  2%]
+...........................................ss........................... [  5%]
+........................................................................ [  8%]
+........................................................................ [ 11%]
+........................................................................ [ 14%]
+........................................................................ [ 17%]
+........................................................................ [ 20%]
+........................................................................ [ 23%]
+........................................................................ [ 26%]
+........................................................................ [ 29%]
+........................................................................ [ 32%]
+......................................sssssssss......................... [ 35%]
+........................................................................ [ 38%]
+........................................................................ [ 41%]
+........................................................................ [ 43%]
+........................................................................ [ 46%]
+........................................................................ [ 49%]
+........................................................................ [ 52%]
+........................................................................ [ 55%]
+........................................................................ [ 58%]
+........................................................................ [ 61%]
+........................................................................ [ 64%]
+........................................................................ [ 67%]
+........................................................................ [ 70%]
+.....ss.................................................ssss............ [ 73%]
+........................................................................ [ 76%]
+........................................................................ [ 79%]
+........................................................................ [ 82%]
+........................................................................ [ 84%]
+........................................................................ [ 87%]
+........................................................................ [ 90%]
+........................................................................ [ 93%]
+........................................................................ [ 96%]
+........................................................................ [ 99%]
+.........                                                                [100%]
+2440 passed, 17 skipped in 56.80s
+
+Exit code: 0
+
+exec
+/bin/zsh -lc "grep -n \"auto_dev.lock\\|task_runs\" .gitignore || true && ls -la .auto_dev.lock" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+total 8
+drwx------   3 maybee  staff    96 Jun  2 00:37 .
+drwx------  53 maybee  staff  1696 Jun  2 00:37 ..
+-rw-------   1 maybee  staff    81 Jun  2 00:37 owner
+
+exec
+/bin/zsh -lc "grep -R \"auto_dev.lock\\|LOCK\" -n scripts | head -80" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+scripts/preflight_check.sh:455:# 检查 auto_dev.lock 残留
+scripts/preflight_check.sh:456:if [ -d ".auto_dev.lock" ]; then
+scripts/preflight_check.sh:457:    warn "发现 .auto_dev.lock 目录（可能为上次异常退出残留）"
+scripts/preflight_check.sh:458:    log "  所有者信息: $(cat '.auto_dev.lock/owner' 2>/dev/null || echo '无')"
+scripts/preflight_check.sh:461:if [ -z "$UNTRACKED_DB" ] && [ -z "$TEMP_PY" ] && [ ! -d ".auto_dev.lock" ]; then
+scripts/auto_dev_loop.sh:28:LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+scripts/auto_dev_loop.sh:34:HAVE_LOCK=false
+scripts/auto_dev_loop.sh:85:    if [ "$HAVE_LOCK" = true ]; then
+scripts/auto_dev_loop.sh:86:        rm -rf "$LOCK_DIR" 2>/dev/null || true
+scripts/auto_dev_loop.sh:94:    if mkdir "$LOCK_DIR" 2>/dev/null; then
+scripts/auto_dev_loop.sh:95:        HAVE_LOCK=true
+scripts/auto_dev_loop.sh:100:        } > "$LOCK_DIR/owner"
+scripts/auto_dev_loop.sh:104:    err "Auto dev lock detected, exiting to avoid duplicate task claim: $LOCK_DIR"
+scripts/auto_dev_loop.sh:105:    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+scripts/auto_dev_loop.sh:153:if [ -d "$LOCK_DIR" ]; then
+scripts/auto_dev_loop.sh:154:    err "Auto dev lock detected, exiting to avoid duplicate task claim: $LOCK_DIR"
+scripts/auto_dev_loop.sh:155:    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+
+exec
+/bin/zsh -lc "sed -n '1,120p' scripts/auto_dev_loop.sh && sed -n '140,165p' scripts/auto_dev_loop.sh" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+#!/usr/bin/env bash
+# AUTO-002: Auto dev loop v1.3 reliability patch
+# Usage: ./scripts/auto_dev_loop.sh [--dry-run]
+#
+# Constraints:
+#   - Single pass only
+#   - Only the highest-priority ready task from docs/TASKS.md
+#   - Exit if working tree is dirty
+#   - No push / PR / merge
+#   - Max 2 fix rounds per task
+#   - No changes to prompts/, no writes to prod tradingagents.db
+#   - Precise commit: only tests/ tradingagents/ docs/ scripts/ files
+#   - Exclude temp files: *.backup, *_original.py, *_fixed.py, patch_*.py, *.tmp, *.log, __pycache__
+#   - Exclude root-level *.py (outside tests/ and tradingagents/)
+#   - Never auto-commit on failure
+#   - DEVLOG/TASKS finalized before commit; no post-commit file changes
+#   - Review output saved to docs/reviews/
+#   - Each task run saved to docs/task_runs/<task>-<timestamp>/
+
+set -euo pipefail
+
+REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TASKS_FILE="$REPO_DIR/docs/TASKS.md"
+DEVLOG_FILE="$REPO_DIR/docs/DEVLOG.md"
+REVIEW_DIR="$REPO_DIR/docs/reviews"
+TASK_RUN_ROOT="$REPO_DIR/docs/task_runs"
+LOCK_DIR="$REPO_DIR/.auto_dev.lock"
+MAX_FIX_ROUNDS=2
+DRY_RUN=false
+PROMPT_FILE=""
+OPENCODE_LOG=""
+REVIEW_FILE=""
+HAVE_LOCK=false
+
+# Zhipu API Key (for quota check)
+ZAI_API_KEY="${ZAI_API_KEY:-}"
+if [[ -z "$ZAI_API_KEY" ]]; then
+    OPENCLAW_CONFIG="$HOME/.openclaw/openclaw.json"
+    if [[ -f "$OPENCLAW_CONFIG" ]]; then
+        ZAI_API_KEY=$(python3 -c "
+import json
+with open('$OPENCLAW_CONFIG') as f:
+    cfg = json.load(f)
+providers = cfg.get('models', {}).get('providers', {})
+for name, prov in providers.items():
+    if 'zai' in name.upper():
+        print(prov.get('apiKey', ''))
+        break
+" 2>/dev/null || echo "")
+    fi
+fi
+export ZAI_API_KEY
+
+# --- Argument parsing ---
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=true ;;
+        -h|--help) echo "Usage: $0 [--dry-run]"; exit 0 ;;
+    esac
+done
+
+cd "$REPO_DIR"
+
+# --- Colors ---
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log()  { echo -e "${GREEN}[AUTO]${NC} $*"; }
+warn() { echo -e "${YELLOW}[AUTO]${NC} $*"; }
+err()  { echo -e "${RED}[AUTO]${NC} $*" >&2; }
+
+redact_log() {
+    # Redact API keys before persisting logs.
+    sed -E \
+        -e 's/sk-[A-Za-z0-9_-]{20,}/[REDACTED_API_KEY]/g' \
+        -e 's/(api[_-]?key[=:][[:space:]]*)[^[:space:]]+/\1[REDACTED]/Ig' \
+        -e 's/(authorization:[[:space:]]*bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig'
+}
+
+cleanup() {
+    rm -f "$PROMPT_FILE" "$OPENCODE_LOG" "$REVIEW_FILE" 2>/dev/null || true
+    if [ "$HAVE_LOCK" = true ]; then
+        rm -rf "$LOCK_DIR" 2>/dev/null || true
+    fi
+}
+
+trap cleanup EXIT
+
+acquire_lock() {
+    # [INF-001] task_claim_lock
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+        HAVE_LOCK=true
+        {
+            echo "pid=$$"
+            echo "started_at=$(date +%Y-%m-%d_%H:%M:%S)"
+            echo "repo=$REPO_DIR"
+        } > "$LOCK_DIR/owner"
+        return 0
+    fi
+
+    err "Auto dev lock detected, exiting to avoid duplicate task claim: $LOCK_DIR"
+    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+    exit 1
+}
+
+update_task_status() {
+    # [INF-001] task_claim_lock
+    local status_text="$1"
+    python3 - "$TASKS_FILE" "$TASK_ID" "$status_text" <<'PYEOF'
+import re
+import sys
+
+tasks_file, target_id, status_text = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(tasks_file, "r", encoding="utf-8") as f:
+    content = f.read()
+
+section_pattern = re.compile(
+new_content = content[: match.start(1)] + new_section + content[match.end(1) :]
+with open(tasks_file, "w", encoding="utf-8") as f:
+    f.write(new_content)
+print(f"TASKS.md: {target_id} -> {status_text}")
+PYEOF
+}
+
+# --- 0. Pre-checks ---
+log "=== AUTO-002 Auto Dev Loop v1.3 ==="
+log "Repo: $REPO_DIR"
+
+mkdir -p "$REVIEW_DIR" "$TASK_RUN_ROOT"
+
+if [ -d "$LOCK_DIR" ]; then
+    err "Auto dev lock detected, exiting to avoid duplicate task claim: $LOCK_DIR"
+    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
+    exit 1
+fi
+
+# 0a. Preflight check (T-000)
+if [ -x "${SCRIPT_DIR}/preflight_check.sh" ]; then
+    log "Running preflight check..."
+    set +e
+    "${SCRIPT_DIR}/preflight_check.sh" --skip-tests --quiet
+    PREFLIGHT_EXIT=$?
+    set -e
+
+codex
+The only substantive issue is the untracked runtime lock artifact, which would block the repository's auto-dev workflow if kept. The TASKS.md status change and task-run records do not show a correctness problem by themselves.
+
+Review comment:
+
+- [P2] Remove the auto dev lock artifact — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-3
+  If this untracked `.auto_dev.lock` directory is included or left in the worktree, `scripts/auto_dev_loop.sh` will exit immediately whenever it sees the directory, so subsequent automated task runs cannot claim work; it also records a machine-specific repo path. This runtime lock should be removed from the change and ideally ignored.
+The only substantive issue is the untracked runtime lock artifact, which would block the repository's auto-dev workflow if kept. The TASKS.md status change and task-run records do not show a correctness problem by themselves.
+
+Review comment:
+
+- [P2] Remove the auto dev lock artifact — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-3
+  If this untracked `.auto_dev.lock` directory is included or left in the worktree, `scripts/auto_dev_loop.sh` will exit immediately whenever it sees the directory, so subsequent automated task runs cannot claim work; it also records a machine-specific repo path. This runtime lock should be removed from the change and ideally ignored.
