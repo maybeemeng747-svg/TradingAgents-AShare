@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-05-31
+> 最后更新：2026-06-01
 
 ---
 
@@ -24,22 +24,26 @@
 
 ### 当前优先队列
 
-1. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，ready）。
-2. `H-002`：政策连续性与级别权重评分（P1，proposed，依赖 H-001）。
-3. `H-003`：产业链受益路径与标杆候选映射（P1，proposed，依赖 H-001）。
-4. `H-004`：左侧埋伏评分与候选类型分流（P1，proposed，依赖 H-002/H-003）。
-5. `H-005`：TradeFlow 前端昊天候选池视图（P2，proposed，依赖 H-004）。
-6. `H-006`：昊天候选池回放评估与反证机制（P2，proposed，依赖 H-004）。
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，ready）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，ready）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，proposed，依赖 TF-DATE-001）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，ready）。
+5. `H-002`：政策连续性与级别权重评分（P1，proposed，依赖 H-001）。
+6. `H-003`：产业链受益路径与标杆候选映射（P1，proposed，依赖 H-001）。
+7. `H-004`：左侧埋伏评分与候选类型分流（P1，proposed，依赖 H-002/H-003）。
+8. `H-005`：TradeFlow 前端昊天候选池视图（P2，proposed，依赖 H-004）。
+9. `H-006`：昊天候选池回放评估与反证机制（P2，proposed，依赖 H-004）。
 
 ### 数据源治理候选队列
 
 > 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
 
-1. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，proposed）。
-2. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，proposed）。
-3. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，proposed，依赖 H-001）。
-4. `DATA-004`：raw_evidence 来源契约升级（P1，proposed）。
-5. `DATA-005`：数据源 fixture replay 与限流/失败回放（P2，proposed）。
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，ready）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，proposed）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，proposed）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，proposed，依赖 H-001）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，proposed）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P2，proposed）。
 
 ### 总体路线图
 
@@ -49,9 +53,155 @@
 
 ---
 
+## TF. TradeFlow 主链路稳定任务池（2026-06-01 新增）
+
+> 目标：先把 TradeFlow 的时间语义和盘中观察闭环打通，再继续建设昊天雷达。TradeFlow 允许周末/盘后生成候选池，并在下一个 A 股交易日观察；不能把候选生成日期、计划生效日期和实际观察日期混成同一个字段。
+
+### TF-DATE-001: TradeFlow 日期语义拆分与非交易日计划生效（P0）
+- **描述**：修复 `trade_date` 同时表示“候选池生成日期/计划生效交易日/盘中观察日期”的问题，支持 2026-05-31 这类非交易日生成候选池，并在 2026-06-01 盘中继续观察。
+- **优先级**：P0
+- **状态**：ready
+- **背景**：
+  - 用户可以在周末、节假日或交易日收盘后生成候选池，这些候选应在下一个 A 股交易日进入 Observe，而不是被锁在生成日。
+  - 当前 `tradeflow_daily_plans` 和 `tradeflow_candidates` 主要按 `trade_date` 查询，导致前端选择 2026-06-01 的 Observe 时查不到 2026-05-31 生成的候选。
+  - 这会阻塞“周末研究/盘前计划/次日盯盘”的实际工作流。
+- **日期语义定义**：
+  1. `plan_date`：候选池生成日期，周末/节假日也允许。
+  2. `effective_trade_date`：计划生效交易日，用于盘中观察和 TA 队列。
+  3. `observe_date`：实际观察日期；第一版可等同 `effective_trade_date`，但 API/前端命名要预留。
+- **执行约束**：
+  - 不写生产 `tradingagents.db` schema；只允许修改 TradeFlow 自有 SQLite 表、兼容迁移或服务层查询。
+  - 不触发真实 TA/LLM 调用。
+  - 不删除现有 `tradeflow.db` 历史数据。
+  - 保持旧数据兼容：没有新字段的旧行仍可按原 `trade_date` 查询。
+- **实现要点**：
+  1. 新增日期 helper，例如 `resolve_effective_trade_date(plan_date, now=None)`：
+     - 非交易日生成：`effective_trade_date = 下一个 A 股交易日`。
+     - 交易日盘前生成：`effective_trade_date = 当天`。
+     - 交易日盘中生成：默认 `effective_trade_date = 当天`。
+     - 交易日收盘后生成：`effective_trade_date = 下一个 A 股交易日`。
+  2. `tradeflow_daily_plans` / `tradeflow_candidates` 兼容新增字段：
+     - `plan_date`
+     - `effective_trade_date`
+     - `observe_date`
+  3. 生成候选池时：
+     - `trade_date` 保持兼容旧字段，可暂等于 `plan_date`。
+     - 新字段必须写入 DB 和 daily plan metadata/candidates_json。
+  4. Observe / TA Queue / Review 查询时：
+     - 优先按 `effective_trade_date` 或 `observe_date` 查询。
+     - 如果新字段不存在或为空，fallback 到旧 `trade_date`。
+     - 查询 `2026-06-01` Observe 时，应能找到 `plan_date=2026-05-31, effective_trade_date=2026-06-01` 的候选。
+  5. 前端 TradeFlow 显示：
+     - 候选池日期：`plan_date`
+     - 生效交易日：`effective_trade_date`
+     - 观察日期：`observe_date`
+     - 当三者不同，显示提示：“该候选池由 5月31日生成，将在 6月1日观察”。
+  6. 数据健康页补充：
+     - `latest_plan_date`
+     - `latest_effective_trade_date`
+     - `latest_observe_date`
+- **验收方式**：
+  - 构造 2026-05-31 非交易日生成候选池，`effective_trade_date` 自动为 2026-06-01。
+  - `GET /v1/tradeflow/observe?date=2026-06-01` 能返回 2026-05-31 生成的候选。
+  - `GET /v1/tradeflow/candidates?date=2026-05-31` 仍能看到候选池本身。
+  - 交易日盘前、盘中、盘后三种场景有单测覆盖。
+  - 旧库无新字段时 API 不报 500。
+  - `pytest tests/test_ui001_tradeflow_api.py tests/test_tradeflow_*.py -q` 通过；前端构建通过。
+- **代码标注要求**：`# [TF-DATE-001] tradeflow_date_semantics` / `// [TF-DATE-001] tradeflow_date_semantics`
+
+### TF-OBS-001: TradeFlow 盘中观察执行器与信号落库（P0）
+- **描述**：在 TF-DATE-001 之后，把现有 `run_observe_check()` 状态机接入真实执行链路，定时读取当日生效候选、拉取实时价格、更新观察状态并写入信号表。
+- **优先级**：P0
+- **状态**：proposed
+- **前置条件**：`TF-DATE-001` 完成。
+- **背景**：
+  - 当前 M-005 已有 Observe 状态机，前端也能展示 Observe Tab，但没有 runner 定时执行，所以 `observe_state` 长期停留在 `WAITING`，`tradeflow_signals` 为空。
+  - Deep TA 门控依赖 `observe_state=TRIGGERED`，因此盘中观察不落地会连带阻塞 TA 队列。
+- **执行约束**：
+  - 不自动调用高成本 LLM。
+  - 不自动输出强买卖词。
+  - 盘中检查频率第一版保持低频，默认 30 分钟或人工触发。
+  - 非交易日不执行实时观察，只输出明确状态。
+- **实现要点**：
+  1. 新增 observe runner/service：
+     - 读取 `effective_trade_date = today` 且 `status='active'` 的候选。
+     - 拉取实时 `current_price/current_volume/current_amount/quote_time/source`。
+     - 调用 `run_observe_check()`。
+     - 更新 `tradeflow_candidates.observe_state/observe_trigger_count/observe_first_trigger_time`。
+     - 写入 `tradeflow_signals` 保存每次检查快照和原始证据。
+  2. API 增加人工触发入口或 scheduler 可调用函数：
+     - 第一版可仅内部函数 + CLI，不必自动 cron。
+  3. 前端 Observe Tab 增加状态：
+     - 未运行
+     - 已运行但无触发
+     - 已触发
+     - 已失效
+     - 非交易日/无实时行情
+  4. Data Health 显示最新 observe 检查时间和最新 signal 时间。
+- **验收方式**：
+  - 构造候选触发价 10、实时价 10.1，执行后 `observe_state=TRIGGERED` 且 signal 落库。
+  - 构造实时价跌破失效价，执行后 `observe_state=INVALIDATED`。
+  - 构造非交易日，runner 不拉实时行情，返回明确 skip reason。
+  - `tradeflow_signals` 有记录，前端 Observe 能显示 `current_price` 和 `trigger_reason`。
+  - `pytest tests/test_m005_intraday_observe.py tests/test_ui001_tradeflow_api.py tests/test_tradeflow_*.py -q` 通过。
+- **代码标注要求**：`# [TF-OBS-001] tradeflow_observe_runner` / `// [TF-OBS-001] tradeflow_observe_runner`
+
+---
+
 ## DATA. 数据源治理 / Simon 数据 Skill 吸收任务池（2026-05-31 新增）
 
 > 目标：把外部 A 股数据 Skill 的优点吸收进本项目 Data Layer，让候选池和 TA 报告更真实、更实时、更可追溯。第一阶段只做数据治理和证据链，不新增 LLM Agent，不替换现有 TA 主链路。
+
+### DATA-P0-603629: TA A股关键数据源补强与假可用修复（P0）
+- **描述**：基于 603629.SH 最新 TA 报告暴露的问题，补强 A 股关键数据源路由，修复“正文说数据缺失、底部却显示数据源可用”的假可用问题。
+- **优先级**：P0
+- **状态**：ready
+- **背景**：
+  - 603629.SH 报告中个股资金流 `ConnectionError`，近 20 日主力净流入/流出缺失。
+  - 龙虎榜仅依赖“资金流异常触发”，导致资金流失败后龙虎榜也未强制查询；但该股存在严重异常波动、新闻明确提及龙虎榜、6月1日一字跌停等高风险特征。
+  - 换手率、量比、板块资金、公告原文/监管事件、复权口径等关键字段未稳定进入 raw_evidence。
+  - 底部数据源可用性将“主力资金报告文本存在”误判为“主力资金数据可用”，与 Evidence Coverage 42% 冲突。
+- **参考方向**：
+  - 参考 SimonLin1212 `a-stock-data` 的数据源优先级：行情/K线/实时价优先 mootdx/腾讯；东财只用于独有数据，并统一限流防封。
+  - 不照搬整套框架，只吸收 direct endpoint、fallback、限流、来源契约和字段 freshness 思路。
+- **执行约束**：
+  - 不提交任何 API key/cookie。
+  - 不改 `tradingagents/prompts/`。
+  - 不写生产 `tradingagents.db` schema。
+  - 不自动触发 TA/LLM live 调用。
+  - 东财接口必须串行限流，禁止并发压测。
+- **实现要点**：
+  1. **个股资金流 fallback**：
+     - 为 `get_individual_fund_flow` 增加 Eastmoney `push2/push2his` 直连 fallback。
+     - 保留 AKShare，但失败时不得直接终止资金流证据链。
+     - raw_evidence 必须记录 `vendor/endpoint/as_of/unit/status/error/fallback_vendor`。
+  2. **龙虎榜与资金流解耦**：
+     - 以下场景必须 force 查询龙虎榜：严重异常波动、连续涨跌停、新闻/公告文本出现龙虎榜、涨跌幅偏离、成交额/量比异常。
+     - 资金流失败不得阻止龙虎榜查询。
+     - 区分 `NOT_QUERIED`、`NORMAL_NO_DATA`、`FAILED`、`HAS_DATA`。
+  3. **实时行情与换手率/量比补强**：
+     - 增加 Tencent fallback，至少提供 `current_price`、`turnover_rate`、`volume_ratio`、`limit_up/down`、`market_cap`、`PE/PB`。
+     - 若 `volume_ratio` 无法由源直接提供，可用当前量/近 N 日均量计算，但必须标注 `computed=True` 和计算口径。
+  4. **公告/监管事件补强**：
+     - 增加 cninfo/巨潮公告 fallback，用于风险提示、严重异常波动、减持、问询函、澄清公告。
+     - 公告必须以原始标题/日期/来源/链接或公告 ID 进入 raw_evidence。
+  5. **复权口径与 K 线 freshness**：
+     - 市场技术数据必须标注 `adjustment`（前复权/后复权/不复权/未知）。
+     - 当天实时补丁不得伪装成完整日 K。
+  6. **数据源可用性修正**：
+     - 底部数据源可用性必须按 raw_evidence status 判断，不能按报告文本是否存在判断。
+     - 若主力资金 raw status 为 `FAILED/NOT_QUERIED`，不得显示 `✅ 主力资金`。
+     - `Evidence Coverage < 70%` 时，最终 `Confidence` 不得显示“高”。
+- **验收方式**：
+  - 用 603629.SH 的 fixture 或 mock 复现：
+    - 资金流 AKShare 失败，但 Eastmoney fallback 成功。
+    - 资金流失败时，龙虎榜仍因异常波动/新闻触发 force 查询。
+    - 主力资金失败时，数据源可用性显示 `❌` 或明确 `FAILED`，不能显示 `✅`。
+    - 报告底部能看到换手率、量比、复权口径、公告来源。
+    - `Evidence Coverage=42%` 一类低证据场景下，Confidence 自动降为中/低。
+  - 新增/更新测试覆盖 readiness/raw_evidence/fund_lhb provenance。
+  - `pytest tests/test_g006_raw_evidence_snapshot.py tests/test_g007_fund_lhb_provenance.py tests/test_readiness_score.py tests/test_dataflows*.py -q` 或同等相关测试通过。
+- **代码标注要求**：`# [DATA-P0-603629] astock_source_fallback`
 
 ### DATA-001: A股数据源能力目录与 fallback 矩阵（P1）
 - **描述**：建立本项目统一的数据源能力目录，明确每个 vendor/endpoint 能提供什么字段、适用场景、freshness、限流风险和 fallback 顺序。
@@ -1808,4 +1958,3 @@ Phase 3（优化期）：C-006 + C-008
   - `pytest tests/test_vlm*.py -q` 通过
 - **代码标注要求**：`# [VLM-001] watchlist_table_parser`
 - **完成记录**：2026-05-31, commit f52aa21
-
