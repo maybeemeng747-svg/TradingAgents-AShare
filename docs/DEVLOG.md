@@ -4,6 +4,50 @@
 
 ---
 
+## 2026-06-01 | DATA-001: A股数据源能力目录与 fallback 矩阵
+
+- **执行者**：OpenCode
+- **任务**：DATA-001 — 建立本项目统一的数据源能力目录，明确每个 vendor/endpoint 能提供什么字段、适用场景、freshness、限流风险和 fallback 顺序
+- **修改文件**：
+  - `tradingagents/dataflows/source_catalog.py` — 新建：[DATA-001] source_catalog
+    - `DataType` 枚举（16 种）：QUOTE / OHLCV / FUND_FLOW / BOARD_FUND_FLOW / LHB / MARGIN_TRADING / NOTICE / REPORT / RATING / NEWS / GLOBAL_NEWS / FINANCIALS / INSIDER / HOT_STOCKS / ZT_POOL / REALTIME_QUOTES
+    - `Freshness` 枚举（6 级）：REALTIME / INTRADAY / DAILY / DELAYED / STALE / UNKNOWN
+    - `RateLimitRisk` 枚举（4 级）：LOW / MEDIUM / HIGH / UNKNOWN
+    - `SourceCapability` 数据类：vendor / endpoint / data_type / fields / unit / freshness / rate_limit_risk / fallback_priority / known_gaps / is_primary / notes
+    - `can_be_primary` 属性：缺少字段/单位未知/freshness 为 UNKNOWN 或 STALE 的数据源不得标为 primary
+    - `get_sources_for_type(data_type)` → 按 fallback_priority 排序的 SourceCapability 列表
+    - `get_primary_source(data_type)` → 该类型的 primary source（通过 can_be_primary 校验）
+    - `get_fallback_chain(data_type)` → vendor 名称列表
+    - `get_all_data_types()` / `get_catalog_summary()` / `get_vendor_capabilities(vendor)` → 辅助查询
+    - `validate_catalog()` → 校验 primary 合规性、空字段、重复条目
+    - 覆盖 3 个 vendor（cn_akshare / cn_astock / cn_baostock）× 16 种 data_type，共 35 个 source entry
+  - `tests/test_data_source_catalog.py` — 新建，66 个测试覆盖：
+    - `TestDataTypeEnum` (3): 全部值、字符串构造、非法值
+    - `TestFreshnessEnum` (1): 全部值
+    - `TestRateLimitRiskEnum` (1): 全部值
+    - `TestSourceCapability` (10): 默认值、to_dict、can_be_primary 各条件（无字段/无单位/quote/fund_flow/非金融/unknown/stale/board_fund_flow）
+    - `TestGetSourcesForType` (16): ohlcv/fund_flow/lhb/notice/realtime_quotes/news/global_news/financials/report/insider/zt_pool/hot_stocks/invalid/sorted/board_fund_flow/string_input
+    - `TestGetPrimarySource` (6): ohlcv/fund_flow/realtime_quotes/notice/news/invalid
+    - `TestGetFallbackChain` (4): ohlcv/fund_flow/lhb/order
+    - `TestGetAllDataTypes` (3): list/no_dup/contains_key
+    - `TestGetCatalogSummary` (1): structure
+    - `TestGetVendorCapabilities` (4): akshare/astock/baostock/unknown
+    - `TestValidateCatalog` (2): no_issues、primary_has_fields
+    - `TestPrimaryIntegrity` (4): stale/fields/unit/unique_per_type
+    - `TestCatalogCompleteness` (4): not_empty/all_key_primary/vendor_endpoint/unique_priority
+    - `TestDataSpecificChecks` (7): ohlcv_primary_vendor/realtime_primary/fund_flow_unit/lhb_force/notice_cninfo/report_eastmoney/astock_pe_pb
+- **测试结果**：66 passed (DATA-001)；165 passed (readiness + raw_evidence + fund_lhb_provenance)；0 failed
+- **关键逻辑**：
+  - 每个 source entry 包含完整元数据：vendor、endpoint、data_type、fields、unit、freshness、rate_limit_risk、fallback_priority、known_gaps、is_primary、notes
+  - `can_be_primary` 属性执行 5 项检查：有字段列表、金融类数据有单位、freshness 不是 UNKNOWN、freshness 不是 STALE
+  - OHLCV 覆盖 3 个 vendor 共 6 条 entry（cn_akshare × 3 + cn_astock × 2 + cn_baostock × 1）
+  - 实时行情覆盖 3 个 vendor × 3 entry：新浪(primary)、东财(akshare fallback)、腾讯(astock)
+  - 资金流/龙虎榜/公告/研报/新闻等每种 data_type 都有明确的 primary 和 fallback chain
+  - `validate_catalog()` 自动检测：primary 不合规、空字段、重复条目
+- **执行边界**：未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未做全市场扫描、未触发 TA/LLM 调用
+
+---
+
 ## 2026-06-01 | TF-OBS-001: TradeFlow 盘中观察执行器与信号落库
 
 - **执行者**：OpenCode
@@ -1068,3 +1112,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TF-OBS-001-20260601-round1.txt
 - **Run archive**: docs/task_runs/TF-OBS-001-20260601-220225/
+
+## 2026-06-01 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-001 - A股数据源能力目录与 fallback 矩阵（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-001-20260601-round1.txt
+- **Run archive**: docs/task_runs/DATA-001-20260601-221610/

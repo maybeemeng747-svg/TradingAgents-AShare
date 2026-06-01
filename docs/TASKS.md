@@ -28,7 +28,7 @@
 2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
 3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
 4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
-5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，ready，支撑后续 DATA/H 任务）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
 6. `H-002`：政策连续性与级别权重评分（P1，ready，依赖 H-001 ✓）。
 7. `H-003`：产业链受益路径与标杆候选映射（P1，ready，依赖 H-001 ✓）。
 8. `H-004`：左侧埋伏评分与候选类型分流（P1，proposed，依赖 H-002/H-003）。
@@ -207,7 +207,7 @@
 ### DATA-001: A股数据源能力目录与 fallback 矩阵（P1）
 - **描述**：建立本项目统一的数据源能力目录，明确每个 vendor/endpoint 能提供什么字段、适用场景、freshness、限流风险和 fallback 顺序。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done -- [DATA-001] source_catalog
 - **背景**：
   - SimonLin1212 `a-stock-data` 的核心启发不是 Agent 数量，而是把腾讯/东财/新浪/巨潮/财联社等数据源做成可调用、可组合的端点目录。
   - 本项目已有 AKShare、BaoStock、yfinance、cn_astock、event_source，但调用关系和 fallback 口径还不够透明。
