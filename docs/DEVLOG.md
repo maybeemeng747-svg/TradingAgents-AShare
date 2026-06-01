@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-06-01 | Task Pool Queue Refresh after AUTO batch
+
+- **执行者**：Codex
+- **背景**：`TF-OBS-001`、`DATA-001`、`H-002`、`H-003` 已由自动开发链完成，任务池无 ready 项，夜间链路会空转。
+- **释放任务**：
+  - `H-004`：左侧埋伏评分与候选类型分流（依赖 `H-002/H-003`，已满足）。
+  - `DATA-002`：实时行情 freshness 检测与补丁标注（依赖 `DATA-001`，已满足）。
+  - `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（依赖 `H-001`，已满足）。
+  - `DATA-004`：raw_evidence 来源契约升级（依赖 `DATA-001`，已满足）。
+- **保持 proposed**：`H-005/H-006` 继续等待 `H-004` 完成，避免前端/回放提前绑定未稳定字段。
+
 ## 2026-06-01 | TF-OBS-001 follow-up: API/UI changes commit gap
 
 - **执行者**：Codex
