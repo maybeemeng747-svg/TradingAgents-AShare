@@ -87,6 +87,31 @@ class TestWatchlist:
         assert results[1]["status"] == "failed"
         assert "上限" in results[1]["message"]
 
+    def test_add_watchlist_items_with_notes_saves_notes(self, db):
+        results = watchlist_service.add_watchlist_items_with_notes(
+            db,
+            "user1",
+            [{"symbol": "300750.SZ", "notes": "新能源龙头"}],
+        )
+        assert results[0]["status"] == "added"
+        items = watchlist_service.list_watchlist(db, "user1")
+        assert len(items) == 1
+        assert items[0]["symbol"] == "300750.SZ"
+        assert items[0]["notes"] == "新能源龙头"
+
+    def test_update_watchlist_notes_empty_does_not_overwrite(self, db):
+        item = watchlist_service.add_watchlist_item(db, "user1", "300750.SZ", notes="原始备注")
+        # 空字符串不应覆盖已有备注
+        updated = watchlist_service.update_watchlist_notes(db, "user1", item["id"], notes="")
+        assert updated["notes"] == "原始备注"
+        items = watchlist_service.list_watchlist(db, "user1")
+        assert items[0]["notes"] == "原始备注"
+        # clear=True 时应清空
+        updated2 = watchlist_service.update_watchlist_notes(db, "user1", item["id"], notes="", clear=True)
+        assert updated2["notes"] is None
+        items2 = watchlist_service.list_watchlist(db, "user1")
+        assert items2[0]["notes"] is None
+
 
 class TestScheduled:
     def test_create_and_list(self, db):
