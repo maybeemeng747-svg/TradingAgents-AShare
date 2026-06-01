@@ -124,6 +124,9 @@ def _row_to_candidate_item(row: sqlite3.Row) -> dict:
         "ta_budget_priority": _rget(row, "ta_budget_priority", 0) or 0,
         "tier_reason": _rget(row, "tier_reason", ""),
         "missing_evidence_for_upgrade": _parse_json(_rget(row, "missing_evidence_for_upgrade_json"), []),
+        "plan_date": _rget(row, "plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
+        "effective_trade_date": _rget(row, "effective_trade_date", ""),  # [TF-DATE-001]
+        "observe_date": _rget(row, "observe_date", ""),  # [TF-DATE-001]
         "created_at": _rget(row, "created_at", ""),
         "updated_at": _rget(row, "updated_at", ""),
     }
@@ -182,6 +185,39 @@ def _compute_summary(items: List[dict]) -> dict:
     }
 
 
+def _query_by_date_or_effective(conn, table: str, date_str: str,
+                                extra_conditions: list[str] = None,
+                                extra_params: list = None,
+                                order_clause: str = "") -> list:
+    """Query table by effective_trade_date, falling back to trade_date.  # [TF-DATE-001]
+    
+    Tries: WHERE effective_trade_date = ? ... UNION WHERE trade_date = ? AND effective_trade_date = ''
+    This finds candidates generated on non-trading days (e.g. 2026-05-31) that
+    are effective for the queried trading day (e.g. 2026-06-01).
+    """
+    columns = _table_columns(conn, table)
+    has_eff = "effective_trade_date" in columns
+    conditions = list(extra_conditions or [])
+    params = list(extra_params or [])
+
+    if has_eff:
+        rows = conn.execute(
+            f"SELECT * FROM {table} WHERE "
+            f"(effective_trade_date = ? OR (trade_date = ? AND (effective_trade_date = '' OR effective_trade_date IS NULL))) "
+            f"{' AND ' + ' AND '.join(conditions) if conditions else ''}"
+            f"{order_clause}",
+            [date_str, date_str] + params,
+        ).fetchall()
+    else:
+        conditions.insert(0, "trade_date = ?")
+        params.insert(0, date_str)
+        rows = conn.execute(
+            f"SELECT * FROM {table} WHERE {' AND '.join(conditions)}{order_clause}",
+            params,
+        ).fetchall()
+    return rows
+
+
 def get_daily_plan(trade_date: str, tf_db_path: str = "") -> dict:
     conn = _connect(tf_db_path)
     if conn is None:
@@ -193,6 +229,13 @@ def get_daily_plan(trade_date: str, tf_db_path: str = "") -> dict:
             (trade_date,),
         ).fetchone()
 
+        if plan_row is None:
+            plan_columns = _table_columns(conn, "tradeflow_daily_plans") if conn else set()
+            if "effective_trade_date" in plan_columns:
+                plan_row = conn.execute(
+                    "SELECT * FROM tradeflow_daily_plans WHERE effective_trade_date = ? AND mode = 'pre_market' ORDER BY created_at DESC LIMIT 1",
+                    (trade_date,),
+                ).fetchone()
         if plan_row is None:
             return {"status": "no_data", "trade_date": trade_date}
 
@@ -263,6 +306,9 @@ def get_daily_plan(trade_date: str, tf_db_path: str = "") -> dict:
             "metadata": metadata_json,
             "summary_agg": _compute_summary(candidate_items),
             "created_at": _rget(plan_row, "created_at", ""),
+            "plan_date": _rget(plan_row, "plan_date", ""),  # [TF-DATE-001]
+            "effective_trade_date": _rget(plan_row, "effective_trade_date", ""),  # [TF-DATE-001]
+            "observe_date": _rget(plan_row, "observe_date", ""),  # [TF-DATE-001]
         }
     finally:
         conn.close()
@@ -280,17 +326,18 @@ def get_candidates(
 
     try:
         columns = _table_columns(conn, "tradeflow_candidates")
-        conditions = ["trade_date = ?"]
-        params: list = [trade_date]
-        filter_tier_in_python = False
+        extra_conditions = ["status = 'active'" if "status" in columns else None]
+        extra_conditions = [c for c in extra_conditions if c is not None]
         if tier and "tier" in columns:
-            conditions.append("tier = ?")
-            params.append(tier)
-        elif tier:
-            filter_tier_in_python = True
+            extra_conditions.append("tier = ?")
         if need_deep_ta is not None:
-            conditions.append("need_deep_ta = ?")
-            params.append(1 if need_deep_ta else 0)
+            extra_conditions.append("need_deep_ta = ?")
+
+        extra_params: list = []
+        if tier and "tier" in columns:
+            extra_params.append(tier)
+        if need_deep_ta is not None:
+            extra_params.append(1 if need_deep_ta else 0)
 
         order_cols = []
         if "composite_score" in columns:
@@ -298,15 +345,15 @@ def get_candidates(
         if "score" in columns:
             order_cols.append("score DESC")
         order_clause = f" ORDER BY {', '.join(order_cols)}" if order_cols else " ORDER BY updated_at DESC, created_at DESC"
-        where = " AND ".join(conditions)
-        rows = conn.execute(
-            f"SELECT * FROM tradeflow_candidates WHERE {where}{order_clause}",
-            params,
-        ).fetchall()
+
+        rows = _query_by_date_or_effective(
+            conn, "tradeflow_candidates", trade_date,
+            extra_conditions=extra_conditions if extra_conditions else None,
+            extra_params=extra_params if extra_params else None,
+            order_clause=order_clause,
+        )
 
         items = [_row_to_candidate_item(r) for r in rows]
-        if filter_tier_in_python:
-            items = [it for it in items if it.get("tier") == tier]
         for it in items:
             it["action"] = _compute_action(it)
             it["reason"] = it.get("why_deep_ta") or it.get("why_not_deep_ta") or "候选观察"
@@ -333,6 +380,14 @@ def get_candidate_detail(symbol: str, trade_date: str, tf_db_path: str = "") -> 
         ).fetchone()
 
         if row is None:
+            columns = _table_columns(conn, "tradeflow_candidates")
+            if "effective_trade_date" in columns:
+                row = conn.execute(
+                    "SELECT * FROM tradeflow_candidates WHERE effective_trade_date = ? AND symbol = ?",
+                    (trade_date, symbol),
+                ).fetchone()
+
+        if row is None:
             return {"status": "no_data", "trade_date": trade_date}
 
         detail = _row_to_candidate_detail(row)
@@ -355,15 +410,15 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
 
     try:
         columns = _table_columns(conn, "tradeflow_candidates")
-        conditions = ["trade_date = ?"]
-        params: list = [trade_date]
+        extra_conditions = []
         if "status" in columns:
-            conditions.append("status = 'active'")
+            extra_conditions.append("status = 'active'")
         order_clause = " ORDER BY composite_score DESC" if "composite_score" in columns else " ORDER BY updated_at DESC, created_at DESC"
-        rows = conn.execute(
-            f"SELECT * FROM tradeflow_candidates WHERE {' AND '.join(conditions)}{order_clause}",
-            params,
-        ).fetchall()
+        rows = _query_by_date_or_effective(
+            conn, "tradeflow_candidates", trade_date,
+            extra_conditions=extra_conditions if extra_conditions else None,
+            order_clause=order_clause,
+        )
 
         items = []
         triggered = 0
@@ -422,10 +477,11 @@ def get_ta_queue(trade_date: str, tf_db_path: str = "") -> dict:
         if "score" in columns:
             order_cols.append("score DESC")
         order_clause = f" ORDER BY {', '.join(order_cols)}" if order_cols else " ORDER BY updated_at DESC, created_at DESC"
-        rows = conn.execute(
-            f"SELECT * FROM tradeflow_candidates WHERE trade_date = ? AND need_deep_ta = 1{order_clause}",
-            (trade_date,),
-        ).fetchall()
+        rows = _query_by_date_or_effective(
+            conn, "tradeflow_candidates", trade_date,
+            extra_conditions=["need_deep_ta = 1"],
+            order_clause=order_clause,
+        )
 
         items = []
         dispatched = 0
@@ -517,6 +573,8 @@ def get_data_health(tf_db_path: str = "") -> dict:
     sources: List[Dict[str, Any]] = []
     latest_plan_date = None
     latest_candidates_date = None
+    latest_eff_date = None  # [TF-DATE-001]
+    latest_obs_date = None  # [TF-DATE-001]
     total_candidates_today = 0
     total_signals_today = 0
     today = datetime.now().strftime("%Y-%m-%d")
@@ -536,6 +594,19 @@ def get_data_health(tf_db_path: str = "") -> dict:
                 ).fetchone()
                 if cand_row:
                     latest_candidates_date = cand_row["trade_date"]
+
+                if "effective_trade_date" in _table_columns(conn, "tradeflow_candidates"):
+                    eff_row = conn.execute(
+                        "SELECT effective_trade_date FROM tradeflow_candidates WHERE effective_trade_date != '' ORDER BY created_at DESC LIMIT 1"
+                    ).fetchone()
+                    if eff_row:
+                        latest_eff_date = eff_row["effective_trade_date"]
+                if "observe_date" in _table_columns(conn, "tradeflow_candidates"):
+                    obs_row = conn.execute(
+                        "SELECT observe_date FROM tradeflow_candidates WHERE observe_date != '' ORDER BY created_at DESC LIMIT 1"
+                    ).fetchone()
+                    if obs_row:
+                        latest_obs_date = obs_row["observe_date"]
 
                 count_row = conn.execute(
                     "SELECT COUNT(*) as cnt FROM tradeflow_candidates WHERE trade_date = ?",
@@ -601,6 +672,8 @@ def get_data_health(tf_db_path: str = "") -> dict:
         "sources": sources,
         "latest_plan_date": latest_plan_date,
         "latest_candidates_date": latest_candidates_date,
+        "latest_effective_trade_date": latest_eff_date,  # [TF-DATE-001]
+        "latest_observe_date": latest_obs_date,  # [TF-DATE-001]
         "total_candidates_today": total_candidates_today,
         "total_signals_today": total_signals_today,
     }

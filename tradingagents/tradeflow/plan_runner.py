@@ -116,6 +116,9 @@ def _build_plan_entry(candidate: Candidate, event_items: Optional[list] = None) 
         "deep_ta_report_path": candidate.deep_ta_report_path,  # [M-006]
         "deep_ta_dispatch_time": candidate.deep_ta_dispatch_time,  # [M-006]
         "deep_ta_position_context": candidate.deep_ta_position_context,  # [M-006]
+        "plan_date": candidate.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
+        "effective_trade_date": candidate.effective_trade_date,  # [TF-DATE-001]
+        "observe_date": candidate.observe_date,  # [TF-DATE-001]
     }
 
     # [T-006] event_source_discovery — add event metadata to plan entry
@@ -174,6 +177,11 @@ def generate_daily_plan(
 
     if not trade_date:
         trade_date = datetime.now().strftime("%Y-%m-%d")
+
+    # [TF-DATE-001] tradeflow_date_semantics — resolve date semantics
+    from .date_semantics import resolve_effective_trade_date, resolve_observe_date
+    eff_trade_date = resolve_effective_trade_date(trade_date)
+    obs_date = resolve_observe_date(eff_trade_date)
 
     # [N-001] event_source_plan_integration — fetch events if enabled
     # [T-006] event_source_discovery — use detailed fetch for richer metadata
@@ -367,10 +375,18 @@ def generate_daily_plan(
 
     # Optionally persist candidates  # [G-004] tradeflow_candidate_date
     if save_candidates and tf_db_path:
-        for c in candidates:
+        for c in candidates:  # [TF-DATE-001] tradeflow_date_semantics
             if c.trade_date != trade_date:
                 c.trade_date = trade_date
+            c.plan_date = trade_date
+            c.effective_trade_date = eff_trade_date
+            c.observe_date = obs_date
             save_candidate(c, tf_db_path)
+
+    # [TF-DATE-001] tradeflow_date_semantics — set plan date fields
+    plan.plan_date = trade_date
+    plan.effective_trade_date = eff_trade_date
+    plan.observe_date = obs_date
 
     return plan
 
@@ -382,13 +398,18 @@ def save_plan(plan: DailyPlan, db_path: str) -> int:
     try:
         conn.execute(
             "INSERT INTO tradeflow_daily_plans "
-            "(trade_date, mode, summary, candidates_json, metadata_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
+            "(trade_date, mode, summary, candidates_json, metadata_json, created_at, "
+            "plan_date, effective_trade_date, observe_date) "  # [TF-DATE-001]
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(trade_date, mode) DO UPDATE SET "
             "summary=excluded.summary, candidates_json=excluded.candidates_json, "
-            "metadata_json=excluded.metadata_json",
+            "metadata_json=excluded.metadata_json, "
+            "plan_date=excluded.plan_date, "  # [TF-DATE-001]
+            "effective_trade_date=excluded.effective_trade_date, "
+            "observe_date=excluded.observe_date",
             (row["trade_date"], row["mode"], row["summary"],
-             row["candidates_json"], row["metadata_json"], row["created_at"]),
+             row["candidates_json"], row["metadata_json"], row["created_at"],
+             row["plan_date"], row["effective_trade_date"], row["observe_date"]),  # [TF-DATE-001]
         )
         conn.commit()
         row_id = conn.execute(

@@ -283,7 +283,7 @@ class TestRunDiscoveryScan:
             trigger_price=36.77,
             invalid_price=33.91,
             need_deep_ta=True,
-            trade_date="2026-05-31",
+            trade_date="2026-05-30",
             tier="A",
             tradeflow_data_completeness=0.8,
         )
@@ -292,10 +292,14 @@ class TestRunDiscoveryScan:
         def fake_evaluate_symbol(**kwargs):
             return c, ""
 
+        # Mock date_semantics so effective_trade_date == trade_date
+        import tradingagents.tradeflow.date_semantics as dt_mod
+        monkeypatch.setattr(dt_mod, "resolve_effective_trade_date", lambda d: d)
+        monkeypatch.setattr(dt_mod, "resolve_observe_date", lambda d: d)
         monkeypatch.setattr("tradingagents.tradeflow.discovery.evaluate_symbol", fake_evaluate_symbol)
 
         result = run_discovery_scan(
-            trade_date="2026-05-31",
+            trade_date="2026-05-30",
             symbols=["002353.SZ"],
             top_n=10,
             include_holdings=False,
@@ -306,7 +310,7 @@ class TestRunDiscoveryScan:
 
         assert result["status"] == "ok"
         assert result["candidate_count"] == 1
-        saved = get_candidates("2026-05-31", tf_db_path=tf_db)
+        saved = get_candidates("2026-05-30", tf_db_path=tf_db)
         assert saved["status"] == "ok"
         assert saved["candidates"][0]["symbol"] == "002353.SZ"
 

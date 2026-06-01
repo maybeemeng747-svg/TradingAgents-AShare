@@ -25,8 +25,8 @@
 ### 当前优先队列
 
 1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，ready）。
-2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，ready）。
-3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，proposed，依赖 TF-DATE-001）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，ready，依赖 TF-DATE-001）。
 4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，ready）。
 5. `H-002`：政策连续性与级别权重评分（P1，proposed，依赖 H-001）。
 6. `H-003`：产业链受益路径与标杆候选映射（P1，proposed，依赖 H-001）。
@@ -60,7 +60,7 @@
 ### TF-DATE-001: TradeFlow 日期语义拆分与非交易日计划生效（P0）
 - **描述**：修复 `trade_date` 同时表示“候选池生成日期/计划生效交易日/盘中观察日期”的问题，支持 2026-05-31 这类非交易日生成候选池，并在 2026-06-01 盘中继续观察。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done -- commit pending
 - **背景**：
   - 用户可以在周末、节假日或交易日收盘后生成候选池，这些候选应在下一个 A 股交易日进入 Observe，而不是被锁在生成日。
   - 当前 `tradeflow_daily_plans` 和 `tradeflow_candidates` 主要按 `trade_date` 查询，导致前端选择 2026-06-01 的 Observe 时查不到 2026-05-31 生成的候选。

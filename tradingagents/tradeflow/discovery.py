@@ -138,6 +138,11 @@ def run_discovery(
     if not trade_date:
         trade_date = datetime.now().strftime("%Y-%m-%d")
 
+    # [TF-DATE-001] tradeflow_date_semantics — resolve date semantics
+    from .date_semantics import resolve_effective_trade_date, resolve_observe_date
+    eff_trade_date = resolve_effective_trade_date(trade_date)
+    obs_date = resolve_observe_date(eff_trade_date)
+
     events_map: dict[str, list[str]] = {}
     event_items_by_symbol: dict[str, list] = {}  # [T-006] event_source_discovery
     event_source_status = "NOT_QUERIED"  # [T-006]
@@ -304,9 +309,12 @@ def run_discovery(
     if save_candidates and tf_db_path:
         init_db(tf_db_path)
         from .candidate_engine import save_candidate
-        for c in top_candidates:
+        for c in top_candidates:  # [TF-DATE-001] tradeflow_date_semantics
             if c.trade_date != trade_date:
                 c.trade_date = trade_date
+            c.plan_date = trade_date
+            c.effective_trade_date = eff_trade_date
+            c.observe_date = obs_date
             save_candidate(c, tf_db_path)
 
     # [UI-007] tradeflow_filtered_trace — persist filtered symbols
@@ -433,6 +441,9 @@ def _build_discovery_entry(candidate: Candidate, event_items: Optional[list] = N
         "what_to_upgrade": candidate.what_to_upgrade,  # [S-008]
         "evidence_gate_applied": candidate.evidence_gate_applied,  # [S-008]
         "universe_sources": candidate.universe_sources,  # [M-003] tradeflow_universe_manager
+        "plan_date": candidate.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
+        "effective_trade_date": candidate.effective_trade_date,  # [TF-DATE-001]
+        "observe_date": candidate.observe_date,  # [TF-DATE-001]
     }
 
     # [T-006] event_source_discovery — add event metadata to discovery entry

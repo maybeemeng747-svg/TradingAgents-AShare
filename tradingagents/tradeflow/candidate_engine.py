@@ -240,6 +240,35 @@ def init_db(db_path: str) -> None:
             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
         except sqlite3.OperationalError:
             pass
+    # [TF-DATE-001] tradeflow_date_semantics — add date semantic columns
+    for _col, _type in [
+        ("plan_date", "TEXT DEFAULT ''"),
+        ("effective_trade_date", "TEXT DEFAULT ''"),
+        ("observe_date", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [TF-DATE-001] tradeflow_date_semantics — add date semantic columns to daily_plans
+    for _col, _type in [
+        ("plan_date", "TEXT DEFAULT ''"),
+        ("effective_trade_date", "TEXT DEFAULT ''"),
+        ("observe_date", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_daily_plans ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [TF-DATE-001] tradeflow_date_semantics — add date semantic columns to filtered_symbols
+    for _col, _type in [
+        ("plan_date", "TEXT DEFAULT ''"),
+        ("effective_trade_date", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_filtered_symbols ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 
@@ -769,8 +798,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "observe_state, observe_trigger_count, observe_first_trigger_time, "
             "deep_ta_status, deep_ta_dispatch_reason, deep_ta_model, "
             "deep_ta_report_path, deep_ta_dispatch_time, deep_ta_position_context, "
+            "plan_date, effective_trade_date, observe_date, "  # [TF-DATE-001]
             "created_at, updated_at) "
-            "VALUES ({}) ".format(",".join(["?"] * 64))
+            "VALUES ({}) ".format(",".join(["?"] * 67))
             + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
             "trigger_price=excluded.trigger_price, "
@@ -820,6 +850,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "deep_ta_report_path=excluded.deep_ta_report_path, "
             "deep_ta_dispatch_time=excluded.deep_ta_dispatch_time, "
             "deep_ta_position_context=excluded.deep_ta_position_context, "
+            "plan_date=excluded.plan_date, "  # [TF-DATE-001]
+            "effective_trade_date=excluded.effective_trade_date, "  # [TF-DATE-001]
+            "observe_date=excluded.observe_date, "  # [TF-DATE-001]
             "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
@@ -853,6 +886,7 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
                 row["deep_ta_status"], row["deep_ta_dispatch_reason"],
                 row["deep_ta_model"], row["deep_ta_report_path"],
                 row["deep_ta_dispatch_time"], row["deep_ta_position_context"],
+                row["plan_date"], row["effective_trade_date"], row["observe_date"],  # [TF-DATE-001]
                 candidate.created_at, row["updated_at"],
             ),
         )

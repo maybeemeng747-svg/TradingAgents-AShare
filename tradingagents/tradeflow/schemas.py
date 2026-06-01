@@ -111,6 +111,9 @@ class Candidate:
     deep_ta_report_path: str = ""  # [M-006] gated_deep_ta_dispatch
     deep_ta_dispatch_time: str = ""  # [M-006] gated_deep_ta_dispatch
     deep_ta_position_context: str = ""  # [M-006] gated_deep_ta_dispatch
+    plan_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+    effective_trade_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+    observe_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
 
     def __post_init__(self):
         if not self.trade_date:
@@ -221,6 +224,9 @@ class Candidate:
             "deep_ta_report_path": self.deep_ta_report_path,  # [M-006]
             "deep_ta_dispatch_time": self.deep_ta_dispatch_time,  # [M-006]
             "deep_ta_position_context": self.deep_ta_position_context,  # [M-006]
+            "plan_date": self.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
+            "effective_trade_date": self.effective_trade_date,  # [TF-DATE-001]
+            "observe_date": self.observe_date,  # [TF-DATE-001]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -291,6 +297,9 @@ class Candidate:
             deep_ta_report_path=row.get("deep_ta_report_path", ""),  # [M-006]
             deep_ta_dispatch_time=row.get("deep_ta_dispatch_time", ""),  # [M-006]
             deep_ta_position_context=row.get("deep_ta_position_context", ""),  # [M-006]
+            plan_date=row.get("plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
+            effective_trade_date=row.get("effective_trade_date", ""),  # [TF-DATE-001]
+            observe_date=row.get("observe_date", ""),  # [TF-DATE-001]
         )
 
 
@@ -338,6 +347,9 @@ class DailyPlan:
     candidates: list[dict] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
     created_at: str = ""
+    plan_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+    effective_trade_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+    observe_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
 
     def __post_init__(self):
         if not self.created_at:
@@ -363,6 +375,9 @@ class DailyPlan:
             "candidates_json": json.dumps(self.candidates, ensure_ascii=False),
             "metadata_json": json.dumps(self.metadata, ensure_ascii=False),
             "created_at": self.created_at,
+            "plan_date": self.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
+            "effective_trade_date": self.effective_trade_date,  # [TF-DATE-001]
+            "observe_date": self.observe_date,  # [TF-DATE-001]
         }
 
     def render_text(self) -> str:

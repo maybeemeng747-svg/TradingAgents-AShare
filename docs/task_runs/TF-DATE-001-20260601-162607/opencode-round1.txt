@@ -1,0 +1,493 @@
+[0m
+> build · glm-5.1
+[0m
+[0m# [0mTodos
+[•] Read task TF-DATE-001 from docs/TASKS.md
+[ ] Read required project docs (project-overview, DECISIONS, DEVLOG)
+[ ] Understand current date handling in TradeFlow
+[ ] Implement date semantic split & non-trading-day plan activation
+[ ] Write/run tests
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DECISIONS.md
+[0m
+[0m# [0mTodos
+[✓] Read task TF-DATE-001 from docs/TASKS.md
+[✓] Read required project docs (project-overview, DECISIONS, DEVLOG)
+[•] Understand current date handling in TradeFlow
+[ ] Implement date semantic split & non-trading-day plan activation
+[ ] Write/run tests
+[ ] Update docs/DEVLOG.md
+[0m
+Now let me explore the current TradeFlow codebase to understand date handling:
+[0m• [0mExplore TradeFlow date handling[90m Explore Agent[0m
+[0m✓ [0mExplore TradeFlow date handling[90m Explore Agent[0m
+[0m
+[0m# [0mTodos
+[✓] Read task TF-DATE-001 from docs/TASKS.md
+[✓] Read required project docs (project-overview, DECISIONS, DEVLOG)
+[✓] Understand current date handling in TradeFlow
+[•] Implement date semantic split & non-trading-day plan activation
+[ ] Write/run tests
+[ ] Update docs/DEVLOG.md
+[0m
+Excellent. Now I have a comprehensive understanding. Let me read the key files I need to modify:
+[0m→ [0mRead tradingagents/dataflows/trade_calendar.py
+[0m→ [0mRead tradingagents/tradeflow/schemas.py
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [limit=110][0m
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [offset=110, limit=200][0m
+[0m→ [0mRead api/services/tradeflow_service.py
+[0m→ [0mRead api/main.py[90m [offset=5080, limit=100][0m
+[0m→ [0mRead api/tradeflow_schemas.py
+Now let me read the API main.py for the tradeflow endpoints, and the frontend TradeFlow page:
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py[90m [offset=130, limit=280][0m
+Now I have a comprehensive understanding of the codebase. Let me read the discovery module and frontend to complete my understanding:
+[0m→ [0mRead tradingagents/tradeflow/discovery.py[90m [limit=50, offset=95][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=30, offset=1][0m
+Now I have a thorough understanding of the codebase. Let me implement the changes. The plan is:
+
+1. **New module**: `tradingagents/tradeflow/date_semantics.py` - date helper with `resolve_effective_trade_date()` and `next_cn_trading_day()`
+2. **Schema changes**: Add `plan_date`, `effective_trade_date`, `observe_date` to Candidate and DailyPlan
+3. **DB migration**: ALTER TABLE for new columns in candidates and daily_plans tables
+4. **plan_runner.py**: Populate new fields on generation
+5. **discovery.py**: Populate new fields on generation
+6. **tradeflow_service.py**: Query by `effective_trade_date` for observe/ta-queue, fallback to `trade_date`
+7. **API schemas**: Add new fields to responses
+8. **Frontend**: Display date hint when dates differ
+9. **Tests**: Full coverage
+
+Let me start implementing:
+[0m
+[0m← [0mWrite tradingagents/tradeflow/date_semantics.py
+Wrote file successfully.
+[0m
+Now add new fields to the Candidate schema:
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -110,8 +110,11 @@
+ deep_ta_model: str = ""  # [M-006] gated_deep_ta_dispatch
+ deep_ta_report_path: str = ""  # [M-006] gated_deep_ta_dispatch
+ deep_ta_dispatch_time: str = ""  # [M-006] gated_deep_ta_dispatch
+ deep_ta_position_context: str = ""  # [M-006] gated_deep_ta_dispatch
++plan_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
++effective_trade_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
++observe_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+ 
+ def __post_init__(self):
+     if not self.trade_date:
+         self.trade_date = datetime.now().strftime("%Y-%m-%d")
+
+[0m
+[0m✗ [0mEdit tradingagents/tradeflow/schemas.py failed
+[91m[1mError: [0mCould not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.
+Now update `to_db_row()` to include the new fields:
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [offset=218, limit=15][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -223,8 +223,11 @@
+         "deep_ta_model": self.deep_ta_model,  # [M-006]
+         "deep_ta_report_path": self.deep_ta_report_path,  # [M-006]
+         "deep_ta_dispatch_time": self.deep_ta_dispatch_time,  # [M-006]
+         "deep_ta_position_context": self.deep_ta_position_context,  # [M-006]
++        "plan_date": self.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
++        "effective_trade_date": self.effective_trade_date,  # [TF-DATE-001]
++        "observe_date": self.observe_date,  # [TF-DATE-001]
+         "updated_at": datetime.now().isoformat(),
+     }
+ 
+ @classmethod
+
+[0m
+Now update `from_db_row()`:
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [limit=15, offset=290][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -296,8 +296,11 @@
+             deep_ta_model=row.get("deep_ta_model", ""),  # [M-006]
+             deep_ta_report_path=row.get("deep_ta_report_path", ""),  # [M-006]
+             deep_ta_dispatch_time=row.get("deep_ta_dispatch_time", ""),  # [M-006]
+             deep_ta_position_context=row.get("deep_ta_position_context", ""),  # [M-006]
++            plan_date=row.get("plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
++            effective_trade_date=row.get("effective_trade_date", ""),  # [TF-DATE-001]
++            observe_date=row.get("observe_date", ""),  # [TF-DATE-001]
+         )
+ 
+ 
+ @dataclass
+
+[0m
+Now update the DailyPlan schema to add new date fields:
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [limit=50, offset=338][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -346,8 +346,11 @@
+ summary: str = ""
+ candidates: list[dict] = field(default_factory=list)
+ metadata: dict = field(default_factory=dict)
+ created_at: str = ""
++plan_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
++effective_trade_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
++observe_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+ 
+ def __post_init__(self):
+     if not self.created_at:
+         self.created_at = datetime.now().isoformat()
+
+[0m
+Update DailyPlan.to_db_row():
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -374,8 +374,11 @@
+         "summary": self.summary,
+         "candidates_json": json.dumps(self.candidates, ensure_ascii=False),
+         "metadata_json": json.dumps(self.metadata, ensure_ascii=False),
+         "created_at": self.created_at,
++        "plan_date": self.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
++        "effective_trade_date": self.effective_trade_date,  # [TF-DATE-001]
++        "observe_date": self.observe_date,  # [TF-DATE-001]
+     }
+ 
+ def render_text(self) -> str:
+     """Render a human-readable plan text."""
+
+[0m
+Now update the DB migration in candidate_engine.py to add the new columns:
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [limit=10, offset=238][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -239,8 +239,37 @@
+     try:
+         conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+     except sqlite3.OperationalError:
+         pass
++# [TF-DATE-001] tradeflow_date_semantics — add date semantic columns
++for _col, _type in [
++    ("plan_date", "TEXT DEFAULT ''"),
++    ("effective_trade_date", "TEXT DEFAULT ''"),
++    ("observe_date", "TEXT DEFAULT ''"),
++]:
++    try:
++        conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
++    except sqlite3.OperationalError:
++        pass
++# [TF-DATE-001] tradeflow_date_semantics — add date semantic columns to daily_plans
++for _col, _type in [
++    ("plan_date", "TEXT DEFAULT ''"),
++    ("effective_trade_date", "TEXT DEFAULT ''"),
++    ("observe_date", "TEXT DEFAULT ''"),
++]:
++    try:
++        conn.execute(f"ALTER TABLE tradeflow_daily_plans ADD COLUMN {_col} {_type}")
++    except sqlite3.OperationalError:
++        pass
++# [TF-DATE-001] tradeflow_date_semantics — add date semantic columns to filtered_symbols
++for _col, _type in [
++    ("plan_date", "TEXT DEFAULT ''"),
++    ("effective_trade_date", "TEXT DEFAULT ''"),
++]:
++    try:
++        conn.execute(f"ALTER TABLE tradeflow_filtered_symbols ADD COLUMN {_col} {_type}")
++    except sqlite3.OperationalError:
++        pass
+ conn.commit()
+ conn.close()
+ 
+ 
+
+[0m
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [limit=120, offset=755][0m
+Now I need to update the `save_candidate()` function to include the new columns. Let me find it:
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [limit=20, offset=875][0m
+I need to update the save_candidate to include the 3 new columns. The INSERT goes from 64 to 67 fields:
+[0m
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -797,10 +797,11 @@
+ "universe_sources_json, "
+ "observe_state, observe_trigger_count, observe_first_trigger_time, "
+ "deep_ta_status, deep_ta_dispatch_reason, deep_ta_model, "
+ "deep_ta_report_path, deep_ta_dispatch_time, deep_ta_position_context, "
++"plan_date, effective_trade_date, observe_date, "  # [TF-DATE-001]
+ "created_at, updated_at) "
+-"VALUES ({}) ".format(",".join(["?"] * 64))
++"VALUES ({}) ".format(",".join(["?"] * 67))
+ + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+ "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+ "trigger_price=excluded.trigger_price, "
+ "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+
+[0m
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -849,8 +849,11 @@
+ "deep_ta_model=excluded.deep_ta_model, "
+ "deep_ta_report_path=excluded.deep_ta_report_path, "
+ "deep_ta_dispatch_time=excluded.deep_ta_dispatch_time, "
+ "deep_ta_position_context=excluded.deep_ta_position_context, "
++"plan_date=excluded.plan_date, "  # [TF-DATE-001]
++"effective_trade_date=excluded.effective_trade_date, "  # [TF-DATE-001]
++"observe_date=excluded.observe_date, "  # [TF-DATE-001]
+ "updated_at=excluded.updated_at",
+ (
+     row["trade_date"], row["symbol"], row["name"], row["source"],
+     row["strategy_tags_json"], row["primary_strategy"],
+
+[0m
+Now update the ON CONFLICT SET clause to include new columns:
+Now update the VALUES tuple to include new columns:
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -885,8 +885,9 @@
+         row["observe_first_trigger_time"],
+         row["deep_ta_status"], row["deep_ta_dispatch_reason"],
+         row["deep_ta_model"], row["deep_ta_report_path"],
+         row["deep_ta_dispatch_time"], row["deep_ta_position_context"],
++        row["plan_date"], row["effective_trade_date"], row["observe_date"],  # [TF-DATE-001]
+         candidate.created_at, row["updated_at"],
+     ),
+ )
+ conn.commit()
+
+[0m
+Now update plan_runner.py to resolve date semantics when generating:
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py[90m [limit=15, offset=170][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -174,8 +174,13 @@
+ 
+ if not trade_date:
+     trade_date = datetime.now().strftime("%Y-%m-%d")
+ 
++# [TF-DATE-001] tradeflow_date_semantics — resolve date semantics
++from .date_semantics import resolve_effective_trade_date, resolve_observe_date
++eff_trade_date = resolve_effective_trade_date(trade_date)
++obs_date = resolve_observe_date(eff_trade_date)
++
+ # [N-001] event_source_plan_integration — fetch events if enabled
+ # [T-006] event_source_discovery — use detailed fetch for richer metadata
+ events_map: dict[str, list[str]] = {}
+ event_items_by_symbol: dict[str, list] = {}
+
+[0m
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py[90m [limit=20, offset=373][0m
+Now update where candidates get the new date fields set before saving:
+[0m
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -371,13 +371,21 @@
+         plan.metadata["validation_issues"] = issues
+ 
+     # Optionally persist candidates  # [G-004] tradeflow_candidate_date
+     if save_candidates and tf_db_path:
+-        for c in candidates:
++        for c in candidates:  # [TF-DATE-001] tradeflow_date_semantics
+             if c.trade_date != trade_date:
+                 c.trade_date = trade_date
++            c.plan_date = trade_date
++            c.effective_trade_date = eff_trade_date
++            c.observe_date = obs_date
+             save_candidate(c, tf_db_path)
+ 
++    # [TF-DATE-001] tradeflow_date_semantics — set plan date fields
++    plan.plan_date = trade_date
++    plan.effective_trade_date = eff_trade_date
++    plan.observe_date = obs_date
++
+     return plan
+ 
+ 
+ def save_plan(plan: DailyPlan, db_path: str) -> int:
+
+[0m
+Now update save_plan to include the new columns:
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py[90m [limit=30, offset=388][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -394,15 +394,20 @@
+ row = plan.to_db_row()
+ try:
+     conn.execute(
+         "INSERT INTO tradeflow_daily_plans "
+-        "(trade_date, mode, summary, candidates_json, metadata_json, created_at) "
+-        "VALUES (?, ?, ?, ?, ?, ?) "
++        "(trade_date, mode, summary, candidates_json, metadata_json, created_at, "
++        "plan_date, effective_trade_date, observe_date) "  # [TF-DATE-001]
++        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+         "ON CONFLICT(trade_date, mode) DO UPDATE SET "
+         "summary=excluded.summary, candidates_json=excluded.candidates_json, "
+-        "metadata_json=excluded.metadata_json",
++        "metadata_json=excluded.metadata_json, "
++        "plan_date=excluded.plan_date, "  # [TF-DATE-001]
++        "effective_trade_date=excluded.effective_trade_date, "
++        "observe_date=excluded.observe_date",
+         (row["trade_date"], row["mode"], row["summary"],
+-         row["candidates_json"], row["metadata_json"], row["created_at"]),
++         row["candidates_json"], row["metadata_json"], row["created_at"],
++         row["plan_date"], row["effective_trade_date"], row["observe_date"]),  # [TF-DATE-001]
+     )
+     conn.commit()
+     row_id = conn.execute(
+         "SELECT id FROM tradeflow_daily_plans WHERE trade_date=? AND mode=?",
+
+[0m
+Now update `_build_plan_entry` to include the new date fields in plan entry output:
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py[90m [limit=70, offset=65][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -115,8 +115,11 @@
+     "deep_ta_model": candidate.deep_ta_model,  # [M-006]
+     "deep_ta_report_path": candidate.deep_ta_report_path,  # [M-006]
+     "deep_ta_dispatch_time": candidate.deep_ta_dispatch_time,  # [M-006]
+     "deep_ta_position_context": candidate.deep_ta_position_context,  # [M-006]
++    "plan_date": candidate.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
++    "effective_trade_date": candidate.effective_trade_date,  # [TF-DATE-001]
++    "observe_date": candidate.observe_date,  # [TF-DATE-001]
+ }
+ 
+ # [T-006] event_source_discovery — add event metadata to plan entry
+ if event_items:
+
+[0m
+Now update discovery.py similarly:
+[0m→ [0mRead tradingagents/tradeflow/discovery.py[90m [limit=20, offset=135][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -137,8 +137,13 @@
+ """
+ if not trade_date:
+     trade_date = datetime.now().strftime("%Y-%m-%d")
+ 
++# [TF-DATE-001] tradeflow_date_semantics — resolve date semantics
++from .date_semantics import resolve_effective_trade_date, resolve_observe_date
++eff_trade_date = resolve_effective_trade_date(trade_date)
++obs_date = resolve_observe_date(eff_trade_date)
++
+ events_map: dict[str, list[str]] = {}
+ event_items_by_symbol: dict[str, list] = {}  # [T-006] event_source_discovery
+ event_source_status = "NOT_QUERIED"  # [T-006]
+ event_source_error = ""  # [T-006]
+
+[0m
+Now find where candidates are saved in discovery.py and update:
+[0m→ [0mRead tradingagents/tradeflow/discovery.py[90m [limit=30, offset=305][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -308,11 +308,14 @@
+ 
+ if save_candidates and tf_db_path:
+     init_db(tf_db_path)
+     from .candidate_engine import save_candidate
+-    for c in top_candidates:
++    for c in top_candidates:  # [TF-DATE-001] tradeflow_date_semantics
+         if c.trade_date != trade_date:
+             c.trade_date = trade_date
++        c.plan_date = trade_date
++        c.effective_trade_date = eff_trade_date
++        c.observe_date = obs_date
+         save_candidate(c, tf_db_path)
+ 
+ # [UI-007] tradeflow_filtered_trace — persist filtered symbols
+ run_id = datetime.now().strftime("%Y%m%d%H%M%S")
+
+[0m
+[0m✱ [0mGrep "def _build_discovery_entry"[90m 1 match[0m
+Now find the `_build_discovery_entry` to add the new date fields:
+[0m→ [0mRead tradingagents/tradeflow/discovery.py[90m [limit=60, offset=380][0m
+[0m→ [0mRead tradingagents/tradeflow/discovery.py[90m [limit=25, offset=440][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/discovery.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/discovery.py
+@@ -440,8 +440,11 @@
+     "missing_data_fields": candidate.missing_data_fields,  # [S-008]
+     "what_to_upgrade": candidate.what_to_upgrade,  # [S-008]
+     "evidence_gate_applied": candidate.evidence_gate_applied,  # [S-008]
+     "universe_sources": candidate.universe_sources,  # [M-003] tradeflow_universe_manager
++    "plan_date": candidate.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
++    "effective_trade_date": candidate.effective_trade_date,  # [TF-DATE-001]
++    "observe_date": candidate.observe_date,  # [TF-DATE-001]
+ }
+ 
+ # [T-006] event_source_discovery — add event metadata to discovery entry
+ if event_items:
+
+[0m
+Now the critical part — update the API service layer to query by `effective_trade_date` for observe/ta-queue, with fallback to `trade_date`:
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -123,8 +123,11 @@
+     "resonance_count": _rget(row, "resonance_count", 0) or 0,
+     "ta_budget_priority": _rget(row, "ta_budget_priority", 0) or 0,
+     "tier_reason": _rget(row, "tier_reason", ""),
+     "missing_evidence_for_upgrade": _parse_json(_rget(row, "missing_evidence_for_upgrade_json"), []),
++    "plan_date": _rget(row, "plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
++    "effective_trade_date": _rget(row, "effective_trade_date", ""),  # [TF-DATE-001]
++    "observe_date": _rget(row, "observe_date", ""),  # [TF-DATE-001]
+     "created_at": _rget(row, "created_at", ""),
+     "updated_at": _rget(row, "updated_at", ""),
+ }
+ 
+
+[0m
+Now I need to add a helper function for the `effective_trade_date` aware queries, and update `get_candidates`, `get_observe`, `get_ta_queue`, `get_daily_plan`, `get_candidate_detail`, and `get_review`:

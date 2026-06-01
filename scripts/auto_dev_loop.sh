@@ -526,7 +526,16 @@ FIX_EOF
     if [ "$CODEX_AVAILABLE" = true ]; then
         log "Running Codex review..."
         set +e
-        timeout 120 codex review --uncommitted > "$REVIEW_FILE" 2>&1
+        if command -v gtimeout &>/dev/null; then
+            gtimeout 120 codex review --uncommitted > "$REVIEW_FILE" 2>&1
+        elif command -v timeout &>/dev/null; then
+            timeout 120 codex review --uncommitted > "$REVIEW_FILE" 2>&1
+        else
+            codex review --uncommitted > "$REVIEW_FILE" 2>&1 &
+            CODXPID=$!
+            sleep 120 && kill $CODXPID 2>/dev/null &
+            wait $CODXPID 2>/dev/null
+        fi
         CODEX_EXIT=$?
         set -e
         log "Codex exit code: $CODEX_EXIT"
