@@ -363,7 +363,7 @@
 ### H-002: 政策连续性与级别权重评分（P1）
 - **描述**：实现 `Mandate Score` 的第一层：识别某个政策/产业主题是否持续升温，以及其信号来自什么级别的来源。
 - **优先级**：P1
-- **状态**：done -- implemented mandate_score.py with 91 tests
+- **状态**：done -- commit ed0ffce
 - **前置条件**：`H-001` 完成 ✓。
 - **执行约束**：
   - 规则评分，不调用 LLM。
