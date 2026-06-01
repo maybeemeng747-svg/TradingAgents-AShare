@@ -29,6 +29,11 @@ from tradingagents.agents.utils.agent_utils import (
     get_announcements,
 )
 from tradingagents.dataflows.interface import get_last_hit_vendor  # [N-003] cn_astock_raw_evidence
+from tradingagents.dataflows.evidence_contract import (  # [DATA-004] raw_evidence_contract
+    resolve_data_type as _resolve_data_type_contract,
+    resolve_endpoint as _resolve_endpoint_contract,
+    resolve_fallback_info as _resolve_fallback_info_contract,
+)
 
 INDICATORS = [
     "close_50_sma", "close_200_sma", "close_10_ema",
@@ -42,6 +47,42 @@ import numpy as np
 _OHLCV_COLS = ["date", "open", "high", "low", "close", "volume"]
 
 _logger = logging.getLogger(__name__)
+
+
+_EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
+    "stock_data": "ohlcv",
+    "news": "news",
+    "global_news": "global_news",
+    "fund_flow_board": "board_fund_flow",
+    "fund_flow_individual": "fund_flow",
+    "lhb": "lhb",
+    "fundamentals": "financials",
+    "balance_sheet": "financials",
+    "cashflow": "financials",
+    "income_statement": "financials",
+    "insider_transactions": "insider",
+    "zt_pool": "zt_pool",
+    "hot_stocks": "hot_stocks",
+    "indicators": "ohlcv",
+    "vpa_indicators": "ohlcv",
+    "announcements": "notice",
+}
+
+
+def _resolve_data_type_for_key(key: str) -> str:  # [DATA-004] raw_evidence_contract
+    return _EVIDENCE_KEY_TO_DATA_TYPE.get(key, "")
+
+
+def _resolve_endpoint_for_vendor(vendor: str, data_type: str) -> str:  # [DATA-004]
+    if not data_type:
+        return ""
+    return _resolve_endpoint_contract(vendor, data_type)
+
+
+def _resolve_fallback_for_vendor(vendor: str, data_type: str) -> Optional[str]:  # [DATA-004]
+    if not data_type:
+        return None
+    return _resolve_fallback_info_contract(vendor, data_type)
 
 
 def _parse_csv_to_dataframe(raw_csv: str) -> Optional[pd.DataFrame]:
@@ -531,6 +572,7 @@ class DataCollector:
 
     def build_raw_evidence(self, ticker: str, trade_date: str) -> Dict[str, Any]:
         # [G-006] raw_evidence_snapshot
+        # [DATA-004] raw_evidence_contract: upgraded with endpoint/fallback_from/source_url
         pool = self.get(ticker, trade_date)
         if not pool:
             return {}
@@ -554,6 +596,10 @@ class DataCollector:
             entry: Dict[str, Any] = {
                 "status": status,
                 "vendor": "akshare",
+                "endpoint": "",  # [DATA-004] raw_evidence_contract
+                "fallback_from": None,  # [DATA-004] raw_evidence_contract
+                "source_url": None,  # [DATA-004] raw_evidence_contract
+                "field": key,  # [DATA-004] raw_evidence_contract
                 "as_of": trade_date,
                 "fetched_at": now_iso,
                 "record_count": self._count_records(raw_value),
@@ -561,6 +607,8 @@ class DataCollector:
                 "error": None,
                 "is_realtime_patched": False,
             }
+
+            data_type = _resolve_data_type_for_key(key)  # [DATA-004]
 
             if key == "stock_data" and isinstance(raw_value, str):
                 actual_vendor = get_last_hit_vendor("get_stock_data")
@@ -609,18 +657,30 @@ class DataCollector:
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
 
+            # [DATA-004] raw_evidence_contract: resolve endpoint and fallback info
+            entry["endpoint"] = _resolve_endpoint_for_vendor(
+                entry["vendor"], data_type
+            )
+            entry["fallback_from"] = _resolve_fallback_for_vendor(
+                entry["vendor"], data_type
+            )
+
             if status == "FAILED" and isinstance(raw_value, str):
                 entry["error"] = raw_value[:200]
 
             raw_evidence[key] = {
                 "raw": raw_value,
+                "field": entry["field"],  # [DATA-004]
                 "status": entry["status"],
                 "vendor": entry["vendor"],
+                "endpoint": entry["endpoint"],  # [DATA-004]
                 "as_of": entry["as_of"],
                 "fetched_at": entry["fetched_at"],
                 "record_count": entry["record_count"],
                 "unit": entry["unit"],
                 "error": entry["error"],
+                "fallback_from": entry["fallback_from"],  # [DATA-004]
+                "source_url": entry["source_url"],  # [DATA-004]
                 "is_realtime_patched": entry["is_realtime_patched"],
                 "source_type": entry.get("source_type"),
                 "unit_verified": entry.get("unit_verified", None),

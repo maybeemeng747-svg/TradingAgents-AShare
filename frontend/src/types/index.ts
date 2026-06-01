@@ -948,6 +948,7 @@ export interface TradeFlowDataHealthResponse {
     total_signals_today: number
     latest_observe_check_time: string | null
     latest_signal_time: string | null
+    evidence_contract_available: boolean
 }
 
 // [UI-007] tradeflow_filtered_trace

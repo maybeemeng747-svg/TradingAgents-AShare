@@ -202,6 +202,7 @@ class TradeFlowDataHealthResponse(BaseModel):
     total_signals_today: int = 0
     latest_observe_check_time: Optional[str] = None
     latest_signal_time: Optional[str] = None
+    evidence_contract_available: bool = False  # [DATA-004] raw_evidence_contract
 
 
 # [UI-007] tradeflow_filtered_trace

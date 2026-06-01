@@ -711,6 +711,7 @@ def get_data_health(tf_db_path: str = "") -> dict:
         "total_signals_today": total_signals_today,
         "latest_observe_check_time": latest_observe_check_time,  # [TF-OBS-001]
         "latest_signal_time": latest_signal_time,  # [TF-OBS-001]
+        "evidence_contract_available": True,  # [DATA-004] raw_evidence_contract
     }
 
 

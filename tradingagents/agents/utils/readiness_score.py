@@ -159,6 +159,22 @@ def calculate_data_completeness(
 calculate_source_coverage = calculate_data_completeness
 
 
+def calculate_evidence_coverage_from_contract(raw_evidence: Optional[dict] = None) -> int:
+    """[DATA-004] raw_evidence_contract: calculate evidence coverage directly from contract.
+
+    Uses the structured contract fields (status, unit, vendor, endpoint) rather
+    than text-based regex. Falls back to 0 if no raw_evidence available.
+
+    Unit unknown or field conflict causes coverage downgrade.
+    """
+    if not raw_evidence:
+        return 0
+
+    from tradingagents.dataflows.evidence_contract import compute_contract_completeness
+    result = compute_contract_completeness(raw_evidence)
+    return result["completeness_score"]
+
+
 def calculate_evidence_coverage(
     ohlcv_5d: str = "not_queried",
     volume: str = "not_queried",

@@ -229,14 +229,23 @@ def create_risk_manager(llm, memory):
 
         # [DATA-P0-603629] astock_source_fallback: use raw_evidence status
         # for data source availability display, not just report text existence.
+        # [DATA-004] raw_evidence_contract: enhanced with vendor/endpoint/fallback info
         _raw_ev = state.get("metadata", {}).get("raw_evidence") or {}
         _status_overrides = {}
+        _contract_overrides = {}
         for _ev_key, _label in [
             ("fund_flow_individual", "主力资金"),
         ]:
             _ev_entry = _raw_ev.get(_ev_key)
             if isinstance(_ev_entry, dict) and "status" in _ev_entry:
                 _status_overrides[_label] = _ev_entry["status"]
+                _contract_overrides[_label] = {
+                    "vendor": _ev_entry.get("vendor", ""),
+                    "endpoint": _ev_entry.get("endpoint", ""),
+                    "fallback_from": _ev_entry.get("fallback_from"),
+                    "unit": _ev_entry.get("unit"),
+                    "unit_verified": _ev_entry.get("unit_verified"),
+                }
 
         checklist_lines = []
         for name, available in data_sources:
@@ -248,7 +257,16 @@ def create_risk_manager(llm, memory):
                     status = "❌"
                 else:
                     status = "⚠️"
-                checklist_lines.append(f"  {status} {name} (raw: {ev_status})")
+                line = f"  {status} {name} (raw: {ev_status})"
+                contract_info = _contract_overrides.get(name)
+                if contract_info:
+                    if contract_info.get("fallback_from"):
+                        line += f" [fallback: {contract_info['fallback_from']}→{contract_info['vendor']}]"
+                    if contract_info.get("endpoint"):
+                        line += f" endpoint={contract_info['endpoint']}"
+                    if contract_info.get("unit") and contract_info.get("unit_verified") is False:
+                        line += " unit未校验"
+                checklist_lines.append(line)
             else:
                 status = "✅" if available else "❌"
                 checklist_lines.append(f"  {status} {name}")

@@ -4,6 +4,80 @@
 
 ---
 
+## 2026-06-02 | DATA-004 manual closeout
+
+- **执行者**：Codex
+- **背景**：OpenCode 进程结束后 DATA-004 仍有未提交代码和 task_run 残留 `NEEDS_HUMAN`；自动失败原因是测试命令使用了不存在的 glob。
+- **收尾修复**：
+  - `frontend/src/types/index.ts` 同步新增 `evidence_contract_available`，避免后端字段与前端类型不一致。
+  - `tests/test_ui001_tradeflow_api.py` 增加 data-health 字段断言。
+  - `docs/TASKS.md` 修正 DATA-004/H-004/DATA-002 状态一致性。
+  - `docs/task_runs/DATA-004-20260602-011020/` 补充 round3 测试与 Codex review 记录。
+- **验证**：
+  - DATA-004 targeted: 88 passed。
+  - API/raw-evidence regression: 135 passed。
+  - Frontend build: passed。
+
+---
+
+## 2026-06-02 | DATA-004 fix: 测试运行路径修正
+
+- **执行者**：OpenCode
+- **问题**：上一轮 task run 使用了错误的 glob pattern `tests/test_tradeflow_*data*.py`，导致 pytest 报 "file or directory not found"，实际测试文件名为 `tests/test_data004_evidence_contract.py`
+- **修复**：无需代码修改，69 个测试全部通过。问题仅在调度层的测试路径配置。
+
+---
+
+## 2026-06-02 | DATA-004: raw_evidence 来源契约升级
+
+- **执行者**：OpenCode
+- **任务**：DATA-004 — 把所有关键字段的来源、端点、时间、单位、状态纳入 raw_evidence，使报告和前端都能回答"这个数从哪里来、是否实时、单位是什么、是否 fallback"
+- **修改文件**：
+  - `tradingagents/dataflows/evidence_contract.py` — 新建：[DATA-004] raw_evidence_contract
+    - `EvidenceContract` 数据类：field / value / unit / vendor / endpoint / as_of / fetched_at / status / fallback_from / source_url / error / is_realtime_patched / source_type / unit_verified / query_mode / adjustment / force_reason / record_count
+    - `to_dict()` / `from_dict()` 序列化往返
+    - `has_data` / `is_failed` / `is_fallback` / `unit_known` / `endpoint_known` 属性
+    - `_EVIDENCE_KEY_TO_DATA_TYPE`：raw_evidence key → source_catalog DataType 映射
+    - `resolve_data_type(key)`：evidence key 转 DataType
+    - `resolve_endpoint(vendor, data_type)`：从 source_catalog 查询 vendor 对应的 endpoint
+    - `resolve_fallback_info(vendor, data_type)`：判断是否为 fallback 并返回原始 vendor
+    - `_REQUIRED_FIELDS_FOR_COMPLETENESS`：关键字段完整性检查清单
+    - `compute_contract_completeness(raw_evidence)`：从 contract 字段计算完整度评分
+    - `build_data_source_summary(raw_evidence)`：生成数据源摘要列表
+  - `tradingagents/graph/data_collector.py` — [DATA-004] build_raw_evidence() 升级
+    - 每条 evidence entry 新增：`field` / `endpoint` / `fallback_from` / `source_url`
+    - `_EVIDENCE_KEY_TO_DATA_TYPE` 本地映射
+    - `_resolve_data_type_for_key()` / `_resolve_endpoint_for_vendor()` / `_resolve_fallback_for_vendor()` helper
+    - 每条 entry 在写入 raw_evidence 之前自动查询 source_catalog 获取 endpoint 和 fallback 信息
+    - 向后兼容：保留所有旧字段（raw / status / vendor / as_of / fetched_at / record_count / unit / error / is_realtime_patched 等）
+  - `tradingagents/agents/utils/readiness_score.py` — [DATA-004] 新增 `calculate_evidence_coverage_from_contract()`
+  - `tradingagents/agents/managers/risk_manager.py` — [DATA-004] 数据源可用性显示增强
+    - 新增 `_contract_overrides`：提取 vendor / endpoint / fallback_from / unit / unit_verified
+    - checklist 行追加 `[fallback: cn_akshare→cn_astock]`、`endpoint=...`、`unit未校验` 等信息
+  - `api/services/tradeflow_service.py` — [DATA-004] data_health 新增 `evidence_contract_available`
+  - `api/tradeflow_schemas.py` — [DATA-004] `TradeFlowDataHealthResponse` 新增 `evidence_contract_available` 字段
+  - `tests/test_data004_evidence_contract.py` — 新建，69 个测试覆盖：
+    - `TestEvidenceContract` (10): 默认值/to_dict/from_dict/最小from_dict/往返/has_data/is_failed/is_fallback/unit_known/endpoint_known
+    - `TestResolveDataType` (8): stock_data/fund_flow_individual/fund_flow_board/lhb/news/announcements/unknown/全覆盖
+    - `TestResolveEndpoint` (5): akshare/astock/unknown_vendor/unknown_type/empty
+    - `TestResolveFallbackInfo` (3): primary/fallback/unknown
+    - `TestComputeContractCompleteness` (6): 空/完整/缺失/降级/unknown_unit/unverified
+    - `TestBuildDataSourceSummary` (4): keys/structure/empty/non_dict
+    - `TestBuildRawEvidenceContractFields` (8): field/endpoint/fallback_from/source_url/stock_data/fund_flow/lhb/fallback检测
+    - `TestData004Acceptance` (11): fallback显示实际vendor/unit未知降级/字段冲突降级/失败状态/endpoint/contract_completeness/空/空dict/unit_verified/query_mode/unit
+    - `TestEdgeCases` (8): None/空字符串/dict/list/空list/realtime_patched/adjustment/无API key/向后兼容
+    - `TestIntegrationWithReadiness` (4): infer_evidence/failed_fund_flow/fund_flow_provenance/lhb_provenance
+- **测试结果**：69 passed (DATA-004)；2602 passed (全部)；17 skipped；0 failed
+- **关键逻辑**：
+  - 契约结构：每条 raw_evidence entry 包含 field / vendor / endpoint / status / unit / fallback_from / source_url / error 等完整溯源字段
+  - endpoint 解析：从 source_catalog 查询 vendor + data_type → endpoint 映射，如 `cn_akshare` + `ohlcv` → `stock_zh_a_hist`
+  - fallback 检测：当前 vendor 不是 primary 时，`fallback_from` 记录 primary vendor 名称
+  - 完整度评分：`compute_contract_completeness()` 按 `_REQUIRED_FIELDS_FOR_COMPLETENESS` 检查 status / vendor / unit / unit_verified，单位未知或字段冲突时降级
+  - 向后兼容：旧字段全部保留，新字段为增量；`infer_evidence_statuses()` / `build_fund_flow_provenance()` / `build_lhb_provenance()` 不受影响
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未改生产 `tradingagents.db` schema
+
+---
+
 ## 2026-06-02 | DATA-003: 公告/研报/政策事件源归一化接入昊天雷达
 
 - **执行者**：OpenCode
@@ -1408,3 +1482,12 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-003-20260602-round1.txt
 - **Run archive**: docs/task_runs/DATA-003-20260602-010127/
+
+## 2026-06-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-004 - raw_evidence 来源契约升级（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Test failed: pytest tests/test_g006_raw_evidence_snapshot.py tests/test_tradeflow_*data*.py -q (exit 4)
+- **Run archive**: docs/task_runs/DATA-004-20260602-011020/

@@ -31,10 +31,10 @@
 5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
 6. `H-002`：政策连续性与级别权重评分（P1，done）。
 7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
-8. `H-004`：左侧埋伏评分与候选类型分流（P0，ready，依赖 H-002/H-003 ✓）。
-9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，ready，依赖 DATA-001 ✓）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
 10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
-11. `DATA-004`：raw_evidence 来源契约升级（P1，ready，依赖 DATA-001 ✓）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
 12. `H-005`：TradeFlow 前端昊天候选池视图（P2，proposed，依赖 H-004）。
 13. `H-006`：昊天候选池回放评估与反证机制（P2，proposed，依赖 H-004）。
 
@@ -44,9 +44,9 @@
 
 1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
 2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
-3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，ready）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
 4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
-5. `DATA-004`：raw_evidence 来源契约升级（P1，ready）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
 6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P2，proposed）。
 
 ### 总体路线图
@@ -286,7 +286,7 @@
 ### DATA-004: raw_evidence 来源契约升级（P1）
 - **描述**：把所有关键字段的来源、端点、时间、单位、状态纳入 raw_evidence，使报告和前端都能回答“这个数从哪里来、是否实时、单位是什么、是否 fallback”。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done -- commit pending
 - **前置条件**：`DATA-001` 完成 ✓。
 - **执行约束**：
   - 不提交任何明文密钥。
@@ -302,7 +302,7 @@
 - **验收方式**：
   - fallback 命中时 raw_evidence 显示实际 vendor，而不是默认 akshare。
   - 单位未知或字段冲突时完整度降级。
-  - `pytest tests/test_g006_raw_evidence_snapshot.py tests/test_tradeflow_*data*.py -q` 通过。
+  - `pytest tests/test_data004_evidence_contract.py tests/test_g006_raw_evidence_snapshot.py tests/test_raw_evidence_vendor.py -q` 通过。
 - **代码标注要求**：`# [DATA-004] raw_evidence_contract`
 
 ### DATA-005: 数据源 fixture replay 与限流/失败回放（P2）

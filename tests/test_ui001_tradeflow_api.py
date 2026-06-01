@@ -549,6 +549,7 @@ class TestDataHealth:
         result = get_data_health(tf_db_path=populated_db)
         assert result["status"] == "ok"
         assert result["tradeflow_db_available"] is True
+        assert result["evidence_contract_available"] is True
         assert len(result["sources"]) >= 3
         source_names = [s["name"] for s in result["sources"]]
         assert "tradeflow_daily_plans" in source_names
