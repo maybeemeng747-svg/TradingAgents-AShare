@@ -4,6 +4,46 @@
 
 ---
 
+## 2026-06-02 | H-005: TradeFlow 前端昊天候选池视图
+
+- **执行者**：OpenCode
+- **任务**：H-005 — 在 TradeFlow 前端增加"昊天雷达/政策左侧"视图，把政策主题、受益路径、候选类型、证据和下一步验证条件展示出来
+- **修改文件**：
+  - `api/tradeflow_schemas.py` — [H-005] mandate_radar_ui
+    - `TradeFlowCandidateItem` 新增 8 个字段：`candidate_type` / `mandate_score` / `ambush_score` / `mandate_topic` / `company_role` / `beneficiary_path` / `candidate_type_reason` / `deep_ta_route`
+    - `TradeFlowCandidateDetail` 新增 3 个字段：`ambush_reasons` / `ambush_evidence_refs` / `mandate_evidence_refs`
+  - `api/services/tradeflow_service.py` — [H-005] mandate_radar_ui
+    - `_row_to_candidate_item()` 新增 9 列读取：candidate_type / mandate_score_component / ambush_score / mandate_topic / company_role / beneficiary_path_json / candidate_type_reason / deep_ta_route
+    - `_row_to_candidate_detail()` 新增 3 列读取：ambush_reasons_json / ambush_evidence_refs_json / mandate_evidence_refs_json
+    - `get_candidates()` 新增 `candidate_type` 参数，支持按候选类型服务端过滤
+  - `api/main.py` — [H-005] mandate_radar_ui
+    - `tradeflow_candidates` 端点新增 `candidate_type` query parameter，透传到 service
+  - `frontend/src/types/index.ts` — [H-005] mandate_radar_ui
+    - `TradeFlowCandidateItem` 新增 8 个字段
+    - `TradeFlowCandidateDetail` 新增 3 个字段
+  - `frontend/src/services/api.ts` — [H-005] mandate_radar_ui
+    - `getTradeFlowCandidates()` 新增 `candidateType` 参数
+  - `frontend/src/pages/TradeFlow.tsx` — [H-005] mandate_radar_ui
+    - 新增 `candidateTypeFilter` 状态 + `candidateTypeLabel()` helper
+    - 候选类型筛选下拉框（全部/昊天左侧/政策确认/技术交易/事件观察/伪政策/过热规避）
+    - 候选表格新增列：候选类型、昊天分、埋伏分、政策主题、公司角色
+    - 空状态说明：昊天类型无匹配时显示政策源不足/路径不足/已过热三原因
+  - `frontend/src/components/TradeFlowCandidateDrawer.tsx` — [H-005] mandate_radar_ui
+    - 新增"政策逻辑"区：候选类型 badge + 政策主题 + 公司角色 + 受益路径 + 昊天分/埋伏分
+    - 分类理由展示（candidate_type_reason）
+    - 政策证据引用列表（mandate_evidence_refs，最多显示 5 条）
+    - "为什么不是政策候选"说明（TECH_TRADE 类型）
+    - "缺什么验证"说明（POLICY_AMBUSH 类型）
+    - 新增 helper：candidateTypeColor / candidateTypeLabel / companyRoleLabel
+- **测试结果**：47 passed (UI-001 API)；954 passed (tradeflow + mandate 全部)；6 skipped；0 failed；npm run build 通过
+- **关键逻辑**：
+  - 后端 H-004 DB 字段 → API 响应完整暴露（candidate_type/mandate_score/ambush_score/mandate_topic/company_role/beneficiary_path）
+  - 候选类型 6 类筛选：POLICY_AMBUSH / POLICY_CONFIRM / TECH_TRADE / EVENT_WATCH / PSEUDO_POLICY / OVERHEATED_AVOID
+  - 前端表格新增 5 列（候选类型/昊天分/埋伏分/政策主题/角色），移除触发价/失效价列（信息密度优先）
+  - 抽屉新增"政策逻辑"区：分类理由、证据引用、缺什么验证、为什么不是政策候选
+  - 空状态按 candidateTypeFilter 区分原因：政策源不足/路径不足/已过热
+- **执行边界**：未改 `tradingagents/prompts/`、未写生产 DB、未 push、未触发 TA/LLM
+
 ## 2026-06-02 | DATA-005: 数据源 fixture replay 与限流/失败回放
 
 - **执行者**：OpenCode
@@ -1572,3 +1612,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-005-20260602-round1.txt
 - **Run archive**: docs/task_runs/DATA-005-20260602-021515/
+
+## 2026-06-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-005 - TradeFlow 前端昊天候选池视图（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/H-005-20260602-round1.txt
+- **Run archive**: docs/task_runs/H-005-20260602-022257/
