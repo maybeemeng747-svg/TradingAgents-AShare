@@ -207,7 +207,7 @@
 ### DATA-001: A股数据源能力目录与 fallback 矩阵（P1）
 - **描述**：建立本项目统一的数据源能力目录，明确每个 vendor/endpoint 能提供什么字段、适用场景、freshness、限流风险和 fallback 顺序。
 - **优先级**：P1
-- **状态**：done -- [DATA-001] source_catalog
+- **状态**：done -- commit 9821932
 - **背景**：
   - SimonLin1212 `a-stock-data` 的核心启发不是 Agent 数量，而是把腾讯/东财/新浪/巨潮/财联社等数据源做成可调用、可组合的端点目录。
   - 本项目已有 AKShare、BaoStock、yfinance、cn_astock、event_source，但调用关系和 fallback 口径还不够透明。
