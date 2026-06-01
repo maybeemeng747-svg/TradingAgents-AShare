@@ -551,6 +551,8 @@ def main() -> None:
     parser.add_argument("--repo-dir", default=None, help="Repository root directory")
     parser.add_argument("--with-sample-replay", action="store_true",  # [V-002]
                         help="Include TradeFlow candidate sample replay in report")
+    parser.add_argument("--with-data-source-digest", action="store_true",  # [DATA-006]
+                        help="Include data source health digest in report")
     args = parser.parse_args()
 
     repo_dir = Path(args.repo_dir) if args.repo_dir else Path(__file__).resolve().parent.parent
@@ -583,6 +585,22 @@ def main() -> None:
     reports_dir.mkdir(parents=True, exist_ok=True)
     report_path = reports_dir / f"{target_date}.md"
     report_path.write_text(report, encoding="utf-8")
+
+    if args.with_data_source_digest:  # [DATA-006]
+        try:
+            from tradingagents.dataflows.data_source_daily_digest import (
+                build_digest_section_for_nightly_report,
+            )
+            ds_reports = str(repo_dir / "docs" / "data_source_reports")
+            section = build_digest_section_for_nightly_report(
+                reports_dir=ds_reports, target_date=target_date,
+            )
+            with open(report_path, "a", encoding="utf-8") as f:
+                f.write("\n")
+                f.write(section)
+        except Exception:
+            pass
+
     print(f"Report written to {report_path}")
 
 

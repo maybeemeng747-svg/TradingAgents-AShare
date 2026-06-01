@@ -1,0 +1,3845 @@
+Task: DATA-006 - 数据源质量报告接入夜间日报（P2）
+Date: 2026-06-02_03:15:40
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019e849b-bc8c-7632-b76d-82600b6c078d
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md && printf '\\n---TASKS---\\n' && sed -n '1,220p' docs/TASKS.md && printf '\\n---DECISIONS---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n---DEVLOG---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+---TASKS---
+# 任务池
+
+> 最后更新：2026-06-01
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，ready，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，ready，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，ready，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，ready）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入 TA 和回放评估。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## TF. TradeFlow 主链路稳定任务池（2026-06-01 新增）
+
+> 目标：先把 TradeFlow 的时间语义和盘中观察闭环打通，再继续建设昊天雷达。TradeFlow 允许周末/盘后生成候选池，并在下一个 A 股交易日观察；不能把候选生成日期、计划生效日期和实际观察日期混成同一个字段。
+
+### TF-DATE-001: TradeFlow 日期语义拆分与非交易日计划生效（P0）
+- **描述**：修复 `trade_date` 同时表示“候选池生成日期/计划生效交易日/盘中观察日期”的问题，支持 2026-05-31 这类非交易日生成候选池，并在 2026-06-01 盘中继续观察。
+- **优先级**：P0
+- **状态**：done -- commit a200103
+- **背景**：
+  - 用户可以在周末、节假日或交易日收盘后生成候选池，这些候选应在下一个 A 股交易日进入 Observe，而不是被锁在生成日。
+  - 当前 `tradeflow_daily_plans` 和 `tradeflow_candidates` 主要按 `trade_date` 查询，导致前端选择 2026-06-01 的 Observe 时查不到 2026-05-31 生成的候选。
+  - 这会阻塞“周末研究/盘前计划/次日盯盘”的实际工作流。
+- **日期语义定义**：
+  1. `plan_date`：候选池生成日期，周末/节假日也允许。
+  2. `effective_trade_date`：计划生效交易日，用于盘中观察和 TA 队列。
+  3. `observe_date`：实际观察日期；第一版可等同 `effective_trade_date`，但 API/前端命名要预留。
+- **执行约束**：
+  - 不写生产 `tradingagents.db` schema；只允许修改 TradeFlow 自有 SQLite 表、兼容迁移或服务层查询。
+  - 不触发真实 TA/LLM 调用。
+  - 不删除现有 `tradeflow.db` 历史数据。
+  - 保持旧数据兼容：没有新字段的旧行仍可按原 `trade_date` 查询。
+- **实现要点**：
+  1. 新增日期 helper，例如 `resolve_effective_trade_date(plan_date, now=None)`：
+     - 非交易日生成：`effective_trade_date = 下一个 A 股交易日`。
+     - 交易日盘前生成：`effective_trade_date = 当天`。
+     - 交易日盘中生成：默认 `effective_trade_date = 当天`。
+     - 交易日收盘后生成：`effective_trade_date = 下一个 A 股交易日`。
+  2. `tradeflow_daily_plans` / `tradeflow_candidates` 兼容新增字段：
+     - `plan_date`
+     - `effective_trade_date`
+     - `observe_date`
+  3. 生成候选池时：
+     - `trade_date` 保持兼容旧字段，可暂等于 `plan_date`。
+     - 新字段必须写入 DB 和 daily plan metadata/candidates_json。
+  4. Observe / TA Queue / Review 查询时：
+     - 优先按 `effective_trade_date` 或 `observe_date` 查询。
+     - 如果新字段不存在或为空，fallback 到旧 `trade_date`。
+     - 查询 `2026-06-01` Observe 时，应能找到 `plan_date=2026-05-31, effective_trade_date=2026-06-01` 的候选。
+  5. 前端 TradeFlow 显示：
+     - 候选池日期：`plan_date`
+     - 生效交易日：`effective_trade_date`
+     - 观察日期：`observe_date`
+     - 当三者不同，显示提示：“该候选池由 5月31日生成，将在 6月1日观察”。
+  6. 数据健康页补充：
+     - `latest_plan_date`
+     - `latest_effective_trade_date`
+     - `latest_observe_date`
+- **验收方式**：
+  - 构造 2026-05-31 非交易日生成候选池，`effective_trade_date` 自动为 2026-06-01。
+  - `GET /v1/tradeflow/observe?date=2026-06-01` 能返回 2026-05-31 生成的候选。
+  - `GET /v1/tradeflow/candidates?date=2026-05-31` 仍能看到候选池本身。
+  - 交易日盘前、盘中、盘后三种场景有单测覆盖。
+  - 旧库无新字段时 API 不报 500。
+  - `pytest tests/test_ui001_tradeflow_api.py tests/test_tradeflow_*.py -q` 通过；前端构建通过。
+- **代码标注要求**：`# [TF-DATE-001] tradeflow_date_semantics` / `// [TF-DATE-001] tradeflow_date_semantics`
+
+### TF-OBS-001: TradeFlow 盘中观察执行器与信号落库（P0）
+- **描述**：在 TF-DATE-001 之后，把现有 `run_observe_check()` 状态机接入真实执行链路，定时读取当日生效候选、拉取实时价格、更新观察状态并写入信号表。
+- **优先级**：P0
+- **状态**：done -- commit f8db3de
+- **前置条件**：`TF-DATE-001` 完成 ✓
+- **背景**：
+  - 当前 M-005 已有 Observe 状态机，前端也能展示 Observe Tab，但没有 runner 定时执行，所以 `observe_state` 长期停留在 `WAITING`，`tradeflow_signals` 为空。
+  - Deep TA 门控依赖 `observe_state=TRIGGERED`，因此盘中观察不落地会连带阻塞 TA 队列。
+- **执行约束**：
+  - 不自动调用高成本 LLM。
+  - 不自动输出强买卖词。
+  - 盘中检查频率第一版保持低频，默认 30 分钟或人工触发。
+  - 非交易日不执行实时观察，只输出明确状态。
+- **实现要点**：
+  1. 新增 observe runner/service：
+     - 读取 `effective_trade_date = today` 且 `status='active'` 的候选。
+     - 拉取实时 `current_price/current_volume/current_amount/quote_time/source`。
+     - 调用 `run_observe_check()`。
+     - 更新 `tradeflow_candidates.observe_state/observe_trigger_count/observe_first_trigger_time`。
+     - 写入 `tradeflow_signals` 保存每次检查快照和原始证据。
+  2. API 增加人工触发入口或 scheduler 可调用函数：
+     - 第一版可仅内部函数 + CLI，不必自动 cron。
+  3. 前端 Observe Tab 增加状态：
+     - 未运行
+     - 已运行但无触发
+     - 已触发
+     - 已失效
+     - 非交易日/无实时行情
+  4. Data Health 显示最新 observe 检查时间和最新 signal 时间。
+- **验收方式**：
+  - 构造候选触发价 10、实时价 10.1，执行后 `observe_state=TRIGGERED` 且 signal 落库。
+  - 构造实时价跌破失效价，执行后 `observe_state=INVALIDATED`。
+  - 构造非交易日，runner 不拉实时行情，返回明确 skip reason。
+  - `tradeflow_signals` 有记录，前端 Observe 能显示 `current_price` 和 `trigger_reason`。
+  - `pytest tests/test_m005_intraday_observe.py tests/test_ui001_tradeflow_api.py tests/test_tradeflow_*.py -q` 通过。
+- **代码标注要求**：`# [TF-OBS-001] tradeflow_observe_runner` / `// [TF-OBS-001] tradeflow_observe_runner`
+
+---
+
+## DATA. 数据源治理 / Simon 数据 Skill 吸收任务池（2026-05-31 新增）
+
+> 目标：把外部 A 股数据 Skill 的优点吸收进本项目 Data Layer，让候选池和 TA 报告更真实、更实时、更可追溯。第一阶段只做数据治理和证据链，不新增 LLM Agent，不替换现有 TA 主链路。
+
+### DATA-P0-603629: TA A股关键数据源补强与假可用修复（P0）
+- **描述**：基于 603629.SH 最新 TA 报告暴露的问题，补强 A 股关键数据源路由，修复“正文说数据缺失、底部却显示数据源可用”的假可用问题。
+- **优先级**：P0
+- **状态**：done -- commit a6d4802
+- **背景**：
+  - 603629.SH 报告中个股资金流 `ConnectionError`，近 20 日主力净流入/流出缺失。
+  - 龙虎榜仅依赖“资金流异常触发”，导致资金流失败后龙虎榜也未强制查询；但该股存在严重异常波动、新闻明确提及龙虎榜、6月1日一字跌停等高风险特征。
+  - 换手率、量比、板块资金、公告原文/监管事件、复权口径等关键字段未稳定进入 raw_evidence。
+  - 底部数据源可用性将“主力资金报告文本存在”误判为“主力资金数据可用”，与 Evidence Coverage 42% 冲突。
+- **参考方向**：
+  - 参考 SimonLin1212 `a-stock-data` 的数据源优先级：行情/K线/实时价优先 mootdx/腾讯；东财只用于独有数据，并统一限流防封。
+  - 不照搬整套框架，只吸收 direct endpoint、fallback、限流、来源契约和字段 freshness 思路。
+- **执行约束**：
+  - 不提交任何 API key/cookie。
+  - 不改 `tradingagents/prompts/`。
+  - 不写生产 `tradingagents.db` schema。
+  - 不自动触发 TA/LLM live 调用。
+  - 东财接口必须串行限流，禁止并发压测。
+- **实现要点**：
+  1. **个股资金流 fallback**：
+     - 为 `get_individual_fund_flow` 增加 Eastmoney `push2/push2his` 直连 fallback。
+     - 保留 AKShare，但失败时不得直接终止资金流证据链。
+     - raw_evidence 必须记录 `vendor/endpoint/as_of/unit/status/error/fallback_vendor`。
+  2. **龙虎榜与资金流解耦**：
+     - 以下场景必须 force 查询龙虎榜：严重异常波动、连续涨跌停、新闻/公告文本出现龙虎榜、涨跌幅偏离、成交额/量比异常。
+     - 资金流失败不得阻止龙虎榜查询。
+     - 区分 `NOT_QUERIED`、`NORMAL_NO_DATA`、`FAILED`、`HAS_DATA`。
+  3. **实时行情与换手率/量比补强**：
+     - 增加 Tencent fallback，至少提供 `current_price`、`turnover_rate`、`volume_ratio`、`limit_up/down`、`market_cap`、`PE/PB`。
+     - 若 `volume_ratio` 无法由源直接提供，可用当前量/近 N 日均量计算，但必须标注 `computed=True` 和计算口径。
+  4. **公告/监管事件补强**：
+     - 增加 cninfo/巨潮公告 fallback，用于风险提示、严重异常波动、减持、问询函、澄清公告。
+     - 公告必须以原始标题/日期/来源/链接或公告 ID 进入 raw_evidence。
+  5. **复权口径与 K 线 freshness**：
+     - 市场技术数据必须标注 `adjustment`（前复权/后复权/不复权/未知）。
+     - 当天实时补丁不得伪装成完整日 K。
+  6. **数据源可用性修正**：
+     - 底部数据源可用性必须按 raw_evidence status 判断，不能按报告文本是否存在判断。
+     - 若主力资金 raw status 为 `FAILED/NOT_QUERIED`，不得显示 `✅ 主力资金`。
+     - `Evidence Coverage < 70%` 时，最终 `Confidence` 不得显示“高”。
+- **验收方式**：
+  - 用 603629.SH 的 fixture 或 mock 复现：
+    - 资金流 AKShare 失败，但 Eastmoney fallback 成功。
+    - 资金流失败时，龙虎榜仍因异常波动/新闻触发 force 查询。
+    - 主力资金失败时，数据源可用性显示 `❌` 或明确 `FAILED`，不能显示 `✅`。
+    - 报告底部能看到换手率、量比、复权口径、公告来源。
+    - `Evidence Coverage=42%` 一类低证据场景下，Confidence 自动降为中/低。
+  - 新增/更新测试覆盖 readiness/raw_evidence/fund_lhb provenance。
+  - `pytest tests/test_g006_raw_evidence_snapshot.py tests/test_g007_fund_lhb_provenance.py tests/test_readiness_score.py tests/test_dataflows*.py -q` 或同等相关测试通过。
+- **代码标注要求**：`# [DATA-P0-603629] astock_source_fallback`
+
+### DATA-001: A股数据源能力目录与 fallback 矩阵（P1）
+- **描述**：建立本项目统一的数据源能力目录，明确每个 vendor/endpoint 能提供什么字段、适用场景、freshness、限流风险和 fallback 顺序。
+- **优先级**：P1
+- **状态**：done -- commit 9821932
+- **背景**：
+
+---DECISIONS---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+---DEVLOG---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-02 | DATA-006: 数据源质量报告接入夜间日报
+
+- **执行者**：OpenCode
+- **任务**：DATA-006 — 把 DATA-005 的 fixture replay 结果接入夜间自动开发日报，让第二天能直接看到数据源健康、失败类型和是否影响候选池/TA 报告可信度
+- **修改文件**：
+  - `tradingagents/dataflows/data_source_daily_digest.py` — 新建：[DATA-006] data_source_report_daily
+    - `DataTypeHealth` 数据类：data_type / label / status(OK/PARTIAL/FAILED/NOT_RUN) / total_fixtures / passed / failed / failure_samples / completeness_avg / has_fallback / fallback_samples / impact_tradeflow / impact_ta_readiness
+    - `DailyDigest` 数据类：date / replay_status / total_fixtures / total_passed / total_failed / all_passed / data_type_healths / failure_types / overall_tradeflow_impact / overall_ta_impact / warnings
+    - `_classify_status()`: passed/total → OK/PARTIAL/FAILED/NOT_RUN
+    - `_assess_overall_impact()`: 从失败数据类型中取最高影响级别
+    - `_DATA_TYPE_CATEGORIES`: data_type → 中文标签映射（13 类）
+    - `_IMPACT_ON_TRADEFLOW` / `_IMPACT_ON_TA_READINESS`: 每种数据类型对 TradeFlow 候选池和 TA readiness 的影响级别（high/medium/low）
+    - `build_daily_digest(report, report_path)`: 核心聚合——从 ReplayReport 按数据类型聚合、分类 OK/PARTIAL/FAILED、评估影响、生成警告
+    - `read_replay_report_from_file(path)`: 从 Markdown 文件解析 ReplayReport（date/run_at/total/passed/failed/fixture rows）
+    - `find_latest_replay_report(reports_dir, target_date)`: 在 docs/data_source_reports/ 查找最新或指定日期的报告
+    - `render_daily_digest(digest)`: Markdown 渲染——包含按数据类型表格、失败类型、失败详情、警告
+    - `build_digest_section_for_nightly_report(reports_dir, target_date)`: 一键构建夜间日报数据源健康 section
+    - `run_digest_and_append_to_report(nightly_report_path, ...)`: 直接追加到夜间日报文件（幂等，不重复追加）
+    - replay 不存在时明确显示 NOT_RUN + 警告，不假装通过
+  - `scripts/summarize_auto_dev_runs.py` — [DATA-006] 新增 `--with-data-source-digest` CLI 参数
+    - `main()` 中当 flag 开启时调用 `build_digest_section_for_nightly_report()` 并追加到日报文件
+  - `tests/test_data006_daily_digest.py` — 新建，74 个测试覆盖：
+    - `TestDataTypeHealth` (2): 默认值/to_dict
+    - `TestDailyDigest` (2): 默认值/to_dict
+    - `TestClassifyStatus` (6): OK/FAILED/PARTIAL/NOT_RUN/单pass/单fail
+    - `TestAssessOverallImpact` (6): 空/全OK/high/medium/low/high覆盖medium
+    - `TestStatusMark` (4): OK/PARTIAL/FAILED/NOT_RUN
+    - `TestImpactMark` (4): HIGH/MEDIUM/LOW/unknown
+    - `TestBuildDailyDigest` (11): NOT_RUN/all_pass/with_failures/聚合/completeness/impact/overall_impact/overall_fail/warnings/failure_types
+    - `TestReadReplayReportFromFile` (3): 不存在/有效文件/无效内容
+    - `TestFindLatestReplayReport` (6): 空目录/找最新/指定日期/日期不存在/不存在目录/忽略非日期文件
+    - `TestRenderDailyDigest` (7): NOT_RUN/all_pass/with_failures/表格/failure_types/warnings/report_path
+    - `TestBuildDigestSectionForNightlyReport` (2): 无报告/有报告
+    - `TestRunDigestAndAppendToReport` (3): 追加/不重复追加/不存在路径
+    - `TestAcceptanceData006` (11): 全部验收标准
+    - `TestEdgeCases` (9): 空report/同类型多失败/fallback检测/None路径/空healths/截断/日期/to_dict往返/report_path
+  - `docs/TASKS.md` — DATA-006 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：74 passed (DATA-006)；295 passed (DATA-series 回归)；3066 passed (全部)；17 skipped；0 failed
+- **关键逻辑**：
+  - 按 data_type 聚合：行情、实时补丁、资金流、龙虎榜、公告/研报等 13 类
+  - 每类 OK/PARTIAL/FAILED 分类：全通过=OK / 全失败=FAILED / 部分=PARTIAL
+  - 影响评估：ohlcv/fund_flow/financials=high / lhb/notice/news=medium / 其他=low
+  - NOT_RUN 兜底：replay 未运行时日报明确显示 NOT_RUN + 警告，不假装通过
+  - 夜间日报集成：`--with-data-source-digest` 参数追加数据源健康 section 到日报
+  - 不泄露 API key/cookie/token
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
+## 2026-06-02 | V-004: 昊天链路端到端 smoke 验收
+
+- **执行者**：OpenCode
+- **任务**：V-004 — 为 H-001~H-008 建立低成本 smoke 验收，验证政策事件 → MandateSignal → Mandate Score → 受益路径 → 左侧分类 → 前端/队列字段的整条链路不字段断裂
+- **修改文件**：
+  - `tests/test_v004_mandate_e2e_smoke.py` — 新建：[V-004] mandate_e2e_smoke
+    - 5 个 policy fixtures：central_continuous / company_beneficiary / weak_evidence / overheated / pseudo_policy
+    - `PipelineFixture` 数据类：含 risk_flags / game_balance 上下文字段
+    - `_run_single_pipeline()`：6 步端到端管线 runner
+      - Step 1: DATA-003 normalize_raw_dicts → NormalizedEventBatch
+      - Step 2: H-002 compute_mandate_score → MandateScoreResult
+      - Step 3: H-003 compute_beneficiary_path → BeneficiaryPathResult
+      - Step 4: H-004 compute_ambush_score → AmbushScoreResult（含 candidate_type）
+      - Step 5: H-007 route_to_research_queue → QueueRouteResult
+      - Step 6: H-008 generate_watchlist_note → WatchlistNoteResult
+    - `PipelineRunResult`：含 field_gaps / forbidden_word_hits / passed / fail_reasons
+    - `_contains_forbidden()` / `_check_forbidden_in_dict()`：全链路强交易词检测
+    - `render_smoke_report()`：Markdown 报告渲染
+    - `run_smoke_and_save()`：一键运行 + 保存到 `docs/mandate_acceptance/YYYY-MM-DD.md`
+    - `render_smoke_report()`：Markdown 报告渲染
+  - `docs/mandate_acceptance/` — 新建目录，首份报告 `2026-06-02.md` 已生成
+  - `docs/TASKS.md` — V-004 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：52 passed (V-004)；621 passed (H-series + DATA 回归)；0 failed
+- **关键验收场景**：
+  - central_continuous (300034.SZ)：POLICY_AMBUSH，mandate=73.5，queue=MIDLINE_POLICY
+  - company_beneficiary (688981.SH)：POLICY_AMBUSH，mandate=65.0，queue=MIDLINE_POLICY
+  - weak_evidence (000001.SZ)：EVENT_WATCH，mandate=23.4，queue=WATCH_ONLY（弱证据不进高分左侧）
+  - overheated (002XXX.SZ)：OVERHEATED_AVOID，queue=REJECTED（过热样本不进 POLICY_AMBUSH）
+  - pseudo_policy (600XXX.SH)：PSEUDO_POLICY，queue=WATCH_ONLY（伪政策不进 POLICY_AMBUSH）
+- **关键逻辑**：
+  - 5 类 fixture 覆盖：中央连续政策 + 公司受益 + 弱证据 + 过热 + 伪政策
+  - 全链路 6 步不字段断裂，每步输出可追溯
+  - 弱证据不进入高分左侧（EVENT_WATCH / PSEUDO_POLICY）
+  - 过热样本正确走 OVERHEATED_AVOID（需 risk_flags + game_balance 上下文）
+  - 无强交易词出现在任何输出字段
+  - 字段缺口显式报告（field_gaps）
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
+## 2026-06-02 | H-008: 昊天主题观察清单与自选备注摘要
+
+- **执行者**：OpenCode
+- **任务**：H-008 — 把昊天候选的政策主题、受益路径、利好度/共识度/证据缺口压缩成短备注，供自选股和前端观察清单展示
+- **修改文件**：
+  - `tradingagents/tradeflow/mandate_watchlist_note.py` — 新建：[H-008] mandate_watchlist_note
+    - `WatchlistNoteResult` 数据类：topic / benefit_score / consensus_score / expected_window / evidence_gap / note_summary / has_evidence / suggested_note
+    - `_compute_benefit_score()`：mandate×0.35 + beneficiary×0.35 + ambush×0.30，封顶 100
+    - `_compute_consensus_score()`：平均各正分 + positive_category 加成 + resonance 加成，封顶 100
+    - `_compute_evidence_gap()`：6 类缺口检测（政策/受益路径/公司定位/资金/叙事/技术）+ 数据完整度 + missing_evidence 追加
+    - `_format_window()`：按 candidate_type 映射窗口（POLICY_AMBUSH→中线 / TECH_TRADE→短线 / OVERHEATED_AVOID→规避）
+    - `_sanitize_note()`：过滤强交易词（买入/卖出/清仓/满仓/梭哈/加仓/减仓）
+    - `generate_watchlist_note()`：核心函数——输入候选各字段，输出 WatchlistNoteResult
+    - 输出格式：`topic｜利好X.X｜共识N｜窗口W｜缺口:a/b`，无证据时显示 `topic｜缺证据`
+    - 用户已有 note 保留在 suggested_note 中，不覆盖
+    - 无证据时不伪造利好度，benefit_score=0.0
+    - `generate_watchlist_note_from_candidate()`：直接从 Candidate 对象生成
+  - `tradingagents/tradeflow/schemas.py` — [H-008] Candidate 新增 6 个字段
+    - `watchlist_note` / `watchlist_note_suggested` / `watchlist_topic` / `watchlist_benefit_score` / `watchlist_consensus_score` / `watchlist_evidence_gap`
+    - `to_db_row()` / `from_db_row()` 同步更新
+    - `render_text()` 新增自选备注显示区
+  - `tradingagents/tradeflow/candidate_engine.py` — [H-008]
+    - `init_db()` 新增 6 列 DB migration
+    - `evaluate_symbol()` 新增 H-008 watchlist note 生成调用，wire 到 candidate 字段
+    - `save_candidate()` SQL INSERT/UPDATE 新增 6 列（VALUES 从 85 扩展到 91）
+  - `tradingagents/tradeflow/plan_runner.py` — [H-008] plan entry 新增 6 个字段
+  - `api/tradeflow_schemas.py` — [H-008] TradeFlowCandidateItem 新增 6 个字段
+  - `api/services/tradeflow_service.py` — [H-008] `_row_to_candidate_item()` 新增 6 列读取
+  - `frontend/src/types/index.ts` — [H-008] TradeFlowCandidateItem 新增 6 个字段
+  - `frontend/src/components/TradeFlowCandidateDrawer.tsx` — [H-008]
+    - 新增 StickyNote icon 导入
+    - 新增"自选备注"区：建议备注 + 用户备注（如不同则同时显示）+ 主题/利好/共识指标 + 缺口标签
+  - `frontend/src/pages/TradeFlow.tsx` — [H-008]
+    - 候选表格新增"自选备注"列（truncate + title tooltip）
+  - `tests/test_h008_mandate_watchlist_note.py` — 新建，79 个测试覆盖：
+    - `TestWatchlistNoteResult` (3): 默认值/自定义值/to_dict
+    - `TestComputeBenefitScore` (6): 全零/单一/组合/封顶/无负数
+    - `TestComputeConsensusScore` (8): 全零/单一/resonance/boost/封顶
+    - `TestComputeEvidenceGap` (9): 全有/单缺/低完整度/追加/上限
+    - `TestFormatWindow` (7): 各类型/自定义/未知
+    - `TestSanitizeNote` (4): 干净/买入/卖出/多词
+    - `TestGenerateWatchlistNote` (14): 空/无证据/全证据/技术/过热/保留/格式
+    - `TestAcceptanceH008` (7): 全部验收标准
+    - `TestGenerateWatchlistNoteFromCandidate` (4): 基本/空/技术/叙事
+    - `TestH008SchemaIntegration` (4): 字段存在/to_db_row/from_db_row/roundtrip
+    - `TestEdgeCases` (9): None/空/零分/高分/只有风险/空字符串/空白/舍入
+- **测试结果**：79 passed (H-008)；1206 passed (H-series + tradeflow 全部)；47 passed (API)；0 failed；npm run build 通过
+- **关键逻辑**：
+  - 利好度 = mandate×0.35 + beneficiary×0.35 + ambush×0.30，封顶 100
+  - 共识度 = 各正分平均 + category_boost + resonance_boost，封顶 100
+  - 缺口检测 6 类：政策证据/受益路径/公司定位/资金验证/叙事质量/技术确认，最多 6 项
+  - 窗口映射：POLICY_AMBUSH→中线 / POLICY_CONFIRM→短线 / TECH_TRADE→短线 / EVENT_WATCH→观察 / OVERHEATED_AVOID→规避
+  - 用户已有 note 不覆盖（suggested_note = existing_note），只生成建议
+  - 无证据时 note_summary 显示 `topic｜缺证据`，不伪造利好度
+  - 强交易词自动过滤（买入/卖出/清仓/满仓/梭哈/加仓/减仓 → ***）
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
+## 2026-06-02 | H-007: 昊天候选到 TA 中线研究队列分流
+
+- **执行者**：OpenCode
+- **任务**：H-007 — 把 H-004 产生的 POLICY_AMBUSH/POLICY_CONFIRM/TECH_TRADE 候选分流到不同研究队列，避免左侧中线候选被短线 TA 逻辑误判
+- **修改文件**：
+  - `tradingagents/tradeflow/mandate_ta_queue_router.py` — 新建：[H-007] mandate_ta_queue_router
+    - `ResearchQueue` 枚举：MIDLINE_POLICY / TA_CONFIRM / SHORT_TERM_TRADE / WATCH_ONLY / REJECTED
+    - `ResearchIntent` 枚举：policy_validation / trend_confirmation / risk_review
+    - `QueueRouteResult` 数据类：research_queue / research_intent / route_reason / queue_priority
+    - `QueueStatistics` 数据类：聚合统计 by_queue / by_intent + 各队列标的列表
+    - `route_to_research_queue()`：核心分流函数
+      - POLICY_AMBUSH → MIDLINE_POLICY (policy_validation)
+      - POLICY_CONFIRM → TA_CONFIRM (trend_confirmation)
+      - TECH_TRADE → SHORT_TERM_TRADE (trend_confirmation)
+      - EVENT_WATCH → WATCH_ONLY (policy_validation if ambush>=30+policy, else risk_review)
+      - PSEUDO_POLICY → REJECTED if high_risk/fragile, else WATCH_ONLY
+      - OVERHEATED_AVOID → REJECTED
+    - `compute_queue_statistics()`：批量路由结果聚合
+    - `render_queue_report()`：Markdown 渲染队列统计报告
+  - `tradingagents/tradeflow/schemas.py` — [H-007] Candidate 新增 3 个字段
+    - `research_queue: str` / `research_intent: str` / `research_route_reason: str`
+    - `to_db_row()` / `from_db_row()` 同步更新
+    - `render_text()` 新增研究队列显示区
+  - `tradingagents/tradeflow/candidate_engine.py` — [H-007]
+    - `init_db()` 新增 3 列 DB migration
+    - `evaluate_symbol()` 新增 H-007 routing 调用，wire 到 candidate 字段
+    - `save_candidate()` SQL INSERT/UPDATE 新增 3 列
+  - `tradingagents/tradeflow/plan_runner.py` — [H-007] plan entry 新增 3 个字段
+  - `api/tradeflow_schemas.py` — [H-007] TradeFlowCandidateItem 新增 3 个字段
+  - `api/services/tradeflow_service.py` — [H-007] `_row_to_candidate_item()` 新增 3 列读取
+  - `frontend/src/types/index.ts` — [H-007] TradeFlowCandidateItem 新增 3 个字段
+  - `tests/test_h007_ta_queue_router.py` — 新建，64 个测试覆盖：
+    - `TestResearchQueueEnum` (4): 全部值/数量/字符串构造/非法值
+    - `TestResearchIntentEnum` (4): 全部值/数量/字符串构造/非法值
+    - `TestLabels` (2): queue 标签完整/intent 标签完整
+    - `TestQueueRouteResult` (3): 默认值/自定义值/to_dict
+    - `TestQueueStatistics` (2): 默认值/to_dict
+    - `TestRouteToResearchQueue` (16): 空类型/POLICY_AMBUSH(3)/POLICY_CONFIRM(3)/TECH_TRADE/EVENT_WATCH(2)/PSEUDO_POLICY(3)/OVERHEATED_AVOID(2)/未知类型
+    - `TestAcceptanceH007` (9): 四类分流/无强交易词/稳定/不覆盖持仓/不冲突analysis_intent
+    - `TestComputeQueueStatistics` (6): 空/单一/混合/intent计数/缺失字段/无symbol
+    - `TestRenderQueueReport` (5): 基础渲染/空报告/无强交易词/全部队列/全部意图
+    - `TestH007Integration` (8): 枚举对齐/完整流水线/统计聚合/to_dict往返/schema字段/to_db_row/from_db_row
+    - `TestEdgeCases` (6): None/空/零分/高分/多风险/优先级排序
+- **测试结果**：64 passed (H-007)；1127 passed (H-series + tradeflow 全部)；47 passed (API)；6 skipped；0 failed；npm run build 通过
+- **关键逻辑**：
+  - 分流规则明确：POLICY_AMBUSH→MIDLINE_POLICY / POLICY_CONFIRM→TA_CONFIRM / TECH_TRADE→SHORT_TERM_TRADE / OVERHEATED_AVOID→REJECTED
+  - PSEUDO_POLICY 双路径：高风险/fragile→REJECTED，否则→WATCH_ONLY
+  - EVENT_WATCH 条件升级：ambush>=30 + 有政策信号时 intent 升级为 policy_validation
+  - queue_priority 排序：MIDLINE_POLICY(1) > TA_CONFIRM(2) > SHORT_TERM_TRADE(3) > WATCH_ONLY(4) > REJECTED(5)
+  - 不输出强买卖词，不覆盖 G-001 analysis_intent/position_context
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
+## 2026-06-02 | H-006: 昊天候选池回放评估与反证机制
+
+- **执行者**：OpenCode
+- **任务**：H-006 — 建立昊天候选池的回放验证机制，每个高分政策候选都要能被后续走势、公告兑现、政策延续或反证记录检验
+- **修改文件**：
+  - `tradingagents/tradeflow/mandate_replay_eval.py` — 新建：[H-006] mandate_replay_eval
+    - `PriceSnapshot` 数据类：entry_price / prices(5/10/20/60d) / index_prices / industry_prices + 收益率/最大涨幅/最大回撤/超额收益计算
+    - `PostEventCheck` 数据类：policy_reconfirmed / announcement_fulfilled / trend_confirmed / risk_counter_evidence + 持续性/兑现评分
+    - `CounterEvidence` 数据类：counter_type / description / horizon / severity
+    - `ReplayFixture` 数据类：完整候选快照 + 价格 + 事件 + 反证
+
+exec
+/bin/zsh -lc 'git status --short --branch' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+## local/tradingagents-custom...myfork/local/tradingagents-custom [ahead 40]
+ M api/main.py
+ M api/services/tradeflow_service.py
+ M api/tradeflow_schemas.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M frontend/src/components/TradeFlowCandidateDrawer.tsx
+ M frontend/src/pages/TradeFlow.tsx
+ M frontend/src/services/api.ts
+ M frontend/src/types/index.ts
+ M scripts/summarize_auto_dev_runs.py
+?? docs/task_runs/DATA-006-20260602-030716/
+?? tests/test_data006_daily_digest.py
+?? tradingagents/dataflows/data_source_daily_digest.py
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- api/main.py api/services/tradeflow_service.py api/tradeflow_schemas.py frontend/src/components/TradeFlowCandidateDrawer.tsx frontend/src/pages/TradeFlow.tsx frontend/src/services/api.ts frontend/src/types/index.ts scripts/summarize_auto_dev_runs.py tradingagents/dataflows/data_source_daily_digest.py tests/test_data006_daily_digest.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ api/main.py                                        |   3 +-
+ api/services/tradeflow_service.py                  |  25 ++++
+ api/tradeflow_schemas.py                           |  20 +++
+ docs/DEVLOG.md                                     |  50 +++++++
+ docs/TASKS.md                                      |   6 +-
+ .../src/components/TradeFlowCandidateDrawer.tsx    | 154 ++++++++++++++++++++-
+ frontend/src/pages/TradeFlow.tsx                   |  78 +++++++++--
+ frontend/src/services/api.ts                       |   3 +-
+ frontend/src/types/index.ts                        |  20 +++
+ scripts/summarize_auto_dev_runs.py                 |  18 +++
+ 10 files changed, 362 insertions(+), 15 deletions(-)
+diff --git a/api/main.py b/api/main.py
+index 60722f9..6b62a44 100644
+--- a/api/main.py
++++ b/api/main.py
+@@ -5108,8 +5108,9 @@ def tradeflow_candidates(
+     date: str = Query(..., description="交易日期 YYYY-MM-DD"),
+     tier: Optional[str] = Query(None, description="层级过滤 A/B/C"),
+     need_deep_ta: Optional[bool] = Query(None, description="是否需要深度TA"),
++    candidate_type: Optional[str] = Query(None, description="候选类型过滤 POLICY_AMBUSH/POLICY_CONFIRM/TECH_TRADE/EVENT_WATCH/PSEUDO_POLICY/OVERHEATED_AVOID"),  # [H-005] mandate_radar_ui
+ ):
+-    return _tf_get_candidates(date, tier=tier, need_deep_ta=need_deep_ta)
++    return _tf_get_candidates(date, tier=tier, need_deep_ta=need_deep_ta, candidate_type=candidate_type)
+ 
+ 
+ @app.get("/v1/tradeflow/candidates/{symbol}", response_model=TradeFlowCandidateDetailResponse)
+diff --git a/api/services/tradeflow_service.py b/api/services/tradeflow_service.py
+index a4924b8..eb07ad9 100644
+--- a/api/services/tradeflow_service.py
++++ b/api/services/tradeflow_service.py
+@@ -124,6 +124,23 @@ def _row_to_candidate_item(row: sqlite3.Row) -> dict:
+         "ta_budget_priority": _rget(row, "ta_budget_priority", 0) or 0,
+         "tier_reason": _rget(row, "tier_reason", ""),
+         "missing_evidence_for_upgrade": _parse_json(_rget(row, "missing_evidence_for_upgrade_json"), []),
++        "candidate_type": _rget(row, "candidate_type", ""),  # [H-005] mandate_radar_ui
++        "mandate_score": _rget(row, "mandate_score_component", 0.0) or 0.0,  # [H-005]
++        "ambush_score": _rget(row, "ambush_score", 0.0) or 0.0,  # [H-005]
++        "mandate_topic": _rget(row, "mandate_topic", ""),  # [H-005]
++        "company_role": _rget(row, "company_role", ""),  # [H-005]
++        "beneficiary_path": _parse_json(_rget(row, "beneficiary_path_json"), []),  # [H-005]
++        "candidate_type_reason": _rget(row, "candidate_type_reason", ""),  # [H-005]
++        "deep_ta_route": _rget(row, "deep_ta_route", ""),  # [H-005]
++        "research_queue": _rget(row, "research_queue", ""),  # [H-007] mandate_ta_queue_router
++        "research_intent": _rget(row, "research_intent", ""),  # [H-007]
++        "research_route_reason": _rget(row, "research_route_reason", ""),  # [H-007]
++        "watchlist_note": _rget(row, "watchlist_note", ""),  # [H-008] mandate_watchlist_note
++        "watchlist_note_suggested": _rget(row, "watchlist_note_suggested", ""),  # [H-008]
++        "watchlist_topic": _rget(row, "watchlist_topic", ""),  # [H-008]
++        "watchlist_benefit_score": _rget(row, "watchlist_benefit_score", 0.0) or 0.0,  # [H-008]
++        "watchlist_consensus_score": _rget(row, "watchlist_consensus_score", 0.0) or 0.0,  # [H-008]
++        "watchlist_evidence_gap": _parse_json(_rget(row, "watchlist_evidence_gap_json"), []),  # [H-008]
+         "plan_date": _rget(row, "plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
+         "effective_trade_date": _rget(row, "effective_trade_date", ""),  # [TF-DATE-001]
+         "observe_date": _rget(row, "observe_date", ""),  # [TF-DATE-001]
+@@ -151,6 +168,9 @@ def _row_to_candidate_detail(row: sqlite3.Row) -> dict:
+         "deep_ta_report_path": _rget(row, "deep_ta_report_path", ""),
+         "deep_ta_dispatch_time": _rget(row, "deep_ta_dispatch_time", ""),
+         "deep_ta_position_context": _rget(row, "deep_ta_position_context", ""),
++        "ambush_reasons": _parse_json(_rget(row, "ambush_reasons_json"), []),  # [H-005] mandate_radar_ui
++        "ambush_evidence_refs": _parse_json(_rget(row, "ambush_evidence_refs_json"), []),  # [H-005]
++        "mandate_evidence_refs": _parse_json(_rget(row, "mandate_evidence_refs_json"), []),  # [H-005]
+     })
+     return item
+ 
+@@ -318,6 +338,7 @@ def get_candidates(
+     trade_date: str,
+     tier: Optional[str] = None,
+     need_deep_ta: Optional[bool] = None,
++    candidate_type: Optional[str] = None,  # [H-005] mandate_radar_ui
+     tf_db_path: str = "",
+ ) -> dict:
+     conn = _connect(tf_db_path)
+@@ -332,12 +353,16 @@ def get_candidates(
+             extra_conditions.append("tier = ?")
+         if need_deep_ta is not None:
+             extra_conditions.append("need_deep_ta = ?")
++        if candidate_type and "candidate_type" in columns:  # [H-005] mandate_radar_ui
++            extra_conditions.append("candidate_type = ?")
+ 
+         extra_params: list = []
+         if tier and "tier" in columns:
+             extra_params.append(tier)
+         if need_deep_ta is not None:
+             extra_params.append(1 if need_deep_ta else 0)
++        if candidate_type and "candidate_type" in columns:  # [H-005] mandate_radar_ui
++            extra_params.append(candidate_type)
+ 
+         order_cols = []
+         if "composite_score" in columns:
+diff --git a/api/tradeflow_schemas.py b/api/tradeflow_schemas.py
+index cf2909c..31bb7fe 100644
+--- a/api/tradeflow_schemas.py
++++ b/api/tradeflow_schemas.py
+@@ -53,6 +53,23 @@ class TradeFlowCandidateItem(BaseModel):
+     ta_budget_priority: int = 0
+     tier_reason: str = ""
+     missing_evidence_for_upgrade: List[str] = Field(default_factory=list)
++    candidate_type: str = ""  # [H-005] mandate_radar_ui
++    mandate_score: float = 0.0  # [H-005] mandate_radar_ui
++    ambush_score: float = 0.0  # [H-005] mandate_radar_ui
++    mandate_topic: str = ""  # [H-005] mandate_radar_ui
++    company_role: str = ""  # [H-005] mandate_radar_ui
++    beneficiary_path: List[str] = Field(default_factory=list)  # [H-005] mandate_radar_ui
++    candidate_type_reason: str = ""  # [H-005] mandate_radar_ui
++    deep_ta_route: str = ""  # [H-005] mandate_radar_ui
++    research_queue: str = ""  # [H-007] mandate_ta_queue_router
++    research_intent: str = ""  # [H-007] mandate_ta_queue_router
++    research_route_reason: str = ""  # [H-007] mandate_ta_queue_router
++    watchlist_note: str = ""  # [H-008] mandate_watchlist_note
++    watchlist_note_suggested: str = ""  # [H-008] mandate_watchlist_note
++    watchlist_topic: str = ""  # [H-008] mandate_watchlist_note
++    watchlist_benefit_score: float = 0.0  # [H-008] mandate_watchlist_note
++    watchlist_consensus_score: float = 0.0  # [H-008] mandate_watchlist_note
++    watchlist_evidence_gap: List[str] = Field(default_factory=list)  # [H-008] mandate_watchlist_note
+     created_at: str = ""
+     updated_at: str = ""
+ 
+@@ -74,6 +91,9 @@ class TradeFlowCandidateDetail(TradeFlowCandidateItem):
+     deep_ta_report_path: str = ""
+     deep_ta_dispatch_time: str = ""
+     deep_ta_position_context: str = ""
++    ambush_reasons: List[str] = Field(default_factory=list)  # [H-005] mandate_radar_ui
++    ambush_evidence_refs: List[Dict[str, Any]] = Field(default_factory=list)  # [H-005] mandate_radar_ui
++    mandate_evidence_refs: List[Dict[str, Any]] = Field(default_factory=list)  # [H-005] mandate_radar_ui
+ 
+ 
+ class TradeFlowSummary(BaseModel):
+diff --git a/frontend/src/components/TradeFlowCandidateDrawer.tsx b/frontend/src/components/TradeFlowCandidateDrawer.tsx
+index 59b40d8..d446fb7 100644
+--- a/frontend/src/components/TradeFlowCandidateDrawer.tsx
++++ b/frontend/src/components/TradeFlowCandidateDrawer.tsx
+@@ -1,5 +1,6 @@
++// [H-005] mandate_radar_ui
+ import { useEffect, useState } from 'react'
+-import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb } from 'lucide-react'
++import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote } from 'lucide-react'
+ import { api } from '@/services/api'
+ import type { TradeFlowCandidateItem, TradeFlowCandidateDetail } from '@/types'
+ 
+@@ -32,6 +33,42 @@ function gameBalanceLabel(balance: string): string {
+     }
+ }
+ 
++function candidateTypeColor(ct: string): string {  // [H-005] mandate_radar_ui
++    switch (ct) {
++        case 'POLICY_AMBUSH': return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300'
++        case 'POLICY_CONFIRM': return 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
++        case 'TECH_TRADE': return 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
++        case 'EVENT_WATCH': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
++        case 'PSEUDO_POLICY': return 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300'
++        case 'OVERHEATED_AVOID': return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
++        default: return 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400'
++    }
++}
++
++function candidateTypeLabel(ct: string): string {  // [H-005] mandate_radar_ui
++    switch (ct) {
++        case 'POLICY_AMBUSH': return '昊天左侧'
++        case 'POLICY_CONFIRM': return '政策确认'
++        case 'TECH_TRADE': return '技术交易'
++        case 'EVENT_WATCH': return '事件观察'
++        case 'PSEUDO_POLICY': return '伪政策'
++        case 'OVERHEATED_AVOID': return '过热规避'
++        default: return ct || '未分类'
++    }
++}
++
++function companyRoleLabel(role: string): string {  // [H-005] mandate_radar_ui
++    switch (role) {
++        case 'LEADER': return '龙头'
++        case 'CORE_SUPPLIER': return '核心供应商'
++        case 'INFRA_PROVIDER': return '基础设施'
++        case 'APPLICATION_SCENE': return '应用场景'
++        case 'PERIPHERAL': return '外围'
++        case 'CONCEPT_ONLY': return '纯概念'
++        default: return role || '未知'
++    }
++}
++
+ function SectionTitle({ icon: Icon, title }: { icon: React.ElementType; title: string }) {
+     return (
+         <div className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-300">
+@@ -176,6 +213,92 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
+                         )}
+                     </div>
+ 
++                    {data.candidate_type && (  // [H-005] mandate_radar_ui
++                        <div>
++                            <SectionTitle icon={ShieldCheck} title="政策逻辑" />
++                            <div className="mt-2 space-y-2">
++                                <div className="flex flex-wrap items-center gap-2">
++                                    <span className="text-xs text-slate-500 dark:text-slate-400">候选类型:</span>
++                                    <span className={`inline-block rounded px-2 py-0.5 text-[11px] font-medium ${candidateTypeColor(data.candidate_type)}`}>
++                                        {candidateTypeLabel(data.candidate_type)}
++                                    </span>
++                                </div>
++                                {data.mandate_topic && (
++                                    <div className="flex items-center gap-2">
++                                        <span className="text-xs text-slate-500 dark:text-slate-400">政策主题:</span>
++                                        <span className="text-xs font-medium text-blue-600 dark:text-blue-400">{data.mandate_topic}</span>
++                                    </div>
++                                )}
++                                {data.company_role && (
++                                    <div className="flex items-center gap-2">
++                                        <span className="text-xs text-slate-500 dark:text-slate-400">公司角色:</span>
++                                        <span className="text-xs font-medium text-slate-700 dark:text-slate-300">{companyRoleLabel(data.company_role)}</span>
++                                    </div>
++                                )}
++                                {data.beneficiary_path && data.beneficiary_path.length > 0 && (
++                                    <div>
++                                        <span className="text-xs text-slate-500 dark:text-slate-400">受益路径:</span>
++                                        <div className="mt-1 flex flex-wrap gap-1">
++                                            {data.beneficiary_path.map((p, i) => (
++                                                <span key={i} className="inline-block rounded bg-indigo-50 px-1.5 py-0.5 text-[11px] text-indigo-600 dark:bg-indigo-900/20 dark:text-indigo-400">{p}</span>
++                                            ))}
++                                        </div>
++                                    </div>
++                                )}
++                                <div className="flex flex-wrap gap-3">
++                                    {data.mandate_score > 0 && (
++                                        <div className="flex items-center gap-1.5">
++                                            <span className="text-xs text-slate-500 dark:text-slate-400">昊天分:</span>
++                                            <span className="text-xs font-medium tabular-nums text-indigo-600 dark:text-indigo-400">{data.mandate_score.toFixed(1)}</span>
++                                        </div>
++                                    )}
++                                    {data.ambush_score > 0 && (
++                                        <div className="flex items-center gap-1.5">
++                                            <span className="text-xs text-slate-500 dark:text-slate-400">埋伏分:</span>
++                                            <span className="text-xs font-medium tabular-nums text-violet-600 dark:text-violet-400">{data.ambush_score.toFixed(1)}</span>
++                                        </div>
++                                    )}
++                                </div>
++                                {data.candidate_type_reason && (
++                                    <div className="rounded-lg border border-indigo-100 bg-indigo-50/50 p-3 dark:border-indigo-800 dark:bg-indigo-900/10">
++                                        <div className="text-[11px] font-medium text-indigo-600 dark:text-indigo-400">分类理由</div>
++                                        <div className="mt-1 text-xs text-slate-600 dark:text-slate-400">{data.candidate_type_reason}</div>
++                                    </div>
++                                )}
++                                {detail && detail.mandate_evidence_refs && detail.mandate_evidence_refs.length > 0 && (
++                                    <div>
++                                        <span className="text-xs text-slate-500 dark:text-slate-400">政策证据引用 ({detail.mandate_evidence_refs.length})</span>
++                                        <div className="mt-1 space-y-1">
++                                            {detail.mandate_evidence_refs.slice(0, 5).map((ref, i) => (
++                                                <div key={i} className="text-[11px] text-slate-500 dark:text-slate-400 truncate" title={JSON.stringify(ref)}>
++                                                    {String(ref.title || ref.source || `证据 ${i + 1}`)}
++                                                </div>
++                                            ))}
++                                            {detail.mandate_evidence_refs.length > 5 && (
++                                                <div className="text-[11px] text-slate-400">+{detail.mandate_evidence_refs.length - 5} 条</div>
++                                            )}
++                                        </div>
++                                    </div>
++                                )}
++                                {data.candidate_type === 'TECH_TRADE' && (
++                                    <div className="rounded-lg border border-slate-200 bg-slate-50/50 p-3 dark:border-slate-700 dark:bg-slate-800/30">
++                                        <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">为什么不是政策候选</div>
++                                        <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">该候选无足够政策连续性或公司受益路径证据，被分类为纯技术交易标的</div>
++                                    </div>
++                                )}
++                                {data.candidate_type === 'POLICY_AMBUSH' && (
++                                    <div className="rounded-lg border border-indigo-100 bg-indigo-50/50 p-3 dark:border-indigo-800 dark:bg-indigo-900/10">
++                                        <div className="text-[11px] font-medium text-indigo-600 dark:text-indigo-400">缺什么验证</div>
++                                        <div className="mt-1 text-xs text-slate-600 dark:text-slate-400">
++                                            {data.trigger_price != null ? '等待技术触发确认入场时机' : '等待技术面出现合理入场位置'}
++                                            {data.need_deep_ta ? '；已建议深度TA验证' : '；建议等待更多证据'}
++                                        </div>
++                                    </div>
++                                )}
++                            </div>
++                        </div>
++                    )}
++
+                     <div>
+                         <SectionTitle icon={BarChart3} title="多空博弈" />
+                         <div className="mt-2 space-y-2">
+@@ -343,6 +466,35 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
+                         </div>
+                     )}
+ 
++                    {data.watchlist_note_suggested && (
++                        <div>
++                            <SectionTitle icon={StickyNote} title="自选备注" />
++                            <div className="mt-2 space-y-2">
++                                <div className="rounded-lg border border-teal-100 bg-teal-50/50 p-3 dark:border-teal-800 dark:bg-teal-900/10">
++                                    <div className="text-xs font-medium text-teal-700 dark:text-teal-400">{data.watchlist_note_suggested}</div>
++                                </div>
++                                {data.watchlist_note && data.watchlist_note !== data.watchlist_note_suggested && (
++                                    <div className="rounded-lg border border-slate-100 bg-slate-50/50 p-3 dark:border-slate-700 dark:bg-slate-800/30">
++                                        <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">用户备注</div>
++                                        <div className="mt-1 text-xs text-slate-600 dark:text-slate-400">{data.watchlist_note}</div>
++                                    </div>
++                                )}
++                                <div className="flex items-center gap-3 text-[11px] text-slate-500 dark:text-slate-400">
++                                    {data.watchlist_topic && <span>主题: {data.watchlist_topic}</span>}
++                                    {data.watchlist_benefit_score > 0 && <span>利好: {data.watchlist_benefit_score.toFixed(1)}</span>}
++                                    {data.watchlist_consensus_score > 0 && <span>共识: {data.watchlist_consensus_score.toFixed(0)}</span>}
++                                </div>
++                                {data.watchlist_evidence_gap.length > 0 && (
++                                    <div className="flex flex-wrap gap-1">
++                                        {data.watchlist_evidence_gap.map(g => (
++                                            <span key={g} className="inline-block rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-600 dark:bg-amber-900/20 dark:text-amber-400">{g}</span>
++                                        ))}
++                                    </div>
++                                )}
++                            </div>
++                        </div>
++                    )}
++
+                     {data.tier_reason && (
+                         <div className="rounded-lg border border-slate-100 bg-slate-50/50 p-3 dark:border-slate-700 dark:bg-slate-800/30">
+                             <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">定级理由</div>
+diff --git a/frontend/src/pages/TradeFlow.tsx b/frontend/src/pages/TradeFlow.tsx
+index 3ecfd7b..394c877 100644
+--- a/frontend/src/pages/TradeFlow.tsx
++++ b/frontend/src/pages/TradeFlow.tsx
+@@ -1,4 +1,5 @@
+ // [UI-005] tradeflow_review_page
++// [H-005] mandate_radar_ui
+ import { useState, useEffect, useCallback, useMemo } from 'react'
+ import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX } from 'lucide-react'
+ import { api } from '@/services/api'
+@@ -73,6 +74,18 @@ function fmtPrice(v: number | null): string {
+     return v != null ? v.toFixed(2) : '-'
+ }
+ 
++function candidateTypeLabel(ct: string): { text: string; cls: string } {  // [H-005] mandate_radar_ui
++    switch (ct) {
++        case 'POLICY_AMBUSH': return { text: '昊天左侧', cls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300' }
++        case 'POLICY_CONFIRM': return { text: '政策确认', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' }
++        case 'TECH_TRADE': return { text: '技术交易', cls: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300' }
++        case 'EVENT_WATCH': return { text: '事件观察', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' }
++        case 'PSEUDO_POLICY': return { text: '伪政策', cls: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300' }
++        case 'OVERHEATED_AVOID': return { text: '过热规避', cls: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' }
++        default: return { text: ct || '未分类', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' }
++    }
++}
++
+ interface SummaryCardsProps {
+     summary: TradeFlowSummary
+     dataHealth: TradeFlowDataHealthResponse | null
+@@ -838,6 +851,7 @@ export default function TradeFlow() {
+     const [tierFilter, setTierFilter] = useState<string>('')
+     const [deepTaFilter, setDeepTaFilter] = useState<string>('')
+     const [observeFilter, setObserveFilter] = useState<string>('')
++    const [candidateTypeFilter, setCandidateTypeFilter] = useState<string>('')  // [H-005] mandate_radar_ui
+     const [drawerOpen, setDrawerOpen] = useState(false)
+     const [selectedCandidate, setSelectedCandidate] = useState<TradeFlowCandidateItem | null>(null)
+ 
+@@ -853,7 +867,7 @@ export default function TradeFlow() {
+         setError(null)
+         try {
+             const [candidatesRes, healthRes] = await Promise.all([
+-                api.getTradeFlowCandidates(date, tierFilter || undefined, deepTaFilter === 'yes' ? true : deepTaFilter === 'no' ? false : undefined),
++                api.getTradeFlowCandidates(date, tierFilter || undefined, deepTaFilter === 'yes' ? true : deepTaFilter === 'no' ? false : undefined, candidateTypeFilter || undefined),  // [H-005]
+                 api.getTradeFlowDataHealth(),
+             ])
+             setStatus(candidatesRes.status)
+@@ -874,7 +888,7 @@ export default function TradeFlow() {
+         } finally {
+             setLoading(false)
+         }
+-    }, [tierFilter, deepTaFilter, observeFilter])
++    }, [tierFilter, deepTaFilter, observeFilter, candidateTypeFilter])  // [H-005]
+ 
+     const fetchObserve = useCallback(async (date: string) => {
+         setLoading(true)
+@@ -1052,7 +1066,21 @@ export default function TradeFlow() {
+                 )
+             }
+             if (candidates.length === 0) {
+-                return <div className="py-20 text-center text-sm text-slate-400">无匹配候选</div>
++                const hasMandateFilter = candidateTypeFilter && ['POLICY_AMBUSH', 'POLICY_CONFIRM', 'EVENT_WATCH'].includes(candidateTypeFilter)  // [H-005]
++                return (
++                    <div className="py-20 text-center text-sm text-slate-400">
++                        <Target className="mx-auto mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
++                        无匹配候选
++                        {hasMandateFilter && (
++                            <div className="mt-2 space-y-1 text-xs text-slate-400">
++                                <div>可能原因：</div>
++                                <div>1. 政策信号源不足，尚未生成昊天候选</div>
++                                <div>2. 公司受益路径不足，无法确认政策受益标的</div>
++                                <div>3. 当前政策候选均已过热，被标记为过热规避</div>
++                            </div>
++                        )}
++                    </div>
++                )
+             }
+             return (
+                 <div className="overflow-x-auto">
+@@ -1061,11 +1089,15 @@ export default function TradeFlow() {
+                             <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+                                 <th className="px-4 py-2.5 font-medium">代码</th>
+                                 <th className="px-4 py-2.5 font-medium">名称</th>
++                                <th className="px-4 py-2.5 font-medium">候选类型</th>
+                                 <th className="px-4 py-2.5 font-medium">层级</th>
+                                 <th className="px-4 py-2.5 font-medium">评分</th>
++                                <th className="px-4 py-2.5 font-medium">昊天分</th>
++                                <th className="px-4 py-2.5 font-medium">埋伏分</th>
++                                <th className="px-4 py-2.5 font-medium">政策主题</th>
++                                <th className="px-4 py-2.5 font-medium">角色</th>
++                                <th className="px-4 py-2.5 font-medium">自选备注</th>
+                                 <th className="px-4 py-2.5 font-medium">策略标签</th>
+-                                <th className="px-4 py-2.5 font-medium">触发价</th>
+-                                <th className="px-4 py-2.5 font-medium">失效价</th>
+                                 <th className="px-4 py-2.5 font-medium">完整度</th>
+                                 <th className="px-4 py-2.5 font-medium">深度TA</th>
+                                 <th className="px-4 py-2.5 font-medium">观察状态</th>
+@@ -1076,6 +1108,7 @@ export default function TradeFlow() {
+                             {candidates.map(c => {
+                                 const act = actionLabel(c.action)
+                                 const obs = observeStateLabel(c.observe_state)
++                                const ct = candidateTypeLabel(c.candidate_type)  // [H-005]
+                                 return (
+                                     <tr
+                                         key={c.symbol}
+@@ -1083,12 +1116,28 @@ export default function TradeFlow() {
+                                         onClick={() => handleRowClick(c)}
+                                     >
+                                         <td className="px-4 py-2.5 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{c.symbol}</td>
+-                                        <td className="max-w-[120px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{c.name || '--'}</td>
++                                        <td className="max-w-[100px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{c.name || '--'}</td>
++                                        <td className="px-4 py-2.5">
++                                            <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${ct.cls}`}>{ct.text}</span>
++                                        </td>
+                                         <td className="px-4 py-2.5">
+                                             <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-bold ${tierBadgeClass(c.tier)}`}>{c.tier || '-'}</span>
+                                         </td>
+                                         <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{c.composite_score.toFixed(2)}</td>
+-                                        <td className="max-w-[200px] px-4 py-2.5">
++                                        <td className="px-4 py-2.5 tabular-nums text-xs">
++                                            {c.mandate_score > 0 ? (
++                                                <span className="font-medium text-indigo-600 dark:text-indigo-400">{c.mandate_score.toFixed(1)}</span>
++                                            ) : <span className="text-slate-400">-</span>}
++                                        </td>
++                                        <td className="px-4 py-2.5 tabular-nums text-xs">
++                                            {c.ambush_score > 0 ? (
++                                                <span className="font-medium text-violet-600 dark:text-violet-400">{c.ambush_score.toFixed(1)}</span>
++                                            ) : <span className="text-slate-400">-</span>}
++                                        </td>
++                                        <td className="max-w-[100px] truncate px-4 py-2.5 text-xs text-slate-600 dark:text-slate-400" title={c.mandate_topic}>{c.mandate_topic || '-'}</td>
++                                        <td className="max-w-[80px] truncate px-4 py-2.5 text-xs text-slate-600 dark:text-slate-400" title={c.company_role}>{c.company_role || '-'}</td>
++                                        <td className="max-w-[180px] truncate px-4 py-2.5 text-xs text-teal-700 dark:text-teal-400" title={c.watchlist_note_suggested}>{c.watchlist_note_suggested || '-'}</td>
++                                        <td className="max-w-[160px] px-4 py-2.5">
+                                             <div className="flex flex-wrap gap-1">
+                                                 {c.strategy_tags.slice(0, 3).map(tag => (
+                                                     <span key={tag} className="inline-block rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600 dark:bg-slate-700 dark:text-slate-300">{tag}</span>
+@@ -1098,8 +1147,6 @@ export default function TradeFlow() {
+                                                 )}
+                                             </div>
+                                         </td>
+-                                        <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{c.trigger_price != null ? c.trigger_price.toFixed(2) : '-'}</td>
+-                                        <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{c.invalid_price != null ? c.invalid_price.toFixed(2) : '-'}</td>
+                                         <td className="px-4 py-2.5">
+                                             <CompletenessBar value={c.tradeflow_data_completeness} />
+                                         </td>
+@@ -1267,6 +1314,19 @@ export default function TradeFlow() {
+                             <Filter className="h-3.5 w-3.5" />
+                             筛选
+                         </div>
++                        <select
++                            value={candidateTypeFilter}
++                            onChange={e => setCandidateTypeFilter(e.target.value)}  // [H-005] mandate_radar_ui
++                            className="rounded border border-slate-200 bg-white px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
++                        >
++                            <option value="">全部类型</option>
++                            <option value="POLICY_AMBUSH">昊天左侧</option>
++                            <option value="POLICY_CONFIRM">政策确认</option>
++                            <option value="TECH_TRADE">技术交易</option>
++                            <option value="EVENT_WATCH">事件观察</option>
++                            <option value="PSEUDO_POLICY">伪政策</option>
++                            <option value="OVERHEATED_AVOID">过热规避</option>
++                        </select>
+                         <select
+                             value={tierFilter}
+                             onChange={e => setTierFilter(e.target.value)}
+diff --git a/frontend/src/services/api.ts b/frontend/src/services/api.ts
+index 9047686..ab258b5 100644
+--- a/frontend/src/services/api.ts
++++ b/frontend/src/services/api.ts
+@@ -381,10 +381,11 @@ class ApiService {
+         return this.request<TradeFlowDailyPlanResponse>(`/v1/tradeflow/daily-plan?date=${encodeURIComponent(date)}`)
+     }
+ 
+-    async getTradeFlowCandidates(date: string, tier?: string, needDeepTa?: boolean): Promise<TradeFlowCandidatesResponse> {
++    async getTradeFlowCandidates(date: string, tier?: string, needDeepTa?: boolean, candidateType?: string): Promise<TradeFlowCandidatesResponse> {  // [H-005] mandate_radar_ui
+         const params = new URLSearchParams({ date })
+         if (tier) params.append('tier', tier)
+         if (needDeepTa !== undefined) params.append('need_deep_ta', String(needDeepTa))
++        if (candidateType) params.append('candidate_type', candidateType)  // [H-005]
+         return this.request<TradeFlowCandidatesResponse>(`/v1/tradeflow/candidates?${params}`)
+     }
+ 
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index e3cb033..5b94ea8 100644
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -774,6 +774,23 @@ export interface TradeFlowCandidateItem {
+     ta_budget_priority: number
+     tier_reason: string
+     missing_evidence_for_upgrade: string[]
++    candidate_type: string  // [H-005] mandate_radar_ui
++    mandate_score: number  // [H-005]
++    ambush_score: number  // [H-005]
++    mandate_topic: string  // [H-005]
++    company_role: string  // [H-005]
++    beneficiary_path: string[]  // [H-005]
++    candidate_type_reason: string  // [H-005]
++    deep_ta_route: string  // [H-005]
++    research_queue: string  // [H-007] mandate_ta_queue_router
++    research_intent: string  // [H-007] mandate_ta_queue_router
++    research_route_reason: string  // [H-007] mandate_ta_queue_router
++    watchlist_note: string  // [H-008] mandate_watchlist_note
++    watchlist_note_suggested: string  // [H-008] mandate_watchlist_note
++    watchlist_topic: string  // [H-008] mandate_watchlist_note
++    watchlist_benefit_score: number  // [H-008] mandate_watchlist_note
++    watchlist_consensus_score: number  // [H-008] mandate_watchlist_note
++    watchlist_evidence_gap: string[]  // [H-008] mandate_watchlist_note
+     created_at: string
+     updated_at: string
+ }
+@@ -795,6 +812,9 @@ export interface TradeFlowCandidateDetail extends TradeFlowCandidateItem {
+     deep_ta_report_path: string
+     deep_ta_dispatch_time: string
+     deep_ta_position_context: string
++    ambush_reasons: string[]  // [H-005] mandate_radar_ui
++    ambush_evidence_refs: Array<Record<string, unknown>>  // [H-005]
++    mandate_evidence_refs: Array<Record<string, unknown>>  // [H-005]
+ }
+ 
+ export interface TradeFlowSummary {
+diff --git a/scripts/summarize_auto_dev_runs.py b/scripts/summarize_auto_dev_runs.py
+index 926dbba..e00a531 100755
+--- a/scripts/summarize_auto_dev_runs.py
++++ b/scripts/summarize_auto_dev_runs.py
+@@ -551,6 +551,8 @@ def main() -> None:
+     parser.add_argument("--repo-dir", default=None, help="Repository root directory")
+     parser.add_argument("--with-sample-replay", action="store_true",  # [V-002]
+                         help="Include TradeFlow candidate sample replay in report")
++    parser.add_argument("--with-data-source-digest", action="store_true",  # [DATA-006]
++                        help="Include data source health digest in report")
+     args = parser.parse_args()
+ 
+     repo_dir = Path(args.repo_dir) if args.repo_dir else Path(__file__).resolve().parent.parent
+@@ -583,6 +585,22 @@ def main() -> None:
+     reports_dir.mkdir(parents=True, exist_ok=True)
+     report_path = reports_dir / f"{target_date}.md"
+     report_path.write_text(report, encoding="utf-8")
++
++    if args.with_data_source_digest:  # [DATA-006]
++        try:
++            from tradingagents.dataflows.data_source_daily_digest import (
++                build_digest_section_for_nightly_report,
++            )
++            ds_reports = str(repo_dir / "docs" / "data_source_reports")
++            section = build_digest_section_for_nightly_report(
++                reports_dir=ds_reports, target_date=target_date,
++            )
++            with open(report_path, "a", encoding="utf-8") as f:
++                f.write("\n")
++                f.write(section)
++        except Exception:
++            pass
++
+     print(f"Report written to {report_path}")
+ 
+ 
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/dataflows/data_source_daily_digest.py && sed -n '260,620p' tradingagents/dataflows/data_source_daily_digest.py && sed -n '1,240p' tests/test_data006_daily_digest.py && sed -n '240,520p' tests/test_data006_daily_digest.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [DATA-006] data_source_report_daily
+"""
+数据源质量报告接入夜间日报。
+
+读取 DATA-005 fixture replay 结果或 docs/data_source_reports/ 下的已存报告，
+按数据类型聚合为 OK/PARTIAL/FAILED 摘要，评估对 TradeFlow 候选池和 TA readiness 的影响。
+
+功能：
+  1. 从 ReplayReport 或文件系统读取 replay 结果
+  2. 按数据类型聚合：行情、实时补丁、资金流、龙虎榜、公告/研报、raw_evidence contract
+  3. 对每类输出：OK/PARTIAL/FAILED、失败样本、是否影响 TradeFlow 候选、是否影响 TA readiness
+  4. 当 replay 不存在时明确显示 NOT_RUN，不能假装通过
+
+Usage:
+    from tradingagents.dataflows.data_source_daily_digest import (
+        build_daily_digest,
+        render_daily_digest,
+        read_replay_report_from_file,
+    )
+    digest = build_daily_digest(report)
+    print(render_daily_digest(digest))
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from .fixture_replay import (
+    ReplayReport,
+    ReplayResult,
+    render_replay_report,
+    run_fixture_replay,
+)
+
+
+# ── Data Type Categories ─────────────────────────────────────────────
+
+_DATA_TYPE_CATEGORIES: Dict[str, str] = {
+    "ohlcv": "行情/OHLCV",
+    "realtime_quotes": "实时补丁",
+    "fund_flow": "资金流",
+    "board_fund_flow": "板块资金流",
+    "lhb": "龙虎榜",
+    "news": "新闻",
+    "global_news": "全球新闻",
+    "notice": "公告/研报",
+    "report": "研报/评级",
+    "financials": "财务数据",
+    "insider": "内部交易",
+    "zt_pool": "涨停池",
+    "hot_stocks": "热门股票",
+}
+
+
+# ── Impact Assessment ────────────────────────────────────────────────
+
+_IMPACT_ON_TRADEFLOW: Dict[str, str] = {
+    "ohlcv": "high",
+    "realtime_quotes": "medium",
+    "fund_flow": "high",
+    "board_fund_flow": "medium",
+    "lhb": "medium",
+    "news": "low",
+    "global_news": "low",
+    "notice": "medium",
+    "report": "low",
+    "financials": "low",
+    "insider": "low",
+    "zt_pool": "low",
+    "hot_stocks": "low",
+}
+
+_IMPACT_ON_TA_READINESS: Dict[str, str] = {
+    "ohlcv": "high",
+    "realtime_quotes": "medium",
+    "fund_flow": "high",
+    "board_fund_flow": "low",
+    "lhb": "medium",
+    "news": "medium",
+    "global_news": "low",
+    "notice": "medium",
+    "report": "medium",
+    "financials": "high",
+    "insider": "low",
+    "zt_pool": "low",
+    "hot_stocks": "low",
+}
+
+
+# ── Data Models ──────────────────────────────────────────────────────
+
+@dataclass
+class DataTypeHealth:
+    data_type: str
+    label: str
+    status: str = "NOT_RUN"
+    total_fixtures: int = 0
+    passed: int = 0
+    failed: int = 0
+    failure_samples: List[str] = field(default_factory=list)
+    completeness_avg: float = 0.0
+    has_fallback: bool = False
+    fallback_samples: List[str] = field(default_factory=list)
+    impact_tradeflow: str = "unknown"
+    impact_ta_readiness: str = "unknown"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "data_type": self.data_type,
+            "label": self.label,
+            "status": self.status,
+            "total_fixtures": self.total_fixtures,
+            "passed": self.passed,
+            "failed": self.failed,
+            "failure_samples": self.failure_samples,
+            "completeness_avg": round(self.completeness_avg, 1),
+            "has_fallback": self.has_fallback,
+            "fallback_samples": self.fallback_samples,
+            "impact_tradeflow": self.impact_tradeflow,
+            "impact_ta_readiness": self.impact_ta_readiness,
+        }
+
+
+@dataclass
+class DailyDigest:
+    date: str
+    generated_at: str
+    replay_status: str = "NOT_RUN"
+    replay_report_available: bool = False
+    replay_report_path: Optional[str] = None
+    total_fixtures: int = 0
+    total_passed: int = 0
+    total_failed: int = 0
+    all_passed: bool = True
+    data_type_healths: List[DataTypeHealth] = field(default_factory=list)
+    failure_types: Dict[str, int] = field(default_factory=dict)
+    overall_tradeflow_impact: str = "none"
+    overall_ta_impact: str = "none"
+    warnings: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "date": self.date,
+            "generated_at": self.generated_at,
+            "replay_status": self.replay_status,
+            "replay_report_available": self.replay_report_available,
+            "replay_report_path": self.replay_report_path,
+            "total_fixtures": self.total_fixtures,
+            "total_passed": self.total_passed,
+            "total_failed": self.total_failed,
+            "all_passed": self.all_passed,
+            "data_type_healths": [h.to_dict() for h in self.data_type_healths],
+            "failure_types": self.failure_types,
+            "overall_tradeflow_impact": self.overall_tradeflow_impact,
+            "overall_ta_impact": self.overall_ta_impact,
+            "warnings": self.warnings,
+        }
+
+
+# ── Classification Helpers ───────────────────────────────────────────
+
+def _classify_status(passed: int, total: int) -> str:
+    if total == 0:
+        return "NOT_RUN"
+    if passed == total:
+        return "OK"
+    if passed == 0:
+        return "FAILED"
+    return "PARTIAL"
+
+
+def _assess_overall_impact(healths: List[DataTypeHealth], impact_field: str) -> str:
+    impacts = set()
+    for h in healths:
+        if h.status == "FAILED":
+            impacts.add(getattr(h, impact_field))
+        elif h.status == "PARTIAL":
+            val = getattr(h, impact_field)
+            if val in ("high", "medium"):
+                impacts.add(val)
+    if "high" in impacts:
+        return "high"
+    if "medium" in impacts:
+        return "medium"
+    if "low" in impacts:
+        return "low"
+    return "none"
+
+
+# ── Core Logic ───────────────────────────────────────────────────────
+
+def build_daily_digest(
+    report: Optional[ReplayReport] = None,
+    report_path: Optional[str] = None,
+) -> DailyDigest:
+    now = datetime.now()
+    digest = DailyDigest(
+        date=now.strftime("%Y-%m-%d"),
+        generated_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+    if report_path is not None:
+        digest.replay_report_path = report_path
+
+    if report is None and report_path is not None:
+        report = read_replay_report_from_file(report_path)
+
+    if report is None:
+        digest.replay_status = "NOT_RUN"
+        digest.replay_report_available = False
+        digest.all_passed = False
+        digest.warnings.append(
+            "DATA-005 replay 尚未运行，数据源健康状况未知。"
+            "请先运行 run_fixture_replay() 或 run_replay_and_save()。"
+        )
+        return digest
+
+    digest.replay_status = "COMPLETED"
+    digest.replay_report_available = True
+    digest.total_fixtures = report.total_fixtures
+    digest.total_passed = report.passed
+    digest.total_failed = report.failed
+    digest.all_passed = report.all_passed
+    digest.failure_types = dict(report.failure_types)
+
+    by_type: Dict[str, List[ReplayResult]] = {}
+    for r in report.results:
+        by_type.setdefault(r.data_type, []).append(r)
+
+    for dt, results in sorted(by_type.items()):
+        passed_count = sum(1 for r in results if r.passed)
+        failed_count = len(results) - passed_count
+        status = _classify_status(passed_count, len(results))
+
+        failure_samples = []
+        fallback_samples = []
+        completeness_scores = []
+        has_fallback = False
+
+        for r in results:
+            completeness_scores.append(r.completeness_score)
+            if not r.passed:
+                sample = f"{r.fixture_id}: expected={r.expected_status} actual={r.actual_status}"
+                if r.error:
+                    sample += f" error={r.error[:80]}"
+                failure_samples.append(sample)
+            if r.is_fallback:
+                has_fallback = True
+                fb = f"{r.fixture_id}: fallback from {r.fallback_from}"
+                fallback_samples.append(fb)
+
+        avg_completeness = (
+            sum(completeness_scores) / len(completeness_scores)
+            if completeness_scores else 0.0
+        )
+        )
+
+        health = DataTypeHealth(
+            data_type=dt,
+            label=_DATA_TYPE_CATEGORIES.get(dt, dt),
+            status=status,
+            total_fixtures=len(results),
+            passed=passed_count,
+            failed=failed_count,
+            failure_samples=failure_samples[:5],
+            completeness_avg=avg_completeness,
+            has_fallback=has_fallback,
+            fallback_samples=fallback_samples[:3],
+            impact_tradeflow=_IMPACT_ON_TRADEFLOW.get(dt, "unknown"),
+            impact_ta_readiness=_IMPACT_ON_TA_READINESS.get(dt, "unknown"),
+        )
+        digest.data_type_healths.append(health)
+
+    digest.overall_tradeflow_impact = _assess_overall_impact(
+        digest.data_type_healths, "impact_tradeflow"
+    )
+    digest.overall_ta_impact = _assess_overall_impact(
+        digest.data_type_healths, "impact_ta_readiness"
+    )
+
+    if not digest.all_passed:
+        high_impact = [
+            h for h in digest.data_type_healths
+            if h.status in ("FAILED", "PARTIAL")
+            and h.impact_tradeflow == "high"
+        ]
+        if high_impact:
+            types = ", ".join(h.label for h in high_impact)
+            digest.warnings.append(
+                f"高影响数据源异常: {types} — 可能影响 TradeFlow 候选池质量。"
+            )
+
+        ta_impact = [
+            h for h in digest.data_type_healths
+            if h.status in ("FAILED", "PARTIAL")
+            and h.impact_ta_readiness == "high"
+        ]
+        if ta_impact:
+            types = ", ".join(h.label for h in ta_impact)
+            digest.warnings.append(
+                f"TA readiness 受影响: {types} — 深度分析报告可信度可能下降。"
+            )
+
+    return digest
+
+
+def read_replay_report_from_file(path: str) -> Optional[ReplayReport]:
+    if not os.path.exists(path):
+        return None
+    try:
+        report = _parse_report_file(path)
+        return report
+    except Exception:
+        return None
+
+
+def find_latest_replay_report(
+    reports_dir: str = "docs/data_source_reports",
+    target_date: Optional[str] = None,
+) -> Optional[str]:
+    if not os.path.isdir(reports_dir):
+        return None
+    if target_date:
+        candidate = os.path.join(reports_dir, f"{target_date}.md")
+        if os.path.exists(candidate):
+            return candidate
+        return None
+
+    files = []
+    for f in os.listdir(reports_dir):
+        if f.endswith(".md"):
+            match = re.match(r"(\d{4}-\d{2}-\d{2})\.md", f)
+            if match:
+                files.append((match.group(1), os.path.join(reports_dir, f)))
+    if not files:
+        return None
+    files.sort(key=lambda x: x[0], reverse=True)
+    return files[0][1]
+
+
+def _parse_report_file(path: str) -> ReplayReport:
+    with open(path, encoding="utf-8") as f:
+        content = f.read()
+
+    date_match = re.search(r"\*\*Date\*\*:\s*(\d{4}-\d{2}-\d{2})", content)
+    run_at_match = re.search(r"\*\*Run at\*\*:\s*(.+)", content)
+    result_match = re.search(r"\*\*Result\*\*:\s*(.+)", content)
+
+    report = ReplayReport(
+        run_at=run_at_match.group(1).strip() if run_at_match else "",
+        date=date_match.group(1) if date_match else "",
+        all_passed="ALL PASSED" in (result_match.group(1) if result_match else ""),
+    )
+
+    summary_match = re.search(
+        r"\| Total fixtures \| (\d+) \|.*?"
+        r"\| Passed \| (\d+) \|.*?"
+        r"\| Failed \| (\d+) \|",
+        content,
+        re.DOTALL,
+    )
+    if summary_match:
+        report.total_fixtures = int(summary_match.group(1))
+        report.passed = int(summary_match.group(2))
+        report.failed = int(summary_match.group(3))
+
+    fixture_rows = re.findall(
+        r"\|\s*(\S+)\s*\|\s*(\S+)\s*\|\s*(\S+)\s*\|\s*(\S+)\s*\|\s*(\S+)\s*\|",
+        content,
+    )
+    for row in fixture_rows:
+        fixture_id = row[0]
+        data_type = row[1]
+        expected = row[2]
+        actual = row[3]
+        passed_str = row[4]
+        report.results.append(ReplayResult(
+            fixture_id=fixture_id,
+            fixture_description="",
+            data_type=data_type,
+            expected_status=expected,
+            actual_status=actual,
+            passed=passed_str == "PASS",
+            vendor="",
+            endpoint="",
+            is_fallback=False,
+            fallback_from=None,
+            error=None,
+            completeness_score=0,
+            missing_details={},
+        ))
+
+    return report
+
+
+# ── Markdown Rendering ────────────────────────────────────────────────
+
+def render_daily_digest(digest: DailyDigest) -> str:
+    lines: List[str] = []
+    lines.append("## 数据源健康日报")
+    lines.append("")
+
+    if digest.replay_status == "NOT_RUN":
+        lines.append("> **NOT_RUN**: DATA-005 fixture replay 未执行，数据源健康状况未知。")
+        lines.append(">")
+        for w in digest.warnings:
+            lines.append(f"> {w}")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+        lines.append("*Generated by data_source_daily_digest.py — [DATA-006] data_source_report_daily*")
+        lines.append("")
+        return "\n".join(lines)
+
+    status_icon = "OK" if digest.all_passed else "HAS ISSUES"
+    lines.append(f"- **日期**: {digest.date}")
+    lines.append(f"- **Replay 状态**: {digest.replay_status}")
+    lines.append(f"- **总体结果**: {status_icon}")
+    lines.append(f"- **Fixtures**: {digest.total_passed} passed / {digest.total_failed} failed / {digest.total_fixtures} total")
+    lines.append("")
+
+    if digest.data_type_healths:
+        lines.append("### 按数据类型")
+        lines.append("")
+        lines.append("| 数据类型 | 状态 | 通过/总数 | 完整度 | 影响TradeFlow | 影响TA |")
+        lines.append("|----------|------|-----------|--------|---------------|--------|")
+        for h in digest.data_type_healths:
+            status_mark = _status_mark(h.status)
+            tf_mark = _impact_mark(h.impact_tradeflow) if h.status != "OK" else "-"
+            ta_mark = _impact_mark(h.impact_ta_readiness) if h.status != "OK" else "-"
+            lines.append(
+                f"| {h.label} | {status_mark} | {h.passed}/{h.total_fixtures} | "
+                f"{h.completeness_avg:.0f}% | {tf_mark} | {ta_mark} |"
+            )
+        lines.append("")
+
+    if digest.failure_types:
+        lines.append("### 失败类型")
+        lines.append("")
+        for ft, count in sorted(digest.failure_types.items()):
+            lines.append(f"- **{ft}**: {count}")
+        lines.append("")
+
+    failed_healths = [h for h in digest.data_type_healths if h.status in ("FAILED", "PARTIAL")]
+    if failed_healths:
+        lines.append("### 失败/部分失败详情")
+        lines.append("")
+        for h in failed_healths:
+            lines.append(f"#### {h.label} ({h.status})")
+            if h.failure_samples:
+                for s in h.failure_samples:
+                    lines.append(f"- {s}")
+            if h.has_fallback:
+                lines.append(f"- Fallback: {'; '.join(h.fallback_samples)}")
+            lines.append("")
+
+    if digest.warnings:
+        lines.append("### 警告")
+        lines.append("")
+        for w in digest.warnings:
+            lines.append(f"- {w}")
+        lines.append("")
+
+    if digest.replay_report_path:
+        lines.append(f"> 完整 replay 报告: `{digest.replay_report_path}`")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("*Generated by data_source_daily_digest.py — [DATA-006] data_source_report_daily*")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _status_mark(status: str) -> str:
+    if status == "OK":
+        return "OK"
+    if status == "PARTIAL":
+        return "PARTIAL"
+    if status == "FAILED":
+        return "FAILED"
+    return "NOT_RUN"
+
+
+def _impact_mark(impact: str) -> str:
+    if impact == "high":
+        return "HIGH"
+    if impact == "medium":
+        return "MEDIUM"
+    if impact == "low":
+        return "LOW"
+    return "-"
+
+
+def build_digest_section_for_nightly_report(
+    reports_dir: str = "docs/data_source_reports",
+    target_date: Optional[str] = None,
+) -> str:
+    report_path = find_latest_replay_report(reports_dir, target_date=target_date)
+    if report_path:
+        report = read_replay_report_from_file(report_path)
+        digest = build_daily_digest(report=report, report_path=report_path)
+    else:
+        digest = build_daily_digest(report=None)
+    return render_daily_digest(digest)
+
+
+def run_digest_and_append_to_report(
+    nightly_report_path: str,
+    reports_dir: str = "docs/data_source_reports",
+    target_date: Optional[str] = None,
+) -> bool:
+    section = build_digest_section_for_nightly_report(reports_dir, target_date=target_date)
+    if not nightly_report_path or not os.path.exists(nightly_report_path):
+        return False
+    with open(nightly_report_path, encoding="utf-8") as f:
+        content = f.read()
+    if "数据源健康日报" in content:
+        return False
+    with open(nightly_report_path, "a", encoding="utf-8") as f:
+        f.write("\n")
+        f.write(section)
+    return True
+# [DATA-006] data_source_report_daily
+"""
+Tests for data source quality report daily digest integration.
+
+Covers:
+  - DailyDigest / DataTypeHealth data models
+  - build_daily_digest: from ReplayReport, from file, NOT_RUN
+  - Status classification: OK / PARTIAL / FAILED / NOT_RUN
+  - Impact assessment: TradeFlow / TA readiness
+  - Failure type aggregation and warnings
+  - Report file parsing (read_replay_report_from_file)
+  - find_latest_replay_report
+  - Markdown rendering
+  - Integration with summarize_auto_dev_runs.py
+  - Acceptance criteria per TASKS.md
+  - Edge cases
+"""
+
+import json
+import os
+import tempfile
+from datetime import datetime
+from unittest.mock import patch
+
+import pytest
+
+from tradingagents.dataflows.data_source_daily_digest import (
+    DailyDigest,
+    DataTypeHealth,
+    build_daily_digest,
+    build_digest_section_for_nightly_report,
+    find_latest_replay_report,
+    read_replay_report_from_file,
+    render_daily_digest,
+    run_digest_and_append_to_report,
+    _classify_status,
+    _assess_overall_impact,
+    _status_mark,
+    _impact_mark,
+)
+from tradingagents.dataflows.fixture_replay import (
+    ALL_FIXTURE_IDS,
+    FixtureEntry,
+    ReplayReport,
+    ReplayResult,
+    run_fixture_replay,
+    render_replay_report,
+    save_replay_report,
+)
+
+
+# ── DataTypeHealth ───────────────────────────────────────────────────
+
+
+class TestDataTypeHealth:
+    def test_defaults(self):
+        h = DataTypeHealth(data_type="ohlcv", label="行情/OHLCV")
+        assert h.status == "NOT_RUN"
+        assert h.total_fixtures == 0
+        assert h.passed == 0
+        assert h.failed == 0
+        assert h.failure_samples == []
+        assert h.completeness_avg == 0.0
+        assert h.has_fallback is False
+        assert h.fallback_samples == []
+        assert h.impact_tradeflow == "unknown"
+        assert h.impact_ta_readiness == "unknown"
+
+    def test_to_dict(self):
+        h = DataTypeHealth(
+            data_type="fund_flow",
+            label="资金流",
+            status="PARTIAL",
+            total_fixtures=2,
+            passed=1,
+            failed=1,
+            completeness_avg=75.3,
+            impact_tradeflow="high",
+            impact_ta_readiness="high",
+        )
+        d = h.to_dict()
+        assert d["data_type"] == "fund_flow"
+        assert d["status"] == "PARTIAL"
+        assert d["completeness_avg"] == 75.3
+        assert d["impact_tradeflow"] == "high"
+
+
+# ── DailyDigest ──────────────────────────────────────────────────────
+
+
+class TestDailyDigest:
+    def test_defaults(self):
+        d = DailyDigest(date="2026-06-02", generated_at="2026-06-02 12:00:00")
+        assert d.replay_status == "NOT_RUN"
+        assert d.replay_report_available is False
+        assert d.all_passed is True
+        assert d.data_type_healths == []
+        assert d.failure_types == {}
+        assert d.warnings == []
+
+    def test_to_dict(self):
+        d = DailyDigest(
+            date="2026-06-02",
+            generated_at="2026-06-02 12:00:00",
+            replay_status="COMPLETED",
+            total_fixtures=7,
+            total_passed=7,
+            total_failed=0,
+            all_passed=True,
+        )
+        dd = d.to_dict()
+        assert dd["date"] == "2026-06-02"
+        assert dd["replay_status"] == "COMPLETED"
+        assert dd["total_fixtures"] == 7
+        assert dd["data_type_healths"] == []
+
+
+# ── Status Classification ────────────────────────────────────────────
+
+
+class TestClassifyStatus:
+    def test_all_passed(self):
+        assert _classify_status(5, 5) == "OK"
+
+    def test_all_failed(self):
+        assert _classify_status(0, 5) == "FAILED"
+
+    def test_partial(self):
+        assert _classify_status(3, 5) == "PARTIAL"
+
+    def test_zero_total(self):
+        assert _classify_status(0, 0) == "NOT_RUN"
+
+    def test_single_passed(self):
+        assert _classify_status(1, 1) == "OK"
+
+    def test_single_failed(self):
+        assert _classify_status(0, 1) == "FAILED"
+
+
+# ── Impact Assessment ────────────────────────────────────────────────
+
+
+class TestAssessOverallImpact:
+    def test_no_healths(self):
+        assert _assess_overall_impact([], "impact_tradeflow") == "none"
+
+    def test_all_ok(self):
+        healths = [
+            DataTypeHealth(data_type="ohlcv", label="行情", status="OK"),
+        ]
+        assert _assess_overall_impact(healths, "impact_tradeflow") == "none"
+
+    def test_high_impact_failed(self):
+        healths = [
+            DataTypeHealth(data_type="ohlcv", label="行情", status="FAILED", impact_tradeflow="high"),
+        ]
+        assert _assess_overall_impact(healths, "impact_tradeflow") == "high"
+
+    def test_medium_partial(self):
+        healths = [
+            DataTypeHealth(data_type="lhb", label="龙虎榜", status="PARTIAL", impact_tradeflow="medium"),
+        ]
+        assert _assess_overall_impact(healths, "impact_tradeflow") == "medium"
+
+    def test_low_only_not_counted(self):
+        healths = [
+            DataTypeHealth(data_type="news", label="新闻", status="FAILED", impact_tradeflow="low"),
+        ]
+        assert _assess_overall_impact(healths, "impact_tradeflow") == "low"
+
+    def test_high_overrides_medium(self):
+        healths = [
+            DataTypeHealth(data_type="ohlcv", label="行情", status="FAILED", impact_tradeflow="high"),
+            DataTypeHealth(data_type="news", label="新闻", status="PARTIAL", impact_tradeflow="low"),
+        ]
+        assert _assess_overall_impact(healths, "impact_tradeflow") == "high"
+
+
+# ── Status / Impact Marks ────────────────────────────────────────────
+
+
+class TestStatusMark:
+    def test_ok(self):
+        assert _status_mark("OK") == "OK"
+
+    def test_partial(self):
+        assert _status_mark("PARTIAL") == "PARTIAL"
+
+    def test_failed(self):
+        assert _status_mark("FAILED") == "FAILED"
+
+    def test_not_run(self):
+        assert _status_mark("NOT_RUN") == "NOT_RUN"
+
+
+class TestImpactMark:
+    def test_high(self):
+        assert _impact_mark("high") == "HIGH"
+
+    def test_medium(self):
+        assert _impact_mark("medium") == "MEDIUM"
+
+    def test_low(self):
+        assert _impact_mark("low") == "LOW"
+
+    def test_unknown(self):
+        assert _impact_mark("unknown") == "-"
+
+
+# ── build_daily_digest ───────────────────────────────────────────────
+
+
+class TestBuildDailyDigest:
+    def test_not_run_when_no_report(self):
+        digest = build_daily_digest(report=None)
+        assert digest.replay_status == "NOT_RUN"
+        assert digest.replay_report_available is False
+        assert digest.all_passed is False
+        assert len(digest.warnings) > 0
+        assert "NOT_RUN" in digest.warnings[0] or "replay" in digest.warnings[0].lower()
+
+    def test_from_replay_report_all_pass(self):
+        report = run_fixture_replay()
+        digest = build_daily_digest(report=report)
+        assert digest.replay_status == "COMPLETED"
+        assert digest.replay_report_available is True
+        assert digest.total_fixtures == 7
+        assert digest.total_passed == 7
+        assert digest.total_failed == 0
+        assert digest.all_passed is True
+        assert len(digest.data_type_healths) > 0
+
+    def test_from_replay_report_with_failures(self):
+        fail_fixture = FixtureEntry(
+            fixture_id="fail_ohlcv",
+            description="Should fail",
+            data_type="ohlcv",
+            vendor="cn_akshare",
+            endpoint="test",
+            endpoint="test",
+            expected_status="HAS_DATA",
+            raw_evidence={
+                "stock_data": {
+                    "status": "FAILED",
+                    "error": "ConnectionError: timeout",
+                    "vendor": "cn_akshare",
+                },
+            },
+        )
+        report = run_fixture_replay(fixtures=[fail_fixture])
+        digest = build_daily_digest(report=report)
+        assert digest.all_passed is False
+        assert digest.total_failed == 1
+        assert len(digest.data_type_healths) == 1
+        assert digest.data_type_healths[0].status == "FAILED"
+
+    def test_data_type_healths_aggregated(self):
+        report = run_fixture_replay()
+        digest = build_daily_digest(report=report)
+        dtypes = {h.data_type for h in digest.data_type_healths}
+        assert "ohlcv" in dtypes or "fund_flow" in dtypes
+
+    def test_completeness_avg_calculated(self):
+        report = run_fixture_replay()
+        digest = build_daily_digest(report=report)
+        for h in digest.data_type_healths:
+            assert h.completeness_avg >= 0
+
+    def test_impact_fields_set(self):
+        report = run_fixture_replay()
+        digest = build_daily_digest(report=report)
+        for h in digest.data_type_healths:
+            assert h.impact_tradeflow in ("high", "medium", "low", "unknown")
+            assert h.impact_ta_readiness in ("high", "medium", "low", "unknown")
+
+    def test_overall_impact_all_pass(self):
+        report = run_fixture_replay()
+        digest = build_daily_digest(report=report)
+        assert digest.overall_tradeflow_impact == "none"
+        assert digest.overall_ta_impact == "none"
+
+    def test_overall_impact_with_failure(self):
+        fail_fixture = FixtureEntry(
+            fixture_id="fail_fund",
+            description="Fund flow failure",
+            data_type="fund_flow",
+            vendor="cn_akshare",
+            endpoint="test",
+            expected_status="HAS_DATA",
+            raw_evidence={
+                "fund_flow_individual": {
+                    "status": "FAILED",
+                    "error": "ConnectionError",
+                    "vendor": "cn_akshare",
+                },
+            },
+        )
+        report = run_fixture_replay(fixtures=[fail_fixture])
+        digest = build_daily_digest(report=report)
+        assert digest.overall_tradeflow_impact == "high"
+        assert digest.overall_ta_impact == "high"
+
+    def test_warnings_on_high_impact_failure(self):
+        fail_fixture = FixtureEntry(
+            fixture_id="fail_fund",
+            description="Fund flow failure",
+            data_type="fund_flow",
+            vendor="cn_akshare",
+            endpoint="test",
+            expected_status="HAS_DATA",
+            raw_evidence={
+                "fund_flow_individual": {
+                    "status": "FAILED",
+                    "error": "ConnectionError",
+                    "vendor": "cn_akshare",
+                },
+            },
+        )
+        report = run_fixture_replay(fixtures=[fail_fixture])
+        digest = build_daily_digest(report=report)
+        assert len(digest.warnings) > 0
+        warning_text = " ".join(digest.warnings)
+        assert "TradeFlow" in warning_text or "TA" in warning_text
+
+    def test_failure_types_propagated(self):
+        fail1 = FixtureEntry(
+            fixture_id="fail1",
+            description="Fail 1",
+            data_type="ohlcv",
+            vendor="cn_akshare",
+            endpoint="test",
+            expected_status="HAS_DATA",
+            raw_evidence={
+                "stock_data": {
+                    "status": "FAILED",
+                    "error": "ConnectionError: timeout",
+                    "vendor": "cn_akshare",
+                },
+            },
+        )
+        report = run_fixture_replay(fixtures=[fail1])
+        digest = build_daily_digest(report=report)
+        assert isinstance(digest.failure_types, dict)
+
+
+# ── File Reading ─────────────────────────────────────────────────────
+
+
+class TestReadReplayReportFromFile:
+    def test_nonexistent_file(self):
+        result = read_replay_report_from_file("/nonexistent/path.md")
+        assert result is None
+
+    def test_valid_report_file(self):
+        report = run_fixture_replay()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = save_replay_report(report, output_dir=tmpdir)
+            loaded = read_replay_report_from_file(path)
+            assert loaded is not None
+            assert loaded.date == report.date
+            assert loaded.total_fixtures == report.total_fixtures
+            assert loaded.passed == report.passed
+            assert loaded.failed == report.failed
+
+    def test_invalid_content_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "test.md")
+            with open(path, "w") as f:
+                f.write("not a valid report\n")
+            result = read_replay_report_from_file(path)
+            assert result is not None
+            assert result.total_fixtures == 0
+
+
+class TestFindLatestReplayReport:
+    def test_empty_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assert find_latest_replay_report(tmpdir) is None
+
+    def test_finds_latest(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for date in ["2026-06-01", "2026-06-02", "2026-06-03"]:
+                path = os.path.join(tmpdir, f"{date}.md")
+                with open(path, "w") as f:
+                    f.write(f"# Report {date}\n")
+            result = find_latest_replay_report(tmpdir)
+            assert result is not None
+            assert "2026-06-03" in result
+
+    def test_target_date(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "2026-06-02.md")
+            with open(path, "w") as f:
+                f.write("# Report\n")
+            result = find_latest_replay_report(tmpdir, target_date="2026-06-02")
+            assert result is not None
+            assert "2026-06-02" in result
+
+    def test_target_date_not_found(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "2026-06-01.md")
+            with open(path, "w") as f:
+                f.write("# Report\n")
+            result = find_latest_replay_report(tmpdir, target_date="2026-06-02")
+            assert result is None
+
+    def test_nonexistent_dir(self):
+        assert find_latest_replay_report("/nonexistent/dir") is None
+
+    def test_ignores_non_date_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "readme.md")
+            with open(path, "w") as f:
+                f.write("# Not a report\n")
+            assert find_latest_replay_report(tmpdir) is None
+
+
+# ── Markdown Rendering ───────────────────────────────────────────────
+
+
+class TestRenderDailyDigest:
+    def test_render_not_run(self):
+        digest = build_daily_digest(report=None)
+        md = render_daily_digest(digest)
+        assert "NOT_RUN" in md
+        assert "DATA-006" in md
+        assert "replay" in md.lower()
+
+    def test_render_all_pass(self):
+        report = run_fixture_replay()
+        digest = build_daily_digest(report=report)
+        md = render_daily_digest(digest)
+        assert "OK" in md
+        assert "按数据类型" in md
+        assert "7 passed" in md or f"{report.passed} passed" in md
+
+    def test_render_with_failures(self):
+        fail_fixture = FixtureEntry(
+            fixture_id="fail_test",
+            description="Fail",
+            data_type="fund_flow",
+            vendor="cn_akshare",
+            endpoint="test",
+            expected_status="HAS_DATA",
+            raw_evidence={
+                "fund_flow_individual": {
+                    "status": "FAILED",
+                    "error": "ConnectionError",
+                    "vendor": "cn_akshare",
+                },
+            },
+        )
+        report = run_fixture_replay(fixtures=[fail_fixture])
+        digest = build_daily_digest(report=report)
+        md = render_daily_digest(digest)
+        assert "HAS ISSUES" in md
+        assert "失败" in md or "FAILED" in md
+
+    def test_render_includes_data_type_table(self):
+        report = run_fixture_replay()
+        digest = build_daily_digest(report=report)
+        md = render_daily_digest(digest)
+        assert "影响TradeFlow" in md
+        assert "影响TA" in md
+
+    def test_render_failure_types_section(self):
+        fail_fixture = FixtureEntry(
+            fixture_id="fail_ft",
+            description="Fail for type",
+            data_type="ohlcv",
+            vendor="cn_akshare",
+            endpoint="test",
+            expected_status="HAS_DATA",
+            raw_evidence={
+                "stock_data": {
+                    "status": "FAILED",
+                    "error": "ConnectionError: timeout",
+                    "vendor": "cn_akshare",
+                },
+            },
+        )
+        report = run_fixture_replay(fixtures=[fail_fixture])
+        digest = build_daily_digest(report=report)
+        md = render_daily_digest(digest)
+        assert "失败类型" in md
+
+    def test_render_warnings_section(self):
+        fail_fixture = FixtureEntry(
+            fixture_id="fail_warn",
+            description="Fail with warning",
+            data_type="fund_flow",
+            vendor="cn_akshare",
+            endpoint="test",
+            expected_status="HAS_DATA",
+            raw_evidence={
+                "fund_flow_individual": {
+                    "status": "FAILED",
+                    "error": "ConnectionError",
+                    "vendor": "cn_akshare",
+                },
+            },
+        )
+        report = run_fixture_replay(fixtures=[fail_fixture])
+        digest = build_daily_digest(report=report)
+        md = render_daily_digest(digest)
+        assert "警告" in md or "TradeFlow" in md
+
+    def test_render_report_path(self):
+        report = run_fixture_replay()
+        digest = build_daily_digest(report=report, report_path="docs/data_source_reports/2026-06-02.md")
+        md = render_daily_digest(digest)
+        assert "docs/data_source_reports/2026-06-02.md" in md
+
+
+# ── build_digest_section_for_nightly_report ──────────────────────────
+
+
+class TestBuildDigestSectionForNightlyReport:
+    def test_with_no_reports(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+
+exec
+/bin/zsh -lc "sed -n '520,1040p' tests/test_data006_daily_digest.py && nl -ba tradingagents/dataflows/data_source_daily_digest.py | sed -n '170,245p' && python -m py_compile tradingagents/dataflows/data_source_daily_digest.py" in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            section = build_digest_section_for_nightly_report(
+                reports_dir=tmpdir, target_date="2026-06-02",
+            )
+            assert "NOT_RUN" in section
+
+    def test_with_existing_report(self):
+        report = run_fixture_replay()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_replay_report(report, output_dir=tmpdir)
+            section = build_digest_section_for_nightly_report(
+                reports_dir=tmpdir, target_date=report.date,
+            )
+            assert "数据源健康日报" in section
+            assert "COMPLETED" in section or "OK" in section
+
+
+# ── run_digest_and_append_to_report ──────────────────────────────────
+
+
+class TestRunDigestAndAppendToReport:
+    def test_appends_to_existing_report(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = os.path.join(tmpdir, "nightly.md")
+            with open(report_path, "w") as f:
+                f.write("# Nightly Report\n\nSome content\n")
+            result = run_digest_and_append_to_report(
+                nightly_report_path=report_path,
+                reports_dir=os.path.join(tmpdir, "nonexistent"),
+            )
+            assert result is True
+            with open(report_path) as f:
+                content = f.read()
+            assert "数据源健康日报" in content
+
+    def test_does_not_double_append(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_path = os.path.join(tmpdir, "nightly.md")
+            with open(report_path, "w") as f:
+                f.write("# Nightly Report\n\nSome content\n")
+            run_digest_and_append_to_report(
+                nightly_report_path=report_path,
+                reports_dir=os.path.join(tmpdir, "nonexistent"),
+            )
+            result = run_digest_and_append_to_report(
+                nightly_report_path=report_path,
+                reports_dir=os.path.join(tmpdir, "nonexistent"),
+            )
+            assert result is False
+
+    def test_nonexistent_report_path(self):
+        result = run_digest_and_append_to_report(
+            nightly_report_path="/nonexistent/path.md",
+        )
+        assert result is False
+
+
+# ── Acceptance: DATA-006 ─────────────────────────────────────────────
+
+
+class TestAcceptanceData006:
+    """DATA-006 验收标准。"""
+
+    def test_fixture_replay_report_in_nightly_digest(self):
+        """构造一个 replay 报告 fixture，夜间日报能展示数据源健康摘要。"""
+        report = run_fixture_replay()
+        digest = build_daily_digest(report=report)
+        md = render_daily_digest(digest)
+        assert "数据源健康日报" in md
+        assert "按数据类型" in md
+        assert len(digest.data_type_healths) > 0
+
+    def test_replay_missing_shows_not_run(self):
+        """replay 缺失时显示 NOT_RUN。"""
+        digest = build_daily_digest(report=None)
+        assert digest.replay_status == "NOT_RUN"
+        md = render_daily_digest(digest)
+        assert "NOT_RUN" in md
+
+    def test_no_sensitive_data_leaked(self):
+        """不泄露敏感环境变量。"""
+        report = run_fixture_replay()
+        digest = build_daily_digest(report=report)
+        md = render_daily_digest(digest)
+        assert "api_key" not in md.lower()
+        assert "apikey" not in md.lower()
+        assert "secret" not in md.lower()
+        assert "cookie" not in md.lower()
+        assert "token" not in md.lower() or "record_count" in md.lower()
+
+    def test_data_type_aggregation_complete(self):
+        """按数据类型聚合完整：每类有 OK/PARTIAL/FAILED。"""
+        report = run_fixture_replay()
+        digest = build_daily_digest(report=report)
+        for h in digest.data_type_healths:
+            assert h.status in ("OK", "PARTIAL", "FAILED", "NOT_RUN")
+            assert h.total_fixtures > 0
+            assert h.passed + h.failed == h.total_fixtures
+
+    def test_failure_samples_captured(self):
+        """失败样本被捕获。"""
+        fail_fixture = FixtureEntry(
+            fixture_id="fail_sample",
+            description="Fail with details",
+            data_type="notice",
+            vendor="cn_astock",
+            endpoint="cninfo",
+            expected_status="HAS_DATA",
+            raw_evidence={
+                "announcements": {
+                    "status": "FAILED",
+                    "error": "ConnectionError: cninfo timeout",
+                    "vendor": "cn_astock",
+                },
+            },
+        )
+        report = run_fixture_replay(fixtures=[fail_fixture])
+        digest = build_daily_digest(report=report)
+        assert len(digest.data_type_healths) == 1
+        h = digest.data_type_healths[0]
+        assert h.status == "FAILED"
+        assert len(h.failure_samples) > 0
+        assert "fail_sample" in h.failure_samples[0]
+
+    def test_tradeflow_impact_assessed(self):
+        """TradeFlow 影响被评估。"""
+        fail_fixture = FixtureEntry(
+            fixture_id="fail_ohlcv",
+            description="OHLCV failure",
+            data_type="ohlcv",
+            vendor="cn_akshare",
+            endpoint="test",
+            expected_status="HAS_DATA",
+            raw_evidence={
+                "stock_data": {
+                    "status": "FAILED",
+                    "error": "ConnectionError",
+                    "vendor": "cn_akshare",
+                },
+            },
+        )
+        report = run_fixture_replay(fixtures=[fail_fixture])
+        digest = build_daily_digest(report=report)
+        assert digest.overall_tradeflow_impact == "high"
+
+    def test_ta_readiness_impact_assessed(self):
+        """TA readiness 影响被评估。"""
+        fail_fixture = FixtureEntry(
+            fixture_id="fail_financials",
+            description="Financials failure",
+            data_type="financials",
+            vendor="cn_akshare",
+            endpoint="test",
+            expected_status="HAS_DATA",
+            raw_evidence={
+                "fundamentals": {
+                    "status": "FAILED",
+                    "error": "KeyError",
+                    "vendor": "cn_akshare",
+                },
+            },
+        )
+        report = run_fixture_replay(fixtures=[fail_fixture])
+        digest = build_daily_digest(report=report)
+        assert digest.overall_ta_impact == "high"
+
+    def test_digest_serializable(self):
+        """日报可序列化。"""
+        report = run_fixture_replay()
+        digest = build_daily_digest(report=report)
+        d = digest.to_dict()
+        json_str = json.dumps(d, ensure_ascii=False)
+        assert "data_type_healths" in json_str
+        assert "replay_status" in json_str
+
+    def test_nightly_report_integration(self):
+        """夜间日报可集成数据源健康摘要。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = run_fixture_replay()
+            save_replay_report(report, output_dir=tmpdir)
+            section = build_digest_section_for_nightly_report(
+                reports_dir=tmpdir, target_date=report.date,
+            )
+            assert "数据源健康日报" in section
+            assert "COMPLETED" in section or "OK" in section
+
+    def test_partial_status_shown(self):
+        """PARTIAL 状态正确展示。"""
+        ok = FixtureEntry(
+            fixture_id="ok_fund",
+            description="OK fund flow",
+            data_type="fund_flow",
+            vendor="cn_akshare",
+            endpoint="test",
+            expected_status="HAS_DATA",
+            raw_evidence={
+                "fund_flow_individual": {
+                    "status": "HAS_DATA",
+                    "vendor": "cn_akshare",
+                    "unit": "万元",
+                    "unit_verified": True,
+                },
+            },
+        )
+        fail = FixtureEntry(
+            fixture_id="fail_fund",
+            description="Fail fund flow",
+            data_type="fund_flow",
+            vendor="cn_akshare",
+            endpoint="test",
+            expected_status="HAS_DATA",
+            raw_evidence={
+                "fund_flow_individual": {
+                    "status": "FAILED",
+                    "error": "ConnectionError",
+                    "vendor": "cn_akshare",
+                },
+            },
+        )
+        report = run_fixture_replay(fixtures=[ok, fail])
+        digest = build_daily_digest(report=report)
+        fund_health = [h for h in digest.data_type_healths if h.data_type == "fund_flow"]
+        assert len(fund_health) == 1
+        assert fund_health[0].status == "PARTIAL"
+        assert fund_health[0].passed == 1
+        assert fund_health[0].failed == 1
+
+
+# ── Edge Cases ───────────────────────────────────────────────────────
+
+
+class TestEdgeCases:
+    def test_empty_replay_report(self):
+        report = run_fixture_replay(fixture_ids=[])
+        digest = build_daily_digest(report=report)
+        assert digest.replay_status == "COMPLETED"
+        assert digest.total_fixtures == 0
+        assert digest.data_type_healths == []
+        assert digest.all_passed is True
+
+    def test_all_failures_same_type(self):
+        fixtures = []
+        for i in range(3):
+            fixtures.append(FixtureEntry(
+                fixture_id=f"fail_{i}",
+                description=f"Fail {i}",
+                data_type="ohlcv",
+                vendor="cn_akshare",
+                endpoint="test",
+                expected_status="HAS_DATA",
+                raw_evidence={
+                    "stock_data": {
+                        "status": "FAILED",
+                        "error": f"Error {i}",
+                        "vendor": "cn_akshare",
+                    },
+                },
+            ))
+        report = run_fixture_replay(fixtures=fixtures)
+        digest = build_daily_digest(report=report)
+        assert len(digest.data_type_healths) == 1
+        assert digest.data_type_healths[0].total_fixtures == 3
+        assert digest.data_type_healths[0].failed == 3
+
+    def test_fallback_detected_in_digest(self):
+        f = FixtureEntry(
+            fixture_id="fallback_test",
+            description="Fallback fixture",
+            data_type="fund_flow",
+            vendor="cn_astock",
+            endpoint="push2his",
+            expected_status="HAS_DATA",
+            raw_evidence={
+                "fund_flow_individual": {
+                    "status": "HAS_DATA",
+                    "vendor": "cn_astock",
+                    "unit": "元",
+                    "unit_verified": False,
+                    "fallback_from": "cn_akshare",
+                },
+            },
+        )
+        report = run_fixture_replay(fixtures=[f])
+        digest = build_daily_digest(report=report)
+        assert len(digest.data_type_healths) == 1
+        h = digest.data_type_healths[0]
+        assert h.has_fallback is True
+
+    def test_digest_with_none_report_path(self):
+        digest = build_daily_digest(report=None, report_path=None)
+        assert digest.replay_report_path is None
+
+    def test_render_empty_healths(self):
+        report = run_fixture_replay(fixture_ids=[])
+        digest = build_daily_digest(report=report)
+        md = render_daily_digest(digest)
+        assert "数据源健康日报" in md
+
+    def test_many_failure_samples_truncated(self):
+        fixtures = []
+        for i in range(10):
+            fixtures.append(FixtureEntry(
+                fixture_id=f"fail_{i}",
+                description=f"Fail {i}",
+                data_type="ohlcv",
+                vendor="cn_akshare",
+                endpoint="test",
+                expected_status="HAS_DATA",
+                raw_evidence={
+                    "stock_data": {
+                        "status": "FAILED",
+                        "error": f"ConnectionError {i}",
+                        "vendor": "cn_akshare",
+                    },
+                },
+            ))
+        report = run_fixture_replay(fixtures=fixtures)
+        digest = build_daily_digest(report=report)
+        h = digest.data_type_healths[0]
+        assert len(h.failure_samples) <= 5
+
+    def test_digest_date_matches(self):
+        digest = build_daily_digest(report=None)
+        today = datetime.now().strftime("%Y-%m-%d")
+        assert digest.date == today
+
+    def test_to_dict_roundtrip(self):
+        report = run_fixture_replay()
+        digest = build_daily_digest(report=report)
+        d = digest.to_dict()
+        assert isinstance(d, dict)
+        assert isinstance(d["data_type_healths"], list)
+        for h in d["data_type_healths"]:
+            assert "status" in h
+            assert "data_type" in h
+
+    def test_report_path_stored_in_digest(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = run_fixture_replay()
+            path = save_replay_report(report, output_dir=tmpdir)
+            digest = build_daily_digest(report_path=path)
+            assert digest.replay_report_path == path
+   170	    if passed == total:
+   171	        return "OK"
+   172	    if passed == 0:
+   173	        return "FAILED"
+   174	    return "PARTIAL"
+   175	
+   176	
+   177	def _assess_overall_impact(healths: List[DataTypeHealth], impact_field: str) -> str:
+   178	    impacts = set()
+   179	    for h in healths:
+   180	        if h.status == "FAILED":
+   181	            impacts.add(getattr(h, impact_field))
+   182	        elif h.status == "PARTIAL":
+   183	            val = getattr(h, impact_field)
+   184	            if val in ("high", "medium"):
+   185	                impacts.add(val)
+   186	    if "high" in impacts:
+   187	        return "high"
+   188	    if "medium" in impacts:
+   189	        return "medium"
+   190	    if "low" in impacts:
+   191	        return "low"
+   192	    return "none"
+   193	
+   194	
+   195	# ── Core Logic ───────────────────────────────────────────────────────
+   196	
+   197	def build_daily_digest(
+   198	    report: Optional[ReplayReport] = None,
+   199	    report_path: Optional[str] = None,
+   200	) -> DailyDigest:
+   201	    now = datetime.now()
+   202	    digest = DailyDigest(
+   203	        date=now.strftime("%Y-%m-%d"),
+   204	        generated_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+   205	    )
+   206	
+   207	    if report_path is not None:
+   208	        digest.replay_report_path = report_path
+   209	
+   210	    if report is None and report_path is not None:
+   211	        report = read_replay_report_from_file(report_path)
+   212	
+   213	    if report is None:
+   214	        digest.replay_status = "NOT_RUN"
+   215	        digest.replay_report_available = False
+   216	        digest.all_passed = False
+   217	        digest.warnings.append(
+   218	            "DATA-005 replay 尚未运行，数据源健康状况未知。"
+   219	            "请先运行 run_fixture_replay() 或 run_replay_and_save()。"
+   220	        )
+   221	        return digest
+   222	
+   223	    digest.replay_status = "COMPLETED"
+   224	    digest.replay_report_available = True
+   225	    digest.total_fixtures = report.total_fixtures
+   226	    digest.total_passed = report.passed
+   227	    digest.total_failed = report.failed
+   228	    digest.all_passed = report.all_passed
+   229	    digest.failure_types = dict(report.failure_types)
+   230	
+   231	    by_type: Dict[str, List[ReplayResult]] = {}
+   232	    for r in report.results:
+   233	        by_type.setdefault(r.data_type, []).append(r)
+   234	
+   235	    for dt, results in sorted(by_type.items()):
+   236	        passed_count = sum(1 for r in results if r.passed)
+   237	        failed_count = len(results) - passed_count
+   238	        status = _classify_status(passed_count, len(results))
+   239	
+   240	        failure_samples = []
+   241	        fallback_samples = []
+   242	        completeness_scores = []
+   243	        has_fallback = False
+   244	
+   245	        for r in results:
+zsh:1: command not found: python
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/dataflows/data_source_daily_digest.py | sed -n '245,285p'; source .venv/bin/activate && python -m py_compile tradingagents/dataflows/data_source_daily_digest.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   245	        for r in results:
+   246	            completeness_scores.append(r.completeness_score)
+   247	            if not r.passed:
+   248	                sample = f"{r.fixture_id}: expected={r.expected_status} actual={r.actual_status}"
+   249	                if r.error:
+   250	                    sample += f" error={r.error[:80]}"
+   251	                failure_samples.append(sample)
+   252	            if r.is_fallback:
+   253	                has_fallback = True
+   254	                fb = f"{r.fixture_id}: fallback from {r.fallback_from}"
+   255	                fallback_samples.append(fb)
+   256	
+   257	        avg_completeness = (
+   258	            sum(completeness_scores) / len(completeness_scores)
+   259	            if completeness_scores else 0.0
+   260	        )
+   261	
+   262	        health = DataTypeHealth(
+   263	            data_type=dt,
+   264	            label=_DATA_TYPE_CATEGORIES.get(dt, dt),
+   265	            status=status,
+   266	            total_fixtures=len(results),
+   267	            passed=passed_count,
+   268	            failed=failed_count,
+   269	            failure_samples=failure_samples[:5],
+   270	            completeness_avg=avg_completeness,
+   271	            has_fallback=has_fallback,
+   272	            fallback_samples=fallback_samples[:3],
+   273	            impact_tradeflow=_IMPACT_ON_TRADEFLOW.get(dt, "unknown"),
+   274	            impact_ta_readiness=_IMPACT_ON_TA_READINESS.get(dt, "unknown"),
+   275	        )
+   276	        digest.data_type_healths.append(health)
+   277	
+   278	    digest.overall_tradeflow_impact = _assess_overall_impact(
+   279	        digest.data_type_healths, "impact_tradeflow"
+   280	    )
+   281	    digest.overall_ta_impact = _assess_overall_impact(
+   282	        digest.data_type_healths, "impact_ta_readiness"
+   283	    )
+   284	
+   285	    if not digest.all_passed:
+
+exec
+/bin/zsh -lc "grep -R \"def render_replay_report\\|class ReplayReport\\|@dataclass.*Replay\" -n tradingagents/dataflows/fixture_replay.py && sed -n '1,260p' tradingagents/dataflows/fixture_replay.py && sed -n '260,560p' tradingagents/dataflows/fixture_replay.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/dataflows/fixture_replay.py:130:class ReplayReport:
+tradingagents/dataflows/fixture_replay.py:625:def render_replay_report(report: ReplayReport) -> str:
+# [DATA-005] data_source_replay
+"""
+数据源 fixture replay 与限流/失败回放。
+
+提供可重复的数据源回放测试，覆盖正常、缺字段、限流、超时、来源冲突、
+当天实时缺失等场景，避免夜间自动开发误判数据源质量。
+
+功能：
+  1. 内置 7 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
+     资金流单位异常、龙虎榜无触发、公告源失败）
+  2. replay runner 将 fixture 模拟为 raw_evidence，输出数据源健康报告
+  3. 失败时写入 docs/data_source_reports/YYYY-MM-DD.md
+  4. 可被 scripts/auto_dev_loop.sh 或 OpenClaw 巡检调用
+
+Usage:
+    from tradingagents.dataflows.fixture_replay import (
+        run_fixture_replay,
+        get_all_fixtures,
+        render_replay_report,
+    )
+    result = run_fixture_replay()
+    print(render_replay_report(result))
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from .evidence_contract import (
+    EvidenceContract,
+    compute_contract_completeness,
+    build_data_source_summary,
+)
+from .source_catalog import (
+    DataType,
+    Freshness,
+    RateLimitRisk,
+    get_primary_source,
+    get_sources_for_type,
+)
+
+
+# ── Fixture Scenario IDs ──────────────────────────────────────────────
+
+FIXTURE_NORMAL_QUOTE = "normal_quote"
+FIXTURE_STALE_DAILY = "stale_daily"
+FIXTURE_REALTIME_SUCCESS = "realtime_success"
+FIXTURE_REALTIME_FAILURE = "realtime_failure"
+FIXTURE_FUND_FLOW_UNIT_ANOMALY = "fund_flow_unit_anomaly"
+FIXTURE_LHB_NO_TRIGGER = "lhb_no_trigger"
+FIXTURE_ANNOUNCEMENT_FAILURE = "announcement_failure"
+
+ALL_FIXTURE_IDS = [
+    FIXTURE_NORMAL_QUOTE,
+    FIXTURE_STALE_DAILY,
+    FIXTURE_REALTIME_SUCCESS,
+    FIXTURE_REALTIME_FAILURE,
+    FIXTURE_FUND_FLOW_UNIT_ANOMALY,
+    FIXTURE_LHB_NO_TRIGGER,
+    FIXTURE_ANNOUNCEMENT_FAILURE,
+]
+
+
+# ── Fixture Data Models ──────────────────────────────────────────────
+
+@dataclass
+class FixtureEntry:
+    fixture_id: str
+    description: str
+    data_type: str
+    vendor: str
+    endpoint: str
+    expected_status: str
+    raw_evidence: Dict[str, Any]
+    tags: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "fixture_id": self.fixture_id,
+            "description": self.description,
+            "data_type": self.data_type,
+            "vendor": self.vendor,
+            "endpoint": self.endpoint,
+            "expected_status": self.expected_status,
+            "raw_evidence": self.raw_evidence,
+            "tags": self.tags,
+        }
+
+
+@dataclass
+class ReplayResult:
+    fixture_id: str
+    fixture_description: str
+    data_type: str
+    expected_status: str
+    actual_status: str
+    passed: bool
+    vendor: str
+    endpoint: str
+    is_fallback: bool
+    fallback_from: Optional[str]
+    error: Optional[str]
+    completeness_score: int
+    missing_details: Dict[str, List[str]]
+    tags: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "fixture_id": self.fixture_id,
+            "fixture_description": self.fixture_description,
+            "data_type": self.data_type,
+            "expected_status": self.expected_status,
+            "actual_status": self.actual_status,
+            "passed": self.passed,
+            "vendor": self.vendor,
+            "endpoint": self.endpoint,
+            "is_fallback": self.is_fallback,
+            "fallback_from": self.fallback_from,
+            "error": self.error,
+            "completeness_score": self.completeness_score,
+            "missing_details": self.missing_details,
+            "tags": self.tags,
+        }
+
+
+@dataclass
+class ReplayReport:
+    run_at: str
+    date: str
+    total_fixtures: int = 0
+    passed: int = 0
+    failed: int = 0
+    results: List[ReplayResult] = field(default_factory=list)
+    all_passed: bool = True
+    by_data_type: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    by_status: Dict[str, int] = field(default_factory=dict)
+    failure_types: Dict[str, int] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "run_at": self.run_at,
+            "date": self.date,
+            "total_fixtures": self.total_fixtures,
+            "passed": self.passed,
+            "failed": self.failed,
+            "all_passed": self.all_passed,
+            "by_data_type": self.by_data_type,
+            "by_status": self.by_status,
+            "failure_types": self.failure_types,
+            "results": [r.to_dict() for r in self.results],
+        }
+
+
+# ── Fixture Builders ─────────────────────────────────────────────────
+
+def _build_normal_quote_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "stock_data": {
+            "raw": "Date,Open,High,Low,Close,Volume\n2026-06-01,1800.0,1812.5,1795.0,1810.0,25000",
+            "field": "stock_data",
+            "unit": "元/股, 股",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_zh_a_hist",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "fallback_from": None,
+            "source_url": None,
+            "error": None,
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 30,
+        },
+        "fund_flow_individual": {
+            "raw": "日期,主力净流入,小单净流入\n2026-06-01,5000,−2000",
+            "field": "fund_flow_individual",
+            "unit": "万元",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_individual_fund_flow",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "fallback_from": None,
+            "unit_verified": True,
+            "record_count": 20,
+        },
+        "lhb": {
+            "raw": None,
+            "field": "lhb",
+            "unit": "万元",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_lhb_detail_em",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "NORMAL_NO_DATA",
+            "fallback_from": None,
+            "record_count": 0,
+        },
+        "news": {
+            "raw": "新闻标题,来源\n贵州茅台召开股东大会,东财",
+            "field": "news",
+            "unit": "条",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_news_em",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "record_count": 5,
+        },
+        "announcements": {
+            "raw": "公告标题,类型,日期\n2025年度权益分派实施公告,分红,2026-06-01",
+            "field": "announcements",
+            "unit": "条",
+            "vendor": "cn_astock",
+            "endpoint": "cninfo.com.cn/hisAnnouncement",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "record_count": 3,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_NORMAL_QUOTE,
+        description="正常行情——所有数据源返回 HAS_DATA 或 NORMAL_NO_DATA",
+        data_type="ohlcv",
+        vendor="cn_akshare",
+        endpoint="stock_zh_a_hist",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["happy_path", "full_coverage"],
+    )
+
+
+def _build_stale_daily_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    yesterday = (datetime.now().replace(hour=0, minute=0, second=0)).strftime("%Y-%m-%d")
+    raw_evidence = {
+        "stock_data": {
+            "raw": "Date,Open,High,Low,Close,Volume\n2026-05-30,1800.0,1812.5,1795.0,1810.0,25000",
+            "field": "stock_data",
+            "unit": "元/股, 股",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_zh_a_hist",
+            "as_of": yesterday,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 29,
+        },
+        "fund_flow_individual": {
+            "raw": None,
+            "field": "fund_flow_individual",
+            "unit": "万元",
+            "vendor": "cn_akshare",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_individual_fund_flow",
+            "as_of": yesterday,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "unit_verified": True,
+            "record_count": 19,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_STALE_DAILY,
+        description="日线数据 stale——最新 bar 停留在昨日，需要 realtime patch",
+        data_type="ohlcv",
+        vendor="cn_akshare",
+        endpoint="stock_zh_a_hist",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["stale", "needs_realtime_patch"],
+    )
+
+
+def _build_realtime_success_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "stock_data": {
+            "raw": "Date,Open,High,Low,Close,Volume\n2026-05-30,...",
+            "field": "stock_data",
+            "unit": "元/股, 股",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_zh_a_hist",
+            "as_of": "2026-05-30",
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "is_realtime_patched": True,
+            "source_type": "realtime_patch",
+            "patch_fields": ["current_price", "current_volume", "current_amount"],
+            "patch_source": "cn_akshare",
+            "patch_as_of": today,
+            "unit_verified": True,
+            "record_count": 29,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_REALTIME_SUCCESS,
+        description="实时 quote 成功——日线 stale 但 realtime patch 补上了 current_price/volume/amount",
+        data_type="realtime_quotes",
+        vendor="cn_akshare",
+        endpoint="hq.sinajs.cn",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["realtime_patch", "success"],
+    )
+
+
+def _build_realtime_failure_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    raw_evidence = {
+        "stock_data": {
+            "raw": "Date,Open,High,Low,Close,Volume\n2026-05-30,...",
+            "field": "stock_data",
+            "unit": "元/股, 股",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_zh_a_hist",
+            "as_of": "2026-05-30",
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 29,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_REALTIME_FAILURE,
+        description="实时 quote 失败——日线 stale 且 realtime patch 未补上，应标记 stale 而非 '无数据'",
+        data_type="realtime_quotes",
+        vendor="cn_akshare",
+        endpoint="hq.sinajs.cn",
+        expected_status="STALE",
+        raw_evidence=raw_evidence,
+        tags=["realtime_failure", "stale"],
+    )
+
+
+def _build_fund_flow_unit_anomaly_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "fund_flow_individual": {
+            "raw": "日期,主力净流入,小单净流入\n2026-06-01,50000000,-20000000",
+            "field": "fund_flow_individual",
+            "unit": "元",
+            "vendor": "cn_astock",
+            "endpoint": "push2his.eastmoney.com/fflow",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "fallback_from": "cn_akshare",
+            "unit_verified": False,
+            "error": "单位与预期不符：预期'万元'，实际为'元'",
+            "record_count": 20,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_FUND_FLOW_UNIT_ANOMALY,
+        description="资金流单位异常——astock fallback 返回'元'而非'万元'，unit_verified=False",
+        data_type="fund_flow",
+        vendor="cn_astock",
+        endpoint="push2his.eastmoney.com/fflow",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["unit_anomaly", "fallback", "unit_unverified"],
+    )
+
+
+def _build_lhb_no_trigger_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "lhb": {
+            "raw": None,
+            "field": "lhb",
+            "unit": "万元",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_lhb_detail_em",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "NOT_QUERIED",
+            "force_reason": None,
+            "record_count": 0,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_LHB_NO_TRIGGER,
+        description="龙虎榜无触发——force=False 时返回 NOT_QUERIED，不是 FAILED 也不是 '无数据'",
+        data_type="lhb",
+        vendor="cn_akshare",
+        endpoint="stock_lhb_detail_em",
+        expected_status="NOT_QUERIED",
+        raw_evidence=raw_evidence,
+        tags=["lhb", "not_queried", "force_false"],
+    )
+
+
+def _build_announcement_failure_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "announcements": {
+            "raw": None,
+            "field": "announcements",
+            "unit": "",
+            "vendor": "cn_astock",
+            "endpoint": "cninfo.com.cn/hisAnnouncement",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "FAILED",
+            "error": "ConnectionError: HTTPSConnectionPool(host='www.cninfo.com.cn', port=443): Max retries exceeded",
+            "record_count": 0,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_ANNOUNCEMENT_FAILURE,
+        description="公告源失败——巨潮 ConnectionError，应标记 FAILED 而非 '无数据'",
+        data_type="notice",
+        vendor="cn_astock",
+        endpoint="cninfo.com.cn/hisAnnouncement",
+        expected_status="FAILED",
+        raw_evidence=raw_evidence,
+        tags=["announcement", "connection_error", "failed"],
+    )
+
+
+_FIXTURE_BUILDERS = {
+    FIXTURE_NORMAL_QUOTE: _build_normal_quote_fixture,
+    FIXTURE_STALE_DAILY: _build_stale_daily_fixture,
+    FIXTURE_REALTIME_SUCCESS: _build_realtime_success_fixture,
+    FIXTURE_REALTIME_FAILURE: _build_realtime_failure_fixture,
+    FIXTURE_FUND_FLOW_UNIT_ANOMALY: _build_fund_flow_unit_anomaly_fixture,
+    FIXTURE_LHB_NO_TRIGGER: _build_lhb_no_trigger_fixture,
+    FIXTURE_ANNOUNCEMENT_FAILURE: _build_announcement_failure_fixture,
+}
+
+
+def get_fixture(fixture_id: str) -> Optional[FixtureEntry]:
+    builder = _FIXTURE_BUILDERS.get(fixture_id)
+    if builder is None:
+        return None
+    return builder()
+
+
+def get_all_fixtures() -> List[FixtureEntry]:
+    return [builder() for builder in (_FIXTURE_BUILDERS[fid] for fid in ALL_FIXTURE_IDS)]
+
+
+# ── Replay Logic ─────────────────────────────────────────────────────
+
+def _check_stale_status(entry: Dict[str, Any]) -> Optional[str]:
+    """Check if the evidence entry indicates stale data that should be flagged."""
+    if not isinstance(entry, dict):
+        return None
+    status = entry.get("status", "")
+    is_patched = entry.get("is_realtime_patched", False)
+    if status == "HAS_DATA" and not is_patched:
+        source_type = entry.get("source_type", "")
+        if source_type == "realtime_patch":
+            return None
+    return None
+
+
+def _classify_failure_type(result: ReplayResult) -> str:
+    if result.actual_status == "FAILED":
+        error = result.error or ""
+        if "ConnectionError" in error or "TimeoutError" in error:
+            return "connection_or_timeout"
+        if "RateLimitError" in error or "rate" in error.lower():
+            return "rate_limited"
+        return "api_error"
+    if result.actual_status == "STALE":
+        return "stale_data"
+    if result.actual_status == "NOT_QUERIED" and result.expected_status != "NOT_QUERIED":
+        return "unexpected_not_queried"
+    if result.completeness_score < 70:
+        return "low_completeness"
+    return "status_mismatch"
+
+
+def _replay_single_fixture(fixture: FixtureEntry) -> ReplayResult:
+    raw_evidence = fixture.raw_evidence
+    completeness = compute_contract_completeness(raw_evidence)
+    primary = get_primary_source(fixture.data_type)
+
+    is_fallback = False
+    fallback_from = None
+    actual_vendor = fixture.vendor
+    if primary and primary.vendor != fixture.vendor:
+        is_fallback = True
+        fallback_from = primary.vendor
+
+    actual_status = fixture.expected_status
+    error_msg = None
+    passed = True
+
+    for ev_key, entry in raw_evidence.items():
+        if not isinstance(entry, dict):
+            continue
+        contract = EvidenceContract.from_dict(entry)
+        ev_status = contract.status
+
+        if ev_status == "FAILED":
+            actual_status = "FAILED"
+            error_msg = contract.error or "unknown error"
+            if fixture.expected_status != "FAILED":
+                passed = False
+            break
+
+        if contract.is_fallback and contract.fallback_from:
+            is_fallback = True
+            fallback_from = contract.fallback_from
+
+        if ev_key == "stock_data" and ev_status == "HAS_DATA":
+            is_patched = entry.get("is_realtime_patched", False)
+            source_type = entry.get("source_type", "")
+            if not is_patched and source_type != "realtime_patch":
+                if fixture.tags and "stale" in fixture.tags and "realtime_failure" in fixture.tags:
+                    actual_status = "STALE"
+                    if fixture.expected_status != "STALE":
+                        passed = False
+
+        if ev_key == "fund_flow_individual" and ev_status == "HAS_DATA":
+            unit_verified = entry.get("unit_verified")
+            if unit_verified is False:
+                if fixture.tags and "unit_anomaly" in fixture.tags:
+                    pass
+
+        if ev_key == "lhb" and ev_status == "NOT_QUERIED":
+            if fixture.expected_status == "NOT_QUERIED":
+                pass
+            elif fixture.expected_status != "NOT_QUERIED":
+                passed = False
+                actual_status = "NOT_QUERIED"
+
+    if fixture.expected_status == "FAILED" and actual_status == "FAILED":
+        passed = True
+    elif fixture.expected_status == "NOT_QUERIED" and actual_status == "NOT_QUERIED":
+        passed = True
+    elif fixture.expected_status == "STALE" and actual_status == "STALE":
+        passed = True
+    elif fixture.expected_status == "HAS_DATA" and actual_status == "HAS_DATA":
+        passed = True
+    elif fixture.expected_status == "HAS_DATA" and actual_status == "FAILED":
+        passed = False
+    elif fixture.expected_status == "STALE" and actual_status == "FAILED":
+        passed = False
+
+    return ReplayResult(
+        fixture_id=fixture.fixture_id,
+        fixture_description=fixture.description,
+        data_type=fixture.data_type,
+        expected_status=fixture.expected_status,
+        actual_status=actual_status,
+
+exec
+/bin/zsh -lc "sed -n '560,740p' tradingagents/dataflows/fixture_replay.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        actual_status=actual_status,
+        passed=passed,
+        vendor=actual_vendor,
+        endpoint=fixture.endpoint,
+        is_fallback=is_fallback,
+        fallback_from=fallback_from,
+        error=error_msg,
+        completeness_score=completeness.get("completeness_score", 0),
+        missing_details=completeness.get("missing_details", {}),
+        tags=fixture.tags,
+    )
+
+
+def run_fixture_replay(
+    fixture_ids: Optional[List[str]] = None,
+    fixtures: Optional[List[FixtureEntry]] = None,
+) -> ReplayReport:
+    now = datetime.now()
+    report = ReplayReport(
+        run_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+        date=now.strftime("%Y-%m-%d"),
+    )
+
+    if fixtures is not None:
+        items = fixtures
+    elif fixture_ids is not None:
+        items = []
+        for fid in fixture_ids:
+            f = get_fixture(fid)
+            if f is not None:
+                items.append(f)
+    else:
+        items = get_all_fixtures()
+
+    report.total_fixtures = len(items)
+
+    for fixture in items:
+        result = _replay_single_fixture(fixture)
+        report.results.append(result)
+
+        if result.passed:
+            report.passed += 1
+        else:
+            report.failed += 1
+            report.all_passed = False
+            ft = _classify_failure_type(result)
+            report.failure_types[ft] = report.failure_types.get(ft, 0) + 1
+
+        dt = result.data_type
+        if dt not in report.by_data_type:
+            report.by_data_type[dt] = {"total": 0, "passed": 0, "failed": 0}
+        report.by_data_type[dt]["total"] += 1
+        if result.passed:
+            report.by_data_type[dt]["passed"] += 1
+        else:
+            report.by_data_type[dt]["failed"] += 1
+
+        st = result.actual_status
+        report.by_status[st] = report.by_status.get(st, 0) + 1
+
+    return report
+
+
+# ── Markdown Rendering ────────────────────────────────────────────────
+
+def render_replay_report(report: ReplayReport) -> str:
+    lines: List[str] = []
+    lines.append("# Data Source Fixture Replay Report")
+    lines.append("")
+    lines.append(f"- **Date**: {report.date}")
+    lines.append(f"- **Run at**: {report.run_at}")
+    lines.append(f"- **Result**: {'ALL PASSED' if report.all_passed else 'HAS FAILURES'}")
+    lines.append("")
+
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("| Metric | Count |")
+    lines.append("|--------|-------|")
+    lines.append(f"| Total fixtures | {report.total_fixtures} |")
+    lines.append(f"| Passed | {report.passed} |")
+    lines.append(f"| Failed | {report.failed} |")
+    lines.append("")
+
+    if report.by_data_type:
+        lines.append("## By Data Type")
+        lines.append("")
+        lines.append("| Data Type | Total | Passed | Failed |")
+        lines.append("|-----------|-------|--------|--------|")
+        for dt, counts in sorted(report.by_data_type.items()):
+            lines.append(
+                f"| {dt} | {counts['total']} | {counts['passed']} | {counts['failed']} |"
+            )
+        lines.append("")
+
+    if report.failure_types:
+        lines.append("## Failure Types")
+        lines.append("")
+        for ft, count in sorted(report.failure_types.items()):
+            lines.append(f"- **{ft}**: {count}")
+        lines.append("")
+
+    lines.append("## Fixture Details")
+    lines.append("")
+    lines.append(
+        "| Fixture | Data Type | Expected | Actual | Passed | Vendor | "
+        "Fallback | Completeness | Error |"
+    )
+    lines.append(
+        "|---------|-----------|----------|--------|--------|--------|"
+        "----------|-------------|-------|"
+    )
+
+    for r in report.results:
+        error_short = (r.error or "-")[:50]
+        if len(error_short) > 50:
+            error_short = error_short[:47] + "..."
+        lines.append(
+            f"| {r.fixture_id} | {r.data_type} | {r.expected_status} | "
+            f"{r.actual_status} | {'PASS' if r.passed else 'FAIL'} | "
+            f"{r.vendor} | {r.fallback_from or '-'} | {r.completeness_score}% | "
+            f"{error_short} |"
+        )
+    lines.append("")
+
+    failed_results = [r for r in report.results if not r.passed]
+    if failed_results:
+        lines.append("## Failed Fixtures Detail")
+        lines.append("")
+        for r in failed_results:
+            lines.append(f"### {r.fixture_id}")
+            lines.append(f"- Description: {r.fixture_description}")
+            lines.append(f"- Expected: {r.expected_status}, Actual: {r.actual_status}")
+            lines.append(f"- Vendor: {r.vendor}, Endpoint: {r.endpoint}")
+            if r.fallback_from:
+                lines.append(f"- Fallback from: {r.fallback_from}")
+            if r.error:
+                lines.append(f"- Error: {r.error}")
+            if r.missing_details:
+                lines.append(f"- Missing details: {r.missing_details}")
+            lines.append("")
+
+    lines.append("---")
+    lines.append("*Generated by fixture_replay.py — [DATA-005] data_source_replay*")
+    lines.append("")
+    return "\n".join(lines)
+
+
+# ── File Output ───────────────────────────────────────────────────────
+
+def save_replay_report(
+    report: ReplayReport,
+    output_dir: str = "docs/data_source_reports",
+) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, f"{report.date}.md")
+    md = render_replay_report(report)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(md)
+    return path
+
+
+def run_replay_and_save(
+    output_dir: str = "docs/data_source_reports",
+    fixture_ids: Optional[List[str]] = None,
+) -> str:
+    report = run_fixture_replay(fixture_ids=fixture_ids)
+    path = save_replay_report(report, output_dir=output_dir)
+    return path
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest tests/test_data006_daily_digest.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 220ms:
+........................................................................ [ 97%]
+..                                                                       [100%]
+74 passed in 0.03s
+
+exec
+/bin/zsh -lc "source .venv/bin/activate && python - <<'PY'
+from tradingagents.dataflows.fixture_replay import run_fixture_replay, save_replay_report
+from tradingagents.dataflows.data_source_daily_digest import read_replay_report_from_file, build_daily_digest
+import tempfile
+report=run_fixture_replay()
+with tempfile.TemporaryDirectory() as d:
+ p=save_replay_report(report, d)
+ loaded=read_replay_report_from_file(p)
+ print(report.total_fixtures, len(report.results), report.failure_types)
+ print(loaded.total_fixtures, len(loaded.results), loaded.failure_types)
+ print([(r.fixture_id,r.data_type,r.passed,r.completeness_score,r.is_fallback) for r in loaded.results[:10]])
+ dig=build_daily_digest(report_path=p)
+ print([(h.data_type,h.status,h.total_fixtures,h.completeness_avg,h.has_fallback) for h in dig.data_type_healths])
+PY" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+7 7 {}
+7 10 {}
+[('Total', 'Passed', False, 0, False), ('Expected', 'Actual', False, 0, False), ('Error', '|---------|-----------|----------|--------|--------|--------|----------|-------------|-------|', False, 0, False), ('PASS', 'cn_akshare', False, 0, False), ('stale_daily', 'ohlcv', True, 0, False), ('realtime_success', 'realtime_quotes', True, 0, False), ('realtime_failure', 'realtime_quotes', True, 0, False), ('fund_flow_unit_anomaly', 'fund_flow', True, 0, False), ('lhb_no_trigger', 'lhb', True, 0, False), ('announcement_failure', 'notice', True, 0, False)]
+[('Actual', 'FAILED', 1, 0.0, False), ('Passed', 'FAILED', 1, 0.0, False), ('cn_akshare', 'FAILED', 1, 0.0, False), ('fund_flow', 'OK', 1, 0.0, False), ('lhb', 'OK', 1, 0.0, False), ('notice', 'OK', 1, 0.0, False), ('ohlcv', 'OK', 1, 0.0, False), ('realtime_quotes', 'OK', 2, 0.0, False), ('|---------|-----------|----------|--------|--------|--------|----------|-------------|-------|', 'FAILED', 1, 0.0, False)]
+
+exec
+/bin/zsh -lc "sed -n '300,390p' api/services/tradeflow_service.py && sed -n '390,470p' api/services/tradeflow_service.py && nl -ba tradingagents/dataflows/data_source_daily_digest.py | sed -n '340,385p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+                "version_score": entry.get("version_score", 0.0),
+                "narrative_score": entry.get("narrative_score", 0.0),
+                "fund_flow_anomaly_score": entry.get("fund_flow_anomaly_score", 0.0),
+                "fund_flow_anomaly_tags": entry.get("fund_flow_anomaly_tags", []),
+                "fund_flow_unit_verified": entry.get("fund_flow_unit_verified", False),
+                "evidence_gate_applied": entry.get("evidence_gate_applied", False),
+                "deep_ta_status": entry.get("deep_ta_status", ""),
+                "deep_ta_dispatch_reason": entry.get("deep_ta_dispatch_reason", ""),
+                "deep_ta_model": entry.get("deep_ta_model", ""),
+                "source": entry.get("source", "manual"),
+                "universe_sources": entry.get("universe_sources", []),
+                "resonance_count": entry.get("resonance_count", 0),
+                "ta_budget_priority": entry.get("ta_budget_priority", 0),
+                "tier_reason": entry.get("tier_reason", ""),
+                "missing_evidence_for_upgrade": entry.get("missing_evidence_for_upgrade", []),
+                "created_at": _rget(plan_row, "created_at", ""),
+                "updated_at": _rget(plan_row, "created_at", ""),
+            }
+            candidate_items.append(item)
+
+        return {
+            "status": "ok",
+            "trade_date": _rget(plan_row, "trade_date", trade_date),
+            "mode": _rget(plan_row, "mode", "pre_market"),
+            "summary": _rget(plan_row, "summary", ""),
+            "candidates": candidate_items,
+            "metadata": metadata_json,
+            "summary_agg": _compute_summary(candidate_items),
+            "created_at": _rget(plan_row, "created_at", ""),
+            "plan_date": _rget(plan_row, "plan_date", ""),  # [TF-DATE-001]
+            "effective_trade_date": _rget(plan_row, "effective_trade_date", ""),  # [TF-DATE-001]
+            "observe_date": _rget(plan_row, "observe_date", ""),  # [TF-DATE-001]
+        }
+    finally:
+        conn.close()
+
+
+def get_candidates(
+    trade_date: str,
+    tier: Optional[str] = None,
+    need_deep_ta: Optional[bool] = None,
+    candidate_type: Optional[str] = None,  # [H-005] mandate_radar_ui
+    tf_db_path: str = "",
+) -> dict:
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "trade_date": trade_date}
+
+    try:
+        columns = _table_columns(conn, "tradeflow_candidates")
+        extra_conditions = ["status = 'active'" if "status" in columns else None]
+        extra_conditions = [c for c in extra_conditions if c is not None]
+        if tier and "tier" in columns:
+            extra_conditions.append("tier = ?")
+        if need_deep_ta is not None:
+            extra_conditions.append("need_deep_ta = ?")
+        if candidate_type and "candidate_type" in columns:  # [H-005] mandate_radar_ui
+            extra_conditions.append("candidate_type = ?")
+
+        extra_params: list = []
+        if tier and "tier" in columns:
+            extra_params.append(tier)
+        if need_deep_ta is not None:
+            extra_params.append(1 if need_deep_ta else 0)
+        if candidate_type and "candidate_type" in columns:  # [H-005] mandate_radar_ui
+            extra_params.append(candidate_type)
+
+        order_cols = []
+        if "composite_score" in columns:
+            order_cols.append("composite_score DESC")
+        if "score" in columns:
+            order_cols.append("score DESC")
+        order_clause = f" ORDER BY {', '.join(order_cols)}" if order_cols else " ORDER BY updated_at DESC, created_at DESC"
+
+        rows = _query_by_date_or_effective(
+            conn, "tradeflow_candidates", trade_date,
+            extra_conditions=extra_conditions if extra_conditions else None,
+            extra_params=extra_params if extra_params else None,
+            order_clause=order_clause,
+        )
+
+        items = [_row_to_candidate_item(r) for r in rows]
+        for it in items:
+            it["action"] = _compute_action(it)
+            it["reason"] = it.get("why_deep_ta") or it.get("why_not_deep_ta") or "候选观察"
+
+        return {
+            "status": "ok",
+            "trade_date": trade_date,
+            "candidates": items,
+            "summary_agg": _compute_summary(items),
+            "summary_agg": _compute_summary(items),
+        }
+    finally:
+        conn.close()
+
+
+def get_candidate_detail(symbol: str, trade_date: str, tf_db_path: str = "") -> dict:
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "trade_date": trade_date}
+
+    try:
+        row = conn.execute(
+            "SELECT * FROM tradeflow_candidates WHERE trade_date = ? AND symbol = ?",
+            (trade_date, symbol),
+        ).fetchone()
+
+        if row is None:
+            columns = _table_columns(conn, "tradeflow_candidates")
+            if "effective_trade_date" in columns:
+                row = conn.execute(
+                    "SELECT * FROM tradeflow_candidates WHERE effective_trade_date = ? AND symbol = ?",
+                    (trade_date, symbol),
+                ).fetchone()
+
+        if row is None:
+            return {"status": "no_data", "trade_date": trade_date}
+
+        detail = _row_to_candidate_detail(row)
+        detail["action"] = _compute_action(detail)
+        detail["reason"] = detail.get("why_deep_ta") or detail.get("why_not_deep_ta") or "候选观察"
+
+        return {
+            "status": "ok",
+            "trade_date": trade_date,
+            "candidate": detail,
+        }
+    finally:
+        conn.close()
+
+
+def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "trade_date": trade_date}
+
+    try:
+        columns = _table_columns(conn, "tradeflow_candidates")
+        extra_conditions = []
+        if "status" in columns:
+            extra_conditions.append("status = 'active'")
+        order_clause = " ORDER BY composite_score DESC" if "composite_score" in columns else " ORDER BY updated_at DESC, created_at DESC"
+        rows = _query_by_date_or_effective(
+            conn, "tradeflow_candidates", trade_date,
+            extra_conditions=extra_conditions if extra_conditions else None,
+            order_clause=order_clause,
+        )
+
+        items = []
+        triggered = 0
+        invalidated = 0
+        waiting = 0
+        for r in rows:
+            state = _rget(r, "observe_state", "WAITING")
+            sym = normalize_tradeflow_symbol(r["symbol"])  # [UI-008]
+            raw_n = _rget(r, "name", "")
+
+            # [TF-OBS-001] tradeflow_observe_runner — populate current_price/trigger_reason from latest signal
+            current_price = None
+            trigger_reason = ""
+            try:
+                sig_rows = conn.execute(
+                    "SELECT evidence_json FROM tradeflow_signals WHERE symbol = ? AND signal_type LIKE 'observe_%' ORDER BY signal_time DESC LIMIT 20",
+                    (sym,),
+                ).fetchall()
+                for sig_row in sig_rows:
+                    ev = _parse_json(_rget(sig_row, "evidence_json", "{}"), {})
+                    if ev.get("trade_date") != trade_date:
+                        continue
+                    current_price = ev.get("current_price")
+                    trigger_reason = ev.get("trigger_reason", "")
+   340	        return None
+   341	    files.sort(key=lambda x: x[0], reverse=True)
+   342	    return files[0][1]
+   343	
+   344	
+   345	def _parse_report_file(path: str) -> ReplayReport:
+   346	    with open(path, encoding="utf-8") as f:
+   347	        content = f.read()
+   348	
+   349	    date_match = re.search(r"\*\*Date\*\*:\s*(\d{4}-\d{2}-\d{2})", content)
+   350	    run_at_match = re.search(r"\*\*Run at\*\*:\s*(.+)", content)
+   351	    result_match = re.search(r"\*\*Result\*\*:\s*(.+)", content)
+   352	
+   353	    report = ReplayReport(
+   354	        run_at=run_at_match.group(1).strip() if run_at_match else "",
+   355	        date=date_match.group(1) if date_match else "",
+   356	        all_passed="ALL PASSED" in (result_match.group(1) if result_match else ""),
+   357	    )
+   358	
+   359	    summary_match = re.search(
+   360	        r"\| Total fixtures \| (\d+) \|.*?"
+   361	        r"\| Passed \| (\d+) \|.*?"
+   362	        r"\| Failed \| (\d+) \|",
+   363	        content,
+   364	        re.DOTALL,
+   365	    )
+   366	    if summary_match:
+   367	        report.total_fixtures = int(summary_match.group(1))
+   368	        report.passed = int(summary_match.group(2))
+   369	        report.failed = int(summary_match.group(3))
+   370	
+   371	    fixture_rows = re.findall(
+   372	        r"\|\s*(\S+)\s*\|\s*(\S+)\s*\|\s*(\S+)\s*\|\s*(\S+)\s*\|\s*(\S+)\s*\|",
+   373	        content,
+   374	    )
+   375	    for row in fixture_rows:
+   376	        fixture_id = row[0]
+   377	        data_type = row[1]
+   378	        expected = row[2]
+   379	        actual = row[3]
+   380	        passed_str = row[4]
+   381	        report.results.append(ReplayResult(
+   382	            fixture_id=fixture_id,
+   383	            fixture_description="",
+   384	            data_type=data_type,
+   385	            expected_status=expected,
+
+exec
+/bin/zsh -lc "sed -n '520,610p' scripts/summarize_auto_dev_runs.py && grep -n \"target_date\" -n scripts/summarize_auto_dev_runs.py | head -20" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            else:
+                lines.append(f"- **{run.task_id}**: 无测试日志")
+        lines.append("")
+
+    # [V-002] nightly_acceptance_report: Ready queue
+    if ready_queue is not None:
+        lines.append("## Ready 队列")
+        lines.append("")
+        if not ready_queue:
+            lines.append("> **任务池不足**: 当前无 `ready` 状态任务，夜间 cron 不应空转。")
+            lines.append("> 请人工添加新任务到 `docs/TASKS.md`，或将 `proposed` 任务转为 `ready`。")
+        else:
+            lines.append("| 任务ID | 标题 | 优先级 |")
+            lines.append("|--------|------|--------|")
+            for t in ready_queue:
+                lines.append(f"| {t['task_id']} | {t['title']} | {t['priority']} |")
+        lines.append("")
+
+    # [V-002] nightly_acceptance_report: Candidate sample replay
+    if replay_results:
+        replay_section = format_sample_replay(replay_results)
+        if replay_section:
+            lines.append(replay_section)
+
+    return "\n".join(lines)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="[M-002/V-002] Summarize auto dev runs into a daily report")
+    parser.add_argument("--date", default=None, help="Target date YYYY-MM-DD (default: today)")
+    parser.add_argument("--dry-run", action="store_true", help="Print report to stdout without writing file")
+    parser.add_argument("--repo-dir", default=None, help="Repository root directory")
+    parser.add_argument("--with-sample-replay", action="store_true",  # [V-002]
+                        help="Include TradeFlow candidate sample replay in report")
+    parser.add_argument("--with-data-source-digest", action="store_true",  # [DATA-006]
+                        help="Include data source health digest in report")
+    args = parser.parse_args()
+
+    repo_dir = Path(args.repo_dir) if args.repo_dir else Path(__file__).resolve().parent.parent
+    task_runs_dir = repo_dir / "docs" / "task_runs"
+    reviews_dir = repo_dir / "docs" / "reviews"
+    reports_dir = repo_dir / "docs" / "auto_dev_reports"
+    tasks_md_path = repo_dir / "docs" / "TASKS.md"  # [V-002]
+
+    target_date = args.date or datetime.now().strftime("%Y-%m-%d")
+
+    runs = scan_task_runs(task_runs_dir, target_date=target_date)
+    commits = get_git_log_for_date(repo_dir, target_date)
+    reviews = collect_reviews(reviews_dir, target_date=target_date)
+
+    ready_queue = parse_ready_queue(tasks_md_path)  # [V-002]
+
+    replay_results = None  # [V-002]
+    if args.with_sample_replay:
+        replay_results = run_sample_replay()
+
+    report = generate_report(runs, commits, reviews, target_date,
+                             ready_queue=ready_queue, replay_results=replay_results)  # [V-002]
+
+    report = redact(report)  # [V-002] final redaction pass
+
+    if args.dry_run:
+        print(report)
+        return
+
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    report_path = reports_dir / f"{target_date}.md"
+    report_path.write_text(report, encoding="utf-8")
+
+    if args.with_data_source_digest:  # [DATA-006]
+        try:
+            from tradingagents.dataflows.data_source_daily_digest import (
+                build_digest_section_for_nightly_report,
+            )
+            ds_reports = str(repo_dir / "docs" / "data_source_reports")
+            section = build_digest_section_for_nightly_report(
+                reports_dir=ds_reports, target_date=target_date,
+            )
+            with open(report_path, "a", encoding="utf-8") as f:
+                f.write("\n")
+                f.write(section)
+        except Exception:
+            pass
+
+    print(f"Report written to {report_path}")
+
+
+if __name__ == "__main__":
+    main()
+257:def scan_task_runs(task_runs_dir: Path, target_date: Optional[str] = None) -> list[TaskRun]:
+272:        if target_date and date_part != target_date:
+321:def get_git_log_for_date(repo_dir: Path, target_date: str) -> list[dict[str, str]]:
+323:        after = f"{target_date}T00:00:00"
+324:        before_suffix = target_date + "T23:59:59"
+357:def collect_reviews(reviews_dir: Path, target_date: Optional[str] = None) -> list[dict[str, str]]:
+369:        if target_date and file_date != target_date:
+386:    target_date: str,
+393:    lines.append(f"# 自动开发日报 — {target_date}")
+564:    target_date = args.date or datetime.now().strftime("%Y-%m-%d")
+566:    runs = scan_task_runs(task_runs_dir, target_date=target_date)
+567:    commits = get_git_log_for_date(repo_dir, target_date)
+568:    reviews = collect_reviews(reviews_dir, target_date=target_date)
+576:    report = generate_report(runs, commits, reviews, target_date,
+586:    report_path = reports_dir / f"{target_date}.md"
+596:                reports_dir=ds_reports, target_date=target_date,
+
+codex
+The DATA-006 integration does not correctly parse persisted DATA-005 replay reports, so the nightly digest can show corrupted health summaries in its primary usage path. There is also a smaller date-labeling issue for historical or targeted reports.
+
+Full review comments:
+
+- [P2] Anchor parsing to actual fixture detail rows — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/data_source_daily_digest.py:371-374
+  When `--with-data-source-digest` reads a saved DATA-005 markdown report, this unanchored 5-column regex scans the whole file and also matches summary/header fragments and shifted pieces of the 9-column fixture table. A saved 7-fixture report is parsed into bogus results/data types such as `Passed` or `cn_akshare`, so the nightly digest reports corrupt statuses, zero completeness, and missing fallback information.
+
+- [P3] Use the replay date instead of the current date — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/data_source_daily_digest.py:201-204
+  When building a digest for `--date` other than today, or for the latest historical replay report, the rendered section is labeled with `datetime.now()` rather than `report.date`. This can misattribute yesterday's or an explicitly targeted data-source health report to the day the summarizer happens to run.
+The DATA-006 integration does not correctly parse persisted DATA-005 replay reports, so the nightly digest can show corrupted health summaries in its primary usage path. There is also a smaller date-labeling issue for historical or targeted reports.
+
+Full review comments:
+
+- [P2] Anchor parsing to actual fixture detail rows — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/data_source_daily_digest.py:371-374
+  When `--with-data-source-digest` reads a saved DATA-005 markdown report, this unanchored 5-column regex scans the whole file and also matches summary/header fragments and shifted pieces of the 9-column fixture table. A saved 7-fixture report is parsed into bogus results/data types such as `Passed` or `cn_akshare`, so the nightly digest reports corrupt statuses, zero completeness, and missing fallback information.
+
+- [P3] Use the replay date instead of the current date — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/data_source_daily_digest.py:201-204
+  When building a digest for `--date` other than today, or for the latest historical replay report, the rendered section is labeled with `datetime.now()` rather than `report.date`. This can misattribute yesterday's or an explicitly targeted data-source health report to the day the summarizer happens to run.

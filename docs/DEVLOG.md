@@ -4,6 +4,56 @@
 
 ---
 
+## 2026-06-02 | DATA-006: 数据源质量报告接入夜间日报
+
+- **执行者**：OpenCode
+- **任务**：DATA-006 — 把 DATA-005 的 fixture replay 结果接入夜间自动开发日报，让第二天能直接看到数据源健康、失败类型和是否影响候选池/TA 报告可信度
+- **修改文件**：
+  - `tradingagents/dataflows/data_source_daily_digest.py` — 新建：[DATA-006] data_source_report_daily
+    - `DataTypeHealth` 数据类：data_type / label / status(OK/PARTIAL/FAILED/NOT_RUN) / total_fixtures / passed / failed / failure_samples / completeness_avg / has_fallback / fallback_samples / impact_tradeflow / impact_ta_readiness
+    - `DailyDigest` 数据类：date / replay_status / total_fixtures / total_passed / total_failed / all_passed / data_type_healths / failure_types / overall_tradeflow_impact / overall_ta_impact / warnings
+    - `_classify_status()`: passed/total → OK/PARTIAL/FAILED/NOT_RUN
+    - `_assess_overall_impact()`: 从失败数据类型中取最高影响级别
+    - `_DATA_TYPE_CATEGORIES`: data_type → 中文标签映射（13 类）
+    - `_IMPACT_ON_TRADEFLOW` / `_IMPACT_ON_TA_READINESS`: 每种数据类型对 TradeFlow 候选池和 TA readiness 的影响级别（high/medium/low）
+    - `build_daily_digest(report, report_path)`: 核心聚合——从 ReplayReport 按数据类型聚合、分类 OK/PARTIAL/FAILED、评估影响、生成警告
+    - `read_replay_report_from_file(path)`: 从 Markdown 文件解析 ReplayReport（date/run_at/total/passed/failed/fixture rows）
+    - `find_latest_replay_report(reports_dir, target_date)`: 在 docs/data_source_reports/ 查找最新或指定日期的报告
+    - `render_daily_digest(digest)`: Markdown 渲染——包含按数据类型表格、失败类型、失败详情、警告
+    - `build_digest_section_for_nightly_report(reports_dir, target_date)`: 一键构建夜间日报数据源健康 section
+    - `run_digest_and_append_to_report(nightly_report_path, ...)`: 直接追加到夜间日报文件（幂等，不重复追加）
+    - replay 不存在时明确显示 NOT_RUN + 警告，不假装通过
+  - `scripts/summarize_auto_dev_runs.py` — [DATA-006] 新增 `--with-data-source-digest` CLI 参数
+    - `main()` 中当 flag 开启时调用 `build_digest_section_for_nightly_report()` 并追加到日报文件
+  - `tests/test_data006_daily_digest.py` — 新建，74 个测试覆盖：
+    - `TestDataTypeHealth` (2): 默认值/to_dict
+    - `TestDailyDigest` (2): 默认值/to_dict
+    - `TestClassifyStatus` (6): OK/FAILED/PARTIAL/NOT_RUN/单pass/单fail
+    - `TestAssessOverallImpact` (6): 空/全OK/high/medium/low/high覆盖medium
+    - `TestStatusMark` (4): OK/PARTIAL/FAILED/NOT_RUN
+    - `TestImpactMark` (4): HIGH/MEDIUM/LOW/unknown
+    - `TestBuildDailyDigest` (11): NOT_RUN/all_pass/with_failures/聚合/completeness/impact/overall_impact/overall_fail/warnings/failure_types
+    - `TestReadReplayReportFromFile` (3): 不存在/有效文件/无效内容
+    - `TestFindLatestReplayReport` (6): 空目录/找最新/指定日期/日期不存在/不存在目录/忽略非日期文件
+    - `TestRenderDailyDigest` (7): NOT_RUN/all_pass/with_failures/表格/failure_types/warnings/report_path
+    - `TestBuildDigestSectionForNightlyReport` (2): 无报告/有报告
+    - `TestRunDigestAndAppendToReport` (3): 追加/不重复追加/不存在路径
+    - `TestAcceptanceData006` (11): 全部验收标准
+    - `TestEdgeCases` (9): 空report/同类型多失败/fallback检测/None路径/空healths/截断/日期/to_dict往返/report_path
+  - `docs/TASKS.md` — DATA-006 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：74 passed (DATA-006)；295 passed (DATA-series 回归)；3066 passed (全部)；17 skipped；0 failed
+- **关键逻辑**：
+  - 按 data_type 聚合：行情、实时补丁、资金流、龙虎榜、公告/研报等 13 类
+  - 每类 OK/PARTIAL/FAILED 分类：全通过=OK / 全失败=FAILED / 部分=PARTIAL
+  - 影响评估：ohlcv/fund_flow/financials=high / lhb/notice/news=medium / 其他=low
+  - NOT_RUN 兜底：replay 未运行时日报明确显示 NOT_RUN + 警告，不假装通过
+  - 夜间日报集成：`--with-data-source-digest` 参数追加数据源健康 section 到日报
+  - 不泄露 API key/cookie/token
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-02 | V-004: 昊天链路端到端 smoke 验收
 
 - **执行者**：OpenCode
@@ -1874,3 +1924,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/V-004-20260602-round1.txt
 - **Run archive**: docs/task_runs/V-004-20260602-025921/
+
+## 2026-06-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-006 - 数据源质量报告接入夜间日报（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-006-20260602-round1.txt
+- **Run archive**: docs/task_runs/DATA-006-20260602-030716/
