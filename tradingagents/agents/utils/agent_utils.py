@@ -24,6 +24,7 @@ from tradingagents.agents.utils.game_theory_tools import (
     get_lhb_detail,
     get_zt_pool,
     get_hot_stocks_xq,
+    get_announcements,  # [DATA-P0-603629] astock_source_fallback
 )
 
 def create_msg_delete():

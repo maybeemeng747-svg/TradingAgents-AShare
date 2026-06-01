@@ -26,6 +26,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_lhb_detail,
     get_zt_pool,
     get_hot_stocks_xq,
+    get_announcements,
 )
 from tradingagents.dataflows.interface import get_last_hit_vendor  # [N-003] cn_astock_raw_evidence
 
@@ -269,11 +270,7 @@ def _detect_fund_flow_anomaly(fund_flow_text: str) -> bool:
     import re
     if not fund_flow_text or "获取失败" in fund_flow_text or "不可用" in fund_flow_text:
         return False
-    # Look for large net inflow/outflow numbers in recent data
-    # Typical format: recent 20 days with columns like 主力净流入-净额
-    anomaly_threshold = 50000  # 5000万 = 50,000 万元
-    # Only scan lines containing fund-flow keywords to avoid
-    # false positives from stock codes (600xxx/603xxx)
+    anomaly_threshold = 50000
     fund_keywords = ("主力", "净流入", "净流出", "超大", "大单")
     for line in fund_flow_text.split("\n"):
         if not any(kw in line for kw in fund_keywords):
@@ -286,6 +283,34 @@ def _detect_fund_flow_anomaly(fund_flow_text: str) -> bool:
                     return True
             except ValueError:
                 continue
+    return False
+
+
+def _should_force_lhb(news_text: str, stock_data_text: str) -> bool:
+    """Check if LHB should be force-queried based on anomaly conditions.
+
+    # [DATA-P0-603629] astock_source_fallback: force LHB query when:
+    - News mentions 龙虎榜, 严重异常波动, 连续涨跌停
+    - Stock data shows limit-up/down patterns
+    """
+    import re
+    if not news_text:
+        return False
+
+    force_keywords = [
+        r"龙虎榜",
+        r"严重?异常波动",
+        r"连续\s*[\d一二三四五六七八九十]+\s*(?:涨停|跌停)",
+        r"一字(?:涨停|跌停)",
+        r"涨跌幅偏离",
+        r"换手率\s*超过\s*\d+",
+        r"成交额?\s*(?:超|破|逾)\s*\d+",
+        r"量比\s*超过?\s*\d+",
+    ]
+    combined = f"{news_text}\n{stock_data_text or ''}"
+    for pattern in force_keywords:
+        if re.search(pattern, combined):
+            return True
     return False
 
 
@@ -311,6 +336,7 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
         "insider_transactions": (get_insider_transactions, {"ticker": ticker}),
         "zt_pool": (get_zt_pool, {"date": trade_date}),
         "hot_stocks": (get_hot_stocks_xq, {}),
+        "announcements": (get_announcements, {"symbol": ticker}),  # [DATA-P0-603629] astock_source_fallback
     }
 
     # 财务报表类数据始终拉取，Research Manager 根据 horizon 自行判断权重
@@ -330,13 +356,26 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
             results[future_to_key[future]] = future.result()
 
     # ── [E-003] 资金流异动时自动升级 LHB 查询 ─────────────────────────
+    # [DATA-P0-603629] astock_source_fallback: LHB force conditions expanded
     results["_lhb_query_mode"] = "on_demand"  # [G-007] default: force=False
     ff_text = results.get("fund_flow_individual", "") or ""
+    news_text = results.get("news", "") or ""
+    lhb_force_needed = False
+    lhb_force_reason = ""
+
     if _detect_fund_flow_anomaly(ff_text):
-        print(f"  [E-003] 资金流异动检测触发，升级 LHB force=True")
+        lhb_force_needed = True
+        lhb_force_reason = "fund_flow_anomaly"
+    elif _should_force_lhb(news_text, results.get("stock_data", "")):
+        lhb_force_needed = True
+        lhb_force_reason = "anomaly_condition"
+
+    if lhb_force_needed:
+        print(f"  [E-003] 龙虎榜强制查询触发 (reason={lhb_force_reason})，升级 LHB force=True")
         lhb_forced = _safe(get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": True})
         results["lhb"] = lhb_forced
         results["_lhb_query_mode"] = "forced"  # [G-007] fund_lhb_provenance
+        results["_lhb_force_reason"] = lhb_force_reason  # [DATA-P0-603629]
 
     # ── Parse CSV once, reuse for indicators and VPA ──────────────────
     raw_csv = results.get("stock_data", "")
@@ -506,6 +545,7 @@ class DataCollector:
             "fundamentals", "balance_sheet", "cashflow", "income_statement",
             "insider_transactions", "zt_pool", "hot_stocks",
             "indicators", "vpa_indicators",
+            "announcements",  # [DATA-P0-603629] astock_source_fallback
         ]
 
         raw_evidence: Dict[str, Any] = {}
@@ -525,7 +565,6 @@ class DataCollector:
             }
 
             if key == "stock_data" and isinstance(raw_value, str):
-                # [N-003] cn_astock_raw_evidence: prefer actual routed vendor
                 actual_vendor = get_last_hit_vendor("get_stock_data")
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
@@ -540,17 +579,37 @@ class DataCollector:
                             parts = line.split("quote_time=")
                             if len(parts) > 1:
                                 entry["as_of"] = parts[1].strip()
+                if "adjustment=" in raw_value:  # [DATA-P0-603629] astock_source_fallback
+                    for line in raw_value.split("\n"):
+                        if "adjustment=" in line and "[DATA-P0-603629]" in line:
+                            parts = line.split("adjustment=")
+                            if len(parts) > 1:
+                                entry["adjustment"] = parts[1].strip().split("\n")[0].strip()
 
             if key == "fund_flow_individual":
                 entry["unit"] = "万元"
-                entry["source_type"] = "individual_fund_flow"  # [G-007]
-                entry["unit_verified"] = entry["unit"] is not None  # [G-007]
+                entry["source_type"] = "individual_fund_flow"
+                entry["unit_verified"] = entry["unit"] is not None
+                actual_vendor = get_last_hit_vendor("get_individual_fund_flow")  # [DATA-P0-603629]
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
             elif key == "fund_flow_board":
-                entry["source_type"] = "board_fund_flow"  # [G-007]
+                entry["source_type"] = "board_fund_flow"
+                actual_vendor = get_last_hit_vendor("get_board_fund_flow")  # [DATA-P0-603629]
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
             elif key == "lhb":
-                entry["query_mode"] = pool.get("_lhb_query_mode", "on_demand")  # [G-007]
+                entry["query_mode"] = pool.get("_lhb_query_mode", "on_demand")
+                entry["force_reason"] = pool.get("_lhb_force_reason")  # [DATA-P0-603629]
+                actual_vendor = get_last_hit_vendor("get_lhb_detail")  # [DATA-P0-603629]
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
             elif key in ("stock_data",):
                 entry["unit"] = "股"
+            elif key == "announcements":  # [DATA-P0-603629] astock_source_fallback
+                actual_vendor = get_last_hit_vendor("get_announcements")
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
 
             if status == "FAILED" and isinstance(raw_value, str):
                 entry["error"] = raw_value[:200]
@@ -565,9 +624,11 @@ class DataCollector:
                 "unit": entry["unit"],
                 "error": entry["error"],
                 "is_realtime_patched": entry["is_realtime_patched"],
-                "source_type": entry.get("source_type"),  # [G-007] fund_lhb_provenance
-                "unit_verified": entry.get("unit_verified", None),  # [G-007]
-                "query_mode": entry.get("query_mode", None),  # [G-007]
+                "source_type": entry.get("source_type"),
+                "unit_verified": entry.get("unit_verified", None),
+                "query_mode": entry.get("query_mode", None),
+                "adjustment": entry.get("adjustment", None),  # [DATA-P0-603629] astock_source_fallback
+                "force_reason": entry.get("force_reason", None),  # [DATA-P0-603629]
             }
 
         return raw_evidence

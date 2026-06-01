@@ -43,6 +43,7 @@ TOOLS_CATEGORIES = {
             "get_lhb_detail",
             "get_zt_pool",
             "get_hot_stocks_xq",
+            "get_announcements",  # [DATA-P0-603629] astock_source_fallback
         ],
     },
 }

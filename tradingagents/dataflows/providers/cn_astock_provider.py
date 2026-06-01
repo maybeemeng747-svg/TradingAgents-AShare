@@ -192,10 +192,14 @@ class CnAstockProvider(BaseMarketDataProvider):
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         df = df.dropna(subset=["Date", "Open", "High", "Low", "Close", "Volume"])
         df = df.sort_values("Date").reset_index(drop=True)
+        df.attrs["_adjustment"] = "未知"  # [DATA-P0-603629] baidu kline adjustment type unknown
         return df
 
     def _fetch_kline_em(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """Fallback: fetch daily K-line from 东财 push2his (HTTP)."""
+        """Fallback: fetch daily K-line from 东财 push2his (HTTP).
+
+        # [DATA-P0-603629] astock_source_fallback: fqt=1 means 前复权 (forward-adjusted).
+        """
         _rate_limit("em_kline")
         market_code = 1 if code.startswith(("5", "6", "9")) else 0
         secid = f"{market_code}.{code}"
@@ -204,8 +208,8 @@ class CnAstockProvider(BaseMarketDataProvider):
             "secid": secid,
             "fields1": "f1,f2,f3,f4,f5,f6",
             "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-            "klt": "101",  # daily
-            "fqt": "1",    # 前复权
+            "klt": "101",
+            "fqt": "1",
             "beg": start_date.replace("-", ""),
             "end": end_date.replace("-", ""),
         }
@@ -231,6 +235,7 @@ class CnAstockProvider(BaseMarketDataProvider):
         df = pd.DataFrame(records)
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         df = df.dropna(subset=["Date"]).sort_values("Date").reset_index(drop=True)
+        df.attrs["_adjustment"] = "前复权"  # [DATA-P0-603629] astock_source_fallback
         return df
 
     def _fetch_hist_df(self, symbol: str, start_date: str, end_date: str) -> pd.DataFrame:
@@ -269,7 +274,10 @@ class CnAstockProvider(BaseMarketDataProvider):
     # ── Required interface methods ──
 
     def get_stock_data(self, symbol: str, start_date: str, end_date: str) -> str:
-        """Return OHLCV data as CSV string."""
+        """Return OHLCV data as CSV string.
+
+        # [DATA-P0-603629] astock_source_fallback: includes adjustment type in header.
+        """
         try:
             df = self._fetch_hist_df(symbol, start_date, end_date)
         except NotImplementedError as exc:
@@ -282,9 +290,12 @@ class CnAstockProvider(BaseMarketDataProvider):
         out["Dividends"] = 0.0
         out["Stock Splits"] = 0.0
         out["Date"] = out["Date"].dt.strftime("%Y-%m-%d")
+        adjustment = getattr(df, "attrs", {}).get("_adjustment", "未知")  # [DATA-P0-603629]
         header = f"# Stock data for {symbol} from {start_date} to {end_date}\n"
         header += f"# Total records: {len(out)}\n"
-        header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        header += f"# [DATA-P0-603629] adjustment={adjustment}\n"
+        header += "\n"
         return header + out.to_csv(index=False)
 
     def get_indicators(
@@ -744,8 +755,134 @@ class CnAstockProvider(BaseMarketDataProvider):
 
     # ── Real-time quotes ──
 
+    # ── [DATA-P0-603629] Fund flow via Eastmoney push2his ──
+
+    def get_individual_fund_flow(self, symbol: str) -> str:
+        """个股资金流 — 东财 push2his 直连 fallback.  # [DATA-P0-603629] astock_source_fallback
+
+        Returns last 20 trading days of main-capital net flow data.
+        Units are 万元 (consistent with AKShare convention).
+        """
+        code = _extract_code(symbol)
+        try:
+            _rate_limit("em_fund_flow_individual")
+            market_code = 1 if code.startswith(("5", "6", "9")) else 0
+            secid = f"{market_code}.{code}"
+            url = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
+            params = {
+                "secid": secid,
+                "fields1": "f1,f2,f3,f7",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63",
+                "lmt": "20",
+                "klt": "101",
+            }
+            headers = {"User-Agent": UA, "Referer": "https://quote.eastmoney.com/"}
+            r = requests.get(url, params=params, headers=headers, timeout=15, proxies=NO_PROXY)
+            d = r.json()
+            klines = d.get("data", {}).get("klines", [])
+            if not klines:
+                return f"{symbol} 近期主力资金流向数据暂不可用。"
+
+            header = f"{symbol} 近20日主力资金净流向（Eastmoney push2his）：\n"
+            header += "日期 | 主力净流入 | 小单净流入 | 中单净流入 | 大单净流入 | 超大单净流入\n"
+            rows = []
+            for line in klines:
+                parts = line.split(",")
+                if len(parts) >= 6:
+                    rows.append(f"{parts[0]} | {parts[1]} | {parts[2]} | {parts[3]} | {parts[4]} | {parts[5]}")
+            return header + "\n".join(rows)
+
+        except Exception as exc:
+            return f"个股资金流向数据获取失败（Eastmoney push2his）：{type(exc).__name__}: {exc}"
+
+    def get_board_fund_flow(self) -> str:
+        """行业板块资金流 — 东财 push2 直连.  # [DATA-P0-603629] astock_source_fallback"""
+        try:
+            _rate_limit("em_fund_flow_board")
+            url = "https://push2.eastmoney.com/api/qt/clist/get"
+            params = {
+                "pn": "1",
+                "pz": "15",
+                "po": "1",
+                "np": "1",
+                "fltt": "2",
+                "invt": "2",
+                "fid": "f62",
+                "fs": "m:90+t:2",
+                "fields": "f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,f164,f174",
+            }
+            headers = {"User-Agent": UA, "Referer": "https://quote.eastmoney.com/"}
+            r = requests.get(url, params=params, headers=headers, timeout=15, proxies=NO_PROXY)
+            d = r.json()
+            items = d.get("data", {}).get("diff", [])
+            if not items:
+                return "板块资金流向数据暂不可用。"
+
+            lines = ["板块资金流向排名（Eastmoney push2）：", "排名 | 板块代码 | 板块名称 | 涨跌幅 | 主力净流入"]
+            for i, item in enumerate(items[:10], 1):
+                code = item.get("f12", "")
+                name = item.get("f14", "")
+                pct = item.get("f3", "")
+                net = item.get("f62", "")
+                lines.append(f"{i} | {code} | {name} | {pct}% | {net}")
+            return "\n".join(lines)
+
+        except Exception as exc:
+            return f"板块资金流向数据获取失败（Eastmoney push2）：{type(exc).__name__}: {exc}"
+
+    def get_lhb_detail(self, symbol: str, date: str, *, force: bool = False) -> str:
+        """个股龙虎榜 — 东财 datacenter.  # [DATA-P0-603629] astock_source_fallback
+
+        This provides a direct Eastmoney fallback for LHB queries,
+        independent of AKShare's stock_lhb_detail_em.
+        """
+        code = _extract_code(symbol)
+        if not force:
+            return (
+                f"{symbol} [G-007] LHB_NOT_QUERIED: 龙虎榜查询未触发（force=False）。"
+                "龙虎榜为按需查询接口，仅当检测到资金异动时才应调用，以避免批量日期查询触发 API 限流。"
+            )
+        try:
+            _rate_limit("em_lhb_detail")
+            lhb_filter = (
+                f'(SECURITY_CODE="{code}")'
+                f"(TRADE_DATE>='{date}')"
+                f"(TRADE_DATE<='{date}')"
+            )
+            data = _eastmoney_datacenter(
+                "RPT_DAILYBILLBOARD_DETAILSNEW",
+                filter_str=lhb_filter,
+                page_size=50,
+                sort_columns="BILLBOARD_NET_AMT",
+                sort_types="-1",
+            )
+            if not data:
+                return f"{symbol} [G-007] LHB_NORMAL_NO_DATA: 在 {date} 无龙虎榜数据（非异动日属正常）。"
+
+            lines = [f"{symbol} [G-007] LHB_HAS_DATA: 龙虎榜明细（{date}，Eastmoney datacenter）："]
+            for row in data[:20]:
+                reason = row.get("EXPLANATION", "")
+                net_buy = (row.get("BILLBOARD_NET_AMT") or 0) / 10000
+                buy_amt = (row.get("BUY_AMOUNT") or 0) / 10000
+                sell_amt = (row.get("SELL_AMOUNT") or 0) / 10000
+                dept_buy = row.get("BUY_BROKER_NAME", "")
+                dept_sell = row.get("SELL_BROKER_NAME", "")
+                lines.append(
+                    f"- {reason} | 净买 {net_buy:.1f}万 | 买入 {buy_amt:.1f}万 | "
+                    f"卖出 {sell_amt:.1f}万 | 买方营业部: {dept_buy} | 卖方营业部: {dept_sell}"
+                )
+            return "\n".join(lines)
+
+        except Exception as exc:
+            return f"{symbol} [G-007] LHB_FAILED: 龙虎榜数据获取失败（Eastmoney datacenter）：{type(exc).__name__}: {exc}"
+
+    # ── Real-time quotes ──
+
     def get_realtime_quotes(self, symbols: list[str]) -> str:
-        """腾讯财经实时行情."""
+        """腾讯财经实时行情.  # [DATA-P0-603629] astock_source_fallback
+
+        Now includes turnover_rate, volume_ratio, limit_up/down, market_cap, PE/PB.
+        """
         if not symbols:
             return json.dumps({})
 
@@ -789,8 +926,16 @@ class CnAstockProvider(BaseMarketDataProvider):
                 "previous_close": q["last_close"],
                 "change": q["change_amt"],
                 "change_pct": q["change_pct"],
-                "volume": q["amount_wan"] * 10000,  # 万 → 元 approximation
-                "amount": amount_val,  # [N-002] cn_astock_fallback
+                "volume": q["amount_wan"] * 10000,
+                "amount": amount_val,
+                "turnover_rate": q["turnover_pct"],
+                "volume_ratio": q["vol_ratio"],
+                "limit_up": q["limit_up"],
+                "limit_down": q["limit_down"],
+                "market_cap": q["mcap_yi"],
+                "pe_ttm": q["pe_ttm"],
+                "pe_static": q["pe_static"],
+                "pb": q["pb"],
                 "source": "tencent",
             }
         return json.dumps(result, ensure_ascii=False)

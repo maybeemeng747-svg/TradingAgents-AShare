@@ -40,3 +40,11 @@ def get_zt_pool(
 def get_hot_stocks_xq() -> str:
     """获取雪球热搜股票列表，反映散户当前关注热点。"""
     return route_to_vendor("get_hot_stocks_xq")
+
+
+@tool  # [DATA-P0-603629] astock_source_fallback
+def get_announcements(
+    symbol: Annotated[str, "股票代码，格式如 600519.SH"],
+) -> str:
+    """获取个股近期公告列表（来自巨潮资讯网 cninfo），包括风险提示、减持、问询函等关键公告。symbol 格式如 600519.SH。"""
+    return route_to_vendor("get_announcements", symbol)

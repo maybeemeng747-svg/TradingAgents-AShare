@@ -250,6 +250,7 @@ class CnAkshareProvider(BaseMarketDataProvider):
         header = f"# Stock data for {symbol} from {start} to {end}\n"
         header += f"# Total records: {len(out)}\n"
         header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        header += f"# [DATA-P0-603629] adjustment=前复权(qfq)\n"  # [DATA-P0-603629] astock_source_fallback
         # [G-005] realtime_ohlcv_patch: record patch info in header
         patch_info = getattr(df, "attrs", {}) or {}
         if patch_info.get("_realtime_patched"):

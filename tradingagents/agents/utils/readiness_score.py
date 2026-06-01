@@ -192,6 +192,7 @@ def assess_confidence(
     has_contradictory_signals: bool = False,
     analyst_agreement_level: Optional[float] = None,
     event_risk_active: bool = False,
+    evidence_coverage: Optional[int] = None,  # [DATA-P0-603629] astock_source_fallback
 ) -> ConfidenceLevel:
     """
     评估置信度。
@@ -201,6 +202,8 @@ def assess_confidence(
         has_contradictory_signals: 分析师信号是否矛盾
         analyst_agreement_level: 分析师一致度 (0-1)，1 表示完全一致
         event_risk_active: 是否有事件风险激活
+        evidence_coverage: 原始证据覆盖度 (0-100)。
+            当 < 70% 时，confidence 不得为 HIGH。
     """
     base_score = data_completeness
 
@@ -212,6 +215,10 @@ def assess_confidence(
 
     if event_risk_active:
         base_score -= 10
+
+    # [DATA-P0-603629] astock_source_fallback: evidence_coverage < 70 → cap at MEDIUM
+    if evidence_coverage is not None and evidence_coverage < 70:
+        base_score = min(base_score, 65)
 
     if base_score >= 70:
         return ConfidenceLevel.HIGH
@@ -1154,21 +1161,29 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
             elif src.strip():
                 volume = EvidenceStatus.FIELD_MISSING
 
-    # 3. Turnover rate — NOT in raw data pool (needs separate akshare call)
+    # 3. Turnover rate — check raw_evidence realtime quote data
+    # [DATA-P0-603629] astock_source_fallback: cn_astock now provides turnover_rate in realtime
     turnover_rate = EvidenceStatus.NOT_AVAILABLE
+    raw_news_val = _unwrap_raw(raw.get("news"))
+    raw_stock_data_val = _unwrap_raw(raw.get("stock_data"))
     if volume_price:
         if re.search(_TURNOVER_PATTERN, volume_price, re.IGNORECASE):
             turnover_rate = EvidenceStatus.HAS_DATA
         elif volume_price.strip():
             turnover_rate = EvidenceStatus.FIELD_MISSING
+    elif raw_stock_data_val and isinstance(raw_stock_data_val, str) and "turnover_rate" in raw_stock_data_val:
+        turnover_rate = EvidenceStatus.HAS_DATA
 
-    # 4. Volume ratio — NOT in raw data pool
+    # 4. Volume ratio — check raw_evidence realtime quote data
+    # [DATA-P0-603629] astock_source_fallback: cn_astock now provides volume_ratio in realtime
     volume_ratio = EvidenceStatus.NOT_QUERIED
     if volume_price:
         if re.search(_VOLUME_RATIO_PATTERN, volume_price, re.IGNORECASE):
             volume_ratio = EvidenceStatus.HAS_DATA
         elif volume_price.strip():
             volume_ratio = EvidenceStatus.FIELD_MISSING
+    elif raw_stock_data_val and isinstance(raw_stock_data_val, str) and "volume_ratio" in raw_stock_data_val:
+        volume_ratio = EvidenceStatus.HAS_DATA
 
     # 5. Individual fund flow — check fund_flow_individual
     individual_fund_flow = EvidenceStatus.NOT_QUERIED

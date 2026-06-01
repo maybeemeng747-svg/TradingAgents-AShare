@@ -89,7 +89,8 @@ class HealthReport:
 def _default_endpoints() -> List[Dict[str, Any]]:
     today = datetime.now().strftime("%Y%m%d")
     start = (datetime.now() - timedelta(days=DEFAULT_HISTORY_DAYS)).strftime("%Y%m%d")
-    return [
+    today_dashed = datetime.now().strftime("%Y-%m-%d")
+    endpoints = [
         {
             "method": "get_stock_data",
             "args": ("_SYMBOL_", start, today),
@@ -131,6 +132,27 @@ def _default_endpoints() -> List[Dict[str, Any]]:
             "kwargs": {},
         },
     ]
+
+    # [DATA-P0-603629] astock_source_fallback: add cn_market_data endpoints
+    endpoints.extend([
+        {
+            "method": "get_individual_fund_flow",
+            "args": ("_SYMBOL_",),
+            "kwargs": {},
+        },
+        {
+            "method": "get_lhb_detail",
+            "args": ("_SYMBOL_", today_dashed),
+            "kwargs": {"force": True},
+        },
+        {
+            "method": "get_announcements",
+            "args": ("_SYMBOL_",),
+            "kwargs": {},
+        },
+    ])
+
+    return endpoints
 
 
 # ── Single-endpoint probe ──────────────────────────────────────────────

@@ -211,6 +211,7 @@ def create_risk_manager(llm, memory):
         confidence = assess_confidence(
             data_completeness,
             event_risk_active=event_risk_info["has_risk"],
+            evidence_coverage=evidence_coverage,  # [DATA-P0-603629] astock_source_fallback
         )
         readiness = generate_readiness_score(data_completeness, confidence)
         final_response += format_readiness_score(readiness)
@@ -225,10 +226,32 @@ def create_risk_manager(llm, memory):
             ("用户上下文", has_user_context),
             ("持仓数据", has_position_data),
         ]
+
+        # [DATA-P0-603629] astock_source_fallback: use raw_evidence status
+        # for data source availability display, not just report text existence.
+        _raw_ev = state.get("metadata", {}).get("raw_evidence") or {}
+        _status_overrides = {}
+        for _ev_key, _label in [
+            ("fund_flow_individual", "主力资金"),
+        ]:
+            _ev_entry = _raw_ev.get(_ev_key)
+            if isinstance(_ev_entry, dict) and "status" in _ev_entry:
+                _status_overrides[_label] = _ev_entry["status"]
+
         checklist_lines = []
         for name, available in data_sources:
-            status = "✅" if available else "❌"
-            checklist_lines.append(f"  {status} {name}")
+            ev_status = _status_overrides.get(name)
+            if ev_status is not None:
+                if ev_status in ("HAS_DATA",):
+                    status = "✅"
+                elif ev_status in ("FAILED", "NOT_QUERIED"):
+                    status = "❌"
+                else:
+                    status = "⚠️"
+                checklist_lines.append(f"  {status} {name} (raw: {ev_status})")
+            else:
+                status = "✅" if available else "❌"
+                checklist_lines.append(f"  {status} {name}")
         checklist = "\n".join(checklist_lines)
         final_response += f"\n\n📊 数据源可用性：\n{checklist}"
 
