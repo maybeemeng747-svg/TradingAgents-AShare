@@ -128,7 +128,7 @@ if not match:
 
 section = match.group(1)
 new_section, n = re.subn(
-    r"(- \*\*status\*\*[:,]\s*).+",
+    r"(- \*\*(status|状态)\*\*[：:,]+\s*).+",
     r"\1" + status_text,
     section,
     count=1,
