@@ -1428,7 +1428,7 @@
 ### V-004: 昊天链路端到端 smoke 验收（P1）
 - **描述**：为 H-001~H-008 建立低成本 smoke 验收，验证政策事件 → MandateSignal → Mandate Score → 受益路径 → 左侧分类 → 前端/队列字段的整条链路不字段断裂。
 - **优先级**：P1
-- **状态**：done — commit pending
+- **状态**：done -- commit fd6e1c3
 - **前置条件**：`H-004`、`DATA-003`、`DATA-004` 完成 ✓。
 - **执行约束**：
   - 不调用外部 LLM。
