@@ -118,6 +118,17 @@ class Candidate:
     company_role: str = ""  # [H-003] mandate_beneficiary_map
     mandate_topic: str = ""  # [H-003] mandate_beneficiary_map
     mandate_evidence_refs: list[dict] = field(default_factory=list)  # [H-003] mandate_beneficiary_map
+    candidate_type: str = ""  # [H-004] mandate_ambush_score
+    ambush_score: float = 0.0  # [H-004] mandate_ambush_score
+    mandate_score_component: float = 0.0  # [H-004] mandate_ambush_score
+    beneficiary_score_component: float = 0.0  # [H-004] mandate_ambush_score
+    pricing_gap_score: float = 0.0  # [H-004] mandate_ambush_score
+    overheat_penalty: float = 0.0  # [H-004] mandate_ambush_score
+    candidate_type_reason: str = ""  # [H-004] mandate_ambush_score
+    deep_ta_route: str = ""  # [H-004] mandate_ambush_score
+    deep_ta_route_reason: str = ""  # [H-004] mandate_ambush_score
+    ambush_reasons: list[str] = field(default_factory=list)  # [H-004] mandate_ambush_score
+    ambush_evidence_refs: list[dict] = field(default_factory=list)  # [H-004] mandate_ambush_score
 
     def __post_init__(self):
         if not self.trade_date:
@@ -235,6 +246,17 @@ class Candidate:
             "company_role": self.company_role,  # [H-003]
             "mandate_topic": self.mandate_topic,  # [H-003]
             "mandate_evidence_refs_json": json.dumps(self.mandate_evidence_refs, ensure_ascii=False),  # [H-003]
+            "candidate_type": self.candidate_type,  # [H-004] mandate_ambush_score
+            "ambush_score": self.ambush_score,  # [H-004]
+            "mandate_score_component": self.mandate_score_component,  # [H-004]
+            "beneficiary_score_component": self.beneficiary_score_component,  # [H-004]
+            "pricing_gap_score": self.pricing_gap_score,  # [H-004]
+            "overheat_penalty": self.overheat_penalty,  # [H-004]
+            "candidate_type_reason": self.candidate_type_reason,  # [H-004]
+            "deep_ta_route": self.deep_ta_route,  # [H-004]
+            "deep_ta_route_reason": self.deep_ta_route_reason,  # [H-004]
+            "ambush_reasons_json": json.dumps(self.ambush_reasons, ensure_ascii=False),  # [H-004]
+            "ambush_evidence_refs_json": json.dumps(self.ambush_evidence_refs, ensure_ascii=False),  # [H-004]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -312,6 +334,17 @@ class Candidate:
             company_role=row.get("company_role", ""),  # [H-003]
             mandate_topic=row.get("mandate_topic", ""),  # [H-003]
             mandate_evidence_refs=json.loads(row.get("mandate_evidence_refs_json", "[]")),  # [H-003]
+            candidate_type=row.get("candidate_type", ""),  # [H-004] mandate_ambush_score
+            ambush_score=row.get("ambush_score", 0.0),  # [H-004]
+            mandate_score_component=row.get("mandate_score_component", 0.0),  # [H-004]
+            beneficiary_score_component=row.get("beneficiary_score_component", 0.0),  # [H-004]
+            pricing_gap_score=row.get("pricing_gap_score", 0.0),  # [H-004]
+            overheat_penalty=row.get("overheat_penalty", 0.0),  # [H-004]
+            candidate_type_reason=row.get("candidate_type_reason", ""),  # [H-004]
+            deep_ta_route=row.get("deep_ta_route", ""),  # [H-004]
+            deep_ta_route_reason=row.get("deep_ta_route_reason", ""),  # [H-004]
+            ambush_reasons=json.loads(row.get("ambush_reasons_json", "[]")),  # [H-004]
+            ambush_evidence_refs=json.loads(row.get("ambush_evidence_refs_json", "[]")),  # [H-004]
         )
 
 
@@ -549,6 +582,38 @@ class DailyPlan:
                     lines.append(f"    模型: {dta_model}")
                 if dta_pos:
                     lines.append(f"    持仓: {dta_pos}")
+            # [H-004] mandate_ambush_score — display candidate type and ambush score
+            cand_type = c.get("candidate_type", "")
+            ambush_sc = c.get("ambush_score", 0)
+            mandate_sc = c.get("mandate_score_component", 0)
+            benef_sc = c.get("beneficiary_score_component", 0)
+            pricing_sc = c.get("pricing_gap_score", 0)
+            overheat_pen = c.get("overheat_penalty", 0)
+            type_reason = c.get("candidate_type_reason", "")
+            ta_route = c.get("deep_ta_route", "")
+            ta_route_reason = c.get("deep_ta_route_reason", "")
+            if cand_type:
+                type_label = {
+                    "POLICY_AMBUSH": "🟢政策左侧埋伏",
+                    "POLICY_CONFIRM": "🔵政策右侧确认",
+                    "TECH_TRADE": "⚪技术交易",
+                    "EVENT_WATCH": "🟡事件观察",
+                    "PSEUDO_POLICY": "🔴伪政策题材",
+                    "OVERHEATED_AVOID": "⛔过热规避",
+                }.get(cand_type, cand_type)
+                lines.append(f"  昊天分类: {type_label} | 埋伏分: {ambush_sc:.0f}")
+                if type_reason:
+                    lines.append(f"    分类原因: {type_reason}")
+                lines.append(f"    政策={mandate_sc:.0f} 受益={benef_sc:.0f} 价差={pricing_sc:.0f} 过热={overheat_pen:.0f}")
+                if ta_route:
+                    route_label = {
+                        "policy_verify": "政策验证",
+                        "deep_ta": "深度TA",
+                        "short_term": "短线/做T",
+                        "observe": "观察等待",
+                        "skip": "跳过",
+                    }.get(ta_route, ta_route)
+                    lines.append(f"    TA路由: {route_label} — {ta_route_reason}")
             lines.append("")
 
         return "\n".join(lines)

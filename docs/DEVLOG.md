@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-06-02 | H-004: 左侧埋伏评分与候选类型分流
+
+- **执行者**：OpenCode
+- **任务**：H-004 — 引入昊天候选池核心分类，把候选分为政策左侧埋伏、政策右侧确认、技术交易、伪政策题材、过热不追
+- **修改文件**：
+  - `tradingagents/tradeflow/ambush_score.py` — 新建：[H-004] mandate_ambush_score
+    - `CandidateType` 枚举：POLICY_AMBUSH / POLICY_CONFIRM / TECH_TRADE / EVENT_WATCH / PSEUDO_POLICY / OVERHEATED_AVOID
+    - `AmbushScoreResult` 数据类：ambush_score + 4 个子分 + candidate_type + deep_ta_route
+    - `compute_ambush_score()`：主评分函数，加权 mandate 35% + beneficiary 30% + pricing_gap 20% - overheat 15%
+    - `classify_candidate_type()`：6 类分流决策逻辑
+    - `route_deep_ta()`：基于 candidate_type 的 TA 路由（policy_verify / deep_ta / short_term / observe / skip）
+    - 左侧埋伏不要求突破，但必须满足政策连续性 + 受益路径 + 风险可控 + 未过热
+    - 所有过热/高风险/fragile 样本一律 OVERHEATED_AVOID
+    - 纯技术票不混入政策池（TECH_TRADE → short_term）
+  - `tradingagents/tradeflow/schemas.py` — Candidate 新增 12 个 H-004 字段 + DailyPlan render 展示
+  - `tradingagents/tradeflow/candidate_engine.py` — wire H-004 到 evaluate_symbol()；DB schema 新增 11 列 + H-003 beneficiary 4 列；save_candidate INSERT 更新
+  - `tradingagents/tradeflow/plan_runner.py` — plan entry 暴露 H-003 + H-004 字段
+  - `tests/test_h004_ambush_score.py` — 新建：60 个测试用例
+- **验证**：
+  - `pytest tests/test_h004_ambush_score.py -v` → 60 passed
+  - `pytest tests/test_tradeflow_*.py tests/test_h0*.py tests/test_s0*.py -q` → 954 passed, 6 skipped
+- **关键验收场景**：
+  - 政策强 + 公司路径明确 + 未突破 → POLICY_AMBUSH（埋伏分 > 40）
+  - 政策强 + 受益路径 + 已突破 → POLICY_CONFIRM → deep_ta
+  - 纯 VCP 无政策 → TECH_TRADE → short_term
+  - 过热/高位/风险拥挤 → OVERHEATED_AVOID → skip
+
 ## 2026-06-01 | Task Pool Queue Refresh after AUTO batch
 
 - **执行者**：Codex
@@ -1283,3 +1310,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/H-003-20260601-round1.txt
 - **Run archive**: docs/task_runs/H-003-20260601-224256/
+
+## 2026-06-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-004 - 左侧埋伏评分与候选类型分流（P0）
+- **Priority**: P0
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/H-004-20260602-round1.txt
+- **Run archive**: docs/task_runs/H-004-20260602-003706/

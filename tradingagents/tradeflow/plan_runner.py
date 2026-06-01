@@ -119,6 +119,21 @@ def _build_plan_entry(candidate: Candidate, event_items: Optional[list] = None) 
         "plan_date": candidate.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
         "effective_trade_date": candidate.effective_trade_date,  # [TF-DATE-001]
         "observe_date": candidate.observe_date,  # [TF-DATE-001]
+        "beneficiary_path": candidate.beneficiary_path,  # [H-003] mandate_beneficiary_map
+        "company_role": candidate.company_role,  # [H-003]
+        "mandate_topic": candidate.mandate_topic,  # [H-003]
+        "mandate_evidence_refs": candidate.mandate_evidence_refs,  # [H-003]
+        "candidate_type": candidate.candidate_type,  # [H-004] mandate_ambush_score
+        "ambush_score": candidate.ambush_score,  # [H-004]
+        "mandate_score_component": candidate.mandate_score_component,  # [H-004]
+        "beneficiary_score_component": candidate.beneficiary_score_component,  # [H-004]
+        "pricing_gap_score": candidate.pricing_gap_score,  # [H-004]
+        "overheat_penalty": candidate.overheat_penalty,  # [H-004]
+        "candidate_type_reason": candidate.candidate_type_reason,  # [H-004]
+        "deep_ta_route": candidate.deep_ta_route,  # [H-004]
+        "deep_ta_route_reason": candidate.deep_ta_route_reason,  # [H-004]
+        "ambush_reasons": candidate.ambush_reasons,  # [H-004]
+        "ambush_evidence_refs": candidate.ambush_evidence_refs,  # [H-004]
     }
 
     # [T-006] event_source_discovery — add event metadata to plan entry

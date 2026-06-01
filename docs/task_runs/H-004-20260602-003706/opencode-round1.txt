@@ -1,0 +1,783 @@
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/project-overview.md
+[0m
+[0m# [0mTodos
+[✓] Read H-004 task details and understand requirements
+[•] Explore existing H-001/H-002/H-003 code (mandate_signal, mandate_score, industry_mandate_map)
+[ ] Explore existing candidate engine, daily plan, and TradeFlow structures
+[ ] Implement candidate type enum (POLICY_AMBUSH, POLICY_CONFIRM, TECH_TRADE, EVENT_WATCH, PSEUDO_POLICY, OVERHEATED_AVOID)
+[ ] Implement ambush scoring (ambush_score, mandate_score, beneficiary_score, pricing_gap_score, overheat_penalty)
+[ ] Implement candidate type classification logic
+[ ] Implement need_deep_ta routing based on candidate type
+[ ] Integrate with daily plan and candidates API
+[ ] Write comprehensive tests
+[ ] Run all tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m• [0mExplore H-001/H-002/H-003 code[90m Explore Agent[0m
+[0m✓ [0mExplore H-001/H-002/H-003 code[90m Explore Agent[0m
+[0m→ [0mRead tradingagents/tradeflow/schemas.py
+[0m→ [0mRead tradingagents/tradeflow/mandate_score.py
+Now let me read the key source files in detail to understand the current structures:
+[0m→ [0mRead tradingagents/tradeflow/industry_mandate_map.py
+[0m→ [0mRead tradingagents/tradeflow/selection_priority_gate.py
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py
+[0m→ [0mRead tradingagents/tradeflow/plan_runner.py
+Now let me also check the plan_runner and the API to understand how candidates get serialized for the API:
+[0m→ [0mRead tradingagents/tradeflow/tier_budget.py
+[0m
+[0m# [0mTodos
+[✓] Read H-004 task details and understand requirements
+[✓] Explore existing H-001/H-002/H-003 code (mandate_signal, mandate_score, industry_mandate_map)
+[✓] Explore existing candidate engine, daily plan, and TradeFlow structures
+[•] Implement candidate type enum (POLICY_AMBUSH, POLICY_CONFIRM, TECH_TRADE, EVENT_WATCH, PSEUDO_POLICY, OVERHEATED_AVOID)
+[ ] Implement ambush scoring (ambush_score, mandate_score, beneficiary_score, pricing_gap_score, overheat_penalty)
+[ ] Implement candidate type classification logic
+[ ] Implement need_deep_ta routing based on candidate type
+[ ] Integrate with daily plan and candidates API
+[ ] Write comprehensive tests
+[ ] Run all tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=50][0m
+Now I have a thorough understanding of the codebase. Let me read the DEVLOG to understand the format, then implement H-004.
+[0m→ [0mRead tradingagents/tradeflow/mandate_signal.py
+Now I have a complete understanding of the codebase. Let me implement H-004. The implementation plan:
+
+1. Create `tradingagents/tradeflow/ambush_score.py` - the core module with candidate type enum, ambush scoring, and classification logic
+2. Update `tradingagents/tradeflow/schemas.py` - add H-004 fields to Candidate
+3. Update `tradingagents/tradeflow/candidate_engine.py` - wire H-004 into evaluate_symbol + DB schema
+4. Update `tradingagents/tradeflow/plan_runner.py` - expose H-004 fields in plan entries
+5. Write comprehensive tests
+6. Update DEVLOG
+
+Let me start implementing:
+[0m
+[0m← [0mWrite tradingagents/tradeflow/ambush_score.py
+Wrote file successfully.
+[0m
+Now update `schemas.py` to add H-004 fields to the Candidate dataclass:
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -117,8 +117,19 @@
+ beneficiary_path: list[str] = field(default_factory=list)  # [H-003] mandate_beneficiary_map
+ company_role: str = ""  # [H-003] mandate_beneficiary_map
+ mandate_topic: str = ""  # [H-003] mandate_beneficiary_map
+ mandate_evidence_refs: list[dict] = field(default_factory=list)  # [H-003] mandate_beneficiary_map
++candidate_type: str = ""  # [H-004] mandate_ambush_score
++ambush_score: float = 0.0  # [H-004] mandate_ambush_score
++mandate_score_component: float = 0.0  # [H-004] mandate_ambush_score
++beneficiary_score_component: float = 0.0  # [H-004] mandate_ambush_score
++pricing_gap_score: float = 0.0  # [H-004] mandate_ambush_score
++overheat_penalty: float = 0.0  # [H-004] mandate_ambush_score
++candidate_type_reason: str = ""  # [H-004] mandate_ambush_score
++deep_ta_route: str = ""  # [H-004] mandate_ambush_score
++deep_ta_route_reason: str = ""  # [H-004] mandate_ambush_score
++ambush_reasons: list[str] = field(default_factory=list)  # [H-004] mandate_ambush_score
++ambush_evidence_refs: list[dict] = field(default_factory=list)  # [H-004] mandate_ambush_score
+ 
+ def __post_init__(self):
+     if not self.trade_date:
+         self.trade_date = datetime.now().strftime("%Y-%m-%d")
+
+[0m
+Now update `to_db_row()` in schemas.py:
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -245,8 +245,19 @@
+         "beneficiary_path_json": json.dumps(self.beneficiary_path, ensure_ascii=False),  # [H-003]
+         "company_role": self.company_role,  # [H-003]
+         "mandate_topic": self.mandate_topic,  # [H-003]
+         "mandate_evidence_refs_json": json.dumps(self.mandate_evidence_refs, ensure_ascii=False),  # [H-003]
++        "candidate_type": self.candidate_type,  # [H-004] mandate_ambush_score
++        "ambush_score": self.ambush_score,  # [H-004]
++        "mandate_score_component": self.mandate_score_component,  # [H-004]
++        "beneficiary_score_component": self.beneficiary_score_component,  # [H-004]
++        "pricing_gap_score": self.pricing_gap_score,  # [H-004]
++        "overheat_penalty": self.overheat_penalty,  # [H-004]
++        "candidate_type_reason": self.candidate_type_reason,  # [H-004]
++        "deep_ta_route": self.deep_ta_route,  # [H-004]
++        "deep_ta_route_reason": self.deep_ta_route_reason,  # [H-004]
++        "ambush_reasons_json": json.dumps(self.ambush_reasons, ensure_ascii=False),  # [H-004]
++        "ambush_evidence_refs_json": json.dumps(self.ambush_evidence_refs, ensure_ascii=False),  # [H-004]
+         "updated_at": datetime.now().isoformat(),
+     }
+ 
+ @classmethod
+
+[0m
+现在更新 `schemas.py` 中的 `from_db_row()`:
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -333,8 +333,19 @@
+             beneficiary_path=json.loads(row.get("beneficiary_path_json", "[]")),  # [H-003]
+             company_role=row.get("company_role", ""),  # [H-003]
+             mandate_topic=row.get("mandate_topic", ""),  # [H-003]
+             mandate_evidence_refs=json.loads(row.get("mandate_evidence_refs_json", "[]")),  # [H-003]
++            candidate_type=row.get("candidate_type", ""),  # [H-004] mandate_ambush_score
++            ambush_score=row.get("ambush_score", 0.0),  # [H-004]
++            mandate_score_component=row.get("mandate_score_component", 0.0),  # [H-004]
++            beneficiary_score_component=row.get("beneficiary_score_component", 0.0),  # [H-004]
++            pricing_gap_score=row.get("pricing_gap_score", 0.0),  # [H-004]
++            overheat_penalty=row.get("overheat_penalty", 0.0),  # [H-004]
++            candidate_type_reason=row.get("candidate_type_reason", ""),  # [H-004]
++            deep_ta_route=row.get("deep_ta_route", ""),  # [H-004]
++            deep_ta_route_reason=row.get("deep_ta_route_reason", ""),  # [H-004]
++            ambush_reasons=json.loads(row.get("ambush_reasons_json", "[]")),  # [H-004]
++            ambush_evidence_refs=json.loads(row.get("ambush_evidence_refs_json", "[]")),  # [H-004]
+         )
+ 
+ 
+ @dataclass
+
+[0m
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [offset=549][0m
+Now update the `render_text()` method in `DailyPlan` to display H-004 fields:
+[0m
+[0m← [0mEdit tradingagents/tradeflow/schemas.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/schemas.py
+@@ -581,7 +581,39 @@
+         if dta_model:
+             lines.append(f"    模型: {dta_model}")
+         if dta_pos:
+             lines.append(f"    持仓: {dta_pos}")
++    # [H-004] mandate_ambush_score — display candidate type and ambush score
++    cand_type = c.get("candidate_type", "")
++    ambush_sc = c.get("ambush_score", 0)
++    mandate_sc = c.get("mandate_score_component", 0)
++    benef_sc = c.get("beneficiary_score_component", 0)
++    pricing_sc = c.get("pricing_gap_score", 0)
++    overheat_pen = c.get("overheat_penalty", 0)
++    type_reason = c.get("candidate_type_reason", "")
++    ta_route = c.get("deep_ta_route", "")
++    ta_route_reason = c.get("deep_ta_route_reason", "")
++    if cand_type:
++        type_label = {
++            "POLICY_AMBUSH": "🟢政策左侧埋伏",
++            "POLICY_CONFIRM": "🔵政策右侧确认",
++            "TECH_TRADE": "⚪技术交易",
++            "EVENT_WATCH": "🟡事件观察",
++            "PSEUDO_POLICY": "🔴伪政策题材",
++            "OVERHEATED_AVOID": "⛔过热规避",
++        }.get(cand_type, cand_type)
++        lines.append(f"  昊天分类: {type_label} | 埋伏分: {ambush_sc:.0f}")
++        if type_reason:
++            lines.append(f"    分类原因: {type_reason}")
++        lines.append(f"    政策={mandate_sc:.0f} 受益={benef_sc:.0f} 价差={pricing_sc:.0f} 过热={overheat_pen:.0f}")
++        if ta_route:
++            route_label = {
++                "policy_verify": "政策验证",
++                "deep_ta": "深度TA",
++                "short_term": "短线/做T",
++                "observe": "观察等待",
++                "skip": "跳过",
++            }.get(ta_route, ta_route)
++            lines.append(f"    TA路由: {route_label} — {ta_route_reason}")
+     lines.append("")
+ 
+ return "\n".join(lines)
+
+[0m
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -31,8 +31,9 @@
+ from .tier_budget import classify_candidate_tier, TierBudgetResult  # [S-007] candidate_tier_budget
+ from .evidence_gate import compute_evidence_completeness, apply_evidence_gate, EvidenceGateResult  # [S-008] tradeflow_evidence_gate
+ from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+ from .symbol_utils import normalize_tradeflow_symbol, resolve_tradeflow_name  # [UI-008] tradeflow_field_normalization
++from .ambush_score import compute_ambush_score, AmbushScoreResult  # [H-004] mandate_ambush_score
+ 
+ 
+ # ── SQL for table creation ──
+ CREATE_CANDIDATES_TABLE = """
+
+[0m
+Now update `candidate_engine.py` to wire H-004 into `evaluate_symbol()` and DB schema:
+Add DB columns for H-004 in `init_db()`:
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -269,8 +269,37 @@
+     try:
+         conn.execute(f"ALTER TABLE tradeflow_filtered_symbols ADD COLUMN {_col} {_type}")
+     except sqlite3.OperationalError:
+         pass
++# [H-003] mandate_beneficiary_map — add beneficiary columns
++for _col, _type in [
++    ("beneficiary_path_json", "TEXT DEFAULT '[]'"),
++    ("company_role", "TEXT DEFAULT ''"),
++    ("mandate_topic", "TEXT DEFAULT ''"),
++    ("mandate_evidence_refs_json", "TEXT DEFAULT '[]'"),
++]:
++    try:
++        conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
++    except sqlite3.OperationalError:
++        pass
++# [H-004] mandate_ambush_score — add ambush score and candidate type columns
++for _col, _type in [
++    ("candidate_type", "TEXT DEFAULT ''"),
++    ("ambush_score", "REAL DEFAULT 0.0"),
++    ("mandate_score_component", "REAL DEFAULT 0.0"),
++    ("beneficiary_score_component", "REAL DEFAULT 0.0"),
++    ("pricing_gap_score", "REAL DEFAULT 0.0"),
++    ("overheat_penalty", "REAL DEFAULT 0.0"),
++    ("candidate_type_reason", "TEXT DEFAULT ''"),
++    ("deep_ta_route", "TEXT DEFAULT ''"),
++    ("deep_ta_route_reason", "TEXT DEFAULT ''"),
++    ("ambush_reasons_json", "TEXT DEFAULT '[]'"),
++    ("ambush_evidence_refs_json", "TEXT DEFAULT '[]'"),
++]:
++    try:
++        conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
++    except sqlite3.OperationalError:
++        pass
+ conn.commit()
+ conn.close()
+ 
+ 
+
+[0m
+Now wire the H-004 ambush score computation into `evaluate_symbol()`. I need to add it after the evidence gate section and before the return:
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -795,8 +795,72 @@
+         "gate_applied": gate_override["gate_applied"],
+         "refs": eg_result.evidence_gate_refs,
+     }
+ 
++    # [H-004] mandate_ambush_score — compute ambush score and candidate type
++    has_tech_breakout = bool(candidate.trigger_price and candidate.score > 0)
++    latest_close = 0.0
++    if df is not None and len(df) > 0:
++        latest_close = float(df["Close"].iloc[-1])
++    ambush_result: AmbushScoreResult = compute_ambush_score(
++        mandate_score=candidate.version_score,
++        version_score=candidate.version_score,
++        policy_tags=candidate.policy_tags,
++        has_policy_document=any(
++            ref.get("source_level", "") in ("CENTRAL", "STATE_COUNCIL", "MINISTRY")
++            for ref in candidate.policy_evidence_refs
++        ),
++        has_high_authority=any(
++            ref.get("source_level", "") in ("CENTRAL", "STATE_COUNCIL", "MINISTRY", "EXCHANGE")
++            for ref in candidate.policy_evidence_refs
++        ),
++        unique_dates=len(set(
++            ref.get("date", "")
++            for ref in candidate.policy_evidence_refs
++            if ref.get("date")
++        )),
++        is_noise=False,
++        company_role=candidate.company_role,
++        beneficiary_path=candidate.beneficiary_path,
++        has_company_evidence=bool(candidate.company_role and candidate.company_role not in ("", "UNKNOWN")),
++        path_confidence=0.0,
++        has_tech_breakout=has_tech_breakout,
++        trigger_price=candidate.trigger_price,
++        current_price=latest_close if latest_close > 0 else None,
++        strategy_tags=candidate.strategy_tags,
++        tech_score=candidate.score,
++        risk_flags=candidate.risk_flags,
++        risk_penalty=candidate.risk_penalty,
++        game_balance=candidate.game_balance,
++        fund_flow_anomaly_tags=candidate.fund_flow_anomaly_tags,
++        narrative_score=candidate.narrative_score,
++        mandate_evidence_refs=candidate.policy_evidence_refs,
++        cfg=cfg,
++    )
++    candidate.candidate_type = ambush_result.candidate_type
++    candidate.ambush_score = ambush_result.ambush_score
++    candidate.mandate_score_component = ambush_result.mandate_score_component
++    candidate.beneficiary_score_component = ambush_result.beneficiary_score_component
++    candidate.pricing_gap_score = ambush_result.pricing_gap_score
++    candidate.overheat_penalty = ambush_result.overheat_penalty
++    candidate.candidate_type_reason = ambush_result.candidate_type_reason
++    candidate.deep_ta_route = ambush_result.deep_ta_route
++    candidate.deep_ta_route_reason = ambush_result.deep_ta_route_reason
++    candidate.ambush_reasons = ambush_result.ambush_reasons
++    candidate.ambush_evidence_refs = ambush_result.ambush_evidence_refs
++    candidate.evidence["ambush_score"] = {
++        "ambush_score": ambush_result.ambush_score,
++        "candidate_type": ambush_result.candidate_type,
++        "candidate_type_reason": ambush_result.candidate_type_reason,
++        "mandate_score_component": ambush_result.mandate_score_component,
++        "beneficiary_score_component": ambush_result.beneficiary_score_component,
++        "pricing_gap_score": ambush_result.pricing_gap_score,
++        "overheat_penalty": ambush_result.overheat_penalty,
++        "deep_ta_route": ambush_result.deep_ta_route,
++        "deep_ta_route_reason": ambush_result.deep_ta_route_reason,
++        "ambush_reasons": ambush_result.ambush_reasons,
++    }
++
+     return candidate, ""
+ 
+ 
+ def save_candidate(candidate: Candidate, db_path: str) -> int:
+
+[0m
+现在，我将更新 `candidate_engine.py` 中的 `save_candidate()` 函数，使其能够持久化 H-004 字段。让我检查一下当前的 INSERT 语句：
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [offset=772, limit=130][0m
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [offset=902][0m
+I need to update the `save_candidate()` INSERT SQL to include the H-003 beneficiary columns (which were missing from the INSERT) and H-004 columns. Let me update the full INSERT statement:
+[0m
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -891,11 +891,16 @@
+ "universe_sources_json, "
+ "observe_state, observe_trigger_count, observe_first_trigger_time, "
+ "deep_ta_status, deep_ta_dispatch_reason, deep_ta_model, "
+ "deep_ta_report_path, deep_ta_dispatch_time, deep_ta_position_context, "
+-"plan_date, effective_trade_date, observe_date, "  # [TF-DATE-001]
++"plan_date, effective_trade_date, observe_date, "
++"beneficiary_path_json, company_role, mandate_topic, mandate_evidence_refs_json, "
++"candidate_type, ambush_score, mandate_score_component, beneficiary_score_component, "
++"pricing_gap_score, overheat_penalty, candidate_type_reason, "
++"deep_ta_route, deep_ta_route_reason, "
++"ambush_reasons_json, ambush_evidence_refs_json, "
+ "created_at, updated_at) "
+-"VALUES ({}) ".format(",".join(["?"] * 67))
++"VALUES ({}) ".format(",".join(["?"] * 78))
+ + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+ "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+ "trigger_price=excluded.trigger_price, "
+ "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+@@ -943,11 +948,26 @@
+ "deep_ta_model=excluded.deep_ta_model, "
+ "deep_ta_report_path=excluded.deep_ta_report_path, "
+ "deep_ta_dispatch_time=excluded.deep_ta_dispatch_time, "
+ "deep_ta_position_context=excluded.deep_ta_position_context, "
+-"plan_date=excluded.plan_date, "  # [TF-DATE-001]
+-"effective_trade_date=excluded.effective_trade_date, "  # [TF-DATE-001]
+-"observe_date=excluded.observe_date, "  # [TF-DATE-001]
++"plan_date=excluded.plan_date, "
++"effective_trade_date=excluded.effective_trade_date, "
++"observe_date=excluded.observe_date, "
++"beneficiary_path_json=excluded.beneficiary_path_json, "
++"company_role=excluded.company_role, "
++"mandate_topic=excluded.mandate_topic, "
++"mandate_evidence_refs_json=excluded.mandate_evidence_refs_json, "
++"candidate_type=excluded.candidate_type, "
++"ambush_score=excluded.ambush_score, "
++"mandate_score_component=excluded.mandate_score_component, "
++"beneficiary_score_component=excluded.beneficiary_score_component, "
++"pricing_gap_score=excluded.pricing_gap_score, "
++"overheat_penalty=excluded.overheat_penalty, "
++"candidate_type_reason=excluded.candidate_type_reason, "
++"deep_ta_route=excluded.deep_ta_route, "
++"deep_ta_route_reason=excluded.deep_ta_route_reason, "
++"ambush_reasons_json=excluded.ambush_reasons_json, "
++"ambush_evidence_refs_json=excluded.ambush_evidence_refs_json, "
+ "updated_at=excluded.updated_at",
+ (
+     row["trade_date"], row["symbol"], row["name"], row["source"],
+     row["strategy_tags_json"], row["primary_strategy"],
+
+[0m
+Now update the VALUES tuple to include the new columns:
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -999,9 +999,17 @@
+         row["observe_first_trigger_time"],
+         row["deep_ta_status"], row["deep_ta_dispatch_reason"],
+         row["deep_ta_model"], row["deep_ta_report_path"],
+         row["deep_ta_dispatch_time"], row["deep_ta_position_context"],
+-        row["plan_date"], row["effective_trade_date"], row["observe_date"],  # [TF-DATE-001]
++        row["plan_date"], row["effective_trade_date"], row["observe_date"],
++        row["beneficiary_path_json"], row["company_role"],
++        row["mandate_topic"], row["mandate_evidence_refs_json"],
++        row["candidate_type"], row["ambush_score"],
++        row["mandate_score_component"], row["beneficiary_score_component"],
++        row["pricing_gap_score"], row["overheat_penalty"],
++        row["candidate_type_reason"],
++        row["deep_ta_route"], row["deep_ta_route_reason"],
++        row["ambush_reasons_json"], row["ambush_evidence_refs_json"],
+         candidate.created_at, row["updated_at"],
+     ),
+ )
+ conn.commit()
+
+[0m
+现在更新 `plan_runner.py`，在计划条目中暴露 H-004 字段：
+[0m← [0mEdit tradingagents/tradeflow/plan_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/plan_runner.py
+@@ -118,8 +118,23 @@
+     "deep_ta_position_context": candidate.deep_ta_position_context,  # [M-006]
+     "plan_date": candidate.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
+     "effective_trade_date": candidate.effective_trade_date,  # [TF-DATE-001]
+     "observe_date": candidate.observe_date,  # [TF-DATE-001]
++    "beneficiary_path": candidate.beneficiary_path,  # [H-003] mandate_beneficiary_map
++    "company_role": candidate.company_role,  # [H-003]
++    "mandate_topic": candidate.mandate_topic,  # [H-003]
++    "mandate_evidence_refs": candidate.mandate_evidence_refs,  # [H-003]
++    "candidate_type": candidate.candidate_type,  # [H-004] mandate_ambush_score
++    "ambush_score": candidate.ambush_score,  # [H-004]
++    "mandate_score_component": candidate.mandate_score_component,  # [H-004]
++    "beneficiary_score_component": candidate.beneficiary_score_component,  # [H-004]
++    "pricing_gap_score": candidate.pricing_gap_score,  # [H-004]
++    "overheat_penalty": candidate.overheat_penalty,  # [H-004]
++    "candidate_type_reason": candidate.candidate_type_reason,  # [H-004]
++    "deep_ta_route": candidate.deep_ta_route,  # [H-004]
++    "deep_ta_route_reason": candidate.deep_ta_route_reason,  # [H-004]
++    "ambush_reasons": candidate.ambush_reasons,  # [H-004]
++    "ambush_evidence_refs": candidate.ambush_evidence_refs,  # [H-004]
+ }
+ 
+ # [T-006] event_source_discovery — add event metadata to plan entry
+ if event_items:
+
+[0m
+[0m# [0mTodos
+[✓] Read H-004 task details and understand requirements
+[✓] Explore existing H-001/H-002/H-003 code (mandate_signal, mandate_score, industry_mandate_map)
+[✓] Explore existing candidate engine, daily plan, and TradeFlow structures
+[✓] Implement candidate type enum (POLICY_AMBUSH, POLICY_CONFIRM, TECH_TRADE, EVENT_WATCH, PSEUDO_POLICY, OVERHEATED_AVOID)
+[✓] Implement ambush scoring (ambush_score, mandate_score, beneficiary_score, pricing_gap_score, overheat_penalty)
+[✓] Implement candidate type classification logic
+[✓] Implement need_deep_ta routing based on candidate type
+[✓] Integrate with daily plan and candidates API
+[•] Write comprehensive tests
+[ ] Run all tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+Now write the comprehensive test file:
+[0m← [0mWrite tests/test_h004_ambush_score.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[✓] Read H-004 task details and understand requirements
+[✓] Explore existing H-001/H-002/H-003 code (mandate_signal, mandate_score, industry_mandate_map)
+[✓] Explore existing candidate engine, daily plan, and TradeFlow structures
+[✓] Implement candidate type enum (POLICY_AMBUSH, POLICY_CONFIRM, TECH_TRADE, EVENT_WATCH, PSEUDO_POLICY, OVERHEATED_AVOID)
+[✓] Implement ambush scoring (ambush_score, mandate_score, beneficiary_score, pricing_gap_score, overheat_penalty)
+[✓] Implement candidate type classification logic
+[✓] Implement need_deep_ta routing based on candidate type
+[✓] Integrate with daily plan and candidates API
+[✓] Write comprehensive tests
+[•] Run all tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_h004_ambush_score.py -v 2>&1 | tail -60
+tests/test_h004_ambush_score.py::TestMandateScoreComponent::test_no_policy_evidence PASSED [  5%]
+tests/test_h004_ambush_score.py::TestMandateScoreComponent::test_with_policy_tags PASSED [  6%]
+tests/test_h004_ambush_score.py::TestMandateScoreComponent::test_noise_reduction PASSED [  8%]
+tests/test_h004_ambush_score.py::TestMandateScoreComponent::test_policy_document_bonus PASSED [ 10%]
+tests/test_h004_ambush_score.py::TestMandateScoreComponent::test_high_authority_bonus PASSED [ 11%]
+tests/test_h004_ambush_score.py::TestMandateScoreComponent::test_multi_day_continuity PASSED [ 13%]
+tests/test_h004_ambush_score.py::TestBeneficiaryScoreComponent::test_no_role PASSED [ 15%]
+tests/test_h004_ambush_score.py::TestBeneficiaryScoreComponent::test_unknown_role PASSED [ 16%]
+tests/test_h004_ambush_score.py::TestBeneficiaryScoreComponent::test_leader_role PASSED [ 18%]
+tests/test_h004_ambush_score.py::TestBeneficiaryScoreComponent::test_concept_only_role PASSED [ 20%]
+tests/test_h004_ambush_score.py::TestBeneficiaryScoreComponent::test_no_company_evidence_reduces PASSED [ 21%]
+tests/test_h004_ambush_score.py::TestBeneficiaryScoreComponent::test_path_confidence_increases PASSED [ 23%]
+tests/test_h004_ambush_score.py::TestPricingGapScore::test_no_tech_signal PASSED [ 25%]
+tests/test_h004_ambush_score.py::TestPricingGapScore::test_breakout_confirmed PASSED [ 26%]
+tests/test_h004_ambush_score.py::TestPricingGapScore::test_vcp_near_trigger PASSED [ 28%]
+tests/test_h004_ambush_score.py::TestPricingGapScore::test_far_from_trigger PASSED [ 30%]
+tests/test_h004_ambush_score.py::TestPricingGapScore::test_no_price_context PASSED [ 31%]
+tests/test_h004_ambush_score.py::TestOverheatPenalty::test_no_risk PASSED [ 33%]
+tests/test_h004_ambush_score.py::TestOverheatPenalty::test_lhb_overheat PASSED [ 35%]
+tests/test_h004_ambush_score.py::TestOverheatPenalty::test_margin_crowding PASSED [ 36%]
+tests/test_h004_ambush_score.py::TestOverheatPenalty::test_net_outflow PASSED [ 38%]
+tests/test_h004_ambush_score.py::TestOverheatPenalty::test_crowded_game_balance PASSED [ 40%]
+tests/test_h004_ambush_score.py::TestOverheatPenalty::test_fragile_game_balance PASSED [ 41%]
+tests/test_h004_ambush_score.py::TestOverheatPenalty::test_many_risk_flags PASSED [ 43%]
+tests/test_h004_ambush_score.py::TestOverheatPenalty::test_heavy_risk_penalty PASSED [ 45%]
+tests/test_h004_ambush_score.py::TestComputeAmbushScore::test_returns_result PASSED [ 46%]
+tests/test_h004_ambush_score.py::TestComputeAmbushScore::test_to_dict PASSED [ 48%]
+tests/test_h004_ambush_score.py::TestComputeAmbushScore::test_ambush_score_bounded PASSED [ 50%]
+tests/test_h004_ambush_score.py::TestClassifyCandidateType::test_policy_ambush_strong_policy_no_breakout PASSED [ 51%]
+tests/test_h004_ambush_score.py::TestClassifyCandidateType::test_policy_confirm_with_breakout PASSED [ 53%]
+tests/test_h004_ambush_score.py::TestClassifyCandidateType::test_tech_trade_no_policy PASSED [ 55%]
+tests/test_h004_ambush_score.py::TestClassifyCandidateType::test_overheated_avoid PASSED [ 56%]
+tests/test_h004_ambush_score.py::TestClassifyCandidateType::test_overheated_high_risk_flags PASSED [ 58%]
+tests/test_h004_ambush_score.py::TestClassifyCandidateType::test_overheated_financial_risk PASSED [ 60%]
+tests/test_h004_ambush_score.py::TestClassifyCandidateType::test_pseudo_policy_weak_evidence PASSED [ 61%]
+tests/test_h004_ambush_score.py::TestClassifyCandidateType::test_event_watch_weak_policy PASSED [ 63%]
+tests/test_h004_ambush_score.py::TestClassifyCandidateType::test_fragile_game_balance_overheated PASSED [ 65%]
+tests/test_h004_ambush_score.py::TestClassifyCandidateType::test_concept_only_role_not_ambush PASSED [ 66%]
+tests/test_h004_ambush_score.py::TestRouteDeepTa::test_policy_ambush_routes_to_policy_verify PASSED [ 68%]
+tests/test_h004_ambush_score.py::TestRouteDeepTa::test_policy_confirm_routes_to_deep_ta PASSED [ 70%]
+tests/test_h004_ambush_score.py::TestRouteDeepTa::test_policy_confirm_no_path_routes_to_policy_verify PASSED [ 71%]
+tests/test_h004_ambush_score.py::TestRouteDeepTa::test_tech_trade_routes_to_short_term PASSED [ 73%]
+tests/test_h004_ambush_score.py::TestRouteDeepTa::test_overheated_routes_to_skip PASSED [ 75%]
+tests/test_h004_ambush_score.py::TestRouteDeepTa::test_pseudo_policy_routes_to_skip PASSED [ 76%]
+tests/test_h004_ambush_score.py::TestRouteDeepTa::test_event_watch_low_score_routes_to_skip PASSED [ 78%]
+tests/test_h004_ambush_score.py::TestRouteDeepTa::test_event_watch_moderate_score_routes_to_observe PASSED [ 80%]
+tests/test_h004_ambush_score.py::TestCandidateSchemaIntegration::test_candidate_h004_fields_default PASSED [ 81%]
+tests/test_h004_ambush_score.py::TestCandidateSchemaIntegration::test_to_db_row_includes_h004 PASSED [ 83%]
+tests/test_h004_ambush_score.py::TestCandidateSchemaIntegration::test_from_db_row_roundtrip PASSED [ 85%]
+tests/test_h004_ambush_score.py::TestCandidateSchemaIntegration::test_from_db_row_missing_columns_graceful PASSED [ 86%]
+tests/test_h004_ambush_score.py::TestFullPipelineScenarios::test_scenario_1_policy_ambush PASSED [ 88%]
+tests/test_h004_ambush_score.py::TestFullPipelineScenarios::test_scenario_2_policy_confirm PASSED [ 90%]
+tests/test_h004_ambush_score.py::TestFullPipelineScenarios::test_scenario_3_tech_trade PASSED [ 91%]
+tests/test_h004_ambush_score.py::TestFullPipelineScenarios::test_scenario_4_overheated_avoid PASSED [ 93%]
+tests/test_h004_ambush_score.py::TestFullPipelineScenarios::test_scenario_5_pseudo_policy PASSED [ 95%]
+tests/test_h004_ambush_score.py::TestFullPipelineScenarios::test_scenario_6_event_watch PASSED [ 96%]
+tests/test_h004_ambush_score.py::TestFullPipelineScenarios::test_high_scores_have_evidence PASSED [ 98%]
+tests/test_h004_ambush_score.py::TestDailyPlanRender::test_render_includes_candidate_type PASSED [100%]
+
+============================== 60 passed in 0.05s ==============================
+[0m
+All 60 H-004 tests pass. Now run the broader test suite to ensure no regressions:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tradeflow_schemas.py tests/test_tradeflow_candidate_engine.py tests/test_tradeflow_plan_runner.py tests/test_s005_selection_priority_gate.py tests/test_s007_tier_budget.py tests/test_h001_mandate_signal.py tests/test_h002_mandate_score.py tests/test_h003_industry_mandate_map.py -v 2>&1 | tail -30
+row["universe_sources_json"],
+                    row["observe_state"], row["observe_trigger_count"],
+                    row["observe_first_trigger_time"],
+                    row["deep_ta_status"], row["deep_ta_dispatch_reason"],
+                    row["deep_ta_model"], row["deep_ta_report_path"],
+                    row["deep_ta_dispatch_time"], row["deep_ta_position_context"],
+                    row["plan_date"], row["effective_trade_date"], row["observe_date"],
+                    row["beneficiary_path_json"], row["company_role"],
+                    row["mandate_topic"], row["mandate_evidence_refs_json"],
+                    row["candidate_type"], row["ambush_score"],
+                    row["mandate_score_component"], row["beneficiary_score_component"],
+                    row["pricing_gap_score"], row["overheat_penalty"],
+                    row["candidate_type_reason"],
+                    row["deep_ta_route"], row["deep_ta_route_reason"],
+                    row["ambush_reasons_json"], row["ambush_evidence_refs_json"],
+                    candidate.created_at, row["updated_at"],
+                ),
+            )
+E           sqlite3.OperationalError: 78 values for 82 columns
+
+tradingagents/tradeflow/candidate_engine.py:874: OperationalError
+=========================== short test summary info ============================
+FAILED tests/test_tradeflow_candidate_engine.py::TestPersistence::test_save_and_read_candidate
+FAILED tests/test_tradeflow_candidate_engine.py::TestPersistence::test_upsert_candidate
+FAILED tests/test_tradeflow_candidate_engine.py::TestPersistence::test_need_deep_ta_persisted
+FAILED tests/test_tradeflow_plan_runner.py::TestPlanPersistence::test_save_candidates_persisted
+FAILED tests/test_s005_selection_priority_gate.py::TestDBPersistence::test_save_and_load_s005_fields
+FAILED tests/test_s005_selection_priority_gate.py::TestDBPersistence::test_db_round_trip_from_db_row
+FAILED tests/test_s007_tier_budget.py::TestDBPersistence::test_save_and_load_tier_fields
+================== 7 failed, 453 passed, 2 skipped in 42.34s ===================
+[0m
+Column count mismatch — the INSERT has 82 columns but only 78 values. Let me count and fix:
+[0m$ [0msource .venv/bin/activate && python -c "
+from tradingagents.tradeflow.schemas import Candidate
+c = Candidate(symbol='000001.SZ')
+row = c.to_db_row()
+print('to_db_row keys:', len(row))
+print('Keys:', sorted(row.keys()))
+"
+to_db_row keys: 81
+Keys: ['ambush_evidence_refs_json', 'ambush_reasons_json', 'ambush_score', 'bear_case', 'beneficiary_path_json', 'beneficiary_score_component', 'bull_case', 'candidate_type', 'candidate_type_reason', 'company_role', 'composite_score', 'data_completeness', 'deep_ta_dispatch_reason', 'deep_ta_dispatch_time', 'deep_ta_model', 'deep_ta_position_context', 'deep_ta_report_path', 'deep_ta_route', 'deep_ta_route_reason', 'deep_ta_status', 'effective_trade_date', 'evidence_gate_applied', 'evidence_json', 'fund_flow_anomaly_refs_json', 'fund_flow_anomaly_score', 'fund_flow_anomaly_tags_json', 'fund_flow_board_summary', 'fund_flow_case', 'fund_flow_individual_summary', 'fund_flow_unit_verified', 'game_balance', 'game_balance_refs_json', 'invalid_price', 'mandate_evidence_refs_json', 'mandate_score_component', 'mandate_topic', 'missing_data_fields_json', 'missing_evidence_for_upgrade_json', 'missing_evidence_json', 'name', 'narrative_evidence_refs_json', 'narrative_reasons_json', 'narrative_score', 'need_deep_ta', 'observe_date', 'observe_first_trigger_time', 'observe_state', 'observe_trigger_count', 'overheat_penalty', 'plan_date', 'policy_case', 'policy_evidence_refs_json', 'policy_tags_json', 'positive_category_count', 'pricing_gap_score', 'primary_strategy', 'priority_rank', 'resonance_count', 'risk_evidence_refs_json', 'risk_flags_json', 'risk_penalty', 'risk_reasons_json', 'score', 'signal_category_hits_json', 'source', 'status', 'strategy_tags_json', 'support_price', 'symbol', 'ta_budget_priority', 'tier', 'tier_reason', 'trade_date', 'tradeflow_data_completeness', 'trigger_price', 'universe_sources_json', 'updated_at', 'version_score', 'what_to_upgrade_json', 'why_deep_ta', 'why_not_deep_ta']
+[0m
+to_db_row has 81 keys (including `updated_at`). The INSERT has `created_at` and `updated_at` as the last two values, so total = 80 + 2 = 82 columns. But the VALUES tuple has 78 params. Let me check the column list:
+[0m$ [0msource .venv/bin/activate && python3 -c "
+cols = '''trade_date, symbol, name, source, strategy_tags_json, primary_strategy,
+score, status, trigger_price, support_price, invalid_price, need_deep_ta,
+evidence_json, risk_flags_json, policy_tags_json, version_score,
+policy_evidence_refs_json, narrative_score, narrative_reasons_json,
+narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json,
+risk_reasons_json, game_balance, bull_case, bear_case, policy_case,
+fund_flow_case, resonance_count, game_balance_refs_json,
+fund_flow_anomaly_score, fund_flow_anomaly_tags_json,
+fund_flow_anomaly_refs_json, fund_flow_unit_verified,
+fund_flow_individual_summary, fund_flow_board_summary,
+composite_score, signal_category_hits_json, positive_category_count,
+data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta,
+priority_rank,
+tier, ta_budget_priority, tier_reason, missing_evidence_for_upgrade_json,
+tradeflow_data_completeness, missing_data_fields_json, what_to_upgrade_json, evidence_gate_applied,
+universe_sources_json,
+observe_state, observe_trigger_count, observe_first_trigger_time,
+deep_ta_status, deep_ta_dispatch_reason, deep_ta_model,
+deep_ta_report_path, deep_ta_dispatch_time, deep_ta_position_context,
+plan_date, effective_trade_date, observe_date,
+beneficiary_path_json, company_role, mandate_topic, mandate_evidence_refs_json,
+candidate_type, ambush_score, mandate_score_component, beneficiary_score_component,
+pricing_gap_score, overheat_penalty, candidate_type_reason,
+deep_ta_route, deep_ta_route_reason,
+ambush_reasons_json, ambush_evidence_refs_json,
+created_at, updated_at'''
+print('Column count:', len([c.strip() for c in cols.split(',') if c.strip()]))
+"
+Column count: 82
+[0m
+82 columns but only 78 placeholders. I need to add 4 more `?` — the issue is the `VALUES ({})` line still says 78. Let me check:
+[0m✱ [0mGrep ""\.format\(.join\(\[\"\?\"\]"[90m 0 matches[0m
+[0m✱ [0mGrep "format.*join.*\?"[90m 1 match[0m
+Need to change 78 to 82:
+[0m
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -898,9 +898,9 @@
+ "pricing_gap_score, overheat_penalty, candidate_type_reason, "
+ "deep_ta_route, deep_ta_route_reason, "
+ "ambush_reasons_json, ambush_evidence_refs_json, "
+ "created_at, updated_at) "
+-"VALUES ({}) ".format(",".join(["?"] * 78))
++"VALUES ({}) ".format(",".join(["?"] * 82))
+ + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+ "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+ "trigger_price=excluded.trigger_price, "
+ "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_h004_ambush_score.py tests/test_tradeflow_candidate_engine.py tests/test_tradeflow_schemas.py tests/test_tradeflow_plan_runner.py tests/test_s005_selection_priority_gate.py tests/test_s007_tier_budget.py tests/test_h001_mandate_signal.py tests/test_h002_mandate_score.py tests/test_h003_industry_mandate_map.py -v 2>&1 | tail -30
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_multiple_segments_matched PASSED [ 94%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_path_confidence_capped PASSED [ 95%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_no_company_evidence_caps_confidence PASSED [ 95%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_unknown_topic PASSED [ 95%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_result_to_dict PASSED [ 95%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_beneficiary_path_result_defaults PASSED [ 95%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPath::test_beneficiary_path_result_to_dict PASSED [ 95%]
+tests/test_h003_industry_mandate_map.py::TestH003Acceptance::test_core_supplier_clear_path PASSED [ 96%]
+tests/test_h003_industry_mandate_map.py::TestH003Acceptance::test_weak_word_concept_only PASSED [ 96%]
+tests/test_h003_industry_mandate_map.py::TestH003Acceptance::test_no_company_evidence_not_high_priority PASSED [ 96%]
+tests/test_h003_industry_mandate_map.py::TestH003Acceptance::test_core_supplier_with_segment_match PASSED [ 96%]
+tests/test_h003_industry_mandate_map.py::TestH003Acceptance::test_strong_vs_weak_evidence PASSED [ 96%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPathsForSignals::test_empty_signals PASSED [ 97%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPathsForSignals::test_single_topic_single_symbol PASSED [ 97%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPathsForSignals::test_multiple_topics PASSED [ 97%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPathsForSignals::test_auto_topic_detection PASSED [ 97%]
+tests/test_h003_industry_mandate_map.py::TestComputeBeneficiaryPathsForSignals::test_multiple_symbols_same_topic PASSED [ 97%]
+tests/test_h003_industry_mandate_map.py::TestH003Integration::test_h001_signal_to_h003_path PASSED [ 98%]
+tests/test_h003_industry_mandate_map.py::TestH003Integration::test_h002_topics_covered PASSED [ 98%]
+tests/test_h003_industry_mandate_map.py::TestH003Integration::test_full_pipeline_policy_to_path PASSED [ 98%]
+tests/test_h003_industry_mandate_map.py::TestH003Integration::test_candidate_schema_fields PASSED [ 98%]
+tests/test_h003_industry_mandate_map.py::TestH003Integration::test_candidate_to_db_round_trip PASSED [ 98%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_zero_confidence PASSED [ 99%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_no_source_level PASSED [ 99%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_empty_title PASSED [ 99%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_many_signals PASSED [ 99%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_all_13_topics_have_chain PASSED [ 99%]
+tests/test_h003_industry_mandate_map.py::TestEdgeCases::test_semicolon_chain_segments_unique PASSED [100%]
+
+======================= 520 passed, 2 skipped in 12.23s ========================
+[0m
+All 520 tests pass (including 60 new H-004 tests), 0 failures, 2 skipped. Now let me also run the broader tradeflow test suite:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tradeflow_*.py -q 2>&1 | tail -10
+........................................................................ [ 55%]
+..........................................................               [100%]
+130 passed in 42.82s
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tradeflow_*.py tests/test_h0*.py tests/test_s0*.py -q 2>&1 | tail -10
+........................................................................ [ 45%]
+........................................................................ [ 52%]
+........................................................................ [ 60%]
+........................................................................ [ 67%]
+........................................................................ [ 75%]
+........................................................................ [ 82%]
+........................................................................ [ 90%]
+................ss.................................................ssss. [ 97%]
+........................                                                 [100%]
+954 passed, 6 skipped in 12.83s
+[0m
+954 passed, 6 skipped, 0 failures. Now update the DEVLOG:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=5][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,35 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-02 | H-004: 左侧埋伏评分与候选类型分流
++
++- **执行者**：OpenCode
++- **任务**：H-004 — 引入昊天候选池核心分类，把候选分为政策左侧埋伏、政策右侧确认、技术交易、伪政策题材、过热不追
++- **修改文件**：
++  - `tradingagents/tradeflow/ambush_score.py` — 新建：[H-004] mandate_ambush_score
++    - `CandidateType` 枚举：POLICY_AMBUSH / POLICY_CONFIRM / TECH_TRADE / EVENT_WATCH / PSEUDO_POLICY / OVERHEATED_AVOID
++    - `AmbushScoreResult` 数据类：ambush_score + 4 个子分 + candidate_type + deep_ta_route
++    - `compute_ambush_score()`：主评分函数，加权 mandate 35% + beneficiary 30% + pricing_gap 20% - overheat 15%
++    - `classify_candidate_type()`：6 类分流决策逻辑
++    - `route_deep_ta()`：基于 candidate_type 的 TA 路由（policy_verify / deep_ta / short_term / observe / skip）
++    - 左侧埋伏不要求突破，但必须满足政策连续性 + 受益路径 + 风险可控 + 未过热
++    - 所有过热/高风险/fragile 样本一律 OVERHEATED_AVOID
++    - 纯技术票不混入政策池（TECH_TRADE → short_term）
++  - `tradingagents/tradeflow/schemas.py` — Candidate 新增 12 个 H-004 字段 + DailyPlan render 展示
++  - `tradingagents/tradeflow/candidate_engine.py` — wire H-004 到 evaluate_symbol()；DB schema 新增 11 列 + H-003 beneficiary 4 列；save_candidate INSERT 更新
++  - `tradingagents/tradeflow/plan_runner.py` — plan entry 暴露 H-003 + H-004 字段
++  - `tests/test_h004_ambush_score.py` — 新建：60 个测试用例
++- **验证**：
++  - `pytest tests/test_h004_ambush_score.py -v` → 60 passed
++  - `pytest tests/test_tradeflow_*.py tests/test_h0*.py tests/test_s0*.py -q` → 954 passed, 6 skipped
++- **关键验收场景**：
++  - 政策强 + 公司路径明确 + 未突破 → POLICY_AMBUSH（埋伏分 > 40）
++  - 政策强 + 受益路径 + 已突破 → POLICY_CONFIRM → deep_ta
++  - 纯 VCP 无政策 → TECH_TRADE → short_term
++  - 过热/高位/风险拥挤 → OVERHEATED_AVOID → skip
++
+ ## 2026-06-01 | Task Pool Queue Refresh after AUTO batch
+ 
+ - **执行者**：Codex
+ - **背景**：`TF-OBS-001`、`DATA-001`、`H-002`、`H-003` 已由自动开发链完成，任务池无 ready 项，夜间链路会空转。
+
+[0m
+[0m# [0mTodos
+[✓] Read H-004 task details and understand requirements
+[✓] Explore existing H-001/H-002/H-003 code (mandate_signal, mandate_score, industry_mandate_map)
+[✓] Explore existing candidate engine, daily plan, and TradeFlow structures
+[✓] Implement candidate type enum (POLICY_AMBUSH, POLICY_CONFIRM, TECH_TRADE, EVENT_WATCH, PSEUDO_POLICY, OVERHEATED_AVOID)
+[✓] Implement ambush scoring (ambush_score, mandate_score, beneficiary_score, pricing_gap_score, overheat_penalty)
+[✓] Implement candidate type classification logic
+[✓] Implement need_deep_ta routing based on candidate type
+[✓] Integrate with daily plan and candidates API
+[✓] Write comprehensive tests
+[✓] Run all tests and verify
+[✓] Update docs/DEVLOG.md
+[0m
+## Summary
+
+### Files Changed
+| File | Change |
+|------|--------|
+| `tradingagents/tradeflow/ambush_score.py` | **New** — Core H-004 module with `CandidateType` enum (6 types), `AmbushScoreResult`, `compute_ambush_score()`, `classify_candidate_type()`, `route_deep_ta()` |
+| `tradingagents/tradeflow/schemas.py` | Added 12 H-004 fields to `Candidate` + `DailyPlan.render_text()` display |
+| `tradingagents/tradeflow/candidate_engine.py` | Wired H-004 into `evaluate_symbol()`, added DB columns for H-003 (4) + H-004 (11), updated `save_candidate()` SQL |
+| `tradingagents/tradeflow/plan_runner.py` | Exposed H-003 + H-004 fields in plan entries |
+| `tests/test_h004_ambush_score.py` | **New** — 60 test cases covering all 6 candidate types, scoring components, routing, schema roundtrip, and full pipeline scenarios |
+| `docs/DEVLOG.md` | Updated with H-004 completion log |
+
+### Key Logic
+
+**6 Candidate Types**: `POLICY_AMBUSH` (left-side ambush, no breakout needed), `POLICY_CONFIRM` (right-side with tech confirmation), `TECH_TRADE` (pure technical, short-term), `EVENT_WATCH` (weak signals, observe), `PSEUDO_POLICY` (concept-only noise), `OVERHEATED_AVOID` (risk-crowded, avoid).
+
+**Ambush Score** = mandate 35% + beneficiary 30% + pricing_gap 20% - overheat_penalty 15%. POLICY_AMBUSH requires mandate_score_component >= 40 AND beneficiary_score_component >= 35 AND no breakout.
+
+**Deep TA Routing**: `POLICY_AMBUSH` → policy_verify queue; `POLICY_CONFIRM` → deep_ta; `TECH_TRADE` → short_term; others → skip/observe.
+
+### Test Results
+- **60/60** H-004 tests passed
+- **954/954** broader test suite passed (6 skipped, 0 failures)

@@ -32,6 +32,7 @@ from .tier_budget import classify_candidate_tier, TierBudgetResult  # [S-007] ca
 from .evidence_gate import compute_evidence_completeness, apply_evidence_gate, EvidenceGateResult  # [S-008] tradeflow_evidence_gate
 from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
 from .symbol_utils import normalize_tradeflow_symbol, resolve_tradeflow_name  # [UI-008] tradeflow_field_normalization
+from .ambush_score import compute_ambush_score, AmbushScoreResult  # [H-004] mandate_ambush_score
 
 
 # ── SQL for table creation ──
@@ -267,6 +268,35 @@ def init_db(db_path: str) -> None:
     ]:
         try:
             conn.execute(f"ALTER TABLE tradeflow_filtered_symbols ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [H-003] mandate_beneficiary_map — add beneficiary columns
+    for _col, _type in [
+        ("beneficiary_path_json", "TEXT DEFAULT '[]'"),
+        ("company_role", "TEXT DEFAULT ''"),
+        ("mandate_topic", "TEXT DEFAULT ''"),
+        ("mandate_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [H-004] mandate_ambush_score — add ambush score and candidate type columns
+    for _col, _type in [
+        ("candidate_type", "TEXT DEFAULT ''"),
+        ("ambush_score", "REAL DEFAULT 0.0"),
+        ("mandate_score_component", "REAL DEFAULT 0.0"),
+        ("beneficiary_score_component", "REAL DEFAULT 0.0"),
+        ("pricing_gap_score", "REAL DEFAULT 0.0"),
+        ("overheat_penalty", "REAL DEFAULT 0.0"),
+        ("candidate_type_reason", "TEXT DEFAULT ''"),
+        ("deep_ta_route", "TEXT DEFAULT ''"),
+        ("deep_ta_route_reason", "TEXT DEFAULT ''"),
+        ("ambush_reasons_json", "TEXT DEFAULT '[]'"),
+        ("ambush_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
         except sqlite3.OperationalError:
             pass
     conn.commit()
@@ -766,6 +796,70 @@ def evaluate_symbol(
         "refs": eg_result.evidence_gate_refs,
     }
 
+    # [H-004] mandate_ambush_score — compute ambush score and candidate type
+    has_tech_breakout = bool(candidate.trigger_price and candidate.score > 0)
+    latest_close = 0.0
+    if df is not None and len(df) > 0:
+        latest_close = float(df["Close"].iloc[-1])
+    ambush_result: AmbushScoreResult = compute_ambush_score(
+        mandate_score=candidate.version_score,
+        version_score=candidate.version_score,
+        policy_tags=candidate.policy_tags,
+        has_policy_document=any(
+            ref.get("source_level", "") in ("CENTRAL", "STATE_COUNCIL", "MINISTRY")
+            for ref in candidate.policy_evidence_refs
+        ),
+        has_high_authority=any(
+            ref.get("source_level", "") in ("CENTRAL", "STATE_COUNCIL", "MINISTRY", "EXCHANGE")
+            for ref in candidate.policy_evidence_refs
+        ),
+        unique_dates=len(set(
+            ref.get("date", "")
+            for ref in candidate.policy_evidence_refs
+            if ref.get("date")
+        )),
+        is_noise=False,
+        company_role=candidate.company_role,
+        beneficiary_path=candidate.beneficiary_path,
+        has_company_evidence=bool(candidate.company_role and candidate.company_role not in ("", "UNKNOWN")),
+        path_confidence=0.0,
+        has_tech_breakout=has_tech_breakout,
+        trigger_price=candidate.trigger_price,
+        current_price=latest_close if latest_close > 0 else None,
+        strategy_tags=candidate.strategy_tags,
+        tech_score=candidate.score,
+        risk_flags=candidate.risk_flags,
+        risk_penalty=candidate.risk_penalty,
+        game_balance=candidate.game_balance,
+        fund_flow_anomaly_tags=candidate.fund_flow_anomaly_tags,
+        narrative_score=candidate.narrative_score,
+        mandate_evidence_refs=candidate.policy_evidence_refs,
+        cfg=cfg,
+    )
+    candidate.candidate_type = ambush_result.candidate_type
+    candidate.ambush_score = ambush_result.ambush_score
+    candidate.mandate_score_component = ambush_result.mandate_score_component
+    candidate.beneficiary_score_component = ambush_result.beneficiary_score_component
+    candidate.pricing_gap_score = ambush_result.pricing_gap_score
+    candidate.overheat_penalty = ambush_result.overheat_penalty
+    candidate.candidate_type_reason = ambush_result.candidate_type_reason
+    candidate.deep_ta_route = ambush_result.deep_ta_route
+    candidate.deep_ta_route_reason = ambush_result.deep_ta_route_reason
+    candidate.ambush_reasons = ambush_result.ambush_reasons
+    candidate.ambush_evidence_refs = ambush_result.ambush_evidence_refs
+    candidate.evidence["ambush_score"] = {
+        "ambush_score": ambush_result.ambush_score,
+        "candidate_type": ambush_result.candidate_type,
+        "candidate_type_reason": ambush_result.candidate_type_reason,
+        "mandate_score_component": ambush_result.mandate_score_component,
+        "beneficiary_score_component": ambush_result.beneficiary_score_component,
+        "pricing_gap_score": ambush_result.pricing_gap_score,
+        "overheat_penalty": ambush_result.overheat_penalty,
+        "deep_ta_route": ambush_result.deep_ta_route,
+        "deep_ta_route_reason": ambush_result.deep_ta_route_reason,
+        "ambush_reasons": ambush_result.ambush_reasons,
+    }
+
     return candidate, ""
 
 
@@ -798,9 +892,14 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "observe_state, observe_trigger_count, observe_first_trigger_time, "
             "deep_ta_status, deep_ta_dispatch_reason, deep_ta_model, "
             "deep_ta_report_path, deep_ta_dispatch_time, deep_ta_position_context, "
-            "plan_date, effective_trade_date, observe_date, "  # [TF-DATE-001]
+            "plan_date, effective_trade_date, observe_date, "
+            "beneficiary_path_json, company_role, mandate_topic, mandate_evidence_refs_json, "
+            "candidate_type, ambush_score, mandate_score_component, beneficiary_score_component, "
+            "pricing_gap_score, overheat_penalty, candidate_type_reason, "
+            "deep_ta_route, deep_ta_route_reason, "
+            "ambush_reasons_json, ambush_evidence_refs_json, "
             "created_at, updated_at) "
-            "VALUES ({}) ".format(",".join(["?"] * 67))
+            "VALUES ({}) ".format(",".join(["?"] * 82))
             + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
             "trigger_price=excluded.trigger_price, "
@@ -850,9 +949,24 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "deep_ta_report_path=excluded.deep_ta_report_path, "
             "deep_ta_dispatch_time=excluded.deep_ta_dispatch_time, "
             "deep_ta_position_context=excluded.deep_ta_position_context, "
-            "plan_date=excluded.plan_date, "  # [TF-DATE-001]
-            "effective_trade_date=excluded.effective_trade_date, "  # [TF-DATE-001]
-            "observe_date=excluded.observe_date, "  # [TF-DATE-001]
+            "plan_date=excluded.plan_date, "
+            "effective_trade_date=excluded.effective_trade_date, "
+            "observe_date=excluded.observe_date, "
+            "beneficiary_path_json=excluded.beneficiary_path_json, "
+            "company_role=excluded.company_role, "
+            "mandate_topic=excluded.mandate_topic, "
+            "mandate_evidence_refs_json=excluded.mandate_evidence_refs_json, "
+            "candidate_type=excluded.candidate_type, "
+            "ambush_score=excluded.ambush_score, "
+            "mandate_score_component=excluded.mandate_score_component, "
+            "beneficiary_score_component=excluded.beneficiary_score_component, "
+            "pricing_gap_score=excluded.pricing_gap_score, "
+            "overheat_penalty=excluded.overheat_penalty, "
+            "candidate_type_reason=excluded.candidate_type_reason, "
+            "deep_ta_route=excluded.deep_ta_route, "
+            "deep_ta_route_reason=excluded.deep_ta_route_reason, "
+            "ambush_reasons_json=excluded.ambush_reasons_json, "
+            "ambush_evidence_refs_json=excluded.ambush_evidence_refs_json, "
             "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
@@ -886,7 +1000,15 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
                 row["deep_ta_status"], row["deep_ta_dispatch_reason"],
                 row["deep_ta_model"], row["deep_ta_report_path"],
                 row["deep_ta_dispatch_time"], row["deep_ta_position_context"],
-                row["plan_date"], row["effective_trade_date"], row["observe_date"],  # [TF-DATE-001]
+                row["plan_date"], row["effective_trade_date"], row["observe_date"],
+                row["beneficiary_path_json"], row["company_role"],
+                row["mandate_topic"], row["mandate_evidence_refs_json"],
+                row["candidate_type"], row["ambush_score"],
+                row["mandate_score_component"], row["beneficiary_score_component"],
+                row["pricing_gap_score"], row["overheat_penalty"],
+                row["candidate_type_reason"],
+                row["deep_ta_route"], row["deep_ta_route_reason"],
+                row["ambush_reasons_json"], row["ambush_evidence_refs_json"],
                 candidate.created_at, row["updated_at"],
             ),
         )
