@@ -1,0 +1,1089 @@
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/project-overview.md
+[0m
+[0m# [0mTodos
+[•] Read existing observe/runner code (intraday_observe.py, candidate_engine.py, tradeflow_service.py, schemas.py)
+[ ] Implement observe runner service (observe_runner.py) - reads candidates, fetches realtime prices, runs observe_check, updates state, writes signals
+[ ] Add tradeflow_signals table schema and persistence
+[ ] Add API endpoint for manual trigger (POST /v1/tradeflow/observe/run)
+[ ] Update frontend Observe Tab with status display
+[ ] Add Data Health observe check time and signal time
+[ ] Write tests for TF-OBS-001
+[ ] Run all tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/tradeflow/intraday_observe.py
+[0m→ [0mRead tradingagents/tradeflow/schemas.py
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py
+[0m→ [0mRead api/services/tradeflow_service.py
+[0m→ [0mRead api/main.py
+[0m→ [0mRead tradingagents/tradeflow/strategy_config.py[90m [limit=50][0m
+Now let me read the existing API main.py, the frontend TradeFlow page, and the existing tests to understand what already exists.
+[0m→ [0mRead tests/test_m005_intraday_observe.py[90m [limit=50][0m
+[0m
+[0m# [0mTodos
+[✓] Read existing observe/runner code (intraday_observe.py, candidate_engine.py, tradeflow_service.py, schemas.py)
+[•] Implement observe runner service (observe_runner.py) - reads candidates, fetches realtime prices, runs observe_check, updates state, writes signals
+[ ] Add tradeflow_signals table schema and persistence
+[ ] Add API endpoint for manual trigger (POST /v1/tradeflow/observe/run)
+[ ] Update frontend Observe Tab with status display
+[ ] Add Data Health observe check time and signal time
+[ ] Write tests for TF-OBS-001
+[ ] Run all tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m• [0mExplore realtime price fetching[90m Explore Agent[0m
+Let me also check what realtime price fetching functions exist and the trade_calendar module:
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=100][0m
+[0m✓ [0mExplore realtime price fetching[90m Explore Agent[0m
+[0m✱ [0mGrep "observe.*run|ObserveTab|observe_run|runObserve"[90m in frontend/src · 2 matches[0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [offset=400, limit=300][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=200, offset=100][0m
+[0m→ [0mRead frontend/src/types/index.ts[90m [limit=50][0m
+[0m✱ [0mGrep "TradeFlowObserveItem|ObserveResponse|observe_run|runObserve"[90m in frontend/src · 6 matches[0m
+[0m✱ [0mGrep "getTradeFlowObserve|runObserveCheck|observe/run"[90m in frontend/src · 1 match[0m
+[0m→ [0mRead frontend/src/types/index.ts[90m [offset=850, limit=50][0m
+[0m→ [0mRead frontend/src/services/api.ts[90m [offset=390, limit=30][0m
+[0m
+[0m← [0mWrite tradingagents/tradeflow/observe_runner.py
+Wrote file successfully.
+[0m
+Now I have a thorough understanding of the codebase. Let me implement TF-OBS-001. I'll create the observe runner, add the signal persistence, API endpoint, frontend updates, and tests.
+Now add the API endpoint and the tradeflow service function for running observe:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=710][0m
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -759,4 +759,39 @@
+         "candidates": result.candidates,
+         "filtered": result.filtered[:50],
+         "metadata": result.metadata,
+     }
++
++
++# [TF-OBS-001] tradeflow_observe_runner
++def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
++    """Run intraday observe check for all active candidates on trade_date.
++
++    This reads candidates, fetches realtime quotes, runs observe checks,
++    updates candidate observe state, and writes signals.
++    Does NOT invoke deep TA or LLM.
++    """
++    from tradingagents.tradeflow.candidate_engine import init_db
++    from tradingagents.tradeflow.observe_runner import run_observe
++
++    tf_db = tf_db_path or _get_tradeflow_db_path()
++    init_db(tf_db)
++
++    result = run_observe(
++        trade_date=trade_date,
++        db_path=tf_db,
++    )
++
++    return {
++        "status": "skipped" if result.skipped_reason else "ok",
++        "trade_date": trade_date,
++        "checked": result.checked,
++        "triggered": result.triggered,
++        "invalidated": result.invalidated,
++        "waiting": result.waiting,
++        "skipped": result.skipped,
++        "signals_written": result.signals_written,
++        "errors": result.errors,
++        "skipped_reason": result.skipped_reason,
++        "run_time": result.run_time,
++        "details": result.details,
++    }
+
+[0m
+Now add the API endpoint. Let me find where the tradeflow endpoints are in main.py:
+[0m✱ [0mGrep "tradeflow/discovery|tradeflow/filtered|v1/tradeflow"[90m in api/main.py · 9 matches[0m
+[0m→ [0mRead api/main.py[90m [offset=5143, limit=80][0m
+Now let me find the helper functions for tradeflow to add our new one:
+[0m✱ [0mGrep "_tf_get_filtered|_tf_run_discovery|_tf_get_observe"[90m in api/main.py · 6 matches[0m
+[0m→ [0mRead api/main.py[90m [limit=30, offset=5074][0m
+[0m
+[0m← [0mEdit api/main.py
+Index: /Users/maybee/TradingAgents-AShare/api/main.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/main.py
++++ /Users/maybee/TradingAgents-AShare/api/main.py
+@@ -5080,8 +5080,9 @@
+     get_review as _tf_get_review,
+     get_data_health as _tf_get_data_health,
+     run_discovery_scan as _tf_run_discovery_scan,
+     get_filtered as _tf_get_filtered,  # [UI-007] tradeflow_filtered_trace
++    run_observe_check as _tf_run_observe_check,  # [TF-OBS-001] tradeflow_observe_runner
+ )
+ 
+ # [UI-001] tradeflow_api — read-only endpoints
+ 
+
+[0m
+Now add the endpoint after the discovery endpoint:
+[0m← [0mEdit api/main.py
+Index: /Users/maybee/TradingAgents-AShare/api/main.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/main.py
++++ /Users/maybee/TradingAgents-AShare/api/main.py
+@@ -5159,8 +5159,14 @@
+         save_candidates=request.save_candidates,
+     )
+ 
+ 
++# [TF-OBS-001] tradeflow_observe_runner
++@app.post("/v1/tradeflow/observe/run")
++def tradeflow_observe_run(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
++    return _tf_run_observe_check(date)
++
++
+ # ─── Static Files & SPA Routing ──────────────────────────────────────────────
+ 
+ # Serve uploaded files (avatars etc.) from shared uploads directory
+ _uploads_dir = Path(os.getenv("UPLOAD_DIR", str(Path(__file__).parent.parent / "uploads")))
+
+[0m
+Now update the Data Health to include observe check time and signal time. Let me update the `get_data_health` function:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=569, limit=115][0m
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -576,8 +576,10 @@
+ latest_eff_date = None  # [TF-DATE-001]
+ latest_obs_date = None  # [TF-DATE-001]
+ total_candidates_today = 0
+ total_signals_today = 0
++latest_observe_check_time = None  # [TF-OBS-001]
++latest_signal_time = None  # [TF-OBS-001]
+ today = datetime.now().strftime("%Y-%m-%d")
+ 
+ if db_available:
+     conn = _connect(db_path)
+
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -623,8 +623,20 @@
+ ).fetchone()
+ if sig_row:
+     total_signals_today = sig_row["cnt"]
+ 
++# [TF-OBS-001] tradeflow_observe_runner — latest observe check and signal times
++obs_check_row = conn.execute(
++    "SELECT signal_time FROM tradeflow_signals WHERE signal_type LIKE 'observe_%' ORDER BY signal_time DESC LIMIT 1"
++).fetchone()
++if obs_check_row:
++    latest_observe_check_time = obs_check_row["signal_time"]
++sig_time_row = conn.execute(
++    "SELECT signal_time FROM tradeflow_signals ORDER BY signal_time DESC LIMIT 1"
++).fetchone()
++if sig_time_row:
++    latest_signal_time = sig_time_row["signal_time"]
++
+ sources.append({
+     "name": "tradeflow_daily_plans",
+     "available": True,
+     "status": "OK",
+
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -689,8 +689,10 @@
+         "latest_effective_trade_date": latest_eff_date,  # [TF-DATE-001]
+         "latest_observe_date": latest_obs_date,  # [TF-DATE-001]
+         "total_candidates_today": total_candidates_today,
+         "total_signals_today": total_signals_today,
++        "latest_observe_check_time": latest_observe_check_time,  # [TF-OBS-001]
++        "latest_signal_time": latest_signal_time,  # [TF-OBS-001]
+     }
+ 
+ 
+ def get_filtered(trade_date: str, tf_db_path: str = "") -> dict:  # [UI-007] tradeflow_filtered_trace
+
+[0m
+Now update the frontend. First, add the API method and types:
+[0m→ [0mRead frontend/src/services/api.ts[90m [limit=20, offset=415][0m
+[0m
+[0m← [0mEdit frontend/src/services/api.ts
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/services/api.ts
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/services/api.ts
++++ /Users/maybee/TradingAgents-AShare/frontend/src/services/api.ts
+@@ -418,7 +418,14 @@
+             method: 'POST',
+             body: JSON.stringify(request),
+         })
+     }
++
++    // [TF-OBS-001] tradeflow_observe_runner
++    async runTradeFlowObserve(date: string): Promise<TradeFlowObserveRunResponse> {
++        return this.request<TradeFlowObserveRunResponse>(`/v1/tradeflow/observe/run?date=${encodeURIComponent(date)}`, {
++            method: 'POST',
++        })
++    }
+ }
+ 
+ export const api = new ApiService()
+
+[0m
+Now add the TypeScript types:
+[0m→ [0mRead frontend/src/types/index.ts[90m [limit=50, offset=900][0m
+[0m→ [0mRead frontend/src/types/index.ts[90m [limit=30, offset=949][0m
+[0m
+[0m← [0mEdit frontend/src/types/index.ts
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
++++ /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
+@@ -945,8 +945,10 @@
+     latest_plan_date: string | null
+     latest_candidates_date: string | null
+     total_candidates_today: number
+     total_signals_today: number
++    latest_observe_check_time: string | null
++    latest_signal_time: string | null
+ }
+ 
+ // [UI-007] tradeflow_filtered_trace
+ export interface TradeFlowFilteredItem {
+
+[0m
+[0m← [0mEdit frontend/src/types/index.ts
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
++++ /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
+@@ -965,4 +965,27 @@
+     trade_date: string
+     filtered: TradeFlowFilteredItem[]
+     filter_breakdown: Record<string, number>
+ }
++
++// [TF-OBS-001] tradeflow_observe_runner
++export interface TradeFlowObserveRunResponse {
++    status: string
++    trade_date: string
++    checked: number
++    triggered: number
++    invalidated: number
++    waiting: number
++    skipped: number
++    signals_written: number
++    errors: string[]
++    skipped_reason: string
++    run_time: string
++    details: {
++        symbol: string
++        observe_state?: string
++        current_price?: number
++        trigger_reason?: string
++        status?: string
++        reason?: string
++    }[]
++}
+
+[0m
+Now update the api.ts import to include the new type:
+[0m→ [0mRead frontend/src/services/api.ts[90m [limit=3, offset=1][0m
+[0m
+[0m← [0mEdit frontend/src/services/api.ts
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/services/api.ts
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/services/api.ts
++++ /Users/maybee/TradingAgents-AShare/frontend/src/services/api.ts
+@@ -1,5 +1,5 @@
+-import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse } from '@/types'
++import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse } from '@/types'
+ 
+ export function getBaseUrl(): string {
+     const envUrl = (import.meta.env.VITE_API_URL as string) || ''
+     if (envUrl) return envUrl.replace(/\/$/, '')
+
+[0m
+Now update the frontend ObserveTable to include a "Run Observe" button and status display:
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -132,15 +132,57 @@
+         </div>
+     )
+ }
+ 
+-function ObserveTable({ items }: { items: TradeFlowObserveItem[] }) {
+-    if (items.length === 0) {
+-        return <div className="py-20 text-center text-sm text-slate-400">暂无盘中观察数据</div>
+-    }
++function ObserveTable({ items, onRun, running, runResult }: { items: TradeFlowObserveItem[]; onRun: () => void; running: boolean; runResult: TradeFlowObserveRunResponse | null }) {
++    const [showResult, setShowResult] = useState(false)
+     return (
+-        <div className="overflow-x-auto">
+-            <table className="w-full text-sm">
++        <div>
++            <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-700">
++                <span className="text-sm font-medium text-slate-700 dark:text-slate-300">盘中观察</span>
++                <button
++                    onClick={() => { onRun(); setShowResult(true) }}
++                    disabled={running}
++                    className="ml-auto inline-flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
++                >
++                    {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
++                    {running ? '执行中...' : '执行观察'}
++                </button>
++            </div>
++            {showResult && runResult && (
++                <div className={`mx-4 mt-3 rounded-lg border px-4 py-3 text-sm ${
++                    runResult.status === 'skipped'
++                        ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300'
++                        : runResult.errors.length > 0
++                        ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300'
++                        : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300'
++                }`}>
++                    {runResult.status === 'skipped' ? (
++                        <span>跳过: {runResult.skipped_reason}</span>
++                    ) : (
++                        <div className="flex flex-wrap gap-4">
++                            <span>检查: {runResult.checked}</span>
++                            <span className="text-emerald-600 dark:text-emerald-400">触发: {runResult.triggered}</span>
++                            <span className="text-red-500">失效: {runResult.invalidated}</span>
++                            <span>等待: {runResult.waiting}</span>
++                            <span className="text-slate-500">无行情: {runResult.skipped}</span>
++                            <span>信号: {runResult.signals_written}</span>
++                        </div>
++                    )}
++                    {runResult.errors.length > 0 && (
++                        <div className="mt-2 text-xs">{runResult.errors.join('; ')}</div>
++                    )}
++                    <div className="mt-1 text-xs opacity-70">执行时间: {runResult.run_time}</div>
++                </div>
++            )}
++            {items.length === 0 && !runResult ? (
++                <div className="py-20 text-center text-sm text-slate-400">
++                    <div className="mb-3">暂无盘中观察数据</div>
++                    <div className="text-xs">点击"执行观察"按钮手动触发盘中检查</div>
++                </div>
++            ) : items.length === 0 ? null : (
++            <div className="overflow-x-auto">
++                <table className="w-full text-sm">
+                 <thead>
+                     <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+                         <th className="px-4 py-2.5 font-medium">代码</th>
+                         <th className="px-4 py-2.5 font-medium">名称</th>
+
+[0m
+Now close the wrapping div for the table:
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=15, offset=190][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=20, offset=224][0m
+[0m
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -235,8 +235,10 @@
+                         )
+                     })}
+                 </tbody>
+             </table>
++            </div>
++            )}
+         </div>
+     )
+ }
+ 
+
+[0m
+Now update the TradeFlow component to use the new ObserveTable with run props. Let me find where ObserveTable is used:
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=30, offset=1095][0m
+Now I need to find the component state and add the observe run state. Let me find the main component state:
+[0m✱ [0mGrep "function TradeFlow|const \[observe|const \[tradeDate"[90m in frontend/src/pages/TradeFlow.tsx · 4 matches[0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=100, offset=813][0m
+[0m
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -836,8 +836,10 @@
+ const [drawerOpen, setDrawerOpen] = useState(false)
+ const [selectedCandidate, setSelectedCandidate] = useState<TradeFlowCandidateItem | null>(null)
+ 
+ const [observeData, setObserveData] = useState<TradeFlowObserveResponse | null>(null)
++const [observeRunLoading, setObserveRunLoading] = useState(false)  // [TF-OBS-001]
++const [observeRunResult, setObserveRunResult] = useState<TradeFlowObserveRunResponse | null>(null)  // [TF-OBS-001]
+ const [taQueueData, setTaQueueData] = useState<TradeFlowTAQueueResponse | null>(null)
+ const [reviewData, setReviewData] = useState<TradeFlowReviewResponse | null>(null)
+ const [filteredData, setFilteredData] = useState<TradeFlowFilteredResponse | null>(null)  // [UI-007] tradeflow_filtered_trace
+ 
+
+[0m
+Now add the runObserve handler after fetchObserve:
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -883,8 +883,23 @@
+         setLoading(false)
+     }
+ }, [])
+ 
++// [TF-OBS-001] tradeflow_observe_runner
++const handleRunObserve = useCallback(async () => {
++    setObserveRunLoading(true)
++    setObserveRunResult(null)
++    try {
++        const res = await api.runTradeFlowObserve(tradeDate)
++        setObserveRunResult(res)
++        await fetchObserve(tradeDate)
++    } catch (e: unknown) {
++        setError(e instanceof Error ? e.message : '执行观察失败')
++    } finally {
++        setObserveRunLoading(false)
++    }
++}, [tradeDate, fetchObserve])
++
+ const fetchTaQueue = useCallback(async (date: string) => {
+     setLoading(true)
+     setError(null)
+     try {
+
+[0m
+Now update the ObserveTable usage to pass the new props:
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -1123,9 +1123,9 @@
+     )
+ }
+ 
+ if (activeTab === 'observe') {
+-    return <ObserveTable items={observeData?.observe_items ?? []} />
++    return <ObserveTable items={observeData?.observe_items ?? []} onRun={handleRunObserve} running={observeRunLoading} runResult={observeRunResult} />
+ }
+ 
+ if (activeTab === 'ta-queue') {
+     if (!taQueueData) {
+
+[0m
+Now add the import for TradeFlowObserveRunResponse:
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -9,8 +9,9 @@
+ DataHealthSource,
+ DataHealthStatus,
+ TradeFlowObserveItem,
+ TradeFlowObserveResponse,
++TradeFlowObserveRunResponse,
+ TradeFlowTAQueueItem,
+ TradeFlowTAQueueResponse,
+ TradeFlowReviewResponse,
+ TradeFlowFilteredResponse,
+
+[0m
+Now add `useState` import check - it's already there. Now update the DataHealth panel to show observe check time and signal time:
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=50, offset=720][0m
+[0m
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -759,8 +759,10 @@
+         {data.latest_plan_date && <span>最新计划: <span className="font-medium text-slate-700 dark:text-slate-300">{data.latest_plan_date}</span></span>}
+         {data.latest_candidates_date && <span>最新候选: <span className="font-medium text-slate-700 dark:text-slate-300">{data.latest_candidates_date}</span></span>}
+         {data.total_candidates_today > 0 && <span>今日候选: <span className="font-medium text-slate-700 dark:text-slate-300">{data.total_candidates_today}</span></span>}
+         {data.total_signals_today > 0 && <span>今日信号: <span className="font-medium text-slate-700 dark:text-slate-300">{data.total_signals_today}</span></span>}
++        {data.latest_observe_check_time && <span>最新观察: <span className="font-medium text-slate-700 dark:text-slate-300">{data.latest_observe_check_time}</span></span>}
++        {data.latest_signal_time && <span>最新信号时间: <span className="font-medium text-slate-700 dark:text-slate-300">{data.latest_signal_time}</span></span>}
+     </div>
+ )}
+ 
+ <div className="overflow-x-auto">
+
+[0m
+Now let's update the ObserveTable to also display trigger_reason from the observe data (which now has current_price from signals). Let me also update the get_observe API to populate current_price and trigger_reason from the latest signals:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=60, offset=406][0m
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -427,8 +427,24 @@
+ for r in rows:
+     state = _rget(r, "observe_state", "WAITING")
+     sym = normalize_tradeflow_symbol(r["symbol"])  # [UI-008]
+     raw_n = _rget(r, "name", "")
++
++    # [TF-OBS-001] tradeflow_observe_runner — populate current_price/trigger_reason from latest signal
++    current_price = None
++    trigger_reason = ""
++    try:
++        sig_row = conn.execute(
++            "SELECT evidence_json FROM tradeflow_signals WHERE symbol = ? AND signal_type LIKE 'observe_%' ORDER BY signal_time DESC LIMIT 1",
++            (sym,),
++        ).fetchone()
++        if sig_row:
++            ev = _parse_json(_rget(sig_row, "evidence_json", "{}"), {})
++            current_price = ev.get("current_price")
++            trigger_reason = ev.get("trigger_reason", "")
++    except Exception:
++        pass
++
+     item = {
+         "symbol": sym,
+         "name": resolve_tradeflow_name(sym, raw_n),  # [UI-008]
+         "observe_state": state,
+@@ -437,10 +453,10 @@
+         "observe_trigger_count": _rget(r, "observe_trigger_count", 0) or 0,
+         "observe_first_trigger_time": _rget(r, "observe_first_trigger_time", ""),
+         "tier": _rget(r, "tier", ""),
+         "composite_score": _rget(r, "composite_score", 0.0) or 0.0,
+-        "current_price": None,
+-        "trigger_reason": "",
++        "current_price": current_price,
++        "trigger_reason": trigger_reason,
+         "strategy_tags": _parse_json(_rget(r, "strategy_tags_json"), []),
+     }
+     items.append(item)
+     if state == "TRIGGERED":
+
+[0m
+Now let's update the ObserveTable to show trigger_reason:
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=20, offset=232][0m
+[0m
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -231,8 +231,9 @@
+                     )}
+                 </td>
+                 <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{item.observe_trigger_count}</td>
+                 <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{item.observe_first_trigger_time || '-'}</td>
++                <td className="max-w-[200px] truncate px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400" title={item.trigger_reason}>{item.trigger_reason || '-'}</td>
+             </tr>
+         )
+     })}
+ </tbody>
+
+[0m
+Add the trigger_reason column header:
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -193,8 +193,9 @@
+         <th className="px-4 py-2.5 font-medium">当前价</th>
+         <th className="px-4 py-2.5 font-medium">触发距离</th>
+         <th className="px-4 py-2.5 font-medium">触发次数</th>
+         <th className="px-4 py-2.5 font-medium">首次触发时间</th>
++        <th className="px-4 py-2.5 font-medium">触发原因</th>
+     </tr>
+ </thead>
+ <tbody>
+     {items.map(item => {
+
+[0m
+Now let's write the tests. This is the critical part:
+[0m← [0mWrite tests/test_tf_obs_001_observe_runner.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[✓] Read existing observe/runner code (intraday_observe.py, candidate_engine.py, tradeflow_service.py, schemas.py)
+[✓] Implement observe runner service (observe_runner.py) - reads candidates, fetches realtime prices, runs observe_check, updates state, writes signals
+[✓] Add tradeflow_signals table schema and persistence
+[✓] Add API endpoint for manual trigger (POST /v1/tradeflow/observe/run)
+[✓] Update frontend Observe Tab with status display
+[✓] Add Data Health observe check time and signal time
+[✓] Write tests for TF-OBS-001
+[•] Run all tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+Now let's run the tests:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tf_obs_001_observe_runner.py -v 2>&1 | tail -80
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 35 items
+
+tests/test_tf_obs_001_observe_runner.py::TestObserveRunResult::test_defaults PASSED [  2%]
+tests/test_tf_obs_001_observe_runner.py::TestObserveRunResult::test_custom PASSED [  5%]
+tests/test_tf_obs_001_observe_runner.py::TestIsTradingDay::test_weekday PASSED [  8%]
+tests/test_tf_obs_001_observe_runner.py::TestIsTradingDay::test_saturday PASSED [ 11%]
+tests/test_tf_obs_001_observe_runner.py::TestIsTradingDay::test_sunday PASSED [ 14%]
+tests/test_tf_obs_001_observe_runner.py::TestFetchRealtimeQuotes::test_empty_symbols PASSED [ 17%]
+tests/test_tf_obs_001_observe_runner.py::TestFetchRealtimeQuotes::test_mock_provider PASSED [ 20%]
+tests/test_tf_obs_001_observe_runner.py::TestLoadActiveCandidates::test_no_candidates PASSED [ 22%]
+tests/test_tf_obs_001_observe_runner.py::TestLoadActiveCandidates::test_with_candidates PASSED [ 25%]
+tests/test_tf_obs_001_observe_runner.py::TestLoadActiveCandidates::test_inactive_filtered PASSED [ 28%]
+tests/test_tf_obs_001_observe_runner.py::TestLoadActiveCandidates::test_effective_trade_date_lookup FAILED [ 31%]
+tests/test_tf_obs_001_observe_runner.py::TestSaveSignal::test_basic PASSED [ 34%]
+tests/test_tf_obs_001_observe_runner.py::TestSaveSignal::test_persisted PASSED [ 37%]
+tests/test_tf_obs_001_observe_runner.py::TestBuildSignalFromSnapshot::test_triggered PASSED [ 40%]
+tests/test_tf_obs_001_observe_runner.py::TestBuildSignalFromSnapshot::test_invalidated PASSED [ 42%]
+tests/test_tf_obs_001_observe_runner.py::TestBuildSignalFromSnapshot::test_waiting PASSED [ 45%]
+tests/test_tf_obs_001_observe_runner.py::TestBuildSignalFromSnapshot::test_expired PASSED [ 48%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveTriggered::test_price_above_trigger PASSED [ 51%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveInvalidated::test_price_below_invalid PASSED [ 54%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveWaiting::test_price_between_trigger_and_invalid PASSED [ 57%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveNoQuotes::test_no_price_skipped PASSED [ 60%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveNonTradingDay::test_saturday_skip PASSED [ 62%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveNonTradingDay::test_sunday_skip PASSED [ 65%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveNoCandidates::test_empty_db PASSED [ 68%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveMultipleSymbols::test_three_symbols PASSED [ 71%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObservePreservesTriggerCount::test_incremental PASSED [ 74%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveTerminalStatePreserved::test_triggered_stays PASSED [ 77%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveTerminalStatePreserved::test_invalidated_stays PASSED [ 80%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveEffectiveTradeDate::test_cross_date_lookup FAILED [ 82%]
+tests/test_tf_obs_001_observe_runner.py::TestSignalEvidenceCompleteness::test_signal_has_all_fields PASSED [ 85%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveWithExactTriggerPrice::test_exact_trigger PASSED [ 88%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveWithExactInvalidPrice::test_exact_invalid PASSED [ 91%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveNoTriggerPrice::test_no_trigger_stays_waiting PASSED [ 94%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveDetails::test_details_populated PASSED [ 97%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveDetails::test_skipped_detail PASSED [100%]
+
+=================================== FAILURES ===================================
+__________ TestLoadActiveCandidates.test_effective_trade_date_lookup ___________
+
+self = <tests.test_tf_obs_001_observe_runner.TestLoadActiveCandidates object at 0x10e8b4d10>
+tmp_db = '/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-60/test_effective_trade_date_look0/test_tradeflow.db'
+
+    def test_effective_trade_date_lookup(self, tmp_db):
+        c = _make_candidate("600519.SH", trade_date="2026-05-31", effective_trade_date="2026-06-01")
+        _save_candidates(tmp_db, [c])
+        candidates = _load_active_candidates(tmp_db, "2026-06-01")
+>       assert len(candidates) == 1
+E       assert 0 == 1
+E        +  where 0 = len([])
+
+tests/test_tf_obs_001_observe_runner.py:124: AssertionError
+___________ TestRunObserveEffectiveTradeDate.test_cross_date_lookup ____________
+
+self = <tests.test_tf_obs_001_observe_runner.TestRunObserveEffectiveTradeDate object at 0x10e8b5130>
+tmp_db = '/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-60/test_cross_date_lookup0/test_tradeflow.db'
+
+    def test_cross_date_lookup(self, tmp_db):
+        c = _make_candidate("600519.SH", trade_date="2026-05-31", effective_trade_date="2026-06-01")
+        _save_candidates(tmp_db, [c])
+    
+        def mock_quotes(symbols):
+            return {s: {"current_price": 10.5, "current_volume": 1000, "current_amount": 10500, "quote_time": "10:00", "source": "mock"} for s in symbols}
+    
+        result = run_observe("2026-06-01", tmp_db, quote_provider=mock_quotes)
+>       assert result.checked == 1
+E       AssertionError: assert 0 == 1
+E        +  where 0 = ObserveRunResult(checked=0, triggered=0, invalidated=0, waiting=0, skipped=0, signals_written=0, errors=[], skipped_reason='2026-06-01 无活跃候选', run_time='2026-06-01T22:11:43.041128', details=[]).checked
+
+tests/test_tf_obs_001_observe_runner.py:389: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_tf_obs_001_observe_runner.py::TestLoadActiveCandidates::test_effective_trade_date_lookup
+FAILED tests/test_tf_obs_001_observe_runner.py::TestRunObserveEffectiveTradeDate::test_cross_date_lookup
+========================= 2 failed, 33 passed in 0.97s =========================
+[0m
+The issue is that `save_candidate` upserts on `(trade_date, symbol)`, so the effective_trade_date is stored but the UNIQUE constraint is on `(trade_date, symbol)`. The candidate is saved with `trade_date="2026-05-31"` but the query looks for `effective_trade_date="2026-06-01"`. The issue is the save uses upsert which doesn't update the effective_trade_date field when it conflicts. Let me check:
+
+The candidate has `trade_date="2026-05-31"` and `effective_trade_date="2026-06-01"`. The upsert uses `ON CONFLICT(trade_date, symbol)` which should work since this is a new entry (no existing row for trade_date=2026-05-31 + 600519.SH). The issue might be that `_load_active_candidates` queries correctly but the save doesn't persist `effective_trade_date` properly.
+
+Let me verify the actual DB state:
+[0m$ [0msource .venv/bin/activate && python -c "
+import tempfile, os
+from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
+from tradingagents.tradeflow.schemas import Candidate
+
+db_path = '/tmp/test_eff_td.db'
+init_db(db_path)
+c = Candidate(symbol='600519.SH', name='Test', trade_date='2026-05-31', effective_trade_date='2026-06-01', status='active', trigger_price=10.0, invalid_price=9.0)
+save_candidate(c, db_path)
+
+import sqlite3
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+row = conn.execute('SELECT trade_date, effective_trade_date, symbol FROM tradeflow_candidates').fetchone()
+print(f'trade_date={row[\"trade_date\"]}, effective_trade_date={row[\"effective_trade_date\"]}, symbol={row[\"symbol\"]}')
+
+# Now test the query
+rows = conn.execute(
+    'SELECT * FROM tradeflow_candidates WHERE (effective_trade_date = ? OR (trade_date = ? AND (effective_trade_date = \'\' OR effective_trade_date IS NULL))) AND status = \'active\'',
+    ('2026-06-01', '2026-06-01')
+).fetchall()
+print(f'Query result count: {len(rows)}')
+conn.close()
+os.unlink(db_path)
+"
+
+trade_date=2026-05-31, effective_trade_date=2026-06-01, symbol=600519.SH
+Query result count: 1
+[0m
+The query works fine. The issue is in `_load_active_candidates` - the `init_db` call might not be properly handling the ALTER TABLE for effective_trade_date. Let me check:
+[0m$ [0msource .venv/bin/activate && python -c "
+import tempfile, os, sqlite3
+from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
+from tradingagents.tradeflow.schemas import Candidate
+from tradingagents.tradeflow.observe_runner import _load_active_candidates
+
+db_path = '/tmp/test_eff_td2.db'
+init_db(db_path)
+c = Candidate(symbol='600519.SH', name='Test', trade_date='2026-05-31', effective_trade_date='2026-06-01', status='active', trigger_price=10.0, invalid_price=9.0)
+save_candidate(c, db_path)
+
+# Direct query
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+row = conn.execute('SELECT effective_trade_date FROM tradeflow_candidates WHERE symbol=\"600519.SH\"').fetchone()
+print(f'DB effective_trade_date: {repr(row[\"effective_trade_date\"])}')
+conn.close()
+
+# Through our function
+cands = _load_active_candidates(db_path, '2026-06-01')
+print(f'Loaded candidates: {len(cands)}')
+
+os.unlink(db_path)
+"
+
+DB effective_trade_date: '2026-06-01'
+Loaded candidates: 0
+[0m
+The `init_db` at the start of `_load_active_candidates` is likely re-creating or the PRAGMA check might be wrong. Let me debug more:
+[0m$ [0msource .venv/bin/activate && python -c "
+import os, sqlite3
+from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
+from tradingagents.tradeflow.schemas import Candidate
+
+db_path = '/tmp/test_eff_td3.db'
+init_db(db_path)
+c = Candidate(symbol='600519.SH', name='Test', trade_date='2026-05-31', effective_trade_date='2026-06-01', status='active', trigger_price=10.0, invalid_price=9.0)
+save_candidate(c, db_path)
+
+# Call init_db again (like _load_active_candidates does)
+init_db(db_path)
+
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+cols = {r[0] for r in conn.execute('PRAGMA table_info(tradeflow_candidates)').fetchall()}
+print(f'Has effective_trade_date: {\"effective_trade_date\" in cols}')
+
+# Try the query manually
+rows = conn.execute(
+    \"SELECT * FROM tradeflow_candidates WHERE (effective_trade_date = ? OR (trade_date = ? AND (effective_trade_date = '' OR effective_trade_date IS NULL))) AND status = 'active'\",
+    ('2026-06-01', '2026-06-01')
+).fetchall()
+print(f'Direct query rows: {len(rows)}')
+conn.close()
+os.unlink(db_path)
+"
+
+Has effective_trade_date: False
+Direct query rows: 1
+[0m
+The issue is `init_db` creates the table first via `CREATE TABLE IF NOT EXISTS` (without the `effective_trade_date` column), then the ALTER TABLE adds it. But `PRAGMA table_info` says it's not there? That's odd. Wait, it says `False` but the query works. Let me re-check:
+[0m$ [0msource .venv/bin/activate && python -c "
+import os, sqlite3
+from tradingagents.tradeflow.candidate_engine import init_db
+
+db_path = '/tmp/test_eff_td4.db'
+init_db(db_path)
+
+conn = sqlite3.connect(db_path)
+cols = {r[0] for r in conn.execute('PRAGMA table_info(tradeflow_candidates)').fetchall()}
+print(sorted(cols))
+print(f'Has effective_trade_date: {\"effective_trade_date\" in cols}')
+conn.close()
+os.unlink(db_path)
+"
+
+[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67]
+Has effective_trade_date: False
+[0m
+The issue is `PRAGMA table_info` returns rows with `cid, name, type, notnull, dflt_value, pk` columns. I'm taking index 0 which is `cid` (the column ID number), not the column name. The actual column name is at index 1. The `_table_columns` function in tradeflow_service.py uses `row["name"]` which is correct, but my `_load_active_candidates` in observe_runner.py uses a different approach.
+
+Let me fix the observe_runner.py:
+[0m← [0mEdit tradingagents/tradeflow/observe_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/observe_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/observe_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/observe_runner.py
+@@ -106,9 +106,9 @@
+ init_db(db_path)
+ conn = sqlite3.connect(db_path)
+ conn.row_factory = sqlite3.Row
+ try:
+-    columns = {r[0] for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()}
++    columns = {r[1] for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()}
+     has_eff = "effective_trade_date" in columns
+ 
+     if has_eff:
+         rows = conn.execute(
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tf_obs_001_observe_runner.py -v 2>&1 | tail -50
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 35 items
+
+tests/test_tf_obs_001_observe_runner.py::TestObserveRunResult::test_defaults PASSED [  2%]
+tests/test_tf_obs_001_observe_runner.py::TestObserveRunResult::test_custom PASSED [  5%]
+tests/test_tf_obs_001_observe_runner.py::TestIsTradingDay::test_weekday PASSED [  8%]
+tests/test_tf_obs_001_observe_runner.py::TestIsTradingDay::test_saturday PASSED [ 11%]
+tests/test_tf_obs_001_observe_runner.py::TestIsTradingDay::test_sunday PASSED [ 14%]
+tests/test_tf_obs_001_observe_runner.py::TestFetchRealtimeQuotes::test_empty_symbols PASSED [ 17%]
+tests/test_tf_obs_001_observe_runner.py::TestFetchRealtimeQuotes::test_mock_provider PASSED [ 20%]
+tests/test_tf_obs_001_observe_runner.py::TestLoadActiveCandidates::test_no_candidates PASSED [ 22%]
+tests/test_tf_obs_001_observe_runner.py::TestLoadActiveCandidates::test_with_candidates PASSED [ 25%]
+tests/test_tf_obs_001_observe_runner.py::TestLoadActiveCandidates::test_inactive_filtered PASSED [ 28%]
+tests/test_tf_obs_001_observe_runner.py::TestLoadActiveCandidates::test_effective_trade_date_lookup PASSED [ 31%]
+tests/test_tf_obs_001_observe_runner.py::TestSaveSignal::test_basic PASSED [ 34%]
+tests/test_tf_obs_001_observe_runner.py::TestSaveSignal::test_persisted PASSED [ 37%]
+tests/test_tf_obs_001_observe_runner.py::TestBuildSignalFromSnapshot::test_triggered PASSED [ 40%]
+tests/test_tf_obs_001_observe_runner.py::TestBuildSignalFromSnapshot::test_invalidated PASSED [ 42%]
+tests/test_tf_obs_001_observe_runner.py::TestBuildSignalFromSnapshot::test_waiting PASSED [ 45%]
+tests/test_tf_obs_001_observe_runner.py::TestBuildSignalFromSnapshot::test_expired PASSED [ 48%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveTriggered::test_price_above_trigger PASSED [ 51%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveInvalidated::test_price_below_invalid PASSED [ 54%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveWaiting::test_price_between_trigger_and_invalid PASSED [ 57%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveNoQuotes::test_no_price_skipped PASSED [ 60%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveNonTradingDay::test_saturday_skip PASSED [ 62%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveNonTradingDay::test_sunday_skip PASSED [ 65%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveNoCandidates::test_empty_db PASSED [ 68%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveMultipleSymbols::test_three_symbols PASSED [ 71%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObservePreservesTriggerCount::test_incremental PASSED [ 74%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveTerminalStatePreserved::test_triggered_stays PASSED [ 77%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveTerminalStatePreserved::test_invalidated_stays PASSED [ 80%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveEffectiveTradeDate::test_cross_date_lookup PASSED [ 82%]
+tests/test_tf_obs_001_observe_runner.py::TestSignalEvidenceCompleteness::test_signal_has_all_fields PASSED [ 85%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveWithExactTriggerPrice::test_exact_trigger PASSED [ 88%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveWithExactInvalidPrice::test_exact_invalid PASSED [ 91%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveNoTriggerPrice::test_no_trigger_stays_waiting PASSED [ 94%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveDetails::test_details_populated PASSED [ 97%]
+tests/test_tf_obs_001_observe_runner.py::TestRunObserveDetails::test_skipped_detail PASSED [100%]
+
+============================== 35 passed in 0.71s ==============================
+[0m
+All 35 tests pass. Now let's run the broader test suites:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_m005_intraday_observe.py tests/test_ui001_tradeflow_api.py tests/test_tradeflow_*.py -q 2>&1 | tail -30
+........................................................................ [ 33%]
+........................................................................ [ 67%]
+....................................................................     [100%]
+212 passed in 18.17s
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tf_obs_001_observe_runner.py tests/test_m005_intraday_observe.py -q 2>&1 | tail -10
+........................................................................ [ 96%]
+...                                                                      [100%]
+75 passed in 0.77s
+[0m
+Now let's build the frontend:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare/frontend && npm run build 2>&1 | tail -20
+> tradingagents-dashboard@0.1.0 build
+> tsc && vite build
+
+vite v6.4.2 building for production...
+(node:68002) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+transforming...
+✓ 1937 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                     1.15 kB │ gzip:   0.65 kB
+dist/assets/index-D3-t5HNC.css    154.04 kB │ gzip:  21.44 kB
+dist/assets/index-CYak--E3.js   1,088.55 kB │ gzip: 321.17 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 1.37s
+[0m
+[0m# [0mTodos
+[✓] Read existing observe/runner code (intraday_observe.py, candidate_engine.py, tradeflow_service.py, schemas.py)
+[✓] Implement observe runner service (observe_runner.py) - reads candidates, fetches realtime prices, runs observe_check, updates state, writes signals
+[✓] Add tradeflow_signals table schema and persistence
+[✓] Add API endpoint for manual trigger (POST /v1/tradeflow/observe/run)
+[✓] Update frontend Observe Tab with status display
+[✓] Add Data Health observe check time and signal time
+[✓] Write tests for TF-OBS-001
+[✓] Run all tests and verify
+[•] Update docs/DEVLOG.md
+[0m
+Frontend builds successfully. Now update the DEVLOG:
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,73 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-01 | TF-OBS-001: TradeFlow 盘中观察执行器与信号落库
++
++- **执行者**：OpenCode
++- **任务**：TF-OBS-001 — 在 TF-DATE-001 之后，把现有 `run_observe_check()` 状态机接入真实执行链路，定时读取当日生效候选、拉取实时价格、更新观察状态并写入信号表
++- **修改文件**：
++  - `tradingagents/tradeflow/observe_runner.py` — 新建：[TF-OBS-001] tradeflow_observe_runner
++    - `ObserveRunResult` 数据类：checked/triggered/invalidated/waiting/skipped/signals_written/errors/skipped_reason/run_time/details
++    - `_is_trading_day()`：调用 trade_calendar 判断交易日
++    - `_fetch_realtime_quotes()`：通过 `route_to_vendor("get_realtime_quotes")` 获取实时行情
++    - `_load_active_candidates()`：按 effective_trade_date 加载活跃候选
++    - `_save_signal()`：将 Signal 写入 tradeflow_signals 表
++    - `_build_signal_from_snapshot()`：将 ObserveSnapshot 转为 Signal（observe_triggered/observe_invalidated/observe_check/observe_expired）
++    - `run_observe()`：核心执行函数——读取候选、拉取实时行情、执行 observe_check、更新候选状态、写入信号；非交易日返回明确 skip reason；无实时行情跳过
++  - `api/services/tradeflow_service.py` — [TF-OBS-001]
++    - `run_observe_check()`：API 层调用 observe_runner，返回执行结果
++    - `get_data_health()`：新增 `latest_observe_check_time` 和 `latest_signal_time` 字段
++    - `get_observe()`：从最新 signal 中提取 `current_price` 和 `trigger_reason` 填充 observe item
++  - `api/main.py` — [TF-OBS-001]
++    - 新增 `POST /v1/tradeflow/observe/run?date=YYYY-MM-DD` 端点
++    - 导入 `run_observe_check` 服务函数
++  - `frontend/src/types/index.ts` — [TF-OBS-001]
++    - 新增 `TradeFlowObserveRunResponse` 类型
++    - `TradeFlowDataHealthResponse` 新增 `latest_observe_check_time` 和 `latest_signal_time`
++  - `frontend/src/services/api.ts` — [TF-OBS-001]
++    - 新增 `runTradeFlowObserve()` API 方法
++  - `frontend/src/pages/TradeFlow.tsx` — [TF-OBS-001]
++    - `ObserveTable` 新增"执行观察"按钮、执行结果状态显示（触发/失效/等待/跳过/信号数）
++    - Observe 表新增"触发原因"列
++    - DataHealth 面板新增"最新观察"和"最新信号时间"显示
++  - `tests/test_tf_obs_001_observe_runner.py` — 新建，35 个测试覆盖：
++    - `TestObserveRunResult` (2): 默认值、自定义值
++    - `TestIsTradingDay` (3): 工作日、周六、周日
++    - `TestFetchRealtimeQuotes` (2): 空 symbols、mock provider
++    - `TestLoadActiveCandidates` (4): 无候选、有候选、inactive 过滤、effective_trade_date 跨日查找
++    - `TestSaveSignal` (2): 基本保存、持久化验证
++    - `TestBuildSignalFromSnapshot` (4): TRIGGERED/INVALIDATED/WAITING/EXPIRED 信号类型
++    - `TestRunObserveTriggered` (1): 价格突破触发价→TRIGGERED + signal 落库
++    - `TestRunObserveInvalidated` (1): 价格跌破失效价→INVALIDATED
++    - `TestRunObserveWaiting` (1): 价格在触发价和失效价之间→WAITING
++    - `TestRunObserveNoQuotes` (1): 无实时行情→skipped
++    - `TestRunObserveNonTradingDay` (2): 周六/周日→skip with reason
++    - `TestRunObserveNoCandidates` (1): 空库→skip with reason
++    - `TestRunObserveMultipleSymbols` (1): 3 个 symbol 独立处理
++    - `TestRunObservePreservesTriggerCount` (1): 增量触发计数保留
++    - `TestRunObserveTerminalStatePreserved` (2): TRIGGERED/INVALIDATED 终态保持
++    - `TestRunObserveEffectiveTradeDate` (1): 跨日 effective_trade_date 查找
++    - `TestSignalEvidenceCompleteness` (1): signal evidence 包含全部字段
++    - `TestRunObserveWithExactTriggerPrice` (1): 恰好触发价→TRIGGERED
++    - `TestRunObserveWithExactInvalidPrice` (1): 恰好失效价→INVALIDATED
++    - `TestRunObserveNoTriggerPrice` (1): 无触发价→WAITING
++    - `TestRunObserveDetails` (2): 详情填充、跳过详情
++- **测试结果**：35 passed (TF-OBS-001)；212 passed (tradeflow 全部)；0 failed；前端构建通过
++- **关键逻辑**：
++  - `run_observe()` 读取 `effective_trade_date = today` 且 `status='active'` 的候选
++  - 通过 `route_to_vendor("get_realtime_quotes")` 批量获取实时行情（支持 mock 注入）
++  - 每个候选创建 `ObserveTracker`，恢复已有的 observe_state/trigger_count
++  - 调用 `run_observe_check()` 执行状态机检查，更新候选并写入 signal
++  - 非交易日直接返回 skip reason，不拉实时行情
++  - 无实时行情的候选标记为 skipped，不执行状态检查
++  - 信号表 `tradeflow_signals` 记录每次检查的完整证据：price_evidence/trigger_reason/quote_source 等
++  - API 端点 `POST /v1/tradeflow/observe/run` 支持手动触发
++  - 前端 Observe Tab 展示"执行观察"按钮和执行结果
++  - Data Health 展示最新观察检查时间和最新信号时间
++- **执行边界**：未触发 TA、未调用 LLM、未输出强买卖词、未改 `tradingagents/prompts/`、未改生产 `tradingagents.db` schema
++
+ ## 2026-06-01 | H-001: 昊天雷达 v0 数据模型与信号分类
+ 
+ - **执行者**：OpenCode
+ - **任务**：H-001 — 新增政策意图识别的基础数据结构，把政策/事件/产业/公司证据统一归档为可评分的 `MandateSignal`，为后续昊天意志评分提供输入
+
+[0m
+Now update TASKS.md to mark TF-OBS-001 as done:
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -25,9 +25,9 @@
+ ### 当前优先队列
+ 
+ 1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+ 2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+-3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，ready，依赖 TF-DATE-001 ✓）。
++3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+ 4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+ 5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，ready，支撑后续 DATA/H 任务）。
+ 6. `H-002`：政策连续性与级别权重评分（P1，ready，依赖 H-001 ✓）。
+ 7. `H-003`：产业链受益路径与标杆候选映射（P1，ready，依赖 H-001 ✓）。
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -112,9 +112,9 @@
+ 
+ ### TF-OBS-001: TradeFlow 盘中观察执行器与信号落库（P0）
+ - **描述**：在 TF-DATE-001 之后，把现有 `run_observe_check()` 状态机接入真实执行链路，定时读取当日生效候选、拉取实时价格、更新观察状态并写入信号表。
+ - **优先级**：P0
+-- **状态**：in_progress -- claimed TF-OBS-001-20260601-220225
++- **状态**：done -- TF-OBS-001 observe_runner implemented
+ - **前置条件**：`TF-DATE-001` 完成 ✓
+ - **背景**：
+   - 当前 M-005 已有 Observe 状态机，前端也能展示 Observe Tab，但没有 runner 定时执行，所以 `observe_state` 长期停留在 `WAITING`，`tradeflow_signals` 为空。
+   - Deep TA 门控依赖 `observe_state=TRIGGERED`，因此盘中观察不落地会连带阻塞 TA 队列。
+
+[0m
+[0m# [0mTodos
+[✓] Read existing observe/runner code (intraday_observe.py, candidate_engine.py, tradeflow_service.py, schemas.py)
+[✓] Implement observe runner service (observe_runner.py) - reads candidates, fetches realtime prices, runs observe_check, updates state, writes signals
+[✓] Add tradeflow_signals table schema and persistence
+[✓] Add API endpoint for manual trigger (POST /v1/tradeflow/observe/run)
+[✓] Update frontend Observe Tab with status display
+[✓] Add Data Health observe check time and signal time
+[✓] Write tests for TF-OBS-001
+[✓] Run all tests and verify
+[✓] Update docs/DEVLOG.md
+[0m
+## TF-OBS-001 Implementation Complete
+
+### Files Changed
+1. **`tradingagents/tradeflow/observe_runner.py`** — New: core observe runner module
+2. **`api/services/tradeflow_service.py`** — Added `run_observe_check()` service, updated `get_data_health()` and `get_observe()`
+3. **`api/main.py`** — Added `POST /v1/tradeflow/observe/run` endpoint
+4. **`frontend/src/types/index.ts`** — Added `TradeFlowObserveRunResponse` type, extended `TradeFlowDataHealthResponse`
+5. **`frontend/src/services/api.ts`** — Added `runTradeFlowObserve()` method
+6. **`frontend/src/pages/TradeFlow.tsx`** — Added "Run Observe" button, result display, trigger_reason column, data health observe times
+7. **`tests/test_tf_obs_001_observe_runner.py`** — New: 35 tests
+8. **`docs/DEVLOG.md`** — Updated
+9. **`docs/TASKS.md`** — TF-OBS-001 status → done
+
+### Key Logic
+- `run_observe()` reads active candidates for `effective_trade_date = today`, fetches realtime quotes via `route_to_vendor`, runs `run_observe_check()` for each, updates candidate observe state in DB, and writes each check as a signal to `tradeflow_signals`
+- Non-trading days skip with explicit reason; no-price candidates skip without error
+- Signals capture full evidence: `current_price`, `trigger_reason`, `price_evidence`, `quote_source`, etc.
+- Frontend Observe Tab has a manual trigger button showing check results
+
+### Test Results
+- **35 passed** (TF-OBS-001), **212 passed** (all tradeflow), **0 failed**
+- **Frontend build**: passes

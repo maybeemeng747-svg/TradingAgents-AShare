@@ -4,6 +4,71 @@
 
 ---
 
+## 2026-06-01 | TF-OBS-001: TradeFlow 盘中观察执行器与信号落库
+
+- **执行者**：OpenCode
+- **任务**：TF-OBS-001 — 在 TF-DATE-001 之后，把现有 `run_observe_check()` 状态机接入真实执行链路，定时读取当日生效候选、拉取实时价格、更新观察状态并写入信号表
+- **修改文件**：
+  - `tradingagents/tradeflow/observe_runner.py` — 新建：[TF-OBS-001] tradeflow_observe_runner
+    - `ObserveRunResult` 数据类：checked/triggered/invalidated/waiting/skipped/signals_written/errors/skipped_reason/run_time/details
+    - `_is_trading_day()`：调用 trade_calendar 判断交易日
+    - `_fetch_realtime_quotes()`：通过 `route_to_vendor("get_realtime_quotes")` 获取实时行情
+    - `_load_active_candidates()`：按 effective_trade_date 加载活跃候选
+    - `_save_signal()`：将 Signal 写入 tradeflow_signals 表
+    - `_build_signal_from_snapshot()`：将 ObserveSnapshot 转为 Signal（observe_triggered/observe_invalidated/observe_check/observe_expired）
+    - `run_observe()`：核心执行函数——读取候选、拉取实时行情、执行 observe_check、更新候选状态、写入信号；非交易日返回明确 skip reason；无实时行情跳过
+  - `api/services/tradeflow_service.py` — [TF-OBS-001]
+    - `run_observe_check()`：API 层调用 observe_runner，返回执行结果
+    - `get_data_health()`：新增 `latest_observe_check_time` 和 `latest_signal_time` 字段
+    - `get_observe()`：从最新 signal 中提取 `current_price` 和 `trigger_reason` 填充 observe item
+  - `api/main.py` — [TF-OBS-001]
+    - 新增 `POST /v1/tradeflow/observe/run?date=YYYY-MM-DD` 端点
+    - 导入 `run_observe_check` 服务函数
+  - `frontend/src/types/index.ts` — [TF-OBS-001]
+    - 新增 `TradeFlowObserveRunResponse` 类型
+    - `TradeFlowDataHealthResponse` 新增 `latest_observe_check_time` 和 `latest_signal_time`
+  - `frontend/src/services/api.ts` — [TF-OBS-001]
+    - 新增 `runTradeFlowObserve()` API 方法
+  - `frontend/src/pages/TradeFlow.tsx` — [TF-OBS-001]
+    - `ObserveTable` 新增"执行观察"按钮、执行结果状态显示（触发/失效/等待/跳过/信号数）
+    - Observe 表新增"触发原因"列
+    - DataHealth 面板新增"最新观察"和"最新信号时间"显示
+  - `tests/test_tf_obs_001_observe_runner.py` — 新建，35 个测试覆盖：
+    - `TestObserveRunResult` (2): 默认值、自定义值
+    - `TestIsTradingDay` (3): 工作日、周六、周日
+    - `TestFetchRealtimeQuotes` (2): 空 symbols、mock provider
+    - `TestLoadActiveCandidates` (4): 无候选、有候选、inactive 过滤、effective_trade_date 跨日查找
+    - `TestSaveSignal` (2): 基本保存、持久化验证
+    - `TestBuildSignalFromSnapshot` (4): TRIGGERED/INVALIDATED/WAITING/EXPIRED 信号类型
+    - `TestRunObserveTriggered` (1): 价格突破触发价→TRIGGERED + signal 落库
+    - `TestRunObserveInvalidated` (1): 价格跌破失效价→INVALIDATED
+    - `TestRunObserveWaiting` (1): 价格在触发价和失效价之间→WAITING
+    - `TestRunObserveNoQuotes` (1): 无实时行情→skipped
+    - `TestRunObserveNonTradingDay` (2): 周六/周日→skip with reason
+    - `TestRunObserveNoCandidates` (1): 空库→skip with reason
+    - `TestRunObserveMultipleSymbols` (1): 3 个 symbol 独立处理
+    - `TestRunObservePreservesTriggerCount` (1): 增量触发计数保留
+    - `TestRunObserveTerminalStatePreserved` (2): TRIGGERED/INVALIDATED 终态保持
+    - `TestRunObserveEffectiveTradeDate` (1): 跨日 effective_trade_date 查找
+    - `TestSignalEvidenceCompleteness` (1): signal evidence 包含全部字段
+    - `TestRunObserveWithExactTriggerPrice` (1): 恰好触发价→TRIGGERED
+    - `TestRunObserveWithExactInvalidPrice` (1): 恰好失效价→INVALIDATED
+    - `TestRunObserveNoTriggerPrice` (1): 无触发价→WAITING
+    - `TestRunObserveDetails` (2): 详情填充、跳过详情
+- **测试结果**：35 passed (TF-OBS-001)；212 passed (tradeflow 全部)；0 failed；前端构建通过
+- **关键逻辑**：
+  - `run_observe()` 读取 `effective_trade_date = today` 且 `status='active'` 的候选
+  - 通过 `route_to_vendor("get_realtime_quotes")` 批量获取实时行情（支持 mock 注入）
+  - 每个候选创建 `ObserveTracker`，恢复已有的 observe_state/trigger_count
+  - 调用 `run_observe_check()` 执行状态机检查，更新候选并写入 signal
+  - 非交易日直接返回 skip reason，不拉实时行情
+  - 无实时行情的候选标记为 skipped，不执行状态检查
+  - 信号表 `tradeflow_signals` 记录每次检查的完整证据：price_evidence/trigger_reason/quote_source 等
+  - API 端点 `POST /v1/tradeflow/observe/run` 支持手动触发
+  - 前端 Observe Tab 展示"执行观察"按钮和执行结果
+  - Data Health 展示最新观察检查时间和最新信号时间
+- **执行边界**：未触发 TA、未调用 LLM、未输出强买卖词、未改 `tradingagents/prompts/`、未改生产 `tradingagents.db` schema
+
 ## 2026-06-01 | H-001: 昊天雷达 v0 数据模型与信号分类
 
 - **执行者**：OpenCode
@@ -992,3 +1057,14 @@
 - **Ready queue**: `TF-OBS-001`, `DATA-001`, `H-002`, `H-003`.
 - **Dependency rule**: `H-004` remains proposed until both `H-002` and `H-003` are done; `DATA-002` remains proposed until `DATA-001` is done.
 - **Note**: Scheduler warning during dry-run is expected because user-approved scheduled analysis is running.
+
+## 2026-06-01 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-OBS-001 - TradeFlow 盘中观察执行器与信号落库（P0）
+- **Priority**: P0
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TF-OBS-001-20260601-round1.txt
+- **Run archive**: docs/task_runs/TF-OBS-001-20260601-220225/

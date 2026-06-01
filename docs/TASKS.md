@@ -26,7 +26,7 @@
 
 1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
 2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
-3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，ready，依赖 TF-DATE-001 ✓）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
 4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
 5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，ready，支撑后续 DATA/H 任务）。
 6. `H-002`：政策连续性与级别权重评分（P1，ready，依赖 H-001 ✓）。
@@ -113,7 +113,7 @@
 ### TF-OBS-001: TradeFlow 盘中观察执行器与信号落库（P0）
 - **描述**：在 TF-DATE-001 之后，把现有 `run_observe_check()` 状态机接入真实执行链路，定时读取当日生效候选、拉取实时价格、更新观察状态并写入信号表。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done -- TF-OBS-001 observe_runner implemented
 - **前置条件**：`TF-DATE-001` 完成 ✓
 - **背景**：
   - 当前 M-005 已有 Observe 状态机，前端也能展示 Observe Tab，但没有 runner 定时执行，所以 `observe_state` 长期停留在 `WAITING`，`tradeflow_signals` 为空。
