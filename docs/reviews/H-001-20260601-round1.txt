@@ -1,0 +1,2907 @@
+Task: H-001 - 昊天雷达 v0 数据模型与信号分类（P1）
+Date: 2026-06-01_18:30:54
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019e82bb-422d-77b3-9436-9175e6aa7c25
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md; printf '\\n---TASKS---\\n'; sed -n '1,220p' docs/TASKS.md; printf '\\n---DECISIONS---\\n'; sed -n '1,220p' docs/DECISIONS.md; printf '\\n---DEVLOG---\\n'; sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+---TASKS---
+# 任务池
+
+> 最后更新：2026-06-01
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，ready）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，ready，依赖 TF-DATE-001）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，ready）。
+5. `H-002`：政策连续性与级别权重评分（P1，proposed，依赖 H-001）。
+6. `H-003`：产业链受益路径与标杆候选映射（P1，proposed，依赖 H-001）。
+7. `H-004`：左侧埋伏评分与候选类型分流（P1，proposed，依赖 H-002/H-003）。
+8. `H-005`：TradeFlow 前端昊天候选池视图（P2，proposed，依赖 H-004）。
+9. `H-006`：昊天候选池回放评估与反证机制（P2，proposed，依赖 H-004）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，ready）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，proposed）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，proposed）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，proposed，依赖 H-001）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，proposed）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P2，proposed）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入 TA 和回放评估。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## TF. TradeFlow 主链路稳定任务池（2026-06-01 新增）
+
+> 目标：先把 TradeFlow 的时间语义和盘中观察闭环打通，再继续建设昊天雷达。TradeFlow 允许周末/盘后生成候选池，并在下一个 A 股交易日观察；不能把候选生成日期、计划生效日期和实际观察日期混成同一个字段。
+
+### TF-DATE-001: TradeFlow 日期语义拆分与非交易日计划生效（P0）
+- **描述**：修复 `trade_date` 同时表示“候选池生成日期/计划生效交易日/盘中观察日期”的问题，支持 2026-05-31 这类非交易日生成候选池，并在 2026-06-01 盘中继续观察。
+- **优先级**：P0
+- **状态**：done -- commit pending
+- **背景**：
+  - 用户可以在周末、节假日或交易日收盘后生成候选池，这些候选应在下一个 A 股交易日进入 Observe，而不是被锁在生成日。
+  - 当前 `tradeflow_daily_plans` 和 `tradeflow_candidates` 主要按 `trade_date` 查询，导致前端选择 2026-06-01 的 Observe 时查不到 2026-05-31 生成的候选。
+  - 这会阻塞“周末研究/盘前计划/次日盯盘”的实际工作流。
+- **日期语义定义**：
+  1. `plan_date`：候选池生成日期，周末/节假日也允许。
+  2. `effective_trade_date`：计划生效交易日，用于盘中观察和 TA 队列。
+  3. `observe_date`：实际观察日期；第一版可等同 `effective_trade_date`，但 API/前端命名要预留。
+- **执行约束**：
+  - 不写生产 `tradingagents.db` schema；只允许修改 TradeFlow 自有 SQLite 表、兼容迁移或服务层查询。
+  - 不触发真实 TA/LLM 调用。
+  - 不删除现有 `tradeflow.db` 历史数据。
+  - 保持旧数据兼容：没有新字段的旧行仍可按原 `trade_date` 查询。
+- **实现要点**：
+  1. 新增日期 helper，例如 `resolve_effective_trade_date(plan_date, now=None)`：
+     - 非交易日生成：`effective_trade_date = 下一个 A 股交易日`。
+     - 交易日盘前生成：`effective_trade_date = 当天`。
+     - 交易日盘中生成：默认 `effective_trade_date = 当天`。
+     - 交易日收盘后生成：`effective_trade_date = 下一个 A 股交易日`。
+  2. `tradeflow_daily_plans` / `tradeflow_candidates` 兼容新增字段：
+     - `plan_date`
+     - `effective_trade_date`
+     - `observe_date`
+  3. 生成候选池时：
+     - `trade_date` 保持兼容旧字段，可暂等于 `plan_date`。
+     - 新字段必须写入 DB 和 daily plan metadata/candidates_json。
+  4. Observe / TA Queue / Review 查询时：
+     - 优先按 `effective_trade_date` 或 `observe_date` 查询。
+     - 如果新字段不存在或为空，fallback 到旧 `trade_date`。
+     - 查询 `2026-06-01` Observe 时，应能找到 `plan_date=2026-05-31, effective_trade_date=2026-06-01` 的候选。
+  5. 前端 TradeFlow 显示：
+     - 候选池日期：`plan_date`
+     - 生效交易日：`effective_trade_date`
+     - 观察日期：`observe_date`
+     - 当三者不同，显示提示：“该候选池由 5月31日生成，将在 6月1日观察”。
+  6. 数据健康页补充：
+     - `latest_plan_date`
+     - `latest_effective_trade_date`
+     - `latest_observe_date`
+- **验收方式**：
+  - 构造 2026-05-31 非交易日生成候选池，`effective_trade_date` 自动为 2026-06-01。
+  - `GET /v1/tradeflow/observe?date=2026-06-01` 能返回 2026-05-31 生成的候选。
+  - `GET /v1/tradeflow/candidates?date=2026-05-31` 仍能看到候选池本身。
+  - 交易日盘前、盘中、盘后三种场景有单测覆盖。
+  - 旧库无新字段时 API 不报 500。
+  - `pytest tests/test_ui001_tradeflow_api.py tests/test_tradeflow_*.py -q` 通过；前端构建通过。
+- **代码标注要求**：`# [TF-DATE-001] tradeflow_date_semantics` / `// [TF-DATE-001] tradeflow_date_semantics`
+
+### TF-OBS-001: TradeFlow 盘中观察执行器与信号落库（P0）
+- **描述**：在 TF-DATE-001 之后，把现有 `run_observe_check()` 状态机接入真实执行链路，定时读取当日生效候选、拉取实时价格、更新观察状态并写入信号表。
+- **优先级**：P0
+- **状态**：proposed
+- **前置条件**：`TF-DATE-001` 完成。
+- **背景**：
+  - 当前 M-005 已有 Observe 状态机，前端也能展示 Observe Tab，但没有 runner 定时执行，所以 `observe_state` 长期停留在 `WAITING`，`tradeflow_signals` 为空。
+  - Deep TA 门控依赖 `observe_state=TRIGGERED`，因此盘中观察不落地会连带阻塞 TA 队列。
+- **执行约束**：
+  - 不自动调用高成本 LLM。
+  - 不自动输出强买卖词。
+  - 盘中检查频率第一版保持低频，默认 30 分钟或人工触发。
+  - 非交易日不执行实时观察，只输出明确状态。
+- **实现要点**：
+  1. 新增 observe runner/service：
+     - 读取 `effective_trade_date = today` 且 `status='active'` 的候选。
+     - 拉取实时 `current_price/current_volume/current_amount/quote_time/source`。
+     - 调用 `run_observe_check()`。
+     - 更新 `tradeflow_candidates.observe_state/observe_trigger_count/observe_first_trigger_time`。
+     - 写入 `tradeflow_signals` 保存每次检查快照和原始证据。
+  2. API 增加人工触发入口或 scheduler 可调用函数：
+     - 第一版可仅内部函数 + CLI，不必自动 cron。
+  3. 前端 Observe Tab 增加状态：
+     - 未运行
+     - 已运行但无触发
+     - 已触发
+     - 已失效
+     - 非交易日/无实时行情
+  4. Data Health 显示最新 observe 检查时间和最新 signal 时间。
+- **验收方式**：
+  - 构造候选触发价 10、实时价 10.1，执行后 `observe_state=TRIGGERED` 且 signal 落库。
+  - 构造实时价跌破失效价，执行后 `observe_state=INVALIDATED`。
+  - 构造非交易日，runner 不拉实时行情，返回明确 skip reason。
+  - `tradeflow_signals` 有记录，前端 Observe 能显示 `current_price` 和 `trigger_reason`。
+  - `pytest tests/test_m005_intraday_observe.py tests/test_ui001_tradeflow_api.py tests/test_tradeflow_*.py -q` 通过。
+- **代码标注要求**：`# [TF-OBS-001] tradeflow_observe_runner` / `// [TF-OBS-001] tradeflow_observe_runner`
+
+---
+
+## DATA. 数据源治理 / Simon 数据 Skill 吸收任务池（2026-05-31 新增）
+
+> 目标：把外部 A 股数据 Skill 的优点吸收进本项目 Data Layer，让候选池和 TA 报告更真实、更实时、更可追溯。第一阶段只做数据治理和证据链，不新增 LLM Agent，不替换现有 TA 主链路。
+
+### DATA-P0-603629: TA A股关键数据源补强与假可用修复（P0）
+- **描述**：基于 603629.SH 最新 TA 报告暴露的问题，补强 A 股关键数据源路由，修复“正文说数据缺失、底部却显示数据源可用”的假可用问题。
+- **优先级**：P0
+- **状态**：done -- commit pending
+- **背景**：
+  - 603629.SH 报告中个股资金流 `ConnectionError`，近 20 日主力净流入/流出缺失。
+  - 龙虎榜仅依赖“资金流异常触发”，导致资金流失败后龙虎榜也未强制查询；但该股存在严重异常波动、新闻明确提及龙虎榜、6月1日一字跌停等高风险特征。
+  - 换手率、量比、板块资金、公告原文/监管事件、复权口径等关键字段未稳定进入 raw_evidence。
+  - 底部数据源可用性将“主力资金报告文本存在”误判为“主力资金数据可用”，与 Evidence Coverage 42% 冲突。
+- **参考方向**：
+  - 参考 SimonLin1212 `a-stock-data` 的数据源优先级：行情/K线/实时价优先 mootdx/腾讯；东财只用于独有数据，并统一限流防封。
+  - 不照搬整套框架，只吸收 direct endpoint、fallback、限流、来源契约和字段 freshness 思路。
+- **执行约束**：
+  - 不提交任何 API key/cookie。
+  - 不改 `tradingagents/prompts/`。
+  - 不写生产 `tradingagents.db` schema。
+  - 不自动触发 TA/LLM live 调用。
+  - 东财接口必须串行限流，禁止并发压测。
+- **实现要点**：
+  1. **个股资金流 fallback**：
+     - 为 `get_individual_fund_flow` 增加 Eastmoney `push2/push2his` 直连 fallback。
+     - 保留 AKShare，但失败时不得直接终止资金流证据链。
+     - raw_evidence 必须记录 `vendor/endpoint/as_of/unit/status/error/fallback_vendor`。
+  2. **龙虎榜与资金流解耦**：
+     - 以下场景必须 force 查询龙虎榜：严重异常波动、连续涨跌停、新闻/公告文本出现龙虎榜、涨跌幅偏离、成交额/量比异常。
+     - 资金流失败不得阻止龙虎榜查询。
+     - 区分 `NOT_QUERIED`、`NORMAL_NO_DATA`、`FAILED`、`HAS_DATA`。
+  3. **实时行情与换手率/量比补强**：
+     - 增加 Tencent fallback，至少提供 `current_price`、`turnover_rate`、`volume_ratio`、`limit_up/down`、`market_cap`、`PE/PB`。
+     - 若 `volume_ratio` 无法由源直接提供，可用当前量/近 N 日均量计算，但必须标注 `computed=True` 和计算口径。
+  4. **公告/监管事件补强**：
+     - 增加 cninfo/巨潮公告 fallback，用于风险提示、严重异常波动、减持、问询函、澄清公告。
+     - 公告必须以原始标题/日期/来源/链接或公告 ID 进入 raw_evidence。
+  5. **复权口径与 K 线 freshness**：
+     - 市场技术数据必须标注 `adjustment`（前复权/后复权/不复权/未知）。
+     - 当天实时补丁不得伪装成完整日 K。
+  6. **数据源可用性修正**：
+     - 底部数据源可用性必须按 raw_evidence status 判断，不能按报告文本是否存在判断。
+     - 若主力资金 raw status 为 `FAILED/NOT_QUERIED`，不得显示 `✅ 主力资金`。
+     - `Evidence Coverage < 70%` 时，最终 `Confidence` 不得显示“高”。
+- **验收方式**：
+  - 用 603629.SH 的 fixture 或 mock 复现：
+    - 资金流 AKShare 失败，但 Eastmoney fallback 成功。
+    - 资金流失败时，龙虎榜仍因异常波动/新闻触发 force 查询。
+    - 主力资金失败时，数据源可用性显示 `❌` 或明确 `FAILED`，不能显示 `✅`。
+    - 报告底部能看到换手率、量比、复权口径、公告来源。
+    - `Evidence Coverage=42%` 一类低证据场景下，Confidence 自动降为中/低。
+  - 新增/更新测试覆盖 readiness/raw_evidence/fund_lhb provenance。
+  - `pytest tests/test_g006_raw_evidence_snapshot.py tests/test_g007_fund_lhb_provenance.py tests/test_readiness_score.py tests/test_dataflows*.py -q` 或同等相关测试通过。
+- **代码标注要求**：`# [DATA-P0-603629] astock_source_fallback`
+
+### DATA-001: A股数据源能力目录与 fallback 矩阵（P1）
+- **描述**：建立本项目统一的数据源能力目录，明确每个 vendor/endpoint 能提供什么字段、适用场景、freshness、限流风险和 fallback 顺序。
+- **优先级**：P1
+- **状态**：proposed
+- **背景**：
+  - SimonLin1212 `a-stock-data` 的核心启发不是 Agent 数量，而是把腾讯/东财/新浪/巨潮/财联社等数据源做成可调用、可组合的端点目录。
+  - 本项目已有 AKShare、BaoStock、yfinance、cn_astock、event_source，但调用关系和 fallback 口径还不够透明。
+- **执行约束**：
+  - 不保存 API key/cookie。
+  - 不做全市场 live 压测。
+  - 不把任何单一第三方源设为唯一真相。
+  - 不改生产数据库。
+- **实现要点**：
+  1. 新增或完善数据源能力配置，例如 `tradingagents/dataflows/source_catalog.py`。
+  2. 至少覆盖：
+
+---DECISIONS---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+---DEVLOG---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-01 | H-001: 昊天雷达 v0 数据模型与信号分类
+
+- **执行者**：OpenCode
+- **任务**：H-001 — 新增政策意图识别的基础数据结构，把政策/事件/产业/公司证据统一归档为可评分的 `MandateSignal`，为后续昊天意志评分提供输入
+- **修改文件**：
+  - `tradingagents/tradeflow/mandate_signal.py` — 新建：[H-001] mandate_signal_model
+    - `SourceLevel` 枚举：CENTRAL / STATE_COUNCIL / MINISTRY / LOCAL_GOV / EXCHANGE / SOE_GROUP / COMPANY_NOTICE / MEDIA（8 级来源权威层级）
+    - `MandateEventType` 枚举：POLICY_DOCUMENT / MEETING_SIGNAL / INDUSTRY_PLAN / SUBSIDY_SUPPORT / PROCUREMENT_ORDER / LICENSE_APPROVAL / M_AND_A_RESTRUCTURING / SOE_REFORM / BUYBACK_RATING（9 类信号）
+    - `MandateSignal` 数据类：symbol / topic / title / source / source_level / date / evidence_text / evidence_url / event_type / direction / confidence / policy_tags / industry_tags / company_role / raw_refs；自动置信度封顶、低证据信号上限 0.3
+    - `classify_source_level()`：基于标题和来源文本的正则匹配，识别来源级别
+    - `classify_event_type()`：基于标题关键词的事件类型分类
+    - `compute_confidence()`：综合来源权重和证据完整度计算置信度；缺失任一关键字段封顶 0.3；全部缺失返回 0.0
+    - `event_item_to_mandate_signal()`：从 `EventItem` 转换为 `MandateSignal`，保留原始 title/source/date/event_type/direction/detail
+    - `convert_event_items()`：批量转换 `items_by_symbol`，按 symbol 隔离，空 symbol 和空标题排除
+    - `validate_mandate_signal()`：校验信号完整性，返回问题列表
+  - `tests/test_h001_mandate_signal.py` — 新建，95 个测试覆盖：
+    - `TestSourceLevelEnum` (4): 全部值、数量、字符串构造、非法值
+    - `TestMandateEventTypeEnum` (2): 全部值、数量
+    - `TestClassifySourceLevel` (17): 党中央/国务院/国办/工信部/证监会/发改委/上交所/国资委/省级/市级/公司公告/东财/财联社/未知/空字符串/来源参数/优先级
+    - `TestClassifyEventType` (12): 各事件类型 + 空标题 + 无匹配默认值
+    - `TestComputeConfidence` (8): 高权威完整证据/低权威/缺标题/缺日期/缺来源/全缺失/范围/层级排序
+    - `TestMandateSignal` (17): 默认值/置信度封顶（有证据/无证据）/负数/低证据上限/高证据放行/枚举构造/属性访问/权重/权威判断/to_dict
+    - `TestEventItemToMandateSignal` (10): 国务院/工信部/地方/公司公告/媒体事件/原始数据保留/空标题/缺字段/方向覆盖
+    - `TestSymbolIsolation` (4): 无交叉污染/空 symbol 排除/空标题排除/空输入
+    - `TestValidateMandateSignal` (6): 合法信号/缺 symbol/缺 title/缺 source/缺 date/缺 source_level
+    - `TestSourceLevelWeights` (4): 最高/最低/层级排序/全部有值
+    - `TestH001FourEventTypes` (9): 四类事件（国务院/部委/地方/公司）集成验证、无交叉污染、置信度排序、raw_refs 完整、全部合法
+    - `TestNoEvidenceLowConfidence` (3): 无证据封顶/媒体<中央/公司<国务院
+- **测试结果**：95 passed (H-001)；225 passed (H-001 + tradeflow 全部)；0 failed
+- **关键逻辑**：
+  - `MandateSignal` 从 `EventItem` 转换时不丢失原始 title/source/date/direction/detail
+  - 缺失 title/source/date 任一的信号置信度封顶 0.3，不得按高级别政策处理
+  - 来源级别通过正则匹配自动分类：中央/国务院 → 部委 → 交易所/国资 → 地方 → 公司公告 → 媒体
+  - 所有信号按 symbol 隔离，不串票
+  - 置信度公式：来源权重 × 0.6 + 证据完整度 × 0.4
+- **执行边界**：未触发 TA、未调用 LLM、未输出强买卖词、未改 `tradingagents/prompts/`、未改生产 `tradingagents.db` schema
+
+---
+
+## 2026-06-01 | DATA-P0-603629 任务释放：TA 关键数据源补强
+
+- **执行者**：Codex
+- **背景**：用户提供的 603629.SH 最新 TA 报告暴露出关键数据源缺失：个股资金流 `ConnectionError`、龙虎榜未 force 查询、换手率/量比/板块资金/公告原文/复权口径不稳定；同时底部数据源可用性将“主力资金报告文本存在”误判为“主力资金数据可用”。
+- **参考**：结合 SimonLin1212 `a-stock-data` 的数据源思路，吸收 direct endpoint、fallback、东财限流防封、来源契约和 freshness 标注；不照搬其整套框架。
+- **变更**：
+  - `docs/TASKS.md` 新增 `DATA-P0-603629`（P0 ready）：TA A股关键数据源补强与假可用修复。
+  - 当前优先队列调整为 `DATA-P0-603629` 第一，排在 `TF-DATE-001` 前面。
+- **后续**：OpenClaw/OpenCode 下一轮应优先领取 `DATA-P0-603629`。完成后用 603629.SH 复跑，重点验收主力资金、龙虎榜、换手率/量比、公告原文、复权口径和 confidence 降级。
+
+---
+
+## 2026-06-01 | TradeFlow 日期语义任务释放
+
+- **执行者**：Codex
+- **背景**：用户确认非交易日生成候选池、下一个交易日观察是合理主流程，例如 2026-05-31 生成候选池，2026-06-01 盘中观察。当前 TradeFlow 将 `trade_date` 同时用于候选生成日期、计划生效日期和观察日期，导致 6月1日 Observe 查不到 5月31日生成的候选。
+- **变更**：
+  - `docs/TASKS.md` 新增 `TF-DATE-001`（P0 ready）：TradeFlow 日期语义拆分与非交易日计划生效。
+  - `docs/TASKS.md` 新增 `TF-OBS-001`（P0 proposed）：盘中观察执行器与信号落库，依赖 `TF-DATE-001`。
+  - 当前优先队列调整为先跑 `TF-DATE-001`，再考虑 Observe runner 和 `H-001` 昊天雷达。
+- **后续**：OpenClaw/OpenCode 下一轮应优先领取 `TF-DATE-001`。`TF-DATE-001` 完成前，不建议继续扩展 Observe/TA 队列，否则会继续被日期模型卡住。
+
+---
+
+## 2026-06-01 | VLM-001 补修：自选备注保存问题
+
+- **执行者**：OpenCode
+- **任务**：修复自选备注保存的三个问题：重复股票 notes 不更新、前端备注编辑缺少保存/取消按钮、`update_watchlist_notes` 的 clear 参数未暴露到 API
+- **修改文件**：
+  - `api/services/watchlist_service.py` — [VLM-001] watchlist_notes_protection：`add_watchlist_items_with_notes()` 遇到重复股票时，根据新/旧 notes 情况自动合并（空→写入，非空→用 ｜ 分隔追加）；新增 `_merge_notes()` 辅助函数
+  - `api/main.py` — [VLM-001] watchlist_notes_protection：`WatchlistNotesUpdate` 增加 `clear: bool = False` 字段；`update_watchlist_notes` endpoint 传递 `clear` 参数到 service
+  - `frontend/src/pages/Portfolio.tsx` — [VLM-001] watchlist_notes_protection：备注编辑状态下显示"保存"和"取消"按钮；Enter 仍可保存；Escape 取消；失焦不自动保存
+- **验证**：`pytest tests/test_vlm*.py tests/test_ui001*.py -q` 58 passed；`npm run build` 零错误
+
+---
+
+## 2026-05-31 | VLM-001: 自选截图解析 v2 — 候选表格识别
+
+- **执行者**：OpenCode
+- **任务**：VLM-001 — 升级 VLM 截图解析，支持识别"自选候选表格"
+- **修改文件**：
+  - `api/services/vlm_position_parser.py` — [VLM-001] 新增 `WATCHLIST_TABLE_PROMPT`、`parse_watchlist_table_image()`、`_parse_watchlist_response()`、`_build_watchlist_notes()`、`_extract_6digit_code()`、`_to_int()` 等函数
+  - `api/services/watchlist_service.py` — [VLM-001] `add_watchlist_item()` 增加 `notes` 参数，新增 `add_watchlist_items_with_notes()` 批量带备注添加
+  - `api/main.py` — [VLM-001] `POST /v1/portfolio/parse-image` 增加 `mode` 参数（position/watchlist），新增 `POST /v1/watchlist/batch-notes` 端点，添加 `Form` import
+  - `frontend/src/types/index.ts` — [VLM-001] 新增 `WatchlistTableItem`、`WatchlistTableParseResponse` 类型
+  - `frontend/src/services/api.ts` — [VLM-001] `parsePositionImage()` 增加 `mode` 参数，新增 `addToWatchlistBatchNotes()` 方法
+  - `frontend/src/pages/Portfolio.tsx` — [VLM-001] 上传截图优先尝试 watchlist 模式，新增候选表格预览与确认添加 UI
+  - `frontend/src/components/TrackingBoardPanel.tsx` — 适配 `parsePositionImage()` 新签名
+  - `tests/test_vlm_position_parser.py` — [VLM-001] 新增 11 个 watchlist table 相关测试用例
+- **验证**：`pytest tests/test_vlm*.py -q` 16 passed；`npm run build` 零错误
+
+---
+
+## 2026-05-31 | T-000: 自动开发巡检基线脚本
+
+- **执行者**：OpenCode
+- **任务**：T-000 — 为 OpenClaw 自动开发建立每日/每轮固定巡检清单
+- **修改文件**：
+  - `scripts/preflight_check.sh` — 新建：[T-000] 自动开发巡检基线脚本
+    - 7 个巡检模块：Git 状态、变更摘要与敏感风险标记、测试健康、数据库安全、Token/API 消耗风险、运行产物清理、文档一致性
+    - Exit code: 0=通过, 1=有风险需人工确认, 2=严重风险禁止继续
+    - 支持 `--skip-tests`（跳过测试）和 `--quiet`（减少输出）
+    - 敏感文件检测：prompts/、tradingagents.db、.env、eval_results/、logs/、模型配置、scheduler/
+    - LLM 调用模式扫描：检测未提交变更中新增的 ChatOpenAI/langchain/anthropic/zhipuai 调用
+    - 高成本模型引用检测：deepseek/gpt-4/claude-3
+    - Scheduler 进程检测与 OpenClaw cron 扫描
+    - 测试模块感知：TradeFlow 改动运行 tradeflow 测试、执行层改动运行 readiness/G001 测试
+  - `docs/TASKS.md` — T-000 状态从 `ready` 更新为 `done`
+- **验证**：`bash -n scripts/preflight_check.sh` 无语法错误；脚本在当前工作区运行输出正确报告，exit code 1（scheduler 运行中为 WARN 级别）
+
+---
+
+## 2026-05-31 | UI-007 完成：TradeFlow 被过滤候选可追溯展示
+
+- **执行者**：OpenCode
+- **背景**：候选池生成后，Discovery 返回的 filtered 列表刷新后丢失，用户无法追溯股票被过滤的原因（流动性差/数据缺失/无策略命中）。前端候选数量与 daily plan/输入股票池不一致时，无法区分是未显示、未落库还是被策略过滤。
+- **变更**：
+  - `tradingagents/tradeflow/candidate_engine.py`：新增 `tradeflow_filtered_symbols` 表（字段：trade_date, symbol, name, source, reason, run_id, created_at）；新增 `save_filtered_symbols()` 和 `get_filtered_symbols()` 函数。
+  - `tradingagents/tradeflow/discovery.py`：`run_discovery()` 在候选池生成后持久化 filtered 结果，同日期扫描自动覆盖旧数据。
+  - `api/services/tradeflow_service.py`：新增 `get_filtered()` 服务函数，按日期查询 filtered 列表及过滤分类统计。
+  - `api/tradeflow_schemas.py`：新增 `TradeFlowFilteredItem` 和 `TradeFlowFilteredResponse` Pydantic 模型。
+  - `api/main.py`：新增 `GET /v1/tradeflow/filtered?date=YYYY-MM-DD` 只读接口。
+  - `frontend/src/types/index.ts`：新增 `TradeFlowFilteredItem` 和 `TradeFlowFilteredResponse` TypeScript 类型。
+  - `frontend/src/services/api.ts`：新增 `getTradeFlowFiltered()` API 方法。
+  - `frontend/src/pages/TradeFlow.tsx`：新增"被过滤"Tab（FilteredTab 组件），含过滤摘要（总扫描/入池/过滤/入池率）、分类统计、被过滤股票表格（可按原因筛选）、空状态区分（未生成/全部过滤/接口失败）。
+  - `tests/test_ui001_tradeflow_api.py`：新增 10 个测试（TestFilteredSymbols 5个 + TestFilteredAPI 3个 + TestDiscoveryPersistsFiltered 2个），覆盖持久化、查询、覆盖、空数据、集成场景。
+- **测试结果**：42 tests passed（API 测试），130 tests passed（全部 tradeflow 测试），前端构建通过。
+- **执行边界**：未触发深度 TA，未调用 LLM，未输出强买卖词，未改 `tradingagents.db` schema。
+
+---
+
+## 2026-05-31 | 总架构路线图与任务分层收口
+
+- **执行者**：Codex
+- **背景**：用户要求不要再零散追加想法，而是总结系统目标架构，把后续任务按阶段布置，避免自动开发方向漂移。
+- **变更**：
+  - 新增 `docs/ROADMAP.md`，定义七层目标架构：数据层、昊天雷达、TradeFlow 候选引擎、TA 深度分析、执行跟踪、复盘评估、前端看板、自动开发层。
+  - 明确两类候选池：`Mandate Pool`（政策左侧/中线）与 `Technical/Trade Pool`（技术确认/做T）。
+  - 把 `H-002` 到 `H-006` 从 `ready` 调整为 `proposed`，当前只保留 `H-001` 为 ready，避免自动开发越过依赖链。
+  - 在 `docs/TASKS.md` 中加入 Roadmap 引用和任务新增原则：新想法必须归入路线图层级，不能随意插队。
+- **执行边界**：只改文档和任务池，不改代码，不触发分析，不调用 LLM API。
+
+---
+
+## 2026-05-31 | H 系列任务释放：昊天雷达 / 政策左侧埋伏
+
+- **执行者**：Codex
+- **背景**：用户明确 TradeFlow 主策略不应只偏短线技术/做 T，而要研究 A 股政策版本、中线左侧埋伏和“昊天意志”方向；技术信号应作为执行确认，不作为第一性筛选。
+- **变更**：
+  - 更新 `docs/TASKS.md` 当前优先队列，把下一轮自动开发切到 `H-001` 到 `H-006`。
+  - 新增 `H. 昊天雷达 / 政策左侧埋伏任务池`：
+    1. `H-001` 昊天雷达 v0 数据模型与信号分类。
+    2. `H-002` 政策连续性与级别权重评分。
+    3. `H-003` 产业链受益路径与标杆候选映射。
+    4. `H-004` 左侧埋伏评分与候选类型分流。
+    5. `H-005` 前端昊天候选池视图。
+    6. `H-006` 回放评估与反证机制。
+- **执行边界**：先做保守规则与证据链，不调用 LLM，不触发 TA，不输出强买卖词，不凭空揣测。
+
+---
+
+## 2026-05-31 | UI-008 任务释放：TradeFlow 字段规范化与名称回填
+
+- **执行者**：Codex
+- **背景**：检查当前 TradeFlow 候选数据发现，`tradeflow_candidates.name` 大量为空，事件源候选还存在无交易所后缀代码（如 `002600`、`688617`），会影响前端展示、详情抽屉、TA 队列和后续 TA 调度一致性。
+- **变更**：
+  - 更新 `docs/TASKS.md` 当前优先队列，新增 `UI-008` 为 P1 ready。
+  - 明确修复范围：symbol 规范化、名称回填、API/前端字段兜底、候选表与 daily plan 字段一致性审计。
+- **执行边界**：不触发深度 TA，不调用 LLM，不改生产 `tradingagents.db` schema。
+
+---
+
+## 2026-05-31 | UI-007 任务释放：TradeFlow 被过滤候选可追溯
+
+- **执行者**：Codex
+- **背景**：排查发现 `daily_plans` 是计划记录，`tradeflow_candidates` 只保存入池候选；未入池股票的过滤原因只在 Discovery 返回瞬间存在，刷新后不可追溯，容易让用户误判为前端漏显示。
+- **变更**：
+  - 更新 `docs/TASKS.md` 当前优先队列，新增 `UI-007` 为 P1 ready。
+  - 明确验收目标：候选池生成后展示并持久化 filtered 列表，刷新后仍可查看过滤原因。
+- **执行边界**：不触发深度 TA，不调用 LLM，不输出强买卖词，不改生产 `tradingagents.db` schema。
+
+---
+
+## 2026-05-31 | TradeFlow 候选池生成入口
+
+- **执行者**：Codex
+- **背景**：TradeFlow 前端只能查看候选结果，无法从 UI 触发候选池筛选，导致用户看到空池后只能回命令行运行脚本。
+- **修改文件**：
+  - `api/main.py` — 新增 `POST /v1/tradeflow/discovery`，支持按日期、手动股票池、TopN、自选股、持仓、事件源生成候选。
+  - `api/services/tradeflow_service.py` — 新增 `run_discovery_scan()`，只运行 TradeFlow Discovery 并保存候选，不触发深度 TA，不调用 LLM。
+  - `frontend/src/services/api.ts`、`frontend/src/types/index.ts` — 新增 Discovery 请求/响应类型与 API 客户端方法。
+  - `frontend/src/pages/TradeFlow.tsx` — 候选池页新增“生成候选池”面板，可输入股票池、选择 TopN、自选股、持仓和事件源。
+  - `tradingagents/tradeflow/universe.py` — 兼容当前生产库的持仓/自选字段，避免 universe 读取为空。
+  - `tests/test_ui001_tradeflow_api.py`、`tests/test_tradeflow_universe.py` — 增加 Discovery 保存候选与当前生产库字段兼容回归测试。
+- **测试结果**：`pytest tests/test_ui001_tradeflow_api.py tests/test_tradeflow_universe.py tests/test_tradeflow_*.py -q` 162 passed；`npm run build` 通过。
+
+---
+
+## 2026-05-31 | TradeFlow 打不开排查：重启后端并修复默认 DB 路径
+
+- **执行者**：Codex
+- **问题**：
+  1. 8000 端口 uvicorn 仍是旧进程，`/v1/tradeflow/*` 未注册，请求被 SPA 兜底返回 HTML。
+  2. TradeFlow API 默认数据库路径误指向 `api/tradeflow.db`，实际数据库在项目根目录 `tradeflow.db`。
+  3. 根目录旧版 `tradeflow.db` 缺少 `composite_score` 等新字段，候选池查询直接 500。
+- **修改文件**：
+  - `api/services/tradeflow_service.py` — 默认 TradeFlow DB 路径改为项目根目录；候选池/Observe/TA 队列查询兼容旧表结构。
+  - `tests/test_ui001_tradeflow_api.py` — 增加默认 DB 路径与旧表结构回归测试。
+- **测试结果**：`pytest tests/test_ui001_tradeflow_api.py tests/test_tradeflow_*.py -q` 160 passed；`npm run build` 通过。
+
+---
+
+## 2026-05-31 | UI-006 验收补修：TradeFlow 前端参数与数据健康字段对齐
+
+- **执行者**：Codex
+
+exec
+/bin/zsh -lc 'git status --short && git diff --stat && git diff --cached --stat' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+?? .auto_dev.lock/
+?? docs/task_runs/H-001-20260601-182415/
+?? tests/test_h001_mandate_signal.py
+?? tradingagents/tradeflow/mandate_signal.py
+ docs/DEVLOG.md | 39 +++++++++++++++++++++++++++++++++++++++
+ docs/TASKS.md  |  2 +-
+ 2 files changed, 40 insertions(+), 1 deletion(-)
+
+exec
+/bin/zsh -lc "find .auto_dev.lock docs/task_runs/H-001-20260601-182415 -maxdepth 3 -type f -print -exec sed -n '1,220p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+.auto_dev.lock/owner
+pid=49967
+started_at=2026-06-01_18:24:15
+repo=/Users/maybee/TradingAgents-AShare
+docs/task_runs/H-001-20260601-182415/tests-round1.txt
+## pytest tests/test_h001_mandate_signal.py -q
+
+........................................................................ [ 75%]
+.......................                                                  [100%]
+95 passed in 0.03s
+
+Exit code: 0
+
+docs/task_runs/H-001-20260601-182415/prompt-round1.md
+# Task: H-001: 昊天雷达 v0 数据模型与信号分类（P1）
+
+Read task "H-001" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/H-001-20260601-182415/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/project-overview.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m
+[0m# [0mTodos
+[✓] Read H-001 task details and understand existing codebase structure
+[•] Explore existing tradeflow modules and event_source to understand patterns
+[ ] Create tradingagents/tradeflow/mandate_signal.py with MandateSignal, enums, and converters
+[ ] Create tests/test_h001_mandate_signal.py with comprehensive test coverage
+[ ] Run tests and verify all pass
+[ ] Update docs/DEVLOG.md with H-001 changes
+[0m
+[0m→ [0mRead tradingagents/tradeflow
+[0m→ [0mRead tradingagents/tradeflow/event_source.py
+[0m→ [0mRead tradingagents/tradeflow/schemas.py
+[0m→ [0mRead tradingagents/tradeflow/policy_version_signal.py
+[0m→ [0mRead tradingagents/tradeflow/strategy_config.py[90m [limit=80][0m
+[0m✱ [0mGlob "tests/test_h001*"[90m 0 matches[0m
+[0m→ [0mRead tradingagents/tradeflow/narrative_quality.py[90m [limit=50][0m
+[0m→ [0mRead tradingagents/tradeflow/__init__.py
+[0m
+[0m# [0mTodos
+[✓] Read H-001 task details and understand existing codebase structure
+[✓] Explore existing tradeflow modules and event_source to understand patterns
+[•] Create tradingagents/tradeflow/mandate_signal.py with MandateSignal, enums, and converters
+[ ] Create tests/test_h001_mandate_signal.py with comprehensive test coverage
+[ ] Run tests and verify all pass
+[ ] Update docs/DEVLOG.md with H-001 changes
+[0m
+Now I'll create the `mandate_signal.py` module:
+[0m← [0mWrite tradingagents/tradeflow/mandate_signal.py
+Wrote file successfully.
+[0m
+Now create the comprehensive test file:
+[0m← [0mWrite tests/test_h001_mandate_signal.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[✓] Read H-001 task details and understand existing codebase structure
+[✓] Explore existing tradeflow modules and event_source to understand patterns
+[✓] Create tradingagents/tradeflow/mandate_signal.py with MandateSignal, enums, and converters
+[✓] Create tests/test_h001_mandate_signal.py with comprehensive test coverage
+[•] Run tests and verify all pass
+[ ] Update docs/DEVLOG.md with H-001 changes
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_h001_mandate_signal.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 94 items
+
+tests/test_h001_mandate_signal.py::TestSourceLevelEnum::test_all_values PASSED [  1%]
+tests/test_h001_mandate_signal.py::TestSourceLevelEnum::test_eight_levels PASSED [  2%]
+tests/test_h001_mandate_signal.py::TestSourceLevelEnum::test_from_string PASSED [  3%]
+tests/test_h001_mandate_signal.py::TestSourceLevelEnum::test_invalid_string_raises PASSED [  4%]
+tests/test_h001_mandate_signal.py::TestMandateEventTypeEnum::test_all_values PASSED [  5%]
+tests/test_h001_mandate_signal.py::TestMandateEventTypeEnum::test_nine_types PASSED [  6%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_central_dangzhongyang PASSED [  7%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_state_council_guowuyuan PASSED [  8%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_state_council_guoban PASSED [  9%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_ministry_gongxinbu PASSED [ 10%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_ministry_zhengjianhui PASSED [ 11%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_ministry_fagaiwei PASSED [ 12%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_exchange_sse PASSED [ 13%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_soe_group_guozijian PASSED [ 14%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_local_gov_province PASSED [ 15%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_local_gov_city PASSED [ 17%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_company_notice PASSED [ 18%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_media_dongcai PASSED [ 19%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_media_cailianshe PASSED [ 20%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_unknown_defaults_to_media PASSED [ 21%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_empty_title_and_source PASSED [ 22%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_source_param_used PASSED [ 23%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_priority_central_over_media PASSED [ 24%]
+tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_priority_state_council_over_local PASSED [ 25%]
+tests/test_h001_mandate_signal.py::TestClassifyEventType::test_policy_document_guideline PASSED [ 26%]
+tests/test_h001_mandate_signal.py::TestClassifyEventType::test_policy_document_action_plan PASSED [ 27%]
+tests/test_h001_mandate_signal.py::TestClassifyEventType::test_meeting_signal PASSED [ 28%]
+tests/test_h001_mandate_signal.py::TestClassifyEventType::test_industry_plan PASSED [ 29%]
+tests/test_h001_mandate_signal.py::TestClassifyEventType::test_subsidy_support PASSED [ 30%]
+tests/test_h001_mandate_signal.py::TestClassifyEventType::test_procurement_order PASSED [ 31%]
+tests/test_h001_mandate_signal.py::TestClassifyEventType::test_license_approval PASSED [ 32%]
+tests/test_h001_mandate_signal.py::TestClassifyEventType::test_m_and_a_restructuring PASSED [ 34%]
+tests/test_h001_mandate_signal.py::TestClassifyEventType::test_soe_reform PASSED [ 35%]
+tests/test_h001_mandate_signal.py::TestClassifyEventType::test_buyback_rating PASSED [ 36%]
+tests/test_h001_mandate_signal.py::TestClassifyEventType::test_empty_defaults_to_policy_document PASSED [ 37%]
+tests/test_h001_mandate_signal.py::TestClassifyEventType::test_no_match_defaults_to_policy_document PASSED [ 38%]
+tests/test_h001_mandate_signal.py::TestComputeConfidence::test_high_authority_full_evidence PASSED [ 39%]
+tests/test_h001_mandate_signal.py::TestComputeConfidence::test_low_authority_full_evidence PASSED [ 40%]
+tests/test_h001_mandate_signal.py::TestComputeConfidence::test_missing_title_caps_confidence PASSED [ 41%]
+tests/test_h001_mandate_signal.py::TestComputeConfidence::test_missing_date_caps_confidence PASSED [ 42%]
+tests/test_h001_mandate_signal.py::TestComputeConfidence::test_missing_source_caps_confidence PASSED [ 43%]
+tests/test_h001_mandate_signal.py::TestComputeConfidence::test_all_missing_zero FAILED [ 44%]
+tests/test_h001_mandate_signal.py::TestComputeConfidence::test_clamped_between_0_and_1 PASSED [ 45%]
+tests/test_h001_mandate_signal.py::TestComputeConfidence::test_authority_hierarchy PASSED [ 46%]
+tests/test_h001_mandate_signal.py::TestMandateSignal::test_default_values PASSED [ 47%]
+tests/test_h001_mandate_signal.py::TestMandateSignal::test_auto_clamp_confidence_high FAILED [ 48%]
+tests/test_h001_mandate_signal.py::TestMandateSignal::test_auto_clamp_confidence_negative PASSED [ 50%]
+tests/test_h001_mandate_signal.py::TestMandateSignal::test_low_confidence_without_minimum_evidence PASSED [ 51%]
+tests/test_h001_mandate_signal.py::TestMandateSignal::test_high_confidence_with_full_evidence PASSED [ 52%]
+tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_from_enum PASSED [ 53%]
+tests/test_h001_mandate_signal.py::TestMandateSignal::test_event_type_from_enum PASSED [ 54%]
+tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_enum_property PASSED [ 55%]
+tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_enum_property_invalid PASSED [ 56%]
+tests/test_h001_mandate_signal.py::TestMandateSignal::test_event_type_enum_property PASSED [ 57%]
+tests/test_h001_mandate_signal.py::TestMandateSignal::test_event_type_enum_property_invalid PASSED [ 58%]
+tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_weight_central PASSED [ 59%]
+tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_weight_invalid PASSED [ 60%]
+tests/test_h001_mandate_signal.py::TestMandateSignal::test_is_high_authority PASSED [ 61%]
+tests/test_h001_mandate_signal.py::TestMandateSignal::test_to_dict FAILED [ 62%]
+tests/test_h001_mandate_signal.py::TestMandateSignal::test_to_dict_round_trip PASSED [ 63%]
+tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_state_council_event PASSED [ 64%]
+tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_ministry_event PASSED [ 65%]
+tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_local_gov_event PASSED [ 67%]
+tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_company_notice_event PASSED [ 68%]
+tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_media_event PASSED [ 69%]
+tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_preserves_original_data PASSED [ 70%]
+tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_empty_title_skipped PASSED [ 71%]
+tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_missing_fields_low_confidence PASSED [ 72%]
+tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_direction_override PASSED [ 73%]
+tests/test_h001_mandate_signal.py::TestSymbolIsolation::test_events_by_symbol_no_cross_contamination PASSED [ 74%]
+tests/test_h001_mandate_signal.py::TestSymbolIsolation::test_empty_symbol_excluded PASSED [ 75%]
+tests/test_h001_mandate_signal.py::TestSymbolIsolation::test_no_title_items_excluded PASSED [ 76%]
+tests/test_h001_mandate_signal.py::TestSymbolIsolation::test_empty_input PASSED [ 77%]
+tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_valid_signal_no_issues PASSED [ 78%]
+tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_symbol PASSED [ 79%]
+tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_title PASSED [ 80%]
+tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_source PASSED [ 81%]
+tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_date PASSED [ 82%]
+tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_source_level PASSED [ 84%]
+tests/test_h001_mandate_signal.py::TestSourceLevelWeights::test_central_highest PASSED [ 85%]
+tests/test_h001_mandate_signal.py::TestSourceLevelWeights::test_media_lowest PASSED [ 86%]
+tests/test_h001_mandate_signal.py::TestSourceLevelWeights::test_hierarchy_ordering PASSED [ 87%]
+tests/test_h001_mandate_signal.py::TestSourceLevelWeights::test_all_levels_have_weight PASSED [ 88%]
+tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_state_council_signal PASSED [ 89%]
+tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_ministry_signal PASSED [ 90%]
+tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_local_gov_signal PASSED [ 91%]
+tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_company_notice_signal PASSED [ 92%]
+tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_no_cross_contamination PASSED [ 93%]
+tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_confidence_ordering PASSED [ 94%]
+tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_all_signals_have_raw_refs PASSED [ 95%]
+tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_all_signals_valid PASSED [ 96%]
+tests/test_h001_mandate_signal.py::TestNoEvidenceLowConfidence::test_no_source_no_date_no_title_low_confidence PASSED [ 97%]
+tests/test_h001_mandate_signal.py::TestNoEvidenceLowConfidence::test_media_with_evidence_still_lower_than_central_with_evidence FAILED [ 98%]
+tests/test_h001_mandate_signal.py::TestNoEvidenceLowConfidence::test_company_notice_cannot_exceed_state_council FAILED [100%]
+
+=================================== FAILURES ===================================
+_________________ TestComputeConfidence.test_all_missing_zero __________________
+
+self = <tests.test_h001_mandate_signal.TestComputeConfidence object at 0x107cfd0d0>
+
+    def test_all_missing_zero(self):
+        conf = compute_confidence(
+            SourceLevel.MEDIA,
+            has_title=False, has_date=False, has_source=False,
+        )
+>       assert conf == 0.0
+E       assert 0.09 == 0.0
+
+tests/test_h001_mandate_signal.py:208: AssertionError
+______________ TestMandateSignal.test_auto_clamp_confidence_high _______________
+
+self = <tests.test_h001_mandate_signal.TestMandateSignal object at 0x107cff320>
+
+    def test_auto_clamp_confidence_high(self):
+        sig = MandateSignal(confidence=1.5)
+>       assert sig.confidence == 1.0
+E       AssertionError: assert 0.3 == 1.0
+E        +  where 0.3 = MandateSignal(symbol='', topic='', title='', source='', source_level='', date='', evidence_text='', evidence_url='', event_type='', direction='neutral', confidence=0.3, policy_tags=[], industry_tags=[], company_role='', raw_refs=[]).confidence
+
+tests/test_h001_mandate_signal.py:243: AssertionError
+________________________ TestMandateSignal.test_to_dict ________________________
+
+self = <tests.test_h001_mandate_signal.TestMandateSignal object at 0x107cfee10>
+
+    def test_to_dict(self):
+        sig = MandateSignal(
+            symbol="600519.SH",
+            title="test title",
+            source_level="CENTRAL",
+            confidence=0.5,
+            policy_tags=["算力"],
+        )
+        d = sig.to_dict()
+        assert d["symbol"] == "600519.SH"
+        assert d["title"] == "test title"
+        assert d["source_level"] == "CENTRAL"
+>       assert d["confidence"] == 0.5
+E       assert 0.3 == 0.5
+
+tests/test_h001_mandate_signal.py:318: AssertionError
+_ TestNoEvidenceLowConfidence.test_media_with_evidence_still_lower_than_central_with_evidence _
+
+self = <tests.test_h001_mandate_signal.TestNoEvidenceLowConfidence object at 0x107cfc230>
+
+    def test_media_with_evidence_still_lower_than_central_with_evidence(self):
+        media_sig = MandateSignal(
+            symbol="600519.SH",
+            title="东财报道",
+            source="eastmoney",
+            date="2026-06-01",
+            source_level="MEDIA",
+            confidence=0.9,
+        )
+        central_sig = MandateSignal(
+            symbol="600519.SH",
+            title="党中央会议决议",
+            source="xinhua",
+            date="2026-06-01",
+            source_level="CENTRAL",
+            confidence=0.9,
+        )
+>       assert media_sig.confidence < central_sig.confidence
+E       AssertionError: assert 0.9 < 0.9
+docs/task_runs/H-001-20260601-182415/task.md
+# Auto Dev Task Run
+
+- Task: H-001 - 昊天雷达 v0 数据模型与信号分类（P1）
+- Priority: P1
+- Status: CLAIMED
+- Started at: 2026-06-01_18:24:15
+- Git HEAD: a6d4802
+- Test commands: pytest tests/test_h001_mandate_signal.py -q
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+
+exec
+/bin/zsh -lc "git diff -- docs/TASKS.md docs/DEVLOG.md && sed -n '1,260p' tradingagents/tradeflow/mandate_signal.py && printf '\\n---tests part---\\n' && sed -n '1,420p' tests/test_h001_mandate_signal.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index eb758bc..ac74999 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,45 @@
+ 
+ ---
+ 
++## 2026-06-01 | H-001: 昊天雷达 v0 数据模型与信号分类
++
++- **执行者**：OpenCode
++- **任务**：H-001 — 新增政策意图识别的基础数据结构，把政策/事件/产业/公司证据统一归档为可评分的 `MandateSignal`，为后续昊天意志评分提供输入
++- **修改文件**：
++  - `tradingagents/tradeflow/mandate_signal.py` — 新建：[H-001] mandate_signal_model
++    - `SourceLevel` 枚举：CENTRAL / STATE_COUNCIL / MINISTRY / LOCAL_GOV / EXCHANGE / SOE_GROUP / COMPANY_NOTICE / MEDIA（8 级来源权威层级）
++    - `MandateEventType` 枚举：POLICY_DOCUMENT / MEETING_SIGNAL / INDUSTRY_PLAN / SUBSIDY_SUPPORT / PROCUREMENT_ORDER / LICENSE_APPROVAL / M_AND_A_RESTRUCTURING / SOE_REFORM / BUYBACK_RATING（9 类信号）
++    - `MandateSignal` 数据类：symbol / topic / title / source / source_level / date / evidence_text / evidence_url / event_type / direction / confidence / policy_tags / industry_tags / company_role / raw_refs；自动置信度封顶、低证据信号上限 0.3
++    - `classify_source_level()`：基于标题和来源文本的正则匹配，识别来源级别
++    - `classify_event_type()`：基于标题关键词的事件类型分类
++    - `compute_confidence()`：综合来源权重和证据完整度计算置信度；缺失任一关键字段封顶 0.3；全部缺失返回 0.0
++    - `event_item_to_mandate_signal()`：从 `EventItem` 转换为 `MandateSignal`，保留原始 title/source/date/event_type/direction/detail
++    - `convert_event_items()`：批量转换 `items_by_symbol`，按 symbol 隔离，空 symbol 和空标题排除
++    - `validate_mandate_signal()`：校验信号完整性，返回问题列表
++  - `tests/test_h001_mandate_signal.py` — 新建，95 个测试覆盖：
++    - `TestSourceLevelEnum` (4): 全部值、数量、字符串构造、非法值
++    - `TestMandateEventTypeEnum` (2): 全部值、数量
++    - `TestClassifySourceLevel` (17): 党中央/国务院/国办/工信部/证监会/发改委/上交所/国资委/省级/市级/公司公告/东财/财联社/未知/空字符串/来源参数/优先级
++    - `TestClassifyEventType` (12): 各事件类型 + 空标题 + 无匹配默认值
++    - `TestComputeConfidence` (8): 高权威完整证据/低权威/缺标题/缺日期/缺来源/全缺失/范围/层级排序
++    - `TestMandateSignal` (17): 默认值/置信度封顶（有证据/无证据）/负数/低证据上限/高证据放行/枚举构造/属性访问/权重/权威判断/to_dict
++    - `TestEventItemToMandateSignal` (10): 国务院/工信部/地方/公司公告/媒体事件/原始数据保留/空标题/缺字段/方向覆盖
++    - `TestSymbolIsolation` (4): 无交叉污染/空 symbol 排除/空标题排除/空输入
++    - `TestValidateMandateSignal` (6): 合法信号/缺 symbol/缺 title/缺 source/缺 date/缺 source_level
++    - `TestSourceLevelWeights` (4): 最高/最低/层级排序/全部有值
++    - `TestH001FourEventTypes` (9): 四类事件（国务院/部委/地方/公司）集成验证、无交叉污染、置信度排序、raw_refs 完整、全部合法
++    - `TestNoEvidenceLowConfidence` (3): 无证据封顶/媒体<中央/公司<国务院
++- **测试结果**：95 passed (H-001)；225 passed (H-001 + tradeflow 全部)；0 failed
++- **关键逻辑**：
++  - `MandateSignal` 从 `EventItem` 转换时不丢失原始 title/source/date/direction/detail
++  - 缺失 title/source/date 任一的信号置信度封顶 0.3，不得按高级别政策处理
++  - 来源级别通过正则匹配自动分类：中央/国务院 → 部委 → 交易所/国资 → 地方 → 公司公告 → 媒体
++  - 所有信号按 symbol 隔离，不串票
++  - 置信度公式：来源权重 × 0.6 + 证据完整度 × 0.4
++- **执行边界**：未触发 TA、未调用 LLM、未输出强买卖词、未改 `tradingagents/prompts/`、未改生产 `tradingagents.db` schema
++
++---
++
+ ## 2026-06-01 | DATA-P0-603629 任务释放：TA 关键数据源补强
+ 
+ - **执行者**：Codex
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 4fd0754..2b9751b 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -331,7 +331,7 @@
+ ### H-001: 昊天雷达 v0 数据模型与信号分类（P1）
+ - **描述**：新增政策意图识别的基础数据结构，把政策/事件/产业/公司证据统一归档为可评分的 `MandateSignal`，为后续“昊天意志评分”提供输入。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：in_progress -- claimed H-001-20260601-182415
+ - **背景**：
+   - 当前 TradeFlow 已有 `POLICY_VERSION`，但还是关键词加分，不能表达政策级别、连续性、产业链位置和公司受益路径。
+   - 昊天战法第一步不是看 K 线，而是识别“当前版本要扶什么方向、哪些公司可能成为标杆”。
+# [H-001] mandate_signal_model
+"""MandateSignal — policy intent recognition data model for 昊天雷达 v0.
+
+Defines the base data structure for classifying policy / event / industry /
+company evidence into scorable signals that feed into the 昊天意志评分
+(mandate score) pipeline.
+
+Components:
+- SourceLevel enum: authority hierarchy for signal provenance.
+- MandateEventType enum: what kind of mandate / event this signal represents.
+- MandateSignal dataclass: one normalised signal ready for scoring.
+- Converter: event_source.EventItem → MandateSignal (no data loss).
+- Validation: missing source / date / title → low confidence, never high.
+
+Constraints:
+- No LLM calls.
+- No TA triggers.
+- No buy/sell suggestions.
+- No changes to tradingagents/prompts/.
+- Symbol isolation: signals are per-symbol, no cross-contamination.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Optional
+
+
+class SourceLevel(Enum):
+    CENTRAL = "CENTRAL"
+    STATE_COUNCIL = "STATE_COUNCIL"
+    MINISTRY = "MINISTRY"
+    LOCAL_GOV = "LOCAL_GOV"
+    EXCHANGE = "EXCHANGE"
+    SOE_GROUP = "SOE_GROUP"
+    COMPANY_NOTICE = "COMPANY_NOTICE"
+    MEDIA = "MEDIA"
+
+
+class MandateEventType(Enum):
+    POLICY_DOCUMENT = "POLICY_DOCUMENT"
+    MEETING_SIGNAL = "MEETING_SIGNAL"
+    INDUSTRY_PLAN = "INDUSTRY_PLAN"
+    SUBSIDY_SUPPORT = "SUBSIDY_SUPPORT"
+    PROCUREMENT_ORDER = "PROCUREMENT_ORDER"
+    LICENSE_APPROVAL = "LICENSE_APPROVAL"
+    M_AND_A_RESTRUCTURING = "M_AND_A_RESTRUCTURING"
+    SOE_REFORM = "SOE_REFORM"
+    BUYBACK_RATING = "BUYBACK_RATING"
+
+
+_SOURCE_LEVEL_WEIGHT: dict[SourceLevel, float] = {
+    SourceLevel.CENTRAL: 1.0,
+    SourceLevel.STATE_COUNCIL: 0.95,
+    SourceLevel.MINISTRY: 0.8,
+    SourceLevel.EXCHANGE: 0.7,
+    SourceLevel.SOE_GROUP: 0.65,
+    SourceLevel.LOCAL_GOV: 0.5,
+    SourceLevel.COMPANY_NOTICE: 0.3,
+    SourceLevel.MEDIA: 0.15,
+}
+
+_MAX_CONFIDENCE_LOW_EVIDENCE = 0.3
+
+_SOURCE_KEYWORD_PATTERNS: list[tuple[re.Pattern, SourceLevel]] = [
+    (re.compile(r"中共中央|党中央|总书记"), SourceLevel.CENTRAL),
+    (re.compile(r"国务院|国办|国务院办公厅"), SourceLevel.STATE_COUNCIL),
+    (re.compile(
+        r"发改委|工信部|证监会|商务部|科技部|财政部|农业农村部|"
+        r"交通运输部|住建部|教育部|卫健委|自然资源部|生态环境部|"
+        r"人民银行|央行|银保监|金管局|国家能源局|国家数据局"
+    ), SourceLevel.MINISTRY),
+    (re.compile(r"沪深交易所|上交所|深交所|北交所|港交所"), SourceLevel.EXCHANGE),
+    (re.compile(r"国资委|央企|集团"), SourceLevel.SOE_GROUP),
+    (re.compile(
+        r"省|市|区|县|地方|开发区|高新区|管委会|"
+        r"省政府|市政府|区政府|县政府"
+    ), SourceLevel.LOCAL_GOV),
+    (re.compile(r"巨潮资讯|cninfo|公告|公司公告|董事会|股东大会|监事会"), SourceLevel.COMPANY_NOTICE),
+    (re.compile(r"东财|同花顺|新浪财经|财联社|证券时报|证券日报|上海证券报|第一财经|界面新闻|澎湃"), SourceLevel.MEDIA),
+]
+
+_EVENT_TYPE_KEYWORDS: list[tuple[re.Pattern, MandateEventType]] = [
+    (re.compile(r"规划|行动计划|实施方案|指导意见|纲要|意见$|通知$|若干政策"), MandateEventType.POLICY_DOCUMENT),
+    (re.compile(r"会议|座谈会|常务会议|工作会议|专题会|推进会"), MandateEventType.MEETING_SIGNAL),
+    (re.compile(r"产业政策|产业规划|产业集群|产业基地|产业示范"), MandateEventType.INDUSTRY_PLAN),
+    (re.compile(r"补贴|税收优惠|专项资金|财政支持|资助|奖励|扶持资金|贴息"), MandateEventType.SUBSIDY_SUPPORT),
+    (re.compile(r"采购|招标|中标|订单|项目中标|采购订单|集中采购"), MandateEventType.PROCUREMENT_ORDER),
+    (re.compile(r"许可证|牌照|资质|获批|批文|通行证|准入|审批通过"), MandateEventType.LICENSE_APPROVAL),
+    (re.compile(r"并购|重组|吸收合并|战略重组|重大资产重组|收购|兼并"), MandateEventType.M_AND_A_RESTRUCTURING),
+    (re.compile(r"国企改革|混改|国资|股权激励.*国企|央企.*行动|央企改革"), MandateEventType.SOE_REFORM),
+    (re.compile(r"回购|评级|增持|减持|买入评级|卖出评级"), MandateEventType.BUYBACK_RATING),
+]
+
+
+@dataclass
+class MandateSignal:
+    symbol: str = ""
+    topic: str = ""
+    title: str = ""
+    source: str = ""
+    source_level: str = ""
+    date: str = ""
+    evidence_text: str = ""
+    evidence_url: str = ""
+    event_type: str = ""
+    direction: str = "neutral"
+    confidence: float = 0.0
+    policy_tags: list[str] = field(default_factory=list)
+    industry_tags: list[str] = field(default_factory=list)
+    company_role: str = ""
+    raw_refs: list[dict] = field(default_factory=list)
+
+    def __post_init__(self):
+        if isinstance(self.source_level, SourceLevel):
+            self.source_level = self.source_level.value
+        if isinstance(self.event_type, MandateEventType):
+            self.event_type = self.event_type.value
+        self._clamp_confidence()
+
+    def _clamp_confidence(self):
+        self.confidence = max(0.0, min(1.0, self.confidence))
+        if not self._has_minimum_evidence():
+            self.confidence = min(self.confidence, _MAX_CONFIDENCE_LOW_EVIDENCE)
+
+    def _has_minimum_evidence(self) -> bool:
+        return bool(self.title and self.source and self.date)
+
+    @property
+    def source_level_enum(self) -> Optional[SourceLevel]:
+        try:
+            return SourceLevel(self.source_level)
+        except ValueError:
+            return None
+
+    @property
+    def event_type_enum(self) -> Optional[MandateEventType]:
+        try:
+            return MandateEventType(self.event_type)
+        except ValueError:
+            return None
+
+    @property
+    def source_level_weight(self) -> float:
+        sl = self.source_level_enum
+        if sl is None:
+            return 0.0
+        return _SOURCE_LEVEL_WEIGHT.get(sl, 0.0)
+
+    def is_high_authority(self) -> bool:
+        sl = self.source_level_enum
+        if sl is None:
+            return False
+        return _SOURCE_LEVEL_WEIGHT.get(sl, 0.0) >= 0.7
+
+    def to_dict(self) -> dict:
+        return {
+            "symbol": self.symbol,
+            "topic": self.topic,
+            "title": self.title,
+            "source": self.source,
+            "source_level": self.source_level,
+            "date": self.date,
+            "evidence_text": self.evidence_text,
+            "evidence_url": self.evidence_url,
+            "event_type": self.event_type,
+            "direction": self.direction,
+            "confidence": round(self.confidence, 3),
+            "policy_tags": self.policy_tags,
+            "industry_tags": self.industry_tags,
+            "company_role": self.company_role,
+            "raw_refs": self.raw_refs,
+        }
+
+
+def classify_source_level(title: str, source: str = "") -> SourceLevel:
+    if not title and not source:
+        return SourceLevel.MEDIA
+    text = f"{title} {source}"
+    for pattern, level in _SOURCE_KEYWORD_PATTERNS:
+        if pattern.search(text):
+            return level
+    return SourceLevel.MEDIA
+
+
+def classify_event_type(title: str) -> MandateEventType:
+    if not title:
+        return MandateEventType.POLICY_DOCUMENT
+    for pattern, et in _EVENT_TYPE_KEYWORDS:
+        if pattern.search(title):
+            return et
+    return MandateEventType.POLICY_DOCUMENT
+
+
+def compute_confidence(
+    source_level: SourceLevel,
+    has_title: bool,
+    has_date: bool,
+    has_source: bool,
+    has_evidence_text: bool = False,
+) -> float:
+    if not (has_title or has_date or has_source or has_evidence_text):
+        return 0.0
+    weight = _SOURCE_LEVEL_WEIGHT.get(source_level, 0.0)
+    evidence_factor = 0.0
+    if has_title:
+        evidence_factor += 0.35
+    if has_date:
+        evidence_factor += 0.25
+    if has_source:
+        evidence_factor += 0.2
+    if has_evidence_text:
+        evidence_factor += 0.2
+    conf = weight * 0.6 + evidence_factor * 0.4
+    if not (has_title and has_source and has_date):
+        conf = min(conf, _MAX_CONFIDENCE_LOW_EVIDENCE)
+    return round(min(1.0, max(0.0, conf)), 3)
+
+
+def event_item_to_mandate_signal(item, direction: str = "") -> MandateSignal:
+    title = getattr(item, "title", "") or ""
+    source = getattr(item, "source", "") or ""
+    date = getattr(item, "date", "") or ""
+    symbol = getattr(item, "symbol", "") or ""
+    evidence_text = title
+
+    source_level = classify_source_level(title, source)
+    event_type = classify_event_type(title)
+
+    detail = getattr(item, "detail", {}) or {}
+    evidence_url = detail.get("url", "") or detail.get("evidence_url", "")
+    item_direction = direction or getattr(item, "direction", "neutral") or "neutral"
+
+    confidence = compute_confidence(
+        source_level=source_level,
+        has_title=bool(title),
+        has_date=bool(date),
+        has_source=bool(source),
+        has_evidence_text=bool(evidence_text),
+    )
+
+    raw_ref = {
+        "original_title": title,
+        "original_source": source,
+        "original_date": date,
+        "original_event_type": getattr(item, "event_type", ""),
+        "original_direction": getattr(item, "direction", ""),
+    }
+    if detail:
+        raw_ref["detail_keys"] = sorted(detail.keys())
+
+    return MandateSignal(
+        symbol=symbol,
+        topic="",
+        title=title,
+        source=source,
+        source_level=source_level.value,
+        date=date,
+
+---tests part---
+# [H-001] mandate_signal_model
+"""Tests for mandate_signal module — 昊天雷达 v0 data model and signal classification."""
+
+import pytest
+
+from tradingagents.tradeflow.mandate_signal import (
+    MandateSignal,
+    MandateEventType,
+    SourceLevel,
+    classify_source_level,
+    classify_event_type,
+    compute_confidence,
+    event_item_to_mandate_signal,
+    convert_event_items,
+    validate_mandate_signal,
+    _SOURCE_LEVEL_WEIGHT,
+    _MAX_CONFIDENCE_LOW_EVIDENCE,
+)
+from tradingagents.tradeflow.event_source import EventItem
+
+
+# ── SourceLevel enum ──
+
+
+class TestSourceLevelEnum:
+    def test_all_values(self):
+        expected = {
+            "CENTRAL", "STATE_COUNCIL", "MINISTRY", "LOCAL_GOV",
+            "EXCHANGE", "SOE_GROUP", "COMPANY_NOTICE", "MEDIA",
+        }
+        assert {e.value for e in SourceLevel} == expected
+
+    def test_eight_levels(self):
+        assert len(SourceLevel) == 8
+
+    def test_from_string(self):
+        assert SourceLevel("CENTRAL") is SourceLevel.CENTRAL
+
+    def test_invalid_string_raises(self):
+        with pytest.raises(ValueError):
+            SourceLevel("INVALID")
+
+
+# ── MandateEventType enum ──
+
+
+class TestMandateEventTypeEnum:
+    def test_all_values(self):
+        expected = {
+            "POLICY_DOCUMENT", "MEETING_SIGNAL", "INDUSTRY_PLAN",
+            "SUBSIDY_SUPPORT", "PROCUREMENT_ORDER", "LICENSE_APPROVAL",
+            "M_AND_A_RESTRUCTURING", "SOE_REFORM", "BUYBACK_RATING",
+        }
+        assert {e.value for e in MandateEventType} == expected
+
+    def test_nine_types(self):
+        assert len(MandateEventType) == 9
+
+
+# ── Source level classification ──
+
+
+class TestClassifySourceLevel:
+    def test_central_dangzhongyang(self):
+        assert classify_source_level("中共中央关于若干重大问题的决定") == SourceLevel.CENTRAL
+
+    def test_state_council_guowuyuan(self):
+        assert classify_source_level("国务院关于加强低空经济的意见") == SourceLevel.STATE_COUNCIL
+
+    def test_state_council_guoban(self):
+        assert classify_source_level("国办发[2026]1号文件") == SourceLevel.STATE_COUNCIL
+
+    def test_ministry_gongxinbu(self):
+        assert classify_source_level("工信部印发机器人产业发展规划") == SourceLevel.MINISTRY
+
+    def test_ministry_zhengjianhui(self):
+        assert classify_source_level("证监会发布上市公司并购重组规则") == SourceLevel.MINISTRY
+
+    def test_ministry_fagaiwei(self):
+        assert classify_source_level("发改委关于算力基础设施建设的通知") == SourceLevel.MINISTRY
+
+    def test_exchange_sse(self):
+        assert classify_source_level("上交所关于股票异常波动的监管函") == SourceLevel.EXCHANGE
+
+    def test_soe_group_guozijian(self):
+        assert classify_source_level("国资委推动央企深化改革") == SourceLevel.SOE_GROUP
+
+    def test_local_gov_province(self):
+        assert classify_source_level("广东省人民政府关于促进低空经济发展的措施") == SourceLevel.LOCAL_GOV
+
+    def test_local_gov_city(self):
+        assert classify_source_level("深圳市政府发布低空经济行动计划") == SourceLevel.LOCAL_GOV
+
+    def test_company_notice(self):
+        assert classify_source_level("某某公司：董事会关于重大事项的公告") == SourceLevel.COMPANY_NOTICE
+
+    def test_media_dongcai(self):
+        assert classify_source_level("东财：机器人板块掀涨停潮") == SourceLevel.MEDIA
+
+    def test_media_cailianshe(self):
+        assert classify_source_level("财联社报道低空经济政策") == SourceLevel.MEDIA
+
+    def test_unknown_defaults_to_media(self):
+        assert classify_source_level("某公司发布新产品") == SourceLevel.MEDIA
+
+    def test_empty_title_and_source(self):
+        assert classify_source_level("", "") == SourceLevel.MEDIA
+
+    def test_source_param_used(self):
+        assert classify_source_level("", "巨潮资讯") == SourceLevel.COMPANY_NOTICE
+
+    def test_priority_central_over_media(self):
+        assert classify_source_level("党中央召开重要会议，媒体报道") == SourceLevel.CENTRAL
+
+    def test_priority_state_council_over_local(self):
+        assert classify_source_level("国务院和广东省联合发布政策") == SourceLevel.STATE_COUNCIL
+
+
+# ── Event type classification ──
+
+
+class TestClassifyEventType:
+    def test_policy_document_guideline(self):
+        assert classify_event_type("算力基础设施发展指导意见") == MandateEventType.POLICY_DOCUMENT
+
+    def test_policy_document_action_plan(self):
+        assert classify_event_type("机器人产业三年行动计划") == MandateEventType.POLICY_DOCUMENT
+
+    def test_meeting_signal(self):
+        assert classify_event_type("国务院常务会议研究低空经济") == MandateEventType.MEETING_SIGNAL
+
+    def test_industry_plan(self):
+        assert classify_event_type("低空经济产业政策发布") == MandateEventType.INDUSTRY_PLAN
+
+    def test_subsidy_support(self):
+        assert classify_event_type("财政部发布算力补贴政策") == MandateEventType.SUBSIDY_SUPPORT
+
+    def test_procurement_order(self):
+        assert classify_event_type("某公司中标智慧城市采购项目") == MandateEventType.PROCUREMENT_ORDER
+
+    def test_license_approval(self):
+        assert classify_event_type("某公司获得低空飞行许可证") == MandateEventType.LICENSE_APPROVAL
+
+    def test_m_and_a_restructuring(self):
+        assert classify_event_type("某公司发布重大资产重组方案") == MandateEventType.M_AND_A_RESTRUCTURING
+
+    def test_soe_reform(self):
+        assert classify_event_type("国资委推进央企混改") == MandateEventType.SOE_REFORM
+
+    def test_buyback_rating(self):
+        assert classify_event_type("某公司公告回购计划") == MandateEventType.BUYBACK_RATING
+
+    def test_empty_defaults_to_policy_document(self):
+        assert classify_event_type("") == MandateEventType.POLICY_DOCUMENT
+
+    def test_no_match_defaults_to_policy_document(self):
+        assert classify_event_type("某公司发布新产品") == MandateEventType.POLICY_DOCUMENT
+
+
+# ── Confidence computation ──
+
+
+class TestComputeConfidence:
+    def test_high_authority_full_evidence(self):
+        conf = compute_confidence(
+            SourceLevel.STATE_COUNCIL,
+            has_title=True, has_date=True, has_source=True, has_evidence_text=True,
+        )
+        assert conf > 0.5
+        assert conf <= 1.0
+
+    def test_low_authority_full_evidence(self):
+        conf = compute_confidence(
+            SourceLevel.MEDIA,
+            has_title=True, has_date=True, has_source=True, has_evidence_text=True,
+        )
+        assert conf < compute_confidence(
+            SourceLevel.STATE_COUNCIL,
+            has_title=True, has_date=True, has_source=True, has_evidence_text=True,
+        )
+
+    def test_missing_title_caps_confidence(self):
+        conf = compute_confidence(
+            SourceLevel.STATE_COUNCIL,
+            has_title=False, has_date=True, has_source=True,
+        )
+        assert conf <= _MAX_CONFIDENCE_LOW_EVIDENCE
+
+    def test_missing_date_caps_confidence(self):
+        conf = compute_confidence(
+            SourceLevel.MINISTRY,
+            has_title=True, has_date=False, has_source=True,
+        )
+        assert conf <= _MAX_CONFIDENCE_LOW_EVIDENCE
+
+    def test_missing_source_caps_confidence(self):
+        conf = compute_confidence(
+            SourceLevel.CENTRAL,
+            has_title=True, has_date=True, has_source=False,
+        )
+        assert conf <= _MAX_CONFIDENCE_LOW_EVIDENCE
+
+    def test_all_missing_zero(self):
+        conf = compute_confidence(
+            SourceLevel.MEDIA,
+            has_title=False, has_date=False, has_source=False,
+        )
+        assert conf == 0.0
+
+    def test_clamped_between_0_and_1(self):
+        conf = compute_confidence(
+            SourceLevel.CENTRAL,
+            has_title=True, has_date=True, has_source=True, has_evidence_text=True,
+        )
+        assert 0.0 <= conf <= 1.0
+
+    def test_authority_hierarchy(self):
+        levels = [SourceLevel.CENTRAL, SourceLevel.STATE_COUNCIL, SourceLevel.MINISTRY,
+                   SourceLevel.LOCAL_GOV, SourceLevel.COMPANY_NOTICE, SourceLevel.MEDIA]
+        confs = [
+            compute_confidence(l, has_title=True, has_date=True, has_source=True)
+            for l in levels
+        ]
+        for i in range(len(confs) - 1):
+            assert confs[i] >= confs[i + 1]
+
+
+# ── MandateSignal dataclass ──
+
+
+class TestMandateSignal:
+    def test_default_values(self):
+        sig = MandateSignal()
+        assert sig.symbol == ""
+        assert sig.confidence == 0.0
+        assert sig.direction == "neutral"
+        assert sig.policy_tags == []
+        assert sig.industry_tags == []
+        assert sig.raw_refs == []
+
+    def test_auto_clamp_confidence_high_with_evidence(self):
+        sig = MandateSignal(
+            confidence=1.5,
+            title="test", source="s", date="2026-06-01",
+        )
+        assert sig.confidence == 1.0
+
+    def test_auto_clamp_confidence_high_without_evidence(self):
+        sig = MandateSignal(confidence=1.5)
+        assert sig.confidence <= _MAX_CONFIDENCE_LOW_EVIDENCE
+
+    def test_auto_clamp_confidence_negative(self):
+        sig = MandateSignal(confidence=-0.5)
+        assert sig.confidence == 0.0
+
+    def test_low_confidence_without_minimum_evidence(self):
+        sig = MandateSignal(
+            symbol="600519.SH",
+            confidence=0.9,
+            source_level="STATE_COUNCIL",
+        )
+        assert sig.confidence <= _MAX_CONFIDENCE_LOW_EVIDENCE
+
+    def test_high_confidence_with_full_evidence(self):
+        sig = MandateSignal(
+            symbol="600519.SH",
+            title="国务院关于促进低空经济发展的意见",
+            source="gov.cn",
+            date="2026-06-01",
+            source_level="STATE_COUNCIL",
+            confidence=0.8,
+        )
+        assert sig.confidence > _MAX_CONFIDENCE_LOW_EVIDENCE
+
+    def test_source_level_from_enum(self):
+        sig = MandateSignal(source_level=SourceLevel.CENTRAL)
+        assert sig.source_level == "CENTRAL"
+
+    def test_event_type_from_enum(self):
+        sig = MandateSignal(event_type=MandateEventType.MEETING_SIGNAL)
+        assert sig.event_type == "MEETING_SIGNAL"
+
+    def test_source_level_enum_property(self):
+        sig = MandateSignal(source_level="CENTRAL")
+        assert sig.source_level_enum is SourceLevel.CENTRAL
+
+    def test_source_level_enum_property_invalid(self):
+        sig = MandateSignal(source_level="INVALID")
+        assert sig.source_level_enum is None
+
+    def test_event_type_enum_property(self):
+        sig = MandateSignal(event_type="POLICY_DOCUMENT")
+        assert sig.event_type_enum is MandateEventType.POLICY_DOCUMENT
+
+    def test_event_type_enum_property_invalid(self):
+        sig = MandateSignal(event_type="INVALID")
+        assert sig.event_type_enum is None
+
+    def test_source_level_weight_central(self):
+        sig = MandateSignal(source_level="CENTRAL")
+        assert sig.source_level_weight == _SOURCE_LEVEL_WEIGHT[SourceLevel.CENTRAL]
+
+    def test_source_level_weight_invalid(self):
+        sig = MandateSignal(source_level="INVALID")
+        assert sig.source_level_weight == 0.0
+
+    def test_is_high_authority(self):
+        assert MandateSignal(source_level="CENTRAL").is_high_authority() is True
+        assert MandateSignal(source_level="MINISTRY").is_high_authority() is True
+        assert MandateSignal(source_level="MEDIA").is_high_authority() is False
+        assert MandateSignal(source_level="LOCAL_GOV").is_high_authority() is False
+
+    def test_to_dict(self):
+        sig = MandateSignal(
+            symbol="600519.SH",
+            title="test title",
+            source="eastmoney",
+            date="2026-06-01",
+            source_level="CENTRAL",
+            confidence=0.5,
+            policy_tags=["算力"],
+        )
+        d = sig.to_dict()
+        assert d["symbol"] == "600519.SH"
+        assert d["title"] == "test title"
+        assert d["source_level"] == "CENTRAL"
+        assert d["confidence"] == 0.5
+        assert d["policy_tags"] == ["算力"]
+
+    def test_to_dict_round_trip(self):
+        sig = MandateSignal(
+            symbol="000001.SZ",
+            title="test",
+            source="eastmoney",
+            date="2026-06-01",
+            source_level="MINISTRY",
+            event_type="MEETING_SIGNAL",
+            confidence=0.6,
+            raw_refs=[{"k": "v"}],
+        )
+        d = sig.to_dict()
+        assert d["raw_refs"] == [{"k": "v"}]
+
+
+# ── EventItem → MandateSignal conversion ──
+
+
+class TestEventItemToMandateSignal:
+    def test_state_council_event(self):
+        item = EventItem(
+            symbol="600519.SH",
+            name="贵州茅台",
+            event_type="notice",
+            title="国务院关于促进低空经济发展的意见",
+            direction="bullish",
+            date="2026-06-01",
+            source="gov.cn",
+        )
+        sig = event_item_to_mandate_signal(item)
+        assert sig.symbol == "600519.SH"
+        assert sig.source_level == "STATE_COUNCIL"
+        assert sig.confidence > _MAX_CONFIDENCE_LOW_EVIDENCE
+        assert sig.direction == "bullish"
+        assert sig.title == item.title
+        assert len(sig.raw_refs) == 1
+        assert sig.raw_refs[0]["original_title"] == item.title
+
+    def test_ministry_event(self):
+        item = EventItem(
+            symbol="002138.SZ",
+            name="顺络电子",
+            event_type="notice",
+            title="工信部发布半导体产业发展规划",
+            direction="bullish",
+            date="2026-06-01",
+            source="miit.gov.cn",
+        )
+        sig = event_item_to_mandate_signal(item)
+        assert sig.source_level == "MINISTRY"
+        assert sig.is_high_authority() is True
+
+    def test_local_gov_event(self):
+        item = EventItem(
+            symbol="300001.SZ",
+            name="特锐德",
+            event_type="notice",
+            title="深圳市政府发布新能源补贴政策",
+            direction="bullish",
+            date="2026-06-01",
+            source="sz.gov.cn",
+        )
+        sig = event_item_to_mandate_signal(item)
+        assert sig.source_level == "LOCAL_GOV"
+        assert sig.is_high_authority() is False
+
+    def test_company_notice_event(self):
+        item = EventItem(
+            symbol="600036.SH",
+            name="招商银行",
+            event_type="notice",
+            title="招商银行：董事会关于回购股份的公告",
+            direction="bullish",
+            date="2026-06-01",
+            source="eastmoney",
+        )
+        sig = event_item_to_mandate_signal(item)
+        assert sig.source_level == "COMPANY_NOTICE"
+        assert sig.is_high_authority() is False
+
+    def test_media_event(self):
+        item = EventItem(
+            symbol="600519.SH",
+            name="贵州茅台",
+            event_type="notice",
+            title="东财：白酒板块资金流入明显",
+            direction="neutral",
+            date="2026-06-01",
+            source="eastmoney",
+        )
+        sig = event_item_to_mandate_signal(item)
+
+exec
+/bin/zsh -lc "sed -n '260,520p' tradingagents/tradeflow/mandate_signal.py && sed -n '420,900p' tests/test_h001_mandate_signal.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        date=date,
+        evidence_text=evidence_text,
+        evidence_url=evidence_url,
+        event_type=event_type.value,
+        direction=item_direction,
+        confidence=confidence,
+        policy_tags=[],
+        industry_tags=[],
+        company_role="",
+        raw_refs=[raw_ref],
+    )
+
+
+def convert_event_items(
+    items_by_symbol: dict[str, list],
+) -> dict[str, list[MandateSignal]]:
+    result: dict[str, list[MandateSignal]] = {}
+    for symbol, items in items_by_symbol.items():
+        if not symbol:
+            continue
+        signals: list[MandateSignal] = []
+        for item in items:
+            sig = event_item_to_mandate_signal(item)
+            if sig.title:
+                signals.append(sig)
+        if signals:
+            result[symbol] = signals
+    return result
+
+
+def validate_mandate_signal(signal: MandateSignal) -> list[str]:
+    issues: list[str] = []
+    if not signal.symbol:
+        issues.append("missing symbol")
+    if not signal.title:
+        issues.append("missing title")
+    if not signal.source:
+        issues.append("missing source")
+    if not signal.date:
+        issues.append("missing date")
+    if not signal.source_level:
+        issues.append("missing source_level")
+    if not signal.event_type:
+        issues.append("missing event_type")
+    if signal.confidence > _MAX_CONFIDENCE_LOW_EVIDENCE and not signal._has_minimum_evidence():
+        issues.append(
+            f"confidence {signal.confidence} exceeds max {_MAX_CONFIDENCE_LOW_EVIDENCE} "
+            f"for low-evidence signal"
+        )
+    return issues
+        sig = event_item_to_mandate_signal(item)
+        assert sig.source_level == "MEDIA"
+        assert sig.is_high_authority() is False
+
+    def test_preserves_original_data(self):
+        item = EventItem(
+            symbol="600519.SH",
+            name="贵州茅台",
+            event_type="buyback",
+            title="回购计划公告",
+            direction="bullish",
+            date="2026-06-01",
+            source="eastmoney",
+            detail={"url": "http://example.com/123", "amount": "10亿"},
+        )
+        sig = event_item_to_mandate_signal(item)
+        assert sig.evidence_url == "http://example.com/123"
+        assert sig.raw_refs[0]["original_event_type"] == "buyback"
+        assert sig.raw_refs[0]["original_direction"] == "bullish"
+        assert "url" in sig.raw_refs[0]["detail_keys"]
+        assert "amount" in sig.raw_refs[0]["detail_keys"]
+
+    def test_empty_title_skipped(self):
+        item = EventItem(symbol="600519.SH", title="", source="eastmoney")
+        sig = event_item_to_mandate_signal(item)
+        assert sig.title == ""
+
+    def test_missing_fields_low_confidence(self):
+        item = EventItem(
+            symbol="600519.SH",
+            title="",
+            source="",
+            date="",
+        )
+        sig = event_item_to_mandate_signal(item)
+        assert sig.confidence <= _MAX_CONFIDENCE_LOW_EVIDENCE
+
+    def test_direction_override(self):
+        item = EventItem(
+            symbol="600519.SH",
+            title="test",
+            direction="bearish",
+            source="eastmoney",
+            date="2026-06-01",
+        )
+        sig = event_item_to_mandate_signal(item, direction="bullish")
+        assert sig.direction == "bullish"
+
+
+# ── Symbol isolation ──
+
+
+class TestSymbolIsolation:
+    def test_events_by_symbol_no_cross_contamination(self):
+        items = {
+            "600519.SH": [
+                EventItem(symbol="600519.SH", title="茅台公告", source="eastmoney", date="2026-06-01"),
+            ],
+            "000001.SZ": [
+                EventItem(symbol="000001.SZ", title="平安公告", source="eastmoney", date="2026-06-01"),
+            ],
+        }
+        result = convert_event_items(items)
+        assert "600519.SH" in result
+        assert "000001.SZ" in result
+        assert len(result["600519.SH"]) == 1
+        assert len(result["000001.SZ"]) == 1
+        assert result["600519.SH"][0].title == "茅台公告"
+        assert result["000001.SZ"][0].title == "平安公告"
+
+    def test_empty_symbol_excluded(self):
+        items = {
+            "": [
+                EventItem(symbol="", title="test", source="eastmoney", date="2026-06-01"),
+            ],
+            "600519.SH": [
+                EventItem(symbol="600519.SH", title="valid", source="eastmoney", date="2026-06-01"),
+            ],
+        }
+        result = convert_event_items(items)
+        assert "" not in result
+        assert "600519.SH" in result
+
+    def test_no_title_items_excluded(self):
+        items = {
+            "600519.SH": [
+                EventItem(symbol="600519.SH", title="", source="eastmoney", date="2026-06-01"),
+                EventItem(symbol="600519.SH", title="valid title", source="eastmoney", date="2026-06-01"),
+            ],
+        }
+        result = convert_event_items(items)
+        assert len(result["600519.SH"]) == 1
+        assert result["600519.SH"][0].title == "valid title"
+
+    def test_empty_input(self):
+        result = convert_event_items({})
+        assert result == {}
+
+
+# ── Validation ──
+
+
+class TestValidateMandateSignal:
+    def test_valid_signal_no_issues(self):
+        sig = MandateSignal(
+            symbol="600519.SH",
+            title="test title",
+            source="eastmoney",
+            date="2026-06-01",
+            source_level="MEDIA",
+            event_type="POLICY_DOCUMENT",
+        )
+        issues = validate_mandate_signal(sig)
+        assert issues == []
+
+    def test_missing_symbol(self):
+        sig = MandateSignal(title="test", source="s", date="d")
+        issues = validate_mandate_signal(sig)
+        assert any("missing symbol" in i for i in issues)
+
+    def test_missing_title(self):
+        sig = MandateSignal(symbol="600519.SH", source="s", date="d")
+        issues = validate_mandate_signal(sig)
+        assert any("missing title" in i for i in issues)
+
+    def test_missing_source(self):
+        sig = MandateSignal(symbol="600519.SH", title="t", date="d")
+        issues = validate_mandate_signal(sig)
+        assert any("missing source" in i for i in issues)
+
+    def test_missing_date(self):
+        sig = MandateSignal(symbol="600519.SH", title="t", source="s")
+        issues = validate_mandate_signal(sig)
+        assert any("missing date" in i for i in issues)
+
+    def test_missing_source_level(self):
+        sig = MandateSignal(
+            symbol="600519.SH", title="t", source="s", date="d",
+        )
+        issues = validate_mandate_signal(sig)
+        assert any("missing source_level" in i for i in issues)
+
+
+# ── Source level weights ──
+
+
+class TestSourceLevelWeights:
+    def test_central_highest(self):
+        assert _SOURCE_LEVEL_WEIGHT[SourceLevel.CENTRAL] == 1.0
+
+    def test_media_lowest(self):
+        assert _SOURCE_LEVEL_WEIGHT[SourceLevel.MEDIA] == 0.15
+
+    def test_hierarchy_ordering(self):
+        order = [
+            SourceLevel.CENTRAL,
+            SourceLevel.STATE_COUNCIL,
+            SourceLevel.MINISTRY,
+            SourceLevel.EXCHANGE,
+            SourceLevel.SOE_GROUP,
+            SourceLevel.LOCAL_GOV,
+            SourceLevel.COMPANY_NOTICE,
+            SourceLevel.MEDIA,
+        ]
+        for i in range(len(order) - 1):
+            assert _SOURCE_LEVEL_WEIGHT[order[i]] > _SOURCE_LEVEL_WEIGHT[order[i + 1]]
+
+    def test_all_levels_have_weight(self):
+        for level in SourceLevel:
+            assert level in _SOURCE_LEVEL_WEIGHT
+            assert _SOURCE_LEVEL_WEIGHT[level] > 0
+
+
+# ── Integration: full pipeline with four event types ──
+
+
+class TestH001FourEventTypes:
+    def _make_items(self):
+        return {
+            "600519.SH": [
+                EventItem(
+                    symbol="600519.SH",
+                    title="国务院关于促进低空经济发展的意见",
+                    source="gov.cn",
+                    date="2026-06-01",
+                    direction="bullish",
+                    event_type="notice",
+                ),
+            ],
+            "002138.SZ": [
+                EventItem(
+                    symbol="002138.SZ",
+                    title="工信部发布半导体产业发展规划",
+                    source="miit.gov.cn",
+                    date="2026-06-01",
+                    direction="bullish",
+                    event_type="notice",
+                ),
+            ],
+            "300001.SZ": [
+                EventItem(
+                    symbol="300001.SZ",
+                    title="深圳市政府发布新能源补贴政策",
+                    source="sz.gov.cn",
+                    date="2026-06-01",
+                    direction="bullish",
+                    event_type="notice",
+                ),
+            ],
+            "600036.SH": [
+                EventItem(
+                    symbol="600036.SH",
+                    title="招商银行：董事会关于回购股份的公告",
+                    source="eastmoney",
+                    date="2026-06-01",
+                    direction="bullish",
+                    event_type="buyback",
+                ),
+            ],
+        }
+
+    def test_state_council_signal(self):
+        items = self._make_items()
+        result = convert_event_items(items)
+        sig = result["600519.SH"][0]
+        assert sig.source_level == "STATE_COUNCIL"
+        assert sig.is_high_authority() is True
+        assert sig.confidence > _MAX_CONFIDENCE_LOW_EVIDENCE
+
+    def test_ministry_signal(self):
+        items = self._make_items()
+        result = convert_event_items(items)
+        sig = result["002138.SZ"][0]
+        assert sig.source_level == "MINISTRY"
+        assert sig.is_high_authority() is True
+        assert sig.confidence > _MAX_CONFIDENCE_LOW_EVIDENCE
+
+    def test_local_gov_signal(self):
+        items = self._make_items()
+        result = convert_event_items(items)
+        sig = result["300001.SZ"][0]
+        assert sig.source_level == "LOCAL_GOV"
+        assert sig.is_high_authority() is False
+
+    def test_company_notice_signal(self):
+        items = self._make_items()
+        result = convert_event_items(items)
+        sig = result["600036.SH"][0]
+        assert sig.source_level == "COMPANY_NOTICE"
+        assert sig.is_high_authority() is False
+
+    def test_no_cross_contamination(self):
+        items = self._make_items()
+        result = convert_event_items(items)
+        for sym, signals in result.items():
+            for s in signals:
+                assert s.symbol == sym
+
+    def test_confidence_ordering(self):
+        items = self._make_items()
+        result = convert_event_items(items)
+        state_council_conf = result["600519.SH"][0].confidence
+        ministry_conf = result["002138.SZ"][0].confidence
+        local_conf = result["300001.SZ"][0].confidence
+        company_conf = result["600036.SH"][0].confidence
+        assert state_council_conf >= ministry_conf >= local_conf >= company_conf
+
+    def test_all_signals_have_raw_refs(self):
+        items = self._make_items()
+        result = convert_event_items(items)
+        for sym, signals in result.items():
+            for s in signals:
+                assert len(s.raw_refs) == 1
+                assert s.raw_refs[0]["original_title"]
+
+    def test_all_signals_valid(self):
+        items = self._make_items()
+        result = convert_event_items(items)
+        for sym, signals in result.items():
+            for s in signals:
+                issues = validate_mandate_signal(s)
+                critical = [i for i in issues if "missing" in i and "source_level" not in i and "event_type" not in i]
+                assert critical == [], f"{sym} has issues: {issues}"
+
+
+# ── No-evidence signal cannot be high confidence ──
+
+
+class TestNoEvidenceLowConfidence:
+    def test_no_source_no_date_no_title_low_confidence(self):
+        sig = MandateSignal(
+            symbol="600519.SH",
+            source_level="CENTRAL",
+            event_type="POLICY_DOCUMENT",
+            confidence=0.9,
+        )
+        assert sig.confidence <= _MAX_CONFIDENCE_LOW_EVIDENCE
+
+    def test_media_with_evidence_still_lower_than_central_with_evidence(self):
+        media_conf = compute_confidence(
+            SourceLevel.MEDIA,
+            has_title=True, has_date=True, has_source=True,
+        )
+        central_conf = compute_confidence(
+            SourceLevel.CENTRAL,
+            has_title=True, has_date=True, has_source=True,
+        )
+        assert media_conf < central_conf
+
+    def test_company_notice_cannot_exceed_state_council(self):
+        company_conf = compute_confidence(
+            SourceLevel.COMPANY_NOTICE,
+            has_title=True, has_date=True, has_source=True,
+        )
+        state_conf = compute_confidence(
+            SourceLevel.STATE_COUNCIL,
+            has_title=True, has_date=True, has_source=True,
+        )
+        assert company_conf < state_conf
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/mandate_signal.py | sed -n '1,360p'; python -m pytest tests/test_h001_mandate_signal.py -q" in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+     1	# [H-001] mandate_signal_model
+     2	"""MandateSignal — policy intent recognition data model for 昊天雷达 v0.
+     3	
+     4	Defines the base data structure for classifying policy / event / industry /
+     5	company evidence into scorable signals that feed into the 昊天意志评分
+     6	(mandate score) pipeline.
+     7	
+     8	Components:
+     9	- SourceLevel enum: authority hierarchy for signal provenance.
+    10	- MandateEventType enum: what kind of mandate / event this signal represents.
+    11	- MandateSignal dataclass: one normalised signal ready for scoring.
+    12	- Converter: event_source.EventItem → MandateSignal (no data loss).
+    13	- Validation: missing source / date / title → low confidence, never high.
+    14	
+    15	Constraints:
+    16	- No LLM calls.
+    17	- No TA triggers.
+    18	- No buy/sell suggestions.
+    19	- No changes to tradingagents/prompts/.
+    20	- Symbol isolation: signals are per-symbol, no cross-contamination.
+    21	"""
+    22	
+    23	from __future__ import annotations
+    24	
+    25	import re
+    26	from dataclasses import dataclass, field
+    27	from enum import Enum
+    28	from typing import Optional
+    29	
+    30	
+    31	class SourceLevel(Enum):
+    32	    CENTRAL = "CENTRAL"
+    33	    STATE_COUNCIL = "STATE_COUNCIL"
+    34	    MINISTRY = "MINISTRY"
+    35	    LOCAL_GOV = "LOCAL_GOV"
+    36	    EXCHANGE = "EXCHANGE"
+    37	    SOE_GROUP = "SOE_GROUP"
+    38	    COMPANY_NOTICE = "COMPANY_NOTICE"
+    39	    MEDIA = "MEDIA"
+    40	
+    41	
+    42	class MandateEventType(Enum):
+    43	    POLICY_DOCUMENT = "POLICY_DOCUMENT"
+    44	    MEETING_SIGNAL = "MEETING_SIGNAL"
+    45	    INDUSTRY_PLAN = "INDUSTRY_PLAN"
+    46	    SUBSIDY_SUPPORT = "SUBSIDY_SUPPORT"
+    47	    PROCUREMENT_ORDER = "PROCUREMENT_ORDER"
+    48	    LICENSE_APPROVAL = "LICENSE_APPROVAL"
+    49	    M_AND_A_RESTRUCTURING = "M_AND_A_RESTRUCTURING"
+    50	    SOE_REFORM = "SOE_REFORM"
+    51	    BUYBACK_RATING = "BUYBACK_RATING"
+    52	
+    53	
+    54	_SOURCE_LEVEL_WEIGHT: dict[SourceLevel, float] = {
+    55	    SourceLevel.CENTRAL: 1.0,
+    56	    SourceLevel.STATE_COUNCIL: 0.95,
+    57	    SourceLevel.MINISTRY: 0.8,
+    58	    SourceLevel.EXCHANGE: 0.7,
+    59	    SourceLevel.SOE_GROUP: 0.65,
+    60	    SourceLevel.LOCAL_GOV: 0.5,
+    61	    SourceLevel.COMPANY_NOTICE: 0.3,
+    62	    SourceLevel.MEDIA: 0.15,
+    63	}
+    64	
+    65	_MAX_CONFIDENCE_LOW_EVIDENCE = 0.3
+    66	
+    67	_SOURCE_KEYWORD_PATTERNS: list[tuple[re.Pattern, SourceLevel]] = [
+    68	    (re.compile(r"中共中央|党中央|总书记"), SourceLevel.CENTRAL),
+    69	    (re.compile(r"国务院|国办|国务院办公厅"), SourceLevel.STATE_COUNCIL),
+    70	    (re.compile(
+    71	        r"发改委|工信部|证监会|商务部|科技部|财政部|农业农村部|"
+    72	        r"交通运输部|住建部|教育部|卫健委|自然资源部|生态环境部|"
+    73	        r"人民银行|央行|银保监|金管局|国家能源局|国家数据局"
+    74	    ), SourceLevel.MINISTRY),
+    75	    (re.compile(r"沪深交易所|上交所|深交所|北交所|港交所"), SourceLevel.EXCHANGE),
+    76	    (re.compile(r"国资委|央企|集团"), SourceLevel.SOE_GROUP),
+    77	    (re.compile(
+    78	        r"省|市|区|县|地方|开发区|高新区|管委会|"
+    79	        r"省政府|市政府|区政府|县政府"
+    80	    ), SourceLevel.LOCAL_GOV),
+    81	    (re.compile(r"巨潮资讯|cninfo|公告|公司公告|董事会|股东大会|监事会"), SourceLevel.COMPANY_NOTICE),
+    82	    (re.compile(r"东财|同花顺|新浪财经|财联社|证券时报|证券日报|上海证券报|第一财经|界面新闻|澎湃"), SourceLevel.MEDIA),
+    83	]
+    84	
+    85	_EVENT_TYPE_KEYWORDS: list[tuple[re.Pattern, MandateEventType]] = [
+    86	    (re.compile(r"规划|行动计划|实施方案|指导意见|纲要|意见$|通知$|若干政策"), MandateEventType.POLICY_DOCUMENT),
+    87	    (re.compile(r"会议|座谈会|常务会议|工作会议|专题会|推进会"), MandateEventType.MEETING_SIGNAL),
+    88	    (re.compile(r"产业政策|产业规划|产业集群|产业基地|产业示范"), MandateEventType.INDUSTRY_PLAN),
+    89	    (re.compile(r"补贴|税收优惠|专项资金|财政支持|资助|奖励|扶持资金|贴息"), MandateEventType.SUBSIDY_SUPPORT),
+    90	    (re.compile(r"采购|招标|中标|订单|项目中标|采购订单|集中采购"), MandateEventType.PROCUREMENT_ORDER),
+    91	    (re.compile(r"许可证|牌照|资质|获批|批文|通行证|准入|审批通过"), MandateEventType.LICENSE_APPROVAL),
+    92	    (re.compile(r"并购|重组|吸收合并|战略重组|重大资产重组|收购|兼并"), MandateEventType.M_AND_A_RESTRUCTURING),
+    93	    (re.compile(r"国企改革|混改|国资|股权激励.*国企|央企.*行动|央企改革"), MandateEventType.SOE_REFORM),
+    94	    (re.compile(r"回购|评级|增持|减持|买入评级|卖出评级"), MandateEventType.BUYBACK_RATING),
+    95	]
+    96	
+    97	
+    98	@dataclass
+    99	class MandateSignal:
+   100	    symbol: str = ""
+   101	    topic: str = ""
+   102	    title: str = ""
+   103	    source: str = ""
+   104	    source_level: str = ""
+   105	    date: str = ""
+   106	    evidence_text: str = ""
+   107	    evidence_url: str = ""
+   108	    event_type: str = ""
+   109	    direction: str = "neutral"
+   110	    confidence: float = 0.0
+   111	    policy_tags: list[str] = field(default_factory=list)
+   112	    industry_tags: list[str] = field(default_factory=list)
+   113	    company_role: str = ""
+   114	    raw_refs: list[dict] = field(default_factory=list)
+   115	
+   116	    def __post_init__(self):
+   117	        if isinstance(self.source_level, SourceLevel):
+   118	            self.source_level = self.source_level.value
+   119	        if isinstance(self.event_type, MandateEventType):
+   120	            self.event_type = self.event_type.value
+   121	        self._clamp_confidence()
+   122	
+   123	    def _clamp_confidence(self):
+   124	        self.confidence = max(0.0, min(1.0, self.confidence))
+   125	        if not self._has_minimum_evidence():
+   126	            self.confidence = min(self.confidence, _MAX_CONFIDENCE_LOW_EVIDENCE)
+   127	
+   128	    def _has_minimum_evidence(self) -> bool:
+   129	        return bool(self.title and self.source and self.date)
+   130	
+   131	    @property
+   132	    def source_level_enum(self) -> Optional[SourceLevel]:
+   133	        try:
+   134	            return SourceLevel(self.source_level)
+   135	        except ValueError:
+   136	            return None
+   137	
+   138	    @property
+   139	    def event_type_enum(self) -> Optional[MandateEventType]:
+   140	        try:
+   141	            return MandateEventType(self.event_type)
+   142	        except ValueError:
+   143	            return None
+   144	
+   145	    @property
+   146	    def source_level_weight(self) -> float:
+   147	        sl = self.source_level_enum
+   148	        if sl is None:
+   149	            return 0.0
+   150	        return _SOURCE_LEVEL_WEIGHT.get(sl, 0.0)
+   151	
+   152	    def is_high_authority(self) -> bool:
+   153	        sl = self.source_level_enum
+   154	        if sl is None:
+   155	            return False
+   156	        return _SOURCE_LEVEL_WEIGHT.get(sl, 0.0) >= 0.7
+   157	
+   158	    def to_dict(self) -> dict:
+   159	        return {
+   160	            "symbol": self.symbol,
+   161	            "topic": self.topic,
+   162	            "title": self.title,
+   163	            "source": self.source,
+   164	            "source_level": self.source_level,
+   165	            "date": self.date,
+   166	            "evidence_text": self.evidence_text,
+   167	            "evidence_url": self.evidence_url,
+   168	            "event_type": self.event_type,
+   169	            "direction": self.direction,
+   170	            "confidence": round(self.confidence, 3),
+   171	            "policy_tags": self.policy_tags,
+   172	            "industry_tags": self.industry_tags,
+   173	            "company_role": self.company_role,
+   174	            "raw_refs": self.raw_refs,
+   175	        }
+   176	
+   177	
+   178	def classify_source_level(title: str, source: str = "") -> SourceLevel:
+   179	    if not title and not source:
+   180	        return SourceLevel.MEDIA
+   181	    text = f"{title} {source}"
+   182	    for pattern, level in _SOURCE_KEYWORD_PATTERNS:
+   183	        if pattern.search(text):
+   184	            return level
+   185	    return SourceLevel.MEDIA
+   186	
+   187	
+   188	def classify_event_type(title: str) -> MandateEventType:
+   189	    if not title:
+   190	        return MandateEventType.POLICY_DOCUMENT
+   191	    for pattern, et in _EVENT_TYPE_KEYWORDS:
+   192	        if pattern.search(title):
+   193	            return et
+   194	    return MandateEventType.POLICY_DOCUMENT
+   195	
+   196	
+   197	def compute_confidence(
+   198	    source_level: SourceLevel,
+   199	    has_title: bool,
+   200	    has_date: bool,
+   201	    has_source: bool,
+   202	    has_evidence_text: bool = False,
+   203	) -> float:
+   204	    if not (has_title or has_date or has_source or has_evidence_text):
+   205	        return 0.0
+   206	    weight = _SOURCE_LEVEL_WEIGHT.get(source_level, 0.0)
+   207	    evidence_factor = 0.0
+   208	    if has_title:
+   209	        evidence_factor += 0.35
+   210	    if has_date:
+   211	        evidence_factor += 0.25
+   212	    if has_source:
+   213	        evidence_factor += 0.2
+   214	    if has_evidence_text:
+   215	        evidence_factor += 0.2
+   216	    conf = weight * 0.6 + evidence_factor * 0.4
+   217	    if not (has_title and has_source and has_date):
+   218	        conf = min(conf, _MAX_CONFIDENCE_LOW_EVIDENCE)
+   219	    return round(min(1.0, max(0.0, conf)), 3)
+   220	
+   221	
+   222	def event_item_to_mandate_signal(item, direction: str = "") -> MandateSignal:
+   223	    title = getattr(item, "title", "") or ""
+   224	    source = getattr(item, "source", "") or ""
+   225	    date = getattr(item, "date", "") or ""
+   226	    symbol = getattr(item, "symbol", "") or ""
+   227	    evidence_text = title
+   228	
+   229	    source_level = classify_source_level(title, source)
+   230	    event_type = classify_event_type(title)
+   231	
+   232	    detail = getattr(item, "detail", {}) or {}
+   233	    evidence_url = detail.get("url", "") or detail.get("evidence_url", "")
+   234	    item_direction = direction or getattr(item, "direction", "neutral") or "neutral"
+   235	
+   236	    confidence = compute_confidence(
+   237	        source_level=source_level,
+   238	        has_title=bool(title),
+   239	        has_date=bool(date),
+   240	        has_source=bool(source),
+   241	        has_evidence_text=bool(evidence_text),
+   242	    )
+   243	
+   244	    raw_ref = {
+   245	        "original_title": title,
+   246	        "original_source": source,
+   247	        "original_date": date,
+   248	        "original_event_type": getattr(item, "event_type", ""),
+   249	        "original_direction": getattr(item, "direction", ""),
+   250	    }
+   251	    if detail:
+   252	        raw_ref["detail_keys"] = sorted(detail.keys())
+   253	
+   254	    return MandateSignal(
+   255	        symbol=symbol,
+   256	        topic="",
+   257	        title=title,
+   258	        source=source,
+   259	        source_level=source_level.value,
+   260	        date=date,
+   261	        evidence_text=evidence_text,
+   262	        evidence_url=evidence_url,
+   263	        event_type=event_type.value,
+   264	        direction=item_direction,
+   265	        confidence=confidence,
+   266	        policy_tags=[],
+   267	        industry_tags=[],
+   268	        company_role="",
+   269	        raw_refs=[raw_ref],
+   270	    )
+   271	
+   272	
+   273	def convert_event_items(
+   274	    items_by_symbol: dict[str, list],
+   275	) -> dict[str, list[MandateSignal]]:
+   276	    result: dict[str, list[MandateSignal]] = {}
+   277	    for symbol, items in items_by_symbol.items():
+   278	        if not symbol:
+   279	            continue
+   280	        signals: list[MandateSignal] = []
+   281	        for item in items:
+   282	            sig = event_item_to_mandate_signal(item)
+   283	            if sig.title:
+   284	                signals.append(sig)
+   285	        if signals:
+   286	            result[symbol] = signals
+   287	    return result
+   288	
+   289	
+   290	def validate_mandate_signal(signal: MandateSignal) -> list[str]:
+   291	    issues: list[str] = []
+   292	    if not signal.symbol:
+   293	        issues.append("missing symbol")
+   294	    if not signal.title:
+   295	        issues.append("missing title")
+   296	    if not signal.source:
+   297	        issues.append("missing source")
+   298	    if not signal.date:
+   299	        issues.append("missing date")
+   300	    if not signal.source_level:
+   301	        issues.append("missing source_level")
+   302	    if not signal.event_type:
+   303	        issues.append("missing event_type")
+   304	    if signal.confidence > _MAX_CONFIDENCE_LOW_EVIDENCE and not signal._has_minimum_evidence():
+   305	        issues.append(
+   306	            f"confidence {signal.confidence} exceeds max {_MAX_CONFIDENCE_LOW_EVIDENCE} "
+   307	            f"for low-evidence signal"
+   308	        )
+   309	    return issues
+zsh:1: command not found: python
+
+exec
+/bin/zsh -lc "grep -R \"class EventItem\" -n tradingagents/tradeflow/event_source.py tradingagents/tradeflow/*.py | head -20 && sed -n '1,120p' tradingagents/tradeflow/event_source.py && grep -R \"convert_event_items\\|MandateSignal\\|mandate_signal\" -n . --exclude-dir=.git --exclude='*.pyc'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 15695ms:
+./.pytest_cache/v/cache/nodeids:414:  "tests/test_h001_mandate_signal.py::TestClassifyEventType::test_buyback_rating",
+./.pytest_cache/v/cache/nodeids:415:  "tests/test_h001_mandate_signal.py::TestClassifyEventType::test_empty_defaults_to_policy_document",
+./.pytest_cache/v/cache/nodeids:416:  "tests/test_h001_mandate_signal.py::TestClassifyEventType::test_industry_plan",
+./.pytest_cache/v/cache/nodeids:417:  "tests/test_h001_mandate_signal.py::TestClassifyEventType::test_license_approval",
+./.pytest_cache/v/cache/nodeids:418:  "tests/test_h001_mandate_signal.py::TestClassifyEventType::test_m_and_a_restructuring",
+./.pytest_cache/v/cache/nodeids:419:  "tests/test_h001_mandate_signal.py::TestClassifyEventType::test_meeting_signal",
+./.pytest_cache/v/cache/nodeids:420:  "tests/test_h001_mandate_signal.py::TestClassifyEventType::test_no_match_defaults_to_policy_document",
+./.pytest_cache/v/cache/nodeids:421:  "tests/test_h001_mandate_signal.py::TestClassifyEventType::test_policy_document_action_plan",
+./.pytest_cache/v/cache/nodeids:422:  "tests/test_h001_mandate_signal.py::TestClassifyEventType::test_policy_document_guideline",
+./.pytest_cache/v/cache/nodeids:423:  "tests/test_h001_mandate_signal.py::TestClassifyEventType::test_procurement_order",
+./.pytest_cache/v/cache/nodeids:424:  "tests/test_h001_mandate_signal.py::TestClassifyEventType::test_soe_reform",
+./.pytest_cache/v/cache/nodeids:425:  "tests/test_h001_mandate_signal.py::TestClassifyEventType::test_subsidy_support",
+./.pytest_cache/v/cache/nodeids:426:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_central_dangzhongyang",
+./.pytest_cache/v/cache/nodeids:427:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_company_notice",
+./.pytest_cache/v/cache/nodeids:428:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_empty_title_and_source",
+./.pytest_cache/v/cache/nodeids:429:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_exchange_sse",
+./.pytest_cache/v/cache/nodeids:430:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_local_gov_city",
+./.pytest_cache/v/cache/nodeids:431:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_local_gov_province",
+./.pytest_cache/v/cache/nodeids:432:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_media_cailianshe",
+./.pytest_cache/v/cache/nodeids:433:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_media_dongcai",
+./.pytest_cache/v/cache/nodeids:434:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_ministry_fagaiwei",
+./.pytest_cache/v/cache/nodeids:435:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_ministry_gongxinbu",
+./.pytest_cache/v/cache/nodeids:436:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_ministry_zhengjianhui",
+./.pytest_cache/v/cache/nodeids:437:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_priority_central_over_media",
+./.pytest_cache/v/cache/nodeids:438:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_priority_state_council_over_local",
+./.pytest_cache/v/cache/nodeids:439:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_soe_group_guozijian",
+./.pytest_cache/v/cache/nodeids:440:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_source_param_used",
+./.pytest_cache/v/cache/nodeids:441:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_state_council_guoban",
+./.pytest_cache/v/cache/nodeids:442:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_state_council_guowuyuan",
+./.pytest_cache/v/cache/nodeids:443:  "tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_unknown_defaults_to_media",
+./.pytest_cache/v/cache/nodeids:444:  "tests/test_h001_mandate_signal.py::TestComputeConfidence::test_all_missing_zero",
+./.pytest_cache/v/cache/nodeids:445:  "tests/test_h001_mandate_signal.py::TestComputeConfidence::test_authority_hierarchy",
+./.pytest_cache/v/cache/nodeids:446:  "tests/test_h001_mandate_signal.py::TestComputeConfidence::test_clamped_between_0_and_1",
+./.pytest_cache/v/cache/nodeids:447:  "tests/test_h001_mandate_signal.py::TestComputeConfidence::test_high_authority_full_evidence",
+./.pytest_cache/v/cache/nodeids:448:  "tests/test_h001_mandate_signal.py::TestComputeConfidence::test_low_authority_full_evidence",
+./.pytest_cache/v/cache/nodeids:449:  "tests/test_h001_mandate_signal.py::TestComputeConfidence::test_missing_date_caps_confidence",
+./.pytest_cache/v/cache/nodeids:450:  "tests/test_h001_mandate_signal.py::TestComputeConfidence::test_missing_source_caps_confidence",
+./.pytest_cache/v/cache/nodeids:451:  "tests/test_h001_mandate_signal.py::TestComputeConfidence::test_missing_title_caps_confidence",
+./.pytest_cache/v/cache/nodeids:452:  "tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_company_notice_event",
+./.pytest_cache/v/cache/nodeids:453:  "tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_direction_override",
+./.pytest_cache/v/cache/nodeids:454:  "tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_empty_title_skipped",
+./.pytest_cache/v/cache/nodeids:455:  "tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_local_gov_event",
+./.pytest_cache/v/cache/nodeids:456:  "tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_media_event",
+./.pytest_cache/v/cache/nodeids:457:  "tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_ministry_event",
+./.pytest_cache/v/cache/nodeids:458:  "tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_missing_fields_low_confidence",
+./.pytest_cache/v/cache/nodeids:459:  "tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_preserves_original_data",
+./.pytest_cache/v/cache/nodeids:460:  "tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_state_council_event",
+./.pytest_cache/v/cache/nodeids:461:  "tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_all_signals_have_raw_refs",
+./.pytest_cache/v/cache/nodeids:462:  "tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_all_signals_valid",
+./.pytest_cache/v/cache/nodeids:463:  "tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_company_notice_signal",
+./.pytest_cache/v/cache/nodeids:464:  "tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_confidence_ordering",
+./.pytest_cache/v/cache/nodeids:465:  "tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_local_gov_signal",
+./.pytest_cache/v/cache/nodeids:466:  "tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_ministry_signal",
+./.pytest_cache/v/cache/nodeids:467:  "tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_no_cross_contamination",
+./.pytest_cache/v/cache/nodeids:468:  "tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_state_council_signal",
+./.pytest_cache/v/cache/nodeids:469:  "tests/test_h001_mandate_signal.py::TestMandateEventTypeEnum::test_all_values",
+./.pytest_cache/v/cache/nodeids:470:  "tests/test_h001_mandate_signal.py::TestMandateEventTypeEnum::test_nine_types",
+./.pytest_cache/v/cache/nodeids:471:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_auto_clamp_confidence_high",
+./.pytest_cache/v/cache/nodeids:472:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_auto_clamp_confidence_high_with_evidence",
+./.pytest_cache/v/cache/nodeids:473:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_auto_clamp_confidence_high_without_evidence",
+./.pytest_cache/v/cache/nodeids:474:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_auto_clamp_confidence_negative",
+./.pytest_cache/v/cache/nodeids:475:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_default_values",
+./.pytest_cache/v/cache/nodeids:476:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_event_type_enum_property",
+./.pytest_cache/v/cache/nodeids:477:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_event_type_enum_property_invalid",
+./.pytest_cache/v/cache/nodeids:478:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_event_type_from_enum",
+./.pytest_cache/v/cache/nodeids:479:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_high_confidence_with_full_evidence",
+./.pytest_cache/v/cache/nodeids:480:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_is_high_authority",
+./.pytest_cache/v/cache/nodeids:481:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_low_confidence_without_minimum_evidence",
+./.pytest_cache/v/cache/nodeids:482:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_enum_property",
+./.pytest_cache/v/cache/nodeids:483:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_enum_property_invalid",
+./.pytest_cache/v/cache/nodeids:484:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_from_enum",
+./.pytest_cache/v/cache/nodeids:485:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_weight_central",
+./.pytest_cache/v/cache/nodeids:486:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_weight_invalid",
+./.pytest_cache/v/cache/nodeids:487:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_to_dict",
+./.pytest_cache/v/cache/nodeids:488:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_to_dict_round_trip",
+./.pytest_cache/v/cache/nodeids:489:  "tests/test_h001_mandate_signal.py::TestNoEvidenceLowConfidence::test_company_notice_cannot_exceed_state_council",
+./.pytest_cache/v/cache/nodeids:490:  "tests/test_h001_mandate_signal.py::TestNoEvidenceLowConfidence::test_media_with_evidence_still_lower_than_central_with_evidence",
+./.pytest_cache/v/cache/nodeids:491:  "tests/test_h001_mandate_signal.py::TestNoEvidenceLowConfidence::test_no_source_no_date_no_title_low_confidence",
+./.pytest_cache/v/cache/nodeids:492:  "tests/test_h001_mandate_signal.py::TestSourceLevelEnum::test_all_values",
+./.pytest_cache/v/cache/nodeids:493:  "tests/test_h001_mandate_signal.py::TestSourceLevelEnum::test_eight_levels",
+./.pytest_cache/v/cache/nodeids:494:  "tests/test_h001_mandate_signal.py::TestSourceLevelEnum::test_from_string",
+./.pytest_cache/v/cache/nodeids:495:  "tests/test_h001_mandate_signal.py::TestSourceLevelEnum::test_invalid_string_raises",
+./.pytest_cache/v/cache/nodeids:496:  "tests/test_h001_mandate_signal.py::TestSourceLevelWeights::test_all_levels_have_weight",
+./.pytest_cache/v/cache/nodeids:497:  "tests/test_h001_mandate_signal.py::TestSourceLevelWeights::test_central_highest",
+./.pytest_cache/v/cache/nodeids:498:  "tests/test_h001_mandate_signal.py::TestSourceLevelWeights::test_hierarchy_ordering",
+./.pytest_cache/v/cache/nodeids:499:  "tests/test_h001_mandate_signal.py::TestSourceLevelWeights::test_media_lowest",
+./.pytest_cache/v/cache/nodeids:500:  "tests/test_h001_mandate_signal.py::TestSymbolIsolation::test_empty_input",
+./.pytest_cache/v/cache/nodeids:501:  "tests/test_h001_mandate_signal.py::TestSymbolIsolation::test_empty_symbol_excluded",
+./.pytest_cache/v/cache/nodeids:502:  "tests/test_h001_mandate_signal.py::TestSymbolIsolation::test_events_by_symbol_no_cross_contamination",
+./.pytest_cache/v/cache/nodeids:503:  "tests/test_h001_mandate_signal.py::TestSymbolIsolation::test_no_title_items_excluded",
+./.pytest_cache/v/cache/nodeids:504:  "tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_date",
+./.pytest_cache/v/cache/nodeids:505:  "tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_source",
+./.pytest_cache/v/cache/nodeids:506:  "tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_source_level",
+./.pytest_cache/v/cache/nodeids:507:  "tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_symbol",
+./.pytest_cache/v/cache/nodeids:508:  "tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_title",
+./.pytest_cache/v/cache/nodeids:509:  "tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_valid_signal_no_issues",
+./.pytest_cache/v/cache/lastfailed:5:  "tests/test_h001_mandate_signal.py::TestMandateSignal::test_auto_clamp_confidence_high": true
+./tests/test_h001_mandate_signal.py:1:# [H-001] mandate_signal_model
+./tests/test_h001_mandate_signal.py:2:"""Tests for mandate_signal module — 昊天雷达 v0 data model and signal classification."""
+./tests/test_h001_mandate_signal.py:6:from tradingagents.tradeflow.mandate_signal import (
+./tests/test_h001_mandate_signal.py:7:    MandateSignal,
+./tests/test_h001_mandate_signal.py:13:    event_item_to_mandate_signal,
+./tests/test_h001_mandate_signal.py:14:    convert_event_items,
+./tests/test_h001_mandate_signal.py:15:    validate_mandate_signal,
+./tests/test_h001_mandate_signal.py:228:# ── MandateSignal dataclass ──
+./tests/test_h001_mandate_signal.py:231:class TestMandateSignal:
+./tests/test_h001_mandate_signal.py:233:        sig = MandateSignal()
+./tests/test_h001_mandate_signal.py:242:        sig = MandateSignal(
+./tests/test_h001_mandate_signal.py:249:        sig = MandateSignal(confidence=1.5)
+./tests/test_h001_mandate_signal.py:253:        sig = MandateSignal(confidence=-0.5)
+./tests/test_h001_mandate_signal.py:257:        sig = MandateSignal(
+./tests/test_h001_mandate_signal.py:265:        sig = MandateSignal(
+./tests/test_h001_mandate_signal.py:276:        sig = MandateSignal(source_level=SourceLevel.CENTRAL)
+./tests/test_h001_mandate_signal.py:280:        sig = MandateSignal(event_type=MandateEventType.MEETING_SIGNAL)
+./tests/test_h001_mandate_signal.py:284:        sig = MandateSignal(source_level="CENTRAL")
+./tests/test_h001_mandate_signal.py:288:        sig = MandateSignal(source_level="INVALID")
+./tests/test_h001_mandate_signal.py:292:        sig = MandateSignal(event_type="POLICY_DOCUMENT")
+./tests/test_h001_mandate_signal.py:296:        sig = MandateSignal(event_type="INVALID")
+./tests/test_h001_mandate_signal.py:300:        sig = MandateSignal(source_level="CENTRAL")
+./tests/test_h001_mandate_signal.py:304:        sig = MandateSignal(source_level="INVALID")
+./tests/test_h001_mandate_signal.py:308:        assert MandateSignal(source_level="CENTRAL").is_high_authority() is True
+./tests/test_h001_mandate_signal.py:309:        assert MandateSignal(source_level="MINISTRY").is_high_authority() is True
+./tests/test_h001_mandate_signal.py:310:        assert MandateSignal(source_level="MEDIA").is_high_authority() is False
+./tests/test_h001_mandate_signal.py:311:        assert MandateSignal(source_level="LOCAL_GOV").is_high_authority() is False
+./tests/test_h001_mandate_signal.py:314:        sig = MandateSignal(
+./tests/test_h001_mandate_signal.py:331:        sig = MandateSignal(
+./tests/test_h001_mandate_signal.py:345:# ── EventItem → MandateSignal conversion ──
+./tests/test_h001_mandate_signal.py:348:class TestEventItemToMandateSignal:
+./tests/test_h001_mandate_signal.py:359:        sig = event_item_to_mandate_signal(item)
+./tests/test_h001_mandate_signal.py:378:        sig = event_item_to_mandate_signal(item)
+./tests/test_h001_mandate_signal.py:392:        sig = event_item_to_mandate_signal(item)
+./tests/test_h001_mandate_signal.py:406:        sig = event_item_to_mandate_signal(item)
+./tests/test_h001_mandate_signal.py:420:        sig = event_item_to_mandate_signal(item)
+./tests/test_h001_mandate_signal.py:435:        sig = event_item_to_mandate_signal(item)
+./tests/test_h001_mandate_signal.py:444:        sig = event_item_to_mandate_signal(item)
+./tests/test_h001_mandate_signal.py:454:        sig = event_item_to_mandate_signal(item)
+./tests/test_h001_mandate_signal.py:465:        sig = event_item_to_mandate_signal(item, direction="bullish")
+./tests/test_h001_mandate_signal.py:482:        result = convert_event_items(items)
+./tests/test_h001_mandate_signal.py:499:        result = convert_event_items(items)
+./tests/test_h001_mandate_signal.py:510:        result = convert_event_items(items)
+./tests/test_h001_mandate_signal.py:515:        result = convert_event_items({})
+./tests/test_h001_mandate_signal.py:522:class TestValidateMandateSignal:
+./tests/test_h001_mandate_signal.py:524:        sig = MandateSignal(
+./tests/test_h001_mandate_signal.py:532:        issues = validate_mandate_signal(sig)
+./tests/test_h001_mandate_signal.py:536:        sig = MandateSignal(title="test", source="s", date="d")
+./tests/test_h001_mandate_signal.py:537:        issues = validate_mandate_signal(sig)
+./tests/test_h001_mandate_signal.py:541:        sig = MandateSignal(symbol="600519.SH", source="s", date="d")
+./tests/test_h001_mandate_signal.py:542:        issues = validate_mandate_signal(sig)
+./tests/test_h001_mandate_signal.py:546:        sig = MandateSignal(symbol="600519.SH", title="t", date="d")
+./tests/test_h001_mandate_signal.py:547:        issues = validate_mandate_signal(sig)
+./tests/test_h001_mandate_signal.py:551:        sig = MandateSignal(symbol="600519.SH", title="t", source="s")
+./tests/test_h001_mandate_signal.py:552:        issues = validate_mandate_signal(sig)
+./tests/test_h001_mandate_signal.py:556:        sig = MandateSignal(
+./tests/test_h001_mandate_signal.py:559:        issues = validate_mandate_signal(sig)
+./tests/test_h001_mandate_signal.py:643:        result = convert_event_items(items)
+./tests/test_h001_mandate_signal.py:651:        result = convert_event_items(items)
+./tests/test_h001_mandate_signal.py:659:        result = convert_event_items(items)
+./tests/test_h001_mandate_signal.py:666:        result = convert_event_items(items)
+./tests/test_h001_mandate_signal.py:673:        result = convert_event_items(items)
+./tests/test_h001_mandate_signal.py:680:        result = convert_event_items(items)
+./tests/test_h001_mandate_signal.py:689:        result = convert_event_items(items)
+./tests/test_h001_mandate_signal.py:697:        result = convert_event_items(items)
+./tests/test_h001_mandate_signal.py:700:                issues = validate_mandate_signal(s)
+./tests/test_h001_mandate_signal.py:710:        sig = MandateSignal(
+./docs/task_runs/H-001-20260601-182415/tests-round1.txt:1:## pytest tests/test_h001_mandate_signal.py -q
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:11:[ ] Create tradingagents/tradeflow/mandate_signal.py with MandateSignal, enums, and converters
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:12:[ ] Create tests/test_h001_mandate_signal.py with comprehensive test coverage
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:28:[•] Create tradingagents/tradeflow/mandate_signal.py with MandateSignal, enums, and converters
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:29:[ ] Create tests/test_h001_mandate_signal.py with comprehensive test coverage
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:33:Now I'll create the `mandate_signal.py` module:
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:34:[0m← [0mWrite tradingagents/tradeflow/mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:38:[0m← [0mWrite tests/test_h001_mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:44:[✓] Create tradingagents/tradeflow/mandate_signal.py with MandateSignal, enums, and converters
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:45:[✓] Create tests/test_h001_mandate_signal.py with comprehensive test coverage
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:49:[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_h001_mandate_signal.py -v 2>&1
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:58:tests/test_h001_mandate_signal.py::TestSourceLevelEnum::test_all_values PASSED [  1%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:59:tests/test_h001_mandate_signal.py::TestSourceLevelEnum::test_eight_levels PASSED [  2%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:60:tests/test_h001_mandate_signal.py::TestSourceLevelEnum::test_from_string PASSED [  3%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:61:tests/test_h001_mandate_signal.py::TestSourceLevelEnum::test_invalid_string_raises PASSED [  4%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:62:tests/test_h001_mandate_signal.py::TestMandateEventTypeEnum::test_all_values PASSED [  5%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:63:tests/test_h001_mandate_signal.py::TestMandateEventTypeEnum::test_nine_types PASSED [  6%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:64:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_central_dangzhongyang PASSED [  7%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:65:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_state_council_guowuyuan PASSED [  8%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:66:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_state_council_guoban PASSED [  9%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:67:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_ministry_gongxinbu PASSED [ 10%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:68:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_ministry_zhengjianhui PASSED [ 11%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:69:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_ministry_fagaiwei PASSED [ 12%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:70:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_exchange_sse PASSED [ 13%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:71:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_soe_group_guozijian PASSED [ 14%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:72:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_local_gov_province PASSED [ 15%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:73:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_local_gov_city PASSED [ 17%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:74:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_company_notice PASSED [ 18%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:75:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_media_dongcai PASSED [ 19%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:76:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_media_cailianshe PASSED [ 20%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:77:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_unknown_defaults_to_media PASSED [ 21%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:78:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_empty_title_and_source PASSED [ 22%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:79:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_source_param_used PASSED [ 23%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:80:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_priority_central_over_media PASSED [ 24%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:81:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_priority_state_council_over_local PASSED [ 25%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:82:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_policy_document_guideline PASSED [ 26%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:83:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_policy_document_action_plan PASSED [ 27%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:84:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_meeting_signal PASSED [ 28%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:85:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_industry_plan PASSED [ 29%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:86:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_subsidy_support PASSED [ 30%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:87:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_procurement_order PASSED [ 31%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:88:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_license_approval PASSED [ 32%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:89:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_m_and_a_restructuring PASSED [ 34%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:90:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_soe_reform PASSED [ 35%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:91:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_buyback_rating PASSED [ 36%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:92:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_empty_defaults_to_policy_document PASSED [ 37%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:93:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_no_match_defaults_to_policy_document PASSED [ 38%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:94:tests/test_h001_mandate_signal.py::TestComputeConfidence::test_high_authority_full_evidence PASSED [ 39%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:95:tests/test_h001_mandate_signal.py::TestComputeConfidence::test_low_authority_full_evidence PASSED [ 40%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:96:tests/test_h001_mandate_signal.py::TestComputeConfidence::test_missing_title_caps_confidence PASSED [ 41%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:97:tests/test_h001_mandate_signal.py::TestComputeConfidence::test_missing_date_caps_confidence PASSED [ 42%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:98:tests/test_h001_mandate_signal.py::TestComputeConfidence::test_missing_source_caps_confidence PASSED [ 43%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:99:tests/test_h001_mandate_signal.py::TestComputeConfidence::test_all_missing_zero FAILED [ 44%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:100:tests/test_h001_mandate_signal.py::TestComputeConfidence::test_clamped_between_0_and_1 PASSED [ 45%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:101:tests/test_h001_mandate_signal.py::TestComputeConfidence::test_authority_hierarchy PASSED [ 46%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:102:tests/test_h001_mandate_signal.py::TestMandateSignal::test_default_values PASSED [ 47%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:103:tests/test_h001_mandate_signal.py::TestMandateSignal::test_auto_clamp_confidence_high FAILED [ 48%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:104:tests/test_h001_mandate_signal.py::TestMandateSignal::test_auto_clamp_confidence_negative PASSED [ 50%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:105:tests/test_h001_mandate_signal.py::TestMandateSignal::test_low_confidence_without_minimum_evidence PASSED [ 51%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:106:tests/test_h001_mandate_signal.py::TestMandateSignal::test_high_confidence_with_full_evidence PASSED [ 52%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:107:tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_from_enum PASSED [ 53%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:108:tests/test_h001_mandate_signal.py::TestMandateSignal::test_event_type_from_enum PASSED [ 54%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:109:tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_enum_property PASSED [ 55%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:110:tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_enum_property_invalid PASSED [ 56%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:111:tests/test_h001_mandate_signal.py::TestMandateSignal::test_event_type_enum_property PASSED [ 57%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:112:tests/test_h001_mandate_signal.py::TestMandateSignal::test_event_type_enum_property_invalid PASSED [ 58%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:113:tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_weight_central PASSED [ 59%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:114:tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_weight_invalid PASSED [ 60%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:115:tests/test_h001_mandate_signal.py::TestMandateSignal::test_is_high_authority PASSED [ 61%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:116:tests/test_h001_mandate_signal.py::TestMandateSignal::test_to_dict FAILED [ 62%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:117:tests/test_h001_mandate_signal.py::TestMandateSignal::test_to_dict_round_trip PASSED [ 63%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:118:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_state_council_event PASSED [ 64%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:119:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_ministry_event PASSED [ 65%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:120:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_local_gov_event PASSED [ 67%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:121:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_company_notice_event PASSED [ 68%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:122:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_media_event PASSED [ 69%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:123:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_preserves_original_data PASSED [ 70%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:124:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_empty_title_skipped PASSED [ 71%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:125:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_missing_fields_low_confidence PASSED [ 72%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:126:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_direction_override PASSED [ 73%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:127:tests/test_h001_mandate_signal.py::TestSymbolIsolation::test_events_by_symbol_no_cross_contamination PASSED [ 74%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:128:tests/test_h001_mandate_signal.py::TestSymbolIsolation::test_empty_symbol_excluded PASSED [ 75%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:129:tests/test_h001_mandate_signal.py::TestSymbolIsolation::test_no_title_items_excluded PASSED [ 76%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:130:tests/test_h001_mandate_signal.py::TestSymbolIsolation::test_empty_input PASSED [ 77%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:131:tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_valid_signal_no_issues PASSED [ 78%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:132:tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_symbol PASSED [ 79%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:133:tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_title PASSED [ 80%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:134:tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_source PASSED [ 81%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:135:tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_date PASSED [ 82%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:136:tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_source_level PASSED [ 84%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:137:tests/test_h001_mandate_signal.py::TestSourceLevelWeights::test_central_highest PASSED [ 85%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:138:tests/test_h001_mandate_signal.py::TestSourceLevelWeights::test_media_lowest PASSED [ 86%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:139:tests/test_h001_mandate_signal.py::TestSourceLevelWeights::test_hierarchy_ordering PASSED [ 87%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:140:tests/test_h001_mandate_signal.py::TestSourceLevelWeights::test_all_levels_have_weight PASSED [ 88%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:141:tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_state_council_signal PASSED [ 89%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:142:tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_ministry_signal PASSED [ 90%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:143:tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_local_gov_signal PASSED [ 91%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:144:tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_company_notice_signal PASSED [ 92%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:145:tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_no_cross_contamination PASSED [ 93%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:146:tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_confidence_ordering PASSED [ 94%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:147:tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_all_signals_have_raw_refs PASSED [ 95%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:148:tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_all_signals_valid PASSED [ 96%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:149:tests/test_h001_mandate_signal.py::TestNoEvidenceLowConfidence::test_no_source_no_date_no_title_low_confidence PASSED [ 97%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:150:tests/test_h001_mandate_signal.py::TestNoEvidenceLowConfidence::test_media_with_evidence_still_lower_than_central_with_evidence FAILED [ 98%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:151:tests/test_h001_mandate_signal.py::TestNoEvidenceLowConfidence::test_company_notice_cannot_exceed_state_council FAILED [100%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:156:self = <tests.test_h001_mandate_signal.TestComputeConfidence object at 0x107cfd0d0>
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:166:tests/test_h001_mandate_signal.py:208: AssertionError
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:167:______________ TestMandateSignal.test_auto_clamp_confidence_high _______________
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:169:self = <tests.test_h001_mandate_signal.TestMandateSignal object at 0x107cff320>
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:172:        sig = MandateSignal(confidence=1.5)
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:175:E        +  where 0.3 = MandateSignal(symbol='', topic='', title='', source='', source_level='', date='', evidence_text='', evidence_url='', event_type='', direction='neutral', confidence=0.3, policy_tags=[], industry_tags=[], company_role='', raw_refs=[]).confidence
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:177:tests/test_h001_mandate_signal.py:243: AssertionError
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:178:________________________ TestMandateSignal.test_to_dict ________________________
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:180:self = <tests.test_h001_mandate_signal.TestMandateSignal object at 0x107cfee10>
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:183:        sig = MandateSignal(
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:197:tests/test_h001_mandate_signal.py:318: AssertionError
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:200:self = <tests.test_h001_mandate_signal.TestNoEvidenceLowConfidence object at 0x107cfc230>
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:203:        media_sig = MandateSignal(
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:211:        central_sig = MandateSignal(
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:221:E        +  where 0.9 = MandateSignal(symbol='600519.SH', topic='', title='东财报道', source='eastmoney', source_level='MEDIA', date='2026-06-01', evidence_text='', evidence_url='', event_type='', direction='neutral', confidence=0.9, policy_tags=[], industry_tags=[], company_role='', raw_refs=[]).confidence
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:222:E        +  and   0.9 = MandateSignal(symbol='600519.SH', topic='', title='党中央会议决议', source='xinhua', source_level='CENTRAL', date='2026-06-01', evidence_text='', evidence_url='', event_type='', direction='neutral', confidence=0.9, policy_tags=[], industry_tags=[], company_role='', raw_refs=[]).confidence
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:224:tests/test_h001_mandate_signal.py:726: AssertionError
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:227:self = <tests.test_h001_mandate_signal.TestNoEvidenceLowConfidence object at 0x107cff3b0>
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:230:        company_sig = MandateSignal(
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:238:        state_sig = MandateSignal(
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:248:E        +  where 0.9 = MandateSignal(symbol='600519.SH', topic='', title='公司公告', source='eastmoney', source_level='COMPANY_NOTICE', date='2026-06-01', evidence_text='', evidence_url='', event_type='', direction='neutral', confidence=0.9, policy_tags=[], industry_tags=[], company_role='', raw_refs=[]).confidence
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:249:E        +  and   0.9 = MandateSignal(symbol='600519.SH', topic='', title='国务院政策', source='gov.cn', source_level='STATE_COUNCIL', date='2026-06-01', evidence_text='', evidence_url='', event_type='', direction='neutral', confidence=0.9, policy_tags=[], industry_tags=[], company_role='', raw_refs=[]).confidence
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:251:tests/test_h001_mandate_signal.py:745: AssertionError
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:253:FAILED tests/test_h001_mandate_signal.py::TestComputeConfidence::test_all_missing_zero
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:254:FAILED tests/test_h001_mandate_signal.py::TestMandateSignal::test_auto_clamp_confidence_high
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:255:FAILED tests/test_h001_mandate_signal.py::TestMandateSignal::test_to_dict - a...
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:256:FAILED tests/test_h001_mandate_signal.py::TestNoEvidenceLowConfidence::test_media_with_evidence_still_lower_than_central_with_evidence
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:257:FAILED tests/test_h001_mandate_signal.py::TestNoEvidenceLowConfidence::test_company_notice_cannot_exceed_state_council
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:260:[0m← [0mEdit tradingagents/tradeflow/mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:261:Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:263:--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:264:+++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:280:[0m← [0mEdit tests/test_h001_mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:281:Index: /Users/maybee/TradingAgents-AShare/tests/test_h001_mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:283:--- /Users/maybee/TradingAgents-AShare/tests/test_h001_mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:284:+++ /Users/maybee/TradingAgents-AShare/tests/test_h001_mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:291:-    sig = MandateSignal(confidence=1.5)
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:293:+    sig = MandateSignal(
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:300:+    sig = MandateSignal(confidence=1.5)
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:304:     sig = MandateSignal(confidence=-0.5)
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:309:[0m← [0mEdit tests/test_h001_mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:310:Index: /Users/maybee/TradingAgents-AShare/tests/test_h001_mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:312:--- /Users/maybee/TradingAgents-AShare/tests/test_h001_mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:313:+++ /Users/maybee/TradingAgents-AShare/tests/test_h001_mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:316:     sig = MandateSignal(
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:327:[0m← [0mEdit tests/test_h001_mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:328:Index: /Users/maybee/TradingAgents-AShare/tests/test_h001_mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:330:--- /Users/maybee/TradingAgents-AShare/tests/test_h001_mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:331:+++ /Users/maybee/TradingAgents-AShare/tests/test_h001_mandate_signal.py
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:337:-    media_sig = MandateSignal(
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:348:-    central_sig = MandateSignal(
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:363:-    company_sig = MandateSignal(
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:374:-    state_sig = MandateSignal(
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:389:[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_h001_mandate_signal.py -v 2>&1
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:398:tests/test_h001_mandate_signal.py::TestSourceLevelEnum::test_all_values PASSED [  1%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:399:tests/test_h001_mandate_signal.py::TestSourceLevelEnum::test_eight_levels PASSED [  2%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:400:tests/test_h001_mandate_signal.py::TestSourceLevelEnum::test_from_string PASSED [  3%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:401:tests/test_h001_mandate_signal.py::TestSourceLevelEnum::test_invalid_string_raises PASSED [  4%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:402:tests/test_h001_mandate_signal.py::TestMandateEventTypeEnum::test_all_values PASSED [  5%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:403:tests/test_h001_mandate_signal.py::TestMandateEventTypeEnum::test_nine_types PASSED [  6%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:404:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_central_dangzhongyang PASSED [  7%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:405:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_state_council_guowuyuan PASSED [  8%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:406:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_state_council_guoban PASSED [  9%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:407:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_ministry_gongxinbu PASSED [ 10%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:408:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_ministry_zhengjianhui PASSED [ 11%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:409:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_ministry_fagaiwei PASSED [ 12%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:410:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_exchange_sse PASSED [ 13%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:411:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_soe_group_guozijian PASSED [ 14%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:412:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_local_gov_province PASSED [ 15%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:413:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_local_gov_city PASSED [ 16%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:414:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_company_notice PASSED [ 17%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:415:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_media_dongcai PASSED [ 18%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:416:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_media_cailianshe PASSED [ 20%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:417:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_unknown_defaults_to_media PASSED [ 21%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:418:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_empty_title_and_source PASSED [ 22%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:419:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_source_param_used PASSED [ 23%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:420:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_priority_central_over_media PASSED [ 24%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:421:tests/test_h001_mandate_signal.py::TestClassifySourceLevel::test_priority_state_council_over_local PASSED [ 25%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:422:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_policy_document_guideline PASSED [ 26%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:423:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_policy_document_action_plan PASSED [ 27%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:424:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_meeting_signal PASSED [ 28%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:425:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_industry_plan PASSED [ 29%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:426:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_subsidy_support PASSED [ 30%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:427:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_procurement_order PASSED [ 31%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:428:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_license_approval PASSED [ 32%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:429:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_m_and_a_restructuring PASSED [ 33%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:430:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_soe_reform PASSED [ 34%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:431:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_buyback_rating PASSED [ 35%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:432:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_empty_defaults_to_policy_document PASSED [ 36%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:433:tests/test_h001_mandate_signal.py::TestClassifyEventType::test_no_match_defaults_to_policy_document PASSED [ 37%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:434:tests/test_h001_mandate_signal.py::TestComputeConfidence::test_high_authority_full_evidence PASSED [ 38%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:435:tests/test_h001_mandate_signal.py::TestComputeConfidence::test_low_authority_full_evidence PASSED [ 40%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:436:tests/test_h001_mandate_signal.py::TestComputeConfidence::test_missing_title_caps_confidence PASSED [ 41%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:437:tests/test_h001_mandate_signal.py::TestComputeConfidence::test_missing_date_caps_confidence PASSED [ 42%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:438:tests/test_h001_mandate_signal.py::TestComputeConfidence::test_missing_source_caps_confidence PASSED [ 43%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:439:tests/test_h001_mandate_signal.py::TestComputeConfidence::test_all_missing_zero PASSED [ 44%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:440:tests/test_h001_mandate_signal.py::TestComputeConfidence::test_clamped_between_0_and_1 PASSED [ 45%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:441:tests/test_h001_mandate_signal.py::TestComputeConfidence::test_authority_hierarchy PASSED [ 46%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:442:tests/test_h001_mandate_signal.py::TestMandateSignal::test_default_values PASSED [ 47%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:443:tests/test_h001_mandate_signal.py::TestMandateSignal::test_auto_clamp_confidence_high_with_evidence PASSED [ 48%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:444:tests/test_h001_mandate_signal.py::TestMandateSignal::test_auto_clamp_confidence_high_without_evidence PASSED [ 49%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:445:tests/test_h001_mandate_signal.py::TestMandateSignal::test_auto_clamp_confidence_negative PASSED [ 50%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:446:tests/test_h001_mandate_signal.py::TestMandateSignal::test_low_confidence_without_minimum_evidence PASSED [ 51%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:447:tests/test_h001_mandate_signal.py::TestMandateSignal::test_high_confidence_with_full_evidence PASSED [ 52%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:448:tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_from_enum PASSED [ 53%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:449:tests/test_h001_mandate_signal.py::TestMandateSignal::test_event_type_from_enum PASSED [ 54%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:450:tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_enum_property PASSED [ 55%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:451:tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_enum_property_invalid PASSED [ 56%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:452:tests/test_h001_mandate_signal.py::TestMandateSignal::test_event_type_enum_property PASSED [ 57%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:453:tests/test_h001_mandate_signal.py::TestMandateSignal::test_event_type_enum_property_invalid PASSED [ 58%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:454:tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_weight_central PASSED [ 60%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:455:tests/test_h001_mandate_signal.py::TestMandateSignal::test_source_level_weight_invalid PASSED [ 61%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:456:tests/test_h001_mandate_signal.py::TestMandateSignal::test_is_high_authority PASSED [ 62%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:457:tests/test_h001_mandate_signal.py::TestMandateSignal::test_to_dict PASSED [ 63%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:458:tests/test_h001_mandate_signal.py::TestMandateSignal::test_to_dict_round_trip PASSED [ 64%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:459:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_state_council_event PASSED [ 65%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:460:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_ministry_event PASSED [ 66%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:461:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_local_gov_event PASSED [ 67%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:462:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_company_notice_event PASSED [ 68%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:463:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_media_event PASSED [ 69%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:464:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_preserves_original_data PASSED [ 70%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:465:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_empty_title_skipped PASSED [ 71%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:466:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_missing_fields_low_confidence PASSED [ 72%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:467:tests/test_h001_mandate_signal.py::TestEventItemToMandateSignal::test_direction_override PASSED [ 73%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:468:tests/test_h001_mandate_signal.py::TestSymbolIsolation::test_events_by_symbol_no_cross_contamination PASSED [ 74%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:469:tests/test_h001_mandate_signal.py::TestSymbolIsolation::test_empty_symbol_excluded PASSED [ 75%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:470:tests/test_h001_mandate_signal.py::TestSymbolIsolation::test_no_title_items_excluded PASSED [ 76%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:471:tests/test_h001_mandate_signal.py::TestSymbolIsolation::test_empty_input PASSED [ 77%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:472:tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_valid_signal_no_issues PASSED [ 78%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:473:tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_symbol PASSED [ 80%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:474:tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_title PASSED [ 81%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:475:tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_source PASSED [ 82%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:476:tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_date PASSED [ 83%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:477:tests/test_h001_mandate_signal.py::TestValidateMandateSignal::test_missing_source_level PASSED [ 84%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:478:tests/test_h001_mandate_signal.py::TestSourceLevelWeights::test_central_highest PASSED [ 85%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:479:tests/test_h001_mandate_signal.py::TestSourceLevelWeights::test_media_lowest PASSED [ 86%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:480:tests/test_h001_mandate_signal.py::TestSourceLevelWeights::test_hierarchy_ordering PASSED [ 87%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:481:tests/test_h001_mandate_signal.py::TestSourceLevelWeights::test_all_levels_have_weight PASSED [ 88%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:482:tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_state_council_signal PASSED [ 89%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:483:tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_ministry_signal PASSED [ 90%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:484:tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_local_gov_signal PASSED [ 91%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:485:tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_company_notice_signal PASSED [ 92%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:486:tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_no_cross_contamination PASSED [ 93%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:487:tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_confidence_ordering PASSED [ 94%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:488:tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_all_signals_have_raw_refs PASSED [ 95%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:489:tests/test_h001_mandate_signal.py::TestH001FourEventTypes::test_all_signals_valid PASSED [ 96%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:490:tests/test_h001_mandate_signal.py::TestNoEvidenceLowConfidence::test_no_source_no_date_no_title_low_confidence PASSED [ 97%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:491:tests/test_h001_mandate_signal.py::TestNoEvidenceLowConfidence::test_media_with_evidence_still_lower_than_central_with_evidence PASSED [ 98%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:492:tests/test_h001_mandate_signal.py::TestNoEvidenceLowConfidence::test_company_notice_cannot_exceed_state_council PASSED [100%]
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:502:[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_h001_mandate_signal.py tests/test_tradeflow_*.py -q 2>&1 | tail -5
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:512:[✓] Create tradingagents/tradeflow/mandate_signal.py with MandateSignal, enums, and converters
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:513:[✓] Create tests/test_h001_mandate_signal.py with comprehensive test coverage
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:531:+- **任务**：H-001 — 新增政策意图识别的基础数据结构，把政策/事件/产业/公司证据统一归档为可评分的 `MandateSignal`，为后续昊天意志评分提供输入
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:533:+  - `tradingagents/tradeflow/mandate_signal.py` — 新建：[H-001] mandate_signal_model
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:536:+    - `MandateSignal` 数据类：symbol / topic / title / source / source_level / date / evidence_text / evidence_url / event_type / direction / confidence / policy_tags / industry_tags / company_role / raw_refs；自动置信度封顶、低证据信号上限 0.3
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:540:+    - `event_item_to_mandate_signal()`：从 `EventItem` 转换为 `MandateSignal`，保留原始 title/source/date/event_type/direction/detail
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:541:+    - `convert_event_items()`：批量转换 `items_by_symbol`，按 symbol 隔离，空 symbol 和空标题排除
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:542:+    - `validate_mandate_signal()`：校验信号完整性，返回问题列表
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:543:+  - `tests/test_h001_mandate_signal.py` — 新建，95 个测试覆盖：
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:549:+    - `TestMandateSignal` (17): 默认值/置信度封顶（有证据/无证据）/负数/低证据上限/高证据放行/枚举构造/属性访问/权重/权威判断/to_dict
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:550:+    - `TestEventItemToMandateSignal` (10): 国务院/工信部/地方/公司公告/媒体事件/原始数据保留/空标题/缺字段/方向覆盖
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:552:+    - `TestValidateMandateSignal` (6): 合法信号/缺 symbol/缺 title/缺 source/缺 date/缺 source_level
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:558:+  - `MandateSignal` 从 `EventItem` 转换时不丢失原始 title/source/date/direction/detail
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:576:[✓] Create tradingagents/tradeflow/mandate_signal.py with MandateSignal, enums, and converters
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:577:[✓] Create tests/test_h001_mandate_signal.py with comprehensive test coverage
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:584:- **`tradingagents/tradeflow/mandate_signal.py`** (new) — core module
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:585:- **`tests/test_h001_mandate_signal.py`** (new) — 95 tests
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:591:3. **`MandateSignal`** dataclass with auto-clamped confidence — missing title/source/date caps at 0.3
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:592:4. **`event_item_to_mandate_signal()`** converter preserves original title/source/date/direction/detail in `raw_refs`
+./docs/task_runs/H-001-20260601-182415/opencode-round1.txt:594:6. **Symbol isolation**: `convert_event_items()` groups strictly by symbol, excludes empty symbols and empty titles
+./docs/task_runs/H-001-20260601-182415/task.md:8:- Test commands: pytest tests/test_h001_mandate_signal.py -q
+./docs/DEVLOG.md:10:- **任务**：H-001 — 新增政策意图识别的基础数据结构，把政策/事件/产业/公司证据统一归档为可评分的 `MandateSignal`，为后续昊天意志评分提供输入
+./docs/DEVLOG.md:12:  - `tradingagents/tradeflow/mandate_signal.py` — 新建：[H-001] mandate_signal_model
+./docs/DEVLOG.md:15:    - `MandateSignal` 数据类：symbol / topic / title / source / source_level / date / evidence_text / evidence_url / event_type / direction / confidence / policy_tags / industry_tags / company_role / raw_refs；自动置信度封顶、低证据信号上限 0.3
+./docs/DEVLOG.md:19:    - `event_item_to_mandate_signal()`：从 `EventItem` 转换为 `MandateSignal`，保留原始 title/source/date/event_type/direction/detail
+./docs/DEVLOG.md:20:    - `convert_event_items()`：批量转换 `items_by_symbol`，按 symbol 隔离，空 symbol 和空标题排除
+./docs/DEVLOG.md:21:    - `validate_mandate_signal()`：校验信号完整性，返回问题列表
+./docs/DEVLOG.md:22:  - `tests/test_h001_mandate_signal.py` — 新建，95 个测试覆盖：
+./docs/DEVLOG.md:28:    - `TestMandateSignal` (17): 默认值/置信度封顶（有证据/无证据）/负数/低证据上限/高证据放行/枚举构造/属性访问/权重/权威判断/to_dict
+./docs/DEVLOG.md:29:    - `TestEventItemToMandateSignal` (10): 国务院/工信部/地方/公司公告/媒体事件/原始数据保留/空标题/缺字段/方向覆盖
+./docs/DEVLOG.md:31:    - `TestValidateMandateSignal` (6): 合法信号/缺 symbol/缺 title/缺 source/缺 date/缺 source_level
+./docs/DEVLOG.md:37:  - `MandateSignal` 从 `EventItem` 转换时不丢失原始 title/source/date/direction/detail
+./docs/DEVLOG.md:976:- 待 H-001 定义 MandateSignal 后，可把 `DATA-003` 转为 ready，服务昊天雷达事件源归一化。
+./docs/TASKS.md:260:- **描述**：把公告、回购、评级、研报标题、政策新闻等事件源统一转换为 `MandateSignal`，让昊天雷达能消费真实事件，而不是只靠关键词。
+./docs/TASKS.md:332:- **描述**：新增政策意图识别的基础数据结构，把政策/事件/产业/公司证据统一归档为可评分的 `MandateSignal`，为后续“昊天意志评分”提供输入。
+./docs/TASKS.md:345:  1. 新增 `tradingagents/tradeflow/mandate_signal.py` 或同等模块。
+./docs/TASKS.md:346:  2. 定义 `MandateSignal` 字段：
+./docs/TASKS.md:353:  5. 从现有 event source / manual event overrides 转换出 `MandateSignal`，不能丢失原始 title/source/date。
+./docs/TASKS.md:359:  - `pytest tests/test_h001_mandate_signal.py -q` 或新增同等测试通过。
+./docs/TASKS.md:360:- **代码标注要求**：`# [H-001] mandate_signal_model`
+./tradingagents/tradeflow/mandate_signal.py:1:# [H-001] mandate_signal_model
+./tradingagents/tradeflow/mandate_signal.py:2:"""MandateSignal — policy intent recognition data model for 昊天雷达 v0.
+./tradingagents/tradeflow/mandate_signal.py:11:- MandateSignal dataclass: one normalised signal ready for scoring.
+./tradingagents/tradeflow/mandate_signal.py:12:- Converter: event_source.EventItem → MandateSignal (no data loss).
+./tradingagents/tradeflow/mandate_signal.py:99:class MandateSignal:
+./tradingagents/tradeflow/mandate_signal.py:222:def event_item_to_mandate_signal(item, direction: str = "") -> MandateSignal:
+./tradingagents/tradeflow/mandate_signal.py:254:    return MandateSignal(
+./tradingagents/tradeflow/mandate_signal.py:273:def convert_event_items(
+./tradingagents/tradeflow/mandate_signal.py:275:) -> dict[str, list[MandateSignal]]:
+./tradingagents/tradeflow/mandate_signal.py:276:    result: dict[str, list[MandateSignal]] = {}
+./tradingagents/tradeflow/mandate_signal.py:280:        signals: list[MandateSignal] = []
+./tradingagents/tradeflow/mandate_signal.py:282:            sig = event_item_to_mandate_signal(item)
+./tradingagents/tradeflow/mandate_signal.py:290:def validate_mandate_signal(signal: MandateSignal) -> list[str]:
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && python -m pytest tests/test_h001_mandate_signal.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 229ms:
+........................................................................ [ 75%]
+.......................                                                  [100%]
+95 passed in 0.03s
+
+exec
+/bin/zsh -lc 'git diff --cached --name-only; git diff --name-only; git status --short' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+docs/DEVLOG.md
+docs/TASKS.md
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+?? .auto_dev.lock/
+?? docs/task_runs/H-001-20260601-182415/
+?? tests/test_h001_mandate_signal.py
+?? tradingagents/tradeflow/mandate_signal.py
+
+exec
+/bin/zsh -lc "nl -ba docs/TASKS.md | sed -n '326,336p'; nl -ba .auto_dev.lock/owner; nl -ba tradingagents/tradeflow/mandate_signal.py | sed -n '73,84p;273,287p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   326	
+   327	## H. 昊天雷达 / 政策左侧埋伏任务池（2026-05-31 新增）
+   328	
+   329	> 目标：把 TradeFlow 的主目标从“技术形态候选池”升级为“政策版本下的中线候选识别”。技术信号只作为执行层确认，不作为第一性筛选。所有结论必须绑定政策/事件/产业/公司证据，不允许凭空揣测。
+   330	
+   331	### H-001: 昊天雷达 v0 数据模型与信号分类（P1）
+   332	- **描述**：新增政策意图识别的基础数据结构，把政策/事件/产业/公司证据统一归档为可评分的 `MandateSignal`，为后续“昊天意志评分”提供输入。
+   333	- **优先级**：P1
+   334	- **状态**：in_progress -- claimed H-001-20260601-182415
+   335	- **背景**：
+   336	  - 当前 TradeFlow 已有 `POLICY_VERSION`，但还是关键词加分，不能表达政策级别、连续性、产业链位置和公司受益路径。
+     1	pid=49967
+     2	started_at=2026-06-01_18:24:15
+     3	repo=/Users/maybee/TradingAgents-AShare
+    73	        r"人民银行|央行|银保监|金管局|国家能源局|国家数据局"
+    74	    ), SourceLevel.MINISTRY),
+    75	    (re.compile(r"沪深交易所|上交所|深交所|北交所|港交所"), SourceLevel.EXCHANGE),
+    76	    (re.compile(r"国资委|央企|集团"), SourceLevel.SOE_GROUP),
+    77	    (re.compile(
+    78	        r"省|市|区|县|地方|开发区|高新区|管委会|"
+    79	        r"省政府|市政府|区政府|县政府"
+    80	    ), SourceLevel.LOCAL_GOV),
+    81	    (re.compile(r"巨潮资讯|cninfo|公告|公司公告|董事会|股东大会|监事会"), SourceLevel.COMPANY_NOTICE),
+    82	    (re.compile(r"东财|同花顺|新浪财经|财联社|证券时报|证券日报|上海证券报|第一财经|界面新闻|澎湃"), SourceLevel.MEDIA),
+    83	]
+    84	
+   273	def convert_event_items(
+   274	    items_by_symbol: dict[str, list],
+   275	) -> dict[str, list[MandateSignal]]:
+   276	    result: dict[str, list[MandateSignal]] = {}
+   277	    for symbol, items in items_by_symbol.items():
+   278	        if not symbol:
+   279	            continue
+   280	        signals: list[MandateSignal] = []
+   281	        for item in items:
+   282	            sig = event_item_to_mandate_signal(item)
+   283	            if sig.title:
+   284	                signals.append(sig)
+   285	        if signals:
+   286	            result[symbol] = signals
+   287	    return result
+
+codex
+The new model mostly works under its tests, but the source classifier can systematically misclassify common company/media titles as local government signals, and conversion can emit signals with non-canonical symbols. The patch also includes a transient lock artifact that should not be committed.
+
+Full review comments:
+
+- [P2] Tighten local-government keyword matching — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_signal.py:78-80
+  When a title contains common characters like `市` or `区` outside a government source, such as `上市公司董事会公告` or `市场监管...`, this pattern classifies it as `LOCAL_GOV` before the company/media patterns are checked. That gives ordinary company notices or media items a higher authority level and confidence than intended, affecting downstream mandate scoring.
+
+- [P2] Preserve the grouping symbol on converted signals — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_signal.py:281-284
+  If `items_by_symbol` is keyed by the canonical symbol but an `EventItem` has an empty or stale `symbol`, the converted `MandateSignal` is still stored under the canonical key with the wrong `sig.symbol`. That violates the symbol isolation requirement and can leak invalid/cross-symbol records to downstream consumers; use the grouping key as the canonical symbol or reject mismatches explicitly.
+
+- [P2] Remove the transient auto-dev lock from the patch — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+  Including this generated lock state can make subsequent automation believe task `H-001-20260601-182415` is still claimed by PID 49967 on this machine, even after the code is checked out elsewhere or after that process exits. This should remain a local runtime artifact rather than part of the code changes.
+The new model mostly works under its tests, but the source classifier can systematically misclassify common company/media titles as local government signals, and conversion can emit signals with non-canonical symbols. The patch also includes a transient lock artifact that should not be committed.
+
+Full review comments:
+
+- [P2] Tighten local-government keyword matching — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_signal.py:78-80
+  When a title contains common characters like `市` or `区` outside a government source, such as `上市公司董事会公告` or `市场监管...`, this pattern classifies it as `LOCAL_GOV` before the company/media patterns are checked. That gives ordinary company notices or media items a higher authority level and confidence than intended, affecting downstream mandate scoring.
+
+- [P2] Preserve the grouping symbol on converted signals — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_signal.py:281-284
+  If `items_by_symbol` is keyed by the canonical symbol but an `EventItem` has an empty or stale `symbol`, the converted `MandateSignal` is still stored under the canonical key with the wrong `sig.symbol`. That violates the symbol isolation requirement and can leak invalid/cross-symbol records to downstream consumers; use the grouping key as the canonical symbol or reject mismatches explicitly.
+
+- [P2] Remove the transient auto-dev lock from the patch — /Users/maybee/TradingAgents-AShare/.auto_dev.lock/owner:1-1
+  Including this generated lock state can make subsequent automation believe task `H-001-20260601-182415` is still claimed by PID 49967 on this machine, even after the code is checked out elsewhere or after that process exits. This should remain a local runtime artifact rather than part of the code changes.

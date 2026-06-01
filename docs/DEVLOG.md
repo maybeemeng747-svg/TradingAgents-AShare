@@ -4,6 +4,45 @@
 
 ---
 
+## 2026-06-01 | H-001: 昊天雷达 v0 数据模型与信号分类
+
+- **执行者**：OpenCode
+- **任务**：H-001 — 新增政策意图识别的基础数据结构，把政策/事件/产业/公司证据统一归档为可评分的 `MandateSignal`，为后续昊天意志评分提供输入
+- **修改文件**：
+  - `tradingagents/tradeflow/mandate_signal.py` — 新建：[H-001] mandate_signal_model
+    - `SourceLevel` 枚举：CENTRAL / STATE_COUNCIL / MINISTRY / LOCAL_GOV / EXCHANGE / SOE_GROUP / COMPANY_NOTICE / MEDIA（8 级来源权威层级）
+    - `MandateEventType` 枚举：POLICY_DOCUMENT / MEETING_SIGNAL / INDUSTRY_PLAN / SUBSIDY_SUPPORT / PROCUREMENT_ORDER / LICENSE_APPROVAL / M_AND_A_RESTRUCTURING / SOE_REFORM / BUYBACK_RATING（9 类信号）
+    - `MandateSignal` 数据类：symbol / topic / title / source / source_level / date / evidence_text / evidence_url / event_type / direction / confidence / policy_tags / industry_tags / company_role / raw_refs；自动置信度封顶、低证据信号上限 0.3
+    - `classify_source_level()`：基于标题和来源文本的正则匹配，识别来源级别
+    - `classify_event_type()`：基于标题关键词的事件类型分类
+    - `compute_confidence()`：综合来源权重和证据完整度计算置信度；缺失任一关键字段封顶 0.3；全部缺失返回 0.0
+    - `event_item_to_mandate_signal()`：从 `EventItem` 转换为 `MandateSignal`，保留原始 title/source/date/event_type/direction/detail
+    - `convert_event_items()`：批量转换 `items_by_symbol`，按 symbol 隔离，空 symbol 和空标题排除
+    - `validate_mandate_signal()`：校验信号完整性，返回问题列表
+  - `tests/test_h001_mandate_signal.py` — 新建，95 个测试覆盖：
+    - `TestSourceLevelEnum` (4): 全部值、数量、字符串构造、非法值
+    - `TestMandateEventTypeEnum` (2): 全部值、数量
+    - `TestClassifySourceLevel` (17): 党中央/国务院/国办/工信部/证监会/发改委/上交所/国资委/省级/市级/公司公告/东财/财联社/未知/空字符串/来源参数/优先级
+    - `TestClassifyEventType` (12): 各事件类型 + 空标题 + 无匹配默认值
+    - `TestComputeConfidence` (8): 高权威完整证据/低权威/缺标题/缺日期/缺来源/全缺失/范围/层级排序
+    - `TestMandateSignal` (17): 默认值/置信度封顶（有证据/无证据）/负数/低证据上限/高证据放行/枚举构造/属性访问/权重/权威判断/to_dict
+    - `TestEventItemToMandateSignal` (10): 国务院/工信部/地方/公司公告/媒体事件/原始数据保留/空标题/缺字段/方向覆盖
+    - `TestSymbolIsolation` (4): 无交叉污染/空 symbol 排除/空标题排除/空输入
+    - `TestValidateMandateSignal` (6): 合法信号/缺 symbol/缺 title/缺 source/缺 date/缺 source_level
+    - `TestSourceLevelWeights` (4): 最高/最低/层级排序/全部有值
+    - `TestH001FourEventTypes` (9): 四类事件（国务院/部委/地方/公司）集成验证、无交叉污染、置信度排序、raw_refs 完整、全部合法
+    - `TestNoEvidenceLowConfidence` (3): 无证据封顶/媒体<中央/公司<国务院
+- **测试结果**：95 passed (H-001)；225 passed (H-001 + tradeflow 全部)；0 failed
+- **关键逻辑**：
+  - `MandateSignal` 从 `EventItem` 转换时不丢失原始 title/source/date/direction/detail
+  - 缺失 title/source/date 任一的信号置信度封顶 0.3，不得按高级别政策处理
+  - 来源级别通过正则匹配自动分类：中央/国务院 → 部委 → 交易所/国资 → 地方 → 公司公告 → 媒体
+  - 所有信号按 symbol 隔离，不串票
+  - 置信度公式：来源权重 × 0.6 + 证据完整度 × 0.4
+- **执行边界**：未触发 TA、未调用 LLM、未输出强买卖词、未改 `tradingagents/prompts/`、未改生产 `tradingagents.db` schema
+
+---
+
 ## 2026-06-01 | DATA-P0-603629 任务释放：TA 关键数据源补强
 
 - **执行者**：Codex
@@ -935,3 +974,14 @@
 ### 后续
 - 当前唯一 ready 仍为 `H-001`。
 - 待 H-001 定义 MandateSignal 后，可把 `DATA-003` 转为 ready，服务昊天雷达事件源归一化。
+
+## 2026-06-01 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-001 - 昊天雷达 v0 数据模型与信号分类（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/H-001-20260601-round1.txt
+- **Run archive**: docs/task_runs/H-001-20260601-182415/
