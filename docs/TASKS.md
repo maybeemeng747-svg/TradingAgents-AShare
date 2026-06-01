@@ -35,8 +35,13 @@
 9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
 10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
 11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
-12. `H-005`：TradeFlow 前端昊天候选池视图（P2，proposed，依赖 H-004）。
-13. `H-006`：昊天候选池回放评估与反证机制（P2，proposed，依赖 H-004）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，ready，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，ready，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，ready，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，ready，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，ready，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，ready，依赖 DATA-005）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，ready，依赖 H-004/DATA-004 ✓）。
 
 ### 数据源治理候选队列
 
@@ -47,7 +52,8 @@
 3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
 4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
 5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
-6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P2，proposed）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，ready）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，ready，依赖 DATA-005）。
 
 ### 总体路线图
 
@@ -305,11 +311,11 @@
   - `pytest tests/test_data004_evidence_contract.py tests/test_g006_raw_evidence_snapshot.py tests/test_raw_evidence_vendor.py -q` 通过。
 - **代码标注要求**：`# [DATA-004] raw_evidence_contract`
 
-### DATA-005: 数据源 fixture replay 与限流/失败回放（P2）
+### DATA-005: 数据源 fixture replay 与限流/失败回放（P1）
 - **描述**：建立可重复的数据源回放测试，覆盖正常、缺字段、限流、超时、来源冲突、当天实时缺失等场景，避免夜间自动开发误判数据源质量。
-- **优先级**：P2
-- **状态**：proposed
-- **前置条件**：`DATA-001`、`DATA-004` 完成。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`DATA-001`、`DATA-004` 完成 ✓。
 - **执行约束**：
   - fixture 不包含 cookie/key。
   - live smoke 默认跳过，必须显式开启。
@@ -325,6 +331,26 @@
   - 限流/超时不会被当作“无数据”。
   - fixture replay 可被 `scripts/auto_dev_loop.sh` 或 OpenClaw 巡检调用。
 - **代码标注要求**：`# [DATA-005] data_source_replay`
+
+### DATA-006: 数据源质量报告接入夜间日报（P2）
+- **描述**：把 DATA-005 的 fixture replay 结果接入夜间自动开发日报，让第二天能直接看到数据源健康、失败类型和是否影响候选池/TA 报告可信度。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：`DATA-005` 完成或已有 replay runner 雏形。
+- **执行约束**：
+  - 不跑 live 全市场请求。
+  - 不输出任何 API key、cookie、token。
+  - 不修改生产数据库。
+- **实现要点**：
+  1. 扩展夜间日报聚合逻辑，读取 `docs/data_source_reports/` 或 DATA-005 replay 输出。
+  2. 报告按数据类型聚合：行情、实时补丁、资金流、龙虎榜、公告/研报、raw_evidence contract。
+  3. 对每类输出：OK/PARTIAL/FAILED、失败样本、是否影响 TradeFlow 候选、是否影响 TA readiness。
+  4. 当 replay 不存在时，日报明确显示 `NOT_RUN`，不能假装通过。
+- **验收方式**：
+  - 构造一个 replay 报告 fixture，夜间日报能展示数据源健康摘要。
+  - replay 缺失时显示 `NOT_RUN`。
+  - 不泄露敏感环境变量。
+- **代码标注要求**：`# [DATA-006] data_source_report_daily`
 
 ---
 
@@ -466,11 +492,11 @@
   - Daily Plan 与 candidates API 返回候选类型和评分。
 - **代码标注要求**：`# [H-004] mandate_ambush_score`
 
-### H-005: TradeFlow 前端昊天候选池视图（P2）
+### H-005: TradeFlow 前端昊天候选池视图（P1）
 - **描述**：在 TradeFlow 前端增加“昊天雷达/政策左侧”视图，把政策主题、受益路径、候选类型、证据和下一步验证条件展示出来。
-- **优先级**：P2
-- **状态**：proposed
-- **前置条件**：`H-004` 完成。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`H-004` 完成 ✓。
 - **执行约束**：
   - 不做花哨营销页，保持工作台信息密度。
   - 不出现强买卖词。
@@ -498,11 +524,11 @@
   - `npm run build` 通过。
 - **代码标注要求**：`// [H-005] mandate_radar_ui`
 
-### H-006: 昊天候选池回放评估与反证机制（P2）
+### H-006: 昊天候选池回放评估与反证机制（P1）
 - **描述**：建立昊天候选池的回放验证机制，避免系统越做越玄。每个高分政策候选都要能被后续走势、公告兑现、政策延续或反证记录检验。
-- **优先级**：P2
-- **状态**：proposed
-- **前置条件**：`H-004` 完成。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`H-004` 完成 ✓。
 - **执行约束**：
   - 不做收益承诺。
   - 不写生产历史回测结果目录 `eval_results/`。
@@ -525,6 +551,58 @@
   - 0% 显示为 `0.0%`，无数据显示为 `N/A`。
   - 不修改 `eval_results/`。
 - **代码标注要求**：`# [H-006] mandate_replay_eval`
+
+### H-007: 昊天候选到 TA 中线研究队列分流（P1）
+- **描述**：把 H-004 产生的 `POLICY_AMBUSH/POLICY_CONFIRM/TECH_TRADE` 候选分流到不同研究队列，避免左侧中线候选被短线 TA 逻辑误判，也避免纯技术票污染昊天池。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`H-004` 完成 ✓。
+- **执行约束**：
+  - 不自动调用高成本 LLM。
+  - 不自动触发 TA 深度分析；只生成队列和理由。
+  - 不输出强买卖词。
+- **实现要点**：
+  1. 新增或扩展队列字段：
+     - `research_queue`: `MIDLINE_POLICY` / `TA_CONFIRM` / `SHORT_TERM_TRADE` / `WATCH_ONLY` / `REJECTED`
+     - `research_intent`: `policy_validation` / `trend_confirmation` / `risk_review`
+  2. 分流规则：
+     - `POLICY_AMBUSH` → `MIDLINE_POLICY`
+     - `POLICY_CONFIRM` → `TA_CONFIRM`
+     - `TECH_TRADE` → `SHORT_TERM_TRADE`
+     - `OVERHEATED_AVOID/PSEUDO_POLICY` → `WATCH_ONLY` 或 `REJECTED`
+  3. API/日报输出队列统计和原因。
+  4. 与 G-001 的 `analysis_intent/position_context` 不冲突。
+- **验收方式**：
+  - 构造四类候选，队列分流稳定。
+  - 未持仓/已持仓上下文不被覆盖。
+  - 无强交易词。
+- **代码标注要求**：`# [H-007] mandate_ta_queue_router`
+
+### H-008: 昊天主题观察清单与自选备注摘要（P1）
+- **描述**：把昊天候选的政策主题、受益路径、利好度/共识度/证据缺口压缩成短备注，供自选股和前端观察清单展示，解决用户手工备注易丢失、信息太散的问题。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`H-004`、`VLM-001` 完成 ✓。
+- **执行约束**：
+  - 不覆盖用户已有备注；只能追加或生成建议备注。
+  - 不输出强买卖词。
+  - 不把无证据题材写成确定利好。
+- **实现要点**：
+  1. 新增摘要生成 helper，例如：
+     - `topic`
+     - `benefit_score`
+     - `consensus_score`
+     - `expected_window`
+     - `evidence_gap`
+     - `note_summary`
+  2. 输出格式短而稳定，例如：`半导体设备｜利好9.1｜共识89｜窗口1月｜缺口:订单/资金`
+  3. 自选添加/截图解析/TradeFlow 候选详情可复用该摘要。
+  4. 已有 notes 不被前端刷新清空。
+- **验收方式**：
+  - 用户已有 notes 保留。
+  - 长字段被压缩，不撑破表格。
+  - 无证据时显示 `缺证据`，不伪造利好度。
+- **代码标注要求**：`# [H-008] mandate_watchlist_note`
 
 ---
 
@@ -1346,6 +1424,38 @@
   - 事件源失败时报告显示 `FAILED/PARTIAL`，不当成无事件。
   - `pytest tests/test_tradeflow_*.py -q` 通过。
 - **代码标注要求**：`# [V-003] tradeflow_acceptance_replay`
+
+### V-004: 昊天链路端到端 smoke 验收（P1）
+- **描述**：为 H-001~H-008 建立低成本 smoke 验收，验证政策事件 → MandateSignal → Mandate Score → 受益路径 → 左侧分类 → 前端/队列字段的整条链路不字段断裂。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`H-004`、`DATA-003`、`DATA-004` 完成 ✓。
+- **执行约束**：
+  - 不调用外部 LLM。
+  - 不跑全市场扫描。
+  - 不写生产数据库。
+  - 不输出强买卖词。
+- **实现要点**：
+  1. 构造固定 policy fixtures：
+     - 中央/部委政策连续信号。
+     - 公司公告受益路径明确。
+     - 研报/媒体弱证据。
+     - 过热/伪政策反例。
+  2. 串联现有 H/DATA 模块输出：
+     - `MandateSignal`
+     - `mandate_score`
+     - `beneficiary_path`
+     - `candidate_type`
+     - `research_queue`
+     - `note_summary`
+  3. 输出 smoke 报告到 `docs/mandate_acceptance/YYYY-MM-DD.md` 或测试 snapshot。
+  4. 报告必须列出字段缺口和无法判断原因。
+- **验收方式**：
+  - fixtures 输出稳定。
+  - 弱证据不进入高分左侧。
+  - 过热样本不进入 `POLICY_AMBUSH`。
+  - `pytest tests/test_h*_*.py tests/test_data003_mandate_event_normalizer.py tests/test_data004_evidence_contract.py -q` 或等价测试通过。
+- **代码标注要求**：`# [V-004] mandate_e2e_smoke`
 
 ---
 
