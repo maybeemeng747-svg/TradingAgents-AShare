@@ -4,6 +4,47 @@
 
 ---
 
+## 2026-06-02 | V-004: 昊天链路端到端 smoke 验收
+
+- **执行者**：OpenCode
+- **任务**：V-004 — 为 H-001~H-008 建立低成本 smoke 验收，验证政策事件 → MandateSignal → Mandate Score → 受益路径 → 左侧分类 → 前端/队列字段的整条链路不字段断裂
+- **修改文件**：
+  - `tests/test_v004_mandate_e2e_smoke.py` — 新建：[V-004] mandate_e2e_smoke
+    - 5 个 policy fixtures：central_continuous / company_beneficiary / weak_evidence / overheated / pseudo_policy
+    - `PipelineFixture` 数据类：含 risk_flags / game_balance 上下文字段
+    - `_run_single_pipeline()`：6 步端到端管线 runner
+      - Step 1: DATA-003 normalize_raw_dicts → NormalizedEventBatch
+      - Step 2: H-002 compute_mandate_score → MandateScoreResult
+      - Step 3: H-003 compute_beneficiary_path → BeneficiaryPathResult
+      - Step 4: H-004 compute_ambush_score → AmbushScoreResult（含 candidate_type）
+      - Step 5: H-007 route_to_research_queue → QueueRouteResult
+      - Step 6: H-008 generate_watchlist_note → WatchlistNoteResult
+    - `PipelineRunResult`：含 field_gaps / forbidden_word_hits / passed / fail_reasons
+    - `_contains_forbidden()` / `_check_forbidden_in_dict()`：全链路强交易词检测
+    - `render_smoke_report()`：Markdown 报告渲染
+    - `run_smoke_and_save()`：一键运行 + 保存到 `docs/mandate_acceptance/YYYY-MM-DD.md`
+    - `render_smoke_report()`：Markdown 报告渲染
+  - `docs/mandate_acceptance/` — 新建目录，首份报告 `2026-06-02.md` 已生成
+  - `docs/TASKS.md` — V-004 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：52 passed (V-004)；621 passed (H-series + DATA 回归)；0 failed
+- **关键验收场景**：
+  - central_continuous (300034.SZ)：POLICY_AMBUSH，mandate=73.5，queue=MIDLINE_POLICY
+  - company_beneficiary (688981.SH)：POLICY_AMBUSH，mandate=65.0，queue=MIDLINE_POLICY
+  - weak_evidence (000001.SZ)：EVENT_WATCH，mandate=23.4，queue=WATCH_ONLY（弱证据不进高分左侧）
+  - overheated (002XXX.SZ)：OVERHEATED_AVOID，queue=REJECTED（过热样本不进 POLICY_AMBUSH）
+  - pseudo_policy (600XXX.SH)：PSEUDO_POLICY，queue=WATCH_ONLY（伪政策不进 POLICY_AMBUSH）
+- **关键逻辑**：
+  - 5 类 fixture 覆盖：中央连续政策 + 公司受益 + 弱证据 + 过热 + 伪政策
+  - 全链路 6 步不字段断裂，每步输出可追溯
+  - 弱证据不进入高分左侧（EVENT_WATCH / PSEUDO_POLICY）
+  - 过热样本正确走 OVERHEATED_AVOID（需 risk_flags + game_balance 上下文）
+  - 无强交易词出现在任何输出字段
+  - 字段缺口显式报告（field_gaps）
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-02 | H-008: 昊天主题观察清单与自选备注摘要
 
 - **执行者**：OpenCode
@@ -1822,3 +1863,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/H-008-20260602-round1.txt
 - **Run archive**: docs/task_runs/H-008-20260602-024951/
+
+## 2026-06-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: V-004 - 昊天链路端到端 smoke 验收（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/V-004-20260602-round1.txt
+- **Run archive**: docs/task_runs/V-004-20260602-025921/
