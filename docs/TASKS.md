@@ -113,7 +113,7 @@
 ### TF-OBS-001: TradeFlow 盘中观察执行器与信号落库（P0）
 - **描述**：在 TF-DATE-001 之后，把现有 `run_observe_check()` 状态机接入真实执行链路，定时读取当日生效候选、拉取实时价格、更新观察状态并写入信号表。
 - **优先级**：P0
-- **状态**：done -- TF-OBS-001 observe_runner implemented
+- **状态**：done -- commit f8db3de
 - **前置条件**：`TF-DATE-001` 完成 ✓
 - **背景**：
   - 当前 M-005 已有 Observe 状态机，前端也能展示 Observe Tab，但没有 runner 定时执行，所以 `observe_state` 长期停留在 `WAITING`，`tradeflow_signals` 为空。
