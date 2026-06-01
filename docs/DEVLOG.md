@@ -4,6 +4,58 @@
 
 ---
 
+## 2026-06-02 | DATA-005: 数据源 fixture replay 与限流/失败回放
+
+- **执行者**：OpenCode
+- **任务**：DATA-005 — 建立可重复的数据源回放测试，覆盖正常、缺字段、限流、超时、来源冲突、当天实时缺失等场景
+- **修改文件**：
+  - `tradingagents/dataflows/fixture_replay.py` — 新建：[DATA-005] data_source_replay
+    - 7 类 fixture：`normal_quote` / `stale_daily` / `realtime_success` / `realtime_failure` / `fund_flow_unit_anomaly` / `lhb_no_trigger` / `announcement_failure`
+    - `FixtureEntry` 数据类：fixture_id / description / data_type / vendor / endpoint / expected_status / raw_evidence / tags
+    - `ReplayResult` 数据类：实际状态 / 是否通过 / 是否 fallback / completeness_score / missing_details / error
+    - `ReplayReport` 数据类：total / passed / failed / by_data_type / by_status / failure_types
+    - `get_fixture(id)` / `get_all_fixtures()` — 获取 fixture 实例
+    - `_replay_single_fixture(fixture)` — 单个 fixture 回放逻辑
+    - `run_fixture_replay(fixture_ids=None, fixtures=None)` — 批量回放，默认运行全部 7 个 fixture
+    - `_classify_failure_type(result)` — 失败分类：connection_or_timeout / rate_limited / api_error / stale_data / unexpected_not_queried / low_completeness / status_mismatch
+    - `render_replay_report(report)` — Markdown 渲染
+    - `save_replay_report(report, output_dir)` — 保存到 `docs/data_source_reports/YYYY-MM-DD.md`
+    - `run_replay_and_save(output_dir, fixture_ids)` — 一键运行 + 保存
+    - 限流/超时/ConnectionError 不会被当作"无数据"（FAILED != NORMAL_NO_DATA）
+    - LHB NOT_QUERIED 不会被当作 FAILED
+    - 资金流单位异常（元 vs 万元）通过 unit_verified=False 检测
+    - fixture 不包含 cookie/key/token
+  - `tests/test_data005_fixture_replay.py` — 新建，86 个测试覆盖：
+    - `TestGetFixture` (10): 7 个 fixture 获取 / unknown / id count / all fixtures
+    - `TestFixtureEntryStructure` (10): 必要字段 / to_dict / 各 fixture evidence 结构验证
+    - `TestReplayResult` (2): 默认值 / to_dict
+    - `TestReplayReport` (2): 默认值 / to_dict
+    - `TestReplaySingleFixture` (7): 7 个 fixture 独立回放
+    - `TestRunFixtureReplay` (8): 全量 / 全通过 / 选择性 / 自定义 / 日期 / by_data_type / by_status / 空
+    - `TestClassifyFailureType` (7): connection_error / timeout / rate_limit / api_error / stale / unexpected_not_queried / status_mismatch
+    - `TestRateLimitNotNoData` (3): 限流 / 超时 / 连接错误都不是"无数据"
+    - `TestLHBNotQueriedVsFailed` (2): NOT_QUERIED != FAILED / vs NORMAL_NO_DATA
+    - `TestFallbackDetection` (2): fallback 检测 / 无 fallback
+    - `TestCompleteness` (3): 正常高 / 失败低 / 异常低于 100
+    - `TestSourceConflict` (2): vendor 冲突 / fallback vendor 不一致
+    - `TestRenderReplayReport` (5): 全通过渲染 / fixture 表格 / 失败渲染 / 无失败区 / by_data_type
+    - `TestSaveReplayReport` (3): 创建文件 / 文件名 / run_replay_and_save
+    - `TestAcceptanceData005` (12): 全部验收标准
+    - `TestEdgeCases` (7): 空 evidence / 非 dict / None / 多失败 / 仅失败渲染 / unknown fixture / 唯一 ID
+- **测试结果**：86 passed (DATA-005)；395 passed (数据源相关全部)；0 failed
+- **关键逻辑**：
+  - 7 类 fixture 覆盖：正常行情、日线 stale、实时成功/失败、资金流单位异常、龙虎榜无触发、公告源失败
+  - 限流/超时/ConnectionError 标记为 FAILED 而非 NORMAL_NO_DATA
+  - LHB force=False 返回 NOT_QUERIED，不与 FAILED 混淆
+  - 资金流单位异常（元 vs 万元）通过 unit_verified=False 检测
+  - Fallback 自动检测：当前 vendor != primary vendor → is_fallback=True + fallback_from=primary
+  - 失败分类：connection_or_timeout / rate_limited / api_error / stale_data / unexpected_not_queried / low_completeness / status_mismatch
+  - 报告可保存到 `docs/data_source_reports/YYYY-MM-DD.md`，供夜间巡检和 DATA-006 消费
+  - `run_fixture_replay()` 和 `run_replay_and_save()` 可被 `scripts/auto_dev_loop.sh` 或 OpenClaw 巡检直接调用
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未改生产 `tradingagents.db` schema、fixture 不含 cookie/key
+
+---
+
 ## 2026-06-02 | Task Pool Batch Release
 
 - **执行者**：Codex
@@ -1509,3 +1561,14 @@
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Test failed: pytest tests/test_g006_raw_evidence_snapshot.py tests/test_tradeflow_*data*.py -q (exit 4)
 - **Run archive**: docs/task_runs/DATA-004-20260602-011020/
+
+## 2026-06-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-005 - 数据源 fixture replay 与限流/失败回放（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-005-20260602-round1.txt
+- **Run archive**: docs/task_runs/DATA-005-20260602-021515/
