@@ -34,6 +34,7 @@ from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
 from .symbol_utils import normalize_tradeflow_symbol, resolve_tradeflow_name  # [UI-008] tradeflow_field_normalization
 from .ambush_score import compute_ambush_score, AmbushScoreResult  # [H-004] mandate_ambush_score
 from .mandate_ta_queue_router import route_to_research_queue, QueueRouteResult  # [H-007] mandate_ta_queue_router
+from .mandate_watchlist_note import generate_watchlist_note, WatchlistNoteResult  # [H-008] mandate_watchlist_note
 
 
 # ── SQL for table creation ──
@@ -305,6 +306,19 @@ def init_db(db_path: str) -> None:
         ("research_queue", "TEXT DEFAULT ''"),
         ("research_intent", "TEXT DEFAULT ''"),
         ("research_route_reason", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [H-008] mandate_watchlist_note — add watchlist note columns
+    for _col, _type in [
+        ("watchlist_note", "TEXT DEFAULT ''"),
+        ("watchlist_note_suggested", "TEXT DEFAULT ''"),
+        ("watchlist_topic", "TEXT DEFAULT ''"),
+        ("watchlist_benefit_score", "REAL DEFAULT 0.0"),
+        ("watchlist_consensus_score", "REAL DEFAULT 0.0"),
+        ("watchlist_evidence_gap_json", "TEXT DEFAULT '[]'"),
     ]:
         try:
             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
@@ -893,6 +907,32 @@ def evaluate_symbol(
         "queue_priority": queue_result.queue_priority,
     }
 
+    # [H-008] mandate_watchlist_note — generate watchlist note summary
+    wl_result: WatchlistNoteResult = generate_watchlist_note(
+        mandate_topic=candidate.mandate_topic,
+        candidate_type=ambush_result.candidate_type,
+        mandate_score_component=ambush_result.mandate_score_component,
+        beneficiary_score_component=ambush_result.beneficiary_score_component,
+        ambush_score=ambush_result.ambush_score,
+        narrative_score=candidate.narrative_score,
+        composite_score=candidate.composite_score,
+        positive_category_count=candidate.positive_category_count,
+        resonance_count=candidate.resonance_count,
+        beneficiary_path=candidate.beneficiary_path,
+        company_role=candidate.company_role,
+        policy_tags=candidate.policy_tags,
+        fund_flow_anomaly_tags=candidate.fund_flow_anomaly_tags,
+        strategy_tags=candidate.strategy_tags,
+        data_completeness=candidate.data_completeness,
+        missing_evidence=candidate.missing_evidence,
+    )
+    candidate.watchlist_note_suggested = wl_result.note_summary
+    candidate.watchlist_topic = wl_result.topic
+    candidate.watchlist_benefit_score = wl_result.benefit_score
+    candidate.watchlist_consensus_score = wl_result.consensus_score
+    candidate.watchlist_evidence_gap = wl_result.evidence_gap
+    candidate.evidence["watchlist_note"] = wl_result.to_dict()
+
     return candidate, ""
 
 
@@ -932,8 +972,10 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "deep_ta_route, deep_ta_route_reason, "
             "ambush_reasons_json, ambush_evidence_refs_json, "
             "research_queue, research_intent, research_route_reason, "
+            "watchlist_note, watchlist_note_suggested, watchlist_topic, "
+            "watchlist_benefit_score, watchlist_consensus_score, watchlist_evidence_gap_json, "
             "created_at, updated_at) "
-            "VALUES ({}) ".format(",".join(["?"] * 85))
+            "VALUES ({}) ".format(",".join(["?"] * 91))
             + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
             "trigger_price=excluded.trigger_price, "
@@ -1004,6 +1046,12 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "research_queue=excluded.research_queue, "
             "research_intent=excluded.research_intent, "
             "research_route_reason=excluded.research_route_reason, "
+            "watchlist_note=excluded.watchlist_note, "
+            "watchlist_note_suggested=excluded.watchlist_note_suggested, "
+            "watchlist_topic=excluded.watchlist_topic, "
+            "watchlist_benefit_score=excluded.watchlist_benefit_score, "
+            "watchlist_consensus_score=excluded.watchlist_consensus_score, "
+            "watchlist_evidence_gap_json=excluded.watchlist_evidence_gap_json, "
             "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
@@ -1047,6 +1095,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
                 row["deep_ta_route"], row["deep_ta_route_reason"],
                 row["ambush_reasons_json"], row["ambush_evidence_refs_json"],
                 row["research_queue"], row["research_intent"], row["research_route_reason"],
+                row["watchlist_note"], row["watchlist_note_suggested"], row["watchlist_topic"],
+                row["watchlist_benefit_score"], row["watchlist_consensus_score"],
+                row["watchlist_evidence_gap_json"],
                 candidate.created_at, row["updated_at"],
             ),
         )

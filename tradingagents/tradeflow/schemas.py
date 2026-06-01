@@ -132,6 +132,12 @@ class Candidate:
     research_queue: str = ""  # [H-007] mandate_ta_queue_router
     research_intent: str = ""  # [H-007] mandate_ta_queue_router
     research_route_reason: str = ""  # [H-007] mandate_ta_queue_router
+    watchlist_note: str = ""  # [H-008] mandate_watchlist_note
+    watchlist_note_suggested: str = ""  # [H-008] mandate_watchlist_note
+    watchlist_topic: str = ""  # [H-008] mandate_watchlist_note
+    watchlist_benefit_score: float = 0.0  # [H-008] mandate_watchlist_note
+    watchlist_consensus_score: float = 0.0  # [H-008] mandate_watchlist_note
+    watchlist_evidence_gap: list[str] = field(default_factory=list)  # [H-008] mandate_watchlist_note
 
     def __post_init__(self):
         if not self.trade_date:
@@ -263,6 +269,12 @@ class Candidate:
             "research_queue": self.research_queue,  # [H-007] mandate_ta_queue_router
             "research_intent": self.research_intent,  # [H-007] mandate_ta_queue_router
             "research_route_reason": self.research_route_reason,  # [H-007] mandate_ta_queue_router
+            "watchlist_note": self.watchlist_note,  # [H-008] mandate_watchlist_note
+            "watchlist_note_suggested": self.watchlist_note_suggested,  # [H-008]
+            "watchlist_topic": self.watchlist_topic,  # [H-008]
+            "watchlist_benefit_score": self.watchlist_benefit_score,  # [H-008]
+            "watchlist_consensus_score": self.watchlist_consensus_score,  # [H-008]
+            "watchlist_evidence_gap_json": json.dumps(self.watchlist_evidence_gap, ensure_ascii=False),  # [H-008]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -354,6 +366,12 @@ class Candidate:
             research_queue=row.get("research_queue", ""),  # [H-007] mandate_ta_queue_router
             research_intent=row.get("research_intent", ""),  # [H-007] mandate_ta_queue_router
             research_route_reason=row.get("research_route_reason", ""),  # [H-007] mandate_ta_queue_router
+            watchlist_note=row.get("watchlist_note", ""),  # [H-008] mandate_watchlist_note
+            watchlist_note_suggested=row.get("watchlist_note_suggested", ""),  # [H-008]
+            watchlist_topic=row.get("watchlist_topic", ""),  # [H-008]
+            watchlist_benefit_score=row.get("watchlist_benefit_score", 0.0),  # [H-008]
+            watchlist_consensus_score=row.get("watchlist_consensus_score", 0.0),  # [H-008]
+            watchlist_evidence_gap=json.loads(row.get("watchlist_evidence_gap_json", "[]")),  # [H-008]
         )
 
 
@@ -643,6 +661,21 @@ class DailyPlan:
                 lines.append(f"  研究队列: {queue_label} ({intent_label})")
                 if r_reason:
                     lines.append(f"    分流原因: {r_reason}")
+            # [H-008] mandate_watchlist_note — display watchlist note summary
+            wl_topic = c.get("watchlist_topic", "")
+            wl_note = c.get("watchlist_note_suggested", "")
+            wl_benefit = c.get("watchlist_benefit_score", 0)
+            wl_consensus = c.get("watchlist_consensus_score", 0)
+            wl_gap = c.get("watchlist_evidence_gap", [])
+            wl_existing = c.get("watchlist_note", "")
+            if wl_note:
+                lines.append(f"  自选备注: {wl_note}")
+                if wl_existing and wl_existing != wl_note:
+                    lines.append(f"    用户备注: {wl_existing}")
+                if wl_topic:
+                    lines.append(f"    主题: {wl_topic} | 利好: {wl_benefit:.1f} | 共识: {wl_consensus:.0f}")
+                if wl_gap:
+                    lines.append(f"    缺口: {', '.join(wl_gap[:4])}")
             lines.append("")
 
         return "\n".join(lines)

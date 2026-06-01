@@ -4,6 +4,65 @@
 
 ---
 
+## 2026-06-02 | H-008: 昊天主题观察清单与自选备注摘要
+
+- **执行者**：OpenCode
+- **任务**：H-008 — 把昊天候选的政策主题、受益路径、利好度/共识度/证据缺口压缩成短备注，供自选股和前端观察清单展示
+- **修改文件**：
+  - `tradingagents/tradeflow/mandate_watchlist_note.py` — 新建：[H-008] mandate_watchlist_note
+    - `WatchlistNoteResult` 数据类：topic / benefit_score / consensus_score / expected_window / evidence_gap / note_summary / has_evidence / suggested_note
+    - `_compute_benefit_score()`：mandate×0.35 + beneficiary×0.35 + ambush×0.30，封顶 100
+    - `_compute_consensus_score()`：平均各正分 + positive_category 加成 + resonance 加成，封顶 100
+    - `_compute_evidence_gap()`：6 类缺口检测（政策/受益路径/公司定位/资金/叙事/技术）+ 数据完整度 + missing_evidence 追加
+    - `_format_window()`：按 candidate_type 映射窗口（POLICY_AMBUSH→中线 / TECH_TRADE→短线 / OVERHEATED_AVOID→规避）
+    - `_sanitize_note()`：过滤强交易词（买入/卖出/清仓/满仓/梭哈/加仓/减仓）
+    - `generate_watchlist_note()`：核心函数——输入候选各字段，输出 WatchlistNoteResult
+    - 输出格式：`topic｜利好X.X｜共识N｜窗口W｜缺口:a/b`，无证据时显示 `topic｜缺证据`
+    - 用户已有 note 保留在 suggested_note 中，不覆盖
+    - 无证据时不伪造利好度，benefit_score=0.0
+    - `generate_watchlist_note_from_candidate()`：直接从 Candidate 对象生成
+  - `tradingagents/tradeflow/schemas.py` — [H-008] Candidate 新增 6 个字段
+    - `watchlist_note` / `watchlist_note_suggested` / `watchlist_topic` / `watchlist_benefit_score` / `watchlist_consensus_score` / `watchlist_evidence_gap`
+    - `to_db_row()` / `from_db_row()` 同步更新
+    - `render_text()` 新增自选备注显示区
+  - `tradingagents/tradeflow/candidate_engine.py` — [H-008]
+    - `init_db()` 新增 6 列 DB migration
+    - `evaluate_symbol()` 新增 H-008 watchlist note 生成调用，wire 到 candidate 字段
+    - `save_candidate()` SQL INSERT/UPDATE 新增 6 列（VALUES 从 85 扩展到 91）
+  - `tradingagents/tradeflow/plan_runner.py` — [H-008] plan entry 新增 6 个字段
+  - `api/tradeflow_schemas.py` — [H-008] TradeFlowCandidateItem 新增 6 个字段
+  - `api/services/tradeflow_service.py` — [H-008] `_row_to_candidate_item()` 新增 6 列读取
+  - `frontend/src/types/index.ts` — [H-008] TradeFlowCandidateItem 新增 6 个字段
+  - `frontend/src/components/TradeFlowCandidateDrawer.tsx` — [H-008]
+    - 新增 StickyNote icon 导入
+    - 新增"自选备注"区：建议备注 + 用户备注（如不同则同时显示）+ 主题/利好/共识指标 + 缺口标签
+  - `frontend/src/pages/TradeFlow.tsx` — [H-008]
+    - 候选表格新增"自选备注"列（truncate + title tooltip）
+  - `tests/test_h008_mandate_watchlist_note.py` — 新建，79 个测试覆盖：
+    - `TestWatchlistNoteResult` (3): 默认值/自定义值/to_dict
+    - `TestComputeBenefitScore` (6): 全零/单一/组合/封顶/无负数
+    - `TestComputeConsensusScore` (8): 全零/单一/resonance/boost/封顶
+    - `TestComputeEvidenceGap` (9): 全有/单缺/低完整度/追加/上限
+    - `TestFormatWindow` (7): 各类型/自定义/未知
+    - `TestSanitizeNote` (4): 干净/买入/卖出/多词
+    - `TestGenerateWatchlistNote` (14): 空/无证据/全证据/技术/过热/保留/格式
+    - `TestAcceptanceH008` (7): 全部验收标准
+    - `TestGenerateWatchlistNoteFromCandidate` (4): 基本/空/技术/叙事
+    - `TestH008SchemaIntegration` (4): 字段存在/to_db_row/from_db_row/roundtrip
+    - `TestEdgeCases` (9): None/空/零分/高分/只有风险/空字符串/空白/舍入
+- **测试结果**：79 passed (H-008)；1206 passed (H-series + tradeflow 全部)；47 passed (API)；0 failed；npm run build 通过
+- **关键逻辑**：
+  - 利好度 = mandate×0.35 + beneficiary×0.35 + ambush×0.30，封顶 100
+  - 共识度 = 各正分平均 + category_boost + resonance_boost，封顶 100
+  - 缺口检测 6 类：政策证据/受益路径/公司定位/资金验证/叙事质量/技术确认，最多 6 项
+  - 窗口映射：POLICY_AMBUSH→中线 / POLICY_CONFIRM→短线 / TECH_TRADE→短线 / EVENT_WATCH→观察 / OVERHEATED_AVOID→规避
+  - 用户已有 note 不覆盖（suggested_note = existing_note），只生成建议
+  - 无证据时 note_summary 显示 `topic｜缺证据`，不伪造利好度
+  - 强交易词自动过滤（买入/卖出/清仓/满仓/梭哈/加仓/减仓 → ***）
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-02 | H-007: 昊天候选到 TA 中线研究队列分流
 
 - **执行者**：OpenCode
@@ -1752,3 +1811,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/H-007-20260602-round1.txt
 - **Run archive**: docs/task_runs/H-007-20260602-024058/
+
+## 2026-06-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-008 - 昊天主题观察清单与自选备注摘要（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/H-008-20260602-round1.txt
+- **Run archive**: docs/task_runs/H-008-20260602-024951/

@@ -137,6 +137,12 @@ def _build_plan_entry(candidate: Candidate, event_items: Optional[list] = None) 
         "research_queue": candidate.research_queue,  # [H-007] mandate_ta_queue_router
         "research_intent": candidate.research_intent,  # [H-007] mandate_ta_queue_router
         "research_route_reason": candidate.research_route_reason,  # [H-007] mandate_ta_queue_router
+        "watchlist_note": candidate.watchlist_note,  # [H-008] mandate_watchlist_note
+        "watchlist_note_suggested": candidate.watchlist_note_suggested,  # [H-008]
+        "watchlist_topic": candidate.watchlist_topic,  # [H-008]
+        "watchlist_benefit_score": candidate.watchlist_benefit_score,  # [H-008]
+        "watchlist_consensus_score": candidate.watchlist_consensus_score,  # [H-008]
+        "watchlist_evidence_gap": candidate.watchlist_evidence_gap,  # [H-008]
     }
 
     # [T-006] event_source_discovery — add event metadata to plan entry
