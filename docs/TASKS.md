@@ -262,7 +262,7 @@
 ### TA-UI-001: 智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0）
 - **描述**：在 `/analysis` 智能分析控制台显式暴露 TA 分析周期和意图选择，避免用户只能靠自然语言猜测系统是否按中线运行。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done -- TA-UI-001 implementation complete
 - **背景**：
   - 后端 G-001 已支持 `horizon/analysis_intent/position_context`。
   - 自选/定时分析页已有短线/中线切换，但智能分析页没有。

@@ -4,6 +4,47 @@
 
 ---
 
+## 2026-06-02 | TA-UI-001: 智能分析控制台增加短线/中线、分析意图、持仓状态选择
+
+- **执行者**：OpenCode
+- **任务**：TA-UI-001 — 在 `/analysis` 智能分析控制台显式暴露 TA 分析周期和意图选择，避免用户只能靠自然语言猜测系统是否按中线运行。
+- **修改文件**：
+  - `frontend/src/stores/analysisStore.ts` — [TA-UI-001] analysis_console_horizon_intent
+    - 新增状态字段：`analysisHorizon`（`'short'|'medium'`）、`analysisIntent`（string）、`hasPosition`（boolean）
+    - 新增 action：`setAnalysisHorizon`、`setAnalysisIntent`、`setHasPosition`
+    - `reset()` 和 `clearSession()` 保留用户选择的分析上下文
+    - `partialize()` 持久化新字段到 localStorage
+  - `frontend/src/types/index.ts` — [TA-UI-001]
+    - `AnalysisRequest` 新增 `query?: string`、`horizons?: string[]`、`user_intent?: Record<string, unknown>`
+  - `frontend/src/services/api.ts` — [TA-UI-001]
+    - `chatCompletion()` 新增可选 `userContext` 参数，传递 `objective`、`investment_horizon`、`current_position` 等到后端
+  - `frontend/src/pages/Analysis.tsx` — [TA-UI-001]
+    - 新增分析配置卡片：周期（短线/中线）、意图（观察/入场研究/持仓复盘/加仓判断/减仓止损）、持仓（未持仓/已持仓）
+    - 读取 URL params `?horizon=&intent=&position=` 从 TradeFlow 跳转时自动设置
+    - 将选择状态通过 props 传递给 ChatCopilotPanel
+  - `frontend/src/components/ChatCopilotPanel.tsx` — [TA-UI-001]
+    - 新增 props：`horizon`、`intent`、`hasPosition`
+    - `streamChat()` 构建 `[分析上下文]` 前缀注入 prompt，并传递 `userContext` 到 API
+    - 新增上下文横幅：显示 `本次分析：中线｜入场研究｜未持仓`
+  - `frontend/src/components/TradeFlowCandidateDrawer.tsx` — [TA-UI-001]
+    - 新增 `onNavigateToAnalysis` prop 和"智能分析"按钮
+    - POLICY_AMBUSH/POLICY_CONFIRM 默认中线+入场研究，TECH_TRADE 默认短线+观察
+  - `frontend/src/pages/TradeFlow.tsx` — [TA-UI-001]
+    - 引入 `useNavigate`，传递 `onNavigateToAnalysis` 到候选详情抽屉
+  - `tests/test_ta_ui_001_horizon_intent.py` — 新建，15 个测试覆盖：
+    - `TestUserContextInput` (3): objective/horizon、position fields、defaults
+    - `TestExtractRequestUserContext` (5): objective、horizon、position、empty strings、empty constraints
+    - `TestAnalyzeRequestHorizons` (4): default short、medium、both、user_intent
+    - `TestChatCompletionRequest` (2): user context fields、context extraction
+    - `TestIntentMapping` (1): all 5 intent values accepted as objective
+- **测试结果**：
+  - `npm run build`：通过（无 TS 错误）
+  - `tests/test_ta_ui_001_horizon_intent.py`：15/15 passed
+  - `tests/test_ui001_tradeflow_api.py`：49/49 passed（无回归）
+- **风险点**：无。未改 prompts、未写生产 DB、未触发 live TA/LLM。
+
+---
+
 ## 2026-06-02 | TF-P0-001: TradeFlow 运行态 schema 迁移、名称回填与观察路由修复
 
 - **执行者**：OpenCode
@@ -2057,3 +2098,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TF-P0-001-20260602-round1.txt
 - **Run archive**: docs/task_runs/TF-P0-001-20260602-180012/
+
+## 2026-06-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: TA-UI-001 - 智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0）
+- **Priority**: P0
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TA-UI-001-20260602-round1.txt
+- **Run archive**: docs/task_runs/TA-UI-001-20260602-182128/

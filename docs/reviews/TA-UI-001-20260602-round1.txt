@@ -1,0 +1,3046 @@
+Task: TA-UI-001 - 智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0）
+Date: 2026-06-02_18:40:45
+Codex exit code: 0
+Round: 1
+---
+2026-06-02T10:38:50.262102Z ERROR codex_models_manager::manager: failed to refresh available models: timeout waiting for child process to exit
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019e87ea-2798-7d10-8674-61308d63c63d
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,200p' docs/project-overview.md && printf '\\n---TASKS---\\n' && sed -n '1,160p' docs/TASKS.md && printf '\\n---DECISIONS---\\n' && sed -n '1,160p' docs/DECISIONS.md && printf '\\n---DEVLOG---\\n' && sed -n '1,160p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+---TASKS---
+# 任务池
+
+> 最后更新：2026-06-02
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，ready）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，ready）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，ready）。
+23. `PERF-001`：运行层级与速度预算契约（P1，ready）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，ready，依赖 TA-UI-001/H-007 ✓）。
+25. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，ready）。
+26. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，ready）。
+27. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready，依赖 DATA-004/DATA-006 ✓）。
+28. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready，依赖 DATA-005 ✓）。
+29. `H-009`：昊天候选反证/过热降权校准（P1，ready，依赖 H-006/V-004 ✓）。
+30. `H-010`：政策主题生命周期与版本状态注册表（P1，ready，依赖 H-002/H-006 ✓）。
+31. `H-011`：候选矛盾证据与负面清单解释（P2，ready，依赖 H-009 ✓）。
+32. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，ready，依赖 H-007/UI-006 ✓）。
+33. `UI-010`：昊天候选对比视图与证据缺口排序（P2，ready，依赖 H-005/DATA-007 ✓）。
+34. `V-005`：夜间昊天候选质量日报与样本回放（P1，ready，依赖 V-004/DATA-006 ✓）。
+35. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，ready，依赖 V-002 ✓）。
+36. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，ready，依赖 INF-001 ✓）。
+37. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，ready，依赖 TF-OBS-001/UI-004 ✓）。
+38. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，ready，依赖 H-008/VLM-001 ✓）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready）。
+9. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready）。
+10. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，ready）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## PERF. 运行成本 / 轻量分析任务池（2026-06-02 新增）
+
+> 目标：系统不能为了“全面”而变慢。TradeFlow 是雷达，轻量 TA 是候选验证，完整 TA 是深度体检。默认链路必须轻，完整多 Agent 分析只能由用户明确触发。
+
+### PERF-001: 运行层级与速度预算契约（P1）
+- **描述**：建立统一运行层级契约，所有 API、前端按钮、scheduler、自动开发任务都要标明属于 `fast/light/full` 哪一层，以及是否允许调用 LLM。
+- **优先级**：P1
+- **状态**：ready
+- **背景**：
+  - 用户明确要求系统不能做得太重，不能“一发指令半天才回来”。
+  - 候选池/盘中观察需要时效；完整 TA 只能用于少量高价值标的。
+- **运行层级定义**：
+  1. `fast`：5-30 秒。TradeFlow 筛选、数据健康、证据缺口、候选分类。默认不调用 LLM。
+  2. `light`：1-3 分钟。轻量 TA，只跑必要模块，用于中线政策验证、短线技术确认、持仓风险复核。
+  3. `full`：10-20 分钟。完整 14 Agent TA，多空辩论和风控全链路，必须人工确认。
+- **执行约束**：
+  - 不改 prompts。
+  - 不触发 live TA。
+  - 不新增高成本模型调用。
+- **实现要点**：
+  1. 新增运行层级枚举/配置，例如 `runtime_tier`：
+     - `FAST_RADAR`
+     - `LIGHT_RESEARCH`
+     - `FULL_TA`
+  2. API/服务层统一返回：
+     - `runtime_tier`
+     - `expected_latency`
+     - `llm_allowed`
+     - `requires_confirmation`
+     - `cost_risk`
+  3. 前端按钮文案对应：
+     - `快速筛选`
+     - `轻量研究`
+     - `完整 TA`
+  4. `TradeFlow Discovery` 和 `Observe` 必须标记为 `FAST_RADAR`。
+  5. 自动任务/scheduler 不得默认进入 `FULL_TA`。
+- **验收方式**：
+  - TradeFlow candidates/observe/data-health API 返回 fast 层级或元数据。
+  - 前端能显示运行层级和预计耗时。
+  - 没有用户确认时，full TA 入口不可直接触发。
+  - `pytest tests/test_runtime_tier*.py tests/test_ui001_tradeflow_api.py -q` 或等价测试通过。
+- **代码标注要求**：`# [PERF-001] runtime_tier_contract` / `// [PERF-001] runtime_tier_contract`
+
+### PERF-002: 轻量 TA Profile 与模块路由（P1）
+- **描述**：在完整 TA 之外增加轻量 TA Profile，只跑与目标相关的模块，避免所有候选都进入 14 Agent 全链路。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`TA-UI-001`、`H-007` 完成或同步完成。
+- **执行约束**：
+  - 不删除完整 TA。
+  - 不改 prompts。
+  - 不自动调用 live LLM；第一版可先做路由配置和 mock/fixture。
+- **Profile 建议**：
+  1. `MIDLINE_POLICY_LIGHT`：
+     - 用于 `POLICY_AMBUSH/POLICY_CONFIRM`。
+     - 重点：政策/公告/基本面/风险/量价。
+  2. `SHORT_TECH_LIGHT`：
+     - 用于 `TECH_TRADE`。
+     - 重点：技术/量价/资金/风险。
+  3. `POSITION_RISK_LIGHT`：
+     - 用于已持仓复盘。
+     - 重点：风控/资金/关键价位/公告。
+  4. `FULL_TA`：
+     - 保持完整多 Agent，只能手动确认。
+- **实现要点**：
+  1. 新增 profile 配置，声明每个 profile 启用的 analyst/manager/risk 模块。
+  2. TradeFlow 候选根据 `candidate_type/research_queue/analysis_intent` 推荐 profile。
+  3. `/analysis` 控制台选择中线/短线后，能带入对应 profile。
+  4. 结果 metadata 中记录 `runtime_profile` 和实际启用模块。
+- **验收方式**：
+  - `POLICY_AMBUSH` 默认推荐 `MIDLINE_POLICY_LIGHT`。
+
+---DECISIONS---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+---DEVLOG---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-02 | TA-UI-001: 智能分析控制台增加短线/中线、分析意图、持仓状态选择
+
+- **执行者**：OpenCode
+- **任务**：TA-UI-001 — 在 `/analysis` 智能分析控制台显式暴露 TA 分析周期和意图选择，避免用户只能靠自然语言猜测系统是否按中线运行。
+- **修改文件**：
+  - `frontend/src/stores/analysisStore.ts` — [TA-UI-001] analysis_console_horizon_intent
+    - 新增状态字段：`analysisHorizon`（`'short'|'medium'`）、`analysisIntent`（string）、`hasPosition`（boolean）
+    - 新增 action：`setAnalysisHorizon`、`setAnalysisIntent`、`setHasPosition`
+    - `reset()` 和 `clearSession()` 保留用户选择的分析上下文
+    - `partialize()` 持久化新字段到 localStorage
+  - `frontend/src/types/index.ts` — [TA-UI-001]
+    - `AnalysisRequest` 新增 `query?: string`、`horizons?: string[]`、`user_intent?: Record<string, unknown>`
+  - `frontend/src/services/api.ts` — [TA-UI-001]
+    - `chatCompletion()` 新增可选 `userContext` 参数，传递 `objective`、`investment_horizon`、`current_position` 等到后端
+  - `frontend/src/pages/Analysis.tsx` — [TA-UI-001]
+    - 新增分析配置卡片：周期（短线/中线）、意图（观察/入场研究/持仓复盘/加仓判断/减仓止损）、持仓（未持仓/已持仓）
+    - 读取 URL params `?horizon=&intent=&position=` 从 TradeFlow 跳转时自动设置
+    - 将选择状态通过 props 传递给 ChatCopilotPanel
+  - `frontend/src/components/ChatCopilotPanel.tsx` — [TA-UI-001]
+    - 新增 props：`horizon`、`intent`、`hasPosition`
+    - `streamChat()` 构建 `[分析上下文]` 前缀注入 prompt，并传递 `userContext` 到 API
+    - 新增上下文横幅：显示 `本次分析：中线｜入场研究｜未持仓`
+  - `frontend/src/components/TradeFlowCandidateDrawer.tsx` — [TA-UI-001]
+    - 新增 `onNavigateToAnalysis` prop 和"智能分析"按钮
+    - POLICY_AMBUSH/POLICY_CONFIRM 默认中线+入场研究，TECH_TRADE 默认短线+观察
+  - `frontend/src/pages/TradeFlow.tsx` — [TA-UI-001]
+    - 引入 `useNavigate`，传递 `onNavigateToAnalysis` 到候选详情抽屉
+  - `tests/test_ta_ui_001_horizon_intent.py` — 新建，15 个测试覆盖：
+    - `TestUserContextInput` (3): objective/horizon、position fields、defaults
+    - `TestExtractRequestUserContext` (5): objective、horizon、position、empty strings、empty constraints
+    - `TestAnalyzeRequestHorizons` (4): default short、medium、both、user_intent
+    - `TestChatCompletionRequest` (2): user context fields、context extraction
+    - `TestIntentMapping` (1): all 5 intent values accepted as objective
+- **测试结果**：
+  - `npm run build`：通过（无 TS 错误）
+  - `tests/test_ta_ui_001_horizon_intent.py`：15/15 passed
+  - `tests/test_ui001_tradeflow_api.py`：49/49 passed（无回归）
+- **风险点**：无。未改 prompts、未写生产 DB、未触发 live TA/LLM。
+
+---
+
+## 2026-06-02 | TF-P0-001: TradeFlow 运行态 schema 迁移、名称回填与观察路由修复
+
+- **执行者**：OpenCode
+- **任务**：TF-P0-001 — 修复本地运行态 `tradeflow.db` 仍为旧 schema 导致 H/TF-DATE 字段无法落库；修复候选名称等于代码时不回填中文名；修复盘中观察执行接口运行后端返回 405。
+- **修改文件**：
+  - `tradingagents/tradeflow/symbol_utils.py` — [TF-P0-001] runtime_schema_name_observe_fix
+    - 新增 `_IS_CODE_PATTERN` 正则和 `_looks_like_code()` 函数：检测 `XXXXXX` / `XXXXXX.SH/SZ/BJ` 等代码格式名称
+    - `resolve()` 方法重构：使用 `_looks_like_code()` 替代旧逻辑，同时检测 `"--"` placeholder，代码类名称和占位符都会走 cache fallback
+    - 解决 `601689.SH` 被当作"已有名称"不回填中文的问题
+  - `tradingagents/tradeflow/candidate_engine.py` — [TF-P0-001]
+    - `save_candidate()` 新增 `_looks_like_code()` 检测，name 为代码格式时触发 resolve
+    - import 更新：新增 `_looks_like_code`
+  - `api/services/tradeflow_service.py` — [TF-P0-001]
+    - `_connect()` 新增 `init_db(db_path)` 调用：确保每次 API 连接 tradeflow.db 时自动迁移 schema
+    - 修复旧 DB 连接后因缺少列导致 `_rget()` 返回 None 的问题
+  - `api/main.py` — [TF-P0-001]
+    - `lifespan()` 新增 tradeflow DB 初始化：启动时即执行 schema migration
+    - 防止首次 API 请求才触发迁移导致延迟
+  - `tests/test_tf_p0_001_runtime_fix.py` — 新建，37 个测试覆盖：
+    - `TestLooksLikeCode` (13): bare code / SH/SZ/BJ suffix / lowercase / Chinese name / empty / None / whitespace / placeholder / random / 5-digit / 7-digit
+    - `TestNameBackfill` (6): code-like name / bare code / real name / empty / placeholder / SZ code
+    - `TestSchemaMigration` (5): migration adds columns / preserves data / idempotent / daily_plans dates / filtered dates
+    - `TestSaveCandidateNameBackfill` (3): code name resolved / bare code resolved / real name kept
+    - `TestCandidateTypeDefault` (1): empty → TECH_TRADE
+    - `TestAPILayerNameBackfill` (1): _row_to_candidate_item resolves code name
+    - `TestObserveRoute` (2): POST /v1/tradeflow/observe/run registered / GET /v1/tradeflow/observe registered
+    - `TestConnectMigratesSchema` (1): _connect migrates old schema
+    - `TestAcceptanceTFP0001` (4): old schema migration / code→Chinese / observe JSON not 405 / no live TA
+  - `tests/test_ui001_tradeflow_api.py` — `test_filter_by_candidate_type` 更新：`c2` 的 `candidate_type` 现在默认为 `TECH_TRADE`
+  - `docs/TASKS.md` — TF-P0-001 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：37 passed (TF-P0-001)；143 passed (tradeflow 回归)；3111 passed (全部)；17 skipped；0 failed；npm run build 通过
+- **关键逻辑**：
+  - Schema migration: `_connect()` 每次连接时调用 `init_db()`，确保旧 DB 自动获得 H-004/H-007/H-008/TF-DATE 等全部 77 个新列
+  - Startup migration: `lifespan()` 启动时即执行一次，避免首次请求延迟
+  - Name backfill: `_looks_like_code()` 用正则 `\d{6}(\.(SH|SZ|SS|BJ))?$` 检测代码格式名称，代码类名称 + `"--"` placeholder 都触发 cache fallback
+  - `save_candidate()`: 增量检测 `_looks_like_code(candidate.name)` 作为触发 resolve 的条件之一
+  - Observe route: 代码已正确注册 POST `/v1/tradeflow/observe/run`，405 问题根源是旧 schema 导致运行时错误；schema migration 修复后路由正常
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
+## 2026-06-02 | Runtime Layer Architecture Update
+
+- **执行者**：Codex
+- **背景**：用户提出系统不应过重，不能每次指令都等待完整多 Agent 报告；盘前/盘中使用需要时效。
+- **架构更新**：
+  - `docs/ROADMAP.md` 新增 Runtime Principle：`Fast Radar` / `Light Research` / `Full TA` 三层。
+  - 新增 Performance And Cost Layer，要求所有功能标注运行层级、预计耗时、是否调用 LLM、是否需要人工确认。
+  - Phase 4 增加轻量研究和完整 TA 的显式区分。
+  - 新增 Phase 4.5 Runtime Budget And Lightweight Analysis。
+- **任务池更新**：
+  - `PERF-001` 运行层级与速度预算契约（P1）。
+  - `PERF-002` 轻量 TA Profile 与模块路由（P1）。
+  - `PERF-003` 分析运行耗时/调用成本遥测与前端展示（P1）。
+  - `PERF-004` 完整 TA 手动确认与 scheduler 成本门禁（P1）。
+- **原则**：TradeFlow 默认 fast，不调用 LLM；轻量 TA 只跑必要模块；完整 TA 只能由用户明确确认。
+
+## 2026-06-02 | P0 Runtime/UI Task Release
+
+- **执行者**：Codex
+- **背景**：用户生成 2026-06-02 今日候选池后发现运行态问题：股票名称显示代码、候选类型未分类、昊天分/埋伏分/政策主题/角色/自选备注为空、盘中观察执行报错；同时智能分析控制台没有显式短线/中线选择。
+- **诊断摘要**：
+  - 当前 `tradeflow.db` 的 `tradeflow_candidates` 仍是旧 schema，缺少 H-004/H-005/H-007/H-008/TF-DATE 相关列，导致新字段无法落库。
+  - 今日 4 只候选来自 `watchlist`，命中 `PULLBACK_SUPPORT/VCP`，属于短线技术观察，不是昊天左侧候选。
+  - 名称被写成 `601689.SH` 这类代码时，名称解析器误判为已有名称，不再回填中文名。
+  - 前端执行观察调用 `POST /v1/tradeflow/observe/run`，当前运行后端返回 405；源码已有路由，需修正运行态路由/重启/API 一致性。
+- **新增优先任务**：
+  - `TF-P0-001` TradeFlow 运行态 schema 迁移、名称回填与观察路由修复。
+  - `TA-UI-001` 智能分析控制台增加短线/中线、分析意图、持仓状态选择。
+  - `TF-P0-002` 候选池分层：短线技术池与昊天左侧池显式拆分。
+  - `TF-P0-003` TradeFlow 生成候选池后的端到端 UI smoke 验收。
+- **原则**：这些任务优先级高于后续 DATA/H/UI P1，因为它们直接影响 TradeFlow 和 TA 是否能日常试用。
+
+## 2026-06-02 | Next Auto Dev Task Batch Release
+
+- **执行者**：Codex
+- **背景**：上一轮夜间自动开发已完成 DATA-005/H-005/H-006/H-007/H-008/V-004/DATA-006，任务池 ready 项清空，需要释放下一批任务，保证 20:00 自动开发链可持续运行。
+- **释放任务**：
+  - `DATA-007` raw_evidence 覆盖率审计与候选可信度联动。
+  - `DATA-008` A股关键源 fallback smoke fixtures 扩展。
+  - `DATA-009` 自选备注与截图识别字段持久化回归保护。
+  - `H-009` 昊天候选反证/过热降权校准。
+  - `H-010` 政策主题生命周期与版本状态注册表。
+  - `H-011` 候选矛盾证据与负面清单解释。
+  - `UI-009` 候选详情一键生成 TA 研究任务预案。
+  - `UI-010` 昊天候选对比视图与证据缺口排序。
+  - `V-005` 夜间昊天候选质量日报与样本回放。
+  - `M-012` 任务池空转时自动生成 proposed 任务草案。
+  - `M-013` CodeGraph 影响范围预检接入自动开发日志。
+  - `T-008` TradeFlow 观察信号 fixture 回放与前端状态一致性验收。
+- **原则**：
+  - 先数据真实，再候选质量，再前端可用，再自动化治理。
+  - 全部任务默认不调用 live LLM、不跑全市场扫描、不写生产数据库。
+  - 每项任务都要求 tests/replay/report 或 frontend build 验收。
+
+## 2026-06-02 | H-series API/UI shared closeout
+
+- **执行者**：Codex
+- **背景**：H-005/H-007/H-008/V-004/DATA-006 自动开发完成后，仍有 7 个前端/API 共享接线文件未提交。
+- **收尾修复**：
+  - `api/main.py` / `api/services/tradeflow_service.py` / `api/tradeflow_schemas.py` 补齐 `candidate_type` 过滤、昊天候选字段、研究队列字段和自选备注字段。
+  - `frontend/src/pages/TradeFlow.tsx` 增加候选类型筛选、昊天分/埋伏分/政策主题/自选备注等列。
+  - `frontend/src/components/TradeFlowCandidateDrawer.tsx` 增加“政策逻辑”和“自选备注”区块。
+  - `frontend/src/services/api.ts` / `frontend/src/types/index.ts` 同步前端 API 参数和类型。
+  - `tests/test_ui001_tradeflow_api.py` 增加候选类型字段、筛选、详情证据字段测试。
+  - `docs/TASKS.md` 修正 H-005/DATA-005/H-007 顶部状态残留，避免自动链重复领取。
+- **验证**：
+  - `.venv/bin/python -m pytest tests/test_ui001_tradeflow_api.py tests/test_h007_ta_queue_router.py tests/test_h008_mandate_watchlist_note.py tests/test_v004_mandate_e2e_smoke.py tests/test_data006_daily_digest.py -q` → 318 passed。
+  - `npm run build` → passed（仅 Vite chunk-size warning）。
+
+## 2026-06-02 | DATA-006: 数据源质量报告接入夜间日报
+
+
+exec
+/bin/zsh -lc 'git status --short --branch' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+## local/tradingagents-custom...myfork/local/tradingagents-custom [ahead 50]
+ M api/main.py
+ M api/services/tradeflow_service.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M frontend/src/components/ChatCopilotPanel.tsx
+ M frontend/src/components/TradeFlowCandidateDrawer.tsx
+ M frontend/src/pages/Analysis.tsx
+ M frontend/src/pages/TradeFlow.tsx
+ M frontend/src/services/api.ts
+ M frontend/src/stores/analysisStore.ts
+ M frontend/src/types/index.ts
+?? docs/task_runs/TA-UI-001-20260602-182128/
+?? tests/test_ta_ui_001_horizon_intent.py
+
+exec
+/bin/zsh -lc 'git diff -- api/main.py api/services/tradeflow_service.py frontend/src/components/ChatCopilotPanel.tsx frontend/src/components/TradeFlowCandidateDrawer.tsx frontend/src/pages/Analysis.tsx frontend/src/pages/TradeFlow.tsx frontend/src/services/api.ts frontend/src/stores/analysisStore.ts frontend/src/types/index.ts tests/test_ta_ui_001_horizon_intent.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/api/main.py b/api/main.py
+index 6b62a44..8818ade 100644
+--- a/api/main.py
++++ b/api/main.py
+@@ -281,6 +281,13 @@ async def lifespan(app: FastAPI):
+ 
+     init_db()
+     _log("Database initialized.")
++    try:
++        from tradingagents.tradeflow.candidate_engine import init_db as _tf_init_db  # [TF-P0-001] runtime_schema_name_observe_fix
++        from tradingagents.dataflows.trade_calendar import is_cn_trade_day  # noqa: F401
++        _tf_init_db(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tradeflow.db"))
++        _log("TradeFlow DB schema migrated.")
++    except Exception as _tf_exc:
++        _log(f"TradeFlow DB init skipped: {_tf_exc}")
+     store = get_job_store()
+     store.clear()
+     _background_tasks.clear()
+diff --git a/api/services/tradeflow_service.py b/api/services/tradeflow_service.py
+index eb07ad9..53e0e7b 100644
+--- a/api/services/tradeflow_service.py
++++ b/api/services/tradeflow_service.py
+@@ -43,6 +43,8 @@ def _connect(tf_db_path: str = "") -> Optional[sqlite3.Connection]:
+     if not os.path.exists(db_path):
+         return None
+     try:
++        from tradingagents.tradeflow.candidate_engine import init_db  # [TF-P0-001] runtime_schema_name_observe_fix
++        init_db(db_path)
+         conn = sqlite3.connect(db_path)
+         conn.row_factory = sqlite3.Row
+         return conn
+diff --git a/frontend/src/components/ChatCopilotPanel.tsx b/frontend/src/components/ChatCopilotPanel.tsx
+index e5dbded..67baba7 100644
+--- a/frontend/src/components/ChatCopilotPanel.tsx
++++ b/frontend/src/components/ChatCopilotPanel.tsx
+@@ -22,6 +22,9 @@ interface ChatCopilotPanelProps {
+     onSymbolDetected: (symbol: string) => void
+     onShowReport?: (section?: string) => void
+     initialInput?: string
++    horizon?: 'short' | 'medium'
++    intent?: string
++    hasPosition?: boolean
+ }
+ 
+ interface StreamEvent {
+@@ -130,7 +133,7 @@ function ReportCard({
+     )
+ }
+ 
+-export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initialInput }: ChatCopilotPanelProps) {
++export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initialInput, horizon, intent, hasPosition: hasPositionProp }: ChatCopilotPanelProps) {
+     const [input, setInput] = useState(initialInput || '')
+     const [streaming, setStreaming] = useState(false)
+     // Tracks agent bubbles waiting for their first token (shows "正在推理分析中..." spinner)
+@@ -564,11 +567,30 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+     }
+ 
+     const streamChat = async (prompt: string, signal?: AbortSignal): Promise<boolean> => {
++        // [TA-UI-001] analysis_console_horizon_intent - build user context from props
++        const objectiveMap: Record<string, string> = {
++            watch: '观察',
++            entry: '建仓/入场研究',
++            holding: '持仓复盘',
++            add: '加仓判断',
++            reduce: '减仓/止损',
++        }
++        const horizonLabel = horizon === 'medium' ? '中线' : '短线'
++        const effectiveObjective = intent ? objectiveMap[intent] : undefined
++        const effectiveHorizon = horizon === 'medium' ? '中线' : '短线'
++        const userContext = {
++            objective: effectiveObjective,
++            investment_horizon: effectiveHorizon,
++        }
++        // Prepend structured context to prompt so intent parser sees it
++        const contextPrefix = `[分析上下文] 周期=${horizonLabel}｜意图=${objectiveMap[intent || 'watch'] || '观察'}｜持仓=${hasPositionProp ? '是' : '否'}\n`
++        const fullPrompt = contextPrefix + prompt
+         const response = await api.chatCompletion(
+-            [{ role: 'user', content: prompt }],
++            [{ role: 'user', content: fullPrompt }],
+             true,
+             selectedAnalysts,
+             signal,
++            userContext,
+         )
+ 
+         if (!response.body) throw new Error('SSE stream unavailable')
+@@ -756,6 +778,26 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
+                 </div>
+             </div>
+ 
++            {/* [TA-UI-001] analysis_console_horizon_intent - context banner */}
++            {horizon && (
++                <div className="text-[11px] px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 flex items-center gap-1.5 mb-2">
++                    <span className="font-medium text-slate-700 dark:text-slate-300">本次分析：</span>
++                    <span className="inline-flex items-center gap-0.5">
++                        <span className={`font-medium ${horizon === 'medium' ? 'text-indigo-600 dark:text-indigo-400' : 'text-cyan-600 dark:text-cyan-400'}`}>
++                            {horizon === 'medium' ? '中线' : '短线'}
++                        </span>
++                        <span className="text-slate-300 dark:text-slate-600">|</span>
++                        <span className="font-medium text-slate-600 dark:text-slate-400">
++                            {{ watch: '观察', entry: '入场研究', holding: '持仓复盘', add: '加仓判断', reduce: '减仓止损' }[intent || 'watch'] || '观察'}
++                        </span>
++                        <span className="text-slate-300 dark:text-slate-600">|</span>
++                        <span className={`font-medium ${hasPositionProp ? 'text-amber-600 dark:text-amber-400' : 'text-slate-500 dark:text-slate-400'}`}>
++                            {hasPositionProp ? '已持仓' : '未持仓'}
++                        </span>
++                    </span>
++                </div>
++            )}
++
+             <div className="text-xs text-slate-500 dark:text-slate-400 mb-3 flex items-center gap-1">
+                 <Sparkles className="w-3 h-3" />
+                 示例：分析贵州茅台 600519.SH 今天走势
+diff --git a/frontend/src/components/TradeFlowCandidateDrawer.tsx b/frontend/src/components/TradeFlowCandidateDrawer.tsx
+index d446fb7..79531f8 100644
+--- a/frontend/src/components/TradeFlowCandidateDrawer.tsx
++++ b/frontend/src/components/TradeFlowCandidateDrawer.tsx
+@@ -1,6 +1,7 @@
+ // [H-005] mandate_radar_ui
++// [TA-UI-001] analysis_console_horizon_intent
+ import { useEffect, useState } from 'react'
+-import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote } from 'lucide-react'
++import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote, FlaskConical } from 'lucide-react'
+ import { api } from '@/services/api'
+ import type { TradeFlowCandidateItem, TradeFlowCandidateDetail } from '@/types'
+ 
+@@ -99,9 +100,10 @@ interface TradeFlowCandidateDrawerProps {
+     tradeDate: string
+     open: boolean
+     onClose: () => void
++    onNavigateToAnalysis?: (url: string) => void
+ }
+ 
+-export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, onClose }: TradeFlowCandidateDrawerProps) {
++export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, onClose, onNavigateToAnalysis }: TradeFlowCandidateDrawerProps) {
+     const [detail, setDetail] = useState<TradeFlowCandidateDetail | null>(null)
+     const [loadingDetail, setLoadingDetail] = useState(false)
+ 
+@@ -517,6 +519,32 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
+                     )}
+ 
+                     <div className="pb-4" />
++
++                    {/* [TA-UI-001] analysis_console_horizon_intent - Jump to analysis */}
++                    {onNavigateToAnalysis && (
++                        <div className="sticky bottom-0 bg-white dark:bg-slate-900 pt-3 pb-2 border-t border-slate-100 dark:border-slate-700">
++                            <button
++                                onClick={() => {
++                                    const ct = data.candidate_type
++                                    const horizon = ct === 'POLICY_AMBUSH' || ct === 'POLICY_CONFIRM' ? 'medium' : 'short'
++                                    const intent = ct === 'POLICY_AMBUSH' || ct === 'POLICY_CONFIRM' ? 'entry' : 'watch'
++                                    const pos = 'false'
++                                    const url = `/analysis?symbol=${encodeURIComponent(candidate.symbol)}&horizon=${horizon}&intent=${intent}&position=${pos}`
++                                    onNavigateToAnalysis(url)
++                                }}
++                                className="w-full flex items-center justify-center gap-2 rounded-lg bg-blue-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-600 transition-colors"
++                            >
++                                <FlaskConical className="h-4 w-4" />
++                                智能分析
++                            </button>
++                            <div className="mt-1 text-center text-[10px] text-slate-400">
++                                {(data.candidate_type === 'POLICY_AMBUSH' || data.candidate_type === 'POLICY_CONFIRM')
++                                    ? '将默认以中线｜入场研究打开'
++                                    : '将默认以短线｜观察打开'
++                                }
++                            </div>
++                        </div>
++                    )}
+                 </div>
+             </div>
+         </>
+diff --git a/frontend/src/pages/Analysis.tsx b/frontend/src/pages/Analysis.tsx
+index 1e3885c..15d1532 100644
+--- a/frontend/src/pages/Analysis.tsx
++++ b/frontend/src/pages/Analysis.tsx
+@@ -11,6 +11,25 @@ import KeyMetrics from '@/components/KeyMetrics'
+ import { useAnalysisStore } from '@/stores/analysisStore'
+ import { api } from '@/services/api'
+ 
++// [TA-UI-001] analysis_console_horizon_intent
++const HORIZON_OPTIONS = [
++    { value: 'short' as const, label: '短线' },
++    { value: 'medium' as const, label: '中线' },
++]
++
++const INTENT_OPTIONS = [
++    { value: 'watch', label: '观察' },
++    { value: 'entry', label: '入场研究' },
++    { value: 'holding', label: '持仓复盘' },
++    { value: 'add', label: '加仓判断' },
++    { value: 'reduce', label: '减仓止损' },
++]
++
++const POSITION_OPTIONS = [
++    { value: false, label: '未持仓' },
++    { value: true, label: '已持仓' },
++]
++
+ function mapDecision(decision?: string): 'buy' | 'sell' | 'hold' | 'add' | 'reduce' | 'watch' | undefined {
+     if (!decision) return undefined
+     const d = decision.toUpperCase()
+@@ -48,6 +67,10 @@ function extractPrice(text: string | undefined, type: 'target' | 'stop'): number
+ export default function Analysis() {
+     const [searchParams] = useSearchParams()
+     const querySymbol = (searchParams.get('symbol') || '').trim().toUpperCase()
++    // [TA-UI-001] analysis_console_horizon_intent - URL params from TradeFlow
++    const queryHorizon = searchParams.get('horizon')
++    const queryIntent = searchParams.get('intent')
++    const queryPosition = searchParams.get('position')
+     const [activeSymbol, setActiveSymbol] = useState(() => querySymbol || useAnalysisStore.getState().currentSymbol || '000001.SH')
+     const [activeSection, setActiveSection] = useState<string | undefined>()
+     const [debateDrawer, setDebateDrawer] = useState<'research' | 'risk' | null>(null)
+@@ -63,6 +86,13 @@ export default function Analysis() {
+         riskItems,
+         keyMetrics,
+         analysisRunState,
++        // [TA-UI-001] analysis_console_horizon_intent
++        analysisHorizon,
++        analysisIntent,
++        hasPosition,
++        setAnalysisHorizon,
++        setAnalysisIntent,
++        setHasPosition,
+     } = useAnalysisStore()
+ 
+     const handleShowReport = (section?: string) => {
+@@ -76,6 +106,15 @@ export default function Analysis() {
+         if (querySymbol) setActiveSymbol(querySymbol)
+     }, [querySymbol])
+ 
++    // [TA-UI-001] analysis_console_horizon_intent - apply URL params once on mount
++    useEffect(() => {
++        if (queryHorizon === 'short' || queryHorizon === 'medium') setAnalysisHorizon(queryHorizon)
++        if (queryIntent && INTENT_OPTIONS.some(o => o.value === queryIntent)) setAnalysisIntent(queryIntent)
++        if (queryPosition === 'true') setHasPosition(true)
++        else if (queryPosition === 'false') setHasPosition(false)
++        // eslint-disable-next-line react-hooks/exhaustive-deps
++    }, [])
++
+     useEffect(() => {
+         if (currentSymbol) {
+             setActiveSymbol(currentSymbol)
+@@ -122,6 +161,68 @@ export default function Analysis() {
+         <div className="space-y-4">
+             <div className="grid grid-cols-1 lg:grid-cols-[340px_minmax(0,1fr)] gap-4 min-h-[calc(100vh-5rem)]">
+                 <aside className="h-[70vh] min-h-[520px] lg:h-[calc(100vh-5rem)] lg:sticky lg:top-0 flex flex-col gap-4">
++                    {/* [TA-UI-001] analysis_console_horizon_intent */}
++                    <div className="card p-3 space-y-3">
++                        <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
++                            <span className="font-medium">分析配置</span>
++                        </div>
++                        <div className="space-y-2">
++                            <div>
++                                <div className="text-[11px] text-slate-400 mb-1">周期</div>
++                                <div className="flex gap-1">
++                                    {HORIZON_OPTIONS.map(opt => (
++                                        <button
++                                            key={opt.value}
++                                            onClick={() => setAnalysisHorizon(opt.value)}
++                                            className={`px-3 py-1 text-xs rounded-md border transition-colors ${
++                                                analysisHorizon === opt.value
++                                                    ? 'bg-blue-500 text-white border-blue-500'
++                                                    : 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-600 hover:border-blue-400'
++                                            }`}
++                                        >
++                                            {opt.label}
++                                        </button>
++                                    ))}
++                                </div>
++                            </div>
++                            <div>
++                                <div className="text-[11px] text-slate-400 mb-1">意图</div>
++                                <div className="flex flex-wrap gap-1">
++                                    {INTENT_OPTIONS.map(opt => (
++                                        <button
++                                            key={opt.value}
++                                            onClick={() => setAnalysisIntent(opt.value)}
++                                            className={`px-2 py-1 text-[11px] rounded-md border transition-colors ${
++                                                analysisIntent === opt.value
++                                                    ? 'bg-blue-500 text-white border-blue-500'
++                                                    : 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-600 hover:border-blue-400'
++                                            }`}
++                                        >
++                                            {opt.label}
++                                        </button>
++                                    ))}
++                                </div>
++                            </div>
++                            <div>
++                                <div className="text-[11px] text-slate-400 mb-1">持仓</div>
++                                <div className="flex gap-1">
++                                    {POSITION_OPTIONS.map(opt => (
++                                        <button
++                                            key={String(opt.value)}
++                                            onClick={() => setHasPosition(opt.value)}
++                                            className={`px-3 py-1 text-xs rounded-md border transition-colors ${
++                                                hasPosition === opt.value
++                                                    ? 'bg-blue-500 text-white border-blue-500'
++                                                    : 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-600 hover:border-blue-400'
++                                            }`}
++                                        >
++                                            {opt.label}
++                                        </button>
++                                    ))}
++                                </div>
++                            </div>
++                        </div>
++                    </div>
+                     <div className="min-h-0 flex-1">
+                         <ChatCopilotPanel
+                             onSymbolDetected={(symbol) => {
+@@ -130,6 +231,9 @@ export default function Analysis() {
+                             }}
+                             onShowReport={handleShowReport}
+                             initialInput={initialChatInput}
++                            horizon={analysisHorizon}
++                            intent={analysisIntent}
++                            hasPosition={hasPosition}
+                         />
+                     </div>
+                 </aside>
+diff --git a/frontend/src/pages/TradeFlow.tsx b/frontend/src/pages/TradeFlow.tsx
+index 394c877..6884926 100644
+--- a/frontend/src/pages/TradeFlow.tsx
++++ b/frontend/src/pages/TradeFlow.tsx
+@@ -1,6 +1,8 @@
+ // [UI-005] tradeflow_review_page
+ // [H-005] mandate_radar_ui
++// [TA-UI-001] analysis_console_horizon_intent
+ import { useState, useEffect, useCallback, useMemo } from 'react'
++import { useNavigate } from 'react-router-dom'
+ import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX } from 'lucide-react'
+ import { api } from '@/services/api'
+ import type {
+@@ -829,6 +831,7 @@ function DataHealthPanel({ data }: { data: TradeFlowDataHealthResponse | null })
+ }
+ 
+ export default function TradeFlow() {
++    const navigate = useNavigate()  // [TA-UI-001] analysis_console_horizon_intent
+     const [activeTab, setActiveTab] = useState<TabKey>('candidates')
+     const [tradeDate, setTradeDate] = useState(todayStr)
+     const [candidates, setCandidates] = useState<TradeFlowCandidateItem[]>([])
+@@ -1378,6 +1381,7 @@ export default function TradeFlow() {
+                     tradeDate={tradeDate}
+                     open={drawerOpen}
+                     onClose={handleDrawerClose}
++                    onNavigateToAnalysis={(url) => navigate(url)}  // [TA-UI-001] analysis_console_horizon_intent
+                 />
+             )}
+         </div>
+diff --git a/frontend/src/services/api.ts b/frontend/src/services/api.ts
+index ab258b5..c82b462 100644
+--- a/frontend/src/services/api.ts
++++ b/frontend/src/services/api.ts
+@@ -87,7 +87,27 @@ class ApiService {
+         stream = true,
+         selectedAnalysts?: string[],
+         signal?: AbortSignal,
++        userContext?: {
++            objective?: string
++            investment_horizon?: string
++            current_position?: number
++            current_position_pct?: number
++            average_cost?: number
++        },
+     ) {
++        const body: Record<string, unknown> = {
++            messages,
++            stream,
++            selected_analysts: selectedAnalysts,
++        }
++        // [TA-UI-001] analysis_console_horizon_intent
++        if (userContext) {
++            if (userContext.objective) body.objective = userContext.objective
++            if (userContext.investment_horizon) body.investment_horizon = userContext.investment_horizon
++            if (userContext.current_position != null) body.current_position = userContext.current_position
++            if (userContext.current_position_pct != null) body.current_position_pct = userContext.current_position_pct
++            if (userContext.average_cost != null) body.average_cost = userContext.average_cost
++        }
+         const response = await fetch(`${getBaseUrl()}/v1/chat/completions`, {
+             method: 'POST',
+             signal,
+@@ -95,11 +115,7 @@ class ApiService {
+                 'Content-Type': 'application/json',
+                 ...(getAuthToken() ? { Authorization: `Bearer ${getAuthToken()}` } : {}),
+             },
+-            body: JSON.stringify({
+-                messages,
+-                stream,
+-                selected_analysts: selectedAnalysts,
+-            }),
++            body: JSON.stringify(body),
+         })
+ 
+         if (!response.ok) {
+diff --git a/frontend/src/stores/analysisStore.ts b/frontend/src/stores/analysisStore.ts
+index db3bff2..465cd0e 100644
+--- a/frontend/src/stores/analysisStore.ts
++++ b/frontend/src/stores/analysisStore.ts
+@@ -83,6 +83,11 @@ interface AnalysisState {
+     // Current analysis horizon (for badge display)
+     currentHorizon: string | null
+ 
++    // [TA-UI-001] analysis_console_horizon_intent
++    analysisHorizon: 'short' | 'medium'
++    analysisIntent: string
++    hasPosition: boolean
++
+     // Actions
+     setCurrentJobId: (jobId: string | null) => void
+     setCurrentSymbol: (symbol: string) => void
+@@ -109,6 +114,10 @@ interface AnalysisState {
+     setAnalysisRunState: (state: 'idle' | 'running' | 'completed' | 'failed', error?: string | null) => void
+     failRun: (error: string) => void
+     setCurrentHorizon: (horizon: string | null) => void
++    // [TA-UI-001] analysis_console_horizon_intent
++    setAnalysisHorizon: (horizon: 'short' | 'medium') => void
++    setAnalysisIntent: (intent: string) => void
++    setHasPosition: (has: boolean) => void
+     addChatMessage: (message: ChatMessage) => void
+     appendToChatMessage: (id: string, chunk: string) => void
+     setMessageContent: (id: string, content: string) => void
+@@ -208,6 +217,9 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+     analysisRunState: 'idle',
+     analysisRunError: null,
+     currentHorizon: null,
++    analysisHorizon: 'short',
++    analysisIntent: 'watch',
++    hasPosition: false,
+ 
+     setCurrentJobId: (jobId) => set({ currentJobId: jobId }),
+ 
+@@ -422,6 +434,9 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+         analysisRunState: 'idle',
+         analysisRunError: null,
+         currentHorizon: null,
++        analysisHorizon: 'short',
++        analysisIntent: 'watch',
++        hasPosition: false,
+     }),
+ 
+     addLog: (log) => set((state) => ({
+@@ -484,6 +499,11 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+ 
+     setCurrentHorizon: (horizon) => set({ currentHorizon: horizon }),
+ 
++    // [TA-UI-001] analysis_console_horizon_intent
++    setAnalysisHorizon: (horizon) => set({ analysisHorizon: horizon }),
++    setAnalysisIntent: (intent) => set({ analysisIntent: intent }),
++    setHasPosition: (has) => set({ hasPosition: has }),
++
+     reset: () => set((state) => ({
+         currentJobId: null,
+         currentSymbol: state.currentSymbol,
+@@ -506,6 +526,10 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+         analysisRunState: 'idle',
+         analysisRunError: null,
+         currentHorizon: null,
++        // [TA-UI-001] 保留用户选择的分析上下文
++        analysisHorizon: state.analysisHorizon,
++        analysisIntent: state.analysisIntent,
++        hasPosition: state.hasPosition,
+     }))
+ }), {
+     name: 'tradingagents-analysis',
+@@ -520,6 +544,10 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
+         jobTargetPrice: state.jobTargetPrice,
+         jobStopLoss: state.jobStopLoss,
+         chatMessages: normalizePersistedChatMessages(state.chatMessages) ?? [],
++        // [TA-UI-001] analysis_console_horizon_intent
++        analysisHorizon: state.analysisHorizon,
++        analysisIntent: state.analysisIntent,
++        hasPosition: state.hasPosition,
+     }),
+     merge: (persistedState, currentState) => {
+         const persisted = (persistedState ?? {}) as Partial<AnalysisState>
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index 5b94ea8..0e45a06 100644
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -96,6 +96,9 @@ export interface AnalysisRequest {
+     user_notes?: string
+     config_overrides?: Record<string, unknown>
+     dry_run?: boolean
++    query?: string
++    horizons?: string[]
++    user_intent?: Record<string, unknown>
+ }
+ 
+ export interface AnalysisResponse {
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff --staged --stat' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ api/main.py                                        |   7 ++
+ api/services/tradeflow_service.py                  |   2 +
+ docs/DEVLOG.md                                     |  41 ++++++++
+ docs/TASKS.md                                      |   2 +-
+ frontend/src/components/ChatCopilotPanel.tsx       |  46 ++++++++-
+ .../src/components/TradeFlowCandidateDrawer.tsx    |  32 ++++++-
+ frontend/src/pages/Analysis.tsx                    | 104 +++++++++++++++++++++
+ frontend/src/pages/TradeFlow.tsx                   |   4 +
+ frontend/src/services/api.ts                       |  26 +++++-
+ frontend/src/stores/analysisStore.ts               |  28 ++++++
+ frontend/src/types/index.ts                        |   3 +
+ 11 files changed, 285 insertions(+), 10 deletions(-)
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tests/test_ta_ui_001_horizon_intent.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [TA-UI-001] analysis_console_horizon_intent
+"""Tests for TA-UI-001: analysis console horizon / intent / position context.
+
+Covers:
+- Backend ChatCompletionRequest accepts objective / investment_horizon / position fields
+- Backend _extract_request_user_context extracts structured fields
+- Backend AnalyzeRequest accepts horizons field
+- Frontend TypeScript types include horizons and user_intent
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from api.main import (
+    ChatCompletionRequest,
+    AnalyzeRequest,
+    UserContextInput,
+    _extract_request_user_context,
+    ChatMessage,
+)
+
+
+class TestUserContextInput:
+    def test_accepts_objective_and_horizon(self):
+        req = UserContextInput(
+            objective="建仓/入场研究",
+            investment_horizon="中线",
+        )
+        assert req.objective == "建仓/入场研究"
+        assert req.investment_horizon == "中线"
+
+    def test_accepts_position_fields(self):
+        req = UserContextInput(
+            current_position=1000,
+            current_position_pct=0.3,
+            average_cost=45.50,
+        )
+        assert req.current_position == 1000
+        assert req.current_position_pct == 0.3
+        assert req.average_cost == 45.50
+
+    def test_defaults_none(self):
+        req = UserContextInput()
+        assert req.objective is None
+        assert req.investment_horizon is None
+        assert req.current_position is None
+        assert req.average_cost is None
+        assert req.constraints == []
+
+
+class TestExtractRequestUserContext:
+    def test_extracts_objective(self):
+        req = UserContextInput(objective="建仓")
+        ctx = _extract_request_user_context(req)
+        assert ctx["objective"] == "建仓"
+
+    def test_extracts_investment_horizon(self):
+        req = UserContextInput(investment_horizon="中线")
+        ctx = _extract_request_user_context(req)
+        assert ctx["investment_horizon"] == "中线"
+
+    def test_extracts_position_fields(self):
+        req = UserContextInput(
+            current_position=500,
+            current_position_pct=0.15,
+            average_cost=100.0,
+        )
+        ctx = _extract_request_user_context(req)
+        assert ctx["current_position"] == 500
+        assert ctx["current_position_pct"] == 0.15
+        assert ctx["average_cost"] == 100.0
+
+    def test_skips_empty_strings(self):
+        req = UserContextInput(objective="  ", investment_horizon="")
+        ctx = _extract_request_user_context(req)
+        assert "objective" not in ctx
+        assert "investment_horizon" not in ctx
+
+    def test_skips_empty_constraints(self):
+        req = UserContextInput(constraints=[])
+        ctx = _extract_request_user_context(req)
+        assert "constraints" not in ctx
+
+
+class TestAnalyzeRequestHorizons:
+    def test_horizons_default_short(self):
+        req = AnalyzeRequest(symbol="600519.SH")
+        assert req.horizons == ["short"]
+
+    def test_horizons_medium(self):
+        req = AnalyzeRequest(symbol="600519.SH", horizons=["medium"])
+        assert req.horizons == ["medium"]
+
+    def test_horizons_short_and_medium(self):
+        req = AnalyzeRequest(symbol="600519.SH", horizons=["short", "medium"])
+        assert req.horizons == ["short", "medium"]
+
+    def test_user_intent_field(self):
+        req = AnalyzeRequest(
+            symbol="600519.SH",
+            user_intent={"raw_query": "test", "ticker": "600519.SH"},
+        )
+        assert req.user_intent is not None
+        assert req.user_intent["ticker"] == "600519.SH"
+
+
+class TestChatCompletionRequest:
+    def test_accepts_user_context_fields(self):
+        req = ChatCompletionRequest(
+            messages=[ChatMessage(role="user", content="分析 600519.SH")],
+            objective="建仓",
+            investment_horizon="中线",
+            current_position=500,
+            average_cost=1800.0,
+        )
+        assert req.objective == "建仓"
+        assert req.investment_horizon == "中线"
+        assert req.current_position == 500
+        assert req.average_cost == 1800.0
+
+    def test_context_extracts_correctly(self):
+        req = ChatCompletionRequest(
+            messages=[ChatMessage(role="user", content="分析 600519.SH")],
+            objective="减仓/止损",
+            investment_horizon="短线",
+        )
+        ctx = _extract_request_user_context(req)
+        assert ctx["objective"] == "减仓/止损"
+        assert ctx["investment_horizon"] == "短线"
+
+
+class TestIntentMapping:
+    def test_all_intent_values_accepted_as_objective(self):
+        intent_map = {
+            "watch": "观察",
+            "entry": "建仓/入场研究",
+            "holding": "持仓复盘",
+            "add": "加仓判断",
+            "reduce": "减仓/止损",
+        }
+        for intent_value, cn_label in intent_map.items():
+            req = UserContextInput(objective=cn_label)
+            ctx = _extract_request_user_context(req)
+            assert ctx["objective"] == cn_label, f"intent={intent_value} failed"
+
+exec
+/bin/zsh -lc "git diff -- docs/TASKS.md docs/DEVLOG.md && find docs/task_runs/TA-UI-001-20260602-182128 -maxdepth 2 -type f -print -exec sed -n '1,160p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 246a0ad..fec2e7f 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,47 @@
+ 
+ ---
+ 
++## 2026-06-02 | TA-UI-001: 智能分析控制台增加短线/中线、分析意图、持仓状态选择
++
++- **执行者**：OpenCode
++- **任务**：TA-UI-001 — 在 `/analysis` 智能分析控制台显式暴露 TA 分析周期和意图选择，避免用户只能靠自然语言猜测系统是否按中线运行。
++- **修改文件**：
++  - `frontend/src/stores/analysisStore.ts` — [TA-UI-001] analysis_console_horizon_intent
++    - 新增状态字段：`analysisHorizon`（`'short'|'medium'`）、`analysisIntent`（string）、`hasPosition`（boolean）
++    - 新增 action：`setAnalysisHorizon`、`setAnalysisIntent`、`setHasPosition`
++    - `reset()` 和 `clearSession()` 保留用户选择的分析上下文
++    - `partialize()` 持久化新字段到 localStorage
++  - `frontend/src/types/index.ts` — [TA-UI-001]
++    - `AnalysisRequest` 新增 `query?: string`、`horizons?: string[]`、`user_intent?: Record<string, unknown>`
++  - `frontend/src/services/api.ts` — [TA-UI-001]
++    - `chatCompletion()` 新增可选 `userContext` 参数，传递 `objective`、`investment_horizon`、`current_position` 等到后端
++  - `frontend/src/pages/Analysis.tsx` — [TA-UI-001]
++    - 新增分析配置卡片：周期（短线/中线）、意图（观察/入场研究/持仓复盘/加仓判断/减仓止损）、持仓（未持仓/已持仓）
++    - 读取 URL params `?horizon=&intent=&position=` 从 TradeFlow 跳转时自动设置
++    - 将选择状态通过 props 传递给 ChatCopilotPanel
++  - `frontend/src/components/ChatCopilotPanel.tsx` — [TA-UI-001]
++    - 新增 props：`horizon`、`intent`、`hasPosition`
++    - `streamChat()` 构建 `[分析上下文]` 前缀注入 prompt，并传递 `userContext` 到 API
++    - 新增上下文横幅：显示 `本次分析：中线｜入场研究｜未持仓`
++  - `frontend/src/components/TradeFlowCandidateDrawer.tsx` — [TA-UI-001]
++    - 新增 `onNavigateToAnalysis` prop 和"智能分析"按钮
++    - POLICY_AMBUSH/POLICY_CONFIRM 默认中线+入场研究，TECH_TRADE 默认短线+观察
++  - `frontend/src/pages/TradeFlow.tsx` — [TA-UI-001]
++    - 引入 `useNavigate`，传递 `onNavigateToAnalysis` 到候选详情抽屉
++  - `tests/test_ta_ui_001_horizon_intent.py` — 新建，15 个测试覆盖：
++    - `TestUserContextInput` (3): objective/horizon、position fields、defaults
++    - `TestExtractRequestUserContext` (5): objective、horizon、position、empty strings、empty constraints
++    - `TestAnalyzeRequestHorizons` (4): default short、medium、both、user_intent
++    - `TestChatCompletionRequest` (2): user context fields、context extraction
++    - `TestIntentMapping` (1): all 5 intent values accepted as objective
++- **测试结果**：
++  - `npm run build`：通过（无 TS 错误）
++  - `tests/test_ta_ui_001_horizon_intent.py`：15/15 passed
++  - `tests/test_ui001_tradeflow_api.py`：49/49 passed（无回归）
++- **风险点**：无。未改 prompts、未写生产 DB、未触发 live TA/LLM。
++
++---
++
+ ## 2026-06-02 | TF-P0-001: TradeFlow 运行态 schema 迁移、名称回填与观察路由修复
+ 
+ - **执行者**：OpenCode
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index c6e3f8b..f7e6b1d 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -262,7 +262,7 @@
+ ### TA-UI-001: 智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0）
+ - **描述**：在 `/analysis` 智能分析控制台显式暴露 TA 分析周期和意图选择，避免用户只能靠自然语言猜测系统是否按中线运行。
+ - **优先级**：P0
+-- **状态**：ready
++- **状态**：done -- TA-UI-001 implementation complete
+ - **背景**：
+   - 后端 G-001 已支持 `horizon/analysis_intent/position_context`。
+   - 自选/定时分析页已有短线/中线切换，但智能分析页没有。
+docs/task_runs/TA-UI-001-20260602-182128/tests-round1.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  2%]
+...........................................ss........................... [  4%]
+........................................................................ [  6%]
+........................................................................ [  9%]
+........................................................................ [ 11%]
+........................................................................ [ 13%]
+........................................................................ [ 16%]
+........................................................................ [ 18%]
+........................................................................ [ 20%]
+........................................................................ [ 22%]
+........................................................................ [ 25%]
+........................................................................ [ 27%]
+........................................................................ [ 29%]
+........................................................................ [ 32%]
+........................................................................ [ 34%]
+........................................................................ [ 36%]
+........................................................................ [ 38%]
+........................................................................ [ 41%]
+........................................................................ [ 43%]
+....................................sssssssss........................... [ 45%]
+........................................................................ [ 48%]
+........................................................................ [ 50%]
+........................................................................ [ 52%]
+........................................................................ [ 54%]
+........................................................................ [ 57%]
+........................................................................ [ 59%]
+........................................................................ [ 61%]
+........................................................................ [ 64%]
+........................................................................ [ 66%]
+........................................................................ [ 68%]
+........................................................................ [ 71%]
+........................................................................ [ 73%]
+...ss.................................................ssss.............. [ 75%]
+........................................................................ [ 77%]
+........................................................................ [ 80%]
+........................................................................ [ 82%]
+........................................................................ [ 84%]
+........................................................................ [ 87%]
+........................................................................ [ 89%]
+........................................................................ [ 91%]
+........................................................................ [ 93%]
+........................................................................ [ 96%]
+........................................................................ [ 98%]
+...............................................                          [100%]
+3126 passed, 17 skipped in 60.37s (0:01:00)
+
+Exit code: 0
+docs/task_runs/TA-UI-001-20260602-182128/prompt-round1.md
+# Task: TA-UI-001: 智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0）
+
+Read task "TA-UI-001" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/TA-UI-001-20260602-182128/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/project-overview.md
+[0m
+[0m# [0mTodos
+[•] Explore frontend /analysis page and backend /analyze endpoint
+[ ] Add horizon/intent/position controls to frontend AnalysisPage
+[ ] Wire frontend controls to backend /v1/analyze API call
+[ ] Add TradeFlow jump-to-analysis URL param defaults
+[ ] Display analysis context banner in report/chat header
+[ ] Add/update tests
+[ ] Run npm build and pytest
+[ ] Update docs/DEVLOG.md
+[0m
+[0m• [0mExplore analysis page and API[90m Explore Agent[0m
+[0m✓ [0mExplore analysis page and API[90m Explore Agent[0m
+[0m
+[0m# [0mTodos
+[✓] Explore frontend /analysis page and backend /analyze endpoint
+[•] Add horizon/intent/position controls to frontend AnalysisPage
+[ ] Wire frontend controls to backend /v1/analyze API call
+[ ] Add TradeFlow jump-to-analysis URL param defaults
+[ ] Display analysis context banner in report/chat header
+[ ] Add/update tests
+[ ] Run npm build and pytest
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead frontend/src/pages/Analysis.tsx
+[0m→ [0mRead frontend/src/services/api.ts
+[0m→ [0mRead frontend/src/stores/analysisStore.ts
+[0m→ [0mRead frontend/src/types/index.ts
+[0m→ [0mRead frontend/src/components/ChatCopilotPanel.tsx
+现在让我阅读 `ChatCopilotPanel` 和 `TradeFlow CandidateDrawer`，以理解整个流程：
+[0m→ [0mRead frontend/src/components/TradeFlowCandidateDrawer.tsx
+[0m→ [0mRead frontend/src/components/ChatCopilotPanel.tsx[90m [offset=988][0m
+[0m→ [0mRead api/main.py[90m [offset=700, limit=150][0m
+[0m→ [0mRead api/main.py[90m [offset=3260, limit=120][0m
+[0m✱ [0mGrep "navigate|onNavigate|useNavigate"[90m 0 matches[0m
+现在让我检查一下 TradeFlow 页面，看看其中现有的导航模式。
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=30][0m
+[0m→ [0mRead frontend/src/App.tsx[90m [limit=40][0m
+[0m→ [0mRead frontend/src/App.tsx[90m [offset=41][0m
+[0m
+[0m# [0mTodos
+[✓] Explore frontend /analysis page and backend /analyze endpoint
+[•] Add horizon/intent/position state to analysisStore
+[ ] Update types/index.ts with new fields
+[ ] Extend api.ts chatCompletion to pass user context
+[ ] Add controls to Analysis.tsx + wire to ChatCopilotPanel
+[ ] Update ChatCopilotPanel to use context and show banner
+[ ] Add analyze button to TradeFlowCandidateDrawer + TradeFlow nav
+[ ] Add/update tests
+[ ] Run npm build and pytest
+[ ] Update docs/DEVLOG.md
+[0m
+现在我对代码库有了全面的了解。接下来我将规划并实现这些修改：
+
+**计划：**
+1.  **analysisStore.ts**：在 store 中添加 `analysisHorizon`、`analysisIntent`、`hasPosition` 状态
+2.  **types/index.ts**：添加 `horizons`、`user_intent`、与位置相关的字段到 `AnalysisRequest`
+3.  **api.ts**：扩展 `chatCompletion()` 以传递用户上下文字段（horizon、intent、position）
+4.  **ChatCopilotPanel.tsx**：接受并使用 horizon/intent/position；显示上下文横幅
+5.  **Analysis.tsx**：添加周期/意图/持仓控件，读取 URL params，并传递给 ChatCopilotPanel
+6.  **TradeFlowCandidateDrawer.tsx**：添加“分析”按钮
+7.  **TradeFlow.tsx**：添加 `useNavigate`，为“分析”按钮的 `onNavigate` prop 传递
+
+让我开始实现：
+### 步骤 1: 添加 `analysisHorizon`、`analysisIntent`、`hasPosition` 到 `analysisStore`
+[0m← [0mEdit frontend/src/stores/analysisStore.ts
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/stores/analysisStore.ts
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/stores/analysisStore.ts
++++ /Users/maybee/TradingAgents-AShare/frontend/src/stores/analysisStore.ts
+@@ -82,8 +82,13 @@
+ 
+ // Current analysis horizon (for badge display)
+ currentHorizon: string | null
+ 
++// [TA-UI-001] analysis_console_horizon_intent
++analysisHorizon: 'short' | 'medium'
++analysisIntent: string
++hasPosition: boolean
++
+ // Actions
+ setCurrentJobId: (jobId: string | null) => void
+ setCurrentSymbol: (symbol: string) => void
+ setJobStatus: (status: JobStatus | null) => void
+
+[0m
+[0m← [0mEdit frontend/src/stores/analysisStore.ts
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/stores/analysisStore.ts
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/stores/analysisStore.ts
++++ /Users/maybee/TradingAgents-AShare/frontend/src/stores/analysisStore.ts
+@@ -113,8 +113,12 @@
+ setIsConnected: (isConnected: boolean) => void
+ setAnalysisRunState: (state: 'idle' | 'running' | 'completed' | 'failed', error?: string | null) => void
+ failRun: (error: string) => void
+ setCurrentHorizon: (horizon: string | null) => void
++// [TA-UI-001] analysis_console_horizon_intent
++setAnalysisHorizon: (horizon: 'short' | 'medium') => void
++setAnalysisIntent: (intent: string) => void
++setHasPosition: (has: boolean) => void
+ addChatMessage: (message: ChatMessage) => void
+ appendToChatMessage: (id: string, chunk: string) => void
+ setMessageContent: (id: string, content: string) => void
+ markAgentMessagesComplete: (msgIds?: string[]) => void
+
+[0m
+[0m← [0mEdit frontend/src/stores/analysisStore.ts
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/stores/analysisStore.ts
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/stores/analysisStore.ts
++++ /Users/maybee/TradingAgents-AShare/frontend/src/stores/analysisStore.ts
+@@ -216,8 +216,11 @@
+ isConnected: false,
+ analysisRunState: 'idle',
+ analysisRunError: null,
+ currentHorizon: null,
++analysisHorizon: 'short',
++analysisIntent: 'watch',
++hasPosition: false,
+ 
+ setCurrentJobId: (jobId) => set({ currentJobId: jobId }),
+ 
+ setCurrentSymbol: (symbol) => set({ currentSymbol: symbol }),
+
+[0m
+现在添加初始状态和动作实现：
+[0m← [0mEdit frontend/src/stores/analysisStore.ts
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/stores/analysisStore.ts
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/stores/analysisStore.ts
++++ /Users/maybee/TradingAgents-AShare/frontend/src/stores/analysisStore.ts
+@@ -495,8 +495,13 @@
+ }),
+ 
+ setCurrentHorizon: (horizon) => set({ currentHorizon: horizon }),
+ 
++// [TA-UI-001] analysis_console_horizon_intent
++setAnalysisHorizon: (horizon) => set({ analysisHorizon: horizon }),
++setAnalysisIntent: (intent) => set({ analysisIntent: intent }),
++setHasPosition: (has) => set({ hasPosition: has }),
++
+ reset: () => set((state) => ({
+     currentJobId: null,
+     currentSymbol: state.currentSymbol,
+     jobStatus: null,
+
+[0m
+同时更新 `clearSession` 和 `reset` 以保留新的字段：
+[0m← [0mEdit frontend/src/stores/analysisStore.ts
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/stores/analysisStore.ts
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/stores/analysisStore.ts
++++ /Users/maybee/TradingAgents-AShare/frontend/src/stores/analysisStore.ts
+@@ -433,8 +433,11 @@
+     isConnected: false,
+docs/task_runs/TA-UI-001-20260602-182128/task.md
+# Auto Dev Task Run
+
+- Task: TA-UI-001 - 智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0）
+- Priority: P0
+- Status: CLAIMED
+- Started at: 2026-06-02_18:21:28
+- Git HEAD: c440353
+- Test commands: pytest tests/ -q --tb=short
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+
+exec
+/bin/zsh -lc "grep -n \"class UserContextInput\\|class ChatCompletionRequest\\|class AnalyzeRequest\\|def _extract_request_user_context\\|chat_completions\\|analyze\" -n api/main.py | head -40 && sed -n '660,790p' api/main.py && sed -n '3160,3235p' api/main.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+154:def _build_scheduled_analyze_request(
+225:            req = _build_scheduled_analyze_request(
+710:class UserContextInput(BaseModel):
+723:class AnalyzeRequest(UserContextInput):
+735:    user_intent: Optional[Dict[str, Any]] = Field(default=None, description="预解析的用户意图，由 chat_completions 传入")
+782:class ChatCompletionRequest(UserContextInput):
+1292:def _extract_request_user_context(request: UserContextInput) -> Dict[str, Any]:
+1888:            # 优先使用已由 chat_completions 预解析的 intent（单次 LLM），避免二次调用
+1894:                # 直接 POST /v1/analyze 时的兕底（无预解析 intent）
+2950:@app.post("/v1/analyze", response_model=AnalyzeResponse)
+2951:async def analyze(
+3270:async def chat_completions(
+3314:                analyze_req = AnalyzeRequest(
+3343:                    symbol=analyze_req.symbol,
+3344:                    trade_date=analyze_req.trade_date,
+3352:                    {"job_id": job_id, "symbol": analyze_req.symbol, "trade_date": analyze_req.trade_date},
+3354:                await _run_job(job_id, analyze_req, True, True, current_user.id, "chat")
+3394:    analyze_req = AnalyzeRequest(
+3424:        symbol=analyze_req.symbol,
+3425:        trade_date=analyze_req.trade_date,
+3433:        {"job_id": job_id, "symbol": analyze_req.symbol, "trade_date": analyze_req.trade_date},
+3436:        await _run_job(job_id, analyze_req, True, True, current_user.id, "chat")
+3452:                            f"symbol={analyze_req.symbol}, trade_date={analyze_req.trade_date}\n"
+3459:    _create_tracked_task(_run_job(job_id, analyze_req, True, True, current_user.id, "chat"))
+3473:                        f"symbol={analyze_req.symbol}, trade_date={analyze_req.trade_date}\n"
+    "trader": "Trader",
+    "aggressive": "Aggressive Analyst",
+    "neutral": "Neutral Analyst",
+    "conservative": "Conservative Analyst",
+    "portfolio_manager": "Portfolio Manager",
+}
+ANALYST_REPORT_MAP = {
+    "market": "market_report",
+    "social": "sentiment_report",
+    "news": "news_report",
+    "fundamentals": "fundamentals_report",
+    "macro": "macro_report",
+    "smart_money": "smart_money_report",
+    "volume_price": "volume_price_report",
+}
+
+# All analysts always run — each uses its own natural time window
+# (technical/funds → short, fundamentals/macro → medium)
+def _get_horizon_analysts(horizon: str, available: List[str]) -> List[str]:
+    """Return all available analysts regardless of horizon."""
+    return list(available)
+
+
+def _announcements_file() -> Path:
+    return Path(__file__).resolve().parent / "announcements.json"
+
+
+def _load_latest_announcement() -> Optional[Dict[str, Any]]:
+    path = _announcements_file()
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        _log(f"[Announcements] Failed to read {path.name}: {exc}")
+        return None
+
+    announcements = raw.get("announcements") if isinstance(raw, dict) else raw
+    if not isinstance(announcements, list):
+        return None
+
+    for item in announcements:
+        if not isinstance(item, dict):
+            continue
+        if item.get("active", True) is False:
+            continue
+        return item
+    return None
+
+
+class UserContextInput(BaseModel):
+    objective: Optional[str] = Field(None, description="用户目标动作，如建仓/加仓/减仓/止损/观察")
+    risk_profile: Optional[str] = Field(None, description="风险偏好，如保守/平衡/激进")
+    investment_horizon: Optional[str] = Field(None, description="持有周期，如短线/波段/中线")
+    cash_available: Optional[float] = Field(None, description="可用资金")
+    current_position: Optional[float] = Field(None, description="当前持仓数量")
+    current_position_pct: Optional[float] = Field(None, description="当前仓位占比")
+    average_cost: Optional[float] = Field(None, description="当前持仓成本")
+    max_loss_pct: Optional[float] = Field(None, description="最大容忍亏损百分比")
+    constraints: List[str] = Field(default_factory=list, description="用户的硬约束列表")
+    user_notes: Optional[str] = Field(None, description="用户补充说明")
+
+
+class AnalyzeRequest(UserContextInput):
+    symbol: str = Field(default="", description="股票代码，如 600519.SH（当 query 包含代码时可省略）")
+    trade_date: str = Field(default_factory=cn_today_str, description="交易日期 YYYY-MM-DD")
+    selected_analysts: List[str] = Field(
+        default_factory=lambda: ["market", "social", "news", "fundamentals", "macro", "smart_money", "volume_price"]
+    )
+    config_overrides: Dict[str, Any] = Field(default_factory=dict)
+    dry_run: bool = False
+    # When set, triggers intent-driven analysis via streaming dual-horizon path
+    query: Optional[str] = Field(default=None, description="自然语言查询，如：分析贵州茅台短线机会")
+    horizons: List[str] = Field(default_factory=lambda: ["short"], description="分析周期列表，如 ['short'] 或 ['short','medium']")
+    # Pre-parsed intent from _ai_extract_symbol_and_date (avoids second LLM call in _run_job)
+    user_intent: Optional[Dict[str, Any]] = Field(default=None, description="预解析的用户意图，由 chat_completions 传入")
+
+
+class AnalyzeResponse(BaseModel):
+    job_id: str
+    status: Literal["pending", "running", "completed", "failed"]
+    created_at: str
+
+
+class BatchScheduledTriggerJob(BaseModel):
+    item_id: str
+    job_id: str
+    symbol: str
+    name: str
+    status: Literal["pending", "running", "completed", "failed"]
+    created_at: str
+    current_position: Optional[float] = None
+    average_cost: Optional[float] = None
+    waiting_ahead_count: Optional[int] = None
+    scheduled_running_count: Optional[int] = None
+    scheduled_concurrency_limit: Optional[int] = None
+
+
+class BatchScheduledTriggerResponse(BaseModel):
+    summary: Dict[str, int]
+    jobs: List[BatchScheduledTriggerJob]
+
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    status: Literal["pending", "running", "completed", "failed"]
+    created_at: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    symbol: str
+    trade_date: str
+    error: Optional[str] = None
+    waiting_ahead_count: Optional[int] = None
+    scheduled_running_count: Optional[int] = None
+    scheduled_concurrency_limit: Optional[int] = None
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: Any
+
+
+class ChatCompletionRequest(UserContextInput):
+    model: Optional[str] = "tradingagents-ashare"
+    messages: List[ChatMessage]
+    stream: bool = True
+    selected_analysts: List[str] = Field(
+        default_factory=lambda: ["market", "social", "news", "fundamentals", "macro", "smart_money", "volume_price"]
+    )
+    config_overrides: Dict[str, Any] = Field(default_factory=dict)
+    dry_run: bool = False
+    """
+    Single-LLM extraction: stock name, date, horizons, focus_areas, specific_questions.
+    Then resolves the stock name to an authoritative code via akshare.
+    Returns (symbol, date, horizons, focus_areas, specific_questions, inferred_user_context).
+    """
+    from tradingagents.llm_clients.factory import create_llm_client
+    import json as _json
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    fast_symbol, fast_date = _extract_symbol_and_date(text)
+
+    llm_name: Optional[str] = None
+    llm_date: Optional[str] = None
+    llm_horizons: List[str] = ["short"]
+    llm_focus_areas: List[str] = []
+    llm_specific_questions: List[str] = []
+    llm_user_context: Dict[str, Any] = {}
+    try:
+        client = create_llm_client(
+            provider=config.get("llm_provider", "openai"),
+            model=config.get("quick_think_llm"),
+            base_url=config.get("backend_url"),
+            api_key=config.get("api_key"),
+        )
+        prompt = f"""你是金融数据助手。从用户消息中提取以下字段并以 JSON 输出。
+
+字段说明：
+- stock_name：用户提到的公司名称或股票代码原文（如"华盛天成"、"贵州茅台"、"600519"、"AAPL"）；美股直接填 ticker。
+- date：YYYY-MM-DD 格式。今天是 {today}，如未提及则填今天。
+- horizons：分析周期，只能选一个：
+  * 用户明确提到"中线/中期/几个月/季度/长期/趋势投资"→ ["medium"]
+  * 其他所有情况（含未提及）→ ["short"]
+- focus_areas：用户关注的分析维度关键词列表，如 ["技术面", "资金面", "业绩"]，未提及则 []。
+- specific_questions：用户提出的具体问题列表，如 ["近期有无催化剂？", "主力是否出货？"]，未提及则 []。
+- user_context：从自然语言中提取的账户与约束对象。若未提及返回 {{}}。可包含：
+  * objective：建仓 / 加仓 / 减仓 / 止损 / 观察 / 持有处理
+  * risk_profile：保守 / 平衡 / 激进
+  * investment_horizon：短线 / 波段 / 中线 / 长期
+  * cash_available / current_position / current_position_pct / average_cost / max_loss_pct：数字
+  * constraints：字符串数组
+  * user_notes：仅保留重要但未能结构化归类的信息
+
+仅输出 JSON，不要任何其他文字：
+{{"stock_name": "...", "date": "YYYY-MM-DD", "horizons": ["short"], "focus_areas": [], "specific_questions": [], "user_context": {{}}}}
+
+如果无法识别股票标的：{{"stock_name": null, "date": null, "horizons": ["short"], "focus_areas": [], "specific_questions": [], "user_context": {{}}}}
+
+用户消息："{text}"
+"""
+        llm = client.get_llm()
+        
+        # 调试日志：打印请求参数
+        target_url = getattr(llm, 'openai_api_base', 'default')
+        _log(f"[LLM Debug] Requesting StockExtract with model: {getattr(llm, 'model_name', 'unknown')} at {target_url}")
+        _log(f"[LLM Debug] Prompt: {prompt[:500]}...")
+
+        response = llm.invoke(prompt)
+        raw = response if isinstance(response, str) else getattr(response, "content", str(response))
+        
+        # 调试日志：打印原始响应
+        _log(f"[LLM Debug] Raw Response: {raw}")
+
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if m:
+            data = _json.loads(m.group(0))
+            llm_name = (data.get("stock_name") or "").strip() or None
+            llm_date = data.get("date") or today
+            llm_horizons = data.get("horizons") or ["short"]
+            llm_focus_areas = data.get("focus_areas") or []
+            llm_specific_questions = data.get("specific_questions") or []
+            llm_user_context = normalize_user_context(data.get("user_context") or {})
+    except Exception as e:
+        _log(f"[StockExtract] LLM failed: {e}")
+
+    if not llm_name:
+        if fast_symbol:
+
+exec
+/bin/zsh -lc "sed -n '1288,1325p' api/main.py && sed -n '3260,3445p' api/main.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            setattr(target, field, value)
+    return target
+
+
+def _extract_request_user_context(request: UserContextInput) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    for key in USER_CONTEXT_KEYS:
+        value = getattr(request, key, None)
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        if key == "constraints" and not value:
+            continue
+        payload[key] = value
+    return payload
+
+
+def _merge_user_context_payload(
+    explicit_context: Dict[str, Any],
+    inferred_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    merged = normalize_user_context(inferred_context or {})
+    merged.update(normalize_user_context(explicit_context or {}))
+    return merged
+
+
+def _compose_analysis_user_context(
+    db: Session,
+    user_id: str,
+    symbol: str,
+    *,
+    explicit_context: Optional[Dict[str, Any]] = None,
+    inferred_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    imported_context = _build_manual_imported_user_context(db, user_id, symbol)
+    merged_with_imported = _merge_user_context_payload(inferred_context or {}, imported_context)
+    return _merge_user_context_payload(explicit_context or {}, merged_with_imported)
+        return fallback, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+
+    if fast_symbol:
+        _log(f"[StockExtract] LLM 名 '{llm_name}' 无法解析为代码，使用 regex 兜底: {fast_symbol}")
+        return fast_symbol, llm_date or fast_date or today, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+
+    _log(f"[StockExtract] Could not resolve '{llm_name}' to a stock code")
+    return None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+
+@app.post("/v1/chat/completions")
+async def chat_completions(
+    request: ChatCompletionRequest,
+    current_user: UserDB = Depends(_require_api_user),
+):
+    text = _extract_chat_text(request.messages)
+    config = await asyncio.to_thread(_build_runtime_config, request.config_overrides, user_id=current_user.id)
+
+    # ── 流式模式：立刻返回 SSE 流，在后台异步提取意图再启动任务 ──────────────────
+    # 这样用户提交查询后立刻收到 job.ready，不用等待 thinking 模型的 StockExtract。
+    if request.stream:
+        job_id = uuid4().hex
+
+        async def _extract_and_run():
+            try:
+                symbol, trade_date, horizons, focus_areas, specific_questions, inferred_user_context = \
+                    await _ai_extract_symbol_and_date_streaming(text, config, job_id)
+
+                if not symbol:
+                    _emit_job_event(job_id, "job.failed", {
+                        "error": "抱歉，我没能从您的消息中识别出股票标的。请输入代码（如 600519.SH）或可识别的公司名称。"
+                    })
+                    return
+
+                pre_intent = {
+                    "raw_query": text,
+                    "ticker": symbol,
+                    "horizons": horizons,
+                    "focus_areas": focus_areas,
+                    "specific_questions": specific_questions,
+                }
+                explicit_context = _extract_request_user_context(request)
+
+                def _load_user_context() -> Dict[str, Any]:
+                    with get_db_ctx() as db:
+                        return _compose_analysis_user_context(
+                            db,
+                            current_user.id,
+                            symbol,
+                            explicit_context=explicit_context,
+                            inferred_context=inferred_user_context,
+                        )
+
+                merged_user_context = await asyncio.to_thread(_load_user_context)
+                pre_intent["user_context"] = merged_user_context
+                analyze_req = AnalyzeRequest(
+                    symbol=symbol,
+                    trade_date=trade_date or cn_today_str(),
+                    selected_analysts=request.selected_analysts,
+                    config_overrides=request.config_overrides,
+                    dry_run=request.dry_run,
+                    query=text,
+                    horizons=horizons,
+                    user_intent=pre_intent,
+                    objective=merged_user_context.get("objective"),
+                    risk_profile=merged_user_context.get("risk_profile"),
+                    investment_horizon=merged_user_context.get("investment_horizon"),
+                    cash_available=merged_user_context.get("cash_available"),
+                    current_position=merged_user_context.get("current_position"),
+                    current_position_pct=merged_user_context.get("current_position_pct"),
+                    average_cost=merged_user_context.get("average_cost"),
+                    max_loss_pct=merged_user_context.get("max_loss_pct"),
+                    constraints=merged_user_context.get("constraints", []),
+                    user_notes=merged_user_context.get("user_notes"),
+                )
+                now = _utcnow_iso()
+                _set_job(
+                    job_id,
+                    job_id=job_id,
+                    user_id=current_user.id,
+                    status="pending",
+                    created_at=now,
+                    started_at=None,
+                    finished_at=None,
+                    symbol=analyze_req.symbol,
+                    trade_date=analyze_req.trade_date,
+                    error=None,
+                    result=None,
+                    decision=None,
+                )
+                _emit_job_event(
+                    job_id,
+                    "job.created",
+                    {"job_id": job_id, "symbol": analyze_req.symbol, "trade_date": analyze_req.trade_date},
+                )
+                await _run_job(job_id, analyze_req, True, True, current_user.id, "chat")
+            except Exception as exc:
+                _log(f"[chat] _extract_and_run failed: {exc}")
+                _emit_job_event(job_id, "job.failed", {"error": str(exc)})
+
+        _create_tracked_task(_extract_and_run())
+        return StreamingResponse(
+            _stream_job_events(job_id),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        )
+
+    # ── 非流式模式：保持原有阻塞行为 ─────────────────────────────────────────────
+    symbol, trade_date, horizons, focus_areas, specific_questions, inferred_user_context = \
+        await asyncio.to_thread(_ai_extract_symbol_and_date, text, config)
+
+    if not symbol:
+        raise HTTPException(status_code=400, detail="抱歉，我没能从您的消息中识别出股票标的。请输入代码（如 600519.SH）或可识别的公司名称。")
+
+    pre_intent = {
+        "raw_query": text,
+        "ticker": symbol,
+        "horizons": horizons,
+        "focus_areas": focus_areas,
+        "specific_questions": specific_questions,
+    }
+    explicit_context = _extract_request_user_context(request)
+
+    def _load_user_context_nonstream() -> Dict[str, Any]:
+        with get_db_ctx() as db:
+            return _compose_analysis_user_context(
+                db,
+                current_user.id,
+                symbol,
+                explicit_context=explicit_context,
+                inferred_context=inferred_user_context,
+            )
+
+    merged_user_context = await asyncio.to_thread(_load_user_context_nonstream)
+    pre_intent["user_context"] = merged_user_context
+    analyze_req = AnalyzeRequest(
+        symbol=symbol,
+        trade_date=trade_date or cn_today_str(),
+        selected_analysts=request.selected_analysts,
+        config_overrides=request.config_overrides,
+        dry_run=request.dry_run,
+        query=text,
+        horizons=horizons,
+        user_intent=pre_intent,
+        objective=merged_user_context.get("objective"),
+        risk_profile=merged_user_context.get("risk_profile"),
+        investment_horizon=merged_user_context.get("investment_horizon"),
+        cash_available=merged_user_context.get("cash_available"),
+        current_position=merged_user_context.get("current_position"),
+        current_position_pct=merged_user_context.get("current_position_pct"),
+        average_cost=merged_user_context.get("average_cost"),
+        max_loss_pct=merged_user_context.get("max_loss_pct"),
+        constraints=merged_user_context.get("constraints", []),
+        user_notes=merged_user_context.get("user_notes"),
+    )
+    job_id = uuid4().hex
+    now = _utcnow_iso()
+    _set_job(
+        job_id,
+        job_id=job_id,
+        user_id=current_user.id,
+        status="pending",
+        created_at=now,
+        started_at=None,
+        finished_at=None,
+        symbol=analyze_req.symbol,
+        trade_date=analyze_req.trade_date,
+        error=None,
+        result=None,
+        decision=None,
+    )
+    _emit_job_event(
+        job_id,
+        "job.created",
+        {"job_id": job_id, "symbol": analyze_req.symbol, "trade_date": analyze_req.trade_date},
+    )
+    if request.dry_run:
+        await _run_job(job_id, analyze_req, True, True, current_user.id, "chat")
+        status_text = _get_job(job_id).get("status", "completed")
+        decision_text = _get_job(job_id).get("decision", "DRY_RUN")
+        return {
+            "id": f"chatcmpl-{job_id}",
+            "object": "chat.completion",
+            "created": int(datetime.now().timestamp()),
+            "model": request.model,
+            "choices": [
+                {
+
+exec
+/bin/zsh -lc "grep -R \"chatCompletion(\" -n frontend/src api tests | head -20 && grep -n \"initialChatInput\\|setCurrentSymbol\\|currentSymbol\" -n frontend/src/pages/Analysis.tsx frontend/src/components/ChatCopilotPanel.tsx | head -80" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+frontend/src/components/ChatCopilotPanel.tsx:588:        const response = await api.chatCompletion(
+frontend/src/services/api.ts:85:    async chatCompletion(
+frontend/src/pages/Analysis.tsx:74:    const [activeSymbol, setActiveSymbol] = useState(() => querySymbol || useAnalysisStore.getState().currentSymbol || '000001.SH')
+frontend/src/pages/Analysis.tsx:81:        currentSymbol,
+frontend/src/pages/Analysis.tsx:82:        setCurrentSymbol,
+frontend/src/pages/Analysis.tsx:103:    const initialChatInput = querySymbol ? `分析 ${querySymbol} 今日走势` : undefined
+frontend/src/pages/Analysis.tsx:119:        if (currentSymbol) {
+frontend/src/pages/Analysis.tsx:120:            setActiveSymbol(currentSymbol)
+frontend/src/pages/Analysis.tsx:122:    }, [currentSymbol])
+frontend/src/pages/Analysis.tsx:230:                                setCurrentSymbol(symbol)
+frontend/src/pages/Analysis.tsx:233:                            initialInput={initialChatInput}
+frontend/src/components/ChatCopilotPanel.tsx:172:        setCurrentSymbol,
+frontend/src/components/ChatCopilotPanel.tsx:212:                    setCurrentSymbol(symbol)
+frontend/src/components/ChatCopilotPanel.tsx:311:                    setCurrentSymbol(symbol)
+frontend/src/components/ChatCopilotPanel.tsx:353:                        setCurrentSymbol(symbol)
+
+exec
+/bin/zsh -lc "sed -n '150,225p' frontend/src/components/ChatCopilotPanel.tsx && sed -n '260,380p' frontend/src/components/ChatCopilotPanel.tsx && sed -n '530,650p' frontend/src/components/ChatCopilotPanel.tsx" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            if (Array.isArray(parsed.defaultAnalysts) && parsed.defaultAnalysts.length > 0) {
+                return parsed.defaultAnalysts
+            }
+        } catch {}
+        return ['market', 'social', 'news', 'fundamentals', 'macro', 'smart_money', 'volume_price']
+    })()
+    // track which section IDs have been added to chatMessages and whether they're done
+    const streamingReportIds = useRef<Map<string, boolean>>(new Map()) // section → isComplete
+    const agentMessageMapRef = useRef<Record<string, string>>({})
+    const firstTokenMapRef = useRef<Record<string, boolean>>({})
+    const sectionToMsgIdsRef = useRef<Record<string, string[]>>({}) // section → all agent bubble msgIds
+    const typingIndicatorIdRef = useRef<string | null>(null)
+    const abortControllerRef = useRef<AbortController | null>(null)
+    const stopHandledRef = useRef(false)
+    const terminalEventSeenRef = useRef(false)
+    const messagesEndRef = useRef<HTMLDivElement>(null)
+    const messagesContainerRef = useRef<HTMLDivElement>(null)
+
+    const {
+        chatMessages,
+        isAnalyzing,
+        setCurrentJobId,
+        setCurrentSymbol,
+        setIsAnalyzing,
+        setIsConnected,
+        setAnalysisRunState,
+        setCurrentHorizon,
+        updateAgentStatus,
+        updateAgentSnapshot,
+        addAgentReport,
+        addReportChunk,
+        addChatMessage,
+        appendToChatMessage,
+        setMessageContent,
+        setReport,
+        setStructuredData,
+        failRun,
+        markAgentMessagesComplete,
+        clearSession,
+        addDebateMessage,
+        appendDebateToken,
+        reset,
+    } = useAnalysisStore()
+
+    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+    const recoverInterruptedJob = async () => {
+        const { currentJobId } = useAnalysisStore.getState()
+        if (!currentJobId) return false
+
+        pushSystem(`分析流中断，正在回查任务状态：${currentJobId}`)
+
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+            const status = await api.getJobStatus(currentJobId)
+
+            if (status.status === 'completed') {
+                const result = await api.getJobResult(currentJobId)
+                setReport(result.result)
+
+                const symbol = result.result.symbol
+                const tradeDate = result.result.trade_date
+                if (symbol) {
+                    setCurrentSymbol(symbol)
+                    onSymbolDetected(symbol)
+                }
+
+                try {
+                    const history = await api.getReports(symbol, 0, 10)
+                    const matched = history.reports.find((item: Report) => item.trade_date === tradeDate) ?? history.reports[0]
+                    if (matched) {
+                        setStructuredData({
+                            riskItems: matched.risk_items,
+                            keyMetrics: matched.key_metrics,
+                            confidence: matched.confidence,
+                            targetPrice: matched.target_price,
+                            stopLoss: matched.stop_loss_price,
+
+    const pushAssistant = (content: string) => {
+        addChatMessage({
+            id: `${Date.now()}-${Math.random()}`,
+            role: 'assistant',
+            content,
+            timestamp: new Date().toISOString(),
+        })
+    }
+
+    const pushSystem = (content: string) => {
+        addChatMessage({
+            id: `${Date.now()}-${Math.random()}`,
+            role: 'system',
+            content,
+            timestamp: new Date().toISOString(),
+        })
+    }
+
+    const clearTypingIndicator = () => {
+        if (!typingIndicatorIdRef.current) return
+        const id = typingIndicatorIdRef.current
+        useAnalysisStore.setState(state => ({
+            chatMessages: state.chatMessages.filter(m => m.id !== id)
+        }))
+        typingIndicatorIdRef.current = null
+    }
+
+    const finalizeFailedRun = (message: string) => {
+        clearTypingIndicator()
+        pendingAgentMsgIdsRef.current = new Set()
+        forceUpdate(n => n + 1)
+        markAgentMessagesComplete()
+        failRun(message)
+    }
+
+    const parseAndDispatch = (event: StreamEvent) => {
+        const { event: eventName, data } = event
+        switch (eventName) {
+            case 'job.ready':
+                setIsConnected(true)
+                // 把 typing indicator 换成"解析中"提示，告知用户正在识别标的
+                if (typingIndicatorIdRef.current) {
+                    setMessageContent(typingIndicatorIdRef.current, '__parsing__')
+                }
+                break
+            case 'job.created': {
+                const jobId = String(data.job_id || '')
+                const symbol = String(data.symbol || '')
+                if (jobId) setCurrentJobId(jobId)
+                if (symbol) {
+                    setCurrentSymbol(symbol)
+                    onSymbolDetected(symbol)
+                }
+                // 切换 indicator 到"采集数据"阶段
+                if (typingIndicatorIdRef.current) {
+                    setMessageContent(typingIndicatorIdRef.current, `__status:collecting:${symbol}__`)
+                }
+                streamingReportIds.current.clear()
+                agentMessageMapRef.current = {}
+                firstTokenMapRef.current = {}
+                sectionToMsgIdsRef.current = {}
+                pendingAgentMsgIdsRef.current = new Set(); forceUpdate(n => n + 1)
+                break
+            }
+            case 'job.running':
+                setIsAnalyzing(true)
+                setAnalysisRunState('running')
+                // 切换 indicator 到"分析启动"阶段
+                if (typingIndicatorIdRef.current) {
+                    setMessageContent(typingIndicatorIdRef.current, '__status:analyzing__')
+                }
+                break
+            case 'agent.horizon_start': {
+                const h = String(data.horizon || '')
+                setCurrentHorizon(h || null)
+                break
+            }
+            case 'agent.horizon_done':
+                // keep currentHorizon until job completes so badge stays visible
+                break
+            case 'job.completed': {
+                terminalEventSeenRef.current = true
+                setCurrentHorizon(null)
+                setIsAnalyzing(false)
+                setAnalysisRunState('completed')
+                // 任务结束：所有 agent 消息标记为已完成（持久化到 store）
+                pendingAgentMsgIdsRef.current = new Set()
+                forceUpdate(n => n + 1)
+                markAgentMessagesComplete()
+                if (typeof data.result === 'object' && data.result && 'symbol' in data.result) {
+                    const symbol = String((data.result as Record<string, unknown>).symbol || '')
+                    if (symbol) {
+                        setCurrentSymbol(symbol)
+                        onSymbolDetected(symbol)
+                    }
+                }
+                setReport((data.result || null) as AnalysisReport | null)
+                setStructuredData({
+                    riskItems: data.risk_items as never,
+                    keyMetrics: data.key_metrics as never,
+                    confidence: data.confidence as number | null,
+                    targetPrice: data.target_price as number | null,
+                    stopLoss: data.stop_loss_price as number | null,
+                })
+                pushAssistant(
+                    `**分析完成**\n\n方向倾向：**${String(data.direction || '未知')}**\n\n执行动作：**${String(data.decision || 'HOLD')}**\n\n> 免责声明：以上内容由模型基于公开数据与规则生成，仅供研究参考，不构成任何投资建议或收益承诺。`
+                )
+                if ('Notification' in window && Notification.permission === 'granted') {
+                    new Notification('TradingAgents 分析完成', {
+                        body: data.direction ? `方向：${String(data.direction)} · 动作：${String(data.decision || 'HOLD')}` : '点击查看完整报告',
+                        icon: '/favicon.ico',
+                    })
+                }
+                break
+            }
+            case 'job.failed':
+                terminalEventSeenRef.current = true
+                setCurrentHorizon(null)
+                {
+                    const message = String(data.error || 'unknown error')
+                    typeof raw.round !== 'number' ||
+                    typeof token !== 'string'
+                ) break
+                appendDebateToken(
+                    debate, raw.agent, raw.round, token,
+                    typeof raw.horizon === 'string' ? raw.horizon : undefined,
+                )
+                break
+            }
+            case 'agent.debate': {
+                const raw = data as Record<string, unknown>
+                const debate = raw.debate
+                const agent = raw.agent
+                const round = raw.round
+                const content = raw.content
+                if (
+                    (debate !== 'research' && debate !== 'risk') ||
+                    typeof agent !== 'string' ||
+                    typeof round !== 'number' ||
+                    typeof content !== 'string'
+                ) {
+                    console.warn('[SSE] Malformed agent.debate payload, skipping:', raw)
+                    break
+                }
+                addDebateMessage({
+                    debate,
+                    agent,
+                    round,
+                    content,
+                    isVerdict: raw.is_verdict === true,
+                    horizon: typeof raw.horizon === 'string' ? raw.horizon : undefined,
+                })
+                break
+            }
+            default:
+                break
+        }
+    }
+
+    const streamChat = async (prompt: string, signal?: AbortSignal): Promise<boolean> => {
+        // [TA-UI-001] analysis_console_horizon_intent - build user context from props
+        const objectiveMap: Record<string, string> = {
+            watch: '观察',
+            entry: '建仓/入场研究',
+            holding: '持仓复盘',
+            add: '加仓判断',
+            reduce: '减仓/止损',
+        }
+        const horizonLabel = horizon === 'medium' ? '中线' : '短线'
+        const effectiveObjective = intent ? objectiveMap[intent] : undefined
+        const effectiveHorizon = horizon === 'medium' ? '中线' : '短线'
+        const userContext = {
+            objective: effectiveObjective,
+            investment_horizon: effectiveHorizon,
+        }
+        // Prepend structured context to prompt so intent parser sees it
+        const contextPrefix = `[分析上下文] 周期=${horizonLabel}｜意图=${objectiveMap[intent || 'watch'] || '观察'}｜持仓=${hasPositionProp ? '是' : '否'}\n`
+        const fullPrompt = contextPrefix + prompt
+        const response = await api.chatCompletion(
+            [{ role: 'user', content: fullPrompt }],
+            true,
+            selectedAnalysts,
+            signal,
+            userContext,
+        )
+
+        if (!response.body) throw new Error('SSE stream unavailable')
+
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+        let currentEvent = 'message'
+
+        while (true) {
+            const { value, done } = await reader.read()
+            if (done) break
+            buffer += decoder.decode(value, { stream: true })
+
+            const blocks = buffer.split('\n\n')
+            buffer = blocks.pop() || ''
+
+            for (const block of blocks) {
+                const lines = block.split('\n')
+                let dataLine = ''
+                for (const raw of lines) {
+                    const line = raw.trim()
+                    if (!line) continue
+                    if (line.startsWith('event:')) currentEvent = line.slice(6).trim()
+                    else if (line.startsWith('data:')) dataLine = line.slice(5).trim()
+                }
+
+                if (!dataLine) continue
+                if (dataLine === '[DONE]' || currentEvent === 'done') {
+                    setIsConnected(false)
+                    setIsAnalyzing(false)
+                    return terminalEventSeenRef.current
+                }
+                
+                if (currentEvent === 'ping') {
+                    continue
+                }
+
+                try {
+                    const data = JSON.parse(dataLine) as Record<string, unknown>
+                    parseAndDispatch({ event: currentEvent, data })
+                } catch {
+                    console.error('SSE解析失败:', dataLine.slice(0, 120))
+                }
+            }
+        }
+
+        setIsConnected(false)
+        setIsAnalyzing(false)
+        return terminalEventSeenRef.current
+    }
+
+    const handleSubmit = async (e: FormEvent) => {
+        e.preventDefault()
+        const prompt = input.trim()
+        if (!prompt || streaming) return
+
+
+exec
+/bin/zsh -lc "sed -n '650,735p' frontend/src/components/ChatCopilotPanel.tsx" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+
+        // Inject custom analysis prompt from settings if set
+        const customPrompt = localStorage.getItem('ta-custom-prompt')?.trim() || ''
+        const fullPrompt = customPrompt ? `${prompt}\n\n[分析要求] ${customPrompt}` : prompt
+
+        setInput('')
+        addChatMessage({
+            id: `${Date.now()}-${Math.random()}`,
+            role: 'user',
+            content: prompt,
+            timestamp: new Date().toISOString(),
+        })
+
+        reset()
+        streamingReportIds.current.clear()
+        pendingAgentMsgIdsRef.current = new Set(); forceUpdate(n => n + 1)
+
+        // 立刻插入 typing indicator，让用户知道系统正在响应
+        const typingId = `typing-${Date.now()}`
+        typingIndicatorIdRef.current = typingId
+        addChatMessage({
+            id: typingId,
+            role: 'assistant',
+            content: '__typing__',
+            timestamp: new Date().toISOString(),
+        })
+
+        setStreaming(true)
+        setIsAnalyzing(true)
+        setIsConnected(false)
+        setAnalysisRunState('running')
+        terminalEventSeenRef.current = false
+        const abortController = new AbortController()
+        abortControllerRef.current = abortController
+        stopHandledRef.current = false
+
+        try {
+            const sawTerminalEvent = await streamChat(fullPrompt, abortController.signal)
+            if (!sawTerminalEvent && !abortController.signal.aborted) {
+                const recovered = await recoverInterruptedJob()
+                if (!recovered) {
+                    pushAssistant('分析流已结束，但没有收到最终完成事件；后端任务可能仍在收尾，请稍后到历史报告中查看结果。')
+                }
+            }
+        } catch (error) {
+            // 出错时清理 typing indicator
+            clearTypingIndicator()
+            const errorMessage = error instanceof Error ? error.message : 'unknown error'
+            if (error instanceof DOMException && error.name === 'AbortError') {
+                if (stopHandledRef.current) return
+                finalizeFailedRun('用户已停止本次分析')
+                pushAssistant('已停止本次分析。')
+                return
+            }
+            const shouldRecover = /network|fetch|stream|sse|body/i.test(errorMessage)
+            if (shouldRecover) {
+                const recovered = await recoverInterruptedJob()
+                if (!recovered) {
+                    finalizeFailedRun(errorMessage)
+                    pushAssistant(`请求中断：${errorMessage}\n\n后端任务可能仍在执行，请稍后到历史报告中查看结果。`)
+                }
+            } else {
+                finalizeFailedRun(errorMessage)
+                pushAssistant(`请求失败：${errorMessage}`)
+            }
+        } finally {
+            if (abortControllerRef.current === abortController) {
+                abortControllerRef.current = null
+            }
+            setStreaming(false)
+        }
+    }
+
+    const handleStop = () => {
+        if (!streaming && !isAnalyzing) return
+        stopHandledRef.current = true
+        abortControllerRef.current?.abort()
+        finalizeFailedRun('用户已停止本次分析')
+        pushAssistant('已停止本次分析。')
+        setStreaming(false)
+    }
+
+    const hasAnyReport = chatMessages.some(m => m.role === 'report')
+
+    return (
+        <aside className="card h-full min-h-0 flex flex-col overflow-hidden">
+
+exec
+/bin/zsh -lc "sed -n '490,540p' frontend/src/stores/analysisStore.ts && sed -n '415,440p' frontend/src/stores/analysisStore.ts" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            currentHorizon: null,
+            streamingSections,
+            agents: state.agents.map(agent => (
+                agent.status === 'in_progress'
+                    ? { ...agent, status: 'error', finishedAt }
+                    : agent
+            )),
+        }
+    }),
+
+    setCurrentHorizon: (horizon) => set({ currentHorizon: horizon }),
+
+    // [TA-UI-001] analysis_console_horizon_intent
+    setAnalysisHorizon: (horizon) => set({ analysisHorizon: horizon }),
+    setAnalysisIntent: (intent) => set({ analysisIntent: intent }),
+    setHasPosition: (has) => set({ hasPosition: has }),
+
+    reset: () => set((state) => ({
+        currentJobId: null,
+        currentSymbol: state.currentSymbol,
+        jobStatus: null,
+        agents: initialAgents.map(a => ({ ...a, status: 'pending' })),
+        report: null,
+        riskItems: [],
+        keyMetrics: [],
+        jobConfidence: null,
+        jobTargetPrice: null,
+        jobStopLoss: null,
+        streamingSections: {},
+        debateMessages: {},
+        debateScrollTick: 0,
+        milestones: [],
+        // 注意：reset时不清空chatMessages，保持对话历史
+        logs: [],
+        isAnalyzing: false,
+        isConnected: false,
+        analysisRunState: 'idle',
+        analysisRunError: null,
+        currentHorizon: null,
+        // [TA-UI-001] 保留用户选择的分析上下文
+        analysisHorizon: state.analysisHorizon,
+        analysisIntent: state.analysisIntent,
+        hasPosition: state.hasPosition,
+    }))
+}), {
+    name: 'tradingagents-analysis',
+    version: 1,
+    storage: createJSONStorage(() => debouncedStorage),
+    partialize: (state) => ({
+        currentSymbol: state.currentSymbol,
+        report: state.report,
+    clearSession: () => set({
+        currentJobId: null,
+        currentSymbol: '000001.SH',
+        jobStatus: null,
+        agents: initialAgents.map(a => ({ ...a, status: 'pending' })),
+        report: null,
+        riskItems: [],
+        keyMetrics: [],
+        jobConfidence: null,
+        jobTargetPrice: null,
+        jobStopLoss: null,
+        streamingSections: {},
+        debateMessages: {},
+        debateScrollTick: 0,
+        milestones: [],
+        chatMessages: createInitialChatMessages(),
+        logs: [],
+        isAnalyzing: false,
+        isConnected: false,
+        analysisRunState: 'idle',
+        analysisRunError: null,
+        currentHorizon: null,
+        analysisHorizon: 'short',
+        analysisIntent: 'watch',
+        hasPosition: false,
+    }),
+
+exec
+/bin/zsh -lc 'grep -R "<ChatCopilotPanel" -n frontend/src' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+frontend/src/pages/Analysis.tsx:227:                        <ChatCopilotPanel
+
+exec
+/bin/zsh -lc 'cd frontend && npm run build' in /Users/maybee/TradingAgents-AShare
+ succeeded in 3460ms:
+
+> tradingagents-dashboard@0.1.0 build
+> tsc && vite build
+
+vite v6.4.2 building for production...
+(node:3489) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+transforming...
+✓ 1937 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                     1.15 kB │ gzip:   0.65 kB
+dist/assets/index-CGRexz3R.css    155.80 kB │ gzip:  21.67 kB
+dist/assets/index-DBAlhH_N.js   1,105.08 kB │ gzip: 324.70 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 1.44s
+
+exec
+/bin/zsh -lc 'python -m pytest tests/test_ta_ui_001_horizon_intent.py -q' in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: python
+
+exec
+/bin/zsh -lc '.venv/bin/python -m pytest tests/test_ta_ui_001_horizon_intent.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 1748ms:
+...............                                                          [100%]
+15 passed in 1.11s
+
+exec
+/bin/zsh -lc "grep -n \"async analyze\\|startAnalysis\\|AnalysisRequest\" -n frontend/src/services/api.ts frontend/src -R | head -60 && sed -n '1,160p' frontend/src/services/api.ts" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+frontend/src/services/api.ts:1:import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse } from '@/types'
+frontend/src/services/api.ts:63:    async startAnalysis(request: AnalysisRequest): Promise<AnalysisResponse> {
+frontend/src/types/index.ts:83:export interface AnalysisRequest {
+frontend/src/services/api.ts:1:import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse } from '@/types'
+frontend/src/services/api.ts:63:    async startAnalysis(request: AnalysisRequest): Promise<AnalysisResponse> {
+import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse } from '@/types'
+
+export function getBaseUrl(): string {
+    const envUrl = (import.meta.env.VITE_API_URL as string) || ''
+    if (envUrl) return envUrl.replace(/\/$/, '')
+    if (typeof window !== 'undefined' && window.location?.origin) {
+        return window.location.origin.replace(/\/$/, '')
+    }
+    return 'http://localhost:8000'
+}
+
+
+function getAuthToken(): string | null {
+    try {
+        return localStorage.getItem('ta-access-token')
+    } catch {
+        return null
+    }
+}
+
+class ApiService {
+    private async request<T>(endpoint: string, options?: RequestInit): Promise<T> {
+        const url = `${getBaseUrl()}${endpoint}`
+        const token = getAuthToken()
+        const response = await fetch(url, {
+            ...options,
+            headers: {
+                'Content-Type': 'application/json',
+                ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                ...options?.headers,
+            },
+        })
+
+        if (!response.ok) {
+            const contentType = response.headers.get('content-type') || ''
+            if (contentType.includes('application/json')) {
+                const data = await response.json().catch(() => null)
+                const detail = data?.detail || data?.message
+                throw new Error(detail || `HTTP error! status: ${response.status}`)
+            }
+            const error = await response.text()
+            throw new Error(error || `HTTP error! status: ${response.status}`)
+        }
+
+        if (response.status === 204 || response.status === 205) {
+            return undefined as T
+        }
+
+        const contentType = response.headers.get('content-type') || ''
+        if (!contentType.includes('application/json')) {
+            const text = await response.text()
+            return (text ? (text as T) : undefined) as T
+        }
+
+        const raw = await response.text()
+        if (!raw) {
+            return undefined as T
+        }
+
+        return JSON.parse(raw) as T
+    }
+
+    async startAnalysis(request: AnalysisRequest): Promise<AnalysisResponse> {
+        return this.request<AnalysisResponse>('/v1/analyze', {
+            method: 'POST',
+            body: JSON.stringify(request),
+        })
+    }
+
+    async getJobStatus(jobId: string): Promise<JobStatus> {
+        return this.request<JobStatus>(`/v1/jobs/${jobId}`)
+    }
+
+    async getJobResult(jobId: string): Promise<{ job_id: string; status: string; decision: string; result: AnalysisReport }> {
+        return this.request(`/v1/jobs/${jobId}/result`)
+    }
+
+    async getKline(symbol: string, startDate?: string, endDate?: string): Promise<KlineResponse> {
+        const params = new URLSearchParams({ symbol })
+        if (startDate) params.append('start_date', startDate)
+        if (endDate) params.append('end_date', endDate)
+        return this.request<KlineResponse>(`/v1/market/kline?${params}`)
+    }
+
+    async chatCompletion(
+        messages: Array<{ role: string; content: string }>,
+        stream = true,
+        selectedAnalysts?: string[],
+        signal?: AbortSignal,
+        userContext?: {
+            objective?: string
+            investment_horizon?: string
+            current_position?: number
+            current_position_pct?: number
+            average_cost?: number
+        },
+    ) {
+        const body: Record<string, unknown> = {
+            messages,
+            stream,
+            selected_analysts: selectedAnalysts,
+        }
+        // [TA-UI-001] analysis_console_horizon_intent
+        if (userContext) {
+            if (userContext.objective) body.objective = userContext.objective
+            if (userContext.investment_horizon) body.investment_horizon = userContext.investment_horizon
+            if (userContext.current_position != null) body.current_position = userContext.current_position
+            if (userContext.current_position_pct != null) body.current_position_pct = userContext.current_position_pct
+            if (userContext.average_cost != null) body.average_cost = userContext.average_cost
+        }
+        const response = await fetch(`${getBaseUrl()}/v1/chat/completions`, {
+            method: 'POST',
+            signal,
+            headers: {
+                'Content-Type': 'application/json',
+                ...(getAuthToken() ? { Authorization: `Bearer ${getAuthToken()}` } : {}),
+            },
+            body: JSON.stringify(body),
+        })
+
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`)
+        }
+
+        return response
+    }
+
+    // Report API Methods
+    async getReports(symbol?: string, skip = 0, limit = 100): Promise<ReportListResponse> {
+        const params = new URLSearchParams()
+        if (symbol) params.append('symbol', symbol)
+        params.append('skip', skip.toString())
+        params.append('limit', limit.toString())
+        return this.request<ReportListResponse>(`/v1/reports?${params}`)
+    }
+
+    async getLatestReportsBySymbols(symbols: string[]): Promise<{ reports: Report[] }> {
+        return this.request<{ reports: Report[] }>('/v1/reports/latest-by-symbols', {
+            method: 'POST',
+            body: JSON.stringify({ symbols }),
+        })
+    }
+
+    async getReport(reportId: string): Promise<ReportDetail> {
+        return this.request<ReportDetail>(`/v1/reports/${reportId}`)
+    }
+
+    async getLatestAnnouncement(): Promise<Announcement | null> {
+        const data = await this.request<LatestAnnouncementResponse>('/v1/announcements/latest')
+        return data.announcement
+    }
+
+    async deleteReport(reportId: string): Promise<{ message: string }> {
+        return this.request<{ message: string }>(`/v1/reports/${reportId}`, {
+            method: 'DELETE',
+        })
+    }
+
+
+    async createReport(report: {
+
+exec
+/bin/zsh -lc "grep -n \"def _ai_extract_symbol_and_date_streaming\\|llm_horizons\\|return fast_symbol\" -n api/main.py | head -80 && sed -n '1180,1288p' api/main.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+3052:async def _ai_extract_symbol_and_date_streaming(
+3066:    llm_horizons: List[str] = ["short"]
+3123:            llm_horizons = data.get("horizons") or ["short"]
+3133:            return fast_symbol, fast_date or today, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+3134:        return None, None, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+3136:    _log(f"[StockExtract] extracted name='{llm_name}', date={llm_date}, horizons={llm_horizons}")
+3140:            return symbol, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+3144:        return local_code, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+3148:        return fallback, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+3152:        return fast_symbol, llm_date or fast_date or today, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+3154:    return None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+3173:    llm_horizons: List[str] = ["short"]
+3227:            llm_horizons = data.get("horizons") or ["short"]
+3237:            return fast_symbol, fast_date or today, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+3239:        return None, None, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+3241:    _log(f"[StockExtract] LLM extracted name='{llm_name}', date={llm_date}, horizons={llm_horizons}")
+3248:            return symbol, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+3254:        return local_code, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+3260:        return fallback, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+3264:        return fast_symbol, llm_date or fast_date or today, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+3267:    return None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+    # by mapping mid/ultra to deep instead of leaking env-level model names.
+    if filtered_user_overrides or filtered_request_overrides:
+        config["mid_think_llm"] = config.get("deep_think_llm") or config.get("quick_think_llm")
+        config["ultra_think_llm"] = config.get("deep_think_llm") or config.get("quick_think_llm")
+
+    if user_id and db is not None and auth_service.has_user_provider_keys(db, user_id):
+        config["api_key"] = auth_service.get_user_provider_api_key(
+            db,
+            user_id,
+            config.get("llm_provider"),
+            config.get("backend_url"),
+        ) or ""
+
+    return config
+
+
+class RequireUser:
+    def __init__(self, allow_api_token: bool = True):
+        self.allow_api_token = allow_api_token
+
+    def __call__(
+        self,
+        credentials: Optional[HTTPAuthorizationCredentials] = Depends(_auth_scheme),
+    ) -> UserDB:
+        if not credentials:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录")
+
+        token = credentials.credentials
+
+        with get_db_ctx() as db:
+            # 1. 优先尝试 JWT (网页登录)
+            try:
+                payload = auth_service.decode_access_token(token)
+                user_id = str(payload.get("sub") or "")
+                user = auth_service.get_user_by_id(db, user_id)
+                if user and user.is_active:
+                    # expunge 使 ORM 对象脱离 session，close 后仍可访问属性
+                    db.expunge(user)
+                    return user
+            except Exception:
+                # 不是有效的 JWT 或已过期，尝试 API Token
+                pass
+
+            # 2. 尝试 API Token (仅在允许时)
+            if self.allow_api_token and token.startswith(token_service.TOKEN_PREFIX):
+                user = token_service.verify_token(db, token)
+                if user and user.is_active:
+                    db.expunge(user)
+                    return user
+
+        detail = "身份验证失败或该接口不支持 API Token 访问" if self.allow_api_token else "该接口仅限网页端登录访问"
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
+
+
+# 快捷依赖定义
+_require_api_user = RequireUser(allow_api_token=True)    # 允许 API Token
+_require_web_user = RequireUser(allow_api_token=False)   # 仅限网页登录
+
+
+def _optional_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_auth_scheme),
+) -> Optional[UserDB]:
+    if not credentials:
+        return None
+    try:
+        payload = auth_service.decode_access_token(credentials.credentials)
+    except Exception:
+        return None
+    user_id = str(payload.get("sub") or "")
+    if not user_id:
+        return None
+    with get_db_ctx() as db:
+        user = auth_service.get_user_by_id(db, user_id)
+        if user:
+            db.expunge(user)
+        return user
+
+
+def _set_job(job_key: str, **kwargs) -> None:
+    # Callers may pass job_id=<value> as a stored field.  Since
+    # store.set_job()'s first positional param is also called job_id,
+    # we must strip it from kwargs to avoid a "got multiple values" TypeError.
+    # _get_job() always injects job_id back into the returned dict.
+    kwargs.pop("job_id", None)
+    get_job_store().set_job(job_key, **kwargs)
+
+
+def _get_job(job_key: str) -> Dict[str, Any]:
+    d = get_job_store().get_job(job_key)
+    if d:
+        d.setdefault("job_id", job_key)
+    return d
+
+
+def _emit_job_event(job_id: str, event: str, data: Dict[str, Any]) -> None:
+    get_job_store().emit_event(job_id, event, data)
+
+
+def _attach_job_runtime_state(target: Any, job_id: Optional[str]) -> Any:
+    if not job_id:
+        return target
+    job = _get_job(job_id)
+    if not job:
+        return target
+
+    for field in ("waiting_ahead_count", "scheduled_running_count", "scheduled_concurrency_limit"):
+        value = job.get(field)
+        if value is not None or hasattr(target, field):
+            setattr(target, field, value)
+
+exec
+/bin/zsh -lc "sed -n '3052,3156p' api/main.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+async def _ai_extract_symbol_and_date_streaming(
+    text: str, config: Dict[str, Any], job_id: str
+) -> tuple[Optional[str], Optional[str], List[str], List[str], List[str], Dict[str, Any]]:
+    """
+    Async streaming version of _ai_extract_symbol_and_date.
+    Emits agent.token events so the frontend can show streaming output during extraction.
+    """
+    from tradingagents.llm_clients.factory import create_llm_client
+    import json as _json
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    fast_symbol, fast_date = _extract_symbol_and_date(text)
+    llm_name: Optional[str] = None
+    llm_date: Optional[str] = None
+    llm_horizons: List[str] = ["short"]
+    llm_focus_areas: List[str] = []
+    llm_specific_questions: List[str] = []
+    llm_user_context: Dict[str, Any] = {}
+
+    try:
+        client = create_llm_client(
+            provider=config.get("llm_provider", "openai"),
+            model=config.get("quick_think_llm"),
+            base_url=config.get("backend_url"),
+            api_key=config.get("api_key"),
+        )
+        prompt = f"""你是金融数据助手。从用户消息中提取以下字段并以 JSON 输出。
+
+字段说明：
+- stock_name：用户提到的公司名称或股票代码原文（如"华盛天成"、"贵州茅台"、"600519"、"AAPL"）；美股直接填 ticker。
+- date：YYYY-MM-DD 格式。今天是 {today}，如未提及则填今天。
+- horizons：分析周期，只能选一个：
+  * 用户明确提到"中线/中期/几个月/季度/长期/趋势投资"→ ["medium"]
+  * 其他所有情况（含未提及）→ ["short"]
+- focus_areas：用户关注的分析维度关键词列表，如 ["技术面", "资金面", "业绩"]，未提及则 []。
+- specific_questions：用户提出的具体问题列表，如 ["近期有无催化剂？", "主力是否出货？"]，未提及则 []。
+- user_context：从自然语言中提取的账户与约束对象。若未提及返回 {{}}。可包含：
+  * objective：建仓 / 加仓 / 减仓 / 止损 / 观察 / 持有处理
+  * risk_profile：保守 / 平衡 / 激进
+  * investment_horizon：短线 / 波段 / 中线 / 长期
+  * cash_available / current_position / current_position_pct / average_cost / max_loss_pct：数字
+  * constraints：字符串数组
+  * user_notes：仅保留重要但未能结构化归类的信息
+
+仅输出 JSON，不要任何其他文字：
+{{"stock_name": "...", "date": "YYYY-MM-DD", "horizons": ["short"], "focus_areas": [], "specific_questions": [], "user_context": {{}}}}
+
+如果无法识别股票标的：{{"stock_name": null, "date": null, "horizons": ["short"], "focus_areas": [], "specific_questions": [], "user_context": {{}}}}
+
+用户消息："{text}"
+"""
+        llm = client.get_llm()
+        _log(f"[LLM Debug] Streaming StockExtract with model: {getattr(llm, 'model_name', 'unknown')}")
+
+        full_content = ""
+        async for chunk in llm.astream(prompt):
+            token = chunk.content if hasattr(chunk, "content") else str(chunk)
+            full_content += token
+            if token:
+                _emit_job_event(job_id, "agent.token", {
+                    "agent": "意图解析",
+                    "report": "stock_extract",
+                    "token": token,
+                })
+
+        _log(f"[LLM Debug] StockExtract response: {full_content[:200]}")
+        m = re.search(r"\{.*\}", full_content, re.DOTALL)
+        if m:
+            data = _json.loads(m.group(0))
+            llm_name = (data.get("stock_name") or "").strip() or None
+            llm_date = data.get("date") or today
+            llm_horizons = data.get("horizons") or ["short"]
+            llm_focus_areas = data.get("focus_areas") or []
+            llm_specific_questions = data.get("specific_questions") or []
+            llm_user_context = normalize_user_context(data.get("user_context") or {})
+    except Exception as e:
+        _log(f"[StockExtract streaming] LLM failed: {e}")
+
+    if not llm_name:
+        if fast_symbol:
+            _log(f"[StockExtract] LLM 未返回 stock_name，使用 regex 兜底: {fast_symbol}")
+            return fast_symbol, fast_date or today, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+        return None, None, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+
+    _log(f"[StockExtract] extracted name='{llm_name}', date={llm_date}, horizons={llm_horizons}")
+    if re.match(r"^\d{6}(?:\.(?:SH|SZ|SS))?$", llm_name, re.IGNORECASE) or re.match(r"^[A-Za-z]{1,6}(\.[A-Za-z]+)?$", llm_name):
+        symbol = _normalize_symbol(llm_name)
+        if symbol:
+            return symbol, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+
+    local_code = await asyncio.to_thread(_search_cn_stock_by_name, llm_name)
+    if local_code:
+        return local_code, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+
+    fallback = _normalize_symbol(llm_name)
+    if fallback and re.search(r"\d{6}|[A-Za-z]{2,}", fallback):
+        return fallback, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+
+    if fast_symbol:
+        _log(f"[StockExtract] LLM 名 '{llm_name}' 无法解析为代码，使用 regex 兜底: {fast_symbol}")
+        return fast_symbol, llm_date or fast_date or today, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+
+    return None, llm_date, llm_horizons, llm_focus_areas, llm_specific_questions, llm_user_context
+
+
+
+exec
+/bin/zsh -lc "nl -ba frontend/src/components/ChatCopilotPanel.tsx | sed -n '570,596p'; nl -ba frontend/src/stores/analysisStore.ts | sed -n '418,438p'; nl -ba frontend/src/pages/Analysis.tsx | sed -n '106,114p'; nl -ba frontend/src/services/api.ts | sed -n '85,112p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   570	        // [TA-UI-001] analysis_console_horizon_intent - build user context from props
+   571	        const objectiveMap: Record<string, string> = {
+   572	            watch: '观察',
+   573	            entry: '建仓/入场研究',
+   574	            holding: '持仓复盘',
+   575	            add: '加仓判断',
+   576	            reduce: '减仓/止损',
+   577	        }
+   578	        const horizonLabel = horizon === 'medium' ? '中线' : '短线'
+   579	        const effectiveObjective = intent ? objectiveMap[intent] : undefined
+   580	        const effectiveHorizon = horizon === 'medium' ? '中线' : '短线'
+   581	        const userContext = {
+   582	            objective: effectiveObjective,
+   583	            investment_horizon: effectiveHorizon,
+   584	        }
+   585	        // Prepend structured context to prompt so intent parser sees it
+   586	        const contextPrefix = `[分析上下文] 周期=${horizonLabel}｜意图=${objectiveMap[intent || 'watch'] || '观察'}｜持仓=${hasPositionProp ? '是' : '否'}\n`
+   587	        const fullPrompt = contextPrefix + prompt
+   588	        const response = await api.chatCompletion(
+   589	            [{ role: 'user', content: fullPrompt }],
+   590	            true,
+   591	            selectedAnalysts,
+   592	            signal,
+   593	            userContext,
+   594	        )
+   595	
+   596	        if (!response.body) throw new Error('SSE stream unavailable')
+   418	        jobStatus: null,
+   419	        agents: initialAgents.map(a => ({ ...a, status: 'pending' })),
+   420	        report: null,
+   421	        riskItems: [],
+   422	        keyMetrics: [],
+   423	        jobConfidence: null,
+   424	        jobTargetPrice: null,
+   425	        jobStopLoss: null,
+   426	        streamingSections: {},
+   427	        debateMessages: {},
+   428	        debateScrollTick: 0,
+   429	        milestones: [],
+   430	        chatMessages: createInitialChatMessages(),
+   431	        logs: [],
+   432	        isAnalyzing: false,
+   433	        isConnected: false,
+   434	        analysisRunState: 'idle',
+   435	        analysisRunError: null,
+   436	        currentHorizon: null,
+   437	        analysisHorizon: 'short',
+   438	        analysisIntent: 'watch',
+   106	        if (querySymbol) setActiveSymbol(querySymbol)
+   107	    }, [querySymbol])
+   108	
+   109	    // [TA-UI-001] analysis_console_horizon_intent - apply URL params once on mount
+   110	    useEffect(() => {
+   111	        if (queryHorizon === 'short' || queryHorizon === 'medium') setAnalysisHorizon(queryHorizon)
+   112	        if (queryIntent && INTENT_OPTIONS.some(o => o.value === queryIntent)) setAnalysisIntent(queryIntent)
+   113	        if (queryPosition === 'true') setHasPosition(true)
+   114	        else if (queryPosition === 'false') setHasPosition(false)
+    85	    async chatCompletion(
+    86	        messages: Array<{ role: string; content: string }>,
+    87	        stream = true,
+    88	        selectedAnalysts?: string[],
+    89	        signal?: AbortSignal,
+    90	        userContext?: {
+    91	            objective?: string
+    92	            investment_horizon?: string
+    93	            current_position?: number
+    94	            current_position_pct?: number
+    95	            average_cost?: number
+    96	        },
+    97	    ) {
+    98	        const body: Record<string, unknown> = {
+    99	            messages,
+   100	            stream,
+   101	            selected_analysts: selectedAnalysts,
+   102	        }
+   103	        // [TA-UI-001] analysis_console_horizon_intent
+   104	        if (userContext) {
+   105	            if (userContext.objective) body.objective = userContext.objective
+   106	            if (userContext.investment_horizon) body.investment_horizon = userContext.investment_horizon
+   107	            if (userContext.current_position != null) body.current_position = userContext.current_position
+   108	            if (userContext.current_position_pct != null) body.current_position_pct = userContext.current_position_pct
+   109	            if (userContext.average_cost != null) body.average_cost = userContext.average_cost
+   110	        }
+   111	        const response = await fetch(`${getBaseUrl()}/v1/chat/completions`, {
+   112	            method: 'POST',
+
+exec
+/bin/zsh -lc 'grep -R "clearSession" -n frontend/src | head -20' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+frontend/src/stores/analysisStore.ts:128:    clearSession: () => void
+frontend/src/stores/analysisStore.ts:415:    clearSession: () => set({
+frontend/src/stores/authStore.ts:25:        useAnalysisStore.getState().clearSession()
+frontend/src/stores/authStore.ts:32:        useAnalysisStore.getState().clearSession()
+frontend/src/components/ChatCopilotPanel.tsx:188:        clearSession,
+frontend/src/components/ChatCopilotPanel.tsx:754:                                clearSession()
+
+exec
+/bin/zsh -lc "nl -ba frontend/src/components/ChatCopilotPanel.tsx | sed -n '744,760p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   744	                            onClick={() => onShowReport()}
+   745	                            className="text-xs px-2 py-1 rounded bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400 hover:bg-blue-200 dark:hover:bg-blue-500/30 transition-colors flex items-center gap-1"
+   746	                        >
+   747	                            <FileText className="w-3 h-3" />
+   748	                            查看报告
+   749	                        </button>
+   750	                    )}
+   751	                    <button
+   752	                        onClick={() => {
+   753	                            if (window.confirm('确定要清空对话和分析结果吗？')) {
+   754	                                clearSession()
+   755	                            }
+   756	                        }}
+   757	                        disabled={streaming || isAnalyzing}
+   758	                        className="text-xs px-2 py-1 rounded bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 hover:bg-red-100 dark:hover:bg-red-500/20 hover:text-red-600 dark:hover:text-red-400 transition-colors flex items-center gap-1 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-slate-100 dark:disabled:hover:bg-slate-700 disabled:hover:text-slate-500"
+   759	                        title="清空对话"
+   760	                    >
+
