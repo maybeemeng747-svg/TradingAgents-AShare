@@ -4,6 +4,70 @@
 
 ---
 
+## 2026-06-02 | PERF-001: 运行层级与速度预算契约
+
+- **执行者**：OpenCode
+- **任务**：PERF-001 — 建立统一运行层级契约，所有 API、前端按钮、scheduler、自动开发任务都要标明属于 `fast/light/full` 哪一层，以及是否允许调用 LLM。
+- **修改文件**：
+  - `api/runtime_tier.py` — 新建：[PERF-001] runtime_tier_contract
+    - `RuntimeTier` 枚举：`FAST_RADAR` / `LIGHT_RESEARCH` / `FULL_TA`
+    - `RuntimeTierSpec` 数据类：tier / label_cn / expected_latency / llm_allowed / requires_confirmation / cost_risk / description
+    - `_TIER_SPECS` 三层配置：FAST_RADAR(5-30s, no LLM, no confirmation) / LIGHT_RESEARCH(1-3min, LLM ok, no confirmation) / FULL_TA(10-20min, LLM ok, requires confirmation)
+    - `_TRADEFLOW_FAST_ENDPOINTS` 集合：10 个 TradeFlow 端点全部映射为 FAST_RADAR
+    - `get_tier_spec()` / `tier_to_meta()` / `tradeflow_endpoint_tier()` / `tradeflow_meta()` helper
+    - `is_full_ta_allowed_without_confirmation()` FULL_TA 门禁判断
+    - `scheduler_default_tier()` 返回 LIGHT_RESEARCH（scheduler 不得默认 FULL_TA）
+  - `api/tradeflow_schemas.py` — [PERF-001]
+    - 新增 `RuntimeTierMeta` Pydantic model：runtime_tier / expected_latency / llm_allowed / requires_confirmation / cost_risk / tier_label / tier_description
+    - 所有 8 个 TradeFlow 响应 model 新增 `runtime_tier_meta` 字段（默认 FAST_RADAR）
+  - `api/services/tradeflow_service.py` — [PERF-001]
+    - import `tradeflow_meta` from runtime_tier
+    - 所有 10 个服务函数（包括 `no_data` 早期返回路径）注入 `runtime_tier_meta`
+    - TradeFlow Discovery 和 Observe 标记为 FAST_RADAR
+  - `api/main.py` — [PERF-001]
+    - `AnalyzeRequest` 新增 `runtime_tier` / `confirmed_full_ta` 字段
+    - `AnalyzeResponse` 新增 `runtime_tier` / `runtime_tier_label` / `expected_latency` 字段
+    - `/v1/analyze` 端点新增 FULL_TA 确认门禁：未设置 `confirmed_full_ta=true` 时返回 403
+    - `_build_scheduled_analyze_request` 显式设置 `runtime_tier="FULL_TA"` + `confirmed_full_ta=True`
+  - `scheduler/main.py` — [PERF-001]
+    - `_run_scheduled_job` 日志记录 `runtime_tier=FULL_TA`
+  - `frontend/src/types/index.ts` — [PERF-001]
+    - 新增 `RuntimeTierMeta` interface
+    - 新增 `RUNTIME_TIER_LABELS` / `RUNTIME_TIER_LATENCY` 常量
+    - 所有 TradeFlow 响应 interface 新增 `runtime_tier_meta` 字段
+    - `AnalysisRequest` 新增 `runtime_tier` / `confirmed_full_ta`
+    - `AnalysisResponse` 新增 `runtime_tier` / `runtime_tier_label` / `expected_latency`
+  - `frontend/src/pages/TradeFlow.tsx` — [PERF-001]
+    - 新增 `RuntimeTierBadge` 组件：显示运行层级 + 预计耗时
+    - TradeFlow 标题旁显示 `FAST_RADAR` badge
+    - 数据健康面板 banner 右侧显示 `RuntimeTierBadge`
+  - `tests/test_runtime_tier_contract.py` — 新建，70 个测试覆盖：
+    - `TestRuntimeTierEnum` (6): 三层枚举/值/字符串/非法值/str比较
+    - `TestTierSpecs` (6): 各层 spec 正确性/数量/描述非空
+    - `TestTierToMeta` (4): 元数据键/值/三层验证
+    - `TestTradeflowEndpointTier` (13): 10 个端点 FAST/unknown LIGHT/discovery/observe_run
+    - `TestTradeflowMeta` (2): meta 值/latency
+    - `TestFullTAGate` (6): FULL_TA/FAST/LIGHT/None/invalid/empty
+    - `TestSchedulerDefault` (2): 非 FULL_TA/是 LIGHT_RESEARCH
+    - `TestTierLabelsCN` (2): 三个标签/数量
+    - `TestRuntimeTierMetaSchema` (3): 默认/自定义/roundtrip
+    - `TestTradeflowServiceMetaInjection` (10): 所有服务函数含 no_data 路径
+    - `TestResponseModels` (10): 所有 schema 默认 FAST/custom override
+    - `TestAcceptancePERF001` (8): 全部验收标准
+  - `docs/TASKS.md` — PERF-001 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：70 passed (PERF-001)；49 passed (UI-001 TradeFlow)；0 failed；npm run build 通过
+- **关键逻辑**：
+  - 三层运行层级：FAST_RADAR(5-30s, no LLM) / LIGHT_RESEARCH(1-3min, LLM ok) / FULL_TA(10-20min, LLM ok, requires confirmation)
+  - 所有 TradeFlow 端点标记为 FAST_RADAR，默认不调用 LLM
+  - FULL_TA 必须用户确认（`confirmed_full_ta=true`），否则 403
+  - Scheduler 显式声明 `runtime_tier="FULL_TA"` + `confirmed_full_ta=True`
+  - 前端 TradeFlow 标题 + 数据健康面板显示运行层级 badge
+  - 所有 TradeFlow API 响应包含 `runtime_tier_meta` 元数据
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-02 | TF-P0-003: TradeFlow 生成候选池后的端到端 UI smoke 验收
 
 - **执行者**：OpenCode
@@ -2220,3 +2284,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TF-P0-003-20260602-round1.txt
 - **Run archive**: docs/task_runs/TF-P0-003-20260602-190059/
+
+## 2026-06-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: PERF-001 - 运行层级与速度预算契约（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/PERF-001-20260602-round1.txt
+- **Run archive**: docs/task_runs/PERF-001-20260602-191005/
