@@ -43,11 +43,11 @@
 17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
 18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
 19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
-20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，ready）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
 21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
 22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
 23. `PERF-001`：运行层级与速度预算契约（P1，done）。
-24. `PERF-002`：轻量 TA Profile 与模块路由（P1，ready，依赖 TA-UI-001/H-007 ✓）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
 25. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，ready）。
 26. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，ready）。
 27. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready，依赖 DATA-004/DATA-006 ✓）。
@@ -133,7 +133,7 @@
 ### PERF-002: 轻量 TA Profile 与模块路由（P1）
 - **描述**：在完整 TA 之外增加轻量 TA Profile，只跑与目标相关的模块，避免所有候选都进入 14 Agent 全链路。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done -- commit 0e6a89d
 - **前置条件**：`TA-UI-001`、`H-007` 完成或同步完成。
 - **执行约束**：
   - 不删除完整 TA。

@@ -299,6 +299,7 @@ async def _run_scheduled_job(task: dict, trade_date: str):
 
     _log(f"[Scheduler] Running {symbol} for user={user_id}")
     job_id = uuid4().hex
+    _log(f"[Scheduler] {symbol} runtime_tier=FULL_TA (user-initiated scheduled task)")  # [PERF-001]
     try:
         await _run_scheduled_analysis_once(
             task,

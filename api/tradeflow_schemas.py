@@ -1,4 +1,5 @@
 # [UI-001] tradeflow_api
+# [PERF-001] runtime_tier_contract
 """Pydantic response models for TradeFlow read-only API endpoints."""
 
 from __future__ import annotations
@@ -6,6 +7,29 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
+
+
+# [PERF-001] runtime_tier_contract
+class RuntimeTierMeta(BaseModel):
+    runtime_tier: str = "FAST_RADAR"
+    expected_latency: str = "5-30s"
+    llm_allowed: bool = False
+    requires_confirmation: bool = False
+    cost_risk: str = "none"
+    tier_label: str = "快速筛选"
+    tier_description: str = ""
+
+
+# [PERF-002] lightweight_ta_profiles
+class RuntimeProfileMeta(BaseModel):
+    runtime_profile: str = ""
+    profile_label: str = ""
+    tier: str = ""
+    expected_latency: str = ""
+    enabled_analysts: List[str] = Field(default_factory=list)
+    enabled_risk_modules: List[str] = Field(default_factory=list)
+    enabled_managers: List[str] = Field(default_factory=list)
+    description: str = ""
 
 
 class TradeFlowCandidateItem(BaseModel):
@@ -114,6 +138,7 @@ class TradeFlowDailyPlanResponse(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
     created_at: str = ""
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
 
 
 class TradeFlowCandidatesResponse(BaseModel):
@@ -121,12 +146,14 @@ class TradeFlowCandidatesResponse(BaseModel):
     trade_date: str = ""
     candidates: List[TradeFlowCandidateItem] = Field(default_factory=list)
     summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
 
 
 class TradeFlowCandidateDetailResponse(BaseModel):
     status: str = "ok"
     trade_date: str = ""
     candidate: Optional[TradeFlowCandidateDetail] = None
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
 
 
 class TradeFlowObserveItem(BaseModel):
@@ -151,6 +178,7 @@ class TradeFlowObserveResponse(BaseModel):
     triggered_count: int = 0
     invalidated_count: int = 0
     waiting_count: int = 0
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
 
 
 class TradeFlowTAQueueItem(BaseModel):
@@ -177,6 +205,7 @@ class TradeFlowTAQueueResponse(BaseModel):
     dispatched_count: int = 0
     blocked_count: int = 0
     pending_count: int = 0
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
 
 
 class TradeFlowReviewItem(BaseModel):
@@ -199,6 +228,7 @@ class TradeFlowReviewResponse(BaseModel):
     reviewed_at: str = ""
     results: List[TradeFlowReviewItem] = Field(default_factory=list)
     summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
 
 
 class DataHealthSource(BaseModel):
@@ -223,6 +253,7 @@ class TradeFlowDataHealthResponse(BaseModel):
     latest_observe_check_time: Optional[str] = None
     latest_signal_time: Optional[str] = None
     evidence_contract_available: bool = False  # [DATA-004] raw_evidence_contract
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
 
 
 # [UI-007] tradeflow_filtered_trace
@@ -240,3 +271,4 @@ class TradeFlowFilteredResponse(BaseModel):
     trade_date: str = ""
     filtered: List[TradeFlowFilteredItem] = Field(default_factory=list)
     filter_breakdown: Dict[str, int] = Field(default_factory=dict)
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]

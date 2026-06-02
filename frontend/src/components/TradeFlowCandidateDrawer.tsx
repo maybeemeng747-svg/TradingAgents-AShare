@@ -1,6 +1,7 @@
 // [H-005] mandate_radar_ui
+// [TA-UI-001] analysis_console_horizon_intent
 import { useEffect, useState } from 'react'
-import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote } from 'lucide-react'
+import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote, FlaskConical } from 'lucide-react'
 import { api } from '@/services/api'
 import type { TradeFlowCandidateItem, TradeFlowCandidateDetail } from '@/types'
 
@@ -41,6 +42,7 @@ function candidateTypeColor(ct: string): string {  // [H-005] mandate_radar_ui
         case 'EVENT_WATCH': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
         case 'PSEUDO_POLICY': return 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300'
         case 'OVERHEATED_AVOID': return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+        case 'UNCLASSIFIED_DATA_GAP': return 'bg-gray-100 text-gray-700 dark:bg-gray-900/40 dark:text-gray-300'  // [TF-P0-002]
         default: return 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400'
     }
 }
@@ -53,6 +55,7 @@ function candidateTypeLabel(ct: string): string {  // [H-005] mandate_radar_ui
         case 'EVENT_WATCH': return '事件观察'
         case 'PSEUDO_POLICY': return '伪政策'
         case 'OVERHEATED_AVOID': return '过热规避'
+        case 'UNCLASSIFIED_DATA_GAP': return '证据缺口'  // [TF-P0-002]
         default: return ct || '未分类'
     }
 }
@@ -99,9 +102,10 @@ interface TradeFlowCandidateDrawerProps {
     tradeDate: string
     open: boolean
     onClose: () => void
+    onNavigateToAnalysis?: (url: string) => void
 }
 
-export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, onClose }: TradeFlowCandidateDrawerProps) {
+export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, onClose, onNavigateToAnalysis }: TradeFlowCandidateDrawerProps) {
     const [detail, setDetail] = useState<TradeFlowCandidateDetail | null>(null)
     const [loadingDetail, setLoadingDetail] = useState(false)
 
@@ -284,6 +288,22 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
                                     <div className="rounded-lg border border-slate-200 bg-slate-50/50 p-3 dark:border-slate-700 dark:bg-slate-800/30">
                                         <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">为什么不是政策候选</div>
                                         <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">该候选无足够政策连续性或公司受益路径证据，被分类为纯技术交易标的</div>
+                                    </div>
+                                )}
+                                {data.candidate_type === 'UNCLASSIFIED_DATA_GAP' && (  // [TF-P0-002]
+                                    <div className="rounded-lg border border-gray-200 bg-gray-50/50 p-3 dark:border-gray-700 dark:bg-gray-800/30">
+                                        <div className="text-[11px] font-medium text-gray-500 dark:text-gray-400">为什么无法分类</div>
+                                        <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                                            该候选数据完整度过低，无法判断是否有政策/事件/受益路径证据。
+                                            需要补充数据后再重新分类。
+                                        </div>
+                                        {data.missing_data_fields.length > 0 && (
+                                            <div className="mt-2 flex flex-wrap gap-1">
+                                                {data.missing_data_fields.slice(0, 5).map(f => (
+                                                    <span key={f} className="inline-block rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600 dark:bg-gray-700 dark:text-gray-400">{f}</span>
+                                                ))}
+                                            </div>
+                                        )}
                                     </div>
                                 )}
                                 {data.candidate_type === 'POLICY_AMBUSH' && (
@@ -517,6 +537,32 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
                     )}
 
                     <div className="pb-4" />
+
+                    {/* [TA-UI-001] analysis_console_horizon_intent - Jump to analysis */}
+                    {onNavigateToAnalysis && (
+                        <div className="sticky bottom-0 bg-white dark:bg-slate-900 pt-3 pb-2 border-t border-slate-100 dark:border-slate-700">
+                            <button
+                                onClick={() => {
+                                    const ct = data.candidate_type
+                                    const horizon = ct === 'POLICY_AMBUSH' || ct === 'POLICY_CONFIRM' ? 'medium' : 'short'
+                                    const intent = ct === 'POLICY_AMBUSH' || ct === 'POLICY_CONFIRM' ? 'entry' : 'watch'
+                                    const pos = 'false'
+                                    const url = `/analysis?symbol=${encodeURIComponent(candidate.symbol)}&horizon=${horizon}&intent=${intent}&position=${pos}`
+                                    onNavigateToAnalysis(url)
+                                }}
+                                className="w-full flex items-center justify-center gap-2 rounded-lg bg-blue-500 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-600 transition-colors"
+                            >
+                                <FlaskConical className="h-4 w-4" />
+                                智能分析
+                            </button>
+                            <div className="mt-1 text-center text-[10px] text-slate-400">
+                                {(data.candidate_type === 'POLICY_AMBUSH' || data.candidate_type === 'POLICY_CONFIRM')
+                                    ? '将默认以中线｜入场研究打开'
+                                    : '将默认以短线｜观察打开'
+                                }
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
         </>

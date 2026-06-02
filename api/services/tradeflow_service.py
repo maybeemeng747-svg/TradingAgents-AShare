@@ -1,4 +1,5 @@
 # [UI-001] tradeflow_api
+# [PERF-001] runtime_tier_contract
 """TradeFlow read-only data access service.
 
 Queries tradeflow SQLite tables for the API layer.
@@ -13,6 +14,7 @@ import sqlite3
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from api.runtime_tier import RuntimeTier, tradeflow_meta as _tradeflow_meta  # [PERF-001]
 from tradingagents.tradeflow.symbol_utils import (  # [UI-008] tradeflow_field_normalization
     normalize_tradeflow_symbol,
     resolve_tradeflow_name,
@@ -43,6 +45,8 @@ def _connect(tf_db_path: str = "") -> Optional[sqlite3.Connection]:
     if not os.path.exists(db_path):
         return None
     try:
+        from tradingagents.tradeflow.candidate_engine import init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+        init_db(db_path)
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         return conn
@@ -239,9 +243,10 @@ def _query_by_date_or_effective(conn, table: str, date_str: str,
 
 
 def get_daily_plan(trade_date: str, tf_db_path: str = "") -> dict:
+    _fast_meta = _tradeflow_meta("tradeflow_daily_plan")  # [PERF-001]
     conn = _connect(tf_db_path)
     if conn is None:
-        return {"status": "no_data", "trade_date": trade_date}
+        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
 
     try:
         plan_row = conn.execute(
@@ -257,7 +262,7 @@ def get_daily_plan(trade_date: str, tf_db_path: str = "") -> dict:
                     (trade_date,),
                 ).fetchone()
         if plan_row is None:
-            return {"status": "no_data", "trade_date": trade_date}
+            return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
 
         candidates_json = _parse_json(_rget(plan_row, "candidates_json", "[]"), [])
         metadata_json = _parse_json(_rget(plan_row, "metadata_json", "{}"), {})
@@ -329,6 +334,7 @@ def get_daily_plan(trade_date: str, tf_db_path: str = "") -> dict:
             "plan_date": _rget(plan_row, "plan_date", ""),  # [TF-DATE-001]
             "effective_trade_date": _rget(plan_row, "effective_trade_date", ""),  # [TF-DATE-001]
             "observe_date": _rget(plan_row, "observe_date", ""),  # [TF-DATE-001]
+            "runtime_tier_meta": _tradeflow_meta("tradeflow_daily_plan"),  # [PERF-001]
         }
     finally:
         conn.close()
@@ -339,11 +345,22 @@ def get_candidates(
     tier: Optional[str] = None,
     need_deep_ta: Optional[bool] = None,
     candidate_type: Optional[str] = None,  # [H-005] mandate_radar_ui
+    pool: Optional[str] = None,  # [TF-P0-002] tradeflow_pool_split
     tf_db_path: str = "",
 ) -> dict:
+    # [TF-P0-002] tradeflow_pool_split — resolve pool to candidate_type list
+    pool_types: list[str] = []
+    if pool and not candidate_type:
+        from tradingagents.tradeflow.candidate_pool import pool_to_candidate_types
+        pool_types = pool_to_candidate_types(pool)
+        if len(pool_types) == 1:
+            candidate_type = pool_types[0]
+        elif len(pool_types) == 0:
+            pass  # "all" pool
+    _fast_meta = _tradeflow_meta("tradeflow_candidates")  # [PERF-001]
     conn = _connect(tf_db_path)
     if conn is None:
-        return {"status": "no_data", "trade_date": trade_date}
+        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
 
     try:
         columns = _table_columns(conn, "tradeflow_candidates")
@@ -355,6 +372,9 @@ def get_candidates(
             extra_conditions.append("need_deep_ta = ?")
         if candidate_type and "candidate_type" in columns:  # [H-005] mandate_radar_ui
             extra_conditions.append("candidate_type = ?")
+        elif len(pool_types) > 1 and "candidate_type" in columns:  # [TF-P0-002] tradeflow_pool_split
+            placeholders = ",".join(["?"] * len(pool_types))
+            extra_conditions.append(f"candidate_type IN ({placeholders})")
 
         extra_params: list = []
         if tier and "tier" in columns:
@@ -363,6 +383,8 @@ def get_candidates(
             extra_params.append(1 if need_deep_ta else 0)
         if candidate_type and "candidate_type" in columns:  # [H-005] mandate_radar_ui
             extra_params.append(candidate_type)
+        elif len(pool_types) > 1:  # [TF-P0-002]
+            extra_params.extend(pool_types)
 
         order_cols = []
         if "composite_score" in columns:
@@ -388,6 +410,7 @@ def get_candidates(
             "trade_date": trade_date,
             "candidates": items,
             "summary_agg": _compute_summary(items),
+            "runtime_tier_meta": _tradeflow_meta("tradeflow_candidates"),  # [PERF-001]
         }
     finally:
         conn.close()
@@ -395,8 +418,9 @@ def get_candidates(
 
 def get_candidate_detail(symbol: str, trade_date: str, tf_db_path: str = "") -> dict:
     conn = _connect(tf_db_path)
+    _fast_meta = _tradeflow_meta("tradeflow_candidate_detail")  # [PERF-001]
     if conn is None:
-        return {"status": "no_data", "trade_date": trade_date}
+        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
 
     try:
         row = conn.execute(
@@ -413,7 +437,7 @@ def get_candidate_detail(symbol: str, trade_date: str, tf_db_path: str = "") -> 
                 ).fetchone()
 
         if row is None:
-            return {"status": "no_data", "trade_date": trade_date}
+            return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
 
         detail = _row_to_candidate_detail(row)
         detail["action"] = _compute_action(detail)
@@ -423,6 +447,7 @@ def get_candidate_detail(symbol: str, trade_date: str, tf_db_path: str = "") -> 
             "status": "ok",
             "trade_date": trade_date,
             "candidate": detail,
+            "runtime_tier_meta": _tradeflow_meta("tradeflow_candidate_detail"),  # [PERF-001]
         }
     finally:
         conn.close()
@@ -430,8 +455,9 @@ def get_candidate_detail(symbol: str, trade_date: str, tf_db_path: str = "") -> 
 
 def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
     conn = _connect(tf_db_path)
+    _fast_meta = _tradeflow_meta("tradeflow_observe")  # [PERF-001]
     if conn is None:
-        return {"status": "no_data", "trade_date": trade_date}
+        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
 
     try:
         columns = _table_columns(conn, "tradeflow_candidates")
@@ -501,6 +527,7 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
             "triggered_count": triggered,
             "invalidated_count": invalidated,
             "waiting_count": waiting,
+            "runtime_tier_meta": _tradeflow_meta("tradeflow_observe"),  # [PERF-001]
         }
     finally:
         conn.close()
@@ -508,8 +535,9 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
 
 def get_ta_queue(trade_date: str, tf_db_path: str = "") -> dict:
     conn = _connect(tf_db_path)
+    _fast_meta = _tradeflow_meta("tradeflow_ta_queue")  # [PERF-001]
     if conn is None:
-        return {"status": "no_data", "trade_date": trade_date}
+        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
 
     try:
         columns = _table_columns(conn, "tradeflow_candidates")
@@ -566,15 +594,17 @@ def get_ta_queue(trade_date: str, tf_db_path: str = "") -> dict:
             "dispatched_count": dispatched,
             "blocked_count": blocked,
             "pending_count": pending,
+            "runtime_tier_meta": _tradeflow_meta("tradeflow_ta_queue"),  # [PERF-001]
         }
     finally:
         conn.close()
 
 
 def get_review(trade_date: str, tf_db_path: str = "") -> dict:
+    _fast_meta = _tradeflow_meta("tradeflow_review")  # [PERF-001]
     plan_data = get_daily_plan(trade_date, tf_db_path)
     if plan_data.get("status") == "no_data":
-        return {"status": "no_data", "trade_date": trade_date}
+        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
 
     candidates = plan_data.get("candidates", [])
     results = []
@@ -607,6 +637,7 @@ def get_review(trade_date: str, tf_db_path: str = "") -> dict:
         "reviewed_at": datetime.now().isoformat(),
         "results": results,
         "summary_agg": _compute_summary(candidates),
+        "runtime_tier_meta": _tradeflow_meta("tradeflow_review"),  # [PERF-001]
     }
 
 
@@ -737,6 +768,7 @@ def get_data_health(tf_db_path: str = "") -> dict:
         "latest_observe_check_time": latest_observe_check_time,  # [TF-OBS-001]
         "latest_signal_time": latest_signal_time,  # [TF-OBS-001]
         "evidence_contract_available": True,  # [DATA-004] raw_evidence_contract
+        "runtime_tier_meta": _tradeflow_meta("tradeflow_data_health"),  # [PERF-001]
     }
 
 
@@ -765,6 +797,7 @@ def get_filtered(trade_date: str, tf_db_path: str = "") -> dict:  # [UI-007] tra
             "trade_date": trade_date,
             "filtered": items,
             "filter_breakdown": breakdown,
+            "runtime_tier_meta": _tradeflow_meta("tradeflow_filtered"),  # [PERF-001]
         }
     except Exception:
         return {"status": "ok", "trade_date": trade_date, "filtered": [], "filter_breakdown": {}}
@@ -820,6 +853,7 @@ def run_discovery_scan(
         "candidates": result.candidates,
         "filtered": result.filtered[:50],
         "metadata": result.metadata,
+        "runtime_tier_meta": _tradeflow_meta("tradeflow_discovery"),  # [PERF-001]
     }
 
 
@@ -855,4 +889,5 @@ def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
         "skipped_reason": result.skipped_reason,
         "run_time": result.run_time,
         "details": result.details,
+        "runtime_tier_meta": _tradeflow_meta("tradeflow_observe_run"),  # [PERF-001]
     }

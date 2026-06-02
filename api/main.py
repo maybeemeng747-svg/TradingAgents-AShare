@@ -193,6 +193,9 @@ def _build_scheduled_analyze_request(
         current_position_pct=scheduled_user_context.get("current_position_pct"),
         average_cost=scheduled_user_context.get("average_cost"),
         user_notes=scheduled_user_context.get("user_notes"),
+        runtime_tier="FULL_TA",  # [PERF-001] scheduler explicitly opts into FULL_TA
+        confirmed_full_ta=True,  # [PERF-001] scheduler is user-initiated, counts as confirmed
+        runtime_profile="FULL_TA",  # [PERF-002] scheduler runs full TA
     )
     if selected:
         req.selected_analysts = selected
@@ -281,6 +284,13 @@ async def lifespan(app: FastAPI):
 
     init_db()
     _log("Database initialized.")
+    try:
+        from tradingagents.tradeflow.candidate_engine import init_db as _tf_init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+        from tradingagents.dataflows.trade_calendar import is_cn_trade_day  # noqa: F401
+        _tf_init_db(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tradeflow.db"))
+        _log("TradeFlow DB schema migrated.")
+    except Exception as _tf_exc:
+        _log(f"TradeFlow DB init skipped: {_tf_exc}")
     store = get_job_store()
     store.clear()
     _background_tasks.clear()
@@ -726,12 +736,21 @@ class AnalyzeRequest(UserContextInput):
     horizons: List[str] = Field(default_factory=lambda: ["short"], description="分析周期列表，如 ['short'] 或 ['short','medium']")
     # Pre-parsed intent from _ai_extract_symbol_and_date (avoids second LLM call in _run_job)
     user_intent: Optional[Dict[str, Any]] = Field(default=None, description="预解析的用户意图，由 chat_completions 传入")
+    runtime_tier: Optional[str] = Field(default=None, description="运行层级 FAST_RADAR/LIGHT_RESEARCH/FULL_TA [PERF-001]")  # [PERF-001]
+    confirmed_full_ta: bool = Field(default=False, description="用户是否确认完整 TA [PERF-001]")  # [PERF-001]
+    runtime_profile: Optional[str] = Field(default=None, description="轻量 TA Profile [PERF-002]")  # [PERF-002]
 
 
 class AnalyzeResponse(BaseModel):
     job_id: str
     status: Literal["pending", "running", "completed", "failed"]
     created_at: str
+    runtime_tier: str = "FULL_TA"  # [PERF-001]
+    runtime_tier_label: str = "完整 TA"  # [PERF-001]
+    expected_latency: str = "10-20min"  # [PERF-001]
+    runtime_profile: Optional[str] = None  # [PERF-002]
+    runtime_profile_label: Optional[str] = None  # [PERF-002]
+    enabled_modules: Optional[List[str]] = None  # [PERF-002]
 
 
 class BatchScheduledTriggerJob(BaseModel):
@@ -2945,7 +2964,69 @@ async def analyze(
     request: AnalyzeRequest,
     current_user: UserDB = Depends(_require_api_user),
 ) -> AnalyzeResponse:
+    from api.runtime_tier import (  # [PERF-001] runtime_tier_contract
+        RuntimeTier,
+        is_full_ta_allowed_without_confirmation,
+        tier_to_meta,
+    )
+    from api.ta_profile import (  # [PERF-002] lightweight_ta_profiles
+        TAProfile,
+        get_profile_spec,
+        profile_to_meta,
+        recommend_profile,
+        filter_analysts_for_profile,
+    )
+
     explicit_context = _extract_request_user_context(request)
+
+    tier_value = request.runtime_tier or RuntimeTier.LIGHT_RESEARCH.value
+    try:
+        resolved_tier = RuntimeTier(tier_value)
+    except ValueError:
+        resolved_tier = RuntimeTier.LIGHT_RESEARCH
+
+    if request.dry_run:
+        resolved_tier = RuntimeTier.LIGHT_RESEARCH
+
+    if resolved_tier == RuntimeTier.FULL_TA and not request.confirmed_full_ta:
+        meta = tier_to_meta(RuntimeTier.FULL_TA)
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "message": "完整 TA 需要用户确认。请设置 confirmed_full_ta=true 后重试。",
+                "runtime_tier": meta["runtime_tier"],
+                "expected_latency": meta["expected_latency"],
+                "cost_risk": meta["cost_risk"],
+                "requires_confirmation": True,
+            },
+        )
+
+    tier_meta = tier_to_meta(resolved_tier)
+
+    resolved_profile: Optional[TAProfile] = None
+    if request.runtime_profile:
+        try:
+            resolved_profile = TAProfile(request.runtime_profile)
+        except ValueError:
+            resolved_profile = None
+    if resolved_profile is None and resolved_tier == RuntimeTier.LIGHT_RESEARCH:
+        analysis_intent = ""
+        if request.user_intent and isinstance(request.user_intent, dict):
+            analysis_intent = str(request.user_intent.get("analysis_intent", ""))
+        resolved_profile = recommend_profile(
+            analysis_intent=analysis_intent,
+            has_position=_resolve_has_position(request.user_intent, request),
+        )
+    elif resolved_profile is None and resolved_tier == RuntimeTier.FULL_TA:
+        resolved_profile = TAProfile.FULL_TA
+    elif resolved_profile is None:
+        resolved_profile = TAProfile.FULL_TA
+
+    profile_meta = profile_to_meta(resolved_profile)
+    if resolved_profile != TAProfile.FULL_TA:
+        request.selected_analysts = filter_analysts_for_profile(
+            resolved_profile, request.selected_analysts,
+        )
 
     def _load_user_context() -> Dict[str, Any]:
         with get_db_ctx() as db:
@@ -2985,9 +3066,25 @@ async def analyze(
     if request.dry_run:
         await _run_job(job_id, request, True, True, current_user.id, "api")
         final_status = _get_job(job_id).get("status", "completed")
-        return AnalyzeResponse(job_id=job_id, status=final_status, created_at=now)
+        return AnalyzeResponse(
+            job_id=job_id, status=final_status, created_at=now,
+            runtime_tier=tier_meta["runtime_tier"],
+            runtime_tier_label=tier_meta["tier_label"],
+            expected_latency=tier_meta["expected_latency"],
+            runtime_profile=profile_meta["runtime_profile"],  # [PERF-002]
+            runtime_profile_label=profile_meta["profile_label"],  # [PERF-002]
+            enabled_modules=sorted(profile_meta["enabled_analysts"] + profile_meta["enabled_risk_modules"] + profile_meta["enabled_managers"]),  # [PERF-002]
+        )
     _create_tracked_task(_run_job(job_id, request, True, True, current_user.id, "api"))
-    return AnalyzeResponse(job_id=job_id, status="pending", created_at=now)
+    return AnalyzeResponse(
+        job_id=job_id, status="pending", created_at=now,
+        runtime_tier=tier_meta["runtime_tier"],
+        runtime_tier_label=tier_meta["tier_label"],
+        expected_latency=tier_meta["expected_latency"],
+        runtime_profile=profile_meta["runtime_profile"],  # [PERF-002]
+        runtime_profile_label=profile_meta["profile_label"],  # [PERF-002]
+        enabled_modules=sorted(profile_meta["enabled_analysts"] + profile_meta["enabled_risk_modules"] + profile_meta["enabled_managers"]),  # [PERF-002]
+    )
 
 
 def _require_job_owner(job_id: str, current_user: UserDB) -> Dict[str, Any]:
@@ -5108,9 +5205,10 @@ def tradeflow_candidates(
     date: str = Query(..., description="交易日期 YYYY-MM-DD"),
     tier: Optional[str] = Query(None, description="层级过滤 A/B/C"),
     need_deep_ta: Optional[bool] = Query(None, description="是否需要深度TA"),
-    candidate_type: Optional[str] = Query(None, description="候选类型过滤 POLICY_AMBUSH/POLICY_CONFIRM/TECH_TRADE/EVENT_WATCH/PSEUDO_POLICY/OVERHEATED_AVOID"),  # [H-005] mandate_radar_ui
+    candidate_type: Optional[str] = Query(None, description="候选类型过滤 POLICY_AMBUSH/POLICY_CONFIRM/TECH_TRADE/EVENT_WATCH/PSEUDO_POLICY/OVERHEATED_AVOID/UNCLASSIFIED_DATA_GAP"),  # [H-005] mandate_radar_ui [TF-P0-002]
+    pool: Optional[str] = Query(None, description="候选池过滤 all/haotian/policy/tech/event/gap"),  # [TF-P0-002] tradeflow_pool_split
 ):
-    return _tf_get_candidates(date, tier=tier, need_deep_ta=need_deep_ta, candidate_type=candidate_type)
+    return _tf_get_candidates(date, tier=tier, need_deep_ta=need_deep_ta, candidate_type=candidate_type, pool=pool)
 
 
 @app.get("/v1/tradeflow/candidates/{symbol}", response_model=TradeFlowCandidateDetailResponse)

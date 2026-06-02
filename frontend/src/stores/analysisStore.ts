@@ -83,6 +83,11 @@ interface AnalysisState {
     // Current analysis horizon (for badge display)
     currentHorizon: string | null
 
+    // [TA-UI-001] analysis_console_horizon_intent
+    analysisHorizon: 'short' | 'medium'
+    analysisIntent: string
+    hasPosition: boolean
+
     // Actions
     setCurrentJobId: (jobId: string | null) => void
     setCurrentSymbol: (symbol: string) => void
@@ -109,6 +114,10 @@ interface AnalysisState {
     setAnalysisRunState: (state: 'idle' | 'running' | 'completed' | 'failed', error?: string | null) => void
     failRun: (error: string) => void
     setCurrentHorizon: (horizon: string | null) => void
+    // [TA-UI-001] analysis_console_horizon_intent
+    setAnalysisHorizon: (horizon: 'short' | 'medium') => void
+    setAnalysisIntent: (intent: string) => void
+    setHasPosition: (has: boolean) => void
     addChatMessage: (message: ChatMessage) => void
     appendToChatMessage: (id: string, chunk: string) => void
     setMessageContent: (id: string, content: string) => void
@@ -208,6 +217,9 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
     analysisRunState: 'idle',
     analysisRunError: null,
     currentHorizon: null,
+    analysisHorizon: 'short',
+    analysisIntent: 'watch',
+    hasPosition: false,
 
     setCurrentJobId: (jobId) => set({ currentJobId: jobId }),
 
@@ -422,6 +434,9 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
         analysisRunState: 'idle',
         analysisRunError: null,
         currentHorizon: null,
+        analysisHorizon: 'short',
+        analysisIntent: 'watch',
+        hasPosition: false,
     }),
 
     addLog: (log) => set((state) => ({
@@ -484,6 +499,11 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
 
     setCurrentHorizon: (horizon) => set({ currentHorizon: horizon }),
 
+    // [TA-UI-001] analysis_console_horizon_intent
+    setAnalysisHorizon: (horizon) => set({ analysisHorizon: horizon }),
+    setAnalysisIntent: (intent) => set({ analysisIntent: intent }),
+    setHasPosition: (has) => set({ hasPosition: has }),
+
     reset: () => set((state) => ({
         currentJobId: null,
         currentSymbol: state.currentSymbol,
@@ -506,6 +526,10 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
         analysisRunState: 'idle',
         analysisRunError: null,
         currentHorizon: null,
+        // [TA-UI-001] 保留用户选择的分析上下文
+        analysisHorizon: state.analysisHorizon,
+        analysisIntent: state.analysisIntent,
+        hasPosition: state.hasPosition,
     }))
 }), {
     name: 'tradingagents-analysis',
@@ -520,6 +544,10 @@ export const useAnalysisStore = create<AnalysisState>()(persist((set) => ({
         jobTargetPrice: state.jobTargetPrice,
         jobStopLoss: state.jobStopLoss,
         chatMessages: normalizePersistedChatMessages(state.chatMessages) ?? [],
+        // [TA-UI-001] analysis_console_horizon_intent
+        analysisHorizon: state.analysisHorizon,
+        analysisIntent: state.analysisIntent,
+        hasPosition: state.hasPosition,
     }),
     merge: (persistedState, currentState) => {
         const persisted = (persistedState ?? {}) as Partial<AnalysisState>

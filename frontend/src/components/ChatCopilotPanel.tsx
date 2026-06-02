@@ -22,6 +22,9 @@ interface ChatCopilotPanelProps {
     onSymbolDetected: (symbol: string) => void
     onShowReport?: (section?: string) => void
     initialInput?: string
+    horizon?: 'short' | 'medium'
+    intent?: string
+    hasPosition?: boolean
 }
 
 interface StreamEvent {
@@ -130,7 +133,7 @@ function ReportCard({
     )
 }
 
-export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initialInput }: ChatCopilotPanelProps) {
+export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initialInput, horizon, intent, hasPosition: hasPositionProp }: ChatCopilotPanelProps) {
     const [input, setInput] = useState(initialInput || '')
     const [streaming, setStreaming] = useState(false)
     // Tracks agent bubbles waiting for their first token (shows "正在推理分析中..." spinner)
@@ -564,11 +567,30 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
     }
 
     const streamChat = async (prompt: string, signal?: AbortSignal): Promise<boolean> => {
+        // [TA-UI-001] analysis_console_horizon_intent - build user context from props
+        const objectiveMap: Record<string, string> = {
+            watch: '观察',
+            entry: '建仓/入场研究',
+            holding: '持仓复盘',
+            add: '加仓判断',
+            reduce: '减仓/止损',
+        }
+        const horizonLabel = horizon === 'medium' ? '中线' : '短线'
+        const effectiveObjective = intent ? objectiveMap[intent] : undefined
+        const effectiveHorizon = horizon === 'medium' ? '中线' : '短线'
+        const userContext = {
+            objective: effectiveObjective,
+            investment_horizon: effectiveHorizon,
+        }
+        // Prepend structured context to prompt so intent parser sees it
+        const contextPrefix = `[分析上下文] 周期=${horizonLabel}｜意图=${objectiveMap[intent || 'watch'] || '观察'}｜持仓=${hasPositionProp ? '是' : '否'}\n`
+        const fullPrompt = contextPrefix + prompt
         const response = await api.chatCompletion(
-            [{ role: 'user', content: prompt }],
+            [{ role: 'user', content: fullPrompt }],
             true,
             selectedAnalysts,
             signal,
+            userContext,
         )
 
         if (!response.body) throw new Error('SSE stream unavailable')
@@ -755,6 +777,26 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
                     )}
                 </div>
             </div>
+
+            {/* [TA-UI-001] analysis_console_horizon_intent - context banner */}
+            {horizon && (
+                <div className="text-[11px] px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 flex items-center gap-1.5 mb-2">
+                    <span className="font-medium text-slate-700 dark:text-slate-300">本次分析：</span>
+                    <span className="inline-flex items-center gap-0.5">
+                        <span className={`font-medium ${horizon === 'medium' ? 'text-indigo-600 dark:text-indigo-400' : 'text-cyan-600 dark:text-cyan-400'}`}>
+                            {horizon === 'medium' ? '中线' : '短线'}
+                        </span>
+                        <span className="text-slate-300 dark:text-slate-600">|</span>
+                        <span className="font-medium text-slate-600 dark:text-slate-400">
+                            {{ watch: '观察', entry: '入场研究', holding: '持仓复盘', add: '加仓判断', reduce: '减仓止损' }[intent || 'watch'] || '观察'}
+                        </span>
+                        <span className="text-slate-300 dark:text-slate-600">|</span>
+                        <span className={`font-medium ${hasPositionProp ? 'text-amber-600 dark:text-amber-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                            {hasPositionProp ? '已持仓' : '未持仓'}
+                        </span>
+                    </span>
+                </div>
+            )}
 
             <div className="text-xs text-slate-500 dark:text-slate-400 mb-3 flex items-center gap-1">
                 <Sparkles className="w-3 h-3" />

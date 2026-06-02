@@ -1,8 +1,14 @@
 // [UI-005] tradeflow_review_page
 // [H-005] mandate_radar_ui
+// [TA-UI-001] analysis_console_horizon_intent
+// [TF-P0-002] tradeflow_pool_split
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX } from 'lucide-react'
 import { api } from '@/services/api'
+import {
+    RUNTIME_TIER_LABELS,
+} from '@/types'
 import type {
     TradeFlowCandidateItem,
     TradeFlowSummary,
@@ -82,9 +88,22 @@ function candidateTypeLabel(ct: string): { text: string; cls: string } {  // [H-
         case 'EVENT_WATCH': return { text: '事件观察', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' }
         case 'PSEUDO_POLICY': return { text: '伪政策', cls: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300' }
         case 'OVERHEATED_AVOID': return { text: '过热规避', cls: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' }
+        case 'UNCLASSIFIED_DATA_GAP': return { text: '证据缺口', cls: 'bg-gray-100 text-gray-700 dark:bg-gray-900/40 dark:text-gray-300' }  // [TF-P0-002]
         default: return { text: ct || '未分类', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' }
     }
 }
+
+// [TF-P0-002] tradeflow_pool_split — pool tabs
+type PoolKey = 'all' | 'haotian' | 'policy' | 'tech' | 'event' | 'gap'
+
+const POOL_TABS: { key: PoolKey; label: string }[] = [
+    { key: 'all', label: '全部' },
+    { key: 'haotian', label: '昊天左侧' },
+    { key: 'policy', label: '政策确认' },
+    { key: 'tech', label: '短线技术' },
+    { key: 'event', label: '事件观察' },
+    { key: 'gap', label: '证据缺口' },
+]
 
 interface SummaryCardsProps {
     summary: TradeFlowSummary
@@ -722,6 +741,22 @@ function healthStatusBadge(status: DataHealthStatus): { text: string; cls: strin
     }
 }
 
+// [PERF-001] runtime_tier_contract
+function RuntimeTierBadge({ tier, latency }: { tier: string; latency: string }) {
+    const label = (RUNTIME_TIER_LABELS as Record<string, string>)[tier] || tier
+    const cls = tier === 'FAST_RADAR'
+        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+        : tier === 'LIGHT_RESEARCH'
+        ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+        : 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300'
+    return (
+        <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-medium ${cls}`}>
+            {label}
+            <span className="text-[10px] opacity-70">~{latency}</span>
+        </span>
+    )
+}
+
 function DataHealthPanel({ data }: { data: TradeFlowDataHealthResponse | null }) {
     if (!data || data.sources.length === 0) {
         return (
@@ -767,6 +802,11 @@ function DataHealthPanel({ data }: { data: TradeFlowDataHealthResponse | null })
             <div className={`flex items-center gap-2 rounded-lg px-4 py-3 text-sm font-medium ${bannerCls}`}>
                 <span>{bannerIcon}</span>
                 {bannerText}
+                {data.runtime_tier_meta && (  // [PERF-001]
+                    <span className="ml-auto">
+                        <RuntimeTierBadge tier={data.runtime_tier_meta.runtime_tier} latency={data.runtime_tier_meta.expected_latency} />
+                    </span>
+                )}
             </div>
 
             {data.latest_plan_date && (
@@ -829,6 +869,7 @@ function DataHealthPanel({ data }: { data: TradeFlowDataHealthResponse | null })
 }
 
 export default function TradeFlow() {
+    const navigate = useNavigate()  // [TA-UI-001] analysis_console_horizon_intent
     const [activeTab, setActiveTab] = useState<TabKey>('candidates')
     const [tradeDate, setTradeDate] = useState(todayStr)
     const [candidates, setCandidates] = useState<TradeFlowCandidateItem[]>([])
@@ -851,7 +892,8 @@ export default function TradeFlow() {
     const [tierFilter, setTierFilter] = useState<string>('')
     const [deepTaFilter, setDeepTaFilter] = useState<string>('')
     const [observeFilter, setObserveFilter] = useState<string>('')
-    const [candidateTypeFilter, setCandidateTypeFilter] = useState<string>('')  // [H-005] mandate_radar_ui
+    const [candidateTypeFilter] = useState<string>('')  // [H-005] mandate_radar_ui — kept for compatibility
+    const [poolFilter, setPoolFilter] = useState<PoolKey>('all')  // [TF-P0-002] tradeflow_pool_split
     const [drawerOpen, setDrawerOpen] = useState(false)
     const [selectedCandidate, setSelectedCandidate] = useState<TradeFlowCandidateItem | null>(null)
 
@@ -867,7 +909,7 @@ export default function TradeFlow() {
         setError(null)
         try {
             const [candidatesRes, healthRes] = await Promise.all([
-                api.getTradeFlowCandidates(date, tierFilter || undefined, deepTaFilter === 'yes' ? true : deepTaFilter === 'no' ? false : undefined, candidateTypeFilter || undefined),  // [H-005]
+                api.getTradeFlowCandidates(date, tierFilter || undefined, deepTaFilter === 'yes' ? true : deepTaFilter === 'no' ? false : undefined, candidateTypeFilter || undefined, poolFilter !== 'all' ? poolFilter : undefined),  // [H-005] [TF-P0-002]
                 api.getTradeFlowDataHealth(),
             ])
             setStatus(candidatesRes.status)
@@ -888,7 +930,7 @@ export default function TradeFlow() {
         } finally {
             setLoading(false)
         }
-    }, [tierFilter, deepTaFilter, observeFilter, candidateTypeFilter])  // [H-005]
+    }, [tierFilter, deepTaFilter, observeFilter, candidateTypeFilter, poolFilter])  // [H-005] [TF-P0-002]
 
     const fetchObserve = useCallback(async (date: string) => {
         setLoading(true)
@@ -1067,11 +1109,12 @@ export default function TradeFlow() {
             }
             if (candidates.length === 0) {
                 const hasMandateFilter = candidateTypeFilter && ['POLICY_AMBUSH', 'POLICY_CONFIRM', 'EVENT_WATCH'].includes(candidateTypeFilter)  // [H-005]
+                const hasPoolFilter = poolFilter !== 'all'  // [TF-P0-002]
                 return (
                     <div className="py-20 text-center text-sm text-slate-400">
                         <Target className="mx-auto mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
                         无匹配候选
-                        {hasMandateFilter && (
+                        {(hasMandateFilter || hasPoolFilter) && (
                             <div className="mt-2 space-y-1 text-xs text-slate-400">
                                 <div>可能原因：</div>
                                 <div>1. 政策信号源不足，尚未生成昊天候选</div>
@@ -1213,6 +1256,7 @@ export default function TradeFlow() {
                 <div className="flex items-center gap-2">
                     <ClipboardList className="h-5 w-5 text-blue-600 dark:text-blue-400" />
                     <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100">TradeFlow</h1>
+                    <RuntimeTierBadge tier="FAST_RADAR" latency="5-30s" />  {/* [PERF-001] */}
                 </div>
                 <div className="flex items-center gap-3">
                     <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800">
@@ -1309,54 +1353,59 @@ export default function TradeFlow() {
                 </div>
 
                 {activeTab === 'candidates' && (
-                    <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-700">
-                        <div className="flex items-center gap-1.5 text-sm text-slate-500">
-                            <Filter className="h-3.5 w-3.5" />
-                            筛选
+                    <div className="border-b border-slate-100 px-4 py-3 dark:border-slate-700">  {/* [TF-P0-002] tradeflow_pool_split */}
+                        <div className="flex flex-wrap items-center gap-3">
+                            <div className="flex items-center gap-1.5 text-sm text-slate-500">
+                                <Filter className="h-3.5 w-3.5" />
+                                候选池
+                            </div>
+                            <div className="flex gap-1">
+                                {POOL_TABS.map(tab => (
+                                    <button
+                                        key={tab.key}
+                                        onClick={() => setPoolFilter(tab.key)}
+                                        className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                                            poolFilter === tab.key
+                                                ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+                                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-400 dark:hover:bg-slate-600'
+                                        }`}
+                                    >
+                                        {tab.label}
+                                    </button>
+                                ))}
+                            </div>
+                            <span className="mx-2 text-slate-300 dark:text-slate-600">|</span>
+                            <select
+                                value={tierFilter}
+                                onChange={e => setTierFilter(e.target.value)}
+                                className="rounded border border-slate-200 bg-white px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                            >
+                                <option value="">全部层级</option>
+                                <option value="A">A级</option>
+                                <option value="B">B级</option>
+                                <option value="C">C级</option>
+                            </select>
+                            <select
+                                value={deepTaFilter}
+                                onChange={e => setDeepTaFilter(e.target.value)}
+                                className="rounded border border-slate-200 bg-white px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                            >
+                                <option value="">全部TA状态</option>
+                                <option value="yes">需深度TA</option>
+                                <option value="no">无需深度TA</option>
+                            </select>
+                            <select
+                                value={observeFilter}
+                                onChange={e => setObserveFilter(e.target.value)}
+                                className="rounded border border-slate-200 bg-white px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                            >
+                                <option value="">全部观察状态</option>
+                                <option value="WAITING">等待中</option>
+                                <option value="TRIGGERED">已触发</option>
+                                <option value="INVALIDATED">已失效</option>
+                            </select>
+                            <span className="ml-auto text-xs text-slate-400">{candidates.length} 条记录</span>
                         </div>
-                        <select
-                            value={candidateTypeFilter}
-                            onChange={e => setCandidateTypeFilter(e.target.value)}  // [H-005] mandate_radar_ui
-                            className="rounded border border-slate-200 bg-white px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
-                        >
-                            <option value="">全部类型</option>
-                            <option value="POLICY_AMBUSH">昊天左侧</option>
-                            <option value="POLICY_CONFIRM">政策确认</option>
-                            <option value="TECH_TRADE">技术交易</option>
-                            <option value="EVENT_WATCH">事件观察</option>
-                            <option value="PSEUDO_POLICY">伪政策</option>
-                            <option value="OVERHEATED_AVOID">过热规避</option>
-                        </select>
-                        <select
-                            value={tierFilter}
-                            onChange={e => setTierFilter(e.target.value)}
-                            className="rounded border border-slate-200 bg-white px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
-                        >
-                            <option value="">全部层级</option>
-                            <option value="A">A级</option>
-                            <option value="B">B级</option>
-                            <option value="C">C级</option>
-                        </select>
-                        <select
-                            value={deepTaFilter}
-                            onChange={e => setDeepTaFilter(e.target.value)}
-                            className="rounded border border-slate-200 bg-white px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
-                        >
-                            <option value="">全部TA状态</option>
-                            <option value="yes">需深度TA</option>
-                            <option value="no">无需深度TA</option>
-                        </select>
-                        <select
-                            value={observeFilter}
-                            onChange={e => setObserveFilter(e.target.value)}
-                            className="rounded border border-slate-200 bg-white px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
-                        >
-                            <option value="">全部观察状态</option>
-                            <option value="WAITING">等待中</option>
-                            <option value="TRIGGERED">已触发</option>
-                            <option value="INVALIDATED">已失效</option>
-                        </select>
-                        <span className="ml-auto text-xs text-slate-400">{candidates.length} 条记录</span>
                     </div>
                 )}
 
@@ -1378,6 +1427,7 @@ export default function TradeFlow() {
                     tradeDate={tradeDate}
                     open={drawerOpen}
                     onClose={handleDrawerClose}
+                    onNavigateToAnalysis={(url) => navigate(url)}  // [TA-UI-001] analysis_console_horizon_intent
                 />
             )}
         </div>

@@ -1,3 +1,52 @@
+// [PERF-001] runtime_tier_contract
+export interface RuntimeTierMeta {
+    runtime_tier: string
+    expected_latency: string
+    llm_allowed: boolean
+    requires_confirmation: boolean
+    cost_risk: string
+    tier_label: string
+    tier_description: string
+}
+
+export const RUNTIME_TIER_LABELS: Record<string, string> = {
+    FAST_RADAR: '快速筛选',
+    LIGHT_RESEARCH: '轻量研究',
+    FULL_TA: '完整 TA',
+}
+
+export const RUNTIME_TIER_LATENCY: Record<string, string> = {
+    FAST_RADAR: '5-30s',
+    LIGHT_RESEARCH: '1-3min',
+    FULL_TA: '10-20min',
+}
+
+// [PERF-002] lightweight_ta_profiles
+export interface RuntimeProfileMeta {
+    runtime_profile: string
+    profile_label: string
+    tier: string
+    expected_latency: string
+    enabled_analysts: string[]
+    enabled_risk_modules: string[]
+    enabled_managers: string[]
+    description: string
+}
+
+export const RUNTIME_PROFILE_LABELS: Record<string, string> = {
+    MIDLINE_POLICY_LIGHT: '中线政策轻量',
+    SHORT_TECH_LIGHT: '短线技术轻量',
+    POSITION_RISK_LIGHT: '持仓风控轻量',
+    FULL_TA: '完整 TA',
+}
+
+export const RUNTIME_PROFILE_LATENCY: Record<string, string> = {
+    MIDLINE_POLICY_LIGHT: '1-3min',
+    SHORT_TECH_LIGHT: '1-2min',
+    POSITION_RISK_LIGHT: '1-2min',
+    FULL_TA: '10-20min',
+}
+
 // Agent Types
 export type AgentStatus = 'pending' | 'in_progress' | 'completed' | 'error' | 'skipped'
 
@@ -96,12 +145,24 @@ export interface AnalysisRequest {
     user_notes?: string
     config_overrides?: Record<string, unknown>
     dry_run?: boolean
+    query?: string
+    horizons?: string[]
+    user_intent?: Record<string, unknown>
+    runtime_tier?: string  // [PERF-001]
+    confirmed_full_ta?: boolean  // [PERF-001]
+    runtime_profile?: string  // [PERF-002]
 }
 
 export interface AnalysisResponse {
     job_id: string
     status: 'pending' | 'running' | 'completed' | 'failed'
     created_at: string
+    runtime_tier?: string  // [PERF-001]
+    runtime_tier_label?: string  // [PERF-001]
+    expected_latency?: string  // [PERF-001]
+    runtime_profile?: string  // [PERF-002]
+    runtime_profile_label?: string  // [PERF-002]
+    enabled_modules?: string[]  // [PERF-002]
 }
 
 export interface JobStatus {
@@ -835,6 +896,7 @@ export interface TradeFlowDailyPlanResponse {
     metadata: Record<string, unknown>
     summary_agg: TradeFlowSummary
     created_at: string
+    runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
 }
 
 export interface TradeFlowCandidatesResponse {
@@ -842,6 +904,7 @@ export interface TradeFlowCandidatesResponse {
     trade_date: string
     candidates: TradeFlowCandidateItem[]
     summary_agg: TradeFlowSummary
+    runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
 }
 
 export interface TradeFlowDiscoveryRequest {
@@ -871,6 +934,7 @@ export interface TradeFlowCandidateDetailResponse {
     status: string
     trade_date: string
     candidate: TradeFlowCandidateDetail | null
+    runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
 }
 
 export interface TradeFlowObserveItem {
@@ -895,6 +959,7 @@ export interface TradeFlowObserveResponse {
     triggered_count: number
     invalidated_count: number
     waiting_count: number
+    runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
 }
 
 export interface TradeFlowTAQueueItem {
@@ -921,6 +986,7 @@ export interface TradeFlowTAQueueResponse {
     dispatched_count: number
     blocked_count: number
     pending_count: number
+    runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
 }
 
 export interface TradeFlowReviewItem {
@@ -943,6 +1009,7 @@ export interface TradeFlowReviewResponse {
     reviewed_at: string
     results: TradeFlowReviewItem[]
     summary_agg: TradeFlowSummary
+    runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
 }
 
 export type DataHealthStatus = 'OK' | 'PARTIAL' | 'FAILED' | 'STALE' | 'NOT_QUERIED'
@@ -969,6 +1036,7 @@ export interface TradeFlowDataHealthResponse {
     latest_observe_check_time: string | null
     latest_signal_time: string | null
     evidence_contract_available: boolean
+    runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
 }
 
 // [UI-007] tradeflow_filtered_trace
@@ -986,6 +1054,7 @@ export interface TradeFlowFilteredResponse {
     trade_date: string
     filtered: TradeFlowFilteredItem[]
     filter_breakdown: Record<string, number>
+    runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
 }
 
 // [TF-OBS-001] tradeflow_observe_runner

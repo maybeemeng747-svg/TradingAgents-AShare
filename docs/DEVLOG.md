@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-06-02 | 收口：PERF-002 + 门禁回归修复 + 自选股名称修复
+
+- **执行者**：OpenCode
+- **任务**：补修收口 — PERF-002 文档收口 + FULL_TA 门禁回归修复 + 自选股名称回归修复 + TASKS.md 状态漂移修复
+- **修改文件**：
+  - `api/main.py` — 修复 /v1/analyze FULL_TA 门禁回归：
+    - 默认 tier 从 FULL_TA 改为 LIGHT_RESEARCH（防止未传 runtime_tier 的请求被 403）
+    - dry_run=True 时跳过 FULL_TA 确认门禁（恢复旧 dry_run 入口）
+    - 补充 runtime_tier_gate 测试覆盖（4 个新测试）
+  - `tests/test_api_smoke.py` — 修复自选股名称回归：
+    - portfolio overview 测试补 patch `_get_reverse_stock_map_cached_only`（名称不再退化成代码）
+    - 新增 TestRuntimeTierGate 类：dry_run/LIGHT_RESEARCH/FULL_TA 未确认/FULL_TA 已确认
+  - `docs/task_runs/PERF-002-20260602-192858/` — 补全运行档案：
+    - `opencode-round1.txt`、`tests-round1.txt`、`codex-review-round1.txt`、`summary.md`
+    - `task.md` 状态从 CLAIMED 更新为 DONE
+  - `docs/TASKS.md` — 修复状态漂移：
+    - TA-UI-001 顶部队列从 ready 改为 done
+    - PERF-002 顶部和正文状态保持一致
+
+---
+
 ## 2026-06-02 | PERF-001: 运行层级与速度预算契约
 
 - **执行者**：OpenCode

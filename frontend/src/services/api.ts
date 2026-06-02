@@ -87,7 +87,27 @@ class ApiService {
         stream = true,
         selectedAnalysts?: string[],
         signal?: AbortSignal,
+        userContext?: {
+            objective?: string
+            investment_horizon?: string
+            current_position?: number
+            current_position_pct?: number
+            average_cost?: number
+        },
     ) {
+        const body: Record<string, unknown> = {
+            messages,
+            stream,
+            selected_analysts: selectedAnalysts,
+        }
+        // [TA-UI-001] analysis_console_horizon_intent
+        if (userContext) {
+            if (userContext.objective) body.objective = userContext.objective
+            if (userContext.investment_horizon) body.investment_horizon = userContext.investment_horizon
+            if (userContext.current_position != null) body.current_position = userContext.current_position
+            if (userContext.current_position_pct != null) body.current_position_pct = userContext.current_position_pct
+            if (userContext.average_cost != null) body.average_cost = userContext.average_cost
+        }
         const response = await fetch(`${getBaseUrl()}/v1/chat/completions`, {
             method: 'POST',
             signal,
@@ -95,11 +115,7 @@ class ApiService {
                 'Content-Type': 'application/json',
                 ...(getAuthToken() ? { Authorization: `Bearer ${getAuthToken()}` } : {}),
             },
-            body: JSON.stringify({
-                messages,
-                stream,
-                selected_analysts: selectedAnalysts,
-            }),
+            body: JSON.stringify(body),
         })
 
         if (!response.ok) {
@@ -381,11 +397,12 @@ class ApiService {
         return this.request<TradeFlowDailyPlanResponse>(`/v1/tradeflow/daily-plan?date=${encodeURIComponent(date)}`)
     }
 
-    async getTradeFlowCandidates(date: string, tier?: string, needDeepTa?: boolean, candidateType?: string): Promise<TradeFlowCandidatesResponse> {  // [H-005] mandate_radar_ui
+    async getTradeFlowCandidates(date: string, tier?: string, needDeepTa?: boolean, candidateType?: string, pool?: string): Promise<TradeFlowCandidatesResponse> {  // [H-005] mandate_radar_ui [TF-P0-002] tradeflow_pool_split
         const params = new URLSearchParams({ date })
         if (tier) params.append('tier', tier)
         if (needDeepTa !== undefined) params.append('need_deep_ta', String(needDeepTa))
         if (candidateType) params.append('candidate_type', candidateType)  // [H-005]
+        if (pool) params.append('pool', pool)  // [TF-P0-002]
         return this.request<TradeFlowCandidatesResponse>(`/v1/tradeflow/candidates?${params}`)
     }
 

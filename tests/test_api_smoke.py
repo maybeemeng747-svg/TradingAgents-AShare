@@ -786,7 +786,8 @@ class TestPortfolioOverviewEndpoint:
             )
             db.commit()
 
-        with patch("api.main._get_reverse_stock_map", return_value=self.code_to_name):
+        with patch("api.main._get_reverse_stock_map", return_value=self.code_to_name), \
+             patch("api.main._get_reverse_stock_map_cached_only", return_value=self.code_to_name):
             response = self.client.get("/v1/portfolio/overview", headers=self.headers)
 
         assert response.status_code == 200
@@ -959,3 +960,58 @@ class TestScheduledBatchEndpoints:
         assert second_args[1] == "2026-03-31"
         assert first_kwargs == {}
         assert second_kwargs == {}
+
+
+class TestRuntimeTierGate:
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.client = _get_client()
+        self.token = _auth_unique(self.client)
+        self.headers = {"Authorization": f"Bearer {self.token}"}
+
+    def test_dry_run_without_runtime_tier_passes(self):
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "symbol": "600519.SH",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+        })
+        assert r.status_code == 200
+        job_id = r.json()["job_id"]
+        result = _wait_job(self.client, self.token, job_id)
+        assert result["status"] == "completed"
+        assert result["decision"] == "DRY_RUN"
+
+    def test_light_research_without_confirmation_passes(self):
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "symbol": "600519.SH",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+            "runtime_tier": "LIGHT_RESEARCH",
+        })
+        assert r.status_code == 200
+        job_id = r.json()["job_id"]
+        result = _wait_job(self.client, self.token, job_id)
+        assert result["status"] == "completed"
+
+    def test_full_ta_without_confirmation_rejected(self):
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "symbol": "600519.SH",
+            "trade_date": "2024-01-15",
+            "dry_run": False,
+            "runtime_tier": "FULL_TA",
+        })
+        assert r.status_code == 403
+        assert "confirmed_full_ta" in r.json()["detail"]["message"]
+
+    def test_full_ta_with_confirmation_accepted(self):
+        r = self.client.post("/v1/analyze", headers=self.headers, json={
+            "symbol": "600519.SH",
+            "trade_date": "2024-01-15",
+            "dry_run": True,
+            "runtime_tier": "FULL_TA",
+            "confirmed_full_ta": True,
+        })
+        assert r.status_code == 200
+        job_id = r.json()["job_id"]
+        result = _wait_job(self.client, self.token, job_id)
+        assert result["status"] == "completed"
