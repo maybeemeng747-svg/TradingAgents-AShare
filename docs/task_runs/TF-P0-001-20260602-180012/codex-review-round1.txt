@@ -1,0 +1,3212 @@
+Task: TF-P0-001 - TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0）
+Date: 2026-06-02_18:21:28
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019e87d8-7ce2-7f63-9f43-f1b1a1fbbc7d
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,180p' AGENTS.md; sed -n '1,120p' docs/project-overview.md; sed -n '1,120p' docs/TASKS.md; sed -n '1,120p' docs/DECISIONS.md; sed -n '1,120p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# TradingAgents-AShare — 项目协作规则
+
+## 项目简介
+
+A股智能投研多智能体系统，基于 LangGraph + LangChain 构建，模拟 14 名专业 Agent 的多空辩论与风控博弈，为投资者提供结构化的交易建议。
+
+核心模块：
+- **Agent 框架**：14 个多智能体（分析师/研究员/风控/交易员），LangGraph 编排
+- **后端 API**：FastAPI，提供分析、持仓、定时任务、研报管理等接口
+- **前端 UI**：React，意图驱动交互、辩论可视化、持仓看板
+- **定时调度**：独立 scheduler，支持自选股定时分析
+- **数据层**：AKShare + BaoStock + yfinance，SQLite 持久化
+
+## 多工具协作架构
+
+```
+孟（最终决策）
+  │
+  ├── OpenClaw（主控调度）── 读取上下文 → 判断任务 → 派发执行
+  │     ├── 简单任务：直接 exec 执行（git/python/npm）
+  │     └── 复杂任务：sessions_spawn 子 agent 或调用 OpenCode 执行
+  │
+  ├── OpenCode（代码执行器）── 读取同一套上下文 → 改代码 → 跑测试 → 输出 diff
+  │
+  └── OpenCode TUI/Web（审查界面）── 查看 diff → 确认修改 → 做 review
+```
+
+**核心原则**：三者读取同一套项目上下文，不各自保存独立记忆。
+
+## 必读文件（任何 coding agent 开始任务前）
+
+1. `AGENTS.md`（本文件）
+2. `docs/project-overview.md`（项目背景 + 架构 + 目录结构）
+3. `docs/TASKS.md`（当前任务池）
+4. `docs/DECISIONS.md`（架构决策记录）
+5. `docs/DEVLOG.md`（最近修改日志）
+6. 涉及模型/API 调用时，必须读 `docs/MODEL_API_CATALOG.md` 和 `docs/LLM_API_USAGE.md`，并可运行 `python scripts/audit_llm_config.py` 查看脱敏配置
+
+## 项目目录结构
+
+```
+TradingAgents-AShare/
+├── tradingagents/            # 核心 Python 包
+│   ├── agents/               # 14 个多智能体
+│   │   ├── analysts/         # 7 个分析师（基本面/情绪/新闻/技术/宏观/主力/量价）
+│   │   ├── researchers/      # 多头/空头研究员 + 研究总监
+│   │   ├── risk_mgmt/        # 风控团队
+│   │   ├── managers/         # 管理层
+│   │   └── trader/           # 交易员
+│   ├── dataflows/            # 数据获取与缓存
+│   ├── graph/                # LangGraph 编排图
+│   ├── llm_clients/          # 多模型厂商适配
+│   ├── prompts/              # Agent 提示词模板
+│   └── default_config.py     # 默认配置
+├── api/                      # FastAPI 后端
+│   ├── main.py               # 入口
+│   ├── database.py           # SQLite
+│   └── services/             # 业务逻辑（分析/持仓/定时/研报）
+├── frontend/                 # React 前端
+├── scheduler/                # 定时分析调度
+├── skills/                   # OpenClaw 技能
+├── tests/                    # 测试
+├── docs/                     # 项目文档
+└── eval_results/             # 回测评估结果
+```
+
+## 执行规则
+
+### 代码修改前
+1. 执行 `git status`，确认当前分支和未提交变更
+2. 激活虚拟环境：`source .venv/bin/activate`
+3. 确认修改范围不影响生产数据库（tradingagents.db）
+4. 如果涉及核心模块，先跑一遍测试确认基线
+
+### 代码修改后
+1. 运行测试，全部通过才算完成
+2. 输出：修改文件列表、测试结果、发现的风险点
+3. 更新 `docs/DEVLOG.md`
+
+### OpenClaw 调度方式
+- **简单任务**（改配置、修 bug、小重构）：OpenClaw 直接 `exec` 执行
+- **复杂任务**（新功能、跨模块修改）：调用 OpenCode 执行，由用户确认后执行
+- **审查任务**：OpenClaw 不直接审查代码，提示用户用 OpenCode TUI 查看 diff
+
+## 安全红线
+
+- 不误改 `tradingagents.db`（生产数据库）
+- 不误改 `eval_results/` 中的历史回测结果
+- 不直接修改 `tradingagents/prompts/` 中的提示词模板（需走审批）
+- 不删除 `logs/` 中的历史日志
+- 测试数据不得写入生产数据库
+- 不读取、解密、打印、提交任何模型 API Key 明文；只能使用 `HAS_KEY/NO_KEY` 级别的脱敏状态
+- 除用户主动发起的分析/定时任务外，任何 live LLM API 调用前都要说明 provider、base_url、模型名和预计调用次数，并征得用户确认
+
+## 技术栈
+
+- **后端**：Python 3.10+, FastAPI, LangGraph, LangChain
+- **前端**：React, TypeScript, Tailwind CSS
+- **数据库**：SQLite
+- **数据源**：AKShare, BaoStock, yfinance
+- **模型**：OpenAI / Anthropic / 智谱 / DeepSeek / 小米 MiMo 等
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+# 任务池
+
+> 最后更新：2026-06-02
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，ready）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，ready）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，ready）。
+23. `PERF-001`：运行层级与速度预算契约（P1，ready）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，ready，依赖 TA-UI-001/H-007 ✓）。
+25. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，ready）。
+26. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，ready）。
+27. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready，依赖 DATA-004/DATA-006 ✓）。
+28. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready，依赖 DATA-005 ✓）。
+29. `H-009`：昊天候选反证/过热降权校准（P1，ready，依赖 H-006/V-004 ✓）。
+30. `H-010`：政策主题生命周期与版本状态注册表（P1，ready，依赖 H-002/H-006 ✓）。
+31. `H-011`：候选矛盾证据与负面清单解释（P2，ready，依赖 H-009 ✓）。
+32. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，ready，依赖 H-007/UI-006 ✓）。
+33. `UI-010`：昊天候选对比视图与证据缺口排序（P2，ready，依赖 H-005/DATA-007 ✓）。
+34. `V-005`：夜间昊天候选质量日报与样本回放（P1，ready，依赖 V-004/DATA-006 ✓）。
+35. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，ready，依赖 V-002 ✓）。
+36. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，ready，依赖 INF-001 ✓）。
+37. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，ready，依赖 TF-OBS-001/UI-004 ✓）。
+38. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，ready，依赖 H-008/VLM-001 ✓）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready）。
+9. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready）。
+10. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，ready）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## PERF. 运行成本 / 轻量分析任务池（2026-06-02 新增）
+
+> 目标：系统不能为了“全面”而变慢。TradeFlow 是雷达，轻量 TA 是候选验证，完整 TA 是深度体检。默认链路必须轻，完整多 Agent 分析只能由用户明确触发。
+
+### PERF-001: 运行层级与速度预算契约（P1）
+- **描述**：建立统一运行层级契约，所有 API、前端按钮、scheduler、自动开发任务都要标明属于 `fast/light/full` 哪一层，以及是否允许调用 LLM。
+- **优先级**：P1
+- **状态**：ready
+- **背景**：
+  - 用户明确要求系统不能做得太重，不能“一发指令半天才回来”。
+  - 候选池/盘中观察需要时效；完整 TA 只能用于少量高价值标的。
+- **运行层级定义**：
+  1. `fast`：5-30 秒。TradeFlow 筛选、数据健康、证据缺口、候选分类。默认不调用 LLM。
+  2. `light`：1-3 分钟。轻量 TA，只跑必要模块，用于中线政策验证、短线技术确认、持仓风险复核。
+  3. `full`：10-20 分钟。完整 14 Agent TA，多空辩论和风控全链路，必须人工确认。
+- **执行约束**：
+  - 不改 prompts。
+  - 不触发 live TA。
+  - 不新增高成本模型调用。
+- **实现要点**：
+  1. 新增运行层级枚举/配置，例如 `runtime_tier`：
+     - `FAST_RADAR`
+     - `LIGHT_RESEARCH`
+     - `FULL_TA`
+  2. API/服务层统一返回：
+     - `runtime_tier`
+     - `expected_latency`
+     - `llm_allowed`
+     - `requires_confirmation`
+     - `cost_risk`
+  3. 前端按钮文案对应：
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-02 | TF-P0-001: TradeFlow 运行态 schema 迁移、名称回填与观察路由修复
+
+- **执行者**：OpenCode
+- **任务**：TF-P0-001 — 修复本地运行态 `tradeflow.db` 仍为旧 schema 导致 H/TF-DATE 字段无法落库；修复候选名称等于代码时不回填中文名；修复盘中观察执行接口运行后端返回 405。
+- **修改文件**：
+  - `tradingagents/tradeflow/symbol_utils.py` — [TF-P0-001] runtime_schema_name_observe_fix
+    - 新增 `_IS_CODE_PATTERN` 正则和 `_looks_like_code()` 函数：检测 `XXXXXX` / `XXXXXX.SH/SZ/BJ` 等代码格式名称
+    - `resolve()` 方法重构：使用 `_looks_like_code()` 替代旧逻辑，同时检测 `"--"` placeholder，代码类名称和占位符都会走 cache fallback
+    - 解决 `601689.SH` 被当作"已有名称"不回填中文的问题
+  - `tradingagents/tradeflow/candidate_engine.py` — [TF-P0-001]
+    - `save_candidate()` 新增 `_looks_like_code()` 检测，name 为代码格式时触发 resolve
+    - import 更新：新增 `_looks_like_code`
+  - `api/services/tradeflow_service.py` — [TF-P0-001]
+    - `_connect()` 新增 `init_db(db_path)` 调用：确保每次 API 连接 tradeflow.db 时自动迁移 schema
+    - 修复旧 DB 连接后因缺少列导致 `_rget()` 返回 None 的问题
+  - `api/main.py` — [TF-P0-001]
+    - `lifespan()` 新增 tradeflow DB 初始化：启动时即执行 schema migration
+    - 防止首次 API 请求才触发迁移导致延迟
+  - `tests/test_tf_p0_001_runtime_fix.py` — 新建，37 个测试覆盖：
+    - `TestLooksLikeCode` (13): bare code / SH/SZ/BJ suffix / lowercase / Chinese name / empty / None / whitespace / placeholder / random / 5-digit / 7-digit
+    - `TestNameBackfill` (6): code-like name / bare code / real name / empty / placeholder / SZ code
+    - `TestSchemaMigration` (5): migration adds columns / preserves data / idempotent / daily_plans dates / filtered dates
+    - `TestSaveCandidateNameBackfill` (3): code name resolved / bare code resolved / real name kept
+    - `TestCandidateTypeDefault` (1): empty → TECH_TRADE
+    - `TestAPILayerNameBackfill` (1): _row_to_candidate_item resolves code name
+    - `TestObserveRoute` (2): POST /v1/tradeflow/observe/run registered / GET /v1/tradeflow/observe registered
+    - `TestConnectMigratesSchema` (1): _connect migrates old schema
+    - `TestAcceptanceTFP0001` (4): old schema migration / code→Chinese / observe JSON not 405 / no live TA
+  - `tests/test_ui001_tradeflow_api.py` — `test_filter_by_candidate_type` 更新：`c2` 的 `candidate_type` 现在默认为 `TECH_TRADE`
+  - `docs/TASKS.md` — TF-P0-001 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：37 passed (TF-P0-001)；143 passed (tradeflow 回归)；3111 passed (全部)；17 skipped；0 failed；npm run build 通过
+- **关键逻辑**：
+  - Schema migration: `_connect()` 每次连接时调用 `init_db()`，确保旧 DB 自动获得 H-004/H-007/H-008/TF-DATE 等全部 77 个新列
+  - Startup migration: `lifespan()` 启动时即执行一次，避免首次请求延迟
+  - Name backfill: `_looks_like_code()` 用正则 `\d{6}(\.(SH|SZ|SS|BJ))?$` 检测代码格式名称，代码类名称 + `"--"` placeholder 都触发 cache fallback
+  - `save_candidate()`: 增量检测 `_looks_like_code(candidate.name)` 作为触发 resolve 的条件之一
+  - Observe route: 代码已正确注册 POST `/v1/tradeflow/observe/run`，405 问题根源是旧 schema 导致运行时错误；schema migration 修复后路由正常
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
+## 2026-06-02 | Runtime Layer Architecture Update
+
+- **执行者**：Codex
+- **背景**：用户提出系统不应过重，不能每次指令都等待完整多 Agent 报告；盘前/盘中使用需要时效。
+- **架构更新**：
+  - `docs/ROADMAP.md` 新增 Runtime Principle：`Fast Radar` / `Light Research` / `Full TA` 三层。
+  - 新增 Performance And Cost Layer，要求所有功能标注运行层级、预计耗时、是否调用 LLM、是否需要人工确认。
+  - Phase 4 增加轻量研究和完整 TA 的显式区分。
+  - 新增 Phase 4.5 Runtime Budget And Lightweight Analysis。
+- **任务池更新**：
+  - `PERF-001` 运行层级与速度预算契约（P1）。
+  - `PERF-002` 轻量 TA Profile 与模块路由（P1）。
+  - `PERF-003` 分析运行耗时/调用成本遥测与前端展示（P1）。
+  - `PERF-004` 完整 TA 手动确认与 scheduler 成本门禁（P1）。
+- **原则**：TradeFlow 默认 fast，不调用 LLM；轻量 TA 只跑必要模块；完整 TA 只能由用户明确确认。
+
+## 2026-06-02 | P0 Runtime/UI Task Release
+
+- **执行者**：Codex
+- **背景**：用户生成 2026-06-02 今日候选池后发现运行态问题：股票名称显示代码、候选类型未分类、昊天分/埋伏分/政策主题/角色/自选备注为空、盘中观察执行报错；同时智能分析控制台没有显式短线/中线选择。
+- **诊断摘要**：
+  - 当前 `tradeflow.db` 的 `tradeflow_candidates` 仍是旧 schema，缺少 H-004/H-005/H-007/H-008/TF-DATE 相关列，导致新字段无法落库。
+  - 今日 4 只候选来自 `watchlist`，命中 `PULLBACK_SUPPORT/VCP`，属于短线技术观察，不是昊天左侧候选。
+  - 名称被写成 `601689.SH` 这类代码时，名称解析器误判为已有名称，不再回填中文名。
+  - 前端执行观察调用 `POST /v1/tradeflow/observe/run`，当前运行后端返回 405；源码已有路由，需修正运行态路由/重启/API 一致性。
+- **新增优先任务**：
+  - `TF-P0-001` TradeFlow 运行态 schema 迁移、名称回填与观察路由修复。
+  - `TA-UI-001` 智能分析控制台增加短线/中线、分析意图、持仓状态选择。
+  - `TF-P0-002` 候选池分层：短线技术池与昊天左侧池显式拆分。
+  - `TF-P0-003` TradeFlow 生成候选池后的端到端 UI smoke 验收。
+- **原则**：这些任务优先级高于后续 DATA/H/UI P1，因为它们直接影响 TradeFlow 和 TA 是否能日常试用。
+
+## 2026-06-02 | Next Auto Dev Task Batch Release
+
+- **执行者**：Codex
+- **背景**：上一轮夜间自动开发已完成 DATA-005/H-005/H-006/H-007/H-008/V-004/DATA-006，任务池 ready 项清空，需要释放下一批任务，保证 20:00 自动开发链可持续运行。
+- **释放任务**：
+  - `DATA-007` raw_evidence 覆盖率审计与候选可信度联动。
+  - `DATA-008` A股关键源 fallback smoke fixtures 扩展。
+  - `DATA-009` 自选备注与截图识别字段持久化回归保护。
+  - `H-009` 昊天候选反证/过热降权校准。
+  - `H-010` 政策主题生命周期与版本状态注册表。
+  - `H-011` 候选矛盾证据与负面清单解释。
+  - `UI-009` 候选详情一键生成 TA 研究任务预案。
+  - `UI-010` 昊天候选对比视图与证据缺口排序。
+  - `V-005` 夜间昊天候选质量日报与样本回放。
+  - `M-012` 任务池空转时自动生成 proposed 任务草案。
+  - `M-013` CodeGraph 影响范围预检接入自动开发日志。
+  - `T-008` TradeFlow 观察信号 fixture 回放与前端状态一致性验收。
+- **原则**：
+  - 先数据真实，再候选质量，再前端可用，再自动化治理。
+  - 全部任务默认不调用 live LLM、不跑全市场扫描、不写生产数据库。
+  - 每项任务都要求 tests/replay/report 或 frontend build 验收。
+
+## 2026-06-02 | H-series API/UI shared closeout
+
+- **执行者**：Codex
+- **背景**：H-005/H-007/H-008/V-004/DATA-006 自动开发完成后，仍有 7 个前端/API 共享接线文件未提交。
+- **收尾修复**：
+  - `api/main.py` / `api/services/tradeflow_service.py` / `api/tradeflow_schemas.py` 补齐 `candidate_type` 过滤、昊天候选字段、研究队列字段和自选备注字段。
+  - `frontend/src/pages/TradeFlow.tsx` 增加候选类型筛选、昊天分/埋伏分/政策主题/自选备注等列。
+  - `frontend/src/components/TradeFlowCandidateDrawer.tsx` 增加“政策逻辑”和“自选备注”区块。
+  - `frontend/src/services/api.ts` / `frontend/src/types/index.ts` 同步前端 API 参数和类型。
+  - `tests/test_ui001_tradeflow_api.py` 增加候选类型字段、筛选、详情证据字段测试。
+  - `docs/TASKS.md` 修正 H-005/DATA-005/H-007 顶部状态残留，避免自动链重复领取。
+- **验证**：
+  - `.venv/bin/python -m pytest tests/test_ui001_tradeflow_api.py tests/test_h007_ta_queue_router.py tests/test_h008_mandate_watchlist_note.py tests/test_v004_mandate_e2e_smoke.py tests/test_data006_daily_digest.py -q` → 318 passed。
+  - `npm run build` → passed（仅 Vite chunk-size warning）。
+
+## 2026-06-02 | DATA-006: 数据源质量报告接入夜间日报
+
+- **执行者**：OpenCode
+
+exec
+/bin/zsh -lc 'git status --short && git status --branch --short' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M api/main.py
+ M api/services/tradeflow_service.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tests/test_ui001_tradeflow_api.py
+ M tradingagents/tradeflow/candidate_engine.py
+ M tradingagents/tradeflow/symbol_utils.py
+?? docs/task_runs/TF-P0-001-20260602-180012/
+?? tests/test_tf_p0_001_runtime_fix.py
+## local/tradingagents-custom...myfork/local/tradingagents-custom [ahead 48]
+ M api/main.py
+ M api/services/tradeflow_service.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tests/test_ui001_tradeflow_api.py
+ M tradingagents/tradeflow/candidate_engine.py
+ M tradingagents/tradeflow/symbol_utils.py
+?? docs/task_runs/TF-P0-001-20260602-180012/
+?? tests/test_tf_p0_001_runtime_fix.py
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- api/main.py api/services/tradeflow_service.py tradingagents/tradeflow/candidate_engine.py tradingagents/tradeflow/symbol_utils.py tests/test_ui001_tradeflow_api.py tests/test_tf_p0_001_runtime_fix.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ api/main.py                                 |  7 +++++
+ api/services/tradeflow_service.py           |  2 ++
+ docs/DEVLOG.md                              | 42 +++++++++++++++++++++++++++++
+ docs/TASKS.md                               |  4 +--
+ tests/test_ui001_tradeflow_api.py           |  6 ++---
+ tradingagents/tradeflow/candidate_engine.py |  3 ++-
+ tradingagents/tradeflow/symbol_utils.py     | 18 ++++++++-----
+ 7 files changed, 70 insertions(+), 12 deletions(-)
+diff --git a/api/main.py b/api/main.py
+index 6b62a44..8818ade 100644
+--- a/api/main.py
++++ b/api/main.py
+@@ -281,6 +281,13 @@ async def lifespan(app: FastAPI):
+ 
+     init_db()
+     _log("Database initialized.")
++    try:
++        from tradingagents.tradeflow.candidate_engine import init_db as _tf_init_db  # [TF-P0-001] runtime_schema_name_observe_fix
++        from tradingagents.dataflows.trade_calendar import is_cn_trade_day  # noqa: F401
++        _tf_init_db(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tradeflow.db"))
++        _log("TradeFlow DB schema migrated.")
++    except Exception as _tf_exc:
++        _log(f"TradeFlow DB init skipped: {_tf_exc}")
+     store = get_job_store()
+     store.clear()
+     _background_tasks.clear()
+diff --git a/api/services/tradeflow_service.py b/api/services/tradeflow_service.py
+index eb07ad9..53e0e7b 100644
+--- a/api/services/tradeflow_service.py
++++ b/api/services/tradeflow_service.py
+@@ -43,6 +43,8 @@ def _connect(tf_db_path: str = "") -> Optional[sqlite3.Connection]:
+     if not os.path.exists(db_path):
+         return None
+     try:
++        from tradingagents.tradeflow.candidate_engine import init_db  # [TF-P0-001] runtime_schema_name_observe_fix
++        init_db(db_path)
+         conn = sqlite3.connect(db_path)
+         conn.row_factory = sqlite3.Row
+         return conn
+diff --git a/tests/test_ui001_tradeflow_api.py b/tests/test_ui001_tradeflow_api.py
+index 60259ed..32a2c1e 100644
+--- a/tests/test_ui001_tradeflow_api.py
++++ b/tests/test_ui001_tradeflow_api.py
+@@ -312,9 +312,9 @@ class TestCandidatesWithData:
+         assert result["status"] == "ok"
+         assert [c["symbol"] for c in result["candidates"]] == ["002353.SZ"]
+ 
+-        empty = get_candidates("2026-05-30", candidate_type="TECH_TRADE", tf_db_path=populated_db)
+-        assert empty["status"] == "ok"
+-        assert empty["candidates"] == []
++        tech = get_candidates("2026-05-30", candidate_type="TECH_TRADE", tf_db_path=populated_db)
++        assert tech["status"] == "ok"
++        assert [c["symbol"] for c in tech["candidates"]] == ["603256.SH"]  # [TF-P0-001] default TECH_TRADE
+ 
+ 
+ class TestRunDiscoveryScan:
+diff --git a/tradingagents/tradeflow/candidate_engine.py b/tradingagents/tradeflow/candidate_engine.py
+index 97601ec..abd3792 100644
+--- a/tradingagents/tradeflow/candidate_engine.py
++++ b/tradingagents/tradeflow/candidate_engine.py
+@@ -31,7 +31,7 @@ from .selection_priority_gate import run_selection_priority_gate, SelectionPrior
+ from .tier_budget import classify_candidate_tier, TierBudgetResult  # [S-007] candidate_tier_budget
+ from .evidence_gate import compute_evidence_completeness, apply_evidence_gate, EvidenceGateResult  # [S-008] tradeflow_evidence_gate
+ from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+-from .symbol_utils import normalize_tradeflow_symbol, resolve_tradeflow_name, symbol_bare_code  # [UI-008] tradeflow_field_normalization
++from .symbol_utils import normalize_tradeflow_symbol, resolve_tradeflow_name, symbol_bare_code, _looks_like_code  # [UI-008] tradeflow_field_normalization  [TF-P0-001] runtime_schema_name_observe_fix
+ from .ambush_score import compute_ambush_score, AmbushScoreResult  # [H-004] mandate_ambush_score
+ from .mandate_ta_queue_router import route_to_research_queue, QueueRouteResult  # [H-007] mandate_ta_queue_router
+ from .mandate_watchlist_note import generate_watchlist_note, WatchlistNoteResult  # [H-008] mandate_watchlist_note
+@@ -1048,6 +1048,7 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
+         or candidate.name == "--"
+         or candidate.name == candidate.symbol
+         or candidate.name == symbol_bare_code(candidate.symbol)
++        or _looks_like_code(candidate.name)  # [TF-P0-001] runtime_schema_name_observe_fix
+     )
+     if _needs_name_lookup:
+         candidate.name = resolve_tradeflow_name(candidate.symbol, candidate.name)  # [UI-008]
+diff --git a/tradingagents/tradeflow/symbol_utils.py b/tradingagents/tradeflow/symbol_utils.py
+index f30c9be..8edd422 100644
+--- a/tradingagents/tradeflow/symbol_utils.py
++++ b/tradingagents/tradeflow/symbol_utils.py
+@@ -65,6 +65,16 @@ def symbol_bare_code(symbol: str) -> str:
+ 
+ _NAME_PLACEHOLDER = "--"
+ 
++_IS_CODE_PATTERN = re.compile(r"^\d{6}(\.(SH|SZ|SS|BJ|sh|sz|ss|bj))?$", re.IGNORECASE)
++
++
++def _looks_like_code(name: str) -> bool:
++    """Return True if *name* looks like a stock code rather than a real name."""
++    if not name or not name.strip():
++        return True
++    s = name.strip()
++    return bool(_IS_CODE_PATTERN.match(s))
++
+ 
+ class StockNameResolver:
+     """Thread-safe, lazy-loaded code→name resolver with TTL cache.
+@@ -140,12 +150,8 @@ class StockNameResolver:
+         """
+         norm_sym = normalize_tradeflow_symbol(symbol)
+         bare = symbol_bare_code(norm_sym)
+-        if name and name.strip():
+-            stripped = name.strip()
+-            if stripped == norm_sym or stripped == bare:
+-                pass
+-            else:
+-                return stripped
++        if name and name.strip() and name.strip() != _NAME_PLACEHOLDER and not _looks_like_code(name):
++            return name.strip()
+ 
+         self._ensure_loaded()
+ 
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/tradeflow/symbol_utils.py; sed -n '1000,1105p' tradingagents/tradeflow/candidate_engine.py; sed -n '1,90p' api/services/tradeflow_service.py; sed -n '250,310p' api/main.py; sed -n '1,260p' tests/test_tf_p0_001_runtime_fix.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [UI-008] tradeflow_field_normalization
+"""TradeFlow symbol normalization and name resolution helpers.
+
+Central place for:
+- normalize_tradeflow_symbol(): ensures 6-digit codes carry .SH/.SZ/.BJ suffix
+- resolve_tradeflow_name(): fills missing stock names via fallback chain
+- symbol_bare_code(): strips suffix for akshare / event_source lookups
+"""
+
+from __future__ import annotations
+
+import re
+import threading
+from typing import Optional
+
+_SUFFIX_RE = re.compile(r"\.(SH|SZ|SS|BJ|sh|sz|ss|bj)$")
+_SIX_DIGIT_RE = re.compile(r"^(\d{6})$")
+
+
+def normalize_tradeflow_symbol(raw: str) -> str:
+    """Ensure a tradeflow symbol is in ``XXXXXX.SH/SZ/BJ`` form.
+
+    Rules:
+    - Already has a recognised suffix → normalise case (.SS → .SH), do not double-add.
+    - Bare 6-digit code starting with 5/6/9 → .SH
+    - Bare 6-digit code starting with 0/2/3 → .SZ
+    - Bare 6-digit code starting with 4/8 → .BJ
+    - Anything else (US tickers, non-standard) → return upper-cased as-is.
+    """
+    s = raw.strip().upper()
+    if not s:
+        return s
+
+    m = _SUFFIX_RE.search(s)
+    if m:
+        suffix = m.group(1)
+        base = s[: m.start()]
+        if suffix == "SS":
+            return f"{base}.SH"
+        return f"{base}.{suffix}"
+
+    dm = _SIX_DIGIT_RE.match(s)
+    if dm:
+        code = dm.group(1)
+        first = code[0]
+        if first in ("5", "6", "9"):
+            return f"{code}.SH"
+        if first in ("0", "2", "3"):
+            return f"{code}.SZ"
+        if first in ("4", "8"):
+            return f"{code}.BJ"
+        return code
+
+    return s
+
+
+def symbol_bare_code(symbol: str) -> str:
+    """Strip exchange suffix, returning the bare 6-digit code."""
+    s = symbol.strip().upper()
+    m = _SUFFIX_RE.search(s)
+    if m:
+        return s[: m.start()]
+    return s
+
+
+_NAME_PLACEHOLDER = "--"
+
+_IS_CODE_PATTERN = re.compile(r"^\d{6}(\.(SH|SZ|SS|BJ|sh|sz|ss|bj))?$", re.IGNORECASE)
+
+
+def _looks_like_code(name: str) -> bool:
+    """Return True if *name* looks like a stock code rather than a real name."""
+    if not name or not name.strip():
+        return True
+    s = name.strip()
+    return bool(_IS_CODE_PATTERN.match(s))
+
+
+class StockNameResolver:
+    """Thread-safe, lazy-loaded code→name resolver with TTL cache.
+
+    Fallback priority:
+    1. Caller-supplied name (non-empty)
+    2. Cached reverse stock map (from akshare or prod DB)
+    3. ``"--"`` placeholder
+    """
+
+    _instance: Optional[StockNameResolver] = None
+    _lock = threading.Lock()
+
+    def __init__(self) -> None:
+        self._reverse_map: dict[str, str] = {}
+        self._loaded_at: float = 0.0
+        self._ttl: float = 7 * 86400.0
+        self._map_lock = threading.Lock()
+
+    @classmethod
+    def shared(cls) -> StockNameResolver:
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls()
+        return cls._instance
+
+    def warm(self, extra_map: dict[str, str]) -> None:
+        """Merge extra code→name entries into cache without resetting TTL."""
+        if not extra_map:
+            return
+        with self._map_lock:
+            self._reverse_map.update(extra_map)
+
+    def _ensure_loaded(self) -> None:
+        import time
+
+        now = time.time()
+        if self._reverse_map and (now - self._loaded_at) <= self._ttl:
+            return
+        with self._map_lock:
+            if self._reverse_map and (now - self._loaded_at) <= self._ttl:
+                return
+            try:
+                self._reverse_map = self._load_from_akshare()
+                self._loaded_at = now
+            except Exception:
+                if not self._reverse_map:
+                    self._reverse_map = {}
+
+    @staticmethod
+    def _load_from_akshare() -> dict[str, str]:
+        import akshare as ak
+
+        result: dict[str, str] = {}
+        try:
+            df = ak.stock_info_a_code_name()
+            for _, row in df.iterrows():
+                name = str(row.get("name", "")).strip()
+                code = str(row.get("code", "")).strip()
+                if name and code:
+                    result[normalize_tradeflow_symbol(code)] = name
+        except Exception:
+            pass
+        return result
+
+    def resolve(self, symbol: str, name: str = "") -> str:
+        """Resolve name for *symbol*, falling back through cache.
+
+        Returns the supplied *name* when it looks like a real Chinese stock
+        name (non-empty and not equal to symbol or bare code), otherwise
+        looks up the cached map, and finally returns ``"--"``.
+        """
+        norm_sym = normalize_tradeflow_symbol(symbol)
+        bare = symbol_bare_code(norm_sym)
+        if name and name.strip() and name.strip() != _NAME_PLACEHOLDER and not _looks_like_code(name):
+            return name.strip()
+
+        self._ensure_loaded()
+
+        with self._map_lock:
+            cached = self._reverse_map.get(norm_sym)
+            if cached:
+                return cached
+
+        with self._map_lock:
+            for k, v in self._reverse_map.items():
+                if symbol_bare_code(k) == bare:
+                    return v
+
+        return _NAME_PLACEHOLDER
+
+
+def resolve_tradeflow_name(symbol: str, name: str = "") -> str:
+    """Convenience wrapper around :pymeth:`StockNameResolver.resolve`."""
+    return StockNameResolver.shared().resolve(symbol, name)
+        game_balance=candidate.game_balance,
+        has_beneficiary_path=bool(candidate.beneficiary_path and candidate.company_role not in ("", "UNKNOWN", "CONCEPT_ONLY")),
+        has_policy=bool(candidate.policy_tags or candidate.version_score > 0),
+    )
+    candidate.research_queue = queue_result.research_queue
+    candidate.research_intent = queue_result.research_intent
+    candidate.research_route_reason = queue_result.route_reason
+    candidate.evidence["ta_queue_router"] = {
+        "research_queue": queue_result.research_queue,
+        "research_intent": queue_result.research_intent,
+        "route_reason": queue_result.route_reason,
+        "queue_priority": queue_result.queue_priority,
+    }
+
+    # [H-008] mandate_watchlist_note — generate watchlist note summary
+    wl_result: WatchlistNoteResult = generate_watchlist_note(
+        mandate_topic=candidate.mandate_topic,
+        candidate_type=candidate.candidate_type,
+        mandate_score_component=ambush_result.mandate_score_component,
+        beneficiary_score_component=ambush_result.beneficiary_score_component,
+        ambush_score=ambush_result.ambush_score,
+        narrative_score=candidate.narrative_score,
+        composite_score=candidate.composite_score,
+        positive_category_count=candidate.positive_category_count,
+        resonance_count=candidate.resonance_count,
+        beneficiary_path=candidate.beneficiary_path,
+        company_role=candidate.company_role,
+        policy_tags=candidate.policy_tags,
+        fund_flow_anomaly_tags=candidate.fund_flow_anomaly_tags,
+        strategy_tags=candidate.strategy_tags,
+        data_completeness=candidate.data_completeness,
+        missing_evidence=candidate.missing_evidence,
+    )
+    candidate.watchlist_note_suggested = wl_result.note_summary
+    candidate.watchlist_topic = wl_result.topic
+    candidate.watchlist_benefit_score = wl_result.benefit_score
+    candidate.watchlist_consensus_score = wl_result.consensus_score
+    candidate.watchlist_evidence_gap = wl_result.evidence_gap
+    candidate.evidence["watchlist_note"] = wl_result.to_dict()
+
+    return candidate, ""
+
+
+def save_candidate(candidate: Candidate, db_path: str) -> int:
+    """Save a candidate to the database. Upsert on (trade_date, symbol)."""
+    candidate.symbol = normalize_tradeflow_symbol(candidate.symbol)  # [UI-008]
+    _needs_name_lookup = (
+        not candidate.name
+        or candidate.name == "--"
+        or candidate.name == candidate.symbol
+        or candidate.name == symbol_bare_code(candidate.symbol)
+        or _looks_like_code(candidate.name)  # [TF-P0-001] runtime_schema_name_observe_fix
+    )
+    if _needs_name_lookup:
+        candidate.name = resolve_tradeflow_name(candidate.symbol, candidate.name)  # [UI-008]
+    if not candidate.candidate_type:
+        candidate.candidate_type = "TECH_TRADE"
+        candidate.candidate_type_reason = candidate.candidate_type_reason or "无政策/事件/受益路径证据，默认技术交易"
+    conn = sqlite3.connect(db_path)
+    ensure_columns(conn)
+    row = candidate.to_db_row()
+    try:
+        conn.execute(
+            "INSERT INTO tradeflow_candidates "
+            "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+            "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+            "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+            "policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
+            "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+            "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
+            "fund_flow_case, resonance_count, game_balance_refs_json, "
+            "fund_flow_anomaly_score, fund_flow_anomaly_tags_json, "
+            "fund_flow_anomaly_refs_json, fund_flow_unit_verified, "
+            "fund_flow_individual_summary, fund_flow_board_summary, "
+            "composite_score, signal_category_hits_json, positive_category_count, "
+            "data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta, "
+            "priority_rank, "
+            "tier, ta_budget_priority, tier_reason, missing_evidence_for_upgrade_json, "
+            "tradeflow_data_completeness, missing_data_fields_json, what_to_upgrade_json, evidence_gate_applied, "
+            "universe_sources_json, "
+            "observe_state, observe_trigger_count, observe_first_trigger_time, "
+            "deep_ta_status, deep_ta_dispatch_reason, deep_ta_model, "
+            "deep_ta_report_path, deep_ta_dispatch_time, deep_ta_position_context, "
+            "plan_date, effective_trade_date, observe_date, "
+            "beneficiary_path_json, company_role, mandate_topic, mandate_evidence_refs_json, "
+            "candidate_type, ambush_score, mandate_score_component, beneficiary_score_component, "
+            "pricing_gap_score, overheat_penalty, candidate_type_reason, "
+            "deep_ta_route, deep_ta_route_reason, "
+            "ambush_reasons_json, ambush_evidence_refs_json, "
+            "research_queue, research_intent, research_route_reason, "
+            "watchlist_note, watchlist_note_suggested, watchlist_topic, "
+            "watchlist_benefit_score, watchlist_consensus_score, watchlist_evidence_gap_json, "
+            "created_at, updated_at) "
+            "VALUES ({}) ".format(",".join(["?"] * 91))
+            + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+            "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+            "trigger_price=excluded.trigger_price, "
+            "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+            "need_deep_ta=excluded.need_deep_ta, evidence_json=excluded.evidence_json, "
+            "risk_flags_json=excluded.risk_flags_json, "
+            "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+            "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
+            "narrative_score=excluded.narrative_score, "
+            "narrative_reasons_json=excluded.narrative_reasons_json, "
+            "narrative_evidence_refs_json=excluded.narrative_evidence_refs_json, "
+            "risk_penalty=excluded.risk_penalty, "
+# [UI-001] tradeflow_api
+"""TradeFlow read-only data access service.
+
+Queries tradeflow SQLite tables for the API layer.
+Does NOT trigger TA, run full market scan, or call LLM.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from tradingagents.tradeflow.symbol_utils import (  # [UI-008] tradeflow_field_normalization
+    normalize_tradeflow_symbol,
+    resolve_tradeflow_name,
+)
+from tradingagents.tradeflow.candidate_engine import get_filtered_symbols as _get_filtered_symbols  # [UI-007] tradeflow_filtered_trace
+
+
+def _get_project_root() -> str:
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _get_tradeflow_db_path() -> str:
+    env_path = os.environ.get("TRADEFLOW_DB_PATH", "")
+    if env_path:
+        return env_path
+    return os.path.join(_get_project_root(), "tradeflow.db")
+
+
+def _get_prod_db_path() -> str:
+    env_path = os.environ.get("DATABASE_URL", "")
+    if env_path.startswith("sqlite:///"):
+        return env_path.replace("sqlite:///", "", 1)
+    return os.path.join(_get_project_root(), "tradingagents.db")
+
+
+def _connect(tf_db_path: str = "") -> Optional[sqlite3.Connection]:
+    db_path = tf_db_path or _get_tradeflow_db_path()
+    if not os.path.exists(db_path):
+        return None
+    try:
+        from tradingagents.tradeflow.candidate_engine import init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception:
+        return None
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return {row["name"] for row in rows}
+    except Exception:
+        return set()
+
+
+def _parse_json(value: Any, default: Any = None) -> Any:
+    if value is None:
+        return default if default is not None else []
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return default if default is not None else []
+    return value
+
+
+def _rget(row: sqlite3.Row, col: str, default: Any = None) -> Any:
+    try:
+        val = row[col]
+        return val
+    except (KeyError, IndexError):
+        return default
+
+
+def _row_to_candidate_item(row: sqlite3.Row) -> dict:
+    symbol = normalize_tradeflow_symbol(row["symbol"])  # [UI-008]
+    raw_name = _rget(row, "name", "")
+    name = resolve_tradeflow_name(symbol, raw_name)  # [UI-008]
+    return {
+        "symbol": symbol,
+        "name": name,
+        "tier": _rget(row, "tier", ""),
+        "composite_score": _rget(row, "composite_score", 0.0) or 0.0,
+    # Raise the AnyIO thread limiter ceiling so frequent sync endpoints
+    # (tracking-board polling, /v1/jobs/{id} polling, akshare-backed
+    # market endpoints) cannot starve each other when the event loop is
+    # also running long-lived `_run_job` tasks.
+    try:
+        from anyio import to_thread as _anyio_to_thread
+
+        limiter = _anyio_to_thread.current_default_thread_limiter()
+        desired = int(os.getenv("ANYIO_THREAD_LIMIT", "120"))
+        if limiter.total_tokens < desired:
+            limiter.total_tokens = desired
+            _log(f"AnyIO thread limiter raised to {desired}.")
+    except Exception as exc:
+        _log(f"Could not raise AnyIO thread limiter: {exc}")
+
+    # Default asyncio executor is used by `asyncio.to_thread`. The CPython
+    # default is `min(32, cpu_count + 4)`, which is too small when many
+    # `_run_job_inner` coroutines fan out concurrent `to_thread` calls for
+    # DB writes, LLM extraction, and akshare data collection.
+    new_default_executor: Optional[ThreadPoolExecutor] = None
+    try:
+        loop = asyncio.get_running_loop()
+        executor_workers = int(os.getenv("ASYNCIO_DEFAULT_EXECUTOR_WORKERS", "64"))
+        new_default_executor = ThreadPoolExecutor(
+            max_workers=executor_workers,
+            thread_name_prefix="ta-asyncio",
+        )
+        loop.set_default_executor(new_default_executor)
+        _log(f"Default asyncio executor set to {executor_workers} workers.")
+    except Exception as exc:
+        _log(f"Could not configure default asyncio executor: {exc}")
+
+    init_db()
+    _log("Database initialized.")
+    try:
+        from tradingagents.tradeflow.candidate_engine import init_db as _tf_init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+        from tradingagents.dataflows.trade_calendar import is_cn_trade_day  # noqa: F401
+        _tf_init_db(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tradeflow.db"))
+        _log("TradeFlow DB schema migrated.")
+    except Exception as _tf_exc:
+        _log(f"TradeFlow DB init skipped: {_tf_exc}")
+    store = get_job_store()
+    store.clear()
+    _background_tasks.clear()
+
+    # Security: warn loudly if using default secret key
+    if not os.getenv("TA_APP_SECRET_KEY"):
+        _log("=" * 70)
+        _log("WARNING: TA_APP_SECRET_KEY is not set!")
+        _log("Using hardcoded default key. ALL encryption and JWT signing")
+        _log("is INSECURE. Set TA_APP_SECRET_KEY env var before production use.")
+        _log("=" * 70)
+
+    _report_version_stats()
+    # Pre-load trade calendar (uses mini_racer/V8 which is not thread-safe)
+    from tradingagents.dataflows.trade_calendar import _load_cn_trade_dates
+    _load_cn_trade_dates()
+    _log("Trade calendar pre-loaded.")
+    # Pre-load stock + ETF name map
+    await asyncio.to_thread(_load_cn_stock_map)
+    _log("Stock map pre-loaded on startup.")
+# [TF-P0-001] runtime_schema_name_observe_fix
+"""Tests for TF-P0-001: schema migration, name backfill, observe route.
+
+Covers:
+1. Old schema fixture runs migration and gets all H/TF-DATE columns.
+2. Code-like names (e.g. 601689.SH) are detected and re-resolved.
+3. API layer _row_to_candidate_item backfills names.
+4. Observe route is registered and callable.
+5. save_candidate defaults candidate_type to TECH_TRADE.
+"""
+
+import json
+import os
+import sqlite3
+import sys
+import tempfile
+from unittest.mock import patch, MagicMock
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tradingagents.tradeflow.candidate_engine import init_db, save_candidate, ensure_columns
+from tradingagents.tradeflow.schemas import Candidate
+from tradingagents.tradeflow.symbol_utils import (
+    normalize_tradeflow_symbol,
+    resolve_tradeflow_name,
+    symbol_bare_code,
+    _looks_like_code,
+    StockNameResolver,
+)
+
+
+_REQUIRED_NEW_COLUMNS = [
+    "candidate_type",
+    "mandate_score_component",
+    "ambush_score",
+    "mandate_topic",
+    "company_role",
+    "effective_trade_date",
+    "watchlist_note_suggested",
+    "beneficiary_path_json",
+    "beneficiary_score_component",
+    "pricing_gap_score",
+    "overheat_penalty",
+    "candidate_type_reason",
+    "deep_ta_route",
+    "deep_ta_route_reason",
+    "ambush_reasons_json",
+    "ambush_evidence_refs_json",
+    "research_queue",
+    "research_intent",
+    "research_route_reason",
+    "watchlist_note",
+    "watchlist_topic",
+    "watchlist_benefit_score",
+    "watchlist_consensus_score",
+    "watchlist_evidence_gap_json",
+    "plan_date",
+    "observe_date",
+]
+
+
+class TestLooksLikeCode:
+    def test_bare_code(self):
+        assert _looks_like_code("601689") is True
+
+    def test_sh_suffix(self):
+        assert _looks_like_code("601689.SH") is True
+
+    def test_sz_suffix(self):
+        assert _looks_like_code("000001.SZ") is True
+
+    def test_bj_suffix(self):
+        assert _looks_like_code("430047.BJ") is True
+
+    def test_lowercase_suffix(self):
+        assert _looks_like_code("601689.sh") is True
+
+    def test_chinese_name(self):
+        assert _looks_like_code("拓普集团") is False
+
+    def test_mixed_name(self):
+        assert _looks_like_code("贵州茅台") is False
+
+    def test_empty(self):
+        assert _looks_like_code("") is True
+
+    def test_none(self):
+        assert _looks_like_code(None) is True
+
+    def test_whitespace(self):
+        assert _looks_like_code("   ") is True
+
+    def test_placeholder(self):
+        assert _looks_like_code("--") is False
+
+    def test_random_string(self):
+        assert _looks_like_code("abc123") is False
+
+    def test_five_digits(self):
+        assert _looks_like_code("12345") is False
+
+    def test_seven_digits(self):
+        assert _looks_like_code("1234567") is False
+
+
+class TestNameBackfill:
+    def test_resolve_code_like_name_falls_through(self):
+        resolver = StockNameResolver()
+        resolver._reverse_map = {"601689.SH": "拓普集团"}
+        resolver._loaded_at = 999999999999.0
+        result = resolver.resolve("601689.SH", "601689.SH")
+        assert result == "拓普集团"
+
+    def test_resolve_bare_code_name_falls_through(self):
+        resolver = StockNameResolver()
+        resolver._reverse_map = {"601689.SH": "拓普集团"}
+        resolver._loaded_at = 999999999999.0
+        result = resolver.resolve("601689.SH", "601689")
+        assert result == "拓普集团"
+
+    def test_resolve_real_name_kept(self):
+        resolver = StockNameResolver()
+        resolver._reverse_map = {"601689.SH": "拓普集团"}
+        resolver._loaded_at = 999999999999.0
+        result = resolver.resolve("601689.SH", "拓普集团")
+        assert result == "拓普集团"
+
+    def test_resolve_empty_name_uses_cache(self):
+        resolver = StockNameResolver()
+        resolver._reverse_map = {"601689.SH": "拓普集团"}
+        resolver._loaded_at = 999999999999.0
+        result = resolver.resolve("601689.SH", "")
+        assert result == "拓普集团"
+
+    def test_resolve_placeholder_name_uses_cache(self):
+        resolver = StockNameResolver()
+        resolver._reverse_map = {"601689.SH": "拓普集团"}
+        resolver._loaded_at = 999999999999.0
+        result = resolver.resolve("601689.SH", "--")
+        assert result == "拓普集团"
+
+    def test_resolve_sz_code_like_name(self):
+        resolver = StockNameResolver()
+        resolver._reverse_map = {"000001.SZ": "平安银行"}
+        resolver._loaded_at = 999999999999.0
+        result = resolver.resolve("000001.SZ", "000001.SZ")
+        assert result == "平安银行"
+
+
+class TestSchemaMigration:
+    def _create_old_schema_db(self, db_path: str):
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tradeflow_candidates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_date TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                name TEXT DEFAULT '',
+                source TEXT DEFAULT 'manual',
+                strategy_tags_json TEXT DEFAULT '[]',
+                primary_strategy TEXT DEFAULT '',
+                score REAL DEFAULT 0.0,
+                status TEXT DEFAULT 'active',
+                trigger_price REAL,
+                support_price REAL,
+                invalid_price REAL,
+                need_deep_ta INTEGER DEFAULT 0,
+                evidence_json TEXT DEFAULT '{}',
+                risk_flags_json TEXT DEFAULT '[]',
+                created_at TEXT,
+                updated_at TEXT,
+                UNIQUE(trade_date, symbol)
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tradeflow_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_time TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                signal_type TEXT NOT NULL,
+                signal_level TEXT DEFAULT 'info',
+                source TEXT DEFAULT 'tradeflow',
+                evidence_json TEXT DEFAULT '{}',
+                action_hint TEXT DEFAULT 'OBSERVE',
+                status TEXT DEFAULT 'new',
+                created_at TEXT
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tradeflow_daily_plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_date TEXT NOT NULL,
+                mode TEXT DEFAULT 'pre_market',
+                summary TEXT DEFAULT '',
+                candidates_json TEXT DEFAULT '[]',
+                metadata_json TEXT DEFAULT '{}',
+                created_at TEXT,
+                UNIQUE(trade_date, mode)
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS tradeflow_filtered_symbols (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_date TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                name TEXT DEFAULT '',
+                source TEXT DEFAULT '',
+                reason TEXT DEFAULT '',
+                run_id TEXT DEFAULT '',
+                created_at TEXT,
+                UNIQUE(trade_date, symbol, reason)
+            );
+        """)
+        conn.execute(
+            "INSERT INTO tradeflow_candidates (trade_date, symbol, name, source, strategy_tags_json, score, status, trigger_price, invalid_price, need_deep_ta, evidence_json, risk_flags_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("2026-06-02", "601689.SH", "601689.SH", "watchlist", json.dumps(["PULLBACK_SUPPORT"]), 55.0, "active", 25.0, 22.0, 0, "{}", "[]"),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_migration_adds_all_required_columns(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            self._create_old_schema_db(db_path)
+            init_db(db_path)
+
+            conn = sqlite3.connect(db_path)
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()}
+            conn.close()
+
+            for col in _REQUIRED_NEW_COLUMNS:
+                assert col in cols, f"Missing column: {col}"
+        finally:
+            os.unlink(db_path)
+
+    def test_migration_preserves_existing_data(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            self._create_old_schema_db(db_path)
+            init_db(db_path)
+
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                "SELECT symbol, score, name FROM tradeflow_candidates WHERE symbol='601689.SH'"
+            ).fetchone()
+            conn.close()
+
+            assert row is not None
+            assert row[0] == "601689.SH"
+            assert row[1] == 55.0
+            assert row[2] == "601689.SH"
+        finally:
+            os.unlink(db_path)
+
+    def test_migration_idempotent(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+
+exec
+/bin/zsh -lc "sed -n '260,620p' tests/test_tf_p0_001_runtime_fix.py; sed -n '1105,1215p' tradingagents/tradeflow/candidate_engine.py; grep -R \"def init_db\\|def ensure_columns\\|CREATE TABLE IF NOT EXISTS tradeflow\" -n tradingagents/tradeflow/candidate_engine.py | head -20" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            self._create_old_schema_db(db_path)
+            init_db(db_path)
+            init_db(db_path)
+
+            conn = sqlite3.connect(db_path)
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()}
+            conn.close()
+
+            for col in _REQUIRED_NEW_COLUMNS:
+                assert col in cols, f"Missing column after re-init: {col}"
+        finally:
+            os.unlink(db_path)
+
+    def test_daily_plans_date_columns(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            self._create_old_schema_db(db_path)
+            init_db(db_path)
+
+            conn = sqlite3.connect(db_path)
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(tradeflow_daily_plans)").fetchall()}
+            conn.close()
+
+            assert "plan_date" in cols
+            assert "effective_trade_date" in cols
+            assert "observe_date" in cols
+        finally:
+            os.unlink(db_path)
+
+    def test_filtered_symbols_date_columns(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            self._create_old_schema_db(db_path)
+            init_db(db_path)
+
+            conn = sqlite3.connect(db_path)
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(tradeflow_filtered_symbols)").fetchall()}
+            conn.close()
+
+            assert "plan_date" in cols
+            assert "effective_trade_date" in cols
+        finally:
+            os.unlink(db_path)
+
+
+class TestSaveCandidateNameBackfill:
+    def test_save_code_name_gets_resolved(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            init_db(db_path)
+            resolver = StockNameResolver()
+            resolver._reverse_map = {"601689.SH": "拓普集团"}
+            resolver._loaded_at = 999999999999.0
+            with patch("tradingagents.tradeflow.candidate_engine.resolve_tradeflow_name", return_value="拓普集团"):
+                c = Candidate(
+                    symbol="601689.SH",
+                    name="601689.SH",
+                    strategy_tags=["PULLBACK_SUPPORT"],
+                    score=55.0,
+                    trade_date="2026-06-02",
+                    primary_strategy="PULLBACK_SUPPORT",
+                )
+                save_candidate(c, db_path)
+
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                "SELECT name FROM tradeflow_candidates WHERE symbol='601689.SH'"
+            ).fetchone()
+            conn.close()
+            assert row[0] == "拓普集团"
+        finally:
+            os.unlink(db_path)
+
+    def test_save_bare_code_name_gets_resolved(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            init_db(db_path)
+            with patch("tradingagents.tradeflow.candidate_engine.resolve_tradeflow_name", return_value="平安银行"):
+                c = Candidate(
+                    symbol="000001.SZ",
+                    name="000001",
+                    strategy_tags=["VCP"],
+                    score=60.0,
+                    trade_date="2026-06-02",
+                    primary_strategy="VCP",
+                )
+                save_candidate(c, db_path)
+
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                "SELECT name FROM tradeflow_candidates WHERE symbol='000001.SZ'"
+            ).fetchone()
+            conn.close()
+            assert row[0] == "平安银行"
+        finally:
+            os.unlink(db_path)
+
+    def test_save_real_name_kept(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            init_db(db_path)
+            c = Candidate(
+                symbol="601689.SH",
+                name="拓普集团",
+                strategy_tags=["PULLBACK_SUPPORT"],
+                score=55.0,
+                trade_date="2026-06-02",
+                primary_strategy="PULLBACK_SUPPORT",
+            )
+            save_candidate(c, db_path)
+
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                "SELECT name FROM tradeflow_candidates WHERE symbol='601689.SH'"
+            ).fetchone()
+            conn.close()
+            assert row[0] == "拓普集团"
+        finally:
+            os.unlink(db_path)
+
+
+class TestCandidateTypeDefault:
+    def test_empty_candidate_type_defaults_to_tech_trade(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            init_db(db_path)
+            c = Candidate(
+                symbol="601689.SH",
+                name="拓普集团",
+                strategy_tags=["PULLBACK_SUPPORT"],
+                score=55.0,
+                trade_date="2026-06-02",
+                primary_strategy="PULLBACK_SUPPORT",
+            )
+            assert c.candidate_type == ""
+            save_candidate(c, db_path)
+
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                "SELECT candidate_type, candidate_type_reason FROM tradeflow_candidates WHERE symbol='601689.SH'"
+            ).fetchone()
+            conn.close()
+            assert row[0] == "TECH_TRADE"
+            assert "技术交易" in row[1]
+        finally:
+            os.unlink(db_path)
+
+
+class TestAPILayerNameBackfill:
+    def test_row_to_candidate_item_resolves_code_name(self):
+        from api.services.tradeflow_service import _row_to_candidate_item
+
+        row = MagicMock()
+        row.__getitem__ = MagicMock(side_effect=lambda k: {
+            "symbol": "601689.SH",
+            "name": "601689.SH",
+            "tier": "B",
+            "composite_score": 55.0,
+            "score": 55.0,
+            "strategy_tags_json": "[]",
+            "primary_strategy": "PULLBACK_SUPPORT",
+        }.get(k))
+        row.keys.return_value = ["symbol", "name", "tier", "composite_score", "score", "strategy_tags_json", "primary_strategy"]
+
+        resolver = StockNameResolver()
+        resolver._reverse_map = {"601689.SH": "拓普集团"}
+        resolver._loaded_at = 999999999999.0
+
+        with patch("api.services.tradeflow_service.resolve_tradeflow_name", return_value="拓普集团"):
+            item = _row_to_candidate_item(row)
+        assert item["name"] == "拓普集团"
+        assert item["symbol"] == "601689.SH"
+
+
+class TestObserveRoute:
+    def test_observe_run_route_registered(self):
+        from api.main import app
+        routes = [(r.path, list(r.methods)) for r in app.routes if hasattr(r, "path") and hasattr(r, "methods")]
+        observe_run = [r for r in routes if r[0] == "/v1/tradeflow/observe/run"]
+        assert len(observe_run) == 1, f"Expected 1 observe/run route, found {len(observe_run)}"
+        assert "POST" in observe_run[0][1]
+
+    def test_observe_read_route_registered(self):
+        from api.main import app
+        routes = [(r.path, list(r.methods)) for r in app.routes if hasattr(r, "path") and hasattr(r, "methods")]
+        observe_read = [r for r in routes if r[0] == "/v1/tradeflow/observe"]
+        assert len(observe_read) == 1
+        assert "GET" in observe_read[0][1]
+
+
+class TestConnectMigratesSchema:
+    def test_connect_calls_init_db_on_existing_db(self):
+        from api.services.tradeflow_service import _connect
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tradeflow_candidates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_date TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    name TEXT DEFAULT '',
+                    source TEXT DEFAULT 'manual',
+                    strategy_tags_json TEXT DEFAULT '[]',
+                    primary_strategy TEXT DEFAULT '',
+                    score REAL DEFAULT 0.0,
+                    status TEXT DEFAULT 'active',
+                    trigger_price REAL,
+                    support_price REAL,
+                    invalid_price REAL,
+                    need_deep_ta INTEGER DEFAULT 0,
+                    evidence_json TEXT DEFAULT '{}',
+                    risk_flags_json TEXT DEFAULT '[]',
+                    created_at TEXT,
+                    updated_at TEXT,
+                    UNIQUE(trade_date, symbol)
+                );
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tradeflow_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signal_time TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    signal_type TEXT NOT NULL,
+                    signal_level TEXT DEFAULT 'info',
+                    source TEXT DEFAULT 'tradeflow',
+                    evidence_json TEXT DEFAULT '{}',
+                    action_hint TEXT DEFAULT 'OBSERVE',
+                    status TEXT DEFAULT 'new',
+                    created_at TEXT
+                );
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tradeflow_daily_plans (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_date TEXT NOT NULL,
+                    mode TEXT DEFAULT 'pre_market',
+                    summary TEXT DEFAULT '',
+                    candidates_json TEXT DEFAULT '[]',
+                    metadata_json TEXT DEFAULT '{}',
+                    created_at TEXT,
+                    UNIQUE(trade_date, mode)
+                );
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tradeflow_filtered_symbols (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_date TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    name TEXT DEFAULT '',
+                    source TEXT DEFAULT '',
+                    reason TEXT DEFAULT '',
+                    run_id TEXT DEFAULT '',
+                    created_at TEXT,
+                    UNIQUE(trade_date, symbol, reason)
+                );
+            """)
+            conn.commit()
+            conn.close()
+
+            conn = _connect(db_path)
+            assert conn is not None
+
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()}
+            conn.close()
+
+            assert "candidate_type" in cols
+            assert "effective_trade_date" in cols
+            assert "watchlist_note_suggested" in cols
+            assert "ambush_score" in cols
+            assert "research_queue" in cols
+        finally:
+            os.unlink(db_path)
+
+
+class TestAcceptanceTFP0001:
+    def test_old_schema_fixture_migrates_with_new_columns(self):
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tradeflow_candidates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_date TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    name TEXT DEFAULT '',
+                    source TEXT DEFAULT 'manual',
+                    strategy_tags_json TEXT DEFAULT '[]',
+                    primary_strategy TEXT DEFAULT '',
+                    score REAL DEFAULT 0.0,
+                    status TEXT DEFAULT 'active',
+                    trigger_price REAL,
+                    support_price REAL,
+                    invalid_price REAL,
+                    need_deep_ta INTEGER DEFAULT 0,
+                    evidence_json TEXT DEFAULT '{}',
+                    risk_flags_json DEFAULT '[]',
+                    created_at TEXT,
+                    updated_at TEXT,
+                    UNIQUE(trade_date, symbol)
+                );
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tradeflow_signals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signal_time TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    signal_type TEXT NOT NULL,
+                    signal_level TEXT DEFAULT 'info',
+                    source TEXT DEFAULT 'tradeflow',
+                    evidence_json TEXT DEFAULT '{}',
+                    action_hint TEXT DEFAULT 'OBSERVE',
+                    status TEXT DEFAULT 'new',
+                    created_at TEXT
+                );
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tradeflow_daily_plans (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_date TEXT NOT NULL,
+                    mode TEXT DEFAULT 'pre_market',
+                    summary TEXT DEFAULT '',
+                    candidates_json TEXT DEFAULT '[]',
+                    metadata_json TEXT DEFAULT '{}',
+                    created_at TEXT,
+                    UNIQUE(trade_date, mode)
+                );
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tradeflow_filtered_symbols (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_date TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    name TEXT DEFAULT '',
+                    source TEXT DEFAULT '',
+                    reason TEXT DEFAULT '',
+                    run_id TEXT DEFAULT '',
+                    created_at TEXT,
+                    UNIQUE(trade_date, symbol, reason)
+                );
+            """)
+            conn.commit()
+            conn.close()
+
+            init_db(db_path)
+            conn = sqlite3.connect(db_path)
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()}
+            conn.close()
+
+            "risk_penalty=excluded.risk_penalty, "
+            "risk_evidence_refs_json=excluded.risk_evidence_refs_json, "
+            "risk_reasons_json=excluded.risk_reasons_json, "
+            "game_balance=excluded.game_balance, "
+            "bull_case=excluded.bull_case, bear_case=excluded.bear_case, "
+            "policy_case=excluded.policy_case, fund_flow_case=excluded.fund_flow_case, "
+            "resonance_count=excluded.resonance_count, "
+            "game_balance_refs_json=excluded.game_balance_refs_json, "
+            "fund_flow_anomaly_score=excluded.fund_flow_anomaly_score, "
+            "fund_flow_anomaly_tags_json=excluded.fund_flow_anomaly_tags_json, "
+            "fund_flow_anomaly_refs_json=excluded.fund_flow_anomaly_refs_json, "
+            "fund_flow_unit_verified=excluded.fund_flow_unit_verified, "
+            "fund_flow_individual_summary=excluded.fund_flow_individual_summary, "
+            "fund_flow_board_summary=excluded.fund_flow_board_summary, "
+            "composite_score=excluded.composite_score, "
+            "signal_category_hits_json=excluded.signal_category_hits_json, "
+            "positive_category_count=excluded.positive_category_count, "
+            "data_completeness=excluded.data_completeness, "
+            "missing_evidence_json=excluded.missing_evidence_json, "
+            "why_deep_ta=excluded.why_deep_ta, why_not_deep_ta=excluded.why_not_deep_ta, "
+            "priority_rank=excluded.priority_rank, "
+            "tier=excluded.tier, ta_budget_priority=excluded.ta_budget_priority, "
+            "tier_reason=excluded.tier_reason, "
+            "missing_evidence_for_upgrade_json=excluded.missing_evidence_for_upgrade_json, "
+            "tradeflow_data_completeness=excluded.tradeflow_data_completeness, "
+            "missing_data_fields_json=excluded.missing_data_fields_json, "
+            "what_to_upgrade_json=excluded.what_to_upgrade_json, "
+            "evidence_gate_applied=excluded.evidence_gate_applied, "
+            "universe_sources_json=excluded.universe_sources_json, "
+            "observe_state=excluded.observe_state, "
+            "observe_trigger_count=excluded.observe_trigger_count, "
+            "observe_first_trigger_time=excluded.observe_first_trigger_time, "
+            "deep_ta_status=excluded.deep_ta_status, "
+            "deep_ta_dispatch_reason=excluded.deep_ta_dispatch_reason, "
+            "deep_ta_model=excluded.deep_ta_model, "
+            "deep_ta_report_path=excluded.deep_ta_report_path, "
+            "deep_ta_dispatch_time=excluded.deep_ta_dispatch_time, "
+            "deep_ta_position_context=excluded.deep_ta_position_context, "
+            "plan_date=excluded.plan_date, "
+            "effective_trade_date=excluded.effective_trade_date, "
+            "observe_date=excluded.observe_date, "
+            "beneficiary_path_json=excluded.beneficiary_path_json, "
+            "company_role=excluded.company_role, "
+            "mandate_topic=excluded.mandate_topic, "
+            "mandate_evidence_refs_json=excluded.mandate_evidence_refs_json, "
+            "candidate_type=excluded.candidate_type, "
+            "ambush_score=excluded.ambush_score, "
+            "mandate_score_component=excluded.mandate_score_component, "
+            "beneficiary_score_component=excluded.beneficiary_score_component, "
+            "pricing_gap_score=excluded.pricing_gap_score, "
+            "overheat_penalty=excluded.overheat_penalty, "
+            "candidate_type_reason=excluded.candidate_type_reason, "
+            "deep_ta_route=excluded.deep_ta_route, "
+            "deep_ta_route_reason=excluded.deep_ta_route_reason, "
+            "ambush_reasons_json=excluded.ambush_reasons_json, "
+            "ambush_evidence_refs_json=excluded.ambush_evidence_refs_json, "
+            "research_queue=excluded.research_queue, "
+            "research_intent=excluded.research_intent, "
+            "research_route_reason=excluded.research_route_reason, "
+            "watchlist_note=excluded.watchlist_note, "
+            "watchlist_note_suggested=excluded.watchlist_note_suggested, "
+            "watchlist_topic=excluded.watchlist_topic, "
+            "watchlist_benefit_score=excluded.watchlist_benefit_score, "
+            "watchlist_consensus_score=excluded.watchlist_consensus_score, "
+            "watchlist_evidence_gap_json=excluded.watchlist_evidence_gap_json, "
+            "updated_at=excluded.updated_at",
+            (
+                row["trade_date"], row["symbol"], row["name"], row["source"],
+                row["strategy_tags_json"], row["primary_strategy"],
+                row["score"], row["status"],
+                row["trigger_price"], row["support_price"], row["invalid_price"],
+                row["need_deep_ta"], row["evidence_json"], row["risk_flags_json"],
+                row["policy_tags_json"], row["version_score"],
+                row["policy_evidence_refs_json"],
+                row["narrative_score"], row["narrative_reasons_json"],
+                row["narrative_evidence_refs_json"],
+                row["risk_penalty"], row["risk_evidence_refs_json"],
+                row["risk_reasons_json"],
+                row["game_balance"], row["bull_case"], row["bear_case"],
+                row["policy_case"], row["fund_flow_case"],
+                row["resonance_count"], row["game_balance_refs_json"],
+                row["fund_flow_anomaly_score"], row["fund_flow_anomaly_tags_json"],
+                row["fund_flow_anomaly_refs_json"], row["fund_flow_unit_verified"],
+                row["fund_flow_individual_summary"], row["fund_flow_board_summary"],
+                row["composite_score"], row["signal_category_hits_json"],
+                row["positive_category_count"], row["data_completeness"],
+                row["missing_evidence_json"], row["why_deep_ta"], row["why_not_deep_ta"],
+                row["priority_rank"],
+                row["tier"], row["ta_budget_priority"],
+                row["tier_reason"], row["missing_evidence_for_upgrade_json"],
+                row["tradeflow_data_completeness"], row["missing_data_fields_json"],
+                row["what_to_upgrade_json"], row["evidence_gate_applied"],
+                row["universe_sources_json"],
+                row["observe_state"], row["observe_trigger_count"],
+                row["observe_first_trigger_time"],
+                row["deep_ta_status"], row["deep_ta_dispatch_reason"],
+                row["deep_ta_model"], row["deep_ta_report_path"],
+                row["deep_ta_dispatch_time"], row["deep_ta_position_context"],
+                row["plan_date"], row["effective_trade_date"], row["observe_date"],
+                row["beneficiary_path_json"], row["company_role"],
+                row["mandate_topic"], row["mandate_evidence_refs_json"],
+                row["candidate_type"], row["ambush_score"],
+                row["mandate_score_component"], row["beneficiary_score_component"],
+                row["pricing_gap_score"], row["overheat_penalty"],
+                row["candidate_type_reason"],
+                row["deep_ta_route"], row["deep_ta_route_reason"],
+                row["ambush_reasons_json"], row["ambush_evidence_refs_json"],
+                row["research_queue"], row["research_intent"], row["research_route_reason"],
+                row["watchlist_note"], row["watchlist_note_suggested"], row["watchlist_topic"],
+                row["watchlist_benefit_score"], row["watchlist_consensus_score"],
+                row["watchlist_evidence_gap_json"],
+tradingagents/tradeflow/candidate_engine.py:42:CREATE TABLE IF NOT EXISTS tradeflow_candidates (
+tradingagents/tradeflow/candidate_engine.py:65:CREATE TABLE IF NOT EXISTS tradeflow_signals (
+tradingagents/tradeflow/candidate_engine.py:80:CREATE TABLE IF NOT EXISTS tradeflow_daily_plans (
+tradingagents/tradeflow/candidate_engine.py:94:CREATE TABLE IF NOT EXISTS tradeflow_filtered_symbols (
+tradingagents/tradeflow/candidate_engine.py:188:def ensure_columns(conn: sqlite3.Connection) -> None:
+tradingagents/tradeflow/candidate_engine.py:208:def init_db(db_path: str) -> None:
+
+exec
+/bin/zsh -lc "sed -n '1,240p' tradingagents/tradeflow/candidate_engine.py; sed -n '620,880p' tests/test_tf_p0_001_runtime_fix.py; find docs/task_runs/TF-P0-001-20260602-180012 -maxdepth 2 -type f -print -exec sed -n '1,160p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""TradeFlow Candidate Engine — runs strategies and produces candidates.
+
+Responsibilities:
+- Load price data for each symbol in the universe
+- Run all three strategies
+- Filter out ST / low-liquidity / data-missing stocks
+- Deduplicate multi-strategy hits
+- Mark need_deep_ta
+- Persist to tradeflow tables
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime
+from typing import Optional
+
+import pandas as pd
+
+from .schemas import Candidate, CandidateSignal, ALL_STRATEGIES, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE, STRATEGY_FUND_FLOW  # [S-001] [S-002] [T-003]
+from .strategies.vcp import score_vcp
+from .strategies.pullback_support import score_pullback_support
+from .strategies.event_catalyst import score_event_catalyst
+from .policy_version_signal import detect_policy_version, PolicyVersionResult  # [S-001]
+from .narrative_quality import score_narrative_quality, NarrativeQualityResult  # [S-002]
+from .underwater_risk_flags import detect_underwater_risks, UnderwaterRiskResult, ALL_RISK_FLAGS  # [S-003]
+from .game_balance import assess_game_balance, GameBalanceResult  # [S-004] candidate_game_balance
+from .fund_flow_anomaly import detect_fund_flow_anomaly, FundFlowAnomalyResult, FUND_FLOW_TAG_NET_OUTFLOW_DOMINANT  # [T-003] fund_flow_anomaly_pool
+from .selection_priority_gate import run_selection_priority_gate, SelectionPriorityResult  # [S-005] selection_priority_gate
+from .tier_budget import classify_candidate_tier, TierBudgetResult  # [S-007] candidate_tier_budget
+from .evidence_gate import compute_evidence_completeness, apply_evidence_gate, EvidenceGateResult  # [S-008] tradeflow_evidence_gate
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+from .symbol_utils import normalize_tradeflow_symbol, resolve_tradeflow_name, symbol_bare_code, _looks_like_code  # [UI-008] tradeflow_field_normalization  [TF-P0-001] runtime_schema_name_observe_fix
+from .ambush_score import compute_ambush_score, AmbushScoreResult  # [H-004] mandate_ambush_score
+from .mandate_ta_queue_router import route_to_research_queue, QueueRouteResult  # [H-007] mandate_ta_queue_router
+from .mandate_watchlist_note import generate_watchlist_note, WatchlistNoteResult  # [H-008] mandate_watchlist_note
+
+
+# ── SQL for table creation ──
+CREATE_CANDIDATES_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    source TEXT DEFAULT 'manual',
+    strategy_tags_json TEXT DEFAULT '[]',
+    primary_strategy TEXT DEFAULT '',
+    score REAL DEFAULT 0.0,
+    status TEXT DEFAULT 'active',
+    trigger_price REAL,
+    support_price REAL,
+    invalid_price REAL,
+    need_deep_ta INTEGER DEFAULT 0,
+    evidence_json TEXT DEFAULT '{}',
+    risk_flags_json TEXT DEFAULT '[]',
+    created_at TEXT,
+    updated_at TEXT,
+    UNIQUE(trade_date, symbol)
+);
+"""
+
+CREATE_SIGNALS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_time TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    signal_type TEXT NOT NULL,
+    signal_level TEXT DEFAULT 'info',
+    source TEXT DEFAULT 'tradeflow',
+    evidence_json TEXT DEFAULT '{}',
+    action_hint TEXT DEFAULT 'OBSERVE',
+    status TEXT DEFAULT 'new',
+    created_at TEXT
+);
+"""
+
+CREATE_DAILY_PLANS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_daily_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    mode TEXT DEFAULT 'pre_market',
+    summary TEXT DEFAULT '',
+    candidates_json TEXT DEFAULT '[]',
+    metadata_json TEXT DEFAULT '{}',
+    created_at TEXT,
+    UNIQUE(trade_date, mode)
+);
+"""
+
+# [UI-007] tradeflow_filtered_trace
+CREATE_FILTERED_SYMBOLS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_filtered_symbols (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    source TEXT DEFAULT '',
+    reason TEXT DEFAULT '',
+    run_id TEXT DEFAULT '',
+    created_at TEXT,
+    UNIQUE(trade_date, symbol, reason)
+);
+"""
+
+
+_MISSING_COLUMNS = [
+    ("primary_strategy", "TEXT DEFAULT ''"),
+    ("policy_tags_json", "TEXT DEFAULT '[]'"),
+    ("version_score", "REAL DEFAULT 0.0"),
+    ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ("narrative_score", "REAL DEFAULT 0.0"),
+    ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
+    ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ("risk_penalty", "REAL DEFAULT 0.0"),
+    ("risk_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ("risk_reasons_json", "TEXT DEFAULT '[]'"),
+    ("game_balance", "TEXT DEFAULT ''"),
+    ("bull_case", "TEXT DEFAULT ''"),
+    ("bear_case", "TEXT DEFAULT ''"),
+    ("policy_case", "TEXT DEFAULT ''"),
+    ("fund_flow_case", "TEXT DEFAULT ''"),
+    ("resonance_count", "INTEGER DEFAULT 0"),
+    ("game_balance_refs_json", "TEXT DEFAULT '[]'"),
+    ("fund_flow_anomaly_score", "REAL DEFAULT 0.0"),
+    ("fund_flow_anomaly_tags_json", "TEXT DEFAULT '[]'"),
+    ("fund_flow_anomaly_refs_json", "TEXT DEFAULT '[]'"),
+    ("fund_flow_unit_verified", "INTEGER DEFAULT 0"),
+    ("fund_flow_individual_summary", "TEXT DEFAULT ''"),
+    ("fund_flow_board_summary", "TEXT DEFAULT ''"),
+    ("composite_score", "REAL DEFAULT 0.0"),
+    ("signal_category_hits_json", "TEXT DEFAULT '[]'"),
+    ("positive_category_count", "INTEGER DEFAULT 0"),
+    ("data_completeness", "REAL DEFAULT 0.0"),
+    ("missing_evidence_json", "TEXT DEFAULT '[]'"),
+    ("why_deep_ta", "TEXT DEFAULT ''"),
+    ("why_not_deep_ta", "TEXT DEFAULT ''"),
+    ("priority_rank", "TEXT DEFAULT ''"),
+    ("tier", "TEXT DEFAULT ''"),
+    ("ta_budget_priority", "INTEGER DEFAULT 0"),
+    ("tier_reason", "TEXT DEFAULT ''"),
+    ("missing_evidence_for_upgrade_json", "TEXT DEFAULT '[]'"),
+    ("tradeflow_data_completeness", "REAL DEFAULT 0.0"),
+    ("missing_data_fields_json", "TEXT DEFAULT '[]'"),
+    ("what_to_upgrade_json", "TEXT DEFAULT '[]'"),
+    ("evidence_gate_applied", "INTEGER DEFAULT 0"),
+    ("universe_sources_json", "TEXT DEFAULT '[]'"),
+    ("observe_state", "TEXT DEFAULT 'WAITING'"),
+    ("observe_trigger_count", "INTEGER DEFAULT 0"),
+    ("observe_first_trigger_time", "TEXT DEFAULT ''"),
+    ("deep_ta_status", "TEXT DEFAULT ''"),
+    ("deep_ta_dispatch_reason", "TEXT DEFAULT ''"),
+    ("deep_ta_model", "TEXT DEFAULT ''"),
+    ("deep_ta_report_path", "TEXT DEFAULT ''"),
+    ("deep_ta_dispatch_time", "TEXT DEFAULT ''"),
+    ("deep_ta_position_context", "TEXT DEFAULT ''"),
+    ("plan_date", "TEXT DEFAULT ''"),
+    ("effective_trade_date", "TEXT DEFAULT ''"),
+    ("observe_date", "TEXT DEFAULT ''"),
+    ("beneficiary_path_json", "TEXT DEFAULT '[]'"),
+    ("company_role", "TEXT DEFAULT ''"),
+    ("mandate_topic", "TEXT DEFAULT ''"),
+    ("mandate_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ("candidate_type", "TEXT DEFAULT ''"),
+    ("ambush_score", "REAL DEFAULT 0.0"),
+    ("mandate_score_component", "REAL DEFAULT 0.0"),
+    ("beneficiary_score_component", "REAL DEFAULT 0.0"),
+    ("pricing_gap_score", "REAL DEFAULT 0.0"),
+    ("overheat_penalty", "REAL DEFAULT 0.0"),
+    ("candidate_type_reason", "TEXT DEFAULT ''"),
+    ("deep_ta_route", "TEXT DEFAULT ''"),
+    ("deep_ta_route_reason", "TEXT DEFAULT ''"),
+    ("ambush_reasons_json", "TEXT DEFAULT '[]'"),
+    ("ambush_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ("research_queue", "TEXT DEFAULT ''"),
+    ("research_intent", "TEXT DEFAULT ''"),
+    ("research_route_reason", "TEXT DEFAULT ''"),
+    ("watchlist_note", "TEXT DEFAULT ''"),
+    ("watchlist_note_suggested", "TEXT DEFAULT ''"),
+    ("watchlist_topic", "TEXT DEFAULT ''"),
+    ("watchlist_benefit_score", "REAL DEFAULT 0.0"),
+    ("watchlist_consensus_score", "REAL DEFAULT 0.0"),
+    ("watchlist_evidence_gap_json", "TEXT DEFAULT '[]'"),
+]
+
+
+def ensure_columns(conn: sqlite3.Connection) -> None:
+    """Ensure all Candidate columns exist in tradeflow_candidates.
+
+    Safe to call repeatedly — uses ALTER TABLE ADD COLUMN wrapped in
+    try/except so existing columns are silently skipped.
+    """
+    existing = {
+        r[1]
+        for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()
+    }
+    for col_name, col_type in _MISSING_COLUMNS:
+        if col_name not in existing:
+            try:
+                conn.execute(
+                    f"ALTER TABLE tradeflow_candidates ADD COLUMN {col_name} {col_type}"
+                )
+            except sqlite3.OperationalError:
+                pass
+
+
+def init_db(db_path: str) -> None:
+    """Create tradeflow tables if they don't exist."""
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        CREATE_CANDIDATES_TABLE
+        + CREATE_SIGNALS_TABLE
+        + CREATE_DAILY_PLANS_TABLE
+        + CREATE_FILTERED_SYMBOLS_TABLE  # [UI-007] tradeflow_filtered_trace
+    )
+    ensure_columns(conn)
+    try:
+        conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    # [S-001] policy_version_signal — add policy version columns
+    for _col, _type in [
+        ("policy_tags_json", "TEXT DEFAULT '[]'"),
+        ("version_score", "REAL DEFAULT 0.0"),
+        ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-002] narrative_quality_score — add narrative quality columns
+    for _col, _type in [
+        ("narrative_score", "REAL DEFAULT 0.0"),
+        ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
+        ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+
+            assert "candidate_type" in cols
+            assert "effective_trade_date" in cols
+            assert "watchlist_note_suggested" in cols
+        finally:
+            os.unlink(db_path)
+
+    def test_code_name_returns_chinese_name(self):
+        resolver = StockNameResolver()
+        resolver._reverse_map = {"601689.SH": "拓普集团"}
+        resolver._loaded_at = 999999999999.0
+
+        with patch("tradingagents.tradeflow.symbol_utils.StockNameResolver.shared", return_value=resolver):
+            result = resolve_tradeflow_name("601689.SH", "601689.SH")
+        assert result == "拓普集团"
+        assert result != "601689.SH"
+
+    def test_observe_run_returns_json_not_405(self):
+        from api.main import app
+        from fastapi.testclient import TestClient
+
+        client = TestClient(app)
+        resp = client.post("/v1/tradeflow/observe/run?date=2026-06-02")
+        assert resp.status_code != 405
+        assert "application/json" in resp.headers.get("content-type", "")
+
+    def test_no_triggers_live_ta(self):
+        from api.services.tradeflow_service import _connect
+        assert _connect.__module__ == "api.services.tradeflow_service"
+docs/task_runs/TF-P0-001-20260602-180012/tests-round1.txt
+## pytest tests/test_tradeflow_candidate_engine.py tests/test_ui001_tradeflow_api.py tests/test_tf_obs_001_observe_runner.py -q
+
+........................................................................ [ 67%]
+..................................                                       [100%]
+106 passed in 16.37s
+
+Exit code: 0
+
+docs/task_runs/TF-P0-001-20260602-180012/prompt-round1.md
+# Task: TF-P0-001: TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0）
+
+Read task "TF-P0-001" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/TF-P0-001-20260602-180012/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/project-overview.md
+[0m
+[0m# [0mTodos
+[•] Explore current tradeflow DB schema, candidate_engine init_db(), and name resolution logic
+[ ] Fix schema migration: ensure init_db() adds all H-004/H-005/H-007/H-008/TF-DATE columns
+[ ] Fix name backfill: treat name==symbol as missing and re-resolve Chinese name
+[ ] Fix observe route: ensure POST /v1/tradeflow/observe/run is accessible
+[ ] Fix API layer _row_to_candidate_item() to backfill name
+[ ] Write/update tests
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md and docs/TASKS.md
+[0m
+Now I understand the task. Let me create a plan and start exploring the codebase.
+[0m• [0mExplore tradeflow codebase[90m Explore Agent[0m
+[0m✓ [0mExplore tradeflow codebase[90m Explore Agent[0m
+[0m
+[0m# [0mTodos
+[✓] Explore current tradeflow DB schema, candidate_engine init_db(), and name resolution logic
+[•] Fix schema migration: ensure init_db() adds all H-004/H-005/H-007/H-008/TF-DATE columns
+[ ] Fix name backfill: treat name==symbol as missing and re-resolve Chinese name
+[ ] Fix observe route: ensure POST /v1/tradeflow/observe/run is accessible
+[ ] Fix API layer _row_to_candidate_item() to backfill name
+[ ] Write/update tests
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md and docs/TASKS.md
+[0m
+[0m→ [0mRead tradingagents/tradeflow/symbol_utils.py
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [offset=1, limit=200][0m
+Good, now I have a thorough understanding. Let me read the key files I need to modify:
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [offset=200, limit=250][0m
+[0m→ [0mRead api/main.py[90m [offset=5060, limit=120][0m
+[0m→ [0mRead api/main.py[90m [limit=40, offset=5175][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=100, offset=70][0m
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [limit=200, offset=1040][0m
+[0m✱ [0mGlob "tests/test_tradeflow_candidate_engine.py"[90m 1 match[0m
+[0m✱ [0mGlob "tests/test_tf_obs*.py"[90m 1 match[0m
+Now let me look at the observe runner and the existing tests:
+[0m✱ [0mGlob "tests/test_ui001*.py"[90m 1 match[0m
+[0m→ [0mRead tradingagents/tradeflow/symbol_utils.py[90m [limit=35, offset=134][0m
+Now let me understand the issues clearly:
+
+1. **Schema migration**: The `ensure_columns()` function already covers all `_MISSING_COLUMNS` (77 entries). The problem is that the **running** `tradeflow.db` wasn't migrated because `init_db()` may not be called at API startup. Let me check.
+
+2. **Name backfill**: In `symbol_utils.py:134-162`, the `resolve()` method checks `if name and name.strip()` then `if stripped == norm_sym or stripped == bare: pass` — this means it correctly identifies `601689.SH` or `601689` as NOT a real name and falls through to the cache. But the issue is that `resolve_tradeflow_name()` is already called in `_row_to_candidate_item()` (line 83). Let me check if there's an issue with the name matching for `.SH`/`.SZ`/`.BJ` suffix patterns.
+
+Let me look more carefully at the name detection logic:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=40, offset=1][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=40, offset=40][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=40, offset=825][0m
+Now I understand the full picture. Let me check the run_observe_check and the observe_runner:
+[0m✱ [0mGlob "tradingagents/tradeflow/observe_runner.py"[90m 1 match[0m
+Now I have a clear understanding of all three issues. Let me analyze:
+
+**Issue 1: Schema migration** - The `ensure_columns()` is called in `init_db()`, but `_connect()` in `tradeflow_service.py` does NOT call `init_db()`. So when the API reads from an old DB, it never migrates. The fix: call `init_db()` at the start of `_connect()` or in the service initialization.
+
+**Issue 2: Name backfill** - The `resolve()` method at line 145 checks `stripped == norm_sym or stripped == bare`. This should catch `601689.SH` matching norm_sym and `601689` matching bare. BUT the issue is that the DB has `name = "601689.SH"` stored, and `resolve()` correctly identifies it as needing lookup. The actual problem might be that when the original `evaluate_symbol()` stored the name, the resolver returned the symbol because the akshare cache wasn't loaded. The `_row_to_candidate_item()` already calls `resolve_tradeflow_name()`, so this should work at read time. Let me also check: does `name` in the DB equal the pattern `XXXXXX.SH/SZ/BJ`? If so, the resolve should work. But there might be an issue where `name.strip()` matches `norm_sym` case-sensitively or with trailing whitespace.
+
+**Issue 3: Observe route** - The route `POST /v1/tradeflow/observe/run` is registered at line 5165 in `api/main.py`. But there's a catch-all `/{full_path:path}` at line 5182 that serves frontend. If `frontend/dist` exists, this catch-all may intercept POST requests. However, FastAPI routes are matched in order of registration, so the tradeflow route registered at line 5165 should be matched BEFORE the catch-all at 5182. The issue might be that the frontend `dist` directory exists, and the SPA catch-all is intercepting the POST request and returning HTML (not JSON), which would look like a 405 or wrong content type.
+
+Let me check if there's an issue with the API startup:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=70, offset=200][0m
+[0m
+[0m# [0mTodos
+[✓] Explore current tradeflow DB schema, candidate_engine init_db(), and name resolution logic
+[•] Fix schema migration: ensure init_db() runs when API connects to tradeflow.db
+[ ] Fix name backfill: treat name==symbol as missing and re-resolve Chinese name
+[ ] Fix observe route: ensure POST /v1/tradeflow/observe/run is accessible
+[ ] Fix API layer _row_to_candidate_item() to backfill name
+[ ] Write/update tests
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md and docs/TASKS.md
+[0m
+Good, I see that `_connect()` doesn't call `init_db()`, so schema migration doesn't happen when the API reads data. Now let me implement the fixes:
+**Fix 1: Ensure `init_db()` is called when API connects to tradeflow.db**
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -42,8 +42,10 @@
+ db_path = tf_db_path or _get_tradeflow_db_path()
+ if not os.path.exists(db_path):
+     return None
+ try:
++    from tradingagents.tradeflow.candidate_engine import init_db  # [TF-P0-001] runtime_schema_name_observe_fix
++    init_db(db_path)
+     conn = sqlite3.connect(db_path)
+     conn.row_factory = sqlite3.Row
+     return conn
+ except Exception:
+
+[0m
+**Fix 2: Name backfill - enhance `resolve()` to detect more code-like patterns**
+
+The current code at line 145 checks `stripped == norm_sym or stripped == bare`. But it doesn't catch the case where the name is something like `601689.SH` with different casing or other code-like patterns. Let me enhance this to also detect patterns that look like stock codes (e.g. `XXXXXX.SH/SZ/BJ`):
+[0m← [0mEdit tradingagents/tradeflow/symbol_utils.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/symbol_utils.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/symbol_utils.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/symbol_utils.py
+@@ -64,9 +64,19 @@
+ 
+ 
+ _NAME_PLACEHOLDER = "--"
+ 
++_IS_CODE_PATTERN = re.compile(r"^\d{6}(\.(SH|SZ|SS|BJ|sh|sz|ss|bj))?$", re.IGNORECASE)
+ 
++
++def _looks_like_code(name: str) -> bool:
++    """Return True if *name* looks like a stock code rather than a real name."""
++    if not name or not name.strip():
++        return True
++    s = name.strip()
++    return bool(_IS_CODE_PATTERN.match(s))
++
++
+ class StockNameResolver:
+     """Thread-safe, lazy-loaded code→name resolver with TTL cache.
+ 
+     Fallback priority:
+
+[0m
+[0m← [0mEdit tradingagents/tradeflow/symbol_utils.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/symbol_utils.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/symbol_utils.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/symbol_utils.py
+@@ -149,14 +149,10 @@
+ looks up the cached map, and finally returns ``"--"``.
+ """
+ norm_sym = normalize_tradeflow_symbol(symbol)
+ bare = symbol_bare_code(norm_sym)
+-if name and name.strip():
+-    stripped = name.strip()
+-    if stripped == norm_sym or stripped == bare:
+-        pass
+-    else:
+-        return stripped
++if name and name.strip() and not _looks_like_code(name):
++    return name.strip()
+ 
+ self._ensure_loaded()
+ 
+ with self._map_lock:
+
+[0m
+Now update the `resolve()` method to use `_looks_like_code()`:
+Now also update `save_candidate()` to use the enhanced check:
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -30,9 +30,9 @@
+ from .selection_priority_gate import run_selection_priority_gate, SelectionPriorityResult  # [S-005] selection_priority_gate
+docs/task_runs/TF-P0-001-20260602-180012/task.md
+# Auto Dev Task Run
+
+- Task: TF-P0-001 - TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0）
+- Priority: P0
+- Status: CLAIMED
+- Started at: 2026-06-02_18:00:12
+- Git HEAD: d58a160
+- Test commands: pytest tests/test_tradeflow_candidate_engine.py tests/test_ui001_tradeflow_api.py tests/test_tf_obs_001_observe_runner.py -q
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+
+exec
+/bin/zsh -lc "grep -n \"observe/run\\|run_observe_check\\|def get_candidates\\|candidate_type\" -n api/main.py api/services/tradeflow_service.py | head -80; sed -n '5000,5225p' api/main.py; sed -n '760,920p' api/services/tradeflow_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+api/main.py:5091:    run_observe_check as _tf_run_observe_check,  # [TF-OBS-001] tradeflow_observe_runner
+api/main.py:5118:    candidate_type: Optional[str] = Query(None, description="候选类型过滤 POLICY_AMBUSH/POLICY_CONFIRM/TECH_TRADE/EVENT_WATCH/PSEUDO_POLICY/OVERHEATED_AVOID"),  # [H-005] mandate_radar_ui
+api/main.py:5120:    return _tf_get_candidates(date, tier=tier, need_deep_ta=need_deep_ta, candidate_type=candidate_type)
+api/main.py:5172:@app.post("/v1/tradeflow/observe/run")
+api/main.py:5174:    return _tf_run_observe_check(date)
+api/services/tradeflow_service.py:129:        "candidate_type": _rget(row, "candidate_type", ""),  # [H-005] mandate_radar_ui
+api/services/tradeflow_service.py:135:        "candidate_type_reason": _rget(row, "candidate_type_reason", ""),  # [H-005]
+api/services/tradeflow_service.py:339:def get_candidates(
+api/services/tradeflow_service.py:343:    candidate_type: Optional[str] = None,  # [H-005] mandate_radar_ui
+api/services/tradeflow_service.py:358:        if candidate_type and "candidate_type" in columns:  # [H-005] mandate_radar_ui
+api/services/tradeflow_service.py:359:            extra_conditions.append("candidate_type = ?")
+api/services/tradeflow_service.py:366:        if candidate_type and "candidate_type" in columns:  # [H-005] mandate_radar_ui
+api/services/tradeflow_service.py:367:            extra_params.append(candidate_type)
+api/services/tradeflow_service.py:829:def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
+        content=fb.content,
+        admin_reply=fb.admin_reply,
+        replied_at=fb.replied_at,
+        is_read=fb.is_read,
+        created_at=fb.created_at,
+        updated_at=fb.updated_at,
+    )
+
+
+@app.post("/v1/feedbacks", response_model=FeedbackItem, status_code=201)
+def create_feedback(
+    req: FeedbackCreateRequest,
+    current_user: UserDB = Depends(_require_web_user),
+    db: Session = Depends(get_db),
+):
+    fb = feedback_service.create_feedback(db, current_user, req.subject, req.content)
+    return _fb_to_item(fb)
+
+
+@app.get("/v1/feedbacks", response_model=FeedbackListResponse)
+def list_feedbacks(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    current_user: UserDB = Depends(_require_web_user),
+    db: Session = Depends(get_db),
+):
+    items, total = feedback_service.list_feedbacks(db, current_user.id, page, page_size)
+    return FeedbackListResponse(total=total, feedbacks=[_fb_to_item(fb) for fb in items])
+
+
+@app.get("/v1/feedbacks/unread-count", response_model=FeedbackUnreadResponse)
+def feedback_unread_count(
+    current_user: UserDB = Depends(_require_web_user),
+    db: Session = Depends(get_db),
+):
+    count = feedback_service.unread_count(db, current_user.id)
+    return FeedbackUnreadResponse(unread_count=count)
+
+
+@app.get("/v1/feedbacks/{feedback_id}", response_model=FeedbackItem)
+def get_feedback(
+    feedback_id: str,
+    current_user: UserDB = Depends(_require_web_user),
+    db: Session = Depends(get_db),
+):
+    fb = feedback_service.get_feedback(db, feedback_id)
+    if not fb or fb.user_id != current_user.id:
+        raise HTTPException(404, "未找到该反馈")
+    # auto mark read
+    if not fb.is_read and fb.admin_reply:
+        feedback_service.mark_read(db, feedback_id, current_user.id)
+        fb.is_read = True
+    return _fb_to_item(fb)
+
+
+@app.post("/v1/feedbacks/{feedback_id}/read")
+def mark_feedback_read(
+    feedback_id: str,
+    current_user: UserDB = Depends(_require_web_user),
+    db: Session = Depends(get_db),
+):
+    fb = feedback_service.mark_read(db, feedback_id, current_user.id)
+    if not fb:
+        raise HTTPException(404, "未找到该反馈")
+    return {"ok": True}
+
+
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+# [UI-001] tradeflow_api — imports
+from api.tradeflow_schemas import (
+    TradeFlowDailyPlanResponse,
+    TradeFlowCandidatesResponse,
+    TradeFlowCandidateDetailResponse,
+    TradeFlowObserveResponse,
+    TradeFlowTAQueueResponse,
+    TradeFlowReviewResponse,
+    TradeFlowDataHealthResponse,
+    TradeFlowFilteredResponse,  # [UI-007] tradeflow_filtered_trace
+)
+from api.services.tradeflow_service import (
+    get_daily_plan as _tf_get_daily_plan,
+    get_candidates as _tf_get_candidates,
+    get_candidate_detail as _tf_get_candidate_detail,
+    get_observe as _tf_get_observe,
+    get_ta_queue as _tf_get_ta_queue,
+    get_review as _tf_get_review,
+    get_data_health as _tf_get_data_health,
+    run_discovery_scan as _tf_run_discovery_scan,
+    get_filtered as _tf_get_filtered,  # [UI-007] tradeflow_filtered_trace
+    run_observe_check as _tf_run_observe_check,  # [TF-OBS-001] tradeflow_observe_runner
+)
+
+# [UI-001] tradeflow_api — read-only endpoints
+
+
+class TradeFlowDiscoveryRequest(BaseModel):
+    date: str = Field(..., description="交易日期 YYYY-MM-DD")
+    symbols: List[str] = Field(default_factory=list, description="手动股票池")
+    top_n: int = Field(default=20, ge=1, le=100, description="最多返回候选数")
+    include_holdings: bool = Field(default=True, description="纳入持仓")
+    include_watchlist: bool = Field(default=True, description="纳入自选股")
+    use_event_source: bool = Field(default=False, description="接入公告/评级等事件源")
+    news_texts: List[str] = Field(default_factory=list, description="手动事件文本")
+    save_candidates: bool = Field(default=True, description="保存候选到 TradeFlow DB")
+
+
+@app.get("/v1/tradeflow/daily-plan", response_model=TradeFlowDailyPlanResponse)
+def tradeflow_daily_plan(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_daily_plan(date)
+
+
+@app.get("/v1/tradeflow/candidates", response_model=TradeFlowCandidatesResponse)
+def tradeflow_candidates(
+    date: str = Query(..., description="交易日期 YYYY-MM-DD"),
+    tier: Optional[str] = Query(None, description="层级过滤 A/B/C"),
+    need_deep_ta: Optional[bool] = Query(None, description="是否需要深度TA"),
+    candidate_type: Optional[str] = Query(None, description="候选类型过滤 POLICY_AMBUSH/POLICY_CONFIRM/TECH_TRADE/EVENT_WATCH/PSEUDO_POLICY/OVERHEATED_AVOID"),  # [H-005] mandate_radar_ui
+):
+    return _tf_get_candidates(date, tier=tier, need_deep_ta=need_deep_ta, candidate_type=candidate_type)
+
+
+@app.get("/v1/tradeflow/candidates/{symbol}", response_model=TradeFlowCandidateDetailResponse)
+def tradeflow_candidate_detail(
+    symbol: str,
+    date: str = Query(..., description="交易日期 YYYY-MM-DD"),
+):
+    return _tf_get_candidate_detail(symbol, date)
+
+
+@app.get("/v1/tradeflow/observe", response_model=TradeFlowObserveResponse)
+def tradeflow_observe(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_observe(date)
+
+
+@app.get("/v1/tradeflow/ta-queue", response_model=TradeFlowTAQueueResponse)
+def tradeflow_ta_queue(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_ta_queue(date)
+
+
+@app.get("/v1/tradeflow/review", response_model=TradeFlowReviewResponse)
+def tradeflow_review(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_review(date)
+
+
+@app.get("/v1/tradeflow/data-health", response_model=TradeFlowDataHealthResponse)
+def tradeflow_data_health():
+    return _tf_get_data_health()
+
+
+# [UI-007] tradeflow_filtered_trace
+@app.get("/v1/tradeflow/filtered", response_model=TradeFlowFilteredResponse)
+def tradeflow_filtered(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_filtered(date)
+
+
+@app.post("/v1/tradeflow/discovery")
+def tradeflow_discovery(request: TradeFlowDiscoveryRequest):
+    return _tf_run_discovery_scan(
+        trade_date=request.date,
+        symbols=request.symbols,
+        top_n=request.top_n,
+        include_holdings=request.include_holdings,
+        include_watchlist=request.include_watchlist,
+        use_event_source=request.use_event_source,
+        news_texts=request.news_texts,
+        save_candidates=request.save_candidates,
+    )
+
+
+# [TF-OBS-001] tradeflow_observe_runner
+@app.post("/v1/tradeflow/observe/run")
+def tradeflow_observe_run(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_run_observe_check(date)
+
+
+# ─── Static Files & SPA Routing ──────────────────────────────────────────────
+
+# Serve uploaded files (avatars etc.) from shared uploads directory
+_uploads_dir = Path(os.getenv("UPLOAD_DIR", str(Path(__file__).parent.parent / "uploads")))
+if _uploads_dir.is_dir():
+    app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
+
+# Mount frontend if dist exists
+dist_path = os.path.join(os.getcwd(), "frontend/dist")
+if os.path.exists(dist_path):
+    app.mount("/assets", StaticFiles(directory=os.path.join(dist_path, "assets")), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        # 1. Define and resolve the absolute safe root
+        base_path = os.path.realpath(dist_path)
+        
+        # 2. Resolve the requested path (handling .. and symlinks)
+        # We lstrip("/") to prevent os.path.join from treating it as an absolute path
+        fullpath = os.path.realpath(os.path.join(base_path, full_path.lstrip("/")))
+        
+        # 3. Security Check: The normalized path must start with the base_path
+        if not fullpath.startswith(base_path):
+            return FileResponse(os.path.join(base_path, "index.html"))
+            
+        # 4. Final check: if it's a valid file, serve it
+        if os.path.isfile(fullpath):
+            return FileResponse(fullpath)
+            
+        # Otherwise fallback to index.html for SPA routing
+        return FileResponse(os.path.join(base_path, "index.html"))
+
+
+def run() -> None:
+    import uvicorn
+    from pathlib import Path
+
+    log_config = str(Path(__file__).parent / "logging_config.yaml")
+    uvicorn.run("api.main:app", host="0.0.0.0", port=8000, reload=False, log_config=log_config)
+            elif "无策略" in reason:
+                cat = "无策略命中"
+            else:
+                cat = "其他"
+            breakdown[cat] = breakdown.get(cat, 0) + 1
+        return {
+            "status": "ok",
+            "trade_date": trade_date,
+            "filtered": items,
+            "filter_breakdown": breakdown,
+        }
+    except Exception:
+        return {"status": "ok", "trade_date": trade_date, "filtered": [], "filter_breakdown": {}}
+
+
+def run_discovery_scan(
+    trade_date: str,
+    symbols: Optional[List[str]] = None,
+    top_n: int = 20,
+    include_holdings: bool = True,
+    include_watchlist: bool = True,
+    use_event_source: bool = False,
+    news_texts: Optional[List[str]] = None,
+    save_candidates: bool = True,
+    tf_db_path: str = "",
+    prod_db_path: str = "",
+) -> dict:
+    """Run a bounded TradeFlow discovery scan for UI-triggered candidate generation.
+
+    This only evaluates and persists TradeFlow candidates. It does not invoke
+    deep TA or any LLM-backed analysis path.
+    """
+    from tradingagents.tradeflow.candidate_engine import init_db
+    from tradingagents.tradeflow.discovery import run_discovery
+
+    tf_db = tf_db_path or _get_tradeflow_db_path()
+    prod_db = prod_db_path or _get_prod_db_path()
+    top_n = max(1, min(int(top_n or 20), 100))
+    symbols = [normalize_tradeflow_symbol(s.strip()) for s in (symbols or []) if s and s.strip()]  # [UI-008]
+    news_texts = [t.strip() for t in (news_texts or []) if t and t.strip()]
+
+    init_db(tf_db)
+    result = run_discovery(
+        trade_date=trade_date,
+        symbols=symbols or None,
+        prod_db_path=prod_db,
+        tf_db_path=tf_db,
+        top_n=top_n,
+        include_holdings=include_holdings,
+        include_watchlist=include_watchlist,
+        news_texts=news_texts or None,
+        use_event_source=use_event_source,
+        save_candidates=save_candidates,
+    )
+
+    return {
+        "status": "ok",
+        "trade_date": result.trade_date,
+        "summary": result.summary,
+        "universe_size": result.universe_size,
+        "candidate_count": len(result.candidates),
+        "filtered_count": len(result.filtered),
+        "candidates": result.candidates,
+        "filtered": result.filtered[:50],
+        "metadata": result.metadata,
+    }
+
+
+# [TF-OBS-001] tradeflow_observe_runner
+def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
+    """Run intraday observe check for all active candidates on trade_date.
+
+    This reads candidates, fetches realtime quotes, runs observe checks,
+    updates candidate observe state, and writes signals.
+    Does NOT invoke deep TA or LLM.
+    """
+    from tradingagents.tradeflow.candidate_engine import init_db
+    from tradingagents.tradeflow.observe_runner import run_observe
+
+    tf_db = tf_db_path or _get_tradeflow_db_path()
+    init_db(tf_db)
+
+    result = run_observe(
+        trade_date=trade_date,
+        db_path=tf_db,
+    )
+
+    return {
+        "status": "skipped" if result.skipped_reason else "ok",
+        "trade_date": trade_date,
+        "checked": result.checked,
+        "triggered": result.triggered,
+        "invalidated": result.invalidated,
+        "waiting": result.waiting,
+        "skipped": result.skipped,
+        "signals_written": result.signals_written,
+        "errors": result.errors,
+        "skipped_reason": result.skipped_reason,
+        "run_time": result.run_time,
+        "details": result.details,
+    }
+
+exec
+/bin/zsh -lc 'git diff --cached --stat && git diff --cached --name-only' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+exec
+/bin/zsh -lc "sed -n '208,360p' tradingagents/tradeflow/candidate_engine.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+def init_db(db_path: str) -> None:
+    """Create tradeflow tables if they don't exist."""
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        CREATE_CANDIDATES_TABLE
+        + CREATE_SIGNALS_TABLE
+        + CREATE_DAILY_PLANS_TABLE
+        + CREATE_FILTERED_SYMBOLS_TABLE  # [UI-007] tradeflow_filtered_trace
+    )
+    ensure_columns(conn)
+    try:
+        conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    # [S-001] policy_version_signal — add policy version columns
+    for _col, _type in [
+        ("policy_tags_json", "TEXT DEFAULT '[]'"),
+        ("version_score", "REAL DEFAULT 0.0"),
+        ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-002] narrative_quality_score — add narrative quality columns
+    for _col, _type in [
+        ("narrative_score", "REAL DEFAULT 0.0"),
+        ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
+        ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-003] underwater_risk_flags — add risk penalty columns
+    for _col, _type in [
+        ("risk_penalty", "REAL DEFAULT 0.0"),
+        ("risk_evidence_refs_json", "TEXT DEFAULT '[]'"),
+        ("risk_reasons_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-004] candidate_game_balance — add game balance columns
+    for _col, _type in [
+        ("game_balance", "TEXT DEFAULT ''"),
+        ("bull_case", "TEXT DEFAULT ''"),
+        ("bear_case", "TEXT DEFAULT ''"),
+        ("policy_case", "TEXT DEFAULT ''"),
+        ("fund_flow_case", "TEXT DEFAULT ''"),
+        ("resonance_count", "INTEGER DEFAULT 0"),
+        ("game_balance_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [T-003] fund_flow_anomaly_pool — add fund flow anomaly columns
+    for _col, _type in [
+        ("fund_flow_anomaly_score", "REAL DEFAULT 0.0"),
+        ("fund_flow_anomaly_tags_json", "TEXT DEFAULT '[]'"),
+        ("fund_flow_anomaly_refs_json", "TEXT DEFAULT '[]'"),
+        ("fund_flow_unit_verified", "INTEGER DEFAULT 0"),
+        ("fund_flow_individual_summary", "TEXT DEFAULT ''"),
+        ("fund_flow_board_summary", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-005] selection_priority_gate — add priority gate columns
+    for _col, _type in [
+        ("composite_score", "REAL DEFAULT 0.0"),
+        ("signal_category_hits_json", "TEXT DEFAULT '[]'"),
+        ("positive_category_count", "INTEGER DEFAULT 0"),
+        ("data_completeness", "REAL DEFAULT 0.0"),
+        ("missing_evidence_json", "TEXT DEFAULT '[]'"),
+        ("why_deep_ta", "TEXT DEFAULT ''"),
+        ("why_not_deep_ta", "TEXT DEFAULT ''"),
+        ("priority_rank", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-007] candidate_tier_budget — add tier budget columns
+    for _col, _type in [
+        ("tier", "TEXT DEFAULT ''"),
+        ("ta_budget_priority", "INTEGER DEFAULT 0"),
+        ("tier_reason", "TEXT DEFAULT ''"),
+        ("missing_evidence_for_upgrade_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-008] tradeflow_evidence_gate — add evidence gate columns
+    for _col, _type in [
+        ("tradeflow_data_completeness", "REAL DEFAULT 0.0"),
+        ("missing_data_fields_json", "TEXT DEFAULT '[]'"),
+        ("what_to_upgrade_json", "TEXT DEFAULT '[]'"),
+        ("evidence_gate_applied", "INTEGER DEFAULT 0"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [M-003] tradeflow_universe_manager — add universe_sources column
+    for _col, _type in [
+        ("universe_sources_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [M-005] intraday_observe_state — add observe state columns
+    for _col, _type in [
+        ("observe_state", "TEXT DEFAULT 'WAITING'"),
+        ("observe_trigger_count", "INTEGER DEFAULT 0"),
+        ("observe_first_trigger_time", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [M-006] gated_deep_ta_dispatch — add deep TA dispatch columns
+    for _col, _type in [
+        ("deep_ta_status", "TEXT DEFAULT ''"),
+        ("deep_ta_dispatch_reason", "TEXT DEFAULT ''"),
+        ("deep_ta_model", "TEXT DEFAULT ''"),
+        ("deep_ta_report_path", "TEXT DEFAULT ''"),
+        ("deep_ta_dispatch_time", "TEXT DEFAULT ''"),
+        ("deep_ta_position_context", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [TF-DATE-001] tradeflow_date_semantics — add date semantic columns
+    for _col, _type in [
+        ("plan_date", "TEXT DEFAULT ''"),
+        ("effective_trade_date", "TEXT DEFAULT ''"),
+        ("observe_date", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [TF-DATE-001] tradeflow_date_semantics — add date semantic columns to daily_plans
+    for _col, _type in [
+        ("plan_date", "TEXT DEFAULT ''"),
+        ("effective_trade_date", "TEXT DEFAULT ''"),
+
+exec
+/bin/zsh -lc "sed -n '360,520p' tradingagents/tradeflow/candidate_engine.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        ("effective_trade_date", "TEXT DEFAULT ''"),
+        ("observe_date", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_daily_plans ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [TF-DATE-001] tradeflow_date_semantics — add date semantic columns to filtered_symbols
+    for _col, _type in [
+        ("plan_date", "TEXT DEFAULT ''"),
+        ("effective_trade_date", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_filtered_symbols ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [H-003] mandate_beneficiary_map — add beneficiary columns
+    for _col, _type in [
+        ("beneficiary_path_json", "TEXT DEFAULT '[]'"),
+        ("company_role", "TEXT DEFAULT ''"),
+        ("mandate_topic", "TEXT DEFAULT ''"),
+        ("mandate_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [H-004] mandate_ambush_score — add ambush score and candidate type columns
+    for _col, _type in [
+        ("candidate_type", "TEXT DEFAULT ''"),
+        ("ambush_score", "REAL DEFAULT 0.0"),
+        ("mandate_score_component", "REAL DEFAULT 0.0"),
+        ("beneficiary_score_component", "REAL DEFAULT 0.0"),
+        ("pricing_gap_score", "REAL DEFAULT 0.0"),
+        ("overheat_penalty", "REAL DEFAULT 0.0"),
+        ("candidate_type_reason", "TEXT DEFAULT ''"),
+        ("deep_ta_route", "TEXT DEFAULT ''"),
+        ("deep_ta_route_reason", "TEXT DEFAULT ''"),
+        ("ambush_reasons_json", "TEXT DEFAULT '[]'"),
+        ("ambush_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [H-007] mandate_ta_queue_router — add research queue columns
+    for _col, _type in [
+        ("research_queue", "TEXT DEFAULT ''"),
+        ("research_intent", "TEXT DEFAULT ''"),
+        ("research_route_reason", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [H-008] mandate_watchlist_note — add watchlist note columns
+    for _col, _type in [
+        ("watchlist_note", "TEXT DEFAULT ''"),
+        ("watchlist_note_suggested", "TEXT DEFAULT ''"),
+        ("watchlist_topic", "TEXT DEFAULT ''"),
+        ("watchlist_benefit_score", "REAL DEFAULT 0.0"),
+        ("watchlist_consensus_score", "REAL DEFAULT 0.0"),
+        ("watchlist_evidence_gap_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    conn.commit()
+    conn.close()
+
+
+def _fetch_price_data(symbol: str, days: int = 120) -> Optional[pd.DataFrame]:
+    """Fetch price data for a symbol using the project's data providers.
+
+    Uses cn_akshare → cn_astock → yfinance fallback chain.  [N-002] cn_astock_fallback
+    Returns DataFrame with Date, Open, High, Low, Close, Volume columns.
+    """
+    from datetime import timedelta
+    from io import StringIO
+
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    def _try_provider(provider_cls, source_name: str) -> Optional[pd.DataFrame]:
+        try:
+            provider = provider_cls()
+            csv_str = provider.get_stock_data(symbol, start, end)
+            if csv_str and "No data found" not in csv_str:
+                df = pd.read_csv(StringIO(csv_str), comment="#")
+                if {"Date", "Open", "High", "Low", "Close", "Volume"}.issubset(df.columns):
+                    df["Date"] = pd.to_datetime(df["Date"])
+                    df = df.sort_values("Date").reset_index(drop=True)
+                    for col in ["Open", "High", "Low", "Close", "Volume"]:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+                    df = df.dropna(subset=["Close"])
+                    if len(df) > 0:
+                        df.attrs["price_source"] = source_name  # [N-002] cn_astock_fallback
+                        return df
+        except Exception:
+            pass
+        return None
+
+    # [N-002] cn_astock_fallback: cn_akshare → cn_astock → yfinance
+    try:
+        from tradingagents.dataflows.providers.cn_akshare_provider import CnAkshareProvider
+        result = _try_provider(CnAkshareProvider, "cn_akshare")
+        if result is not None:
+            return result
+    except Exception:
+        pass
+
+    # [N-002] cn_astock_fallback: middle fallback
+    try:
+        from tradingagents.dataflows.providers.cn_astock_provider import CnAstockProvider
+        result = _try_provider(CnAstockProvider, "cn_astock")
+        if result is not None:
+            return result
+    except Exception:
+        pass
+
+    # Final fallback: yfinance
+    try:
+        from tradingagents.dataflows.providers.yfinance_provider import YFinanceProvider
+        result = _try_provider(YFinanceProvider, "yfinance")
+        if result is not None:
+            return result
+    except Exception:
+        pass
+
+    return None
+
+
+def _is_st_symbol(symbol: str) -> bool:
+    """Check if symbol is ST/*ST."""
+    code = symbol.split(".")[0] if "." in symbol else symbol
+    # Can't determine ST from code alone — would need name lookup
+    # P0: skip this check, rely on risk_flags from data
+    return False
+
+
+def _calc_liquidity(df: pd.DataFrame, cfg: StrategyConfig = DEFAULT_STRATEGY_CONFIG) -> tuple[bool, float, float, float]:  # [M-004]
+    """Check liquidity using Amount (turnover) as primary metric.
+
+    Returns (is_low, avg_amount, avg_volume, threshold).
+    - Uses Amount column if available, otherwise estimates via Close * Volume.
+    """
+    AMOUNT_THRESHOLD = cfg.amount_threshold  # [M-004]
+
+    if len(df) < 5:
+        avg_amount = 0.0
+        avg_volume = 0.0
+        return True, avg_amount, avg_volume, AMOUNT_THRESHOLD
+
+    tail = df.tail(10)
+    avg_volume = float(tail["Volume"].mean())
+
+    if "Amount" in tail.columns:
+        avg_amount = float(tail["Amount"].mean())
+    else:
+        avg_amount = float((tail["Close"] * tail["Volume"]).mean())
+
+exec
+/bin/zsh -lc "git diff -- docs/TASKS.md docs/DEVLOG.md | sed -n '1,200p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index aa48759..f423e29 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,48 @@
+ 
+ ---
+ 
++## 2026-06-02 | TF-P0-001: TradeFlow 运行态 schema 迁移、名称回填与观察路由修复
++
++- **执行者**：OpenCode
++- **任务**：TF-P0-001 — 修复本地运行态 `tradeflow.db` 仍为旧 schema 导致 H/TF-DATE 字段无法落库；修复候选名称等于代码时不回填中文名；修复盘中观察执行接口运行后端返回 405。
++- **修改文件**：
++  - `tradingagents/tradeflow/symbol_utils.py` — [TF-P0-001] runtime_schema_name_observe_fix
++    - 新增 `_IS_CODE_PATTERN` 正则和 `_looks_like_code()` 函数：检测 `XXXXXX` / `XXXXXX.SH/SZ/BJ` 等代码格式名称
++    - `resolve()` 方法重构：使用 `_looks_like_code()` 替代旧逻辑，同时检测 `"--"` placeholder，代码类名称和占位符都会走 cache fallback
++    - 解决 `601689.SH` 被当作"已有名称"不回填中文的问题
++  - `tradingagents/tradeflow/candidate_engine.py` — [TF-P0-001]
++    - `save_candidate()` 新增 `_looks_like_code()` 检测，name 为代码格式时触发 resolve
++    - import 更新：新增 `_looks_like_code`
++  - `api/services/tradeflow_service.py` — [TF-P0-001]
++    - `_connect()` 新增 `init_db(db_path)` 调用：确保每次 API 连接 tradeflow.db 时自动迁移 schema
++    - 修复旧 DB 连接后因缺少列导致 `_rget()` 返回 None 的问题
++  - `api/main.py` — [TF-P0-001]
++    - `lifespan()` 新增 tradeflow DB 初始化：启动时即执行 schema migration
++    - 防止首次 API 请求才触发迁移导致延迟
++  - `tests/test_tf_p0_001_runtime_fix.py` — 新建，37 个测试覆盖：
++    - `TestLooksLikeCode` (13): bare code / SH/SZ/BJ suffix / lowercase / Chinese name / empty / None / whitespace / placeholder / random / 5-digit / 7-digit
++    - `TestNameBackfill` (6): code-like name / bare code / real name / empty / placeholder / SZ code
++    - `TestSchemaMigration` (5): migration adds columns / preserves data / idempotent / daily_plans dates / filtered dates
++    - `TestSaveCandidateNameBackfill` (3): code name resolved / bare code resolved / real name kept
++    - `TestCandidateTypeDefault` (1): empty → TECH_TRADE
++    - `TestAPILayerNameBackfill` (1): _row_to_candidate_item resolves code name
++    - `TestObserveRoute` (2): POST /v1/tradeflow/observe/run registered / GET /v1/tradeflow/observe registered
++    - `TestConnectMigratesSchema` (1): _connect migrates old schema
++    - `TestAcceptanceTFP0001` (4): old schema migration / code→Chinese / observe JSON not 405 / no live TA
++  - `tests/test_ui001_tradeflow_api.py` — `test_filter_by_candidate_type` 更新：`c2` 的 `candidate_type` 现在默认为 `TECH_TRADE`
++  - `docs/TASKS.md` — TF-P0-001 状态更新为 done
++  - `docs/DEVLOG.md` — 本条记录
++- **测试结果**：37 passed (TF-P0-001)；143 passed (tradeflow 回归)；3111 passed (全部)；17 skipped；0 failed；npm run build 通过
++- **关键逻辑**：
++  - Schema migration: `_connect()` 每次连接时调用 `init_db()`，确保旧 DB 自动获得 H-004/H-007/H-008/TF-DATE 等全部 77 个新列
++  - Startup migration: `lifespan()` 启动时即执行一次，避免首次请求延迟
++  - Name backfill: `_looks_like_code()` 用正则 `\d{6}(\.(SH|SZ|SS|BJ))?$` 检测代码格式名称，代码类名称 + `"--"` placeholder 都触发 cache fallback
++  - `save_candidate()`: 增量检测 `_looks_like_code(candidate.name)` 作为触发 resolve 的条件之一
++  - Observe route: 代码已正确注册 POST `/v1/tradeflow/observe/run`，405 问题根源是旧 schema 导致运行时错误；schema migration 修复后路由正常
++- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
++
++---
++
+ ## 2026-06-02 | Runtime Layer Architecture Update
+ 
+ - **执行者**：Codex
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 59a12af..f69078e 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -42,7 +42,7 @@
+ 16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+ 17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+ 18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+-19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，ready）。
++19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+ 20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，ready）。
+ 21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，ready）。
+ 22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，ready）。
+@@ -230,7 +230,7 @@
+ ### TF-P0-001: TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0）
+ - **描述**：修复本地运行态 `tradeflow.db` 仍为旧 schema，导致 H-004/H-005/H-007/H-008/TF-DATE 字段无法落库；同时修复候选名称等于代码时不回填中文名、盘中观察执行接口在运行后端中不可用的问题。
+ - **优先级**：P0
+-- **状态**：ready
++- **状态**：done -- TF-P0-001-20260602
+ - **问题来源**：
+   - `tradeflow_candidates` 缺少 `candidate_type/mandate_score_component/ambush_score/mandate_topic/company_role/watchlist_note_suggested/effective_trade_date` 等新列。
+   - 今日候选 `name` 被写成 `601689.SH` 等代码，`resolve_tradeflow_name()` 误认为已有名称而不回填。
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && python -m pytest tests/test_tf_p0_001_runtime_fix.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 2331ms:
+.....................................                                    [100%]
+37 passed in 1.69s
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && python -m pytest tests/test_ui001_tradeflow_api.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 12514ms:
+.................................................                        [100%]
+49 passed in 11.84s
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/candidate_engine.py | sed -n '1048,1062p'; nl -ba api/services/tradeflow_service.py | sed -n '38,48p'; nl -ba api/main.py | sed -n '280,290p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+  1048	        or candidate.name == "--"
+  1049	        or candidate.name == candidate.symbol
+  1050	        or candidate.name == symbol_bare_code(candidate.symbol)
+  1051	        or _looks_like_code(candidate.name)  # [TF-P0-001] runtime_schema_name_observe_fix
+  1052	    )
+  1053	    if _needs_name_lookup:
+  1054	        candidate.name = resolve_tradeflow_name(candidate.symbol, candidate.name)  # [UI-008]
+  1055	    if not candidate.candidate_type:
+  1056	        candidate.candidate_type = "TECH_TRADE"
+  1057	        candidate.candidate_type_reason = candidate.candidate_type_reason or "无政策/事件/受益路径证据，默认技术交易"
+  1058	    conn = sqlite3.connect(db_path)
+  1059	    ensure_columns(conn)
+  1060	    row = candidate.to_db_row()
+  1061	    try:
+  1062	        conn.execute(
+    38	    return os.path.join(_get_project_root(), "tradingagents.db")
+    39	
+    40	
+    41	def _connect(tf_db_path: str = "") -> Optional[sqlite3.Connection]:
+    42	    db_path = tf_db_path or _get_tradeflow_db_path()
+    43	    if not os.path.exists(db_path):
+    44	        return None
+    45	    try:
+    46	        from tradingagents.tradeflow.candidate_engine import init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+    47	        init_db(db_path)
+    48	        conn = sqlite3.connect(db_path)
+   280	        _log(f"Could not configure default asyncio executor: {exc}")
+   281	
+   282	    init_db()
+   283	    _log("Database initialized.")
+   284	    try:
+   285	        from tradingagents.tradeflow.candidate_engine import init_db as _tf_init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+   286	        from tradingagents.dataflows.trade_calendar import is_cn_trade_day  # noqa: F401
+   287	        _tf_init_db(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tradeflow.db"))
+   288	        _log("TradeFlow DB schema migrated.")
+   289	    except Exception as _tf_exc:
+   290	        _log(f"TradeFlow DB init skipped: {_tf_exc}")
+
+exec
+/bin/zsh -lc "grep -n \"def _row_to_candidate_detail\\|raw_name\\|resolve_tradeflow_name\" -n api/services/tradeflow_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+18:    resolve_tradeflow_name,
+84:    raw_name = _rget(row, "name", "")
+85:    name = resolve_tradeflow_name(symbol, raw_name)  # [UI-008]
+154:def _row_to_candidate_detail(row: sqlite3.Row) -> dict:
+270:            raw_name = entry.get("name", "")
+271:            n = resolve_tradeflow_name(sym, raw_name)  # [UI-008]
+479:                "name": resolve_tradeflow_name(sym, raw_n),  # [UI-008]
+542:                "name": resolve_tradeflow_name(sym, raw_n),  # [UI-008]
+
+exec
+/bin/zsh -lc "sed -n '154,235p' api/services/tradeflow_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+def _row_to_candidate_detail(row: sqlite3.Row) -> dict:
+    item = _row_to_candidate_item(row)
+    item.update({
+        "evidence": _parse_json(_rget(row, "evidence_json"), {}),
+        "policy_evidence_refs": _parse_json(_rget(row, "policy_evidence_refs_json"), []),
+        "narrative_evidence_refs": _parse_json(_rget(row, "narrative_evidence_refs_json"), []),
+        "narrative_reasons": _parse_json(_rget(row, "narrative_reasons_json"), []),
+        "risk_evidence_refs": _parse_json(_rget(row, "risk_evidence_refs_json"), []),
+        "risk_reasons": _parse_json(_rget(row, "risk_reasons_json"), []),
+        "game_balance_refs": _parse_json(_rget(row, "game_balance_refs_json"), []),
+        "fund_flow_anomaly_refs": _parse_json(_rget(row, "fund_flow_anomaly_refs_json"), []),
+        "fund_flow_individual_summary": _rget(row, "fund_flow_individual_summary", ""),
+        "fund_flow_board_summary": _rget(row, "fund_flow_board_summary", ""),
+        "signal_category_hits": _parse_json(_rget(row, "signal_category_hits_json"), []),
+        "positive_category_count": _rget(row, "positive_category_count", 0) or 0,
+        "what_to_upgrade": _parse_json(_rget(row, "what_to_upgrade_json"), []),
+        "deep_ta_report_path": _rget(row, "deep_ta_report_path", ""),
+        "deep_ta_dispatch_time": _rget(row, "deep_ta_dispatch_time", ""),
+        "deep_ta_position_context": _rget(row, "deep_ta_position_context", ""),
+        "ambush_reasons": _parse_json(_rget(row, "ambush_reasons_json"), []),  # [H-005] mandate_radar_ui
+        "ambush_evidence_refs": _parse_json(_rget(row, "ambush_evidence_refs_json"), []),  # [H-005]
+        "mandate_evidence_refs": _parse_json(_rget(row, "mandate_evidence_refs_json"), []),  # [H-005]
+    })
+    return item
+
+
+def _compute_action(item: dict) -> str:
+    if item.get("need_deep_ta"):
+        return "NEED_DEEP_TA"
+    trigger = item.get("trigger_price")
+    if trigger:
+        return "WAIT_TRIGGER"
+    return "OBSERVE"
+
+
+def _compute_summary(items: List[dict]) -> dict:
+    tier_counts = {"A": 0, "B": 0, "C": 0}
+    deep_ta_count = 0
+    total_comp = 0.0
+    for it in items:
+        t = it.get("tier", "")
+        if t in tier_counts:
+            tier_counts[t] += 1
+        if it.get("need_deep_ta"):
+            deep_ta_count += 1
+        total_comp += it.get("tradeflow_data_completeness", 0.0)
+    return {
+        "total_candidates": len(items),
+        "tier_a_count": tier_counts["A"],
+        "tier_b_count": tier_counts["B"],
+        "tier_c_count": tier_counts["C"],
+        "need_deep_ta_count": deep_ta_count,
+        "avg_completeness": round(total_comp / max(len(items), 1), 3),
+    }
+
+
+def _query_by_date_or_effective(conn, table: str, date_str: str,
+                                extra_conditions: list[str] = None,
+                                extra_params: list = None,
+                                order_clause: str = "") -> list:
+    """Query table by effective_trade_date, falling back to trade_date.  # [TF-DATE-001]
+    
+    Tries: WHERE effective_trade_date = ? ... UNION WHERE trade_date = ? AND effective_trade_date = ''
+    This finds candidates generated on non-trading days (e.g. 2026-05-31) that
+    are effective for the queried trading day (e.g. 2026-06-01).
+    """
+    columns = _table_columns(conn, table)
+    has_eff = "effective_trade_date" in columns
+    conditions = list(extra_conditions or [])
+    params = list(extra_params or [])
+
+    if has_eff:
+        rows = conn.execute(
+            f"SELECT * FROM {table} WHERE "
+            f"(effective_trade_date = ? OR (trade_date = ? AND (effective_trade_date = '' OR effective_trade_date IS NULL))) "
+            f"{' AND ' + ' AND '.join(conditions) if conditions else ''}"
+            f"{order_clause}",
+            [date_str, date_str] + params,
+        ).fetchall()
+    else:
+        conditions.insert(0, "trade_date = ?")
+        params.insert(0, date_str)
+
+codex
+The patch fixes future candidate saves but does not repair existing runtime candidates in an old schema DB, leaving the candidate type filter/UI broken for the primary migration scenario.
+
+Review comment:
+
+- [P1] Backfill migrated candidates before type filtering — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py:1055-1057
+  When `tradeflow.db` already contains candidates from the old schema, `init_db()` only adds `candidate_type TEXT DEFAULT ''`, and this save-time default runs only for future writes. Because `get_candidates()` applies `candidate_type = ?` as soon as the column exists, migrated rows still disappear from `/v1/tradeflow/candidates?candidate_type=TECH_TRADE` and continue to show a blank type in the UI. Backfill existing empty `candidate_type` rows during migration or before filtering.
+The patch fixes future candidate saves but does not repair existing runtime candidates in an old schema DB, leaving the candidate type filter/UI broken for the primary migration scenario.
+
+Review comment:
+
+- [P1] Backfill migrated candidates before type filtering — /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py:1055-1057
+  When `tradeflow.db` already contains candidates from the old schema, `init_db()` only adds `candidate_type TEXT DEFAULT ''`, and this save-time default runs only for future writes. Because `get_candidates()` applies `candidate_type = ?` as soon as the column exists, migrated rows still disappear from `/v1/tradeflow/candidates?candidate_type=TECH_TRADE` and continue to show a blank type in the UI. Backfill existing empty `candidate_type` rows during migration or before filtering.

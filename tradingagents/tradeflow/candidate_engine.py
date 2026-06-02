@@ -31,7 +31,7 @@ from .selection_priority_gate import run_selection_priority_gate, SelectionPrior
 from .tier_budget import classify_candidate_tier, TierBudgetResult  # [S-007] candidate_tier_budget
 from .evidence_gate import compute_evidence_completeness, apply_evidence_gate, EvidenceGateResult  # [S-008] tradeflow_evidence_gate
 from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
-from .symbol_utils import normalize_tradeflow_symbol, resolve_tradeflow_name, symbol_bare_code  # [UI-008] tradeflow_field_normalization
+from .symbol_utils import normalize_tradeflow_symbol, resolve_tradeflow_name, symbol_bare_code, _looks_like_code  # [UI-008] tradeflow_field_normalization  [TF-P0-001] runtime_schema_name_observe_fix
 from .ambush_score import compute_ambush_score, AmbushScoreResult  # [H-004] mandate_ambush_score
 from .mandate_ta_queue_router import route_to_research_queue, QueueRouteResult  # [H-007] mandate_ta_queue_router
 from .mandate_watchlist_note import generate_watchlist_note, WatchlistNoteResult  # [H-008] mandate_watchlist_note
@@ -1048,6 +1048,7 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
         or candidate.name == "--"
         or candidate.name == candidate.symbol
         or candidate.name == symbol_bare_code(candidate.symbol)
+        or _looks_like_code(candidate.name)  # [TF-P0-001] runtime_schema_name_observe_fix
     )
     if _needs_name_lookup:
         candidate.name = resolve_tradeflow_name(candidate.symbol, candidate.name)  # [UI-008]

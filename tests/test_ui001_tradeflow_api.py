@@ -312,9 +312,9 @@ class TestCandidatesWithData:
         assert result["status"] == "ok"
         assert [c["symbol"] for c in result["candidates"]] == ["002353.SZ"]
 
-        empty = get_candidates("2026-05-30", candidate_type="TECH_TRADE", tf_db_path=populated_db)
-        assert empty["status"] == "ok"
-        assert empty["candidates"] == []
+        tech = get_candidates("2026-05-30", candidate_type="TECH_TRADE", tf_db_path=populated_db)
+        assert tech["status"] == "ok"
+        assert [c["symbol"] for c in tech["candidates"]] == ["603256.SH"]  # [TF-P0-001] default TECH_TRADE
 
 
 class TestRunDiscoveryScan:

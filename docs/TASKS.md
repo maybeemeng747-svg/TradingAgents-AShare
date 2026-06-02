@@ -42,7 +42,7 @@
 16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
 17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
 18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
-19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，ready）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
 20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，ready）。
 21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，ready）。
 22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，ready）。
@@ -230,7 +230,7 @@
 ### TF-P0-001: TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0）
 - **描述**：修复本地运行态 `tradeflow.db` 仍为旧 schema，导致 H-004/H-005/H-007/H-008/TF-DATE 字段无法落库；同时修复候选名称等于代码时不回填中文名、盘中观察执行接口在运行后端中不可用的问题。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done -- TF-P0-001-20260602
 - **问题来源**：
   - `tradeflow_candidates` 缺少 `candidate_type/mandate_score_component/ambush_score/mandate_topic/company_role/watchlist_note_suggested/effective_trade_date` 等新列。
   - 今日候选 `name` 被写成 `601689.SH` 等代码，`resolve_tradeflow_name()` 误认为已有名称而不回填。

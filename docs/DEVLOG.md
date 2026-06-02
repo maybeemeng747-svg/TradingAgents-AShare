@@ -4,6 +4,48 @@
 
 ---
 
+## 2026-06-02 | TF-P0-001: TradeFlow 运行态 schema 迁移、名称回填与观察路由修复
+
+- **执行者**：OpenCode
+- **任务**：TF-P0-001 — 修复本地运行态 `tradeflow.db` 仍为旧 schema 导致 H/TF-DATE 字段无法落库；修复候选名称等于代码时不回填中文名；修复盘中观察执行接口运行后端返回 405。
+- **修改文件**：
+  - `tradingagents/tradeflow/symbol_utils.py` — [TF-P0-001] runtime_schema_name_observe_fix
+    - 新增 `_IS_CODE_PATTERN` 正则和 `_looks_like_code()` 函数：检测 `XXXXXX` / `XXXXXX.SH/SZ/BJ` 等代码格式名称
+    - `resolve()` 方法重构：使用 `_looks_like_code()` 替代旧逻辑，同时检测 `"--"` placeholder，代码类名称和占位符都会走 cache fallback
+    - 解决 `601689.SH` 被当作"已有名称"不回填中文的问题
+  - `tradingagents/tradeflow/candidate_engine.py` — [TF-P0-001]
+    - `save_candidate()` 新增 `_looks_like_code()` 检测，name 为代码格式时触发 resolve
+    - import 更新：新增 `_looks_like_code`
+  - `api/services/tradeflow_service.py` — [TF-P0-001]
+    - `_connect()` 新增 `init_db(db_path)` 调用：确保每次 API 连接 tradeflow.db 时自动迁移 schema
+    - 修复旧 DB 连接后因缺少列导致 `_rget()` 返回 None 的问题
+  - `api/main.py` — [TF-P0-001]
+    - `lifespan()` 新增 tradeflow DB 初始化：启动时即执行 schema migration
+    - 防止首次 API 请求才触发迁移导致延迟
+  - `tests/test_tf_p0_001_runtime_fix.py` — 新建，37 个测试覆盖：
+    - `TestLooksLikeCode` (13): bare code / SH/SZ/BJ suffix / lowercase / Chinese name / empty / None / whitespace / placeholder / random / 5-digit / 7-digit
+    - `TestNameBackfill` (6): code-like name / bare code / real name / empty / placeholder / SZ code
+    - `TestSchemaMigration` (5): migration adds columns / preserves data / idempotent / daily_plans dates / filtered dates
+    - `TestSaveCandidateNameBackfill` (3): code name resolved / bare code resolved / real name kept
+    - `TestCandidateTypeDefault` (1): empty → TECH_TRADE
+    - `TestAPILayerNameBackfill` (1): _row_to_candidate_item resolves code name
+    - `TestObserveRoute` (2): POST /v1/tradeflow/observe/run registered / GET /v1/tradeflow/observe registered
+    - `TestConnectMigratesSchema` (1): _connect migrates old schema
+    - `TestAcceptanceTFP0001` (4): old schema migration / code→Chinese / observe JSON not 405 / no live TA
+  - `tests/test_ui001_tradeflow_api.py` — `test_filter_by_candidate_type` 更新：`c2` 的 `candidate_type` 现在默认为 `TECH_TRADE`
+  - `docs/TASKS.md` — TF-P0-001 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：37 passed (TF-P0-001)；143 passed (tradeflow 回归)；3111 passed (全部)；17 skipped；0 failed；npm run build 通过
+- **关键逻辑**：
+  - Schema migration: `_connect()` 每次连接时调用 `init_db()`，确保旧 DB 自动获得 H-004/H-007/H-008/TF-DATE 等全部 77 个新列
+  - Startup migration: `lifespan()` 启动时即执行一次，避免首次请求延迟
+  - Name backfill: `_looks_like_code()` 用正则 `\d{6}(\.(SH|SZ|SS|BJ))?$` 检测代码格式名称，代码类名称 + `"--"` placeholder 都触发 cache fallback
+  - `save_candidate()`: 增量检测 `_looks_like_code(candidate.name)` 作为触发 resolve 的条件之一
+  - Observe route: 代码已正确注册 POST `/v1/tradeflow/observe/run`，405 问题根源是旧 schema 导致运行时错误；schema migration 修复后路由正常
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-02 | Runtime Layer Architecture Update
 
 - **执行者**：Codex
@@ -2004,3 +2046,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-006-20260602-round1.txt
 - **Run archive**: docs/task_runs/DATA-006-20260602-030716/
+
+## 2026-06-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-P0-001 - TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0）
+- **Priority**: P0
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TF-P0-001-20260602-round1.txt
+- **Run archive**: docs/task_runs/TF-P0-001-20260602-180012/

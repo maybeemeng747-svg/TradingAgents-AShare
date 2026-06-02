@@ -65,6 +65,16 @@ def symbol_bare_code(symbol: str) -> str:
 
 _NAME_PLACEHOLDER = "--"
 
+_IS_CODE_PATTERN = re.compile(r"^\d{6}(\.(SH|SZ|SS|BJ|sh|sz|ss|bj))?$", re.IGNORECASE)
+
+
+def _looks_like_code(name: str) -> bool:
+    """Return True if *name* looks like a stock code rather than a real name."""
+    if not name or not name.strip():
+        return True
+    s = name.strip()
+    return bool(_IS_CODE_PATTERN.match(s))
+
 
 class StockNameResolver:
     """Thread-safe, lazy-loaded code→name resolver with TTL cache.
@@ -140,12 +150,8 @@ class StockNameResolver:
         """
         norm_sym = normalize_tradeflow_symbol(symbol)
         bare = symbol_bare_code(norm_sym)
-        if name and name.strip():
-            stripped = name.strip()
-            if stripped == norm_sym or stripped == bare:
-                pass
-            else:
-                return stripped
+        if name and name.strip() and name.strip() != _NAME_PLACEHOLDER and not _looks_like_code(name):
+            return name.strip()
 
         self._ensure_loaded()
 
