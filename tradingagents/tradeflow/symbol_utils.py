@@ -134,13 +134,19 @@ class StockNameResolver:
     def resolve(self, symbol: str, name: str = "") -> str:
         """Resolve name for *symbol*, falling back through cache.
 
-        Returns the supplied *name* when non-empty, otherwise looks up
-        the cached map, and finally returns ``"--"``.
+        Returns the supplied *name* when it looks like a real Chinese stock
+        name (non-empty and not equal to symbol or bare code), otherwise
+        looks up the cached map, and finally returns ``"--"``.
         """
-        if name and name.strip():
-            return name.strip()
-
         norm_sym = normalize_tradeflow_symbol(symbol)
+        bare = symbol_bare_code(norm_sym)
+        if name and name.strip():
+            stripped = name.strip()
+            if stripped == norm_sym or stripped == bare:
+                pass
+            else:
+                return stripped
+
         self._ensure_loaded()
 
         with self._map_lock:
@@ -148,7 +154,6 @@ class StockNameResolver:
             if cached:
                 return cached
 
-        bare = symbol_bare_code(norm_sym)
         with self._map_lock:
             for k, v in self._reverse_map.items():
                 if symbol_bare_code(k) == bare:

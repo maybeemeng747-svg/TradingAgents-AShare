@@ -31,7 +31,7 @@ from .selection_priority_gate import run_selection_priority_gate, SelectionPrior
 from .tier_budget import classify_candidate_tier, TierBudgetResult  # [S-007] candidate_tier_budget
 from .evidence_gate import compute_evidence_completeness, apply_evidence_gate, EvidenceGateResult  # [S-008] tradeflow_evidence_gate
 from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
-from .symbol_utils import normalize_tradeflow_symbol, resolve_tradeflow_name  # [UI-008] tradeflow_field_normalization
+from .symbol_utils import normalize_tradeflow_symbol, resolve_tradeflow_name, symbol_bare_code  # [UI-008] tradeflow_field_normalization
 from .ambush_score import compute_ambush_score, AmbushScoreResult  # [H-004] mandate_ambush_score
 from .mandate_ta_queue_router import route_to_research_queue, QueueRouteResult  # [H-007] mandate_ta_queue_router
 from .mandate_watchlist_note import generate_watchlist_note, WatchlistNoteResult  # [H-008] mandate_watchlist_note
@@ -103,6 +103,106 @@ CREATE TABLE IF NOT EXISTS tradeflow_filtered_symbols (
     UNIQUE(trade_date, symbol, reason)
 );
 """
+
+
+_MISSING_COLUMNS = [
+    ("primary_strategy", "TEXT DEFAULT ''"),
+    ("policy_tags_json", "TEXT DEFAULT '[]'"),
+    ("version_score", "REAL DEFAULT 0.0"),
+    ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ("narrative_score", "REAL DEFAULT 0.0"),
+    ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
+    ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ("risk_penalty", "REAL DEFAULT 0.0"),
+    ("risk_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ("risk_reasons_json", "TEXT DEFAULT '[]'"),
+    ("game_balance", "TEXT DEFAULT ''"),
+    ("bull_case", "TEXT DEFAULT ''"),
+    ("bear_case", "TEXT DEFAULT ''"),
+    ("policy_case", "TEXT DEFAULT ''"),
+    ("fund_flow_case", "TEXT DEFAULT ''"),
+    ("resonance_count", "INTEGER DEFAULT 0"),
+    ("game_balance_refs_json", "TEXT DEFAULT '[]'"),
+    ("fund_flow_anomaly_score", "REAL DEFAULT 0.0"),
+    ("fund_flow_anomaly_tags_json", "TEXT DEFAULT '[]'"),
+    ("fund_flow_anomaly_refs_json", "TEXT DEFAULT '[]'"),
+    ("fund_flow_unit_verified", "INTEGER DEFAULT 0"),
+    ("fund_flow_individual_summary", "TEXT DEFAULT ''"),
+    ("fund_flow_board_summary", "TEXT DEFAULT ''"),
+    ("composite_score", "REAL DEFAULT 0.0"),
+    ("signal_category_hits_json", "TEXT DEFAULT '[]'"),
+    ("positive_category_count", "INTEGER DEFAULT 0"),
+    ("data_completeness", "REAL DEFAULT 0.0"),
+    ("missing_evidence_json", "TEXT DEFAULT '[]'"),
+    ("why_deep_ta", "TEXT DEFAULT ''"),
+    ("why_not_deep_ta", "TEXT DEFAULT ''"),
+    ("priority_rank", "TEXT DEFAULT ''"),
+    ("tier", "TEXT DEFAULT ''"),
+    ("ta_budget_priority", "INTEGER DEFAULT 0"),
+    ("tier_reason", "TEXT DEFAULT ''"),
+    ("missing_evidence_for_upgrade_json", "TEXT DEFAULT '[]'"),
+    ("tradeflow_data_completeness", "REAL DEFAULT 0.0"),
+    ("missing_data_fields_json", "TEXT DEFAULT '[]'"),
+    ("what_to_upgrade_json", "TEXT DEFAULT '[]'"),
+    ("evidence_gate_applied", "INTEGER DEFAULT 0"),
+    ("universe_sources_json", "TEXT DEFAULT '[]'"),
+    ("observe_state", "TEXT DEFAULT 'WAITING'"),
+    ("observe_trigger_count", "INTEGER DEFAULT 0"),
+    ("observe_first_trigger_time", "TEXT DEFAULT ''"),
+    ("deep_ta_status", "TEXT DEFAULT ''"),
+    ("deep_ta_dispatch_reason", "TEXT DEFAULT ''"),
+    ("deep_ta_model", "TEXT DEFAULT ''"),
+    ("deep_ta_report_path", "TEXT DEFAULT ''"),
+    ("deep_ta_dispatch_time", "TEXT DEFAULT ''"),
+    ("deep_ta_position_context", "TEXT DEFAULT ''"),
+    ("plan_date", "TEXT DEFAULT ''"),
+    ("effective_trade_date", "TEXT DEFAULT ''"),
+    ("observe_date", "TEXT DEFAULT ''"),
+    ("beneficiary_path_json", "TEXT DEFAULT '[]'"),
+    ("company_role", "TEXT DEFAULT ''"),
+    ("mandate_topic", "TEXT DEFAULT ''"),
+    ("mandate_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ("candidate_type", "TEXT DEFAULT ''"),
+    ("ambush_score", "REAL DEFAULT 0.0"),
+    ("mandate_score_component", "REAL DEFAULT 0.0"),
+    ("beneficiary_score_component", "REAL DEFAULT 0.0"),
+    ("pricing_gap_score", "REAL DEFAULT 0.0"),
+    ("overheat_penalty", "REAL DEFAULT 0.0"),
+    ("candidate_type_reason", "TEXT DEFAULT ''"),
+    ("deep_ta_route", "TEXT DEFAULT ''"),
+    ("deep_ta_route_reason", "TEXT DEFAULT ''"),
+    ("ambush_reasons_json", "TEXT DEFAULT '[]'"),
+    ("ambush_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ("research_queue", "TEXT DEFAULT ''"),
+    ("research_intent", "TEXT DEFAULT ''"),
+    ("research_route_reason", "TEXT DEFAULT ''"),
+    ("watchlist_note", "TEXT DEFAULT ''"),
+    ("watchlist_note_suggested", "TEXT DEFAULT ''"),
+    ("watchlist_topic", "TEXT DEFAULT ''"),
+    ("watchlist_benefit_score", "REAL DEFAULT 0.0"),
+    ("watchlist_consensus_score", "REAL DEFAULT 0.0"),
+    ("watchlist_evidence_gap_json", "TEXT DEFAULT '[]'"),
+]
+
+
+def ensure_columns(conn: sqlite3.Connection) -> None:
+    """Ensure all Candidate columns exist in tradeflow_candidates.
+
+    Safe to call repeatedly — uses ALTER TABLE ADD COLUMN wrapped in
+    try/except so existing columns are silently skipped.
+    """
+    existing = {
+        r[1]
+        for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()
+    }
+    for col_name, col_type in _MISSING_COLUMNS:
+        if col_name not in existing:
+            try:
+                conn.execute(
+                    f"ALTER TABLE tradeflow_candidates ADD COLUMN {col_name} {col_type}"
+                )
+            except sqlite3.OperationalError:
+                pass
 
 
 def init_db(db_path: str) -> None:
@@ -872,6 +972,9 @@ def evaluate_symbol(
     candidate.deep_ta_route_reason = ambush_result.deep_ta_route_reason
     candidate.ambush_reasons = ambush_result.ambush_reasons
     candidate.ambush_evidence_refs = ambush_result.ambush_evidence_refs
+    if not candidate.candidate_type:
+        candidate.candidate_type = "TECH_TRADE"
+        candidate.candidate_type_reason = candidate.candidate_type_reason or "无政策/事件/受益路径证据，默认技术交易"
     candidate.evidence["ambush_score"] = {
         "ambush_score": ambush_result.ambush_score,
         "candidate_type": ambush_result.candidate_type,
@@ -939,9 +1042,19 @@ def evaluate_symbol(
 def save_candidate(candidate: Candidate, db_path: str) -> int:
     """Save a candidate to the database. Upsert on (trade_date, symbol)."""
     candidate.symbol = normalize_tradeflow_symbol(candidate.symbol)  # [UI-008]
-    if not candidate.name or candidate.name == "--":
+    _needs_name_lookup = (
+        not candidate.name
+        or candidate.name == "--"
+        or candidate.name == candidate.symbol
+        or candidate.name == symbol_bare_code(candidate.symbol)
+    )
+    if _needs_name_lookup:
         candidate.name = resolve_tradeflow_name(candidate.symbol, candidate.name)  # [UI-008]
+    if not candidate.candidate_type:
+        candidate.candidate_type = "TECH_TRADE"
+        candidate.candidate_type_reason = candidate.candidate_type_reason or "无政策/事件/受益路径证据，默认技术交易"
     conn = sqlite3.connect(db_path)
+    ensure_columns(conn)
     row = candidate.to_db_row()
     try:
         conn.execute(
