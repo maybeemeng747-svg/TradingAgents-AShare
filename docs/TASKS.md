@@ -42,18 +42,22 @@
 16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
 17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
 18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
-19. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready，依赖 DATA-004/DATA-006 ✓）。
-20. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready，依赖 DATA-005 ✓）。
-21. `H-009`：昊天候选反证/过热降权校准（P1，ready，依赖 H-006/V-004 ✓）。
-22. `H-010`：政策主题生命周期与版本状态注册表（P1，ready，依赖 H-002/H-006 ✓）。
-23. `H-011`：候选矛盾证据与负面清单解释（P2，ready，依赖 H-009 ✓）。
-24. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，ready，依赖 H-007/UI-006 ✓）。
-25. `UI-010`：昊天候选对比视图与证据缺口排序（P2，ready，依赖 H-005/DATA-007 ✓）。
-26. `V-005`：夜间昊天候选质量日报与样本回放（P1，ready，依赖 V-004/DATA-006 ✓）。
-27. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，ready，依赖 V-002 ✓）。
-28. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，ready，依赖 INF-001 ✓）。
-29. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，ready，依赖 TF-OBS-001/UI-004 ✓）。
-30. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，ready，依赖 H-008/VLM-001 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，ready）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，ready）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，ready）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，ready）。
+23. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready，依赖 DATA-004/DATA-006 ✓）。
+24. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready，依赖 DATA-005 ✓）。
+25. `H-009`：昊天候选反证/过热降权校准（P1，ready，依赖 H-006/V-004 ✓）。
+26. `H-010`：政策主题生命周期与版本状态注册表（P1，ready，依赖 H-002/H-006 ✓）。
+27. `H-011`：候选矛盾证据与负面清单解释（P2，ready，依赖 H-009 ✓）。
+28. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，ready，依赖 H-007/UI-006 ✓）。
+29. `UI-010`：昊天候选对比视图与证据缺口排序（P2，ready，依赖 H-005/DATA-007 ✓）。
+30. `V-005`：夜间昊天候选质量日报与样本回放（P1，ready，依赖 V-004/DATA-006 ✓）。
+31. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，ready，依赖 V-002 ✓）。
+32. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，ready，依赖 INF-001 ✓）。
+33. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，ready，依赖 TF-OBS-001/UI-004 ✓）。
+34. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，ready，依赖 H-008/VLM-001 ✓）。
 
 ### 数据源治理候选队列
 
@@ -77,6 +81,144 @@
 - 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
 
 ---
+
+## P0. 2026-06-02 运行态修复与 TA 控制台任务池
+
+> 背景：用户 2026-06-02 生成今日候选池后发现：名称显示代码、候选类型未分类、昊天分/埋伏分/政策主题/角色/自选备注为空、盘中观察执行报错；同时智能分析控制台没有显式短线/中线选择。这些问题阻塞 TradeFlow/TA 日常试用，优先级高于后续策略优化。
+
+### TF-P0-001: TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0）
+- **描述**：修复本地运行态 `tradeflow.db` 仍为旧 schema，导致 H-004/H-005/H-007/H-008/TF-DATE 字段无法落库；同时修复候选名称等于代码时不回填中文名、盘中观察执行接口在运行后端中不可用的问题。
+- **优先级**：P0
+- **状态**：ready
+- **问题来源**：
+  - `tradeflow_candidates` 缺少 `candidate_type/mandate_score_component/ambush_score/mandate_topic/company_role/watchlist_note_suggested/effective_trade_date` 等新列。
+  - 今日候选 `name` 被写成 `601689.SH` 等代码，`resolve_tradeflow_name()` 误认为已有名称而不回填。
+  - 前端调用 `POST /v1/tradeflow/observe/run`，当前运行后端返回 405，源码已有路由，需确认重启/路由注册/API client 方法一致。
+- **执行约束**：
+  - 不删除 `tradeflow.db` 历史数据。
+  - 不写生产 `tradingagents.db` schema。
+  - 不触发 TA/LLM。
+  - 不跑全市场扫描。
+- **实现要点**：
+  1. 增加 TradeFlow schema migration smoke：
+     - 应用启动或 Discovery 前必须调用 `init_db()` 或等价迁移。
+     - 旧 `tradeflow.db` 能补齐 H/TF-DATE/H-008 字段。
+  2. 名称回填修复：
+     - 当 `name == symbol`、`name == bare_code`、`name` 形似 `XXXXXX.SH/SZ/BJ` 时，视为缺失并重新解析中文名。
+     - API 层 `_row_to_candidate_item()` 也要兜底。
+  3. 盘中观察路由修复：
+     - 确认 `POST /v1/tradeflow/observe/run?date=YYYY-MM-DD` 在运行服务中可用。
+     - 若生产前端仍打到 GET/static fallback，修正 API client 或路由顺序。
+  4. 对旧库当日 4 只候选可重新补字段或至少重新生成后字段完整。
+- **验收方式**：
+  - 旧 schema fixture 运行迁移后包含 `candidate_type/effective_trade_date/watchlist_note_suggested` 等列。
+  - `601689.SH` API 返回 `拓普集团`，不再显示代码作为名称。
+  - `POST /v1/tradeflow/observe/run?date=2026-06-02` 返回 JSON，不返回 405/HTML。
+  - `pytest tests/test_tradeflow_candidate_engine.py tests/test_ui001_tradeflow_api.py tests/test_tf_obs_001_observe_runner.py -q` 或等价测试通过。
+  - `npm run build` 通过。
+- **代码标注要求**：`# [TF-P0-001] runtime_schema_name_observe_fix` / `// [TF-P0-001] runtime_schema_name_observe_fix`
+
+### TA-UI-001: 智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0）
+- **描述**：在 `/analysis` 智能分析控制台显式暴露 TA 分析周期和意图选择，避免用户只能靠自然语言猜测系统是否按中线运行。
+- **优先级**：P0
+- **状态**：ready
+- **背景**：
+  - 后端 G-001 已支持 `horizon/analysis_intent/position_context`。
+  - 自选/定时分析页已有短线/中线切换，但智能分析页没有。
+  - 昊天左侧候选需要默认走中线研究；短线技术池才走短线确认。
+- **执行约束**：
+  - 不触发 live TA 测试。
+  - 不改 prompts。
+  - 不输出强买卖词。
+- **实现要点**：
+  1. `/analysis` 页面增加控件：
+     - 周期：`短线` / `中线`
+     - 意图：`观察` / `入场研究` / `持仓复盘` / `加仓判断` / `减仓止损`
+     - 持仓状态：`未持仓` / `已持仓`
+  2. 提交 `/v1/analyze` 时写入：
+     - `horizons: ["short"|"medium"]`
+     - `user_context.analysis_intent`
+     - `user_context.position_context`
+     - 或后端当前接受的等价字段。
+  3. UI 选择优先于自然语言推断；自然语言仍可补充具体问题。
+  4. 报告/聊天状态顶部展示本次上下文：
+     - `本次分析：中线｜入场研究｜未持仓`
+  5. 从 TradeFlow 跳转 `/analysis?symbol=...` 时：
+     - `POLICY_AMBUSH` 默认中线 + 政策验证/入场研究。
+     - `TECH_TRADE` 默认短线 + 趋势确认。
+- **验收方式**：
+  - 前端选择中线后，请求 payload 含 `medium`。
+  - 选择未持仓入场研究时，后端最终 `analysis_intent=entry` 且 `position_context.has_position=false`。
+  - 选择已持仓复盘时，后端最终 `analysis_intent=holding` 且 `position_context.has_position=true`。
+  - TradeFlow 左侧候选跳转智能分析时默认中线。
+  - `npm run build` 通过；相关 API/前端测试通过。
+- **代码标注要求**：`# [TA-UI-001] analysis_console_horizon_intent` / `// [TA-UI-001] analysis_console_horizon_intent`
+
+### TF-P0-002: 候选池分层：短线技术池与昊天左侧池显式拆分（P0）
+- **描述**：把 TradeFlow 候选池明确拆成“短线技术池”和“昊天左侧池”，防止纯 VCP/回踩支撑候选被误解为昊天战法候选。
+- **优先级**：P0
+- **状态**：ready
+- **背景**：
+  - 2026-06-02 今日 4 只候选均来自 watchlist，策略为 `PULLBACK_SUPPORT/VCP`，只有技术信号，数据完整度约 38%-40%。
+  - 用户主目标是昊天左侧中线，但当前候选更像短线做 T。
+- **执行约束**：
+  - 不改变已有技术策略，只增加分类和展示。
+  - 不输出买卖建议。
+  - 不调用 LLM。
+- **实现要点**：
+  1. 候选生成时明确 `candidate_type`：
+     - 有政策/事件/受益路径证据：按 `POLICY_AMBUSH/POLICY_CONFIRM/EVENT_WATCH`。
+     - 仅 VCP/PULLBACK_SUPPORT：标记 `TECH_TRADE`。
+     - 无法分类：标记 `UNCLASSIFIED_DATA_GAP` 或给出缺口原因，而不是空字符串。
+  2. 前端候选页增加池子筛选：
+     - 全部
+     - 昊天左侧
+     - 政策确认
+     - 短线技术
+     - 事件观察
+     - 证据缺口
+  3. 短线技术池隐藏/弱化昊天字段，显示：
+     - 技术策略、触发价、失效价、数据完整度、为什么不是昊天票。
+  4. 昊天池必须展示：
+     - 昊天分、埋伏分、政策主题、公司角色、受益路径、自选备注、反证缺口。
+- **验收方式**：
+  - 纯 VCP/PULLBACK 样本显示 `TECH_TRADE`，不再“未分类”。
+  - 有政策证据样本显示 `POLICY_AMBUSH/POLICY_CONFIRM`。
+  - 前端切换“短线技术池/昊天左侧池”结果正确。
+  - `pytest tests/test_h004_ambush_score.py tests/test_ui001_tradeflow_api.py tests/test_tradeflow_*.py -q` 通过；`npm run build` 通过。
+- **代码标注要求**：`# [TF-P0-002] tradeflow_pool_split` / `// [TF-P0-002] tradeflow_pool_split`
+
+### TF-P0-003: TradeFlow 生成候选池后的端到端 UI smoke 验收（P0）
+- **描述**：建立一个低成本端到端 smoke，模拟“生成今日候选池 → 前端候选页 → 盘中观察 → 候选详情 → 跳 TA 预案”的完整链路，专门防止字段落库和前端显示断裂。
+- **优先级**：P0
+- **状态**：ready
+- **前置条件**：`TF-P0-001`、`TF-P0-002` 完成或同步完成。
+- **执行约束**：
+  - 不跑 live TA。
+  - 不调用 LLM。
+  - 不依赖当天真实行情。
+  - 不写生产 DB。
+- **实现要点**：
+  1. 使用 fixture DB 或临时 `tradeflow.db`。
+  2. 构造至少 3 类候选：
+     - `TECH_TRADE`
+     - `POLICY_AMBUSH`
+     - `UNCLASSIFIED_DATA_GAP` 或证据缺口样本。
+  3. 验证 API：
+     - `/candidates`
+     - `/observe`
+     - `/candidate detail`
+     - `/ta-queue` 或研究预案。
+  4. 前端 smoke 可用 Playwright 或组件级 mock：
+     - 名称不是代码。
+     - 候选类型不是空。
+     - 昊天字段在政策候选中可见。
+     - 技术候选显示“短线技术池”语义。
+- **验收方式**：
+  - smoke 报告写入 `docs/tradeflow_acceptance/` 或测试 snapshot。
+  - `pytest tests/test_ui001_tradeflow_api.py tests/test_tradeflow_*.py -q` 通过。
+  - `npm run build` 通过。
+- **代码标注要求**：`# [TF-P0-003] tradeflow_ui_e2e_smoke` / `// [TF-P0-003] tradeflow_ui_e2e_smoke`
 
 ## TF. TradeFlow 主链路稳定任务池（2026-06-01 新增）
 
