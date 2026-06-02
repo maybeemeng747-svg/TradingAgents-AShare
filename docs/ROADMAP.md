@@ -1,6 +1,6 @@
 # TradingAgents-AShare Roadmap
 
-> Last updated: 2026-05-31
+> Last updated: 2026-06-02
 
 ## Product Direction
 
@@ -17,6 +17,38 @@ Review decides whether the whole system is learning or drifting.
 ```
 
 The system must not become a pile of disconnected ideas. New work should fit one of the layers below.
+
+## Runtime Principle
+
+The system must stay light enough for real research use. It should not turn every click into a full multi-agent report.
+
+Default runtime layers:
+
+```text
+Fast Radar
+  └─ Target latency: 5-30 seconds
+     No LLM by default. Used for TradeFlow candidate discovery, data health,
+     evidence gaps, strategy classification, and "is this worth deeper work?"
+
+Light Research
+  └─ Target latency: 1-3 minutes
+     Selective modules only. Used for one candidate after user intent is clear:
+     medium-term policy validation, short-term technical confirmation, or
+     position-aware risk review.
+
+Full TA
+  └─ Target latency: 10-20 minutes
+     Full multi-agent debate. Manual trigger only, with model/cost confirmation.
+     Used for high-conviction candidates, position risk, or deep research.
+```
+
+Architecture rule:
+
+```text
+Fast first. Light second. Full only by explicit confirmation.
+```
+
+Any new feature must declare which layer it belongs to, its expected runtime, whether it calls LLMs, and what user action is required before running costly analysis.
 
 ## Target Architecture
 
@@ -67,6 +99,14 @@ Frontend Workbench
   ├─ Filtered-symbol trace
   ├─ TA queue and report links
   └─ Data source health
+
+Performance And Cost Layer
+  ├─ Runtime tier: fast / light / full
+  ├─ Latency budget and timeout policy
+  ├─ LLM call budget and model disclosure
+  ├─ Scheduler cost guard
+  ├─ Manual confirmation before full TA
+  └─ Per-run telemetry: elapsed time, modules, tokens/calls, reason
 
 Automation Layer
   ├─ TASKS.md task pool
@@ -179,6 +219,29 @@ Exit criteria:
 - No automatic costly analysis.
 - User can manually trigger TA from qualified candidates.
 - TA receives candidate context: mandate topic, beneficiary path, evidence gaps, and position context.
+- UI clearly separates "light research" from "full TA".
+- Every TA trigger shows expected runtime and model/cost risk before execution.
+
+### Phase 4.5: Runtime Budget And Lightweight Analysis
+
+Goal: keep the system responsive enough for盤前/盤中 use.
+
+Key tasks:
+
+- Define runtime tiers and speed budgets across API/UI/scheduler.
+- Add lightweight TA profiles:
+  - `MIDLINE_POLICY_LIGHT`
+  - `SHORT_TECH_LIGHT`
+  - `POSITION_RISK_LIGHT`
+- Add cost and latency telemetry for every analysis run.
+- Prevent scheduler and TradeFlow from silently triggering full TA.
+
+Exit criteria:
+
+- TradeFlow candidate discovery returns within the fast budget in normal fixture/small-pool mode.
+- Light research can run with a subset of agents/modules.
+- Full TA requires explicit user confirmation.
+- Frontend displays runtime tier and estimated cost before analysis starts.
 
 ### Phase 5: Review And Calibration
 

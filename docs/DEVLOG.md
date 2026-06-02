@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-06-02 | Runtime Layer Architecture Update
+
+- **执行者**：Codex
+- **背景**：用户提出系统不应过重，不能每次指令都等待完整多 Agent 报告；盘前/盘中使用需要时效。
+- **架构更新**：
+  - `docs/ROADMAP.md` 新增 Runtime Principle：`Fast Radar` / `Light Research` / `Full TA` 三层。
+  - 新增 Performance And Cost Layer，要求所有功能标注运行层级、预计耗时、是否调用 LLM、是否需要人工确认。
+  - Phase 4 增加轻量研究和完整 TA 的显式区分。
+  - 新增 Phase 4.5 Runtime Budget And Lightweight Analysis。
+- **任务池更新**：
+  - `PERF-001` 运行层级与速度预算契约（P1）。
+  - `PERF-002` 轻量 TA Profile 与模块路由（P1）。
+  - `PERF-003` 分析运行耗时/调用成本遥测与前端展示（P1）。
+  - `PERF-004` 完整 TA 手动确认与 scheduler 成本门禁（P1）。
+- **原则**：TradeFlow 默认 fast，不调用 LLM；轻量 TA 只跑必要模块；完整 TA 只能由用户明确确认。
+
 ## 2026-06-02 | P0 Runtime/UI Task Release
 
 - **执行者**：Codex
