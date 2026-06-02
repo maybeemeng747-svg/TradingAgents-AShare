@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-06-02 | H-series API/UI shared closeout
+
+- **执行者**：Codex
+- **背景**：H-005/H-007/H-008/V-004/DATA-006 自动开发完成后，仍有 7 个前端/API 共享接线文件未提交。
+- **收尾修复**：
+  - `api/main.py` / `api/services/tradeflow_service.py` / `api/tradeflow_schemas.py` 补齐 `candidate_type` 过滤、昊天候选字段、研究队列字段和自选备注字段。
+  - `frontend/src/pages/TradeFlow.tsx` 增加候选类型筛选、昊天分/埋伏分/政策主题/自选备注等列。
+  - `frontend/src/components/TradeFlowCandidateDrawer.tsx` 增加“政策逻辑”和“自选备注”区块。
+  - `frontend/src/services/api.ts` / `frontend/src/types/index.ts` 同步前端 API 参数和类型。
+  - `tests/test_ui001_tradeflow_api.py` 增加候选类型字段、筛选、详情证据字段测试。
+  - `docs/TASKS.md` 修正 H-005/DATA-005/H-007 顶部状态残留，避免自动链重复领取。
+- **验证**：
+  - `.venv/bin/python -m pytest tests/test_ui001_tradeflow_api.py tests/test_h007_ta_queue_router.py tests/test_h008_mandate_watchlist_note.py tests/test_v004_mandate_e2e_smoke.py tests/test_data006_daily_digest.py -q` → 318 passed。
+  - `npm run build` → passed（仅 Vite chunk-size warning）。
+
 ## 2026-06-02 | DATA-006: 数据源质量报告接入夜间日报
 
 - **执行者**：OpenCode

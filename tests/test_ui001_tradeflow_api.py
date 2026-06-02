@@ -86,6 +86,26 @@ def sample_candidate():
         deep_ta_status="PENDING",
         deep_ta_dispatch_reason="tier A candidate",
         evidence={"VCP": {"score": 65, "reason": "VCP形态"}},
+        candidate_type="POLICY_AMBUSH",
+        mandate_score_component=72.5,
+        ambush_score=68.0,
+        mandate_topic="低空经济",
+        company_role="CORE_SUPPLIER",
+        beneficiary_path=["空管系统", "核心设备"],
+        candidate_type_reason="政策连续性强且公司受益路径明确",
+        deep_ta_route="MIDLINE_RESEARCH",
+        ambush_reasons=["政策连续性强", "未明显过热"],
+        ambush_evidence_refs=[{"title": "低空经济政策支持", "source": "MINISTRY"}],
+        mandate_evidence_refs=[{"title": "低空经济政策支持", "source": "MINISTRY"}],
+        research_queue="MIDLINE_POLICY",
+        research_intent="policy_validation",
+        research_route_reason="左侧政策候选进入中线研究队列",
+        watchlist_note="用户原备注",
+        watchlist_note_suggested="低空经济｜利好8.8｜共识86｜窗口1月｜缺口:订单",
+        watchlist_topic="低空经济",
+        watchlist_benefit_score=8.8,
+        watchlist_consensus_score=86.0,
+        watchlist_evidence_gap=["订单"],
     )
     c.signals = [CandidateSignal(strategy_tag="VCP", score=65.0, reason="VCP形态确认")]
     return c
@@ -272,6 +292,30 @@ class TestCandidatesWithData:
             assert "action" in c
             assert c["action"] in {"OBSERVE", "WAIT_TRIGGER", "NEED_DEEP_TA", "REMOVE_FROM_WATCH"}
 
+    def test_mandate_fields_populated(self, populated_db):
+        result = get_candidates("2026-05-30", tf_db_path=populated_db)
+        c = next(item for item in result["candidates"] if item["symbol"] == "002353.SZ")
+        assert c["candidate_type"] == "POLICY_AMBUSH"
+        assert c["mandate_score"] == 72.5
+        assert c["ambush_score"] == 68.0
+        assert c["mandate_topic"] == "低空经济"
+        assert c["company_role"] == "CORE_SUPPLIER"
+        assert c["beneficiary_path"] == ["空管系统", "核心设备"]
+        assert c["research_queue"] == "MIDLINE_POLICY"
+        assert c["research_intent"] == "policy_validation"
+        assert c["watchlist_note"] == "用户原备注"
+        assert c["watchlist_note_suggested"].startswith("低空经济")
+        assert c["watchlist_evidence_gap"] == ["订单"]
+
+    def test_filter_by_candidate_type(self, populated_db):
+        result = get_candidates("2026-05-30", candidate_type="POLICY_AMBUSH", tf_db_path=populated_db)
+        assert result["status"] == "ok"
+        assert [c["symbol"] for c in result["candidates"]] == ["002353.SZ"]
+
+        empty = get_candidates("2026-05-30", candidate_type="TECH_TRADE", tf_db_path=populated_db)
+        assert empty["status"] == "ok"
+        assert empty["candidates"] == []
+
 
 class TestRunDiscoveryScan:
     def test_discovery_scan_persists_candidates(self, tf_db, monkeypatch):
@@ -342,6 +386,9 @@ class TestCandidateDetail:
         assert isinstance(c["evidence"], dict)
         assert "action" in c
         assert c["action"] == "NEED_DEEP_TA"
+        assert c["ambush_reasons"] == ["政策连续性强", "未明显过热"]
+        assert c["ambush_evidence_refs"][0]["source"] == "MINISTRY"
+        assert c["mandate_evidence_refs"][0]["title"] == "低空经济政策支持"
 
 
 class TestObserve:

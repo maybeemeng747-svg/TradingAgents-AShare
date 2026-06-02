@@ -381,10 +381,11 @@ class ApiService {
         return this.request<TradeFlowDailyPlanResponse>(`/v1/tradeflow/daily-plan?date=${encodeURIComponent(date)}`)
     }
 
-    async getTradeFlowCandidates(date: string, tier?: string, needDeepTa?: boolean): Promise<TradeFlowCandidatesResponse> {
+    async getTradeFlowCandidates(date: string, tier?: string, needDeepTa?: boolean, candidateType?: string): Promise<TradeFlowCandidatesResponse> {  // [H-005] mandate_radar_ui
         const params = new URLSearchParams({ date })
         if (tier) params.append('tier', tier)
         if (needDeepTa !== undefined) params.append('need_deep_ta', String(needDeepTa))
+        if (candidateType) params.append('candidate_type', candidateType)  // [H-005]
         return this.request<TradeFlowCandidatesResponse>(`/v1/tradeflow/candidates?${params}`)
     }
 

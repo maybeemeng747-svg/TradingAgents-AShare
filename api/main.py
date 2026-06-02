@@ -5108,8 +5108,9 @@ def tradeflow_candidates(
     date: str = Query(..., description="交易日期 YYYY-MM-DD"),
     tier: Optional[str] = Query(None, description="层级过滤 A/B/C"),
     need_deep_ta: Optional[bool] = Query(None, description="是否需要深度TA"),
+    candidate_type: Optional[str] = Query(None, description="候选类型过滤 POLICY_AMBUSH/POLICY_CONFIRM/TECH_TRADE/EVENT_WATCH/PSEUDO_POLICY/OVERHEATED_AVOID"),  # [H-005] mandate_radar_ui
 ):
-    return _tf_get_candidates(date, tier=tier, need_deep_ta=need_deep_ta)
+    return _tf_get_candidates(date, tier=tier, need_deep_ta=need_deep_ta, candidate_type=candidate_type)
 
 
 @app.get("/v1/tradeflow/candidates/{symbol}", response_model=TradeFlowCandidateDetailResponse)

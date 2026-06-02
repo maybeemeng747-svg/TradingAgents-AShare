@@ -1,4 +1,5 @@
 // [UI-005] tradeflow_review_page
+// [H-005] mandate_radar_ui
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX } from 'lucide-react'
 import { api } from '@/services/api'
@@ -71,6 +72,18 @@ function taStatusLabel(status: string): { text: string; cls: string } {
 
 function fmtPrice(v: number | null): string {
     return v != null ? v.toFixed(2) : '-'
+}
+
+function candidateTypeLabel(ct: string): { text: string; cls: string } {  // [H-005] mandate_radar_ui
+    switch (ct) {
+        case 'POLICY_AMBUSH': return { text: '昊天左侧', cls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300' }
+        case 'POLICY_CONFIRM': return { text: '政策确认', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' }
+        case 'TECH_TRADE': return { text: '技术交易', cls: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300' }
+        case 'EVENT_WATCH': return { text: '事件观察', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' }
+        case 'PSEUDO_POLICY': return { text: '伪政策', cls: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300' }
+        case 'OVERHEATED_AVOID': return { text: '过热规避', cls: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' }
+        default: return { text: ct || '未分类', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' }
+    }
 }
 
 interface SummaryCardsProps {
@@ -838,6 +851,7 @@ export default function TradeFlow() {
     const [tierFilter, setTierFilter] = useState<string>('')
     const [deepTaFilter, setDeepTaFilter] = useState<string>('')
     const [observeFilter, setObserveFilter] = useState<string>('')
+    const [candidateTypeFilter, setCandidateTypeFilter] = useState<string>('')  // [H-005] mandate_radar_ui
     const [drawerOpen, setDrawerOpen] = useState(false)
     const [selectedCandidate, setSelectedCandidate] = useState<TradeFlowCandidateItem | null>(null)
 
@@ -853,7 +867,7 @@ export default function TradeFlow() {
         setError(null)
         try {
             const [candidatesRes, healthRes] = await Promise.all([
-                api.getTradeFlowCandidates(date, tierFilter || undefined, deepTaFilter === 'yes' ? true : deepTaFilter === 'no' ? false : undefined),
+                api.getTradeFlowCandidates(date, tierFilter || undefined, deepTaFilter === 'yes' ? true : deepTaFilter === 'no' ? false : undefined, candidateTypeFilter || undefined),  // [H-005]
                 api.getTradeFlowDataHealth(),
             ])
             setStatus(candidatesRes.status)
@@ -874,7 +888,7 @@ export default function TradeFlow() {
         } finally {
             setLoading(false)
         }
-    }, [tierFilter, deepTaFilter, observeFilter])
+    }, [tierFilter, deepTaFilter, observeFilter, candidateTypeFilter])  // [H-005]
 
     const fetchObserve = useCallback(async (date: string) => {
         setLoading(true)
@@ -1052,7 +1066,21 @@ export default function TradeFlow() {
                 )
             }
             if (candidates.length === 0) {
-                return <div className="py-20 text-center text-sm text-slate-400">无匹配候选</div>
+                const hasMandateFilter = candidateTypeFilter && ['POLICY_AMBUSH', 'POLICY_CONFIRM', 'EVENT_WATCH'].includes(candidateTypeFilter)  // [H-005]
+                return (
+                    <div className="py-20 text-center text-sm text-slate-400">
+                        <Target className="mx-auto mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
+                        无匹配候选
+                        {hasMandateFilter && (
+                            <div className="mt-2 space-y-1 text-xs text-slate-400">
+                                <div>可能原因：</div>
+                                <div>1. 政策信号源不足，尚未生成昊天候选</div>
+                                <div>2. 公司受益路径不足，无法确认政策受益标的</div>
+                                <div>3. 当前政策候选均已过热，被标记为过热规避</div>
+                            </div>
+                        )}
+                    </div>
+                )
             }
             return (
                 <div className="overflow-x-auto">
@@ -1061,11 +1089,15 @@ export default function TradeFlow() {
                             <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
                                 <th className="px-4 py-2.5 font-medium">代码</th>
                                 <th className="px-4 py-2.5 font-medium">名称</th>
+                                <th className="px-4 py-2.5 font-medium">候选类型</th>
                                 <th className="px-4 py-2.5 font-medium">层级</th>
                                 <th className="px-4 py-2.5 font-medium">评分</th>
+                                <th className="px-4 py-2.5 font-medium">昊天分</th>
+                                <th className="px-4 py-2.5 font-medium">埋伏分</th>
+                                <th className="px-4 py-2.5 font-medium">政策主题</th>
+                                <th className="px-4 py-2.5 font-medium">角色</th>
+                                <th className="px-4 py-2.5 font-medium">自选备注</th>
                                 <th className="px-4 py-2.5 font-medium">策略标签</th>
-                                <th className="px-4 py-2.5 font-medium">触发价</th>
-                                <th className="px-4 py-2.5 font-medium">失效价</th>
                                 <th className="px-4 py-2.5 font-medium">完整度</th>
                                 <th className="px-4 py-2.5 font-medium">深度TA</th>
                                 <th className="px-4 py-2.5 font-medium">观察状态</th>
@@ -1076,6 +1108,7 @@ export default function TradeFlow() {
                             {candidates.map(c => {
                                 const act = actionLabel(c.action)
                                 const obs = observeStateLabel(c.observe_state)
+                                const ct = candidateTypeLabel(c.candidate_type)  // [H-005]
                                 return (
                                     <tr
                                         key={c.symbol}
@@ -1083,12 +1116,28 @@ export default function TradeFlow() {
                                         onClick={() => handleRowClick(c)}
                                     >
                                         <td className="px-4 py-2.5 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{c.symbol}</td>
-                                        <td className="max-w-[120px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{c.name || '--'}</td>
+                                        <td className="max-w-[100px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{c.name || '--'}</td>
+                                        <td className="px-4 py-2.5">
+                                            <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${ct.cls}`}>{ct.text}</span>
+                                        </td>
                                         <td className="px-4 py-2.5">
                                             <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-bold ${tierBadgeClass(c.tier)}`}>{c.tier || '-'}</span>
                                         </td>
                                         <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{c.composite_score.toFixed(2)}</td>
-                                        <td className="max-w-[200px] px-4 py-2.5">
+                                        <td className="px-4 py-2.5 tabular-nums text-xs">
+                                            {c.mandate_score > 0 ? (
+                                                <span className="font-medium text-indigo-600 dark:text-indigo-400">{c.mandate_score.toFixed(1)}</span>
+                                            ) : <span className="text-slate-400">-</span>}
+                                        </td>
+                                        <td className="px-4 py-2.5 tabular-nums text-xs">
+                                            {c.ambush_score > 0 ? (
+                                                <span className="font-medium text-violet-600 dark:text-violet-400">{c.ambush_score.toFixed(1)}</span>
+                                            ) : <span className="text-slate-400">-</span>}
+                                        </td>
+                                        <td className="max-w-[100px] truncate px-4 py-2.5 text-xs text-slate-600 dark:text-slate-400" title={c.mandate_topic}>{c.mandate_topic || '-'}</td>
+                                        <td className="max-w-[80px] truncate px-4 py-2.5 text-xs text-slate-600 dark:text-slate-400" title={c.company_role}>{c.company_role || '-'}</td>
+                                        <td className="max-w-[180px] truncate px-4 py-2.5 text-xs text-teal-700 dark:text-teal-400" title={c.watchlist_note_suggested}>{c.watchlist_note_suggested || '-'}</td>
+                                        <td className="max-w-[160px] px-4 py-2.5">
                                             <div className="flex flex-wrap gap-1">
                                                 {c.strategy_tags.slice(0, 3).map(tag => (
                                                     <span key={tag} className="inline-block rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600 dark:bg-slate-700 dark:text-slate-300">{tag}</span>
@@ -1098,8 +1147,6 @@ export default function TradeFlow() {
                                                 )}
                                             </div>
                                         </td>
-                                        <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{c.trigger_price != null ? c.trigger_price.toFixed(2) : '-'}</td>
-                                        <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{c.invalid_price != null ? c.invalid_price.toFixed(2) : '-'}</td>
                                         <td className="px-4 py-2.5">
                                             <CompletenessBar value={c.tradeflow_data_completeness} />
                                         </td>
@@ -1267,6 +1314,19 @@ export default function TradeFlow() {
                             <Filter className="h-3.5 w-3.5" />
                             筛选
                         </div>
+                        <select
+                            value={candidateTypeFilter}
+                            onChange={e => setCandidateTypeFilter(e.target.value)}  // [H-005] mandate_radar_ui
+                            className="rounded border border-slate-200 bg-white px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                        >
+                            <option value="">全部类型</option>
+                            <option value="POLICY_AMBUSH">昊天左侧</option>
+                            <option value="POLICY_CONFIRM">政策确认</option>
+                            <option value="TECH_TRADE">技术交易</option>
+                            <option value="EVENT_WATCH">事件观察</option>
+                            <option value="PSEUDO_POLICY">伪政策</option>
+                            <option value="OVERHEATED_AVOID">过热规避</option>
+                        </select>
                         <select
                             value={tierFilter}
                             onChange={e => setTierFilter(e.target.value)}

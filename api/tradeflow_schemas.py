@@ -53,6 +53,23 @@ class TradeFlowCandidateItem(BaseModel):
     ta_budget_priority: int = 0
     tier_reason: str = ""
     missing_evidence_for_upgrade: List[str] = Field(default_factory=list)
+    candidate_type: str = ""  # [H-005] mandate_radar_ui
+    mandate_score: float = 0.0  # [H-005] mandate_radar_ui
+    ambush_score: float = 0.0  # [H-005] mandate_radar_ui
+    mandate_topic: str = ""  # [H-005] mandate_radar_ui
+    company_role: str = ""  # [H-005] mandate_radar_ui
+    beneficiary_path: List[str] = Field(default_factory=list)  # [H-005] mandate_radar_ui
+    candidate_type_reason: str = ""  # [H-005] mandate_radar_ui
+    deep_ta_route: str = ""  # [H-005] mandate_radar_ui
+    research_queue: str = ""  # [H-007] mandate_ta_queue_router
+    research_intent: str = ""  # [H-007] mandate_ta_queue_router
+    research_route_reason: str = ""  # [H-007] mandate_ta_queue_router
+    watchlist_note: str = ""  # [H-008] mandate_watchlist_note
+    watchlist_note_suggested: str = ""  # [H-008] mandate_watchlist_note
+    watchlist_topic: str = ""  # [H-008] mandate_watchlist_note
+    watchlist_benefit_score: float = 0.0  # [H-008] mandate_watchlist_note
+    watchlist_consensus_score: float = 0.0  # [H-008] mandate_watchlist_note
+    watchlist_evidence_gap: List[str] = Field(default_factory=list)  # [H-008] mandate_watchlist_note
     created_at: str = ""
     updated_at: str = ""
 
@@ -74,6 +91,9 @@ class TradeFlowCandidateDetail(TradeFlowCandidateItem):
     deep_ta_report_path: str = ""
     deep_ta_dispatch_time: str = ""
     deep_ta_position_context: str = ""
+    ambush_reasons: List[str] = Field(default_factory=list)  # [H-005] mandate_radar_ui
+    ambush_evidence_refs: List[Dict[str, Any]] = Field(default_factory=list)  # [H-005] mandate_radar_ui
+    mandate_evidence_refs: List[Dict[str, Any]] = Field(default_factory=list)  # [H-005] mandate_radar_ui
 
 
 class TradeFlowSummary(BaseModel):

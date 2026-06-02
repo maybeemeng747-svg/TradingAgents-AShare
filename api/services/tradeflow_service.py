@@ -124,6 +124,23 @@ def _row_to_candidate_item(row: sqlite3.Row) -> dict:
         "ta_budget_priority": _rget(row, "ta_budget_priority", 0) or 0,
         "tier_reason": _rget(row, "tier_reason", ""),
         "missing_evidence_for_upgrade": _parse_json(_rget(row, "missing_evidence_for_upgrade_json"), []),
+        "candidate_type": _rget(row, "candidate_type", ""),  # [H-005] mandate_radar_ui
+        "mandate_score": _rget(row, "mandate_score_component", 0.0) or 0.0,  # [H-005]
+        "ambush_score": _rget(row, "ambush_score", 0.0) or 0.0,  # [H-005]
+        "mandate_topic": _rget(row, "mandate_topic", ""),  # [H-005]
+        "company_role": _rget(row, "company_role", ""),  # [H-005]
+        "beneficiary_path": _parse_json(_rget(row, "beneficiary_path_json"), []),  # [H-005]
+        "candidate_type_reason": _rget(row, "candidate_type_reason", ""),  # [H-005]
+        "deep_ta_route": _rget(row, "deep_ta_route", ""),  # [H-005]
+        "research_queue": _rget(row, "research_queue", ""),  # [H-007] mandate_ta_queue_router
+        "research_intent": _rget(row, "research_intent", ""),  # [H-007]
+        "research_route_reason": _rget(row, "research_route_reason", ""),  # [H-007]
+        "watchlist_note": _rget(row, "watchlist_note", ""),  # [H-008] mandate_watchlist_note
+        "watchlist_note_suggested": _rget(row, "watchlist_note_suggested", ""),  # [H-008]
+        "watchlist_topic": _rget(row, "watchlist_topic", ""),  # [H-008]
+        "watchlist_benefit_score": _rget(row, "watchlist_benefit_score", 0.0) or 0.0,  # [H-008]
+        "watchlist_consensus_score": _rget(row, "watchlist_consensus_score", 0.0) or 0.0,  # [H-008]
+        "watchlist_evidence_gap": _parse_json(_rget(row, "watchlist_evidence_gap_json"), []),  # [H-008]
         "plan_date": _rget(row, "plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
         "effective_trade_date": _rget(row, "effective_trade_date", ""),  # [TF-DATE-001]
         "observe_date": _rget(row, "observe_date", ""),  # [TF-DATE-001]
@@ -151,6 +168,9 @@ def _row_to_candidate_detail(row: sqlite3.Row) -> dict:
         "deep_ta_report_path": _rget(row, "deep_ta_report_path", ""),
         "deep_ta_dispatch_time": _rget(row, "deep_ta_dispatch_time", ""),
         "deep_ta_position_context": _rget(row, "deep_ta_position_context", ""),
+        "ambush_reasons": _parse_json(_rget(row, "ambush_reasons_json"), []),  # [H-005] mandate_radar_ui
+        "ambush_evidence_refs": _parse_json(_rget(row, "ambush_evidence_refs_json"), []),  # [H-005]
+        "mandate_evidence_refs": _parse_json(_rget(row, "mandate_evidence_refs_json"), []),  # [H-005]
     })
     return item
 
@@ -318,6 +338,7 @@ def get_candidates(
     trade_date: str,
     tier: Optional[str] = None,
     need_deep_ta: Optional[bool] = None,
+    candidate_type: Optional[str] = None,  # [H-005] mandate_radar_ui
     tf_db_path: str = "",
 ) -> dict:
     conn = _connect(tf_db_path)
@@ -332,12 +353,16 @@ def get_candidates(
             extra_conditions.append("tier = ?")
         if need_deep_ta is not None:
             extra_conditions.append("need_deep_ta = ?")
+        if candidate_type and "candidate_type" in columns:  # [H-005] mandate_radar_ui
+            extra_conditions.append("candidate_type = ?")
 
         extra_params: list = []
         if tier and "tier" in columns:
             extra_params.append(tier)
         if need_deep_ta is not None:
             extra_params.append(1 if need_deep_ta else 0)
+        if candidate_type and "candidate_type" in columns:  # [H-005] mandate_radar_ui
+            extra_params.append(candidate_type)
 
         order_cols = []
         if "composite_score" in columns:

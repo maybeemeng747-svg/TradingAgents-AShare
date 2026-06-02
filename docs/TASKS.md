@@ -35,10 +35,10 @@
 9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
 10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
 11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
-12. `H-005`：TradeFlow 前端昊天候选池视图（P1，ready，依赖 H-004 ✓）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
 13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
-14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，ready，依赖 DATA-001/DATA-004 ✓）。
-15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，ready，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
 16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
 17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
 18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。

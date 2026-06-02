@@ -1,5 +1,6 @@
+// [H-005] mandate_radar_ui
 import { useEffect, useState } from 'react'
-import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb } from 'lucide-react'
+import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote } from 'lucide-react'
 import { api } from '@/services/api'
 import type { TradeFlowCandidateItem, TradeFlowCandidateDetail } from '@/types'
 
@@ -29,6 +30,42 @@ function gameBalanceLabel(balance: string): string {
         case 'crowded': return '拥挤'
         case 'fragile': return '脆弱'
         default: return balance || '未知'
+    }
+}
+
+function candidateTypeColor(ct: string): string {  // [H-005] mandate_radar_ui
+    switch (ct) {
+        case 'POLICY_AMBUSH': return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300'
+        case 'POLICY_CONFIRM': return 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+        case 'TECH_TRADE': return 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+        case 'EVENT_WATCH': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+        case 'PSEUDO_POLICY': return 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300'
+        case 'OVERHEATED_AVOID': return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+        default: return 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400'
+    }
+}
+
+function candidateTypeLabel(ct: string): string {  // [H-005] mandate_radar_ui
+    switch (ct) {
+        case 'POLICY_AMBUSH': return '昊天左侧'
+        case 'POLICY_CONFIRM': return '政策确认'
+        case 'TECH_TRADE': return '技术交易'
+        case 'EVENT_WATCH': return '事件观察'
+        case 'PSEUDO_POLICY': return '伪政策'
+        case 'OVERHEATED_AVOID': return '过热规避'
+        default: return ct || '未分类'
+    }
+}
+
+function companyRoleLabel(role: string): string {  // [H-005] mandate_radar_ui
+    switch (role) {
+        case 'LEADER': return '龙头'
+        case 'CORE_SUPPLIER': return '核心供应商'
+        case 'INFRA_PROVIDER': return '基础设施'
+        case 'APPLICATION_SCENE': return '应用场景'
+        case 'PERIPHERAL': return '外围'
+        case 'CONCEPT_ONLY': return '纯概念'
+        default: return role || '未知'
     }
 }
 
@@ -175,6 +212,92 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
                             </div>
                         )}
                     </div>
+
+                    {data.candidate_type && (  // [H-005] mandate_radar_ui
+                        <div>
+                            <SectionTitle icon={ShieldCheck} title="政策逻辑" />
+                            <div className="mt-2 space-y-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <span className="text-xs text-slate-500 dark:text-slate-400">候选类型:</span>
+                                    <span className={`inline-block rounded px-2 py-0.5 text-[11px] font-medium ${candidateTypeColor(data.candidate_type)}`}>
+                                        {candidateTypeLabel(data.candidate_type)}
+                                    </span>
+                                </div>
+                                {data.mandate_topic && (
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs text-slate-500 dark:text-slate-400">政策主题:</span>
+                                        <span className="text-xs font-medium text-blue-600 dark:text-blue-400">{data.mandate_topic}</span>
+                                    </div>
+                                )}
+                                {data.company_role && (
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs text-slate-500 dark:text-slate-400">公司角色:</span>
+                                        <span className="text-xs font-medium text-slate-700 dark:text-slate-300">{companyRoleLabel(data.company_role)}</span>
+                                    </div>
+                                )}
+                                {data.beneficiary_path && data.beneficiary_path.length > 0 && (
+                                    <div>
+                                        <span className="text-xs text-slate-500 dark:text-slate-400">受益路径:</span>
+                                        <div className="mt-1 flex flex-wrap gap-1">
+                                            {data.beneficiary_path.map((p, i) => (
+                                                <span key={i} className="inline-block rounded bg-indigo-50 px-1.5 py-0.5 text-[11px] text-indigo-600 dark:bg-indigo-900/20 dark:text-indigo-400">{p}</span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                <div className="flex flex-wrap gap-3">
+                                    {data.mandate_score > 0 && (
+                                        <div className="flex items-center gap-1.5">
+                                            <span className="text-xs text-slate-500 dark:text-slate-400">昊天分:</span>
+                                            <span className="text-xs font-medium tabular-nums text-indigo-600 dark:text-indigo-400">{data.mandate_score.toFixed(1)}</span>
+                                        </div>
+                                    )}
+                                    {data.ambush_score > 0 && (
+                                        <div className="flex items-center gap-1.5">
+                                            <span className="text-xs text-slate-500 dark:text-slate-400">埋伏分:</span>
+                                            <span className="text-xs font-medium tabular-nums text-violet-600 dark:text-violet-400">{data.ambush_score.toFixed(1)}</span>
+                                        </div>
+                                    )}
+                                </div>
+                                {data.candidate_type_reason && (
+                                    <div className="rounded-lg border border-indigo-100 bg-indigo-50/50 p-3 dark:border-indigo-800 dark:bg-indigo-900/10">
+                                        <div className="text-[11px] font-medium text-indigo-600 dark:text-indigo-400">分类理由</div>
+                                        <div className="mt-1 text-xs text-slate-600 dark:text-slate-400">{data.candidate_type_reason}</div>
+                                    </div>
+                                )}
+                                {detail && detail.mandate_evidence_refs && detail.mandate_evidence_refs.length > 0 && (
+                                    <div>
+                                        <span className="text-xs text-slate-500 dark:text-slate-400">政策证据引用 ({detail.mandate_evidence_refs.length})</span>
+                                        <div className="mt-1 space-y-1">
+                                            {detail.mandate_evidence_refs.slice(0, 5).map((ref, i) => (
+                                                <div key={i} className="text-[11px] text-slate-500 dark:text-slate-400 truncate" title={JSON.stringify(ref)}>
+                                                    {String(ref.title || ref.source || `证据 ${i + 1}`)}
+                                                </div>
+                                            ))}
+                                            {detail.mandate_evidence_refs.length > 5 && (
+                                                <div className="text-[11px] text-slate-400">+{detail.mandate_evidence_refs.length - 5} 条</div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                                {data.candidate_type === 'TECH_TRADE' && (
+                                    <div className="rounded-lg border border-slate-200 bg-slate-50/50 p-3 dark:border-slate-700 dark:bg-slate-800/30">
+                                        <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">为什么不是政策候选</div>
+                                        <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">该候选无足够政策连续性或公司受益路径证据，被分类为纯技术交易标的</div>
+                                    </div>
+                                )}
+                                {data.candidate_type === 'POLICY_AMBUSH' && (
+                                    <div className="rounded-lg border border-indigo-100 bg-indigo-50/50 p-3 dark:border-indigo-800 dark:bg-indigo-900/10">
+                                        <div className="text-[11px] font-medium text-indigo-600 dark:text-indigo-400">缺什么验证</div>
+                                        <div className="mt-1 text-xs text-slate-600 dark:text-slate-400">
+                                            {data.trigger_price != null ? '等待技术触发确认入场时机' : '等待技术面出现合理入场位置'}
+                                            {data.need_deep_ta ? '；已建议深度TA验证' : '；建议等待更多证据'}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
 
                     <div>
                         <SectionTitle icon={BarChart3} title="多空博弈" />
@@ -340,6 +463,35 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
                         <div className="rounded-lg border border-slate-100 bg-slate-50/50 p-3 dark:border-slate-700 dark:bg-slate-800/30">
                             <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">入池理由</div>
                             <div className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-400">{data.reason}</div>
+                        </div>
+                    )}
+
+                    {data.watchlist_note_suggested && (
+                        <div>
+                            <SectionTitle icon={StickyNote} title="自选备注" />
+                            <div className="mt-2 space-y-2">
+                                <div className="rounded-lg border border-teal-100 bg-teal-50/50 p-3 dark:border-teal-800 dark:bg-teal-900/10">
+                                    <div className="text-xs font-medium text-teal-700 dark:text-teal-400">{data.watchlist_note_suggested}</div>
+                                </div>
+                                {data.watchlist_note && data.watchlist_note !== data.watchlist_note_suggested && (
+                                    <div className="rounded-lg border border-slate-100 bg-slate-50/50 p-3 dark:border-slate-700 dark:bg-slate-800/30">
+                                        <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">用户备注</div>
+                                        <div className="mt-1 text-xs text-slate-600 dark:text-slate-400">{data.watchlist_note}</div>
+                                    </div>
+                                )}
+                                <div className="flex items-center gap-3 text-[11px] text-slate-500 dark:text-slate-400">
+                                    {data.watchlist_topic && <span>主题: {data.watchlist_topic}</span>}
+                                    {data.watchlist_benefit_score > 0 && <span>利好: {data.watchlist_benefit_score.toFixed(1)}</span>}
+                                    {data.watchlist_consensus_score > 0 && <span>共识: {data.watchlist_consensus_score.toFixed(0)}</span>}
+                                </div>
+                                {data.watchlist_evidence_gap.length > 0 && (
+                                    <div className="flex flex-wrap gap-1">
+                                        {data.watchlist_evidence_gap.map(g => (
+                                            <span key={g} className="inline-block rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-600 dark:bg-amber-900/20 dark:text-amber-400">{g}</span>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     )}
 

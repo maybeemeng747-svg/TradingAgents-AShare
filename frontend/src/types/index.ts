@@ -774,6 +774,23 @@ export interface TradeFlowCandidateItem {
     ta_budget_priority: number
     tier_reason: string
     missing_evidence_for_upgrade: string[]
+    candidate_type: string  // [H-005] mandate_radar_ui
+    mandate_score: number  // [H-005]
+    ambush_score: number  // [H-005]
+    mandate_topic: string  // [H-005]
+    company_role: string  // [H-005]
+    beneficiary_path: string[]  // [H-005]
+    candidate_type_reason: string  // [H-005]
+    deep_ta_route: string  // [H-005]
+    research_queue: string  // [H-007] mandate_ta_queue_router
+    research_intent: string  // [H-007] mandate_ta_queue_router
+    research_route_reason: string  // [H-007] mandate_ta_queue_router
+    watchlist_note: string  // [H-008] mandate_watchlist_note
+    watchlist_note_suggested: string  // [H-008] mandate_watchlist_note
+    watchlist_topic: string  // [H-008] mandate_watchlist_note
+    watchlist_benefit_score: number  // [H-008] mandate_watchlist_note
+    watchlist_consensus_score: number  // [H-008] mandate_watchlist_note
+    watchlist_evidence_gap: string[]  // [H-008] mandate_watchlist_note
     created_at: string
     updated_at: string
 }
@@ -795,6 +812,9 @@ export interface TradeFlowCandidateDetail extends TradeFlowCandidateItem {
     deep_ta_report_path: string
     deep_ta_dispatch_time: string
     deep_ta_position_context: string
+    ambush_reasons: string[]  // [H-005] mandate_radar_ui
+    ambush_evidence_refs: Array<Record<string, unknown>>  // [H-005]
+    mandate_evidence_refs: Array<Record<string, unknown>>  // [H-005]
 }
 
 export interface TradeFlowSummary {
