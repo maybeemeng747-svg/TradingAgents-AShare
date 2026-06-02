@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-06-01
+> 最后更新：2026-06-02
 
 ---
 
@@ -42,6 +42,18 @@
 16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
 17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
 18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready，依赖 DATA-004/DATA-006 ✓）。
+20. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready，依赖 DATA-005 ✓）。
+21. `H-009`：昊天候选反证/过热降权校准（P1，ready，依赖 H-006/V-004 ✓）。
+22. `H-010`：政策主题生命周期与版本状态注册表（P1，ready，依赖 H-002/H-006 ✓）。
+23. `H-011`：候选矛盾证据与负面清单解释（P2，ready，依赖 H-009 ✓）。
+24. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，ready，依赖 H-007/UI-006 ✓）。
+25. `UI-010`：昊天候选对比视图与证据缺口排序（P2，ready，依赖 H-005/DATA-007 ✓）。
+26. `V-005`：夜间昊天候选质量日报与样本回放（P1，ready，依赖 V-004/DATA-006 ✓）。
+27. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，ready，依赖 V-002 ✓）。
+28. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，ready，依赖 INF-001 ✓）。
+29. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，ready，依赖 TF-OBS-001/UI-004 ✓）。
+30. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，ready，依赖 H-008/VLM-001 ✓）。
 
 ### 数据源治理候选队列
 
@@ -52,8 +64,11 @@
 3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
 4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
 5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
-6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，ready）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
 7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready）。
+9. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready）。
+10. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，ready）。
 
 ### 总体路线图
 
@@ -352,6 +367,103 @@
   - 不泄露敏感环境变量。
 - **代码标注要求**：`# [DATA-006] data_source_report_daily`
 
+### DATA-007: raw_evidence 覆盖率审计与候选可信度联动（P1）
+- **描述**：把 raw_evidence contract 的覆盖情况转成可读审计结果，并联动 TradeFlow 候选可信度，避免“候选分数高但关键数据缺证据”的情况继续进入高优先级。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`DATA-004`、`DATA-006` 完成 ✓。
+- **执行约束**：
+  - 不调用外部 LLM。
+  - 不跑 live 全市场请求。
+  - 不修改生产数据库。
+  - 不把缺失字段用推测值补满。
+- **实现要点**：
+  1. 新增 raw_evidence auditor，输入候选或报告 metadata，输出：
+     - `evidence_coverage`
+     - `critical_missing_fields`
+     - `stale_fields`
+     - `unit_unknown_fields`
+     - `fallback_fields`
+     - `evidence_quality_level`
+  2. 覆盖至少这些字段族：
+     - OHLCV/成交额/换手率/量比。
+     - 个股资金流/板块资金。
+     - 龙虎榜/两融。
+     - 公告/研报/政策事件。
+     - 实时补丁 freshness。
+  3. TradeFlow 候选层增加联动：
+     - 关键字段缺失时不得进入 A 层。
+     - `POLICY_AMBUSH` 允许技术未确认，但不允许政策/公司证据缺失。
+     - `TECH_TRADE` 缺实时行情/量价证据时降级。
+  4. 前端/API 暴露审计摘要，供候选详情和日报复用。
+- **验收方式**：
+  - 构造完整证据、缺资金、缺公告、stale 行情、单位未知五类 fixture。
+  - 完整证据样本不误降级。
+  - 缺关键证据样本候选等级和 `need_deep_ta` 被限制。
+  - 夜间日报能展示 `evidence_coverage` 和关键缺口。
+  - `pytest tests/test_data004_evidence_contract.py tests/test_tradeflow_*.py tests/test_data006_daily_digest.py -q` 或等价测试通过。
+- **代码标注要求**：`# [DATA-007] evidence_coverage_audit`
+
+### DATA-008: A股关键源 fallback smoke fixtures 扩展（P1）
+- **描述**：扩展 DATA-005 fixture replay，重点覆盖用户报告中经常缺失的 A 股行情、资金流、龙虎榜、公告和实时补丁 fallback，防止数据源“假可用”再次回归。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`DATA-005` 完成 ✓。
+- **执行约束**：
+  - 默认只跑 fixture/mock，不做 live 压测。
+  - 不保存 cookie、API key、token。
+  - 不把第三方接口失败静默解释为“无数据”。
+- **实现要点**：
+  1. 增加 replay 场景：
+     - AKShare 个股资金流失败但 fallback 成功。
+     - 龙虎榜 `NORMAL_NO_DATA` 与 `FAILED` 区分。
+     - 日线 stale 后实时 quote 补丁成功。
+     - 公告源失败但事件源有弱证据。
+     - 换手率/量比缺失导致完整度降级。
+  2. replay 输出必须包含 `vendor/endpoint/status/fallback_vendor/error/as_of`。
+  3. replay 报告聚合到 `docs/data_source_reports/`。
+  4. 与 DATA-007 auditor 对接，确保 fixture 能触发覆盖率变化。
+- **验收方式**：
+  - `FAILED` 不被显示为 `NORMAL_NO_DATA`。
+  - fallback 成功时显示实际 vendor。
+  - stale 行情补丁显示 `is_realtime_patched=True`。
+  - `pytest tests/test_data_source_replay.py tests/test_g007_fund_lhb_provenance.py tests/test_tradeflow_*.py -q` 或等价测试通过。
+- **代码标注要求**：`# [DATA-008] astock_fallback_replay`
+
+### DATA-009: 自选备注与截图识别字段持久化回归保护（P1）
+- **描述**：针对用户反馈“前端更新后备注全没了”，为自选备注、截图识别导入字段、昊天备注摘要建立持久化和回归测试，保证后续 UI/API 修改不会清空用户备注。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`H-008`、`VLM-001` 完成 ✓。
+- **执行约束**：
+  - 不读取用户真实图片内容；测试使用 mock OCR/VLM 结果。
+  - 不调用 live VLM/LLM。
+  - 不覆盖用户已有备注。
+  - 不修改生产 `tradingagents.db`。
+- **实现要点**：
+  1. 后端 watchlist schema/API 回归保护：
+     - `notes`
+     - `topic`
+     - `benefit_score`
+     - `consensus_score`
+     - `expected_window`
+     - `evidence_gap`
+     - `watchlist_note_suggested`
+  2. 前端“添加自选/图片识别”流程：
+     - 识别结果写入建议备注。
+     - 用户已有备注保留，建议备注只能追加或待确认。
+     - 多图上传时按 symbol 合并，不重复覆盖。
+  3. 增加测试覆盖：
+     - 更新自选名称/排序不清空 notes。
+     - 前端刷新后 notes 字段仍返回。
+     - 0 分/空字符串/None 区分正确。
+- **验收方式**：
+  - 构造已备注自选，调用更新接口后 notes 不丢。
+  - mock 图片识别结果能生成短备注：`半导体设备｜利好9.1｜共识89｜窗口1月｜缺口:订单/资金`。
+  - `pytest tests/test_watchlist_*.py tests/test_vlm_position_parser.py tests/test_h008_mandate_watchlist_note.py -q` 或等价测试通过。
+  - 前端构建通过。
+- **代码标注要求**：`# [DATA-009] watchlist_notes_persistence` / `// [DATA-009] watchlist_notes_persistence`
+
 ---
 
 ## H. 昊天雷达 / 政策左侧埋伏任务池（2026-05-31 新增）
@@ -603,6 +715,102 @@
   - 长字段被压缩，不撑破表格。
   - 无证据时显示 `缺证据`，不伪造利好度。
 - **代码标注要求**：`# [H-008] mandate_watchlist_note`
+
+### H-009: 昊天候选反证/过热降权校准（P1）
+- **描述**：把 H-006 回放中的反证信号沉淀为评分校准规则，重点降低“抄在半山腰”的候选：过热、政策弱兑现、公司路径伪、资金不认、风险事件未消化。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`H-006`、`V-004` 完成 ✓。
+- **执行约束**：
+  - 不调用 LLM。
+  - 不输出买卖建议。
+  - 不把短期回撤简单等同于逻辑失败。
+  - 不修改 prompts。
+- **实现要点**：
+  1. 新增或扩展反证规则：
+     - `overheated_price_position`
+     - `policy_signal_decay`
+     - `weak_company_benefit_path`
+     - `funding_not_confirmed`
+     - `negative_event_unresolved`
+     - `crowded_consensus_risk`
+  2. 对 `POLICY_AMBUSH` 加入降权约束：
+     - 高位连续放量但政策/公司证据不新增 → 降级。
+     - 仅媒体热度、无原始政策/公告 → 不得高分。
+     - 公司路径为 `CONCEPT_ONLY/UNKNOWN` → 不得进入 A 层。
+  3. 输出可解释字段：
+     - `counter_evidence`
+     - `overheat_flags`
+     - `downgrade_reasons`
+     - `what_would_change_mind`
+  4. 反证字段进入 API/日报，前端可展示。
+- **验收方式**：
+  - 过热样本不得进入 `POLICY_AMBUSH` A 层。
+  - 政策强但公司路径弱的样本降级到观察。
+  - 明确公司受益且未过热的样本不被误杀。
+  - `pytest tests/test_h006_mandate_replay*.py tests/test_h004_mandate_ambush*.py tests/test_v004_mandate_e2e_smoke.py -q` 或等价测试通过。
+- **代码标注要求**：`# [H-009] mandate_counter_evidence_calibration`
+
+### H-010: 政策主题生命周期与版本状态注册表（P1）
+- **描述**：建立“政策主题生命周期”注册表，区分新版本、升温、兑现、拥挤、退潮，帮助昊天雷达判断当前主题适合左侧埋伏、右侧确认还是只观察。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`H-002`、`H-006` 完成 ✓。
+- **执行约束**：
+  - 第一版规则化，不调用 LLM。
+  - 不声称主题一定上涨。
+  - 不自动调 TA。
+- **实现要点**：
+  1. 新增主题状态枚举：
+     - `EMERGING`
+     - `ACCELERATING`
+     - `CONFIRMING`
+     - `CROWDED`
+     - `FADING`
+     - `UNKNOWN`
+  2. 基于政策连续性、事件密度、候选拥挤度、价格热度、回放结果更新主题状态。
+  3. Candidate 输出：
+     - `topic_lifecycle_state`
+     - `topic_lifecycle_reason`
+     - `topic_last_signal_date`
+     - `topic_signal_count`
+  4. 左侧埋伏优先：
+     - `EMERGING/ACCELERATING` 且公司路径明确。
+     - `CROWDED/FADING` 降级或只观察。
+- **验收方式**：
+  - 单一孤立事件为 `UNKNOWN/EMERGING`，不得直接高置信。
+  - 多日多源政策信号进入 `ACCELERATING/CONFIRMING`。
+  - 过热且信号不延续进入 `CROWDED/FADING`。
+  - `pytest tests/test_h002_mandate_score.py tests/test_h006_mandate_replay*.py tests/test_tradeflow_*.py -q` 或等价测试通过。
+- **代码标注要求**：`# [H-010] mandate_topic_lifecycle`
+
+### H-011: 候选矛盾证据与负面清单解释（P2）
+- **描述**：为每个昊天候选输出“为什么可能错”的负面清单，让用户看到政策逻辑、公司受益、资金、技术和风险之间的矛盾，而不是只看正面叙事。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：`H-009` 完成或已有反证字段。
+- **执行约束**：
+  - 不调用 LLM。
+  - 不输出强动作词。
+  - 不把未知项写成确定利空。
+- **实现要点**：
+  1. 新增 `candidate_contradictions` 聚合器：
+     - 政策强但公司路径弱。
+     - 主题热但资金不认。
+     - 基本面差但题材强。
+     - 技术破位但中线逻辑未破。
+     - 数据完整度低但分数高。
+  2. 输出字段：
+     - `contradiction_level`
+     - `contradiction_items`
+     - `blocking_evidence_gaps`
+     - `next_verification_steps`
+  3. 前端/日报使用同一字段展示，避免重复拼文案。
+- **验收方式**：
+  - 构造 4 类矛盾样本，均能输出不同解释。
+  - 无矛盾样本显示空数组，不报错。
+  - `pytest tests/test_tradeflow_*.py tests/test_h009_*.py -q` 或等价测试通过。
+- **代码标注要求**：`# [H-011] candidate_contradiction_explainer`
 
 ---
 
@@ -1005,6 +1213,58 @@
   - 未配置 webhook 时不报错、不发送。
 - **代码标注要求**：`# [M-010] notification_dry_run`
 
+### M-012: 任务池空转时自动生成 proposed 任务草案（P1）
+- **描述**：当 `docs/TASKS.md` 没有 ready 任务时，自动开发链不应只空转退出，而应生成一批 `proposed` 任务草案和原因，等待 Codex/用户审核后释放为 ready。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`V-002` 完成 ✓。
+- **执行约束**：
+  - 不自动把 proposed 改成 ready。
+  - 不调用高成本模型；第一版基于 ROADMAP/TASKS/DEVLOG 静态分析。
+  - 不修改业务代码。
+- **实现要点**：
+  1. 新增或扩展脚本，例如 `scripts/suggest_next_tasks.py`。
+  2. 输入：
+     - `docs/ROADMAP.md`
+     - `docs/TASKS.md`
+     - `docs/DEVLOG.md`
+     - 最近 `docs/task_runs/`
+  3. 输出：
+     - `docs/task_suggestions/YYYY-MM-DD.md`
+     - 每个建议包含 priority、依赖、原因、验收方式、风险。
+  4. `scripts/auto_dev_loop.sh` 在无 ready 时提示建议报告路径。
+  5. OpenClaw 可读取建议报告后再派 Codex/用户确认。
+- **验收方式**：
+  - 无 ready 任务时生成 proposed 报告。
+  - 有 ready 任务时不生成或只提示无需建议。
+  - 报告不直接改 TASKS 状态。
+  - `bash -n scripts/auto_dev_loop.sh` 通过；新增脚本测试或 dry-run 通过。
+- **代码标注要求**：`# [M-012] task_pool_suggestion`
+
+### M-013: CodeGraph 影响范围预检接入自动开发日志（P2）
+- **描述**：把 CodeGraph 的 symbol/context/impact 输出接入每个任务的运行档案，帮助 OpenCode 开发前知道影响范围，也方便 Codex review 时检查调用方覆盖。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：`INF-001` 完成 ✓；CodeGraph 已本地安装或可优雅跳过。
+- **执行约束**：
+  - CodeGraph 不可用时不能阻塞任务执行，只记录 `SKIPPED`。
+  - 不提交 `.codegraph/` 索引。
+  - 不调用外部网络。
+- **实现要点**：
+  1. 自动开发领取任务后，在 `docs/task_runs/<TASK>/` 写入：
+     - `codegraph-context.txt`
+     - `codegraph-impact.txt`
+     - `codegraph-status.json`
+  2. 根据任务描述关键词尝试生成相关 symbol context。
+  3. 任务完成后，对变更文件跑 impact 摘要，写入 run archive。
+  4. DEVLOG 中记录 CodeGraph 是否成功、影响范围是否异常大。
+- **验收方式**：
+  - CodeGraph 可用时 run archive 有 context/impact 文件。
+  - CodeGraph 不可用时任务仍可继续。
+  - `.codegraph/` 不进入 git。
+  - `bash -n scripts/auto_dev_loop.sh` 通过。
+- **代码标注要求**：`# [M-013] codegraph_auto_dev_preflight`
+
 ---
 
 ## UI. TradeFlow 前端工作台任务池（2026-05-31 新增）
@@ -1224,6 +1484,67 @@
   - 前端构建通过：`npm run build`。
   - 后端测试通过：`pytest tests/test_ui001_tradeflow_api.py tests/test_tradeflow_universe.py tests/test_tradeflow_*.py -q`。
 - **代码标注要求**：`# [UI-008] tradeflow_field_normalization` / `// [UI-008] tradeflow_field_normalization`
+
+### UI-009: 候选详情一键生成 TA 研究任务预案（P1）
+- **描述**：在 TradeFlow 候选详情中提供“生成 TA 研究预案/加入研究队列”的轻量入口，只生成队列记录和分析参数预案，不直接触发高成本 TA/LLM。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`H-007`、`UI-006` 完成 ✓。
+- **执行约束**：
+  - 不自动启动 TA 深度分析。
+  - 不调用 LLM。
+  - 不输出强买卖词。
+  - 不覆盖用户已有任务。
+- **实现要点**：
+  1. 后端新增/复用队列预案接口：
+     - 输入 candidate id/symbol/date。
+     - 输出 `research_queue`、`analysis_intent`、`horizon`、`position_context`、`required_evidence`、`route_reason`。
+  2. 前端详情抽屉增加按钮：
+     - `生成中线研究预案`
+     - `生成短线确认预案`
+     - 根据 candidate type 自动禁用不适合的选项。
+  3. 页面显示：
+     - 预案已生成/已存在/缺证据不能生成。
+     - 后续人工确认后才真正跑 TA。
+  4. 与 G-001 中短线路由保持字段一致。
+- **验收方式**：
+  - `POLICY_AMBUSH` 默认生成中线政策验证预案。
+  - `TECH_TRADE` 默认生成短线确认预案。
+  - 缺关键 evidence 时显示不能生成原因。
+  - 刷新页面后预案状态可见。
+  - `pytest tests/test_h007_ta_queue_router.py tests/test_ui001_tradeflow_api.py -q` 通过；`npm run build` 通过。
+- **代码标注要求**：`# [UI-009] candidate_ta_plan_draft` / `// [UI-009] candidate_ta_plan_draft`
+
+### UI-010: 昊天候选对比视图与证据缺口排序（P2）
+- **描述**：在 TradeFlow 前端增加候选对比视图，按政策主题、受益路径、证据覆盖率、反证风险和下一步验证条件排序，帮助用户从少量昊天候选中挑重点研究对象。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：`H-005`、`DATA-007` 完成或具备等价字段。
+- **执行约束**：
+  - 不做营销页。
+  - 不输出强买卖词。
+  - 不隐藏证据缺口。
+- **实现要点**：
+  1. 新增候选对比 Tab 或表格模式：
+     - `mandate_score`
+     - `ambush_score`
+     - `evidence_coverage`
+     - `company_role`
+     - `topic_lifecycle_state`
+     - `counter_evidence`
+     - `next_verification_steps`
+  2. 支持排序：
+     - 政策强度。
+     - 证据覆盖率。
+     - 反证风险。
+     - 验证缺口最少。
+  3. 长文本压缩为短标签，详情抽屉展示完整解释。
+  4. 空字段显示 `--/未验证/缺证据`，不显示空白。
+- **验收方式**：
+  - mock 三只候选，排序和字段显示稳定。
+  - 长文本不撑破表格。
+  - `npm run build` 通过。
+- **代码标注要求**：`// [UI-010] mandate_candidate_compare`
 
 ---
 
@@ -1456,6 +1777,36 @@
   - 过热样本不进入 `POLICY_AMBUSH`。
   - `pytest tests/test_h*_*.py tests/test_data003_mandate_event_normalizer.py tests/test_data004_evidence_contract.py -q` 或等价测试通过。
 - **代码标注要求**：`# [V-004] mandate_e2e_smoke`
+
+### V-005: 夜间昊天候选质量日报与样本回放（P1）
+- **描述**：把 DATA-006、H-006、V-004 的结果合并成夜间昊天候选质量日报，第二天可以直接看到候选池有没有选对方向、哪些是数据问题、哪些是策略问题。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`V-004`、`DATA-006` 完成 ✓。
+- **执行约束**：
+  - 不调用外部 LLM。
+  - 不跑全市场扫描。
+  - 不写生产数据库。
+  - 不输出强买卖词。
+- **实现要点**：
+  1. 生成 `docs/mandate_reports/YYYY-MM-DD.md` 或并入现有 auto dev report。
+  2. 报告包含：
+     - 昊天候选数量、类型分布、主题分布。
+     - A/B/C 或候选等级分布。
+     - 数据覆盖率摘要。
+     - 反证/过热/证据缺口 TopN。
+     - 后续需人工研究的候选。
+  3. 当候选为空时，区分：
+     - 无事件源。
+     - 事件源失败。
+     - 全部被过滤。
+     - 策略门槛过严。
+  4. 与 `docs/task_runs/` 关联，便于回查每晚自动开发和候选质量。
+- **验收方式**：
+  - 构造有候选、无候选、数据源失败三类 fixture，报告输出不同原因。
+  - 报告不包含 API key/token/敏感路径。
+  - `pytest tests/test_v004_mandate_e2e_smoke.py tests/test_data006_daily_digest.py tests/test_mandate_reports*.py -q` 或等价测试通过。
+- **代码标注要求**：`# [V-005] nightly_mandate_quality_report`
 
 ---
 
@@ -1724,6 +2075,37 @@
   - mock 成功但空事件时，status=`OK` 且 count=0。
   - `pytest tests/test_t006_event_source_discovery.py tests/test_event_source_integration.py -q` 通过。
 - **代码标注要求**：`# [T-007] event_source_failure_status`
+
+### T-008: TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2）
+- **描述**：在不启用真实盘中盯盘的情况下，用 fixture 回放验证 Observe 状态机、signals 落库、API 和前端显示一致，避免候选池有票但盘中观察页空白或状态断裂。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：`TF-OBS-001`、`UI-004` 完成 ✓。
+- **执行约束**：
+  - 不启动真实 scheduler。
+  - 不拉 live 行情。
+  - 不调用 TA/LLM。
+  - 不输出强买卖词。
+- **实现要点**：
+  1. 构造 Observe fixtures：
+     - 未触发。
+     - 达到触发价。
+     - 跌破失效价。
+     - 行情 stale。
+     - 非交易日计划生效到下一交易日。
+  2. 回放后验证：
+     - `observe_state`
+     - `tradeflow_signals`
+     - `current_price`
+     - `trigger_reason`
+     - `data_status`
+  3. API 和前端使用同一状态枚举，避免后端有状态、前端显示空。
+  4. 与 TF-DATE-001 的 `plan_date/effective_trade_date/observe_date` 语义保持一致。
+- **验收方式**：
+  - 5 类 fixture 状态稳定。
+  - 前端 Observe Tab 能显示 replay 后状态。
+  - `pytest tests/test_m005_intraday_observe.py tests/test_ui001_tradeflow_api.py tests/test_tradeflow_*.py -q` 通过；`npm run build` 通过。
+- **代码标注要求**：`# [T-008] observe_fixture_replay` / `// [T-008] observe_fixture_replay`
 
 ### T-004: TradeFlow P2 盘中 Observe
 - **描述**：对候选池做盘中低频触发检查，发现突破触发价、跌破失效价、异常放量等事件。
