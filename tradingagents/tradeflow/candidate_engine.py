@@ -214,6 +214,7 @@ def init_db(db_path: str) -> None:
         + CREATE_DAILY_PLANS_TABLE
         + CREATE_FILTERED_SYMBOLS_TABLE  # [UI-007] tradeflow_filtered_trace
     )
+    ensure_columns(conn)
     try:
         conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
     except sqlite3.OperationalError:
@@ -977,8 +978,8 @@ def evaluate_symbol(
         candidate.candidate_type_reason = candidate.candidate_type_reason or "无政策/事件/受益路径证据，默认技术交易"
     candidate.evidence["ambush_score"] = {
         "ambush_score": ambush_result.ambush_score,
-        "candidate_type": ambush_result.candidate_type,
-        "candidate_type_reason": ambush_result.candidate_type_reason,
+        "candidate_type": candidate.candidate_type,
+        "candidate_type_reason": candidate.candidate_type_reason,
         "mandate_score_component": ambush_result.mandate_score_component,
         "beneficiary_score_component": ambush_result.beneficiary_score_component,
         "pricing_gap_score": ambush_result.pricing_gap_score,
@@ -990,7 +991,7 @@ def evaluate_symbol(
 
     # [H-007] mandate_ta_queue_router — route candidate to research queue
     queue_result: QueueRouteResult = route_to_research_queue(
-        candidate_type=ambush_result.candidate_type,
+        candidate_type=candidate.candidate_type,
         ambush_score=ambush_result.ambush_score,
         mandate_score_component=ambush_result.mandate_score_component,
         beneficiary_score_component=ambush_result.beneficiary_score_component,
@@ -1013,7 +1014,7 @@ def evaluate_symbol(
     # [H-008] mandate_watchlist_note — generate watchlist note summary
     wl_result: WatchlistNoteResult = generate_watchlist_note(
         mandate_topic=candidate.mandate_topic,
-        candidate_type=ambush_result.candidate_type,
+        candidate_type=candidate.candidate_type,
         mandate_score_component=ambush_result.mandate_score_component,
         beneficiary_score_component=ambush_result.beneficiary_score_component,
         ambush_score=ambush_result.ambush_score,

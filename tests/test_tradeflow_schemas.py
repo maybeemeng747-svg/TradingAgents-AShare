@@ -3,6 +3,7 @@
 import sys
 import os
 import json
+import tempfile
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -11,6 +12,9 @@ from tradingagents.tradeflow.schemas import (
     Candidate, CandidateSignal, Signal, DailyPlan,
     ALLOWED_ACTIONS, FORBIDDEN_WORDS, ALL_STRATEGIES,
 )
+from tradingagents.tradeflow.ambush_score import compute_ambush_score, AmbushScoreResult
+from tradingagents.tradeflow.mandate_ta_queue_router import route_to_research_queue
+from tradingagents.tradeflow.mandate_watchlist_note import generate_watchlist_note
 
 
 class TestCandidateSignal:
@@ -207,3 +211,111 @@ class TestConstants:
         assert "VCP" in ALL_STRATEGIES
         assert "PULLBACK_SUPPORT" in ALL_STRATEGIES
         assert "EVENT_CATALYST" in ALL_STRATEGIES
+
+
+class TestTechTradeDefaultPropagation:
+    """Regression: candidate_type default TECH_TRADE must propagate to all downstream.
+
+    Scenario: pure VCP/PULLBACK strategy, no policy/event/beneficiary evidence.
+    """
+
+    def _make_tech_candidate(self):
+        c = Candidate(symbol="002353.SZ", name="测试技术")
+        c.signals = [CandidateSignal(
+            strategy_tag="VCP", score=55.0,
+            trigger_price=100.0, support_price=88.0, invalid_price=82.0,
+        )]
+        c.merge_signals()
+        c.candidate_type = ""
+        c.candidate_type_reason = ""
+        return c
+
+    def test_ambush_falls_back_to_tech_trade(self):
+        ambush_result = compute_ambush_score(
+            mandate_score=0.0,
+            version_score=0.0,
+            policy_tags=[],
+            strategy_tags=["VCP"],
+            tech_score=55.0,
+            has_tech_breakout=True,
+            trigger_price=100.0,
+            current_price=99.0,
+        )
+        c = self._make_tech_candidate()
+        c.candidate_type = ambush_result.candidate_type
+        c.candidate_type_reason = ambush_result.candidate_type_reason
+        if not c.candidate_type:
+            c.candidate_type = "TECH_TRADE"
+            c.candidate_type_reason = c.candidate_type_reason or "无政策/事件/受益路径证据，默认技术交易"
+        assert c.candidate_type == "TECH_TRADE"
+
+    def test_evidence_json_uses_candidate_type(self):
+        c = self._make_tech_candidate()
+        c.candidate_type = "TECH_TRADE"
+        c.candidate_type_reason = "无政策/事件/受益路径证据，默认技术交易"
+        c.evidence["ambush_score"] = {
+            "candidate_type": c.candidate_type,
+            "candidate_type_reason": c.candidate_type_reason,
+        }
+        assert c.evidence["ambush_score"]["candidate_type"] == "TECH_TRADE"
+
+    def test_research_queue_not_empty_for_tech_trade(self):
+        queue_result = route_to_research_queue(
+            candidate_type="TECH_TRADE",
+            ambush_score=30.0,
+        )
+        assert queue_result.research_queue != ""
+        assert queue_result.research_queue == "SHORT_TERM_TRADE"
+
+    def test_watchlist_note_tech_semantics(self):
+        wl_result = generate_watchlist_note(
+            candidate_type="TECH_TRADE",
+            strategy_tags=["VCP"],
+            data_completeness=0.6,
+        )
+        assert wl_result.topic != ""
+        assert wl_result.note_summary != ""
+        assert "技术" in wl_result.topic or "技术" in wl_result.note_summary or "短线" in wl_result.note_summary
+
+    def test_init_db_ensure_columns(self):
+        from tradingagents.tradeflow.candidate_engine import init_db, ensure_columns
+        import sqlite3
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            init_db(db_path)
+            conn = sqlite3.connect(db_path)
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()]
+            conn.close()
+            assert "candidate_type" in cols
+            assert "research_queue" in cols
+            assert "watchlist_note_suggested" in cols
+        finally:
+            os.unlink(db_path)
+
+    def test_save_candidate_default_tech_trade(self):
+        from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
+        import sqlite3
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            init_db(db_path)
+            c = Candidate(
+                symbol="002353.SZ", name="测试",
+                strategy_tags=["VCP"], score=55.0,
+                trade_date="2026-06-02",
+                primary_strategy="VCP",
+            )
+            c.candidate_type = "TECH_TRADE"
+            c.candidate_type_reason = "无政策/事件/受益路径证据，默认技术交易"
+            save_candidate(c, db_path)
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT candidate_type, research_queue, watchlist_note_suggested FROM tradeflow_candidates WHERE symbol='002353.SZ'"
+            ).fetchone()
+            conn.close()
+            assert row is not None
+            assert row["candidate_type"] == "TECH_TRADE"
+        finally:
+            os.unlink(db_path)
