@@ -4,6 +4,46 @@
 
 ---
 
+## 2026-06-02 | TF-P0-003: TradeFlow 生成候选池后的端到端 UI smoke 验收
+
+- **执行者**：OpenCode
+- **任务**：TF-P0-003 — 建立低成本端到端 smoke，模拟"生成今日候选池 → 前端候选页 → 盘中观察 → 候选详情 → 跳 TA 预案"的完整链路，防止字段落库和前端显示断裂。
+- **修改文件**：
+  - `tests/test_tf_p0_003_e2e_smoke.py` — 新建：[TF-P0-003] tradeflow_ui_e2e_smoke
+    - 3 类候选 fixture：TECH_TRADE (601689.SH 拓普集团)、POLICY_AMBUSH (300034.SZ 钢研高纳)、UNCLASSIFIED_DATA_GAP (600711.SH 香江控股)
+    - 53 个测试覆盖 11 个测试类：
+      - `TestCandidatesE2E` (9): 3候选返回、名称非代码、类型非空、技术无昊天字段、政策有昊天字段、缺口低完整度、action合法、summary_agg、禁用词
+      - `TestPoolFilteringE2E` (6): haotian/tech/gap/all 池过滤、映射覆盖、类型→池 roundtrip
+      - `TestObserveE2E` (5): 3个观察项、名称非代码、字段完整、政策有触发价、技术有触发价
+      - `TestCandidateDetailE2E` (6): 技术/政策/缺口详情、名称非代码、禁用词、证据引用
+      - `TestTAQueueE2E` (4): 仅 deep_ta 候选、why_deep_ta、技术不在队列、缺口不在队列
+      - `TestDailyPlanE2E` (3): 返回计划、候选名称、summary_agg
+      - `TestDataHealthE2E` (2): 健康检查ok、最新日期
+      - `TestReviewE2E` (2): 全部返回、keep_observing
+      - `TestFilteredE2E` (1): 无过滤项
+      - `TestSchemaIntegrity` (2): 必要列存在、3候选已持久化
+      - `TestFrontendTypeContract` (2): 响应类型匹配前端、详情证据字段
+      - `TestSmokeReport` (2): 报告生成、报告写盘
+      - `TestAcceptanceTFP0003` (10): 全部验收标准
+    - `_run_smoke_checks()`: 8 步管线验证（candidates/pool_filtering/observe/detail/ta_queue/haotian_fields/tech_semantics/no_forbidden_words）
+    - `_render_smoke_report()`: Markdown 报告渲染
+  - `docs/tradeflow_acceptance/2026-06-02-tf-p0-003.md` — 新建：8/8 PASS smoke 验收报告
+  - `docs/TASKS.md` — TF-P0-003 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：53 passed (TF-P0-003)；320 passed (tradeflow 回归)；0 failed；npm run build 通过
+- **关键逻辑**：
+  - 3 类候选覆盖：TECH_TRADE（纯技术）、POLICY_AMBUSH（昊天左侧，有政策/受益路径/研究队列/自选备注）、UNCLASSIFIED_DATA_GAP（数据完整度 18%，证据缺口）
+  - 全链路 API 验证：candidates / observe / detail / ta-queue / daily-plan / data-health / review / filtered
+  - 名称非代码断言：所有候选名称不包含 .SH/.SZ/.BJ 后缀
+  - 池映射验证：haotian→POLICY_AMBUSH、tech→TECH_TRADE、gap→UNCLASSIFIED_DATA_GAP
+  - 昊天字段可见性：POLICY_AMBUSH 候选的 mandate_topic/company_role/beneficiary_path/research_queue/watchlist_note_suggested 非空
+  - 技术候选短线语义：TECH_TRADE 候选 candidate_type_to_pool→"tech"、POOL_LABELS→"短线技术"
+  - 禁用词检查：全链路无买入/卖出/清仓等强交易词
+  - Smoke 报告写入 docs/tradeflow_acceptance/2026-06-02-tf-p0-003.md
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-02 | TF-P0-002: 候选池分层：短线技术池与昊天左侧池显式拆分
 
 - **执行者**：OpenCode
@@ -2169,3 +2209,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TF-P0-002-20260602-round1.txt
 - **Run archive**: docs/task_runs/TF-P0-002-20260602-184045/
+
+## 2026-06-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-P0-003 - TradeFlow 生成候选池后的端到端 UI smoke 验收（P0）
+- **Priority**: P0
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TF-P0-003-20260602-round1.txt
+- **Run archive**: docs/task_runs/TF-P0-003-20260602-190059/
