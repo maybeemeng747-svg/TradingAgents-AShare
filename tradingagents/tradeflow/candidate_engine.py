@@ -960,6 +960,7 @@ def evaluate_symbol(
         fund_flow_anomaly_tags=candidate.fund_flow_anomaly_tags,
         narrative_score=candidate.narrative_score,
         mandate_evidence_refs=candidate.policy_evidence_refs,
+        data_completeness=candidate.data_completeness,  # [TF-P0-002] tradeflow_pool_split
         cfg=cfg,
     )
     candidate.candidate_type = ambush_result.candidate_type

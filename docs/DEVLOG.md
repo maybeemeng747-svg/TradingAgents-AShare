@@ -4,6 +4,55 @@
 
 ---
 
+## 2026-06-02 | TF-P0-002: 候选池分层：短线技术池与昊天左侧池显式拆分
+
+- **执行者**：OpenCode
+- **任务**：TF-P0-002 — 把 TradeFlow 候选池明确拆成"短线技术池"和"昊天左侧池"，防止纯 VCP/回踩支撑候选被误解为昊天战法候选。
+- **修改文件**：
+  - `tradingagents/tradeflow/ambush_score.py` — [TF-P0-002] tradeflow_pool_split
+    - `CandidateType` 新增 `UNCLASSIFIED_DATA_GAP` 类型：数据完整度<30%且无政策/技术信号时标记
+    - `classify_candidate_type()` 新增 `data_completeness` 参数：低完整度候选不再默认 TECH_TRADE，而是显式标记为证据缺口
+    - `compute_ambush_score()` 新增 `data_completeness` 参数，透传到 classify_candidate_type
+  - `tradingagents/tradeflow/candidate_pool.py` — 新建：[TF-P0-002] tradeflow_pool_split
+    - `POOL_TO_CANDIDATE_TYPES` 映射：all/haotian/policy/tech/event/gap → candidate_type 列表
+    - `pool_to_candidate_types()` / `candidate_type_to_pool()` helper
+  - `tradingagents/tradeflow/candidate_engine.py` — [TF-P0-002]
+    - `evaluate_symbol()` 传递 `data_completeness` 到 `compute_ambush_score()`
+  - `api/services/tradeflow_service.py` — [TF-P0-002]
+    - `get_candidates()` 新增 `pool` 参数，支持池级别过滤
+    - 支持多类型 IN 查询（pool 映射到多个 candidate_type 时）
+  - `api/main.py` — [TF-P0-002]
+    - `/v1/tradeflow/candidates` 新增 `pool` query parameter
+  - `frontend/src/services/api.ts` — [TF-P0-002]
+    - `getTradeFlowCandidates()` 新增 `pool` 参数
+  - `frontend/src/pages/TradeFlow.tsx` — [TF-P0-002]
+    - 候选类型下拉框替换为池级标签按钮：全部/昊天左侧/政策确认/短线技术/事件观察/证据缺口
+    - `candidateTypeLabel` 新增 `UNCLASSIFIED_DATA_GAP` case
+  - `frontend/src/components/TradeFlowCandidateDrawer.tsx` — [TF-P0-002]
+    - 新增 `UNCLASSIFIED_DATA_GAP` 颜色/标签映射
+    - 新增"为什么无法分类"区块：显示数据完整度过低原因和缺失字段
+  - `tests/test_tf_p0_002_pool_split.py` — 新建，38 个测试覆盖：
+    - `TestCandidateTypeEnum` (1): has UNCLASSIFIED_DATA_GAP
+    - `TestClassifyCandidateTypeDataGap` (7): low comp triggers gap / has policy bypass / has tech bypass / boundary 30% / below 30% / default 1.0
+    - `TestPureVCPClassifiedTechTrade` (3): VCP no policy / pullback no policy / policy gives mandate
+    - `TestPoolMapping` (13): all pools / unknown / labels / ct_to_pool roundtrips / pseudo+overheated fallback to all
+    - `TestComputeAmbushScoreDataGap` (3): low data gap / high data tech / policy evidence
+    - `TestSaveCandidatePoolType` (3): TECH_TRADE / UNCLASSIFIED_DATA_GAP / POLICY_AMBUSH
+    - `TestPoolAPIFiltering` (2): pool filter service / pool all returns all
+    - `TestAcceptanceTFP0002` (5): pure VCP tech / policy ambush / low comp gap / pool mapping / no strong words
+  - `tests/test_h004_ambush_score.py` — 更新 `test_all_seven_types` 加入 `UNCLASSIFIED_DATA_GAP`
+  - `docs/TASKS.md` — TF-P0-002 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：38 passed (TF-P0-002)；388 passed (H-series + tradeflow + API 全部回归)；0 failed；npm run build 通过
+- **关键逻辑**：
+  - `UNCLASSIFIED_DATA_GAP`：数据完整度<30%且无政策/技术信号时，候选不再默认 TECH_TRADE，而是显式标记为证据缺口
+  - 池映射：all(无过滤) / haotian(POLICY_AMBUSH) / policy(POLICY_CONFIRM) / tech(TECH_TRADE) / event(EVENT_WATCH) / gap(UNCLASSIFIED_DATA_GAP)
+  - API `pool` 参数：优先于 `candidate_type`，映射到具体类型后执行服务端过滤
+  - 前端候选池标签按钮：替换原候选类型下拉框，点击即切换池视图
+  - 纯 VCP/PULLBACK 样本 → TECH_TRADE（有政策证据时 → POLICY_AMBUSH）
+  - 数据完整度<30%无证据 → UNCLASSIFIED_DATA_GAP（不是空字符串或"未分类"）
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
 ## 2026-06-02 | TA-UI-001: 智能分析控制台增加短线/中线、分析意图、持仓状态选择
 
 - **执行者**：OpenCode
@@ -2109,3 +2158,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TA-UI-001-20260602-round1.txt
 - **Run archive**: docs/task_runs/TA-UI-001-20260602-182128/
+
+## 2026-06-02 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-P0-002 - 候选池分层：短线技术池与昊天左侧池显式拆分（P0）
+- **Priority**: P0
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TF-P0-002-20260602-round1.txt
+- **Run archive**: docs/task_runs/TF-P0-002-20260602-184045/

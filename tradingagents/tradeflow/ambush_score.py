@@ -41,6 +41,7 @@ class CandidateType(Enum):
     EVENT_WATCH = "EVENT_WATCH"
     PSEUDO_POLICY = "PSEUDO_POLICY"
     OVERHEATED_AVOID = "OVERHEATED_AVOID"
+    UNCLASSIFIED_DATA_GAP = "UNCLASSIFIED_DATA_GAP"  # [TF-P0-002] tradeflow_pool_split
 
 
 CANDIDATE_TYPE_LABELS = {
@@ -48,6 +49,7 @@ CANDIDATE_TYPE_LABELS = {
     CandidateType.POLICY_CONFIRM: "政策右侧确认",
     CandidateType.TECH_TRADE: "技术交易",
     CandidateType.EVENT_WATCH: "事件观察",
+    CandidateType.UNCLASSIFIED_DATA_GAP: "证据缺口",  # [TF-P0-002]
     CandidateType.PSEUDO_POLICY: "伪政策题材",
     CandidateType.OVERHEATED_AVOID: "过热规避",
 }
@@ -284,6 +286,7 @@ def compute_ambush_score(
     narrative_score: float = 0.0,
     mandate_evidence_refs: Optional[list[dict]] = None,
     mandate_reasons: Optional[list[str]] = None,
+    data_completeness: float = 1.0,  # [TF-P0-002] tradeflow_pool_split
     cfg: Optional[StrategyConfig] = None,
 ) -> AmbushScoreResult:
     if cfg is None:
@@ -347,6 +350,7 @@ def compute_ambush_score(
         is_noise=is_noise,
         risk_flags=risk_flags,
         game_balance=game_balance,
+        data_completeness=data_completeness,  # [TF-P0-002]
     )
 
     deep_ta_route, deep_ta_route_reason = route_deep_ta(
@@ -384,8 +388,12 @@ def classify_candidate_type(
     is_noise: bool = False,
     risk_flags: Optional[list[str]] = None,
     game_balance: str = "",
+    data_completeness: float = 1.0,  # [TF-P0-002] tradeflow_pool_split
 ) -> tuple[CandidateType, str]:
     r_flags = set(risk_flags or [])
+
+    if data_completeness < 0.3 and not has_policy and not has_tech_breakout:  # [TF-P0-002]
+        return CandidateType.UNCLASSIFIED_DATA_GAP, f"证据缺口: 数据完整度{data_completeness:.0%}<30%, 无法分类"
 
     if is_overheated:
         return CandidateType.OVERHEATED_AVOID, "过热/高位/风险拥挤，规避追涨"

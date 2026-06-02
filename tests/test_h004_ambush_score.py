@@ -35,9 +35,10 @@ from tradingagents.tradeflow.schemas import Candidate
 # ── CandidateType enum ──
 
 class TestCandidateTypeEnum:
-    def test_all_six_types(self):
+    def test_all_seven_types(self):  # [TF-P0-002]
         expected = {"POLICY_AMBUSH", "POLICY_CONFIRM", "TECH_TRADE",
-                    "EVENT_WATCH", "PSEUDO_POLICY", "OVERHEATED_AVOID"}
+                    "EVENT_WATCH", "PSEUDO_POLICY", "OVERHEATED_AVOID",
+                    "UNCLASSIFIED_DATA_GAP"}  # [TF-P0-002]
         actual = {t.value for t in CandidateType}
         assert actual == expected
 
