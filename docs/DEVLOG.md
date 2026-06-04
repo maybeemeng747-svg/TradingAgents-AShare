@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-06-03 | TF-UX 收敛优化：评分 + 分级视图 + 自动刷新 + 复盘
+
+- **执行者**：OpenCode
+- **任务**：TradeFlow UX 收敛优化 4 个任务
+- **修改文件**：
+  - `tradingagents/tradeflow/action_tier_scorer.py` — **新增**：trade_priority_score 评分 + action_tier 分级逻辑
+    - 7 因子加权评分：触发距离/是否已触发/数据完整度/信号强度/资金流/失效距离/信号类别质量
+    - action_tier 分配：actionable(≥0.7 + 接近触发 + 完整度≥0.5 + 信号≥2类) / watch(≥0.4 + 完整度≥0.3) / scan(其余)
+    - 输出 action_tier_reason 说明入选/未入选原因
+  - `tradingagents/tradeflow/candidate_engine.py` — DB migration：新增 action_tier/trade_priority_score/action_tier_reason 列
+  - `api/services/tradeflow_service.py` — 新增服务：
+    - `get_candidates_tiered()` — 按 tier 分组返回候选
+    - `_recompute_action_tiers()` — 懒计算并持久化 action_tier
+    - `generate_review()` — 调用 post_market_review 生成复盘
+    - `get_candidates()` 默认排序改为 trade_priority_score DESC → composite_score DESC
+  - `api/tradeflow_schemas.py` — 新增 Pydantic models：
+    - `TradeFlowTieredCandidatesResponse` / `TradeFlowReviewGenerateResponse`
+    - `TradeFlowCandidateItem` 新增 action_tier/trade_priority_score/action_tier_reason 字段
+  - `api/main.py` — 新增 API 端点：
+    - `GET /v1/tradeflow/candidates/tiered` — 分级候选
+    - `POST /v1/tradeflow/review/generate` — 生成盘后复盘
+  - `frontend/src/types/index.ts` — 新增 TS 类型：TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse
+  - `frontend/src/services/api.ts` — 新增 API 方法：getTradeFlowCandidatesTiered, generateTradeFlowReview
+  - `frontend/src/pages/TradeFlow.tsx` — 主要前端改动：
+    - [TF-UX-001] 分级视图：默认卡片式展示 actionable(≤3)/watch(≤8)/scan(折叠)
+    - [TF-UX-002] 自动刷新：盘中 3min/非盘中 5min 自动刷新 observe tab
+    - [TF-UX-002] A股颜色语义修复：红=上涨/触发, 绿=下跌/失效, 蓝=等待中
+    - [TF-UX-003] Review tab 无数据时显示"生成今日复盘"按钮
+    - [TF-UX-004] 表格视图默认按 trade_priority_score 排序，显示优先分列
+- **影响范围**：后端新增 2 个 API，前端新增分级视图/自动刷新/复盘按钮，DB 新增 3 列（ALTER TABLE）
+- **向后兼容**：所有现有 API 不变，新字段有默认值
+
 ## 2026-06-02 | 收口：PERF-002 + 门禁回归修复 + 自选股名称修复
 
 - **执行者**：OpenCode

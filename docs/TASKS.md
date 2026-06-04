@@ -48,20 +48,24 @@
 22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
 23. `PERF-001`：运行层级与速度预算契约（P1，done）。
 24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
-25. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，ready）。
-26. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，ready）。
-27. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready，依赖 DATA-004/DATA-006 ✓）。
-28. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready，依赖 DATA-005 ✓）。
-29. `H-009`：昊天候选反证/过热降权校准（P1，ready，依赖 H-006/V-004 ✓）。
-30. `H-010`：政策主题生命周期与版本状态注册表（P1，ready，依赖 H-002/H-006 ✓）。
-31. `H-011`：候选矛盾证据与负面清单解释（P2，ready，依赖 H-009 ✓）。
-32. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，ready，依赖 H-007/UI-006 ✓）。
-33. `UI-010`：昊天候选对比视图与证据缺口排序（P2，ready，依赖 H-005/DATA-007 ✓）。
-34. `V-005`：夜间昊天候选质量日报与样本回放（P1，ready，依赖 V-004/DATA-006 ✓）。
-35. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，ready，依赖 V-002 ✓）。
-36. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，ready，依赖 INF-001 ✓）。
-37. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，ready，依赖 TF-OBS-001/UI-004 ✓）。
-38. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，ready，依赖 H-008/VLM-001 ✓）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，ready）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，ready，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，in_progress — claimed PERF-003-20260602-200127）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，ready）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，ready，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，ready，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，ready，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，ready，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，ready，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，ready，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，ready，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，ready，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，ready，依赖 TF-OBS-001/UI-004 ✓）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，ready，依赖 H-008/VLM-001 ✓）。
 
 ### 数据源治理候选队列
 
@@ -74,9 +78,13 @@
 5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
 6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
 7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
-8. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready）。
-9. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready）。
-10. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，ready）。
+8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，ready）。
+9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，ready）。
+10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，ready）。
+11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，ready）。
+12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready）。
+13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready）。
+14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，ready）。
 
 ### 总体路线图
 
@@ -167,7 +175,7 @@
 ### PERF-003: 分析运行耗时/调用成本遥测与前端展示（P1）
 - **描述**：为 TradeFlow、轻量 TA、完整 TA 增加运行遥测，记录耗时、模块、模型调用次数、失败原因和成本风险，让用户知道一次分析到底重不重。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：in_progress — claimed PERF-003-20260602-200127
 - **执行约束**：
   - 不记录 API key/token。
   - 不泄露完整 prompt。
@@ -510,6 +518,130 @@
   - 新增/更新测试覆盖 readiness/raw_evidence/fund_lhb provenance。
   - `pytest tests/test_g006_raw_evidence_snapshot.py tests/test_g007_fund_lhb_provenance.py tests/test_readiness_score.py tests/test_dataflows*.py -q` 或同等相关测试通过。
 - **代码标注要求**：`# [DATA-P0-603629] astock_source_fallback`
+
+### DATA-P0-FUND-ROUTE: 主力资金 fallback 假成功与单位修复（P0）
+- **描述**：修复主力资金 AKShare 失败字符串被路由层误判为成功的问题，确保 Eastmoney/cn_astock fallback 真正生效，并统一资金流单位。
+- **优先级**：P0
+- **状态**：ready
+- **背景**：
+  - 现场验证 `route_to_vendor("get_individual_fund_flow", "603629.SH")` 命中 `cn_akshare` 后返回 `ProxyError` 失败字符串，路由层仍记录 `vendor=cn_akshare status=hit`，没有继续 fallback 到 `cn_astock`。
+  - 直接调用 `CnAstockProvider.get_individual_fund_flow("603629.SH")` 可取得 Eastmoney push2his 近 20 日资金流，说明不是股票天然缺主力资金，而是 fallback 链路被失败字符串截断。
+  - `cn_astock_provider` 当前输出文案写“单位：万元”，但 Eastmoney push2his 原始金额看起来是元级，需要统一 `/10000` 转万元并标注单位校验。
+- **执行约束**：
+  - 不跑全市场 live 压测。
+  - 不提交 cookie/API key/proxy 配置。
+  - 不把失败数据填成推测值。
+  - 不改 `tradingagents/prompts/`。
+- **实现要点**：
+  1. 修复 provider route 的“失败字符串假成功”：
+     - 对 `get_individual_fund_flow`、`get_lhb_detail`、`get_announcements` 等关键源，返回文本包含 `数据获取失败`、`ProxyError`、`ConnectionError`、`Max retries exceeded`、`Unable to connect`、`暂不可用` 时，不得视为 successful hit。
+     - 可选方案 A：在 `route_to_vendor()` 中识别失败文本并继续 fallback。
+     - 可选方案 B：改 `CnAkshareProvider.get_individual_fund_flow()`，异常时抛出 provider unavailable 异常，由路由层继续 fallback。
+  2. `get_last_hit_vendor("get_individual_fund_flow")` 必须记录最终真实 vendor，例如 fallback 成功时为 `cn_astock`。
+  3. `CnAstockProvider.get_individual_fund_flow()` 金额单位统一：
+     - Eastmoney push2his 原始金额按元处理。
+     - 输出前统一 `/10000` 转为万元。
+     - 文本注明 `单位：万元`。
+     - raw_evidence 对应 entry 中 `unit=万元`、`unit_verified=True`。
+  4. 保持失败状态透明：
+     - 如果 AKShare 和 cn_astock 都失败，最终 status 为 `FAILED`，error 保留最后失败原因。
+     - 不允许失败字符串被下游当作 `HAS_DATA`。
+- **验收方式**：
+  - mock AKShare 返回/抛出 ProxyError，cn_astock 返回有效资金流，断言最终结果来自 `cn_astock`。
+  - 603629 类 fixture：AKShare 失败但 Eastmoney fallback 成功，raw_evidence.vendor=`cn_astock`，fallback_from=`cn_akshare`。
+  - 金额单位转换测试：输入元级原始值，输出万元级文本和 unit_verified=True。
+  - `pytest tests/test_g007_fund_lhb_provenance.py tests/test_data_source_replay.py tests/test_dataflows*.py -q` 或等价测试通过。
+- **代码标注要求**：`# [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth`
+
+### DATA-P1-LHB-FUND-DECOUPLE: 龙虎榜与资金流触发链路复核（P1）
+- **描述**：复核并补强龙虎榜查询与主力资金链路的解耦，确保资金流失败不会阻断龙虎榜按异常条件 force 查询，同时明确“无龙虎榜”和“未查询/失败”的区别。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`DATA-P0-FUND-ROUTE` 完成。
+- **背景**：
+  - 龙虎榜不是所有股票每天都有；普通交易日 `force=True` 无记录应为 `NORMAL_NO_DATA`，不是接口失败。
+  - 当前 smart_money/data_collector 仍有“先看资金流异常，再决定是否 force 龙虎榜”的强耦合痕迹；当资金流失败时，异常波动/新闻提及龙虎榜/涨跌停等条件仍应能触发 force。
+- **实现要点**：
+  1. force 条件至少覆盖：
+     - 新闻/公告文本出现“龙虎榜”。
+     - 连续涨停/跌停、一字板、严重异常波动。
+     - 涨跌幅偏离、量比/成交额异常。
+     - 资金流可用且显示明显异动。
+  2. 资金流失败只影响资金流证据，不得阻止 LHB force 条件继续判断。
+  3. raw_evidence.lhb 必须稳定输出四态：
+     - `NOT_QUERIED`：force=False，未触发查询。
+     - `NORMAL_NO_DATA`：force=True，但当日未上榜。
+     - `FAILED`：接口失败/解析失败。
+     - `HAS_DATA`：有龙虎榜记录。
+  4. 报告底部/数据源摘要：
+     - `NORMAL_NO_DATA` 显示为“非异动日无龙虎榜”，不能显示红色失败。
+     - `NOT_QUERIED` 显示为“未触发查询”，不能说“无龙虎榜数据”。
+- **验收方式**：
+  - 构造资金流失败 + 新闻出现龙虎榜，断言仍 force 查询 LHB。
+  - 构造 force=True 但无记录，断言状态为 `NORMAL_NO_DATA`。
+  - 构造 force=False，断言状态为 `NOT_QUERIED`。
+  - 构造接口异常，断言状态为 `FAILED`。
+  - `pytest tests/test_g007_fund_lhb_provenance.py tests/test_readiness_score.py -q` 通过。
+- **代码标注要求**：`# [DATA-P1-LHB-FUND-DECOUPLE] lhb_fund_decouple`
+
+### DATA-P1-ASTOCK-LIVE-SMOKE: cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1）
+- **描述**：建立低频 live smoke 脚本/测试，用少量固定股票验证 cn_astock/Eastmoney 关键端点可用性、限流和字段单位，防止“fixture 通过但实盘接口失效”。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`DATA-P0-FUND-ROUTE` 完成。
+- **执行约束**：
+  - 默认测试必须 mock/fixture；live smoke 必须通过环境变量显式开启，例如 `TA_LIVE_DATA_SMOKE=1`。
+  - live smoke 样本不超过 3 只股票。
+  - 东财接口串行请求，单端点请求间隔必须限流。
+  - 不写生产数据库。
+- **实现要点**：
+  1. 增加 live smoke 脚本或 pytest marker，覆盖：
+     - `cn_astock` 个股资金流 push2his。
+     - `cn_astock` 龙虎榜 datacenter。
+     - 腾讯/新浪实时 quote。
+     - CNInfo/公告端点可用性（只查少量样本）。
+  2. 输出 `docs/data_source_reports/live-smoke-YYYY-MM-DD.md`，包含：
+     - endpoint、vendor、status、latency、field_count、unit、error。
+  3. live smoke 失败不应直接阻断普通测试，但应在夜间日报标红。
+  4. 与 `M-008` 数据源健康检查和 `DATA-006` 日报聚合对接。
+- **验收方式**：
+  - 未设置 `TA_LIVE_DATA_SMOKE` 时 live 测试 skip。
+  - 设置后只请求固定 1-3 只样本，输出报告。
+  - endpoint 失败时报告 `FAILED`，不能写成 `NORMAL_NO_DATA`。
+  - `pytest tests/test_data_source_replay.py tests/test_m008_health_check.py -q` 或等价测试通过。
+- **代码标注要求**：`# [DATA-P1-ASTOCK-LIVE-SMOKE] astock_live_smoke`
+
+### DATA-P1-SOURCE-GAP-AUDIT: Simon 数据源吸收落地差距审计（P1）
+- **描述**：对照 SimonLin1212 `a-stock-data` / A股数据 Skill 思路，审计本项目已经吸收和仍未落地的数据源能力，输出可执行差距清单。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`DATA-001`、`DATA-004` 完成 ✓。
+- **背景**：
+  - 已落地部分：source_catalog、cn_astock provider 注册、raw_evidence contract、fixture replay、数据源日报、事件源归一化。
+  - 未完全落地部分：fallback 执行链仍可能被失败字符串截断；live smoke 不稳定；部分字段源仍只在目录中登记，未真正进入 TA/TradeFlow；资金流单位和 fallback vendor 溯源仍有缺口。
+- **实现要点**：
+  1. 新增审计文档 `docs/DATA_SOURCE_GAP_AUDIT.md` 或更新既有数据源文档。
+  2. 按数据类型输出矩阵：
+     - OHLCV/实时 quote/换手率/量比。
+     - 个股资金流/板块资金。
+     - 龙虎榜/融资融券。
+     - 公告/研报/评级/回购。
+     - 新闻/政策事件。
+  3. 对每项标注：
+     - 已登记 source_catalog？
+     - provider 是否已实现？
+     - 是否进入 route fallback？
+     - 是否进入 raw_evidence？
+     - 是否进入报告/前端？
+     - 是否有 fixture？
+     - 是否有 live smoke？
+  4. 输出下一轮任务建议，不得把未实现项写成 done。
+- **验收方式**：
+  - 审计文档能解释为什么“之前说接了 fallback，但主力资金仍失败”：失败字符串假成功导致 route 没继续 fallback。
+  - 文档列出至少 5 个未落地风险和对应任务编号。
+  - 不修改生产代码，除非只增加无副作用 helper/test。
+  - `rg` 检查审计文档包含 `fund_flow`、`lhb`、`raw_evidence`、`fallback`、`live smoke`。
+- **代码标注要求**：`# [DATA-P1-SOURCE-GAP-AUDIT] source_gap_audit`
 
 ### DATA-001: A股数据源能力目录与 fallback 矩阵（P1）
 - **描述**：建立本项目统一的数据源能力目录，明确每个 vendor/endpoint 能提供什么字段、适用场景、freshness、限流风险和 fallback 顺序。

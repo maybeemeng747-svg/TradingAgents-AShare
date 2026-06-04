@@ -94,6 +94,9 @@ class TradeFlowCandidateItem(BaseModel):
     watchlist_benefit_score: float = 0.0  # [H-008] mandate_watchlist_note
     watchlist_consensus_score: float = 0.0  # [H-008] mandate_watchlist_note
     watchlist_evidence_gap: List[str] = Field(default_factory=list)  # [H-008] mandate_watchlist_note
+    action_tier: str = "scan"  # [TF-UX-004] action_tier_scorer
+    trade_priority_score: float = 0.0  # [TF-UX-004] action_tier_scorer
+    action_tier_reason: str = ""  # [TF-UX-004] action_tier_scorer
     created_at: str = ""
     updated_at: str = ""
 
@@ -272,3 +275,25 @@ class TradeFlowFilteredResponse(BaseModel):
     filtered: List[TradeFlowFilteredItem] = Field(default_factory=list)
     filter_breakdown: Dict[str, int] = Field(default_factory=dict)
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+
+
+# [TF-UX-001] tiered candidates
+class TradeFlowTieredCandidatesResponse(BaseModel):
+    status: str = "ok"
+    trade_date: str = ""
+    actionable: List[TradeFlowCandidateItem] = Field(default_factory=list)
+    watch: List[TradeFlowCandidateItem] = Field(default_factory=list)
+    scan: List[TradeFlowCandidateItem] = Field(default_factory=list)
+    actionable_count: int = 0
+    watch_count: int = 0
+    scan_count: int = 0
+    summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [TF-UX-003] post_market_review
+class TradeFlowReviewGenerateResponse(BaseModel):
+    status: str = "ok"
+    trade_date: str = ""
+    message: str = ""
+    review: Optional[Dict[str, Any]] = None

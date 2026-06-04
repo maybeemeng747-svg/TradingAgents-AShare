@@ -148,6 +148,9 @@ def _row_to_candidate_item(row: sqlite3.Row) -> dict:
         "plan_date": _rget(row, "plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
         "effective_trade_date": _rget(row, "effective_trade_date", ""),  # [TF-DATE-001]
         "observe_date": _rget(row, "observe_date", ""),  # [TF-DATE-001]
+        "action_tier": _rget(row, "action_tier", "scan"),  # [TF-UX-004]
+        "trade_priority_score": _rget(row, "trade_priority_score", 0.0) or 0.0,  # [TF-UX-004]
+        "action_tier_reason": _rget(row, "action_tier_reason", ""),  # [TF-UX-004]
         "created_at": _rget(row, "created_at", ""),
         "updated_at": _rget(row, "updated_at", ""),
     }
@@ -387,6 +390,8 @@ def get_candidates(
             extra_params.extend(pool_types)
 
         order_cols = []
+        if "trade_priority_score" in columns:
+            order_cols.append("trade_priority_score DESC")
         if "composite_score" in columns:
             order_cols.append("composite_score DESC")
         if "score" in columns:
@@ -404,6 +409,8 @@ def get_candidates(
         for it in items:
             it["action"] = _compute_action(it)
             it["reason"] = it.get("why_deep_ta") or it.get("why_not_deep_ta") or "候选观察"
+
+        _recompute_action_tiers(conn, items, trade_date)
 
         return {
             "status": "ok",
@@ -890,4 +897,184 @@ def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
         "run_time": result.run_time,
         "details": result.details,
         "runtime_tier_meta": _tradeflow_meta("tradeflow_observe_run"),  # [PERF-001]
+    }
+
+
+# [TF-UX-001] tiered candidates
+def get_candidates_tiered(trade_date: str, tf_db_path: str = "") -> dict:
+    """Return candidates grouped by action_tier: actionable, watch, scan."""
+    _fast_meta = _tradeflow_meta("tradeflow_candidates_tiered")
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}
+
+    try:
+        columns = _table_columns(conn, "tradeflow_candidates")
+        extra_conditions = ["status = 'active'" if "status" in columns else None]
+        extra_conditions = [c for c in extra_conditions if c is not None]
+
+        order_cols = []
+        if "trade_priority_score" in columns:
+            order_cols.append("trade_priority_score DESC")
+        if "composite_score" in columns:
+            order_cols.append("composite_score DESC")
+        if "score" in columns:
+            order_cols.append("score DESC")
+        order_clause = f" ORDER BY {', '.join(order_cols)}" if order_cols else " ORDER BY updated_at DESC, created_at DESC"
+
+        rows = _query_by_date_or_effective(
+            conn, "tradeflow_candidates", trade_date,
+            extra_conditions=extra_conditions if extra_conditions else None,
+            order_clause=order_clause,
+        )
+
+        all_items = [_row_to_candidate_item(r) for r in rows]
+        for it in all_items:
+            it["action"] = _compute_action(it)
+            it["reason"] = it.get("why_deep_ta") or it.get("why_not_deep_ta") or "候选观察"
+
+        # Compute action_tier for items that don't have it yet or need update
+        _recompute_action_tiers(conn, all_items, trade_date)
+
+        actionable = [it for it in all_items if it.get("action_tier") == "actionable"][:3]
+        watch = [it for it in all_items if it.get("action_tier") == "watch"][:8]
+        scan = [it for it in all_items if it.get("action_tier") == "scan"]
+
+        return {
+            "status": "ok",
+            "trade_date": trade_date,
+            "actionable": actionable,
+            "watch": watch,
+            "scan": scan,
+            "actionable_count": len([it for it in all_items if it.get("action_tier") == "actionable"]),
+            "watch_count": len([it for it in all_items if it.get("action_tier") == "watch"]),
+            "scan_count": len(scan),
+            "summary_agg": _compute_summary(all_items),
+            "runtime_tier_meta": _tradeflow_meta("tradeflow_candidates_tiered"),
+        }
+    finally:
+        conn.close()
+
+
+def _recompute_action_tiers(
+    conn: sqlite3.Connection,
+    items: list[dict],
+    trade_date: str,
+) -> None:
+    """Recompute action_tier for items from DB fields, persisting if changed."""
+    columns = _table_columns(conn, "tradeflow_candidates")
+    has_tier_cols = {"action_tier", "trade_priority_score", "action_tier_reason"}.issubset(columns)
+
+    for it in items:
+        existing_tier = it.get("action_tier", "scan")
+        existing_score = it.get("trade_priority_score", 0.0)
+        existing_reason = it.get("action_tier_reason", "")
+
+        if existing_tier and existing_tier != "scan" and existing_score > 0:
+            continue
+
+        from tradingagents.tradeflow.action_tier_scorer import run_action_tier_scorer
+        result = run_action_tier_scorer(
+            trigger_price=it.get("trigger_price"),
+            current_price=None,
+            invalid_price=it.get("invalid_price"),
+            observe_state=it.get("observe_state", "WAITING"),
+            data_completeness=it.get("data_completeness", 0.0),
+            composite_score=it.get("composite_score", 0.0),
+            positive_category_count=it.get("positive_category_count", 0),
+            fund_flow_anomaly_score=it.get("fund_flow_anomaly_score", 0.0),
+            fund_flow_unit_verified=it.get("fund_flow_unit_verified", False),
+            risk_penalty=it.get("risk_penalty", 0.0) if "risk_penalty" in it else 0.0,
+            game_balance=it.get("game_balance", ""),
+            ambush_score=it.get("ambush_score", 0.0),
+        )
+
+        it["action_tier"] = result.action_tier
+        it["trade_priority_score"] = result.trade_priority_score
+        it["action_tier_reason"] = result.action_tier_reason
+
+        if has_tier_cols:
+            try:
+                conn.execute(
+                    "UPDATE tradeflow_candidates SET action_tier=?, trade_priority_score=?, action_tier_reason=? WHERE trade_date=? AND symbol=?",
+                    (result.action_tier, result.trade_priority_score, result.action_tier_reason, trade_date, it["symbol"]),
+                )
+            except Exception:
+                pass
+
+    if has_tier_cols:
+        try:
+            conn.commit()
+        except Exception:
+            pass
+
+
+# [TF-UX-003] post_market_review
+def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
+    """Generate post-market review for trade_date using post_market_review module."""
+    from tradingagents.tradeflow.candidate_engine import init_db
+    from tradingagents.tradeflow.post_market_review import (
+        build_candidate_performance_from_dict,
+        run_post_market_review,
+        save_review_report,
+    )
+
+    tf_db = tf_db_path or _get_tradeflow_db_path()
+    init_db(tf_db)
+
+    candidates_data = get_candidates(trade_date, tf_db_path=tf_db)
+    if candidates_data.get("status") == "no_data":
+        return {"status": "no_data", "trade_date": trade_date, "message": "无候选数据"}
+
+    candidates = candidates_data.get("candidates", [])
+    if not candidates:
+        return {"status": "no_data", "trade_date": trade_date, "message": "候选列表为空"}
+
+    performances = []
+    for c in candidates:
+        perf = build_candidate_performance_from_dict(c)
+        performances.append(perf)
+
+    summary = run_post_market_review(performances, candidate_date=trade_date)
+
+    try:
+        save_review_report(summary)
+    except Exception:
+        pass
+
+    return {
+        "status": "ok",
+        "trade_date": trade_date,
+        "review": {
+            "review_date": summary.review_date,
+            "candidate_date": summary.candidate_date,
+            "total_candidates": summary.total_candidates,
+            "scored_candidates": summary.scored_candidates,
+            "no_data_candidates": summary.no_data_candidates,
+            "overall_hit_count": summary.overall_hit_count,
+            "overall_miss_count": summary.overall_miss_count,
+            "overall_invalidated_count": summary.overall_invalidated_count,
+            "overall_hit_rate": summary.overall_hit_rate,
+            "overall_false_positive_rate": summary.overall_false_positive_rate,
+            "avg_next_day_return": summary.avg_next_day_return,
+            "avg_day3_return": summary.avg_day3_return,
+            "avg_day5_return": summary.avg_day5_return,
+            "strategy_stats": {
+                tag: {
+                    "strategy_tag": st.strategy_tag,
+                    "total_candidates": st.total_candidates,
+                    "hit_count": st.hit_count,
+                    "miss_count": st.miss_count,
+                    "no_data_count": st.no_data_count,
+                    "invalidated_count": st.invalidated_count,
+                    "hit_rate": st.hit_rate,
+                    "false_positive_rate": st.false_positive_rate,
+                    "avg_next_day_return": st.avg_next_day_return,
+                }
+                for tag, st in summary.strategy_stats.items()
+            },
+            "tier_stats": summary.tier_stats,
+            "common_removal_reasons": summary.common_removal_reasons,
+            "suggestions": summary.suggestions,
+        },
     }

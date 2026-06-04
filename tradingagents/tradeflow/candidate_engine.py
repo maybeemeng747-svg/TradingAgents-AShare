@@ -182,6 +182,10 @@ _MISSING_COLUMNS = [
     ("watchlist_benefit_score", "REAL DEFAULT 0.0"),
     ("watchlist_consensus_score", "REAL DEFAULT 0.0"),
     ("watchlist_evidence_gap_json", "TEXT DEFAULT '[]'"),
+    # [TF-UX-004] action_tier_scorer — add trade priority score & action tier
+    ("action_tier", "TEXT DEFAULT 'scan'"),
+    ("trade_priority_score", "REAL DEFAULT 0.0"),
+    ("action_tier_reason", "TEXT DEFAULT ''"),
 ]
 
 
@@ -420,6 +424,16 @@ def init_db(db_path: str) -> None:
         ("watchlist_benefit_score", "REAL DEFAULT 0.0"),
         ("watchlist_consensus_score", "REAL DEFAULT 0.0"),
         ("watchlist_evidence_gap_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [TF-UX-004] action_tier_scorer — add trade priority score & action tier
+    for _col, _type in [
+        ("action_tier", "TEXT DEFAULT 'scan'"),
+        ("trade_priority_score", "REAL DEFAULT 0.0"),
+        ("action_tier_reason", "TEXT DEFAULT ''"),
     ]:
         try:
             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")

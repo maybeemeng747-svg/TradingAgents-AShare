@@ -5167,6 +5167,8 @@ from api.tradeflow_schemas import (
     TradeFlowReviewResponse,
     TradeFlowDataHealthResponse,
     TradeFlowFilteredResponse,  # [UI-007] tradeflow_filtered_trace
+    TradeFlowTieredCandidatesResponse,  # [TF-UX-001]
+    TradeFlowReviewGenerateResponse,  # [TF-UX-003]
 )
 from api.services.tradeflow_service import (
     get_daily_plan as _tf_get_daily_plan,
@@ -5179,6 +5181,8 @@ from api.services.tradeflow_service import (
     run_discovery_scan as _tf_run_discovery_scan,
     get_filtered as _tf_get_filtered,  # [UI-007] tradeflow_filtered_trace
     run_observe_check as _tf_run_observe_check,  # [TF-OBS-001] tradeflow_observe_runner
+    get_candidates_tiered as _tf_get_candidates_tiered,  # [TF-UX-001]
+    generate_review as _tf_generate_review,  # [TF-UX-003]
 )
 
 # [UI-001] tradeflow_api — read-only endpoints
@@ -5263,6 +5267,18 @@ def tradeflow_discovery(request: TradeFlowDiscoveryRequest):
 @app.post("/v1/tradeflow/observe/run")
 def tradeflow_observe_run(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
     return _tf_run_observe_check(date)
+
+
+# [TF-UX-001] tiered candidates
+@app.get("/v1/tradeflow/candidates/tiered", response_model=TradeFlowTieredCandidatesResponse)
+def tradeflow_candidates_tiered(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_candidates_tiered(date)
+
+
+# [TF-UX-003] post_market_review
+@app.post("/v1/tradeflow/review/generate", response_model=TradeFlowReviewGenerateResponse)
+def tradeflow_review_generate(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_generate_review(date)
 
 
 # ─── Static Files & SPA Routing ──────────────────────────────────────────────

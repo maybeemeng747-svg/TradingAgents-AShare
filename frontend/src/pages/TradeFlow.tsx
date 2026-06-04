@@ -2,9 +2,13 @@
 // [H-005] mandate_radar_ui
 // [TA-UI-001] analysis_console_horizon_intent
 // [TF-P0-002] tradeflow_pool_split
-import { useState, useEffect, useCallback, useMemo } from 'react'
+// [TF-UX-001] tiered candidates
+// [TF-UX-002] auto refresh + A-stock colors
+// [TF-UX-003] post_market_review
+// [TF-UX-004] trade_priority_score
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX } from 'lucide-react'
+import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX, ChevronDown, ChevronRight, Zap, Clock } from 'lucide-react'
 import { api } from '@/services/api'
 import {
     RUNTIME_TIER_LABELS,
@@ -22,6 +26,7 @@ import type {
     TradeFlowTAQueueResponse,
     TradeFlowReviewResponse,
     TradeFlowFilteredResponse,
+    TradeFlowTieredCandidatesResponse,
 } from '@/types'
 import TradeFlowCandidateDrawer from '@/components/TradeFlowCandidateDrawer'
 
@@ -91,6 +96,33 @@ function candidateTypeLabel(ct: string): { text: string; cls: string } {  // [H-
         case 'UNCLASSIFIED_DATA_GAP': return { text: '证据缺口', cls: 'bg-gray-100 text-gray-700 dark:bg-gray-900/40 dark:text-gray-300' }  // [TF-P0-002]
         default: return { text: ct || '未分类', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' }
     }
+}
+
+// [TF-UX-004] action tier badge
+function actionTierBadge(tier: string): { text: string; cls: string } {
+    switch (tier) {
+        case 'actionable': return { text: '今日可操作', cls: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' }
+        case 'watch': return { text: '重点观察', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' }
+        case 'scan': return { text: '扫描', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' }
+        default: return { text: tier || '未分类', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' }
+    }
+}
+
+// [TF-UX-002] A-stock color: red=up/triggered, green=down/invalidated
+function priceDistanceColor(currentPrice: number | null, triggerPrice: number | null, invalidPrice: number | null): { text: string; cls: string; label: string } {
+    if (!triggerPrice || !currentPrice) {
+        return { text: '-', cls: 'text-slate-400', label: '' }
+    }
+    const distPct = ((currentPrice - triggerPrice) / triggerPrice * 100)
+    if (currentPrice >= triggerPrice) {
+        return { text: `已触发 / +${distPct.toFixed(2)}%`, cls: 'text-red-600 dark:text-red-400 font-medium', label: '已触发' }
+    }
+    if (invalidPrice && currentPrice <= invalidPrice) {
+        const belowPct = ((invalidPrice - currentPrice) / invalidPrice * 100)
+        return { text: `已失效 / -${belowPct.toFixed(2)}%`, cls: 'text-emerald-600 dark:text-emerald-400', label: '已失效' }
+    }
+    const toTrigger = ((triggerPrice - currentPrice) / triggerPrice * 100)
+    return { text: `还差 ${toTrigger.toFixed(2)}%`, cls: 'text-blue-600 dark:text-blue-400', label: '等待中' }
 }
 
 // [TF-P0-002] tradeflow_pool_split — pool tabs
@@ -166,12 +198,18 @@ function CompletenessBar({ value }: { value: number }) {
     )
 }
 
-function ObserveTable({ items, onRun, running, runResult }: { items: TradeFlowObserveItem[]; onRun: () => void; running: boolean; runResult: TradeFlowObserveRunResponse | null }) {
+function ObserveTable({ items, onRun, running, runResult, lastCheckTime }: { items: TradeFlowObserveItem[]; onRun: () => void; running: boolean; runResult: TradeFlowObserveRunResponse | null; lastCheckTime: string | null }) {
     const [showResult, setShowResult] = useState(false)
     return (
         <div>
             <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-700">
                 <span className="text-sm font-medium text-slate-700 dark:text-slate-300">盘中观察</span>
+                {lastCheckTime && (
+                    <span className="inline-flex items-center gap-1 text-xs text-slate-400">
+                        <Clock className="h-3 w-3" />
+                        最后检查: {lastCheckTime}
+                    </span>
+                )}
                 <button
                     onClick={() => { onRun(); setShowResult(true) }}
                     disabled={running}
@@ -194,8 +232,8 @@ function ObserveTable({ items, onRun, running, runResult }: { items: TradeFlowOb
                     ) : (
                         <div className="flex flex-wrap gap-4">
                             <span>检查: {runResult.checked}</span>
-                            <span className="text-emerald-600 dark:text-emerald-400">触发: {runResult.triggered}</span>
-                            <span className="text-red-500">失效: {runResult.invalidated}</span>
+                            <span className="text-red-600 dark:text-red-400">触发: {runResult.triggered}</span>
+                            <span className="text-emerald-600 dark:text-emerald-400">失效: {runResult.invalidated}</span>
                             <span>等待: {runResult.waiting}</span>
                             <span className="text-slate-500">无行情: {runResult.skipped}</span>
                             <span>信号: {runResult.signals_written}</span>
@@ -232,10 +270,7 @@ function ObserveTable({ items, onRun, running, runResult }: { items: TradeFlowOb
                 <tbody>
                     {items.map(item => {
                         const st = observeStateLabel(item.observe_state)
-                        const hasPrice = item.current_price != null && item.trigger_price != null
-                        const distance = hasPrice
-                            ? ((item.trigger_price! - item.current_price!) / item.trigger_price! * 100)
-                            : null
+                        const distInfo = priceDistanceColor(item.current_price, item.trigger_price, item.invalid_price)
                         return (
                             <tr
                                 key={item.symbol}
@@ -255,13 +290,7 @@ function ObserveTable({ items, onRun, running, runResult }: { items: TradeFlowOb
                                     {item.current_price != null ? item.current_price.toFixed(2) : <span className="text-xs text-slate-400">实时行情不可用</span>}
                                 </td>
                                 <td className="px-4 py-2.5 tabular-nums">
-                                    {distance != null ? (
-                                        <span className={distance > 0 ? 'text-red-500' : 'text-emerald-600 dark:text-emerald-400'}>
-                                            {distance >= 0 ? '+' : ''}{distance.toFixed(2)}%
-                                        </span>
-                                    ) : (
-                                        <span className="text-xs text-slate-400">-</span>
-                                    )}
+                                    <span className={distInfo.cls}>{distInfo.text}</span>
                                 </td>
                                 <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{item.observe_trigger_count}</td>
                                 <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{item.observe_first_trigger_time || '-'}</td>
@@ -904,13 +933,37 @@ export default function TradeFlow() {
     const [reviewData, setReviewData] = useState<TradeFlowReviewResponse | null>(null)
     const [filteredData, setFilteredData] = useState<TradeFlowFilteredResponse | null>(null)  // [UI-007] tradeflow_filtered_trace
 
+    // [TF-UX-001] tiered candidates state
+    const [tieredData, setTieredData] = useState<TradeFlowTieredCandidatesResponse | null>(null)
+    const [showScan, setShowScan] = useState(false)
+    const [viewMode, setViewMode] = useState<'tiered' | 'table'>('tiered')
+
+    // [TF-UX-002] auto-refresh state
+    const [lastObserveCheckTime, setLastObserveCheckTime] = useState<string | null>(null)
+    const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+    // [TF-UX-003] review generation
+    const [reviewGenerating, setReviewGenerating] = useState(false)
+
+    // [TF-UX-002] check if market is in session
+    const isInMarketHours = useCallback(() => {
+        const now = new Date()
+        const day = now.getDay()
+        if (day === 0 || day === 6) return false
+        const h = now.getHours()
+        const m = now.getMinutes()
+        const t = h * 60 + m
+        return (t >= 570 && t <= 690) || (t >= 780 && t <= 900) // 9:30-11:30, 13:00-15:00
+    }, [])
+
     const fetchCandidates = useCallback(async (date: string) => {
         setLoading(true)
         setError(null)
         try {
-            const [candidatesRes, healthRes] = await Promise.all([
-                api.getTradeFlowCandidates(date, tierFilter || undefined, deepTaFilter === 'yes' ? true : deepTaFilter === 'no' ? false : undefined, candidateTypeFilter || undefined, poolFilter !== 'all' ? poolFilter : undefined),  // [H-005] [TF-P0-002]
+            const [candidatesRes, healthRes, tieredRes] = await Promise.all([
+                api.getTradeFlowCandidates(date, tierFilter || undefined, deepTaFilter === 'yes' ? true : deepTaFilter === 'no' ? false : undefined, candidateTypeFilter || undefined, poolFilter !== 'all' ? poolFilter : undefined),
                 api.getTradeFlowDataHealth(),
+                api.getTradeFlowCandidatesTiered(date),
             ])
             setStatus(candidatesRes.status)
             if (candidatesRes.status === 'ok') {
@@ -925,12 +978,13 @@ export default function TradeFlow() {
                 setSummary({ total_candidates: 0, tier_a_count: 0, tier_b_count: 0, tier_c_count: 0, need_deep_ta_count: 0, avg_completeness: 0 })
             }
             setDataHealth(healthRes)
+            setTieredData(tieredRes)
         } catch (e: unknown) {
             setError(e instanceof Error ? e.message : '加载失败')
         } finally {
             setLoading(false)
         }
-    }, [tierFilter, deepTaFilter, observeFilter, candidateTypeFilter, poolFilter])  // [H-005] [TF-P0-002]
+    }, [tierFilter, deepTaFilter, observeFilter, candidateTypeFilter, poolFilter])
 
     const fetchObserve = useCallback(async (date: string) => {
         setLoading(true)
@@ -952,6 +1006,7 @@ export default function TradeFlow() {
         try {
             const res = await api.runTradeFlowObserve(tradeDate)
             setObserveRunResult(res)
+            setLastObserveCheckTime(new Date().toISOString())
             await fetchObserve(tradeDate)
         } catch (e: unknown) {
             setError(e instanceof Error ? e.message : '执行观察失败')
@@ -1013,6 +1068,19 @@ export default function TradeFlow() {
         }
     }, [])
 
+    // [TF-UX-003] generate review
+    const handleGenerateReview = useCallback(async () => {
+        setReviewGenerating(true)
+        try {
+            await api.generateTradeFlowReview(tradeDate)
+            await fetchReview(tradeDate)
+        } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : '生成复盘失败')
+        } finally {
+            setReviewGenerating(false)
+        }
+    }, [tradeDate, fetchReview])
+
     const fetchData = useCallback(async (date: string) => {
         if (activeTab === 'candidates') {
             await fetchCandidates(date)
@@ -1032,6 +1100,25 @@ export default function TradeFlow() {
     useEffect(() => {
         void fetchData(tradeDate)
     }, [tradeDate, fetchData])
+
+    // [TF-UX-002] auto-refresh for observe tab
+    useEffect(() => {
+        if (autoRefreshRef.current) {
+            clearInterval(autoRefreshRef.current)
+            autoRefreshRef.current = null
+        }
+        if (activeTab === 'observe') {
+            const interval = isInMarketHours() ? 3 * 60 * 1000 : 5 * 60 * 1000
+            autoRefreshRef.current = setInterval(() => {
+                void fetchObserve(tradeDate)
+            }, interval)
+        }
+        return () => {
+            if (autoRefreshRef.current) {
+                clearInterval(autoRefreshRef.current)
+            }
+        }
+    }, [activeTab, tradeDate, fetchObserve, isInMarketHours])
 
     const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         setTradeDate(e.target.value)
@@ -1079,6 +1166,43 @@ export default function TradeFlow() {
         setDrawerOpen(false)
     }
 
+    // [TF-UX-001] tiered candidate card renderer
+    const renderTieredCandidateCard = (c: TradeFlowCandidateItem) => {
+        const at = actionTierBadge(c.action_tier)
+        const ct = candidateTypeLabel(c.candidate_type)
+        return (
+            <div
+                key={c.symbol}
+                className="cursor-pointer rounded-lg border border-slate-100 p-3 transition-colors hover:border-blue-200 hover:bg-blue-50/30 dark:border-slate-700 dark:hover:border-blue-800 dark:hover:bg-blue-900/10"
+                onClick={() => handleRowClick(c)}
+            >
+                <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs font-bold text-slate-900 dark:text-slate-100">{c.symbol}</span>
+                    <span className="max-w-[80px] truncate text-sm text-slate-700 dark:text-slate-300">{c.name || '--'}</span>
+                    <span className={`ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium ${at.cls}`}>{at.text}</span>
+                </div>
+                <div className="mt-1.5 flex items-center gap-2 text-xs">
+                    <span className={`inline-block rounded px-1 py-0.5 text-[10px] font-bold ${tierBadgeClass(c.tier)}`}>{c.tier || '-'}</span>
+                    <span className={`inline-block rounded px-1 py-0.5 text-[10px] font-medium ${ct.cls}`}>{ct.text}</span>
+                    <span className="tabular-nums text-slate-500">优先分: <span className="font-medium text-slate-700 dark:text-slate-300">{c.trade_priority_score.toFixed(2)}</span></span>
+                    <span className="tabular-nums text-slate-500">综合: <span className="font-medium text-slate-700 dark:text-slate-300">{c.composite_score.toFixed(1)}</span></span>
+                </div>
+                {c.action_tier_reason && (
+                    <div className="mt-1 text-[11px] text-slate-400" title={c.action_tier_reason}>{c.action_tier_reason}</div>
+                )}
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                    {c.strategy_tags.slice(0, 2).map(tag => (
+                        <span key={tag} className="inline-block rounded bg-slate-100 px-1 py-0.5 text-[10px] text-slate-500 dark:bg-slate-700 dark:text-slate-400">{tag}</span>
+                    ))}
+                    {c.strategy_tags.length > 2 && <span className="text-[10px] text-slate-400">+{c.strategy_tags.length - 2}</span>}
+                    <span className="ml-auto">
+                        <CompletenessBar value={c.tradeflow_data_completeness} />
+                    </span>
+                </div>
+            </div>
+        )
+    }
+
     const renderContent = () => {
         if (loading) {
             return (
@@ -1108,8 +1232,8 @@ export default function TradeFlow() {
                 )
             }
             if (candidates.length === 0) {
-                const hasMandateFilter = candidateTypeFilter && ['POLICY_AMBUSH', 'POLICY_CONFIRM', 'EVENT_WATCH'].includes(candidateTypeFilter)  // [H-005]
-                const hasPoolFilter = poolFilter !== 'all'  // [TF-P0-002]
+                const hasMandateFilter = candidateTypeFilter && ['POLICY_AMBUSH', 'POLICY_CONFIRM', 'EVENT_WATCH'].includes(candidateTypeFilter)
+                const hasPoolFilter = poolFilter !== 'all'
                 return (
                     <div className="py-20 text-center text-sm text-slate-400">
                         <Target className="mx-auto mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
@@ -1125,6 +1249,67 @@ export default function TradeFlow() {
                     </div>
                 )
             }
+
+            // [TF-UX-001] tiered view mode
+            if (viewMode === 'tiered' && tieredData && tieredData.status === 'ok') {
+                const actionableItems = tieredData.actionable
+                const watchItems = tieredData.watch
+                const scanItems = tieredData.scan
+
+                return (
+                    <div className="space-y-4 p-4">
+                        {actionableItems.length > 0 && (
+                            <div>
+                                <div className="mb-2 flex items-center gap-2">
+                                    <Zap className="h-4 w-4 text-red-500" />
+                                    <span className="text-sm font-bold text-red-700 dark:text-red-300">今日可操作</span>
+                                    <span className="text-xs text-slate-400">（最多 3 只）</span>
+                                </div>
+                                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                                    {actionableItems.map(renderTieredCandidateCard)}
+                                </div>
+                            </div>
+                        )}
+
+                        {watchItems.length > 0 && (
+                            <div>
+                                <div className="mb-2 flex items-center gap-2">
+                                    <Eye className="h-4 w-4 text-amber-500" />
+                                    <span className="text-sm font-bold text-amber-700 dark:text-amber-300">重点观察</span>
+                                    <span className="text-xs text-slate-400">（最多 8 只）</span>
+                                </div>
+                                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                                    {watchItems.map(renderTieredCandidateCard)}
+                                </div>
+                            </div>
+                        )}
+
+                        {scanItems.length > 0 && (
+                            <div>
+                                <button
+                                    onClick={() => setShowScan(!showScan)}
+                                    className="mb-2 flex items-center gap-2 text-sm font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                                >
+                                    {showScan ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                                    <Target className="h-4 w-4" />
+                                    全部扫描结果（{tieredData.scan_count} 只）
+                                </button>
+                                {showScan && (
+                                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                                        {scanItems.map(renderTieredCandidateCard)}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {actionableItems.length === 0 && watchItems.length === 0 && scanItems.length === 0 && (
+                            <div className="py-12 text-center text-sm text-slate-400">暂无分级数据</div>
+                        )}
+                    </div>
+                )
+            }
+
+            // [TF-UX-001] table view mode (fallback)
             return (
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm">
@@ -1132,17 +1317,13 @@ export default function TradeFlow() {
                             <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
                                 <th className="px-4 py-2.5 font-medium">代码</th>
                                 <th className="px-4 py-2.5 font-medium">名称</th>
+                                <th className="px-4 py-2.5 font-medium">操作层级</th>
                                 <th className="px-4 py-2.5 font-medium">候选类型</th>
                                 <th className="px-4 py-2.5 font-medium">层级</th>
-                                <th className="px-4 py-2.5 font-medium">评分</th>
-                                <th className="px-4 py-2.5 font-medium">昊天分</th>
-                                <th className="px-4 py-2.5 font-medium">埋伏分</th>
-                                <th className="px-4 py-2.5 font-medium">政策主题</th>
-                                <th className="px-4 py-2.5 font-medium">角色</th>
-                                <th className="px-4 py-2.5 font-medium">自选备注</th>
+                                <th className="px-4 py-2.5 font-medium">优先分</th>
+                                <th className="px-4 py-2.5 font-medium">综合分</th>
                                 <th className="px-4 py-2.5 font-medium">策略标签</th>
                                 <th className="px-4 py-2.5 font-medium">完整度</th>
-                                <th className="px-4 py-2.5 font-medium">深度TA</th>
                                 <th className="px-4 py-2.5 font-medium">观察状态</th>
                                 <th className="px-4 py-2.5 font-medium">动作</th>
                             </tr>
@@ -1151,7 +1332,8 @@ export default function TradeFlow() {
                             {candidates.map(c => {
                                 const act = actionLabel(c.action)
                                 const obs = observeStateLabel(c.observe_state)
-                                const ct = candidateTypeLabel(c.candidate_type)  // [H-005]
+                                const ct = candidateTypeLabel(c.candidate_type)
+                                const at = actionTierBadge(c.action_tier)
                                 return (
                                     <tr
                                         key={c.symbol}
@@ -1161,25 +1343,16 @@ export default function TradeFlow() {
                                         <td className="px-4 py-2.5 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{c.symbol}</td>
                                         <td className="max-w-[100px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{c.name || '--'}</td>
                                         <td className="px-4 py-2.5">
+                                            <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${at.cls}`}>{at.text}</span>
+                                        </td>
+                                        <td className="px-4 py-2.5">
                                             <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${ct.cls}`}>{ct.text}</span>
                                         </td>
                                         <td className="px-4 py-2.5">
                                             <span className={`inline-block rounded px-1.5 py-0.5 text-xs font-bold ${tierBadgeClass(c.tier)}`}>{c.tier || '-'}</span>
                                         </td>
+                                        <td className="px-4 py-2.5 tabular-nums text-xs font-medium text-red-600 dark:text-red-400">{c.trade_priority_score.toFixed(2)}</td>
                                         <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{c.composite_score.toFixed(2)}</td>
-                                        <td className="px-4 py-2.5 tabular-nums text-xs">
-                                            {c.mandate_score > 0 ? (
-                                                <span className="font-medium text-indigo-600 dark:text-indigo-400">{c.mandate_score.toFixed(1)}</span>
-                                            ) : <span className="text-slate-400">-</span>}
-                                        </td>
-                                        <td className="px-4 py-2.5 tabular-nums text-xs">
-                                            {c.ambush_score > 0 ? (
-                                                <span className="font-medium text-violet-600 dark:text-violet-400">{c.ambush_score.toFixed(1)}</span>
-                                            ) : <span className="text-slate-400">-</span>}
-                                        </td>
-                                        <td className="max-w-[100px] truncate px-4 py-2.5 text-xs text-slate-600 dark:text-slate-400" title={c.mandate_topic}>{c.mandate_topic || '-'}</td>
-                                        <td className="max-w-[80px] truncate px-4 py-2.5 text-xs text-slate-600 dark:text-slate-400" title={c.company_role}>{c.company_role || '-'}</td>
-                                        <td className="max-w-[180px] truncate px-4 py-2.5 text-xs text-teal-700 dark:text-teal-400" title={c.watchlist_note_suggested}>{c.watchlist_note_suggested || '-'}</td>
                                         <td className="max-w-[160px] px-4 py-2.5">
                                             <div className="flex flex-wrap gap-1">
                                                 {c.strategy_tags.slice(0, 3).map(tag => (
@@ -1192,13 +1365,6 @@ export default function TradeFlow() {
                                         </td>
                                         <td className="px-4 py-2.5">
                                             <CompletenessBar value={c.tradeflow_data_completeness} />
-                                        </td>
-                                        <td className="px-4 py-2.5">
-                                            {c.need_deep_ta ? (
-                                                <span className="inline-block rounded bg-purple-100 px-1.5 py-0.5 text-[11px] font-medium text-purple-700 dark:bg-purple-900/40 dark:text-purple-300">是</span>
-                                            ) : (
-                                                <span className="text-xs text-slate-400">否</span>
-                                            )}
                                         </td>
                                         <td className="px-4 py-2.5">
                                             <span className={`flex items-center gap-1 text-xs font-medium ${obs.cls}`}>
@@ -1219,7 +1385,7 @@ export default function TradeFlow() {
         }
 
         if (activeTab === 'observe') {
-            return <ObserveTable items={observeData?.observe_items ?? []} onRun={handleRunObserve} running={observeRunLoading} runResult={observeRunResult} />
+            return <ObserveTable items={observeData?.observe_items ?? []} onRun={handleRunObserve} running={observeRunLoading} runResult={observeRunResult} lastCheckTime={lastObserveCheckTime} />
         }
 
         if (activeTab === 'ta-queue') {
@@ -1231,7 +1397,20 @@ export default function TradeFlow() {
 
         if (activeTab === 'review') {
             if (!reviewData || reviewData.status === 'no_data') {
-                return <div className="py-20 text-center text-sm text-slate-400">{tradeDate} 暂无复盘数据</div>
+                return (
+                    <div className="py-20 text-center text-sm text-slate-400">
+                        <BarChart3 className="mx-auto mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
+                        <div className="mb-4">尚未生成盘后复盘</div>
+                        <button
+                            onClick={() => void handleGenerateReview()}
+                            disabled={reviewGenerating}
+                            className="inline-flex items-center gap-1.5 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                        >
+                            {reviewGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <BarChart3 className="h-4 w-4" />}
+                            {reviewGenerating ? '生成中...' : '生成今日复盘'}
+                        </button>
+                    </div>
+                )
             }
             return <ReviewTab data={reviewData} />
         }
@@ -1256,7 +1435,7 @@ export default function TradeFlow() {
                 <div className="flex items-center gap-2">
                     <ClipboardList className="h-5 w-5 text-blue-600 dark:text-blue-400" />
                     <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100">TradeFlow</h1>
-                    <RuntimeTierBadge tier="FAST_RADAR" latency="5-30s" />  {/* [PERF-001] */}
+                    <RuntimeTierBadge tier="FAST_RADAR" latency="5-30s" />
                 </div>
                 <div className="flex items-center gap-3">
                     <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800">
@@ -1353,12 +1532,35 @@ export default function TradeFlow() {
                 </div>
 
                 {activeTab === 'candidates' && (
-                    <div className="border-b border-slate-100 px-4 py-3 dark:border-slate-700">  {/* [TF-P0-002] tradeflow_pool_split */}
+                    <div className="border-b border-slate-100 px-4 py-3 dark:border-slate-700">
                         <div className="flex flex-wrap items-center gap-3">
                             <div className="flex items-center gap-1.5 text-sm text-slate-500">
                                 <Filter className="h-3.5 w-3.5" />
-                                候选池
+                                视图
                             </div>
+                            <div className="flex gap-1">
+                                <button
+                                    onClick={() => setViewMode('tiered')}
+                                    className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                                        viewMode === 'tiered'
+                                            ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-400 dark:hover:bg-slate-600'
+                                    }`}
+                                >
+                                    分级视图
+                                </button>
+                                <button
+                                    onClick={() => setViewMode('table')}
+                                    className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                                        viewMode === 'table'
+                                            ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+                                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-400 dark:hover:bg-slate-600'
+                                    }`}
+                                >
+                                    表格视图
+                                </button>
+                            </div>
+                            <span className="mx-2 text-slate-300 dark:text-slate-600">|</span>
                             <div className="flex gap-1">
                                 {POOL_TABS.map(tab => (
                                     <button
@@ -1411,9 +1613,9 @@ export default function TradeFlow() {
 
                 {activeTab === 'observe' && observeData && (
                     <div className="flex flex-wrap items-center gap-4 border-b border-slate-100 px-4 py-2.5 dark:border-slate-700">
-                        <span className="text-xs text-slate-500">已触发: <span className="font-medium text-emerald-600 dark:text-emerald-400">{observeData.triggered_count}</span></span>
+                        <span className="text-xs text-slate-500">已触发: <span className="font-medium text-red-600 dark:text-red-400">{observeData.triggered_count}</span></span>
                         <span className="text-xs text-slate-500">等待中: <span className="font-medium text-slate-600 dark:text-slate-300">{observeData.waiting_count}</span></span>
-                        <span className="text-xs text-slate-500">已失效: <span className="font-medium text-red-500">{observeData.invalidated_count}</span></span>
+                        <span className="text-xs text-slate-500">已失效: <span className="font-medium text-emerald-600 dark:text-emerald-400">{observeData.invalidated_count}</span></span>
                         <span className="ml-auto text-xs text-slate-400">{observeData.observe_items.length} 条记录</span>
                     </div>
                 )}

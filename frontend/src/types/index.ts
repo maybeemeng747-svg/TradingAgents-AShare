@@ -852,6 +852,9 @@ export interface TradeFlowCandidateItem {
     watchlist_benefit_score: number  // [H-008] mandate_watchlist_note
     watchlist_consensus_score: number  // [H-008] mandate_watchlist_note
     watchlist_evidence_gap: string[]  // [H-008] mandate_watchlist_note
+    action_tier: string  // [TF-UX-004] actionable/watch/scan
+    trade_priority_score: number  // [TF-UX-004]
+    action_tier_reason: string  // [TF-UX-004]
     created_at: string
     updated_at: string
 }
@@ -1078,4 +1081,53 @@ export interface TradeFlowObserveRunResponse {
         status?: string
         reason?: string
     }[]
+}
+
+// [TF-UX-001] tiered candidates
+export interface TradeFlowTieredCandidatesResponse {
+    status: string
+    trade_date: string
+    actionable: TradeFlowCandidateItem[]
+    watch: TradeFlowCandidateItem[]
+    scan: TradeFlowCandidateItem[]
+    actionable_count: number
+    watch_count: number
+    scan_count: number
+    summary_agg: TradeFlowSummary
+}
+
+// [TF-UX-003] post_market_review
+export interface TradeFlowReviewGenerateResponse {
+    status: string
+    trade_date: string
+    message: string
+    review: {
+        review_date: string
+        candidate_date: string
+        total_candidates: number
+        scored_candidates: number
+        no_data_candidates: number
+        overall_hit_count: number
+        overall_miss_count: number
+        overall_invalidated_count: number
+        overall_hit_rate: number | null
+        overall_false_positive_rate: number | null
+        avg_next_day_return: number | null
+        avg_day3_return: number | null
+        avg_day5_return: number | null
+        strategy_stats: Record<string, {
+            strategy_tag: string
+            total_candidates: number
+            hit_count: number
+            miss_count: number
+            no_data_count: number
+            invalidated_count: number
+            hit_rate: number | null
+            false_positive_rate: number | null
+            avg_next_day_return: number | null
+        }>
+        tier_stats: Record<string, { total: number; hit: number; miss: number; no_data: number; invalidated: number }>
+        common_removal_reasons: string[]
+        suggestions: string[]
+    } | null
 }
