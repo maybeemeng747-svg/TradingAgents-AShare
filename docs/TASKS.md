@@ -587,7 +587,7 @@
 ### DATA-P1-ASTOCK-LIVE-SMOKE: cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1）
 - **描述**：建立低频 live smoke 脚本/测试，用少量固定股票验证 cn_astock/Eastmoney 关键端点可用性、限流和字段单位，防止“fixture 通过但实盘接口失效”。
 - **优先级**：P1
-- **状态**：done — DATA-P1-ASTOCK-LIVE-SMOKE-20260604
+- **状态**：done -- commit 7e0a5a0
 - **前置条件**：`DATA-P0-FUND-ROUTE` 完成。
 - **执行约束**：
   - 默认测试必须 mock/fixture；live smoke 必须通过环境变量显式开启，例如 `TA_LIVE_DATA_SMOKE=1`。
