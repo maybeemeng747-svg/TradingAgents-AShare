@@ -28,24 +28,19 @@ def _check_fund_flow_anomaly(fund_flow_text: str) -> bool:
     if not recent:
         return True
 
-    # Pattern 1: any percentage value (unsigned, +, -)
     _PCT_RE = re.compile(r"[-+]?\s*\d+\.?\d*\s*%")
-    # Pattern 2: percentage after "占比" keyword (inline)
     _RATIO_RE = re.compile(r"(?:占比|净占比|主力净流入占比)[^\d]*?([-+]?\d+\.?\d*)")
 
-    # Pattern 3: table header containing 占比/净占比 column
     _RATIO_HEADER_RE = re.compile(r"(?:占比|净占比)")
     ratio_col_indices: list[int] = []
     if len(data_lines) >= 2:
         header_line = data_lines[0]
-        # Split by common table separators
         headers = re.split(r"[\s\t|]+", header_line.strip())
         for i, h in enumerate(headers):
             if _RATIO_HEADER_RE.search(h):
                 ratio_col_indices.append(i)
 
     for line in recent:
-        # Path 1: explicit percentage values
         for m in _PCT_RE.finditer(line):
             raw = m.group().replace("%", "").replace(" ", "")
             try:
@@ -55,7 +50,6 @@ def _check_fund_flow_anomaly(fund_flow_text: str) -> bool:
             except ValueError:
                 continue
 
-        # Path 2: inline ratio keyword
         for m in _RATIO_RE.finditer(line):
             try:
                 val = float(m.group(1))
@@ -64,7 +58,6 @@ def _check_fund_flow_anomaly(fund_flow_text: str) -> bool:
             except ValueError:
                 continue
 
-        # Path 3: table column parsing (if header has ratio columns)
         if ratio_col_indices:
             cells = re.split(r"[\s\t|]+", line.strip())
             for idx in ratio_col_indices:
@@ -76,6 +69,25 @@ def _check_fund_flow_anomaly(fund_flow_text: str) -> bool:
                             return True
                     except ValueError:
                         continue
+    return False
+
+
+def _should_force_lhb_from_news(news_text: str, stock_data_text: str) -> bool:
+    """[DATA-P1-LHB-FUND-DECOUPLE] Check anomaly conditions independent of fund flow."""
+    force_keywords = [
+        r"龙虎榜",
+        r"严重?异常波动",
+        r"连续\s*[\d一二三四五六七八九十]+\s*(?:涨停|跌停)",
+        r"一字(?:涨停|跌停)",
+        r"涨跌幅偏离",
+        r"换手率\s*超过\s*\d+",
+        r"成交额?\s*(?:超|破|逾)\s*\d+",
+        r"量比\s*超过?\s*\d+",
+    ]
+    combined = f"{news_text or ''}\n{stock_data_text or ''}"
+    for pattern in force_keywords:
+        if re.search(pattern, combined):
+            return True
     return False
 
 
@@ -109,14 +121,21 @@ def create_smart_money_analyst(llm, data_collector=None):
             lhb_raw = pool.get("lhb", "无数据")
             volume = pool.get("indicators", {}).get("vwma", "无数据")
 
-            # 判断LHB是否因资金异动而被force查询
-            should_query_lhb = _check_fund_flow_anomaly(fund_flow)
-            if should_query_lhb:
-                lhb_trigger_note = f"[LHB触发: force=True, 原因=资金异动明显]"
+            # [DATA-P1-LHB-FUND-DECOUPLE] LHB trigger: check both fund flow AND news/anomaly
+            ff_anomaly = _check_fund_flow_anomaly(fund_flow)
+            news_text = pool.get("news", "") or ""
+            stock_text = pool.get("stock_data", "") or ""
+            anomaly_cond = _should_force_lhb_from_news(news_text, stock_text)
+            if ff_anomaly or anomaly_cond:
+                reasons = []
+                if ff_anomaly:
+                    reasons.append("资金异动明显")
+                if anomaly_cond:
+                    reasons.append("异常条件触发")
+                lhb_trigger_note = f"[LHB触发: force=True, 原因={'+'.join(reasons)}]"
             else:
-                lhb_trigger_note = f"[LHB触发: force=False, 原因=资金流未超阈值]"
+                lhb_trigger_note = f"[LHB触发: force=False, 原因=无触发条件]"
 
-            # 标注查询结果
             if lhb_raw and lhb_raw not in ("无数据", ""):
                 lhb = f"{lhb_trigger_note}\n{lhb_raw}"
             else:
@@ -129,16 +148,26 @@ def create_smart_money_analyst(llm, data_collector=None):
             fund_flow_result = await _safe(get_individual_fund_flow, {"symbol": ticker})
             fund_flow = fund_flow_result
 
-            should_query_lhb = _check_fund_flow_anomaly(fund_flow)
+            # [DATA-P1-LHB-FUND-DECOUPLE] LHB trigger: check both fund flow AND news/anomaly
+            ff_anomaly = _check_fund_flow_anomaly(fund_flow)
+            anomaly_cond = _should_force_lhb_from_news(
+                state.get("news", "") or "",
+                state.get("stock_data", "") or "",
+            )
 
-            if should_query_lhb:
+            if ff_anomaly or anomaly_cond:
+                reasons = []
+                if ff_anomaly:
+                    reasons.append("资金异动明显")
+                if anomaly_cond:
+                    reasons.append("异常条件触发")
                 lhb = await _safe(get_lhb_detail, {
                     "symbol": ticker, "date": current_date, "force": True,
                 })
-                lhb_trigger_note = f"[LHB触发: force=True, 原因=资金异动明显]"
+                lhb_trigger_note = f"[LHB触发: force=True, 原因={'+'.join(reasons)}]"
                 lhb = f"{lhb_trigger_note}\n{lhb}"
             else:
-                lhb_trigger_note = f"[LHB触发: force=False, 原因=资金流未超阈值]"
+                lhb_trigger_note = f"[LHB触发: force=False, 原因=无触发条件]"
                 lhb = f"{lhb_trigger_note}\n近期无明显异动，龙虎榜查询已跳过"
 
             volume = await _safe(get_indicators, {

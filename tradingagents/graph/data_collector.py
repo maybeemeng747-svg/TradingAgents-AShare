@@ -307,6 +307,9 @@ def _detect_fund_flow_anomaly(fund_flow_text: str) -> bool:
 
     Triggers when main capital net flow exceeds threshold in recent days,
     indicating potential need for LHB (龙虎榜) forced query.
+
+    Returns False when fund flow data is unavailable (failure/empty),
+    but callers MUST NOT use this as the sole gate for LHB force query.
     """
     import re
     if not fund_flow_text or "获取失败" in fund_flow_text or "不可用" in fund_flow_text:
@@ -333,6 +336,9 @@ def _should_force_lhb(news_text: str, stock_data_text: str) -> bool:
     # [DATA-P0-603629] astock_source_fallback: force LHB query when:
     - News mentions 龙虎榜, 严重异常波动, 连续涨跌停
     - Stock data shows limit-up/down patterns
+
+    # [DATA-P1-LHB-FUND-DECOUPLE] This is INDEPENDENT of fund flow status.
+    Fund flow failure does NOT prevent this check from running.
     """
     import re
 
@@ -351,6 +357,37 @@ def _should_force_lhb(news_text: str, stock_data_text: str) -> bool:
         if re.search(pattern, combined):
             return True
     return False
+
+
+def _compute_lhb_force_decision(
+    fund_flow_text: str,
+    news_text: str,
+    stock_data_text: str,
+    announcements_text: str = "",
+) -> tuple:
+    """[DATA-P1-LHB-FUND-DECOUPLE] Compute LHB force decision.
+
+    Decouples LHB force from fund flow: fund flow failure only affects
+    the fund_flow_anomaly condition, NOT the anomaly_condition check.
+
+    Returns (force_needed: bool, force_reason: str).
+    """
+    ff_anomaly = _detect_fund_flow_anomaly(fund_flow_text)
+    anomaly_cond = _should_force_lhb(news_text, stock_data_text)
+
+    if ff_anomaly and anomaly_cond:
+        return (True, "fund_flow_anomaly_and_anomaly_condition")
+    if ff_anomaly:
+        return (True, "fund_flow_anomaly")
+    if anomaly_cond:
+        return (True, "anomaly_condition")
+
+    if announcements_text:
+        import re
+        if re.search(r"龙虎榜", announcements_text):
+            return (True, "announcement_mentions_lhb")
+
+    return (False, "")
 
 
 def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
@@ -396,18 +433,15 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
 
     # ── [E-003] 资金流异动时自动升级 LHB 查询 ─────────────────────────
     # [DATA-P0-603629] astock_source_fallback: LHB force conditions expanded
+    # [DATA-P1-LHB-FUND-DECOUPLE] 资金流失败不阻断异常条件 force 检查
     results["_lhb_query_mode"] = "on_demand"  # [G-007] default: force=False
     ff_text = results.get("fund_flow_individual", "") or ""
     news_text = results.get("news", "") or ""
-    lhb_force_needed = False
-    lhb_force_reason = ""
 
-    if _detect_fund_flow_anomaly(ff_text):
-        lhb_force_needed = True
-        lhb_force_reason = "fund_flow_anomaly"
-    elif _should_force_lhb(news_text, results.get("stock_data", "")):
-        lhb_force_needed = True
-        lhb_force_reason = "anomaly_condition"
+    lhb_force_needed, lhb_force_reason = _compute_lhb_force_decision(
+        ff_text, news_text, results.get("stock_data", ""),
+        results.get("announcements", ""),
+    )
 
     if lhb_force_needed:
         print(f"  [E-003] 龙虎榜强制查询触发 (reason={lhb_force_reason})，升级 LHB force=True")

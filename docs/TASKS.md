@@ -49,7 +49,7 @@
 23. `PERF-001`：运行层级与速度预算契约（P1，done）。
 24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
 25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
-26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
 27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
 28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，ready，依赖 DATA-001/DATA-004 ✓）。
 29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，in_progress — claimed PERF-003-20260602-200127）。
@@ -79,7 +79,7 @@
 6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
 7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
 8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
-9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，ready）。
+9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
 10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，ready）。
 11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，ready）。
 12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready）。
@@ -554,9 +554,9 @@
 - **代码标注要求**：`# [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth`
 
 ### DATA-P1-LHB-FUND-DECOUPLE: 龙虎榜与资金流触发链路复核（P1）
-- **描述**：复核并补强龙虎榜查询与主力资金链路的解耦，确保资金流失败不会阻断龙虎榜按异常条件 force 查询，同时明确“无龙虎榜”和“未查询/失败”的区别。
+- **描述**：复核并补强龙虎榜查询与主力资金链路的解耦，确保资金流失败不会阻断龙虎榜按异常条件 force 查询，同时明确"无龙虎榜"和"未查询/失败"的区别。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — DATA-P1-LHB-FUND-DECOUPLE-20260604
 - **前置条件**：`DATA-P0-FUND-ROUTE` 完成。
 - **背景**：
   - 龙虎榜不是所有股票每天都有；普通交易日 `force=True` 无记录应为 `NORMAL_NO_DATA`，不是接口失败。

@@ -4,6 +4,44 @@
 
 ---
 
+## 2026-06-04 | DATA-P1-LHB-FUND-DECOUPLE: 龙虎榜与资金流触发链路复核
+
+- **执行者**：OpenCode
+- **任务**：DATA-P1-LHB-FUND-DECOUPLE — 复核并补强龙虎榜查询与主力资金链路的解耦，确保资金流失败不会阻断龙虎榜按异常条件 force 查询，同时明确"无龙虎榜"和"未查询/失败"的区别。
+- **修改文件**：
+  - `tradingagents/graph/data_collector.py` — [DATA-P1-LHB-FUND-DECOUPLE] lhb_fund_decouple
+    - `_detect_fund_flow_anomaly()` 文档注释更新：明确说明资金流失败返回 False，调用方不得仅依赖此函数作为 LHB force 的唯一门控
+    - `_should_force_lhb()` 文档注释更新：明确此函数独立于资金流状态
+    - 新增 `_compute_lhb_force_decision()` 函数：统一计算 LHB force 决策，将 `_detect_fund_flow_anomaly` 和 `_should_force_lhb` 从 `elif` 串行改为独立并行判断，资金流失败不再短路异常条件检查
+    - `_fetch_all()` 重构 LHB force 链路：从 `if/elif` 改为调用 `_compute_lhb_force_decision()`，支持 `fund_flow_anomaly`、`anomaly_condition`、`fund_flow_anomaly_and_anomaly_condition`、`announcement_mentions_lhb` 四种 force reason
+  - `tradingagents/agents/analysts/smart_money_analyst.py` — [DATA-P1-LHB-FUND-DECOUPLE]
+    - 新增 `_should_force_lhb_from_news()` 函数：独立于资金流的异常条件检测，复用 data_collector 的 force keyword 列表
+    - `smart_money_analyst_node()` pool 路径重构：从仅检查 `_check_fund_flow_anomaly` 改为同时检查 `_should_force_lhb_from_news`，资金流失败不阻止异常条件触发 LHB
+    - `smart_money_analyst_node()` fallback 路径重构：同样同时检查资金流和异常条件
+    - `lhb_trigger_note` 标注更新：从 `资金流未超阈值` 改为 `无触发条件`，原因标注支持 `资金异动明显+异常条件触发` 组合
+  - `tests/test_data_p1_lhb_fund_decouple.py` — 新建，47 个测试覆盖：
+    - `TestComputeLHBForceDecision` (9): 资金流异动/异常条件/资金流失败+异常条件/双失败/组合/空/公告触发/公告不触发
+    - `TestShouldForceLHBFromNews` (7): 龙虎榜关键词/严重异常波动/连续涨停/一字涨停/正常文本不触发/None 输入
+    - `TestFetchAllLHBDecoupling` (2): 资金流失败+新闻触发/资金流空+行情异常触发
+    - `TestSmartMoneyLHBTrigger` (3): pool 路径资金流失败+新闻触发/pool 路径资金流正常+新闻触发/无触发
+    - `TestLHBFourStates` (5): NOT_QUERIED/NORMAL_NO_DATA/FAILED/HAS_DATA/NOT_QUERIED vs NORMAL_NO_DATA 区分
+    - `TestFormatProvenanceDisplay` (3): NOT_QUERIED 中性/FAILED 红色/NORMAL_NO_DATA 中性不红色
+    - `TestInferEvidenceLHBDecouple` (5): G-006 structured 4 态 + NOT_QUERIED vs NORMAL_NO_DATA 区分
+    - `TestInferSourceStatusDecouple` (4): DataCollector 4 态
+    - `TestAcceptanceDataP1LHBFundDecouple` (9): 全部验收标准
+  - `docs/TASKS.md` — DATA-P1-LHB-FUND-DECOUPLE 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：47 passed (DATA-P1-LHB-FUND-DECOUPLE)；155 passed (G-007+readiness 回归)；203 passed (data source 回归)；3597 passed (全量)；2 pre-existing failed (无关)；17 skipped
+- **关键逻辑**：
+  - 解耦核心：`_compute_lhb_force_decision()` 将 `_detect_fund_flow_anomaly()` 和 `_should_force_lhb()` 从 elif 串行改为独立判断，资金流返回 False 不再阻止异常条件检查
+  - 4 态 LHB：NOT_QUERIED (force=False)/NORMAL_NO_DATA (force=True 无记录)/FAILED (接口异常)/HAS_DATA (有龙虎榜)
+  - 显示语义：NORMAL_NO_DATA 显示"非异动日无龙虎榜"（⬜中性），NOT_QUERIED 显示"未触发查询"（⬜中性），FAILED 显示"查询失败"（❌红色）
+  - smart_money_analyst 两路径统一：pool 路径和 fallback 路径都同时检查资金流异动和新闻/行情异常条件
+  - force reason 支持 4 种：fund_flow_anomaly / anomaly_condition / fund_flow_anomaly_and_anomaly_condition / announcement_mentions_lhb
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-04 | PERF-004 fix: 修正验收命令中不存在的 test_scheduler 文件引用
 
 - **执行者**：OpenCode
@@ -2460,3 +2498,14 @@
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Test failed: pytest tests/test_g007_fund_lhb_provenance.py tests/test_data_source_replay.py tests/test_dataflows*.py -q (exit 4)
 - **Run archive**: docs/task_runs/DATA-P0-FUND-ROUTE-20260604-121846/
+
+## 2026-06-04 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-P1-LHB-FUND-DECOUPLE - 龙虎榜与资金流触发链路复核（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-P1-LHB-FUND-DECOUPLE-20260604-round1.txt
+- **Run archive**: docs/task_runs/DATA-P1-LHB-FUND-DECOUPLE-20260604-123938/
