@@ -44,6 +44,7 @@ P3   → 盘后 Review + 策略命中率复盘
 - 不跨任务做大重构
 - 不自由发挥做不在任务池里的功能
 - 不把 `REQUEST_TASKS` 草案自动改成 `ready`
+- **不跳过 Codex review** — 任何 commit 之前必须跑 `codex review --uncommitted`，无论自动还是手动（2026-06-04 教训：手动恢复测试失败时漏了 PERF-004 和 DATA-P1-SOURCE-GAP-AUDIT 的 review）
 
 ## 无任务时的 REQUEST_TASKS 协议
 
@@ -116,6 +117,31 @@ Codex 审核时不只看 diff，还要同时检查：
 7. 是否需要人工确认后才能继续下一阶段
 
 没有写清验收命令的任务，自动开发只能按默认测试执行，不能自行扩大到全市场扫描或深度 TA。
+
+### 强制 Codex Review 规则（2026-06-04）
+
+**任何代码 commit 之前，必须先跑 `codex review --uncommitted`。**
+
+适用范围：
+- 自动开发循环（脚本已内置）
+- 手动恢复测试失败后的提交
+- 主控/OpeNClaw/OpenCode/Codex 任何一方的提交
+- bugfix、hotfix、半成品收尾
+
+不可跳过的情况：
+- 测试失败后手动修代码 → 必须 review
+- 半成品收尾 → 必须 review
+- 紧急修复 → 必须 review
+
+唯一豁免：
+- 纯文档/纯配置变更（无 .py/.ts/.tsx 文件改动）可标记 PASS_DOC_ONLY
+
+漏 review 的后果：
+- 标记为 PASS_UNREVIEWED
+- 下一次自动开发必须补 review
+- 发现 P0/P1 则追加修复 commit
+
+**教训来源**：2026-06-04，PERF-004 和 DATA-P1-SOURCE-GAP-AUDIT 因手动恢复测试失败时跳过了 review，被孟发现后补救。
 
 ## 任务优先级
 
