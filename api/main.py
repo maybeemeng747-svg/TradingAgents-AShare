@@ -800,6 +800,9 @@ class ChatCompletionRequest(UserContextInput):
     )
     config_overrides: Dict[str, Any] = Field(default_factory=dict)
     dry_run: bool = False
+    runtime_tier: Optional[str] = Field(default=None, description="运行层级 [PERF-004]")  # [PERF-004]
+    confirmed_full_ta: bool = Field(default=False, description="是否确认完整 TA [PERF-004]")  # [PERF-004]
+    runtime_profile: Optional[str] = Field(default=None, description="TA Profile [PERF-004]")  # [PERF-004]
 
 
 class KlineResponse(BaseModel):
@@ -2959,6 +2962,40 @@ def get_hot_stocks(source: str = "em", limit: int = 30) -> Dict:
     )
 
 
+# [PERF-004] full_ta_cost_gate
+class FullTACostPreviewResponse(BaseModel):
+    runtime_tier: str = "FULL_TA"
+    tier_label: str = "完整 TA"
+    expected_latency: str = "10-20min"
+    llm_allowed: bool = True
+    cost_risk: str = "high"
+    requires_confirmation: bool = True
+    llm_provider: str = ""
+    llm_model: str = ""
+    base_url_display: str = ""
+    enabled_modules: List[str] = Field(default_factory=list)
+    estimated_llm_calls: int = 0
+    description: str = ""
+
+
+@app.get("/v1/analyze/cost-preview", response_model=FullTACostPreviewResponse)
+def get_full_ta_cost_preview(
+    current_user: UserDB = Depends(_require_api_user),
+):
+    from api.runtime_tier import get_full_ta_cost_preview as _preview
+    config = _build_runtime_config({}, user_id=current_user.id)
+    llm_provider = config.get("llm_provider", "")
+    llm_model = config.get("deep_think_llm", "")
+    base_url = str(config.get("backend_url", "") or "")
+    base_url_display = base_url if base_url else ""
+    preview = _preview(
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        base_url_display=base_url_display,
+    )
+    return FullTACostPreviewResponse(**preview.to_dict())
+
+
 @app.post("/v1/analyze", response_model=AnalyzeResponse)
 async def analyze(
     request: AnalyzeRequest,
@@ -3420,6 +3457,9 @@ async def chat_completions(
                     max_loss_pct=merged_user_context.get("max_loss_pct"),
                     constraints=merged_user_context.get("constraints", []),
                     user_notes=merged_user_context.get("user_notes"),
+                    runtime_tier=request.runtime_tier,  # [PERF-004]
+                    confirmed_full_ta=request.confirmed_full_ta,  # [PERF-004]
+                    runtime_profile=request.runtime_profile,  # [PERF-004]
                 )
                 now = _utcnow_iso()
                 _set_job(
@@ -3500,6 +3540,9 @@ async def chat_completions(
         max_loss_pct=merged_user_context.get("max_loss_pct"),
         constraints=merged_user_context.get("constraints", []),
         user_notes=merged_user_context.get("user_notes"),
+        runtime_tier=request.runtime_tier,  # [PERF-004]
+        confirmed_full_ta=request.confirmed_full_ta,  # [PERF-004]
+        runtime_profile=request.runtime_profile,  # [PERF-004]
     )
     job_id = uuid4().hex
     now = _utcnow_iso()
@@ -4377,12 +4420,18 @@ def _annotate_scheduled_with_imported_context(items: List[dict], db: Session, us
     imported_map: Dict[str, Dict[str, Any]] = {}
     for item in portfolio_import_service.list_imported_positions(db, user_id):
         imported_map[item["symbol"]] = item
+    from api.runtime_tier import build_scheduled_cost_meta  # [PERF-004] full_ta_cost_gate
     for item in items:
         imported = imported_map.get(item["symbol"])
         item["has_imported_context"] = imported is not None
         item["imported_current_position"] = imported.get("current_position") if imported else None
         item["imported_average_cost"] = imported.get("average_cost") if imported else None
         item["imported_trade_points_count"] = imported.get("trade_points_count") if imported else 0
+        cost_meta = build_scheduled_cost_meta(
+            trigger_time=item.get("trigger_time", "20:00"),
+            last_run_status=item.get("last_run_status"),
+        )
+        item["cost_meta"] = cost_meta.to_dict()
     return items
 
 

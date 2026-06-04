@@ -10,6 +10,8 @@ import RiskRadar from '@/components/RiskRadar'
 import KeyMetrics from '@/components/KeyMetrics'
 import { useAnalysisStore } from '@/stores/analysisStore'
 import { api } from '@/services/api'
+import type { FullTACostPreview } from '@/types'
+import { AlertTriangle, X } from 'lucide-react'
 
 // [TA-UI-001] analysis_console_horizon_intent
 const HORIZON_OPTIONS = [
@@ -76,6 +78,10 @@ export default function Analysis() {
     const [debateDrawer, setDebateDrawer] = useState<'research' | 'risk' | null>(null)
     const [latestPriceFallback, setLatestPriceFallback] = useState<{ target?: number | null; stop?: number | null; symbol?: string } | null>(null)
     const reportRef = useRef<HTMLDivElement | null>(null)
+    const [fullTaMode, setFullTaMode] = useState(false)  // [PERF-004]
+    const [showCostPreview, setShowCostPreview] = useState(false)  // [PERF-004]
+    const [costPreview, setCostPreview] = useState<FullTACostPreview | null>(null)  // [PERF-004]
+    const [costPreviewLoading, setCostPreviewLoading] = useState(false)  // [PERF-004]
     const {
         report,
         currentSymbol,
@@ -221,6 +227,33 @@ export default function Analysis() {
                                     ))}
                                 </div>
                             </div>
+                            {/* [PERF-004] full_ta_cost_gate */}
+                            <div className="pt-1 border-t border-slate-200 dark:border-slate-600">
+                                <button
+                                    onClick={async () => {
+                                        if (fullTaMode) {
+                                            setFullTaMode(false)
+                                            return
+                                        }
+                                        setCostPreviewLoading(true)
+                                        setShowCostPreview(true)
+                                        try {
+                                            const preview = await api.getFullTACostPreview()
+                                            setCostPreview(preview)
+                                        } catch {
+                                            setCostPreview(null)
+                                        }
+                                        setCostPreviewLoading(false)
+                                    }}
+                                    className={`w-full px-3 py-1.5 text-xs rounded-md border transition-colors ${
+                                        fullTaMode
+                                            ? 'bg-amber-500 text-white border-amber-500'
+                                            : 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-600 hover:border-amber-400'
+                                    }`}
+                                >
+                                    {fullTaMode ? '完整 TA 已启用（点击关闭）' : '完整 TA（需确认）'}
+                                </button>
+                            </div>
                         </div>
                     </div>
                     <div className="min-h-0 flex-1">
@@ -234,6 +267,7 @@ export default function Analysis() {
                             horizon={analysisHorizon}
                             intent={analysisIntent}
                             hasPosition={hasPosition}
+                            fullTaConfirmed={fullTaMode}
                         />
                     </div>
                 </aside>
@@ -272,6 +306,77 @@ export default function Analysis() {
             </div>
 
             <DebateDrawer debate={debateDrawer} onClose={() => setDebateDrawer(null)} />
+
+            {/* [PERF-004] full_ta_cost_gate - Confirmation Modal */}
+            {showCostPreview && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowCostPreview(false)}>
+                    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl max-w-md w-full mx-4 p-5" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center justify-between mb-4">
+                            <div className="flex items-center gap-2">
+                                <AlertTriangle className="w-5 h-5 text-amber-500" />
+                                <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">完整 TA 成本确认</h3>
+                            </div>
+                            <button onClick={() => setShowCostPreview(false)} className="text-slate-400 hover:text-slate-600">
+                                <X className="w-4 h-4" />
+                            </button>
+                        </div>
+                        {costPreviewLoading ? (
+                            <div className="text-sm text-slate-500 py-6 text-center">加载成本预估...</div>
+                        ) : costPreview ? (
+                            <div className="space-y-3 text-sm">
+                                <div className="grid grid-cols-2 gap-2">
+                                    <div className="text-slate-500">运行层级</div>
+                                    <div className="font-medium text-slate-900 dark:text-slate-100">{costPreview.tier_label}</div>
+                                    <div className="text-slate-500">预计耗时</div>
+                                    <div className="font-medium text-slate-900 dark:text-slate-100">{costPreview.expected_latency}</div>
+                                    <div className="text-slate-500">成本风险</div>
+                                    <div className="font-medium text-amber-600">{costPreview.cost_risk === 'high' ? '高' : costPreview.cost_risk}</div>
+                                    <div className="text-slate-500">模型厂商</div>
+                                    <div className="font-medium text-slate-900 dark:text-slate-100">{costPreview.llm_provider || '默认'}</div>
+                                    <div className="text-slate-500">模型</div>
+                                    <div className="font-medium text-slate-900 dark:text-slate-100 break-all">{costPreview.llm_model || '默认'}</div>
+                                    <div className="text-slate-500">预计调用次数</div>
+                                    <div className="font-medium text-slate-900 dark:text-slate-100">~{costPreview.estimated_llm_calls} 次</div>
+                                </div>
+                                <div className="border-t border-slate-200 dark:border-slate-600 pt-3">
+                                    <div className="text-slate-500 mb-1">启用模块</div>
+                                    <div className="flex flex-wrap gap-1">
+                                        {costPreview.enabled_modules.slice(0, 8).map(m => (
+                                            <span key={m} className="text-[10px] px-1.5 py-0.5 bg-slate-100 dark:bg-slate-700 rounded text-slate-600 dark:text-slate-300">{m}</span>
+                                        ))}
+                                        {costPreview.enabled_modules.length > 8 && (
+                                            <span className="text-[10px] px-1.5 py-0.5 bg-slate-100 dark:bg-slate-700 rounded text-slate-600 dark:text-slate-300">+{costPreview.enabled_modules.length - 8}</span>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="text-xs text-amber-600 bg-amber-50 dark:bg-amber-900/20 rounded p-2">
+                                    完整 TA 将调用 14 个 Agent 进行多空辩论和风控分析，预计耗时 {costPreview.expected_latency}，产生约 {costPreview.estimated_llm_calls} 次 LLM 调用。
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="text-sm text-red-500 py-4 text-center">无法获取成本预估，请检查模型配置。</div>
+                        )}
+                        <div className="flex gap-2 mt-4">
+                            <button
+                                onClick={() => setShowCostPreview(false)}
+                                className="flex-1 px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700"
+                            >
+                                取消
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setFullTaMode(true)
+                                    setShowCostPreview(false)
+                                }}
+                                disabled={!costPreview}
+                                className="flex-1 px-3 py-2 text-sm rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                确认启动完整 TA
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     )
 }

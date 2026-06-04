@@ -4,6 +4,63 @@
 
 ---
 
+## 2026-06-04 | PERF-004 fix: 修正验收命令中不存在的 test_scheduler 文件引用
+
+- **执行者**：OpenCode
+- **任务**：PERF-004 fix — 原验收命令 `pytest tests/test_scheduler*.py tests/test_runtime_tier*.py -q` 中 `test_scheduler*.py` 文件不存在导致 `ERROR: file or directory not found`。
+- **修改文件**：
+  - `docs/TASKS.md` — PERF-004 验收命令从 `tests/test_scheduler*.py tests/test_runtime_tier*.py` 更正为 `tests/test_perf004_full_ta_cost_gate.py tests/test_runtime_tier_contract.py tests/test_scheduled_queue.py`。
+- **测试结果**：119 passed in 1.32s
+
+---
+
+## 2026-06-04 | PERF-004: 完整 TA 手动确认与 scheduler 成本门禁
+
+- **执行者**：OpenCode
+- **任务**：PERF-004 — 防止定时任务、TradeFlow 或前端误触完整 TA。完整 TA 必须显示模型、预计调用、预计耗时，并由用户确认。
+- **修改文件**：
+  - `api/runtime_tier.py` — [PERF-004] full_ta_cost_gate
+    - `FullTACostPreview` 数据类：runtime_tier / tier_label / expected_latency / llm_provider / llm_model / base_url_display / enabled_modules(14) / estimated_llm_calls(20) / cost_risk / description
+    - `get_full_ta_cost_preview()` 函数：从用户配置读取 provider/model/base_url 生成成本预览
+    - `ScheduledCostMeta` 数据类：is_full_ta / runtime_tier / tier_label / created_by / trigger_frequency / last_run_llm_summary
+    - `build_scheduled_cost_meta()` 函数：为定时任务构建成本元数据，包含触发频率和上次运行摘要
+    - `_summarize_last_run()` 辅助函数：将 last_run_status 转为可读中文摘要
+  - `api/main.py` — [PERF-004]
+    - `FullTACostPreviewResponse` Pydantic model：成本预览响应
+    - `GET /v1/analyze/cost-preview` 端点：返回用户当前模型配置下的 FULL_TA 成本预览
+    - `ChatCompletionRequest` 新增 `runtime_tier` / `confirmed_full_ta` / `runtime_profile` 字段
+    - `/v1/chat/completions` 流式/非流式路径：转发 `runtime_tier` / `confirmed_full_ta` / `runtime_profile` 到 AnalyzeRequest
+    - `_annotate_scheduled_with_imported_context()` 新增 `cost_meta` 字段注入
+  - `scheduler/main.py` — [PERF-004]
+    - `_run_scheduled_job` 日志增强：`cost_risk=high estimated_calls=20`
+  - `frontend/src/types/index.ts` — [PERF-004]
+    - `FullTACostPreview` interface
+    - `ScheduledCostMeta` interface
+  - `frontend/src/services/api.ts` — [PERF-004]
+    - `getFullTACostPreview()` API 方法
+    - `chatCompletion()` 新增 `runtimeContext` 参数传递 runtime_tier / confirmed_full_ta
+  - `frontend/src/components/ChatCopilotPanel.tsx` — [PERF-004]
+    - `fullTaConfirmed` prop
+    - `streamChat()` 传递 FULL_TA runtime context
+  - `frontend/src/pages/Analysis.tsx` — [PERF-004]
+    - "完整 TA（需确认）" 按钮 + 成本确认弹窗
+    - 弹窗显示：运行层级、预计耗时、成本风险、模型厂商、模型名、预计调用次数、启用模块
+    - 确认后启用 fullTaMode，传递到 ChatCopilotPanel
+  - `tests/test_perf004_full_ta_cost_gate.py` — 新建，47 个测试
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：47 passed (PERF-004)；119 passed (PERF-001 + API smoke 回归)；0 failed；npm run build 通过
+- **关键逻辑**：
+  - FULL_TA 成本预览：`GET /v1/analyze/cost-preview` 返回 provider/model/modules/estimated_calls，不泄露 API key
+  - 前端确认弹窗：点击"完整 TA"按钮 → 拉取成本预览 → 弹窗展示 → 用户确认后启用 FULL_TA 模式
+  - ChatCompletions 转发：`runtime_tier` / `confirmed_full_ta` / `runtime_profile` 从前端透传到 AnalyzeRequest
+  - 定时任务成本元数据：`build_scheduled_cost_meta()` 为每个定时任务生成 cost_meta（is_full_ta / trigger_frequency / last_run_llm_summary）
+  - 定时任务列表增强：`_annotate_scheduled_with_imported_context()` 注入 `cost_meta` 字段
+  - Scheduler 日志增强：`cost_risk=high estimated_calls=20` 明确标注成本风险
+  - 不泄露 API key / 不改 prompts / 不写生产 DB / 不触发 live LLM
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-04 | DATA-P0-FUND-ROUTE: 主力资金 fallback 假成功与单位修复
 
 - **执行者**：OpenCode

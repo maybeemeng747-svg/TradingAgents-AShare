@@ -1,4 +1,4 @@
-import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse } from '@/types'
+import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview } from '@/types'
 
 export function getBaseUrl(): string {
     const envUrl = (import.meta.env.VITE_API_URL as string) || ''
@@ -67,6 +67,10 @@ class ApiService {
         })
     }
 
+    async getFullTACostPreview(): Promise<FullTACostPreview> {
+        return this.request<FullTACostPreview>('/v1/analyze/cost-preview')
+    }
+
     async getJobStatus(jobId: string): Promise<JobStatus> {
         return this.request<JobStatus>(`/v1/jobs/${jobId}`)
     }
@@ -94,6 +98,11 @@ class ApiService {
             current_position_pct?: number
             average_cost?: number
         },
+        runtimeContext?: {
+            runtime_tier?: string
+            confirmed_full_ta?: boolean
+            runtime_profile?: string
+        },
     ) {
         const body: Record<string, unknown> = {
             messages,
@@ -107,6 +116,12 @@ class ApiService {
             if (userContext.current_position != null) body.current_position = userContext.current_position
             if (userContext.current_position_pct != null) body.current_position_pct = userContext.current_position_pct
             if (userContext.average_cost != null) body.average_cost = userContext.average_cost
+        }
+        // [PERF-004] full_ta_cost_gate
+        if (runtimeContext) {
+            if (runtimeContext.runtime_tier) body.runtime_tier = runtimeContext.runtime_tier
+            if (runtimeContext.confirmed_full_ta != null) body.confirmed_full_ta = runtimeContext.confirmed_full_ta
+            if (runtimeContext.runtime_profile) body.runtime_profile = runtimeContext.runtime_profile
         }
         const response = await fetch(`${getBaseUrl()}/v1/chat/completions`, {
             method: 'POST',

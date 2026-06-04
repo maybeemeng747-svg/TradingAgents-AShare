@@ -53,7 +53,7 @@
 27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
 28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，ready，依赖 DATA-001/DATA-004 ✓）。
 29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，in_progress — claimed PERF-003-20260602-200127）。
-30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，ready）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
 31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready，依赖 DATA-004/DATA-006 ✓）。
 32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready，依赖 DATA-005 ✓）。
 33. `H-009`：昊天候选反证/过热降权校准（P1，ready，依赖 H-006/V-004 ✓）。
@@ -206,7 +206,7 @@
 ### PERF-004: 完整 TA 手动确认与 scheduler 成本门禁（P1）
 - **描述**：防止定时任务、TradeFlow 或前端误触完整 TA。完整 TA 必须显示模型、预计调用、预计耗时，并由用户确认。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — PERF-004-20260604
 - **执行约束**：
   - 不禁用用户主动设置的定时分析。
   - 不改变已有允许的 scheduler 行为，只增加透明度和门禁。
@@ -228,7 +228,7 @@
   - 未确认时 full TA 不启动。
   - 用户主动定时分析仍可运行，但日志明确记录。
   - 日报能看到 scheduler 成本风险。
-  - `pytest tests/test_scheduler*.py tests/test_runtime_tier*.py -q` 或等价测试通过。
+  - `pytest tests/test_perf004_full_ta_cost_gate.py tests/test_runtime_tier_contract.py tests/test_scheduled_queue.py -q` 或等价测试通过。
 - **代码标注要求**：`# [PERF-004] full_ta_cost_gate` / `// [PERF-004] full_ta_cost_gate`
 
 ## P0. 2026-06-02 运行态修复与 TA 控制台任务池

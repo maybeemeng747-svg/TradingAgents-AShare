@@ -165,6 +165,31 @@ export interface AnalysisResponse {
     enabled_modules?: string[]  // [PERF-002]
 }
 
+// [PERF-004] full_ta_cost_gate
+export interface FullTACostPreview {
+    runtime_tier: string
+    tier_label: string
+    expected_latency: string
+    llm_allowed: boolean
+    cost_risk: string
+    requires_confirmation: boolean
+    llm_provider: string
+    llm_model: string
+    base_url_display: string
+    enabled_modules: string[]
+    estimated_llm_calls: number
+    description: string
+}
+
+export interface ScheduledCostMeta {
+    is_full_ta: boolean
+    runtime_tier: string
+    tier_label: string
+    created_by: string
+    trigger_frequency: string
+    last_run_llm_summary: string
+}
+
 export interface JobStatus {
     job_id: string
     status: 'pending' | 'running' | 'completed' | 'failed'

@@ -25,6 +25,7 @@ interface ChatCopilotPanelProps {
     horizon?: 'short' | 'medium'
     intent?: string
     hasPosition?: boolean
+    fullTaConfirmed?: boolean  // [PERF-004]
 }
 
 interface StreamEvent {
@@ -133,7 +134,7 @@ function ReportCard({
     )
 }
 
-export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initialInput, horizon, intent, hasPosition: hasPositionProp }: ChatCopilotPanelProps) {
+export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initialInput, horizon, intent, hasPosition: hasPositionProp, fullTaConfirmed }: ChatCopilotPanelProps) {
     const [input, setInput] = useState(initialInput || '')
     const [streaming, setStreaming] = useState(false)
     // Tracks agent bubbles waiting for their first token (shows "正在推理分析中..." spinner)
@@ -591,6 +592,9 @@ export default function ChatCopilotPanel({ onSymbolDetected, onShowReport, initi
             selectedAnalysts,
             signal,
             userContext,
+            fullTaConfirmed  // [PERF-004] full_ta_cost_gate
+                ? { runtime_tier: 'FULL_TA', confirmed_full_ta: true, runtime_profile: 'FULL_TA' }
+                : undefined,
         )
 
         if (!response.body) throw new Error('SSE stream unavailable')
