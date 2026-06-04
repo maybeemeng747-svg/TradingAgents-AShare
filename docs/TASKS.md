@@ -822,7 +822,7 @@
 ### DATA-008: A股关键源 fallback smoke fixtures 扩展（P1）
 - **描述**：扩展 DATA-005 fixture replay，重点覆盖用户报告中经常缺失的 A 股行情、资金流、龙虎榜、公告和实时补丁 fallback，防止数据源“假可用”再次回归。
 - **优先级**：P1
-- **状态**：done — DATA-008-20260604-132917
+- **状态**：done -- commit 421389f
   - **前置条件**：`DATA-005` 完成 ✓。
 - **执行约束**：
   - 默认只跑 fixture/mock，不做 live 压测。
