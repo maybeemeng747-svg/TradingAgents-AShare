@@ -614,7 +614,7 @@
 ### DATA-P1-SOURCE-GAP-AUDIT: Simon 数据源吸收落地差距审计（P1）
 - **描述**：对照 SimonLin1212 `a-stock-data` / A股数据 Skill 思路，审计本项目已经吸收和仍未落地的数据源能力，输出可执行差距清单。
 - **优先级**：P1
-- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/DATA-P1-SOURCE-GAP-AUDIT-20260604-125917
+- **状态**：done — commit 9be871f
 - **前置条件**：`DATA-001`、`DATA-004` 完成 ✓。
 - **背景**：
   - 已落地部分：source_catalog、cn_astock provider 注册、raw_evidence contract、fixture replay、数据源日报、事件源归一化。
