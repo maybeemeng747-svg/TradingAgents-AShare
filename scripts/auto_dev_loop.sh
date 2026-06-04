@@ -509,7 +509,9 @@ FIX_EOF
 
     log "Tests passed"
 
-    # 3c. Run Codex review (with token availability check)
+    # 3c. Run Codex review (MANDATORY — never skip even after manual recovery)
+    # [CRITICAL] Review must run before ANY commit. If recovering from test failure,
+    # always run `codex review --uncommitted` before `git add/commit`.
     CODEX_AVAILABLE=true
     REVIEW_SKIPPED=false
     set +e
