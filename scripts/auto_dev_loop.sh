@@ -514,6 +514,7 @@ FIX_EOF
     # always run `codex review --uncommitted` before `git add/commit`.
     CODEX_AVAILABLE=true
     REVIEW_SKIPPED=false
+    CODEX_EXIT=127  # default: not run (codex unavailable)
     set +e
     codex review --help > /dev/null 2>&1
     CODEX_HELP_EXIT=$?
@@ -650,9 +651,9 @@ if [ "$RESULT_STATUS" = "PASS" ]; then
 - Finished at: $(date +%Y-%m-%d_%H:%M:%S)
 SUMMARY_EOF
 
-    # 4a. Precise git add: allow tests/ tradingagents/ docs/ scripts/
-    log "Precise commit: git add tests/ tradingagents/ docs/ scripts/"
-    git add tests/ tradingagents/ docs/ scripts/
+    # 4a. Stage all implementation directories (tests/tradingagents/api/frontend/scheduler/docs/scripts)
+    log "Precise commit: git add tests/ tradingagents/ api/ frontend/ scheduler/ docs/ scripts/"
+    git add tests/ tradingagents/ api/ frontend/ scheduler/ docs/ scripts/
 
     # 4b. Exclude temp and backup files
     EXCLUDE_PATTERNS=('*.backup' '*_original.py' '*_fixed.py' 'patch_*.py' '*.tmp' '*.log')
