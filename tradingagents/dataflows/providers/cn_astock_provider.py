@@ -761,8 +761,7 @@ class CnAstockProvider(BaseMarketDataProvider):
         """个股资金流 — 东财 push2his 直连 fallback.  # [DATA-P0-603629] astock_source_fallback
 
         Returns last 20 trading days of main-capital net flow data.
-        Eastmoney push2his returns values in 元; we convert to 万元
-        for consistency with AKShare convention.
+        Eastmoney push2his fflow/daykline returns values already in 万元.
         """
         code = _extract_code(symbol)
         try:

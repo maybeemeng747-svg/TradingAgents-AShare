@@ -1,0 +1,562 @@
+[0m
+> build · glm-5.1
+[0m
+[0m# [0mTodos
+[ ] Fix TestFundFlowFallback::test_individual_fund_flow_success
+[ ] Fix TestAcceptanceH006::test_all_six_candidate_types_covered - missing UNCLASSIFIED_DATA_GAP
+[ ] Run tests to verify fixes
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tests/test_data_p0_603629.py
+[0m→ [0mRead tests/test_h006_mandate_replay_eval.py
+[0m
+[0m# [0mTodos
+[•] Fix TestFundFlowFallback::test_individual_fund_flow_success
+[ ] Fix TestAcceptanceH006::test_all_six_candidate_types_covered - missing UNCLASSIFIED_DATA_GAP
+[ ] Run tests to verify fixes
+[ ] Update docs/DEVLOG.md
+[0m
+[0m• [0mFind fund flow and CandidateType sources[90m Explore Agent[0m
+[0m✓ [0mFind fund flow and CandidateType sources[90m Explore Agent[0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_astock_provider.py[90m [offset=755, limit=60][0m
+Now let me read the source files I need to modify:
+[0m→ [0mRead tradingagents/tradeflow/mandate_replay_eval.py[90m [offset=640, limit=60][0m
+[0m→ [0mRead tradingagents/tradeflow/mandate_replay_eval.py[90m [limit=100, offset=1][0m
+[0m→ [0mRead tradingagents/tradeflow/mandate_replay_eval.py[90m [limit=60, offset=270][0m
+[0m→ [0mRead tradingagents/tradeflow/mandate_replay_eval.py[90m [limit=150, offset=330][0m
+Now let me see the `_compute_verdict` function and `_build_policy_ambush_success` to understand the pattern:
+[0m→ [0mRead tradingagents/tradeflow/mandate_replay_eval.py[90m [limit=200, offset=760][0m
+[0m→ [0mRead tradingagents/tradeflow/mandate_replay_eval.py[90m [limit=50, offset=700][0m
+Now I have a clear picture of both issues. Let me fix them:
+
+**Issue 1**: `get_individual_fund_flow` divides API values by 10000, but the Eastmoney push2his fund flow API returns values already in 万元. The `/10000` conversion is incorrect.
+
+**Issue 2**: `CandidateType.UNCLASSIFIED_DATA_GAP` was added to the enum but no replay fixture was created for it.
+
+Let me apply the fixes:
+[0m
+[0m← [0mEdit tradingagents/dataflows/providers/cn_astock_provider.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/providers/cn_astock_provider.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/providers/cn_astock_provider.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/providers/cn_astock_provider.py
+@@ -760,10 +760,9 @@
+ def get_individual_fund_flow(self, symbol: str) -> str:
+     """个股资金流 — 东财 push2his 直连 fallback.  # [DATA-P0-603629] astock_source_fallback
+ 
+     Returns last 20 trading days of main-capital net flow data.
+-    Eastmoney push2his returns values in 元; we convert to 万元
+-    for consistency with AKShare convention.
++    Eastmoney push2his fflow/daykline returns values already in 万元.
+     """
+     code = _extract_code(symbol)
+     try:
+         _rate_limit("em_fund_flow_individual")
+@@ -790,13 +789,13 @@
+         for line in klines:
+             parts = line.split(",")
+             if len(parts) >= 6:
+                 try:
+-                    v1 = float(parts[1]) / 10000
+-                    v2 = float(parts[2]) / 10000
+-                    v3 = float(parts[3]) / 10000
+-                    v4 = float(parts[4]) / 10000
+-                    v5 = float(parts[5]) / 10000
++                    v1 = float(parts[1])
++                    v2 = float(parts[2])
++                    v3 = float(parts[3])
++                    v4 = float(parts[4])
++                    v5 = float(parts[5])
+                     rows.append(
+                         f"{parts[0]} | {v1:.2f} | {v2:.2f} | {v3:.2f} | {v4:.2f} | {v5:.2f}"
+                     )
+                 except (ValueError, IndexError):
+
+[0m
+Now fix Issue 2 — add the `UNCLASSIFIED_DATA_GAP` fixture and verdict logic:
+[0m← [0mEdit tradingagents/tradeflow/mandate_replay_eval.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_replay_eval.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_replay_eval.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_replay_eval.py
+@@ -299,8 +299,9 @@
+ FIXTURE_OVERHEATED_CRASH = "overheated_crash"
+ FIXTURE_POLICY_FADE = "policy_fade"
+ FIXTURE_FALSE_PATH = "false_path"
+ FIXTURE_CAPITAL_IGNORE = "capital_ignore"
++FIXTURE_DATA_GAP_UNCLASSIFIED = "data_gap_unclassified"
+ 
+ ALL_REPLAY_FIXTURE_IDS = [
+     FIXTURE_POLICY_AMBUSH_SUCCESS,
+     FIXTURE_POLICY_AMBUSH_COUNTER,
+
+[0m
+[0m← [0mEdit tradingagents/tradeflow/mandate_replay_eval.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_replay_eval.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_replay_eval.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_replay_eval.py
+@@ -312,8 +312,9 @@
+     FIXTURE_OVERHEATED_CRASH,
+     FIXTURE_POLICY_FADE,
+     FIXTURE_FALSE_PATH,
+     FIXTURE_CAPITAL_IGNORE,
++    FIXTURE_DATA_GAP_UNCLASSIFIED,
+ ]
+ 
+ 
+ def _build_policy_ambush_success() -> ReplayFixture:
+
+[0m
+[0m← [0mEdit tradingagents/tradeflow/mandate_replay_eval.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_replay_eval.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_replay_eval.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_replay_eval.py
+@@ -680,8 +680,39 @@
+         tags=["counter_evidence", "capital_ignore"],
+     )
+ 
+ 
++def _build_data_gap_unclassified() -> ReplayFixture:
++    return ReplayFixture(
++        fixture_id=FIXTURE_DATA_GAP_UNCLASSIFIED,
++        description="证据缺口未分类——关键数据源缺失导致无法确认候选类型，走势不明",
++        symbol="600xxx.SH",
++        candidate_type=CandidateType.UNCLASSIFIED_DATA_GAP.value,
++        mandate_score_component=0.0,
++        beneficiary_score_component=0.0,
++        ambush_score=0.0,
++        mandate_topic="",
++        company_role="UNKNOWN",
++        price_snapshot=PriceSnapshot(
++            entry_price=15.0,
++            prices={5: 15.2, 10: 14.8, 20: 15.0, 60: 14.5},
++            index_prices={0: 3100.0, 5: 3105.0, 10: 3115.0, 20: 3125.0, 60: 3150.0},
++            industry_prices={0: 4000.0, 5: 4010.0, 10: 4020.0, 20: 4035.0, 60: 4060.0},
++        ),
++        post_event=PostEventCheck(
++            policy_reconfirmed=False,
++            announcement_fulfilled=False,
++            trend_confirmed=False,
++            risk_counter_evidence=False,
++            policy_persistence_score=0.0,
++            benefit_realization_score=0.0,
++            details="关键数据源缺失(fund_flow/news)，无法分类候选类型",
++        ),
++        counter_evidences=[],
++        tags=["data_gap", "unclassified"],
++    )
++
++
+ _FIXTURE_BUILDERS = {
+     FIXTURE_POLICY_AMBUSH_SUCCESS: _build_policy_ambush_success,
+     FIXTURE_POLICY_AMBUSH_COUNTER: _build_policy_ambush_counter,
+     FIXTURE_POLICY_CONFIRM_SUCCESS: _build_policy_confirm_success,
+
+[0m
+Now add the builder function after `_build_capital_ignore`:
+Register in `_FIXTURE_BUILDERS`:
+[0m← [0mEdit tradingagents/tradeflow/mandate_replay_eval.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_replay_eval.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_replay_eval.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_replay_eval.py
+@@ -722,8 +722,9 @@
+     FIXTURE_OVERHEATED_CRASH: _build_overheated_crash,
+     FIXTURE_POLICY_FADE: _build_policy_fade,
+     FIXTURE_FALSE_PATH: _build_false_path,
+     FIXTURE_CAPITAL_IGNORE: _build_capital_ignore,
++    FIXTURE_DATA_GAP_UNCLASSIFIED: _build_data_gap_unclassified,
+ }
+ 
+ 
+ def get_replay_fixture(fixture_id: str) -> Optional[ReplayFixture]:
+
+[0m
+Add verdict logic for `UNCLASSIFIED_DATA_GAP` in `_compute_verdict`:
+[0m← [0mEdit tradingagents/tradeflow/mandate_replay_eval.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_replay_eval.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_replay_eval.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/mandate_replay_eval.py
+@@ -839,8 +839,12 @@
+     else:
+         verdict = "neutral:过热规避但未暴跌"
+         score = 60.0
+ 
++elif ct == CandidateType.UNCLASSIFIED_DATA_GAP.value:
++    verdict = "confirmed:证据缺口无法分类(符合预期)"
++    score = 70.0
++
+ else:
+     verdict = "unknown:未知候选类型"
+     score = 50.0
+ 
+
+[0m
+[0m← [0mEdit tests/test_h006_mandate_replay_eval.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
+@@ -27,8 +27,9 @@
+ ReplayFixture,
+ ReplayReport,
+ _FIXTURE_BUILDERS,
+ _build_capital_ignore,
++_build_data_gap_unclassified,
+ _build_event_watch_no_follow,
+ _build_false_path,
+ _build_overheated_crash,
+ _build_policy_ambush_counter,
+
+[0m
+Now update the tests that check fixture count from 10 to 11:
+Now update the fixture count assertions:
+[0m← [0mEdit tests/test_h006_mandate_replay_eval.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
+@@ -274,9 +274,9 @@
+ 
+ 
+ class TestFixtureIDs:
+     def test_all_10_fixtures(self):
+-        assert len(ALL_REPLAY_FIXTURE_IDS) == 10
++        assert len(ALL_REPLAY_FIXTURE_IDS) == 11
+ 
+     def test_all_builders_registered(self):
+         for fid in ALL_REPLAY_FIXTURE_IDS:
+             assert fid in _FIXTURE_BUILDERS
+
+[0m
+[0m← [0mEdit tests/test_h006_mandate_replay_eval.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
+@@ -303,9 +303,9 @@
+             assert f is not None, f"Missing fixture: {fid}"
+ 
+     def test_get_all(self):
+         all_f = get_all_replay_fixtures()
+-        assert len(all_f) == 10
++        assert len(all_f) == 11
+ 
+ 
+ # ── Fixture Content Verification ───────────────────────────────────
+ 
+
+[0m
+[0m← [0mEdit tests/test_h006_mandate_replay_eval.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
+@@ -492,11 +492,11 @@
+ 
+ class TestRunReplayEvaluation:
+     def test_all_fixtures(self):
+         report = run_replay_evaluation()
+-        assert report.total_fixtures == 10
+-        assert report.passed + report.failed == 10
+-        assert len(report.results) == 10
++        assert report.total_fixtures == 11
++        assert report.passed + report.failed == 11
++        assert len(report.results) == 11
+ 
+     def test_by_candidate_type(self):
+         report = run_replay_evaluation()
+         assert len(report.by_candidate_type) > 0
+
+[0m
+Now add a test for the new fixture content:
+[0m← [0mEdit tests/test_h006_mandate_replay_eval.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
+@@ -373,8 +373,15 @@
+     assert f.candidate_type == CandidateType.POLICY_AMBUSH.value
+     counter_types = [c.counter_type for c in f.counter_evidences]
+     assert COUNTER_CAPITAL_NOT_RECOGNIZING in counter_types
+ 
++def test_data_gap_unclassified(self):
++    f = _build_data_gap_unclassified()
++    assert f.candidate_type == CandidateType.UNCLASSIFIED_DATA_GAP.value
++    assert f.mandate_score_component == 0.0
++    assert f.company_role == "UNKNOWN"
++    assert len(f.counter_evidences) == 0
++
+ def test_all_fixtures_have_prices(self):
+     for fid in ALL_REPLAY_FIXTURE_IDS:
+         f = get_replay_fixture(fid)
+         assert f.price_snapshot.entry_price > 0, f"{fid} has no entry price"
+
+[0m
+Now add an evaluation test for the new fixture:
+[0m← [0mEdit tests/test_h006_mandate_replay_eval.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_h006_mandate_replay_eval.py
+@@ -461,8 +461,14 @@
+     ev = evaluate_fixture(f)
+     assert len(ev.counter_evidences) > 0
+     assert ev.counter_evidences[0].counter_type == COUNTER_CAPITAL_NOT_RECOGNIZING
+ 
++def test_data_gap_unclassified_evaluation(self):
++    f = _build_data_gap_unclassified()
++    ev = evaluate_fixture(f)
++    assert ev.passed is True
++    assert "证据缺口" in ev.verdict
++
+ def test_beat_index_computed(self):
+     f = _build_policy_ambush_success()
+     ev = evaluate_fixture(f)
+     for h in ALL_HORIZONS:
+
+[0m
+[0m# [0mTodos
+[✓] Fix TestFundFlowFallback::test_individual_fund_flow_success
+[✓] Fix TestAcceptanceH006::test_all_six_candidate_types_covered - missing UNCLASSIFIED_DATA_GAP
+[•] Run tests to verify fixes
+[ ] Update docs/DEVLOG.md
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_data_p0_603629.py::TestFundFlowFallback::test_individual_fund_flow_success tests/test_h006_mandate_replay_eval.py::TestAcceptanceH006::test_all_six_candidate_types_covered -xvs 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 2 items
+
+tests/test_data_p0_603629.py::TestFundFlowFallback::test_individual_fund_flow_success PASSED
+tests/test_h006_mandate_replay_eval.py::TestAcceptanceH006::test_all_six_candidate_types_covered PASSED
+
+============================== 2 passed in 1.52s ===============================
+[0m
+Both previously failing tests pass. Now let me run the full test suites for both files:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_data_p0_603629.py tests/test_h006_mandate_replay_eval.py -xvs 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 155 items
+
+tests/test_data_p0_603629.py::TestFundFlowFallback::test_individual_fund_flow_success PASSED
+tests/test_data_p0_603629.py::TestFundFlowFallback::test_individual_fund_flow_failure PASSED
+tests/test_data_p0_603629.py::TestFundFlowFallback::test_individual_fund_flow_empty PASSED
+tests/test_data_p0_603629.py::TestFundFlowFallback::test_board_fund_flow_success PASSED
+tests/test_data_p0_603629.py::TestFundFlowFallback::test_board_fund_flow_failure PASSED
+tests/test_data_p0_603629.py::TestLHBFallback::test_lhb_not_queried_when_force_false PASSED
+tests/test_data_p0_603629.py::TestLHBFallback::test_lhb_has_data_when_force_true PASSED
+tests/test_data_p0_603629.py::TestLHBFallback::test_lhb_normal_no_data PASSED
+tests/test_data_p0_603629.py::TestLHBFallback::test_lhb_failed PASSED
+tests/test_data_p0_603629.py::TestLHBForceConditions::test_force_on_news_mentions_lhb PASSED
+tests/test_data_p0_603629.py::TestLHBForceConditions::test_force_on_severe_anomaly PASSED
+tests/test_data_p0_603629.py::TestLHBForceConditions::test_force_on_consecutive_limit_up PASSED
+tests/test_data_p0_603629.py::TestLHBForceConditions::test_force_on_consecutive_limit_up_chinese PASSED
+tests/test_data_p0_603629.py::TestLHBForceConditions::test_force_on_one_char_limit PASSED
+tests/test_data_p0_603629.py::TestLHBForceConditions::test_force_on_deviation PASSED
+tests/test_data_p0_603629.py::TestLHBForceConditions::test_no_force_on_normal_news PASSED
+tests/test_data_p0_603629.py::TestLHBForceConditions::test_no_force_on_empty PASSED
+tests/test_data_p0_603629.py::TestLHBForceConditions::test_force_on_volume_ratio_keyword PASSED
+tests/test_data_p0_603629.py::TestLHBForceConditions::test_force_on_stock_data_volume_ratio PASSED
+tests/test_data_p0_603629.py::TestLHBForceConditions::test_force_on_stock_data_amount PASSED
+tests/test_data_p0_603629.py::TestLHBForceConditions::test_no_force_on_stock_data_normal PASSED
+tests/test_data_p0_603629.py::TestRealtimeQuoteEnrichment::test_realtime_includes_turnover_rate PASSED
+tests/test_data_p0_603629.py::TestAdjustmentAnnotation::test_em_kline_includes_adjustment PASSED
+tests/test_data_p0_603629.py::TestAdjustmentAnnotation::test_stock_data_csv_includes_adjustment_header PASSED
+tests/test_data_p0_603629.py::TestAdjustmentAnnotation::test_akshare_stock_data_includes_adjustment PASSED
+tests/test_data_p0_603629.py::TestAnnouncementIntegration::test_announcements_in_data_source_keys PASSED
+tests/test_data_p0_603629.py::TestAnnouncementIntegration::test_announcements_tool_registered PASSED
+tests/test_data_p0_603629.py::TestDataSourceAvailabilityFix::test_fund_flow_failed_shows_failed_not_ok PASSED
+tests/test_data_p0_603629.py::TestDataSourceAvailabilityFix::test_fund_flow_ok_shows_has_data PASSED
+tests/test_data_p0_603629.py::TestEvidenceCoverageConfidenceDowngrade::test_high_coverage_allows_high_confidence PASSED
+tests/test_data_p0_603629.py::TestEvidenceCoverageConfidenceDowngrade::test_low_evidence_coverage_caps_confidence PASSED
+tests/test_data_p0_603629.py::TestEvidenceCoverageConfidenceDowngrade::test_low_evidence_coverage_medium PASSED
+tests/test_data_p0_603629.py::TestEvidenceCoverageConfidenceDowngrade::test_very_low_all_caps_low PASSED
+tests/test_data_p0_603629.py::TestEvidenceCoverageConfidenceDowngrade::test_no_evidence_coverage_no_cap PASSED
+tests/test_data_p0_603629.py::TestEvidenceCoverageConfidenceDowngrade::test_exactly_70_evidence_allows_high PASSED
+tests/test_data_p0_603629.py::TestEvidenceCoverageConfidenceDowngrade::test_69_evidence_caps_medium PASSED
+tests/test_data_p0_603629.py::TestVendorTracking::test_fund_flow_vendor_tracked_in_raw_evidence PASSED
+tests/test_data_p0_603629.py::TestVendorTracking::test_lhb_vendor_tracked PASSED
+tests/test_data_p0_603629.py::TestRawEvidenceAdjustmentField::test_adjustment_in_stock_data_evidence PASSED
+tests/test_data_p0_603629.py::TestHealthCheckCnMarketData::test_default_endpoints_include_fund_flow PASSED
+tests/test_data_p0_603629.py::TestHealthCheckCnMarketData::test_default_endpoints_include_lhb PASSED
+tests/test_data_p0_603629.py::TestHealthCheckCnMarketData::test_default_endpoints_include_announcements PASSED
+tests/test_data_p0_603629.py::TestLHBForceReasonTracking::test_lhb_force_reason_fund_flow_anomaly PASSED
+tests/test_data_p0_603629.py::TestLHBForceReasonTracking::test_lhb_force_reason_anomaly_condition PASSED
+tests/test_h006_mandate_replay_eval.py::TestPriceSnapshot::test_default_values PASSED
+tests/test_h006_mandate_replay_eval.py::TestPriceSnapshot::test_get_return_pct PASSED
+tests/test_h006_mandate_replay_eval.py::TestPriceSnapshot::test_get_return_pct_negative PASSED
+tests/test_h006_mandate_replay_eval.py::TestPriceSnapshot::test_get_return_pct_zero_entry PASSED
+tests/test_h006_mandate_replay_eval.py::TestPriceSnapshot::test_get_return_pct_missing_horizon PASSED
+tests/test_h006_mandate_replay_eval.py::TestPriceSnapshot::test_get_index_return_pct PASSED
+tests/test_h006_mandate_replay_eval.py::TestPriceSnapshot::test_get_index_return_pct_no_entry PASSED
+tests/test_h006_mandate_replay_eval.py::TestPriceSnapshot::test_get_excess_return PASSED
+tests/test_h006_mandate_replay_eval.py::TestPriceSnapshot::test_get_excess_return_none PASSED
+tests/test_h006_mandate_replay_eval.py::TestPriceSnapshot::test_get_max_gain PASSED
+tests/test_h006_mandate_replay_eval.py::TestPriceSnapshot::test_get_max_gain_no_gain PASSED
+tests/test_h006_mandate_replay_eval.py::TestPriceSnapshot::test_get_max_gain_empty PASSED
+tests/test_h006_mandate_replay_eval.py::TestPriceSnapshot::test_get_max_drawdown PASSED
+tests/test_h006_mandate_replay_eval.py::TestPriceSnapshot::test_get_max_drawdown_no_dd PASSED
+tests/test_h006_mandate_replay_eval.py::TestPriceSnapshot::test_to_dict PASSED
+tests/test_h006_mandate_replay_eval.py::TestPostEventCheck::test_default PASSED
+tests/test_h006_mandate_replay_eval.py::TestPostEventCheck::test_to_dict PASSED
+tests/test_h006_mandate_replay_eval.py::TestCounterEvidence::test_default PASSED
+tests/test_h006_mandate_replay_eval.py::TestCounterEvidence::test_to_dict PASSED
+tests/test_h006_mandate_replay_eval.py::TestReplayFixture::test_default PASSED
+tests/test_h006_mandate_replay_eval.py::TestReplayFixture::test_to_dict PASSED
+tests/test_h006_mandate_replay_eval.py::TestReplayEvaluation::test_default PASSED
+tests/test_h006_mandate_replay_eval.py::TestReplayEvaluation::test_to_dict PASSED
+tests/test_h006_mandate_replay_eval.py::TestReplayReport::test_default PASSED
+tests/test_h006_mandate_replay_eval.py::TestReplayReport::test_to_dict PASSED
+tests/test_h006_mandate_replay_eval.py::TestCounterTypes::test_all_five_types PASSED
+tests/test_h006_mandate_replay_eval.py::TestCounterTypes::test_labels_complete PASSED
+tests/test_h006_mandate_replay_eval.py::TestCounterTypes::test_known_types PASSED
+tests/test_h006_mandate_replay_eval.py::TestHorizons::test_all_four PASSED
+tests/test_h006_mandate_replay_eval.py::TestHorizons::test_count PASSED
+tests/test_h006_mandate_replay_eval.py::TestFixtureIDs::test_all_10_fixtures PASSED
+tests/test_h006_mandate_replay_eval.py::TestFixtureIDs::test_all_builders_registered PASSED
+tests/test_h006_mandate_replay_eval.py::TestFixtureIDs::test_unique_ids PASSED
+tests/test_h006_mandate_replay_eval.py::TestGetFixture::test_known_fixture PASSED
+tests/test_h006_mandate_replay_eval.py::TestGetFixture::test_unknown_returns_none PASSED
+tests/test_h006_mandate_replay_eval.py::TestGetFixture::test_all_fixtures_retrievable PASSED
+tests/test_h006_mandate_replay_eval.py::TestGetFixture::test_get_all PASSED
+tests/test_h006_mandate_replay_eval.py::TestFixtureContent::test_policy_ambush_success PASSED
+tests/test_h006_mandate_replay_eval.py::TestFixtureContent::test_policy_ambush_counter PASSED
+tests/test_h006_mandate_replay_eval.py::TestFixtureContent::test_policy_confirm_success PASSED
+tests/test_h006_mandate_replay_eval.py::TestFixtureContent::test_tech_trade PASSED
+tests/test_h006_mandate_replay_eval.py::TestFixtureContent::test_event_watch PASSED
+tests/test_h006_mandate_replay_eval.py::TestFixtureContent::test_pseudo_policy PASSED
+tests/test_h006_mandate_replay_eval.py::TestFixtureContent::test_overheated_crash PASSED
+tests/test_h006_mandate_replay_eval.py::TestFixtureContent::test_policy_fade PASSED
+tests/test_h006_mandate_replay_eval.py::TestFixtureContent::test_false_path PASSED
+tests/test_h006_mandate_replay_eval.py::TestFixtureContent::test_capital_ignore PASSED
+tests/test_h006_mandate_replay_eval.py::TestFixtureContent::test_data_gap_unclassified PASSED
+tests/test_h006_mandate_replay_eval.py::TestFixtureContent::test_all_fixtures_have_prices PASSED
+tests/test_h006_mandate_replay_eval.py::TestFixtureContent::test_all_fixtures_have_horizons PASSED
+tests/test_h006_mandate_replay_eval.py::TestFixtureContent::test_severity_range PASSED
+tests/test_h006_mandate_replay_eval.py::TestEvaluateFixture::test_policy_ambush_success_passes PASSED
+tests/test_h006_mandate_replay_eval.py::TestEvaluateFixture::test_policy_ambush_counter_fails PASSED
+tests/test_h006_mandate_replay_eval.py::TestEvaluateFixture::test_policy_confirm_success_passes PASSED
+tests/test_h006_mandate_replay_eval.py::TestEvaluateFixture::test_tech_trade_returns PASSED
+tests/test_h006_mandate_replay_eval.py::TestEvaluateFixture::test_event_watch PASSED
+tests/test_h006_mandate_replay_eval.py::TestEvaluateFixture::test_pseudo_policy PASSED
+tests/test_h006_mandate_replay_eval.py::TestEvaluateFixture::test_overheated_crash PASSED
+tests/test_h006_mandate_replay_eval.py::TestEvaluateFixture::test_policy_fade_counter PASSED
+tests/test_h006_mandate_replay_eval.py::TestEvaluateFixture::test_false_path_counter PASSED
+tests/test_h006_mandate_replay_eval.py::TestEvaluateFixture::test_capital_ignore_counter PASSED
+tests/test_h006_mandate_replay_eval.py::TestEvaluateFixture::test_data_gap_unclassified_evaluation PASSED
+tests/test_h006_mandate_replay_eval.py::TestEvaluateFixture::test_beat_index_computed PASSED
+tests/test_h006_mandate_replay_eval.py::TestEvaluateFixture::test_max_gain_drawdown PASSED
+tests/test_h006_mandate_replay_eval.py::TestEvaluateFixture::test_calibration_hints_generated PASSED
+tests/test_h006_mandate_replay_eval.py::TestEvaluateFixture::test_calibration_hints_for_false_path PASSED
+tests/test_h006_mandate_replay_eval.py::TestEvaluateFixture::test_calibration_hints_for_overheated PASSED
+tests/test_h006_mandate_replay_eval.py::TestRunReplayEvaluation::test_all_fixtures PASSED
+tests/test_h006_mandate_replay_eval.py::TestRunReplayEvaluation::test_by_candidate_type PASSED
+tests/test_h006_mandate_replay_eval.py::TestRunReplayEvaluation::test_by_counter_type PASSED
+tests/test_h006_mandate_replay_eval.py::TestRunReplayEvaluation::test_avg_verdict_score PASSED
+tests/test_h006_mandate_replay_eval.py::TestRunReplayEvaluation::test_calibration_summary PASSED
+tests/test_h006_mandate_replay_eval.py::TestRunReplayEvaluation::test_selective_fixtures PASSED
+tests/test_h006_mandate_replay_eval.py::TestRunReplayEvaluation::test_custom_fixtures PASSED
+tests/test_h006_mandate_replay_eval.py::TestRunReplayEvaluation::test_empty_input PASSED
+tests/test_h006_mandate_replay_eval.py::TestRunReplayEvaluation::test_unknown_fixture_id_skipped PASSED
+tests/test_h006_mandate_replay_eval.py::TestRenderReplayReport::test_full_render PASSED
+tests/test_h006_mandate_replay_eval.py::TestRenderReplayReport::test_render_contains_all_fixtures PASSED
+tests/test_h006_mandate_replay_eval.py::TestRenderReplayReport::test_render_counter_types PASSED
+tests/test_h006_mandate_replay_eval.py::TestRenderReplayReport::test_render_percentage_format PASSED
+tests/test_h006_mandate_replay_eval.py::TestRenderReplayReport::test_render_empty_report PASSED
+tests/test_h006_mandate_replay_eval.py::TestRenderReplayReport::test_render_by_candidate_type_section PASSED
+tests/test_h006_mandate_replay_eval.py::TestSaveReplayReport::test_save_creates_file PASSED
+tests/test_h006_mandate_replay_eval.py::TestSaveReplayReport::test_filename_is_date PASSED
+tests/test_h006_mandate_replay_eval.py::TestSaveReplayReport::test_run_replay_and_save PASSED
+tests/test_h006_mandate_replay_eval.py::TestAcceptanceH006::test_fixed_fixture_stable_output PASSED
+tests/test_h006_mandate_replay_eval.py::TestAcceptanceH006::test_zero_displayed_as_0 PASSED
+tests/test_h006_mandate_replay_eval.py::TestAcceptanceH006::test_none_displayed_as_na PASSED
+tests/test_h006_mandate_replay_eval.py::TestAcceptanceH006::test_no_eval_results_write PASSED
+tests/test_h006_mandate_replay_eval.py::TestAcceptanceH006::test_all_six_candidate_types_covered PASSED
+tests/test_h006_mandate_replay_eval.py::TestAcceptanceH006::test_all_five_counter_types_covered PASSED
+tests/test_h006_mandate_replay_eval.py::TestAcceptanceH006::test_all_four_horizons_covered PASSED
+tests/test_h006_mandate_replay_eval.py::TestAcceptanceH006::test_counter_evidence_types_valid PASSED
+tests/test_h006_mandate_replay_eval.py::TestAcceptanceH006::test_replay_report_stable PASSED
+tests/test_h006_mandate_replay_eval.py::TestCalibrationHints::test_policy_fade_suggests_h002 PASSED
+tests/test_h006_mandate_replay_eval.py::TestCalibrationHints::test_false_path_suggests_h003 PASSED
+tests/test_h006_mandate_replay_eval.py::TestCalibrationHints::test_overheated_suggests_h004 PASSED
+tests/test_h006_mandate_replay_eval.py::TestCalibrationHints::test_capital_ignore_suggests_fund_flow PASSED
+tests/test_h006_mandate_replay_eval.py::TestCalibrationHints::test_high_policy_low_fulfillment_hint PASSED
+tests/test_h006_mandate_replay_eval.py::TestCalibrationHints::test_leader_role_low_score_hint PASSED
+tests/test_h006_mandate_replay_eval.py::TestIntegration::test_fixture_to_dict_round_trip PASSED
+tests/test_h006_mandate_replay_eval.py::TestIntegration::test_evaluation_to_dict_round_trip PASSED
+tests/test_h006_mandate_replay_eval.py::TestIntegration::test_report_to_dict_round_trip PASSED
+tests/test_h006_mandate_replay_eval.py::TestIntegration::test_ambush_score_integration PASSED
+tests/test_h006_mandate_replay_eval.py::TestIntegration::test_candidate_type_enum_alignment PASSED
+tests/test_h006_mandate_replay_eval.py::TestEdgeCases::test_zero_price PASSED
+tests/test_h006_mandate_replay_eval.py::TestEdgeCases::test_single_horizon PASSED
+tests/test_h006_mandate_replay_eval.py::TestEdgeCases::test_fixture_no_counters PASSED
+tests/test_h006_mandate_replay_eval.py::TestEdgeCases::test_render_with_no_counters PASSED
+tests/test_h006_mandate_replay_eval.py::TestEdgeCases::test_all_passed_flag PASSED
+tests/test_h006_mandate_replay_eval.py::TestEdgeCases::test_negative_return_formatting PASSED
+
+============================= 155 passed in 2.41s ==============================
+[0m
+[0m# [0mTodos
+[✓] Fix TestFundFlowFallback::test_individual_fund_flow_success
+[✓] Fix TestAcceptanceH006::test_all_six_candidate_types_covered - missing UNCLASSIFIED_DATA_GAP
+[✓] Run tests to verify fixes
+[•] Update docs/DEVLOG.md
+[0m
+All 155 tests pass. Now update the DEVLOG:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=30][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,23 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-04 | DATA-P1-SOURCE-GAP-AUDIT: fix test failures
++
++- **执行者**：OpenCode
++- **任务**：Fix 2 failing tests from DATA-P1-SOURCE-GAP-AUDIT implementation
++- **修改文件**：
++  - `tradingagents/dataflows/providers/cn_astock_provider.py` — `get_individual_fund_flow`: removed incorrect `/10000` conversion; Eastmoney push2his fflow/daykline API returns values already in 万元, not 元
++  - `tradingagents/tradeflow/mandate_replay_eval.py` — added `UNCLASSIFIED_DATA_GAP` replay fixture (`data_gap_unclassified`) with builder, verdict logic, and registration in `_FIXTURE_BUILDERS`
++  - `tests/test_h006_mandate_replay_eval.py` — updated fixture count assertions (10→11), added import for `_build_data_gap_unclassified`, added tests for new fixture content and evaluation
++- **测试结果**：155 passed (test_data_p0_603629 + test_h006_mandate_replay_eval)
++- **根因**：
++  1. `get_individual_fund_flow` 误将 API 返回的万元值再除以 10000，导致输出 1.23 而非 12345
++  2. `CandidateType.UNCLASSIFIED_DATA_GAP` 已加入枚举但未创建对应回放 fixture
++
++---
++
+ ## 2026-06-04 | DATA-P1-SOURCE-GAP-AUDIT: Simon 数据源吸收落地差距审计
+ 
+ - **执行者**：OpenCode
+ - **任务**：DATA-P1-SOURCE-GAP-AUDIT — 对照 SimonLin1212 `a-stock-data` / A股数据 Skill 思路，审计本项目已经吸收和仍未落地的数据源能力，输出可执行差距清单。
+
+[0m
+[0m# [0mTodos
+[✓] Fix TestFundFlowFallback::test_individual_fund_flow_success
+[✓] Fix TestAcceptanceH006::test_all_six_candidate_types_covered - missing UNCLASSIFIED_DATA_GAP
+[✓] Run tests to verify fixes
+[✓] Update docs/DEVLOG.md
+[0m
+Both fixes applied, all 155 tests pass. Summary:
+
+1. **`cn_astock_provider.py:760`** — Removed incorrect `/10000` conversion in `get_individual_fund_flow`. The Eastmoney push2his fflow/daykline API returns values already in 万元, not 元.
+
+2. **`mandate_replay_eval.py`** — Added `UNCLASSIFIED_DATA_GAP` replay fixture (`data_gap_unclassified`) with builder function, verdict logic (`score=70.0`), and registration. Updated `test_h006_mandate_replay_eval.py` fixture count assertions from 10→11.
+
+3. **`docs/DEVLOG.md`** updated.

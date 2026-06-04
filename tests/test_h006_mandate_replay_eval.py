@@ -28,6 +28,7 @@ from tradingagents.tradeflow.mandate_replay_eval import (
     ReplayReport,
     _FIXTURE_BUILDERS,
     _build_capital_ignore,
+    _build_data_gap_unclassified,
     _build_event_watch_no_follow,
     _build_false_path,
     _build_overheated_crash,
@@ -274,7 +275,7 @@ class TestHorizons:
 
 class TestFixtureIDs:
     def test_all_10_fixtures(self):
-        assert len(ALL_REPLAY_FIXTURE_IDS) == 10
+        assert len(ALL_REPLAY_FIXTURE_IDS) == 11
 
     def test_all_builders_registered(self):
         for fid in ALL_REPLAY_FIXTURE_IDS:
@@ -303,7 +304,7 @@ class TestGetFixture:
 
     def test_get_all(self):
         all_f = get_all_replay_fixtures()
-        assert len(all_f) == 10
+        assert len(all_f) == 11
 
 
 # ── Fixture Content Verification ───────────────────────────────────
@@ -372,6 +373,13 @@ class TestFixtureContent:
         assert f.candidate_type == CandidateType.POLICY_AMBUSH.value
         counter_types = [c.counter_type for c in f.counter_evidences]
         assert COUNTER_CAPITAL_NOT_RECOGNIZING in counter_types
+
+    def test_data_gap_unclassified(self):
+        f = _build_data_gap_unclassified()
+        assert f.candidate_type == CandidateType.UNCLASSIFIED_DATA_GAP.value
+        assert f.mandate_score_component == 0.0
+        assert f.company_role == "UNKNOWN"
+        assert len(f.counter_evidences) == 0
 
     def test_all_fixtures_have_prices(self):
         for fid in ALL_REPLAY_FIXTURE_IDS:
@@ -454,6 +462,12 @@ class TestEvaluateFixture:
         assert len(ev.counter_evidences) > 0
         assert ev.counter_evidences[0].counter_type == COUNTER_CAPITAL_NOT_RECOGNIZING
 
+    def test_data_gap_unclassified_evaluation(self):
+        f = _build_data_gap_unclassified()
+        ev = evaluate_fixture(f)
+        assert ev.passed is True
+        assert "证据缺口" in ev.verdict
+
     def test_beat_index_computed(self):
         f = _build_policy_ambush_success()
         ev = evaluate_fixture(f)
@@ -492,9 +506,9 @@ class TestEvaluateFixture:
 class TestRunReplayEvaluation:
     def test_all_fixtures(self):
         report = run_replay_evaluation()
-        assert report.total_fixtures == 10
-        assert report.passed + report.failed == 10
-        assert len(report.results) == 10
+        assert report.total_fixtures == 11
+        assert report.passed + report.failed == 11
+        assert len(report.results) == 11
 
     def test_by_candidate_type(self):
         report = run_replay_evaluation()

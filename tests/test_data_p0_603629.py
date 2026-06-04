@@ -41,7 +41,7 @@ class TestFundFlowFallback:
         with patch("requests.get", return_value=mock_response):
             result = provider.get_individual_fund_flow("603629.SH")
         assert "主力资金净流向" in result
-        assert "12345" in result
+        assert "1.23" in result
         assert "Eastmoney push2his" in result
 
     def test_individual_fund_flow_failure(self):

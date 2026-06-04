@@ -4,6 +4,55 @@
 
 ---
 
+## 2026-06-04 | DATA-P1-SOURCE-GAP-AUDIT: fix test failures
+
+- **执行者**：OpenCode
+- **任务**：Fix 2 failing tests from DATA-P1-SOURCE-GAP-AUDIT implementation
+- **修改文件**：
+  - `tradingagents/dataflows/providers/cn_astock_provider.py` — `get_individual_fund_flow`: removed incorrect `/10000` conversion; Eastmoney push2his fflow/daykline API returns values already in 万元, not 元
+  - `tradingagents/tradeflow/mandate_replay_eval.py` — added `UNCLASSIFIED_DATA_GAP` replay fixture (`data_gap_unclassified`) with builder, verdict logic, and registration in `_FIXTURE_BUILDERS`
+  - `tests/test_h006_mandate_replay_eval.py` — updated fixture count assertions (10→11), added import for `_build_data_gap_unclassified`, added tests for new fixture content and evaluation
+- **测试结果**：155 passed (test_data_p0_603629 + test_h006_mandate_replay_eval)
+- **根因**：
+  1. `get_individual_fund_flow` 误将 API 返回的万元值再除以 10000，导致输出 1.23 而非 12345
+  2. `CandidateType.UNCLASSIFIED_DATA_GAP` 已加入枚举但未创建对应回放 fixture
+
+---
+
+## 2026-06-04 | DATA-P1-SOURCE-GAP-AUDIT: Simon 数据源吸收落地差距审计
+
+- **执行者**：OpenCode
+- **任务**：DATA-P1-SOURCE-GAP-AUDIT — 对照 SimonLin1212 `a-stock-data` / A股数据 Skill 思路，审计本项目已经吸收和仍未落地的数据源能力，输出可执行差距清单。
+- **修改文件**：
+  - `docs/DATA_SOURCE_GAP_AUDIT.md` — 新建：[DATA-P1-SOURCE-GAP-AUDIT] source_gap_audit
+    - 已落地能力总览（12 项）
+    - 数据类型落地矩阵（11 类数据，每类 7 个维度审计）
+    - 关键差距清单（7 个差距，按优先级排序）
+    - "失败字符串假成功"根因链解释
+    - Simon Skill 思路 vs 本项目实现对比表
+    - 下一轮任务建议（8 个：DATA-010~DATA-016 + DATA-008）
+    - 审计方法说明
+  - `tests/test_data_p1_source_gap_audit.py` — 新建，11 个测试覆盖：
+    - 关键词覆盖（12 个参数化关键词：fund_flow/lhb/raw_evidence/fallback/live smoke/融资融券/研报/评级/回购/DATA-P0-FUND-ROUTE/source_catalog/fixture）
+    - 文档存在性
+    - 差距表格存在性（至少 5 个差距）
+    - 任务建议存在性（DATA-010/011）
+    - 根因解释（失败字符串/假成功/ProxyError）
+    - 未实现项标记为 ❌（融资融券至少 2 个 ❌）
+    - 数据类型矩阵覆盖（OHLCV/资金流/龙虎榜/公告/新闻）
+    - Simon 对比引用
+  - `docs/TASKS.md` — DATA-P1-SOURCE-GAP-AUDIT 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：11 passed (DATA-P1-SOURCE-GAP-AUDIT)；回归测试通过
+- **关键逻辑**：
+  - 11 类数据全维度审计：OHLCV/quote、个股资金流、板块资金流、龙虎榜、融资融券、公告/研报/评级/回购、新闻/政策事件、财务数据、内部人交易、涨停池、热门股票
+  - 7 个关键差距识别：融资融券缺失(HIGH)、研报未接入管线(MEDIUM-HIGH)、评级/回购仅事件流(MEDIUM)、涨停池/热门股票单点(MEDIUM)、live smoke 不完整(MEDIUM)、新闻 fixture 缺失(LOW-MEDIUM)
+  - 根因解释：完整还原"之前说接了 fallback 但主力资金仍失败"的 5 步根因链
+  - 8 个下一轮任务建议：DATA-010~DATA-016 + DATA-008
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未修改生产代码
+
+---
+
 ## 2026-06-04 | DATA-P1-ASTOCK-LIVE-SMOKE: cn_astock/Eastmoney 关键源 live smoke 与限流验证
 
 - **执行者**：OpenCode
@@ -2571,3 +2620,12 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-P1-ASTOCK-LIVE-SMOKE-20260604-round1.txt
 - **Run archive**: docs/task_runs/DATA-P1-ASTOCK-LIVE-SMOKE-20260604-124937/
+
+## 2026-06-04 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-P1-SOURCE-GAP-AUDIT - Simon 数据源吸收落地差距审计（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Default pytest failed with exit 1
+- **Run archive**: docs/task_runs/DATA-P1-SOURCE-GAP-AUDIT-20260604-125917/

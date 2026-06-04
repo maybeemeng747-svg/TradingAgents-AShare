@@ -300,6 +300,7 @@ FIXTURE_OVERHEATED_CRASH = "overheated_crash"
 FIXTURE_POLICY_FADE = "policy_fade"
 FIXTURE_FALSE_PATH = "false_path"
 FIXTURE_CAPITAL_IGNORE = "capital_ignore"
+FIXTURE_DATA_GAP_UNCLASSIFIED = "data_gap_unclassified"
 
 ALL_REPLAY_FIXTURE_IDS = [
     FIXTURE_POLICY_AMBUSH_SUCCESS,
@@ -312,6 +313,7 @@ ALL_REPLAY_FIXTURE_IDS = [
     FIXTURE_POLICY_FADE,
     FIXTURE_FALSE_PATH,
     FIXTURE_CAPITAL_IGNORE,
+    FIXTURE_DATA_GAP_UNCLASSIFIED,
 ]
 
 
@@ -679,6 +681,37 @@ def _build_capital_ignore() -> ReplayFixture:
     )
 
 
+def _build_data_gap_unclassified() -> ReplayFixture:
+    return ReplayFixture(
+        fixture_id=FIXTURE_DATA_GAP_UNCLASSIFIED,
+        description="证据缺口未分类——关键数据源缺失导致无法确认候选类型，走势不明",
+        symbol="600xxx.SH",
+        candidate_type=CandidateType.UNCLASSIFIED_DATA_GAP.value,
+        mandate_score_component=0.0,
+        beneficiary_score_component=0.0,
+        ambush_score=0.0,
+        mandate_topic="",
+        company_role="UNKNOWN",
+        price_snapshot=PriceSnapshot(
+            entry_price=15.0,
+            prices={5: 15.2, 10: 14.8, 20: 15.0, 60: 14.5},
+            index_prices={0: 3100.0, 5: 3105.0, 10: 3115.0, 20: 3125.0, 60: 3150.0},
+            industry_prices={0: 4000.0, 5: 4010.0, 10: 4020.0, 20: 4035.0, 60: 4060.0},
+        ),
+        post_event=PostEventCheck(
+            policy_reconfirmed=False,
+            announcement_fulfilled=False,
+            trend_confirmed=False,
+            risk_counter_evidence=False,
+            policy_persistence_score=0.0,
+            benefit_realization_score=0.0,
+            details="关键数据源缺失(fund_flow/news)，无法分类候选类型",
+        ),
+        counter_evidences=[],
+        tags=["data_gap", "unclassified"],
+    )
+
+
 _FIXTURE_BUILDERS = {
     FIXTURE_POLICY_AMBUSH_SUCCESS: _build_policy_ambush_success,
     FIXTURE_POLICY_AMBUSH_COUNTER: _build_policy_ambush_counter,
@@ -690,6 +723,7 @@ _FIXTURE_BUILDERS = {
     FIXTURE_POLICY_FADE: _build_policy_fade,
     FIXTURE_FALSE_PATH: _build_false_path,
     FIXTURE_CAPITAL_IGNORE: _build_capital_ignore,
+    FIXTURE_DATA_GAP_UNCLASSIFIED: _build_data_gap_unclassified,
 }
 
 
@@ -805,6 +839,10 @@ def _compute_verdict(fixture: ReplayFixture) -> tuple[str, float]:
         else:
             verdict = "neutral:过热规避但未暴跌"
             score = 60.0
+
+    elif ct == CandidateType.UNCLASSIFIED_DATA_GAP.value:
+        verdict = "confirmed:证据缺口无法分类(符合预期)"
+        score = 70.0
 
     else:
         verdict = "unknown:未知候选类型"

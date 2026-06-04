@@ -51,7 +51,7 @@
 25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
 26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
 27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
-28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，ready，依赖 DATA-001/DATA-004 ✓）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
 29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，in_progress — claimed PERF-003-20260602-200127）。
 30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
 31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready，依赖 DATA-004/DATA-006 ✓）。
@@ -81,7 +81,7 @@
 8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
 9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
 10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
-11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，ready）。
+11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
 12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready）。
 13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready）。
 14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，ready）。
@@ -614,7 +614,7 @@
 ### DATA-P1-SOURCE-GAP-AUDIT: Simon 数据源吸收落地差距审计（P1）
 - **描述**：对照 SimonLin1212 `a-stock-data` / A股数据 Skill 思路，审计本项目已经吸收和仍未落地的数据源能力，输出可执行差距清单。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/DATA-P1-SOURCE-GAP-AUDIT-20260604-125917
 - **前置条件**：`DATA-001`、`DATA-004` 完成 ✓。
 - **背景**：
   - 已落地部分：source_catalog、cn_astock provider 注册、raw_evidence contract、fixture replay、数据源日报、事件源归一化。
