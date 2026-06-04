@@ -522,7 +522,7 @@
 ### DATA-P0-FUND-ROUTE: 主力资金 fallback 假成功与单位修复（P0）
 - **描述**：修复主力资金 AKShare 失败字符串被路由层误判为成功的问题，确保 Eastmoney/cn_astock fallback 真正生效，并统一资金流单位。
 - **优先级**：P0
-- **状态**：in_progress — claimed DATA-P0-FUND-ROUTE-20260604-121846
+- **状态**：done — commit c0bc042
 - **背景**：
   - 现场验证 `route_to_vendor("get_individual_fund_flow", "603629.SH")` 命中 `cn_akshare` 后返回 `ProxyError` 失败字符串，路由层仍记录 `vendor=cn_akshare status=hit`，没有继续 fallback 到 `cn_astock`。
   - 直接调用 `CnAstockProvider.get_individual_fund_flow("603629.SH")` 可取得 Eastmoney push2his 近 20 日资金流，说明不是股票天然缺主力资金，而是 fallback 链路被失败字符串截断。
