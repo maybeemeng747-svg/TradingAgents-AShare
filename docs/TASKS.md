@@ -56,7 +56,7 @@
 30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
 31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
 32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
-33. `H-009`：昊天候选反证/过热降权校准（P1，ready，依赖 H-006/V-004 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，done，依赖 H-006/V-004 ✓）。
 34. `H-010`：政策主题生命周期与版本状态注册表（P1，ready，依赖 H-002/H-006 ✓）。
 35. `H-011`：候选矛盾证据与负面清单解释（P2，ready，依赖 H-009 ✓）。
 36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，ready，依赖 H-007/UI-006 ✓）。
@@ -1134,7 +1134,7 @@
 ### H-009: 昊天候选反证/过热降权校准（P1）
 - **描述**：把 H-006 回放中的反证信号沉淀为评分校准规则，重点降低“抄在半山腰”的候选：过热、政策弱兑现、公司路径伪、资金不认、风险事件未消化。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/H-009-20260604-135113
 - **前置条件**：`H-006`、`V-004` 完成 ✓。
 - **执行约束**：
   - 不调用 LLM。
@@ -1163,7 +1163,7 @@
   - 过热样本不得进入 `POLICY_AMBUSH` A 层。
   - 政策强但公司路径弱的样本降级到观察。
   - 明确公司受益且未过热的样本不被误杀。
-  - `pytest tests/test_h006_mandate_replay*.py tests/test_h004_mandate_ambush*.py tests/test_v004_mandate_e2e_smoke.py -q` 或等价测试通过。
+  - `pytest tests/test_h006_mandate_replay_eval.py tests/test_h004_ambush_score.py tests/test_v004_mandate_e2e_smoke.py tests/test_h009_counter_evidence_calibration.py -q` 或等价测试通过。
 - **代码标注要求**：`# [H-009] mandate_counter_evidence_calibration`
 
 ### H-010: 政策主题生命周期与版本状态注册表（P1）

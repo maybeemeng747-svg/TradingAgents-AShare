@@ -151,6 +151,10 @@ def _row_to_candidate_item(row: sqlite3.Row) -> dict:
         "action_tier": _rget(row, "action_tier", "scan"),  # [TF-UX-004]
         "trade_priority_score": _rget(row, "trade_priority_score", 0.0) or 0.0,  # [TF-UX-004]
         "action_tier_reason": _rget(row, "action_tier_reason", ""),  # [TF-UX-004]
+        "counter_evidence": _parse_json(_rget(row, "counter_evidence_json"), []),  # [H-009]
+        "overheat_flags": _parse_json(_rget(row, "overheat_flags_json"), []),  # [H-009]
+        "downgrade_reasons": _parse_json(_rget(row, "downgrade_reasons_json"), []),  # [H-009]
+        "what_would_change_mind": _parse_json(_rget(row, "what_would_change_mind_json"), []),  # [H-009]
         "created_at": _rget(row, "created_at", ""),
         "updated_at": _rget(row, "updated_at", ""),
     }
@@ -775,6 +779,7 @@ def get_data_health(tf_db_path: str = "") -> dict:
         "latest_observe_check_time": latest_observe_check_time,  # [TF-OBS-001]
         "latest_signal_time": latest_signal_time,  # [TF-OBS-001]
         "evidence_contract_available": True,  # [DATA-004] raw_evidence_contract
+        "evidence_coverage_audit_available": True,  # [DATA-007] evidence_coverage_audit
         "runtime_tier_meta": _tradeflow_meta("tradeflow_data_health"),  # [PERF-001]
     }
 
@@ -1007,6 +1012,91 @@ def _recompute_action_tiers(
             conn.commit()
         except Exception:
             pass
+
+
+# [DATA-007] evidence_coverage_audit
+def get_evidence_audit(trade_date: str, tf_db_path: str = "") -> dict:
+    """Run evidence coverage audit on all candidates for trade_date.
+
+    Reads candidate metadata from tradeflow.db, runs the evidence coverage
+    auditor on each candidate, and returns a summary.
+    Does NOT call LLM or live data sources.
+    """
+    from tradingagents.dataflows.evidence_coverage_audit import (
+        audit_candidate_evidence,
+        build_evidence_coverage_section,
+    )
+
+    _fast_meta = _tradeflow_meta("tradeflow_evidence_audit")
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {
+            "status": "no_data",
+            "trade_date": trade_date,
+            "audits": [],
+            "credibilities": [],
+            "summary_markdown": "",
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    try:
+        columns = _table_columns(conn, "tradeflow_candidates")
+        extra_conditions = ["status = 'active'" if "status" in columns else None]
+        extra_conditions = [c for c in extra_conditions if c is not None]
+        rows = _query_by_date_or_effective(
+            conn, "tradeflow_candidates", trade_date,
+            extra_conditions=extra_conditions if extra_conditions else None,
+        )
+
+        audits = []
+        credibilities = []
+        for row in rows:
+            data_comp = float(row.get("data_completeness", 0) or 0)
+            tf_comp = float(row.get("tradeflow_data_completeness", 0) or 0)
+            cand_type = str(row.get("candidate_type", "") or "")
+            missing_fields = json.loads(row.get("missing_data_fields_json", "[]") or "[]")
+            gate_applied = bool(row.get("evidence_gate_applied", 0))
+            ff_verified = bool(row.get("fund_flow_unit_verified", 0))
+            symbol = str(row.get("symbol", ""))
+
+            has_policy = cand_type in ("POLICY_AMBUSH", "POLICY_CONFIRM", "PSEUDO_POLICY")
+            has_tech = cand_type == "TECH_TRADE"
+            has_realtime = tf_comp >= 0.5
+
+            cred = audit_candidate_evidence(
+                candidate_data_completeness=data_comp,
+                candidate_tradeflow_completeness=tf_comp,
+                candidate_type=cand_type,
+                missing_data_fields=missing_fields,
+                evidence_gate_applied=gate_applied,
+                fund_flow_unit_verified=ff_verified,
+                has_policy_evidence=has_policy,
+                has_tech_signal=has_tech,
+                has_realtime_quote=has_realtime,
+            )
+            cred.symbol = symbol
+
+            if cred.evidence_audit:
+                audits.append(cred.evidence_audit)
+            credibilities.append(cred)
+
+        summary_md = build_evidence_coverage_section(
+            audits=audits if audits else None,
+            credibilities=credibilities if credibilities else None,
+        )
+
+        return {
+            "status": "ok",
+            "trade_date": trade_date,
+            "total_candidates": len(rows),
+            "audits_count": len(audits),
+            "credibilities_count": len(credibilities),
+            "credibilities": [c.to_dict() for c in credibilities],
+            "summary_markdown": summary_md,
+            "runtime_tier_meta": _fast_meta,
+        }
+    finally:
+        conn.close()
 
 
 # [TF-UX-003] post_market_review

@@ -474,6 +474,13 @@ export interface WatchlistItem {
     name: string
     sort_order: number
     notes: string | null
+    // [DATA-009] watchlist_notes_persistence — structured note fields
+    topic: string | null
+    benefit_score: number | null
+    consensus_score: number | null
+    expected_window: string | null
+    evidence_gap: string | null
+    watchlist_note_suggested: string | null
     created_at: string
     has_scheduled: boolean
 }

@@ -33,6 +33,7 @@ from .evidence_gate import compute_evidence_completeness, apply_evidence_gate, E
 from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
 from .symbol_utils import normalize_tradeflow_symbol, resolve_tradeflow_name, symbol_bare_code, _looks_like_code  # [UI-008] tradeflow_field_normalization  [TF-P0-001] runtime_schema_name_observe_fix
 from .ambush_score import compute_ambush_score, AmbushScoreResult  # [H-004] mandate_ambush_score
+from .counter_evidence_calibration import evaluate_counter_evidence, CounterEvidenceCalibrationResult  # [H-009] mandate_counter_evidence_calibration
 from .mandate_ta_queue_router import route_to_research_queue, QueueRouteResult  # [H-007] mandate_ta_queue_router
 from .mandate_watchlist_note import generate_watchlist_note, WatchlistNoteResult  # [H-008] mandate_watchlist_note
 
@@ -186,6 +187,11 @@ _MISSING_COLUMNS = [
     ("action_tier", "TEXT DEFAULT 'scan'"),
     ("trade_priority_score", "REAL DEFAULT 0.0"),
     ("action_tier_reason", "TEXT DEFAULT ''"),
+    # [H-009] mandate_counter_evidence_calibration
+    ("counter_evidence_json", "TEXT DEFAULT '[]'"),
+    ("overheat_flags_json", "TEXT DEFAULT '[]'"),
+    ("downgrade_reasons_json", "TEXT DEFAULT '[]'"),
+    ("what_would_change_mind_json", "TEXT DEFAULT '[]'"),
 ]
 
 
@@ -1004,6 +1010,55 @@ def evaluate_symbol(
         "ambush_reasons": ambush_result.ambush_reasons,
     }
 
+    # [H-009] mandate_counter_evidence_calibration — evaluate counter-evidence and apply caps
+    ce_result: CounterEvidenceCalibrationResult = evaluate_counter_evidence(
+        candidate_type=candidate.candidate_type,
+        overheat_penalty=ambush_result.overheat_penalty,
+        narrative_score=candidate.narrative_score,
+        game_balance=candidate.game_balance,
+        risk_flags=candidate.risk_flags,
+        risk_penalty=candidate.risk_penalty,
+        policy_tags=candidate.policy_tags,
+        version_score=candidate.version_score,
+        has_policy_document=any(
+            ref.get("source_level", "") in ("CENTRAL", "STATE_COUNCIL", "MINISTRY")
+            for ref in candidate.policy_evidence_refs
+        ),
+        unique_dates=len(set(
+            ref.get("date", "")
+            for ref in candidate.policy_evidence_refs
+            if ref.get("date")
+        )),
+        is_noise=False,
+        company_role=candidate.company_role,
+        beneficiary_path=candidate.beneficiary_path,
+        has_company_evidence=bool(candidate.company_role and candidate.company_role not in ("", "UNKNOWN")),
+        has_new_policy_evidence=any(
+            ref.get("source_level", "") in ("CENTRAL", "STATE_COUNCIL", "MINISTRY")
+            for ref in candidate.policy_evidence_refs
+        ),
+        has_new_company_evidence=bool(candidate.beneficiary_path and candidate.company_role not in ("", "UNKNOWN", "CONCEPT_ONLY")),
+        fund_flow_anomaly_score=candidate.fund_flow_anomaly_score,
+        fund_flow_anomaly_tags=candidate.fund_flow_anomaly_tags,
+        fund_flow_unit_verified=candidate.fund_flow_unit_verified,
+        resonance_count=candidate.resonance_count,
+    )
+    candidate.counter_evidence = ce_result.counter_evidence
+    candidate.overheat_flags = ce_result.overheat_flags
+    candidate.downgrade_reasons = ce_result.downgrade_reasons
+    candidate.what_would_change_mind = ce_result.what_would_change_mind
+    if ce_result.ambush_score_cap < candidate.ambush_score:
+        candidate.ambush_score = ce_result.ambush_score_cap
+    if ce_result.max_downgrade_tier and candidate.tier:
+        from .counter_evidence_calibration import _worse_tier
+        if _worse_tier("", ce_result.max_downgrade_tier) == ce_result.max_downgrade_tier:
+            tier_order = {"A": 0, "B": 1, "C": 2}
+            if tier_order.get(ce_result.max_downgrade_tier, 1) > tier_order.get(candidate.tier, 0):
+                old_tier = candidate.tier
+                candidate.tier = ce_result.max_downgrade_tier
+                candidate.tier_reason = f"[H-009反证降级]{ce_result.max_downgrade_tier}层; {candidate.tier_reason}"
+    candidate.evidence["counter_evidence_calibration"] = ce_result.to_dict()
+
     # [H-007] mandate_ta_queue_router — route candidate to research queue
     queue_result: QueueRouteResult = route_to_research_queue(
         candidate_type=candidate.candidate_type,
@@ -1104,8 +1159,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "research_queue, research_intent, research_route_reason, "
             "watchlist_note, watchlist_note_suggested, watchlist_topic, "
             "watchlist_benefit_score, watchlist_consensus_score, watchlist_evidence_gap_json, "
+            "counter_evidence_json, overheat_flags_json, downgrade_reasons_json, what_would_change_mind_json, "
             "created_at, updated_at) "
-            "VALUES ({}) ".format(",".join(["?"] * 91))
+            "VALUES ({}) ".format(",".join(["?"] * 95))
             + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
             "trigger_price=excluded.trigger_price, "
@@ -1182,6 +1238,10 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "watchlist_benefit_score=excluded.watchlist_benefit_score, "
             "watchlist_consensus_score=excluded.watchlist_consensus_score, "
             "watchlist_evidence_gap_json=excluded.watchlist_evidence_gap_json, "
+            "counter_evidence_json=excluded.counter_evidence_json, "
+            "overheat_flags_json=excluded.overheat_flags_json, "
+            "downgrade_reasons_json=excluded.downgrade_reasons_json, "
+            "what_would_change_mind_json=excluded.what_would_change_mind_json, "
             "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
@@ -1228,6 +1288,8 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
                 row["watchlist_note"], row["watchlist_note_suggested"], row["watchlist_topic"],
                 row["watchlist_benefit_score"], row["watchlist_consensus_score"],
                 row["watchlist_evidence_gap_json"],
+                row["counter_evidence_json"], row["overheat_flags_json"],
+                row["downgrade_reasons_json"], row["what_would_change_mind_json"],
                 candidate.created_at, row["updated_at"],
             ),
         )

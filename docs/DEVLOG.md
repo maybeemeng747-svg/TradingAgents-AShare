@@ -4,6 +4,82 @@
 
 ---
 
+## 2026-06-04 | H-009 fix: 修正验收命令中不存在的 test_h004_mandate_ambush 文件引用
+
+- **执行者**：OpenCode
+- **任务**：H-009 fix — 原验收命令 `pytest tests/test_h006_mandate_replay*.py tests/test_h004_mandate_ambush*.py tests/test_v004_mandate_e2e_smoke.py -q` 中 `test_h004_mandate_ambush*.py` 文件不存在导致 `ERROR: file or directory not found`。
+- **修改文件**：
+  - `docs/TASKS.md` — H-009 验收命令从 `tests/test_h004_mandate_ambush*.py` 更正为 `tests/test_h004_ambush_score.py tests/test_h009_counter_evidence_calibration.py`。
+- **测试结果**：300 passed in 11.46s
+
+---
+
+## 2026-06-04 | H-009: 昊天候选反证/过热降权校准
+
+- **执行者**：OpenCode
+- **任务**：H-009 — 把 H-006 回放中的反证信号沉淀为评分校准规则，重点降低"抄在半山腰"的候选。
+- **修改文件**：
+  - `tradingagents/tradeflow/counter_evidence_calibration.py` — **新建**：[H-009] mandate_counter_evidence_calibration
+    - 6 个反证规则：`overheated_price_position` / `policy_signal_decay` / `weak_company_benefit_path` / `funding_not_confirmed` / `negative_event_unresolved` / `crowded_consensus_risk`
+    - `CounterEvidenceFlag` 数据类：rule / triggered / severity / description
+    - `CounterEvidenceCalibrationResult` 数据类：counter_evidence / overheat_flags / downgrade_reasons / what_would_change_mind / max_downgrade_tier / ambush_score_cap
+    - `evaluate_counter_evidence()` 主函数：评估全部 6 个规则，按候选类型执行差异化降权
+    - `_worse_tier()` 辅助函数：tier 降级比较
+    - `render_counter_evidence_summary()` Markdown 渲染
+    - POLICY_AMBUSH 特殊约束：仅媒体热度无政策原文→cap 45；CONCEPT_ONLY/UNKNOWN→不得 A 层 + cap 35
+  - `tradingagents/tradeflow/schemas.py` — [H-009]
+    - `Candidate` 新增 4 字段：`counter_evidence` / `overheat_flags` / `downgrade_reasons` / `what_would_change_mind`
+    - `to_db_row()` 新增 4 个 JSON 列输出
+    - `from_db_row()` 新增 4 个 JSON 列解析
+  - `tradingagents/tradeflow/candidate_engine.py` — [H-009]
+    - `_MISSING_COLUMNS` 新增 4 列：counter_evidence_json / overheat_flags_json / downgrade_reasons_json / what_would_change_mind_json
+    - `evaluate_symbol()` 新增反证评估步骤（在 H-004 ambush_score 之后、H-007 TA queue router 之前）
+    - 反证评估结果写入 candidate 字段和 evidence dict
+    - ambush_score_cap 生效时覆盖 candidate.ambush_score
+    - max_downgrade_tier 生效时降级 candidate.tier
+    - `save_candidate()` INSERT 列数从 91→95，ON CONFLICT UPDATE 新增 4 列
+  - `tradingagents/tradeflow/mandate_replay_eval.py` — [H-009]
+    - 新增 2 个 replay fixture：
+      - `overheated_weak_path`：CONCEPT_ONLY + crowded + 无政策原文 → 反证降权触发
+      - `strong_policy_not_overkilled`：LEADER + 政策 3 日连续 + 实质订单 → 不应被误杀
+    - ALL_REPLAY_FIXTURE_IDS 从 11→13，_FIXTURE_BUILDERS 注册 2 个新 builder
+  - `api/tradeflow_schemas.py` — [H-009]
+    - `TradeFlowCandidateItem` 新增 4 字段：counter_evidence / overheat_flags / downgrade_reasons / what_would_change_mind
+  - `api/services/tradeflow_service.py` — [H-009]
+    - `_row_to_candidate_item()` 新增 4 个字段映射
+  - `tests/test_h009_counter_evidence_calibration.py` — 新建，77 个测试覆盖：
+    - `TestCounterEvidenceFlag` (3): to_dict / default / severity_rounded
+    - `TestCounterEvidenceCalibrationResult` (3): to_dict / default / counter_flags
+    - `TestConstants` (3): six_rules / labels_match / rule_ids
+    - `TestWorseTier` (6): empty / both / a_vs_b / b_vs_c / same
+    - `TestRuleOverheatedPricePosition` (6): high_overheat / with_evidence / narrative_crowded / low / bad_game / neutral
+    - `TestRulePolicySignalDecay` (5): noise / no_doc_single_low / no_doc_single_high / has_doc / multi_date
+    - `TestRuleWeakCompanyBenefitPath` (6): concept_only / unknown / no_role / leader / concept_evidence / no_path
+    - `TestRuleFundingNotConfirmed` (4): net_outflow_unverified / net_outflow_verified / no_signal / positive
+    - `TestRuleNegativeEventUnresolved` (5): inquiry / financial / heavy_penalty / no_risk / low_penalty
+    - `TestRuleCrowdedConsensus` (4): crowded_resonance / fragile / narrative / favorable
+    - `TestEvaluateCounterEvidence` (8): no_issues / overheated / concept_only / media_only / negative_risk / tech_trade / what_would_change / no_duplicates
+    - `TestAcceptanceOverheat` (3): overheated_no_a / strong_path_weak / strong_not_overkilled
+    - `TestRenderSummary` (2): no_issues / with_issues
+    - `TestH009ReplayFixtures` (6): exists / includes / replay / full_replay
+    - `TestDBSchemaIntegration` (3): roundtrip / from_db_row / save_and_load
+    - `TestAmbushScoreWithCounterEvidence` (2): concept_only / strong_leader
+    - `TestAcceptanceH009` (9): 全部验收标准
+  - `tests/test_h006_mandate_replay_eval.py` — 更新 fixture count 断言（11→13），保持 H-006 回归通过
+  - `docs/TASKS.md` — H-009 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：77 passed (H-009)；300 passed (H-006+H-004+V-004+H-009 全部)；185 passed (tradeflow + API smoke)；0 failed；npm run build 通过
+- **关键逻辑**：
+  - 6 规则反证评估：每位候选经过 6 个独立规则检查，触发时产出 CounterEvidenceFlag（severity 0-1）
+  - POLICY_AMBUSH 降权约束：高位连续放量无新证据→B 层；仅媒体无政策原文→cap 45；CONCEPT_ONLY/UNKNOWN→B 层 + cap 35
+  - ambush_score_cap 生效：被反证降权后，ambush_score 不超过 cap 值
+  - max_downgrade_tier 生效：反证触发后 tier 降级（A→B 或 A/B→C）
+  - 可解释输出：4 个字段（counter_evidence / overheat_flags / downgrade_reasons / what_would_change_mind）全程可追溯
+  - 2 个新 replay fixture：overheated_weak_path（反证触发验证）+ strong_policy_not_overkilled（不误杀验证）
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-04 | DATA-009: 自选备注与截图识别字段持久化回归保护
 
 - **执行者**：OpenCode
@@ -2802,3 +2878,12 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-009-20260604-round1.txt
 - **Run archive**: docs/task_runs/DATA-009-20260604-134042/
+
+## 2026-06-04 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-009 - 昊天候选反证/过热降权校准（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Test failed: pytest tests/test_h006_mandate_replay*.py tests/test_h004_mandate_ambush*.py tests/test_v004_mandate_e2e_smoke.py -q (exit 4)
+- **Run archive**: docs/task_runs/H-009-20260604-135113/

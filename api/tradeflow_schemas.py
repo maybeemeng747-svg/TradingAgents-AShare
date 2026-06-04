@@ -97,6 +97,10 @@ class TradeFlowCandidateItem(BaseModel):
     action_tier: str = "scan"  # [TF-UX-004] action_tier_scorer
     trade_priority_score: float = 0.0  # [TF-UX-004] action_tier_scorer
     action_tier_reason: str = ""  # [TF-UX-004] action_tier_scorer
+    counter_evidence: List[dict] = Field(default_factory=list)  # [H-009] mandate_counter_evidence_calibration
+    overheat_flags: List[str] = Field(default_factory=list)  # [H-009]
+    downgrade_reasons: List[str] = Field(default_factory=list)  # [H-009]
+    what_would_change_mind: List[str] = Field(default_factory=list)  # [H-009]
     created_at: str = ""
     updated_at: str = ""
 
@@ -256,6 +260,7 @@ class TradeFlowDataHealthResponse(BaseModel):
     latest_observe_check_time: Optional[str] = None
     latest_signal_time: Optional[str] = None
     evidence_contract_available: bool = False  # [DATA-004] raw_evidence_contract
+    evidence_coverage_audit_available: bool = False  # [DATA-007] evidence_coverage_audit
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
 
 
@@ -297,3 +302,27 @@ class TradeFlowReviewGenerateResponse(BaseModel):
     trade_date: str = ""
     message: str = ""
     review: Optional[Dict[str, Any]] = None
+
+
+# [DATA-007] evidence_coverage_audit
+class EvidenceCredibilityItem(BaseModel):
+    symbol: str = ""
+    candidate_type: str = ""
+    evidence_coverage: float = 0.0
+    evidence_quality_level: str = "UNKNOWN"
+    tier_allowed: str = ""
+    tier_restricted: bool = False
+    need_deep_ta_allowed: bool = True
+    credibility_level: str = "UNKNOWN"
+    credibility_reasons: List[str] = Field(default_factory=list)
+
+
+class TradeFlowEvidenceAuditResponse(BaseModel):
+    status: str = "ok"
+    trade_date: str = ""
+    total_candidates: int = 0
+    audits_count: int = 0
+    credibilities_count: int = 0
+    credibilities: List[EvidenceCredibilityItem] = Field(default_factory=list)
+    summary_markdown: str = ""
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)

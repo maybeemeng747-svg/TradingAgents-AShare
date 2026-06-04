@@ -275,7 +275,7 @@ class TestHorizons:
 
 class TestFixtureIDs:
     def test_all_10_fixtures(self):
-        assert len(ALL_REPLAY_FIXTURE_IDS) == 11
+        assert len(ALL_REPLAY_FIXTURE_IDS) == 13
 
     def test_all_builders_registered(self):
         for fid in ALL_REPLAY_FIXTURE_IDS:
@@ -304,7 +304,7 @@ class TestGetFixture:
 
     def test_get_all(self):
         all_f = get_all_replay_fixtures()
-        assert len(all_f) == 11
+        assert len(all_f) == 13
 
 
 # ── Fixture Content Verification ───────────────────────────────────
@@ -506,9 +506,9 @@ class TestEvaluateFixture:
 class TestRunReplayEvaluation:
     def test_all_fixtures(self):
         report = run_replay_evaluation()
-        assert report.total_fixtures == 11
-        assert report.passed + report.failed == 11
-        assert len(report.results) == 11
+        assert report.total_fixtures == 13
+        assert report.passed + report.failed == 13
+        assert len(report.results) == 13
 
     def test_by_candidate_type(self):
         report = run_replay_evaluation()

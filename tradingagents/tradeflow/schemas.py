@@ -138,6 +138,10 @@ class Candidate:
     watchlist_benefit_score: float = 0.0  # [H-008] mandate_watchlist_note
     watchlist_consensus_score: float = 0.0  # [H-008] mandate_watchlist_note
     watchlist_evidence_gap: list[str] = field(default_factory=list)  # [H-008] mandate_watchlist_note
+    counter_evidence: list[dict] = field(default_factory=list)  # [H-009] mandate_counter_evidence_calibration
+    overheat_flags: list[str] = field(default_factory=list)  # [H-009]
+    downgrade_reasons: list[str] = field(default_factory=list)  # [H-009]
+    what_would_change_mind: list[str] = field(default_factory=list)  # [H-009]
 
     def __post_init__(self):
         if not self.trade_date:
@@ -275,6 +279,10 @@ class Candidate:
             "watchlist_benefit_score": self.watchlist_benefit_score,  # [H-008]
             "watchlist_consensus_score": self.watchlist_consensus_score,  # [H-008]
             "watchlist_evidence_gap_json": json.dumps(self.watchlist_evidence_gap, ensure_ascii=False),  # [H-008]
+            "counter_evidence_json": json.dumps(self.counter_evidence, ensure_ascii=False),  # [H-009] mandate_counter_evidence_calibration
+            "overheat_flags_json": json.dumps(self.overheat_flags, ensure_ascii=False),  # [H-009]
+            "downgrade_reasons_json": json.dumps(self.downgrade_reasons, ensure_ascii=False),  # [H-009]
+            "what_would_change_mind_json": json.dumps(self.what_would_change_mind, ensure_ascii=False),  # [H-009]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -372,6 +380,10 @@ class Candidate:
             watchlist_benefit_score=row.get("watchlist_benefit_score", 0.0),  # [H-008]
             watchlist_consensus_score=row.get("watchlist_consensus_score", 0.0),  # [H-008]
             watchlist_evidence_gap=json.loads(row.get("watchlist_evidence_gap_json", "[]")),  # [H-008]
+            counter_evidence=json.loads(row.get("counter_evidence_json", "[]")),  # [H-009]
+            overheat_flags=json.loads(row.get("overheat_flags_json", "[]")),  # [H-009]
+            downgrade_reasons=json.loads(row.get("downgrade_reasons_json", "[]")),  # [H-009]
+            what_would_change_mind=json.loads(row.get("what_would_change_mind_json", "[]")),  # [H-009]
         )
 
 

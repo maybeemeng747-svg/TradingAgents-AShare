@@ -98,7 +98,7 @@ def init_db() -> None:
 
 
 def _ensure_watchlist_schema() -> None:
-    """Add notes column to watchlist_items for existing SQLite deployments."""
+    """Add notes and structured note columns to watchlist_items for existing SQLite deployments."""
     if not DATABASE_URL.startswith("sqlite"):
         return
     try:
@@ -110,8 +110,21 @@ def _ensure_watchlist_schema() -> None:
             if "notes" not in columns:
                 conn.execute(text("ALTER TABLE watchlist_items ADD COLUMN notes TEXT"))
                 logger.info("[migration] Added notes column to watchlist_items")
+            # [DATA-009] watchlist_notes_persistence — structured note columns
+            _add_col_if_missing(conn, columns, "watchlist_items", "topic", "TEXT")
+            _add_col_if_missing(conn, columns, "watchlist_items", "benefit_score", "FLOAT")
+            _add_col_if_missing(conn, columns, "watchlist_items", "consensus_score", "INTEGER")
+            _add_col_if_missing(conn, columns, "watchlist_items", "expected_window", "TEXT")
+            _add_col_if_missing(conn, columns, "watchlist_items", "evidence_gap", "TEXT")
+            _add_col_if_missing(conn, columns, "watchlist_items", "watchlist_note_suggested", "TEXT")
     except Exception as e:
         logger.error("Failed to ensure watchlist schema: %s", e)
+
+
+def _add_col_if_missing(conn, existing_columns: set, table: str, col: str, col_type: str) -> None:
+    if col not in existing_columns:
+        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
+        logger.info("[migration] Added %s column to %s", col, table)
 
 
 def _ensure_report_schema() -> None:
@@ -509,6 +522,13 @@ class WatchlistItemDB(Base):
     symbol = Column(String(20), nullable=False)
     sort_order = Column(Integer, default=0)
     notes = Column(Text, nullable=True)
+    # [DATA-009] watchlist_notes_persistence — structured note fields
+    topic = Column(Text, nullable=True)
+    benefit_score = Column(Float, nullable=True)
+    consensus_score = Column(Integer, nullable=True)
+    expected_window = Column(Text, nullable=True)
+    evidence_gap = Column(Text, nullable=True)
+    watchlist_note_suggested = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (UniqueConstraint('user_id', 'symbol', name='uq_watchlist_user_symbol'),)

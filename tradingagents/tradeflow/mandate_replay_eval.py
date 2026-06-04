@@ -301,6 +301,8 @@ FIXTURE_POLICY_FADE = "policy_fade"
 FIXTURE_FALSE_PATH = "false_path"
 FIXTURE_CAPITAL_IGNORE = "capital_ignore"
 FIXTURE_DATA_GAP_UNCLASSIFIED = "data_gap_unclassified"
+FIXTURE_OVERHEATED_WEAK_PATH = "overheated_weak_path"  # [H-009] mandate_counter_evidence_calibration
+FIXTURE_STRONG_NOT_OVERKILL = "strong_policy_not_overkilled"  # [H-009]
 
 ALL_REPLAY_FIXTURE_IDS = [
     FIXTURE_POLICY_AMBUSH_SUCCESS,
@@ -314,6 +316,8 @@ ALL_REPLAY_FIXTURE_IDS = [
     FIXTURE_FALSE_PATH,
     FIXTURE_CAPITAL_IGNORE,
     FIXTURE_DATA_GAP_UNCLASSIFIED,
+    FIXTURE_OVERHEATED_WEAK_PATH,
+    FIXTURE_STRONG_NOT_OVERKILL,
 ]
 
 
@@ -712,6 +716,81 @@ def _build_data_gap_unclassified() -> ReplayFixture:
     )
 
 
+def _build_overheated_weak_path() -> ReplayFixture:
+    return ReplayFixture(
+        fixture_id=FIXTURE_OVERHEATED_WEAK_PATH,
+        description="过热+路径弱——机器人概念股，CONCEPT_ONLY+博弈crowded+无政策原文，5日回撤10%",
+        symbol="300www.SZ",
+        candidate_type=CandidateType.POLICY_AMBUSH.value,
+        mandate_score_component=30.0,
+        beneficiary_score_component=12.0,
+        ambush_score=15.0,
+        mandate_topic="机器人",
+        company_role="CONCEPT_ONLY",
+        price_snapshot=PriceSnapshot(
+            entry_price=22.0,
+            prices={5: 19.8, 10: 19.0, 20: 18.5, 60: 17.0},
+            index_prices={0: 3100.0, 5: 3110.0, 10: 3120.0, 20: 3130.0, 60: 3150.0},
+            industry_prices={0: 5500.0, 5: 5480.0, 10: 5500.0, 20: 5520.0, 60: 5550.0},
+        ),
+        post_event=PostEventCheck(
+            policy_reconfirmed=False,
+            announcement_fulfilled=False,
+            trend_confirmed=False,
+            risk_counter_evidence=True,
+            policy_persistence_score=15.0,
+            benefit_realization_score=5.0,
+            details="CONCEPT_ONLY+无政策原文+博弈crowded，H-009反证降权校准触发",
+        ),
+        counter_evidences=[
+            CounterEvidence(
+                counter_type=COUNTER_OVERHEAT_REVERSAL,
+                description="过热+路径弱，H-009校准应降级",
+                horizon=5,
+                severity=0.8,
+            ),
+            CounterEvidence(
+                counter_type=COUNTER_FALSE_PATH,
+                description="CONCEPT_ONLY角色，无实质受益",
+                horizon=5,
+                severity=0.7,
+            ),
+        ],
+        tags=["counter_evidence", "h009_overheated_weak"],
+    )
+
+
+def _build_strong_not_overkilled() -> ReplayFixture:
+    return ReplayFixture(
+        fixture_id=FIXTURE_STRONG_NOT_OVERKILL,
+        description="强政策+强路径+不过热——低空经济LEADER，政策连续3日+实质订单，不应被误杀",
+        symbol="002xxx.SZ",
+        candidate_type=CandidateType.POLICY_AMBUSH.value,
+        mandate_score_component=70.0,
+        beneficiary_score_component=80.0,
+        ambush_score=62.0,
+        mandate_topic="低空经济",
+        company_role="LEADER",
+        price_snapshot=PriceSnapshot(
+            entry_price=35.0,
+            prices={5: 36.5, 10: 38.0, 20: 40.0, 60: 45.0},
+            index_prices={0: 3100.0, 5: 3120.0, 10: 3130.0, 20: 3150.0, 60: 3200.0},
+            industry_prices={0: 5000.0, 5: 5100.0, 10: 5200.0, 20: 5300.0, 60: 5500.0},
+        ),
+        post_event=PostEventCheck(
+            policy_reconfirmed=True,
+            announcement_fulfilled=True,
+            trend_confirmed=True,
+            risk_counter_evidence=False,
+            policy_persistence_score=90.0,
+            benefit_realization_score=85.0,
+            details="LEADER+政策3日连续+实质订单+不过热，H-009不应降级",
+        ),
+        counter_evidences=[],
+        tags=["happy_path", "h009_strong_not_overkilled"],
+    )
+
+
 _FIXTURE_BUILDERS = {
     FIXTURE_POLICY_AMBUSH_SUCCESS: _build_policy_ambush_success,
     FIXTURE_POLICY_AMBUSH_COUNTER: _build_policy_ambush_counter,
@@ -724,6 +803,8 @@ _FIXTURE_BUILDERS = {
     FIXTURE_FALSE_PATH: _build_false_path,
     FIXTURE_CAPITAL_IGNORE: _build_capital_ignore,
     FIXTURE_DATA_GAP_UNCLASSIFIED: _build_data_gap_unclassified,
+    FIXTURE_OVERHEATED_WEAK_PATH: _build_overheated_weak_path,
+    FIXTURE_STRONG_NOT_OVERKILL: _build_strong_not_overkilled,
 }
 
 

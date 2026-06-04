@@ -4699,7 +4699,18 @@ def add_to_watchlist_batch_notes(
             symbol = symbol_raw
         if not name:
             name = code_to_name.get(symbol, symbol)
-        resolved.append({"symbol": symbol, "name": name, "notes": notes})
+        # [DATA-009] watchlist_notes_persistence — pass structured fields
+        resolved.append({
+            "symbol": symbol,
+            "name": name,
+            "notes": notes,
+            "topic": entry.get("topic"),
+            "benefit_score": entry.get("benefit_score"),
+            "consensus_score": entry.get("consensus_score"),
+            "expected_window": entry.get("expected_window"),
+            "evidence_gap": entry.get("evidence_gap"),
+            "watchlist_note_suggested": entry.get("watchlist_note_suggested"),
+        })
 
     add_results = watchlist_service.add_watchlist_items_with_notes(
         db, current_user.id, resolved
@@ -5218,6 +5229,7 @@ from api.tradeflow_schemas import (
     TradeFlowFilteredResponse,  # [UI-007] tradeflow_filtered_trace
     TradeFlowTieredCandidatesResponse,  # [TF-UX-001]
     TradeFlowReviewGenerateResponse,  # [TF-UX-003]
+    TradeFlowEvidenceAuditResponse,  # [DATA-007] evidence_coverage_audit
 )
 from api.services.tradeflow_service import (
     get_daily_plan as _tf_get_daily_plan,
@@ -5232,6 +5244,7 @@ from api.services.tradeflow_service import (
     run_observe_check as _tf_run_observe_check,  # [TF-OBS-001] tradeflow_observe_runner
     get_candidates_tiered as _tf_get_candidates_tiered,  # [TF-UX-001]
     generate_review as _tf_generate_review,  # [TF-UX-003]
+    get_evidence_audit as _tf_get_evidence_audit,  # [DATA-007] evidence_coverage_audit
 )
 
 # [UI-001] tradeflow_api — read-only endpoints
@@ -5290,6 +5303,12 @@ def tradeflow_review(date: str = Query(..., description="交易日期 YYYY-MM-DD
 @app.get("/v1/tradeflow/data-health", response_model=TradeFlowDataHealthResponse)
 def tradeflow_data_health():
     return _tf_get_data_health()
+
+
+# [DATA-007] evidence_coverage_audit
+@app.get("/v1/tradeflow/evidence-audit", response_model=TradeFlowEvidenceAuditResponse)
+def tradeflow_evidence_audit(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_evidence_audit(date)
 
 
 # [UI-007] tradeflow_filtered_trace

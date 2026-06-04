@@ -486,9 +486,13 @@ export default function Portfolio() {
         if (pendingWatchlistItems.length === 0) return
         setAddingWatchlistNotes(true)
         try {
+            // [DATA-009] watchlist_notes_persistence — pass structured fields
             const entries = pendingWatchlistItems.map(item => ({
                 symbol: item.symbol,
                 notes: item.notes || undefined,
+                topic: item.sector || undefined,
+                benefit_score: item.bullish_score ?? undefined,
+                consensus_score: item.consensus ?? undefined,
             }))
             const response = await api.addToWatchlistBatchNotes(entries)
             const details = response.results
