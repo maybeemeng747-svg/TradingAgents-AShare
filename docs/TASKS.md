@@ -48,7 +48,7 @@
 22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
 23. `PERF-001`：运行层级与速度预算契约（P1，done）。
 24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
-25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，ready）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
 26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
 27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
 28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，ready，依赖 DATA-001/DATA-004 ✓）。
@@ -78,7 +78,7 @@
 5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
 6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
 7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
-8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，ready）。
+8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
 9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，ready）。
 10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，ready）。
 11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，ready）。
@@ -522,7 +522,7 @@
 ### DATA-P0-FUND-ROUTE: 主力资金 fallback 假成功与单位修复（P0）
 - **描述**：修复主力资金 AKShare 失败字符串被路由层误判为成功的问题，确保 Eastmoney/cn_astock fallback 真正生效，并统一资金流单位。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：in_progress — claimed DATA-P0-FUND-ROUTE-20260604-121846
 - **背景**：
   - 现场验证 `route_to_vendor("get_individual_fund_flow", "603629.SH")` 命中 `cn_akshare` 后返回 `ProxyError` 失败字符串，路由层仍记录 `vendor=cn_akshare status=hit`，没有继续 fallback 到 `cn_astock`。
   - 直接调用 `CnAstockProvider.get_individual_fund_flow("603629.SH")` 可取得 Eastmoney push2his 近 20 日资金流，说明不是股票天然缺主力资金，而是 fallback 链路被失败字符串截断。
@@ -550,7 +550,7 @@
   - mock AKShare 返回/抛出 ProxyError，cn_astock 返回有效资金流，断言最终结果来自 `cn_astock`。
   - 603629 类 fixture：AKShare 失败但 Eastmoney fallback 成功，raw_evidence.vendor=`cn_astock`，fallback_from=`cn_akshare`。
   - 金额单位转换测试：输入元级原始值，输出万元级文本和 unit_verified=True。
-  - `pytest tests/test_g007_fund_lhb_provenance.py tests/test_data_source_replay.py tests/test_dataflows*.py -q` 或等价测试通过。
+  - `pytest tests/test_data_p0_fund_route.py tests/test_g007_fund_lhb_provenance.py tests/test_data_source_replay.py -q` 或等价测试通过。
 - **代码标注要求**：`# [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth`
 
 ### DATA-P1-LHB-FUND-DECOUPLE: 龙虎榜与资金流触发链路复核（P1）

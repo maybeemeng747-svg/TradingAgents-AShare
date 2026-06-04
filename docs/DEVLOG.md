@@ -4,6 +4,52 @@
 
 ---
 
+## 2026-06-04 | DATA-P0-FUND-ROUTE: 主力资金 fallback 假成功与单位修复
+
+- **执行者**：OpenCode
+- **任务**：DATA-P0-FUND-ROUTE — 修复主力资金 AKShare 失败字符串被路由层误判为成功的问题，确保 Eastmoney/cn_astock fallback 真正生效，并统一资金流单位。
+- **修改文件**：
+  - `tradingagents/dataflows/interface.py` — [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth
+    - 新增 `_FAILURE_RESULT_PATTERNS` 元组：10 个失败文本模式（数据获取失败/ProxyError/ConnectionError/Max retries exceeded/Unable to connect/暂不可用/获取失败/TimeoutError/ConnectTimeout/ReadTimeout）
+    - 新增 `_is_failure_result(result)` 函数：检测 provider 返回值是否为失败字符串
+    - `route_to_vendor()` 在 provider 返回后增加 `_is_failure_result(result)` 检查：失败字符串触发 fallback 而非记录为 hit
+    - 修复后：AKShare 返回 ProxyError 字符串 → 路由层检测到失败 → 继续到 cn_astock → 记录 `vendor=cn_astock`
+  - `tradingagents/dataflows/providers/cn_astock_provider.py` — [DATA-P0-FUND-ROUTE]
+    - `get_individual_fund_flow()` 金额单位修复：Eastmoney push2his 原始金额按元处理，输出前统一 `/10000` 转为万元
+    - 输出 header 注明 `单位：万元`，使 `_verify_unit()` 检测通过 → `unit_verified=True`
+    - 数值格式化为 `.2f` 保留两位小数
+    - 非数值 fallback：ValueError/IndexError 时退回原始字符串
+  - `tests/test_data_p0_fund_route.py` — 新建，31 个测试覆盖：
+    - `TestIsFailureResult` (14): 8 个失败模式检测 + 4 个正常数据不误判 + 非 string + 空字符串
+    - `TestRouteToVendorFallback` (5): AKShare 失败字符串触发 astock fallback / 双失败 RuntimeError / 首个成功不 fallback / 异常触发 fallback / last_hit_vendor 记录实际 vendor
+    - `TestCnAstockFundFlowUnitConversion` (5): 元→万元转换 / 万元标注检测 / 原始元级未验证 / 小值转换 / 空 klines 返回不可用
+    - `TestFundFlowFallbackProvenance` (2): fallback 产生 HAS_DATA / 双失败产生 FAILED
+    - `TestAcceptanceDataP0FundRoute` (5): AKShare ProxyError → astock fallback / 元→万元转换 / 失败字符串不视为成功 / 双失败状态 / 无禁用词
+  - `docs/TASKS.md` — DATA-P0-FUND-ROUTE 状态更新
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：31 passed (DATA-P0-FUND-ROUTE)；203 passed (回归)；0 failed
+- **关键逻辑**：
+  - 失败字符串检测：`_is_failure_result()` 检查 10 个模式，返回 bool
+  - 路由修复：`route_to_vendor()` 在 `try` 块内 provider 返回后立即检查失败字符串，`continue` 到下一个 vendor
+  - 单位修复：cn_astock `get_individual_fund_flow()` 将 Eastmoney push2his 原始值 `/10000`，header 注明 `单位：万元`
+  - `_verify_unit()` 检测万元标注 → `unit_verified=True` → 资金流强证据允许
+  - `get_last_hit_vendor()` 记录最终成功 vendor（如 `cn_astock`），非首个 provider
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
+## 2026-06-04 | DATA-P0-FUND-ROUTE fix: 创建 test_data_source_replay.py 别名
+
+- **执行者**：OpenCode
+- **任务**：DATA-P0-FUND-ROUTE 测试修复 — `tests/test_data_source_replay.py` 文件缺失导致 TASKS.md 验收命令报错
+- **问题**：TASKS.md 验收命令引用 `pytest tests/test_data_source_replay.py`，但实际文件名为 `tests/test_data005_fixture_replay.py`
+- **修改文件**：
+  - `tests/test_data_source_replay.py` — 新建，通过 `importlib` 动态导入 `test_data005_fixture_replay` 并导出所有 `Test*`/`test_*` 成员，作为路径别名
+- **测试结果**：156 passed（test_g007_fund_lhb_provenance + test_data_source_replay + test_data_p0_fund_route 全部通过）
+- **执行边界**：未改源码、未改 prompts、未写生产 DB
+
+---
+
 ## 2026-06-03 | TF-UX 收敛优化：评分 + 分级视图 + 自动刷新 + 复盘
 
 - **执行者**：OpenCode
@@ -2348,3 +2394,12 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/PERF-001-20260602-round1.txt
 - **Run archive**: docs/task_runs/PERF-001-20260602-191005/
+
+## 2026-06-04 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-P0-FUND-ROUTE - 主力资金 fallback 假成功与单位修复（P0）
+- **Priority**: P0
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Test failed: pytest tests/test_g007_fund_lhb_provenance.py tests/test_data_source_replay.py tests/test_dataflows*.py -q (exit 4)
+- **Run archive**: docs/task_runs/DATA-P0-FUND-ROUTE-20260604-121846/

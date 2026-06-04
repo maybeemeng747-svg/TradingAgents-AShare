@@ -75,6 +75,26 @@ def _trace(msg: str) -> None:
         print(f"[provider-trace] {msg}", flush=True)
 
 
+_FAILURE_RESULT_PATTERNS = (
+    "数据获取失败",
+    "ProxyError",
+    "ConnectionError",
+    "Max retries exceeded",
+    "Unable to connect",
+    "暂不可用",
+    "获取失败",
+    "TimeoutError",
+    "ConnectTimeout",
+    "ReadTimeout",
+)
+
+
+def _is_failure_result(result) -> bool:
+    if not isinstance(result, str):
+        return False
+    return any(p in result for p in _FAILURE_RESULT_PATTERNS)
+
+
 _TRACE_KEYS = ("symbol", "ticker", "start_date", "end_date", "curr_date", "indicator")
 
 
@@ -156,6 +176,12 @@ def route_to_vendor(method: str, *args, **kwargs):
 
         try:
             result = impl_func(*args, **kwargs)
+            if _is_failure_result(result):  # [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth
+                _trace(
+                    f"method={method} {args_summary} vendor={vendor} status=fallback "
+                    f"reason=failure-string-detected"
+                )
+                continue
             _last_hit_vendor[method] = vendor  # [N-003] cn_astock_raw_evidence
             _trace(f"method={method} {args_summary} vendor={vendor} status=hit")
             return result

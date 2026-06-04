@@ -761,7 +761,8 @@ class CnAstockProvider(BaseMarketDataProvider):
         """个股资金流 — 东财 push2his 直连 fallback.  # [DATA-P0-603629] astock_source_fallback
 
         Returns last 20 trading days of main-capital net flow data.
-        Units are 万元 (consistent with AKShare convention).
+        Eastmoney push2his returns values in 元; we convert to 万元
+        for consistency with AKShare convention.
         """
         code = _extract_code(symbol)
         try:
@@ -783,13 +784,25 @@ class CnAstockProvider(BaseMarketDataProvider):
             if not klines:
                 return f"{symbol} 近期主力资金流向数据暂不可用。"
 
-            header = f"{symbol} 近20日主力资金净流向（Eastmoney push2his）：\n"
+            header = f"{symbol} 近20日主力资金净流向（Eastmoney push2his，单位：万元）：\n"
             header += "日期 | 主力净流入 | 小单净流入 | 中单净流入 | 大单净流入 | 超大单净流入\n"
             rows = []
             for line in klines:
                 parts = line.split(",")
                 if len(parts) >= 6:
-                    rows.append(f"{parts[0]} | {parts[1]} | {parts[2]} | {parts[3]} | {parts[4]} | {parts[5]}")
+                    try:
+                        v1 = float(parts[1]) / 10000
+                        v2 = float(parts[2]) / 10000
+                        v3 = float(parts[3]) / 10000
+                        v4 = float(parts[4]) / 10000
+                        v5 = float(parts[5]) / 10000
+                        rows.append(
+                            f"{parts[0]} | {v1:.2f} | {v2:.2f} | {v3:.2f} | {v4:.2f} | {v5:.2f}"
+                        )
+                    except (ValueError, IndexError):
+                        rows.append(
+                            f"{parts[0]} | {parts[1]} | {parts[2]} | {parts[3]} | {parts[4]} | {parts[5]}"
+                        )
             return header + "\n".join(rows)
 
         except Exception as exc:

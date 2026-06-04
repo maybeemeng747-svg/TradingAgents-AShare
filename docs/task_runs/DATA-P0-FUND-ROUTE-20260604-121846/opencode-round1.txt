@@ -1,0 +1,1342 @@
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/project-overview.md
+[0m
+[0m# [0mTodos
+[•] Understand current provider route & cn_akshare/cn_astock provider code
+[ ] Fix provider route failure-string false success detection
+[ ] Fix cn_astock fund flow unit conversion (元 → 万元)
+[ ] Write tests covering fallback chain and unit conversion
+[ ] Update docs/DEVLOG.md
+[0m
+[0m• [0mExplore fund flow provider code[90m Explore Agent[0m
+[0m✓ [0mExplore fund flow provider code[90m Explore Agent[0m
+[0m
+[0m# [0mTodos
+[✓] Understand current provider route & cn_akshare/cn_astock provider code
+[•] Fix provider route failure-string false success detection
+[ ] Fix cn_astock fund flow unit conversion (元 → 万元)
+[ ] Write tests covering fallback chain and unit conversion
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/dataflows/interface.py
+[0m→ [0mRead tradingagents/dataflows/providers/cn_astock_provider.py[90m [offset=750, limit=80][0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_akshare_provider.py[90m [offset=1095, limit=80][0m
+Now let me look at the readiness_score and raw_evidence related code to understand unit tracking:
+[0m✱ [0mGrep "build_fund_flow_provenance"[90m 19 matches[0m
+[0m✱ [0mGrep "unit_verified"[90m 164 matches[0m
+[0m→ [0mRead tradingagents/tradeflow/fund_flow_anomaly.py[90m [limit=60, offset=370][0m
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=100, offset=1720][0m
+[0m✱ [0mGrep "def _verify_unit"[90m 1 match[0m
+[0m→ [0mRead tradingagents/tradeflow/fund_flow_anomaly.py[90m [limit=55, offset=316][0m
+Now I have a clear understanding of the codebase. Let me implement the fixes.
+
+**Fix 1**: Add failure-string detection in `route_to_vendor()` in `interface.py`:
+[0m
+[0m← [0mEdit tradingagents/dataflows/interface.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/interface.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/interface.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/interface.py
+@@ -74,8 +74,28 @@
+     if _is_trace_enabled():
+         print(f"[provider-trace] {msg}", flush=True)
+ 
+ 
++_FAILURE_RESULT_PATTERNS = (
++    "数据获取失败",
++    "ProxyError",
++    "ConnectionError",
++    "Max retries exceeded",
++    "Unable to connect",
++    "暂不可用",
++    "获取失败",
++    "TimeoutError",
++    "ConnectTimeout",
++    "ReadTimeout",
++)
++
++
++def _is_failure_result(result) -> bool:
++    if not isinstance(result, str):
++        return False
++    return any(p in result for p in _FAILURE_RESULT_PATTERNS)
++
++
+ _TRACE_KEYS = ("symbol", "ticker", "start_date", "end_date", "curr_date", "indicator")
+ 
+ 
+ def _summarize_args(args: tuple, kwargs: dict) -> str:
+
+[0m
+[0m← [0mEdit tradingagents/dataflows/interface.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/interface.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/interface.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/interface.py
+@@ -175,8 +175,14 @@
+     continue
+ 
+ try:
+     result = impl_func(*args, **kwargs)
++    if _is_failure_result(result):  # [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth
++        _trace(
++            f"method={method} {args_summary} vendor={vendor} status=fallback "
++            f"reason=failure-string-detected"
++        )
++        continue
+     _last_hit_vendor[method] = vendor  # [N-003] cn_astock_raw_evidence
+     _trace(f"method={method} {args_summary} vendor={vendor} status=hit")
+     return result
+ except (AlphaVantageRateLimitError, NotImplementedError) as exc:
+
+[0m
+Now update `route_to_vendor` to check for failure strings:
+[0m# [0mTodos
+[✓] Understand current provider route & cn_akshare/cn_astock provider code
+[✓] Fix provider route failure-string false success detection
+[•] Fix cn_astock fund flow unit conversion (元 → 万元)
+[ ] Write tests covering fallback chain and unit conversion
+[ ] Update docs/DEVLOG.md
+[0m
+**Fix 2**: Fix cn_astock fund flow unit conversion (元 → 万元) and add unit annotation:
+[0m← [0mEdit tradingagents/dataflows/providers/cn_astock_provider.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/providers/cn_astock_provider.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/providers/cn_astock_provider.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/providers/cn_astock_provider.py
+@@ -760,9 +760,10 @@
+ def get_individual_fund_flow(self, symbol: str) -> str:
+     """个股资金流 — 东财 push2his 直连 fallback.  # [DATA-P0-603629] astock_source_fallback
+ 
+     Returns last 20 trading days of main-capital net flow data.
+-    Units are 万元 (consistent with AKShare convention).
++    Eastmoney push2his returns values in 元; we convert to 万元
++    for consistency with AKShare convention.
+     """
+     code = _extract_code(symbol)
+     try:
+         _rate_limit("em_fund_flow_individual")
+@@ -782,15 +783,27 @@
+         klines = d.get("data", {}).get("klines", [])
+         if not klines:
+             return f"{symbol} 近期主力资金流向数据暂不可用。"
+ 
+-        header = f"{symbol} 近20日主力资金净流向（Eastmoney push2his）：\n"
++        header = f"{symbol} 近20日主力资金净流向（Eastmoney push2his，单位：万元）：\n"
+         header += "日期 | 主力净流入 | 小单净流入 | 中单净流入 | 大单净流入 | 超大单净流入\n"
+         rows = []
+         for line in klines:
+             parts = line.split(",")
+             if len(parts) >= 6:
+-                rows.append(f"{parts[0]} | {parts[1]} | {parts[2]} | {parts[3]} | {parts[4]} | {parts[5]}")
++                try:
++                    v1 = float(parts[1]) / 10000
++                    v2 = float(parts[2]) / 10000
++                    v3 = float(parts[3]) / 10000
++                    v4 = float(parts[4]) / 10000
++                    v5 = float(parts[5]) / 10000
++                    rows.append(
++                        f"{parts[0]} | {v1:.2f} | {v2:.2f} | {v3:.2f} | {v4:.2f} | {v5:.2f}"
++                    )
++                except (ValueError, IndexError):
++                    rows.append(
++                        f"{parts[0]} | {parts[1]} | {parts[2]} | {parts[3]} | {parts[4]} | {parts[5]}"
++                    )
+         return header + "\n".join(rows)
+ 
+     except Exception as exc:
+         return f"个股资金流向数据获取失败（Eastmoney push2his）：{type(exc).__name__}: {exc}"
+
+[0m
+[0m# [0mTodos
+[✓] Understand current provider route & cn_akshare/cn_astock provider code
+[✓] Fix provider route failure-string false success detection
+[✓] Fix cn_astock fund flow unit conversion (元 → 万元)
+[•] Write tests covering fallback chain and unit conversion
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tests/test_raw_evidence_vendor.py
+Now let me write the tests. First let me check what test patterns exist:
+[0m→ [0mRead tests/test_g007_fund_lhb_provenance.py[90m [limit=50][0m
+Now let me create the test file:
+[0m
+[0m← [0mWrite tests/test_data_p0_fund_route.py
+Wrote file successfully.
+[0m
+Now let's run the tests:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_data_p0_fund_route.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 31 items
+
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_detects_failure_patterns[\u4e2a\u80a1\u8d44\u91d1\u6d41\u5411\u6570\u636e\u83b7\u53d6\u5931\u8d25\uff1aProxyError] PASSED [  3%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_detects_failure_patterns[\u4e2a\u80a1\u8d44\u91d1\u6d41\u5411\u6570\u636e\u83b7\u53d6\u5931\u8d25\uff1aConnectionError: max retries] PASSED [  6%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_detects_failure_patterns[\u6570\u636e\u83b7\u53d6\u5931\u8d25\uff1aMax retries exceeded with url] PASSED [  9%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_detects_failure_patterns[Unable to connect to proxy] PASSED [ 12%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_detects_failure_patterns[\u8fd1\u671f\u4e3b\u529b\u8d44\u91d1\u6d41\u5411\u6570\u636e\u6682\u4e0d\u53ef\u7528\u3002] PASSED [ 16%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_detects_failure_patterns[TimeoutError: timed out] PASSED [ 19%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_detects_failure_patterns[ConnectTimeout: connection timed out] PASSED [ 22%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_detects_failure_patterns[ReadTimeout: read timed out] PASSED [ 25%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_normal_data_not_flagged[603629.SH \u8fd120\u65e5\u4e3b\u529b\u8d44\u91d1\u51c0\u6d41\u5411\uff08Eastmoney push2his\uff0c\u5355\u4f4d\uff1a\u4e07\u5143\uff09\uff1a\n2026-06-01 | 1234.56] PASSED [ 29%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_normal_data_not_flagged[603629.SH \u8fd120\u65e5\u4e3b\u529b\u8d44\u91d1\u51c0\u6d41\u5411\uff1a\n\u65e5\u671f \u4e3b\u529b\u51c0\u6d41\u5165] PASSED [ 32%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_normal_data_not_flagged[\u677f\u5757\u8d44\u91d1\u6d41\u5411\u6392\u540d\uff08\u517115\u4e2a\u677f\u5757\uff0c\u524d10\u540d\uff09\uff1a\n\u6392\u540d \u677f\u5757\u4ee3\u7801] PASSED [ 35%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_normal_data_not_flagged[some normal data string with no errors] PASSED [ 38%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_non_string_not_flagged PASSED [ 41%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_empty_string_not_flagged PASSED [ 45%]
+tests/test_data_p0_fund_route.py::TestRouteToVendorFallback::test_akshare_failure_string_triggers_astock_fallback FAILED [ 48%]
+tests/test_data_p0_fund_route.py::TestRouteToVendorFallback::test_both_vendors_fail_raises_error PASSED [ 51%]
+tests/test_data_p0_fund_route.py::TestRouteToVendorFallback::test_first_vendor_succeeds_no_fallback PASSED [ 54%]
+tests/test_data_p0_fund_route.py::TestRouteToVendorFallback::test_exception_triggers_fallback FAILED [ 58%]
+tests/test_data_p0_fund_route.py::TestRouteToVendorFallback::test_last_hit_vendor_records_actual_vendor_after_fallback FAILED [ 61%]
+tests/test_data_p0_fund_route.py::TestCnAstockFundFlowUnitConversion::test_yuan_to_wanyuan_conversion PASSED [ 64%]
+tests/test_data_p0_fund_route.py::TestCnAstockFundFlowUnitConversion::test_unit_verified_detects_wanyuan PASSED [ 67%]
+tests/test_data_p0_fund_route.py::TestCnAstockFundFlowUnitConversion::test_unit_not_verified_for_raw_yuan PASSED [ 70%]
+tests/test_data_p0_fund_route.py::TestCnAstockFundFlowUnitConversion::test_small_values_converted PASSED [ 74%]
+tests/test_data_p0_fund_route.py::TestCnAstockFundFlowUnitConversion::test_empty_klines_returns_unavailable PASSED [ 77%]
+tests/test_data_p0_fund_route.py::TestFundFlowFallbackProvenance::test_fallback_produces_has_data_status PASSED [ 80%]
+tests/test_data_p0_fund_route.py::TestFundFlowFallbackProvenance::test_both_fail_produces_failed_status PASSED [ 83%]
+tests/test_data_p0_fund_route.py::TestAcceptanceDataP0FundRoute::test_akshare_proxyerror_astock_fallback_succeeds FAILED [ 87%]
+tests/test_data_p0_fund_route.py::TestAcceptanceDataP0FundRoute::test_unit_conversion_yuan_to_wanyuan PASSED [ 90%]
+tests/test_data_p0_fund_route.py::TestAcceptanceDataP0FundRoute::test_failure_string_not_treated_as_success PASSED [ 93%]
+tests/test_data_p0_fund_route.py::TestAcceptanceDataP0FundRoute::test_both_fail_status_is_failed PASSED [ 96%]
+tests/test_data_p0_fund_route.py::TestAcceptanceDataP0FundRoute::test_no_forbidden_words_in_output PASSED [100%]
+
+=================================== FAILURES ===================================
+_ TestRouteToVendorFallback.test_akshare_failure_string_triggers_astock_fallback _
+
+self = <tests.test_data_p0_fund_route.TestRouteToVendorFallback object at 0x10fd64470>
+
+    def test_akshare_failure_string_triggers_astock_fallback(self):
+        """When cn_akshare returns failure string, route continues to cn_astock."""
+        akshare_result = "个股资金流向数据获取失败：ProxyError"
+        astock_result = "603629.SH 近20日主力资金净流向（Eastmoney push2his，单位：万元）：\ndata"
+    
+        mock_akshare = MagicMock()
+        mock_akshare.get_individual_fund_flow = MagicMock(return_value=akshare_result)
+        mock_astock = MagicMock()
+        mock_astock.get_individual_fund_flow = MagicMock(return_value=astock_result)
+    
+        with patch("tradingagents.dataflows.interface._registry") as mock_reg:
+            mock_reg.get = lambda name: {
+                "cn_akshare": mock_akshare,
+                "cn_astock": mock_astock,
+            }.get(name)
+            mock_reg.list_names = MagicMock(return_value=["cn_akshare", "cn_astock"])
+    
+            with patch("tradingagents.dataflows.interface.get_vendor", return_value="cn_akshare"):
+>               result = route_to_vendor("get_individual_fund_flow", "603629.SH")
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_data_p0_fund_route.py:84: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+method = 'get_individual_fund_flow', args = ('603629.SH',), kwargs = {}
+category = 'cn_market_data', vendor_config = 'cn_akshare'
+fallback_vendors = ['cn_akshare'], args_summary = "symbol='603629.SH'"
+last_exc = None, vendor = 'cn_akshare', provider = <MagicMock id='4560675488'>
+impl_func = <MagicMock name='mock.get_individual_fund_flow' id='4547588320'>
+result = '个股资金流向数据获取失败：ProxyError'
+
+    def route_to_vendor(method: str, *args, **kwargs):
+        """Route method calls to provider implementations with fallback support."""
+        category = get_category_for_method(method)
+        vendor_config = get_vendor(category, method)
+        fallback_vendors = _resolve_vendor_chain(method, vendor_config)
+        args_summary = _summarize_args(args, kwargs)
+        last_exc = None
+        _trace(
+            f"method={method} {args_summary} category={category} "
+            f"configured='{vendor_config}' chain={fallback_vendors}"
+        )
+    
+        for vendor in fallback_vendors:
+            provider = _registry.get(vendor)
+            if provider is None:
+                _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-registered")
+                continue
+    
+            impl_func = getattr(provider, method, None)
+            if impl_func is None:
+                _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-implemented")
+                continue
+    
+            try:
+                result = impl_func(*args, **kwargs)
+                if _is_failure_result(result):  # [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth
+                    _trace(
+                        f"method={method} {args_summary} vendor={vendor} status=fallback "
+                        f"reason=failure-string-detected"
+                    )
+                    continue
+                _last_hit_vendor[method] = vendor  # [N-003] cn_astock_raw_evidence
+                _trace(f"method={method} {args_summary} vendor={vendor} status=hit")
+                return result
+            except (AlphaVantageRateLimitError, NotImplementedError) as exc:
+                last_exc = exc
+                # Try next provider for transient/routing issues or placeholder providers.
+                _trace(
+                    f"method={method} {args_summary} vendor={vendor} status=fallback "
+                    f"reason={type(exc).__name__}: {exc}"
+                )
+                continue
+            except Exception as exc:
+                # Provider-specific runtime/parsing errors (e.g., schema changes, KeyError)
+                # should not terminate the full chain; fall through to next vendor.
+                last_exc = exc
+                _trace(
+                    f"method={method} {args_summary} vendor={vendor} status=fallback "
+                    f"reason={type(exc).__name__}: {exc}"
+                )
+                continue
+    
+        _trace(f"method={method} {args_summary} status=failed reason=no-available-vendor")
+        if last_exc is not None:
+            raise RuntimeError(
+                f"No available vendor for method '{method}'. "
+                f"Configured chain: {fallback_vendors}. "
+                f"Last error: {type(last_exc).__name__}: {last_exc}"
+            ) from last_exc
+>       raise RuntimeError(
+            f"No available vendor for method '{method}'. "
+            f"Configured chain: {fallback_vendors}"
+        )
+E       RuntimeError: No available vendor for method 'get_individual_fund_flow'. Configured chain: ['cn_akshare']
+
+tradingagents/dataflows/interface.py:213: RuntimeError
+----------------------------- Captured stdout call -----------------------------
+[provider-trace] method=get_individual_fund_flow symbol='603629.SH' category=cn_market_data configured='cn_akshare' chain=['cn_akshare']
+[provider-trace] method=get_individual_fund_flow symbol='603629.SH' vendor=cn_akshare status=fallback reason=failure-string-detected
+[provider-trace] method=get_individual_fund_flow symbol='603629.SH' status=failed reason=no-available-vendor
+__________ TestRouteToVendorFallback.test_exception_triggers_fallback __________
+
+method = 'get_individual_fund_flow', args = ('603629.SH',), kwargs = {}
+category = 'cn_market_data', vendor_config = 'cn_akshare'
+fallback_vendors = ['cn_akshare'], args_summary = "symbol='603629.SH'"
+last_exc = Exception('network error'), vendor = 'cn_akshare'
+provider = <MagicMock id='4561519008'>
+impl_func = <MagicMock name='mock.get_individual_fund_flow' id='4561530480'>
+
+    def route_to_vendor(method: str, *args, **kwargs):
+        """Route method calls to provider implementations with fallback support."""
+        category = get_category_for_method(method)
+        vendor_config = get_vendor(category, method)
+        fallback_vendors = _resolve_vendor_chain(method, vendor_config)
+        args_summary = _summarize_args(args, kwargs)
+        last_exc = None
+        _trace(
+            f"method={method} {args_summary} category={category} "
+            f"configured='{vendor_config}' chain={fallback_vendors}"
+        )
+    
+        for vendor in fallback_vendors:
+            provider = _registry.get(vendor)
+            if provider is None:
+                _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-registered")
+                continue
+    
+            impl_func = getattr(provider, method, None)
+            if impl_func is None:
+                _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-implemented")
+                continue
+    
+            try:
+>               result = impl_func(*args, **kwargs)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tradingagents/dataflows/interface.py:178: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/mock.py:1139: in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/mock.py:1143: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <MagicMock name='mock.get_individual_fund_flow' id='4561530480'>
+args = ('603629.SH',), kwargs = {}, effect = Exception('network error')
+
+    def _execute_mock_call(self, /, *args, **kwargs):
+        # separate from _increment_mock_call so that awaited functions are
+        # executed separately from their call, also AsyncMock overrides this method
+    
+        effect = self.side_effect
+        if effect is not None:
+            if _is_exception(effect):
+>               raise effect
+E               Exception: network error
+
+/opt/homebrew/Cellar/python@3.12/3.12.13/Frameworks/Python.framework/Versions/3.12/lib/python3.12/unittest/mock.py:1198: Exception
+
+The above exception was the direct cause of the following exception:
+
+self = <tests.test_data_p0_fund_route.TestRouteToVendorFallback object at 0x10fd64c80>
+
+    def test_exception_triggers_fallback(self):
+        """When provider raises exception, fallback continues."""
+        astock_result = "603629.SH 近20日主力资金净流向（Eastmoney push2his，单位：万元）：\ndata"
+    
+        mock_akshare = MagicMock()
+        mock_akshare.get_individual_fund_flow = MagicMock(
+            side_effect=Exception("network error")
+        )
+        mock_astock = MagicMock()
+        mock_astock.get_individual_fund_flow = MagicMock(return_value=astock_result)
+    
+        with patch("tradingagents.dataflows.interface._registry") as mock_reg:
+            mock_reg.get = lambda name: {
+                "cn_akshare": mock_akshare,
+                "cn_astock": mock_astock,
+            }.get(name)
+            mock_reg.list_names = MagicMock(return_value=["cn_akshare", "cn_astock"])
+    
+            with patch("tradingagents.dataflows.interface.get_vendor", return_value="cn_akshare"):
+>               result = route_to_vendor("get_individual_fund_flow", "603629.SH")
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_data_p0_fund_route.py:152: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+method = 'get_individual_fund_flow', args = ('603629.SH',), kwargs = {}
+category = 'cn_market_data', vendor_config = 'cn_akshare'
+fallback_vendors = ['cn_akshare'], args_summary = "symbol='603629.SH'"
+last_exc = Exception('network error'), vendor = 'cn_akshare'
+provider = <MagicMock id='4561519008'>
+impl_func = <MagicMock name='mock.get_individual_fund_flow' id='4561530480'>
+
+    def route_to_vendor(method: str, *args, **kwargs):
+        """Route method calls to provider implementations with fallback support."""
+        category = get_category_for_method(method)
+        vendor_config = get_vendor(category, method)
+        fallback_vendors = _resolve_vendor_chain(method, vendor_config)
+        args_summary = _summarize_args(args, kwargs)
+        last_exc = None
+        _trace(
+            f"method={method} {args_summary} category={category} "
+            f"configured='{vendor_config}' chain={fallback_vendors}"
+        )
+    
+        for vendor in fallback_vendors:
+            provider = _registry.get(vendor)
+            if provider is None:
+                _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-registered")
+                continue
+    
+            impl_func = getattr(provider, method, None)
+            if impl_func is None:
+                _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-implemented")
+                continue
+    
+            try:
+                result = impl_func(*args, **kwargs)
+                if _is_failure_result(result):  # [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth
+                    _trace(
+                        f"method={method} {args_summary} vendor={vendor} status=fallback "
+                        f"reason=failure-string-detected"
+                    )
+                    continue
+                _last_hit_vendor[method] = vendor  # [N-003] cn_astock_raw_evidence
+                _trace(f"method={method} {args_summary} vendor={vendor} status=hit")
+                return result
+            except (AlphaVantageRateLimitError, NotImplementedError) as exc:
+                last_exc = exc
+                # Try next provider for transient/routing issues or placeholder providers.
+                _trace(
+                    f"method={method} {args_summary} vendor={vendor} status=fallback "
+                    f"reason={type(exc).__name__}: {exc}"
+                )
+                continue
+            except Exception as exc:
+                # Provider-specific runtime/parsing errors (e.g., schema changes, KeyError)
+                # should not terminate the full chain; fall through to next vendor.
+                last_exc = exc
+                _trace(
+                    f"method={method} {args_summary} vendor={vendor} status=fallback "
+                    f"reason={type(exc).__name__}: {exc}"
+                )
+                continue
+    
+        _trace(f"method={method} {args_summary} status=failed reason=no-available-vendor")
+        if last_exc is not None:
+>           raise RuntimeError(
+                f"No available vendor for method '{method}'. "
+                f"Configured chain: {fallback_vendors}. "
+                f"Last error: {type(last_exc).__name__}: {last_exc}"
+            ) from last_exc
+E           RuntimeError: No available vendor for method 'get_individual_fund_flow'. Configured chain: ['cn_akshare']. Last error: Exception: network error
+
+tradingagents/dataflows/interface.py:208: RuntimeError
+----------------------------- Captured stdout call -----------------------------
+[provider-trace] method=get_individual_fund_flow symbol='603629.SH' category=cn_market_data configured='cn_akshare' chain=['cn_akshare']
+[provider-trace] method=get_individual_fund_flow symbol='603629.SH' vendor=cn_akshare status=fallback reason=Exception: network error
+[provider-trace] method=get_individual_fund_flow symbol='603629.SH' status=failed reason=no-available-vendor
+_ TestRouteToVendorFallback.test_last_hit_vendor_records_actual_vendor_after_fallback _
+
+self = <tests.test_data_p0_fund_route.TestRouteToVendorFallback object at 0x10fd64f80>
+
+    def test_last_hit_vendor_records_actual_vendor_after_fallback(self):
+        """get_last_hit_vendor must return the real vendor that succeeded."""
+        astock_result = "603629.SH data here with enough length to be data"
+    
+        mock_akshare = MagicMock()
+        mock_akshare.get_individual_fund_flow = MagicMock(
+            return_value="数据获取失败：ProxyError"
+        )
+        mock_astock = MagicMock()
+        mock_astock.get_individual_fund_flow = MagicMock(return_value=astock_result)
+    
+        with patch("tradingagents.dataflows.interface._registry") as mock_reg:
+            mock_reg.get = lambda name: {
+                "cn_akshare": mock_akshare,
+                "cn_astock": mock_astock,
+            }.get(name)
+            mock_reg.list_names = MagicMock(return_value=["cn_akshare", "cn_astock"])
+    
+            with patch("tradingagents.dataflows.interface.get_vendor", return_value="cn_akshare"):
+>               route_to_vendor("get_individual_fund_flow", "603629.SH")
+
+tests/test_data_p0_fund_route.py:176: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+method = 'get_individual_fund_flow', args = ('603629.SH',), kwargs = {}
+category = 'cn_market_data', vendor_config = 'cn_akshare'
+fallback_vendors = ['cn_akshare'], args_summary = "symbol='603629.SH'"
+last_exc = None, vendor = 'cn_akshare', provider = <MagicMock id='4561526448'>
+impl_func = <MagicMock name='mock.get_individual_fund_flow' id='4561522464'>
+result = '数据获取失败：ProxyError'
+
+    def route_to_vendor(method: str, *args, **kwargs):
+        """Route method calls to provider implementations with fallback support."""
+        category = get_category_for_method(method)
+        vendor_config = get_vendor(category, method)
+        fallback_vendors = _resolve_vendor_chain(method, vendor_config)
+        args_summary = _summarize_args(args, kwargs)
+        last_exc = None
+        _trace(
+            f"method={method} {args_summary} category={category} "
+            f"configured='{vendor_config}' chain={fallback_vendors}"
+        )
+    
+        for vendor in fallback_vendors:
+            provider = _registry.get(vendor)
+            if provider is None:
+                _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-registered")
+                continue
+    
+            impl_func = getattr(provider, method, None)
+            if impl_func is None:
+                _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-implemented")
+                continue
+    
+            try:
+                result = impl_func(*args, **kwargs)
+                if _is_failure_result(result):  # [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth
+                    _trace(
+                        f"method={method} {args_summary} vendor={vendor} status=fallback "
+                        f"reason=failure-string-detected"
+                    )
+                    continue
+                _last_hit_vendor[method] = vendor  # [N-003] cn_astock_raw_evidence
+                _trace(f"method={method} {args_summary} vendor={vendor} status=hit")
+                return result
+            except (AlphaVantageRateLimitError, NotImplementedError) as exc:
+                last_exc = exc
+                # Try next provider for transient/routing issues or placeholder providers.
+                _trace(
+                    f"method={method} {args_summary} vendor={vendor} status=fallback "
+                    f"reason={type(exc).__name__}: {exc}"
+                )
+                continue
+            except Exception as exc:
+                # Provider-specific runtime/parsing errors (e.g., schema changes, KeyError)
+                # should not terminate the full chain; fall through to next vendor.
+                last_exc = exc
+                _trace(
+                    f"method={method} {args_summary} vendor={vendor} status=fallback "
+                    f"reason={type(exc).__name__}: {exc}"
+                )
+                continue
+    
+        _trace(f"method={method} {args_summary} status=failed reason=no-available-vendor")
+        if last_exc is not None:
+            raise RuntimeError(
+                f"No available vendor for method '{method}'. "
+                f"Configured chain: {fallback_vendors}. "
+                f"Last error: {type(last_exc).__name__}: {last_exc}"
+            ) from last_exc
+>       raise RuntimeError(
+            f"No available vendor for method '{method}'. "
+            f"Configured chain: {fallback_vendors}"
+        )
+E       RuntimeError: No available vendor for method 'get_individual_fund_flow'. Configured chain: ['cn_akshare']
+
+tradingagents/dataflows/interface.py:213: RuntimeError
+----------------------------- Captured stdout call -----------------------------
+[provider-trace] method=get_individual_fund_flow symbol='603629.SH' category=cn_market_data configured='cn_akshare' chain=['cn_akshare']
+[provider-trace] method=get_individual_fund_flow symbol='603629.SH' vendor=cn_akshare status=fallback reason=failure-string-detected
+[provider-trace] method=get_individual_fund_flow symbol='603629.SH' status=failed reason=no-available-vendor
+_ TestAcceptanceDataP0FundRoute.test_akshare_proxyerror_astock_fallback_succeeds _
+
+self = <tests.test_data_p0_fund_route.TestAcceptanceDataP0FundRoute object at 0x10fd65880>
+
+    def test_akshare_proxyerror_astock_fallback_succeeds(self):
+        """mock AKShare returns ProxyError string, cn_astock returns valid data,
+        final result comes from cn_astock."""
+        astock_result = (
+            "603629.SH 近20日主力资金净流向（Eastmoney push2his，单位：万元）：\n"
+            "日期 | 主力净流入 | 小单净流入 | 中单净流入 | 大单净流入 | 超大单净流入\n"
+            "2026-06-01 | 1234.56 | -567.89 | 100.00 | 800.00 | 434.56"
+        )
+    
+        mock_akshare = MagicMock()
+        mock_akshare.get_individual_fund_flow = MagicMock(
+            return_value="个股资金流向数据获取失败：ProxyError"
+        )
+        mock_astock = MagicMock()
+        mock_astock.get_individual_fund_flow = MagicMock(return_value=astock_result)
+    
+        with patch("tradingagents.dataflows.interface._registry") as mock_reg:
+            mock_reg.get = lambda name: {
+                "cn_akshare": mock_akshare,
+                "cn_astock": mock_astock,
+            }.get(name)
+            mock_reg.list_names = MagicMock(return_value=["cn_akshare", "cn_astock"])
+    
+            with patch("tradingagents.dataflows.interface.get_vendor", return_value="cn_akshare"):
+>               result = route_to_vendor("get_individual_fund_flow", "603629.SH")
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_data_p0_fund_route.py:350: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+method = 'get_individual_fund_flow', args = ('603629.SH',), kwargs = {}
+category = 'cn_market_data', vendor_config = 'cn_akshare'
+fallback_vendors = ['cn_akshare'], args_summary = "symbol='603629.SH'"
+last_exc = None, vendor = 'cn_akshare', provider = <MagicMock id='4561682304'>
+impl_func = <MagicMock name='mock.get_individual_fund_flow' id='4616617616'>
+result = '个股资金流向数据获取失败：ProxyError'
+
+    def route_to_vendor(method: str, *args, **kwargs):
+        """Route method calls to provider implementations with fallback support."""
+        category = get_category_for_method(method)
+        vendor_config = get_vendor(category, method)
+        fallback_vendors = _resolve_vendor_chain(method, vendor_config)
+        args_summary = _summarize_args(args, kwargs)
+        last_exc = None
+        _trace(
+            f"method={method} {args_summary} category={category} "
+            f"configured='{vendor_config}' chain={fallback_vendors}"
+        )
+    
+        for vendor in fallback_vendors:
+            provider = _registry.get(vendor)
+            if provider is None:
+                _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-registered")
+                continue
+    
+            impl_func = getattr(provider, method, None)
+            if impl_func is None:
+                _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-implemented")
+                continue
+    
+            try:
+                result = impl_func(*args, **kwargs)
+                if _is_failure_result(result):  # [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth
+                    _trace(
+                        f"method={method} {args_summary} vendor={vendor} status=fallback "
+                        f"reason=failure-string-detected"
+                    )
+                    continue
+                _last_hit_vendor[method] = vendor  # [N-003] cn_astock_raw_evidence
+                _trace(f"method={method} {args_summary} vendor={vendor} status=hit")
+                return result
+            except (AlphaVantageRateLimitError, NotImplementedError) as exc:
+                last_exc = exc
+                # Try next provider for transient/routing issues or placeholder providers.
+                _trace(
+                    f"method={method} {args_summary} vendor={vendor} status=fallback "
+                    f"reason={type(exc).__name__}: {exc}"
+                )
+                continue
+            except Exception as exc:
+                # Provider-specific runtime/parsing errors (e.g., schema changes, KeyError)
+                # should not terminate the full chain; fall through to next vendor.
+                last_exc = exc
+                _trace(
+                    f"method={method} {args_summary} vendor={vendor} status=fallback "
+                    f"reason={type(exc).__name__}: {exc}"
+                )
+                continue
+    
+        _trace(f"method={method} {args_summary} status=failed reason=no-available-vendor")
+        if last_exc is not None:
+            raise RuntimeError(
+                f"No available vendor for method '{method}'. "
+                f"Configured chain: {fallback_vendors}. "
+                f"Last error: {type(last_exc).__name__}: {last_exc}"
+            ) from last_exc
+>       raise RuntimeError(
+            f"No available vendor for method '{method}'. "
+            f"Configured chain: {fallback_vendors}"
+        )
+E       RuntimeError: No available vendor for method 'get_individual_fund_flow'. Configured chain: ['cn_akshare']
+
+tradingagents/dataflows/interface.py:213: RuntimeError
+----------------------------- Captured stdout call -----------------------------
+[provider-trace] method=get_individual_fund_flow symbol='603629.SH' category=cn_market_data configured='cn_akshare' chain=['cn_akshare']
+[provider-trace] method=get_individual_fund_flow symbol='603629.SH' vendor=cn_akshare status=fallback reason=failure-string-detected
+[provider-trace] method=get_individual_fund_flow symbol='603629.SH' status=failed reason=no-available-vendor
+=========================== short test summary info ============================
+FAILED tests/test_data_p0_fund_route.py::TestRouteToVendorFallback::test_akshare_failure_string_triggers_astock_fallback
+FAILED tests/test_data_p0_fund_route.py::TestRouteToVendorFallback::test_exception_triggers_fallback
+FAILED tests/test_data_p0_fund_route.py::TestRouteToVendorFallback::test_last_hit_vendor_records_actual_vendor_after_fallback
+FAILED tests/test_data_p0_fund_route.py::TestAcceptanceDataP0FundRoute::test_akshare_proxyerror_astock_fallback_succeeds
+========================= 4 failed, 27 passed in 1.05s =========================
+[0m
+The test failures are because MagicMock's `is_placeholder` attribute is truthy by default. I need to fix the tests to properly set `is_placeholder = False`:
+[0m→ [0mRead tests/test_data_p0_fund_route.py
+[0m
+[0m← [0mEdit tests/test_data_p0_fund_route.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_data_p0_fund_route.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_data_p0_fund_route.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_data_p0_fund_route.py
+@@ -62,68 +62,73 @@
+ 
+ def setup_method(self):
+     _last_hit_vendor.clear()
+ 
++def _make_mock_provider(self, return_value=None, side_effect=None):
++    provider = MagicMock()
++    provider.is_placeholder = False
++    provider.get_individual_fund_flow = MagicMock(
++        return_value=return_value, side_effect=side_effect
++    )
++    return provider
++
+ def test_akshare_failure_string_triggers_astock_fallback(self):
+     """When cn_akshare returns failure string, route continues to cn_astock."""
+-    akshare_result = "个股资金流向数据获取失败：ProxyError"
+     astock_result = "603629.SH 近20日主力资金净流向（Eastmoney push2his，单位：万元）：\ndata"
++    mock_akshare = self._make_mock_provider(
++        return_value="个股资金流向数据获取失败：ProxyError"
++    )
++    mock_astock = self._make_mock_provider(return_value=astock_result)
+ 
+-    mock_akshare = MagicMock()
+-    mock_akshare.get_individual_fund_flow = MagicMock(return_value=akshare_result)
+-    mock_astock = MagicMock()
+-    mock_astock.get_individual_fund_flow = MagicMock(return_value=astock_result)
++    mock_reg = MagicMock()
++    mock_reg.get = lambda name: {
++        "cn_akshare": mock_akshare,
++        "cn_astock": mock_astock,
++    }.get(name)
++    mock_reg.list_names = MagicMock(return_value=["cn_akshare", "cn_astock"])
+ 
+-    with patch("tradingagents.dataflows.interface._registry") as mock_reg:
+-        mock_reg.get = lambda name: {
+-            "cn_akshare": mock_akshare,
+-            "cn_astock": mock_astock,
+-        }.get(name)
+-        mock_reg.list_names = MagicMock(return_value=["cn_akshare", "cn_astock"])
+-
++    with patch("tradingagents.dataflows.interface._registry", mock_reg):
+         with patch("tradingagents.dataflows.interface.get_vendor", return_value="cn_akshare"):
+             result = route_to_vendor("get_individual_fund_flow", "603629.SH")
+ 
+     assert result == astock_result
+     assert get_last_hit_vendor("get_individual_fund_flow") == "cn_astock"
+ 
+ def test_both_vendors_fail_raises_error(self):
+     """When both vendors return failure strings, RuntimeError is raised."""
+-    akshare_result = "个股资金流向数据获取失败：ConnectionError"
+-    astock_result = "个股资金流向数据获取失败（Eastmoney push2his）：TimeoutError: timeout"
++    mock_akshare = self._make_mock_provider(
++        return_value="个股资金流向数据获取失败：ConnectionError"
++    )
++    mock_astock = self._make_mock_provider(
++        return_value="个股资金流向数据获取失败（Eastmoney push2his）：TimeoutError: timeout"
++    )
+ 
+-    mock_akshare = MagicMock()
+-    mock_akshare.get_individual_fund_flow = MagicMock(return_value=akshare_result)
+-    mock_astock = MagicMock()
+-    mock_astock.get_individual_fund_flow = MagicMock(return_value=astock_result)
++    mock_reg = MagicMock()
++    mock_reg.get = lambda name: {
++        "cn_akshare": mock_akshare,
++        "cn_astock": mock_astock,
++    }.get(name)
++    mock_reg.list_names = MagicMock(return_value=["cn_akshare", "cn_astock"])
+ 
+-    with patch("tradingagents.dataflows.interface._registry") as mock_reg:
+-        mock_reg.get = lambda name: {
+-            "cn_akshare": mock_akshare,
+-            "cn_astock": mock_astock,
+-        }.get(name)
+-        mock_reg.list_names = MagicMock(return_value=["cn_akshare", "cn_astock"])
+-
++    with patch("tradingagents.dataflows.interface._registry", mock_reg):
+         with patch("tradingagents.dataflows.interface.get_vendor", return_value="cn_akshare"):
+             with pytest.raises(RuntimeError, match="No available vendor"):
+                 route_to_vendor("get_individual_fund_flow", "603629.SH")
+ 
+ def test_first_vendor_succeeds_no_fallback(self):
+     """When first vendor returns valid data, no fallback occurs."""
+     akshare_result = "603629.SH 近20日主力资金净流向：\ndata here"
++    mock_akshare = self._make_mock_provider(return_value=akshare_result)
++    mock_astock = self._make_mock_provider(return_value="should not be called")
+ 
+-    mock_akshare = MagicMock()
+-    mock_akshare.get_individual_fund_flow = MagicMock(return_value=akshare_result)
+-    mock_astock = MagicMock()
+-    mock_astock.get_individual_fund_flow = MagicMock(return_value="should not be called")
++    mock_reg = MagicMock()
++    mock_reg.get = lambda name: {
++        "cn_akshare": mock_akshare,
++        "cn_astock": mock_astock,
++    }.get(name)
++    mock_reg.list_names = MagicMock(return_value=["cn_akshare", "cn_astock"])
+ 
+-    with patch("tradingagents.dataflows.interface._registry") as mock_reg:
+-        mock_reg.get = lambda name: {
+-            "cn_akshare": mock_akshare,
+-            "cn_astock": mock_astock,
+-        }.get(name)
+-        mock_reg.list_names = MagicMock(return_value=["cn_akshare", "cn_astock"])
+-
++    with patch("tradingagents.dataflows.interface._registry", mock_reg):
+         with patch("tradingagents.dataflows.interface.get_vendor", return_value="cn_akshare"):
+             result = route_to_vendor("get_individual_fund_flow", "603629.SH")
+ 
+     assert result == akshare_result
+@@ -132,23 +137,19 @@
+ 
+ def test_exception_triggers_fallback(self):
+     """When provider raises exception, fallback continues."""
+     astock_result = "603629.SH 近20日主力资金净流向（Eastmoney push2his，单位：万元）：\ndata"
++    mock_akshare = self._make_mock_provider(side_effect=Exception("network error"))
++    mock_astock = self._make_mock_provider(return_value=astock_result)
+ 
+-    mock_akshare = MagicMock()
+-    mock_akshare.get_individual_fund_flow = MagicMock(
+-        side_effect=Exception("network error")
+-    )
+-    mock_astock = MagicMock()
+-    mock_astock.get_individual_fund_flow = MagicMock(return_value=astock_result)
++    mock_reg = MagicMock()
++    mock_reg.get = lambda name: {
++        "cn_akshare": mock_akshare,
++        "cn_astock": mock_astock,
++    }.get(name)
++    mock_reg.list_names = MagicMock(return_value=["cn_akshare", "cn_astock"])
+ 
+-    with patch("tradingagents.dataflows.interface._registry") as mock_reg:
+-        mock_reg.get = lambda name: {
+-            "cn_akshare": mock_akshare,
+-            "cn_astock": mock_astock,
+-        }.get(name)
+-        mock_reg.list_names = MagicMock(return_value=["cn_akshare", "cn_astock"])
+-
++    with patch("tradingagents.dataflows.interface._registry", mock_reg):
+         with patch("tradingagents.dataflows.interface.get_vendor", return_value="cn_akshare"):
+             result = route_to_vendor("get_individual_fund_flow", "603629.SH")
+ 
+     assert result == astock_result
+@@ -156,23 +157,21 @@
+ 
+ def test_last_hit_vendor_records_actual_vendor_after_fallback(self):
+     """get_last_hit_vendor must return the real vendor that succeeded."""
+     astock_result = "603629.SH data here with enough length to be data"
+-
+-    mock_akshare = MagicMock()
+-    mock_akshare.get_individual_fund_flow = MagicMock(
++    mock_akshare = self._make_mock_provider(
+         return_value="数据获取失败：ProxyError"
+     )
+-    mock_astock = MagicMock()
+-    mock_astock.get_individual_fund_flow = MagicMock(return_value=astock_result)
++    mock_astock = self._make_mock_provider(return_value=astock_result)
+ 
+-    with patch("tradingagents.dataflows.interface._registry") as mock_reg:
+-        mock_reg.get = lambda name: {
+-            "cn_akshare": mock_akshare,
+-            "cn_astock": mock_astock,
+-        }.get(name)
+-        mock_reg.list_names = MagicMock(return_value=["cn_akshare", "cn_astock"])
++    mock_reg = MagicMock()
++    mock_reg.get = lambda name: {
++        "cn_akshare": mock_akshare,
++        "cn_astock": mock_astock,
++    }.get(name)
++    mock_reg.list_names = MagicMock(return_value=["cn_akshare", "cn_astock"])
+ 
++    with patch("tradingagents.dataflows.interface._registry", mock_reg):
+         with patch("tradingagents.dataflows.interface.get_vendor", return_value="cn_akshare"):
+             route_to_vendor("get_individual_fund_flow", "603629.SH")
+ 
+     assert get_last_hit_vendor("get_individual_fund_flow") == "cn_astock"
+
+[0m
+I need to fix the tests by properly mocking `_resolve_vendor_chain` instead of trying to mock the registry directly (since the `is_placeholder` check on MagicMock returns truthy):
+[0m← [0mEdit tests/test_data_p0_fund_route.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_data_p0_fund_route.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_data_p0_fund_route.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_data_p0_fund_route.py
+@@ -331,21 +331,24 @@
+     "2026-06-01 | 1234.56 | -567.89 | 100.00 | 800.00 | 434.56"
+ )
+ 
+ mock_akshare = MagicMock()
++mock_akshare.is_placeholder = False
+ mock_akshare.get_individual_fund_flow = MagicMock(
+     return_value="个股资金流向数据获取失败：ProxyError"
+ )
+ mock_astock = MagicMock()
++mock_astock.is_placeholder = False
+ mock_astock.get_individual_fund_flow = MagicMock(return_value=astock_result)
+ 
+-with patch("tradingagents.dataflows.interface._registry") as mock_reg:
+-    mock_reg.get = lambda name: {
+-        "cn_akshare": mock_akshare,
+-        "cn_astock": mock_astock,
+-    }.get(name)
+-    mock_reg.list_names = MagicMock(return_value=["cn_akshare", "cn_astock"])
++mock_reg = MagicMock()
++mock_reg.get = lambda name: {
++    "cn_akshare": mock_akshare,
++    "cn_astock": mock_astock,
++}.get(name)
++mock_reg.list_names = MagicMock(return_value=["cn_akshare", "cn_astock"])
+ 
++with patch("tradingagents.dataflows.interface._registry", mock_reg):
+     with patch("tradingagents.dataflows.interface.get_vendor", return_value="cn_akshare"):
+         result = route_to_vendor("get_individual_fund_flow", "603629.SH")
+ 
+ assert result == astock_result
+
+[0m
+Now fix the acceptance test similarly:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_data_p0_fund_route.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 31 items
+
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_detects_failure_patterns[\u4e2a\u80a1\u8d44\u91d1\u6d41\u5411\u6570\u636e\u83b7\u53d6\u5931\u8d25\uff1aProxyError] PASSED [  3%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_detects_failure_patterns[\u4e2a\u80a1\u8d44\u91d1\u6d41\u5411\u6570\u636e\u83b7\u53d6\u5931\u8d25\uff1aConnectionError: max retries] PASSED [  6%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_detects_failure_patterns[\u6570\u636e\u83b7\u53d6\u5931\u8d25\uff1aMax retries exceeded with url] PASSED [  9%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_detects_failure_patterns[Unable to connect to proxy] PASSED [ 12%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_detects_failure_patterns[\u8fd1\u671f\u4e3b\u529b\u8d44\u91d1\u6d41\u5411\u6570\u636e\u6682\u4e0d\u53ef\u7528\u3002] PASSED [ 16%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_detects_failure_patterns[TimeoutError: timed out] PASSED [ 19%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_detects_failure_patterns[ConnectTimeout: connection timed out] PASSED [ 22%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_detects_failure_patterns[ReadTimeout: read timed out] PASSED [ 25%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_normal_data_not_flagged[603629.SH \u8fd120\u65e5\u4e3b\u529b\u8d44\u91d1\u51c0\u6d41\u5411\uff08Eastmoney push2his\uff0c\u5355\u4f4d\uff1a\u4e07\u5143\uff09\uff1a\n2026-06-01 | 1234.56] PASSED [ 29%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_normal_data_not_flagged[603629.SH \u8fd120\u65e5\u4e3b\u529b\u8d44\u91d1\u51c0\u6d41\u5411\uff1a\n\u65e5\u671f \u4e3b\u529b\u51c0\u6d41\u5165] PASSED [ 32%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_normal_data_not_flagged[\u677f\u5757\u8d44\u91d1\u6d41\u5411\u6392\u540d\uff08\u517115\u4e2a\u677f\u5757\uff0c\u524d10\u540d\uff09\uff1a\n\u6392\u540d \u677f\u5757\u4ee3\u7801] PASSED [ 35%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_normal_data_not_flagged[some normal data string with no errors] PASSED [ 38%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_non_string_not_flagged PASSED [ 41%]
+tests/test_data_p0_fund_route.py::TestIsFailureResult::test_empty_string_not_flagged PASSED [ 45%]
+tests/test_data_p0_fund_route.py::TestRouteToVendorFallback::test_akshare_failure_string_triggers_astock_fallback PASSED [ 48%]
+tests/test_data_p0_fund_route.py::TestRouteToVendorFallback::test_both_vendors_fail_raises_error PASSED [ 51%]
+tests/test_data_p0_fund_route.py::TestRouteToVendorFallback::test_first_vendor_succeeds_no_fallback PASSED [ 54%]
+tests/test_data_p0_fund_route.py::TestRouteToVendorFallback::test_exception_triggers_fallback PASSED [ 58%]
+tests/test_data_p0_fund_route.py::TestRouteToVendorFallback::test_last_hit_vendor_records_actual_vendor_after_fallback PASSED [ 61%]
+tests/test_data_p0_fund_route.py::TestCnAstockFundFlowUnitConversion::test_yuan_to_wanyuan_conversion PASSED [ 64%]
+tests/test_data_p0_fund_route.py::TestCnAstockFundFlowUnitConversion::test_unit_verified_detects_wanyuan PASSED [ 67%]
+tests/test_data_p0_fund_route.py::TestCnAstockFundFlowUnitConversion::test_unit_not_verified_for_raw_yuan PASSED [ 70%]
+tests/test_data_p0_fund_route.py::TestCnAstockFundFlowUnitConversion::test_small_values_converted PASSED [ 74%]
+tests/test_data_p0_fund_route.py::TestCnAstockFundFlowUnitConversion::test_empty_klines_returns_unavailable PASSED [ 77%]
+tests/test_data_p0_fund_route.py::TestFundFlowFallbackProvenance::test_fallback_produces_has_data_status PASSED [ 80%]
+tests/test_data_p0_fund_route.py::TestFundFlowFallbackProvenance::test_both_fail_produces_failed_status PASSED [ 83%]
+tests/test_data_p0_fund_route.py::TestAcceptanceDataP0FundRoute::test_akshare_proxyerror_astock_fallback_succeeds PASSED [ 87%]
+tests/test_data_p0_fund_route.py::TestAcceptanceDataP0FundRoute::test_unit_conversion_yuan_to_wanyuan PASSED [ 90%]
+tests/test_data_p0_fund_route.py::TestAcceptanceDataP0FundRoute::test_failure_string_not_treated_as_success PASSED [ 93%]
+tests/test_data_p0_fund_route.py::TestAcceptanceDataP0FundRoute::test_both_fail_status_is_failed PASSED [ 96%]
+tests/test_data_p0_fund_route.py::TestAcceptanceDataP0FundRoute::test_no_forbidden_words_in_output PASSED [100%]
+
+============================== 31 passed in 0.89s ==============================
+[0m
+All 31 tests pass. Now let's run the related regression tests:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_raw_evidence_vendor.py tests/test_g007_fund_lhb_provenance.py tests/test_data004_evidence_contract.py tests/test_data005_fixture_replay.py -v --tb=short 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 203 items
+
+tests/test_raw_evidence_vendor.py::TestGetLastHitVendor::test_returns_empty_when_no_hits PASSED [  0%]
+tests/test_raw_evidence_vendor.py::TestGetLastHitVendor::test_returns_vendor_after_hit PASSED [  0%]
+tests/test_raw_evidence_vendor.py::TestGetLastHitVendor::test_returns_cn_astock_after_hit PASSED [  1%]
+tests/test_raw_evidence_vendor.py::TestRawEvidenceVendorTracking::test_stock_data_vendor_cn_akshare PASSED [  1%]
+tests/test_raw_evidence_vendor.py::TestRawEvidenceVendorTracking::test_stock_data_vendor_cn_astock_fallback PASSED [  2%]
+tests/test_raw_evidence_vendor.py::TestRawEvidenceVendorTracking::test_stock_data_vendor_default_when_no_tracking PASSED [  2%]
+tests/test_raw_evidence_vendor.py::TestRawEvidenceVendorTracking::test_realtime_patched_overrides_tracked_vendor PASSED [  3%]
+tests/test_raw_evidence_vendor.py::TestRawEvidenceVendorTracking::test_non_stock_data_keys_keep_default_vendor PASSED [  3%]
+tests/test_raw_evidence_vendor.py::TestRawEvidenceVendorTracking::test_failed_stock_data_no_vendor_override PASSED [  4%]
+tests/test_g007_fund_lhb_provenance.py::TestFundFlowProvenance::test_individual_has_data_g006_structured PASSED [  4%]
+tests/test_g007_fund_lhb_provenance.py::TestFundFlowProvenance::test_individual_failed_news_mentions_fund PASSED [  5%]
+tests/test_g007_fund_lhb_provenance.py::TestFundFlowProvenance::test_individual_not_queried PASSED [  5%]
+tests/test_g007_fund_lhb_provenance.py::TestFundFlowProvenance::test_individual_normal_no_data PASSED [  6%]
+tests/test_g007_fund_lhb_provenance.py::TestFundFlowProvenance::test_legacy_format_individual_has_data PASSED [  6%]
+tests/test_g007_fund_lhb_provenance.py::TestFundFlowProvenance::test_legacy_format_individual_failed PASSED [  7%]
+tests/test_g007_fund_lhb_provenance.py::TestFundFlowProvenance::test_board_separate_from_individual PASSED [  7%]
+tests/test_g007_fund_lhb_provenance.py::TestFundFlowProvenance::test_news_no_fund_mention PASSED [  8%]
+tests/test_g007_fund_lhb_provenance.py::TestFundFlowProvenance::test_empty_raw_evidence PASSED [  8%]
+tests/test_g007_fund_lhb_provenance.py::TestFundFlowProvenance::test_unit_verified_false_blocks_strong_evidence PASSED [  9%]
+tests/test_g007_fund_lhb_provenance.py::TestLHBProvenance::test_force_false_returns_not_queried PASSED [  9%]
+tests/test_g007_fund_lhb_provenance.py::TestLHBProvenance::test_force_false_legacy_text_query_mode PASSED [ 10%]
+tests/test_g007_fund_lhb_provenance.py::TestLHBProvenance::test_force_true_no_data_returns_normal_no_data PASSED [ 10%]
+tests/test_g007_fund_lhb_provenance.py::TestLHBProvenance::test_force_true_has_data PASSED [ 11%]
+tests/test_g007_fund_lhb_provenance.py::TestLHBProvenance::test_force_true_failed PASSED [ 11%]
+tests/test_g007_fund_lhb_provenance.py::TestLHBProvenance::test_legacy_text_not_queried PASSED [ 12%]
+tests/test_g007_fund_lhb_provenance.py::TestLHBProvenance::test_legacy_text_normal_no_data PASSED [ 12%]
+tests/test_g007_fund_lhb_provenance.py::TestLHBProvenance::test_legacy_text_has_data PASSED [ 13%]
+tests/test_g007_fund_lhb_provenance.py::TestLHBProvenance::test_legacy_text_failed PASSED [ 13%]
+tests/test_g007_fund_lhb_provenance.py::TestLHBProvenance::test_empty_raw PASSED [ 14%]
+tests/test_g007_fund_lhb_provenance.py::TestLHBProvenance::test_historical_lhb_today_not_queried_no_wrong_display PASSED [ 14%]
+tests/test_g007_fund_lhb_provenance.py::TestGateIntegration::test_fund_flow_failed_news_mentions_blocks_gate PASSED [ 15%]
+tests/test_g007_fund_lhb_provenance.py::TestGateIntegration::test_fund_flow_ok_passes_gate PASSED [ 15%]
+tests/test_g007_fund_lhb_provenance.py::TestGateIntegration::test_unit_unverified_blocks_gate PASSED [ 16%]
+tests/test_g007_fund_lhb_provenance.py::TestInferEvidenceLHB::test_lhb_not_queried_from_g006_structured PASSED [ 16%]
+tests/test_g007_fund_lhb_provenance.py::TestInferEvidenceLHB::test_lhb_normal_no_data_from_g006_structured PASSED [ 17%]
+tests/test_g007_fund_lhb_provenance.py::TestInferEvidenceLHB::test_lhb_failed_from_g006_structured PASSED [ 17%]
+tests/test_g007_fund_lhb_provenance.py::TestInferEvidenceLHB::test_lhb_has_data_from_g006_structured PASSED [ 18%]
+tests/test_g007_fund_lhb_provenance.py::TestInferEvidenceLHB::test_lhb_legacy_not_queried_text PASSED [ 18%]
+tests/test_g007_fund_lhb_provenance.py::TestFormatProvenance::test_all_ok_format PASSED [ 19%]
+tests/test_g007_fund_lhb_provenance.py::TestFormatProvenance::test_failed_with_news_conflict_format PASSED [ 19%]
+tests/test_g007_fund_lhb_provenance.py::TestFormatProvenance::test_lhb_not_queried_display PASSED [ 20%]
+tests/test_g007_fund_lhb_provenance.py::TestInferSourceStatusG007::test_lhb_not_queried_text PASSED [ 20%]
+tests/test_g007_fund_lhb_provenance.py::TestInferSourceStatusG007::test_lhb_normal_no_data_text PASSED [ 21%]
+tests/test_g007_fund_lhb_provenance.py::TestInferSourceStatusG007::test_lhb_failed_text PASSED [ 21%]
+tests/test_g007_fund_lhb_provenance.py::TestInferSourceStatusG007::test_lhb_has_data_text PASSED [ 22%]
+tests/test_g007_fund_lhb_provenance.py::TestInferSourceStatusG007::test_regular_fund_flow_not_affected PASSED [ 22%]
+tests/test_g007_fund_lhb_provenance.py::TestInferSourceStatusG007::test_none_returns_not_queried PASSED [ 23%]
+tests/test_g007_fund_lhb_provenance.py::TestInferSourceStatusG007::test_empty_returns_not_queried PASSED [ 23%]
+tests/test_data004_evidence_contract.py::TestEvidenceContract::test_default_values PASSED [ 24%]
+tests/test_data004_evidence_contract.py::TestEvidenceContract::test_to_dict PASSED [ 24%]
+tests/test_data004_evidence_contract.py::TestEvidenceContract::test_from_dict PASSED [ 25%]
+tests/test_data004_evidence_contract.py::TestEvidenceContract::test_from_dict_minimal PASSED [ 25%]
+tests/test_data004_evidence_contract.py::TestEvidenceContract::test_roundtrip PASSED [ 26%]
+tests/test_data004_evidence_contract.py::TestEvidenceContract::test_has_data_property PASSED [ 26%]
+tests/test_data004_evidence_contract.py::TestEvidenceContract::test_is_failed_property PASSED [ 27%]
+tests/test_data004_evidence_contract.py::TestEvidenceContract::test_is_fallback_property PASSED [ 27%]
+tests/test_data004_evidence_contract.py::TestEvidenceContract::test_unit_known_property PASSED [ 28%]
+tests/test_data004_evidence_contract.py::TestEvidenceContract::test_endpoint_known_property PASSED [ 28%]
+tests/test_data004_evidence_contract.py::TestResolveDataType::test_stock_data PASSED [ 29%]
+tests/test_data004_evidence_contract.py::TestResolveDataType::test_fund_flow_individual PASSED [ 29%]
+tests/test_data004_evidence_contract.py::TestResolveDataType::test_fund_flow_board PASSED [ 30%]
+tests/test_data004_evidence_contract.py::TestResolveDataType::test_lhb PASSED [ 30%]
+tests/test_data004_evidence_contract.py::TestResolveDataType::test_news PASSED [ 31%]
+tests/test_data004_evidence_contract.py::TestResolveDataType::test_announcements PASSED [ 31%]
+tests/test_data004_evidence_contract.py::TestResolveDataType::test_unknown PASSED [ 32%]
+tests/test_data004_evidence_contract.py::TestResolveDataType::test_all_keys_mapped PASSED [ 32%]
+tests/test_data004_evidence_contract.py::TestResolveEndpoint::test_akshare_ohlcv PASSED [ 33%]
+tests/test_data004_evidence_contract.py::TestResolveEndpoint::test_astock_fund_flow PASSED [ 33%]
+tests/test_data004_evidence_contract.py::TestResolveEndpoint::test_unknown_vendor PASSED [ 33%]
+tests/test_data004_evidence_contract.py::TestResolveEndpoint::test_unknown_data_type PASSED [ 34%]
+tests/test_data004_evidence_contract.py::TestResolveEndpoint::test_empty_data_type PASSED [ 34%]
+tests/test_data004_evidence_contract.py::TestResolveFallbackInfo::test_primary_returns_none PASSED [ 35%]
+tests/test_data004_evidence_contract.py::TestResolveFallbackInfo::test_fallback_returns_primary PASSED [ 35%]
+tests/test_data004_evidence_contract.py::TestResolveFallbackInfo::test_unknown_type PASSED [ 36%]
+tests/test_data004_evidence_contract.py::TestComputeContractCompleteness::test_empty_evidence PASSED [ 36%]
+tests/test_data004_evidence_contract.py::TestComputeContractCompleteness::test_full_evidence PASSED [ 37%]
+tests/test_data004_evidence_contract.py::TestComputeContractCompleteness::test_missing_fund_flow PASSED [ 37%]
+tests/test_data004_evidence_contract.py::TestComputeContractCompleteness::test_fallback_vendor_shows_actual PASSED [ 38%]
+tests/test_data004_evidence_contract.py::TestComputeContractCompleteness::test_unit_unknown_degrades PASSED [ 38%]
+tests/test_data004_evidence_contract.py::TestComputeContractCompleteness::test_unit_unverified_degrades PASSED [ 39%]
+tests/test_data004_evidence_contract.py::TestBuildDataSourceSummary::test_summary_keys PASSED [ 39%]
+tests/test_data004_evidence_contract.py::TestBuildDataSourceSummary::test_summary_structure PASSED [ 40%]
+tests/test_data004_evidence_contract.py::TestBuildDataSourceSummary::test_empty_evidence PASSED [ 40%]
+tests/test_data004_evidence_contract.py::TestBuildDataSourceSummary::test_non_dict_entry_skipped PASSED [ 41%]
+tests/test_data004_evidence_contract.py::TestBuildRawEvidenceContractFields::test_all_entries_have_field_key PASSED [ 41%]
+tests/test_data004_evidence_contract.py::TestBuildRawEvidenceContractFields::test_all_entries_have_endpoint PASSED [ 42%]
+tests/test_data004_evidence_contract.py::TestBuildRawEvidenceContractFields::test_all_entries_have_fallback_from PASSED [ 42%]
+tests/test_data004_evidence_contract.py::TestBuildRawEvidenceContractFields::test_all_entries_have_source_url PASSED [ 43%]
+tests/test_data004_evidence_contract.py::TestBuildRawEvidenceContractFields::test_stock_data_endpoint PASSED [ 43%]
+tests/test_data004_evidence_contract.py::TestBuildRawEvidenceContractFields::test_fund_flow_endpoint PASSED [ 44%]
+tests/test_data004_evidence_contract.py::TestBuildRawEvidenceContractFields::test_lhb_endpoint PASSED [ 44%]
+tests/test_data004_evidence_contract.py::TestBuildRawEvidenceContractFields::test_fallback_detected_when_non_primary PASSED [ 45%]
+tests/test_data004_evidence_contract.py::TestBuildRawEvidenceContractFields::test_no_fallback_when_primary PASSED [ 45%]
+tests/test_data004_evidence_contract.py::TestData004Acceptance::test_fallback_shows_actual_vendor PASSED [ 46%]
+tests/test_data004_evidence_contract.py::TestData004Acceptance::test_unit_unknown_degrades_completeness PASSED [ 46%]
+tests/test_data004_evidence_contract.py::TestData004Acceptance::test_unit_conflict_degrades PASSED [ 47%]
+tests/test_data004_evidence_contract.py::TestData004Acceptance::test_failed_status_zero_completeness_for_key PASSED [ 47%]
+tests/test_data004_evidence_contract.py::TestData004Acceptance::test_endpoint_populated_for_known_types PASSED [ 48%]
+tests/test_data004_evidence_contract.py::TestData004Acceptance::test_contract_completeness_from_readiness PASSED [ 48%]
+tests/test_data004_evidence_contract.py::TestData004Acceptance::test_contract_completeness_empty PASSED [ 49%]
+tests/test_data004_evidence_contract.py::TestData004Acceptance::test_contract_completeness_empty_dict PASSED [ 49%]
+tests/test_data004_evidence_contract.py::TestData004Acceptance::test_fund_flow_unit_verified_in_contract PASSED [ 50%]
+tests/test_data004_evidence_contract.py::TestData004Acceptance::test_lhb_query_mode_in_contract PASSED [ 50%]
+tests/test_data004_evidence_contract.py::TestData004Acceptance::test_stock_data_unit_in_contract PASSED [ 51%]
+tests/test_data004_evidence_contract.py::TestEdgeCases::test_none_pool_value PASSED [ 51%]
+tests/test_data004_evidence_contract.py::TestEdgeCases::test_empty_string_value PASSED [ 52%]
+tests/test_data004_evidence_contract.py::TestEdgeCases::test_dict_value PASSED [ 52%]
+tests/test_data004_evidence_contract.py::TestEdgeCases::test_list_value PASSED [ 53%]
+tests/test_data004_evidence_contract.py::TestEdgeCases::test_empty_list_value PASSED [ 53%]
+tests/test_data004_evidence_contract.py::TestEdgeCases::test_realtime_patched_vendor PASSED [ 54%]
+tests/test_data004_evidence_contract.py::TestEdgeCases::test_adjustment_in_stock_data PASSED [ 54%]
+tests/test_data004_evidence_contract.py::TestEdgeCases::test_no_api_keys_in_output PASSED [ 55%]
+tests/test_data004_evidence_contract.py::TestEdgeCases::test_backward_compatible_existing_fields PASSED [ 55%]
+tests/test_data004_evidence_contract.py::TestIntegrationWithReadiness::test_infer_evidence_with_contract PASSED [ 56%]
+tests/test_data004_evidence_contract.py::TestIntegrationWithReadiness::test_infer_evidence_with_failed_fund_flow PASSED [ 56%]
+tests/test_data004_evidence_contract.py::TestIntegrationWithReadiness::test_fund_flow_provenance_with_contract PASSED [ 57%]
+tests/test_data004_evidence_contract.py::TestIntegrationWithReadiness::test_lhb_provenance_with_contract PASSED [ 57%]
+tests/test_data005_fixture_replay.py::TestGetFixture::test_get_normal_quote PASSED [ 58%]
+tests/test_data005_fixture_replay.py::TestGetFixture::test_get_stale_daily PASSED [ 58%]
+tests/test_data005_fixture_replay.py::TestGetFixture::test_get_realtime_success PASSED [ 59%]
+tests/test_data005_fixture_replay.py::TestGetFixture::test_get_realtime_failure PASSED [ 59%]
+tests/test_data005_fixture_replay.py::TestGetFixture::test_get_fund_flow_unit_anomaly PASSED [ 60%]
+tests/test_data005_fixture_replay.py::TestGetFixture::test_get_lhb_no_trigger PASSED [ 60%]
+tests/test_data005_fixture_replay.py::TestGetFixture::test_get_announcement_failure PASSED [ 61%]
+tests/test_data005_fixture_replay.py::TestGetFixture::test_get_unknown_fixture PASSED [ 61%]
+tests/test_data005_fixture_replay.py::TestGetFixture::test_all_fixture_ids_count PASSED [ 62%]
+tests/test_data005_fixture_replay.py::TestGetFixture::test_get_all_fixtures PASSED [ 62%]
+tests/test_data005_fixture_replay.py::TestFixtureEntryStructure::test_fixture_has_required_fields PASSED [ 63%]
+tests/test_data005_fixture_replay.py::TestFixtureEntryStructure::test_fixture_to_dict PASSED [ 63%]
+tests/test_data005_fixture_replay.py::TestFixtureEntryStructure::test_normal_quote_evidence_has_stock_data PASSED [ 64%]
+tests/test_data005_fixture_replay.py::TestFixtureEntryStructure::test_normal_quote_evidence_has_fund_flow PASSED [ 64%]
+tests/test_data005_fixture_replay.py::TestFixtureEntryStructure::test_normal_quote_evidence_has_lhb PASSED [ 65%]
+tests/test_data005_fixture_replay.py::TestFixtureEntryStructure::test_stale_daily_no_today_data PASSED [ 65%]
+tests/test_data005_fixture_replay.py::TestFixtureEntryStructure::test_realtime_success_has_patch PASSED [ 66%]
+tests/test_data005_fixture_replay.py::TestFixtureEntryStructure::test_fund_flow_unit_anomaly_fallback PASSED [ 66%]
+tests/test_data005_fixture_replay.py::TestFixtureEntryStructure::test_announcement_failure_has_error PASSED [ 66%]
+tests/test_data005_fixture_replay.py::TestFixtureEntryStructure::test_lhb_no_trigger_not_queried PASSED [ 67%]
+tests/test_data005_fixture_replay.py::TestReplayResult::test_replay_result_defaults PASSED [ 67%]
+tests/test_data005_fixture_replay.py::TestReplayResult::test_replay_result_to_dict PASSED [ 68%]
+tests/test_data005_fixture_replay.py::TestReplayReport::test_replay_report_defaults PASSED [ 68%]
+tests/test_data005_fixture_replay.py::TestReplayReport::test_replay_report_to_dict PASSED [ 69%]
+tests/test_data005_fixture_replay.py::TestReplaySingleFixture::test_replay_normal_quote PASSED [ 69%]
+tests/test_data005_fixture_replay.py::TestReplaySingleFixture::test_replay_stale_daily PASSED [ 70%]
+tests/test_data005_fixture_replay.py::TestReplaySingleFixture::test_replay_realtime_success PASSED [ 70%]
+tests/test_data005_fixture_replay.py::TestReplaySingleFixture::test_replay_realtime_failure PASSED [ 71%]
+tests/test_data005_fixture_replay.py::TestReplaySingleFixture::test_replay_fund_flow_unit_anomaly PASSED [ 71%]
+tests/test_data005_fixture_replay.py::TestReplaySingleFixture::test_replay_lhb_no_trigger PASSED [ 72%]
+tests/test_data005_fixture_replay.py::TestReplaySingleFixture::test_replay_announcement_failure PASSED [ 72%]
+tests/test_data005_fixture_replay.py::TestRunFixtureReplay::test_run_all_fixtures PASSED [ 73%]
+tests/test_data005_fixture_replay.py::TestRunFixtureReplay::test_run_all_pass PASSED [ 73%]
+tests/test_data005_fixture_replay.py::TestRunFixtureReplay::test_run_selective_fixtures PASSED [ 74%]
+tests/test_data005_fixture_replay.py::TestRunFixtureReplay::test_run_custom_fixtures PASSED [ 74%]
+tests/test_data005_fixture_replay.py::TestRunFixtureReplay::test_report_has_date_and_time PASSED [ 75%]
+tests/test_data005_fixture_replay.py::TestRunFixtureReplay::test_report_by_data_type PASSED [ 75%]
+tests/test_data005_fixture_replay.py::TestRunFixtureReplay::test_report_by_status PASSED [ 76%]
+tests/test_data005_fixture_replay.py::TestRunFixtureReplay::test_empty_fixture_ids PASSED [ 76%]
+tests/test_data005_fixture_replay.py::TestClassifyFailureType::test_connection_error PASSED [ 77%]
+tests/test_data005_fixture_replay.py::TestClassifyFailureType::test_timeout_error PASSED [ 77%]
+tests/test_data005_fixture_replay.py::TestClassifyFailureType::test_rate_limit PASSED [ 78%]
+tests/test_data005_fixture_replay.py::TestClassifyFailureType::test_api_error PASSED [ 78%]
+tests/test_data005_fixture_replay.py::TestClassifyFailureType::test_stale_data PASSED [ 79%]
+tests/test_data005_fixture_replay.py::TestClassifyFailureType::test_unexpected_not_queried PASSED [ 79%]
+tests/test_data005_fixture_replay.py::TestClassifyFailureType::test_status_mismatch PASSED [ 80%]
+tests/test_data005_fixture_replay.py::TestRateLimitNotNoData::test_rate_limit_fixture_is_failed_not_no_data PASSED [ 80%]
+tests/test_data005_fixture_replay.py::TestRateLimitNotNoData::test_timeout_fixture_is_failed_not_no_data PASSED [ 81%]
+tests/test_data005_fixture_replay.py::TestRateLimitNotNoData::test_connection_error_is_failed_not_no_data PASSED [ 81%]
+tests/test_data005_fixture_replay.py::TestLHBNotQueriedVsFailed::test_not_queried_is_not_failed PASSED [ 82%]
+tests/test_data005_fixture_replay.py::TestLHBNotQueriedVsFailed::test_not_queried_vs_normal_no_data PASSED [ 82%]
+tests/test_data005_fixture_replay.py::TestFallbackDetection::test_fund_flow_fallback_detected PASSED [ 83%]
+tests/test_data005_fixture_replay.py::TestFallbackDetection::test_normal_quote_no_fallback PASSED [ 83%]
+tests/test_data005_fixture_replay.py::TestCompleteness::test_normal_quote_high_completeness PASSED [ 84%]
+tests/test_data005_fixture_replay.py::TestCompleteness::test_announcement_failure_low_completeness PASSED [ 84%]
+tests/test_data005_fixture_replay.py::TestCompleteness::test_fund_flow_unit_anomaly_lower_completeness PASSED [ 85%]
+tests/test_data005_fixture_replay.py::TestSourceConflict::test_conflicting_vendors_in_evidence PASSED [ 85%]
+tests/test_data005_fixture_replay.py::TestSourceConflict::test_fallback_vendor_disagreement PASSED [ 86%]
+tests/test_data005_fixture_replay.py::TestRenderReplayReport::test_render_all_passed PASSED [ 86%]
+tests/test_data005_fixture_replay.py::TestRenderReplayReport::test_render_has_fixture_table PASSED [ 87%]
+tests/test_data005_fixture_replay.py::TestRenderReplayReport::test_render_with_failures PASSED [ 87%]
+tests/test_data005_fixture_replay.py::TestRenderReplayReport::test_render_no_failure_section_when_all_pass PASSED [ 88%]
+tests/test_data005_fixture_replay.py::TestRenderReplayReport::test_render_by_data_type PASSED [ 88%]
+tests/test_data005_fixture_replay.py::TestSaveReplayReport::test_save_creates_file PASSED [ 89%]
+tests/test_data005_fixture_replay.py::TestSaveReplayReport::test_save_filename_is_date PASSED [ 89%]
+tests/test_data005_fixture_replay.py::TestSaveReplayReport::test_run_replay_and_save PASSED [ 90%]
+tests/test_data005_fixture_replay.py::TestAcceptanceData005::test_all_fixture_outputs_stable PASSED [ 90%]
+tests/test_data005_fixture_replay.py::TestAcceptanceData005::test_rate_limit_not_no_data PASSED [ 91%]
+tests/test_data005_fixture_replay.py::TestAcceptanceData005::test_lhb_not_queried_not_failed PASSED [ 91%]
+tests/test_data005_fixture_replay.py::TestAcceptanceData005::test_fixture_replay_callable_by_script PASSED [ 92%]
+tests/test_data005_fixture_replay.py::TestAcceptanceData005::test_fixture_replay_callable_with_save PASSED [ 92%]
+tests/test_data005_fixture_replay.py::TestAcceptanceData005::test_fund_flow_unit_anomaly_detected PASSED [ 93%]
+tests/test_data005_fixture_replay.py::TestAcceptanceData005::test_realtime_failure_marked_stale PASSED [ 93%]
+tests/test_data005_fixture_replay.py::TestAcceptanceData005::test_normal_quote_completeness_high PASSED [ 94%]
+tests/test_data005_fixture_replay.py::TestAcceptanceData005::test_no_cookie_or_key_in_fixtures PASSED [ 94%]
+tests/test_data005_fixture_replay.py::TestAcceptanceData005::test_replay_report_serializable PASSED [ 95%]
+tests/test_data005_fixture_replay.py::TestAcceptanceData005::test_stale_daily_needs_realtime_patch PASSED [ 95%]
+tests/test_data005_fixture_replay.py::TestAcceptanceData005::test_announcement_failure_error_preserved PASSED [ 96%]
+tests/test_data005_fixture_replay.py::TestAcceptanceData005::test_run_fixture_replay_empty_returns_ok PASSED [ 96%]
+tests/test_data005_fixture_replay.py::TestEdgeCases::test_fixture_with_empty_raw_evidence PASSED [ 97%]
+tests/test_data005_fixture_replay.py::TestEdgeCases::test_fixture_with_non_dict_evidence PASSED [ 97%]
+tests/test_data005_fixture_replay.py::TestEdgeCases::test_fixture_with_none_values PASSED [ 98%]
+tests/test_data005_fixture_replay.py::TestEdgeCases::test_multiple_failures_tracked PASSED [ 98%]
+tests/test_data005_fixture_replay.py::TestEdgeCases::test_report_with_only_failures_renders PASSED [ 99%]
+tests/test_data005_fixture_replay.py::TestEdgeCases::test_fixture_id_not_in_builders PASSED [ 99%]
+tests/test_data005_fixture_replay.py::TestEdgeCases::test_all_fixtures_have_unique_ids PASSED [100%]
+
+============================= 203 passed in 1.02s ==============================
+[0m
+[0m# [0mTodos
+[✓] Understand current provider route & cn_akshare/cn_astock provider code
+[✓] Fix provider route failure-string false success detection
+[✓] Fix cn_astock fund flow unit conversion (元 → 万元)
+[✓] Write tests covering fallback chain and unit conversion
+[•] Update docs/DEVLOG.md
+[0m
+All 203 regression tests pass. Now update the DEVLOG and TASKS status:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=10][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,42 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-04 | DATA-P0-FUND-ROUTE: 主力资金 fallback 假成功与单位修复
++
++- **执行者**：OpenCode
++- **任务**：DATA-P0-FUND-ROUTE — 修复主力资金 AKShare 失败字符串被路由层误判为成功的问题，确保 Eastmoney/cn_astock fallback 真正生效，并统一资金流单位。
++- **修改文件**：
++  - `tradingagents/dataflows/interface.py` — [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth
++    - 新增 `_FAILURE_RESULT_PATTERNS` 元组：10 个失败文本模式（数据获取失败/ProxyError/ConnectionError/Max retries exceeded/Unable to connect/暂不可用/获取失败/TimeoutError/ConnectTimeout/ReadTimeout）
++    - 新增 `_is_failure_result(result)` 函数：检测 provider 返回值是否为失败字符串
++    - `route_to_vendor()` 在 provider 返回后增加 `_is_failure_result(result)` 检查：失败字符串触发 fallback 而非记录为 hit
++    - 修复后：AKShare 返回 ProxyError 字符串 → 路由层检测到失败 → 继续到 cn_astock → 记录 `vendor=cn_astock`
++  - `tradingagents/dataflows/providers/cn_astock_provider.py` — [DATA-P0-FUND-ROUTE]
++    - `get_individual_fund_flow()` 金额单位修复：Eastmoney push2his 原始金额按元处理，输出前统一 `/10000` 转为万元
++    - 输出 header 注明 `单位：万元`，使 `_verify_unit()` 检测通过 → `unit_verified=True`
++    - 数值格式化为 `.2f` 保留两位小数
++    - 非数值 fallback：ValueError/IndexError 时退回原始字符串
++  - `tests/test_data_p0_fund_route.py` — 新建，31 个测试覆盖：
++    - `TestIsFailureResult` (14): 8 个失败模式检测 + 4 个正常数据不误判 + 非 string + 空字符串
++    - `TestRouteToVendorFallback` (5): AKShare 失败字符串触发 astock fallback / 双失败 RuntimeError / 首个成功不 fallback / 异常触发 fallback / last_hit_vendor 记录实际 vendor
++    - `TestCnAstockFundFlowUnitConversion` (5): 元→万元转换 / 万元标注检测 / 原始元级未验证 / 小值转换 / 空 klines 返回不可用
++    - `TestFundFlowFallbackProvenance` (2): fallback 产生 HAS_DATA / 双失败产生 FAILED
++    - `TestAcceptanceDataP0FundRoute` (5): AKShare ProxyError → astock fallback / 元→万元转换 / 失败字符串不视为成功 / 双失败状态 / 无禁用词
++  - `docs/TASKS.md` — DATA-P0-FUND-ROUTE 状态更新
++  - `docs/DEVLOG.md` — 本条记录
++- **测试结果**：31 passed (DATA-P0-FUND-ROUTE)；203 passed (回归)；0 failed
++- **关键逻辑**：
++  - 失败字符串检测：`_is_failure_result()` 检查 10 个模式，返回 bool
++  - 路由修复：`route_to_vendor()` 在 `try` 块内 provider 返回后立即检查失败字符串，`continue` 到下一个 vendor
++  - 单位修复：cn_astock `get_individual_fund_flow()` 将 Eastmoney push2his 原始值 `/10000`，header 注明 `单位：万元`
++  - `_verify_unit()` 检测万元标注 → `unit_verified=True` → 资金流强证据允许
++  - `get_last_hit_vendor()` 记录最终成功 vendor（如 `cn_astock`），非首个 provider
++- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
++
++---
++
+ ## 2026-06-03 | TF-UX 收敛优化：评分 + 分级视图 + 自动刷新 + 复盘
+ 
+ - **执行者**：OpenCode
+ - **任务**：TradeFlow UX 收敛优化 4 个任务
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -47,9 +47,9 @@
+ 21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+ 22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+ 23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+ 24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+-25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，ready）。
++25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+ 26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
+ 27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
+ 28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，ready，依赖 DATA-001/DATA-004 ✓）。
+ 29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，in_progress — claimed PERF-003-20260602-200127）。
+
+[0m
+Now update the TASKS.md status for this task:
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -521,9 +521,9 @@
+ 
+ ### DATA-P0-FUND-ROUTE: 主力资金 fallback 假成功与单位修复（P0）
+ - **描述**：修复主力资金 AKShare 失败字符串被路由层误判为成功的问题，确保 Eastmoney/cn_astock fallback 真正生效，并统一资金流单位。
+ - **优先级**：P0
+-- **状态**：in_progress — claimed DATA-P0-FUND-ROUTE-20260604-121846
++- **状态**：done — DATA-P0-FUND-ROUTE-20260604
+ - **背景**：
+   - 现场验证 `route_to_vendor("get_individual_fund_flow", "603629.SH")` 命中 `cn_akshare` 后返回 `ProxyError` 失败字符串，路由层仍记录 `vendor=cn_akshare status=hit`，没有继续 fallback 到 `cn_astock`。
+   - 直接调用 `CnAstockProvider.get_individual_fund_flow("603629.SH")` 可取得 Eastmoney push2his 近 20 日资金流，说明不是股票天然缺主力资金，而是 fallback 链路被失败字符串截断。
+   - `cn_astock_provider` 当前输出文案写“单位：万元”，但 Eastmoney push2his 原始金额看起来是元级，需要统一 `/10000` 转万元并标注单位校验。
+
+[0m
+Also update the data source governance queue:
+[0m→ [0mRead docs/TASKS.md[90m [offset=78, limit=10][0m
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -77,9 +77,9 @@
+ 4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+ 5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+ 6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+ 7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+-8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，ready）。
++8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+ 9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，ready）。
+ 10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，ready）。
+ 11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，ready）。
+ 12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready）。
+
+[0m
+Now run the broader test suite to confirm no regressions:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_data_p0_fund_route.py tests/test_raw_evidence_vendor.py tests/test_g007_fund_lhb_provenance.py tests/test_data004_evidence_contract.py tests/test_data005_fixture_replay.py tests/test_data006_daily_digest.py tests/test_readiness_score.py -q --tb=short 2>&1
+........................................................................ [ 16%]
+........................................................................ [ 33%]
+........................................................................ [ 50%]
+........................................................................ [ 67%]
+........................................................................ [ 84%]
+................................................................         [100%]
+424 passed in 11.02s
+[0m
+[0m# [0mTodos
+[✓] Understand current provider route & cn_akshare/cn_astock provider code
+[✓] Fix provider route failure-string false success detection
+[✓] Fix cn_astock fund flow unit conversion (元 → 万元)
+[✓] Write tests covering fallback chain and unit conversion
+[✓] Update docs/DEVLOG.md
+[0m
+## Output
+
+### Files Changed
+1. **`tradingagents/dataflows/interface.py`** — Added `_FAILURE_RESULT_PATTERNS` (10 failure text patterns), `_is_failure_result()` checker, and failure-string detection in `route_to_vendor()` after provider returns
+2. **`tradingagents/dataflows/providers/cn_astock_provider.py`** — Fixed `get_individual_fund_flow()`: Eastmoney push2his raw values (元) now divided by 10000 to 万元; header annotates `单位：万元` so `_verify_unit()` passes
+3. **`tests/test_data_p0_fund_route.py`** — New: 31 tests covering failure detection, fallback chain, unit conversion, provenance, and acceptance
+4. **`docs/DEVLOG.md`** — Updated
+5. **`docs/TASKS.md`** — Status updated to `done`
+
+### Key Logic Summary
+- **Root cause**: Providers (cn_akshare/cn_astock) catch exceptions internally and return failure strings; `route_to_vendor()` only triggered fallback on exceptions, not on failure strings. Result: `"个股资金流向数据获取失败：ProxyError"` was treated as a successful hit from `cn_akshare`, blocking cn_astock fallback.
+- **Fix 1**: `route_to_vendor()` now checks `_is_failure_result(result)` after each provider returns. If detected, continues to next vendor instead of recording a hit.
+- **Fix 2**: cn_astock `get_individual_fund_flow()` converts Eastmoney push2his values from 元 to 万元 (`/10000`), with header annotation `单位：万元`. This ensures `_verify_unit()` → `unit_verified=True` → fund flow strong evidence allowed.
+- **`get_last_hit_vendor()`** now correctly records the actual successful vendor (e.g., `cn_astock` after fallback).
+
+### Test Results
+- **31 passed** (new DATA-P0-FUND-ROUTE tests)
+- **424 passed** (broader regression: readiness_score, evidence_contract, fixture_replay, daily_digest, provenance, raw_evidence_vendor)
+- **0 failed**
