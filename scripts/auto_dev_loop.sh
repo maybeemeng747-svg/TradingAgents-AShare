@@ -566,11 +566,13 @@ FIX_EOF
     cp "$REVIEW_SAVE_PATH" "$RUN_DIR/codex-review-round${ROUND}.txt"
     log "Review saved: $REVIEW_SAVE_PATH"
 
-    # Review skipped (token unavailable) -> mark unreviewed, pass through
+    # Review skipped (token unavailable) -> STOP, do not commit without review
+    # [2026-06-04] Hard rule: no commit without Codex review. No exceptions.
     if [ "$REVIEW_SKIPPED" = true ]; then
-        warn "Codex review skipped (token unavailable), marked unreviewed"
-        REVIEW_OUTPUT="[REVIEW SKIPPED -- Codex token unavailable]"
-        RESULT_STATUS="PASS_UNREVIEWED"
+        err "Codex unavailable — cannot commit without review"
+        RESULT_STATUS="NEEDS_HUMAN"
+        LAST_FAILURE_REASON="Codex unavailable (token/auth), review is mandatory"
+        ISSUES_LOG+=("[Round $ROUND] Codex unavailable — blocked commit, NEEDS_HUMAN")
         break
     fi
 
@@ -632,11 +634,8 @@ done
 # --- 4. Process results ---
 COMMIT_HASH=""
 
-if [ "$RESULT_STATUS" = "PASS" ] || [ "$RESULT_STATUS" = "PASS_UNREVIEWED" ]; then
+if [ "$RESULT_STATUS" = "PASS" ]; then
     REVIEW_NOTE="no P0/P1 findings"
-    if [ "$RESULT_STATUS" = "PASS_UNREVIEWED" ]; then
-        REVIEW_NOTE="SKIPPED -- Codex token unavailable, not reviewed"
-    fi
     cat > "$RUN_DIR/summary.md" <<SUMMARY_EOF
 # Auto Dev Summary
 
@@ -689,13 +688,9 @@ SUMMARY_EOF
     fi
 fi
 
-if [ "$RESULT_STATUS" = "PASS" ] || [ "$RESULT_STATUS" = "PASS_UNREVIEWED" ]; then
+if [ "$RESULT_STATUS" = "PASS" ]; then
     REVIEW_DEVLOG_NOTE="no P0/P1 findings"
     REVIEW_COMMIT_NOTE=""
-    if [ "$RESULT_STATUS" = "PASS_UNREVIEWED" ]; then
-        REVIEW_DEVLOG_NOTE="SKIPPED -- Codex token unavailable, not reviewed"
-        REVIEW_COMMIT_NOTE=" [unreviewed]"
-    fi
     # 4d. Write DEVLOG (before commit, will be included)
     cat >> "$DEVLOG_FILE" <<DEVLOG_EOF
 
