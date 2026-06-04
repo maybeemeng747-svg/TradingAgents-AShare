@@ -1,0 +1,3624 @@
+Task: DATA-007 - raw_evidence 覆盖率审计与候选可信度联动（P1）
+Date: 2026-06-04_13:29:16
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019e911a-0c9c-7cb1-ada1-06047fee63aa
+--------
+user
+current changes
+exec
+/bin/zsh -lc 'git status --short && git rev-parse --show-toplevel && git branch --show-current' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M api/main.py
+ M api/services/tradeflow_service.py
+ M api/tradeflow_schemas.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/dataflows/data_source_daily_digest.py
+?? docs/task_runs/DATA-007-20260604-131503/
+?? tests/test_data007_evidence_coverage_audit.py
+?? tradingagents/dataflows/evidence_coverage_audit.py
+/Users/maybee/TradingAgents-AShare
+local/tradingagents-custom
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff --cached --stat && git diff -- api/main.py api/services/tradeflow_service.py api/tradeflow_schemas.py tradingagents/dataflows/data_source_daily_digest.py tradingagents/dataflows/evidence_coverage_audit.py tests/test_data007_evidence_coverage_audit.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ api/main.py                                        |  8 ++
+ api/services/tradeflow_service.py                  | 86 ++++++++++++++++++++++
+ api/tradeflow_schemas.py                           | 25 +++++++
+ docs/DEVLOG.md                                     | 61 +++++++++++++++
+ docs/TASKS.md                                      |  6 +-
+ .../dataflows/data_source_daily_digest.py          | 35 +++++++++
+ 6 files changed, 218 insertions(+), 3 deletions(-)
+diff --git a/api/main.py b/api/main.py
+index 6d653b5..0606a2c 100644
+--- a/api/main.py
++++ b/api/main.py
+@@ -5218,6 +5218,7 @@ from api.tradeflow_schemas import (
+     TradeFlowFilteredResponse,  # [UI-007] tradeflow_filtered_trace
+     TradeFlowTieredCandidatesResponse,  # [TF-UX-001]
+     TradeFlowReviewGenerateResponse,  # [TF-UX-003]
++    TradeFlowEvidenceAuditResponse,  # [DATA-007] evidence_coverage_audit
+ )
+ from api.services.tradeflow_service import (
+     get_daily_plan as _tf_get_daily_plan,
+@@ -5232,6 +5233,7 @@ from api.services.tradeflow_service import (
+     run_observe_check as _tf_run_observe_check,  # [TF-OBS-001] tradeflow_observe_runner
+     get_candidates_tiered as _tf_get_candidates_tiered,  # [TF-UX-001]
+     generate_review as _tf_generate_review,  # [TF-UX-003]
++    get_evidence_audit as _tf_get_evidence_audit,  # [DATA-007] evidence_coverage_audit
+ )
+ 
+ # [UI-001] tradeflow_api — read-only endpoints
+@@ -5292,6 +5294,12 @@ def tradeflow_data_health():
+     return _tf_get_data_health()
+ 
+ 
++# [DATA-007] evidence_coverage_audit
++@app.get("/v1/tradeflow/evidence-audit", response_model=TradeFlowEvidenceAuditResponse)
++def tradeflow_evidence_audit(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
++    return _tf_get_evidence_audit(date)
++
++
+ # [UI-007] tradeflow_filtered_trace
+ @app.get("/v1/tradeflow/filtered", response_model=TradeFlowFilteredResponse)
+ def tradeflow_filtered(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+diff --git a/api/services/tradeflow_service.py b/api/services/tradeflow_service.py
+index e49cb49..130a8d0 100644
+--- a/api/services/tradeflow_service.py
++++ b/api/services/tradeflow_service.py
+@@ -775,6 +775,7 @@ def get_data_health(tf_db_path: str = "") -> dict:
+         "latest_observe_check_time": latest_observe_check_time,  # [TF-OBS-001]
+         "latest_signal_time": latest_signal_time,  # [TF-OBS-001]
+         "evidence_contract_available": True,  # [DATA-004] raw_evidence_contract
++        "evidence_coverage_audit_available": True,  # [DATA-007] evidence_coverage_audit
+         "runtime_tier_meta": _tradeflow_meta("tradeflow_data_health"),  # [PERF-001]
+     }
+ 
+@@ -1009,6 +1010,91 @@ def _recompute_action_tiers(
+             pass
+ 
+ 
++# [DATA-007] evidence_coverage_audit
++def get_evidence_audit(trade_date: str, tf_db_path: str = "") -> dict:
++    """Run evidence coverage audit on all candidates for trade_date.
++
++    Reads candidate metadata from tradeflow.db, runs the evidence coverage
++    auditor on each candidate, and returns a summary.
++    Does NOT call LLM or live data sources.
++    """
++    from tradingagents.dataflows.evidence_coverage_audit import (
++        audit_candidate_evidence,
++        build_evidence_coverage_section,
++    )
++
++    _fast_meta = _tradeflow_meta("tradeflow_evidence_audit")
++    conn = _connect(tf_db_path)
++    if conn is None:
++        return {
++            "status": "no_data",
++            "trade_date": trade_date,
++            "audits": [],
++            "credibilities": [],
++            "summary_markdown": "",
++            "runtime_tier_meta": _fast_meta,
++        }
++
++    try:
++        columns = _table_columns(conn, "tradeflow_candidates")
++        extra_conditions = ["status = 'active'" if "status" in columns else None]
++        extra_conditions = [c for c in extra_conditions if c is not None]
++        rows = _query_by_date_or_effective(
++            conn, "tradeflow_candidates", trade_date,
++            extra_conditions=extra_conditions if extra_conditions else None,
++        )
++
++        audits = []
++        credibilities = []
++        for row in rows:
++            data_comp = float(row.get("data_completeness", 0) or 0)
++            tf_comp = float(row.get("tradeflow_data_completeness", 0) or 0)
++            cand_type = str(row.get("candidate_type", "") or "")
++            missing_fields = json.loads(row.get("missing_data_fields_json", "[]") or "[]")
++            gate_applied = bool(row.get("evidence_gate_applied", 0))
++            ff_verified = bool(row.get("fund_flow_unit_verified", 0))
++            symbol = str(row.get("symbol", ""))
++
++            has_policy = cand_type in ("POLICY_AMBUSH", "POLICY_CONFIRM", "PSEUDO_POLICY")
++            has_tech = cand_type == "TECH_TRADE"
++            has_realtime = tf_comp >= 0.5
++
++            cred = audit_candidate_evidence(
++                candidate_data_completeness=data_comp,
++                candidate_tradeflow_completeness=tf_comp,
++                candidate_type=cand_type,
++                missing_data_fields=missing_fields,
++                evidence_gate_applied=gate_applied,
++                fund_flow_unit_verified=ff_verified,
++                has_policy_evidence=has_policy,
++                has_tech_signal=has_tech,
++                has_realtime_quote=has_realtime,
++            )
++            cred.symbol = symbol
++
++            if cred.evidence_audit:
++                audits.append(cred.evidence_audit)
++            credibilities.append(cred)
++
++        summary_md = build_evidence_coverage_section(
++            audits=audits if audits else None,
++            credibilities=credibilities if credibilities else None,
++        )
++
++        return {
++            "status": "ok",
++            "trade_date": trade_date,
++            "total_candidates": len(rows),
++            "audits_count": len(audits),
++            "credibilities_count": len(credibilities),
++            "credibilities": [c.to_dict() for c in credibilities],
++            "summary_markdown": summary_md,
++            "runtime_tier_meta": _fast_meta,
++        }
++    finally:
++        conn.close()
++
++
+ # [TF-UX-003] post_market_review
+ def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
+     """Generate post-market review for trade_date using post_market_review module."""
+diff --git a/api/tradeflow_schemas.py b/api/tradeflow_schemas.py
+index 3d48f1b..cb25791 100644
+--- a/api/tradeflow_schemas.py
++++ b/api/tradeflow_schemas.py
+@@ -256,6 +256,7 @@ class TradeFlowDataHealthResponse(BaseModel):
+     latest_observe_check_time: Optional[str] = None
+     latest_signal_time: Optional[str] = None
+     evidence_contract_available: bool = False  # [DATA-004] raw_evidence_contract
++    evidence_coverage_audit_available: bool = False  # [DATA-007] evidence_coverage_audit
+     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+ 
+ 
+@@ -297,3 +298,27 @@ class TradeFlowReviewGenerateResponse(BaseModel):
+     trade_date: str = ""
+     message: str = ""
+     review: Optional[Dict[str, Any]] = None
++
++
++# [DATA-007] evidence_coverage_audit
++class EvidenceCredibilityItem(BaseModel):
++    symbol: str = ""
++    candidate_type: str = ""
++    evidence_coverage: float = 0.0
++    evidence_quality_level: str = "UNKNOWN"
++    tier_allowed: str = ""
++    tier_restricted: bool = False
++    need_deep_ta_allowed: bool = True
++    credibility_level: str = "UNKNOWN"
++    credibility_reasons: List[str] = Field(default_factory=list)
++
++
++class TradeFlowEvidenceAuditResponse(BaseModel):
++    status: str = "ok"
++    trade_date: str = ""
++    total_candidates: int = 0
++    audits_count: int = 0
++    credibilities_count: int = 0
++    credibilities: List[EvidenceCredibilityItem] = Field(default_factory=list)
++    summary_markdown: str = ""
++    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+diff --git a/tradingagents/dataflows/data_source_daily_digest.py b/tradingagents/dataflows/data_source_daily_digest.py
+index 04c3360..e90885f 100644
+--- a/tradingagents/dataflows/data_source_daily_digest.py
++++ b/tradingagents/dataflows/data_source_daily_digest.py
+@@ -36,6 +36,11 @@ from .fixture_replay import (
+     render_replay_report,
+     run_fixture_replay,
+ )
++from .evidence_coverage_audit import (  # [DATA-007] evidence_coverage_audit
++    EvidenceAuditResult,
++    CandidateCredibilityResult,
++    build_evidence_coverage_section,
++)
+ 
+ 
+ # ── Data Type Categories ─────────────────────────────────────────────
+@@ -142,6 +147,9 @@ class DailyDigest:
+     overall_tradeflow_impact: str = "none"
+     overall_ta_impact: str = "none"
+     warnings: List[str] = field(default_factory=list)
++    evidence_audits: Optional[List[EvidenceAuditResult]] = None  # [DATA-007]
++    evidence_credibilities: Optional[List[CandidateCredibilityResult]] = None  # [DATA-007]
++    evidence_coverage_section: str = ""  # [DATA-007]
+ 
+     def to_dict(self) -> Dict[str, Any]:
+         return {
+@@ -159,6 +167,9 @@ class DailyDigest:
+             "overall_tradeflow_impact": self.overall_tradeflow_impact,
+             "overall_ta_impact": self.overall_ta_impact,
+             "warnings": self.warnings,
++            "evidence_audits_count": len(self.evidence_audits) if self.evidence_audits else 0,
++            "evidence_credibilities_count": len(self.evidence_credibilities) if self.evidence_credibilities else 0,
++            "evidence_coverage_section_present": bool(self.evidence_coverage_section),
+         }
+ 
+ 
+@@ -469,6 +480,9 @@ def render_daily_digest(digest: DailyDigest) -> str:
+         lines.append(f"> 完整 replay 报告: `{digest.replay_report_path}`")
+         lines.append("")
+ 
++    if digest.evidence_coverage_section:
++        lines.append(digest.evidence_coverage_section)
++
+     lines.append("---")
+     lines.append("*Generated by data_source_daily_digest.py — [DATA-006] data_source_report_daily*")
+     lines.append("")
+@@ -524,3 +538,24 @@ def run_digest_and_append_to_report(
+         f.write("\n")
+         f.write(section)
+     return True
++
++
++# [DATA-007] evidence_coverage_audit
++def attach_evidence_coverage_to_digest(
++    digest: DailyDigest,
++    audits: Optional[List[EvidenceAuditResult]] = None,
++    credibilities: Optional[List[CandidateCredibilityResult]] = None,
++) -> DailyDigest:
++    """Attach evidence coverage audit results to a DailyDigest.
++
++    This allows the nightly digest to include evidence coverage
++    summaries alongside data source health.
++    """
++    digest.evidence_audits = audits
++    digest.evidence_credibilities = credibilities
++    if audits or credibilities:
++        digest.evidence_coverage_section = build_evidence_coverage_section(
++            audits=audits,
++            credibilities=credibilities,
++        )
++    return digest
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/dataflows/evidence_coverage_audit.py && printf '\\n---TEST---\\n' && sed -n '1,260p' tests/test_data007_evidence_coverage_audit.py && printf '\\n---docs dir---\\n' && find docs/task_runs/DATA-007-20260604-131503 -maxdepth 2 -type f -print -exec sed -n '1,120p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [DATA-007] evidence_coverage_audit
+"""
+raw_evidence 覆盖率审计与候选可信度联动。
+
+把 raw_evidence contract 的覆盖情况转成可读审计结果，并联动 TradeFlow 候选可信度，
+避免"候选分数高但关键数据缺证据"的情况继续进入高优先级。
+
+功能：
+  1. audit_raw_evidence(): 审计 raw_evidence 字典，输出覆盖率、关键缺口、stale 字段、
+     单位未知字段、fallback 字段和质量等级。
+  2. audit_candidate_evidence(): 审计单个 TradeFlow 候选的证据完整度。
+  3. apply_credibility_linkage(): 根据审计结果联动候选等级，关键缺失时限制升级。
+  4. render_audit_summary(): 渲染审计摘要 Markdown。
+  5. build_evidence_coverage_section(): 为夜间日报构建证据覆盖率 section。
+
+使用示例：
+    from tradingagents.dataflows.evidence_coverage_audit import (
+        audit_raw_evidence,
+        audit_candidate_evidence,
+        apply_credibility_linkage,
+    )
+    result = audit_raw_evidence(raw_evidence)
+    print(result.evidence_quality_level)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from .evidence_contract import (
+    EvidenceContract,
+    compute_contract_completeness,
+)
+
+
+_CRITICAL_FIELDS_BY_CANDIDATE_TYPE: Dict[str, List[str]] = {
+    "POLICY_AMBUSH": ["fundamentals", "news", "announcements"],
+    "POLICY_CONFIRM": ["fundamentals", "news", "announcements"],
+    "TECH_TRADE": ["stock_data", "fund_flow_individual"],
+    "EVENT_WATCH": ["news", "announcements"],
+    "PSEUDO_POLICY": ["news"],
+    "OVERHEATED_AVOID": ["stock_data", "fund_flow_individual"],
+    "UNCLASSIFIED_DATA_GAP": [],
+}
+
+_EVIDENCE_FIELD_LABELS: Dict[str, str] = {
+    "stock_data": "行情/OHLCV",
+    "fund_flow_individual": "个股资金流",
+    "fund_flow_board": "板块资金流",
+    "lhb": "龙虎榜",
+    "news": "新闻",
+    "global_news": "全球新闻",
+    "announcements": "公告/研报",
+    "fundamentals": "财务基本面",
+    "balance_sheet": "资产负债表",
+    "cashflow": "现金流量表",
+    "income_statement": "利润表",
+    "insider_transactions": "内部人交易",
+    "zt_pool": "涨停池",
+    "hot_stocks": "热门股票",
+    "indicators": "技术指标",
+    "vpa_indicators": "量价分析指标",
+}
+
+_EVIDENCE_FIELD_FAMILIES: Dict[str, str] = {
+    "stock_data": "ohlcv",
+    "indicators": "ohlcv",
+    "vpa_indicators": "ohlcv",
+    "fund_flow_individual": "fund_flow",
+    "fund_flow_board": "fund_flow",
+    "lhb": "lhb",
+    "news": "news",
+    "global_news": "news",
+    "announcements": "notice",
+    "fundamentals": "financials",
+    "balance_sheet": "financials",
+    "cashflow": "financials",
+    "income_statement": "financials",
+    "insider_transactions": "insider",
+    "zt_pool": "zt_pool",
+    "hot_stocks": "hot_stocks",
+}
+
+_TIER_RANK = {"A": 1, "B": 2, "C": 3}
+
+
+def _worse_tier(current: str, minimum: str) -> str:
+    """Return the worse (higher rank number) of two tiers."""
+    current_rank = _TIER_RANK.get(current, 3)
+    minimum_rank = _TIER_RANK.get(minimum, 3)
+    return "A" if current_rank <= minimum_rank and minimum_rank == 1 else (
+        "B" if max(current_rank, minimum_rank) == 2 else "C"
+    )
+
+
+@dataclass
+class EvidenceAuditResult:
+    evidence_coverage: float = 0.0
+    critical_missing_fields: List[str] = field(default_factory=list)
+    stale_fields: List[str] = field(default_factory=list)
+    unit_unknown_fields: List[str] = field(default_factory=list)
+    fallback_fields: List[str] = field(default_factory=list)
+    failed_fields: List[str] = field(default_factory=list)
+    not_queried_fields: List[str] = field(default_factory=list)
+    normal_no_data_fields: List[str] = field(default_factory=list)
+    has_data_fields: List[str] = field(default_factory=list)
+    evidence_quality_level: str = "UNKNOWN"
+    total_fields: int = 0
+    satisfied_fields: int = 0
+    audit_refs: List[Dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "evidence_coverage": round(self.evidence_coverage, 4),
+            "critical_missing_fields": self.critical_missing_fields,
+            "stale_fields": self.stale_fields,
+            "unit_unknown_fields": self.unit_unknown_fields,
+            "fallback_fields": self.fallback_fields,
+            "failed_fields": self.failed_fields,
+            "not_queried_fields": self.not_queried_fields,
+            "normal_no_data_fields": self.normal_no_data_fields,
+            "has_data_fields": self.has_data_fields,
+            "evidence_quality_level": self.evidence_quality_level,
+            "total_fields": self.total_fields,
+            "satisfied_fields": self.satisfied_fields,
+            "audit_refs_count": len(self.audit_refs),
+        }
+
+
+@dataclass
+class CandidateCredibilityResult:
+    symbol: str = ""
+    candidate_type: str = ""
+    evidence_audit: Optional[EvidenceAuditResult] = None
+    tier_allowed: str = ""
+    tier_restricted: bool = False
+    need_deep_ta_allowed: bool = True
+    credibility_level: str = "UNKNOWN"
+    credibility_reasons: List[str] = field(default_factory=list)
+    credibility_refs: List[Dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "candidate_type": self.candidate_type,
+            "evidence_audit": self.evidence_audit.to_dict() if self.evidence_audit else None,
+            "tier_allowed": self.tier_allowed,
+            "tier_restricted": self.tier_restricted,
+            "need_deep_ta_allowed": self.need_deep_ta_allowed,
+            "credibility_level": self.credibility_level,
+            "credibility_reasons": self.credibility_reasons,
+            "credibility_refs_count": len(self.credibility_refs),
+        }
+
+
+def _classify_quality_level(
+    coverage: float,
+    critical_missing: List[str],
+    failed_count: int,
+    total: int,
+) -> str:
+    if total == 0:
+        return "UNKNOWN"
+    if coverage >= 0.8 and not critical_missing and failed_count == 0:
+        return "HIGH"
+    if coverage >= 0.5 and len(critical_missing) <= 1:
+        return "MEDIUM"
+    if coverage >= 0.3:
+        return "LOW"
+    return "CRITICAL"
+
+
+def audit_raw_evidence(raw_evidence: Dict[str, Any]) -> EvidenceAuditResult:
+    """Audit raw_evidence contract coverage.
+
+    Scans every evidence key, classifies fields by status, detects stale/
+    unit-unknown/fallback fields, and produces an overall quality level.
+
+    Args:
+        raw_evidence: Dict mapping evidence key -> EvidenceContract dict.
+
+    Returns:
+        EvidenceAuditResult with full audit breakdown.
+    """
+    result = EvidenceAuditResult()
+
+    if not raw_evidence:
+        result.evidence_quality_level = "UNKNOWN"
+        result.audit_refs.append({
+            "field": "raw_evidence_audit",
+            "status": "NO_EVIDENCE",
+            "reason": "raw_evidence 为空",
+        })
+        return result
+
+    contract_completeness = compute_contract_completeness(raw_evidence)
+    result.total_fields = contract_completeness["total_checks"]
+    result.satisfied_fields = contract_completeness["satisfied_checks"]
+    result.evidence_coverage = (
+        round(result.satisfied_fields / result.total_fields, 4)
+        if result.total_fields > 0
+        else 0.0
+    )
+
+    for ev_key, entry in raw_evidence.items():
+        if not isinstance(entry, dict):
+            result.not_queried_fields.append(ev_key)
+            continue
+
+        contract = EvidenceContract.from_dict(entry)
+        label = _EVIDENCE_FIELD_LABELS.get(ev_key, ev_key)
+
+        if contract.has_data:
+            result.has_data_fields.append(ev_key)
+        elif contract.is_failed:
+            result.failed_fields.append(ev_key)
+        elif contract.status == "NORMAL_NO_DATA":
+            result.normal_no_data_fields.append(ev_key)
+        else:
+            result.not_queried_fields.append(ev_key)
+
+        if contract.is_realtime_patched:
+            result.stale_fields.append(ev_key)
+
+        if not contract.unit_known and contract.has_data:
+            result.unit_unknown_fields.append(ev_key)
+
+        if contract.is_fallback:
+            result.fallback_fields.append(ev_key)
+
+    missing_from_completeness = contract_completeness.get("missing_details", {})
+    for ev_key, missing_reqs in missing_from_completeness.items():
+        if ev_key not in result.failed_fields and ev_key not in result.not_queried_fields:
+            result.critical_missing_fields.append(ev_key)
+
+    result.evidence_quality_level = _classify_quality_level(
+        coverage=result.evidence_coverage,
+        critical_missing=result.critical_missing_fields,
+        failed_count=len(result.failed_fields),
+        total=result.total_fields,
+    )
+
+    result.audit_refs.append({
+        "field": "raw_evidence_audit",
+        "evidence_coverage": result.evidence_coverage,
+        "quality_level": result.evidence_quality_level,
+        "has_data_count": len(result.has_data_fields),
+        "failed_count": len(result.failed_fields),
+        "stale_count": len(result.stale_fields),
+        "unit_unknown_count": len(result.unit_unknown_fields),
+        "fallback_count": len(result.fallback_fields),
+    })
+
+    return result
+
+
+def audit_candidate_evidence(
+    candidate_data_completeness: float = 0.0,
+
+---TEST---
+# [DATA-007] evidence_coverage_audit
+"""Tests for raw_evidence coverage audit and candidate credibility linkage."""
+
+from __future__ import annotations
+
+import pytest
+from typing import Any, Dict, List
+
+from tradingagents.dataflows.evidence_coverage_audit import (
+    EvidenceAuditResult,
+    CandidateCredibilityResult,
+    audit_raw_evidence,
+    audit_candidate_evidence,
+    apply_credibility_linkage,
+    render_audit_summary,
+    render_credibility_summary,
+    build_evidence_coverage_section,
+    _classify_quality_level,
+    _CRITICAL_FIELDS_BY_CANDIDATE_TYPE,
+    _EVIDENCE_FIELD_LABELS,
+    _EVIDENCE_FIELD_FAMILIES,
+)
+
+
+def _make_contract(
+    field: str = "stock_data",
+    status: str = "HAS_DATA",
+    vendor: str = "cn_akshare",
+    unit: str = "元",
+    unit_verified: bool = True,
+    is_realtime_patched: bool = False,
+    fallback_from: str | None = None,
+    endpoint: str = "stock_zh_a_hist",
+    error: str | None = None,
+) -> Dict[str, Any]:
+    return {
+        "raw": f"sample_data_for_{field}",
+        "field": field,
+        "unit": unit,
+        "vendor": vendor,
+        "endpoint": endpoint,
+        "as_of": "2026-06-04",
+        "fetched_at": "2026-06-04T10:00:00",
+        "status": status,
+        "fallback_from": fallback_from,
+        "source_url": None,
+        "error": error,
+        "is_realtime_patched": is_realtime_patched,
+        "source_type": "api",
+        "unit_verified": unit_verified,
+        "query_mode": "normal",
+        "adjustment": "qfq",
+        "force_reason": None,
+        "record_count": 20,
+    }
+
+
+def _full_evidence() -> Dict[str, Any]:
+    return {
+        "stock_data": _make_contract("stock_data", status="HAS_DATA"),
+        "fund_flow_individual": _make_contract("fund_flow_individual", status="HAS_DATA", unit="万元"),
+        "fund_flow_board": _make_contract("fund_flow_board", status="HAS_DATA"),
+        "lhb": _make_contract("lhb", status="NORMAL_NO_DATA"),
+        "news": _make_contract("news", status="HAS_DATA"),
+        "global_news": _make_contract("global_news", status="HAS_DATA"),
+        "announcements": _make_contract("announcements", status="HAS_DATA"),
+        "fundamentals": _make_contract("fundamentals", status="HAS_DATA"),
+    }
+
+
+def _evidence_missing_fund() -> Dict[str, Any]:
+    ev = _full_evidence()
+    ev["fund_flow_individual"] = _make_contract("fund_flow_individual", status="FAILED", error="ProxyError")
+    return ev
+
+
+def _evidence_missing_announcements() -> Dict[str, Any]:
+    ev = _full_evidence()
+    ev["announcements"] = _make_contract("announcements", status="NOT_QUERIED")
+    return ev
+
+
+def _evidence_stale() -> Dict[str, Any]:
+    ev = _full_evidence()
+    ev["stock_data"] = _make_contract("stock_data", status="HAS_DATA", is_realtime_patched=True)
+    return ev
+
+
+def _evidence_unit_unknown() -> Dict[str, Any]:
+    ev = _full_evidence()
+    ev["fund_flow_individual"] = _make_contract("fund_flow_individual", status="HAS_DATA", unit="", unit_verified=False)
+    return ev
+
+
+def _evidence_with_fallback() -> Dict[str, Any]:
+    ev = _full_evidence()
+    ev["fund_flow_individual"] = _make_contract(
+        "fund_flow_individual", status="HAS_DATA", unit="万元",
+        fallback_from="cn_akshare", vendor="cn_astock",
+    )
+    return ev
+
+
+# ── TestEvidenceAuditResult ──────────────────────────────────────────
+
+class TestEvidenceAuditResult:
+    def test_defaults(self):
+        r = EvidenceAuditResult()
+        assert r.evidence_coverage == 0.0
+        assert r.evidence_quality_level == "UNKNOWN"
+        assert r.critical_missing_fields == []
+        assert r.stale_fields == []
+        assert r.unit_unknown_fields == []
+        assert r.fallback_fields == []
+
+    def test_to_dict(self):
+        r = EvidenceAuditResult(evidence_coverage=0.75, evidence_quality_level="MEDIUM")
+        d = r.to_dict()
+        assert d["evidence_coverage"] == 0.75
+        assert d["evidence_quality_level"] == "MEDIUM"
+        assert "audit_refs_count" in d
+
+    def test_to_dict_roundtrip(self):
+        r = EvidenceAuditResult(
+            evidence_coverage=0.8,
+            critical_missing_fields=["fund_flow_individual"],
+            stale_fields=["stock_data"],
+            unit_unknown_fields=["fund_flow_board"],
+            fallback_fields=["news"],
+            failed_fields=["lhb"],
+            not_queried_fields=["announcements"],
+            has_data_fields=["stock_data", "fundamentals"],
+            evidence_quality_level="HIGH",
+            total_fields=8,
+            satisfied_fields=6,
+        )
+        d = r.to_dict()
+        assert d["evidence_coverage"] == 0.8
+        assert d["critical_missing_fields"] == ["fund_flow_individual"]
+        assert d["stale_fields"] == ["stock_data"]
+        assert d["unit_unknown_fields"] == ["fund_flow_board"]
+        assert d["fallback_fields"] == ["news"]
+        assert d["total_fields"] == 8
+
+
+# ── TestCandidateCredibilityResult ───────────────────────────────────
+
+class TestCandidateCredibilityResult:
+    def test_defaults(self):
+        r = CandidateCredibilityResult()
+        assert r.credibility_level == "UNKNOWN"
+        assert r.tier_allowed == ""
+        assert r.tier_restricted is False
+
+    def test_to_dict(self):
+        r = CandidateCredibilityResult(
+            symbol="600519.SH",
+            candidate_type="POLICY_AMBUSH",
+            credibility_level="HIGH",
+            tier_allowed="A",
+        )
+        d = r.to_dict()
+        assert d["symbol"] == "600519.SH"
+        assert d["candidate_type"] == "POLICY_AMBUSH"
+        assert d["credibility_level"] == "HIGH"
+
+
+# ── TestClassifyQualityLevel ─────────────────────────────────────────
+
+class TestClassifyQualityLevel:
+    def test_high(self):
+        assert _classify_quality_level(0.85, [], 0, 8) == "HIGH"
+
+    def test_high_no_critical_no_failures(self):
+        assert _classify_quality_level(1.0, [], 0, 8) == "HIGH"
+
+    def test_medium(self):
+        assert _classify_quality_level(0.6, [], 0, 8) == "MEDIUM"
+
+    def test_medium_with_one_critical(self):
+        assert _classify_quality_level(0.6, ["fund_flow_individual"], 0, 8) == "MEDIUM"
+
+    def test_low(self):
+        assert _classify_quality_level(0.35, [], 0, 8) == "LOW"
+
+    def test_critical(self):
+        assert _classify_quality_level(0.1, [], 0, 8) == "CRITICAL"
+
+    def test_unknown_empty(self):
+        assert _classify_quality_level(0.0, [], 0, 0) == "UNKNOWN"
+
+    def test_medium_with_failures(self):
+        assert _classify_quality_level(0.7, [], 2, 8) == "MEDIUM"
+
+
+# ── TestAuditRawEvidence ─────────────────────────────────────────────
+
+class TestAuditRawEvidence:
+    def test_empty_evidence(self):
+        result = audit_raw_evidence({})
+        assert result.evidence_quality_level == "UNKNOWN"
+        assert result.total_fields == 0
+
+    def test_none_evidence(self):
+        result = audit_raw_evidence(None)
+        assert result.evidence_quality_level == "UNKNOWN"
+
+    def test_full_evidence(self):
+        result = audit_raw_evidence(_full_evidence())
+        assert result.evidence_coverage > 0
+        assert result.evidence_quality_level in ("HIGH", "MEDIUM")
+        assert len(result.has_data_fields) > 0
+        assert len(result.failed_fields) == 0
+        assert len(result.stale_fields) == 0
+
+    def test_missing_fund_flow(self):
+        result = audit_raw_evidence(_evidence_missing_fund())
+        assert "fund_flow_individual" in result.failed_fields
+        assert result.evidence_coverage < 1.0
+
+    def test_missing_announcements(self):
+        result = audit_raw_evidence(_evidence_missing_announcements())
+        assert "announcements" in result.not_queried_fields
+
+    def test_stale_fields(self):
+        result = audit_raw_evidence(_evidence_stale())
+        assert "stock_data" in result.stale_fields
+
+    def test_unit_unknown_fields(self):
+        result = audit_raw_evidence(_evidence_unit_unknown())
+        assert "fund_flow_individual" in result.unit_unknown_fields
+
+    def test_fallback_fields(self):
+        result = audit_raw_evidence(_evidence_with_fallback())
+        assert "fund_flow_individual" in result.fallback_fields
+
+    def test_normal_no_data_fields(self):
+        result = audit_raw_evidence(_full_evidence())
+        assert "lhb" in result.normal_no_data_fields
+
+    def test_audit_refs_present(self):
+        result = audit_raw_evidence(_full_evidence())
+        assert len(result.audit_refs) >= 1
+        ref = result.audit_refs[0]
+        assert ref["field"] == "raw_evidence_audit"
+
+    def test_coverage_is_ratio(self):
+        result = audit_raw_evidence(_full_evidence())
+        assert 0.0 <= result.evidence_coverage <= 1.0
+
+    def test_non_dict_entry(self):
+        ev = _full_evidence()
+        ev["bad_key"] = "not a dict"
+        result = audit_raw_evidence(ev)
+        assert "bad_key" in result.not_queried_fields
+
+
+# ── TestAuditCandidateEvidence ───────────────────────────────────────
+
+class TestAuditCandidateEvidence:
+
+---docs dir---
+docs/task_runs/DATA-007-20260604-131503/tests-round1.txt
+## pytest tests/test_data004_evidence_contract.py tests/test_tradeflow_*.py tests/test_data006_daily_digest.py -q
+
+........................................................................ [ 25%]
+........................................................................ [ 51%]
+........................................................................ [ 77%]
+...............................................................          [100%]
+279 passed in 11.86s
+
+Exit code: 0
+
+docs/task_runs/DATA-007-20260604-131503/prompt-round1.md
+# Task: DATA-007: raw_evidence 覆盖率审计与候选可信度联动（P1）
+
+Read task "DATA-007" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/DATA-007-20260604-131503/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/project-overview.md
+[0m
+[0m# [0mTodos
+[✓] Read and understand DATA-007 task requirements
+[•] Explore existing raw_evidence contract and data source code
+[ ] Implement raw_evidence auditor module
+[ ] Add TradeFlow candidate credibility linkage
+[ ] Expose audit summary in API
+[ ] Integrate with nightly daily digest
+[ ] Write comprehensive tests
+[ ] Update TASKS.md and DEVLOG.md
+[0m
+Now let me understand the DATA-007 task fully and explore the existing codebase to understand the patterns.
+[0m• [0mExplore raw_evidence codebase[90m Explore Agent[0m
+[0m✓ [0mExplore raw_evidence codebase[90m Explore Agent[0m
+[0m• [0mExplore evidence_gate and dataflows[90m Explore Agent[0m
+[0m✓ [0mExplore evidence_gate and dataflows[90m Explore Agent[0m
+[0m
+[0m# [0mTodos
+[✓] Read and understand DATA-007 task requirements
+[✓] Explore existing raw_evidence contract and data source code
+[•] Implement raw_evidence auditor module (evidence_coverage_audit.py)
+[ ] Add TradeFlow candidate credibility linkage
+[ ] Expose audit summary in API
+[ ] Integrate with nightly daily digest
+[ ] Write comprehensive tests
+[ ] Update TASKS.md and DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/dataflows/evidence_contract.py
+[0m→ [0mRead tradingagents/tradeflow/evidence_gate.py
+[0m→ [0mRead tradingagents/dataflows/data_source_daily_digest.py
+Now let me read the key files I need to reference for implementation:
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [limit=120][0m
+[0m→ [0mRead api/tradeflow_schemas.py
+Now let me look at the candidate schemas and the tradeflow service to understand existing patterns:
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [offset=120, limit=200][0m
+Now let me check the tradeflow_schemas.py continuation for the Candidate `to_db_row` method:
+I now have a comprehensive understanding. Let me implement the DATA-007 module. I'll create the main auditor module first:
+[0m
+[0m← [0mWrite tradingagents/dataflows/evidence_coverage_audit.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[✓] Read and understand DATA-007 task requirements
+[✓] Explore existing raw_evidence contract and data source code
+[✓] Implement raw_evidence auditor module (evidence_coverage_audit.py)
+[✓] Add TradeFlow candidate credibility linkage
+[•] Expose audit summary in API
+[ ] Integrate with nightly daily digest
+[ ] Write comprehensive tests
+[ ] Update TASKS.md and DEVLOG.md
+[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=60][0m
+[0m✱ [0mGrep "def get_data_health"[90m 1 match[0m
+Now let me add the API exposure. I need to add audit summary to the tradeflow data-health endpoint and add the candidate audit to the candidate detail. Let me first read the relevant API sections:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=651, limit=120][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=30, offset=771][0m
+Now let me look at the API endpoint for data-health and candidate detail:
+[0m✱ [0mGrep "_tf_get_data_health|_tf_get_candidate_detail"[90m in api · 4 matches[0m
+[0m→ [0mRead api/main.py[90m [offset=5209, limit=120][0m
+Now I'll add the evidence coverage audit to the data-health endpoint. Let me also add the audit endpoint to the API. I'll modify the tradeflow_service.py to add an evidence audit function and update the data-health response:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=60, offset=801][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=220, offset=861][0m
+Now I'll add the evidence audit endpoint. Let me add it to the tradeflow_service.py, the tradeflow_schemas.py, and the main.py:
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -774,8 +774,9 @@
+     "total_signals_today": total_signals_today,
+     "latest_observe_check_time": latest_observe_check_time,  # [TF-OBS-001]
+     "latest_signal_time": latest_signal_time,  # [TF-OBS-001]
+     "evidence_contract_available": True,  # [DATA-004] raw_evidence_contract
++    "evidence_coverage_audit_available": True,  # [DATA-007] evidence_coverage_audit
+     "runtime_tier_meta": _tradeflow_meta("tradeflow_data_health"),  # [PERF-001]
+ }
+ 
+ 
+
+[0m
+Now add the get_evidence_audit function to tradeflow_service.py:
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -1009,8 +1009,93 @@
+         except Exception:
+             pass
+ 
+ 
++# [DATA-007] evidence_coverage_audit
++def get_evidence_audit(trade_date: str, tf_db_path: str = "") -> dict:
++    """Run evidence coverage audit on all candidates for trade_date.
++
++    Reads candidate metadata from tradeflow.db, runs the evidence coverage
++    auditor on each candidate, and returns a summary.
++    Does NOT call LLM or live data sources.
++    """
++    from tradingagents.dataflows.evidence_coverage_audit import (
++        audit_candidate_evidence,
++        build_evidence_coverage_section,
++    )
++
++    _fast_meta = _tradeflow_meta("tradeflow_evidence_audit")
++    conn = _connect(tf_db_path)
++    if conn is None:
++        return {
++            "status": "no_data",
++            "trade_date": trade_date,
++            "audits": [],
++            "credibilities": [],
++            "summary_markdown": "",
+docs/task_runs/DATA-007-20260604-131503/task.md
+# Auto Dev Task Run
+
+- Task: DATA-007 - raw_evidence 覆盖率审计与候选可信度联动（P1）
+- Priority: P1
+- Status: CLAIMED
+- Started at: 2026-06-04_13:15:03
+- Git HEAD: feab4a6
+- Test commands: pytest tests/test_data004_evidence_contract.py tests/test_tradeflow_*.py tests/test_data006_daily_digest.py -q
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+
+exec
+/bin/zsh -lc "sed -n '260,620p' tradingagents/dataflows/evidence_coverage_audit.py && sed -n '260,620p' tests/test_data007_evidence_coverage_audit.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    candidate_data_completeness: float = 0.0,
+    candidate_tradeflow_completeness: float = 0.0,
+    candidate_type: str = "",
+    missing_data_fields: Optional[List[str]] = None,
+    evidence_gate_applied: bool = False,
+    fund_flow_unit_verified: bool = False,
+    raw_evidence: Optional[Dict[str, Any]] = None,
+    has_policy_evidence: bool = False,
+    has_tech_signal: bool = False,
+    has_realtime_quote: bool = False,
+) -> CandidateCredibilityResult:
+    """Audit a TradeFlow candidate's evidence completeness and credibility.
+
+    Combines the raw_evidence contract audit with candidate-level metadata
+    to determine credibility.
+
+    Args:
+        candidate_data_completeness: S-005 data completeness (0-1).
+        candidate_tradeflow_completeness: S-008 tradeflow completeness (0-1).
+        candidate_type: Candidate type string (POLICY_AMBUSH, TECH_TRADE, etc).
+        missing_data_fields: S-008 missing dimension labels.
+        evidence_gate_applied: Whether evidence gate was triggered.
+        fund_flow_unit_verified: Fund flow unit verification status.
+        raw_evidence: Optional raw_evidence dict for deep audit.
+        has_policy_evidence: Whether policy evidence exists.
+        has_tech_signal: Whether tech signal exists.
+        has_realtime_quote: Whether realtime quote data is available.
+
+    Returns:
+        CandidateCredibilityResult with credibility assessment.
+    """
+    result = CandidateCredibilityResult(
+        candidate_type=candidate_type,
+    )
+
+    if raw_evidence:
+        result.evidence_audit = audit_raw_evidence(raw_evidence)
+    else:
+        coverage = max(candidate_data_completeness, candidate_tradeflow_completeness)
+        result.evidence_audit = EvidenceAuditResult(
+            evidence_coverage=coverage,
+            total_fields=10,
+            satisfied_fields=int(coverage * 10),
+            evidence_quality_level=_classify_quality_level(
+                coverage=coverage,
+                critical_missing=[],
+                failed_count=0,
+                total=10,
+            ),
+        )
+
+    audit = result.evidence_audit
+    reasons: List[str] = []
+    refs: List[Dict[str, Any]] = []
+    tier_allowed = "A"
+    need_deep_ta_allowed = True
+    restricted = False
+
+    critical_for_type = _CRITICAL_FIELDS_BY_CANDIDATE_TYPE.get(candidate_type, [])
+
+    if candidate_type in ("POLICY_AMBUSH", "POLICY_CONFIRM"):
+        if not has_policy_evidence:
+            tier_allowed = "B"
+            restricted = True
+            reasons.append("政策候选缺少政策/公司证据，不得进入A层")
+            refs.append({
+                "field": "policy_evidence_gate",
+                "value": "missing",
+                "candidate_type": candidate_type,
+                "gate": "POLICY_AMBUSH_requires_policy_evidence",
+            })
+        if audit:
+            for f in ("fundamentals", "news", "announcements"):
+                if f in audit.failed_fields or f in audit.not_queried_fields:
+                    if f not in reasons:
+                        reasons.append(f"政策候选关键证据缺失: {_EVIDENCE_FIELD_LABELS.get(f, f)}")
+
+    if candidate_type == "TECH_TRADE":
+        if not has_realtime_quote and not has_tech_signal:
+            tier_allowed = "C"
+            restricted = True
+            reasons.append("技术候选缺少实时行情/量价证据，降级")
+            refs.append({
+                "field": "tech_evidence_gate",
+                "value": "missing_realtime_and_tech",
+                "candidate_type": candidate_type,
+            })
+        elif not has_realtime_quote:
+            tier_allowed = _worse_tier(tier_allowed, "B")
+            restricted = True
+            reasons.append("技术候选缺少实时行情，限制升级")
+            refs.append({
+                "field": "tech_evidence_gate",
+                "value": "missing_realtime_quote",
+                "candidate_type": candidate_type,
+            })
+        if not fund_flow_unit_verified:
+            need_deep_ta_allowed = False
+            reasons.append("技术候选资金流单位未校验，禁止深挖")
+            refs.append({
+                "field": "fund_flow_unit_gate",
+                "value": "not_verified",
+                "candidate_type": candidate_type,
+            })
+
+    if candidate_type == "UNCLASSIFIED_DATA_GAP":
+        tier_allowed = "C"
+        restricted = True
+        need_deep_ta_allowed = False
+        reasons.append("证据缺口候选不得升级")
+        refs.append({
+            "field": "data_gap_gate",
+            "value": "unclassified",
+            "candidate_type": candidate_type,
+        })
+
+    if audit and audit.evidence_coverage < 0.3:
+        tier_allowed = _worse_tier(tier_allowed, "B")
+        restricted = True
+        if not any("证据覆盖率" in r for r in reasons):
+            reasons.append(f"证据覆盖率过低({audit.evidence_coverage:.0%})，限制升级")
+
+    if audit and audit.evidence_coverage < 0.5:
+        need_deep_ta_allowed = False
+        if not any("覆盖率不足" in r for r in reasons):
+            reasons.append(f"证据覆盖率不足({audit.evidence_coverage:.0%})，禁止深挖")
+
+    if evidence_gate_applied:
+        if not any("证据门控" in r for r in reasons):
+            reasons.append("证据门控已触发")
+
+    if missing_data_fields:
+        critical_missing_labels = [f for f in missing_data_fields if "关键" in f or "OHLCV" in f or "行情" in f]
+        if critical_missing_labels and tier_allowed == "A":
+            tier_allowed = _worse_tier(tier_allowed, "B")
+            restricted = True
+
+    quality = audit.evidence_quality_level if audit else "UNKNOWN"
+    if quality in ("CRITICAL", "LOW"):
+        tier_allowed = _worse_tier(tier_allowed, "B")
+        restricted = True
+
+    if restricted:
+        if quality in ("HIGH", "MEDIUM"):
+            credibility = "MEDIUM"
+        else:
+            credibility = quality
+    else:
+        credibility = quality
+
+    result.tier_allowed = tier_allowed
+    result.tier_restricted = restricted
+    result.need_deep_ta_allowed = need_deep_ta_allowed
+    result.credibility_level = credibility
+    result.credibility_reasons = reasons
+    result.credibility_refs = refs
+
+    return result
+
+
+def apply_credibility_linkage(
+    candidate_tier: str = "",
+    candidate_need_deep_ta: bool = False,
+    credibility: Optional[CandidateCredibilityResult] = None,
+) -> Dict[str, Any]:
+    """Apply credibility linkage to a candidate's tier and need_deep_ta.
+
+    If the credibility assessment restricts the candidate, this function
+    overrides tier and need_deep_ta accordingly.
+
+    Args:
+        candidate_tier: Current tier (A/B/C).
+        candidate_need_deep_ta: Whether deep TA is requested.
+        credibility: CandidateCredibilityResult from audit_candidate_evidence.
+
+    Returns:
+        Dict with potentially overridden tier/need_deep_ta and reasons.
+    """
+    if credibility is None:
+        return {
+            "tier": candidate_tier,
+            "need_deep_ta": candidate_need_deep_ta,
+            "tier_overridden": False,
+            "need_deep_ta_overridden": False,
+            "tier_reason_addition": "",
+            "why_not_deep_ta_addition": "",
+            "credibility_applied": False,
+        }
+
+    tier = candidate_tier
+    need_deep_ta = candidate_need_deep_ta
+    tier_overridden = False
+    deep_ta_overridden = False
+    tier_reasons: List[str] = []
+    deep_ta_reasons: List[str] = []
+
+    allowed = credibility.tier_allowed
+    if tier < allowed:
+        tier = allowed
+        tier_overridden = True
+        tier_reasons.append(
+            f"可信度联动: 候选限制为{allowed}层({credibility.credibility_level})"
+        )
+
+    if need_deep_ta and not credibility.need_deep_ta_allowed:
+        need_deep_ta = False
+        deep_ta_overridden = True
+        deep_ta_reasons.append(
+            f"可信度联动: 禁止深挖({credibility.credibility_level})"
+        )
+
+    return {
+        "tier": tier,
+        "need_deep_ta": need_deep_ta,
+        "tier_overridden": tier_overridden,
+        "need_deep_ta_overridden": deep_ta_overridden,
+        "tier_reason_addition": "; ".join(tier_reasons),
+        "why_not_deep_ta_addition": "; ".join(deep_ta_reasons),
+        "credibility_applied": tier_overridden or deep_ta_overridden,
+    }
+
+
+def render_audit_summary(audit: EvidenceAuditResult) -> str:
+    """Render an EvidenceAuditResult as a Markdown summary string."""
+    lines: List[str] = []
+    lines.append("### raw_evidence 覆盖率审计")
+    lines.append("")
+    lines.append(f"- **覆盖率**: {audit.evidence_coverage:.1%} ({audit.satisfied_fields}/{audit.total_fields})")
+    lines.append(f"- **质量等级**: {audit.evidence_quality_level}")
+    lines.append(f"- **有数据字段**: {len(audit.has_data_fields)}")
+    lines.append(f"- **失败字段**: {len(audit.failed_fields)}")
+    lines.append(f"- **未查询字段**: {len(audit.not_queried_fields)}")
+    lines.append(f"- **Stale 字段**: {len(audit.stale_fields)}")
+    lines.append(f"- **单位未知字段**: {len(audit.unit_unknown_fields)}")
+    lines.append(f"- **Fallback 字段**: {len(audit.fallback_fields)}")
+    lines.append(f"- **关键缺失字段**: {len(audit.critical_missing_fields)}")
+
+    if audit.critical_missing_fields:
+        lines.append("")
+        lines.append("**关键缺失**:")
+        for f in audit.critical_missing_fields:
+            label = _EVIDENCE_FIELD_LABELS.get(f, f)
+            lines.append(f"- {label} ({f})")
+
+    if audit.failed_fields:
+        lines.append("")
+        lines.append("**失败字段**:")
+        for f in audit.failed_fields:
+            label = _EVIDENCE_FIELD_LABELS.get(f, f)
+            lines.append(f"- {label} ({f})")
+
+    if audit.stale_fields:
+        lines.append("")
+        lines.append("**Stale 字段 (实时补丁)**:")
+        for f in audit.stale_fields:
+            label = _EVIDENCE_FIELD_LABELS.get(f, f)
+            lines.append(f"- {label} ({f})")
+
+    if audit.unit_unknown_fields:
+        lines.append("")
+        lines.append("**单位未知字段**:")
+        for f in audit.unit_unknown_fields:
+            label = _EVIDENCE_FIELD_LABELS.get(f, f)
+            lines.append(f"- {label} ({f})")
+
+    if audit.fallback_fields:
+        lines.append("")
+        lines.append("**Fallback 字段**:")
+        for f in audit.fallback_fields:
+            label = _EVIDENCE_FIELD_LABELS.get(f, f)
+            lines.append(f"- {label} ({f})")
+
+    lines.append("")
+    lines.append("---")
+    lines.append("*Generated by evidence_coverage_audit.py — [DATA-007] evidence_coverage_audit*")
+    return "\n".join(lines)
+
+
+def render_credibility_summary(credibility: CandidateCredibilityResult) -> str:
+    """Render a CandidateCredibilityResult as a Markdown summary."""
+    lines: List[str] = []
+    lines.append(f"### 候选可信度评估: {credibility.symbol}")
+    lines.append("")
+    lines.append(f"- **候选类型**: {credibility.candidate_type}")
+    lines.append(f"- **可信度等级**: {credibility.credibility_level}")
+    lines.append(f"- **允许最高层**: {credibility.tier_allowed}")
+    lines.append(f"- **等级受限**: {'是' if credibility.tier_restricted else '否'}")
+    lines.append(f"- **允许深挖**: {'是' if credibility.need_deep_ta_allowed else '否'}")
+
+    if credibility.evidence_audit:
+        lines.append(f"- **证据覆盖率**: {credibility.evidence_audit.evidence_coverage:.1%}")
+
+    if credibility.credibility_reasons:
+        lines.append("")
+        lines.append("**限制原因**:")
+        for r in credibility.credibility_reasons:
+            lines.append(f"- {r}")
+
+    lines.append("")
+    lines.append("---")
+    lines.append("*Generated by evidence_coverage_audit.py — [DATA-007] evidence_coverage_audit*")
+    return "\n".join(lines)
+
+
+def build_evidence_coverage_section(
+    audits: Optional[List[EvidenceAuditResult]] = None,
+    credibilities: Optional[List[CandidateCredibilityResult]] = None,
+) -> str:
+    """Build an evidence coverage section for the nightly daily digest.
+
+    Args:
+        audits: List of EvidenceAuditResult from raw_evidence audits.
+        credibilities: List of CandidateCredibilityResult from candidate audits.
+
+    Returns:
+        Markdown section string for inclusion in nightly report.
+    """
+    lines: List[str] = []
+    lines.append("## 证据覆盖率审计")
+    lines.append("")
+    now = datetime.now()
+    lines.append(f"- **审计时间**: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("")
+
+    if audits:
+        high_count = sum(1 for a in audits if a.evidence_quality_level == "HIGH")
+        medium_count = sum(1 for a in audits if a.evidence_quality_level == "MEDIUM")
+        low_count = sum(1 for a in audits if a.evidence_quality_level == "LOW")
+        critical_count = sum(1 for a in audits if a.evidence_quality_level == "CRITICAL")
+        unknown_count = sum(1 for a in audits if a.evidence_quality_level == "UNKNOWN")
+        avg_coverage = (
+            sum(a.evidence_coverage for a in audits) / len(audits)
+            if audits else 0.0
+        )
+
+        lines.append("### raw_evidence 审计汇总")
+        lines.append("")
+        lines.append(f"- **审计样本数**: {len(audits)}")
+        lines.append(f"- **平均覆盖率**: {avg_coverage:.1%}")
+        lines.append(f"- **质量分布**: HIGH={high_count}, MEDIUM={medium_count}, LOW={low_count}, CRITICAL={critical_count}, UNKNOWN={unknown_count}")
+        lines.append("")
+
+    if credibilities:
+        restricted_count = sum(1 for c in credibilities if c.tier_restricted)
+        deep_ta_blocked = sum(1 for c in credibilities if not c.need_deep_ta_allowed)
+        avg_cred = (
+            sum(
+                {"HIGH": 4, "MEDIUM": 3, "LOW": 2, "CRITICAL": 1, "UNKNOWN": 0}.get(
+                    c.credibility_level, 0
+                )
+                for c in credibilities
+            )
+            / len(credibilities)
+            if credibilities else 0.0
+        )
+
+        lines.append("### 候选可信度汇总")
+        lines.append("")
+        lines.append(f"- **候选样本数**: {len(credibilities)}")
+        lines.append(f"- **等级受限**: {restricted_count}/{len(credibilities)}")
+        lines.append(f"- **深挖被阻**: {deep_ta_blocked}/{len(credibilities)}")
+class TestAuditCandidateEvidence:
+    def test_policy_ambush_with_evidence(self):
+        result = audit_candidate_evidence(
+            candidate_data_completeness=0.9,
+            candidate_tradeflow_completeness=0.8,
+            candidate_type="POLICY_AMBUSH",
+            has_policy_evidence=True,
+            has_realtime_quote=True,
+        )
+        assert result.credibility_level in ("HIGH", "MEDIUM")
+        assert result.tier_allowed == "A"
+        assert not result.tier_restricted
+
+    def test_policy_ambush_without_policy_evidence(self):
+        result = audit_candidate_evidence(
+            candidate_data_completeness=0.5,
+            candidate_type="POLICY_AMBUSH",
+            has_policy_evidence=False,
+        )
+        assert result.tier_restricted
+        assert result.tier_allowed in ("B", "C")
+        assert any("政策" in r for r in result.credibility_reasons)
+
+    def test_tech_trade_with_realtime(self):
+        result = audit_candidate_evidence(
+            candidate_data_completeness=0.8,
+            candidate_type="TECH_TRADE",
+            has_tech_signal=True,
+            has_realtime_quote=True,
+            fund_flow_unit_verified=True,
+        )
+        assert not result.tier_restricted
+        assert result.need_deep_ta_allowed
+
+    def test_tech_trade_without_realtime_and_tech(self):
+        result = audit_candidate_evidence(
+            candidate_data_completeness=0.3,
+            candidate_type="TECH_TRADE",
+            has_tech_signal=False,
+            has_realtime_quote=False,
+        )
+        assert result.tier_restricted
+        assert result.tier_allowed == "C"
+        assert any("降级" in r for r in result.credibility_reasons)
+
+    def test_tech_trade_without_realtime_only(self):
+        result = audit_candidate_evidence(
+            candidate_data_completeness=0.8,
+            candidate_type="TECH_TRADE",
+            has_tech_signal=True,
+            has_realtime_quote=False,
+        )
+        assert result.tier_restricted
+        assert any("实时行情" in r for r in result.credibility_reasons)
+
+    def test_tech_trade_fund_flow_not_verified(self):
+        result = audit_candidate_evidence(
+            candidate_data_completeness=0.8,
+            candidate_type="TECH_TRADE",
+            has_tech_signal=True,
+            has_realtime_quote=True,
+            fund_flow_unit_verified=False,
+        )
+        assert not result.need_deep_ta_allowed
+        assert any("资金流单位" in r for r in result.credibility_reasons)
+
+    def test_unclassified_data_gap(self):
+        result = audit_candidate_evidence(
+            candidate_data_completeness=0.1,
+            candidate_type="UNCLASSIFIED_DATA_GAP",
+        )
+        assert result.tier_allowed == "C"
+        assert result.tier_restricted
+        assert not result.need_deep_ta_allowed
+
+    def test_low_coverage_blocks_deep_ta(self):
+        result = audit_candidate_evidence(
+            candidate_data_completeness=0.3,
+            candidate_tradeflow_completeness=0.3,
+            candidate_type="TECH_TRADE",
+            has_tech_signal=True,
+            has_realtime_quote=True,
+        )
+        assert not result.need_deep_ta_allowed
+
+    def test_evidence_gate_applied(self):
+        result = audit_candidate_evidence(
+            candidate_data_completeness=0.5,
+            candidate_type="TECH_TRADE",
+            evidence_gate_applied=True,
+            has_tech_signal=True,
+            has_realtime_quote=True,
+        )
+        assert any("门控" in r for r in result.credibility_reasons)
+
+    def test_with_raw_evidence(self):
+        result = audit_candidate_evidence(
+            candidate_data_completeness=0.9,
+            candidate_type="POLICY_AMBUSH",
+            has_policy_evidence=True,
+            raw_evidence=_full_evidence(),
+        )
+        assert result.evidence_audit is not None
+        assert result.evidence_audit.evidence_coverage > 0
+
+    def test_policy_ambush_missing_critical(self):
+        ev = _full_evidence()
+        ev["fundamentals"] = _make_contract("fundamentals", status="FAILED")
+        result = audit_candidate_evidence(
+            candidate_data_completeness=0.5,
+            candidate_type="POLICY_AMBUSH",
+            has_policy_evidence=True,
+            raw_evidence=ev,
+        )
+        assert any("关键证据缺失" in r for r in result.credibility_reasons)
+
+    def test_missing_critical_data_fields_blocks_a(self):
+        result = audit_candidate_evidence(
+            candidate_data_completeness=0.5,
+            candidate_tradeflow_completeness=0.5,
+            candidate_type="TECH_TRADE",
+            missing_data_fields=["关键证据缺失: 行情OHLCV数据"],
+            has_tech_signal=True,
+            has_realtime_quote=True,
+            fund_flow_unit_verified=True,
+        )
+        assert result.tier_allowed != "A" or result.tier_restricted
+
+
+# ── TestApplyCredibilityLinkage ──────────────────────────────────────
+
+class TestApplyCredibilityLinkage:
+    def test_no_credibility(self):
+        result = apply_credibility_linkage(candidate_tier="A")
+        assert result["tier"] == "A"
+        assert not result["credibility_applied"]
+
+    def test_high_credibility_no_override(self):
+        cred = CandidateCredibilityResult(
+            tier_allowed="A", credibility_level="HIGH"
+        )
+        result = apply_credibility_linkage(candidate_tier="A", credibility=cred)
+        assert result["tier"] == "A"
+        assert not result["tier_overridden"]
+
+    def test_tier_downgrade(self):
+        cred = CandidateCredibilityResult(
+            tier_allowed="B", credibility_level="MEDIUM"
+        )
+        result = apply_credibility_linkage(candidate_tier="A", credibility=cred)
+        assert result["tier"] == "B"
+        assert result["tier_overridden"]
+        assert result["credibility_applied"]
+
+    def test_tier_no_upgrade(self):
+        cred = CandidateCredibilityResult(
+            tier_allowed="B", credibility_level="MEDIUM"
+        )
+        result = apply_credibility_linkage(candidate_tier="C", credibility=cred)
+        assert result["tier"] == "C"
+        assert not result["tier_overridden"]
+
+    def test_deep_ta_blocked(self):
+        cred = CandidateCredibilityResult(
+            tier_allowed="A",
+            need_deep_ta_allowed=False,
+            credibility_level="LOW",
+        )
+        result = apply_credibility_linkage(
+            candidate_tier="A", candidate_need_deep_ta=True, credibility=cred
+        )
+        assert not result["need_deep_ta"]
+        assert result["need_deep_ta_overridden"]
+
+    def test_deep_ta_allowed(self):
+        cred = CandidateCredibilityResult(
+            tier_allowed="A",
+            need_deep_ta_allowed=True,
+            credibility_level="HIGH",
+        )
+        result = apply_credibility_linkage(
+            candidate_tier="A", candidate_need_deep_ta=True, credibility=cred
+        )
+        assert result["need_deep_ta"]
+        assert not result["need_deep_ta_overridden"]
+
+
+# ── TestRenderAuditSummary ───────────────────────────────────────────
+
+class TestRenderAuditSummary:
+    def test_basic_render(self):
+        audit = audit_raw_evidence(_full_evidence())
+        md = render_audit_summary(audit)
+        assert "raw_evidence 覆盖率审计" in md
+        assert "覆盖率" in md
+        assert "质量等级" in md
+        assert "[DATA-007]" in md
+
+    def test_with_critical_missing(self):
+        audit = EvidenceAuditResult(
+            critical_missing_fields=["fund_flow_individual", "announcements"],
+            evidence_coverage=0.3,
+            evidence_quality_level="LOW",
+            total_fields=8,
+            satisfied_fields=2,
+        )
+        md = render_audit_summary(audit)
+        assert "关键缺失" in md
+
+    def test_with_stale(self):
+        audit = EvidenceAuditResult(
+            stale_fields=["stock_data"],
+            evidence_coverage=0.8,
+            evidence_quality_level="MEDIUM",
+            total_fields=8,
+            satisfied_fields=6,
+        )
+        md = render_audit_summary(audit)
+        assert "Stale" in md
+
+    def test_with_unit_unknown(self):
+        audit = EvidenceAuditResult(
+            unit_unknown_fields=["fund_flow_individual"],
+            evidence_coverage=0.7,
+            evidence_quality_level="MEDIUM",
+            total_fields=8,
+            satisfied_fields=5,
+        )
+        md = render_audit_summary(audit)
+        assert "单位未知" in md
+
+    def test_with_fallback(self):
+        audit = EvidenceAuditResult(
+            fallback_fields=["fund_flow_individual"],
+            evidence_coverage=0.8,
+            evidence_quality_level="HIGH",
+            total_fields=8,
+            satisfied_fields=7,
+        )
+        md = render_audit_summary(audit)
+        assert "Fallback" in md
+
+
+# ── TestRenderCredibilitySummary ─────────────────────────────────────
+
+class TestRenderCredibilitySummary:
+    def test_basic_render(self):
+        cred = audit_candidate_evidence(
+            candidate_data_completeness=0.8,
+            candidate_type="TECH_TRADE",
+            has_tech_signal=True,
+            has_realtime_quote=True,
+        )
+        cred.symbol = "600519.SH"
+        md = render_credibility_summary(cred)
+        assert "600519.SH" in md
+        assert "候选可信度评估" in md
+        assert "[DATA-007]" in md
+
+    def test_with_reasons(self):
+        cred = audit_candidate_evidence(
+            candidate_data_completeness=0.3,
+            candidate_type="TECH_TRADE",
+            has_tech_signal=False,
+            has_realtime_quote=False,
+        )
+        cred.symbol = "000001.SZ"
+        md = render_credibility_summary(cred)
+        assert "限制原因" in md
+
+
+# ── TestBuildEvidenceCoverageSection ─────────────────────────────────
+
+class TestBuildEvidenceCoverageSection:
+    def test_empty(self):
+        md = build_evidence_coverage_section()
+        assert "证据覆盖率审计" in md
+        assert "[DATA-007]" in md
+
+    def test_with_audits(self):
+        audits = [
+            audit_raw_evidence(_full_evidence()),
+            audit_raw_evidence(_evidence_missing_fund()),
+        ]
+        md = build_evidence_coverage_section(audits=audits)
+        assert "raw_evidence 审计汇总" in md
+        assert "审计样本数" in md
+        assert "平均覆盖率" in md
+
+    def test_with_credibilities(self):
+        creds = [
+            audit_candidate_evidence(
+                candidate_data_completeness=0.9,
+                candidate_type="POLICY_AMBUSH",
+                has_policy_evidence=True,
+            ),
+            audit_candidate_evidence(
+                candidate_data_completeness=0.3,
+                candidate_type="TECH_TRADE",
+                has_tech_signal=False,
+                has_realtime_quote=False,
+            ),
+        ]
+        creds[0].symbol = "600519.SH"
+        creds[1].symbol = "000001.SZ"
+        md = build_evidence_coverage_section(credibilities=creds)
+        assert "候选可信度汇总" in md
+        assert "等级受限" in md
+        assert "候选类型" in md
+
+    def test_with_both(self):
+        audits = [audit_raw_evidence(_full_evidence())]
+        creds = [
+            audit_candidate_evidence(
+                candidate_data_completeness=0.8,
+                candidate_type="POLICY_AMBUSH",
+                has_policy_evidence=True,
+            )
+        ]
+        creds[0].symbol = "600519.SH"
+        md = build_evidence_coverage_section(audits=audits, credibilities=creds)
+        assert "raw_evidence 审计汇总" in md
+        assert "候选可信度汇总" in md
+
+
+# ── TestCriticalFieldsByCandidateType ────────────────────────────────
+
+class TestCriticalFieldsByCandidateType:
+    def test_policy_ambush_requires_policy(self):
+        assert "fundamentals" in _CRITICAL_FIELDS_BY_CANDIDATE_TYPE["POLICY_AMBUSH"]
+        assert "news" in _CRITICAL_FIELDS_BY_CANDIDATE_TYPE["POLICY_AMBUSH"]
+        assert "announcements" in _CRITICAL_FIELDS_BY_CANDIDATE_TYPE["POLICY_AMBUSH"]
+
+    def test_tech_trade_requires_realtime(self):
+        assert "stock_data" in _CRITICAL_FIELDS_BY_CANDIDATE_TYPE["TECH_TRADE"]
+        assert "fund_flow_individual" in _CRITICAL_FIELDS_BY_CANDIDATE_TYPE["TECH_TRADE"]
+
+    def test_data_gap_no_critical(self):
+        assert _CRITICAL_FIELDS_BY_CANDIDATE_TYPE["UNCLASSIFIED_DATA_GAP"] == []
+
+    def test_all_types_have_entries(self):
+        expected = {"POLICY_AMBUSH", "POLICY_CONFIRM", "TECH_TRADE", "EVENT_WATCH",
+                    "PSEUDO_POLICY", "OVERHEATED_AVOID", "UNCLASSIFIED_DATA_GAP"}
+        assert expected.issubset(set(_CRITICAL_FIELDS_BY_CANDIDATE_TYPE.keys()))
+
+
+# ── TestEvidenceFieldLabels ──────────────────────────────────────────
+
+class TestEvidenceFieldLabels:
+    def test_key_fields_have_labels(self):
+        for key in ("stock_data", "fund_flow_individual", "lhb", "news",
+                     "announcements", "fundamentals"):
+            assert key in _EVIDENCE_FIELD_LABELS
+
+    def test_all_labels_non_empty(self):
+        for key, label in _EVIDENCE_FIELD_LABELS.items():
+            assert label, f"Label for {key} is empty"
+
+
+# ── TestEvidenceFieldFamilies ────────────────────────────────────────
+
+
+exec
+/bin/zsh -lc "sed -n '620,920p' tradingagents/dataflows/evidence_coverage_audit.py && sed -n '620,920p' tests/test_data007_evidence_coverage_audit.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        lines.append(f"- **深挖被阻**: {deep_ta_blocked}/{len(credibilities)}")
+        lines.append(f"- **可信度均值**: {avg_cred:.2f}/4.0")
+        lines.append("")
+
+        type_breakdown: Dict[str, List[str]] = {}
+        for c in credibilities:
+            type_breakdown.setdefault(c.candidate_type, []).append(c.credibility_level)
+        if type_breakdown:
+            lines.append("| 候选类型 | 数量 | 可信度分布 |")
+            lines.append("|----------|------|------------|")
+            for ct, levels in sorted(type_breakdown.items()):
+                dist = ", ".join(
+                    f"{lvl}={sum(1 for l in levels if l == lvl)}"
+                    for lvl in ("HIGH", "MEDIUM", "LOW", "CRITICAL", "UNKNOWN")
+                    if sum(1 for l in levels if l == lvl) > 0
+                )
+                lines.append(f"| {ct or 'UNKNOWN'} | {len(levels)} | {dist} |")
+            lines.append("")
+
+    lines.append("---")
+    lines.append("*Generated by evidence_coverage_audit.py — [DATA-007] evidence_coverage_audit*")
+    lines.append("")
+    return "\n".join(lines)
+
+class TestEvidenceFieldFamilies:
+    def test_stock_data_ohlcv(self):
+        assert _EVIDENCE_FIELD_FAMILIES["stock_data"] == "ohlcv"
+        assert _EVIDENCE_FIELD_FAMILIES["indicators"] == "ohlcv"
+
+    def test_fund_flow_family(self):
+        assert _EVIDENCE_FIELD_FAMILIES["fund_flow_individual"] == "fund_flow"
+        assert _EVIDENCE_FIELD_FAMILIES["fund_flow_board"] == "fund_flow"
+
+
+# ── TestFiveFixtureScenarios ─────────────────────────────────────────
+
+class TestFiveFixtureScenarios:
+    """Verify 5 fixture scenarios from the acceptance criteria:
+    1. Full evidence — no false downgrade
+    2. Missing fund flow — degraded
+    3. Missing announcements — tracked
+    4. Stale market data — tracked
+    5. Unit unknown — tracked
+    """
+
+    def test_full_evidence_no_downgrade(self):
+        audit = audit_raw_evidence(_full_evidence())
+        assert audit.evidence_quality_level in ("HIGH", "MEDIUM")
+        assert len(audit.failed_fields) == 0
+        cred = audit_candidate_evidence(
+            candidate_data_completeness=audit.evidence_coverage,
+            candidate_type="POLICY_AMBUSH",
+            has_policy_evidence=True,
+            raw_evidence=_full_evidence(),
+        )
+        assert cred.credibility_level in ("HIGH", "MEDIUM")
+        linkage = apply_credibility_linkage(candidate_tier="A", credibility=cred)
+        assert linkage["tier"] == "A"
+        assert not linkage["tier_overridden"]
+
+    def test_missing_fund_degraded(self):
+        audit = audit_raw_evidence(_evidence_missing_fund())
+        assert "fund_flow_individual" in audit.failed_fields
+        assert audit.evidence_coverage < 1.0
+
+    def test_missing_announcements_tracked(self):
+        audit = audit_raw_evidence(_evidence_missing_announcements())
+        assert "announcements" in audit.not_queried_fields
+
+    def test_stale_market_data_tracked(self):
+        audit = audit_raw_evidence(_evidence_stale())
+        assert "stock_data" in audit.stale_fields
+
+    def test_unit_unknown_tracked(self):
+        audit = audit_raw_evidence(_evidence_unit_unknown())
+        assert "fund_flow_individual" in audit.unit_unknown_fields
+
+
+# ── TestAcceptanceDATA007 ────────────────────────────────────────────
+
+class TestAcceptanceDATA007:
+    """All acceptance criteria from TASKS.md DATA-007."""
+
+    def test_full_evidence_no_false_downgrade(self):
+        audit = audit_raw_evidence(_full_evidence())
+        cred = audit_candidate_evidence(
+            candidate_data_completeness=audit.evidence_coverage,
+            candidate_type="POLICY_AMBUSH",
+            has_policy_evidence=True,
+            raw_evidence=_full_evidence(),
+        )
+        assert cred.credibility_level in ("HIGH", "MEDIUM")
+        assert not cred.tier_restricted
+
+    def test_missing_critical_restricts_tier_and_deep_ta(self):
+        cred = audit_candidate_evidence(
+            candidate_data_completeness=0.2,
+            candidate_tradeflow_completeness=0.2,
+            candidate_type="UNCLASSIFIED_DATA_GAP",
+        )
+        assert cred.tier_restricted
+        assert not cred.need_deep_ta_allowed
+
+    def test_nightly_digest_can_show_coverage(self):
+        audits = [audit_raw_evidence(_full_evidence())]
+        section = build_evidence_coverage_section(audits=audits)
+        assert "证据覆盖率审计" in section
+        assert "覆盖率" in section
+
+    def test_no_live_llm_required(self):
+        result = audit_raw_evidence(_full_evidence())
+        assert result.evidence_coverage > 0
+
+    def test_no_prod_db_write(self):
+        result = audit_candidate_evidence(
+            candidate_data_completeness=0.5,
+            candidate_type="TECH_TRADE",
+        )
+        assert isinstance(result.credibility_level, str)
+
+    def test_no_speculative_fill(self):
+        ev = {"stock_data": _make_contract("stock_data", status="FAILED")}
+        result = audit_raw_evidence(ev)
+        assert result.evidence_coverage < 1.0
+        assert "stock_data" in result.failed_fields
+
+    def test_render_contains_quality_level(self):
+        audit = audit_raw_evidence(_full_evidence())
+        md = render_audit_summary(audit)
+        assert audit.evidence_quality_level in md
+
+    def test_api_audit_endpoint_schema(self):
+        from api.tradeflow_schemas import (
+            TradeFlowEvidenceAuditResponse,
+            EvidenceCredibilityItem,
+        )
+        resp = TradeFlowEvidenceAuditResponse()
+        assert resp.status == "ok"
+        assert resp.total_candidates == 0
+        item = EvidenceCredibilityItem(symbol="600519.SH")
+        assert item.symbol == "600519.SH"
+
+exec
+/bin/zsh -lc 'rg -n "raw_evidence|evidence_audit|missing_data_fields_json|candidate_type|data_completeness|tradeflow_data_completeness" -S tradingagents api tests | head -200' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+api/services/tradeflow_service.py:103:        "tradeflow_data_completeness": _rget(row, "tradeflow_data_completeness", 0.0) or 0.0,
+api/services/tradeflow_service.py:104:        "missing_data_fields": _parse_json(_rget(row, "missing_data_fields_json"), []),
+api/services/tradeflow_service.py:105:        "data_completeness": _rget(row, "data_completeness", 0.0) or 0.0,
+api/services/tradeflow_service.py:131:        "candidate_type": _rget(row, "candidate_type", ""),  # [H-005] mandate_radar_ui
+api/services/tradeflow_service.py:137:        "candidate_type_reason": _rget(row, "candidate_type_reason", ""),  # [H-005]
+api/services/tradeflow_service.py:204:        total_comp += it.get("tradeflow_data_completeness", 0.0)
+api/services/tradeflow_service.py:295:                "tradeflow_data_completeness": entry.get("tradeflow_data_completeness", 0.0),
+api/services/tradeflow_service.py:297:                "data_completeness": entry.get("data_completeness", 0.0),
+api/services/tradeflow_service.py:350:    candidate_type: Optional[str] = None,  # [H-005] mandate_radar_ui
+api/services/tradeflow_service.py:354:    # [TF-P0-002] tradeflow_pool_split — resolve pool to candidate_type list
+api/services/tradeflow_service.py:356:    if pool and not candidate_type:
+api/services/tradeflow_service.py:357:        from tradingagents.tradeflow.candidate_pool import pool_to_candidate_types
+api/services/tradeflow_service.py:358:        pool_types = pool_to_candidate_types(pool)
+api/services/tradeflow_service.py:360:            candidate_type = pool_types[0]
+api/services/tradeflow_service.py:376:        if candidate_type and "candidate_type" in columns:  # [H-005] mandate_radar_ui
+api/services/tradeflow_service.py:377:            extra_conditions.append("candidate_type = ?")
+api/services/tradeflow_service.py:378:        elif len(pool_types) > 1 and "candidate_type" in columns:  # [TF-P0-002] tradeflow_pool_split
+api/services/tradeflow_service.py:380:            extra_conditions.append(f"candidate_type IN ({placeholders})")
+api/services/tradeflow_service.py:387:        if candidate_type and "candidate_type" in columns:  # [H-005] mandate_radar_ui
+api/services/tradeflow_service.py:388:            extra_params.append(candidate_type)
+api/services/tradeflow_service.py:585:                "tradeflow_data_completeness": _rget(r, "tradeflow_data_completeness", 0.0) or 0.0,
+api/services/tradeflow_service.py:777:        "evidence_contract_available": True,  # [DATA-004] raw_evidence_contract
+api/services/tradeflow_service.py:983:            data_completeness=it.get("data_completeness", 0.0),
+api/services/tradeflow_service.py:1014:def get_evidence_audit(trade_date: str, tf_db_path: str = "") -> dict:
+api/services/tradeflow_service.py:1026:    _fast_meta = _tradeflow_meta("tradeflow_evidence_audit")
+api/services/tradeflow_service.py:1050:            data_comp = float(row.get("data_completeness", 0) or 0)
+api/services/tradeflow_service.py:1051:            tf_comp = float(row.get("tradeflow_data_completeness", 0) or 0)
+api/services/tradeflow_service.py:1052:            cand_type = str(row.get("candidate_type", "") or "")
+api/services/tradeflow_service.py:1053:            missing_fields = json.loads(row.get("missing_data_fields_json", "[]") or "[]")
+api/services/tradeflow_service.py:1063:                candidate_data_completeness=data_comp,
+api/services/tradeflow_service.py:1065:                candidate_type=cand_type,
+api/services/tradeflow_service.py:1075:            if cred.evidence_audit:
+api/services/tradeflow_service.py:1076:                audits.append(cred.evidence_audit)
+tests/test_v004_mandate_e2e_smoke.py:56:    classify_candidate_type,
+tests/test_v004_mandate_e2e_smoke.py:109:    expected_candidate_type: Optional[str] = None
+tests/test_v004_mandate_e2e_smoke.py:125:    expected_candidate_type="POLICY_AMBUSH",
+tests/test_v004_mandate_e2e_smoke.py:165:    expected_candidate_type="POLICY_AMBUSH",
+tests/test_v004_mandate_e2e_smoke.py:206:    expected_candidate_type=None,
+tests/test_v004_mandate_e2e_smoke.py:231:    expected_candidate_type="OVERHEATED_AVOID",
+tests/test_v004_mandate_e2e_smoke.py:251:    expected_candidate_type="PSEUDO_POLICY",
+tests/test_v004_mandate_e2e_smoke.py:307:    candidate_type: str = ""
+tests/test_v004_mandate_e2e_smoke.py:321:            "candidate_type": self.candidate_type,
+tests/test_v004_mandate_e2e_smoke.py:440:            "candidate_type": ambush_result.candidate_type,
+tests/test_v004_mandate_e2e_smoke.py:456:    result.candidate_type = ambush_result.candidate_type
+tests/test_v004_mandate_e2e_smoke.py:472:            candidate_type=ambush_result.candidate_type,
+tests/test_v004_mandate_e2e_smoke.py:506:            candidate_type=ambush_result.candidate_type,
+tests/test_v004_mandate_e2e_smoke.py:538:    if not result.candidate_type:
+tests/test_v004_mandate_e2e_smoke.py:539:        field_gaps.append("candidate_type")
+tests/test_v004_mandate_e2e_smoke.py:558:    if fixture.expected_candidate_type is not None:
+tests/test_v004_mandate_e2e_smoke.py:559:        type_ok = result.candidate_type == fixture.expected_candidate_type
+tests/test_v004_mandate_e2e_smoke.py:565:        mandate_ok = result.mandate_score < 50 or result.candidate_type not in ("POLICY_AMBUSH",)
+tests/test_v004_mandate_e2e_smoke.py:575:            f"candidate_type mismatch: expected={fixture.expected_candidate_type}, got={result.candidate_type}"
+tests/test_v004_mandate_e2e_smoke.py:580:            f"score={result.mandate_score:.1f}, type={result.candidate_type}"
+tests/test_v004_mandate_e2e_smoke.py:602:            f"| {r.fixture_id} | {r.symbol} | {r.candidate_type} | "
+tests/test_v004_mandate_e2e_smoke.py:611:        lines.append(f"- **CandidateType**: {r.candidate_type}")
+tests/test_v004_mandate_e2e_smoke.py:799:        assert r.candidate_type in ("POLICY_AMBUSH", "POLICY_CONFIRM"), (
+tests/test_v004_mandate_e2e_smoke.py:800:            f"Expected POLICY_AMBUSH or POLICY_CONFIRM, got {r.candidate_type}"
+tests/test_v004_mandate_e2e_smoke.py:806:        assert r.candidate_type in ("POLICY_AMBUSH", "POLICY_CONFIRM"), (
+tests/test_v004_mandate_e2e_smoke.py:807:            f"Expected POLICY_AMBUSH or POLICY_CONFIRM, got {r.candidate_type}"
+tests/test_v004_mandate_e2e_smoke.py:812:        assert r.candidate_type not in ("POLICY_AMBUSH",), (
+tests/test_v004_mandate_e2e_smoke.py:813:            f"Weak evidence should not be POLICY_AMBUSH, got {r.candidate_type}"
+tests/test_v004_mandate_e2e_smoke.py:818:        assert r.candidate_type in ("OVERHEATED_AVOID", "PSEUDO_POLICY", "EVENT_WATCH", "TECH_TRADE"), (
+tests/test_v004_mandate_e2e_smoke.py:819:            f"Overheated should not be POLICY_AMBUSH, got {r.candidate_type}"
+tests/test_v004_mandate_e2e_smoke.py:824:        assert r.candidate_type not in ("POLICY_AMBUSH", "POLICY_CONFIRM"), (
+tests/test_v004_mandate_e2e_smoke.py:825:            f"Pseudo policy should not be POLICY_AMBUSH, got {r.candidate_type}"
+tests/test_v004_mandate_e2e_smoke.py:832:        if r.candidate_type in ("POLICY_AMBUSH", "POLICY_CONFIRM"):
+tests/test_v004_mandate_e2e_smoke.py:837:        if r.candidate_type in ("POLICY_AMBUSH", "POLICY_CONFIRM"):
+tests/test_v004_mandate_e2e_smoke.py:878:            assert r1.candidate_type == r2.candidate_type, (
+tests/test_v004_mandate_e2e_smoke.py:879:                f"{fixture.fixture_id} candidate_type not stable"
+tests/test_v004_mandate_e2e_smoke.py:956:            assert r1.candidate_type == r2.candidate_type
+tests/test_v004_mandate_e2e_smoke.py:962:        assert r.candidate_type != "POLICY_AMBUSH", (
+tests/test_v004_mandate_e2e_smoke.py:968:        assert r.candidate_type != "POLICY_AMBUSH", (
+tests/test_v004_mandate_e2e_smoke.py:974:        assert r.candidate_type != "POLICY_AMBUSH", (
+tests/test_v004_mandate_e2e_smoke.py:980:        assert r.candidate_type in ("POLICY_AMBUSH", "POLICY_CONFIRM"), (
+tests/test_v004_mandate_e2e_smoke.py:981:            f"Strong policy should be POLICY_AMBUSH or POLICY_CONFIRM, got {r.candidate_type}"
+tests/test_v004_mandate_e2e_smoke.py:1013:        assert "candidate_type" in d
+tests/test_v004_mandate_e2e_smoke.py:1032:        assert r.candidate_type in ("TECH_TRADE", "EVENT_WATCH", "")
+tests/test_v004_mandate_e2e_smoke.py:1049:        assert r.candidate_type not in ("POLICY_AMBUSH",)
+tests/test_v004_mandate_e2e_smoke.py:1065:        assert isinstance(r.candidate_type, str)
+tests/test_h004_ambush_score.py:7:3. classify_candidate_type() decision logic.
+tests/test_h004_ambush_score.py:14:   - Daily Plan returns candidate_type and scores.
+tests/test_h004_ambush_score.py:22:    CANDIDATE_TYPE_LABELS,
+tests/test_h004_ambush_score.py:24:    classify_candidate_type,
+tests/test_h004_ambush_score.py:47:            assert t in CANDIDATE_TYPE_LABELS
+tests/test_h004_ambush_score.py:48:            assert len(CANDIDATE_TYPE_LABELS[t]) > 0
+tests/test_h004_ambush_score.py:272:        assert "candidate_type" in d
+tests/test_h004_ambush_score.py:289:# ── classify_candidate_type ──
+tests/test_h004_ambush_score.py:296:        ct, reason = classify_candidate_type(
+tests/test_h004_ambush_score.py:312:        ct, reason = classify_candidate_type(
+tests/test_h004_ambush_score.py:327:        ct, reason = classify_candidate_type(
+tests/test_h004_ambush_score.py:342:        ct, reason = classify_candidate_type(
+tests/test_h004_ambush_score.py:357:        ct, reason = classify_candidate_type(
+tests/test_h004_ambush_score.py:366:        ct, _ = classify_candidate_type(
+tests/test_h004_ambush_score.py:374:        ct, reason = classify_candidate_type(
+tests/test_h004_ambush_score.py:389:        ct, reason = classify_candidate_type(
+tests/test_h004_ambush_score.py:404:        ct, reason = classify_candidate_type(
+tests/test_h004_ambush_score.py:412:        ct, reason = classify_candidate_type(
+tests/test_h004_ambush_score.py:480:        assert c.candidate_type == ""
+tests/test_h004_ambush_score.py:486:        assert c.candidate_type_reason == ""
+tests/test_h004_ambush_score.py:495:            candidate_type="POLICY_AMBUSH",
+tests/test_h004_ambush_score.py:501:            candidate_type_reason="test",
+tests/test_h004_ambush_score.py:508:        assert row["candidate_type"] == "POLICY_AMBUSH"
+tests/test_h004_ambush_score.py:514:        assert row["candidate_type_reason"] == "test"
+tests/test_h004_ambush_score.py:523:            candidate_type="POLICY_CONFIRM",
+tests/test_h004_ambush_score.py:529:            candidate_type_reason="政策右侧确认",
+tests/test_h004_ambush_score.py:538:        assert restored.candidate_type == "POLICY_CONFIRM"
+tests/test_h004_ambush_score.py:544:        assert restored.candidate_type_reason == "政策右侧确认"
+tests/test_h004_ambush_score.py:571:        assert c.candidate_type == ""
+tests/test_h004_ambush_score.py:605:        assert result.candidate_type == "POLICY_AMBUSH"
+tests/test_h004_ambush_score.py:635:        assert result.candidate_type == "POLICY_CONFIRM"
+tests/test_h004_ambush_score.py:656:        assert result.candidate_type == "TECH_TRADE"
+tests/test_h004_ambush_score.py:679:        assert result.candidate_type == "OVERHEATED_AVOID"
+tests/test_h004_ambush_score.py:700:        assert result.candidate_type == "PSEUDO_POLICY"
+tests/test_h004_ambush_score.py:719:        assert result.candidate_type == "EVENT_WATCH"
+tests/test_h004_ambush_score.py:747:    def test_render_includes_candidate_type(self):
+tests/test_h004_ambush_score.py:757:                "candidate_type": "POLICY_AMBUSH",
+tests/test_h004_ambush_score.py:763:                "candidate_type_reason": "政策左侧埋伏",
+tests/test_h006_mandate_replay_eval.py:192:            candidate_type=CandidateType.POLICY_AMBUSH.value,
+tests/test_h006_mandate_replay_eval.py:316:        assert f.candidate_type == CandidateType.POLICY_AMBUSH.value
+tests/test_h006_mandate_replay_eval.py:324:        assert f.candidate_type == CandidateType.POLICY_AMBUSH.value
+tests/test_h006_mandate_replay_eval.py:332:        assert f.candidate_type == CandidateType.POLICY_CONFIRM.value
+tests/test_h006_mandate_replay_eval.py:338:        assert f.candidate_type == CandidateType.TECH_TRADE.value
+tests/test_h006_mandate_replay_eval.py:344:        assert f.candidate_type == CandidateType.EVENT_WATCH.value
+tests/test_h006_mandate_replay_eval.py:349:        assert f.candidate_type == CandidateType.PSEUDO_POLICY.value
+tests/test_h006_mandate_replay_eval.py:355:        assert f.candidate_type == CandidateType.OVERHEATED_AVOID.value
+tests/test_h006_mandate_replay_eval.py:362:        assert f.candidate_type == CandidateType.POLICY_AMBUSH.value
+tests/test_h006_mandate_replay_eval.py:367:        assert f.candidate_type == CandidateType.POLICY_CONFIRM.value
+tests/test_h006_mandate_replay_eval.py:373:        assert f.candidate_type == CandidateType.POLICY_AMBUSH.value
+tests/test_h006_mandate_replay_eval.py:379:        assert f.candidate_type == CandidateType.UNCLASSIFIED_DATA_GAP.value
+tests/test_h006_mandate_replay_eval.py:513:    def test_by_candidate_type(self):
+tests/test_h006_mandate_replay_eval.py:515:        assert len(report.by_candidate_type) > 0
+tests/test_h006_mandate_replay_eval.py:516:        for ct, counts in report.by_candidate_type.items():
+tests/test_h006_mandate_replay_eval.py:541:            candidate_type=CandidateType.EVENT_WATCH.value,
+tests/test_h006_mandate_replay_eval.py:594:    def test_render_by_candidate_type_section(self):
+tests/test_h006_mandate_replay_eval.py:655:    def test_all_six_candidate_types_covered(self):
+tests/test_h006_mandate_replay_eval.py:659:            types_covered.add(f.candidate_type)
+tests/test_h006_mandate_replay_eval.py:721:            candidate_type=CandidateType.POLICY_AMBUSH.value,
+tests/test_h006_mandate_replay_eval.py:734:            candidate_type=CandidateType.POLICY_CONFIRM.value,
+tests/test_h006_mandate_replay_eval.py:788:    def test_candidate_type_enum_alignment(self):
+tests/test_h006_mandate_replay_eval.py:792:            assert f.candidate_type in valid_types, f"{fid} has invalid type: {f.candidate_type}"
+tests/test_h006_mandate_replay_eval.py:812:            candidate_type=CandidateType.TECH_TRADE.value,
+tests/test_h006_mandate_replay_eval.py:824:                    candidate_type=CandidateType.TECH_TRADE.value,
+tests/test_h006_mandate_replay_eval.py:835:            candidate_type=CandidateType.POLICY_AMBUSH.value,
+tests/test_g001_three_layer.py:43:        result = get_allowed_actions(data_completeness=80, position_status="no_position")
+tests/test_g001_three_layer.py:83:        result = get_allowed_actions(data_completeness=80, position_status="has_position")
+tests/test_g001_three_layer.py:133:        base = get_allowed_actions(data_completeness=80, position_status="no_position")
+tests/test_g001_three_layer.py:192:        result = get_allowed_actions(data_completeness=40, position_status="no_position")
+tests/test_g001_three_layer.py:198:        result = get_allowed_actions(data_completeness=60, position_status="no_position")
+tests/test_g001_three_layer.py:206:        result = get_allowed_actions(data_completeness=40, position_status="has_position")
+tests/test_g001_three_layer.py:216:        result = get_allowed_actions(data_completeness=65, position_status="has_position")
+tests/test_g001_three_layer.py:221:        result = get_allowed_actions(data_completeness=80, position_status="has_position")
+tests/test_g001_three_layer.py:309:        base = get_allowed_actions(data_completeness=80, position_status="no_position")
+tests/test_v003_tradeflow_acceptance_replay.py:113:    def test_data_completeness_high(self):
+tests/test_v003_tradeflow_acceptance_replay.py:117:        assert entry["data_completeness"] >= 0.75
+tests/test_v003_tradeflow_acceptance_replay.py:834:            completeness=c.data_completeness,
+tests/test_v003_tradeflow_acceptance_replay.py:852:            completeness=c.data_completeness,
+tests/test_v003_tradeflow_acceptance_replay.py:870:            completeness=c.data_completeness,
+tests/test_readiness_score.py:8:    calculate_data_completeness,
+tests/test_readiness_score.py:37:    score = calculate_data_completeness(
+tests/test_readiness_score.py:47:    score = calculate_data_completeness(
+tests/test_readiness_score.py:60:# ── Test 2: source_coverage equals data_completeness ──
+tests/test_readiness_score.py:62:def test_source_coverage_equals_data_completeness():
+tests/test_readiness_score.py:73:    assert calculate_source_coverage(**kwargs) == calculate_data_completeness(**kwargs)
+tests/test_readiness_score.py:411:        data_completeness=100,
+tests/test_readiness_score.py:1121:def test_raw_evidence_stock_data_overrides_text():
+tests/test_readiness_score.py:1124:        raw_evidence={"stock_data": "date,open,high,low,close,volume\n2026-05-01,10,11,9,10.5,1000000" + "x" * 60},
+tests/test_readiness_score.py:1130:def test_raw_evidence_stock_data_failed():
+tests/test_readiness_score.py:1133:        raw_evidence={"stock_data": "stock_data 调用失败"},
+tests/test_readiness_score.py:1138:def test_raw_evidence_fund_flow_individual():
+tests/test_readiness_score.py:1141:        raw_evidence={"fund_flow_individual": "日期,主力净流入\n2026-05-01,1000万"},
+tests/test_readiness_score.py:1146:def test_raw_evidence_fund_flow_failed():
+tests/test_readiness_score.py:1149:        raw_evidence={"fund_flow_individual": "fund_flow_individual 调用失败：timeout"},
+tests/test_readiness_score.py:1154:def test_raw_evidence_lhb_normal():
+tests/test_readiness_score.py:1157:        raw_evidence={"lhb": ""},
+tests/test_readiness_score.py:1162:def test_raw_evidence_lhb_failed():
+tests/test_readiness_score.py:1165:        raw_evidence={"lhb": "lhb 调用失败：API Error"},
+tests/test_readiness_score.py:1170:def test_raw_evidence_lhb_has_data():
+tests/test_readiness_score.py:1173:        raw_evidence={"lhb": "龙虎榜：买入营业部..."},
+tests/test_readiness_score.py:1178:def test_raw_evidence_news_has_data():
+tests/test_readiness_score.py:1181:        raw_evidence={"news": "x" * 100},
+tests/test_readiness_score.py:1186:def test_raw_evidence_news_failed():
+tests/test_readiness_score.py:1189:        raw_evidence={"news": "news 调用失败"},
+tests/test_readiness_score.py:1194:def test_raw_evidence_turnover_rate_not_in_pool():
+tests/test_readiness_score.py:1197:        raw_evidence={"stock_data": "x" * 100},
+tests/test_readiness_score.py:1202:def test_raw_evidence_margin_trading_not_in_pool():
+tests/test_readiness_score.py:1205:        raw_evidence={"stock_data": "x" * 100},
+tests/test_readiness_score.py:1210:def test_raw_evidence_none_falls_back_to_text():
+tests/test_readiness_score.py:1213:        raw_evidence=None,
+tests/test_readiness_score.py:1217:        raw_evidence={},
+tests/test_readiness_score.py:1227:def test_raw_evidence_lhb_not_triggered():
+tests/test_readiness_score.py:1231:        raw_evidence={"lhb": "龙虎榜查询未触发（force=False）"},
+tests/test_readiness_score.py:1236:def test_raw_evidence_lhb_not_triggered_short():
+tests/test_readiness_score.py:1240:        raw_evidence={"lhb": "未触发"},
+tests/test_ui001_tradeflow_api.py:75:        tradeflow_data_completeness=0.85,
+tests/test_ui001_tradeflow_api.py:89:        candidate_type="POLICY_AMBUSH",
+tests/test_ui001_tradeflow_api.py:95:        candidate_type_reason="政策连续性强且公司受益路径明确",
+tests/test_ui001_tradeflow_api.py:184:        tradeflow_data_completeness=0.6,
+tests/test_ui001_tradeflow_api.py:298:        assert c["candidate_type"] == "POLICY_AMBUSH"
+tests/test_ui001_tradeflow_api.py:310:    def test_filter_by_candidate_type(self, populated_db):
+tests/test_ui001_tradeflow_api.py:311:        result = get_candidates("2026-05-30", candidate_type="POLICY_AMBUSH", tf_db_path=populated_db)
+
+exec
+/bin/zsh -lc "sed -n '1,160p' api/services/tradeflow_service.py && rg -n \"CREATE TABLE tradeflow_candidates|tradeflow_candidates\" -S tradingagents api | head -100" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [UI-001] tradeflow_api
+# [PERF-001] runtime_tier_contract
+"""TradeFlow read-only data access service.
+
+Queries tradeflow SQLite tables for the API layer.
+Does NOT trigger TA, run full market scan, or call LLM.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from api.runtime_tier import RuntimeTier, tradeflow_meta as _tradeflow_meta  # [PERF-001]
+from tradingagents.tradeflow.symbol_utils import (  # [UI-008] tradeflow_field_normalization
+    normalize_tradeflow_symbol,
+    resolve_tradeflow_name,
+)
+from tradingagents.tradeflow.candidate_engine import get_filtered_symbols as _get_filtered_symbols  # [UI-007] tradeflow_filtered_trace
+
+
+def _get_project_root() -> str:
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _get_tradeflow_db_path() -> str:
+    env_path = os.environ.get("TRADEFLOW_DB_PATH", "")
+    if env_path:
+        return env_path
+    return os.path.join(_get_project_root(), "tradeflow.db")
+
+
+def _get_prod_db_path() -> str:
+    env_path = os.environ.get("DATABASE_URL", "")
+    if env_path.startswith("sqlite:///"):
+        return env_path.replace("sqlite:///", "", 1)
+    return os.path.join(_get_project_root(), "tradingagents.db")
+
+
+def _connect(tf_db_path: str = "") -> Optional[sqlite3.Connection]:
+    db_path = tf_db_path or _get_tradeflow_db_path()
+    if not os.path.exists(db_path):
+        return None
+    try:
+        from tradingagents.tradeflow.candidate_engine import init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception:
+        return None
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return {row["name"] for row in rows}
+    except Exception:
+        return set()
+
+
+def _parse_json(value: Any, default: Any = None) -> Any:
+    if value is None:
+        return default if default is not None else []
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return default if default is not None else []
+    return value
+
+
+def _rget(row: sqlite3.Row, col: str, default: Any = None) -> Any:
+    try:
+        val = row[col]
+        return val
+    except (KeyError, IndexError):
+        return default
+
+
+def _row_to_candidate_item(row: sqlite3.Row) -> dict:
+    symbol = normalize_tradeflow_symbol(row["symbol"])  # [UI-008]
+    raw_name = _rget(row, "name", "")
+    name = resolve_tradeflow_name(symbol, raw_name)  # [UI-008]
+    return {
+        "symbol": symbol,
+        "name": name,
+        "tier": _rget(row, "tier", ""),
+        "composite_score": _rget(row, "composite_score", 0.0) or 0.0,
+        "score": _rget(row, "score", 0.0) or 0.0,
+        "strategy_tags": _parse_json(_rget(row, "strategy_tags_json"), []),
+        "primary_strategy": _rget(row, "primary_strategy", ""),
+        "trigger_price": _rget(row, "trigger_price"),
+        "support_price": _rget(row, "support_price"),
+        "invalid_price": _rget(row, "invalid_price"),
+        "need_deep_ta": bool(_rget(row, "need_deep_ta", 0)),
+        "observe_state": _rget(row, "observe_state", "WAITING"),
+        "observe_trigger_count": _rget(row, "observe_trigger_count", 0) or 0,
+        "observe_first_trigger_time": _rget(row, "observe_first_trigger_time", ""),
+        "tradeflow_data_completeness": _rget(row, "tradeflow_data_completeness", 0.0) or 0.0,
+        "missing_data_fields": _parse_json(_rget(row, "missing_data_fields_json"), []),
+        "data_completeness": _rget(row, "data_completeness", 0.0) or 0.0,
+        "missing_evidence": _parse_json(_rget(row, "missing_evidence_json"), []),
+        "game_balance": _rget(row, "game_balance", ""),
+        "bull_case": _rget(row, "bull_case", ""),
+        "bear_case": _rget(row, "bear_case", ""),
+        "policy_case": _rget(row, "policy_case", ""),
+        "fund_flow_case": _rget(row, "fund_flow_case", ""),
+        "why_deep_ta": _rget(row, "why_deep_ta", ""),
+        "why_not_deep_ta": _rget(row, "why_not_deep_ta", ""),
+        "risk_flags": _parse_json(_rget(row, "risk_flags_json"), []),
+        "policy_tags": _parse_json(_rget(row, "policy_tags_json"), []),
+        "version_score": _rget(row, "version_score", 0.0) or 0.0,
+        "narrative_score": _rget(row, "narrative_score", 0.0) or 0.0,
+        "fund_flow_anomaly_score": _rget(row, "fund_flow_anomaly_score", 0.0) or 0.0,
+        "fund_flow_anomaly_tags": _parse_json(_rget(row, "fund_flow_anomaly_tags_json"), []),
+        "fund_flow_unit_verified": bool(_rget(row, "fund_flow_unit_verified", 0)),
+        "evidence_gate_applied": bool(_rget(row, "evidence_gate_applied", 0)),
+        "deep_ta_status": _rget(row, "deep_ta_status", ""),
+        "deep_ta_dispatch_reason": _rget(row, "deep_ta_dispatch_reason", ""),
+        "deep_ta_model": _rget(row, "deep_ta_model", ""),
+        "source": _rget(row, "source", "manual"),
+        "universe_sources": _parse_json(_rget(row, "universe_sources_json"), []),
+        "resonance_count": _rget(row, "resonance_count", 0) or 0,
+        "ta_budget_priority": _rget(row, "ta_budget_priority", 0) or 0,
+        "tier_reason": _rget(row, "tier_reason", ""),
+        "missing_evidence_for_upgrade": _parse_json(_rget(row, "missing_evidence_for_upgrade_json"), []),
+        "candidate_type": _rget(row, "candidate_type", ""),  # [H-005] mandate_radar_ui
+        "mandate_score": _rget(row, "mandate_score_component", 0.0) or 0.0,  # [H-005]
+        "ambush_score": _rget(row, "ambush_score", 0.0) or 0.0,  # [H-005]
+        "mandate_topic": _rget(row, "mandate_topic", ""),  # [H-005]
+        "company_role": _rget(row, "company_role", ""),  # [H-005]
+        "beneficiary_path": _parse_json(_rget(row, "beneficiary_path_json"), []),  # [H-005]
+        "candidate_type_reason": _rget(row, "candidate_type_reason", ""),  # [H-005]
+        "deep_ta_route": _rget(row, "deep_ta_route", ""),  # [H-005]
+        "research_queue": _rget(row, "research_queue", ""),  # [H-007] mandate_ta_queue_router
+        "research_intent": _rget(row, "research_intent", ""),  # [H-007]
+        "research_route_reason": _rget(row, "research_route_reason", ""),  # [H-007]
+        "watchlist_note": _rget(row, "watchlist_note", ""),  # [H-008] mandate_watchlist_note
+        "watchlist_note_suggested": _rget(row, "watchlist_note_suggested", ""),  # [H-008]
+        "watchlist_topic": _rget(row, "watchlist_topic", ""),  # [H-008]
+        "watchlist_benefit_score": _rget(row, "watchlist_benefit_score", 0.0) or 0.0,  # [H-008]
+        "watchlist_consensus_score": _rget(row, "watchlist_consensus_score", 0.0) or 0.0,  # [H-008]
+        "watchlist_evidence_gap": _parse_json(_rget(row, "watchlist_evidence_gap_json"), []),  # [H-008]
+        "plan_date": _rget(row, "plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
+        "effective_trade_date": _rget(row, "effective_trade_date", ""),  # [TF-DATE-001]
+        "observe_date": _rget(row, "observe_date", ""),  # [TF-DATE-001]
+        "action_tier": _rget(row, "action_tier", "scan"),  # [TF-UX-004]
+        "trade_priority_score": _rget(row, "trade_priority_score", 0.0) or 0.0,  # [TF-UX-004]
+        "action_tier_reason": _rget(row, "action_tier_reason", ""),  # [TF-UX-004]
+        "created_at": _rget(row, "created_at", ""),
+        "updated_at": _rget(row, "updated_at", ""),
+    }
+
+
+def _row_to_candidate_detail(row: sqlite3.Row) -> dict:
+    item = _row_to_candidate_item(row)
+api/services/tradeflow_service.py:363:    _fast_meta = _tradeflow_meta("tradeflow_candidates")  # [PERF-001]
+api/services/tradeflow_service.py:369:        columns = _table_columns(conn, "tradeflow_candidates")
+api/services/tradeflow_service.py:402:            conn, "tradeflow_candidates", trade_date,
+api/services/tradeflow_service.py:420:            "runtime_tier_meta": _tradeflow_meta("tradeflow_candidates"),  # [PERF-001]
+api/services/tradeflow_service.py:434:            "SELECT * FROM tradeflow_candidates WHERE trade_date = ? AND symbol = ?",
+api/services/tradeflow_service.py:439:            columns = _table_columns(conn, "tradeflow_candidates")
+api/services/tradeflow_service.py:442:                    "SELECT * FROM tradeflow_candidates WHERE effective_trade_date = ? AND symbol = ?",
+api/services/tradeflow_service.py:470:        columns = _table_columns(conn, "tradeflow_candidates")
+api/services/tradeflow_service.py:476:            conn, "tradeflow_candidates", trade_date,
+api/services/tradeflow_service.py:550:        columns = _table_columns(conn, "tradeflow_candidates")
+api/services/tradeflow_service.py:560:            conn, "tradeflow_candidates", trade_date,
+api/services/tradeflow_service.py:677:                    "SELECT trade_date FROM tradeflow_candidates ORDER BY created_at DESC LIMIT 1"
+api/services/tradeflow_service.py:682:                if "effective_trade_date" in _table_columns(conn, "tradeflow_candidates"):
+api/services/tradeflow_service.py:684:                        "SELECT effective_trade_date FROM tradeflow_candidates WHERE effective_trade_date != '' ORDER BY created_at DESC LIMIT 1"
+api/services/tradeflow_service.py:688:                if "observe_date" in _table_columns(conn, "tradeflow_candidates"):
+api/services/tradeflow_service.py:690:                        "SELECT observe_date FROM tradeflow_candidates WHERE observe_date != '' ORDER BY created_at DESC LIMIT 1"
+api/services/tradeflow_service.py:696:                    "SELECT COUNT(*) as cnt FROM tradeflow_candidates WHERE trade_date = ?",
+api/services/tradeflow_service.py:730:                    "name": "tradeflow_candidates",
+api/services/tradeflow_service.py:735:                    "record_count": conn.execute("SELECT COUNT(*) FROM tradeflow_candidates").fetchone()[0],
+api/services/tradeflow_service.py:907:    _fast_meta = _tradeflow_meta("tradeflow_candidates_tiered")
+api/services/tradeflow_service.py:913:        columns = _table_columns(conn, "tradeflow_candidates")
+api/services/tradeflow_service.py:927:            conn, "tradeflow_candidates", trade_date,
+api/services/tradeflow_service.py:954:            "runtime_tier_meta": _tradeflow_meta("tradeflow_candidates_tiered"),
+api/services/tradeflow_service.py:966:    columns = _table_columns(conn, "tradeflow_candidates")
+api/services/tradeflow_service.py:1000:                    "UPDATE tradeflow_candidates SET action_tier=?, trade_priority_score=?, action_tier_reason=? WHERE trade_date=? AND symbol=?",
+api/services/tradeflow_service.py:1039:        columns = _table_columns(conn, "tradeflow_candidates")
+api/services/tradeflow_service.py:1043:            conn, "tradeflow_candidates", trade_date,
+api/main.py:5259:def tradeflow_candidates(
+api/main.py:5331:def tradeflow_candidates_tiered(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+api/runtime_tier.py:65:    "tradeflow_candidates",
+tradingagents/tradeflow/schemas.py:47:    """A tradeflow candidate — one row in tradeflow_candidates."""
+tradingagents/tradeflow/observe_runner.py:8:4. Update tradeflow_candidates observe_state/trigger_count/first_trigger_time.
+tradingagents/tradeflow/observe_runner.py:110:        columns = {r[1] for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()}
+tradingagents/tradeflow/observe_runner.py:115:                "SELECT * FROM tradeflow_candidates WHERE "
+tradingagents/tradeflow/observe_runner.py:122:                "SELECT * FROM tradeflow_candidates WHERE trade_date = ? AND status = 'active'",
+tradingagents/tradeflow/universe.py:373:            "FROM tradeflow_candidates WHERE trade_date = ? AND status = 'active'",
+tradingagents/tradeflow/candidate_engine.py:42:CREATE TABLE IF NOT EXISTS tradeflow_candidates (
+tradingagents/tradeflow/candidate_engine.py:193:    """Ensure all Candidate columns exist in tradeflow_candidates.
+tradingagents/tradeflow/candidate_engine.py:200:        for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()
+tradingagents/tradeflow/candidate_engine.py:206:                    f"ALTER TABLE tradeflow_candidates ADD COLUMN {col_name} {col_type}"
+tradingagents/tradeflow/candidate_engine.py:223:        conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+tradingagents/tradeflow/candidate_engine.py:233:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:243:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:253:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:267:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:280:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:295:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:306:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:317:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:325:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:335:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:348:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:358:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:388:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:406:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:416:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:429:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:439:            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+tradingagents/tradeflow/candidate_engine.py:1078:            "INSERT INTO tradeflow_candidates "
+tradingagents/tradeflow/candidate_engine.py:1236:            "SELECT id FROM tradeflow_candidates WHERE trade_date=? AND symbol=?",
+tradingagents/tradeflow/plan_runner.py:3:Reads candidates from tradeflow_candidates, produces a DailyPlan
+
+exec
+/bin/zsh -lc "sed -n '42,130p' tradingagents/tradeflow/candidate_engine.py && sed -n '193,460p' tradingagents/tradeflow/candidate_engine.py && sed -n '1,260p' tradingagents/tradeflow/schemas.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+CREATE TABLE IF NOT EXISTS tradeflow_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    source TEXT DEFAULT 'manual',
+    strategy_tags_json TEXT DEFAULT '[]',
+    primary_strategy TEXT DEFAULT '',
+    score REAL DEFAULT 0.0,
+    status TEXT DEFAULT 'active',
+    trigger_price REAL,
+    support_price REAL,
+    invalid_price REAL,
+    need_deep_ta INTEGER DEFAULT 0,
+    evidence_json TEXT DEFAULT '{}',
+    risk_flags_json TEXT DEFAULT '[]',
+    created_at TEXT,
+    updated_at TEXT,
+    UNIQUE(trade_date, symbol)
+);
+"""
+
+CREATE_SIGNALS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_time TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    signal_type TEXT NOT NULL,
+    signal_level TEXT DEFAULT 'info',
+    source TEXT DEFAULT 'tradeflow',
+    evidence_json TEXT DEFAULT '{}',
+    action_hint TEXT DEFAULT 'OBSERVE',
+    status TEXT DEFAULT 'new',
+    created_at TEXT
+);
+"""
+
+CREATE_DAILY_PLANS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_daily_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    mode TEXT DEFAULT 'pre_market',
+    summary TEXT DEFAULT '',
+    candidates_json TEXT DEFAULT '[]',
+    metadata_json TEXT DEFAULT '{}',
+    created_at TEXT,
+    UNIQUE(trade_date, mode)
+);
+"""
+
+# [UI-007] tradeflow_filtered_trace
+CREATE_FILTERED_SYMBOLS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_filtered_symbols (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_date TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    source TEXT DEFAULT '',
+    reason TEXT DEFAULT '',
+    run_id TEXT DEFAULT '',
+    created_at TEXT,
+    UNIQUE(trade_date, symbol, reason)
+);
+"""
+
+
+_MISSING_COLUMNS = [
+    ("primary_strategy", "TEXT DEFAULT ''"),
+    ("policy_tags_json", "TEXT DEFAULT '[]'"),
+    ("version_score", "REAL DEFAULT 0.0"),
+    ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ("narrative_score", "REAL DEFAULT 0.0"),
+    ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
+    ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ("risk_penalty", "REAL DEFAULT 0.0"),
+    ("risk_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ("risk_reasons_json", "TEXT DEFAULT '[]'"),
+    ("game_balance", "TEXT DEFAULT ''"),
+    ("bull_case", "TEXT DEFAULT ''"),
+    ("bear_case", "TEXT DEFAULT ''"),
+    ("policy_case", "TEXT DEFAULT ''"),
+    ("fund_flow_case", "TEXT DEFAULT ''"),
+    ("resonance_count", "INTEGER DEFAULT 0"),
+    ("game_balance_refs_json", "TEXT DEFAULT '[]'"),
+    ("fund_flow_anomaly_score", "REAL DEFAULT 0.0"),
+    ("fund_flow_anomaly_tags_json", "TEXT DEFAULT '[]'"),
+    ("fund_flow_anomaly_refs_json", "TEXT DEFAULT '[]'"),
+    ("fund_flow_unit_verified", "INTEGER DEFAULT 0"),
+    ("fund_flow_individual_summary", "TEXT DEFAULT ''"),
+    """Ensure all Candidate columns exist in tradeflow_candidates.
+
+    Safe to call repeatedly — uses ALTER TABLE ADD COLUMN wrapped in
+    try/except so existing columns are silently skipped.
+    """
+    existing = {
+        r[1]
+        for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()
+    }
+    for col_name, col_type in _MISSING_COLUMNS:
+        if col_name not in existing:
+            try:
+                conn.execute(
+                    f"ALTER TABLE tradeflow_candidates ADD COLUMN {col_name} {col_type}"
+                )
+            except sqlite3.OperationalError:
+                pass
+
+
+def init_db(db_path: str) -> None:
+    """Create tradeflow tables if they don't exist."""
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        CREATE_CANDIDATES_TABLE
+        + CREATE_SIGNALS_TABLE
+        + CREATE_DAILY_PLANS_TABLE
+        + CREATE_FILTERED_SYMBOLS_TABLE  # [UI-007] tradeflow_filtered_trace
+    )
+    ensure_columns(conn)
+    try:
+        conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    # [S-001] policy_version_signal — add policy version columns
+    for _col, _type in [
+        ("policy_tags_json", "TEXT DEFAULT '[]'"),
+        ("version_score", "REAL DEFAULT 0.0"),
+        ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-002] narrative_quality_score — add narrative quality columns
+    for _col, _type in [
+        ("narrative_score", "REAL DEFAULT 0.0"),
+        ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
+        ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-003] underwater_risk_flags — add risk penalty columns
+    for _col, _type in [
+        ("risk_penalty", "REAL DEFAULT 0.0"),
+        ("risk_evidence_refs_json", "TEXT DEFAULT '[]'"),
+        ("risk_reasons_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-004] candidate_game_balance — add game balance columns
+    for _col, _type in [
+        ("game_balance", "TEXT DEFAULT ''"),
+        ("bull_case", "TEXT DEFAULT ''"),
+        ("bear_case", "TEXT DEFAULT ''"),
+        ("policy_case", "TEXT DEFAULT ''"),
+        ("fund_flow_case", "TEXT DEFAULT ''"),
+        ("resonance_count", "INTEGER DEFAULT 0"),
+        ("game_balance_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [T-003] fund_flow_anomaly_pool — add fund flow anomaly columns
+    for _col, _type in [
+        ("fund_flow_anomaly_score", "REAL DEFAULT 0.0"),
+        ("fund_flow_anomaly_tags_json", "TEXT DEFAULT '[]'"),
+        ("fund_flow_anomaly_refs_json", "TEXT DEFAULT '[]'"),
+        ("fund_flow_unit_verified", "INTEGER DEFAULT 0"),
+        ("fund_flow_individual_summary", "TEXT DEFAULT ''"),
+        ("fund_flow_board_summary", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-005] selection_priority_gate — add priority gate columns
+    for _col, _type in [
+        ("composite_score", "REAL DEFAULT 0.0"),
+        ("signal_category_hits_json", "TEXT DEFAULT '[]'"),
+        ("positive_category_count", "INTEGER DEFAULT 0"),
+        ("data_completeness", "REAL DEFAULT 0.0"),
+        ("missing_evidence_json", "TEXT DEFAULT '[]'"),
+        ("why_deep_ta", "TEXT DEFAULT ''"),
+        ("why_not_deep_ta", "TEXT DEFAULT ''"),
+        ("priority_rank", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-007] candidate_tier_budget — add tier budget columns
+    for _col, _type in [
+        ("tier", "TEXT DEFAULT ''"),
+        ("ta_budget_priority", "INTEGER DEFAULT 0"),
+        ("tier_reason", "TEXT DEFAULT ''"),
+        ("missing_evidence_for_upgrade_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-008] tradeflow_evidence_gate — add evidence gate columns
+    for _col, _type in [
+        ("tradeflow_data_completeness", "REAL DEFAULT 0.0"),
+        ("missing_data_fields_json", "TEXT DEFAULT '[]'"),
+        ("what_to_upgrade_json", "TEXT DEFAULT '[]'"),
+        ("evidence_gate_applied", "INTEGER DEFAULT 0"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [M-003] tradeflow_universe_manager — add universe_sources column
+    for _col, _type in [
+        ("universe_sources_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [M-005] intraday_observe_state — add observe state columns
+    for _col, _type in [
+        ("observe_state", "TEXT DEFAULT 'WAITING'"),
+        ("observe_trigger_count", "INTEGER DEFAULT 0"),
+        ("observe_first_trigger_time", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [M-006] gated_deep_ta_dispatch — add deep TA dispatch columns
+    for _col, _type in [
+        ("deep_ta_status", "TEXT DEFAULT ''"),
+        ("deep_ta_dispatch_reason", "TEXT DEFAULT ''"),
+        ("deep_ta_model", "TEXT DEFAULT ''"),
+        ("deep_ta_report_path", "TEXT DEFAULT ''"),
+        ("deep_ta_dispatch_time", "TEXT DEFAULT ''"),
+        ("deep_ta_position_context", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [TF-DATE-001] tradeflow_date_semantics — add date semantic columns
+    for _col, _type in [
+        ("plan_date", "TEXT DEFAULT ''"),
+        ("effective_trade_date", "TEXT DEFAULT ''"),
+        ("observe_date", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [TF-DATE-001] tradeflow_date_semantics — add date semantic columns to daily_plans
+    for _col, _type in [
+        ("plan_date", "TEXT DEFAULT ''"),
+        ("effective_trade_date", "TEXT DEFAULT ''"),
+        ("observe_date", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_daily_plans ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [TF-DATE-001] tradeflow_date_semantics — add date semantic columns to filtered_symbols
+    for _col, _type in [
+        ("plan_date", "TEXT DEFAULT ''"),
+        ("effective_trade_date", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_filtered_symbols ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [H-003] mandate_beneficiary_map — add beneficiary columns
+    for _col, _type in [
+        ("beneficiary_path_json", "TEXT DEFAULT '[]'"),
+        ("company_role", "TEXT DEFAULT ''"),
+        ("mandate_topic", "TEXT DEFAULT ''"),
+        ("mandate_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [H-004] mandate_ambush_score — add ambush score and candidate type columns
+    for _col, _type in [
+        ("candidate_type", "TEXT DEFAULT ''"),
+        ("ambush_score", "REAL DEFAULT 0.0"),
+        ("mandate_score_component", "REAL DEFAULT 0.0"),
+        ("beneficiary_score_component", "REAL DEFAULT 0.0"),
+        ("pricing_gap_score", "REAL DEFAULT 0.0"),
+        ("overheat_penalty", "REAL DEFAULT 0.0"),
+        ("candidate_type_reason", "TEXT DEFAULT ''"),
+        ("deep_ta_route", "TEXT DEFAULT ''"),
+        ("deep_ta_route_reason", "TEXT DEFAULT ''"),
+        ("ambush_reasons_json", "TEXT DEFAULT '[]'"),
+        ("ambush_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [H-007] mandate_ta_queue_router — add research queue columns
+    for _col, _type in [
+        ("research_queue", "TEXT DEFAULT ''"),
+        ("research_intent", "TEXT DEFAULT ''"),
+        ("research_route_reason", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [H-008] mandate_watchlist_note — add watchlist note columns
+    for _col, _type in [
+        ("watchlist_note", "TEXT DEFAULT ''"),
+        ("watchlist_note_suggested", "TEXT DEFAULT ''"),
+        ("watchlist_topic", "TEXT DEFAULT ''"),
+        ("watchlist_benefit_score", "REAL DEFAULT 0.0"),
+        ("watchlist_consensus_score", "REAL DEFAULT 0.0"),
+        ("watchlist_evidence_gap_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [TF-UX-004] action_tier_scorer — add trade priority score & action tier
+    for _col, _type in [
+        ("action_tier", "TEXT DEFAULT 'scan'"),
+        ("trade_priority_score", "REAL DEFAULT 0.0"),
+        ("action_tier_reason", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    conn.commit()
+    conn.close()
+
+
+def _fetch_price_data(symbol: str, days: int = 120) -> Optional[pd.DataFrame]:
+    """Fetch price data for a symbol using the project's data providers.
+
+    Uses cn_akshare → cn_astock → yfinance fallback chain.  [N-002] cn_astock_fallback
+    Returns DataFrame with Date, Open, High, Low, Close, Volume columns.
+    """
+    from datetime import timedelta
+    from io import StringIO
+
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    def _try_provider(provider_cls, source_name: str) -> Optional[pd.DataFrame]:
+        try:
+            provider = provider_cls()
+"""TradeFlow schemas — data models for candidates, signals, and daily plans."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from typing import Optional
+
+
+# ── Allowed actions ──
+ALLOWED_ACTIONS = {"OBSERVE", "WAIT_TRIGGER", "NEED_DEEP_TA", "REMOVE_FROM_WATCH"}
+FORBIDDEN_WORDS = {"立即买入", "重仓买入", "立即清仓", "满仓", "梭哈"}
+
+STRATEGY_VCP = "VCP"
+STRATEGY_PULLBACK = "PULLBACK_SUPPORT"
+STRATEGY_EVENT = "EVENT_CATALYST"
+STRATEGY_POLICY_VERSION = "POLICY_VERSION"  # [S-001] policy_version_signal
+STRATEGY_NARRATIVE = "NARRATIVE_QUALITY"  # [S-002] narrative_quality_score
+STRATEGY_FUND_FLOW = "FUND_FLOW_ANOMALY"  # [T-003] fund_flow_anomaly_pool
+ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE, STRATEGY_FUND_FLOW}
+
+# [N-004] astock_signal_tags
+SIGNAL_TAG_POLICY_CATALYST = "POLICY_CATALYST"
+SIGNAL_TAG_HOT_MONEY_LHB = "HOT_MONEY_LHB"
+SIGNAL_TAG_LOCKUP_RISK = "LOCKUP_RISK"
+SIGNAL_TAG_BUYBACK_EVENT = "BUYBACK_EVENT"
+SIGNAL_TAG_RATING_CHANGE = "RATING_CHANGE"
+
+
+@dataclass
+class CandidateSignal:
+    """One strategy hit on a symbol."""
+    strategy_tag: str
+    trigger_price: Optional[float] = None
+    support_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    score: float = 0.0
+    reason: str = ""
+    evidence: dict = field(default_factory=dict)
+    risk_flags: list[str] = field(default_factory=list)
+    need_deep_ta: bool = False
+
+
+@dataclass
+class Candidate:
+    """A tradeflow candidate — one row in tradeflow_candidates."""
+    symbol: str
+    name: str = ""
+    source: str = "manual"
+    strategy_tags: list[str] = field(default_factory=list)
+    score: float = 0.0
+    status: str = "active"
+    trigger_price: Optional[float] = None
+    support_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    need_deep_ta: bool = False
+    evidence: dict = field(default_factory=dict)
+    risk_flags: list[str] = field(default_factory=list)
+    trade_date: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+    primary_strategy: str = ""
+    signals: list[CandidateSignal] = field(default_factory=list, repr=False)
+    policy_tags: list[str] = field(default_factory=list)  # [S-001] policy_version_signal
+    version_score: float = 0.0  # [S-001] policy_version_signal
+    policy_evidence_refs: list[dict] = field(default_factory=list)  # [S-001] policy_version_signal
+    narrative_score: float = 0.0  # [S-002] narrative_quality_score
+    narrative_reasons: list[str] = field(default_factory=list)  # [S-002] narrative_quality_score
+    narrative_evidence_refs: list[dict] = field(default_factory=list)  # [S-002] narrative_quality_score
+    risk_penalty: float = 0.0  # [S-003] underwater_risk_flags
+    risk_evidence_refs: list[dict] = field(default_factory=list)  # [S-003] underwater_risk_flags
+    risk_reasons: list[str] = field(default_factory=list)  # [S-003] underwater_risk_flags
+    game_balance: str = ""  # [S-004] candidate_game_balance
+    bull_case: str = ""  # [S-004] candidate_game_balance
+    bear_case: str = ""  # [S-004] candidate_game_balance
+    policy_case: str = ""  # [S-004] candidate_game_balance
+    fund_flow_case: str = ""  # [S-004] candidate_game_balance
+    resonance_count: int = 0  # [S-004] candidate_game_balance
+    game_balance_refs: list[dict] = field(default_factory=list)  # [S-004] candidate_game_balance
+    fund_flow_anomaly_score: float = 0.0  # [T-003] fund_flow_anomaly_pool
+    fund_flow_anomaly_tags: list[str] = field(default_factory=list)  # [T-003]
+    fund_flow_anomaly_refs: list[dict] = field(default_factory=list)  # [T-003]
+    fund_flow_unit_verified: bool = False  # [T-003]
+    fund_flow_individual_summary: str = ""  # [T-003]
+    fund_flow_board_summary: str = ""  # [T-003]
+    composite_score: float = 0.0  # [S-005] selection_priority_gate
+    signal_category_hits: list[str] = field(default_factory=list)  # [S-005]
+    positive_category_count: int = 0  # [S-005]
+    data_completeness: float = 0.0  # [S-005]
+    missing_evidence: list[str] = field(default_factory=list)  # [S-005]
+    why_deep_ta: str = ""  # [S-005]
+    why_not_deep_ta: str = ""  # [S-005]
+    priority_rank: str = ""  # [S-005]
+    tier: str = ""  # [S-007] candidate_tier_budget
+    ta_budget_priority: int = 0  # [S-007] candidate_tier_budget
+    tier_reason: str = ""  # [S-007] candidate_tier_budget
+    missing_evidence_for_upgrade: list[str] = field(default_factory=list)  # [S-007]
+    tradeflow_data_completeness: float = 0.0  # [S-008] tradeflow_evidence_gate
+    missing_data_fields: list[str] = field(default_factory=list)  # [S-008]
+    what_to_upgrade: list[str] = field(default_factory=list)  # [S-008]
+    evidence_gate_applied: bool = False  # [S-008]
+    universe_sources: list[str] = field(default_factory=list)  # [M-003] tradeflow_universe_manager
+    observe_state: str = "WAITING"  # [M-005] intraday_observe_state
+    observe_trigger_count: int = 0  # [M-005] intraday_observe_state
+    observe_first_trigger_time: str = ""  # [M-005] intraday_observe_state
+    deep_ta_status: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_dispatch_reason: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_model: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_report_path: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_dispatch_time: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_position_context: str = ""  # [M-006] gated_deep_ta_dispatch
+    plan_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+    effective_trade_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+    observe_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+    beneficiary_path: list[str] = field(default_factory=list)  # [H-003] mandate_beneficiary_map
+    company_role: str = ""  # [H-003] mandate_beneficiary_map
+    mandate_topic: str = ""  # [H-003] mandate_beneficiary_map
+    mandate_evidence_refs: list[dict] = field(default_factory=list)  # [H-003] mandate_beneficiary_map
+    candidate_type: str = ""  # [H-004] mandate_ambush_score
+    ambush_score: float = 0.0  # [H-004] mandate_ambush_score
+    mandate_score_component: float = 0.0  # [H-004] mandate_ambush_score
+    beneficiary_score_component: float = 0.0  # [H-004] mandate_ambush_score
+    pricing_gap_score: float = 0.0  # [H-004] mandate_ambush_score
+    overheat_penalty: float = 0.0  # [H-004] mandate_ambush_score
+    candidate_type_reason: str = ""  # [H-004] mandate_ambush_score
+    deep_ta_route: str = ""  # [H-004] mandate_ambush_score
+    deep_ta_route_reason: str = ""  # [H-004] mandate_ambush_score
+    ambush_reasons: list[str] = field(default_factory=list)  # [H-004] mandate_ambush_score
+    ambush_evidence_refs: list[dict] = field(default_factory=list)  # [H-004] mandate_ambush_score
+    research_queue: str = ""  # [H-007] mandate_ta_queue_router
+    research_intent: str = ""  # [H-007] mandate_ta_queue_router
+    research_route_reason: str = ""  # [H-007] mandate_ta_queue_router
+    watchlist_note: str = ""  # [H-008] mandate_watchlist_note
+    watchlist_note_suggested: str = ""  # [H-008] mandate_watchlist_note
+    watchlist_topic: str = ""  # [H-008] mandate_watchlist_note
+    watchlist_benefit_score: float = 0.0  # [H-008] mandate_watchlist_note
+    watchlist_consensus_score: float = 0.0  # [H-008] mandate_watchlist_note
+    watchlist_evidence_gap: list[str] = field(default_factory=list)  # [H-008] mandate_watchlist_note
+
+    def __post_init__(self):
+        if not self.trade_date:
+            self.trade_date = datetime.now().strftime("%Y-%m-%d")
+        if not self.created_at:
+            self.created_at = datetime.now().isoformat()
+        if not self.updated_at:
+            self.updated_at = self.created_at
+
+    def merge_signals(self):
+        """Merge individual signals into aggregate candidate fields.
+
+        The signal with the highest score becomes the primary_signal.
+        trigger/support/invalid prices come ONLY from the primary signal,
+        preventing later strategies from silently overwriting them.
+        """
+        if not self.signals:
+            return
+
+        primary = max(self.signals, key=lambda s: s.score)
+        self.primary_strategy = primary.strategy_tag
+
+        tags = set()
+        best_score = 0.0
+        all_evidence = {}
+        all_risks = []
+        deep_ta = False
+
+        for sig in self.signals:
+            tags.add(sig.strategy_tag)
+            if sig.score > best_score:
+                best_score = sig.score
+            all_evidence[sig.strategy_tag] = sig.evidence
+            all_risks.extend(sig.risk_flags)
+            if sig.need_deep_ta:
+                deep_ta = True
+
+        self.strategy_tags = sorted(tags)
+        self.score = round(best_score, 2)
+        self.evidence = all_evidence
+        self.risk_flags = sorted(set(all_risks))
+        self.trigger_price = primary.trigger_price
+        self.support_price = primary.support_price
+        self.invalid_price = primary.invalid_price
+        self.need_deep_ta = deep_ta
+
+    def to_db_row(self) -> dict:
+        return {
+            "trade_date": self.trade_date,
+            "symbol": self.symbol,
+            "name": self.name,
+            "source": self.source,
+            "strategy_tags_json": json.dumps(self.strategy_tags, ensure_ascii=False),
+            "primary_strategy": self.primary_strategy,
+            "score": self.score,
+            "status": self.status,
+            "trigger_price": self.trigger_price,
+            "support_price": self.support_price,
+            "invalid_price": self.invalid_price,
+            "need_deep_ta": 1 if self.need_deep_ta else 0,
+            "evidence_json": json.dumps(self.evidence, ensure_ascii=False),
+            "risk_flags_json": json.dumps(self.risk_flags, ensure_ascii=False),
+            "policy_tags_json": json.dumps(self.policy_tags, ensure_ascii=False),  # [S-001]
+            "version_score": self.version_score,  # [S-001]
+            "policy_evidence_refs_json": json.dumps(self.policy_evidence_refs, ensure_ascii=False),  # [S-001]
+            "narrative_score": self.narrative_score,  # [S-002] narrative_quality_score
+            "narrative_reasons_json": json.dumps(self.narrative_reasons, ensure_ascii=False),  # [S-002]
+            "narrative_evidence_refs_json": json.dumps(self.narrative_evidence_refs, ensure_ascii=False),  # [S-002]
+            "risk_penalty": self.risk_penalty,  # [S-003] underwater_risk_flags
+            "risk_evidence_refs_json": json.dumps(self.risk_evidence_refs, ensure_ascii=False),  # [S-003]
+            "risk_reasons_json": json.dumps(self.risk_reasons, ensure_ascii=False),  # [S-003]
+            "game_balance": self.game_balance,  # [S-004] candidate_game_balance
+            "bull_case": self.bull_case,  # [S-004]
+            "bear_case": self.bear_case,  # [S-004]
+            "policy_case": self.policy_case,  # [S-004]
+            "fund_flow_case": self.fund_flow_case,  # [S-004]
+            "resonance_count": self.resonance_count,  # [S-004]
+            "game_balance_refs_json": json.dumps(self.game_balance_refs, ensure_ascii=False),  # [S-004]
+            "fund_flow_anomaly_score": self.fund_flow_anomaly_score,  # [T-003] fund_flow_anomaly_pool
+            "fund_flow_anomaly_tags_json": json.dumps(self.fund_flow_anomaly_tags, ensure_ascii=False),  # [T-003]
+            "fund_flow_anomaly_refs_json": json.dumps(self.fund_flow_anomaly_refs, ensure_ascii=False),  # [T-003]
+            "fund_flow_unit_verified": 1 if self.fund_flow_unit_verified else 0,  # [T-003]
+            "fund_flow_individual_summary": self.fund_flow_individual_summary,  # [T-003]
+            "fund_flow_board_summary": self.fund_flow_board_summary,  # [T-003]
+            "composite_score": self.composite_score,  # [S-005] selection_priority_gate
+            "signal_category_hits_json": json.dumps(self.signal_category_hits, ensure_ascii=False),  # [S-005]
+            "positive_category_count": self.positive_category_count,  # [S-005]
+            "data_completeness": self.data_completeness,  # [S-005]
+            "missing_evidence_json": json.dumps(self.missing_evidence, ensure_ascii=False),  # [S-005]
+            "why_deep_ta": self.why_deep_ta,  # [S-005]
+            "why_not_deep_ta": self.why_not_deep_ta,  # [S-005]
+            "priority_rank": self.priority_rank,  # [S-005]
+            "tier": self.tier,  # [S-007] candidate_tier_budget
+            "ta_budget_priority": self.ta_budget_priority,  # [S-007]
+            "tier_reason": self.tier_reason,  # [S-007]
+            "missing_evidence_for_upgrade_json": json.dumps(self.missing_evidence_for_upgrade, ensure_ascii=False),  # [S-007]
+            "tradeflow_data_completeness": self.tradeflow_data_completeness,  # [S-008] tradeflow_evidence_gate
+            "missing_data_fields_json": json.dumps(self.missing_data_fields, ensure_ascii=False),  # [S-008]
+            "what_to_upgrade_json": json.dumps(self.what_to_upgrade, ensure_ascii=False),  # [S-008]
+            "evidence_gate_applied": 1 if self.evidence_gate_applied else 0,  # [S-008]
+            "universe_sources_json": json.dumps(self.universe_sources, ensure_ascii=False),  # [M-003]
+            "observe_state": self.observe_state,  # [M-005] intraday_observe_state
+            "observe_trigger_count": self.observe_trigger_count,  # [M-005]
+            "observe_first_trigger_time": self.observe_first_trigger_time,  # [M-005]
+            "deep_ta_status": self.deep_ta_status,  # [M-006] gated_deep_ta_dispatch
+            "deep_ta_dispatch_reason": self.deep_ta_dispatch_reason,  # [M-006]
+            "deep_ta_model": self.deep_ta_model,  # [M-006]
+            "deep_ta_report_path": self.deep_ta_report_path,  # [M-006]
+            "deep_ta_dispatch_time": self.deep_ta_dispatch_time,  # [M-006]
+            "deep_ta_position_context": self.deep_ta_position_context,  # [M-006]
+            "plan_date": self.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
+            "effective_trade_date": self.effective_trade_date,  # [TF-DATE-001]
+            "observe_date": self.observe_date,  # [TF-DATE-001]
+            "beneficiary_path_json": json.dumps(self.beneficiary_path, ensure_ascii=False),  # [H-003]
+            "company_role": self.company_role,  # [H-003]
+            "mandate_topic": self.mandate_topic,  # [H-003]
+            "mandate_evidence_refs_json": json.dumps(self.mandate_evidence_refs, ensure_ascii=False),  # [H-003]
+            "candidate_type": self.candidate_type,  # [H-004] mandate_ambush_score
+            "ambush_score": self.ambush_score,  # [H-004]
+            "mandate_score_component": self.mandate_score_component,  # [H-004]
+
+exec
+/bin/zsh -lc "sed -n '260,420p' tradingagents/tradeflow/schemas.py && sed -n '1040,1100p' tradingagents/tradeflow/candidate_engine.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            "mandate_score_component": self.mandate_score_component,  # [H-004]
+            "beneficiary_score_component": self.beneficiary_score_component,  # [H-004]
+            "pricing_gap_score": self.pricing_gap_score,  # [H-004]
+            "overheat_penalty": self.overheat_penalty,  # [H-004]
+            "candidate_type_reason": self.candidate_type_reason,  # [H-004]
+            "deep_ta_route": self.deep_ta_route,  # [H-004]
+            "deep_ta_route_reason": self.deep_ta_route_reason,  # [H-004]
+            "ambush_reasons_json": json.dumps(self.ambush_reasons, ensure_ascii=False),  # [H-004]
+            "ambush_evidence_refs_json": json.dumps(self.ambush_evidence_refs, ensure_ascii=False),  # [H-004]
+            "research_queue": self.research_queue,  # [H-007] mandate_ta_queue_router
+            "research_intent": self.research_intent,  # [H-007] mandate_ta_queue_router
+            "research_route_reason": self.research_route_reason,  # [H-007] mandate_ta_queue_router
+            "watchlist_note": self.watchlist_note,  # [H-008] mandate_watchlist_note
+            "watchlist_note_suggested": self.watchlist_note_suggested,  # [H-008]
+            "watchlist_topic": self.watchlist_topic,  # [H-008]
+            "watchlist_benefit_score": self.watchlist_benefit_score,  # [H-008]
+            "watchlist_consensus_score": self.watchlist_consensus_score,  # [H-008]
+            "watchlist_evidence_gap_json": json.dumps(self.watchlist_evidence_gap, ensure_ascii=False),  # [H-008]
+            "updated_at": datetime.now().isoformat(),
+        }
+
+    @classmethod
+    def from_db_row(cls, row: dict) -> "Candidate":
+        return cls(
+            symbol=row["symbol"],
+            name=row.get("name", ""),
+            source=row.get("source", "manual"),
+            strategy_tags=json.loads(row.get("strategy_tags_json", "[]")),
+            primary_strategy=row.get("primary_strategy", ""),
+            score=row.get("score", 0.0),
+            status=row.get("status", "active"),
+            trigger_price=row.get("trigger_price"),
+            support_price=row.get("support_price"),
+            invalid_price=row.get("invalid_price"),
+            need_deep_ta=bool(row.get("need_deep_ta", 0)),
+            evidence=json.loads(row.get("evidence_json", "{}")),
+            risk_flags=json.loads(row.get("risk_flags_json", "[]")),
+            trade_date=row.get("trade_date", ""),
+            created_at=row.get("created_at", ""),
+            updated_at=row.get("updated_at", ""),
+            policy_tags=json.loads(row.get("policy_tags_json", "[]")),  # [S-001]
+            version_score=row.get("version_score", 0.0),  # [S-001]
+            policy_evidence_refs=json.loads(row.get("policy_evidence_refs_json", "[]")),  # [S-001]
+            narrative_score=row.get("narrative_score", 0.0),  # [S-002] narrative_quality_score
+            narrative_reasons=json.loads(row.get("narrative_reasons_json", "[]")),  # [S-002]
+            narrative_evidence_refs=json.loads(row.get("narrative_evidence_refs_json", "[]")),  # [S-002]
+            risk_penalty=row.get("risk_penalty", 0.0),  # [S-003] underwater_risk_flags
+            risk_evidence_refs=json.loads(row.get("risk_evidence_refs_json", "[]")),  # [S-003]
+            risk_reasons=json.loads(row.get("risk_reasons_json", "[]")),  # [S-003]
+            game_balance=row.get("game_balance", ""),  # [S-004] candidate_game_balance
+            bull_case=row.get("bull_case", ""),  # [S-004]
+            bear_case=row.get("bear_case", ""),  # [S-004]
+            policy_case=row.get("policy_case", ""),  # [S-004]
+            fund_flow_case=row.get("fund_flow_case", ""),  # [S-004]
+            resonance_count=row.get("resonance_count", 0),  # [S-004]
+            game_balance_refs=json.loads(row.get("game_balance_refs_json", "[]")),  # [S-004]
+            fund_flow_anomaly_score=row.get("fund_flow_anomaly_score", 0.0),  # [T-003] fund_flow_anomaly_pool
+            fund_flow_anomaly_tags=json.loads(row.get("fund_flow_anomaly_tags_json", "[]")),  # [T-003]
+            fund_flow_anomaly_refs=json.loads(row.get("fund_flow_anomaly_refs_json", "[]")),  # [T-003]
+            fund_flow_unit_verified=bool(row.get("fund_flow_unit_verified", 0)),  # [T-003]
+            fund_flow_individual_summary=row.get("fund_flow_individual_summary", ""),  # [T-003]
+            fund_flow_board_summary=row.get("fund_flow_board_summary", ""),  # [T-003]
+            composite_score=row.get("composite_score", 0.0),  # [S-005] selection_priority_gate
+            signal_category_hits=json.loads(row.get("signal_category_hits_json", "[]")),  # [S-005]
+            positive_category_count=row.get("positive_category_count", 0),  # [S-005]
+            data_completeness=row.get("data_completeness", 0.0),  # [S-005]
+            missing_evidence=json.loads(row.get("missing_evidence_json", "[]")),  # [S-005]
+            why_deep_ta=row.get("why_deep_ta", ""),  # [S-005]
+            why_not_deep_ta=row.get("why_not_deep_ta", ""),  # [S-005]
+            priority_rank=row.get("priority_rank", ""),  # [S-005]
+            tier=row.get("tier", ""),  # [S-007] candidate_tier_budget
+            ta_budget_priority=row.get("ta_budget_priority", 0),  # [S-007]
+            tier_reason=row.get("tier_reason", ""),  # [S-007]
+            missing_evidence_for_upgrade=json.loads(row.get("missing_evidence_for_upgrade_json", "[]")),  # [S-007]
+            tradeflow_data_completeness=row.get("tradeflow_data_completeness", 0.0),  # [S-008] tradeflow_evidence_gate
+            missing_data_fields=json.loads(row.get("missing_data_fields_json", "[]")),  # [S-008]
+            what_to_upgrade=json.loads(row.get("what_to_upgrade_json", "[]")),  # [S-008]
+            evidence_gate_applied=bool(row.get("evidence_gate_applied", 0)),  # [S-008]
+            universe_sources=json.loads(row.get("universe_sources_json", "[]")),  # [M-003]
+            observe_state=row.get("observe_state", "WAITING"),  # [M-005] intraday_observe_state
+            observe_trigger_count=row.get("observe_trigger_count", 0),  # [M-005]
+            observe_first_trigger_time=row.get("observe_first_trigger_time", ""),  # [M-005]
+            deep_ta_status=row.get("deep_ta_status", ""),  # [M-006] gated_deep_ta_dispatch
+            deep_ta_dispatch_reason=row.get("deep_ta_dispatch_reason", ""),  # [M-006]
+            deep_ta_model=row.get("deep_ta_model", ""),  # [M-006]
+            deep_ta_report_path=row.get("deep_ta_report_path", ""),  # [M-006]
+            deep_ta_dispatch_time=row.get("deep_ta_dispatch_time", ""),  # [M-006]
+            deep_ta_position_context=row.get("deep_ta_position_context", ""),  # [M-006]
+            plan_date=row.get("plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
+            effective_trade_date=row.get("effective_trade_date", ""),  # [TF-DATE-001]
+            observe_date=row.get("observe_date", ""),  # [TF-DATE-001]
+            beneficiary_path=json.loads(row.get("beneficiary_path_json", "[]")),  # [H-003]
+            company_role=row.get("company_role", ""),  # [H-003]
+            mandate_topic=row.get("mandate_topic", ""),  # [H-003]
+            mandate_evidence_refs=json.loads(row.get("mandate_evidence_refs_json", "[]")),  # [H-003]
+            candidate_type=row.get("candidate_type", ""),  # [H-004] mandate_ambush_score
+            ambush_score=row.get("ambush_score", 0.0),  # [H-004]
+            mandate_score_component=row.get("mandate_score_component", 0.0),  # [H-004]
+            beneficiary_score_component=row.get("beneficiary_score_component", 0.0),  # [H-004]
+            pricing_gap_score=row.get("pricing_gap_score", 0.0),  # [H-004]
+            overheat_penalty=row.get("overheat_penalty", 0.0),  # [H-004]
+            candidate_type_reason=row.get("candidate_type_reason", ""),  # [H-004]
+            deep_ta_route=row.get("deep_ta_route", ""),  # [H-004]
+            deep_ta_route_reason=row.get("deep_ta_route_reason", ""),  # [H-004]
+            ambush_reasons=json.loads(row.get("ambush_reasons_json", "[]")),  # [H-004]
+            ambush_evidence_refs=json.loads(row.get("ambush_evidence_refs_json", "[]")),  # [H-004]
+            research_queue=row.get("research_queue", ""),  # [H-007] mandate_ta_queue_router
+            research_intent=row.get("research_intent", ""),  # [H-007] mandate_ta_queue_router
+            research_route_reason=row.get("research_route_reason", ""),  # [H-007] mandate_ta_queue_router
+            watchlist_note=row.get("watchlist_note", ""),  # [H-008] mandate_watchlist_note
+            watchlist_note_suggested=row.get("watchlist_note_suggested", ""),  # [H-008]
+            watchlist_topic=row.get("watchlist_topic", ""),  # [H-008]
+            watchlist_benefit_score=row.get("watchlist_benefit_score", 0.0),  # [H-008]
+            watchlist_consensus_score=row.get("watchlist_consensus_score", 0.0),  # [H-008]
+            watchlist_evidence_gap=json.loads(row.get("watchlist_evidence_gap_json", "[]")),  # [H-008]
+        )
+
+
+@dataclass
+class Signal:
+    """One signal event — row in tradeflow_signals."""
+    symbol: str
+    signal_type: str
+    signal_level: str = "info"
+    source: str = "tradeflow"
+    evidence: dict = field(default_factory=dict)
+    action_hint: str = "OBSERVE"
+    status: str = "new"
+    signal_time: str = ""
+    created_at: str = ""
+
+    def __post_init__(self):
+        if not self.signal_time:
+            self.signal_time = datetime.now().isoformat()
+        if not self.created_at:
+            self.created_at = datetime.now().isoformat()
+        # validate action_hint
+        if self.action_hint not in ALLOWED_ACTIONS:
+            self.action_hint = "OBSERVE"
+
+    def to_db_row(self) -> dict:
+        return {
+            "signal_time": self.signal_time,
+            "symbol": self.symbol,
+            "signal_type": self.signal_type,
+            "signal_level": self.signal_level,
+            "source": self.source,
+            "evidence_json": json.dumps(self.evidence, ensure_ascii=False),
+            "action_hint": self.action_hint,
+            "status": self.status,
+        }
+
+
+@dataclass
+class DailyPlan:
+    """Daily pre-market plan — row in tradeflow_daily_plans."""
+    trade_date: str
+    mode: str = "pre_market"
+    summary: str = ""
+    candidates: list[dict] = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)
+        beneficiary_path=candidate.beneficiary_path,
+        company_role=candidate.company_role,
+        policy_tags=candidate.policy_tags,
+        fund_flow_anomaly_tags=candidate.fund_flow_anomaly_tags,
+        strategy_tags=candidate.strategy_tags,
+        data_completeness=candidate.data_completeness,
+        missing_evidence=candidate.missing_evidence,
+    )
+    candidate.watchlist_note_suggested = wl_result.note_summary
+    candidate.watchlist_topic = wl_result.topic
+    candidate.watchlist_benefit_score = wl_result.benefit_score
+    candidate.watchlist_consensus_score = wl_result.consensus_score
+    candidate.watchlist_evidence_gap = wl_result.evidence_gap
+    candidate.evidence["watchlist_note"] = wl_result.to_dict()
+
+    return candidate, ""
+
+
+def save_candidate(candidate: Candidate, db_path: str) -> int:
+    """Save a candidate to the database. Upsert on (trade_date, symbol)."""
+    candidate.symbol = normalize_tradeflow_symbol(candidate.symbol)  # [UI-008]
+    _needs_name_lookup = (
+        not candidate.name
+        or candidate.name == "--"
+        or candidate.name == candidate.symbol
+        or candidate.name == symbol_bare_code(candidate.symbol)
+        or _looks_like_code(candidate.name)  # [TF-P0-001] runtime_schema_name_observe_fix
+    )
+    if _needs_name_lookup:
+        candidate.name = resolve_tradeflow_name(candidate.symbol, candidate.name)  # [UI-008]
+    if not candidate.candidate_type:
+        candidate.candidate_type = "TECH_TRADE"
+        candidate.candidate_type_reason = candidate.candidate_type_reason or "无政策/事件/受益路径证据，默认技术交易"
+    conn = sqlite3.connect(db_path)
+    ensure_columns(conn)
+    row = candidate.to_db_row()
+    try:
+        conn.execute(
+            "INSERT INTO tradeflow_candidates "
+            "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+            "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+            "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+            "policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
+            "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+            "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
+            "fund_flow_case, resonance_count, game_balance_refs_json, "
+            "fund_flow_anomaly_score, fund_flow_anomaly_tags_json, "
+            "fund_flow_anomaly_refs_json, fund_flow_unit_verified, "
+            "fund_flow_individual_summary, fund_flow_board_summary, "
+            "composite_score, signal_category_hits_json, positive_category_count, "
+            "data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta, "
+            "priority_rank, "
+            "tier, ta_budget_priority, tier_reason, missing_evidence_for_upgrade_json, "
+            "tradeflow_data_completeness, missing_data_fields_json, what_to_upgrade_json, evidence_gate_applied, "
+            "universe_sources_json, "
+            "observe_state, observe_trigger_count, observe_first_trigger_time, "
+            "deep_ta_status, deep_ta_dispatch_reason, deep_ta_model, "
+            "deep_ta_report_path, deep_ta_dispatch_time, deep_ta_position_context, "
+            "plan_date, effective_trade_date, observe_date, "
+            "beneficiary_path_json, company_role, mandate_topic, mandate_evidence_refs_json, "
+            "candidate_type, ambush_score, mandate_score_component, beneficiary_score_component, "
+
+exec
+/bin/zsh -lc "sed -n '1100,1185p' tradingagents/tradeflow/candidate_engine.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            "candidate_type, ambush_score, mandate_score_component, beneficiary_score_component, "
+            "pricing_gap_score, overheat_penalty, candidate_type_reason, "
+            "deep_ta_route, deep_ta_route_reason, "
+            "ambush_reasons_json, ambush_evidence_refs_json, "
+            "research_queue, research_intent, research_route_reason, "
+            "watchlist_note, watchlist_note_suggested, watchlist_topic, "
+            "watchlist_benefit_score, watchlist_consensus_score, watchlist_evidence_gap_json, "
+            "created_at, updated_at) "
+            "VALUES ({}) ".format(",".join(["?"] * 91))
+            + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+            "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+            "trigger_price=excluded.trigger_price, "
+            "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+            "need_deep_ta=excluded.need_deep_ta, evidence_json=excluded.evidence_json, "
+            "risk_flags_json=excluded.risk_flags_json, "
+            "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+            "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
+            "narrative_score=excluded.narrative_score, "
+            "narrative_reasons_json=excluded.narrative_reasons_json, "
+            "narrative_evidence_refs_json=excluded.narrative_evidence_refs_json, "
+            "risk_penalty=excluded.risk_penalty, "
+            "risk_evidence_refs_json=excluded.risk_evidence_refs_json, "
+            "risk_reasons_json=excluded.risk_reasons_json, "
+            "game_balance=excluded.game_balance, "
+            "bull_case=excluded.bull_case, bear_case=excluded.bear_case, "
+            "policy_case=excluded.policy_case, fund_flow_case=excluded.fund_flow_case, "
+            "resonance_count=excluded.resonance_count, "
+            "game_balance_refs_json=excluded.game_balance_refs_json, "
+            "fund_flow_anomaly_score=excluded.fund_flow_anomaly_score, "
+            "fund_flow_anomaly_tags_json=excluded.fund_flow_anomaly_tags_json, "
+            "fund_flow_anomaly_refs_json=excluded.fund_flow_anomaly_refs_json, "
+            "fund_flow_unit_verified=excluded.fund_flow_unit_verified, "
+            "fund_flow_individual_summary=excluded.fund_flow_individual_summary, "
+            "fund_flow_board_summary=excluded.fund_flow_board_summary, "
+            "composite_score=excluded.composite_score, "
+            "signal_category_hits_json=excluded.signal_category_hits_json, "
+            "positive_category_count=excluded.positive_category_count, "
+            "data_completeness=excluded.data_completeness, "
+            "missing_evidence_json=excluded.missing_evidence_json, "
+            "why_deep_ta=excluded.why_deep_ta, why_not_deep_ta=excluded.why_not_deep_ta, "
+            "priority_rank=excluded.priority_rank, "
+            "tier=excluded.tier, ta_budget_priority=excluded.ta_budget_priority, "
+            "tier_reason=excluded.tier_reason, "
+            "missing_evidence_for_upgrade_json=excluded.missing_evidence_for_upgrade_json, "
+            "tradeflow_data_completeness=excluded.tradeflow_data_completeness, "
+            "missing_data_fields_json=excluded.missing_data_fields_json, "
+            "what_to_upgrade_json=excluded.what_to_upgrade_json, "
+            "evidence_gate_applied=excluded.evidence_gate_applied, "
+            "universe_sources_json=excluded.universe_sources_json, "
+            "observe_state=excluded.observe_state, "
+            "observe_trigger_count=excluded.observe_trigger_count, "
+            "observe_first_trigger_time=excluded.observe_first_trigger_time, "
+            "deep_ta_status=excluded.deep_ta_status, "
+            "deep_ta_dispatch_reason=excluded.deep_ta_dispatch_reason, "
+            "deep_ta_model=excluded.deep_ta_model, "
+            "deep_ta_report_path=excluded.deep_ta_report_path, "
+            "deep_ta_dispatch_time=excluded.deep_ta_dispatch_time, "
+            "deep_ta_position_context=excluded.deep_ta_position_context, "
+            "plan_date=excluded.plan_date, "
+            "effective_trade_date=excluded.effective_trade_date, "
+            "observe_date=excluded.observe_date, "
+            "beneficiary_path_json=excluded.beneficiary_path_json, "
+            "company_role=excluded.company_role, "
+            "mandate_topic=excluded.mandate_topic, "
+            "mandate_evidence_refs_json=excluded.mandate_evidence_refs_json, "
+            "candidate_type=excluded.candidate_type, "
+            "ambush_score=excluded.ambush_score, "
+            "mandate_score_component=excluded.mandate_score_component, "
+            "beneficiary_score_component=excluded.beneficiary_score_component, "
+            "pricing_gap_score=excluded.pricing_gap_score, "
+            "overheat_penalty=excluded.overheat_penalty, "
+            "candidate_type_reason=excluded.candidate_type_reason, "
+            "deep_ta_route=excluded.deep_ta_route, "
+            "deep_ta_route_reason=excluded.deep_ta_route_reason, "
+            "ambush_reasons_json=excluded.ambush_reasons_json, "
+            "ambush_evidence_refs_json=excluded.ambush_evidence_refs_json, "
+            "research_queue=excluded.research_queue, "
+            "research_intent=excluded.research_intent, "
+            "research_route_reason=excluded.research_route_reason, "
+            "watchlist_note=excluded.watchlist_note, "
+            "watchlist_note_suggested=excluded.watchlist_note_suggested, "
+            "watchlist_topic=excluded.watchlist_topic, "
+            "watchlist_benefit_score=excluded.watchlist_benefit_score, "
+            "watchlist_consensus_score=excluded.watchlist_consensus_score, "
+            "watchlist_evidence_gap_json=excluded.watchlist_evidence_gap_json, "
+            "updated_at=excluded.updated_at",
+
+exec
+/bin/zsh -lc "nl -ba api/services/tradeflow_service.py | sed -n '1048,1088p'; nl -ba api/tradeflow_schemas.py | sed -n '298,324p'; nl -ba tradingagents/dataflows/evidence_coverage_audit.py | sed -n '392,420p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+  1048	        credibilities = []
+  1049	        for row in rows:
+  1050	            data_comp = float(row.get("data_completeness", 0) or 0)
+  1051	            tf_comp = float(row.get("tradeflow_data_completeness", 0) or 0)
+  1052	            cand_type = str(row.get("candidate_type", "") or "")
+  1053	            missing_fields = json.loads(row.get("missing_data_fields_json", "[]") or "[]")
+  1054	            gate_applied = bool(row.get("evidence_gate_applied", 0))
+  1055	            ff_verified = bool(row.get("fund_flow_unit_verified", 0))
+  1056	            symbol = str(row.get("symbol", ""))
+  1057	
+  1058	            has_policy = cand_type in ("POLICY_AMBUSH", "POLICY_CONFIRM", "PSEUDO_POLICY")
+  1059	            has_tech = cand_type == "TECH_TRADE"
+  1060	            has_realtime = tf_comp >= 0.5
+  1061	
+  1062	            cred = audit_candidate_evidence(
+  1063	                candidate_data_completeness=data_comp,
+  1064	                candidate_tradeflow_completeness=tf_comp,
+  1065	                candidate_type=cand_type,
+  1066	                missing_data_fields=missing_fields,
+  1067	                evidence_gate_applied=gate_applied,
+  1068	                fund_flow_unit_verified=ff_verified,
+  1069	                has_policy_evidence=has_policy,
+  1070	                has_tech_signal=has_tech,
+  1071	                has_realtime_quote=has_realtime,
+  1072	            )
+  1073	            cred.symbol = symbol
+  1074	
+  1075	            if cred.evidence_audit:
+  1076	                audits.append(cred.evidence_audit)
+  1077	            credibilities.append(cred)
+  1078	
+  1079	        summary_md = build_evidence_coverage_section(
+  1080	            audits=audits if audits else None,
+  1081	            credibilities=credibilities if credibilities else None,
+  1082	        )
+  1083	
+  1084	        return {
+  1085	            "status": "ok",
+  1086	            "trade_date": trade_date,
+  1087	            "total_candidates": len(rows),
+  1088	            "audits_count": len(audits),
+   298	    trade_date: str = ""
+   299	    message: str = ""
+   300	    review: Optional[Dict[str, Any]] = None
+   301	
+   302	
+   303	# [DATA-007] evidence_coverage_audit
+   304	class EvidenceCredibilityItem(BaseModel):
+   305	    symbol: str = ""
+   306	    candidate_type: str = ""
+   307	    evidence_coverage: float = 0.0
+   308	    evidence_quality_level: str = "UNKNOWN"
+   309	    tier_allowed: str = ""
+   310	    tier_restricted: bool = False
+   311	    need_deep_ta_allowed: bool = True
+   312	    credibility_level: str = "UNKNOWN"
+   313	    credibility_reasons: List[str] = Field(default_factory=list)
+   314	
+   315	
+   316	class TradeFlowEvidenceAuditResponse(BaseModel):
+   317	    status: str = "ok"
+   318	    trade_date: str = ""
+   319	    total_candidates: int = 0
+   320	    audits_count: int = 0
+   321	    credibilities_count: int = 0
+   322	    credibilities: List[EvidenceCredibilityItem] = Field(default_factory=list)
+   323	    summary_markdown: str = ""
+   324	    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+   392	        critical_missing_labels = [f for f in missing_data_fields if "关键" in f or "OHLCV" in f or "行情" in f]
+   393	        if critical_missing_labels and tier_allowed == "A":
+   394	            tier_allowed = _worse_tier(tier_allowed, "B")
+   395	            restricted = True
+   396	
+   397	    quality = audit.evidence_quality_level if audit else "UNKNOWN"
+   398	    if quality in ("CRITICAL", "LOW"):
+   399	        tier_allowed = _worse_tier(tier_allowed, "B")
+   400	        restricted = True
+   401	
+   402	    if restricted:
+   403	        if quality in ("HIGH", "MEDIUM"):
+   404	            credibility = "MEDIUM"
+   405	        else:
+   406	            credibility = quality
+   407	    else:
+   408	        credibility = quality
+   409	
+   410	    result.tier_allowed = tier_allowed
+   411	    result.tier_restricted = restricted
+   412	    result.need_deep_ta_allowed = need_deep_ta_allowed
+   413	    result.credibility_level = credibility
+   414	    result.credibility_reasons = reasons
+   415	    result.credibility_refs = refs
+   416	
+   417	    return result
+   418	
+   419	
+   420	def apply_credibility_linkage(
+
+exec
+/bin/zsh -lc "nl -ba api/services/tradeflow_service.py | sed -n '1084,1098p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+  1084	        return {
+  1085	            "status": "ok",
+  1086	            "trade_date": trade_date,
+  1087	            "total_candidates": len(rows),
+  1088	            "audits_count": len(audits),
+  1089	            "credibilities_count": len(credibilities),
+  1090	            "credibilities": [c.to_dict() for c in credibilities],
+  1091	            "summary_markdown": summary_md,
+  1092	            "runtime_tier_meta": _fast_meta,
+  1093	        }
+  1094	    finally:
+  1095	        conn.close()
+  1096	
+  1097	
+  1098	# [TF-UX-003] post_market_review
+
+exec
+/bin/zsh -lc "sed -n '1,240p' tradingagents/dataflows/evidence_contract.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [DATA-004] raw_evidence_contract
+"""
+raw_evidence 来源契约定义。
+
+所有关键字段的来源、端点、时间、单位、状态纳入统一契约结构，
+使报告和前端都能回答"这个数从哪里来、是否实时、单位是什么、是否 fallback"。
+
+契约字段：
+  - field: 字段名称 (如 stock_data, fund_flow_individual)
+  - value: 原始数据 (raw)
+  - unit: 单位 (万元, 股, 条, %, 元/股 等)
+  - vendor: 实际返回数据的厂商 (cn_akshare, cn_astock, sina, ...)
+  - endpoint: 实际调用的端点 (stock_zh_a_hist, push2his.eastmoney.com/fflow, ...)
+  - as_of: 数据日期或行情时间
+  - fetched_at: 获取时间 ISO
+  - status: HAS_DATA / FAILED / NOT_QUERIED / NORMAL_NO_DATA
+  - fallback_from: 如果走了 fallback，记录原始厂商名
+  - source_url: 可选，数据源链接
+  - error: 失败时的错误摘要
+
+使用示例：
+    from tradingagents.dataflows.evidence_contract import (
+        EvidenceContract,
+        build_evidence_contract,
+        compute_contract_completeness,
+    )
+    contract = build_evidence_contract("stock_data", raw_value, ...)
+    score = compute_contract_completeness(raw_evidence)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field as dc_field
+from typing import Any, Dict, List, Optional
+
+
+@dataclass
+class EvidenceContract:
+    field: str
+    value: Any = None
+    unit: Optional[str] = None
+    vendor: str = ""
+    endpoint: str = ""
+    as_of: str = ""
+    fetched_at: str = ""
+    status: str = "NOT_QUERIED"
+    fallback_from: Optional[str] = None
+    source_url: Optional[str] = None
+    error: Optional[str] = None
+
+    is_realtime_patched: bool = False
+    source_type: Optional[str] = None
+    unit_verified: Optional[bool] = None
+    query_mode: Optional[str] = None
+    adjustment: Optional[str] = None
+    force_reason: Optional[str] = None
+    record_count: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "raw": self.value,
+            "field": self.field,
+            "unit": self.unit,
+            "vendor": self.vendor,
+            "endpoint": self.endpoint,
+            "as_of": self.as_of,
+            "fetched_at": self.fetched_at,
+            "status": self.status,
+            "fallback_from": self.fallback_from,
+            "source_url": self.source_url,
+            "error": self.error,
+            "is_realtime_patched": self.is_realtime_patched,
+            "source_type": self.source_type,
+            "unit_verified": self.unit_verified,
+            "query_mode": self.query_mode,
+            "adjustment": self.adjustment,
+            "force_reason": self.force_reason,
+            "record_count": self.record_count,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EvidenceContract":
+        return cls(
+            field=data.get("field", ""),
+            value=data.get("raw"),
+            unit=data.get("unit"),
+            vendor=data.get("vendor", ""),
+            endpoint=data.get("endpoint", ""),
+            as_of=data.get("as_of", ""),
+            fetched_at=data.get("fetched_at", ""),
+            status=data.get("status", "NOT_QUERIED"),
+            fallback_from=data.get("fallback_from"),
+            source_url=data.get("source_url"),
+            error=data.get("error"),
+            is_realtime_patched=data.get("is_realtime_patched", False),
+            source_type=data.get("source_type"),
+            unit_verified=data.get("unit_verified"),
+            query_mode=data.get("query_mode"),
+            adjustment=data.get("adjustment"),
+            force_reason=data.get("force_reason"),
+            record_count=data.get("record_count", 0),
+        )
+
+    @property
+    def has_data(self) -> bool:
+        return self.status == "HAS_DATA"
+
+    @property
+    def is_failed(self) -> bool:
+        return self.status == "FAILED"
+
+    @property
+    def is_fallback(self) -> bool:
+        return self.fallback_from is not None and self.fallback_from != ""
+
+    @property
+    def unit_known(self) -> bool:
+        return self.unit is not None and self.unit != ""
+
+    @property
+    def endpoint_known(self) -> bool:
+        return self.endpoint != ""
+
+
+_EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
+    "stock_data": "ohlcv",
+    "news": "news",
+    "global_news": "global_news",
+    "fund_flow_board": "board_fund_flow",
+    "fund_flow_individual": "fund_flow",
+    "lhb": "lhb",
+    "fundamentals": "financials",
+    "balance_sheet": "financials",
+    "cashflow": "financials",
+    "income_statement": "financials",
+    "insider_transactions": "insider",
+    "zt_pool": "zt_pool",
+    "hot_stocks": "hot_stocks",
+    "indicators": "ohlcv",
+    "vpa_indicators": "ohlcv",
+    "announcements": "notice",
+}
+
+
+def resolve_data_type(evidence_key: str) -> str:
+    return _EVIDENCE_KEY_TO_DATA_TYPE.get(evidence_key, "")
+
+
+def resolve_endpoint(vendor: str, data_type: str) -> str:
+    try:
+        from .source_catalog import get_primary_source, get_sources_for_type
+        sources = get_sources_for_type(data_type)
+        for s in sources:
+            if s.vendor == vendor:
+                return s.endpoint
+        if sources:
+            return sources[0].endpoint
+    except Exception:
+        pass
+    return ""
+
+
+def resolve_fallback_info(vendor: str, data_type: str) -> Optional[str]:
+    try:
+        from .source_catalog import get_primary_source
+        primary = get_primary_source(data_type)
+        if primary and primary.vendor != vendor:
+            return primary.vendor
+    except Exception:
+        pass
+    return None
+
+
+_REQUIRED_FIELDS_FOR_COMPLETENESS: Dict[str, List[str]] = {
+    "stock_data": ["status", "vendor", "unit"],
+    "fund_flow_individual": ["status", "vendor", "unit", "unit_verified"],
+    "fund_flow_board": ["status", "vendor"],
+    "lhb": ["status", "vendor"],
+    "news": ["status", "vendor"],
+    "global_news": ["status", "vendor"],
+    "announcements": ["status", "vendor"],
+    "fundamentals": ["status", "vendor"],
+}
+
+
+def compute_contract_completeness(raw_evidence: Dict[str, Any]) -> Dict[str, Any]:
+    total = 0
+    satisfied = 0
+    missing_details: Dict[str, List[str]] = {}
+
+    for ev_key, required in _REQUIRED_FIELDS_FOR_COMPLETENESS.items():
+        entry = raw_evidence.get(ev_key)
+        if entry is None:
+            total += len(required)
+            missing_details[ev_key] = required
+            continue
+
+        if isinstance(entry, dict):
+            contract = EvidenceContract.from_dict(entry)
+        else:
+            total += len(required)
+            missing_details[ev_key] = required
+            continue
+
+        for req_field in required:
+            total += 1
+            if req_field == "status" and contract.has_data:
+                satisfied += 1
+            elif req_field == "vendor" and contract.vendor != "":
+                satisfied += 1
+            elif req_field == "unit" and contract.unit_known:
+                satisfied += 1
+            elif req_field == "unit_verified" and contract.unit_verified is True:
+                satisfied += 1
+            elif req_field == "endpoint" and contract.endpoint_known:
+                satisfied += 1
+            else:
+                if ev_key not in missing_details:
+                    missing_details[ev_key] = []
+                missing_details[ev_key].append(req_field)
+
+    score = int((satisfied / total) * 100) if total > 0 else 0
+    return {
+        "completeness_score": score,
+        "total_checks": total,
+        "satisfied_checks": satisfied,
+        "missing_details": missing_details,
+    }
+
+
+def build_data_source_summary(raw_evidence: Dict[str, Any]) -> List[Dict[str, Any]]:
+    summary = []
+    for key in sorted(raw_evidence.keys()):
+        entry = raw_evidence[key]
+        if not isinstance(entry, dict):
+            continue
+        contract = EvidenceContract.from_dict(entry)
+        summary.append({
+            "field": key,
+            "vendor": contract.vendor,
+
+exec
+/bin/zsh -lc "python - <<'PY'
+import sqlite3
+c=sqlite3.connect(':memory:'); c.row_factory=sqlite3.Row; c.execute('create table t(a int)'); c.execute('insert into t values(1)'); r=c.execute('select * from t').fetchone(); print(hasattr(r,'get')); print(r['a'])
+PY" in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: python
+
+exec
+/bin/zsh -lc "python3 - <<'PY'
+import sqlite3
+c=sqlite3.connect(':memory:'); c.row_factory=sqlite3.Row; c.execute('create table t(a int)'); c.execute('insert into t values(1)'); r=c.execute('select * from t').fetchone(); print(hasattr(r,'get')); print(r['a'])
+PY" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+False
+1
+
+codex
+The new evidence audit endpoint fails for normal dates with candidate rows because it calls `.get()` on `sqlite3.Row`. Even after that is fixed, the response model currently hides the computed coverage/quality values due to a payload/schema mismatch.
+
+Full review comments:
+
+- [P1] Replace sqlite row `.get()` calls — /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py:1050-1056
+  When `/v1/tradeflow/evidence-audit` is called for a date that has candidates, `rows` contains `sqlite3.Row` objects from `_connect()`, and `sqlite3.Row` does not implement `.get()`. The first iteration will raise `AttributeError` before any audit response is returned; use the existing `_rget(row, ...)` helper or convert rows to dicts before accessing optional columns.
+
+- [P2] Return credibility fields in the response shape — /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py:1090-1090
+  For any candidate audit that does get returned, `CandidateCredibilityResult.to_dict()` puts coverage and quality under `evidence_audit`, but the `TradeFlowEvidenceAuditResponse` model only exposes flat `evidence_coverage` and `evidence_quality_level` fields. FastAPI will drop the nested audit object and fill these fields with `0.0`/`UNKNOWN`, so clients see misleading audit results even when the computation produced real coverage and quality values.
+The new evidence audit endpoint fails for normal dates with candidate rows because it calls `.get()` on `sqlite3.Row`. Even after that is fixed, the response model currently hides the computed coverage/quality values due to a payload/schema mismatch.
+
+Full review comments:
+
+- [P1] Replace sqlite row `.get()` calls — /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py:1050-1056
+  When `/v1/tradeflow/evidence-audit` is called for a date that has candidates, `rows` contains `sqlite3.Row` objects from `_connect()`, and `sqlite3.Row` does not implement `.get()`. The first iteration will raise `AttributeError` before any audit response is returned; use the existing `_rget(row, ...)` helper or convert rows to dicts before accessing optional columns.
+
+- [P2] Return credibility fields in the response shape — /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py:1090-1090
+  For any candidate audit that does get returned, `CandidateCredibilityResult.to_dict()` puts coverage and quality under `evidence_audit`, but the `TradeFlowEvidenceAuditResponse` model only exposes flat `evidence_coverage` and `evidence_quality_level` fields. FastAPI will drop the nested audit object and fill these fields with `0.0`/`UNKNOWN`, so clients see misleading audit results even when the computation produced real coverage and quality values.

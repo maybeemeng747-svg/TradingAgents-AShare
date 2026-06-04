@@ -1,0 +1,897 @@
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/project-overview.md
+[0m
+[0m# [0mTodos
+[✓] Read and understand DATA-007 task requirements
+[•] Explore existing raw_evidence contract and data source code
+[ ] Implement raw_evidence auditor module
+[ ] Add TradeFlow candidate credibility linkage
+[ ] Expose audit summary in API
+[ ] Integrate with nightly daily digest
+[ ] Write comprehensive tests
+[ ] Update TASKS.md and DEVLOG.md
+[0m
+Now let me understand the DATA-007 task fully and explore the existing codebase to understand the patterns.
+[0m• [0mExplore raw_evidence codebase[90m Explore Agent[0m
+[0m✓ [0mExplore raw_evidence codebase[90m Explore Agent[0m
+[0m• [0mExplore evidence_gate and dataflows[90m Explore Agent[0m
+[0m✓ [0mExplore evidence_gate and dataflows[90m Explore Agent[0m
+[0m
+[0m# [0mTodos
+[✓] Read and understand DATA-007 task requirements
+[✓] Explore existing raw_evidence contract and data source code
+[•] Implement raw_evidence auditor module (evidence_coverage_audit.py)
+[ ] Add TradeFlow candidate credibility linkage
+[ ] Expose audit summary in API
+[ ] Integrate with nightly daily digest
+[ ] Write comprehensive tests
+[ ] Update TASKS.md and DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/dataflows/evidence_contract.py
+[0m→ [0mRead tradingagents/tradeflow/evidence_gate.py
+[0m→ [0mRead tradingagents/dataflows/data_source_daily_digest.py
+Now let me read the key files I need to reference for implementation:
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [limit=120][0m
+[0m→ [0mRead api/tradeflow_schemas.py
+Now let me look at the candidate schemas and the tradeflow service to understand existing patterns:
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [offset=120, limit=200][0m
+Now let me check the tradeflow_schemas.py continuation for the Candidate `to_db_row` method:
+I now have a comprehensive understanding. Let me implement the DATA-007 module. I'll create the main auditor module first:
+[0m
+[0m← [0mWrite tradingagents/dataflows/evidence_coverage_audit.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[✓] Read and understand DATA-007 task requirements
+[✓] Explore existing raw_evidence contract and data source code
+[✓] Implement raw_evidence auditor module (evidence_coverage_audit.py)
+[✓] Add TradeFlow candidate credibility linkage
+[•] Expose audit summary in API
+[ ] Integrate with nightly daily digest
+[ ] Write comprehensive tests
+[ ] Update TASKS.md and DEVLOG.md
+[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=60][0m
+[0m✱ [0mGrep "def get_data_health"[90m 1 match[0m
+Now let me add the API exposure. I need to add audit summary to the tradeflow data-health endpoint and add the candidate audit to the candidate detail. Let me first read the relevant API sections:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=651, limit=120][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=30, offset=771][0m
+Now let me look at the API endpoint for data-health and candidate detail:
+[0m✱ [0mGrep "_tf_get_data_health|_tf_get_candidate_detail"[90m in api · 4 matches[0m
+[0m→ [0mRead api/main.py[90m [offset=5209, limit=120][0m
+Now I'll add the evidence coverage audit to the data-health endpoint. Let me also add the audit endpoint to the API. I'll modify the tradeflow_service.py to add an evidence audit function and update the data-health response:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=60, offset=801][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=220, offset=861][0m
+Now I'll add the evidence audit endpoint. Let me add it to the tradeflow_service.py, the tradeflow_schemas.py, and the main.py:
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -774,8 +774,9 @@
+     "total_signals_today": total_signals_today,
+     "latest_observe_check_time": latest_observe_check_time,  # [TF-OBS-001]
+     "latest_signal_time": latest_signal_time,  # [TF-OBS-001]
+     "evidence_contract_available": True,  # [DATA-004] raw_evidence_contract
++    "evidence_coverage_audit_available": True,  # [DATA-007] evidence_coverage_audit
+     "runtime_tier_meta": _tradeflow_meta("tradeflow_data_health"),  # [PERF-001]
+ }
+ 
+ 
+
+[0m
+Now add the get_evidence_audit function to tradeflow_service.py:
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -1009,8 +1009,93 @@
+         except Exception:
+             pass
+ 
+ 
++# [DATA-007] evidence_coverage_audit
++def get_evidence_audit(trade_date: str, tf_db_path: str = "") -> dict:
++    """Run evidence coverage audit on all candidates for trade_date.
++
++    Reads candidate metadata from tradeflow.db, runs the evidence coverage
++    auditor on each candidate, and returns a summary.
++    Does NOT call LLM or live data sources.
++    """
++    from tradingagents.dataflows.evidence_coverage_audit import (
++        audit_candidate_evidence,
++        build_evidence_coverage_section,
++    )
++
++    _fast_meta = _tradeflow_meta("tradeflow_evidence_audit")
++    conn = _connect(tf_db_path)
++    if conn is None:
++        return {
++            "status": "no_data",
++            "trade_date": trade_date,
++            "audits": [],
++            "credibilities": [],
++            "summary_markdown": "",
++            "runtime_tier_meta": _fast_meta,
++        }
++
++    try:
++        columns = _table_columns(conn, "tradeflow_candidates")
++        extra_conditions = ["status = 'active'" if "status" in columns else None]
++        extra_conditions = [c for c in extra_conditions if c is not None]
++        rows = _query_by_date_or_effective(
++            conn, "tradeflow_candidates", trade_date,
++            extra_conditions=extra_conditions if extra_conditions else None,
++        )
++
++        audits = []
++        credibilities = []
++        for row in rows:
++            data_comp = float(row.get("data_completeness", 0) or 0)
++            tf_comp = float(row.get("tradeflow_data_completeness", 0) or 0)
++            cand_type = str(row.get("candidate_type", "") or "")
++            missing_fields = json.loads(row.get("missing_data_fields_json", "[]") or "[]")
++            gate_applied = bool(row.get("evidence_gate_applied", 0))
++            ff_verified = bool(row.get("fund_flow_unit_verified", 0))
++            symbol = str(row.get("symbol", ""))
++
++            has_policy = cand_type in ("POLICY_AMBUSH", "POLICY_CONFIRM", "PSEUDO_POLICY")
++            has_tech = cand_type == "TECH_TRADE"
++            has_realtime = tf_comp >= 0.5
++
++            cred = audit_candidate_evidence(
++                candidate_data_completeness=data_comp,
++                candidate_tradeflow_completeness=tf_comp,
++                candidate_type=cand_type,
++                missing_data_fields=missing_fields,
++                evidence_gate_applied=gate_applied,
++                fund_flow_unit_verified=ff_verified,
++                has_policy_evidence=has_policy,
++                has_tech_signal=has_tech,
++                has_realtime_quote=has_realtime,
++            )
++            cred.symbol = symbol
++
++            if cred.evidence_audit:
++                audits.append(cred.evidence_audit)
++            credibilities.append(cred)
++
++        summary_md = build_evidence_coverage_section(
++            audits=audits if audits else None,
++            credibilities=credibilities if credibilities else None,
++        )
++
++        return {
++            "status": "ok",
++            "trade_date": trade_date,
++            "total_candidates": len(rows),
++            "audits_count": len(audits),
++            "credibilities_count": len(credibilities),
++            "credibilities": [c.to_dict() for c in credibilities],
++            "summary_markdown": summary_md,
++            "runtime_tier_meta": _fast_meta,
++        }
++    finally:
++        conn.close()
++
++
+ # [TF-UX-003] post_market_review
+ def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
+     """Generate post-market review for trade_date using post_market_review module."""
+     from tradingagents.tradeflow.candidate_engine import init_db
+
+[0m
+Now add the API schema:
+[0m← [0mEdit api/tradeflow_schemas.py
+Index: /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
++++ /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
+@@ -255,8 +255,9 @@
+     total_signals_today: int = 0
+     latest_observe_check_time: Optional[str] = None
+     latest_signal_time: Optional[str] = None
+     evidence_contract_available: bool = False  # [DATA-004] raw_evidence_contract
++    evidence_coverage_audit_available: bool = False  # [DATA-007] evidence_coverage_audit
+     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+ 
+ 
+ # [UI-007] tradeflow_filtered_trace
+
+[0m
+[0m← [0mEdit api/tradeflow_schemas.py
+Index: /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
++++ /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
+@@ -297,4 +297,28 @@
+     status: str = "ok"
+     trade_date: str = ""
+     message: str = ""
+     review: Optional[Dict[str, Any]] = None
++
++
++# [DATA-007] evidence_coverage_audit
++class EvidenceCredibilityItem(BaseModel):
++    symbol: str = ""
++    candidate_type: str = ""
++    evidence_coverage: float = 0.0
++    evidence_quality_level: str = "UNKNOWN"
++    tier_allowed: str = ""
++    tier_restricted: bool = False
++    need_deep_ta_allowed: bool = True
++    credibility_level: str = "UNKNOWN"
++    credibility_reasons: List[str] = Field(default_factory=list)
++
++
++class TradeFlowEvidenceAuditResponse(BaseModel):
++    status: str = "ok"
++    trade_date: str = ""
++    total_candidates: int = 0
++    audits_count: int = 0
++    credibilities_count: int = 0
++    credibilities: List[EvidenceCredibilityItem] = Field(default_factory=list)
++    summary_markdown: str = ""
++    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+[0m
+Now add the evidence audit response schema and the endpoint to main.py:
+Now update main.py to add the import and the new endpoint:
+[0m← [0mEdit api/main.py
+Index: /Users/maybee/TradingAgents-AShare/api/main.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/main.py
++++ /Users/maybee/TradingAgents-AShare/api/main.py
+@@ -5217,8 +5217,9 @@
+     TradeFlowDataHealthResponse,
+     TradeFlowFilteredResponse,  # [UI-007] tradeflow_filtered_trace
+     TradeFlowTieredCandidatesResponse,  # [TF-UX-001]
+     TradeFlowReviewGenerateResponse,  # [TF-UX-003]
++    TradeFlowEvidenceAuditResponse,  # [DATA-007] evidence_coverage_audit
+ )
+ from api.services.tradeflow_service import (
+     get_daily_plan as _tf_get_daily_plan,
+     get_candidates as _tf_get_candidates,
+
+[0m
+[0m← [0mEdit api/main.py
+Index: /Users/maybee/TradingAgents-AShare/api/main.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/main.py
++++ /Users/maybee/TradingAgents-AShare/api/main.py
+@@ -5232,8 +5232,9 @@
+     get_filtered as _tf_get_filtered,  # [UI-007] tradeflow_filtered_trace
+     run_observe_check as _tf_run_observe_check,  # [TF-OBS-001] tradeflow_observe_runner
+     get_candidates_tiered as _tf_get_candidates_tiered,  # [TF-UX-001]
+     generate_review as _tf_generate_review,  # [TF-UX-003]
++    get_evidence_audit as _tf_get_evidence_audit,  # [DATA-007] evidence_coverage_audit
+ )
+ 
+ # [UI-001] tradeflow_api — read-only endpoints
+ 
+
+[0m
+Now add the endpoint before the review/generate endpoint:
+[0m← [0mEdit api/main.py
+Index: /Users/maybee/TradingAgents-AShare/api/main.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/main.py
++++ /Users/maybee/TradingAgents-AShare/api/main.py
+@@ -5293,8 +5293,14 @@
+ def tradeflow_data_health():
+     return _tf_get_data_health()
+ 
+ 
++# [DATA-007] evidence_coverage_audit
++@app.get("/v1/tradeflow/evidence-audit", response_model=TradeFlowEvidenceAuditResponse)
++def tradeflow_evidence_audit(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
++    return _tf_get_evidence_audit(date)
++
++
+ # [UI-007] tradeflow_filtered_trace
+ @app.get("/v1/tradeflow/filtered", response_model=TradeFlowFilteredResponse)
+ def tradeflow_filtered(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+     return _tf_get_filtered(date)
+
+[0m
+[0m# [0mTodos
+[✓] Read and understand DATA-007 task requirements
+[✓] Explore existing raw_evidence contract and data source code
+[✓] Implement raw_evidence auditor module (evidence_coverage_audit.py)
+[✓] Add TradeFlow candidate credibility linkage
+[✓] Expose audit summary in API
+[•] Integrate with nightly daily digest
+[ ] Write comprehensive tests
+[ ] Update TASKS.md and DEVLOG.md
+[0m
+[0m← [0mEdit tradingagents/dataflows/data_source_daily_digest.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/data_source_daily_digest.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/data_source_daily_digest.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/data_source_daily_digest.py
+@@ -35,8 +35,13 @@
+     ReplayResult,
+     render_replay_report,
+     run_fixture_replay,
+ )
++from .evidence_coverage_audit import (  # [DATA-007] evidence_coverage_audit
++    EvidenceAuditResult,
++    CandidateCredibilityResult,
++    build_evidence_coverage_section,
++)
+ 
+ 
+ # ── Data Type Categories ─────────────────────────────────────────────
+ 
+
+[0m
+Now let me integrate with the nightly daily digest. I need to add a function that builds the evidence coverage section for the daily digest:
+Now add the evidence audit field to DailyDigest and update the digest builder:
+[0m← [0mEdit tradingagents/dataflows/data_source_daily_digest.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/data_source_daily_digest.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/data_source_daily_digest.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/data_source_daily_digest.py
+@@ -146,8 +146,11 @@
+     failure_types: Dict[str, int] = field(default_factory=dict)
+     overall_tradeflow_impact: str = "none"
+     overall_ta_impact: str = "none"
+     warnings: List[str] = field(default_factory=list)
++    evidence_audits: Optional[List[EvidenceAuditResult]] = None  # [DATA-007]
++    evidence_credibilities: Optional[List[CandidateCredibilityResult]] = None  # [DATA-007]
++    evidence_coverage_section: str = ""  # [DATA-007]
+ 
+     def to_dict(self) -> Dict[str, Any]:
+         return {
+             "date": self.date,
+@@ -163,8 +166,11 @@
+             "failure_types": self.failure_types,
+             "overall_tradeflow_impact": self.overall_tradeflow_impact,
+             "overall_ta_impact": self.overall_ta_impact,
+             "warnings": self.warnings,
++            "evidence_audits_count": len(self.evidence_audits) if self.evidence_audits else 0,
++            "evidence_credibilities_count": len(self.evidence_credibilities) if self.evidence_credibilities else 0,
++            "evidence_coverage_section_present": bool(self.evidence_coverage_section),
+         }
+ 
+ 
+ # ── Classification Helpers ───────────────────────────────────────────
+
+[0m
+[0m← [0mEdit tradingagents/dataflows/data_source_daily_digest.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/data_source_daily_digest.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/data_source_daily_digest.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/data_source_daily_digest.py
+@@ -479,8 +479,11 @@
+ if digest.replay_report_path:
+     lines.append(f"> 完整 replay 报告: `{digest.replay_report_path}`")
+     lines.append("")
+ 
++if digest.evidence_coverage_section:
++    lines.append(digest.evidence_coverage_section)
++
+ lines.append("---")
+ lines.append("*Generated by data_source_daily_digest.py — [DATA-006] data_source_report_daily*")
+ lines.append("")
+ return "\n".join(lines)
+
+[0m
+Now update the render_daily_digest to include the evidence coverage section:
+Now add a helper to set evidence audits on a digest:
+[0m← [0mEdit tradingagents/dataflows/data_source_daily_digest.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/data_source_daily_digest.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/data_source_daily_digest.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/data_source_daily_digest.py
+@@ -537,4 +537,25 @@
+     with open(nightly_report_path, "a", encoding="utf-8") as f:
+         f.write("\n")
+         f.write(section)
+     return True
++
++
++# [DATA-007] evidence_coverage_audit
++def attach_evidence_coverage_to_digest(
++    digest: DailyDigest,
++    audits: Optional[List[EvidenceAuditResult]] = None,
++    credibilities: Optional[List[CandidateCredibilityResult]] = None,
++) -> DailyDigest:
++    """Attach evidence coverage audit results to a DailyDigest.
++
++    This allows the nightly digest to include evidence coverage
++    summaries alongside data source health.
++    """
++    digest.evidence_audits = audits
++    digest.evidence_credibilities = credibilities
++    if audits or credibilities:
++        digest.evidence_coverage_section = build_evidence_coverage_section(
++            audits=audits,
++            credibilities=credibilities,
++        )
++    return digest
+
+[0m
+[0m# [0mTodos
+[✓] Read and understand DATA-007 task requirements
+[✓] Explore existing raw_evidence contract and data source code
+[✓] Implement raw_evidence auditor module (evidence_coverage_audit.py)
+[✓] Add TradeFlow candidate credibility linkage
+[✓] Expose audit summary in API
+[✓] Integrate with nightly daily digest
+[•] Write comprehensive tests
+[ ] Update TASKS.md and DEVLOG.md
+[0m
+Now let me write the comprehensive test file:
+[0m← [0mWrite tests/test_data007_evidence_coverage_audit.py
+Wrote file successfully.
+[0m
+Now let's run the tests:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_data007_evidence_coverage_audit.py -v --tb=short 2>&1 | tail -80
+tests/test_data007_evidence_coverage_audit.py::TestAuditRawEvidence::test_full_evidence PASSED [ 21%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditRawEvidence::test_missing_fund_flow PASSED [ 22%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditRawEvidence::test_missing_announcements PASSED [ 24%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditRawEvidence::test_stale_fields PASSED [ 25%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditRawEvidence::test_unit_unknown_fields PASSED [ 26%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditRawEvidence::test_fallback_fields PASSED [ 28%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditRawEvidence::test_normal_no_data_fields PASSED [ 29%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditRawEvidence::test_audit_refs_present PASSED [ 30%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditRawEvidence::test_coverage_is_ratio PASSED [ 32%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditRawEvidence::test_non_dict_entry PASSED [ 33%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditCandidateEvidence::test_policy_ambush_with_evidence PASSED [ 34%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditCandidateEvidence::test_policy_ambush_without_policy_evidence PASSED [ 36%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditCandidateEvidence::test_tech_trade_with_realtime PASSED [ 37%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditCandidateEvidence::test_tech_trade_without_realtime_and_tech FAILED [ 38%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditCandidateEvidence::test_tech_trade_without_realtime_only PASSED [ 40%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditCandidateEvidence::test_tech_trade_fund_flow_not_verified PASSED [ 41%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditCandidateEvidence::test_unclassified_data_gap FAILED [ 42%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditCandidateEvidence::test_low_coverage_blocks_deep_ta PASSED [ 44%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditCandidateEvidence::test_evidence_gate_applied PASSED [ 45%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditCandidateEvidence::test_with_raw_evidence PASSED [ 46%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditCandidateEvidence::test_policy_ambush_missing_critical PASSED [ 48%]
+tests/test_data007_evidence_coverage_audit.py::TestAuditCandidateEvidence::test_missing_critical_data_fields_blocks_a PASSED [ 49%]
+tests/test_data007_evidence_coverage_audit.py::TestApplyCredibilityLinkage::test_no_credibility PASSED [ 50%]
+tests/test_data007_evidence_coverage_audit.py::TestApplyCredibilityLinkage::test_high_credibility_no_override PASSED [ 52%]
+tests/test_data007_evidence_coverage_audit.py::TestApplyCredibilityLinkage::test_tier_downgrade PASSED [ 53%]
+tests/test_data007_evidence_coverage_audit.py::TestApplyCredibilityLinkage::test_tier_no_upgrade PASSED [ 54%]
+tests/test_data007_evidence_coverage_audit.py::TestApplyCredibilityLinkage::test_deep_ta_blocked PASSED [ 56%]
+tests/test_data007_evidence_coverage_audit.py::TestApplyCredibilityLinkage::test_deep_ta_allowed PASSED [ 57%]
+tests/test_data007_evidence_coverage_audit.py::TestRenderAuditSummary::test_basic_render PASSED [ 58%]
+tests/test_data007_evidence_coverage_audit.py::TestRenderAuditSummary::test_with_critical_missing PASSED [ 60%]
+tests/test_data007_evidence_coverage_audit.py::TestRenderAuditSummary::test_with_stale PASSED [ 61%]
+tests/test_data007_evidence_coverage_audit.py::TestRenderAuditSummary::test_with_unit_unknown PASSED [ 62%]
+tests/test_data007_evidence_coverage_audit.py::TestRenderAuditSummary::test_with_fallback PASSED [ 64%]
+tests/test_data007_evidence_coverage_audit.py::TestRenderCredibilitySummary::test_basic_render PASSED [ 65%]
+tests/test_data007_evidence_coverage_audit.py::TestRenderCredibilitySummary::test_with_reasons PASSED [ 66%]
+tests/test_data007_evidence_coverage_audit.py::TestBuildEvidenceCoverageSection::test_empty PASSED [ 68%]
+tests/test_data007_evidence_coverage_audit.py::TestBuildEvidenceCoverageSection::test_with_audits PASSED [ 69%]
+tests/test_data007_evidence_coverage_audit.py::TestBuildEvidenceCoverageSection::test_with_credibilities PASSED [ 70%]
+tests/test_data007_evidence_coverage_audit.py::TestBuildEvidenceCoverageSection::test_with_both PASSED [ 72%]
+tests/test_data007_evidence_coverage_audit.py::TestCriticalFieldsByCandidateType::test_policy_ambush_requires_policy PASSED [ 73%]
+tests/test_data007_evidence_coverage_audit.py::TestCriticalFieldsByCandidateType::test_tech_trade_requires_realtime PASSED [ 74%]
+tests/test_data007_evidence_coverage_audit.py::TestCriticalFieldsByCandidateType::test_data_gap_no_critical PASSED [ 76%]
+tests/test_data007_evidence_coverage_audit.py::TestCriticalFieldsByCandidateType::test_all_types_have_entries PASSED [ 77%]
+tests/test_data007_evidence_coverage_audit.py::TestEvidenceFieldLabels::test_key_fields_have_labels PASSED [ 78%]
+tests/test_data007_evidence_coverage_audit.py::TestEvidenceFieldLabels::test_all_labels_non_empty PASSED [ 80%]
+tests/test_data007_evidence_coverage_audit.py::TestEvidenceFieldFamilies::test_stock_data_ohlcv PASSED [ 81%]
+tests/test_data007_evidence_coverage_audit.py::TestEvidenceFieldFamilies::test_fund_flow_family PASSED [ 82%]
+tests/test_data007_evidence_coverage_audit.py::TestFiveFixtureScenarios::test_full_evidence_no_downgrade PASSED [ 84%]
+tests/test_data007_evidence_coverage_audit.py::TestFiveFixtureScenarios::test_missing_fund_degraded PASSED [ 85%]
+tests/test_data007_evidence_coverage_audit.py::TestFiveFixtureScenarios::test_missing_announcements_tracked PASSED [ 86%]
+tests/test_data007_evidence_coverage_audit.py::TestFiveFixtureScenarios::test_stale_market_data_tracked PASSED [ 88%]
+tests/test_data007_evidence_coverage_audit.py::TestFiveFixtureScenarios::test_unit_unknown_tracked PASSED [ 89%]
+tests/test_data007_evidence_coverage_audit.py::TestAcceptanceDATA007::test_full_evidence_no_false_downgrade PASSED [ 90%]
+tests/test_data007_evidence_coverage_audit.py::TestAcceptanceDATA007::test_missing_critical_restricts_tier_and_deep_ta PASSED [ 92%]
+tests/test_data007_evidence_coverage_audit.py::TestAcceptanceDATA007::test_nightly_digest_can_show_coverage PASSED [ 93%]
+tests/test_data007_evidence_coverage_audit.py::TestAcceptanceDATA007::test_no_live_llm_required PASSED [ 94%]
+tests/test_data007_evidence_coverage_audit.py::TestAcceptanceDATA007::test_no_prod_db_write PASSED [ 96%]
+tests/test_data007_evidence_coverage_audit.py::TestAcceptanceDATA007::test_no_speculative_fill PASSED [ 97%]
+tests/test_data007_evidence_coverage_audit.py::TestAcceptanceDATA007::test_render_contains_quality_level PASSED [ 98%]
+tests/test_data007_evidence_coverage_audit.py::TestAcceptanceDATA007::test_api_audit_endpoint_schema PASSED [100%]
+
+=================================== FAILURES ===================================
+_____ TestAuditCandidateEvidence.test_tech_trade_without_realtime_and_tech _____
+tests/test_data007_evidence_coverage_audit.py:302: in test_tech_trade_without_realtime_and_tech
+    assert result.tier_allowed == "C"
+E   AssertionError: assert 'B' == 'C'
+E     
+E     - C
+E     + B
+____________ TestAuditCandidateEvidence.test_unclassified_data_gap _____________
+tests/test_data007_evidence_coverage_audit.py:331: in test_unclassified_data_gap
+    assert result.tier_allowed == "C"
+E   AssertionError: assert 'B' == 'C'
+E     
+E     - C
+E     + B
+=========================== short test summary info ============================
+FAILED tests/test_data007_evidence_coverage_audit.py::TestAuditCandidateEvidence::test_tech_trade_without_realtime_and_tech
+FAILED tests/test_data007_evidence_coverage_audit.py::TestAuditCandidateEvidence::test_unclassified_data_gap
+========================= 2 failed, 73 passed in 0.11s =========================
+[0m
+Two test failures - the tier_allowed logic needs to handle string comparison properly. The issue is that Python string comparison `"B" < "A"` is False, so my `min()` approach doesn't work. Let me fix the logic:
+[0m→ [0mRead tradingagents/dataflows/evidence_coverage_audit.py[90m [limit=40, offset=218][0m
+[0m
+[0m← [0mEdit tradingagents/dataflows/evidence_coverage_audit.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_coverage_audit.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_coverage_audit.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_coverage_audit.py
+@@ -82,9 +82,20 @@
+     "zt_pool": "zt_pool",
+     "hot_stocks": "hot_stocks",
+ }
+ 
++_TIER_RANK = {"A": 1, "B": 2, "C": 3}
+ 
++
++def _worse_tier(current: str, minimum: str) -> str:
++    """Return the worse (higher rank number) of two tiers."""
++    current_rank = _TIER_RANK.get(current, 3)
++    minimum_rank = _TIER_RANK.get(minimum, 3)
++    return "A" if current_rank <= minimum_rank and minimum_rank == 1 else (
++        "B" if max(current_rank, minimum_rank) == 2 else "C"
++    )
++
++
+ @dataclass
+ class EvidenceAuditResult:
+     evidence_coverage: float = 0.0
+     critical_missing_fields: List[str] = field(default_factory=list)
+
+[0m
+I need to fix the tier_allowed logic. The issue is using string comparison like `min("A", "B")` and `"B" < "A"`. I need a tier rank helper:
+Now fix the `audit_candidate_evidence` function to use `_worse_tier`:
+[0m← [0mEdit tradingagents/dataflows/evidence_coverage_audit.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_coverage_audit.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_coverage_audit.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_coverage_audit.py
+@@ -344,11 +344,9 @@
+         "value": "missing_realtime_and_tech",
+         "candidate_type": candidate_type,
+     })
+ elif not has_realtime_quote:
+-    tier_allowed = min(tier_allowed, "B") if tier_allowed <= "B" else tier_allowed
+-    if tier_allowed == "A":
+-        tier_allowed = "B"
++    tier_allowed = _worse_tier(tier_allowed, "B")
+     restricted = True
+     reasons.append("技术候选缺少实时行情，限制升级")
+     refs.append({
+         "field": "tech_evidence_gate",
+
+[0m
+Also fix the low coverage tier restriction:
+[0m← [0mEdit tradingagents/dataflows/evidence_coverage_audit.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_coverage_audit.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_coverage_audit.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_coverage_audit.py
+@@ -373,10 +373,9 @@
+         "candidate_type": candidate_type,
+     })
+ 
+ if audit and audit.evidence_coverage < 0.3:
+-    if tier_allowed > "B":
+-        tier_allowed = "B"
++    tier_allowed = _worse_tier(tier_allowed, "B")
+     restricted = True
+     if not any("证据覆盖率" in r for r in reasons):
+         reasons.append(f"证据覆盖率过低({audit.evidence_coverage:.0%})，限制升级")
+ 
+
+[0m
+Also fix the quality level restriction and the critical_missing_data_fields block:
+[0m← [0mEdit tradingagents/dataflows/evidence_coverage_audit.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_coverage_audit.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_coverage_audit.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_coverage_audit.py
+@@ -390,15 +390,14 @@
+ 
+ if missing_data_fields:
+     critical_missing_labels = [f for f in missing_data_fields if "关键" in f or "OHLCV" in f or "行情" in f]
+     if critical_missing_labels and tier_allowed == "A":
+-        tier_allowed = "B"
++        tier_allowed = _worse_tier(tier_allowed, "B")
+         restricted = True
+ 
+ quality = audit.evidence_quality_level if audit else "UNKNOWN"
+ if quality in ("CRITICAL", "LOW"):
+-    if tier_allowed > "B":
+-        tier_allowed = "B"
++    tier_allowed = _worse_tier(tier_allowed, "B")
+     restricted = True
+ 
+ if restricted:
+     if quality in ("HIGH", "MEDIUM"):
+
+[0m
+Now let me also fix the test expectations. The issue with `test_unclassified_data_gap` is that data_completeness=0.1 gives a quality level of "CRITICAL", which forces to B but the test expected C. Let me check the logic again:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -c "
+from tradingagents.dataflows.evidence_coverage_audit import audit_candidate_evidence
+r = audit_candidate_evidence(candidate_data_completeness=0.1, candidate_type='UNCLASSIFIED_DATA_GAP')
+print(f'tier_allowed={r.tier_allowed}, tier_restricted={r.tier_restricted}, need_deep_ta={r.need_deep_ta_allowed}')
+print(f'credibility_level={r.credibility_level}')
+print(f'reasons={r.credibility_reasons}')
+"
+tier_allowed=C, tier_restricted=True, need_deep_ta=False
+credibility_level=CRITICAL
+reasons=['证据缺口候选不得升级', '证据覆盖率过低(10%)，限制升级', '证据覆盖率不足(10%)，禁止深挖']
+[0m
+Good, it actually returns C now. Let me run the tests again:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_data007_evidence_coverage_audit.py -v --tb=short 2>&1 | tail -30
+tests/test_data007_evidence_coverage_audit.py::TestRenderAuditSummary::test_with_fallback PASSED [ 64%]
+tests/test_data007_evidence_coverage_audit.py::TestRenderCredibilitySummary::test_basic_render PASSED [ 65%]
+tests/test_data007_evidence_coverage_audit.py::TestRenderCredibilitySummary::test_with_reasons PASSED [ 66%]
+tests/test_data007_evidence_coverage_audit.py::TestBuildEvidenceCoverageSection::test_empty PASSED [ 68%]
+tests/test_data007_evidence_coverage_audit.py::TestBuildEvidenceCoverageSection::test_with_audits PASSED [ 69%]
+tests/test_data007_evidence_coverage_audit.py::TestBuildEvidenceCoverageSection::test_with_credibilities PASSED [ 70%]
+tests/test_data007_evidence_coverage_audit.py::TestBuildEvidenceCoverageSection::test_with_both PASSED [ 72%]
+tests/test_data007_evidence_coverage_audit.py::TestCriticalFieldsByCandidateType::test_policy_ambush_requires_policy PASSED [ 73%]
+tests/test_data007_evidence_coverage_audit.py::TestCriticalFieldsByCandidateType::test_tech_trade_requires_realtime PASSED [ 74%]
+tests/test_data007_evidence_coverage_audit.py::TestCriticalFieldsByCandidateType::test_data_gap_no_critical PASSED [ 76%]
+tests/test_data007_evidence_coverage_audit.py::TestCriticalFieldsByCandidateType::test_all_types_have_entries PASSED [ 77%]
+tests/test_data007_evidence_coverage_audit.py::TestEvidenceFieldLabels::test_key_fields_have_labels PASSED [ 78%]
+tests/test_data007_evidence_coverage_audit.py::TestEvidenceFieldLabels::test_all_labels_non_empty PASSED [ 80%]
+tests/test_data007_evidence_coverage_audit.py::TestEvidenceFieldFamilies::test_stock_data_ohlcv PASSED [ 81%]
+tests/test_data007_evidence_coverage_audit.py::TestEvidenceFieldFamilies::test_fund_flow_family PASSED [ 82%]
+tests/test_data007_evidence_coverage_audit.py::TestFiveFixtureScenarios::test_full_evidence_no_downgrade PASSED [ 84%]
+tests/test_data007_evidence_coverage_audit.py::TestFiveFixtureScenarios::test_missing_fund_degraded PASSED [ 85%]
+tests/test_data007_evidence_coverage_audit.py::TestFiveFixtureScenarios::test_missing_announcements_tracked PASSED [ 86%]
+tests/test_data007_evidence_coverage_audit.py::TestFiveFixtureScenarios::test_stale_market_data_tracked PASSED [ 88%]
+tests/test_data007_evidence_coverage_audit.py::TestFiveFixtureScenarios::test_unit_unknown_tracked PASSED [ 89%]
+tests/test_data007_evidence_coverage_audit.py::TestAcceptanceDATA007::test_full_evidence_no_false_downgrade PASSED [ 90%]
+tests/test_data007_evidence_coverage_audit.py::TestAcceptanceDATA007::test_missing_critical_restricts_tier_and_deep_ta PASSED [ 92%]
+tests/test_data007_evidence_coverage_audit.py::TestAcceptanceDATA007::test_nightly_digest_can_show_coverage PASSED [ 93%]
+tests/test_data007_evidence_coverage_audit.py::TestAcceptanceDATA007::test_no_live_llm_required PASSED [ 94%]
+tests/test_data007_evidence_coverage_audit.py::TestAcceptanceDATA007::test_no_prod_db_write PASSED [ 96%]
+tests/test_data007_evidence_coverage_audit.py::TestAcceptanceDATA007::test_no_speculative_fill PASSED [ 97%]
+tests/test_data007_evidence_coverage_audit.py::TestAcceptanceDATA007::test_render_contains_quality_level PASSED [ 98%]
+tests/test_data007_evidence_coverage_audit.py::TestAcceptanceDATA007::test_api_audit_endpoint_schema PASSED [100%]
+
+============================== 75 passed in 0.06s ==============================
+[0m
+All 75 tests pass. Now let me run the related regression tests:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_data004_evidence_contract.py tests/test_data006_daily_digest.py -v --tb=short 2>&1 | tail -30
+tests/test_data006_daily_digest.py::TestRenderDailyDigest::test_render_includes_data_type_table PASSED [ 81%]
+tests/test_data006_daily_digest.py::TestRenderDailyDigest::test_render_failure_types_section PASSED [ 81%]
+tests/test_data006_daily_digest.py::TestRenderDailyDigest::test_render_warnings_section PASSED [ 82%]
+tests/test_data006_daily_digest.py::TestRenderDailyDigest::test_render_report_path PASSED [ 83%]
+tests/test_data006_daily_digest.py::TestBuildDigestSectionForNightlyReport::test_with_no_reports PASSED [ 83%]
+tests/test_data006_daily_digest.py::TestBuildDigestSectionForNightlyReport::test_with_existing_report PASSED [ 84%]
+tests/test_data006_daily_digest.py::TestRunDigestAndAppendToReport::test_appends_to_existing_report PASSED [ 85%]
+tests/test_data006_daily_digest.py::TestRunDigestAndAppendToReport::test_does_not_double_append PASSED [ 86%]
+tests/test_data006_daily_digest.py::TestRunDigestAndAppendToReport::test_nonexistent_report_path PASSED [ 86%]
+tests/test_data006_daily_digest.py::TestAcceptanceData006::test_fixture_replay_report_in_nightly_digest PASSED [ 87%]
+tests/test_data006_daily_digest.py::TestAcceptanceData006::test_replay_missing_shows_not_run PASSED [ 88%]
+tests/test_data006_daily_digest.py::TestAcceptanceData006::test_no_sensitive_data_leaked PASSED [ 88%]
+tests/test_data006_daily_digest.py::TestAcceptanceData006::test_data_type_aggregation_complete PASSED [ 89%]
+tests/test_data006_daily_digest.py::TestAcceptanceData006::test_failure_samples_captured PASSED [ 90%]
+tests/test_data006_daily_digest.py::TestAcceptanceData006::test_tradeflow_impact_assessed PASSED [ 90%]
+tests/test_data006_daily_digest.py::TestAcceptanceData006::test_ta_readiness_impact_assessed PASSED [ 91%]
+tests/test_data006_daily_digest.py::TestAcceptanceData006::test_digest_serializable PASSED [ 92%]
+tests/test_data006_daily_digest.py::TestAcceptanceData006::test_nightly_report_integration PASSED [ 93%]
+tests/test_data006_daily_digest.py::TestAcceptanceData006::test_partial_status_shown PASSED [ 93%]
+tests/test_data006_daily_digest.py::TestEdgeCases::test_empty_replay_report PASSED [ 94%]
+tests/test_data006_daily_digest.py::TestEdgeCases::test_all_failures_same_type PASSED [ 95%]
+tests/test_data006_daily_digest.py::TestEdgeCases::test_fallback_detected_in_digest PASSED [ 95%]
+tests/test_data006_daily_digest.py::TestEdgeCases::test_digest_with_none_report_path PASSED [ 96%]
+tests/test_data006_daily_digest.py::TestEdgeCases::test_render_empty_healths PASSED [ 97%]
+tests/test_data006_daily_digest.py::TestEdgeCases::test_many_failure_samples_truncated PASSED [ 97%]
+tests/test_data006_daily_digest.py::TestEdgeCases::test_digest_date_matches PASSED [ 98%]
+tests/test_data006_daily_digest.py::TestEdgeCases::test_to_dict_roundtrip PASSED [ 99%]
+tests/test_data006_daily_digest.py::TestEdgeCases::test_report_path_stored_in_digest PASSED [100%]
+
+============================= 143 passed in 0.97s ==============================
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tradeflow_candidate_engine.py tests/test_ui001_tradeflow_api.py -q --tb=short 2>&1 | tail -10
+.......................................................................  [100%]
+71 passed in 13.35s
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_api_smoke.py -q --tb=short 2>&1 | tail -10
+.................................................                        [100%]
+49 passed in 12.37s
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_h004_ambush_score.py tests/test_h006_mandate_replay_eval.py -q --tb=short 2>&1 | tail -10
+........................................................................ [ 42%]
+........................................................................ [ 84%]
+...........................                                              [100%]
+171 passed in 0.07s
+[0m
+All regression tests pass. Now let me also run a broader regression check:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_data_source_replay.py tests/test_data_p0_fund_route.py tests/test_g007_fund_lhb_provenance.py tests/test_readiness_score.py -q --tb=short 2>&1 | tail -10
+........................................................................ [ 26%]
+........................................................................ [ 52%]
+........................................................................ [ 79%]
+........................................................                 [100%]
+272 passed in 9.95s
+[0m
+[0m# [0mTodos
+[✓] Read and understand DATA-007 task requirements
+[✓] Explore existing raw_evidence contract and data source code
+[✓] Implement raw_evidence auditor module (evidence_coverage_audit.py)
+[✓] Add TradeFlow candidate credibility linkage
+[✓] Expose audit summary in API
+[✓] Integrate with nightly daily digest
+[✓] Write comprehensive tests
+[•] Update TASKS.md and DEVLOG.md
+[0m
+All passing. Now let me update TASKS.md and DEVLOG.md:
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -53,9 +53,9 @@
+ 27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+ 28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+ 29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，in_progress — claimed PERF-003-20260602-200127）。
+ 30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+-31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready，依赖 DATA-004/DATA-006 ✓）。
++31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+ 32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready，依赖 DATA-005 ✓）。
+ 33. `H-009`：昊天候选反证/过热降权校准（P1，ready，依赖 H-006/V-004 ✓）。
+ 34. `H-010`：政策主题生命周期与版本状态注册表（P1，ready，依赖 H-002/H-006 ✓）。
+ 35. `H-011`：候选矛盾证据与负面清单解释（P2，ready，依赖 H-009 ✓）。
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -81,9 +81,9 @@
+ 8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+ 9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+ 10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+ 11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+-12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready）。
++12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+ 13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready）。
+ 14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，ready）。
+ 
+ ### 总体路线图
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -784,9 +784,9 @@
+ 
+ ### DATA-007: raw_evidence 覆盖率审计与候选可信度联动（P1）
+ - **描述**：把 raw_evidence contract 的覆盖情况转成可读审计结果，并联动 TradeFlow 候选可信度，避免“候选分数高但关键数据缺证据”的情况继续进入高优先级。
+ - **优先级**：P1
+-- **状态**：in_progress — claimed DATA-007-20260604-131503
++- **状态**：done — DATA-007-20260604-131503
+ - **前置条件**：`DATA-004`、`DATA-006` 完成 ✓。
+ - **执行约束**：
+   - 不调用外部 LLM。
+   - 不跑 live 全市场请求。
+
+[0m
+Now update the DATA-007 task status in TASKS.md:
+Now update DEVLOG.md:
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,69 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-04 | DATA-007: raw_evidence 覆盖率审计与候选可信度联动
++
++- **执行者**：OpenCode
++- **任务**：DATA-007 — 把 raw_evidence contract 的覆盖情况转成可读审计结果，并联动 TradeFlow 候选可信度，避免"候选分数高但关键数据缺证据"的情况继续进入高优先级。
++- **修改文件**：
++  - `tradingagents/dataflows/evidence_coverage_audit.py` — 新建：[DATA-007] evidence_coverage_audit
++    - `EvidenceAuditResult` 数据类：evidence_coverage / critical_missing_fields / stale_fields / unit_unknown_fields / fallback_fields / failed_fields / not_queried_fields / normal_no_data_fields / has_data_fields / evidence_quality_level / total_fields / satisfied_fields / audit_refs
++    - `CandidateCredibilityResult` 数据类：symbol / candidate_type / evidence_audit / tier_allowed / tier_restricted / need_deep_ta_allowed / credibility_level / credibility_reasons / credibility_refs
++    - `_classify_quality_level()`: 覆盖率→HIGH/MEDIUM/LOW/CRITICAL 四级分类
++    - `audit_raw_evidence()`: 审计 raw_evidence 字典，输出覆盖率、关键缺口、stale/单位未知/fallback 字段和质量等级
++    - `audit_candidate_evidence()`: 审计单个候选的证据完整度和可信度，按候选类型执行差异化门控
++    - `apply_credibility_linkage()`: 根据可信度结果联动候选 tier 和 need_deep_ta
++    - `render_audit_summary()` / `render_credibility_summary()`: Markdown 渲染
++    - `build_evidence_coverage_section()`: 为夜间日报构建证据覆盖率 section
++    - `_CRITICAL_FIELDS_BY_CANDIDATE_TYPE`: 7 种候选类型的关键字段映射
++    - `_EVIDENCE_FIELD_LABELS`: 16 个证据字段的中文标签
++    - `_EVIDENCE_FIELD_FAMILIES`: 字段族映射
++    - `_worse_tier()`: tier 降级辅助函数
++  - `tradingagents/dataflows/data_source_daily_digest.py` — [DATA-007]
++    - `DailyDigest` 新增 `evidence_audits` / `evidence_credibilities` / `evidence_coverage_section` 字段
++    - `render_daily_digest()` 增加证据覆盖率 section 输出
++    - 新增 `attach_evidence_coverage_to_digest()` 函数：将审计结果附加到日报
++  - `api/tradeflow_schemas.py` — [DATA-007]
++    - `TradeFlowDataHealthResponse` 新增 `evidence_coverage_audit_available` 字段
++    - 新增 `EvidenceCredibilityItem` Pydantic model
++    - 新增 `TradeFlowEvidenceAuditResponse` Pydantic model
++  - `api/services/tradeflow_service.py` — [DATA-007]
++    - `get_data_health()` 返回值增加 `evidence_coverage_audit_available`
++    - 新增 `get_evidence_audit()` 函数：批量审计指定日期所有候选的可信度
++  - `api/main.py` — [DATA-007]
++    - 新增 `GET /v1/tradeflow/evidence-audit` 端点
++    - 导入 `TradeFlowEvidenceAuditResponse` 和 `get_evidence_audit`
++  - `tests/test_data007_evidence_coverage_audit.py` — 新建，75 个测试覆盖：
++    - `TestEvidenceAuditResult` (3): defaults / to_dict / roundtrip
++    - `TestCandidateCredibilityResult` (2): defaults / to_dict
++    - `TestClassifyQualityLevel` (8): HIGH/MEDIUM/LOW/CRITICAL/UNKNOWN/各种边界
++    - `TestAuditRawEvidence` (12): empty/full/missing_fund/missing_ann/stale/unit_unknown/fallback/normal_no_data/refs/coverage/non_dict
++    - `TestAuditCandidateEvidence` (12): policy_ambush±evidence / tech_trade±realtime / fund_flow_not_verified / unclassified_data_gap / low_coverage / evidence_gate / raw_evidence / policy_missing_critical / missing_critical_data_fields
++    - `TestApplyCredibilityLinkage` (6): no_credibility / high_no_override / tier_downgrade / tier_no_upgrade / deep_ta_blocked / deep_ta_allowed
++    - `TestRenderAuditSummary` (5): basic / critical_missing / stale / unit_unknown / fallback
++    - `TestRenderCredibilitySummary` (2): basic / with_reasons
++    - `TestBuildEvidenceCoverageSection` (4): empty / audits / credibilities / both
++    - `TestCriticalFieldsByCandidateType` (4): policy_requires / tech_requires / gap_empty / all_types
++    - `TestEvidenceFieldLabels` (2): key_fields / non_empty
++    - `TestEvidenceFieldFamilies` (2): ohlcv / fund_flow
++    - `TestFiveFixtureScenarios` (5): 5 类 fixture 场景验证
++    - `TestAcceptanceDATA007` (8): 全部验收标准
++  - `docs/TASKS.md` — DATA-007 状态更新为 done
++  - `docs/DEVLOG.md` — 本条记录
++- **测试结果**：75 passed (DATA-007)；143 passed (DATA-004/006 回归)；71 passed (tradeflow 回归)；49 passed (API smoke)；171 passed (H-series 回归)；272 passed (data source 回归)；0 failed
++- **关键逻辑**：
++  - 审计核心：`audit_raw_evidence()` 扫描 raw_evidence 字典，分类为 has_data/failed/not_queried/normal_no_data/stale/unit_unknown/fallback，输出覆盖率(0-1)和质量等级(HIGH/MEDIUM/LOW/CRITICAL)
++  - 候选类型差异化门控：POLICY_AMBUSH 缺政策证据→限B层；TECH_TRADE 缺实时行情→限B/C层、资金流单位未校验→禁深挖；UNCLASSIFIED_DATA_GAP→固定C层+禁深挖
++  - 可信度联动：`apply_credibility_linkage()` 将可信度评估结果应用于候选 tier/need_deep_ta，超限时降级
++  - API 暴露：`GET /v1/tradeflow/evidence-audit?date=YYYY-MM-DD` 返回所有候选的可信度审计摘要
++  - 夜间日报集成：`attach_evidence_coverage_to_digest()` 将审计结果附加到 DATA-006 日报
++  - 5 类 fixture 覆盖：完整证据/缺资金/缺公告/stale行情/单位未知
++- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
++
++---
++
+ ## 2026-06-04 | DATA-P1-SOURCE-GAP-AUDIT: fix test failures
+ 
+ - **执行者**：OpenCode
+ - **任务**：Fix 2 failing tests from DATA-P1-SOURCE-GAP-AUDIT implementation
+
+[0m
+[0m# [0mTodos
+[✓] Read and understand DATA-007 task requirements
+[✓] Explore existing raw_evidence contract and data source code
+[✓] Implement raw_evidence auditor module (evidence_coverage_audit.py)
+[✓] Add TradeFlow candidate credibility linkage
+[✓] Expose audit summary in API
+[✓] Integrate with nightly daily digest
+[✓] Write comprehensive tests
+[✓] Update TASKS.md and DEVLOG.md
+[0m
+## Summary
+
+### Files Changed
+1. **`tradingagents/dataflows/evidence_coverage_audit.py`** — NEW: Core audit module (~635 lines)
+2. **`tradingagents/dataflows/data_source_daily_digest.py`** — Modified: Added evidence audit fields + `attach_evidence_coverage_to_digest()`
+3. **`api/tradeflow_schemas.py`** — Modified: Added `EvidenceCredibilityItem`, `TradeFlowEvidenceAuditResponse`, `evidence_coverage_audit_available` field
+4. **`api/services/tradeflow_service.py`** — Modified: Added `get_evidence_audit()`, updated `get_data_health()`
+5. **`api/main.py`** — Modified: Added `GET /v1/tradeflow/evidence-audit` endpoint
+6. **`tests/test_data007_evidence_coverage_audit.py`** — NEW: 75 tests
+7. **`docs/TASKS.md`** — Updated DATA-007 status to done
+8. **`docs/DEVLOG.md`** — Added implementation log entry
+
+### Key Logic
+- **`audit_raw_evidence()`**: Scans raw_evidence dict, classifies fields by status (HAS_DATA/FAILED/NOT_QUERIED/NORMAL_NO_DATA), detects stale/unit-unknown/fallback fields, outputs coverage ratio and quality level (HIGH/MEDIUM/LOW/CRITICAL)
+- **`audit_candidate_evidence()`**: Per-candidate-type credibility gate — POLICY_AMBUSH requires policy evidence, TECH_TRADE requires realtime+fund_flow_unit_verified, UNCLASSIFIED_DATA_GAP is locked to C-tier
+- **`apply_credibility_linkage()`**: Overrides candidate tier/need_deep_ta based on credibility result
+- **API**: `GET /v1/tradeflow/evidence-audit?date=` returns batch audit summary
+- **Nightly digest**: `attach_evidence_coverage_to_digest()` integrates audit into DATA-006 daily digest
+
+### Test Results
+- **75 passed** (DATA-007 tests)
+- **143 passed** (DATA-004/006 regression)
+- **71 passed** (tradeflow regression)
+- **49 passed** (API smoke)
+- **171 passed** (H-series regression)
+- **272 passed** (data source regression)
+- **0 failed**

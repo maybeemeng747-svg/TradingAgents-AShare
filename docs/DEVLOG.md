@@ -4,6 +4,67 @@
 
 ---
 
+## 2026-06-04 | DATA-007: raw_evidence 覆盖率审计与候选可信度联动
+
+- **执行者**：OpenCode
+- **任务**：DATA-007 — 把 raw_evidence contract 的覆盖情况转成可读审计结果，并联动 TradeFlow 候选可信度，避免"候选分数高但关键数据缺证据"的情况继续进入高优先级。
+- **修改文件**：
+  - `tradingagents/dataflows/evidence_coverage_audit.py` — 新建：[DATA-007] evidence_coverage_audit
+    - `EvidenceAuditResult` 数据类：evidence_coverage / critical_missing_fields / stale_fields / unit_unknown_fields / fallback_fields / failed_fields / not_queried_fields / normal_no_data_fields / has_data_fields / evidence_quality_level / total_fields / satisfied_fields / audit_refs
+    - `CandidateCredibilityResult` 数据类：symbol / candidate_type / evidence_audit / tier_allowed / tier_restricted / need_deep_ta_allowed / credibility_level / credibility_reasons / credibility_refs
+    - `_classify_quality_level()`: 覆盖率→HIGH/MEDIUM/LOW/CRITICAL 四级分类
+    - `audit_raw_evidence()`: 审计 raw_evidence 字典，输出覆盖率、关键缺口、stale/单位未知/fallback 字段和质量等级
+    - `audit_candidate_evidence()`: 审计单个候选的证据完整度和可信度，按候选类型执行差异化门控
+    - `apply_credibility_linkage()`: 根据可信度结果联动候选 tier 和 need_deep_ta
+    - `render_audit_summary()` / `render_credibility_summary()`: Markdown 渲染
+    - `build_evidence_coverage_section()`: 为夜间日报构建证据覆盖率 section
+    - `_CRITICAL_FIELDS_BY_CANDIDATE_TYPE`: 7 种候选类型的关键字段映射
+    - `_EVIDENCE_FIELD_LABELS`: 16 个证据字段的中文标签
+    - `_EVIDENCE_FIELD_FAMILIES`: 字段族映射
+    - `_worse_tier()`: tier 降级辅助函数
+  - `tradingagents/dataflows/data_source_daily_digest.py` — [DATA-007]
+    - `DailyDigest` 新增 `evidence_audits` / `evidence_credibilities` / `evidence_coverage_section` 字段
+    - `render_daily_digest()` 增加证据覆盖率 section 输出
+    - 新增 `attach_evidence_coverage_to_digest()` 函数：将审计结果附加到日报
+  - `api/tradeflow_schemas.py` — [DATA-007]
+    - `TradeFlowDataHealthResponse` 新增 `evidence_coverage_audit_available` 字段
+    - 新增 `EvidenceCredibilityItem` Pydantic model
+    - 新增 `TradeFlowEvidenceAuditResponse` Pydantic model
+  - `api/services/tradeflow_service.py` — [DATA-007]
+    - `get_data_health()` 返回值增加 `evidence_coverage_audit_available`
+    - 新增 `get_evidence_audit()` 函数：批量审计指定日期所有候选的可信度
+  - `api/main.py` — [DATA-007]
+    - 新增 `GET /v1/tradeflow/evidence-audit` 端点
+    - 导入 `TradeFlowEvidenceAuditResponse` 和 `get_evidence_audit`
+  - `tests/test_data007_evidence_coverage_audit.py` — 新建，75 个测试覆盖：
+    - `TestEvidenceAuditResult` (3): defaults / to_dict / roundtrip
+    - `TestCandidateCredibilityResult` (2): defaults / to_dict
+    - `TestClassifyQualityLevel` (8): HIGH/MEDIUM/LOW/CRITICAL/UNKNOWN/各种边界
+    - `TestAuditRawEvidence` (12): empty/full/missing_fund/missing_ann/stale/unit_unknown/fallback/normal_no_data/refs/coverage/non_dict
+    - `TestAuditCandidateEvidence` (12): policy_ambush±evidence / tech_trade±realtime / fund_flow_not_verified / unclassified_data_gap / low_coverage / evidence_gate / raw_evidence / policy_missing_critical / missing_critical_data_fields
+    - `TestApplyCredibilityLinkage` (6): no_credibility / high_no_override / tier_downgrade / tier_no_upgrade / deep_ta_blocked / deep_ta_allowed
+    - `TestRenderAuditSummary` (5): basic / critical_missing / stale / unit_unknown / fallback
+    - `TestRenderCredibilitySummary` (2): basic / with_reasons
+    - `TestBuildEvidenceCoverageSection` (4): empty / audits / credibilities / both
+    - `TestCriticalFieldsByCandidateType` (4): policy_requires / tech_requires / gap_empty / all_types
+    - `TestEvidenceFieldLabels` (2): key_fields / non_empty
+    - `TestEvidenceFieldFamilies` (2): ohlcv / fund_flow
+    - `TestFiveFixtureScenarios` (5): 5 类 fixture 场景验证
+    - `TestAcceptanceDATA007` (8): 全部验收标准
+  - `docs/TASKS.md` — DATA-007 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：75 passed (DATA-007)；143 passed (DATA-004/006 回归)；71 passed (tradeflow 回归)；49 passed (API smoke)；171 passed (H-series 回归)；272 passed (data source 回归)；0 failed
+- **关键逻辑**：
+  - 审计核心：`audit_raw_evidence()` 扫描 raw_evidence 字典，分类为 has_data/failed/not_queried/normal_no_data/stale/unit_unknown/fallback，输出覆盖率(0-1)和质量等级(HIGH/MEDIUM/LOW/CRITICAL)
+  - 候选类型差异化门控：POLICY_AMBUSH 缺政策证据→限B层；TECH_TRADE 缺实时行情→限B/C层、资金流单位未校验→禁深挖；UNCLASSIFIED_DATA_GAP→固定C层+禁深挖
+  - 可信度联动：`apply_credibility_linkage()` 将可信度评估结果应用于候选 tier/need_deep_ta，超限时降级
+  - API 暴露：`GET /v1/tradeflow/evidence-audit?date=YYYY-MM-DD` 返回所有候选的可信度审计摘要
+  - 夜间日报集成：`attach_evidence_coverage_to_digest()` 将审计结果附加到 DATA-006 日报
+  - 5 类 fixture 覆盖：完整证据/缺资金/缺公告/stale行情/单位未知
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-04 | DATA-P1-SOURCE-GAP-AUDIT: fix test failures
 
 - **执行者**：OpenCode
@@ -2629,3 +2690,14 @@
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Default pytest failed with exit 1
 - **Run archive**: docs/task_runs/DATA-P1-SOURCE-GAP-AUDIT-20260604-125917/
+
+## 2026-06-04 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-007 - raw_evidence 覆盖率审计与候选可信度联动（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-007-20260604-round1.txt
+- **Run archive**: docs/task_runs/DATA-007-20260604-131503/
