@@ -1,4 +1,4 @@
-# [DATA-005] data_source_replay
+# [DATA-005] data_source_replay  [DATA-008] astock_fallback_replay
 """
 数据源 fixture replay 与限流/失败回放。
 
@@ -6,8 +6,10 @@
 当天实时缺失等场景，避免夜间自动开发误判数据源质量。
 
 功能：
-  1. 内置 7 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
-     资金流单位异常、龙虎榜无触发、公告源失败）
+  1. 内置 12 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
+     资金流单位异常、龙虎榜无触发、公告源失败、
+     AKShare 资金流失败→astock fallback、龙虎榜 NORMAL_NO_DATA、
+     龙虎榜 FAILED、公告失败→事件源弱证据、换手率/量比缺失）
   2. replay runner 将 fixture 模拟为 raw_evidence，输出数据源健康报告
   3. 失败时写入 docs/data_source_reports/YYYY-MM-DD.md
   4. 可被 scripts/auto_dev_loop.sh 或 OpenClaw 巡检调用
@@ -52,6 +54,12 @@ FIXTURE_REALTIME_FAILURE = "realtime_failure"
 FIXTURE_FUND_FLOW_UNIT_ANOMALY = "fund_flow_unit_anomaly"
 FIXTURE_LHB_NO_TRIGGER = "lhb_no_trigger"
 FIXTURE_ANNOUNCEMENT_FAILURE = "announcement_failure"
+FIXTURE_FUND_FLOW_AKSHARE_FAIL_FALLBACK = "fund_flow_akshare_fail_fallback"
+FIXTURE_LHB_NORMAL_NO_DATA = "lhb_normal_no_data"
+FIXTURE_LHB_FAILED = "lhb_failed"
+FIXTURE_STALE_REALTIME_PATCH = "stale_realtime_patch"
+FIXTURE_ANNOUNCEMENT_FAIL_EVENT_WEAK = "announcement_fail_event_weak"
+FIXTURE_TURNOVER_VOLUME_RATIO_MISSING = "turnover_volume_ratio_missing"
 
 ALL_FIXTURE_IDS = [
     FIXTURE_NORMAL_QUOTE,
@@ -61,6 +69,12 @@ ALL_FIXTURE_IDS = [
     FIXTURE_FUND_FLOW_UNIT_ANOMALY,
     FIXTURE_LHB_NO_TRIGGER,
     FIXTURE_ANNOUNCEMENT_FAILURE,
+    FIXTURE_FUND_FLOW_AKSHARE_FAIL_FALLBACK,
+    FIXTURE_LHB_NORMAL_NO_DATA,
+    FIXTURE_LHB_FAILED,
+    FIXTURE_STALE_REALTIME_PATCH,
+    FIXTURE_ANNOUNCEMENT_FAIL_EVENT_WEAK,
+    FIXTURE_TURNOVER_VOLUME_RATIO_MISSING,
 ]
 
 
@@ -106,6 +120,7 @@ class ReplayResult:
     completeness_score: int
     missing_details: Dict[str, List[str]]
     tags: List[str] = field(default_factory=list)
+    as_of: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -123,6 +138,7 @@ class ReplayResult:
             "completeness_score": self.completeness_score,
             "missing_details": self.missing_details,
             "tags": self.tags,
+            "as_of": self.as_of,
         }
 
 
@@ -430,6 +446,263 @@ def _build_announcement_failure_fixture() -> FixtureEntry:
     )
 
 
+def _build_fund_flow_akshare_fail_fallback_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "fund_flow_individual": {
+            "raw": "日期,主力净流入,小单净流入\n2026-06-01,12345.00,-6789.00",
+            "field": "fund_flow_individual",
+            "unit": "万元",
+            "vendor": "cn_astock",
+            "endpoint": "push2his.eastmoney.com/fflow",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "fallback_from": "cn_akshare",
+            "unit_verified": True,
+            "record_count": 20,
+        },
+        "stock_data": {
+            "raw": "Date,Open,High,Low,Close,Volume\n2026-06-01,10.5,10.8,10.3,10.7,500000",
+            "field": "stock_data",
+            "unit": "元/股, 股",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_zh_a_hist",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 30,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_FUND_FLOW_AKSHARE_FAIL_FALLBACK,
+        description="AKShare 个股资金流 ProxyError，cn_astock Eastmoney fallback 成功——vendor 应显示 cn_astock，fallback_from=cn_akshare",
+        data_type="fund_flow",
+        vendor="cn_astock",
+        endpoint="push2his.eastmoney.com/fflow",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["fund_flow", "fallback", "akshare_failed", "astock_success"],
+    )
+
+
+def _build_lhb_normal_no_data_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "lhb": {
+            "raw": None,
+            "field": "lhb",
+            "unit": "万元",
+            "vendor": "cn_astock",
+            "endpoint": "datacenter.eastmoney.com/RPT_DAILYBILLBOARD_DETAILSNEW",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "NORMAL_NO_DATA",
+            "force_reason": "anomaly_condition",
+            "record_count": 0,
+        },
+        "stock_data": {
+            "raw": "Date,Open,High,Low,Close,Volume\n2026-06-01,15.0,15.5,14.8,15.2,800000",
+            "field": "stock_data",
+            "unit": "元/股, 股",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_zh_a_hist",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 30,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_LHB_NORMAL_NO_DATA,
+        description="龙虎榜 force=True 但当日未上榜——NORMAL_NO_DATA，不是 FAILED",
+        data_type="lhb",
+        vendor="cn_astock",
+        endpoint="datacenter.eastmoney.com/RPT_DAILYBILLBOARD_DETAILSNEW",
+        expected_status="NORMAL_NO_DATA",
+        raw_evidence=raw_evidence,
+        tags=["lhb", "normal_no_data", "force_true"],
+    )
+
+
+def _build_lhb_failed_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "lhb": {
+            "raw": None,
+            "field": "lhb",
+            "unit": "",
+            "vendor": "cn_astock",
+            "endpoint": "datacenter.eastmoney.com/RPT_DAILYBILLBOARD_DETAILSNEW",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "FAILED",
+            "error": "ConnectionError: HTTPSConnectionPool(host='datacenter.eastmoney.com'): Max retries exceeded",
+            "force_reason": "anomaly_condition",
+            "record_count": 0,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_LHB_FAILED,
+        description="龙虎榜 force=True 但接口 ConnectionError——FAILED，不是 NORMAL_NO_DATA",
+        data_type="lhb",
+        vendor="cn_astock",
+        endpoint="datacenter.eastmoney.com/RPT_DAILYBILLBOARD_DETAILSNEW",
+        expected_status="FAILED",
+        raw_evidence=raw_evidence,
+        tags=["lhb", "failed", "connection_error", "force_true"],
+    )
+
+
+def _build_stale_realtime_patch_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "stock_data": {
+            "raw": "Date,Open,High,Low,Close,Volume\n2026-05-30,25.0,25.5,24.8,25.2,300000",
+            "field": "stock_data",
+            "unit": "元/股, 股",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_zh_a_hist",
+            "as_of": "2026-05-30",
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "is_realtime_patched": True,
+            "source_type": "realtime_patch",
+            "patch_fields": ["current_price", "current_volume", "current_amount", "turnover_rate", "volume_ratio"],
+            "patch_source": "cn_astock_tencent",
+            "patch_as_of": today,
+            "unit_verified": True,
+            "record_count": 29,
+        },
+        "fund_flow_individual": {
+            "raw": "日期,主力净流入,小单净流入\n2026-05-30,8000,-3000",
+            "field": "fund_flow_individual",
+            "unit": "万元",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_individual_fund_flow",
+            "as_of": "2026-05-30",
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "fallback_from": None,
+            "unit_verified": True,
+            "record_count": 19,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_STALE_REALTIME_PATCH,
+        description="日线 stale 后腾讯实时 quote 补丁成功——is_realtime_patched=True, patch_source=cn_astock_tencent",
+        data_type="ohlcv",
+        vendor="cn_akshare",
+        endpoint="stock_zh_a_hist",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["realtime_patch", "success", "stale_patched", "tencent_fallback"],
+    )
+
+
+def _build_announcement_fail_event_weak_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "announcements": {
+            "raw": None,
+            "field": "announcements",
+            "unit": "",
+            "vendor": "cn_astock",
+            "endpoint": "cninfo.com.cn/hisAnnouncement",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "FAILED",
+            "error": "ConnectionError: cninfo unreachable",
+            "record_count": 0,
+        },
+        "news": {
+            "raw": "标题,来源,日期\n某公司发布业绩预告,东财,2026-06-01",
+            "field": "news",
+            "unit": "条",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_news_em",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "record_count": 2,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_ANNOUNCEMENT_FAIL_EVENT_WEAK,
+        description="公告源 CNInfo 失败但新闻事件源有弱证据——公告为 FAILED，新闻为 HAS_DATA（弱替代）",
+        data_type="notice",
+        vendor="cn_astock",
+        endpoint="cninfo.com.cn/hisAnnouncement",
+        expected_status="FAILED",
+        raw_evidence=raw_evidence,
+        tags=["announcement", "failed", "event_weak", "partial_coverage"],
+    )
+
+
+def _build_turnover_volume_ratio_missing_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "stock_data": {
+            "raw": "Date,Open,High,Low,Close,Volume\n2026-06-01,8.5,8.7,8.3,8.6,200000",
+            "field": "stock_data",
+            "unit": "元/股, 股",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_zh_a_hist",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 30,
+        },
+        "fund_flow_individual": {
+            "raw": "日期,主力净流入,小单净流入\n2026-06-01,2000,-800",
+            "field": "fund_flow_individual",
+            "unit": "万元",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_individual_fund_flow",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "fallback_from": None,
+            "unit_verified": True,
+            "record_count": 20,
+        },
+        "lhb": {
+            "raw": None,
+            "field": "lhb",
+            "unit": "万元",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_lhb_detail_em",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "NOT_QUERIED",
+            "force_reason": None,
+            "record_count": 0,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_TURNOVER_VOLUME_RATIO_MISSING,
+        description="换手率/量比缺失——stock_data 和 fund_flow 可用但缺 turnover_rate/volume_ratio 字段，完整度降级",
+        data_type="ohlcv",
+        vendor="cn_akshare",
+        endpoint="stock_zh_a_hist",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["missing_turnover", "missing_volume_ratio", "completeness_degradation"],
+    )
+
+
 _FIXTURE_BUILDERS = {
     FIXTURE_NORMAL_QUOTE: _build_normal_quote_fixture,
     FIXTURE_STALE_DAILY: _build_stale_daily_fixture,
@@ -438,6 +711,12 @@ _FIXTURE_BUILDERS = {
     FIXTURE_FUND_FLOW_UNIT_ANOMALY: _build_fund_flow_unit_anomaly_fixture,
     FIXTURE_LHB_NO_TRIGGER: _build_lhb_no_trigger_fixture,
     FIXTURE_ANNOUNCEMENT_FAILURE: _build_announcement_failure_fixture,
+    FIXTURE_FUND_FLOW_AKSHARE_FAIL_FALLBACK: _build_fund_flow_akshare_fail_fallback_fixture,
+    FIXTURE_LHB_NORMAL_NO_DATA: _build_lhb_normal_no_data_fixture,
+    FIXTURE_LHB_FAILED: _build_lhb_failed_fixture,
+    FIXTURE_STALE_REALTIME_PATCH: _build_stale_realtime_patch_fixture,
+    FIXTURE_ANNOUNCEMENT_FAIL_EVENT_WEAK: _build_announcement_fail_event_weak_fixture,
+    FIXTURE_TURNOVER_VOLUME_RATIO_MISSING: _build_turnover_volume_ratio_missing_fixture,
 }
 
 
@@ -499,12 +778,16 @@ def _replay_single_fixture(fixture: FixtureEntry) -> ReplayResult:
     actual_status = fixture.expected_status
     error_msg = None
     passed = True
+    as_of_value = ""
 
     for ev_key, entry in raw_evidence.items():
         if not isinstance(entry, dict):
             continue
         contract = EvidenceContract.from_dict(entry)
         ev_status = contract.status
+
+        if contract.as_of and not as_of_value:
+            as_of_value = contract.as_of
 
         if ev_status == "FAILED":
             actual_status = "FAILED"
@@ -532,12 +815,20 @@ def _replay_single_fixture(fixture: FixtureEntry) -> ReplayResult:
                 if fixture.tags and "unit_anomaly" in fixture.tags:
                     pass
 
-        if ev_key == "lhb" and ev_status == "NOT_QUERIED":
-            if fixture.expected_status == "NOT_QUERIED":
-                pass
-            elif fixture.expected_status != "NOT_QUERIED":
-                passed = False
-                actual_status = "NOT_QUERIED"
+        if ev_key == "lhb":
+            if ev_status == "NOT_QUERIED":
+                if fixture.expected_status == "NOT_QUERIED":
+                    pass
+                elif fixture.expected_status != "NOT_QUERIED":
+                    if len(raw_evidence) == 1:
+                        passed = False
+                        actual_status = "NOT_QUERIED"
+            elif ev_status == "NORMAL_NO_DATA":
+                if fixture.expected_status == "NORMAL_NO_DATA":
+                    pass
+                elif fixture.expected_status != "NORMAL_NO_DATA":
+                    if len(raw_evidence) == 1:
+                        actual_status = "NORMAL_NO_DATA"
 
     if fixture.expected_status == "FAILED" and actual_status == "FAILED":
         passed = True
@@ -546,6 +837,8 @@ def _replay_single_fixture(fixture: FixtureEntry) -> ReplayResult:
     elif fixture.expected_status == "STALE" and actual_status == "STALE":
         passed = True
     elif fixture.expected_status == "HAS_DATA" and actual_status == "HAS_DATA":
+        passed = True
+    elif fixture.expected_status == "NORMAL_NO_DATA" and actual_status == "NORMAL_NO_DATA":
         passed = True
     elif fixture.expected_status == "HAS_DATA" and actual_status == "FAILED":
         passed = False
@@ -567,6 +860,7 @@ def _replay_single_fixture(fixture: FixtureEntry) -> ReplayResult:
         completeness_score=completeness.get("completeness_score", 0),
         missing_details=completeness.get("missing_details", {}),
         tags=fixture.tags,
+        as_of=as_of_value,
     )
 
 

@@ -4,6 +4,55 @@
 
 ---
 
+## 2026-06-04 | DATA-008: A股关键源 fallback smoke fixtures 扩展
+
+- **执行者**：OpenCode
+- **任务**：DATA-008 — 扩展 DATA-005 fixture replay，重点覆盖用户报告中经常缺失的 A 股行情、资金流、龙虎榜、公告和实时补丁 fallback，防止数据源"假可用"再次回归。
+- **修改文件**：
+  - `tradingagents/dataflows/fixture_replay.py` — [DATA-008] astock_fallback_replay
+    - 新增 6 个 fixture scenario IDs 和 builder 函数：
+      - `fund_flow_akshare_fail_fallback`: AKShare ProxyError → cn_astock Eastmoney push2his fallback 成功，vendor=cn_astock, fallback_from=cn_akshare
+      - `lhb_normal_no_data`: 龙虎榜 force=True 但当日未上榜 → NORMAL_NO_DATA（非 FAILED）
+      - `lhb_failed`: 龙虎榜 force=True 但 ConnectionError → FAILED（非 NORMAL_NO_DATA）
+      - `stale_realtime_patch`: 日线 stale 后腾讯实时 quote 补丁成功，is_realtime_patched=True, patch_fields 含 turnover_rate/volume_ratio
+      - `announcement_fail_event_weak`: 公告源 CNInfo 失败但新闻事件源有弱证据
+      - `turnover_volume_ratio_missing`: stock_data/fund_flow 可用但缺 announcements/news，完整度降级
+    - `ReplayResult` 新增 `as_of` 字段：replay 输出包含 vendor/endpoint/status/fallback_from/error/as_of
+    - `_replay_single_fixture()` 提取 `as_of` 值，修复 LHB NOT_QUERIED/NORMAL_NO_DATA 在多证据 fixture 中不应覆盖整体 actual_status 的问题
+    - `ALL_FIXTURE_IDS` 从 7 扩展到 13
+    - `_FIXTURE_BUILDERS` 注册 6 个新 builder
+  - `tests/test_data005_fixture_replay.py` — 更新 fixture count 断言（7→len(ALL_FIXTURE_IDS)），保持 DATA-005 回归通过
+  - `tests/test_data008_astock_fallback_replay.py` — 新建，94 个测试覆盖：
+    - `TestNewFixtureExistence` (8): 6 个 fixture 存在性 + ALL_FIXTURE_IDS 包含 + 总数≥13
+    - `TestFundFlowAkshareFailFallback` (6): fixture 结构 / fallback 标记 / unit_verified / replay 通过 / vendor 显示 / as_of
+    - `TestLHBNormalNoData` (5): 结构 / NORMAL_NO_DATA 非 FAILED / force_reason / replay 通过 / 非 FAILED 断言
+    - `TestLHBFailed` (6): 结构 / FAILED 非 NORMAL_NO_DATA / error / replay 通过 / 非 NORMAL_NO_DATA / error 保留
+    - `TestStaleRealtimePatch` (6): 结构 / is_realtime_patched / patch_fields / patch_source / patch_as_of / replay
+    - `TestAnnouncementFailEventWeak` (5): 结构 / FAILED / news HAS_DATA / replay / 非 NORMAL_NO_DATA
+    - `TestTurnoverVolumeRatioMissing` (6): 结构 / stock_data / fund_flow / LHB NOT_QUERIED / tags / completeness 降级
+    - `TestLHBDistinction` (3): FAILED vs NORMAL_NO_DATA 明确区分
+    - `TestFallbackVendorDisplay` (2): fallback 显示实际 vendor
+    - `TestStaleRealtimePatchDisplay` (3): patch 属性验证
+    - `TestReplayOutputFields` (12): 6 fixtures × (required_fields + to_dict roundtrip)
+    - `TestEvidenceAuditIntegration` (8): 6 fixtures 各自触发不同 coverage + coverage 变化
+    - `TestReplayReportAggregation` (3): 全量 replay 包含新 fixtures / 全部通过 / by_status
+    - `TestRenderNewFixtures` (6): 6 个新 fixture render 包含关键信息
+    - `TestSaveReportNewFixtures` (2): save + run_replay_and_save
+    - `TestEdgeCases` (3): to_dict / as_of / unique ids
+    - `TestAcceptanceDATA008` (9): 全部验收标准
+  - `docs/TASKS.md` — DATA-008 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：94 passed (DATA-008)；516 passed (DATA-series + tradeflow 全部回归)；0 failed
+- **关键逻辑**：
+  - 6 个新增 fixture 覆盖 DATA-008 要求的全部 5 个 replay 场景（AKShare fail→fallback、LHB NORMAL_NO_DATA vs FAILED、stale→realtime patch、公告 fail→事件弱证据、换手率/量比缺失）
+  - `ReplayResult.as_of` 字段：replay 输出现在包含 provenance 六要素 (vendor/endpoint/status/fallback_from/error/as_of)
+  - LHB 状态区分：FAILED 与 NORMAL_NO_DATA 在 fixture 和 replay 中明确区分，不被互相误标
+  - DATA-007 auditor 集成：新 fixture 触发不同覆盖率结果，覆盖从 LOW 到 MEDIUM
+  - 多证据 fixture 中 LHB NOT_QUERIED/NORMAL_NO_DATA 不再覆盖整体 actual_status
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-04 | DATA-007: raw_evidence 覆盖率审计与候选可信度联动
 
 - **执行者**：OpenCode
@@ -2701,3 +2750,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-007-20260604-round1.txt
 - **Run archive**: docs/task_runs/DATA-007-20260604-131503/
+
+## 2026-06-04 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-008 - A股关键源 fallback smoke fixtures 扩展（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-008-20260604-round1.txt
+- **Run archive**: docs/task_runs/DATA-008-20260604-132917/

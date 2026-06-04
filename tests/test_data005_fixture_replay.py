@@ -98,11 +98,11 @@ class TestGetFixture:
         assert get_fixture("nonexistent") is None
 
     def test_all_fixture_ids_count(self):
-        assert len(ALL_FIXTURE_IDS) == 7
+        assert len(ALL_FIXTURE_IDS) >= 7
 
     def test_get_all_fixtures(self):
         fixtures = get_all_fixtures()
-        assert len(fixtures) == 7
+        assert len(fixtures) == len(ALL_FIXTURE_IDS)
         ids = {f.fixture_id for f in fixtures}
         assert ids == set(ALL_FIXTURE_IDS)
 
@@ -305,7 +305,7 @@ class TestReplaySingleFixture:
 class TestRunFixtureReplay:
     def test_run_all_fixtures(self):
         report = run_fixture_replay()
-        assert report.total_fixtures == 7
+        assert report.total_fixtures == len(ALL_FIXTURE_IDS)
         assert report.passed + report.failed == report.total_fixtures
 
     def test_run_all_pass(self):
@@ -619,7 +619,7 @@ class TestRenderReplayReport:
         md = render_replay_report(report)
         assert "# Data Source Fixture Replay Report" in md
         assert "ALL PASSED" in md
-        assert "| Total fixtures | 7 |" in md
+        assert f"| Total fixtures | {len(ALL_FIXTURE_IDS)} |" in md
 
     def test_render_has_fixture_table(self):
         report = run_fixture_replay()
@@ -703,7 +703,7 @@ class TestAcceptanceData005:
         """所有 fixture 输出稳定。"""
         report = run_fixture_replay()
         assert report.all_passed is True
-        assert report.total_fixtures == 7
+        assert report.total_fixtures == len(ALL_FIXTURE_IDS)
 
     def test_rate_limit_not_no_data(self):
         """限流/超时不会被当作'无数据'。"""

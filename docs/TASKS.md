@@ -55,7 +55,7 @@
 29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，in_progress — claimed PERF-003-20260602-200127）。
 30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
 31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
-32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready，依赖 DATA-005 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
 33. `H-009`：昊天候选反证/过热降权校准（P1，ready，依赖 H-006/V-004 ✓）。
 34. `H-010`：政策主题生命周期与版本状态注册表（P1，ready，依赖 H-002/H-006 ✓）。
 35. `H-011`：候选矛盾证据与负面清单解释（P2，ready，依赖 H-009 ✓）。
@@ -83,7 +83,7 @@
 10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
 11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
 12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
-13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready）。
+  13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
 14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，ready）。
 
 ### 总体路线图
@@ -822,8 +822,8 @@
 ### DATA-008: A股关键源 fallback smoke fixtures 扩展（P1）
 - **描述**：扩展 DATA-005 fixture replay，重点覆盖用户报告中经常缺失的 A 股行情、资金流、龙虎榜、公告和实时补丁 fallback，防止数据源“假可用”再次回归。
 - **优先级**：P1
-- **状态**：ready
-- **前置条件**：`DATA-005` 完成 ✓。
+- **状态**：done — DATA-008-20260604-132917
+  - **前置条件**：`DATA-005` 完成 ✓。
 - **执行约束**：
   - 默认只跑 fixture/mock，不做 live 压测。
   - 不保存 cookie、API key、token。
