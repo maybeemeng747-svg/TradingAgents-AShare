@@ -521,7 +521,7 @@ FIX_EOF
     set -e
     if [ $CODEX_HELP_EXIT -ne 0 ]; then
         CODEX_AVAILABLE=false
-        warn "Codex unavailable (exit=$CODEX_HELP_EXIT), skipping review"
+        warn "Codex unavailable (exit=$CODEX_HELP_EXIT) — blocking commit"
         REVIEW_SKIPPED=true
     fi
 
@@ -545,7 +545,7 @@ FIX_EOF
         if [ $CODEX_EXIT -ne 0 ]; then
             REVIEW_ERR=$(cat "$REVIEW_FILE" 2>/dev/null || echo "")
             if echo "$REVIEW_ERR" | grep -qiE "(auth|token|quota|rate.limit|401|403|429|unauthorized|billing)"; then
-                warn "Codex token/auth error, skipping review and marking unreviewed"
+                warn "Codex token/auth error — blocking commit"
                 CODEX_AVAILABLE=false
                 REVIEW_SKIPPED=true
             fi
