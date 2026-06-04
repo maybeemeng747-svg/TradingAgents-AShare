@@ -4,6 +4,36 @@
 
 ---
 
+## 2026-06-04 | DATA-009: 自选备注与截图识别字段持久化回归保护
+
+- **执行者**：OpenCode
+- **任务**：DATA-009 — 为自选备注、截图识别导入字段、昊天备注摘要建立持久化和回归测试，保证后续 UI/API 修改不会清空用户备注。
+- **修改文件**：
+  - `api/database.py` — [DATA-009] watchlist_notes_persistence
+    - `WatchlistItemDB` 新增 6 列：`topic` (TEXT), `benefit_score` (FLOAT), `consensus_score` (INTEGER), `expected_window` (TEXT), `evidence_gap` (TEXT), `watchlist_note_suggested` (TEXT)
+    - 新增 `_add_col_if_missing()` 通用 migration helper
+    - `_ensure_watchlist_schema()` 扩展：自动 ALTER TABLE 补齐 6 个新列
+  - `api/services/watchlist_service.py` — [DATA-009] watchlist_notes_persistence
+    - 新增 `_item_to_dict()` 统一序列化（含 6 个结构化字段）
+    - 新增 `_get_item_dict()` 按 symbol 查询并序列化
+    - 新增 `_update_structured_fields()` 写入/更新结构化字段
+    - `list_watchlist()` 返回所有结构化字段
+    - `add_watchlist_items_with_notes()` 接收并持久化结构化字段；duplicate 时仍更新结构化字段
+    - `update_watchlist_notes()` 更新 notes 时保留结构化字段
+  - `api/main.py` — [DATA-009] batch-notes endpoint 传递结构化字段（topic/benefit_score/consensus_score/expected_window/evidence_gap/watchlist_note_suggested）
+  - `frontend/src/types/index.ts` — [DATA-009] WatchlistItem 接口新增 6 个结构化字段
+  - `frontend/src/pages/Portfolio.tsx` — [DATA-009] confirmWatchlistTableAdd 传递 sector→topic, bullish_score→benefit_score, consensus→consensus_score
+  - `tests/test_data009_watchlist_notes_persistence.py` — 新建，23 个回归测试：
+    - `TestNotesPersistenceOnReorder` (2): reorder 不清 notes / 不清结构化字段
+    - `TestNotesPersistenceOnUpdate` (4): 空备注不覆盖 / clear=True 允许 / update 保留结构化字段 / list 返回结构化字段
+    - `TestBatchNotesWithStructuredFields` (5): 批量添加含结构化字段 / duplicate 保留备注 / 无新备注保留旧 / duplicate 更新结构化 / 多图按 symbol 合并
+    - `TestZeroEmptyNoneDistinction` (4): 0 分不是 None / None vs 空字符串 / 默认字段为 None
+    - `TestVLMNotesFormat` (5): mock VLM 生成格式 / 含窗口格式 / 部分 null / 全 null / roundtrip
+    - `TestStructuredFieldsRoundtrip` (3): 完整增改查 / 用户备注不被建议覆盖 / 删除不影响其他项
+- **测试结果**：23 passed (DATA-009) + 34 passed (watchlist_scheduled) + 95 passed (vlm + h008) = 152 passed, 0 failed
+- **前端构建**：npm run build 通过
+- **风险点**：watchlist_items 表已有部署需走 migration path，_ensure_watchlist_schema 会自动补列；现有 notes 保护逻辑不变。
+
 ## 2026-06-04 | DATA-008: A股关键源 fallback smoke fixtures 扩展
 
 - **执行者**：OpenCode
@@ -2761,3 +2791,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-008-20260604-round1.txt
 - **Run archive**: docs/task_runs/DATA-008-20260604-132917/
+
+## 2026-06-04 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-009 - 自选备注与截图识别字段持久化回归保护（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-009-20260604-round1.txt
+- **Run archive**: docs/task_runs/DATA-009-20260604-134042/

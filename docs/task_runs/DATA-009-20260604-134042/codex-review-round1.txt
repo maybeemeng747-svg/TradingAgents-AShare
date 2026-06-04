@@ -1,0 +1,3045 @@
+Task: DATA-009 - 自选备注与截图识别字段持久化回归保护（P1）
+Date: 2026-06-04_13:51:13
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019e912d-d263-7151-afe4-fd4275b1a3cf
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,180p' docs/project-overview.md; printf '\\n---TASKS---\\n'; sed -n '1,160p' docs/TASKS.md; printf '\\n---DECISIONS---\\n'; sed -n '1,160p' docs/DECISIONS.md; printf '\\n---DEVLOG---\\n'; sed -n '1,160p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+---TASKS---
+# 任务池
+
+> 最后更新：2026-06-02
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，in_progress — claimed PERF-003-20260602-200127）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，ready，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，ready，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，ready，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，ready，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，ready，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，ready，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，ready，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，ready，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，ready，依赖 TF-OBS-001/UI-004 ✓）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+  13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## PERF. 运行成本 / 轻量分析任务池（2026-06-02 新增）
+
+> 目标：系统不能为了“全面”而变慢。TradeFlow 是雷达，轻量 TA 是候选验证，完整 TA 是深度体检。默认链路必须轻，完整多 Agent 分析只能由用户明确触发。
+
+### PERF-001: 运行层级与速度预算契约（P1）
+- **描述**：建立统一运行层级契约，所有 API、前端按钮、scheduler、自动开发任务都要标明属于 `fast/light/full` 哪一层，以及是否允许调用 LLM。
+- **优先级**：P1
+- **状态**：done -- commit ca08846
+- **背景**：
+  - 用户明确要求系统不能做得太重，不能“一发指令半天才回来”。
+  - 候选池/盘中观察需要时效；完整 TA 只能用于少量高价值标的。
+- **运行层级定义**：
+  1. `fast`：5-30 秒。TradeFlow 筛选、数据健康、证据缺口、候选分类。默认不调用 LLM。
+  2. `light`：1-3 分钟。轻量 TA，只跑必要模块，用于中线政策验证、短线技术确认、持仓风险复核。
+  3. `full`：10-20 分钟。完整 14 Agent TA，多空辩论和风控全链路，必须人工确认。
+- **执行约束**：
+  - 不改 prompts。
+  - 不触发 live TA。
+  - 不新增高成本模型调用。
+- **实现要点**：
+  1. 新增运行层级枚举/配置，例如 `runtime_tier`：
+     - `FAST_RADAR`
+     - `LIGHT_RESEARCH`
+     - `FULL_TA`
+  2. API/服务层统一返回：
+     - `runtime_tier`
+     - `expected_latency`
+     - `llm_allowed`
+     - `requires_confirmation`
+     - `cost_risk`
+  3. 前端按钮文案对应：
+     - `快速筛选`
+     - `轻量研究`
+     - `完整 TA`
+  4. `TradeFlow Discovery` 和 `Observe` 必须标记为 `FAST_RADAR`。
+  5. 自动任务/scheduler 不得默认进入 `FULL_TA`。
+- **验收方式**：
+  - TradeFlow candidates/observe/data-health API 返回 fast 层级或元数据。
+  - 前端能显示运行层级和预计耗时。
+  - 没有用户确认时，full TA 入口不可直接触发。
+  - `pytest tests/test_runtime_tier*.py tests/test_ui001_tradeflow_api.py -q` 或等价测试通过。
+- **代码标注要求**：`# [PERF-001] runtime_tier_contract` / `// [PERF-001] runtime_tier_contract`
+
+### PERF-002: 轻量 TA Profile 与模块路由（P1）
+- **描述**：在完整 TA 之外增加轻量 TA Profile，只跑与目标相关的模块，避免所有候选都进入 14 Agent 全链路。
+- **优先级**：P1
+- **状态**：done -- commit 20ff126
+- **前置条件**：`TA-UI-001`、`H-007` 完成或同步完成。
+- **执行约束**：
+  - 不删除完整 TA。
+  - 不改 prompts。
+  - 不自动调用 live LLM；第一版可先做路由配置和 mock/fixture。
+- **Profile 建议**：
+  1. `MIDLINE_POLICY_LIGHT`：
+     - 用于 `POLICY_AMBUSH/POLICY_CONFIRM`。
+     - 重点：政策/公告/基本面/风险/量价。
+  2. `SHORT_TECH_LIGHT`：
+     - 用于 `TECH_TRADE`。
+     - 重点：技术/量价/资金/风险。
+  3. `POSITION_RISK_LIGHT`：
+     - 用于已持仓复盘。
+     - 重点：风控/资金/关键价位/公告。
+  4. `FULL_TA`：
+
+---DECISIONS---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+---DEVLOG---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-04 | DATA-009: 自选备注与截图识别字段持久化回归保护
+
+- **执行者**：OpenCode
+- **任务**：DATA-009 — 为自选备注、截图识别导入字段、昊天备注摘要建立持久化和回归测试，保证后续 UI/API 修改不会清空用户备注。
+- **修改文件**：
+  - `api/database.py` — [DATA-009] watchlist_notes_persistence
+    - `WatchlistItemDB` 新增 6 列：`topic` (TEXT), `benefit_score` (FLOAT), `consensus_score` (INTEGER), `expected_window` (TEXT), `evidence_gap` (TEXT), `watchlist_note_suggested` (TEXT)
+    - 新增 `_add_col_if_missing()` 通用 migration helper
+    - `_ensure_watchlist_schema()` 扩展：自动 ALTER TABLE 补齐 6 个新列
+  - `api/services/watchlist_service.py` — [DATA-009] watchlist_notes_persistence
+    - 新增 `_item_to_dict()` 统一序列化（含 6 个结构化字段）
+    - 新增 `_get_item_dict()` 按 symbol 查询并序列化
+    - 新增 `_update_structured_fields()` 写入/更新结构化字段
+    - `list_watchlist()` 返回所有结构化字段
+    - `add_watchlist_items_with_notes()` 接收并持久化结构化字段；duplicate 时仍更新结构化字段
+    - `update_watchlist_notes()` 更新 notes 时保留结构化字段
+  - `api/main.py` — [DATA-009] batch-notes endpoint 传递结构化字段（topic/benefit_score/consensus_score/expected_window/evidence_gap/watchlist_note_suggested）
+  - `frontend/src/types/index.ts` — [DATA-009] WatchlistItem 接口新增 6 个结构化字段
+  - `frontend/src/pages/Portfolio.tsx` — [DATA-009] confirmWatchlistTableAdd 传递 sector→topic, bullish_score→benefit_score, consensus→consensus_score
+  - `tests/test_data009_watchlist_notes_persistence.py` — 新建，23 个回归测试：
+    - `TestNotesPersistenceOnReorder` (2): reorder 不清 notes / 不清结构化字段
+    - `TestNotesPersistenceOnUpdate` (4): 空备注不覆盖 / clear=True 允许 / update 保留结构化字段 / list 返回结构化字段
+    - `TestBatchNotesWithStructuredFields` (5): 批量添加含结构化字段 / duplicate 保留备注 / 无新备注保留旧 / duplicate 更新结构化 / 多图按 symbol 合并
+    - `TestZeroEmptyNoneDistinction` (4): 0 分不是 None / None vs 空字符串 / 默认字段为 None
+    - `TestVLMNotesFormat` (5): mock VLM 生成格式 / 含窗口格式 / 部分 null / 全 null / roundtrip
+    - `TestStructuredFieldsRoundtrip` (3): 完整增改查 / 用户备注不被建议覆盖 / 删除不影响其他项
+- **测试结果**：23 passed (DATA-009) + 34 passed (watchlist_scheduled) + 95 passed (vlm + h008) = 152 passed, 0 failed
+- **前端构建**：npm run build 通过
+- **风险点**：watchlist_items 表已有部署需走 migration path，_ensure_watchlist_schema 会自动补列；现有 notes 保护逻辑不变。
+
+## 2026-06-04 | DATA-008: A股关键源 fallback smoke fixtures 扩展
+
+- **执行者**：OpenCode
+- **任务**：DATA-008 — 扩展 DATA-005 fixture replay，重点覆盖用户报告中经常缺失的 A 股行情、资金流、龙虎榜、公告和实时补丁 fallback，防止数据源"假可用"再次回归。
+- **修改文件**：
+  - `tradingagents/dataflows/fixture_replay.py` — [DATA-008] astock_fallback_replay
+    - 新增 6 个 fixture scenario IDs 和 builder 函数：
+      - `fund_flow_akshare_fail_fallback`: AKShare ProxyError → cn_astock Eastmoney push2his fallback 成功，vendor=cn_astock, fallback_from=cn_akshare
+      - `lhb_normal_no_data`: 龙虎榜 force=True 但当日未上榜 → NORMAL_NO_DATA（非 FAILED）
+      - `lhb_failed`: 龙虎榜 force=True 但 ConnectionError → FAILED（非 NORMAL_NO_DATA）
+      - `stale_realtime_patch`: 日线 stale 后腾讯实时 quote 补丁成功，is_realtime_patched=True, patch_fields 含 turnover_rate/volume_ratio
+      - `announcement_fail_event_weak`: 公告源 CNInfo 失败但新闻事件源有弱证据
+      - `turnover_volume_ratio_missing`: stock_data/fund_flow 可用但缺 announcements/news，完整度降级
+    - `ReplayResult` 新增 `as_of` 字段：replay 输出包含 vendor/endpoint/status/fallback_from/error/as_of
+    - `_replay_single_fixture()` 提取 `as_of` 值，修复 LHB NOT_QUERIED/NORMAL_NO_DATA 在多证据 fixture 中不应覆盖整体 actual_status 的问题
+    - `ALL_FIXTURE_IDS` 从 7 扩展到 13
+    - `_FIXTURE_BUILDERS` 注册 6 个新 builder
+  - `tests/test_data005_fixture_replay.py` — 更新 fixture count 断言（7→len(ALL_FIXTURE_IDS)），保持 DATA-005 回归通过
+  - `tests/test_data008_astock_fallback_replay.py` — 新建，94 个测试覆盖：
+    - `TestNewFixtureExistence` (8): 6 个 fixture 存在性 + ALL_FIXTURE_IDS 包含 + 总数≥13
+    - `TestFundFlowAkshareFailFallback` (6): fixture 结构 / fallback 标记 / unit_verified / replay 通过 / vendor 显示 / as_of
+    - `TestLHBNormalNoData` (5): 结构 / NORMAL_NO_DATA 非 FAILED / force_reason / replay 通过 / 非 FAILED 断言
+    - `TestLHBFailed` (6): 结构 / FAILED 非 NORMAL_NO_DATA / error / replay 通过 / 非 NORMAL_NO_DATA / error 保留
+    - `TestStaleRealtimePatch` (6): 结构 / is_realtime_patched / patch_fields / patch_source / patch_as_of / replay
+    - `TestAnnouncementFailEventWeak` (5): 结构 / FAILED / news HAS_DATA / replay / 非 NORMAL_NO_DATA
+    - `TestTurnoverVolumeRatioMissing` (6): 结构 / stock_data / fund_flow / LHB NOT_QUERIED / tags / completeness 降级
+    - `TestLHBDistinction` (3): FAILED vs NORMAL_NO_DATA 明确区分
+    - `TestFallbackVendorDisplay` (2): fallback 显示实际 vendor
+    - `TestStaleRealtimePatchDisplay` (3): patch 属性验证
+    - `TestReplayOutputFields` (12): 6 fixtures × (required_fields + to_dict roundtrip)
+    - `TestEvidenceAuditIntegration` (8): 6 fixtures 各自触发不同 coverage + coverage 变化
+    - `TestReplayReportAggregation` (3): 全量 replay 包含新 fixtures / 全部通过 / by_status
+    - `TestRenderNewFixtures` (6): 6 个新 fixture render 包含关键信息
+    - `TestSaveReportNewFixtures` (2): save + run_replay_and_save
+    - `TestEdgeCases` (3): to_dict / as_of / unique ids
+    - `TestAcceptanceDATA008` (9): 全部验收标准
+  - `docs/TASKS.md` — DATA-008 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：94 passed (DATA-008)；516 passed (DATA-series + tradeflow 全部回归)；0 failed
+- **关键逻辑**：
+  - 6 个新增 fixture 覆盖 DATA-008 要求的全部 5 个 replay 场景（AKShare fail→fallback、LHB NORMAL_NO_DATA vs FAILED、stale→realtime patch、公告 fail→事件弱证据、换手率/量比缺失）
+  - `ReplayResult.as_of` 字段：replay 输出现在包含 provenance 六要素 (vendor/endpoint/status/fallback_from/error/as_of)
+  - LHB 状态区分：FAILED 与 NORMAL_NO_DATA 在 fixture 和 replay 中明确区分，不被互相误标
+  - DATA-007 auditor 集成：新 fixture 触发不同覆盖率结果，覆盖从 LOW 到 MEDIUM
+  - 多证据 fixture 中 LHB NOT_QUERIED/NORMAL_NO_DATA 不再覆盖整体 actual_status
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
+## 2026-06-04 | DATA-007: raw_evidence 覆盖率审计与候选可信度联动
+
+- **执行者**：OpenCode
+- **任务**：DATA-007 — 把 raw_evidence contract 的覆盖情况转成可读审计结果，并联动 TradeFlow 候选可信度，避免"候选分数高但关键数据缺证据"的情况继续进入高优先级。
+- **修改文件**：
+  - `tradingagents/dataflows/evidence_coverage_audit.py` — 新建：[DATA-007] evidence_coverage_audit
+    - `EvidenceAuditResult` 数据类：evidence_coverage / critical_missing_fields / stale_fields / unit_unknown_fields / fallback_fields / failed_fields / not_queried_fields / normal_no_data_fields / has_data_fields / evidence_quality_level / total_fields / satisfied_fields / audit_refs
+    - `CandidateCredibilityResult` 数据类：symbol / candidate_type / evidence_audit / tier_allowed / tier_restricted / need_deep_ta_allowed / credibility_level / credibility_reasons / credibility_refs
+    - `_classify_quality_level()`: 覆盖率→HIGH/MEDIUM/LOW/CRITICAL 四级分类
+    - `audit_raw_evidence()`: 审计 raw_evidence 字典，输出覆盖率、关键缺口、stale/单位未知/fallback 字段和质量等级
+    - `audit_candidate_evidence()`: 审计单个候选的证据完整度和可信度，按候选类型执行差异化门控
+    - `apply_credibility_linkage()`: 根据可信度结果联动候选 tier 和 need_deep_ta
+    - `render_audit_summary()` / `render_credibility_summary()`: Markdown 渲染
+    - `build_evidence_coverage_section()`: 为夜间日报构建证据覆盖率 section
+    - `_CRITICAL_FIELDS_BY_CANDIDATE_TYPE`: 7 种候选类型的关键字段映射
+    - `_EVIDENCE_FIELD_LABELS`: 16 个证据字段的中文标签
+    - `_EVIDENCE_FIELD_FAMILIES`: 字段族映射
+    - `_worse_tier()`: tier 降级辅助函数
+  - `tradingagents/dataflows/data_source_daily_digest.py` — [DATA-007]
+    - `DailyDigest` 新增 `evidence_audits` / `evidence_credibilities` / `evidence_coverage_section` 字段
+    - `render_daily_digest()` 增加证据覆盖率 section 输出
+    - 新增 `attach_evidence_coverage_to_digest()` 函数：将审计结果附加到日报
+  - `api/tradeflow_schemas.py` — [DATA-007]
+    - `TradeFlowDataHealthResponse` 新增 `evidence_coverage_audit_available` 字段
+    - 新增 `EvidenceCredibilityItem` Pydantic model
+    - 新增 `TradeFlowEvidenceAuditResponse` Pydantic model
+  - `api/services/tradeflow_service.py` — [DATA-007]
+    - `get_data_health()` 返回值增加 `evidence_coverage_audit_available`
+    - 新增 `get_evidence_audit()` 函数：批量审计指定日期所有候选的可信度
+  - `api/main.py` — [DATA-007]
+    - 新增 `GET /v1/tradeflow/evidence-audit` 端点
+    - 导入 `TradeFlowEvidenceAuditResponse` 和 `get_evidence_audit`
+  - `tests/test_data007_evidence_coverage_audit.py` — 新建，75 个测试覆盖：
+    - `TestEvidenceAuditResult` (3): defaults / to_dict / roundtrip
+    - `TestCandidateCredibilityResult` (2): defaults / to_dict
+    - `TestClassifyQualityLevel` (8): HIGH/MEDIUM/LOW/CRITICAL/UNKNOWN/各种边界
+    - `TestAuditRawEvidence` (12): empty/full/missing_fund/missing_ann/stale/unit_unknown/fallback/normal_no_data/refs/coverage/non_dict
+    - `TestAuditCandidateEvidence` (12): policy_ambush±evidence / tech_trade±realtime / fund_flow_not_verified / unclassified_data_gap / low_coverage / evidence_gate / raw_evidence / policy_missing_critical / missing_critical_data_fields
+    - `TestApplyCredibilityLinkage` (6): no_credibility / high_no_override / tier_downgrade / tier_no_upgrade / deep_ta_blocked / deep_ta_allowed
+    - `TestRenderAuditSummary` (5): basic / critical_missing / stale / unit_unknown / fallback
+    - `TestRenderCredibilitySummary` (2): basic / with_reasons
+    - `TestBuildEvidenceCoverageSection` (4): empty / audits / credibilities / both
+    - `TestCriticalFieldsByCandidateType` (4): policy_requires / tech_requires / gap_empty / all_types
+    - `TestEvidenceFieldLabels` (2): key_fields / non_empty
+    - `TestEvidenceFieldFamilies` (2): ohlcv / fund_flow
+    - `TestFiveFixtureScenarios` (5): 5 类 fixture 场景验证
+    - `TestAcceptanceDATA007` (8): 全部验收标准
+  - `docs/TASKS.md` — DATA-007 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：75 passed (DATA-007)；143 passed (DATA-004/006 回归)；71 passed (tradeflow 回归)；49 passed (API smoke)；171 passed (H-series 回归)；272 passed (data source 回归)；0 failed
+- **关键逻辑**：
+  - 审计核心：`audit_raw_evidence()` 扫描 raw_evidence 字典，分类为 has_data/failed/not_queried/normal_no_data/stale/unit_unknown/fallback，输出覆盖率(0-1)和质量等级(HIGH/MEDIUM/LOW/CRITICAL)
+  - 候选类型差异化门控：POLICY_AMBUSH 缺政策证据→限B层；TECH_TRADE 缺实时行情→限B/C层、资金流单位未校验→禁深挖；UNCLASSIFIED_DATA_GAP→固定C层+禁深挖
+  - 可信度联动：`apply_credibility_linkage()` 将可信度评估结果应用于候选 tier/need_deep_ta，超限时降级
+  - API 暴露：`GET /v1/tradeflow/evidence-audit?date=YYYY-MM-DD` 返回所有候选的可信度审计摘要
+  - 夜间日报集成：`attach_evidence_coverage_to_digest()` 将审计结果附加到 DATA-006 日报
+  - 5 类 fixture 覆盖：完整证据/缺资金/缺公告/stale行情/单位未知
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
+## 2026-06-04 | DATA-P1-SOURCE-GAP-AUDIT: fix test failures
+
+- **执行者**：OpenCode
+- **任务**：Fix 2 failing tests from DATA-P1-SOURCE-GAP-AUDIT implementation
+- **修改文件**：
+  - `tradingagents/dataflows/providers/cn_astock_provider.py` — `get_individual_fund_flow`: removed incorrect `/10000` conversion; Eastmoney push2his fflow/daykline API returns values already in 万元, not 元
+  - `tradingagents/tradeflow/mandate_replay_eval.py` — added `UNCLASSIFIED_DATA_GAP` replay fixture (`data_gap_unclassified`) with builder, verdict logic, and registration in `_FIXTURE_BUILDERS`
+  - `tests/test_h006_mandate_replay_eval.py` — updated fixture count assertions (10→11), added import for `_build_data_gap_unclassified`, added tests for new fixture content and evaluation
+- **测试结果**：155 passed (test_data_p0_603629 + test_h006_mandate_replay_eval)
+- **根因**：
+  1. `get_individual_fund_flow` 误将 API 返回的万元值再除以 10000，导致输出 1.23 而非 12345
+  2. `CandidateType.UNCLASSIFIED_DATA_GAP` 已加入枚举但未创建对应回放 fixture
+
+---
+
+exec
+/bin/zsh -lc 'git status --short && git rev-parse --show-toplevel' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M api/database.py
+ M api/main.py
+ M api/services/tradeflow_service.py
+ M api/services/watchlist_service.py
+ M api/tradeflow_schemas.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M frontend/src/pages/Portfolio.tsx
+ M frontend/src/types/index.ts
+?? docs/task_runs/DATA-009-20260604-134042/
+?? tests/test_data009_watchlist_notes_persistence.py
+/Users/maybee/TradingAgents-AShare
+
+exec
+/bin/zsh -lc 'git diff -- api/database.py api/main.py api/services/tradeflow_service.py api/services/watchlist_service.py api/tradeflow_schemas.py frontend/src/pages/Portfolio.tsx frontend/src/types/index.ts tests/test_data009_watchlist_notes_persistence.py docs/TASKS.md docs/DEVLOG.md' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/api/database.py b/api/database.py
+index e61fcd9..b3e48d7 100644
+--- a/api/database.py
++++ b/api/database.py
+@@ -98,7 +98,7 @@ def init_db() -> None:
+ 
+ 
+ def _ensure_watchlist_schema() -> None:
+-    """Add notes column to watchlist_items for existing SQLite deployments."""
++    """Add notes and structured note columns to watchlist_items for existing SQLite deployments."""
+     if not DATABASE_URL.startswith("sqlite"):
+         return
+     try:
+@@ -110,10 +110,23 @@ def _ensure_watchlist_schema() -> None:
+             if "notes" not in columns:
+                 conn.execute(text("ALTER TABLE watchlist_items ADD COLUMN notes TEXT"))
+                 logger.info("[migration] Added notes column to watchlist_items")
++            # [DATA-009] watchlist_notes_persistence — structured note columns
++            _add_col_if_missing(conn, columns, "watchlist_items", "topic", "TEXT")
++            _add_col_if_missing(conn, columns, "watchlist_items", "benefit_score", "FLOAT")
++            _add_col_if_missing(conn, columns, "watchlist_items", "consensus_score", "INTEGER")
++            _add_col_if_missing(conn, columns, "watchlist_items", "expected_window", "TEXT")
++            _add_col_if_missing(conn, columns, "watchlist_items", "evidence_gap", "TEXT")
++            _add_col_if_missing(conn, columns, "watchlist_items", "watchlist_note_suggested", "TEXT")
+     except Exception as e:
+         logger.error("Failed to ensure watchlist schema: %s", e)
+ 
+ 
++def _add_col_if_missing(conn, existing_columns: set, table: str, col: str, col_type: str) -> None:
++    if col not in existing_columns:
++        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
++        logger.info("[migration] Added %s column to %s", col, table)
++
++
+ def _ensure_report_schema() -> None:
+     """Add lightweight columns for existing SQLite deployments without migrations."""
+     try:
+@@ -509,6 +522,13 @@ class WatchlistItemDB(Base):
+     symbol = Column(String(20), nullable=False)
+     sort_order = Column(Integer, default=0)
+     notes = Column(Text, nullable=True)
++    # [DATA-009] watchlist_notes_persistence — structured note fields
++    topic = Column(Text, nullable=True)
++    benefit_score = Column(Float, nullable=True)
++    consensus_score = Column(Integer, nullable=True)
++    expected_window = Column(Text, nullable=True)
++    evidence_gap = Column(Text, nullable=True)
++    watchlist_note_suggested = Column(Text, nullable=True)
+     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+ 
+     __table_args__ = (UniqueConstraint('user_id', 'symbol', name='uq_watchlist_user_symbol'),)
+diff --git a/api/main.py b/api/main.py
+index 6d653b5..82aaef6 100644
+--- a/api/main.py
++++ b/api/main.py
+@@ -4699,7 +4699,18 @@ def add_to_watchlist_batch_notes(
+             symbol = symbol_raw
+         if not name:
+             name = code_to_name.get(symbol, symbol)
+-        resolved.append({"symbol": symbol, "name": name, "notes": notes})
++        # [DATA-009] watchlist_notes_persistence — pass structured fields
++        resolved.append({
++            "symbol": symbol,
++            "name": name,
++            "notes": notes,
++            "topic": entry.get("topic"),
++            "benefit_score": entry.get("benefit_score"),
++            "consensus_score": entry.get("consensus_score"),
++            "expected_window": entry.get("expected_window"),
++            "evidence_gap": entry.get("evidence_gap"),
++            "watchlist_note_suggested": entry.get("watchlist_note_suggested"),
++        })
+ 
+     add_results = watchlist_service.add_watchlist_items_with_notes(
+         db, current_user.id, resolved
+@@ -5218,6 +5229,7 @@ from api.tradeflow_schemas import (
+     TradeFlowFilteredResponse,  # [UI-007] tradeflow_filtered_trace
+     TradeFlowTieredCandidatesResponse,  # [TF-UX-001]
+     TradeFlowReviewGenerateResponse,  # [TF-UX-003]
++    TradeFlowEvidenceAuditResponse,  # [DATA-007] evidence_coverage_audit
+ )
+ from api.services.tradeflow_service import (
+     get_daily_plan as _tf_get_daily_plan,
+@@ -5232,6 +5244,7 @@ from api.services.tradeflow_service import (
+     run_observe_check as _tf_run_observe_check,  # [TF-OBS-001] tradeflow_observe_runner
+     get_candidates_tiered as _tf_get_candidates_tiered,  # [TF-UX-001]
+     generate_review as _tf_generate_review,  # [TF-UX-003]
++    get_evidence_audit as _tf_get_evidence_audit,  # [DATA-007] evidence_coverage_audit
+ )
+ 
+ # [UI-001] tradeflow_api — read-only endpoints
+@@ -5292,6 +5305,12 @@ def tradeflow_data_health():
+     return _tf_get_data_health()
+ 
+ 
++# [DATA-007] evidence_coverage_audit
++@app.get("/v1/tradeflow/evidence-audit", response_model=TradeFlowEvidenceAuditResponse)
++def tradeflow_evidence_audit(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
++    return _tf_get_evidence_audit(date)
++
++
+ # [UI-007] tradeflow_filtered_trace
+ @app.get("/v1/tradeflow/filtered", response_model=TradeFlowFilteredResponse)
+ def tradeflow_filtered(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+diff --git a/api/services/tradeflow_service.py b/api/services/tradeflow_service.py
+index e49cb49..130a8d0 100644
+--- a/api/services/tradeflow_service.py
++++ b/api/services/tradeflow_service.py
+@@ -775,6 +775,7 @@ def get_data_health(tf_db_path: str = "") -> dict:
+         "latest_observe_check_time": latest_observe_check_time,  # [TF-OBS-001]
+         "latest_signal_time": latest_signal_time,  # [TF-OBS-001]
+         "evidence_contract_available": True,  # [DATA-004] raw_evidence_contract
++        "evidence_coverage_audit_available": True,  # [DATA-007] evidence_coverage_audit
+         "runtime_tier_meta": _tradeflow_meta("tradeflow_data_health"),  # [PERF-001]
+     }
+ 
+@@ -1009,6 +1010,91 @@ def _recompute_action_tiers(
+             pass
+ 
+ 
++# [DATA-007] evidence_coverage_audit
++def get_evidence_audit(trade_date: str, tf_db_path: str = "") -> dict:
++    """Run evidence coverage audit on all candidates for trade_date.
++
++    Reads candidate metadata from tradeflow.db, runs the evidence coverage
++    auditor on each candidate, and returns a summary.
++    Does NOT call LLM or live data sources.
++    """
++    from tradingagents.dataflows.evidence_coverage_audit import (
++        audit_candidate_evidence,
++        build_evidence_coverage_section,
++    )
++
++    _fast_meta = _tradeflow_meta("tradeflow_evidence_audit")
++    conn = _connect(tf_db_path)
++    if conn is None:
++        return {
++            "status": "no_data",
++            "trade_date": trade_date,
++            "audits": [],
++            "credibilities": [],
++            "summary_markdown": "",
++            "runtime_tier_meta": _fast_meta,
++        }
++
++    try:
++        columns = _table_columns(conn, "tradeflow_candidates")
++        extra_conditions = ["status = 'active'" if "status" in columns else None]
++        extra_conditions = [c for c in extra_conditions if c is not None]
++        rows = _query_by_date_or_effective(
++            conn, "tradeflow_candidates", trade_date,
++            extra_conditions=extra_conditions if extra_conditions else None,
++        )
++
++        audits = []
++        credibilities = []
++        for row in rows:
++            data_comp = float(row.get("data_completeness", 0) or 0)
++            tf_comp = float(row.get("tradeflow_data_completeness", 0) or 0)
++            cand_type = str(row.get("candidate_type", "") or "")
++            missing_fields = json.loads(row.get("missing_data_fields_json", "[]") or "[]")
++            gate_applied = bool(row.get("evidence_gate_applied", 0))
++            ff_verified = bool(row.get("fund_flow_unit_verified", 0))
++            symbol = str(row.get("symbol", ""))
++
++            has_policy = cand_type in ("POLICY_AMBUSH", "POLICY_CONFIRM", "PSEUDO_POLICY")
++            has_tech = cand_type == "TECH_TRADE"
++            has_realtime = tf_comp >= 0.5
++
++            cred = audit_candidate_evidence(
++                candidate_data_completeness=data_comp,
++                candidate_tradeflow_completeness=tf_comp,
++                candidate_type=cand_type,
++                missing_data_fields=missing_fields,
++                evidence_gate_applied=gate_applied,
++                fund_flow_unit_verified=ff_verified,
++                has_policy_evidence=has_policy,
++                has_tech_signal=has_tech,
++                has_realtime_quote=has_realtime,
++            )
++            cred.symbol = symbol
++
++            if cred.evidence_audit:
++                audits.append(cred.evidence_audit)
++            credibilities.append(cred)
++
++        summary_md = build_evidence_coverage_section(
++            audits=audits if audits else None,
++            credibilities=credibilities if credibilities else None,
++        )
++
++        return {
++            "status": "ok",
++            "trade_date": trade_date,
++            "total_candidates": len(rows),
++            "audits_count": len(audits),
++            "credibilities_count": len(credibilities),
++            "credibilities": [c.to_dict() for c in credibilities],
++            "summary_markdown": summary_md,
++            "runtime_tier_meta": _fast_meta,
++        }
++    finally:
++        conn.close()
++
++
+ # [TF-UX-003] post_market_review
+ def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
+     """Generate post-market review for trade_date using post_market_review module."""
+diff --git a/api/services/watchlist_service.py b/api/services/watchlist_service.py
+index d69896c..d5d301d 100644
+--- a/api/services/watchlist_service.py
++++ b/api/services/watchlist_service.py
+@@ -1,7 +1,6 @@
+ """Watchlist service for database operations."""
+ 
+ from typing import List
+-from uuid import uuid4
+ 
+ from sqlalchemy.orm import Session
+ 
+@@ -10,6 +9,26 @@ from api.database import WatchlistItemDB, ScheduledAnalysisDB
+ MAX_WATCHLIST_ITEMS = 300
+ 
+ 
++def _item_to_dict(item: WatchlistItemDB, extra: dict | None = None) -> dict:
++    # [DATA-009] watchlist_notes_persistence
++    d = {
++        "id": item.id,
++        "symbol": item.symbol,
++        "sort_order": item.sort_order,
++        "notes": item.notes,
++        "topic": getattr(item, "topic", None),
++        "benefit_score": getattr(item, "benefit_score", None),
++        "consensus_score": getattr(item, "consensus_score", None),
++        "expected_window": getattr(item, "expected_window", None),
++        "evidence_gap": getattr(item, "evidence_gap", None),
++        "watchlist_note_suggested": getattr(item, "watchlist_note_suggested", None),
++        "created_at": item.created_at.isoformat() if item.created_at else None,
++    }
++    if extra:
++        d.update(extra)
++    return d
++
++
+ def list_watchlist(db: Session, user_id: str) -> List[dict]:
+     """List user's watchlist items with scheduled status."""
+     items = (
+@@ -25,14 +44,7 @@ def list_watchlist(db: Session, user_id: str) -> List[dict]:
+         .all()
+     )
+     return [
+-        {
+-            "id": item.id,
+-            "symbol": item.symbol,
+-            "sort_order": item.sort_order,
+-            "notes": item.notes,
+-            "created_at": item.created_at.isoformat() if item.created_at else None,
+-            "has_scheduled": item.symbol in scheduled_symbols,
+-        }
++        _item_to_dict(item, {"has_scheduled": item.symbol in scheduled_symbols})
+         for item in items
+     ]
+ 
+@@ -51,17 +63,11 @@ def add_watchlist_item(db: Session, user_id: str, symbol: str, notes: str | None
+     if existing:
+         raise ValueError(f"{symbol} 已在自选列表中")
+ 
+-    item = WatchlistItemDB(id=uuid4().hex, user_id=user_id, symbol=symbol, notes=notes)
++    item = WatchlistItemDB(id=__import__("uuid").uuid4().hex, user_id=user_id, symbol=symbol, notes=notes)
+     db.add(item)
+     db.commit()
+     db.refresh(item)
+-    return {
+-        "id": item.id,
+-        "symbol": item.symbol,
+-        "sort_order": item.sort_order,
+-        "notes": item.notes,
+-        "created_at": item.created_at.isoformat() if item.created_at else None,
+-    }
++    return _item_to_dict(item)
+ 
+ 
+ def add_watchlist_items(db: Session, user_id: str, symbols: List[str]) -> List[dict]:
+@@ -97,28 +103,46 @@ def _merge_notes(existing_notes: str | None, new_notes: str | None) -> str | Non
+ 
+ 
+ # [VLM-001] watchlist_notes_protection
++# [DATA-009] watchlist_notes_persistence
+ def add_watchlist_items_with_notes(
+     db: Session,
+     user_id: str,
+     entries: List[dict],
+ ) -> List[dict]:
+-    """Add multiple stocks with optional notes. Each entry: {symbol, notes?}.
++    """Add multiple stocks with optional notes and structured fields. Each entry:
++    {symbol, notes?, topic?, benefit_score?, consensus_score?, expected_window?,
++     evidence_gap?, watchlist_note_suggested?}.
+ 
+     When a stock already exists (duplicate):
+     - If new notes provided and existing notes empty → write notes directly
+     - If new notes provided and existing notes non-empty → append with ｜ separator
+     - If no new notes → leave unchanged
++    - Structured fields always preserved/merged (new values overwrite old)
+     """
+     results: List[dict] = []
+     for entry in entries:
+         symbol = entry.get("symbol", "")
+         notes = entry.get("notes")
++        # [DATA-009] structured fields from VLM/H-008
++        topic = entry.get("topic")
++        benefit_score = entry.get("benefit_score")
++        consensus_score = entry.get("consensus_score")
++        expected_window = entry.get("expected_window")
++        evidence_gap = entry.get("evidence_gap")
++        watchlist_note_suggested = entry.get("watchlist_note_suggested")
+         try:
+             item = add_watchlist_item(db, user_id, symbol, notes=notes)
++            # [DATA-009] persist structured fields on new item
++            _update_structured_fields(db, user_id, symbol, topic=topic,
++                                      benefit_score=benefit_score,
++                                      consensus_score=consensus_score,
++                                      expected_window=expected_window,
++                                      evidence_gap=evidence_gap,
++                                      watchlist_note_suggested=watchlist_note_suggested)
+             results.append({
+                 "symbol": symbol,
+                 "status": "added",
+-                "item": item,
++                "item": _get_item_dict(db, user_id, symbol),
+                 "message": "已添加到自选列表",
+             })
+         except ValueError as exc:
+@@ -138,13 +162,24 @@ def add_watchlist_items_with_notes(
+                         existing.notes = merged_notes
+                         db.commit()
+                         db.refresh(existing)
+-                    updated_item = {
+-                        "id": existing.id,
+-                        "symbol": existing.symbol,
+-                        "sort_order": existing.sort_order,
+-                        "notes": existing.notes,
+-                        "created_at": existing.created_at.isoformat() if existing.created_at else None,
+-                    }
++                    updated_item = _item_to_dict(existing)
++            elif status == "duplicate":
++                # [DATA-009] still update structured fields even without notes
++                existing = (
++                    db.query(WatchlistItemDB)
++                    .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol)
++                    .first()
++                )
++                if existing and any(v is not None for v in [topic, benefit_score, consensus_score, expected_window, evidence_gap, watchlist_note_suggested]):
++                    _update_structured_fields(db, user_id, symbol, topic=topic,
++                                              benefit_score=benefit_score,
++                                              consensus_score=consensus_score,
++                                              expected_window=expected_window,
++                                              evidence_gap=evidence_gap,
++                                              watchlist_note_suggested=watchlist_note_suggested)
++                    updated_item = _get_item_dict(db, user_id, symbol)
++                elif existing:
++                    updated_item = _item_to_dict(existing)
+             results.append({
+                 "symbol": symbol,
+                 "status": status,
+@@ -154,10 +189,56 @@ def add_watchlist_items_with_notes(
+     return results
+ 
+ 
++# [DATA-009] watchlist_notes_persistence
++def _get_item_dict(db: Session, user_id: str, symbol: str) -> dict | None:
++    existing = (
++        db.query(WatchlistItemDB)
++        .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol)
++        .first()
++    )
++    return _item_to_dict(existing) if existing else None
++
++
++def _update_structured_fields(
++    db: Session,
++    user_id: str,
++    symbol: str,
++    *,
++    topic: str | None = None,
++    benefit_score: float | None = None,
++    consensus_score: int | None = None,
++    expected_window: str | None = None,
++    evidence_gap: str | None = None,
++    watchlist_note_suggested: str | None = None,
++) -> None:
++    existing = (
++        db.query(WatchlistItemDB)
++        .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol)
++        .first()
++    )
++    if not existing:
++        return
++    if topic is not None:
++        existing.topic = topic
++    if benefit_score is not None:
++        existing.benefit_score = benefit_score
++    if consensus_score is not None:
++        existing.consensus_score = consensus_score
++    if expected_window is not None:
++        existing.expected_window = expected_window
++    if evidence_gap is not None:
++        existing.evidence_gap = evidence_gap
++    if watchlist_note_suggested is not None:
++        existing.watchlist_note_suggested = watchlist_note_suggested
++    db.commit()
++    db.refresh(existing)
++
++
+ def update_watchlist_notes(db: Session, user_id: str, item_id: str, notes: str, clear: bool = False) -> dict | None:
+     """Update notes for a watchlist item. Returns updated item or None if not found.
+ 
+     Protection: empty notes won't overwrite existing notes unless clear=True.
++    Structured fields (topic, benefit_score, etc.) are never cleared by this function.
+     """
+     item = (
+         db.query(WatchlistItemDB)
+@@ -166,25 +247,12 @@ def update_watchlist_notes(db: Session, user_id: str, item_id: str, notes: str,
+     )
+     if not item:
+         return None
+-    # 防误清空：空备注不覆盖已有备注，除非明确要求清空
+     if not notes and not clear and item.notes:
+-        return {
+-            "id": item.id,
+-            "symbol": item.symbol,
+-            "sort_order": item.sort_order,
+-            "notes": item.notes,
+-            "created_at": item.created_at.isoformat() if item.created_at else None,
+-        }
++        return _item_to_dict(item)
+     item.notes = notes if notes else None
+     db.commit()
+     db.refresh(item)
+-    return {
+-        "id": item.id,
+-        "symbol": item.symbol,
+-        "sort_order": item.sort_order,
+-        "notes": item.notes,
+-        "created_at": item.created_at.isoformat() if item.created_at else None,
+-    }
++    return _item_to_dict(item)
+ 
+ 
+ def delete_watchlist_item(db: Session, user_id: str, item_id: str) -> bool:
+diff --git a/api/tradeflow_schemas.py b/api/tradeflow_schemas.py
+index 3d48f1b..cb25791 100644
+--- a/api/tradeflow_schemas.py
++++ b/api/tradeflow_schemas.py
+@@ -256,6 +256,7 @@ class TradeFlowDataHealthResponse(BaseModel):
+     latest_observe_check_time: Optional[str] = None
+     latest_signal_time: Optional[str] = None
+     evidence_contract_available: bool = False  # [DATA-004] raw_evidence_contract
++    evidence_coverage_audit_available: bool = False  # [DATA-007] evidence_coverage_audit
+     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+ 
+ 
+@@ -297,3 +298,27 @@ class TradeFlowReviewGenerateResponse(BaseModel):
+     trade_date: str = ""
+     message: str = ""
+     review: Optional[Dict[str, Any]] = None
++
++
++# [DATA-007] evidence_coverage_audit
++class EvidenceCredibilityItem(BaseModel):
++    symbol: str = ""
++    candidate_type: str = ""
++    evidence_coverage: float = 0.0
++    evidence_quality_level: str = "UNKNOWN"
++    tier_allowed: str = ""
++    tier_restricted: bool = False
++    need_deep_ta_allowed: bool = True
++    credibility_level: str = "UNKNOWN"
++    credibility_reasons: List[str] = Field(default_factory=list)
++
++
++class TradeFlowEvidenceAuditResponse(BaseModel):
++    status: str = "ok"
++    trade_date: str = ""
++    total_candidates: int = 0
++    audits_count: int = 0
++    credibilities_count: int = 0
++    credibilities: List[EvidenceCredibilityItem] = Field(default_factory=list)
++    summary_markdown: str = ""
++    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 398a8be..d2c8e9c 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,36 @@
+ 
+ ---
+ 
++## 2026-06-04 | DATA-009: 自选备注与截图识别字段持久化回归保护
++
++- **执行者**：OpenCode
++- **任务**：DATA-009 — 为自选备注、截图识别导入字段、昊天备注摘要建立持久化和回归测试，保证后续 UI/API 修改不会清空用户备注。
++- **修改文件**：
++  - `api/database.py` — [DATA-009] watchlist_notes_persistence
++    - `WatchlistItemDB` 新增 6 列：`topic` (TEXT), `benefit_score` (FLOAT), `consensus_score` (INTEGER), `expected_window` (TEXT), `evidence_gap` (TEXT), `watchlist_note_suggested` (TEXT)
++    - 新增 `_add_col_if_missing()` 通用 migration helper
++    - `_ensure_watchlist_schema()` 扩展：自动 ALTER TABLE 补齐 6 个新列
++  - `api/services/watchlist_service.py` — [DATA-009] watchlist_notes_persistence
++    - 新增 `_item_to_dict()` 统一序列化（含 6 个结构化字段）
++    - 新增 `_get_item_dict()` 按 symbol 查询并序列化
++    - 新增 `_update_structured_fields()` 写入/更新结构化字段
++    - `list_watchlist()` 返回所有结构化字段
++    - `add_watchlist_items_with_notes()` 接收并持久化结构化字段；duplicate 时仍更新结构化字段
++    - `update_watchlist_notes()` 更新 notes 时保留结构化字段
++  - `api/main.py` — [DATA-009] batch-notes endpoint 传递结构化字段（topic/benefit_score/consensus_score/expected_window/evidence_gap/watchlist_note_suggested）
++  - `frontend/src/types/index.ts` — [DATA-009] WatchlistItem 接口新增 6 个结构化字段
++  - `frontend/src/pages/Portfolio.tsx` — [DATA-009] confirmWatchlistTableAdd 传递 sector→topic, bullish_score→benefit_score, consensus→consensus_score
++  - `tests/test_data009_watchlist_notes_persistence.py` — 新建，23 个回归测试：
++    - `TestNotesPersistenceOnReorder` (2): reorder 不清 notes / 不清结构化字段
++    - `TestNotesPersistenceOnUpdate` (4): 空备注不覆盖 / clear=True 允许 / update 保留结构化字段 / list 返回结构化字段
++    - `TestBatchNotesWithStructuredFields` (5): 批量添加含结构化字段 / duplicate 保留备注 / 无新备注保留旧 / duplicate 更新结构化 / 多图按 symbol 合并
++    - `TestZeroEmptyNoneDistinction` (4): 0 分不是 None / None vs 空字符串 / 默认字段为 None
++    - `TestVLMNotesFormat` (5): mock VLM 生成格式 / 含窗口格式 / 部分 null / 全 null / roundtrip
++    - `TestStructuredFieldsRoundtrip` (3): 完整增改查 / 用户备注不被建议覆盖 / 删除不影响其他项
++- **测试结果**：23 passed (DATA-009) + 34 passed (watchlist_scheduled) + 95 passed (vlm + h008) = 152 passed, 0 failed
++- **前端构建**：npm run build 通过
++- **风险点**：watchlist_items 表已有部署需走 migration path，_ensure_watchlist_schema 会自动补列；现有 notes 保护逻辑不变。
++
+ ## 2026-06-04 | DATA-008: A股关键源 fallback smoke fixtures 扩展
+ 
+ - **执行者**：OpenCode
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 13c2712..ba5cde0 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -65,7 +65,7 @@
+ 39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，ready，依赖 V-002 ✓）。
+ 40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，ready，依赖 INF-001 ✓）。
+ 41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，ready，依赖 TF-OBS-001/UI-004 ✓）。
+-42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，ready，依赖 H-008/VLM-001 ✓）。
++42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+ 
+ ### 数据源治理候选队列
+ 
+@@ -84,7 +84,7 @@
+ 11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+ 12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+   13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+-14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，ready）。
++14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+ 
+ ### 总体路线图
+ 
+@@ -848,7 +848,7 @@
+ ### DATA-009: 自选备注与截图识别字段持久化回归保护（P1）
+ - **描述**：针对用户反馈“前端更新后备注全没了”，为自选备注、截图识别导入字段、昊天备注摘要建立持久化和回归测试，保证后续 UI/API 修改不会清空用户备注。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：done — DATA-009-20260604
+ - **前置条件**：`H-008`、`VLM-001` 完成 ✓。
+ - **执行约束**：
+   - 不读取用户真实图片内容；测试使用 mock OCR/VLM 结果。
+diff --git a/frontend/src/pages/Portfolio.tsx b/frontend/src/pages/Portfolio.tsx
+index bd41153..75ea401 100644
+--- a/frontend/src/pages/Portfolio.tsx
++++ b/frontend/src/pages/Portfolio.tsx
+@@ -486,9 +486,13 @@ export default function Portfolio() {
+         if (pendingWatchlistItems.length === 0) return
+         setAddingWatchlistNotes(true)
+         try {
++            // [DATA-009] watchlist_notes_persistence — pass structured fields
+             const entries = pendingWatchlistItems.map(item => ({
+                 symbol: item.symbol,
+                 notes: item.notes || undefined,
++                topic: item.sector || undefined,
++                benefit_score: item.bullish_score ?? undefined,
++                consensus_score: item.consensus ?? undefined,
+             }))
+             const response = await api.addToWatchlistBatchNotes(entries)
+             const details = response.results
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index 9bec88e..c44c5d2 100644
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -474,6 +474,13 @@ export interface WatchlistItem {
+     name: string
+     sort_order: number
+     notes: string | null
++    // [DATA-009] watchlist_notes_persistence — structured note fields
++    topic: string | null
++    benefit_score: number | null
++    consensus_score: number | null
++    expected_window: string | null
++    evidence_gap: string | null
++    watchlist_note_suggested: string | null
+     created_at: string
+     has_scheduled: boolean
+ }
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tests/test_data009_watchlist_notes_persistence.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""[DATA-009] Regression tests for watchlist notes and structured fields persistence.
+
+Ensures that:
+- Reorder does not clear notes or structured fields
+- Batch add preserves existing notes on duplicates
+- VLM mock generates proper note format
+- 0 score / empty string / None distinction
+- Frontend refresh returns all fields (via list_watchlist)
+- Structured fields roundtrip through add/list/update
+"""
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from api.database import Base
+from api.services import watchlist_service
+
+
+@pytest.fixture
+def db():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    yield session
+    session.close()
+
+
+class TestNotesPersistenceOnReorder:
+    def test_reorder_preserves_notes(self, db):
+        item_a = watchlist_service.add_watchlist_item(db, "u1", "300750.SZ", notes="重要备注")
+        item_b = watchlist_service.add_watchlist_item(db, "u1", "600519.SH")
+        watchlist_service.reorder_watchlist(db, "u1", [
+            {"id": item_b["id"], "sort_order": 0},
+            {"id": item_a["id"], "sort_order": 1},
+        ])
+        items = watchlist_service.list_watchlist(db, "u1")
+        by_symbol = {i["symbol"]: i for i in items}
+        assert by_symbol["300750.SZ"]["notes"] == "重要备注"
+        assert by_symbol["600519.SH"]["notes"] is None
+
+    def test_reorder_preserves_structured_fields(self, db):
+        item = watchlist_service.add_watchlist_item(db, "u1", "300750.SZ", notes="备注")
+        from api.database import WatchlistItemDB
+        row = db.query(WatchlistItemDB).filter(WatchlistItemDB.id == item["id"]).first()
+        row.topic = "半导体设备"
+        row.benefit_score = 9.1
+        row.consensus_score = 89
+        row.expected_window = "1月"
+        row.evidence_gap = "订单/资金"
+        row.watchlist_note_suggested = "半导体设备｜利好9.1｜共识89｜窗口1月｜缺口:订单/资金"
+        db.commit()
+
+        watchlist_service.reorder_watchlist(db, "u1", [
+            {"id": item["id"], "sort_order": 0},
+        ])
+        items = watchlist_service.list_watchlist(db, "u1")
+        assert items[0]["notes"] == "备注"
+        assert items[0]["topic"] == "半导体设备"
+        assert items[0]["benefit_score"] == 9.1
+        assert items[0]["consensus_score"] == 89
+        assert items[0]["expected_window"] == "1月"
+        assert items[0]["evidence_gap"] == "订单/资金"
+        assert items[0]["watchlist_note_suggested"] == "半导体设备｜利好9.1｜共识89｜窗口1月｜缺口:订单/资金"
+
+
+class TestNotesPersistenceOnUpdate:
+    def test_empty_notes_do_not_overwrite(self, db):
+        item = watchlist_service.add_watchlist_item(db, "u1", "300750.SZ", notes="原始备注")
+        updated = watchlist_service.update_watchlist_notes(db, "u1", item["id"], notes="")
+        assert updated["notes"] == "原始备注"
+
+    def test_clear_true_allows_empty_overwrite(self, db):
+        item = watchlist_service.add_watchlist_item(db, "u1", "300750.SZ", notes="原始备注")
+        updated = watchlist_service.update_watchlist_notes(db, "u1", item["id"], notes="", clear=True)
+        assert updated["notes"] is None
+
+    def test_update_notes_preserves_structured_fields(self, db):
+        item = watchlist_service.add_watchlist_item(db, "u1", "300750.SZ", notes="旧备注")
+        from api.database import WatchlistItemDB
+        row = db.query(WatchlistItemDB).filter(WatchlistItemDB.id == item["id"]).first()
+        row.topic = "半导体"
+        row.benefit_score = 8.5
+        row.consensus_score = 90
+        row.watchlist_note_suggested = "半导体｜利好8.5｜共识90"
+        db.commit()
+
+        updated = watchlist_service.update_watchlist_notes(db, "u1", item["id"], notes="新备注")
+        assert updated["notes"] == "新备注"
+        assert updated["topic"] == "半导体"
+        assert updated["benefit_score"] == 8.5
+        assert updated["consensus_score"] == 90
+        assert updated["watchlist_note_suggested"] == "半导体｜利好8.5｜共识90"
+
+    def test_list_returns_structured_fields_after_update(self, db):
+        item = watchlist_service.add_watchlist_item(db, "u1", "300750.SZ", notes="备注")
+        from api.database import WatchlistItemDB
+        row = db.query(WatchlistItemDB).filter(WatchlistItemDB.id == item["id"]).first()
+        row.topic = "AI算力"
+        row.benefit_score = 7.2
+        row.consensus_score = 85
+        row.expected_window = "中线"
+        row.evidence_gap = "政策确认"
+        row.watchlist_note_suggested = "AI算力｜利好7.2｜共识85"
+        db.commit()
+
+        items = watchlist_service.list_watchlist(db, "u1")
+        assert len(items) == 1
+        assert items[0]["topic"] == "AI算力"
+        assert items[0]["benefit_score"] == 7.2
+        assert items[0]["consensus_score"] == 85
+        assert items[0]["expected_window"] == "中线"
+        assert items[0]["evidence_gap"] == "政策确认"
+        assert items[0]["watchlist_note_suggested"] == "AI算力｜利好7.2｜共识85"
+
+
+class TestBatchNotesWithStructuredFields:
+    def test_batch_add_with_notes_and_structured_fields(self, db):
+        results = watchlist_service.add_watchlist_items_with_notes(db, "u1", [
+            {
+                "symbol": "300750.SZ",
+                "notes": "新能源龙头",
+                "topic": "新能源",
+                "benefit_score": 8.0,
+                "consensus_score": 88,
+                "watchlist_note_suggested": "新能源｜利好8.0｜共识88",
+            },
+        ])
+        assert results[0]["status"] == "added"
+        items = watchlist_service.list_watchlist(db, "u1")
+        assert items[0]["notes"] == "新能源龙头"
+        assert items[0]["topic"] == "新能源"
+        assert items[0]["benefit_score"] == 8.0
+        assert items[0]["consensus_score"] == 88
+        assert items[0]["watchlist_note_suggested"] == "新能源｜利好8.0｜共识88"
+
+    def test_duplicate_batch_preserves_existing_notes(self, db):
+        watchlist_service.add_watchlist_item(db, "u1", "300750.SZ", notes="已有备注")
+        results = watchlist_service.add_watchlist_items_with_notes(db, "u1", [
+            {"symbol": "300750.SZ", "notes": "新识别备注"},
+        ])
+        assert results[0]["status"] == "duplicate"
+        assert "备注已追加" in results[0]["message"]
+        items = watchlist_service.list_watchlist(db, "u1")
+        assert "已有备注" in items[0]["notes"]
+        assert "新识别备注" in items[0]["notes"]
+
+    def test_duplicate_batch_no_new_notes_preserves_existing(self, db):
+        watchlist_service.add_watchlist_item(db, "u1", "300750.SZ", notes="已有备注")
+        results = watchlist_service.add_watchlist_items_with_notes(db, "u1", [
+            {"symbol": "300750.SZ"},
+        ])
+        assert results[0]["status"] == "duplicate"
+        items = watchlist_service.list_watchlist(db, "u1")
+        assert items[0]["notes"] == "已有备注"
+
+    def test_duplicate_batch_updates_structured_fields(self, db):
+        watchlist_service.add_watchlist_item(db, "u1", "300750.SZ", notes="备注")
+        results = watchlist_service.add_watchlist_items_with_notes(db, "u1", [
+            {
+                "symbol": "300750.SZ",
+                "topic": "新主题",
+                "benefit_score": 9.1,
+                "consensus_score": 89,
+            },
+        ])
+        assert results[0]["status"] == "duplicate"
+        items = watchlist_service.list_watchlist(db, "u1")
+        assert items[0]["notes"] == "备注"
+        assert items[0]["topic"] == "新主题"
+        assert items[0]["benefit_score"] == 9.1
+        assert items[0]["consensus_score"] == 89
+
+    def test_multi_image_merge_by_symbol(self, db):
+        results = watchlist_service.add_watchlist_items_with_notes(db, "u1", [
+            {"symbol": "300750.SZ", "notes": "图片1备注", "topic": "新能源"},
+        ])
+        assert results[0]["status"] == "added"
+        results2 = watchlist_service.add_watchlist_items_with_notes(db, "u1", [
+            {"symbol": "300750.SZ", "notes": "图片2备注", "topic": "电池"},
+        ])
+        assert results2[0]["status"] == "duplicate"
+        items = watchlist_service.list_watchlist(db, "u1")
+        assert len(items) == 1
+        assert "图片1备注" in items[0]["notes"]
+        assert "图片2备注" in items[0]["notes"]
+
+
+class TestZeroEmptyNoneDistinction:
+    def test_zero_benefit_score_not_confused_with_none(self, db):
+        watchlist_service.add_watchlist_items_with_notes(db, "u1", [
+            {"symbol": "300750.SZ", "benefit_score": 0.0, "consensus_score": 0},
+        ])
+        items = watchlist_service.list_watchlist(db, "u1")
+        assert items[0]["benefit_score"] == 0.0
+        assert items[0]["consensus_score"] == 0
+
+    def test_none_vs_empty_string_notes(self, db):
+        item = watchlist_service.add_watchlist_item(db, "u1", "300750.SZ")
+        assert item["notes"] is None
+        items = watchlist_service.list_watchlist(db, "u1")
+        assert items[0]["notes"] is None
+
+    def test_explicit_empty_notes_vs_none(self, db):
+        item = watchlist_service.add_watchlist_item(db, "u1", "300750.SZ", notes="")
+        assert item["notes"] == ""
+        items = watchlist_service.list_watchlist(db, "u1")
+        assert items[0]["notes"] == ""
+
+    def test_none_structured_fields_by_default(self, db):
+        watchlist_service.add_watchlist_item(db, "u1", "300750.SZ")
+        items = watchlist_service.list_watchlist(db, "u1")
+        assert items[0]["topic"] is None
+        assert items[0]["benefit_score"] is None
+        assert items[0]["consensus_score"] is None
+        assert items[0]["expected_window"] is None
+        assert items[0]["evidence_gap"] is None
+        assert items[0]["watchlist_note_suggested"] is None
+
+
+class TestVLMNotesFormat:
+    def test_vlm_mock_generates_note_format(self):
+        from api.services.vlm_position_parser import _build_watchlist_notes
+        notes = _build_watchlist_notes("半导体设备", "刻蚀/沉积设备", 9.1, 89)
+        assert notes == "半导体设备｜刻蚀/沉积设备｜利好9.1｜共识89"
+
+    def test_vlm_mock_generates_note_with_window(self):
+        from api.services.vlm_position_parser import _build_watchlist_notes
+        notes = _build_watchlist_notes("半导体设备", "刻蚀/沉积设备", 9.1, 89)
+        base = f"{notes}｜窗口1月｜缺口:订单/资金"
+        assert "半导体设备" in base
+        assert "利好9.1" in base
+        assert "共识89" in base
+        assert "窗口1月" in base
+        assert "缺口:订单/资金" in base
+
+    def test_vlm_partial_fields(self):
+        from api.services.vlm_position_parser import _build_watchlist_notes
+        notes = _build_watchlist_notes("半导体设备", None, None, None)
+        assert notes == "半导体设备"
+
+    def test_vlm_all_null(self):
+        from api.services.vlm_position_parser import _build_watchlist_notes
+        notes = _build_watchlist_notes(None, None, None, None)
+        assert notes == ""
+
+    def test_vlm_full_roundtrip_to_watchlist(self, db):
+        results = watchlist_service.add_watchlist_items_with_notes(db, "u1", [
+            {
+                "symbol": "002371",
+                "notes": "半导体设备｜刻蚀/沉积设备｜利好9.3｜共识92",
+                "topic": "半导体设备",
+                "benefit_score": 9.3,
+                "consensus_score": 92,
+                "watchlist_note_suggested": "半导体设备｜利好9.3｜共识92｜窗口1月｜缺口:订单/资金",
+            },
+        ])
+        assert results[0]["status"] == "added"
+        items = watchlist_service.list_watchlist(db, "u1")
+
+exec
+/bin/zsh -lc 'git diff --staged --stat && git diff --stat' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ api/database.py                   |  22 +++++-
+ api/main.py                       |  21 +++++-
+ api/services/tradeflow_service.py |  86 ++++++++++++++++++++++
+ api/services/watchlist_service.py | 150 +++++++++++++++++++++++++++-----------
+ api/tradeflow_schemas.py          |  25 +++++++
+ docs/DEVLOG.md                    |  30 ++++++++
+ docs/TASKS.md                     |   6 +-
+ frontend/src/pages/Portfolio.tsx  |   4 +
+ frontend/src/types/index.ts       |   7 ++
+ 9 files changed, 305 insertions(+), 46 deletions(-)
+
+exec
+/bin/zsh -lc "grep -R \"addToWatchlistBatchNotes\\|WatchlistItem\" -n frontend/src api | head -80" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+frontend/src/types/index.ts:471:export interface WatchlistItem {
+frontend/src/types/index.ts:494:    item?: WatchlistItem
+frontend/src/types/index.ts:618:    watchlist: WatchlistItem[]
+frontend/src/pages/Portfolio.tsx:26:import type { WatchlistItem, WatchlistTableItem, ScheduledAnalysis, StockSearchResult, Report } from '@/types'
+frontend/src/pages/Portfolio.tsx:82:function SortableWatchlistItem({
+frontend/src/pages/Portfolio.tsx:97:    item: WatchlistItem
+frontend/src/pages/Portfolio.tsx:103:    onStartEditNotes: (item: WatchlistItem) => void
+frontend/src/pages/Portfolio.tsx:231:    const [watchlist, setWatchlist] = useState<WatchlistItem[]>([])
+frontend/src/pages/Portfolio.tsx:265:    const [pendingWatchlistItems, setPendingWatchlistItems] = useState<WatchlistTableItem[]>([])
+frontend/src/pages/Portfolio.tsx:439:        setPendingWatchlistItems([])
+frontend/src/pages/Portfolio.tsx:457:                setPendingWatchlistItems(allItems)
+frontend/src/pages/Portfolio.tsx:486:        if (pendingWatchlistItems.length === 0) return
+frontend/src/pages/Portfolio.tsx:490:            const entries = pendingWatchlistItems.map(item => ({
+frontend/src/pages/Portfolio.tsx:497:            const response = await api.addToWatchlistBatchNotes(entries)
+frontend/src/pages/Portfolio.tsx:509:            setPendingWatchlistItems([])
+frontend/src/pages/Portfolio.tsx:530:    const moveWatchlistItem = async (id: string, position: 'top' | 'bottom') => {
+frontend/src/pages/Portfolio.tsx:582:    const startEditNotes = (item: WatchlistItem) => {
+frontend/src/pages/Portfolio.tsx:944:                            {pendingWatchlistItems.length > 0 && (
+frontend/src/pages/Portfolio.tsx:948:                                        {pendingWatchlistItems.map((item, idx) => (
+frontend/src/pages/Portfolio.tsx:964:                                            确认添加 {pendingWatchlistItems.length} 只
+frontend/src/pages/Portfolio.tsx:968:                                            onClick={() => { setPendingWatchlistItems([]); setWatchlistFeedback(null) }}
+frontend/src/pages/Portfolio.tsx:1018:                                            <SortableWatchlistItem
+frontend/src/pages/Portfolio.tsx:1031:                                                onMoveToTop={(id) => moveWatchlistItem(id, 'top')}
+frontend/src/pages/Portfolio.tsx:1032:                                                onMoveToBottom={(id) => moveWatchlistItem(id, 'bottom')}
+frontend/src/services/api.ts:1:import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview } from '@/types'
+frontend/src/services/api.ts:188:    async getWatchlist(): Promise<{ items: WatchlistItem[] }> {
+frontend/src/services/api.ts:189:        return this.request<{ items: WatchlistItem[] }>('/v1/watchlist')
+frontend/src/services/api.ts:200:    async updateWatchlistNotes(id: string, notes: string): Promise<WatchlistItem> {
+frontend/src/services/api.ts:201:        return this.request<WatchlistItem>('/v1/watchlist/' + id, {
+frontend/src/services/api.ts:302:    async addToWatchlistBatchNotes(entries: Array<{ symbol: string; notes?: string }>): Promise<WatchlistBatchResponse> {
+api/database.py:516:class WatchlistItemDB(Base):
+Binary file api/__pycache__/database.cpython-314.pyc matches
+Binary file api/__pycache__/database.cpython-312.pyc matches
+api/services/watchlist_service.py:7:from api.database import WatchlistItemDB, ScheduledAnalysisDB
+api/services/watchlist_service.py:12:def _item_to_dict(item: WatchlistItemDB, extra: dict | None = None) -> dict:
+api/services/watchlist_service.py:35:        db.query(WatchlistItemDB)
+api/services/watchlist_service.py:36:        .filter(WatchlistItemDB.user_id == user_id)
+api/services/watchlist_service.py:37:        .order_by(WatchlistItemDB.sort_order, WatchlistItemDB.created_at)
+api/services/watchlist_service.py:54:    count = db.query(WatchlistItemDB).filter(WatchlistItemDB.user_id == user_id).count()
+api/services/watchlist_service.py:59:        db.query(WatchlistItemDB)
+api/services/watchlist_service.py:60:        .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol)
+api/services/watchlist_service.py:66:    item = WatchlistItemDB(id=__import__("uuid").uuid4().hex, user_id=user_id, symbol=symbol, notes=notes)
+api/services/watchlist_service.py:155:                    db.query(WatchlistItemDB)
+api/services/watchlist_service.py:156:                    .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol)
+api/services/watchlist_service.py:169:                    db.query(WatchlistItemDB)
+api/services/watchlist_service.py:170:                    .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol)
+api/services/watchlist_service.py:195:        db.query(WatchlistItemDB)
+api/services/watchlist_service.py:196:        .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol)
+api/services/watchlist_service.py:215:        db.query(WatchlistItemDB)
+api/services/watchlist_service.py:216:        .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol)
+api/services/watchlist_service.py:244:        db.query(WatchlistItemDB)
+api/services/watchlist_service.py:245:        .filter(WatchlistItemDB.id == item_id, WatchlistItemDB.user_id == user_id)
+api/services/watchlist_service.py:261:        db.query(WatchlistItemDB)
+api/services/watchlist_service.py:262:        .filter(WatchlistItemDB.id == item_id, WatchlistItemDB.user_id == user_id)
+api/services/watchlist_service.py:291:        db.query(WatchlistItemDB)
+api/services/watchlist_service.py:292:        .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.id.in_(id_list))
+Binary file api/services/__pycache__/watchlist_service.cpython-312.pyc matches
+
+exec
+/bin/zsh -lc "sed -n '260,380p' tests/test_data009_watchlist_notes_persistence.py; sed -n '1,340p' api/services/watchlist_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        items = watchlist_service.list_watchlist(db, "u1")
+        assert "半导体设备" in items[0]["notes"]
+        assert "利好9.3" in items[0]["notes"]
+        assert items[0]["topic"] == "半导体设备"
+        assert items[0]["benefit_score"] == 9.3
+        assert items[0]["consensus_score"] == 92
+
+
+class TestStructuredFieldsRoundtrip:
+    def test_full_roundtrip_add_list_update(self, db):
+        item = watchlist_service.add_watchlist_items_with_notes(db, "u1", [
+            {
+                "symbol": "300750.SZ",
+                "notes": "新能源龙头",
+                "topic": "新能源",
+                "benefit_score": 8.0,
+                "consensus_score": 88,
+                "expected_window": "1月",
+                "evidence_gap": "订单/资金",
+                "watchlist_note_suggested": "新能源｜利好8.0｜共识88｜窗口1月｜缺口:订单/资金",
+            },
+        ])
+        assert item[0]["status"] == "added"
+
+        items = watchlist_service.list_watchlist(db, "u1")
+        assert len(items) == 1
+        assert items[0]["notes"] == "新能源龙头"
+        assert items[0]["topic"] == "新能源"
+        assert items[0]["benefit_score"] == 8.0
+        assert items[0]["consensus_score"] == 88
+        assert items[0]["expected_window"] == "1月"
+        assert items[0]["evidence_gap"] == "订单/资金"
+        assert items[0]["watchlist_note_suggested"] == "新能源｜利好8.0｜共识88｜窗口1月｜缺口:订单/资金"
+
+        updated = watchlist_service.update_watchlist_notes(
+            db, "u1", items[0]["id"], notes="更新后的备注"
+        )
+        assert updated["notes"] == "更新后的备注"
+        assert updated["topic"] == "新能源"
+        assert updated["benefit_score"] == 8.0
+        assert updated["consensus_score"] == 88
+
+        items2 = watchlist_service.list_watchlist(db, "u1")
+        assert items2[0]["notes"] == "更新后的备注"
+        assert items2[0]["topic"] == "新能源"
+
+    def test_user_notes_not_overwritten_by_suggested(self, db):
+        watchlist_service.add_watchlist_item(db, "u1", "300750.SZ", notes="用户自己的备注")
+        watchlist_service.add_watchlist_items_with_notes(db, "u1", [
+            {
+                "symbol": "300750.SZ",
+                "notes": None,
+                "watchlist_note_suggested": "系统建议备注",
+            },
+        ])
+        items = watchlist_service.list_watchlist(db, "u1")
+        assert items[0]["notes"] == "用户自己的备注"
+        assert items[0]["watchlist_note_suggested"] == "系统建议备注"
+
+    def test_delete_does_not_affect_other_items_notes(self, db):
+        item_a = watchlist_service.add_watchlist_items_with_notes(db, "u1", [
+            {"symbol": "300750.SZ", "notes": "备注A", "topic": "新能源"},
+        ])
+        item_b = watchlist_service.add_watchlist_items_with_notes(db, "u1", [
+            {"symbol": "600519.SH", "notes": "备注B", "topic": "消费"},
+        ])
+        assert item_a[0]["status"] == "added"
+        assert item_b[0]["status"] == "added"
+
+        items = watchlist_service.list_watchlist(db, "u1")
+        id_a = next(i["id"] for i in items if i["symbol"] == "300750.SZ")
+        watchlist_service.delete_watchlist_item(db, "u1", id_a)
+
+        remaining = watchlist_service.list_watchlist(db, "u1")
+        assert len(remaining) == 1
+        assert remaining[0]["notes"] == "备注B"
+        assert remaining[0]["topic"] == "消费"
+"""Watchlist service for database operations."""
+
+from typing import List
+
+from sqlalchemy.orm import Session
+
+from api.database import WatchlistItemDB, ScheduledAnalysisDB
+
+MAX_WATCHLIST_ITEMS = 300
+
+
+def _item_to_dict(item: WatchlistItemDB, extra: dict | None = None) -> dict:
+    # [DATA-009] watchlist_notes_persistence
+    d = {
+        "id": item.id,
+        "symbol": item.symbol,
+        "sort_order": item.sort_order,
+        "notes": item.notes,
+        "topic": getattr(item, "topic", None),
+        "benefit_score": getattr(item, "benefit_score", None),
+        "consensus_score": getattr(item, "consensus_score", None),
+        "expected_window": getattr(item, "expected_window", None),
+        "evidence_gap": getattr(item, "evidence_gap", None),
+        "watchlist_note_suggested": getattr(item, "watchlist_note_suggested", None),
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+    }
+    if extra:
+        d.update(extra)
+    return d
+
+
+def list_watchlist(db: Session, user_id: str) -> List[dict]:
+    """List user's watchlist items with scheduled status."""
+    items = (
+        db.query(WatchlistItemDB)
+        .filter(WatchlistItemDB.user_id == user_id)
+        .order_by(WatchlistItemDB.sort_order, WatchlistItemDB.created_at)
+        .all()
+    )
+    scheduled_symbols = set(
+        row.symbol for row in
+        db.query(ScheduledAnalysisDB.symbol)
+        .filter(ScheduledAnalysisDB.user_id == user_id)
+        .all()
+    )
+    return [
+        _item_to_dict(item, {"has_scheduled": item.symbol in scheduled_symbols})
+        for item in items
+    ]
+
+
+def add_watchlist_item(db: Session, user_id: str, symbol: str, notes: str | None = None) -> dict:
+    """Add a stock to user's watchlist."""
+    count = db.query(WatchlistItemDB).filter(WatchlistItemDB.user_id == user_id).count()
+    if count >= MAX_WATCHLIST_ITEMS:
+        raise ValueError(f"自选股数量已达上限 ({MAX_WATCHLIST_ITEMS})")
+
+    existing = (
+        db.query(WatchlistItemDB)
+        .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol)
+        .first()
+    )
+    if existing:
+        raise ValueError(f"{symbol} 已在自选列表中")
+
+    item = WatchlistItemDB(id=__import__("uuid").uuid4().hex, user_id=user_id, symbol=symbol, notes=notes)
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return _item_to_dict(item)
+
+
+def add_watchlist_items(db: Session, user_id: str, symbols: List[str]) -> List[dict]:
+    """Add multiple stocks to user's watchlist and return per-item results."""
+    results: List[dict] = []
+    for symbol in symbols:
+        try:
+            item = add_watchlist_item(db, user_id, symbol)
+            results.append({
+                "symbol": symbol,
+                "status": "added",
+                "item": item,
+                "message": "已添加到自选列表",
+            })
+        except ValueError as exc:
+            message = str(exc)
+            status = "duplicate" if "已在自选列表" in message else "failed"
+            results.append({
+                "symbol": symbol,
+                "status": status,
+                "message": message,
+            })
+    return results
+
+
+# [VLM-001] watchlist_notes_protection
+def _merge_notes(existing_notes: str | None, new_notes: str | None) -> str | None:
+    if not new_notes:
+        return existing_notes
+    if not existing_notes:
+        return new_notes
+    return f"{existing_notes}｜{new_notes}"
+
+
+# [VLM-001] watchlist_notes_protection
+# [DATA-009] watchlist_notes_persistence
+def add_watchlist_items_with_notes(
+    db: Session,
+    user_id: str,
+    entries: List[dict],
+) -> List[dict]:
+    """Add multiple stocks with optional notes and structured fields. Each entry:
+    {symbol, notes?, topic?, benefit_score?, consensus_score?, expected_window?,
+     evidence_gap?, watchlist_note_suggested?}.
+
+    When a stock already exists (duplicate):
+    - If new notes provided and existing notes empty → write notes directly
+    - If new notes provided and existing notes non-empty → append with ｜ separator
+    - If no new notes → leave unchanged
+    - Structured fields always preserved/merged (new values overwrite old)
+    """
+    results: List[dict] = []
+    for entry in entries:
+        symbol = entry.get("symbol", "")
+        notes = entry.get("notes")
+        # [DATA-009] structured fields from VLM/H-008
+        topic = entry.get("topic")
+        benefit_score = entry.get("benefit_score")
+        consensus_score = entry.get("consensus_score")
+        expected_window = entry.get("expected_window")
+        evidence_gap = entry.get("evidence_gap")
+        watchlist_note_suggested = entry.get("watchlist_note_suggested")
+        try:
+            item = add_watchlist_item(db, user_id, symbol, notes=notes)
+            # [DATA-009] persist structured fields on new item
+            _update_structured_fields(db, user_id, symbol, topic=topic,
+                                      benefit_score=benefit_score,
+                                      consensus_score=consensus_score,
+                                      expected_window=expected_window,
+                                      evidence_gap=evidence_gap,
+                                      watchlist_note_suggested=watchlist_note_suggested)
+            results.append({
+                "symbol": symbol,
+                "status": "added",
+                "item": _get_item_dict(db, user_id, symbol),
+                "message": "已添加到自选列表",
+            })
+        except ValueError as exc:
+            message = str(exc)
+            status = "duplicate" if "已在自选列表" in message else "failed"
+            merged_notes = None
+            updated_item = None
+            if status == "duplicate" and notes:
+                existing = (
+                    db.query(WatchlistItemDB)
+                    .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol)
+                    .first()
+                )
+                if existing:
+                    merged_notes = _merge_notes(existing.notes, notes)
+                    if merged_notes != existing.notes:
+                        existing.notes = merged_notes
+                        db.commit()
+                        db.refresh(existing)
+                    updated_item = _item_to_dict(existing)
+            elif status == "duplicate":
+                # [DATA-009] still update structured fields even without notes
+                existing = (
+                    db.query(WatchlistItemDB)
+                    .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol)
+                    .first()
+                )
+                if existing and any(v is not None for v in [topic, benefit_score, consensus_score, expected_window, evidence_gap, watchlist_note_suggested]):
+                    _update_structured_fields(db, user_id, symbol, topic=topic,
+                                              benefit_score=benefit_score,
+                                              consensus_score=consensus_score,
+                                              expected_window=expected_window,
+                                              evidence_gap=evidence_gap,
+                                              watchlist_note_suggested=watchlist_note_suggested)
+                    updated_item = _get_item_dict(db, user_id, symbol)
+                elif existing:
+                    updated_item = _item_to_dict(existing)
+            results.append({
+                "symbol": symbol,
+                "status": status,
+                "message": message if not merged_notes else f"{message}（备注已追加）",
+                **({"item": updated_item} if updated_item else {}),
+            })
+    return results
+
+
+# [DATA-009] watchlist_notes_persistence
+def _get_item_dict(db: Session, user_id: str, symbol: str) -> dict | None:
+    existing = (
+        db.query(WatchlistItemDB)
+        .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol)
+        .first()
+    )
+    return _item_to_dict(existing) if existing else None
+
+
+def _update_structured_fields(
+    db: Session,
+    user_id: str,
+    symbol: str,
+    *,
+    topic: str | None = None,
+    benefit_score: float | None = None,
+    consensus_score: int | None = None,
+    expected_window: str | None = None,
+    evidence_gap: str | None = None,
+    watchlist_note_suggested: str | None = None,
+) -> None:
+    existing = (
+        db.query(WatchlistItemDB)
+        .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol)
+        .first()
+    )
+    if not existing:
+        return
+    if topic is not None:
+        existing.topic = topic
+    if benefit_score is not None:
+        existing.benefit_score = benefit_score
+    if consensus_score is not None:
+        existing.consensus_score = consensus_score
+    if expected_window is not None:
+        existing.expected_window = expected_window
+    if evidence_gap is not None:
+        existing.evidence_gap = evidence_gap
+    if watchlist_note_suggested is not None:
+        existing.watchlist_note_suggested = watchlist_note_suggested
+    db.commit()
+    db.refresh(existing)
+
+
+def update_watchlist_notes(db: Session, user_id: str, item_id: str, notes: str, clear: bool = False) -> dict | None:
+    """Update notes for a watchlist item. Returns updated item or None if not found.
+
+    Protection: empty notes won't overwrite existing notes unless clear=True.
+    Structured fields (topic, benefit_score, etc.) are never cleared by this function.
+    """
+    item = (
+        db.query(WatchlistItemDB)
+        .filter(WatchlistItemDB.id == item_id, WatchlistItemDB.user_id == user_id)
+        .first()
+    )
+    if not item:
+        return None
+    if not notes and not clear and item.notes:
+        return _item_to_dict(item)
+    item.notes = notes if notes else None
+    db.commit()
+    db.refresh(item)
+    return _item_to_dict(item)
+
+
+def delete_watchlist_item(db: Session, user_id: str, item_id: str) -> bool:
+    """Delete a watchlist item. Returns True if found and deleted."""
+    item = (
+        db.query(WatchlistItemDB)
+        .filter(WatchlistItemDB.id == item_id, WatchlistItemDB.user_id == user_id)
+        .first()
+    )
+    if not item:
+        return False
+    db.delete(item)
+    db.commit()
+    return True
+
+
+def reorder_watchlist(db: Session, user_id: str, items: List[dict]) -> None:
+    """Batch-update sort_order for watchlist items.
+
+    ``items`` is a list of ``{"id": str, "sort_order": int}``.
+    Validates that all ids belong to the user and sort_orders are unique,
+    then persists in a single transaction.
+    """
+    if not items:
+        return
+
+    id_list = [entry["id"] for entry in items]
+    order_list = [entry["sort_order"] for entry in items]
+
+    if len(set(id_list)) != len(id_list):
+        raise ValueError("存在重复的 id")
+    if len(set(order_list)) != len(order_list):
+        raise ValueError("存在重复的 sort_order")
+
+    rows = (
+        db.query(WatchlistItemDB)
+        .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.id.in_(id_list))
+        .all()
+    )
+    if len(rows) != len(id_list):
+        raise ValueError("包含不属于当前用户的自选股")
+
+    row_map = {row.id: row for row in rows}
+    for entry in items:
+        row_map[entry["id"]].sort_order = entry["sort_order"]
+    db.commit()
+
+exec
+/bin/zsh -lc "sed -n '180,210p' frontend/src/services/api.ts; sed -n '4650,4725p' api/main.py; grep -R \"class.*Watchlist\\|Watchlist.*Request\\|add_to_watchlist_batch\" -n api/main.py api/*.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    }): Promise<Report> {
+        return this.request<Report>('/v1/reports', {
+            method: 'POST',
+            body: JSON.stringify(report),
+        })
+    }
+
+    // Watchlist
+    async getWatchlist(): Promise<{ items: WatchlistItem[] }> {
+        return this.request<{ items: WatchlistItem[] }>('/v1/watchlist')
+    }
+    async addToWatchlist(input: string): Promise<WatchlistBatchResponse> {
+        return this.request<WatchlistBatchResponse>('/v1/watchlist', {
+            method: 'POST',
+            body: JSON.stringify({ text: input }),
+        })
+    }
+    async removeFromWatchlist(id: string): Promise<void> {
+        await this.request('/v1/watchlist/' + id, { method: 'DELETE' })
+    }
+    async updateWatchlistNotes(id: string, notes: string): Promise<WatchlistItem> {
+        return this.request<WatchlistItem>('/v1/watchlist/' + id, {
+            method: 'PATCH',
+            body: JSON.stringify({ notes }),
+        })
+    }
+    async reorderWatchlist(items: Array<{ id: string; sort_order: number }>): Promise<{ message: string }> {
+        return this.request<{ message: string }>('/v1/watchlist/reorder', {
+            method: 'PUT',
+            body: JSON.stringify({ items }),
+        })
+        })
+
+    results.sort(key=lambda row: row["_order"])
+    for row in results:
+        row.pop("_order", None)
+    summary = {
+        "total": len(tokens),
+        "added": sum(1 for row in results if row["status"] == "added"),
+        "duplicate": sum(1 for row in results if row["status"] == "duplicate"),
+        "failed": sum(1 for row in results if row["status"] in {"invalid", "failed"}),
+    }
+    message_parts = [f"共处理 {summary['total']} 项"]
+    if summary["added"]:
+        message_parts.append(f"新增 {summary['added']} 项")
+    if summary["duplicate"]:
+        message_parts.append(f"重复 {summary['duplicate']} 项")
+    if summary["failed"]:
+        message_parts.append(f"失败 {summary['failed']} 项")
+    return {
+        "message": "，".join(message_parts),
+        "summary": summary,
+        "results": results,
+    }
+
+
+# [VLM-001] watchlist_table_parser
+class WatchlistBatchWithNotesRequest(BaseModel):
+    entries: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+@app.post("/v1/watchlist/batch-notes")
+def add_to_watchlist_batch_notes(
+    body: WatchlistBatchWithNotesRequest,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    """Batch-add watchlist items with optional notes (from VLM watchlist table parsing)."""
+    if not body.entries:
+        raise HTTPException(400, "entries is required")
+
+    name_to_code = _load_cn_stock_map()
+    code_to_name = _get_reverse_stock_map()
+
+    resolved: List[Dict[str, Any]] = []
+    for entry in body.entries:
+        symbol_raw = str(entry.get("symbol", "")).strip()
+        notes = entry.get("notes")
+        symbol, name, _ = _resolve_watchlist_identifier(symbol_raw, name_to_code, code_to_name)
+        if not symbol:
+            symbol = symbol_raw
+        if not name:
+            name = code_to_name.get(symbol, symbol)
+        # [DATA-009] watchlist_notes_persistence — pass structured fields
+        resolved.append({
+            "symbol": symbol,
+            "name": name,
+            "notes": notes,
+            "topic": entry.get("topic"),
+            "benefit_score": entry.get("benefit_score"),
+            "consensus_score": entry.get("consensus_score"),
+            "expected_window": entry.get("expected_window"),
+            "evidence_gap": entry.get("evidence_gap"),
+            "watchlist_note_suggested": entry.get("watchlist_note_suggested"),
+        })
+
+    add_results = watchlist_service.add_watchlist_items_with_notes(
+        db, current_user.id, resolved
+    )
+    for entry, result in zip(resolved, add_results):
+        item = result.get("item")
+        if item:
+            item["name"] = entry["name"]
+            item["has_scheduled"] = False
+        result["name"] = entry["name"]
+
+    added = sum(1 for r in add_results if r["status"] == "added")
+api/main.py:896:class WatchlistAddRequest(BaseModel):
+api/main.py:4598:    body: WatchlistAddRequest,
+api/main.py:4676:class WatchlistBatchWithNotesRequest(BaseModel):
+api/main.py:4681:def add_to_watchlist_batch_notes(
+api/main.py:4682:    body: WatchlistBatchWithNotesRequest,
+api/main.py:4754:class WatchlistNotesUpdate(BaseModel):
+api/main.py:4759:class WatchlistReorderRequest(BaseModel):
+api/main.py:4765:    body: WatchlistReorderRequest,
+api/database.py:516:class WatchlistItemDB(Base):
+api/main.py:896:class WatchlistAddRequest(BaseModel):
+api/main.py:4598:    body: WatchlistAddRequest,
+api/main.py:4676:class WatchlistBatchWithNotesRequest(BaseModel):
+api/main.py:4681:def add_to_watchlist_batch_notes(
+api/main.py:4682:    body: WatchlistBatchWithNotesRequest,
+api/main.py:4754:class WatchlistNotesUpdate(BaseModel):
+api/main.py:4759:class WatchlistReorderRequest(BaseModel):
+api/main.py:4765:    body: WatchlistReorderRequest,
+
+exec
+/bin/zsh -lc "grep -R \"missing_data_fields_json\\|fund_flow_unit_verified\\|tradeflow_candidates\" -n tradingagents api tests | head -80" in /Users/maybee/TradingAgents-AShare
+ succeeded in 288ms:
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/dataflows/evidence_coverage_audit.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [DATA-007] evidence_coverage_audit
+"""
+raw_evidence 覆盖率审计与候选可信度联动。
+
+把 raw_evidence contract 的覆盖情况转成可读审计结果，并联动 TradeFlow 候选可信度，
+避免"候选分数高但关键数据缺证据"的情况继续进入高优先级。
+
+功能：
+  1. audit_raw_evidence(): 审计 raw_evidence 字典，输出覆盖率、关键缺口、stale 字段、
+     单位未知字段、fallback 字段和质量等级。
+  2. audit_candidate_evidence(): 审计单个 TradeFlow 候选的证据完整度。
+  3. apply_credibility_linkage(): 根据审计结果联动候选等级，关键缺失时限制升级。
+  4. render_audit_summary(): 渲染审计摘要 Markdown。
+  5. build_evidence_coverage_section(): 为夜间日报构建证据覆盖率 section。
+
+使用示例：
+    from tradingagents.dataflows.evidence_coverage_audit import (
+        audit_raw_evidence,
+        audit_candidate_evidence,
+        apply_credibility_linkage,
+    )
+    result = audit_raw_evidence(raw_evidence)
+    print(result.evidence_quality_level)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from .evidence_contract import (
+    EvidenceContract,
+    compute_contract_completeness,
+)
+
+
+_CRITICAL_FIELDS_BY_CANDIDATE_TYPE: Dict[str, List[str]] = {
+    "POLICY_AMBUSH": ["fundamentals", "news", "announcements"],
+    "POLICY_CONFIRM": ["fundamentals", "news", "announcements"],
+    "TECH_TRADE": ["stock_data", "fund_flow_individual"],
+    "EVENT_WATCH": ["news", "announcements"],
+    "PSEUDO_POLICY": ["news"],
+    "OVERHEATED_AVOID": ["stock_data", "fund_flow_individual"],
+    "UNCLASSIFIED_DATA_GAP": [],
+}
+
+_EVIDENCE_FIELD_LABELS: Dict[str, str] = {
+    "stock_data": "行情/OHLCV",
+    "fund_flow_individual": "个股资金流",
+    "fund_flow_board": "板块资金流",
+    "lhb": "龙虎榜",
+    "news": "新闻",
+    "global_news": "全球新闻",
+    "announcements": "公告/研报",
+    "fundamentals": "财务基本面",
+    "balance_sheet": "资产负债表",
+    "cashflow": "现金流量表",
+    "income_statement": "利润表",
+    "insider_transactions": "内部人交易",
+    "zt_pool": "涨停池",
+    "hot_stocks": "热门股票",
+    "indicators": "技术指标",
+    "vpa_indicators": "量价分析指标",
+}
+
+_EVIDENCE_FIELD_FAMILIES: Dict[str, str] = {
+    "stock_data": "ohlcv",
+    "indicators": "ohlcv",
+    "vpa_indicators": "ohlcv",
+    "fund_flow_individual": "fund_flow",
+    "fund_flow_board": "fund_flow",
+    "lhb": "lhb",
+    "news": "news",
+    "global_news": "news",
+    "announcements": "notice",
+    "fundamentals": "financials",
+    "balance_sheet": "financials",
+    "cashflow": "financials",
+    "income_statement": "financials",
+    "insider_transactions": "insider",
+    "zt_pool": "zt_pool",
+    "hot_stocks": "hot_stocks",
+}
+
+_TIER_RANK = {"A": 1, "B": 2, "C": 3}
+
+
+def _worse_tier(current: str, minimum: str) -> str:
+    """Return the worse (higher rank number) of two tiers."""
+    current_rank = _TIER_RANK.get(current, 3)
+    minimum_rank = _TIER_RANK.get(minimum, 3)
+    return "A" if current_rank <= minimum_rank and minimum_rank == 1 else (
+        "B" if max(current_rank, minimum_rank) == 2 else "C"
+    )
+
+
+@dataclass
+class EvidenceAuditResult:
+    evidence_coverage: float = 0.0
+    critical_missing_fields: List[str] = field(default_factory=list)
+    stale_fields: List[str] = field(default_factory=list)
+    unit_unknown_fields: List[str] = field(default_factory=list)
+    fallback_fields: List[str] = field(default_factory=list)
+    failed_fields: List[str] = field(default_factory=list)
+    not_queried_fields: List[str] = field(default_factory=list)
+    normal_no_data_fields: List[str] = field(default_factory=list)
+    has_data_fields: List[str] = field(default_factory=list)
+    evidence_quality_level: str = "UNKNOWN"
+    total_fields: int = 0
+    satisfied_fields: int = 0
+    audit_refs: List[Dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "evidence_coverage": round(self.evidence_coverage, 4),
+            "critical_missing_fields": self.critical_missing_fields,
+            "stale_fields": self.stale_fields,
+            "unit_unknown_fields": self.unit_unknown_fields,
+            "fallback_fields": self.fallback_fields,
+            "failed_fields": self.failed_fields,
+            "not_queried_fields": self.not_queried_fields,
+            "normal_no_data_fields": self.normal_no_data_fields,
+            "has_data_fields": self.has_data_fields,
+            "evidence_quality_level": self.evidence_quality_level,
+            "total_fields": self.total_fields,
+            "satisfied_fields": self.satisfied_fields,
+            "audit_refs_count": len(self.audit_refs),
+        }
+
+
+@dataclass
+class CandidateCredibilityResult:
+    symbol: str = ""
+    candidate_type: str = ""
+    evidence_audit: Optional[EvidenceAuditResult] = None
+    tier_allowed: str = ""
+    tier_restricted: bool = False
+    need_deep_ta_allowed: bool = True
+    credibility_level: str = "UNKNOWN"
+    credibility_reasons: List[str] = field(default_factory=list)
+    credibility_refs: List[Dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "candidate_type": self.candidate_type,
+            "evidence_audit": self.evidence_audit.to_dict() if self.evidence_audit else None,
+            "tier_allowed": self.tier_allowed,
+            "tier_restricted": self.tier_restricted,
+            "need_deep_ta_allowed": self.need_deep_ta_allowed,
+            "credibility_level": self.credibility_level,
+            "credibility_reasons": self.credibility_reasons,
+            "credibility_refs_count": len(self.credibility_refs),
+        }
+
+
+def _classify_quality_level(
+    coverage: float,
+    critical_missing: List[str],
+    failed_count: int,
+    total: int,
+) -> str:
+    if total == 0:
+        return "UNKNOWN"
+    if coverage >= 0.8 and not critical_missing and failed_count == 0:
+        return "HIGH"
+    if coverage >= 0.5 and len(critical_missing) <= 1:
+        return "MEDIUM"
+    if coverage >= 0.3:
+        return "LOW"
+    return "CRITICAL"
+
+
+def audit_raw_evidence(raw_evidence: Dict[str, Any]) -> EvidenceAuditResult:
+    """Audit raw_evidence contract coverage.
+
+    Scans every evidence key, classifies fields by status, detects stale/
+    unit-unknown/fallback fields, and produces an overall quality level.
+
+    Args:
+        raw_evidence: Dict mapping evidence key -> EvidenceContract dict.
+
+    Returns:
+        EvidenceAuditResult with full audit breakdown.
+    """
+    result = EvidenceAuditResult()
+
+    if not raw_evidence:
+        result.evidence_quality_level = "UNKNOWN"
+        result.audit_refs.append({
+            "field": "raw_evidence_audit",
+            "status": "NO_EVIDENCE",
+            "reason": "raw_evidence 为空",
+        })
+        return result
+
+    contract_completeness = compute_contract_completeness(raw_evidence)
+    result.total_fields = contract_completeness["total_checks"]
+    result.satisfied_fields = contract_completeness["satisfied_checks"]
+    result.evidence_coverage = (
+        round(result.satisfied_fields / result.total_fields, 4)
+        if result.total_fields > 0
+        else 0.0
+    )
+
+    for ev_key, entry in raw_evidence.items():
+        if not isinstance(entry, dict):
+            result.not_queried_fields.append(ev_key)
+            continue
+
+        contract = EvidenceContract.from_dict(entry)
+        label = _EVIDENCE_FIELD_LABELS.get(ev_key, ev_key)
+
+        if contract.has_data:
+            result.has_data_fields.append(ev_key)
+        elif contract.is_failed:
+            result.failed_fields.append(ev_key)
+        elif contract.status == "NORMAL_NO_DATA":
+            result.normal_no_data_fields.append(ev_key)
+        else:
+            result.not_queried_fields.append(ev_key)
+
+        if contract.is_realtime_patched:
+            result.stale_fields.append(ev_key)
+
+        if not contract.unit_known and contract.has_data:
+            result.unit_unknown_fields.append(ev_key)
+
+        if contract.is_fallback:
+            result.fallback_fields.append(ev_key)
+
+    missing_from_completeness = contract_completeness.get("missing_details", {})
+    for ev_key, missing_reqs in missing_from_completeness.items():
+        if ev_key not in result.failed_fields and ev_key not in result.not_queried_fields:
+            result.critical_missing_fields.append(ev_key)
+
+    result.evidence_quality_level = _classify_quality_level(
+        coverage=result.evidence_coverage,
+        critical_missing=result.critical_missing_fields,
+        failed_count=len(result.failed_fields),
+        total=result.total_fields,
+    )
+
+    result.audit_refs.append({
+        "field": "raw_evidence_audit",
+        "evidence_coverage": result.evidence_coverage,
+        "quality_level": result.evidence_quality_level,
+        "has_data_count": len(result.has_data_fields),
+        "failed_count": len(result.failed_fields),
+        "stale_count": len(result.stale_fields),
+        "unit_unknown_count": len(result.unit_unknown_fields),
+        "fallback_count": len(result.fallback_fields),
+    })
+
+    return result
+
+
+def audit_candidate_evidence(
+    candidate_data_completeness: float = 0.0,
+
+exec
+/bin/zsh -lc "sed -n '260,560p' tradingagents/dataflows/evidence_coverage_audit.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    candidate_data_completeness: float = 0.0,
+    candidate_tradeflow_completeness: float = 0.0,
+    candidate_type: str = "",
+    missing_data_fields: Optional[List[str]] = None,
+    evidence_gate_applied: bool = False,
+    fund_flow_unit_verified: bool = False,
+    raw_evidence: Optional[Dict[str, Any]] = None,
+    has_policy_evidence: bool = False,
+    has_tech_signal: bool = False,
+    has_realtime_quote: bool = False,
+) -> CandidateCredibilityResult:
+    """Audit a TradeFlow candidate's evidence completeness and credibility.
+
+    Combines the raw_evidence contract audit with candidate-level metadata
+    to determine credibility.
+
+    Args:
+        candidate_data_completeness: S-005 data completeness (0-1).
+        candidate_tradeflow_completeness: S-008 tradeflow completeness (0-1).
+        candidate_type: Candidate type string (POLICY_AMBUSH, TECH_TRADE, etc).
+        missing_data_fields: S-008 missing dimension labels.
+        evidence_gate_applied: Whether evidence gate was triggered.
+        fund_flow_unit_verified: Fund flow unit verification status.
+        raw_evidence: Optional raw_evidence dict for deep audit.
+        has_policy_evidence: Whether policy evidence exists.
+        has_tech_signal: Whether tech signal exists.
+        has_realtime_quote: Whether realtime quote data is available.
+
+    Returns:
+        CandidateCredibilityResult with credibility assessment.
+    """
+    result = CandidateCredibilityResult(
+        candidate_type=candidate_type,
+    )
+
+    if raw_evidence:
+        result.evidence_audit = audit_raw_evidence(raw_evidence)
+    else:
+        coverage = max(candidate_data_completeness, candidate_tradeflow_completeness)
+        result.evidence_audit = EvidenceAuditResult(
+            evidence_coverage=coverage,
+            total_fields=10,
+            satisfied_fields=int(coverage * 10),
+            evidence_quality_level=_classify_quality_level(
+                coverage=coverage,
+                critical_missing=[],
+                failed_count=0,
+                total=10,
+            ),
+        )
+
+    audit = result.evidence_audit
+    reasons: List[str] = []
+    refs: List[Dict[str, Any]] = []
+    tier_allowed = "A"
+    need_deep_ta_allowed = True
+    restricted = False
+
+    critical_for_type = _CRITICAL_FIELDS_BY_CANDIDATE_TYPE.get(candidate_type, [])
+
+    if candidate_type in ("POLICY_AMBUSH", "POLICY_CONFIRM"):
+        if not has_policy_evidence:
+            tier_allowed = "B"
+            restricted = True
+            reasons.append("政策候选缺少政策/公司证据，不得进入A层")
+            refs.append({
+                "field": "policy_evidence_gate",
+                "value": "missing",
+                "candidate_type": candidate_type,
+                "gate": "POLICY_AMBUSH_requires_policy_evidence",
+            })
+        if audit:
+            for f in ("fundamentals", "news", "announcements"):
+                if f in audit.failed_fields or f in audit.not_queried_fields:
+                    if f not in reasons:
+                        reasons.append(f"政策候选关键证据缺失: {_EVIDENCE_FIELD_LABELS.get(f, f)}")
+
+    if candidate_type == "TECH_TRADE":
+        if not has_realtime_quote and not has_tech_signal:
+            tier_allowed = "C"
+            restricted = True
+            reasons.append("技术候选缺少实时行情/量价证据，降级")
+            refs.append({
+                "field": "tech_evidence_gate",
+                "value": "missing_realtime_and_tech",
+                "candidate_type": candidate_type,
+            })
+        elif not has_realtime_quote:
+            tier_allowed = _worse_tier(tier_allowed, "B")
+            restricted = True
+            reasons.append("技术候选缺少实时行情，限制升级")
+            refs.append({
+                "field": "tech_evidence_gate",
+                "value": "missing_realtime_quote",
+                "candidate_type": candidate_type,
+            })
+        if not fund_flow_unit_verified:
+            need_deep_ta_allowed = False
+            reasons.append("技术候选资金流单位未校验，禁止深挖")
+            refs.append({
+                "field": "fund_flow_unit_gate",
+                "value": "not_verified",
+                "candidate_type": candidate_type,
+            })
+
+    if candidate_type == "UNCLASSIFIED_DATA_GAP":
+        tier_allowed = "C"
+        restricted = True
+        need_deep_ta_allowed = False
+        reasons.append("证据缺口候选不得升级")
+        refs.append({
+            "field": "data_gap_gate",
+            "value": "unclassified",
+            "candidate_type": candidate_type,
+        })
+
+    if audit and audit.evidence_coverage < 0.3:
+        tier_allowed = _worse_tier(tier_allowed, "B")
+        restricted = True
+        if not any("证据覆盖率" in r for r in reasons):
+            reasons.append(f"证据覆盖率过低({audit.evidence_coverage:.0%})，限制升级")
+
+    if audit and audit.evidence_coverage < 0.5:
+        need_deep_ta_allowed = False
+        if not any("覆盖率不足" in r for r in reasons):
+            reasons.append(f"证据覆盖率不足({audit.evidence_coverage:.0%})，禁止深挖")
+
+    if evidence_gate_applied:
+        if not any("证据门控" in r for r in reasons):
+            reasons.append("证据门控已触发")
+
+    if missing_data_fields:
+        critical_missing_labels = [f for f in missing_data_fields if "关键" in f or "OHLCV" in f or "行情" in f]
+        if critical_missing_labels and tier_allowed == "A":
+            tier_allowed = _worse_tier(tier_allowed, "B")
+            restricted = True
+
+    quality = audit.evidence_quality_level if audit else "UNKNOWN"
+    if quality in ("CRITICAL", "LOW"):
+        tier_allowed = _worse_tier(tier_allowed, "B")
+        restricted = True
+
+    if restricted:
+        if quality in ("HIGH", "MEDIUM"):
+            credibility = "MEDIUM"
+        else:
+            credibility = quality
+    else:
+        credibility = quality
+
+    result.tier_allowed = tier_allowed
+    result.tier_restricted = restricted
+    result.need_deep_ta_allowed = need_deep_ta_allowed
+    result.credibility_level = credibility
+    result.credibility_reasons = reasons
+    result.credibility_refs = refs
+
+    return result
+
+
+def apply_credibility_linkage(
+    candidate_tier: str = "",
+    candidate_need_deep_ta: bool = False,
+    credibility: Optional[CandidateCredibilityResult] = None,
+) -> Dict[str, Any]:
+    """Apply credibility linkage to a candidate's tier and need_deep_ta.
+
+    If the credibility assessment restricts the candidate, this function
+    overrides tier and need_deep_ta accordingly.
+
+    Args:
+        candidate_tier: Current tier (A/B/C).
+        candidate_need_deep_ta: Whether deep TA is requested.
+        credibility: CandidateCredibilityResult from audit_candidate_evidence.
+
+    Returns:
+        Dict with potentially overridden tier/need_deep_ta and reasons.
+    """
+    if credibility is None:
+        return {
+            "tier": candidate_tier,
+            "need_deep_ta": candidate_need_deep_ta,
+            "tier_overridden": False,
+            "need_deep_ta_overridden": False,
+            "tier_reason_addition": "",
+            "why_not_deep_ta_addition": "",
+            "credibility_applied": False,
+        }
+
+    tier = candidate_tier
+    need_deep_ta = candidate_need_deep_ta
+    tier_overridden = False
+    deep_ta_overridden = False
+    tier_reasons: List[str] = []
+    deep_ta_reasons: List[str] = []
+
+    allowed = credibility.tier_allowed
+    if tier < allowed:
+        tier = allowed
+        tier_overridden = True
+        tier_reasons.append(
+            f"可信度联动: 候选限制为{allowed}层({credibility.credibility_level})"
+        )
+
+    if need_deep_ta and not credibility.need_deep_ta_allowed:
+        need_deep_ta = False
+        deep_ta_overridden = True
+        deep_ta_reasons.append(
+            f"可信度联动: 禁止深挖({credibility.credibility_level})"
+        )
+
+    return {
+        "tier": tier,
+        "need_deep_ta": need_deep_ta,
+        "tier_overridden": tier_overridden,
+        "need_deep_ta_overridden": deep_ta_overridden,
+        "tier_reason_addition": "; ".join(tier_reasons),
+        "why_not_deep_ta_addition": "; ".join(deep_ta_reasons),
+        "credibility_applied": tier_overridden or deep_ta_overridden,
+    }
+
+
+def render_audit_summary(audit: EvidenceAuditResult) -> str:
+    """Render an EvidenceAuditResult as a Markdown summary string."""
+    lines: List[str] = []
+    lines.append("### raw_evidence 覆盖率审计")
+    lines.append("")
+    lines.append(f"- **覆盖率**: {audit.evidence_coverage:.1%} ({audit.satisfied_fields}/{audit.total_fields})")
+    lines.append(f"- **质量等级**: {audit.evidence_quality_level}")
+    lines.append(f"- **有数据字段**: {len(audit.has_data_fields)}")
+    lines.append(f"- **失败字段**: {len(audit.failed_fields)}")
+    lines.append(f"- **未查询字段**: {len(audit.not_queried_fields)}")
+    lines.append(f"- **Stale 字段**: {len(audit.stale_fields)}")
+    lines.append(f"- **单位未知字段**: {len(audit.unit_unknown_fields)}")
+    lines.append(f"- **Fallback 字段**: {len(audit.fallback_fields)}")
+    lines.append(f"- **关键缺失字段**: {len(audit.critical_missing_fields)}")
+
+    if audit.critical_missing_fields:
+        lines.append("")
+        lines.append("**关键缺失**:")
+        for f in audit.critical_missing_fields:
+            label = _EVIDENCE_FIELD_LABELS.get(f, f)
+            lines.append(f"- {label} ({f})")
+
+    if audit.failed_fields:
+        lines.append("")
+        lines.append("**失败字段**:")
+        for f in audit.failed_fields:
+            label = _EVIDENCE_FIELD_LABELS.get(f, f)
+            lines.append(f"- {label} ({f})")
+
+    if audit.stale_fields:
+        lines.append("")
+        lines.append("**Stale 字段 (实时补丁)**:")
+        for f in audit.stale_fields:
+            label = _EVIDENCE_FIELD_LABELS.get(f, f)
+            lines.append(f"- {label} ({f})")
+
+    if audit.unit_unknown_fields:
+        lines.append("")
+        lines.append("**单位未知字段**:")
+        for f in audit.unit_unknown_fields:
+            label = _EVIDENCE_FIELD_LABELS.get(f, f)
+            lines.append(f"- {label} ({f})")
+
+    if audit.fallback_fields:
+        lines.append("")
+        lines.append("**Fallback 字段**:")
+        for f in audit.fallback_fields:
+            label = _EVIDENCE_FIELD_LABELS.get(f, f)
+            lines.append(f"- {label} ({f})")
+
+    lines.append("")
+    lines.append("---")
+    lines.append("*Generated by evidence_coverage_audit.py — [DATA-007] evidence_coverage_audit*")
+    return "\n".join(lines)
+
+
+def render_credibility_summary(credibility: CandidateCredibilityResult) -> str:
+    """Render a CandidateCredibilityResult as a Markdown summary."""
+    lines: List[str] = []
+    lines.append(f"### 候选可信度评估: {credibility.symbol}")
+    lines.append("")
+    lines.append(f"- **候选类型**: {credibility.candidate_type}")
+    lines.append(f"- **可信度等级**: {credibility.credibility_level}")
+    lines.append(f"- **允许最高层**: {credibility.tier_allowed}")
+    lines.append(f"- **等级受限**: {'是' if credibility.tier_restricted else '否'}")
+    lines.append(f"- **允许深挖**: {'是' if credibility.need_deep_ta_allowed else '否'}")
+
+    if credibility.evidence_audit:
+        lines.append(f"- **证据覆盖率**: {credibility.evidence_audit.evidence_coverage:.1%}")
+
+    if credibility.credibility_reasons:
+        lines.append("")
+        lines.append("**限制原因**:")
+        for r in credibility.credibility_reasons:
+            lines.append(f"- {r}")
+
+    lines.append("")
+    lines.append("---")
+    lines.append("*Generated by evidence_coverage_audit.py — [DATA-007] evidence_coverage_audit*")
+
+exec
+/bin/zsh -lc "sed -n '460,520p' frontend/src/types/index.ts; grep -R \"evidence_coverage\" -n tests api tradingagents | head -100; nl -ba api/services/watchlist_service.py | sed -n '126,182p'; nl -ba api/services/tradeflow_service.py | sed -n '1048,1088p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    published_at: string
+    items: AnnouncementItem[]
+    cta_label?: string
+    cta_path?: string
+}
+
+export interface LatestAnnouncementResponse {
+    announcement: Announcement | null
+}
+
+// Watchlist & Scheduled Analysis
+export interface WatchlistItem {
+    id: string
+    symbol: string
+    name: string
+    sort_order: number
+    notes: string | null
+    // [DATA-009] watchlist_notes_persistence — structured note fields
+    topic: string | null
+    benefit_score: number | null
+    consensus_score: number | null
+    expected_window: string | null
+    evidence_gap: string | null
+    watchlist_note_suggested: string | null
+    created_at: string
+    has_scheduled: boolean
+}
+
+export interface WatchlistBatchResult {
+    input: string
+    symbol?: string
+    name?: string
+    status: 'added' | 'duplicate' | 'invalid' | 'failed'
+    message: string
+    item?: WatchlistItem
+}
+
+export interface WatchlistBatchResponse {
+    message: string
+    summary: {
+        total: number
+        added: number
+        duplicate: number
+        failed: number
+    }
+    results: WatchlistBatchResult[]
+}
+
+export interface ScheduledAnalysis {
+    id: string
+    symbol: string
+    name: string
+    horizon: string
+    trigger_time: string
+    is_active: boolean
+    last_run_date: string | null
+    last_run_status: string | null
+    last_report_id: string | null
+    consecutive_failures: number
+    created_at: string
+    has_imported_context?: boolean
+tests/test_g001_three_layer.py:163:            evidence_coverage=75,
+tests/test_g001_three_layer.py:228:            evidence_coverage=50,
+tests/test_g001_three_layer.py:320:            evidence_coverage=70,
+tests/test_g001_three_layer.py:352:            evidence_coverage=70,
+tests/test_g001_three_layer.py:369:            evidence_coverage=75,
+tests/test_g001_three_layer.py:385:            evidence_coverage=75,
+tests/test_g001_three_layer.py:401:            evidence_coverage=75,
+tests/test_g001_three_layer.py:414:            evidence_coverage=75,
+tests/test_g001_three_layer.py:433:            evidence_coverage=75,
+tests/test_p0_p1_acceptance.py:119:            evidence_coverage=75,
+tests/test_p0_p1_acceptance.py:136:            evidence_coverage=75,
+tests/test_p0_p1_acceptance.py:195:            evidence_coverage=75,
+tests/test_data008_astock_fallback_replay.py:48:from tradingagents.dataflows.evidence_coverage_audit import (
+tests/test_data008_astock_fallback_replay.py:436:        assert audit.evidence_coverage > 0
+tests/test_data008_astock_fallback_replay.py:454:        assert audit.evidence_coverage > 0
+tests/test_data008_astock_fallback_replay.py:465:        assert audit.evidence_coverage < 1.0
+tests/test_data008_astock_fallback_replay.py:474:        assert audit_full.evidence_coverage != audit_sparse.evidence_coverage
+tests/test_data008_astock_fallback_replay.py:671:        assert audit_full.evidence_coverage > audit_sparse.evidence_coverage
+Binary file tests/__pycache__/test_data_p0_603629.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_execution_schema.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_g001_three_layer.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_data004_evidence_contract.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_data007_evidence_coverage_audit.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_e_series_fixes.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_readiness_score.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_p0_p1_acceptance.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_g007_fund_lhb_provenance.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_data008_astock_fallback_replay.cpython-312-pytest-9.0.2.pyc matches
+tests/test_e_series_fixes.py:8:    calculate_evidence_coverage,
+tests/test_e_series_fixes.py:106:        coverage = calculate_evidence_coverage(
+tests/test_e_series_fixes.py:122:        coverage = calculate_evidence_coverage(
+tests/test_e_series_fixes.py:138:        coverage = calculate_evidence_coverage(
+tests/test_e_series_fixes.py:163:            evidence_coverage=80,
+tests/test_e_series_fixes.py:171:            evidence_coverage=80,
+tests/test_execution_schema.py:32:                evidence_coverage=80,
+tests/test_execution_schema.py:45:            evidence_coverage=80,
+tests/test_execution_schema.py:58:            evidence_coverage=80,
+tests/test_execution_schema.py:71:            evidence_coverage=80,
+tests/test_execution_schema.py:84:            evidence_coverage=80,
+tests/test_execution_schema.py:97:            evidence_coverage=80,
+tests/test_execution_schema.py:110:            evidence_coverage=80,
+tests/test_execution_schema.py:123:            evidence_coverage=60,
+tests/test_execution_schema.py:142:            evidence_coverage=80,
+tests/test_execution_schema.py:153:            evidence_coverage=80,
+tests/test_execution_schema.py:163:            evidence_coverage=80,
+tests/test_execution_schema.py:174:            evidence_coverage=80,
+tests/test_execution_schema.py:184:            evidence_coverage=80,
+tests/test_execution_schema.py:194:            evidence_coverage=80,
+tests/test_execution_schema.py:204:            evidence_coverage=40,
+tests/test_execution_schema.py:207:        assert "low_evidence_coverage" in s.data_quality_flags
+tests/test_execution_schema.py:215:            evidence_coverage=80,
+tests/test_execution_schema.py:218:        assert "low_evidence_coverage" not in s.data_quality_flags
+tests/test_execution_schema.py:227:            evidence_coverage=40,
+tests/test_execution_schema.py:241:            evidence_coverage=80,
+tests/test_execution_schema.py:253:            evidence_coverage=60,
+tests/test_data004_evidence_contract.py:433:        from tradingagents.agents.utils.readiness_score import calculate_evidence_coverage_from_contract
+tests/test_data004_evidence_contract.py:435:        score = calculate_evidence_coverage_from_contract(re_data)
+tests/test_data004_evidence_contract.py:440:        from tradingagents.agents.utils.readiness_score import calculate_evidence_coverage_from_contract
+tests/test_data004_evidence_contract.py:441:        score = calculate_evidence_coverage_from_contract(None)
+tests/test_data004_evidence_contract.py:445:        from tradingagents.agents.utils.readiness_score import calculate_evidence_coverage_from_contract
+tests/test_data004_evidence_contract.py:446:        score = calculate_evidence_coverage_from_contract({})
+tests/test_data_p0_603629.py:20:    calculate_evidence_coverage,
+tests/test_data_p0_603629.py:355:    """Test that low evidence_coverage prevents HIGH confidence."""
+tests/test_data_p0_603629.py:358:        result = assess_confidence(80, evidence_coverage=80)
+tests/test_data_p0_603629.py:361:    def test_low_evidence_coverage_caps_confidence(self):
+tests/test_data_p0_603629.py:362:        result = assess_confidence(90, evidence_coverage=42)
+tests/test_data_p0_603629.py:365:    def test_low_evidence_coverage_medium(self):
+tests/test_data_p0_603629.py:366:        result = assess_confidence(80, evidence_coverage=42)
+tests/test_data_p0_603629.py:370:        result = assess_confidence(30, evidence_coverage=30)
+tests/test_data_p0_603629.py:373:    def test_no_evidence_coverage_no_cap(self):
+tests/test_data_p0_603629.py:378:        result = assess_confidence(80, evidence_coverage=70)
+tests/test_data_p0_603629.py:382:        result = assess_confidence(90, evidence_coverage=69)
+tests/test_readiness_score.py:10:    calculate_evidence_coverage,
+tests/test_readiness_score.py:76:# ── Test 3: Missing critical evidence → evidence_coverage < 70 ──
+tests/test_readiness_score.py:79:    ev = calculate_evidence_coverage(
+tests/test_readiness_score.py:92:def test_full_evidence_coverage_100():
+tests/test_readiness_score.py:93:    ev = calculate_evidence_coverage(
+tests/test_readiness_score.py:108:    ev = calculate_evidence_coverage(
+tests/test_readiness_score.py:122:    ev = calculate_evidence_coverage(
+tests/test_readiness_score.py:135:# ── Test 4: source_coverage or evidence_coverage < 70 → strong action blocked ──
+tests/test_readiness_score.py:138:    gate = get_strong_action_gate(source_coverage=50, evidence_coverage=80)
+tests/test_readiness_score.py:143:def test_strong_action_gate_blocks_on_low_evidence_coverage():
+tests/test_readiness_score.py:144:    gate = get_strong_action_gate(source_coverage=80, evidence_coverage=50)
+tests/test_readiness_score.py:146:    assert any("evidence_coverage" in f for f in gate["failures"])
+tests/test_readiness_score.py:151:        source_coverage=80, evidence_coverage=80,
+tests/test_readiness_score.py:160:        source_coverage=80, evidence_coverage=80,
+tests/test_readiness_score.py:169:        source_coverage=80, evidence_coverage=80,
+tests/test_readiness_score.py:178:        source_coverage=80, evidence_coverage=80,
+tests/test_readiness_score.py:189:        source_coverage=85, evidence_coverage=85,
+tests/test_readiness_score.py:201:        source_coverage=60, evidence_coverage=85,
+tests/test_readiness_score.py:213:        source_coverage=85, evidence_coverage=85,
+tests/test_readiness_score.py:225:        source_coverage=85, evidence_coverage=85,
+tests/test_readiness_score.py:236:        source_coverage=50, evidence_coverage=50,
+tests/test_readiness_score.py:246:        source_coverage=85, evidence_coverage=85,
+tests/test_readiness_score.py:260:        source_coverage=85, evidence_coverage=85,
+tests/test_readiness_score.py:272:        source_coverage=70, evidence_coverage=85,
+tests/test_readiness_score.py:283:        source_coverage=85, evidence_coverage=85,
+tests/test_readiness_score.py:295:        source_coverage=20, evidence_coverage=20,
+tests/test_readiness_score.py:430:        evidence_coverage=75,
+tests/test_readiness_score.py:451:        evidence_coverage=80,
+   126	        # [DATA-009] structured fields from VLM/H-008
+   127	        topic = entry.get("topic")
+   128	        benefit_score = entry.get("benefit_score")
+   129	        consensus_score = entry.get("consensus_score")
+   130	        expected_window = entry.get("expected_window")
+   131	        evidence_gap = entry.get("evidence_gap")
+   132	        watchlist_note_suggested = entry.get("watchlist_note_suggested")
+   133	        try:
+   134	            item = add_watchlist_item(db, user_id, symbol, notes=notes)
+   135	            # [DATA-009] persist structured fields on new item
+   136	            _update_structured_fields(db, user_id, symbol, topic=topic,
+   137	                                      benefit_score=benefit_score,
+   138	                                      consensus_score=consensus_score,
+   139	                                      expected_window=expected_window,
+   140	                                      evidence_gap=evidence_gap,
+   141	                                      watchlist_note_suggested=watchlist_note_suggested)
+   142	            results.append({
+   143	                "symbol": symbol,
+   144	                "status": "added",
+   145	                "item": _get_item_dict(db, user_id, symbol),
+   146	                "message": "已添加到自选列表",
+   147	            })
+   148	        except ValueError as exc:
+   149	            message = str(exc)
+   150	            status = "duplicate" if "已在自选列表" in message else "failed"
+   151	            merged_notes = None
+   152	            updated_item = None
+   153	            if status == "duplicate" and notes:
+   154	                existing = (
+   155	                    db.query(WatchlistItemDB)
+   156	                    .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol)
+   157	                    .first()
+   158	                )
+   159	                if existing:
+   160	                    merged_notes = _merge_notes(existing.notes, notes)
+   161	                    if merged_notes != existing.notes:
+   162	                        existing.notes = merged_notes
+   163	                        db.commit()
+   164	                        db.refresh(existing)
+   165	                    updated_item = _item_to_dict(existing)
+   166	            elif status == "duplicate":
+   167	                # [DATA-009] still update structured fields even without notes
+   168	                existing = (
+   169	                    db.query(WatchlistItemDB)
+   170	                    .filter(WatchlistItemDB.user_id == user_id, WatchlistItemDB.symbol == symbol)
+   171	                    .first()
+   172	                )
+   173	                if existing and any(v is not None for v in [topic, benefit_score, consensus_score, expected_window, evidence_gap, watchlist_note_suggested]):
+   174	                    _update_structured_fields(db, user_id, symbol, topic=topic,
+   175	                                              benefit_score=benefit_score,
+   176	                                              consensus_score=consensus_score,
+   177	                                              expected_window=expected_window,
+   178	                                              evidence_gap=evidence_gap,
+   179	                                              watchlist_note_suggested=watchlist_note_suggested)
+   180	                    updated_item = _get_item_dict(db, user_id, symbol)
+   181	                elif existing:
+   182	                    updated_item = _item_to_dict(existing)
+  1048	        credibilities = []
+  1049	        for row in rows:
+  1050	            data_comp = float(row.get("data_completeness", 0) or 0)
+  1051	            tf_comp = float(row.get("tradeflow_data_completeness", 0) or 0)
+  1052	            cand_type = str(row.get("candidate_type", "") or "")
+  1053	            missing_fields = json.loads(row.get("missing_data_fields_json", "[]") or "[]")
+  1054	            gate_applied = bool(row.get("evidence_gate_applied", 0))
+  1055	            ff_verified = bool(row.get("fund_flow_unit_verified", 0))
+  1056	            symbol = str(row.get("symbol", ""))
+  1057	
+  1058	            has_policy = cand_type in ("POLICY_AMBUSH", "POLICY_CONFIRM", "PSEUDO_POLICY")
+  1059	            has_tech = cand_type == "TECH_TRADE"
+  1060	            has_realtime = tf_comp >= 0.5
+  1061	
+  1062	            cred = audit_candidate_evidence(
+  1063	                candidate_data_completeness=data_comp,
+  1064	                candidate_tradeflow_completeness=tf_comp,
+  1065	                candidate_type=cand_type,
+  1066	                missing_data_fields=missing_fields,
+  1067	                evidence_gate_applied=gate_applied,
+  1068	                fund_flow_unit_verified=ff_verified,
+  1069	                has_policy_evidence=has_policy,
+  1070	                has_tech_signal=has_tech,
+  1071	                has_realtime_quote=has_realtime,
+  1072	            )
+  1073	            cred.symbol = symbol
+  1074	
+  1075	            if cred.evidence_audit:
+  1076	                audits.append(cred.evidence_audit)
+  1077	            credibilities.append(cred)
+  1078	
+  1079	        summary_md = build_evidence_coverage_section(
+  1080	            audits=audits if audits else None,
+  1081	            credibilities=credibilities if credibilities else None,
+  1082	        )
+  1083	
+  1084	        return {
+  1085	            "status": "ok",
+  1086	            "trade_date": trade_date,
+  1087	            "total_candidates": len(rows),
+  1088	            "audits_count": len(audits),
+
+exec
+/bin/zsh -lc "nl -ba api/services/tradeflow_service.py | sed -n '1084,1102p'; nl -ba api/tradeflow_schemas.py | sed -n '300,322p'; grep -n \"raw_evidence\" -n tradingagents/tradeflow/candidate_engine.py | head -40" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+  1084	        return {
+  1085	            "status": "ok",
+  1086	            "trade_date": trade_date,
+  1087	            "total_candidates": len(rows),
+  1088	            "audits_count": len(audits),
+  1089	            "credibilities_count": len(credibilities),
+  1090	            "credibilities": [c.to_dict() for c in credibilities],
+  1091	            "summary_markdown": summary_md,
+  1092	            "runtime_tier_meta": _fast_meta,
+  1093	        }
+  1094	    finally:
+  1095	        conn.close()
+  1096	
+  1097	
+  1098	# [TF-UX-003] post_market_review
+  1099	def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
+  1100	    """Generate post-market review for trade_date using post_market_review module."""
+  1101	    from tradingagents.tradeflow.candidate_engine import init_db
+  1102	    from tradingagents.tradeflow.post_market_review import (
+   300	    review: Optional[Dict[str, Any]] = None
+   301	
+   302	
+   303	# [DATA-007] evidence_coverage_audit
+   304	class EvidenceCredibilityItem(BaseModel):
+   305	    symbol: str = ""
+   306	    candidate_type: str = ""
+   307	    evidence_coverage: float = 0.0
+   308	    evidence_quality_level: str = "UNKNOWN"
+   309	    tier_allowed: str = ""
+   310	    tier_restricted: bool = False
+   311	    need_deep_ta_allowed: bool = True
+   312	    credibility_level: str = "UNKNOWN"
+   313	    credibility_reasons: List[str] = Field(default_factory=list)
+   314	
+   315	
+   316	class TradeFlowEvidenceAuditResponse(BaseModel):
+   317	    status: str = "ok"
+   318	    trade_date: str = ""
+   319	    total_candidates: int = 0
+   320	    audits_count: int = 0
+   321	    credibilities_count: int = 0
+   322	    credibilities: List[EvidenceCredibilityItem] = Field(default_factory=list)
+
+exec
+/bin/zsh -lc "sed -n '4560,4635p' api/main.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            from api.services.vlm_position_parser import parse_watchlist_table_image
+            items = await asyncio.to_thread(parse_watchlist_table_image, image_bytes, file.content_type)
+            items = await asyncio.to_thread(_repair_portfolio_position_symbols, items)
+            return {"mode": "watchlist", "items": items}
+        else:
+            from api.services.vlm_position_parser import parse_position_image
+            positions = await asyncio.to_thread(parse_position_image, image_bytes, file.content_type)
+            positions = await asyncio.to_thread(_repair_portfolio_position_symbols, positions)
+            return {"positions": positions}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        logger.warning("[parse-image] VLM parsing failed: %s", exc)
+        raise HTTPException(500, "图片解析失败，请稍后重试") from exc
+
+
+@app.get("/v1/dashboard/tracking-board")
+def get_dashboard_tracking_board(
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    return tracking_board_service.get_tracking_board(db, current_user.id)
+
+
+# ── Watchlist ─────────────────────────────────────────────────────────────────
+
+@app.get("/v1/watchlist")
+def list_watchlist(
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    items = watchlist_service.list_watchlist(db, current_user.id)
+    _attach_stock_names(items, _get_reverse_stock_map())
+    return {"items": items}
+
+
+@app.post("/v1/watchlist")
+def add_to_watchlist(
+    body: WatchlistAddRequest,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    text = str(body.text or body.symbol or "").strip()
+    if not text:
+        raise HTTPException(400, "text or symbol is required")
+
+    tokens = _split_watchlist_batch_text(text)
+    if not tokens:
+        raise HTTPException(400, "至少提供一个股票代码或名称")
+
+    name_to_code = _load_cn_stock_map()
+    code_to_name = _get_reverse_stock_map()
+
+    resolved_entries: List[Dict[str, Any]] = []
+    results: List[Dict[str, Any]] = []
+    for idx, token in enumerate(tokens):
+        symbol, name, error = _resolve_watchlist_identifier(token, name_to_code, code_to_name)
+        if error:
+            results.append({
+                "_order": idx,
+                "input": token,
+                "status": "invalid",
+                "message": error,
+            })
+            continue
+        resolved_entries.append({
+            "_order": idx,
+            "input": token,
+            "symbol": symbol,
+            "name": name,
+        })
+
+    add_results = watchlist_service.add_watchlist_items(
+        db,
+        current_user.id,
+        [entry["symbol"] for entry in resolved_entries],
+
+exec
+/bin/zsh -lc "sed -n '4635,4665p' api/main.py; sed -n '4725,4788p' api/main.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        [entry["symbol"] for entry in resolved_entries],
+    )
+    for entry, result in zip(resolved_entries, add_results):
+        item = result.get("item")
+        if item:
+            item["name"] = entry["name"]
+            item["has_scheduled"] = False
+        results.append({
+            "_order": entry["_order"],
+            "input": entry["input"],
+            "symbol": entry["symbol"],
+            "name": entry["name"],
+            "status": result["status"],
+            "message": result["message"],
+            "item": item,
+        })
+
+    results.sort(key=lambda row: row["_order"])
+    for row in results:
+        row.pop("_order", None)
+    summary = {
+        "total": len(tokens),
+        "added": sum(1 for row in results if row["status"] == "added"),
+        "duplicate": sum(1 for row in results if row["status"] == "duplicate"),
+        "failed": sum(1 for row in results if row["status"] in {"invalid", "failed"}),
+    }
+    message_parts = [f"共处理 {summary['total']} 项"]
+    if summary["added"]:
+        message_parts.append(f"新增 {summary['added']} 项")
+    if summary["duplicate"]:
+        message_parts.append(f"重复 {summary['duplicate']} 项")
+    added = sum(1 for r in add_results if r["status"] == "added")
+    duplicate = sum(1 for r in add_results if r["status"] == "duplicate")
+    failed = sum(1 for r in add_results if r["status"] == "failed")
+    message_parts = [f"共处理 {len(add_results)} 项"]
+    if added:
+        message_parts.append(f"新增 {added} 项")
+    if duplicate:
+        message_parts.append(f"重复 {duplicate} 项")
+    if failed:
+        message_parts.append(f"失败 {failed} 项")
+
+    return {
+        "message": "，".join(message_parts),
+        "summary": {"total": len(add_results), "added": added, "duplicate": duplicate, "failed": failed},
+        "results": add_results,
+    }
+
+
+@app.delete("/v1/watchlist/{item_id}", status_code=204)
+def delete_from_watchlist(
+    item_id: str,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    if not watchlist_service.delete_watchlist_item(db, current_user.id, item_id):
+        raise HTTPException(404, "未找到该自选股")
+
+
+# [VLM-001] watchlist_notes_protection
+class WatchlistNotesUpdate(BaseModel):
+    notes: str
+    clear: bool = False
+
+
+class WatchlistReorderRequest(BaseModel):
+    items: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+@app.put("/v1/watchlist/reorder")
+def reorder_watchlist(
+    body: WatchlistReorderRequest,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        watchlist_service.reorder_watchlist(db, current_user.id, body.items)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"message": "排序已更新"}
+
+
+@app.patch("/v1/watchlist/{item_id}")
+def update_watchlist_notes(
+    item_id: str,
+    body: WatchlistNotesUpdate,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    result = watchlist_service.update_watchlist_notes(db, current_user.id, item_id, body.notes, clear=body.clear)
+    if not result:
+        raise HTTPException(404, "未找到该自选股")
+    return result
+
+
+
+codex
+The patch introduces regressions in the new persistence and audit API behavior: duplicate note imports can drop structured fields, and the evidence audit endpoint returns defaulted coverage/quality values to clients.
+
+Full review comments:
+
+- [P2] Preserve structured fields when merging duplicate notes — /Users/maybee/TradingAgents-AShare/api/services/watchlist_service.py:153-165
+  When a duplicate watchlist item is imported with both `notes` and structured fields, this branch appends the notes but never calls `_update_structured_fields`, so fields such as `topic`, `benefit_score`, or `watchlist_note_suggested` are silently ignored. This affects the screenshot/VLM batch-add path where each duplicate entry commonly carries both a generated note and structured metadata, defeating the new persistence guarantee for existing symbols.
+
+- [P2] Flatten evidence audit fields before returning — /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py:1090-1090
+  For any candidate returned by `/v1/tradeflow/evidence-audit`, `c.to_dict()` nests the actual coverage and quality under `evidence_audit`, but the `response_model` expects top-level `evidence_coverage` and `evidence_quality_level`. FastAPI will filter the nested object and fill those top-level fields with defaults, so clients always see `0.0`/`UNKNOWN` even when the audit computed a real value.
+The patch introduces regressions in the new persistence and audit API behavior: duplicate note imports can drop structured fields, and the evidence audit endpoint returns defaulted coverage/quality values to clients.
+
+Full review comments:
+
+- [P2] Preserve structured fields when merging duplicate notes — /Users/maybee/TradingAgents-AShare/api/services/watchlist_service.py:153-165
+  When a duplicate watchlist item is imported with both `notes` and structured fields, this branch appends the notes but never calls `_update_structured_fields`, so fields such as `topic`, `benefit_score`, or `watchlist_note_suggested` are silently ignored. This affects the screenshot/VLM batch-add path where each duplicate entry commonly carries both a generated note and structured metadata, defeating the new persistence guarantee for existing symbols.
+
+- [P2] Flatten evidence audit fields before returning — /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py:1090-1090
+  For any candidate returned by `/v1/tradeflow/evidence-audit`, `c.to_dict()` nests the actual coverage and quality under `evidence_audit`, but the `response_model` expects top-level `evidence_coverage` and `evidence_quality_level`. FastAPI will filter the nested object and fill those top-level fields with defaults, so clients always see `0.0`/`UNKNOWN` even when the audit computed a real value.
