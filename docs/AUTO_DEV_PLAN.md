@@ -137,9 +137,8 @@ Codex 审核时不只看 diff，还要同时检查：
 - 纯文档/纯配置变更（无 .py/.ts/.tsx 文件改动）可标记 PASS_DOC_ONLY
 
 漏 review 的后果：
-- 标记为 PASS_UNREVIEWED
-- 下一次自动开发必须补 review
-- 发现 P0/P1 则追加修复 commit
+- 任务标记 NEEDS_HUMAN，停止执行，等待人工介入
+- 不允许 commit（PASS_UNREVIEWED 已于 2026-06-04 删除）
 
 **教训来源**：2026-06-04，PERF-004 和 DATA-P1-SOURCE-GAP-AUDIT 因手动恢复测试失败时跳过了 review，被孟发现后补救。
 
