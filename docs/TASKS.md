@@ -50,7 +50,7 @@
 24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
 25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
 26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
-27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
 28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，ready，依赖 DATA-001/DATA-004 ✓）。
 29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，in_progress — claimed PERF-003-20260602-200127）。
 30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
@@ -80,7 +80,7 @@
 7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
 8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
 9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
-10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，ready）。
+10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
 11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，ready）。
 12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，ready）。
 13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，ready）。
@@ -587,7 +587,7 @@
 ### DATA-P1-ASTOCK-LIVE-SMOKE: cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1）
 - **描述**：建立低频 live smoke 脚本/测试，用少量固定股票验证 cn_astock/Eastmoney 关键端点可用性、限流和字段单位，防止“fixture 通过但实盘接口失效”。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — DATA-P1-ASTOCK-LIVE-SMOKE-20260604
 - **前置条件**：`DATA-P0-FUND-ROUTE` 完成。
 - **执行约束**：
   - 默认测试必须 mock/fixture；live smoke 必须通过环境变量显式开启，例如 `TA_LIVE_DATA_SMOKE=1`。

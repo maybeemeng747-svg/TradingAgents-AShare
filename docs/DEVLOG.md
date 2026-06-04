@@ -4,6 +4,57 @@
 
 ---
 
+## 2026-06-04 | DATA-P1-ASTOCK-LIVE-SMOKE: cn_astock/Eastmoney 关键源 live smoke 与限流验证
+
+- **执行者**：OpenCode
+- **任务**：DATA-P1-ASTOCK-LIVE-SMOKE — 建立低频 live smoke 脚本/测试，用少量固定股票验证 cn_astock/Eastmoney 关键端点可用性、限流和字段单位，防止"fixture 通过但实盘接口失效"。
+- **修改文件**：
+  - `tradingagents/dataflows/live_smoke.py` — 新建：[DATA-P1-ASTOCK-LIVE-SMOKE] astock_live_smoke
+    - `EndpointSmokeResult` 数据类：endpoint / vendor / symbol / status / latency_ms / field_count / unit / unit_verified / error / has_data / sample_snippet / rate_limit_ok
+    - `LiveSmokeReport` 数据类：run_at / date / symbols / results / summary / env_gated
+    - `_make_endpoint_definitions()` 4 个端点：cn_astock push2his_fund_flow / datacenter_lhb / tencent_realtime_quote / cninfo_announcements
+    - `_smoke_single_endpoint()` 单端点 smoke 执行：rate_limit 检查 + 0.5s 最小间隔 + 方法调用 + 结果解析（OK / FAILED / NORMAL_NO_DATA / failure_string 检测 / unit 验证）
+    - `run_live_smoke()` 主 runner：`TA_LIVE_DATA_SMOKE=1` 环境变量门控，最多 3 只股票，4 端点 × N 股票
+    - `_compute_summary()` 聚合：按端点分组统计 OK/FAILED/SKIPPED/NORMAL_NO_DATA / avg_latency_ms / all_passed / has_failures
+    - `render_live_smoke_report()` Markdown 渲染：Summary / Endpoint Details / Failed Endpoints / Per-Endpoint Summary
+    - `save_live_smoke_report()` 输出到 `docs/data_source_reports/live-smoke-YYYY-MM-DD.md`
+    - `is_live_smoke_enabled()` 环境变量检查
+  - `scripts/run_live_smoke.py` — 新建：CLI 入口
+    - `TA_LIVE_DATA_SMOKE=1` 开启 live 调用
+    - `--symbols` 自定义样本股
+    - `--output` 自定义输出路径
+    - `--dry-run` 打印到 stdout
+    - FAILED 时 exit code 1
+  - `tests/test_data_p1_astock_live_smoke.py` — 新建，76 个测试覆盖：
+    - `TestEndpointSmokeResult` (5): to_dict roundtrip / failed / long error truncation / long snippet truncation / default NOT_RUN
+    - `TestLiveSmokeReport` (2): to_dict roundtrip / empty report
+    - `TestDetectUnit` (5): 万元冒号 / 万元英文冒号 / 元 / 无单位 / 嵌入上下文
+    - `TestCountDataLines` (4): 正常CSV / 空 / 仅header / 去除hash
+    - `TestEndpointDefinitions` (8): 4个端点 / fund_flow / lhb / realtime / announcements / expected_unit / args_template / lhb force=True
+    - `TestResolveArgs` (4): symbol替换 / date替换 / list替换 / mixed
+    - `TestComputeSummary` (7): all ok / has failures / skipped不影响 / NORMAL_NO_DATA不是failure / 按端点分组 / 空结果 / 全skipped
+    - `TestRunLiveSmokeGated` (4): env未设→SKIPPED / skipped有results / max symbols / 默认symbols
+    - `TestRunLiveSmokeMockedLive` (6): fund_flow ok / lhb no data / fund_flow failure / realtime quote / announcements / 多股票
+    - `TestSmokeSingleEndpoint` (8): fund_flow ok mock / lhb no data / lhb has data / failure string / exception / empty / unit mismatch / rate_limit checked
+    - `TestRenderLiveSmokeReport` (8): summary / details / env_gated / failed section / no failed / per-endpoint / task marker
+    - `TestSaveLiveSmokeReport` (2): creates file / markdown content
+    - `TestEnvGating` (3): default disabled / enabled / zero disabled
+    - `TestRateLimiting` (2): min interval / max symbols
+    - `TestAcceptanceDataP1AstockLiveSmoke` (10): 全部验收标准
+  - `docs/TASKS.md` — DATA-P1-ASTOCK-LIVE-SMOKE 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：76 passed (DATA-P1-ASTOCK-LIVE-SMOKE)；130 passed (M-008 + data_source_replay 回归)；117 passed (DATA-series 回归)；0 failed
+- **关键逻辑**：
+  - 环境变量门控：`TA_LIVE_DATA_SMOKE=1` 才执行 live 调用，否则全部 SKIPPED
+  - 4 个关键端点覆盖：push2his 资金流 / datacenter 龙虎榜 / 腾讯实时行情 / CNInfo 公告
+  - 限流：每次端点调用间隔至少 0.5s，复用 cn_astock_provider 的 `_rate_limit()`
+  - 最多 3 只样本股，默认 600519.SH / 000001.SZ / 603629.SH
+  - 端点失败报告 FAILED，非异动日无龙虎榜报告 NORMAL_NO_DATA，两者明确区分
+  - 资金流单位验证：检测"万元"标注并与期望值比对
+  - 报告输出到 `docs/data_source_reports/live-smoke-YYYY-MM-DD.md`
+  - CLI：`TA_LIVE_DATA_SMOKE=1 python scripts/run_live_smoke.py`
+- **执行边界**：未调用 live LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
 ## 2026-06-04 | DATA-P1-LHB-FUND-DECOUPLE: 龙虎榜与资金流触发链路复核
 
 - **执行者**：OpenCode
@@ -2509,3 +2560,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-P1-LHB-FUND-DECOUPLE-20260604-round1.txt
 - **Run archive**: docs/task_runs/DATA-P1-LHB-FUND-DECOUPLE-20260604-123938/
+
+## 2026-06-04 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-P1-ASTOCK-LIVE-SMOKE - cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-P1-ASTOCK-LIVE-SMOKE-20260604-round1.txt
+- **Run archive**: docs/task_runs/DATA-P1-ASTOCK-LIVE-SMOKE-20260604-124937/
