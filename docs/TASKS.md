@@ -988,7 +988,7 @@
 ### DATA-014: 新闻/政策事件 fixture 与 live smoke 补充（P2）
 - **描述**：补齐新闻/政策事件源的 fixture replay 和低频 live smoke，验证昊天雷达核心事件源在失败、空结果、限流时的状态语义。
 - **优先级**：P2
-- **状态**：done -- [DATA-014] policy_news_fixture_smoke
+- **状态**：done -- commit ed3fc04
 - **前置条件**：`DATA-005`、`DATA-P1-ASTOCK-LIVE-SMOKE` 完成 ✓。
 - **执行约束**：
   - live smoke 必须环境变量显式开启。
