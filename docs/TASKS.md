@@ -61,7 +61,7 @@
 35. `H-011`：候选矛盾证据与负面清单解释（P2，ready，依赖 H-009 ✓）。
 36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，done，依赖 H-007/UI-006 ✓）。
 37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，ready，依赖 H-005/DATA-007 ✓）。
-38. `V-005`：夜间昊天候选质量日报与样本回放（P1，ready，依赖 V-004/DATA-006 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
 39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
 40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，ready，依赖 INF-001 ✓）。
 41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，ready，依赖 TF-OBS-001/UI-004 ✓）。
@@ -2196,7 +2196,7 @@
 ### V-005: 夜间昊天候选质量日报与样本回放（P1）
 - **描述**：把 DATA-006、H-006、V-004 的结果合并成夜间昊天候选质量日报，第二天可以直接看到候选池有没有选对方向、哪些是数据问题、哪些是策略问题。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/V-005-20260607-233817
 - **前置条件**：`V-004`、`DATA-006` 完成 ✓。
 - **执行约束**：
   - 不调用外部 LLM。
@@ -2220,7 +2220,7 @@
 - **验收方式**：
   - 构造有候选、无候选、数据源失败三类 fixture，报告输出不同原因。
   - 报告不包含 API key/token/敏感路径。
-  - `pytest tests/test_v004_mandate_e2e_smoke.py tests/test_data006_daily_digest.py tests/test_mandate_reports*.py -q` 或等价测试通过。
+  - `pytest tests/test_v004_mandate_e2e_smoke.py tests/test_data006_daily_digest.py tests/test_v005_mandate_quality_report.py -q` 或等价测试通过。
 - **代码标注要求**：`# [V-005] nightly_mandate_quality_report`
 
 ---

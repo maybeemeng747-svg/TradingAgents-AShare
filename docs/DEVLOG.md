@@ -4,6 +4,57 @@
 
 ---
 
+## 2026-06-07 | V-005 fix: 修正测试命令引用
+
+- **执行者**：OpenCode
+- **任务**：V-005 fix — 上一轮实现完毕但测试命令引用了不存在的 `test_mandate_reports*.py`，实际文件名为 `test_v005_mandate_quality_report.py`。
+- **修改文件**：
+  - `docs/TASKS.md` — 修正 V-005 验收测试命令中的文件名
+  - `docs/task_runs/V-005-20260607-233817/task.md` — 同步修正
+- **测试结果**：195 passed (V-004+DATA-006+V-005)；0 failed
+
+---
+
+## 2026-06-07 | V-005: 夜间昊天候选质量日报与样本回放
+
+- **执行者**：OpenCode
+- **任务**：V-005 — 把 DATA-006、H-006、V-004 的结果合并成夜间昊天候选质量日报，第二天可以直接看到候选池有没有选对方向、哪些是数据问题、哪些是策略问题。
+- **修改文件**：
+  - `tradingagents/tradeflow/mandate_quality_report.py` — **新建**：[V-005] nightly_mandate_quality_report
+    - `CandidateSummary` 数据类：symbol/name/candidate_type/tier/mandate_topic/company_role/ambush_score/mandate_score_component/research_queue/evidence_coverage/evidence_quality_level/overheat_flags/downgrade_reasons/counter_evidence_types/what_would_change_mind/topic_lifecycle_state/need_deep_ta/watchlist_note
+    - `MandateQualityReport` 数据类：date/total_candidates/candidates_by_type/tier/topic/lifecycle/queue 分布 + avg_evidence_coverage/evidence_quality_distribution/overheat_count/downgrade_count/counter_evidence_top/need_deep_ta_count/candidates_needing_research/data_source_status/replay_status/empty_reason
+    - `classify_empty_reason()` 空候选原因分类：无事件源/事件源失败/全部被过滤/策略门槛过严/未知
+    - `build_mandate_quality_report()` 核心构建函数：从候选列表、回放报告、数据源状态生成完整日报
+    - `build_report_from_replay()` 从 H-006 回放 fixtures 直接生成日报
+    - `render_mandate_quality_report()` Markdown 渲染：候选分布/数据覆盖率/反证 TopN/需人工研究候选/数据源状态/回放评估
+    - `save_mandate_quality_report()` 输出到 `docs/mandate_reports/YYYY-MM-DD.md`
+    - `run_mandate_quality_report()` 便捷入口：构建 + 保存
+  - `tests/test_v005_mandate_quality_report.py` — 新建，69 个测试覆盖：
+    - `TestCandidateSummary` (3): 默认值/to_dict/roundtrip
+    - `TestMandateQualityReport` (3): 默认值/to_dict/to_dict_empty
+    - `TestCountDistribution` (3): 基本/空/单一
+    - `TestTopCounterEvidences` (4): 基本/空/无反证/limit
+    - `TestClassifyEmptyReason` (7): 全部 5 种空候选原因 + labels + partial
+    - `TestBuildMandateQualityReport` (12): 有候选/空/重播/数据源/日期/覆盖率/需研究/生命周期/质量分布
+    - `TestBuildReportFromReplay` (3): 单fixture/多fixture/空
+    - `TestRenderMandateQualityReport` (14): 有候选/空+事件失败/空+全过滤/数据源/回放/无数据源/需研究/禁用词/敏感信息/生命周期/队列/反证TopN/空+回放
+    - `TestSaveMandateQualityReport` (2): 保存/创建目录
+    - `TestRunMandateQualityReport` (2): 运行+保存/空候选
+    - `TestThreeScenarioFixtures` (3): 有候选/数据失败+空/全过滤+空
+    - `TestAcceptanceV005` (16): 全部验收标准
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：69 passed (V-005)；195 passed (V-004+DATA-006+V-005)；324 passed (tradeflow 全部回归)；0 failed
+- **关键逻辑**：
+  - 日报聚合：合并候选类型/等级/主题/生命周期/队列 5 维分布
+  - 反证 TopN：按反证类型统计频次，展示样本标的
+  - 空候选分类：5 种原因自动区分（无事件源/失败/全过滤/策略严/未知）
+  - 回放集成：从 H-006 fixture 回放直接生成候选摘要和日报
+  - 需研究候选：筛选 MIDLINE_POLICY/TA_CONFIRM 队列中 need_deep_ta=True 的候选
+  - 输出到 `docs/mandate_reports/YYYY-MM-DD.md`
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-07 | UI-009 fix: 代码质量修复（Codex review exit 1 后修整）
 
 - **执行者**：OpenCode
@@ -3090,3 +3141,12 @@
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex review failed with exit 1
 - **Run archive**: docs/task_runs/UI-009-20260607-232508/
+
+## 2026-06-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: V-005 - 夜间昊天候选质量日报与样本回放（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Test failed: pytest tests/test_v004_mandate_e2e_smoke.py tests/test_data006_daily_digest.py tests/test_mandate_reports*.py -q (exit 4)
+- **Run archive**: docs/task_runs/V-005-20260607-233817/
