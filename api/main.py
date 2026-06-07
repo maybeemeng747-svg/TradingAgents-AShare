@@ -5231,6 +5231,7 @@ from api.tradeflow_schemas import (
     TradeFlowReviewGenerateResponse,  # [TF-UX-003]
     TradeFlowEvidenceAuditResponse,  # [DATA-007] evidence_coverage_audit
     TradeFlowResearchPlanResponse,  # [UI-009] candidate_ta_plan_draft
+    TradeFlowCompareResponse,  # [UI-010] mandate_candidate_compare
 )
 from api.services.tradeflow_service import (
     get_daily_plan as _tf_get_daily_plan,
@@ -5247,6 +5248,7 @@ from api.services.tradeflow_service import (
     generate_review as _tf_generate_review,  # [TF-UX-003]
     get_evidence_audit as _tf_get_evidence_audit,  # [DATA-007] evidence_coverage_audit
     generate_research_plan as _tf_generate_research_plan,  # [UI-009] candidate_ta_plan_draft
+    get_candidate_comparison as _tf_get_candidate_comparison,  # [UI-010] mandate_candidate_compare
 )
 
 # [UI-001] tradeflow_api — read-only endpoints
@@ -5358,6 +5360,17 @@ def tradeflow_research_plan(
     date: str = Query(..., description="交易日期 YYYY-MM-DD"),
 ):
     return _tf_generate_research_plan(symbol, date)
+
+
+# [UI-010] mandate_candidate_compare
+@app.get("/v1/tradeflow/candidates/compare", response_model=TradeFlowCompareResponse)
+def tradeflow_candidates_compare(
+    date: str = Query(..., description="交易日期 YYYY-MM-DD"),
+    sort_by: str = Query("mandate_score", description="排序字段: mandate_score/ambush_score/evidence_coverage/counter_evidence_count/evidence_gap_count/topic_lifecycle_state/company_role"),
+    sort_order: str = Query("desc", description="排序方向: desc/asc"),
+    pool: Optional[str] = Query(None, description="候选池过滤: all/haotian/policy/tech/event/gap"),
+):
+    return _tf_get_candidate_comparison(date, sort_by=sort_by, sort_order=sort_order, pool=pool)
 
 
 # ─── Static Files & SPA Routing ──────────────────────────────────────────────

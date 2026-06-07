@@ -1241,3 +1241,128 @@ def generate_research_plan(symbol: str, trade_date: str, tf_db_path: str = "") -
         return result
     finally:
         conn.close()
+
+
+# [UI-010] mandate_candidate_compare
+_VALID_SORT_KEYS = {
+    "mandate_score": "mandate_score_component",
+    "ambush_score": "ambush_score",
+    "evidence_coverage": "tradeflow_data_completeness",
+    "counter_evidence_count": None,
+    "evidence_gap_count": None,
+    "topic_lifecycle_state": None,
+    "company_role": None,
+}
+
+
+def _counter_evidence_severity(items: list[dict]) -> float:
+    total = 0.0
+    for item in items:
+        total += float(item.get("severity", 0.0))
+    return total
+
+
+def _topic_lifecycle_order(state: str) -> int:
+    _ORDER = {"EMERGING": 0, "ACCELERATING": 1, "CONFIRMING": 2, "UNKNOWN": 3, "CROWDED": 4, "FADING": 5}
+    return _ORDER.get(state, 3)
+
+
+def get_candidate_comparison(
+    trade_date: str,
+    sort_by: str = "mandate_score",
+    sort_order: str = "desc",
+    pool: Optional[str] = None,
+    tf_db_path: str = "",
+) -> dict:
+    """Return candidates sorted for comparison view with evidence gap ranking.
+
+    Sort options:
+      - mandate_score: policy strength (mandate_score_component)
+      - ambush_score: left-side ambush score
+      - evidence_coverage: evidence completeness (tradeflow_data_completeness)
+      - counter_evidence_count: counter-evidence risk severity (lower is better)
+      - evidence_gap_count: fewer gaps first
+      - topic_lifecycle_state: lifecycle stage order
+      - company_role: alphabetical grouping
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_candidates")
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}
+
+    try:
+        pool_types: list[str] = []
+        if pool:
+            from tradingagents.tradeflow.candidate_pool import pool_to_candidate_types
+            pool_types = pool_to_candidate_types(pool)
+
+        columns = _table_columns(conn, "tradeflow_candidates")
+        extra_conditions = ["status = 'active'" if "status" in columns else None]
+        extra_conditions = [c for c in extra_conditions if c is not None]
+
+        extra_params: list = []
+        if len(pool_types) == 1 and "candidate_type" in columns:
+            extra_conditions.append("candidate_type = ?")
+            extra_params.append(pool_types[0])
+        elif len(pool_types) > 1 and "candidate_type" in columns:
+            placeholders = ",".join(["?"] * len(pool_types))
+            extra_conditions.append(f"candidate_type IN ({placeholders})")
+            extra_params.extend(pool_types)
+
+        rows = _query_by_date_or_effective(
+            conn, "tradeflow_candidates", trade_date,
+            extra_conditions=extra_conditions if extra_conditions else None,
+            extra_params=extra_params if extra_params else None,
+        )
+
+        items = [_row_to_candidate_item(r) for r in rows]
+
+        for it in items:
+            it["action"] = _compute_action(it)
+            ce = it.get("counter_evidence") or []
+            it["_counter_evidence_severity"] = _counter_evidence_severity(ce)
+            gaps = it.get("blocking_evidence_gaps") or []
+            it["_evidence_gap_count"] = len(gaps)
+            it["_topic_lifecycle_order"] = _topic_lifecycle_order(it.get("topic_lifecycle_state", ""))
+
+        effective_key = sort_by
+        if sort_by not in _VALID_SORT_KEYS:
+            effective_key = "mandate_score"
+
+        reverse = sort_order == "desc"
+
+        def _sort_key(item: dict):
+            if effective_key == "mandate_score":
+                return (item.get("mandate_score", 0.0) or 0.0)
+            elif effective_key == "ambush_score":
+                return (item.get("ambush_score", 0.0) or 0.0)
+            elif effective_key == "evidence_coverage":
+                return (item.get("tradeflow_data_completeness", 0.0) or 0.0)
+            elif effective_key == "counter_evidence_count":
+                return item.get("_counter_evidence_severity", 0.0)
+            elif effective_key == "evidence_gap_count":
+                return item.get("_evidence_gap_count", 0)
+            elif effective_key == "topic_lifecycle_state":
+                return item.get("_topic_lifecycle_order", 3)
+            elif effective_key == "company_role":
+                return item.get("company_role", "") or ""
+            return 0
+
+        items.sort(key=_sort_key, reverse=reverse)
+
+        for it in items:
+            it.pop("_counter_evidence_severity", None)
+            it.pop("_evidence_gap_count", None)
+            it.pop("_topic_lifecycle_order", None)
+
+        return {
+            "status": "ok",
+            "trade_date": trade_date,
+            "candidates": items,
+            "sort_by": effective_key,
+            "sort_order": sort_order,
+            "total": len(items),
+            "runtime_tier_meta": _tradeflow_meta("tradeflow_candidates"),
+        }
+    finally:
+        conn.close()

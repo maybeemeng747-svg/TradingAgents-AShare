@@ -8,7 +8,7 @@
 // [TF-UX-004] trade_priority_score
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX, ChevronDown, ChevronRight, Zap, Clock } from 'lucide-react'
+import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX, ChevronDown, ChevronRight, Zap, Clock, GitCompare } from 'lucide-react'
 import { api } from '@/services/api'
 import {
     RUNTIME_TIER_LABELS,
@@ -30,7 +30,7 @@ import type {
 } from '@/types'
 import TradeFlowCandidateDrawer from '@/components/TradeFlowCandidateDrawer'
 
-type TabKey = 'candidates' | 'observe' | 'ta-queue' | 'review' | 'filtered' | 'data-health'
+type TabKey = 'candidates' | 'observe' | 'ta-queue' | 'review' | 'filtered' | 'data-health' | 'compare'
 
 function todayStr(): string {
     return new Date().toISOString().slice(0, 10)
@@ -369,6 +369,7 @@ function TAQueueTable({ items, meta }: { items: TradeFlowTAQueueItem[]; meta: Tr
 
 const TABS: { key: TabKey; label: string; icon: typeof Target }[] = [
     { key: 'candidates', label: '候选池', icon: Target },
+    { key: 'compare', label: '候选对比', icon: GitCompare },
     { key: 'observe', label: '盘中观察', icon: Eye },
     { key: 'ta-queue', label: 'TA 队列', icon: ListOrdered },
     { key: 'review', label: '盘后 Review', icon: BarChart3 },
@@ -897,6 +898,154 @@ function DataHealthPanel({ data }: { data: TradeFlowDataHealthResponse | null })
     )
 }
 
+// [UI-010] mandate_candidate_compare
+type CompareSortKey = 'mandate_score' | 'ambush_score' | 'evidence_coverage' | 'counter_evidence_count' | 'evidence_gap_count' | 'topic_lifecycle_state' | 'company_role'
+
+const COMPARE_SORT_OPTIONS: { key: CompareSortKey; label: string; descLabel: string }[] = [
+    { key: 'mandate_score', label: '政策强度', descLabel: '政策强度 ↓' },
+    { key: 'ambush_score', label: '左侧埋伏分', descLabel: '埋伏分 ↓' },
+    { key: 'evidence_coverage', label: '证据覆盖率', descLabel: '覆盖率 ↓' },
+    { key: 'counter_evidence_count', label: '反证风险', descLabel: '反证风险 ↓' },
+    { key: 'evidence_gap_count', label: '验证缺口', descLabel: '缺口最少 ↑' },
+    { key: 'topic_lifecycle_state', label: '主题周期', descLabel: '主题周期' },
+    { key: 'company_role', label: '公司角色', descLabel: '公司角色' },
+]
+
+function companyRoleLabel(role: string): { text: string; cls: string } {
+    switch (role) {
+        case 'LEADER': return { text: '标杆', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' }
+        case 'CORE_SUPPLIER': return { text: '核心供应', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' }
+        case 'INFRA_PROVIDER': return { text: '基础设施', cls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300' }
+        case 'APPLICATION_SCENE': return { text: '应用场景', cls: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300' }
+        case 'PERIPHERAL': return { text: '外围', cls: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300' }
+        case 'CONCEPT_ONLY': return { text: '纯概念', cls: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300' }
+        default: return { text: role || '--', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' }
+    }
+}
+
+function topicLifecycleLabel(state: string): { text: string; cls: string } {
+    switch (state) {
+        case 'EMERGING': return { text: '萌芽', cls: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300' }
+        case 'ACCELERATING': return { text: '升温', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' }
+        case 'CONFIRMING': return { text: '兑现', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' }
+        case 'CROWDED': return { text: '拥挤', cls: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300' }
+        case 'FADING': return { text: '退潮', cls: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' }
+        default: return { text: state || '未验证', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' }
+    }
+}
+
+function counterEvidenceSummary(items: { rule?: string; severity?: number; description?: string }[] | undefined): string {
+    if (!items || items.length === 0) return '无'
+    const triggered = items.filter(i => i.severity && i.severity > 0)
+    if (triggered.length === 0) return '无'
+    return `${triggered.length} 项`
+}
+
+function gapsSummary(gaps: string[] | undefined): string {
+    if (!gaps || gaps.length === 0) return '无'
+    if (gaps.length <= 2) return gaps.join('、')
+    return `${gaps.slice(0, 2).join('、')} +${gaps.length - 2}`
+}
+
+function CompareTab({ candidates, sortBy, onSortChange, onRowClick }: {
+    candidates: TradeFlowCandidateItem[]
+    sortBy: CompareSortKey
+    onSortChange: (key: CompareSortKey) => void
+    onRowClick: (c: TradeFlowCandidateItem) => void
+}) {
+    if (candidates.length === 0) {
+        return (
+            <div className="py-20 text-center text-sm text-slate-400">
+                <div className="mb-3">暂无昊天候选数据</div>
+                <div className="text-xs">请先在候选池中生成今日候选，或切换到昊天左侧池筛选</div>
+            </div>
+        )
+    }
+
+    return (
+        <div className="p-4">
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium text-slate-500 dark:text-slate-400">排序:</span>
+                {COMPARE_SORT_OPTIONS.map(opt => (
+                    <button
+                        key={opt.key}
+                        onClick={() => onSortChange(opt.key)}
+                        className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
+                            sortBy === opt.key
+                                ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-400 dark:hover:bg-slate-600'
+                        }`}
+                    >
+                        {sortBy === opt.key ? opt.descLabel : opt.label}
+                    </button>
+                ))}
+            </div>
+
+            <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                    <thead>
+                        <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+                            <th className="px-3 py-2.5 font-medium">代码</th>
+                            <th className="px-3 py-2.5 font-medium">名称</th>
+                            <th className="px-3 py-2.5 font-medium">类型</th>
+                            <th className="px-3 py-2.5 font-medium">层级</th>
+                            <th className="px-3 py-2.5 font-medium">昊天分</th>
+                            <th className="px-3 py-2.5 font-medium">埋伏分</th>
+                            <th className="px-3 py-2.5 font-medium">政策主题</th>
+                            <th className="px-3 py-2.5 font-medium">公司角色</th>
+                            <th className="px-3 py-2.5 font-medium">主题周期</th>
+                            <th className="px-3 py-2.5 font-medium">覆盖率</th>
+                            <th className="px-3 py-2.5 font-medium">反证</th>
+                            <th className="px-3 py-2.5 font-medium">证据缺口</th>
+                            <th className="px-3 py-2.5 font-medium">验证步骤</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {candidates.map(c => {
+                            const ctBadge = candidateTypeLabel(c.candidate_type)
+                            const roleBadge = companyRoleLabel(c.company_role)
+                            const lifecycleBadge = topicLifecycleLabel(c.topic_lifecycle_state)
+                            const ce = counterEvidenceSummary(c.counter_evidence as { rule?: string; severity?: number; description?: string }[] | undefined)
+                            const gaps = gapsSummary(c.blocking_evidence_gaps)
+                            const steps = gapsSummary(c.next_verification_steps)
+
+                            return (
+                                <tr
+                                    key={c.symbol}
+                                    onClick={() => onRowClick(c)}
+                                    className="cursor-pointer border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
+                                >
+                                    <td className="px-3 py-2.5 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{c.symbol}</td>
+                                    <td className="max-w-[80px] truncate px-3 py-2.5 text-slate-700 dark:text-slate-300">{c.name || '--'}</td>
+                                    <td className="px-3 py-2.5">
+                                        <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${ctBadge.cls}`}>{ctBadge.text}</span>
+                                    </td>
+                                    <td className="px-3 py-2.5">
+                                        <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${tierBadgeClass(c.tier)}`}>{c.tier || '--'}</span>
+                                    </td>
+                                    <td className="px-3 py-2.5 tabular-nums text-xs font-medium text-slate-700 dark:text-slate-300">{(c.mandate_score || 0).toFixed(1)}</td>
+                                    <td className="px-3 py-2.5 tabular-nums text-xs font-medium text-red-600 dark:text-red-400">{(c.ambush_score || 0).toFixed(1)}</td>
+                                    <td className="max-w-[100px] truncate px-3 py-2.5 text-xs text-slate-600 dark:text-slate-400" title={c.mandate_topic}>{c.mandate_topic || '--'}</td>
+                                    <td className="px-3 py-2.5">
+                                        <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${roleBadge.cls}`}>{roleBadge.text}</span>
+                                    </td>
+                                    <td className="px-3 py-2.5">
+                                        <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${lifecycleBadge.cls}`}>{lifecycleBadge.text}</span>
+                                    </td>
+                                    <td className="px-3 py-2.5"><CompletenessBar value={c.tradeflow_data_completeness} /></td>
+                                    <td className="px-3 py-2.5 text-xs text-slate-600 dark:text-slate-400">{ce}</td>
+                                    <td className="max-w-[120px] truncate px-3 py-2.5 text-xs text-amber-600 dark:text-amber-400" title={(c.blocking_evidence_gaps || []).join('、')}>{gaps}</td>
+                                    <td className="max-w-[120px] truncate px-3 py-2.5 text-xs text-blue-600 dark:text-blue-400" title={(c.next_verification_steps || []).join('、')}>{steps}</td>
+                                </tr>
+                            )
+                        })}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    )
+}
+
 export default function TradeFlow() {
     const navigate = useNavigate()  // [TA-UI-001] analysis_console_horizon_intent
     const [activeTab, setActiveTab] = useState<TabKey>('candidates')
@@ -944,6 +1093,10 @@ export default function TradeFlow() {
 
     // [TF-UX-003] review generation
     const [reviewGenerating, setReviewGenerating] = useState(false)
+
+    // [UI-010] mandate_candidate_compare
+    const [compareData, setCompareData] = useState<TradeFlowCandidateItem[]>([])
+    const [compareSortBy, setCompareSortBy] = useState<CompareSortKey>('mandate_score')
 
     // [TF-UX-002] check if market is in session
     const isInMarketHours = useCallback(() => {
@@ -1041,6 +1194,24 @@ export default function TradeFlow() {
         }
     }, [])
 
+    // [UI-010] mandate_candidate_compare
+    const fetchCompare = useCallback(async (date: string) => {
+        setLoading(true)
+        setError(null)
+        try {
+            const res = await api.getTradeFlowCandidatesCompare(date, compareSortBy, 'desc', 'haotian')
+            if (res.status === 'ok') {
+                setCompareData(res.candidates)
+            } else {
+                setCompareData([])
+            }
+        } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : '加载失败')
+        } finally {
+            setLoading(false)
+        }
+    }, [compareSortBy])
+
     const fetchDataHealth = useCallback(async () => {
         setLoading(true)
         setError(null)
@@ -1084,6 +1255,8 @@ export default function TradeFlow() {
     const fetchData = useCallback(async (date: string) => {
         if (activeTab === 'candidates') {
             await fetchCandidates(date)
+        } else if (activeTab === 'compare') {
+            await fetchCompare(date)
         } else if (activeTab === 'observe') {
             await fetchObserve(date)
         } else if (activeTab === 'ta-queue') {
@@ -1095,7 +1268,7 @@ export default function TradeFlow() {
         } else if (activeTab === 'data-health') {
             await fetchDataHealth()
         }
-    }, [activeTab, fetchCandidates, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth, fetchFiltered])
+    }, [activeTab, fetchCandidates, fetchCompare, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth, fetchFiltered])
 
     useEffect(() => {
         void fetchData(tradeDate)
@@ -1381,6 +1554,22 @@ export default function TradeFlow() {
                         </tbody>
                     </table>
                 </div>
+            )
+        }
+
+        if (activeTab === 'compare') {
+            return (
+                <CompareTab
+                    candidates={compareData}
+                    sortBy={compareSortBy}
+                    onSortChange={(key) => {
+                        setCompareSortBy(key)
+                        api.getTradeFlowCandidatesCompare(tradeDate, key, 'desc', 'haotian').then(res => {
+                            if (res.status === 'ok') setCompareData(res.candidates)
+                        }).catch(() => {})
+                    }}
+                    onRowClick={handleRowClick}
+                />
             )
         }
 

@@ -355,3 +355,14 @@ class TradeFlowResearchPlanResponse(BaseModel):
     block_reason: str = ""
     plan_markdown: str = ""
     route_reason: str = ""
+
+
+# [UI-010] mandate_candidate_compare
+class TradeFlowCompareResponse(BaseModel):
+    status: str = "ok"
+    trade_date: str = ""
+    candidates: List[TradeFlowCandidateItem] = Field(default_factory=list)
+    sort_by: str = "mandate_score"
+    sort_order: str = "desc"
+    total: int = 0
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)

@@ -887,6 +887,18 @@ export interface TradeFlowCandidateItem {
     action_tier: string  // [TF-UX-004] actionable/watch/scan
     trade_priority_score: number  // [TF-UX-004]
     action_tier_reason: string  // [TF-UX-004]
+    counter_evidence: Array<Record<string, unknown>>  // [H-009]
+    overheat_flags: string[]  // [H-009]
+    downgrade_reasons: string[]  // [H-009]
+    what_would_change_mind: string[]  // [H-009]
+    topic_lifecycle_state: string  // [H-010]
+    topic_lifecycle_reason: string  // [H-010]
+    topic_last_signal_date: string  // [H-010]
+    topic_signal_count: number  // [H-010]
+    contradiction_level: string  // [H-011]
+    contradiction_items: Array<Record<string, unknown>>  // [H-011]
+    blocking_evidence_gaps: string[]  // [H-011]
+    next_verification_steps: string[]  // [H-011]
     created_at: string
     updated_at: string
 }
@@ -1183,4 +1195,15 @@ export interface TradeFlowResearchPlanResponse {
     block_reason: string
     plan_markdown: string
     route_reason: string
+}
+
+// [UI-010] mandate_candidate_compare
+export interface TradeFlowCompareResponse {
+    status: string
+    trade_date: string
+    candidates: TradeFlowCandidateItem[]
+    sort_by: string
+    sort_order: string
+    total: number
+    runtime_tier_meta: RuntimeTierMeta
 }
