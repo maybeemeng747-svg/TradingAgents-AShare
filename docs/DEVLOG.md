@@ -3081,3 +3081,12 @@
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex review failed with exit 1
 - **Run archive**: docs/task_runs/M-012-20260607-231054/
+
+## 2026-06-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: UI-009 - 候选详情一键生成 TA 研究任务预案（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/UI-009-20260607-232508/
