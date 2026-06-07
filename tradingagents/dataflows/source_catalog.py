@@ -589,6 +589,16 @@ def _build_catalog() -> None:
         is_primary=True,
         notes="雪球热搜股票",
     )
+    _register(  # [DATA-016] hot_stock_fallback
+        "cn_astock", "push2.eastmoney.com/getHotStock",
+        DataType.HOT_STOCKS,
+        fields=["SECURITY_CODE", "SECURITY_NAME_ABBR", "CHANGE_RATE", "TRADE_VOLUME"],
+        unit="条",
+        freshness=Freshness.INTRADAY,
+        rate_limit_risk=RateLimitRisk.MEDIUM,
+        fallback_priority=2,
+        notes="东财热榜 push2 直连 fallback",
+    )
 
     # ── 回购 ──────────────────────────────────────────────────────────
     # [DATA-013] buyback_raw_evidence

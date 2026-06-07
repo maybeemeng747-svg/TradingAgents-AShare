@@ -191,6 +191,14 @@ def _make_endpoint_definitions() -> List[Dict[str, Any]]:
             "kwargs": {},
             "expected_unit": "条",
         },
+        {  # [DATA-016] hot_stock_fallback
+            "endpoint": "cn_astock/hot_stocks",
+            "method": "get_hot_stocks",
+            "vendor": "cn_astock",
+            "args_template": (),
+            "kwargs": {},
+            "expected_unit": "条",
+        },
     ]
 
 

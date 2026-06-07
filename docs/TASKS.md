@@ -75,7 +75,7 @@
 49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
 50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
 51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
-52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，ready，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
 
 ### 数据源治理候选队列
 
@@ -101,7 +101,7 @@
 18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
 19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
 20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done）。
-21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，ready）。
+21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done）。
 
 ### 总体路线图
 
@@ -1030,7 +1030,7 @@
 ### DATA-016: 热门股票 cn_astock fallback 与 fixture（P2）
 - **描述**：为热门股票/热搜/市场关注度数据增加 cn_astock/Eastmoney fallback 和 fixture，避免短线情绪源单点失效。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — DATA-016-20260608-060126
 - **前置条件**：`DATA-005`、`DATA-P0-FUND-ROUTE` 完成 ✓。
 - **执行约束**：
   - 不把热度当作政策证据。

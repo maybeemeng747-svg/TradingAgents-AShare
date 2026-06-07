@@ -59,7 +59,7 @@ _EVIDENCE_FIELD_LABELS: Dict[str, str] = {
     "income_statement": "利润表",
     "insider_transactions": "内部人交易",
     "zt_pool": "涨停池",
-    "hot_stocks": "热门股票",
+    "hot_stocks": "热门股票",  # [DATA-016] hot_stock_fallback
     "indicators": "技术指标",
     "vpa_indicators": "量价分析指标",
     "margin_trading": "融资融券",  # [DATA-010] margin_trading_raw_evidence
@@ -85,7 +85,7 @@ _EVIDENCE_FIELD_FAMILIES: Dict[str, str] = {
     "income_statement": "financials",
     "insider_transactions": "insider",
     "zt_pool": "zt_pool",  # [DATA-015] limit_up_pool_fallback
-    "hot_stocks": "hot_stocks",
+    "hot_stocks": "hot_stocks",  # [DATA-016] hot_stock_fallback
     "margin_trading": "margin_trading",  # [DATA-010] margin_trading_raw_evidence
     "research_report": "report",  # [DATA-011] research_report_raw_evidence
     "ratings": "rating",  # [DATA-012] rating_raw_evidence

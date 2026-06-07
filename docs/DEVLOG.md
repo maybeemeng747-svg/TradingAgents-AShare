@@ -4,6 +4,52 @@
 
 ---
 
+## 2026-06-08 | DATA-016: 热门股票 cn_astock fallback 与 fixture
+
+- **执行者**：OpenCode
+- **任务**：DATA-016 — 为热门股票/热搜/市场关注度数据增加 cn_astock/Eastmoney fallback 和 fixture，避免短线情绪源单点失效。
+- **修改文件**：
+  - `tradingagents/dataflows/source_catalog.py` — [DATA-016] hot_stock_fallback
+    - 新增 cn_astock 东财 push2 热榜 fallback source（fallback_priority=2）
+    - `DataType.HOT_STOCKS` 现有 2 个 vendor：cn_akshare(primary) + cn_astock(fallback)
+  - `tradingagents/dataflows/providers/cn_astock_provider.py` — [DATA-016]
+    - 新增 `get_hot_stocks()`: 东财 push2 热榜直连 fallback
+    - 支持 `HOT_STOCKS_HAS_DATA` / `HOT_STOCKS_NORMAL_NO_DATA` / `HOT_STOCKS_FAILED` 三态输出
+  - `tradingagents/dataflows/evidence_contract.py` — [DATA-016]
+    - `_REQUIRED_FIELDS_FOR_COMPLETENESS` 新增 `"hot_stocks": ["status", "vendor"]`
+  - `tradingagents/dataflows/evidence_coverage_audit.py` — [DATA-016]
+    - `_EVIDENCE_FIELD_LABELS` 和 `_EVIDENCE_FIELD_FAMILIES` 补充 DATA-016 标注注释
+  - `tradingagents/dataflows/fixture_replay.py` — [DATA-016]
+    - 新增 5 个 fixture：`hot_stocks_has_data`(HAS_DATA/cn_akshare) / `hot_stocks_akshare_fail_fallback`(HAS_DATA/cn_astock fallback) / `hot_stocks_failed`(FAILED) / `hot_stocks_normal_no_data`(NORMAL_NO_DATA) / `hot_stocks_rate_limited`(FAILED/429限流)
+    - `ALL_FIXTURE_IDS` 从 38 扩展到 43
+  - `tradingagents/dataflows/live_smoke.py` — [DATA-016]
+    - `_make_endpoint_definitions()` 新增 `cn_astock/hot_stocks`(get_hot_stocks) 端点
+  - `tests/test_data016_hot_stocks.py` — **新建**，64 个测试覆盖：
+    - `TestSourceCatalogHotStocks` (8): DataType 枚举/sources 注册/primary/fallback chain/all_data_types/fields/endpoint/catalog validation
+    - `TestEvidenceContractHotStocks` (6): resolve_data_type/contract HAS_DATA/FAILED/completeness/missing/required fields
+    - `TestEvidenceCoverageAuditHotStocks` (4): label/family/audit HAS_DATA/audit FAILED
+    - `TestInterfaceHotStocks` (3): tools categories/category/failure string detection
+    - `TestProviderHotStocks` (5): astock method/has data/no data/failed/rate limited
+    - `TestHotStocksFixtures` (9): fixture IDs/count/exists/vendor/unit/error/no vendor/all fixtures/in all fixture ids
+    - `TestHotStocksFixtureReplay` (7): replay HAS_DATA/fallback/FAILED/NORMAL_NO_DATA/rate_limited/all hot stocks/full replay
+    - `TestLiveSmokeHotStocks` (4): endpoint definitions/env gating/skip/enabled
+    - `TestHotStocksEvidenceIsolation` (2): hot_stocks not policy evidence/failure not candidate failure
+    - `TestAcceptanceDATA016` (16): 全部验收标准
+  - `docs/TASKS.md` — DATA-016 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：64 passed (DATA-016)；330 passed (fixture_replay + readiness_score + evidence_contract + data_source_replay 回归)；278 passed (DATA-010~015 回归)；19 passed (raw_evidence 回归)；0 DATA-016 相关失败
+- **关键逻辑**：
+  - 热门股票 5 种 fixture 场景：AKShare 成功（HAS_DATA）/ AKShare 失败 cn_astock fallback 成功（HAS_DATA, fallback_from=cn_akshare）/ 全部失败（FAILED）/ 空结果（NORMAL_NO_DATA, count=0）/ 限流（FAILED, error 含 429）
+  - provider `get_hot_stocks()` 单层 fallback：东财 push2 clist 排序接口，按涨跌幅排序取前 30 只
+  - fallback 成功时 raw_evidence 显示 `vendor=cn_astock, fallback_from=cn_akshare`
+  - 全部失败时 status=`FAILED`，error 包含 ConnectionError 等错误信息
+  - 空结果时 status=`NORMAL_NO_DATA`，不能显示为 FAILED
+  - 限流不被当作"无数据"——status=FAILED, error 含 429
+  - live smoke 必须环境变量 `TA_LIVE_DATA_SMOKE=1` 开启，未开启时全部 SKIPPED
+  - 与 DATA-006 日报和 DATA-007 evidence audit 对接
+  - 热度证据不与新闻/政策证据混用——隔离测试覆盖
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未跑 live 请求
+
 ## 2026-06-08 | DATA-015: 涨停池 cn_astock fallback 与 fixture — Codex Review 修复
 
 - **执行者**：OpenCode
@@ -3790,3 +3836,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-015-20260608-round2.txt
 - **Run archive**: docs/task_runs/DATA-015-20260608-054126/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-016 - 热门股票 cn_astock fallback 与 fixture（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-016-20260608-round1.txt
+- **Run archive**: docs/task_runs/DATA-016-20260608-060126/

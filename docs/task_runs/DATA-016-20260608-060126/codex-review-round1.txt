@@ -1,0 +1,2663 @@
+Task: DATA-016 - 热门股票 cn_astock fallback 与 fixture（P2）
+Date: 2026-06-08_06:10:18
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019ea421-d40b-70d3-8528-eafec62664f4
+--------
+user
+current changes
+exec
+/bin/zsh -lc "cat AGENTS.md && printf '\\n--- overview ---\\n' && sed -n '1,220p' docs/project-overview.md && printf '\\n--- tasks ---\\n' && sed -n '1,220p' docs/TASKS.md && printf '\\n--- decisions ---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n--- devlog ---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# TradingAgents-AShare — 项目协作规则
+
+## 项目简介
+
+A股智能投研多智能体系统，基于 LangGraph + LangChain 构建，模拟 14 名专业 Agent 的多空辩论与风控博弈，为投资者提供结构化的交易建议。
+
+核心模块：
+- **Agent 框架**：14 个多智能体（分析师/研究员/风控/交易员），LangGraph 编排
+- **后端 API**：FastAPI，提供分析、持仓、定时任务、研报管理等接口
+- **前端 UI**：React，意图驱动交互、辩论可视化、持仓看板
+- **定时调度**：独立 scheduler，支持自选股定时分析
+- **数据层**：AKShare + BaoStock + yfinance，SQLite 持久化
+
+## 多工具协作架构
+
+```
+孟（最终决策）
+  │
+  ├── OpenClaw（主控调度）── 读取上下文 → 判断任务 → 派发执行
+  │     ├── 简单任务：直接 exec 执行（git/python/npm）
+  │     └── 复杂任务：sessions_spawn 子 agent 或调用 OpenCode 执行
+  │
+  ├── OpenCode（代码执行器）── 读取同一套上下文 → 改代码 → 跑测试 → 输出 diff
+  │
+  └── OpenCode TUI/Web（审查界面）── 查看 diff → 确认修改 → 做 review
+```
+
+**核心原则**：三者读取同一套项目上下文，不各自保存独立记忆。
+
+## 必读文件（任何 coding agent 开始任务前）
+
+1. `AGENTS.md`（本文件）
+2. `docs/project-overview.md`（项目背景 + 架构 + 目录结构）
+3. `docs/TASKS.md`（当前任务池）
+4. `docs/DECISIONS.md`（架构决策记录）
+5. `docs/DEVLOG.md`（最近修改日志）
+6. 涉及模型/API 调用时，必须读 `docs/MODEL_API_CATALOG.md` 和 `docs/LLM_API_USAGE.md`，并可运行 `python scripts/audit_llm_config.py` 查看脱敏配置
+
+## 项目目录结构
+
+```
+TradingAgents-AShare/
+├── tradingagents/            # 核心 Python 包
+│   ├── agents/               # 14 个多智能体
+│   │   ├── analysts/         # 7 个分析师（基本面/情绪/新闻/技术/宏观/主力/量价）
+│   │   ├── researchers/      # 多头/空头研究员 + 研究总监
+│   │   ├── risk_mgmt/        # 风控团队
+│   │   ├── managers/         # 管理层
+│   │   └── trader/           # 交易员
+│   ├── dataflows/            # 数据获取与缓存
+│   ├── graph/                # LangGraph 编排图
+│   ├── llm_clients/          # 多模型厂商适配
+│   ├── prompts/              # Agent 提示词模板
+│   └── default_config.py     # 默认配置
+├── api/                      # FastAPI 后端
+│   ├── main.py               # 入口
+│   ├── database.py           # SQLite
+│   └── services/             # 业务逻辑（分析/持仓/定时/研报）
+├── frontend/                 # React 前端
+├── scheduler/                # 定时分析调度
+├── skills/                   # OpenClaw 技能
+├── tests/                    # 测试
+├── docs/                     # 项目文档
+└── eval_results/             # 回测评估结果
+```
+
+## 执行规则
+
+### 代码修改前
+1. 执行 `git status`，确认当前分支和未提交变更
+2. 激活虚拟环境：`source .venv/bin/activate`
+3. 确认修改范围不影响生产数据库（tradingagents.db）
+4. 如果涉及核心模块，先跑一遍测试确认基线
+
+### 代码修改后
+1. 运行测试，全部通过才算完成
+2. 输出：修改文件列表、测试结果、发现的风险点
+3. 更新 `docs/DEVLOG.md`
+
+### OpenClaw 调度方式
+- **简单任务**（改配置、修 bug、小重构）：OpenClaw 直接 `exec` 执行
+- **复杂任务**（新功能、跨模块修改）：调用 OpenCode 执行，由用户确认后执行
+- **审查任务**：OpenClaw 不直接审查代码，提示用户用 OpenCode TUI 查看 diff
+
+## 安全红线
+
+- 不误改 `tradingagents.db`（生产数据库）
+- 不误改 `eval_results/` 中的历史回测结果
+- 不直接修改 `tradingagents/prompts/` 中的提示词模板（需走审批）
+- 不删除 `logs/` 中的历史日志
+- 测试数据不得写入生产数据库
+- 不读取、解密、打印、提交任何模型 API Key 明文；只能使用 `HAS_KEY/NO_KEY` 级别的脱敏状态
+- 除用户主动发起的分析/定时任务外，任何 live LLM API 调用前都要说明 provider、base_url、模型名和预计调用次数，并征得用户确认
+
+## 技术栈
+
+- **后端**：Python 3.10+, FastAPI, LangGraph, LangChain
+- **前端**：React, TypeScript, Tailwind CSS
+- **数据库**：SQLite
+- **数据源**：AKShare, BaoStock, yfinance
+- **模型**：OpenAI / Anthropic / 智谱 / DeepSeek / 小米 MiMo 等
+
+--- overview ---
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+--- tasks ---
+# 任务池
+
+> 最后更新：2026-06-08
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，done）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，done，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，done，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，done，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，done，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，done，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done，依赖 DATA-004 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，ready，依赖 DATA-003/DATA-004 ✓）。
+49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
+50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
+16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，ready）。
+18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
+19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done）。
+21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## PERF. 运行成本 / 轻量分析任务池（2026-06-02 新增）
+
+> 目标：系统不能为了“全面”而变慢。TradeFlow 是雷达，轻量 TA 是候选验证，完整 TA 是深度体检。默认链路必须轻，完整多 Agent 分析只能由用户明确触发。
+
+### PERF-001: 运行层级与速度预算契约（P1）
+- **描述**：建立统一运行层级契约，所有 API、前端按钮、scheduler、自动开发任务都要标明属于 `fast/light/full` 哪一层，以及是否允许调用 LLM。
+- **优先级**：P1
+- **状态**：done -- commit ca08846
+- **背景**：
+  - 用户明确要求系统不能做得太重，不能“一发指令半天才回来”。
+  - 候选池/盘中观察需要时效；完整 TA 只能用于少量高价值标的。
+- **运行层级定义**：
+  1. `fast`：5-30 秒。TradeFlow 筛选、数据健康、证据缺口、候选分类。默认不调用 LLM。
+  2. `light`：1-3 分钟。轻量 TA，只跑必要模块，用于中线政策验证、短线技术确认、持仓风险复核。
+  3. `full`：10-20 分钟。完整 14 Agent TA，多空辩论和风控全链路，必须人工确认。
+- **执行约束**：
+  - 不改 prompts。
+  - 不触发 live TA。
+  - 不新增高成本模型调用。
+- **实现要点**：
+  1. 新增运行层级枚举/配置，例如 `runtime_tier`：
+     - `FAST_RADAR`
+     - `LIGHT_RESEARCH`
+     - `FULL_TA`
+  2. API/服务层统一返回：
+     - `runtime_tier`
+     - `expected_latency`
+     - `llm_allowed`
+     - `requires_confirmation`
+     - `cost_risk`
+  3. 前端按钮文案对应：
+     - `快速筛选`
+     - `轻量研究`
+     - `完整 TA`
+  4. `TradeFlow Discovery` 和 `Observe` 必须标记为 `FAST_RADAR`。
+  5. 自动任务/scheduler 不得默认进入 `FULL_TA`。
+- **验收方式**：
+  - TradeFlow candidates/observe/data-health API 返回 fast 层级或元数据。
+  - 前端能显示运行层级和预计耗时。
+  - 没有用户确认时，full TA 入口不可直接触发。
+  - `pytest tests/test_runtime_tier*.py tests/test_ui001_tradeflow_api.py -q` 或等价测试通过。
+- **代码标注要求**：`# [PERF-001] runtime_tier_contract` / `// [PERF-001] runtime_tier_contract`
+
+### PERF-002: 轻量 TA Profile 与模块路由（P1）
+- **描述**：在完整 TA 之外增加轻量 TA Profile，只跑与目标相关的模块，避免所有候选都进入 14 Agent 全链路。
+- **优先级**：P1
+- **状态**：done -- commit 20ff126
+- **前置条件**：`TA-UI-001`、`H-007` 完成或同步完成。
+- **执行约束**：
+  - 不删除完整 TA。
+  - 不改 prompts。
+  - 不自动调用 live LLM；第一版可先做路由配置和 mock/fixture。
+- **Profile 建议**：
+  1. `MIDLINE_POLICY_LIGHT`：
+     - 用于 `POLICY_AMBUSH/POLICY_CONFIRM`。
+     - 重点：政策/公告/基本面/风险/量价。
+  2. `SHORT_TECH_LIGHT`：
+     - 用于 `TECH_TRADE`。
+     - 重点：技术/量价/资金/风险。
+  3. `POSITION_RISK_LIGHT`：
+     - 用于已持仓复盘。
+     - 重点：风控/资金/关键价位/公告。
+  4. `FULL_TA`：
+     - 保持完整多 Agent，只能手动确认。
+- **实现要点**：
+  1. 新增 profile 配置，声明每个 profile 启用的 analyst/manager/risk 模块。
+  2. TradeFlow 候选根据 `candidate_type/research_queue/analysis_intent` 推荐 profile。
+  3. `/analysis` 控制台选择中线/短线后，能带入对应 profile。
+  4. 结果 metadata 中记录 `runtime_profile` 和实际启用模块。
+- **验收方式**：
+  - `POLICY_AMBUSH` 默认推荐 `MIDLINE_POLICY_LIGHT`。
+  - `TECH_TRADE` 默认推荐 `SHORT_TECH_LIGHT`。
+  - 已持仓复盘默认推荐 `POSITION_RISK_LIGHT`。
+  - 完整 TA 仍可人工选择。
+  - 测试覆盖 profile 路由，不触发真实 LLM。
+- **代码标注要求**：`# [PERF-002] lightweight_ta_profiles`
+
+### PERF-003: 分析运行耗时/调用成本遥测与前端展示（P1）
+- **描述**：为 TradeFlow、轻量 TA、完整 TA 增加运行遥测，记录耗时、模块、模型调用次数、失败原因和成本风险，让用户知道一次分析到底重不重。
+- **优先级**：P1
+- **状态**：done — commit 059fc21
+- **执行约束**：
+  - 不记录 API key/token。
+  - 不泄露完整 prompt。
+  - 不强行估算真实费用；可先记录调用次数和模型名。
+- **实现要点**：
+  1. 每次运行记录：
+     - `started_at`
+     - `finished_at`
+     - `elapsed_ms`
+     - `runtime_tier`
+     - `runtime_profile`
+     - `modules_run`
+     - `llm_provider/model`
+     - `llm_call_count`
+     - `status/error`
+  2. 前端展示：
+     - “快速/轻量/完整”
+     - “预计耗时/实际耗时”
+     - “是否调用模型”
+  3. 夜间日报和 task_runs 引入运行摘要。
+- **验收方式**：
+  - fast TradeFlow 运行有 elapsed_ms。
+  - mock light/full TA 有模块和调用次数记录。
+  - 前端能展示运行层级和实际耗时。
+  - 敏感信息不进入日志。
+
+--- decisions ---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+--- devlog ---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-08 | DATA-016: 热门股票 cn_astock fallback 与 fixture
+
+- **执行者**：OpenCode
+- **任务**：DATA-016 — 为热门股票/热搜/市场关注度数据增加 cn_astock/Eastmoney fallback 和 fixture，避免短线情绪源单点失效。
+- **修改文件**：
+  - `tradingagents/dataflows/source_catalog.py` — [DATA-016] hot_stock_fallback
+    - 新增 cn_astock 东财 push2 热榜 fallback source（fallback_priority=2）
+    - `DataType.HOT_STOCKS` 现有 2 个 vendor：cn_akshare(primary) + cn_astock(fallback)
+  - `tradingagents/dataflows/providers/cn_astock_provider.py` — [DATA-016]
+    - 新增 `get_hot_stocks()`: 东财 push2 热榜直连 fallback
+    - 支持 `HOT_STOCKS_HAS_DATA` / `HOT_STOCKS_NORMAL_NO_DATA` / `HOT_STOCKS_FAILED` 三态输出
+  - `tradingagents/dataflows/evidence_contract.py` — [DATA-016]
+    - `_REQUIRED_FIELDS_FOR_COMPLETENESS` 新增 `"hot_stocks": ["status", "vendor"]`
+  - `tradingagents/dataflows/evidence_coverage_audit.py` — [DATA-016]
+    - `_EVIDENCE_FIELD_LABELS` 和 `_EVIDENCE_FIELD_FAMILIES` 补充 DATA-016 标注注释
+  - `tradingagents/dataflows/fixture_replay.py` — [DATA-016]
+    - 新增 5 个 fixture：`hot_stocks_has_data`(HAS_DATA/cn_akshare) / `hot_stocks_akshare_fail_fallback`(HAS_DATA/cn_astock fallback) / `hot_stocks_failed`(FAILED) / `hot_stocks_normal_no_data`(NORMAL_NO_DATA) / `hot_stocks_rate_limited`(FAILED/429限流)
+    - `ALL_FIXTURE_IDS` 从 38 扩展到 43
+  - `tradingagents/dataflows/live_smoke.py` — [DATA-016]
+    - `_make_endpoint_definitions()` 新增 `cn_astock/hot_stocks`(get_hot_stocks) 端点
+  - `tests/test_data016_hot_stocks.py` — **新建**，64 个测试覆盖：
+    - `TestSourceCatalogHotStocks` (8): DataType 枚举/sources 注册/primary/fallback chain/all_data_types/fields/endpoint/catalog validation
+    - `TestEvidenceContractHotStocks` (6): resolve_data_type/contract HAS_DATA/FAILED/completeness/missing/required fields
+    - `TestEvidenceCoverageAuditHotStocks` (4): label/family/audit HAS_DATA/audit FAILED
+    - `TestInterfaceHotStocks` (3): tools categories/category/failure string detection
+    - `TestProviderHotStocks` (5): astock method/has data/no data/failed/rate limited
+    - `TestHotStocksFixtures` (9): fixture IDs/count/exists/vendor/unit/error/no vendor/all fixtures/in all fixture ids
+    - `TestHotStocksFixtureReplay` (7): replay HAS_DATA/fallback/FAILED/NORMAL_NO_DATA/rate_limited/all hot stocks/full replay
+    - `TestLiveSmokeHotStocks` (4): endpoint definitions/env gating/skip/enabled
+    - `TestHotStocksEvidenceIsolation` (2): hot_stocks not policy evidence/failure not candidate failure
+    - `TestAcceptanceDATA016` (16): 全部验收标准
+  - `docs/TASKS.md` — DATA-016 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：64 passed (DATA-016)；330 passed (fixture_replay + readiness_score + evidence_contract + data_source_replay 回归)；278 passed (DATA-010~015 回归)；19 passed (raw_evidence 回归)；0 DATA-016 相关失败
+- **关键逻辑**：
+  - 热门股票 5 种 fixture 场景：AKShare 成功（HAS_DATA）/ AKShare 失败 cn_astock fallback 成功（HAS_DATA, fallback_from=cn_akshare）/ 全部失败（FAILED）/ 空结果（NORMAL_NO_DATA, count=0）/ 限流（FAILED, error 含 429）
+  - provider `get_hot_stocks()` 单层 fallback：东财 push2 clist 排序接口，按涨跌幅排序取前 30 只
+  - fallback 成功时 raw_evidence 显示 `vendor=cn_astock, fallback_from=cn_akshare`
+  - 全部失败时 status=`FAILED`，error 包含 ConnectionError 等错误信息
+  - 空结果时 status=`NORMAL_NO_DATA`，不能显示为 FAILED
+  - 限流不被当作"无数据"——status=FAILED, error 含 429
+  - live smoke 必须环境变量 `TA_LIVE_DATA_SMOKE=1` 开启，未开启时全部 SKIPPED
+  - 与 DATA-006 日报和 DATA-007 evidence audit 对接
+  - 热度证据不与新闻/政策证据混用——隔离测试覆盖
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未跑 live 请求
+
+## 2026-06-08 | DATA-015: 涨停池 cn_astock fallback 与 fixture — Codex Review 修复
+
+- **执行者**：OpenCode
+- **任务**：DATA-015 — 修复 Codex Review 发现的关键问题。
+- **修复内容**：
+  1. **[Critical] 错误的 datacenter 报表名**（`cn_astock_provider.py:1246`）：原实现使用 `RPT_DAILYBILLBOARD_DETAILSNEW`（龙虎榜）获取涨停池数据，语义错误。修正为 `RPTA_WEB_ZTZS_ZTPOOL`（涨停池专用报表）。
+  2. **[Critical] push2 fallback 返回错误状态**（`cn_astock_provider.py:1278-1279`）：push2 fallback 异常时返回 `ZT_POOL_NORMAL_NO_DATA`，应为 `ZT_POOL_FAILED`。已修正。
+  3. **[Critical] push2 API 参数错误**：原使用 `push2his.eastmoney.com/api/qt/clist/get` + `fs: b:BK0815`（板块行情），非涨停池接口。修正为 `push2ex.eastmoney.com/getTopicZTPool`（涨停池专用 API）。
+  4. **[Medium] source_catalog 字段不匹配**：注册字段 `CLOSE_PRICE, CONTINUOUS_DAYS` 与实际 API 返回不匹配，修正为 `EXPLANATION, CHANGE_RATE`；endpoint 更新为 `push2ex.eastmoney.com/getTopicZTPool`。
+  5. **[Low] fixture docstring 计数错误**：注释写 34 类 fixture，实际为 38 类。
+  6. **新增测试**：`test_astock_zt_pool_push2_fallback_failed` 验证 push2 fallback 失败时返回 FAILED 而非 NORMAL_NO_DATA。
+- **修改文件**：
+  - `tradingagents/dataflows/providers/cn_astock_provider.py` — 修正 report 名、push2 URL/参数、inner exception 状态码
+  - `tradingagents/dataflows/source_catalog.py` — 修正 endpoint 和 fields
+  - `tradingagents/dataflows/fixture_replay.py` — 修正 docstring 计数、fixture endpoint
+  - `tests/test_data015_zt_pool.py` — 新增 push2 fallback FAILED 测试，修正 mock 数据结构
+- **测试结果**：59 passed (DATA-015)；206 passed (相关回归)；0 DATA-015 相关失败
+- **执行边界**：未调用 LLM、未触发 TA、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+## 2026-06-08 | DATA-015: 涨停池 cn_astock fallback 与 fixture（初次实现）
+
+- **执行者**：OpenCode
+- **任务**：DATA-015 — 为涨停池/涨停板情绪数据增加 cn_astock/Eastmoney fallback 和 fixture，降低 AKShare 单点失败对短线候选和市场情绪的影响。
+- **修改文件**：
+  - `tradingagents/dataflows/source_catalog.py` — [DATA-015] limit_up_pool_fallback
+    - 新增 cn_astock 东财 push2his 涨停池 fallback source（fallback_priority=2）
+    - `DataType.ZT_POOL` 现有 2 个 vendor：cn_akshare(primary) + cn_astock(fallback)
+  - `tradingagents/dataflows/providers/cn_astock_provider.py` — [DATA-015]
+    - 新增 `get_zt_pool(date)`: 东财 datacenter + push2 双重 fallback
+    - 支持 `ZT_POOL_HAS_DATA` / `ZT_POOL_NORMAL_NO_DATA` / `ZT_POOL_FAILED` 三态输出
+  - `tradingagents/dataflows/evidence_contract.py` — [DATA-015]
+    - `_REQUIRED_FIELDS_FOR_COMPLETENESS` 新增 `"zt_pool": ["status", "vendor"]`
+    - `_EVIDENCE_KEY_TO_DATA_TYPE` 已有 `"zt_pool": "zt_pool"` 无需变更
+  - `tradingagents/dataflows/evidence_coverage_audit.py` — [DATA-015]
+    - `_EVIDENCE_FIELD_LABELS` 新增 `"zt_pool": "涨停池"`
+    - `_EVIDENCE_FIELD_FAMILIES` 新增 `"zt_pool": "zt_pool"` 注释
+  - `tradingagents/dataflows/fixture_replay.py` — [DATA-015]
+    - 新增 4 个 fixture：`zt_pool_has_data`(HAS_DATA/cn_akshare) / `zt_pool_akshare_fail_fallback`(HAS_DATA/cn_astock fallback) / `zt_pool_failed`(FAILED) / `zt_pool_normal_no_data`(NORMAL_NO_DATA)
+    - `ALL_FIXTURE_IDS` 从 34 扩展到 38
+  - `tradingagents/dataflows/live_smoke.py` — [DATA-015]
+    - `_make_endpoint_definitions()` 新增 `cn_astock/zt_pool`(get_zt_pool) 端点
+    - 支持 `TA_LIVE_DATA_SMOKE=1` 环境变量门控
+  - `tests/test_data015_zt_pool.py` — **新建**，58 个测试覆盖：
+    - `TestSourceCatalogZtPool` (8): DataType 枚举/sources 注册/primary/fallback chain/all_data_types/fields/endpoint/catalog validation
+    - `TestEvidenceContractZtPool` (6): resolve_data_type/contract HAS_DATA/FAILED/completeness/missing/required fields
+    - `TestEvidenceCoverageAuditZtPool` (4): label/family/audit HAS_DATA/audit FAILED
+    - `TestInterfaceZtPool` (3): tools categories/category/failure string detection
+    - `TestProviderZtPool` (5): astock method/has data/no data/failed/fallback has data
+    - `TestZtPoolFixtures` (9): fixture IDs/count/exists/vendor/unit/error/no vendor/all fixtures/in all fixture ids
+    - `TestZtPoolFixtureReplay` (7): replay HAS_DATA/fallback/FAILED/NORMAL_NO_DATA/all zt pool/full replay
+    - `TestLiveSmokeZtPool` (4): endpoint definitions/env gating/skip/enabled
+    - `TestAcceptanceDATA015` (12): 全部验收标准
+  - `docs/TASKS.md` — DATA-015 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：58 passed (DATA-015)；276 passed (fixture_replay + readiness_score + daily_digest 回归)；654 passed (全部数据源相关回归)；0 failed（2 个 pre-existing DATA-007 失败与 DATA-015 无关）
+- **关键逻辑**：
+  - 涨停池 4 种 fixture 场景：AKShare 成功（HAS_DATA）/ AKShare 失败 cn_astock fallback 成功（HAS_DATA, fallback_from=cn_akshare）/ 全部失败（FAILED）/ 空池（NORMAL_NO_DATA, count=0）
+  - provider `get_zt_pool()` 双重 fallback：先尝试东财 datacenter RPT_DAILYBILLBOARD_DETAILSNEW，失败再尝试 push2 clist 接口
+  - fallback 成功时 raw_evidence 显示 `vendor=cn_astock, fallback_from=cn_akshare`
+  - 全部失败时 status=`FAILED`，error 包含 ConnectionError 等错误信息
+  - 空池时 status=`NORMAL_NO_DATA`，不能显示为 FAILED
+  - live smoke 必须环境变量 `TA_LIVE_DATA_SMOKE=1` 开启，未开启时全部 SKIPPED
+  - 与 DATA-006 日报和 DATA-007 evidence audit 对接
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未跑 live 请求
+
+## 2026-06-08 | DATA-014: 新闻/政策事件 fixture 与 live smoke 补充
+
+- **执行者**：OpenCode
+- **任务**：DATA-014 — 补齐新闻/政策事件源的 fixture replay 和低频 live smoke，验证昊天雷达核心事件源在失败、空结果、限流时的状态语义。
+- **修改文件**：
+  - `tradingagents/dataflows/fixture_replay.py` — [DATA-014] policy_news_fixture_smoke
+    - 新增 9 个 fixture：`news_has_data` / `news_normal_no_data` / `news_partial_failed` / `news_failed` / `news_rate_limited` / `global_news_has_data` / `global_news_normal_no_data` / `global_news_failed` / `global_news_rate_limited`
+    - `ALL_FIXTURE_IDS` 从 25 扩展到 34
+    - 每个 fixture 包含 `source_level`（政策原文/新闻转述/市场传闻）和 `evidence_type`（policy_document/news_relay）字段
+    - 区分 5 种新闻场景：HAS_DATA / NORMAL_NO_DATA / PARTIAL_FAILED（fallback）/ FAILED / RATE_LIMITED
+    - 区分 4 种全球新闻场景：HAS_DATA / NORMAL_NO_DATA / FAILED / RATE_LIMITED
+  - `tradingagents/dataflows/live_smoke.py` — [DATA-014]
+    - `_make_endpoint_definitions()` 新增 2 个端点：`cn_astock/eastmoney_news`(get_news) + `cn_astock/cls_global_news`(get_global_news)
+    - 支持 `TA_LIVE_DATA_SMOKE=1` 环境变量门控
+  - `tests/test_data014_policy_news_fixture.py` — **新建**，94 个测试覆盖：
+    - `TestSourceCatalogNews` (13): DataType 枚举/sources 注册/primary/fallback chain/all_data_types/fields/endpoint/catalog validation
+    - `TestEvidenceContractNews` (8): resolve_data_type/required_fields/contract HAS_DATA/FAILED/completeness/missing
+    - `TestEvidenceCoverageAuditNews` (6): label/family/audit HAS_DATA/audit FAILED
+    - `TestReadinessScoreNews` (5): HAS_DATA/FAILED/NORMAL_NO_DATA/NOT_QUERIED/text fallback
+    - `TestInterfaceNews` (4): tools categories/category/failure patterns
+    - `TestEventSourceStatus` (3): enum/default result/default item
+    - `TestNewsFixtures` (15): fixture IDs/count/individual fixtures/unique/unknown
+    - `TestNewsFixtureReplay` (7): replay single/all/full includes
+    - `TestSourceLevelClassification` (4): source_level/evidence_type
+    - `TestEvidenceTypeDistinction` (4): policy_document/news_relay/market_rumor/empty
+    - `TestLiveSmokeNews` (8): endpoint definitions/env gating/skip/enabled/report structure
+    - `TestNewsDedup` (2): no double count/different vendor
+    - `TestAcceptanceDATA014` (15): 全部验收标准
+  - `tests/test_data013_buyback.py` — 更新 ALL_FIXTURE_IDS 计数断言 `== 25` → `>= 25`
+  - `tests/test_data_p1_astock_live_smoke.py` — 更新 endpoint 计数断言 `== 4` → `>= 4`
+  - `docs/TASKS.md` — DATA-014 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：94 passed (DATA-014)；518 passed (回归：fixture_replay + live_smoke + daily_digest + margin + report + buyback)；116 passed (readiness_score)；24 passed (event_source)；86 passed (data_source_replay)；0 failed
+- **关键逻辑**：
+  - 新闻 5 种 fixture 场景：成功（HAS_DATA）/ 空结果（NORMAL_NO_DATA, count=0）/ 部分失败（AKShare 失败→cn_astock fallback）/ 全部失败（FAILED）/ 限流（RATE_LIMITED）
+  - 全球新闻 4 种 fixture 场景：成功/空结果/全部失败/限流
+  - source_level 区分"政策原文""新闻转述""市场传闻"
+  - evidence_type 区分 policy_document / news_relay
+  - 限流不被当作"无数据"——status=FAILED, error=RateLimitError
+  - live smoke 必须环境变量 `TA_LIVE_DATA_SMOKE=1` 开启，未开启时全部 SKIPPED
+  - 与 DATA-006 日报和 DATA-007 evidence audit 对接
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未跑 live 请求
+
+## 2026-06-08 | DATA-013: 回购数据接入 provider 路由与 raw_evidence
+
+- **执行者**：OpenCode
+- **任务**：DATA-013 — 把回购计划/回购进展从事件流扩展到 provider route 与 raw_evidence，作为公司行为和中线信号证据。
+- **修改文件**：
+  - `tradingagents/dataflows/source_catalog.py` — [DATA-013] buyback_raw_evidence
+    - `DataType` 枚举新增 `BUYBACK = "buyback"`
+    - 注册 2 个回购 source：`cn_akshare/stock_repurchase`(primary) + `cn_astock/datacenter-web.eastmoney.com/RPT_SHAREBUYBACK_DET`(fallback)
+  - `tradingagents/dataflows/providers/cn_akshare_provider.py` — [DATA-013]
+    - 新增 `get_buybacks(symbol)`: AKShare stock_repurchase_em 回购数据
+    - 支持 `BUYBACK_HAS_DATA` / `BUYBACK_NORMAL_NO_DATA` / `BUYBACK_FAILED` 三态输出
+  - `tradingagents/dataflows/providers/cn_astock_provider.py` — [DATA-013]
+    - 新增 `get_buybacks(symbol)`: 东财 datacenter RPT_SHAREBUYBACK_DET 直连
+    - 金额元→万元 `/10000` 转换，输出公告日期/金额/数量/进度/目的
+  - `tradingagents/dataflows/interface.py` — [DATA-013]
+    - `TOOLS_CATEGORIES["cn_market_data"]["tools"]` 新增 `"get_buybacks"`
+    - 支持 `route_to_vendor` 自动 fallback 和 `get_last_hit_vendor` 追踪
+  - `tradingagents/dataflows/evidence_contract.py` — [DATA-013]
+    - `_EVIDENCE_KEY_TO_DATA_TYPE` 新增 `"buybacks": "buyback"`
+    - `_REQUIRED_FIELDS_FOR_COMPLETENESS` 新增 `"buybacks": ["status", "vendor", "unit"]`
+  - `tradingagents/dataflows/evidence_coverage_audit.py` — [DATA-013]
+    - `_EVIDENCE_FIELD_LABELS` 新增 `"buybacks": "回购"`
+    - `_EVIDENCE_FIELD_FAMILIES` 新增 `"buybacks": "buyback"`
+  - `tradingagents/agents/utils/readiness_score.py` — [DATA-013]
+    - `infer_evidence_statuses()` 中新增 buybacks 四态检查：从 raw_evidence["buybacks"] 读取
+    - 支持 `HAS_DATA/QUERY_FAILED/NORMAL_NO_DATA/NOT_QUERIED` 四态
+    - `calculate_evidence_coverage()` 返回值新增 buybacks 字段
+  - `tradingagents/dataflows/fixture_replay.py` — [DATA-013]
+    - 新增 3 个 fixture：`buyback_has_data`(HAS_DATA/cn_astock) / `buyback_failed`(FAILED/ConnectionError) / `buyback_not_queried`(NOT_QUERIED)
+    - `ALL_FIXTURE_IDS` 从 22 扩展到 25
+  - `tests/test_data013_buyback.py` — **新建**，61 个测试覆盖：
+    - `TestSourceCatalogBuyback` (8): DataType 枚举/sources 注册/primary/fallback chain/all_data_types/fields/endpoint/catalog validation
+    - `TestEvidenceContractBuyback` (6): resolve_data_type/contract HAS_DATA/FAILED/completeness/missing/required fields
+    - `TestEvidenceCoverageAuditBuyback` (4): label/family/audit HAS_DATA/audit FAILED
+    - `TestReadinessScoreBuyback` (10): NOT_QUERIED default/HAS_DATA/FAILED/NORMAL_NO_DATA from structured/text/coverage increase/text fallback/text normal no data
+    - `TestInterfaceBuyback` (3): tools categories/category/failure string detection
+    - `TestProviderBuyback` (7): akshare method/astock method/akshare no data/akshare has data/astock no data/astock has data/astock failed
+    - `TestBuybackFixtures` (9): fixture IDs/total count/exists/vendor/unit/error/no vendor/all fixtures/in all fixture ids
+    - `TestBuybackFixtureReplay` (5): replay HAS_DATA/FAILED/NOT_QUERIED/all buyback/full replay
+    - `TestBuybackDedup` (2): no double count/different vendor
+    - `TestAcceptanceDATA013` (10): 全部验收标准
+  - `tests/test_readiness_score.py` — 更新 3 处覆盖率计算断言（新增 ratings+buybacks 字段后分母从 9 变为 11）
+  - `tests/test_data011_research_report.py` — 更新 1 处覆盖率断言
+  - `tests/test_data005_fixture_replay.py` — 更新 2 处 completeness 阈值断言
+  - `docs/TASKS.md` — DATA-013 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：61 passed (DATA-013)；619 passed (回归)；0 failed
+- **关键逻辑**：
+  - 回购数据从事件流扩展为完整 raw_evidence 四态数据源
+  - source_catalog 注册 2 个 vendor：AKShare(stock_repurchase_em) 为 primary，东财 datacenter(RPT_SHAREBUYBACK_DET) 为 fallback
+  - provider 层输出 `BUYBACK_HAS_DATA / BUYBACK_NORMAL_NO_DATA / BUYBACK_FAILED` 三态标记
+  - route_to_vendor 支持失败字符串检测和 fallback 链自动切换
+  - readiness_score 中 buybacks 支持结构化状态和文本模式双重识别
+  - 3 个 fixture 覆盖 HAS_DATA/FAILED/NOT_QUERIED 三种场景
+  - 重复事件不会导致候选分数重复叠加（dedup 测试覆盖）
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未跑 live 请求
+
+---
+
+## 2026-06-08 | T-004: TradeFlow P2 盘中 Observe
+
+exec
+/bin/zsh -lc "git status --short && printf '\\n---BRANCH---\\n' && git branch --show-current" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/dataflows/evidence_contract.py
+ M tradingagents/dataflows/evidence_coverage_audit.py
+ M tradingagents/dataflows/fixture_replay.py
+ M tradingagents/dataflows/live_smoke.py
+ M tradingagents/dataflows/providers/cn_astock_provider.py
+ M tradingagents/dataflows/source_catalog.py
+?? docs/task_runs/DATA-016-20260608-060126/
+?? tests/test_data016_hot_stocks.py
+
+---BRANCH---
+local/tradingagents-custom
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- tradingagents/dataflows/source_catalog.py tradingagents/dataflows/providers/cn_astock_provider.py tradingagents/dataflows/evidence_contract.py tradingagents/dataflows/evidence_coverage_audit.py tradingagents/dataflows/fixture_replay.py tradingagents/dataflows/live_smoke.py tests/test_data016_hot_stocks.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ docs/DEVLOG.md                                     |  46 ++++++
+ docs/TASKS.md                                      |   6 +-
+ tradingagents/dataflows/evidence_contract.py       |   1 +
+ tradingagents/dataflows/evidence_coverage_audit.py |   4 +-
+ tradingagents/dataflows/fixture_replay.py          | 184 +++++++++++++++++++++
+ tradingagents/dataflows/live_smoke.py              |   8 +
+ .../dataflows/providers/cn_astock_provider.py      |  37 +++++
+ tradingagents/dataflows/source_catalog.py          |  10 ++
+ 8 files changed, 291 insertions(+), 5 deletions(-)
+diff --git a/tradingagents/dataflows/evidence_contract.py b/tradingagents/dataflows/evidence_contract.py
+index 5c791f0..cbe500e 100644
+--- a/tradingagents/dataflows/evidence_contract.py
++++ b/tradingagents/dataflows/evidence_contract.py
+@@ -189,6 +189,7 @@ _REQUIRED_FIELDS_FOR_COMPLETENESS: Dict[str, List[str]] = {
+     "ratings": ["status", "vendor"],  # [DATA-012] rating_raw_evidence
+     "buybacks": ["status", "vendor", "unit"],  # [DATA-013] buyback_raw_evidence
+     "zt_pool": ["status", "vendor"],  # [DATA-015] limit_up_pool_fallback
++    "hot_stocks": ["status", "vendor"],  # [DATA-016] hot_stock_fallback
+ }
+ 
+ 
+diff --git a/tradingagents/dataflows/evidence_coverage_audit.py b/tradingagents/dataflows/evidence_coverage_audit.py
+index 0866e00..4b9bb08 100644
+--- a/tradingagents/dataflows/evidence_coverage_audit.py
++++ b/tradingagents/dataflows/evidence_coverage_audit.py
+@@ -59,7 +59,7 @@ _EVIDENCE_FIELD_LABELS: Dict[str, str] = {
+     "income_statement": "利润表",
+     "insider_transactions": "内部人交易",
+     "zt_pool": "涨停池",
+-    "hot_stocks": "热门股票",
++    "hot_stocks": "热门股票",  # [DATA-016] hot_stock_fallback
+     "indicators": "技术指标",
+     "vpa_indicators": "量价分析指标",
+     "margin_trading": "融资融券",  # [DATA-010] margin_trading_raw_evidence
+@@ -85,7 +85,7 @@ _EVIDENCE_FIELD_FAMILIES: Dict[str, str] = {
+     "income_statement": "financials",
+     "insider_transactions": "insider",
+     "zt_pool": "zt_pool",  # [DATA-015] limit_up_pool_fallback
+-    "hot_stocks": "hot_stocks",
++    "hot_stocks": "hot_stocks",  # [DATA-016] hot_stock_fallback
+     "margin_trading": "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+     "research_report": "report",  # [DATA-011] research_report_raw_evidence
+     "ratings": "rating",  # [DATA-012] rating_raw_evidence
+diff --git a/tradingagents/dataflows/fixture_replay.py b/tradingagents/dataflows/fixture_replay.py
+index 456e28c..8f94efd 100644
+--- a/tradingagents/dataflows/fixture_replay.py
++++ b/tradingagents/dataflows/fixture_replay.py
+@@ -91,6 +91,11 @@ FIXTURE_ZT_POOL_HAS_DATA = "zt_pool_has_data"  # [DATA-015] limit_up_pool_fallba
+ FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK = "zt_pool_akshare_fail_fallback"  # [DATA-015] limit_up_pool_fallback
+ FIXTURE_ZT_POOL_FAILED = "zt_pool_failed"  # [DATA-015] limit_up_pool_fallback
+ FIXTURE_ZT_POOL_NORMAL_NO_DATA = "zt_pool_normal_no_data"  # [DATA-015] limit_up_pool_fallback
++FIXTURE_HOT_STOCKS_HAS_DATA = "hot_stocks_has_data"  # [DATA-016] hot_stock_fallback
++FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK = "hot_stocks_akshare_fail_fallback"  # [DATA-016] hot_stock_fallback
++FIXTURE_HOT_STOCKS_FAILED = "hot_stocks_failed"  # [DATA-016] hot_stock_fallback
++FIXTURE_HOT_STOCKS_NORMAL_NO_DATA = "hot_stocks_normal_no_data"  # [DATA-016] hot_stock_fallback
++FIXTURE_HOT_STOCKS_RATE_LIMITED = "hot_stocks_rate_limited"  # [DATA-016] hot_stock_fallback
+ 
+ ALL_FIXTURE_IDS = [
+     FIXTURE_NORMAL_QUOTE,
+@@ -131,6 +136,11 @@ ALL_FIXTURE_IDS = [
+     FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK,
+     FIXTURE_ZT_POOL_FAILED,
+     FIXTURE_ZT_POOL_NORMAL_NO_DATA,
++    FIXTURE_HOT_STOCKS_HAS_DATA,
++    FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK,
++    FIXTURE_HOT_STOCKS_FAILED,
++    FIXTURE_HOT_STOCKS_NORMAL_NO_DATA,
++    FIXTURE_HOT_STOCKS_RATE_LIMITED,
+ ]
+ 
+ 
+@@ -1631,6 +1641,175 @@ def _build_zt_pool_normal_no_data_fixture() -> FixtureEntry:
+     )
+ 
+ 
++def _build_hot_stocks_has_data_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "hot_stocks": {
++            "raw": "雪球热搜前20：\n600519 贵州茅台 120.5\n000858 五粮液 98.3",
++            "field": "hot_stocks",
++            "unit": "条",
++            "vendor": "cn_akshare",
++            "endpoint": "stock_hot_follow_xq",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "HAS_DATA",
++            "fallback_from": None,
++            "source_url": None,
++            "error": None,
++            "is_realtime_patched": False,
++            "unit_verified": True,
++            "record_count": 20,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_HOT_STOCKS_HAS_DATA,
++        description="热门股票正常返回（AKShare/雪球 成功）",
++        data_type="hot_stocks",
++        vendor="cn_akshare",
++        endpoint="stock_hot_follow_xq",
++        expected_status="HAS_DATA",
++        raw_evidence=raw_evidence,
++        tags=["hot_stocks", "has_data", "DATA-016"],
++    )
++
++
++def _build_hot_stocks_akshare_fail_fallback_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "hot_stocks": {
++            "raw": (
++                "[DATA-016] HOT_STOCKS_HAS_DATA: 热门股票（Eastmoney 热榜，共 30 只）：\n"
++                "- 600519 贵州茅台 | 最新 1800.0 | 涨跌幅 2.5% | 成交额 4500000000\n"
++                "- 300750 宁德时代 | 最新 220.0 | 涨跌幅 3.1% | 成交额 3800000000"
++            ),
++            "field": "hot_stocks",
++            "unit": "条",
++            "vendor": "cn_astock",
++            "endpoint": "push2.eastmoney.com/getHotStock",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "HAS_DATA",
++            "fallback_from": "cn_akshare",
++            "source_url": None,
++            "error": "AKShare stock_hot_follow_xq: ProxyError",
++            "is_realtime_patched": False,
++            "unit_verified": True,
++            "record_count": 30,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK,
++        description="热门股票 AKShare 失败→cn_astock fallback 成功——vendor 应显示 cn_astock",
++        data_type="hot_stocks",
++        vendor="cn_astock",
++        endpoint="push2.eastmoney.com/getHotStock",
++        expected_status="HAS_DATA",
++        raw_evidence=raw_evidence,
++        tags=["hot_stocks", "fallback", "akshare_failed", "astock_success", "DATA-016"],
++    )
++
++
++def _build_hot_stocks_failed_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "hot_stocks": {
++            "raw": "[DATA-016] HOT_STOCKS_FAILED: 热门股票数据获取失败（Eastmoney push2）：ConnectionError",
++            "field": "hot_stocks",
++            "unit": None,
++            "vendor": "cn_astock",
++            "endpoint": "push2.eastmoney.com/getHotStock",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "FAILED",
++            "fallback_from": "cn_akshare",
++            "source_url": None,
++            "error": "ConnectionError",
++            "is_realtime_patched": False,
++            "unit_verified": None,
++            "record_count": 0,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_HOT_STOCKS_FAILED,
++        description="热门股票全部失败——AKShare 和 cn_astock 均连接失败",
++        data_type="hot_stocks",
++        vendor="cn_astock",
++        endpoint="push2.eastmoney.com/getHotStock",
++        expected_status="FAILED",
++        raw_evidence=raw_evidence,
++        tags=["hot_stocks", "failed", "DATA-016"],
++    )
++
++
++def _build_hot_stocks_normal_no_data_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "hot_stocks": {
++            "raw": "雪球热搜数据暂不可用。",
++            "field": "hot_stocks",
++            "unit": "条",
++            "vendor": "cn_akshare",
++            "endpoint": "stock_hot_follow_xq",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "NORMAL_NO_DATA",
++            "fallback_from": None,
++            "source_url": None,
++            "error": None,
++            "is_realtime_patched": False,
++            "unit_verified": True,
++            "record_count": 0,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_HOT_STOCKS_NORMAL_NO_DATA,
++        description="热门股票空结果——非交易日或盘后未更新（status=NORMAL_NO_DATA, count=0）",
++        data_type="hot_stocks",
++        vendor="cn_akshare",
++        endpoint="stock_hot_follow_xq",
++        expected_status="NORMAL_NO_DATA",
++        raw_evidence=raw_evidence,
++        tags=["hot_stocks", "normal_no_data", "DATA-016"],
++    )
++
++
++def _build_hot_stocks_rate_limited_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "hot_stocks": {
++            "raw": "[DATA-016] HOT_STOCKS_FAILED: 热门股票数据获取失败（Eastmoney push2）：HTTPError: 429 Too Many Requests",
++            "field": "hot_stocks",
++            "unit": None,
++            "vendor": "cn_astock",
++            "endpoint": "push2.eastmoney.com/getHotStock",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "FAILED",
++            "fallback_from": "cn_akshare",
++            "source_url": None,
++            "error": "HTTPError: 429 Too Many Requests",
++            "is_realtime_patched": False,
++            "unit_verified": None,
++            "record_count": 0,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_HOT_STOCKS_RATE_LIMITED,
++        description="热门股票限流——请求频率过高被拒",
++        data_type="hot_stocks",
++        vendor="cn_astock",
++        endpoint="push2.eastmoney.com/getHotStock",
++        expected_status="FAILED",
++        raw_evidence=raw_evidence,
++        tags=["hot_stocks", "rate_limited", "DATA-016"],
++    )
++
++
+ _FIXTURE_BUILDERS = {
+     FIXTURE_NORMAL_QUOTE: _build_normal_quote_fixture,
+     FIXTURE_STALE_DAILY: _build_stale_daily_fixture,
+@@ -1670,6 +1849,11 @@ _FIXTURE_BUILDERS = {
+     FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK: _build_zt_pool_akshare_fail_fallback_fixture,
+     FIXTURE_ZT_POOL_FAILED: _build_zt_pool_failed_fixture,
+     FIXTURE_ZT_POOL_NORMAL_NO_DATA: _build_zt_pool_normal_no_data_fixture,
++    FIXTURE_HOT_STOCKS_HAS_DATA: _build_hot_stocks_has_data_fixture,
++    FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK: _build_hot_stocks_akshare_fail_fallback_fixture,
++    FIXTURE_HOT_STOCKS_FAILED: _build_hot_stocks_failed_fixture,
++    FIXTURE_HOT_STOCKS_NORMAL_NO_DATA: _build_hot_stocks_normal_no_data_fixture,
++    FIXTURE_HOT_STOCKS_RATE_LIMITED: _build_hot_stocks_rate_limited_fixture,
+ }
+ 
+ 
+diff --git a/tradingagents/dataflows/live_smoke.py b/tradingagents/dataflows/live_smoke.py
+index 859987b..1dfd61e 100644
+--- a/tradingagents/dataflows/live_smoke.py
++++ b/tradingagents/dataflows/live_smoke.py
+@@ -191,6 +191,14 @@ def _make_endpoint_definitions() -> List[Dict[str, Any]]:
+             "kwargs": {},
+             "expected_unit": "条",
+         },
++        {  # [DATA-016] hot_stock_fallback
++            "endpoint": "cn_astock/hot_stocks",
++            "method": "get_hot_stocks",
++            "vendor": "cn_astock",
++            "args_template": (),
++            "kwargs": {},
++            "expected_unit": "条",
++        },
+     ]
+ 
+ 
+diff --git a/tradingagents/dataflows/providers/cn_astock_provider.py b/tradingagents/dataflows/providers/cn_astock_provider.py
+index a9a92c4..a8295ba 100644
+--- a/tradingagents/dataflows/providers/cn_astock_provider.py
++++ b/tradingagents/dataflows/providers/cn_astock_provider.py
+@@ -1330,3 +1330,40 @@ class CnAstockProvider(BaseMarketDataProvider):
+ 
+         except Exception as exc:
+             return f"{symbol} [DATA-013] BUYBACK_FAILED: 回购数据获取失败（Eastmoney datacenter）：{type(exc).__name__}: {exc}"
++
++    def get_hot_stocks(self) -> str:
++        """热门股票/热搜/市场关注度 — 东财 push2 直连 fallback.  # [DATA-016] hot_stock_fallback"""
++        try:
++            _rate_limit("em_hot_stocks")
++            url = "https://push2.eastmoney.com/api/qt/clist/get"
++            params = {
++                "pn": "1",
++                "pz": "30",
++                "po": "1",
++                "np": "1",
++                "fltt": "2",
++                "invt": "2",
++                "fid": "f3",
++                "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
++                "fields": "f2,f3,f4,f12,f14,f5,f6,f7,f8,f15,f16,f17",
++                "ut": "b339539b309c025e262b08e3f6d85183",
++            }
++            headers = {"User-Agent": UA, "Referer": "https://quote.eastmoney.com/"}
++            resp = requests.get(url, params=params, headers=headers, timeout=15, proxies=NO_PROXY)
++            body = resp.json()
++            items = body.get("data", {}).get("diff", [])
++            if not items:
++                return "[DATA-016] HOT_STOCKS_NORMAL_NO_DATA: 热门股票暂无数据（非交易日或盘后未更新）。"
++            count = len(items)
++            lines = [f"[DATA-016] HOT_STOCKS_HAS_DATA: 热门股票（Eastmoney 热榜，共 {count} 只）："]
++            for item in items[:30]:
++                code = item.get("f12", "")
++                name = item.get("f14", "")
++                price = item.get("f2", "-")
++                change_pct = item.get("f3", "-")
++                volume = item.get("f6", "-")
++                lines.append(f"- {code} {name} | 最新 {price} | 涨跌幅 {change_pct}% | 成交额 {volume}")
++            return "\n".join(lines)
++
++        except Exception as exc:
++            return f"[DATA-016] HOT_STOCKS_FAILED: 热门股票数据获取失败（Eastmoney push2）：{type(exc).__name__}: {exc}"
+diff --git a/tradingagents/dataflows/source_catalog.py b/tradingagents/dataflows/source_catalog.py
+index 3c3f627..46ed2aa 100644
+--- a/tradingagents/dataflows/source_catalog.py
++++ b/tradingagents/dataflows/source_catalog.py
+@@ -589,6 +589,16 @@ def _build_catalog() -> None:
+         is_primary=True,
+         notes="雪球热搜股票",
+     )
++    _register(  # [DATA-016] hot_stock_fallback
++        "cn_astock", "push2.eastmoney.com/getHotStock",
++        DataType.HOT_STOCKS,
++        fields=["SECURITY_CODE", "SECURITY_NAME_ABBR", "CHANGE_RATE", "TRADE_VOLUME"],
++        unit="条",
++        freshness=Freshness.INTRADAY,
++        rate_limit_risk=RateLimitRisk.MEDIUM,
++        fallback_priority=2,
++        notes="东财热榜 push2 直连 fallback",
++    )
+ 
+     # ── 回购 ──────────────────────────────────────────────────────────
+     # [DATA-013] buyback_raw_evidence
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tests/test_data016_hot_stocks.py && printf '\\n--- rest ---\\n' && sed -n '260,560p' tests/test_data016_hot_stocks.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [DATA-016] hot_stock_fallback
+"""
+Tests for hot stocks (热门股票) cn_astock fallback, source catalog registration,
+evidence contract, evidence coverage audit, fixture replay,
+provider, live smoke, and acceptance criteria.
+"""
+
+import pytest
+from unittest.mock import patch, MagicMock
+
+from tradingagents.dataflows.source_catalog import (
+    DataType,
+    Freshness,
+    RateLimitRisk,
+    get_sources_for_type,
+    get_primary_source,
+    get_fallback_chain,
+    get_all_data_types,
+    validate_catalog,
+)
+from tradingagents.dataflows.evidence_contract import (
+    EvidenceContract,
+    resolve_data_type,
+    compute_contract_completeness,
+    _REQUIRED_FIELDS_FOR_COMPLETENESS,
+)
+from tradingagents.dataflows.evidence_coverage_audit import (
+    audit_raw_evidence,
+    _EVIDENCE_FIELD_LABELS,
+    _EVIDENCE_FIELD_FAMILIES,
+)
+from tradingagents.agents.utils.readiness_score import (
+    EvidenceStatus,
+    calculate_evidence_coverage,
+)
+from tradingagents.dataflows.fixture_replay import (
+    FIXTURE_HOT_STOCKS_HAS_DATA,
+    FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK,
+    FIXTURE_HOT_STOCKS_FAILED,
+    FIXTURE_HOT_STOCKS_NORMAL_NO_DATA,
+    FIXTURE_HOT_STOCKS_RATE_LIMITED,
+    ALL_FIXTURE_IDS,
+    get_fixture,
+    get_all_fixtures,
+    run_fixture_replay,
+)
+from tradingagents.dataflows.interface import (
+    TOOLS_CATEGORIES,
+    get_category_for_method,
+    _FAILURE_RESULT_PATTERNS,
+)
+
+
+class TestSourceCatalogHotStocks:
+    def test_hot_stocks_data_type_exists(self):
+        assert DataType.HOT_STOCKS.value == "hot_stocks"
+
+    def test_hot_stocks_sources_registered(self):
+        sources = get_sources_for_type(DataType.HOT_STOCKS)
+        assert len(sources) >= 2
+
+    def test_hot_stocks_primary_source(self):
+        primary = get_primary_source(DataType.HOT_STOCKS)
+        assert primary is not None
+        assert primary.vendor == "cn_akshare"
+        assert primary.is_primary
+
+    def test_hot_stocks_fallback_chain(self):
+        chain = get_fallback_chain(DataType.HOT_STOCKS)
+        assert "cn_akshare" in chain
+        assert "cn_astock" in chain
+        assert chain.index("cn_akshare") < chain.index("cn_astock")
+
+    def test_hot_stocks_in_all_data_types(self):
+        all_types = get_all_data_types()
+        assert "hot_stocks" in all_types
+
+    def test_hot_stocks_primary_fields(self):
+        primary = get_primary_source(DataType.HOT_STOCKS)
+        assert len(primary.fields) > 0
+
+    def test_hot_stocks_primary_endpoint(self):
+        primary = get_primary_source(DataType.HOT_STOCKS)
+        assert primary.endpoint == "stock_hot_follow_xq"
+
+    def test_hot_stocks_fallback_endpoint(self):
+        sources = get_sources_for_type(DataType.HOT_STOCKS)
+        astock = [s for s in sources if s.vendor == "cn_astock"]
+        assert len(astock) >= 1
+        assert "eastmoney" in astock[0].endpoint.lower() or "push2" in astock[0].endpoint.lower()
+
+
+class TestEvidenceContractHotStocks:
+    def test_resolve_data_type_hot_stocks(self):
+        assert resolve_data_type("hot_stocks") == "hot_stocks"
+
+    def test_hot_stocks_contract_has_data(self):
+        contract = EvidenceContract(
+            field="hot_stocks",
+            value="雪球热搜前20：\n600519 贵州茅台 120.5",
+            unit="条",
+            vendor="cn_akshare",
+            endpoint="stock_hot_follow_xq",
+            status="HAS_DATA",
+        )
+        assert contract.has_data
+        assert contract.unit_known
+        assert contract.vendor == "cn_akshare"
+
+    def test_hot_stocks_contract_failed(self):
+        contract = EvidenceContract(
+            field="hot_stocks",
+            value=None,
+            vendor="cn_astock",
+            endpoint="push2.eastmoney.com/getHotStock",
+            status="FAILED",
+            error="ConnectionError",
+        )
+        assert contract.is_failed
+        assert not contract.has_data
+
+    def test_hot_stocks_completeness(self):
+        raw = {
+            "hot_stocks": {
+                "raw": "雪球热搜前20",
+                "field": "hot_stocks",
+                "unit": "条",
+                "vendor": "cn_akshare",
+                "endpoint": "stock_hot_follow_xq",
+                "status": "HAS_DATA",
+            },
+        }
+        result = compute_contract_completeness(raw)
+        assert result["completeness_score"] > 0
+
+    def test_hot_stocks_missing(self):
+        raw = {}
+        result = compute_contract_completeness(raw)
+        assert "hot_stocks" in result.get("missing_details", {})
+
+    def test_hot_stocks_in_required_fields(self):
+        assert "hot_stocks" in _REQUIRED_FIELDS_FOR_COMPLETENESS
+
+
+class TestEvidenceCoverageAuditHotStocks:
+    def test_hot_stocks_label(self):
+        assert _EVIDENCE_FIELD_LABELS.get("hot_stocks") == "热门股票"
+
+    def test_hot_stocks_family(self):
+        assert _EVIDENCE_FIELD_FAMILIES.get("hot_stocks") == "hot_stocks"
+
+    def test_audit_hot_stocks_has_data(self):
+        raw = {
+            "hot_stocks": {
+                "raw": "雪球热搜前20",
+                "field": "hot_stocks",
+                "unit": "条",
+                "vendor": "cn_akshare",
+                "endpoint": "stock_hot_follow_xq",
+                "status": "HAS_DATA",
+            },
+        }
+        result = audit_raw_evidence(raw)
+        assert "hot_stocks" in result.has_data_fields
+
+    def test_audit_hot_stocks_failed(self):
+        raw = {
+            "hot_stocks": {
+                "raw": "HOT_STOCKS_FAILED",
+                "field": "hot_stocks",
+                "unit": None,
+                "vendor": "cn_astock",
+                "endpoint": "push2.eastmoney.com/getHotStock",
+                "status": "FAILED",
+                "error": "ConnectionError",
+            },
+        }
+        result = audit_raw_evidence(raw)
+        assert "hot_stocks" in result.failed_fields
+
+
+class TestInterfaceHotStocks:
+    def test_hot_stocks_in_tools_categories(self):
+        tools = TOOLS_CATEGORIES.get("cn_market_data", {}).get("tools", [])
+        assert "get_hot_stocks_xq" in tools
+
+    def test_hot_stocks_category(self):
+        cat = get_category_for_method("get_hot_stocks_xq")
+        assert cat == "cn_market_data"
+
+    def test_failure_string_detection(self):
+        failure = "热门股票数据获取失败：ConnectionError"
+        assert any(p in failure for p in _FAILURE_RESULT_PATTERNS)
+
+
+class TestProviderHotStocks:
+    def test_astock_has_get_hot_stocks(self):
+        from tradingagents.dataflows.providers.cn_astock_provider import CnAstockProvider
+        provider = CnAstockProvider()
+        assert hasattr(provider, "get_hot_stocks")
+
+    @patch("tradingagents.dataflows.providers.cn_astock_provider.requests.get")
+    def test_astock_hot_stocks_has_data(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "data": {
+                "diff": [
+                    {"f12": "600519", "f14": "贵州茅台", "f2": 1800.0, "f3": 2.5, "f6": 4500000000},
+                    {"f12": "300750", "f14": "宁德时代", "f2": 220.0, "f3": 3.1, "f6": 3800000000},
+                ]
+            }
+        }
+        mock_get.return_value = mock_resp
+        from tradingagents.dataflows.providers.cn_astock_provider import CnAstockProvider
+        provider = CnAstockProvider()
+        result = provider.get_hot_stocks()
+        assert "HOT_STOCKS_HAS_DATA" in result
+
+    @patch("tradingagents.dataflows.providers.cn_astock_provider.requests.get")
+    def test_astock_hot_stocks_no_data(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"data": {"diff": []}}
+        mock_get.return_value = mock_resp
+        from tradingagents.dataflows.providers.cn_astock_provider import CnAstockProvider
+        provider = CnAstockProvider()
+        result = provider.get_hot_stocks()
+        assert "HOT_STOCKS_NORMAL_NO_DATA" in result
+
+    @patch("tradingagents.dataflows.providers.cn_astock_provider.requests.get")
+    def test_astock_hot_stocks_failed(self, mock_get):
+        mock_get.side_effect = Exception("ConnectionError")
+        from tradingagents.dataflows.providers.cn_astock_provider import CnAstockProvider
+        provider = CnAstockProvider()
+        result = provider.get_hot_stocks()
+        assert "HOT_STOCKS_FAILED" in result
+
+    @patch("tradingagents.dataflows.providers.cn_astock_provider.requests.get")
+    def test_astock_hot_stocks_rate_limited(self, mock_get):
+        mock_get.side_effect = Exception("HTTPError: 429 Too Many Requests")
+        from tradingagents.dataflows.providers.cn_astock_provider import CnAstockProvider
+        provider = CnAstockProvider()
+        result = provider.get_hot_stocks()
+        assert "HOT_STOCKS_FAILED" in result
+        assert "429" in result
+
+
+class TestHotStocksFixtures:
+    def test_fixture_ids_exist(self):
+        assert FIXTURE_HOT_STOCKS_HAS_DATA == "hot_stocks_has_data"
+        assert FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK == "hot_stocks_akshare_fail_fallback"
+        assert FIXTURE_HOT_STOCKS_FAILED == "hot_stocks_failed"
+        assert FIXTURE_HOT_STOCKS_NORMAL_NO_DATA == "hot_stocks_normal_no_data"
+        assert FIXTURE_HOT_STOCKS_RATE_LIMITED == "hot_stocks_rate_limited"
+
+    def test_fixture_count_in_all_fixture_ids(self):
+        hs_ids = [
+            FIXTURE_HOT_STOCKS_HAS_DATA,
+            FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK,
+            FIXTURE_HOT_STOCKS_FAILED,
+            FIXTURE_HOT_STOCKS_NORMAL_NO_DATA,
+
+--- rest ---
+            FIXTURE_HOT_STOCKS_NORMAL_NO_DATA,
+            FIXTURE_HOT_STOCKS_RATE_LIMITED,
+        ]
+        for hid in hs_ids:
+            assert hid in ALL_FIXTURE_IDS
+
+    def test_total_fixture_count_increased(self):
+        assert len(ALL_FIXTURE_IDS) >= 39
+
+    def test_hot_stocks_has_data_fixture(self):
+        f = get_fixture(FIXTURE_HOT_STOCKS_HAS_DATA)
+        assert f is not None
+        assert f.expected_status == "HAS_DATA"
+        assert f.vendor == "cn_akshare"
+        assert f.data_type == "hot_stocks"
+        ev = f.raw_evidence.get("hot_stocks", {})
+        assert ev.get("status") == "HAS_DATA"
+        assert ev.get("record_count") == 20
+
+    def test_hot_stocks_fallback_fixture(self):
+        f = get_fixture(FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK)
+        assert f is not None
+        assert f.expected_status == "HAS_DATA"
+        assert f.vendor == "cn_astock"
+        ev = f.raw_evidence.get("hot_stocks", {})
+        assert ev.get("fallback_from") == "cn_akshare"
+
+    def test_hot_stocks_failed_fixture(self):
+        f = get_fixture(FIXTURE_HOT_STOCKS_FAILED)
+        assert f is not None
+        assert f.expected_status == "FAILED"
+        ev = f.raw_evidence.get("hot_stocks", {})
+        assert ev.get("status") == "FAILED"
+        assert ev.get("error") == "ConnectionError"
+
+    def test_hot_stocks_normal_no_data_fixture(self):
+        f = get_fixture(FIXTURE_HOT_STOCKS_NORMAL_NO_DATA)
+        assert f is not None
+        assert f.expected_status == "NORMAL_NO_DATA"
+        ev = f.raw_evidence.get("hot_stocks", {})
+        assert ev.get("status") == "NORMAL_NO_DATA"
+        assert ev.get("record_count") == 0
+
+    def test_hot_stocks_rate_limited_fixture(self):
+        f = get_fixture(FIXTURE_HOT_STOCKS_RATE_LIMITED)
+        assert f is not None
+        assert f.expected_status == "FAILED"
+        ev = f.raw_evidence.get("hot_stocks", {})
+        assert ev.get("status") == "FAILED"
+        assert "429" in ev.get("error", "")
+
+    def test_all_hot_stocks_fixtures_unique_ids(self):
+        ids = [
+            FIXTURE_HOT_STOCKS_HAS_DATA,
+            FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK,
+            FIXTURE_HOT_STOCKS_FAILED,
+            FIXTURE_HOT_STOCKS_NORMAL_NO_DATA,
+            FIXTURE_HOT_STOCKS_RATE_LIMITED,
+        ]
+        assert len(set(ids)) == 5
+
+    def test_unknown_fixture_returns_none(self):
+        assert get_fixture("hot_stocks_unknown") is None
+
+
+class TestHotStocksFixtureReplay:
+    def test_replay_has_data(self):
+        report = run_fixture_replay(fixture_ids=[FIXTURE_HOT_STOCKS_HAS_DATA])
+        assert report.total_fixtures == 1
+        assert report.passed == 1
+        assert report.failed == 0
+
+    def test_replay_fallback(self):
+        report = run_fixture_replay(fixture_ids=[FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK])
+        assert report.total_fixtures == 1
+        assert report.passed == 1
+        r = report.results[0]
+        assert r.vendor == "cn_astock"
+        assert r.fallback_from == "cn_akshare"
+        assert r.is_fallback
+
+    def test_replay_failed(self):
+        report = run_fixture_replay(fixture_ids=[FIXTURE_HOT_STOCKS_FAILED])
+        assert report.total_fixtures == 1
+        assert report.passed == 1
+        r = report.results[0]
+        assert r.actual_status == "FAILED"
+
+    def test_replay_normal_no_data(self):
+        report = run_fixture_replay(fixture_ids=[FIXTURE_HOT_STOCKS_NORMAL_NO_DATA])
+        assert report.total_fixtures == 1
+        assert report.passed == 1
+        r = report.results[0]
+        assert r.actual_status == "NORMAL_NO_DATA"
+
+    def test_replay_rate_limited(self):
+        report = run_fixture_replay(fixture_ids=[FIXTURE_HOT_STOCKS_RATE_LIMITED])
+        assert report.total_fixtures == 1
+        assert report.passed == 1
+        r = report.results[0]
+        assert r.actual_status == "FAILED"
+
+    def test_replay_all_hot_stocks(self):
+        ids = [
+            FIXTURE_HOT_STOCKS_HAS_DATA,
+            FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK,
+            FIXTURE_HOT_STOCKS_FAILED,
+            FIXTURE_HOT_STOCKS_NORMAL_NO_DATA,
+            FIXTURE_HOT_STOCKS_RATE_LIMITED,
+        ]
+        report = run_fixture_replay(fixture_ids=ids)
+        assert report.total_fixtures == 5
+        assert report.all_passed
+
+    def test_replay_full_includes_hot_stocks(self):
+        report = run_fixture_replay()
+        hs_results = [r for r in report.results if r.data_type == "hot_stocks"]
+        assert len(hs_results) == 5
+
+
+class TestLiveSmokeHotStocks:
+    def test_endpoint_definitions_include_hot_stocks(self):
+        from tradingagents.dataflows.live_smoke import _make_endpoint_definitions
+        defs = _make_endpoint_definitions()
+        hs_eps = [d for d in defs if "hot_stocks" in d["endpoint"]]
+        assert len(hs_eps) >= 1
+
+    def test_hot_stocks_endpoint_vendor(self):
+        from tradingagents.dataflows.live_smoke import _make_endpoint_definitions
+        defs = _make_endpoint_definitions()
+        hs_ep = [d for d in defs if "hot_stocks" in d["endpoint"]][0]
+        assert hs_ep["vendor"] == "cn_astock"
+        assert hs_ep["method"] == "get_hot_stocks"
+
+    def test_live_smoke_env_gated(self):
+        from tradingagents.dataflows.live_smoke import run_live_smoke
+        with patch.dict("os.environ", {}, clear=True):
+            report = run_live_smoke(symbols=["600519.SH"])
+            assert report.env_gated
+            hs_results = [r for r in report.results if "hot_stocks" in r.endpoint]
+            assert len(hs_results) >= 1
+            assert all(r.status == "SKIPPED" for r in hs_results)
+
+    def test_live_smoke_enabled_runs(self):
+        from tradingagents.dataflows.live_smoke import run_live_smoke, _make_endpoint_definitions
+        defs = [d for d in _make_endpoint_definitions() if "hot_stocks" in d["endpoint"]]
+        mock_fn = MagicMock(return_value=MagicMock(
+            endpoint="cn_astock/hot_stocks",
+            vendor="cn_astock",
+            symbol="600519.SH",
+            status="OK",
+            latency_ms=100.0,
+            field_count=5,
+            unit="条",
+            unit_verified=True,
+            error="",
+            has_data=True,
+            sample_snippet="热门股票（Eastmoney 热榜，共 30 只）",
+            rate_limit_ok=True,
+        ))
+        with patch.dict("os.environ", {"TA_LIVE_DATA_SMOKE": "1"}):
+            report = run_live_smoke(
+                symbols=["600519.SH"],
+                endpoints=defs,
+                smoke_fn=mock_fn,
+            )
+            assert not report.env_gated
+            assert len(report.results) >= 1
+
+
+class TestHotStocksEvidenceIsolation:
+    def test_hot_stocks_not_policy_evidence(self):
+        raw = {
+            "hot_stocks": {
+                "raw": "雪球热搜前20",
+                "field": "hot_stocks",
+                "unit": "条",
+                "vendor": "cn_akshare",
+                "endpoint": "stock_hot_follow_xq",
+                "status": "HAS_DATA",
+            },
+        }
+        result = audit_raw_evidence(raw)
+        assert "hot_stocks" in result.has_data_fields
+        assert "news" not in result.has_data_fields
+        assert "announcements" not in result.has_data_fields
+
+    def test_hot_stocks_failure_not_candidate_failure(self):
+        raw = {
+            "hot_stocks": {
+                "raw": "HOT_STOCKS_FAILED",
+                "field": "hot_stocks",
+                "status": "FAILED",
+                "vendor": "cn_astock",
+                "error": "ConnectionError",
+            },
+        }
+        result = audit_raw_evidence(raw)
+        assert "hot_stocks" in result.failed_fields
+
+
+class TestAcceptanceDATA016:
+    def test_fallback_shows_cn_astock_vendor(self):
+        f = get_fixture(FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK)
+        ev = f.raw_evidence["hot_stocks"]
+        assert ev["vendor"] == "cn_astock"
+        assert ev["fallback_from"] == "cn_akshare"
+
+    def test_all_failed_shows_failed(self):
+        f = get_fixture(FIXTURE_HOT_STOCKS_FAILED)
+        ev = f.raw_evidence["hot_stocks"]
+        assert ev["status"] == "FAILED"
+        assert ev["error"] is not None
+
+    def test_empty_result_shows_normal_no_data(self):
+        f = get_fixture(FIXTURE_HOT_STOCKS_NORMAL_NO_DATA)
+        ev = f.raw_evidence["hot_stocks"]
+        assert ev["status"] == "NORMAL_NO_DATA"
+        assert ev["record_count"] == 0
+
+    def test_catalog_has_fallback_chain(self):
+        chain = get_fallback_chain(DataType.HOT_STOCKS)
+        assert len(chain) >= 2
+        assert chain[0] == "cn_akshare"
+
+    def test_hot_stocks_not_in_coverage_denominator(self):
+        cov = calculate_evidence_coverage()
+        assert 0 <= cov <= 100
+
+    def test_hot_stocks_evidence_audit_works(self):
+        raw = {
+            "hot_stocks": {
+                "raw": "热门股票数据",
+                "field": "hot_stocks",
+                "unit": "条",
+                "vendor": "cn_astock",
+                "endpoint": "push2.eastmoney.com/getHotStock",
+                "status": "HAS_DATA",
+                "fallback_from": "cn_akshare",
+            },
+        }
+        result = audit_raw_evidence(raw)
+        assert "hot_stocks" in result.fallback_fields
+        assert "hot_stocks" in result.has_data_fields
+
+    def test_fixture_replay_all_passed(self):
+        ids = [
+            FIXTURE_HOT_STOCKS_HAS_DATA,
+            FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK,
+            FIXTURE_HOT_STOCKS_FAILED,
+            FIXTURE_HOT_STOCKS_NORMAL_NO_DATA,
+            FIXTURE_HOT_STOCKS_RATE_LIMITED,
+        ]
+        report = run_fixture_replay(fixture_ids=ids)
+        assert report.all_passed
+        assert report.total_fixtures == 5
+
+    def test_live_smoke_has_hot_stocks(self):
+        from tradingagents.dataflows.live_smoke import _make_endpoint_definitions
+        defs = _make_endpoint_definitions()
+        hs_eps = [d for d in defs if "hot_stocks" in d["endpoint"]]
+        assert len(hs_eps) >= 1
+
+    def test_provider_fallback_text_detected(self):
+        failure = "热门股票数据获取失败：ConnectionError"
+        from tradingagents.dataflows.interface import _is_failure_result
+        assert _is_failure_result(failure)
+
+    def test_catalog_validation_no_hot_stocks_issues(self):
+        issues = validate_catalog()
+        hs_issues = [i for i in issues if "hot_stocks" in i.lower()]
+        assert len(hs_issues) == 0
+
+    def test_hot_stocks_fixtures_tags_contain_data016(self):
+        for fid in [
+            FIXTURE_HOT_STOCKS_HAS_DATA,
+            FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK,
+            FIXTURE_HOT_STOCKS_FAILED,
+            FIXTURE_HOT_STOCKS_NORMAL_NO_DATA,
+            FIXTURE_HOT_STOCKS_RATE_LIMITED,
+        ]:
+            f = get_fixture(fid)
+            assert "DATA-016" in f.tags
+
+    def test_hot_stocks_has_data_record_count_positive(self):
+        f = get_fixture(FIXTURE_HOT_STOCKS_HAS_DATA)
+        ev = f.raw_evidence["hot_stocks"]
+        assert ev["record_count"] > 0
+
+    def test_hot_stocks_failed_record_count_zero(self):
+        f = get_fixture(FIXTURE_HOT_STOCKS_FAILED)
+        ev = f.raw_evidence["hot_stocks"]
+        assert ev["record_count"] == 0
+
+    def test_hot_stocks_failure_not_affect_other_evidence(self):
+        raw = {
+            "hot_stocks": {
+                "raw": "HOT_STOCKS_FAILED",
+                "field": "hot_stocks",
+                "status": "FAILED",
+                "vendor": "cn_astock",
+
+exec
+/bin/zsh -lc 'git diff --cached --stat && git diff --cached' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+exec
+/bin/zsh -lc "find docs/task_runs/DATA-016-20260608-060126 -maxdepth 2 -type f -print -exec sed -n '1,160p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+docs/task_runs/DATA-016-20260608-060126/tests-round1.txt
+## pytest tests/test_data_source_replay.py tests/test_tradeflow_*.py tests/test_s006_false_positive_audit.py -q
+
+........................................................................ [ 22%]
+........................................................................ [ 45%]
+........................................................................ [ 68%]
+........................................................................ [ 91%]
+..........................                                               [100%]
+314 passed in 12.99s
+
+Exit code: 0
+
+docs/task_runs/DATA-016-20260608-060126/codegraph-status.json
+{
+  "task_id": "DATA-016",
+  "generated_at": "2026-06-08T06:01:26.411111",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": false,
+    "version": "0.9.7",
+    "error": "status check failed: error: unknown option '-p'",
+    "files_indexed": 0,
+    "nodes_count": 0
+  },
+  "result": "SKIPPED",
+  "reason": "CodeGraph not indexed",
+  "post_generated_at": "2026-06-08T06:08:59.892652",
+  "codegraph_post": {
+    "available": true,
+    "indexed": false,
+    "version": "0.9.7",
+    "error": "status check failed: error: unknown option '-p'",
+    "files_indexed": 0,
+    "nodes_count": 0
+  },
+  "post_result": "SKIPPED"
+}docs/task_runs/DATA-016-20260608-060126/prompt-round1.md
+# Task: DATA-016: 热门股票 cn_astock fallback 与 fixture（P2）
+
+Read task "DATA-016" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/DATA-016-20260608-060126/codegraph-context.txt
+# CodeGraph Context: SKIPPED
+# Task: DATA-016
+# Reason: CodeGraph not indexed
+docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/TASKS.md[90m [offset=806][0m
+[0m✱ [0mGrep "DATA-016"[90m 5 matches[0m
+[0m
+[0m# [0mTodos
+[•] Explore existing DATA-015 (涨停池) implementation as reference pattern
+[ ] Add HOT_STOCK DataType and sources to source_catalog.py
+[ ] Add get_hot_stocks() method to cn_astock_provider.py
+[ ] Update interface.py with hot_stocks category
+[ ] Update evidence_contract.py with hot_stocks fields
+[ ] Update evidence_coverage_audit.py with hot_stocks labels
+[ ] Add hot_stock fixtures to fixture_replay.py
+[ ] Add hot_stock endpoints to live_smoke.py
+[ ] Create tests/test_data016_hot_stocks.py
+[ ] Run tests and verify all pass
+[ ] Update docs/DEVLOG.md
+[ ] Update docs/TASKS.md status
+[0m
+[0m• [0mExplore DATA-015 reference code[90m Explore Agent[0m
+[0m• [0mCheck current source_catalog state[90m Explore Agent[0m
+Let me explore the reference implementations in parallel:
+[0m✓ [0mCheck current source_catalog state[90m Explore Agent[0m
+[0m✓ [0mExplore DATA-015 reference code[90m Explore Agent[0m
+[0m→ [0mRead tradingagents/dataflows/source_catalog.py[90m [offset=570, limit=40][0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_astock_provider.py[90m [offset=1280, limit=30][0m
+[0m→ [0mRead tradingagents/dataflows/evidence_contract.py[90m [offset=125, limit=80][0m
+Now let me read the specific files I'll be modifying:
+[0m→ [0mRead tradingagents/dataflows/interface.py[90m [offset=35, limit=25][0m
+[0m→ [0mRead tradingagents/dataflows/evidence_coverage_audit.py[90m [offset=50, limit=50][0m
+[0m→ [0mRead tradingagents/dataflows/fixture_replay.py[90m [limit=60, offset=80][0m
+[0m→ [0mRead tradingagents/dataflows/fixture_replay.py[90m [limit=50, offset=1490][0m
+[0m→ [0mRead tradingagents/dataflows/fixture_replay.py[90m [limit=50, offset=1640][0m
+[0m→ [0mRead tradingagents/dataflows/live_smoke.py[90m [limit=30, offset=178][0m
+[0m→ [0mRead tradingagents/dataflows/fixture_replay.py[90m [limit=100, offset=1540][0m
+[0m→ [0mRead tests/test_data015_zt_pool.py
+Now let me read the rest of the zt_pool fixture builders and the full test file for reference:
+[0m→ [0mRead api/main.py[90m [limit=110, offset=2860][0m
+Now let me check the API's existing hot stocks implementation for Eastmoney endpoints:
+[0m→ [0mRead tradingagents/dataflows/providers/cn_astock_provider.py[90m [limit=20, offset=1320][0m
+[0m
+[0m# [0mTodos
+[✓] Explore existing DATA-015 (涨停池) implementation as reference pattern
+[•] Add HOT_STOCKS cn_astock fallback source to source_catalog.py
+[ ] Add get_hot_stocks() method to cn_astock_provider.py
+[ ] Update evidence_contract.py with hot_stocks required fields
+[ ] Update evidence_coverage_audit.py with hot_stocks labels
+[ ] Add hot_stock fixtures to fixture_replay.py
+[ ] Add hot_stock endpoints to live_smoke.py
+[ ] Create tests/test_data016_hot_stocks.py
+[ ] Run tests and verify all pass
+[ ] Update docs/DEVLOG.md and docs/TASKS.md
+[0m
+Now I have a complete understanding of the pattern. Let me implement DATA-016. The key files to modify are:
+
+1. **source_catalog.py** - Add cn_astock fallback for HOT_STOCKS
+2. **cn_astock_provider.py** - Add `get_hot_stocks()` method
+3. **evidence_contract.py** - Add hot_stocks to required fields
+4. **evidence_coverage_audit.py** - Already has hot_stocks labels/families (verify)
+5. **fixture_replay.py** - Add 5 hot_stock fixtures
+6. **live_smoke.py** - Add hot_stocks endpoint
+7. **tests/test_data016_hot_stocks.py** - New test file
+
+Let's start:
+[0m← [0mEdit tradingagents/dataflows/source_catalog.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/source_catalog.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/source_catalog.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/source_catalog.py
+@@ -588,8 +588,18 @@
+     fallback_priority=1,
+     is_primary=True,
+     notes="雪球热搜股票",
+ )
++_register(  # [DATA-016] hot_stock_fallback
++    "cn_astock", "push2.eastmoney.com/getHotStock",
++    DataType.HOT_STOCKS,
++    fields=["SECURITY_CODE", "SECURITY_NAME_ABBR", "CHANGE_RATE", "TRADE_VOLUME"],
++    unit="条",
++    freshness=Freshness.INTRADAY,
++    rate_limit_risk=RateLimitRisk.MEDIUM,
++    fallback_priority=2,
++    notes="东财热榜 push2 直连 fallback",
++)
+ 
+ # ── 回购 ──────────────────────────────────────────────────────────
+ # [DATA-013] buyback_raw_evidence
+ _register(
+
+[0m
+[0m# [0mTodos
+[✓] Explore existing DATA-015 (涨停池) implementation as reference pattern
+[✓] Add HOT_STOCKS cn_astock fallback source to source_catalog.py
+[•] Add get_hot_stocks() method to cn_astock_provider.py
+[ ] Update evidence_contract.py with hot_stocks required fields
+[ ] Update evidence_coverage_audit.py with hot_stocks labels
+[ ] Add hot_stock fixtures to fixture_replay.py
+[ ] Add hot_stock endpoints to live_smoke.py
+[ ] Create tests/test_data016_hot_stocks.py
+[ ] Run tests and verify all pass
+[ ] Update docs/DEVLOG.md and docs/TASKS.md
+[0m
+Now add the `get_hot_stocks()` method to cn_astock_provider.py:
+[0m← [0mEdit tradingagents/dataflows/providers/cn_astock_provider.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/providers/cn_astock_provider.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/providers/cn_astock_provider.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/providers/cn_astock_provider.py
+@@ -1329,4 +1329,41 @@
+         return "\n".join(lines)
+ 
+     except Exception as exc:
+         return f"{symbol} [DATA-013] BUYBACK_FAILED: 回购数据获取失败（Eastmoney datacenter）：{type(exc).__name__}: {exc}"
++
++def get_hot_stocks(self) -> str:
++    """热门股票/热搜/市场关注度 — 东财 push2 直连 fallback.  # [DATA-016] hot_stock_fallback"""
++    try:
++        _rate_limit("em_hot_stocks")
++        url = "https://push2.eastmoney.com/api/qt/clist/get"
++        params = {
++            "pn": "1",
++            "pz": "30",
++            "po": "1",
++            "np": "1",
++            "fltt": "2",
++            "invt": "2",
++            "fid": "f3",
++            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
++            "fields": "f2,f3,f4,f12,f14,f5,f6,f7,f8,f15,f16,f17",
++            "ut": "b339539b309c025e262b08e3f6d85183",
++        }
++        headers = {"User-Agent": UA, "Referer": "https://quote.eastmoney.com/"}
++        resp = requests.get(url, params=params, headers=headers, timeout=15, proxies=NO_PROXY)
++        body = resp.json()
++        items = body.get("data", {}).get("diff", [])
++        if not items:
++            return "[DATA-016] HOT_STOCKS_NORMAL_NO_DATA: 热门股票暂无数据（非交易日或盘后未更新）。"
++        count = len(items)
++        lines = [f"[DATA-016] HOT_STOCKS_HAS_DATA: 热门股票（Eastmoney 热榜，共 {count} 只）："]
++        for item in items[:30]:
++            code = item.get("f12", "")
++            name = item.get("f14", "")
++            price = item.get("f2", "-")
++            change_pct = item.get("f3", "-")
++            volume = item.get("f6", "-")
++            lines.append(f"- {code} {name} | 最新 {price} | 涨跌幅 {change_pct}% | 成交额 {volume}")
++        return "\n".join(lines)
++
++    except Exception as exc:
++        return f"[DATA-016] HOT_STOCKS_FAILED: 热门股票数据获取失败（Eastmoney push2）：{type(exc).__name__}: {exc}"
+
+[0m
+Now update evidence_contract.py:
+[0m← [0mEdit tradingagents/dataflows/evidence_contract.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_contract.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_contract.py
+docs/task_runs/DATA-016-20260608-060126/task.md
+# Auto Dev Task Run
+
+- Task: DATA-016 - 热门股票 cn_astock fallback 与 fixture（P2）
+- Priority: P2
+- Status: CLAIMED
+- Started at: 2026-06-08_06:01:26
+- Git HEAD: 6f694e4
+- Test commands: pytest tests/test_data_source_replay.py tests/test_tradeflow_*.py tests/test_s006_false_positive_audit.py -q
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/DATA-016-20260608-060126/codegraph-impact.txt
+# CodeGraph Impact: SKIPPED
+# Reason: CodeGraph not indexed
+
+exec
+/bin/zsh -lc "grep -R \"def get_hot_stocks\\|get_hot_stocks\" -n . | head -50 && sed -n '1,140p' tradingagents/dataflows/interface.py && grep -n \"HOT_STOCKS\\|hot_stocks\" -n tradingagents/dataflows/source_catalog.py tradingagents/dataflows/evidence_contract.py tradingagents/agents/utils/readiness_score.py tradingagents/dataflows/providers/cn_akshare_provider.py" in /Users/maybee/TradingAgents-AShare
+2026-06-07T22:09:36.478980Z ERROR codex_core::tools::router: error=write_stdin failed: stdin is closed for this session; rerun exec_command with tty=true to keep stdin open
+ succeeded in 15402ms:
+./.pytest_cache/v/cache/nodeids:1109:  "tests/test_data016_hot_stocks.py::TestProviderHotStocks::test_astock_has_get_hot_stocks",
+Binary file ./tests/__pycache__/test_data016_hot_stocks.cpython-312-pytest-9.0.2.pyc matches
+./tests/test_data016_hot_stocks.py:185:        assert "get_hot_stocks_xq" in tools
+./tests/test_data016_hot_stocks.py:188:        cat = get_category_for_method("get_hot_stocks_xq")
+./tests/test_data016_hot_stocks.py:197:    def test_astock_has_get_hot_stocks(self):
+./tests/test_data016_hot_stocks.py:200:        assert hasattr(provider, "get_hot_stocks")
+./tests/test_data016_hot_stocks.py:216:        result = provider.get_hot_stocks()
+./tests/test_data016_hot_stocks.py:226:        result = provider.get_hot_stocks()
+./tests/test_data016_hot_stocks.py:234:        result = provider.get_hot_stocks()
+./tests/test_data016_hot_stocks.py:242:        result = provider.get_hot_stocks()
+./tests/test_data016_hot_stocks.py:392:        assert hs_ep["method"] == "get_hot_stocks"
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:1320:[0m✱ [0mGrep "def (get_stock_data|get_indicators|get_fundamentals|get_balance_sheet|get_cashflow|get_income_statement|get_news|get_global_news|get_insider_transactions|get_realtime_quotes|get_board_fund_flow|get_individual_fund_flow|get_lhb_detail|get_zt_pool|get_hot_stocks_xq)"[90m 15 matches[0m
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2082:            "get_hot_stocks_xq",
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2787:/bin/zsh -lc "grep -R \"def get_board_fund_flow\\|def get_individual_fund_flow\\|def get_lhb_detail\\|def get_zt_pool\\|def get_hot_stocks_xq\" -n tradingagents/dataflows/providers tradingagents/agents/utils" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2793:tradingagents/dataflows/providers/cn_akshare_provider.py:1162:    def get_hot_stocks_xq(self) -> str:
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2798:tradingagents/agents/utils/game_theory_tools.py:40:def get_hot_stocks_xq() -> str:
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2912:  The default endpoint list omits the `cn_market_data` tools such as `get_board_fund_flow`, `get_individual_fund_flow`, `get_lhb_detail`, `get_zt_pool`, and `get_hot_stocks_xq`, even though M-008 explicitly covers funding/LHB observability. A report can therefore show all default endpoints healthy while the A-share fund-flow/LHB sources are broken or falling back.
+./docs/task_runs/M-008-20260529-142207/codex-review-round1.txt:2930:  The default endpoint list omits the `cn_market_data` tools such as `get_board_fund_flow`, `get_individual_fund_flow`, `get_lhb_detail`, `get_zt_pool`, and `get_hot_stocks_xq`, even though M-008 explicitly covers funding/LHB observability. A report can therefore show all default endpoints healthy while the A-share fund-flow/LHB sources are broken or falling back.
+./docs/task_runs/M-008-20260529-142207/opencode-round1.txt:40:[0m✱ [0mGrep "def (get_stock_data|get_indicators|get_fundamentals|get_balance_sheet|get_cashflow|get_income_statement|get_news|get_global_news|get_insider_transactions|get_realtime_quotes|get_board_fund_flow|get_individual_fund_flow|get_lhb_detail|get_zt_pool|get_hot_stocks_xq)"[90m 15 matches[0m
+./docs/task_runs/DATA-010-20260608-020414/codex-review-round1.txt:887:             "get_hot_stocks_xq",
+./docs/task_runs/DATA-010-20260608-020414/codex-review-round1.txt:1701:            "get_hot_stocks_xq",
+./docs/task_runs/DATA-010-20260608-020414/codex-review-round1.txt:2715:tradingagents/agents/utils/game_theory_tools.py:42:    return route_to_vendor("get_hot_stocks_xq")
+./docs/task_runs/DATA-010-20260608-020414/codex-review-round1.txt:3021:    get_hot_stocks_xq,
+./docs/task_runs/DATA-010-20260608-020414/codex-review-round1.txt:3397:        "hot_stocks": (get_hot_stocks_xq, {}),
+./docs/task_runs/DATA-010-20260608-020414/codex-review-round1.txt:3479:    get_hot_stocks_xq,
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:203:             "get_hot_stocks_xq",
+./docs/task_runs/DATA-012-20260608-024928/opencode-round2.txt:416:             "get_hot_stocks_xq",
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:12:[ ] Add get_hot_stocks() method to cn_astock_provider.py
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:48:[ ] Add get_hot_stocks() method to cn_astock_provider.py
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:60:2. **cn_astock_provider.py** - Add `get_hot_stocks()` method
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:97:[•] Add get_hot_stocks() method to cn_astock_provider.py
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:106:Now add the `get_hot_stocks()` method to cn_astock_provider.py:
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:118:+def get_hot_stocks(self) -> str:
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:177:[✓] Add get_hot_stocks() method to cn_astock_provider.py
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:477:[✓] Add get_hot_stocks() method to cn_astock_provider.py
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:499:+            "method": "get_hot_stocks",
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:518:[✓] Add get_hot_stocks() method to cn_astock_provider.py
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:553:tests/test_data016_hot_stocks.py::TestProviderHotStocks::test_astock_has_get_hot_stocks PASSED [ 34%]
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:721:[✓] Add get_hot_stocks() method to cn_astock_provider.py
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:807:+    - 新增 `get_hot_stocks()`: 东财 push2 热榜直连 fallback
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:817:+    - `_make_endpoint_definitions()` 新增 `cn_astock/hot_stocks`(get_hot_stocks) 端点
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:834:+  - provider `get_hot_stocks()` 单层 fallback：东财 push2 clist 排序接口，按涨跌幅排序取前 30 只
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:853:[✓] Add get_hot_stocks() method to cn_astock_provider.py
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:868:| `tradingagents/dataflows/providers/cn_astock_provider.py` | Added `get_hot_stocks()` method with Eastmoney push2 fallback |
+./docs/task_runs/DATA-016-20260608-060126/opencode-round1.txt:878:- **Provider**: `get_hot_stocks()` queries Eastmoney push2 clist API (sorted by change% desc, top 30), returns `HOT_STOCKS_HAS_DATA` / `HOT_STOCKS_NORMAL_NO_DATA` / `HOT_STOCKS_FAILED` status strings
+./docs/task_runs/DATA-004-20260602-011020/opencode-round1.txt:161:     get_hot_stocks_xq,
+./docs/task_runs/DATA-P1-LHB-FUND-DECOUPLE-20260604-123938/codex-review-round1.txt:6545:        "hot_stocks": (get_hot_stocks_xq, {}),
+./docs/task_runs/DATA-015-20260608-054126/codex-review-round1.txt:408:tradingagents/agents/analysts/social_media_analyst.py:39:            from tradingagents.agents.utils.agent_utils import get_news, get_zt_pool, get_hot_stocks_xq
+./docs/task_runs/DATA-015-20260608-054126/codex-review-round1.txt:788:    def get_hot_stocks_xq(self) -> str:
+./docs/task_runs/DATA-015-20260608-054126/codex-review-round1.txt:855:            "get_hot_stocks_xq",
+grep: ./.git/fsmonitor--daemon.ipc: Operation not supported on socket
+import os
+
+from .alpha_vantage_common import AlphaVantageRateLimitError
+from .config import get_config
+from .providers import build_default_registry
+
+# Tools organized by category
+TOOLS_CATEGORIES = {
+    "core_stock_apis": {
+        "description": "OHLCV stock price data",
+        "tools": ["get_stock_data"],
+    },
+    "technical_indicators": {
+        "description": "Technical analysis indicators",
+        "tools": ["get_indicators"],
+    },
+    "fundamental_data": {
+        "description": "Company fundamentals",
+        "tools": [
+            "get_fundamentals",
+            "get_balance_sheet",
+            "get_cashflow",
+            "get_income_statement",
+        ],
+    },
+    "news_data": {
+        "description": "News and insider data",
+        "tools": [
+            "get_news",
+            "get_global_news",
+            "get_insider_transactions",
+        ],
+    },
+    "realtime_data": {
+        "description": "Real-time market quotes",
+        "tools": ["get_realtime_quotes"],
+    },
+    "cn_market_data": {
+        "description": "China A-share market sentiment and fund flow data",
+        "tools": [
+            "get_board_fund_flow",
+            "get_individual_fund_flow",
+            "get_lhb_detail",
+            "get_zt_pool",
+            "get_hot_stocks_xq",
+            "get_announcements",  # [DATA-P0-603629] astock_source_fallback
+            "get_margin_trading",  # [DATA-010] margin_trading_raw_evidence
+            "get_research_report",  # [DATA-011] research_report_raw_evidence
+            "get_ratings",  # [DATA-012] rating_raw_evidence
+            "get_buybacks",  # [DATA-013] buyback_raw_evidence
+        ],
+    },
+}
+
+_registry = build_default_registry()
+
+VENDOR_LIST = _registry.list_names()
+
+# [N-003] cn_astock_raw_evidence: track which vendor last handled each method
+_last_hit_vendor: dict[str, str] = {}
+
+
+def get_last_hit_vendor(method: str) -> str:
+    """Return the vendor name that most recently produced a successful hit for *method*."""
+    return _last_hit_vendor.get(method, "")
+
+
+def _is_trace_enabled() -> bool:
+    env_value = os.getenv("TA_TRACE")
+    if env_value is not None:
+        return env_value.strip().lower() in ("1", "true", "yes", "on")
+
+    config = get_config()
+    return bool(config.get("provider_trace", True))
+
+
+def _trace(msg: str) -> None:
+    if _is_trace_enabled():
+        print(f"[provider-trace] {msg}", flush=True)
+
+
+_FAILURE_RESULT_PATTERNS = (
+    "数据获取失败",
+    "ProxyError",
+    "ConnectionError",
+    "Max retries exceeded",
+    "Unable to connect",
+    "暂不可用",
+    "获取失败",
+    "TimeoutError",
+    "ConnectTimeout",
+    "ReadTimeout",
+)
+
+
+def _is_failure_result(result) -> bool:
+    if not isinstance(result, str):
+        return False
+    return any(p in result for p in _FAILURE_RESULT_PATTERNS)
+
+
+_TRACE_KEYS = ("symbol", "ticker", "start_date", "end_date", "curr_date", "indicator")
+
+
+def _summarize_args(args: tuple, kwargs: dict) -> str:
+    """格式化首参数（通常是 symbol）和常见日期/指标键，用于 trace 日志定位。"""
+    parts = []
+    if args:
+        # 约定：所有 provider 方法首参数为 symbol/ticker
+        parts.append(f"symbol={args[0]!r}")
+        if len(args) >= 2:
+            parts.append(f"arg2={args[1]!r}")
+        if len(args) >= 3:
+            parts.append(f"arg3={args[2]!r}")
+    for k, v in kwargs.items():
+        if k in _TRACE_KEYS:
+            parts.append(f"{k}={v!r}")
+    return " ".join(parts)
+
+
+def get_category_for_method(method: str) -> str:
+    """Get the category that contains the specified method."""
+    for category, info in TOOLS_CATEGORIES.items():
+        if method in info["tools"]:
+            return category
+    raise ValueError(f"Method '{method}' not found in any category")
+
+
+def get_vendor(category: str, method: str = None) -> str:
+    """Get configured vendor for category or tool method."""
+    config = get_config()
+
+    if method:
+        tool_vendors = config.get("tool_vendors", {})
+        if method in tool_vendors:
+            return tool_vendors[method]
+
+    return config.get("data_vendors", {}).get(category, "yfinance")
+
+
+tradingagents/dataflows/source_catalog.py:43:    HOT_STOCKS = "hot_stocks"
+tradingagents/dataflows/source_catalog.py:583:        DataType.HOT_STOCKS,
+tradingagents/dataflows/source_catalog.py:594:        DataType.HOT_STOCKS,
+tradingagents/dataflows/evidence_contract.py:138:    "hot_stocks": "hot_stocks",
+tradingagents/dataflows/evidence_contract.py:192:    "hot_stocks": ["status", "vendor"],  # [DATA-016] hot_stock_fallback
+tradingagents/dataflows/providers/cn_akshare_provider.py:1163:    def get_hot_stocks_xq(self) -> str:
+
+exec
+/bin/zsh -lc "grep -n \"get_hot_stocks_xq\\|HOT_STOCKS\\|hot_stocks\" tradingagents/dataflows/interface.py tradingagents/dataflows/source_catalog.py tradingagents/dataflows/evidence_contract.py tradingagents/agents/utils/readiness_score.py tradingagents/dataflows/providers/cn_akshare_provider.py tradingagents/agents/utils/agent_utils.py tradingagents/agents/analysts/social_media_analyst.py | head -100 && sed -n '1140,1195p' tradingagents/dataflows/providers/cn_akshare_provider.py && sed -n '1308,1348p' tradingagents/dataflows/providers/cn_astock_provider.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/dataflows/interface.py:45:            "get_hot_stocks_xq",
+tradingagents/dataflows/source_catalog.py:43:    HOT_STOCKS = "hot_stocks"
+tradingagents/dataflows/source_catalog.py:583:        DataType.HOT_STOCKS,
+tradingagents/dataflows/source_catalog.py:594:        DataType.HOT_STOCKS,
+tradingagents/dataflows/evidence_contract.py:138:    "hot_stocks": "hot_stocks",
+tradingagents/dataflows/evidence_contract.py:192:    "hot_stocks": ["status", "vendor"],  # [DATA-016] hot_stock_fallback
+tradingagents/dataflows/providers/cn_akshare_provider.py:1163:    def get_hot_stocks_xq(self) -> str:
+tradingagents/agents/utils/agent_utils.py:26:    get_hot_stocks_xq,
+tradingagents/agents/analysts/social_media_analyst.py:36:            hot_stocks = pool.get("hot_stocks", "无数据")
+tradingagents/agents/analysts/social_media_analyst.py:39:            from tradingagents.agents.utils.agent_utils import get_news, get_zt_pool, get_hot_stocks_xq
+tradingagents/agents/analysts/social_media_analyst.py:50:                _safe(get_hot_stocks_xq, {})
+tradingagents/agents/analysts/social_media_analyst.py:52:            news_text, zt_data, hot_stocks = results
+tradingagents/agents/analysts/social_media_analyst.py:65:                f"【雪球热门股票】\n{hot_stocks}\n"
+            if df is None or df.empty:
+                return f"{symbol} [G-007] LHB_NORMAL_NO_DATA: 在 {date} 无龙虎榜数据（非异动日属正常）。"
+            return f"{symbol} [G-007] LHB_HAS_DATA: 龙虎榜明细（{date}）：\n{df.head(20).to_string(index=False)}"
+        except Exception as exc:
+            return f"{symbol} [G-007] LHB_FAILED: 龙虎榜数据获取失败：{type(exc).__name__}: {exc}"
+
+    def get_zt_pool(self, date: str) -> str:
+        """获取涨停板情绪池，反映市场整体情绪温度。"""
+        try:
+            ak = self._ak()
+            with AKSHARE_CALL_LOCK:
+                df = ak.stock_zt_pool_em(date=date.replace("-", ""))
+            if df is None or df.empty:
+                return f"{date} 涨停板情绪池数据暂不可用。"
+            count = len(df)
+            result = f"{date} 涨停家数：{count}\n"
+            if "连板数" in df.columns:
+                lianban = df["连板数"].value_counts().sort_index()
+                result += f"连板分布：\n{lianban.head(10).to_string()}"
+            return result
+        except Exception as exc:
+            return f"涨停板情绪池数据获取失败：{type(exc).__name__}: {exc}"
+
+    def get_hot_stocks_xq(self) -> str:
+        """获取雪球热搜股票，反映散户关注度。"""
+        try:
+            ak = self._ak()
+            with AKSHARE_CALL_LOCK:
+                df = ak.stock_hot_follow_xq(symbol="最热门")
+            if df is None or df.empty:
+                return "雪球热搜数据暂不可用。"
+            return f"雪球热搜前20：\n{df.head(20).to_string(index=False)}"
+        except Exception as exc:
+            return f"雪球热搜数据获取失败：{type(exc).__name__}: {exc}"
+
+    def get_margin_trading(self, symbol: str) -> str:
+        """获取个股融资融券数据。  # [DATA-010] margin_trading_raw_evidence"""
+        code = self._normalize_symbol(symbol)
+        try:
+            ak = self._ak()
+            if code[:1] in ("0", "1", "2", "3"):
+                func = "stock_margin_underlying_info_szse"
+                with AKSHARE_CALL_LOCK:
+                    df = ak.stock_margin_underlying_info_szse(date=datetime.now().strftime("%Y%m%d"))
+            else:
+                func = "stock_margin_underlying_info_sse"
+                with AKSHARE_CALL_LOCK:
+                    df = ak.stock_margin_underlying_info_sse(date=datetime.now().strftime("%Y%m%d"))
+            if df is None or df.empty:
+                return f"{symbol} 融资融券数据暂不可用。"
+            code_col = None
+            for col in df.columns:
+                if "代码" in col or "证券代码" in col:
+                    code_col = col
+                    break
+            if code_col:
+            )
+            if not data:
+                return f"{symbol} [DATA-013] BUYBACK_NORMAL_NO_DATA: 该股无回购计划或进展数据。"
+
+            lines = [f"{symbol} [DATA-013] BUYBACK_HAS_DATA: 回购数据（Eastmoney datacenter）："]
+            for row in data[:15]:
+                notice_date = row.get("NOTICE_DATE", "")[:10] if row.get("NOTICE_DATE") else ""
+                buyback_amount = (row.get("BUYBACK_AMOUNT") or 0) / 10000
+                buyback_volume = row.get("BUYBACK_VOLUME", 0)
+                progress = row.get("PROGRESS", "")
+                purpose = row.get("PURPOSE", "")
+                line = f"- {notice_date}"
+                if buyback_amount:
+                    line += f" | 金额: {buyback_amount:.1f}万"
+                if buyback_volume:
+                    line += f" | 数量: {buyback_volume}"
+                if progress:
+                    line += f" | 进度: {progress}"
+                if purpose:
+                    line += f" | 目的: {str(purpose)[:40]}"
+                lines.append(line)
+            return "\n".join(lines)
+
+        except Exception as exc:
+            return f"{symbol} [DATA-013] BUYBACK_FAILED: 回购数据获取失败（Eastmoney datacenter）：{type(exc).__name__}: {exc}"
+
+    def get_hot_stocks(self) -> str:
+        """热门股票/热搜/市场关注度 — 东财 push2 直连 fallback.  # [DATA-016] hot_stock_fallback"""
+        try:
+            _rate_limit("em_hot_stocks")
+            url = "https://push2.eastmoney.com/api/qt/clist/get"
+            params = {
+                "pn": "1",
+                "pz": "30",
+                "po": "1",
+                "np": "1",
+                "fltt": "2",
+                "invt": "2",
+                "fid": "f3",
+                "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
+                "fields": "f2,f3,f4,f12,f14,f5,f6,f7,f8,f15,f16,f17",
+
+exec
+/bin/zsh -lc "sed -n '1,220p' tradingagents/dataflows/interface.py && sed -n '1,120p' tradingagents/agents/utils/agent_utils.py && grep -R \"route_to_vendor\" -n tradingagents/dataflows tradingagents/agents/utils | head -50" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+import os
+
+from .alpha_vantage_common import AlphaVantageRateLimitError
+from .config import get_config
+from .providers import build_default_registry
+
+# Tools organized by category
+TOOLS_CATEGORIES = {
+    "core_stock_apis": {
+        "description": "OHLCV stock price data",
+        "tools": ["get_stock_data"],
+    },
+    "technical_indicators": {
+        "description": "Technical analysis indicators",
+        "tools": ["get_indicators"],
+    },
+    "fundamental_data": {
+        "description": "Company fundamentals",
+        "tools": [
+            "get_fundamentals",
+            "get_balance_sheet",
+            "get_cashflow",
+            "get_income_statement",
+        ],
+    },
+    "news_data": {
+        "description": "News and insider data",
+        "tools": [
+            "get_news",
+            "get_global_news",
+            "get_insider_transactions",
+        ],
+    },
+    "realtime_data": {
+        "description": "Real-time market quotes",
+        "tools": ["get_realtime_quotes"],
+    },
+    "cn_market_data": {
+        "description": "China A-share market sentiment and fund flow data",
+        "tools": [
+            "get_board_fund_flow",
+            "get_individual_fund_flow",
+            "get_lhb_detail",
+            "get_zt_pool",
+            "get_hot_stocks_xq",
+            "get_announcements",  # [DATA-P0-603629] astock_source_fallback
+            "get_margin_trading",  # [DATA-010] margin_trading_raw_evidence
+            "get_research_report",  # [DATA-011] research_report_raw_evidence
+            "get_ratings",  # [DATA-012] rating_raw_evidence
+            "get_buybacks",  # [DATA-013] buyback_raw_evidence
+        ],
+    },
+}
+
+_registry = build_default_registry()
+
+VENDOR_LIST = _registry.list_names()
+
+# [N-003] cn_astock_raw_evidence: track which vendor last handled each method
+_last_hit_vendor: dict[str, str] = {}
+
+
+def get_last_hit_vendor(method: str) -> str:
+    """Return the vendor name that most recently produced a successful hit for *method*."""
+    return _last_hit_vendor.get(method, "")
+
+
+def _is_trace_enabled() -> bool:
+    env_value = os.getenv("TA_TRACE")
+    if env_value is not None:
+        return env_value.strip().lower() in ("1", "true", "yes", "on")
+
+    config = get_config()
+    return bool(config.get("provider_trace", True))
+
+
+def _trace(msg: str) -> None:
+    if _is_trace_enabled():
+        print(f"[provider-trace] {msg}", flush=True)
+
+
+_FAILURE_RESULT_PATTERNS = (
+    "数据获取失败",
+    "ProxyError",
+    "ConnectionError",
+    "Max retries exceeded",
+    "Unable to connect",
+    "暂不可用",
+    "获取失败",
+    "TimeoutError",
+    "ConnectTimeout",
+    "ReadTimeout",
+)
+
+
+def _is_failure_result(result) -> bool:
+    if not isinstance(result, str):
+        return False
+    return any(p in result for p in _FAILURE_RESULT_PATTERNS)
+
+
+_TRACE_KEYS = ("symbol", "ticker", "start_date", "end_date", "curr_date", "indicator")
+
+
+def _summarize_args(args: tuple, kwargs: dict) -> str:
+    """格式化首参数（通常是 symbol）和常见日期/指标键，用于 trace 日志定位。"""
+    parts = []
+    if args:
+        # 约定：所有 provider 方法首参数为 symbol/ticker
+        parts.append(f"symbol={args[0]!r}")
+        if len(args) >= 2:
+            parts.append(f"arg2={args[1]!r}")
+        if len(args) >= 3:
+            parts.append(f"arg3={args[2]!r}")
+    for k, v in kwargs.items():
+        if k in _TRACE_KEYS:
+            parts.append(f"{k}={v!r}")
+    return " ".join(parts)
+
+
+def get_category_for_method(method: str) -> str:
+    """Get the category that contains the specified method."""
+    for category, info in TOOLS_CATEGORIES.items():
+        if method in info["tools"]:
+            return category
+    raise ValueError(f"Method '{method}' not found in any category")
+
+
+def get_vendor(category: str, method: str = None) -> str:
+    """Get configured vendor for category or tool method."""
+    config = get_config()
+
+    if method:
+        tool_vendors = config.get("tool_vendors", {})
+        if method in tool_vendors:
+            return tool_vendors[method]
+
+    return config.get("data_vendors", {}).get(category, "yfinance")
+
+
+def _resolve_vendor_chain(method: str, configured_vendor: str) -> list[str]:
+    configured = [v.strip() for v in configured_vendor.split(",") if v.strip()]
+    fallback = configured.copy()
+
+    for provider_name in _registry.list_names():
+        if provider_name in fallback:
+            continue
+        provider = _registry.get(provider_name)
+        # 占位 provider（如 cn_stub）不自动追加进 fallback chain，
+        # 避免污染日志和兜底链；用户显式配置仍可强制使用。
+        if getattr(provider, "is_placeholder", False):
+            continue
+        fallback.append(provider_name)
+
+    return fallback
+
+
+def route_to_vendor(method: str, *args, **kwargs):
+    """Route method calls to provider implementations with fallback support."""
+    category = get_category_for_method(method)
+    vendor_config = get_vendor(category, method)
+    fallback_vendors = _resolve_vendor_chain(method, vendor_config)
+    args_summary = _summarize_args(args, kwargs)
+    last_exc = None
+    _trace(
+        f"method={method} {args_summary} category={category} "
+        f"configured='{vendor_config}' chain={fallback_vendors}"
+    )
+
+    for vendor in fallback_vendors:
+        provider = _registry.get(vendor)
+        if provider is None:
+            _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-registered")
+            continue
+
+        impl_func = getattr(provider, method, None)
+        if impl_func is None:
+            _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-implemented")
+            continue
+
+        try:
+            result = impl_func(*args, **kwargs)
+            if _is_failure_result(result):  # [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth
+                _trace(
+                    f"method={method} {args_summary} vendor={vendor} status=fallback "
+                    f"reason=failure-string-detected"
+                )
+                continue
+            _last_hit_vendor[method] = vendor  # [N-003] cn_astock_raw_evidence
+            _trace(f"method={method} {args_summary} vendor={vendor} status=hit")
+            return result
+        except (AlphaVantageRateLimitError, NotImplementedError) as exc:
+            last_exc = exc
+            # Try next provider for transient/routing issues or placeholder providers.
+            _trace(
+                f"method={method} {args_summary} vendor={vendor} status=fallback "
+                f"reason={type(exc).__name__}: {exc}"
+            )
+            continue
+        except Exception as exc:
+            # Provider-specific runtime/parsing errors (e.g., schema changes, KeyError)
+            # should not terminate the full chain; fall through to next vendor.
+            last_exc = exc
+            _trace(
+                f"method={method} {args_summary} vendor={vendor} status=fallback "
+                f"reason={type(exc).__name__}: {exc}"
+            )
+            continue
+
+    _trace(f"method={method} {args_summary} status=failed reason=no-available-vendor")
+    if last_exc is not None:
+        raise RuntimeError(
+            f"No available vendor for method '{method}'. "
+            f"Configured chain: {fallback_vendors}. "
+            f"Last error: {type(last_exc).__name__}: {last_exc}"
+        ) from last_exc
+    raise RuntimeError(
+        f"No available vendor for method '{method}'. "
+        f"Configured chain: {fallback_vendors}"
+    )
+from langchain_core.messages import HumanMessage, RemoveMessage
+
+# Import tools from separate utility files
+from tradingagents.agents.utils.core_stock_tools import (
+    get_stock_data
+)
+from tradingagents.agents.utils.technical_indicators_tools import (
+    get_indicators
+)
+from tradingagents.agents.utils.fundamental_data_tools import (
+    get_fundamentals,
+    get_balance_sheet,
+    get_cashflow,
+    get_income_statement
+)
+from tradingagents.agents.utils.news_data_tools import (
+    get_news,
+    get_insider_transactions,
+    get_global_news
+)
+from tradingagents.agents.utils.game_theory_tools import (
+    get_board_fund_flow,
+    get_individual_fund_flow,
+    get_lhb_detail,
+    get_zt_pool,
+    get_hot_stocks_xq,
+    get_announcements,  # [DATA-P0-603629] astock_source_fallback
+    get_margin_trading,  # [DATA-010] margin_trading_raw_evidence
+)
+
+def create_msg_delete():
+    def delete_messages(state):
+        """Clear messages and add placeholder for Anthropic compatibility"""
+        messages = state["messages"]
+
+        # Remove all messages
+        removal_operations = [RemoveMessage(id=m.id) for m in messages]
+
+        company = state.get("company_of_interest", "")
+        trade_date = state.get("trade_date", "")
+        # Keep concise but explicit context so next agent doesn't ask for missing task/date.
+        placeholder_text = (
+            f"Continue analysis for symbol {company} on {trade_date}. "
+            "Use available tools and context; do not ask the user for missing task details."
+        ).strip()
+        placeholder = HumanMessage(content=placeholder_text)
+
+        return {"messages": removal_operations + [placeholder]}
+
+    return delete_messages
+
+
+        
+tradingagents/dataflows/interface.py:158:def route_to_vendor(method: str, *args, **kwargs):
+Binary file tradingagents/dataflows/__pycache__/interface.cpython-314.pyc matches
+Binary file tradingagents/dataflows/__pycache__/interface.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/health_check.cpython-312.pyc matches
+tradingagents/dataflows/health_check.py:24:from .interface import route_to_vendor, _registry, get_vendor, _resolve_vendor_chain, TOOLS_CATEGORIES
+tradingagents/dataflows/health_check.py:199:        result = route_to_vendor(method, *real_args, **real_kwargs)
+tradingagents/agents/utils/fundamental_data_tools.py:3:from tradingagents.dataflows.interface import route_to_vendor
+tradingagents/agents/utils/fundamental_data_tools.py:20:    return route_to_vendor("get_fundamentals", ticker, curr_date)
+tradingagents/agents/utils/fundamental_data_tools.py:39:    return route_to_vendor("get_balance_sheet", ticker, freq, curr_date)
+tradingagents/agents/utils/fundamental_data_tools.py:58:    return route_to_vendor("get_cashflow", ticker, freq, curr_date)
+tradingagents/agents/utils/fundamental_data_tools.py:77:    return route_to_vendor("get_income_statement", ticker, freq, curr_date)
+Binary file tradingagents/agents/utils/__pycache__/fundamental_data_tools.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/news_data_tools.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/game_theory_tools.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/technical_indicators_tools.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/core_stock_tools.cpython-312.pyc matches
+tradingagents/agents/utils/news_data_tools.py:3:from tradingagents.dataflows.interface import route_to_vendor
+tradingagents/agents/utils/news_data_tools.py:21:    return route_to_vendor("get_news", ticker, start_date, end_date)
+tradingagents/agents/utils/news_data_tools.py:39:    return route_to_vendor("get_global_news", curr_date, look_back_days, limit)
+tradingagents/agents/utils/news_data_tools.py:53:    return route_to_vendor("get_insider_transactions", ticker)
+tradingagents/agents/utils/game_theory_tools.py:3:from tradingagents.dataflows.interface import route_to_vendor
+tradingagents/agents/utils/game_theory_tools.py:9:    return route_to_vendor("get_board_fund_flow")
+tradingagents/agents/utils/game_theory_tools.py:17:    return route_to_vendor("get_individual_fund_flow", symbol)
+tradingagents/agents/utils/game_theory_tools.py:28:    return route_to_vendor("get_lhb_detail", symbol, date, force=force)
+tradingagents/agents/utils/game_theory_tools.py:36:    return route_to_vendor("get_zt_pool", date)
+tradingagents/agents/utils/game_theory_tools.py:42:    return route_to_vendor("get_hot_stocks_xq")
+tradingagents/agents/utils/game_theory_tools.py:50:    return route_to_vendor("get_announcements", symbol)
+tradingagents/agents/utils/game_theory_tools.py:58:    return route_to_vendor("get_margin_trading", symbol)
+tradingagents/agents/utils/core_stock_tools.py:3:from tradingagents.dataflows.interface import route_to_vendor
+tradingagents/agents/utils/core_stock_tools.py:22:    return route_to_vendor("get_stock_data", symbol, start_date, end_date)
+tradingagents/agents/utils/technical_indicators_tools.py:3:from tradingagents.dataflows.interface import route_to_vendor
+tradingagents/agents/utils/technical_indicators_tools.py:23:    return route_to_vendor("get_indicators", symbol, indicator, curr_date, look_back_days)
+
+exec
+/bin/zsh -lc "sed -n '1,160p' tradingagents/dataflows/providers/__init__.py && nl -ba tradingagents/dataflows/providers/cn_astock_provider.py | sed -n '1328,1345p' && nl -ba tradingagents/dataflows/live_smoke.py | sed -n '186,202p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+from .base import BaseMarketDataProvider
+from .registry import DataProviderRegistry, build_default_registry
+
+__all__ = [
+    "BaseMarketDataProvider",
+    "DataProviderRegistry",
+    "build_default_registry",
+]
+
+  1328	                lines.append(line)
+  1329	            return "\n".join(lines)
+  1330	
+  1331	        except Exception as exc:
+  1332	            return f"{symbol} [DATA-013] BUYBACK_FAILED: 回购数据获取失败（Eastmoney datacenter）：{type(exc).__name__}: {exc}"
+  1333	
+  1334	    def get_hot_stocks(self) -> str:
+  1335	        """热门股票/热搜/市场关注度 — 东财 push2 直连 fallback.  # [DATA-016] hot_stock_fallback"""
+  1336	        try:
+  1337	            _rate_limit("em_hot_stocks")
+  1338	            url = "https://push2.eastmoney.com/api/qt/clist/get"
+  1339	            params = {
+  1340	                "pn": "1",
+  1341	                "pz": "30",
+  1342	                "po": "1",
+  1343	                "np": "1",
+  1344	                "fltt": "2",
+  1345	                "invt": "2",
+   186	        {  # [DATA-015] limit_up_pool_fallback
+   187	            "endpoint": "cn_astock/zt_pool",
+   188	            "method": "get_zt_pool",
+   189	            "vendor": "cn_astock",
+   190	            "args_template": ("{date}",),
+   191	            "kwargs": {},
+   192	            "expected_unit": "条",
+   193	        },
+   194	        {  # [DATA-016] hot_stock_fallback
+   195	            "endpoint": "cn_astock/hot_stocks",
+   196	            "method": "get_hot_stocks",
+   197	            "vendor": "cn_astock",
+   198	            "args_template": (),
+   199	            "kwargs": {},
+   200	            "expected_unit": "条",
+   201	        },
+   202	    ]
+
+exec
+/bin/zsh -lc "sed -n '1,220p' tradingagents/dataflows/providers/registry.py && grep -R \"get_hot_stocks\" -n tradingagents | cat" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+from typing import Dict
+
+from .base import BaseMarketDataProvider
+from .yfinance_provider import YFinanceProvider
+from .alpha_vantage_provider import AlphaVantageProvider
+from .china_equity_provider import CnStubProvider
+from .cn_akshare_provider import CnAkshareProvider
+from .cn_baostock_provider import CnBaoStockProvider
+from .cn_astock_provider import CnAstockProvider
+
+
+class DataProviderRegistry:
+    """Simple in-memory provider registry."""
+
+    def __init__(self):
+        self._providers: Dict[str, BaseMarketDataProvider] = {}
+
+    def register(self, provider: BaseMarketDataProvider) -> None:
+        self._providers[provider.name] = provider
+
+    def get(self, provider_name: str) -> BaseMarketDataProvider | None:
+        return self._providers.get(provider_name)
+
+    def list_names(self) -> list[str]:
+        return list(self._providers.keys())
+
+
+def build_default_registry() -> DataProviderRegistry:
+    registry = DataProviderRegistry()
+    registry.register(CnAkshareProvider())
+    registry.register(CnBaoStockProvider())
+    registry.register(YFinanceProvider())
+    registry.register(AlphaVantageProvider())
+    registry.register(CnStubProvider())
+    registry.register(CnAstockProvider())
+    return registry
+tradingagents/graph/data_collector.py:28:    get_hot_stocks_xq,
+tradingagents/graph/data_collector.py:415:        "hot_stocks": (get_hot_stocks_xq, {}),
+Binary file tradingagents/graph/__pycache__/data_collector.cpython-312.pyc matches
+tradingagents/agents/utils/agent_utils.py:26:    get_hot_stocks_xq,
+Binary file tradingagents/agents/utils/__pycache__/game_theory_tools.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/agent_utils.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/agent_utils.cpython-314.pyc matches
+tradingagents/agents/utils/game_theory_tools.py:40:def get_hot_stocks_xq() -> str:
+tradingagents/agents/utils/game_theory_tools.py:42:    return route_to_vendor("get_hot_stocks_xq")
+Binary file tradingagents/agents/analysts/__pycache__/social_media_analyst.cpython-312.pyc matches
+tradingagents/agents/analysts/social_media_analyst.py:39:            from tradingagents.agents.utils.agent_utils import get_news, get_zt_pool, get_hot_stocks_xq
+tradingagents/agents/analysts/social_media_analyst.py:50:                _safe(get_hot_stocks_xq, {})
+tradingagents/dataflows/live_smoke.py:196:            "method": "get_hot_stocks",
+tradingagents/dataflows/providers/cn_akshare_provider.py:1163:    def get_hot_stocks_xq(self) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:1334:    def get_hot_stocks(self) -> str:
+Binary file tradingagents/dataflows/providers/__pycache__/cn_astock_provider.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/cn_akshare_provider.cpython-312.pyc matches
+tradingagents/dataflows/interface.py:45:            "get_hot_stocks_xq",
+Binary file tradingagents/dataflows/__pycache__/interface.cpython-314.pyc matches
+Binary file tradingagents/dataflows/__pycache__/interface.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/live_smoke.cpython-312.pyc matches
+
+exec
+/bin/zsh -lc 'pytest tests/test_data016_hot_stocks.py -q' in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: pytest
+
+exec
+/bin/zsh -lc "source .venv/bin/activate && python - <<'PY'
+from tradingagents.dataflows.interface import _registry
+p=_registry.get('cn_astock')
+print(hasattr(p,'get_hot_stocks_xq'), hasattr(p,'get_hot_stocks'))
+PY" in /Users/maybee/TradingAgents-AShare
+ succeeded in 264ms:
+False True
+
+codex
+The main DATA-016 fallback does not connect to the existing routed hot-stocks tool, so the intended fallback behavior will not work for actual callers when AKShare fails.
+
+Review comment:
+
+- [P2] Expose the fallback under the routed tool name — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/providers/cn_astock_provider.py:1334-1334
+  When AKShare `get_hot_stocks_xq` returns a failure string, production callers go through `route_to_vendor("get_hot_stocks_xq")` (e.g. `game_theory_tools.get_hot_stocks_xq` and `data_collector`), and the router only looks for that same method name on fallback providers. Because the new cn_astock implementation is named `get_hot_stocks`, the cn_astock provider is skipped as “not implemented”, so the registered hot-stocks fallback is never used outside the new live-smoke endpoint.
+The main DATA-016 fallback does not connect to the existing routed hot-stocks tool, so the intended fallback behavior will not work for actual callers when AKShare fails.
+
+Review comment:
+
+- [P2] Expose the fallback under the routed tool name — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/providers/cn_astock_provider.py:1334-1334
+  When AKShare `get_hot_stocks_xq` returns a failure string, production callers go through `route_to_vendor("get_hot_stocks_xq")` (e.g. `game_theory_tools.get_hot_stocks_xq` and `data_collector`), and the router only looks for that same method name on fallback providers. Because the new cn_astock implementation is named `get_hot_stocks`, the cn_astock provider is skipped as “not implemented”, so the registered hot-stocks fallback is never used outside the new live-smoke endpoint.

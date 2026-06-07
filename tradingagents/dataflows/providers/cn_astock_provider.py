@@ -1330,3 +1330,40 @@ class CnAstockProvider(BaseMarketDataProvider):
 
         except Exception as exc:
             return f"{symbol} [DATA-013] BUYBACK_FAILED: 回购数据获取失败（Eastmoney datacenter）：{type(exc).__name__}: {exc}"
+
+    def get_hot_stocks(self) -> str:
+        """热门股票/热搜/市场关注度 — 东财 push2 直连 fallback.  # [DATA-016] hot_stock_fallback"""
+        try:
+            _rate_limit("em_hot_stocks")
+            url = "https://push2.eastmoney.com/api/qt/clist/get"
+            params = {
+                "pn": "1",
+                "pz": "30",
+                "po": "1",
+                "np": "1",
+                "fltt": "2",
+                "invt": "2",
+                "fid": "f3",
+                "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
+                "fields": "f2,f3,f4,f12,f14,f5,f6,f7,f8,f15,f16,f17",
+                "ut": "b339539b309c025e262b08e3f6d85183",
+            }
+            headers = {"User-Agent": UA, "Referer": "https://quote.eastmoney.com/"}
+            resp = requests.get(url, params=params, headers=headers, timeout=15, proxies=NO_PROXY)
+            body = resp.json()
+            items = body.get("data", {}).get("diff", [])
+            if not items:
+                return "[DATA-016] HOT_STOCKS_NORMAL_NO_DATA: 热门股票暂无数据（非交易日或盘后未更新）。"
+            count = len(items)
+            lines = [f"[DATA-016] HOT_STOCKS_HAS_DATA: 热门股票（Eastmoney 热榜，共 {count} 只）："]
+            for item in items[:30]:
+                code = item.get("f12", "")
+                name = item.get("f14", "")
+                price = item.get("f2", "-")
+                change_pct = item.get("f3", "-")
+                volume = item.get("f6", "-")
+                lines.append(f"- {code} {name} | 最新 {price} | 涨跌幅 {change_pct}% | 成交额 {volume}")
+            return "\n".join(lines)
+
+        except Exception as exc:
+            return f"[DATA-016] HOT_STOCKS_FAILED: 热门股票数据获取失败（Eastmoney push2）：{type(exc).__name__}: {exc}"

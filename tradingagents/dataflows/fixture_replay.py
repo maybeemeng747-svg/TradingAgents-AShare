@@ -91,6 +91,11 @@ FIXTURE_ZT_POOL_HAS_DATA = "zt_pool_has_data"  # [DATA-015] limit_up_pool_fallba
 FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK = "zt_pool_akshare_fail_fallback"  # [DATA-015] limit_up_pool_fallback
 FIXTURE_ZT_POOL_FAILED = "zt_pool_failed"  # [DATA-015] limit_up_pool_fallback
 FIXTURE_ZT_POOL_NORMAL_NO_DATA = "zt_pool_normal_no_data"  # [DATA-015] limit_up_pool_fallback
+FIXTURE_HOT_STOCKS_HAS_DATA = "hot_stocks_has_data"  # [DATA-016] hot_stock_fallback
+FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK = "hot_stocks_akshare_fail_fallback"  # [DATA-016] hot_stock_fallback
+FIXTURE_HOT_STOCKS_FAILED = "hot_stocks_failed"  # [DATA-016] hot_stock_fallback
+FIXTURE_HOT_STOCKS_NORMAL_NO_DATA = "hot_stocks_normal_no_data"  # [DATA-016] hot_stock_fallback
+FIXTURE_HOT_STOCKS_RATE_LIMITED = "hot_stocks_rate_limited"  # [DATA-016] hot_stock_fallback
 
 ALL_FIXTURE_IDS = [
     FIXTURE_NORMAL_QUOTE,
@@ -131,6 +136,11 @@ ALL_FIXTURE_IDS = [
     FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK,
     FIXTURE_ZT_POOL_FAILED,
     FIXTURE_ZT_POOL_NORMAL_NO_DATA,
+    FIXTURE_HOT_STOCKS_HAS_DATA,
+    FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK,
+    FIXTURE_HOT_STOCKS_FAILED,
+    FIXTURE_HOT_STOCKS_NORMAL_NO_DATA,
+    FIXTURE_HOT_STOCKS_RATE_LIMITED,
 ]
 
 
@@ -1631,6 +1641,175 @@ def _build_zt_pool_normal_no_data_fixture() -> FixtureEntry:
     )
 
 
+def _build_hot_stocks_has_data_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "hot_stocks": {
+            "raw": "雪球热搜前20：\n600519 贵州茅台 120.5\n000858 五粮液 98.3",
+            "field": "hot_stocks",
+            "unit": "条",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_hot_follow_xq",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "fallback_from": None,
+            "source_url": None,
+            "error": None,
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 20,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_HOT_STOCKS_HAS_DATA,
+        description="热门股票正常返回（AKShare/雪球 成功）",
+        data_type="hot_stocks",
+        vendor="cn_akshare",
+        endpoint="stock_hot_follow_xq",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["hot_stocks", "has_data", "DATA-016"],
+    )
+
+
+def _build_hot_stocks_akshare_fail_fallback_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "hot_stocks": {
+            "raw": (
+                "[DATA-016] HOT_STOCKS_HAS_DATA: 热门股票（Eastmoney 热榜，共 30 只）：\n"
+                "- 600519 贵州茅台 | 最新 1800.0 | 涨跌幅 2.5% | 成交额 4500000000\n"
+                "- 300750 宁德时代 | 最新 220.0 | 涨跌幅 3.1% | 成交额 3800000000"
+            ),
+            "field": "hot_stocks",
+            "unit": "条",
+            "vendor": "cn_astock",
+            "endpoint": "push2.eastmoney.com/getHotStock",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "fallback_from": "cn_akshare",
+            "source_url": None,
+            "error": "AKShare stock_hot_follow_xq: ProxyError",
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 30,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK,
+        description="热门股票 AKShare 失败→cn_astock fallback 成功——vendor 应显示 cn_astock",
+        data_type="hot_stocks",
+        vendor="cn_astock",
+        endpoint="push2.eastmoney.com/getHotStock",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["hot_stocks", "fallback", "akshare_failed", "astock_success", "DATA-016"],
+    )
+
+
+def _build_hot_stocks_failed_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "hot_stocks": {
+            "raw": "[DATA-016] HOT_STOCKS_FAILED: 热门股票数据获取失败（Eastmoney push2）：ConnectionError",
+            "field": "hot_stocks",
+            "unit": None,
+            "vendor": "cn_astock",
+            "endpoint": "push2.eastmoney.com/getHotStock",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "FAILED",
+            "fallback_from": "cn_akshare",
+            "source_url": None,
+            "error": "ConnectionError",
+            "is_realtime_patched": False,
+            "unit_verified": None,
+            "record_count": 0,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_HOT_STOCKS_FAILED,
+        description="热门股票全部失败——AKShare 和 cn_astock 均连接失败",
+        data_type="hot_stocks",
+        vendor="cn_astock",
+        endpoint="push2.eastmoney.com/getHotStock",
+        expected_status="FAILED",
+        raw_evidence=raw_evidence,
+        tags=["hot_stocks", "failed", "DATA-016"],
+    )
+
+
+def _build_hot_stocks_normal_no_data_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "hot_stocks": {
+            "raw": "雪球热搜数据暂不可用。",
+            "field": "hot_stocks",
+            "unit": "条",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_hot_follow_xq",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "NORMAL_NO_DATA",
+            "fallback_from": None,
+            "source_url": None,
+            "error": None,
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 0,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_HOT_STOCKS_NORMAL_NO_DATA,
+        description="热门股票空结果——非交易日或盘后未更新（status=NORMAL_NO_DATA, count=0）",
+        data_type="hot_stocks",
+        vendor="cn_akshare",
+        endpoint="stock_hot_follow_xq",
+        expected_status="NORMAL_NO_DATA",
+        raw_evidence=raw_evidence,
+        tags=["hot_stocks", "normal_no_data", "DATA-016"],
+    )
+
+
+def _build_hot_stocks_rate_limited_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "hot_stocks": {
+            "raw": "[DATA-016] HOT_STOCKS_FAILED: 热门股票数据获取失败（Eastmoney push2）：HTTPError: 429 Too Many Requests",
+            "field": "hot_stocks",
+            "unit": None,
+            "vendor": "cn_astock",
+            "endpoint": "push2.eastmoney.com/getHotStock",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "FAILED",
+            "fallback_from": "cn_akshare",
+            "source_url": None,
+            "error": "HTTPError: 429 Too Many Requests",
+            "is_realtime_patched": False,
+            "unit_verified": None,
+            "record_count": 0,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_HOT_STOCKS_RATE_LIMITED,
+        description="热门股票限流——请求频率过高被拒",
+        data_type="hot_stocks",
+        vendor="cn_astock",
+        endpoint="push2.eastmoney.com/getHotStock",
+        expected_status="FAILED",
+        raw_evidence=raw_evidence,
+        tags=["hot_stocks", "rate_limited", "DATA-016"],
+    )
+
+
 _FIXTURE_BUILDERS = {
     FIXTURE_NORMAL_QUOTE: _build_normal_quote_fixture,
     FIXTURE_STALE_DAILY: _build_stale_daily_fixture,
@@ -1670,6 +1849,11 @@ _FIXTURE_BUILDERS = {
     FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK: _build_zt_pool_akshare_fail_fallback_fixture,
     FIXTURE_ZT_POOL_FAILED: _build_zt_pool_failed_fixture,
     FIXTURE_ZT_POOL_NORMAL_NO_DATA: _build_zt_pool_normal_no_data_fixture,
+    FIXTURE_HOT_STOCKS_HAS_DATA: _build_hot_stocks_has_data_fixture,
+    FIXTURE_HOT_STOCKS_AKSHARE_FAIL_FALLBACK: _build_hot_stocks_akshare_fail_fallback_fixture,
+    FIXTURE_HOT_STOCKS_FAILED: _build_hot_stocks_failed_fixture,
+    FIXTURE_HOT_STOCKS_NORMAL_NO_DATA: _build_hot_stocks_normal_no_data_fixture,
+    FIXTURE_HOT_STOCKS_RATE_LIMITED: _build_hot_stocks_rate_limited_fixture,
 }
 
 
