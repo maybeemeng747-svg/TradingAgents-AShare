@@ -2,7 +2,7 @@
 
 - Task: H-011 - 候选矛盾证据与负面清单解释（P2）
 - Priority: P2
-- Status: DONE (manual — Codex review config.toml error, code verified)
+- Status: DONE (manual closeout, Codex review restored)
 - Started at: 2026-06-07_23:47:42
 - Completed at: 2026-06-08_00:00:00
 - Git HEAD: 3997254
