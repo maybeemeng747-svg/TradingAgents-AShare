@@ -13,7 +13,7 @@ import json
 import sqlite3
 import sys
 import os
-import tempfile
+from datetime import datetime
 import pytest
 from unittest.mock import patch
 
@@ -32,10 +32,9 @@ from tradingagents.tradeflow.observe_fixture_replay import (
     _read_signals,
     _read_candidate_observe_state,
 )
-from tradingagents.tradeflow.intraday_observe import ObserveState, ObserveTracker, run_observe_check
-from tradingagents.tradeflow.observe_runner import run_observe, ObserveRunResult
+from tradingagents.tradeflow.intraday_observe import ObserveState
 from tradingagents.tradeflow.schemas import Candidate
-from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
+from tradingagents.tradeflow.candidate_engine import init_db
 
 
 @pytest.fixture
@@ -90,7 +89,7 @@ class TestWaitingNotTriggered:
 
     def test_trigger_reason_empty_or_not_triggered(self, tmp_db):
         r = replay_fixture("waiting_not_triggered", tmp_db)
-        assert r.trigger_reason == "" or "未" in r.trigger_reason or r.trigger_reason == ""
+        assert r.trigger_reason == "" or "未" in r.trigger_reason
 
     def test_evidence_has_trade_date(self, tmp_db):
         r = replay_fixture("waiting_not_triggered", tmp_db)
@@ -198,7 +197,6 @@ class TestNonTradingDayCrossDate:
 
     def test_plan_date_is_non_trading_weekend(self):
         f = get_fixture("non_trading_day_cross_date")
-        from datetime import datetime
         d = datetime.strptime(f["plan_date"], "%Y-%m-%d")
         assert d.weekday() >= 5
 

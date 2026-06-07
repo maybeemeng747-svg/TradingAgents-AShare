@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-06-08 | T-008 fix: Codex review 代码质量修复
+
+- **执行者**：OpenCode
+- **任务**：T-008 fix — Codex review exit code 1 后代码质量修复（根因为 Codex config.toml `service_tier` 配置错误，非代码问题）
+- **修复内容**：
+  1. `tradingagents/tradeflow/observe_fixture_replay.py:23` — 移除未使用的 `asdict` import
+  2. `tradingagents/tradeflow/observe_fixture_replay.py:30` — 移除未使用的 `ObserveRunResult` import
+  3. `tradingagents/tradeflow/observe_fixture_replay.py:27` — `from unittest.mock import patch` 从 `replay_fixture()` 内联移至模块顶部
+  4. `tradingagents/tradeflow/observe_fixture_replay.py:22` — 新增 `logging` import 和 `logger` 实例
+  5. `tradingagents/tradeflow/observe_fixture_replay.py:25` — 新增 `Callable` import，补全 `_make_quote_provider` 返回类型和内部函数参数类型注解
+  6. `tradingagents/tradeflow/observe_fixture_replay.py:64-79` — `to_dict()` 补全遗漏的 `run_result` 字段（与其他 fixture replay 模块一致）
+  7. `tradingagents/tradeflow/observe_fixture_replay.py:189-193` — `get_fixture()` 返回类型改为 `Optional[dict]`，未知 ID 返回 `None` 而非 raise `ValueError`（与 `fixture_replay.py` / `mandate_replay_eval.py` 一致）
+  8. `tradingagents/tradeflow/observe_fixture_replay.py:272-358` — `replay_fixture()` 包裹 try/except，异常时写入 `error` 字段而非崩溃（此前 `error` 字段始终为空串，属于死代码）
+  9. `tradingagents/tradeflow/observe_fixture_replay.py:225-231` — `_read_signals()` 单字母变量 `r`/`d`/`k`/`ev` 改为 `row`/`row_dict`/`col`/`evidence_raw`
+  10. `tradingagents/tradeflow/observe_fixture_replay.py:242` — `_read_candidate_observe_state()` 单字母变量 `r` 改为 `col`
+  11. `tradingagents/tradeflow/observe_fixture_replay.py:260` — 同上 `d`/`k` 改为 `row_dict`/`col`
+  12. `tradingagents/tradeflow/observe_fixture_replay.py:368-384` — `validate_state_consistency()` 处理 `get_fixture()` 返回 `None`
+  13. `tests/test_t008_observe_fixture_replay.py:16` — 移除未使用的 `tempfile` import
+  14. `tests/test_t008_observe_fixture_replay.py:35` — 移除未使用的 `ObserveTracker`, `run_observe_check` import
+  15. `tests/test_t008_observe_fixture_replay.py:36` — 移除未使用的 `run_observe`, `ObserveRunResult` import
+  16. `tests/test_t008_observe_fixture_replay.py:38` — 移除未使用的 `save_candidate` import
+  17. `tests/test_t008_observe_fixture_replay.py:93` — 修复 `test_trigger_reason_empty_or_not_triggered` 重复断言条件
+  18. `tests/test_t008_observe_fixture_replay.py:17` — `from datetime import datetime` 从内联移至模块顶部
+- **测试结果**：84 passed (T-008)；195 passed (tradeflow 回归)；0 failed
+- **根因分析**：Codex review exit code 1 由 `config.toml: unknown variant 'default' in 'service_tier'` 导致，非本任务代码缺陷。审查中发现 18 处代码质量问题并全部修复
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-08 | T-008: TradeFlow 观察信号 fixture 回放与前端状态一致性验收
 
 - **执行者**：OpenCode
@@ -3323,3 +3352,12 @@
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex review failed with exit 1
 - **Run archive**: docs/task_runs/UI-010-20260608-001244/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: T-008 - TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2）
+- **Priority**: P2
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/T-008-20260608-002337/

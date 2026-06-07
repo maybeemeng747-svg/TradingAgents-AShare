@@ -2494,7 +2494,7 @@
 ### T-008: TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2）
 - **描述**：在不启用真实盘中盯盘的情况下，用 fixture 回放验证 Observe 状态机、signals 落库、API 和前端显示一致，避免候选池有票但盘中观察页空白或状态断裂。
 - **优先级**：P2
-- **状态**：done — T-008-20260608
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/T-008-20260608-002337
 - **前置条件**：`TF-OBS-001`、`UI-004` 完成 ✓。
 - **执行约束**：
   - 不启动真实 scheduler。
