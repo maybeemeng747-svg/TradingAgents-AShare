@@ -968,7 +968,7 @@
 ### DATA-013: 回购数据接入 provider 路由与 raw_evidence（P2）
 - **描述**：把回购计划/回购进展从事件流扩展到 provider route 与 raw_evidence，作为公司行为和中线信号证据。
 - **优先级**：P2
-- **状态**：done
+- **状态**：done -- commit 9b05a2b
 - **前置条件**：`DATA-003`、`DATA-004` 完成 ✓。
 - **执行约束**：
   - 回购只作为事件证据，不直接生成买入结论。
