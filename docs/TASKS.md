@@ -1030,7 +1030,7 @@
 ### DATA-016: 热门股票 cn_astock fallback 与 fixture（P2）
 - **描述**：为热门股票/热搜/市场关注度数据增加 cn_astock/Eastmoney fallback 和 fixture，避免短线情绪源单点失效。
 - **优先级**：P2
-- **状态**：done — DATA-016-20260608-060126
+- **状态**：done -- commit ea85f4c
 - **前置条件**：`DATA-005`、`DATA-P0-FUND-ROUTE` 完成 ✓。
 - **执行约束**：
   - 不把热度当作政策证据。
