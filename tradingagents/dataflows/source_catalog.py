@@ -566,6 +566,16 @@ def _build_catalog() -> None:
         is_primary=True,
         notes="AKShare/东财涨停池",
     )
+    _register(  # [DATA-015] limit_up_pool_fallback
+        "cn_astock", "push2ex.eastmoney.com/getTopicZTPool",
+        DataType.ZT_POOL,
+        fields=["SECURITY_CODE", "SECURITY_NAME_ABBR", "EXPLANATION", "CHANGE_RATE"],
+        unit="条",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.MEDIUM,
+        fallback_priority=2,
+        notes="东财 datacenter + push2ex 涨停池直连 fallback",
+    )
 
     # ── 热门股票 ───────────────────────────────────────────────────────
     _register(

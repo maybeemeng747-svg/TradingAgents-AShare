@@ -4,6 +4,71 @@
 
 ---
 
+## 2026-06-08 | DATA-015: 涨停池 cn_astock fallback 与 fixture — Codex Review 修复
+
+- **执行者**：OpenCode
+- **任务**：DATA-015 — 修复 Codex Review 发现的关键问题。
+- **修复内容**：
+  1. **[Critical] 错误的 datacenter 报表名**（`cn_astock_provider.py:1246`）：原实现使用 `RPT_DAILYBILLBOARD_DETAILSNEW`（龙虎榜）获取涨停池数据，语义错误。修正为 `RPTA_WEB_ZTZS_ZTPOOL`（涨停池专用报表）。
+  2. **[Critical] push2 fallback 返回错误状态**（`cn_astock_provider.py:1278-1279`）：push2 fallback 异常时返回 `ZT_POOL_NORMAL_NO_DATA`，应为 `ZT_POOL_FAILED`。已修正。
+  3. **[Critical] push2 API 参数错误**：原使用 `push2his.eastmoney.com/api/qt/clist/get` + `fs: b:BK0815`（板块行情），非涨停池接口。修正为 `push2ex.eastmoney.com/getTopicZTPool`（涨停池专用 API）。
+  4. **[Medium] source_catalog 字段不匹配**：注册字段 `CLOSE_PRICE, CONTINUOUS_DAYS` 与实际 API 返回不匹配，修正为 `EXPLANATION, CHANGE_RATE`；endpoint 更新为 `push2ex.eastmoney.com/getTopicZTPool`。
+  5. **[Low] fixture docstring 计数错误**：注释写 34 类 fixture，实际为 38 类。
+  6. **新增测试**：`test_astock_zt_pool_push2_fallback_failed` 验证 push2 fallback 失败时返回 FAILED 而非 NORMAL_NO_DATA。
+- **修改文件**：
+  - `tradingagents/dataflows/providers/cn_astock_provider.py` — 修正 report 名、push2 URL/参数、inner exception 状态码
+  - `tradingagents/dataflows/source_catalog.py` — 修正 endpoint 和 fields
+  - `tradingagents/dataflows/fixture_replay.py` — 修正 docstring 计数、fixture endpoint
+  - `tests/test_data015_zt_pool.py` — 新增 push2 fallback FAILED 测试，修正 mock 数据结构
+- **测试结果**：59 passed (DATA-015)；206 passed (相关回归)；0 DATA-015 相关失败
+- **执行边界**：未调用 LLM、未触发 TA、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+## 2026-06-08 | DATA-015: 涨停池 cn_astock fallback 与 fixture（初次实现）
+
+- **执行者**：OpenCode
+- **任务**：DATA-015 — 为涨停池/涨停板情绪数据增加 cn_astock/Eastmoney fallback 和 fixture，降低 AKShare 单点失败对短线候选和市场情绪的影响。
+- **修改文件**：
+  - `tradingagents/dataflows/source_catalog.py` — [DATA-015] limit_up_pool_fallback
+    - 新增 cn_astock 东财 push2his 涨停池 fallback source（fallback_priority=2）
+    - `DataType.ZT_POOL` 现有 2 个 vendor：cn_akshare(primary) + cn_astock(fallback)
+  - `tradingagents/dataflows/providers/cn_astock_provider.py` — [DATA-015]
+    - 新增 `get_zt_pool(date)`: 东财 datacenter + push2 双重 fallback
+    - 支持 `ZT_POOL_HAS_DATA` / `ZT_POOL_NORMAL_NO_DATA` / `ZT_POOL_FAILED` 三态输出
+  - `tradingagents/dataflows/evidence_contract.py` — [DATA-015]
+    - `_REQUIRED_FIELDS_FOR_COMPLETENESS` 新增 `"zt_pool": ["status", "vendor"]`
+    - `_EVIDENCE_KEY_TO_DATA_TYPE` 已有 `"zt_pool": "zt_pool"` 无需变更
+  - `tradingagents/dataflows/evidence_coverage_audit.py` — [DATA-015]
+    - `_EVIDENCE_FIELD_LABELS` 新增 `"zt_pool": "涨停池"`
+    - `_EVIDENCE_FIELD_FAMILIES` 新增 `"zt_pool": "zt_pool"` 注释
+  - `tradingagents/dataflows/fixture_replay.py` — [DATA-015]
+    - 新增 4 个 fixture：`zt_pool_has_data`(HAS_DATA/cn_akshare) / `zt_pool_akshare_fail_fallback`(HAS_DATA/cn_astock fallback) / `zt_pool_failed`(FAILED) / `zt_pool_normal_no_data`(NORMAL_NO_DATA)
+    - `ALL_FIXTURE_IDS` 从 34 扩展到 38
+  - `tradingagents/dataflows/live_smoke.py` — [DATA-015]
+    - `_make_endpoint_definitions()` 新增 `cn_astock/zt_pool`(get_zt_pool) 端点
+    - 支持 `TA_LIVE_DATA_SMOKE=1` 环境变量门控
+  - `tests/test_data015_zt_pool.py` — **新建**，58 个测试覆盖：
+    - `TestSourceCatalogZtPool` (8): DataType 枚举/sources 注册/primary/fallback chain/all_data_types/fields/endpoint/catalog validation
+    - `TestEvidenceContractZtPool` (6): resolve_data_type/contract HAS_DATA/FAILED/completeness/missing/required fields
+    - `TestEvidenceCoverageAuditZtPool` (4): label/family/audit HAS_DATA/audit FAILED
+    - `TestInterfaceZtPool` (3): tools categories/category/failure string detection
+    - `TestProviderZtPool` (5): astock method/has data/no data/failed/fallback has data
+    - `TestZtPoolFixtures` (9): fixture IDs/count/exists/vendor/unit/error/no vendor/all fixtures/in all fixture ids
+    - `TestZtPoolFixtureReplay` (7): replay HAS_DATA/fallback/FAILED/NORMAL_NO_DATA/all zt pool/full replay
+    - `TestLiveSmokeZtPool` (4): endpoint definitions/env gating/skip/enabled
+    - `TestAcceptanceDATA015` (12): 全部验收标准
+  - `docs/TASKS.md` — DATA-015 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：58 passed (DATA-015)；276 passed (fixture_replay + readiness_score + daily_digest 回归)；654 passed (全部数据源相关回归)；0 failed（2 个 pre-existing DATA-007 失败与 DATA-015 无关）
+- **关键逻辑**：
+  - 涨停池 4 种 fixture 场景：AKShare 成功（HAS_DATA）/ AKShare 失败 cn_astock fallback 成功（HAS_DATA, fallback_from=cn_akshare）/ 全部失败（FAILED）/ 空池（NORMAL_NO_DATA, count=0）
+  - provider `get_zt_pool()` 双重 fallback：先尝试东财 datacenter RPT_DAILYBILLBOARD_DETAILSNEW，失败再尝试 push2 clist 接口
+  - fallback 成功时 raw_evidence 显示 `vendor=cn_astock, fallback_from=cn_akshare`
+  - 全部失败时 status=`FAILED`，error 包含 ConnectionError 等错误信息
+  - 空池时 status=`NORMAL_NO_DATA`，不能显示为 FAILED
+  - live smoke 必须环境变量 `TA_LIVE_DATA_SMOKE=1` 开启，未开启时全部 SKIPPED
+  - 与 DATA-006 日报和 DATA-007 evidence audit 对接
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未跑 live 请求
+
 ## 2026-06-08 | DATA-014: 新闻/政策事件 fixture 与 live smoke 补充
 
 - **执行者**：OpenCode
@@ -3714,3 +3779,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-014-20260608-round1.txt
 - **Run archive**: docs/task_runs/DATA-014-20260608-052740/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-015 - 涨停池 cn_astock fallback 与 fixture（P2）
+- **Priority**: P2
+- **Rounds**: 2
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-015-20260608-round2.txt
+- **Run archive**: docs/task_runs/DATA-015-20260608-054126/

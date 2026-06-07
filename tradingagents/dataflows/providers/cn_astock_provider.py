@@ -1235,6 +1235,62 @@ class CnAstockProvider(BaseMarketDataProvider):
         except Exception as exc:
             return f"{symbol} [DATA-010] MARGIN_FAILED: 融资融券数据获取失败（Eastmoney datacenter）：{type(exc).__name__}: {exc}"
 
+    def get_zt_pool(self, date: str) -> str:
+        """涨停池 — 东财 datacenter 直连 fallback.  # [DATA-015] limit_up_pool_fallback"""
+        try:
+            _rate_limit("em_zt_pool")
+            zt_filter = (
+                f"(TRADE_DATE='{'-'.join([date[:4], date[4:6], date[6:8]]) if len(date) == 8 else date}')"
+            )
+            data = _eastmoney_datacenter(
+                "RPTA_WEB_ZTZS_ZTPOOL",
+                filter_str=zt_filter,
+                page_size=200,
+                sort_columns="CHANGE_RATE",
+                sort_types="-1",
+            )
+
+            if not data:
+                try:
+                    _rate_limit("em_zt_pool_push2")
+                    url = "https://push2ex.eastmoney.com/getTopicZTPool"
+                    params = {
+                        "ut": "7eea3edcaed734bea9tele",
+                        "dpt": "wz.ztzt",
+                        "Ession": date.replace("-", ""),
+                        "date": date.replace("-", ""),
+                    }
+                    headers = {"User-Agent": UA, "Referer": "https://quote.eastmoney.com/"}
+                    r = requests.get(url, params=params, headers=headers, timeout=15, proxies=NO_PROXY)
+                    d = r.json()
+                    pool = d.get("data", {}).get("pool", [])
+                    if not pool:
+                        return f"{date} [DATA-015] ZT_POOL_NORMAL_NO_DATA: 当日无涨停股票（非交易日或盘后未更新）。"
+                    count = len(pool)
+                    lines = [f"{date} [DATA-015] ZT_POOL_HAS_DATA: 涨停池（Eastmoney push2ex，共 {count} 只）："]
+                    for item in pool[:30]:
+                        code = item.get("c", "")
+                        name = item.get("n", "")
+                        pct = item.get("zdp", "")
+                        lb = item.get("lbc", "")
+                        lines.append(f"- {code} {name} | 涨跌幅 {pct}% | 连板 {lb}")
+                    return "\n".join(lines)
+                except Exception as inner_exc:
+                    return f"{date} [DATA-015] ZT_POOL_FAILED: 涨停池数据获取失败（Eastmoney push2ex fallback）：{type(inner_exc).__name__}: {inner_exc}"
+
+            count = len(data)
+            lines = [f"{date} [DATA-015] ZT_POOL_HAS_DATA: 涨停池（Eastmoney datacenter，共 {count} 只）："]
+            for row in data[:30]:
+                code = row.get("SECURITY_CODE", "")
+                name = row.get("SECURITY_NAME_ABBR", "")
+                reason = row.get("EXPLANATION", "")
+                change_pct = round(float(row.get("CHANGE_RATE") or 0), 2)
+                lines.append(f"- {code} {name} | {reason} | 涨跌 {change_pct}%")
+            return "\n".join(lines)
+
+        except Exception as exc:
+            return f"{date} [DATA-015] ZT_POOL_FAILED: 涨停池数据获取失败（Eastmoney）：{type(exc).__name__}: {exc}"
+
     def get_buybacks(self, symbol: str) -> str:
         """个股回购计划/进展 — 东财 datacenter.  # [DATA-013] buyback_raw_evidence"""
         code = _extract_code(symbol)

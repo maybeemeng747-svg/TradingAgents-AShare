@@ -1,3 +1,228 @@
+Task: DATA-015 - 涨停池 cn_astock fallback 与 fixture（P2）
+Date: 2026-06-08_06:01:25
+Codex exit code: 0
+Round: 2
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019ea419-1308-7872-b42f-8386b8ac5601
+--------
+user
+current changes
+exec
+/bin/zsh -lc "cat AGENTS.md && printf '\\n--- overview ---\\n' && cat docs/project-overview.md && printf '\\n--- tasks ---\\n' && cat docs/TASKS.md && printf '\\n--- decisions ---\\n' && cat docs/DECISIONS.md && printf '\\n--- devlog ---\\n' && tail -n 120 docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# TradingAgents-AShare — 项目协作规则
+
+## 项目简介
+
+A股智能投研多智能体系统，基于 LangGraph + LangChain 构建，模拟 14 名专业 Agent 的多空辩论与风控博弈，为投资者提供结构化的交易建议。
+
+核心模块：
+- **Agent 框架**：14 个多智能体（分析师/研究员/风控/交易员），LangGraph 编排
+- **后端 API**：FastAPI，提供分析、持仓、定时任务、研报管理等接口
+- **前端 UI**：React，意图驱动交互、辩论可视化、持仓看板
+- **定时调度**：独立 scheduler，支持自选股定时分析
+- **数据层**：AKShare + BaoStock + yfinance，SQLite 持久化
+
+## 多工具协作架构
+
+```
+孟（最终决策）
+  │
+  ├── OpenClaw（主控调度）── 读取上下文 → 判断任务 → 派发执行
+  │     ├── 简单任务：直接 exec 执行（git/python/npm）
+  │     └── 复杂任务：sessions_spawn 子 agent 或调用 OpenCode 执行
+  │
+  ├── OpenCode（代码执行器）── 读取同一套上下文 → 改代码 → 跑测试 → 输出 diff
+  │
+  └── OpenCode TUI/Web（审查界面）── 查看 diff → 确认修改 → 做 review
+```
+
+**核心原则**：三者读取同一套项目上下文，不各自保存独立记忆。
+
+## 必读文件（任何 coding agent 开始任务前）
+
+1. `AGENTS.md`（本文件）
+2. `docs/project-overview.md`（项目背景 + 架构 + 目录结构）
+3. `docs/TASKS.md`（当前任务池）
+4. `docs/DECISIONS.md`（架构决策记录）
+5. `docs/DEVLOG.md`（最近修改日志）
+6. 涉及模型/API 调用时，必须读 `docs/MODEL_API_CATALOG.md` 和 `docs/LLM_API_USAGE.md`，并可运行 `python scripts/audit_llm_config.py` 查看脱敏配置
+
+## 项目目录结构
+
+```
+TradingAgents-AShare/
+├── tradingagents/            # 核心 Python 包
+│   ├── agents/               # 14 个多智能体
+│   │   ├── analysts/         # 7 个分析师（基本面/情绪/新闻/技术/宏观/主力/量价）
+│   │   ├── researchers/      # 多头/空头研究员 + 研究总监
+│   │   ├── risk_mgmt/        # 风控团队
+│   │   ├── managers/         # 管理层
+│   │   └── trader/           # 交易员
+│   ├── dataflows/            # 数据获取与缓存
+│   ├── graph/                # LangGraph 编排图
+│   ├── llm_clients/          # 多模型厂商适配
+│   ├── prompts/              # Agent 提示词模板
+│   └── default_config.py     # 默认配置
+├── api/                      # FastAPI 后端
+│   ├── main.py               # 入口
+│   ├── database.py           # SQLite
+│   └── services/             # 业务逻辑（分析/持仓/定时/研报）
+├── frontend/                 # React 前端
+├── scheduler/                # 定时分析调度
+├── skills/                   # OpenClaw 技能
+├── tests/                    # 测试
+├── docs/                     # 项目文档
+└── eval_results/             # 回测评估结果
+```
+
+## 执行规则
+
+### 代码修改前
+1. 执行 `git status`，确认当前分支和未提交变更
+2. 激活虚拟环境：`source .venv/bin/activate`
+3. 确认修改范围不影响生产数据库（tradingagents.db）
+4. 如果涉及核心模块，先跑一遍测试确认基线
+
+### 代码修改后
+1. 运行测试，全部通过才算完成
+2. 输出：修改文件列表、测试结果、发现的风险点
+3. 更新 `docs/DEVLOG.md`
+
+### OpenClaw 调度方式
+- **简单任务**（改配置、修 bug、小重构）：OpenClaw 直接 `exec` 执行
+- **复杂任务**（新功能、跨模块修改）：调用 OpenCode 执行，由用户确认后执行
+- **审查任务**：OpenClaw 不直接审查代码，提示用户用 OpenCode TUI 查看 diff
+
+## 安全红线
+
+- 不误改 `tradingagents.db`（生产数据库）
+- 不误改 `eval_results/` 中的历史回测结果
+- 不直接修改 `tradingagents/prompts/` 中的提示词模板（需走审批）
+- 不删除 `logs/` 中的历史日志
+- 测试数据不得写入生产数据库
+- 不读取、解密、打印、提交任何模型 API Key 明文；只能使用 `HAS_KEY/NO_KEY` 级别的脱敏状态
+- 除用户主动发起的分析/定时任务外，任何 live LLM API 调用前都要说明 provider、base_url、模型名和预计调用次数，并征得用户确认
+
+## 技术栈
+
+- **后端**：Python 3.10+, FastAPI, LangGraph, LangChain
+- **前端**：React, TypeScript, Tailwind CSS
+- **数据库**：SQLite
+- **数据源**：AKShare, BaoStock, yfinance
+- **模型**：OpenAI / Anthropic / 智谱 / DeepSeek / 小米 MiMo 等
+
+--- overview ---
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+--- tasks ---
 # 任务池
 
 > 最后更新：2026-06-08
@@ -3038,3 +3263,2882 @@ Phase 3（优化期）：C-006 + C-008
   - `pytest tests/test_vlm*.py -q` 通过
 - **代码标注要求**：`# [VLM-001] watchlist_table_parser`
 - **完成记录**：2026-05-31, commit f52aa21
+
+--- decisions ---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+--- devlog ---
+- **Task**: UI-009 - 候选详情一键生成 TA 研究任务预案（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/UI-009-20260607-232508/
+
+## 2026-06-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: V-005 - 夜间昊天候选质量日报与样本回放（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Test failed: pytest tests/test_v004_mandate_e2e_smoke.py tests/test_data006_daily_digest.py tests/test_mandate_reports*.py -q (exit 4)
+- **Run archive**: docs/task_runs/V-005-20260607-233817/
+
+## 2026-06-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-011 - 候选矛盾证据与负面清单解释（P2）
+- **Priority**: P2
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/H-011-20260607-234742/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: M-013 - CodeGraph 影响范围预检接入自动开发日志（P2）
+- **Priority**: P2
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/M-013-20260607-235926/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: UI-010 - 昊天候选对比视图与证据缺口排序（P2）
+- **Priority**: P2
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/UI-010-20260608-001244/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: T-008 - TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2）
+- **Priority**: P2
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/T-008-20260608-002337/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-010 - 融资融券数据源注册与 raw_evidence 接入（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-010-20260608-round1.txt
+- **Run archive**: docs/task_runs/DATA-010-20260608-020414/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: V-001 - 600584 数据真实性端到端验收（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: OpenCode failed with exit 143
+- **Run archive**: docs/task_runs/V-001-20260608-022250/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: T-005 - TradeFlow P3 盘后 Review
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Default pytest failed with exit 1
+- **Run archive**: docs/task_runs/T-005-20260608-024421/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: T-004 - TradeFlow P2 盘中 Observe
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Default pytest failed with exit 1
+- **Run archive**: docs/task_runs/T-004-20260608-023348/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-012 - 评级数据接入 provider 路由与 raw_evidence（P2）
+- **Priority**: P2
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Zhipu API quota exhausted (429)
+- **Run archive**: docs/task_runs/DATA-012-20260608-024928/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-013 - 回购数据接入 provider 路由与 raw_evidence（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-013-20260608-round1.txt
+- **Run archive**: docs/task_runs/DATA-013-20260608-050752/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-014 - 新闻/政策事件 fixture 与 live smoke 补充（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-014-20260608-round1.txt
+- **Run archive**: docs/task_runs/DATA-014-20260608-052740/
+
+exec
+/bin/zsh -lc 'git status --short && git rev-parse --show-toplevel' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/dataflows/evidence_contract.py
+ M tradingagents/dataflows/evidence_coverage_audit.py
+ M tradingagents/dataflows/fixture_replay.py
+ M tradingagents/dataflows/live_smoke.py
+ M tradingagents/dataflows/providers/cn_astock_provider.py
+ M tradingagents/dataflows/source_catalog.py
+?? docs/reviews/DATA-015-20260608-round1.txt
+?? docs/task_runs/DATA-015-20260608-054126/
+?? tests/test_data015_zt_pool.py
+/Users/maybee/TradingAgents-AShare
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff --cached --stat && git diff --name-only --diff-filter=AM && find docs/task_runs/DATA-015-20260608-054126 -maxdepth 2 -type f -print' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ docs/DEVLOG.md                                     |  65 ++++++++
+ docs/TASKS.md                                      |   6 +-
+ tradingagents/dataflows/evidence_contract.py       |   1 +
+ tradingagents/dataflows/evidence_coverage_audit.py |   3 +-
+ tradingagents/dataflows/fixture_replay.py          | 165 +++++++++++++++++++--
+ tradingagents/dataflows/live_smoke.py              |   8 +
+ .../dataflows/providers/cn_astock_provider.py      |  56 +++++++
+ tradingagents/dataflows/source_catalog.py          |  10 ++
+ 8 files changed, 301 insertions(+), 13 deletions(-)
+docs/DEVLOG.md
+docs/TASKS.md
+tradingagents/dataflows/evidence_contract.py
+tradingagents/dataflows/evidence_coverage_audit.py
+tradingagents/dataflows/fixture_replay.py
+tradingagents/dataflows/live_smoke.py
+tradingagents/dataflows/providers/cn_astock_provider.py
+tradingagents/dataflows/source_catalog.py
+docs/task_runs/DATA-015-20260608-054126/tests-round2.txt
+docs/task_runs/DATA-015-20260608-054126/tests-round1.txt
+docs/task_runs/DATA-015-20260608-054126/codex-review-round1.txt
+docs/task_runs/DATA-015-20260608-054126/codegraph-status.json
+docs/task_runs/DATA-015-20260608-054126/prompt-round1.md
+docs/task_runs/DATA-015-20260608-054126/codegraph-context.txt
+docs/task_runs/DATA-015-20260608-054126/opencode-round2.txt
+docs/task_runs/DATA-015-20260608-054126/prompt-round2.md
+docs/task_runs/DATA-015-20260608-054126/opencode-round1.txt
+docs/task_runs/DATA-015-20260608-054126/task.md
+docs/task_runs/DATA-015-20260608-054126/codegraph-impact.txt
+
+exec
+/bin/zsh -lc "git diff -- tradingagents/dataflows/evidence_contract.py tradingagents/dataflows/evidence_coverage_audit.py tradingagents/dataflows/fixture_replay.py tradingagents/dataflows/live_smoke.py tradingagents/dataflows/providers/cn_astock_provider.py tradingagents/dataflows/source_catalog.py && printf '\\n--- untracked test ---\\n' && sed -n '1,240p' tests/test_data015_zt_pool.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/tradingagents/dataflows/evidence_contract.py b/tradingagents/dataflows/evidence_contract.py
+index 13dca15..5c791f0 100644
+--- a/tradingagents/dataflows/evidence_contract.py
++++ b/tradingagents/dataflows/evidence_contract.py
+@@ -188,6 +188,7 @@ _REQUIRED_FIELDS_FOR_COMPLETENESS: Dict[str, List[str]] = {
+     "research_report": ["status", "vendor"],  # [DATA-011] research_report_raw_evidence
+     "ratings": ["status", "vendor"],  # [DATA-012] rating_raw_evidence
+     "buybacks": ["status", "vendor", "unit"],  # [DATA-013] buyback_raw_evidence
++    "zt_pool": ["status", "vendor"],  # [DATA-015] limit_up_pool_fallback
+ }
+ 
+ 
+diff --git a/tradingagents/dataflows/evidence_coverage_audit.py b/tradingagents/dataflows/evidence_coverage_audit.py
+index 061655c..0866e00 100644
+--- a/tradingagents/dataflows/evidence_coverage_audit.py
++++ b/tradingagents/dataflows/evidence_coverage_audit.py
+@@ -66,6 +66,7 @@ _EVIDENCE_FIELD_LABELS: Dict[str, str] = {
+     "research_report": "研报/评级",  # [DATA-011] research_report_raw_evidence
+     "ratings": "分析师评级",  # [DATA-012] rating_raw_evidence
+     "buybacks": "回购",  # [DATA-013] buyback_raw_evidence
++    "zt_pool": "涨停池",  # [DATA-015] limit_up_pool_fallback
+ }
+ 
+ _EVIDENCE_FIELD_FAMILIES: Dict[str, str] = {
+@@ -83,7 +84,7 @@ _EVIDENCE_FIELD_FAMILIES: Dict[str, str] = {
+     "cashflow": "financials",
+     "income_statement": "financials",
+     "insider_transactions": "insider",
+-    "zt_pool": "zt_pool",
++    "zt_pool": "zt_pool",  # [DATA-015] limit_up_pool_fallback
+     "hot_stocks": "hot_stocks",
+     "margin_trading": "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+     "research_report": "report",  # [DATA-011] research_report_raw_evidence
+diff --git a/tradingagents/dataflows/fixture_replay.py b/tradingagents/dataflows/fixture_replay.py
+index a4f7975..456e28c 100644
+--- a/tradingagents/dataflows/fixture_replay.py
++++ b/tradingagents/dataflows/fixture_replay.py
+@@ -6,15 +6,16 @@
+ 当天实时缺失等场景，避免夜间自动开发误判数据源质量。
+ 
+ 功能：
+-  1. 内置 30 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
+-     资金流单位异常、龙虎榜无触发、公告源失败、
+-     AKShare 资金流失败→astock fallback、龙虎榜 NORMAL_NO_DATA、
+-     龙虎榜 FAILED、公告失败→事件源弱证据、换手率/量比缺失、
+-     融资融券有数据、融资融券失败、融资融券未查询、
+-     研报有数据、研报失败、研报未查询、
+-     回购有数据、回购失败、回购未查询、
+-     新闻有数据、新闻空结果、新闻部分失败、新闻全部失败、新闻限流、
+-     全球新闻有数据、全球新闻空结果、全球新闻失败、全球新闻限流）
++  1. 内置 38 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
++      资金流单位异常、龙虎榜无触发、公告源失败、
++      AKShare 资金流失败→astock fallback、龙虎榜 NORMAL_NO_DATA、
++      龙虎榜 FAILED、公告失败→事件源弱证据、换手率/量比缺失、
++      融资融券有数据、融资融券失败、融资融券未查询、
++      研报有数据、研报失败、研报未查询、
++      回购有数据、回购失败、回购未查询、
++      新闻有数据、新闻空结果、新闻部分失败、新闻全部失败、新闻限流、
++      全球新闻有数据、全球新闻空结果、全球新闻失败、全球新闻限流、
++      涨停池有数据、涨停池 AKShare 失败 fallback 成功、涨停池失败、涨停池空池）
+   2. replay runner 将 fixture 模拟为 raw_evidence，输出数据源健康报告
+   3. 失败时写入 docs/data_source_reports/YYYY-MM-DD.md
+   4. 可被 scripts/auto_dev_loop.sh 或 OpenClaw 巡检调用
+@@ -86,6 +87,10 @@ FIXTURE_GLOBAL_NEWS_HAS_DATA = "global_news_has_data"  # [DATA-014] policy_news_
+ FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA = "global_news_normal_no_data"  # [DATA-014] policy_news_fixture_smoke
+ FIXTURE_GLOBAL_NEWS_FAILED = "global_news_failed"  # [DATA-014] policy_news_fixture_smoke
+ FIXTURE_GLOBAL_NEWS_RATE_LIMITED = "global_news_rate_limited"  # [DATA-014] policy_news_fixture_smoke
++FIXTURE_ZT_POOL_HAS_DATA = "zt_pool_has_data"  # [DATA-015] limit_up_pool_fallback
++FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK = "zt_pool_akshare_fail_fallback"  # [DATA-015] limit_up_pool_fallback
++FIXTURE_ZT_POOL_FAILED = "zt_pool_failed"  # [DATA-015] limit_up_pool_fallback
++FIXTURE_ZT_POOL_NORMAL_NO_DATA = "zt_pool_normal_no_data"  # [DATA-015] limit_up_pool_fallback
+ 
+ ALL_FIXTURE_IDS = [
+     FIXTURE_NORMAL_QUOTE,
+@@ -122,6 +127,10 @@ ALL_FIXTURE_IDS = [
+     FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA,
+     FIXTURE_GLOBAL_NEWS_FAILED,
+     FIXTURE_GLOBAL_NEWS_RATE_LIMITED,
++    FIXTURE_ZT_POOL_HAS_DATA,
++    FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK,
++    FIXTURE_ZT_POOL_FAILED,
++    FIXTURE_ZT_POOL_NORMAL_NO_DATA,
+ ]
+ 
+ 
+@@ -1488,6 +1497,140 @@ def _build_global_news_rate_limited_fixture() -> FixtureEntry:
+     )
+ 
+ 
++def _build_zt_pool_has_data_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "zt_pool": {
++            "raw": f"{today} 涨停家数：35\n连板分布：\n1    20\n2    8\n3    5\n4    2",
++            "field": "zt_pool",
++            "unit": "条",
++            "vendor": "cn_akshare",
++            "endpoint": "stock_zt_pool_em",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "HAS_DATA",
++            "fallback_from": None,
++            "source_url": None,
++            "error": None,
++            "is_realtime_patched": False,
++            "unit_verified": True,
++            "record_count": 35,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_ZT_POOL_HAS_DATA,
++        description="涨停池正常返回（AKShare 成功，含连板分布）",
++        data_type="zt_pool",
++        vendor="cn_akshare",
++        endpoint="stock_zt_pool_em",
++        expected_status="HAS_DATA",
++        raw_evidence=raw_evidence,
++        tags=["zt_pool", "has_data", "DATA-015"],
++    )
++
++
++def _build_zt_pool_akshare_fail_fallback_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "zt_pool": {
++            "raw": f"{today} [DATA-015] ZT_POOL_HAS_DATA: 涨停池（Eastmoney datacenter，共 28 只）：\n"
++                   "- 601678 SH 拓普集团 | 涨停 | 涨跌 10.0%\n"
++                   "- 300750 SZ 宁德时代 | 涨停 | 涨跌 20.0%",
++            "field": "zt_pool",
++            "unit": "条",
++            "vendor": "cn_astock",
++            "endpoint": "push2ex.eastmoney.com/getTopicZTPool",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "HAS_DATA",
++            "fallback_from": "cn_akshare",
++            "source_url": None,
++            "error": "AKShare stock_zt_pool_em: ProxyError",
++            "is_realtime_patched": False,
++            "unit_verified": True,
++            "record_count": 28,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK,
++        description="涨停池 AKShare 失败→cn_astock fallback 成功——vendor 应显示 cn_astock",
++        data_type="zt_pool",
++        vendor="cn_astock",
++        endpoint="push2ex.eastmoney.com/getTopicZTPool",
++        expected_status="HAS_DATA",
++        raw_evidence=raw_evidence,
++        tags=["zt_pool", "fallback", "akshare_failed", "astock_success", "DATA-015"],
++    )
++
++
++def _build_zt_pool_failed_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "zt_pool": {
++            "raw": f"{today} [DATA-015] ZT_POOL_FAILED: 涨停池数据获取失败（Eastmoney）：ConnectionError",
++            "field": "zt_pool",
++            "unit": None,
++            "vendor": "cn_astock",
++            "endpoint": "push2ex.eastmoney.com/getTopicZTPool",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "FAILED",
++            "fallback_from": "cn_akshare",
++            "source_url": None,
++            "error": "ConnectionError",
++            "is_realtime_patched": False,
++            "unit_verified": None,
++            "record_count": 0,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_ZT_POOL_FAILED,
++        description="涨停池全部失败——AKShare 和 cn_astock 均连接失败",
++        data_type="zt_pool",
++        vendor="cn_astock",
++        endpoint="push2ex.eastmoney.com/getTopicZTPool",
++        expected_status="FAILED",
++        raw_evidence=raw_evidence,
++        tags=["zt_pool", "failed", "DATA-015"],
++    )
++
++
++def _build_zt_pool_normal_no_data_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "zt_pool": {
++            "raw": f"{today} [DATA-015] ZT_POOL_NORMAL_NO_DATA: 当日无涨停股票（非交易日或盘后未更新）。",
++            "field": "zt_pool",
++            "unit": "条",
++            "vendor": "cn_akshare",
++            "endpoint": "stock_zt_pool_em",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "NORMAL_NO_DATA",
++            "fallback_from": None,
++            "source_url": None,
++            "error": None,
++            "is_realtime_patched": False,
++            "unit_verified": True,
++            "record_count": 0,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_ZT_POOL_NORMAL_NO_DATA,
++        description="涨停池空池——非交易日或盘后未更新（status=OK, count=0）",
++        data_type="zt_pool",
++        vendor="cn_akshare",
++        endpoint="stock_zt_pool_em",
++        expected_status="NORMAL_NO_DATA",
++        raw_evidence=raw_evidence,
++        tags=["zt_pool", "normal_no_data", "DATA-015"],
++    )
++
++
+ _FIXTURE_BUILDERS = {
+     FIXTURE_NORMAL_QUOTE: _build_normal_quote_fixture,
+     FIXTURE_STALE_DAILY: _build_stale_daily_fixture,
+@@ -1523,6 +1666,10 @@ _FIXTURE_BUILDERS = {
+     FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA: _build_global_news_normal_no_data_fixture,
+     FIXTURE_GLOBAL_NEWS_FAILED: _build_global_news_failed_fixture,
+     FIXTURE_GLOBAL_NEWS_RATE_LIMITED: _build_global_news_rate_limited_fixture,
++    FIXTURE_ZT_POOL_HAS_DATA: _build_zt_pool_has_data_fixture,
++    FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK: _build_zt_pool_akshare_fail_fallback_fixture,
++    FIXTURE_ZT_POOL_FAILED: _build_zt_pool_failed_fixture,
++    FIXTURE_ZT_POOL_NORMAL_NO_DATA: _build_zt_pool_normal_no_data_fixture,
+ }
+ 
+ 
+diff --git a/tradingagents/dataflows/live_smoke.py b/tradingagents/dataflows/live_smoke.py
+index afe31e9..859987b 100644
+--- a/tradingagents/dataflows/live_smoke.py
++++ b/tradingagents/dataflows/live_smoke.py
+@@ -183,6 +183,14 @@ def _make_endpoint_definitions() -> List[Dict[str, Any]]:
+             "kwargs": {},
+             "expected_unit": "条",
+         },
++        {  # [DATA-015] limit_up_pool_fallback
++            "endpoint": "cn_astock/zt_pool",
++            "method": "get_zt_pool",
++            "vendor": "cn_astock",
++            "args_template": ("{date}",),
++            "kwargs": {},
++            "expected_unit": "条",
++        },
+     ]
+ 
+ 
+diff --git a/tradingagents/dataflows/providers/cn_astock_provider.py b/tradingagents/dataflows/providers/cn_astock_provider.py
+index 6e289c6..a9a92c4 100644
+--- a/tradingagents/dataflows/providers/cn_astock_provider.py
++++ b/tradingagents/dataflows/providers/cn_astock_provider.py
+@@ -1235,6 +1235,62 @@ class CnAstockProvider(BaseMarketDataProvider):
+         except Exception as exc:
+             return f"{symbol} [DATA-010] MARGIN_FAILED: 融资融券数据获取失败（Eastmoney datacenter）：{type(exc).__name__}: {exc}"
+ 
++    def get_zt_pool(self, date: str) -> str:
++        """涨停池 — 东财 datacenter 直连 fallback.  # [DATA-015] limit_up_pool_fallback"""
++        try:
++            _rate_limit("em_zt_pool")
++            zt_filter = (
++                f"(TRADE_DATE='{'-'.join([date[:4], date[4:6], date[6:8]]) if len(date) == 8 else date}')"
++            )
++            data = _eastmoney_datacenter(
++                "RPTA_WEB_ZTZS_ZTPOOL",
++                filter_str=zt_filter,
++                page_size=200,
++                sort_columns="CHANGE_RATE",
++                sort_types="-1",
++            )
++
++            if not data:
++                try:
++                    _rate_limit("em_zt_pool_push2")
++                    url = "https://push2ex.eastmoney.com/getTopicZTPool"
++                    params = {
++                        "ut": "7eea3edcaed734bea9tele",
++                        "dpt": "wz.ztzt",
++                        "Ession": date.replace("-", ""),
++                        "date": date.replace("-", ""),
++                    }
++                    headers = {"User-Agent": UA, "Referer": "https://quote.eastmoney.com/"}
++                    r = requests.get(url, params=params, headers=headers, timeout=15, proxies=NO_PROXY)
++                    d = r.json()
++                    pool = d.get("data", {}).get("pool", [])
++                    if not pool:
++                        return f"{date} [DATA-015] ZT_POOL_NORMAL_NO_DATA: 当日无涨停股票（非交易日或盘后未更新）。"
++                    count = len(pool)
++                    lines = [f"{date} [DATA-015] ZT_POOL_HAS_DATA: 涨停池（Eastmoney push2ex，共 {count} 只）："]
++                    for item in pool[:30]:
++                        code = item.get("c", "")
++                        name = item.get("n", "")
++                        pct = item.get("zdp", "")
++                        lb = item.get("lbc", "")
++                        lines.append(f"- {code} {name} | 涨跌幅 {pct}% | 连板 {lb}")
++                    return "\n".join(lines)
++                except Exception as inner_exc:
++                    return f"{date} [DATA-015] ZT_POOL_FAILED: 涨停池数据获取失败（Eastmoney push2ex fallback）：{type(inner_exc).__name__}: {inner_exc}"
++
++            count = len(data)
++            lines = [f"{date} [DATA-015] ZT_POOL_HAS_DATA: 涨停池（Eastmoney datacenter，共 {count} 只）："]
++            for row in data[:30]:
++                code = row.get("SECURITY_CODE", "")
++                name = row.get("SECURITY_NAME_ABBR", "")
++                reason = row.get("EXPLANATION", "")
++                change_pct = round(float(row.get("CHANGE_RATE") or 0), 2)
++                lines.append(f"- {code} {name} | {reason} | 涨跌 {change_pct}%")
++            return "\n".join(lines)
++
++        except Exception as exc:
++            return f"{date} [DATA-015] ZT_POOL_FAILED: 涨停池数据获取失败（Eastmoney）：{type(exc).__name__}: {exc}"
++
+     def get_buybacks(self, symbol: str) -> str:
+         """个股回购计划/进展 — 东财 datacenter.  # [DATA-013] buyback_raw_evidence"""
+         code = _extract_code(symbol)
+diff --git a/tradingagents/dataflows/source_catalog.py b/tradingagents/dataflows/source_catalog.py
+index ab3cda4..3c3f627 100644
+--- a/tradingagents/dataflows/source_catalog.py
++++ b/tradingagents/dataflows/source_catalog.py
+@@ -566,6 +566,16 @@ def _build_catalog() -> None:
+         is_primary=True,
+         notes="AKShare/东财涨停池",
+     )
++    _register(  # [DATA-015] limit_up_pool_fallback
++        "cn_astock", "push2ex.eastmoney.com/getTopicZTPool",
++        DataType.ZT_POOL,
++        fields=["SECURITY_CODE", "SECURITY_NAME_ABBR", "EXPLANATION", "CHANGE_RATE"],
++        unit="条",
++        freshness=Freshness.DAILY,
++        rate_limit_risk=RateLimitRisk.MEDIUM,
++        fallback_priority=2,
++        notes="东财 datacenter + push2ex 涨停池直连 fallback",
++    )
+ 
+     # ── 热门股票 ───────────────────────────────────────────────────────
+     _register(
+
+--- untracked test ---
+# [DATA-015] limit_up_pool_fallback
+"""
+Tests for ZT pool (涨停池) cn_astock fallback, source catalog registration,
+evidence contract, evidence coverage audit, readiness score, fixture replay,
+provider, live smoke, and acceptance criteria.
+"""
+
+import pytest
+from unittest.mock import patch, MagicMock
+
+from tradingagents.dataflows.source_catalog import (
+    DataType,
+    Freshness,
+    RateLimitRisk,
+    get_sources_for_type,
+    get_primary_source,
+    get_fallback_chain,
+    get_all_data_types,
+    validate_catalog,
+)
+from tradingagents.dataflows.evidence_contract import (
+    EvidenceContract,
+    resolve_data_type,
+    compute_contract_completeness,
+    _REQUIRED_FIELDS_FOR_COMPLETENESS,
+)
+from tradingagents.dataflows.evidence_coverage_audit import (
+    audit_raw_evidence,
+    _EVIDENCE_FIELD_LABELS,
+    _EVIDENCE_FIELD_FAMILIES,
+)
+from tradingagents.agents.utils.readiness_score import (
+    EvidenceStatus,
+    calculate_evidence_coverage,
+)
+from tradingagents.dataflows.fixture_replay import (
+    FIXTURE_ZT_POOL_HAS_DATA,
+    FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK,
+    FIXTURE_ZT_POOL_FAILED,
+    FIXTURE_ZT_POOL_NORMAL_NO_DATA,
+    ALL_FIXTURE_IDS,
+    get_fixture,
+    get_all_fixtures,
+    run_fixture_replay,
+)
+from tradingagents.dataflows.interface import (
+    TOOLS_CATEGORIES,
+    get_category_for_method,
+    _FAILURE_RESULT_PATTERNS,
+)
+
+
+class TestSourceCatalogZtPool:
+    def test_zt_pool_data_type_exists(self):
+        assert DataType.ZT_POOL.value == "zt_pool"
+
+    def test_zt_pool_sources_registered(self):
+        sources = get_sources_for_type(DataType.ZT_POOL)
+        assert len(sources) >= 2
+
+    def test_zt_pool_primary_source(self):
+        primary = get_primary_source(DataType.ZT_POOL)
+        assert primary is not None
+        assert primary.vendor == "cn_akshare"
+        assert primary.is_primary
+
+    def test_zt_pool_fallback_chain(self):
+        chain = get_fallback_chain(DataType.ZT_POOL)
+        assert "cn_akshare" in chain
+        assert "cn_astock" in chain
+        assert chain.index("cn_akshare") < chain.index("cn_astock")
+
+    def test_zt_pool_in_all_data_types(self):
+        all_types = get_all_data_types()
+        assert "zt_pool" in all_types
+
+    def test_zt_pool_primary_fields(self):
+        primary = get_primary_source(DataType.ZT_POOL)
+        assert len(primary.fields) > 0
+
+    def test_zt_pool_primary_endpoint(self):
+        primary = get_primary_source(DataType.ZT_POOL)
+        assert primary.endpoint == "stock_zt_pool_em"
+
+    def test_zt_pool_fallback_endpoint(self):
+        sources = get_sources_for_type(DataType.ZT_POOL)
+        astock = [s for s in sources if s.vendor == "cn_astock"]
+        assert len(astock) >= 1
+        assert "eastmoney" in astock[0].endpoint.lower() or "push2" in astock[0].endpoint.lower()
+
+
+class TestEvidenceContractZtPool:
+    def test_resolve_data_type_zt_pool(self):
+        assert resolve_data_type("zt_pool") == "zt_pool"
+
+    def test_zt_pool_contract_has_data(self):
+        contract = EvidenceContract(
+            field="zt_pool",
+            value="2026-06-08 涨停家数：35",
+            unit="条",
+            vendor="cn_akshare",
+            endpoint="stock_zt_pool_em",
+            status="HAS_DATA",
+        )
+        assert contract.has_data
+        assert contract.unit_known
+        assert contract.vendor == "cn_akshare"
+
+    def test_zt_pool_contract_failed(self):
+        contract = EvidenceContract(
+            field="zt_pool",
+            value=None,
+            vendor="cn_astock",
+            endpoint="push2his.eastmoney.com/zt",
+            status="FAILED",
+            error="ConnectionError",
+        )
+        assert contract.is_failed
+        assert not contract.has_data
+
+    def test_zt_pool_completeness(self):
+        raw = {
+            "zt_pool": {
+                "raw": "2026-06-08 涨停家数：35",
+                "field": "zt_pool",
+                "unit": "条",
+                "vendor": "cn_akshare",
+                "endpoint": "stock_zt_pool_em",
+                "status": "HAS_DATA",
+            },
+        }
+        result = compute_contract_completeness(raw)
+        assert result["completeness_score"] > 0
+
+    def test_zt_pool_missing(self):
+        raw = {}
+        result = compute_contract_completeness(raw)
+        assert "zt_pool" in result.get("missing_details", {})
+
+    def test_zt_pool_in_required_fields(self):
+        assert "zt_pool" in _REQUIRED_FIELDS_FOR_COMPLETENESS
+
+
+class TestEvidenceCoverageAuditZtPool:
+    def test_zt_pool_label(self):
+        assert _EVIDENCE_FIELD_LABELS.get("zt_pool") == "涨停池"
+
+    def test_zt_pool_family(self):
+        assert _EVIDENCE_FIELD_FAMILIES.get("zt_pool") == "zt_pool"
+
+    def test_audit_zt_pool_has_data(self):
+        raw = {
+            "zt_pool": {
+                "raw": "2026-06-08 涨停家数：35",
+                "field": "zt_pool",
+                "unit": "条",
+                "vendor": "cn_akshare",
+                "endpoint": "stock_zt_pool_em",
+                "status": "HAS_DATA",
+            },
+        }
+        result = audit_raw_evidence(raw)
+        assert "zt_pool" in result.has_data_fields
+
+    def test_audit_zt_pool_failed(self):
+        raw = {
+            "zt_pool": {
+                "raw": "ZT_POOL_FAILED",
+                "field": "zt_pool",
+                "unit": None,
+                "vendor": "cn_astock",
+                "endpoint": "push2his.eastmoney.com/zt",
+                "status": "FAILED",
+                "error": "ConnectionError",
+            },
+        }
+        result = audit_raw_evidence(raw)
+        assert "zt_pool" in result.failed_fields
+
+
+class TestInterfaceZtPool:
+    def test_zt_pool_in_tools_categories(self):
+        tools = TOOLS_CATEGORIES.get("cn_market_data", {}).get("tools", [])
+        assert "get_zt_pool" in tools
+
+    def test_zt_pool_category(self):
+        cat = get_category_for_method("get_zt_pool")
+        assert cat == "cn_market_data"
+
+    def test_failure_string_detection(self):
+        failure = "涨停板情绪池数据获取失败：ConnectionError"
+        assert any(p in failure for p in _FAILURE_RESULT_PATTERNS)
+
+
+class TestProviderZtPool:
+    def test_astock_has_get_zt_pool(self):
+        from tradingagents.dataflows.providers.cn_astock_provider import CnAstockProvider
+        provider = CnAstockProvider()
+        assert hasattr(provider, "get_zt_pool")
+
+    @patch("tradingagents.dataflows.providers.cn_astock_provider._eastmoney_datacenter")
+    def test_astock_zt_pool_has_data(self, mock_dc):
+        mock_dc.return_value = [
+            {"SECURITY_CODE": "601678", "SECURITY_NAME_ABBR": "拓普集团",
+             "EXPLANATION": "涨停", "CHANGE_RATE": 10.0},
+        ]
+        from tradingagents.dataflows.providers.cn_astock_provider import CnAstockProvider
+        provider = CnAstockProvider()
+        result = provider.get_zt_pool("2026-06-08")
+        assert "ZT_POOL_HAS_DATA" in result
+
+    @patch("tradingagents.dataflows.providers.cn_astock_provider._eastmoney_datacenter")
+    def test_astock_zt_pool_no_data(self, mock_dc):
+        mock_dc.return_value = []
+        with patch("tradingagents.dataflows.providers.cn_astock_provider.requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = {"data": {"pool": []}}
+            mock_get.return_value = mock_resp
+            from tradingagents.dataflows.providers.cn_astock_provider import CnAstockProvider
+            provider = CnAstockProvider()
+            result = provider.get_zt_pool("2026-06-08")
+            assert "ZT_POOL_NORMAL_NO_DATA" in result
+
+    @patch("tradingagents.dataflows.providers.cn_astock_provider._eastmoney_datacenter")
+    def test_astock_zt_pool_failed(self, mock_dc):
+        mock_dc.side_effect = Exception("ConnectionError")
+        from tradingagents.dataflows.providers.cn_astock_provider import CnAstockProvider
+        provider = CnAstockProvider()
+        result = provider.get_zt_pool("2026-06-08")
+        assert "ZT_POOL_FAILED" in result
+
+    @patch("tradingagents.dataflows.providers.cn_astock_provider._eastmoney_datacenter")
+    def test_astock_zt_pool_fallback_has_data(self, mock_dc):
+        mock_dc.return_value = []
+        with patch("tradingagents.dataflows.providers.cn_astock_provider.requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = {
+                "data": {
+                    "pool": [
+                        {"c": "601678", "n": "拓普集团", "zdp": "10.0", "lbc": "1"},
+
+exec
+/bin/zsh -lc "sed -n '240,520p' tests/test_data015_zt_pool.py && grep -R \"def get_zt_pool\\|get_zt_pool\" -n tradingagents/dataflows | head -50 && sed -n '1,260p' tradingagents/dataflows/source_catalog.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+                        {"c": "601678", "n": "拓普集团", "zdp": "10.0", "lbc": "1"},
+                        {"c": "300750", "n": "宁德时代", "zdp": "20.0", "lbc": "2"},
+                    ]
+                }
+            }
+            mock_get.return_value = mock_resp
+            from tradingagents.dataflows.providers.cn_astock_provider import CnAstockProvider
+            provider = CnAstockProvider()
+            result = provider.get_zt_pool("2026-06-08")
+            assert "ZT_POOL_HAS_DATA" in result
+
+    @patch("tradingagents.dataflows.providers.cn_astock_provider._eastmoney_datacenter")
+    def test_astock_zt_pool_push2_fallback_failed(self, mock_dc):
+        mock_dc.return_value = []
+        with patch("tradingagents.dataflows.providers.cn_astock_provider.requests.get") as mock_get:
+            mock_get.side_effect = Exception("ConnectionError")
+            from tradingagents.dataflows.providers.cn_astock_provider import CnAstockProvider
+            provider = CnAstockProvider()
+            result = provider.get_zt_pool("2026-06-08")
+            assert "ZT_POOL_FAILED" in result
+
+
+class TestZtPoolFixtures:
+    def test_fixture_ids_exist(self):
+        assert FIXTURE_ZT_POOL_HAS_DATA == "zt_pool_has_data"
+        assert FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK == "zt_pool_akshare_fail_fallback"
+        assert FIXTURE_ZT_POOL_FAILED == "zt_pool_failed"
+        assert FIXTURE_ZT_POOL_NORMAL_NO_DATA == "zt_pool_normal_no_data"
+
+    def test_fixture_count_in_all_fixture_ids(self):
+        zt_ids = [
+            FIXTURE_ZT_POOL_HAS_DATA,
+            FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK,
+            FIXTURE_ZT_POOL_FAILED,
+            FIXTURE_ZT_POOL_NORMAL_NO_DATA,
+        ]
+        for zid in zt_ids:
+            assert zid in ALL_FIXTURE_IDS
+
+    def test_total_fixture_count_increased(self):
+        assert len(ALL_FIXTURE_IDS) >= 34
+
+    def test_zt_pool_has_data_fixture(self):
+        f = get_fixture(FIXTURE_ZT_POOL_HAS_DATA)
+        assert f is not None
+        assert f.expected_status == "HAS_DATA"
+        assert f.vendor == "cn_akshare"
+        assert f.data_type == "zt_pool"
+        ev = f.raw_evidence.get("zt_pool", {})
+        assert ev.get("status") == "HAS_DATA"
+        assert ev.get("record_count") == 35
+
+    def test_zt_pool_fallback_fixture(self):
+        f = get_fixture(FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK)
+        assert f is not None
+        assert f.expected_status == "HAS_DATA"
+        assert f.vendor == "cn_astock"
+        ev = f.raw_evidence.get("zt_pool", {})
+        assert ev.get("fallback_from") == "cn_akshare"
+
+    def test_zt_pool_failed_fixture(self):
+        f = get_fixture(FIXTURE_ZT_POOL_FAILED)
+        assert f is not None
+        assert f.expected_status == "FAILED"
+        ev = f.raw_evidence.get("zt_pool", {})
+        assert ev.get("status") == "FAILED"
+        assert ev.get("error") == "ConnectionError"
+
+    def test_zt_pool_normal_no_data_fixture(self):
+        f = get_fixture(FIXTURE_ZT_POOL_NORMAL_NO_DATA)
+        assert f is not None
+        assert f.expected_status == "NORMAL_NO_DATA"
+        ev = f.raw_evidence.get("zt_pool", {})
+        assert ev.get("status") == "NORMAL_NO_DATA"
+        assert ev.get("record_count") == 0
+
+    def test_all_zt_pool_fixtures_unique_ids(self):
+        ids = [
+            FIXTURE_ZT_POOL_HAS_DATA,
+            FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK,
+            FIXTURE_ZT_POOL_FAILED,
+            FIXTURE_ZT_POOL_NORMAL_NO_DATA,
+        ]
+        assert len(set(ids)) == 4
+
+    def test_unknown_fixture_returns_none(self):
+        assert get_fixture("zt_pool_unknown") is None
+
+
+class TestZtPoolFixtureReplay:
+    def test_replay_has_data(self):
+        report = run_fixture_replay(fixture_ids=[FIXTURE_ZT_POOL_HAS_DATA])
+        assert report.total_fixtures == 1
+        assert report.passed == 1
+        assert report.failed == 0
+
+    def test_replay_fallback(self):
+        report = run_fixture_replay(fixture_ids=[FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK])
+        assert report.total_fixtures == 1
+        assert report.passed == 1
+        r = report.results[0]
+        assert r.vendor == "cn_astock"
+        assert r.fallback_from == "cn_akshare"
+        assert r.is_fallback
+
+    def test_replay_failed(self):
+        report = run_fixture_replay(fixture_ids=[FIXTURE_ZT_POOL_FAILED])
+        assert report.total_fixtures == 1
+        assert report.passed == 1
+        r = report.results[0]
+        assert r.actual_status == "FAILED"
+
+    def test_replay_normal_no_data(self):
+        report = run_fixture_replay(fixture_ids=[FIXTURE_ZT_POOL_NORMAL_NO_DATA])
+        assert report.total_fixtures == 1
+        assert report.passed == 1
+        r = report.results[0]
+        assert r.actual_status == "NORMAL_NO_DATA"
+
+    def test_replay_all_zt_pool(self):
+        ids = [
+            FIXTURE_ZT_POOL_HAS_DATA,
+            FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK,
+            FIXTURE_ZT_POOL_FAILED,
+            FIXTURE_ZT_POOL_NORMAL_NO_DATA,
+        ]
+        report = run_fixture_replay(fixture_ids=ids)
+        assert report.total_fixtures == 4
+        assert report.all_passed
+
+    def test_replay_full_includes_zt_pool(self):
+        report = run_fixture_replay()
+        zt_results = [r for r in report.results if r.data_type == "zt_pool"]
+        assert len(zt_results) == 4
+
+
+class TestLiveSmokeZtPool:
+    def test_endpoint_definitions_include_zt_pool(self):
+        from tradingagents.dataflows.live_smoke import _make_endpoint_definitions
+        defs = _make_endpoint_definitions()
+        zt_eps = [d for d in defs if "zt_pool" in d["endpoint"]]
+        assert len(zt_eps) >= 1
+
+    def test_zt_pool_endpoint_vendor(self):
+        from tradingagents.dataflows.live_smoke import _make_endpoint_definitions
+        defs = _make_endpoint_definitions()
+        zt_ep = [d for d in defs if "zt_pool" in d["endpoint"]][0]
+        assert zt_ep["vendor"] == "cn_astock"
+        assert zt_ep["method"] == "get_zt_pool"
+
+    def test_live_smoke_env_gated(self):
+        from tradingagents.dataflows.live_smoke import run_live_smoke
+        with patch.dict("os.environ", {}, clear=True):
+            report = run_live_smoke(symbols=["600519.SH"])
+            assert report.env_gated
+            zt_results = [r for r in report.results if "zt_pool" in r.endpoint]
+            assert len(zt_results) >= 1
+            assert all(r.status == "SKIPPED" for r in zt_results)
+
+    def test_live_smoke_enabled_runs(self):
+        from tradingagents.dataflows.live_smoke import run_live_smoke, _make_endpoint_definitions
+        defs = [d for d in _make_endpoint_definitions() if "zt_pool" in d["endpoint"]]
+        mock_fn = MagicMock(return_value=MagicMock(
+            endpoint="cn_astock/zt_pool",
+            vendor="cn_astock",
+            symbol="600519.SH",
+            status="OK",
+            latency_ms=100.0,
+            field_count=5,
+            unit="条",
+            unit_verified=True,
+            error="",
+            has_data=True,
+            sample_snippet="涨停家数：35",
+            rate_limit_ok=True,
+        ))
+        with patch.dict("os.environ", {"TA_LIVE_DATA_SMOKE": "1"}):
+            report = run_live_smoke(
+                symbols=["600519.SH"],
+                endpoints=defs,
+                smoke_fn=mock_fn,
+            )
+            assert not report.env_gated
+            assert len(report.results) >= 1
+
+
+class TestAcceptanceDATA015:
+    def test_fallback_shows_cn_astock_vendor(self):
+        f = get_fixture(FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK)
+        ev = f.raw_evidence["zt_pool"]
+        assert ev["vendor"] == "cn_astock"
+        assert ev["fallback_from"] == "cn_akshare"
+
+    def test_all_failed_shows_failed(self):
+        f = get_fixture(FIXTURE_ZT_POOL_FAILED)
+        ev = f.raw_evidence["zt_pool"]
+        assert ev["status"] == "FAILED"
+        assert ev["error"] is not None
+
+    def test_empty_pool_shows_normal_no_data(self):
+        f = get_fixture(FIXTURE_ZT_POOL_NORMAL_NO_DATA)
+        ev = f.raw_evidence["zt_pool"]
+        assert ev["status"] == "NORMAL_NO_DATA"
+        assert ev["record_count"] == 0
+
+    def test_catalog_has_fallback_chain(self):
+        chain = get_fallback_chain(DataType.ZT_POOL)
+        assert len(chain) >= 2
+        assert chain[0] == "cn_akshare"
+
+    def test_zt_pool_not_in_coverage_denominator(self):
+        cov = calculate_evidence_coverage()
+        assert 0 <= cov <= 100
+
+    def test_zt_pool_evidence_audit_works(self):
+        raw = {
+            "zt_pool": {
+                "raw": "涨停池数据",
+                "field": "zt_pool",
+                "unit": "条",
+                "vendor": "cn_astock",
+                "endpoint": "push2his.eastmoney.com/zt",
+                "status": "HAS_DATA",
+                "fallback_from": "cn_akshare",
+            },
+        }
+        result = audit_raw_evidence(raw)
+        assert "zt_pool" in result.fallback_fields
+        assert "zt_pool" in result.has_data_fields
+
+    def test_fixture_replay_all_passed(self):
+        ids = [
+            FIXTURE_ZT_POOL_HAS_DATA,
+            FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK,
+            FIXTURE_ZT_POOL_FAILED,
+            FIXTURE_ZT_POOL_NORMAL_NO_DATA,
+        ]
+        report = run_fixture_replay(fixture_ids=ids)
+        assert report.all_passed
+        assert report.total_fixtures == 4
+
+    def test_live_smoke_has_zt_pool(self):
+        from tradingagents.dataflows.live_smoke import _make_endpoint_definitions
+        defs = _make_endpoint_definitions()
+        zt_eps = [d for d in defs if "zt_pool" in d["endpoint"]]
+        assert len(zt_eps) >= 1
+
+    def test_provider_fallback_text_detected(self):
+        failure = "涨停板情绪池数据获取失败：ConnectionError"
+        from tradingagents.dataflows.interface import _is_failure_result
+        assert _is_failure_result(failure)
+
+    def test_catalog_validation_no_zt_pool_issues(self):
+        issues = validate_catalog()
+        zt_issues = [i for i in issues if "zt_pool" in i.lower()]
+        assert len(zt_issues) == 0
+
+    def test_zt_pool_fixtures_tags_contain_data015(self):
+        for fid in [
+            FIXTURE_ZT_POOL_HAS_DATA,
+            FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK,
+            FIXTURE_ZT_POOL_FAILED,
+            FIXTURE_ZT_POOL_NORMAL_NO_DATA,
+        ]:
+            f = get_fixture(fid)
+            assert "DATA-015" in f.tags
+
+    def test_zt_pool_has_data_record_count_positive(self):
+        f = get_fixture(FIXTURE_ZT_POOL_HAS_DATA)
+        ev = f.raw_evidence["zt_pool"]
+        assert ev["record_count"] > 0
+
+    def test_zt_pool_failed_record_count_zero(self):
+        f = get_fixture(FIXTURE_ZT_POOL_FAILED)
+        ev = f.raw_evidence["zt_pool"]
+        assert ev["record_count"] == 0
+tradingagents/dataflows/live_smoke.py:188:            "method": "get_zt_pool",
+tradingagents/dataflows/providers/cn_akshare_provider.py:1146:    def get_zt_pool(self, date: str) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:1238:    def get_zt_pool(self, date: str) -> str:
+Binary file tradingagents/dataflows/providers/__pycache__/cn_astock_provider.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/cn_akshare_provider.cpython-312.pyc matches
+tradingagents/dataflows/interface.py:44:            "get_zt_pool",
+Binary file tradingagents/dataflows/__pycache__/interface.cpython-314.pyc matches
+Binary file tradingagents/dataflows/__pycache__/interface.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/live_smoke.cpython-312.pyc matches
+# [DATA-001] source_catalog
+"""
+A股数据源能力目录与 fallback 矩阵。
+
+提供统一的 source capability 查询接口：
+  - 每种 data_type (quote / fund_flow / lhb / notice / report / ...)
+    有明确的主选 vendor / fallback 顺序
+  - 每个 source 记录 fields / unit / freshness / rate_limit_risk / known_gaps
+  - 缺少字段或单位未知的数据源不得标为 primary
+
+使用示例：
+    from tradingagents.dataflows.source_catalog import (
+        get_sources_for_type,
+        get_primary_source,
+        SourceCapability,
+    )
+    sources = get_sources_for_type("quote")
+    for s in sources:
+        print(s.vendor, s.fallback_priority, s.fields)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional
+
+
+class DataType(str, Enum):
+    QUOTE = "quote"
+    OHLCV = "ohlcv"
+    FUND_FLOW = "fund_flow"
+    BOARD_FUND_FLOW = "board_fund_flow"
+    LHB = "lhb"
+    MARGIN_TRADING = "margin_trading"
+    NOTICE = "notice"
+    REPORT = "report"
+    RATING = "rating"
+    NEWS = "news"
+    GLOBAL_NEWS = "global_news"
+    FINANCIALS = "financials"
+    INSIDER = "insider"
+    HOT_STOCKS = "hot_stocks"
+    ZT_POOL = "zt_pool"
+    REALTIME_QUOTES = "realtime_quotes"
+    BUYBACK = "buyback"  # [DATA-013] buyback_raw_evidence
+
+
+class Freshness(str, Enum):
+    REALTIME = "realtime"
+    INTRADAY = "intraday"
+    DAILY = "daily"
+    DELAYED = "delayed"
+    STALE = "stale"
+    UNKNOWN = "unknown"
+
+
+class RateLimitRisk(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class SourceCapability:
+    vendor: str
+    endpoint: str
+    data_type: DataType
+    fields: List[str] = field(default_factory=list)
+    unit: str = ""
+    freshness: Freshness = Freshness.UNKNOWN
+    rate_limit_risk: RateLimitRisk = RateLimitRisk.UNKNOWN
+    fallback_priority: int = 99
+    known_gaps: List[str] = field(default_factory=list)
+    is_primary: bool = False
+    notes: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "vendor": self.vendor,
+            "endpoint": self.endpoint,
+            "data_type": self.data_type.value,
+            "fields": self.fields,
+            "unit": self.unit,
+            "freshness": self.freshness.value,
+            "rate_limit_risk": self.rate_limit_risk.value,
+            "fallback_priority": self.fallback_priority,
+            "known_gaps": self.known_gaps,
+            "is_primary": self.is_primary,
+            "notes": self.notes,
+        }
+
+    @property
+    def can_be_primary(self) -> bool:
+        if not self.fields:
+            return False
+        if not self.unit and self.data_type in (
+            DataType.FUND_FLOW,
+            DataType.BOARD_FUND_FLOW,
+            DataType.OHLCV,
+            DataType.QUOTE,
+            DataType.REALTIME_QUOTES,
+        ):
+            return False
+        if self.freshness == Freshness.UNKNOWN:
+            return False
+        if self.freshness == Freshness.STALE:
+            return False
+        return True
+
+
+_SOURCE_CATALOG: List[SourceCapability] = []
+
+
+def _register(
+    vendor: str,
+    endpoint: str,
+    data_type: DataType,
+    *,
+    fields: Optional[List[str]] = None,
+    unit: str = "",
+    freshness: Freshness = Freshness.UNKNOWN,
+    rate_limit_risk: RateLimitRisk = RateLimitRisk.UNKNOWN,
+    fallback_priority: int = 99,
+    known_gaps: Optional[List[str]] = None,
+    is_primary: bool = False,
+    notes: str = "",
+) -> None:
+    cap = SourceCapability(
+        vendor=vendor,
+        endpoint=endpoint,
+        data_type=data_type,
+        fields=fields or [],
+        unit=unit,
+        freshness=freshness,
+        rate_limit_risk=rate_limit_risk,
+        fallback_priority=fallback_priority,
+        known_gaps=known_gaps or [],
+        is_primary=is_primary,
+        notes=notes,
+    )
+    if is_primary and not cap.can_be_primary:
+        cap.is_primary = False
+    _SOURCE_CATALOG.append(cap)
+
+
+def _build_catalog() -> None:
+    if _SOURCE_CATALOG:
+        return
+
+    # ── OHLCV / K-line ──────────────────────────────────────────────────
+    _register(
+        "cn_akshare", "stock_zh_a_hist",
+        DataType.OHLCV,
+        fields=["Date", "Open", "High", "Low", "Close", "Volume"],
+        unit="元/股, 股",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.MEDIUM,
+        fallback_priority=1,
+        is_primary=True,
+        notes="东财前复权日线，通过 AKShare 调用；盘中实时 patch 由 G-005 补丁机制提供",
+    )
+    _register(
+        "cn_akshare", "stock_zh_a_daily",
+        DataType.OHLCV,
+        fields=["Date", "Open", "High", "Low", "Close", "Volume"],
+        unit="元/股, 股",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.LOW,
+        fallback_priority=2,
+        known_gaps=["新浪历史接口偶有停机"],
+        notes="新浪前复权日线，cn_akshare 内部 fallback",
+    )
+    _register(
+        "cn_akshare", "stock_zh_a_hist_tx",
+        DataType.OHLCV,
+        fields=["Date", "Open", "High", "Low", "Close", "Volume"],
+        unit="元/股, 股",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.LOW,
+        fallback_priority=3,
+        known_gaps=["腾讯历史接口数据覆盖不如东财"],
+        notes="腾讯前复权日线，cn_akshare 内部 fallback",
+    )
+    _register(
+        "cn_astock", "finance.pae.baidu.com/kline",
+        DataType.OHLCV,
+        fields=["Date", "Open", "High", "Low", "Close", "Volume", "Amount"],
+        unit="未知",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.LOW,
+        fallback_priority=4,
+        known_gaps=["adjustment type unknown", "amount 单位不明确"],
+        notes="百度股市通 K 线，cn_astock 内部首选",
+    )
+    _register(
+        "cn_astock", "push2his.eastmoney.com/kline",
+        DataType.OHLCV,
+        fields=["Date", "Open", "High", "Low", "Close", "Volume"],
+        unit="元/股, 股",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.MEDIUM,
+        fallback_priority=5,
+        notes="东财 push2his 前复权 K 线，cn_astock 内部 fallback",
+    )
+    _register(
+        "cn_baostock", "query_history_k_data_plus",
+        DataType.OHLCV,
+        fields=["Date", "Open", "High", "Low", "Close", "Volume"],
+        unit="元/股, 股",
+        freshness=Freshness.DELAYED,
+        rate_limit_risk=RateLimitRisk.LOW,
+        fallback_priority=6,
+        known_gaps=["前复权 adjustflag=2，更新有延迟"],
+        notes="BaoStock 日线，延迟较大但稳定",
+    )
+
+    # ── 实时行情 ────────────────────────────────────────────────────────
+    _register(
+        "cn_akshare", "hq.sinajs.cn",
+        DataType.REALTIME_QUOTES,
+        fields=["price", "open", "high", "low", "previous_close", "change",
+                "change_pct", "volume", "amount", "quote_time"],
+        unit="元, 股, 元",
+        freshness=Freshness.REALTIME,
+        rate_limit_risk=RateLimitRisk.LOW,
+        fallback_priority=1,
+        is_primary=True,
+        notes="新浪实时行情，轻量且稳定，cn_akshare 的首选实时源",
+    )
+    _register(
+        "cn_akshare", "stock_zh_a_spot_em",
+        DataType.REALTIME_QUOTES,
+        fields=["price", "open", "high", "low", "previous_close", "change",
+                "change_pct", "volume", "amount"],
+        unit="元, 股, 元",
+        freshness=Freshness.REALTIME,
+        rate_limit_risk=RateLimitRisk.HIGH,
+        fallback_priority=2,
+        known_gaps=["东财全量接口需串行限流", "有 8s TTL 缓存"],
+        notes="东财全市场快照，cn_akshare 的 fallback 实时源",
+    )
+    _register(
+        "cn_astock", "qt.gtimg.cn",
+        DataType.REALTIME_QUOTES,
+        fields=["price", "open", "high", "low", "previous_close", "change",
+                "change_pct", "volume", "amount", "turnover_rate", "volume_ratio",
+                "limit_up", "limit_down", "market_cap", "pe_ttm", "pe_static", "pb"],
+        unit="元, 股, 元, %, 亿元",
+        freshness=Freshness.REALTIME,
+        rate_limit_risk=RateLimitRisk.LOW,
+        fallback_priority=3,
+        notes="腾讯实时行情，字段最丰富（PE/PB/换手率/量比/涨停价）",
+    )
+
+    # ── 资金流 / 个股资金 ──────────────────────────────────────────────
+    _register(
+        "cn_akshare", "stock_individual_fund_flow",
+        DataType.FUND_FLOW,
+
+exec
+/bin/zsh -lc "sed -n '1,170p' tradingagents/dataflows/providers/cn_astock_provider.py && sed -n '1120,1175p' tradingagents/dataflows/providers/cn_akshare_provider.py && grep -R \"ZT_POOL\\|zt_pool\" -n tradingagents | grep -v __pycache__" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""
+A-share market data provider backed by direct HTTP APIs.
+
+Data sources (zero third-party data wrapper dependencies):
+- 腾讯财经 (qt.gtimg.cn) — real-time quotes, PE/PB/mcap
+- 百度股市通 (finance.pae.baidu.com) — K-line with MA
+- 东财 datacenter / push2 — financial info, insider data, news
+- 新浪财经 (quotes.sina.cn) — financial statements (三表)
+- 财联社 (cls.cn) — market news / telegraph
+- 东财 search-api-web — stock-specific news
+"""
+
+import json
+import logging
+import re
+import time
+import uuid
+import urllib.request
+from datetime import datetime, timedelta
+
+import pandas as pd
+import requests
+from stockstats import wrap
+
+from .base import BaseMarketDataProvider
+from ..trade_calendar import cn_no_data_reason
+
+logger = logging.getLogger(__name__)
+
+
+# ── Shared constants ──
+
+UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+
+# Chinese financial APIs should bypass proxy (direct connection)
+NO_PROXY = {"http": None, "https": None}
+
+# Rate-limit: minimum seconds between identical API calls
+_last_call: dict[str, float] = {}
+_RATE_LIMIT_INTERVAL = 0.2  # 200ms between calls to same endpoint
+
+
+def _rate_limit(endpoint_key: str) -> None:
+    """Basic rate limiter — sleep if calling the same endpoint too fast."""
+    now = time.monotonic()
+    last = _last_call.get(endpoint_key, 0.0)
+    wait = _RATE_LIMIT_INTERVAL - (now - last)
+    if wait > 0:
+        time.sleep(wait)
+    _last_call[endpoint_key] = time.monotonic()
+
+
+# ── Ticker normalization ──
+
+def _extract_code(symbol: str) -> str:
+    """Extract 6-digit code from any format: '600519', 'SH600519', '600519.SH'."""
+    s = symbol.strip().upper()
+    m = re.search(r"(\d{6})", s)
+    if not m:
+        raise ValueError(f"Cannot extract 6-digit code from: {symbol}")
+    return m.group(1)
+
+
+def _get_prefix(code: str) -> str:
+    """6-digit code → market prefix (sh/sz/bj)."""
+    if code.startswith(("6", "9")):
+        return "sh"
+    elif code.startswith("8"):
+        return "bj"
+    else:
+        return "sz"
+
+
+def _tencent_prefixed(code: str) -> str:
+    return f"{_get_prefix(code)}{code}"
+
+
+def _sina_prefixed(code: str) -> str:
+    return f"{_get_prefix(code)}{code}"
+
+
+# ── Eastmoney datacenter shared helper ──
+
+DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+
+
+def _eastmoney_datacenter(
+    report_name: str,
+    columns: str = "ALL",
+    filter_str: str = "",
+    page_size: int = 50,
+    sort_columns: str = "",
+    sort_types: str = "-1",
+) -> list[dict]:
+    """东财数据中心统一查询 — 龙虎榜/解禁/融资融券/大宗交易/股东户数/分红."""
+    _rate_limit(f"em_dc_{report_name}")
+    params = {
+        "reportName": report_name,
+        "columns": columns,
+        "filter": filter_str,
+        "pageNumber": "1",
+        "pageSize": str(page_size),
+        "sortColumns": sort_columns,
+        "sortTypes": sort_types,
+        "source": "WEB",
+        "client": "WEB",
+    }
+    r = requests.get(DATACENTER_URL, params=params, headers={"User-Agent": UA}, timeout=15, proxies=NO_PROXY)
+    d = r.json()
+    if d.get("result") and d["result"].get("data"):
+        return d["result"]["data"]
+    return []
+
+
+class CnAstockProvider(BaseMarketDataProvider):
+    """A-share provider backed by direct HTTP APIs (腾讯/东财/新浪/同花顺/财联社)."""
+
+    INDICATOR_DESCRIPTIONS = {
+        "close_50_sma": "50 日均线（SMA）：中期趋势指标。",
+        "close_200_sma": "200 日均线（SMA）：长期趋势基准。",
+        "close_10_ema": "10 日指数均线（EMA）：短期响应更快。",
+        "macd": "MACD：趋势与动量综合指标。",
+        "macds": "MACD 信号线（Signal）。",
+        "macdh": "MACD 柱状图（Histogram）。",
+        "rsi": "RSI：衡量超买/超卖的动量指标。",
+        "boll": "布林中轨（20 日均线）。",
+        "boll_ub": "布林上轨。",
+        "boll_lb": "布林下轨。",
+        "atr": "ATR：真实波动幅度均值，用于波动与风控。",
+        "vwma": "VWMA：成交量加权均线。",
+        "mfi": "MFI：资金流量指标。",
+    }
+
+    # ── Provider identity ──
+
+    @property
+    def name(self) -> str:
+        return "cn_astock"
+
+    # ── Internal helpers ──
+
+    def _fetch_kline_baidu(self, code: str, start_date: str = "") -> pd.DataFrame:
+        """Fetch daily K-line from 百度股市通 (HTTP, returns OHLCV + MA)."""
+        _rate_limit("baidu_kline")
+        url = "https://finance.pae.baidu.com/selfselect/getstockquotation"
+        params = {
+            "all": "1", "isIndex": "false", "isBk": "false", "isBlock": "false",
+            "isFutures": "false", "isStock": "true", "newFormat": "1",
+            "group": "quotation_kline_ab", "finClientType": "pc",
+            "code": code, "start_time": start_date, "ktype": "1",
+        }
+        headers = {
+            "User-Agent": UA,
+            "Accept": "application/vnd.finance-web.v1+json",
+            "Origin": "https://gushitong.baidu.com",
+            "Referer": "https://gushitong.baidu.com/",
+        }
+        r = requests.get(url, params=params, headers=headers, timeout=15, proxies=NO_PROXY)
+        d = r.json()
+        result = d.get("Result", {})
+        md = result.get("newMarketData", {})
+        keys = md.get("keys", [])
+        rows_str = md.get("marketData", "")
+        if not keys or not rows_str:
+            return pd.DataFrame()
+
+        records = []
+        for row_str in rows_str.split(";"):
+            if not row_str.strip():
+                continue
+            return f"个股资金流向数据获取失败：{type(exc).__name__}: {exc}"
+
+    def get_lhb_detail(self, symbol: str, date: str, *, force: bool = False) -> str:
+        """获取龙虎榜数据。
+
+        Args:
+            symbol: 股票代码
+            date: 查询日期（YYYY-MM-DD）
+            force: 是否强制查询。默认 False 时返回提示信息以避免批量调用触发限流。
+        """
+        if not force:
+            return (
+                f"{symbol} [G-007] LHB_NOT_QUERIED: 龙虎榜查询未触发（force=False）。"
+                "龙虎榜为按需查询接口，仅当检测到资金异动时才应调用，以避免批量日期查询触发 API 限流。"
+            )
+        try:
+            ak = self._ak()
+            code = self._normalize_symbol(symbol)
+            with AKSHARE_CALL_LOCK:
+                df = ak.stock_lhb_detail_em(symbol=code, start_date=date, end_date=date)
+            if df is None or df.empty:
+                return f"{symbol} [G-007] LHB_NORMAL_NO_DATA: 在 {date} 无龙虎榜数据（非异动日属正常）。"
+            return f"{symbol} [G-007] LHB_HAS_DATA: 龙虎榜明细（{date}）：\n{df.head(20).to_string(index=False)}"
+        except Exception as exc:
+            return f"{symbol} [G-007] LHB_FAILED: 龙虎榜数据获取失败：{type(exc).__name__}: {exc}"
+
+    def get_zt_pool(self, date: str) -> str:
+        """获取涨停板情绪池，反映市场整体情绪温度。"""
+        try:
+            ak = self._ak()
+            with AKSHARE_CALL_LOCK:
+                df = ak.stock_zt_pool_em(date=date.replace("-", ""))
+            if df is None or df.empty:
+                return f"{date} 涨停板情绪池数据暂不可用。"
+            count = len(df)
+            result = f"{date} 涨停家数：{count}\n"
+            if "连板数" in df.columns:
+                lianban = df["连板数"].value_counts().sort_index()
+                result += f"连板分布：\n{lianban.head(10).to_string()}"
+            return result
+        except Exception as exc:
+            return f"涨停板情绪池数据获取失败：{type(exc).__name__}: {exc}"
+
+    def get_hot_stocks_xq(self) -> str:
+        """获取雪球热搜股票，反映散户关注度。"""
+        try:
+            ak = self._ak()
+            with AKSHARE_CALL_LOCK:
+                df = ak.stock_hot_follow_xq(symbol="最热门")
+            if df is None or df.empty:
+                return "雪球热搜数据暂不可用。"
+            return f"雪球热搜前20：\n{df.head(20).to_string(index=False)}"
+        except Exception as exc:
+            return f"雪球热搜数据获取失败：{type(exc).__name__}: {exc}"
+
+    def get_margin_trading(self, symbol: str) -> str:
+tradingagents/graph/data_collector.py:27:    get_zt_pool,
+tradingagents/graph/data_collector.py:65:    "zt_pool": "zt_pool",
+tradingagents/graph/data_collector.py:414:        "zt_pool": (get_zt_pool, {"date": trade_date}),
+tradingagents/graph/data_collector.py:622:            "insider_transactions", "zt_pool", "hot_stocks",
+tradingagents/agents/utils/agent_utils.py:25:    get_zt_pool,
+tradingagents/agents/utils/game_theory_tools.py:32:def get_zt_pool(
+tradingagents/agents/utils/game_theory_tools.py:36:    return route_to_vendor("get_zt_pool", date)
+tradingagents/agents/analysts/social_media_analyst.py:35:            zt_data = pool.get("zt_pool", "无数据")
+tradingagents/agents/analysts/social_media_analyst.py:39:            from tradingagents.agents.utils.agent_utils import get_news, get_zt_pool, get_hot_stocks_xq
+tradingagents/agents/analysts/social_media_analyst.py:49:                _safe(get_zt_pool, {"date": current_date}),
+tradingagents/dataflows/live_smoke.py:187:            "endpoint": "cn_astock/zt_pool",
+tradingagents/dataflows/live_smoke.py:188:            "method": "get_zt_pool",
+tradingagents/dataflows/source_catalog.py:44:    ZT_POOL = "zt_pool"
+tradingagents/dataflows/source_catalog.py:559:        "cn_akshare", "stock_zt_pool_em",
+tradingagents/dataflows/source_catalog.py:560:        DataType.ZT_POOL,
+tradingagents/dataflows/source_catalog.py:571:        DataType.ZT_POOL,
+tradingagents/dataflows/providers/cn_akshare_provider.py:1146:    def get_zt_pool(self, date: str) -> str:
+tradingagents/dataflows/providers/cn_akshare_provider.py:1151:                df = ak.stock_zt_pool_em(date=date.replace("-", ""))
+tradingagents/dataflows/providers/cn_astock_provider.py:1238:    def get_zt_pool(self, date: str) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:1241:            _rate_limit("em_zt_pool")
+tradingagents/dataflows/providers/cn_astock_provider.py:1255:                    _rate_limit("em_zt_pool_push2")
+tradingagents/dataflows/providers/cn_astock_provider.py:1268:                        return f"{date} [DATA-015] ZT_POOL_NORMAL_NO_DATA: 当日无涨停股票（非交易日或盘后未更新）。"
+tradingagents/dataflows/providers/cn_astock_provider.py:1270:                    lines = [f"{date} [DATA-015] ZT_POOL_HAS_DATA: 涨停池（Eastmoney push2ex，共 {count} 只）："]
+tradingagents/dataflows/providers/cn_astock_provider.py:1279:                    return f"{date} [DATA-015] ZT_POOL_FAILED: 涨停池数据获取失败（Eastmoney push2ex fallback）：{type(inner_exc).__name__}: {inner_exc}"
+tradingagents/dataflows/providers/cn_astock_provider.py:1282:            lines = [f"{date} [DATA-015] ZT_POOL_HAS_DATA: 涨停池（Eastmoney datacenter，共 {count} 只）："]
+tradingagents/dataflows/providers/cn_astock_provider.py:1292:            return f"{date} [DATA-015] ZT_POOL_FAILED: 涨停池数据获取失败（Eastmoney）：{type(exc).__name__}: {exc}"
+tradingagents/dataflows/interface.py:44:            "get_zt_pool",
+tradingagents/dataflows/data_source_daily_digest.py:60:    "zt_pool": "涨停池",
+tradingagents/dataflows/data_source_daily_digest.py:79:    "zt_pool": "low",
+tradingagents/dataflows/data_source_daily_digest.py:95:    "zt_pool": "low",
+tradingagents/dataflows/evidence_contract.py:137:    "zt_pool": "zt_pool",
+tradingagents/dataflows/evidence_contract.py:191:    "zt_pool": ["status", "vendor"],  # [DATA-015] limit_up_pool_fallback
+tradingagents/dataflows/fixture_replay.py:90:FIXTURE_ZT_POOL_HAS_DATA = "zt_pool_has_data"  # [DATA-015] limit_up_pool_fallback
+tradingagents/dataflows/fixture_replay.py:91:FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK = "zt_pool_akshare_fail_fallback"  # [DATA-015] limit_up_pool_fallback
+tradingagents/dataflows/fixture_replay.py:92:FIXTURE_ZT_POOL_FAILED = "zt_pool_failed"  # [DATA-015] limit_up_pool_fallback
+tradingagents/dataflows/fixture_replay.py:93:FIXTURE_ZT_POOL_NORMAL_NO_DATA = "zt_pool_normal_no_data"  # [DATA-015] limit_up_pool_fallback
+tradingagents/dataflows/fixture_replay.py:130:    FIXTURE_ZT_POOL_HAS_DATA,
+tradingagents/dataflows/fixture_replay.py:131:    FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK,
+tradingagents/dataflows/fixture_replay.py:132:    FIXTURE_ZT_POOL_FAILED,
+tradingagents/dataflows/fixture_replay.py:133:    FIXTURE_ZT_POOL_NORMAL_NO_DATA,
+tradingagents/dataflows/fixture_replay.py:1500:def _build_zt_pool_has_data_fixture() -> FixtureEntry:
+tradingagents/dataflows/fixture_replay.py:1504:        "zt_pool": {
+tradingagents/dataflows/fixture_replay.py:1506:            "field": "zt_pool",
+tradingagents/dataflows/fixture_replay.py:1509:            "endpoint": "stock_zt_pool_em",
+tradingagents/dataflows/fixture_replay.py:1522:        fixture_id=FIXTURE_ZT_POOL_HAS_DATA,
+tradingagents/dataflows/fixture_replay.py:1524:        data_type="zt_pool",
+tradingagents/dataflows/fixture_replay.py:1526:        endpoint="stock_zt_pool_em",
+tradingagents/dataflows/fixture_replay.py:1529:        tags=["zt_pool", "has_data", "DATA-015"],
+tradingagents/dataflows/fixture_replay.py:1533:def _build_zt_pool_akshare_fail_fallback_fixture() -> FixtureEntry:
+tradingagents/dataflows/fixture_replay.py:1537:        "zt_pool": {
+tradingagents/dataflows/fixture_replay.py:1538:            "raw": f"{today} [DATA-015] ZT_POOL_HAS_DATA: 涨停池（Eastmoney datacenter，共 28 只）：\n"
+tradingagents/dataflows/fixture_replay.py:1541:            "field": "zt_pool",
+tradingagents/dataflows/fixture_replay.py:1550:            "error": "AKShare stock_zt_pool_em: ProxyError",
+tradingagents/dataflows/fixture_replay.py:1557:        fixture_id=FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK,
+tradingagents/dataflows/fixture_replay.py:1559:        data_type="zt_pool",
+tradingagents/dataflows/fixture_replay.py:1564:        tags=["zt_pool", "fallback", "akshare_failed", "astock_success", "DATA-015"],
+tradingagents/dataflows/fixture_replay.py:1568:def _build_zt_pool_failed_fixture() -> FixtureEntry:
+tradingagents/dataflows/fixture_replay.py:1572:        "zt_pool": {
+tradingagents/dataflows/fixture_replay.py:1573:            "raw": f"{today} [DATA-015] ZT_POOL_FAILED: 涨停池数据获取失败（Eastmoney）：ConnectionError",
+tradingagents/dataflows/fixture_replay.py:1574:            "field": "zt_pool",
+tradingagents/dataflows/fixture_replay.py:1590:        fixture_id=FIXTURE_ZT_POOL_FAILED,
+tradingagents/dataflows/fixture_replay.py:1592:        data_type="zt_pool",
+tradingagents/dataflows/fixture_replay.py:1597:        tags=["zt_pool", "failed", "DATA-015"],
+tradingagents/dataflows/fixture_replay.py:1601:def _build_zt_pool_normal_no_data_fixture() -> FixtureEntry:
+tradingagents/dataflows/fixture_replay.py:1605:        "zt_pool": {
+tradingagents/dataflows/fixture_replay.py:1606:            "raw": f"{today} [DATA-015] ZT_POOL_NORMAL_NO_DATA: 当日无涨停股票（非交易日或盘后未更新）。",
+tradingagents/dataflows/fixture_replay.py:1607:            "field": "zt_pool",
+tradingagents/dataflows/fixture_replay.py:1610:            "endpoint": "stock_zt_pool_em",
+tradingagents/dataflows/fixture_replay.py:1623:        fixture_id=FIXTURE_ZT_POOL_NORMAL_NO_DATA,
+tradingagents/dataflows/fixture_replay.py:1625:        data_type="zt_pool",
+tradingagents/dataflows/fixture_replay.py:1627:        endpoint="stock_zt_pool_em",
+tradingagents/dataflows/fixture_replay.py:1630:        tags=["zt_pool", "normal_no_data", "DATA-015"],
+tradingagents/dataflows/fixture_replay.py:1669:    FIXTURE_ZT_POOL_HAS_DATA: _build_zt_pool_has_data_fixture,
+tradingagents/dataflows/fixture_replay.py:1670:    FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK: _build_zt_pool_akshare_fail_fallback_fixture,
+tradingagents/dataflows/fixture_replay.py:1671:    FIXTURE_ZT_POOL_FAILED: _build_zt_pool_failed_fixture,
+tradingagents/dataflows/fixture_replay.py:1672:    FIXTURE_ZT_POOL_NORMAL_NO_DATA: _build_zt_pool_normal_no_data_fixture,
+tradingagents/dataflows/evidence_coverage_audit.py:61:    "zt_pool": "涨停池",
+tradingagents/dataflows/evidence_coverage_audit.py:69:    "zt_pool": "涨停池",  # [DATA-015] limit_up_pool_fallback
+tradingagents/dataflows/evidence_coverage_audit.py:87:    "zt_pool": "zt_pool",  # [DATA-015] limit_up_pool_fallback
+
+exec
+/bin/zsh -lc "sed -n '1,140p' tradingagents/agents/utils/game_theory_tools.py && sed -n '1,180p' tradingagents/dataflows/provider_router.py 2>/dev/null || grep -R \"def route_to_vendor\" -n tradingagents" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+from langchain_core.tools import tool
+from typing import Annotated
+from tradingagents.dataflows.interface import route_to_vendor
+
+
+@tool
+def get_board_fund_flow() -> str:
+    """获取今日行业板块资金流向排名，用于判断板块轮动信号和个股所在板块的资金吸引力。"""
+    return route_to_vendor("get_board_fund_flow")
+
+
+@tool
+def get_individual_fund_flow(
+    symbol: Annotated[str, "股票代码，格式如 600519.SH"],
+) -> str:
+    """获取个股近5日主力资金净流向，判断机构资金进出方向。symbol 格式如 600519.SH。"""
+    return route_to_vendor("get_individual_fund_flow", symbol)
+
+
+@tool
+def get_lhb_detail(
+    symbol: Annotated[str, "股票代码，格式如 600519.SH"],
+    date: Annotated[str, "日期，格式 YYYY-MM-DD"],
+    force: Annotated[bool, "是否强制查询，默认 False 按需触发"] = False,
+) -> str:
+    """获取个股龙虎榜数据，非异动日无数据属正常。symbol 格式如 600519.SH，date 格式 YYYY-MM-DD。
+    force=True 时才真正查询 API，否则返回提示信息避免限流。"""
+    return route_to_vendor("get_lhb_detail", symbol, date, force=force)
+
+
+@tool
+def get_zt_pool(
+    date: Annotated[str, "日期，格式 YYYY-MM-DD"],
+) -> str:
+    """获取市场涨停板情绪池，反映市场整体情绪温度，date 格式 YYYY-MM-DD。"""
+    return route_to_vendor("get_zt_pool", date)
+
+
+@tool
+def get_hot_stocks_xq() -> str:
+    """获取雪球热搜股票列表，反映散户当前关注热点。"""
+    return route_to_vendor("get_hot_stocks_xq")
+
+
+@tool  # [DATA-P0-603629] astock_source_fallback
+def get_announcements(
+    symbol: Annotated[str, "股票代码，格式如 600519.SH"],
+) -> str:
+    """获取个股近期公告列表（来自巨潮资讯网 cninfo），包括风险提示、减持、问询函等关键公告。symbol 格式如 600519.SH。"""
+    return route_to_vendor("get_announcements", symbol)
+
+
+@tool  # [DATA-010] margin_trading_raw_evidence
+def get_margin_trading(
+    symbol: Annotated[str, "股票代码，格式如 600519.SH"],
+) -> str:
+    """获取个股融资融券数据，包括融资余额、融券余额、融资买入额等。symbol 格式如 600519.SH。"""
+    return route_to_vendor("get_margin_trading", symbol)
+tradingagents/dataflows/interface.py:158:def route_to_vendor(method: str, *args, **kwargs):
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/dataflows/interface.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+import os
+
+from .alpha_vantage_common import AlphaVantageRateLimitError
+from .config import get_config
+from .providers import build_default_registry
+
+# Tools organized by category
+TOOLS_CATEGORIES = {
+    "core_stock_apis": {
+        "description": "OHLCV stock price data",
+        "tools": ["get_stock_data"],
+    },
+    "technical_indicators": {
+        "description": "Technical analysis indicators",
+        "tools": ["get_indicators"],
+    },
+    "fundamental_data": {
+        "description": "Company fundamentals",
+        "tools": [
+            "get_fundamentals",
+            "get_balance_sheet",
+            "get_cashflow",
+            "get_income_statement",
+        ],
+    },
+    "news_data": {
+        "description": "News and insider data",
+        "tools": [
+            "get_news",
+            "get_global_news",
+            "get_insider_transactions",
+        ],
+    },
+    "realtime_data": {
+        "description": "Real-time market quotes",
+        "tools": ["get_realtime_quotes"],
+    },
+    "cn_market_data": {
+        "description": "China A-share market sentiment and fund flow data",
+        "tools": [
+            "get_board_fund_flow",
+            "get_individual_fund_flow",
+            "get_lhb_detail",
+            "get_zt_pool",
+            "get_hot_stocks_xq",
+            "get_announcements",  # [DATA-P0-603629] astock_source_fallback
+            "get_margin_trading",  # [DATA-010] margin_trading_raw_evidence
+            "get_research_report",  # [DATA-011] research_report_raw_evidence
+            "get_ratings",  # [DATA-012] rating_raw_evidence
+            "get_buybacks",  # [DATA-013] buyback_raw_evidence
+        ],
+    },
+}
+
+_registry = build_default_registry()
+
+VENDOR_LIST = _registry.list_names()
+
+# [N-003] cn_astock_raw_evidence: track which vendor last handled each method
+_last_hit_vendor: dict[str, str] = {}
+
+
+def get_last_hit_vendor(method: str) -> str:
+    """Return the vendor name that most recently produced a successful hit for *method*."""
+    return _last_hit_vendor.get(method, "")
+
+
+def _is_trace_enabled() -> bool:
+    env_value = os.getenv("TA_TRACE")
+    if env_value is not None:
+        return env_value.strip().lower() in ("1", "true", "yes", "on")
+
+    config = get_config()
+    return bool(config.get("provider_trace", True))
+
+
+def _trace(msg: str) -> None:
+    if _is_trace_enabled():
+        print(f"[provider-trace] {msg}", flush=True)
+
+
+_FAILURE_RESULT_PATTERNS = (
+    "数据获取失败",
+    "ProxyError",
+    "ConnectionError",
+    "Max retries exceeded",
+    "Unable to connect",
+    "暂不可用",
+    "获取失败",
+    "TimeoutError",
+    "ConnectTimeout",
+    "ReadTimeout",
+)
+
+
+def _is_failure_result(result) -> bool:
+    if not isinstance(result, str):
+        return False
+    return any(p in result for p in _FAILURE_RESULT_PATTERNS)
+
+
+_TRACE_KEYS = ("symbol", "ticker", "start_date", "end_date", "curr_date", "indicator")
+
+
+def _summarize_args(args: tuple, kwargs: dict) -> str:
+    """格式化首参数（通常是 symbol）和常见日期/指标键，用于 trace 日志定位。"""
+    parts = []
+    if args:
+        # 约定：所有 provider 方法首参数为 symbol/ticker
+        parts.append(f"symbol={args[0]!r}")
+        if len(args) >= 2:
+            parts.append(f"arg2={args[1]!r}")
+        if len(args) >= 3:
+            parts.append(f"arg3={args[2]!r}")
+    for k, v in kwargs.items():
+        if k in _TRACE_KEYS:
+            parts.append(f"{k}={v!r}")
+    return " ".join(parts)
+
+
+def get_category_for_method(method: str) -> str:
+    """Get the category that contains the specified method."""
+    for category, info in TOOLS_CATEGORIES.items():
+        if method in info["tools"]:
+            return category
+    raise ValueError(f"Method '{method}' not found in any category")
+
+
+def get_vendor(category: str, method: str = None) -> str:
+    """Get configured vendor for category or tool method."""
+    config = get_config()
+
+    if method:
+        tool_vendors = config.get("tool_vendors", {})
+        if method in tool_vendors:
+            return tool_vendors[method]
+
+    return config.get("data_vendors", {}).get(category, "yfinance")
+
+
+def _resolve_vendor_chain(method: str, configured_vendor: str) -> list[str]:
+    configured = [v.strip() for v in configured_vendor.split(",") if v.strip()]
+    fallback = configured.copy()
+
+    for provider_name in _registry.list_names():
+        if provider_name in fallback:
+            continue
+        provider = _registry.get(provider_name)
+        # 占位 provider（如 cn_stub）不自动追加进 fallback chain，
+        # 避免污染日志和兜底链；用户显式配置仍可强制使用。
+        if getattr(provider, "is_placeholder", False):
+            continue
+        fallback.append(provider_name)
+
+    return fallback
+
+
+def route_to_vendor(method: str, *args, **kwargs):
+    """Route method calls to provider implementations with fallback support."""
+    category = get_category_for_method(method)
+    vendor_config = get_vendor(category, method)
+    fallback_vendors = _resolve_vendor_chain(method, vendor_config)
+    args_summary = _summarize_args(args, kwargs)
+    last_exc = None
+    _trace(
+        f"method={method} {args_summary} category={category} "
+        f"configured='{vendor_config}' chain={fallback_vendors}"
+    )
+
+    for vendor in fallback_vendors:
+        provider = _registry.get(vendor)
+        if provider is None:
+            _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-registered")
+            continue
+
+        impl_func = getattr(provider, method, None)
+        if impl_func is None:
+            _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-implemented")
+            continue
+
+        try:
+            result = impl_func(*args, **kwargs)
+            if _is_failure_result(result):  # [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth
+                _trace(
+                    f"method={method} {args_summary} vendor={vendor} status=fallback "
+                    f"reason=failure-string-detected"
+                )
+                continue
+            _last_hit_vendor[method] = vendor  # [N-003] cn_astock_raw_evidence
+            _trace(f"method={method} {args_summary} vendor={vendor} status=hit")
+            return result
+        except (AlphaVantageRateLimitError, NotImplementedError) as exc:
+            last_exc = exc
+            # Try next provider for transient/routing issues or placeholder providers.
+            _trace(
+                f"method={method} {args_summary} vendor={vendor} status=fallback "
+                f"reason={type(exc).__name__}: {exc}"
+            )
+            continue
+        except Exception as exc:
+            # Provider-specific runtime/parsing errors (e.g., schema changes, KeyError)
+            # should not terminate the full chain; fall through to next vendor.
+            last_exc = exc
+            _trace(
+                f"method={method} {args_summary} vendor={vendor} status=fallback "
+                f"reason={type(exc).__name__}: {exc}"
+            )
+            continue
+
+    _trace(f"method={method} {args_summary} status=failed reason=no-available-vendor")
+    if last_exc is not None:
+        raise RuntimeError(
+            f"No available vendor for method '{method}'. "
+            f"Configured chain: {fallback_vendors}. "
+            f"Last error: {type(last_exc).__name__}: {last_exc}"
+        ) from last_exc
+    raise RuntimeError(
+        f"No available vendor for method '{method}'. "
+        f"Configured chain: {fallback_vendors}"
+    )
+
+exec
+/bin/zsh -lc "sed -n '1,220p' tradingagents/dataflows/providers/__init__.py && grep -n \"data_vendors\\|tool_vendors\\|cn_market\" -n tradingagents/dataflows/config.py tradingagents/default_config.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+from .base import BaseMarketDataProvider
+from .registry import DataProviderRegistry, build_default_registry
+
+__all__ = [
+    "BaseMarketDataProvider",
+    "DataProviderRegistry",
+    "build_default_registry",
+]
+
+tradingagents/default_config.py:36:    "data_vendors": {
+tradingagents/default_config.py:43:    "tool_vendors": {},
+
+exec
+/bin/zsh -lc "sed -n '1,220p' tradingagents/dataflows/providers/registry.py && sed -n '1,70p' tradingagents/default_config.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+from typing import Dict
+
+from .base import BaseMarketDataProvider
+from .yfinance_provider import YFinanceProvider
+from .alpha_vantage_provider import AlphaVantageProvider
+from .china_equity_provider import CnStubProvider
+from .cn_akshare_provider import CnAkshareProvider
+from .cn_baostock_provider import CnBaoStockProvider
+from .cn_astock_provider import CnAstockProvider
+
+
+class DataProviderRegistry:
+    """Simple in-memory provider registry."""
+
+    def __init__(self):
+        self._providers: Dict[str, BaseMarketDataProvider] = {}
+
+    def register(self, provider: BaseMarketDataProvider) -> None:
+        self._providers[provider.name] = provider
+
+    def get(self, provider_name: str) -> BaseMarketDataProvider | None:
+        return self._providers.get(provider_name)
+
+    def list_names(self) -> list[str]:
+        return list(self._providers.keys())
+
+
+def build_default_registry() -> DataProviderRegistry:
+    registry = DataProviderRegistry()
+    registry.register(CnAkshareProvider())
+    registry.register(CnBaoStockProvider())
+    registry.register(YFinanceProvider())
+    registry.register(AlphaVantageProvider())
+    registry.register(CnStubProvider())
+    registry.register(CnAstockProvider())
+    return registry
+import os
+
+DEFAULT_CONFIG = {
+    "project_dir": os.path.abspath(os.path.join(os.path.dirname(__file__), ".")),
+    "results_dir": os.getenv("TA_RESULTS_DIR", "./results"),
+    "data_cache_dir": os.path.join(
+        os.path.abspath(os.path.join(os.path.dirname(__file__), ".")),
+        "dataflows/data_cache",
+    ),
+    # LLM settings
+    "llm_provider": os.getenv("TA_LLM_PROVIDER", "openai"),
+    "deep_think_llm": os.getenv("TA_LLM_DEEP", "gpt-4o"),
+    "quick_think_llm": os.getenv("TA_LLM_QUICK", "gpt-4o-mini"),
+    "mid_think_llm": os.getenv("TA_LLM_MID", os.getenv("TA_LLM_DEEP", "gpt-4o")),
+    "ultra_think_llm": os.getenv("TA_LLM_ULTRA", os.getenv("TA_LLM_DEEP", "gpt-4o")),
+    "backend_url": os.getenv("TA_BASE_URL", "https://api.openai.com/v1"),
+    "api_key": os.getenv("TA_API_KEY", ""),
+    
+    # Provider-specific thinking configuration
+    "google_thinking_level": None,      # "high", "minimal", etc.
+    "openai_reasoning_effort": None,    # "medium", "high", "low"
+    
+    # Debate and discussion settings
+    "max_debate_rounds": int(os.getenv("TA_MAX_DEBATE") or "2"),
+    "max_risk_discuss_rounds": int(os.getenv("TA_MAX_RISK") or "1"),
+    "max_recur_limit": 100,
+    
+    # Prompt language control: zh, en, or auto
+    "prompt_language": os.getenv("TA_LANGUAGE", "zh"),
+    "prompt_language_by_provider": {},
+    
+    # Provider routing trace logs
+    "provider_trace": os.getenv("TA_TRACE", "1").lower() in ("1", "true", "yes", "on"),
+    
+    # Data vendor configuration
+    "data_vendors": {
+        "core_stock_apis": "cn_akshare,cn_baostock,yfinance",
+        "technical_indicators": "cn_akshare,cn_baostock,yfinance",
+        "fundamental_data": "cn_akshare,cn_baostock,yfinance",
+        "news_data": "cn_akshare,cn_baostock,yfinance",
+        "realtime_data": "cn_akshare",
+    },
+    "tool_vendors": {},
+
+    # [C-002] account_capability
+    "account_capability": {
+        "can_buy_kcb": os.getenv("TA_CAN_BUY_KCB", "false").lower() == "true",
+        "can_buy_chinext": os.getenv("TA_CAN_BUY_CHINEXT", "true").lower() == "true",
+        "can_short": False,
+    },
+}
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/dataflows/live_smoke.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""Live smoke test for cn_astock/Eastmoney critical endpoints.  # [DATA-P1-ASTOCK-LIVE-SMOKE] astock_live_smoke
+
+Low-frequency live smoke that validates real endpoint availability, rate
+limiting, field presence and unit correctness for the cn_astock provider
+and its direct HTTP data sources (Eastmoney, Tencent, CNInfo).
+
+**Gating** — all live network calls require ``TA_LIVE_DATA_SMOKE=1`` in the
+environment.  Without it, tests are **skipped** and the smoke report shows
+``SKIPPED``.
+
+Usage (library):
+    from tradingagents.dataflows.live_smoke import run_live_smoke, render_live_smoke_report
+    report = run_live_smoke(symbols=["600519.SH", "000001.SZ"])
+    print(render_live_smoke_report(report))
+
+Usage (CLI):
+    TA_LIVE_DATA_SMOKE=1 python scripts/run_live_smoke.py
+    TA_LIVE_DATA_SMOKE=1 python scripts/run_live_smoke.py --symbols 600519.SH,603629.SH
+
+Output:
+    docs/data_source_reports/live-smoke-YYYY-MM-DD.md
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from .providers.cn_astock_provider import (
+    CnAstockProvider,
+    _rate_limit,
+    _extract_code,
+)
+
+_LIVE_ENV = "TA_LIVE_DATA_SMOKE"
+_MIN_ENDPOINT_INTERVAL = 0.5
+_MAX_SYMBOLS = 3
+
+DEFAULT_LIVE_SMOKE_SYMBOLS = ["600519.SH", "000001.SZ", "603629.SH"]
+
+
+@dataclass
+class EndpointSmokeResult:
+    endpoint: str
+    vendor: str
+    symbol: str
+    status: str = "NOT_RUN"
+    latency_ms: float = 0.0
+    field_count: int = 0
+    unit: str = ""
+    unit_verified: bool = False
+    error: str = ""
+    has_data: bool = False
+    sample_snippet: str = ""
+    rate_limit_ok: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "endpoint": self.endpoint,
+            "vendor": self.vendor,
+            "symbol": self.symbol,
+            "status": self.status,
+            "latency_ms": round(self.latency_ms, 1),
+            "field_count": self.field_count,
+            "unit": self.unit,
+            "unit_verified": self.unit_verified,
+            "error": self.error[:200] if self.error else "",
+            "has_data": self.has_data,
+            "sample_snippet": self.sample_snippet[:120],
+            "rate_limit_ok": self.rate_limit_ok,
+        }
+
+
+@dataclass
+class LiveSmokeReport:
+    run_at: str
+    date: str
+    symbols: List[str] = field(default_factory=list)
+    results: List[EndpointSmokeResult] = field(default_factory=list)
+    summary: Dict[str, Any] = field(default_factory=dict)
+    env_gated: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "run_at": self.run_at,
+            "date": self.date,
+            "symbols": self.symbols,
+            "results": [r.to_dict() for r in self.results],
+            "summary": self.summary,
+            "env_gated": self.env_gated,
+        }
+
+
+_STATUS_OK = "OK"
+_STATUS_FAILED = "FAILED"
+_STATUS_SKIPPED = "SKIPPED"
+_STATUS_NORMAL_NO_DATA = "NORMAL_NO_DATA"
+
+_WAN_YUAN_PATTERN = re.compile(r"单位[：:]\s*万元")
+_YUAN_PATTERN = re.compile(r"单位[：:]\s*元")
+
+
+def _count_data_lines(text: str) -> int:
+    if not text:
+        return 0
+    lines = [
+        l for l in text.strip().split("\n")
+        if l.strip() and not l.strip().startswith("#") and not l.strip().startswith("##")
+    ]
+    return max(0, len(lines) - 1)
+
+
+def _detect_unit(text: str) -> str:
+    if _WAN_YUAN_PATTERN.search(text):
+        return "万元"
+    if _YUAN_PATTERN.search(text):
+        return "元"
+    return ""
+
+
+def _check_rate_limit(symbol: str, endpoint_key: str) -> bool:
+    try:
+        t0 = time.monotonic()
+        _rate_limit(endpoint_key)
+        elapsed = time.monotonic() - t0
+        return elapsed < 2.0
+    except Exception:
+        return False
+
+
+def _make_endpoint_definitions() -> List[Dict[str, Any]]:
+    return [
+        {
+            "endpoint": "cn_astock/push2his_fund_flow",
+            "method": "get_individual_fund_flow",
+            "vendor": "cn_astock",
+            "args_template": ("{symbol}",),
+            "kwargs": {},
+            "expected_unit": "万元",
+        },
+        {
+            "endpoint": "cn_astock/datacenter_lhb",
+            "method": "get_lhb_detail",
+            "vendor": "cn_astock",
+            "args_template": ("{symbol}", "{date}"),
+            "kwargs": {"force": True},
+            "expected_unit": "万元",
+        },
+        {
+            "endpoint": "cn_astock/tencent_realtime_quote",
+            "method": "get_realtime_quotes",
+            "vendor": "cn_astock",
+            "args_template": (["{symbol}"],),
+            "kwargs": {},
+            "expected_unit": "",
+        },
+        {
+            "endpoint": "cn_astock/cninfo_announcements",
+            "method": "get_announcements",
+            "vendor": "cn_astock",
+            "args_template": ("{symbol}",),
+            "kwargs": {},
+            "expected_unit": "",
+        },
+        {  # [DATA-014] policy_news_fixture_smoke
+            "endpoint": "cn_astock/eastmoney_news",
+            "method": "get_news",
+            "vendor": "cn_astock",
+            "args_template": ("{symbol}", "{date}", "{date}"),
+            "kwargs": {},
+            "expected_unit": "条",
+        },
+        {  # [DATA-014] policy_news_fixture_smoke
+            "endpoint": "cn_astock/cls_global_news",
+            "method": "get_global_news",
+            "vendor": "cn_astock",
+            "args_template": ("{date}",),
+            "kwargs": {},
+            "expected_unit": "条",
+        },
+        {  # [DATA-015] limit_up_pool_fallback
+            "endpoint": "cn_astock/zt_pool",
+            "method": "get_zt_pool",
+            "vendor": "cn_astock",
+            "args_template": ("{date}",),
+            "kwargs": {},
+            "expected_unit": "条",
+        },
+    ]
+
+
+def _resolve_args(template: tuple, symbol: str, date: str) -> tuple:
+    result = []
+    for arg in template:
+        if isinstance(arg, str):
+            arg = arg.replace("{symbol}", symbol).replace("{date}", date)
+            result.append(arg)
+        elif isinstance(arg, list):
+            result.append([a.replace("{symbol}", symbol).replace("{date}", date) for a in arg])
+        else:
+            result.append(arg)
+    return tuple(result)
+
+
+def _smoke_single_endpoint(
+    provider: CnAstockProvider,
+    ep_def: Dict[str, Any],
+    symbol: str,
+    date: str,
+) -> EndpointSmokeResult:
+    result = EndpointSmokeResult(
+        endpoint=ep_def["endpoint"],
+        vendor=ep_def["vendor"],
+        symbol=symbol,
+    )
+
+    rate_key = f"live_smoke_{ep_def['endpoint']}"
+    result.rate_limit_ok = _check_rate_limit(symbol, rate_key)
+
+    time.sleep(_MIN_ENDPOINT_INTERVAL)
+
+    args = _resolve_args(ep_def["args_template"], symbol, date)
+    kwargs = ep_def.get("kwargs", {})
+
+    method = getattr(provider, ep_def["method"], None)
+    if method is None:
+        result.status = _STATUS_FAILED
+        result.error = f"Method {ep_def['method']} not found on provider"
+        return result
+
+    t0 = time.monotonic()
+    try:
+        raw = method(*args, **kwargs)
+        elapsed = (time.monotonic() - t0) * 1000
+        result.latency_ms = elapsed
+
+        if raw is None or (isinstance(raw, str) and len(raw.strip()) < 10):
+            result.status = _STATUS_FAILED
+            result.error = "empty_or_minimal_response"
+            return result
+
+        if isinstance(raw, str):
+            if "LHB_NORMAL_NO_DATA" in raw:
+                result.status = _STATUS_NORMAL_NO_DATA
+                result.has_data = False
+                result.unit = _detect_unit(raw)
+                result.field_count = _count_data_lines(raw)
+                result.sample_snippet = raw[:120]
+                return result
+
+            if any(p in raw for p in ("数据获取失败", "暂不可用", "获取失败", "FAILED")):
+                result.status = _STATUS_FAILED
+                result.error = "failure_string_detected"
+                result.sample_snippet = raw[:120]
+                return result
+
+exec
+/bin/zsh -lc "sed -n '260,560p' tradingagents/dataflows/live_smoke.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+                return result
+
+            result.has_data = True
+            result.field_count = _count_data_lines(raw)
+            result.unit = _detect_unit(raw)
+            result.unit_verified = result.unit == ep_def.get("expected_unit", "") if ep_def.get("expected_unit") else False
+            result.sample_snippet = raw[:120]
+            result.status = _STATUS_OK
+
+        elif isinstance(raw, dict):
+            result.has_data = bool(raw)
+            result.field_count = len(raw)
+            result.status = _STATUS_OK
+
+        else:
+            result.has_data = True
+            result.status = _STATUS_OK
+
+    except Exception as exc:
+        elapsed = (time.monotonic() - t0) * 1000
+        result.latency_ms = elapsed
+        result.status = _STATUS_FAILED
+        result.error = f"{type(exc).__name__}: {exc}"
+
+    return result
+
+
+def run_live_smoke(
+    symbols: Optional[List[str]] = None,
+    endpoints: Optional[List[Dict[str, Any]]] = None,
+    smoke_fn: Optional[Any] = None,
+) -> LiveSmokeReport:
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    report = LiveSmokeReport(
+        run_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+        date=date_str,
+        env_gated=False,
+    )
+
+    if os.getenv(_LIVE_ENV, "").strip() != "1":
+        report.env_gated = True
+        if endpoints is None:
+            endpoints = _make_endpoint_definitions()
+        if symbols is None:
+            symbols = DEFAULT_LIVE_SMOKE_SYMBOLS[:_MAX_SYMBOLS]
+        report.symbols = symbols[:_MAX_SYMBOLS]
+        for ep_def in endpoints:
+            for sym in symbols[:_MAX_SYMBOLS]:
+                report.results.append(EndpointSmokeResult(
+                    endpoint=ep_def["endpoint"],
+                    vendor=ep_def["vendor"],
+                    symbol=sym,
+                    status=_STATUS_SKIPPED,
+                ))
+        report.summary = _compute_summary(report.results)
+        return report
+
+    if symbols is None:
+        symbols = DEFAULT_LIVE_SMOKE_SYMBOLS[:_MAX_SYMBOLS]
+    if endpoints is None:
+        endpoints = _make_endpoint_definitions()
+
+    report.symbols = symbols[:_MAX_SYMBOLS]
+    report.env_gated = False
+
+    provider = CnAstockProvider()
+
+    if smoke_fn is None:
+        smoke_fn = _smoke_single_endpoint
+
+    for ep_def in endpoints:
+        for sym in symbols[:_MAX_SYMBOLS]:
+            result = smoke_fn(provider, ep_def, sym, date_str)
+            report.results.append(result)
+
+    report.summary = _compute_summary(report.results)
+    return report
+
+
+def _compute_summary(results: List[EndpointSmokeResult]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {
+        "total": len(results),
+        "OK": 0,
+        "FAILED": 0,
+        "SKIPPED": 0,
+        "NORMAL_NO_DATA": 0,
+        "NOT_RUN": 0,
+        "all_passed": False,
+        "has_failures": False,
+        "by_endpoint": {},
+    }
+
+    for r in results:
+        if r.status in summary:
+            summary[r.status] += 1
+        ep = summary["by_endpoint"].setdefault(r.endpoint, {
+            "total": 0, "OK": 0, "FAILED": 0, "SKIPPED": 0,
+            "NORMAL_NO_DATA": 0, "avg_latency_ms": 0.0,
+        })
+        ep["total"] += 1
+        if r.status in ep:
+            ep[r.status] += 1
+        ep["avg_latency_ms"] += r.latency_ms
+
+    for ep_data in summary["by_endpoint"].values():
+        if ep_data["total"] > 0:
+            ep_data["avg_latency_ms"] = round(
+                ep_data["avg_latency_ms"] / ep_data["total"], 1
+            )
+
+    runnable = [r for r in results if r.status != _STATUS_SKIPPED]
+    summary["all_passed"] = (
+        len(runnable) > 0 and all(r.status in (_STATUS_OK, _STATUS_NORMAL_NO_DATA) for r in runnable)
+    )
+    summary["has_failures"] = any(r.status == _STATUS_FAILED for r in runnable)
+
+    return summary
+
+
+def render_live_smoke_report(report: LiveSmokeReport) -> str:
+    lines: List[str] = []
+    lines.append("# Live Smoke Report — cn_astock/Eastmoney Critical Endpoints")
+    lines.append("")
+    lines.append(f"- **Date**: {report.date}")
+    lines.append(f"- **Run at**: {report.run_at}")
+    lines.append(f"- **Symbols**: {', '.join(report.symbols)}")
+    lines.append(f"- **Env gated**: {'Yes (TA_LIVE_DATA_SMOKE not set)' if report.env_gated else 'No (live calls executed)'}")
+    lines.append("")
+
+    s = report.summary
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("| Metric | Count |")
+    lines.append("|--------|-------|")
+    lines.append(f"| Total checks | {s.get('total', 0)} |")
+    lines.append(f"| OK | {s.get('OK', 0)} |")
+    lines.append(f"| FAILED | {s.get('FAILED', 0)} |")
+    lines.append(f"| SKIPPED (env gated) | {s.get('SKIPPED', 0)} |")
+    lines.append(f"| NORMAL_NO_DATA | {s.get('NORMAL_NO_DATA', 0)} |")
+    lines.append(f"| All runnable passed | {'Yes' if s.get('all_passed') else 'No'} |")
+    lines.append(f"| Has failures | {'Yes' if s.get('has_failures') else 'No'} |")
+    lines.append("")
+
+    lines.append("## Endpoint Details")
+    lines.append("")
+    lines.append("| Endpoint | Vendor | Symbol | Status | Latency (ms) | Fields | Unit | Unit Verified | Error |")
+    lines.append("|----------|--------|--------|--------|-------------|--------|------|---------------|-------|")
+
+    for r in report.results:
+        error_short = r.error[:50] + "..." if len(r.error) > 50 else r.error
+        lines.append(
+            f"| {r.endpoint} | {r.vendor} | {r.symbol} | {r.status} "
+            f"| {r.latency_ms:.0f} | {r.field_count} | {r.unit or '-'} "
+            f"| {'Yes' if r.unit_verified else '-'} | {error_short or '-'} |"
+        )
+    lines.append("")
+
+    failed = [r for r in report.results if r.status == _STATUS_FAILED]
+    if failed:
+        lines.append("## Failed Endpoints")
+        lines.append("")
+        for r in failed:
+            lines.append(f"- **{r.endpoint}** ({r.symbol}): {r.error}")
+        lines.append("")
+
+    lines.append("## Per-Endpoint Summary")
+    lines.append("")
+    by_ep = s.get("by_endpoint", {})
+    if by_ep:
+        lines.append("| Endpoint | Total | OK | FAILED | SKIPPED | Avg Latency (ms) |")
+        lines.append("|----------|-------|----|--------|---------|------------------|")
+        for ep_name, ep_data in by_ep.items():
+            lines.append(
+                f"| {ep_name} | {ep_data['total']} | {ep_data['OK']} "
+                f"| {ep_data['FAILED']} | {ep_data['SKIPPED']} "
+                f"| {ep_data['avg_latency_ms']} |"
+            )
+        lines.append("")
+
+    lines.append("---")
+    lines.append(f"*Generated by live_smoke.py — [DATA-P1-ASTOCK-LIVE-SMOKE] astock_live_smoke*")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def save_live_smoke_report(
+    report: LiveSmokeReport,
+    output_dir: str = "docs/data_source_reports",
+) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, f"live-smoke-{report.date}.md")
+    md = render_live_smoke_report(report)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(md)
+    return path
+
+
+def is_live_smoke_enabled() -> bool:
+    return os.getenv(_LIVE_ENV, "").strip() == "1"
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate 2>/dev/null || true; pytest tests/test_data015_zt_pool.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 2124ms:
+...........................................................              [100%]
+59 passed in 1.68s
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/dataflows/evidence_contract.py && grep -R \"compute_contract_completeness\" -n . | head -20" in /Users/maybee/TradingAgents-AShare
+ succeeded in 11182ms:
+./tests/test_data011_research_report.py:103:        from tradingagents.dataflows.evidence_contract import compute_contract_completeness
+./tests/test_data011_research_report.py:113:        result = compute_contract_completeness(raw_evidence)
+./tests/test_data011_research_report.py:117:        from tradingagents.dataflows.evidence_contract import compute_contract_completeness, _REQUIRED_FIELDS_FOR_COMPLETENESS
+./tests/test_data011_research_report.py:121:        from tradingagents.dataflows.evidence_contract import compute_contract_completeness
+./tests/test_data011_research_report.py:132:        result = compute_contract_completeness(raw_evidence)
+./tests/test_data008_astock_fallback_replay.py:46:    compute_contract_completeness,
+./tests/test_data008_astock_fallback_replay.py:316:        comp = compute_contract_completeness(f.raw_evidence)
+./tests/test_data008_astock_fallback_replay.py:712:        comp = compute_contract_completeness(f.raw_evidence)
+./tests/test_data015_zt_pool.py:24:    compute_contract_completeness,
+./tests/test_data015_zt_pool.py:132:        result = compute_contract_completeness(raw)
+./tests/test_data015_zt_pool.py:137:        result = compute_contract_completeness(raw)
+Binary file ./tests/__pycache__/test_data005_fixture_replay.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_v001_600584_data_authenticity.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_data014_policy_news_fixture.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_data004_evidence_contract.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_data005_fixture_replay.cpython-312.pyc matches
+Binary file ./tests/__pycache__/test_data010_margin_trading.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_data013_buyback.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_data015_zt_pool.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_data011_research_report.cpython-312-pytest-9.0.2.pyc matches
+grep: ./.git/fsmonitor--daemon.ipc: Operation not supported on socket
+
+exec
+/bin/zsh -lc "sed -n '360,460p' tradingagents/graph/data_collector.py && sed -n '580,660p' tradingagents/graph/data_collector.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    return False
+
+
+def _compute_lhb_force_decision(
+    fund_flow_text: str,
+    news_text: str,
+    stock_data_text: str,
+    announcements_text: str = "",
+) -> tuple:
+    """[DATA-P1-LHB-FUND-DECOUPLE] Compute LHB force decision.
+
+    Decouples LHB force from fund flow: fund flow failure only affects
+    the fund_flow_anomaly condition, NOT the anomaly_condition check.
+
+    Returns (force_needed: bool, force_reason: str).
+    """
+    ff_anomaly = _detect_fund_flow_anomaly(fund_flow_text)
+    anomaly_cond = _should_force_lhb(news_text, stock_data_text)
+
+    if ff_anomaly and anomaly_cond:
+        return (True, "fund_flow_anomaly_and_anomaly_condition")
+    if ff_anomaly:
+        return (True, "fund_flow_anomaly")
+    if anomaly_cond:
+        return (True, "anomaly_condition")
+
+    if announcements_text:
+        import re
+        if re.search(r"龙虎榜", announcements_text):
+            return (True, "announcement_mentions_lhb")
+
+    return (False, "")
+
+
+def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
+    """Fetch all data sources in parallel.
+
+    Always fetches full data including financial statements, regardless of horizon.
+    The horizon only affects the analysis window, not data collection.
+    """
+    lookback = LONG_DAYS
+    end_dt = datetime.strptime(trade_date, "%Y-%m-%d")
+    # 为了计算指标准确（如 200 SMA），需要比分析窗口更长的历史数据
+    fetch_lookback = 365
+    start_str = (end_dt - timedelta(days=fetch_lookback)).strftime("%Y-%m-%d")
+
+    tasks: Dict[str, tuple] = {
+        "stock_data": (get_stock_data, {"symbol": ticker, "start_date": start_str, "end_date": trade_date}),
+        "news": (get_news, {"ticker": ticker, "start_date": (end_dt - timedelta(days=lookback)).strftime("%Y-%m-%d"), "end_date": trade_date}),
+        "global_news": (get_global_news, {"curr_date": trade_date, "look_back_days": lookback, "limit": 30}),
+        "fund_flow_board": (get_board_fund_flow, {}),
+        "fund_flow_individual": (get_individual_fund_flow, {"symbol": ticker}),
+        "lhb": (get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": False}),
+        "insider_transactions": (get_insider_transactions, {"ticker": ticker}),
+        "zt_pool": (get_zt_pool, {"date": trade_date}),
+        "hot_stocks": (get_hot_stocks_xq, {}),
+        "announcements": (get_announcements, {"symbol": ticker}),  # [DATA-P0-603629] astock_source_fallback
+        "margin_trading": (get_margin_trading, {"symbol": ticker}),  # [DATA-010] margin_trading_raw_evidence
+    }
+
+    # 财务报表类数据始终拉取，Research Manager 根据 horizon 自行判断权重
+    tasks.update({
+        "fundamentals": (get_fundamentals, {"ticker": ticker, "curr_date": trade_date}),
+        "balance_sheet": (get_balance_sheet, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
+        "cashflow": (get_cashflow, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
+        "income_statement": (get_income_statement, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
+    })
+
+    results: Dict[str, Any] = {}
+    fetch_start = time.time()
+    # 减少并发池大小，避免被反爬
+    with ThreadPoolExecutor(max_workers=min(10, len(tasks))) as executor:
+        future_to_key = {executor.submit(_safe, tool, payload): key for key, (tool, payload) in tasks.items()}
+        for future in future_to_key:
+            results[future_to_key[future]] = future.result()
+
+    # ── [E-003] 资金流异动时自动升级 LHB 查询 ─────────────────────────
+    # [DATA-P0-603629] astock_source_fallback: LHB force conditions expanded
+    # [DATA-P1-LHB-FUND-DECOUPLE] 资金流失败不阻断异常条件 force 检查
+    results["_lhb_query_mode"] = "on_demand"  # [G-007] default: force=False
+    ff_text = results.get("fund_flow_individual", "") or ""
+    news_text = results.get("news", "") or ""
+
+    lhb_force_needed, lhb_force_reason = _compute_lhb_force_decision(
+        ff_text, news_text, results.get("stock_data", ""),
+        results.get("announcements", ""),
+    )
+
+    if lhb_force_needed:
+        print(f"  [E-003] 龙虎榜强制查询触发 (reason={lhb_force_reason})，升级 LHB force=True")
+        lhb_forced = _safe(get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": True})
+        results["lhb"] = lhb_forced
+        results["_lhb_query_mode"] = "forced"  # [G-007] fund_lhb_provenance
+        results["_lhb_force_reason"] = lhb_force_reason  # [DATA-P0-603629]
+
+    # ── Parse CSV once, reuse for indicators and VPA ──────────────────
+    raw_csv = results.get("stock_data", "")
+    df = _parse_csv_to_dataframe(raw_csv)
+
+    # ── 核心加速：本地计算所有技术指标 ──────────────────
+    indicators_res = {}
+                return "FAILED"
+            if val.startswith("N/A") or val == "VPA 数据不足" or val == "VPA 计算失败":
+                return "NORMAL_NO_DATA"
+            if "[G-007] LHB_NOT_QUERIED" in val or "查询未触发" in val:
+                return "NOT_QUERIED"
+            if "[G-007] LHB_NORMAL_NO_DATA" in val or "无龙虎榜数据" in val:
+                return "NORMAL_NO_DATA"
+            if "[G-007] LHB_FAILED" in val:
+                return "FAILED"
+            if "[G-007] LHB_HAS_DATA" in val or "龙虎榜明细" in val:
+                return "HAS_DATA"
+            return "HAS_DATA"
+        if isinstance(raw_value, dict):
+            return "HAS_DATA" if raw_value else "NOT_QUERIED"
+        if isinstance(raw_value, list):
+            return "HAS_DATA" if raw_value else "NORMAL_NO_DATA"
+        return "HAS_DATA"
+
+    @staticmethod
+    def _count_records(raw_value: Any) -> int:
+        if raw_value is None:
+            return 0
+        if isinstance(raw_value, str):
+            lines = raw_value.strip().split("\n")
+            return max(0, len(lines) - 1) if len(lines) > 1 else 0
+        if isinstance(raw_value, (list, dict)):
+            return len(raw_value)
+        return 1
+
+    def build_raw_evidence(self, ticker: str, trade_date: str) -> Dict[str, Any]:
+        # [G-006] raw_evidence_snapshot
+        # [DATA-004] raw_evidence_contract: upgraded with endpoint/fallback_from/source_url
+        pool = self.get(ticker, trade_date)
+        if not pool:
+            return {}
+
+        now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+        data_source_keys = [
+            "stock_data", "news", "global_news",
+            "fund_flow_board", "fund_flow_individual", "lhb",
+            "fundamentals", "balance_sheet", "cashflow", "income_statement",
+            "insider_transactions", "zt_pool", "hot_stocks",
+            "indicators", "vpa_indicators",
+            "announcements",  # [DATA-P0-603629] astock_source_fallback
+            "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+            "research_report",  # [DATA-011] research_report_raw_evidence
+        ]
+
+        raw_evidence: Dict[str, Any] = {}
+        for key in data_source_keys:
+            raw_value = pool.get(key)
+            status = self._infer_source_status(raw_value)
+
+            entry: Dict[str, Any] = {
+                "status": status,
+                "vendor": "akshare",
+                "endpoint": "",  # [DATA-004] raw_evidence_contract
+                "fallback_from": None,  # [DATA-004] raw_evidence_contract
+                "source_url": None,  # [DATA-004] raw_evidence_contract
+                "field": key,  # [DATA-004] raw_evidence_contract
+                "as_of": trade_date,
+                "fetched_at": now_iso,
+                "record_count": self._count_records(raw_value),
+                "unit": None,
+                "error": None,
+                "is_realtime_patched": False,
+            }
+
+            data_type = _resolve_data_type_for_key(key)  # [DATA-004]
+
+            if key == "stock_data" and isinstance(raw_value, str):
+                actual_vendor = get_last_hit_vendor("get_stock_data")
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+                if "is_realtime_patched=True" in raw_value:
+                    entry["is_realtime_patched"] = True
+                    for line in raw_value.split("\n"):
+                        if "source=" in line and "[G-005]" in line:
+                            parts = line.split("source=")
+                            if len(parts) > 1:
+
+exec
+/bin/zsh -lc "sed -n '660,820p' tradingagents/graph/data_collector.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+                            if len(parts) > 1:
+                                entry["vendor"] = parts[1].split(",")[0].strip()
+                        if "quote_time=" in line and "[G-005]" in line:
+                            parts = line.split("quote_time=")
+                            if len(parts) > 1:
+                                entry["as_of"] = parts[1].strip()
+                if "adjustment=" in raw_value:  # [DATA-P0-603629] astock_source_fallback
+                    for line in raw_value.split("\n"):
+                        if "adjustment=" in line and "[DATA-P0-603629]" in line:
+                            parts = line.split("adjustment=")
+                            if len(parts) > 1:
+                                entry["adjustment"] = parts[1].strip().split("\n")[0].strip()
+
+            if key == "fund_flow_individual":
+                entry["unit"] = "万元"
+                entry["source_type"] = "individual_fund_flow"
+                entry["unit_verified"] = entry["unit"] is not None
+                actual_vendor = get_last_hit_vendor("get_individual_fund_flow")  # [DATA-P0-603629]
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key == "fund_flow_board":
+                entry["source_type"] = "board_fund_flow"
+                actual_vendor = get_last_hit_vendor("get_board_fund_flow")  # [DATA-P0-603629]
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key == "lhb":
+                entry["query_mode"] = pool.get("_lhb_query_mode", "on_demand")
+                entry["force_reason"] = pool.get("_lhb_force_reason")  # [DATA-P0-603629]
+                actual_vendor = get_last_hit_vendor("get_lhb_detail")  # [DATA-P0-603629]
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key in ("stock_data",):
+                entry["unit"] = "股"
+            elif key == "announcements":  # [DATA-P0-603629] astock_source_fallback
+                actual_vendor = get_last_hit_vendor("get_announcements")
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key == "margin_trading":  # [DATA-010] margin_trading_raw_evidence
+                actual_vendor = get_last_hit_vendor("get_margin_trading")
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key == "research_report":  # [DATA-011] research_report_raw_evidence
+                actual_vendor = get_last_hit_vendor("get_research_report")
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+
+            # [DATA-004] raw_evidence_contract: resolve endpoint and fallback info
+            entry["endpoint"] = _resolve_endpoint_for_vendor(
+                entry["vendor"], data_type
+            )
+            entry["fallback_from"] = _resolve_fallback_for_vendor(
+                entry["vendor"], data_type
+            )
+
+            if status == "FAILED" and isinstance(raw_value, str):
+                entry["error"] = raw_value[:200]
+
+            raw_evidence[key] = {
+                "raw": raw_value,
+                "field": entry["field"],  # [DATA-004]
+                "status": entry["status"],
+                "vendor": entry["vendor"],
+                "endpoint": entry["endpoint"],  # [DATA-004]
+                "as_of": entry["as_of"],
+                "fetched_at": entry["fetched_at"],
+                "record_count": entry["record_count"],
+                "unit": entry["unit"],
+                "error": entry["error"],
+                "fallback_from": entry["fallback_from"],  # [DATA-004]
+                "source_url": entry["source_url"],  # [DATA-004]
+                "is_realtime_patched": entry["is_realtime_patched"],
+                "source_type": entry.get("source_type"),
+                "unit_verified": entry.get("unit_verified", None),
+                "query_mode": entry.get("query_mode", None),
+                "adjustment": entry.get("adjustment", None),  # [DATA-P0-603629] astock_source_fallback
+                "force_reason": entry.get("force_reason", None),  # [DATA-P0-603629]
+            }
+
+        return raw_evidence
+
+exec
+/bin/zsh -lc 'grep -n "def _safe" -A30 tradingagents/graph/data_collector.py && grep -n "get_last_hit_vendor" -n tradingagents/graph/data_collector.py | head -20' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+292:def _safe(tool, payload: dict) -> Any:
+293-    start_t = time.time()
+294-    try:
+295-        res = tool.invoke(payload)
+296-        duration = time.time() - start_t
+297-        # 仅在耗时较长时输出
+298-        if duration > 0.5:
+299-            print(f"  [Timer] {getattr(tool, 'name', str(tool))} took {duration:.2f}s")
+300-        return res
+301-    except Exception as exc:
+302-        print(f"  [Error] {getattr(tool, 'name', str(tool))} failed: {exc}")
+303-        return f"数据获取失败：{type(exc).__name__}: {exc}"
+304-
+305-
+306-def _detect_fund_flow_anomaly(fund_flow_text: str) -> bool:
+307-    """Detect if individual fund flow shows significant capital anomaly.
+308-
+309-    Triggers when main capital net flow exceeds threshold in recent days,
+310-    indicating potential need for LHB (龙虎榜) forced query.
+311-
+312-    Returns False when fund flow data is unavailable (failure/empty),
+313-    but callers MUST NOT use this as the sole gate for LHB force query.
+314-    """
+315-    import re
+316-    if not fund_flow_text or "获取失败" in fund_flow_text or "不可用" in fund_flow_text:
+317-        return False
+318-    anomaly_threshold = 50000
+319-    fund_keywords = ("主力", "净流入", "净流出", "超大", "大单")
+320-    for line in fund_flow_text.split("\n"):
+321-        if not any(kw in line for kw in fund_keywords):
+322-            continue
+32:from tradingagents.dataflows.interface import get_last_hit_vendor  # [N-003] cn_astock_raw_evidence
+652:                actual_vendor = get_last_hit_vendor("get_stock_data")
+677:                actual_vendor = get_last_hit_vendor("get_individual_fund_flow")  # [DATA-P0-603629]
+682:                actual_vendor = get_last_hit_vendor("get_board_fund_flow")  # [DATA-P0-603629]
+688:                actual_vendor = get_last_hit_vendor("get_lhb_detail")  # [DATA-P0-603629]
+694:                actual_vendor = get_last_hit_vendor("get_announcements")
+698:                actual_vendor = get_last_hit_vendor("get_margin_trading")
+702:                actual_vendor = get_last_hit_vendor("get_research_report")
+

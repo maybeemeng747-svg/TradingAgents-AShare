@@ -188,6 +188,7 @@ _REQUIRED_FIELDS_FOR_COMPLETENESS: Dict[str, List[str]] = {
     "research_report": ["status", "vendor"],  # [DATA-011] research_report_raw_evidence
     "ratings": ["status", "vendor"],  # [DATA-012] rating_raw_evidence
     "buybacks": ["status", "vendor", "unit"],  # [DATA-013] buyback_raw_evidence
+    "zt_pool": ["status", "vendor"],  # [DATA-015] limit_up_pool_fallback
 }
 
 

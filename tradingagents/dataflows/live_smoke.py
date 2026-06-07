@@ -183,6 +183,14 @@ def _make_endpoint_definitions() -> List[Dict[str, Any]]:
             "kwargs": {},
             "expected_unit": "条",
         },
+        {  # [DATA-015] limit_up_pool_fallback
+            "endpoint": "cn_astock/zt_pool",
+            "method": "get_zt_pool",
+            "vendor": "cn_astock",
+            "args_template": ("{date}",),
+            "kwargs": {},
+            "expected_unit": "条",
+        },
     ]
 
 

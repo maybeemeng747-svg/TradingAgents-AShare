@@ -6,15 +6,16 @@
 当天实时缺失等场景，避免夜间自动开发误判数据源质量。
 
 功能：
-  1. 内置 30 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
-     资金流单位异常、龙虎榜无触发、公告源失败、
-     AKShare 资金流失败→astock fallback、龙虎榜 NORMAL_NO_DATA、
-     龙虎榜 FAILED、公告失败→事件源弱证据、换手率/量比缺失、
-     融资融券有数据、融资融券失败、融资融券未查询、
-     研报有数据、研报失败、研报未查询、
-     回购有数据、回购失败、回购未查询、
-     新闻有数据、新闻空结果、新闻部分失败、新闻全部失败、新闻限流、
-     全球新闻有数据、全球新闻空结果、全球新闻失败、全球新闻限流）
+  1. 内置 38 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
+      资金流单位异常、龙虎榜无触发、公告源失败、
+      AKShare 资金流失败→astock fallback、龙虎榜 NORMAL_NO_DATA、
+      龙虎榜 FAILED、公告失败→事件源弱证据、换手率/量比缺失、
+      融资融券有数据、融资融券失败、融资融券未查询、
+      研报有数据、研报失败、研报未查询、
+      回购有数据、回购失败、回购未查询、
+      新闻有数据、新闻空结果、新闻部分失败、新闻全部失败、新闻限流、
+      全球新闻有数据、全球新闻空结果、全球新闻失败、全球新闻限流、
+      涨停池有数据、涨停池 AKShare 失败 fallback 成功、涨停池失败、涨停池空池）
   2. replay runner 将 fixture 模拟为 raw_evidence，输出数据源健康报告
   3. 失败时写入 docs/data_source_reports/YYYY-MM-DD.md
   4. 可被 scripts/auto_dev_loop.sh 或 OpenClaw 巡检调用
@@ -86,6 +87,10 @@ FIXTURE_GLOBAL_NEWS_HAS_DATA = "global_news_has_data"  # [DATA-014] policy_news_
 FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA = "global_news_normal_no_data"  # [DATA-014] policy_news_fixture_smoke
 FIXTURE_GLOBAL_NEWS_FAILED = "global_news_failed"  # [DATA-014] policy_news_fixture_smoke
 FIXTURE_GLOBAL_NEWS_RATE_LIMITED = "global_news_rate_limited"  # [DATA-014] policy_news_fixture_smoke
+FIXTURE_ZT_POOL_HAS_DATA = "zt_pool_has_data"  # [DATA-015] limit_up_pool_fallback
+FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK = "zt_pool_akshare_fail_fallback"  # [DATA-015] limit_up_pool_fallback
+FIXTURE_ZT_POOL_FAILED = "zt_pool_failed"  # [DATA-015] limit_up_pool_fallback
+FIXTURE_ZT_POOL_NORMAL_NO_DATA = "zt_pool_normal_no_data"  # [DATA-015] limit_up_pool_fallback
 
 ALL_FIXTURE_IDS = [
     FIXTURE_NORMAL_QUOTE,
@@ -122,6 +127,10 @@ ALL_FIXTURE_IDS = [
     FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA,
     FIXTURE_GLOBAL_NEWS_FAILED,
     FIXTURE_GLOBAL_NEWS_RATE_LIMITED,
+    FIXTURE_ZT_POOL_HAS_DATA,
+    FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK,
+    FIXTURE_ZT_POOL_FAILED,
+    FIXTURE_ZT_POOL_NORMAL_NO_DATA,
 ]
 
 
@@ -1488,6 +1497,140 @@ def _build_global_news_rate_limited_fixture() -> FixtureEntry:
     )
 
 
+def _build_zt_pool_has_data_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "zt_pool": {
+            "raw": f"{today} 涨停家数：35\n连板分布：\n1    20\n2    8\n3    5\n4    2",
+            "field": "zt_pool",
+            "unit": "条",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_zt_pool_em",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "fallback_from": None,
+            "source_url": None,
+            "error": None,
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 35,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_ZT_POOL_HAS_DATA,
+        description="涨停池正常返回（AKShare 成功，含连板分布）",
+        data_type="zt_pool",
+        vendor="cn_akshare",
+        endpoint="stock_zt_pool_em",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["zt_pool", "has_data", "DATA-015"],
+    )
+
+
+def _build_zt_pool_akshare_fail_fallback_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "zt_pool": {
+            "raw": f"{today} [DATA-015] ZT_POOL_HAS_DATA: 涨停池（Eastmoney datacenter，共 28 只）：\n"
+                   "- 601678 SH 拓普集团 | 涨停 | 涨跌 10.0%\n"
+                   "- 300750 SZ 宁德时代 | 涨停 | 涨跌 20.0%",
+            "field": "zt_pool",
+            "unit": "条",
+            "vendor": "cn_astock",
+            "endpoint": "push2ex.eastmoney.com/getTopicZTPool",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "fallback_from": "cn_akshare",
+            "source_url": None,
+            "error": "AKShare stock_zt_pool_em: ProxyError",
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 28,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK,
+        description="涨停池 AKShare 失败→cn_astock fallback 成功——vendor 应显示 cn_astock",
+        data_type="zt_pool",
+        vendor="cn_astock",
+        endpoint="push2ex.eastmoney.com/getTopicZTPool",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["zt_pool", "fallback", "akshare_failed", "astock_success", "DATA-015"],
+    )
+
+
+def _build_zt_pool_failed_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "zt_pool": {
+            "raw": f"{today} [DATA-015] ZT_POOL_FAILED: 涨停池数据获取失败（Eastmoney）：ConnectionError",
+            "field": "zt_pool",
+            "unit": None,
+            "vendor": "cn_astock",
+            "endpoint": "push2ex.eastmoney.com/getTopicZTPool",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "FAILED",
+            "fallback_from": "cn_akshare",
+            "source_url": None,
+            "error": "ConnectionError",
+            "is_realtime_patched": False,
+            "unit_verified": None,
+            "record_count": 0,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_ZT_POOL_FAILED,
+        description="涨停池全部失败——AKShare 和 cn_astock 均连接失败",
+        data_type="zt_pool",
+        vendor="cn_astock",
+        endpoint="push2ex.eastmoney.com/getTopicZTPool",
+        expected_status="FAILED",
+        raw_evidence=raw_evidence,
+        tags=["zt_pool", "failed", "DATA-015"],
+    )
+
+
+def _build_zt_pool_normal_no_data_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "zt_pool": {
+            "raw": f"{today} [DATA-015] ZT_POOL_NORMAL_NO_DATA: 当日无涨停股票（非交易日或盘后未更新）。",
+            "field": "zt_pool",
+            "unit": "条",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_zt_pool_em",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "NORMAL_NO_DATA",
+            "fallback_from": None,
+            "source_url": None,
+            "error": None,
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 0,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_ZT_POOL_NORMAL_NO_DATA,
+        description="涨停池空池——非交易日或盘后未更新（status=OK, count=0）",
+        data_type="zt_pool",
+        vendor="cn_akshare",
+        endpoint="stock_zt_pool_em",
+        expected_status="NORMAL_NO_DATA",
+        raw_evidence=raw_evidence,
+        tags=["zt_pool", "normal_no_data", "DATA-015"],
+    )
+
+
 _FIXTURE_BUILDERS = {
     FIXTURE_NORMAL_QUOTE: _build_normal_quote_fixture,
     FIXTURE_STALE_DAILY: _build_stale_daily_fixture,
@@ -1523,6 +1666,10 @@ _FIXTURE_BUILDERS = {
     FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA: _build_global_news_normal_no_data_fixture,
     FIXTURE_GLOBAL_NEWS_FAILED: _build_global_news_failed_fixture,
     FIXTURE_GLOBAL_NEWS_RATE_LIMITED: _build_global_news_rate_limited_fixture,
+    FIXTURE_ZT_POOL_HAS_DATA: _build_zt_pool_has_data_fixture,
+    FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK: _build_zt_pool_akshare_fail_fallback_fixture,
+    FIXTURE_ZT_POOL_FAILED: _build_zt_pool_failed_fixture,
+    FIXTURE_ZT_POOL_NORMAL_NO_DATA: _build_zt_pool_normal_no_data_fixture,
 }
 
 
