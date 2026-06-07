@@ -112,10 +112,11 @@ class TestE004NotAvailable:
             lhb_status=EvidenceStatus.NORMAL_NO_DATA,
             margin_trading=EvidenceStatus.NOT_QUERIED,  # [DATA-010] now counted
             announcements=EvidenceStatus.HAS_DATA,
+            research_report=EvidenceStatus.NOT_QUERIED,  # [DATA-011] now counted
         )
-        # 7 counted (excluding 1 NOT_AVAILABLE), weighted: 5 HAS_DATA + 1 NORMAL_NO_DATA(0.5) + 1 NOT_QUERIED(0)
-        # = 5.5/7 ≈ 78%
-        assert coverage == 78
+        # 8 counted (excluding 1 NOT_AVAILABLE), weighted: 5 HAS_DATA + 1 NORMAL_NO_DATA(0.5) + 2 NOT_QUERIED(0)
+        # = 5.5/8 ≈ 68%
+        assert coverage == 68
 
     def test_not_available_reduces_denominator(self):
         """With NOT_AVAILABLE, denominator shrinks but valid items still count."""
@@ -128,10 +129,11 @@ class TestE004NotAvailable:
             lhb_status=EvidenceStatus.NORMAL_NO_DATA,
             margin_trading=EvidenceStatus.NOT_QUERIED,  # [DATA-010] now counted
             announcements=EvidenceStatus.HAS_DATA,
+            research_report=EvidenceStatus.NOT_QUERIED,  # [DATA-011] now counted
         )
-        # 7 counted, weighted: 4 HAS_DATA + 1 NORMAL_NO_DATA(0.5) + 1 FIELD_MISSING(0) + 1 NOT_QUERIED(0)
-        # = 4.5/7 ≈ 64%
-        assert coverage == 64
+        # 8 counted, weighted: 4 HAS_DATA + 1 NORMAL_NO_DATA(0.5) + 1 FIELD_MISSING(0) + 2 NOT_QUERIED(0)
+        # = 4.5/8 ≈ 56%
+        assert coverage == 56
 
     def test_all_not_available_returns_zero(self):
         """Edge case: all fields are NOT_AVAILABLE/NOT_QUERIED → 0% (0/8 = 0)."""
@@ -144,6 +146,7 @@ class TestE004NotAvailable:
             lhb_status=EvidenceStatus.NOT_AVAILABLE,
             margin_trading=EvidenceStatus.NOT_AVAILABLE,
             announcements=EvidenceStatus.NOT_AVAILABLE,
+            research_report=EvidenceStatus.NOT_AVAILABLE,
         )
         assert coverage == 0
 

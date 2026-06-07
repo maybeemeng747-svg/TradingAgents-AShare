@@ -206,6 +206,7 @@ def create_risk_manager(llm, memory):
             lhb_status=evidence_statuses["lhb_status"],
             margin_trading=evidence_statuses["margin_trading"],
             announcements=evidence_statuses["announcements"],
+            research_report=evidence_statuses.get("research_report", "not_queried"),
         )
 
         confidence = assess_confidence(

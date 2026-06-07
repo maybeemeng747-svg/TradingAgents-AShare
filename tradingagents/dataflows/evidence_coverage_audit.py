@@ -63,6 +63,7 @@ _EVIDENCE_FIELD_LABELS: Dict[str, str] = {
     "indicators": "技术指标",
     "vpa_indicators": "量价分析指标",
     "margin_trading": "融资融券",  # [DATA-010] margin_trading_raw_evidence
+    "research_report": "研报/评级",  # [DATA-011] research_report_raw_evidence
 }
 
 _EVIDENCE_FIELD_FAMILIES: Dict[str, str] = {
@@ -83,6 +84,7 @@ _EVIDENCE_FIELD_FAMILIES: Dict[str, str] = {
     "zt_pool": "zt_pool",
     "hot_stocks": "hot_stocks",
     "margin_trading": "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+    "research_report": "report",  # [DATA-011] research_report_raw_evidence
 }
 
 _TIER_RANK = {"A": 1, "B": 2, "C": 3}

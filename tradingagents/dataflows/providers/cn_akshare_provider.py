@@ -1201,3 +1201,31 @@ class CnAkshareProvider(BaseMarketDataProvider):
             return f"{symbol} [DATA-010] MARGIN_HAS_DATA: 融资融券数据（via {func}）：\n{df.tail(20).to_string(index=False)}"
         except Exception as exc:
             return f"{symbol} [DATA-010] MARGIN_FAILED: 融资融券数据获取失败：{type(exc).__name__}: {exc}"
+
+    def get_research_report(self, symbol: str) -> str:
+        """获取个股券商研报数据。  # [DATA-011] research_report_raw_evidence"""
+        code = self._normalize_symbol(symbol)
+        try:
+            ak = self._ak()
+            with AKSHARE_CALL_LOCK:
+                df = ak.stock_institute_recommend(symbol=code)
+            if df is None or df.empty:
+                return f"{symbol} [DATA-011] REPORT_NORMAL_NO_DATA: 该股无券商研报或评级数据。"
+            lines = [f"{symbol} [DATA-011] REPORT_HAS_DATA: 券商研报/评级数据（AKShare stock_institute_recommend）："]
+            for _, row in df.head(15).iterrows():
+                date_val = row.get("日期", row.get("date", ""))
+                org = row.get("研究机构", row.get("org", ""))
+                rating = row.get("评级", row.get("rating", ""))
+                title = row.get("标题", row.get("title", ""))
+                target_price = row.get("目标价", row.get("target_price", ""))
+                line = f"- {date_val} | {org} | {rating}"
+                if title:
+                    line += f" | {str(title)[:60]}"
+                if target_price:
+                    line += f" | 目标价: {target_price}"
+                lines.append(line)
+            return "\n".join(lines)
+        except AttributeError:
+            return f"{symbol} [DATA-011] REPORT_NORMAL_NO_DATA: AKShare 研报接口不可用。"
+        except Exception as exc:
+            return f"{symbol} [DATA-011] REPORT_FAILED: 研报数据获取失败：{type(exc).__name__}: {exc}"

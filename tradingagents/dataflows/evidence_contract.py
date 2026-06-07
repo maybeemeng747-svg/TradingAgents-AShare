@@ -140,6 +140,7 @@ _EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
     "vpa_indicators": "ohlcv",
     "announcements": "notice",
     "margin_trading": "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+    "research_report": "report",  # [DATA-011] research_report_raw_evidence
 }
 
 
@@ -182,6 +183,7 @@ _REQUIRED_FIELDS_FOR_COMPLETENESS: Dict[str, List[str]] = {
     "announcements": ["status", "vendor"],
     "fundamentals": ["status", "vendor"],
     "margin_trading": ["status", "vendor", "unit"],  # [DATA-010] margin_trading_raw_evidence
+    "research_report": ["status", "vendor"],  # [DATA-011] research_report_raw_evidence
 }
 
 

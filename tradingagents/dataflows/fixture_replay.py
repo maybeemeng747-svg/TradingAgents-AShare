@@ -6,11 +6,12 @@
 当天实时缺失等场景，避免夜间自动开发误判数据源质量。
 
 功能：
-  1. 内置 15 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
+  1. 内置 18 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
      资金流单位异常、龙虎榜无触发、公告源失败、
      AKShare 资金流失败→astock fallback、龙虎榜 NORMAL_NO_DATA、
      龙虎榜 FAILED、公告失败→事件源弱证据、换手率/量比缺失、
-     融资融券有数据、融资融券失败、融资融券未查询）
+     融资融券有数据、融资融券失败、融资融券未查询、
+     研报有数据、研报失败、研报未查询）
   2. replay runner 将 fixture 模拟为 raw_evidence，输出数据源健康报告
   3. 失败时写入 docs/data_source_reports/YYYY-MM-DD.md
   4. 可被 scripts/auto_dev_loop.sh 或 OpenClaw 巡检调用
@@ -64,6 +65,9 @@ FIXTURE_TURNOVER_VOLUME_RATIO_MISSING = "turnover_volume_ratio_missing"
 FIXTURE_MARGIN_HAS_DATA = "margin_has_data"  # [DATA-010] margin_trading_raw_evidence
 FIXTURE_MARGIN_FAILED = "margin_failed"  # [DATA-010] margin_trading_raw_evidence
 FIXTURE_MARGIN_NOT_QUERIED = "margin_not_queried"  # [DATA-010] margin_trading_raw_evidence
+FIXTURE_REPORT_HAS_DATA = "report_has_data"  # [DATA-011] research_report_raw_evidence
+FIXTURE_REPORT_FAILED = "report_failed"  # [DATA-011] research_report_raw_evidence
+FIXTURE_REPORT_NOT_QUERIED = "report_not_queried"  # [DATA-011] research_report_raw_evidence
 
 ALL_FIXTURE_IDS = [
     FIXTURE_NORMAL_QUOTE,
@@ -82,6 +86,9 @@ ALL_FIXTURE_IDS = [
     FIXTURE_MARGIN_HAS_DATA,
     FIXTURE_MARGIN_FAILED,
     FIXTURE_MARGIN_NOT_QUERIED,
+    FIXTURE_REPORT_HAS_DATA,
+    FIXTURE_REPORT_FAILED,
+    FIXTURE_REPORT_NOT_QUERIED,
 ]
 
 
@@ -808,6 +815,105 @@ def _build_margin_not_queried_fixture() -> FixtureEntry:
     )
 
 
+def _build_report_has_data_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "research_report": {
+            "raw": "600519.SH [DATA-011] REPORT_HAS_DATA: 研报数据（Eastmoney reportapi，共 5 篇）：\n"
+                   "- 2026-06-05 | 中信证券 | 买入 | 贵州茅台深度研究\n"
+                   "- 2026-06-03 | 国泰君安 | 增持 | 白酒龙头估值分析",
+            "field": "research_report",
+            "unit": "条",
+            "vendor": "cn_astock",
+            "endpoint": "reportapi.eastmoney.com/report/list",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "fallback_from": None,
+            "source_url": None,
+            "error": None,
+            "is_realtime_patched": False,
+            "unit_verified": None,
+            "record_count": 5,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_REPORT_HAS_DATA,
+        description="研报数据正常返回",
+        data_type="report",
+        vendor="cn_astock",
+        endpoint="reportapi.eastmoney.com/report/list",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["research_report", "has_data"],
+    )
+
+
+def _build_report_failed_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "research_report": {
+            "raw": "600519.SH [DATA-011] REPORT_FAILED: 研报数据获取失败（Eastmoney reportapi）：ConnectionError",
+            "field": "research_report",
+            "unit": None,
+            "vendor": "cn_astock",
+            "endpoint": "reportapi.eastmoney.com/report/list",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "FAILED",
+            "fallback_from": None,
+            "source_url": None,
+            "error": "ConnectionError",
+            "is_realtime_patched": False,
+            "unit_verified": None,
+            "record_count": 0,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_REPORT_FAILED,
+        description="研报查询失败",
+        data_type="report",
+        vendor="cn_astock",
+        endpoint="reportapi.eastmoney.com/report/list",
+        expected_status="FAILED",
+        raw_evidence=raw_evidence,
+        tags=["research_report", "failed"],
+    )
+
+
+def _build_report_not_queried_fixture() -> FixtureEntry:
+    raw_evidence = {
+        "research_report": {
+            "raw": None,
+            "field": "research_report",
+            "unit": None,
+            "vendor": "",
+            "endpoint": "",
+            "as_of": "",
+            "fetched_at": "",
+            "status": "NOT_QUERIED",
+            "fallback_from": None,
+            "source_url": None,
+            "error": None,
+            "is_realtime_patched": False,
+            "unit_verified": None,
+            "record_count": 0,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_REPORT_NOT_QUERIED,
+        description="研报未查询",
+        data_type="report",
+        vendor="",
+        endpoint="",
+        expected_status="NOT_QUERIED",
+        raw_evidence=raw_evidence,
+        tags=["research_report", "not_queried"],
+    )
+
+
 _FIXTURE_BUILDERS = {
     FIXTURE_NORMAL_QUOTE: _build_normal_quote_fixture,
     FIXTURE_STALE_DAILY: _build_stale_daily_fixture,
@@ -825,6 +931,9 @@ _FIXTURE_BUILDERS = {
     FIXTURE_MARGIN_HAS_DATA: _build_margin_has_data_fixture,
     FIXTURE_MARGIN_FAILED: _build_margin_failed_fixture,
     FIXTURE_MARGIN_NOT_QUERIED: _build_margin_not_queried_fixture,
+    FIXTURE_REPORT_HAS_DATA: _build_report_has_data_fixture,
+    FIXTURE_REPORT_FAILED: _build_report_failed_fixture,
+    FIXTURE_REPORT_NOT_QUERIED: _build_report_not_queried_fixture,
 }
 
 

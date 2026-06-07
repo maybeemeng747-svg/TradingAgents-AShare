@@ -954,8 +954,8 @@ class CnAstockProvider(BaseMarketDataProvider):
 
     # ── Bonus methods (unique to a-stock-data) ──
 
-    def get_research_reports(self, symbol: str, max_pages: int = 3) -> str:
-        """东财研报列表 (reportapi)."""
+    def get_research_report(self, symbol: str) -> str:
+        """东财研报列表 (reportapi).  # [DATA-011] research_report_raw_evidence"""
         code = _extract_code(symbol)
         try:
             _rate_limit("em_reports")
@@ -963,7 +963,7 @@ class CnAstockProvider(BaseMarketDataProvider):
             session.headers.update({"User-Agent": UA, "Referer": "https://data.eastmoney.com/"})
 
             all_records = []
-            for page in range(1, max_pages + 1):
+            for page in range(1, 4):
                 params = {
                     "industryCode": "*", "pageSize": "100", "industry": "*",
                     "rating": "*", "ratingChange": "*",
@@ -986,9 +986,9 @@ class CnAstockProvider(BaseMarketDataProvider):
                 time.sleep(0.3)
 
             if not all_records:
-                return f"No research reports found for {symbol}"
+                return f"{symbol} [DATA-011] REPORT_NORMAL_NO_DATA: 该股无券商研报。"
 
-            lines = [f"## Research Reports for {symbol} ({len(all_records)} total)\n"]
+            lines = [f"{symbol} [DATA-011] REPORT_HAS_DATA: 研报数据（Eastmoney reportapi，共 {len(all_records)} 篇）："]
             for r in all_records[:20]:
                 date = (r.get("publishDate", ""))[:10]
                 org = r.get("orgSName", "未知")
@@ -1011,7 +1011,11 @@ class CnAstockProvider(BaseMarketDataProvider):
             return "\n".join(lines)
 
         except Exception as exc:
-            return f"Research reports unavailable for {symbol}: {exc}"
+            return f"{symbol} [DATA-011] REPORT_FAILED: 研报数据获取失败（Eastmoney reportapi）：{type(exc).__name__}: {exc}"
+
+    def get_research_reports(self, symbol: str, max_pages: int = 3) -> str:
+        """东财研报列表 (reportapi) — 保留向后兼容。"""
+        return self.get_research_report(symbol)
 
     def get_lhb_data(self, date: str, min_net_buy: float = None) -> str:
         """全市场龙虎榜 — 东财 datacenter."""

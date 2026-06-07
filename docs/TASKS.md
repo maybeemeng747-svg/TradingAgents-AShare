@@ -925,7 +925,7 @@
 ### DATA-011: 研报端点接入 route_to_vendor 与 raw_evidence（P1）
 - **描述**：把券商研报/研究报告端点从“目录登记”推进到 provider route 和 raw_evidence，服务中线研究和估值 sanity check。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：in_progress — claimed DATA-011-20260608-021519
 - **前置条件**：`DATA-004` 完成 ✓。
 - **执行约束**：
   - 不抓取大批量研报正文；第一版只要标题、机构、日期、评级/目标价摘要、来源链接或 ID。
