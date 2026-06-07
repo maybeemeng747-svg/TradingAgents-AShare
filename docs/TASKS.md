@@ -70,7 +70,7 @@
 44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，ready，依赖 DATA-004 ✓）。
 45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
 46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，ready，依赖 TF-OBS-001/T-008 ✓）。
-47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，ready，依赖 M-007/T-008/V-005 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
 48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，ready，依赖 DATA-003/DATA-004 ✓）。
 49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，ready，依赖 DATA-003/DATA-004 ✓）。
 50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，ready，依赖 DATA-005/DATA-P1-ASTOCK-LIVE-SMOKE ✓）。
@@ -948,7 +948,7 @@
 ### DATA-012: 评级数据接入 provider 路由与 raw_evidence（P2）
 - **描述**：把分析师评级数据从事件流扩展到 provider route 与 raw_evidence，让 TA 报告和 TradeFlow 候选能追溯评级变化。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：in_progress — claimed DATA-012-20260608-024928
 - **前置条件**：`DATA-003`、`DATA-004` 完成 ✓。
 - **执行约束**：
   - 不输出“因评级买入/卖出”的强动作。
@@ -2274,7 +2274,7 @@
 ### V-001: 600584 数据真实性端到端验收（P1）
 - **描述**：在 G-007/G-008 收口后，用 600584.SH 做一次低成本验收，确认当天行情补齐、raw evidence、资金/LHB 口径、估值旧价拦截都能在报告或结果 metadata 中看见。
 - **优先级**：P1
-- **状态**：in_progress — claimed V-001-20260608-022250
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/V-001-20260608-022250
 - **前置条件**：`G-009`、`G-010`、`N-002`、`N-003` 完成 ✓。
 - **执行约束**：
   - 默认只跑低成本/轻量路径；不要用 DeepSeek。
@@ -2693,7 +2693,7 @@
 ### T-004: TradeFlow P2 盘中 Observe
 - **描述**：对候选池做盘中低频触发检查，发现突破触发价、跌破失效价、异常放量等事件。
 - **优先级**：P1（本轮提升；用户反馈盘中观察无数据/需手动执行，阻塞 TradeFlow 日常使用）
-- **状态**：in_progress — claimed T-004-20260608-023348
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/T-004-20260608-023348
 - **前置条件**：`TF-OBS-001`、`T-008` 完成 ✓。
 - **实现要点**：
   - 默认静默，只在触发条件满足时记录 signal。
@@ -2706,11 +2706,12 @@
 ### T-005: TradeFlow P3 盘后 Review
 - **描述**：复盘候选池信号是否有效，记录命中率、误报率、继续观察/移除理由。
 - **优先级**：P1（本轮提升；用户反馈盘后 Review 无数据，阻塞候选池质量闭环）
-- **状态**：in_progress — claimed T-005-20260608-024421
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/T-005-20260608-024421
 - **前置条件**：`M-007`、`T-008`、`V-005` 完成 ✓。
 - **验证方式**：
   - 每日可输出候选复盘表。
-  - 对失效候选给出明确移除原因。
+  - 对失效候选给出明确移除理由。
+- **代码标注要求**：`# [T-005] review_fixture_replay`
 
 ---
 

@@ -193,6 +193,8 @@ def _build_signal_from_snapshot(
         "daily_trigger_count": snapshot.daily_trigger_count,
         "price_evidence": snapshot.price_evidence,
         "quote_source": quote_source,
+        "volume_anomaly": getattr(snapshot, "volume_anomaly", False),
+        "volume_ratio": getattr(snapshot, "volume_ratio", None),
     }
 
     return Signal(
@@ -276,6 +278,7 @@ def run_observe(
             current_price=current_price,
             current_volume=current_volume,
             current_amount=current_amount,
+            avg_volume=q.get("avg_volume"),
             cfg=cfg,
         )
 
@@ -310,6 +313,8 @@ def run_observe(
             "observe_state": state.value if isinstance(state, ObserveState) else str(state),
             "current_price": current_price,
             "trigger_reason": snapshot.trigger_reason,
+            "volume_anomaly": getattr(snapshot, "volume_anomaly", False),
+            "volume_ratio": getattr(snapshot, "volume_ratio", None),
         })
 
     return result

@@ -130,6 +130,14 @@ class StrategyConfig:
     observe_trigger_breach_pct: float = 0.0
     observe_invalidate_breach_pct: float = 0.0
 
+    # ── Intraday Observe Scheduler [T-004] ──
+    observe_interval_minutes: int = 30
+    observe_volume_anomaly_ratio: float = 2.0
+    observe_market_open_hour: int = 9
+    observe_market_open_minute: int = 30
+    observe_market_close_hour: int = 15
+    observe_market_close_minute: int = 0
+
     # ── Deep TA Dispatch Gate [M-006] ──
     deep_ta_daily_limit: int = 3
     deep_ta_default_model: str = ""

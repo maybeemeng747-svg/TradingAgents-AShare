@@ -71,6 +71,7 @@ _TRADEFLOW_FAST_ENDPOINTS: set[str] = {
     "tradeflow_filtered",
     "tradeflow_discovery",
     "tradeflow_observe_run",
+    "tradeflow_observe_scheduler",
 }
 
 

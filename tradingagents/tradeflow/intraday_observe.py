@@ -7,6 +7,7 @@ Responsibilities:
    pre-market candidates.
 3. Record raw price-volume evidence and trigger reason for each check.
 4. Enforce a per-symbol daily trigger cap to prevent noise.
+5. [T-004] Detect abnormal volume spikes (volume anomaly).
 
 Design constraints:
 - Low-frequency checks (every 30 minutes or less).
@@ -18,12 +19,15 @@ Design constraints:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG
+
+logger = logging.getLogger(__name__)
 
 
 class ObserveState(str, Enum):
@@ -46,6 +50,8 @@ class ObserveSnapshot:
     trigger_reason: str = ""
     price_evidence: dict = field(default_factory=dict)
     daily_trigger_count: int = 0
+    volume_anomaly: bool = False
+    volume_ratio: Optional[float] = None
 
     def __post_init__(self):
         if not self.check_time:
@@ -69,11 +75,38 @@ class ObserveTracker:
             self.trade_date = datetime.now().strftime("%Y-%m-%d")
 
 
+def detect_volume_anomaly(
+    current_volume: Optional[float],
+    avg_volume: Optional[float] = None,
+    cfg: Optional[StrategyConfig] = None,
+) -> tuple[bool, Optional[float]]:
+    """[T-004] Detect if current volume is abnormally high.
+
+    Args:
+        current_volume: Current session volume.
+        avg_volume: Average volume baseline (e.g. 20-day avg). If None, no anomaly check.
+        cfg: Strategy config for threshold.
+
+    Returns:
+        (is_anomaly, volume_ratio) where volume_ratio = current / avg.
+    """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+    threshold: float = getattr(cfg, "observe_volume_anomaly_ratio", 2.0)
+
+    if current_volume is None or avg_volume is None or avg_volume <= 0:
+        return False, None
+
+    ratio = current_volume / avg_volume
+    return ratio >= threshold, round(ratio, 2)
+
+
 def run_observe_check(
     tracker: ObserveTracker,
     current_price: float,
     current_volume: Optional[float] = None,
     current_amount: Optional[float] = None,
+    avg_volume: Optional[float] = None,
     cfg: Optional[StrategyConfig] = None,
 ) -> ObserveSnapshot:
     if cfg is None:
@@ -89,6 +122,8 @@ def run_observe_check(
     reason = ""
     new_state = ObserveState.WAITING
     price_evidence: dict = {}
+
+    vol_anomaly, vol_ratio = detect_volume_anomaly(current_volume, avg_volume, cfg)
 
     if invalid_price is not None and current_price <= invalid_price:
         new_state = ObserveState.INVALIDATED
@@ -108,6 +143,8 @@ def run_observe_check(
             tracker.daily_trigger_count += 1
             rise_pct = (current_price - trigger_price) / trigger_price * 100 if trigger_price else 0
             reason = f"价格{current_price:.2f}突破触发价{trigger_price:.2f}(+{rise_pct:.2f}%)"
+            if vol_anomaly:
+                reason += f" 放量{vol_ratio:.1f}倍"
             price_evidence = {
                 "current_price": current_price,
                 "trigger_price": trigger_price,
@@ -119,6 +156,8 @@ def run_observe_check(
             tracker.first_trigger_time = tracker.first_trigger_time or datetime.now().isoformat()
         else:
             reason = f"已达到单日触发上限({max_daily_triggers}次)，价格{current_price:.2f}虽突破触发价{trigger_price:.2f}但不再触发"
+    elif vol_anomaly:
+        reason = f"放量异常: 成交量{vol_ratio:.1f}倍于均量"
 
     snapshot = ObserveSnapshot(
         symbol=tracker.symbol,
@@ -131,6 +170,8 @@ def run_observe_check(
         trigger_reason=reason,
         price_evidence=price_evidence,
         daily_trigger_count=tracker.daily_trigger_count,
+        volume_anomaly=vol_anomaly,
+        volume_ratio=vol_ratio,
     )
     tracker.check_history.append(snapshot)
     return snapshot

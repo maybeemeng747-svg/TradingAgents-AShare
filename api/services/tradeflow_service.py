@@ -913,6 +913,30 @@ def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
     }
 
 
+# [T-004] intraday_observe_scheduler
+def get_observe_scheduler_status() -> dict:
+    """Return current observe scheduler status and configuration."""
+    from tradingagents.tradeflow.strategy_config import DEFAULT_STRATEGY_CONFIG
+    cfg = DEFAULT_STRATEGY_CONFIG
+    from zoneinfo import ZoneInfo
+    now = datetime.now(tz=ZoneInfo("Asia/Shanghai"))
+    today = now.strftime("%Y-%m-%d")
+    from tradingagents.tradeflow.intraday_observe_scheduler import _is_trading_day, _is_market_hours
+    is_trading = _is_trading_day(today)
+    is_hours = _is_market_hours(cfg)
+    return {
+        "status": "available",
+        "current_time": now.isoformat(),
+        "trade_date": today,
+        "is_trading_day": is_trading,
+        "is_market_hours": is_hours,
+        "interval_minutes": cfg.observe_interval_minutes,
+        "volume_anomaly_ratio": cfg.observe_volume_anomaly_ratio,
+        "max_daily_triggers": cfg.observe_max_daily_triggers,
+        "runtime_tier_meta": _tradeflow_meta("tradeflow_observe_scheduler"),
+    }
+
+
 # [TF-UX-001] tiered candidates
 def get_candidates_tiered(trade_date: str, tf_db_path: str = "") -> dict:
     """Return candidates grouped by action_tier: actionable, watch, scan."""

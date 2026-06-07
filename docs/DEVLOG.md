@@ -4,6 +4,108 @@
 
 ---
 
+## 2026-06-08 | T-004: TradeFlow P2 盘中 Observe
+
+- **执行者**：OpenCode
+- **任务**：T-004 — 对候选池做盘中低频触发检查，发现突破触发价、跌破失效价、异常放量等事件。修复上一轮 OpenCode exit code 143（被 SIGTERM 杀掉，未完成任何工作）。
+- **修改文件**：
+  - `tradingagents/tradeflow/strategy_config.py` — [T-004] intraday_observe_scheduler
+    - `StrategyConfig` 新增 6 字段：`observe_interval_minutes`(30) / `observe_volume_anomaly_ratio`(2.0) / `observe_market_open_hour`(9) / `observe_market_open_minute`(30) / `observe_market_close_hour`(15) / `observe_market_close_minute`(0)
+  - `tradingagents/tradeflow/intraday_observe.py` — [T-004]
+    - 新增 `detect_volume_anomaly(current_volume, avg_volume, cfg)` 函数：检测成交量是否异常放大（默认 ≥ 2 倍均量）
+    - `ObserveSnapshot` 新增 `volume_anomaly: bool` / `volume_ratio: Optional[float]` 字段
+    - `run_observe_check()` 新增 `avg_volume` 参数，触发时附加放量信息，WAITING 状态也可检测纯放量异常
+  - `tradingagents/tradeflow/intraday_observe_scheduler.py` — **新建**：[T-004] intraday_observe_scheduler
+    - `ObserveSchedulerTickResult` 数据类：tick_time / trade_date / status / result / error
+    - `_is_market_hours(cfg)` 检查当前是否在 A 股交易时段
+    - `_is_trading_day(date_str)` 复用交易日历
+    - `run_observe_tick()` 单次 tick：检查交易日→市场时段→执行 run_observe→返回结果
+    - `run_observe_session()` 阻塞循环：按 interval 间隔循环执行 tick 直到收盘/停止/达到上限
+    - 支持 `stop_check` 回调提前停止、`tick_callback` 每次 tick 后回调
+  - `tradingagents/tradeflow/observe_runner.py` — [T-004]
+    - `run_observe()` 传递 quote 中的 `avg_volume` 到 `run_observe_check()`
+    - `_build_signal_from_snapshot()` evidence 新增 `volume_anomaly` / `volume_ratio`
+    - `run_observe()` details 新增 `volume_anomaly` / `volume_ratio`
+  - `api/services/tradeflow_service.py` — [T-004]
+    - 新增 `get_observe_scheduler_status()` 服务函数：返回当前调度器状态、配置和交易日信息
+  - `api/main.py` — [T-004]
+    - 新增 `GET /v1/tradeflow/observe/scheduler-status` 端点
+    - 导入 `get_observe_scheduler_status`
+  - `api/runtime_tier.py` — [T-004]
+    - `_TRADEFLOW_FAST_ENDPOINTS` 新增 `tradeflow_observe_scheduler`
+  - `tests/test_t004_intraday_observe.py` — **新建**，58 个测试覆盖：
+    - `TestDetectVolumeAnomaly` (9): no volume / no avg / zero avg / below / at / above / custom threshold / custom triggered / ratio rounded
+    - `TestObserveSnapshotVolumeFields` (2): defaults / with anomaly
+    - `TestRunObserveCheckWithVolume` (6): triggered with anomaly / no anomaly / waiting anomaly only / waiting no anomaly / invalidated with volume / no avg volume
+    - `TestStrategyConfigSchedulerFields` (5): interval / ratio / market hours / custom interval / custom ratio
+    - `TestObserveSchedulerTickResult` (2): defaults / with trade_date
+    - `TestIsMarketHours` (5): during / before / after / at open / at close
+    - `TestIsTradingDayScheduler` (3): saturday / sunday / weekday
+    - `TestRunObserveTick` (4): non trading / non hours / no db / with candidates
+    - `TestRunObserveSession` (4): stops on non trading / stops on stop_check / max ticks / tick callback
+    - `TestSignalVolumeEvidence` (2): has anomaly / no anomaly
+    - `TestRunObserveVolumeAnomaly` (2): triggered e2e / details include anomaly
+    - `TestObserveSchedulerAPI` (1): scheduler status response
+    - `TestBackwardCompatibility` (3): existing tests / snapshot fields / expire tracker
+    - `TestAcceptanceT004` (10): 全部验收标准
+  - `docs/TASKS.md` — T-004 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：58 passed (T-004)；159 passed (M-005+TF-OBS-001+T-008 回归)；3037 passed (tradeflow 全部回归)；npm run build 通过；0 failed（3 个 pre-existing DATA-007 失败与 T-004 无关）
+- **关键逻辑**：
+  - 异常放量检测：`detect_volume_anomaly()` 对比当前成交量与均量，默认阈值 2.0 倍
+  - 触发时放量附加信息：突破触发价 + 放量 → trigger_reason 包含 "放量X.X倍"
+  - 纯放量异常记录：WAITING 状态也可记录放量异常事件（不触发 TRIGGERED 但记录原因）
+  - 盘中调度器：`run_observe_session()` 按 30 分钟间隔循环检查，仅在交易日 09:30–15:00 运行
+  - API 查询调度器状态：`GET /v1/tradeflow/observe/scheduler-status` 返回配置和当前状态
+  - 完全向后兼容：新增字段有默认值，不影响已有测试和功能
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
+## 2026-06-08 | T-005: TradeFlow P3 盘后 Review
+
+- **执行者**：OpenCode
+- **任务**：T-005 — 盘后复盘候选池信号是否有效，记录命中率、误报率、继续观察/移除理由。修复上一轮 OpenCode exit code 143（被 SIGTERM 杀掉，未完成任何工作）。
+- **修改文件**：
+  - `tradingagents/tradeflow/review_fixture_replay.py` — **新建**：[T-005] review_fixture_replay
+    - 7 个 fixture 场景：`multi_strategy_hit` / `single_miss` / `invalidated_break` / `expired_no_trigger` / `mixed_tier_review` / `no_data_stale` / `cross_date_review`
+    - `ReviewFixtureResult` 数据类：fixture_id / candidates_count / scored_candidates / no_data_candidates / hit_count / miss_count / invalidated_count / removal_reasons / suggestions / strategy_stats_keys / tier_stats_keys / overall_hit_rate / overall_false_positive_rate / avg_next_day_return / review_date / candidate_date / error
+    - `get_fixture()` / `replay_fixture()` / `replay_all()` 回放入口
+    - `validate_fixture_expectations()` 预期结果校验
+    - `validate_no_forbidden_words()` 禁用词检查
+    - `_summary_to_result()` ReviewSummary → ReviewFixtureResult 转换
+  - `tests/test_t005_review_fixture_replay.py` — **新建**，120 个测试覆盖：
+    - `TestFixtureExistence` (9): 存在性 / performances / dates / expected / count / unknown / symbols unique
+    - `TestMultiStrategyHit` (9): hit/miss/invalidated/strategy/tier/removal/return/rate/error
+    - `TestSingleMiss` (6): hit/miss/strategy/tier/false_positive/return
+    - `TestInvalidatedBreak` (6): invalidated/miss/removal/keyword/strategy/error
+    - `TestExpiredNoTrigger` (5): miss/removal/keyword/strategy/tier
+    - `TestMixedTierReview` (10): hit/miss/invalidated/no_data/strategy/tier/removal/count/suggestions
+    - `TestNoDataStale` (6): no_data/hit/miss/rate/return/suggestions
+    - `TestCrossDateReview` (4): hit/candidate_date/review_date/dates_differ
+    - `TestReplayAll` (5): count/no_errors/unique_ids/all_present/valid_dates
+    - `TestValidation` (4): expectations/forbidden/unknown/error
+    - `TestReviewFixtureResult` (3): defaults/to_dict/roundtrip
+    - `TestMarkdownRendering` (4): multi/mixed/invalidated/forbidden
+    - `TestSaveReport` (2): save/creates_dir
+    - `TestAPIIntegration` (3): generate_no_db/get_no_db/schema_fields
+    - `TestRemovalReasonsQuality` (4): invalidated/expired/normal/multiple
+    - `TestStrategyStatsDeep` (3): vcp/fund_flow/no_strategy
+    - `TestAcceptanceT005` (12): 全部验收标准
+  - `docs/TASKS.md` — T-005 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：120 passed (T-005)；64 passed (M-007 回归)；136 passed (tradeflow 回归)；npm run build 通过；0 failed
+- **关键逻辑**：
+  - 7 类 fixture 覆盖盘后 Review 全部场景：多策略命中 / 单一误报 / 跌破失效价 / 过期未触发 / 混合分层 / 无数据 / 跨交易日
+  - 每个失效候选自动生成移除理由："价格跌破失效价" / "观察到期未触发"
+  - ReviewSummary 输出完整复盘表：策略命中率、分层统计、移除理由、调参建议
+  - 跨交易日场景验证：candidate_date=2026-05-31, review_date=2026-06-01
+  - 无数据场景仍能产出报告（策略建议中包含数据缺失提示）
+  - 所有 fixture markdown 不含禁用词
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-08 | DATA-010: 融资融券数据源注册与 raw_evidence 接入
 
 - **执行者**：OpenCode
@@ -3452,3 +3554,30 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-010-20260608-round1.txt
 - **Run archive**: docs/task_runs/DATA-010-20260608-020414/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: V-001 - 600584 数据真实性端到端验收（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: OpenCode failed with exit 143
+- **Run archive**: docs/task_runs/V-001-20260608-022250/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: T-005 - TradeFlow P3 盘后 Review
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Default pytest failed with exit 1
+- **Run archive**: docs/task_runs/T-005-20260608-024421/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: T-004 - TradeFlow P2 盘中 Observe
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Default pytest failed with exit 1
+- **Run archive**: docs/task_runs/T-004-20260608-023348/
