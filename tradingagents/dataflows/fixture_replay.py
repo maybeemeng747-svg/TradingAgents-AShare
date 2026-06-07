@@ -6,12 +6,13 @@
 当天实时缺失等场景，避免夜间自动开发误判数据源质量。
 
 功能：
-  1. 内置 18 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
+  1. 内置 21 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
      资金流单位异常、龙虎榜无触发、公告源失败、
      AKShare 资金流失败→astock fallback、龙虎榜 NORMAL_NO_DATA、
      龙虎榜 FAILED、公告失败→事件源弱证据、换手率/量比缺失、
      融资融券有数据、融资融券失败、融资融券未查询、
-     研报有数据、研报失败、研报未查询）
+     研报有数据、研报失败、研报未查询、
+     回购有数据、回购失败、回购未查询）
   2. replay runner 将 fixture 模拟为 raw_evidence，输出数据源健康报告
   3. 失败时写入 docs/data_source_reports/YYYY-MM-DD.md
   4. 可被 scripts/auto_dev_loop.sh 或 OpenClaw 巡检调用
@@ -68,6 +69,12 @@ FIXTURE_MARGIN_NOT_QUERIED = "margin_not_queried"  # [DATA-010] margin_trading_r
 FIXTURE_REPORT_HAS_DATA = "report_has_data"  # [DATA-011] research_report_raw_evidence
 FIXTURE_REPORT_FAILED = "report_failed"  # [DATA-011] research_report_raw_evidence
 FIXTURE_REPORT_NOT_QUERIED = "report_not_queried"  # [DATA-011] research_report_raw_evidence
+FIXTURE_RATINGS_HAS_DATA = "ratings_has_data"  # [DATA-012] rating_raw_evidence
+FIXTURE_RATINGS_FAILED = "ratings_failed"  # [DATA-012] rating_raw_evidence
+FIXTURE_RATINGS_NOT_QUERIED = "ratings_not_queried"  # [DATA-012] rating_raw_evidence
+FIXTURE_BUYBACK_HAS_DATA = "buyback_has_data"  # [DATA-013] buyback_raw_evidence
+FIXTURE_BUYBACK_FAILED = "buyback_failed"  # [DATA-013] buyback_raw_evidence
+FIXTURE_BUYBACK_NOT_QUERIED = "buyback_not_queried"  # [DATA-013] buyback_raw_evidence
 
 ALL_FIXTURE_IDS = [
     FIXTURE_NORMAL_QUOTE,
@@ -89,6 +96,12 @@ ALL_FIXTURE_IDS = [
     FIXTURE_REPORT_HAS_DATA,
     FIXTURE_REPORT_FAILED,
     FIXTURE_REPORT_NOT_QUERIED,
+    FIXTURE_RATINGS_HAS_DATA,
+    FIXTURE_RATINGS_FAILED,
+    FIXTURE_RATINGS_NOT_QUERIED,
+    FIXTURE_BUYBACK_HAS_DATA,
+    FIXTURE_BUYBACK_FAILED,
+    FIXTURE_BUYBACK_NOT_QUERIED,
 ]
 
 
@@ -914,6 +927,202 @@ def _build_report_not_queried_fixture() -> FixtureEntry:
     )
 
 
+def _build_ratings_has_data_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "ratings": {
+            "raw": "600519.SH [DATA-012] RATINGS_HAS_DATA: 分析师评级数据（Eastmoney reportapi，共 15 条）：\n"
+                   "- 2026-06-06 | 东方证券 | 买入 | 目标价: 2100 | 贵州茅台点评",
+            "field": "ratings",
+            "unit": "条",
+            "vendor": "cn_astock",
+            "endpoint": "reportapi.eastmoney.com/report/list",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "fallback_from": None,
+            "source_url": None,
+            "error": None,
+            "is_realtime_patched": False,
+            "unit_verified": None,
+            "record_count": 15,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_RATINGS_HAS_DATA,
+        description="评级数据正常返回",
+        data_type="rating",
+        vendor="cn_astock",
+        endpoint="reportapi.eastmoney.com/report/list",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["ratings", "has_data"],
+    )
+
+
+def _build_ratings_failed_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "ratings": {
+            "raw": "600519.SH [DATA-012] RATINGS_FAILED: 评级数据获取失败（Eastmoney reportapi）：ConnectionError",
+            "field": "ratings",
+            "unit": None,
+            "vendor": "cn_astock",
+            "endpoint": "reportapi.eastmoney.com/report/list",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "FAILED",
+            "fallback_from": None,
+            "source_url": None,
+            "error": "ConnectionError",
+            "is_realtime_patched": False,
+            "unit_verified": None,
+            "record_count": 0,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_RATINGS_FAILED,
+        description="评级查询失败",
+        data_type="rating",
+        vendor="cn_astock",
+        endpoint="reportapi.eastmoney.com/report/list",
+        expected_status="FAILED",
+        raw_evidence=raw_evidence,
+        tags=["ratings", "failed"],
+    )
+
+
+def _build_ratings_not_queried_fixture() -> FixtureEntry:
+    raw_evidence = {
+        "ratings": {
+            "raw": None,
+            "field": "ratings",
+            "unit": None,
+            "vendor": "",
+            "endpoint": "",
+            "as_of": "",
+            "fetched_at": "",
+            "status": "NOT_QUERIED",
+            "fallback_from": None,
+            "source_url": None,
+            "error": None,
+            "is_realtime_patched": False,
+            "unit_verified": None,
+            "record_count": 0,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_RATINGS_NOT_QUERIED,
+        description="评级未查询",
+        data_type="rating",
+        vendor="",
+        endpoint="",
+        expected_status="NOT_QUERIED",
+        raw_evidence=raw_evidence,
+        tags=["ratings", "not_queried"],
+    )
+
+
+def _build_buyback_has_data_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "buybacks": {
+            "raw": "601689.SH [DATA-013] BUYBACK_HAS_DATA: 回购数据（Eastmoney datacenter）：\n"
+                   "- 2026-05-15 | 金额: 50000.0万 | 数量: 2500000 | 进度: 实施中 | 目的: 股权激励",
+            "field": "buybacks",
+            "unit": "万元",
+            "vendor": "cn_astock",
+            "endpoint": "datacenter-web.eastmoney.com/RPT_SHAREBUYBACK_DET",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "fallback_from": None,
+            "source_url": None,
+            "error": None,
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 3,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_BUYBACK_HAS_DATA,
+        description="回购数据正常返回",
+        data_type="buyback",
+        vendor="cn_astock",
+        endpoint="datacenter-web.eastmoney.com/RPT_SHAREBUYBACK_DET",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["buybacks", "has_data"],
+    )
+
+
+def _build_buyback_failed_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "buybacks": {
+            "raw": "601689.SH [DATA-013] BUYBACK_FAILED: 回购数据获取失败（Eastmoney datacenter）：ConnectionError",
+            "field": "buybacks",
+            "unit": None,
+            "vendor": "cn_astock",
+            "endpoint": "datacenter-web.eastmoney.com/RPT_SHAREBUYBACK_DET",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "FAILED",
+            "fallback_from": None,
+            "source_url": None,
+            "error": "ConnectionError",
+            "is_realtime_patched": False,
+            "unit_verified": None,
+            "record_count": 0,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_BUYBACK_FAILED,
+        description="回购查询失败",
+        data_type="buyback",
+        vendor="cn_astock",
+        endpoint="datacenter-web.eastmoney.com/RPT_SHAREBUYBACK_DET",
+        expected_status="FAILED",
+        raw_evidence=raw_evidence,
+        tags=["buybacks", "failed"],
+    )
+
+
+def _build_buyback_not_queried_fixture() -> FixtureEntry:
+    raw_evidence = {
+        "buybacks": {
+            "raw": None,
+            "field": "buybacks",
+            "unit": None,
+            "vendor": "",
+            "endpoint": "",
+            "as_of": "",
+            "fetched_at": "",
+            "status": "NOT_QUERIED",
+            "fallback_from": None,
+            "source_url": None,
+            "error": None,
+            "is_realtime_patched": False,
+            "unit_verified": None,
+            "record_count": 0,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_BUYBACK_NOT_QUERIED,
+        description="回购未查询",
+        data_type="buyback",
+        vendor="",
+        endpoint="",
+        expected_status="NOT_QUERIED",
+        raw_evidence=raw_evidence,
+        tags=["buybacks", "not_queried"],
+    )
+
+
 _FIXTURE_BUILDERS = {
     FIXTURE_NORMAL_QUOTE: _build_normal_quote_fixture,
     FIXTURE_STALE_DAILY: _build_stale_daily_fixture,
@@ -934,6 +1143,12 @@ _FIXTURE_BUILDERS = {
     FIXTURE_REPORT_HAS_DATA: _build_report_has_data_fixture,
     FIXTURE_REPORT_FAILED: _build_report_failed_fixture,
     FIXTURE_REPORT_NOT_QUERIED: _build_report_not_queried_fixture,
+    FIXTURE_RATINGS_HAS_DATA: _build_ratings_has_data_fixture,
+    FIXTURE_RATINGS_FAILED: _build_ratings_failed_fixture,
+    FIXTURE_RATINGS_NOT_QUERIED: _build_ratings_not_queried_fixture,
+    FIXTURE_BUYBACK_HAS_DATA: _build_buyback_has_data_fixture,
+    FIXTURE_BUYBACK_FAILED: _build_buyback_failed_fixture,
+    FIXTURE_BUYBACK_NOT_QUERIED: _build_buyback_not_queried_fixture,
 }
 
 

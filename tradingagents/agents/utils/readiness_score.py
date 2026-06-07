@@ -185,6 +185,8 @@ def calculate_evidence_coverage(
     margin_trading: str = "not_queried",
     announcements: str = "not_queried",
     research_report: str = "not_queried",
+    ratings: str = "not_queried",
+    buybacks: str = "not_queried",  # [DATA-013] buyback_raw_evidence
 ) -> int:
     """
     计算原始证据覆盖度（0-100%）。
@@ -196,7 +198,7 @@ def calculate_evidence_coverage(
     items = [
         ohlcv_5d, volume, turnover_rate, volume_ratio,
         individual_fund_flow, lhb_status, margin_trading, announcements,
-        research_report,
+        research_report, ratings, buybacks,
     ]
     # Exclude NOT_AVAILABLE fields from denominator (data source doesn't provide them)
     counted = [s for s in items if s not in _EXCLUDE_FROM_COVERAGE]
@@ -1310,6 +1312,64 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
         else:
             research_report = EvidenceStatus.NORMAL_NO_DATA
 
+    # 10. Ratings — check raw_evidence ratings field
+    # [DATA-012] rating_raw_evidence
+    ratings = EvidenceStatus.NOT_QUERIED
+    raw_ratings_entry = raw.get("ratings")
+    if isinstance(raw_ratings_entry, dict) and "status" in raw_ratings_entry:
+        struct_status = raw_ratings_entry["status"]
+        if struct_status == "HAS_DATA":
+            ratings = EvidenceStatus.HAS_DATA
+        elif struct_status == "FAILED":
+            ratings = EvidenceStatus.QUERY_FAILED
+        elif struct_status in ("NORMAL_NO_DATA", "NO_DATA"):
+            ratings = EvidenceStatus.NORMAL_NO_DATA
+    raw_ratings = _unwrap_raw(raw_ratings_entry)
+    if ratings == EvidenceStatus.NOT_QUERIED and raw_ratings is not None:
+        if isinstance(raw_ratings, str) and "RATINGS_HAS_DATA" in raw_ratings:
+            ratings = EvidenceStatus.HAS_DATA
+        elif isinstance(raw_ratings, str) and "RATINGS_FAILED" in raw_ratings:
+            ratings = EvidenceStatus.QUERY_FAILED
+        elif isinstance(raw_ratings, str) and ("RATINGS_NORMAL_NO_DATA" in raw_ratings or "无分析师评级" in raw_ratings):
+            ratings = EvidenceStatus.NORMAL_NO_DATA
+        elif isinstance(raw_ratings, str) and len(raw_ratings) > 20:
+            ratings = EvidenceStatus.HAS_DATA
+        elif isinstance(raw_ratings, str) and "失败" in raw_ratings:
+            ratings = EvidenceStatus.QUERY_FAILED
+        elif raw_ratings:
+            ratings = EvidenceStatus.HAS_DATA
+        else:
+            ratings = EvidenceStatus.NORMAL_NO_DATA
+
+    # 10. Buybacks (回购) — check raw_evidence buybacks field
+    # [DATA-013] buyback_raw_evidence
+    buybacks = EvidenceStatus.NOT_QUERIED
+    raw_buyback_entry = raw.get("buybacks")
+    if isinstance(raw_buyback_entry, dict) and "status" in raw_buyback_entry:
+        struct_status = raw_buyback_entry["status"]
+        if struct_status == "HAS_DATA":
+            buybacks = EvidenceStatus.HAS_DATA
+        elif struct_status == "FAILED":
+            buybacks = EvidenceStatus.QUERY_FAILED
+        elif struct_status in ("NORMAL_NO_DATA", "NO_DATA"):
+            buybacks = EvidenceStatus.NORMAL_NO_DATA
+    raw_buyback = _unwrap_raw(raw_buyback_entry)
+    if buybacks == EvidenceStatus.NOT_QUERIED and raw_buyback is not None:
+        if isinstance(raw_buyback, str) and "BUYBACK_HAS_DATA" in raw_buyback:
+            buybacks = EvidenceStatus.HAS_DATA
+        elif isinstance(raw_buyback, str) and "BUYBACK_FAILED" in raw_buyback:
+            buybacks = EvidenceStatus.QUERY_FAILED
+        elif isinstance(raw_buyback, str) and ("BUYBACK_NORMAL_NO_DATA" in raw_buyback or "无回购" in raw_buyback):
+            buybacks = EvidenceStatus.NORMAL_NO_DATA
+        elif isinstance(raw_buyback, str) and len(raw_buyback) > 20:
+            buybacks = EvidenceStatus.HAS_DATA
+        elif isinstance(raw_buyback, str) and "失败" in raw_buyback:
+            buybacks = EvidenceStatus.QUERY_FAILED
+        elif raw_buyback:
+            buybacks = EvidenceStatus.HAS_DATA
+        else:
+            buybacks = EvidenceStatus.NORMAL_NO_DATA
+
     return {
         "ohlcv_5d": ohlcv_5d,
         "volume": volume,
@@ -1320,6 +1380,8 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
         "margin_trading": margin_trading,
         "announcements": announcements,
         "research_report": research_report,
+        "ratings": ratings,
+        "buybacks": buybacks,
     }
 
 

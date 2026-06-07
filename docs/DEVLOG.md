@@ -4,6 +4,65 @@
 
 ---
 
+## 2026-06-08 | DATA-013: 回购数据接入 provider 路由与 raw_evidence
+
+- **执行者**：OpenCode
+- **任务**：DATA-013 — 把回购计划/回购进展从事件流扩展到 provider route 与 raw_evidence，作为公司行为和中线信号证据。
+- **修改文件**：
+  - `tradingagents/dataflows/source_catalog.py` — [DATA-013] buyback_raw_evidence
+    - `DataType` 枚举新增 `BUYBACK = "buyback"`
+    - 注册 2 个回购 source：`cn_akshare/stock_repurchase`(primary) + `cn_astock/datacenter-web.eastmoney.com/RPT_SHAREBUYBACK_DET`(fallback)
+  - `tradingagents/dataflows/providers/cn_akshare_provider.py` — [DATA-013]
+    - 新增 `get_buybacks(symbol)`: AKShare stock_repurchase_em 回购数据
+    - 支持 `BUYBACK_HAS_DATA` / `BUYBACK_NORMAL_NO_DATA` / `BUYBACK_FAILED` 三态输出
+  - `tradingagents/dataflows/providers/cn_astock_provider.py` — [DATA-013]
+    - 新增 `get_buybacks(symbol)`: 东财 datacenter RPT_SHAREBUYBACK_DET 直连
+    - 金额元→万元 `/10000` 转换，输出公告日期/金额/数量/进度/目的
+  - `tradingagents/dataflows/interface.py` — [DATA-013]
+    - `TOOLS_CATEGORIES["cn_market_data"]["tools"]` 新增 `"get_buybacks"`
+    - 支持 `route_to_vendor` 自动 fallback 和 `get_last_hit_vendor` 追踪
+  - `tradingagents/dataflows/evidence_contract.py` — [DATA-013]
+    - `_EVIDENCE_KEY_TO_DATA_TYPE` 新增 `"buybacks": "buyback"`
+    - `_REQUIRED_FIELDS_FOR_COMPLETENESS` 新增 `"buybacks": ["status", "vendor", "unit"]`
+  - `tradingagents/dataflows/evidence_coverage_audit.py` — [DATA-013]
+    - `_EVIDENCE_FIELD_LABELS` 新增 `"buybacks": "回购"`
+    - `_EVIDENCE_FIELD_FAMILIES` 新增 `"buybacks": "buyback"`
+  - `tradingagents/agents/utils/readiness_score.py` — [DATA-013]
+    - `infer_evidence_statuses()` 中新增 buybacks 四态检查：从 raw_evidence["buybacks"] 读取
+    - 支持 `HAS_DATA/QUERY_FAILED/NORMAL_NO_DATA/NOT_QUERIED` 四态
+    - `calculate_evidence_coverage()` 返回值新增 buybacks 字段
+  - `tradingagents/dataflows/fixture_replay.py` — [DATA-013]
+    - 新增 3 个 fixture：`buyback_has_data`(HAS_DATA/cn_astock) / `buyback_failed`(FAILED/ConnectionError) / `buyback_not_queried`(NOT_QUERIED)
+    - `ALL_FIXTURE_IDS` 从 22 扩展到 25
+  - `tests/test_data013_buyback.py` — **新建**，61 个测试覆盖：
+    - `TestSourceCatalogBuyback` (8): DataType 枚举/sources 注册/primary/fallback chain/all_data_types/fields/endpoint/catalog validation
+    - `TestEvidenceContractBuyback` (6): resolve_data_type/contract HAS_DATA/FAILED/completeness/missing/required fields
+    - `TestEvidenceCoverageAuditBuyback` (4): label/family/audit HAS_DATA/audit FAILED
+    - `TestReadinessScoreBuyback` (10): NOT_QUERIED default/HAS_DATA/FAILED/NORMAL_NO_DATA from structured/text/coverage increase/text fallback/text normal no data
+    - `TestInterfaceBuyback` (3): tools categories/category/failure string detection
+    - `TestProviderBuyback` (7): akshare method/astock method/akshare no data/akshare has data/astock no data/astock has data/astock failed
+    - `TestBuybackFixtures` (9): fixture IDs/total count/exists/vendor/unit/error/no vendor/all fixtures/in all fixture ids
+    - `TestBuybackFixtureReplay` (5): replay HAS_DATA/FAILED/NOT_QUERIED/all buyback/full replay
+    - `TestBuybackDedup` (2): no double count/different vendor
+    - `TestAcceptanceDATA013` (10): 全部验收标准
+  - `tests/test_readiness_score.py` — 更新 3 处覆盖率计算断言（新增 ratings+buybacks 字段后分母从 9 变为 11）
+  - `tests/test_data011_research_report.py` — 更新 1 处覆盖率断言
+  - `tests/test_data005_fixture_replay.py` — 更新 2 处 completeness 阈值断言
+  - `docs/TASKS.md` — DATA-013 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：61 passed (DATA-013)；619 passed (回归)；0 failed
+- **关键逻辑**：
+  - 回购数据从事件流扩展为完整 raw_evidence 四态数据源
+  - source_catalog 注册 2 个 vendor：AKShare(stock_repurchase_em) 为 primary，东财 datacenter(RPT_SHAREBUYBACK_DET) 为 fallback
+  - provider 层输出 `BUYBACK_HAS_DATA / BUYBACK_NORMAL_NO_DATA / BUYBACK_FAILED` 三态标记
+  - route_to_vendor 支持失败字符串检测和 fallback 链自动切换
+  - readiness_score 中 buybacks 支持结构化状态和文本模式双重识别
+  - 3 个 fixture 覆盖 HAS_DATA/FAILED/NOT_QUERIED 三种场景
+  - 重复事件不会导致候选分数重复叠加（dedup 测试覆盖）
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未跑 live 请求
+
+---
+
 ## 2026-06-08 | T-004: TradeFlow P2 盘中 Observe
 
 - **执行者**：OpenCode
@@ -3581,3 +3640,23 @@
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Default pytest failed with exit 1
 - **Run archive**: docs/task_runs/T-004-20260608-023348/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-012 - 评级数据接入 provider 路由与 raw_evidence（P2）
+- **Priority**: P2
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Zhipu API quota exhausted (429)
+- **Run archive**: docs/task_runs/DATA-012-20260608-024928/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-013 - 回购数据接入 provider 路由与 raw_evidence（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-013-20260608-round1.txt
+- **Run archive**: docs/task_runs/DATA-013-20260608-050752/

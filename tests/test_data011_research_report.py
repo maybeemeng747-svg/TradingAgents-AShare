@@ -295,7 +295,8 @@ class TestReadinessScoreResearchReport:
             turnover_rate="has_data", volume_ratio="has_data",
             individual_fund_flow="has_data", lhb_status="has_data",
             margin_trading="has_data", announcements="has_data",
-            research_report="has_data",
+            research_report="has_data", ratings="has_data",
+            buybacks="has_data",
         )
         assert all_has == 100
 

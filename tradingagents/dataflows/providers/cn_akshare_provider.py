@@ -1229,3 +1229,63 @@ class CnAkshareProvider(BaseMarketDataProvider):
             return f"{symbol} [DATA-011] REPORT_NORMAL_NO_DATA: AKShare 研报接口不可用。"
         except Exception as exc:
             return f"{symbol} [DATA-011] REPORT_FAILED: 研报数据获取失败：{type(exc).__name__}: {exc}"
+
+    def get_ratings(self, symbol: str) -> str:
+        """获取个股分析师评级数据。  # [DATA-012] rating_raw_evidence"""
+        code = self._normalize_symbol(symbol)
+        try:
+            ak = self._ak()
+            with AKSHARE_CALL_LOCK:
+                df = ak.stock_institute_recommend_detail(symbol=code)
+            if df is None or df.empty:
+                return f"{symbol} [DATA-012] RATINGS_NORMAL_NO_DATA: 该股无分析师评级数据。"
+            lines = [f"{symbol} [DATA-012] RATINGS_HAS_DATA: 分析师评级数据（AKShare stock_institute_recommend_detail）："]
+            for _, row in df.head(20).iterrows():
+                date_val = row.get("评级日期", row.get("date", ""))
+                rating = row.get("最新评级", row.get("rating", ""))
+                org = row.get("评级机构", row.get("org", ""))
+                analyst = row.get("分析师", "")
+                target_price = row.get("目标价", "")
+                line = f"- {date_val} | {org} | {rating}"
+                if analyst:
+                    line += f" | 分析师: {analyst}"
+                if target_price and str(target_price) != "nan":
+                    line += f" | 目标价: {target_price}"
+                lines.append(line)
+            return "\n".join(lines)
+        except AttributeError:
+            return f"{symbol} [DATA-012] RATINGS_NORMAL_NO_DATA: AKShare 评级接口不可用。"
+        except Exception as exc:
+            return f"{symbol} [DATA-012] RATINGS_FAILED: 评级数据获取失败：{type(exc).__name__}: {exc}"
+
+    def get_buybacks(self, symbol: str) -> str:
+        """获取个股回购计划/进展数据。  # [DATA-013] buyback_raw_evidence"""
+        code = self._normalize_symbol(symbol)
+        try:
+            ak = self._ak()
+            with AKSHARE_CALL_LOCK:
+                df = ak.stock_repurchase_em(symbol=code)
+            if df is None or df.empty:
+                return f"{symbol} [DATA-013] BUYBACK_NORMAL_NO_DATA: 该股无回购计划或进展数据。"
+            lines = [f"{symbol} [DATA-013] BUYBACK_HAS_DATA: 回购数据（AKShare stock_repurchase_em）："]
+            for _, row in df.head(15).iterrows():
+                date_val = row.get("公告日期", row.get("date", ""))
+                amount = row.get("回购金额", row.get("amount", ""))
+                volume = row.get("回购数量", row.get("volume", ""))
+                progress = row.get("回购进度", row.get("progress", ""))
+                purpose = row.get("回购目的", row.get("purpose", ""))
+                line = f"- {date_val}"
+                if amount:
+                    line += f" | 金额: {amount}"
+                if volume:
+                    line += f" | 数量: {volume}"
+                if progress:
+                    line += f" | 进度: {progress}"
+                if purpose:
+                    line += f" | 目的: {str(purpose)[:40]}"
+                lines.append(line)
+            return "\n".join(lines)
+        except AttributeError:
+            return f"{symbol} [DATA-013] BUYBACK_NORMAL_NO_DATA: AKShare 回购接口不可用。"
+        except Exception as exc:
+            return f"{symbol} [DATA-013] BUYBACK_FAILED: 回购数据获取失败：{type(exc).__name__}: {exc}"

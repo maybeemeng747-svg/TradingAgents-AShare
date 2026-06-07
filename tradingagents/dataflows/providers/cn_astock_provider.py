@@ -1017,6 +1017,62 @@ class CnAstockProvider(BaseMarketDataProvider):
         """东财研报列表 (reportapi) — 保留向后兼容。"""
         return self.get_research_report(symbol)
 
+    def get_ratings(self, symbol: str) -> str:
+        """分析师评级/目标价 — 东财 reportapi 提取评级变更.  # [DATA-012] rating_raw_evidence"""
+        code = _extract_code(symbol)
+        try:
+            _rate_limit("em_ratings")
+            session = requests.Session()
+            session.headers.update({"User-Agent": UA, "Referer": "https://data.eastmoney.com/"})
+
+            all_records = []
+            for page in range(1, 3):
+                params = {
+                    "industryCode": "*", "pageSize": "50", "industry": "*",
+                    "rating": "*", "ratingChange": "*",
+                    "beginTime": "2000-01-01", "endTime": "2030-01-01",
+                    "pageNo": str(page), "fields": "", "qType": "0",
+                    "orgCode": "", "code": code, "rcode": "",
+                    "p": str(page), "pageNum": str(page), "pageNumber": str(page),
+                }
+                r = session.get(
+                    "https://reportapi.eastmoney.com/report/list",
+                    params=params, timeout=30,
+                )
+                d = r.json()
+                rows = d.get("data") or []
+                if not rows:
+                    break
+                all_records.extend(rows)
+                if page >= (d.get("TotalPage", 1) or 1):
+                    break
+                time.sleep(0.3)
+
+            if not all_records:
+                return f"{symbol} [DATA-012] RATINGS_NORMAL_NO_DATA: 该股无分析师评级数据。"
+
+            lines = [f"{symbol} [DATA-012] RATINGS_HAS_DATA: 分析师评级数据（Eastmoney reportapi，共 {len(all_records)} 条）："]
+            for rec in all_records[:20]:
+                date_val = (rec.get("publishDate", ""))[:10]
+                org = rec.get("orgSName", "未知")
+                rating = rec.get("emRatingName", "")
+                last_rating = rec.get("lastEmRatingName", "")
+                target_price = rec.get("indvAimPriceT", "")
+                title = rec.get("title", "")[:40]
+                line = f"- {date_val} | {org} | {rating}"
+                if last_rating:
+                    line += f"（前次: {last_rating}）"
+                if target_price and str(target_price) != "0":
+                    line += f" | 目标价: {target_price}"
+                if title:
+                    line += f" | {title}"
+                lines.append(line)
+
+            return "\n".join(lines)
+
+        except Exception as exc:
+            return f"{symbol} [DATA-012] RATINGS_FAILED: 评级数据获取失败（Eastmoney reportapi）：{type(exc).__name__}: {exc}"
+
     def get_lhb_data(self, date: str, min_net_buy: float = None) -> str:
         """全市场龙虎榜 — 东财 datacenter."""
         try:
@@ -1178,3 +1234,43 @@ class CnAstockProvider(BaseMarketDataProvider):
 
         except Exception as exc:
             return f"{symbol} [DATA-010] MARGIN_FAILED: 融资融券数据获取失败（Eastmoney datacenter）：{type(exc).__name__}: {exc}"
+
+    def get_buybacks(self, symbol: str) -> str:
+        """个股回购计划/进展 — 东财 datacenter.  # [DATA-013] buyback_raw_evidence"""
+        code = _extract_code(symbol)
+        try:
+            _rate_limit("em_buyback")
+            buyback_filter = (
+                f'(SECURITY_CODE="{code}")'
+            )
+            data = _eastmoney_datacenter(
+                "RPT_SHAREBUYBACK_DET",
+                filter_str=buyback_filter,
+                page_size=20,
+                sort_columns="NOTICE_DATE",
+                sort_types="-1",
+            )
+            if not data:
+                return f"{symbol} [DATA-013] BUYBACK_NORMAL_NO_DATA: 该股无回购计划或进展数据。"
+
+            lines = [f"{symbol} [DATA-013] BUYBACK_HAS_DATA: 回购数据（Eastmoney datacenter）："]
+            for row in data[:15]:
+                notice_date = row.get("NOTICE_DATE", "")[:10] if row.get("NOTICE_DATE") else ""
+                buyback_amount = (row.get("BUYBACK_AMOUNT") or 0) / 10000
+                buyback_volume = row.get("BUYBACK_VOLUME", 0)
+                progress = row.get("PROGRESS", "")
+                purpose = row.get("PURPOSE", "")
+                line = f"- {notice_date}"
+                if buyback_amount:
+                    line += f" | 金额: {buyback_amount:.1f}万"
+                if buyback_volume:
+                    line += f" | 数量: {buyback_volume}"
+                if progress:
+                    line += f" | 进度: {progress}"
+                if purpose:
+                    line += f" | 目的: {str(purpose)[:40]}"
+                lines.append(line)
+            return "\n".join(lines)
+
+        except Exception as exc:
+            return f"{symbol} [DATA-013] BUYBACK_FAILED: 回购数据获取失败（Eastmoney datacenter）：{type(exc).__name__}: {exc}"

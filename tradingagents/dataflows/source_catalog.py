@@ -43,6 +43,7 @@ class DataType(str, Enum):
     HOT_STOCKS = "hot_stocks"
     ZT_POOL = "zt_pool"
     REALTIME_QUOTES = "realtime_quotes"
+    BUYBACK = "buyback"  # [DATA-013] buyback_raw_evidence
 
 
 class Freshness(str, Enum):
@@ -406,6 +407,30 @@ def _build_catalog() -> None:
         notes="东财研报列表，支持分页",
     )
 
+    # ── 评级（分析师评级/目标价，区别于研报全文）──────────────────────────
+    _register(
+        "cn_akshare", "stock_institute_recommend_detail",
+        DataType.RATING,
+        fields=["股票代码", "股票名称", "目标价", "最新评级", "评级机构", "分析师", "行业", "评级日期"],
+        unit="条",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.MEDIUM,
+        fallback_priority=1,
+        is_primary=True,
+        known_gaps=["新浪财经评级数据覆盖不全"],
+        notes="AKShare 新浪财经股票评级记录",
+    )
+    _register(
+        "cn_astock", "reportapi.eastmoney.com/report/list",
+        DataType.RATING,
+        fields=["publishDate", "orgSName", "emRatingName", "lastEmRatingName", "emRatingChange", "indvAimPriceT", "title"],
+        unit="条",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.MEDIUM,
+        fallback_priority=2,
+        notes="东财研报列表提取评级变更与目标价",
+    )
+
     # ── 新闻 ───────────────────────────────────────────────────────────
     _register(
         "cn_akshare", "stock_news_em",
@@ -553,6 +578,30 @@ def _build_catalog() -> None:
         fallback_priority=1,
         is_primary=True,
         notes="雪球热搜股票",
+    )
+
+    # ── 回购 ──────────────────────────────────────────────────────────
+    # [DATA-013] buyback_raw_evidence
+    _register(
+        "cn_akshare", "stock_repurchase",
+        DataType.BUYBACK,
+        fields=["公告日期", "回购金额", "回购数量", "回购进度", "回购目的"],
+        unit="万元",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.MEDIUM,
+        fallback_priority=1,
+        is_primary=True,
+        notes="AKShare 个股回购计划/进展",
+    )
+    _register(
+        "cn_astock", "datacenter-web.eastmoney.com/RPT_SHAREBUYBACK",
+        DataType.BUYBACK,
+        fields=["NOTICE_DATE", "BUYBACK_AMOUNT", "BUYBACK_VOLUME", "PROGRESS", "PURPOSE"],
+        unit="元(需/10000转万元)",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.MEDIUM,
+        fallback_priority=2,
+        notes="东财 datacenter 回购数据",
     )
 
 

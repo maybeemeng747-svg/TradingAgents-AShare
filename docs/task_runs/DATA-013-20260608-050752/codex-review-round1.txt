@@ -1,3 +1,228 @@
+Task: DATA-013 - 回购数据接入 provider 路由与 raw_evidence（P2）
+Date: 2026-06-08_05:27:40
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019ea3fa-2b6d-7ce2-9c15-049e7e1ae0ab
+--------
+user
+current changes
+exec
+/bin/zsh -lc "cat AGENTS.md; printf '\\n--- project ---\\n'; cat docs/project-overview.md; printf '\\n--- tasks ---\\n'; cat docs/TASKS.md; printf '\\n--- decisions ---\\n'; cat docs/DECISIONS.md; printf '\\n--- devlog ---\\n'; tail -n 200 docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# TradingAgents-AShare — 项目协作规则
+
+## 项目简介
+
+A股智能投研多智能体系统，基于 LangGraph + LangChain 构建，模拟 14 名专业 Agent 的多空辩论与风控博弈，为投资者提供结构化的交易建议。
+
+核心模块：
+- **Agent 框架**：14 个多智能体（分析师/研究员/风控/交易员），LangGraph 编排
+- **后端 API**：FastAPI，提供分析、持仓、定时任务、研报管理等接口
+- **前端 UI**：React，意图驱动交互、辩论可视化、持仓看板
+- **定时调度**：独立 scheduler，支持自选股定时分析
+- **数据层**：AKShare + BaoStock + yfinance，SQLite 持久化
+
+## 多工具协作架构
+
+```
+孟（最终决策）
+  │
+  ├── OpenClaw（主控调度）── 读取上下文 → 判断任务 → 派发执行
+  │     ├── 简单任务：直接 exec 执行（git/python/npm）
+  │     └── 复杂任务：sessions_spawn 子 agent 或调用 OpenCode 执行
+  │
+  ├── OpenCode（代码执行器）── 读取同一套上下文 → 改代码 → 跑测试 → 输出 diff
+  │
+  └── OpenCode TUI/Web（审查界面）── 查看 diff → 确认修改 → 做 review
+```
+
+**核心原则**：三者读取同一套项目上下文，不各自保存独立记忆。
+
+## 必读文件（任何 coding agent 开始任务前）
+
+1. `AGENTS.md`（本文件）
+2. `docs/project-overview.md`（项目背景 + 架构 + 目录结构）
+3. `docs/TASKS.md`（当前任务池）
+4. `docs/DECISIONS.md`（架构决策记录）
+5. `docs/DEVLOG.md`（最近修改日志）
+6. 涉及模型/API 调用时，必须读 `docs/MODEL_API_CATALOG.md` 和 `docs/LLM_API_USAGE.md`，并可运行 `python scripts/audit_llm_config.py` 查看脱敏配置
+
+## 项目目录结构
+
+```
+TradingAgents-AShare/
+├── tradingagents/            # 核心 Python 包
+│   ├── agents/               # 14 个多智能体
+│   │   ├── analysts/         # 7 个分析师（基本面/情绪/新闻/技术/宏观/主力/量价）
+│   │   ├── researchers/      # 多头/空头研究员 + 研究总监
+│   │   ├── risk_mgmt/        # 风控团队
+│   │   ├── managers/         # 管理层
+│   │   └── trader/           # 交易员
+│   ├── dataflows/            # 数据获取与缓存
+│   ├── graph/                # LangGraph 编排图
+│   ├── llm_clients/          # 多模型厂商适配
+│   ├── prompts/              # Agent 提示词模板
+│   └── default_config.py     # 默认配置
+├── api/                      # FastAPI 后端
+│   ├── main.py               # 入口
+│   ├── database.py           # SQLite
+│   └── services/             # 业务逻辑（分析/持仓/定时/研报）
+├── frontend/                 # React 前端
+├── scheduler/                # 定时分析调度
+├── skills/                   # OpenClaw 技能
+├── tests/                    # 测试
+├── docs/                     # 项目文档
+└── eval_results/             # 回测评估结果
+```
+
+## 执行规则
+
+### 代码修改前
+1. 执行 `git status`，确认当前分支和未提交变更
+2. 激活虚拟环境：`source .venv/bin/activate`
+3. 确认修改范围不影响生产数据库（tradingagents.db）
+4. 如果涉及核心模块，先跑一遍测试确认基线
+
+### 代码修改后
+1. 运行测试，全部通过才算完成
+2. 输出：修改文件列表、测试结果、发现的风险点
+3. 更新 `docs/DEVLOG.md`
+
+### OpenClaw 调度方式
+- **简单任务**（改配置、修 bug、小重构）：OpenClaw 直接 `exec` 执行
+- **复杂任务**（新功能、跨模块修改）：调用 OpenCode 执行，由用户确认后执行
+- **审查任务**：OpenClaw 不直接审查代码，提示用户用 OpenCode TUI 查看 diff
+
+## 安全红线
+
+- 不误改 `tradingagents.db`（生产数据库）
+- 不误改 `eval_results/` 中的历史回测结果
+- 不直接修改 `tradingagents/prompts/` 中的提示词模板（需走审批）
+- 不删除 `logs/` 中的历史日志
+- 测试数据不得写入生产数据库
+- 不读取、解密、打印、提交任何模型 API Key 明文；只能使用 `HAS_KEY/NO_KEY` 级别的脱敏状态
+- 除用户主动发起的分析/定时任务外，任何 live LLM API 调用前都要说明 provider、base_url、模型名和预计调用次数，并征得用户确认
+
+## 技术栈
+
+- **后端**：Python 3.10+, FastAPI, LangGraph, LangChain
+- **前端**：React, TypeScript, Tailwind CSS
+- **数据库**：SQLite
+- **数据源**：AKShare, BaoStock, yfinance
+- **模型**：OpenAI / Anthropic / 智谱 / DeepSeek / 小米 MiMo 等
+
+--- project ---
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+--- tasks ---
 # 任务池
 
 > 最后更新：2026-06-08
@@ -3038,3 +3263,3084 @@ Phase 3（优化期）：C-006 + C-008
   - `pytest tests/test_vlm*.py -q` 通过
 - **代码标注要求**：`# [VLM-001] watchlist_table_parser`
 - **完成记录**：2026-05-31, commit f52aa21
+
+--- decisions ---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+--- devlog ---
+## 2026-06-04 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-P0-FUND-ROUTE - 主力资金 fallback 假成功与单位修复（P0）
+- **Priority**: P0
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Test failed: pytest tests/test_g007_fund_lhb_provenance.py tests/test_data_source_replay.py tests/test_dataflows*.py -q (exit 4)
+- **Run archive**: docs/task_runs/DATA-P0-FUND-ROUTE-20260604-121846/
+
+## 2026-06-04 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-P1-LHB-FUND-DECOUPLE - 龙虎榜与资金流触发链路复核（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-P1-LHB-FUND-DECOUPLE-20260604-round1.txt
+- **Run archive**: docs/task_runs/DATA-P1-LHB-FUND-DECOUPLE-20260604-123938/
+
+## 2026-06-04 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-P1-ASTOCK-LIVE-SMOKE - cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-P1-ASTOCK-LIVE-SMOKE-20260604-round1.txt
+- **Run archive**: docs/task_runs/DATA-P1-ASTOCK-LIVE-SMOKE-20260604-124937/
+
+## 2026-06-04 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-P1-SOURCE-GAP-AUDIT - Simon 数据源吸收落地差距审计（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Default pytest failed with exit 1
+- **Run archive**: docs/task_runs/DATA-P1-SOURCE-GAP-AUDIT-20260604-125917/
+
+## 2026-06-04 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-007 - raw_evidence 覆盖率审计与候选可信度联动（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-007-20260604-round1.txt
+- **Run archive**: docs/task_runs/DATA-007-20260604-131503/
+
+## 2026-06-04 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-008 - A股关键源 fallback smoke fixtures 扩展（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-008-20260604-round1.txt
+- **Run archive**: docs/task_runs/DATA-008-20260604-132917/
+
+## 2026-06-04 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-009 - 自选备注与截图识别字段持久化回归保护（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-009-20260604-round1.txt
+- **Run archive**: docs/task_runs/DATA-009-20260604-134042/
+
+## 2026-06-04 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-009 - 昊天候选反证/过热降权校准（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Test failed: pytest tests/test_h006_mandate_replay*.py tests/test_h004_mandate_ambush*.py tests/test_v004_mandate_e2e_smoke.py -q (exit 4)
+- **Run archive**: docs/task_runs/H-009-20260604-135113/
+
+## 2026-06-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-010 - 政策主题生命周期与版本状态注册表（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/H-010-20260607-225838/
+
+## 2026-06-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: M-012 - 任务池空转时自动生成 proposed 任务草案（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/M-012-20260607-231054/
+
+## 2026-06-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: UI-009 - 候选详情一键生成 TA 研究任务预案（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/UI-009-20260607-232508/
+
+## 2026-06-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: V-005 - 夜间昊天候选质量日报与样本回放（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Test failed: pytest tests/test_v004_mandate_e2e_smoke.py tests/test_data006_daily_digest.py tests/test_mandate_reports*.py -q (exit 4)
+- **Run archive**: docs/task_runs/V-005-20260607-233817/
+
+## 2026-06-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-011 - 候选矛盾证据与负面清单解释（P2）
+- **Priority**: P2
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/H-011-20260607-234742/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: M-013 - CodeGraph 影响范围预检接入自动开发日志（P2）
+- **Priority**: P2
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/M-013-20260607-235926/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: UI-010 - 昊天候选对比视图与证据缺口排序（P2）
+- **Priority**: P2
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/UI-010-20260608-001244/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: T-008 - TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2）
+- **Priority**: P2
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/T-008-20260608-002337/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-010 - 融资融券数据源注册与 raw_evidence 接入（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-010-20260608-round1.txt
+- **Run archive**: docs/task_runs/DATA-010-20260608-020414/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: V-001 - 600584 数据真实性端到端验收（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: OpenCode failed with exit 143
+- **Run archive**: docs/task_runs/V-001-20260608-022250/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: T-005 - TradeFlow P3 盘后 Review
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Default pytest failed with exit 1
+- **Run archive**: docs/task_runs/T-005-20260608-024421/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: T-004 - TradeFlow P2 盘中 Observe
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Default pytest failed with exit 1
+- **Run archive**: docs/task_runs/T-004-20260608-023348/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-012 - 评级数据接入 provider 路由与 raw_evidence（P2）
+- **Priority**: P2
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Zhipu API quota exhausted (429)
+- **Run archive**: docs/task_runs/DATA-012-20260608-024928/
+
+exec
+/bin/zsh -lc 'git status --short && git status --branch' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tests/test_data005_fixture_replay.py
+ M tests/test_data011_research_report.py
+ M tests/test_readiness_score.py
+ M tradingagents/agents/utils/readiness_score.py
+ M tradingagents/dataflows/evidence_contract.py
+ M tradingagents/dataflows/evidence_coverage_audit.py
+ M tradingagents/dataflows/fixture_replay.py
+ M tradingagents/dataflows/interface.py
+ M tradingagents/dataflows/providers/cn_akshare_provider.py
+ M tradingagents/dataflows/providers/cn_astock_provider.py
+ M tradingagents/dataflows/source_catalog.py
+?? docs/task_runs/DATA-012-20260608-024928/opencode-round2.txt
+?? docs/task_runs/DATA-012-20260608-024928/summary.md
+?? docs/task_runs/DATA-013-20260608-050752/
+?? tests/test_data012_ratings.py
+?? tests/test_data013_buyback.py
+On branch local/tradingagents-custom
+Your branch is ahead of 'myfork/local/tradingagents-custom' by 54 commits.
+  (use "git push" to publish your local commits)
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   docs/DEVLOG.md
+	modified:   docs/TASKS.md
+	modified:   tests/test_data005_fixture_replay.py
+	modified:   tests/test_data011_research_report.py
+	modified:   tests/test_readiness_score.py
+	modified:   tradingagents/agents/utils/readiness_score.py
+	modified:   tradingagents/dataflows/evidence_contract.py
+	modified:   tradingagents/dataflows/evidence_coverage_audit.py
+	modified:   tradingagents/dataflows/fixture_replay.py
+	modified:   tradingagents/dataflows/interface.py
+	modified:   tradingagents/dataflows/providers/cn_akshare_provider.py
+	modified:   tradingagents/dataflows/providers/cn_astock_provider.py
+	modified:   tradingagents/dataflows/source_catalog.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	docs/task_runs/DATA-012-20260608-024928/opencode-round2.txt
+	docs/task_runs/DATA-012-20260608-024928/summary.md
+	docs/task_runs/DATA-013-20260608-050752/
+	tests/test_data012_ratings.py
+	tests/test_data013_buyback.py
+
+no changes added to commit (use "git add" and/or "git commit -a")
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- tradingagents/dataflows/evidence_contract.py tradingagents/dataflows/evidence_coverage_audit.py tradingagents/dataflows/fixture_replay.py tradingagents/dataflows/interface.py tradingagents/dataflows/providers/cn_akshare_provider.py tradingagents/dataflows/providers/cn_astock_provider.py tradingagents/dataflows/source_catalog.py tradingagents/agents/utils/readiness_score.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ docs/DEVLOG.md                                     |  68 +++++++
+ docs/TASKS.md                                      |   8 +-
+ tests/test_data005_fixture_replay.py               |   4 +-
+ tests/test_data011_research_report.py              |   3 +-
+ tests/test_readiness_score.py                      |  10 +-
+ tradingagents/agents/utils/readiness_score.py      |  64 +++++-
+ tradingagents/dataflows/evidence_contract.py       |   4 +
+ tradingagents/dataflows/evidence_coverage_audit.py |   4 +
+ tradingagents/dataflows/fixture_replay.py          | 219 ++++++++++++++++++++-
+ tradingagents/dataflows/interface.py               |   2 +
+ .../dataflows/providers/cn_akshare_provider.py     |  60 ++++++
+ .../dataflows/providers/cn_astock_provider.py      |  96 +++++++++
+ tradingagents/dataflows/source_catalog.py          |  49 +++++
+ 13 files changed, 579 insertions(+), 12 deletions(-)
+diff --git a/tradingagents/agents/utils/readiness_score.py b/tradingagents/agents/utils/readiness_score.py
+index 2d036bf..fddf14e 100644
+--- a/tradingagents/agents/utils/readiness_score.py
++++ b/tradingagents/agents/utils/readiness_score.py
+@@ -185,6 +185,8 @@ def calculate_evidence_coverage(
+     margin_trading: str = "not_queried",
+     announcements: str = "not_queried",
+     research_report: str = "not_queried",
++    ratings: str = "not_queried",
++    buybacks: str = "not_queried",  # [DATA-013] buyback_raw_evidence
+ ) -> int:
+     """
+     计算原始证据覆盖度（0-100%）。
+@@ -196,7 +198,7 @@ def calculate_evidence_coverage(
+     items = [
+         ohlcv_5d, volume, turnover_rate, volume_ratio,
+         individual_fund_flow, lhb_status, margin_trading, announcements,
+-        research_report,
++        research_report, ratings, buybacks,
+     ]
+     # Exclude NOT_AVAILABLE fields from denominator (data source doesn't provide them)
+     counted = [s for s in items if s not in _EXCLUDE_FROM_COVERAGE]
+@@ -1310,6 +1312,64 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None)
+         else:
+             research_report = EvidenceStatus.NORMAL_NO_DATA
+ 
++    # 10. Ratings — check raw_evidence ratings field
++    # [DATA-012] rating_raw_evidence
++    ratings = EvidenceStatus.NOT_QUERIED
++    raw_ratings_entry = raw.get("ratings")
++    if isinstance(raw_ratings_entry, dict) and "status" in raw_ratings_entry:
++        struct_status = raw_ratings_entry["status"]
++        if struct_status == "HAS_DATA":
++            ratings = EvidenceStatus.HAS_DATA
++        elif struct_status == "FAILED":
++            ratings = EvidenceStatus.QUERY_FAILED
++        elif struct_status in ("NORMAL_NO_DATA", "NO_DATA"):
++            ratings = EvidenceStatus.NORMAL_NO_DATA
++    raw_ratings = _unwrap_raw(raw_ratings_entry)
++    if ratings == EvidenceStatus.NOT_QUERIED and raw_ratings is not None:
++        if isinstance(raw_ratings, str) and "RATINGS_HAS_DATA" in raw_ratings:
++            ratings = EvidenceStatus.HAS_DATA
++        elif isinstance(raw_ratings, str) and "RATINGS_FAILED" in raw_ratings:
++            ratings = EvidenceStatus.QUERY_FAILED
++        elif isinstance(raw_ratings, str) and ("RATINGS_NORMAL_NO_DATA" in raw_ratings or "无分析师评级" in raw_ratings):
++            ratings = EvidenceStatus.NORMAL_NO_DATA
++        elif isinstance(raw_ratings, str) and len(raw_ratings) > 20:
++            ratings = EvidenceStatus.HAS_DATA
++        elif isinstance(raw_ratings, str) and "失败" in raw_ratings:
++            ratings = EvidenceStatus.QUERY_FAILED
++        elif raw_ratings:
++            ratings = EvidenceStatus.HAS_DATA
++        else:
++            ratings = EvidenceStatus.NORMAL_NO_DATA
++
++    # 10. Buybacks (回购) — check raw_evidence buybacks field
++    # [DATA-013] buyback_raw_evidence
++    buybacks = EvidenceStatus.NOT_QUERIED
++    raw_buyback_entry = raw.get("buybacks")
++    if isinstance(raw_buyback_entry, dict) and "status" in raw_buyback_entry:
++        struct_status = raw_buyback_entry["status"]
++        if struct_status == "HAS_DATA":
++            buybacks = EvidenceStatus.HAS_DATA
++        elif struct_status == "FAILED":
++            buybacks = EvidenceStatus.QUERY_FAILED
++        elif struct_status in ("NORMAL_NO_DATA", "NO_DATA"):
++            buybacks = EvidenceStatus.NORMAL_NO_DATA
++    raw_buyback = _unwrap_raw(raw_buyback_entry)
++    if buybacks == EvidenceStatus.NOT_QUERIED and raw_buyback is not None:
++        if isinstance(raw_buyback, str) and "BUYBACK_HAS_DATA" in raw_buyback:
++            buybacks = EvidenceStatus.HAS_DATA
++        elif isinstance(raw_buyback, str) and "BUYBACK_FAILED" in raw_buyback:
++            buybacks = EvidenceStatus.QUERY_FAILED
++        elif isinstance(raw_buyback, str) and ("BUYBACK_NORMAL_NO_DATA" in raw_buyback or "无回购" in raw_buyback):
++            buybacks = EvidenceStatus.NORMAL_NO_DATA
++        elif isinstance(raw_buyback, str) and len(raw_buyback) > 20:
++            buybacks = EvidenceStatus.HAS_DATA
++        elif isinstance(raw_buyback, str) and "失败" in raw_buyback:
++            buybacks = EvidenceStatus.QUERY_FAILED
++        elif raw_buyback:
++            buybacks = EvidenceStatus.HAS_DATA
++        else:
++            buybacks = EvidenceStatus.NORMAL_NO_DATA
++
+     return {
+         "ohlcv_5d": ohlcv_5d,
+         "volume": volume,
+@@ -1320,6 +1380,8 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None)
+         "margin_trading": margin_trading,
+         "announcements": announcements,
+         "research_report": research_report,
++        "ratings": ratings,
++        "buybacks": buybacks,
+     }
+ 
+ 
+diff --git a/tradingagents/dataflows/evidence_contract.py b/tradingagents/dataflows/evidence_contract.py
+index edeeee5..13dca15 100644
+--- a/tradingagents/dataflows/evidence_contract.py
++++ b/tradingagents/dataflows/evidence_contract.py
+@@ -141,6 +141,8 @@ _EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
+     "announcements": "notice",
+     "margin_trading": "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+     "research_report": "report",  # [DATA-011] research_report_raw_evidence
++    "ratings": "rating",  # [DATA-012] rating_raw_evidence
++    "buybacks": "buyback",  # [DATA-013] buyback_raw_evidence
+ }
+ 
+ 
+@@ -184,6 +186,8 @@ _REQUIRED_FIELDS_FOR_COMPLETENESS: Dict[str, List[str]] = {
+     "fundamentals": ["status", "vendor"],
+     "margin_trading": ["status", "vendor", "unit"],  # [DATA-010] margin_trading_raw_evidence
+     "research_report": ["status", "vendor"],  # [DATA-011] research_report_raw_evidence
++    "ratings": ["status", "vendor"],  # [DATA-012] rating_raw_evidence
++    "buybacks": ["status", "vendor", "unit"],  # [DATA-013] buyback_raw_evidence
+ }
+ 
+ 
+diff --git a/tradingagents/dataflows/evidence_coverage_audit.py b/tradingagents/dataflows/evidence_coverage_audit.py
+index 3af97d4..061655c 100644
+--- a/tradingagents/dataflows/evidence_coverage_audit.py
++++ b/tradingagents/dataflows/evidence_coverage_audit.py
+@@ -64,6 +64,8 @@ _EVIDENCE_FIELD_LABELS: Dict[str, str] = {
+     "vpa_indicators": "量价分析指标",
+     "margin_trading": "融资融券",  # [DATA-010] margin_trading_raw_evidence
+     "research_report": "研报/评级",  # [DATA-011] research_report_raw_evidence
++    "ratings": "分析师评级",  # [DATA-012] rating_raw_evidence
++    "buybacks": "回购",  # [DATA-013] buyback_raw_evidence
+ }
+ 
+ _EVIDENCE_FIELD_FAMILIES: Dict[str, str] = {
+@@ -85,6 +87,8 @@ _EVIDENCE_FIELD_FAMILIES: Dict[str, str] = {
+     "hot_stocks": "hot_stocks",
+     "margin_trading": "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+     "research_report": "report",  # [DATA-011] research_report_raw_evidence
++    "ratings": "rating",  # [DATA-012] rating_raw_evidence
++    "buybacks": "buyback",  # [DATA-013] buyback_raw_evidence
+ }
+ 
+ _TIER_RANK = {"A": 1, "B": 2, "C": 3}
+diff --git a/tradingagents/dataflows/fixture_replay.py b/tradingagents/dataflows/fixture_replay.py
+index e622e12..8786d53 100644
+--- a/tradingagents/dataflows/fixture_replay.py
++++ b/tradingagents/dataflows/fixture_replay.py
+@@ -6,12 +6,13 @@
+ 当天实时缺失等场景，避免夜间自动开发误判数据源质量。
+ 
+ 功能：
+-  1. 内置 18 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
++  1. 内置 21 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
+      资金流单位异常、龙虎榜无触发、公告源失败、
+      AKShare 资金流失败→astock fallback、龙虎榜 NORMAL_NO_DATA、
+      龙虎榜 FAILED、公告失败→事件源弱证据、换手率/量比缺失、
+      融资融券有数据、融资融券失败、融资融券未查询、
+-     研报有数据、研报失败、研报未查询）
++     研报有数据、研报失败、研报未查询、
++     回购有数据、回购失败、回购未查询）
+   2. replay runner 将 fixture 模拟为 raw_evidence，输出数据源健康报告
+   3. 失败时写入 docs/data_source_reports/YYYY-MM-DD.md
+   4. 可被 scripts/auto_dev_loop.sh 或 OpenClaw 巡检调用
+@@ -68,6 +69,12 @@ FIXTURE_MARGIN_NOT_QUERIED = "margin_not_queried"  # [DATA-010] margin_trading_r
+ FIXTURE_REPORT_HAS_DATA = "report_has_data"  # [DATA-011] research_report_raw_evidence
+ FIXTURE_REPORT_FAILED = "report_failed"  # [DATA-011] research_report_raw_evidence
+ FIXTURE_REPORT_NOT_QUERIED = "report_not_queried"  # [DATA-011] research_report_raw_evidence
++FIXTURE_RATINGS_HAS_DATA = "ratings_has_data"  # [DATA-012] rating_raw_evidence
++FIXTURE_RATINGS_FAILED = "ratings_failed"  # [DATA-012] rating_raw_evidence
++FIXTURE_RATINGS_NOT_QUERIED = "ratings_not_queried"  # [DATA-012] rating_raw_evidence
++FIXTURE_BUYBACK_HAS_DATA = "buyback_has_data"  # [DATA-013] buyback_raw_evidence
++FIXTURE_BUYBACK_FAILED = "buyback_failed"  # [DATA-013] buyback_raw_evidence
++FIXTURE_BUYBACK_NOT_QUERIED = "buyback_not_queried"  # [DATA-013] buyback_raw_evidence
+ 
+ ALL_FIXTURE_IDS = [
+     FIXTURE_NORMAL_QUOTE,
+@@ -89,6 +96,12 @@ ALL_FIXTURE_IDS = [
+     FIXTURE_REPORT_HAS_DATA,
+     FIXTURE_REPORT_FAILED,
+     FIXTURE_REPORT_NOT_QUERIED,
++    FIXTURE_RATINGS_HAS_DATA,
++    FIXTURE_RATINGS_FAILED,
++    FIXTURE_RATINGS_NOT_QUERIED,
++    FIXTURE_BUYBACK_HAS_DATA,
++    FIXTURE_BUYBACK_FAILED,
++    FIXTURE_BUYBACK_NOT_QUERIED,
+ ]
+ 
+ 
+@@ -914,6 +927,202 @@ def _build_report_not_queried_fixture() -> FixtureEntry:
+     )
+ 
+ 
++def _build_ratings_has_data_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "ratings": {
++            "raw": "600519.SH [DATA-012] RATINGS_HAS_DATA: 分析师评级数据（Eastmoney reportapi，共 15 条）：\n"
++                   "- 2026-06-06 | 东方证券 | 买入 | 目标价: 2100 | 贵州茅台点评",
++            "field": "ratings",
++            "unit": "条",
++            "vendor": "cn_astock",
++            "endpoint": "reportapi.eastmoney.com/report/list",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "HAS_DATA",
++            "fallback_from": None,
++            "source_url": None,
++            "error": None,
++            "is_realtime_patched": False,
++            "unit_verified": None,
++            "record_count": 15,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_RATINGS_HAS_DATA,
++        description="评级数据正常返回",
++        data_type="rating",
++        vendor="cn_astock",
++        endpoint="reportapi.eastmoney.com/report/list",
++        expected_status="HAS_DATA",
++        raw_evidence=raw_evidence,
++        tags=["ratings", "has_data"],
++    )
++
++
++def _build_ratings_failed_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "ratings": {
++            "raw": "600519.SH [DATA-012] RATINGS_FAILED: 评级数据获取失败（Eastmoney reportapi）：ConnectionError",
++            "field": "ratings",
++            "unit": None,
++            "vendor": "cn_astock",
++            "endpoint": "reportapi.eastmoney.com/report/list",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "FAILED",
++            "fallback_from": None,
++            "source_url": None,
++            "error": "ConnectionError",
++            "is_realtime_patched": False,
++            "unit_verified": None,
++            "record_count": 0,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_RATINGS_FAILED,
++        description="评级查询失败",
++        data_type="rating",
++        vendor="cn_astock",
++        endpoint="reportapi.eastmoney.com/report/list",
++        expected_status="FAILED",
++        raw_evidence=raw_evidence,
++        tags=["ratings", "failed"],
++    )
++
++
++def _build_ratings_not_queried_fixture() -> FixtureEntry:
++    raw_evidence = {
++        "ratings": {
++            "raw": None,
++            "field": "ratings",
++            "unit": None,
++            "vendor": "",
++            "endpoint": "",
++            "as_of": "",
++            "fetched_at": "",
++            "status": "NOT_QUERIED",
++            "fallback_from": None,
++            "source_url": None,
++            "error": None,
++            "is_realtime_patched": False,
++            "unit_verified": None,
++            "record_count": 0,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_RATINGS_NOT_QUERIED,
++        description="评级未查询",
++        data_type="rating",
++        vendor="",
++        endpoint="",
++        expected_status="NOT_QUERIED",
++        raw_evidence=raw_evidence,
++        tags=["ratings", "not_queried"],
++    )
++
++
++def _build_buyback_has_data_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "buybacks": {
++            "raw": "601689.SH [DATA-013] BUYBACK_HAS_DATA: 回购数据（Eastmoney datacenter）：\n"
++                   "- 2026-05-15 | 金额: 50000.0万 | 数量: 2500000 | 进度: 实施中 | 目的: 股权激励",
++            "field": "buybacks",
++            "unit": "万元",
++            "vendor": "cn_astock",
++            "endpoint": "datacenter-web.eastmoney.com/RPT_SHAREBUYBACK_DET",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "HAS_DATA",
++            "fallback_from": None,
++            "source_url": None,
++            "error": None,
++            "is_realtime_patched": False,
++            "unit_verified": True,
++            "record_count": 3,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_BUYBACK_HAS_DATA,
++        description="回购数据正常返回",
++        data_type="buyback",
++        vendor="cn_astock",
++        endpoint="datacenter-web.eastmoney.com/RPT_SHAREBUYBACK_DET",
++        expected_status="HAS_DATA",
++        raw_evidence=raw_evidence,
++        tags=["buybacks", "has_data"],
++    )
++
++
++def _build_buyback_failed_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "buybacks": {
++            "raw": "601689.SH [DATA-013] BUYBACK_FAILED: 回购数据获取失败（Eastmoney datacenter）：ConnectionError",
++            "field": "buybacks",
++            "unit": None,
++            "vendor": "cn_astock",
++            "endpoint": "datacenter-web.eastmoney.com/RPT_SHAREBUYBACK_DET",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "FAILED",
++            "fallback_from": None,
++            "source_url": None,
++            "error": "ConnectionError",
++            "is_realtime_patched": False,
++            "unit_verified": None,
++            "record_count": 0,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_BUYBACK_FAILED,
++        description="回购查询失败",
++        data_type="buyback",
++        vendor="cn_astock",
++        endpoint="datacenter-web.eastmoney.com/RPT_SHAREBUYBACK_DET",
++        expected_status="FAILED",
++        raw_evidence=raw_evidence,
++        tags=["buybacks", "failed"],
++    )
++
++
++def _build_buyback_not_queried_fixture() -> FixtureEntry:
++    raw_evidence = {
++        "buybacks": {
++            "raw": None,
++            "field": "buybacks",
++            "unit": None,
++            "vendor": "",
++            "endpoint": "",
++            "as_of": "",
++            "fetched_at": "",
++            "status": "NOT_QUERIED",
++            "fallback_from": None,
++            "source_url": None,
++            "error": None,
++            "is_realtime_patched": False,
++            "unit_verified": None,
++            "record_count": 0,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_BUYBACK_NOT_QUERIED,
++        description="回购未查询",
++        data_type="buyback",
++        vendor="",
++        endpoint="",
++        expected_status="NOT_QUERIED",
++        raw_evidence=raw_evidence,
++        tags=["buybacks", "not_queried"],
++    )
++
++
+ _FIXTURE_BUILDERS = {
+     FIXTURE_NORMAL_QUOTE: _build_normal_quote_fixture,
+     FIXTURE_STALE_DAILY: _build_stale_daily_fixture,
+@@ -934,6 +1143,12 @@ _FIXTURE_BUILDERS = {
+     FIXTURE_REPORT_HAS_DATA: _build_report_has_data_fixture,
+     FIXTURE_REPORT_FAILED: _build_report_failed_fixture,
+     FIXTURE_REPORT_NOT_QUERIED: _build_report_not_queried_fixture,
++    FIXTURE_RATINGS_HAS_DATA: _build_ratings_has_data_fixture,
++    FIXTURE_RATINGS_FAILED: _build_ratings_failed_fixture,
++    FIXTURE_RATINGS_NOT_QUERIED: _build_ratings_not_queried_fixture,
++    FIXTURE_BUYBACK_HAS_DATA: _build_buyback_has_data_fixture,
++    FIXTURE_BUYBACK_FAILED: _build_buyback_failed_fixture,
++    FIXTURE_BUYBACK_NOT_QUERIED: _build_buyback_not_queried_fixture,
+ }
+ 
+ 
+diff --git a/tradingagents/dataflows/interface.py b/tradingagents/dataflows/interface.py
+index 17778c4..25ec248 100644
+--- a/tradingagents/dataflows/interface.py
++++ b/tradingagents/dataflows/interface.py
+@@ -46,6 +46,8 @@ TOOLS_CATEGORIES = {
+             "get_announcements",  # [DATA-P0-603629] astock_source_fallback
+             "get_margin_trading",  # [DATA-010] margin_trading_raw_evidence
+             "get_research_report",  # [DATA-011] research_report_raw_evidence
++            "get_ratings",  # [DATA-012] rating_raw_evidence
++            "get_buybacks",  # [DATA-013] buyback_raw_evidence
+         ],
+     },
+ }
+diff --git a/tradingagents/dataflows/providers/cn_akshare_provider.py b/tradingagents/dataflows/providers/cn_akshare_provider.py
+index 4455ad2..3b9700f 100644
+--- a/tradingagents/dataflows/providers/cn_akshare_provider.py
++++ b/tradingagents/dataflows/providers/cn_akshare_provider.py
+@@ -1229,3 +1229,63 @@ class CnAkshareProvider(BaseMarketDataProvider):
+             return f"{symbol} [DATA-011] REPORT_NORMAL_NO_DATA: AKShare 研报接口不可用。"
+         except Exception as exc:
+             return f"{symbol} [DATA-011] REPORT_FAILED: 研报数据获取失败：{type(exc).__name__}: {exc}"
++
++    def get_ratings(self, symbol: str) -> str:
++        """获取个股分析师评级数据。  # [DATA-012] rating_raw_evidence"""
++        code = self._normalize_symbol(symbol)
++        try:
++            ak = self._ak()
++            with AKSHARE_CALL_LOCK:
++                df = ak.stock_institute_recommend_detail(symbol=code)
++            if df is None or df.empty:
++                return f"{symbol} [DATA-012] RATINGS_NORMAL_NO_DATA: 该股无分析师评级数据。"
++            lines = [f"{symbol} [DATA-012] RATINGS_HAS_DATA: 分析师评级数据（AKShare stock_institute_recommend_detail）："]
++            for _, row in df.head(20).iterrows():
++                date_val = row.get("评级日期", row.get("date", ""))
++                rating = row.get("最新评级", row.get("rating", ""))
++                org = row.get("评级机构", row.get("org", ""))
++                analyst = row.get("分析师", "")
++                target_price = row.get("目标价", "")
++                line = f"- {date_val} | {org} | {rating}"
++                if analyst:
++                    line += f" | 分析师: {analyst}"
++                if target_price and str(target_price) != "nan":
++                    line += f" | 目标价: {target_price}"
++                lines.append(line)
++            return "\n".join(lines)
++        except AttributeError:
++            return f"{symbol} [DATA-012] RATINGS_NORMAL_NO_DATA: AKShare 评级接口不可用。"
++        except Exception as exc:
++            return f"{symbol} [DATA-012] RATINGS_FAILED: 评级数据获取失败：{type(exc).__name__}: {exc}"
++
++    def get_buybacks(self, symbol: str) -> str:
++        """获取个股回购计划/进展数据。  # [DATA-013] buyback_raw_evidence"""
++        code = self._normalize_symbol(symbol)
++        try:
++            ak = self._ak()
++            with AKSHARE_CALL_LOCK:
++                df = ak.stock_repurchase_em(symbol=code)
++            if df is None or df.empty:
++                return f"{symbol} [DATA-013] BUYBACK_NORMAL_NO_DATA: 该股无回购计划或进展数据。"
++            lines = [f"{symbol} [DATA-013] BUYBACK_HAS_DATA: 回购数据（AKShare stock_repurchase_em）："]
++            for _, row in df.head(15).iterrows():
++                date_val = row.get("公告日期", row.get("date", ""))
++                amount = row.get("回购金额", row.get("amount", ""))
++                volume = row.get("回购数量", row.get("volume", ""))
++                progress = row.get("回购进度", row.get("progress", ""))
++                purpose = row.get("回购目的", row.get("purpose", ""))
++                line = f"- {date_val}"
++                if amount:
++                    line += f" | 金额: {amount}"
++                if volume:
++                    line += f" | 数量: {volume}"
++                if progress:
++                    line += f" | 进度: {progress}"
++                if purpose:
++                    line += f" | 目的: {str(purpose)[:40]}"
++                lines.append(line)
++            return "\n".join(lines)
++        except AttributeError:
++            return f"{symbol} [DATA-013] BUYBACK_NORMAL_NO_DATA: AKShare 回购接口不可用。"
++        except Exception as exc:
++            return f"{symbol} [DATA-013] BUYBACK_FAILED: 回购数据获取失败：{type(exc).__name__}: {exc}"
+diff --git a/tradingagents/dataflows/providers/cn_astock_provider.py b/tradingagents/dataflows/providers/cn_astock_provider.py
+index ff53dde..6e289c6 100644
+--- a/tradingagents/dataflows/providers/cn_astock_provider.py
++++ b/tradingagents/dataflows/providers/cn_astock_provider.py
+@@ -1017,6 +1017,62 @@ class CnAstockProvider(BaseMarketDataProvider):
+         """东财研报列表 (reportapi) — 保留向后兼容。"""
+         return self.get_research_report(symbol)
+ 
++    def get_ratings(self, symbol: str) -> str:
++        """分析师评级/目标价 — 东财 reportapi 提取评级变更.  # [DATA-012] rating_raw_evidence"""
++        code = _extract_code(symbol)
++        try:
++            _rate_limit("em_ratings")
++            session = requests.Session()
++            session.headers.update({"User-Agent": UA, "Referer": "https://data.eastmoney.com/"})
++
++            all_records = []
++            for page in range(1, 3):
++                params = {
++                    "industryCode": "*", "pageSize": "50", "industry": "*",
++                    "rating": "*", "ratingChange": "*",
++                    "beginTime": "2000-01-01", "endTime": "2030-01-01",
++                    "pageNo": str(page), "fields": "", "qType": "0",
++                    "orgCode": "", "code": code, "rcode": "",
++                    "p": str(page), "pageNum": str(page), "pageNumber": str(page),
++                }
++                r = session.get(
++                    "https://reportapi.eastmoney.com/report/list",
++                    params=params, timeout=30,
++                )
++                d = r.json()
++                rows = d.get("data") or []
++                if not rows:
++                    break
++                all_records.extend(rows)
++                if page >= (d.get("TotalPage", 1) or 1):
++                    break
++                time.sleep(0.3)
++
++            if not all_records:
++                return f"{symbol} [DATA-012] RATINGS_NORMAL_NO_DATA: 该股无分析师评级数据。"
++
++            lines = [f"{symbol} [DATA-012] RATINGS_HAS_DATA: 分析师评级数据（Eastmoney reportapi，共 {len(all_records)} 条）："]
++            for rec in all_records[:20]:
++                date_val = (rec.get("publishDate", ""))[:10]
++                org = rec.get("orgSName", "未知")
++                rating = rec.get("emRatingName", "")
++                last_rating = rec.get("lastEmRatingName", "")
++                target_price = rec.get("indvAimPriceT", "")
++                title = rec.get("title", "")[:40]
++                line = f"- {date_val} | {org} | {rating}"
++                if last_rating:
++                    line += f"（前次: {last_rating}）"
++                if target_price and str(target_price) != "0":
++                    line += f" | 目标价: {target_price}"
++                if title:
++                    line += f" | {title}"
++                lines.append(line)
++
++            return "\n".join(lines)
++
++        except Exception as exc:
++            return f"{symbol} [DATA-012] RATINGS_FAILED: 评级数据获取失败（Eastmoney reportapi）：{type(exc).__name__}: {exc}"
++
+     def get_lhb_data(self, date: str, min_net_buy: float = None) -> str:
+         """全市场龙虎榜 — 东财 datacenter."""
+         try:
+@@ -1178,3 +1234,43 @@ class CnAstockProvider(BaseMarketDataProvider):
+ 
+         except Exception as exc:
+             return f"{symbol} [DATA-010] MARGIN_FAILED: 融资融券数据获取失败（Eastmoney datacenter）：{type(exc).__name__}: {exc}"
++
++    def get_buybacks(self, symbol: str) -> str:
++        """个股回购计划/进展 — 东财 datacenter.  # [DATA-013] buyback_raw_evidence"""
++        code = _extract_code(symbol)
++        try:
++            _rate_limit("em_buyback")
++            buyback_filter = (
++                f'(SECURITY_CODE="{code}")'
++            )
++            data = _eastmoney_datacenter(
++                "RPT_SHAREBUYBACK_DET",
++                filter_str=buyback_filter,
++                page_size=20,
++                sort_columns="NOTICE_DATE",
++                sort_types="-1",
++            )
++            if not data:
++                return f"{symbol} [DATA-013] BUYBACK_NORMAL_NO_DATA: 该股无回购计划或进展数据。"
++
++            lines = [f"{symbol} [DATA-013] BUYBACK_HAS_DATA: 回购数据（Eastmoney datacenter）："]
++            for row in data[:15]:
++                notice_date = row.get("NOTICE_DATE", "")[:10] if row.get("NOTICE_DATE") else ""
++                buyback_amount = (row.get("BUYBACK_AMOUNT") or 0) / 10000
++                buyback_volume = row.get("BUYBACK_VOLUME", 0)
++                progress = row.get("PROGRESS", "")
++                purpose = row.get("PURPOSE", "")
++                line = f"- {notice_date}"
++                if buyback_amount:
++                    line += f" | 金额: {buyback_amount:.1f}万"
++                if buyback_volume:
++                    line += f" | 数量: {buyback_volume}"
++                if progress:
++                    line += f" | 进度: {progress}"
++                if purpose:
++                    line += f" | 目的: {str(purpose)[:40]}"
++                lines.append(line)
++            return "\n".join(lines)
++
++        except Exception as exc:
++            return f"{symbol} [DATA-013] BUYBACK_FAILED: 回购数据获取失败（Eastmoney datacenter）：{type(exc).__name__}: {exc}"
+diff --git a/tradingagents/dataflows/source_catalog.py b/tradingagents/dataflows/source_catalog.py
+index 4afe9bb..ab3cda4 100644
+--- a/tradingagents/dataflows/source_catalog.py
++++ b/tradingagents/dataflows/source_catalog.py
+@@ -43,6 +43,7 @@ class DataType(str, Enum):
+     HOT_STOCKS = "hot_stocks"
+     ZT_POOL = "zt_pool"
+     REALTIME_QUOTES = "realtime_quotes"
++    BUYBACK = "buyback"  # [DATA-013] buyback_raw_evidence
+ 
+ 
+ class Freshness(str, Enum):
+@@ -406,6 +407,30 @@ def _build_catalog() -> None:
+         notes="东财研报列表，支持分页",
+     )
+ 
++    # ── 评级（分析师评级/目标价，区别于研报全文）──────────────────────────
++    _register(
++        "cn_akshare", "stock_institute_recommend_detail",
++        DataType.RATING,
++        fields=["股票代码", "股票名称", "目标价", "最新评级", "评级机构", "分析师", "行业", "评级日期"],
++        unit="条",
++        freshness=Freshness.DAILY,
++        rate_limit_risk=RateLimitRisk.MEDIUM,
++        fallback_priority=1,
++        is_primary=True,
++        known_gaps=["新浪财经评级数据覆盖不全"],
++        notes="AKShare 新浪财经股票评级记录",
++    )
++    _register(
++        "cn_astock", "reportapi.eastmoney.com/report/list",
++        DataType.RATING,
++        fields=["publishDate", "orgSName", "emRatingName", "lastEmRatingName", "emRatingChange", "indvAimPriceT", "title"],
++        unit="条",
++        freshness=Freshness.DAILY,
++        rate_limit_risk=RateLimitRisk.MEDIUM,
++        fallback_priority=2,
++        notes="东财研报列表提取评级变更与目标价",
++    )
++
+     # ── 新闻 ───────────────────────────────────────────────────────────
+     _register(
+         "cn_akshare", "stock_news_em",
+@@ -555,6 +580,30 @@ def _build_catalog() -> None:
+         notes="雪球热搜股票",
+     )
+ 
++    # ── 回购 ──────────────────────────────────────────────────────────
++    # [DATA-013] buyback_raw_evidence
++    _register(
++        "cn_akshare", "stock_repurchase",
++        DataType.BUYBACK,
++        fields=["公告日期", "回购金额", "回购数量", "回购进度", "回购目的"],
++        unit="万元",
++        freshness=Freshness.DAILY,
++        rate_limit_risk=RateLimitRisk.MEDIUM,
++        fallback_priority=1,
++        is_primary=True,
++        notes="AKShare 个股回购计划/进展",
++    )
++    _register(
++        "cn_astock", "datacenter-web.eastmoney.com/RPT_SHAREBUYBACK",
++        DataType.BUYBACK,
++        fields=["NOTICE_DATE", "BUYBACK_AMOUNT", "BUYBACK_VOLUME", "PROGRESS", "PURPOSE"],
++        unit="元(需/10000转万元)",
++        freshness=Freshness.DAILY,
++        rate_limit_risk=RateLimitRisk.MEDIUM,
++        fallback_priority=2,
++        notes="东财 datacenter 回购数据",
++    )
++
+ 
+ _build_catalog()
+ 
+
+exec
+/bin/zsh -lc "git diff -- tests/test_data005_fixture_replay.py tests/test_data011_research_report.py tests/test_readiness_score.py tests/test_data012_ratings.py tests/test_data013_buyback.py docs/TASKS.md docs/DEVLOG.md && grep -R \"def get_ratings\\|DataType.RATING\\|route_to_vendor\\|get_buybacks\" -n tradingagents tests | head -200" in /Users/maybee/TradingAgents-AShare
+ succeeded in 409ms:
+tradingagents/tradeflow/observe_runner.py:76:        from tradingagents.dataflows.interface import route_to_vendor
+tradingagents/tradeflow/observe_runner.py:77:        raw_json = route_to_vendor("get_realtime_quotes", symbols)
+Binary file tradingagents/tradeflow/__pycache__/observe_runner.cpython-312.pyc matches
+tradingagents/agents/utils/fundamental_data_tools.py:3:from tradingagents.dataflows.interface import route_to_vendor
+tradingagents/agents/utils/fundamental_data_tools.py:20:    return route_to_vendor("get_fundamentals", ticker, curr_date)
+tradingagents/agents/utils/fundamental_data_tools.py:39:    return route_to_vendor("get_balance_sheet", ticker, freq, curr_date)
+tradingagents/agents/utils/fundamental_data_tools.py:58:    return route_to_vendor("get_cashflow", ticker, freq, curr_date)
+tradingagents/agents/utils/fundamental_data_tools.py:77:    return route_to_vendor("get_income_statement", ticker, freq, curr_date)
+Binary file tradingagents/agents/utils/__pycache__/fundamental_data_tools.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/news_data_tools.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/game_theory_tools.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/technical_indicators_tools.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/core_stock_tools.cpython-312.pyc matches
+tradingagents/agents/utils/news_data_tools.py:3:from tradingagents.dataflows.interface import route_to_vendor
+tradingagents/agents/utils/news_data_tools.py:21:    return route_to_vendor("get_news", ticker, start_date, end_date)
+tradingagents/agents/utils/news_data_tools.py:39:    return route_to_vendor("get_global_news", curr_date, look_back_days, limit)
+tradingagents/agents/utils/news_data_tools.py:53:    return route_to_vendor("get_insider_transactions", ticker)
+tradingagents/agents/utils/game_theory_tools.py:3:from tradingagents.dataflows.interface import route_to_vendor
+tradingagents/agents/utils/game_theory_tools.py:9:    return route_to_vendor("get_board_fund_flow")
+tradingagents/agents/utils/game_theory_tools.py:17:    return route_to_vendor("get_individual_fund_flow", symbol)
+tradingagents/agents/utils/game_theory_tools.py:28:    return route_to_vendor("get_lhb_detail", symbol, date, force=force)
+tradingagents/agents/utils/game_theory_tools.py:36:    return route_to_vendor("get_zt_pool", date)
+tradingagents/agents/utils/game_theory_tools.py:42:    return route_to_vendor("get_hot_stocks_xq")
+tradingagents/agents/utils/game_theory_tools.py:50:    return route_to_vendor("get_announcements", symbol)
+tradingagents/agents/utils/game_theory_tools.py:58:    return route_to_vendor("get_margin_trading", symbol)
+tradingagents/agents/utils/core_stock_tools.py:3:from tradingagents.dataflows.interface import route_to_vendor
+tradingagents/agents/utils/core_stock_tools.py:22:    return route_to_vendor("get_stock_data", symbol, start_date, end_date)
+tradingagents/agents/utils/technical_indicators_tools.py:3:from tradingagents.dataflows.interface import route_to_vendor
+tradingagents/agents/utils/technical_indicators_tools.py:23:    return route_to_vendor("get_indicators", symbol, indicator, curr_date, look_back_days)
+tradingagents/dataflows/source_catalog.py:413:        DataType.RATING,
+tradingagents/dataflows/source_catalog.py:425:        DataType.RATING,
+tradingagents/dataflows/providers/cn_akshare_provider.py:1233:    def get_ratings(self, symbol: str) -> str:
+tradingagents/dataflows/providers/cn_akshare_provider.py:1261:    def get_buybacks(self, symbol: str) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:1020:    def get_ratings(self, symbol: str) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:1238:    def get_buybacks(self, symbol: str) -> str:
+Binary file tradingagents/dataflows/providers/__pycache__/cn_astock_provider.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/cn_akshare_provider.cpython-312.pyc matches
+tradingagents/dataflows/interface.py:50:            "get_buybacks",  # [DATA-013] buyback_raw_evidence
+tradingagents/dataflows/interface.py:158:def route_to_vendor(method: str, *args, **kwargs):
+Binary file tradingagents/dataflows/__pycache__/interface.cpython-314.pyc matches
+Binary file tradingagents/dataflows/__pycache__/interface.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/health_check.cpython-312.pyc matches
+tradingagents/dataflows/health_check.py:24:from .interface import route_to_vendor, _registry, get_vendor, _resolve_vendor_chain, TOOLS_CATEGORIES
+tradingagents/dataflows/health_check.py:199:        result = route_to_vendor(method, *real_args, **real_kwargs)
+tests/test_data012_ratings.py:18:        assert DataType.RATING.value == "rating"
+tests/test_data_p0_fund_route.py:4:1. route_to_vendor failure-string detection → fallback to next vendor
+tests/test_data_p0_fund_route.py:15:    route_to_vendor,
+tests/test_data_p0_fund_route.py:59:# ── route_to_vendor fallback chain ──────────────────────────────
+tests/test_data_p0_fund_route.py:91:                result = route_to_vendor("get_individual_fund_flow", "603629.SH")
+tests/test_data_p0_fund_route.py:115:                    route_to_vendor("get_individual_fund_flow", "603629.SH")
+tests/test_data_p0_fund_route.py:132:                result = route_to_vendor("get_individual_fund_flow", "603629.SH")
+tests/test_data_p0_fund_route.py:153:                result = route_to_vendor("get_individual_fund_flow", "603629.SH")
+tests/test_data_p0_fund_route.py:175:                route_to_vendor("get_individual_fund_flow", "603629.SH")
+tests/test_data_p0_fund_route.py:352:                result = route_to_vendor("get_individual_fund_flow", "603629.SH")
+tests/test_realtime_quote_provider.py:51:def test_route_to_vendor_resolves_realtime_quotes():
+tests/test_realtime_quote_provider.py:52:    """route_to_vendor can route get_realtime_quotes to the correct category."""
+Binary file tests/__pycache__/test_data_p0_fund_route.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_realtime_quote_provider.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_dashboard_tracking.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_m008_health_check.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_data010_margin_trading.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_data013_buyback.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_raw_evidence_vendor.cpython-312-pytest-9.0.2.pyc matches
+tests/test_data013_buyback.py:285:    def test_get_buybacks_in_tools_categories(self):
+tests/test_data013_buyback.py:287:        assert "get_buybacks" in tools
+tests/test_data013_buyback.py:289:    def test_get_buybacks_category(self):
+tests/test_data013_buyback.py:290:        assert get_category_for_method("get_buybacks") == "cn_market_data"
+tests/test_data013_buyback.py:301:    def test_akshare_has_get_buybacks(self):
+tests/test_data013_buyback.py:304:        assert hasattr(provider, "get_buybacks")
+tests/test_data013_buyback.py:305:        assert callable(provider.get_buybacks)
+tests/test_data013_buyback.py:307:    def test_astock_has_get_buybacks(self):
+tests/test_data013_buyback.py:310:        assert hasattr(provider, "get_buybacks")
+tests/test_data013_buyback.py:311:        assert callable(provider.get_buybacks)
+tests/test_data013_buyback.py:318:        result = provider.get_buybacks("600519.SH")
+tests/test_data013_buyback.py:334:        result = provider.get_buybacks("600519.SH")
+tests/test_data013_buyback.py:342:        result = provider.get_buybacks("600519.SH")
+tests/test_data013_buyback.py:358:        result = provider.get_buybacks("600519.SH")
+tests/test_data013_buyback.py:366:        result = provider.get_buybacks("600519.SH")
+tests/test_data013_buyback.py:511:        assert "get_buybacks" in tools
+tests/test_raw_evidence_vendor.py:6:    route_to_vendor,
+tests/test_m008_health_check.py:175:# ── _probe_endpoint (with mocked route_to_vendor) ──────────────────────
+tests/test_m008_health_check.py:179:        with patch("tradingagents.dataflows.health_check.route_to_vendor") as mock_route:
+tests/test_m008_health_check.py:189:        with patch("tradingagents.dataflows.health_check.route_to_vendor") as mock_route:
+tests/test_m008_health_check.py:198:        with patch("tradingagents.dataflows.health_check.route_to_vendor") as mock_route:
+tests/test_m008_health_check.py:207:        with patch("tradingagents.dataflows.health_check.route_to_vendor") as mock_route:
+tests/test_m008_health_check.py:215:        with patch("tradingagents.dataflows.health_check.route_to_vendor") as mock_route:
+tests/test_dashboard_tracking.py:228:def test_fetch_live_quotes_returns_empty_when_route_to_vendor_fails(monkeypatch):
+tests/test_dashboard_tracking.py:234:    monkeypatch.setattr("api.services.tracking_board_service.route_to_vendor", _fail)
+tests/test_dashboard_tracking.py:259:        "api.services.tracking_board_service.route_to_vendor",
+tests/test_data010_margin_trading.py:49:    route_to_vendor,
+tests/test_data010_margin_trading.py:355:    def test_route_to_vendor_margin_trading_has_method(self):
+
+exec
+/bin/zsh -lc "sed -n '1,120p' tradingagents/dataflows/source_catalog.py; sed -n '130,230p' tradingagents/dataflows/interface.py; sed -n '1,120p' tradingagents/dataflows/providers/base.py 2>/dev/null || ls tradingagents/dataflows/providers" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [DATA-001] source_catalog
+"""
+A股数据源能力目录与 fallback 矩阵。
+
+提供统一的 source capability 查询接口：
+  - 每种 data_type (quote / fund_flow / lhb / notice / report / ...)
+    有明确的主选 vendor / fallback 顺序
+  - 每个 source 记录 fields / unit / freshness / rate_limit_risk / known_gaps
+  - 缺少字段或单位未知的数据源不得标为 primary
+
+使用示例：
+    from tradingagents.dataflows.source_catalog import (
+        get_sources_for_type,
+        get_primary_source,
+        SourceCapability,
+    )
+    sources = get_sources_for_type("quote")
+    for s in sources:
+        print(s.vendor, s.fallback_priority, s.fields)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional
+
+
+class DataType(str, Enum):
+    QUOTE = "quote"
+    OHLCV = "ohlcv"
+    FUND_FLOW = "fund_flow"
+    BOARD_FUND_FLOW = "board_fund_flow"
+    LHB = "lhb"
+    MARGIN_TRADING = "margin_trading"
+    NOTICE = "notice"
+    REPORT = "report"
+    RATING = "rating"
+    NEWS = "news"
+    GLOBAL_NEWS = "global_news"
+    FINANCIALS = "financials"
+    INSIDER = "insider"
+    HOT_STOCKS = "hot_stocks"
+    ZT_POOL = "zt_pool"
+    REALTIME_QUOTES = "realtime_quotes"
+    BUYBACK = "buyback"  # [DATA-013] buyback_raw_evidence
+
+
+class Freshness(str, Enum):
+    REALTIME = "realtime"
+    INTRADAY = "intraday"
+    DAILY = "daily"
+    DELAYED = "delayed"
+    STALE = "stale"
+    UNKNOWN = "unknown"
+
+
+class RateLimitRisk(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class SourceCapability:
+    vendor: str
+    endpoint: str
+    data_type: DataType
+    fields: List[str] = field(default_factory=list)
+    unit: str = ""
+    freshness: Freshness = Freshness.UNKNOWN
+    rate_limit_risk: RateLimitRisk = RateLimitRisk.UNKNOWN
+    fallback_priority: int = 99
+    known_gaps: List[str] = field(default_factory=list)
+    is_primary: bool = False
+    notes: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "vendor": self.vendor,
+            "endpoint": self.endpoint,
+            "data_type": self.data_type.value,
+            "fields": self.fields,
+            "unit": self.unit,
+            "freshness": self.freshness.value,
+            "rate_limit_risk": self.rate_limit_risk.value,
+            "fallback_priority": self.fallback_priority,
+            "known_gaps": self.known_gaps,
+            "is_primary": self.is_primary,
+            "notes": self.notes,
+        }
+
+    @property
+    def can_be_primary(self) -> bool:
+        if not self.fields:
+            return False
+        if not self.unit and self.data_type in (
+            DataType.FUND_FLOW,
+            DataType.BOARD_FUND_FLOW,
+            DataType.OHLCV,
+            DataType.QUOTE,
+            DataType.REALTIME_QUOTES,
+        ):
+            return False
+        if self.freshness == Freshness.UNKNOWN:
+            return False
+        if self.freshness == Freshness.STALE:
+            return False
+        return True
+
+
+_SOURCE_CATALOG: List[SourceCapability] = []
+
+
+def _register(
+    vendor: str,
+    endpoint: str,
+    data_type: DataType,
+    *,
+    """Get configured vendor for category or tool method."""
+    config = get_config()
+
+    if method:
+        tool_vendors = config.get("tool_vendors", {})
+        if method in tool_vendors:
+            return tool_vendors[method]
+
+    return config.get("data_vendors", {}).get(category, "yfinance")
+
+
+def _resolve_vendor_chain(method: str, configured_vendor: str) -> list[str]:
+    configured = [v.strip() for v in configured_vendor.split(",") if v.strip()]
+    fallback = configured.copy()
+
+    for provider_name in _registry.list_names():
+        if provider_name in fallback:
+            continue
+        provider = _registry.get(provider_name)
+        # 占位 provider（如 cn_stub）不自动追加进 fallback chain，
+        # 避免污染日志和兜底链；用户显式配置仍可强制使用。
+        if getattr(provider, "is_placeholder", False):
+            continue
+        fallback.append(provider_name)
+
+    return fallback
+
+
+def route_to_vendor(method: str, *args, **kwargs):
+    """Route method calls to provider implementations with fallback support."""
+    category = get_category_for_method(method)
+    vendor_config = get_vendor(category, method)
+    fallback_vendors = _resolve_vendor_chain(method, vendor_config)
+    args_summary = _summarize_args(args, kwargs)
+    last_exc = None
+    _trace(
+        f"method={method} {args_summary} category={category} "
+        f"configured='{vendor_config}' chain={fallback_vendors}"
+    )
+
+    for vendor in fallback_vendors:
+        provider = _registry.get(vendor)
+        if provider is None:
+            _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-registered")
+            continue
+
+        impl_func = getattr(provider, method, None)
+        if impl_func is None:
+            _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-implemented")
+            continue
+
+        try:
+            result = impl_func(*args, **kwargs)
+            if _is_failure_result(result):  # [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth
+                _trace(
+                    f"method={method} {args_summary} vendor={vendor} status=fallback "
+                    f"reason=failure-string-detected"
+                )
+                continue
+            _last_hit_vendor[method] = vendor  # [N-003] cn_astock_raw_evidence
+            _trace(f"method={method} {args_summary} vendor={vendor} status=hit")
+            return result
+        except (AlphaVantageRateLimitError, NotImplementedError) as exc:
+            last_exc = exc
+            # Try next provider for transient/routing issues or placeholder providers.
+            _trace(
+                f"method={method} {args_summary} vendor={vendor} status=fallback "
+                f"reason={type(exc).__name__}: {exc}"
+            )
+            continue
+        except Exception as exc:
+            # Provider-specific runtime/parsing errors (e.g., schema changes, KeyError)
+            # should not terminate the full chain; fall through to next vendor.
+            last_exc = exc
+            _trace(
+                f"method={method} {args_summary} vendor={vendor} status=fallback "
+                f"reason={type(exc).__name__}: {exc}"
+            )
+            continue
+
+    _trace(f"method={method} {args_summary} status=failed reason=no-available-vendor")
+    if last_exc is not None:
+        raise RuntimeError(
+            f"No available vendor for method '{method}'. "
+            f"Configured chain: {fallback_vendors}. "
+            f"Last error: {type(last_exc).__name__}: {last_exc}"
+        ) from last_exc
+    raise RuntimeError(
+        f"No available vendor for method '{method}'. "
+        f"Configured chain: {fallback_vendors}"
+    )
+from abc import ABC, abstractmethod
+
+
+class BaseMarketDataProvider(ABC):
+    """Abstract interface for market data providers."""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Provider identifier used by config routing."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_stock_data(self, symbol: str, start_date: str, end_date: str) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_indicators(
+        self, symbol: str, indicator: str, curr_date: str, look_back_days: int
+    ) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_fundamentals(self, ticker: str, curr_date: str = None) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_balance_sheet(
+        self, ticker: str, freq: str = "quarterly", curr_date: str = None
+    ) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_cashflow(
+        self, ticker: str, freq: str = "quarterly", curr_date: str = None
+    ) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_income_statement(
+        self, ticker: str, freq: str = "quarterly", curr_date: str = None
+    ) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_global_news(
+        self, curr_date: str, look_back_days: int = 7, limit: int = 50
+    ) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_insider_transactions(self, symbol: str) -> str:
+        raise NotImplementedError
+
+    def get_realtime_quotes(self, symbols: list[str]) -> str:
+        """Return real-time quotes for a list of symbols as a JSON string.
+
+        Keys are original symbols (e.g. "600519.SH"), values are dicts with:
+        price, open, high, low, previous_close, change, change_pct, volume, amount.
+        """
+        raise NotImplementedError
+
+
+exec
+/bin/zsh -lc "sed -n '1,140p' tradingagents/dataflows/interface.py; grep -R \"RATING\" -n tradingagents/dataflows/source_catalog.py tests/test_data012_ratings.py; sed -n '1,220p' tests/test_data013_buyback.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+import os
+
+from .alpha_vantage_common import AlphaVantageRateLimitError
+from .config import get_config
+from .providers import build_default_registry
+
+# Tools organized by category
+TOOLS_CATEGORIES = {
+    "core_stock_apis": {
+        "description": "OHLCV stock price data",
+        "tools": ["get_stock_data"],
+    },
+    "technical_indicators": {
+        "description": "Technical analysis indicators",
+        "tools": ["get_indicators"],
+    },
+    "fundamental_data": {
+        "description": "Company fundamentals",
+        "tools": [
+            "get_fundamentals",
+            "get_balance_sheet",
+            "get_cashflow",
+            "get_income_statement",
+        ],
+    },
+    "news_data": {
+        "description": "News and insider data",
+        "tools": [
+            "get_news",
+            "get_global_news",
+            "get_insider_transactions",
+        ],
+    },
+    "realtime_data": {
+        "description": "Real-time market quotes",
+        "tools": ["get_realtime_quotes"],
+    },
+    "cn_market_data": {
+        "description": "China A-share market sentiment and fund flow data",
+        "tools": [
+            "get_board_fund_flow",
+            "get_individual_fund_flow",
+            "get_lhb_detail",
+            "get_zt_pool",
+            "get_hot_stocks_xq",
+            "get_announcements",  # [DATA-P0-603629] astock_source_fallback
+            "get_margin_trading",  # [DATA-010] margin_trading_raw_evidence
+            "get_research_report",  # [DATA-011] research_report_raw_evidence
+            "get_ratings",  # [DATA-012] rating_raw_evidence
+            "get_buybacks",  # [DATA-013] buyback_raw_evidence
+        ],
+    },
+}
+
+_registry = build_default_registry()
+
+VENDOR_LIST = _registry.list_names()
+
+# [N-003] cn_astock_raw_evidence: track which vendor last handled each method
+_last_hit_vendor: dict[str, str] = {}
+
+
+def get_last_hit_vendor(method: str) -> str:
+    """Return the vendor name that most recently produced a successful hit for *method*."""
+    return _last_hit_vendor.get(method, "")
+
+
+def _is_trace_enabled() -> bool:
+    env_value = os.getenv("TA_TRACE")
+    if env_value is not None:
+        return env_value.strip().lower() in ("1", "true", "yes", "on")
+
+    config = get_config()
+    return bool(config.get("provider_trace", True))
+
+
+def _trace(msg: str) -> None:
+    if _is_trace_enabled():
+        print(f"[provider-trace] {msg}", flush=True)
+
+
+_FAILURE_RESULT_PATTERNS = (
+    "数据获取失败",
+    "ProxyError",
+    "ConnectionError",
+    "Max retries exceeded",
+    "Unable to connect",
+    "暂不可用",
+    "获取失败",
+    "TimeoutError",
+    "ConnectTimeout",
+    "ReadTimeout",
+)
+
+
+def _is_failure_result(result) -> bool:
+    if not isinstance(result, str):
+        return False
+    return any(p in result for p in _FAILURE_RESULT_PATTERNS)
+
+
+_TRACE_KEYS = ("symbol", "ticker", "start_date", "end_date", "curr_date", "indicator")
+
+
+def _summarize_args(args: tuple, kwargs: dict) -> str:
+    """格式化首参数（通常是 symbol）和常见日期/指标键，用于 trace 日志定位。"""
+    parts = []
+    if args:
+        # 约定：所有 provider 方法首参数为 symbol/ticker
+        parts.append(f"symbol={args[0]!r}")
+        if len(args) >= 2:
+            parts.append(f"arg2={args[1]!r}")
+        if len(args) >= 3:
+            parts.append(f"arg3={args[2]!r}")
+    for k, v in kwargs.items():
+        if k in _TRACE_KEYS:
+            parts.append(f"{k}={v!r}")
+    return " ".join(parts)
+
+
+def get_category_for_method(method: str) -> str:
+    """Get the category that contains the specified method."""
+    for category, info in TOOLS_CATEGORIES.items():
+        if method in info["tools"]:
+            return category
+    raise ValueError(f"Method '{method}' not found in any category")
+
+
+def get_vendor(category: str, method: str = None) -> str:
+    """Get configured vendor for category or tool method."""
+    config = get_config()
+
+    if method:
+        tool_vendors = config.get("tool_vendors", {})
+        if method in tool_vendors:
+            return tool_vendors[method]
+
+    return config.get("data_vendors", {}).get(category, "yfinance")
+
+
+tradingagents/dataflows/source_catalog.py:38:    RATING = "rating"
+tradingagents/dataflows/source_catalog.py:413:        DataType.RATING,
+tradingagents/dataflows/source_catalog.py:425:        DataType.RATING,
+tests/test_data012_ratings.py:18:        assert DataType.RATING.value == "rating"
+tests/test_data012_ratings.py:78:            raw="600519.SH [DATA-012] RATINGS_HAS_DATA: ...",
+tests/test_data012_ratings.py:90:            raw="600519.SH [DATA-012] RATINGS_FAILED: ConnectionError",
+tests/test_data012_ratings.py:174:                "raw": "600519.SH [DATA-012] RATINGS_HAS_DATA: ...",
+tests/test_data012_ratings.py:187:                "raw": "600519.SH [DATA-012] RATINGS_FAILED: ConnectionError",
+tests/test_data012_ratings.py:227:        raw = {"ratings": "600519.SH [DATA-012] RATINGS_HAS_DATA: ..."}
+tests/test_data012_ratings.py:233:        raw = {"ratings": "600519.SH [DATA-012] RATINGS_FAILED: error"}
+tests/test_data012_ratings.py:239:        raw = {"ratings": "600519.SH [DATA-012] RATINGS_NORMAL_NO_DATA: 无分析师评级数据"}
+tests/test_data012_ratings.py:351:        assert "RATINGS_HAS_DATA" in ev["raw"]
+tests/test_data012_ratings.py:472:            assert "RATINGS_FAILED" in result
+tests/test_data012_ratings.py:481:            assert "RATINGS_FAILED" in result
+tests/test_data012_ratings.py:492:            assert "RATINGS_NORMAL_NO_DATA" in result
+tests/test_data012_ratings.py:515:            assert "RATINGS_HAS_DATA" in result
+tests/test_data012_ratings.py:529:            assert "RATINGS_NORMAL_NO_DATA" in result or "RATINGS_FAILED" in result
+tests/test_data012_ratings.py:548:            assert "RATINGS_HAS_DATA" in result
+# [DATA-013] buyback_raw_evidence
+"""
+Tests for buyback data source registration, provider routing, raw_evidence,
+evidence coverage audit, readiness score, and fixture replay.
+"""
+
+import pytest
+from unittest.mock import patch, MagicMock
+
+from tradingagents.dataflows.source_catalog import (
+    DataType,
+    Freshness,
+    RateLimitRisk,
+    get_sources_for_type,
+    get_primary_source,
+    get_fallback_chain,
+    get_all_data_types,
+    validate_catalog,
+    _SOURCE_CATALOG,
+)
+from tradingagents.dataflows.evidence_contract import (
+    EvidenceContract,
+    resolve_data_type,
+    compute_contract_completeness,
+    _REQUIRED_FIELDS_FOR_COMPLETENESS,
+)
+from tradingagents.dataflows.evidence_coverage_audit import (
+    audit_raw_evidence,
+    _EVIDENCE_FIELD_LABELS,
+    _EVIDENCE_FIELD_FAMILIES,
+)
+from tradingagents.agents.utils.readiness_score import (
+    EvidenceStatus,
+    calculate_evidence_coverage,
+    infer_evidence_statuses,
+)
+from tradingagents.dataflows.fixture_replay import (
+    FIXTURE_BUYBACK_HAS_DATA,
+    FIXTURE_BUYBACK_FAILED,
+    FIXTURE_BUYBACK_NOT_QUERIED,
+    ALL_FIXTURE_IDS,
+    get_fixture,
+    get_all_fixtures,
+    run_fixture_replay,
+)
+from tradingagents.dataflows.interface import (
+    TOOLS_CATEGORIES,
+    get_category_for_method,
+    _FAILURE_RESULT_PATTERNS,
+)
+
+
+# ── Source Catalog ────────────────────────────────────────────────────
+
+
+class TestSourceCatalogBuyback:
+    def test_buyback_data_type_exists(self):
+        assert DataType.BUYBACK.value == "buyback"
+
+    def test_buyback_sources_registered(self):
+        sources = get_sources_for_type(DataType.BUYBACK)
+        assert len(sources) >= 2
+
+    def test_buyback_primary_source(self):
+        primary = get_primary_source(DataType.BUYBACK)
+        assert primary is not None
+        assert primary.vendor == "cn_akshare"
+        assert primary.is_primary
+
+    def test_buyback_fallback_chain(self):
+        chain = get_fallback_chain(DataType.BUYBACK)
+        assert "cn_akshare" in chain
+        assert "cn_astock" in chain
+        assert chain.index("cn_akshare") < chain.index("cn_astock")
+
+    def test_buyback_in_all_data_types(self):
+        all_types = get_all_data_types()
+        assert "buyback" in all_types
+
+    def test_buyback_primary_fields(self):
+        primary = get_primary_source(DataType.BUYBACK)
+        assert len(primary.fields) > 0
+
+    def test_buyback_primary_endpoint(self):
+        primary = get_primary_source(DataType.BUYBACK)
+        assert primary.endpoint == "stock_repurchase"
+
+    def test_catalog_validation_passes(self):
+        issues = validate_catalog()
+        buyback_issues = [i for i in issues if "buyback" in i.lower()]
+        assert len(buyback_issues) == 0
+
+
+# ── Evidence Contract ─────────────────────────────────────────────────
+
+
+class TestEvidenceContractBuyback:
+    def test_resolve_data_type_buybacks(self):
+        assert resolve_data_type("buybacks") == "buyback"
+
+    def test_buyback_has_data_contract(self):
+        contract = EvidenceContract(
+            field="buybacks",
+            unit="万元",
+            vendor="cn_astock",
+            endpoint="datacenter-web.eastmoney.com/RPT_SHAREBUYBACK_DET",
+            status="HAS_DATA",
+            unit_verified=True,
+            record_count=3,
+        )
+        assert contract.has_data
+        assert contract.unit_known
+        assert contract.unit_verified is True
+
+    def test_buyback_failed_contract(self):
+        contract = EvidenceContract(
+            field="buybacks",
+            vendor="cn_astock",
+            status="FAILED",
+            error="ConnectionError",
+        )
+        assert contract.is_failed
+        assert not contract.has_data
+
+    def test_buyback_completeness(self):
+        raw = {
+            "buybacks": {
+                "raw": "data",
+                "field": "buybacks",
+                "unit": "万元",
+                "vendor": "cn_astock",
+                "endpoint": "test",
+                "status": "HAS_DATA",
+                "unit_verified": True,
+            }
+        }
+        result = compute_contract_completeness(raw)
+        assert result["completeness_score"] > 0
+
+    def test_buyback_missing_completeness(self):
+        raw = {
+            "buybacks": {
+                "raw": None,
+                "field": "buybacks",
+                "status": "FAILED",
+            }
+        }
+        result = compute_contract_completeness(raw)
+        assert "buybacks" in result["missing_details"]
+
+    def test_buyback_in_required_fields(self):
+        assert "buybacks" in _REQUIRED_FIELDS_FOR_COMPLETENESS
+        assert "status" in _REQUIRED_FIELDS_FOR_COMPLETENESS["buybacks"]
+        assert "vendor" in _REQUIRED_FIELDS_FOR_COMPLETENESS["buybacks"]
+        assert "unit" in _REQUIRED_FIELDS_FOR_COMPLETENESS["buybacks"]
+
+
+# ── Evidence Coverage Audit ───────────────────────────────────────────
+
+
+class TestEvidenceCoverageAuditBuyback:
+    def test_buyback_label(self):
+        assert _EVIDENCE_FIELD_LABELS["buybacks"] == "回购"
+
+    def test_buyback_family(self):
+        assert _EVIDENCE_FIELD_FAMILIES["buybacks"] == "buyback"
+
+    def test_audit_buyback_has_data(self):
+        raw = {
+            "buybacks": {
+                "raw": "data",
+                "field": "buybacks",
+                "unit": "万元",
+                "vendor": "cn_astock",
+                "status": "HAS_DATA",
+                "unit_verified": True,
+            }
+        }
+        result = audit_raw_evidence(raw)
+        assert "buybacks" in result.has_data_fields
+
+    def test_audit_buyback_failed(self):
+        raw = {
+            "buybacks": {
+                "raw": "error",
+                "field": "buybacks",
+                "vendor": "cn_astock",
+                "status": "FAILED",
+                "error": "ConnectionError",
+            }
+        }
+        result = audit_raw_evidence(raw)
+        assert "buybacks" in result.failed_fields
+
+
+# ── Readiness Score ───────────────────────────────────────────────────
+
+
+class TestReadinessScoreBuyback:
+    def test_buyback_not_queried_default(self):
+        statuses = infer_evidence_statuses({}, raw_evidence={})
+        assert statuses["buybacks"] == EvidenceStatus.NOT_QUERIED
+
+    def test_buyback_has_data_from_structured(self):
+        raw = {
+            "buybacks": {
+                "raw": "data",
+                "status": "HAS_DATA",
+            }
+        }
+        statuses = infer_evidence_statuses({}, raw_evidence=raw)
+        assert statuses["buybacks"] == EvidenceStatus.HAS_DATA
+
+    def test_buyback_failed_from_structured(self):
+        raw = {
+            "buybacks": {
+                "raw": "error",
+                "status": "FAILED",
+            }
+        }
+
+exec
+/bin/zsh -lc "grep -n \"_EXCLUDE\\|def calculate_evidence_coverage\\|NOT_QUERIED\" -n tradingagents/agents/utils/readiness_score.py | head -60; sed -n '150,230p' tradingagents/agents/utils/readiness_score.py; grep -R \"calculate_evidence_coverage(\" -n tradingagents tests | head -100" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+22:    NOT_QUERIED = "not_queried"
+106:_EXCLUDE_FROM_COVERAGE = {EvidenceStatus.NOT_AVAILABLE}
+162:def calculate_evidence_coverage_from_contract(raw_evidence: Optional[dict] = None) -> int:
+178:def calculate_evidence_coverage(
+204:    counted = [s for s in items if s not in _EXCLUDE_FROM_COVERAGE]
+1160:    ohlcv_5d = EvidenceStatus.NOT_QUERIED
+1173:    volume = EvidenceStatus.NOT_QUERIED
+1199:    volume_ratio = EvidenceStatus.NOT_QUERIED
+1209:    individual_fund_flow = EvidenceStatus.NOT_QUERIED
+1227:    lhb_status = EvidenceStatus.NOT_QUERIED
+1233:            if "查询未触发" in raw_lhb or "LHB_NOT_QUERIED" in raw_lhb or raw_lhb.strip() == "未触发":
+1234:                lhb_status = EvidenceStatus.NOT_QUERIED  # [G-007]
+1251:    margin_trading = EvidenceStatus.NOT_QUERIED
+1263:    if margin_trading == EvidenceStatus.NOT_QUERIED and raw_margin is not None:
+1280:    announcements = EvidenceStatus.NOT_QUERIED
+1297:    research_report = EvidenceStatus.NOT_QUERIED
+1317:    ratings = EvidenceStatus.NOT_QUERIED
+1328:    if ratings == EvidenceStatus.NOT_QUERIED and raw_ratings is not None:
+1346:    buybacks = EvidenceStatus.NOT_QUERIED
+1357:    if buybacks == EvidenceStatus.NOT_QUERIED and raw_buyback is not None:
+1826:            return structured.get("status", "NOT_QUERIED")
+1836:            return "NOT_QUERIED"
+1840:                return "NOT_QUERIED"
+1846:        return "HAS_DATA" if val else "NOT_QUERIED"
+1876:    elif individual_status == "NOT_QUERIED":
+1898:    Distinguishes: HAS_DATA / NOT_QUERIED / NORMAL_NO_DATA / FAILED.
+1899:    NOT_QUERIED  = force=False, no anomaly triggered
+1906:    lhb_status = "NOT_QUERIED"
+1912:        lhb_status = raw_lhb_entry.get("status", "NOT_QUERIED")
+1919:            lhb_status = "NOT_QUERIED"
+1923:                lhb_status = "NOT_QUERIED"
+1926:            elif "查询未触发" in val or "LHB_NOT_QUERIED" in val:
+1927:                lhb_status = "NOT_QUERIED"
+1933:                lhb_status = "NOT_QUERIED"
+1935:            lhb_status = "HAS_DATA" if raw_lhb_val else "NOT_QUERIED"
+1937:    if lhb_status == "NOT_QUERIED":
+1946:        "NOT_QUERIED": "龙虎榜未查询（非异动触发）",
+1967:        "NOT_QUERIED": "⬜ 未查询",
+1979:    lhb_icon = {"HAS_DATA": "✅", "NOT_QUERIED": "⬜", "NORMAL_NO_DATA": "⬜", "FAILED": "❌"}.get(lhb_prov['status'], "⬜")
+        has_smart_money_data,
+        has_volume_price_data,
+        has_user_context,
+        has_position_data,
+    ])
+
+    return int((available_fields / total_fields) * 100)
+
+
+calculate_source_coverage = calculate_data_completeness
+
+
+def calculate_evidence_coverage_from_contract(raw_evidence: Optional[dict] = None) -> int:
+    """[DATA-004] raw_evidence_contract: calculate evidence coverage directly from contract.
+
+    Uses the structured contract fields (status, unit, vendor, endpoint) rather
+    than text-based regex. Falls back to 0 if no raw_evidence available.
+
+    Unit unknown or field conflict causes coverage downgrade.
+    """
+    if not raw_evidence:
+        return 0
+
+    from tradingagents.dataflows.evidence_contract import compute_contract_completeness
+    result = compute_contract_completeness(raw_evidence)
+    return result["completeness_score"]
+
+
+def calculate_evidence_coverage(
+    ohlcv_5d: str = "not_queried",
+    volume: str = "not_queried",
+    turnover_rate: str = "not_queried",
+    volume_ratio: str = "not_queried",
+    individual_fund_flow: str = "not_queried",
+    lhb_status: str = "not_queried",
+    margin_trading: str = "not_queried",
+    announcements: str = "not_queried",
+    research_report: str = "not_queried",
+    ratings: str = "not_queried",
+    buybacks: str = "not_queried",  # [DATA-013] buyback_raw_evidence
+) -> int:
+    """
+    计算原始证据覆盖度（0-100%）。
+
+    区分：有数据 / 正常无触发 / 查询失败 / 未查询 / 字段缺失。
+    [F-001-fix] Weighted: HAS_DATA = 1.0, NORMAL_NO_DATA = 0.5.
+    This prevents NORMAL_NO_DATA from inflating coverage when data completeness is low.
+    """
+    items = [
+        ohlcv_5d, volume, turnover_rate, volume_ratio,
+        individual_fund_flow, lhb_status, margin_trading, announcements,
+        research_report, ratings, buybacks,
+    ]
+    # Exclude NOT_AVAILABLE fields from denominator (data source doesn't provide them)
+    counted = [s for s in items if s not in _EXCLUDE_FROM_COVERAGE]
+    # [F-001-fix] Weighted sum: HAS_DATA counts fully, NORMAL_NO_DATA counts 0.5
+    weighted = sum(_EVIDENCE_WEIGHTS.get(s, 0) for s in counted)
+    return int((weighted / len(counted)) * 100) if counted else 0
+
+
+def assess_confidence(
+    data_completeness: int,
+    has_contradictory_signals: bool = False,
+    analyst_agreement_level: Optional[float] = None,
+    event_risk_active: bool = False,
+    evidence_coverage: Optional[int] = None,  # [DATA-P0-603629] astock_source_fallback
+) -> ConfidenceLevel:
+    """
+    评估置信度。
+
+    参数:
+        data_completeness: 数据完整度 (0-100)
+        has_contradictory_signals: 分析师信号是否矛盾
+        analyst_agreement_level: 分析师一致度 (0-1)，1 表示完全一致
+        event_risk_active: 是否有事件风险激活
+        evidence_coverage: 原始证据覆盖度 (0-100)。
+            当 < 70% 时，confidence 不得为 HIGH。
+    """
+    base_score = data_completeness
+
+    if has_contradictory_signals:
+tradingagents/agents/managers/risk_manager.py:200:        evidence_coverage = calculate_evidence_coverage(
+tradingagents/agents/utils/readiness_score.py:178:def calculate_evidence_coverage(
+tests/test_data012_ratings.py:251:        coverage = calculate_evidence_coverage(
+tests/test_data012_ratings.py:267:        coverage_all_has = calculate_evidence_coverage(
+tests/test_data012_ratings.py:279:        coverage_all_has_with_ratings = calculate_evidence_coverage(
+tests/test_data012_ratings.py:605:        coverage_without = calculate_evidence_coverage(
+tests/test_data012_ratings.py:612:        coverage_with = calculate_evidence_coverage(
+tests/test_data011_research_report.py:258:        base = calculate_evidence_coverage(
+tests/test_data011_research_report.py:265:        with_report = calculate_evidence_coverage(
+tests/test_data011_research_report.py:276:        cov = calculate_evidence_coverage(research_report="not_available")
+tests/test_data011_research_report.py:293:        all_has = calculate_evidence_coverage(
+tests/test_data011_research_report.py:539:        cov_without = calculate_evidence_coverage(
+tests/test_data011_research_report.py:546:        cov_with = calculate_evidence_coverage(
+tests/test_e_series_fixes.py:106:        coverage = calculate_evidence_coverage(
+tests/test_e_series_fixes.py:123:        coverage = calculate_evidence_coverage(
+tests/test_e_series_fixes.py:140:        coverage = calculate_evidence_coverage(
+tests/test_data013_buyback.py:255:        coverage_without = calculate_evidence_coverage(
+tests/test_data013_buyback.py:258:        coverage_with = calculate_evidence_coverage(
+tests/test_readiness_score.py:79:    ev = calculate_evidence_coverage(
+tests/test_readiness_score.py:93:    ev = calculate_evidence_coverage(
+tests/test_readiness_score.py:111:    ev = calculate_evidence_coverage(
+tests/test_readiness_score.py:128:    ev = calculate_evidence_coverage(
+tests/test_readiness_score.py:597:    ev = calculate_evidence_coverage(**statuses)
+tests/test_data010_margin_trading.py:303:        coverage_without = calculate_evidence_coverage(**base, margin_trading=EvidenceStatus.NOT_QUERIED)
+tests/test_data010_margin_trading.py:304:        coverage_with = calculate_evidence_coverage(**base, margin_trading=EvidenceStatus.HAS_DATA)
+tests/test_data010_margin_trading.py:308:        coverage = calculate_evidence_coverage(
+tests/test_data010_margin_trading.py:608:        coverage = calculate_evidence_coverage(
+
+exec
+/bin/zsh -lc "sed -n '180,220p' tradingagents/agents/managers/risk_manager.py; sed -n '580,610p' tests/test_readiness_score.py; sed -n '240,285p' tests/test_data011_research_report.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            has_news_data=has_news,
+            has_fundamentals_data=has_fundamentals,
+            has_smart_money_data=has_smart_money,
+            has_volume_price_data=has_volume_price,
+            has_user_context=has_user_context,
+            has_position_data=has_position_data,
+        )
+
+        reports_dict = {
+            "market_report": market_research_report or "",
+            "volume_price_report": state.get("volume_price_report", "") or "",
+            "smart_money_report": state.get("smart_money_report", "") or "",
+            "news_report": news_report or "",
+        }
+
+        evidence_statuses = infer_evidence_statuses(
+            reports_dict,
+            raw_evidence=state.get("metadata", {}).get("raw_evidence"),
+        )
+
+        evidence_coverage = calculate_evidence_coverage(
+            ohlcv_5d=evidence_statuses["ohlcv_5d"],
+            volume=evidence_statuses["volume"],
+            turnover_rate=evidence_statuses["turnover_rate"],
+            volume_ratio=evidence_statuses["volume_ratio"],
+            individual_fund_flow=evidence_statuses["individual_fund_flow"],
+            lhb_status=evidence_statuses["lhb_status"],
+            margin_trading=evidence_statuses["margin_trading"],
+            announcements=evidence_statuses["announcements"],
+            research_report=evidence_statuses.get("research_report", "not_queried"),
+        )
+
+        confidence = assess_confidence(
+            data_completeness,
+            event_risk_active=event_risk_info["has_risk"],
+            evidence_coverage=evidence_coverage,  # [DATA-P0-603629] astock_source_fallback
+        )
+        readiness = generate_readiness_score(data_completeness, confidence)
+        final_response += format_readiness_score(readiness)
+
+        data_sources = [
+    assert statuses["margin_trading"] == EvidenceStatus.NOT_QUERIED
+
+
+def test_evidence_no_report_means_not_queried():
+    statuses = infer_evidence_statuses({})
+    assert statuses["ohlcv_5d"] == EvidenceStatus.NOT_QUERIED
+    assert statuses["volume"] == EvidenceStatus.NOT_QUERIED
+    assert statuses["margin_trading"] == EvidenceStatus.NOT_QUERIED
+
+
+def test_evidence_coverage_not_inflated_by_report_existence():
+    statuses = infer_evidence_statuses({
+        "market_report": "市场报告文字",
+        "volume_price_report": "量价报告文字",
+        "smart_money_report": "主力资金报告文字",
+        "news_report": "新闻报告文字",
+    })
+    ev = calculate_evidence_coverage(**statuses)
+    assert ev < 70
+
+
+def test_evidence_announcement_with_date_is_has_data():
+    statuses = infer_evidence_statuses({
+        "news_report": "公告：2026-05-10 发布重大事项公告，原文内容如下...",
+    })
+    assert statuses["announcements"] == EvidenceStatus.HAS_DATA
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# P1: extract_execution_signals + Buy/Risk/Opportunity integration tests
+# ══════════════════════════════════════════════════════════════════════════════
+        statuses = infer_evidence_statuses({}, raw_evidence=raw)
+        assert statuses["research_report"] == EvidenceStatus.QUERY_FAILED
+
+    def test_research_report_normal_no_data(self):
+        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses, EvidenceStatus
+        raw = {"research_report": {"raw": "600519.SH [DATA-011] REPORT_NORMAL_NO_DATA: ...", "status": "NORMAL_NO_DATA"}}
+        statuses = infer_evidence_statuses({}, raw_evidence=raw)
+        assert statuses["research_report"] == EvidenceStatus.NORMAL_NO_DATA
+
+    def test_research_report_from_raw_long_text(self):
+        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses, EvidenceStatus
+        long_text = "A" * 100
+        raw = {"research_report": {"raw": long_text, "status": "HAS_DATA"}}
+        statuses = infer_evidence_statuses({}, raw_evidence=raw)
+        assert statuses["research_report"] == EvidenceStatus.HAS_DATA
+
+    def test_research_report_coverage_increases_with_data(self):
+        from tradingagents.agents.utils.readiness_score import calculate_evidence_coverage
+        base = calculate_evidence_coverage(
+            ohlcv_5d="has_data", volume="has_data",
+            turnover_rate="has_data", volume_ratio="has_data",
+            individual_fund_flow="has_data", lhb_status="normal_no_data",
+            margin_trading="has_data", announcements="has_data",
+            research_report="not_queried",
+        )
+        with_report = calculate_evidence_coverage(
+            ohlcv_5d="has_data", volume="has_data",
+            turnover_rate="has_data", volume_ratio="has_data",
+            individual_fund_flow="has_data", lhb_status="normal_no_data",
+            margin_trading="has_data", announcements="has_data",
+            research_report="has_data",
+        )
+        assert with_report > base
+
+    def test_research_report_not_available_excluded(self):
+        from tradingagents.agents.utils.readiness_score import calculate_evidence_coverage
+        cov = calculate_evidence_coverage(research_report="not_available")
+        assert cov == 0
+
+    def test_research_report_failed_text(self):
+        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses, EvidenceStatus
+        raw = {"research_report": {"raw": "600519.SH [DATA-011] REPORT_FAILED: 研报数据获取失败：ConnectionError", "status": "FAILED"}}
+        statuses = infer_evidence_statuses({}, raw_evidence=raw)
+        assert statuses["research_report"] == EvidenceStatus.QUERY_FAILED
+
+    def test_research_report_normal_no_data_empty(self):
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/agents/utils/readiness_score.py | sed -n '186,205p'; nl -ba tradingagents/dataflows/source_catalog.py | sed -n '580,606p'; nl -ba tradingagents/dataflows/providers/cn_akshare_provider.py | sed -n '1260,1275p'; nl -ba tradingagents/dataflows/providers/cn_astock_provider.py | sed -n '1240,1262p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   186	    announcements: str = "not_queried",
+   187	    research_report: str = "not_queried",
+   188	    ratings: str = "not_queried",
+   189	    buybacks: str = "not_queried",  # [DATA-013] buyback_raw_evidence
+   190	) -> int:
+   191	    """
+   192	    计算原始证据覆盖度（0-100%）。
+   193	
+   194	    区分：有数据 / 正常无触发 / 查询失败 / 未查询 / 字段缺失。
+   195	    [F-001-fix] Weighted: HAS_DATA = 1.0, NORMAL_NO_DATA = 0.5.
+   196	    This prevents NORMAL_NO_DATA from inflating coverage when data completeness is low.
+   197	    """
+   198	    items = [
+   199	        ohlcv_5d, volume, turnover_rate, volume_ratio,
+   200	        individual_fund_flow, lhb_status, margin_trading, announcements,
+   201	        research_report, ratings, buybacks,
+   202	    ]
+   203	    # Exclude NOT_AVAILABLE fields from denominator (data source doesn't provide them)
+   204	    counted = [s for s in items if s not in _EXCLUDE_FROM_COVERAGE]
+   205	    # [F-001-fix] Weighted sum: HAS_DATA counts fully, NORMAL_NO_DATA counts 0.5
+   580	        notes="雪球热搜股票",
+   581	    )
+   582	
+   583	    # ── 回购 ──────────────────────────────────────────────────────────
+   584	    # [DATA-013] buyback_raw_evidence
+   585	    _register(
+   586	        "cn_akshare", "stock_repurchase",
+   587	        DataType.BUYBACK,
+   588	        fields=["公告日期", "回购金额", "回购数量", "回购进度", "回购目的"],
+   589	        unit="万元",
+   590	        freshness=Freshness.DAILY,
+   591	        rate_limit_risk=RateLimitRisk.MEDIUM,
+   592	        fallback_priority=1,
+   593	        is_primary=True,
+   594	        notes="AKShare 个股回购计划/进展",
+   595	    )
+   596	    _register(
+   597	        "cn_astock", "datacenter-web.eastmoney.com/RPT_SHAREBUYBACK",
+   598	        DataType.BUYBACK,
+   599	        fields=["NOTICE_DATE", "BUYBACK_AMOUNT", "BUYBACK_VOLUME", "PROGRESS", "PURPOSE"],
+   600	        unit="元(需/10000转万元)",
+   601	        freshness=Freshness.DAILY,
+   602	        rate_limit_risk=RateLimitRisk.MEDIUM,
+   603	        fallback_priority=2,
+   604	        notes="东财 datacenter 回购数据",
+   605	    )
+   606	
+  1260	
+  1261	    def get_buybacks(self, symbol: str) -> str:
+  1262	        """获取个股回购计划/进展数据。  # [DATA-013] buyback_raw_evidence"""
+  1263	        code = self._normalize_symbol(symbol)
+  1264	        try:
+  1265	            ak = self._ak()
+  1266	            with AKSHARE_CALL_LOCK:
+  1267	                df = ak.stock_repurchase_em(symbol=code)
+  1268	            if df is None or df.empty:
+  1269	                return f"{symbol} [DATA-013] BUYBACK_NORMAL_NO_DATA: 该股无回购计划或进展数据。"
+  1270	            lines = [f"{symbol} [DATA-013] BUYBACK_HAS_DATA: 回购数据（AKShare stock_repurchase_em）："]
+  1271	            for _, row in df.head(15).iterrows():
+  1272	                date_val = row.get("公告日期", row.get("date", ""))
+  1273	                amount = row.get("回购金额", row.get("amount", ""))
+  1274	                volume = row.get("回购数量", row.get("volume", ""))
+  1275	                progress = row.get("回购进度", row.get("progress", ""))
+  1240	        code = _extract_code(symbol)
+  1241	        try:
+  1242	            _rate_limit("em_buyback")
+  1243	            buyback_filter = (
+  1244	                f'(SECURITY_CODE="{code}")'
+  1245	            )
+  1246	            data = _eastmoney_datacenter(
+  1247	                "RPT_SHAREBUYBACK_DET",
+  1248	                filter_str=buyback_filter,
+  1249	                page_size=20,
+  1250	                sort_columns="NOTICE_DATE",
+  1251	                sort_types="-1",
+  1252	            )
+  1253	            if not data:
+  1254	                return f"{symbol} [DATA-013] BUYBACK_NORMAL_NO_DATA: 该股无回购计划或进展数据。"
+  1255	
+  1256	            lines = [f"{symbol} [DATA-013] BUYBACK_HAS_DATA: 回购数据（Eastmoney datacenter）："]
+  1257	            for row in data[:15]:
+  1258	                notice_date = row.get("NOTICE_DATE", "")[:10] if row.get("NOTICE_DATE") else ""
+  1259	                buyback_amount = (row.get("BUYBACK_AMOUNT") or 0) / 10000
+  1260	                buyback_volume = row.get("BUYBACK_VOLUME", 0)
+  1261	                progress = row.get("PROGRESS", "")
+  1262	                purpose = row.get("PURPOSE", "")
+
+exec
+/bin/zsh -lc "sed -n '1,140p' tradingagents/dataflows/evidence_contract.py; grep -R \"status=.*QUERY_FAILED\\|QUERY_FAILED\" -n tradingagents/dataflows tradingagents/agents | head -50" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [DATA-004] raw_evidence_contract
+"""
+raw_evidence 来源契约定义。
+
+所有关键字段的来源、端点、时间、单位、状态纳入统一契约结构，
+使报告和前端都能回答"这个数从哪里来、是否实时、单位是什么、是否 fallback"。
+
+契约字段：
+  - field: 字段名称 (如 stock_data, fund_flow_individual)
+  - value: 原始数据 (raw)
+  - unit: 单位 (万元, 股, 条, %, 元/股 等)
+  - vendor: 实际返回数据的厂商 (cn_akshare, cn_astock, sina, ...)
+  - endpoint: 实际调用的端点 (stock_zh_a_hist, push2his.eastmoney.com/fflow, ...)
+  - as_of: 数据日期或行情时间
+  - fetched_at: 获取时间 ISO
+  - status: HAS_DATA / FAILED / NOT_QUERIED / NORMAL_NO_DATA
+  - fallback_from: 如果走了 fallback，记录原始厂商名
+  - source_url: 可选，数据源链接
+  - error: 失败时的错误摘要
+
+使用示例：
+    from tradingagents.dataflows.evidence_contract import (
+        EvidenceContract,
+        build_evidence_contract,
+        compute_contract_completeness,
+    )
+    contract = build_evidence_contract("stock_data", raw_value, ...)
+    score = compute_contract_completeness(raw_evidence)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field as dc_field
+from typing import Any, Dict, List, Optional
+
+
+@dataclass
+class EvidenceContract:
+    field: str
+    value: Any = None
+    unit: Optional[str] = None
+    vendor: str = ""
+    endpoint: str = ""
+    as_of: str = ""
+    fetched_at: str = ""
+    status: str = "NOT_QUERIED"
+    fallback_from: Optional[str] = None
+    source_url: Optional[str] = None
+    error: Optional[str] = None
+
+    is_realtime_patched: bool = False
+    source_type: Optional[str] = None
+    unit_verified: Optional[bool] = None
+    query_mode: Optional[str] = None
+    adjustment: Optional[str] = None
+    force_reason: Optional[str] = None
+    record_count: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "raw": self.value,
+            "field": self.field,
+            "unit": self.unit,
+            "vendor": self.vendor,
+            "endpoint": self.endpoint,
+            "as_of": self.as_of,
+            "fetched_at": self.fetched_at,
+            "status": self.status,
+            "fallback_from": self.fallback_from,
+            "source_url": self.source_url,
+            "error": self.error,
+            "is_realtime_patched": self.is_realtime_patched,
+            "source_type": self.source_type,
+            "unit_verified": self.unit_verified,
+            "query_mode": self.query_mode,
+            "adjustment": self.adjustment,
+            "force_reason": self.force_reason,
+            "record_count": self.record_count,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EvidenceContract":
+        return cls(
+            field=data.get("field", ""),
+            value=data.get("raw"),
+            unit=data.get("unit"),
+            vendor=data.get("vendor", ""),
+            endpoint=data.get("endpoint", ""),
+            as_of=data.get("as_of", ""),
+            fetched_at=data.get("fetched_at", ""),
+            status=data.get("status", "NOT_QUERIED"),
+            fallback_from=data.get("fallback_from"),
+            source_url=data.get("source_url"),
+            error=data.get("error"),
+            is_realtime_patched=data.get("is_realtime_patched", False),
+            source_type=data.get("source_type"),
+            unit_verified=data.get("unit_verified"),
+            query_mode=data.get("query_mode"),
+            adjustment=data.get("adjustment"),
+            force_reason=data.get("force_reason"),
+            record_count=data.get("record_count", 0),
+        )
+
+    @property
+    def has_data(self) -> bool:
+        return self.status == "HAS_DATA"
+
+    @property
+    def is_failed(self) -> bool:
+        return self.status == "FAILED"
+
+    @property
+    def is_fallback(self) -> bool:
+        return self.fallback_from is not None and self.fallback_from != ""
+
+    @property
+    def unit_known(self) -> bool:
+        return self.unit is not None and self.unit != ""
+
+    @property
+    def endpoint_known(self) -> bool:
+        return self.endpoint != ""
+
+
+_EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
+    "stock_data": "ohlcv",
+    "news": "news",
+    "global_news": "global_news",
+    "fund_flow_board": "board_fund_flow",
+    "fund_flow_individual": "fund_flow",
+    "lhb": "lhb",
+    "fundamentals": "financials",
+    "balance_sheet": "financials",
+    "cashflow": "financials",
+    "income_statement": "financials",
+    "insider_transactions": "insider",
+    "zt_pool": "zt_pool",
+    "hot_stocks": "hot_stocks",
+    "indicators": "ohlcv",
+    "vpa_indicators": "ohlcv",
+Binary file tradingagents/agents/utils/__pycache__/readiness_score.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/readiness_score.cpython-314.pyc matches
+tradingagents/agents/utils/readiness_score.py:21:    QUERY_FAILED = "query_failed"
+tradingagents/agents/utils/readiness_score.py:1165:        ohlcv_5d = EvidenceStatus.QUERY_FAILED if (isinstance(raw_stock_data, str) and "失败" in raw_stock_data) else EvidenceStatus.NORMAL_NO_DATA
+tradingagents/agents/utils/readiness_score.py:1215:            individual_fund_flow = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1231:            lhb_status = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1243:            lhb_status = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1259:            margin_trading = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1267:            margin_trading = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1273:            margin_trading = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1286:            announcements = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1303:            research_report = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1309:            research_report = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1324:            ratings = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1332:            ratings = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1338:            ratings = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1353:            buybacks = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1361:            buybacks = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1367:            buybacks = EvidenceStatus.QUERY_FAILED
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate 2>/dev/null || true; pytest tests/test_readiness_score.py tests/test_data011_research_report.py tests/test_data010_margin_trading.py tests/test_data013_buyback.py tests/test_data012_ratings.py -q' in /Users/maybee/TradingAgents-AShare
+ exited 1 in 11935ms:
+........................................................................ [ 19%]
+........................................................................ [ 38%]
+........................................................................ [ 58%]
+........................................................................ [ 77%]
+.........................FFFFFF..FFFFFFFFFF..FF.............FFFFFF...... [ 96%]
+...FFFFF.F..                                                             [100%]
+=================================== FAILURES ===================================
+__________ TestEvidenceContractRatings.test_ratings_has_data_contract __________
+
+self = <tests.test_data012_ratings.TestEvidenceContractRatings object at 0x1115ae210>
+
+    def test_ratings_has_data_contract(self):
+        from tradingagents.dataflows.evidence_contract import EvidenceContract
+>       contract = EvidenceContract(
+            field="ratings",
+            raw="600519.SH [DATA-012] RATINGS_HAS_DATA: ...",
+            vendor="cn_astock",
+            endpoint="reportapi.eastmoney.com/report/list",
+            status="HAS_DATA",
+        )
+E       TypeError: EvidenceContract.__init__() got an unexpected keyword argument 'raw'
+
+tests/test_data012_ratings.py:76: TypeError
+___________ TestEvidenceContractRatings.test_ratings_failed_contract ___________
+
+self = <tests.test_data012_ratings.TestEvidenceContractRatings object at 0x1115ae4e0>
+
+    def test_ratings_failed_contract(self):
+        from tradingagents.dataflows.evidence_contract import EvidenceContract
+>       contract = EvidenceContract(
+            field="ratings",
+            raw="600519.SH [DATA-012] RATINGS_FAILED: ConnectionError",
+            vendor="cn_akshare",
+            status="FAILED",
+            error="ConnectionError",
+        )
+E       TypeError: EvidenceContract.__init__() got an unexpected keyword argument 'raw'
+
+tests/test_data012_ratings.py:88: TypeError
+_________ TestEvidenceContractRatings.test_ratings_completeness_check __________
+
+self = <tests.test_data012_ratings.TestEvidenceContractRatings object at 0x1115ae7b0>
+
+    def test_ratings_completeness_check(self):
+>       from tradingagents.dataflows.evidence_contract import (
+            EvidenceContract,
+            check_completeness,
+        )
+E       ImportError: cannot import name 'check_completeness' from 'tradingagents.dataflows.evidence_contract' (/Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_contract.py)
+
+tests/test_data012_ratings.py:98: ImportError
+___________ TestEvidenceContractRatings.test_ratings_missing_vendor ____________
+
+self = <tests.test_data012_ratings.TestEvidenceContractRatings object at 0x1115aea80>
+
+    def test_ratings_missing_vendor(self):
+>       from tradingagents.dataflows.evidence_contract import (
+            EvidenceContract,
+            check_completeness,
+        )
+E       ImportError: cannot import name 'check_completeness' from 'tradingagents.dataflows.evidence_contract' (/Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_contract.py)
+
+tests/test_data012_ratings.py:114: ImportError
+____________ TestEvidenceContractRatings.test_ratings_failed_status ____________
+
+self = <tests.test_data012_ratings.TestEvidenceContractRatings object at 0x1115aed50>
+
+    def test_ratings_failed_status(self):
+>       from tradingagents.dataflows.evidence_contract import (
+            EvidenceContract,
+            check_completeness,
+        )
+E       ImportError: cannot import name 'check_completeness' from 'tradingagents.dataflows.evidence_contract' (/Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_contract.py)
+
+tests/test_data012_ratings.py:129: ImportError
+_______________ TestEvidenceContractRatings.test_ratings_summary _______________
+
+self = <tests.test_data012_ratings.TestEvidenceContractRatings object at 0x1115af020>
+
+    def test_ratings_summary(self):
+        from tradingagents.dataflows.evidence_contract import EvidenceContract
+>       contract = EvidenceContract(
+            field="ratings",
+            raw="data",
+            vendor="cn_astock",
+            status="HAS_DATA",
+            unit="条",
+        )
+E       TypeError: EvidenceContract.__init__() got an unexpected keyword argument 'raw'
+
+tests/test_data012_ratings.py:144: TypeError
+_________ TestEvidenceCoverageAuditRatings.test_audit_ratings_has_data _________
+
+self = <tests.test_data012_ratings.TestEvidenceCoverageAuditRatings object at 0x11158b620>
+
+    def test_audit_ratings_has_data(self):
+        from tradingagents.dataflows.evidence_coverage_audit import audit_raw_evidence
+        raw = {
+            "ratings": {
+                "raw": "600519.SH [DATA-012] RATINGS_HAS_DATA: ...",
+                "vendor": "cn_astock",
+                "status": "HAS_DATA",
+            },
+        }
+        result = audit_raw_evidence(raw)
+>       assert "ratings" in result.field_results
+                            ^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'EvidenceAuditResult' object has no attribute 'field_results'
+
+tests/test_data012_ratings.py:180: AttributeError
+__________ TestEvidenceCoverageAuditRatings.test_audit_ratings_failed __________
+
+self = <tests.test_data012_ratings.TestEvidenceCoverageAuditRatings object at 0x11155f3e0>
+
+    def test_audit_ratings_failed(self):
+        from tradingagents.dataflows.evidence_coverage_audit import audit_raw_evidence
+        raw = {
+            "ratings": {
+                "raw": "600519.SH [DATA-012] RATINGS_FAILED: ConnectionError",
+                "vendor": "cn_astock",
+                "status": "FAILED",
+                "error": "ConnectionError",
+            },
+        }
+        result = audit_raw_evidence(raw)
+>       assert "ratings" in result.field_results
+                            ^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'EvidenceAuditResult' object has no attribute 'field_results'
+
+tests/test_data012_ratings.py:194: AttributeError
+__________ TestReadinessScoreRatings.test_ratings_default_not_queried __________
+
+self = <tests.test_data012_ratings.TestReadinessScoreRatings object at 0x1115aecc0>
+
+    def test_ratings_default_not_queried(self):
+        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses
+        result = infer_evidence_statuses({})
+>       assert result["ratings"].value == "not_queried"
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'value'
+
+tests/test_data012_ratings.py:205: AttributeError
+__________ TestReadinessScoreRatings.test_ratings_has_data_structured __________
+
+self = <tests.test_data012_ratings.TestReadinessScoreRatings object at 0x1115ae8d0>
+
+    def test_ratings_has_data_structured(self):
+        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses
+        raw = {"ratings": {"status": "HAS_DATA", "raw": "data"}}
+        result = infer_evidence_statuses(raw)
+>       assert result["ratings"].value == "has_data"
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'value'
+
+tests/test_data012_ratings.py:211: AttributeError
+___________ TestReadinessScoreRatings.test_ratings_failed_structured ___________
+
+self = <tests.test_data012_ratings.TestReadinessScoreRatings object at 0x1115ae450>
+
+    def test_ratings_failed_structured(self):
+        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses
+        raw = {"ratings": {"status": "FAILED", "raw": "failed"}}
+        result = infer_evidence_statuses(raw)
+>       assert result["ratings"].value == "query_failed"
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'value'
+
+tests/test_data012_ratings.py:217: AttributeError
+_______ TestReadinessScoreRatings.test_ratings_normal_no_data_structured _______
+
+self = <tests.test_data012_ratings.TestReadinessScoreRatings object at 0x1115ae060>
+
+    def test_ratings_normal_no_data_structured(self):
+        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses
+        raw = {"ratings": {"status": "NORMAL_NO_DATA", "raw": ""}}
+        result = infer_evidence_statuses(raw)
+>       assert result["ratings"].value == "normal_no_data"
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'value'
+
+tests/test_data012_ratings.py:223: AttributeError
+_____________ TestReadinessScoreRatings.test_ratings_has_data_text _____________
+
+self = <tests.test_data012_ratings.TestReadinessScoreRatings object at 0x1115adbb0>
+
+    def test_ratings_has_data_text(self):
+        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses
+        raw = {"ratings": "600519.SH [DATA-012] RATINGS_HAS_DATA: ..."}
+        result = infer_evidence_statuses(raw)
+>       assert result["ratings"].value == "has_data"
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'value'
+
+tests/test_data012_ratings.py:229: AttributeError
+______________ TestReadinessScoreRatings.test_ratings_failed_text ______________
+
+self = <tests.test_data012_ratings.TestReadinessScoreRatings object at 0x1115ad7c0>
+
+    def test_ratings_failed_text(self):
+        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses
+        raw = {"ratings": "600519.SH [DATA-012] RATINGS_FAILED: error"}
+        result = infer_evidence_statuses(raw)
+>       assert result["ratings"].value == "query_failed"
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'value'
+
+tests/test_data012_ratings.py:235: AttributeError
+__________ TestReadinessScoreRatings.test_ratings_normal_no_data_text __________
+
+self = <tests.test_data012_ratings.TestReadinessScoreRatings object at 0x1115af3b0>
+
+    def test_ratings_normal_no_data_text(self):
+        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses
+        raw = {"ratings": "600519.SH [DATA-012] RATINGS_NORMAL_NO_DATA: 无分析师评级数据"}
+        result = infer_evidence_statuses(raw)
+>       assert result["ratings"].value == "normal_no_data"
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'value'
+
+tests/test_data012_ratings.py:241: AttributeError
+__________ TestReadinessScoreRatings.test_ratings_long_text_has_data ___________
+
+self = <tests.test_data012_ratings.TestReadinessScoreRatings object at 0x1115af680>
+
+    def test_ratings_long_text_has_data(self):
+        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses
+        raw = {"ratings": "600519.SH " + "x" * 100}
+        result = infer_evidence_statuses(raw)
+>       assert result["ratings"].value == "has_data"
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'value'
+
+tests/test_data012_ratings.py:247: AttributeError
+_________ TestReadinessScoreRatings.test_ratings_failure_text_detected _________
+
+self = <tests.test_data012_ratings.TestReadinessScoreRatings object at 0x1115afef0>
+
+    def test_ratings_failure_text_detected(self):
+        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses
+        raw = {"ratings": "600519.SH 评级数据获取失败：Timeout"}
+        result = infer_evidence_statuses(raw)
+>       assert result["ratings"].value == "query_failed"
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'value'
+
+tests/test_data012_ratings.py:297: AttributeError
+______ TestReadinessScoreRatings.test_ratings_empty_string_normal_no_data ______
+
+self = <tests.test_data012_ratings.TestReadinessScoreRatings object at 0x1115e0200>
+
+    def test_ratings_empty_string_normal_no_data(self):
+        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses
+        raw = {"ratings": {"status": "NOT_QUERIED", "raw": ""}}
+        result = infer_evidence_statuses(raw)
+>       assert result["ratings"].value == "not_queried"
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'value'
+
+tests/test_data012_ratings.py:303: AttributeError
+____ TestRatingsFixtures.test_ratings_fixtures_evidence_contract_roundtrip _____
+
+self = <tests.test_data012_ratings.TestRatingsFixtures object at 0x1115e0050>
+
+    def test_ratings_fixtures_evidence_contract_roundtrip(self):
+        from tradingagents.dataflows.evidence_contract import EvidenceContract
+        from tradingagents.dataflows.fixture_replay import get_fixture
+        fixture = get_fixture("ratings_has_data")
+        ev = fixture.raw_evidence["ratings"]
+>       contract = EvidenceContract(
+            field=ev.get("field", "ratings"),
+            raw=ev.get("raw", ""),
+            vendor=ev.get("vendor", ""),
+            endpoint=ev.get("endpoint", ""),
+            status=ev.get("status", ""),
+            error=ev.get("error"),
+        )
+E       TypeError: EvidenceContract.__init__() got an unexpected keyword argument 'raw'
+
+tests/test_data012_ratings.py:398: TypeError
+____________ TestRatingsFixtureReplay.test_replay_ratings_has_data _____________
+
+self = <tests.test_data012_ratings.TestRatingsFixtureReplay object at 0x1115e0bc0>
+
+    def test_replay_ratings_has_data(self):
+>       from tradingagents.dataflows.fixture_replay import replay_fixture
+E       ImportError: cannot import name 'replay_fixture' from 'tradingagents.dataflows.fixture_replay' (/Users/maybee/TradingAgents-AShare/tradingagents/dataflows/fixture_replay.py)
+
+tests/test_data012_ratings.py:415: ImportError
+_____________ TestRatingsFixtureReplay.test_replay_ratings_failed ______________
+
+self = <tests.test_data012_ratings.TestRatingsFixtureReplay object at 0x1115e0e90>
+
+    def test_replay_ratings_failed(self):
+>       from tradingagents.dataflows.fixture_replay import replay_fixture
+E       ImportError: cannot import name 'replay_fixture' from 'tradingagents.dataflows.fixture_replay' (/Users/maybee/TradingAgents-AShare/tradingagents/dataflows/fixture_replay.py)
+
+tests/test_data012_ratings.py:422: ImportError
+___________ TestRatingsFixtureReplay.test_replay_ratings_not_queried ___________
+
+self = <tests.test_data012_ratings.TestRatingsFixtureReplay object at 0x1115e1160>
+
+    def test_replay_ratings_not_queried(self):
+>       from tradingagents.dataflows.fixture_replay import replay_fixture
+E       ImportError: cannot import name 'replay_fixture' from 'tradingagents.dataflows.fixture_replay' (/Users/maybee/TradingAgents-AShare/tradingagents/dataflows/fixture_replay.py)
+
+tests/test_data012_ratings.py:429: ImportError
+_______________ TestRatingsFixtureReplay.test_replay_all_ratings _______________
+
+self = <tests.test_data012_ratings.TestRatingsFixtureReplay object at 0x1115e1430>
+
+    def test_replay_all_ratings(self):
+>       from tradingagents.dataflows.fixture_replay import replay_fixture
+E       ImportError: cannot import name 'replay_fixture' from 'tradingagents.dataflows.fixture_replay' (/Users/maybee/TradingAgents-AShare/tradingagents/dataflows/fixture_replay.py)
+
+tests/test_data012_ratings.py:436: ImportError
+__________ TestRatingsFixtureReplay.test_full_replay_includes_ratings __________
+
+self = <tests.test_data012_ratings.TestRatingsFixtureReplay object at 0x1115e1700>
+
+    def test_full_replay_includes_ratings(self):
+>       from tradingagents.dataflows.fixture_replay import replay_all
+E       ImportError: cannot import name 'replay_all' from 'tradingagents.dataflows.fixture_replay' (/Users/maybee/TradingAgents-AShare/tradingagents/dataflows/fixture_replay.py)
+
+tests/test_data012_ratings.py:445: ImportError
+____________ TestAcceptanceDATA012.test_evidence_contract_complete _____________
+
+self = <tests.test_data012_ratings.TestAcceptanceDATA012 object at 0x1115e1040>
+
+    def test_evidence_contract_complete(self):
+>       from tradingagents.dataflows.evidence_contract import (
+            EvidenceContract,
+            check_completeness,
+            resolve_data_type,
+        )
+E       ImportError: cannot import name 'check_completeness' from 'tradingagents.dataflows.evidence_contract' (/Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_contract.py)
+
+tests/test_data012_ratings.py:564: ImportError
+______________ TestAcceptanceDATA012.test_ratings_has_data_status ______________
+
+self = <tests.test_data012_ratings.TestAcceptanceDATA012 object at 0x1115e0bf0>
+
+    def test_ratings_has_data_status(self):
+        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses
+        raw = {"ratings": {"status": "HAS_DATA", "raw": "data"}}
+        result = infer_evidence_statuses(raw)
+>       assert result["ratings"].value == "has_data"
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'value'
+
+tests/test_data012_ratings.py:584: AttributeError
+_______________ TestAcceptanceDATA012.test_ratings_failed_status _______________
+
+self = <tests.test_data012_ratings.TestAcceptanceDATA012 object at 0x1115e0350>
+
+    def test_ratings_failed_status(self):
+        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses
+        raw = {"ratings": {"status": "FAILED", "raw": "error"}}
+        result = infer_evidence_statuses(raw)
+>       assert result["ratings"].value == "query_failed"
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'value'
+
+tests/test_data012_ratings.py:590: AttributeError
+___________ TestAcceptanceDATA012.test_ratings_normal_no_data_status ___________
+
+self = <tests.test_data012_ratings.TestAcceptanceDATA012 object at 0x1115e07d0>
+
+    def test_ratings_normal_no_data_status(self):
+        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses
+        raw = {"ratings": {"status": "NORMAL_NO_DATA", "raw": ""}}
+        result = infer_evidence_statuses(raw)
+>       assert result["ratings"].value == "normal_no_data"
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'value'
+
+tests/test_data012_ratings.py:596: AttributeError
+____________ TestAcceptanceDATA012.test_ratings_not_queried_status _____________
+
+self = <tests.test_data012_ratings.TestAcceptanceDATA012 object at 0x1115e1d90>
+
+    def test_ratings_not_queried_status(self):
+        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses
+        result = infer_evidence_statuses({})
+>       assert result["ratings"].value == "not_queried"
+               ^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'str' object has no attribute 'value'
+
+tests/test_data012_ratings.py:601: AttributeError
+_______________ TestAcceptanceDATA012.test_ratings_fixtures_pass _______________
+
+self = <tests.test_data012_ratings.TestAcceptanceDATA012 object at 0x1115e2330>
+
+    def test_ratings_fixtures_pass(self):
+>       from tradingagents.dataflows.fixture_replay import replay_fixture
+E       ImportError: cannot import name 'replay_fixture' from 'tradingagents.dataflows.fixture_replay' (/Users/maybee/TradingAgents-AShare/tradingagents/dataflows/fixture_replay.py)
+
+tests/test_data012_ratings.py:622: ImportError
+=========================== short test summary info ============================
+FAILED tests/test_data012_ratings.py::TestEvidenceContractRatings::test_ratings_has_data_contract
+FAILED tests/test_data012_ratings.py::TestEvidenceContractRatings::test_ratings_failed_contract
+FAILED tests/test_data012_ratings.py::TestEvidenceContractRatings::test_ratings_completeness_check
+FAILED tests/test_data012_ratings.py::TestEvidenceContractRatings::test_ratings_missing_vendor
+FAILED tests/test_data012_ratings.py::TestEvidenceContractRatings::test_ratings_failed_status
+FAILED tests/test_data012_ratings.py::TestEvidenceContractRatings::test_ratings_summary
+FAILED tests/test_data012_ratings.py::TestEvidenceCoverageAuditRatings::test_audit_ratings_has_data
+FAILED tests/test_data012_ratings.py::TestEvidenceCoverageAuditRatings::test_audit_ratings_failed
+FAILED tests/test_data012_ratings.py::TestReadinessScoreRatings::test_ratings_default_not_queried
+FAILED tests/test_data012_ratings.py::TestReadinessScoreRatings::test_ratings_has_data_structured
+FAILED tests/test_data012_ratings.py::TestReadinessScoreRatings::test_ratings_failed_structured
+FAILED tests/test_data012_ratings.py::TestReadinessScoreRatings::test_ratings_normal_no_data_structured
+FAILED tests/test_data012_ratings.py::TestReadinessScoreRatings::test_ratings_has_data_text
+FAILED tests/test_data012_ratings.py::TestReadinessScoreRatings::test_ratings_failed_text
+FAILED tests/test_data012_ratings.py::TestReadinessScoreRatings::test_ratings_normal_no_data_text
+FAILED tests/test_data012_ratings.py::TestReadinessScoreRatings::test_ratings_long_text_has_data
+FAILED tests/test_data012_ratings.py::TestReadinessScoreRatings::test_ratings_failure_text_detected
+FAILED tests/test_data012_ratings.py::TestReadinessScoreRatings::test_ratings_empty_string_normal_no_data
+FAILED tests/test_data012_ratings.py::TestRatingsFixtures::test_ratings_fixtures_evidence_contract_roundtrip
+FAILED tests/test_data012_ratings.py::TestRatingsFixtureReplay::test_replay_ratings_has_data
+FAILED tests/test_data012_ratings.py::TestRatingsFixtureReplay::test_replay_ratings_failed
+FAILED tests/test_data012_ratings.py::TestRatingsFixtureReplay::test_replay_ratings_not_queried
+FAILED tests/test_data012_ratings.py::TestRatingsFixtureReplay::test_replay_all_ratings
+FAILED tests/test_data012_ratings.py::TestRatingsFixtureReplay::test_full_replay_includes_ratings
+FAILED tests/test_data012_ratings.py::TestAcceptanceDATA012::test_evidence_contract_complete
+FAILED tests/test_data012_ratings.py::TestAcceptanceDATA012::test_ratings_has_data_status
+FAILED tests/test_data012_ratings.py::TestAcceptanceDATA012::test_ratings_failed_status
+FAILED tests/test_data012_ratings.py::TestAcceptanceDATA012::test_ratings_normal_no_data_status
+FAILED tests/test_data012_ratings.py::TestAcceptanceDATA012::test_ratings_not_queried_status
+FAILED tests/test_data012_ratings.py::TestAcceptanceDATA012::test_ratings_fixtures_pass
+30 failed, 342 passed in 11.32s
+
+exec
+/bin/zsh -lc "nl -ba tests/test_data012_ratings.py | sed -n '70,82p'; nl -ba tests/test_data012_ratings.py | sed -n '200,214p'; nl -ba tests/test_data012_ratings.py | sed -n '410,418p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    70	    def test_resolve_data_type_ratings(self):
+    71	        from tradingagents.dataflows.evidence_contract import resolve_data_type
+    72	        assert resolve_data_type("ratings") == "rating"
+    73	
+    74	    def test_ratings_has_data_contract(self):
+    75	        from tradingagents.dataflows.evidence_contract import EvidenceContract
+    76	        contract = EvidenceContract(
+    77	            field="ratings",
+    78	            raw="600519.SH [DATA-012] RATINGS_HAS_DATA: ...",
+    79	            vendor="cn_astock",
+    80	            endpoint="reportapi.eastmoney.com/report/list",
+    81	            status="HAS_DATA",
+    82	        )
+   200	
+   201	class TestReadinessScoreRatings:
+   202	    def test_ratings_default_not_queried(self):
+   203	        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses
+   204	        result = infer_evidence_statuses({})
+   205	        assert result["ratings"].value == "not_queried"
+   206	
+   207	    def test_ratings_has_data_structured(self):
+   208	        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses
+   209	        raw = {"ratings": {"status": "HAS_DATA", "raw": "data"}}
+   210	        result = infer_evidence_statuses(raw)
+   211	        assert result["ratings"].value == "has_data"
+   212	
+   213	    def test_ratings_failed_structured(self):
+   214	        from tradingagents.agents.utils.readiness_score import infer_evidence_statuses
+   410	# ── Fixture Replay ──────────────────────────────────────────────────────
+   411	
+   412	
+   413	class TestRatingsFixtureReplay:
+   414	    def test_replay_ratings_has_data(self):
+   415	        from tradingagents.dataflows.fixture_replay import replay_fixture
+   416	        result = replay_fixture("ratings_has_data")
+   417	        assert result is not None
+   418	        assert result.fixture_id == "ratings_has_data"
+
+exec
+/bin/zsh -lc 'pytest tests/test_data013_buyback.py -q' in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: pytest
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate; pytest tests/test_data013_buyback.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 1849ms:
+.............................................................            [100%]
+61 passed in 1.34s
+
+exec
+/bin/zsh -lc "grep -R \"build_raw_evidence\\|raw_evidence\" -n tradingagents | head -80; grep -R \"get_research_report\\|get_margin_trading\\|get_announcements\" -n tradingagents/agents tradingagents/dataflows | head -120" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/graph/data_collector.py:30:    get_margin_trading,  # [DATA-010] margin_trading_raw_evidence
+tradingagents/graph/data_collector.py:32:from tradingagents.dataflows.interface import get_last_hit_vendor  # [N-003] cn_astock_raw_evidence
+tradingagents/graph/data_collector.py:33:from tradingagents.dataflows.evidence_contract import (  # [DATA-004] raw_evidence_contract
+tradingagents/graph/data_collector.py:73:def _resolve_data_type_for_key(key: str) -> str:  # [DATA-004] raw_evidence_contract
+tradingagents/graph/data_collector.py:417:        "margin_trading": (get_margin_trading, {"symbol": ticker}),  # [DATA-010] margin_trading_raw_evidence
+tradingagents/graph/data_collector.py:570:    # [G-006] raw_evidence_snapshot
+tradingagents/graph/data_collector.py:609:    def build_raw_evidence(self, ticker: str, trade_date: str) -> Dict[str, Any]:
+tradingagents/graph/data_collector.py:610:        # [G-006] raw_evidence_snapshot
+tradingagents/graph/data_collector.py:611:        # [DATA-004] raw_evidence_contract: upgraded with endpoint/fallback_from/source_url
+tradingagents/graph/data_collector.py:625:            "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+tradingagents/graph/data_collector.py:626:            "research_report",  # [DATA-011] research_report_raw_evidence
+tradingagents/graph/data_collector.py:629:        raw_evidence: Dict[str, Any] = {}
+tradingagents/graph/data_collector.py:637:                "endpoint": "",  # [DATA-004] raw_evidence_contract
+tradingagents/graph/data_collector.py:638:                "fallback_from": None,  # [DATA-004] raw_evidence_contract
+tradingagents/graph/data_collector.py:639:                "source_url": None,  # [DATA-004] raw_evidence_contract
+tradingagents/graph/data_collector.py:640:                "field": key,  # [DATA-004] raw_evidence_contract
+tradingagents/graph/data_collector.py:697:            elif key == "margin_trading":  # [DATA-010] margin_trading_raw_evidence
+tradingagents/graph/data_collector.py:701:            elif key == "research_report":  # [DATA-011] research_report_raw_evidence
+tradingagents/graph/data_collector.py:706:            # [DATA-004] raw_evidence_contract: resolve endpoint and fallback info
+tradingagents/graph/data_collector.py:717:            raw_evidence[key] = {
+tradingagents/graph/data_collector.py:738:        return raw_evidence
+tradingagents/graph/trading_graph.py:292:        init_agent_state["metadata"]["raw_evidence"] = self.data_collector.build_raw_evidence(
+tradingagents/graph/trading_graph.py:393:        state["metadata"]["raw_evidence"] = self.data_collector.build_raw_evidence(
+tradingagents/graph/trading_graph.py:415:        if "raw_evidence" not in metadata:
+tradingagents/graph/trading_graph.py:419:                raw_evidence = self.data_collector.build_raw_evidence(ticker, trade_date)
+tradingagents/graph/trading_graph.py:420:                if raw_evidence:
+tradingagents/graph/trading_graph.py:421:                    metadata["raw_evidence"] = raw_evidence
+Binary file tradingagents/graph/__pycache__/trading_graph.cpython-314.pyc matches
+Binary file tradingagents/graph/__pycache__/trading_graph.cpython-312.pyc matches
+Binary file tradingagents/graph/__pycache__/data_collector.cpython-312.pyc matches
+Binary file tradingagents/agents/managers/__pycache__/risk_manager.cpython-312.pyc matches
+Binary file tradingagents/agents/managers/__pycache__/risk_manager.cpython-314.pyc matches
+tradingagents/agents/managers/risk_manager.py:197:            raw_evidence=state.get("metadata", {}).get("raw_evidence"),
+tradingagents/agents/managers/risk_manager.py:231:        # [DATA-P0-603629] astock_source_fallback: use raw_evidence status
+tradingagents/agents/managers/risk_manager.py:233:        # [DATA-004] raw_evidence_contract: enhanced with vendor/endpoint/fallback info
+tradingagents/agents/managers/risk_manager.py:234:        _raw_ev = state.get("metadata", {}).get("raw_evidence") or {}
+tradingagents/agents/managers/risk_manager.py:354:        # [G-008] Enhanced: Extract current price from raw_evidence first
+tradingagents/agents/managers/risk_manager.py:356:        raw_evidence = state.get("metadata", {}).get("raw_evidence") or state.get("raw_evidence")
+tradingagents/agents/managers/risk_manager.py:358:        # Extract current price from raw_evidence (new G-006 format support)
+tradingagents/agents/managers/risk_manager.py:359:        if raw_evidence:
+tradingagents/agents/managers/risk_manager.py:360:            raw_stock_data = raw_evidence.get("stock_data")
+tradingagents/agents/managers/risk_manager.py:362:                # New G-006 format: raw_evidence.stock_data.raw = CSV string
+tradingagents/agents/managers/risk_manager.py:372:                            _logger.info("[G-008] Extracted current price from raw_evidence CSV: %.2f", current_price_from_raw)
+tradingagents/agents/managers/risk_manager.py:376:                # Legacy format: raw_evidence.stock_data = CSV string
+tradingagents/agents/managers/risk_manager.py:385:                            _logger.info("[G-008] Extracted current price from raw_evidence CSV: %.2f", current_price_from_raw)
+tradingagents/agents/managers/risk_manager.py:389:        # Use raw_evidence price if available, otherwise use original method
+tradingagents/agents/utils/agent_utils.py:28:    get_margin_trading,  # [DATA-010] margin_trading_raw_evidence
+Binary file tradingagents/agents/utils/__pycache__/readiness_score.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/readiness_score.cpython-314.pyc matches
+tradingagents/agents/utils/readiness_score.py:162:def calculate_evidence_coverage_from_contract(raw_evidence: Optional[dict] = None) -> int:
+tradingagents/agents/utils/readiness_score.py:163:    """[DATA-004] raw_evidence_contract: calculate evidence coverage directly from contract.
+tradingagents/agents/utils/readiness_score.py:166:    than text-based regex. Falls back to 0 if no raw_evidence available.
+tradingagents/agents/utils/readiness_score.py:170:    if not raw_evidence:
+tradingagents/agents/utils/readiness_score.py:174:    result = compute_contract_completeness(raw_evidence)
+tradingagents/agents/utils/readiness_score.py:189:    buybacks: str = "not_queried",  # [DATA-013] buyback_raw_evidence
+tradingagents/agents/utils/readiness_score.py:1124:def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) -> dict:
+tradingagents/agents/utils/readiness_score.py:1127:    When *raw_evidence* dict is provided (from DataCollector pool), structured
+tradingagents/agents/utils/readiness_score.py:1134:        raw_evidence: optional dict from DataCollector pool with keys like
+tradingagents/agents/utils/readiness_score.py:1144:        # [G-006] raw_evidence_snapshot: unwrap G-006 structured entries
+tradingagents/agents/utils/readiness_score.py:1157:    raw = raw_evidence or {}
+tradingagents/agents/utils/readiness_score.py:1184:    # 3. Turnover rate — check raw_evidence realtime quote data
+tradingagents/agents/utils/readiness_score.py:1197:    # 4. Volume ratio — check raw_evidence realtime quote data
+tradingagents/agents/utils/readiness_score.py:1249:    # 7. Margin trading (融资融券) — check raw_evidence margin_trading field
+tradingagents/agents/utils/readiness_score.py:1250:    # [DATA-010] margin_trading_raw_evidence
+tradingagents/agents/utils/readiness_score.py:1295:    # 9. Research reports — check raw_evidence research_report field
+tradingagents/agents/utils/readiness_score.py:1296:    # [DATA-011] research_report_raw_evidence
+tradingagents/agents/utils/readiness_score.py:1315:    # 10. Ratings — check raw_evidence ratings field
+tradingagents/agents/utils/readiness_score.py:1316:    # [DATA-012] rating_raw_evidence
+tradingagents/agents/utils/readiness_score.py:1344:    # 10. Buybacks (回购) — check raw_evidence buybacks field
+tradingagents/agents/utils/readiness_score.py:1345:    # [DATA-013] buyback_raw_evidence
+tradingagents/agents/utils/readiness_score.py:1798:def build_fund_flow_provenance(raw_evidence: Optional[dict], reports: dict) -> dict:
+tradingagents/agents/utils/readiness_score.py:1799:    """[G-007] Build fund flow provenance info from raw_evidence and reports.
+tradingagents/agents/utils/readiness_score.py:1816:    raw = raw_evidence or {}
+tradingagents/agents/utils/readiness_score.py:1895:def build_lhb_provenance(raw_evidence: Optional[dict], reports: dict) -> dict:
+tradingagents/agents/utils/readiness_score.py:1896:    """[G-007] Build LHB provenance info from raw_evidence and reports.
+tradingagents/agents/utils/readiness_score.py:1904:    raw = raw_evidence or {}
+tradingagents/agents/utils/game_theory_tools.py:53:@tool  # [DATA-010] margin_trading_raw_evidence
+tradingagents/dataflows/source_catalog.py:46:    BUYBACK = "buyback"  # [DATA-013] buyback_raw_evidence
+tradingagents/dataflows/source_catalog.py:584:    # [DATA-013] buyback_raw_evidence
+tradingagents/dataflows/providers/cn_akshare_provider.py:1176:        """获取个股融资融券数据。  # [DATA-010] margin_trading_raw_evidence"""
+tradingagents/agents/utils/agent_utils.py:27:    get_announcements,  # [DATA-P0-603629] astock_source_fallback
+tradingagents/agents/utils/agent_utils.py:28:    get_margin_trading,  # [DATA-010] margin_trading_raw_evidence
+Binary file tradingagents/agents/utils/__pycache__/game_theory_tools.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/agent_utils.cpython-312.pyc matches
+tradingagents/agents/utils/game_theory_tools.py:46:def get_announcements(
+tradingagents/agents/utils/game_theory_tools.py:50:    return route_to_vendor("get_announcements", symbol)
+tradingagents/agents/utils/game_theory_tools.py:54:def get_margin_trading(
+tradingagents/agents/utils/game_theory_tools.py:58:    return route_to_vendor("get_margin_trading", symbol)
+tradingagents/dataflows/live_smoke.py:164:            "method": "get_announcements",
+tradingagents/dataflows/providers/cn_akshare_provider.py:1175:    def get_margin_trading(self, symbol: str) -> str:
+tradingagents/dataflows/providers/cn_akshare_provider.py:1205:    def get_research_report(self, symbol: str) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:957:    def get_research_report(self, symbol: str) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:1016:    def get_research_reports(self, symbol: str, max_pages: int = 3) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:1018:        return self.get_research_report(symbol)
+tradingagents/dataflows/providers/cn_astock_provider.py:1146:    def get_announcements(self, symbol: str, page_size: int = 20) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:1203:    def get_margin_trading(self, symbol: str) -> str:
+Binary file tradingagents/dataflows/providers/__pycache__/cn_astock_provider.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/cn_akshare_provider.cpython-312.pyc matches
+tradingagents/dataflows/interface.py:46:            "get_announcements",  # [DATA-P0-603629] astock_source_fallback
+tradingagents/dataflows/interface.py:47:            "get_margin_trading",  # [DATA-010] margin_trading_raw_evidence
+tradingagents/dataflows/interface.py:48:            "get_research_report",  # [DATA-011] research_report_raw_evidence
+Binary file tradingagents/dataflows/__pycache__/interface.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/health_check.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/live_smoke.cpython-312.pyc matches
+tradingagents/dataflows/health_check.py:149:            "method": "get_announcements",
+
+exec
+/bin/zsh -lc "sed -n '400,435p' tradingagents/graph/data_collector.py; nl -ba tradingagents/graph/data_collector.py | sed -n '609,730p'; sed -n '1,45p' tradingagents/graph/data_collector.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    lookback = LONG_DAYS
+    end_dt = datetime.strptime(trade_date, "%Y-%m-%d")
+    # 为了计算指标准确（如 200 SMA），需要比分析窗口更长的历史数据
+    fetch_lookback = 365
+    start_str = (end_dt - timedelta(days=fetch_lookback)).strftime("%Y-%m-%d")
+
+    tasks: Dict[str, tuple] = {
+        "stock_data": (get_stock_data, {"symbol": ticker, "start_date": start_str, "end_date": trade_date}),
+        "news": (get_news, {"ticker": ticker, "start_date": (end_dt - timedelta(days=lookback)).strftime("%Y-%m-%d"), "end_date": trade_date}),
+        "global_news": (get_global_news, {"curr_date": trade_date, "look_back_days": lookback, "limit": 30}),
+        "fund_flow_board": (get_board_fund_flow, {}),
+        "fund_flow_individual": (get_individual_fund_flow, {"symbol": ticker}),
+        "lhb": (get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": False}),
+        "insider_transactions": (get_insider_transactions, {"ticker": ticker}),
+        "zt_pool": (get_zt_pool, {"date": trade_date}),
+        "hot_stocks": (get_hot_stocks_xq, {}),
+        "announcements": (get_announcements, {"symbol": ticker}),  # [DATA-P0-603629] astock_source_fallback
+        "margin_trading": (get_margin_trading, {"symbol": ticker}),  # [DATA-010] margin_trading_raw_evidence
+    }
+
+    # 财务报表类数据始终拉取，Research Manager 根据 horizon 自行判断权重
+    tasks.update({
+        "fundamentals": (get_fundamentals, {"ticker": ticker, "curr_date": trade_date}),
+        "balance_sheet": (get_balance_sheet, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
+        "cashflow": (get_cashflow, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
+        "income_statement": (get_income_statement, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
+    })
+
+    results: Dict[str, Any] = {}
+    fetch_start = time.time()
+    # 减少并发池大小，避免被反爬
+    with ThreadPoolExecutor(max_workers=min(10, len(tasks))) as executor:
+        future_to_key = {executor.submit(_safe, tool, payload): key for key, (tool, payload) in tasks.items()}
+        for future in future_to_key:
+            results[future_to_key[future]] = future.result()
+
+   609	    def build_raw_evidence(self, ticker: str, trade_date: str) -> Dict[str, Any]:
+   610	        # [G-006] raw_evidence_snapshot
+   611	        # [DATA-004] raw_evidence_contract: upgraded with endpoint/fallback_from/source_url
+   612	        pool = self.get(ticker, trade_date)
+   613	        if not pool:
+   614	            return {}
+   615	
+   616	        now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+   617	
+   618	        data_source_keys = [
+   619	            "stock_data", "news", "global_news",
+   620	            "fund_flow_board", "fund_flow_individual", "lhb",
+   621	            "fundamentals", "balance_sheet", "cashflow", "income_statement",
+   622	            "insider_transactions", "zt_pool", "hot_stocks",
+   623	            "indicators", "vpa_indicators",
+   624	            "announcements",  # [DATA-P0-603629] astock_source_fallback
+   625	            "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+   626	            "research_report",  # [DATA-011] research_report_raw_evidence
+   627	        ]
+   628	
+   629	        raw_evidence: Dict[str, Any] = {}
+   630	        for key in data_source_keys:
+   631	            raw_value = pool.get(key)
+   632	            status = self._infer_source_status(raw_value)
+   633	
+   634	            entry: Dict[str, Any] = {
+   635	                "status": status,
+   636	                "vendor": "akshare",
+   637	                "endpoint": "",  # [DATA-004] raw_evidence_contract
+   638	                "fallback_from": None,  # [DATA-004] raw_evidence_contract
+   639	                "source_url": None,  # [DATA-004] raw_evidence_contract
+   640	                "field": key,  # [DATA-004] raw_evidence_contract
+   641	                "as_of": trade_date,
+   642	                "fetched_at": now_iso,
+   643	                "record_count": self._count_records(raw_value),
+   644	                "unit": None,
+   645	                "error": None,
+   646	                "is_realtime_patched": False,
+   647	            }
+   648	
+   649	            data_type = _resolve_data_type_for_key(key)  # [DATA-004]
+   650	
+   651	            if key == "stock_data" and isinstance(raw_value, str):
+   652	                actual_vendor = get_last_hit_vendor("get_stock_data")
+   653	                if actual_vendor:
+   654	                    entry["vendor"] = actual_vendor
+   655	                if "is_realtime_patched=True" in raw_value:
+   656	                    entry["is_realtime_patched"] = True
+   657	                    for line in raw_value.split("\n"):
+   658	                        if "source=" in line and "[G-005]" in line:
+   659	                            parts = line.split("source=")
+   660	                            if len(parts) > 1:
+   661	                                entry["vendor"] = parts[1].split(",")[0].strip()
+   662	                        if "quote_time=" in line and "[G-005]" in line:
+   663	                            parts = line.split("quote_time=")
+   664	                            if len(parts) > 1:
+   665	                                entry["as_of"] = parts[1].strip()
+   666	                if "adjustment=" in raw_value:  # [DATA-P0-603629] astock_source_fallback
+   667	                    for line in raw_value.split("\n"):
+   668	                        if "adjustment=" in line and "[DATA-P0-603629]" in line:
+   669	                            parts = line.split("adjustment=")
+   670	                            if len(parts) > 1:
+   671	                                entry["adjustment"] = parts[1].strip().split("\n")[0].strip()
+   672	
+   673	            if key == "fund_flow_individual":
+   674	                entry["unit"] = "万元"
+   675	                entry["source_type"] = "individual_fund_flow"
+   676	                entry["unit_verified"] = entry["unit"] is not None
+   677	                actual_vendor = get_last_hit_vendor("get_individual_fund_flow")  # [DATA-P0-603629]
+   678	                if actual_vendor:
+   679	                    entry["vendor"] = actual_vendor
+   680	            elif key == "fund_flow_board":
+   681	                entry["source_type"] = "board_fund_flow"
+   682	                actual_vendor = get_last_hit_vendor("get_board_fund_flow")  # [DATA-P0-603629]
+   683	                if actual_vendor:
+   684	                    entry["vendor"] = actual_vendor
+   685	            elif key == "lhb":
+   686	                entry["query_mode"] = pool.get("_lhb_query_mode", "on_demand")
+   687	                entry["force_reason"] = pool.get("_lhb_force_reason")  # [DATA-P0-603629]
+   688	                actual_vendor = get_last_hit_vendor("get_lhb_detail")  # [DATA-P0-603629]
+   689	                if actual_vendor:
+   690	                    entry["vendor"] = actual_vendor
+   691	            elif key in ("stock_data",):
+   692	                entry["unit"] = "股"
+   693	            elif key == "announcements":  # [DATA-P0-603629] astock_source_fallback
+   694	                actual_vendor = get_last_hit_vendor("get_announcements")
+   695	                if actual_vendor:
+   696	                    entry["vendor"] = actual_vendor
+   697	            elif key == "margin_trading":  # [DATA-010] margin_trading_raw_evidence
+   698	                actual_vendor = get_last_hit_vendor("get_margin_trading")
+   699	                if actual_vendor:
+   700	                    entry["vendor"] = actual_vendor
+   701	            elif key == "research_report":  # [DATA-011] research_report_raw_evidence
+   702	                actual_vendor = get_last_hit_vendor("get_research_report")
+   703	                if actual_vendor:
+   704	                    entry["vendor"] = actual_vendor
+   705	
+   706	            # [DATA-004] raw_evidence_contract: resolve endpoint and fallback info
+   707	            entry["endpoint"] = _resolve_endpoint_for_vendor(
+   708	                entry["vendor"], data_type
+   709	            )
+   710	            entry["fallback_from"] = _resolve_fallback_for_vendor(
+   711	                entry["vendor"], data_type
+   712	            )
+   713	
+   714	            if status == "FAILED" and isinstance(raw_value, str):
+   715	                entry["error"] = raw_value[:200]
+   716	
+   717	            raw_evidence[key] = {
+   718	                "raw": raw_value,
+   719	                "field": entry["field"],  # [DATA-004]
+   720	                "status": entry["status"],
+   721	                "vendor": entry["vendor"],
+   722	                "endpoint": entry["endpoint"],  # [DATA-004]
+   723	                "as_of": entry["as_of"],
+   724	                "fetched_at": entry["fetched_at"],
+   725	                "record_count": entry["record_count"],
+   726	                "unit": entry["unit"],
+   727	                "error": entry["error"],
+   728	                "fallback_from": entry["fallback_from"],  # [DATA-004]
+   729	                "source_url": entry["source_url"],  # [DATA-004]
+   730	                "is_realtime_patched": entry["is_realtime_patched"],
+"""DataCollector: fetch all data once, serve windowed views to analyst agents."""
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
+import threading
+import time
+import pandas as pd
+from stockstats import wrap
+import io
+import logging
+
+from tradingagents.agents.utils.agent_utils import (
+    get_stock_data,
+    get_indicators,
+    get_fundamentals,
+    get_balance_sheet,
+    get_cashflow,
+    get_income_statement,
+    get_news,
+    get_global_news,
+    get_insider_transactions,
+    get_board_fund_flow,
+    get_individual_fund_flow,
+    get_lhb_detail,
+    get_zt_pool,
+    get_hot_stocks_xq,
+    get_announcements,
+    get_margin_trading,  # [DATA-010] margin_trading_raw_evidence
+)
+from tradingagents.dataflows.interface import get_last_hit_vendor  # [N-003] cn_astock_raw_evidence
+from tradingagents.dataflows.evidence_contract import (  # [DATA-004] raw_evidence_contract
+    resolve_data_type as _resolve_data_type_contract,
+    resolve_endpoint as _resolve_endpoint_contract,
+    resolve_fallback_info as _resolve_fallback_info_contract,
+)
+
+INDICATORS = [
+    "close_50_sma", "close_200_sma", "close_10_ema",
+    "rsi", "macd", "boll", "boll_ub", "boll_lb", "atr", "vwma",
+]
+SHORT_DAYS = 14
+LONG_DAYS = 90
+
+
