@@ -384,14 +384,25 @@ def _build_catalog() -> None:
 
     # ── 研报 / 评级 ────────────────────────────────────────────────────
     _register(
+        "cn_akshare", "stock_institute_recommend",
+        DataType.REPORT,
+        fields=["日期", "研究机构", "评级", "标题", "目标价"],
+        unit="条",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.MEDIUM,
+        fallback_priority=1,
+        is_primary=True,
+        known_gaps=["AKShare 研报接口字段覆盖不稳定"],
+        notes="AKShare 券商研报/评级推荐接口",
+    )
+    _register(
         "cn_astock", "reportapi.eastmoney.com/report/list",
         DataType.REPORT,
         fields=["publishDate", "orgSName", "title", "emRatingName", "predictThisYearEps"],
         unit="条",
         freshness=Freshness.DAILY,
         rate_limit_risk=RateLimitRisk.MEDIUM,
-        fallback_priority=1,
-        is_primary=True,
+        fallback_priority=2,
         notes="东财研报列表，支持分页",
     )
 

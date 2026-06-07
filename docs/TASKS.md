@@ -68,7 +68,7 @@
 42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
 43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，ready，依赖 DATA-001/DATA-004 ✓）。
 44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，ready，依赖 DATA-004 ✓）。
-45. `V-001`：600584 数据真实性端到端验收（P1，ready，依赖 G-009/G-010/N-002/N-003 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
 46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，ready，依赖 TF-OBS-001/T-008 ✓）。
 47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，ready，依赖 M-007/T-008/V-005 ✓）。
 48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，ready，依赖 DATA-003/DATA-004 ✓）。
@@ -2274,7 +2274,7 @@
 ### V-001: 600584 数据真实性端到端验收（P1）
 - **描述**：在 G-007/G-008 收口后，用 600584.SH 做一次低成本验收，确认当天行情补齐、raw evidence、资金/LHB 口径、估值旧价拦截都能在报告或结果 metadata 中看见。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：in_progress — claimed V-001-20260608-022250
 - **前置条件**：`G-009`、`G-010`、`N-002`、`N-003` 完成 ✓。
 - **执行约束**：
   - 默认只跑低成本/轻量路径；不要用 DeepSeek。
