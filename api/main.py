@@ -5230,6 +5230,7 @@ from api.tradeflow_schemas import (
     TradeFlowTieredCandidatesResponse,  # [TF-UX-001]
     TradeFlowReviewGenerateResponse,  # [TF-UX-003]
     TradeFlowEvidenceAuditResponse,  # [DATA-007] evidence_coverage_audit
+    TradeFlowResearchPlanResponse,  # [UI-009] candidate_ta_plan_draft
 )
 from api.services.tradeflow_service import (
     get_daily_plan as _tf_get_daily_plan,
@@ -5245,6 +5246,7 @@ from api.services.tradeflow_service import (
     get_candidates_tiered as _tf_get_candidates_tiered,  # [TF-UX-001]
     generate_review as _tf_generate_review,  # [TF-UX-003]
     get_evidence_audit as _tf_get_evidence_audit,  # [DATA-007] evidence_coverage_audit
+    generate_research_plan as _tf_generate_research_plan,  # [UI-009] candidate_ta_plan_draft
 )
 
 # [UI-001] tradeflow_api — read-only endpoints
@@ -5347,6 +5349,15 @@ def tradeflow_candidates_tiered(date: str = Query(..., description="交易日期
 @app.post("/v1/tradeflow/review/generate", response_model=TradeFlowReviewGenerateResponse)
 def tradeflow_review_generate(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
     return _tf_generate_review(date)
+
+
+# [UI-009] candidate_ta_plan_draft
+@app.post("/v1/tradeflow/research-plan", response_model=TradeFlowResearchPlanResponse)
+def tradeflow_research_plan(
+    symbol: str = Query(..., description="股票代码"),
+    date: str = Query(..., description="交易日期 YYYY-MM-DD"),
+):
+    return _tf_generate_research_plan(symbol, date)
 
 
 # ─── Static Files & SPA Routing ──────────────────────────────────────────────

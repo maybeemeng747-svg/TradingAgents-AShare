@@ -1163,3 +1163,24 @@ export interface TradeFlowReviewGenerateResponse {
         suggestions: string[]
     } | null
 }
+
+// [UI-009] candidate_ta_plan_draft
+export interface TradeFlowResearchPlanResponse {
+    status: string
+    trade_date: string
+    symbol: string
+    candidate_type: string
+    research_queue: string
+    research_intent: string
+    horizon: string
+    analysis_intent: string
+    position_context: string
+    runtime_profile: string
+    enabled_modules: string[]
+    required_evidence: string[]
+    existing_evidence_coverage: number
+    can_generate: boolean
+    block_reason: string
+    plan_markdown: string
+    route_reason: string
+}

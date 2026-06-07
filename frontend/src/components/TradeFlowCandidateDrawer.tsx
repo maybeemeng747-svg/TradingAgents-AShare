@@ -1,9 +1,9 @@
 // [H-005] mandate_radar_ui
 // [TA-UI-001] analysis_console_horizon_intent
 import { useEffect, useState } from 'react'
-import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote, FlaskConical } from 'lucide-react'
+import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote, FlaskConical, FileText } from 'lucide-react'
 import { api } from '@/services/api'
-import type { TradeFlowCandidateItem, TradeFlowCandidateDetail } from '@/types'
+import type { TradeFlowCandidateItem, TradeFlowCandidateDetail, TradeFlowResearchPlanResponse } from '@/types'
 
 const ALL_STRATEGIES = [
     'VCP',
@@ -108,12 +108,15 @@ interface TradeFlowCandidateDrawerProps {
 export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, onClose, onNavigateToAnalysis }: TradeFlowCandidateDrawerProps) {
     const [detail, setDetail] = useState<TradeFlowCandidateDetail | null>(null)
     const [loadingDetail, setLoadingDetail] = useState(false)
+    const [researchPlan, setResearchPlan] = useState<TradeFlowResearchPlanResponse | null>(null)  // [UI-009]
+    const [loadingPlan, setLoadingPlan] = useState(false)  // [UI-009]
 
     useEffect(() => {
         if (!open) return
         let cancelled = false
         setLoadingDetail(true)
         setDetail(null)
+        setResearchPlan(null)
         api.getTradeFlowCandidateDetail(candidate.symbol, tradeDate)
             .then(res => {
                 if (!cancelled && res.candidate) {
@@ -535,6 +538,79 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
                             <div className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-400">{detail.fund_flow_board_summary}</div>
                         </div>
                     )}
+
+                    {/* [UI-009] candidate_ta_plan_draft — Research plan section */}
+                    <div>
+                        <div className="flex items-center justify-between">
+                            <SectionTitle icon={FileText} title="研究预案" />
+                            {!researchPlan && !loadingPlan && (
+                                <button
+                                    onClick={() => {
+                                        setLoadingPlan(true)
+                                        api.generateResearchPlan(candidate.symbol, tradeDate)
+                                            .then(res => { setResearchPlan(res) })
+                                            .catch(() => {})
+                                            .finally(() => { setLoadingPlan(false) })
+                                    }}
+                                    className="flex items-center gap-1 rounded-md bg-indigo-50 px-2 py-1 text-[11px] font-medium text-indigo-600 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:text-indigo-400 dark:hover:bg-indigo-900/50 transition-colors"
+                                >
+                                    <FileText className="h-3.5 w-3.5" />
+                                    {data.candidate_type === 'TECH_TRADE' ? '生成短线确认预案' : '生成中线研究预案'}
+                                </button>
+                            )}
+                        </div>
+                        <div className="mt-2 space-y-2">
+                            {loadingPlan && (
+                                <div className="flex items-center gap-2 text-xs text-slate-400">
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    生成研究预案...
+                                </div>
+                            )}
+                            {researchPlan && researchPlan.status !== 'no_data' && (
+                                <>
+                                    {researchPlan.can_generate ? (
+                                        <div className="rounded-lg border border-indigo-200 bg-indigo-50/50 p-3 dark:border-indigo-800 dark:bg-indigo-900/10">
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-[11px] font-medium text-indigo-600 dark:text-indigo-400">
+                                                    {researchPlan.horizon === 'medium' ? '中线研究预案' : '短线确认预案'}
+                                                </span>
+                                                <span className="text-[10px] text-slate-400">|</span>
+                                                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                                                    队列: {researchPlan.research_queue || '未分配'}
+                                                </span>
+                                                <span className="text-[10px] text-slate-400">|</span>
+                                                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                                                    Profile: {researchPlan.runtime_profile}
+                                                </span>
+                                            </div>
+                                            <div className="mt-1 flex flex-wrap gap-1">
+                                                {researchPlan.enabled_modules.map(m => (
+                                                    <span key={m} className="inline-block rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600 dark:bg-blue-900/20 dark:text-blue-400">{m}</span>
+                                                ))}
+                                            </div>
+                                            {researchPlan.route_reason && (
+                                                <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{researchPlan.route_reason}</div>
+                                            )}
+                                            <div className="mt-2 rounded bg-white/60 dark:bg-slate-800/40 p-2 text-[11px] text-slate-600 dark:text-slate-400 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                                                {researchPlan.plan_markdown}
+                                            </div>
+                                            <div className="mt-1 text-[10px] text-slate-400">
+                                                预案已生成，需人工确认后才会启动 TA 分析
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-3 dark:border-amber-800 dark:bg-amber-900/10">
+                                            <div className="text-[11px] font-medium text-amber-600 dark:text-amber-400">无法生成研究预案</div>
+                                            <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{researchPlan.block_reason}</div>
+                                        </div>
+                                    )}
+                                </>
+                            )}
+                            {researchPlan && researchPlan.status === 'no_data' && (
+                                <div className="text-xs text-slate-400">未找到候选记录</div>
+                            )}
+                        </div>
+                    </div>
 
                     <div className="pb-4" />
 

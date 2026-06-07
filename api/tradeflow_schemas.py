@@ -330,3 +330,24 @@ class TradeFlowEvidenceAuditResponse(BaseModel):
     credibilities: List[EvidenceCredibilityItem] = Field(default_factory=list)
     summary_markdown: str = ""
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [UI-009] candidate_ta_plan_draft
+class TradeFlowResearchPlanResponse(BaseModel):
+    status: str = "ok"
+    trade_date: str = ""
+    symbol: str = ""
+    candidate_type: str = ""
+    research_queue: str = ""
+    research_intent: str = ""
+    horizon: str = ""
+    analysis_intent: str = ""
+    position_context: str = ""
+    runtime_profile: str = ""
+    enabled_modules: List[str] = Field(default_factory=list)
+    required_evidence: List[str] = Field(default_factory=list)
+    existing_evidence_coverage: float = 0.0
+    can_generate: bool = True
+    block_reason: str = ""
+    plan_markdown: str = ""
+    route_reason: str = ""

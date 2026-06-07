@@ -1172,3 +1172,68 @@ def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
             "suggestions": summary.suggestions,
         },
     }
+
+
+# [UI-009] candidate_ta_plan_draft
+def generate_research_plan(symbol: str, trade_date: str, tf_db_path: str = "") -> dict:
+    """Generate a TA research plan draft for a single candidate."""
+    from tradingagents.tradeflow.research_plan_draft import generate_research_plan as _gen_plan
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {
+            "status": "no_data",
+            "trade_date": trade_date,
+            "symbol": symbol,
+            "can_generate": False,
+            "block_reason": "TradeFlow 数据库不可用",
+        }
+
+    try:
+        row = conn.execute(
+            "SELECT * FROM tradeflow_candidates WHERE trade_date = ? AND symbol = ?",
+            (trade_date, symbol),
+        ).fetchone()
+
+        if row is None:
+            columns = _table_columns(conn, "tradeflow_candidates")
+            if "effective_trade_date" in columns:
+                row = conn.execute(
+                    "SELECT * FROM tradeflow_candidates WHERE effective_trade_date = ? AND symbol = ?",
+                    (trade_date, symbol),
+                ).fetchone()
+
+        if row is None:
+            return {
+                "status": "no_data",
+                "trade_date": trade_date,
+                "symbol": symbol,
+                "can_generate": False,
+                "block_reason": "未找到该候选记录",
+            }
+
+        item = _row_to_candidate_item(row)
+        evidence = _parse_json(_rget(row, "evidence_json"), {})
+        evidence_coverage = 0.0
+        if isinstance(evidence, dict):
+            total = len(evidence)
+            if total > 0:
+                has = sum(1 for v in evidence.values() if v)
+                evidence_coverage = has / total
+
+        draft = _gen_plan(
+            symbol=symbol,
+            trade_date=trade_date,
+            candidate_type=item.get("candidate_type", ""),
+            research_queue=item.get("research_queue", ""),
+            research_intent=item.get("research_intent", ""),
+            route_reason=item.get("research_route_reason", ""),
+            evidence_coverage=evidence_coverage,
+            missing_evidence=item.get("missing_evidence"),
+        )
+
+        result = draft.to_dict()
+        result["status"] = "ok"
+        return result
+    finally:
+        conn.close()

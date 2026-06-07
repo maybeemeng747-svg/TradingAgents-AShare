@@ -4,6 +4,72 @@
 
 ---
 
+## 2026-06-07 | UI-009 fix: 代码质量修复（Codex review exit 1 后修整）
+
+- **执行者**：OpenCode
+- **任务**：UI-009 Codex review exit code 1 后代码质量修复
+- **修复内容**：
+  1. `tradingagents/tradeflow/research_plan_draft.py:97` — 移除未使用的 `_BLOCKING_CANDIDATE_TYPES` 常量（死代码）
+  2. `tradingagents/tradeflow/research_plan_draft.py:107-114` — 合并 `_determine_analysis_intent` 中重复的 if 分支（POLICY_AMBUSH/POLICY_CONFIRM 共用同一分支）
+  3. `frontend/src/components/TradeFlowCandidateDrawer.tsx:118` — 抽屉重新打开时重置 `researchPlan` 状态（`setResearchPlan(null)`），避免显示上一个候选的残留预案数据
+- **测试结果**：48 passed (UI-009)；136 passed (tradeflow 全部回归)；npm run build 通过；0 failed
+
+---
+
+## 2026-06-07 | UI-009: 候选详情一键生成 TA 研究任务预案
+
+- **执行者**：OpenCode
+- **任务**：UI-009 — 在 TradeFlow 候选详情中提供"生成 TA 研究预案/加入研究队列"的轻量入口，只生成队列记录和分析参数预案，不直接触发高成本 TA/LLM。
+- **修改文件**：
+  - `tradingagents/tradeflow/research_plan_draft.py` — **新建**：[UI-009] candidate_ta_plan_draft
+    - `ResearchPlanDraft` 数据类：symbol/trade_date/candidate_type/research_queue/research_intent/horizon/analysis_intent/position_context/runtime_profile/enabled_modules/required_evidence/can_generate/block_reason/plan_markdown
+    - `generate_research_plan()` 主函数：根据候选类型自动确定周期/意图/profile/模块/必要证据，检查阻断条件，生成 Markdown 预案
+    - `render_plan_markdown()` Markdown 渲染
+    - 三类 Profile：MIDLINE_POLICY_LIGHT(POLICY_AMBUSH/CONFIRM) / SHORT_TECH_LIGHT(TECH_TRADE) / FULL_TA(其余)
+    - 阻断条件：REJECTED/OVERHEATED_AVOID/PSEUDO_POLICY/证据覆盖率过低/关键证据缺失
+  - `api/tradeflow_schemas.py` — [UI-009]
+    - 新增 `TradeFlowResearchPlanResponse` Pydantic model
+  - `api/services/tradeflow_service.py` — [UI-009]
+    - 新增 `generate_research_plan()` 服务函数：从 DB 读取候选数据，计算证据覆盖率，调用核心模块生成预案
+  - `api/main.py` — [UI-009]
+    - 新增 `POST /v1/tradeflow/research-plan` 端点
+    - 导入新 schema 和 service 函数
+  - `frontend/src/types/index.ts` — [UI-009]
+    - 新增 `TradeFlowResearchPlanResponse` TypeScript interface
+  - `frontend/src/services/api.ts` — [UI-009]
+    - 新增 `generateResearchPlan()` API 方法
+  - `frontend/src/components/TradeFlowCandidateDrawer.tsx` — [UI-009]
+    - 新增"研究预案"section，含"生成中线研究预案"/"生成短线确认预案"按钮
+    - 根据候选类型自动选择按钮文案
+    - 预案生成后展示：队列/意图/profile/启用模块/分流原因/Markdown 预案内容
+    - 阻断时展示无法生成原因
+  - `tests/test_ui009_research_plan_draft.py` — 新建，48 个测试覆盖：
+    - `TestResearchPlanDraft` (2): 默认值/to_dict
+    - `TestDetermineHorizon` (5): 五种候选类型周期判定
+    - `TestDetermineAnalysisIntent` (4): 入场/观察意图
+    - `TestDeterminePositionContext` (2): 持仓上下文
+    - `TestDetermineRuntimeProfile` (4): 三类 profile + 默认
+    - `TestDetermineModules` (3): 三类模块集
+    - `TestDetermineRequiredEvidence` (3): 必要证据列表
+    - `TestCheckCanGenerate` (7): REJECTED/OVERHEATED/PSEUDO/低覆盖率/关键缺失/正常/部分缺失
+    - `TestGenerateResearchPlan` (5): 中线/短线/阻断过热/阻断低覆盖/空类型
+    - `TestRenderPlanMarkdown` (2): 正常/阻断
+    - `TestServiceIntegration` (4): 服务层集成(POLICY_AMBUSH/TECH_TRADE/无数据/无DB)
+    - `TestAcceptanceUI009` (8): 全部验收标准
+  - `docs/TASKS.md` — UI-009 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：48 passed (UI-009)；113 passed (H-007+UI-001 回归)；136 passed (tradeflow 全部回归)；npm run build 通过；0 failed
+- **关键逻辑**：
+  - 核心模块 `research_plan_draft.py`：纯规则化，不调用 LLM，不触发 TA
+  - 三类 Profile 自动映射：POLICY_AMBUSH/CONFIRM → 中线+MIDLINE_POLICY_LIGHT；TECH_TRADE → 短线+SHORT_TECH_LIGHT；其余 → FULL_TA
+  - 阻断门禁：REJECTED 队列/过热/伪政策/证据覆盖率<15%/关键证据缺失时无法生成
+  - API `POST /v1/tradeflow/research-plan?symbol=...&date=...`：轻量 POST，只读候选数据+生成预案
+  - 前端按钮文案根据候选类型动态切换："生成中线研究预案" vs "生成短线确认预案"
+  - 预案生成后显示完整参数和 Markdown 摘要，标注"需人工确认后才会启动 TA 分析"
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-07 | M-012 fix: 修复 test_from_replay_report_all_pass 断言
 
 - **执行者**：OpenCode
