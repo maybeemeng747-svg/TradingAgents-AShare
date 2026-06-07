@@ -66,10 +66,10 @@
 40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
 41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
 42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
-43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，ready，依赖 DATA-001/DATA-004 ✓）。
-44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，ready，依赖 DATA-004 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done，依赖 DATA-004 ✓）。
 45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
-46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，ready，依赖 TF-OBS-001/T-008 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
 47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
 48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，ready，依赖 DATA-003/DATA-004 ✓）。
 49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，ready，依赖 DATA-003/DATA-004 ✓）。
@@ -95,8 +95,8 @@
 12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
 13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
 14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
-15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，ready）。
-16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，ready）。
+15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
+16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
 17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，ready）。
 18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，ready）。
 19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，ready）。
