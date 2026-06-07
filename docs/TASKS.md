@@ -1010,7 +1010,7 @@
 ### DATA-015: 涨停池 cn_astock fallback 与 fixture（P2）
 - **描述**：为涨停池/涨停板情绪数据增加 cn_astock/Eastmoney fallback 和 fixture，降低 AKShare 单点失败对短线候选和市场情绪的影响。
 - **优先级**：P2
-- **状态**：done — DATA-015-20260608
+- **状态**：done -- commit 4bb21cf
 - **前置条件**：`DATA-005`、`DATA-P0-FUND-ROUTE` 完成 ✓。
 - **执行约束**：
   - 不全市场高频轮询。
