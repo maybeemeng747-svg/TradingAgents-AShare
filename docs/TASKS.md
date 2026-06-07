@@ -63,7 +63,7 @@
 37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，ready，依赖 H-005/DATA-007 ✓）。
 38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
 39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
-40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，ready，依赖 INF-001 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
 41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，ready，依赖 TF-OBS-001/UI-004 ✓）。
 42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
 
@@ -1659,7 +1659,7 @@
 ### M-013: CodeGraph 影响范围预检接入自动开发日志（P2）
 - **描述**：把 CodeGraph 的 symbol/context/impact 输出接入每个任务的运行档案，帮助 OpenCode 开发前知道影响范围，也方便 Codex review 时检查调用方覆盖。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：in_progress — claimed M-013-20260607-235926
 - **前置条件**：`INF-001` 完成 ✓；CodeGraph 已本地安装或可优雅跳过。
 - **执行约束**：
   - CodeGraph 不可用时不能阻塞任务执行，只记录 `SKIPPED`。

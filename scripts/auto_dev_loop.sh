@@ -357,6 +357,25 @@ cat > "$RUN_DIR/task.md" <<TASK_META_EOF
 TASK_META_EOF
 log "Task run archive: $RUN_DIR"
 
+    # --- 2a. [M-013] CodeGraph preflight: generate context before development ---
+    CG_PREFLIGHT_SCRIPT="$SCRIPT_DIR/codegraph_preflight.py"
+    if [ -f "$CG_PREFLIGHT_SCRIPT" ]; then
+        log "[M-013] Running CodeGraph preflight (pre)..."
+        set +e
+        python3 "$CG_PREFLIGHT_SCRIPT" pre \
+            --run-dir "$RUN_DIR" \
+            --task-id "$TASK_ID" \
+            --task-title "$TASK_TITLE" \
+            --repo-dir "$REPO_DIR" 2>&1 | tail -5
+        CG_PRE_EXIT=$?
+        set -e
+        if [ $CG_PRE_EXIT -eq 0 ]; then
+            log "[M-013] CodeGraph preflight done"
+        else
+            warn "[M-013] CodeGraph preflight failed (exit=$CG_PRE_EXIT), continuing"
+        fi
+    fi
+
 # --- 2. Build OpenCode prompt ---
 PROMPT_FILE=$(mktemp -t auto-dev-prompt.XXXXXX)
 cat > "$PROMPT_FILE" <<PROMPT_EOF
@@ -526,6 +545,26 @@ FIX_EOF
     fi
 
     log "Tests passed"
+
+    # --- 3b2. [M-013] CodeGraph post-task: generate impact from changed files ---
+    if [ -f "$CG_PREFLIGHT_SCRIPT" ]; then
+        CHANGED_FILES_LIST=$(git diff --name-only 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+        if [ -n "$CHANGED_FILES_LIST" ]; then
+            log "[M-013] Running CodeGraph impact (post)..."
+            set +e
+            python3 "$CG_PREFLIGHT_SCRIPT" post \
+                --run-dir "$RUN_DIR" \
+                --changed-files "$CHANGED_FILES_LIST" \
+                --repo-dir "$REPO_DIR" 2>&1 | tail -5
+            CG_POST_EXIT=$?
+            set -e
+            if [ $CG_POST_EXIT -eq 0 ]; then
+                log "[M-013] CodeGraph impact done"
+            else
+                warn "[M-013] CodeGraph impact failed (exit=$CG_POST_EXIT), continuing"
+            fi
+        fi
+    fi
 
     # 3c. Run Codex review (MANDATORY — never skip even after manual recovery)
     # [CRITICAL] Review must run before ANY commit. If recovering from test failure,
