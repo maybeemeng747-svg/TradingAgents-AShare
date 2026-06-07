@@ -1,0 +1,3613 @@
+Task: DATA-010 - 融资融券数据源注册与 raw_evidence 接入（P1）
+Date: 2026-06-08_02:15:19
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019ea34a-52b2-7672-9bd4-03fbc9bed619
+--------
+user
+current changes
+exec
+/bin/zsh -lc "printf '%s\\n' '--- overview ---'; sed -n '1,220p' docs/project-overview.md; printf '%s\\n' '--- tasks ---'; sed -n '1,180p' docs/TASKS.md; printf '%s\\n' '--- decisions ---'; sed -n '1,180p' docs/DECISIONS.md; printf '%s\\n' '--- devlog ---'; sed -n '1,180p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+--- overview ---
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+--- tasks ---
+# 任务池
+
+> 最后更新：2026-06-08
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，done）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，done，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，done，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，done，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，done，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，done，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，ready，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，ready，依赖 DATA-004 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，ready，依赖 G-009/G-010/N-002/N-003 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，ready，依赖 TF-OBS-001/T-008 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，ready，依赖 M-007/T-008/V-005 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，ready，依赖 DATA-003/DATA-004 ✓）。
+49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，ready，依赖 DATA-003/DATA-004 ✓）。
+50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，ready，依赖 DATA-005/DATA-P1-ASTOCK-LIVE-SMOKE ✓）。
+51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，ready，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，ready，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，ready）。
+16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，ready）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，ready）。
+18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，ready）。
+19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，ready）。
+20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，ready）。
+21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，ready）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## PERF. 运行成本 / 轻量分析任务池（2026-06-02 新增）
+
+> 目标：系统不能为了“全面”而变慢。TradeFlow 是雷达，轻量 TA 是候选验证，完整 TA 是深度体检。默认链路必须轻，完整多 Agent 分析只能由用户明确触发。
+
+### PERF-001: 运行层级与速度预算契约（P1）
+- **描述**：建立统一运行层级契约，所有 API、前端按钮、scheduler、自动开发任务都要标明属于 `fast/light/full` 哪一层，以及是否允许调用 LLM。
+- **优先级**：P1
+- **状态**：done -- commit ca08846
+- **背景**：
+  - 用户明确要求系统不能做得太重，不能“一发指令半天才回来”。
+  - 候选池/盘中观察需要时效；完整 TA 只能用于少量高价值标的。
+- **运行层级定义**：
+  1. `fast`：5-30 秒。TradeFlow 筛选、数据健康、证据缺口、候选分类。默认不调用 LLM。
+  2. `light`：1-3 分钟。轻量 TA，只跑必要模块，用于中线政策验证、短线技术确认、持仓风险复核。
+  3. `full`：10-20 分钟。完整 14 Agent TA，多空辩论和风控全链路，必须人工确认。
+- **执行约束**：
+  - 不改 prompts。
+  - 不触发 live TA。
+  - 不新增高成本模型调用。
+- **实现要点**：
+  1. 新增运行层级枚举/配置，例如 `runtime_tier`：
+     - `FAST_RADAR`
+     - `LIGHT_RESEARCH`
+     - `FULL_TA`
+  2. API/服务层统一返回：
+     - `runtime_tier`
+     - `expected_latency`
+     - `llm_allowed`
+     - `requires_confirmation`
+     - `cost_risk`
+  3. 前端按钮文案对应：
+     - `快速筛选`
+     - `轻量研究`
+     - `完整 TA`
+  4. `TradeFlow Discovery` 和 `Observe` 必须标记为 `FAST_RADAR`。
+  5. 自动任务/scheduler 不得默认进入 `FULL_TA`。
+- **验收方式**：
+  - TradeFlow candidates/observe/data-health API 返回 fast 层级或元数据。
+  - 前端能显示运行层级和预计耗时。
+  - 没有用户确认时，full TA 入口不可直接触发。
+  - `pytest tests/test_runtime_tier*.py tests/test_ui001_tradeflow_api.py -q` 或等价测试通过。
+- **代码标注要求**：`# [PERF-001] runtime_tier_contract` / `// [PERF-001] runtime_tier_contract`
+
+### PERF-002: 轻量 TA Profile 与模块路由（P1）
+- **描述**：在完整 TA 之外增加轻量 TA Profile，只跑与目标相关的模块，避免所有候选都进入 14 Agent 全链路。
+- **优先级**：P1
+- **状态**：done -- commit 20ff126
+- **前置条件**：`TA-UI-001`、`H-007` 完成或同步完成。
+- **执行约束**：
+  - 不删除完整 TA。
+  - 不改 prompts。
+  - 不自动调用 live LLM；第一版可先做路由配置和 mock/fixture。
+- **Profile 建议**：
+  1. `MIDLINE_POLICY_LIGHT`：
+     - 用于 `POLICY_AMBUSH/POLICY_CONFIRM`。
+     - 重点：政策/公告/基本面/风险/量价。
+  2. `SHORT_TECH_LIGHT`：
+     - 用于 `TECH_TRADE`。
+     - 重点：技术/量价/资金/风险。
+  3. `POSITION_RISK_LIGHT`：
+     - 用于已持仓复盘。
+     - 重点：风控/资金/关键价位/公告。
+  4. `FULL_TA`：
+     - 保持完整多 Agent，只能手动确认。
+- **实现要点**：
+  1. 新增 profile 配置，声明每个 profile 启用的 analyst/manager/risk 模块。
+--- decisions ---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+--- devlog ---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-08 | DATA-010: 融资融券数据源注册与 raw_evidence 接入
+
+- **执行者**：OpenCode
+- **任务**：DATA-010 — 把融资融券数据纳入 source_catalog、provider 路由和 raw_evidence contract，补齐 TA 风控和情绪判断里的杠杆资金证据。
+- **修改文件**：
+  - `tradingagents/dataflows/source_catalog.py` — [DATA-010] margin_trading_raw_evidence
+    - 注册 2 个融资融券 source：`cn_akshare/stock_margin_underlying_info_szse`(primary) + `cn_astock/datacenter-web.eastmoney.com/RPT_RZRQ_LSHJ`(fallback)
+    - `DataType.MARGIN_TRADING` 已存在于枚举中但无注册源，现补齐
+  - `tradingagents/dataflows/providers/cn_akshare_provider.py` — [DATA-010]
+    - 新增 `get_margin_trading(symbol)`: AKShare 深交所/沪交所融资融券标的数据
+    - 支持 `MARGIN_HAS_DATA` / `MARGIN_NORMAL_NO_DATA` / `MARGIN_FAILED` 三态输出
+  - `tradingagents/dataflows/providers/cn_astock_provider.py` — [DATA-010]
+    - 新增 `get_margin_trading(symbol)`: 东财 datacenter RPT_RZRQ_LSHJ 直连
+    - 金额元→万元 `/10000` 转换，输出融资余额/融资买入/融券余额/融券卖出/净买
+  - `tradingagents/dataflows/interface.py` — [DATA-010]
+    - `TOOLS_CATEGORIES["cn_market_data"]["tools"]` 新增 `"get_margin_trading"`
+    - 支持 `route_to_vendor` 自动 fallback 和 `get_last_hit_vendor` 追踪
+  - `tradingagents/dataflows/evidence_contract.py` — [DATA-010]
+    - `_EVIDENCE_KEY_TO_DATA_TYPE` 新增 `"margin_trading": "margin_trading"`
+    - `_REQUIRED_FIELDS_FOR_COMPLETENESS` 新增 `"margin_trading": ["status", "vendor", "unit"]`
+  - `tradingagents/dataflows/evidence_coverage_audit.py` — [DATA-010]
+    - `_EVIDENCE_FIELD_LABELS` 新增 `"margin_trading": "融资融券"`
+    - `_EVIDENCE_FIELD_FAMILIES` 新增 `"margin_trading": "margin_trading"`
+  - `tradingagents/agents/utils/readiness_score.py` — [DATA-010]
+    - `infer_evidence_statuses()` 中 margin_trading 从硬编码 `NOT_AVAILABLE` 改为从 `raw_evidence["margin_trading"]` 读取
+    - 支持 `HAS_DATA/QUERY_FAILED/NORMAL_NO_DATA/NOT_QUERIED` 四态
+    - `margin_trading` 不再被 `_EXCLUDE_FROM_COVERAGE` 排除
+  - `tradingagents/dataflows/fixture_replay.py` — [DATA-010]
+    - 新增 3 个 fixture：`margin_has_data`(HAS_DATA/cn_astock) / `margin_failed`(FAILED/ConnectionError) / `margin_not_queried`(NOT_QUERIED)
+    - `ALL_FIXTURE_IDS` 从 13 扩展到 16
+  - `tests/test_data010_margin_trading.py` — **新建**，64 个测试覆盖：
+    - `TestSourceCatalogMarginTrading` (8): DataType 枚举/sources 注册/primary/fallback chain/all_data_types/fields/endpoint/catalog validation
+    - `TestEvidenceContractMarginTrading` (8): resolve_data_type/contract HAS_DATA/FAILED/completeness/missing/failed/summary
+    - `TestEvidenceCoverageAuditMarginTrading` (4): label/family/audit HAS_DATA/audit FAILED
+    - `TestReadinessScoreMarginTrading` (10): NOT_QUERIED default/HAS_DATA/FAILED/NORMAL_NO_DATA/NOT_QUERIED from raw/coverage increase/NOT_AVAILABLE excluded/long text/unavailable
+    - `TestInterfaceMarginTrading` (4): tools categories/category/method/failure string detection
+    - `TestMarginTradingFixtures` (12): fixture IDs/total count/exists/vendor/unit/error/no vendor/all fixtures
+    - `TestMarginTradingFixtureReplay` (5): replay HAS_DATA/FAILED/NOT_QUERIED/all margin/full replay
+    - `TestProviderMarginTrading` (6): akshare method/astock method/akshare fail/astock fail/astock no data/astock has data
+    - `TestAcceptanceDATA010` (10): 全部验收标准
+  - `tests/test_readiness_score.py` — 更新 3 处 `NOT_AVAILABLE` 断言为 `NOT_QUERIED`
+  - `tests/test_e_series_fixes.py` — 更新 2 处覆盖率计算断言（margin_trading 从 excluded 变为 counted）
+  - `docs/TASKS.md` — DATA-010 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：64 passed (DATA-010)；543 passed (相关回归)；0 failed
+- **关键逻辑**：
+  - 融资融券从 `NOT_AVAILABLE` 硬编码升级为完整 raw_evidence 四态数据源
+  - source_catalog 注册 2 个 vendor：AKShare(深交所/沪交所) 为 primary，东财 datacenter 为 fallback
+  - provider 层输出 `MARGIN_HAS_DATA / MARGIN_NORMAL_NO_DATA / MARGIN_FAILED` 三态标记
+  - route_to_vendor 支持失败字符串检测和 fallback 链自动切换
+  - readiness_score 中 margin_trading 不再被排除出覆盖率计算
+  - 3 个 fixture 覆盖 HAS_DATA/FAILED/NOT_QUERIED 三种场景
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未跑 live 请求
+
+---
+
+- **执行者**：Codex
+- **背景**：上一轮 `UI-010/T-008` 收口后，任务池 ready 队列为 0；`M-012` 生成 `docs/task_suggestions/2026-06-08.md`，但建议中混有历史已完成任务和外围联动任务，需要人工筛选后释放。
+- **本轮释放原则**：
+  - 优先补齐 `DATA_SOURCE_GAP_AUDIT` 指出的真实数据源缺口。
+  - 优先验证 TradeFlow 已有链路的盘中/盘后实用性。
+  - 暂不释放模型接入、飞书推送、旧 D/E/C 历史任务，避免偏离当前主线。
+- **释放为 ready 的任务**：
+  - `DATA-010` 融资融券数据源注册与 raw_evidence 接入（P1）。
+  - `DATA-011` 研报端点接入 route_to_vendor 与 raw_evidence（P1）。
+  - `V-001` 600584 数据真实性端到端验收（P1）。
+  - `T-004` TradeFlow P2 盘中 Observe（本轮 P1，修复盘中观察无数据/需手动执行的使用阻塞）。
+  - `T-005` TradeFlow P3 盘后 Review（本轮 P1，修复盘后 Review 无数据的质量闭环阻塞）。
+  - `DATA-012` 评级数据接入 provider 路由与 raw_evidence（P2）。
+  - `DATA-013` 回购数据接入 provider 路由与 raw_evidence（P2）。
+  - `DATA-014` 新闻/政策事件 fixture 与 live smoke 补充（P2）。
+  - `DATA-015` 涨停池 cn_astock fallback 与 fixture（P2）。
+  - `DATA-016` 热门股票 cn_astock fallback 与 fixture（P2）。
+- **同步修正**：
+  - 顶部队列中 `PERF-003` 从旧的 `in_progress` 校正为 `done`，详情区已是 `done — commit 059fc21`。
+  - `docs/task_suggestions/2026-06-08.md` 保留为本轮任务释放依据。
+- **执行边界**：仅修改任务池和日志；未改业务代码，未调用 TA/LLM，未写生产数据库。
+
+---
+
+## 2026-06-08 | T-008 fix: Codex review 代码质量修复
+
+- **执行者**：OpenCode
+- **任务**：T-008 fix — Codex review exit code 1 后代码质量修复（根因为 Codex config.toml `service_tier` 配置错误，非代码问题）
+- **修复内容**：
+  1. `tradingagents/tradeflow/observe_fixture_replay.py:23` — 移除未使用的 `asdict` import
+  2. `tradingagents/tradeflow/observe_fixture_replay.py:30` — 移除未使用的 `ObserveRunResult` import
+  3. `tradingagents/tradeflow/observe_fixture_replay.py:27` — `from unittest.mock import patch` 从 `replay_fixture()` 内联移至模块顶部
+  4. `tradingagents/tradeflow/observe_fixture_replay.py:22` — 新增 `logging` import 和 `logger` 实例
+  5. `tradingagents/tradeflow/observe_fixture_replay.py:25` — 新增 `Callable` import，补全 `_make_quote_provider` 返回类型和内部函数参数类型注解
+  6. `tradingagents/tradeflow/observe_fixture_replay.py:64-79` — `to_dict()` 补全遗漏的 `run_result` 字段（与其他 fixture replay 模块一致）
+  7. `tradingagents/tradeflow/observe_fixture_replay.py:189-193` — `get_fixture()` 返回类型改为 `Optional[dict]`，未知 ID 返回 `None` 而非 raise `ValueError`（与 `fixture_replay.py` / `mandate_replay_eval.py` 一致）
+  8. `tradingagents/tradeflow/observe_fixture_replay.py:272-358` — `replay_fixture()` 包裹 try/except，异常时写入 `error` 字段而非崩溃（此前 `error` 字段始终为空串，属于死代码）
+  9. `tradingagents/tradeflow/observe_fixture_replay.py:225-231` — `_read_signals()` 单字母变量 `r`/`d`/`k`/`ev` 改为 `row`/`row_dict`/`col`/`evidence_raw`
+  10. `tradingagents/tradeflow/observe_fixture_replay.py:242` — `_read_candidate_observe_state()` 单字母变量 `r` 改为 `col`
+  11. `tradingagents/tradeflow/observe_fixture_replay.py:260` — 同上 `d`/`k` 改为 `row_dict`/`col`
+  12. `tradingagents/tradeflow/observe_fixture_replay.py:368-384` — `validate_state_consistency()` 处理 `get_fixture()` 返回 `None`
+  13. `tests/test_t008_observe_fixture_replay.py:16` — 移除未使用的 `tempfile` import
+  14. `tests/test_t008_observe_fixture_replay.py:35` — 移除未使用的 `ObserveTracker`, `run_observe_check` import
+  15. `tests/test_t008_observe_fixture_replay.py:36` — 移除未使用的 `run_observe`, `ObserveRunResult` import
+  16. `tests/test_t008_observe_fixture_replay.py:38` — 移除未使用的 `save_candidate` import
+  17. `tests/test_t008_observe_fixture_replay.py:93` — 修复 `test_trigger_reason_empty_or_not_triggered` 重复断言条件
+  18. `tests/test_t008_observe_fixture_replay.py:17` — `from datetime import datetime` 从内联移至模块顶部
+- **测试结果**：84 passed (T-008)；195 passed (tradeflow 回归)；0 failed
+- **根因分析**：Codex review exit code 1 由 `config.toml: unknown variant 'default' in 'service_tier'` 导致，非本任务代码缺陷。审查中发现 18 处代码质量问题并全部修复
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
+## 2026-06-08 | T-008: TradeFlow 观察信号 fixture 回放与前端状态一致性验收
+
+- **执行者**：OpenCode
+- **任务**：T-008 — 在不启用真实盘中盯盘的情况下，用 fixture 回放验证 Observe 状态机、signals 落库、API 和前端显示一致，避免候选池有票但盘中观察页空白或状态断裂。
+- **修改文件**：
+  - `tradingagents/tradeflow/observe_fixture_replay.py` — **新建**：[T-008] observe_fixture_replay
+    - 5 个 fixture 场景：`waiting_not_triggered` / `triggered` / `invalidated` / `stale_quote` / `non_trading_day_cross_date`
+    - `ObserveFixtureResult` 数据类：fixture_id / symbol / trade_date / plan_date / effective_trade_date / observe_state / current_price / trigger_reason / data_status / signal_count / signal_evidence
+    - `get_fixture()` / `replay_fixture()` / `replay_all()` 回放入口
+    - `_make_quote_provider()` fixture 行情注入
+    - `_read_signals()` / `_read_candidate_observe_state()` DB 读取验证
+    - `validate_state_consistency()` 后端状态校验
+    - `validate_api_frontend_consistency()` 前后端枚举一致性校验
+    - 使用 `unittest.mock.patch(_is_trading_day)` 确保不依赖真实交易日历
+  - `tests/test_t008_observe_fixture_replay.py` — **新建**，84 个测试覆盖：
+    - `TestFixtureExistence` (8): 5个fixture存在性 + 参数化字段检查 + 有效状态校验
+    - `TestWaitingNotTriggered` (5): WAITING状态 / signal写入 / current_price / trigger_reason / evidence
+    - `TestTriggered` (6): TRIGGERED状态 / signal / price / reason / rise_pct / data_status
+    - `TestInvalidated` (6): INVALIDATED状态 / signal / price / reason / breach_pct / data_status
+    - `TestStaleQuote` (5): STALE状态 / 无signal / WAITING不变 / skipped / current_price=None
+    - `TestNonTradingDayCrossDate` (5): TRIGGERED / plan_date!=effective / 周末 / signal / candidate查找
+    - `TestReplayAll` (5): 5个count / 无error / 唯一symbol / 有效状态 / fixture_id顺序
+    - `TestStateConsistency` (5): backend枚举完整 / validate无issue / API一致性 / pydantic默认 / Candidate默认
+    - `TestSignalPersistence` (5): triggered/invalidated/waiting类型 / evidence_json / stale无signal
+    - `TestAPIGetObserveIntegration` (5): 状态 / current_price / trigger_reason / counts / cross_date
+    - `TestFrontendStateMatching` (6): 后端=前端枚举 / 4个状态参数化 / pydantic默认
+    - `TestDateSemantics` (3): cross_date / trade_date / both_dates_stored
+    - `TestObserveFixtureResult` (3): defaults / to_dict / roundtrip
+    - `TestAcceptanceT008` (8): 全部验收标准
+  - `docs/TASKS.md` — T-008 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：84 passed (T-008)；159 passed (M-005+TF-OBS-001+T-008 回归)；136 passed (tradeflow 全部回归)；49 passed (API smoke)；npm run build 通过；0 failed
+- **关键逻辑**：
+  - 5 类 fixture 覆盖所有 observe 状态转换：WAITING(价格在区间内) / TRIGGERED(突破触发价) / INVALIDATED(跌破失效价) / STALE(无实时行情) / cross-date(非交易日生成→下一交易日生效并触发)
+  - `replay_fixture()` 完整流程：构造候选→注入行情→run_observe()→读取候选状态→读取signals→返回ObserveFixtureResult
+  - 状态一致性验证：backend ObserveState {WAITING,TRIGGERED,INVALIDATED,EXPIRED} == frontend 状态字符串集合
+  - API get_observe() 集成：replay 后调用 get_observe() 验证 current_price/trigger_reason/observe_state 正确返回
+  - TF-DATE-001 语义一致：cross_date fixture 验证 plan_date(2026-05-31 周日) → effective_trade_date(2026-06-01) 观察日正确触发
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未拉 live 行情、未启动 scheduler
+
+## 2026-06-08 | UI-010: 昊天候选对比视图与证据缺口排序
+
+- **执行者**：OpenCode
+- **任务**：UI-010 — 在 TradeFlow 前端增加候选对比视图，按政策主题、受益路径、证据覆盖率、反证风险和下一步验证条件排序，帮助用户从少量昊天候选中挑重点研究对象。
+- **修改文件**：
+  - `api/services/tradeflow_service.py` — [UI-010] mandate_candidate_compare
+    - 新增 `get_candidate_comparison()` 服务函数：按 7 种排序维度（mandate_score/ambush_score/evidence_coverage/counter_evidence_count/evidence_gap_count/topic_lifecycle_state/company_role）对候选排序
+    - `_counter_evidence_severity()` 辅助函数：累加反证 severity 分数
+    - `_topic_lifecycle_order()` 辅助函数：生命周期状态映射为排序序号（EMERGING→0, FADING→5）
+    - 支持 pool 过滤（haotian/policy/tech/event/gap/all）
+    - 支持 asc/desc 排序方向
+  - `api/tradeflow_schemas.py` — [UI-010]
+    - 新增 `TradeFlowCompareResponse` Pydantic model：candidates/sort_by/sort_order/total/runtime_tier_meta
+  - `api/main.py` — [UI-010]
+    - 新增 `GET /v1/tradeflow/candidates/compare` 端点，支持 date/sort_by/sort_order/pool 参数
+  - `frontend/src/types/index.ts` — [UI-010]
+    - 新增 `TradeFlowCompareResponse` TypeScript interface
+    - 补全 `TradeFlowCandidateItem` 缺失的 H-009/H-010/H-011 字段：counter_evidence/overheat_flags/downgrade_reasons/what_would_change_mind/topic_lifecycle_state/topic_lifecycle_reason/topic_last_signal_date/topic_signal_count/contradiction_level/contradiction_items/blocking_evidence_gaps/next_verification_steps
+  - `frontend/src/services/api.ts` — [UI-010]
+    - 新增 `getTradeFlowCandidatesCompare()` API 方法
+  - `frontend/src/pages/TradeFlow.tsx` — [UI-010] mandate_candidate_compare
+    - 新增 `compare` TabKey 和"候选对比"Tab
+    - 新增 `CompareTab` 组件：7 种排序按钮 + 13 列对比表格（代码/名称/类型/层级/昊天分/埋伏分/政策主题/公司角色/主题周期/覆盖率/反证/证据缺口/验证步骤）
+    - 新增辅助函数：`companyRoleLabel()`/`topicLifecycleLabel()`/`counterEvidenceSummary()`/`gapsSummary()`
+    - Tab 栏新增 GitCompare 图标
+
+exec
+/bin/zsh -lc "git status --short && printf '\\n--- AGENTS ---\\n' && sed -n '1,220p' AGENTS.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tests/test_e_series_fixes.py
+ M tests/test_readiness_score.py
+ M tradingagents/agents/utils/readiness_score.py
+ M tradingagents/dataflows/evidence_contract.py
+ M tradingagents/dataflows/evidence_coverage_audit.py
+ M tradingagents/dataflows/fixture_replay.py
+ M tradingagents/dataflows/interface.py
+ M tradingagents/dataflows/providers/cn_akshare_provider.py
+ M tradingagents/dataflows/providers/cn_astock_provider.py
+ M tradingagents/dataflows/source_catalog.py
+?? docs/task_runs/DATA-010-20260608-020414/
+?? tests/test_data010_margin_trading.py
+
+--- AGENTS ---
+# TradingAgents-AShare — 项目协作规则
+
+## 项目简介
+
+A股智能投研多智能体系统，基于 LangGraph + LangChain 构建，模拟 14 名专业 Agent 的多空辩论与风控博弈，为投资者提供结构化的交易建议。
+
+核心模块：
+- **Agent 框架**：14 个多智能体（分析师/研究员/风控/交易员），LangGraph 编排
+- **后端 API**：FastAPI，提供分析、持仓、定时任务、研报管理等接口
+- **前端 UI**：React，意图驱动交互、辩论可视化、持仓看板
+- **定时调度**：独立 scheduler，支持自选股定时分析
+- **数据层**：AKShare + BaoStock + yfinance，SQLite 持久化
+
+## 多工具协作架构
+
+```
+孟（最终决策）
+  │
+  ├── OpenClaw（主控调度）── 读取上下文 → 判断任务 → 派发执行
+  │     ├── 简单任务：直接 exec 执行（git/python/npm）
+  │     └── 复杂任务：sessions_spawn 子 agent 或调用 OpenCode 执行
+  │
+  ├── OpenCode（代码执行器）── 读取同一套上下文 → 改代码 → 跑测试 → 输出 diff
+  │
+  └── OpenCode TUI/Web（审查界面）── 查看 diff → 确认修改 → 做 review
+```
+
+**核心原则**：三者读取同一套项目上下文，不各自保存独立记忆。
+
+## 必读文件（任何 coding agent 开始任务前）
+
+1. `AGENTS.md`（本文件）
+2. `docs/project-overview.md`（项目背景 + 架构 + 目录结构）
+3. `docs/TASKS.md`（当前任务池）
+4. `docs/DECISIONS.md`（架构决策记录）
+5. `docs/DEVLOG.md`（最近修改日志）
+6. 涉及模型/API 调用时，必须读 `docs/MODEL_API_CATALOG.md` 和 `docs/LLM_API_USAGE.md`，并可运行 `python scripts/audit_llm_config.py` 查看脱敏配置
+
+## 项目目录结构
+
+```
+TradingAgents-AShare/
+├── tradingagents/            # 核心 Python 包
+│   ├── agents/               # 14 个多智能体
+│   │   ├── analysts/         # 7 个分析师（基本面/情绪/新闻/技术/宏观/主力/量价）
+│   │   ├── researchers/      # 多头/空头研究员 + 研究总监
+│   │   ├── risk_mgmt/        # 风控团队
+│   │   ├── managers/         # 管理层
+│   │   └── trader/           # 交易员
+│   ├── dataflows/            # 数据获取与缓存
+│   ├── graph/                # LangGraph 编排图
+│   ├── llm_clients/          # 多模型厂商适配
+│   ├── prompts/              # Agent 提示词模板
+│   └── default_config.py     # 默认配置
+├── api/                      # FastAPI 后端
+│   ├── main.py               # 入口
+│   ├── database.py           # SQLite
+│   └── services/             # 业务逻辑（分析/持仓/定时/研报）
+├── frontend/                 # React 前端
+├── scheduler/                # 定时分析调度
+├── skills/                   # OpenClaw 技能
+├── tests/                    # 测试
+├── docs/                     # 项目文档
+└── eval_results/             # 回测评估结果
+```
+
+## 执行规则
+
+### 代码修改前
+1. 执行 `git status`，确认当前分支和未提交变更
+2. 激活虚拟环境：`source .venv/bin/activate`
+3. 确认修改范围不影响生产数据库（tradingagents.db）
+4. 如果涉及核心模块，先跑一遍测试确认基线
+
+### 代码修改后
+1. 运行测试，全部通过才算完成
+2. 输出：修改文件列表、测试结果、发现的风险点
+3. 更新 `docs/DEVLOG.md`
+
+### OpenClaw 调度方式
+- **简单任务**（改配置、修 bug、小重构）：OpenClaw 直接 `exec` 执行
+- **复杂任务**（新功能、跨模块修改）：调用 OpenCode 执行，由用户确认后执行
+- **审查任务**：OpenClaw 不直接审查代码，提示用户用 OpenCode TUI 查看 diff
+
+## 安全红线
+
+- 不误改 `tradingagents.db`（生产数据库）
+- 不误改 `eval_results/` 中的历史回测结果
+- 不直接修改 `tradingagents/prompts/` 中的提示词模板（需走审批）
+- 不删除 `logs/` 中的历史日志
+- 测试数据不得写入生产数据库
+- 不读取、解密、打印、提交任何模型 API Key 明文；只能使用 `HAS_KEY/NO_KEY` 级别的脱敏状态
+- 除用户主动发起的分析/定时任务外，任何 live LLM API 调用前都要说明 provider、base_url、模型名和预计调用次数，并征得用户确认
+
+## 技术栈
+
+- **后端**：Python 3.10+, FastAPI, LangGraph, LangChain
+- **前端**：React, TypeScript, Tailwind CSS
+- **数据库**：SQLite
+- **数据源**：AKShare, BaoStock, yfinance
+- **模型**：OpenAI / Anthropic / 智谱 / DeepSeek / 小米 MiMo 等
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- tradingagents/dataflows/providers/cn_akshare_provider.py tradingagents/dataflows/providers/cn_astock_provider.py tradingagents/dataflows/interface.py tradingagents/dataflows/source_catalog.py tradingagents/dataflows/evidence_contract.py tradingagents/agents/utils/readiness_score.py tradingagents/dataflows/fixture_replay.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ docs/DEVLOG.md                                     |  56 ++++++++++-
+ docs/TASKS.md                                      |   2 +-
+ tests/test_e_series_fixes.py                       |  18 ++--
+ tests/test_readiness_score.py                      |   8 +-
+ tradingagents/agents/utils/readiness_score.py      |  21 +++-
+ tradingagents/dataflows/evidence_contract.py       |   2 +
+ tradingagents/dataflows/evidence_coverage_audit.py |   2 +
+ tradingagents/dataflows/fixture_replay.py          | 112 ++++++++++++++++++++-
+ tradingagents/dataflows/interface.py               |   1 +
+ .../dataflows/providers/cn_akshare_provider.py     |  30 ++++++
+ .../dataflows/providers/cn_astock_provider.py      |  35 +++++++
+ tradingagents/dataflows/source_catalog.py          |  23 +++++
+ 12 files changed, 291 insertions(+), 19 deletions(-)
+diff --git a/tradingagents/agents/utils/readiness_score.py b/tradingagents/agents/utils/readiness_score.py
+index dc69571..2c891a7 100644
+--- a/tradingagents/agents/utils/readiness_score.py
++++ b/tradingagents/agents/utils/readiness_score.py
+@@ -1242,8 +1242,25 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None)
+         elif re.search(r'龙虎榜', combined, re.IGNORECASE):
+             lhb_status = EvidenceStatus.FIELD_MISSING
+ 
+-    # 7. Margin trading (融资融券) — NOT in raw data pool
+-    margin_trading = EvidenceStatus.NOT_AVAILABLE
++    # 7. Margin trading (融资融券) — check raw_evidence margin_trading field
++    # [DATA-010] margin_trading_raw_evidence
++    margin_trading = EvidenceStatus.NOT_QUERIED
++    raw_margin = _unwrap_raw(raw.get("margin_trading"))
++    if raw_margin is not None:
++        if isinstance(raw_margin, str) and "MARGIN_HAS_DATA" in raw_margin:
++            margin_trading = EvidenceStatus.HAS_DATA
++        elif isinstance(raw_margin, str) and "MARGIN_FAILED" in raw_margin:
++            margin_trading = EvidenceStatus.QUERY_FAILED
++        elif isinstance(raw_margin, str) and ("MARGIN_NORMAL_NO_DATA" in raw_margin or "暂不可用" in raw_margin):
++            margin_trading = EvidenceStatus.NORMAL_NO_DATA
++        elif isinstance(raw_margin, str) and len(raw_margin) > 20:
++            margin_trading = EvidenceStatus.HAS_DATA
++        elif isinstance(raw_margin, str) and "失败" in raw_margin:
++            margin_trading = EvidenceStatus.QUERY_FAILED
++        elif raw_margin:
++            margin_trading = EvidenceStatus.HAS_DATA
++        else:
++            margin_trading = EvidenceStatus.NORMAL_NO_DATA
+ 
+     # 8. Announcements — check news data
+     announcements = EvidenceStatus.NOT_QUERIED
+diff --git a/tradingagents/dataflows/evidence_contract.py b/tradingagents/dataflows/evidence_contract.py
+index 977b494..0473af2 100644
+--- a/tradingagents/dataflows/evidence_contract.py
++++ b/tradingagents/dataflows/evidence_contract.py
+@@ -139,6 +139,7 @@ _EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
+     "indicators": "ohlcv",
+     "vpa_indicators": "ohlcv",
+     "announcements": "notice",
++    "margin_trading": "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+ }
+ 
+ 
+@@ -180,6 +181,7 @@ _REQUIRED_FIELDS_FOR_COMPLETENESS: Dict[str, List[str]] = {
+     "global_news": ["status", "vendor"],
+     "announcements": ["status", "vendor"],
+     "fundamentals": ["status", "vendor"],
++    "margin_trading": ["status", "vendor", "unit"],  # [DATA-010] margin_trading_raw_evidence
+ }
+ 
+ 
+diff --git a/tradingagents/dataflows/fixture_replay.py b/tradingagents/dataflows/fixture_replay.py
+index 5450d42..fd18090 100644
+--- a/tradingagents/dataflows/fixture_replay.py
++++ b/tradingagents/dataflows/fixture_replay.py
+@@ -6,10 +6,11 @@
+ 当天实时缺失等场景，避免夜间自动开发误判数据源质量。
+ 
+ 功能：
+-  1. 内置 12 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
++  1. 内置 15 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
+      资金流单位异常、龙虎榜无触发、公告源失败、
+      AKShare 资金流失败→astock fallback、龙虎榜 NORMAL_NO_DATA、
+-     龙虎榜 FAILED、公告失败→事件源弱证据、换手率/量比缺失）
++     龙虎榜 FAILED、公告失败→事件源弱证据、换手率/量比缺失、
++     融资融券有数据、融资融券失败、融资融券未查询）
+   2. replay runner 将 fixture 模拟为 raw_evidence，输出数据源健康报告
+   3. 失败时写入 docs/data_source_reports/YYYY-MM-DD.md
+   4. 可被 scripts/auto_dev_loop.sh 或 OpenClaw 巡检调用
+@@ -60,6 +61,9 @@ FIXTURE_LHB_FAILED = "lhb_failed"
+ FIXTURE_STALE_REALTIME_PATCH = "stale_realtime_patch"
+ FIXTURE_ANNOUNCEMENT_FAIL_EVENT_WEAK = "announcement_fail_event_weak"
+ FIXTURE_TURNOVER_VOLUME_RATIO_MISSING = "turnover_volume_ratio_missing"
++FIXTURE_MARGIN_HAS_DATA = "margin_has_data"  # [DATA-010] margin_trading_raw_evidence
++FIXTURE_MARGIN_FAILED = "margin_failed"  # [DATA-010] margin_trading_raw_evidence
++FIXTURE_MARGIN_NOT_QUERIED = "margin_not_queried"  # [DATA-010] margin_trading_raw_evidence
+ 
+ ALL_FIXTURE_IDS = [
+     FIXTURE_NORMAL_QUOTE,
+@@ -75,6 +79,9 @@ ALL_FIXTURE_IDS = [
+     FIXTURE_STALE_REALTIME_PATCH,
+     FIXTURE_ANNOUNCEMENT_FAIL_EVENT_WEAK,
+     FIXTURE_TURNOVER_VOLUME_RATIO_MISSING,
++    FIXTURE_MARGIN_HAS_DATA,
++    FIXTURE_MARGIN_FAILED,
++    FIXTURE_MARGIN_NOT_QUERIED,
+ ]
+ 
+ 
+@@ -703,6 +710,104 @@ def _build_turnover_volume_ratio_missing_fixture() -> FixtureEntry:
+     )
+ 
+ 
++def _build_margin_has_data_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "margin_trading": {
++            "raw": "600519.SH [DATA-010] MARGIN_HAS_DATA: 融资融券数据（Eastmoney datacenter）：\n"
++                   "- 2026-06-07 | 融资余额 185200.0万 | 融资买入 3200.0万 | 融券余额 1500.0万",
++            "field": "margin_trading",
++            "unit": "万元",
++            "vendor": "cn_astock",
++            "endpoint": "datacenter-web.eastmoney.com/RPT_RZRQ_LSHJ",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "HAS_DATA",
++            "fallback_from": None,
++            "source_url": None,
++            "error": None,
++            "is_realtime_patched": False,
++            "unit_verified": True,
++            "record_count": 10,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_MARGIN_HAS_DATA,
++        description="融资融券数据正常返回",
++        data_type="margin_trading",
++        vendor="cn_astock",
++        endpoint="datacenter-web.eastmoney.com/RPT_RZRQ_LSHJ",
++        expected_status="HAS_DATA",
++        raw_evidence=raw_evidence,
++        tags=["margin_trading", "has_data"],
++    )
++
++
++def _build_margin_failed_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "margin_trading": {
++            "raw": "600519.SH [DATA-010] MARGIN_FAILED: 融资融券数据获取失败：ConnectionError",
++            "field": "margin_trading",
++            "unit": None,
++            "vendor": "cn_astock",
++            "endpoint": "datacenter-web.eastmoney.com/RPT_RZRQ_LSHJ",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "FAILED",
++            "fallback_from": None,
++            "source_url": None,
++            "error": "ConnectionError",
++            "is_realtime_patched": False,
++            "unit_verified": None,
++            "record_count": 0,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_MARGIN_FAILED,
++        description="融资融券查询失败",
++        data_type="margin_trading",
++        vendor="cn_astock",
++        endpoint="datacenter-web.eastmoney.com/RPT_RZRQ_LSHJ",
++        expected_status="FAILED",
++        raw_evidence=raw_evidence,
++        tags=["margin_trading", "failed"],
++    )
++
++
++def _build_margin_not_queried_fixture() -> FixtureEntry:
++    raw_evidence = {
++        "margin_trading": {
++            "raw": None,
++            "field": "margin_trading",
++            "unit": None,
++            "vendor": "",
++            "endpoint": "",
++            "as_of": "",
++            "fetched_at": "",
++            "status": "NOT_QUERIED",
++            "fallback_from": None,
++            "source_url": None,
++            "error": None,
++            "is_realtime_patched": False,
++            "unit_verified": None,
++            "record_count": 0,
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_MARGIN_NOT_QUERIED,
++        description="融资融券未查询",
++        data_type="margin_trading",
++        vendor="",
++        endpoint="",
++        expected_status="NOT_QUERIED",
++        raw_evidence=raw_evidence,
++        tags=["margin_trading", "not_queried"],
++    )
++
++
+ _FIXTURE_BUILDERS = {
+     FIXTURE_NORMAL_QUOTE: _build_normal_quote_fixture,
+     FIXTURE_STALE_DAILY: _build_stale_daily_fixture,
+@@ -717,6 +822,9 @@ _FIXTURE_BUILDERS = {
+     FIXTURE_STALE_REALTIME_PATCH: _build_stale_realtime_patch_fixture,
+     FIXTURE_ANNOUNCEMENT_FAIL_EVENT_WEAK: _build_announcement_fail_event_weak_fixture,
+     FIXTURE_TURNOVER_VOLUME_RATIO_MISSING: _build_turnover_volume_ratio_missing_fixture,
++    FIXTURE_MARGIN_HAS_DATA: _build_margin_has_data_fixture,
++    FIXTURE_MARGIN_FAILED: _build_margin_failed_fixture,
++    FIXTURE_MARGIN_NOT_QUERIED: _build_margin_not_queried_fixture,
+ }
+ 
+ 
+diff --git a/tradingagents/dataflows/interface.py b/tradingagents/dataflows/interface.py
+index c7488fc..42132ce 100644
+--- a/tradingagents/dataflows/interface.py
++++ b/tradingagents/dataflows/interface.py
+@@ -44,6 +44,7 @@ TOOLS_CATEGORIES = {
+             "get_zt_pool",
+             "get_hot_stocks_xq",
+             "get_announcements",  # [DATA-P0-603629] astock_source_fallback
++            "get_margin_trading",  # [DATA-010] margin_trading_raw_evidence
+         ],
+     },
+ }
+diff --git a/tradingagents/dataflows/providers/cn_akshare_provider.py b/tradingagents/dataflows/providers/cn_akshare_provider.py
+index b1a17c6..bfeb06e 100644
+--- a/tradingagents/dataflows/providers/cn_akshare_provider.py
++++ b/tradingagents/dataflows/providers/cn_akshare_provider.py
+@@ -1171,3 +1171,33 @@ class CnAkshareProvider(BaseMarketDataProvider):
+             return f"雪球热搜前20：\n{df.head(20).to_string(index=False)}"
+         except Exception as exc:
+             return f"雪球热搜数据获取失败：{type(exc).__name__}: {exc}"
++
++    def get_margin_trading(self, symbol: str) -> str:
++        """获取个股融资融券数据。  # [DATA-010] margin_trading_raw_evidence"""
++        code = self._normalize_symbol(symbol)
++        try:
++            ak = self._ak()
++            if code[:1] in ("0", "1", "2", "3"):
++                func = "stock_margin_underlying_info_szse"
++                with AKSHARE_CALL_LOCK:
++                    df = ak.stock_margin_underlying_info_szse(date=datetime.now().strftime("%Y%m%d"))
++            else:
++                func = "stock_margin_underlying_info_sse"
++                with AKSHARE_CALL_LOCK:
++                    df = ak.stock_margin_underlying_info_sse(date=datetime.now().strftime("%Y%m%d"))
++            if df is None or df.empty:
++                return f"{symbol} 融资融券数据暂不可用。"
++            code_col = None
++            for col in df.columns:
++                if "代码" in col or "证券代码" in col:
++                    code_col = col
++                    break
++            if code_col:
++                mask = df[code_col].astype(str).str.contains(code, na=False)
++                df_filtered = df[mask]
++                if df_filtered.empty:
++                    return f"{symbol} [DATA-010] MARGIN_NORMAL_NO_DATA: 该股非融资融券标的或当日无数据。"
++                return f"{symbol} [DATA-010] MARGIN_HAS_DATA: 融资融券数据（via {func}）：\n{df_filtered.tail(10).to_string(index=False)}"
++            return f"{symbol} [DATA-010] MARGIN_HAS_DATA: 融资融券数据（via {func}）：\n{df.tail(20).to_string(index=False)}"
++        except Exception as exc:
++            return f"{symbol} [DATA-010] MARGIN_FAILED: 融资融券数据获取失败：{type(exc).__name__}: {exc}"
+diff --git a/tradingagents/dataflows/providers/cn_astock_provider.py b/tradingagents/dataflows/providers/cn_astock_provider.py
+index c63d7d5..e8ec0b3 100644
+--- a/tradingagents/dataflows/providers/cn_astock_provider.py
++++ b/tradingagents/dataflows/providers/cn_astock_provider.py
+@@ -1139,3 +1139,38 @@ class CnAstockProvider(BaseMarketDataProvider):
+ 
+         except Exception as exc:
+             return f"Announcements unavailable for {symbol}: {exc}"
++
++    def get_margin_trading(self, symbol: str) -> str:
++        """个股融资融券 — 东财 datacenter.  # [DATA-010] margin_trading_raw_evidence"""
++        code = _extract_code(symbol)
++        try:
++            _rate_limit("em_margin_trading")
++            rzrq_filter = (
++                f'(SECURITY_CODE="{code}")'
++            )
++            data = _eastmoney_datacenter(
++                "RPT_RZRQ_LSHJ",
++                filter_str=rzrq_filter,
++                page_size=20,
++                sort_columns="TRADE_DATE",
++                sort_types="-1",
++            )
++            if not data:
++                return f"{symbol} [DATA-010] MARGIN_NORMAL_NO_DATA: 该股非融资融券标的或当日无数据。"
++
++            lines = [f"{symbol} [DATA-010] MARGIN_HAS_DATA: 融资融券数据（Eastmoney datacenter）："]
++            for row in data[:10]:
++                trade_date = row.get("TRADE_DATE", "")[:10] if row.get("TRADE_DATE") else ""
++                rzrq_ye = (row.get("RZRQ_YE") or 0) / 10000
++                rzrq_mre = (row.get("RZRQ_MRE") or 0) / 10000
++                rqye = (row.get("RQYE") or 0) / 10000
++                rqmrl = (row.get("RQMRL") or 0) / 10000
++                rzrq_jme = (row.get("RZRQ_JME") or 0) / 10000
++                lines.append(
++                    f"- {trade_date} | 融资余额 {rzrq_ye:.1f}万 | 融资买入 {rzrq_mre:.1f}万 | "
++                    f"融券余额 {rqye:.1f}万 | 融券卖出 {rqmrl:.1f}万 | 融资融券净买 {rzrq_jme:.1f}万"
++                )
++            return "\n".join(lines)
++
++        except Exception as exc:
++            return f"{symbol} [DATA-010] MARGIN_FAILED: 融资融券数据获取失败（Eastmoney datacenter）：{type(exc).__name__}: {exc}"
+diff --git a/tradingagents/dataflows/source_catalog.py b/tradingagents/dataflows/source_catalog.py
+index aa15055..c120d71 100644
+--- a/tradingagents/dataflows/source_catalog.py
++++ b/tradingagents/dataflows/source_catalog.py
+@@ -335,6 +335,29 @@ def _build_catalog() -> None:
+         notes="东财 datacenter 直连龙虎榜",
+     )
+ 
++    # ── 融资融券 ────────────────────────────────────────────────────────
++    _register(
++        "cn_akshare", "stock_margin_underlying_info_szse",
++        DataType.MARGIN_TRADING,
++        fields=["标的证券代码", "标的证券简称", "融资买入额", "融资余额", "融券卖出量", "融券余量"],
++        unit="万元/股",
++        freshness=Freshness.DAILY,
++        rate_limit_risk=RateLimitRisk.MEDIUM,
++        fallback_priority=1,
++        is_primary=True,
++        notes="AKShare 深交所融资融券标的；沪市用 stock_margin_underlying_info_sse",
++    )
++    _register(
++        "cn_astock", "datacenter-web.eastmoney.com/RPT_RZRQ_LSHJ",
++        DataType.MARGIN_TRADING,
++        fields=["RZRQ_YE", "RZRQ_MRE", "RQYE", "RQMRL", "RZRQ_JME"],
++        unit="元(需/10000转万元)",
++        freshness=Freshness.DAILY,
++        rate_limit_risk=RateLimitRisk.MEDIUM,
++        fallback_priority=2,
++        notes="东财 datacenter 融资融券汇总",
++    )
++
+     # ── 公告 ───────────────────────────────────────────────────────────
+     _register(
+         "cn_astock", "cninfo.com.cn/hisAnnouncement",
+
+exec
+/bin/zsh -lc "git diff -- tradingagents/dataflows/evidence_coverage_audit.py tests/test_data010_margin_trading.py tests/test_readiness_score.py tests/test_e_series_fixes.py docs/TASKS.md | sed -n '1,260p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 795aa71..343d499 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -899,7 +899,7 @@
+ ### DATA-010: 融资融券数据源注册与 raw_evidence 接入（P1）
+ - **描述**：把融资融券数据纳入 source_catalog、provider 路由和 raw_evidence contract，补齐 TA 风控和情绪判断里的杠杆资金证据。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：done — DATA-010-20260608-020414
+ - **前置条件**：`DATA-001`、`DATA-004` 完成 ✓。
+ - **背景**：
+   - `DATA_SOURCE_GAP_AUDIT` 标记融资融券为高风险缺口。
+diff --git a/tests/test_e_series_fixes.py b/tests/test_e_series_fixes.py
+index 19b8fc9..1436c84 100644
+--- a/tests/test_e_series_fixes.py
++++ b/tests/test_e_series_fixes.py
+@@ -110,12 +110,12 @@ class TestE004NotAvailable:
+             volume_ratio=EvidenceStatus.HAS_DATA,
+             individual_fund_flow=EvidenceStatus.HAS_DATA,
+             lhb_status=EvidenceStatus.NORMAL_NO_DATA,
+-            margin_trading=EvidenceStatus.NOT_AVAILABLE,  # excluded
++            margin_trading=EvidenceStatus.NOT_QUERIED,  # [DATA-010] now counted
+             announcements=EvidenceStatus.HAS_DATA,
+         )
+-        # 6 counted (excluding 2 NOT_AVAILABLE), weighted: 5 HAS_DATA + 1 NORMAL_NO_DATA(0.5)
+-        # = 5.5/6 ≈ 91%
+-        assert coverage == 91
++        # 7 counted (excluding 1 NOT_AVAILABLE), weighted: 5 HAS_DATA + 1 NORMAL_NO_DATA(0.5) + 1 NOT_QUERIED(0)
++        # = 5.5/7 ≈ 78%
++        assert coverage == 78
+ 
+     def test_not_available_reduces_denominator(self):
+         """With NOT_AVAILABLE, denominator shrinks but valid items still count."""
+@@ -126,15 +126,15 @@ class TestE004NotAvailable:
+             volume_ratio=EvidenceStatus.HAS_DATA,
+             individual_fund_flow=EvidenceStatus.HAS_DATA,
+             lhb_status=EvidenceStatus.NORMAL_NO_DATA,
+-            margin_trading=EvidenceStatus.NOT_AVAILABLE,
++            margin_trading=EvidenceStatus.NOT_QUERIED,  # [DATA-010] now counted
+             announcements=EvidenceStatus.HAS_DATA,
+         )
+-        # 6 counted, weighted: 4 HAS_DATA + 1 NORMAL_NO_DATA(0.5) + 1 FIELD_MISSING(0)
+-        # = 4.5/6 = 75%
+-        assert coverage == 75
++        # 7 counted, weighted: 4 HAS_DATA + 1 NORMAL_NO_DATA(0.5) + 1 FIELD_MISSING(0) + 1 NOT_QUERIED(0)
++        # = 4.5/7 ≈ 64%
++        assert coverage == 64
+ 
+     def test_all_not_available_returns_zero(self):
+-        """Edge case: all fields are NOT_AVAILABLE → 0% (0/0 = 0)."""
++        """Edge case: all fields are NOT_AVAILABLE/NOT_QUERIED → 0% (0/8 = 0)."""
+         coverage = calculate_evidence_coverage(
+             ohlcv_5d=EvidenceStatus.NOT_AVAILABLE,
+             volume=EvidenceStatus.NOT_AVAILABLE,
+diff --git a/tests/test_readiness_score.py b/tests/test_readiness_score.py
+index b757f30..3fad7a6 100644
+--- a/tests/test_readiness_score.py
++++ b/tests/test_readiness_score.py
+@@ -563,19 +563,19 @@ def test_evidence_lhb_query_failed():
+     assert statuses["lhb_status"] == EvidenceStatus.QUERY_FAILED
+ 
+ 
+-def test_evidence_margin_trading_always_not_queried():
++def test_evidence_margin_trading_not_queried_by_default():
+     statuses = infer_evidence_statuses({
+         "market_report": "some report",
+         "smart_money_report": "some report",
+     })
+-    assert statuses["margin_trading"] == EvidenceStatus.NOT_AVAILABLE
++    assert statuses["margin_trading"] == EvidenceStatus.NOT_QUERIED
+ 
+ 
+ def test_evidence_no_report_means_not_queried():
+     statuses = infer_evidence_statuses({})
+     assert statuses["ohlcv_5d"] == EvidenceStatus.NOT_QUERIED
+     assert statuses["volume"] == EvidenceStatus.NOT_QUERIED
+-    assert statuses["margin_trading"] == EvidenceStatus.NOT_AVAILABLE
++    assert statuses["margin_trading"] == EvidenceStatus.NOT_QUERIED
+ 
+ 
+ def test_evidence_coverage_not_inflated_by_report_existence():
+@@ -1204,7 +1204,7 @@ def test_raw_evidence_margin_trading_not_in_pool():
+         {},
+         raw_evidence={"stock_data": "x" * 100},
+     )
+-    assert statuses["margin_trading"] == EvidenceStatus.NOT_AVAILABLE
++    assert statuses["margin_trading"] == EvidenceStatus.NOT_QUERIED
+ 
+ 
+ def test_raw_evidence_none_falls_back_to_text():
+diff --git a/tradingagents/dataflows/evidence_coverage_audit.py b/tradingagents/dataflows/evidence_coverage_audit.py
+index f5118a6..f08cae1 100644
+--- a/tradingagents/dataflows/evidence_coverage_audit.py
++++ b/tradingagents/dataflows/evidence_coverage_audit.py
+@@ -62,6 +62,7 @@ _EVIDENCE_FIELD_LABELS: Dict[str, str] = {
+     "hot_stocks": "热门股票",
+     "indicators": "技术指标",
+     "vpa_indicators": "量价分析指标",
++    "margin_trading": "融资融券",  # [DATA-010] margin_trading_raw_evidence
+ }
+ 
+ _EVIDENCE_FIELD_FAMILIES: Dict[str, str] = {
+@@ -81,6 +82,7 @@ _EVIDENCE_FIELD_FAMILIES: Dict[str, str] = {
+     "insider_transactions": "insider",
+     "zt_pool": "zt_pool",
+     "hot_stocks": "hot_stocks",
++    "margin_trading": "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+ }
+ 
+ _TIER_RANK = {"A": 1, "B": 2, "C": 3}
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tests/test_data010_margin_trading.py && printf '\\n--- task run files ---\\n' && find docs/task_runs/DATA-010-20260608-020414 -maxdepth 2 -type f -print -exec sed -n '1,120p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [DATA-010] margin_trading_raw_evidence
+"""
+融资融券数据源注册与 raw_evidence 接入测试。
+
+覆盖：
+  1. source_catalog 中 margin_trading 数据类型注册与查询
+  2. evidence_contract 中 margin_trading 映射与完整性计算
+  3. evidence_coverage_audit 中 margin_trading 标签
+  4. readiness_score 中 margin_trading 从 raw_evidence 读取
+  5. fixture_replay 中新增 margin_trading fixture
+  6. provider route 中 get_margin_trading 方法
+  7. 验收标准
+"""
+
+import pytest
+from unittest.mock import patch, MagicMock
+
+from tradingagents.dataflows.source_catalog import (
+    DataType,
+    get_sources_for_type,
+    get_primary_source,
+    get_fallback_chain,
+    get_all_data_types,
+    validate_catalog,
+)
+from tradingagents.dataflows.evidence_contract import (
+    EvidenceContract,
+    resolve_data_type,
+    compute_contract_completeness,
+    build_data_source_summary,
+)
+from tradingagents.dataflows.evidence_coverage_audit import (
+    _EVIDENCE_FIELD_LABELS,
+    _EVIDENCE_FIELD_FAMILIES,
+    audit_raw_evidence,
+)
+from tradingagents.dataflows.fixture_replay import (
+    ALL_FIXTURE_IDS,
+    FIXTURE_MARGIN_HAS_DATA,
+    FIXTURE_MARGIN_FAILED,
+    FIXTURE_MARGIN_NOT_QUERIED,
+    get_fixture,
+    run_fixture_replay,
+    get_all_fixtures,
+)
+from tradingagents.dataflows.interface import (
+    TOOLS_CATEGORIES,
+    get_category_for_method,
+    route_to_vendor,
+    get_last_hit_vendor,
+)
+from tradingagents.agents.utils.readiness_score import (
+    EvidenceStatus,
+    infer_evidence_statuses,
+    calculate_evidence_coverage,
+)
+
+
+# ── Source Catalog ──────────────────────────────────────────────────────
+
+
+class TestSourceCatalogMarginTrading:
+    def test_margin_trading_data_type_exists(self):
+        assert DataType.MARGIN_TRADING.value == "margin_trading"
+
+    def test_margin_trading_sources_registered(self):
+        sources = get_sources_for_type(DataType.MARGIN_TRADING)
+        assert len(sources) >= 2
+
+    def test_margin_trading_has_primary(self):
+        primary = get_primary_source(DataType.MARGIN_TRADING)
+        assert primary is not None
+        assert primary.vendor == "cn_akshare"
+        assert primary.is_primary is True
+
+    def test_margin_trading_fallback_chain(self):
+        chain = get_fallback_chain(DataType.MARGIN_TRADING)
+        assert "cn_akshare" in chain
+        assert "cn_astock" in chain
+        assert chain.index("cn_akshare") < chain.index("cn_astock")
+
+    def test_margin_trading_in_all_data_types(self):
+        types = get_all_data_types()
+        assert "margin_trading" in types
+
+    def test_margin_trading_primary_has_fields(self):
+        primary = get_primary_source(DataType.MARGIN_TRADING)
+        assert len(primary.fields) > 0
+        assert primary.unit != ""
+
+    def test_margin_trading_astock_source(self):
+        sources = get_sources_for_type(DataType.MARGIN_TRADING)
+        astock = [s for s in sources if s.vendor == "cn_astock"]
+        assert len(astock) >= 1
+        assert "RPT_RZRQ_LSHJ" in astock[0].endpoint
+
+    def test_catalog_validation_passes(self):
+        issues = validate_catalog()
+        margin_issues = [i for i in issues if "margin_trading" in i]
+        assert len(margin_issues) == 0
+
+
+# ── Evidence Contract ──────────────────────────────────────────────────
+
+
+class TestEvidenceContractMarginTrading:
+    def test_resolve_data_type_margin_trading(self):
+        assert resolve_data_type("margin_trading") == "margin_trading"
+
+    def test_resolve_data_type_unknown(self):
+        assert resolve_data_type("nonexistent_key") == ""
+
+    def test_margin_trading_contract_has_data(self):
+        contract = EvidenceContract(
+            field="margin_trading",
+            value="融资余额 185200万",
+            unit="万元",
+            vendor="cn_astock",
+            endpoint="datacenter-web.eastmoney.com/RPT_RZRQ_LSHJ",
+            as_of="2026-06-07",
+            status="HAS_DATA",
+            unit_verified=True,
+            record_count=10,
+        )
+        assert contract.has_data is True
+        assert contract.is_failed is False
+        assert contract.unit_known is True
+
+    def test_margin_trading_contract_failed(self):
+        contract = EvidenceContract(
+            field="margin_trading",
+            status="FAILED",
+            error="ConnectionError",
+        )
+        assert contract.has_data is False
+        assert contract.is_failed is True
+
+    def test_margin_trading_completeness_calculation(self):
+        raw_evidence = {
+            "margin_trading": {
+                "raw": "融资融券数据",
+                "field": "margin_trading",
+                "unit": "万元",
+                "vendor": "cn_astock",
+                "endpoint": "datacenter-web.eastmoney.com/RPT_RZRQ_LSHJ",
+                "as_of": "2026-06-07",
+                "fetched_at": "2026-06-07T10:00:00",
+                "status": "HAS_DATA",
+                "fallback_from": None,
+                "source_url": None,
+                "error": None,
+                "is_realtime_patched": False,
+                "unit_verified": True,
+                "record_count": 10,
+            }
+        }
+        result = compute_contract_completeness(raw_evidence)
+        assert "margin_trading" not in result["missing_details"]
+
+    def test_margin_trading_missing_all(self):
+        result = compute_contract_completeness({"margin_trading": None})
+        assert result["missing_details"].get("margin_trading") is not None
+
+    def test_margin_trading_failed_completeness(self):
+        raw_evidence = {
+            "margin_trading": {
+                "raw": None,
+                "field": "margin_trading",
+                "status": "FAILED",
+                "error": "ConnectionError",
+                "vendor": "",
+            }
+        }
+        result = compute_contract_completeness(raw_evidence)
+        assert result["completeness_score"] < 100
+
+    def test_build_data_source_summary_includes_margin(self):
+        raw_evidence = {
+            "margin_trading": {
+                "raw": "data",
+                "field": "margin_trading",
+                "unit": "万元",
+                "vendor": "cn_astock",
+                "endpoint": "RPT_RZRQ_LSHJ",
+                "status": "HAS_DATA",
+            }
+        }
+        summary = build_data_source_summary(raw_evidence)
+        margin_items = [s for s in summary if s["field"] == "margin_trading"]
+        assert len(margin_items) == 1
+        assert margin_items[0]["vendor"] == "cn_astock"
+        assert margin_items[0]["status"] == "HAS_DATA"
+
+
+# ── Evidence Coverage Audit ────────────────────────────────────────────
+
+
+class TestEvidenceCoverageAuditMarginTrading:
+    def test_margin_trading_label_exists(self):
+        assert "margin_trading" in _EVIDENCE_FIELD_LABELS
+        assert _EVIDENCE_FIELD_LABELS["margin_trading"] == "融资融券"
+
+    def test_margin_trading_family_exists(self):
+        assert "margin_trading" in _EVIDENCE_FIELD_FAMILIES
+        assert _EVIDENCE_FIELD_FAMILIES["margin_trading"] == "margin_trading"
+
+    def test_audit_raw_evidence_margin_has_data(self):
+        raw_evidence = {
+            "margin_trading": {
+                "raw": "600519 [DATA-010] MARGIN_HAS_DATA",
+                "field": "margin_trading",
+                "unit": "万元",
+                "vendor": "cn_astock",
+                "endpoint": "RPT_RZRQ_LSHJ",
+                "as_of": "2026-06-07",
+                "status": "HAS_DATA",
+                "unit_verified": True,
+                "record_count": 10,
+            }
+        }
+        result = audit_raw_evidence(raw_evidence)
+        assert "margin_trading" in result.has_data_fields
+
+    def test_audit_raw_evidence_margin_failed(self):
+        raw_evidence = {
+            "margin_trading": {
+                "raw": "MARGIN_FAILED: ConnectionError",
+                "field": "margin_trading",
+                "status": "FAILED",
+                "error": "ConnectionError",
+            }
+        }
+        result = audit_raw_evidence(raw_evidence)
+        assert "margin_trading" in result.failed_fields
+
+
+# ── Readiness Score ────────────────────────────────────────────────────
+
+
+class TestReadinessScoreMarginTrading:
+    def test_margin_trading_not_queried_by_default(self):
+        statuses = infer_evidence_statuses({})
+        assert statuses["margin_trading"] == EvidenceStatus.NOT_QUERIED
+
+    def test_margin_trading_has_data_from_raw_evidence(self):
+        statuses = infer_evidence_statuses(
+            {},
+            raw_evidence={
+                "margin_trading": {
+                    "raw": "600519 [DATA-010] MARGIN_HAS_DATA: 融资余额 185200万",
+                    "status": "HAS_DATA",
+                }
+            },
+        )
+        assert statuses["margin_trading"] == EvidenceStatus.HAS_DATA
+
+    def test_margin_trading_failed_from_raw_evidence(self):
+        statuses = infer_evidence_statuses(
+            {},
+            raw_evidence={
+
+--- task run files ---
+docs/task_runs/DATA-010-20260608-020414/tests-round1.txt
+## pytest tests/test_data_source_catalog.py tests/test_data004_evidence_contract.py tests/test_readiness_score.py -q
+
+........................................................................ [ 28%]
+........................................................................ [ 57%]
+........................................................................ [ 86%]
+...................................                                      [100%]
+251 passed in 11.56s
+
+Exit code: 0
+
+docs/task_runs/DATA-010-20260608-020414/codegraph-status.json
+{
+  "task_id": "DATA-010",
+  "generated_at": "2026-06-08T02:04:15.111513",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": false,
+    "version": "0.9.7",
+    "error": "status check failed: error: unknown option '-p'",
+    "files_indexed": 0,
+    "nodes_count": 0
+  },
+  "result": "SKIPPED",
+  "reason": "CodeGraph not indexed",
+  "post_generated_at": "2026-06-08T02:13:36.299271",
+  "codegraph_post": {
+    "available": true,
+    "indexed": false,
+    "version": "0.9.7",
+    "error": "status check failed: error: unknown option '-p'",
+    "files_indexed": 0,
+    "nodes_count": 0
+  },
+  "post_result": "SKIPPED"
+}docs/task_runs/DATA-010-20260608-020414/prompt-round1.md
+# Task: DATA-010: 融资融券数据源注册与 raw_evidence 接入（P1）
+
+Read task "DATA-010" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/DATA-010-20260608-020414/codegraph-context.txt
+# CodeGraph Context: SKIPPED
+# Task: DATA-010
+# Reason: CodeGraph not indexed
+docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/TASKS.md[90m [offset=805][0m
+[0m• [0mExplore DATA-010 related code[90m Explore Agent[0m
+让我来找到 DATA-010 的具体任务详情，并探索相关的代码。
+[0m✓ [0mExplore DATA-010 related code[90m Explore Agent[0m
+[0m
+[0m# [0mTodos
+[ ] Register margin_trading sources in source_catalog.py
+[ ] Add get_margin_trading() to cn_akshare_provider.py
+[ ] Add get_margin_trading() to cn_astock_provider.py
+[ ] Add get_margin_trading to interface.py TOOLS_CATEGORIES
+[ ] Update evidence_contract.py with margin_trading mapping
+[ ] Update evidence_coverage_audit.py with margin_trading labels
+[ ] Update readiness_score.py to read raw_evidence for margin_trading
+[ ] Add margin_trading fixtures to fixture_replay.py
+[ ] Update default_config.py for get_margin_trading routing
+[ ] Create tests/test_data010_margin_trading.py
+[ ] Run full test suite to verify no regressions
+[ ] Update docs/TASKS.md and docs/DEVLOG.md
+[0m
+[0m→ [0mRead tradingagents/dataflows/source_catalog.py
+[0m→ [0mRead tradingagents/dataflows/evidence_contract.py
+[0m→ [0mRead tradingagents/dataflows/interface.py
+让我阅读需要修改的关键文件，以了解确切的模式。
+[0m→ [0mRead tradingagents/dataflows/evidence_coverage_audit.py[90m [offset=1, limit=100][0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_astock_provider.py[90m [offset=1, limit=120][0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_akshare_provider.py[90m [offset=1080, limit=100][0m
+[0m✱ [0mGrep "margin_trading|融资融券|rzrq|两融"[90m in tradingagents · 9 matches[0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_astock_provider.py[90m [offset=830, limit=100][0m
+[0m→ [0mRead tradingagents/default_config.py
+现在我来读取 `readiness_score.py` 中相关部分和 `default_config.py`，并查看 `LHB` 在 `cn_astock_provider.py` 中是如何实现的。
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=80, offset=1230][0m
+现在我来更仔细地阅读 `readiness_score.py` 中相关部分：
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=30, offset=175][0m
+[0m→ [0mRead tradingagents/dataflows/fixture_replay.py[90m [limit=100, offset=1][0m
+现在我来检查现有的 readiness_score 测试和 `fixture_replay`，以了解 fixture 模式：
+[0m✱ [0mGrep "margin_trading.*NOT_AVAILABLE|test_raw_evidence_margin|test_evidence_margin"[90m in tests · 8 matches[0m
+[0m→ [0mRead tradingagents/dataflows/fixture_replay.py[90m [limit=100, offset=100][0m
+[0m
+[0m# [0mTodos
+[•] Register margin_trading sources in source_catalog.py
+[ ] Add get_margin_trading() to cn_akshare_provider.py
+[ ] Add get_margin_trading() to cn_astock_provider.py
+[ ] Add get_margin_trading to interface.py TOOLS_CATEGORIES
+[ ] Update evidence_contract.py with margin_trading mapping
+[ ] Update evidence_coverage_audit.py with margin_trading labels
+[ ] Update readiness_score.py to read raw_evidence for margin_trading
+[ ] Add margin_trading fixtures to fixture_replay.py
+[ ] Update default_config.py for get_margin_trading routing
+[ ] Create tests/test_data010_margin_trading.py
+[ ] Run full test suite to verify no regressions
+[ ] Update docs/TASKS.md and docs/DEVLOG.md
+[0m
+我现在对代码库有了深入的理解。让我来开始实现吧。
+**步骤 1：在 `source_catalog.py` 中注册 `margin_trading` 源**
+[0m← [0mEdit tradingagents/dataflows/source_catalog.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/source_catalog.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/source_catalog.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/source_catalog.py
+@@ -334,8 +334,31 @@
+     fallback_priority=2,
+     notes="东财 datacenter 直连龙虎榜",
+ )
+ 
++# ── 融资融券 ────────────────────────────────────────────────────────
++_register(
++    "cn_akshare", "stock_margin_underlying_info_szse",
++    DataType.MARGIN_TRADING,
++    fields=["标的证券代码", "标的证券简称", "融资买入额", "融资余额", "融券卖出量", "融券余量"],
++    unit="万元/股",
++    freshness=Freshness.DAILY,
++    rate_limit_risk=RateLimitRisk.MEDIUM,
++    fallback_priority=1,
++    is_primary=True,
++    notes="AKShare 深交所融资融券标的；沪市用 stock_margin_underlying_info_sse",
++)
++_register(
++    "cn_astock", "datacenter-web.eastmoney.com/RPT_RZRQ_LSHJ",
++    DataType.MARGIN_TRADING,
++    fields=["RZRQ_YE", "RZRQ_MRE", "RQYE", "RQMRL", "RZRQ_JME"],
++    unit="元(需/10000转万元)",
++    freshness=Freshness.DAILY,
++    rate_limit_risk=RateLimitRisk.MEDIUM,
++    fallback_priority=2,
++    notes="东财 datacenter 融资融券汇总",
++)
++
+ # ── 公告 ───────────────────────────────────────────────────────────
+ _register(
+     "cn_astock", "cninfo.com.cn/hisAnnouncement",
+     DataType.NOTICE,
+
+[0m
+**步骤 2：添加 `get_margin_trading()` 到 `cn_akshare_provider.py`**
+[0m→ [0mRead tradingagents/dataflows/providers/cn_akshare_provider.py[90m [limit=20, offset=1155][0m
+[0m
+[0m← [0mEdit tradingagents/dataflows/providers/cn_akshare_provider.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/providers/cn_akshare_provider.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/providers/cn_akshare_provider.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/providers/cn_akshare_provider.py
+@@ -1170,4 +1170,34 @@
+             return "雪球热搜数据暂不可用。"
+         return f"雪球热搜前20：\n{df.head(20).to_string(index=False)}"
+     except Exception as exc:
+         return f"雪球热搜数据获取失败：{type(exc).__name__}: {exc}"
++
++def get_margin_trading(self, symbol: str) -> str:
++    """获取个股融资融券数据。  # [DATA-010] margin_trading_raw_evidence"""
++    code = self._normalize_symbol(symbol)
++    try:
++        ak = self._ak()
++        if code[:1] in ("0", "1", "2", "3"):
++            func = "stock_margin_underlying_info_szse"
++            with AKSHARE_CALL_LOCK:
+docs/task_runs/DATA-010-20260608-020414/task.md
+# Auto Dev Task Run
+
+- Task: DATA-010 - 融资融券数据源注册与 raw_evidence 接入（P1）
+- Priority: P1
+- Status: CLAIMED
+- Started at: 2026-06-08_02:04:14
+- Git HEAD: 1af63c1
+- Test commands: pytest tests/test_data_source_catalog.py tests/test_data004_evidence_contract.py tests/test_readiness_score.py -q
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/DATA-010-20260608-020414/codegraph-impact.txt
+# CodeGraph Impact: SKIPPED
+# Reason: CodeGraph not indexed
+
+exec
+/bin/zsh -lc "grep -R \"def route_to_vendor\\|MARGIN_\\|失败\" -n tradingagents/dataflows/interface.py tradingagents/dataflows/*.py tradingagents/dataflows/providers/*.py | sed -n '1,240p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/dataflows/interface.py:80:    "数据获取失败",
+tradingagents/dataflows/interface.py:86:    "获取失败",
+tradingagents/dataflows/interface.py:155:def route_to_vendor(method: str, *args, **kwargs):
+tradingagents/dataflows/data_source_daily_digest.py:11:  3. 对每类输出：OK/PARTIAL/FAILED、失败样本、是否影响 TradeFlow 候选、是否影响 TA readiness
+tradingagents/dataflows/data_source_daily_digest.py:453:        lines.append("### 失败类型")
+tradingagents/dataflows/data_source_daily_digest.py:461:        lines.append("### 失败/部分失败详情")
+tradingagents/dataflows/evidence_contract.py:19:  - error: 失败时的错误摘要
+tradingagents/dataflows/evidence_coverage_audit.py:492:    lines.append(f"- **失败字段**: {len(audit.failed_fields)}")
+tradingagents/dataflows/evidence_coverage_audit.py:508:        lines.append("**失败字段**:")
+tradingagents/dataflows/fixture_replay.py:3:数据源 fixture replay 与限流/失败回放。
+tradingagents/dataflows/fixture_replay.py:9:  1. 内置 15 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
+tradingagents/dataflows/fixture_replay.py:10:     资金流单位异常、龙虎榜无触发、公告源失败、
+tradingagents/dataflows/fixture_replay.py:11:     AKShare 资金流失败→astock fallback、龙虎榜 NORMAL_NO_DATA、
+tradingagents/dataflows/fixture_replay.py:12:     龙虎榜 FAILED、公告失败→事件源弱证据、换手率/量比缺失、
+tradingagents/dataflows/fixture_replay.py:13:     融资融券有数据、融资融券失败、融资融券未查询）
+tradingagents/dataflows/fixture_replay.py:15:  3. 失败时写入 docs/data_source_reports/YYYY-MM-DD.md
+tradingagents/dataflows/fixture_replay.py:64:FIXTURE_MARGIN_HAS_DATA = "margin_has_data"  # [DATA-010] margin_trading_raw_evidence
+tradingagents/dataflows/fixture_replay.py:65:FIXTURE_MARGIN_FAILED = "margin_failed"  # [DATA-010] margin_trading_raw_evidence
+tradingagents/dataflows/fixture_replay.py:66:FIXTURE_MARGIN_NOT_QUERIED = "margin_not_queried"  # [DATA-010] margin_trading_raw_evidence
+tradingagents/dataflows/fixture_replay.py:82:    FIXTURE_MARGIN_HAS_DATA,
+tradingagents/dataflows/fixture_replay.py:83:    FIXTURE_MARGIN_FAILED,
+tradingagents/dataflows/fixture_replay.py:84:    FIXTURE_MARGIN_NOT_QUERIED,
+tradingagents/dataflows/fixture_replay.py:357:        description="实时 quote 失败——日线 stale 且 realtime patch 未补上，应标记 stale 而非 '无数据'",
+tradingagents/dataflows/fixture_replay.py:446:        description="公告源失败——巨潮 ConnectionError，应标记 FAILED 而非 '无数据'",
+tradingagents/dataflows/fixture_replay.py:648:        description="公告源 CNInfo 失败但新闻事件源有弱证据——公告为 FAILED，新闻为 HAS_DATA（弱替代）",
+tradingagents/dataflows/fixture_replay.py:718:            "raw": "600519.SH [DATA-010] MARGIN_HAS_DATA: 融资融券数据（Eastmoney datacenter）：\n"
+tradingagents/dataflows/fixture_replay.py:736:        fixture_id=FIXTURE_MARGIN_HAS_DATA,
+tradingagents/dataflows/fixture_replay.py:752:            "raw": "600519.SH [DATA-010] MARGIN_FAILED: 融资融券数据获取失败：ConnectionError",
+tradingagents/dataflows/fixture_replay.py:769:        fixture_id=FIXTURE_MARGIN_FAILED,
+tradingagents/dataflows/fixture_replay.py:770:        description="融资融券查询失败",
+tradingagents/dataflows/fixture_replay.py:800:        fixture_id=FIXTURE_MARGIN_NOT_QUERIED,
+tradingagents/dataflows/fixture_replay.py:825:    FIXTURE_MARGIN_HAS_DATA: _build_margin_has_data_fixture,
+tradingagents/dataflows/fixture_replay.py:826:    FIXTURE_MARGIN_FAILED: _build_margin_failed_fixture,
+tradingagents/dataflows/fixture_replay.py:827:    FIXTURE_MARGIN_NOT_QUERIED: _build_margin_not_queried_fixture,
+tradingagents/dataflows/interface.py:80:    "数据获取失败",
+tradingagents/dataflows/interface.py:86:    "获取失败",
+tradingagents/dataflows/interface.py:155:def route_to_vendor(method: str, *args, **kwargs):
+tradingagents/dataflows/live_smoke.py:232:            if any(p in raw for p in ("数据获取失败", "暂不可用", "获取失败", "FAILED")):
+tradingagents/dataflows/source_catalog.py:35:    MARGIN_TRADING = "margin_trading"
+tradingagents/dataflows/source_catalog.py:341:        DataType.MARGIN_TRADING,
+tradingagents/dataflows/source_catalog.py:352:        DataType.MARGIN_TRADING,
+tradingagents/dataflows/providers/cn_akshare_provider.py:1063:        """获取行业板块资金流向排名，主接口失败时尝试 AKShare fallback。"""
+tradingagents/dataflows/providers/cn_akshare_provider.py:1066:        if not ("获取失败" in result or "不可用" in result):
+tradingagents/dataflows/providers/cn_akshare_provider.py:1084:        return f"板块资金流向数据获取失败（主接口和 fallback 均不可用）：{result}"
+tradingagents/dataflows/providers/cn_akshare_provider.py:1104:            return f"板块资金流向数据获取失败：{type(exc).__name__}: {exc}"
+tradingagents/dataflows/providers/cn_akshare_provider.py:1120:            return f"个股资金流向数据获取失败：{type(exc).__name__}: {exc}"
+tradingagents/dataflows/providers/cn_akshare_provider.py:1144:            return f"{symbol} [G-007] LHB_FAILED: 龙虎榜数据获取失败：{type(exc).__name__}: {exc}"
+tradingagents/dataflows/providers/cn_akshare_provider.py:1161:            return f"涨停板情绪池数据获取失败：{type(exc).__name__}: {exc}"
+tradingagents/dataflows/providers/cn_akshare_provider.py:1173:            return f"雪球热搜数据获取失败：{type(exc).__name__}: {exc}"
+tradingagents/dataflows/providers/cn_akshare_provider.py:1199:                    return f"{symbol} [DATA-010] MARGIN_NORMAL_NO_DATA: 该股非融资融券标的或当日无数据。"
+tradingagents/dataflows/providers/cn_akshare_provider.py:1200:                return f"{symbol} [DATA-010] MARGIN_HAS_DATA: 融资融券数据（via {func}）：\n{df_filtered.tail(10).to_string(index=False)}"
+tradingagents/dataflows/providers/cn_akshare_provider.py:1201:            return f"{symbol} [DATA-010] MARGIN_HAS_DATA: 融资融券数据（via {func}）：\n{df.tail(20).to_string(index=False)}"
+tradingagents/dataflows/providers/cn_akshare_provider.py:1203:            return f"{symbol} [DATA-010] MARGIN_FAILED: 融资融券数据获取失败：{type(exc).__name__}: {exc}"
+tradingagents/dataflows/providers/cn_astock_provider.py:808:            return f"个股资金流向数据获取失败（Eastmoney push2his）：{type(exc).__name__}: {exc}"
+tradingagents/dataflows/providers/cn_astock_provider.py:843:            return f"板块资金流向数据获取失败（Eastmoney push2）：{type(exc).__name__}: {exc}"
+tradingagents/dataflows/providers/cn_astock_provider.py:889:            return f"{symbol} [G-007] LHB_FAILED: 龙虎榜数据获取失败（Eastmoney datacenter）：{type(exc).__name__}: {exc}"
+tradingagents/dataflows/providers/cn_astock_provider.py:1044:            return f"龙虎榜数据获取失败: {exc}"
+tradingagents/dataflows/providers/cn_astock_provider.py:1084:            return f"北向资金数据获取失败: {exc}"
+tradingagents/dataflows/providers/cn_astock_provider.py:1159:                return f"{symbol} [DATA-010] MARGIN_NORMAL_NO_DATA: 该股非融资融券标的或当日无数据。"
+tradingagents/dataflows/providers/cn_astock_provider.py:1161:            lines = [f"{symbol} [DATA-010] MARGIN_HAS_DATA: 融资融券数据（Eastmoney datacenter）："]
+tradingagents/dataflows/providers/cn_astock_provider.py:1176:            return f"{symbol} [DATA-010] MARGIN_FAILED: 融资融券数据获取失败（Eastmoney datacenter）：{type(exc).__name__}: {exc}"
+
+exec
+/bin/zsh -lc "sed -n '1,230p' tradingagents/dataflows/interface.py && sed -n '1,80p' tradingagents/dataflows/source_catalog.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+import os
+
+from .alpha_vantage_common import AlphaVantageRateLimitError
+from .config import get_config
+from .providers import build_default_registry
+
+# Tools organized by category
+TOOLS_CATEGORIES = {
+    "core_stock_apis": {
+        "description": "OHLCV stock price data",
+        "tools": ["get_stock_data"],
+    },
+    "technical_indicators": {
+        "description": "Technical analysis indicators",
+        "tools": ["get_indicators"],
+    },
+    "fundamental_data": {
+        "description": "Company fundamentals",
+        "tools": [
+            "get_fundamentals",
+            "get_balance_sheet",
+            "get_cashflow",
+            "get_income_statement",
+        ],
+    },
+    "news_data": {
+        "description": "News and insider data",
+        "tools": [
+            "get_news",
+            "get_global_news",
+            "get_insider_transactions",
+        ],
+    },
+    "realtime_data": {
+        "description": "Real-time market quotes",
+        "tools": ["get_realtime_quotes"],
+    },
+    "cn_market_data": {
+        "description": "China A-share market sentiment and fund flow data",
+        "tools": [
+            "get_board_fund_flow",
+            "get_individual_fund_flow",
+            "get_lhb_detail",
+            "get_zt_pool",
+            "get_hot_stocks_xq",
+            "get_announcements",  # [DATA-P0-603629] astock_source_fallback
+            "get_margin_trading",  # [DATA-010] margin_trading_raw_evidence
+        ],
+    },
+}
+
+_registry = build_default_registry()
+
+VENDOR_LIST = _registry.list_names()
+
+# [N-003] cn_astock_raw_evidence: track which vendor last handled each method
+_last_hit_vendor: dict[str, str] = {}
+
+
+def get_last_hit_vendor(method: str) -> str:
+    """Return the vendor name that most recently produced a successful hit for *method*."""
+    return _last_hit_vendor.get(method, "")
+
+
+def _is_trace_enabled() -> bool:
+    env_value = os.getenv("TA_TRACE")
+    if env_value is not None:
+        return env_value.strip().lower() in ("1", "true", "yes", "on")
+
+    config = get_config()
+    return bool(config.get("provider_trace", True))
+
+
+def _trace(msg: str) -> None:
+    if _is_trace_enabled():
+        print(f"[provider-trace] {msg}", flush=True)
+
+
+_FAILURE_RESULT_PATTERNS = (
+    "数据获取失败",
+    "ProxyError",
+    "ConnectionError",
+    "Max retries exceeded",
+    "Unable to connect",
+    "暂不可用",
+    "获取失败",
+    "TimeoutError",
+    "ConnectTimeout",
+    "ReadTimeout",
+)
+
+
+def _is_failure_result(result) -> bool:
+    if not isinstance(result, str):
+        return False
+    return any(p in result for p in _FAILURE_RESULT_PATTERNS)
+
+
+_TRACE_KEYS = ("symbol", "ticker", "start_date", "end_date", "curr_date", "indicator")
+
+
+def _summarize_args(args: tuple, kwargs: dict) -> str:
+    """格式化首参数（通常是 symbol）和常见日期/指标键，用于 trace 日志定位。"""
+    parts = []
+    if args:
+        # 约定：所有 provider 方法首参数为 symbol/ticker
+        parts.append(f"symbol={args[0]!r}")
+        if len(args) >= 2:
+            parts.append(f"arg2={args[1]!r}")
+        if len(args) >= 3:
+            parts.append(f"arg3={args[2]!r}")
+    for k, v in kwargs.items():
+        if k in _TRACE_KEYS:
+            parts.append(f"{k}={v!r}")
+    return " ".join(parts)
+
+
+def get_category_for_method(method: str) -> str:
+    """Get the category that contains the specified method."""
+    for category, info in TOOLS_CATEGORIES.items():
+        if method in info["tools"]:
+            return category
+    raise ValueError(f"Method '{method}' not found in any category")
+
+
+def get_vendor(category: str, method: str = None) -> str:
+    """Get configured vendor for category or tool method."""
+    config = get_config()
+
+    if method:
+        tool_vendors = config.get("tool_vendors", {})
+        if method in tool_vendors:
+            return tool_vendors[method]
+
+    return config.get("data_vendors", {}).get(category, "yfinance")
+
+
+def _resolve_vendor_chain(method: str, configured_vendor: str) -> list[str]:
+    configured = [v.strip() for v in configured_vendor.split(",") if v.strip()]
+    fallback = configured.copy()
+
+    for provider_name in _registry.list_names():
+        if provider_name in fallback:
+            continue
+        provider = _registry.get(provider_name)
+        # 占位 provider（如 cn_stub）不自动追加进 fallback chain，
+        # 避免污染日志和兜底链；用户显式配置仍可强制使用。
+        if getattr(provider, "is_placeholder", False):
+            continue
+        fallback.append(provider_name)
+
+    return fallback
+
+
+def route_to_vendor(method: str, *args, **kwargs):
+    """Route method calls to provider implementations with fallback support."""
+    category = get_category_for_method(method)
+    vendor_config = get_vendor(category, method)
+    fallback_vendors = _resolve_vendor_chain(method, vendor_config)
+    args_summary = _summarize_args(args, kwargs)
+    last_exc = None
+    _trace(
+        f"method={method} {args_summary} category={category} "
+        f"configured='{vendor_config}' chain={fallback_vendors}"
+    )
+
+    for vendor in fallback_vendors:
+        provider = _registry.get(vendor)
+        if provider is None:
+            _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-registered")
+            continue
+
+        impl_func = getattr(provider, method, None)
+        if impl_func is None:
+            _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-implemented")
+            continue
+
+        try:
+            result = impl_func(*args, **kwargs)
+            if _is_failure_result(result):  # [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth
+                _trace(
+                    f"method={method} {args_summary} vendor={vendor} status=fallback "
+                    f"reason=failure-string-detected"
+                )
+                continue
+            _last_hit_vendor[method] = vendor  # [N-003] cn_astock_raw_evidence
+            _trace(f"method={method} {args_summary} vendor={vendor} status=hit")
+            return result
+        except (AlphaVantageRateLimitError, NotImplementedError) as exc:
+            last_exc = exc
+            # Try next provider for transient/routing issues or placeholder providers.
+            _trace(
+                f"method={method} {args_summary} vendor={vendor} status=fallback "
+                f"reason={type(exc).__name__}: {exc}"
+            )
+            continue
+        except Exception as exc:
+            # Provider-specific runtime/parsing errors (e.g., schema changes, KeyError)
+            # should not terminate the full chain; fall through to next vendor.
+            last_exc = exc
+            _trace(
+                f"method={method} {args_summary} vendor={vendor} status=fallback "
+                f"reason={type(exc).__name__}: {exc}"
+            )
+            continue
+
+    _trace(f"method={method} {args_summary} status=failed reason=no-available-vendor")
+    if last_exc is not None:
+        raise RuntimeError(
+            f"No available vendor for method '{method}'. "
+            f"Configured chain: {fallback_vendors}. "
+            f"Last error: {type(last_exc).__name__}: {last_exc}"
+        ) from last_exc
+    raise RuntimeError(
+        f"No available vendor for method '{method}'. "
+        f"Configured chain: {fallback_vendors}"
+    )
+# [DATA-001] source_catalog
+"""
+A股数据源能力目录与 fallback 矩阵。
+
+提供统一的 source capability 查询接口：
+  - 每种 data_type (quote / fund_flow / lhb / notice / report / ...)
+    有明确的主选 vendor / fallback 顺序
+  - 每个 source 记录 fields / unit / freshness / rate_limit_risk / known_gaps
+  - 缺少字段或单位未知的数据源不得标为 primary
+
+使用示例：
+    from tradingagents.dataflows.source_catalog import (
+        get_sources_for_type,
+        get_primary_source,
+        SourceCapability,
+    )
+    sources = get_sources_for_type("quote")
+    for s in sources:
+        print(s.vendor, s.fallback_priority, s.fields)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional
+
+
+class DataType(str, Enum):
+    QUOTE = "quote"
+    OHLCV = "ohlcv"
+    FUND_FLOW = "fund_flow"
+    BOARD_FUND_FLOW = "board_fund_flow"
+    LHB = "lhb"
+    MARGIN_TRADING = "margin_trading"
+    NOTICE = "notice"
+    REPORT = "report"
+    RATING = "rating"
+    NEWS = "news"
+    GLOBAL_NEWS = "global_news"
+    FINANCIALS = "financials"
+    INSIDER = "insider"
+    HOT_STOCKS = "hot_stocks"
+    ZT_POOL = "zt_pool"
+    REALTIME_QUOTES = "realtime_quotes"
+
+
+class Freshness(str, Enum):
+    REALTIME = "realtime"
+    INTRADAY = "intraday"
+    DAILY = "daily"
+    DELAYED = "delayed"
+    STALE = "stale"
+    UNKNOWN = "unknown"
+
+
+class RateLimitRisk(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class SourceCapability:
+    vendor: str
+    endpoint: str
+    data_type: DataType
+    fields: List[str] = field(default_factory=list)
+    unit: str = ""
+    freshness: Freshness = Freshness.UNKNOWN
+    rate_limit_risk: RateLimitRisk = RateLimitRisk.UNKNOWN
+    fallback_priority: int = 99
+    known_gaps: List[str] = field(default_factory=list)
+    is_primary: bool = False
+    notes: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "vendor": self.vendor,
+
+exec
+/bin/zsh -lc "sed -n '1,60p' tradingagents/dataflows/providers/cn_akshare_provider.py && sed -n '1,80p' tradingagents/dataflows/providers/cn_astock_provider.py && grep -R \"get_margin_trading\" -n . | sed -n '1,120p'" in /Users/maybee/TradingAgents-AShare
+2026-06-07T18:14:20.459657Z ERROR codex_core::tools::router: error=write_stdin failed: stdin is closed for this session; rerun exec_command with tty=true to keep stdin open
+ succeeded in 10835ms:
+grep: ./.git/fsmonitor--daemon.ipc: Operation not supported on socket
+./.pytest_cache/v/cache/nodeids:670:  "tests/test_data010_margin_trading.py::TestInterfaceMarginTrading::test_get_margin_trading_in_tools_categories",
+Binary file ./tests/__pycache__/test_data010_margin_trading.cpython-312-pytest-9.0.2.pyc matches
+./tests/test_data010_margin_trading.py:11:  6. provider route 中 get_margin_trading 方法
+./tests/test_data010_margin_trading.py:349:    def test_get_margin_trading_in_tools_categories(self):
+./tests/test_data010_margin_trading.py:350:        assert "get_margin_trading" in TOOLS_CATEGORIES["cn_market_data"]["tools"]
+./tests/test_data010_margin_trading.py:353:        assert get_category_for_method("get_margin_trading") == "cn_market_data"
+./tests/test_data010_margin_trading.py:358:        assert hasattr(provider, "get_margin_trading")
+./tests/test_data010_margin_trading.py:477:        assert hasattr(provider, "get_margin_trading")
+./tests/test_data010_margin_trading.py:482:        assert hasattr(provider, "get_margin_trading")
+./tests/test_data010_margin_trading.py:488:            result = provider.get_margin_trading("600519.SH")
+./tests/test_data010_margin_trading.py:496:            result = provider.get_margin_trading("600519.SH")
+./tests/test_data010_margin_trading.py:504:            result = provider.get_margin_trading("600519.SH")
+./tests/test_data010_margin_trading.py:522:            result = provider.get_margin_trading("600519.SH")
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:13:[ ] Add get_margin_trading() to cn_akshare_provider.py
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:14:[ ] Add get_margin_trading() to cn_astock_provider.py
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:15:[ ] Add get_margin_trading to interface.py TOOLS_CATEGORIES
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:20:[ ] Update default_config.py for get_margin_trading routing
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:46:[ ] Add get_margin_trading() to cn_akshare_provider.py
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:47:[ ] Add get_margin_trading() to cn_astock_provider.py
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:48:[ ] Add get_margin_trading to interface.py TOOLS_CATEGORIES
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:53:[ ] Update default_config.py for get_margin_trading routing
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:99:**步骤 2：添加 `get_margin_trading()` 到 `cn_akshare_provider.py`**
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:113:+def get_margin_trading(self, symbol: str) -> str:
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:144:**步骤 3：将 `get_margin_trading()` 添加到 `cn_astock_provider.py`**
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:158:+def get_margin_trading(self, symbol: str) -> str:
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:194:**第四步：将 `get_margin_trading` 添加到 `interface.py` 的 `TOOLS_CATEGORIES` 中**
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:205:+            "get_margin_trading",  # [DATA-010] margin_trading_raw_evidence
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:214:[✓] Add get_margin_trading() to cn_akshare_provider.py
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:215:[✓] Add get_margin_trading() to cn_astock_provider.py
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:216:[✓] Add get_margin_trading to interface.py TOOLS_CATEGORIES
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:221:[ ] Update default_config.py for get_margin_trading routing
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:538:现在我来检查 `default_config.py`，看看是否需要为 `get_margin_trading` 添加路由：
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:546:[✓] Add get_margin_trading() to cn_akshare_provider.py
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:547:[✓] Add get_margin_trading() to cn_astock_provider.py
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:548:[✓] Add get_margin_trading to interface.py TOOLS_CATEGORIES
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:553:[✓] Update default_config.py for get_margin_trading routing
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:560:实际上，`_resolve_vendor_chain` 已经追加了所有未处于占位符模式的已注册提供商。`cn_akshare` 和 `cn_astock` 都已注册并实现了这些方法。因此，`get_margin_trading` 的路由将自然而然地通过备用链进行工作。无需更改 `config`。
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:712:[✓] Add get_margin_trading() to cn_akshare_provider.py
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:713:[✓] Add get_margin_trading() to cn_astock_provider.py
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:714:[✓] Add get_margin_trading to interface.py TOOLS_CATEGORIES
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:719:[✓] Update default_config.py for get_margin_trading routing
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:729:            result = route_to_vendor("get_margin_trading", "600519.SH")
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:731:>           assert get_last_hit_vendor("get_margin_trading") == "cn_astock"
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:739:[provider-trace] method=get_margin_trading symbol='600519.SH' category=cn_market_data configured='yfinance' chain=['yfinance']
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:740:[provider-trace] method=get_margin_trading symbol='600519.SH' vendor=yfinance status=hit
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:798:         assert get_category_for_method("get_margin_trading") == "cn_market_data"
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:803:-            mock_provider.get_margin_trading.return_value = "600519 [DATA-010] MARGIN_HAS_DATA"
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:809:+        assert hasattr(provider, "get_margin_trading")
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:811:-            result = route_to_vendor("get_margin_trading", "600519.SH")
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:813:-            assert get_last_hit_vendor("get_margin_trading") == "cn_akshare"
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:822:-            ak_provider.get_margin_trading.return_value = "融资融券数据获取失败：ProxyError"
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:824:-            astock_provider.get_margin_trading.return_value = "600519 [DATA-010] MARGIN_HAS_DATA"
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:834:-            result = route_to_vendor("get_margin_trading", "600519.SH")
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:836:-            assert get_last_hit_vendor("get_margin_trading") == "cn_astock"
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:881:[✓] Add get_margin_trading() to cn_akshare_provider.py
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:882:[✓] Add get_margin_trading() to cn_astock_provider.py
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:883:[✓] Add get_margin_trading to interface.py TOOLS_CATEGORIES
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:888:[✓] Update default_config.py for get_margin_trading routing
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:936:+    - 新增 `get_margin_trading(symbol)`: AKShare 深交所/沪交所融资融券标的数据
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:939:+    - 新增 `get_margin_trading(symbol)`: 东财 datacenter RPT_RZRQ_LSHJ 直连
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:942:+    - `TOOLS_CATEGORIES["cn_market_data"]["tools"]` 新增 `"get_margin_trading"`
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:991:[✓] Add get_margin_trading() to cn_akshare_provider.py
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:992:[✓] Add get_margin_trading() to cn_astock_provider.py
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:993:[✓] Add get_margin_trading to interface.py TOOLS_CATEGORIES
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:998:[✓] Update default_config.py for get_margin_trading routing
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:1010:| `tradingagents/dataflows/providers/cn_akshare_provider.py` | Added `get_margin_trading(symbol)` with AKShare 深交所/沪交所 support |
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:1011:| `tradingagents/dataflows/providers/cn_astock_provider.py` | Added `get_margin_trading(symbol)` with Eastmoney datacenter RPT_RZRQ_LSHJ |
+./docs/task_runs/DATA-010-20260608-020414/opencode-round1.txt:1012:| `tradingagents/dataflows/interface.py` | Added `get_margin_trading` to `cn_market_data` tools category |
+./docs/DEVLOG.md:16:    - 新增 `get_margin_trading(symbol)`: AKShare 深交所/沪交所融资融券标的数据
+./docs/DEVLOG.md:19:    - 新增 `get_margin_trading(symbol)`: 东财 datacenter RPT_RZRQ_LSHJ 直连
+./docs/DEVLOG.md:22:    - `TOOLS_CATEGORIES["cn_market_data"]["tools"]` 新增 `"get_margin_trading"`
+./docs/TASKS.md:914:  2. provider 层提供最小接口，例如 `get_margin_trading(symbol, date_range?)`。
+./tradingagents/dataflows/providers/cn_akshare_provider.py:1175:    def get_margin_trading(self, symbol: str) -> str:
+./tradingagents/dataflows/providers/cn_astock_provider.py:1143:    def get_margin_trading(self, symbol: str) -> str:
+Binary file ./tradingagents/dataflows/providers/__pycache__/cn_astock_provider.cpython-312.pyc matches
+Binary file ./tradingagents/dataflows/providers/__pycache__/cn_akshare_provider.cpython-312.pyc matches
+./tradingagents/dataflows/interface.py:47:            "get_margin_trading",  # [DATA-010] margin_trading_raw_evidence
+Binary file ./tradingagents/dataflows/__pycache__/interface.cpython-312.pyc matches
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/dataflows/evidence_contract.py && sed -n '1,160p' tradingagents/dataflows/evidence_coverage_audit.py && sed -n '1120,1290p' tradingagents/agents/utils/readiness_score.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [DATA-004] raw_evidence_contract
+"""
+raw_evidence 来源契约定义。
+
+所有关键字段的来源、端点、时间、单位、状态纳入统一契约结构，
+使报告和前端都能回答"这个数从哪里来、是否实时、单位是什么、是否 fallback"。
+
+契约字段：
+  - field: 字段名称 (如 stock_data, fund_flow_individual)
+  - value: 原始数据 (raw)
+  - unit: 单位 (万元, 股, 条, %, 元/股 等)
+  - vendor: 实际返回数据的厂商 (cn_akshare, cn_astock, sina, ...)
+  - endpoint: 实际调用的端点 (stock_zh_a_hist, push2his.eastmoney.com/fflow, ...)
+  - as_of: 数据日期或行情时间
+  - fetched_at: 获取时间 ISO
+  - status: HAS_DATA / FAILED / NOT_QUERIED / NORMAL_NO_DATA
+  - fallback_from: 如果走了 fallback，记录原始厂商名
+  - source_url: 可选，数据源链接
+  - error: 失败时的错误摘要
+
+使用示例：
+    from tradingagents.dataflows.evidence_contract import (
+        EvidenceContract,
+        build_evidence_contract,
+        compute_contract_completeness,
+    )
+    contract = build_evidence_contract("stock_data", raw_value, ...)
+    score = compute_contract_completeness(raw_evidence)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field as dc_field
+from typing import Any, Dict, List, Optional
+
+
+@dataclass
+class EvidenceContract:
+    field: str
+    value: Any = None
+    unit: Optional[str] = None
+    vendor: str = ""
+    endpoint: str = ""
+    as_of: str = ""
+    fetched_at: str = ""
+    status: str = "NOT_QUERIED"
+    fallback_from: Optional[str] = None
+    source_url: Optional[str] = None
+    error: Optional[str] = None
+
+    is_realtime_patched: bool = False
+    source_type: Optional[str] = None
+    unit_verified: Optional[bool] = None
+    query_mode: Optional[str] = None
+    adjustment: Optional[str] = None
+    force_reason: Optional[str] = None
+    record_count: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "raw": self.value,
+            "field": self.field,
+            "unit": self.unit,
+            "vendor": self.vendor,
+            "endpoint": self.endpoint,
+            "as_of": self.as_of,
+            "fetched_at": self.fetched_at,
+            "status": self.status,
+            "fallback_from": self.fallback_from,
+            "source_url": self.source_url,
+            "error": self.error,
+            "is_realtime_patched": self.is_realtime_patched,
+            "source_type": self.source_type,
+            "unit_verified": self.unit_verified,
+            "query_mode": self.query_mode,
+            "adjustment": self.adjustment,
+            "force_reason": self.force_reason,
+            "record_count": self.record_count,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EvidenceContract":
+        return cls(
+            field=data.get("field", ""),
+            value=data.get("raw"),
+            unit=data.get("unit"),
+            vendor=data.get("vendor", ""),
+            endpoint=data.get("endpoint", ""),
+            as_of=data.get("as_of", ""),
+            fetched_at=data.get("fetched_at", ""),
+            status=data.get("status", "NOT_QUERIED"),
+            fallback_from=data.get("fallback_from"),
+            source_url=data.get("source_url"),
+            error=data.get("error"),
+            is_realtime_patched=data.get("is_realtime_patched", False),
+            source_type=data.get("source_type"),
+            unit_verified=data.get("unit_verified"),
+            query_mode=data.get("query_mode"),
+            adjustment=data.get("adjustment"),
+            force_reason=data.get("force_reason"),
+            record_count=data.get("record_count", 0),
+        )
+
+    @property
+    def has_data(self) -> bool:
+        return self.status == "HAS_DATA"
+
+    @property
+    def is_failed(self) -> bool:
+        return self.status == "FAILED"
+
+    @property
+    def is_fallback(self) -> bool:
+        return self.fallback_from is not None and self.fallback_from != ""
+
+    @property
+    def unit_known(self) -> bool:
+        return self.unit is not None and self.unit != ""
+
+    @property
+    def endpoint_known(self) -> bool:
+        return self.endpoint != ""
+
+
+_EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
+    "stock_data": "ohlcv",
+    "news": "news",
+    "global_news": "global_news",
+    "fund_flow_board": "board_fund_flow",
+    "fund_flow_individual": "fund_flow",
+    "lhb": "lhb",
+    "fundamentals": "financials",
+    "balance_sheet": "financials",
+    "cashflow": "financials",
+    "income_statement": "financials",
+    "insider_transactions": "insider",
+    "zt_pool": "zt_pool",
+    "hot_stocks": "hot_stocks",
+    "indicators": "ohlcv",
+    "vpa_indicators": "ohlcv",
+    "announcements": "notice",
+    "margin_trading": "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+}
+
+
+def resolve_data_type(evidence_key: str) -> str:
+    return _EVIDENCE_KEY_TO_DATA_TYPE.get(evidence_key, "")
+
+
+def resolve_endpoint(vendor: str, data_type: str) -> str:
+    try:
+        from .source_catalog import get_primary_source, get_sources_for_type
+        sources = get_sources_for_type(data_type)
+        for s in sources:
+            if s.vendor == vendor:
+                return s.endpoint
+        if sources:
+            return sources[0].endpoint
+    except Exception:
+        pass
+    return ""
+
+
+def resolve_fallback_info(vendor: str, data_type: str) -> Optional[str]:
+    try:
+        from .source_catalog import get_primary_source
+        primary = get_primary_source(data_type)
+        if primary and primary.vendor != vendor:
+            return primary.vendor
+    except Exception:
+        pass
+    return None
+
+
+_REQUIRED_FIELDS_FOR_COMPLETENESS: Dict[str, List[str]] = {
+    "stock_data": ["status", "vendor", "unit"],
+    "fund_flow_individual": ["status", "vendor", "unit", "unit_verified"],
+    "fund_flow_board": ["status", "vendor"],
+    "lhb": ["status", "vendor"],
+    "news": ["status", "vendor"],
+    "global_news": ["status", "vendor"],
+    "announcements": ["status", "vendor"],
+    "fundamentals": ["status", "vendor"],
+    "margin_trading": ["status", "vendor", "unit"],  # [DATA-010] margin_trading_raw_evidence
+}
+
+
+def compute_contract_completeness(raw_evidence: Dict[str, Any]) -> Dict[str, Any]:
+    total = 0
+    satisfied = 0
+    missing_details: Dict[str, List[str]] = {}
+
+    for ev_key, required in _REQUIRED_FIELDS_FOR_COMPLETENESS.items():
+        entry = raw_evidence.get(ev_key)
+        if entry is None:
+            total += len(required)
+            missing_details[ev_key] = required
+            continue
+
+        if isinstance(entry, dict):
+            contract = EvidenceContract.from_dict(entry)
+        else:
+            total += len(required)
+            missing_details[ev_key] = required
+            continue
+
+        for req_field in required:
+            total += 1
+            if req_field == "status" and contract.has_data:
+                satisfied += 1
+            elif req_field == "vendor" and contract.vendor != "":
+                satisfied += 1
+            elif req_field == "unit" and contract.unit_known:
+                satisfied += 1
+            elif req_field == "unit_verified" and contract.unit_verified is True:
+                satisfied += 1
+            elif req_field == "endpoint" and contract.endpoint_known:
+                satisfied += 1
+            else:
+                if ev_key not in missing_details:
+                    missing_details[ev_key] = []
+                missing_details[ev_key].append(req_field)
+
+    score = int((satisfied / total) * 100) if total > 0 else 0
+    return {
+        "completeness_score": score,
+        "total_checks": total,
+        "satisfied_checks": satisfied,
+        "missing_details": missing_details,
+    }
+
+
+def build_data_source_summary(raw_evidence: Dict[str, Any]) -> List[Dict[str, Any]]:
+    summary = []
+    for key in sorted(raw_evidence.keys()):
+        entry = raw_evidence[key]
+        if not isinstance(entry, dict):
+            continue
+        contract = EvidenceContract.from_dict(entry)
+        summary.append({
+            "field": key,
+            "vendor": contract.vendor,
+            "endpoint": contract.endpoint,
+            "status": contract.status,
+            "unit": contract.unit,
+            "unit_verified": contract.unit_verified,
+            "is_fallback": contract.is_fallback,
+            "fallback_from": contract.fallback_from,
+            "is_realtime_patched": contract.is_realtime_patched,
+            "as_of": contract.as_of,
+            "record_count": contract.record_count,
+            "error": contract.error,
+        })
+    return summary
+# [DATA-007] evidence_coverage_audit
+"""
+raw_evidence 覆盖率审计与候选可信度联动。
+
+把 raw_evidence contract 的覆盖情况转成可读审计结果，并联动 TradeFlow 候选可信度，
+避免"候选分数高但关键数据缺证据"的情况继续进入高优先级。
+
+功能：
+  1. audit_raw_evidence(): 审计 raw_evidence 字典，输出覆盖率、关键缺口、stale 字段、
+     单位未知字段、fallback 字段和质量等级。
+  2. audit_candidate_evidence(): 审计单个 TradeFlow 候选的证据完整度。
+  3. apply_credibility_linkage(): 根据审计结果联动候选等级，关键缺失时限制升级。
+  4. render_audit_summary(): 渲染审计摘要 Markdown。
+  5. build_evidence_coverage_section(): 为夜间日报构建证据覆盖率 section。
+
+使用示例：
+    from tradingagents.dataflows.evidence_coverage_audit import (
+        audit_raw_evidence,
+        audit_candidate_evidence,
+        apply_credibility_linkage,
+    )
+    result = audit_raw_evidence(raw_evidence)
+    print(result.evidence_quality_level)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from .evidence_contract import (
+    EvidenceContract,
+    compute_contract_completeness,
+)
+
+
+_CRITICAL_FIELDS_BY_CANDIDATE_TYPE: Dict[str, List[str]] = {
+    "POLICY_AMBUSH": ["fundamentals", "news", "announcements"],
+    "POLICY_CONFIRM": ["fundamentals", "news", "announcements"],
+    "TECH_TRADE": ["stock_data", "fund_flow_individual"],
+    "EVENT_WATCH": ["news", "announcements"],
+    "PSEUDO_POLICY": ["news"],
+    "OVERHEATED_AVOID": ["stock_data", "fund_flow_individual"],
+    "UNCLASSIFIED_DATA_GAP": [],
+}
+
+_EVIDENCE_FIELD_LABELS: Dict[str, str] = {
+    "stock_data": "行情/OHLCV",
+    "fund_flow_individual": "个股资金流",
+    "fund_flow_board": "板块资金流",
+    "lhb": "龙虎榜",
+    "news": "新闻",
+    "global_news": "全球新闻",
+    "announcements": "公告/研报",
+    "fundamentals": "财务基本面",
+    "balance_sheet": "资产负债表",
+    "cashflow": "现金流量表",
+    "income_statement": "利润表",
+    "insider_transactions": "内部人交易",
+    "zt_pool": "涨停池",
+    "hot_stocks": "热门股票",
+    "indicators": "技术指标",
+    "vpa_indicators": "量价分析指标",
+    "margin_trading": "融资融券",  # [DATA-010] margin_trading_raw_evidence
+}
+
+_EVIDENCE_FIELD_FAMILIES: Dict[str, str] = {
+    "stock_data": "ohlcv",
+    "indicators": "ohlcv",
+    "vpa_indicators": "ohlcv",
+    "fund_flow_individual": "fund_flow",
+    "fund_flow_board": "fund_flow",
+    "lhb": "lhb",
+    "news": "news",
+    "global_news": "news",
+    "announcements": "notice",
+    "fundamentals": "financials",
+    "balance_sheet": "financials",
+    "cashflow": "financials",
+    "income_statement": "financials",
+    "insider_transactions": "insider",
+    "zt_pool": "zt_pool",
+    "hot_stocks": "hot_stocks",
+    "margin_trading": "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+}
+
+_TIER_RANK = {"A": 1, "B": 2, "C": 3}
+
+
+def _worse_tier(current: str, minimum: str) -> str:
+    """Return the worse (higher rank number) of two tiers."""
+    current_rank = _TIER_RANK.get(current, 3)
+    minimum_rank = _TIER_RANK.get(minimum, 3)
+    return "A" if current_rank <= minimum_rank and minimum_rank == 1 else (
+        "B" if max(current_rank, minimum_rank) == 2 else "C"
+    )
+
+
+@dataclass
+class EvidenceAuditResult:
+    evidence_coverage: float = 0.0
+    critical_missing_fields: List[str] = field(default_factory=list)
+    stale_fields: List[str] = field(default_factory=list)
+    unit_unknown_fields: List[str] = field(default_factory=list)
+    fallback_fields: List[str] = field(default_factory=list)
+    failed_fields: List[str] = field(default_factory=list)
+    not_queried_fields: List[str] = field(default_factory=list)
+    normal_no_data_fields: List[str] = field(default_factory=list)
+    has_data_fields: List[str] = field(default_factory=list)
+    evidence_quality_level: str = "UNKNOWN"
+    total_fields: int = 0
+    satisfied_fields: int = 0
+    audit_refs: List[Dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "evidence_coverage": round(self.evidence_coverage, 4),
+            "critical_missing_fields": self.critical_missing_fields,
+            "stale_fields": self.stale_fields,
+            "unit_unknown_fields": self.unit_unknown_fields,
+            "fallback_fields": self.fallback_fields,
+            "failed_fields": self.failed_fields,
+            "not_queried_fields": self.not_queried_fields,
+            "normal_no_data_fields": self.normal_no_data_fields,
+            "has_data_fields": self.has_data_fields,
+            "evidence_quality_level": self.evidence_quality_level,
+            "total_fields": self.total_fields,
+            "satisfied_fields": self.satisfied_fields,
+            "audit_refs_count": len(self.audit_refs),
+        }
+
+
+@dataclass
+class CandidateCredibilityResult:
+    symbol: str = ""
+    candidate_type: str = ""
+    evidence_audit: Optional[EvidenceAuditResult] = None
+    tier_allowed: str = ""
+    tier_restricted: bool = False
+    need_deep_ta_allowed: bool = True
+    credibility_level: str = "UNKNOWN"
+    credibility_reasons: List[str] = field(default_factory=list)
+    credibility_refs: List[Dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "candidate_type": self.candidate_type,
+            "evidence_audit": self.evidence_audit.to_dict() if self.evidence_audit else None,
+            "tier_allowed": self.tier_allowed,
+            "tier_restricted": self.tier_restricted,
+            "need_deep_ta_allowed": self.need_deep_ta_allowed,
+            "credibility_level": self.credibility_level,
+            "credibility_reasons": self.credibility_reasons,
+            "credibility_refs_count": len(self.credibility_refs),
+        }
+
+
+def _classify_quality_level(
+def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) -> dict:
+    """根据报告文本推断各项证据状态。
+
+    When *raw_evidence* dict is provided (from DataCollector pool), structured
+    fields are used directly and text-based regex is skipped for those keys.
+    Falls back to text regex for keys without raw evidence.
+
+    Args:
+        reports: dict with keys like 'market_report', 'volume_price_report',
+                 'smart_money_report', 'news_report' etc.
+        raw_evidence: optional dict from DataCollector pool with keys like
+                      'stock_data', 'fund_flow_individual', 'lhb', etc.
+                      Supports both legacy format (raw values) and G-006 format
+                      (dict with 'raw', 'status', 'vendor', etc. keys).
+
+    Returns:
+        dict with evidence field names mapped to EvidenceStatus values.
+    """
+
+    def _unwrap_raw(val):
+        # [G-006] raw_evidence_snapshot: unwrap G-006 structured entries
+        if isinstance(val, dict) and "raw" in val and "status" in val:
+            return val["raw"]
+        return val
+
+    market = reports.get("market_report", "") or ""
+    volume_price = reports.get("volume_price_report", "") or ""
+    smart_money = reports.get("smart_money_report", "") or ""
+    news = reports.get("news_report", "") or ""
+
+    combined = f"{market}\n{volume_price}\n{smart_money}\n{news}"
+
+    # ── Structured evidence from raw data pool (E-004) ──
+    raw = raw_evidence or {}
+
+    # 1. OHLCV 5d — check stock_data CSV
+    ohlcv_5d = EvidenceStatus.NOT_QUERIED
+    raw_stock_data = _unwrap_raw(raw.get("stock_data"))
+    if raw_stock_data and isinstance(raw_stock_data, str) and len(raw_stock_data) > 50:
+        ohlcv_5d = EvidenceStatus.HAS_DATA
+    elif raw_stock_data is not None:
+        ohlcv_5d = EvidenceStatus.QUERY_FAILED if (isinstance(raw_stock_data, str) and "失败" in raw_stock_data) else EvidenceStatus.NORMAL_NO_DATA
+    elif market:
+        if _text_match_any(market, _OHLC_PATTERNS):
+            ohlcv_5d = EvidenceStatus.HAS_DATA
+        elif market.strip():
+            ohlcv_5d = EvidenceStatus.FIELD_MISSING
+
+    # 2. Volume — derived from stock_data
+    volume = EvidenceStatus.NOT_QUERIED
+    if raw_stock_data and isinstance(raw_stock_data, str) and len(raw_stock_data) > 50:
+        volume = EvidenceStatus.HAS_DATA
+    else:
+        src = market or volume_price
+        if src:
+            if re.search(_VOLUME_PATTERN, src, re.IGNORECASE):
+                volume = EvidenceStatus.HAS_DATA
+            elif src.strip():
+                volume = EvidenceStatus.FIELD_MISSING
+
+    # 3. Turnover rate — check raw_evidence realtime quote data
+    # [DATA-P0-603629] astock_source_fallback: cn_astock now provides turnover_rate in realtime
+    turnover_rate = EvidenceStatus.NOT_AVAILABLE
+    raw_news_val = _unwrap_raw(raw.get("news"))
+    raw_stock_data_val = _unwrap_raw(raw.get("stock_data"))
+    if volume_price:
+        if re.search(_TURNOVER_PATTERN, volume_price, re.IGNORECASE):
+            turnover_rate = EvidenceStatus.HAS_DATA
+        elif volume_price.strip():
+            turnover_rate = EvidenceStatus.FIELD_MISSING
+    elif raw_stock_data_val and isinstance(raw_stock_data_val, str) and "turnover_rate" in raw_stock_data_val:
+        turnover_rate = EvidenceStatus.HAS_DATA
+
+    # 4. Volume ratio — check raw_evidence realtime quote data
+    # [DATA-P0-603629] astock_source_fallback: cn_astock now provides volume_ratio in realtime
+    volume_ratio = EvidenceStatus.NOT_QUERIED
+    if volume_price:
+        if re.search(_VOLUME_RATIO_PATTERN, volume_price, re.IGNORECASE):
+            volume_ratio = EvidenceStatus.HAS_DATA
+        elif volume_price.strip():
+            volume_ratio = EvidenceStatus.FIELD_MISSING
+    elif raw_stock_data_val and isinstance(raw_stock_data_val, str) and "volume_ratio" in raw_stock_data_val:
+        volume_ratio = EvidenceStatus.HAS_DATA
+
+    # 5. Individual fund flow — check fund_flow_individual
+    individual_fund_flow = EvidenceStatus.NOT_QUERIED
+    raw_fund_flow = _unwrap_raw(raw.get("fund_flow_individual"))
+    if raw_fund_flow is not None:
+        if isinstance(raw_fund_flow, str) and len(raw_fund_flow) > 20 and "失败" not in raw_fund_flow:
+            individual_fund_flow = EvidenceStatus.HAS_DATA
+        elif isinstance(raw_fund_flow, str) and "失败" in raw_fund_flow:
+            individual_fund_flow = EvidenceStatus.QUERY_FAILED
+        elif raw_fund_flow:
+            individual_fund_flow = EvidenceStatus.HAS_DATA
+        else:
+            individual_fund_flow = EvidenceStatus.NORMAL_NO_DATA
+    elif smart_money:
+        if re.search(_FUND_FLOW_PATTERN, smart_money, re.IGNORECASE | re.DOTALL):
+            individual_fund_flow = EvidenceStatus.HAS_DATA
+        elif smart_money.strip():
+            individual_fund_flow = EvidenceStatus.FIELD_MISSING
+
+    # 6. LHB (龙虎榜) — check lhb field
+    lhb_status = EvidenceStatus.NOT_QUERIED
+    raw_lhb = _unwrap_raw(raw.get("lhb"))
+    if raw_lhb is not None:
+        if isinstance(raw_lhb, str) and "失败" in raw_lhb:
+            lhb_status = EvidenceStatus.QUERY_FAILED
+        elif isinstance(raw_lhb, str) and ("无" in raw_lhb or "未上榜" in raw_lhb or "未触发" in raw_lhb or len(raw_lhb.strip()) == 0):
+            if "查询未触发" in raw_lhb or "LHB_NOT_QUERIED" in raw_lhb or raw_lhb.strip() == "未触发":
+                lhb_status = EvidenceStatus.NOT_QUERIED  # [G-007]
+            else:
+                lhb_status = EvidenceStatus.NORMAL_NO_DATA
+        elif raw_lhb:
+            lhb_status = EvidenceStatus.HAS_DATA
+        else:
+            lhb_status = EvidenceStatus.NORMAL_NO_DATA
+    elif combined:
+        if _text_match_any(combined, _LHB_FAILED_PATTERNS):
+            lhb_status = EvidenceStatus.QUERY_FAILED
+        elif _text_match_any(combined, _LHB_NORMAL_PATTERNS):
+            lhb_status = EvidenceStatus.NORMAL_NO_DATA
+        elif re.search(r'龙虎榜', combined, re.IGNORECASE):
+            lhb_status = EvidenceStatus.FIELD_MISSING
+
+    # 7. Margin trading (融资融券) — check raw_evidence margin_trading field
+    # [DATA-010] margin_trading_raw_evidence
+    margin_trading = EvidenceStatus.NOT_QUERIED
+    raw_margin = _unwrap_raw(raw.get("margin_trading"))
+    if raw_margin is not None:
+        if isinstance(raw_margin, str) and "MARGIN_HAS_DATA" in raw_margin:
+            margin_trading = EvidenceStatus.HAS_DATA
+        elif isinstance(raw_margin, str) and "MARGIN_FAILED" in raw_margin:
+            margin_trading = EvidenceStatus.QUERY_FAILED
+        elif isinstance(raw_margin, str) and ("MARGIN_NORMAL_NO_DATA" in raw_margin or "暂不可用" in raw_margin):
+            margin_trading = EvidenceStatus.NORMAL_NO_DATA
+        elif isinstance(raw_margin, str) and len(raw_margin) > 20:
+            margin_trading = EvidenceStatus.HAS_DATA
+        elif isinstance(raw_margin, str) and "失败" in raw_margin:
+            margin_trading = EvidenceStatus.QUERY_FAILED
+        elif raw_margin:
+            margin_trading = EvidenceStatus.HAS_DATA
+        else:
+            margin_trading = EvidenceStatus.NORMAL_NO_DATA
+
+    # 8. Announcements — check news data
+    announcements = EvidenceStatus.NOT_QUERIED
+    raw_news = _unwrap_raw(raw.get("news"))
+    if raw_news is not None:
+        if isinstance(raw_news, str) and len(raw_news) > 50:
+            announcements = EvidenceStatus.HAS_DATA
+        elif isinstance(raw_news, str) and "失败" in raw_news:
+            announcements = EvidenceStatus.QUERY_FAILED
+        else:
+            announcements = EvidenceStatus.NORMAL_NO_DATA
+    elif news:
+        if re.search(_ANNOUNCEMENT_PATTERN, news, re.IGNORECASE | re.DOTALL):
+            announcements = EvidenceStatus.HAS_DATA
+        elif news.strip():
+            announcements = EvidenceStatus.FIELD_MISSING
+
+    return {
+        "ohlcv_5d": ohlcv_5d,
+        "volume": volume,
+        "turnover_rate": turnover_rate,
+        "volume_ratio": volume_ratio,
+        "individual_fund_flow": individual_fund_flow,
+        "lhb_status": lhb_status,
+        "margin_trading": margin_trading,
+        "announcements": announcements,
+    }
+
+exec
+/bin/zsh -lc "grep -R \"raw_evidence\\|build_evidence_contract\\|route_to_vendor\" -n tradingagents | sed -n '1,240p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 106ms:
+tradingagents/tradeflow/observe_runner.py:76:        from tradingagents.dataflows.interface import route_to_vendor
+tradingagents/tradeflow/observe_runner.py:77:        raw_json = route_to_vendor("get_realtime_quotes", symbols)
+Binary file tradingagents/tradeflow/__pycache__/observe_runner.cpython-312.pyc matches
+tradingagents/graph/data_collector.py:31:from tradingagents.dataflows.interface import get_last_hit_vendor  # [N-003] cn_astock_raw_evidence
+tradingagents/graph/data_collector.py:32:from tradingagents.dataflows.evidence_contract import (  # [DATA-004] raw_evidence_contract
+tradingagents/graph/data_collector.py:72:def _resolve_data_type_for_key(key: str) -> str:  # [DATA-004] raw_evidence_contract
+tradingagents/graph/data_collector.py:568:    # [G-006] raw_evidence_snapshot
+tradingagents/graph/data_collector.py:607:    def build_raw_evidence(self, ticker: str, trade_date: str) -> Dict[str, Any]:
+tradingagents/graph/data_collector.py:608:        # [G-006] raw_evidence_snapshot
+tradingagents/graph/data_collector.py:609:        # [DATA-004] raw_evidence_contract: upgraded with endpoint/fallback_from/source_url
+tradingagents/graph/data_collector.py:625:        raw_evidence: Dict[str, Any] = {}
+tradingagents/graph/data_collector.py:633:                "endpoint": "",  # [DATA-004] raw_evidence_contract
+tradingagents/graph/data_collector.py:634:                "fallback_from": None,  # [DATA-004] raw_evidence_contract
+tradingagents/graph/data_collector.py:635:                "source_url": None,  # [DATA-004] raw_evidence_contract
+tradingagents/graph/data_collector.py:636:                "field": key,  # [DATA-004] raw_evidence_contract
+tradingagents/graph/data_collector.py:694:            # [DATA-004] raw_evidence_contract: resolve endpoint and fallback info
+tradingagents/graph/data_collector.py:705:            raw_evidence[key] = {
+tradingagents/graph/data_collector.py:726:        return raw_evidence
+tradingagents/graph/trading_graph.py:292:        init_agent_state["metadata"]["raw_evidence"] = self.data_collector.build_raw_evidence(
+tradingagents/graph/trading_graph.py:393:        state["metadata"]["raw_evidence"] = self.data_collector.build_raw_evidence(
+tradingagents/graph/trading_graph.py:415:        if "raw_evidence" not in metadata:
+tradingagents/graph/trading_graph.py:419:                raw_evidence = self.data_collector.build_raw_evidence(ticker, trade_date)
+tradingagents/graph/trading_graph.py:420:                if raw_evidence:
+tradingagents/graph/trading_graph.py:421:                    metadata["raw_evidence"] = raw_evidence
+Binary file tradingagents/graph/__pycache__/trading_graph.cpython-314.pyc matches
+Binary file tradingagents/graph/__pycache__/trading_graph.cpython-312.pyc matches
+Binary file tradingagents/graph/__pycache__/data_collector.cpython-312.pyc matches
+Binary file tradingagents/agents/managers/__pycache__/risk_manager.cpython-312.pyc matches
+Binary file tradingagents/agents/managers/__pycache__/risk_manager.cpython-314.pyc matches
+tradingagents/agents/managers/risk_manager.py:197:            raw_evidence=state.get("metadata", {}).get("raw_evidence"),
+tradingagents/agents/managers/risk_manager.py:230:        # [DATA-P0-603629] astock_source_fallback: use raw_evidence status
+tradingagents/agents/managers/risk_manager.py:232:        # [DATA-004] raw_evidence_contract: enhanced with vendor/endpoint/fallback info
+tradingagents/agents/managers/risk_manager.py:233:        _raw_ev = state.get("metadata", {}).get("raw_evidence") or {}
+tradingagents/agents/managers/risk_manager.py:353:        # [G-008] Enhanced: Extract current price from raw_evidence first
+tradingagents/agents/managers/risk_manager.py:355:        raw_evidence = state.get("metadata", {}).get("raw_evidence") or state.get("raw_evidence")
+tradingagents/agents/managers/risk_manager.py:357:        # Extract current price from raw_evidence (new G-006 format support)
+tradingagents/agents/managers/risk_manager.py:358:        if raw_evidence:
+tradingagents/agents/managers/risk_manager.py:359:            raw_stock_data = raw_evidence.get("stock_data")
+tradingagents/agents/managers/risk_manager.py:361:                # New G-006 format: raw_evidence.stock_data.raw = CSV string
+tradingagents/agents/managers/risk_manager.py:371:                            _logger.info("[G-008] Extracted current price from raw_evidence CSV: %.2f", current_price_from_raw)
+tradingagents/agents/managers/risk_manager.py:375:                # Legacy format: raw_evidence.stock_data = CSV string
+tradingagents/agents/managers/risk_manager.py:384:                            _logger.info("[G-008] Extracted current price from raw_evidence CSV: %.2f", current_price_from_raw)
+tradingagents/agents/managers/risk_manager.py:388:        # Use raw_evidence price if available, otherwise use original method
+tradingagents/agents/utils/fundamental_data_tools.py:3:from tradingagents.dataflows.interface import route_to_vendor
+tradingagents/agents/utils/fundamental_data_tools.py:20:    return route_to_vendor("get_fundamentals", ticker, curr_date)
+tradingagents/agents/utils/fundamental_data_tools.py:39:    return route_to_vendor("get_balance_sheet", ticker, freq, curr_date)
+tradingagents/agents/utils/fundamental_data_tools.py:58:    return route_to_vendor("get_cashflow", ticker, freq, curr_date)
+tradingagents/agents/utils/fundamental_data_tools.py:77:    return route_to_vendor("get_income_statement", ticker, freq, curr_date)
+Binary file tradingagents/agents/utils/__pycache__/readiness_score.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/readiness_score.cpython-314.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/fundamental_data_tools.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/news_data_tools.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/game_theory_tools.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/technical_indicators_tools.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/core_stock_tools.cpython-312.pyc matches
+tradingagents/agents/utils/readiness_score.py:162:def calculate_evidence_coverage_from_contract(raw_evidence: Optional[dict] = None) -> int:
+tradingagents/agents/utils/readiness_score.py:163:    """[DATA-004] raw_evidence_contract: calculate evidence coverage directly from contract.
+tradingagents/agents/utils/readiness_score.py:166:    than text-based regex. Falls back to 0 if no raw_evidence available.
+tradingagents/agents/utils/readiness_score.py:170:    if not raw_evidence:
+tradingagents/agents/utils/readiness_score.py:174:    result = compute_contract_completeness(raw_evidence)
+tradingagents/agents/utils/readiness_score.py:1120:def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) -> dict:
+tradingagents/agents/utils/readiness_score.py:1123:    When *raw_evidence* dict is provided (from DataCollector pool), structured
+tradingagents/agents/utils/readiness_score.py:1130:        raw_evidence: optional dict from DataCollector pool with keys like
+tradingagents/agents/utils/readiness_score.py:1140:        # [G-006] raw_evidence_snapshot: unwrap G-006 structured entries
+tradingagents/agents/utils/readiness_score.py:1153:    raw = raw_evidence or {}
+tradingagents/agents/utils/readiness_score.py:1180:    # 3. Turnover rate — check raw_evidence realtime quote data
+tradingagents/agents/utils/readiness_score.py:1193:    # 4. Volume ratio — check raw_evidence realtime quote data
+tradingagents/agents/utils/readiness_score.py:1245:    # 7. Margin trading (融资融券) — check raw_evidence margin_trading field
+tradingagents/agents/utils/readiness_score.py:1246:    # [DATA-010] margin_trading_raw_evidence
+tradingagents/agents/utils/readiness_score.py:1703:def build_fund_flow_provenance(raw_evidence: Optional[dict], reports: dict) -> dict:
+tradingagents/agents/utils/readiness_score.py:1704:    """[G-007] Build fund flow provenance info from raw_evidence and reports.
+tradingagents/agents/utils/readiness_score.py:1721:    raw = raw_evidence or {}
+tradingagents/agents/utils/readiness_score.py:1800:def build_lhb_provenance(raw_evidence: Optional[dict], reports: dict) -> dict:
+tradingagents/agents/utils/readiness_score.py:1801:    """[G-007] Build LHB provenance info from raw_evidence and reports.
+tradingagents/agents/utils/readiness_score.py:1809:    raw = raw_evidence or {}
+tradingagents/agents/utils/news_data_tools.py:3:from tradingagents.dataflows.interface import route_to_vendor
+tradingagents/agents/utils/news_data_tools.py:21:    return route_to_vendor("get_news", ticker, start_date, end_date)
+tradingagents/agents/utils/news_data_tools.py:39:    return route_to_vendor("get_global_news", curr_date, look_back_days, limit)
+tradingagents/agents/utils/news_data_tools.py:53:    return route_to_vendor("get_insider_transactions", ticker)
+tradingagents/agents/utils/game_theory_tools.py:3:from tradingagents.dataflows.interface import route_to_vendor
+tradingagents/agents/utils/game_theory_tools.py:9:    return route_to_vendor("get_board_fund_flow")
+tradingagents/agents/utils/game_theory_tools.py:17:    return route_to_vendor("get_individual_fund_flow", symbol)
+tradingagents/agents/utils/game_theory_tools.py:28:    return route_to_vendor("get_lhb_detail", symbol, date, force=force)
+tradingagents/agents/utils/game_theory_tools.py:36:    return route_to_vendor("get_zt_pool", date)
+tradingagents/agents/utils/game_theory_tools.py:42:    return route_to_vendor("get_hot_stocks_xq")
+tradingagents/agents/utils/game_theory_tools.py:50:    return route_to_vendor("get_announcements", symbol)
+tradingagents/agents/utils/core_stock_tools.py:3:from tradingagents.dataflows.interface import route_to_vendor
+tradingagents/agents/utils/core_stock_tools.py:22:    return route_to_vendor("get_stock_data", symbol, start_date, end_date)
+tradingagents/agents/utils/technical_indicators_tools.py:3:from tradingagents.dataflows.interface import route_to_vendor
+tradingagents/agents/utils/technical_indicators_tools.py:23:    return route_to_vendor("get_indicators", symbol, indicator, curr_date, look_back_days)
+tradingagents/dataflows/providers/cn_akshare_provider.py:1176:        """获取个股融资融券数据。  # [DATA-010] margin_trading_raw_evidence"""
+tradingagents/dataflows/providers/cn_astock_provider.py:1144:        """个股融资融券 — 东财 datacenter.  # [DATA-010] margin_trading_raw_evidence"""
+Binary file tradingagents/dataflows/providers/__pycache__/cn_astock_provider.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/cn_akshare_provider.cpython-312.pyc matches
+tradingagents/dataflows/interface.py:47:            "get_margin_trading",  # [DATA-010] margin_trading_raw_evidence
+tradingagents/dataflows/interface.py:56:# [N-003] cn_astock_raw_evidence: track which vendor last handled each method
+tradingagents/dataflows/interface.py:155:def route_to_vendor(method: str, *args, **kwargs):
+tradingagents/dataflows/interface.py:186:            _last_hit_vendor[method] = vendor  # [N-003] cn_astock_raw_evidence
+Binary file tradingagents/dataflows/__pycache__/evidence_contract.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/interface.cpython-314.pyc matches
+Binary file tradingagents/dataflows/__pycache__/interface.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/data_source_daily_digest.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/health_check.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/fixture_replay.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/evidence_coverage_audit.cpython-312.pyc matches
+tradingagents/dataflows/data_source_daily_digest.py:10:  2. 按数据类型聚合：行情、实时补丁、资金流、龙虎榜、公告/研报、raw_evidence contract
+tradingagents/dataflows/evidence_contract.py:1:# [DATA-004] raw_evidence_contract
+tradingagents/dataflows/evidence_contract.py:3:raw_evidence 来源契约定义。
+tradingagents/dataflows/evidence_contract.py:24:        build_evidence_contract,
+tradingagents/dataflows/evidence_contract.py:27:    contract = build_evidence_contract("stock_data", raw_value, ...)
+tradingagents/dataflows/evidence_contract.py:28:    score = compute_contract_completeness(raw_evidence)
+tradingagents/dataflows/evidence_contract.py:142:    "margin_trading": "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+tradingagents/dataflows/evidence_contract.py:184:    "margin_trading": ["status", "vendor", "unit"],  # [DATA-010] margin_trading_raw_evidence
+tradingagents/dataflows/evidence_contract.py:188:def compute_contract_completeness(raw_evidence: Dict[str, Any]) -> Dict[str, Any]:
+tradingagents/dataflows/evidence_contract.py:194:        entry = raw_evidence.get(ev_key)
+tradingagents/dataflows/evidence_contract.py:233:def build_data_source_summary(raw_evidence: Dict[str, Any]) -> List[Dict[str, Any]]:
+tradingagents/dataflows/evidence_contract.py:235:    for key in sorted(raw_evidence.keys()):
+tradingagents/dataflows/evidence_contract.py:236:        entry = raw_evidence[key]
+tradingagents/dataflows/health_check.py:24:from .interface import route_to_vendor, _registry, get_vendor, _resolve_vendor_chain, TOOLS_CATEGORIES
+tradingagents/dataflows/health_check.py:199:        result = route_to_vendor(method, *real_args, **real_kwargs)
+tradingagents/dataflows/fixture_replay.py:14:  2. replay runner 将 fixture 模拟为 raw_evidence，输出数据源健康报告
+tradingagents/dataflows/fixture_replay.py:64:FIXTURE_MARGIN_HAS_DATA = "margin_has_data"  # [DATA-010] margin_trading_raw_evidence
+tradingagents/dataflows/fixture_replay.py:65:FIXTURE_MARGIN_FAILED = "margin_failed"  # [DATA-010] margin_trading_raw_evidence
+tradingagents/dataflows/fixture_replay.py:66:FIXTURE_MARGIN_NOT_QUERIED = "margin_not_queried"  # [DATA-010] margin_trading_raw_evidence
+tradingagents/dataflows/fixture_replay.py:98:    raw_evidence: Dict[str, Any]
+tradingagents/dataflows/fixture_replay.py:109:            "raw_evidence": self.raw_evidence,
+tradingagents/dataflows/fixture_replay.py:185:    raw_evidence = {
+tradingagents/dataflows/fixture_replay.py:257:        raw_evidence=raw_evidence,
+tradingagents/dataflows/fixture_replay.py:265:    raw_evidence = {
+tradingagents/dataflows/fixture_replay.py:299:        raw_evidence=raw_evidence,
+tradingagents/dataflows/fixture_replay.py:307:    raw_evidence = {
+tradingagents/dataflows/fixture_replay.py:333:        raw_evidence=raw_evidence,
+tradingagents/dataflows/fixture_replay.py:340:    raw_evidence = {
+tradingagents/dataflows/fixture_replay.py:362:        raw_evidence=raw_evidence,
+tradingagents/dataflows/fixture_replay.py:370:    raw_evidence = {
+tradingagents/dataflows/fixture_replay.py:393:        raw_evidence=raw_evidence,
+tradingagents/dataflows/fixture_replay.py:401:    raw_evidence = {
+tradingagents/dataflows/fixture_replay.py:422:        raw_evidence=raw_evidence,
+tradingagents/dataflows/fixture_replay.py:430:    raw_evidence = {
+tradingagents/dataflows/fixture_replay.py:451:        raw_evidence=raw_evidence,
+tradingagents/dataflows/fixture_replay.py:459:    raw_evidence = {
+tradingagents/dataflows/fixture_replay.py:494:        raw_evidence=raw_evidence,
+tradingagents/dataflows/fixture_replay.py:502:    raw_evidence = {
+tradingagents/dataflows/fixture_replay.py:536:        raw_evidence=raw_evidence,
+tradingagents/dataflows/fixture_replay.py:544:    raw_evidence = {
+tradingagents/dataflows/fixture_replay.py:566:        raw_evidence=raw_evidence,
+tradingagents/dataflows/fixture_replay.py:574:    raw_evidence = {
+tradingagents/dataflows/fixture_replay.py:613:        raw_evidence=raw_evidence,
+tradingagents/dataflows/fixture_replay.py:621:    raw_evidence = {
+tradingagents/dataflows/fixture_replay.py:653:        raw_evidence=raw_evidence,
+tradingagents/dataflows/fixture_replay.py:661:    raw_evidence = {
+tradingagents/dataflows/fixture_replay.py:708:        raw_evidence=raw_evidence,
+tradingagents/dataflows/fixture_replay.py:716:    raw_evidence = {
+tradingagents/dataflows/fixture_replay.py:742:        raw_evidence=raw_evidence,
+tradingagents/dataflows/fixture_replay.py:750:    raw_evidence = {
+tradingagents/dataflows/fixture_replay.py:775:        raw_evidence=raw_evidence,
+tradingagents/dataflows/fixture_replay.py:781:    raw_evidence = {
+tradingagents/dataflows/fixture_replay.py:806:        raw_evidence=raw_evidence,
+tradingagents/dataflows/fixture_replay.py:875:    raw_evidence = fixture.raw_evidence
+tradingagents/dataflows/fixture_replay.py:876:    completeness = compute_contract_completeness(raw_evidence)
+tradingagents/dataflows/fixture_replay.py:891:    for ev_key, entry in raw_evidence.items():
+tradingagents/dataflows/fixture_replay.py:931:                    if len(raw_evidence) == 1:
+tradingagents/dataflows/fixture_replay.py:938:                    if len(raw_evidence) == 1:
+tradingagents/dataflows/evidence_coverage_audit.py:3:raw_evidence 覆盖率审计与候选可信度联动。
+tradingagents/dataflows/evidence_coverage_audit.py:5:把 raw_evidence contract 的覆盖情况转成可读审计结果，并联动 TradeFlow 候选可信度，
+tradingagents/dataflows/evidence_coverage_audit.py:9:  1. audit_raw_evidence(): 审计 raw_evidence 字典，输出覆盖率、关键缺口、stale 字段、
+tradingagents/dataflows/evidence_coverage_audit.py:18:        audit_raw_evidence,
+tradingagents/dataflows/evidence_coverage_audit.py:22:    result = audit_raw_evidence(raw_evidence)
+tradingagents/dataflows/evidence_coverage_audit.py:65:    "margin_trading": "融资融券",  # [DATA-010] margin_trading_raw_evidence
+tradingagents/dataflows/evidence_coverage_audit.py:85:    "margin_trading": "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+tradingagents/dataflows/evidence_coverage_audit.py:177:def audit_raw_evidence(raw_evidence: Dict[str, Any]) -> EvidenceAuditResult:
+tradingagents/dataflows/evidence_coverage_audit.py:178:    """Audit raw_evidence contract coverage.
+tradingagents/dataflows/evidence_coverage_audit.py:184:        raw_evidence: Dict mapping evidence key -> EvidenceContract dict.
+tradingagents/dataflows/evidence_coverage_audit.py:191:    if not raw_evidence:
+tradingagents/dataflows/evidence_coverage_audit.py:194:            "field": "raw_evidence_audit",
+tradingagents/dataflows/evidence_coverage_audit.py:196:            "reason": "raw_evidence 为空",
+tradingagents/dataflows/evidence_coverage_audit.py:200:    contract_completeness = compute_contract_completeness(raw_evidence)
+tradingagents/dataflows/evidence_coverage_audit.py:209:    for ev_key, entry in raw_evidence.items():
+tradingagents/dataflows/evidence_coverage_audit.py:248:        "field": "raw_evidence_audit",
+tradingagents/dataflows/evidence_coverage_audit.py:268:    raw_evidence: Optional[Dict[str, Any]] = None,
+tradingagents/dataflows/evidence_coverage_audit.py:275:    Combines the raw_evidence contract audit with candidate-level metadata
+tradingagents/dataflows/evidence_coverage_audit.py:285:        raw_evidence: Optional raw_evidence dict for deep audit.
+tradingagents/dataflows/evidence_coverage_audit.py:297:    if raw_evidence:
+tradingagents/dataflows/evidence_coverage_audit.py:298:        result.evidence_audit = audit_raw_evidence(raw_evidence)
+tradingagents/dataflows/evidence_coverage_audit.py:487:    lines.append("### raw_evidence 覆盖率审计")
+tradingagents/dataflows/evidence_coverage_audit.py:573:        audits: List of EvidenceAuditResult from raw_evidence audits.
+tradingagents/dataflows/evidence_coverage_audit.py:597:        lines.append("### raw_evidence 审计汇总")
+
+exec
+/bin/zsh -lc "sed -n '600,730p' tradingagents/graph/data_collector.py && sed -n '50,90p' tradingagents/graph/data_collector.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        if isinstance(raw_value, str):
+            lines = raw_value.strip().split("\n")
+            return max(0, len(lines) - 1) if len(lines) > 1 else 0
+        if isinstance(raw_value, (list, dict)):
+            return len(raw_value)
+        return 1
+
+    def build_raw_evidence(self, ticker: str, trade_date: str) -> Dict[str, Any]:
+        # [G-006] raw_evidence_snapshot
+        # [DATA-004] raw_evidence_contract: upgraded with endpoint/fallback_from/source_url
+        pool = self.get(ticker, trade_date)
+        if not pool:
+            return {}
+
+        now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+        data_source_keys = [
+            "stock_data", "news", "global_news",
+            "fund_flow_board", "fund_flow_individual", "lhb",
+            "fundamentals", "balance_sheet", "cashflow", "income_statement",
+            "insider_transactions", "zt_pool", "hot_stocks",
+            "indicators", "vpa_indicators",
+            "announcements",  # [DATA-P0-603629] astock_source_fallback
+        ]
+
+        raw_evidence: Dict[str, Any] = {}
+        for key in data_source_keys:
+            raw_value = pool.get(key)
+            status = self._infer_source_status(raw_value)
+
+            entry: Dict[str, Any] = {
+                "status": status,
+                "vendor": "akshare",
+                "endpoint": "",  # [DATA-004] raw_evidence_contract
+                "fallback_from": None,  # [DATA-004] raw_evidence_contract
+                "source_url": None,  # [DATA-004] raw_evidence_contract
+                "field": key,  # [DATA-004] raw_evidence_contract
+                "as_of": trade_date,
+                "fetched_at": now_iso,
+                "record_count": self._count_records(raw_value),
+                "unit": None,
+                "error": None,
+                "is_realtime_patched": False,
+            }
+
+            data_type = _resolve_data_type_for_key(key)  # [DATA-004]
+
+            if key == "stock_data" and isinstance(raw_value, str):
+                actual_vendor = get_last_hit_vendor("get_stock_data")
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+                if "is_realtime_patched=True" in raw_value:
+                    entry["is_realtime_patched"] = True
+                    for line in raw_value.split("\n"):
+                        if "source=" in line and "[G-005]" in line:
+                            parts = line.split("source=")
+                            if len(parts) > 1:
+                                entry["vendor"] = parts[1].split(",")[0].strip()
+                        if "quote_time=" in line and "[G-005]" in line:
+                            parts = line.split("quote_time=")
+                            if len(parts) > 1:
+                                entry["as_of"] = parts[1].strip()
+                if "adjustment=" in raw_value:  # [DATA-P0-603629] astock_source_fallback
+                    for line in raw_value.split("\n"):
+                        if "adjustment=" in line and "[DATA-P0-603629]" in line:
+                            parts = line.split("adjustment=")
+                            if len(parts) > 1:
+                                entry["adjustment"] = parts[1].strip().split("\n")[0].strip()
+
+            if key == "fund_flow_individual":
+                entry["unit"] = "万元"
+                entry["source_type"] = "individual_fund_flow"
+                entry["unit_verified"] = entry["unit"] is not None
+                actual_vendor = get_last_hit_vendor("get_individual_fund_flow")  # [DATA-P0-603629]
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key == "fund_flow_board":
+                entry["source_type"] = "board_fund_flow"
+                actual_vendor = get_last_hit_vendor("get_board_fund_flow")  # [DATA-P0-603629]
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key == "lhb":
+                entry["query_mode"] = pool.get("_lhb_query_mode", "on_demand")
+                entry["force_reason"] = pool.get("_lhb_force_reason")  # [DATA-P0-603629]
+                actual_vendor = get_last_hit_vendor("get_lhb_detail")  # [DATA-P0-603629]
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key in ("stock_data",):
+                entry["unit"] = "股"
+            elif key == "announcements":  # [DATA-P0-603629] astock_source_fallback
+                actual_vendor = get_last_hit_vendor("get_announcements")
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+
+            # [DATA-004] raw_evidence_contract: resolve endpoint and fallback info
+            entry["endpoint"] = _resolve_endpoint_for_vendor(
+                entry["vendor"], data_type
+            )
+            entry["fallback_from"] = _resolve_fallback_for_vendor(
+                entry["vendor"], data_type
+            )
+
+            if status == "FAILED" and isinstance(raw_value, str):
+                entry["error"] = raw_value[:200]
+
+            raw_evidence[key] = {
+                "raw": raw_value,
+                "field": entry["field"],  # [DATA-004]
+                "status": entry["status"],
+                "vendor": entry["vendor"],
+                "endpoint": entry["endpoint"],  # [DATA-004]
+                "as_of": entry["as_of"],
+                "fetched_at": entry["fetched_at"],
+                "record_count": entry["record_count"],
+                "unit": entry["unit"],
+                "error": entry["error"],
+                "fallback_from": entry["fallback_from"],  # [DATA-004]
+                "source_url": entry["source_url"],  # [DATA-004]
+                "is_realtime_patched": entry["is_realtime_patched"],
+                "source_type": entry.get("source_type"),
+                "unit_verified": entry.get("unit_verified", None),
+                "query_mode": entry.get("query_mode", None),
+                "adjustment": entry.get("adjustment", None),  # [DATA-P0-603629] astock_source_fallback
+                "force_reason": entry.get("force_reason", None),  # [DATA-P0-603629]
+            }
+
+        return raw_evidence
+
+
+_EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
+    "stock_data": "ohlcv",
+    "news": "news",
+    "global_news": "global_news",
+    "fund_flow_board": "board_fund_flow",
+    "fund_flow_individual": "fund_flow",
+    "lhb": "lhb",
+    "fundamentals": "financials",
+    "balance_sheet": "financials",
+    "cashflow": "financials",
+    "income_statement": "financials",
+    "insider_transactions": "insider",
+    "zt_pool": "zt_pool",
+    "hot_stocks": "hot_stocks",
+    "indicators": "ohlcv",
+    "vpa_indicators": "ohlcv",
+    "announcements": "notice",
+}
+
+
+def _resolve_data_type_for_key(key: str) -> str:  # [DATA-004] raw_evidence_contract
+    return _EVIDENCE_KEY_TO_DATA_TYPE.get(key, "")
+
+
+def _resolve_endpoint_for_vendor(vendor: str, data_type: str) -> str:  # [DATA-004]
+    if not data_type:
+        return ""
+    return _resolve_endpoint_contract(vendor, data_type)
+
+
+def _resolve_fallback_for_vendor(vendor: str, data_type: str) -> Optional[str]:  # [DATA-004]
+    if not data_type:
+        return None
+    return _resolve_fallback_info_contract(vendor, data_type)
+
+
+def _parse_csv_to_dataframe(raw_csv: str) -> Optional[pd.DataFrame]:
+    """Parse raw CSV string into a normalized OHLCV DataFrame.
+
+
+exec
+/bin/zsh -lc "sed -n '1,140p' tradingagents/graph/data_collector.py && sed -n '500,610p' tradingagents/graph/data_collector.py && grep -R \"get_announcements\\|fund_flow_individual\\|lhb\" -n tradingagents/graph/data_collector.py tradingagents/agents | sed -n '1,160p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""DataCollector: fetch all data once, serve windowed views to analyst agents."""
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
+import threading
+import time
+import pandas as pd
+from stockstats import wrap
+import io
+import logging
+
+from tradingagents.agents.utils.agent_utils import (
+    get_stock_data,
+    get_indicators,
+    get_fundamentals,
+    get_balance_sheet,
+    get_cashflow,
+    get_income_statement,
+    get_news,
+    get_global_news,
+    get_insider_transactions,
+    get_board_fund_flow,
+    get_individual_fund_flow,
+    get_lhb_detail,
+    get_zt_pool,
+    get_hot_stocks_xq,
+    get_announcements,
+)
+from tradingagents.dataflows.interface import get_last_hit_vendor  # [N-003] cn_astock_raw_evidence
+from tradingagents.dataflows.evidence_contract import (  # [DATA-004] raw_evidence_contract
+    resolve_data_type as _resolve_data_type_contract,
+    resolve_endpoint as _resolve_endpoint_contract,
+    resolve_fallback_info as _resolve_fallback_info_contract,
+)
+
+INDICATORS = [
+    "close_50_sma", "close_200_sma", "close_10_ema",
+    "rsi", "macd", "boll", "boll_ub", "boll_lb", "atr", "vwma",
+]
+SHORT_DAYS = 14
+LONG_DAYS = 90
+
+import numpy as np
+
+_OHLCV_COLS = ["date", "open", "high", "low", "close", "volume"]
+
+_logger = logging.getLogger(__name__)
+
+
+_EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
+    "stock_data": "ohlcv",
+    "news": "news",
+    "global_news": "global_news",
+    "fund_flow_board": "board_fund_flow",
+    "fund_flow_individual": "fund_flow",
+    "lhb": "lhb",
+    "fundamentals": "financials",
+    "balance_sheet": "financials",
+    "cashflow": "financials",
+    "income_statement": "financials",
+    "insider_transactions": "insider",
+    "zt_pool": "zt_pool",
+    "hot_stocks": "hot_stocks",
+    "indicators": "ohlcv",
+    "vpa_indicators": "ohlcv",
+    "announcements": "notice",
+}
+
+
+def _resolve_data_type_for_key(key: str) -> str:  # [DATA-004] raw_evidence_contract
+    return _EVIDENCE_KEY_TO_DATA_TYPE.get(key, "")
+
+
+def _resolve_endpoint_for_vendor(vendor: str, data_type: str) -> str:  # [DATA-004]
+    if not data_type:
+        return ""
+    return _resolve_endpoint_contract(vendor, data_type)
+
+
+def _resolve_fallback_for_vendor(vendor: str, data_type: str) -> Optional[str]:  # [DATA-004]
+    if not data_type:
+        return None
+    return _resolve_fallback_info_contract(vendor, data_type)
+
+
+def _parse_csv_to_dataframe(raw_csv: str) -> Optional[pd.DataFrame]:
+    """Parse raw CSV string into a normalized OHLCV DataFrame.
+
+    Returns None if parsing fails or the CSV is too short/empty.
+    """
+    if not isinstance(raw_csv, str) or len(raw_csv) <= 50:
+        return None
+    try:
+        df = pd.read_csv(io.StringIO(raw_csv), on_bad_lines='skip', comment='#')
+    except Exception:
+        return None
+    if df.empty:
+        return None
+    cols_map = {c.lower(): c for c in df.columns}
+    rename_dict = {}
+    for target in _OHLCV_COLS:
+        if target in cols_map:
+            rename_dict[cols_map[target]] = target
+    df = df.rename(columns=rename_dict)
+    return df
+
+
+# ── VPA (Volume Price Analysis) 预计算 ──────────────────────────
+
+
+def _compute_vpa_indicators(df: pd.DataFrame, window: int = 20) -> str:
+    """Pre-compute Volume Price Analysis indicators from OHLCV DataFrame.
+
+    Returns a human-readable text block for the VPA analyst agent.
+    All numerical comparisons are done here so the LLM only needs to
+    interpret the results, not do arithmetic.
+    """
+    required = {"open", "high", "low", "close", "volume"}
+    if not required.issubset(set(df.columns)):
+        return "VPA 数据不足：缺少 OHLCV 列"
+
+    df = df.copy()
+    df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
+    df["open"] = pd.to_numeric(df["open"], errors="coerce")
+    df["high"] = pd.to_numeric(df["high"], errors="coerce")
+    df["low"] = pd.to_numeric(df["low"], errors="coerce")
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df = df.dropna(subset=["open", "high", "low", "close", "volume"])
+
+    if len(df) < window + 5:
+        return "VPA 数据不足：历史 K 线数量不够"
+
+    # ── 派生指标 ──
+    df["vol_ma"] = df["volume"].rolling(window).mean()
+    df["volume_ratio"] = df["volume"] / df["vol_ma"]
+
+    hl_range = df["high"] - df["low"]
+    df["bar_spread"] = hl_range / df["close"]  # 实体相对大小
+        results["vpa_indicators"] = f"VPA 计算失败：{e}"
+
+    print(f"[Timer] Total Data Collection for {ticker} took {time.time() - fetch_start:.2f}s")
+    return results
+
+
+class DataCollector:
+    """Collect and cache data, thread-safe and shareable across jobs."""
+
+    def __init__(self):
+        self._cache: Dict[str, Dict[str, Any]] = {}
+        self._locks: Dict[str, threading.Lock] = {}
+        self._meta_lock = threading.Lock()
+        self._refcounts: Dict[str, int] = {}
+
+    def _get_key_lock(self, key: str) -> threading.Lock:
+        with self._meta_lock:
+            if key not in self._locks:
+                self._locks[key] = threading.Lock()
+            return self._locks[key]
+
+    def collect(self, ticker: str, trade_date: str, horizons: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Fetch all data and store in cache.
+
+        Thread-safe: concurrent calls for the same ticker+date will block
+        on a per-key lock, so data is fetched only once.
+        """
+        key = make_cache_key(ticker, trade_date)
+        key_lock = self._get_key_lock(key)
+        with key_lock:
+            if key not in self._cache:
+                self._cache[key] = _fetch_all(ticker, trade_date)
+        return self._cache[key]
+
+    def get(self, ticker: str, trade_date: str) -> Optional[Dict[str, Any]]:
+        """Retrieve cached pool, or None if not collected yet."""
+        return self._cache.get(make_cache_key(ticker, trade_date))
+
+    def get_window(
+        self,
+        pool: Dict[str, Any],
+        horizon: str,
+        trade_date: str,
+    ) -> Dict[str, Any]:
+        """Return pool copy annotated with horizon window metadata."""
+        days = SHORT_DAYS if horizon == "short" else LONG_DAYS
+        result = dict(pool)
+        result["_data_window"] = f"{days}天"
+        result["_horizon"] = horizon
+        return result
+
+    def ref(self, ticker: str, trade_date: str) -> None:
+        """Increment reference count (call before using cached data)."""
+        key = make_cache_key(ticker, trade_date)
+        with self._meta_lock:
+            self._refcounts[key] = self._refcounts.get(key, 0) + 1
+
+    def evict(self, ticker: str, trade_date: str) -> None:
+        """Decrement refcount and remove cached data when no one needs it."""
+        key = make_cache_key(ticker, trade_date)
+        with self._meta_lock:
+            count = self._refcounts.get(key, 1) - 1
+            if count <= 0:
+                self._cache.pop(key, None)
+                self._refcounts.pop(key, None)
+            else:
+                self._refcounts[key] = count
+
+    # [G-006] raw_evidence_snapshot
+    @staticmethod
+    def _infer_source_status(raw_value: Any) -> str:
+        if raw_value is None:
+            return "NOT_QUERIED"
+        if isinstance(raw_value, str):
+            val = raw_value.strip()
+            if not val:
+                return "NOT_QUERIED"
+            if "获取失败" in val or "不可用" in val or "error" in val.lower():
+                return "FAILED"
+            if val.startswith("N/A") or val == "VPA 数据不足" or val == "VPA 计算失败":
+                return "NORMAL_NO_DATA"
+            if "[G-007] LHB_NOT_QUERIED" in val or "查询未触发" in val:
+                return "NOT_QUERIED"
+            if "[G-007] LHB_NORMAL_NO_DATA" in val or "无龙虎榜数据" in val:
+                return "NORMAL_NO_DATA"
+            if "[G-007] LHB_FAILED" in val:
+                return "FAILED"
+            if "[G-007] LHB_HAS_DATA" in val or "龙虎榜明细" in val:
+                return "HAS_DATA"
+            return "HAS_DATA"
+        if isinstance(raw_value, dict):
+            return "HAS_DATA" if raw_value else "NOT_QUERIED"
+        if isinstance(raw_value, list):
+            return "HAS_DATA" if raw_value else "NORMAL_NO_DATA"
+        return "HAS_DATA"
+
+    @staticmethod
+    def _count_records(raw_value: Any) -> int:
+        if raw_value is None:
+            return 0
+        if isinstance(raw_value, str):
+            lines = raw_value.strip().split("\n")
+            return max(0, len(lines) - 1) if len(lines) > 1 else 0
+        if isinstance(raw_value, (list, dict)):
+            return len(raw_value)
+        return 1
+
+    def build_raw_evidence(self, ticker: str, trade_date: str) -> Dict[str, Any]:
+        # [G-006] raw_evidence_snapshot
+        # [DATA-004] raw_evidence_contract: upgraded with endpoint/fallback_from/source_url
+        pool = self.get(ticker, trade_date)
+tradingagents/graph/data_collector.py:26:    get_lhb_detail,
+tradingagents/graph/data_collector.py:29:    get_announcements,
+tradingagents/graph/data_collector.py:57:    "fund_flow_individual": "fund_flow",
+tradingagents/graph/data_collector.py:58:    "lhb": "lhb",
+tradingagents/graph/data_collector.py:333:def _should_force_lhb(news_text: str, stock_data_text: str) -> bool:
+tradingagents/graph/data_collector.py:362:def _compute_lhb_force_decision(
+tradingagents/graph/data_collector.py:376:    anomaly_cond = _should_force_lhb(news_text, stock_data_text)
+tradingagents/graph/data_collector.py:388:            return (True, "announcement_mentions_lhb")
+tradingagents/graph/data_collector.py:410:        "fund_flow_individual": (get_individual_fund_flow, {"symbol": ticker}),
+tradingagents/graph/data_collector.py:411:        "lhb": (get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": False}),
+tradingagents/graph/data_collector.py:415:        "announcements": (get_announcements, {"symbol": ticker}),  # [DATA-P0-603629] astock_source_fallback
+tradingagents/graph/data_collector.py:437:    results["_lhb_query_mode"] = "on_demand"  # [G-007] default: force=False
+tradingagents/graph/data_collector.py:438:    ff_text = results.get("fund_flow_individual", "") or ""
+tradingagents/graph/data_collector.py:441:    lhb_force_needed, lhb_force_reason = _compute_lhb_force_decision(
+tradingagents/graph/data_collector.py:446:    if lhb_force_needed:
+tradingagents/graph/data_collector.py:447:        print(f"  [E-003] 龙虎榜强制查询触发 (reason={lhb_force_reason})，升级 LHB force=True")
+tradingagents/graph/data_collector.py:448:        lhb_forced = _safe(get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": True})
+tradingagents/graph/data_collector.py:449:        results["lhb"] = lhb_forced
+tradingagents/graph/data_collector.py:450:        results["_lhb_query_mode"] = "forced"  # [G-007] fund_lhb_provenance
+tradingagents/graph/data_collector.py:451:        results["_lhb_force_reason"] = lhb_force_reason  # [DATA-P0-603629]
+tradingagents/graph/data_collector.py:618:            "fund_flow_board", "fund_flow_individual", "lhb",
+tradingagents/graph/data_collector.py:669:            if key == "fund_flow_individual":
+tradingagents/graph/data_collector.py:681:            elif key == "lhb":
+tradingagents/graph/data_collector.py:682:                entry["query_mode"] = pool.get("_lhb_query_mode", "on_demand")
+tradingagents/graph/data_collector.py:683:                entry["force_reason"] = pool.get("_lhb_force_reason")  # [DATA-P0-603629]
+tradingagents/graph/data_collector.py:684:                actual_vendor = get_last_hit_vendor("get_lhb_detail")  # [DATA-P0-603629]
+tradingagents/graph/data_collector.py:690:                actual_vendor = get_last_hit_vendor("get_announcements")
+Binary file tradingagents/agents/managers/__pycache__/risk_manager.cpython-312.pyc matches
+Binary file tradingagents/agents/managers/__pycache__/risk_manager.cpython-314.pyc matches
+tradingagents/agents/managers/risk_manager.py:206:            lhb_status=evidence_statuses["lhb_status"],
+tradingagents/agents/managers/risk_manager.py:237:            ("fund_flow_individual", "主力资金"),
+tradingagents/agents/utils/agent_utils.py:24:    get_lhb_detail,
+tradingagents/agents/utils/agent_utils.py:27:    get_announcements,  # [DATA-P0-603629] astock_source_fallback
+Binary file tradingagents/agents/utils/__pycache__/readiness_score.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/readiness_score.cpython-314.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/game_theory_tools.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/agent_utils.cpython-312.pyc matches
+Binary file tradingagents/agents/utils/__pycache__/agent_utils.cpython-314.pyc matches
+tradingagents/agents/utils/readiness_score.py:184:    lhb_status: str = "not_queried",
+tradingagents/agents/utils/readiness_score.py:197:        individual_fund_flow, lhb_status, margin_trading, announcements,
+tradingagents/agents/utils/readiness_score.py:1131:                      'stock_data', 'fund_flow_individual', 'lhb', etc.
+tradingagents/agents/utils/readiness_score.py:1204:    # 5. Individual fund flow — check fund_flow_individual
+tradingagents/agents/utils/readiness_score.py:1206:    raw_fund_flow = _unwrap_raw(raw.get("fund_flow_individual"))
+tradingagents/agents/utils/readiness_score.py:1222:    # 6. LHB (龙虎榜) — check lhb field
+tradingagents/agents/utils/readiness_score.py:1223:    lhb_status = EvidenceStatus.NOT_QUERIED
+tradingagents/agents/utils/readiness_score.py:1224:    raw_lhb = _unwrap_raw(raw.get("lhb"))
+tradingagents/agents/utils/readiness_score.py:1225:    if raw_lhb is not None:
+tradingagents/agents/utils/readiness_score.py:1226:        if isinstance(raw_lhb, str) and "失败" in raw_lhb:
+tradingagents/agents/utils/readiness_score.py:1227:            lhb_status = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1228:        elif isinstance(raw_lhb, str) and ("无" in raw_lhb or "未上榜" in raw_lhb or "未触发" in raw_lhb or len(raw_lhb.strip()) == 0):
+tradingagents/agents/utils/readiness_score.py:1229:            if "查询未触发" in raw_lhb or "LHB_NOT_QUERIED" in raw_lhb or raw_lhb.strip() == "未触发":
+tradingagents/agents/utils/readiness_score.py:1230:                lhb_status = EvidenceStatus.NOT_QUERIED  # [G-007]
+tradingagents/agents/utils/readiness_score.py:1232:                lhb_status = EvidenceStatus.NORMAL_NO_DATA
+tradingagents/agents/utils/readiness_score.py:1233:        elif raw_lhb:
+tradingagents/agents/utils/readiness_score.py:1234:            lhb_status = EvidenceStatus.HAS_DATA
+tradingagents/agents/utils/readiness_score.py:1236:            lhb_status = EvidenceStatus.NORMAL_NO_DATA
+tradingagents/agents/utils/readiness_score.py:1239:            lhb_status = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1241:            lhb_status = EvidenceStatus.NORMAL_NO_DATA
+tradingagents/agents/utils/readiness_score.py:1243:            lhb_status = EvidenceStatus.FIELD_MISSING
+tradingagents/agents/utils/readiness_score.py:1287:        "lhb_status": lhb_status,
+tradingagents/agents/utils/readiness_score.py:1693:# ── [G-007] fund_lhb_provenance ──────────────────────────────────────────
+tradingagents/agents/utils/readiness_score.py:1753:    individual_status = _status_from_g006(raw.get("fund_flow_individual"))
+tradingagents/agents/utils/readiness_score.py:1756:        structured = raw.get("fund_flow_individual")
+tradingagents/agents/utils/readiness_score.py:1759:        raw_ff = _unwrap_legacy(raw.get("fund_flow_individual"))
+tradingagents/agents/utils/readiness_score.py:1800:def build_lhb_provenance(raw_evidence: Optional[dict], reports: dict) -> dict:
+tradingagents/agents/utils/readiness_score.py:1811:    lhb_status = "NOT_QUERIED"
+tradingagents/agents/utils/readiness_score.py:1814:    raw_lhb_entry = raw.get("lhb")
+tradingagents/agents/utils/readiness_score.py:1816:    if isinstance(raw_lhb_entry, dict) and "status" in raw_lhb_entry:
+tradingagents/agents/utils/readiness_score.py:1817:        lhb_status = raw_lhb_entry.get("status", "NOT_QUERIED")
+tradingagents/agents/utils/readiness_score.py:1818:        query_mode = raw_lhb_entry.get("query_mode", "not_queried") or "not_queried"
+tradingagents/agents/utils/readiness_score.py:1820:        raw_lhb_val = raw_lhb_entry
+tradingagents/agents/utils/readiness_score.py:1821:        if isinstance(raw_lhb_entry, dict) and "raw" in raw_lhb_entry:
+tradingagents/agents/utils/readiness_score.py:1822:            raw_lhb_val = raw_lhb_entry["raw"]
+tradingagents/agents/utils/readiness_score.py:1823:        if raw_lhb_val is None:
+tradingagents/agents/utils/readiness_score.py:1824:            lhb_status = "NOT_QUERIED"
+tradingagents/agents/utils/readiness_score.py:1825:        elif isinstance(raw_lhb_val, str):
+tradingagents/agents/utils/readiness_score.py:1826:            val = raw_lhb_val.strip()
+tradingagents/agents/utils/readiness_score.py:1828:                lhb_status = "NOT_QUERIED"
+tradingagents/agents/utils/readiness_score.py:1830:                lhb_status = "FAILED"
+tradingagents/agents/utils/readiness_score.py:1832:                lhb_status = "NOT_QUERIED"
+tradingagents/agents/utils/readiness_score.py:1834:                lhb_status = "NORMAL_NO_DATA"
+tradingagents/agents/utils/readiness_score.py:1836:                lhb_status = "HAS_DATA"
+tradingagents/agents/utils/readiness_score.py:1838:                lhb_status = "NOT_QUERIED"
+tradingagents/agents/utils/readiness_score.py:1840:            lhb_status = "HAS_DATA" if raw_lhb_val else "NOT_QUERIED"
+tradingagents/agents/utils/readiness_score.py:1842:    if lhb_status == "NOT_QUERIED":
+tradingagents/agents/utils/readiness_score.py:1845:    elif lhb_status in ("NORMAL_NO_DATA", "HAS_DATA", "FAILED"):
+tradingagents/agents/utils/readiness_score.py:1856:    display_text = display_map.get(lhb_status, f"龙虎榜状态未知: {lhb_status}")
+tradingagents/agents/utils/readiness_score.py:1859:        "status": lhb_status,
+tradingagents/agents/utils/readiness_score.py:1865:def format_fund_lhb_provenance(fund_prov: dict, lhb_prov: dict) -> str:
+tradingagents/agents/utils/readiness_score.py:1884:    lhb_icon = {"HAS_DATA": "✅", "NOT_QUERIED": "⬜", "NORMAL_NO_DATA": "⬜", "FAILED": "❌"}.get(lhb_prov['status'], "⬜")
+tradingagents/agents/utils/readiness_score.py:1885:    lines.append(f"  龙虎榜: {lhb_icon} {lhb_prov['display_text']}")
+tradingagents/agents/utils/game_theory_tools.py:21:def get_lhb_detail(
+tradingagents/agents/utils/game_theory_tools.py:28:    return route_to_vendor("get_lhb_detail", symbol, date, force=force)
+tradingagents/agents/utils/game_theory_tools.py:46:def get_announcements(
+tradingagents/agents/utils/game_theory_tools.py:50:    return route_to_vendor("get_announcements", symbol)
+Binary file tradingagents/agents/analysts/__pycache__/smart_money_analyst.cpython-312.pyc matches
+tradingagents/agents/analysts/smart_money_analyst.py:75:def _should_force_lhb_from_news(news_text: str, stock_data_text: str) -> bool:
+tradingagents/agents/analysts/smart_money_analyst.py:117:        lhb_trigger_note = ""
+tradingagents/agents/analysts/smart_money_analyst.py:120:            fund_flow = pool.get("fund_flow_individual", "无数据")
+tradingagents/agents/analysts/smart_money_analyst.py:121:            lhb_raw = pool.get("lhb", "无数据")
+tradingagents/agents/analysts/smart_money_analyst.py:128:            anomaly_cond = _should_force_lhb_from_news(news_text, stock_text)
+tradingagents/agents/analysts/smart_money_analyst.py:135:                lhb_trigger_note = f"[LHB触发: force=True, 原因={'+'.join(reasons)}]"
+tradingagents/agents/analysts/smart_money_analyst.py:137:                lhb_trigger_note = f"[LHB触发: force=False, 原因=无触发条件]"
+tradingagents/agents/analysts/smart_money_analyst.py:139:            if lhb_raw and lhb_raw not in ("无数据", ""):
+tradingagents/agents/analysts/smart_money_analyst.py:140:                lhb = f"{lhb_trigger_note}\n{lhb_raw}"
+tradingagents/agents/analysts/smart_money_analyst.py:142:                lhb = f"{lhb_trigger_note}\n无龙虎榜数据（可能未上榜或查询未返回数据）"
+tradingagents/agents/analysts/smart_money_analyst.py:145:                get_individual_fund_flow, get_lhb_detail, get_indicators,
+tradingagents/agents/analysts/smart_money_analyst.py:153:            anomaly_cond = _should_force_lhb_from_news(
+tradingagents/agents/analysts/smart_money_analyst.py:164:                lhb = await _safe(get_lhb_detail, {
+tradingagents/agents/analysts/smart_money_analyst.py:167:                lhb_trigger_note = f"[LHB触发: force=True, 原因={'+'.join(reasons)}]"
+tradingagents/agents/analysts/smart_money_analyst.py:168:                lhb = f"{lhb_trigger_note}\n{lhb}"
+tradingagents/agents/analysts/smart_money_analyst.py:170:                lhb_trigger_note = f"[LHB触发: force=False, 原因=无触发条件]"
+tradingagents/agents/analysts/smart_money_analyst.py:171:                lhb = f"{lhb_trigger_note}\n近期无明显异动，龙虎榜查询已跳过"
+tradingagents/agents/analysts/smart_money_analyst.py:188:                f"【龙虎榜数据】\n{lhb}\n\n"
+
+exec
+/bin/zsh -lc "sed -n '380,470p' tradingagents/graph/data_collector.py && sed -n '1,80p' tradingagents/agents/utils/agent_utils.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    if ff_anomaly:
+        return (True, "fund_flow_anomaly")
+    if anomaly_cond:
+        return (True, "anomaly_condition")
+
+    if announcements_text:
+        import re
+        if re.search(r"龙虎榜", announcements_text):
+            return (True, "announcement_mentions_lhb")
+
+    return (False, "")
+
+
+def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
+    """Fetch all data sources in parallel.
+
+    Always fetches full data including financial statements, regardless of horizon.
+    The horizon only affects the analysis window, not data collection.
+    """
+    lookback = LONG_DAYS
+    end_dt = datetime.strptime(trade_date, "%Y-%m-%d")
+    # 为了计算指标准确（如 200 SMA），需要比分析窗口更长的历史数据
+    fetch_lookback = 365
+    start_str = (end_dt - timedelta(days=fetch_lookback)).strftime("%Y-%m-%d")
+
+    tasks: Dict[str, tuple] = {
+        "stock_data": (get_stock_data, {"symbol": ticker, "start_date": start_str, "end_date": trade_date}),
+        "news": (get_news, {"ticker": ticker, "start_date": (end_dt - timedelta(days=lookback)).strftime("%Y-%m-%d"), "end_date": trade_date}),
+        "global_news": (get_global_news, {"curr_date": trade_date, "look_back_days": lookback, "limit": 30}),
+        "fund_flow_board": (get_board_fund_flow, {}),
+        "fund_flow_individual": (get_individual_fund_flow, {"symbol": ticker}),
+        "lhb": (get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": False}),
+        "insider_transactions": (get_insider_transactions, {"ticker": ticker}),
+        "zt_pool": (get_zt_pool, {"date": trade_date}),
+        "hot_stocks": (get_hot_stocks_xq, {}),
+        "announcements": (get_announcements, {"symbol": ticker}),  # [DATA-P0-603629] astock_source_fallback
+    }
+
+    # 财务报表类数据始终拉取，Research Manager 根据 horizon 自行判断权重
+    tasks.update({
+        "fundamentals": (get_fundamentals, {"ticker": ticker, "curr_date": trade_date}),
+        "balance_sheet": (get_balance_sheet, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
+        "cashflow": (get_cashflow, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
+        "income_statement": (get_income_statement, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
+    })
+
+    results: Dict[str, Any] = {}
+    fetch_start = time.time()
+    # 减少并发池大小，避免被反爬
+    with ThreadPoolExecutor(max_workers=min(10, len(tasks))) as executor:
+        future_to_key = {executor.submit(_safe, tool, payload): key for key, (tool, payload) in tasks.items()}
+        for future in future_to_key:
+            results[future_to_key[future]] = future.result()
+
+    # ── [E-003] 资金流异动时自动升级 LHB 查询 ─────────────────────────
+    # [DATA-P0-603629] astock_source_fallback: LHB force conditions expanded
+    # [DATA-P1-LHB-FUND-DECOUPLE] 资金流失败不阻断异常条件 force 检查
+    results["_lhb_query_mode"] = "on_demand"  # [G-007] default: force=False
+    ff_text = results.get("fund_flow_individual", "") or ""
+    news_text = results.get("news", "") or ""
+
+    lhb_force_needed, lhb_force_reason = _compute_lhb_force_decision(
+        ff_text, news_text, results.get("stock_data", ""),
+        results.get("announcements", ""),
+    )
+
+    if lhb_force_needed:
+        print(f"  [E-003] 龙虎榜强制查询触发 (reason={lhb_force_reason})，升级 LHB force=True")
+        lhb_forced = _safe(get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": True})
+        results["lhb"] = lhb_forced
+        results["_lhb_query_mode"] = "forced"  # [G-007] fund_lhb_provenance
+        results["_lhb_force_reason"] = lhb_force_reason  # [DATA-P0-603629]
+
+    # ── Parse CSV once, reuse for indicators and VPA ──────────────────
+    raw_csv = results.get("stock_data", "")
+    df = _parse_csv_to_dataframe(raw_csv)
+
+    # ── 核心加速：本地计算所有技术指标 ──────────────────
+    indicators_res = {}
+    try:
+        if df is not None and "close" in df.columns:
+            ss = wrap(df.copy())
+
+            calc_map = {
+                "close_50_sma": "close_50_sma",
+                "close_200_sma": "close_200_sma",
+                "close_10_ema": "close_10_ema",
+                "rsi": "rsi_14",
+                "macd": "macd",
+                "boll": "close_20_sma",
+                "boll_ub": "boll_ub",
+from langchain_core.messages import HumanMessage, RemoveMessage
+
+# Import tools from separate utility files
+from tradingagents.agents.utils.core_stock_tools import (
+    get_stock_data
+)
+from tradingagents.agents.utils.technical_indicators_tools import (
+    get_indicators
+)
+from tradingagents.agents.utils.fundamental_data_tools import (
+    get_fundamentals,
+    get_balance_sheet,
+    get_cashflow,
+    get_income_statement
+)
+from tradingagents.agents.utils.news_data_tools import (
+    get_news,
+    get_insider_transactions,
+    get_global_news
+)
+from tradingagents.agents.utils.game_theory_tools import (
+    get_board_fund_flow,
+    get_individual_fund_flow,
+    get_lhb_detail,
+    get_zt_pool,
+    get_hot_stocks_xq,
+    get_announcements,  # [DATA-P0-603629] astock_source_fallback
+)
+
+def create_msg_delete():
+    def delete_messages(state):
+        """Clear messages and add placeholder for Anthropic compatibility"""
+        messages = state["messages"]
+
+        # Remove all messages
+        removal_operations = [RemoveMessage(id=m.id) for m in messages]
+
+        company = state.get("company_of_interest", "")
+        trade_date = state.get("trade_date", "")
+        # Keep concise but explicit context so next agent doesn't ask for missing task/date.
+        placeholder_text = (
+            f"Continue analysis for symbol {company} on {trade_date}. "
+            "Use available tools and context; do not ask the user for missing task details."
+        ).strip()
+        placeholder = HumanMessage(content=placeholder_text)
+
+        return {"messages": removal_operations + [placeholder]}
+
+    return delete_messages
+
+
+        
+
+exec
+/bin/zsh -lc 'pytest tests/test_data010_margin_trading.py -q' in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: pytest
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/dataflows/evidence_contract.py | sed -n '176,188p'; nl -ba tradingagents/dataflows/providers/cn_akshare_provider.py | sed -n '1178,1204p'; nl -ba tradingagents/dataflows/providers/cn_astock_provider.py | sed -n '1154,1162p'; nl -ba tradingagents/agents/utils/readiness_score.py | sed -n '1246,1256p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   176	    "stock_data": ["status", "vendor", "unit"],
+   177	    "fund_flow_individual": ["status", "vendor", "unit", "unit_verified"],
+   178	    "fund_flow_board": ["status", "vendor"],
+   179	    "lhb": ["status", "vendor"],
+   180	    "news": ["status", "vendor"],
+   181	    "global_news": ["status", "vendor"],
+   182	    "announcements": ["status", "vendor"],
+   183	    "fundamentals": ["status", "vendor"],
+   184	    "margin_trading": ["status", "vendor", "unit"],  # [DATA-010] margin_trading_raw_evidence
+   185	}
+   186	
+   187	
+   188	def compute_contract_completeness(raw_evidence: Dict[str, Any]) -> Dict[str, Any]:
+  1178	        try:
+  1179	            ak = self._ak()
+  1180	            if code[:1] in ("0", "1", "2", "3"):
+  1181	                func = "stock_margin_underlying_info_szse"
+  1182	                with AKSHARE_CALL_LOCK:
+  1183	                    df = ak.stock_margin_underlying_info_szse(date=datetime.now().strftime("%Y%m%d"))
+  1184	            else:
+  1185	                func = "stock_margin_underlying_info_sse"
+  1186	                with AKSHARE_CALL_LOCK:
+  1187	                    df = ak.stock_margin_underlying_info_sse(date=datetime.now().strftime("%Y%m%d"))
+  1188	            if df is None or df.empty:
+  1189	                return f"{symbol} 融资融券数据暂不可用。"
+  1190	            code_col = None
+  1191	            for col in df.columns:
+  1192	                if "代码" in col or "证券代码" in col:
+  1193	                    code_col = col
+  1194	                    break
+  1195	            if code_col:
+  1196	                mask = df[code_col].astype(str).str.contains(code, na=False)
+  1197	                df_filtered = df[mask]
+  1198	                if df_filtered.empty:
+  1199	                    return f"{symbol} [DATA-010] MARGIN_NORMAL_NO_DATA: 该股非融资融券标的或当日无数据。"
+  1200	                return f"{symbol} [DATA-010] MARGIN_HAS_DATA: 融资融券数据（via {func}）：\n{df_filtered.tail(10).to_string(index=False)}"
+  1201	            return f"{symbol} [DATA-010] MARGIN_HAS_DATA: 融资融券数据（via {func}）：\n{df.tail(20).to_string(index=False)}"
+  1202	        except Exception as exc:
+  1203	            return f"{symbol} [DATA-010] MARGIN_FAILED: 融资融券数据获取失败：{type(exc).__name__}: {exc}"
+  1154	                page_size=20,
+  1155	                sort_columns="TRADE_DATE",
+  1156	                sort_types="-1",
+  1157	            )
+  1158	            if not data:
+  1159	                return f"{symbol} [DATA-010] MARGIN_NORMAL_NO_DATA: 该股非融资融券标的或当日无数据。"
+  1160	
+  1161	            lines = [f"{symbol} [DATA-010] MARGIN_HAS_DATA: 融资融券数据（Eastmoney datacenter）："]
+  1162	            for row in data[:10]:
+  1246	    # [DATA-010] margin_trading_raw_evidence
+  1247	    margin_trading = EvidenceStatus.NOT_QUERIED
+  1248	    raw_margin = _unwrap_raw(raw.get("margin_trading"))
+  1249	    if raw_margin is not None:
+  1250	        if isinstance(raw_margin, str) and "MARGIN_HAS_DATA" in raw_margin:
+  1251	            margin_trading = EvidenceStatus.HAS_DATA
+  1252	        elif isinstance(raw_margin, str) and "MARGIN_FAILED" in raw_margin:
+  1253	            margin_trading = EvidenceStatus.QUERY_FAILED
+  1254	        elif isinstance(raw_margin, str) and ("MARGIN_NORMAL_NO_DATA" in raw_margin or "暂不可用" in raw_margin):
+  1255	            margin_trading = EvidenceStatus.NORMAL_NO_DATA
+  1256	        elif isinstance(raw_margin, str) and len(raw_margin) > 20:
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/dataflows/source_catalog.py | sed -n '335,356p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   335	        notes="东财 datacenter 直连龙虎榜",
+   336	    )
+   337	
+   338	    # ── 融资融券 ────────────────────────────────────────────────────────
+   339	    _register(
+   340	        "cn_akshare", "stock_margin_underlying_info_szse",
+   341	        DataType.MARGIN_TRADING,
+   342	        fields=["标的证券代码", "标的证券简称", "融资买入额", "融资余额", "融券卖出量", "融券余量"],
+   343	        unit="万元/股",
+   344	        freshness=Freshness.DAILY,
+   345	        rate_limit_risk=RateLimitRisk.MEDIUM,
+   346	        fallback_priority=1,
+   347	        is_primary=True,
+   348	        notes="AKShare 深交所融资融券标的；沪市用 stock_margin_underlying_info_sse",
+   349	    )
+   350	    _register(
+   351	        "cn_astock", "datacenter-web.eastmoney.com/RPT_RZRQ_LSHJ",
+   352	        DataType.MARGIN_TRADING,
+   353	        fields=["RZRQ_YE", "RZRQ_MRE", "RQYE", "RQMRL", "RZRQ_JME"],
+   354	        unit="元(需/10000转万元)",
+   355	        freshness=Freshness.DAILY,
+   356	        rate_limit_risk=RateLimitRisk.MEDIUM,
+
+codex
+The patch registers and requires margin-trading evidence but does not integrate it into the actual data collection/raw_evidence pipeline, so existing analyses are penalized and the new data source is not used.
+
+Review comment:
+
+- [P1] Wire margin trading into the data collector before requiring it — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_contract.py:184-184
+  In normal TA runs, `DataCollector.build_raw_evidence()` still iterates a fixed `data_source_keys` list that does not include `margin_trading`, and `_fetch_all()` does not call `get_margin_trading`, so real raw_evidence will never contain this new field. Adding it as a required completeness field here means every existing analysis is permanently marked missing/NOT_QUERIED for margin trading and gets a lower evidence/readiness score, while the new source is not actually collected. Please add the margin source to the collection/raw_evidence path before making it required.
+The patch registers and requires margin-trading evidence but does not integrate it into the actual data collection/raw_evidence pipeline, so existing analyses are penalized and the new data source is not used.
+
+Review comment:
+
+- [P1] Wire margin trading into the data collector before requiring it — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/evidence_contract.py:184-184
+  In normal TA runs, `DataCollector.build_raw_evidence()` still iterates a fixed `data_source_keys` list that does not include `margin_trading`, and `_fetch_all()` does not call `get_margin_trading`, so real raw_evidence will never contain this new field. Adding it as a required completeness field here means every existing analysis is permanently marked missing/NOT_QUERIED for margin trading and gets a lower evidence/readiness score, while the new source is not actually collected. Please add the margin source to the collection/raw_evidence path before making it required.

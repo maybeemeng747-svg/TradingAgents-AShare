@@ -563,19 +563,19 @@ def test_evidence_lhb_query_failed():
     assert statuses["lhb_status"] == EvidenceStatus.QUERY_FAILED
 
 
-def test_evidence_margin_trading_always_not_queried():
+def test_evidence_margin_trading_not_queried_by_default():
     statuses = infer_evidence_statuses({
         "market_report": "some report",
         "smart_money_report": "some report",
     })
-    assert statuses["margin_trading"] == EvidenceStatus.NOT_AVAILABLE
+    assert statuses["margin_trading"] == EvidenceStatus.NOT_QUERIED
 
 
 def test_evidence_no_report_means_not_queried():
     statuses = infer_evidence_statuses({})
     assert statuses["ohlcv_5d"] == EvidenceStatus.NOT_QUERIED
     assert statuses["volume"] == EvidenceStatus.NOT_QUERIED
-    assert statuses["margin_trading"] == EvidenceStatus.NOT_AVAILABLE
+    assert statuses["margin_trading"] == EvidenceStatus.NOT_QUERIED
 
 
 def test_evidence_coverage_not_inflated_by_report_existence():
@@ -1204,7 +1204,7 @@ def test_raw_evidence_margin_trading_not_in_pool():
         {},
         raw_evidence={"stock_data": "x" * 100},
     )
-    assert statuses["margin_trading"] == EvidenceStatus.NOT_AVAILABLE
+    assert statuses["margin_trading"] == EvidenceStatus.NOT_QUERIED
 
 
 def test_raw_evidence_none_falls_back_to_text():

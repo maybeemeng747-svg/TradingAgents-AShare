@@ -899,7 +899,7 @@
 ### DATA-010: 融资融券数据源注册与 raw_evidence 接入（P1）
 - **描述**：把融资融券数据纳入 source_catalog、provider 路由和 raw_evidence contract，补齐 TA 风控和情绪判断里的杠杆资金证据。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — DATA-010-20260608-020414
 - **前置条件**：`DATA-001`、`DATA-004` 完成 ✓。
 - **背景**：
   - `DATA_SOURCE_GAP_AUDIT` 标记融资融券为高风险缺口。

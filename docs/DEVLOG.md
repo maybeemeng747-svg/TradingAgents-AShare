@@ -4,7 +4,61 @@
 
 ---
 
-## 2026-06-08 | 下一波自动开发任务释放
+## 2026-06-08 | DATA-010: 融资融券数据源注册与 raw_evidence 接入
+
+- **执行者**：OpenCode
+- **任务**：DATA-010 — 把融资融券数据纳入 source_catalog、provider 路由和 raw_evidence contract，补齐 TA 风控和情绪判断里的杠杆资金证据。
+- **修改文件**：
+  - `tradingagents/dataflows/source_catalog.py` — [DATA-010] margin_trading_raw_evidence
+    - 注册 2 个融资融券 source：`cn_akshare/stock_margin_underlying_info_szse`(primary) + `cn_astock/datacenter-web.eastmoney.com/RPT_RZRQ_LSHJ`(fallback)
+    - `DataType.MARGIN_TRADING` 已存在于枚举中但无注册源，现补齐
+  - `tradingagents/dataflows/providers/cn_akshare_provider.py` — [DATA-010]
+    - 新增 `get_margin_trading(symbol)`: AKShare 深交所/沪交所融资融券标的数据
+    - 支持 `MARGIN_HAS_DATA` / `MARGIN_NORMAL_NO_DATA` / `MARGIN_FAILED` 三态输出
+  - `tradingagents/dataflows/providers/cn_astock_provider.py` — [DATA-010]
+    - 新增 `get_margin_trading(symbol)`: 东财 datacenter RPT_RZRQ_LSHJ 直连
+    - 金额元→万元 `/10000` 转换，输出融资余额/融资买入/融券余额/融券卖出/净买
+  - `tradingagents/dataflows/interface.py` — [DATA-010]
+    - `TOOLS_CATEGORIES["cn_market_data"]["tools"]` 新增 `"get_margin_trading"`
+    - 支持 `route_to_vendor` 自动 fallback 和 `get_last_hit_vendor` 追踪
+  - `tradingagents/dataflows/evidence_contract.py` — [DATA-010]
+    - `_EVIDENCE_KEY_TO_DATA_TYPE` 新增 `"margin_trading": "margin_trading"`
+    - `_REQUIRED_FIELDS_FOR_COMPLETENESS` 新增 `"margin_trading": ["status", "vendor", "unit"]`
+  - `tradingagents/dataflows/evidence_coverage_audit.py` — [DATA-010]
+    - `_EVIDENCE_FIELD_LABELS` 新增 `"margin_trading": "融资融券"`
+    - `_EVIDENCE_FIELD_FAMILIES` 新增 `"margin_trading": "margin_trading"`
+  - `tradingagents/agents/utils/readiness_score.py` — [DATA-010]
+    - `infer_evidence_statuses()` 中 margin_trading 从硬编码 `NOT_AVAILABLE` 改为从 `raw_evidence["margin_trading"]` 读取
+    - 支持 `HAS_DATA/QUERY_FAILED/NORMAL_NO_DATA/NOT_QUERIED` 四态
+    - `margin_trading` 不再被 `_EXCLUDE_FROM_COVERAGE` 排除
+  - `tradingagents/dataflows/fixture_replay.py` — [DATA-010]
+    - 新增 3 个 fixture：`margin_has_data`(HAS_DATA/cn_astock) / `margin_failed`(FAILED/ConnectionError) / `margin_not_queried`(NOT_QUERIED)
+    - `ALL_FIXTURE_IDS` 从 13 扩展到 16
+  - `tests/test_data010_margin_trading.py` — **新建**，64 个测试覆盖：
+    - `TestSourceCatalogMarginTrading` (8): DataType 枚举/sources 注册/primary/fallback chain/all_data_types/fields/endpoint/catalog validation
+    - `TestEvidenceContractMarginTrading` (8): resolve_data_type/contract HAS_DATA/FAILED/completeness/missing/failed/summary
+    - `TestEvidenceCoverageAuditMarginTrading` (4): label/family/audit HAS_DATA/audit FAILED
+    - `TestReadinessScoreMarginTrading` (10): NOT_QUERIED default/HAS_DATA/FAILED/NORMAL_NO_DATA/NOT_QUERIED from raw/coverage increase/NOT_AVAILABLE excluded/long text/unavailable
+    - `TestInterfaceMarginTrading` (4): tools categories/category/method/failure string detection
+    - `TestMarginTradingFixtures` (12): fixture IDs/total count/exists/vendor/unit/error/no vendor/all fixtures
+    - `TestMarginTradingFixtureReplay` (5): replay HAS_DATA/FAILED/NOT_QUERIED/all margin/full replay
+    - `TestProviderMarginTrading` (6): akshare method/astock method/akshare fail/astock fail/astock no data/astock has data
+    - `TestAcceptanceDATA010` (10): 全部验收标准
+  - `tests/test_readiness_score.py` — 更新 3 处 `NOT_AVAILABLE` 断言为 `NOT_QUERIED`
+  - `tests/test_e_series_fixes.py` — 更新 2 处覆盖率计算断言（margin_trading 从 excluded 变为 counted）
+  - `docs/TASKS.md` — DATA-010 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：64 passed (DATA-010)；543 passed (相关回归)；0 failed
+- **关键逻辑**：
+  - 融资融券从 `NOT_AVAILABLE` 硬编码升级为完整 raw_evidence 四态数据源
+  - source_catalog 注册 2 个 vendor：AKShare(深交所/沪交所) 为 primary，东财 datacenter 为 fallback
+  - provider 层输出 `MARGIN_HAS_DATA / MARGIN_NORMAL_NO_DATA / MARGIN_FAILED` 三态标记
+  - route_to_vendor 支持失败字符串检测和 fallback 链自动切换
+  - readiness_score 中 margin_trading 不再被排除出覆盖率计算
+  - 3 个 fixture 覆盖 HAS_DATA/FAILED/NOT_QUERIED 三种场景
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未跑 live 请求
+
+---
 
 - **执行者**：Codex
 - **背景**：上一轮 `UI-010/T-008` 收口后，任务池 ready 队列为 0；`M-012` 生成 `docs/task_suggestions/2026-06-08.md`，但建议中混有历史已完成任务和外围联动任务，需要人工筛选后释放。
@@ -3387,3 +3441,14 @@
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex review failed with exit 1
 - **Run archive**: docs/task_runs/T-008-20260608-002337/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-010 - 融资融券数据源注册与 raw_evidence 接入（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-010-20260608-round1.txt
+- **Run archive**: docs/task_runs/DATA-010-20260608-020414/

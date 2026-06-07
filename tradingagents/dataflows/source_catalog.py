@@ -335,6 +335,29 @@ def _build_catalog() -> None:
         notes="东财 datacenter 直连龙虎榜",
     )
 
+    # ── 融资融券 ────────────────────────────────────────────────────────
+    _register(
+        "cn_akshare", "stock_margin_underlying_info_szse",
+        DataType.MARGIN_TRADING,
+        fields=["标的证券代码", "标的证券简称", "融资买入额", "融资余额", "融券卖出量", "融券余量"],
+        unit="万元/股",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.MEDIUM,
+        fallback_priority=1,
+        is_primary=True,
+        notes="AKShare 深交所融资融券标的；沪市用 stock_margin_underlying_info_sse",
+    )
+    _register(
+        "cn_astock", "datacenter-web.eastmoney.com/RPT_RZRQ_LSHJ",
+        DataType.MARGIN_TRADING,
+        fields=["RZRQ_YE", "RZRQ_MRE", "RQYE", "RQMRL", "RZRQ_JME"],
+        unit="元(需/10000转万元)",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.MEDIUM,
+        fallback_priority=2,
+        notes="东财 datacenter 融资融券汇总",
+    )
+
     # ── 公告 ───────────────────────────────────────────────────────────
     _register(
         "cn_astock", "cninfo.com.cn/hisAnnouncement",

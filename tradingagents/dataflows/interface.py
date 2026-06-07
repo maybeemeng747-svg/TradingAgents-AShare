@@ -44,6 +44,7 @@ TOOLS_CATEGORIES = {
             "get_zt_pool",
             "get_hot_stocks_xq",
             "get_announcements",  # [DATA-P0-603629] astock_source_fallback
+            "get_margin_trading",  # [DATA-010] margin_trading_raw_evidence
         ],
     },
 }

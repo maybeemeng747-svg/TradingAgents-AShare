@@ -6,10 +6,11 @@
 当天实时缺失等场景，避免夜间自动开发误判数据源质量。
 
 功能：
-  1. 内置 12 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
+  1. 内置 15 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
      资金流单位异常、龙虎榜无触发、公告源失败、
      AKShare 资金流失败→astock fallback、龙虎榜 NORMAL_NO_DATA、
-     龙虎榜 FAILED、公告失败→事件源弱证据、换手率/量比缺失）
+     龙虎榜 FAILED、公告失败→事件源弱证据、换手率/量比缺失、
+     融资融券有数据、融资融券失败、融资融券未查询）
   2. replay runner 将 fixture 模拟为 raw_evidence，输出数据源健康报告
   3. 失败时写入 docs/data_source_reports/YYYY-MM-DD.md
   4. 可被 scripts/auto_dev_loop.sh 或 OpenClaw 巡检调用
@@ -60,6 +61,9 @@ FIXTURE_LHB_FAILED = "lhb_failed"
 FIXTURE_STALE_REALTIME_PATCH = "stale_realtime_patch"
 FIXTURE_ANNOUNCEMENT_FAIL_EVENT_WEAK = "announcement_fail_event_weak"
 FIXTURE_TURNOVER_VOLUME_RATIO_MISSING = "turnover_volume_ratio_missing"
+FIXTURE_MARGIN_HAS_DATA = "margin_has_data"  # [DATA-010] margin_trading_raw_evidence
+FIXTURE_MARGIN_FAILED = "margin_failed"  # [DATA-010] margin_trading_raw_evidence
+FIXTURE_MARGIN_NOT_QUERIED = "margin_not_queried"  # [DATA-010] margin_trading_raw_evidence
 
 ALL_FIXTURE_IDS = [
     FIXTURE_NORMAL_QUOTE,
@@ -75,6 +79,9 @@ ALL_FIXTURE_IDS = [
     FIXTURE_STALE_REALTIME_PATCH,
     FIXTURE_ANNOUNCEMENT_FAIL_EVENT_WEAK,
     FIXTURE_TURNOVER_VOLUME_RATIO_MISSING,
+    FIXTURE_MARGIN_HAS_DATA,
+    FIXTURE_MARGIN_FAILED,
+    FIXTURE_MARGIN_NOT_QUERIED,
 ]
 
 
@@ -703,6 +710,104 @@ def _build_turnover_volume_ratio_missing_fixture() -> FixtureEntry:
     )
 
 
+def _build_margin_has_data_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "margin_trading": {
+            "raw": "600519.SH [DATA-010] MARGIN_HAS_DATA: 融资融券数据（Eastmoney datacenter）：\n"
+                   "- 2026-06-07 | 融资余额 185200.0万 | 融资买入 3200.0万 | 融券余额 1500.0万",
+            "field": "margin_trading",
+            "unit": "万元",
+            "vendor": "cn_astock",
+            "endpoint": "datacenter-web.eastmoney.com/RPT_RZRQ_LSHJ",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "fallback_from": None,
+            "source_url": None,
+            "error": None,
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 10,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_MARGIN_HAS_DATA,
+        description="融资融券数据正常返回",
+        data_type="margin_trading",
+        vendor="cn_astock",
+        endpoint="datacenter-web.eastmoney.com/RPT_RZRQ_LSHJ",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["margin_trading", "has_data"],
+    )
+
+
+def _build_margin_failed_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "margin_trading": {
+            "raw": "600519.SH [DATA-010] MARGIN_FAILED: 融资融券数据获取失败：ConnectionError",
+            "field": "margin_trading",
+            "unit": None,
+            "vendor": "cn_astock",
+            "endpoint": "datacenter-web.eastmoney.com/RPT_RZRQ_LSHJ",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "FAILED",
+            "fallback_from": None,
+            "source_url": None,
+            "error": "ConnectionError",
+            "is_realtime_patched": False,
+            "unit_verified": None,
+            "record_count": 0,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_MARGIN_FAILED,
+        description="融资融券查询失败",
+        data_type="margin_trading",
+        vendor="cn_astock",
+        endpoint="datacenter-web.eastmoney.com/RPT_RZRQ_LSHJ",
+        expected_status="FAILED",
+        raw_evidence=raw_evidence,
+        tags=["margin_trading", "failed"],
+    )
+
+
+def _build_margin_not_queried_fixture() -> FixtureEntry:
+    raw_evidence = {
+        "margin_trading": {
+            "raw": None,
+            "field": "margin_trading",
+            "unit": None,
+            "vendor": "",
+            "endpoint": "",
+            "as_of": "",
+            "fetched_at": "",
+            "status": "NOT_QUERIED",
+            "fallback_from": None,
+            "source_url": None,
+            "error": None,
+            "is_realtime_patched": False,
+            "unit_verified": None,
+            "record_count": 0,
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_MARGIN_NOT_QUERIED,
+        description="融资融券未查询",
+        data_type="margin_trading",
+        vendor="",
+        endpoint="",
+        expected_status="NOT_QUERIED",
+        raw_evidence=raw_evidence,
+        tags=["margin_trading", "not_queried"],
+    )
+
+
 _FIXTURE_BUILDERS = {
     FIXTURE_NORMAL_QUOTE: _build_normal_quote_fixture,
     FIXTURE_STALE_DAILY: _build_stale_daily_fixture,
@@ -717,6 +822,9 @@ _FIXTURE_BUILDERS = {
     FIXTURE_STALE_REALTIME_PATCH: _build_stale_realtime_patch_fixture,
     FIXTURE_ANNOUNCEMENT_FAIL_EVENT_WEAK: _build_announcement_fail_event_weak_fixture,
     FIXTURE_TURNOVER_VOLUME_RATIO_MISSING: _build_turnover_volume_ratio_missing_fixture,
+    FIXTURE_MARGIN_HAS_DATA: _build_margin_has_data_fixture,
+    FIXTURE_MARGIN_FAILED: _build_margin_failed_fixture,
+    FIXTURE_MARGIN_NOT_QUERIED: _build_margin_not_queried_fixture,
 }
 
 

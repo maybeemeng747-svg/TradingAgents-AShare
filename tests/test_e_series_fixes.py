@@ -110,12 +110,12 @@ class TestE004NotAvailable:
             volume_ratio=EvidenceStatus.HAS_DATA,
             individual_fund_flow=EvidenceStatus.HAS_DATA,
             lhb_status=EvidenceStatus.NORMAL_NO_DATA,
-            margin_trading=EvidenceStatus.NOT_AVAILABLE,  # excluded
+            margin_trading=EvidenceStatus.NOT_QUERIED,  # [DATA-010] now counted
             announcements=EvidenceStatus.HAS_DATA,
         )
-        # 6 counted (excluding 2 NOT_AVAILABLE), weighted: 5 HAS_DATA + 1 NORMAL_NO_DATA(0.5)
-        # = 5.5/6 ≈ 91%
-        assert coverage == 91
+        # 7 counted (excluding 1 NOT_AVAILABLE), weighted: 5 HAS_DATA + 1 NORMAL_NO_DATA(0.5) + 1 NOT_QUERIED(0)
+        # = 5.5/7 ≈ 78%
+        assert coverage == 78
 
     def test_not_available_reduces_denominator(self):
         """With NOT_AVAILABLE, denominator shrinks but valid items still count."""
@@ -126,15 +126,15 @@ class TestE004NotAvailable:
             volume_ratio=EvidenceStatus.HAS_DATA,
             individual_fund_flow=EvidenceStatus.HAS_DATA,
             lhb_status=EvidenceStatus.NORMAL_NO_DATA,
-            margin_trading=EvidenceStatus.NOT_AVAILABLE,
+            margin_trading=EvidenceStatus.NOT_QUERIED,  # [DATA-010] now counted
             announcements=EvidenceStatus.HAS_DATA,
         )
-        # 6 counted, weighted: 4 HAS_DATA + 1 NORMAL_NO_DATA(0.5) + 1 FIELD_MISSING(0)
-        # = 4.5/6 = 75%
-        assert coverage == 75
+        # 7 counted, weighted: 4 HAS_DATA + 1 NORMAL_NO_DATA(0.5) + 1 FIELD_MISSING(0) + 1 NOT_QUERIED(0)
+        # = 4.5/7 ≈ 64%
+        assert coverage == 64
 
     def test_all_not_available_returns_zero(self):
-        """Edge case: all fields are NOT_AVAILABLE → 0% (0/0 = 0)."""
+        """Edge case: all fields are NOT_AVAILABLE/NOT_QUERIED → 0% (0/8 = 0)."""
         coverage = calculate_evidence_coverage(
             ohlcv_5d=EvidenceStatus.NOT_AVAILABLE,
             volume=EvidenceStatus.NOT_AVAILABLE,

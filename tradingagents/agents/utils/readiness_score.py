@@ -1242,8 +1242,25 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
         elif re.search(r'龙虎榜', combined, re.IGNORECASE):
             lhb_status = EvidenceStatus.FIELD_MISSING
 
-    # 7. Margin trading (融资融券) — NOT in raw data pool
-    margin_trading = EvidenceStatus.NOT_AVAILABLE
+    # 7. Margin trading (融资融券) — check raw_evidence margin_trading field
+    # [DATA-010] margin_trading_raw_evidence
+    margin_trading = EvidenceStatus.NOT_QUERIED
+    raw_margin = _unwrap_raw(raw.get("margin_trading"))
+    if raw_margin is not None:
+        if isinstance(raw_margin, str) and "MARGIN_HAS_DATA" in raw_margin:
+            margin_trading = EvidenceStatus.HAS_DATA
+        elif isinstance(raw_margin, str) and "MARGIN_FAILED" in raw_margin:
+            margin_trading = EvidenceStatus.QUERY_FAILED
+        elif isinstance(raw_margin, str) and ("MARGIN_NORMAL_NO_DATA" in raw_margin or "暂不可用" in raw_margin):
+            margin_trading = EvidenceStatus.NORMAL_NO_DATA
+        elif isinstance(raw_margin, str) and len(raw_margin) > 20:
+            margin_trading = EvidenceStatus.HAS_DATA
+        elif isinstance(raw_margin, str) and "失败" in raw_margin:
+            margin_trading = EvidenceStatus.QUERY_FAILED
+        elif raw_margin:
+            margin_trading = EvidenceStatus.HAS_DATA
+        else:
+            margin_trading = EvidenceStatus.NORMAL_NO_DATA
 
     # 8. Announcements — check news data
     announcements = EvidenceStatus.NOT_QUERIED

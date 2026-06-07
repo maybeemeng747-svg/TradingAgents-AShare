@@ -1171,3 +1171,33 @@ class CnAkshareProvider(BaseMarketDataProvider):
             return f"雪球热搜前20：\n{df.head(20).to_string(index=False)}"
         except Exception as exc:
             return f"雪球热搜数据获取失败：{type(exc).__name__}: {exc}"
+
+    def get_margin_trading(self, symbol: str) -> str:
+        """获取个股融资融券数据。  # [DATA-010] margin_trading_raw_evidence"""
+        code = self._normalize_symbol(symbol)
+        try:
+            ak = self._ak()
+            if code[:1] in ("0", "1", "2", "3"):
+                func = "stock_margin_underlying_info_szse"
+                with AKSHARE_CALL_LOCK:
+                    df = ak.stock_margin_underlying_info_szse(date=datetime.now().strftime("%Y%m%d"))
+            else:
+                func = "stock_margin_underlying_info_sse"
+                with AKSHARE_CALL_LOCK:
+                    df = ak.stock_margin_underlying_info_sse(date=datetime.now().strftime("%Y%m%d"))
+            if df is None or df.empty:
+                return f"{symbol} 融资融券数据暂不可用。"
+            code_col = None
+            for col in df.columns:
+                if "代码" in col or "证券代码" in col:
+                    code_col = col
+                    break
+            if code_col:
+                mask = df[code_col].astype(str).str.contains(code, na=False)
+                df_filtered = df[mask]
+                if df_filtered.empty:
+                    return f"{symbol} [DATA-010] MARGIN_NORMAL_NO_DATA: 该股非融资融券标的或当日无数据。"
+                return f"{symbol} [DATA-010] MARGIN_HAS_DATA: 融资融券数据（via {func}）：\n{df_filtered.tail(10).to_string(index=False)}"
+            return f"{symbol} [DATA-010] MARGIN_HAS_DATA: 融资融券数据（via {func}）：\n{df.tail(20).to_string(index=False)}"
+        except Exception as exc:
+            return f"{symbol} [DATA-010] MARGIN_FAILED: 融资融券数据获取失败：{type(exc).__name__}: {exc}"

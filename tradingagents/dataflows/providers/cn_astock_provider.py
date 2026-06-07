@@ -1139,3 +1139,38 @@ class CnAstockProvider(BaseMarketDataProvider):
 
         except Exception as exc:
             return f"Announcements unavailable for {symbol}: {exc}"
+
+    def get_margin_trading(self, symbol: str) -> str:
+        """个股融资融券 — 东财 datacenter.  # [DATA-010] margin_trading_raw_evidence"""
+        code = _extract_code(symbol)
+        try:
+            _rate_limit("em_margin_trading")
+            rzrq_filter = (
+                f'(SECURITY_CODE="{code}")'
+            )
+            data = _eastmoney_datacenter(
+                "RPT_RZRQ_LSHJ",
+                filter_str=rzrq_filter,
+                page_size=20,
+                sort_columns="TRADE_DATE",
+                sort_types="-1",
+            )
+            if not data:
+                return f"{symbol} [DATA-010] MARGIN_NORMAL_NO_DATA: 该股非融资融券标的或当日无数据。"
+
+            lines = [f"{symbol} [DATA-010] MARGIN_HAS_DATA: 融资融券数据（Eastmoney datacenter）："]
+            for row in data[:10]:
+                trade_date = row.get("TRADE_DATE", "")[:10] if row.get("TRADE_DATE") else ""
+                rzrq_ye = (row.get("RZRQ_YE") or 0) / 10000
+                rzrq_mre = (row.get("RZRQ_MRE") or 0) / 10000
+                rqye = (row.get("RQYE") or 0) / 10000
+                rqmrl = (row.get("RQMRL") or 0) / 10000
+                rzrq_jme = (row.get("RZRQ_JME") or 0) / 10000
+                lines.append(
+                    f"- {trade_date} | 融资余额 {rzrq_ye:.1f}万 | 融资买入 {rzrq_mre:.1f}万 | "
+                    f"融券余额 {rqye:.1f}万 | 融券卖出 {rqmrl:.1f}万 | 融资融券净买 {rzrq_jme:.1f}万"
+                )
+            return "\n".join(lines)
+
+        except Exception as exc:
+            return f"{symbol} [DATA-010] MARGIN_FAILED: 融资融券数据获取失败（Eastmoney datacenter）：{type(exc).__name__}: {exc}"
