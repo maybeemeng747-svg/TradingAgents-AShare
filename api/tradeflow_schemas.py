@@ -105,6 +105,10 @@ class TradeFlowCandidateItem(BaseModel):
     topic_lifecycle_reason: str = ""  # [H-010] mandate_topic_lifecycle
     topic_last_signal_date: str = ""  # [H-010] mandate_topic_lifecycle
     topic_signal_count: int = 0  # [H-010] mandate_topic_lifecycle
+    contradiction_level: str = ""  # [H-011] candidate_contradiction_explainer
+    contradiction_items: List[dict] = Field(default_factory=list)  # [H-011]
+    blocking_evidence_gaps: List[str] = Field(default_factory=list)  # [H-011]
+    next_verification_steps: List[str] = Field(default_factory=list)  # [H-011]
     created_at: str = ""
     updated_at: str = ""
 

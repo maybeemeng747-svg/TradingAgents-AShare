@@ -35,6 +35,7 @@ from .symbol_utils import normalize_tradeflow_symbol, resolve_tradeflow_name, sy
 from .ambush_score import compute_ambush_score, AmbushScoreResult  # [H-004] mandate_ambush_score
 from .counter_evidence_calibration import evaluate_counter_evidence, CounterEvidenceCalibrationResult  # [H-009] mandate_counter_evidence_calibration
 from .topic_lifecycle import evaluate_topic_lifecycle, TopicLifecycleResult, apply_lifecycle_to_candidate  # [H-010] mandate_topic_lifecycle
+from .candidate_contradictions import evaluate_contradictions, ContradictionResult  # [H-011] candidate_contradiction_explainer
 from .mandate_ta_queue_router import route_to_research_queue, QueueRouteResult  # [H-007] mandate_ta_queue_router
 from .mandate_watchlist_note import generate_watchlist_note, WatchlistNoteResult  # [H-008] mandate_watchlist_note
 
@@ -198,6 +199,11 @@ _MISSING_COLUMNS = [
     ("topic_lifecycle_reason", "TEXT DEFAULT ''"),
     ("topic_last_signal_date", "TEXT DEFAULT ''"),
     ("topic_signal_count", "INTEGER DEFAULT 0"),
+    # [H-011] candidate_contradiction_explainer
+    ("contradiction_level", "TEXT DEFAULT ''"),
+    ("contradiction_items_json", "TEXT DEFAULT '[]'"),
+    ("blocking_evidence_gaps_json", "TEXT DEFAULT '[]'"),
+    ("next_verification_steps_json", "TEXT DEFAULT '[]'"),
 ]
 
 
@@ -1111,6 +1117,41 @@ def evaluate_symbol(
 
     candidate.evidence["topic_lifecycle"] = lc_result.to_dict()
 
+    # [H-011] candidate_contradiction_explainer — evaluate contradictions across dimensions
+    ct_result: ContradictionResult = evaluate_contradictions(
+        candidate_type=candidate.candidate_type,
+        policy_tags=candidate.policy_tags,
+        version_score=candidate.version_score,
+        mandate_score_component=candidate.mandate_score_component,
+        has_policy_document=any(
+            ref.get("source_level", "") in ("CENTRAL", "STATE_COUNCIL", "MINISTRY")
+            for ref in candidate.policy_evidence_refs
+        ),
+        company_role=candidate.company_role,
+        beneficiary_path=candidate.beneficiary_path,
+        has_company_evidence=bool(candidate.company_role and candidate.company_role not in ("", "UNKNOWN")),
+        narrative_score=candidate.narrative_score,
+        fund_flow_anomaly_score=candidate.fund_flow_anomaly_score,
+        fund_flow_anomaly_tags=candidate.fund_flow_anomaly_tags,
+        fund_flow_unit_verified=candidate.fund_flow_unit_verified,
+        risk_penalty=candidate.risk_penalty,
+        risk_flags=candidate.risk_flags,
+        game_balance=candidate.game_balance,
+        overheat_penalty=candidate.overheat_penalty,
+        ambush_score=candidate.ambush_score,
+        composite_score=candidate.composite_score,
+        data_completeness=candidate.data_completeness,
+        tradeflow_data_completeness=candidate.tradeflow_data_completeness,
+        missing_evidence=candidate.missing_evidence,
+        bull_case=candidate.bull_case,
+        mandate_topic=candidate.mandate_topic,
+    )
+    candidate.contradiction_level = ct_result.contradiction_level
+    candidate.contradiction_items = ct_result.contradiction_items
+    candidate.blocking_evidence_gaps = ct_result.blocking_evidence_gaps
+    candidate.next_verification_steps = ct_result.next_verification_steps
+    candidate.evidence["contradictions"] = ct_result.to_dict()
+
     # [H-007] mandate_ta_queue_router — route candidate to research queue
     queue_result: QueueRouteResult = route_to_research_queue(
         candidate_type=candidate.candidate_type,
@@ -1214,8 +1255,9 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "counter_evidence_json, overheat_flags_json, downgrade_reasons_json, "
             "what_would_change_mind_json, "
             "topic_lifecycle_state, topic_lifecycle_reason, topic_last_signal_date, topic_signal_count, "
+            "contradiction_level, contradiction_items_json, blocking_evidence_gaps_json, next_verification_steps_json, "
             "created_at, updated_at) "
-            "VALUES ({}) ".format(",".join(["?"] * 99))
+            "VALUES ({}) ".format(",".join(["?"] * 103))
             + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
             "trigger_price=excluded.trigger_price, "
@@ -1300,6 +1342,10 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "topic_lifecycle_reason=excluded.topic_lifecycle_reason, "
             "topic_last_signal_date=excluded.topic_last_signal_date, "
             "topic_signal_count=excluded.topic_signal_count, "
+            "contradiction_level=excluded.contradiction_level, "
+            "contradiction_items_json=excluded.contradiction_items_json, "
+            "blocking_evidence_gaps_json=excluded.blocking_evidence_gaps_json, "
+            "next_verification_steps_json=excluded.next_verification_steps_json, "
             "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
@@ -1350,6 +1396,8 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
                 row["downgrade_reasons_json"], row["what_would_change_mind_json"],
                 row["topic_lifecycle_state"], row["topic_lifecycle_reason"],
                 row["topic_last_signal_date"], row["topic_signal_count"],
+                row["contradiction_level"], row["contradiction_items_json"],
+                row["blocking_evidence_gaps_json"], row["next_verification_steps_json"],
                 candidate.created_at, row["updated_at"],
             ),
         )

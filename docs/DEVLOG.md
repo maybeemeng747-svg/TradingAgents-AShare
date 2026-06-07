@@ -4,7 +4,45 @@
 
 ---
 
-## 2026-06-07 | V-005 fix: 修正测试命令引用
+## 2026-06-07 | H-011: 候选矛盾证据与负面清单解释
+
+- **执行者**：OpenCode
+- **任务**：H-011 — 为每个昊天候选输出"为什么可能错"的负面清单，让用户看到政策逻辑、公司受益、资金、技术和风险之间的矛盾，而不是只看正面叙事。
+- **修改文件**：
+  - `tradingagents/tradeflow/candidate_contradictions.py` — **新建**：[H-011] candidate_contradiction_explainer
+    - 6 类矛盾规则：`policy_strong_company_weak` / `theme_hot_funding_cold` / `fundamental_weak_theme_strong` / `tech_broken_thesis_intact` / `data_sparse_score_high` / `risk_high_narrative_bullish`
+    - `ContradictionItem` 数据类：contradiction_type / dimension_a / dimension_b / description / severity
+    - `ContradictionResult` 数据类：contradiction_level(none/low/medium/high) / contradiction_items / blocking_evidence_gaps / next_verification_steps
+    - `evaluate_contradictions()` 主函数：跨维度矛盾聚合
+    - `_build_blocking_gaps()` 阻断性证据缺口生成
+    - `_build_verification_steps()` 建议验证步骤生成
+    - `render_contradiction_summary()` Markdown 渲染
+  - `tradingagents/tradeflow/schemas.py` — [H-011]
+    - `Candidate` 新增 4 字段：contradiction_level / contradiction_items / blocking_evidence_gaps / next_verification_steps
+    - `to_db_row()` 新增 4 列输出
+    - `from_db_row()` 新增 4 列解析
+  - `tradingagents/tradeflow/candidate_engine.py` — [H-011]
+    - `_MISSING_COLUMNS` 新增 4 列
+    - `evaluate_symbol()` 新增矛盾评估步骤（在 H-010 生命周期之后、H-007 TA queue router 之前）
+    - `save_candidate()` INSERT 列数 99→103，ON CONFLICT UPDATE 新增 4 列
+  - `api/tradeflow_schemas.py` — [H-011]
+    - `TradeFlowCandidateItem` 新增 4 字段
+  - `api/services/tradeflow_service.py` — [H-011]
+    - `_row_to_candidate_item()` 新增 4 字段映射
+  - `tests/test_h011_candidate_contradictions.py` — 新建，93 个测试覆盖
+  - `docs/TASKS.md` — H-011 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：93 passed (H-011)；213 passed (tradeflow + H-009 回归)；0 failed
+- **关键逻辑**：
+  - 6 类跨维度矛盾检查：政策vs公司 / 主题vs资金 / 基本面vs题材 / 技术vs逻辑 / 数据vs评分 / 风险vs叙事
+  - 矛盾等级自动分类：none → low → medium → high（基于 max severity 和 count）
+  - 阻断性证据缺口：根据矛盾类型生成可操作的缺失证据列表
+  - 验证步骤建议：按候选类型和矛盾类型生成下一步行动建议
+  - 无矛盾时输出空数组，不报错
+  - 未知项不被当作确定利空
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
 
 - **执行者**：OpenCode
 - **任务**：V-005 fix — 上一轮实现完毕但测试命令引用了不存在的 `test_mandate_reports*.py`，实际文件名为 `test_v005_mandate_quality_report.py`。
@@ -3150,3 +3188,12 @@
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Test failed: pytest tests/test_v004_mandate_e2e_smoke.py tests/test_data006_daily_digest.py tests/test_mandate_reports*.py -q (exit 4)
 - **Run archive**: docs/task_runs/V-005-20260607-233817/
+
+## 2026-06-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-011 - 候选矛盾证据与负面清单解释（P2）
+- **Priority**: P2
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/H-011-20260607-234742/

@@ -159,6 +159,10 @@ def _row_to_candidate_item(row: sqlite3.Row) -> dict:
         "topic_lifecycle_reason": _rget(row, "topic_lifecycle_reason", ""),  # [H-010]
         "topic_last_signal_date": _rget(row, "topic_last_signal_date", ""),  # [H-010]
         "topic_signal_count": _rget(row, "topic_signal_count", 0) or 0,  # [H-010]
+        "contradiction_level": _rget(row, "contradiction_level", ""),  # [H-011] candidate_contradiction_explainer
+        "contradiction_items": _parse_json(_rget(row, "contradiction_items_json"), []),  # [H-011]
+        "blocking_evidence_gaps": _parse_json(_rget(row, "blocking_evidence_gaps_json"), []),  # [H-011]
+        "next_verification_steps": _parse_json(_rget(row, "next_verification_steps_json"), []),  # [H-011]
         "created_at": _rget(row, "created_at", ""),
         "updated_at": _rget(row, "updated_at", ""),
     }

@@ -146,6 +146,10 @@ class Candidate:
     topic_lifecycle_reason: str = ""  # [H-010] mandate_topic_lifecycle
     topic_last_signal_date: str = ""  # [H-010] mandate_topic_lifecycle
     topic_signal_count: int = 0  # [H-010] mandate_topic_lifecycle
+    contradiction_level: str = ""  # [H-011] candidate_contradiction_explainer
+    contradiction_items: list[dict] = field(default_factory=list)  # [H-011]
+    blocking_evidence_gaps: list[str] = field(default_factory=list)  # [H-011]
+    next_verification_steps: list[str] = field(default_factory=list)  # [H-011]
 
     def __post_init__(self):
         if not self.trade_date:
@@ -291,6 +295,10 @@ class Candidate:
             "topic_lifecycle_reason": self.topic_lifecycle_reason,  # [H-010]
             "topic_last_signal_date": self.topic_last_signal_date,  # [H-010]
             "topic_signal_count": self.topic_signal_count,  # [H-010]
+            "contradiction_level": self.contradiction_level,  # [H-011] candidate_contradiction_explainer
+            "contradiction_items_json": json.dumps(self.contradiction_items, ensure_ascii=False),  # [H-011]
+            "blocking_evidence_gaps_json": json.dumps(self.blocking_evidence_gaps, ensure_ascii=False),  # [H-011]
+            "next_verification_steps_json": json.dumps(self.next_verification_steps, ensure_ascii=False),  # [H-011]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -396,6 +404,10 @@ class Candidate:
             topic_lifecycle_reason=row.get("topic_lifecycle_reason", ""),  # [H-010]
             topic_last_signal_date=row.get("topic_last_signal_date", ""),  # [H-010]
             topic_signal_count=row.get("topic_signal_count", 0),  # [H-010]
+            contradiction_level=row.get("contradiction_level", ""),  # [H-011] candidate_contradiction_explainer
+            contradiction_items=json.loads(row.get("contradiction_items_json", "[]")),  # [H-011]
+            blocking_evidence_gaps=json.loads(row.get("blocking_evidence_gaps_json", "[]")),  # [H-011]
+            next_verification_steps=json.loads(row.get("next_verification_steps_json", "[]")),  # [H-011]
         )
 
 
