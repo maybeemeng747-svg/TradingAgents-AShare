@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-06-08 | 下一波自动开发任务释放
+
+- **执行者**：Codex
+- **背景**：上一轮 `UI-010/T-008` 收口后，任务池 ready 队列为 0；`M-012` 生成 `docs/task_suggestions/2026-06-08.md`，但建议中混有历史已完成任务和外围联动任务，需要人工筛选后释放。
+- **本轮释放原则**：
+  - 优先补齐 `DATA_SOURCE_GAP_AUDIT` 指出的真实数据源缺口。
+  - 优先验证 TradeFlow 已有链路的盘中/盘后实用性。
+  - 暂不释放模型接入、飞书推送、旧 D/E/C 历史任务，避免偏离当前主线。
+- **释放为 ready 的任务**：
+  - `DATA-010` 融资融券数据源注册与 raw_evidence 接入（P1）。
+  - `DATA-011` 研报端点接入 route_to_vendor 与 raw_evidence（P1）。
+  - `V-001` 600584 数据真实性端到端验收（P1）。
+  - `T-004` TradeFlow P2 盘中 Observe（本轮 P1，修复盘中观察无数据/需手动执行的使用阻塞）。
+  - `T-005` TradeFlow P3 盘后 Review（本轮 P1，修复盘后 Review 无数据的质量闭环阻塞）。
+  - `DATA-012` 评级数据接入 provider 路由与 raw_evidence（P2）。
+  - `DATA-013` 回购数据接入 provider 路由与 raw_evidence（P2）。
+  - `DATA-014` 新闻/政策事件 fixture 与 live smoke 补充（P2）。
+  - `DATA-015` 涨停池 cn_astock fallback 与 fixture（P2）。
+  - `DATA-016` 热门股票 cn_astock fallback 与 fixture（P2）。
+- **同步修正**：
+  - 顶部队列中 `PERF-003` 从旧的 `in_progress` 校正为 `done`，详情区已是 `done — commit 059fc21`。
+  - `docs/task_suggestions/2026-06-08.md` 保留为本轮任务释放依据。
+- **执行边界**：仅修改任务池和日志；未改业务代码，未调用 TA/LLM，未写生产数据库。
+
+---
+
 ## 2026-06-08 | T-008 fix: Codex review 代码质量修复
 
 - **执行者**：OpenCode

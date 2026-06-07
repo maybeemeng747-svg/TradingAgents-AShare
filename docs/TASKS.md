@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-06-02
+> 最后更新：2026-06-08
 
 ---
 
@@ -52,7 +52,7 @@
 26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
 27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
 28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
-29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，in_progress — claimed PERF-003-20260602-200127）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，done）。
 30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
 31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
 32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
@@ -66,6 +66,16 @@
 40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
 41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
 42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，ready，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，ready，依赖 DATA-004 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，ready，依赖 G-009/G-010/N-002/N-003 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，ready，依赖 TF-OBS-001/T-008 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，ready，依赖 M-007/T-008/V-005 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，ready，依赖 DATA-003/DATA-004 ✓）。
+49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，ready，依赖 DATA-003/DATA-004 ✓）。
+50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，ready，依赖 DATA-005/DATA-P1-ASTOCK-LIVE-SMOKE ✓）。
+51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，ready，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，ready，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
 
 ### 数据源治理候选队列
 
@@ -83,8 +93,15 @@
 10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
 11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
 12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
-  13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
 14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，ready）。
+16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，ready）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，ready）。
+18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，ready）。
+19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，ready）。
+20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，ready）。
+21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，ready）。
 
 ### 总体路线图
 
@@ -878,6 +895,157 @@
   - `pytest tests/test_watchlist_*.py tests/test_vlm_position_parser.py tests/test_h008_mandate_watchlist_note.py -q` 或等价测试通过。
   - 前端构建通过。
 - **代码标注要求**：`# [DATA-009] watchlist_notes_persistence` / `// [DATA-009] watchlist_notes_persistence`
+
+### DATA-010: 融资融券数据源注册与 raw_evidence 接入（P1）
+- **描述**：把融资融券数据纳入 source_catalog、provider 路由和 raw_evidence contract，补齐 TA 风控和情绪判断里的杠杆资金证据。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`DATA-001`、`DATA-004` 完成 ✓。
+- **背景**：
+  - `DATA_SOURCE_GAP_AUDIT` 标记融资融券为高风险缺口。
+  - 当前 TA 报告经常把融资融券显示为 `NOT_QUERIED` 或完全缺失，无法评估杠杆风险。
+- **执行约束**：
+  - 不调用 LLM。
+  - 不写生产数据库。
+  - 不跑全市场 live 请求；测试默认 mock/fixture。
+  - 不把缺失融资融券数据推测成结论。
+- **实现要点**：
+  1. 在 `source_catalog` 中注册融资融券数据类型和可用 vendor/endpoint。
+  2. provider 层提供最小接口，例如 `get_margin_trading(symbol, date_range?)`。
+  3. route 层支持 fallback，并正确记录 `get_last_hit_vendor`。
+  4. `raw_evidence` entry 包含 `vendor/endpoint/status/as_of/unit/error/fallback_from`。
+  5. readiness/evidence coverage 能识别 `HAS_DATA/FAILED/NOT_QUERIED`，不能只靠文本存在判断。
+- **验收方式**：
+  - mock 成功样本：raw_evidence.margin_trading 为 `HAS_DATA`，包含融资余额/融券余额或等价字段。
+  - mock 失败样本：状态为 `FAILED`，不被当成可用数据。
+  - 缺失样本：状态为 `NOT_QUERIED` 或 `NORMAL_NO_DATA`，语义清晰。
+  - `pytest tests/test_data_source_catalog.py tests/test_data004_evidence_contract.py tests/test_readiness_score.py -q` 或等价测试通过。
+- **代码标注要求**：`# [DATA-010] margin_trading_raw_evidence`
+
+### DATA-011: 研报端点接入 route_to_vendor 与 raw_evidence（P1）
+- **描述**：把券商研报/研究报告端点从“目录登记”推进到 provider route 和 raw_evidence，服务中线研究和估值 sanity check。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`DATA-004` 完成 ✓。
+- **执行约束**：
+  - 不抓取大批量研报正文；第一版只要标题、机构、日期、评级/目标价摘要、来源链接或 ID。
+  - 不把研报观点当作交易建议。
+  - 不调用 LLM。
+  - 默认测试 mock/fixture。
+- **实现要点**：
+  1. provider 增加研报查询方法，例如 `get_research_reports(symbol, limit=...)`。
+  2. route_to_vendor 支持研报方法和 fallback。
+  3. raw_evidence 增加 `research_reports` entry。
+  4. 报告/数据源摘要可展示“有研报/无研报/查询失败”，不要把空结果当失败。
+  5. 若目标价与实时价偏离过大，只标注口径风险，不生成买卖建议。
+- **验收方式**：
+  - 有研报 fixture 能进入 raw_evidence，包含 vendor、endpoint、机构、日期。
+  - 空列表显示 `NORMAL_NO_DATA` 或等价正常无数据状态。
+  - 接口失败显示 `FAILED`，不污染估值结论。
+  - `pytest tests/test_data004_evidence_contract.py tests/test_data_source_replay.py tests/test_g008_valuation_sanity.py -q` 或等价测试通过。
+- **代码标注要求**：`# [DATA-011] research_report_raw_evidence`
+
+### DATA-012: 评级数据接入 provider 路由与 raw_evidence（P2）
+- **描述**：把分析师评级数据从事件流扩展到 provider route 与 raw_evidence，让 TA 报告和 TradeFlow 候选能追溯评级变化。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：`DATA-003`、`DATA-004` 完成 ✓。
+- **执行约束**：
+  - 不输出“因评级买入/卖出”的强动作。
+  - 不调用 LLM。
+  - 不跑全市场 live。
+- **实现要点**：
+  1. provider 增加评级查询方法，至少返回机构、评级、日期、变动方向、来源。
+  2. route_to_vendor 和 source_catalog 增加 data type。
+  3. raw_evidence 增加 `ratings` entry。
+  4. TradeFlow/TA 只把评级作为事件证据，不直接提升到强结论。
+- **验收方式**：
+  - mock 评级上调/下调/无数据/失败四类 fixture。
+  - raw_evidence status 区分 `HAS_DATA/NORMAL_NO_DATA/FAILED`。
+  - `pytest tests/test_event_source.py tests/test_data004_evidence_contract.py tests/test_data_source_replay.py -q` 或等价测试通过。
+- **代码标注要求**：`# [DATA-012] rating_raw_evidence`
+
+### DATA-013: 回购数据接入 provider 路由与 raw_evidence（P2）
+- **描述**：把回购计划/回购进展从事件流扩展到 provider route 与 raw_evidence，作为公司行为和中线信号证据。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：`DATA-003`、`DATA-004` 完成 ✓。
+- **执行约束**：
+  - 回购只作为事件证据，不直接生成买入结论。
+  - 不调用 LLM。
+  - 默认测试 mock/fixture。
+- **实现要点**：
+  1. provider 增加回购查询方法，返回公告日期、金额区间、进度、来源。
+  2. route_to_vendor 和 source_catalog 增加 data type。
+  3. raw_evidence 增加 `buybacks` entry。
+  4. 与事件源归一化保持一致，避免同一回购重复计分。
+- **验收方式**：
+  - mock 回购计划/进展/无数据/失败四类 fixture。
+  - 重复事件不会导致候选分数重复叠加。
+  - `pytest tests/test_event_source.py tests/test_data004_evidence_contract.py tests/test_tradeflow_*.py -q` 或等价测试通过。
+- **代码标注要求**：`# [DATA-013] buyback_raw_evidence`
+
+### DATA-014: 新闻/政策事件 fixture 与 live smoke 补充（P2）
+- **描述**：补齐新闻/政策事件源的 fixture replay 和低频 live smoke，验证昊天雷达核心事件源在失败、空结果、限流时的状态语义。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：`DATA-005`、`DATA-P1-ASTOCK-LIVE-SMOKE` 完成 ✓。
+- **执行约束**：
+  - live smoke 必须环境变量显式开启。
+  - 不抓取大批量新闻。
+  - 不调用 LLM。
+  - 不把新闻热度当政策原文。
+- **实现要点**：
+  1. 增加新闻/政策事件 fixture：成功、有空结果、部分失败、全部失败、限流。
+  2. live smoke 输出 vendor、endpoint、status、latency、count、error。
+  3. 与 `DATA-006` 日报和 `DATA-007` evidence audit 对接。
+  4. 报告中区分“政策原文”“新闻转述”“市场传闻”。
+- **验收方式**：
+  - mock 全部失败时 status=`FAILED`。
+  - 成功但无事件时 status=`OK` 且 count=0。
+  - live smoke 未开启时 skip，不阻断普通测试。
+  - `pytest tests/test_event_source.py tests/test_data_source_replay.py tests/test_data006_daily_digest.py -q` 或等价测试通过。
+- **代码标注要求**：`# [DATA-014] policy_news_fixture_smoke`
+
+### DATA-015: 涨停池 cn_astock fallback 与 fixture（P2）
+- **描述**：为涨停池/涨停板情绪数据增加 cn_astock/Eastmoney fallback 和 fixture，降低 AKShare 单点失败对短线候选和市场情绪的影响。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：`DATA-005`、`DATA-P0-FUND-ROUTE` 完成 ✓。
+- **执行约束**：
+  - 不全市场高频轮询。
+  - fallback 失败时透明标注，不推测涨停池。
+  - 不输出买卖建议。
+- **实现要点**：
+  1. provider 层补充涨停池 fallback 方法或复用 Eastmoney 端点。
+  2. source_catalog 增加 fallback 顺序。
+  3. fixture 覆盖 AKShare 成功、AKShare 失败 fallback 成功、全部失败、空池。
+  4. 数据源健康面板能显示最终 vendor。
+- **验收方式**：
+  - AKShare 失败时 fallback 成功显示 `vendor=cn_astock` 或等价实际 vendor。
+  - 全部失败显示 `FAILED`，不能显示空池正常。
+  - `pytest tests/test_data_source_replay.py tests/test_m008_health_check.py tests/test_tradeflow_*.py -q` 或等价测试通过。
+- **代码标注要求**：`# [DATA-015] limit_up_pool_fallback`
+
+### DATA-016: 热门股票 cn_astock fallback 与 fixture（P2）
+- **描述**：为热门股票/热搜/市场关注度数据增加 cn_astock/Eastmoney fallback 和 fixture，避免短线情绪源单点失效。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：`DATA-005`、`DATA-P0-FUND-ROUTE` 完成 ✓。
+- **执行约束**：
+  - 不把热度当作政策证据。
+  - 不全市场高频轮询。
+  - 不输出买卖建议。
+- **实现要点**：
+  1. provider 层补充热门股票/热搜 fallback 方法。
+  2. source_catalog 增加字段、freshness 和 fallback priority。
+  3. fixture 覆盖成功、空结果、限流、fallback 成功、全部失败。
+  4. TradeFlow 候选只把热度作为弱证据或排序辅助。
+- **验收方式**：
+  - 热门股票失败不会导致候选池整体失败。
+  - 新闻/政策证据与热门热度证据不混用。
+  - `pytest tests/test_data_source_replay.py tests/test_tradeflow_*.py tests/test_s006_false_positive_audit.py -q` 或等价测试通过。
+- **代码标注要求**：`# [DATA-016] hot_stock_fallback`
 
 ---
 
@@ -2106,8 +2274,8 @@
 ### V-001: 600584 数据真实性端到端验收（P1）
 - **描述**：在 G-007/G-008 收口后，用 600584.SH 做一次低成本验收，确认当天行情补齐、raw evidence、资金/LHB 口径、估值旧价拦截都能在报告或结果 metadata 中看见。
 - **优先级**：P1
-- **状态**：blocked
-- **前置条件**：`G-009`、`G-010`、`N-002`、`N-003` 完成。
+- **状态**：ready
+- **前置条件**：`G-009`、`G-010`、`N-002`、`N-003` 完成 ✓。
 - **执行约束**：
   - 默认只跑低成本/轻量路径；不要用 DeepSeek。
   - 不自动全市场扫描。
@@ -2524,9 +2692,9 @@
 
 ### T-004: TradeFlow P2 盘中 Observe
 - **描述**：对候选池做盘中低频触发检查，发现突破触发价、跌破失效价、异常放量等事件。
-- **优先级**：中
-- **状态**：blocked
-- **前置条件**：T-001/T-002 稳定运行后再做。
+- **优先级**：P1（本轮提升；用户反馈盘中观察无数据/需手动执行，阻塞 TradeFlow 日常使用）
+- **状态**：ready
+- **前置条件**：`TF-OBS-001`、`T-008` 完成 ✓。
 - **实现要点**：
   - 默认静默，只在触发条件满足时记录 signal。
   - 先不自动推送飞书，不自动调用 TA。
@@ -2537,9 +2705,9 @@
 
 ### T-005: TradeFlow P3 盘后 Review
 - **描述**：复盘候选池信号是否有效，记录命中率、误报率、继续观察/移除理由。
-- **优先级**：中
-- **状态**：blocked
-- **前置条件**：盘前 Plan 和盘中 Observe 有稳定信号记录。
+- **优先级**：P1（本轮提升；用户反馈盘后 Review 无数据，阻塞候选池质量闭环）
+- **状态**：ready
+- **前置条件**：`M-007`、`T-008`、`V-005` 完成 ✓。
 - **验证方式**：
   - 每日可输出候选复盘表。
   - 对失效候选给出明确移除原因。
