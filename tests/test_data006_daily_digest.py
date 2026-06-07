@@ -225,8 +225,8 @@ class TestBuildDailyDigest:
         digest = build_daily_digest(report=report)
         assert digest.replay_status == "COMPLETED"
         assert digest.replay_report_available is True
-        assert digest.total_fixtures == 7
-        assert digest.total_passed == 7
+        assert digest.total_fixtures == len(ALL_FIXTURE_IDS)
+        assert digest.total_passed == len(ALL_FIXTURE_IDS)
         assert digest.total_failed == 0
         assert digest.all_passed is True
         assert len(digest.data_type_healths) > 0

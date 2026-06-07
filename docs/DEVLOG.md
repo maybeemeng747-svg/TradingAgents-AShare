@@ -4,6 +4,64 @@
 
 ---
 
+## 2026-06-07 | M-012 fix: 修复 test_from_replay_report_all_pass 断言
+
+- **执行者**：OpenCode
+- **任务**：M-012 fix — `test_from_replay_report_all_pass` 中 `total_fixtures` 硬编码为 7，但 `ALL_FIXTURE_IDS` 已扩展至 13 个 fixture，导致断言失败。
+- **修改文件**：
+  - `tests/test_data006_daily_digest.py` — 将 `assert digest.total_fixtures == 7` 和 `assert digest.total_passed == 7` 改为 `assert digest.total_fixtures == len(ALL_FIXTURE_IDS)` 和 `assert digest.total_passed == len(ALL_FIXTURE_IDS)`，与 `test_data005` 的做法保持一致。
+- **测试**：74 passed (test_data006_daily_digest.py 全部通过)
+
+---
+
+## 2026-06-07 | M-012: 任务池空转时自动生成 proposed 任务草案
+
+- **执行者**：OpenCode
+- **任务**：M-012 — 当 `docs/TASKS.md` 没有 ready 任务时，自动开发链不再空转退出，而是生成一批 `proposed` 任务草案和原因，等待 Codex/用户审核后释放为 ready。
+- **修改文件**：
+  - `scripts/suggest_next_tasks.py` — **新建**：[M-012] task_pool_suggestion
+    - `TaskInfo` 数据类：task_id / title / priority / status / body / dependencies / section_header
+    - `ProposedSuggestion` 数据类：suggested_id / title / priority / source_reason / description / dependencies / acceptance / risks / section
+    - `parse_all_tasks()`：解析 TASKS.md 全部任务（ID / 标题 / 状态 / 优先级 / 依赖）
+    - `parse_ready_tasks()` / `parse_done_task_ids()` / `parse_blocked_tasks()` / `parse_proposed_tasks()`：按状态分类
+    - `parse_roadmap_phases()`：解析 ROADMAP.md 的 Phase 结构，提取每个 Phase 的关键任务列表
+    - `get_recent_task_runs()`：获取最近 N 个 task_runs 目录名
+    - `_deps_satisfied()`：检查依赖是否全部在 done_ids 中
+    - `_is_dev_task()`：排除巡检/临时任务（R-*/AUTO-*/T-000）
+    - `generate_suggestions()`：核心逻辑 — 有 ready 任务时返回空；无 ready 时扫描 blocked（依赖已满足）→ 排除 done/ready/in_progress/proposed → 生成建议；全部无建议时 fallback 输出 blocked 任务
+    - `render_suggestions_report()`：Markdown 报告渲染，含建议表格 + 每个建议详情 + 下一步指引
+    - `run_suggest()`：主入口，支持 --dry-run / --date / --repo-dir
+    - 输出到 `docs/task_suggestions/YYYY-MM-DD.md`
+  - `scripts/auto_dev_loop.sh` — [M-012]
+    - 无 ready 任务退出前，调用 `suggest_next_tasks.py` 生成建议
+    - 支持 --dry-run 模式下也调用 --dry-run
+    - 输出建议文件路径到日志
+  - `tests/test_m012_suggest_next_tasks.py` — 新建，53 个测试覆盖：
+    - `TestTaskInfo` (2): 默认值 / 赋值
+    - `TestProposedSuggestion` (2): 默认值 / 赋值
+    - `TestParseAllTasks` (6): 空/不存在/解析/状态/依赖/优先级
+    - `TestParseHelpers` (4): ready/done/blocked/proposed 分类
+    - `TestParseRoadmapPhases` (3): 不存在/解析/空
+    - `TestGetRecentTaskRuns` (3): 不存在/目录列表/limit
+    - `TestDepsSatisfied` (4): 无依赖/全部满足/部分/无
+    - `TestIsDevTask` (5): 正常/排除前缀/排除ID
+    - `TestGenerateSuggestions` (7): 有ready返回空/无ready生成/blocked依赖满足/blocked依赖不满足/无重复/roadmap原因/优先级排序
+    - `TestRenderSuggestionsReport` (5): 有ready/无建议/有建议/不修改TASKS/无敏感数据
+    - `TestRunSuggest` (5): dry-run/写文件/有ready/空TASKS/创建目录
+    - `TestAcceptanceM012` (7): 全部验收标准
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：53 passed (M-012)；136 passed (tradeflow 回归)；49 passed (API smoke 回归)；256 passed (H-series 回归)；0 failed
+- **关键逻辑**：
+  - 静态分析：纯 ROADMAP + TASKS + DEVLOG 文本分析，不调用 LLM
+  - 依赖检查：blocked 任务的依赖全部在 done_ids 中时，建议转为 ready
+  - Roadmap 关联：建议理由包含 Roadmap Phase 归属
+  - 排除逻辑：不重复建议 proposed 任务、不包含 done/ready/in_progress
+  - 报告输出到 `docs/task_suggestions/YYYY-MM-DD.md`，不修改 TASKS.md 状态
+  - auto_dev_loop.sh 无 ready 时自动调用，提示用户查看建议
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-07 | H-010: 政策主题生命周期与版本状态注册表
 
 - **执行者**：OpenCode
@@ -2939,3 +2997,21 @@
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Test failed: pytest tests/test_h006_mandate_replay*.py tests/test_h004_mandate_ambush*.py tests/test_v004_mandate_e2e_smoke.py -q (exit 4)
 - **Run archive**: docs/task_runs/H-009-20260604-135113/
+
+## 2026-06-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-010 - 政策主题生命周期与版本状态注册表（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/H-010-20260607-225838/
+
+## 2026-06-07 | AUTO-002 Auto Dev Loop
+
+- **Task**: M-012 - 任务池空转时自动生成 proposed 任务草案（P1）
+- **Priority**: P1
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/M-012-20260607-231054/

@@ -291,7 +291,25 @@ TASK_PRIO=$(echo "$TASK_LINE" | cut -d'|' -f3)
 TASK_TESTS=$(echo "$TASK_LINE" | cut -d'|' -f4)
 
 if [ "$TASK_ID" = "NONE" ]; then
-    log "No status=ready tasks found, exiting."
+    log "No status=ready tasks found."
+    # [M-012] task_pool_suggestion: generate proposed task suggestions
+    SUGGEST_SCRIPT="$SCRIPT_DIR/suggest_next_tasks.py"
+    if [ -f "$SUGGEST_SCRIPT" ]; then
+        log "Generating task suggestions..."
+        SUGGEST_ARGS=""
+        if [ "$DRY_RUN" = true ]; then
+            SUGGEST_ARGS="--dry-run"
+        fi
+        set +e
+        python3 "$SUGGEST_SCRIPT" $SUGGEST_ARGS 2>&1 | tail -5
+        set -e
+        SUGGEST_DIR="$REPO_DIR/docs/task_suggestions"
+        SUGGEST_FILE="$SUGGEST_DIR/$(date +%Y-%m-%d).md"
+        if [ -f "$SUGGEST_FILE" ]; then
+            log "Suggestions saved: $SUGGEST_FILE"
+            log "Review and promote proposed tasks to ready in docs/TASKS.md"
+        fi
+    fi
     break
 fi
 
