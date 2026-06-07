@@ -4,6 +4,96 @@
 
 ---
 
+## 2026-06-08 | T-008: TradeFlow 观察信号 fixture 回放与前端状态一致性验收
+
+- **执行者**：OpenCode
+- **任务**：T-008 — 在不启用真实盘中盯盘的情况下，用 fixture 回放验证 Observe 状态机、signals 落库、API 和前端显示一致，避免候选池有票但盘中观察页空白或状态断裂。
+- **修改文件**：
+  - `tradingagents/tradeflow/observe_fixture_replay.py` — **新建**：[T-008] observe_fixture_replay
+    - 5 个 fixture 场景：`waiting_not_triggered` / `triggered` / `invalidated` / `stale_quote` / `non_trading_day_cross_date`
+    - `ObserveFixtureResult` 数据类：fixture_id / symbol / trade_date / plan_date / effective_trade_date / observe_state / current_price / trigger_reason / data_status / signal_count / signal_evidence
+    - `get_fixture()` / `replay_fixture()` / `replay_all()` 回放入口
+    - `_make_quote_provider()` fixture 行情注入
+    - `_read_signals()` / `_read_candidate_observe_state()` DB 读取验证
+    - `validate_state_consistency()` 后端状态校验
+    - `validate_api_frontend_consistency()` 前后端枚举一致性校验
+    - 使用 `unittest.mock.patch(_is_trading_day)` 确保不依赖真实交易日历
+  - `tests/test_t008_observe_fixture_replay.py` — **新建**，84 个测试覆盖：
+    - `TestFixtureExistence` (8): 5个fixture存在性 + 参数化字段检查 + 有效状态校验
+    - `TestWaitingNotTriggered` (5): WAITING状态 / signal写入 / current_price / trigger_reason / evidence
+    - `TestTriggered` (6): TRIGGERED状态 / signal / price / reason / rise_pct / data_status
+    - `TestInvalidated` (6): INVALIDATED状态 / signal / price / reason / breach_pct / data_status
+    - `TestStaleQuote` (5): STALE状态 / 无signal / WAITING不变 / skipped / current_price=None
+    - `TestNonTradingDayCrossDate` (5): TRIGGERED / plan_date!=effective / 周末 / signal / candidate查找
+    - `TestReplayAll` (5): 5个count / 无error / 唯一symbol / 有效状态 / fixture_id顺序
+    - `TestStateConsistency` (5): backend枚举完整 / validate无issue / API一致性 / pydantic默认 / Candidate默认
+    - `TestSignalPersistence` (5): triggered/invalidated/waiting类型 / evidence_json / stale无signal
+    - `TestAPIGetObserveIntegration` (5): 状态 / current_price / trigger_reason / counts / cross_date
+    - `TestFrontendStateMatching` (6): 后端=前端枚举 / 4个状态参数化 / pydantic默认
+    - `TestDateSemantics` (3): cross_date / trade_date / both_dates_stored
+    - `TestObserveFixtureResult` (3): defaults / to_dict / roundtrip
+    - `TestAcceptanceT008` (8): 全部验收标准
+  - `docs/TASKS.md` — T-008 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：84 passed (T-008)；159 passed (M-005+TF-OBS-001+T-008 回归)；136 passed (tradeflow 全部回归)；49 passed (API smoke)；npm run build 通过；0 failed
+- **关键逻辑**：
+  - 5 类 fixture 覆盖所有 observe 状态转换：WAITING(价格在区间内) / TRIGGERED(突破触发价) / INVALIDATED(跌破失效价) / STALE(无实时行情) / cross-date(非交易日生成→下一交易日生效并触发)
+  - `replay_fixture()` 完整流程：构造候选→注入行情→run_observe()→读取候选状态→读取signals→返回ObserveFixtureResult
+  - 状态一致性验证：backend ObserveState {WAITING,TRIGGERED,INVALIDATED,EXPIRED} == frontend 状态字符串集合
+  - API get_observe() 集成：replay 后调用 get_observe() 验证 current_price/trigger_reason/observe_state 正确返回
+  - TF-DATE-001 语义一致：cross_date fixture 验证 plan_date(2026-05-31 周日) → effective_trade_date(2026-06-01) 观察日正确触发
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未拉 live 行情、未启动 scheduler
+
+## 2026-06-08 | UI-010: 昊天候选对比视图与证据缺口排序
+
+- **执行者**：OpenCode
+- **任务**：UI-010 — 在 TradeFlow 前端增加候选对比视图，按政策主题、受益路径、证据覆盖率、反证风险和下一步验证条件排序，帮助用户从少量昊天候选中挑重点研究对象。
+- **修改文件**：
+  - `api/services/tradeflow_service.py` — [UI-010] mandate_candidate_compare
+    - 新增 `get_candidate_comparison()` 服务函数：按 7 种排序维度（mandate_score/ambush_score/evidence_coverage/counter_evidence_count/evidence_gap_count/topic_lifecycle_state/company_role）对候选排序
+    - `_counter_evidence_severity()` 辅助函数：累加反证 severity 分数
+    - `_topic_lifecycle_order()` 辅助函数：生命周期状态映射为排序序号（EMERGING→0, FADING→5）
+    - 支持 pool 过滤（haotian/policy/tech/event/gap/all）
+    - 支持 asc/desc 排序方向
+  - `api/tradeflow_schemas.py` — [UI-010]
+    - 新增 `TradeFlowCompareResponse` Pydantic model：candidates/sort_by/sort_order/total/runtime_tier_meta
+  - `api/main.py` — [UI-010]
+    - 新增 `GET /v1/tradeflow/candidates/compare` 端点，支持 date/sort_by/sort_order/pool 参数
+  - `frontend/src/types/index.ts` — [UI-010]
+    - 新增 `TradeFlowCompareResponse` TypeScript interface
+    - 补全 `TradeFlowCandidateItem` 缺失的 H-009/H-010/H-011 字段：counter_evidence/overheat_flags/downgrade_reasons/what_would_change_mind/topic_lifecycle_state/topic_lifecycle_reason/topic_last_signal_date/topic_signal_count/contradiction_level/contradiction_items/blocking_evidence_gaps/next_verification_steps
+  - `frontend/src/services/api.ts` — [UI-010]
+    - 新增 `getTradeFlowCandidatesCompare()` API 方法
+  - `frontend/src/pages/TradeFlow.tsx` — [UI-010] mandate_candidate_compare
+    - 新增 `compare` TabKey 和"候选对比"Tab
+    - 新增 `CompareTab` 组件：7 种排序按钮 + 13 列对比表格（代码/名称/类型/层级/昊天分/埋伏分/政策主题/公司角色/主题周期/覆盖率/反证/证据缺口/验证步骤）
+    - 新增辅助函数：`companyRoleLabel()`/`topicLifecycleLabel()`/`counterEvidenceSummary()`/`gapsSummary()`
+    - Tab 栏新增 GitCompare 图标
+    - 排序切换时即时重新拉取数据
+  - `tests/test_ui010_candidate_compare.py` — 新建，36 个测试覆盖：
+    - `TestCounterEvidenceSeverity` (5): empty/single/multiple/no_severity/mixed
+    - `TestTopicLifecycleOrder` (8): 全部 6 状态 + empty + unrecognized
+    - `TestGetCandidateComparisonNoDb` (1): 无数据库返回 no_data
+    - `TestGetCandidateComparisonWithDb` (9): mandate_score desc/asc/ambush_score/coverage/lifecycle/company_role/invalid_key/no_internal_keys/empty
+    - `TestGetCandidateComparisonWithCounterEvidence` (2): counter_evidence/gap_count 排序
+    - `TestGetCandidateComparisonPoolFilter` (3): haotian/tech/all
+    - `TestAcceptanceUI010` (8): 三只候选排序稳定/覆盖率排序/反证排序/缺口最少优先/runtime_tier_meta/长文本/无强买卖词/空字段默认值
+  - `docs/TASKS.md` — UI-010 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：36 passed (UI-010)；244 passed (tradeflow 回归)；1542 passed (H-series + DATA-series + tradeflow 全部回归)；npm run build 通过；0 failed
+- **关键逻辑**：
+  - 后端 `GET /v1/tradeflow/candidates/compare`：纯排序服务，不调用 LLM，不写 DB，复用已有 `_row_to_candidate_item()` 和 `_query_by_date_or_effective()`
+  - 7 种排序维度：政策强度(mandate_score)/埋伏分(ambush_score)/覆盖率(evidence_coverage)/反证风险(counter_evidence_count)/缺口最少(evidence_gap_count)/主题周期(topic_lifecycle_state)/公司角色(company_role)
+  - 反证风险排序：累加 severity 分数，分数越高风险越大
+  - 生命周期排序：EMERGING→0 优先，FADING→5 最后
+  - 默认按昊天左侧池（haotian）过滤，减少噪声
+  - 前端排序按钮即时切换，点击行打开详情抽屉
+  - 空字段显示 `--`/`未验证`/`缺证据`，不显示空白
+  - 长文本（证据缺口/验证步骤）压缩为短标签，hover 显示完整
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-08 | M-013 fix: CodeGraph 影响范围预检代码质量修复
 
 - **执行者**：OpenCode
@@ -3224,3 +3314,12 @@
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex review failed with exit 1
 - **Run archive**: docs/task_runs/M-013-20260607-235926/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: UI-010 - 昊天候选对比视图与证据缺口排序（P2）
+- **Priority**: P2
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/UI-010-20260608-001244/
