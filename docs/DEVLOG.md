@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-06-08 | M-013 fix: CodeGraph 影响范围预检代码质量修复
+
+- **执行者**：OpenCode
+- **任务**：M-013 fix — Codex review exit code 1 后代码质量修复（实际根因为 Codex config.toml 的 `service_tier` 配置错误，非代码问题）
+- **修复内容**：
+  1. `scripts/codegraph_preflight.py:107` — `except Exception` 收窄为 `except OSError`，避免掩盖逻辑错误
+  2. `scripts/codegraph_preflight.py:347` — 变量名 `l` 改为 `line`，提升可读性
+  3. `scripts/codegraph_preflight.py:178-180` — `generate_context()` 增加 `os.makedirs(run_dir, exist_ok=True)`，修复目录不存在时 FileNotFoundError
+  4. `scripts/codegraph_preflight.py:335-338` — 修复 `total_impact_files` 计数逻辑：从遍历 `impact_lines` 列表改为先 `splitlines()` 再逐行匹配 `  →` / `  -` 前缀，修复多行输出只计数为 1 的 bug
+  5. `scripts/codegraph_preflight.py:339-342` — 修复 `codegraph affected` 命令：从 `--stdin`（未管道输入）改为传递 `changed_files` 位置参数
+  6. `scripts/auto_dev_loop.sh` — [M-013] 集成 CodeGraph preflight pre/post hooks：任务领取后跑 `codegraph_preflight.py pre`，测试通过后跑 `codegraph_preflight.py post`
+  7. `tests/test_m013_codegraph_preflight.py` — **新建**，38 个测试覆盖：CodeGraphStatus/PreflightResult 数据类、_run_cmd、check_codegraph_available、关键词提取、context 生成、impact 生成、CLI、验收标准
+- **测试结果**：38 passed (M-013)；4335 passed (全量回归)；0 failed
+- **根因分析**：Codex review exit code 1 由 `config.toml: unknown variant 'default' in 'service_tier'` 导致，非本任务代码缺陷。但审查中发现 codegraph_preflight.py 有 5 处代码质量问题（宽异常、单字母变量、目录缺失、计数逻辑、stdin 管道）和集成缺失（auto_dev_loop.sh 未接入 hooks）
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-07 | H-011: 候选矛盾证据与负面清单解释
 
 - **执行者**：OpenCode
@@ -3197,3 +3215,12 @@
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Codex review failed with exit 1
 - **Run archive**: docs/task_runs/H-011-20260607-234742/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: M-013 - CodeGraph 影响范围预检接入自动开发日志（P2）
+- **Priority**: P2
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Codex review failed with exit 1
+- **Run archive**: docs/task_runs/M-013-20260607-235926/

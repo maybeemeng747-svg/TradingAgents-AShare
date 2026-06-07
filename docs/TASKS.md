@@ -1659,7 +1659,7 @@
 ### M-013: CodeGraph 影响范围预检接入自动开发日志（P2）
 - **描述**：把 CodeGraph 的 symbol/context/impact 输出接入每个任务的运行档案，帮助 OpenCode 开发前知道影响范围，也方便 Codex review 时检查调用方覆盖。
 - **优先级**：P2
-- **状态**：in_progress — claimed M-013-20260607-235926
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/M-013-20260607-235926
 - **前置条件**：`INF-001` 完成 ✓；CodeGraph 已本地安装或可优雅跳过。
 - **执行约束**：
   - CodeGraph 不可用时不能阻塞任务执行，只记录 `SKIPPED`。
