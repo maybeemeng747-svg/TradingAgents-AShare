@@ -27,6 +27,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_zt_pool,
     get_hot_stocks_xq,
     get_announcements,
+    get_margin_trading,  # [DATA-010] margin_trading_raw_evidence
 )
 from tradingagents.dataflows.interface import get_last_hit_vendor  # [N-003] cn_astock_raw_evidence
 from tradingagents.dataflows.evidence_contract import (  # [DATA-004] raw_evidence_contract
@@ -413,6 +414,7 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
         "zt_pool": (get_zt_pool, {"date": trade_date}),
         "hot_stocks": (get_hot_stocks_xq, {}),
         "announcements": (get_announcements, {"symbol": ticker}),  # [DATA-P0-603629] astock_source_fallback
+        "margin_trading": (get_margin_trading, {"symbol": ticker}),  # [DATA-010] margin_trading_raw_evidence
     }
 
     # 财务报表类数据始终拉取，Research Manager 根据 horizon 自行判断权重
@@ -620,6 +622,8 @@ class DataCollector:
             "insider_transactions", "zt_pool", "hot_stocks",
             "indicators", "vpa_indicators",
             "announcements",  # [DATA-P0-603629] astock_source_fallback
+            "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+            "research_report",  # [DATA-011] research_report_raw_evidence
         ]
 
         raw_evidence: Dict[str, Any] = {}
@@ -688,6 +692,14 @@ class DataCollector:
                 entry["unit"] = "股"
             elif key == "announcements":  # [DATA-P0-603629] astock_source_fallback
                 actual_vendor = get_last_hit_vendor("get_announcements")
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key == "margin_trading":  # [DATA-010] margin_trading_raw_evidence
+                actual_vendor = get_last_hit_vendor("get_margin_trading")
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key == "research_report":  # [DATA-011] research_report_raw_evidence
+                actual_vendor = get_last_hit_vendor("get_research_report")
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
 

@@ -184,6 +184,7 @@ def calculate_evidence_coverage(
     lhb_status: str = "not_queried",
     margin_trading: str = "not_queried",
     announcements: str = "not_queried",
+    research_report: str = "not_queried",
 ) -> int:
     """
     计算原始证据覆盖度（0-100%）。
@@ -195,6 +196,7 @@ def calculate_evidence_coverage(
     items = [
         ohlcv_5d, volume, turnover_rate, volume_ratio,
         individual_fund_flow, lhb_status, margin_trading, announcements,
+        research_report,
     ]
     # Exclude NOT_AVAILABLE fields from denominator (data source doesn't provide them)
     counted = [s for s in items if s not in _EXCLUDE_FROM_COVERAGE]
@@ -1245,8 +1247,18 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
     # 7. Margin trading (融资融券) — check raw_evidence margin_trading field
     # [DATA-010] margin_trading_raw_evidence
     margin_trading = EvidenceStatus.NOT_QUERIED
-    raw_margin = _unwrap_raw(raw.get("margin_trading"))
-    if raw_margin is not None:
+    raw_margin_entry = raw.get("margin_trading")
+    # Check structured status first (P2: honor structured contract status)
+    if isinstance(raw_margin_entry, dict) and "status" in raw_margin_entry:
+        struct_status = raw_margin_entry["status"]
+        if struct_status == "HAS_DATA":
+            margin_trading = EvidenceStatus.HAS_DATA
+        elif struct_status == "FAILED":
+            margin_trading = EvidenceStatus.QUERY_FAILED
+        elif struct_status in ("NORMAL_NO_DATA", "NO_DATA"):
+            margin_trading = EvidenceStatus.NORMAL_NO_DATA
+    raw_margin = _unwrap_raw(raw_margin_entry)
+    if margin_trading == EvidenceStatus.NOT_QUERIED and raw_margin is not None:
         if isinstance(raw_margin, str) and "MARGIN_HAS_DATA" in raw_margin:
             margin_trading = EvidenceStatus.HAS_DATA
         elif isinstance(raw_margin, str) and "MARGIN_FAILED" in raw_margin:
@@ -1278,6 +1290,26 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
         elif news.strip():
             announcements = EvidenceStatus.FIELD_MISSING
 
+    # 9. Research reports — check raw_evidence research_report field
+    # [DATA-011] research_report_raw_evidence
+    research_report = EvidenceStatus.NOT_QUERIED
+    raw_report = _unwrap_raw(raw.get("research_report"))
+    if raw_report is not None:
+        if isinstance(raw_report, str) and "REPORT_HAS_DATA" in raw_report:
+            research_report = EvidenceStatus.HAS_DATA
+        elif isinstance(raw_report, str) and "REPORT_FAILED" in raw_report:
+            research_report = EvidenceStatus.QUERY_FAILED
+        elif isinstance(raw_report, str) and ("REPORT_NORMAL_NO_DATA" in raw_report or "无券商研报" in raw_report):
+            research_report = EvidenceStatus.NORMAL_NO_DATA
+        elif isinstance(raw_report, str) and len(raw_report) > 20:
+            research_report = EvidenceStatus.HAS_DATA
+        elif isinstance(raw_report, str) and "失败" in raw_report:
+            research_report = EvidenceStatus.QUERY_FAILED
+        elif raw_report:
+            research_report = EvidenceStatus.HAS_DATA
+        else:
+            research_report = EvidenceStatus.NORMAL_NO_DATA
+
     return {
         "ohlcv_5d": ohlcv_5d,
         "volume": volume,
@@ -1287,6 +1319,7 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
         "lhb_status": lhb_status,
         "margin_trading": margin_trading,
         "announcements": announcements,
+        "research_report": research_report,
     }
 
 

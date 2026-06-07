@@ -99,6 +99,7 @@ def test_full_evidence_coverage_100():
         lhb_status=EvidenceStatus.HAS_DATA,
         margin_trading=EvidenceStatus.HAS_DATA,
         announcements=EvidenceStatus.HAS_DATA,
+        research_report=EvidenceStatus.HAS_DATA,
     )
     assert ev == 100
 
@@ -114,8 +115,9 @@ def test_normal_no_data_counts_as_half():
         lhb_status=EvidenceStatus.NORMAL_NO_DATA,
         margin_trading=EvidenceStatus.NORMAL_NO_DATA,
         announcements=EvidenceStatus.NORMAL_NO_DATA,
+        research_report=EvidenceStatus.NORMAL_NO_DATA,
     )
-    assert ev == 50  # 8 fields * 0.5 weight / 8 = 50%
+    assert ev == 50  # 9 fields * 0.5 weight / 9 = 50%
 
 
 def test_query_failed_not_counted_as_valid():
@@ -128,8 +130,9 @@ def test_query_failed_not_counted_as_valid():
         lhb_status=EvidenceStatus.QUERY_FAILED,
         margin_trading=EvidenceStatus.HAS_DATA,
         announcements=EvidenceStatus.HAS_DATA,
+        research_report=EvidenceStatus.HAS_DATA,
     )
-    assert ev == 87
+    assert ev == 88  # 8*1.0 + 1*0.0 / 9 = 88%
 
 
 # ── Test 4: source_coverage or evidence_coverage < 70 → strong action blocked ──

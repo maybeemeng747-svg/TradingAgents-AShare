@@ -48,3 +48,11 @@ def get_announcements(
 ) -> str:
     """获取个股近期公告列表（来自巨潮资讯网 cninfo），包括风险提示、减持、问询函等关键公告。symbol 格式如 600519.SH。"""
     return route_to_vendor("get_announcements", symbol)
+
+
+@tool  # [DATA-010] margin_trading_raw_evidence
+def get_margin_trading(
+    symbol: Annotated[str, "股票代码，格式如 600519.SH"],
+) -> str:
+    """获取个股融资融券数据，包括融资余额、融券余额、融资买入额等。symbol 格式如 600519.SH。"""
+    return route_to_vendor("get_margin_trading", symbol)
