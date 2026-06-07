@@ -155,6 +155,10 @@ def _row_to_candidate_item(row: sqlite3.Row) -> dict:
         "overheat_flags": _parse_json(_rget(row, "overheat_flags_json"), []),  # [H-009]
         "downgrade_reasons": _parse_json(_rget(row, "downgrade_reasons_json"), []),  # [H-009]
         "what_would_change_mind": _parse_json(_rget(row, "what_would_change_mind_json"), []),  # [H-009]
+        "topic_lifecycle_state": _rget(row, "topic_lifecycle_state", ""),  # [H-010] mandate_topic_lifecycle
+        "topic_lifecycle_reason": _rget(row, "topic_lifecycle_reason", ""),  # [H-010]
+        "topic_last_signal_date": _rget(row, "topic_last_signal_date", ""),  # [H-010]
+        "topic_signal_count": _rget(row, "topic_signal_count", 0) or 0,  # [H-010]
         "created_at": _rget(row, "created_at", ""),
         "updated_at": _rget(row, "updated_at", ""),
     }

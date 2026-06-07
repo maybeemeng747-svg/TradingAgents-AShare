@@ -101,6 +101,10 @@ class TradeFlowCandidateItem(BaseModel):
     overheat_flags: List[str] = Field(default_factory=list)  # [H-009]
     downgrade_reasons: List[str] = Field(default_factory=list)  # [H-009]
     what_would_change_mind: List[str] = Field(default_factory=list)  # [H-009]
+    topic_lifecycle_state: str = ""  # [H-010] mandate_topic_lifecycle
+    topic_lifecycle_reason: str = ""  # [H-010] mandate_topic_lifecycle
+    topic_last_signal_date: str = ""  # [H-010] mandate_topic_lifecycle
+    topic_signal_count: int = 0  # [H-010] mandate_topic_lifecycle
     created_at: str = ""
     updated_at: str = ""
 

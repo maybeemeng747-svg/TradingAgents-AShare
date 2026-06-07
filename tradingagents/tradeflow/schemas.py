@@ -142,6 +142,10 @@ class Candidate:
     overheat_flags: list[str] = field(default_factory=list)  # [H-009]
     downgrade_reasons: list[str] = field(default_factory=list)  # [H-009]
     what_would_change_mind: list[str] = field(default_factory=list)  # [H-009]
+    topic_lifecycle_state: str = ""  # [H-010] mandate_topic_lifecycle
+    topic_lifecycle_reason: str = ""  # [H-010] mandate_topic_lifecycle
+    topic_last_signal_date: str = ""  # [H-010] mandate_topic_lifecycle
+    topic_signal_count: int = 0  # [H-010] mandate_topic_lifecycle
 
     def __post_init__(self):
         if not self.trade_date:
@@ -283,6 +287,10 @@ class Candidate:
             "overheat_flags_json": json.dumps(self.overheat_flags, ensure_ascii=False),  # [H-009]
             "downgrade_reasons_json": json.dumps(self.downgrade_reasons, ensure_ascii=False),  # [H-009]
             "what_would_change_mind_json": json.dumps(self.what_would_change_mind, ensure_ascii=False),  # [H-009]
+            "topic_lifecycle_state": self.topic_lifecycle_state,  # [H-010] mandate_topic_lifecycle
+            "topic_lifecycle_reason": self.topic_lifecycle_reason,  # [H-010]
+            "topic_last_signal_date": self.topic_last_signal_date,  # [H-010]
+            "topic_signal_count": self.topic_signal_count,  # [H-010]
             "updated_at": datetime.now().isoformat(),
         }
 
@@ -384,6 +392,10 @@ class Candidate:
             overheat_flags=json.loads(row.get("overheat_flags_json", "[]")),  # [H-009]
             downgrade_reasons=json.loads(row.get("downgrade_reasons_json", "[]")),  # [H-009]
             what_would_change_mind=json.loads(row.get("what_would_change_mind_json", "[]")),  # [H-009]
+            topic_lifecycle_state=row.get("topic_lifecycle_state", ""),  # [H-010] mandate_topic_lifecycle
+            topic_lifecycle_reason=row.get("topic_lifecycle_reason", ""),  # [H-010]
+            topic_last_signal_date=row.get("topic_last_signal_date", ""),  # [H-010]
+            topic_signal_count=row.get("topic_signal_count", 0),  # [H-010]
         )
 
 

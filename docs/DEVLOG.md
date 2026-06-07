@@ -4,6 +4,58 @@
 
 ---
 
+## 2026-06-07 | H-010: 政策主题生命周期与版本状态注册表
+
+- **执行者**：OpenCode
+- **任务**：H-010 — 建立政策主题生命周期注册表，区分新主题萌芽、升温加速、兑现确认、拥挤过热、退潮衰减，帮助昊天雷达判断当前主题适合左侧埋伏、右侧确认还是仅观察。
+- **修改文件**：
+  - `tradingagents/tradeflow/topic_lifecycle.py` — **新建**：[H-010] mandate_topic_lifecycle
+    - `TopicLifecycleState` 枚举：EMERGING / ACCELERATING / CONFIRMING / CROWDED / FADING / UNKNOWN
+    - `TopicLifecycleEntry` 数据类：topic / state / signal_count / unique_dates / unique_sources / last_signal_date / has_policy_document / has_high_authority / is_noise / mandate_score / heat_delta / overheat_flags / update_count
+    - `TopicLifecycleResult` 数据类：topic_lifecycle_state / topic_lifecycle_reason / topic_last_signal_date / topic_signal_count / is_left_side_suitable / is_observe_only / lifecycle_label
+    - `TopicLifecycleRegistry` 注册表：内存级 topic→state 映射，支持 update_entry 自动触发分类
+    - `_classify_lifecycle_state()` 核心分类逻辑：基于信号数量/天数/来源/政策文件/权威级别/热度变化/过热标记判定状态
+    - `evaluate_topic_lifecycle()` 主函数：评估主题生命周期，支持自定义或默认注册表
+    - `apply_lifecycle_to_candidate()` 候选联动函数：CROWDED/FADING 时降级 A→B
+    - 左侧优先规则：EMERGING/ACCELERATING → is_left_side_suitable=True；CROWDED/FADING → is_observe_only=True
+  - `tradingagents/tradeflow/schemas.py` — [H-010]
+    - `Candidate` 新增 4 字段：topic_lifecycle_state / topic_lifecycle_reason / topic_last_signal_date / topic_signal_count
+    - `to_db_row()` 新增 4 列输出
+    - `from_db_row()` 新增 4 列解析
+  - `tradingagents/tradeflow/candidate_engine.py` — [H-010]
+    - `_MISSING_COLUMNS` 新增 4 列
+    - `evaluate_symbol()` 新增主题生命周期评估步骤（在 H-009 反证之后、H-007 TA queue router 之前）
+    - 从 policy_evidence_refs 提取信号日期、来源数量、政策文件/高权威标记
+    - lifecycle_result 写入 candidate 字段和 evidence dict
+    - CROWDED/FADING 状态时 POLICY_AMBUSH 候选自动降级 tier
+    - `save_candidate()` INSERT 列数 95→99，ON CONFLICT UPDATE 新增 4 列
+  - `api/tradeflow_schemas.py` — [H-010]
+    - `TradeFlowCandidateItem` 新增 4 字段：topic_lifecycle_state / topic_lifecycle_reason / topic_last_signal_date / topic_signal_count
+  - `api/services/tradeflow_service.py` — [H-010]
+    - `_row_to_candidate_item()` 新增 4 字段映射
+  - `tests/test_h010_topic_lifecycle.py` — 新建，68 个测试覆盖：
+    - `TestTopicLifecycleState` (6): 六状态枚举/值/标签/左侧状态/观察状态
+    - `TestTopicLifecycleEntry` (3): 默认值/to_dict/roundtrip
+    - `TestTopicLifecycleResult` (3): 默认值/to_dict/含 entry roundtrip
+    - `TestTopicLifecycleRegistry` (8): 空/创建/更新/分类触发/全部/序列化/清空/过热
+    - `TestClassifyLifecycleState` (15): 全部状态分类：UNKNOWN/EMERGING/ACCELERATING/CONFIRMING/CROWDED/FADING 边界
+    - `TestBuildLifecycleReason` (7): 全部状态原因文本
+    - `TestEvaluateTopicLifecycle` (10): 无主题/孤立事件/多日政策/过热拥挤/退潮/注册表更新/默认注册表/左侧优先/非左侧
+    - `TestApplyLifecycleToCandidate` (6): A→B降级/B维持/C维持/空 tier/正常不降级
+    - `TestAcceptanceH010` (10): 全部验收标准
+  - `docs/TASKS.md` — H-010 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：68 passed (H-010)；248 passed (H-002/H-006/candidate_engine 回归)；332 passed (H-004/007/008/009/V-004 回归)；338 passed (TASKS.md 验收命令)；189 passed (tradeflow 全部)；0 failed
+- **关键逻辑**：
+  - 6 种生命周期状态：UNKNOWN(无信号) → EMERGING(1-2信号) → ACCELERATING(多日多源) → CONFIRMING(政策持续+高分) → CROWDED(过热标记) → FADING(热度下降+无新政策)
+  - 左侧埋伏优先：EMERGING/ACCELERATING 标记 is_left_side_suitable=True
+  - 观察约束：CROWDED/FADING 标记 is_observe_only=True，POLICY_AMBUSH 候选 A 层降级为 B 层
+  - 可解释输出：4 个字段全程可追溯
+  - 注册表支持跨候选共享主题状态
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-04 | H-009 fix: 修正验收命令中不存在的 test_h004_mandate_ambush 文件引用
 
 - **执行者**：OpenCode

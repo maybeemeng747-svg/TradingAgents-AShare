@@ -34,6 +34,7 @@ from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG  # [M-004]
 from .symbol_utils import normalize_tradeflow_symbol, resolve_tradeflow_name, symbol_bare_code, _looks_like_code  # [UI-008] tradeflow_field_normalization  [TF-P0-001] runtime_schema_name_observe_fix
 from .ambush_score import compute_ambush_score, AmbushScoreResult  # [H-004] mandate_ambush_score
 from .counter_evidence_calibration import evaluate_counter_evidence, CounterEvidenceCalibrationResult  # [H-009] mandate_counter_evidence_calibration
+from .topic_lifecycle import evaluate_topic_lifecycle, TopicLifecycleResult, apply_lifecycle_to_candidate  # [H-010] mandate_topic_lifecycle
 from .mandate_ta_queue_router import route_to_research_queue, QueueRouteResult  # [H-007] mandate_ta_queue_router
 from .mandate_watchlist_note import generate_watchlist_note, WatchlistNoteResult  # [H-008] mandate_watchlist_note
 
@@ -192,6 +193,11 @@ _MISSING_COLUMNS = [
     ("overheat_flags_json", "TEXT DEFAULT '[]'"),
     ("downgrade_reasons_json", "TEXT DEFAULT '[]'"),
     ("what_would_change_mind_json", "TEXT DEFAULT '[]'"),
+    # [H-010] mandate_topic_lifecycle
+    ("topic_lifecycle_state", "TEXT DEFAULT ''"),
+    ("topic_lifecycle_reason", "TEXT DEFAULT ''"),
+    ("topic_last_signal_date", "TEXT DEFAULT ''"),
+    ("topic_signal_count", "INTEGER DEFAULT 0"),
 ]
 
 
@@ -1059,6 +1065,52 @@ def evaluate_symbol(
                 candidate.tier_reason = f"[H-009反证降级]{ce_result.max_downgrade_tier}层; {candidate.tier_reason}"
     candidate.evidence["counter_evidence_calibration"] = ce_result.to_dict()
 
+    # [H-010] mandate_topic_lifecycle — evaluate topic lifecycle state
+    policy_refs = candidate.policy_evidence_refs or candidate.evidence.get("ambush_score", {}).get("ambush_evidence_refs", [])
+    last_signal_date = ""
+    signal_dates: set[str] = set()
+    for ref in policy_refs:
+        d = ref.get("date", "")
+        if d:
+            signal_dates.add(d)
+    if signal_dates:
+        last_signal_date = max(signal_dates)
+
+    has_policy_doc = any(
+        ref.get("source_level", "") in ("CENTRAL", "STATE_COUNCIL", "MINISTRY")
+        for ref in policy_refs
+    )
+    has_high_auth = any(
+        ref.get("source_level", "") in ("CENTRAL", "STATE_COUNCIL", "MINISTRY", "EXCHANGE", "SOE_GROUP")
+        for ref in policy_refs
+    )
+
+    lc_result: TopicLifecycleResult = evaluate_topic_lifecycle(
+        topic=candidate.mandate_topic,
+        signal_count=len(policy_refs) if policy_refs else 0,
+        unique_dates=len(signal_dates),
+        unique_sources=len(set(ref.get("source", "") for ref in policy_refs if ref.get("source"))),
+        last_signal_date=last_signal_date,
+        has_policy_document=has_policy_doc,
+        has_high_authority=has_high_auth,
+        is_noise=(len(signal_dates) <= 1 and len(policy_refs) <= 1),
+        mandate_score=candidate.mandate_score_component,
+        heat_delta=0.0,
+        overheat_flags=candidate.overheat_flags,
+    )
+    candidate.topic_lifecycle_state = lc_result.topic_lifecycle_state
+    candidate.topic_lifecycle_reason = lc_result.topic_lifecycle_reason
+    candidate.topic_last_signal_date = lc_result.topic_last_signal_date
+    candidate.topic_signal_count = lc_result.topic_signal_count
+
+    if lc_result.is_observe_only and candidate.candidate_type == "POLICY_AMBUSH":
+        new_tier, tier_reason_suffix = apply_lifecycle_to_candidate(lc_result, candidate.tier)
+        if new_tier != candidate.tier:
+            candidate.tier = new_tier
+            candidate.tier_reason = f"{tier_reason_suffix}; {candidate.tier_reason}"
+
+    candidate.evidence["topic_lifecycle"] = lc_result.to_dict()
+
     # [H-007] mandate_ta_queue_router — route candidate to research queue
     queue_result: QueueRouteResult = route_to_research_queue(
         candidate_type=candidate.candidate_type,
@@ -1159,9 +1211,11 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "research_queue, research_intent, research_route_reason, "
             "watchlist_note, watchlist_note_suggested, watchlist_topic, "
             "watchlist_benefit_score, watchlist_consensus_score, watchlist_evidence_gap_json, "
-            "counter_evidence_json, overheat_flags_json, downgrade_reasons_json, what_would_change_mind_json, "
+            "counter_evidence_json, overheat_flags_json, downgrade_reasons_json, "
+            "what_would_change_mind_json, "
+            "topic_lifecycle_state, topic_lifecycle_reason, topic_last_signal_date, topic_signal_count, "
             "created_at, updated_at) "
-            "VALUES ({}) ".format(",".join(["?"] * 95))
+            "VALUES ({}) ".format(",".join(["?"] * 99))
             + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
             "trigger_price=excluded.trigger_price, "
@@ -1242,6 +1296,10 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "overheat_flags_json=excluded.overheat_flags_json, "
             "downgrade_reasons_json=excluded.downgrade_reasons_json, "
             "what_would_change_mind_json=excluded.what_would_change_mind_json, "
+            "topic_lifecycle_state=excluded.topic_lifecycle_state, "
+            "topic_lifecycle_reason=excluded.topic_lifecycle_reason, "
+            "topic_last_signal_date=excluded.topic_last_signal_date, "
+            "topic_signal_count=excluded.topic_signal_count, "
             "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
@@ -1290,6 +1348,8 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
                 row["watchlist_evidence_gap_json"],
                 row["counter_evidence_json"], row["overheat_flags_json"],
                 row["downgrade_reasons_json"], row["what_would_change_mind_json"],
+                row["topic_lifecycle_state"], row["topic_lifecycle_reason"],
+                row["topic_last_signal_date"], row["topic_signal_count"],
                 candidate.created_at, row["updated_at"],
             ),
         )
