@@ -1,4 +1,4 @@
-# [DATA-005] data_source_replay  [DATA-008] astock_fallback_replay
+# [DATA-005] data_source_replay  [DATA-008] astock_fallback_replay  [DATA-014] policy_news_fixture_smoke
 """
 数据源 fixture replay 与限流/失败回放。
 
@@ -6,13 +6,15 @@
 当天实时缺失等场景，避免夜间自动开发误判数据源质量。
 
 功能：
-  1. 内置 21 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
+  1. 内置 30 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
      资金流单位异常、龙虎榜无触发、公告源失败、
      AKShare 资金流失败→astock fallback、龙虎榜 NORMAL_NO_DATA、
      龙虎榜 FAILED、公告失败→事件源弱证据、换手率/量比缺失、
      融资融券有数据、融资融券失败、融资融券未查询、
      研报有数据、研报失败、研报未查询、
-     回购有数据、回购失败、回购未查询）
+     回购有数据、回购失败、回购未查询、
+     新闻有数据、新闻空结果、新闻部分失败、新闻全部失败、新闻限流、
+     全球新闻有数据、全球新闻空结果、全球新闻失败、全球新闻限流）
   2. replay runner 将 fixture 模拟为 raw_evidence，输出数据源健康报告
   3. 失败时写入 docs/data_source_reports/YYYY-MM-DD.md
   4. 可被 scripts/auto_dev_loop.sh 或 OpenClaw 巡检调用
@@ -75,6 +77,15 @@ FIXTURE_RATINGS_NOT_QUERIED = "ratings_not_queried"  # [DATA-012] rating_raw_evi
 FIXTURE_BUYBACK_HAS_DATA = "buyback_has_data"  # [DATA-013] buyback_raw_evidence
 FIXTURE_BUYBACK_FAILED = "buyback_failed"  # [DATA-013] buyback_raw_evidence
 FIXTURE_BUYBACK_NOT_QUERIED = "buyback_not_queried"  # [DATA-013] buyback_raw_evidence
+FIXTURE_NEWS_HAS_DATA = "news_has_data"  # [DATA-014] policy_news_fixture_smoke
+FIXTURE_NEWS_NORMAL_NO_DATA = "news_normal_no_data"  # [DATA-014] policy_news_fixture_smoke
+FIXTURE_NEWS_PARTIAL_FAILED = "news_partial_failed"  # [DATA-014] policy_news_fixture_smoke
+FIXTURE_NEWS_FAILED = "news_failed"  # [DATA-014] policy_news_fixture_smoke
+FIXTURE_NEWS_RATE_LIMITED = "news_rate_limited"  # [DATA-014] policy_news_fixture_smoke
+FIXTURE_GLOBAL_NEWS_HAS_DATA = "global_news_has_data"  # [DATA-014] policy_news_fixture_smoke
+FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA = "global_news_normal_no_data"  # [DATA-014] policy_news_fixture_smoke
+FIXTURE_GLOBAL_NEWS_FAILED = "global_news_failed"  # [DATA-014] policy_news_fixture_smoke
+FIXTURE_GLOBAL_NEWS_RATE_LIMITED = "global_news_rate_limited"  # [DATA-014] policy_news_fixture_smoke
 
 ALL_FIXTURE_IDS = [
     FIXTURE_NORMAL_QUOTE,
@@ -102,6 +113,15 @@ ALL_FIXTURE_IDS = [
     FIXTURE_BUYBACK_HAS_DATA,
     FIXTURE_BUYBACK_FAILED,
     FIXTURE_BUYBACK_NOT_QUERIED,
+    FIXTURE_NEWS_HAS_DATA,
+    FIXTURE_NEWS_NORMAL_NO_DATA,
+    FIXTURE_NEWS_PARTIAL_FAILED,
+    FIXTURE_NEWS_FAILED,
+    FIXTURE_NEWS_RATE_LIMITED,
+    FIXTURE_GLOBAL_NEWS_HAS_DATA,
+    FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA,
+    FIXTURE_GLOBAL_NEWS_FAILED,
+    FIXTURE_GLOBAL_NEWS_RATE_LIMITED,
 ]
 
 
@@ -1123,6 +1143,351 @@ def _build_buyback_not_queried_fixture() -> FixtureEntry:
     )
 
 
+# ── [DATA-014] News / Policy Event Fixtures ────────────────────────────
+
+_POLICY_NEWS_TEXT = (
+    "[政策原文] 国务院印发《关于加快发展低空经济的若干意见》，明确支持低空基础设施建设、"
+    "空域管理改革和无人机产业发展。来源级别：中央/国务院。"
+)
+_NEWS_RELAY_TEXT = (
+    "[新闻转述] 多家媒体报道低空经济板块持续升温，相关概念股异动。来源级别：媒体。"
+)
+_MARKET_RUMOR_TEXT = (
+    "[市场传闻] 市场传言某公司将获得低空经济相关订单，但无公告或政策原文佐证。"
+    "来源级别：市场传闻。"
+)
+_NORMAL_NEWS_TEXT = (
+    "贵州茅台召开股东大会,东财\n"
+    "贵州茅台发布2025年度权益分派实施公告,东财\n"
+    "贵州茅台：董事长增持计划实施完毕,东财\n"
+    "茅台系列酒提价预期升温,东财\n"
+    "白酒行业龙头稳健增长,东财"
+)
+
+
+def _build_news_has_data_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "news": {
+            "raw": _NORMAL_NEWS_TEXT,
+            "field": "news",
+            "unit": "条",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_news_em",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "fallback_from": None,
+            "source_url": None,
+            "error": None,
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 5,
+            "source_level": "媒体",
+            "evidence_type": "news_relay",
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_NEWS_HAS_DATA,
+        description="新闻正常返回（含政策原文/新闻转述/市场传闻分类标注）",
+        data_type="news",
+        vendor="cn_akshare",
+        endpoint="stock_news_em",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["news", "has_data", "DATA-014"],
+    )
+
+
+def _build_news_normal_no_data_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "news": {
+            "raw": "暂无相关新闻",
+            "field": "news",
+            "unit": "条",
+            "vendor": "cn_akshare",
+            "endpoint": "stock_news_em",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "NORMAL_NO_DATA",
+            "fallback_from": None,
+            "source_url": None,
+            "error": None,
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 0,
+            "source_level": "",
+            "evidence_type": "",
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_NEWS_NORMAL_NO_DATA,
+        description="新闻正常返回但无事件（status=OK, count=0）",
+        data_type="news",
+        vendor="cn_akshare",
+        endpoint="stock_news_em",
+        expected_status="NORMAL_NO_DATA",
+        raw_evidence=raw_evidence,
+        tags=["news", "normal_no_data", "DATA-014"],
+    )
+
+
+def _build_news_partial_failed_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "news": {
+            "raw": "601689.SH [DATA-014] NEWS_PARTIAL_FAILED: AKShare新闻失败，"
+                   "东财搜索接口返回部分数据",
+            "field": "news",
+            "unit": "条",
+            "vendor": "cn_astock",
+            "endpoint": "search-api-web.eastmoney.com",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "fallback_from": "cn_akshare",
+            "source_url": None,
+            "error": "AKShare stock_news_em: ProxyError",
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 2,
+            "source_level": "媒体",
+            "evidence_type": "news_relay",
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_NEWS_PARTIAL_FAILED,
+        description="新闻部分失败——AKShare 失败后 fallback 到 cn_astock 成功",
+        data_type="news",
+        vendor="cn_astock",
+        endpoint="search-api-web.eastmoney.com",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["news", "partial_failed", "fallback", "DATA-014"],
+    )
+
+
+def _build_news_failed_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "news": {
+            "raw": "601689.SH [DATA-014] NEWS_FAILED: 新闻数据获取失败："
+                   "AKShare ConnectionError; cn_astock ConnectionError",
+            "field": "news",
+            "unit": None,
+            "vendor": "cn_astock",
+            "endpoint": "search-api-web.eastmoney.com",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "FAILED",
+            "fallback_from": "cn_akshare",
+            "source_url": None,
+            "error": "ConnectionError",
+            "is_realtime_patched": False,
+            "unit_verified": None,
+            "record_count": 0,
+            "source_level": "",
+            "evidence_type": "",
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_NEWS_FAILED,
+        description="新闻全部失败——AKShare 和 cn_astock 均连接失败",
+        data_type="news",
+        vendor="cn_astock",
+        endpoint="search-api-web.eastmoney.com",
+        expected_status="FAILED",
+        raw_evidence=raw_evidence,
+        tags=["news", "failed", "DATA-014"],
+    )
+
+
+def _build_news_rate_limited_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "news": {
+            "raw": "601689.SH [DATA-014] NEWS_RATE_LIMITED: 新闻数据获取失败："
+                   "RateLimitError: 请求过于频繁，请稍后再试",
+            "field": "news",
+            "unit": None,
+            "vendor": "cn_akshare",
+            "endpoint": "stock_news_em",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "FAILED",
+            "fallback_from": None,
+            "source_url": None,
+            "error": "RateLimitError: 请求过于频繁，请稍后再试",
+            "is_realtime_patched": False,
+            "unit_verified": None,
+            "record_count": 0,
+            "source_level": "",
+            "evidence_type": "",
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_NEWS_RATE_LIMITED,
+        description="新闻限流——请求频率过高被拒",
+        data_type="news",
+        vendor="cn_akshare",
+        endpoint="stock_news_em",
+        expected_status="FAILED",
+        raw_evidence=raw_evidence,
+        tags=["news", "rate_limited", "DATA-014"],
+    )
+
+
+def _build_global_news_has_data_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "global_news": {
+            "raw": "央视新闻联播\n"
+                   "1. 国务院常务会议部署促进平台经济健康发展措施\n"
+                   "2. 工信部发布《新能源汽车产业发展规划》修订版\n"
+                   "3. 央行实施降准操作，释放长期资金约5000亿元",
+            "field": "global_news",
+            "unit": "条",
+            "vendor": "cn_akshare",
+            "endpoint": "news_cctv",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "HAS_DATA",
+            "fallback_from": None,
+            "source_url": None,
+            "error": None,
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 3,
+            "source_level": "中央/国务院",
+            "evidence_type": "policy_document",
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_GLOBAL_NEWS_HAS_DATA,
+        description="全球新闻正常返回（含政策原文级别标注）",
+        data_type="global_news",
+        vendor="cn_akshare",
+        endpoint="news_cctv",
+        expected_status="HAS_DATA",
+        raw_evidence=raw_evidence,
+        tags=["global_news", "has_data", "DATA-014"],
+    )
+
+
+def _build_global_news_normal_no_data_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "global_news": {
+            "raw": "暂无全球新闻",
+            "field": "global_news",
+            "unit": "条",
+            "vendor": "cn_akshare",
+            "endpoint": "news_cctv",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "NORMAL_NO_DATA",
+            "fallback_from": None,
+            "source_url": None,
+            "error": None,
+            "is_realtime_patched": False,
+            "unit_verified": True,
+            "record_count": 0,
+            "source_level": "",
+            "evidence_type": "",
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA,
+        description="全球新闻正常返回但无事件（status=OK, count=0）",
+        data_type="global_news",
+        vendor="cn_akshare",
+        endpoint="news_cctv",
+        expected_status="NORMAL_NO_DATA",
+        raw_evidence=raw_evidence,
+        tags=["global_news", "normal_no_data", "DATA-014"],
+    )
+
+
+def _build_global_news_failed_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "global_news": {
+            "raw": "[DATA-014] GLOBAL_NEWS_FAILED: 全球新闻数据获取失败："
+                   "AKShare ConnectionError; cn_astock ConnectionError",
+            "field": "global_news",
+            "unit": None,
+            "vendor": "cn_astock",
+            "endpoint": "cls.cn/telegraphList",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "FAILED",
+            "fallback_from": "cn_akshare",
+            "source_url": None,
+            "error": "ConnectionError",
+            "is_realtime_patched": False,
+            "unit_verified": None,
+            "record_count": 0,
+            "source_level": "",
+            "evidence_type": "",
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_GLOBAL_NEWS_FAILED,
+        description="全球新闻全部失败——AKShare 和 cn_astock 均连接失败",
+        data_type="global_news",
+        vendor="cn_astock",
+        endpoint="cls.cn/telegraphList",
+        expected_status="FAILED",
+        raw_evidence=raw_evidence,
+        tags=["global_news", "failed", "DATA-014"],
+    )
+
+
+def _build_global_news_rate_limited_fixture() -> FixtureEntry:
+    now_iso = datetime.now().isoformat()
+    today = datetime.now().strftime("%Y-%m-%d")
+    raw_evidence = {
+        "global_news": {
+            "raw": "[DATA-014] GLOBAL_NEWS_RATE_LIMITED: 全球新闻数据获取失败："
+                   "RateLimitError: 请求频率超限",
+            "field": "global_news",
+            "unit": None,
+            "vendor": "cn_akshare",
+            "endpoint": "news_cctv",
+            "as_of": today,
+            "fetched_at": now_iso,
+            "status": "FAILED",
+            "fallback_from": None,
+            "source_url": None,
+            "error": "RateLimitError: 请求频率超限",
+            "is_realtime_patched": False,
+            "unit_verified": None,
+            "record_count": 0,
+            "source_level": "",
+            "evidence_type": "",
+        },
+    }
+    return FixtureEntry(
+        fixture_id=FIXTURE_GLOBAL_NEWS_RATE_LIMITED,
+        description="全球新闻限流——请求频率过高被拒",
+        data_type="global_news",
+        vendor="cn_akshare",
+        endpoint="news_cctv",
+        expected_status="FAILED",
+        raw_evidence=raw_evidence,
+        tags=["global_news", "rate_limited", "DATA-014"],
+    )
+
+
 _FIXTURE_BUILDERS = {
     FIXTURE_NORMAL_QUOTE: _build_normal_quote_fixture,
     FIXTURE_STALE_DAILY: _build_stale_daily_fixture,
@@ -1149,6 +1514,15 @@ _FIXTURE_BUILDERS = {
     FIXTURE_BUYBACK_HAS_DATA: _build_buyback_has_data_fixture,
     FIXTURE_BUYBACK_FAILED: _build_buyback_failed_fixture,
     FIXTURE_BUYBACK_NOT_QUERIED: _build_buyback_not_queried_fixture,
+    FIXTURE_NEWS_HAS_DATA: _build_news_has_data_fixture,
+    FIXTURE_NEWS_NORMAL_NO_DATA: _build_news_normal_no_data_fixture,
+    FIXTURE_NEWS_PARTIAL_FAILED: _build_news_partial_failed_fixture,
+    FIXTURE_NEWS_FAILED: _build_news_failed_fixture,
+    FIXTURE_NEWS_RATE_LIMITED: _build_news_rate_limited_fixture,
+    FIXTURE_GLOBAL_NEWS_HAS_DATA: _build_global_news_has_data_fixture,
+    FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA: _build_global_news_normal_no_data_fixture,
+    FIXTURE_GLOBAL_NEWS_FAILED: _build_global_news_failed_fixture,
+    FIXTURE_GLOBAL_NEWS_RATE_LIMITED: _build_global_news_rate_limited_fixture,
 }
 
 

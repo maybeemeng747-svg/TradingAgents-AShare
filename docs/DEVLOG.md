@@ -4,6 +4,49 @@
 
 ---
 
+## 2026-06-08 | DATA-014: 新闻/政策事件 fixture 与 live smoke 补充
+
+- **执行者**：OpenCode
+- **任务**：DATA-014 — 补齐新闻/政策事件源的 fixture replay 和低频 live smoke，验证昊天雷达核心事件源在失败、空结果、限流时的状态语义。
+- **修改文件**：
+  - `tradingagents/dataflows/fixture_replay.py` — [DATA-014] policy_news_fixture_smoke
+    - 新增 9 个 fixture：`news_has_data` / `news_normal_no_data` / `news_partial_failed` / `news_failed` / `news_rate_limited` / `global_news_has_data` / `global_news_normal_no_data` / `global_news_failed` / `global_news_rate_limited`
+    - `ALL_FIXTURE_IDS` 从 25 扩展到 34
+    - 每个 fixture 包含 `source_level`（政策原文/新闻转述/市场传闻）和 `evidence_type`（policy_document/news_relay）字段
+    - 区分 5 种新闻场景：HAS_DATA / NORMAL_NO_DATA / PARTIAL_FAILED（fallback）/ FAILED / RATE_LIMITED
+    - 区分 4 种全球新闻场景：HAS_DATA / NORMAL_NO_DATA / FAILED / RATE_LIMITED
+  - `tradingagents/dataflows/live_smoke.py` — [DATA-014]
+    - `_make_endpoint_definitions()` 新增 2 个端点：`cn_astock/eastmoney_news`(get_news) + `cn_astock/cls_global_news`(get_global_news)
+    - 支持 `TA_LIVE_DATA_SMOKE=1` 环境变量门控
+  - `tests/test_data014_policy_news_fixture.py` — **新建**，94 个测试覆盖：
+    - `TestSourceCatalogNews` (13): DataType 枚举/sources 注册/primary/fallback chain/all_data_types/fields/endpoint/catalog validation
+    - `TestEvidenceContractNews` (8): resolve_data_type/required_fields/contract HAS_DATA/FAILED/completeness/missing
+    - `TestEvidenceCoverageAuditNews` (6): label/family/audit HAS_DATA/audit FAILED
+    - `TestReadinessScoreNews` (5): HAS_DATA/FAILED/NORMAL_NO_DATA/NOT_QUERIED/text fallback
+    - `TestInterfaceNews` (4): tools categories/category/failure patterns
+    - `TestEventSourceStatus` (3): enum/default result/default item
+    - `TestNewsFixtures` (15): fixture IDs/count/individual fixtures/unique/unknown
+    - `TestNewsFixtureReplay` (7): replay single/all/full includes
+    - `TestSourceLevelClassification` (4): source_level/evidence_type
+    - `TestEvidenceTypeDistinction` (4): policy_document/news_relay/market_rumor/empty
+    - `TestLiveSmokeNews` (8): endpoint definitions/env gating/skip/enabled/report structure
+    - `TestNewsDedup` (2): no double count/different vendor
+    - `TestAcceptanceDATA014` (15): 全部验收标准
+  - `tests/test_data013_buyback.py` — 更新 ALL_FIXTURE_IDS 计数断言 `== 25` → `>= 25`
+  - `tests/test_data_p1_astock_live_smoke.py` — 更新 endpoint 计数断言 `== 4` → `>= 4`
+  - `docs/TASKS.md` — DATA-014 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：94 passed (DATA-014)；518 passed (回归：fixture_replay + live_smoke + daily_digest + margin + report + buyback)；116 passed (readiness_score)；24 passed (event_source)；86 passed (data_source_replay)；0 failed
+- **关键逻辑**：
+  - 新闻 5 种 fixture 场景：成功（HAS_DATA）/ 空结果（NORMAL_NO_DATA, count=0）/ 部分失败（AKShare 失败→cn_astock fallback）/ 全部失败（FAILED）/ 限流（RATE_LIMITED）
+  - 全球新闻 4 种 fixture 场景：成功/空结果/全部失败/限流
+  - source_level 区分"政策原文""新闻转述""市场传闻"
+  - evidence_type 区分 policy_document / news_relay
+  - 限流不被当作"无数据"——status=FAILED, error=RateLimitError
+  - live smoke 必须环境变量 `TA_LIVE_DATA_SMOKE=1` 开启，未开启时全部 SKIPPED
+  - 与 DATA-006 日报和 DATA-007 evidence audit 对接
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未跑 live 请求
+
 ## 2026-06-08 | DATA-013: 回购数据接入 provider 路由与 raw_evidence
 
 - **执行者**：OpenCode
@@ -3660,3 +3703,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-013-20260608-round1.txt
 - **Run archive**: docs/task_runs/DATA-013-20260608-050752/
+
+## 2026-06-08 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-014 - 新闻/政策事件 fixture 与 live smoke 补充（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-014-20260608-round1.txt
+- **Run archive**: docs/task_runs/DATA-014-20260608-052740/

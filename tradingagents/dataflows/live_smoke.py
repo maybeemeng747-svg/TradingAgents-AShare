@@ -167,6 +167,22 @@ def _make_endpoint_definitions() -> List[Dict[str, Any]]:
             "kwargs": {},
             "expected_unit": "",
         },
+        {  # [DATA-014] policy_news_fixture_smoke
+            "endpoint": "cn_astock/eastmoney_news",
+            "method": "get_news",
+            "vendor": "cn_astock",
+            "args_template": ("{symbol}", "{date}", "{date}"),
+            "kwargs": {},
+            "expected_unit": "条",
+        },
+        {  # [DATA-014] policy_news_fixture_smoke
+            "endpoint": "cn_astock/cls_global_news",
+            "method": "get_global_news",
+            "vendor": "cn_astock",
+            "args_template": ("{date}",),
+            "kwargs": {},
+            "expected_unit": "条",
+        },
     ]
 
 

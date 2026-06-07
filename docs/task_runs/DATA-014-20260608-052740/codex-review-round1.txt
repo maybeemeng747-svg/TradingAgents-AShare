@@ -1,0 +1,3243 @@
+Task: DATA-014 - 新闻/政策事件 fixture 与 live smoke 补充（P2）
+Date: 2026-06-08_05:41:26
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019ea407-86e0-7a83-bd0b-fe79d3109739
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' AGENTS.md; printf '\\n--- overview ---\\n'; sed -n '1,200p' docs/project-overview.md; printf '\\n--- tasks ---\\n'; sed -n '1,200p' docs/TASKS.md; printf '\\n--- decisions ---\\n'; sed -n '1,160p' docs/DECISIONS.md; printf '\\n--- devlog ---\\n'; sed -n '1,160p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# TradingAgents-AShare — 项目协作规则
+
+## 项目简介
+
+A股智能投研多智能体系统，基于 LangGraph + LangChain 构建，模拟 14 名专业 Agent 的多空辩论与风控博弈，为投资者提供结构化的交易建议。
+
+核心模块：
+- **Agent 框架**：14 个多智能体（分析师/研究员/风控/交易员），LangGraph 编排
+- **后端 API**：FastAPI，提供分析、持仓、定时任务、研报管理等接口
+- **前端 UI**：React，意图驱动交互、辩论可视化、持仓看板
+- **定时调度**：独立 scheduler，支持自选股定时分析
+- **数据层**：AKShare + BaoStock + yfinance，SQLite 持久化
+
+## 多工具协作架构
+
+```
+孟（最终决策）
+  │
+  ├── OpenClaw（主控调度）── 读取上下文 → 判断任务 → 派发执行
+  │     ├── 简单任务：直接 exec 执行（git/python/npm）
+  │     └── 复杂任务：sessions_spawn 子 agent 或调用 OpenCode 执行
+  │
+  ├── OpenCode（代码执行器）── 读取同一套上下文 → 改代码 → 跑测试 → 输出 diff
+  │
+  └── OpenCode TUI/Web（审查界面）── 查看 diff → 确认修改 → 做 review
+```
+
+**核心原则**：三者读取同一套项目上下文，不各自保存独立记忆。
+
+## 必读文件（任何 coding agent 开始任务前）
+
+1. `AGENTS.md`（本文件）
+2. `docs/project-overview.md`（项目背景 + 架构 + 目录结构）
+3. `docs/TASKS.md`（当前任务池）
+4. `docs/DECISIONS.md`（架构决策记录）
+5. `docs/DEVLOG.md`（最近修改日志）
+6. 涉及模型/API 调用时，必须读 `docs/MODEL_API_CATALOG.md` 和 `docs/LLM_API_USAGE.md`，并可运行 `python scripts/audit_llm_config.py` 查看脱敏配置
+
+## 项目目录结构
+
+```
+TradingAgents-AShare/
+├── tradingagents/            # 核心 Python 包
+│   ├── agents/               # 14 个多智能体
+│   │   ├── analysts/         # 7 个分析师（基本面/情绪/新闻/技术/宏观/主力/量价）
+│   │   ├── researchers/      # 多头/空头研究员 + 研究总监
+│   │   ├── risk_mgmt/        # 风控团队
+│   │   ├── managers/         # 管理层
+│   │   └── trader/           # 交易员
+│   ├── dataflows/            # 数据获取与缓存
+│   ├── graph/                # LangGraph 编排图
+│   ├── llm_clients/          # 多模型厂商适配
+│   ├── prompts/              # Agent 提示词模板
+│   └── default_config.py     # 默认配置
+├── api/                      # FastAPI 后端
+│   ├── main.py               # 入口
+│   ├── database.py           # SQLite
+│   └── services/             # 业务逻辑（分析/持仓/定时/研报）
+├── frontend/                 # React 前端
+├── scheduler/                # 定时分析调度
+├── skills/                   # OpenClaw 技能
+├── tests/                    # 测试
+├── docs/                     # 项目文档
+└── eval_results/             # 回测评估结果
+```
+
+## 执行规则
+
+### 代码修改前
+1. 执行 `git status`，确认当前分支和未提交变更
+2. 激活虚拟环境：`source .venv/bin/activate`
+3. 确认修改范围不影响生产数据库（tradingagents.db）
+4. 如果涉及核心模块，先跑一遍测试确认基线
+
+### 代码修改后
+1. 运行测试，全部通过才算完成
+2. 输出：修改文件列表、测试结果、发现的风险点
+3. 更新 `docs/DEVLOG.md`
+
+### OpenClaw 调度方式
+- **简单任务**（改配置、修 bug、小重构）：OpenClaw 直接 `exec` 执行
+- **复杂任务**（新功能、跨模块修改）：调用 OpenCode 执行，由用户确认后执行
+- **审查任务**：OpenClaw 不直接审查代码，提示用户用 OpenCode TUI 查看 diff
+
+## 安全红线
+
+- 不误改 `tradingagents.db`（生产数据库）
+- 不误改 `eval_results/` 中的历史回测结果
+- 不直接修改 `tradingagents/prompts/` 中的提示词模板（需走审批）
+- 不删除 `logs/` 中的历史日志
+- 测试数据不得写入生产数据库
+- 不读取、解密、打印、提交任何模型 API Key 明文；只能使用 `HAS_KEY/NO_KEY` 级别的脱敏状态
+- 除用户主动发起的分析/定时任务外，任何 live LLM API 调用前都要说明 provider、base_url、模型名和预计调用次数，并征得用户确认
+
+## 技术栈
+
+- **后端**：Python 3.10+, FastAPI, LangGraph, LangChain
+- **前端**：React, TypeScript, Tailwind CSS
+- **数据库**：SQLite
+- **数据源**：AKShare, BaoStock, yfinance
+- **模型**：OpenAI / Anthropic / 智谱 / DeepSeek / 小米 MiMo 等
+
+--- overview ---
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+--- tasks ---
+# 任务池
+
+> 最后更新：2026-06-08
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，done）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，done，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，done，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，done，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，done，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，done，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done，依赖 DATA-004 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，ready，依赖 DATA-003/DATA-004 ✓）。
+49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
+50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，ready，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，ready，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
+16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，ready）。
+18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
+19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，ready）。
+21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，ready）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## PERF. 运行成本 / 轻量分析任务池（2026-06-02 新增）
+
+> 目标：系统不能为了“全面”而变慢。TradeFlow 是雷达，轻量 TA 是候选验证，完整 TA 是深度体检。默认链路必须轻，完整多 Agent 分析只能由用户明确触发。
+
+### PERF-001: 运行层级与速度预算契约（P1）
+- **描述**：建立统一运行层级契约，所有 API、前端按钮、scheduler、自动开发任务都要标明属于 `fast/light/full` 哪一层，以及是否允许调用 LLM。
+- **优先级**：P1
+- **状态**：done -- commit ca08846
+- **背景**：
+  - 用户明确要求系统不能做得太重，不能“一发指令半天才回来”。
+  - 候选池/盘中观察需要时效；完整 TA 只能用于少量高价值标的。
+- **运行层级定义**：
+  1. `fast`：5-30 秒。TradeFlow 筛选、数据健康、证据缺口、候选分类。默认不调用 LLM。
+  2. `light`：1-3 分钟。轻量 TA，只跑必要模块，用于中线政策验证、短线技术确认、持仓风险复核。
+  3. `full`：10-20 分钟。完整 14 Agent TA，多空辩论和风控全链路，必须人工确认。
+- **执行约束**：
+  - 不改 prompts。
+  - 不触发 live TA。
+  - 不新增高成本模型调用。
+- **实现要点**：
+  1. 新增运行层级枚举/配置，例如 `runtime_tier`：
+     - `FAST_RADAR`
+     - `LIGHT_RESEARCH`
+     - `FULL_TA`
+  2. API/服务层统一返回：
+     - `runtime_tier`
+     - `expected_latency`
+     - `llm_allowed`
+     - `requires_confirmation`
+     - `cost_risk`
+  3. 前端按钮文案对应：
+     - `快速筛选`
+     - `轻量研究`
+     - `完整 TA`
+  4. `TradeFlow Discovery` 和 `Observe` 必须标记为 `FAST_RADAR`。
+  5. 自动任务/scheduler 不得默认进入 `FULL_TA`。
+- **验收方式**：
+  - TradeFlow candidates/observe/data-health API 返回 fast 层级或元数据。
+  - 前端能显示运行层级和预计耗时。
+  - 没有用户确认时，full TA 入口不可直接触发。
+  - `pytest tests/test_runtime_tier*.py tests/test_ui001_tradeflow_api.py -q` 或等价测试通过。
+- **代码标注要求**：`# [PERF-001] runtime_tier_contract` / `// [PERF-001] runtime_tier_contract`
+
+### PERF-002: 轻量 TA Profile 与模块路由（P1）
+- **描述**：在完整 TA 之外增加轻量 TA Profile，只跑与目标相关的模块，避免所有候选都进入 14 Agent 全链路。
+- **优先级**：P1
+- **状态**：done -- commit 20ff126
+- **前置条件**：`TA-UI-001`、`H-007` 完成或同步完成。
+- **执行约束**：
+  - 不删除完整 TA。
+  - 不改 prompts。
+  - 不自动调用 live LLM；第一版可先做路由配置和 mock/fixture。
+- **Profile 建议**：
+  1. `MIDLINE_POLICY_LIGHT`：
+     - 用于 `POLICY_AMBUSH/POLICY_CONFIRM`。
+     - 重点：政策/公告/基本面/风险/量价。
+  2. `SHORT_TECH_LIGHT`：
+     - 用于 `TECH_TRADE`。
+     - 重点：技术/量价/资金/风险。
+  3. `POSITION_RISK_LIGHT`：
+     - 用于已持仓复盘。
+     - 重点：风控/资金/关键价位/公告。
+  4. `FULL_TA`：
+     - 保持完整多 Agent，只能手动确认。
+- **实现要点**：
+  1. 新增 profile 配置，声明每个 profile 启用的 analyst/manager/risk 模块。
+  2. TradeFlow 候选根据 `candidate_type/research_queue/analysis_intent` 推荐 profile。
+  3. `/analysis` 控制台选择中线/短线后，能带入对应 profile。
+  4. 结果 metadata 中记录 `runtime_profile` 和实际启用模块。
+- **验收方式**：
+  - `POLICY_AMBUSH` 默认推荐 `MIDLINE_POLICY_LIGHT`。
+  - `TECH_TRADE` 默认推荐 `SHORT_TECH_LIGHT`。
+  - 已持仓复盘默认推荐 `POSITION_RISK_LIGHT`。
+  - 完整 TA 仍可人工选择。
+  - 测试覆盖 profile 路由，不触发真实 LLM。
+- **代码标注要求**：`# [PERF-002] lightweight_ta_profiles`
+
+### PERF-003: 分析运行耗时/调用成本遥测与前端展示（P1）
+- **描述**：为 TradeFlow、轻量 TA、完整 TA 增加运行遥测，记录耗时、模块、模型调用次数、失败原因和成本风险，让用户知道一次分析到底重不重。
+- **优先级**：P1
+- **状态**：done — commit 059fc21
+- **执行约束**：
+  - 不记录 API key/token。
+  - 不泄露完整 prompt。
+  - 不强行估算真实费用；可先记录调用次数和模型名。
+- **实现要点**：
+
+--- decisions ---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+--- devlog ---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-08 | DATA-014: 新闻/政策事件 fixture 与 live smoke 补充
+
+- **执行者**：OpenCode
+- **任务**：DATA-014 — 补齐新闻/政策事件源的 fixture replay 和低频 live smoke，验证昊天雷达核心事件源在失败、空结果、限流时的状态语义。
+- **修改文件**：
+  - `tradingagents/dataflows/fixture_replay.py` — [DATA-014] policy_news_fixture_smoke
+    - 新增 9 个 fixture：`news_has_data` / `news_normal_no_data` / `news_partial_failed` / `news_failed` / `news_rate_limited` / `global_news_has_data` / `global_news_normal_no_data` / `global_news_failed` / `global_news_rate_limited`
+    - `ALL_FIXTURE_IDS` 从 25 扩展到 34
+    - 每个 fixture 包含 `source_level`（政策原文/新闻转述/市场传闻）和 `evidence_type`（policy_document/news_relay）字段
+    - 区分 5 种新闻场景：HAS_DATA / NORMAL_NO_DATA / PARTIAL_FAILED（fallback）/ FAILED / RATE_LIMITED
+    - 区分 4 种全球新闻场景：HAS_DATA / NORMAL_NO_DATA / FAILED / RATE_LIMITED
+  - `tradingagents/dataflows/live_smoke.py` — [DATA-014]
+    - `_make_endpoint_definitions()` 新增 2 个端点：`cn_astock/eastmoney_news`(get_news) + `cn_astock/cls_global_news`(get_global_news)
+    - 支持 `TA_LIVE_DATA_SMOKE=1` 环境变量门控
+  - `tests/test_data014_policy_news_fixture.py` — **新建**，94 个测试覆盖：
+    - `TestSourceCatalogNews` (13): DataType 枚举/sources 注册/primary/fallback chain/all_data_types/fields/endpoint/catalog validation
+    - `TestEvidenceContractNews` (8): resolve_data_type/required_fields/contract HAS_DATA/FAILED/completeness/missing
+    - `TestEvidenceCoverageAuditNews` (6): label/family/audit HAS_DATA/audit FAILED
+    - `TestReadinessScoreNews` (5): HAS_DATA/FAILED/NORMAL_NO_DATA/NOT_QUERIED/text fallback
+    - `TestInterfaceNews` (4): tools categories/category/failure patterns
+    - `TestEventSourceStatus` (3): enum/default result/default item
+    - `TestNewsFixtures` (15): fixture IDs/count/individual fixtures/unique/unknown
+    - `TestNewsFixtureReplay` (7): replay single/all/full includes
+    - `TestSourceLevelClassification` (4): source_level/evidence_type
+    - `TestEvidenceTypeDistinction` (4): policy_document/news_relay/market_rumor/empty
+    - `TestLiveSmokeNews` (8): endpoint definitions/env gating/skip/enabled/report structure
+    - `TestNewsDedup` (2): no double count/different vendor
+    - `TestAcceptanceDATA014` (15): 全部验收标准
+  - `tests/test_data013_buyback.py` — 更新 ALL_FIXTURE_IDS 计数断言 `== 25` → `>= 25`
+  - `tests/test_data_p1_astock_live_smoke.py` — 更新 endpoint 计数断言 `== 4` → `>= 4`
+  - `docs/TASKS.md` — DATA-014 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：94 passed (DATA-014)；518 passed (回归：fixture_replay + live_smoke + daily_digest + margin + report + buyback)；116 passed (readiness_score)；24 passed (event_source)；86 passed (data_source_replay)；0 failed
+- **关键逻辑**：
+  - 新闻 5 种 fixture 场景：成功（HAS_DATA）/ 空结果（NORMAL_NO_DATA, count=0）/ 部分失败（AKShare 失败→cn_astock fallback）/ 全部失败（FAILED）/ 限流（RATE_LIMITED）
+  - 全球新闻 4 种 fixture 场景：成功/空结果/全部失败/限流
+  - source_level 区分"政策原文""新闻转述""市场传闻"
+  - evidence_type 区分 policy_document / news_relay
+  - 限流不被当作"无数据"——status=FAILED, error=RateLimitError
+  - live smoke 必须环境变量 `TA_LIVE_DATA_SMOKE=1` 开启，未开启时全部 SKIPPED
+  - 与 DATA-006 日报和 DATA-007 evidence audit 对接
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未跑 live 请求
+
+## 2026-06-08 | DATA-013: 回购数据接入 provider 路由与 raw_evidence
+
+- **执行者**：OpenCode
+- **任务**：DATA-013 — 把回购计划/回购进展从事件流扩展到 provider route 与 raw_evidence，作为公司行为和中线信号证据。
+- **修改文件**：
+  - `tradingagents/dataflows/source_catalog.py` — [DATA-013] buyback_raw_evidence
+    - `DataType` 枚举新增 `BUYBACK = "buyback"`
+    - 注册 2 个回购 source：`cn_akshare/stock_repurchase`(primary) + `cn_astock/datacenter-web.eastmoney.com/RPT_SHAREBUYBACK_DET`(fallback)
+  - `tradingagents/dataflows/providers/cn_akshare_provider.py` — [DATA-013]
+    - 新增 `get_buybacks(symbol)`: AKShare stock_repurchase_em 回购数据
+    - 支持 `BUYBACK_HAS_DATA` / `BUYBACK_NORMAL_NO_DATA` / `BUYBACK_FAILED` 三态输出
+  - `tradingagents/dataflows/providers/cn_astock_provider.py` — [DATA-013]
+    - 新增 `get_buybacks(symbol)`: 东财 datacenter RPT_SHAREBUYBACK_DET 直连
+    - 金额元→万元 `/10000` 转换，输出公告日期/金额/数量/进度/目的
+  - `tradingagents/dataflows/interface.py` — [DATA-013]
+    - `TOOLS_CATEGORIES["cn_market_data"]["tools"]` 新增 `"get_buybacks"`
+    - 支持 `route_to_vendor` 自动 fallback 和 `get_last_hit_vendor` 追踪
+  - `tradingagents/dataflows/evidence_contract.py` — [DATA-013]
+    - `_EVIDENCE_KEY_TO_DATA_TYPE` 新增 `"buybacks": "buyback"`
+    - `_REQUIRED_FIELDS_FOR_COMPLETENESS` 新增 `"buybacks": ["status", "vendor", "unit"]`
+  - `tradingagents/dataflows/evidence_coverage_audit.py` — [DATA-013]
+    - `_EVIDENCE_FIELD_LABELS` 新增 `"buybacks": "回购"`
+    - `_EVIDENCE_FIELD_FAMILIES` 新增 `"buybacks": "buyback"`
+  - `tradingagents/agents/utils/readiness_score.py` — [DATA-013]
+    - `infer_evidence_statuses()` 中新增 buybacks 四态检查：从 raw_evidence["buybacks"] 读取
+    - 支持 `HAS_DATA/QUERY_FAILED/NORMAL_NO_DATA/NOT_QUERIED` 四态
+    - `calculate_evidence_coverage()` 返回值新增 buybacks 字段
+  - `tradingagents/dataflows/fixture_replay.py` — [DATA-013]
+    - 新增 3 个 fixture：`buyback_has_data`(HAS_DATA/cn_astock) / `buyback_failed`(FAILED/ConnectionError) / `buyback_not_queried`(NOT_QUERIED)
+    - `ALL_FIXTURE_IDS` 从 22 扩展到 25
+  - `tests/test_data013_buyback.py` — **新建**，61 个测试覆盖：
+    - `TestSourceCatalogBuyback` (8): DataType 枚举/sources 注册/primary/fallback chain/all_data_types/fields/endpoint/catalog validation
+    - `TestEvidenceContractBuyback` (6): resolve_data_type/contract HAS_DATA/FAILED/completeness/missing/required fields
+    - `TestEvidenceCoverageAuditBuyback` (4): label/family/audit HAS_DATA/audit FAILED
+    - `TestReadinessScoreBuyback` (10): NOT_QUERIED default/HAS_DATA/FAILED/NORMAL_NO_DATA from structured/text/coverage increase/text fallback/text normal no data
+    - `TestInterfaceBuyback` (3): tools categories/category/failure string detection
+    - `TestProviderBuyback` (7): akshare method/astock method/akshare no data/akshare has data/astock no data/astock has data/astock failed
+    - `TestBuybackFixtures` (9): fixture IDs/total count/exists/vendor/unit/error/no vendor/all fixtures/in all fixture ids
+    - `TestBuybackFixtureReplay` (5): replay HAS_DATA/FAILED/NOT_QUERIED/all buyback/full replay
+    - `TestBuybackDedup` (2): no double count/different vendor
+    - `TestAcceptanceDATA013` (10): 全部验收标准
+  - `tests/test_readiness_score.py` — 更新 3 处覆盖率计算断言（新增 ratings+buybacks 字段后分母从 9 变为 11）
+  - `tests/test_data011_research_report.py` — 更新 1 处覆盖率断言
+  - `tests/test_data005_fixture_replay.py` — 更新 2 处 completeness 阈值断言
+  - `docs/TASKS.md` — DATA-013 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：61 passed (DATA-013)；619 passed (回归)；0 failed
+- **关键逻辑**：
+  - 回购数据从事件流扩展为完整 raw_evidence 四态数据源
+  - source_catalog 注册 2 个 vendor：AKShare(stock_repurchase_em) 为 primary，东财 datacenter(RPT_SHAREBUYBACK_DET) 为 fallback
+  - provider 层输出 `BUYBACK_HAS_DATA / BUYBACK_NORMAL_NO_DATA / BUYBACK_FAILED` 三态标记
+  - route_to_vendor 支持失败字符串检测和 fallback 链自动切换
+  - readiness_score 中 buybacks 支持结构化状态和文本模式双重识别
+  - 3 个 fixture 覆盖 HAS_DATA/FAILED/NOT_QUERIED 三种场景
+  - 重复事件不会导致候选分数重复叠加（dedup 测试覆盖）
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未跑 live 请求
+
+---
+
+## 2026-06-08 | T-004: TradeFlow P2 盘中 Observe
+
+- **执行者**：OpenCode
+- **任务**：T-004 — 对候选池做盘中低频触发检查，发现突破触发价、跌破失效价、异常放量等事件。修复上一轮 OpenCode exit code 143（被 SIGTERM 杀掉，未完成任何工作）。
+- **修改文件**：
+  - `tradingagents/tradeflow/strategy_config.py` — [T-004] intraday_observe_scheduler
+    - `StrategyConfig` 新增 6 字段：`observe_interval_minutes`(30) / `observe_volume_anomaly_ratio`(2.0) / `observe_market_open_hour`(9) / `observe_market_open_minute`(30) / `observe_market_close_hour`(15) / `observe_market_close_minute`(0)
+  - `tradingagents/tradeflow/intraday_observe.py` — [T-004]
+    - 新增 `detect_volume_anomaly(current_volume, avg_volume, cfg)` 函数：检测成交量是否异常放大（默认 ≥ 2 倍均量）
+    - `ObserveSnapshot` 新增 `volume_anomaly: bool` / `volume_ratio: Optional[float]` 字段
+    - `run_observe_check()` 新增 `avg_volume` 参数，触发时附加放量信息，WAITING 状态也可检测纯放量异常
+  - `tradingagents/tradeflow/intraday_observe_scheduler.py` — **新建**：[T-004] intraday_observe_scheduler
+    - `ObserveSchedulerTickResult` 数据类：tick_time / trade_date / status / result / error
+    - `_is_market_hours(cfg)` 检查当前是否在 A 股交易时段
+    - `_is_trading_day(date_str)` 复用交易日历
+    - `run_observe_tick()` 单次 tick：检查交易日→市场时段→执行 run_observe→返回结果
+    - `run_observe_session()` 阻塞循环：按 interval 间隔循环执行 tick 直到收盘/停止/达到上限
+    - 支持 `stop_check` 回调提前停止、`tick_callback` 每次 tick 后回调
+  - `tradingagents/tradeflow/observe_runner.py` — [T-004]
+    - `run_observe()` 传递 quote 中的 `avg_volume` 到 `run_observe_check()`
+    - `_build_signal_from_snapshot()` evidence 新增 `volume_anomaly` / `volume_ratio`
+    - `run_observe()` details 新增 `volume_anomaly` / `volume_ratio`
+  - `api/services/tradeflow_service.py` — [T-004]
+    - 新增 `get_observe_scheduler_status()` 服务函数：返回当前调度器状态、配置和交易日信息
+  - `api/main.py` — [T-004]
+    - 新增 `GET /v1/tradeflow/observe/scheduler-status` 端点
+    - 导入 `get_observe_scheduler_status`
+  - `api/runtime_tier.py` — [T-004]
+    - `_TRADEFLOW_FAST_ENDPOINTS` 新增 `tradeflow_observe_scheduler`
+  - `tests/test_t004_intraday_observe.py` — **新建**，58 个测试覆盖：
+    - `TestDetectVolumeAnomaly` (9): no volume / no avg / zero avg / below / at / above / custom threshold / custom triggered / ratio rounded
+    - `TestObserveSnapshotVolumeFields` (2): defaults / with anomaly
+    - `TestRunObserveCheckWithVolume` (6): triggered with anomaly / no anomaly / waiting anomaly only / waiting no anomaly / invalidated with volume / no avg volume
+    - `TestStrategyConfigSchedulerFields` (5): interval / ratio / market hours / custom interval / custom ratio
+    - `TestObserveSchedulerTickResult` (2): defaults / with trade_date
+    - `TestIsMarketHours` (5): during / before / after / at open / at close
+    - `TestIsTradingDayScheduler` (3): saturday / sunday / weekday
+    - `TestRunObserveTick` (4): non trading / non hours / no db / with candidates
+    - `TestRunObserveSession` (4): stops on non trading / stops on stop_check / max ticks / tick callback
+    - `TestSignalVolumeEvidence` (2): has anomaly / no anomaly
+    - `TestRunObserveVolumeAnomaly` (2): triggered e2e / details include anomaly
+    - `TestObserveSchedulerAPI` (1): scheduler status response
+    - `TestBackwardCompatibility` (3): existing tests / snapshot fields / expire tracker
+    - `TestAcceptanceT004` (10): 全部验收标准
+  - `docs/TASKS.md` — T-004 状态更新为 done
+  - `docs/DEVLOG.md` — 本条记录
+- **测试结果**：58 passed (T-004)；159 passed (M-005+TF-OBS-001+T-008 回归)；3037 passed (tradeflow 全部回归)；npm run build 通过；0 failed（3 个 pre-existing DATA-007 失败与 T-004 无关）
+- **关键逻辑**：
+  - 异常放量检测：`detect_volume_anomaly()` 对比当前成交量与均量，默认阈值 2.0 倍
+  - 触发时放量附加信息：突破触发价 + 放量 → trigger_reason 包含 "放量X.X倍"
+  - 纯放量异常记录：WAITING 状态也可记录放量异常事件（不触发 TRIGGERED 但记录原因）
+  - 盘中调度器：`run_observe_session()` 按 30 分钟间隔循环检查，仅在交易日 09:30–15:00 运行
+
+exec
+/bin/zsh -lc "git status --short && printf '\\n---branch---\\n' && git branch --show-current" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tests/test_data013_buyback.py
+ M tests/test_data_p1_astock_live_smoke.py
+ M tradingagents/dataflows/fixture_replay.py
+ M tradingagents/dataflows/live_smoke.py
+?? docs/task_runs/DATA-014-20260608-052740/
+?? tests/test_data014_policy_news_fixture.py
+
+---branch---
+local/tradingagents-custom
+
+exec
+/bin/zsh -lc "find docs/task_runs/DATA-014-20260608-052740 -maxdepth 2 -type f -print -exec sed -n '1,160p' {} \\;" in /Users/maybee/TradingAgents-AShare
+exec
+/bin/zsh -lc "git diff --stat && printf '\\n--- diff ---\\n' && git diff -- tradingagents/dataflows/fixture_replay.py tradingagents/dataflows/live_smoke.py tests/test_data014_policy_news_fixture.py tests/test_data013_buyback.py tests/test_data_p1_astock_live_smoke.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+docs/task_runs/DATA-014-20260608-052740/tests-round1.txt
+## pytest tests/test_event_source.py tests/test_data_source_replay.py tests/test_data006_daily_digest.py -q
+
+........................................................................ [ 39%]
+........................................................................ [ 78%]
+........................................                                 [100%]
+184 passed in 0.32s
+
+Exit code: 0
+
+docs/task_runs/DATA-014-20260608-052740/codegraph-status.json
+{
+  "task_id": "DATA-014",
+  "generated_at": "2026-06-08T05:27:41.115575",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": false,
+    "version": "0.9.7",
+    "error": "status check failed: error: unknown option '-p'",
+    "files_indexed": 0,
+    "nodes_count": 0
+  },
+  "result": "SKIPPED",
+  "reason": "CodeGraph not indexed",
+  "post_generated_at": "2026-06-08T05:40:16.105479",
+  "codegraph_post": {
+    "available": true,
+    "indexed": false,
+    "version": "0.9.7",
+    "error": "status check failed: error: unknown option '-p'",
+    "files_indexed": 0,
+    "nodes_count": 0
+  },
+  "post_result": "SKIPPED"
+}docs/task_runs/DATA-014-20260608-052740/prompt-round1.md
+# Task: DATA-014: 新闻/政策事件 fixture 与 live smoke 补充（P2）
+
+Read task "DATA-014" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/DATA-014-20260608-052740/codegraph-context.txt
+# CodeGraph Context: SKIPPED
+# Task: DATA-014
+# Reason: CodeGraph not indexed
+docs/task_runs/DATA-014-20260608-052740/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m→ [0mRead docs/DEVLOG.md
+[0m→ [0mRead docs/project-overview.md
+[0m
+[0m# [0mTodos
+[•] Read DATA-014 task details from TASKS.md (line 805+)
+[ ] Explore existing fixture_replay.py, source_catalog, and related test patterns
+[ ] Implement news/policy event fixtures and live smoke
+[ ] Write comprehensive tests for DATA-014
+[ ] Run tests and verify all pass
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead docs/TASKS.md[90m [offset=805][0m
+[0m
+[0m# [0mTodos
+[✓] Read DATA-014 task details from TASKS.md (line 805+)
+[•] Explore existing fixture_replay.py, source_catalog, event_source, and related test patterns
+[ ] Implement news/policy event fixtures and live smoke
+[ ] Write comprehensive tests for DATA-014
+[ ] Run tests and verify all pass
+[ ] Update docs/DEVLOG.md and docs/TASKS.md
+[0m
+Now let me explore the existing codebase to understand patterns for fixtures, live smoke, event sources, and the relevant modules.
+[0m• [0mExplore DATA-014 codebase patterns[90m Explore Agent[0m
+[0m✓ [0mExplore DATA-014 codebase patterns[90m Explore Agent[0m
+[0m→ [0mRead tradingagents/dataflows/fixture_replay.py[90m [limit=120][0m
+[0m→ [0mRead tradingagents/dataflows/live_smoke.py[90m [limit=100][0m
+[0m→ [0mRead tradingagents/dataflows/live_smoke.py[90m [offset=101][0m
+[0m→ [0mRead tradingagents/dataflows/fixture_replay.py[90m [offset=121, limit=200][0m
+[0m→ [0mRead tradingagents/dataflows/fixture_replay.py[90m [offset=1100][0m
+[0m→ [0mRead tradingagents/dataflows/fixture_replay.py[90m [offset=1000, limit=130][0m
+[0m→ [0mRead tradingagents/tradeflow/event_source.py
+Now let me read the buyback fixtures (the most recent pattern) and the event_source module:
+[0m✱ [0mGrep "NEWS|GLOBAL_NEWS|get_news|get_global_news"[90m in tradingagents/dataflows · 38 matches[0m
+Now let me also check the source_catalog to see the NEWS and GLOBAL_NEWS entries, and see what the provider methods look like:
+[0m✱ [0mGrep "def get_news|def get_global_news"[90m in tradingagents/dataflows · 18 matches[0m
+[0m→ [0mRead tests/test_data013_buyback.py[90m [limit=100][0m
+Now let me read the existing test files that have test patterns I need to follow:
+[0m→ [0mRead tradingagents/dataflows/source_catalog.py[90m [offset=430, limit=70][0m
+[0m
+[0m# [0mTodos
+[✓] Read DATA-014 task details from TASKS.md (line 805+)
+[✓] Explore existing fixture_replay.py, source_catalog, event_source, and related test patterns
+[•] Implement news/policy event fixtures in fixture_replay.py
+[ ] Add live smoke endpoint definitions for news/global_news
+[ ] Write comprehensive tests for DATA-014
+[ ] Run tests and verify all pass
+[ ] Update docs/DEVLOG.md and docs/TASKS.md
+[0m
+[0m← [0mEdit tradingagents/dataflows/fixture_replay.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/fixture_replay.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/fixture_replay.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/fixture_replay.py
+@@ -1,19 +1,21 @@
+-# [DATA-005] data_source_replay  [DATA-008] astock_fallback_replay
++# [DATA-005] data_source_replay  [DATA-008] astock_fallback_replay  [DATA-014] policy_news_fixture_smoke
+ """
+ 数据源 fixture replay 与限流/失败回放。
+ 
+ 提供可重复的数据源回放测试，覆盖正常、缺字段、限流、超时、来源冲突、
+ 当天实时缺失等场景，避免夜间自动开发误判数据源质量。
+ 
+ 功能：
+-  1. 内置 21 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
++  1. 内置 30 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
+      资金流单位异常、龙虎榜无触发、公告源失败、
+      AKShare 资金流失败→astock fallback、龙虎榜 NORMAL_NO_DATA、
+      龙虎榜 FAILED、公告失败→事件源弱证据、换手率/量比缺失、
+      融资融券有数据、融资融券失败、融资融券未查询、
+      研报有数据、研报失败、研报未查询、
+-     回购有数据、回购失败、回购未查询）
++     回购有数据、回购失败、回购未查询、
++     新闻有数据、新闻空结果、新闻部分失败、新闻全部失败、新闻限流、
++     全球新闻有数据、全球新闻空结果、全球新闻失败、全球新闻限流）
+   2. replay runner 将 fixture 模拟为 raw_evidence，输出数据源健康报告
+   3. 失败时写入 docs/data_source_reports/YYYY-MM-DD.md
+   4. 可被 scripts/auto_dev_loop.sh 或 OpenClaw 巡检调用
+ 
+
+[0m
+Now I have a thorough understanding. Let me implement DATA-014. I need to:
+
+1. Add news/policy event fixture entries to `fixture_replay.py`
+2. Add news/global_news live smoke endpoint definitions to `live_smoke.py`
+3. Write the test file `tests/test_data014_policy_news_fixture.py`
+4. Update TASKS.md and DEVLOG.md
+
+Let me start with the fixture_replay.py changes:
+[0m← [0mEdit tradingagents/dataflows/fixture_replay.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/fixture_replay.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/fixture_replay.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/fixture_replay.py
+@@ -76,8 +76,17 @@
+ FIXTURE_RATINGS_NOT_QUERIED = "ratings_not_queried"  # [DATA-012] rating_raw_evidence
+ FIXTURE_BUYBACK_HAS_DATA = "buyback_has_data"  # [DATA-013] buyback_raw_evidence
+ FIXTURE_BUYBACK_FAILED = "buyback_failed"  # [DATA-013] buyback_raw_evidence
+ FIXTURE_BUYBACK_NOT_QUERIED = "buyback_not_queried"  # [DATA-013] buyback_raw_evidence
++FIXTURE_NEWS_HAS_DATA = "news_has_data"  # [DATA-014] policy_news_fixture_smoke
++FIXTURE_NEWS_NORMAL_NO_DATA = "news_normal_no_data"  # [DATA-014] policy_news_fixture_smoke
++FIXTURE_NEWS_PARTIAL_FAILED = "news_partial_failed"  # [DATA-014] policy_news_fixture_smoke
++FIXTURE_NEWS_FAILED = "news_failed"  # [DATA-014] policy_news_fixture_smoke
++FIXTURE_NEWS_RATE_LIMITED = "news_rate_limited"  # [DATA-014] policy_news_fixture_smoke
++FIXTURE_GLOBAL_NEWS_HAS_DATA = "global_news_has_data"  # [DATA-014] policy_news_fixture_smoke
++FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA = "global_news_normal_no_data"  # [DATA-014] policy_news_fixture_smoke
++FIXTURE_GLOBAL_NEWS_FAILED = "global_news_failed"  # [DATA-014] policy_news_fixture_smoke
++FIXTURE_GLOBAL_NEWS_RATE_LIMITED = "global_news_rate_limited"  # [DATA-014] policy_news_fixture_smoke
+ 
+ ALL_FIXTURE_IDS = [
+     FIXTURE_NORMAL_QUOTE,
+     FIXTURE_STALE_DAILY,
+@@ -103,8 +112,17 @@
+     FIXTURE_RATINGS_NOT_QUERIED,
+     FIXTURE_BUYBACK_HAS_DATA,
+     FIXTURE_BUYBACK_FAILED,
+     FIXTURE_BUYBACK_NOT_QUERIED,
++    FIXTURE_NEWS_HAS_DATA,
++    FIXTURE_NEWS_NORMAL_NO_DATA,
++    FIXTURE_NEWS_PARTIAL_FAILED,
++    FIXTURE_NEWS_FAILED,
++    FIXTURE_NEWS_RATE_LIMITED,
++    FIXTURE_GLOBAL_NEWS_HAS_DATA,
++    FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA,
++    FIXTURE_GLOBAL_NEWS_FAILED,
++    FIXTURE_GLOBAL_NEWS_RATE_LIMITED,
+ ]
+ 
+ 
+ # ── Fixture Data Models ──────────────────────────────────────────────
+
+[0m
+Now add the fixture builder functions before the `_FIXTURE_BUILDERS` dict:
+[0m← [0mEdit tradingagents/dataflows/fixture_replay.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/fixture_replay.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/fixture_replay.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/fixture_replay.py
+@@ -1168,8 +1168,17 @@
+     FIXTURE_RATINGS_NOT_QUERIED: _build_ratings_not_queried_fixture,
+     FIXTURE_BUYBACK_HAS_DATA: _build_buyback_has_data_fixture,
+     FIXTURE_BUYBACK_FAILED: _build_buyback_failed_fixture,
+     FIXTURE_BUYBACK_NOT_QUERIED: _build_buyback_not_queried_fixture,
++    FIXTURE_NEWS_HAS_DATA: _build_news_has_data_fixture,
++    FIXTURE_NEWS_NORMAL_NO_DATA: _build_news_normal_no_data_fixture,
++    FIXTURE_NEWS_PARTIAL_FAILED: _build_news_partial_failed_fixture,
++    FIXTURE_NEWS_FAILED: _build_news_failed_fixture,
++    FIXTURE_NEWS_RATE_LIMITED: _build_news_rate_limited_fixture,
++    FIXTURE_GLOBAL_NEWS_HAS_DATA: _build_global_news_has_data_fixture,
++    FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA: _build_global_news_normal_no_data_fixture,
++    FIXTURE_GLOBAL_NEWS_FAILED: _build_global_news_failed_fixture,
++    FIXTURE_GLOBAL_NEWS_RATE_LIMITED: _build_global_news_rate_limited_fixture,
+ }
+ 
+ 
+ def get_fixture(fixture_id: str) -> Optional[FixtureEntry]:
+
+docs/task_runs/DATA-014-20260608-052740/task.md
+# Auto Dev Task Run
+
+- Task: DATA-014 - 新闻/政策事件 fixture 与 live smoke 补充（P2）
+- Priority: P2
+- Status: CLAIMED
+- Started at: 2026-06-08_05:27:40
+- Git HEAD: 938744a
+- Test commands: pytest tests/test_event_source.py tests/test_data_source_replay.py tests/test_data006_daily_digest.py -q
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/DATA-014-20260608-052740/codegraph-impact.txt
+# CodeGraph Impact: SKIPPED
+# Reason: CodeGraph not indexed
+
+ succeeded in 0ms:
+ docs/DEVLOG.md                            |  43 ++++
+ docs/TASKS.md                             |   6 +-
+ tests/test_data013_buyback.py             |   2 +-
+ tests/test_data_p1_astock_live_smoke.py   |   2 +-
+ tradingagents/dataflows/fixture_replay.py | 380 +++++++++++++++++++++++++++++-
+ tradingagents/dataflows/live_smoke.py     |  16 ++
+ 6 files changed, 441 insertions(+), 8 deletions(-)
+
+--- diff ---
+diff --git a/tests/test_data013_buyback.py b/tests/test_data013_buyback.py
+index c2c70bb..bdb2ac5 100644
+--- a/tests/test_data013_buyback.py
++++ b/tests/test_data013_buyback.py
+@@ -383,7 +383,7 @@ class TestBuybackFixtures:
+         assert FIXTURE_BUYBACK_HAS_DATA in ALL_FIXTURE_IDS
+         assert FIXTURE_BUYBACK_FAILED in ALL_FIXTURE_IDS
+         assert FIXTURE_BUYBACK_NOT_QUERIED in ALL_FIXTURE_IDS
+-        assert len(ALL_FIXTURE_IDS) == 25
++        assert len(ALL_FIXTURE_IDS) >= 25
+ 
+     def test_buyback_has_data_fixture(self):
+         fixture = get_fixture(FIXTURE_BUYBACK_HAS_DATA)
+diff --git a/tests/test_data_p1_astock_live_smoke.py b/tests/test_data_p1_astock_live_smoke.py
+index 1dda00f..95a2bb7 100644
+--- a/tests/test_data_p1_astock_live_smoke.py
++++ b/tests/test_data_p1_astock_live_smoke.py
+@@ -205,7 +205,7 @@ class TestCountDataLines:
+ class TestEndpointDefinitions:
+     def test_has_four_endpoints(self):
+         eps = _make_endpoint_definitions()
+-        assert len(eps) == 4
++        assert len(eps) >= 4
+ 
+     def test_covers_fund_flow(self):
+         eps = _make_endpoint_definitions()
+diff --git a/tradingagents/dataflows/fixture_replay.py b/tradingagents/dataflows/fixture_replay.py
+index 8786d53..a4f7975 100644
+--- a/tradingagents/dataflows/fixture_replay.py
++++ b/tradingagents/dataflows/fixture_replay.py
+@@ -1,4 +1,4 @@
+-# [DATA-005] data_source_replay  [DATA-008] astock_fallback_replay
++# [DATA-005] data_source_replay  [DATA-008] astock_fallback_replay  [DATA-014] policy_news_fixture_smoke
+ """
+ 数据源 fixture replay 与限流/失败回放。
+ 
+@@ -6,13 +6,15 @@
+ 当天实时缺失等场景，避免夜间自动开发误判数据源质量。
+ 
+ 功能：
+-  1. 内置 21 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
++  1. 内置 30 类 fixture（正常行情、日线 stale、实时 quote 成功/失败、
+      资金流单位异常、龙虎榜无触发、公告源失败、
+      AKShare 资金流失败→astock fallback、龙虎榜 NORMAL_NO_DATA、
+      龙虎榜 FAILED、公告失败→事件源弱证据、换手率/量比缺失、
+      融资融券有数据、融资融券失败、融资融券未查询、
+      研报有数据、研报失败、研报未查询、
+-     回购有数据、回购失败、回购未查询）
++     回购有数据、回购失败、回购未查询、
++     新闻有数据、新闻空结果、新闻部分失败、新闻全部失败、新闻限流、
++     全球新闻有数据、全球新闻空结果、全球新闻失败、全球新闻限流）
+   2. replay runner 将 fixture 模拟为 raw_evidence，输出数据源健康报告
+   3. 失败时写入 docs/data_source_reports/YYYY-MM-DD.md
+   4. 可被 scripts/auto_dev_loop.sh 或 OpenClaw 巡检调用
+@@ -75,6 +77,15 @@ FIXTURE_RATINGS_NOT_QUERIED = "ratings_not_queried"  # [DATA-012] rating_raw_evi
+ FIXTURE_BUYBACK_HAS_DATA = "buyback_has_data"  # [DATA-013] buyback_raw_evidence
+ FIXTURE_BUYBACK_FAILED = "buyback_failed"  # [DATA-013] buyback_raw_evidence
+ FIXTURE_BUYBACK_NOT_QUERIED = "buyback_not_queried"  # [DATA-013] buyback_raw_evidence
++FIXTURE_NEWS_HAS_DATA = "news_has_data"  # [DATA-014] policy_news_fixture_smoke
++FIXTURE_NEWS_NORMAL_NO_DATA = "news_normal_no_data"  # [DATA-014] policy_news_fixture_smoke
++FIXTURE_NEWS_PARTIAL_FAILED = "news_partial_failed"  # [DATA-014] policy_news_fixture_smoke
++FIXTURE_NEWS_FAILED = "news_failed"  # [DATA-014] policy_news_fixture_smoke
++FIXTURE_NEWS_RATE_LIMITED = "news_rate_limited"  # [DATA-014] policy_news_fixture_smoke
++FIXTURE_GLOBAL_NEWS_HAS_DATA = "global_news_has_data"  # [DATA-014] policy_news_fixture_smoke
++FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA = "global_news_normal_no_data"  # [DATA-014] policy_news_fixture_smoke
++FIXTURE_GLOBAL_NEWS_FAILED = "global_news_failed"  # [DATA-014] policy_news_fixture_smoke
++FIXTURE_GLOBAL_NEWS_RATE_LIMITED = "global_news_rate_limited"  # [DATA-014] policy_news_fixture_smoke
+ 
+ ALL_FIXTURE_IDS = [
+     FIXTURE_NORMAL_QUOTE,
+@@ -102,6 +113,15 @@ ALL_FIXTURE_IDS = [
+     FIXTURE_BUYBACK_HAS_DATA,
+     FIXTURE_BUYBACK_FAILED,
+     FIXTURE_BUYBACK_NOT_QUERIED,
++    FIXTURE_NEWS_HAS_DATA,
++    FIXTURE_NEWS_NORMAL_NO_DATA,
++    FIXTURE_NEWS_PARTIAL_FAILED,
++    FIXTURE_NEWS_FAILED,
++    FIXTURE_NEWS_RATE_LIMITED,
++    FIXTURE_GLOBAL_NEWS_HAS_DATA,
++    FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA,
++    FIXTURE_GLOBAL_NEWS_FAILED,
++    FIXTURE_GLOBAL_NEWS_RATE_LIMITED,
+ ]
+ 
+ 
+@@ -1123,6 +1143,351 @@ def _build_buyback_not_queried_fixture() -> FixtureEntry:
+     )
+ 
+ 
++# ── [DATA-014] News / Policy Event Fixtures ────────────────────────────
++
++_POLICY_NEWS_TEXT = (
++    "[政策原文] 国务院印发《关于加快发展低空经济的若干意见》，明确支持低空基础设施建设、"
++    "空域管理改革和无人机产业发展。来源级别：中央/国务院。"
++)
++_NEWS_RELAY_TEXT = (
++    "[新闻转述] 多家媒体报道低空经济板块持续升温，相关概念股异动。来源级别：媒体。"
++)
++_MARKET_RUMOR_TEXT = (
++    "[市场传闻] 市场传言某公司将获得低空经济相关订单，但无公告或政策原文佐证。"
++    "来源级别：市场传闻。"
++)
++_NORMAL_NEWS_TEXT = (
++    "贵州茅台召开股东大会,东财\n"
++    "贵州茅台发布2025年度权益分派实施公告,东财\n"
++    "贵州茅台：董事长增持计划实施完毕,东财\n"
++    "茅台系列酒提价预期升温,东财\n"
++    "白酒行业龙头稳健增长,东财"
++)
++
++
++def _build_news_has_data_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "news": {
++            "raw": _NORMAL_NEWS_TEXT,
++            "field": "news",
++            "unit": "条",
++            "vendor": "cn_akshare",
++            "endpoint": "stock_news_em",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "HAS_DATA",
++            "fallback_from": None,
++            "source_url": None,
++            "error": None,
++            "is_realtime_patched": False,
++            "unit_verified": True,
++            "record_count": 5,
++            "source_level": "媒体",
++            "evidence_type": "news_relay",
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_NEWS_HAS_DATA,
++        description="新闻正常返回（含政策原文/新闻转述/市场传闻分类标注）",
++        data_type="news",
++        vendor="cn_akshare",
++        endpoint="stock_news_em",
++        expected_status="HAS_DATA",
++        raw_evidence=raw_evidence,
++        tags=["news", "has_data", "DATA-014"],
++    )
++
++
++def _build_news_normal_no_data_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "news": {
++            "raw": "暂无相关新闻",
++            "field": "news",
++            "unit": "条",
++            "vendor": "cn_akshare",
++            "endpoint": "stock_news_em",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "NORMAL_NO_DATA",
++            "fallback_from": None,
++            "source_url": None,
++            "error": None,
++            "is_realtime_patched": False,
++            "unit_verified": True,
++            "record_count": 0,
++            "source_level": "",
++            "evidence_type": "",
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_NEWS_NORMAL_NO_DATA,
++        description="新闻正常返回但无事件（status=OK, count=0）",
++        data_type="news",
++        vendor="cn_akshare",
++        endpoint="stock_news_em",
++        expected_status="NORMAL_NO_DATA",
++        raw_evidence=raw_evidence,
++        tags=["news", "normal_no_data", "DATA-014"],
++    )
++
++
++def _build_news_partial_failed_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "news": {
++            "raw": "601689.SH [DATA-014] NEWS_PARTIAL_FAILED: AKShare新闻失败，"
++                   "东财搜索接口返回部分数据",
++            "field": "news",
++            "unit": "条",
++            "vendor": "cn_astock",
++            "endpoint": "search-api-web.eastmoney.com",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "HAS_DATA",
++            "fallback_from": "cn_akshare",
++            "source_url": None,
++            "error": "AKShare stock_news_em: ProxyError",
++            "is_realtime_patched": False,
++            "unit_verified": True,
++            "record_count": 2,
++            "source_level": "媒体",
++            "evidence_type": "news_relay",
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_NEWS_PARTIAL_FAILED,
++        description="新闻部分失败——AKShare 失败后 fallback 到 cn_astock 成功",
++        data_type="news",
++        vendor="cn_astock",
++        endpoint="search-api-web.eastmoney.com",
++        expected_status="HAS_DATA",
++        raw_evidence=raw_evidence,
++        tags=["news", "partial_failed", "fallback", "DATA-014"],
++    )
++
++
++def _build_news_failed_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "news": {
++            "raw": "601689.SH [DATA-014] NEWS_FAILED: 新闻数据获取失败："
++                   "AKShare ConnectionError; cn_astock ConnectionError",
++            "field": "news",
++            "unit": None,
++            "vendor": "cn_astock",
++            "endpoint": "search-api-web.eastmoney.com",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "FAILED",
++            "fallback_from": "cn_akshare",
++            "source_url": None,
++            "error": "ConnectionError",
++            "is_realtime_patched": False,
++            "unit_verified": None,
++            "record_count": 0,
++            "source_level": "",
++            "evidence_type": "",
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_NEWS_FAILED,
++        description="新闻全部失败——AKShare 和 cn_astock 均连接失败",
++        data_type="news",
++        vendor="cn_astock",
++        endpoint="search-api-web.eastmoney.com",
++        expected_status="FAILED",
++        raw_evidence=raw_evidence,
++        tags=["news", "failed", "DATA-014"],
++    )
++
++
++def _build_news_rate_limited_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "news": {
++            "raw": "601689.SH [DATA-014] NEWS_RATE_LIMITED: 新闻数据获取失败："
++                   "RateLimitError: 请求过于频繁，请稍后再试",
++            "field": "news",
++            "unit": None,
++            "vendor": "cn_akshare",
++            "endpoint": "stock_news_em",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "FAILED",
++            "fallback_from": None,
++            "source_url": None,
++            "error": "RateLimitError: 请求过于频繁，请稍后再试",
++            "is_realtime_patched": False,
++            "unit_verified": None,
++            "record_count": 0,
++            "source_level": "",
++            "evidence_type": "",
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_NEWS_RATE_LIMITED,
++        description="新闻限流——请求频率过高被拒",
++        data_type="news",
++        vendor="cn_akshare",
++        endpoint="stock_news_em",
++        expected_status="FAILED",
++        raw_evidence=raw_evidence,
++        tags=["news", "rate_limited", "DATA-014"],
++    )
++
++
++def _build_global_news_has_data_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "global_news": {
++            "raw": "央视新闻联播\n"
++                   "1. 国务院常务会议部署促进平台经济健康发展措施\n"
++                   "2. 工信部发布《新能源汽车产业发展规划》修订版\n"
++                   "3. 央行实施降准操作，释放长期资金约5000亿元",
++            "field": "global_news",
++            "unit": "条",
++            "vendor": "cn_akshare",
++            "endpoint": "news_cctv",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "HAS_DATA",
++            "fallback_from": None,
++            "source_url": None,
++            "error": None,
++            "is_realtime_patched": False,
++            "unit_verified": True,
++            "record_count": 3,
++            "source_level": "中央/国务院",
++            "evidence_type": "policy_document",
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_GLOBAL_NEWS_HAS_DATA,
++        description="全球新闻正常返回（含政策原文级别标注）",
++        data_type="global_news",
++        vendor="cn_akshare",
++        endpoint="news_cctv",
++        expected_status="HAS_DATA",
++        raw_evidence=raw_evidence,
++        tags=["global_news", "has_data", "DATA-014"],
++    )
++
++
++def _build_global_news_normal_no_data_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "global_news": {
++            "raw": "暂无全球新闻",
++            "field": "global_news",
++            "unit": "条",
++            "vendor": "cn_akshare",
++            "endpoint": "news_cctv",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "NORMAL_NO_DATA",
++            "fallback_from": None,
++            "source_url": None,
++            "error": None,
++            "is_realtime_patched": False,
++            "unit_verified": True,
++            "record_count": 0,
++            "source_level": "",
++            "evidence_type": "",
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA,
++        description="全球新闻正常返回但无事件（status=OK, count=0）",
++        data_type="global_news",
++        vendor="cn_akshare",
++        endpoint="news_cctv",
++        expected_status="NORMAL_NO_DATA",
++        raw_evidence=raw_evidence,
++        tags=["global_news", "normal_no_data", "DATA-014"],
++    )
++
++
++def _build_global_news_failed_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "global_news": {
++            "raw": "[DATA-014] GLOBAL_NEWS_FAILED: 全球新闻数据获取失败："
++                   "AKShare ConnectionError; cn_astock ConnectionError",
++            "field": "global_news",
++            "unit": None,
++            "vendor": "cn_astock",
++            "endpoint": "cls.cn/telegraphList",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "FAILED",
++            "fallback_from": "cn_akshare",
++            "source_url": None,
++            "error": "ConnectionError",
++            "is_realtime_patched": False,
++            "unit_verified": None,
++            "record_count": 0,
++            "source_level": "",
++            "evidence_type": "",
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_GLOBAL_NEWS_FAILED,
++        description="全球新闻全部失败——AKShare 和 cn_astock 均连接失败",
++        data_type="global_news",
++        vendor="cn_astock",
++        endpoint="cls.cn/telegraphList",
++        expected_status="FAILED",
++        raw_evidence=raw_evidence,
++        tags=["global_news", "failed", "DATA-014"],
++    )
++
++
++def _build_global_news_rate_limited_fixture() -> FixtureEntry:
++    now_iso = datetime.now().isoformat()
++    today = datetime.now().strftime("%Y-%m-%d")
++    raw_evidence = {
++        "global_news": {
++            "raw": "[DATA-014] GLOBAL_NEWS_RATE_LIMITED: 全球新闻数据获取失败："
++                   "RateLimitError: 请求频率超限",
++            "field": "global_news",
++            "unit": None,
++            "vendor": "cn_akshare",
++            "endpoint": "news_cctv",
++            "as_of": today,
++            "fetched_at": now_iso,
++            "status": "FAILED",
++            "fallback_from": None,
++            "source_url": None,
++            "error": "RateLimitError: 请求频率超限",
++            "is_realtime_patched": False,
++            "unit_verified": None,
++            "record_count": 0,
++            "source_level": "",
++            "evidence_type": "",
++        },
++    }
++    return FixtureEntry(
++        fixture_id=FIXTURE_GLOBAL_NEWS_RATE_LIMITED,
++        description="全球新闻限流——请求频率过高被拒",
++        data_type="global_news",
++        vendor="cn_akshare",
++        endpoint="news_cctv",
++        expected_status="FAILED",
++        raw_evidence=raw_evidence,
++        tags=["global_news", "rate_limited", "DATA-014"],
++    )
++
++
+ _FIXTURE_BUILDERS = {
+     FIXTURE_NORMAL_QUOTE: _build_normal_quote_fixture,
+     FIXTURE_STALE_DAILY: _build_stale_daily_fixture,
+@@ -1149,6 +1514,15 @@ _FIXTURE_BUILDERS = {
+     FIXTURE_BUYBACK_HAS_DATA: _build_buyback_has_data_fixture,
+     FIXTURE_BUYBACK_FAILED: _build_buyback_failed_fixture,
+     FIXTURE_BUYBACK_NOT_QUERIED: _build_buyback_not_queried_fixture,
++    FIXTURE_NEWS_HAS_DATA: _build_news_has_data_fixture,
++    FIXTURE_NEWS_NORMAL_NO_DATA: _build_news_normal_no_data_fixture,
++    FIXTURE_NEWS_PARTIAL_FAILED: _build_news_partial_failed_fixture,
++    FIXTURE_NEWS_FAILED: _build_news_failed_fixture,
++    FIXTURE_NEWS_RATE_LIMITED: _build_news_rate_limited_fixture,
++    FIXTURE_GLOBAL_NEWS_HAS_DATA: _build_global_news_has_data_fixture,
++    FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA: _build_global_news_normal_no_data_fixture,
++    FIXTURE_GLOBAL_NEWS_FAILED: _build_global_news_failed_fixture,
++    FIXTURE_GLOBAL_NEWS_RATE_LIMITED: _build_global_news_rate_limited_fixture,
+ }
+ 
+ 
+diff --git a/tradingagents/dataflows/live_smoke.py b/tradingagents/dataflows/live_smoke.py
+index 825d3dc..afe31e9 100644
+--- a/tradingagents/dataflows/live_smoke.py
++++ b/tradingagents/dataflows/live_smoke.py
+@@ -167,6 +167,22 @@ def _make_endpoint_definitions() -> List[Dict[str, Any]]:
+             "kwargs": {},
+             "expected_unit": "",
+         },
++        {  # [DATA-014] policy_news_fixture_smoke
++            "endpoint": "cn_astock/eastmoney_news",
++            "method": "get_news",
++            "vendor": "cn_astock",
++            "args_template": ("{symbol}", "{date}", "{date}"),
++            "kwargs": {},
++            "expected_unit": "条",
++        },
++        {  # [DATA-014] policy_news_fixture_smoke
++            "endpoint": "cn_astock/cls_global_news",
++            "method": "get_global_news",
++            "vendor": "cn_astock",
++            "args_template": ("{date}",),
++            "kwargs": {},
++            "expected_unit": "条",
++        },
+     ]
+ 
+ 
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tests/test_data014_policy_news_fixture.py && printf '\\n--- rest ---\\n' && sed -n '260,620p' tests/test_data014_policy_news_fixture.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [DATA-014] policy_news_fixture_smoke
+"""
+Tests for news/policy event fixtures, live smoke integration,
+evidence contract, coverage audit, readiness score, and source catalog.
+"""
+
+import pytest
+from unittest.mock import patch, MagicMock
+
+from tradingagents.dataflows.source_catalog import (
+    DataType,
+    Freshness,
+    RateLimitRisk,
+    get_sources_for_type,
+    get_primary_source,
+    get_fallback_chain,
+    get_all_data_types,
+    validate_catalog,
+)
+from tradingagents.dataflows.evidence_contract import (
+    EvidenceContract,
+    resolve_data_type,
+    compute_contract_completeness,
+    _REQUIRED_FIELDS_FOR_COMPLETENESS,
+)
+from tradingagents.dataflows.evidence_coverage_audit import (
+    audit_raw_evidence,
+    _EVIDENCE_FIELD_LABELS,
+    _EVIDENCE_FIELD_FAMILIES,
+)
+from tradingagents.agents.utils.readiness_score import (
+    EvidenceStatus,
+    infer_evidence_statuses,
+)
+from tradingagents.dataflows.fixture_replay import (
+    FIXTURE_NEWS_HAS_DATA,
+    FIXTURE_NEWS_NORMAL_NO_DATA,
+    FIXTURE_NEWS_PARTIAL_FAILED,
+    FIXTURE_NEWS_FAILED,
+    FIXTURE_NEWS_RATE_LIMITED,
+    FIXTURE_GLOBAL_NEWS_HAS_DATA,
+    FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA,
+    FIXTURE_GLOBAL_NEWS_FAILED,
+    FIXTURE_GLOBAL_NEWS_RATE_LIMITED,
+    ALL_FIXTURE_IDS,
+    get_fixture,
+    get_all_fixtures,
+    run_fixture_replay,
+)
+from tradingagents.dataflows.interface import (
+    TOOLS_CATEGORIES,
+    get_category_for_method,
+    _FAILURE_RESULT_PATTERNS,
+)
+from tradingagents.dataflows.live_smoke import (
+    _make_endpoint_definitions,
+    run_live_smoke,
+    is_live_smoke_enabled,
+    LiveSmokeReport,
+    EndpointSmokeResult,
+)
+from tradingagents.tradeflow.event_source import (
+    EventSourceStatus,
+    EventSourceResult,
+    EventItem,
+)
+
+
+# ── Source Catalog ────────────────────────────────────────────────────
+
+
+class TestSourceCatalogNews:
+    def test_news_data_type_exists(self):
+        assert DataType.NEWS.value == "news"
+
+    def test_global_news_data_type_exists(self):
+        assert DataType.GLOBAL_NEWS.value == "global_news"
+
+    def test_news_sources_registered(self):
+        sources = get_sources_for_type(DataType.NEWS)
+        assert len(sources) >= 2
+
+    def test_global_news_sources_registered(self):
+        sources = get_sources_for_type(DataType.GLOBAL_NEWS)
+        assert len(sources) >= 2
+
+    def test_news_primary_source(self):
+        primary = get_primary_source(DataType.NEWS)
+        assert primary is not None
+        assert primary.vendor == "cn_akshare"
+        assert primary.is_primary
+
+    def test_global_news_primary_source(self):
+        primary = get_primary_source(DataType.GLOBAL_NEWS)
+        assert primary is not None
+        assert primary.vendor == "cn_akshare"
+        assert primary.is_primary
+
+    def test_news_fallback_chain(self):
+        chain = get_fallback_chain(DataType.NEWS)
+        assert "cn_akshare" in chain
+        assert "cn_astock" in chain
+        assert chain.index("cn_akshare") < chain.index("cn_astock")
+
+    def test_global_news_fallback_chain(self):
+        chain = get_fallback_chain(DataType.GLOBAL_NEWS)
+        assert "cn_akshare" in chain
+        assert "cn_astock" in chain
+
+    def test_news_in_all_data_types(self):
+        all_types = get_all_data_types()
+        assert "news" in all_types
+        assert "global_news" in all_types
+
+    def test_news_primary_fields(self):
+        primary = get_primary_source(DataType.NEWS)
+        assert len(primary.fields) > 0
+
+    def test_news_primary_endpoint(self):
+        primary = get_primary_source(DataType.NEWS)
+        assert primary.endpoint == "stock_news_em"
+
+    def test_global_news_primary_endpoint(self):
+        primary = get_primary_source(DataType.GLOBAL_NEWS)
+        assert primary.endpoint == "news_cctv"
+
+    def test_catalog_validation_passes(self):
+        issues = validate_catalog()
+        news_issues = [i for i in issues if "news" in i.lower()]
+        assert len(news_issues) == 0
+
+
+# ── Evidence Contract ─────────────────────────────────────────────────
+
+
+class TestEvidenceContractNews:
+    def test_resolve_data_type_news(self):
+        assert resolve_data_type("news") == "news"
+
+    def test_resolve_data_type_global_news(self):
+        assert resolve_data_type("global_news") == "global_news"
+
+    def test_news_required_fields(self):
+        assert "news" in _REQUIRED_FIELDS_FOR_COMPLETENESS
+        assert "status" in _REQUIRED_FIELDS_FOR_COMPLETENESS["news"]
+        assert "vendor" in _REQUIRED_FIELDS_FOR_COMPLETENESS["news"]
+
+    def test_global_news_required_fields(self):
+        assert "global_news" in _REQUIRED_FIELDS_FOR_COMPLETENESS
+        assert "status" in _REQUIRED_FIELDS_FOR_COMPLETENESS["global_news"]
+        assert "vendor" in _REQUIRED_FIELDS_FOR_COMPLETENESS["global_news"]
+
+    def test_news_contract_has_data(self):
+        contract = EvidenceContract(
+            field="news", value="新闻文本", unit="条",
+            vendor="cn_akshare", endpoint="stock_news_em",
+            as_of="2026-06-08", status="HAS_DATA",
+        )
+        assert contract.status == "HAS_DATA"
+        assert contract.vendor == "cn_akshare"
+
+    def test_news_contract_failed(self):
+        contract = EvidenceContract(
+            field="news", value=None, unit=None,
+            vendor="cn_akshare", endpoint="stock_news_em",
+            as_of="2026-06-08", status="FAILED",
+            error="ConnectionError",
+        )
+        assert contract.status == "FAILED"
+        assert contract.error == "ConnectionError"
+
+    def test_news_completeness_has_data(self):
+        raw_evidence = {
+            "news": {
+                "raw": "新闻内容",
+                "field": "news",
+                "unit": "条",
+                "vendor": "cn_akshare",
+                "endpoint": "stock_news_em",
+                "as_of": "2026-06-08",
+                "fetched_at": "2026-06-08T10:00:00",
+                "status": "HAS_DATA",
+                "record_count": 5,
+            },
+        }
+        result = compute_contract_completeness(raw_evidence)
+        assert result["completeness_score"] > 0
+
+    def test_news_completeness_missing(self):
+        raw_evidence = {
+            "news": {
+                "raw": None,
+                "field": "news",
+                "status": "NOT_QUERIED",
+            },
+        }
+        result = compute_contract_completeness(raw_evidence)
+        assert "news" in result.get("missing_details", {})
+
+
+# ── Evidence Coverage Audit ───────────────────────────────────────────
+
+
+class TestEvidenceCoverageAuditNews:
+    def test_news_label(self):
+        assert "news" in _EVIDENCE_FIELD_LABELS
+        assert _EVIDENCE_FIELD_LABELS["news"] == "新闻"
+
+    def test_global_news_label(self):
+        assert "global_news" in _EVIDENCE_FIELD_LABELS
+        assert _EVIDENCE_FIELD_LABELS["global_news"] == "全球新闻"
+
+    def test_news_family(self):
+        assert _EVIDENCE_FIELD_FAMILIES.get("news") == "news"
+
+    def test_global_news_family(self):
+        assert _EVIDENCE_FIELD_FAMILIES.get("global_news") == "news"
+
+    def test_audit_news_has_data(self):
+        raw = {
+            "news": {
+                "raw": "新闻内容",
+                "field": "news",
+                "unit": "条",
+                "vendor": "cn_akshare",
+                "endpoint": "stock_news_em",
+                "as_of": "2026-06-08",
+                "fetched_at": "2026-06-08T10:00:00",
+                "status": "HAS_DATA",
+            },
+        }
+        result = audit_raw_evidence(raw)
+        assert result.evidence_coverage >= 0
+
+    def test_audit_news_failed(self):
+        raw = {
+            "news": {
+                "raw": None,
+                "field": "news",
+                "unit": None,
+                "vendor": "cn_akshare",
+                "endpoint": "stock_news_em",
+                "as_of": "2026-06-08",
+                "status": "FAILED",
+                "error": "ConnectionError",
+            },
+        }
+        result = audit_raw_evidence(raw)
+        assert "news" in result.failed_fields or result.evidence_coverage < 100
+
+
+# ── Readiness Score ───────────────────────────────────────────────────
+
+
+class TestReadinessScoreNews:
+    def test_news_structured_has_data(self):
+        raw = {
+            "news": {
+                "status": "HAS_DATA",
+                "raw": "贵州茅台召开股东大会,东财\n"
+
+--- rest ---
+                "raw": "贵州茅台召开股东大会,东财\n"
+                       "贵州茅台发布2025年度权益分派实施公告,东财\n"
+                       "白酒行业龙头稳健增长,东财",
+            },
+        }
+        result = infer_evidence_statuses(reports={}, raw_evidence=raw)
+        assert result["announcements"] == EvidenceStatus.HAS_DATA
+
+    def test_news_structured_failed(self):
+        raw = {
+            "news": {
+                "status": "FAILED",
+                "raw": "新闻数据获取失败",
+                "error": "ConnectionError",
+            },
+        }
+        result = infer_evidence_statuses(reports={}, raw_evidence=raw)
+        assert result["announcements"] == EvidenceStatus.QUERY_FAILED
+
+    def test_news_structured_normal_no_data(self):
+        raw = {
+            "news": {
+                "status": "NORMAL_NO_DATA",
+                "raw": "暂无相关新闻",
+            },
+        }
+        result = infer_evidence_statuses(reports={}, raw_evidence=raw)
+        assert result["announcements"] == EvidenceStatus.NORMAL_NO_DATA
+
+    def test_news_not_queried_default(self):
+        raw = {}
+        result = infer_evidence_statuses(reports={}, raw_evidence=raw)
+        assert result["announcements"] == EvidenceStatus.NOT_QUERIED
+
+    def test_news_text_fallback(self):
+        reports = {"news_report": "贵州茅台：2026-06-08公告标题摘要。公司公告重大事项。"}
+        result = infer_evidence_statuses(reports=reports, raw_evidence={})
+        assert result["announcements"] in (EvidenceStatus.HAS_DATA, EvidenceStatus.FIELD_MISSING)
+
+
+# ── Interface ─────────────────────────────────────────────────────────
+
+
+class TestInterfaceNews:
+    def test_news_tools_category(self):
+        assert "news_data" in TOOLS_CATEGORIES
+        tools = TOOLS_CATEGORIES["news_data"]["tools"]
+        assert "get_news" in tools
+        assert "get_global_news" in tools
+
+    def test_get_news_category(self):
+        cat = get_category_for_method("get_news")
+        assert cat == "news_data"
+
+    def test_get_global_news_category(self):
+        cat = get_category_for_method("get_global_news")
+        assert cat == "news_data"
+
+    def test_failure_string_detection(self):
+        for pattern in _FAILURE_RESULT_PATTERNS:
+            assert isinstance(pattern, str)
+
+
+# ── Event Source ──────────────────────────────────────────────────────
+
+
+class TestEventSourceStatus:
+    def test_status_enum_values(self):
+        assert EventSourceStatus.OK.value == "OK"
+        assert EventSourceStatus.FAILED.value == "FAILED"
+        assert EventSourceStatus.STALE.value == "STALE"
+        assert EventSourceStatus.PARTIAL.value == "PARTIAL"
+
+    def test_event_source_result_default(self):
+        result = EventSourceResult()
+        assert result.status == EventSourceStatus.OK
+        assert result.event_count == 0
+        assert result.symbols_count == 0
+
+    def test_event_item_default(self):
+        item = EventItem()
+        assert item.symbol == ""
+        assert item.direction == "neutral"
+        assert item.event_type == ""
+
+
+# ── News Fixtures ─────────────────────────────────────────────────────
+
+
+_NEWS_FIXTURE_IDS = [
+    FIXTURE_NEWS_HAS_DATA,
+    FIXTURE_NEWS_NORMAL_NO_DATA,
+    FIXTURE_NEWS_PARTIAL_FAILED,
+    FIXTURE_NEWS_FAILED,
+    FIXTURE_NEWS_RATE_LIMITED,
+]
+
+_GLOBAL_NEWS_FIXTURE_IDS = [
+    FIXTURE_GLOBAL_NEWS_HAS_DATA,
+    FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA,
+    FIXTURE_GLOBAL_NEWS_FAILED,
+    FIXTURE_GLOBAL_NEWS_RATE_LIMITED,
+]
+
+
+class TestNewsFixtures:
+    def test_news_fixture_ids_exist(self):
+        for fid in _NEWS_FIXTURE_IDS:
+            fixture = get_fixture(fid)
+            assert fixture is not None, f"Missing fixture: {fid}"
+
+    def test_global_news_fixture_ids_exist(self):
+        for fid in _GLOBAL_NEWS_FIXTURE_IDS:
+            fixture = get_fixture(fid)
+            assert fixture is not None, f"Missing fixture: {fid}"
+
+    def test_all_fixture_ids_count(self):
+        assert len(ALL_FIXTURE_IDS) >= 34
+
+    def test_news_fixtures_in_all_fixture_ids(self):
+        for fid in _NEWS_FIXTURE_IDS:
+            assert fid in ALL_FIXTURE_IDS, f"{fid} not in ALL_FIXTURE_IDS"
+
+    def test_global_news_fixtures_in_all_fixture_ids(self):
+        for fid in _GLOBAL_NEWS_FIXTURE_IDS:
+            assert fid in ALL_FIXTURE_IDS, f"{fid} not in ALL_FIXTURE_IDS"
+
+    def test_news_has_data_fixture(self):
+        fixture = get_fixture(FIXTURE_NEWS_HAS_DATA)
+        assert fixture.expected_status == "HAS_DATA"
+        assert fixture.vendor == "cn_akshare"
+        assert "news" in fixture.raw_evidence
+        ev = fixture.raw_evidence["news"]
+        assert ev["status"] == "HAS_DATA"
+        assert ev["unit"] == "条"
+        assert ev["record_count"] > 0
+
+    def test_news_normal_no_data_fixture(self):
+        fixture = get_fixture(FIXTURE_NEWS_NORMAL_NO_DATA)
+        assert fixture.expected_status == "NORMAL_NO_DATA"
+        ev = fixture.raw_evidence["news"]
+        assert ev["status"] == "NORMAL_NO_DATA"
+        assert ev["record_count"] == 0
+
+    def test_news_partial_failed_fixture(self):
+        fixture = get_fixture(FIXTURE_NEWS_PARTIAL_FAILED)
+        assert fixture.expected_status == "HAS_DATA"
+        ev = fixture.raw_evidence["news"]
+        assert ev["fallback_from"] == "cn_akshare"
+        assert ev["vendor"] == "cn_astock"
+        assert ev["error"] is not None
+
+    def test_news_failed_fixture(self):
+        fixture = get_fixture(FIXTURE_NEWS_FAILED)
+        assert fixture.expected_status == "FAILED"
+        ev = fixture.raw_evidence["news"]
+        assert ev["status"] == "FAILED"
+        assert ev["error"] == "ConnectionError"
+
+    def test_news_rate_limited_fixture(self):
+        fixture = get_fixture(FIXTURE_NEWS_RATE_LIMITED)
+        assert fixture.expected_status == "FAILED"
+        ev = fixture.raw_evidence["news"]
+        assert ev["status"] == "FAILED"
+        assert "RateLimitError" in (ev["error"] or "")
+
+    def test_global_news_has_data_fixture(self):
+        fixture = get_fixture(FIXTURE_GLOBAL_NEWS_HAS_DATA)
+        assert fixture.expected_status == "HAS_DATA"
+        assert fixture.vendor == "cn_akshare"
+        ev = fixture.raw_evidence["global_news"]
+        assert ev["status"] == "HAS_DATA"
+        assert ev["record_count"] > 0
+
+    def test_global_news_normal_no_data_fixture(self):
+        fixture = get_fixture(FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA)
+        assert fixture.expected_status == "NORMAL_NO_DATA"
+        ev = fixture.raw_evidence["global_news"]
+        assert ev["record_count"] == 0
+
+    def test_global_news_failed_fixture(self):
+        fixture = get_fixture(FIXTURE_GLOBAL_NEWS_FAILED)
+        assert fixture.expected_status == "FAILED"
+        ev = fixture.raw_evidence["global_news"]
+        assert ev["status"] == "FAILED"
+
+    def test_global_news_rate_limited_fixture(self):
+        fixture = get_fixture(FIXTURE_GLOBAL_NEWS_RATE_LIMITED)
+        assert fixture.expected_status == "FAILED"
+        ev = fixture.raw_evidence["global_news"]
+        assert "RateLimitError" in (ev["error"] or "")
+
+    def test_no_vendor_for_empty_fixtures(self):
+        fixture = get_fixture(FIXTURE_NEWS_NORMAL_NO_DATA)
+        assert fixture.vendor != "" or fixture.expected_status == "NORMAL_NO_DATA"
+
+    def test_all_news_fixtures_unique(self):
+        all_ids = _NEWS_FIXTURE_IDS + _GLOBAL_NEWS_FIXTURE_IDS
+        assert len(all_ids) == len(set(all_ids))
+
+    def test_unknown_fixture_returns_none(self):
+        assert get_fixture("nonexistent_news_fixture") is None
+
+
+# ── News Fixture Replay ───────────────────────────────────────────────
+
+
+class TestNewsFixtureReplay:
+    def test_replay_news_has_data(self):
+        fixture = get_fixture(FIXTURE_NEWS_HAS_DATA)
+        report = run_fixture_replay(fixtures=[fixture])
+        assert report.total_fixtures == 1
+        assert report.passed == 1
+        assert report.failed == 0
+
+    def test_replay_news_normal_no_data(self):
+        fixture = get_fixture(FIXTURE_NEWS_NORMAL_NO_DATA)
+        report = run_fixture_replay(fixtures=[fixture])
+        assert report.total_fixtures == 1
+        assert report.passed == 1
+
+    def test_replay_news_failed(self):
+        fixture = get_fixture(FIXTURE_NEWS_FAILED)
+        report = run_fixture_replay(fixtures=[fixture])
+        assert report.total_fixtures == 1
+        assert report.passed == 1
+        assert report.results[0].actual_status == "FAILED"
+
+    def test_replay_news_rate_limited(self):
+        fixture = get_fixture(FIXTURE_NEWS_RATE_LIMITED)
+        report = run_fixture_replay(fixtures=[fixture])
+        assert report.total_fixtures == 1
+        assert report.passed == 1
+
+    def test_replay_all_news(self):
+        fixtures = [get_fixture(fid) for fid in _NEWS_FIXTURE_IDS]
+        report = run_fixture_replay(fixtures=fixtures)
+        assert report.total_fixtures == 5
+        assert report.passed == 5
+
+    def test_replay_all_global_news(self):
+        fixtures = [get_fixture(fid) for fid in _GLOBAL_NEWS_FIXTURE_IDS]
+        report = run_fixture_replay(fixtures=fixtures)
+        assert report.total_fixtures == 4
+        assert report.passed == 4
+
+    def test_replay_full_includes_news(self):
+        report = run_fixture_replay()
+        news_results = [r for r in report.results if r.data_type in ("news", "global_news")]
+        assert len(news_results) == 9
+
+
+# ── Source Level Classification ───────────────────────────────────────
+
+
+class TestSourceLevelClassification:
+    def test_news_has_source_level_field(self):
+        fixture = get_fixture(FIXTURE_NEWS_HAS_DATA)
+        ev = fixture.raw_evidence["news"]
+        assert "source_level" in ev
+        assert ev["source_level"] != ""
+
+    def test_global_news_has_policy_document_type(self):
+        fixture = get_fixture(FIXTURE_GLOBAL_NEWS_HAS_DATA)
+        ev = fixture.raw_evidence["global_news"]
+        assert ev.get("evidence_type") == "policy_document"
+
+    def test_news_relay_type(self):
+        fixture = get_fixture(FIXTURE_NEWS_HAS_DATA)
+        ev = fixture.raw_evidence["news"]
+        assert ev.get("evidence_type") == "news_relay"
+
+    def test_failed_fixtures_have_no_source_level(self):
+        fixture = get_fixture(FIXTURE_NEWS_FAILED)
+        ev = fixture.raw_evidence["news"]
+        assert ev.get("source_level", "") == ""
+
+
+# ── Evidence Type Distinction ─────────────────────────────────────────
+
+
+class TestEvidenceTypeDistinction:
+    def test_policy_document_distinguished(self):
+        fixture = get_fixture(FIXTURE_GLOBAL_NEWS_HAS_DATA)
+        ev = fixture.raw_evidence["global_news"]
+        assert ev["evidence_type"] == "policy_document"
+        assert ev["source_level"] == "中央/国务院"
+
+    def test_news_relay_distinguished(self):
+        fixture = get_fixture(FIXTURE_NEWS_HAS_DATA)
+        ev = fixture.raw_evidence["news"]
+        assert ev["evidence_type"] == "news_relay"
+
+    def test_market_rumor_not_in_has_data(self):
+        fixture = get_fixture(FIXTURE_NEWS_HAS_DATA)
+        ev = fixture.raw_evidence["news"]
+        assert ev["evidence_type"] != "market_rumor"
+
+    def test_empty_evidence_type_for_failures(self):
+        fixture = get_fixture(FIXTURE_NEWS_FAILED)
+        ev = fixture.raw_evidence["news"]
+        assert ev.get("evidence_type", "") == ""
+
+
+# ── Live Smoke ────────────────────────────────────────────────────────
+
+
+class TestLiveSmokeNews:
+    def test_news_endpoint_in_definitions(self):
+        endpoints = _make_endpoint_definitions()
+        ep_names = [ep["endpoint"] for ep in endpoints]
+        assert "cn_astock/eastmoney_news" in ep_names
+        assert "cn_astock/cls_global_news" in ep_names
+
+    def test_news_endpoint_definition_fields(self):
+        endpoints = _make_endpoint_definitions()
+        news_ep = [ep for ep in endpoints if ep["endpoint"] == "cn_astock/eastmoney_news"][0]
+        assert news_ep["method"] == "get_news"
+        assert news_ep["vendor"] == "cn_astock"
+        assert news_ep["expected_unit"] == "条"
+
+    def test_global_news_endpoint_definition_fields(self):
+        endpoints = _make_endpoint_definitions()
+        gn_ep = [ep for ep in endpoints if ep["endpoint"] == "cn_astock/cls_global_news"][0]
+        assert gn_ep["method"] == "get_global_news"
+        assert gn_ep["vendor"] == "cn_astock"
+        assert gn_ep["expected_unit"] == "条"
+
+    def test_live_smoke_skip_without_env(self):
+        with patch.dict("os.environ", {}, clear=True):
+            report = run_live_smoke(
+                symbols=["600519.SH"],
+                endpoints=[{
+                    "endpoint": "cn_astock/eastmoney_news",
+                    "method": "get_news",
+                    "vendor": "cn_astock",
+                    "args_template": ("{symbol}", "{date}", "{date}"),
+                    "kwargs": {},
+                    "expected_unit": "条",
+                }],
+            )
+        assert report.env_gated is True
+        assert all(r.status == "SKIPPED" for r in report.results)
+
+    def test_live_smoke_enabled_with_env(self):
+        with patch.dict("os.environ", {"TA_LIVE_DATA_SMOKE": "1"}, clear=False):
+            mock_provider = MagicMock()
+            mock_provider.get_news.return_value = "新闻标题,来源\n测试新闻,东财"
+            report = run_live_smoke(
+                symbols=["600519.SH"],
+                endpoints=[{
+                    "endpoint": "cn_astock/eastmoney_news",
+                    "method": "get_news",
+                    "vendor": "cn_astock",
+                    "args_template": ("{symbol}", "{date}", "{date}"),
+                    "kwargs": {},
+                    "expected_unit": "条",
+                }],
+            )
+        assert report.env_gated is False
+
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/dataflows/live_smoke.py && printf '\\n--- source catalog relevant ---\\n' && grep -R \"NEWS\\|GLOBAL_NEWS\\|global_news\\|get_global_news\\|get_news\" -n tradingagents/dataflows tests | head -200" in /Users/maybee/TradingAgents-AShare
+ succeeded in 294ms:
+tradingagents/dataflows/live_smoke.py:172:            "method": "get_news",
+tradingagents/dataflows/live_smoke.py:179:            "endpoint": "cn_astock/cls_global_news",
+tradingagents/dataflows/live_smoke.py:180:            "method": "get_global_news",
+tradingagents/dataflows/source_catalog.py:39:    NEWS = "news"
+tradingagents/dataflows/source_catalog.py:40:    GLOBAL_NEWS = "global_news"
+tradingagents/dataflows/source_catalog.py:437:        DataType.NEWS,
+tradingagents/dataflows/source_catalog.py:448:        DataType.NEWS,
+tradingagents/dataflows/source_catalog.py:460:        DataType.GLOBAL_NEWS,
+tradingagents/dataflows/source_catalog.py:471:        DataType.GLOBAL_NEWS,
+tradingagents/dataflows/source_catalog.py:481:        DataType.GLOBAL_NEWS,
+tradingagents/dataflows/providers/cn_akshare_provider.py:781:    def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/cn_akshare_provider.py:820:    def get_global_news(
+tradingagents/dataflows/providers/cn_akshare_provider.py:886:            news = self.get_news(symbol, start_date, end_date)
+tradingagents/dataflows/providers/cn_baostock_provider.py:197:    def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/cn_baostock_provider.py:200:    def get_global_news(
+tradingagents/dataflows/providers/yfinance_provider.py:11:from ..yfinance_news import get_news_yfinance, get_global_news_yfinance
+tradingagents/dataflows/providers/yfinance_provider.py:54:    def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/yfinance_provider.py:55:        return get_news_yfinance(self._normalize_symbol(ticker), start_date, end_date)
+tradingagents/dataflows/providers/yfinance_provider.py:57:    def get_global_news(
+tradingagents/dataflows/providers/yfinance_provider.py:60:        return get_global_news_yfinance(curr_date, look_back_days, limit)
+tradingagents/dataflows/providers/cn_astock_provider.py:570:    def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:644:    def get_global_news(
+tradingagents/dataflows/providers/cn_astock_provider.py:678:            _rate_limit("em_global_news")
+tradingagents/dataflows/providers/alpha_vantage_provider.py:10:    get_news as get_alpha_vantage_news,
+tradingagents/dataflows/providers/alpha_vantage_provider.py:11:    get_global_news as get_alpha_vantage_global_news,
+tradingagents/dataflows/providers/alpha_vantage_provider.py:46:    def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/alpha_vantage_provider.py:49:    def get_global_news(
+tradingagents/dataflows/providers/alpha_vantage_provider.py:52:        return get_alpha_vantage_global_news(curr_date, look_back_days, limit)
+Binary file tradingagents/dataflows/providers/__pycache__/base.cpython-314.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/base.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/cn_astock_provider.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/cn_akshare_provider.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/alpha_vantage_provider.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/cn_baostock_provider.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/yfinance_provider.cpython-314.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/yfinance_provider.cpython-312.pyc matches
+Binary file tradingagents/dataflows/providers/__pycache__/china_equity_provider.cpython-312.pyc matches
+tradingagents/dataflows/providers/china_equity_provider.py:45:    def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/china_equity_provider.py:48:    def get_global_news(
+tradingagents/dataflows/providers/base.py:46:    def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
+tradingagents/dataflows/providers/base.py:50:    def get_global_news(
+tradingagents/dataflows/interface.py:29:            "get_news",
+tradingagents/dataflows/interface.py:30:            "get_global_news",
+Binary file tradingagents/dataflows/__pycache__/evidence_contract.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/interface.cpython-314.pyc matches
+Binary file tradingagents/dataflows/__pycache__/source_catalog.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/alpha_vantage_news.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/interface.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/data_source_daily_digest.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/alpha_vantage.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/health_check.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/yfinance_news.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/fixture_replay.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/live_smoke.cpython-312.pyc matches
+Binary file tradingagents/dataflows/__pycache__/evidence_coverage_audit.cpython-312.pyc matches
+tradingagents/dataflows/data_source_daily_digest.py:55:    "global_news": "全球新闻",
+tradingagents/dataflows/data_source_daily_digest.py:74:    "global_news": "low",
+tradingagents/dataflows/data_source_daily_digest.py:90:    "global_news": "low",
+tradingagents/dataflows/alpha_vantage_news.py:3:def get_news(ticker, start_date, end_date) -> dict[str, str] | str:
+tradingagents/dataflows/alpha_vantage_news.py:23:    return _make_api_request("NEWS_SENTIMENT", params)
+tradingagents/dataflows/alpha_vantage_news.py:25:def get_global_news(curr_date, look_back_days: int = 7, limit: int = 50) -> dict[str, str] | str:
+tradingagents/dataflows/alpha_vantage_news.py:52:    return _make_api_request("NEWS_SENTIMENT", params)
+tradingagents/dataflows/evidence_contract.py:128:    "global_news": "global_news",
+tradingagents/dataflows/evidence_contract.py:184:    "global_news": ["status", "vendor"],
+tradingagents/dataflows/health_check.py:125:            "method": "get_news",
+tradingagents/dataflows/fixture_replay.py:80:FIXTURE_NEWS_HAS_DATA = "news_has_data"  # [DATA-014] policy_news_fixture_smoke
+tradingagents/dataflows/fixture_replay.py:81:FIXTURE_NEWS_NORMAL_NO_DATA = "news_normal_no_data"  # [DATA-014] policy_news_fixture_smoke
+tradingagents/dataflows/fixture_replay.py:82:FIXTURE_NEWS_PARTIAL_FAILED = "news_partial_failed"  # [DATA-014] policy_news_fixture_smoke
+tradingagents/dataflows/fixture_replay.py:83:FIXTURE_NEWS_FAILED = "news_failed"  # [DATA-014] policy_news_fixture_smoke
+tradingagents/dataflows/fixture_replay.py:84:FIXTURE_NEWS_RATE_LIMITED = "news_rate_limited"  # [DATA-014] policy_news_fixture_smoke
+tradingagents/dataflows/fixture_replay.py:85:FIXTURE_GLOBAL_NEWS_HAS_DATA = "global_news_has_data"  # [DATA-014] policy_news_fixture_smoke
+tradingagents/dataflows/fixture_replay.py:86:FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA = "global_news_normal_no_data"  # [DATA-014] policy_news_fixture_smoke
+tradingagents/dataflows/fixture_replay.py:87:FIXTURE_GLOBAL_NEWS_FAILED = "global_news_failed"  # [DATA-014] policy_news_fixture_smoke
+tradingagents/dataflows/fixture_replay.py:88:FIXTURE_GLOBAL_NEWS_RATE_LIMITED = "global_news_rate_limited"  # [DATA-014] policy_news_fixture_smoke
+tradingagents/dataflows/fixture_replay.py:116:    FIXTURE_NEWS_HAS_DATA,
+tradingagents/dataflows/fixture_replay.py:117:    FIXTURE_NEWS_NORMAL_NO_DATA,
+tradingagents/dataflows/fixture_replay.py:118:    FIXTURE_NEWS_PARTIAL_FAILED,
+tradingagents/dataflows/fixture_replay.py:119:    FIXTURE_NEWS_FAILED,
+tradingagents/dataflows/fixture_replay.py:120:    FIXTURE_NEWS_RATE_LIMITED,
+tradingagents/dataflows/fixture_replay.py:121:    FIXTURE_GLOBAL_NEWS_HAS_DATA,
+tradingagents/dataflows/fixture_replay.py:122:    FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA,
+tradingagents/dataflows/fixture_replay.py:123:    FIXTURE_GLOBAL_NEWS_FAILED,
+tradingagents/dataflows/fixture_replay.py:124:    FIXTURE_GLOBAL_NEWS_RATE_LIMITED,
+tradingagents/dataflows/fixture_replay.py:1148:_POLICY_NEWS_TEXT = (
+tradingagents/dataflows/fixture_replay.py:1152:_NEWS_RELAY_TEXT = (
+tradingagents/dataflows/fixture_replay.py:1159:_NORMAL_NEWS_TEXT = (
+tradingagents/dataflows/fixture_replay.py:1173:            "raw": _NORMAL_NEWS_TEXT,
+tradingagents/dataflows/fixture_replay.py:1192:        fixture_id=FIXTURE_NEWS_HAS_DATA,
+tradingagents/dataflows/fixture_replay.py:1227:        fixture_id=FIXTURE_NEWS_NORMAL_NO_DATA,
+tradingagents/dataflows/fixture_replay.py:1243:            "raw": "601689.SH [DATA-014] NEWS_PARTIAL_FAILED: AKShare新闻失败，"
+tradingagents/dataflows/fixture_replay.py:1263:        fixture_id=FIXTURE_NEWS_PARTIAL_FAILED,
+tradingagents/dataflows/fixture_replay.py:1279:            "raw": "601689.SH [DATA-014] NEWS_FAILED: 新闻数据获取失败："
+tradingagents/dataflows/fixture_replay.py:1299:        fixture_id=FIXTURE_NEWS_FAILED,
+tradingagents/dataflows/fixture_replay.py:1315:            "raw": "601689.SH [DATA-014] NEWS_RATE_LIMITED: 新闻数据获取失败："
+tradingagents/dataflows/fixture_replay.py:1335:        fixture_id=FIXTURE_NEWS_RATE_LIMITED,
+tradingagents/dataflows/fixture_replay.py:1346:def _build_global_news_has_data_fixture() -> FixtureEntry:
+tradingagents/dataflows/fixture_replay.py:1350:        "global_news": {
+tradingagents/dataflows/fixture_replay.py:1355:            "field": "global_news",
+tradingagents/dataflows/fixture_replay.py:1373:        fixture_id=FIXTURE_GLOBAL_NEWS_HAS_DATA,
+tradingagents/dataflows/fixture_replay.py:1375:        data_type="global_news",
+tradingagents/dataflows/fixture_replay.py:1380:        tags=["global_news", "has_data", "DATA-014"],
+tradingagents/dataflows/fixture_replay.py:1384:def _build_global_news_normal_no_data_fixture() -> FixtureEntry:
+tradingagents/dataflows/fixture_replay.py:1388:        "global_news": {
+tradingagents/dataflows/fixture_replay.py:1390:            "field": "global_news",
+tradingagents/dataflows/fixture_replay.py:1408:        fixture_id=FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA,
+tradingagents/dataflows/fixture_replay.py:1410:        data_type="global_news",
+tradingagents/dataflows/fixture_replay.py:1415:        tags=["global_news", "normal_no_data", "DATA-014"],
+tradingagents/dataflows/fixture_replay.py:1419:def _build_global_news_failed_fixture() -> FixtureEntry:
+tradingagents/dataflows/fixture_replay.py:1423:        "global_news": {
+tradingagents/dataflows/fixture_replay.py:1424:            "raw": "[DATA-014] GLOBAL_NEWS_FAILED: 全球新闻数据获取失败："
+tradingagents/dataflows/fixture_replay.py:1426:            "field": "global_news",
+tradingagents/dataflows/fixture_replay.py:1444:        fixture_id=FIXTURE_GLOBAL_NEWS_FAILED,
+tradingagents/dataflows/fixture_replay.py:1446:        data_type="global_news",
+tradingagents/dataflows/fixture_replay.py:1451:        tags=["global_news", "failed", "DATA-014"],
+tradingagents/dataflows/fixture_replay.py:1455:def _build_global_news_rate_limited_fixture() -> FixtureEntry:
+tradingagents/dataflows/fixture_replay.py:1459:        "global_news": {
+tradingagents/dataflows/fixture_replay.py:1460:            "raw": "[DATA-014] GLOBAL_NEWS_RATE_LIMITED: 全球新闻数据获取失败："
+tradingagents/dataflows/fixture_replay.py:1462:            "field": "global_news",
+tradingagents/dataflows/fixture_replay.py:1480:        fixture_id=FIXTURE_GLOBAL_NEWS_RATE_LIMITED,
+tradingagents/dataflows/fixture_replay.py:1482:        data_type="global_news",
+tradingagents/dataflows/fixture_replay.py:1487:        tags=["global_news", "rate_limited", "DATA-014"],
+tradingagents/dataflows/fixture_replay.py:1517:    FIXTURE_NEWS_HAS_DATA: _build_news_has_data_fixture,
+tradingagents/dataflows/fixture_replay.py:1518:    FIXTURE_NEWS_NORMAL_NO_DATA: _build_news_normal_no_data_fixture,
+tradingagents/dataflows/fixture_replay.py:1519:    FIXTURE_NEWS_PARTIAL_FAILED: _build_news_partial_failed_fixture,
+tradingagents/dataflows/fixture_replay.py:1520:    FIXTURE_NEWS_FAILED: _build_news_failed_fixture,
+tradingagents/dataflows/fixture_replay.py:1521:    FIXTURE_NEWS_RATE_LIMITED: _build_news_rate_limited_fixture,
+tradingagents/dataflows/fixture_replay.py:1522:    FIXTURE_GLOBAL_NEWS_HAS_DATA: _build_global_news_has_data_fixture,
+tradingagents/dataflows/fixture_replay.py:1523:    FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA: _build_global_news_normal_no_data_fixture,
+tradingagents/dataflows/fixture_replay.py:1524:    FIXTURE_GLOBAL_NEWS_FAILED: _build_global_news_failed_fixture,
+tradingagents/dataflows/fixture_replay.py:1525:    FIXTURE_GLOBAL_NEWS_RATE_LIMITED: _build_global_news_rate_limited_fixture,
+tradingagents/dataflows/evidence_coverage_audit.py:54:    "global_news": "全球新闻",
+tradingagents/dataflows/evidence_coverage_audit.py:79:    "global_news": "news",
+tradingagents/dataflows/alpha_vantage.py:5:from .alpha_vantage_news import get_news, get_global_news, get_insider_transactions
+tradingagents/dataflows/yfinance_news.py:49:def get_news_yfinance(
+tradingagents/dataflows/yfinance_news.py:67:        news = stock.get_news(count=20)
+tradingagents/dataflows/yfinance_news.py:105:def get_global_news_yfinance(
+Binary file tests/__pycache__/test_data_p0_603629.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_v001_600584_data_authenticity.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_data014_policy_news_fixture.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_data004_evidence_contract.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_m008_health_check.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_data007_evidence_coverage_audit.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_data_collector.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_data_source_catalog.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_raw_evidence_vendor.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_cn_astock_provider.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_g006_raw_evidence_snapshot.cpython-312-pytest-9.0.2.pyc matches
+tests/test_data014_policy_news_fixture.py:36:    FIXTURE_NEWS_HAS_DATA,
+tests/test_data014_policy_news_fixture.py:37:    FIXTURE_NEWS_NORMAL_NO_DATA,
+tests/test_data014_policy_news_fixture.py:38:    FIXTURE_NEWS_PARTIAL_FAILED,
+tests/test_data014_policy_news_fixture.py:39:    FIXTURE_NEWS_FAILED,
+tests/test_data014_policy_news_fixture.py:40:    FIXTURE_NEWS_RATE_LIMITED,
+tests/test_data014_policy_news_fixture.py:41:    FIXTURE_GLOBAL_NEWS_HAS_DATA,
+tests/test_data014_policy_news_fixture.py:42:    FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA,
+tests/test_data014_policy_news_fixture.py:43:    FIXTURE_GLOBAL_NEWS_FAILED,
+tests/test_data014_policy_news_fixture.py:44:    FIXTURE_GLOBAL_NEWS_RATE_LIMITED,
+tests/test_data014_policy_news_fixture.py:74:        assert DataType.NEWS.value == "news"
+tests/test_data014_policy_news_fixture.py:76:    def test_global_news_data_type_exists(self):
+tests/test_data014_policy_news_fixture.py:77:        assert DataType.GLOBAL_NEWS.value == "global_news"
+tests/test_data014_policy_news_fixture.py:80:        sources = get_sources_for_type(DataType.NEWS)
+tests/test_data014_policy_news_fixture.py:83:    def test_global_news_sources_registered(self):
+tests/test_data014_policy_news_fixture.py:84:        sources = get_sources_for_type(DataType.GLOBAL_NEWS)
+tests/test_data014_policy_news_fixture.py:88:        primary = get_primary_source(DataType.NEWS)
+tests/test_data014_policy_news_fixture.py:93:    def test_global_news_primary_source(self):
+tests/test_data014_policy_news_fixture.py:94:        primary = get_primary_source(DataType.GLOBAL_NEWS)
+tests/test_data014_policy_news_fixture.py:100:        chain = get_fallback_chain(DataType.NEWS)
+tests/test_data014_policy_news_fixture.py:105:    def test_global_news_fallback_chain(self):
+tests/test_data014_policy_news_fixture.py:106:        chain = get_fallback_chain(DataType.GLOBAL_NEWS)
+tests/test_data014_policy_news_fixture.py:113:        assert "global_news" in all_types
+tests/test_data014_policy_news_fixture.py:116:        primary = get_primary_source(DataType.NEWS)
+tests/test_data014_policy_news_fixture.py:120:        primary = get_primary_source(DataType.NEWS)
+tests/test_data014_policy_news_fixture.py:123:    def test_global_news_primary_endpoint(self):
+tests/test_data014_policy_news_fixture.py:124:        primary = get_primary_source(DataType.GLOBAL_NEWS)
+tests/test_data014_policy_news_fixture.py:140:    def test_resolve_data_type_global_news(self):
+tests/test_data014_policy_news_fixture.py:141:        assert resolve_data_type("global_news") == "global_news"
+tests/test_data014_policy_news_fixture.py:148:    def test_global_news_required_fields(self):
+tests/test_data014_policy_news_fixture.py:149:        assert "global_news" in _REQUIRED_FIELDS_FOR_COMPLETENESS
+tests/test_data014_policy_news_fixture.py:150:        assert "status" in _REQUIRED_FIELDS_FOR_COMPLETENESS["global_news"]
+tests/test_data014_policy_news_fixture.py:151:        assert "vendor" in _REQUIRED_FIELDS_FOR_COMPLETENESS["global_news"]
+tests/test_data014_policy_news_fixture.py:209:    def test_global_news_label(self):
+tests/test_data014_policy_news_fixture.py:210:        assert "global_news" in _EVIDENCE_FIELD_LABELS
+tests/test_data014_policy_news_fixture.py:211:        assert _EVIDENCE_FIELD_LABELS["global_news"] == "全球新闻"
+tests/test_data014_policy_news_fixture.py:216:    def test_global_news_family(self):
+tests/test_data014_policy_news_fixture.py:217:        assert _EVIDENCE_FIELD_FAMILIES.get("global_news") == "news"
+tests/test_data014_policy_news_fixture.py:307:        assert "get_news" in tools
+tests/test_data014_policy_news_fixture.py:308:        assert "get_global_news" in tools
+tests/test_data014_policy_news_fixture.py:310:    def test_get_news_category(self):
+tests/test_data014_policy_news_fixture.py:311:        cat = get_category_for_method("get_news")
+tests/test_data014_policy_news_fixture.py:314:    def test_get_global_news_category(self):
+tests/test_data014_policy_news_fixture.py:315:        cat = get_category_for_method("get_global_news")
+tests/test_data014_policy_news_fixture.py:349:_NEWS_FIXTURE_IDS = [
+tests/test_data014_policy_news_fixture.py:350:    FIXTURE_NEWS_HAS_DATA,
+tests/test_data014_policy_news_fixture.py:351:    FIXTURE_NEWS_NORMAL_NO_DATA,
+tests/test_data014_policy_news_fixture.py:352:    FIXTURE_NEWS_PARTIAL_FAILED,
+tests/test_data014_policy_news_fixture.py:353:    FIXTURE_NEWS_FAILED,
+tests/test_data014_policy_news_fixture.py:354:    FIXTURE_NEWS_RATE_LIMITED,
+tests/test_data014_policy_news_fixture.py:357:_GLOBAL_NEWS_FIXTURE_IDS = [
+tests/test_data014_policy_news_fixture.py:358:    FIXTURE_GLOBAL_NEWS_HAS_DATA,
+tests/test_data014_policy_news_fixture.py:359:    FIXTURE_GLOBAL_NEWS_NORMAL_NO_DATA,
+tests/test_data014_policy_news_fixture.py:360:    FIXTURE_GLOBAL_NEWS_FAILED,
+
+exec
+/bin/zsh -lc "sed -n '520,760p' tests/test_data014_policy_news_fixture.py && sed -n '260,380p' tradingagents/dataflows/live_smoke.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        assert ev["source_level"] != ""
+
+    def test_global_news_has_policy_document_type(self):
+        fixture = get_fixture(FIXTURE_GLOBAL_NEWS_HAS_DATA)
+        ev = fixture.raw_evidence["global_news"]
+        assert ev.get("evidence_type") == "policy_document"
+
+    def test_news_relay_type(self):
+        fixture = get_fixture(FIXTURE_NEWS_HAS_DATA)
+        ev = fixture.raw_evidence["news"]
+        assert ev.get("evidence_type") == "news_relay"
+
+    def test_failed_fixtures_have_no_source_level(self):
+        fixture = get_fixture(FIXTURE_NEWS_FAILED)
+        ev = fixture.raw_evidence["news"]
+        assert ev.get("source_level", "") == ""
+
+
+# ── Evidence Type Distinction ─────────────────────────────────────────
+
+
+class TestEvidenceTypeDistinction:
+    def test_policy_document_distinguished(self):
+        fixture = get_fixture(FIXTURE_GLOBAL_NEWS_HAS_DATA)
+        ev = fixture.raw_evidence["global_news"]
+        assert ev["evidence_type"] == "policy_document"
+        assert ev["source_level"] == "中央/国务院"
+
+    def test_news_relay_distinguished(self):
+        fixture = get_fixture(FIXTURE_NEWS_HAS_DATA)
+        ev = fixture.raw_evidence["news"]
+        assert ev["evidence_type"] == "news_relay"
+
+    def test_market_rumor_not_in_has_data(self):
+        fixture = get_fixture(FIXTURE_NEWS_HAS_DATA)
+        ev = fixture.raw_evidence["news"]
+        assert ev["evidence_type"] != "market_rumor"
+
+    def test_empty_evidence_type_for_failures(self):
+        fixture = get_fixture(FIXTURE_NEWS_FAILED)
+        ev = fixture.raw_evidence["news"]
+        assert ev.get("evidence_type", "") == ""
+
+
+# ── Live Smoke ────────────────────────────────────────────────────────
+
+
+class TestLiveSmokeNews:
+    def test_news_endpoint_in_definitions(self):
+        endpoints = _make_endpoint_definitions()
+        ep_names = [ep["endpoint"] for ep in endpoints]
+        assert "cn_astock/eastmoney_news" in ep_names
+        assert "cn_astock/cls_global_news" in ep_names
+
+    def test_news_endpoint_definition_fields(self):
+        endpoints = _make_endpoint_definitions()
+        news_ep = [ep for ep in endpoints if ep["endpoint"] == "cn_astock/eastmoney_news"][0]
+        assert news_ep["method"] == "get_news"
+        assert news_ep["vendor"] == "cn_astock"
+        assert news_ep["expected_unit"] == "条"
+
+    def test_global_news_endpoint_definition_fields(self):
+        endpoints = _make_endpoint_definitions()
+        gn_ep = [ep for ep in endpoints if ep["endpoint"] == "cn_astock/cls_global_news"][0]
+        assert gn_ep["method"] == "get_global_news"
+        assert gn_ep["vendor"] == "cn_astock"
+        assert gn_ep["expected_unit"] == "条"
+
+    def test_live_smoke_skip_without_env(self):
+        with patch.dict("os.environ", {}, clear=True):
+            report = run_live_smoke(
+                symbols=["600519.SH"],
+                endpoints=[{
+                    "endpoint": "cn_astock/eastmoney_news",
+                    "method": "get_news",
+                    "vendor": "cn_astock",
+                    "args_template": ("{symbol}", "{date}", "{date}"),
+                    "kwargs": {},
+                    "expected_unit": "条",
+                }],
+            )
+        assert report.env_gated is True
+        assert all(r.status == "SKIPPED" for r in report.results)
+
+    def test_live_smoke_enabled_with_env(self):
+        with patch.dict("os.environ", {"TA_LIVE_DATA_SMOKE": "1"}, clear=False):
+            mock_provider = MagicMock()
+            mock_provider.get_news.return_value = "新闻标题,来源\n测试新闻,东财"
+            report = run_live_smoke(
+                symbols=["600519.SH"],
+                endpoints=[{
+                    "endpoint": "cn_astock/eastmoney_news",
+                    "method": "get_news",
+                    "vendor": "cn_astock",
+                    "args_template": ("{symbol}", "{date}", "{date}"),
+                    "kwargs": {},
+                    "expected_unit": "条",
+                }],
+            )
+        assert report.env_gated is False
+
+    def test_live_smoke_report_structure(self):
+        report = run_live_smoke(symbols=["600519.SH"])
+        assert isinstance(report, LiveSmokeReport)
+        assert report.run_at != ""
+        assert report.date != ""
+        assert "600519.SH" in report.symbols
+
+    def test_is_live_smoke_enabled_default(self):
+        with patch.dict("os.environ", {}, clear=True):
+            assert is_live_smoke_enabled() is False
+
+    def test_is_live_smoke_enabled_set(self):
+        with patch.dict("os.environ", {"TA_LIVE_DATA_SMOKE": "1"}, clear=False):
+            assert is_live_smoke_enabled() is True
+
+
+# ── News Dedup ────────────────────────────────────────────────────────
+
+
+class TestNewsDedup:
+    def test_no_double_count_same_vendor(self):
+        fixture = get_fixture(FIXTURE_NEWS_HAS_DATA)
+        ev = fixture.raw_evidence["news"]
+        assert ev["vendor"] == "cn_akshare"
+        report = run_fixture_replay(fixtures=[fixture])
+        assert report.total_fixtures == 1
+
+    def test_different_vendor_for_fallback(self):
+        fixture = get_fixture(FIXTURE_NEWS_PARTIAL_FAILED)
+        ev = fixture.raw_evidence["news"]
+        assert ev["vendor"] == "cn_astock"
+        assert ev["fallback_from"] == "cn_akshare"
+
+
+# ── Acceptance ────────────────────────────────────────────────────────
+
+
+class TestAcceptanceDATA014:
+    def test_all_failed_returns_failed(self):
+        fixture = get_fixture(FIXTURE_NEWS_FAILED)
+        ev = fixture.raw_evidence["news"]
+        assert ev["status"] == "FAILED"
+
+    def test_success_no_events_returns_normal_no_data(self):
+        fixture = get_fixture(FIXTURE_NEWS_NORMAL_NO_DATA)
+        ev = fixture.raw_evidence["news"]
+        assert ev["status"] == "NORMAL_NO_DATA"
+        assert ev["record_count"] == 0
+
+    def test_live_smoke_skip_without_env(self):
+        with patch.dict("os.environ", {}, clear=True):
+            assert is_live_smoke_enabled() is False
+            report = run_live_smoke(symbols=["600519.SH"])
+            assert all(r.status == "SKIPPED" for r in report.results)
+
+    def test_fixture_replay_passes(self):
+        all_news = _NEWS_FIXTURE_IDS + _GLOBAL_NEWS_FIXTURE_IDS
+        fixtures = [get_fixture(fid) for fid in all_news]
+        report = run_fixture_replay(fixtures=fixtures)
+        assert report.passed == len(all_news)
+        assert report.failed == 0
+
+    def test_source_level_distinction(self):
+        policy = get_fixture(FIXTURE_GLOBAL_NEWS_HAS_DATA)
+        policy_ev = policy.raw_evidence["global_news"]
+        assert policy_ev["source_level"] == "中央/国务院"
+        assert policy_ev["evidence_type"] == "policy_document"
+
+        relay = get_fixture(FIXTURE_NEWS_HAS_DATA)
+        relay_ev = relay.raw_evidence["news"]
+        assert relay_ev["evidence_type"] == "news_relay"
+
+    def test_rate_limit_not_no_data(self):
+        fixture = get_fixture(FIXTURE_NEWS_RATE_LIMITED)
+        ev = fixture.raw_evidence["news"]
+        assert ev["status"] == "FAILED"
+        assert ev["status"] != "NORMAL_NO_DATA"
+
+    def test_fallback_from_recorded(self):
+        fixture = get_fixture(FIXTURE_NEWS_PARTIAL_FAILED)
+        ev = fixture.raw_evidence["news"]
+        assert ev["fallback_from"] == "cn_akshare"
+
+    def test_vendor_endpoint_present(self):
+        for fid in _NEWS_FIXTURE_IDS:
+            fixture = get_fixture(fid)
+            ev = fixture.raw_evidence["news"]
+            assert ev["vendor"] != "" or fixture.expected_status == "NORMAL_NO_DATA"
+            assert "endpoint" in ev
+        for fid in _GLOBAL_NEWS_FIXTURE_IDS:
+            fixture = get_fixture(fid)
+            ev = fixture.raw_evidence["global_news"]
+            assert ev["vendor"] != "" or fixture.expected_status == "NORMAL_NO_DATA"
+            assert "endpoint" in ev
+
+    def test_no_sensitive_data_in_fixtures(self):
+        sensitive_patterns = ["api_key", "token", "password", "secret"]
+        for fid in _NEWS_FIXTURE_IDS + _GLOBAL_NEWS_FIXTURE_IDS:
+            fixture = get_fixture(fid)
+            fixture_str = str(fixture.to_dict())
+            for pat in sensitive_patterns:
+                assert pat not in fixture_str.lower(), f"Sensitive data found in {fid}: {pat}"
+
+    def test_evidence_contract_completeness(self):
+        fixture = get_fixture(FIXTURE_NEWS_HAS_DATA)
+        ev = fixture.raw_evidence["news"]
+        contract = EvidenceContract.from_dict(ev)
+        assert contract.status == "HAS_DATA"
+
+    def test_five_news_scenarios_covered(self):
+        assert len(_NEWS_FIXTURE_IDS) == 5
+
+    def test_four_global_news_scenarios_covered(self):
+        assert len(_GLOBAL_NEWS_FIXTURE_IDS) == 4
+
+    def test_total_nine_new_fixtures(self):
+        total_new = len(_NEWS_FIXTURE_IDS) + len(_GLOBAL_NEWS_FIXTURE_IDS)
+        assert total_new == 9
+
+        elif isinstance(raw, dict):
+            result.has_data = bool(raw)
+            result.field_count = len(raw)
+            result.status = _STATUS_OK
+
+        else:
+            result.has_data = True
+            result.status = _STATUS_OK
+
+    except Exception as exc:
+        elapsed = (time.monotonic() - t0) * 1000
+        result.latency_ms = elapsed
+        result.status = _STATUS_FAILED
+        result.error = f"{type(exc).__name__}: {exc}"
+
+    return result
+
+
+def run_live_smoke(
+    symbols: Optional[List[str]] = None,
+    endpoints: Optional[List[Dict[str, Any]]] = None,
+    smoke_fn: Optional[Any] = None,
+) -> LiveSmokeReport:
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    report = LiveSmokeReport(
+        run_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+        date=date_str,
+        env_gated=False,
+    )
+
+    if os.getenv(_LIVE_ENV, "").strip() != "1":
+        report.env_gated = True
+        if endpoints is None:
+            endpoints = _make_endpoint_definitions()
+        if symbols is None:
+            symbols = DEFAULT_LIVE_SMOKE_SYMBOLS[:_MAX_SYMBOLS]
+        report.symbols = symbols[:_MAX_SYMBOLS]
+        for ep_def in endpoints:
+            for sym in symbols[:_MAX_SYMBOLS]:
+                report.results.append(EndpointSmokeResult(
+                    endpoint=ep_def["endpoint"],
+                    vendor=ep_def["vendor"],
+                    symbol=sym,
+                    status=_STATUS_SKIPPED,
+                ))
+        report.summary = _compute_summary(report.results)
+        return report
+
+    if symbols is None:
+        symbols = DEFAULT_LIVE_SMOKE_SYMBOLS[:_MAX_SYMBOLS]
+    if endpoints is None:
+        endpoints = _make_endpoint_definitions()
+
+    report.symbols = symbols[:_MAX_SYMBOLS]
+    report.env_gated = False
+
+    provider = CnAstockProvider()
+
+    if smoke_fn is None:
+        smoke_fn = _smoke_single_endpoint
+
+    for ep_def in endpoints:
+        for sym in symbols[:_MAX_SYMBOLS]:
+            result = smoke_fn(provider, ep_def, sym, date_str)
+            report.results.append(result)
+
+    report.summary = _compute_summary(report.results)
+    return report
+
+
+def _compute_summary(results: List[EndpointSmokeResult]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {
+        "total": len(results),
+        "OK": 0,
+        "FAILED": 0,
+        "SKIPPED": 0,
+        "NORMAL_NO_DATA": 0,
+        "NOT_RUN": 0,
+        "all_passed": False,
+        "has_failures": False,
+        "by_endpoint": {},
+    }
+
+    for r in results:
+        if r.status in summary:
+            summary[r.status] += 1
+        ep = summary["by_endpoint"].setdefault(r.endpoint, {
+            "total": 0, "OK": 0, "FAILED": 0, "SKIPPED": 0,
+            "NORMAL_NO_DATA": 0, "avg_latency_ms": 0.0,
+        })
+        ep["total"] += 1
+        if r.status in ep:
+            ep[r.status] += 1
+        ep["avg_latency_ms"] += r.latency_ms
+
+    for ep_data in summary["by_endpoint"].values():
+        if ep_data["total"] > 0:
+            ep_data["avg_latency_ms"] = round(
+                ep_data["avg_latency_ms"] / ep_data["total"], 1
+            )
+
+    runnable = [r for r in results if r.status != _STATUS_SKIPPED]
+    summary["all_passed"] = (
+        len(runnable) > 0 and all(r.status in (_STATUS_OK, _STATUS_NORMAL_NO_DATA) for r in runnable)
+    )
+    summary["has_failures"] = any(r.status == _STATUS_FAILED for r in runnable)
+
+    return summary
+
+
+def render_live_smoke_report(report: LiveSmokeReport) -> str:
+    lines: List[str] = []
+    lines.append("# Live Smoke Report — cn_astock/Eastmoney Critical Endpoints")
+    lines.append("")
+    lines.append(f"- **Date**: {report.date}")
+    lines.append(f"- **Run at**: {report.run_at}")
+    lines.append(f"- **Symbols**: {', '.join(report.symbols)}")
+    lines.append(f"- **Env gated**: {'Yes (TA_LIVE_DATA_SMOKE not set)' if report.env_gated else 'No (live calls executed)'}")
+    lines.append("")
+
+exec
+/bin/zsh -lc "sed -n '540,720p' tradingagents/dataflows/providers/cn_astock_provider.py && sed -n '760,850p' tradingagents/dataflows/providers/cn_akshare_provider.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            if non_nan:
+                df = df[non_nan]
+            return (
+                f"## Cashflow ({ticker})\n\n"
+                + self._shrink_table(df, max_rows=12, max_cols=20).to_markdown(index=False)
+            )
+        except Exception as exc:
+            return f"Cashflow unavailable for {ticker}: {exc}"
+
+    def get_income_statement(
+        self, ticker: str, freq: str = "quarterly", curr_date: str = None
+    ) -> str:
+        code = _extract_code(ticker)
+        try:
+            items = self._sina_financial_report(code, "lrb")
+            if not items:
+                return f"No income statement data found for {ticker}"
+            df = pd.DataFrame(items)
+            non_nan = [c for c in df.columns if df[c].notna().any()]
+            if non_nan:
+                df = df[non_nan]
+            return (
+                f"## Income Statement ({ticker})\n\n"
+                + self._shrink_table(df, max_rows=12, max_cols=20).to_markdown(index=False)
+            )
+        except Exception as exc:
+            return f"Income statement unavailable for {ticker}: {exc}"
+
+    # ── News ──
+
+    def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
+        """东财个股新闻 (search-api-web JSONP)."""
+        code = _extract_code(ticker)
+        try:
+            _rate_limit("em_news")
+            cb = "jQuery_news"
+            url = "https://search-api-web.eastmoney.com/search/jsonp"
+            inner_params = json.dumps({
+                "uid": "",
+                "keyword": code,
+                "type": ["cmsArticleWebOld"],
+                "client": "web",
+                "clientType": "web",
+                "clientVersion": "curr",
+                "param": {
+                    "cmsArticleWebOld": {
+                        "searchScope": "default", "sort": "default",
+                        "pageIndex": 1, "pageSize": 20,
+                        "preTag": "", "postTag": "",
+                    }
+                },
+            }, separators=(",", ":"))
+            params = {"cb": cb, "param": inner_params}
+            headers = {"User-Agent": UA, "Referer": "https://so.eastmoney.com/"}
+            r = requests.get(url, params=params, headers=headers, timeout=15, proxies=NO_PROXY)
+
+            text = r.text
+            json_str = text[text.index("(") + 1:text.rindex(")")]
+            d = json.loads(json_str)
+
+            cms = d.get("result", {}).get("cmsArticleWebOld", [])
+            # Handle both formats: list directly or dict with 'list' key
+            if isinstance(cms, dict):
+                articles = cms.get("list", [])
+            elif isinstance(cms, list):
+                articles = cms
+            else:
+                articles = []
+            if not articles:
+                return f"No news found for {ticker}"
+
+            rows = []
+            for a in articles[:20]:
+                title = re.sub(r"<[^>]+>", "", a.get("title", ""))
+                content = re.sub(r"<[^>]+>", "", a.get("content", ""))[:400]
+                src = a.get("mediaName", "Unknown")
+                link = a.get("url", "")
+                pub_time = a.get("date", "")
+
+                # Date filter
+                if pub_time:
+                    try:
+                        pub_dt = datetime.strptime(pub_time[:10], "%Y-%m-%d")
+                        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                        end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+                        if pub_dt < start_dt or pub_dt >= end_dt:
+                            continue
+                    except ValueError:
+                        pass
+
+                rows.append(f"### {title} (source: {src})")
+                if content and content != "nan":
+                    rows.append(content)
+                if link and link != "nan":
+                    rows.append(f"Link: {link}")
+                rows.append("")
+
+            if not rows:
+                return f"No news found for {ticker} between {start_date} and {end_date}"
+            return f"## {ticker} 新闻（{start_date} 至 {end_date}）：\n\n" + "\n".join(rows)
+
+        except Exception as exc:
+            return f"News unavailable for {ticker}: {exc}"
+
+    def get_global_news(
+        self, curr_date: str, look_back_days: int = 7, limit: int = 50
+    ) -> str:
+        """财联社快讯 (cls.cn) + 东财全球资讯."""
+        all_news: list[dict] = []
+        errors = []
+
+        # Source 1: 财联社电报
+        try:
+            _rate_limit("cls_telegraph")
+            url = "https://www.cls.cn/nodeapi/telegraphList"
+            params = {"rn": str(min(limit, 50)), "page": "1"}
+            headers = {"User-Agent": UA, "Referer": "https://www.cls.cn/"}
+            r = requests.get(url, params=params, headers=headers, timeout=10, proxies=NO_PROXY)
+            d = r.json()
+            for item in d.get("data", {}).get("roll_data", []):
+                ctime = item.get("ctime", "")
+                time_str = ""
+                if ctime:
+                    try:
+                        time_str = datetime.fromtimestamp(int(ctime)).strftime("%Y-%m-%d %H:%M")
+                    except (ValueError, OSError):
+                        time_str = str(ctime)
+                all_news.append({
+                    "title": item.get("title", "") or item.get("brief", ""),
+                    "content": item.get("content", "") or item.get("brief", ""),
+                    "time": time_str,
+                    "source": "财联社",
+                })
+        except Exception as exc:
+            errors.append(f"cls: {type(exc).__name__}")
+
+        # Source 2: 东财全球资讯 (7x24)
+        try:
+            _rate_limit("em_global_news")
+            url = "https://np-weblist.eastmoney.com/comm/web/getFastNewsList"
+            params = {
+                "client": "web", "biz": "web_724",
+                "fastColumn": "102", "sortEnd": "",
+                "pageSize": str(min(limit, 50)),
+                "req_trace": str(uuid.uuid4()),
+            }
+            headers = {"User-Agent": UA, "Referer": "https://kuaixun.eastmoney.com/"}
+            r = requests.get(url, params=params, headers=headers, timeout=10, proxies=NO_PROXY)
+            d = r.json()
+            for item in d.get("data", {}).get("fastNewsList", []):
+                all_news.append({
+                    "title": item.get("title", ""),
+                    "content": item.get("summary", "")[:200],
+                    "time": item.get("showTime", ""),
+                    "source": "东财7x24",
+                })
+        except Exception as exc:
+            errors.append(f"eastmoney: {type(exc).__name__}")
+
+        if not all_news:
+            return f"Global news unavailable: {'; '.join(errors)}" if errors else "No global news found"
+
+        start = (
+            datetime.strptime(curr_date, "%Y-%m-%d") - timedelta(days=look_back_days)
+        ).strftime("%Y-%m-%d")
+
+        rows = []
+        for n in all_news[:limit]:
+            rows.append(f"### {n['title']} ({n['source']})")
+            if n["content"] and n["content"] != "nan":
+                rows.append(n["content"][:300])
+            if n["time"]:
+                rows.append(f"Time: {n['time']}")
+            rows.append("")
+
+        return f"## 全球市场新闻（{start} 至 {curr_date}）：\n\n" + "\n".join(rows)
+
+    # ── Insider transactions ──
+
+    def get_insider_transactions(self, symbol: str) -> str:
+        """东财 datacenter — 股东持股变动 (RPT_INSIDER_SHAREHOLDERS)."""
+                    return f"## Balance Sheet ({ticker})\n\n" + self._shrink_table(df, max_rows=6, max_cols=20).to_markdown(index=False)
+                raise ValueError("empty dataframe")
+            except Exception as exc:
+                errors.append(f"stock_financial_abstract_new_ths: {type(exc).__name__}")
+
+            raise NotImplementedError(
+                f"cn_akshare is temporarily unavailable for 资产负债表: {'; '.join(errors)}"
+            )
+
+    def get_cashflow(
+        self, ticker: str, freq: str = "quarterly", curr_date: str = None
+    ) -> str:
+        table = self._financial_report_sina(ticker, "现金流量表")
+        return f"## Cashflow ({ticker})\n\n{table}"
+
+    def get_income_statement(
+        self, ticker: str, freq: str = "quarterly", curr_date: str = None
+    ) -> str:
+        table = self._financial_report_sina(ticker, "利润表")
+        return f"## Income Statement ({ticker})\n\n{table}"
+
+    def get_news(self, ticker: str, start_date: str, end_date: str) -> str:
+        with AKSHARE_CALL_LOCK:
+            ak = self._ak()
+            code = self._normalize_symbol(ticker)
+            try:
+                df = ak.stock_news_em(symbol=code)
+                if df is None or df.empty:
+                    return f"No news found for {ticker}"
+
+                date_col = "发布时间" if "发布时间" in df.columns else None
+                if date_col is not None:
+                    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+                    df = df.dropna(subset=[date_col])
+                    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                    end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+                    df = df[(df[date_col] >= start_dt) & (df[date_col] < end_dt)]
+
+                if df.empty:
+                    return f"No news found for {ticker} between {start_date} and {end_date}"
+
+                rows = []
+                for _, row in df.head(20).iterrows():
+                    title = str(row.get("新闻标题", row.get("标题", "No title")))
+                    src = str(row.get("文章来源", row.get("来源", "Unknown")))
+                    summary = str(row.get("新闻内容", row.get("内容", "")))
+                    link = str(row.get("新闻链接", row.get("链接", "")))
+                    rows.append(f"### {title} (source: {src})")
+                    if summary and summary != "nan":
+                        rows.append(summary[:400])
+                    if link and link != "nan":
+                        rows.append(f"Link: {link}")
+                    rows.append("")
+
+                return f"## {ticker} 新闻（{start_date} 至 {end_date}）：\n\n" + "\n".join(rows)
+            except Exception as exc:
+                raise NotImplementedError(
+                    f"cn_akshare is temporarily unavailable for news: {exc}"
+                ) from exc
+
+    def get_global_news(
+        self, curr_date: str, look_back_days: int = 7, limit: int = 50
+    ) -> str:
+        with AKSHARE_CALL_LOCK:
+            ak = self._ak()
+            try:
+                if hasattr(ak, "news_cctv"):
+                    target_dt = datetime.strptime(curr_date, "%Y-%m-%d")
+                    used_date = curr_date
+                    df = ak.news_cctv(date=curr_date.replace("-", ""))
+                    if df is None or df.empty:
+                        # Fallback: if today's feed is empty, try recent 3 days.
+                        for back in range(1, 4):
+                            probe_dt = target_dt - timedelta(days=back)
+                            probe_date = probe_dt.strftime("%Y-%m-%d")
+                            probe_df = ak.news_cctv(date=probe_date.replace("-", ""))
+                            if probe_df is not None and not probe_df.empty:
+                                df = probe_df
+                                used_date = probe_date
+                                break
+                    if df is None or df.empty:
+                        return f"{curr_date} 未获取到全球市场新闻（已回看最近3天）"
+                    rows = []
+                    for _, row in df.head(limit).iterrows():
+                        title = str(row.get("title", row.get("标题", "No title")))
+                        content = str(row.get("content", row.get("内容", "")))
+                        rows.append(f"### {title}")
+                        if content and content != "nan":
+                            rows.append(content[:300])
+                        rows.append("")
+                    start = (
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/dataflows/live_smoke.py | sed -n '160,185p'; nl -ba tradingagents/dataflows/fixture_replay.py | sed -n '1148,1220p'; nl -ba tradingagents/dataflows/fixture_replay.py | sed -n '1346,1390p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   160	            "expected_unit": "",
+   161	        },
+   162	        {
+   163	            "endpoint": "cn_astock/cninfo_announcements",
+   164	            "method": "get_announcements",
+   165	            "vendor": "cn_astock",
+   166	            "args_template": ("{symbol}",),
+   167	            "kwargs": {},
+   168	            "expected_unit": "",
+   169	        },
+   170	        {  # [DATA-014] policy_news_fixture_smoke
+   171	            "endpoint": "cn_astock/eastmoney_news",
+   172	            "method": "get_news",
+   173	            "vendor": "cn_astock",
+   174	            "args_template": ("{symbol}", "{date}", "{date}"),
+   175	            "kwargs": {},
+   176	            "expected_unit": "条",
+   177	        },
+   178	        {  # [DATA-014] policy_news_fixture_smoke
+   179	            "endpoint": "cn_astock/cls_global_news",
+   180	            "method": "get_global_news",
+   181	            "vendor": "cn_astock",
+   182	            "args_template": ("{date}",),
+   183	            "kwargs": {},
+   184	            "expected_unit": "条",
+   185	        },
+  1148	_POLICY_NEWS_TEXT = (
+  1149	    "[政策原文] 国务院印发《关于加快发展低空经济的若干意见》，明确支持低空基础设施建设、"
+  1150	    "空域管理改革和无人机产业发展。来源级别：中央/国务院。"
+  1151	)
+  1152	_NEWS_RELAY_TEXT = (
+  1153	    "[新闻转述] 多家媒体报道低空经济板块持续升温，相关概念股异动。来源级别：媒体。"
+  1154	)
+  1155	_MARKET_RUMOR_TEXT = (
+  1156	    "[市场传闻] 市场传言某公司将获得低空经济相关订单，但无公告或政策原文佐证。"
+  1157	    "来源级别：市场传闻。"
+  1158	)
+  1159	_NORMAL_NEWS_TEXT = (
+  1160	    "贵州茅台召开股东大会,东财\n"
+  1161	    "贵州茅台发布2025年度权益分派实施公告,东财\n"
+  1162	    "贵州茅台：董事长增持计划实施完毕,东财\n"
+  1163	    "茅台系列酒提价预期升温,东财\n"
+  1164	    "白酒行业龙头稳健增长,东财"
+  1165	)
+  1166	
+  1167	
+  1168	def _build_news_has_data_fixture() -> FixtureEntry:
+  1169	    now_iso = datetime.now().isoformat()
+  1170	    today = datetime.now().strftime("%Y-%m-%d")
+  1171	    raw_evidence = {
+  1172	        "news": {
+  1173	            "raw": _NORMAL_NEWS_TEXT,
+  1174	            "field": "news",
+  1175	            "unit": "条",
+  1176	            "vendor": "cn_akshare",
+  1177	            "endpoint": "stock_news_em",
+  1178	            "as_of": today,
+  1179	            "fetched_at": now_iso,
+  1180	            "status": "HAS_DATA",
+  1181	            "fallback_from": None,
+  1182	            "source_url": None,
+  1183	            "error": None,
+  1184	            "is_realtime_patched": False,
+  1185	            "unit_verified": True,
+  1186	            "record_count": 5,
+  1187	            "source_level": "媒体",
+  1188	            "evidence_type": "news_relay",
+  1189	        },
+  1190	    }
+  1191	    return FixtureEntry(
+  1192	        fixture_id=FIXTURE_NEWS_HAS_DATA,
+  1193	        description="新闻正常返回（含政策原文/新闻转述/市场传闻分类标注）",
+  1194	        data_type="news",
+  1195	        vendor="cn_akshare",
+  1196	        endpoint="stock_news_em",
+  1197	        expected_status="HAS_DATA",
+  1198	        raw_evidence=raw_evidence,
+  1199	        tags=["news", "has_data", "DATA-014"],
+  1200	    )
+  1201	
+  1202	
+  1203	def _build_news_normal_no_data_fixture() -> FixtureEntry:
+  1204	    now_iso = datetime.now().isoformat()
+  1205	    today = datetime.now().strftime("%Y-%m-%d")
+  1206	    raw_evidence = {
+  1207	        "news": {
+  1208	            "raw": "暂无相关新闻",
+  1209	            "field": "news",
+  1210	            "unit": "条",
+  1211	            "vendor": "cn_akshare",
+  1212	            "endpoint": "stock_news_em",
+  1213	            "as_of": today,
+  1214	            "fetched_at": now_iso,
+  1215	            "status": "NORMAL_NO_DATA",
+  1216	            "fallback_from": None,
+  1217	            "source_url": None,
+  1218	            "error": None,
+  1219	            "is_realtime_patched": False,
+  1220	            "unit_verified": True,
+  1346	def _build_global_news_has_data_fixture() -> FixtureEntry:
+  1347	    now_iso = datetime.now().isoformat()
+  1348	    today = datetime.now().strftime("%Y-%m-%d")
+  1349	    raw_evidence = {
+  1350	        "global_news": {
+  1351	            "raw": "央视新闻联播\n"
+  1352	                   "1. 国务院常务会议部署促进平台经济健康发展措施\n"
+  1353	                   "2. 工信部发布《新能源汽车产业发展规划》修订版\n"
+  1354	                   "3. 央行实施降准操作，释放长期资金约5000亿元",
+  1355	            "field": "global_news",
+  1356	            "unit": "条",
+  1357	            "vendor": "cn_akshare",
+  1358	            "endpoint": "news_cctv",
+  1359	            "as_of": today,
+  1360	            "fetched_at": now_iso,
+  1361	            "status": "HAS_DATA",
+  1362	            "fallback_from": None,
+  1363	            "source_url": None,
+  1364	            "error": None,
+  1365	            "is_realtime_patched": False,
+  1366	            "unit_verified": True,
+  1367	            "record_count": 3,
+  1368	            "source_level": "中央/国务院",
+  1369	            "evidence_type": "policy_document",
+  1370	        },
+  1371	    }
+  1372	    return FixtureEntry(
+  1373	        fixture_id=FIXTURE_GLOBAL_NEWS_HAS_DATA,
+  1374	        description="全球新闻正常返回（含政策原文级别标注）",
+  1375	        data_type="global_news",
+  1376	        vendor="cn_akshare",
+  1377	        endpoint="news_cctv",
+  1378	        expected_status="HAS_DATA",
+  1379	        raw_evidence=raw_evidence,
+  1380	        tags=["global_news", "has_data", "DATA-014"],
+  1381	    )
+  1382	
+  1383	
+  1384	def _build_global_news_normal_no_data_fixture() -> FixtureEntry:
+  1385	    now_iso = datetime.now().isoformat()
+  1386	    today = datetime.now().strftime("%Y-%m-%d")
+  1387	    raw_evidence = {
+  1388	        "global_news": {
+  1389	            "raw": "暂无全球新闻",
+  1390	            "field": "global_news",
+
+exec
+/bin/zsh -lc "grep -n \"def run_fixture_replay\\|actual_status\\|expected_status\" -n tradingagents/dataflows/fixture_replay.py | head -80 && sed -n '1530,1660p' tradingagents/dataflows/fixture_replay.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+137:    expected_status: str
+148:            "expected_status": self.expected_status,
+159:    expected_status: str
+160:    actual_status: str
+177:            "expected_status": self.expected_status,
+178:            "actual_status": self.actual_status,
+296:        expected_status="HAS_DATA",
+338:        expected_status="HAS_DATA",
+372:        expected_status="HAS_DATA",
+401:        expected_status="STALE",
+432:        expected_status="HAS_DATA",
+461:        expected_status="NOT_QUERIED",
+490:        expected_status="FAILED",
+533:        expected_status="HAS_DATA",
+575:        expected_status="NORMAL_NO_DATA",
+605:        expected_status="FAILED",
+652:        expected_status="HAS_DATA",
+692:        expected_status="FAILED",
+747:        expected_status="HAS_DATA",
+781:        expected_status="HAS_DATA",
+814:        expected_status="FAILED",
+845:        expected_status="NOT_QUERIED",
+880:        expected_status="HAS_DATA",
+913:        expected_status="FAILED",
+944:        expected_status="NOT_QUERIED",
+978:        expected_status="HAS_DATA",
+1011:        expected_status="FAILED",
+1042:        expected_status="NOT_QUERIED",
+1076:        expected_status="HAS_DATA",
+1109:        expected_status="FAILED",
+1140:        expected_status="NOT_QUERIED",
+1197:        expected_status="HAS_DATA",
+1232:        expected_status="NORMAL_NO_DATA",
+1268:        expected_status="HAS_DATA",
+1304:        expected_status="FAILED",
+1340:        expected_status="FAILED",
+1378:        expected_status="HAS_DATA",
+1413:        expected_status="NORMAL_NO_DATA",
+1449:        expected_status="FAILED",
+1485:        expected_status="FAILED",
+1556:    if result.actual_status == "FAILED":
+1563:    if result.actual_status == "STALE":
+1565:    if result.actual_status == "NOT_QUERIED" and result.expected_status != "NOT_QUERIED":
+1584:    actual_status = fixture.expected_status
+1599:            actual_status = "FAILED"
+1601:            if fixture.expected_status != "FAILED":
+1614:                    actual_status = "STALE"
+1615:                    if fixture.expected_status != "STALE":
+1626:                if fixture.expected_status == "NOT_QUERIED":
+1628:                elif fixture.expected_status != "NOT_QUERIED":
+1631:                        actual_status = "NOT_QUERIED"
+1633:                if fixture.expected_status == "NORMAL_NO_DATA":
+1635:                elif fixture.expected_status != "NORMAL_NO_DATA":
+1637:                        actual_status = "NORMAL_NO_DATA"
+1639:    if fixture.expected_status == "FAILED" and actual_status == "FAILED":
+1641:    elif fixture.expected_status == "NOT_QUERIED" and actual_status == "NOT_QUERIED":
+1643:    elif fixture.expected_status == "STALE" and actual_status == "STALE":
+1645:    elif fixture.expected_status == "HAS_DATA" and actual_status == "HAS_DATA":
+1647:    elif fixture.expected_status == "NORMAL_NO_DATA" and actual_status == "NORMAL_NO_DATA":
+1649:    elif fixture.expected_status == "HAS_DATA" and actual_status == "FAILED":
+1651:    elif fixture.expected_status == "STALE" and actual_status == "FAILED":
+1658:        expected_status=fixture.expected_status,
+1659:        actual_status=actual_status,
+1673:def run_fixture_replay(
+1717:        st = result.actual_status
+1777:            f"| {r.fixture_id} | {r.data_type} | {r.expected_status} | "
+1778:            f"{r.actual_status} | {'PASS' if r.passed else 'FAIL'} | "
+1791:            lines.append(f"- Expected: {r.expected_status}, Actual: {r.actual_status}")
+    builder = _FIXTURE_BUILDERS.get(fixture_id)
+    if builder is None:
+        return None
+    return builder()
+
+
+def get_all_fixtures() -> List[FixtureEntry]:
+    return [builder() for builder in (_FIXTURE_BUILDERS[fid] for fid in ALL_FIXTURE_IDS)]
+
+
+# ── Replay Logic ─────────────────────────────────────────────────────
+
+def _check_stale_status(entry: Dict[str, Any]) -> Optional[str]:
+    """Check if the evidence entry indicates stale data that should be flagged."""
+    if not isinstance(entry, dict):
+        return None
+    status = entry.get("status", "")
+    is_patched = entry.get("is_realtime_patched", False)
+    if status == "HAS_DATA" and not is_patched:
+        source_type = entry.get("source_type", "")
+        if source_type == "realtime_patch":
+            return None
+    return None
+
+
+def _classify_failure_type(result: ReplayResult) -> str:
+    if result.actual_status == "FAILED":
+        error = result.error or ""
+        if "ConnectionError" in error or "TimeoutError" in error:
+            return "connection_or_timeout"
+        if "RateLimitError" in error or "rate" in error.lower():
+            return "rate_limited"
+        return "api_error"
+    if result.actual_status == "STALE":
+        return "stale_data"
+    if result.actual_status == "NOT_QUERIED" and result.expected_status != "NOT_QUERIED":
+        return "unexpected_not_queried"
+    if result.completeness_score < 70:
+        return "low_completeness"
+    return "status_mismatch"
+
+
+def _replay_single_fixture(fixture: FixtureEntry) -> ReplayResult:
+    raw_evidence = fixture.raw_evidence
+    completeness = compute_contract_completeness(raw_evidence)
+    primary = get_primary_source(fixture.data_type)
+
+    is_fallback = False
+    fallback_from = None
+    actual_vendor = fixture.vendor
+    if primary and primary.vendor != fixture.vendor:
+        is_fallback = True
+        fallback_from = primary.vendor
+
+    actual_status = fixture.expected_status
+    error_msg = None
+    passed = True
+    as_of_value = ""
+
+    for ev_key, entry in raw_evidence.items():
+        if not isinstance(entry, dict):
+            continue
+        contract = EvidenceContract.from_dict(entry)
+        ev_status = contract.status
+
+        if contract.as_of and not as_of_value:
+            as_of_value = contract.as_of
+
+        if ev_status == "FAILED":
+            actual_status = "FAILED"
+            error_msg = contract.error or "unknown error"
+            if fixture.expected_status != "FAILED":
+                passed = False
+            break
+
+        if contract.is_fallback and contract.fallback_from:
+            is_fallback = True
+            fallback_from = contract.fallback_from
+
+        if ev_key == "stock_data" and ev_status == "HAS_DATA":
+            is_patched = entry.get("is_realtime_patched", False)
+            source_type = entry.get("source_type", "")
+            if not is_patched and source_type != "realtime_patch":
+                if fixture.tags and "stale" in fixture.tags and "realtime_failure" in fixture.tags:
+                    actual_status = "STALE"
+                    if fixture.expected_status != "STALE":
+                        passed = False
+
+        if ev_key == "fund_flow_individual" and ev_status == "HAS_DATA":
+            unit_verified = entry.get("unit_verified")
+            if unit_verified is False:
+                if fixture.tags and "unit_anomaly" in fixture.tags:
+                    pass
+
+        if ev_key == "lhb":
+            if ev_status == "NOT_QUERIED":
+                if fixture.expected_status == "NOT_QUERIED":
+                    pass
+                elif fixture.expected_status != "NOT_QUERIED":
+                    if len(raw_evidence) == 1:
+                        passed = False
+                        actual_status = "NOT_QUERIED"
+            elif ev_status == "NORMAL_NO_DATA":
+                if fixture.expected_status == "NORMAL_NO_DATA":
+                    pass
+                elif fixture.expected_status != "NORMAL_NO_DATA":
+                    if len(raw_evidence) == 1:
+                        actual_status = "NORMAL_NO_DATA"
+
+    if fixture.expected_status == "FAILED" and actual_status == "FAILED":
+        passed = True
+    elif fixture.expected_status == "NOT_QUERIED" and actual_status == "NOT_QUERIED":
+        passed = True
+    elif fixture.expected_status == "STALE" and actual_status == "STALE":
+        passed = True
+    elif fixture.expected_status == "HAS_DATA" and actual_status == "HAS_DATA":
+        passed = True
+    elif fixture.expected_status == "NORMAL_NO_DATA" and actual_status == "NORMAL_NO_DATA":
+        passed = True
+    elif fixture.expected_status == "HAS_DATA" and actual_status == "FAILED":
+        passed = False
+    elif fixture.expected_status == "STALE" and actual_status == "FAILED":
+        passed = False
+
+    return ReplayResult(
+        fixture_id=fixture.fixture_id,
+        fixture_description=fixture.description,
+        data_type=fixture.data_type,
+        expected_status=fixture.expected_status,
+        actual_status=actual_status,
+        passed=passed,
+
+exec
+/bin/zsh -lc 'pytest tests/test_data014_policy_news_fixture.py -q' in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: pytest
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest tests/test_data014_policy_news_fixture.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 1919ms:
+........................................................................ [ 76%]
+......................                                                   [100%]
+94 passed in 1.49s
+
+exec
+/bin/zsh -lc "source .venv/bin/activate && python - <<'PY'
+from tradingagents.dataflows.live_smoke import run_live_smoke, EndpointSmokeResult
+import os
+
+def fake(provider, ep, sym, date):
+    from tradingagents.dataflows.live_smoke import _smoke_single_endpoint
+PY" in /Users/maybee/TradingAgents-AShare
+ succeeded in 280ms:
+exec
+/bin/zsh -lc "source .venv/bin/activate && python - <<'PY'
+from tradingagents.dataflows.live_smoke import _smoke_single_endpoint
+class P:
+    def get_news(self,*a,**k): return 'No news found for 600519.SH between 2026-06-08 and 2026-06-08'
+
+ep={'endpoint':'cn_astock/eastmoney_news','method':'get_news','vendor':'cn_astock','args_template':('{symbol}','{date}','{date}'),'kwargs':{},'expected_unit':'条'}
+r=_smoke_single_endpoint(P(), ep, '600519.SH','2026-06-08')
+print(r.status, r.has_data, r.error, r.sample_snippet)
+PY" in /Users/maybee/TradingAgents-AShare
+ succeeded in 819ms:
+OK True  No news found for 600519.SH between 2026-06-08 and 2026-06-08
+
+codex
+The added news live-smoke endpoints reuse status parsing that misclassifies normal no-news responses as successful data, so the new smoke coverage can report false positives. The fixture additions themselves are covered by tests, but this live-smoke behavior should be fixed.
+
+Review comment:
+
+- [P2] Handle no-news responses in live smoke — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/live_smoke.py:170-176
+  When this new `get_news` endpoint returns a normal empty result, `CnAstockProvider.get_news()` emits strings like `No news found for ...`, but `_smoke_single_endpoint()` only recognizes `LHB_NORMAL_NO_DATA` and failure strings, so these new news smoke checks are reported as `OK` with `has_data=True`. This hides the exact `NORMAL_NO_DATA` scenario DATA-014 is adding fixtures for, and can make live smoke reports falsely show healthy news coverage on symbols/dates with no matching news; please extend the smoke parser for the news/global-news no-data and unavailable strings when adding these endpoints.
+The added news live-smoke endpoints reuse status parsing that misclassifies normal no-news responses as successful data, so the new smoke coverage can report false positives. The fixture additions themselves are covered by tests, but this live-smoke behavior should be fixed.
+
+Review comment:
+
+- [P2] Handle no-news responses in live smoke — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/live_smoke.py:170-176
+  When this new `get_news` endpoint returns a normal empty result, `CnAstockProvider.get_news()` emits strings like `No news found for ...`, but `_smoke_single_endpoint()` only recognizes `LHB_NORMAL_NO_DATA` and failure strings, so these new news smoke checks are reported as `OK` with `has_data=True`. This hides the exact `NORMAL_NO_DATA` scenario DATA-014 is adding fixtures for, and can make live smoke reports falsely show healthy news coverage on symbols/dates with no matching news; please extend the smoke parser for the news/global-news no-data and unavailable strings when adding these endpoints.

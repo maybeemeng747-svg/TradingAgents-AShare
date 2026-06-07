@@ -383,7 +383,7 @@ class TestBuybackFixtures:
         assert FIXTURE_BUYBACK_HAS_DATA in ALL_FIXTURE_IDS
         assert FIXTURE_BUYBACK_FAILED in ALL_FIXTURE_IDS
         assert FIXTURE_BUYBACK_NOT_QUERIED in ALL_FIXTURE_IDS
-        assert len(ALL_FIXTURE_IDS) == 25
+        assert len(ALL_FIXTURE_IDS) >= 25
 
     def test_buyback_has_data_fixture(self):
         fixture = get_fixture(FIXTURE_BUYBACK_HAS_DATA)
