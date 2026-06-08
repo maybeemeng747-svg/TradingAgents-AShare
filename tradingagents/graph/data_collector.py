@@ -28,6 +28,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_hot_stocks_xq,
     get_announcements,
     get_margin_trading,  # [DATA-010] margin_trading_raw_evidence
+    get_ratings,  # [DATA-012A] rating_data_collector_wiring
 )
 from tradingagents.dataflows.interface import get_last_hit_vendor  # [N-003] cn_astock_raw_evidence
 from tradingagents.dataflows.evidence_contract import (  # [DATA-004] raw_evidence_contract
@@ -67,6 +68,7 @@ _EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
     "indicators": "ohlcv",
     "vpa_indicators": "ohlcv",
     "announcements": "notice",
+    "ratings": "rating",  # [DATA-012A] rating_data_collector_wiring
 }
 
 
@@ -415,6 +417,7 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
         "hot_stocks": (get_hot_stocks_xq, {}),
         "announcements": (get_announcements, {"symbol": ticker}),  # [DATA-P0-603629] astock_source_fallback
         "margin_trading": (get_margin_trading, {"symbol": ticker}),  # [DATA-010] margin_trading_raw_evidence
+        "ratings": (get_ratings, {"symbol": ticker}),  # [DATA-012A] rating_data_collector_wiring
     }
 
     # 财务报表类数据始终拉取，Research Manager 根据 horizon 自行判断权重
@@ -588,6 +591,10 @@ class DataCollector:
                 return "FAILED"
             if "[G-007] LHB_HAS_DATA" in val or "龙虎榜明细" in val:
                 return "HAS_DATA"
+            if "[DATA-012] RATINGS_NORMAL_NO_DATA" in val or "无分析师评级" in val:
+                return "NORMAL_NO_DATA"
+            if "[DATA-012] RATINGS_FAILED" in val:
+                return "FAILED"
             return "HAS_DATA"
         if isinstance(raw_value, dict):
             return "HAS_DATA" if raw_value else "NOT_QUERIED"
@@ -624,6 +631,7 @@ class DataCollector:
             "announcements",  # [DATA-P0-603629] astock_source_fallback
             "margin_trading",  # [DATA-010] margin_trading_raw_evidence
             "research_report",  # [DATA-011] research_report_raw_evidence
+            "ratings",  # [DATA-012A] rating_data_collector_wiring
         ]
 
         raw_evidence: Dict[str, Any] = {}
@@ -700,6 +708,10 @@ class DataCollector:
                     entry["vendor"] = actual_vendor
             elif key == "research_report":  # [DATA-011] research_report_raw_evidence
                 actual_vendor = get_last_hit_vendor("get_research_report")
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key == "ratings":  # [DATA-012A] rating_data_collector_wiring
+                actual_vendor = get_last_hit_vendor("get_ratings")
                 if actual_vendor:
                     entry["vendor"] = actual_vendor
 

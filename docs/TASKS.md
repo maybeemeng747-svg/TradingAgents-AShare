@@ -71,12 +71,12 @@
 45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
 46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
 47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
-48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，blocked — 部分落地，缺 data_collector 接线，依赖 DATA-003/DATA-004 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，blocked — provider/readiness 已部分落地，data_collector 接线由 DATA-012A 收口完成，待 Codex review 决定）。
 49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
 50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
 51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
 52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
-53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，ready，依赖 DATA-012 部分落地 ✓）。
+53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done，依赖 DATA-012 部分落地 ✓）。
 
 ### 数据源治理候选队列
 
@@ -98,8 +98,8 @@
 14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
 15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
 16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
-17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，blocked — 部分落地，缺 data_collector 接线）。
-17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，ready）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，blocked — provider/readiness 已部分落地，data_collector 接线由 DATA-012A 收口完成，待 Codex review 决定）。
+17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done）。
 18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
 19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
 20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done）。

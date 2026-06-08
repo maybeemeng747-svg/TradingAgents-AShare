@@ -26,6 +26,7 @@ from tradingagents.agents.utils.game_theory_tools import (
     get_hot_stocks_xq,
     get_announcements,  # [DATA-P0-603629] astock_source_fallback
     get_margin_trading,  # [DATA-010] margin_trading_raw_evidence
+    get_ratings,  # [DATA-012A] rating_data_collector_wiring
 )
 
 def create_msg_delete():

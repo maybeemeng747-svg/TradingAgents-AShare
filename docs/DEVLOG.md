@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-06-08 | DATA-012A: 评级数据 data_collector 接线与回归验收
+
+- **执行者**：OpenCode
+- **任务**：DATA-012A — 把已有的 get_ratings/provider route 接入 data_collector.py 的 _fetch_all() 和 build_raw_evidence()，补齐 DATA-012 遗留的 data_collector 接线缺口。
+- **修改文件**：
+  - `tradingagents/agents/utils/game_theory_tools.py` — [DATA-012A] rating_data_collector_wiring
+    - 新增 `get_ratings(symbol)` LangChain tool，调用 `route_to_vendor("get_ratings", symbol)`
+  - `tradingagents/agents/utils/agent_utils.py` — [DATA-012A]
+    - 从 game_theory_tools 导出 get_ratings
+  - `tradingagents/graph/data_collector.py` — [DATA-012A] rating_data_collector_wiring
+    - `_fetch_all()` tasks 新增 `"ratings": (get_ratings, {"symbol": ticker})`
+    - `_EVIDENCE_KEY_TO_DATA_TYPE` 新增 `"ratings": "rating"`
+    - `build_raw_evidence()` data_source_keys 新增 `"ratings"`
+    - `_infer_source_status()` 新增 `[DATA-012] RATINGS_NORMAL_NO_DATA` / `RATINGS_FAILED` 状态识别
+    - vendor resolution 新增 `get_last_hit_vendor("get_ratings")` 追踪
+  - `tests/test_data012_ratings.py` — 重写，修复 pre-existing API 不匹配（EvidenceContract.value 非 raw、infer_evidence_statuses 第二参数 raw_evidence=、run_fixture_replay 返回 ReplayReport），新增 TestDataCollectorRatingsWiring 11 个测试
+- **测试结果**：81 passed (DATA-012A)；185 passed (evidence_contract + readiness_score 回归)；64 passed + 2 pre-existing failures (data_source_catalog，非本任务引入)
+- **关键逻辑**：
+  - 评级数据通过 route_to_vendor 自动 fallback（cn_akshare → cn_astock）
+  - data_collector._fetch_all() 并行拉取评级数据
+  - build_raw_evidence() 四态覆盖：HAS_DATA / NORMAL_NO_DATA / FAILED / NOT_QUERIED
+  - vendor/endpoint/fallback_from 从 source_catalog 自动解析
+- **执行边界**：未调用 LLM、未触发 TA、未输出强买卖词、未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`
+
+---
+
 ## 2026-06-08 | 晨间收口审核：TASKS.md 状态统一 + DATA-012A 拆分
 
 - **执行者**：主控AI

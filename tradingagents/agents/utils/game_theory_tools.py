@@ -56,3 +56,11 @@ def get_margin_trading(
 ) -> str:
     """获取个股融资融券数据，包括融资余额、融券余额、融资买入额等。symbol 格式如 600519.SH。"""
     return route_to_vendor("get_margin_trading", symbol)
+
+
+@tool  # [DATA-012A] rating_data_collector_wiring
+def get_ratings(
+    symbol: Annotated[str, "股票代码，格式如 600519.SH"],
+) -> str:
+    """获取个股分析师评级数据，包括机构评级、目标价、评级变动等。symbol 格式如 600519.SH。"""
+    return route_to_vendor("get_ratings", symbol)
