@@ -24,7 +24,7 @@ class TestDataTypeEnum:
             "quote", "ohlcv", "fund_flow", "board_fund_flow", "lhb",
             "margin_trading", "notice", "report", "rating", "news",
             "global_news", "financials", "insider", "hot_stocks",
-            "zt_pool", "realtime_quotes",
+            "zt_pool", "realtime_quotes", "buyback",
         }
         assert {dt.value for dt in DataType} == expected
 
@@ -458,7 +458,7 @@ class TestDataSpecificChecks:
     def test_report_primary_is_eastmoney(self):
         p = get_primary_source("report")
         assert p is not None
-        assert p.vendor == "cn_astock"
+        assert p.vendor == "cn_akshare"
 
     def test_astock_realtime_includes_pe_pb(self):
         caps = get_vendor_capabilities("cn_astock")
