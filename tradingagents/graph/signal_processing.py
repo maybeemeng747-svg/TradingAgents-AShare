@@ -78,10 +78,16 @@ def _classify_research_direction(snippet: str) -> str | None:
     return None
 
 
+def _strip_system_overrides(text: str) -> str:
+    return re.sub(r"⚠?\s*\[C-\d+\].*", "", text)
+
+
 def _infer_research_direction(text: str) -> str:
     rd = _parse_research_direction_from_verdict(text)
     if rd:
         return rd
+
+    stripped = _strip_system_overrides(text)
 
     explicit_patterns = [
         r"最终裁决[:：]\s*([^\n*]+)",
@@ -91,18 +97,18 @@ def _infer_research_direction(text: str) -> str:
         r"核心定性[:：]\s*([^\n*]+)",
     ]
     for pattern in explicit_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
+        match = re.search(pattern, stripped, re.IGNORECASE)
         if match:
             rd = _classify_research_direction(match.group(1).strip())
             if rd:
                 return rd
 
-    headline = "\n".join(text.splitlines()[:20])
+    headline = "\n".join(stripped.splitlines()[:20])
     rd = _classify_research_direction(headline)
     if rd:
         return rd
 
-    rd = _classify_research_direction(text.upper())
+    rd = _classify_research_direction(stripped.upper())
     if rd:
         return rd
 

@@ -161,6 +161,23 @@ class TestExtractDecisionSemanticsGateBlocked:
         assert result.decision == "HOLD"
 
 
+class TestC001OverrideNoise:
+    """C-001 auto-conversion line should not pollute research direction."""
+
+    def test_c001_clearance_in_suggestion_hold(self):
+        text = (
+            "建议持有。假设约25.30元\n\n"
+            "### 执行质检\n"
+            "- 系统动作：人工复核\n"
+            "- 触发价：—\n\n"
+            "⚠️ [C-001] 未持仓状态，已将减仓/清仓建议自动转换为观望（WAIT）。"
+        )
+        result = _extract_decision_semantics(text, has_position=False)
+        assert result.research_direction == "中性"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "观望"
+
+
 class TestNegationHandling:
     """Negated buy phrases should produce 中性, not 偏多."""
 

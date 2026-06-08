@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-06-08 | DECISION-002: 历史报告回放测试
+
+- **执行者**：OpenCode
+- **类型**：测试 + 最小修复
+- **背景**：用 5 份真实 delta_log 样本回放 _extract_decision_semantics，验证 research_direction / execution_action / action_label 分类正确性
+- **修改文件**：
+  - `tradingagents/graph/signal_processing.py`：新增 `_strip_system_overrides()` 辅助函数，在 `_infer_research_direction` 中剥离 C-001 系统覆盖行再分类，防止"减仓/清仓建议自动转换为观望"中的"清仓"关键词污染 research_direction
+  - `tests/test_decision_replay.py`：**新建**，5 个历史报告回放测试（002709/300750/603256/002138/600584）
+  - `tests/test_decision_semantics.py`：新增 `TestC001OverrideNoise` 单元测试
+- **回放结果**：
+  - 002709.SZ：偏多 / WAIT / 等待触发 ✓
+  - 300750.SZ：偏多 / WAIT / 等待触发 ✓
+  - 603256.SH：偏空 / WAIT / 回避 ✓
+  - 002138.SZ：偏空 / WAIT / 回避 ✓
+  - 600584.SH：中性 / WAIT / 观望 ✓（修复前误判为偏空）
+- **分类错误修复**：600584.SH 无 VERDICT 标签，"建议持有"文本后接 C-001 自动转换行含"清仓"，被 _classify_research_direction 优先匹配为偏空。修复方案：_infer_research_direction 分类前剥离 `[C-xxx]` 系统覆盖行
+- **测试结果**：5 passed (test_decision_replay)；24 passed (test_decision_semantics)；29/29 全部通过
+- **安全红线**：未改 prompts，未调 LLM，未写生产 DB
+
+---
+
 ## 2026-06-08 | DECISION-001: 最终动作语义分层实现
 
 - **执行者**：OpenCode

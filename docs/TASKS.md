@@ -78,7 +78,7 @@
 52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
 53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done，依赖 DATA-012 部分落地 ✓）。
 54. `DECISION-001`：最终动作语义分层 — 禁止默认 HOLD（P0，done，commit dee415c）。
-55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，ready，依赖 DECISION-001 ✓）。
+55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
 56. `DECISION-003`：前端展示 3 层语义（P1，ready，依赖 DECISION-001 ✓）。
 57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，ready，依赖 DECISION-001 ✓）。
 
@@ -2565,7 +2565,7 @@
 ### DECISION-002: 历史报告回放测试 — 覆盖典型场景（P1）
 - **描述**：用历史报告样本（002709.SZ、300750.SZ、603256.SH 等）做回放测试，验证 DECISION-001 的语义分层在真实报告文本上正确工作。
 - **优先级**：P1
-- **状态**：ready — 依赖 DECISION-001 ✓
+- **状态**：done
 - **前置条件**：`DECISION-001` 完成。
 - **执行约束**：
   - 不修改历史报告内容。
