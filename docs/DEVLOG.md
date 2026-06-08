@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-06-08 | DECISION-003: 前端展示 3 层语义
+
+- **执行者**：OpenCode
+- **类型**：前端功能
+- **背景**：前端报告页面不再只显示 decision=HOLD，而是展示 3 层语义：action_label（大字）/ research_direction（辅助）/ execution_action（小标签）
+- **修改文件**：
+  - `frontend/src/types/index.ts`：`AnalysisReport` 新增 `research_direction?`、`execution_action?`、`action_label?` 三个可选字段
+  - `frontend/src/components/DecisionCard.tsx`：props 新增 `actionLabel`、`researchDirection`、`executionAction`；主显示优先用 actionLabel，fallback 到旧 decision；researchDirection 显示在 symbol 下方；executionAction 用小标签；颜色映射：等待触发/条件入场→红，持有→蓝，回避→灰，条件减仓/清仓→橙
+  - `frontend/src/pages/Analysis.tsx`：DecisionCard 调用处传入 `report?.action_label`、`report?.research_direction`、`report?.execution_action`
+  - `frontend/src/pages/Reports.tsx`：DecisionCard 调用处传入 `selectedReport.result_data?.action_label/research_direction/execution_action`
+- **构建结果**：`npm run build` 通过，无 TypeScript 错误
+- **安全红线**：未改后端 API，未改 prompts，未调 LLM
+
+---
+
 ## 2026-06-08 | DECISION-002: 历史报告回放测试
 
 - **执行者**：OpenCode

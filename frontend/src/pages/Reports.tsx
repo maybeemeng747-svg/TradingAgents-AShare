@@ -500,6 +500,9 @@ export default function Reports() {
                             targetPrice={selectedReport.target_price ?? undefined}
                             stopLoss={selectedReport.stop_loss_price ?? undefined}
                             reasoning={selectedReport.final_trade_decision?.slice(0, 300) ?? undefined}
+                            actionLabel={selectedReport.result_data?.action_label}
+                            researchDirection={selectedReport.result_data?.research_direction}
+                            executionAction={selectedReport.result_data?.execution_action}
                         />
                     ) : selectedReport.status === 'failed' ? (
                         <div className="card h-full flex flex-col items-center justify-center p-8 text-center min-h-[320px]">

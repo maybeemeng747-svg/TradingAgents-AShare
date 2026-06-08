@@ -18,6 +18,9 @@ interface DecisionCardProps {
     reasoning?: string
     riskLevel?: 'low' | 'medium' | 'high'
     report?: AnalysisReport
+    actionLabel?: string
+    researchDirection?: string
+    executionAction?: string
 }
 
 const decisionConfig: Record<string, { label: string; color: string; icon: typeof TrendingUp }> = {
@@ -42,8 +45,41 @@ export default function DecisionCard({
     reasoning,
     riskLevel,
     report,
+    actionLabel: propActionLabel,
+    researchDirection: propResearchDirection,
+    executionAction: propExecutionAction,
 }: DecisionCardProps) {
     const [expanded, setExpanded] = useState(false)
+
+    const actionLabel = propActionLabel || report?.action_label
+    const researchDirection = propResearchDirection || report?.research_direction
+    const executionAction = propExecutionAction || report?.execution_action
+
+    const actionLabelColorMap: Record<string, string> = {
+        '等待触发': 'bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-400 border-red-200 dark:border-red-500/30',
+        '条件入场': 'bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-400 border-red-200 dark:border-red-500/30',
+        '持有': 'bg-blue-100 dark:bg-blue-500/20 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-500/30',
+        '回避': 'bg-slate-100 dark:bg-slate-700/50 text-slate-700 dark:text-slate-400 border-slate-200 dark:border-slate-600',
+        '条件减仓': 'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400 border-orange-200 dark:border-orange-500/30',
+        '清仓': 'bg-orange-100 dark:bg-orange-500/20 text-orange-700 dark:text-orange-400 border-orange-200 dark:border-orange-500/30',
+        '数据不足观察': 'bg-slate-100 dark:bg-slate-700/50 text-slate-700 dark:text-slate-400 border-slate-200 dark:border-slate-600',
+    }
+
+    const researchDirectionColorMap: Record<string, string> = {
+        '看多': 'text-red-600 dark:text-red-400',
+        '偏多': 'text-red-500 dark:text-red-300',
+        '中性': 'text-slate-500 dark:text-slate-400',
+        '偏空': 'text-green-500 dark:text-green-300',
+        '看空': 'text-green-600 dark:text-green-400',
+    }
+
+    const executionActionColorMap: Record<string, string> = {
+        'WAIT': 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300',
+        'ENTER': 'bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400',
+        'HOLD': 'bg-blue-100 dark:bg-blue-500/20 text-blue-600 dark:text-blue-400',
+        'REDUCE': 'bg-orange-100 dark:bg-orange-500/20 text-orange-600 dark:text-orange-400',
+        'EXIT': 'bg-orange-100 dark:bg-orange-500/20 text-orange-600 dark:text-orange-400',
+    }
 
     const parseDecision = (text?: string): 'buy' | 'sell' | 'hold' | 'add' | 'reduce' | 'watch' | undefined => {
         if (!text) return propDecision
@@ -79,21 +115,37 @@ export default function DecisionCard({
                     <div>
                         <h3 className="font-semibold text-slate-900 dark:text-slate-100">{name}</h3>
                         <p className="text-sm text-slate-500">{symbol}</p>
-                        {direction && (
+                        {researchDirection && (
+                            <p className={`text-xs mt-0.5 font-medium ${researchDirectionColorMap[researchDirection] || 'text-slate-400'}`}>
+                                {researchDirection}
+                            </p>
+                        )}
+                        {!researchDirection && direction && (
                             <p className="text-xs text-slate-400 mt-0.5">方向：{direction}</p>
                         )}
                     </div>
                 </div>
-                {config && DecisionIcon ? (
-                    <div className={`px-4 py-2 rounded-full border font-medium flex items-center gap-1.5 ${config.color}`}>
-                        <DecisionIcon className="w-4 h-4" />
-                        {config.label}
-                    </div>
-                ) : (
-                    <div className="px-4 py-2 rounded-full border font-medium text-slate-400 border-slate-200 dark:border-slate-700">
-                        等待裁决
-                    </div>
-                )}
+                <div className="flex flex-col items-end gap-1.5">
+                    {actionLabel ? (
+                        <div className={`px-4 py-2 rounded-full border font-medium text-base ${actionLabelColorMap[actionLabel] || 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-600'}`}>
+                            {actionLabel}
+                        </div>
+                    ) : config && DecisionIcon ? (
+                        <div className={`px-4 py-2 rounded-full border font-medium flex items-center gap-1.5 ${config.color}`}>
+                            <DecisionIcon className="w-4 h-4" />
+                            {config.label}
+                        </div>
+                    ) : (
+                        <div className="px-4 py-2 rounded-full border font-medium text-slate-400 border-slate-200 dark:border-slate-700">
+                            等待裁决
+                        </div>
+                    )}
+                    {executionAction && (
+                        <span className={`text-[10px] px-2 py-0.5 rounded font-mono ${executionActionColorMap[executionAction] || 'bg-slate-100 dark:bg-slate-700 text-slate-500'}`}>
+                            {executionAction}
+                        </span>
+                    )}
+                </div>
             </div>
 
             {/* 置信度 */}

@@ -79,7 +79,7 @@
 53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done，依赖 DATA-012 部分落地 ✓）。
 54. `DECISION-001`：最终动作语义分层 — 禁止默认 HOLD（P0，done，commit dee415c）。
 55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
-56. `DECISION-003`：前端展示 3 层语义（P1，ready，依赖 DECISION-001 ✓）。
+56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
 57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，ready，依赖 DECISION-001 ✓）。
 
 ### 数据源治理候选队列
@@ -2582,7 +2582,7 @@
 ### DECISION-003: 前端展示 3 层语义（P1）
 - **描述**：前端报告页面和分析结果卡片展示 `research_direction + execution_action + action_label`，不再只取 `decision` 字段。
 - **优先级**：P1
-- **状态**：ready — 依赖 DECISION-001 ✓
+- **状态**：done — commit 61a09a7
 - **前置条件**：`DECISION-001` 完成。
 - **执行约束**：
   - 保持旧报告兼容：如果新字段不存在，fallback 到 `decision`。

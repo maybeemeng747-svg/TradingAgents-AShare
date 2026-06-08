@@ -352,6 +352,9 @@ export interface AnalysisReport {
     trader_investment_plan?: string
     risk_feedback_state?: RiskFeedbackState
     final_trade_decision?: string
+    research_direction?: string
+    execution_action?: string
+    action_label?: string
 }
 
 // UI Types

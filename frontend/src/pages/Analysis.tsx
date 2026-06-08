@@ -294,6 +294,9 @@ export default function Analysis() {
                             targetPrice={targetPrice}
                             stopLoss={stopLoss}
                             reasoning={finalDecision?.slice(0, 300)}
+                            actionLabel={report?.action_label}
+                            researchDirection={report?.research_direction}
+                            executionAction={report?.execution_action}
                         />
                         <RiskRadar items={riskItems} />
                         <KeyMetrics items={keyMetrics} />
