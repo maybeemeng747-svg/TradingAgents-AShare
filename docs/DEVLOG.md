@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-06-08 | DECISION-001: 最终动作语义分层实现
+
+- **执行者**：OpenCode
+- **类型**：功能实现
+- **背景**：HOLD 被过度复用，6 种不同语义全压成 HOLD
+- **修改文件**：
+  - `tradingagents/graph/signal_processing.py`：新增 `DecisionSemantics` dataclass、`_extract_decision_semantics`、`_derive_action_label`、`_resolve_execution_action`、`_has_gate_failure`、`_infer_research_direction`、`_parse_research_direction_from_verdict`、`_classify_research_direction`（含否定处理）、`_is_data_insufficient`；重构 `_execution_layer_overrides_hold` 内部拆出 `_has_gate_failure`；`_extract_decision_keyword` 保持向后兼容
+  - `api/services/report_service.py`：`StructuredReport` 新增 `research_direction`、`execution_action`、`action_label` 三个可选字段；`resolve_report_fields` 接入 `_extract_decision_semantics` 并透传 `has_position`
+  - `api/main.py`：双调用点（dual_horizon / single_horizon）传入 `has_position`，`result.update` 透传三个语义字段
+  - `tests/test_decision_semantics.py`：新增 6 个核心场景 + 单元测试 + 向后兼容测试 + 门禁阻断测试 + 否定处理测试 + resolve_report_fields 接线测试（23 个用例）
+- **direction_map 扩展**：偏多→WAIT(未持仓无触发价)/ENTER(有触发价)；中性→HOLD(已持仓)/WAIT(未持仓)；偏空→WAIT(未持仓)/REDUCE(已持仓)
+- **测试结果**：23/23 新增测试通过，146/146 回归测试通过（P0/P1/P11/data012/report_recovery），E-004 2 个预存失败不受影响
+- **Codex Review 修复**：[P1] 接线 `resolve_report_fields` → `_extract_decision_semantics`，语义字段已接入生产链路；[P2] `_classify_research_direction` 增加否定短语检测（"不建议买入" → 中性）
+- **安全红线**：未改 prompts，未调用 LLM，未写生产数据库
+
+---
+
 ## 2026-06-08 | DECISION-001~004: 最终动作语义分层任务创建
 
 - **执行者**：主控AI

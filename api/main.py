@@ -2167,12 +2167,16 @@ async def _run_job_inner(
                 confidence_override=structured.confidence if structured else None,
                 target_price_override=structured.target_price if structured else None,
                 stop_loss_override=structured.stop_loss_price if structured else None,
+                has_position=_resolve_has_position(user_intent, request),
             )
             result.update({
                 "direction": resolved["direction"],
                 "confidence": resolved["confidence"],
                 "target_price": resolved["target_price"],
                 "stop_loss_price": resolved["stop_loss_price"],
+                "research_direction": resolved["research_direction"],
+                "execution_action": resolved["execution_action"],
+                "action_label": resolved["action_label"],
             })
 
             # 自动保存报告到数据库
@@ -2420,6 +2424,7 @@ async def _run_job_inner(
             confidence_override=structured.confidence if structured else None,
             target_price_override=structured.target_price if structured else None,
             stop_loss_override=structured.stop_loss_price if structured else None,
+            has_position=_has_pos,
         )
 
         # 注入结果字典以便通知和保存使用
@@ -2428,6 +2433,9 @@ async def _run_job_inner(
             "confidence": resolved["confidence"],
             "target_price": resolved["target_price"],
             "stop_loss_price": resolved["stop_loss_price"],
+            "research_direction": resolved["research_direction"],
+            "execution_action": resolved["execution_action"],
+            "action_label": resolved["action_label"],
         })
 
         # 自动保存/收口报告到数据库

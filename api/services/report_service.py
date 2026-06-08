@@ -107,6 +107,9 @@ class StructuredReport(BaseModel):
     stop_loss_price: Optional[float] = Field(None, description="止损价（数字，无单位）")
     risks: List[RiskItemSchema] = Field(default_factory=list, description="主要风险，最多5条")
     key_metrics: List[KeyMetricSchema] = Field(default_factory=list, description="关键指标，最多6条")
+    research_direction: Optional[str] = Field(None, description="研究方向：看多/偏多/中性/偏空/看空")
+    execution_action: Optional[str] = Field(None, description="执行动作：WAIT/ENTER/HOLD/REDUCE/EXIT")
+    action_label: Optional[str] = Field(None, description="动作标签：持有/等待触发/条件入场/回避/条件减仓/数据不足观察")
 
     @field_validator("target_price", "stop_loss_price", mode="before")
     @classmethod
@@ -291,6 +294,8 @@ def resolve_report_fields(
     confidence_override: Optional[int] = None,
     target_price_override: Optional[float] = None,
     stop_loss_override: Optional[float] = None,
+    *,
+    has_position: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Resolve the final structured fields once for both SSE payloads and DB writes."""
     market_report = sentiment_report = news_report = None
@@ -335,6 +340,24 @@ def resolve_report_fields(
         else _extract_price_from_sections(price_sections, "stop_loss")
     )
 
+    research_direction = None
+    execution_action = None
+    action_label = None
+    if final_trade_decision:
+        try:
+            from tradingagents.graph.signal_processing import _extract_decision_semantics
+            semantics = _extract_decision_semantics(
+                final_trade_decision,
+                has_position=has_position,
+                trigger_price=target_price,
+                invalid_price=stop_loss_price,
+            )
+            research_direction = semantics.research_direction
+            execution_action = semantics.execution_action
+            action_label = semantics.action_label
+        except Exception:
+            pass
+
     return {
         "market_report": market_report,
         "sentiment_report": sentiment_report,
@@ -351,6 +374,9 @@ def resolve_report_fields(
         "confidence": confidence,
         "target_price": target_price,
         "stop_loss_price": stop_loss_price,
+        "research_direction": research_direction,
+        "execution_action": execution_action,
+        "action_label": action_label,
     }
 
 
