@@ -77,6 +77,10 @@
 51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
 52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
 53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done，依赖 DATA-012 部分落地 ✓）。
+54. `DECISION-001`：最终动作语义分层 — 禁止默认 HOLD（P0，ready，依赖 N-005 ✓）。
+55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，blocked，依赖 DECISION-001）。
+56. `DECISION-003`：前端展示 3 层语义（P1，blocked，依赖 DECISION-001）。
+57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，blocked，依赖 DECISION-001）。
 
 ### 数据源治理候选队列
 
@@ -2535,6 +2539,80 @@
 - **代码标注要求**：`# [N-005] execution_schema`
 
 ---
+
+### DECISION-001: 最终动作语义分层 — 禁止默认 HOLD（P0）
+- **描述**：当前 HOLD 被过度复用（已持仓持有、未持仓观望、偏多等待、数据不足、风控降级全压成 HOLD）。拆成 3 层语义：`research_direction`（看多/偏多/中性/偏空/看空）、`execution_action`（WAIT/ENTER/HOLD/REDUCE/EXIT）、`action_label`（回避/等待触发/条件入场/持有/减仓/清仓）。禁止默认 HOLD。
+- **优先级**：P0
+- **状态**：ready
+- **前置条件**：`N-005` 完成（已有 WAIT/ENTER/HOLD/REDUCE/EXIT 枚举和 execution_schema）✓。
+- **执行约束**：
+  - 不改 prompt 作为唯一方案，必须在 signal_processing.py 和 report_service.py 做规则层改造。
+  - 保持向后兼容：旧报告的 `decision` 字段仍可读，新字段并行输出。
+  - 不调用 LLM。
+- **实现要点**：
+  1. `signal_processing.py`：`process_signal` 返回值从单一 `decision` 扩展为 3 层结构。`_extract_decision_keyword` 重构为 `_extract_decision_semantics`，分别提取方向、动作、标签。
+  2. `report_service.py`：`StructuredReport` 新增 `research_direction`、`execution_action`、`action_label` 字段，`decision` 保留但不再作为唯一展示源。
+  3. `signal_processing.py`：`_execution_layer_overrides_hold` 改为返回结构化动作（WAIT/ENTER/HOLD/REDUCE/EXIT），不再一律返回 HOLD。
+  4. `direction_map` 扩展：偏多→WAIT（未持仓）或 ENTER（有触发价），中性→HOLD（已持仓）或 WAIT（未持仓），偏空→WAIT（未持仓）。
+  5. 新增 `_derive_action_label(has_position, research_direction, execution_action, trigger_price, invalid_price)` 函数生成中文标签。
+- **验收方式**：
+  - 新增测试覆盖 6 种场景（未持仓偏多等待触发、未持仓强偏多条件入场、未持仓偏空回避、已持仓中性持有、已持仓风险升高减仓、数据不足）。
+  - `pytest tests/test_signal_processing.py -q` 通过。
+  - `pytest tests/test_report_service.py -q` 通过（如有）。
+  - 旧报告 `decision` 字段不受影响。
+- **代码标注要求**：`# [DECISION-001] action_semantics_layering`
+
+### DECISION-002: 历史报告回放测试 — 覆盖典型场景（P1）
+- **描述**：用历史报告样本（002709.SZ、300750.SZ、603256.SH 等）做回放测试，验证 DECISION-001 的语义分层在真实报告文本上正确工作。
+- **优先级**：P1
+- **状态**：blocked — 依赖 DECISION-001
+- **前置条件**：`DECISION-001` 完成。
+- **执行约束**：
+  - 不修改历史报告内容。
+  - 不调用 LLM。
+- **实现要点**：
+  1. 提取 002709.SZ、300750.SZ、603256.SH 的历史报告文本。
+  2. 用 `process_signal` 重新解析，验证 3 层输出与预期一致。
+  3. 新增 `tests/test_decision_replay.py` 覆盖至少 3 个样本。
+- **验收方式**：
+  - `pytest tests/test_decision_replay.py -q` 通过。
+  - 每个样本的 `research_direction`、`execution_action`、`action_label` 与预期一致。
+- **代码标注要求**：`# [DECISION-002] decision_replay_test`
+
+### DECISION-003: 前端展示 3 层语义（P1）
+- **描述**：前端报告页面和分析结果卡片展示 `research_direction + execution_action + action_label`，不再只取 `decision` 字段。
+- **优先级**：P1
+- **状态**：blocked — 依赖 DECISION-001
+- **前置条件**：`DECISION-001` 完成。
+- **执行约束**：
+  - 保持旧报告兼容：如果新字段不存在，fallback 到 `decision`。
+  - 不改后端 API schema（新字段已经在 StructuredReport 中）。
+- **实现要点**：
+  1. `frontend/src/pages/Analysis.tsx`：报告卡片展示 `action_label`（大字）+ `research_direction`（辅助）。
+  2. 候选池/观察池列表中，动作标签用颜色区分（红=减仓/清仓，黄=等待触发，绿=条件入场/持有，灰=回避）。
+  3. 推送通知/日报中使用 `action_label` 而非 `decision`。
+- **验收方式**：
+  - 前端 build 无错误。
+  - 报告卡片展示 3 层语义。
+  - 旧报告 fallback 到 `decision` 不报错。
+- **代码标注要求**：`# [DECISION-003] frontend_action_label`
+
+### DECISION-004: 报告卡片和推送通知不再只取 decision（P2）
+- **描述**：报告导出、飞书推送、日报汇总中，使用 `action_label` 替代 `decision` 作为用户可见的动作描述。
+- **优先级**：P2
+- **状态**：blocked — 依赖 DECISION-001
+- **前置条件**：`DECISION-001` 完成。
+- **执行约束**：
+  - 不改飞书 API 调用方式，只改推送内容字段。
+  - 向后兼容：旧报告 fallback 到 `decision`。
+- **实现要点**：
+  1. 报告导出模块使用 `action_label`。
+  2. 飞书/通知推送使用 `action_label`。
+  3. 夜间日报汇总使用 `action_label`。
+- **验收方式**：
+  - 导出报告包含 `action_label`。
+  - 推送通知内容与报告一致。
+- **代码标注要求**：`# [DECISION-004] notification_action_label`
 
 ## B. 待办
 

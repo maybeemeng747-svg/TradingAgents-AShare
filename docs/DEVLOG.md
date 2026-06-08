@@ -4,6 +4,25 @@
 
 ---
 
+## 2026-06-08 | DECISION-001~004: 最终动作语义分层任务创建
+
+- **执行者**：主控AI
+- **类型**：任务创建（无代码变更）
+- **背景**：HOLD 被过度复用，6 种不同语义全压成 HOLD，导致用户看到千篇一律的“持有”。
+- **根因**：
+  - `signal_processing.py:56`：兜底返回 HOLD
+  - `signal_processing.py:101`：`_execution_layer_overrides_hold` 强制 HOLD
+  - `report_service.py:104`：`StructuredReport.decision` 默认 HOLD
+  - `direction_map`：偏多/中性/谨慎全映射 HOLD
+- **任务拆解**：
+  - DECISION-001（P0）：3 层语义分层（research_direction / execution_action / action_label）
+  - DECISION-002（P1）：历史报告回放测试
+  - DECISION-003（P1）：前端展示 3 层语义
+  - DECISION-004（P2）：推送通知使用 action_label
+- **设计参考**：N-005 已定义 WAIT/ENTER/HOLD/REDUCE/EXIT 枚举和 execution_schema，但未接到生产链路
+
+---
+
 ## 2026-06-08 | DATA-012A: 评级数据 data_collector 接线与回归验收
 
 - **执行者**：OpenCode
