@@ -802,6 +802,20 @@ class TestAcceptanceDATA012:
         assert evidence["ratings"]["endpoint"] != ""
         assert evidence["ratings"]["fetched_at"] != ""
 
+    def test_infer_source_status_ratings_normal_no_data_with_bukyong(self):
+        from tradingagents.graph.data_collector import DataCollector
+        status = DataCollector._infer_source_status(
+            "RATINGS_NORMAL_NO_DATA: AKShare 评级接口不可用。"
+        )
+        assert status == "NORMAL_NO_DATA"
+
+    def test_infer_source_status_ratings_failed_with_huoqushibai(self):
+        from tradingagents.graph.data_collector import DataCollector
+        status = DataCollector._infer_source_status(
+            "RATINGS_FAILED: 评级数据获取失败，ConnectionError"
+        )
+        assert status == "FAILED"
+
     def test_data012a_four_states_from_collector(self):
         from tradingagents.graph.data_collector import DataCollector
         dc = DataCollector()

@@ -579,10 +579,12 @@ class DataCollector:
             val = raw_value.strip()
             if not val:
                 return "NOT_QUERIED"
-            if "获取失败" in val or "不可用" in val or "error" in val.lower():
-                return "FAILED"
-            if val.startswith("N/A") or val == "VPA 数据不足" or val == "VPA 计算失败":
+            if "RATINGS_NORMAL_NO_DATA" in val or "无分析师评级" in val:
                 return "NORMAL_NO_DATA"
+            if "RATINGS_FAILED" in val:
+                return "FAILED"
+            if "RATINGS_HAS_DATA" in val:
+                return "HAS_DATA"
             if "[G-007] LHB_NOT_QUERIED" in val or "查询未触发" in val:
                 return "NOT_QUERIED"
             if "[G-007] LHB_NORMAL_NO_DATA" in val or "无龙虎榜数据" in val:
@@ -591,10 +593,10 @@ class DataCollector:
                 return "FAILED"
             if "[G-007] LHB_HAS_DATA" in val or "龙虎榜明细" in val:
                 return "HAS_DATA"
-            if "[DATA-012] RATINGS_NORMAL_NO_DATA" in val or "无分析师评级" in val:
-                return "NORMAL_NO_DATA"
-            if "[DATA-012] RATINGS_FAILED" in val:
+            if "获取失败" in val or "不可用" in val or "error" in val.lower():
                 return "FAILED"
+            if val.startswith("N/A") or val == "VPA 数据不足" or val == "VPA 计算失败":
+                return "NORMAL_NO_DATA"
             return "HAS_DATA"
         if isinstance(raw_value, dict):
             return "HAS_DATA" if raw_value else "NOT_QUERIED"
