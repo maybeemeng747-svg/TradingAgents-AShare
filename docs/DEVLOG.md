@@ -8,6 +8,7 @@
 
 - **执行者**：OpenCode
 - **任务**：DATA-012A — 把已有的 get_ratings/provider route 接入 data_collector.py 的 _fetch_all() 和 build_raw_evidence()，补齐 DATA-012 遗留的 data_collector 接线缺口。
+- **Codex 收口**：P2 补修 commit `4d9ae52` 已完成，`RATINGS_NORMAL_NO_DATA: AKShare 评级接口不可用。` 现在优先匹配 ratings 标记并正确返回 `NORMAL_NO_DATA`，不再被通用 `不可用` 关键词误判为 `FAILED`。
 - **修改文件**：
   - `tradingagents/agents/utils/game_theory_tools.py` — [DATA-012A] rating_data_collector_wiring
     - 新增 `get_ratings(symbol)` LangChain tool，调用 `route_to_vendor("get_ratings", symbol)`

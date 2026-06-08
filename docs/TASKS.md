@@ -71,7 +71,7 @@
 45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
 46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
 47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
-48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，blocked — provider/readiness 已部分落地，data_collector 接线由 DATA-012A 收口完成，待 Codex review 决定）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
 49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
 50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
 51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
@@ -98,7 +98,7 @@
 14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
 15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
 16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
-17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，blocked — provider/readiness 已部分落地，data_collector 接线由 DATA-012A 收口完成，待 Codex review 决定）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
 17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done）。
 18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
 19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
@@ -950,7 +950,7 @@
 ### DATA-012: 评级数据接入 provider 路由与 raw_evidence（P2）
 - **描述**：把分析师评级数据从事件流扩展到 provider route 与 raw_evidence，让 TA 报告和 TradeFlow 候选能追溯评级变化。
 - **优先级**：P2
-- **状态**：blocked — provider/readiness 已部分落地，缺 data_collector raw_evidence 接线，需拆小任务收口
+- **状态**：done — commit 3a8351f + 4d9ae52（由 DATA-012A 收口完成）
 - **前置条件**：`DATA-003`、`DATA-004` 完成 ✓。
 - **执行约束**：
   - 不输出“因评级买入/卖出”的强动作。
@@ -970,7 +970,7 @@
 ### DATA-012A: 评级数据 data_collector 接线与回归验收（P1）
 - **描述**：DATA-012 的 provider 方法和 readiness 评分已落地（commit 6b9cb02），但 data_collector.py 未调用 get_ratings，评级数据不会进入 raw_evidence。本任务只补接线和回归验收。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — commit 3a8351f + 4d9ae52
 - **前置条件**：`DATA-012` 部分落地（provider/get_ratings + readiness_score + source_catalog 已就位）✓。
 - **执行约束**：
   - 不重写 provider 方法，只接线。
