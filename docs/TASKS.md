@@ -71,11 +71,12 @@
 45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
 46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
 47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
-48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，ready，依赖 DATA-003/DATA-004 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，blocked — 部分落地，缺 data_collector 接线，依赖 DATA-003/DATA-004 ✓）。
 49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
 50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
 51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
 52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，ready，依赖 DATA-012 部分落地 ✓）。
 
 ### 数据源治理候选队列
 
@@ -97,7 +98,8 @@
 14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
 15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
 16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
-17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，ready）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，blocked — 部分落地，缺 data_collector 接线）。
+17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，ready）。
 18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
 19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
 20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done）。
@@ -925,7 +927,7 @@
 ### DATA-011: 研报端点接入 route_to_vendor 与 raw_evidence（P1）
 - **描述**：把券商研报/研究报告端点从“目录登记”推进到 provider route 和 raw_evidence，服务中线研究和估值 sanity check。
 - **优先级**：P1
-- **状态**：in_progress — claimed DATA-011-20260608-021519
+- **状态**：done — commit 1f86ad1
 - **前置条件**：`DATA-004` 完成 ✓。
 - **执行约束**：
   - 不抓取大批量研报正文；第一版只要标题、机构、日期、评级/目标价摘要、来源链接或 ID。
@@ -948,7 +950,7 @@
 ### DATA-012: 评级数据接入 provider 路由与 raw_evidence（P2）
 - **描述**：把分析师评级数据从事件流扩展到 provider route 与 raw_evidence，让 TA 报告和 TradeFlow 候选能追溯评级变化。
 - **优先级**：P2
-- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/DATA-012-20260608-024928
+- **状态**：blocked — provider/readiness 已部分落地，缺 data_collector raw_evidence 接线，需拆小任务收口
 - **前置条件**：`DATA-003`、`DATA-004` 完成 ✓。
 - **执行约束**：
   - 不输出“因评级买入/卖出”的强动作。
@@ -964,6 +966,26 @@
   - raw_evidence status 区分 `HAS_DATA/NORMAL_NO_DATA/FAILED`。
   - `pytest tests/test_event_source.py tests/test_data004_evidence_contract.py tests/test_data_source_replay.py -q` 或等价测试通过。
 - **代码标注要求**：`# [DATA-012] rating_raw_evidence`
+
+### DATA-012A: 评级数据 data_collector 接线与回归验收（P1）
+- **描述**：DATA-012 的 provider 方法和 readiness 评分已落地（commit 6b9cb02），但 data_collector.py 未调用 get_ratings，评级数据不会进入 raw_evidence。本任务只补接线和回归验收。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：`DATA-012` 部分落地（provider/get_ratings + readiness_score + source_catalog 已就位）✓。
+- **执行约束**：
+  - 不重写 provider 方法，只接线。
+  - 不调用 LLM。
+  - 不跑全市场 live。
+- **实现要点**：
+  1. `data_collector.py` 增加 `get_ratings` 调用，结果写入 `raw_evidence["ratings"]`。
+  2. raw_evidence ratings entry 包含 status（HAS_DATA/NORMAL_NO_DATA/FAILED）、vendor、data 字段。
+  3. 跑 `tests/test_data012_ratings.py` 全过。
+  4. 路径：`pytest tests/test_data012_ratings.py tests/test_data004_evidence_contract.py -q` 回归通过。
+- **验收方式**：
+  - `pytest tests/test_data012_ratings.py -q` 全过。
+  - `pytest tests/test_data004_evidence_contract.py -q` 回归无破坏。
+  - data_collector 收集后 `raw_evidence["ratings"]` 有结构化 status。
+- **代码标注要求**：`# [DATA-012A] rating_collector_wiring`
 
 ### DATA-013: 回购数据接入 provider 路由与 raw_evidence（P2）
 - **描述**：把回购计划/回购进展从事件流扩展到 provider route 与 raw_evidence，作为公司行为和中线信号证据。
@@ -2693,7 +2715,7 @@
 ### T-004: TradeFlow P2 盘中 Observe
 - **描述**：对候选池做盘中低频触发检查，发现突破触发价、跌破失效价、异常放量等事件。
 - **优先级**：P1（本轮提升；用户反馈盘中观察无数据/需手动执行，阻塞 TradeFlow 日常使用）
-- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/T-004-20260608-023348
+- **状态**：done — commit 6b9cb02
 - **前置条件**：`TF-OBS-001`、`T-008` 完成 ✓。
 - **实现要点**：
   - 默认静默，只在触发条件满足时记录 signal。
@@ -2706,7 +2728,7 @@
 ### T-005: TradeFlow P3 盘后 Review
 - **描述**：复盘候选池信号是否有效，记录命中率、误报率、继续观察/移除理由。
 - **优先级**：P1（本轮提升；用户反馈盘后 Review 无数据，阻塞候选池质量闭环）
-- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/T-005-20260608-024421
+- **状态**：done — commit 6b9cb02
 - **前置条件**：`M-007`、`T-008`、`V-005` 完成 ✓。
 - **验证方式**：
   - 每日可输出候选复盘表。

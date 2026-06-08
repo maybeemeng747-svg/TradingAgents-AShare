@@ -4,6 +4,24 @@
 
 ---
 
+## 2026-06-08 | 晨间收口审核：TASKS.md 状态统一 + DATA-012A 拆分
+
+- **执行者**：主控AI
+- **类型**：状态收口（无代码变更）
+- **变更内容**：
+  1. T-004 详情状态：`blocked` → `done — commit 6b9cb02`（178 tests 通过）
+  2. T-005 详情状态：`blocked` → `done — commit 6b9cb02`（178 tests 通过）
+  3. DATA-011 详情状态：`in_progress` → `done — commit 1f86ad1`（后续 DATA-013 已基于此开发）
+  4. DATA-012 详情状态：`blocked — NEEDS_HUMAN` → `blocked — provider/readiness 已部分落地，缺 data_collector raw_evidence 接线，需拆小任务收口`
+  5. 新增 DATA-012A（P1，ready）：评级数据 data_collector 接线与回归验收
+  6. 提交 task_suggestions/2026-06-08.md（草案快照，最终以 TASKS.md 为准）
+- **DATA-012 审计结论**：
+  - 已落地：cn_akshare_provider.get_ratings + cn_astock_provider.get_ratings + DataType.RATING + readiness_score 评分 + 完整测试文件
+  - 缺口：data_collector.py 未调用 get_ratings，评级数据不进入 raw_evidence
+  - 结论：拆为 DATA-012（blocked）+ DATA-012A（ready），避免 OpenCode 重跑整个任务
+
+---
+
 ## 2026-06-08 | DATA-016: 热门股票 cn_astock fallback 与 fixture
 
 - **执行者**：OpenCode
