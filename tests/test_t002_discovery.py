@@ -274,7 +274,7 @@ class TestRunDiscovery:
                 include_watchlist=False,
             )
         assert "共扫描" in result.summary
-        assert "只候选" in result.summary
+        assert "主候选" in result.summary
         assert "被过滤" in result.summary
 
     def test_discovery_no_forbidden_words(self):

@@ -138,6 +138,14 @@ class StrategyConfig:
     observe_market_close_hour: int = 15
     observe_market_close_minute: int = 0
 
+    # ── Candidate Pool Gate [TF-QUALITY-001] ──
+    pool_main_max: int = 5
+    pool_tech_max: int = 3
+    pool_haotian_max: int = 3
+    pool_min_positive_categories_for_main: int = 2
+    pool_min_composite_for_single_strong: float = 60.0
+    pool_min_completeness_for_single_strong: float = 0.6
+
     # ── Deep TA Dispatch Gate [M-006] ──
     deep_ta_daily_limit: int = 3
     deep_ta_default_model: str = ""

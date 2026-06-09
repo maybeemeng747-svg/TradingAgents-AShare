@@ -25,6 +25,7 @@ from .candidate_engine import save_filtered_symbols as _save_filtered_symbols  #
 from .universe import build_universe
 from .false_positive_audit import build_audit_report, render_audit_report, AuditReport  # [S-006] candidate_false_positive_audit
 from .tier_budget import allocate_tier_budget, render_tier_budget_summary  # [S-007] candidate_tier_budget
+from .candidate_pool_gate import run_pool_gate  # [TF-QUALITY-001] candidate_pool_gate
 from .symbol_utils import normalize_tradeflow_symbol, symbol_bare_code  # [UI-008] tradeflow_field_normalization
 
 
@@ -273,16 +274,25 @@ def run_discovery(
             plan_entries[i]["ta_budget_priority"] = tr.ta_budget_priority
             plan_entries[i]["tier_reason"] = tr.tier_reason
 
+    # [TF-QUALITY-001] candidate_pool_gate — split into main/observation/filtered
+    pool_gate_result = run_pool_gate(plan_entries)
+    plan_entries = pool_gate_result.main_candidates
+    observation_entries = pool_gate_result.observation_candidates
+    gate_filtered_entries = pool_gate_result.filtered_candidates
+
     n_total = len(plan_entries)
+    n_observation = len(observation_entries)  # [TF-QUALITY-001]
+    n_gate_filtered = len(gate_filtered_entries)  # [TF-QUALITY-001]
     n_deep_ta = sum(1 for e in plan_entries if e.get("need_deep_ta"))
-    n_filtered = len(filtered)
+    n_filtered = len(filtered) + n_gate_filtered  # [TF-QUALITY-001]
     n_universe = len(universe)
 
     filter_breakdown = _classify_filter_reasons(filtered)
 
     summary_parts = [
         f"共扫描{n_universe}只",
-        f"{n_total}只候选(Top{top_n})",
+        f"{n_total}只主候选",
+        f"{n_observation}只观察",  # [TF-QUALITY-001]
         f"{n_deep_ta}只需要深度TA",
         f"{n_filtered}只被过滤",
     ]
@@ -294,7 +304,7 @@ def run_discovery(
         trade_date=trade_date,
         universe_size=n_universe,
         candidates=plan_entries,
-        filtered=[asdict(f) for f in filtered],
+        filtered=[asdict(f) for f in filtered] + gate_filtered_entries,
         summary="，".join(summary_parts) + "。",
         metadata={
             "top_n": top_n,
@@ -309,6 +319,9 @@ def run_discovery(
                 "failed_sources": event_source_failed,  # [T-007]
                 "source_statuses": event_source_per_source,  # [T-007]
             },
+            "observation_candidates": observation_entries,  # [TF-QUALITY-001]
+            "pool_gate": pool_gate_result.pool_counts,  # [TF-QUALITY-001]
+            "pool_gate_summary": pool_gate_result.gate_summary,  # [TF-QUALITY-001]
         },
     )
 
@@ -372,12 +385,13 @@ def run_discovery(
     result.metadata["tier_budget_summary"] = render_tier_budget_summary(budget_allocation)
 
     # [S-008] tradeflow_evidence_gate — add evidence gate summary to metadata
-    gate_blocked_count = sum(1 for e in plan_entries if e.get("evidence_gate_applied"))
-    gate_deep_ta_blocked = sum(1 for e in plan_entries if e.get("evidence_gate_applied") and not e.get("need_deep_ta"))
+    all_pool_entries = plan_entries + observation_entries  # [TF-QUALITY-001]
+    gate_blocked_count = sum(1 for e in all_pool_entries if e.get("evidence_gate_applied"))
+    gate_deep_ta_blocked = sum(1 for e in all_pool_entries if e.get("evidence_gate_applied") and not e.get("need_deep_ta"))
     result.metadata["evidence_gate"] = {
         "gate_blocked_count": gate_blocked_count,
         "deep_ta_blocked_count": gate_deep_ta_blocked,
-        "avg_completeness": round(sum(e.get("tradeflow_data_completeness", 0) for e in plan_entries) / max(len(plan_entries), 1), 3),
+        "avg_completeness": round(sum(e.get("tradeflow_data_completeness", 0) for e in all_pool_entries) / max(len(all_pool_entries), 1), 3),
     }
 
     return result

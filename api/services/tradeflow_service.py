@@ -424,11 +424,19 @@ def get_candidates(
 
         _recompute_action_tiers(conn, items, trade_date)
 
+        # [TF-QUALITY-001] candidate_pool_gate — split into main/observation/filtered
+        from tradingagents.tradeflow.candidate_pool_gate import run_pool_gate
+        pool_result = run_pool_gate(items)
+
         return {
             "status": "ok",
             "trade_date": trade_date,
-            "candidates": items,
-            "summary_agg": _compute_summary(items),
+            "candidates": pool_result.main_candidates,
+            "observation_candidates": pool_result.observation_candidates,
+            "filtered_candidates": pool_result.filtered_candidates,
+            "pool_counts": pool_result.pool_counts,
+            "pool_gate_summary": pool_result.gate_summary,
+            "summary_agg": _compute_summary(pool_result.main_candidates),
             "runtime_tier_meta": _tradeflow_meta("tradeflow_candidates"),  # [PERF-001]
         }
     finally:
@@ -973,9 +981,13 @@ def get_candidates_tiered(trade_date: str, tf_db_path: str = "") -> dict:
         # Compute action_tier for items that don't have it yet or need update
         _recompute_action_tiers(conn, all_items, trade_date)
 
-        actionable = [it for it in all_items if it.get("action_tier") == "actionable"][:3]
-        watch = [it for it in all_items if it.get("action_tier") == "watch"][:8]
-        scan = [it for it in all_items if it.get("action_tier") == "scan"]
+        # [TF-QUALITY-001] candidate_pool_gate — split into main/observation/filtered
+        from tradingagents.tradeflow.candidate_pool_gate import run_pool_gate
+        pool_result = run_pool_gate(all_items)
+
+        actionable = [it for it in pool_result.main_candidates if it.get("action_tier") == "actionable"][:3]
+        watch = [it for it in pool_result.main_candidates if it.get("action_tier") == "watch"][:8]
+        scan = [it for it in pool_result.main_candidates if it.get("action_tier") == "scan"]
 
         return {
             "status": "ok",
@@ -983,10 +995,13 @@ def get_candidates_tiered(trade_date: str, tf_db_path: str = "") -> dict:
             "actionable": actionable,
             "watch": watch,
             "scan": scan,
-            "actionable_count": len([it for it in all_items if it.get("action_tier") == "actionable"]),
-            "watch_count": len([it for it in all_items if it.get("action_tier") == "watch"]),
+            "observation_candidates": pool_result.observation_candidates,
+            "filtered_candidates": pool_result.filtered_candidates,
+            "pool_counts": pool_result.pool_counts,
+            "actionable_count": len([it for it in pool_result.main_candidates if it.get("action_tier") == "actionable"]),
+            "watch_count": len([it for it in pool_result.main_candidates if it.get("action_tier") == "watch"]),
             "scan_count": len(scan),
-            "summary_agg": _compute_summary(all_items),
+            "summary_agg": _compute_summary(pool_result.main_candidates),
             "runtime_tier_meta": _tradeflow_meta("tradeflow_candidates_tiered"),
         }
     finally:

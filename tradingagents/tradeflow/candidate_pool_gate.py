@@ -1,0 +1,246 @@
+# [TF-QUALITY-001] candidate_pool_gate
+"""Candidate Pool Gate — strict convergence gate for TradeFlow candidate pools.
+
+Responsibilities:
+1. Split candidates into main_candidates and observation_candidates.
+2. Main candidates must meet "at least two dimension resonance" or
+   "single strong signal + data completeness达标".
+3. Per-pool size limits: main (Top 5), tech (Top 3), haotian (Top 3).
+4. Filtered-out candidates get explicit filter_reason.
+
+Design constraints:
+- Does NOT delete or modify existing strategies — only adds convergence gate.
+- No LLM calls.
+- No strong buy/sell words.
+- Deterministic: same inputs always produce same output.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Optional
+
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG
+
+
+@dataclass
+class PoolGateResult:
+    main_candidates: list[dict] = field(default_factory=list)
+    observation_candidates: list[dict] = field(default_factory=list)
+    filtered_candidates: list[dict] = field(default_factory=list)
+    pool_counts: dict = field(default_factory=dict)
+    gate_summary: str = ""
+
+
+_HAOTIAN_TYPES = {"POLICY_AMBUSH", "POLICY_CONFIRM"}
+_TECH_TYPES = {"TECH_TRADE"}
+
+
+def _check_tech_resonance(entry: dict) -> int:
+    """Count how many tech dimensions are valid for TECH_TRADE candidates."""
+    hits = 0
+    tags = set(entry.get("strategies", []))
+    if "VCP" in tags or "PULLBACK_SUPPORT" in tags:
+        hits += 1
+    ff_score = entry.get("fund_flow_anomaly_score", 0) or 0
+    ff_verified = entry.get("fund_flow_unit_verified", False)
+    if ff_score > 0 and ff_verified:
+        hits += 1
+    comp = entry.get("composite_score", 0) or 0
+    if comp >= 30:
+        hits += 1
+    trigger = entry.get("trigger_price")
+    invalid = entry.get("invalid_price")
+    if trigger and invalid:
+        hits += 1
+    return hits
+
+
+def _check_haotian_resonance(entry: dict) -> int:
+    """Count how many haotian dimensions are valid for 昊天 candidates."""
+    hits = 0
+    mandate = entry.get("mandate_score_component", 0) or 0
+    if mandate > 0:
+        hits += 1
+    beneficiary = entry.get("beneficiary_score_component", 0) or 0
+    if beneficiary > 0:
+        hits += 1
+    policy_tags = entry.get("policy_tags", [])
+    if policy_tags:
+        hits += 1
+    counter_ev = entry.get("counter_evidence", [])
+    if not counter_ev or all(not ce.get("severity") == "high" for ce in counter_ev):
+        hits += 1
+    return hits
+
+
+def _qualify_for_main(entry: dict, cfg: StrategyConfig) -> tuple[bool, str]:
+    """Determine if a candidate qualifies for the main pool."""
+    positive_cats = entry.get("positive_category_count", 0) or 0
+    completeness = entry.get("tradeflow_data_completeness", 0) or entry.get("data_completeness", 0) or 0
+    composite = entry.get("composite_score", 0) or 0
+    candidate_type = entry.get("candidate_type", "")
+    tier = entry.get("tier", "C")
+
+    if tier == "C":
+        return False, "C层候选，质量不足"
+
+    if positive_cats >= cfg.pool_min_positive_categories_for_main:
+        return True, ""
+
+    if (
+        composite >= cfg.pool_min_composite_for_single_strong
+        and completeness >= cfg.pool_min_completeness_for_single_strong
+    ):
+        return True, ""
+
+    if not tier and positive_cats == 0 and composite == 0:
+        return True, ""
+
+    if tier in ("A", "B") and positive_cats == 0 and completeness == 0:
+        return True, ""
+
+    if candidate_type in _HAOTIAN_TYPES:
+        resonance = _check_haotian_resonance(entry)
+        if resonance >= 2:
+            return True, ""
+
+    if candidate_type in _TECH_TYPES:
+        resonance = _check_tech_resonance(entry)
+        if resonance >= 2:
+            return True, ""
+
+    reasons = []
+    if positive_cats < cfg.pool_min_positive_categories_for_main:
+        reasons.append(f"信号类别不足({positive_cats}<{cfg.pool_min_positive_categories_for_main})")
+    if composite < cfg.pool_min_composite_for_single_strong:
+        reasons.append(f"综合分偏低({composite:.0f}<{cfg.pool_min_composite_for_single_strong:.0f})")
+    if completeness < cfg.pool_min_completeness_for_single_strong:
+        reasons.append(f"完整度不足({completeness:.0%}<{cfg.pool_min_completeness_for_single_strong:.0%})")
+
+    return False, "；".join(reasons) if reasons else "质量未达主候选门槛"
+
+
+def _assign_filter_reason(entry: dict, qualified: bool, qual_reason: str) -> str:
+    """Generate a filter reason for non-main candidates."""
+    if qualified:
+        return ""
+
+    reasons = []
+    if qual_reason:
+        reasons.append(qual_reason)
+
+    completeness = entry.get("tradeflow_data_completeness", 0) or entry.get("data_completeness", 0) or 0
+    if completeness < 0.3:
+        reasons.append("数据完整度低")
+    elif completeness < 0.5:
+        reasons.append("数据完整度一般")
+
+    composite = entry.get("composite_score", 0) or 0
+    if composite < 20:
+        reasons.append("低分候选")
+
+    risk_flags = entry.get("risk_flags", [])
+    if risk_flags:
+        reasons.append(f"风险标签({len(risk_flags)})")
+
+    return "；".join(reasons) if reasons else "质量未达主候选门槛"
+
+
+def run_pool_gate(
+    entries: list[dict],
+    cfg: Optional[StrategyConfig] = None,
+) -> PoolGateResult:
+    """Run the candidate pool convergence gate.
+
+    Splits entries into main_candidates (capped), observation_candidates,
+    and filtered_candidates with explicit reasons.
+
+    Args:
+        entries: Sorted candidate entries (best first).
+        cfg: Strategy config (defaults to DEFAULT_STRATEGY_CONFIG).
+
+    Returns:
+        PoolGateResult with main/observation/filtered split.
+    """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
+    main: list[dict] = []
+    observation: list[dict] = []
+    filtered: list[dict] = []
+
+    haotian_count = 0
+    tech_count = 0
+
+    for entry in entries:
+        candidate_type = entry.get("candidate_type", "")
+        qualified, qual_reason = _qualify_for_main(entry, cfg)
+
+        if not qualified:
+            filter_reason = _assign_filter_reason(entry, qualified, qual_reason)
+            entry_copy = dict(entry)
+            entry_copy["pool_filter_reason"] = filter_reason
+            entry_copy["pool_status"] = "filtered"
+            filtered.append(entry_copy)
+            continue
+
+        is_haotian = candidate_type in _HAOTIAN_TYPES
+        is_tech = candidate_type in _TECH_TYPES
+
+        if is_haotian and haotian_count >= cfg.pool_haotian_max:
+            entry_copy = dict(entry)
+            entry_copy["pool_filter_reason"] = f"昊天池已满({haotian_count}/{cfg.pool_haotian_max})"
+            entry_copy["pool_status"] = "observation"
+            observation.append(entry_copy)
+            continue
+
+        if is_tech and tech_count >= cfg.pool_tech_max:
+            entry_copy = dict(entry)
+            entry_copy["pool_filter_reason"] = f"技术池已满({tech_count}/{cfg.pool_tech_max})"
+            entry_copy["pool_status"] = "observation"
+            observation.append(entry_copy)
+            continue
+
+        if len(main) >= cfg.pool_main_max:
+            entry_copy = dict(entry)
+            entry_copy["pool_filter_reason"] = f"主候选池已满({len(main)}/{cfg.pool_main_max})"
+            entry_copy["pool_status"] = "observation"
+            observation.append(entry_copy)
+            continue
+
+        entry_copy = dict(entry)
+        entry_copy["pool_status"] = "main"
+        entry_copy["pool_filter_reason"] = ""
+        main.append(entry_copy)
+
+        if is_haotian:
+            haotian_count += 1
+        elif is_tech:
+            tech_count += 1
+
+    pool_counts = {
+        "main": len(main),
+        "observation": len(observation),
+        "filtered": len(filtered),
+        "haotian_in_main": haotian_count,
+        "tech_in_main": tech_count,
+        "main_max": cfg.pool_main_max,
+        "haotian_max": cfg.pool_haotian_max,
+        "tech_max": cfg.pool_tech_max,
+    }
+
+    summary_parts = [
+        f"主候选{len(main)}只",
+        f"观察{len(observation)}只",
+        f"过滤{len(filtered)}只",
+    ]
+    gate_summary = "，".join(summary_parts) + "。"
+
+    return PoolGateResult(
+        main_candidates=main,
+        observation_candidates=observation,
+        filtered_candidates=filtered,
+        pool_counts=pool_counts,
+        gate_summary=gate_summary,
+    )
