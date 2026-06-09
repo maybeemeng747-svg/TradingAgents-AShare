@@ -4,6 +4,50 @@
 
 ---
 
+## 2026-06-09 | Codex 审核 TF-QUALITY-001 与任务框架重排
+
+- **执行者**：Codex
+- **类型**：审核 + 任务池治理
+- **背景**：TF-QUALITY-001 已提交 commit `5f304db`，但自动开发默认全量 pytest 失败并进入 `NEEDS_HUMAN`。需要区分“老的数据覆盖率失败”和“候选池门禁引入的 TradeFlow 真回归”，并防止自动开发继续领取下游 UI/Observe/Review 任务。
+- **审核结论**：
+  - `tests/test_tf_quality001_pool_gate.py` + `tests/test_t002_discovery.py` 目标测试通过，说明收敛门禁核心逻辑初步可用。
+  - `tests/test_t004_intraday_observe.py` 出现“无活跃候选”，说明 Observe 读取候选范围与新三池契约不一致，属于真实 TradeFlow 回归。
+  - `tests/test_tf_p0_003_e2e_smoke.py` 中 `pool=all`、`UNCLASSIFIED_DATA_GAP`、summary 统计失败，说明候选 API 默认主池收敛后没有维护旧筛选/全量视图契约。
+  - Codex review 明确给出 2 个 P1 必修项：保留 `pool=all` 语义；落库 gated pools 而不是 pre-gate `top_candidates`。
+  - DATA-007/E-004/V-001 覆盖率失败与 ratings/buybacks/report 等证据分母变化相关，拆为单独 DATA-COVERAGE-001，不混入 TF-QUALITY-001A。
+  - task_run 中 CodeGraph 预检命令参数失败，拆为 CODEGRAPH-002。
+- **任务池调整**：
+  - `TF-QUALITY-001`：顶部与详情统一为 `blocked — NEEDS_HUMAN`。
+  - 新增 `TF-QUALITY-001A`（P0 ready）：修复候选三池 API/落库/Observe 回归。
+  - `TF-QUALITY-002`、`TF-OBS-002`、`TF-REVIEW-002`、`TF-UI-011`：暂时 blocked，等待 TF-QUALITY-001A。
+  - 新增 `DATA-COVERAGE-001`（P1 ready）与 `CODEGRAPH-002`（P2 ready）。
+  - 新增“系统任务框架”分层：L0 数据源与证据契约、L1 Discovery、L2 候选收敛、L3 Observe、L4 Review、L5 TA 分流、L6 动作语义、L7 自动开发治理。
+- **Review 归档**：`docs/reviews/TF-QUALITY-001-audit-20260609.txt`
+- **安全红线**：未改 prompts，未调用 LLM，未写生产数据库。
+
+---
+
+## 2026-06-09 | TF-QUALITY-001: TradeFlow 候选池严格收敛门禁
+
+- **执行者**：OpenCode（Round 1）+ 手动补收
+- **类型**：新功能（P0）
+- **背景**：候选池输出过多弱信号，需要收敛门禁，默认只输出少量高质量候选，弱信号进入过滤/观察池并保留明确原因。
+- **修改文件**：
+  - `tradingagents/tradeflow/candidate_pool_gate.py`（新增）：核心收敛门禁逻辑，含 `run_pool_gate()`、`_qualify_for_main()`、`_check_tech_resonance()`、`_check_haotian_resonance()` 等。
+  - `tradingagents/tradeflow/strategy_config.py`：新增 `pool_main_max=5`、`pool_tech_max=3`、`pool_haotian_max=3` 等门禁配置字段。
+  - `tradingagents/tradeflow/discovery.py`：集成 `run_pool_gate` 到 `run_discovery()` 流程，输出分为主候选/观察/过滤三池，metadata 新增 `observation_candidates`、`pool_gate`、`pool_gate_summary`。
+  - `api/services/tradeflow_service.py`：`get_candidates()` 和 `get_candidates_tiered()` 接入门禁，返回 `observation_candidates`、`filtered_candidates`、`pool_counts`、`pool_gate_summary`。
+  - `tests/test_tf_quality001_pool_gate.py`（新增）：44 个测试覆盖技术共振、昊天共振、主候选资格、池容量上限、fixture 20 只股票验收、弱 VCP/弱事件过滤、过滤原因、向后兼容等。
+  - `tests/test_t002_discovery.py`：适配 summary 文本断言 `"主候选"` 替代 `"只候选"`。
+  - `docs/TASKS.md`：TF-QUALITY-001 状态更新为 `in_progress`。
+- **验收结果**：
+  - 44/44 pool gate 测试通过
+  - 39/39 discovery 测试通过
+  - 前端 build 正常
+- **安全红线**：未改 prompts，未调 live LLM，未写生产 DB。
+
+---
+
 ## 2026-06-09 | 释放 TradeFlow 可试用收敛线任务
 
 - **执行者**：Codex
@@ -4005,3 +4049,12 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-016-20260608-round1.txt
 - **Run archive**: docs/task_runs/DATA-016-20260608-060126/
+
+## 2026-06-09 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-QUALITY-001 - TradeFlow 候选池严格收敛门禁（P0）
+- **Priority**: P0
+- **Rounds**: 2 (max)
+- **Status**: FAIL NEEDS_HUMAN
+- **Reason**: Default pytest failed with exit 1
+- **Run archive**: docs/task_runs/TF-QUALITY-001-20260609-202554/

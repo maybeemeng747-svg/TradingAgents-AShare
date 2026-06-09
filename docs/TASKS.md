@@ -81,13 +81,16 @@
 55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
 56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
 57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
-58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，ready）。
-59. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，ready）。
-60. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，ready）。
-61. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，ready）。
-62. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，ready，依赖 PERF-002）。
-63. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
-64. `V-006`：最终动作语义端到端回放验收（P1，ready，依赖 DECISION-004）。
+58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，blocked — NEEDS_HUMAN，commit 5f304db，见 task_runs）。
+59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，ready，依赖 TF-QUALITY-001 审核）。
+60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，blocked — 等 TF-QUALITY-001A）。
+61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，blocked — 等 TF-QUALITY-001A）。
+62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，blocked — 等 TF-QUALITY-001A）。
+63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，blocked — 等 TF-QUALITY-001A/PERF-002）。
+64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
+65. `V-006`：最终动作语义端到端回放验收（P1，ready，依赖 DECISION-004）。
+66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，ready，来自 TF-QUALITY-001 全量回归）。
+67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，ready，来自 TF-QUALITY-001 task_run）。
 
 ### 数据源治理候选队列
 
@@ -2621,6 +2624,21 @@
   - 推送通知内容与报告一致。
 - **代码标注要求**：`# [DECISION-004] notification_action_label`
 
+## 2026-06-09 系统任务框架：从选股雷达到执行闭环
+
+> 目标：后续任务不再按零散想法排队，而是按“数据真实性 → 候选发现 → 候选收敛 → 盘中观察 → 盘后复盘 → TA 分流 → 动作语义 → 自动验收”逐层推进。每层必须能独立验收，且上游坏了不继续堆下游功能。
+
+| 层级 | 模块 | 当前目标 | 代表任务 |
+|------|------|----------|----------|
+| L0 | 数据源与证据契约 | 行情、资金、龙虎榜、公告、评级、研报必须能标注 HAS_DATA/NORMAL_NO_DATA/FAILED/STALE/UNIT_UNVERIFIED | DATA-017、DATA-COVERAGE-001 |
+| L1 | 候选发现 Discovery | 同时支持短线技术池与昊天左侧池，候选入池必须有策略标签和证据字段 | TF-P0、H 系列、T-002 |
+| L2 | 候选收敛与排序 | 默认只给少量主候选，观察/过滤候选保留原因，分数要能拉开差距 | TF-QUALITY-001A、TF-QUALITY-002 |
+| L3 | 盘中 Observe | 自动读取最近有效计划，低频观察触发/等待/失效，不调 LLM | TF-OBS-002、T-004 |
+| L4 | 盘后 Review | 支持非交易日计划映射到下一交易日，复盘命中/误报/无数据 | TF-REVIEW-002、T-005 |
+| L5 | 轻量 TA / 完整 TA 分流 | 候选详情能看公司/K线/证据，并生成轻量 TA 预案；完整 TA 需用户确认 | TF-UI-011、PERF-002 |
+| L6 | 最终动作语义 | 不再一片 HOLD，区分 research_direction / execution_action / action_label | DECISION-001~004、V-006 |
+| L7 | 自动开发治理 | 任务领取、日志、CodeGraph 预检、Codex review、失败即停、日报可回查 | AUTO/M 系列、CODEGRAPH-002 |
+
 ## 2026-06-09 释放任务：TradeFlow 可试用收敛线
 
 > 背景：用户试用反馈候选池过多、打分区分不明显、盘中观察需手动点击且红绿视觉反直觉、盘后 Review 无数据、候选详情缺少一键轻量 TA/K 线/公司概览。目标是让 TradeFlow 从“能生成一堆票”升级为“能给 5000 元小仓位试错时真正可用的少量目标”。
@@ -2628,7 +2646,7 @@
 ### TF-QUALITY-001: TradeFlow 候选池严格收敛门禁（P0）
 - **描述**：收窄候选池，默认只输出少量高质量候选，弱信号进入过滤/观察原因，不进入主候选池。
 - **优先级**：P0
-- **状态**：in_progress — claimed TF-QUALITY-001-20260609-202554
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/TF-QUALITY-001-20260609-202554
 - **前置条件**：TF-P0-002、T-008、H-010 完成 ✓。
 - **执行约束**：
   - 不改 prompts。
@@ -2649,11 +2667,43 @@
   - TradeFlow 前端候选池展示数量与后端主候选一致。
 - **代码标注要求**：`# [TF-QUALITY-001] candidate_pool_gate` / `// [TF-QUALITY-001] candidate_pool_gate`
 
+### TF-QUALITY-001A: 收敛门禁回归修复与状态一致性（P0）
+- **描述**：审核 TF-QUALITY-001（commit 5f304db）后发现全量回归中存在真实 TradeFlow 断裂：候选主池收敛后，旧候选接口、盘中 Observe、E2E smoke 对 data_gap/observation/filtered 的契约不一致。先修这个补丁，再继续评分和前端任务。
+- **优先级**：P0
+- **状态**：ready
+- **前置条件**：TF-QUALITY-001 已提交但 blocked；必须读取 `docs/task_runs/TF-QUALITY-001-20260609-202554/summary.md` 与 `tests-round2.txt`。
+- **执行约束**：
+  - 不改 prompts。
+  - 不调用 live LLM。
+  - 不写生产数据库；测试使用 fixture/临时库。
+  - 不简单改测试绕过，必须恢复 TradeFlow API/Observe 的业务契约。
+- **问题清单**：
+  1. `get_candidates()` / `get_candidates_tiered()` 只返回主候选后，`pool=all`、`UNCLASSIFIED_DATA_GAP`、data gap 视图回归失败。
+  2. T-004 盘中 Observe fixture 变成“无活跃候选”，说明 Observe 读取候选的范围与新三池契约不一致。
+  3. gate-filtered 候选只进 discovery metadata，未稳定落库/追踪过滤原因。
+  4. discovery 保存候选时仍可能保存原始 `top_candidates`，而非带 `pool_status` 的主候选/观察候选，导致 DB/API 二次门禁结果不一致。
+  5. task_run 中 CodeGraph 预检因命令参数失败，不应影响本任务，但需要记录给 CODEGRAPH-002。
+- **Codex Review P1 必修项**：
+  1. `api/services/tradeflow_service.py`：必须保留 `pool=all` 语义，不得把 legacy `candidates` 永远替换成 `main_candidates`。
+  2. `tradingagents/tradeflow/discovery.py`：必须落库 gated pools，而不是落库 pre-gate `top_candidates` 后再让 DB/API 二次门禁。
+- **实现要点**：
+  1. 明确 API 契约：默认候选表展示 `main_candidates`；`pool=all` 必须能返回主候选 + 观察候选 + data gap/过滤候选，且保留 `pool_status`。
+  2. Observe 读取“可观察候选”时应包含主候选和 observation_candidates；被过滤候选不得触发 Observe。
+  3. `save_candidates` 路径要写入或可重建 `pool_status`、`pool_filter_reason`、`pool_gate_summary`，避免 DB/API 前后不一致。
+  4. discovery audit/summary 中要同时统计主候选、观察候选、过滤候选，不再只看原始 top_candidates。
+  5. gate-filtered 候选要有可回查的过滤原因，至少在 API metadata 和 task_run 中一致。
+- **验收方式**：
+  - `.venv/bin/python -m pytest tests/test_tf_quality001_pool_gate.py tests/test_t002_discovery.py -q`
+  - `.venv/bin/python -m pytest tests/test_t004_intraday_observe.py tests/test_tf_p0_003_e2e_smoke.py -q`
+  - 不要求本任务修复 DATA 覆盖率老失败，但必须在 summary 中列出剩余 data coverage failures。
+  - Codex review 无 P0/P1 findings。
+- **代码标注要求**：`# [TF-QUALITY-001A] pool_gate_contract`
+
 ### TF-QUALITY-002: TradeFlow 评分拉开差距与排序解释（P0）
 - **描述**：修复候选分数区分不明显的问题，让同一批股票能看出 A/B/C 层差距、为什么排前、为什么不够强。
 - **优先级**：P0
-- **状态**：ready
-- **前置条件**：TF-P0-002、T-008 完成 ✓；与 TF-QUALITY-001 无硬依赖，但队列顺序上排在其后。
+- **状态**：blocked — 等 TF-QUALITY-001A 修复候选池契约后再做
+- **前置条件**：TF-P0-002、T-008 完成 ✓；TF-QUALITY-001A 完成。
 - **执行约束**：
   - 不改 prompts。
   - 不调用 live LLM。
@@ -2681,8 +2731,8 @@
 ### TF-OBS-002: 盘中观察自动执行与 A 股红绿视觉修正（P0）
 - **描述**：盘中观察不应必须用户点“执行”才看到结果；同时距离触发价的颜色要符合 A 股直觉：上涨/接近突破用红，跌破/远离/风险用绿或灰。
 - **优先级**：P0
-- **状态**：ready
-- **前置条件**：T-004、T-008 完成 ✓。
+- **状态**：blocked — 等 TF-QUALITY-001A 恢复 Observe 候选读取契约
+- **前置条件**：T-004、T-008 完成 ✓；TF-QUALITY-001A 完成。
 - **执行约束**：
   - 不做高频盯盘；默认低频/手动刷新即可。
   - 不调用 LLM。
@@ -2705,8 +2755,8 @@
 ### TF-REVIEW-002: 盘后 Review 数据补齐与非交易日计划映射（P0）
 - **描述**：修复盘后 Review 无数据。非交易日生成的候选池应映射到下一交易日复盘；缺行情时要显示原因而不是空表。
 - **优先级**：P0
-- **状态**：ready
-- **前置条件**：T-005、M-007、TF-DATE-001 完成 ✓。
+- **状态**：blocked — 等 TF-QUALITY-001A 稳定候选三池与落库契约
+- **前置条件**：T-005、M-007、TF-DATE-001 完成 ✓；TF-QUALITY-001A 完成。
 - **执行约束**：
   - 不写生产库测试数据。
   - 不调用 LLM。
@@ -2728,8 +2778,8 @@
 ### TF-UI-011: 候选详情一键轻量 TA、K 线与公司概览（P1）
 - **描述**：候选池中的票必须能继续研究：详情里显示公司概览、K 线入口、入池证据，并提供一键轻量 TA 预案。
 - **优先级**：P1
-- **状态**：ready
-- **前置条件**：PERF-002 完成 ✓。
+- **状态**：blocked — 等 TF-QUALITY-001A 后，基于稳定候选详情字段开发
+- **前置条件**：PERF-002 完成 ✓；TF-QUALITY-001A 完成。
 - **执行约束**：
   - 默认只生成轻量 TA 预案，不直接启动 full TA。
   - 不调用 live LLM，除非用户手动确认完整 TA。
@@ -2803,6 +2853,48 @@
   - 保存报告后不会丢失 position-aware 语义。
   - Bark/企业微信/报告列表均优先显示 `action_label`。
 - **代码标注要求**：`# [V-006] decision_semantics_e2e`
+
+### DATA-COVERAGE-001: raw_evidence 覆盖率分母/质量等级回归修复（P1）
+- **描述**：TF-QUALITY-001 全量回归暴露 DATA-007/E-004/V-001 相关覆盖率断言下降：新增 ratings/buybacks/report 等证据字段后，分母变化与 NORMAL_NO_DATA/NOT_AVAILABLE 处理导致“完整证据”样本被误降级为 LOW。需要单独修复数据覆盖率契约，不和 TradeFlow 门禁混在一起。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：DATA-012A 完成 ✓；数据源目录回归修复 commit `e4a4062` 已完成。
+- **执行约束**：
+  - 不改 prompts。
+  - 不调用 LLM。
+  - 不写生产数据库。
+  - 不用改测试期望掩盖真实分母变化；必须解释每个新增 evidence key 是否进入分母、是否 critical。
+- **问题样本**：
+  - `tests/test_data007_evidence_coverage_audit.py::TestAuditRawEvidence::test_full_evidence`
+  - `tests/test_e_series_fixes.py::TestE004NotAvailable::*`
+  - `tests/test_v001_600584_data_authenticity.py::TestEndToEndScenarios::test_scenario_happy_path`
+- **实现要点**：
+  1. 梳理 raw_evidence key 清单：OHLC、volume、fund_flow、lhb、margin、announcements、ratings、buybacks、research_report 等。
+  2. 明确 `NORMAL_NO_DATA`、`NOT_AVAILABLE`、`NOT_QUERIED` 对分母和 critical_missing 的影响。
+  3. 对新增字段设置合理 criticality，避免评级/回购/研报缺失把完整行情样本误降为 LOW。
+  4. 更新 evidence coverage audit 输出，显示分母变化原因。
+- **验收方式**：
+  - `.venv/bin/python -m pytest tests/test_data007_evidence_coverage_audit.py tests/test_e_series_fixes.py tests/test_v001_600584_data_authenticity.py -q`
+  - 旧完整样本不得误降级为 LOW。
+  - 失败/单位未校验仍应触发降级，不得一刀切放宽。
+- **代码标注要求**：`# [DATA-COVERAGE-001] evidence_denominator_contract`
+
+### CODEGRAPH-002: CodeGraph 自动开发预检命令修复（P2）
+- **描述**：TF-QUALITY-001 task_run 中 CodeGraph 预检失败，原因是自动开发脚本使用了当前 codegraph CLI 不支持的参数（如 `-p`）。需要修复命令封装，避免影响后续任务的影响范围日志。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：M-013 完成 ✓。
+- **执行约束**：
+  - 不改业务代码。
+  - 不要求 CodeGraph 决定任务成败；预检失败只能降级为 warning。
+- **实现要点**：
+  1. 检查本机 `codegraph --help` / `codegraph context --help` 的真实参数。
+  2. 修复自动开发中调用 CodeGraph 的命令。
+  3. task_run 中记录 `codegraph-status.json`：`ok/skipped/warn`，并包含实际命令和 stderr 摘要。
+- **验收方式**：
+  - dry-run 自动开发能生成有效 codegraph status。
+  - 无 codegraph 或命令失败时不阻塞 OpenCode 开发，只进入 warning。
+- **代码标注要求**：`# [CODEGRAPH-002] codegraph_preflight`
 
 ## B. 待办
 
