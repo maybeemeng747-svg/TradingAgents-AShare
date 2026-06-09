@@ -148,6 +148,12 @@ def _ensure_report_schema() -> None:
                 conn.execute(text("ALTER TABLE reports ADD COLUMN game_theory_report TEXT"))
             if "volume_price_report" not in columns:
                 conn.execute(text("ALTER TABLE reports ADD COLUMN volume_price_report TEXT"))
+            if "research_direction" not in columns:
+                conn.execute(text("ALTER TABLE reports ADD COLUMN research_direction VARCHAR(50)"))
+            if "execution_action" not in columns:
+                conn.execute(text("ALTER TABLE reports ADD COLUMN execution_action VARCHAR(20)"))
+            if "action_label" not in columns:
+                conn.execute(text("ALTER TABLE reports ADD COLUMN action_label VARCHAR(50)"))
     except Exception as e:
         logger.error("Failed to ensure report schema: %s", e)
 
@@ -372,6 +378,9 @@ class ReportDB(Base):
     # Decision info
     decision = Column(String(50), nullable=True)  # BUY, SELL, HOLD, etc.
     direction = Column(String(50), nullable=True)  # 看多、偏多、中性、偏空、看空
+    research_direction = Column(String(50), nullable=True)  # 看多、偏多、中性、偏空、看空
+    execution_action = Column(String(20), nullable=True)  # WAIT, ENTER, HOLD, REDUCE, EXIT
+    action_label = Column(String(50), nullable=True)  # 等待触发、条件入场、持有、回避等
     confidence = Column(Integer, nullable=True)  # 0-100
     target_price = Column(Float, nullable=True)
     stop_loss_price = Column(Float, nullable=True)
@@ -410,6 +419,9 @@ class ReportDB(Base):
             "trade_date": self.trade_date,
             "decision": self.decision,
             "direction": self.direction,
+            "research_direction": self.research_direction,
+            "execution_action": self.execution_action,
+            "action_label": self.action_label,
             "confidence": self.confidence,
             "target_price": self.target_price,
             "stop_loss_price": self.stop_loss_price,

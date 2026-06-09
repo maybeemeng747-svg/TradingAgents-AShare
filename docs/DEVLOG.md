@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-06-08 | DECISION-004: 通知与列表优先展示动作标签
+
+- **执行者**：Codex
+- **类型**：后端通知 + 前端展示
+- **背景**：DECISION-001/003 已把报告主体改为 3 层语义，但 Bark、企业微信、邮件、控制台/报告列表、聊天完成提示仍可能只展示旧 `decision=HOLD`，导致用户继续看到一片"持有"。
+- **修改文件**：
+  - `api/database.py`：reports 增加轻量语义列 `research_direction`、`execution_action`、`action_label`，避免列表接口加载完整 `result_data`。
+  - `api/main.py`：报告列表响应模型透出 3 个轻量语义字段，详情接口仍保留完整 `result_data`。
+  - `api/services/bark_notification_service.py`：推送标题/正文优先使用 `action_label` 与 `research_direction`，并补充 `execution_action` 动作码；旧报告 fallback 到 `decision`。
+  - `api/services/wecom_notification_service.py`：企业微信消息从"决策"切换为"动作"，优先 `action_label`，并展示动作码。
+  - `api/services/email_report_service.py`：邮件 HTML/纯文本的决策卡改为动作卡，优先 `action_label`。
+  - `api/services/report_service.py`：创建/更新报告时写入 3 个轻量语义列，报告摘要查询只加载轻量列。
+  - `api/services/tracking_board_service.py`：跟踪看板摘要透传轻量语义列，不再读取完整 `result_data`。
+  - `frontend/src/pages/Dashboard.tsx`、`frontend/src/pages/Reports.tsx`、`frontend/src/pages/Portfolio.tsx`、`frontend/src/components/TrackingBoardPanel.tsx`、`frontend/src/components/ChatCopilotPanel.tsx`：报告列表、控制台、聊天完成提示、自选跟踪优先展示动作标签。
+  - `tests/test_bark_notification_service.py`、`tests/test_wecom_notification_service.py`：新增 action_label 优先级测试。
+- **验证结果**：
+  - `.venv/bin/python -m pytest tests/test_bark_notification_service.py tests/test_wecom_notification_service.py tests/test_decision_semantics.py tests/test_decision_replay.py tests/test_api_smoke.py::TestReportsEndpoint::test_latest_by_symbols_returns_only_each_symbol_latest_report -q`：48 passed
+  - `cd frontend && npm run build`：通过
+- **安全红线**：未改 prompts，未调 LLM，未写生产 DB。
+
+---
+
 ## 2026-06-08 | DECISION-003: 前端展示 3 层语义
 
 - **执行者**：OpenCode

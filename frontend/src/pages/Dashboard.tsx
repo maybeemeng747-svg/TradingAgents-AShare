@@ -7,6 +7,19 @@ import { useAnalysisStore } from '@/stores/analysisStore'
 import { useAuthStore } from '@/stores/authStore'
 import type { Report, TrackingBoardResponse } from '@/types'
 
+const getReportActionLabel = (report: Report): string => {
+    return report.action_label || report.decision || '-'
+}
+
+const getReportActionColor = (report: Report): string => {
+    const action = report.execution_action
+    const label = getReportActionLabel(report)
+    if (action === 'ENTER' || label.includes('入场') || label.includes('买')) return 'text-red-600 dark:text-red-400'
+    if (action === 'REDUCE' || action === 'EXIT' || label.includes('减仓') || label.includes('清仓')) return 'text-orange-600 dark:text-orange-400'
+    if (label.includes('回避')) return 'text-green-600 dark:text-green-400'
+    return 'text-slate-500 dark:text-slate-400'
+}
+
 export default function Dashboard() {
     const { agents, isAnalyzing } = useAnalysisStore()
     const { user } = useAuthStore()
@@ -152,11 +165,7 @@ export default function Dashboard() {
                 ) : (
                     <div className="divide-y divide-slate-100 dark:divide-slate-700">
                         {recentReports.map(report => {
-                            const decisionColor = report.decision?.toUpperCase().includes('BUY') || report.decision?.includes('增持')
-                                ? 'text-red-600 dark:text-red-400'
-                                : report.decision?.toUpperCase().includes('SELL') || report.decision?.includes('减持')
-                                    ? 'text-green-600 dark:text-green-400'
-                                    : 'text-slate-500 dark:text-slate-400'
+                            const decisionColor = getReportActionColor(report)
                             return (
                                 <div
                                     key={report.id}
@@ -174,7 +183,7 @@ export default function Dashboard() {
                                     </div>
                                     <div className="flex items-center gap-4">
                                         <span className={`text-sm font-medium ${decisionColor}`}>
-                                            {report.decision || '-'}
+                                            {getReportActionLabel(report)}
                                         </span>
                                         {report.confidence != null && (
                                             <span className="text-xs text-slate-400">{report.confidence}%</span>

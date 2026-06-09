@@ -37,10 +37,28 @@ class TestBuildReportMessage:
         assert "TradingAgents 定时分析完成" in message
         assert "标的：600519.SH" in message
         assert "交易日：2025-06-01" in message
-        assert "决策：BUY" in message
+        assert "动作：BUY" in message
         assert "方向：看多" in message
         assert "置信度：85%" in message
         assert "摘要：" in message
+
+    def test_prefers_action_label(self):
+        from api.services.wecom_notification_service import build_report_message
+
+        message = build_report_message(_make_report(
+            decision="HOLD",
+            direction="中性",
+            result_data={
+                "action_label": "条件入场",
+                "research_direction": "看多",
+                "execution_action": "ENTER",
+            },
+        ))
+
+        assert "动作：条件入场" in message
+        assert "方向：看多" in message
+        assert "动作码：ENTER" in message
+        assert "决策：HOLD" not in message
 
     def test_falls_back_to_investment_plan_summary(self):
         from api.services.wecom_notification_service import build_report_message

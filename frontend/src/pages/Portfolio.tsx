@@ -143,7 +143,7 @@ function SortableWatchlistItem({
                 <p className="text-xs text-slate-400">{item.symbol}</p>
                 {report && (
                     <p className="text-xs text-slate-400 mt-0.5">
-                        最近：{report.trade_date} · {report.direction || report.decision || '—'}
+                        最近：{report.trade_date} · {report.action_label || report.research_direction || report.direction || report.decision || '—'}
                     </p>
                 )}
                 <div className="mt-1">

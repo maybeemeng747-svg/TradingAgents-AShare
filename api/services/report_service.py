@@ -26,6 +26,9 @@ REPORT_SUMMARY_COLUMNS = (
     ReportDB.error,
     ReportDB.decision,
     ReportDB.direction,
+    ReportDB.research_direction,
+    ReportDB.execution_action,
+    ReportDB.action_label,
     ReportDB.confidence,
     ReportDB.target_price,
     ReportDB.stop_loss_price,
@@ -340,10 +343,11 @@ def resolve_report_fields(
         else _extract_price_from_sections(price_sections, "stop_loss")
     )
 
-    research_direction = None
-    execution_action = None
-    action_label = None
-    if final_trade_decision:
+    research_direction = str(result_data.get("research_direction") or "") if result_data else ""
+    execution_action = str(result_data.get("execution_action") or "") if result_data else ""
+    action_label = str(result_data.get("action_label") or "") if result_data else ""
+    has_resolved_semantics = bool(research_direction and execution_action and action_label)
+    if final_trade_decision and not has_resolved_semantics:
         try:
             from tradingagents.graph.signal_processing import _extract_decision_semantics
             semantics = _extract_decision_semantics(
@@ -357,6 +361,9 @@ def resolve_report_fields(
             action_label = semantics.action_label
         except Exception:
             pass
+    research_direction = research_direction or None
+    execution_action = execution_action or None
+    action_label = action_label or None
 
     return {
         "market_report": market_report,
@@ -530,6 +537,9 @@ def create_report(
         db_report.status = "completed"
         db_report.decision = decision
         db_report.direction = resolved["direction"]
+        db_report.research_direction = resolved["research_direction"]
+        db_report.execution_action = resolved["execution_action"]
+        db_report.action_label = resolved["action_label"]
         db_report.confidence = resolved["confidence"]
         db_report.target_price = resolved["target_price"]
         db_report.stop_loss_price = resolved["stop_loss_price"]
@@ -559,6 +569,9 @@ def create_report(
             status="completed",
             decision=decision,
             direction=resolved["direction"],
+            research_direction=resolved["research_direction"],
+            execution_action=resolved["execution_action"],
+            action_label=resolved["action_label"],
             confidence=resolved["confidence"],
             target_price=resolved["target_price"],
             stop_loss_price=resolved["stop_loss_price"],

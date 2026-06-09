@@ -5,7 +5,7 @@ import logging
 import re
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from api.database import ImportedPortfolioPositionDB, ReportDB
 from tradingagents.dataflows.interface import route_to_vendor
@@ -105,6 +105,21 @@ def _select_reports_for_symbols(
 
     rows = (
         db.query(ReportDB)
+        .options(load_only(
+            ReportDB.id,
+            ReportDB.symbol,
+            ReportDB.trade_date,
+            ReportDB.decision,
+            ReportDB.direction,
+            ReportDB.research_direction,
+            ReportDB.execution_action,
+            ReportDB.action_label,
+            ReportDB.target_price,
+            ReportDB.stop_loss_price,
+            ReportDB.trader_investment_plan,
+            ReportDB.final_trade_decision,
+            ReportDB.created_at,
+        ))
         .filter(
             ReportDB.user_id == user_id,
             ReportDB.symbol.in_(symbols),
@@ -138,6 +153,9 @@ def _serialize_report_summary(report: ReportDB | None, previous_trade_date: str)
         "is_previous_trade_day": report.trade_date == previous_trade_date,
         "decision": report.decision,
         "direction": report.direction,
+        "research_direction": report.research_direction,
+        "execution_action": report.execution_action,
+        "action_label": report.action_label,
         "high_price": _to_float(report.target_price),
         "low_price": _to_float(report.stop_loss_price),
         "trader_advice_summary": _summarize_trader_advice(

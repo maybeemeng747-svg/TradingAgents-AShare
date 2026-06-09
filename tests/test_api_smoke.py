@@ -678,18 +678,23 @@ class TestReportsEndpoint:
         self.token = _auth_unique(self.client)
         self.headers = {"Authorization": f"Bearer {self.token}"}
 
-    def _create_report(self, symbol: str, trade_date: str, decision: str):
+    def _create_report(self, symbol: str, trade_date: str, decision: str, result_data: dict | None = None):
         response = self.client.post("/v1/reports", headers=self.headers, json={
             "symbol": symbol,
             "trade_date": trade_date,
             "decision": decision,
+            **({"result_data": result_data} if result_data is not None else {}),
         })
         assert response.status_code == 200
         return response.json()
 
     def test_latest_by_symbols_returns_only_each_symbol_latest_report(self):
         self._create_report("600519.SH", "2026-03-28", "HOLD")
-        self._create_report("600519.SH", "2026-03-30", "BUY")
+        self._create_report("600519.SH", "2026-03-30", "BUY", {
+            "action_label": "条件入场",
+            "research_direction": "看多",
+            "execution_action": "ENTER",
+        })
         self._create_report("300750.SZ", "2026-03-29", "SELL")
 
         response = self.client.post(
@@ -703,6 +708,8 @@ class TestReportsEndpoint:
         assert [item["symbol"] for item in body["reports"]] == ["300750.SZ", "600519.SH"]
         assert body["reports"][0]["decision"] == "SELL"
         assert body["reports"][1]["decision"] == "BUY"
+        assert body["reports"][1]["action_label"] == "条件入场"
+        assert "result_data" not in body["reports"][1]
 
     def test_batch_delete_endpoint_removes_multiple_reports(self):
         first = self._create_report("600519.SH", "2026-03-28", "HOLD")

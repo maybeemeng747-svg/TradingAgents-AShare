@@ -205,6 +205,22 @@ class TestResolveReportFieldsSemantics:
         assert resolved["execution_action"] == "WAIT"
         assert resolved["action_label"] == "等待触发"
 
+    def test_preserves_position_aware_semantics_from_result_data(self):
+        from api.services.report_service import resolve_report_fields
+
+        result_data = {
+            "final_trade_decision": '<!-- VERDICT: {"direction": "看多"} -->\n放量突破触发价后条件入场',
+            "research_direction": "看多",
+            "execution_action": "ENTER",
+            "action_label": "条件入场",
+        }
+
+        resolved = resolve_report_fields(result_data=result_data)
+
+        assert resolved["research_direction"] == "看多"
+        assert resolved["execution_action"] == "ENTER"
+        assert resolved["action_label"] == "条件入场"
+
     def test_semantic_fields_none_without_final_trade_decision(self):
         from api.services.report_service import resolve_report_fields
         resolved = resolve_report_fields(result_data={})

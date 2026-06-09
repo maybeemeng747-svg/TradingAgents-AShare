@@ -783,12 +783,13 @@ function DetailedTrackingRow({
     const rangeAlert = getModelRangeAlert(item)
     const rangeLabel = analysis?.is_previous_trade_day ? '昨日报告高低位' : `最近报告高低位 · ${analysis?.trade_date || '--'}`
     const decisionText = analysis?.decision?.toUpperCase() ?? ''
-    const directionText = analysis?.direction ?? ''
+    const directionText = analysis?.research_direction ?? analysis?.direction ?? ''
+    const actionLabel = analysis?.action_label || directionText || analysis?.decision || '待定'
 
     let decisionToneClass = 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-300'
-    if (decisionText.includes('BUY') || directionText.includes('增持')) {
+    if (analysis?.execution_action === 'ENTER' || decisionText.includes('BUY') || directionText.includes('看多') || directionText.includes('偏多')) {
         decisionToneClass = 'bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-300'
-    } else if (decisionText.includes('SELL') || directionText.includes('减持')) {
+    } else if (analysis?.execution_action === 'REDUCE' || analysis?.execution_action === 'EXIT' || decisionText.includes('SELL') || actionLabel.includes('回避')) {
         decisionToneClass = 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-300'
     }
 
@@ -967,7 +968,7 @@ function DetailedTrackingRow({
                             <>
                                 <div className="mt-3 flex items-center gap-2 text-xs">
                                     <span className={`rounded-full px-2 py-1 font-semibold ${decisionToneClass}`}>
-                                        {analysis.direction || analysis.decision || '待定'}
+                                        {actionLabel}
                                     </span>
                                     <span className="rounded-full bg-slate-100 px-2 py-1 text-slate-500 dark:bg-slate-700 dark:text-slate-300">
                                         {analysis.trade_date}

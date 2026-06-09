@@ -23,16 +23,38 @@ def _clip_text(text: str | None, limit: int = 720) -> str:
     return compact[:limit]
 
 
+def _semantic_field(report: "ReportDB", key: str) -> str | None:
+    value = getattr(report, key, None)
+    if value:
+        return str(value)
+    result_data = getattr(report, "result_data", None)
+    if isinstance(result_data, dict):
+        value = result_data.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _display_action(report: "ReportDB") -> str | None:
+    """[DECISION-004] Prefer action_label in push text."""
+    return _semantic_field(report, "action_label") or getattr(report, "decision", None)
+
+
 def build_report_message(report: "ReportDB") -> str:
     lines = [
         "TradingAgents 定时分析完成",
         f"标的：{report.symbol}",
         f"交易日：{report.trade_date}",
     ]
-    if getattr(report, "decision", None):
-        lines.append(f"决策：{report.decision}")
-    if getattr(report, "direction", None):
-        lines.append(f"方向：{report.direction}")
+    action = _display_action(report)
+    direction = _semantic_field(report, "research_direction") or getattr(report, "direction", None)
+    execution_action = _semantic_field(report, "execution_action")
+    if action:
+        lines.append(f"动作：{action}")
+    if direction:
+        lines.append(f"方向：{direction}")
+    if execution_action:
+        lines.append(f"动作码：{execution_action}")
     if getattr(report, "confidence", None) is not None:
         lines.append(f"置信度：{report.confidence}%")
 

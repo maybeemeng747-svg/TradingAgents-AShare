@@ -830,6 +830,9 @@ class ReportResponse(BaseModel):
     error: Optional[str] = None
     decision: Optional[str]
     direction: Optional[str]
+    research_direction: Optional[str] = None
+    execution_action: Optional[str] = None
+    action_label: Optional[str] = None
     confidence: Optional[int]
     target_price: Optional[float]
     stop_loss_price: Optional[float]

@@ -38,6 +38,19 @@ const getDecisionColor = (decision?: string) => {
     return 'text-slate-600 dark:text-slate-400'
 }
 
+const getReportActionLabel = (report: Report): string => {
+    return report.action_label || parseDecision(report.decision).label
+}
+
+const getReportActionColor = (report: Report): string => {
+    const action = report.execution_action
+    const label = getReportActionLabel(report)
+    if (action === 'ENTER' || label.includes('入场') || label.includes('买')) return 'text-red-600 dark:text-red-400'
+    if (action === 'REDUCE' || action === 'EXIT' || label.includes('减仓') || label.includes('清仓')) return 'text-orange-600 dark:text-orange-400'
+    if (label.includes('回避')) return 'text-green-600 dark:text-green-400'
+    return getDecisionColor(report.decision)
+}
+
 function getQueueHint(report: Pick<Report, 'status' | 'waiting_ahead_count' | 'scheduled_running_count' | 'scheduled_concurrency_limit'>): string | null {
     if (report.status !== 'pending') return null
 
@@ -143,10 +156,9 @@ const renderStatusBadge = (report: Report) => {
                 </div>
             )
         default:
-            const { label } = parseDecision(report.decision)
             return (
-                <span className={`font-medium ${getDecisionColor(report.decision)}`}>
-                    {label}
+                <span className={`font-medium ${getReportActionColor(report)}`}>
+                    {getReportActionLabel(report)}
                 </span>
             )
     }

@@ -40,6 +40,23 @@ class TestBarkPayload:
         assert "TradingAgents 定时分析 | 2026-05-07" in payload["body"]
         assert "价位：目标 12.3 / 止损 10.8" in payload["body"]
 
+    def test_report_payload_prefers_action_label(self):
+        from api.services.bark_notification_service import build_report_payload
+
+        payload = build_report_payload(_make_report(
+            decision="HOLD",
+            direction="中性",
+            result_data={
+                "action_label": "等待触发",
+                "research_direction": "偏多",
+                "execution_action": "WAIT",
+            },
+        ))
+
+        assert payload["title"] == "601958.SH 等待触发/偏多 62%"
+        assert "结论：等待触发，方向：偏多，动作码：WAIT" in payload["body"]
+        assert "结论：HOLD" not in payload["body"]
+
     def test_report_payload_uses_push_summary_instead_of_full_markdown_report(self):
         from api.services.bark_notification_service import build_report_payload
 

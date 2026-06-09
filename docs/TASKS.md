@@ -80,7 +80,7 @@
 54. `DECISION-001`：最终动作语义分层 — 禁止默认 HOLD（P0，done，commit dee415c）。
 55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
 56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
-57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，ready，依赖 DECISION-001 ✓）。
+57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，待提交）。
 
 ### 数据源治理候选队列
 
@@ -2600,7 +2600,7 @@
 ### DECISION-004: 报告卡片和推送通知不再只取 decision（P2）
 - **描述**：报告导出、飞书推送、日报汇总中，使用 `action_label` 替代 `decision` 作为用户可见的动作描述。
 - **优先级**：P2
-- **状态**：ready — 依赖 DECISION-001 ✓
+- **状态**：done — 待提交，依赖 DECISION-001 ✓
 - **前置条件**：`DECISION-001` 完成。
 - **执行约束**：
   - 不改飞书 API 调用方式，只改推送内容字段。

@@ -74,6 +74,27 @@ def _remove_leading_label(text: str, labels: tuple[str, ...]) -> str:
     return cleaned.lstrip(" ：:-")
 
 
+def _semantic_field(report: "ReportDB", key: str) -> str | None:
+    value = getattr(report, key, None)
+    if value:
+        return str(value)
+    result_data = getattr(report, "result_data", None)
+    if isinstance(result_data, dict):
+        value = result_data.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _display_action(report: "ReportDB") -> str:
+    """[DECISION-004] Prefer user-facing action_label over legacy decision."""
+    return _semantic_field(report, "action_label") or getattr(report, "decision", None) or "-"
+
+
+def _display_direction(report: "ReportDB") -> str:
+    return _semantic_field(report, "research_direction") or getattr(report, "direction", None) or "-"
+
+
 def _build_action_lines(report: "ReportDB", text: str) -> list[str]:
     lines: list[str] = []
     risk_review = _extract_risk_review(text)
@@ -139,8 +160,9 @@ def normalize_bark_url(value: str) -> str:
 
 
 def build_report_payload(report: "ReportDB") -> dict:
-    decision = getattr(report, "decision", None) or "-"
-    direction = getattr(report, "direction", None) or "-"
+    decision = _display_action(report)
+    direction = _display_direction(report)
+    execution_action = _semantic_field(report, "execution_action")
     confidence = getattr(report, "confidence", None)
     confidence_text = f" {confidence}%" if confidence is not None else ""
     title = f"{report.symbol} {decision}/{direction}{confidence_text}"
@@ -149,6 +171,8 @@ def build_report_payload(report: "ReportDB") -> dict:
         f"TradingAgents 定时分析 | {report.trade_date}",
         f"结论：{decision}，方向：{direction}"
     ]
+    if execution_action:
+        lines[-1] += f"，动作码：{execution_action}"
 
     if confidence is not None:
         lines[-1] += f"，置信度：{confidence}%"

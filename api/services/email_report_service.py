@@ -165,14 +165,32 @@ _AGENT_SECTIONS = [
 _GITHUB_URL = "https://github.com/KylinMountain/TradingAgents-AShare"
 
 
+def _semantic_field(report: "ReportDB", key: str) -> str | None:
+    value = getattr(report, key, None)
+    if value:
+        return str(value)
+    result_data = getattr(report, "result_data", None)
+    if isinstance(result_data, dict):
+        value = result_data.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _display_action(report: "ReportDB") -> str:
+    """[DECISION-004] Prefer action_label for user-visible email action."""
+    return _semantic_field(report, "action_label") or getattr(report, "decision", None) or "-"
+
+
 def render_report_html(report: "ReportDB", frontend_url: str = "", stock_name: str = "") -> str:
     """Render a *ReportDB* instance as an HTML email string with inline CSS."""
 
     symbol = _escape(report.symbol or "")
     name = _escape(stock_name) if stock_name and stock_name != report.symbol else ""
     trade_date = _escape(report.trade_date or "")
-    decision = _escape(report.decision or "-")
-    direction = report.direction or ""
+    decision = _escape(_display_action(report))
+    direction = _semantic_field(report, "research_direction") or report.direction or ""
+    execution_action = _semantic_field(report, "execution_action")
     direction_color = _DIRECTION_COLOR.get(direction, "#6b7280")
     # Direction badge background (lighter tint)
     direction_bg = {
@@ -217,8 +235,9 @@ def render_report_html(report: "ReportDB", frontend_url: str = "", stock_name: s
     # Decision column
     parts.append(
         '<td width="33%" style="padding:16px;background:#f8fafc;border-radius:12px;text-align:center;border:1px solid #e2e8f0;">'
-        f'<p style="margin:0;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#64748b;">决策</p>'
+        f'<p style="margin:0;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#64748b;">动作</p>'
         f'<p style="margin:8px 0 0;font-size:24px;font-weight:800;color:#0f172a;">{decision}</p>'
+        f'<p style="margin:4px 0 0;font-size:11px;color:#94a3b8;">{_escape(execution_action) if execution_action else ""}</p>'
         '</td>'
     )
     parts.append('<td width="2%"></td>')
@@ -442,7 +461,7 @@ def send_report_email(user: "UserDB", report: "ReportDB", stock_name: str = "") 
     msg["To"] = user.email
 
     # text/plain fallback
-    plain = f"TradingAgents 投研报告\n{display_name} {trade_date}\n决策: {report.decision or '-'}\n方向: {report.direction or '-'}\n置信度: {report.confidence or '-'}%{report_link}\n\n请使用支持 HTML 的邮件客户端查看完整报告。"
+    plain = f"TradingAgents 投研报告\n{display_name} {trade_date}\n动作: {_display_action(report)}\n方向: {_semantic_field(report, 'research_direction') or report.direction or '-'}\n置信度: {report.confidence or '-'}%{report_link}\n\n请使用支持 HTML 的邮件客户端查看完整报告。"
     msg.set_content(plain)
     msg.add_alternative(html_body, subtype="html")
 

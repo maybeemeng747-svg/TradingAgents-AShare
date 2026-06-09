@@ -418,6 +418,9 @@ export interface Report {
     error?: string
     decision?: string
     direction?: string
+    research_direction?: string | null
+    execution_action?: string | null
+    action_label?: string | null
     confidence?: number
     target_price?: number
     stop_loss_price?: number
@@ -630,6 +633,9 @@ export interface TrackingBoardAnalysis {
     is_previous_trade_day: boolean
     decision?: string | null
     direction?: string | null
+    research_direction?: string | null
+    execution_action?: string | null
+    action_label?: string | null
     high_price?: number | null
     low_price?: number | null
     trader_advice_summary?: string | null
