@@ -70,7 +70,7 @@ def parse_ready_queue(tasks_md_path: Path) -> list[dict[str, str]]:
     current_status = ""
 
     for line in lines:
-        header_match = re.match(r"^###\s+([A-Z]+-\d+)\s*:\s*(.+)$", line)
+        header_match = re.match(r"^###\s+([A-Z]+-[\w-]+)\s*:\s*(.+)$", line)
         if header_match:
             if current_task_id and current_status == "ready":
                 ready_tasks.append({

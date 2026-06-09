@@ -75,6 +75,18 @@ class TestParseReadyQueue:
         assert result[0]["task_id"] == "T-006"
         assert "P1" in result[0]["priority"]
 
+    def test_parse_multi_segment_ready_id(self, tmp_path):
+        content = textwrap.dedent("""\
+        ### TF-QUALITY-001: TradeFlow 候选池严格收敛门禁（P0）
+        - **优先级**: P0
+        - **状态**: ready
+        """)
+        p = self._write_tasks_md(tmp_path, content)
+        result = parse_ready_queue(p)
+        assert len(result) == 1
+        assert result[0]["task_id"] == "TF-QUALITY-001"
+        assert "P0" in result[0]["priority"]
+
     def test_parse_multiple_ready(self, tmp_path):
         content = textwrap.dedent("""\
         ### T-006: First task（P1）
