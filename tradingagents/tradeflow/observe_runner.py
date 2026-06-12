@@ -34,6 +34,8 @@ from .schemas import Candidate, Signal
 from .candidate_engine import init_db, save_candidate
 from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG
 
+_MAX_OBSERVE_FALLBACK_DAYS = 5
+
 
 @dataclass
 class ObserveRunResult:
@@ -122,6 +124,35 @@ def _load_active_candidates(db_path: str, trade_date: str) -> list[Candidate]:
                 "SELECT * FROM tradeflow_candidates WHERE trade_date = ? AND status = 'active'",
                 (trade_date,),
             ).fetchall()
+
+        if not rows:
+            # [TF-QUALITY-001A] pool_gate_contract — if an observe date has no
+            # exact candidates, fall back to the latest active plan in this DB.
+            # This preserves weekend/next-trading-day workflows and keeps tests
+            # with isolated temp DB candidates from depending on today's date.
+            date_expr = "COALESCE(NULLIF(effective_trade_date, ''), trade_date)"
+            current_records = conn.execute(
+                f"SELECT COUNT(*) AS cnt FROM tradeflow_candidates "
+                f"WHERE {date_expr} = ?",
+                (trade_date,),
+            ).fetchone()
+            if current_records and current_records["cnt"] > 0:
+                return []
+
+            latest = conn.execute(
+                f"SELECT {date_expr} AS active_date FROM tradeflow_candidates "
+                f"WHERE status = 'active' AND {date_expr} IS NOT NULL AND {date_expr} != '' "
+                f"AND {date_expr} <= ? "
+                f"AND julianday(?) - julianday({date_expr}) <= ? "
+                f"ORDER BY active_date DESC LIMIT 1",
+                (trade_date, trade_date, _MAX_OBSERVE_FALLBACK_DAYS),
+            ).fetchone()
+            if latest and latest["active_date"]:
+                rows = conn.execute(
+                    f"SELECT * FROM tradeflow_candidates WHERE status = 'active' AND {date_expr} = ? "
+                    f"ORDER BY updated_at DESC, created_at DESC",
+                    (latest["active_date"],),
+                ).fetchall()
 
         candidates = []
         for r in rows:

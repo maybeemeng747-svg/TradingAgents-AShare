@@ -94,7 +94,7 @@ def _qualify_for_main(entry: dict, cfg: StrategyConfig) -> tuple[bool, str]:
     ):
         return True, ""
 
-    if not tier and positive_cats == 0 and composite == 0:
+    if not tier and positive_cats == 0 and completeness == 0:
         return True, ""
 
     if tier in ("A", "B") and positive_cats == 0 and completeness == 0:

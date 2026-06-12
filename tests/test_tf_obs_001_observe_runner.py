@@ -123,6 +123,41 @@ class TestLoadActiveCandidates:
         candidates = _load_active_candidates(tmp_db, "2026-06-01")
         assert len(candidates) == 1
 
+    def test_fallback_uses_latest_active_plan_on_or_before_observe_date(self, tmp_db):
+        older = _make_candidate("600519.SH", trade_date="2026-05-31", effective_trade_date="2026-06-01")
+        future = _make_candidate("000001.SZ", trade_date="2026-06-03", effective_trade_date="2026-06-03")
+        _save_candidates(tmp_db, [older, future])
+
+        candidates = _load_active_candidates(tmp_db, "2026-06-02")
+
+        assert [c.symbol for c in candidates] == ["600519.SH"]
+
+    def test_fallback_does_not_load_future_plan_for_historical_observe_date(self, tmp_db):
+        future = _make_candidate("000001.SZ", trade_date="2026-06-03", effective_trade_date="2026-06-03")
+        _save_candidates(tmp_db, [future])
+
+        candidates = _load_active_candidates(tmp_db, "2026-06-02")
+
+        assert candidates == []
+
+    def test_fallback_does_not_load_stale_plan_after_current_filtered_run(self, tmp_db):
+        older = _make_candidate("600519.SH", trade_date="2026-05-31", effective_trade_date="2026-06-01")
+        current_filtered = _make_candidate("000001.SZ", trade_date="2026-06-02", effective_trade_date="2026-06-02")
+        current_filtered.status = "filtered"
+        _save_candidates(tmp_db, [older, current_filtered])
+
+        candidates = _load_active_candidates(tmp_db, "2026-06-02")
+
+        assert candidates == []
+
+    def test_fallback_does_not_load_stale_old_plan(self, tmp_db):
+        stale = _make_candidate("600519.SH", trade_date="2026-05-01", effective_trade_date="2026-05-01")
+        _save_candidates(tmp_db, [stale])
+
+        candidates = _load_active_candidates(tmp_db, "2026-06-02")
+
+        assert candidates == []
+
 
 class TestSaveSignal:
     def test_basic(self, tmp_db):

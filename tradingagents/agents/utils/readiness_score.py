@@ -185,8 +185,8 @@ def calculate_evidence_coverage(
     margin_trading: str = "not_queried",
     announcements: str = "not_queried",
     research_report: str = "not_queried",
-    ratings: str = "not_queried",
-    buybacks: str = "not_queried",  # [DATA-013] buyback_raw_evidence
+    ratings: str = "not_available",
+    buybacks: str = "not_available",  # [DATA-013] buyback_raw_evidence
 ) -> int:
     """
     计算原始证据覆盖度（0-100%）。

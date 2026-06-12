@@ -160,7 +160,13 @@ class TradeFlowCandidatesResponse(BaseModel):
     status: str = "ok"
     trade_date: str = ""
     candidates: List[TradeFlowCandidateItem] = Field(default_factory=list)
+    main_candidates: List[TradeFlowCandidateItem] = Field(default_factory=list)
+    observation_candidates: List[Dict[str, Any]] = Field(default_factory=list)
+    filtered_candidates: List[Dict[str, Any]] = Field(default_factory=list)
+    pool_counts: Dict[str, Any] = Field(default_factory=dict)
+    pool_gate_summary: str = ""
     summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
+    main_summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
 
 
@@ -297,6 +303,11 @@ class TradeFlowTieredCandidatesResponse(BaseModel):
     actionable: List[TradeFlowCandidateItem] = Field(default_factory=list)
     watch: List[TradeFlowCandidateItem] = Field(default_factory=list)
     scan: List[TradeFlowCandidateItem] = Field(default_factory=list)
+    main_candidates: List[TradeFlowCandidateItem] = Field(default_factory=list)
+    observation_candidates: List[Dict[str, Any]] = Field(default_factory=list)
+    filtered_candidates: List[Dict[str, Any]] = Field(default_factory=list)
+    pool_counts: Dict[str, Any] = Field(default_factory=dict)
+    pool_gate_summary: str = ""
     actionable_count: int = 0
     watch_count: int = 0
     scan_count: int = 0

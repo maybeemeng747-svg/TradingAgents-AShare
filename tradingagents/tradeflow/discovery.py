@@ -33,6 +33,30 @@ SOURCE_WATCHLIST = "watchlist"
 SOURCE_HOLDING = "holding"
 SOURCE_MANUAL = "manual"
 SOURCE_INDUSTRY = "industry_pool"
+
+
+def _deactivate_candidates_outside_active_pool(
+    db_path: str,
+    trade_date: str,
+    active_symbols: set[str],
+    scanned_symbols: set[str],
+) -> None:
+    """Deactivate scanned same-date candidates that no longer pass the pool gate."""
+    deactivate_symbols = {s for s in scanned_symbols if s and s not in active_symbols}
+    if not deactivate_symbols:
+        return
+    conn = sqlite3.connect(db_path)
+    try:
+        now = datetime.now().isoformat()
+        placeholders = ",".join(["?"] * len(deactivate_symbols))
+        conn.execute(
+            f"UPDATE tradeflow_candidates SET status = 'filtered', updated_at = ? "
+            f"WHERE trade_date = ? AND status = 'active' AND symbol IN ({placeholders})",
+            (now, trade_date, *sorted(deactivate_symbols)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 SOURCE_EVENT = "event_source"
 
 SOURCE_FUND_FLOW = "fund_flow_pool"  # [T-003] fund_flow_anomaly_pool
@@ -328,7 +352,20 @@ def run_discovery(
     if save_candidates and tf_db_path:
         init_db(tf_db_path)
         from .candidate_engine import save_candidate
+        active_pool_symbols = {
+            normalize_tradeflow_symbol(e.get("symbol", ""))
+            for e in (plan_entries + observation_entries)
+            if e.get("symbol")
+        }
+        scanned_symbols = {
+            normalize_tradeflow_symbol(item.get("symbol", ""))
+            for item in universe
+            if item.get("symbol")
+        }
+        _deactivate_candidates_outside_active_pool(tf_db_path, trade_date, active_pool_symbols, scanned_symbols)
         for c in top_candidates:  # [TF-DATE-001] tradeflow_date_semantics
+            if normalize_tradeflow_symbol(c.symbol) not in active_pool_symbols:
+                continue  # [TF-QUALITY-001A] pool_gate_contract
             if c.trade_date != trade_date:
                 c.trade_date = trade_date
             c.plan_date = trade_date
@@ -338,15 +375,25 @@ def run_discovery(
 
     # [UI-007] tradeflow_filtered_trace — persist filtered symbols
     run_id = datetime.now().strftime("%Y%m%d%H%M%S")
-    if tf_db_path and filtered:
+    all_filtered = [asdict(f) for f in filtered] + [
+        {
+            **e,
+            "reason": e.get("pool_filter_reason") or e.get("reason") or "候选池门禁过滤",
+        }
+        for e in gate_filtered_entries
+    ]  # [TF-QUALITY-001A] pool_gate_contract
+    for entry in all_filtered:
+        entry.setdefault("plan_date", trade_date)
+        entry.setdefault("effective_trade_date", eff_trade_date)
+    if tf_db_path and all_filtered:
         init_db(tf_db_path)
         _save_filtered_symbols(
-            filtered=[asdict(f) for f in filtered],
+            filtered=all_filtered,
             trade_date=trade_date,
             run_id=run_id,
             db_path=tf_db_path,
         )
-    elif tf_db_path and not filtered:
+    elif tf_db_path and not all_filtered:
         init_db(tf_db_path)
         import sqlite3
         conn = sqlite3.connect(tf_db_path)

@@ -192,6 +192,13 @@ _REQUIRED_FIELDS_FOR_COMPLETENESS: Dict[str, List[str]] = {
     "hot_stocks": ["status", "vendor"],  # [DATA-016] hot_stock_fallback
 }
 
+_OPTIONAL_FIELDS_FOR_COMPLETENESS = {
+    "margin_trading",
+    "research_report",
+    "ratings",
+    "buybacks",
+}
+
 
 def compute_contract_completeness(raw_evidence: Dict[str, Any]) -> Dict[str, Any]:
     total = 0
@@ -201,6 +208,8 @@ def compute_contract_completeness(raw_evidence: Dict[str, Any]) -> Dict[str, Any
     for ev_key, required in _REQUIRED_FIELDS_FOR_COMPLETENESS.items():
         entry = raw_evidence.get(ev_key)
         if entry is None:
+            if ev_key in _OPTIONAL_FIELDS_FOR_COMPLETENESS and ev_key not in raw_evidence:
+                continue
             total += len(required)
             missing_details[ev_key] = required
             continue
@@ -214,7 +223,7 @@ def compute_contract_completeness(raw_evidence: Dict[str, Any]) -> Dict[str, Any
 
         for req_field in required:
             total += 1
-            if req_field == "status" and contract.has_data:
+            if req_field == "status" and contract.status in {"HAS_DATA", "NORMAL_NO_DATA"}:
                 satisfied += 1
             elif req_field == "vendor" and contract.vendor != "":
                 satisfied += 1

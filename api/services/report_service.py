@@ -11,7 +11,8 @@ from typing import List, Optional, Dict, Any, Iterable, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, inspect as sa_inspect
+from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.orm import Session, load_only
 
 from api.database import ReportDB
@@ -41,6 +42,51 @@ REPORT_SUMMARY_COLUMNS = (
 
 ACTIVE_REPORT_STATUSES = ("pending", "running")
 STALE_REPORT_ERROR_MESSAGE = "分析任务已中断，请重新发起分析"
+
+
+def normalize_report_action_label(report: Any) -> Any:
+    """Normalize stale DECISION labels on read without mutating the database.
+
+    Older rows may have action_label="数据不足观察" even when the final
+    research_direction was directional. Keep true neutral insufficient-data
+    cases unchanged, but recover useful labels for directional WAIT reports.
+    """
+    if not report:
+        return report
+    if isinstance(report, ReportDB) and "result_data" in sa_inspect(report).unloaded:
+        result_data = None
+    else:
+        result_data = getattr(report, "result_data", None)
+    result_action_label = result_data.get("action_label") if isinstance(result_data, dict) else None
+    result_execution_action = result_data.get("execution_action") if isinstance(result_data, dict) else None
+    result_research_direction = result_data.get("research_direction") if isinstance(result_data, dict) else None
+    label = getattr(report, "action_label", None) or result_action_label
+    action = getattr(report, "execution_action", None) or result_execution_action
+    direction = (
+        getattr(report, "research_direction", None)
+        or result_research_direction
+        or getattr(report, "direction", None)
+    )
+    normalized_label = None
+    if label == "数据不足观察" and action == "WAIT":
+        if direction in ("偏空", "看空"):
+            normalized_label = "回避"
+        elif direction in ("偏多", "看多"):
+            normalized_label = "等待触发"
+    if normalized_label:
+        if isinstance(report, ReportDB):
+            set_committed_value(report, "action_label", normalized_label)
+            if isinstance(result_data, dict) and result_action_label == "数据不足观察":
+                normalized_result_data = dict(result_data)
+                normalized_result_data["action_label"] = normalized_label
+                set_committed_value(report, "result_data", normalized_result_data)
+        else:
+            setattr(report, "action_label", normalized_label)
+            if isinstance(result_data, dict) and result_action_label == "数据不足观察":
+                normalized_result_data = dict(result_data)
+                normalized_result_data["action_label"] = normalized_label
+                setattr(report, "result_data", normalized_result_data)
+    return report
 
 
 # ─── Structured extraction schemas ───────────────────────────────────────────
@@ -604,7 +650,7 @@ def get_report(db: Session, report_id: str, user_id: Optional[str] = None) -> Op
     query = db.query(ReportDB).filter(ReportDB.id == report_id)
     if user_id:
         query = query.filter(ReportDB.user_id == user_id)
-    return query.first()
+    return normalize_report_action_label(query.first())
 
 
 def get_reports_by_user(
@@ -619,7 +665,8 @@ def get_reports_by_user(
         query = query.filter(ReportDB.user_id == user_id)
     if symbol:
         query = query.filter(ReportDB.symbol == symbol)
-    return query.order_by(ReportDB.created_at.desc()).offset(skip).limit(limit).all()
+    reports = query.order_by(ReportDB.created_at.desc()).offset(skip).limit(limit).all()
+    return [normalize_report_action_label(report) for report in reports]
 
 
 def get_latest_reports_by_symbols(
@@ -647,7 +694,11 @@ def get_latest_reports_by_symbols(
         if symbol and symbol not in latest_by_symbol:
             latest_by_symbol[symbol] = row
 
-    return [latest_by_symbol[symbol] for symbol in normalized_symbols if symbol in latest_by_symbol]
+    return [
+        normalize_report_action_label(latest_by_symbol[symbol])
+        for symbol in normalized_symbols
+        if symbol in latest_by_symbol
+    ]
 
 
 def count_reports(

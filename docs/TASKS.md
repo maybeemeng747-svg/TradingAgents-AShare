@@ -82,14 +82,14 @@
 56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
 57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
 58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，blocked — NEEDS_HUMAN，commit 5f304db，见 task_runs）。
-59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，ready，依赖 TF-QUALITY-001 审核）。
-60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，blocked — 等 TF-QUALITY-001A）。
-61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，blocked — 等 TF-QUALITY-001A）。
-62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，blocked — 等 TF-QUALITY-001A）。
-63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，blocked — 等 TF-QUALITY-001A/PERF-002）。
+59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done，Codex 修复，待提交）。
+60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，ready，依赖 TF-QUALITY-001A ✓）。
+61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，ready，依赖 TF-QUALITY-001A ✓）。
+62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，ready，依赖 TF-QUALITY-001A ✓）。
+63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，ready，依赖 TF-QUALITY-001A/PERF-002 ✓）。
 64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
 65. `V-006`：最终动作语义端到端回放验收（P1，ready，依赖 DECISION-004）。
-66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，ready，来自 TF-QUALITY-001 全量回归）。
+66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
 67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，ready，来自 TF-QUALITY-001 task_run）。
 
 ### 数据源治理候选队列
@@ -2670,7 +2670,7 @@
 ### TF-QUALITY-001A: 收敛门禁回归修复与状态一致性（P0）
 - **描述**：审核 TF-QUALITY-001（commit 5f304db）后发现全量回归中存在真实 TradeFlow 断裂：候选主池收敛后，旧候选接口、盘中 Observe、E2E smoke 对 data_gap/observation/filtered 的契约不一致。先修这个补丁，再继续评分和前端任务。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done — Codex 修复，待提交
 - **前置条件**：TF-QUALITY-001 已提交但 blocked；必须读取 `docs/task_runs/TF-QUALITY-001-20260609-202554/summary.md` 与 `tests-round2.txt`。
 - **执行约束**：
   - 不改 prompts。
@@ -2702,7 +2702,7 @@
 ### TF-QUALITY-002: TradeFlow 评分拉开差距与排序解释（P0）
 - **描述**：修复候选分数区分不明显的问题，让同一批股票能看出 A/B/C 层差距、为什么排前、为什么不够强。
 - **优先级**：P0
-- **状态**：blocked — 等 TF-QUALITY-001A 修复候选池契约后再做
+- **状态**：ready
 - **前置条件**：TF-P0-002、T-008 完成 ✓；TF-QUALITY-001A 完成。
 - **执行约束**：
   - 不改 prompts。
@@ -2731,7 +2731,7 @@
 ### TF-OBS-002: 盘中观察自动执行与 A 股红绿视觉修正（P0）
 - **描述**：盘中观察不应必须用户点“执行”才看到结果；同时距离触发价的颜色要符合 A 股直觉：上涨/接近突破用红，跌破/远离/风险用绿或灰。
 - **优先级**：P0
-- **状态**：blocked — 等 TF-QUALITY-001A 恢复 Observe 候选读取契约
+- **状态**：ready
 - **前置条件**：T-004、T-008 完成 ✓；TF-QUALITY-001A 完成。
 - **执行约束**：
   - 不做高频盯盘；默认低频/手动刷新即可。
@@ -2755,7 +2755,7 @@
 ### TF-REVIEW-002: 盘后 Review 数据补齐与非交易日计划映射（P0）
 - **描述**：修复盘后 Review 无数据。非交易日生成的候选池应映射到下一交易日复盘；缺行情时要显示原因而不是空表。
 - **优先级**：P0
-- **状态**：blocked — 等 TF-QUALITY-001A 稳定候选三池与落库契约
+- **状态**：ready
 - **前置条件**：T-005、M-007、TF-DATE-001 完成 ✓；TF-QUALITY-001A 完成。
 - **执行约束**：
   - 不写生产库测试数据。
@@ -2778,7 +2778,7 @@
 ### TF-UI-011: 候选详情一键轻量 TA、K 线与公司概览（P1）
 - **描述**：候选池中的票必须能继续研究：详情里显示公司概览、K 线入口、入池证据，并提供一键轻量 TA 预案。
 - **优先级**：P1
-- **状态**：blocked — 等 TF-QUALITY-001A 后，基于稳定候选详情字段开发
+- **状态**：ready
 - **前置条件**：PERF-002 完成 ✓；TF-QUALITY-001A 完成。
 - **执行约束**：
   - 默认只生成轻量 TA 预案，不直接启动 full TA。
@@ -2857,7 +2857,7 @@
 ### DATA-COVERAGE-001: raw_evidence 覆盖率分母/质量等级回归修复（P1）
 - **描述**：TF-QUALITY-001 全量回归暴露 DATA-007/E-004/V-001 相关覆盖率断言下降：新增 ratings/buybacks/report 等证据字段后，分母变化与 NORMAL_NO_DATA/NOT_AVAILABLE 处理导致“完整证据”样本被误降级为 LOW。需要单独修复数据覆盖率契约，不和 TradeFlow 门禁混在一起。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — Codex 修复，待提交
 - **前置条件**：DATA-012A 完成 ✓；数据源目录回归修复 commit `e4a4062` 已完成。
 - **执行约束**：
   - 不改 prompts。

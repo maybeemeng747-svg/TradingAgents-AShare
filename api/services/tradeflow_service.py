@@ -224,6 +224,101 @@ def _compute_summary(items: List[dict]) -> dict:
     }
 
 
+def _load_filtered_trace_candidates(
+    trade_date: str,
+    tf_db_path: str = "",
+    allowed_symbols: Optional[set[str]] = None,
+) -> list[dict]:
+    """Load persisted filtered trace rows in pool-gate compatible shape."""
+    db_path = tf_db_path or _get_tradeflow_db_path()
+    if not os.path.exists(db_path):
+        return []
+    trace_dates = _filtered_trace_dates_for_view(trade_date, db_path)
+    rows: list[dict] = []
+    for trace_date in trace_dates:
+        try:
+            rows.extend(_get_filtered_symbols(trace_date, db_path))
+        except Exception:
+            continue
+
+    items: list[dict] = []
+    for row in rows:
+        symbol = normalize_tradeflow_symbol(row.get("symbol", ""))
+        if not symbol:
+            continue
+        if allowed_symbols is not None and symbol not in allowed_symbols:
+            continue
+        reason = row.get("reason", "")
+        items.append({
+            "symbol": symbol,
+            "name": resolve_tradeflow_name(symbol, row.get("name", "")),
+            "source": row.get("source", ""),
+            "reason": reason,
+            "pool_filter_reason": reason,
+            "pool_status": "filtered",
+            "run_id": row.get("run_id", ""),
+            "created_at": row.get("created_at", ""),
+        })
+    return items
+
+
+def _filtered_trace_dates_for_view(trade_date: str, db_path: str) -> list[str]:
+    """Resolve plan dates whose filtered traces should appear for a view date."""
+    dates = [trade_date]
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            for table in ("tradeflow_daily_plans", "tradeflow_candidates", "tradeflow_filtered_symbols"):
+                columns = _table_columns(conn, table)
+                if {"trade_date", "effective_trade_date"}.issubset(columns):
+                    rows = conn.execute(
+                        f"SELECT DISTINCT trade_date FROM {table} "
+                        "WHERE effective_trade_date = ? AND trade_date != ?",
+                        (trade_date, trade_date),
+                    ).fetchall()
+                    for row in rows:
+                        plan_date = row["trade_date"]
+                        if plan_date and plan_date not in dates:
+                            dates.append(plan_date)
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return dates
+
+
+def _merge_filtered_candidates(current: list[dict], persisted: list[dict]) -> list[dict]:
+    """Merge live pool-gate filtered rows with persisted filtered trace rows."""
+    merged: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for item in [*current, *persisted]:
+        symbol = normalize_tradeflow_symbol(item.get("symbol", ""))
+        reason = item.get("pool_filter_reason") or item.get("reason", "")
+        key = (symbol, reason)
+        if not symbol or key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
+
+
+def _pool_counts_with_filtered(pool_counts: dict, filtered_candidates: list[dict]) -> dict:
+    """Keep pool count badges aligned with merged filtered trace rows."""
+    counts = dict(pool_counts or {})
+    counts["filtered"] = len(filtered_candidates)
+    return counts
+
+
+def _pool_gate_summary_with_counts(pool_counts: dict) -> str:
+    """Render a pool summary from final response counts."""
+    return (
+        f"主候选{pool_counts.get('main', 0)}只，"
+        f"观察{pool_counts.get('observation', 0)}只，"
+        f"过滤{pool_counts.get('filtered', 0)}只。"
+    )
+
+
 def _query_by_date_or_effective(conn, table: str, date_str: str,
                                 extra_conditions: list[str] = None,
                                 extra_params: list = None,
@@ -424,19 +519,33 @@ def get_candidates(
 
         _recompute_action_tiers(conn, items, trade_date)
 
-        # [TF-QUALITY-001] candidate_pool_gate — split into main/observation/filtered
+        # [TF-QUALITY-001A] pool_gate_contract — keep legacy candidates intact
+        # while exposing the strict main/observation/filtered split separately.
         from tradingagents.tradeflow.candidate_pool_gate import run_pool_gate
         pool_result = run_pool_gate(items)
+        filter_active = bool(tier or need_deep_ta is not None or candidate_type or pool_types)
+        allowed_filtered_symbols = {it["symbol"] for it in items} if filter_active else None
+        filtered_candidates = _merge_filtered_candidates(
+            pool_result.filtered_candidates,
+            _load_filtered_trace_candidates(
+                trade_date,
+                tf_db_path,
+                allowed_symbols=allowed_filtered_symbols,
+            ),
+        )
+        pool_counts = _pool_counts_with_filtered(pool_result.pool_counts, filtered_candidates)
 
         return {
             "status": "ok",
             "trade_date": trade_date,
-            "candidates": pool_result.main_candidates,
+            "candidates": items,
+            "main_candidates": pool_result.main_candidates,
             "observation_candidates": pool_result.observation_candidates,
-            "filtered_candidates": pool_result.filtered_candidates,
-            "pool_counts": pool_result.pool_counts,
-            "pool_gate_summary": pool_result.gate_summary,
-            "summary_agg": _compute_summary(pool_result.main_candidates),
+            "filtered_candidates": filtered_candidates,
+            "pool_counts": pool_counts,
+            "pool_gate_summary": _pool_gate_summary_with_counts(pool_counts),
+            "summary_agg": _compute_summary(items),
+            "main_summary_agg": _compute_summary(pool_result.main_candidates),
             "runtime_tier_meta": _tradeflow_meta("tradeflow_candidates"),  # [PERF-001]
         }
     finally:
@@ -981,9 +1090,15 @@ def get_candidates_tiered(trade_date: str, tf_db_path: str = "") -> dict:
         # Compute action_tier for items that don't have it yet or need update
         _recompute_action_tiers(conn, all_items, trade_date)
 
-        # [TF-QUALITY-001] candidate_pool_gate — split into main/observation/filtered
+        # [TF-QUALITY-001A] pool_gate_contract — tiered view intentionally
+        # groups main candidates but keeps the other pools visible.
         from tradingagents.tradeflow.candidate_pool_gate import run_pool_gate
         pool_result = run_pool_gate(all_items)
+        filtered_candidates = _merge_filtered_candidates(
+            pool_result.filtered_candidates,
+            _load_filtered_trace_candidates(trade_date, tf_db_path),
+        )
+        pool_counts = _pool_counts_with_filtered(pool_result.pool_counts, filtered_candidates)
 
         actionable = [it for it in pool_result.main_candidates if it.get("action_tier") == "actionable"][:3]
         watch = [it for it in pool_result.main_candidates if it.get("action_tier") == "watch"][:8]
@@ -995,9 +1110,11 @@ def get_candidates_tiered(trade_date: str, tf_db_path: str = "") -> dict:
             "actionable": actionable,
             "watch": watch,
             "scan": scan,
+            "main_candidates": pool_result.main_candidates,
             "observation_candidates": pool_result.observation_candidates,
-            "filtered_candidates": pool_result.filtered_candidates,
-            "pool_counts": pool_result.pool_counts,
+            "filtered_candidates": filtered_candidates,
+            "pool_counts": pool_counts,
+            "pool_gate_summary": _pool_gate_summary_with_counts(pool_counts),
             "actionable_count": len([it for it in pool_result.main_candidates if it.get("action_tier") == "actionable"]),
             "watch_count": len([it for it in pool_result.main_candidates if it.get("action_tier") == "watch"]),
             "scan_count": len(scan),

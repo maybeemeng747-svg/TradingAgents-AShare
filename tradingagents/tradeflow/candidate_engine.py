@@ -1437,10 +1437,12 @@ def save_filtered_symbols(
             sym = normalize_tradeflow_symbol(f.get("symbol", ""))
             if not sym:
                 continue
+            plan_date = f.get("plan_date") or trade_date
+            effective_trade_date = f.get("effective_trade_date") or ""
             conn.execute(
                 "INSERT OR IGNORE INTO tradeflow_filtered_symbols "
-                "(trade_date, symbol, name, source, reason, run_id, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(trade_date, symbol, name, source, reason, run_id, created_at, plan_date, effective_trade_date) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     trade_date,
                     sym,
@@ -1449,6 +1451,8 @@ def save_filtered_symbols(
                     f.get("reason", ""),
                     run_id,
                     now,
+                    plan_date,
+                    effective_trade_date,
                 ),
             )
             count += 1

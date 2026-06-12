@@ -52,11 +52,12 @@ _DECISION_MAP = {
 
 
 def _parse_research_direction_from_verdict(text: str) -> str | None:
-    match = re.search(r"<!--\s*VERDICT:\s*(\{.*?\})\s*-->", text, re.IGNORECASE | re.DOTALL)
-    if not match:
+    verdict_scope = re.split(r"\n\s*#{1,6}\s*执行质检\b", text, maxsplit=1)[0]
+    matches = list(re.finditer(r"<!--\s*VERDICT:\s*(\{.*?\})\s*-->", verdict_scope, re.IGNORECASE | re.DOTALL))
+    if not matches:
         return None
     try:
-        payload = json.loads(match.group(1))
+        payload = json.loads(matches[-1].group(1))
     except Exception:
         return None
     direction = str(payload.get("direction", "")).strip()
@@ -87,7 +88,11 @@ def _infer_research_direction(text: str) -> str:
     if rd:
         return rd
 
-    stripped = _strip_system_overrides(text)
+    stripped = re.split(
+        r"\n\s*#{1,6}\s*执行质检\b",
+        _strip_system_overrides(text),
+        maxsplit=1,
+    )[0]
 
     explicit_patterns = [
         r"最终裁决[:：]\s*([^\n*]+)",
@@ -427,7 +432,7 @@ def _extract_decision_semantics(
         invalid_price=invalid_price,
     )
 
-    if data_insufficient and execution_action == "WAIT":
+    if data_insufficient and execution_action == "WAIT" and research_direction == "中性":
         action_label = "数据不足观察"
 
     decision = _DECISION_MAP.get(research_direction, "HOLD")

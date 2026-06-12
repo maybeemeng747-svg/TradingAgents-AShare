@@ -4,6 +4,56 @@
 
 ---
 
+## 2026-06-11 | DECISION 补修：避免 WAIT 全部显示为“数据不足观察”
+
+- **执行者**：Codex
+- **类型**：决策语义修复
+- **背景**：用户反馈最近 3 篇报告的决策建议都显示为“数据不足观察”，观察标签再次变得笼统。核查报告原文后发现，报告正文实际包含“回避/等待触发”等更具体动作，但保存/展示语义被覆盖。
+- **根因**：
+  1. `_extract_decision_semantics()` 只要检测到数据不足且 `execution_action=WAIT`，就无条件把 `action_label` 改成“数据不足观察”，覆盖了偏多的“等待触发”和偏空的“回避”。
+  2. 多 Agent 报告包含多个 `<!-- VERDICT -->`，解析器取第一个 VERDICT，容易把早期分析师结论当成最终风控结论。
+- **修复内容**：
+  - `tradingagents/graph/signal_processing.py`：只有 `research_direction=中性` 且数据不足时才使用“数据不足观察”；偏多仍显示“等待触发”，偏空/看空仍显示“回避”。
+  - `tradingagents/graph/signal_processing.py`：多 VERDICT 报告优先取“执行质检”之前的最后一个 VERDICT，避免 C-005/历史报告片段污染最终方向。
+  - `api/services/report_service.py`：读取旧报告时做轻量归一化，不改数据库；旧的 `WAIT + 数据不足观察 + 偏空/看空` 显示为“回避”，`WAIT + 数据不足观察 + 偏多/看多` 显示为“等待触发”。
+  - `tests/test_decision_semantics.py`：新增数据不足偏多/偏空不覆盖标签、多 VERDICT 取最终结论的回归测试。
+- **样本回放**：
+  - `analysis-603629.SH-2026-06-03.md`：看空 / WAIT / 回避
+  - `analysis-601991.SH-2026-06-02.md`：看空 / WAIT / 回避
+  - `analysis-603296.SH-2026-06-01.md`：偏多 / WAIT / 等待触发
+- **验证结果**：
+  - `.venv/bin/python -m pytest tests/test_decision_semantics.py tests/test_decision_replay.py tests/test_report_recovery.py tests/test_bark_notification_service.py tests/test_wecom_notification_service.py tests/test_api_smoke.py::TestReportsEndpoint::test_latest_by_symbols_returns_only_each_symbol_latest_report -q --tb=short`：62 passed
+  - 最近 3 条数据库报告经 `report_service.get_report()` 读取后显示为：603629.SH 回避、002015.SZ 回避、603629.SH 等待触发。
+- **安全红线**：未改 prompts，未调用 live LLM，未写生产数据库。
+
+---
+
+## 2026-06-10 | Codex 全项目收口检查：TradeFlow 契约与证据覆盖率回归修复
+
+- **执行者**：Codex
+- **类型**：全量检查 + 回归修复 + 任务池治理
+- **背景**：用户要求从头到尾细查项目并修复必要问题。重点检查昨晚 TF-QUALITY-001 后的 TradeFlow 候选池、盘中 Observe、E2E smoke，以及全量 pytest 暴露的数据覆盖率回归。
+- **修复内容**：
+  - `api/services/tradeflow_service.py`：恢复旧候选接口契约，`candidates` 保留查询池语义，同时新增 `main_candidates` / `main_summary_agg` 暴露严格主候选池，避免 `pool=all` 被主池收敛误伤。
+  - `tradingagents/tradeflow/discovery.py`：`save_candidates` 只落库通过门禁的主候选/观察候选；门禁过滤候选写入 filtered trace 并保留过滤原因，避免 DB/API 二次门禁不一致。
+  - `tradingagents/tradeflow/observe_runner.py`：盘中观察在指定日期无候选时，回退到最新有效 active plan，支持周末/非交易日计划映射到后续交易日观察。
+  - `tradingagents/tradeflow/candidate_pool_gate.py`：修复旧候选兼容条件，避免仅有 `composite_score` 的历史候选被误过滤。
+  - `tradingagents/dataflows/evidence_contract.py`：明确融资融券、研报、评级、回购为可选新增证据源，未出现时不进入 completeness 分母；`NORMAL_NO_DATA` 视为已完成查询状态。
+  - `tradingagents/dataflows/evidence_coverage_audit.py`：把可选/辅助源从 `critical_missing` 中排除，避免评级、回购、涨停池、热门股等辅助源缺失把主证据完整样本误降级为 LOW。
+  - `tradingagents/agents/utils/readiness_score.py`：评级/回购默认 `not_available`，保持旧调用的 evidence coverage 分母兼容；显式传入时仍参与覆盖率。
+- **任务池调整**：
+  - `TF-QUALITY-001A`、`DATA-COVERAGE-001` 标记为 done。
+  - 解锁 `TF-QUALITY-002`、`TF-OBS-002`、`TF-REVIEW-002`、`TF-UI-011` 为 ready。
+  - `DATA-017`、`V-006`、`CODEGRAPH-002` 保持 ready。
+- **验证结果**：
+  - `.venv/bin/python -m pytest tests/test_t004_intraday_observe.py tests/test_tf_p0_003_e2e_smoke.py tests/test_ui001_tradeflow_api.py tests/test_tf_quality001_pool_gate.py tests/test_t002_discovery.py -q --tb=short`：243 passed
+  - `.venv/bin/python -m pytest tests/test_data007_evidence_coverage_audit.py tests/test_e_series_fixes.py tests/test_v001_600584_data_authenticity.py -q --tb=short`：160 passed
+  - `.venv/bin/python -m pytest tests/test_data010_margin_trading.py tests/test_data011_research_report.py tests/test_data012_ratings.py tests/test_data013_buyback.py tests/test_data015_zt_pool.py -q --tb=short`：330 passed
+  - `.venv/bin/python -m pytest tests/ -q --tb=short`：5245 passed, 17 skipped
+- **安全红线**：未改 prompts，未调用 live LLM，未写生产数据库。
+
+---
+
 ## 2026-06-09 | Codex 审核 TF-QUALITY-001 与任务框架重排
 
 - **执行者**：Codex

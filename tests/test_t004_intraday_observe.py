@@ -333,7 +333,7 @@ class TestRunObserveTick:
             from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
             from tradingagents.tradeflow.schemas import Candidate
             init_db(db_path)
-            cand = Candidate(symbol="600519.SH", name="贵州茅台", trigger_price=10.0, invalid_price=9.0)
+            cand = Candidate(symbol="600519.SH", name="贵州茅台", trigger_price=10.0, invalid_price=9.0, trade_date="2026-06-08", effective_trade_date="2026-06-08")
             save_candidate(cand, db_path)
 
             def mock_quotes(symbols):
@@ -469,7 +469,7 @@ class TestRunObserveVolumeAnomaly:
             from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
             from tradingagents.tradeflow.schemas import Candidate
             init_db(db_path)
-            cand = Candidate(symbol="600519.SH", name="贵州茅台", trigger_price=10.0, invalid_price=9.0)
+            cand = Candidate(symbol="600519.SH", name="贵州茅台", trigger_price=10.0, invalid_price=9.0, trade_date="2026-06-08", effective_trade_date="2026-06-08")
             save_candidate(cand, db_path)
 
             def mock_quotes(symbols):
@@ -497,7 +497,7 @@ class TestRunObserveVolumeAnomaly:
             from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
             from tradingagents.tradeflow.schemas import Candidate
             init_db(db_path)
-            cand = Candidate(symbol="600519.SH", name="贵州茅台", trigger_price=10.0, invalid_price=9.0)
+            cand = Candidate(symbol="600519.SH", name="贵州茅台", trigger_price=10.0, invalid_price=9.0, trade_date="2026-06-08", effective_trade_date="2026-06-08")
             save_candidate(cand, db_path)
 
             def mock_quotes(symbols):
@@ -577,7 +577,7 @@ class TestAcceptanceT004:
             from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
             from tradingagents.tradeflow.schemas import Candidate
             init_db(db_path)
-            cand = Candidate(symbol="600519.SH", name="贵州茅台", trigger_price=10.0, invalid_price=9.0)
+            cand = Candidate(symbol="600519.SH", name="贵州茅台", trigger_price=10.0, invalid_price=9.0, trade_date="2026-06-08", effective_trade_date="2026-06-08")
             save_candidate(cand, db_path)
 
             def mock_quotes(symbols):
@@ -623,7 +623,7 @@ class TestAcceptanceT004:
             from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
             from tradingagents.tradeflow.schemas import Candidate
             init_db(db_path)
-            cand = Candidate(symbol="600519.SH", name="贵州茅台", trigger_price=10.0, invalid_price=9.0)
+            cand = Candidate(symbol="600519.SH", name="贵州茅台", trigger_price=10.0, invalid_price=9.0, trade_date="2026-06-08", effective_trade_date="2026-06-08")
             save_candidate(cand, db_path)
 
             def mock_quotes(symbols):

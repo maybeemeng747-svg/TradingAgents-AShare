@@ -92,6 +92,15 @@ _EVIDENCE_FIELD_FAMILIES: Dict[str, str] = {
     "buybacks": "buyback",  # [DATA-013] buyback_raw_evidence
 }
 
+_OPTIONAL_AUDIT_FIELDS = {
+    "margin_trading",
+    "research_report",
+    "ratings",
+    "buybacks",
+    "zt_pool",
+    "hot_stocks",
+}
+
 _TIER_RANK = {"A": 1, "B": 2, "C": 3}
 
 
@@ -241,6 +250,8 @@ def audit_raw_evidence(raw_evidence: Dict[str, Any]) -> EvidenceAuditResult:
 
     missing_from_completeness = contract_completeness.get("missing_details", {})
     for ev_key, missing_reqs in missing_from_completeness.items():
+        if ev_key in _OPTIONAL_AUDIT_FIELDS:
+            continue
         if ev_key not in result.failed_fields and ev_key not in result.not_queried_fields:
             result.critical_missing_fields.append(ev_key)
 

@@ -43,6 +43,7 @@ from api.services.tradeflow_service import (
     run_discovery_scan,
     run_observe_check,  # [TF-OBS-001] tradeflow_observe_runner
     get_filtered,  # [UI-007] tradeflow_filtered_trace
+    get_candidates_tiered,
 )
 from api.tradeflow_schemas import TradeFlowDataHealthResponse  # [TF-OBS-001]
 
@@ -315,6 +316,58 @@ class TestCandidatesWithData:
         tech = get_candidates("2026-05-30", candidate_type="TECH_TRADE", tf_db_path=populated_db)
         assert tech["status"] == "ok"
         assert [c["symbol"] for c in tech["candidates"]] == ["603256.SH"]  # [TF-P0-001] default TECH_TRADE
+
+    def test_candidates_include_persisted_filtered_trace(self, populated_db):
+        save_filtered_symbols(
+            [{"symbol": "000001.SZ", "name": "平安银行", "source": "manual", "reason": "候选池门禁过滤"}],
+            "2026-05-30",
+            "run001",
+            populated_db,
+        )
+
+        result = get_candidates("2026-05-30", tf_db_path=populated_db)
+
+        assert any(
+            item["symbol"] == "000001.SZ" and item["pool_filter_reason"] == "候选池门禁过滤"
+            for item in result["filtered_candidates"]
+        )
+        assert result["pool_counts"]["filtered"] == len(result["filtered_candidates"])
+        assert "过滤1只" in result["pool_gate_summary"]
+
+    def test_filtered_trace_respects_candidate_type_filter(self, populated_db):
+        save_filtered_symbols(
+            [
+                {"symbol": "000001.SZ", "name": "平安银行", "source": "manual", "reason": "未知类型过滤"},
+                {"symbol": "603256.SH", "name": "宏和科技", "source": "manual", "reason": "技术池过滤"},
+            ],
+            "2026-05-30",
+            "run001",
+            populated_db,
+        )
+
+        result = get_candidates("2026-05-30", candidate_type="TECH_TRADE", tf_db_path=populated_db)
+
+        filtered_symbols = {item["symbol"] for item in result["filtered_candidates"]}
+        assert "603256.SH" in filtered_symbols
+        assert "000001.SZ" not in filtered_symbols
+        assert result["pool_counts"]["filtered"] == len(result["filtered_candidates"])
+
+    def test_tiered_candidates_include_persisted_filtered_trace(self, populated_db):
+        save_filtered_symbols(
+            [{"symbol": "000001.SZ", "name": "平安银行", "source": "manual", "reason": "候选池门禁过滤"}],
+            "2026-05-30",
+            "run001",
+            populated_db,
+        )
+
+        result = get_candidates_tiered("2026-05-30", tf_db_path=populated_db)
+
+        assert any(
+            item["symbol"] == "000001.SZ" and item["pool_filter_reason"] == "候选池门禁过滤"
+            for item in result["filtered_candidates"]
+        )
+        assert result["pool_counts"]["filtered"] == len(result["filtered_candidates"])
+        assert "过滤1只" in result["pool_gate_summary"]
 
 
 class TestRunDiscoveryScan:
@@ -789,6 +842,21 @@ class TestDiscoveryPersistsFiltered:
         assert "000002.SZ" in symbols
         assert "600000.SH" in symbols
 
+        conn = sqlite3.connect(tf_db)
+        try:
+            effective_date = conn.execute(
+                "SELECT effective_trade_date FROM tradeflow_candidates "
+                "WHERE trade_date = ? AND symbol = ?",
+                ("2026-05-31", "000001.SZ"),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        candidates_result = get_candidates(effective_date, tf_db_path=tf_db)
+        effective_filtered_symbols = {item["symbol"] for item in candidates_result["filtered_candidates"]}
+        assert "000002.SZ" in effective_filtered_symbols
+        assert "600000.SH" in effective_filtered_symbols
+
     def test_second_discovery_overwrites_filtered(self, tf_db, monkeypatch):
         def fake_evaluate_v1(**kwargs):
             sym = kwargs.get("symbol", "")
@@ -819,3 +887,69 @@ class TestDiscoveryPersistsFiltered:
         filtered_result = get_filtered("2026-05-31", tf_db_path=tf_db)
         assert len(filtered_result["filtered"]) == 3
         assert all(f["reason"] == "数据缺失" for f in filtered_result["filtered"])
+        candidates_result = get_candidates("2026-05-31", tf_db_path=tf_db)
+        assert candidates_result["candidates"] == []
+
+        from tradingagents.tradeflow.date_semantics import resolve_effective_trade_date
+        effective_date = resolve_effective_trade_date("2026-05-31")
+        effective_result = get_candidates(effective_date, tf_db_path=tf_db)
+        assert {item["symbol"] for item in effective_result["filtered_candidates"]} == {
+            "000001.SZ",
+            "000002.SZ",
+            "000003.SZ",
+        }
+
+        conn = sqlite3.connect(tf_db)
+        try:
+            status = conn.execute(
+                "SELECT status FROM tradeflow_candidates WHERE trade_date = ? AND symbol = ?",
+                ("2026-05-31", "000001.SZ"),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert status == "filtered"
+
+    def test_partial_discovery_does_not_deactivate_unscanned_candidates(self, tf_db, monkeypatch):
+        trade_date = "2026-06-01"
+
+        def fake_evaluate_v1(**kwargs):
+            sym = kwargs.get("symbol", "")
+            c = Candidate(symbol=sym, name="test", strategy_tags=["VCP"], score=60.0, composite_score=70.0, trade_date=trade_date)
+            c.signals = [CandidateSignal(strategy_tag="VCP", score=60.0, reason="test")]
+            return c, ""
+
+        monkeypatch.setattr("tradingagents.tradeflow.discovery.evaluate_symbol", fake_evaluate_v1)
+        run_discovery_scan(
+            trade_date=trade_date, symbols=["000001.SZ", "000002.SZ"],
+            top_n=10, include_holdings=False, include_watchlist=False,
+            tf_db_path=tf_db, prod_db_path="/nonexistent/tradingagents.db",
+        )
+
+        def fake_evaluate_v2(**kwargs):
+            return None, "数据缺失"
+
+        monkeypatch.setattr("tradingagents.tradeflow.discovery.evaluate_symbol", fake_evaluate_v2)
+        run_discovery_scan(
+            trade_date=trade_date, symbols=["000001.SZ"],
+            top_n=10, include_holdings=False, include_watchlist=False,
+            tf_db_path=tf_db, prod_db_path="/nonexistent/tradingagents.db",
+        )
+
+        conn = sqlite3.connect(tf_db)
+        try:
+            rows = conn.execute(
+                "SELECT symbol, status, effective_trade_date FROM tradeflow_candidates WHERE trade_date = ?",
+                (trade_date,),
+            ).fetchall()
+        finally:
+            conn.close()
+        statuses = {row[0]: row[1] for row in rows}
+        effective_date = next(row[2] for row in rows if row[0] == "000002.SZ")
+
+        assert statuses["000001.SZ"] == "filtered"
+        assert statuses["000002.SZ"] == "active"
+
+        candidates_result = get_candidates(effective_date or trade_date, tf_db_path=tf_db)
+        symbols = {c["symbol"] for c in candidates_result["candidates"]}
+        assert "000001.SZ" not in symbols
+        assert "000002.SZ" in symbols

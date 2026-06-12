@@ -5,6 +5,7 @@ into structured research_direction / execution_action / action_label.
 """
 
 import pytest
+from types import SimpleNamespace
 from tradingagents.graph.signal_processing import (
     _extract_decision_semantics,
     _derive_action_label,
@@ -83,6 +84,33 @@ class TestDecisionSemanticsSixScenarios:
         assert result.execution_action == "WAIT"
         assert result.action_label == "数据不足观察"
 
+    def test_data_insufficient_bullish_keeps_waiting_trigger_label(self):
+        text = (
+            "<!-- VERDICT: {\"direction\": \"偏多\"} -->\n"
+            "### 执行质检\n"
+            "- 系统动作：等待触发\n"
+            "- 数据完整度：75%\n"
+            "- Evidence Coverage：57%\n"
+            "⚠️ 数据完整度不足，中线判断仅供参考\n"
+        )
+        result = _extract_decision_semantics(text, has_position=False)
+        assert result.research_direction == "偏多"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "等待触发"
+
+    def test_data_insufficient_bearish_keeps_avoid_label(self):
+        text = (
+            "<!-- VERDICT: {\"direction\": \"偏空\"} -->\n"
+            "### 执行质检\n"
+            "- 系统动作：等待触发\n"
+            "- Evidence Coverage：57%\n"
+            "⚠️ 数据完整度不足，中线判断仅供参考\n"
+        )
+        result = _extract_decision_semantics(text, has_position=False)
+        assert result.research_direction == "偏空"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "回避"
+
 
 class TestDeriveActionLabel:
     """Unit tests for _derive_action_label."""
@@ -160,6 +188,46 @@ class TestExtractDecisionSemanticsGateBlocked:
         assert result.execution_action == "WAIT"
         assert result.decision == "HOLD"
 
+    def test_uses_last_verdict_for_multi_agent_report(self):
+        text = (
+            "<!-- VERDICT: {\"direction\": \"偏多\", \"reason\": \"技术分析师早期结论\"} -->\n"
+            "中间分析内容\n"
+            "<!-- VERDICT: {\"direction\": \"看空\", \"reason\": \"最终风控结论\"} -->\n"
+            "### 执行质检\n"
+            "- 系统动作：等待触发\n"
+            "- Evidence Coverage：57%\n"
+        )
+        result = _extract_decision_semantics(text, has_position=False)
+        assert result.research_direction == "看空"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "回避"
+
+    def test_ignores_historical_verdict_after_quality_section(self):
+        text = (
+            "<!-- VERDICT: {\"direction\": \"看空\", \"reason\": \"最终风控结论\"} -->\n"
+            "### 执行质检\n"
+            "- 系统动作：等待触发\n"
+            "⚠️ [C-005] 同股票结论翻转警告\n"
+            "上一版结论：<!-- VERDICT: {\"direction\": \"看多\", \"reason\": \"历史旧结论\"} -->\n"
+        )
+        result = _extract_decision_semantics(text, has_position=False)
+        assert result.research_direction == "看空"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "回避"
+
+    def test_without_current_verdict_does_not_use_historical_verdict_after_quality_section(self):
+        text = (
+            "最终建议：观望，等待更明确的量价确认。\n"
+            "### 执行质检\n"
+            "- 系统动作：等待触发\n"
+            "⚠️ [C-005] 同股票结论翻转警告\n"
+            "上一版结论：<!-- VERDICT: {\"direction\": \"看多\", \"reason\": \"历史旧结论\"} -->\n"
+        )
+        result = _extract_decision_semantics(text, has_position=False)
+        assert result.research_direction == "中性"
+        assert result.execution_action == "WAIT"
+        assert result.action_label == "观望"
+
 
 class TestC001OverrideNoise:
     """C-001 auto-conversion line should not pollute research direction."""
@@ -227,3 +295,97 @@ class TestResolveReportFieldsSemantics:
         assert resolved["research_direction"] is None
         assert resolved["execution_action"] is None
         assert resolved["action_label"] is None
+
+
+class TestNormalizeReportActionLabel:
+    """Old persisted reports with directional WAIT should not display as generic data-insufficient watch."""
+
+    def test_bearish_wait_stale_data_insufficient_becomes_avoid(self):
+        from api.services.report_service import normalize_report_action_label
+
+        report = SimpleNamespace(
+            research_direction="看空",
+            execution_action="WAIT",
+            action_label="数据不足观察",
+        )
+        normalize_report_action_label(report)
+        assert report.action_label == "回避"
+
+    def test_result_data_stale_label_is_normalized_for_detail_card(self):
+        from api.services.report_service import normalize_report_action_label
+
+        report = SimpleNamespace(
+            research_direction="偏多",
+            execution_action="WAIT",
+            action_label="数据不足观察",
+            result_data={
+                "research_direction": "偏多",
+                "execution_action": "WAIT",
+                "action_label": "数据不足观察",
+            },
+        )
+        normalize_report_action_label(report)
+        assert report.action_label == "等待触发"
+        assert report.result_data["action_label"] == "等待触发"
+
+    def test_summary_normalization_does_not_lazy_load_result_data(self):
+        from sqlalchemy import create_engine, event
+        from sqlalchemy.orm import sessionmaker, load_only
+        from api.database import Base, ReportDB
+        from api.services.report_service import REPORT_SUMMARY_COLUMNS, normalize_report_action_label
+
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(bind=engine)
+        db = SessionLocal()
+        try:
+            db.add(ReportDB(
+                id="r1",
+                user_id="u1",
+                symbol="600519.SH",
+                trade_date="2026-06-08",
+                status="completed",
+                research_direction="偏空",
+                execution_action="WAIT",
+                action_label="数据不足观察",
+                result_data={"action_label": "数据不足观察"},
+            ))
+            db.commit()
+            report = db.query(ReportDB).options(load_only(*REPORT_SUMMARY_COLUMNS)).first()
+            query_count = {"n": 0}
+
+            def _count_queries(*_args, **_kwargs):
+                query_count["n"] += 1
+
+            event.listen(engine, "before_cursor_execute", _count_queries)
+            try:
+                normalize_report_action_label(report)
+            finally:
+                event.remove(engine, "before_cursor_execute", _count_queries)
+
+            assert query_count["n"] == 0
+            assert report.action_label == "回避"
+        finally:
+            db.close()
+
+    def test_bullish_wait_stale_data_insufficient_becomes_waiting_trigger(self):
+        from api.services.report_service import normalize_report_action_label
+
+        report = SimpleNamespace(
+            research_direction="偏多",
+            execution_action="WAIT",
+            action_label="数据不足观察",
+        )
+        normalize_report_action_label(report)
+        assert report.action_label == "等待触发"
+
+    def test_neutral_data_insufficient_kept(self):
+        from api.services.report_service import normalize_report_action_label
+
+        report = SimpleNamespace(
+            research_direction="中性",
+            execution_action="WAIT",
+            action_label="数据不足观察",
+        )
+        normalize_report_action_label(report)
+        assert report.action_label == "数据不足观察"

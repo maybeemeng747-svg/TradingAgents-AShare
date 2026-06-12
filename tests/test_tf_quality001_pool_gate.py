@@ -10,6 +10,7 @@ from tradingagents.tradeflow.candidate_pool_gate import (
     _qualify_for_main,
 )
 from tradingagents.tradeflow.strategy_config import StrategyConfig
+from api.tradeflow_schemas import TradeFlowCandidatesResponse, TradeFlowTieredCandidatesResponse
 
 
 def _make_entry(
@@ -54,6 +55,52 @@ def _make_entry(
         "risk_flags": risk_flags or [],
         "score": score,
     }
+
+
+class TestTradeFlowPoolResponseSchemas:
+    def test_candidates_response_keeps_pool_fields(self):
+        payload = {
+            "status": "ok",
+            "trade_date": "2026-06-08",
+            "candidates": [{"symbol": "600519.SH", "name": "贵州茅台"}],
+            "main_candidates": [{"symbol": "600519.SH", "name": "贵州茅台", "pool_status": "main"}],
+            "observation_candidates": [{"symbol": "000001.SZ", "pool_status": "observation"}],
+            "filtered_candidates": [{"symbol": "000002.SZ", "pool_filter_reason": "质量不足"}],
+            "pool_counts": {"main": 1, "observation": 1, "filtered": 1},
+            "pool_gate_summary": "主候选1只，观察1只，过滤1只。",
+            "main_summary_agg": {"total_candidates": 1},
+        }
+
+        response = TradeFlowCandidatesResponse.model_validate(payload).model_dump()
+
+        assert response["main_candidates"][0]["symbol"] == "600519.SH"
+        assert response["observation_candidates"][0]["pool_status"] == "observation"
+        assert response["filtered_candidates"][0]["pool_filter_reason"] == "质量不足"
+        assert response["pool_counts"]["main"] == 1
+        assert response["pool_gate_summary"] == "主候选1只，观察1只，过滤1只。"
+        assert response["main_summary_agg"]["total_candidates"] == 1
+
+    def test_tiered_response_keeps_pool_fields(self):
+        payload = {
+            "status": "ok",
+            "trade_date": "2026-06-08",
+            "actionable": [],
+            "watch": [],
+            "scan": [],
+            "main_candidates": [{"symbol": "600519.SH", "name": "贵州茅台"}],
+            "observation_candidates": [{"symbol": "000001.SZ", "pool_status": "observation"}],
+            "filtered_candidates": [{"symbol": "000002.SZ", "pool_filter_reason": "质量不足"}],
+            "pool_counts": {"main": 1},
+            "pool_gate_summary": "主候选1只。",
+        }
+
+        response = TradeFlowTieredCandidatesResponse.model_validate(payload).model_dump()
+
+        assert response["main_candidates"][0]["symbol"] == "600519.SH"
+        assert response["observation_candidates"][0]["pool_status"] == "observation"
+        assert response["filtered_candidates"][0]["pool_filter_reason"] == "质量不足"
+        assert response["pool_counts"]["main"] == 1
+        assert response["pool_gate_summary"] == "主候选1只。"
 
 
 class TestTechResonance:
