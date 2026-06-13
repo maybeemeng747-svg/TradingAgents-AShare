@@ -1,0 +1,2992 @@
+Task: H-012 - 昊天主题注册表与政策版本 Watchlist（P1）
+Date: 2026-06-14_01:13:39
+Codex exit code: 0
+Round: 1
+---
+2026-06-13T17:11:50.977052Z ERROR codex_models_manager::manager: failed to refresh available models: timeout waiting for child process to exit
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019ec1f7-ebc3-75e0-867c-aac1fdd56c40
+--------
+user
+current changes
+exec
+/bin/zsh -lc 'git status --short && git rev-parse --show-toplevel' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M api/main.py
+ M api/services/tradeflow_service.py
+ M api/tradeflow_schemas.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tradingagents/tradeflow/candidate_engine.py
+?? docs/task_runs/H-012-20260614-005948/
+?? tests/test_h012_topic_registry.py
+?? tradingagents/tradeflow/topic_registry.py
+/Users/maybee/TradingAgents-AShare
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- api/main.py api/services/tradeflow_service.py api/tradeflow_schemas.py tradingagents/tradeflow/candidate_engine.py tradingagents/tradeflow/topic_registry.py tests/test_h012_topic_registry.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ api/main.py                                 |  19 +++++
+ api/services/tradeflow_service.py           | 108 ++++++++++++++++++++++++++++
+ api/tradeflow_schemas.py                    |  59 +++++++++++++++
+ docs/DEVLOG.md                              |  39 ++++++++++
+ docs/TASKS.md                               |   4 +-
+ tradingagents/tradeflow/candidate_engine.py |  15 ++++
+ 6 files changed, 242 insertions(+), 2 deletions(-)
+diff --git a/api/main.py b/api/main.py
+index 8a747d1..1104a42 100644
+--- a/api/main.py
++++ b/api/main.py
+@@ -5249,6 +5249,8 @@ from api.tradeflow_schemas import (
+     PaperAddCandidateRequest,  # [TF-PAPER-001] paper_trading_ledger
+     PaperActionResponse,  # [TF-PAPER-001] paper_trading_ledger
+     PaperReviewResponse,  # [TF-PAPER-001] paper_trading_ledger
++    TopicRegistryResponse,  # [H-012] mandate_topic_registry
++    TopicWatchlistResponse,  # [H-012] mandate_topic_registry
+ )
+ from api.services.tradeflow_service import (
+     get_daily_plan as _tf_get_daily_plan,
+@@ -5274,6 +5276,8 @@ from api.services.tradeflow_service import (
+     confirm_paper_action as _tf_confirm_paper_action,  # [TF-PAPER-001] paper_trading_ledger
+     update_paper_observe_state as _tf_update_paper_observe_state,  # [TF-PAPER-001] paper_trading_ledger
+     get_paper_review as _tf_get_paper_review,  # [TF-PAPER-001] paper_trading_ledger
++    get_topic_registry as _tf_get_topic_registry,  # [H-012] mandate_topic_registry
++    get_topic_watchlist as _tf_get_topic_watchlist,  # [H-012] mandate_topic_registry
+ )
+ 
+ # [UI-001] tradeflow_api — read-only endpoints
+@@ -5454,6 +5458,21 @@ def tradeflow_paper_ledger_review(date: str = Query(..., description="复盘日
+     return _tf_get_paper_review(date)
+ 
+ 
++# [H-012] mandate_topic_registry
++@app.get("/v1/tradeflow/topic-registry", response_model=TopicRegistryResponse)
++def tradeflow_topic_registry():
++    return _tf_get_topic_registry()
++
++
++# [H-012] mandate_topic_registry
++@app.get("/v1/tradeflow/topic-watchlist", response_model=TopicWatchlistResponse)
++def tradeflow_topic_watchlist(
++    date: str = Query(..., description="交易日期 YYYY-MM-DD"),
++    max_symbols: int = Query(5, description="每个主题最多标的数", ge=1, le=20),
++):
++    return _tf_get_topic_watchlist(date, max_symbols_per_topic=max_symbols)
++
++
+ # ─── Static Files & SPA Routing ──────────────────────────────────────────────
+ 
+ # Serve uploaded files (avatars etc.) from shared uploads directory
+diff --git a/api/services/tradeflow_service.py b/api/services/tradeflow_service.py
+index 3e413de..9fe3255 100644
+--- a/api/services/tradeflow_service.py
++++ b/api/services/tradeflow_service.py
+@@ -2263,3 +2263,111 @@ def get_paper_review(trade_date: str, tf_db_path: str = "") -> dict:
+         }
+     finally:
+         conn.close()
++
++
++# [H-012] mandate_topic_registry
++def get_topic_registry(tf_db_path: str = "") -> dict:
++    """Return all registered topics from the topic registry."""
++    _fast_meta = _tradeflow_meta("tradeflow_topic_registry")
++    from tradingagents.tradeflow.topic_registry import (
++        get_default_topic_registry,
++        get_default_topic_definitions,
++    )
++
++    registry = get_default_topic_registry()
++    definitions = get_default_topic_definitions()
++
++    topics: list[dict] = []
++    seen_topics: set[str] = set()
++
++    for entry_dict in registry.to_dict().values():
++        topics.append(entry_dict)
++        seen_topics.add(entry_dict.get("topic", ""))
++
++    for d in definitions:
++        if d.topic not in seen_topics:
++            topics.append({
++                "topic": d.topic,
++                "topic_status": "UNKNOWN",
++                "topic_status_label": "未知",
++                "lifecycle_state": "UNKNOWN",
++                "policy_level": d.policy_level,
++                "policy_level_weight": 0,
++                "last_signal_date": "",
++                "signal_count": 0,
++                "evidence_links": [],
++                "evidence_summary": "",
++                "chain_segments": [s.to_dict() for s in d.chain_segments],
++                "is_left_side": False,
++                "is_observe_only": False,
++                "is_confirmed": False,
++                "matched_candidates": [],
++            })
++            seen_topics.add(d.topic)
++
++    topics.sort(key=lambda t: t.get("signal_count", 0), reverse=True)
++
++    return {
++        "status": "ok",
++        "topics": topics,
++        "total_topics": len(topics),
++        "runtime_tier_meta": _fast_meta,
++    }
++
++
++# [H-012] mandate_topic_registry
++def get_topic_watchlist(
++    trade_date: str,
++    tf_db_path: str = "",
++    max_symbols_per_topic: int = 5,
++) -> dict:
++    """Build a per-topic watchlist from candidates for a given trade date."""
++    _fast_meta = _tradeflow_meta("tradeflow_topic_watchlist")
++    conn = _connect(tf_db_path)
++    if conn is None:
++        return {
++            "status": "no_data",
++            "topics": [],
++            "total_topics": 0,
++            "total_symbols": 0,
++            "runtime_tier_meta": _fast_meta,
++        }
++
++    try:
++        rows = _query_by_date_or_effective(conn, "tradeflow_candidates", trade_date)
++        candidates = []
++        for row in rows:
++            item = _row_to_candidate_item(row)
++            candidates.append({
++                "symbol": item.get("symbol", ""),
++                "name": item.get("name", ""),
++                "mandate_topic": item.get("mandate_topic", ""),
++                "policy_tags": item.get("policy_tags", []),
++                "company_role": item.get("company_role", ""),
++                "beneficiary_path": item.get("beneficiary_path", []),
++                "mandate_score_component": item.get("mandate_score", 0.0),
++                "composite_score": item.get("composite_score", 0.0),
++                "tier": item.get("tier", ""),
++                "blocking_evidence_gaps": item.get("blocking_evidence_gaps", []),
++                "watchlist_evidence_gap": item.get("watchlist_evidence_gap", []),
++                "topic_lifecycle_state": item.get("topic_lifecycle_state", ""),
++                "topic_signal_count": item.get("topic_signal_count", 0),
++                "topic_last_signal_date": item.get("topic_last_signal_date", ""),
++                "policy_evidence_refs": item.get("policy_evidence_refs", []),
++            })
++
++        from tradingagents.tradeflow.topic_registry import build_topic_watchlist
++        result = build_topic_watchlist(
++            candidates,
++            max_symbols_per_topic=max_symbols_per_topic,
++        )
++
++        return {
++            "status": "ok",
++            "topics": [t.to_dict() for t in result.topics],
++            "total_topics": result.total_topics,
++            "total_symbols": result.total_symbols,
++            "runtime_tier_meta": _fast_meta,
++        }
++    finally:
++        conn.close()
+diff --git a/api/tradeflow_schemas.py b/api/tradeflow_schemas.py
+index bdced06..fc42840 100644
+--- a/api/tradeflow_schemas.py
++++ b/api/tradeflow_schemas.py
+@@ -497,3 +497,62 @@ class PaperReviewResponse(BaseModel):
+     review: Dict[str, Any] = Field(default_factory=dict)
+     trades: List[PaperTradeItem] = Field(default_factory=list)
+     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
++
++
++# [H-012] mandate_topic_registry
++class TopicRegistryItem(BaseModel):
++    topic: str = ""
++    topic_status: str = "UNKNOWN"
++    topic_status_label: str = "未知"
++    lifecycle_state: str = "UNKNOWN"
++    policy_level: str = "UNKNOWN"
++    policy_level_weight: int = 0
++    last_signal_date: str = ""
++    signal_count: int = 0
++    evidence_links: List[Dict[str, Any]] = Field(default_factory=list)
++    evidence_summary: str = ""
++    chain_segments: List[Dict[str, Any]] = Field(default_factory=list)
++    is_left_side: bool = False
++    is_observe_only: bool = False
++    is_confirmed: bool = False
++    matched_candidates: List[str] = Field(default_factory=list)
++
++
++class TopicRegistryResponse(BaseModel):
++    status: str = "ok"
++    topics: List[TopicRegistryItem] = Field(default_factory=list)
++    total_topics: int = 0
++    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
++
++
++# [H-012] mandate_topic_registry
++class TopicWatchlistSymbolItem(BaseModel):
++    symbol: str = ""
++    name: str = ""
++    company_role: str = ""
++    beneficiary_path: List[str] = Field(default_factory=list)
++    mandate_score: float = 0.0
++    tier: str = ""
++    evidence_gaps: List[str] = Field(default_factory=list)
++    note_suggestion: str = ""
++
++
++class TopicWatchlistTopicItem(BaseModel):
++    topic: str = ""
++    topic_status: str = "UNKNOWN"
++    topic_status_label: str = "未知"
++    policy_level: str = "UNKNOWN"
++    is_left_side: bool = False
++    is_observe_only: bool = False
++    symbols: List[TopicWatchlistSymbolItem] = Field(default_factory=list)
++    chain_segments: List[Dict[str, Any]] = Field(default_factory=list)
++    counter_evidence_gaps: List[str] = Field(default_factory=list)
++    note_suggestion: str = ""
++
++
++class TopicWatchlistResponse(BaseModel):
++    status: str = "ok"
++    topics: List[TopicWatchlistTopicItem] = Field(default_factory=list)
++    total_topics: int = 0
++    total_symbols: int = 0
++    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+diff --git a/tradingagents/tradeflow/candidate_engine.py b/tradingagents/tradeflow/candidate_engine.py
+index 0baa346..2f5285c 100644
+--- a/tradingagents/tradeflow/candidate_engine.py
++++ b/tradingagents/tradeflow/candidate_engine.py
+@@ -38,6 +38,7 @@ from .topic_lifecycle import evaluate_topic_lifecycle, TopicLifecycleResult, app
+ from .candidate_contradictions import evaluate_contradictions, ContradictionResult  # [H-011] candidate_contradiction_explainer
+ from .mandate_ta_queue_router import route_to_research_queue, QueueRouteResult  # [H-007] mandate_ta_queue_router
+ from .mandate_watchlist_note import generate_watchlist_note, WatchlistNoteResult  # [H-008] mandate_watchlist_note
++from .topic_registry import get_default_topic_registry  # [H-012] mandate_topic_registry
+ from .score_separation import compute_split_scores  # [TF-QUALITY-002] score_separation
+ 
+ 
+@@ -1244,6 +1245,20 @@ def evaluate_symbol(
+     candidate.watchlist_evidence_gap = wl_result.evidence_gap
+     candidate.evidence["watchlist_note"] = wl_result.to_dict()
+ 
++    # [H-012] mandate_topic_registry — register candidate to topic registry
++    _topic_registry = get_default_topic_registry()
++    _topic_registry.register_candidate_topic(
++        topic=candidate.mandate_topic,
++        mandate_topic=candidate.mandate_topic,
++        policy_tags=candidate.policy_tags,
++        name=candidate.name,
++        lifecycle_state=candidate.topic_lifecycle_state,
++        last_signal_date=candidate.topic_last_signal_date,
++        signal_count=candidate.topic_signal_count,
++        evidence_refs=candidate.policy_evidence_refs or candidate.mandate_evidence_refs,
++        candidate_symbol=candidate.symbol,
++    )
++
+     # [TF-QUALITY-002] score_separation — compute dimension sub-scores
+     ss_result = compute_split_scores(
+         score=candidate.score,
+
+exec
+/bin/zsh -lc "sed -n '1,240p' tradingagents/tradeflow/topic_registry.py && sed -n '1,240p' tests/test_h012_topic_registry.py && find docs/task_runs/H-012-20260614-005948 -maxdepth 2 -type f -print -exec sed -n '1,120p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [H-012] mandate_topic_registry
+"""Topic Registry — maintainable registry of 昊天 policy topics with
+lifecycle, evidence, industry chain roles and a per-topic watchlist.
+
+Upgrades scattered policy keywords into a structured, queryable registry:
+  1. Pre-defined topic definitions with policy level, keywords, chain segments.
+  2. Candidate → topic matching via mandate_topic / policy_tags / keywords.
+  3. Topic watchlist generation: core symbols, beneficiary path, evidence gaps.
+  4. Short note suggestion that feeds into H-008 watchlist_note.
+
+Constraints:
+  - No LLM calls.
+  - Topic state changes only affect candidate explanation and ranking,
+    never the trade action.
+  - Does not overwrite user watchlist notes — only generates suggestions.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Optional
+
+from .topic_lifecycle import (
+    TopicLifecycleState,
+    _LIFECYCLE_STATE_LABELS,
+    _LEFT_SIDE_STATES,
+    _OBSERVE_ONLY_STATES,
+)
+
+
+# ── Policy levels ─────────────────────────────────────────────────────
+
+POLICY_LEVEL_CENTRAL = "CENTRAL"
+POLICY_LEVEL_MINISTRY = "MINISTRY"
+POLICY_LEVEL_LOCAL = "LOCAL"
+POLICY_LEVEL_INDUSTRY = "INDUSTRY"
+POLICY_LEVEL_MEDIA = "MEDIA"
+POLICY_LEVEL_UNKNOWN = "UNKNOWN"
+
+_POLICY_LEVEL_WEIGHTS: dict[str, int] = {
+    POLICY_LEVEL_CENTRAL: 5,
+    POLICY_LEVEL_MINISTRY: 4,
+    POLICY_LEVEL_LOCAL: 3,
+    POLICY_LEVEL_INDUSTRY: 2,
+    POLICY_LEVEL_MEDIA: 1,
+    POLICY_LEVEL_UNKNOWN: 0,
+}
+
+
+# ── Topic status (distinct from lifecycle state) ─────────────────────
+# Maps to task description: 酝酿/发酵/确认/兑现/退潮
+
+TOPIC_STATUS_BREWING = "BREWING"        # 酝酿 — early stage, left-side
+TOPIC_STATUS_FERMENTING = "FERMENTING"  # 发酵 — accelerating
+TOPIC_STATUS_CONFIRMING = "CONFIRMING"  # 确认 — multi-source confirmed
+TOPIC_STATUS_DELIVERING = "DELIVERING"  # 兑现 — actual orders/revenue
+TOPIC_STATUS_RECEDING = "RECEDING"      # 退潮 — fading/crowded
+TOPIC_STATUS_UNKNOWN = "UNKNOWN"
+
+_TOPIC_STATUS_LABELS: dict[str, str] = {
+    TOPIC_STATUS_BREWING: "酝酿",
+    TOPIC_STATUS_FERMENTING: "发酵",
+    TOPIC_STATUS_CONFIRMING: "确认",
+    TOPIC_STATUS_DELIVERING: "兑现",
+    TOPIC_STATUS_RECEDING: "退潮",
+    TOPIC_STATUS_UNKNOWN: "未知",
+}
+
+_LEFT_SIDE_STATUSES = {TOPIC_STATUS_BREWING, TOPIC_STATUS_FERMENTING}
+_CONFIRM_STATUSES = {TOPIC_STATUS_CONFIRMING, TOPIC_STATUS_DELIVERING}
+_OBSERVE_ONLY_STATUSES = {TOPIC_STATUS_RECEDING}
+
+
+def _lifecycle_to_status(lifecycle_state: str) -> str:
+    """Map H-010 lifecycle state to H-012 topic status."""
+    mapping = {
+        TopicLifecycleState.EMERGING.value: TOPIC_STATUS_BREWING,
+        TopicLifecycleState.ACCELERATING.value: TOPIC_STATUS_FERMENTING,
+        TopicLifecycleState.CONFIRMING.value: TOPIC_STATUS_CONFIRMING,
+        TopicLifecycleState.CROWDED.value: TOPIC_STATUS_RECEDING,
+        TopicLifecycleState.FADING.value: TOPIC_STATUS_RECEDING,
+        TopicLifecycleState.UNKNOWN.value: TOPIC_STATUS_UNKNOWN,
+    }
+    return mapping.get(lifecycle_state, TOPIC_STATUS_UNKNOWN)
+
+
+# ── Industry chain segment ────────────────────────────────────────────
+
+@dataclass
+class ChainSegment:
+    """One segment of an industry chain within a topic."""
+    name: str = ""
+    role: str = ""
+    example_symbols: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "role": self.role,
+            "example_symbols": self.example_symbols,
+        }
+
+
+# ── Topic definition (static, pre-defined) ───────────────────────────
+
+@dataclass
+class TopicDefinition:
+    """Pre-defined topic definition with keywords, policy level, chain."""
+    topic: str = ""
+    aliases: list[str] = field(default_factory=list)
+    policy_level: str = POLICY_LEVEL_UNKNOWN
+    keywords: list[str] = field(default_factory=list)
+    chain_segments: list[ChainSegment] = field(default_factory=list)
+    description: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "topic": self.topic,
+            "aliases": self.aliases,
+            "policy_level": self.policy_level,
+            "keywords": self.keywords,
+            "chain_segments": [s.to_dict() for s in self.chain_segments],
+            "description": self.description,
+        }
+
+
+# ── Topic registry entry (dynamic, updated at runtime) ───────────────
+
+@dataclass
+class TopicRegistryEntry:
+    """One topic entry in the registry — tracks evidence and state."""
+    topic: str = ""
+    topic_status: str = TOPIC_STATUS_UNKNOWN
+    topic_status_label: str = "未知"
+    lifecycle_state: str = TopicLifecycleState.UNKNOWN.value
+    policy_level: str = POLICY_LEVEL_UNKNOWN
+    last_signal_date: str = ""
+    signal_count: int = 0
+    evidence_links: list[dict] = field(default_factory=list)
+    evidence_summary: str = ""
+    chain_segments: list[ChainSegment] = field(default_factory=list)
+    is_left_side: bool = False
+    is_observe_only: bool = False
+    is_confirmed: bool = False
+    definition: Optional[TopicDefinition] = None
+    matched_candidates: list[str] = field(default_factory=list)
+    update_count: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "topic": self.topic,
+            "topic_status": self.topic_status,
+            "topic_status_label": self.topic_status_label,
+            "lifecycle_state": self.lifecycle_state,
+            "policy_level": self.policy_level,
+            "policy_level_weight": _POLICY_LEVEL_WEIGHTS.get(self.policy_level, 0),
+            "last_signal_date": self.last_signal_date,
+            "signal_count": self.signal_count,
+            "evidence_links": self.evidence_links,
+            "evidence_summary": self.evidence_summary,
+            "chain_segments": [s.to_dict() for s in self.chain_segments],
+            "is_left_side": self.is_left_side,
+            "is_observe_only": self.is_observe_only,
+            "is_confirmed": self.is_confirmed,
+            "matched_candidates": self.matched_candidates,
+            "update_count": self.update_count,
+        }
+
+
+# ── Watchlist item ────────────────────────────────────────────────────
+
+@dataclass
+class TopicWatchlistSymbol:
+    """One symbol within a topic watchlist."""
+    symbol: str = ""
+    name: str = ""
+    company_role: str = ""
+    beneficiary_path: list[str] = field(default_factory=list)
+    mandate_score: float = 0.0
+    tier: str = ""
+    evidence_gaps: list[str] = field(default_factory=list)
+    note_suggestion: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "symbol": self.symbol,
+            "name": self.name,
+            "company_role": self.company_role,
+            "beneficiary_path": self.beneficiary_path,
+            "mandate_score": round(self.mandate_score, 1),
+            "tier": self.tier,
+            "evidence_gaps": self.evidence_gaps,
+            "note_suggestion": self.note_suggestion,
+        }
+
+
+@dataclass
+class TopicWatchlistEntry:
+    """One topic's watchlist — core symbols + beneficiary paths + gaps."""
+    topic: str = ""
+    topic_status: str = TOPIC_STATUS_UNKNOWN
+    topic_status_label: str = "未知"
+    policy_level: str = POLICY_LEVEL_UNKNOWN
+    is_left_side: bool = False
+    is_observe_only: bool = False
+    symbols: list[TopicWatchlistSymbol] = field(default_factory=list)
+    chain_segments: list[ChainSegment] = field(default_factory=list)
+    counter_evidence_gaps: list[str] = field(default_factory=list)
+    note_suggestion: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "topic": self.topic,
+            "topic_status": self.topic_status,
+            "topic_status_label": self.topic_status_label,
+            "policy_level": self.policy_level,
+            "is_left_side": self.is_left_side,
+            "is_observe_only": self.is_observe_only,
+            "symbols": [s.to_dict() for s in self.symbols],
+            "chain_segments": [s.to_dict() for s in self.chain_segments],
+            "counter_evidence_gaps": self.counter_evidence_gaps,
+            "note_suggestion": self.note_suggestion,
+        }
+
+
+@dataclass
+class TopicWatchlistResult:
+    """Full watchlist result across all topics."""
+    topics: list[TopicWatchlistEntry] = field(default_factory=list)
+    total_topics: int = 0
+    total_symbols: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "topics": [t.to_dict() for t in self.topics],
+            "total_topics": self.total_topics,
+            "total_symbols": self.total_symbols,
+        }
+
+
+# [H-012] mandate_topic_registry — comprehensive tests
+import pytest
+
+from tradingagents.tradeflow.topic_registry import (
+    POLICY_LEVEL_CENTRAL,
+    POLICY_LEVEL_MINISTRY,
+    POLICY_LEVEL_LOCAL,
+    POLICY_LEVEL_INDUSTRY,
+    POLICY_LEVEL_MEDIA,
+    POLICY_LEVEL_UNKNOWN,
+    TOPIC_STATUS_BREWING,
+    TOPIC_STATUS_FERMENTING,
+    TOPIC_STATUS_CONFIRMING,
+    TOPIC_STATUS_DELIVERING,
+    TOPIC_STATUS_RECEDING,
+    TOPIC_STATUS_UNKNOWN,
+    _TOPIC_STATUS_LABELS,
+    _LEFT_SIDE_STATUSES,
+    _CONFIRM_STATUSES,
+    _OBSERVE_ONLY_STATUSES,
+    _POLICY_LEVEL_WEIGHTS,
+    _lifecycle_to_status,
+    ChainSegment,
+    TopicDefinition,
+    TopicRegistryEntry,
+    TopicRegistry,
+    TopicWatchlistSymbol,
+    TopicWatchlistEntry,
+    TopicWatchlistResult,
+    get_default_topic_definitions,
+    get_default_topic_registry,
+    get_topic_status_label,
+    is_topic_left_side,
+    is_topic_observe_only,
+    match_topic_from_text,
+    match_topic,
+    suggest_topic_watchlist_note,
+    build_topic_watchlist,
+)
+
+
+class TestPolicyLevels:
+    def test_six_levels(self):
+        levels = {
+            POLICY_LEVEL_CENTRAL, POLICY_LEVEL_MINISTRY,
+            POLICY_LEVEL_LOCAL, POLICY_LEVEL_INDUSTRY,
+            POLICY_LEVEL_MEDIA, POLICY_LEVEL_UNKNOWN,
+        }
+        assert len(levels) == 6
+
+    def test_weights_ordered(self):
+        assert _POLICY_LEVEL_WEIGHTS[POLICY_LEVEL_CENTRAL] > _POLICY_LEVEL_WEIGHTS[POLICY_LEVEL_MINISTRY]
+        assert _POLICY_LEVEL_WEIGHTS[POLICY_LEVEL_MINISTRY] > _POLICY_LEVEL_WEIGHTS[POLICY_LEVEL_LOCAL]
+        assert _POLICY_LEVEL_WEIGHTS[POLICY_LEVEL_LOCAL] > _POLICY_LEVEL_WEIGHTS[POLICY_LEVEL_INDUSTRY]
+        assert _POLICY_LEVEL_WEIGHTS[POLICY_LEVEL_INDUSTRY] > _POLICY_LEVEL_WEIGHTS[POLICY_LEVEL_MEDIA]
+        assert _POLICY_LEVEL_WEIGHTS[POLICY_LEVEL_MEDIA] > _POLICY_LEVEL_WEIGHTS[POLICY_LEVEL_UNKNOWN]
+
+    def test_unknown_weight_zero(self):
+        assert _POLICY_LEVEL_WEIGHTS[POLICY_LEVEL_UNKNOWN] == 0
+
+
+class TestTopicStatus:
+    def test_six_statuses(self):
+        statuses = {
+            TOPIC_STATUS_BREWING, TOPIC_STATUS_FERMENTING,
+            TOPIC_STATUS_CONFIRMING, TOPIC_STATUS_DELIVERING,
+            TOPIC_STATUS_RECEDING, TOPIC_STATUS_UNKNOWN,
+        }
+        assert len(statuses) == 6
+
+    def test_labels(self):
+        assert _TOPIC_STATUS_LABELS[TOPIC_STATUS_BREWING] == "酝酿"
+        assert _TOPIC_STATUS_LABELS[TOPIC_STATUS_FERMENTING] == "发酵"
+        assert _TOPIC_STATUS_LABELS[TOPIC_STATUS_CONFIRMING] == "确认"
+        assert _TOPIC_STATUS_LABELS[TOPIC_STATUS_DELIVERING] == "兑现"
+        assert _TOPIC_STATUS_LABELS[TOPIC_STATUS_RECEDING] == "退潮"
+        assert _TOPIC_STATUS_LABELS[TOPIC_STATUS_UNKNOWN] == "未知"
+
+    def test_left_side_statuses(self):
+        assert TOPIC_STATUS_BREWING in _LEFT_SIDE_STATUSES
+        assert TOPIC_STATUS_FERMENTING in _LEFT_SIDE_STATUSES
+        assert TOPIC_STATUS_CONFIRMING not in _LEFT_SIDE_STATUSES
+        assert TOPIC_STATUS_RECEDING not in _LEFT_SIDE_STATUSES
+
+    def test_observe_only_statuses(self):
+        assert TOPIC_STATUS_RECEDING in _OBSERVE_ONLY_STATUSES
+        assert TOPIC_STATUS_BREWING not in _OBSERVE_ONLY_STATUSES
+
+    def test_confirm_statuses(self):
+        assert TOPIC_STATUS_CONFIRMING in _CONFIRM_STATUSES
+        assert TOPIC_STATUS_DELIVERING in _CONFIRM_STATUSES
+
+
+class TestLifecycleToStatus:
+    def test_emerging_to_brewing(self):
+        assert _lifecycle_to_status("EMERGING") == TOPIC_STATUS_BREWING
+
+    def test_accelerating_to_fermenting(self):
+        assert _lifecycle_to_status("ACCELERATING") == TOPIC_STATUS_FERMENTING
+
+    def test_confirming_to_confirming(self):
+        assert _lifecycle_to_status("CONFIRMING") == TOPIC_STATUS_CONFIRMING
+
+    def test_crowded_to_receding(self):
+        assert _lifecycle_to_status("CROWDED") == TOPIC_STATUS_RECEDING
+
+    def test_fading_to_receding(self):
+        assert _lifecycle_to_status("FADING") == TOPIC_STATUS_RECEDING
+
+    def test_unknown_to_unknown(self):
+        assert _lifecycle_to_status("UNKNOWN") == TOPIC_STATUS_UNKNOWN
+
+    def test_empty_to_unknown(self):
+        assert _lifecycle_to_status("") == TOPIC_STATUS_UNKNOWN
+
+    def test_invalid_to_unknown(self):
+        assert _lifecycle_to_status("GARBAGE") == TOPIC_STATUS_UNKNOWN
+
+
+class TestChainSegment:
+    def test_defaults(self):
+        seg = ChainSegment()
+        assert seg.name == ""
+        assert seg.role == ""
+        assert seg.example_symbols == []
+
+    def test_to_dict(self):
+        seg = ChainSegment(name="整机制造", role="核心整机", example_symbols=["600000.SH"])
+        d = seg.to_dict()
+        assert d["name"] == "整机制造"
+        assert d["role"] == "核心整机"
+        assert d["example_symbols"] == ["600000.SH"]
+
+
+class TestTopicDefinition:
+    def test_defaults(self):
+        d = TopicDefinition(topic="测试")
+        assert d.topic == "测试"
+        assert d.aliases == []
+        assert d.policy_level == POLICY_LEVEL_UNKNOWN
+        assert d.keywords == []
+        assert d.chain_segments == []
+        assert d.description == ""
+
+    def test_to_dict(self):
+        d = TopicDefinition(
+            topic="低空经济",
+            aliases=["eVTOL"],
+            policy_level=POLICY_LEVEL_MINISTRY,
+            keywords=["低空经济"],
+            chain_segments=[ChainSegment(name="整机", role="核心")],
+            description="test",
+        )
+        d_dict = d.to_dict()
+        assert d_dict["topic"] == "低空经济"
+        assert d_dict["aliases"] == ["eVTOL"]
+        assert d_dict["policy_level"] == POLICY_LEVEL_MINISTRY
+        assert d_dict["keywords"] == ["低空经济"]
+        assert len(d_dict["chain_segments"]) == 1
+        assert d_dict["description"] == "test"
+
+
+class TestTopicRegistryEntry:
+    def test_defaults(self):
+        entry = TopicRegistryEntry(topic="算力")
+        assert entry.topic == "算力"
+        assert entry.topic_status == TOPIC_STATUS_UNKNOWN
+        assert entry.topic_status_label == "未知"
+        assert entry.lifecycle_state == "UNKNOWN"
+        assert entry.policy_level == POLICY_LEVEL_UNKNOWN
+        assert entry.last_signal_date == ""
+        assert entry.signal_count == 0
+        assert entry.evidence_links == []
+        assert entry.evidence_summary == ""
+        assert entry.chain_segments == []
+        assert not entry.is_left_side
+        assert not entry.is_observe_only
+        assert not entry.is_confirmed
+        assert entry.matched_candidates == []
+
+    def test_to_dict(self):
+        entry = TopicRegistryEntry(
+            topic="低空经济",
+            topic_status=TOPIC_STATUS_FERMENTING,
+            lifecycle_state="ACCELERATING",
+            policy_level=POLICY_LEVEL_MINISTRY,
+            signal_count=5,
+            is_left_side=True,
+        )
+        d = entry.to_dict()
+        assert d["topic"] == "低空经济"
+        assert d["topic_status"] == TOPIC_STATUS_FERMENTING
+        assert d["policy_level"] == POLICY_LEVEL_MINISTRY
+        assert d["signal_count"] == 5
+        assert d["is_left_side"] is True
+
+
+class TestDefaultTopicDefinitions:
+    def test_has_low_altitude(self):
+        defs = get_default_topic_definitions()
+        topics = [d.topic for d in defs]
+        assert "低空经济" in topics
+
+    def test_has_compute(self):
+        defs = get_default_topic_definitions()
+        topics = [d.topic for d in defs]
+        assert "算力" in topics
+
+    def test_has_semiconductor(self):
+        defs = get_default_topic_definitions()
+        topics = [d.topic for d in defs]
+        assert "半导体设备" in topics
+
+    def test_has_robot(self):
+        defs = get_default_topic_definitions()
+        topics = [d.topic for d in defs]
+        assert "机器人" in topics
+
+    def test_has_new_energy(self):
+        defs = get_default_topic_definitions()
+        topics = [d.topic for d in defs]
+        assert "新能源" in topics
+
+    def test_min_definition_count(self):
+        defs = get_default_topic_definitions()
+        assert len(defs) >= 6
+
+    def test_each_has_keywords(self):
+        defs = get_default_topic_definitions()
+        for d in defs:
+            assert len(d.keywords) > 0, f"Topic {d.topic} has no keywords"
+
+    def test_each_has_chain_segments(self):
+        defs = get_default_topic_definitions()
+        for d in defs:
+            assert len(d.chain_segments) > 0, f"Topic {d.topic} has no chain segments"
+
+    def test_each_has_policy_level(self):
+        defs = get_default_topic_definitions()
+        for d in defs:
+docs/task_runs/H-012-20260614-005948/tests-round1.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  1%]
+................................................ss...................... [  2%]
+........................................................................ [  3%]
+........................................................................ [  5%]
+........................................................................ [  6%]
+........................................................................ [  7%]
+........................................................................ [  8%]
+........................................................................ [ 10%]
+........................................................................ [ 11%]
+........................................................................ [ 12%]
+........................................................................ [ 14%]
+........................................................................ [ 15%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 19%]
+........................................................................ [ 20%]
+........................................................................ [ 21%]
+........................................................................ [ 22%]
+........................................................................ [ 24%]
+........................................................................ [ 25%]
+........................................................................ [ 26%]
+........................................................................ [ 28%]
+........................................................................ [ 29%]
+........................................................................ [ 30%]
+........................................................................ [ 31%]
+........................................................................ [ 33%]
+........................................................................ [ 34%]
+........................................................................ [ 35%]
+........................................................................ [ 37%]
+........................................................................ [ 38%]
+........................................................................ [ 39%]
+........................................................................ [ 40%]
+........................................................................ [ 42%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 45%]
+........................................................................ [ 47%]
+........................................................................ [ 48%]
+.........................................................sssssssss...... [ 49%]
+........................................................................ [ 51%]
+........................................................................ [ 52%]
+........................................................................ [ 53%]
+........................................................................ [ 54%]
+........................................................................ [ 56%]
+........................................................................ [ 57%]
+........................................................................ [ 58%]
+........................................................................ [ 60%]
+........................................................................ [ 61%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+........................................................................ [ 67%]
+........................................................................ [ 68%]
+........................................................................ [ 70%]
+.........................................ss............................. [ 71%]
+....................ssss................................................ [ 72%]
+........................................................................ [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 76%]
+........................................................................ [ 77%]
+........................................................................ [ 79%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+........................................................................ [ 83%]
+........................................................................ [ 84%]
+........................................................................ [ 85%]
+........................................................................ [ 86%]
+........................................................................ [ 88%]
+........................................................................ [ 89%]
+........................................................................ [ 90%]
+........................................................................ [ 91%]
+........................................................................ [ 93%]
+........................................................................ [ 94%]
+........................................................................ [ 95%]
+........................................................................ [ 97%]
+........................................................................ [ 98%]
+........................................................................ [ 99%]
+....................                                                     [100%]
+5619 passed, 17 skipped in 155.45s (0:02:35)
+
+Exit code: 0
+docs/task_runs/H-012-20260614-005948/codegraph-status.json
+{
+  "task_id": "H-012",
+  "generated_at": "2026-06-14T00:59:48.731624",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": false,
+    "version": "0.9.7",
+    "error": "status check failed: error: unknown option '-p'",
+    "files_indexed": 0,
+    "nodes_count": 0
+  },
+  "result": "SKIPPED",
+  "reason": "CodeGraph not indexed",
+  "post_generated_at": "2026-06-14T01:11:45.548835",
+  "codegraph_post": {
+    "available": true,
+    "indexed": false,
+    "version": "0.9.7",
+    "error": "status check failed: error: unknown option '-p'",
+    "files_indexed": 0,
+    "nodes_count": 0
+  },
+  "post_result": "SKIPPED"
+}docs/task_runs/H-012-20260614-005948/prompt-round1.md
+# Task: H-012: 昊天主题注册表与政策版本 Watchlist（P1）
+
+Read task "H-012" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/H-012-20260614-005948/codegraph-context.txt
+# CodeGraph Context: SKIPPED
+# Task: H-012
+# Reason: CodeGraph not indexed
+docs/task_runs/H-012-20260614-005948/README.md
+# H-012 Task Run — 昊天主题注册表与政策版本 Watchlist
+
+- **Task**: H-012
+- **Date**: 2026-06-14
+- **Executor**: OpenCode
+- **Status**: done
+
+## Changed Files
+
+1. `tradingagents/tradeflow/topic_registry.py` (new) — Topic registry module
+2. `tradingagents/tradeflow/candidate_engine.py` — Integration call after H-008
+3. `api/tradeflow_schemas.py` — API response models
+4. `api/services/tradeflow_service.py` — Service functions
+5. `api/main.py` — API endpoints
+6. `tests/test_h012_topic_registry.py` (new) — 113 tests
+7. `docs/DEVLOG.md` — Updated
+8. `docs/TASKS.md` — Status updated
+
+## Key Logic
+
+- 8 pre-defined topics: 低空经济, 算力, 半导体设备, 机器人, 新能源, 国产替代, 并购重组, 出海
+- Each topic has: keywords, aliases, policy level, industry chain segments
+- Topic status maps from H-010 lifecycle: EMERGING→酝酿, ACCELERATING→发酵, CONFIRMING→确认, CROWDED/FADING→退潮
+- Candidate registration: keyword matching via mandate_topic/policy_tags/name
+- Watchlist generation: aggregates candidates per topic, sorted by score, max 5 per topic
+- Note suggestions: `主题｜状态｜级别｜核心X只｜缺口:a/b` — no buy/sell words
+
+## Test Results
+
+- H-012 tests: 113 passed
+- H-008/H-010/H-011 regression: 240 passed
+- Tradeflow full: 136 passed
+docs/task_runs/H-012-20260614-005948/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "### H-012"[90m 1 match[0m
+Let me find the full H-012 task description and also read dependencies H-010 and H-011.
+[0m✱ [0mGrep "### H-010"[90m 1 match[0m
+[0m→ [0mRead docs/TASKS.md[90m [offset=2952, limit=120][0m
+[0m→ [0mRead docs/TASKS.md[90m [offset=1379, limit=120][0m
+[0m
+[0m# [0mTodos
+[•] Understand existing mandate topic/lifecycle code (H-010, H-011, H-008)
+[ ] Create topic registry structure with lifecycle, policy evidence, chain roles
+[ ] Implement topic-candidate mapping and watchlist generation
+[ ] Integrate with H-008 watchlist note suggestions
+[ ] Add API endpoint for topic registry and watchlist
+[ ] Write tests with fixtures for low-altitude/compute/semiconductor topics
+[ ] Run tests and update docs/DEVLOG.md
+[0m
+[0m• [0mExplore mandate topic code[90m Explore Agent[0m
+[0m✓ [0mExplore mandate topic code[90m Explore Agent[0m
+[0m→ [0mRead tradingagents/tradeflow/topic_lifecycle.py
+Now let me read the key files to understand patterns:
+[0m→ [0mRead tradingagents/tradeflow/mandate_watchlist_note.py
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [limit=200, offset=100][0m
+[0m→ [0mRead api/tradeflow_schemas.py
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [limit=140, offset=1110][0m
+Now let me read the candidate engine integration points and the API routes:
+[0m✱ [0mGrep "@router\.(get|post).*tradeflow"[90m 0 matches[0m
+[0m✱ [0mGrep "@router\.(get|post)"[90m in api · 0 matches[0m
+[0m✱ [0mGrep "def get_candidates|def get_daily_plan|def get_data_health"[90m in api · 4 matches[0m
+[0m✱ [0mGrep "@app\.(get|post).*tradeflow"[90m in api · 22 matches[0m
+[0m→ [0mRead api/main.py[90m [limit=100][0m
+[0m→ [0mRead api/main.py[90m [limit=80, offset=5290][0m
+Let me look at an existing tradeflow endpoint pattern and the service layer:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=80, offset=460][0m
+[0m→ [0mRead tradingagents/tradeflow/mandate_quality_report.py[90m [limit=120][0m
+Let me check the quality report module and the `_tf_get` helper functions in main.py:
+[0m✱ [0mGrep "def _tf_get_candidates|def _tf_get_daily_plan"[90m in api/main.py · 0 matches[0m
+[0m✱ [0mGrep "def _tf_get"[90m in api/main.py · 0 matches[0m
+[0m✱ [0mGrep "_tf_get_candidates|_tf_get_daily"[90m in api · 6 matches[0m
+[0m→ [0mRead api/main.py[90m [limit=30, offset=5245][0m
+[0m→ [0mRead tests/test_h010_topic_lifecycle.py[90m [limit=80][0m
+Now let me check the existing test patterns:
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [limit=50][0m
+[0m
+[0m# [0mTodos
+[✓] Understand existing mandate topic/lifecycle code (H-010, H-011, H-008)
+[•] Create topic registry module (topic_registry.py) with registry entries, watchlist, pre-defined topics
+[ ] Integrate topic registry into candidate_engine.py
+[ ] Add API schema and service function for topic registry/watchlist
+[ ] Add API endpoint in main.py
+[ ] Write comprehensive tests with fixtures
+[ ] Run tests and update docs/DEVLOG.md
+[0m
+Now let me create the topic registry module:
+[0m← [0mWrite tradingagents/tradeflow/topic_registry.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[✓] Understand existing mandate topic/lifecycle code (H-010, H-011, H-008)
+[✓] Create topic registry module (topic_registry.py) with registry entries, watchlist, pre-defined topics
+[•] Integrate topic registry into candidate_engine.py
+[ ] Add API schema and service function for topic registry/watchlist
+[ ] Add API endpoint in main.py
+[ ] Write comprehensive tests with fixtures
+[ ] Run tests and update docs/DEVLOG.md
+[0m
+Now let me integrate the topic registry into the candidate engine:
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [limit=30, offset=1][0m
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [limit=30, offset=31][0m
+Let me add the import and the integration call:
+[0m
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -37,8 +37,9 @@
+ from .topic_lifecycle import evaluate_topic_lifecycle, TopicLifecycleResult, apply_lifecycle_to_candidate  # [H-010] mandate_topic_lifecycle
+ from .candidate_contradictions import evaluate_contradictions, ContradictionResult  # [H-011] candidate_contradiction_explainer
+ from .mandate_ta_queue_router import route_to_research_queue, QueueRouteResult  # [H-007] mandate_ta_queue_router
+ from .mandate_watchlist_note import generate_watchlist_note, WatchlistNoteResult  # [H-008] mandate_watchlist_note
++from .topic_registry import get_default_topic_registry  # [H-012] mandate_topic_registry
+ from .score_separation import compute_split_scores  # [TF-QUALITY-002] score_separation
+ 
+ 
+ # ── SQL for table creation ──
+
+[0m
+Now let me add the topic registry registration call after the H-008 watchlist note section:
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [limit=20, offset=1240][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -1244,8 +1244,22 @@
+ candidate.watchlist_consensus_score = wl_result.consensus_score
+ candidate.watchlist_evidence_gap = wl_result.evidence_gap
+ candidate.evidence["watchlist_note"] = wl_result.to_dict()
+ 
++# [H-012] mandate_topic_registry — register candidate to topic registry
++_topic_registry = get_default_topic_registry()
++_topic_registry.register_candidate_topic(
++    topic=candidate.mandate_topic,
++    mandate_topic=candidate.mandate_topic,
++    policy_tags=candidate.policy_tags,
++    name=candidate.name,
++    lifecycle_state=candidate.topic_lifecycle_state,
++    last_signal_date=candidate.topic_last_signal_date,
++    signal_count=candidate.topic_signal_count,
++    evidence_refs=candidate.policy_evidence_refs or candidate.mandate_evidence_refs,
++    candidate_symbol=candidate.symbol,
++)
++
+ # [TF-QUALITY-002] score_separation — compute dimension sub-scores
+ ss_result = compute_split_scores(
+     score=candidate.score,
+docs/task_runs/H-012-20260614-005948/task.md
+# Auto Dev Task Run
+
+- Task: H-012 - 昊天主题注册表与政策版本 Watchlist（P1）
+- Priority: P1
+- Status: CLAIMED
+- Started at: 2026-06-14_00:59:48
+- Git HEAD: e7a1878
+- Test commands: pytest tests/ -q --tb=short
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/H-012-20260614-005948/codegraph-impact.txt
+# CodeGraph Impact: SKIPPED
+# Reason: CodeGraph not indexed
+
+exec
+/bin/zsh -lc "sed -n '241,520p' tradingagents/tradeflow/topic_registry.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# ── Pre-defined topic definitions ────────────────────────────────────
+
+_DEFAULT_TOPIC_DEFINITIONS: list[TopicDefinition] = [
+    TopicDefinition(
+        topic="低空经济",
+        aliases=["eVTOL", "无人机", "低空"],
+        policy_level=POLICY_LEVEL_MINISTRY,
+        keywords=["低空经济", "eVTOL", "无人机", "飞行汽车", "空中出租车", "低空空域"],
+        chain_segments=[
+            ChainSegment(name="整机制造", role="核心整机", example_symbols=[]),
+            ChainSegment(name="动力系统", role="电机/电池", example_symbols=[]),
+            ChainSegment(name="航电系统", role="飞控/导航", example_symbols=[]),
+            ChainSegment(name="空管基础设施", role="通信/导航/监视", example_symbols=[]),
+        ],
+        description="低空经济产业：eVTOL、无人机、低空空域管理与基础设施。",
+    ),
+    TopicDefinition(
+        topic="算力",
+        aliases=["AI算力", "智算中心", "GPU"],
+        policy_level=POLICY_LEVEL_MINISTRY,
+        keywords=["算力", "智算中心", "GPU", "AI芯片", "数据中心", "液冷", "光模块", "东数西算"],
+        chain_segments=[
+            ChainSegment(name="AI芯片", role="GPU/ASIC", example_symbols=[]),
+            ChainSegment(name="光模块", role="光互联", example_symbols=[]),
+            ChainSegment(name="服务器", role="AI服务器", example_symbols=[]),
+            ChainSegment(name="液冷散热", role="热管理", example_symbols=[]),
+            ChainSegment(name="IDC运营", role="数据中心", example_symbols=[]),
+        ],
+        description="算力基础设施：AI芯片、光模块、服务器、数据中心、液冷。",
+    ),
+    TopicDefinition(
+        topic="半导体设备",
+        aliases=["半导体", "国产替代", "芯片设备"],
+        policy_level=POLICY_LEVEL_MINISTRY,
+        keywords=["半导体设备", "光刻", "刻蚀", "薄膜沉积", "离子注入", "量测", "国产替代", "芯片制造"],
+        chain_segments=[
+            ChainSegment(name="刻蚀设备", role="核心工艺设备", example_symbols=[]),
+            ChainSegment(name="薄膜沉积", role="CVD/PVD", example_symbols=[]),
+            ChainSegment(name="光刻设备", role="核心前道光刻", example_symbols=[]),
+            ChainSegment(name="量测设备", role="检测/量测", example_symbols=[]),
+            ChainSegment(name="清洗设备", role="清洗/湿法", example_symbols=[]),
+        ],
+        description="半导体设备国产替代：刻蚀、薄膜、光刻、量测、清洗。",
+    ),
+    TopicDefinition(
+        topic="机器人",
+        aliases=["人形机器人", "工业机器人", "具身智能"],
+        policy_level=POLICY_LEVEL_MINISTRY,
+        keywords=["机器人", "人形机器人", "具身智能", "减速器", "伺服", "机器视觉", "谐波减速器"],
+        chain_segments=[
+            ChainSegment(name="减速器", role="核心零部件", example_symbols=[]),
+            ChainSegment(name="伺服系统", role="动力控制", example_symbols=[]),
+            ChainSegment(name="机器视觉", role="感知", example_symbols=[]),
+            ChainSegment(name="整机制造", role="本体", example_symbols=[]),
+        ],
+        description="机器人产业：人形机器人、核心零部件（减速器、伺服）、机器视觉。",
+    ),
+    TopicDefinition(
+        topic="新能源",
+        aliases=["光伏", "风电", "储能", "锂电"],
+        policy_level=POLICY_LEVEL_MINISTRY,
+        keywords=["光伏", "风电", "储能", "锂电池", "新能源", "HJT", "TOPCon", "钠离子电池", "固态电池"],
+        chain_segments=[
+            ChainSegment(name="光伏", role="硅片/电池/组件", example_symbols=[]),
+            ChainSegment(name="锂电池", role="正负极/电解液/隔膜", example_symbols=[]),
+            ChainSegment(name="储能", role="储能系统集成", example_symbols=[]),
+            ChainSegment(name="风电", role="风机/塔筒/海风", example_symbols=[]),
+        ],
+        description="新能源：光伏、锂电、储能、风电产业链。",
+    ),
+    TopicDefinition(
+        topic="国产替代",
+        aliases=["自主可控", "信创"],
+        policy_level=POLICY_LEVEL_CENTRAL,
+        keywords=["国产替代", "自主可控", "信创", "国产软件", "操作系统", "数据库", "EDA"],
+        chain_segments=[
+            ChainSegment(name="基础软件", role="OS/数据库", example_symbols=[]),
+            ChainSegment(name="EDA工具", role="芯片设计工具", example_symbols=[]),
+            ChainSegment(name="应用软件", role="行业应用", example_symbols=[]),
+        ],
+        description="国产替代/信创：操作系统、数据库、EDA、行业软件。",
+    ),
+    TopicDefinition(
+        topic="并购重组",
+        aliases=["重组", "借壳"],
+        policy_level=POLICY_LEVEL_CENTRAL,
+        keywords=["并购重组", "重大资产重组", "借壳", "吸收合并", "分拆上市"],
+        chain_segments=[
+            ChainSegment(name="央国企重组", role="集团整合", example_symbols=[]),
+            ChainSegment(name="产业并购", role="同业整合", example_symbols=[]),
+        ],
+        description="并购重组：央企整合、产业并购、分拆上市。",
+    ),
+    TopicDefinition(
+        topic="出海",
+        aliases=["海外扩张", "国际化"],
+        policy_level=POLICY_LEVEL_INDUSTRY,
+        keywords=["出海", "海外", "国际化", "跨境电商", "海外建厂", "一带一路"],
+        chain_segments=[
+            ChainSegment(name="汽车出海", role="整车出口", example_symbols=[]),
+            ChainSegment(name="跨境电商", role="出海零售", example_symbols=[]),
+            ChainSegment(name="工程出海", role="海外工程", example_symbols=[]),
+        ],
+        description="企业出海：汽车出口、跨境电商、海外工程。",
+    ),
+]
+
+
+def get_default_topic_definitions() -> list[TopicDefinition]:
+    """Return the default pre-defined topic definitions."""
+    return list(_DEFAULT_TOPIC_DEFINITIONS)
+
+
+def match_topic_from_text(
+    text: str,
+    definitions: Optional[list[TopicDefinition]] = None,
+) -> str:
+    """Match a topic from text using keyword/alias matching.
+
+    Returns the topic name or empty string if no match.
+    """
+    if not text:
+        return ""
+    defs = definitions if definitions is not None else _DEFAULT_TOPIC_DEFINITIONS
+    text_lower = text.lower()
+    for d in defs:
+        for kw in d.keywords:
+            if kw and kw in text:
+                return d.topic
+        for alias in d.aliases:
+            if alias and alias.lower() in text_lower:
+                return d.topic
+    return ""
+
+
+def match_topic(
+    mandate_topic: str = "",
+    policy_tags: Optional[list[str]] = None,
+    name: str = "",
+    definitions: Optional[list[TopicDefinition]] = None,
+) -> str:
+    """Match topic from mandate_topic, policy_tags, or name.
+
+    Priority: explicit mandate_topic > policy_tags keyword > name keyword.
+    """
+    if mandate_topic:
+        defs = definitions if definitions is not None else _DEFAULT_TOPIC_DEFINITIONS
+        all_topics = {d.topic for d in defs}
+        if mandate_topic in all_topics:
+            return mandate_topic
+
+    for tag in (policy_tags or []):
+        matched = match_topic_from_text(tag, definitions)
+        if matched:
+            return matched
+
+    if mandate_topic:
+        matched = match_topic_from_text(mandate_topic, definitions)
+        if matched:
+            return matched
+
+    if name:
+        matched = match_topic_from_text(name, definitions)
+        if matched:
+            return matched
+
+    return mandate_topic or ""
+
+
+# ── Topic Registry ────────────────────────────────────────────────────
+
+class TopicRegistry:
+    """In-memory registry of topic entries."""
+
+    def __init__(self, definitions: Optional[list[TopicDefinition]] = None) -> None:
+        self._definitions: dict[str, TopicDefinition] = {}
+        self._entries: dict[str, TopicRegistryEntry] = {}
+        for d in (definitions or _DEFAULT_TOPIC_DEFINITIONS):
+            self._definitions[d.topic] = d
+
+    def get_definition(self, topic: str) -> Optional[TopicDefinition]:
+        return self._definitions.get(topic)
+
+    def get_definition_by_alias(self, text: str) -> Optional[TopicDefinition]:
+        """Find a definition by matching text against keywords/aliases."""
+        matched = match_topic_from_text(text, list(self._definitions.values()))
+        if matched:
+            return self._definitions.get(matched)
+        return None
+
+    def all_definitions(self) -> dict[str, TopicDefinition]:
+        return dict(self._definitions)
+
+    def register_candidate_topic(
+        self,
+        topic: str = "",
+        mandate_topic: str = "",
+        policy_tags: Optional[list[str]] = None,
+        name: str = "",
+        lifecycle_state: str = "",
+        last_signal_date: str = "",
+        signal_count: int = 0,
+        evidence_refs: Optional[list[dict]] = None,
+        policy_level: str = "",
+        candidate_symbol: str = "",
+    ) -> TopicRegistryEntry:
+        """Register or update a topic entry from a candidate.
+
+        Returns the updated TopicRegistryEntry.
+        """
+        resolved = match_topic(
+            mandate_topic=mandate_topic or topic,
+            policy_tags=policy_tags,
+            name=name,
+            definitions=list(self._definitions.values()),
+        )
+        if not resolved:
+            resolved = mandate_topic or topic
+
+        if not resolved:
+            return TopicRegistryEntry()
+
+        entry = self._entries.get(resolved)
+        if entry is None:
+            definition = self._definitions.get(resolved)
+            entry = TopicRegistryEntry(
+                topic=resolved,
+                policy_level=policy_level or (definition.policy_level if definition else POLICY_LEVEL_UNKNOWN),
+                chain_segments=list(definition.chain_segments) if definition else [],
+                definition=definition,
+            )
+            self._entries[resolved] = entry
+
+        if candidate_symbol and candidate_symbol not in entry.matched_candidates:
+            entry.matched_candidates.append(candidate_symbol)
+
+        if signal_count > entry.signal_count:
+            entry.signal_count = signal_count
+
+        if last_signal_date and last_signal_date > entry.last_signal_date:
+            entry.last_signal_date = last_signal_date
+
+        ev_refs = evidence_refs or []
+        for ref in ev_refs:
+            title = ref.get("title", "")
+            source = ref.get("source", "")
+            date = ref.get("date", "")
+            url = ref.get("url", "")
+            link_entry = {"title": title, "source": source, "date": date, "url": url}
+            if link_entry not in entry.evidence_links:
+                entry.evidence_links.append(link_entry)
+        entry.evidence_links = entry.evidence_links[:20]
+
+        if ev_refs:
+            titles = [r.get("title", "") for r in ev_refs if r.get("title")]
+            if titles:
+                existing = entry.evidence_summary
+                new_titles = "; ".join(titles[:3])
+                if new_titles not in existing:
+                    entry.evidence_summary = f"{existing}; {new_titles}".strip("; ").strip() if existing else new_titles
+
+        if policy_level:
+            current_weight = _POLICY_LEVEL_WEIGHTS.get(entry.policy_level, 0)
+            new_weight = _POLICY_LEVEL_WEIGHTS.get(policy_level, 0)
+            if new_weight > current_weight:
+                entry.policy_level = policy_level
+
+        if lifecycle_state:
+            entry.lifecycle_state = lifecycle_state
+
+        entry.topic_status = _lifecycle_to_status(entry.lifecycle_state)
+        entry.topic_status_label = _TOPIC_STATUS_LABELS.get(entry.topic_status, "未知")
+        entry.is_left_side = entry.topic_status in _LEFT_SIDE_STATUSES
+        entry.is_observe_only = entry.topic_status in _OBSERVE_ONLY_STATUSES
+        entry.is_confirmed = entry.topic_status in _CONFIRM_STATUSES
+
+        entry.update_count += 1
+        return entry
+
+    def get(self, topic: str) -> Optional[TopicRegistryEntry]:
+
+exec
+/bin/zsh -lc "sed -n '520,920p' tradingagents/tradeflow/topic_registry.py && sed -n '240,520p' tests/test_h012_topic_registry.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    def get(self, topic: str) -> Optional[TopicRegistryEntry]:
+        return self._entries.get(topic)
+
+    def get_or_create(self, topic: str) -> TopicRegistryEntry:
+        if topic not in self._entries:
+            definition = self._definitions.get(topic)
+            self._entries[topic] = TopicRegistryEntry(
+                topic=topic,
+                policy_level=definition.policy_level if definition else POLICY_LEVEL_UNKNOWN,
+                chain_segments=list(definition.chain_segments) if definition else [],
+                definition=definition,
+            )
+        return self._entries[topic]
+
+    def all_entries(self) -> dict[str, TopicRegistryEntry]:
+        return dict(self._entries)
+
+    def to_dict(self) -> dict:
+        return {topic: entry.to_dict() for topic, entry in self._entries.items()}
+
+    def clear(self) -> None:
+        self._entries.clear()
+
+
+_DEFAULT_TOPIC_REGISTRY = TopicRegistry()
+
+
+def get_default_topic_registry() -> TopicRegistry:
+    return _DEFAULT_TOPIC_REGISTRY
+
+
+# ── Topic status helpers ──────────────────────────────────────────────
+
+def get_topic_status_label(status: str) -> str:
+    return _TOPIC_STATUS_LABELS.get(status, "未知")
+
+
+def is_topic_left_side(status: str) -> bool:
+    return status in _LEFT_SIDE_STATUSES
+
+
+def is_topic_observe_only(status: str) -> bool:
+    return status in _OBSERVE_ONLY_STATUSES
+
+
+# ── Watchlist note suggestion ─────────────────────────────────────────
+
+_FORBIDDEN_WORDS = {"买入", "卖出", "清仓", "满仓", "梭哈", "加仓", "减仓"}
+
+
+def _sanitize_note(text: str) -> str:
+    for w in _FORBIDDEN_WORDS:
+        text = text.replace(w, "***")
+    return text
+
+
+def suggest_topic_watchlist_note(
+    topic: str = "",
+    topic_status: str = TOPIC_STATUS_UNKNOWN,
+    policy_level: str = POLICY_LEVEL_UNKNOWN,
+    symbol_count: int = 0,
+    top_symbol: str = "",
+    top_role: str = "",
+    evidence_gaps: Optional[list[str]] = None,
+) -> str:
+    """Generate a short note suggestion for a topic watchlist entry.
+
+    Format: `主题｜状态｜级别｜核心X只｜缺口:a/b`
+
+    Does NOT contain buy/sell suggestions.
+    Does NOT overwrite user notes.
+    """
+    if not topic:
+        return ""
+
+    parts: list[str] = [topic]
+
+    status_label = _TOPIC_STATUS_LABELS.get(topic_status, "未知")
+    parts.append(status_label)
+
+    level_map = {
+        POLICY_LEVEL_CENTRAL: "中央",
+        POLICY_LEVEL_MINISTRY: "部委",
+        POLICY_LEVEL_LOCAL: "地方",
+        POLICY_LEVEL_INDUSTRY: "行业",
+        POLICY_LEVEL_MEDIA: "媒体",
+        POLICY_LEVEL_UNKNOWN: "未知级别",
+    }
+    level_label = level_map.get(policy_level, "未知级别")
+    parts.append(level_label)
+
+    if symbol_count > 0:
+        parts.append(f"核心{symbol_count}只")
+    else:
+        parts.append("暂无候选")
+
+    if top_symbol and top_role:
+        parts.append(f"标杆:{top_symbol}({top_role})")
+
+    gaps = evidence_gaps or []
+    if gaps:
+        parts.append(f"缺口:{'/'.join(gaps[:3])}")
+
+    return _sanitize_note("｜".join(parts))
+
+
+# ── Watchlist generation ──────────────────────────────────────────────
+
+def build_topic_watchlist(
+    candidates: list[dict],
+    registry: Optional[TopicRegistry] = None,
+    max_symbols_per_topic: int = 5,
+) -> TopicWatchlistResult:
+    """Build a per-topic watchlist from candidate dicts.
+
+    Each candidate dict should have fields like:
+      symbol, name, mandate_topic, policy_tags, company_role,
+      beneficiary_path, mandate_score_component, tier,
+      blocking_evidence_gaps, watchlist_evidence_gap,
+      topic_lifecycle_state, topic_signal_count, topic_last_signal_date,
+      policy_evidence_refs.
+
+    Returns TopicWatchlistResult with per-topic entries.
+    """
+    reg = registry if registry is not None else get_default_topic_registry()
+
+    topic_candidates: dict[str, list[dict]] = {}
+
+    for cand in candidates:
+        topic = match_topic(
+            mandate_topic=cand.get("mandate_topic", ""),
+            policy_tags=cand.get("policy_tags"),
+            name=cand.get("name", ""),
+            definitions=list(reg.all_definitions().values()),
+        )
+        if not topic:
+            topic = cand.get("mandate_topic", "")
+        if not topic:
+            continue
+
+        if topic not in topic_candidates:
+            topic_candidates[topic] = []
+        topic_candidates[topic].append(cand)
+
+        evidence_refs = cand.get("policy_evidence_refs") or cand.get("mandate_evidence_refs") or []
+        policy_level = ""
+        for ref in evidence_refs:
+            sl = ref.get("source_level", "")
+            if sl in ("CENTRAL", "STATE_COUNCIL"):
+                policy_level = POLICY_LEVEL_CENTRAL
+                break
+            elif sl in ("MINISTRY",) and not policy_level:
+                policy_level = POLICY_LEVEL_MINISTRY
+            elif sl in ("LOCAL",) and not policy_level:
+                policy_level = POLICY_LEVEL_LOCAL
+
+        reg.register_candidate_topic(
+            topic=topic,
+            mandate_topic=cand.get("mandate_topic", ""),
+            policy_tags=cand.get("policy_tags"),
+            name=cand.get("name", ""),
+            lifecycle_state=cand.get("topic_lifecycle_state", ""),
+            last_signal_date=cand.get("topic_last_signal_date", ""),
+            signal_count=cand.get("topic_signal_count", 0),
+            evidence_refs=evidence_refs,
+            policy_level=policy_level,
+            candidate_symbol=cand.get("symbol", ""),
+        )
+
+    watchlist_topics: list[TopicWatchlistEntry] = []
+    total_symbols = 0
+
+    for topic, topic_cands in topic_candidates.items():
+        entry = reg.get(topic)
+        definition = reg.get_definition(topic)
+
+        sorted_cands = sorted(
+            topic_cands,
+            key=lambda c: c.get("mandate_score_component", c.get("composite_score", 0.0)),
+            reverse=True,
+        )
+        top_cands = sorted_cands[:max_symbols_per_topic]
+
+        watch_symbols: list[TopicWatchlistSymbol] = []
+        for cand in top_cands:
+            gaps = cand.get("blocking_evidence_gaps") or cand.get("watchlist_evidence_gap") or []
+            note = suggest_topic_watchlist_note(
+                topic=topic,
+                topic_status=entry.topic_status if entry else TOPIC_STATUS_UNKNOWN,
+                policy_level=entry.policy_level if entry else POLICY_LEVEL_UNKNOWN,
+                symbol_count=len(top_cands),
+                top_symbol=cand.get("symbol", ""),
+                top_role=cand.get("company_role", ""),
+                evidence_gaps=gaps,
+            )
+            watch_symbols.append(TopicWatchlistSymbol(
+                symbol=cand.get("symbol", ""),
+                name=cand.get("name", ""),
+                company_role=cand.get("company_role", ""),
+                beneficiary_path=cand.get("beneficiary_path", []),
+                mandate_score=cand.get("mandate_score_component", cand.get("composite_score", 0.0)),
+                tier=cand.get("tier", ""),
+                evidence_gaps=gaps,
+                note_suggestion=note,
+            ))
+            total_symbols += 1
+
+        counter_evidence_gaps: list[str] = []
+        seen_gaps: set[str] = set()
+        for cand in topic_cands:
+            for g in (cand.get("blocking_evidence_gaps") or []):
+                if g and g not in seen_gaps:
+                    counter_evidence_gaps.append(g)
+                    seen_gaps.add(g)
+                    if len(counter_evidence_gaps) >= 5:
+                        break
+            if len(counter_evidence_gaps) >= 5:
+                break
+
+        topic_note = suggest_topic_watchlist_note(
+            topic=topic,
+            topic_status=entry.topic_status if entry else TOPIC_STATUS_UNKNOWN,
+            policy_level=entry.policy_level if entry else POLICY_LEVEL_UNKNOWN,
+            symbol_count=len(top_cands),
+            top_symbol=top_cands[0].get("symbol", "") if top_cands else "",
+            top_role=top_cands[0].get("company_role", "") if top_cands else "",
+            evidence_gaps=counter_evidence_gaps,
+        )
+
+        chain_segments = []
+        if entry and entry.chain_segments:
+            chain_segments = list(entry.chain_segments)
+        elif definition:
+            chain_segments = list(definition.chain_segments)
+
+        watchlist_topics.append(TopicWatchlistEntry(
+            topic=topic,
+            topic_status=entry.topic_status if entry else TOPIC_STATUS_UNKNOWN,
+            topic_status_label=entry.topic_status_label if entry else "未知",
+            policy_level=entry.policy_level if entry else POLICY_LEVEL_UNKNOWN,
+            is_left_side=entry.is_left_side if entry else False,
+            is_observe_only=entry.is_observe_only if entry else False,
+            symbols=watch_symbols,
+            chain_segments=chain_segments,
+            counter_evidence_gaps=counter_evidence_gaps,
+            note_suggestion=topic_note,
+        ))
+
+    status_order = {
+        TOPIC_STATUS_BREWING: 0,
+        TOPIC_STATUS_FERMENTING: 1,
+        TOPIC_STATUS_CONFIRMING: 2,
+        TOPIC_STATUS_DELIVERING: 3,
+        TOPIC_STATUS_RECEDING: 4,
+        TOPIC_STATUS_UNKNOWN: 5,
+    }
+    watchlist_topics.sort(key=lambda t: (status_order.get(t.topic_status, 9), -len(t.symbols)))
+
+    return TopicWatchlistResult(
+        topics=watchlist_topics,
+        total_topics=len(watchlist_topics),
+        total_symbols=total_symbols,
+    )
+        for d in defs:
+            assert d.policy_level != POLICY_LEVEL_UNKNOWN, f"Topic {d.topic} has unknown policy level"
+
+    def test_low_altitude_keywords(self):
+        defs = get_default_topic_definitions()
+        la_def = next(d for d in defs if d.topic == "低空经济")
+        assert "低空经济" in la_def.keywords
+        assert "eVTOL" in la_def.keywords
+
+    def test_compute_keywords(self):
+        defs = get_default_topic_definitions()
+        comp_def = next(d for d in defs if d.topic == "算力")
+        assert "算力" in comp_def.keywords
+        assert "光模块" in comp_def.keywords
+
+    def test_semiconductor_keywords(self):
+        defs = get_default_topic_definitions()
+        semi_def = next(d for d in defs if d.topic == "半导体设备")
+        assert "半导体设备" in semi_def.keywords
+        assert "刻蚀" in semi_def.keywords
+
+
+class TestMatchTopicFromText:
+    def test_match_low_altitude(self):
+        assert match_topic_from_text("低空经济政策发布") == "低空经济"
+
+    def test_match_compute(self):
+        assert match_topic_from_text("算力中心建设加速") == "算力"
+
+    def test_match_semiconductor(self):
+        assert match_topic_from_text("刻蚀设备国产化") == "半导体设备"
+
+    def test_match_robot(self):
+        assert match_topic_from_text("人形机器人量产") == "机器人"
+
+    def test_match_new_energy(self):
+        assert match_topic_from_text("光伏产业链景气") == "新能源"
+
+    def test_no_match(self):
+        assert match_topic_from_text("某公司公告") == ""
+
+    def test_empty_text(self):
+        assert match_topic_from_text("") == ""
+
+    def test_match_by_alias(self):
+        assert match_topic_from_text("eVTOL concept stocks") == "低空经济"
+
+    def test_match_keyword_in_longer_text(self):
+        assert match_topic_from_text("国务院发布低空空域管理改革意见") == "低空经济"
+
+
+class TestMatchTopic:
+    def test_explicit_topic(self):
+        result = match_topic(mandate_topic="算力")
+        assert result == "算力"
+
+    def test_from_policy_tags(self):
+        result = match_topic(policy_tags=["低空经济政策"])
+        assert result == "低空经济"
+
+    def test_from_name(self):
+        result = match_topic(name="某低空经济概念股")
+        assert result == "低空经济"
+
+    def test_priority_mandate_topic(self):
+        result = match_topic(mandate_topic="算力", policy_tags=["低空经济政策"])
+        assert result == "算力"
+
+    def test_unmatched_returns_mandate_topic(self):
+        result = match_topic(mandate_topic="自定义主题X")
+        assert result == "自定义主题X"
+
+    def test_empty_all(self):
+        assert match_topic() == ""
+
+    def test_keyword_fallback_for_unregistered_topic(self):
+        result = match_topic(mandate_topic="低空经济试点城市")
+        assert result == "低空经济"
+
+
+class TestTopicRegistry:
+    def setup_method(self):
+        self.registry = TopicRegistry()
+
+    def test_empty_registry(self):
+        assert self.registry.all_entries() == {}
+
+    def test_get_or_create(self):
+        entry = self.registry.get_or_create("算力")
+        assert entry.topic == "算力"
+        assert entry.policy_level == POLICY_LEVEL_MINISTRY  # from default definition
+
+    def test_get_or_create_idempotent(self):
+        e1 = self.registry.get_or_create("算力")
+        e2 = self.registry.get_or_create("算力")
+        assert e1 is e2
+
+    def test_get_existing(self):
+        self.registry.get_or_create("算力")
+        entry = self.registry.get("算力")
+        assert entry is not None
+        assert entry.topic == "算力"
+
+    def test_get_nonexistent(self):
+        assert self.registry.get("不存在") is None
+
+    def test_register_candidate_basic(self):
+        entry = self.registry.register_candidate_topic(
+            topic="低空经济",
+            mandate_topic="低空经济",
+            candidate_symbol="600000.SH",
+            signal_count=3,
+            last_signal_date="2026-06-10",
+        )
+        assert entry.topic == "低空经济"
+        assert entry.signal_count == 3
+        assert entry.last_signal_date == "2026-06-10"
+        assert "600000.SH" in entry.matched_candidates
+
+    def test_register_updates_signal_count_max(self):
+        self.registry.register_candidate_topic(
+            topic="算力", candidate_symbol="000001.SZ", signal_count=3,
+        )
+        entry = self.registry.register_candidate_topic(
+            topic="算力", candidate_symbol="000002.SZ", signal_count=5,
+        )
+        assert entry.signal_count == 5
+
+    def test_register_does_not_decrease_signal_count(self):
+        self.registry.register_candidate_topic(
+            topic="算力", candidate_symbol="000001.SZ", signal_count=5,
+        )
+        entry = self.registry.register_candidate_topic(
+            topic="算力", candidate_symbol="000002.SZ", signal_count=2,
+        )
+        assert entry.signal_count == 5
+
+    def test_register_updates_last_signal_date(self):
+        self.registry.register_candidate_topic(
+            topic="算力", candidate_symbol="A", last_signal_date="2026-06-01",
+        )
+        entry = self.registry.register_candidate_topic(
+            topic="算力", candidate_symbol="B", last_signal_date="2026-06-10",
+        )
+        assert entry.last_signal_date == "2026-06-10"
+
+    def test_register_accumulates_candidates(self):
+        self.registry.register_candidate_topic(topic="算力", candidate_symbol="A")
+        self.registry.register_candidate_topic(topic="算力", candidate_symbol="B")
+        entry = self.registry.get("算力")
+        assert set(entry.matched_candidates) == {"A", "B"}
+
+    def test_register_no_duplicate_candidate(self):
+        self.registry.register_candidate_topic(topic="算力", candidate_symbol="A")
+        self.registry.register_candidate_topic(topic="算力", candidate_symbol="A")
+        entry = self.registry.get("算力")
+        assert entry.matched_candidates.count("A") == 1
+
+    def test_register_with_evidence_refs(self):
+        refs = [
+            {"title": "低空经济政策", "source": "国务院", "date": "2026-06-01", "url": ""},
+            {"title": "eVTOL产业规划", "source": "工信部", "date": "2026-06-05", "url": ""},
+        ]
+        entry = self.registry.register_candidate_topic(
+            topic="低空经济", candidate_symbol="A", evidence_refs=refs,
+        )
+        assert len(entry.evidence_links) == 2
+        assert entry.evidence_summary != ""
+
+    def test_register_deduplicates_evidence(self):
+        ref = {"title": "政策A", "source": "国务院", "date": "2026-06-01", "url": ""}
+        self.registry.register_candidate_topic(topic="低空经济", candidate_symbol="A", evidence_refs=[ref])
+        entry = self.registry.register_candidate_topic(topic="低空经济", candidate_symbol="B", evidence_refs=[ref])
+        assert len(entry.evidence_links) == 1
+
+    def test_register_evidence_link_cap(self):
+        refs = [{"title": f"政策{i}", "source": "国务院", "date": "2026-06-01", "url": ""} for i in range(25)]
+        entry = self.registry.register_candidate_topic(topic="低空经济", candidate_symbol="A", evidence_refs=refs)
+        assert len(entry.evidence_links) <= 20
+
+    def test_register_policy_level_upgrade(self):
+        self.registry.register_candidate_topic(
+            topic="低空经济", candidate_symbol="A", policy_level=POLICY_LEVEL_LOCAL,
+        )
+        entry = self.registry.register_candidate_topic(
+            topic="低空经济", candidate_symbol="B", policy_level=POLICY_LEVEL_CENTRAL,
+        )
+        assert entry.policy_level == POLICY_LEVEL_CENTRAL
+
+    def test_register_policy_level_no_downgrade(self):
+        self.registry.register_candidate_topic(
+            topic="低空经济", candidate_symbol="A", policy_level=POLICY_LEVEL_CENTRAL,
+        )
+        entry = self.registry.register_candidate_topic(
+            topic="低空经济", candidate_symbol="B", policy_level=POLICY_LEVEL_LOCAL,
+        )
+        assert entry.policy_level == POLICY_LEVEL_CENTRAL
+
+    def test_register_lifecycle_to_status(self):
+        entry = self.registry.register_candidate_topic(
+            topic="算力", candidate_symbol="A", lifecycle_state="ACCELERATING",
+        )
+        assert entry.topic_status == TOPIC_STATUS_FERMENTING
+        assert entry.is_left_side is True
+
+    def test_register_observe_only_status(self):
+        entry = self.registry.register_candidate_topic(
+            topic="算力", candidate_symbol="A", lifecycle_state="CROWDED",
+        )
+        assert entry.topic_status == TOPIC_STATUS_RECEDING
+        assert entry.is_observe_only is True
+
+    def test_register_confirmed_status(self):
+        entry = self.registry.register_candidate_topic(
+            topic="算力", candidate_symbol="A", lifecycle_state="CONFIRMING",
+        )
+        assert entry.topic_status == TOPIC_STATUS_CONFIRMING
+        assert entry.is_confirmed is True
+
+    def test_chain_segments_from_definition(self):
+        entry = self.registry.register_candidate_topic(topic="算力", candidate_symbol="A")
+        assert len(entry.chain_segments) > 0
+
+    def test_clear(self):
+        self.registry.register_candidate_topic(topic="算力", candidate_symbol="A")
+        self.registry.clear()
+        assert self.registry.all_entries() == {}
+
+    def test_to_dict(self):
+        self.registry.register_candidate_topic(topic="算力", candidate_symbol="A")
+        d = self.registry.to_dict()
+        assert "算力" in d
+
+    def test_all_definitions(self):
+        defs = self.registry.all_definitions()
+        assert "低空经济" in defs
+        assert "算力" in defs
+
+    def test_get_definition(self):
+        d = self.registry.get_definition("算力")
+        assert d is not None
+        assert d.topic == "算力"
+
+    def test_get_definition_nonexistent(self):
+        assert self.registry.get_definition("不存在") is None
+
+    def test_match_by_keyword_via_mandate_topic(self):
+        entry = self.registry.register_candidate_topic(
+            mandate_topic="低空经济试点",
+            candidate_symbol="A",
+        )
+        assert entry.topic == "低空经济"
+
+    def test_match_by_policy_tags(self):
+        entry = self.registry.register_candidate_topic(
+            mandate_topic="",
+            policy_tags=["低空经济概念"],
+            candidate_symbol="A",
+        )
+        assert entry.topic == "低空经济"
+
+    def test_empty_topic_noop(self):
+        entry = self.registry.register_candidate_topic(topic="", candidate_symbol="A")
+        assert entry.topic == ""
+
+    def test_update_count_increments(self):
+        self.registry.register_candidate_topic(topic="算力", candidate_symbol="A")
+        self.registry.register_candidate_topic(topic="算力", candidate_symbol="B")
+        entry = self.registry.get("算力")
+        assert entry.update_count == 2
+
+
+class TestTopicStatusHelpers:
+    def test_get_label(self):
+        assert get_topic_status_label(TOPIC_STATUS_BREWING) == "酝酿"
+        assert get_topic_status_label(TOPIC_STATUS_UNKNOWN) == "未知"
+
+    def test_is_left_side(self):
+        assert is_topic_left_side(TOPIC_STATUS_BREWING) is True
+        assert is_topic_left_side(TOPIC_STATUS_FERMENTING) is True
+        assert is_topic_left_side(TOPIC_STATUS_RECEDING) is False
+
+exec
+/bin/zsh -lc "grep -R \"mandate_score_component\" -n . | head -20 && grep -R \"mandate_score\" -n tradingagents api | head -50 && grep -n \"def _row_to_candidate_item\" -n api/services/tradeflow_service.py && sed -n '1,160p' api/services/tradeflow_service.py && sed -n '160,320p' api/services/tradeflow_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 4913ms:
+./tests/test_h006_mandate_replay_eval.py:317:        assert f.mandate_score_component >= 40
+./tests/test_h006_mandate_replay_eval.py:339:        assert f.mandate_score_component < 20
+./tests/test_h006_mandate_replay_eval.py:380:        assert f.mandate_score_component == 0.0
+./tests/test_h006_mandate_replay_eval.py:785:        assert f.mandate_score_component > 0
+./tests/test_h006_mandate_replay_eval.py:836:            mandate_score_component=70.0,
+./tests/test_tf_quality001_pool_gate.py:31:    mandate_score_component=0,
+./tests/test_tf_quality001_pool_gate.py:55:        "mandate_score_component": mandate_score_component,
+./tests/test_tf_quality001_pool_gate.py:138:            mandate_score_component=50,
+./tests/test_tf_quality001_pool_gate.py:144:        e = _make_entry(candidate_type="POLICY_AMBUSH", mandate_score_component=50, counter_evidence=[{"severity": "high"}])
+./tests/test_tf_quality001_pool_gate.py:154:            mandate_score_component=50,
+./tests/test_tf_quality001_pool_gate.py:223:            mandate_score_component=50,
+./tests/test_tf_quality001_pool_gate.py:532:            mandate_score_component=60,
+./tests/test_tf_quality001_pool_gate.py:653:            mandate_score_component=60,
+./tests/test_tf_quality001_pool_gate.py:669:            mandate_score_component=0,
+./tests/test_tf_quality001_pool_gate.py:686:            mandate_score_component=60,
+./tests/test_tf_quality001_pool_gate.py:703:            mandate_score_component=60,
+./tests/test_tf_quality001_pool_gate.py:726:            mandate_score_component=0,
+./tests/test_tf_quality001_pool_gate.py:833:                    mandate_score_component=60,
+./tests/test_tf_quality001_pool_gate.py:859:                    mandate_score_component=0,
+./tests/test_tf_quality001_pool_gate.py:943:            mandate_score_component=0,
+tradingagents/tradeflow/candidate_engine.py:213:    ("mandate_score_component", "REAL DEFAULT 0.0"),
+tradingagents/tradeflow/candidate_engine.py:458:        ("mandate_score_component", "REAL DEFAULT 0.0"),
+tradingagents/tradeflow/candidate_engine.py:1008:        mandate_score=candidate.version_score,
+tradingagents/tradeflow/candidate_engine.py:1045:    candidate.mandate_score_component = ambush_result.mandate_score_component
+tradingagents/tradeflow/candidate_engine.py:1061:        "mandate_score_component": ambush_result.mandate_score_component,
+tradingagents/tradeflow/candidate_engine.py:1148:        mandate_score=candidate.mandate_score_component,
+tradingagents/tradeflow/candidate_engine.py:1170:        mandate_score_component=candidate.mandate_score_component,
+tradingagents/tradeflow/candidate_engine.py:1204:        mandate_score_component=ambush_result.mandate_score_component,
+tradingagents/tradeflow/candidate_engine.py:1226:        mandate_score_component=ambush_result.mandate_score_component,
+tradingagents/tradeflow/candidate_engine.py:1345:            "candidate_type, ambush_score, mandate_score_component, beneficiary_score_component, "
+tradingagents/tradeflow/candidate_engine.py:1416:            "mandate_score_component=excluded.mandate_score_component, "
+tradingagents/tradeflow/candidate_engine.py:1483:                row["mandate_score_component"], row["beneficiary_score_component"],
+tradingagents/tradeflow/mandate_score.py:12:- compute_mandate_score(): main scoring function.
+tradingagents/tradeflow/mandate_score.py:91:    mandate_score: float = 0.0
+tradingagents/tradeflow/mandate_score.py:108:            "mandate_score": round(self.mandate_score, 2),
+tradingagents/tradeflow/mandate_score.py:288:def compute_mandate_score(
+tradingagents/tradeflow/mandate_score.py:364:        mandate_score=round(min(raw_mandate, _MAX_MANDATE_SCORE), 2),
+tradingagents/tradeflow/mandate_score.py:381:def compute_mandate_scores_by_topic(
+tradingagents/tradeflow/mandate_score.py:406:        results[topic] = compute_mandate_score(sigs, topic=topic, historical_signals=historical_signals)
+tradingagents/tradeflow/mandate_score.py:409:        results["_unassigned"] = compute_mandate_score(
+tradingagents/tradeflow/discovery.py:525:        "mandate_score_component": candidate.mandate_score_component,
+tradingagents/tradeflow/candidate_contradictions.py:98:    mandate_score_component: float = 0.0,
+tradingagents/tradeflow/candidate_contradictions.py:104:    has_policy = bool(policy_tags) or version_score >= 20 or mandate_score_component >= 20
+tradingagents/tradeflow/candidate_contradictions.py:138:    mandate_score_component: float = 0.0,
+tradingagents/tradeflow/candidate_contradictions.py:143:    theme_hot = narrative_score >= 30 or mandate_score_component >= 30
+tradingagents/tradeflow/candidate_contradictions.py:158:    theme_desc = f"叙事分={narrative_score:.0f}/政策分={mandate_score_component:.0f}"
+tradingagents/tradeflow/candidate_contradictions.py:176:    mandate_score_component: float = 0.0,
+tradingagents/tradeflow/candidate_contradictions.py:182:    theme_strong = narrative_score >= 40 or mandate_score_component >= 40
+tradingagents/tradeflow/candidate_contradictions.py:198:    theme_desc = f"叙事分={narrative_score:.0f}/政策分={mandate_score_component:.0f}"
+tradingagents/tradeflow/candidate_contradictions.py:213:    mandate_score_component: float = 0.0,
+tradingagents/tradeflow/candidate_contradictions.py:216:    thesis_intact = candidate_type in ("POLICY_AMBUSH", "POLICY_CONFIRM") and mandate_score_component >= 25
+tradingagents/tradeflow/candidate_contradictions.py:230:    thesis_desc = f"类型={candidate_type}, 政策分={mandate_score_component:.0f}"
+tradingagents/tradeflow/candidate_contradictions.py:414:    mandate_score_component: float = 0.0,
+tradingagents/tradeflow/candidate_contradictions.py:440:        mandate_score_component=mandate_score_component,
+tradingagents/tradeflow/candidate_contradictions.py:451:        mandate_score_component=mandate_score_component,
+tradingagents/tradeflow/candidate_contradictions.py:463:        mandate_score_component=mandate_score_component,
+tradingagents/tradeflow/candidate_contradictions.py:472:        mandate_score_component=mandate_score_component,
+tradingagents/tradeflow/topic_lifecycle.py:62:    mandate_score: float = 0.0
+tradingagents/tradeflow/topic_lifecycle.py:78:            "mandate_score": round(self.mandate_score, 2),
+tradingagents/tradeflow/topic_lifecycle.py:134:        mandate_score: float = 0.0,
+tradingagents/tradeflow/topic_lifecycle.py:146:        entry.mandate_score = mandate_score
+tradingagents/tradeflow/topic_lifecycle.py:181:    ms = entry.mandate_score
+tradingagents/tradeflow/topic_lifecycle.py:228:    mandate_score: float = 0.0,
+tradingagents/tradeflow/topic_lifecycle.py:251:        mandate_score=mandate_score,
+tradingagents/tradeflow/topic_lifecycle.py:306:        if entry.mandate_score >= 50:
+tradingagents/tradeflow/topic_lifecycle.py:307:            parts.append(f"昊天分{entry.mandate_score:.0f}")
+tradingagents/tradeflow/industry_mandate_map.py:398:            from tradingagents.tradeflow.mandate_score import match_topics
+tradingagents/tradeflow/mandate_quality_report.py:51:    mandate_score_component: float = 0.0
+tradingagents/tradeflow/mandate_quality_report.py:72:            "mandate_score_component": round(self.mandate_score_component, 2),
+tradingagents/tradeflow/plan_runner.py:128:        "mandate_score_component": candidate.mandate_score_component,  # [H-004]
+84:def _row_to_candidate_item(row: sqlite3.Row) -> dict:
+# [UI-001] tradeflow_api
+# [PERF-001] runtime_tier_contract
+"""TradeFlow read-only data access service.
+
+Queries tradeflow SQLite tables for the API layer.
+Does NOT trigger TA, run full market scan, or call LLM.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from api.runtime_tier import RuntimeTier, tradeflow_meta as _tradeflow_meta  # [PERF-001]
+from tradingagents.tradeflow.symbol_utils import (  # [UI-008] tradeflow_field_normalization
+    normalize_tradeflow_symbol,
+    resolve_tradeflow_name,
+)
+from tradingagents.tradeflow.candidate_engine import get_filtered_symbols as _get_filtered_symbols  # [UI-007] tradeflow_filtered_trace
+
+
+def _get_project_root() -> str:
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _get_tradeflow_db_path() -> str:
+    env_path = os.environ.get("TRADEFLOW_DB_PATH", "")
+    if env_path:
+        return env_path
+    return os.path.join(_get_project_root(), "tradeflow.db")
+
+
+def _get_prod_db_path() -> str:
+    env_path = os.environ.get("DATABASE_URL", "")
+    if env_path.startswith("sqlite:///"):
+        return env_path.replace("sqlite:///", "", 1)
+    return os.path.join(_get_project_root(), "tradingagents.db")
+
+
+def _connect(tf_db_path: str = "") -> Optional[sqlite3.Connection]:
+    db_path = tf_db_path or _get_tradeflow_db_path()
+    if not os.path.exists(db_path):
+        return None
+    try:
+        from tradingagents.tradeflow.candidate_engine import init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception:
+        return None
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return {row["name"] for row in rows}
+    except Exception:
+        return set()
+
+
+def _parse_json(value: Any, default: Any = None) -> Any:
+    if value is None:
+        return default if default is not None else []
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return default if default is not None else []
+    return value
+
+
+def _rget(row: sqlite3.Row, col: str, default: Any = None) -> Any:
+    try:
+        val = row[col]
+        return val
+    except (KeyError, IndexError):
+        return default
+
+
+def _row_to_candidate_item(row: sqlite3.Row) -> dict:
+    symbol = normalize_tradeflow_symbol(row["symbol"])  # [UI-008]
+    raw_name = _rget(row, "name", "")
+    name = resolve_tradeflow_name(symbol, raw_name)  # [UI-008]
+    return {
+        "symbol": symbol,
+        "name": name,
+        "tier": _rget(row, "tier", ""),
+        "composite_score": _rget(row, "composite_score", 0.0) or 0.0,
+        "score": _rget(row, "score", 0.0) or 0.0,
+        "strategy_tags": _parse_json(_rget(row, "strategy_tags_json"), []),
+        "primary_strategy": _rget(row, "primary_strategy", ""),
+        "trigger_price": _rget(row, "trigger_price"),
+        "support_price": _rget(row, "support_price"),
+        "invalid_price": _rget(row, "invalid_price"),
+        "need_deep_ta": bool(_rget(row, "need_deep_ta", 0)),
+        "observe_state": _rget(row, "observe_state", "WAITING"),
+        "observe_trigger_count": _rget(row, "observe_trigger_count", 0) or 0,
+        "observe_first_trigger_time": _rget(row, "observe_first_trigger_time", ""),
+        "tradeflow_data_completeness": _rget(row, "tradeflow_data_completeness", 0.0) or 0.0,
+        "missing_data_fields": _parse_json(_rget(row, "missing_data_fields_json"), []),
+        "data_completeness": _rget(row, "data_completeness", 0.0) or 0.0,
+        "missing_evidence": _parse_json(_rget(row, "missing_evidence_json"), []),
+        "game_balance": _rget(row, "game_balance", ""),
+        "bull_case": _rget(row, "bull_case", ""),
+        "bear_case": _rget(row, "bear_case", ""),
+        "policy_case": _rget(row, "policy_case", ""),
+        "fund_flow_case": _rget(row, "fund_flow_case", ""),
+        "why_deep_ta": _rget(row, "why_deep_ta", ""),
+        "why_not_deep_ta": _rget(row, "why_not_deep_ta", ""),
+        "risk_flags": _parse_json(_rget(row, "risk_flags_json"), []),
+        "policy_tags": _parse_json(_rget(row, "policy_tags_json"), []),
+        "version_score": _rget(row, "version_score", 0.0) or 0.0,
+        "narrative_score": _rget(row, "narrative_score", 0.0) or 0.0,
+        "fund_flow_anomaly_score": _rget(row, "fund_flow_anomaly_score", 0.0) or 0.0,
+        "fund_flow_anomaly_tags": _parse_json(_rget(row, "fund_flow_anomaly_tags_json"), []),
+        "fund_flow_unit_verified": bool(_rget(row, "fund_flow_unit_verified", 0)),
+        "evidence_gate_applied": bool(_rget(row, "evidence_gate_applied", 0)),
+        "deep_ta_status": _rget(row, "deep_ta_status", ""),
+        "deep_ta_dispatch_reason": _rget(row, "deep_ta_dispatch_reason", ""),
+        "deep_ta_model": _rget(row, "deep_ta_model", ""),
+        "source": _rget(row, "source", "manual"),
+        "universe_sources": _parse_json(_rget(row, "universe_sources_json"), []),
+        "resonance_count": _rget(row, "resonance_count", 0) or 0,
+        "ta_budget_priority": _rget(row, "ta_budget_priority", 0) or 0,
+        "tier_reason": _rget(row, "tier_reason", ""),
+        "missing_evidence_for_upgrade": _parse_json(_rget(row, "missing_evidence_for_upgrade_json"), []),
+        "candidate_type": _rget(row, "candidate_type", ""),  # [H-005] mandate_radar_ui
+        "mandate_score": _rget(row, "mandate_score_component", 0.0) or 0.0,  # [H-005]
+        "ambush_score": _rget(row, "ambush_score", 0.0) or 0.0,  # [H-005]
+        "mandate_topic": _rget(row, "mandate_topic", ""),  # [H-005]
+        "company_role": _rget(row, "company_role", ""),  # [H-005]
+        "beneficiary_path": _parse_json(_rget(row, "beneficiary_path_json"), []),  # [H-005]
+        "candidate_type_reason": _rget(row, "candidate_type_reason", ""),  # [H-005]
+        "deep_ta_route": _rget(row, "deep_ta_route", ""),  # [H-005]
+        "research_queue": _rget(row, "research_queue", ""),  # [H-007] mandate_ta_queue_router
+        "research_intent": _rget(row, "research_intent", ""),  # [H-007]
+        "research_route_reason": _rget(row, "research_route_reason", ""),  # [H-007]
+        "watchlist_note": _rget(row, "watchlist_note", ""),  # [H-008] mandate_watchlist_note
+        "watchlist_note_suggested": _rget(row, "watchlist_note_suggested", ""),  # [H-008]
+        "watchlist_topic": _rget(row, "watchlist_topic", ""),  # [H-008]
+        "watchlist_benefit_score": _rget(row, "watchlist_benefit_score", 0.0) or 0.0,  # [H-008]
+        "watchlist_consensus_score": _rget(row, "watchlist_consensus_score", 0.0) or 0.0,  # [H-008]
+        "watchlist_evidence_gap": _parse_json(_rget(row, "watchlist_evidence_gap_json"), []),  # [H-008]
+        "plan_date": _rget(row, "plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
+        "effective_trade_date": _rget(row, "effective_trade_date", ""),  # [TF-DATE-001]
+        "observe_date": _rget(row, "observe_date", ""),  # [TF-DATE-001]
+        "action_tier": _rget(row, "action_tier", "scan"),  # [TF-UX-004]
+        "trade_priority_score": _rget(row, "trade_priority_score", 0.0) or 0.0,  # [TF-UX-004]
+        "action_tier_reason": _rget(row, "action_tier_reason", ""),  # [TF-UX-004]
+        "counter_evidence": _parse_json(_rget(row, "counter_evidence_json"), []),  # [H-009]
+        "overheat_flags": _parse_json(_rget(row, "overheat_flags_json"), []),  # [H-009]
+        "downgrade_reasons": _parse_json(_rget(row, "downgrade_reasons_json"), []),  # [H-009]
+        "what_would_change_mind": _parse_json(_rget(row, "what_would_change_mind_json"), []),  # [H-009]
+        "topic_lifecycle_state": _rget(row, "topic_lifecycle_state", ""),  # [H-010] mandate_topic_lifecycle
+        "topic_lifecycle_reason": _rget(row, "topic_lifecycle_reason", ""),  # [H-010]
+        "topic_last_signal_date": _rget(row, "topic_last_signal_date", ""),  # [H-010]
+        "topic_last_signal_date": _rget(row, "topic_last_signal_date", ""),  # [H-010]
+        "topic_signal_count": _rget(row, "topic_signal_count", 0) or 0,  # [H-010]
+        "contradiction_level": _rget(row, "contradiction_level", ""),  # [H-011] candidate_contradiction_explainer
+        "contradiction_items": _parse_json(_rget(row, "contradiction_items_json"), []),  # [H-011]
+        "blocking_evidence_gaps": _parse_json(_rget(row, "blocking_evidence_gaps_json"), []),  # [H-011]
+        "next_verification_steps": _parse_json(_rget(row, "next_verification_steps_json"), []),  # [H-011]
+        # [TF-QUALITY-002] score_separation — split scores for precision gate
+        "technical_score": _rget(row, "technical_score", 0.0) or 0.0,
+        "policy_score": _rget(row, "policy_score", 0.0) or 0.0,
+        "fund_flow_score": _rget(row, "fund_flow_score", 0.0) or 0.0,
+        "event_score": _rget(row, "event_score", 0.0) or 0.0,
+        "risk_penalty_score": _rget(row, "risk_penalty_score", 0.0) or 0.0,
+        "data_quality_score": _rget(row, "data_quality_score", 0.0) or 0.0,
+        "ranking_reasons": _parse_json(_rget(row, "ranking_reasons_json"), []),
+        "weakness_reasons": _parse_json(_rget(row, "weakness_reasons_json"), []),
+        # [TF-QUALITY-003] candidate_precision_gate — fields for precision dimensions
+        "mandate_score_component": _rget(row, "mandate_score_component", 0.0) or 0.0,
+        "beneficiary_score_component": _rget(row, "beneficiary_score_component", 0.0) or 0.0,
+        "overheat_penalty": _rget(row, "overheat_penalty", 0.0) or 0.0,
+        "overheat_flags": _parse_json(_rget(row, "overheat_flags_json"), []),
+        "created_at": _rget(row, "created_at", ""),
+        "updated_at": _rget(row, "updated_at", ""),
+    }
+
+
+def _row_to_candidate_detail(row: sqlite3.Row) -> dict:
+    item = _row_to_candidate_item(row)
+    item.update({
+        "evidence": _parse_json(_rget(row, "evidence_json"), {}),
+        "policy_evidence_refs": _parse_json(_rget(row, "policy_evidence_refs_json"), []),
+        "narrative_evidence_refs": _parse_json(_rget(row, "narrative_evidence_refs_json"), []),
+        "narrative_reasons": _parse_json(_rget(row, "narrative_reasons_json"), []),
+        "risk_evidence_refs": _parse_json(_rget(row, "risk_evidence_refs_json"), []),
+        "risk_reasons": _parse_json(_rget(row, "risk_reasons_json"), []),
+        "game_balance_refs": _parse_json(_rget(row, "game_balance_refs_json"), []),
+        "fund_flow_anomaly_refs": _parse_json(_rget(row, "fund_flow_anomaly_refs_json"), []),
+        "fund_flow_individual_summary": _rget(row, "fund_flow_individual_summary", ""),
+        "fund_flow_board_summary": _rget(row, "fund_flow_board_summary", ""),
+        "signal_category_hits": _parse_json(_rget(row, "signal_category_hits_json"), []),
+        "positive_category_count": _rget(row, "positive_category_count", 0) or 0,
+        "what_to_upgrade": _parse_json(_rget(row, "what_to_upgrade_json"), []),
+        "deep_ta_report_path": _rget(row, "deep_ta_report_path", ""),
+        "deep_ta_dispatch_time": _rget(row, "deep_ta_dispatch_time", ""),
+        "deep_ta_position_context": _rget(row, "deep_ta_position_context", ""),
+        "ambush_reasons": _parse_json(_rget(row, "ambush_reasons_json"), []),  # [H-005] mandate_radar_ui
+        "ambush_evidence_refs": _parse_json(_rget(row, "ambush_evidence_refs_json"), []),  # [H-005]
+        "mandate_evidence_refs": _parse_json(_rget(row, "mandate_evidence_refs_json"), []),  # [H-005]
+    })
+    return item
+
+
+def _compute_action(item: dict) -> str:
+    if item.get("need_deep_ta"):
+        return "NEED_DEEP_TA"
+    trigger = item.get("trigger_price")
+    if trigger:
+        return "WAIT_TRIGGER"
+    return "OBSERVE"
+
+
+def _compute_summary(items: List[dict]) -> dict:
+    tier_counts = {"A": 0, "B": 0, "C": 0}
+    deep_ta_count = 0
+    total_comp = 0.0
+    for it in items:
+        t = it.get("tier", "")
+        if t in tier_counts:
+            tier_counts[t] += 1
+        if it.get("need_deep_ta"):
+            deep_ta_count += 1
+        total_comp += it.get("tradeflow_data_completeness", 0.0)
+    return {
+        "total_candidates": len(items),
+        "tier_a_count": tier_counts["A"],
+        "tier_b_count": tier_counts["B"],
+        "tier_c_count": tier_counts["C"],
+        "need_deep_ta_count": deep_ta_count,
+        "avg_completeness": round(total_comp / max(len(items), 1), 3),
+    }
+
+
+def _load_filtered_trace_candidates(
+    trade_date: str,
+    tf_db_path: str = "",
+    allowed_symbols: Optional[set[str]] = None,
+) -> list[dict]:
+    """Load persisted filtered trace rows in pool-gate compatible shape."""
+    db_path = tf_db_path or _get_tradeflow_db_path()
+    if not os.path.exists(db_path):
+        return []
+    trace_dates = _filtered_trace_dates_for_view(trade_date, db_path)
+    rows: list[dict] = []
+    for trace_date in trace_dates:
+        try:
+            rows.extend(_get_filtered_symbols(trace_date, db_path))
+        except Exception:
+            continue
+
+    items: list[dict] = []
+    for row in rows:
+        symbol = normalize_tradeflow_symbol(row.get("symbol", ""))
+        if not symbol:
+            continue
+        if allowed_symbols is not None and symbol not in allowed_symbols:
+            continue
+        reason = row.get("reason", "")
+        items.append({
+            "symbol": symbol,
+            "name": resolve_tradeflow_name(symbol, row.get("name", "")),
+            "source": row.get("source", ""),
+            "reason": reason,
+            "pool_filter_reason": reason,
+            "pool_status": "filtered",
+            "run_id": row.get("run_id", ""),
+            "created_at": row.get("created_at", ""),
+        })
+    return items
+
+
+def _filtered_trace_dates_for_view(trade_date: str, db_path: str) -> list[str]:
+    """Resolve plan dates whose filtered traces should appear for a view date."""
+    dates = [trade_date]
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            for table in ("tradeflow_daily_plans", "tradeflow_candidates", "tradeflow_filtered_symbols"):
+                columns = _table_columns(conn, table)
+                if {"trade_date", "effective_trade_date"}.issubset(columns):
+                    rows = conn.execute(
+                        f"SELECT DISTINCT trade_date FROM {table} "
+                        "WHERE effective_trade_date = ? AND trade_date != ?",
+                        (trade_date, trade_date),
+                    ).fetchall()
+                    for row in rows:
+                        plan_date = row["trade_date"]
+                        if plan_date and plan_date not in dates:
+                            dates.append(plan_date)
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return dates
+
+
+def _merge_filtered_candidates(current: list[dict], persisted: list[dict]) -> list[dict]:
+    """Merge live pool-gate filtered rows with persisted filtered trace rows."""
+    merged: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for item in [*current, *persisted]:
+        symbol = normalize_tradeflow_symbol(item.get("symbol", ""))
+        reason = item.get("pool_filter_reason") or item.get("reason", "")
+        key = (symbol, reason)
+        if not symbol or key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
+
+
+def _pool_counts_with_filtered(pool_counts: dict, filtered_candidates: list[dict]) -> dict:
+
+exec
+/bin/zsh -lc "grep -n \"def _query_by_date_or_effective\" -n api/services/tradeflow_service.py && sed -n '330,410p' api/services/tradeflow_service.py && grep -R \"get_default_topic_registry\" -n ." in /Users/maybee/TradingAgents-AShare
+ exited 2 in 10138ms:
+grep: ./.git/fsmonitor--daemon.ipc: Operation not supported on socket
+Binary file ./tests/__pycache__/test_h012_topic_registry.cpython-312-pytest-9.0.2.pyc matches
+./tests/test_h012_topic_registry.py:31:    get_default_topic_registry,
+./tests/test_h012_topic_registry.py:784:        reg = get_default_topic_registry()
+./tests/test_h012_topic_registry.py:789:        reg1 = get_default_topic_registry()
+./tests/test_h012_topic_registry.py:790:        reg2 = get_default_topic_registry()
+./docs/task_runs/H-012-20260614-005948/opencode-round1.txt:84:+from .topic_registry import get_default_topic_registry  # [H-012] mandate_topic_registry
+./docs/task_runs/H-012-20260614-005948/opencode-round1.txt:105:+_topic_registry = get_default_topic_registry()
+./docs/task_runs/H-012-20260614-005948/opencode-round1.txt:221:+        get_default_topic_registry,
+./docs/task_runs/H-012-20260614-005948/opencode-round1.txt:225:+    registry = get_default_topic_registry()
+./tradingagents/tradeflow/candidate_engine.py:41:from .topic_registry import get_default_topic_registry  # [H-012] mandate_topic_registry
+./tradingagents/tradeflow/candidate_engine.py:1249:    _topic_registry = get_default_topic_registry()
+Binary file ./tradingagents/tradeflow/__pycache__/candidate_engine.cpython-312.pyc matches
+Binary file ./tradingagents/tradeflow/__pycache__/topic_registry.cpython-312.pyc matches
+./tradingagents/tradeflow/topic_registry.py:547:def get_default_topic_registry() -> TopicRegistry:
+./tradingagents/tradeflow/topic_registry.py:644:    reg = registry if registry is not None else get_default_topic_registry()
+Binary file ./api/services/__pycache__/tradeflow_service.cpython-312.pyc matches
+./api/services/tradeflow_service.py:2273:        get_default_topic_registry,
+./api/services/tradeflow_service.py:2277:    registry = get_default_topic_registry()
+
+exec
+/bin/zsh -lc "sed -n '1210,1275p' tradingagents/tradeflow/candidate_engine.py && sed -n '1320,1505p' tradingagents/tradeflow/candidate_engine.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        has_policy=bool(candidate.policy_tags or candidate.version_score > 0),
+    )
+    candidate.research_queue = queue_result.research_queue
+    candidate.research_intent = queue_result.research_intent
+    candidate.research_route_reason = queue_result.route_reason
+    candidate.evidence["ta_queue_router"] = {
+        "research_queue": queue_result.research_queue,
+        "research_intent": queue_result.research_intent,
+        "route_reason": queue_result.route_reason,
+        "queue_priority": queue_result.queue_priority,
+    }
+
+    # [H-008] mandate_watchlist_note — generate watchlist note summary
+    wl_result: WatchlistNoteResult = generate_watchlist_note(
+        mandate_topic=candidate.mandate_topic,
+        candidate_type=candidate.candidate_type,
+        mandate_score_component=ambush_result.mandate_score_component,
+        beneficiary_score_component=ambush_result.beneficiary_score_component,
+        ambush_score=ambush_result.ambush_score,
+        narrative_score=candidate.narrative_score,
+        composite_score=candidate.composite_score,
+        positive_category_count=candidate.positive_category_count,
+        resonance_count=candidate.resonance_count,
+        beneficiary_path=candidate.beneficiary_path,
+        company_role=candidate.company_role,
+        policy_tags=candidate.policy_tags,
+        fund_flow_anomaly_tags=candidate.fund_flow_anomaly_tags,
+        strategy_tags=candidate.strategy_tags,
+        data_completeness=candidate.data_completeness,
+        missing_evidence=candidate.missing_evidence,
+    )
+    candidate.watchlist_note_suggested = wl_result.note_summary
+    candidate.watchlist_topic = wl_result.topic
+    candidate.watchlist_benefit_score = wl_result.benefit_score
+    candidate.watchlist_consensus_score = wl_result.consensus_score
+    candidate.watchlist_evidence_gap = wl_result.evidence_gap
+    candidate.evidence["watchlist_note"] = wl_result.to_dict()
+
+    # [H-012] mandate_topic_registry — register candidate to topic registry
+    _topic_registry = get_default_topic_registry()
+    _topic_registry.register_candidate_topic(
+        topic=candidate.mandate_topic,
+        mandate_topic=candidate.mandate_topic,
+        policy_tags=candidate.policy_tags,
+        name=candidate.name,
+        lifecycle_state=candidate.topic_lifecycle_state,
+        last_signal_date=candidate.topic_last_signal_date,
+        signal_count=candidate.topic_signal_count,
+        evidence_refs=candidate.policy_evidence_refs or candidate.mandate_evidence_refs,
+        candidate_symbol=candidate.symbol,
+    )
+
+    # [TF-QUALITY-002] score_separation — compute dimension sub-scores
+    ss_result = compute_split_scores(
+        score=candidate.score,
+        strategy_tags=candidate.strategy_tags,
+        version_score=candidate.version_score,
+        policy_tags=candidate.policy_tags,
+        narrative_score=candidate.narrative_score,
+        fund_flow_anomaly_score=candidate.fund_flow_anomaly_score,
+        fund_flow_anomaly_tags=candidate.fund_flow_anomaly_tags,
+        fund_flow_unit_verified=candidate.fund_flow_unit_verified,
+        risk_penalty=candidate.risk_penalty,
+        risk_flags=candidate.risk_flags,
+        data_completeness=candidate.tradeflow_data_completeness or candidate.data_completeness,
+        game_balance=candidate.game_balance,
+    row = candidate.to_db_row()
+    try:
+        conn.execute(
+            "INSERT INTO tradeflow_candidates "
+            "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+            "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+            "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+            "policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
+            "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+            "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
+            "fund_flow_case, resonance_count, game_balance_refs_json, "
+            "fund_flow_anomaly_score, fund_flow_anomaly_tags_json, "
+            "fund_flow_anomaly_refs_json, fund_flow_unit_verified, "
+            "fund_flow_individual_summary, fund_flow_board_summary, "
+            "composite_score, signal_category_hits_json, positive_category_count, "
+            "data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta, "
+            "priority_rank, "
+            "tier, ta_budget_priority, tier_reason, missing_evidence_for_upgrade_json, "
+            "tradeflow_data_completeness, missing_data_fields_json, what_to_upgrade_json, evidence_gate_applied, "
+            "universe_sources_json, "
+            "observe_state, observe_trigger_count, observe_first_trigger_time, "
+            "deep_ta_status, deep_ta_dispatch_reason, deep_ta_model, "
+            "deep_ta_report_path, deep_ta_dispatch_time, deep_ta_position_context, "
+            "plan_date, effective_trade_date, observe_date, "
+            "beneficiary_path_json, company_role, mandate_topic, mandate_evidence_refs_json, "
+            "candidate_type, ambush_score, mandate_score_component, beneficiary_score_component, "
+            "pricing_gap_score, overheat_penalty, candidate_type_reason, "
+            "deep_ta_route, deep_ta_route_reason, "
+            "ambush_reasons_json, ambush_evidence_refs_json, "
+            "research_queue, research_intent, research_route_reason, "
+            "watchlist_note, watchlist_note_suggested, watchlist_topic, "
+            "watchlist_benefit_score, watchlist_consensus_score, watchlist_evidence_gap_json, "
+            "counter_evidence_json, overheat_flags_json, downgrade_reasons_json, "
+            "what_would_change_mind_json, "
+            "topic_lifecycle_state, topic_lifecycle_reason, topic_last_signal_date, topic_signal_count, "
+            "contradiction_level, contradiction_items_json, blocking_evidence_gaps_json, next_verification_steps_json, "
+            "created_at, updated_at) "
+            "VALUES ({}) ".format(",".join(["?"] * 103))
+            + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+            "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+            "trigger_price=excluded.trigger_price, "
+            "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+            "need_deep_ta=excluded.need_deep_ta, evidence_json=excluded.evidence_json, "
+            "risk_flags_json=excluded.risk_flags_json, "
+            "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+            "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
+            "narrative_score=excluded.narrative_score, "
+            "narrative_reasons_json=excluded.narrative_reasons_json, "
+            "narrative_evidence_refs_json=excluded.narrative_evidence_refs_json, "
+            "risk_penalty=excluded.risk_penalty, "
+            "risk_evidence_refs_json=excluded.risk_evidence_refs_json, "
+            "risk_reasons_json=excluded.risk_reasons_json, "
+            "game_balance=excluded.game_balance, "
+            "bull_case=excluded.bull_case, bear_case=excluded.bear_case, "
+            "policy_case=excluded.policy_case, fund_flow_case=excluded.fund_flow_case, "
+            "resonance_count=excluded.resonance_count, "
+            "game_balance_refs_json=excluded.game_balance_refs_json, "
+            "fund_flow_anomaly_score=excluded.fund_flow_anomaly_score, "
+            "fund_flow_anomaly_tags_json=excluded.fund_flow_anomaly_tags_json, "
+            "fund_flow_anomaly_refs_json=excluded.fund_flow_anomaly_refs_json, "
+            "fund_flow_unit_verified=excluded.fund_flow_unit_verified, "
+            "fund_flow_individual_summary=excluded.fund_flow_individual_summary, "
+            "fund_flow_board_summary=excluded.fund_flow_board_summary, "
+            "composite_score=excluded.composite_score, "
+            "signal_category_hits_json=excluded.signal_category_hits_json, "
+            "positive_category_count=excluded.positive_category_count, "
+            "data_completeness=excluded.data_completeness, "
+            "missing_evidence_json=excluded.missing_evidence_json, "
+            "why_deep_ta=excluded.why_deep_ta, why_not_deep_ta=excluded.why_not_deep_ta, "
+            "priority_rank=excluded.priority_rank, "
+            "tier=excluded.tier, ta_budget_priority=excluded.ta_budget_priority, "
+            "tier_reason=excluded.tier_reason, "
+            "missing_evidence_for_upgrade_json=excluded.missing_evidence_for_upgrade_json, "
+            "tradeflow_data_completeness=excluded.tradeflow_data_completeness, "
+            "missing_data_fields_json=excluded.missing_data_fields_json, "
+            "what_to_upgrade_json=excluded.what_to_upgrade_json, "
+            "evidence_gate_applied=excluded.evidence_gate_applied, "
+            "universe_sources_json=excluded.universe_sources_json, "
+            "observe_state=excluded.observe_state, "
+            "observe_trigger_count=excluded.observe_trigger_count, "
+            "observe_first_trigger_time=excluded.observe_first_trigger_time, "
+            "deep_ta_status=excluded.deep_ta_status, "
+            "deep_ta_dispatch_reason=excluded.deep_ta_dispatch_reason, "
+            "deep_ta_model=excluded.deep_ta_model, "
+            "deep_ta_report_path=excluded.deep_ta_report_path, "
+            "deep_ta_dispatch_time=excluded.deep_ta_dispatch_time, "
+            "deep_ta_position_context=excluded.deep_ta_position_context, "
+            "plan_date=excluded.plan_date, "
+            "effective_trade_date=excluded.effective_trade_date, "
+            "observe_date=excluded.observe_date, "
+            "beneficiary_path_json=excluded.beneficiary_path_json, "
+            "company_role=excluded.company_role, "
+            "mandate_topic=excluded.mandate_topic, "
+            "mandate_evidence_refs_json=excluded.mandate_evidence_refs_json, "
+            "candidate_type=excluded.candidate_type, "
+            "ambush_score=excluded.ambush_score, "
+            "mandate_score_component=excluded.mandate_score_component, "
+            "beneficiary_score_component=excluded.beneficiary_score_component, "
+            "pricing_gap_score=excluded.pricing_gap_score, "
+            "overheat_penalty=excluded.overheat_penalty, "
+            "candidate_type_reason=excluded.candidate_type_reason, "
+            "deep_ta_route=excluded.deep_ta_route, "
+            "deep_ta_route_reason=excluded.deep_ta_route_reason, "
+            "ambush_reasons_json=excluded.ambush_reasons_json, "
+            "ambush_evidence_refs_json=excluded.ambush_evidence_refs_json, "
+            "research_queue=excluded.research_queue, "
+            "research_intent=excluded.research_intent, "
+            "research_route_reason=excluded.research_route_reason, "
+            "watchlist_note=excluded.watchlist_note, "
+            "watchlist_note_suggested=excluded.watchlist_note_suggested, "
+            "watchlist_topic=excluded.watchlist_topic, "
+            "watchlist_benefit_score=excluded.watchlist_benefit_score, "
+            "watchlist_consensus_score=excluded.watchlist_consensus_score, "
+            "watchlist_evidence_gap_json=excluded.watchlist_evidence_gap_json, "
+            "counter_evidence_json=excluded.counter_evidence_json, "
+            "overheat_flags_json=excluded.overheat_flags_json, "
+            "downgrade_reasons_json=excluded.downgrade_reasons_json, "
+            "what_would_change_mind_json=excluded.what_would_change_mind_json, "
+            "topic_lifecycle_state=excluded.topic_lifecycle_state, "
+            "topic_lifecycle_reason=excluded.topic_lifecycle_reason, "
+            "topic_last_signal_date=excluded.topic_last_signal_date, "
+            "topic_signal_count=excluded.topic_signal_count, "
+            "contradiction_level=excluded.contradiction_level, "
+            "contradiction_items_json=excluded.contradiction_items_json, "
+            "blocking_evidence_gaps_json=excluded.blocking_evidence_gaps_json, "
+            "next_verification_steps_json=excluded.next_verification_steps_json, "
+            "updated_at=excluded.updated_at",
+            (
+                row["trade_date"], row["symbol"], row["name"], row["source"],
+                row["strategy_tags_json"], row["primary_strategy"],
+                row["score"], row["status"],
+                row["trigger_price"], row["support_price"], row["invalid_price"],
+                row["need_deep_ta"], row["evidence_json"], row["risk_flags_json"],
+                row["policy_tags_json"], row["version_score"],
+                row["policy_evidence_refs_json"],
+                row["narrative_score"], row["narrative_reasons_json"],
+                row["narrative_evidence_refs_json"],
+                row["risk_penalty"], row["risk_evidence_refs_json"],
+                row["risk_reasons_json"],
+                row["game_balance"], row["bull_case"], row["bear_case"],
+                row["policy_case"], row["fund_flow_case"],
+                row["resonance_count"], row["game_balance_refs_json"],
+                row["fund_flow_anomaly_score"], row["fund_flow_anomaly_tags_json"],
+                row["fund_flow_anomaly_refs_json"], row["fund_flow_unit_verified"],
+                row["fund_flow_individual_summary"], row["fund_flow_board_summary"],
+                row["composite_score"], row["signal_category_hits_json"],
+                row["positive_category_count"], row["data_completeness"],
+                row["missing_evidence_json"], row["why_deep_ta"], row["why_not_deep_ta"],
+                row["priority_rank"],
+                row["tier"], row["ta_budget_priority"],
+                row["tier_reason"], row["missing_evidence_for_upgrade_json"],
+                row["tradeflow_data_completeness"], row["missing_data_fields_json"],
+                row["what_to_upgrade_json"], row["evidence_gate_applied"],
+                row["universe_sources_json"],
+                row["observe_state"], row["observe_trigger_count"],
+                row["observe_first_trigger_time"],
+                row["deep_ta_status"], row["deep_ta_dispatch_reason"],
+                row["deep_ta_model"], row["deep_ta_report_path"],
+                row["deep_ta_dispatch_time"], row["deep_ta_position_context"],
+                row["plan_date"], row["effective_trade_date"], row["observe_date"],
+                row["beneficiary_path_json"], row["company_role"],
+                row["mandate_topic"], row["mandate_evidence_refs_json"],
+                row["candidate_type"], row["ambush_score"],
+                row["mandate_score_component"], row["beneficiary_score_component"],
+                row["pricing_gap_score"], row["overheat_penalty"],
+                row["candidate_type_reason"],
+                row["deep_ta_route"], row["deep_ta_route_reason"],
+                row["ambush_reasons_json"], row["ambush_evidence_refs_json"],
+                row["research_queue"], row["research_intent"], row["research_route_reason"],
+                row["watchlist_note"], row["watchlist_note_suggested"], row["watchlist_topic"],
+                row["watchlist_benefit_score"], row["watchlist_consensus_score"],
+                row["watchlist_evidence_gap_json"],
+                row["counter_evidence_json"], row["overheat_flags_json"],
+                row["downgrade_reasons_json"], row["what_would_change_mind_json"],
+                row["topic_lifecycle_state"], row["topic_lifecycle_reason"],
+                row["topic_last_signal_date"], row["topic_signal_count"],
+                row["contradiction_level"], row["contradiction_items_json"],
+                row["blocking_evidence_gaps_json"], row["next_verification_steps_json"],
+                candidate.created_at, row["updated_at"],
+            ),
+        )
+        conn.commit()
+        row_id = conn.execute(
+            "SELECT id FROM tradeflow_candidates WHERE trade_date=? AND symbol=?",
+            (row["trade_date"], row["symbol"]),
+        ).fetchone()[0]
+
+exec
+/bin/zsh -lc 'grep -n "H-012" -A80 -B10 docs/TASKS.md' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+86-60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+87-61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+88-62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
+89-63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+90-64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
+91-65. `V-006`：最终动作语义端到端回放验收（P1，done，依赖 DECISION-004 ✓）。
+92-66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
+93-67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，ready，来自 TF-QUALITY-001 task_run）。
+94-68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
+95-69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，done，依赖 TF-OBS-002/TF-REVIEW-002）。
+96:70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，done，依赖 H-010/H-011）。
+97-71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，ready，依赖 DATA-017/DATA-006）。
+98-72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，ready，依赖 TF-QUALITY-002/TF-OBS-002）。
+99-73. `V-007`：TradeFlow 试用闭环端到端验收（P1，ready，依赖 TF-QUALITY-003/TF-PAPER-001）。
+100-
+101-### 数据源治理候选队列
+102-
+103-> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+104-
+105-1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+106-2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+107-3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+108-4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+109-5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+110-6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+111-7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+112-8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+113-9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+114-10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+115-11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+116-12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+117-13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+118-14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+119-15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
+120-16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
+121-17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+122-17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done）。
+123-18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
+124-19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+125-20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done）。
+126-21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done）。
+127-
+128-### 总体路线图
+129-
+130-- 详见 `docs/ROADMAP.md`。
+131-- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+132-- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+133-- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+134-
+135----
+136-
+137-## PERF. 运行成本 / 轻量分析任务池（2026-06-02 新增）
+138-
+139-> 目标：系统不能为了“全面”而变慢。TradeFlow 是雷达，轻量 TA 是候选验证，完整 TA 是深度体检。默认链路必须轻，完整多 Agent 分析只能由用户明确触发。
+140-
+141-### PERF-001: 运行层级与速度预算契约（P1）
+142-- **描述**：建立统一运行层级契约，所有 API、前端按钮、scheduler、自动开发任务都要标明属于 `fast/light/full` 哪一层，以及是否允许调用 LLM。
+143-- **优先级**：P1
+144-- **状态**：done -- commit ca08846
+145-- **背景**：
+146-  - 用户明确要求系统不能做得太重，不能“一发指令半天才回来”。
+147-  - 候选池/盘中观察需要时效；完整 TA 只能用于少量高价值标的。
+148-- **运行层级定义**：
+149-  1. `fast`：5-30 秒。TradeFlow 筛选、数据健康、证据缺口、候选分类。默认不调用 LLM。
+150-  2. `light`：1-3 分钟。轻量 TA，只跑必要模块，用于中线政策验证、短线技术确认、持仓风险复核。
+151-  3. `full`：10-20 分钟。完整 14 Agent TA，多空辩论和风控全链路，必须人工确认。
+152-- **执行约束**：
+153-  - 不改 prompts。
+154-  - 不触发 live TA。
+155-  - 不新增高成本模型调用。
+156-- **实现要点**：
+157-  1. 新增运行层级枚举/配置，例如 `runtime_tier`：
+158-     - `FAST_RADAR`
+159-     - `LIGHT_RESEARCH`
+160-     - `FULL_TA`
+161-  2. API/服务层统一返回：
+162-     - `runtime_tier`
+163-     - `expected_latency`
+164-     - `llm_allowed`
+165-     - `requires_confirmation`
+166-     - `cost_risk`
+167-  3. 前端按钮文案对应：
+168-     - `快速筛选`
+169-     - `轻量研究`
+170-     - `完整 TA`
+171-  4. `TradeFlow Discovery` 和 `Observe` 必须标记为 `FAST_RADAR`。
+172-  5. 自动任务/scheduler 不得默认进入 `FULL_TA`。
+173-- **验收方式**：
+174-  - TradeFlow candidates/observe/data-health API 返回 fast 层级或元数据。
+175-  - 前端能显示运行层级和预计耗时。
+176-  - 没有用户确认时，full TA 入口不可直接触发。
+--
+2942-  2. 候选详情支持“加入模拟跟踪”，默认金额上限 5000，可配置但不自动下单。
+2943-  3. 盘中 Observe 触发后可写入“待人工确认模拟动作”。
+2944-  4. 盘后 Review 聚合模拟账本收益、误报、未触发、失效。
+2945-  5. 前端展示试跑看板：本金、持仓模拟、待确认、已完成复盘。
+2946-- **验收方式**：
+2947-  - 临时 DB/fixture 能创建 5000 元账本并加入 2 只候选。
+2948-  - 未经人工确认不会生成模拟成交。
+2949-  - 盘后 Review 能读取账本并展示收益或无数据原因。
+2950-- **代码标注要求**：`# [TF-PAPER-001] paper_trading_ledger` / `// [TF-PAPER-001] paper_trading_ledger`
+2951-
+2952:### H-012: 昊天主题注册表与政策版本 Watchlist（P1）
+2953-- **描述**：把昊天战法从零散政策关键词升级为可维护主题注册表，记录主题级别、生命周期、政策证据、产业链角色和重点观察标的。
+2954-- **优先级**：P1
+2955:- **状态**：done（2026-06-14，H-012）
+2956-- **前置条件**：H-010、H-011 完成。
+2957-- **执行约束**：
+2958-  - 不调 LLM。
+2959-  - 不把政策主题直接翻译成买卖建议。
+2960-  - 不覆盖用户自选备注，只生成建议备注/主题标签。
+2961-- **实现要点**：
+2962-  1. 新增主题注册表结构：主题名、政策级别、状态、最近信号日、证据链接/摘要、核心产业链环节。
+2963-  2. 候选入池时关联 `mandate_topic` 到主题注册表，输出主题状态：酝酿/发酵/确认/兑现/退潮。
+2964-  3. 生成主题 Watchlist：每个主题最多列出核心标的、受益路径、反证缺口。
+2965-  4. 与 H-008 自选备注联动，生成简短备注建议。
+2966-- **验收方式**：
+2967-  - fixture 中“低空经济/算力/半导体设备”等主题能注册并匹配候选。
+2968-  - 主题状态变化不影响交易动作，只影响候选解释和排序。
+2969-  - 前端或 API 能返回主题清单与候选映射。
+2970:- **代码标注要求**：`# [H-012] mandate_topic_registry`
+2971-
+2972-### DATA-018: A股关键源新鲜度与 fallback 可视化日报（P1）
+2973-- **描述**：把 DATA-017 的资金/LHB 健康巡检扩展到行情、资金、龙虎榜、公告、研报、评级、回购等关键源，形成每日可读的数据源新鲜度与 fallback 报告。
+2974-- **优先级**：P1
+2975-- **状态**：ready
+2976-- **前置条件**：DATA-017、DATA-006 完成。
+2977-- **执行约束**：
+2978-  - 不调用 LLM。
+2979-  - 不打印 API key。
+2980-  - live smoke 必须限频，失败不阻塞业务，只输出状态。
+2981-- **实现要点**：
+2982-  1. 建立 `source_freshness_report`：数据类型、主 vendor、fallback vendor、最近数据日、状态、错误摘要。
+2983-  2. 区分 `HAS_DATA/NORMAL_NO_DATA/STALE/FAILED/RATE_LIMITED/UNIT_UNVERIFIED`。
+2984-  3. 写入 `docs/data_source_reports/` 并接入夜间日报摘要。
+2985-  4. 前端数据健康面板读取最新报告并显示红黄绿状态。
+2986-- **验收方式**：
+2987-  - fixture 能模拟 AKShare 失败、cn_astock fallback 成功、龙虎榜正常无数据。
+2988-  - 报告中不出现明文密钥。
+2989-  - 数据健康 API/前端能看到各源状态。
+2990-- **代码标注要求**：`# [DATA-018] source_freshness_report`
+2991-
+2992-### UI-012: TradeFlow 前端降噪与主候选优先工作台（P1）
+2993-- **描述**：当前候选池信息过散，用户要试跑时需要一眼看到少数主候选、原因、触发条件和下一步动作。本任务把前端默认视图改为主候选工作台。
+2994-- **优先级**：P1
+2995-- **状态**：ready
+2996-- **前置条件**：TF-QUALITY-002、TF-OBS-002 完成。
+2997-- **执行约束**：
+2998-  - 不新增营销式页面。
+2999-  - 不隐藏 observation/filtered，只是默认折叠。
+3000-  - 不触发 full TA。
+3001-- **实现要点**：
+3002-  1. TradeFlow 默认首屏展示 `main_candidates`，observation/filtered 折叠到独立 tab 或 drawer。
+3003-  2. 每只主候选显示：候选类型、tier、总分、分项分、前两条排前原因、前两条扣分原因、触发价/失效价、观察状态。
+3004-  3. 技术池与昊天池视觉区分，但颜色遵守 A 股红涨绿跌直觉。
+3005-  4. 增加“下一步”按钮：观察、轻量 TA 预案、加入模拟账本。
+3006-- **验收方式**：
+3007-  - 主候选为空时有明确原因，不显示空白。
+3008-  - 观察/过滤候选可追溯但不干扰主视线。
+3009-  - 前端 build 通过。
+3010-- **代码标注要求**：`// [UI-012] tradeflow_focus_workspace`
+3011-
+3012-### V-007: TradeFlow 试用闭环端到端验收（P1）
+3013-- **描述**：把候选筛选、盘中观察、轻量 TA 预案、模拟账本、盘后 Review 串成一条可回放链路，验证系统能支撑用户小资金试跑。
+3014-- **优先级**：P1
+3015-- **状态**：ready
+3016-- **前置条件**：TF-QUALITY-003、TF-PAPER-001 完成。
+3017-- **执行约束**：
+3018-  - 不调用 LLM。
+3019-  - 不写生产数据库。
+3020-  - 不接真实交易。
+3021-- **实现要点**：
+3022-  1. 新增 E2E fixture：生成 5 只候选 → 主候选 2 只 → 盘中触发 1 只 → 加入模拟账本 → 盘后 Review。
+3023-  2. 验证所有日期语义：非交易日计划、有效交易日观察、盘后复盘。
+3024-  3. 验证前端/API 字段不丢：中文名、候选类型、分项分、观察状态、模拟账本、Review 结果。
+3025-  4. 输出 `docs/tradeflow_trial_acceptance.md`。
+3026-- **验收方式**：
+3027-  - smoke/e2e 测试通过。
+3028-  - 试跑报告能说明“为什么入池、什么时候触发、触发后如何记录、盘后结果如何”。
+3029-  - 无强买卖建议。
+3030-- **代码标注要求**：`# [V-007] tradeflow_trial_acceptance`
+3031-
+3032-## B. 待办
+3033-
+3034-### B-001: 接入小米 MiMo 模型到 TA 系统
+3035-- **描述**：在 `llm_clients/` 中添加小米 MiMo 适配器，支持 mimo-v2.5 和 mimo-v2.5-pro
+3036-- **优先级**：高
+3037-- **前置条件**：无
+3038-- **验证方式**：前端设置页切换到小米模型，执行一次分析任务成功
+3039-
+3040-### B-002: 定时任务与 OpenClaw 联动
+3041-- **描述**：定时分析完成后自动通知 OpenClaw，由主控 AI 决定是否推送到飞书
+3042-- **优先级**：中
+3043-- **前置条件**：OpenClaw API 可达
+3044-- **验证方式**：定时任务完成后飞书收到通知
+3045-
+3046-### B-003: 研报导出为飞书文档
+3047-- **描述**：分析结果支持导出为飞书云文档，方便分享和存档
+3048-- **优先级**：中
+3049-- **前置条件**：飞书 API 权限
+3050-- **验证方式**：点击导出按钮，飞书生成对应文档
+
+exec
+/bin/zsh -lc "nl -ba api/services/tradeflow_service.py | sed -n '2260,2360p' && nl -ba tradingagents/tradeflow/candidate_engine.py | sed -n '1240,1265p' && nl -ba tradingagents/tradeflow/topic_registry.py | sed -n '420,455p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+  2260	            "review": review,
+  2261	            "trades": trades,
+  2262	            "runtime_tier_meta": _fast_meta,
+  2263	        }
+  2264	    finally:
+  2265	        conn.close()
+  2266	
+  2267	
+  2268	# [H-012] mandate_topic_registry
+  2269	def get_topic_registry(tf_db_path: str = "") -> dict:
+  2270	    """Return all registered topics from the topic registry."""
+  2271	    _fast_meta = _tradeflow_meta("tradeflow_topic_registry")
+  2272	    from tradingagents.tradeflow.topic_registry import (
+  2273	        get_default_topic_registry,
+  2274	        get_default_topic_definitions,
+  2275	    )
+  2276	
+  2277	    registry = get_default_topic_registry()
+  2278	    definitions = get_default_topic_definitions()
+  2279	
+  2280	    topics: list[dict] = []
+  2281	    seen_topics: set[str] = set()
+  2282	
+  2283	    for entry_dict in registry.to_dict().values():
+  2284	        topics.append(entry_dict)
+  2285	        seen_topics.add(entry_dict.get("topic", ""))
+  2286	
+  2287	    for d in definitions:
+  2288	        if d.topic not in seen_topics:
+  2289	            topics.append({
+  2290	                "topic": d.topic,
+  2291	                "topic_status": "UNKNOWN",
+  2292	                "topic_status_label": "未知",
+  2293	                "lifecycle_state": "UNKNOWN",
+  2294	                "policy_level": d.policy_level,
+  2295	                "policy_level_weight": 0,
+  2296	                "last_signal_date": "",
+  2297	                "signal_count": 0,
+  2298	                "evidence_links": [],
+  2299	                "evidence_summary": "",
+  2300	                "chain_segments": [s.to_dict() for s in d.chain_segments],
+  2301	                "is_left_side": False,
+  2302	                "is_observe_only": False,
+  2303	                "is_confirmed": False,
+  2304	                "matched_candidates": [],
+  2305	            })
+  2306	            seen_topics.add(d.topic)
+  2307	
+  2308	    topics.sort(key=lambda t: t.get("signal_count", 0), reverse=True)
+  2309	
+  2310	    return {
+  2311	        "status": "ok",
+  2312	        "topics": topics,
+  2313	        "total_topics": len(topics),
+  2314	        "runtime_tier_meta": _fast_meta,
+  2315	    }
+  2316	
+  2317	
+  2318	# [H-012] mandate_topic_registry
+  2319	def get_topic_watchlist(
+  2320	    trade_date: str,
+  2321	    tf_db_path: str = "",
+  2322	    max_symbols_per_topic: int = 5,
+  2323	) -> dict:
+  2324	    """Build a per-topic watchlist from candidates for a given trade date."""
+  2325	    _fast_meta = _tradeflow_meta("tradeflow_topic_watchlist")
+  2326	    conn = _connect(tf_db_path)
+  2327	    if conn is None:
+  2328	        return {
+  2329	            "status": "no_data",
+  2330	            "topics": [],
+  2331	            "total_topics": 0,
+  2332	            "total_symbols": 0,
+  2333	            "runtime_tier_meta": _fast_meta,
+  2334	        }
+  2335	
+  2336	    try:
+  2337	        rows = _query_by_date_or_effective(conn, "tradeflow_candidates", trade_date)
+  2338	        candidates = []
+  2339	        for row in rows:
+  2340	            item = _row_to_candidate_item(row)
+  2341	            candidates.append({
+  2342	                "symbol": item.get("symbol", ""),
+  2343	                "name": item.get("name", ""),
+  2344	                "mandate_topic": item.get("mandate_topic", ""),
+  2345	                "policy_tags": item.get("policy_tags", []),
+  2346	                "company_role": item.get("company_role", ""),
+  2347	                "beneficiary_path": item.get("beneficiary_path", []),
+  2348	                "mandate_score_component": item.get("mandate_score", 0.0),
+  2349	                "composite_score": item.get("composite_score", 0.0),
+  2350	                "tier": item.get("tier", ""),
+  2351	                "blocking_evidence_gaps": item.get("blocking_evidence_gaps", []),
+  2352	                "watchlist_evidence_gap": item.get("watchlist_evidence_gap", []),
+  2353	                "topic_lifecycle_state": item.get("topic_lifecycle_state", ""),
+  2354	                "topic_signal_count": item.get("topic_signal_count", 0),
+  2355	                "topic_last_signal_date": item.get("topic_last_signal_date", ""),
+  2356	                "policy_evidence_refs": item.get("policy_evidence_refs", []),
+  2357	            })
+  2358	
+  2359	        from tradingagents.tradeflow.topic_registry import build_topic_watchlist
+  2360	        result = build_topic_watchlist(
+  1240	    )
+  1241	    candidate.watchlist_note_suggested = wl_result.note_summary
+  1242	    candidate.watchlist_topic = wl_result.topic
+  1243	    candidate.watchlist_benefit_score = wl_result.benefit_score
+  1244	    candidate.watchlist_consensus_score = wl_result.consensus_score
+  1245	    candidate.watchlist_evidence_gap = wl_result.evidence_gap
+  1246	    candidate.evidence["watchlist_note"] = wl_result.to_dict()
+  1247	
+  1248	    # [H-012] mandate_topic_registry — register candidate to topic registry
+  1249	    _topic_registry = get_default_topic_registry()
+  1250	    _topic_registry.register_candidate_topic(
+  1251	        topic=candidate.mandate_topic,
+  1252	        mandate_topic=candidate.mandate_topic,
+  1253	        policy_tags=candidate.policy_tags,
+  1254	        name=candidate.name,
+  1255	        lifecycle_state=candidate.topic_lifecycle_state,
+  1256	        last_signal_date=candidate.topic_last_signal_date,
+  1257	        signal_count=candidate.topic_signal_count,
+  1258	        evidence_refs=candidate.policy_evidence_refs or candidate.mandate_evidence_refs,
+  1259	        candidate_symbol=candidate.symbol,
+  1260	    )
+  1261	
+  1262	    # [TF-QUALITY-002] score_separation — compute dimension sub-scores
+  1263	    ss_result = compute_split_scores(
+  1264	        score=candidate.score,
+  1265	        strategy_tags=candidate.strategy_tags,
+   420	
+   421	    def get_definition(self, topic: str) -> Optional[TopicDefinition]:
+   422	        return self._definitions.get(topic)
+   423	
+   424	    def get_definition_by_alias(self, text: str) -> Optional[TopicDefinition]:
+   425	        """Find a definition by matching text against keywords/aliases."""
+   426	        matched = match_topic_from_text(text, list(self._definitions.values()))
+   427	        if matched:
+   428	            return self._definitions.get(matched)
+   429	        return None
+   430	
+   431	    def all_definitions(self) -> dict[str, TopicDefinition]:
+   432	        return dict(self._definitions)
+   433	
+   434	    def register_candidate_topic(
+   435	        self,
+   436	        topic: str = "",
+   437	        mandate_topic: str = "",
+   438	        policy_tags: Optional[list[str]] = None,
+   439	        name: str = "",
+   440	        lifecycle_state: str = "",
+   441	        last_signal_date: str = "",
+   442	        signal_count: int = 0,
+   443	        evidence_refs: Optional[list[dict]] = None,
+   444	        policy_level: str = "",
+   445	        candidate_symbol: str = "",
+   446	    ) -> TopicRegistryEntry:
+   447	        """Register or update a topic entry from a candidate.
+   448	
+   449	        Returns the updated TopicRegistryEntry.
+   450	        """
+   451	        resolved = match_topic(
+   452	            mandate_topic=mandate_topic or topic,
+   453	            policy_tags=policy_tags,
+   454	            name=name,
+   455	            definitions=list(self._definitions.values()),
+
+codex
+The new endpoints work for in-memory unit scenarios, but the API loses persisted topic/candidate mappings and evidence after process boundaries or restarts. These are functional issues for the DB-backed TradeFlow API.
+
+Full review comments:
+
+- [P2] Hydrate the registry from persisted candidates — /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py:2277-2284
+  When the API process starts fresh, restarts, or candidate generation runs in a separate scheduler process, the module-global default registry has no candidate registrations, so `/v1/tradeflow/topic-registry` returns only static definitions with empty `matched_candidates` and evidence even though `tradeflow_candidates` rows exist. Since the other TradeFlow API views are DB-backed, this endpoint should rebuild or persist the registry from the candidate table rather than relying on in-process state.
+
+- [P2] Read policy evidence refs from candidate rows — /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py:2353-2356
+  For DB-backed watchlist requests, `_row_to_candidate_item()` does not include `policy_evidence_refs` (it is only added by `_row_to_candidate_detail()`), so this always passes an empty list. As a result, topics built from persisted candidates lose policy evidence links/summaries and cannot upgrade `policy_level` from source-level evidence, which is one of the main fields this new watchlist/registry is meant to expose.
+The new endpoints work for in-memory unit scenarios, but the API loses persisted topic/candidate mappings and evidence after process boundaries or restarts. These are functional issues for the DB-backed TradeFlow API.
+
+Full review comments:
+
+- [P2] Hydrate the registry from persisted candidates — /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py:2277-2284
+  When the API process starts fresh, restarts, or candidate generation runs in a separate scheduler process, the module-global default registry has no candidate registrations, so `/v1/tradeflow/topic-registry` returns only static definitions with empty `matched_candidates` and evidence even though `tradeflow_candidates` rows exist. Since the other TradeFlow API views are DB-backed, this endpoint should rebuild or persist the registry from the candidate table rather than relying on in-process state.
+
+- [P2] Read policy evidence refs from candidate rows — /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py:2353-2356
+  For DB-backed watchlist requests, `_row_to_candidate_item()` does not include `policy_evidence_refs` (it is only added by `_row_to_candidate_detail()`), so this always passes an empty list. As a result, topics built from persisted candidates lose policy evidence links/summaries and cannot upgrade `policy_level` from source-level evidence, which is one of the main fields this new watchlist/registry is meant to expose.

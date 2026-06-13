@@ -2263,3 +2263,111 @@ def get_paper_review(trade_date: str, tf_db_path: str = "") -> dict:
         }
     finally:
         conn.close()
+
+
+# [H-012] mandate_topic_registry
+def get_topic_registry(tf_db_path: str = "") -> dict:
+    """Return all registered topics from the topic registry."""
+    _fast_meta = _tradeflow_meta("tradeflow_topic_registry")
+    from tradingagents.tradeflow.topic_registry import (
+        get_default_topic_registry,
+        get_default_topic_definitions,
+    )
+
+    registry = get_default_topic_registry()
+    definitions = get_default_topic_definitions()
+
+    topics: list[dict] = []
+    seen_topics: set[str] = set()
+
+    for entry_dict in registry.to_dict().values():
+        topics.append(entry_dict)
+        seen_topics.add(entry_dict.get("topic", ""))
+
+    for d in definitions:
+        if d.topic not in seen_topics:
+            topics.append({
+                "topic": d.topic,
+                "topic_status": "UNKNOWN",
+                "topic_status_label": "未知",
+                "lifecycle_state": "UNKNOWN",
+                "policy_level": d.policy_level,
+                "policy_level_weight": 0,
+                "last_signal_date": "",
+                "signal_count": 0,
+                "evidence_links": [],
+                "evidence_summary": "",
+                "chain_segments": [s.to_dict() for s in d.chain_segments],
+                "is_left_side": False,
+                "is_observe_only": False,
+                "is_confirmed": False,
+                "matched_candidates": [],
+            })
+            seen_topics.add(d.topic)
+
+    topics.sort(key=lambda t: t.get("signal_count", 0), reverse=True)
+
+    return {
+        "status": "ok",
+        "topics": topics,
+        "total_topics": len(topics),
+        "runtime_tier_meta": _fast_meta,
+    }
+
+
+# [H-012] mandate_topic_registry
+def get_topic_watchlist(
+    trade_date: str,
+    tf_db_path: str = "",
+    max_symbols_per_topic: int = 5,
+) -> dict:
+    """Build a per-topic watchlist from candidates for a given trade date."""
+    _fast_meta = _tradeflow_meta("tradeflow_topic_watchlist")
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {
+            "status": "no_data",
+            "topics": [],
+            "total_topics": 0,
+            "total_symbols": 0,
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    try:
+        rows = _query_by_date_or_effective(conn, "tradeflow_candidates", trade_date)
+        candidates = []
+        for row in rows:
+            item = _row_to_candidate_item(row)
+            candidates.append({
+                "symbol": item.get("symbol", ""),
+                "name": item.get("name", ""),
+                "mandate_topic": item.get("mandate_topic", ""),
+                "policy_tags": item.get("policy_tags", []),
+                "company_role": item.get("company_role", ""),
+                "beneficiary_path": item.get("beneficiary_path", []),
+                "mandate_score_component": item.get("mandate_score", 0.0),
+                "composite_score": item.get("composite_score", 0.0),
+                "tier": item.get("tier", ""),
+                "blocking_evidence_gaps": item.get("blocking_evidence_gaps", []),
+                "watchlist_evidence_gap": item.get("watchlist_evidence_gap", []),
+                "topic_lifecycle_state": item.get("topic_lifecycle_state", ""),
+                "topic_signal_count": item.get("topic_signal_count", 0),
+                "topic_last_signal_date": item.get("topic_last_signal_date", ""),
+                "policy_evidence_refs": item.get("policy_evidence_refs", []),
+            })
+
+        from tradingagents.tradeflow.topic_registry import build_topic_watchlist
+        result = build_topic_watchlist(
+            candidates,
+            max_symbols_per_topic=max_symbols_per_topic,
+        )
+
+        return {
+            "status": "ok",
+            "topics": [t.to_dict() for t in result.topics],
+            "total_topics": result.total_topics,
+            "total_symbols": result.total_symbols,
+            "runtime_tier_meta": _fast_meta,
+        }
+    finally:
+        conn.close()

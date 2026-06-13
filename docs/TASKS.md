@@ -93,7 +93,7 @@
 67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，ready，来自 TF-QUALITY-001 task_run）。
 68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
 69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，done，依赖 TF-OBS-002/TF-REVIEW-002）。
-70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，ready，依赖 H-010/H-011）。
+70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，done，依赖 H-010/H-011）。
 71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，ready，依赖 DATA-017/DATA-006）。
 72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，ready，依赖 TF-QUALITY-002/TF-OBS-002）。
 73. `V-007`：TradeFlow 试用闭环端到端验收（P1，ready，依赖 TF-QUALITY-003/TF-PAPER-001）。
@@ -2952,7 +2952,7 @@
 ### H-012: 昊天主题注册表与政策版本 Watchlist（P1）
 - **描述**：把昊天战法从零散政策关键词升级为可维护主题注册表，记录主题级别、生命周期、政策证据、产业链角色和重点观察标的。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done（2026-06-14，H-012）
 - **前置条件**：H-010、H-011 完成。
 - **执行约束**：
   - 不调 LLM。

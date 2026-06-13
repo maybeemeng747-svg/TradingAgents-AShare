@@ -38,6 +38,7 @@ from .topic_lifecycle import evaluate_topic_lifecycle, TopicLifecycleResult, app
 from .candidate_contradictions import evaluate_contradictions, ContradictionResult  # [H-011] candidate_contradiction_explainer
 from .mandate_ta_queue_router import route_to_research_queue, QueueRouteResult  # [H-007] mandate_ta_queue_router
 from .mandate_watchlist_note import generate_watchlist_note, WatchlistNoteResult  # [H-008] mandate_watchlist_note
+from .topic_registry import get_default_topic_registry  # [H-012] mandate_topic_registry
 from .score_separation import compute_split_scores  # [TF-QUALITY-002] score_separation
 
 
@@ -1243,6 +1244,20 @@ def evaluate_symbol(
     candidate.watchlist_consensus_score = wl_result.consensus_score
     candidate.watchlist_evidence_gap = wl_result.evidence_gap
     candidate.evidence["watchlist_note"] = wl_result.to_dict()
+
+    # [H-012] mandate_topic_registry — register candidate to topic registry
+    _topic_registry = get_default_topic_registry()
+    _topic_registry.register_candidate_topic(
+        topic=candidate.mandate_topic,
+        mandate_topic=candidate.mandate_topic,
+        policy_tags=candidate.policy_tags,
+        name=candidate.name,
+        lifecycle_state=candidate.topic_lifecycle_state,
+        last_signal_date=candidate.topic_last_signal_date,
+        signal_count=candidate.topic_signal_count,
+        evidence_refs=candidate.policy_evidence_refs or candidate.mandate_evidence_refs,
+        candidate_symbol=candidate.symbol,
+    )
 
     # [TF-QUALITY-002] score_separation — compute dimension sub-scores
     ss_result = compute_split_scores(

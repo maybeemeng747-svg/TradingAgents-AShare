@@ -497,3 +497,62 @@ class PaperReviewResponse(BaseModel):
     review: Dict[str, Any] = Field(default_factory=dict)
     trades: List[PaperTradeItem] = Field(default_factory=list)
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [H-012] mandate_topic_registry
+class TopicRegistryItem(BaseModel):
+    topic: str = ""
+    topic_status: str = "UNKNOWN"
+    topic_status_label: str = "未知"
+    lifecycle_state: str = "UNKNOWN"
+    policy_level: str = "UNKNOWN"
+    policy_level_weight: int = 0
+    last_signal_date: str = ""
+    signal_count: int = 0
+    evidence_links: List[Dict[str, Any]] = Field(default_factory=list)
+    evidence_summary: str = ""
+    chain_segments: List[Dict[str, Any]] = Field(default_factory=list)
+    is_left_side: bool = False
+    is_observe_only: bool = False
+    is_confirmed: bool = False
+    matched_candidates: List[str] = Field(default_factory=list)
+
+
+class TopicRegistryResponse(BaseModel):
+    status: str = "ok"
+    topics: List[TopicRegistryItem] = Field(default_factory=list)
+    total_topics: int = 0
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [H-012] mandate_topic_registry
+class TopicWatchlistSymbolItem(BaseModel):
+    symbol: str = ""
+    name: str = ""
+    company_role: str = ""
+    beneficiary_path: List[str] = Field(default_factory=list)
+    mandate_score: float = 0.0
+    tier: str = ""
+    evidence_gaps: List[str] = Field(default_factory=list)
+    note_suggestion: str = ""
+
+
+class TopicWatchlistTopicItem(BaseModel):
+    topic: str = ""
+    topic_status: str = "UNKNOWN"
+    topic_status_label: str = "未知"
+    policy_level: str = "UNKNOWN"
+    is_left_side: bool = False
+    is_observe_only: bool = False
+    symbols: List[TopicWatchlistSymbolItem] = Field(default_factory=list)
+    chain_segments: List[Dict[str, Any]] = Field(default_factory=list)
+    counter_evidence_gaps: List[str] = Field(default_factory=list)
+    note_suggestion: str = ""
+
+
+class TopicWatchlistResponse(BaseModel):
+    status: str = "ok"
+    topics: List[TopicWatchlistTopicItem] = Field(default_factory=list)
+    total_topics: int = 0
+    total_symbols: int = 0
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)

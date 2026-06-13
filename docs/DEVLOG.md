@@ -4,6 +4,45 @@
 
 ---
 
+## 2026-06-14 | H-012: 昊天主题注册表与政策版本 Watchlist
+
+- **执行者**：OpenCode
+- **类型**：新功能（P1）
+- **任务**：H-012
+- **背景**：把昊天战法从零散政策关键词升级为可维护主题注册表，记录主题级别、生命周期、政策证据、产业链角色和重点观察标的。
+- **修改文件**：
+  - `tradingagents/tradeflow/topic_registry.py` — [H-012] mandate_topic_registry（新建）
+    - 主题状态枚举（酝酿/发酵/确认/兑现/退潮/未知），与 H-010 lifecycle 映射
+    - `TopicDefinition` — 静态预定义（低空经济/算力/半导体设备/机器人/新能源/国产替代/并购重组/出海）
+    - `TopicRegistryEntry` — 动态注册表条目（主题/状态/政策级别/证据/产业链/候选）
+    - `TopicRegistry` — in-memory 注册表（register/get/all_entries/to_dict/clear）
+    - `match_topic()` / `match_topic_from_text()` — 关键词/别名匹配
+    - `suggest_topic_watchlist_note()` — 短备注建议（不含买卖词）
+    - `build_topic_watchlist()` — 从候选列表生成按主题聚合的 Watchlist
+  - `tradingagents/tradeflow/candidate_engine.py` — [H-012] mandate_topic_registry
+    - 在 H-008 watchlist_note 之后调用 `register_candidate_topic()` 注册候选主题
+  - `api/tradeflow_schemas.py` — [H-012] mandate_topic_registry
+    - 新增 `TopicRegistryItem`、`TopicRegistryResponse`
+    - 新增 `TopicWatchlistSymbolItem`、`TopicWatchlistTopicItem`、`TopicWatchlistResponse`
+  - `api/services/tradeflow_service.py` — [H-012] mandate_topic_registry
+    - 新增 `get_topic_registry()` — 返回所有注册主题（含预定义+动态）
+    - 新增 `get_topic_watchlist()` — 按交易日从候选池生成主题 Watchlist
+  - `api/main.py` — [H-012] mandate_topic_registry
+    - 新增 `GET /v1/tradeflow/topic-registry` 端点
+    - 新增 `GET /v1/tradeflow/topic-watchlist?date=YYYY-MM-DD` 端点
+  - `tests/test_h012_topic_registry.py` — 113 个测试覆盖
+    - 主题状态/政策级别枚举
+    - lifecycle → status 映射
+    - 主题定义（低空经济/算力/半导体设备等关键词验证）
+    - 关键词匹配（match_topic / match_topic_from_text）
+    - 注册表 CRUD 和候选注册
+    - Watchlist 生成、排序、截断、缺口聚合
+    - 备注建议不含买卖词
+- **测试结果**：113 passed（H-012）+ 240 passed（H-008/H-010/H-011 回归）+ 136 passed（tradeflow 全量）
+- **风险点**：无；主题状态变化仅影响候选解释和排序，不影响交易动作；不调用 LLM；不覆盖用户自选备注。
+
+---
+
 ## 2026-06-14 | TF-PAPER-001: 5000 元试跑模拟账户与候选跟踪账本
 
 - **执行者**：OpenCode
@@ -4420,3 +4459,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TF-PAPER-001-20260614-round1.txt
 - **Run archive**: docs/task_runs/TF-PAPER-001-20260614-004155/
+
+## 2026-06-14 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-012 - 昊天主题注册表与政策版本 Watchlist（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/H-012-20260614-round1.txt
+- **Run archive**: docs/task_runs/H-012-20260614-005948/
