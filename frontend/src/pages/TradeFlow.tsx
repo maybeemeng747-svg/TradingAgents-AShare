@@ -6,9 +6,10 @@
 // [TF-UX-002] auto refresh + A-stock colors
 // [TF-UX-003] post_market_review
 // [TF-UX-004] trade_priority_score
+// [UI-012] tradeflow_focus_workspace
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX, ChevronDown, ChevronRight, Zap, Clock, GitCompare, Wallet } from 'lucide-react'
+import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX, ChevronDown, ChevronRight, Zap, Clock, GitCompare, Wallet, TrendingUp, ShieldAlert, Lightbulb, Eye as EyeIcon } from 'lucide-react'
 import { api } from '@/services/api'
 import {
     RUNTIME_TIER_LABELS,
@@ -1267,7 +1268,7 @@ export default function TradeFlow() {
     // [TF-UX-001] tiered candidates state
     const [tieredData, setTieredData] = useState<TradeFlowTieredCandidatesResponse | null>(null)
     const [showScan, setShowScan] = useState(false)
-    const [viewMode, setViewMode] = useState<'tiered' | 'table'>('tiered')
+    const [viewMode, setViewMode] = useState<'focus' | 'tiered' | 'table'>('focus')  // [UI-012] default to focus workspace
 
     // [TF-UX-002] auto-refresh state
     const [lastObserveCheckTime, setLastObserveCheckTime] = useState<string | null>(null)
@@ -1582,6 +1583,192 @@ export default function TradeFlow() {
         setDrawerOpen(false)
     }
 
+    // [UI-012] tradeflow_focus_workspace — dimension score chip
+    const renderScoreChip = (label: string, value: number, highlight: boolean) => {
+        const v = value || 0
+        const cls = highlight
+            ? 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+            : v > 0
+            ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+            : 'bg-slate-50 text-slate-400 dark:bg-slate-800 dark:text-slate-500'
+        return (
+            <span className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums ${cls}`}>
+                {label}: {v.toFixed(1)}
+            </span>
+        )
+    }
+
+    // [UI-012] tradeflow_focus_workspace — main candidate card with scores, reasons, next steps
+    const renderMainCandidateCard = (c: TradeFlowCandidateItem) => {
+        const ct = candidateTypeLabel(c.candidate_type)
+        const obs = observeStateLabel(c.observe_state)
+        const isHaotian = c.candidate_type === 'POLICY_AMBUSH' || c.candidate_type === 'POLICY_CONFIRM'
+        const poolBorderCls = isHaotian
+            ? 'border-l-indigo-400 dark:border-l-indigo-600'
+            : 'border-l-slate-300 dark:border-l-slate-600'
+
+        return (
+            <div
+                key={c.symbol}
+                className={`cursor-pointer rounded-lg border border-slate-100 border-l-4 ${poolBorderCls} p-3 transition-colors hover:border-blue-200 hover:bg-blue-50/30 dark:border-slate-700 dark:hover:border-blue-800 dark:hover:bg-blue-900/10`}
+                onClick={() => handleRowClick(c)}
+            >
+                {/* Row 1: symbol + name + type + tier */}
+                <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs font-bold text-slate-900 dark:text-slate-100">{c.symbol}</span>
+                    <span className="max-w-[80px] truncate text-sm font-medium text-slate-700 dark:text-slate-300">{c.name || '--'}</span>
+                    <span className={`inline-block rounded px-1 py-0.5 text-[10px] font-medium ${ct.cls}`}>{ct.text}</span>
+                    <span className={`inline-block rounded px-1 py-0.5 text-[10px] font-bold ${tierBadgeClass(c.tier)}`}>{c.tier || '-'}</span>
+                    <span className="ml-auto text-sm font-bold tabular-nums text-slate-900 dark:text-slate-100">
+                        {c.trade_priority_score.toFixed(1)}
+                    </span>
+                </div>
+
+                {/* Row 2: dimension scores */}
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                    {renderScoreChip('形态', c.technical_score, false)}
+                    {renderScoreChip('政策', c.policy_score, isHaotian)}
+                    {renderScoreChip('资金', c.fund_flow_score, false)}
+                    {renderScoreChip('事件', c.event_score, false)}
+                    {renderScoreChip('风控', c.risk_penalty_score, c.risk_penalty_score > 20)}
+                    {renderScoreChip('数据', c.data_quality_score, false)}
+                </div>
+
+                {/* Row 3: ranking reasons (top 2) + weakness reasons (top 2) */}
+                <div className="mt-1.5 space-y-0.5">
+                    {(c.ranking_reasons || []).slice(0, 2).map((r, i) => (
+                        <div key={i} className="flex items-start gap-1 text-[11px] text-emerald-600 dark:text-emerald-400">
+                            <TrendingUp className="mt-0.5 h-2.5 w-2.5 flex-shrink-0" />
+                            <span className="truncate">{r}</span>
+                        </div>
+                    ))}
+                    {(c.weakness_reasons || []).slice(0, 2).map((r, i) => (
+                        <div key={i} className="flex items-start gap-1 text-[11px] text-amber-600 dark:text-amber-400">
+                            <ShieldAlert className="mt-0.5 h-2.5 w-2.5 flex-shrink-0" />
+                            <span className="truncate">{r}</span>
+                        </div>
+                    ))}
+                    {!c.ranking_reasons?.length && !c.weakness_reasons?.length && (
+                        <div className="text-[11px] text-slate-400">
+                            {c.action_tier_reason || '暂无排前/扣分原因'}
+                        </div>
+                    )}
+                </div>
+
+                {/* Row 4: trigger/invalid prices + observe state */}
+                <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px]">
+                    {c.trigger_price != null && (
+                        <span className="rounded bg-red-50 px-1.5 py-0.5 text-red-700 dark:bg-red-900/30 dark:text-red-300">
+                            触发 {fmtPrice(c.trigger_price)}
+                        </span>
+                    )}
+                    {c.invalid_price != null && (
+                        <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
+                            失效 {fmtPrice(c.invalid_price)}
+                        </span>
+                    )}
+                    <span className={`flex items-center gap-0.5 font-medium ${obs.cls}`}>
+                        {c.observe_state === 'WAITING' && <EyeIcon className="h-2.5 w-2.5" />}
+                        {obs.text}
+                    </span>
+                    <span className="ml-auto">
+                        <CompletenessBar value={c.tradeflow_data_completeness} />
+                    </span>
+                </div>
+
+                {/* Row 5: Next Step buttons */}
+                <div className="mt-2 flex items-center gap-1.5">
+                    <button
+                        onClick={(e) => { e.stopPropagation(); setActiveTab('observe') }}
+                        className="inline-flex items-center gap-0.5 rounded border border-slate-200 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-700"
+                    >
+                        <Eye className="h-2.5 w-2.5" />
+                        观察
+                    </button>
+                    <button
+                        onClick={(e) => {
+                            e.stopPropagation()
+                            navigate(`/analysis?symbol=${c.symbol}&horizon=${isHaotian ? 'medium' : 'short'}&intent=${isHaotian ? 'entry' : 'trend_confirm'}`)
+                        }}
+                        className="inline-flex items-center gap-0.5 rounded border border-blue-200 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 hover:bg-blue-50 dark:border-blue-700 dark:text-blue-300 dark:hover:bg-blue-900/30"
+                    >
+                        <Lightbulb className="h-2.5 w-2.5" />
+                        轻量 TA
+                    </button>
+                    <button
+                        onClick={async (e) => {
+                            e.stopPropagation()
+                            try {
+                                await api.addPaperCandidate({
+                                    symbol: c.symbol,
+                                    name: c.name,
+                                    trade_date: tradeDate,
+                                    trigger_price: c.trigger_price,
+                                    invalid_price: c.invalid_price,
+                                    candidate_type: c.candidate_type,
+                                })
+                                setActiveTab('paper-ledger')
+                            } catch {
+                                // ignore — user can retry from drawer
+                            }
+                        }}
+                        className="inline-flex items-center gap-0.5 rounded border border-purple-200 px-1.5 py-0.5 text-[10px] font-medium text-purple-600 hover:bg-purple-50 dark:border-purple-700 dark:text-purple-300 dark:hover:bg-purple-900/30"
+                    >
+                        <Wallet className="h-2.5 w-2.5" />
+                        模拟跟踪
+                    </button>
+                </div>
+            </div>
+        )
+    }
+
+    // [UI-012] tradeflow_focus_workspace — observation pool collapsible section
+    const [showObservationPool, setShowObservationPool] = useState(false)
+
+    const renderObservationPool = (items: TradeFlowCandidateItem[]) => {
+        if (items.length === 0) return null
+        return (
+            <div>
+                <button
+                    onClick={() => setShowObservationPool(!showObservationPool)}
+                    className="mb-2 flex items-center gap-2 text-sm font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+                >
+                    {showObservationPool ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                    <Eye className="h-4 w-4 text-amber-500" />
+                    观察池（{items.length} 只）
+                    <span className="text-xs text-slate-400">— 未达主候选精度但值得跟踪</span>
+                </button>
+                {showObservationPool && (
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                        {items.map(c => {
+                            const ct = candidateTypeLabel(c.candidate_type)
+                            return (
+                                <div
+                                    key={c.symbol}
+                                    className="cursor-pointer rounded border border-slate-100 p-2 transition-colors hover:border-amber-200 hover:bg-amber-50/30 dark:border-slate-700 dark:hover:border-amber-800 dark:hover:bg-amber-900/10"
+                                    onClick={() => handleRowClick(c)}
+                                >
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="font-mono text-[11px] font-bold text-slate-700 dark:text-slate-300">{c.symbol}</span>
+                                        <span className="max-w-[60px] truncate text-xs text-slate-600 dark:text-slate-400">{c.name || '--'}</span>
+                                        <span className={`ml-auto rounded px-1 py-0.5 text-[9px] font-medium ${ct.cls}`}>{ct.text}</span>
+                                    </div>
+                                    <div className="mt-1 flex items-center gap-1.5 text-[10px] text-slate-400">
+                                        <span className="tabular-nums">优先分: {(c.trade_priority_score || 0).toFixed(1)}</span>
+                                        <span className="tabular-nums">完整度: {((c.tradeflow_data_completeness || 0) * 100).toFixed(0)}%</span>
+                                    </div>
+                                    {c.action_tier_reason && (
+                                        <div className="mt-0.5 truncate text-[10px] text-amber-500" title={c.action_tier_reason}>{c.action_tier_reason}</div>
+                                    )}
+                                </div>
+                            )
+                        })}
+                    </div>
+                )}
+            </div>
+        )
+    }
+
     // [TF-UX-001] tiered candidate card renderer
     const renderTieredCandidateCard = (c: TradeFlowCandidateItem) => {
         const at = actionTierBadge(c.action_tier)
@@ -1662,6 +1849,100 @@ export default function TradeFlow() {
                                 <div>3. 当前政策候选均已过热，被标记为过热规避</div>
                             </div>
                         )}
+                    </div>
+                )
+            }
+
+            // [UI-012] tradeflow_focus_workspace — default focus view
+            if (viewMode === 'focus' && tieredData && tieredData.status === 'ok') {
+                const mainItems = tieredData.main_candidates ?? [
+                    ...tieredData.actionable,
+                    ...tieredData.watch,
+                    ...tieredData.scan,
+                ]
+                const observationItems = tieredData.observation_candidates ?? []
+                const poolSummary = tieredData.pool_gate_summary ?? ''
+                const poolCounts = tieredData.pool_counts ?? {}
+
+                if (mainItems.length === 0) {
+                    const hasObservation = observationItems.length > 0
+                    const hasFiltered = (poolCounts['filtered'] ?? 0) > 0
+                    return (
+                        <div className="space-y-4 p-4">
+                            <div className="py-12 text-center text-sm text-slate-400">
+                                <Target className="mx-auto mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
+                                <div className="font-medium text-slate-500 dark:text-slate-400">今日无主候选</div>
+                                <div className="mt-2 text-xs">
+                                    {poolSummary || '候选池尚未生成或全部未达主候选精度'}
+                                </div>
+                                {hasObservation && (
+                                    <div className="mt-1 text-xs text-amber-500">
+                                        有 {observationItems.length} 只观察候选，可展开下方观察池查看
+                                    </div>
+                                )}
+                                {!hasObservation && hasFiltered && (
+                                    <div className="mt-1 text-xs text-slate-400">
+                                        今日扫描的股票全部被过滤，可在「被过滤」tab 查看原因
+                                    </div>
+                                )}
+                                {!hasObservation && !hasFiltered && (
+                                    <div className="mt-1 text-xs text-slate-400">
+                                        请先生成候选池，或检查数据源是否正常
+                                    </div>
+                                )}
+                            </div>
+                            {renderObservationPool(observationItems)}
+                        </div>
+                    )
+                }
+
+                // Split main candidates into haotian pool and tech pool for visual distinction
+                const haotianItems = mainItems.filter(c =>
+                    c.candidate_type === 'POLICY_AMBUSH' || c.candidate_type === 'POLICY_CONFIRM'
+                )
+                const techItems = mainItems.filter(c =>
+                    c.candidate_type !== 'POLICY_AMBUSH' && c.candidate_type !== 'POLICY_CONFIRM'
+                )
+
+                return (
+                    <div className="space-y-4 p-4">
+                        {/* Pool gate summary banner */}
+                        {poolSummary && (
+                            <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+                                {poolSummary}
+                            </div>
+                        )}
+
+                        {/* Haotian (policy) pool */}
+                        {haotianItems.length > 0 && (
+                            <div>
+                                <div className="mb-2 flex items-center gap-2">
+                                    <span className="inline-block h-2 w-2 rounded-full bg-indigo-500" />
+                                    <span className="text-sm font-bold text-indigo-700 dark:text-indigo-300">昊天左侧池</span>
+                                    <span className="text-xs text-slate-400">（政策驱动，中线埋伏）</span>
+                                </div>
+                                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                                    {haotianItems.map(renderMainCandidateCard)}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Tech pool */}
+                        {techItems.length > 0 && (
+                            <div>
+                                <div className="mb-2 flex items-center gap-2">
+                                    <span className="inline-block h-2 w-2 rounded-full bg-slate-400" />
+                                    <span className="text-sm font-bold text-slate-700 dark:text-slate-300">短线技术池</span>
+                                    <span className="text-xs text-slate-400">（形态/量能/资金共振）</span>
+                                </div>
+                                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                                    {techItems.map(renderMainCandidateCard)}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Observation pool — collapsed by default */}
+                        {renderObservationPool(observationItems)}
                     </div>
                 )
             }
@@ -2128,6 +2409,16 @@ export default function TradeFlow() {
                                 视图
                             </div>
                             <div className="flex gap-1">
+                                <button
+                                    onClick={() => setViewMode('focus')}
+                                    className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                                        viewMode === 'focus'
+                                            ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300'
+                                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-400 dark:hover:bg-slate-600'
+                                    }`}
+                                >
+                                    主候选工作台
+                                </button>
                                 <button
                                     onClick={() => setViewMode('tiered')}
                                     className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${

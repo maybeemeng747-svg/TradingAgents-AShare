@@ -896,6 +896,15 @@ export interface TradeFlowCandidateItem {
     action_tier: string  // [TF-UX-004] actionable/watch/scan
     trade_priority_score: number  // [TF-UX-004]
     action_tier_reason: string  // [TF-UX-004]
+    // [UI-012] tradeflow_focus_workspace — dimension scores for main candidate cards
+    technical_score: number
+    policy_score: number
+    fund_flow_score: number
+    event_score: number
+    risk_penalty_score: number
+    data_quality_score: number
+    ranking_reasons: string[]
+    weakness_reasons: string[]
     counter_evidence: Array<Record<string, unknown>>  // [H-009]
     overheat_flags: string[]  // [H-009]
     downgrade_reasons: string[]  // [H-009]
@@ -1206,6 +1215,12 @@ export interface TradeFlowTieredCandidatesResponse {
     watch_count: number
     scan_count: number
     summary_agg: TradeFlowSummary
+    // [UI-012] tradeflow_focus_workspace — pool data for focus workspace
+    main_candidates?: TradeFlowCandidateItem[]
+    observation_candidates?: TradeFlowCandidateItem[]
+    filtered_candidates?: Array<{ symbol: string; name: string; source: string; reason: string }>
+    pool_counts?: Record<string, number>
+    pool_gate_summary?: string
 }
 
 // [TF-UX-003] post_market_review

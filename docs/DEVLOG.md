@@ -4,6 +4,48 @@
 
 ---
 
+## 2026-06-14 | UI-012: TradeFlow 前端降噪与主候选优先工作台
+
+- **执行者**：OpenCode
+- **类型**：前端功能增强（P1）
+- **任务**：UI-012
+- **背景**：候选池信息过散，用户试跑时需要一眼看到少数主候选、原因、触发条件和下一步动作。本任务把前端默认视图改为主候选工作台。
+- **修改文件**：
+  - `frontend/src/types/index.ts` — [UI-012] tradeflow_focus_workspace
+    - `TradeFlowCandidateItem` 新增 8 个分项评分字段：`technical_score`/`policy_score`/`fund_flow_score`/`event_score`/`risk_penalty_score`/`data_quality_score`/`ranking_reasons`/`weakness_reasons`
+    - `TradeFlowTieredCandidatesResponse` 新增 `main_candidates`/`observation_candidates`/`filtered_candidates`/`pool_counts`/`pool_gate_summary` 可选字段
+  - `frontend/src/pages/TradeFlow.tsx` — [UI-012] tradeflow_focus_workspace
+    - 新增「主候选工作台」视图模式（`focus`），设为默认视图
+    - 新增 `renderMainCandidateCard()` — 主候选富卡片组件，显示：
+      - 代码、名称、候选类型徽章（昊天=靛蓝/技术=灰）、Tier 徽章、优先分
+      - 6 维分项评分 chip（形态/政策/资金/事件/风控/数据），高维标红
+      - 前 2 条排前原因（绿色 TrendingUp 图标）
+      - 前 2 条扣分原因（橙色 ShieldAlert 图标）
+      - 触发价（红色 A 股涨色）/失效价（绿色 A 股跌色）
+      - 观察状态
+      - 3 个「下一步」按钮：观察 / 轻量 TA / 模拟跟踪
+    - 新增 `renderObservationPool()` — 观察池折叠区域，默认收起
+    - 新增 `renderScoreChip()` — 分项评分 chip 渲染辅助
+    - 视图模式切换增加「主候选工作台」按钮（靛蓝色）
+    - 主候选按类型分为「昊天左侧池」（靛蓝左边框）和「短线技术池」（灰色左边框）
+    - 空状态显示明确原因：无候选/有观察候选/全部被过滤/需先生成
+    - 顶部 pool gate summary 横幅
+- **关键逻辑**：
+  1. 默认视图从 `tiered`（分级）改为 `focus`（主候选工作台），用户一进来就看到少数主候选。
+  2. 昊天池和技术池视觉区分：左边框颜色 + 分区标题 + 角标说明（中线埋伏 vs 形态共振）。
+  3. 颜色遵守 A 股红涨绿跌：触发价红、失效价绿、已触发红、已失效绿。
+  4. 观察池默认折叠，不干扰主视线，但可一键展开追溯。
+  5. 「下一步」按钮直接在卡片上，一键跳转观察/轻量 TA/模拟账本。
+  6. 轻量 TA 按钮根据候选类型自动带入短线/中线 horizon 和意图。
+  7. 模拟跟踪按钮一键加入账本并跳转。
+  8. 空状态有明确原因：区分"无候选+有观察"、"全部被过滤"、"需先生成"。
+- **测试结果**：
+  - 前端构建：`npm run build` 通过
+  - 回归测试（ui001/ui011/e2e_smoke）：127 passed, 0 failed
+- **风险点**：无；不调用 LLM，不写生产 DB，不修改 prompts，不输出买卖建议。
+
+---
+
 ## 2026-06-14 | DATA-018: A股关键源新鲜度与 fallback 可视化日报
 
 - **执行者**：OpenCode
@@ -4538,3 +4580,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-018-20260614-round1.txt
 - **Run archive**: docs/task_runs/DATA-018-20260614-011340/
+
+## 2026-06-14 | AUTO-002 Auto Dev Loop
+
+- **Task**: UI-012 - TradeFlow 前端降噪与主候选优先工作台（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/UI-012-20260614-round1.txt
+- **Run archive**: docs/task_runs/UI-012-20260614-012750/
