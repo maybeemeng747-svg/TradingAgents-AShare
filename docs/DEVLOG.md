@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-06-13 | TF-REVIEW-002: 盘后 Review 数据补齐与非交易日计划映射
+
+- **执行者**：OpenCode
+- **类型**：功能增强
+- **任务**：TF-REVIEW-002（P0）
+- **背景**：盘后 Review 页面在以下场景显示空白且无解释：(1) 非交易日生成的候选池无法在下一交易日 Review；(2) 缺行情时只显示空表无原因说明；(3) 0% 收益可能显示为 N/A。
+- **修改文件**：
+  - `tradingagents/tradeflow/post_market_review.py`：新增 `ReviewDataStatus` 枚举（`OK/NO_MARKET_DATA/NON_TRADING_DAY/SOURCE_FAILED/NOT_ENOUGH_DAYS/NO_CANDIDATES`）；`CandidatePerformance` 和 `ReviewSummary` 新增 `data_status` 字段；`run_post_market_review()` 新增 `plan_date`/`effective_trade_date` 参数并自动计算 `data_status`；`render_review_markdown()` 显示数据状态和跨日期映射提示。
+  - `tradingagents/tradeflow/date_semantics.py`：新增 `resolve_review_date()` 和 `find_latest_plan_date()` 辅助函数，支持非交易日计划映射到下一交易日复盘。
+  - `api/services/tradeflow_service.py`：新增 `_get_available_dates()` 辅助函数；`get_review()` 当查询日期无计划时 fallback 到最近有候选的计划日期，并返回 `data_status`/`data_status_message`/`plan_date`/`effective_trade_date`；`generate_review()` 支持 `plan_date`→`review_date` 映射，strategy_stats 新增 `avg_day3_return`/`avg_day5_return`。
+  - `api/tradeflow_schemas.py`：`TradeFlowReviewResponse` 和 `TradeFlowReviewGenerateResponse` 新增 `data_status`/`data_status_message`/`plan_date`/`effective_trade_date` 字段。
+  - `frontend/src/types/index.ts`：TypeScript 类型同步新增字段。
+  - `frontend/src/pages/TradeFlow.tsx`：ReviewTab 组件展示数据状态横幅和跨日期映射提示。
+  - `tests/test_tf_review_002_date_mapping.py`：新增 34 个测试覆盖所有新逻辑。
+- **测试结果**：
+  - 全量回归：5323 passed, 17 skipped（0 failed）
+  - 前端构建：`npm run build` 通过
+- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM。
+
+---
+
 ## 2026-06-13 | TF-OBS-002 fix: 盘中观察 auto-run 仅限当日
 
 - **执行者**：OpenCode
@@ -4182,3 +4203,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TF-OBS-002-20260613-round2.txt
 - **Run archive**: docs/task_runs/TF-OBS-002-20260613-225218/
+
+## 2026-06-13 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-REVIEW-002 - 盘后 Review 数据补齐与非交易日计划映射（P0）
+- **Priority**: P0
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TF-REVIEW-002-20260613-round1.txt
+- **Run archive**: docs/task_runs/TF-REVIEW-002-20260613-232054/

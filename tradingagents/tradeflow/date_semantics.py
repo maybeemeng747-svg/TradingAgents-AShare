@@ -65,3 +65,45 @@ def resolve_plan_date(now: Optional[datetime] = None) -> str:
 
 def resolve_observe_date(effective_trade_date: str) -> str:
     return effective_trade_date
+
+
+# [TF-REVIEW-002] review_date_mapping
+def resolve_review_date(plan_date: str, effective_trade_date: str = "") -> str:
+    """Resolve which trading day a plan should be reviewed on.
+
+    If the plan was generated on a non-trading day (e.g. 2026-05-31 Sunday),
+    the review happens on the effective_trade_date (e.g. 2026-06-01 Monday).
+
+    Args:
+        plan_date: The date the candidate pool was generated.
+        effective_trade_date: The resolved effective trading day (from resolve_effective_trade_date).
+            If empty, computed from plan_date.
+
+    Returns:
+        The trading day the review should target.
+    """
+    if effective_trade_date:
+        return effective_trade_date
+    if is_cn_trading_day(plan_date):
+        return plan_date
+    return next_cn_trading_day(plan_date)
+
+
+def find_latest_plan_date(dates: list[str], target_date: str = "") -> str:
+    """Find the most recent plan date that should be reviewed.
+
+    Used by the Review page to default-select the most recent plan with candidates.
+    If target_date is given, prefers the exact match; otherwise returns the max date.
+
+    Args:
+        dates: list of plan_date strings available in the DB.
+        target_date: the date the user is viewing (optional).
+
+    Returns:
+        The best plan_date to show, or "" if no dates available.
+    """
+    if not dates:
+        return ""
+    if target_date in dates:
+        return target_date
+    return max(dates)

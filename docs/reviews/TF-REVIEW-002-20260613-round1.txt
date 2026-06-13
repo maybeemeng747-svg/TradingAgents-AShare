@@ -1,0 +1,3437 @@
+Task: TF-REVIEW-002 - 盘后 Review 数据补齐与非交易日计划映射（P0）
+Date: 2026-06-13_23:42:11
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019ec1a4-0746-7da0-a40a-3fa3ac575974
+--------
+user
+current changes
+exec
+/bin/zsh -lc 'git status --short && git rev-parse --show-toplevel && git diff --stat && git diff --cached --stat' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M api/services/tradeflow_service.py
+ M api/tradeflow_schemas.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M frontend/src/pages/TradeFlow.tsx
+ M frontend/src/types/index.ts
+ M tradingagents/tradeflow/date_semantics.py
+ M tradingagents/tradeflow/post_market_review.py
+?? docs/task_runs/TF-REVIEW-002-20260613-232054/
+?? docs/tradeflow_reviews/2026-06-02.md
+?? tests/test_tf_review_002_date_mapping.py
+/Users/maybee/TradingAgents-AShare
+ api/services/tradeflow_service.py             | 115 ++++++++++++++++++++++++--
+ api/tradeflow_schemas.py                      |   6 ++
+ docs/DEVLOG.md                                |  21 +++++
+ docs/TASKS.md                                 |   4 +-
+ frontend/src/pages/TradeFlow.tsx              |  14 ++++
+ frontend/src/types/index.ts                   |  12 +++
+ tradingagents/tradeflow/date_semantics.py     |  42 ++++++++++
+ tradingagents/tradeflow/post_market_review.py |  64 +++++++++++++-
+ 8 files changed, 270 insertions(+), 8 deletions(-)
+
+exec
+/bin/zsh -lc 'git diff -- api/services/tradeflow_service.py api/tradeflow_schemas.py frontend/src/pages/TradeFlow.tsx frontend/src/types/index.ts tradingagents/tradeflow/date_semantics.py tradingagents/tradeflow/post_market_review.py && git diff --cached' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/api/services/tradeflow_service.py b/api/services/tradeflow_service.py
+index 41e7492..4a3cb6b 100644
+--- a/api/services/tradeflow_service.py
++++ b/api/services/tradeflow_service.py
+@@ -861,11 +861,62 @@ def get_ta_queue(trade_date: str, tf_db_path: str = "") -> dict:
+         conn.close()
+ 
+ 
++def _get_available_dates(tf_db_path: str = "") -> list[str]:
++    """Return all distinct plan dates that have at least one candidate.  # [TF-REVIEW-002]
++
++    Used by the Review page to find the most recent plan with candidates
++    when the queried date has no data.
++    """
++    db_path = tf_db_path or _get_tradeflow_db_path()
++    dates: list[str] = []
++    if not os.path.exists(db_path):
++        return dates
++    try:
++        conn = _connect(db_path)
++        if conn is None:
++            return dates
++        try:
++            rows = conn.execute(
++                "SELECT DISTINCT trade_date FROM tradeflow_candidates ORDER BY trade_date DESC"
++            ).fetchall()
++            for row in rows:
++                d = row["trade_date"]
++                if d and d not in dates:
++                    dates.append(d)
++        finally:
++            conn.close()
++    except Exception:
++        pass
++    return dates
++
++
+ def get_review(trade_date: str, tf_db_path: str = "") -> dict:
++    # [TF-REVIEW-002] review_date_mapping
+     _fast_meta = _tradeflow_meta("tradeflow_review")  # [PERF-001]
+     plan_data = get_daily_plan(trade_date, tf_db_path)
++
++    # If no plan for this exact date, try effective_trade_date mapping
++    # (e.g. plan generated on 5/31 weekend, review on 6/1 trading day)
+     if plan_data.get("status") == "no_data":
+-        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
++        from tradingagents.tradeflow.candidate_engine import init_db  # noqa
++        from tradingagents.tradeflow.date_semantics import find_latest_plan_date
++
++        available_dates = _get_available_dates(tf_db_path)
++        if available_dates:
++            best = find_latest_plan_date(available_dates, trade_date)
++            if best and best != trade_date:
++                plan_data = get_daily_plan(best, tf_db_path)
++
++    if plan_data.get("status") == "no_data":
++        # [TF-REVIEW-002] review_date_mapping — return clear data_status
++        from tradingagents.tradeflow.post_market_review import ReviewDataStatus
++        return {
++            "status": "no_data",
++            "trade_date": trade_date,
++            "data_status": ReviewDataStatus.NO_CANDIDATES.value,
++            "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
++            "runtime_tier_meta": _fast_meta,
++        }
+ 
+     candidates = plan_data.get("candidates", [])
+     results = []
+@@ -892,12 +943,17 @@ def get_review(trade_date: str, tf_db_path: str = "") -> dict:
+             result["reason"] = "继续观察"
+         results.append(result)
+ 
++    # [TF-REVIEW-002] review_date_mapping — include plan_date/effective_trade_date
+     return {
+         "status": "ok",
+         "trade_date": trade_date,
+         "reviewed_at": datetime.now().isoformat(),
+         "results": results,
+         "summary_agg": _compute_summary(candidates),
++        "plan_date": plan_data.get("plan_date", ""),  # [TF-DATE-001]
++        "effective_trade_date": plan_data.get("effective_trade_date", ""),  # [TF-DATE-001]
++        "data_status": "OK",
++        "data_status_message": "数据正常",
+         "runtime_tier_meta": _tradeflow_meta("tradeflow_review"),  # [PERF-001]
+     }
+ 
+@@ -1388,33 +1444,74 @@ def get_evidence_audit(trade_date: str, tf_db_path: str = "") -> dict:
+         conn.close()
+ 
+ 
+-# [TF-UX-003] post_market_review
++# [TF-UX-003] post_market_review  # [TF-REVIEW-002] review_date_mapping
+ def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
+     """Generate post-market review for trade_date using post_market_review module."""
+     from tradingagents.tradeflow.candidate_engine import init_db
+     from tradingagents.tradeflow.post_market_review import (
++        ReviewDataStatus,
+         build_candidate_performance_from_dict,
+         run_post_market_review,
+         save_review_report,
+     )
++    from tradingagents.tradeflow.date_semantics import resolve_review_date, find_latest_plan_date
+ 
+     tf_db = tf_db_path or _get_tradeflow_db_path()
+     init_db(tf_db)
+ 
++    # [TF-REVIEW-002] Try the exact date first, then fall back to latest plan
++    resolved_date = trade_date
+     candidates_data = get_candidates(trade_date, tf_db_path=tf_db)
+     if candidates_data.get("status") == "no_data":
+-        return {"status": "no_data", "trade_date": trade_date, "message": "无候选数据"}
++        available = _get_available_dates(tf_db)
++        if available:
++            best = find_latest_plan_date(available, trade_date)
++            if best and best != trade_date:
++                resolved_date = best
++                candidates_data = get_candidates(best, tf_db_path=tf_db)
++
++    if candidates_data.get("status") == "no_data":
++        return {
++            "status": "no_data",
++            "trade_date": trade_date,
++            "message": "无候选数据",
++            "data_status": ReviewDataStatus.NO_CANDIDATES.value,
++            "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
++        }
+ 
+     candidates = candidates_data.get("candidates", [])
+     if not candidates:
+-        return {"status": "no_data", "trade_date": trade_date, "message": "候选列表为空"}
++        return {
++            "status": "no_data",
++            "trade_date": trade_date,
++            "message": "候选列表为空",
++            "data_status": ReviewDataStatus.NO_CANDIDATES.value,
++            "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
++        }
++
++    # [TF-REVIEW-002] Resolve plan_date vs review_date
++    plan_date = resolved_date
++    effective_trade_date = resolved_date
++    if candidates:
++        first = candidates[0]
++        if first.get("effective_trade_date"):
++            effective_trade_date = first["effective_trade_date"]
++        if first.get("plan_date"):
++            plan_date = first["plan_date"]
++    review_date = resolve_review_date(plan_date, effective_trade_date)
+ 
+     performances = []
+     for c in candidates:
+         perf = build_candidate_performance_from_dict(c)
+         performances.append(perf)
+ 
+-    summary = run_post_market_review(performances, candidate_date=trade_date)
++    summary = run_post_market_review(
++        performances,
++        candidate_date=resolved_date,
++        review_date=review_date,
++        plan_date=plan_date,
++        effective_trade_date=effective_trade_date,
++    )
+ 
+     try:
+         save_review_report(summary)
+@@ -1424,9 +1521,15 @@ def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
+     return {
+         "status": "ok",
+         "trade_date": trade_date,
++        "data_status": summary.data_status,
++        "data_status_message": summary.data_status_message,
+         "review": {
+             "review_date": summary.review_date,
+             "candidate_date": summary.candidate_date,
++            "plan_date": summary.plan_date,
++            "effective_trade_date": summary.effective_trade_date,
++            "data_status": summary.data_status,
++            "data_status_message": summary.data_status_message,
+             "total_candidates": summary.total_candidates,
+             "scored_candidates": summary.scored_candidates,
+             "no_data_candidates": summary.no_data_candidates,
+@@ -1449,6 +1552,8 @@ def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
+                     "hit_rate": st.hit_rate,
+                     "false_positive_rate": st.false_positive_rate,
+                     "avg_next_day_return": st.avg_next_day_return,
++                    "avg_day3_return": st.avg_day3_return,
++                    "avg_day5_return": st.avg_day5_return,
+                 }
+                 for tag, st in summary.strategy_stats.items()
+             },
+diff --git a/api/tradeflow_schemas.py b/api/tradeflow_schemas.py
+index 8012437..114f681 100644
+--- a/api/tradeflow_schemas.py
++++ b/api/tradeflow_schemas.py
+@@ -252,6 +252,10 @@ class TradeFlowReviewResponse(BaseModel):
+     reviewed_at: str = ""
+     results: List[TradeFlowReviewItem] = Field(default_factory=list)
+     summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
++    plan_date: str = ""  # [TF-REVIEW-002] review_date_mapping
++    effective_trade_date: str = ""  # [TF-REVIEW-002] review_date_mapping
++    data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
++    data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
+     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+ 
+ 
+@@ -323,6 +327,8 @@ class TradeFlowReviewGenerateResponse(BaseModel):
+     status: str = "ok"
+     trade_date: str = ""
+     message: str = ""
++    data_status: str = ""  # [TF-REVIEW-002] review_date_mapping
++    data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
+     review: Optional[Dict[str, Any]] = None
+ 
+ 
+diff --git a/frontend/src/pages/TradeFlow.tsx b/frontend/src/pages/TradeFlow.tsx
+index 1658b00..e23085e 100644
+--- a/frontend/src/pages/TradeFlow.tsx
++++ b/frontend/src/pages/TradeFlow.tsx
+@@ -505,6 +505,20 @@ function ReviewTab({ data }: { data: TradeFlowReviewResponse }) {
+         <div className="space-y-6 p-4">
+             <div className="text-xs text-slate-400">复盘时间: {data.reviewed_at || '-'}</div>
+ 
++            {/* [TF-REVIEW-002] review_date_mapping — show data_status and cross-date mapping */}
++            {data.data_status && data.data_status !== 'OK' && (
++                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
++                    <span className="font-medium">数据状态: {data.data_status}</span>
++                    {data.data_status_message && <span className="ml-2">{data.data_status_message}</span>}
++                </div>
++            )}
++            {data.plan_date && data.plan_date !== data.trade_date && (
++                <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-xs text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
++                    该候选池由 {data.plan_date} 生成
++                    {data.effective_trade_date && `，生效交易日: ${data.effective_trade_date}`}
++                </div>
++            )}
++
+             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+                 {[
+                     { label: '总候选数', value: total, color: 'text-slate-900 dark:text-slate-100' },
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index 73f8ece..f436fa4 100644
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -1068,6 +1068,10 @@ export interface TradeFlowReviewResponse {
+     reviewed_at: string
+     results: TradeFlowReviewItem[]
+     summary_agg: TradeFlowSummary
++    plan_date?: string  // [TF-REVIEW-002] review_date_mapping
++    effective_trade_date?: string  // [TF-REVIEW-002] review_date_mapping
++    data_status?: string  // [TF-REVIEW-002] review_date_mapping
++    data_status_message?: string  // [TF-REVIEW-002] review_date_mapping
+     runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
+ }
+ 
+@@ -1157,9 +1161,15 @@ export interface TradeFlowReviewGenerateResponse {
+     status: string
+     trade_date: string
+     message: string
++    data_status?: string  // [TF-REVIEW-002] review_date_mapping
++    data_status_message?: string  // [TF-REVIEW-002] review_date_mapping
+     review: {
+         review_date: string
+         candidate_date: string
++        plan_date?: string  // [TF-REVIEW-002] review_date_mapping
++        effective_trade_date?: string  // [TF-REVIEW-002] review_date_mapping
++        data_status?: string  // [TF-REVIEW-002] review_date_mapping
++        data_status_message?: string  // [TF-REVIEW-002] review_date_mapping
+         total_candidates: number
+         scored_candidates: number
+         no_data_candidates: number
+@@ -1181,6 +1191,8 @@ export interface TradeFlowReviewGenerateResponse {
+             hit_rate: number | null
+             false_positive_rate: number | null
+             avg_next_day_return: number | null
++            avg_day3_return: number | null  // [TF-REVIEW-002] review_date_mapping
++            avg_day5_return: number | null  // [TF-REVIEW-002] review_date_mapping
+         }>
+         tier_stats: Record<string, { total: number; hit: number; miss: number; no_data: number; invalidated: number }>
+         common_removal_reasons: string[]
+diff --git a/tradingagents/tradeflow/date_semantics.py b/tradingagents/tradeflow/date_semantics.py
+index 9bc8621..dbd31be 100644
+--- a/tradingagents/tradeflow/date_semantics.py
++++ b/tradingagents/tradeflow/date_semantics.py
+@@ -65,3 +65,45 @@ def resolve_plan_date(now: Optional[datetime] = None) -> str:
+ 
+ def resolve_observe_date(effective_trade_date: str) -> str:
+     return effective_trade_date
++
++
++# [TF-REVIEW-002] review_date_mapping
++def resolve_review_date(plan_date: str, effective_trade_date: str = "") -> str:
++    """Resolve which trading day a plan should be reviewed on.
++
++    If the plan was generated on a non-trading day (e.g. 2026-05-31 Sunday),
++    the review happens on the effective_trade_date (e.g. 2026-06-01 Monday).
++
++    Args:
++        plan_date: The date the candidate pool was generated.
++        effective_trade_date: The resolved effective trading day (from resolve_effective_trade_date).
++            If empty, computed from plan_date.
++
++    Returns:
++        The trading day the review should target.
++    """
++    if effective_trade_date:
++        return effective_trade_date
++    if is_cn_trading_day(plan_date):
++        return plan_date
++    return next_cn_trading_day(plan_date)
++
++
++def find_latest_plan_date(dates: list[str], target_date: str = "") -> str:
++    """Find the most recent plan date that should be reviewed.
++
++    Used by the Review page to default-select the most recent plan with candidates.
++    If target_date is given, prefers the exact match; otherwise returns the max date.
++
++    Args:
++        dates: list of plan_date strings available in the DB.
++        target_date: the date the user is viewing (optional).
++
++    Returns:
++        The best plan_date to show, or "" if no dates available.
++    """
++    if not dates:
++        return ""
++    if target_date in dates:
++        return target_date
++    return max(dates)
+diff --git a/tradingagents/tradeflow/post_market_review.py b/tradingagents/tradeflow/post_market_review.py
+index 8a1f6ef..22b2fb0 100644
+--- a/tradingagents/tradeflow/post_market_review.py
++++ b/tradingagents/tradeflow/post_market_review.py
+@@ -18,12 +18,36 @@ from __future__ import annotations
+ import os
+ from dataclasses import dataclass, field
+ from datetime import datetime
++from enum import Enum
+ from typing import Optional
+ 
+ from .schemas import Candidate, ALL_STRATEGIES, FORBIDDEN_WORDS
+ from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG
+ 
+ 
++# [TF-REVIEW-002] review_date_mapping
++class ReviewDataStatus(str, Enum):
++    """Explains WHY review data is missing, instead of showing a blank page."""
++    OK = "OK"
++    NO_MARKET_DATA = "NO_MARKET_DATA"
++    NON_TRADING_DAY = "NON_TRADING_DAY"
++    SOURCE_FAILED = "SOURCE_FAILED"
++    NOT_ENOUGH_DAYS = "NOT_ENOUGH_DAYS"
++    NO_CANDIDATES = "NO_CANDIDATES"
++
++    @property
++    def message_cn(self) -> str:
++        _MAP = {
++            ReviewDataStatus.OK: "数据正常",
++            ReviewDataStatus.NO_MARKET_DATA: "无行情数据，等待收盘后补齐",
++            ReviewDataStatus.NON_TRADING_DAY: "非交易日，无行情更新",
++            ReviewDataStatus.SOURCE_FAILED: "行情数据源获取失败",
++            ReviewDataStatus.NOT_ENOUGH_DAYS: "交易日不足，多日收益暂不可用",
++            ReviewDataStatus.NO_CANDIDATES: "无候选记录",
++        }
++        return _MAP.get(self, "未知状态")
++
++
+ @dataclass
+ class CandidatePerformance:
+     symbol: str
+@@ -47,6 +71,7 @@ class CandidatePerformance:
+     day5_return_pct: Optional[float] = None
+     hit: Optional[bool] = None
+     invalidated: Optional[bool] = None
++    data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
+ 
+     def compute_returns(self) -> None:
+         if self.entry_price and self.entry_price > 0:
+@@ -114,6 +139,10 @@ class ReviewSummary:
+     avg_next_day_return: Optional[float] = None
+     avg_day3_return: Optional[float] = None
+     avg_day5_return: Optional[float] = None
++    data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
++    data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
++    plan_date: str = ""  # [TF-REVIEW-002] review_date_mapping — original candidate pool generation date
++    effective_trade_date: str = ""  # [TF-REVIEW-002] review_date_mapping
+ 
+     def compute_overall(self) -> None:
+         self.scored_candidates = self.overall_hit_count + self.overall_miss_count
+@@ -294,6 +323,8 @@ def run_post_market_review(
+     performances: list[CandidatePerformance],
+     candidate_date: Optional[str] = None,
+     review_date: Optional[str] = None,
++    plan_date: Optional[str] = None,
++    effective_trade_date: Optional[str] = None,
+ ) -> ReviewSummary:
+     if not review_date:
+         review_date = datetime.now().strftime("%Y-%m-%d")
+@@ -328,6 +359,16 @@ def run_post_market_review(
+ 
+     suggestions = generate_suggestions(strategy_stats, tier_stats, total)
+ 
++    # [TF-REVIEW-002] review_date_mapping — compute data_status
++    if total == 0:
++        data_status = ReviewDataStatus.NO_CANDIDATES
++    elif no_data_count == total:
++        data_status = ReviewDataStatus.NO_MARKET_DATA
++    elif len(next_returns) > 0 and len(d3_returns) == 0:
++        data_status = ReviewDataStatus.NOT_ENOUGH_DAYS
++    else:
++        data_status = ReviewDataStatus.OK
++
+     summary = ReviewSummary(
+         review_date=review_date,
+         candidate_date=candidate_date,
+@@ -343,6 +384,10 @@ def run_post_market_review(
+         avg_next_day_return=round(sum(next_returns) / len(next_returns), 2) if next_returns else None,
+         avg_day3_return=round(sum(d3_returns) / len(d3_returns), 2) if d3_returns else None,
+         avg_day5_return=round(sum(d5_returns) / len(d5_returns), 2) if d5_returns else None,
++        data_status=data_status.value,
++        data_status_message=data_status.message_cn,
++        plan_date=plan_date or candidate_date,
++        effective_trade_date=effective_trade_date or review_date,
+     )
+     summary.compute_overall()
+     return summary
+@@ -354,6 +399,23 @@ def render_review_markdown(summary: ReviewSummary) -> str:
+         "",
+         f"## 候选日期: {summary.candidate_date}",
+         "",
++    ]
++
++    # [TF-REVIEW-002] review_date_mapping — show cross-date mapping
++    if summary.plan_date and summary.plan_date != summary.candidate_date:
++        lines.append(f"> 该候选池由 {summary.plan_date} 生成，将在 {summary.candidate_date} 复盘")
++        lines.append("")
++
++    if summary.effective_trade_date and summary.effective_trade_date != summary.review_date:
++        lines.append(f"> 生效交易日: {summary.effective_trade_date}")
++        lines.append("")
++
++    # [TF-REVIEW-002] review_date_mapping — show data_status
++    if summary.data_status and summary.data_status != ReviewDataStatus.OK.value:
++        lines.append(f"> **数据状态**: {summary.data_status} — {summary.data_status_message}")
++        lines.append("")
++
++    lines.extend([
+         "### 总体概览",
+         "",
+         f"| 指标 | 值 |",
+@@ -370,7 +432,7 @@ def render_review_markdown(summary: ReviewSummary) -> str:
+         f"| 平均3日收益 | {summary.avg_day3_return if summary.avg_day3_return is not None else 'N/A'}% |",
+         f"| 平均5日收益 | {summary.avg_day5_return if summary.avg_day5_return is not None else 'N/A'}% |",
+         "",
+-    ]
++    ])
+ 
+     lines.append("### 策略命中率")
+     lines.append("")
+
+exec
+/bin/zsh -lc "sed -n '1,240p' tests/test_tf_review_002_date_mapping.py && find docs/task_runs/TF-REVIEW-002-20260613-232054 -type f -maxdepth 2 -print -exec sed -n '1,160p' {} \\; && sed -n '1,220p' docs/tradeflow_reviews/2026-06-02.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [TF-REVIEW-002] review_date_mapping tests
+"""Tests for post-market Review data enrichment and non-trading-day plan mapping."""
+
+import os
+import tempfile
+
+import pytest
+
+from tradingagents.tradeflow.post_market_review import (
+    ReviewDataStatus,
+    CandidatePerformance,
+    ReviewSummary,
+    run_post_market_review,
+    render_review_markdown,
+    build_candidate_performance_from_dict,
+)
+from tradingagents.tradeflow.date_semantics import (
+    resolve_review_date,
+    find_latest_plan_date,
+    next_cn_trading_day,
+)
+
+
+# ── ReviewDataStatus ──
+
+
+class TestReviewDataStatus:
+    def test_all_statuses_exist(self):
+        assert ReviewDataStatus.OK
+        assert ReviewDataStatus.NO_MARKET_DATA
+        assert ReviewDataStatus.NON_TRADING_DAY
+        assert ReviewDataStatus.SOURCE_FAILED
+        assert ReviewDataStatus.NOT_ENOUGH_DAYS
+        assert ReviewDataStatus.NO_CANDIDATES
+
+    def test_status_values_are_strings(self):
+        for s in ReviewDataStatus:
+            assert isinstance(s.value, str)
+
+    def test_message_cn_returns_chinese(self):
+        assert "行情" in ReviewDataStatus.NO_MARKET_DATA.message_cn
+        assert "非交易" in ReviewDataStatus.NON_TRADING_DAY.message_cn
+        assert "不足" in ReviewDataStatus.NOT_ENOUGH_DAYS.message_cn
+
+    def test_ok_message(self):
+        assert ReviewDataStatus.OK.message_cn == "数据正常"
+
+
+# ── data_status in run_post_market_review ──
+
+
+class TestDataStatusInReview:
+    def test_no_candidates_status(self):
+        summary = run_post_market_review([], candidate_date="2026-05-31", review_date="2026-06-01")
+        assert summary.data_status == ReviewDataStatus.NO_CANDIDATES.value
+
+    def test_all_no_data_status(self):
+        """When all candidates have no next_day_close, status is NO_MARKET_DATA."""
+        perf = CandidatePerformance(
+            symbol="000001.SZ", trade_date="2026-05-31",
+            entry_price=10.0, trigger_price=10.5, invalid_price=9.0,
+            strategy_tags=["VCP"], tier="A",
+        )
+        summary = run_post_market_review([perf], candidate_date="2026-05-31")
+        assert summary.data_status == ReviewDataStatus.NO_MARKET_DATA.value
+
+    def test_not_enough_days_status(self):
+        """When next_day data exists but 3-day/5-day don't, status is NOT_ENOUGH_DAYS."""
+        perf = CandidatePerformance(
+            symbol="000001.SZ", trade_date="2026-05-31",
+            entry_price=10.0, trigger_price=10.5, invalid_price=9.0,
+            strategy_tags=["VCP"], tier="A", next_day_close=10.5,
+        )
+        summary = run_post_market_review([perf], candidate_date="2026-05-31")
+        assert summary.data_status == ReviewDataStatus.NOT_ENOUGH_DAYS.value
+
+    def test_ok_status_with_multi_day_data(self):
+        """When next_day and day3 data exist, status is OK."""
+        perf = CandidatePerformance(
+            symbol="000001.SZ", trade_date="2026-05-31",
+            entry_price=10.0, trigger_price=10.5, invalid_price=9.0,
+            strategy_tags=["VCP"], tier="A",
+            next_day_close=10.5, day3_close=11.0, day5_close=11.5,
+        )
+        summary = run_post_market_review([perf], candidate_date="2026-05-31")
+        assert summary.data_status == ReviewDataStatus.OK.value
+
+    def test_mixed_candidates_ok_status(self):
+        """When some have data and some don't, status is OK (not all no_data)."""
+        perfs = [
+            CandidatePerformance(
+                symbol="000001.SZ", trade_date="2026-05-31",
+                entry_price=10.0, trigger_price=10.5, invalid_price=9.0,
+                strategy_tags=["VCP"], tier="A", next_day_close=10.5,
+                day3_close=11.0,
+            ),
+            CandidatePerformance(
+                symbol="000002.SZ", trade_date="2026-05-31",
+                entry_price=20.0, trigger_price=21.0, invalid_price=19.0,
+                strategy_tags=["VCP"], tier="B",
+            ),
+        ]
+        summary = run_post_market_review(perfs, candidate_date="2026-05-31")
+        assert summary.data_status == ReviewDataStatus.OK.value
+
+
+# ── plan_date / effective_trade_date fields ──
+
+
+class TestReviewDateMapping:
+    def test_plan_date_and_effective_trade_date_set(self):
+        perf = CandidatePerformance(
+            symbol="000001.SZ", trade_date="2026-05-31",
+            entry_price=10.0, trigger_price=10.5, invalid_price=9.0,
+            strategy_tags=["VCP"], tier="A", next_day_close=10.5,
+        )
+        summary = run_post_market_review(
+            [perf],
+            candidate_date="2026-05-31",
+            review_date="2026-06-01",
+            plan_date="2026-05-31",
+            effective_trade_date="2026-06-01",
+        )
+        assert summary.plan_date == "2026-05-31"
+        assert summary.effective_trade_date == "2026-06-01"
+
+    def test_plan_date_defaults_to_candidate_date(self):
+        perf = CandidatePerformance(
+            symbol="000001.SZ", trade_date="2026-05-31",
+            entry_price=10.0, trigger_price=10.5, invalid_price=9.0,
+            strategy_tags=["VCP"], tier="A", next_day_close=10.5,
+        )
+        summary = run_post_market_review([perf], candidate_date="2026-05-31")
+        assert summary.plan_date == "2026-05-31"
+        assert summary.effective_trade_date == summary.review_date
+
+    def test_cross_date_review_summary(self):
+        """Plan generated on weekend, reviewed on Monday."""
+        perf = CandidatePerformance(
+            symbol="000001.SZ", trade_date="2026-05-31",
+            entry_price=10.0, trigger_price=10.5, invalid_price=9.0,
+            strategy_tags=["VCP", "POLICY_VERSION"], tier="A",
+            next_day_close=10.8,
+        )
+        summary = run_post_market_review(
+            [perf],
+            candidate_date="2026-05-31",
+            review_date="2026-06-01",
+            plan_date="2026-05-31",
+            effective_trade_date="2026-06-01",
+        )
+        assert summary.candidate_date == "2026-05-31"
+        assert summary.review_date == "2026-06-01"
+        assert summary.plan_date == "2026-05-31"
+        assert summary.overall_hit_count == 1
+
+
+# ── Markdown rendering with data_status ──
+
+
+class TestRenderWithDataStatus:
+    def test_render_shows_data_status_when_not_ok(self):
+        perf = CandidatePerformance(
+            symbol="000001.SZ", trade_date="2026-05-31",
+            entry_price=10.0, trigger_price=10.5, invalid_price=9.0,
+            strategy_tags=["VCP"], tier="A",
+        )
+        summary = run_post_market_review([perf], candidate_date="2026-05-31")
+        md = render_review_markdown(summary)
+        assert "数据状态" in md
+        assert ReviewDataStatus.NO_MARKET_DATA.value in md
+
+    def test_render_no_data_status_when_ok(self):
+        perf = CandidatePerformance(
+            symbol="000001.SZ", trade_date="2026-05-31",
+            entry_price=10.0, trigger_price=10.5, invalid_price=9.0,
+            strategy_tags=["VCP"], tier="A",
+            next_day_close=10.5, day3_close=11.0, day5_close=11.5,
+        )
+        summary = run_post_market_review([perf], candidate_date="2026-05-31")
+        md = render_review_markdown(summary)
+        assert "数据状态" not in md
+
+    def test_render_cross_date_mapping_shown(self):
+        perf = CandidatePerformance(
+            symbol="000001.SZ", trade_date="2026-05-31",
+            entry_price=10.0, trigger_price=10.5, invalid_price=9.0,
+            strategy_tags=["VCP"], tier="A", next_day_close=10.5,
+        )
+        summary = run_post_market_review(
+            [perf],
+            candidate_date="2026-05-31",
+            review_date="2026-06-01",
+            plan_date="2026-05-31",
+            effective_trade_date="2026-06-01",
+        )
+        md = render_review_markdown(summary)
+        assert "2026-05-31" in md
+        assert "2026-06-01" in md
+
+    def test_render_zero_percent_not_na(self):
+        """0% return must render as 0.0%, not N/A%."""
+        perf = CandidatePerformance(
+            symbol="000001.SZ", trade_date="2026-05-31",
+            entry_price=10.0, trigger_price=None, invalid_price=None,
+            strategy_tags=["VCP"], tier="A", next_day_close=10.0,
+            day3_close=10.0, day5_close=10.0,
+        )
+        summary = run_post_market_review([perf], candidate_date="2026-05-31", review_date="2026-06-01")
+        md = render_review_markdown(summary)
+        assert "总命中率 | 0.0%" in md
+        assert "平均次日收益 | 0.0%" in md
+        assert "平均3日收益 | 0.0%" in md
+        assert "平均5日收益 | 0.0%" in md
+
+    def test_render_partial_na_only_for_missing_periods(self):
+        """When day3/day5 data is missing, only those show N/A%."""
+        perf = CandidatePerformance(
+            symbol="000001.SZ", trade_date="2026-05-31",
+            entry_price=10.0, trigger_price=None, invalid_price=None,
+            strategy_tags=["VCP"], tier="A", next_day_close=10.5,
+        )
+        summary = run_post_market_review([perf], candidate_date="2026-05-31", review_date="2026-06-01")
+        md = render_review_markdown(summary)
+        assert "平均次日收益 | 5.0%" in md
+        assert "平均3日收益 | N/A%" in md
+        assert "平均5日收益 | N/A%" in md
+
+
+# ── date_semantics helpers ──
+
+
+class TestDateSemanticsHelpers:
+    def test_resolve_review_date_with_effective(self):
+        result = resolve_review_date("2026-05-31", "2026-06-01")
+        assert result == "2026-06-01"
+
+    def test_resolve_review_date_trading_day(self):
+        """If plan_date is a trading day, review on the same day."""
+        # 2026-06-01 is a Monday — check if it's a trading day
+docs/task_runs/TF-REVIEW-002-20260613-232054/tests-round1.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  1%]
+................................................ss...................... [  2%]
+........................................................................ [  4%]
+........................................................................ [  5%]
+........................................................................ [  6%]
+........................................................................ [  8%]
+........................................................................ [  9%]
+........................................................................ [ 10%]
+........................................................................ [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 18%]
+........................................................................ [ 20%]
+........................................................................ [ 21%]
+........................................................................ [ 22%]
+........................................................................ [ 24%]
+........................................................................ [ 25%]
+........................................................................ [ 26%]
+........................................................................ [ 28%]
+........................................................................ [ 29%]
+........................................................................ [ 31%]
+........................................................................ [ 32%]
+........................................................................ [ 33%]
+........................................................................ [ 35%]
+........................................................................ [ 36%]
+........................................................................ [ 37%]
+........................................................................ [ 39%]
+........................................................................ [ 40%]
+........................................................................ [ 41%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 45%]
+........................................................................ [ 47%]
+........................................................................ [ 48%]
+.....................................sssssssss.......................... [ 49%]
+........................................................................ [ 51%]
+........................................................................ [ 52%]
+........................................................................ [ 53%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 57%]
+........................................................................ [ 59%]
+........................................................................ [ 60%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 64%]
+........................................................................ [ 66%]
+........................................................................ [ 67%]
+........................................................................ [ 68%]
+........................................................................ [ 70%]
+........................................................................ [ 71%]
+.....................ss................................................. [ 72%]
+ssss.................................................................... [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 76%]
+........................................................................ [ 78%]
+........................................................................ [ 79%]
+........................................................................ [ 80%]
+........................................................................ [ 82%]
+........................................................................ [ 83%]
+........................................................................ [ 84%]
+........................................................................ [ 86%]
+........................................................................ [ 87%]
+........................................................................ [ 88%]
+........................................................................ [ 90%]
+........................................................................ [ 91%]
+........................................................................ [ 93%]
+........................................................................ [ 94%]
+........................................................................ [ 95%]
+........................................................................ [ 97%]
+........................................................................ [ 98%]
+........................................................................ [ 99%]
+............                                                             [100%]
+5323 passed, 17 skipped in 151.53s (0:02:31)
+
+Exit code: 0
+docs/task_runs/TF-REVIEW-002-20260613-232054/codegraph-status.json
+{
+  "task_id": "TF-REVIEW-002",
+  "generated_at": "2026-06-13T23:20:55.069659",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": false,
+    "version": "0.9.7",
+    "error": "status check failed: error: unknown option '-p'",
+    "files_indexed": 0,
+    "nodes_count": 0
+  },
+  "result": "SKIPPED",
+  "reason": "CodeGraph not indexed",
+  "post_generated_at": "2026-06-13T23:40:11.523028",
+  "codegraph_post": {
+    "available": true,
+    "indexed": false,
+    "version": "0.9.7",
+    "error": "status check failed: error: unknown option '-p'",
+    "files_indexed": 0,
+    "nodes_count": 0
+  },
+  "post_result": "SKIPPED"
+}docs/task_runs/TF-REVIEW-002-20260613-232054/prompt-round1.md
+# Task: TF-REVIEW-002: 盘后 Review 数据补齐与非交易日计划映射（P0）
+
+Read task "TF-REVIEW-002" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/TF-REVIEW-002-20260613-232054/codegraph-context.txt
+# CodeGraph Context: SKIPPED
+# Task: TF-REVIEW-002
+# Reason: CodeGraph not indexed
+docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "TF-REVIEW-002"[90m in . · 31 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [offset=2760, limit=100][0m
+Now let me read the T-005 task and look at the existing Review implementation to understand the current state.
+[0m→ [0mRead docs/task_runs/TF-REVIEW-002-20260613-232054/task.md
+[0m• [0mExplore review module[90m Explore Agent[0m
+[0m✓ [0mExplore review module[90m Explore Agent[0m
+Let me read the key files to understand the current implementation in detail.
+[0m→ [0mRead tradingagents/tradeflow/post_market_review.py
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=200, offset=850][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=200, offset=1370][0m
+Let me read the relevant service functions and date semantics helpers.
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=100, offset=280][0m
+[0m→ [0mRead tradingagents/tradeflow/date_semantics.py
+Now let me look at the existing tests and the Review API endpoint in main.py:
+[0m→ [0mRead api/main.py[90m [limit=100, offset=5300][0m
+[0m→ [0mRead tradingagents/tradeflow/review_fixture_replay.py[90m [limit=150, offset=290][0m
+[0m→ [0mRead tradingagents/tradeflow/review_fixture_replay.py[90m [limit=100, offset=1][0m
+Now let me check the existing test files and the `get_candidates` function:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=80, offset=380][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=120, offset=460][0m
+Let me check the existing tests:
+[0m→ [0mRead tests/test_m007_post_market_review.py
+Now let me look at the T-005 test file and the trade_calendar:
+[0m→ [0mRead tests/test_t005_review_fixture_replay.py
+[0m
+[0m# [0mTodos
+[ ] Add ReviewDataStatus enum and data_status fields to post_market_review.py
+[ ] Add resolve_review_date() / find latest reviewable plan helper to date_semantics.py
+[ ] Update get_review() service to map non-trading-day plans and return data_status
+[ ] Update generate_review() service to include data_status and plan/review date mapping
+[ ] Write new tests for TF-REVIEW-002 and run full test suite
+[ ] Update docs/DEVLOG.md and docs/TASKS.md
+[0m
+Let me set up the todo list and start implementing. First, let me verify the current test baseline:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_m007_post_market_review.py tests/test_t005_review_fixture_replay.py -q --tb=short 2>&1 | tail -20
+........................................................................ [ 39%]
+........................................................................ [ 78%]
+........................................                                 [100%]
+184 passed in 1.17s
+[0m
+Good, baseline is clean (184 passed). Let me check git status:
+[0m$ [0mgit status --short && git log --oneline -3
+M docs/TASKS.md
+?? docs/task_runs/TF-REVIEW-002-20260613-232054/
+7a9a83b docs: mark TF-OBS-002 done after auto run
+8ede481 auto: TF-OBS-002 盘中观察自动执行与 A 股红绿视觉修正（P0） [AUTO-002]
+b1ca16f feat(TF-QUALITY-002): score separation with dimension sub-scores and explainable ranking
+[0m
+[0m# [0mTodos
+[•] Add ReviewDataStatus enum and data_status fields to post_market_review.py
+[ ] Add resolve_review_date() / find latest reviewable plan helper to date_semantics.py
+[ ] Update get_review() service to map non-trading-day plans and return data_status
+[ ] Update generate_review() service to include data_status and plan/review date mapping
+[ ] Write new tests for TF-REVIEW-002 and run full test suite
+[ ] Update docs/DEVLOG.md and docs/TASKS.md
+[0m
+Now let's start implementing. First, add `ReviewDataStatus` enum and `data_status` fields to `post_market_review.py`:
+[0m← [0mEdit tradingagents/tradeflow/post_market_review.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
+@@ -17,14 +17,38 @@
+ 
+ import os
+ from dataclasses import dataclass, field
+ from datetime import datetime
++from enum import Enum
+ from typing import Optional
+ 
+ from .schemas import Candidate, ALL_STRATEGIES, FORBIDDEN_WORDS
+ from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG
+ 
+ 
++# [TF-REVIEW-002] review_date_mapping
++class ReviewDataStatus(str, Enum):
++    """Explains WHY review data is missing, instead of showing a blank page."""
++    OK = "OK"
++    NO_MARKET_DATA = "NO_MARKET_DATA"
++    NON_TRADING_DAY = "NON_TRADING_DAY"
++    SOURCE_FAILED = "SOURCE_FAILED"
++    NOT_ENOUGH_DAYS = "NOT_ENOUGH_DAYS"
++    NO_CANDIDATES = "NO_CANDIDATES"
++
++    @property
++    def message_cn(self) -> str:
++        _MAP = {
++            ReviewDataStatus.OK: "数据正常",
++            ReviewDataStatus.NO_MARKET_DATA: "无行情数据，等待收盘后补齐",
++            ReviewDataStatus.NON_TRADING_DAY: "非交易日，无行情更新",
++            ReviewDataStatus.SOURCE_FAILED: "行情数据源获取失败",
++            ReviewDataStatus.NOT_ENOUGH_DAYS: "交易日不足，多日收益暂不可用",
++            ReviewDataStatus.NO_CANDIDATES: "无候选记录",
++        }
++        return _MAP.get(self, "未知状态")
++
++
+ @dataclass
+ class CandidatePerformance:
+     symbol: str
+     trade_date: str
+
+[0m
+Now add `data_status` field to `CandidatePerformance`:
+[0m← [0mEdit tradingagents/tradeflow/post_market_review.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
+@@ -70,8 +70,9 @@
+ day3_return_pct: Optional[float] = None
+ day5_return_pct: Optional[float] = None
+ hit: Optional[bool] = None
+ invalidated: Optional[bool] = None
++data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
+ 
+ def compute_returns(self) -> None:
+     if self.entry_price and self.entry_price > 0:
+         if self.next_day_close is not None:
+
+[0m
+Now add `data_status` fields to `ReviewSummary` and update `compute_overall`:
+[0m← [0mEdit tradingagents/tradeflow/post_market_review.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
+@@ -138,8 +138,12 @@
+ suggestions: list[str] = field(default_factory=list)
+ avg_next_day_return: Optional[float] = None
+ avg_day3_return: Optional[float] = None
+ avg_day5_return: Optional[float] = None
++data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
++data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
++plan_date: str = ""  # [TF-REVIEW-002] review_date_mapping — original candidate pool generation date
++effective_trade_date: str = ""  # [TF-REVIEW-002] review_date_mapping
+ 
+ def compute_overall(self) -> None:
+     self.scored_candidates = self.overall_hit_count + self.overall_miss_count
+     if self.scored_candidates > 0:
+
+[0m
+Now update `run_post_market_review()` to compute data_status:
+[0m← [0mEdit tradingagents/tradeflow/post_market_review.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
+@@ -322,8 +322,10 @@
+ def run_post_market_review(
+     performances: list[CandidatePerformance],
+     candidate_date: Optional[str] = None,
+     review_date: Optional[str] = None,
++    plan_date: Optional[str] = None,
++    effective_trade_date: Optional[str] = None,
+ ) -> ReviewSummary:
+docs/task_runs/TF-REVIEW-002-20260613-232054/task.md
+# Auto Dev Task Run
+
+- Task: TF-REVIEW-002 - 盘后 Review 数据补齐与非交易日计划映射（P0）
+- Priority: P0
+- Status: CLAIMED
+- Started at: 2026-06-13_23:20:54
+- Git HEAD: 7a9a83b
+- Test commands: pytest tests/ -q --tb=short
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/TF-REVIEW-002-20260613-232054/codegraph-impact.txt
+# CodeGraph Impact: SKIPPED
+# Reason: CodeGraph not indexed
+# 盘后复盘 2026-06-02
+
+## 候选日期: 2026-06-02
+
+> **数据状态**: NO_MARKET_DATA — 无行情数据，等待收盘后补齐
+
+### 总体概览
+
+| 指标 | 值 |
+|------|-----|
+| 总候选数 | 1 |
+| 有评分数 | 0 |
+| 无数据数 | 1 |
+| 命中数 | 0 |
+| 误报数 | 0 |
+| 失效数 | 0 |
+| 总命中率 | N/A% |
+| 总误报率 | N/A% |
+| 平均次日收益 | N/A% |
+| 平均3日收益 | N/A% |
+| 平均5日收益 | N/A% |
+
+### 策略命中率
+
+| 策略 | 总数 | 命中 | 误报 | 无数据 | 失效 | 命中率 | 误报率 | 平均次日 | 平均3日 | 平均5日 |
+|------|------|------|------|--------|------|--------|--------|----------|----------|----------|
+| VCP | 1 | 0 | 0 | 1 | 0 | N/A% | N/A% | N/A% | N/A% | N/A% |
+
+### 分层统计
+
+| 层级 | 总数 | 命中 | 误报 | 无数据 | 失效 |
+|------|------|------|------|--------|------|
+| A层 | 1 | 0 | 0 | 1 | 0 |
+
+### 调参建议
+
+- [A层] 数据缺失率100%，建议检查行情数据源
+
+exec
+/bin/zsh -lc "sed -n '240,520p' tests/test_tf_review_002_date_mapping.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        # 2026-06-01 is a Monday — check if it's a trading day
+        result = resolve_review_date("2026-06-01", "")
+        assert result == "2026-06-01"
+
+    def test_resolve_review_date_non_trading_day(self):
+        """If plan_date is a weekend, resolve to next trading day."""
+        # 2026-05-31 is a Sunday
+        result = resolve_review_date("2026-05-31", "")
+        assert result != "2026-05-31"
+
+    def test_find_latest_plan_date_exact_match(self):
+        dates = ["2026-05-29", "2026-05-31", "2026-06-02"]
+        assert find_latest_plan_date(dates, "2026-05-31") == "2026-05-31"
+
+    def test_find_latest_plan_date_no_match_returns_max(self):
+        dates = ["2026-05-29", "2026-05-31", "2026-06-02"]
+        assert find_latest_plan_date(dates, "2026-07-01") == "2026-06-02"
+
+    def test_find_latest_plan_date_empty(self):
+        assert find_latest_plan_date([], "2026-06-01") == ""
+
+    def test_find_latest_plan_date_no_target(self):
+        dates = ["2026-05-29", "2026-05-31", "2026-06-02"]
+        assert find_latest_plan_date(dates) == "2026-06-02"
+
+
+# ── Service layer: get_review with data_status ──
+
+
+class TestGetReviewDataStatus:
+    def test_get_review_no_db_returns_no_candidates(self):
+        from api.services.tradeflow_service import get_review
+        result = get_review("2026-06-02", tf_db_path="/tmp/nonexistent_tf_review_002.db")
+        assert result["status"] == "no_data"
+        assert result["data_status"] == ReviewDataStatus.NO_CANDIDATES.value
+        assert "data_status_message" in result
+
+    def test_get_review_returns_data_status_ok(self):
+        """When a plan exists, get_review returns data_status OK."""
+        from api.services.tradeflow_service import get_review
+        import sqlite3
+        from tradingagents.tradeflow.candidate_engine import init_db
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_tf_review.db")
+            init_db(db_path)
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            from datetime import datetime
+            now = datetime.now().isoformat()
+            plan_json = '[{"symbol": "000001.SZ", "name": "测试股", "tier": "A", "trigger_price": 10.5, "invalid_price": 9.0, "strategies": ["VCP"], "action": "OBSERVE", "composite_score": 70.0, "observe_state": "WAITING"}]'
+            conn.execute(
+                "INSERT INTO tradeflow_daily_plans (trade_date, mode, summary, candidates_json, metadata_json, created_at, effective_trade_date, plan_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("2026-06-02", "pre_market", "test", plan_json, "{}", now, "2026-06-02", "2026-06-02"),
+            )
+            conn.execute(
+                "INSERT INTO tradeflow_candidates (trade_date, symbol, name, score, tier, trigger_price, invalid_price, strategy_tags_json, status, created_at, updated_at, effective_trade_date, plan_date, observe_state, composite_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("2026-06-02", "000001.SZ", "测试股", 60.0, "A", 10.5, 9.0, '["VCP"]', "active", now, now, "2026-06-02", "2026-06-02", "WAITING", 70.0),
+            )
+            conn.commit()
+            conn.close()
+
+            result = get_review("2026-06-02", tf_db_path=db_path)
+            assert result["status"] == "ok"
+            assert result["data_status"] == "OK"
+            assert "data_status_message" in result
+            assert len(result["results"]) == 1
+
+    def test_get_review_falls_back_to_latest_plan(self):
+        """When querying a date with no plan, falls back to latest available."""
+        from api.services.tradeflow_service import get_review
+        import sqlite3
+        from tradingagents.tradeflow.candidate_engine import init_db
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_tf_review_fb.db")
+            init_db(db_path)
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            from datetime import datetime
+            now = datetime.now().isoformat()
+            conn.execute(
+                "INSERT INTO tradeflow_candidates (trade_date, symbol, name, score, tier, trigger_price, invalid_price, strategy_tags_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("2026-05-29", "000001.SZ", "测试股", 60.0, "A", 10.5, 9.0, '["VCP"]', "active", now, now),
+            )
+            conn.commit()
+            conn.close()
+
+            # Query a date with no candidates — should fall back to 2026-05-29
+            result = get_review("2026-06-15", tf_db_path=db_path)
+            # Either falls back to latest or returns no_data, but must not crash
+            assert result["status"] in ("ok", "no_data")
+
+
+# ── Service layer: generate_review with data_status ──
+
+
+class TestGenerateReviewDataStatus:
+    def test_generate_review_no_db_returns_data_status(self):
+        from api.services.tradeflow_service import generate_review
+        result = generate_review("2026-06-02", tf_db_path="/tmp/nonexistent_tf_review_002_gen.db")
+        assert result["status"] == "no_data"
+        assert result["data_status"] == ReviewDataStatus.NO_CANDIDATES.value
+        assert "data_status_message" in result
+
+    def test_generate_review_with_candidates(self):
+        """generate_review with actual candidates returns data_status."""
+        from api.services.tradeflow_service import generate_review
+        import sqlite3
+        from tradingagents.tradeflow.candidate_engine import init_db
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_tf_review_gen.db")
+            init_db(db_path)
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            from datetime import datetime
+            now = datetime.now().isoformat()
+            conn.execute(
+                "INSERT INTO tradeflow_candidates (trade_date, symbol, name, score, tier, trigger_price, invalid_price, strategy_tags_json, status, created_at, updated_at, effective_trade_date, plan_date, observe_state, composite_score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("2026-06-02", "000001.SZ", "测试股", 60.0, "A", 10.5, 9.0, '["VCP"]', "active", now, now, "2026-06-02", "2026-06-02", "WAITING", 70.0),
+            )
+            conn.commit()
+            conn.close()
+
+            result = generate_review("2026-06-02", tf_db_path=db_path)
+            assert result["status"] == "ok"
+            assert "data_status" in result
+            assert result["data_status"] == ReviewDataStatus.NO_MARKET_DATA.value
+            review = result.get("review", {})
+            assert "plan_date" in review
+            assert "effective_trade_date" in review
+            assert "data_status" in review
+
+    def test_generate_review_includes_strategy_day3_day5_returns(self):
+        """generate_review strategy_stats should include avg_day3_return and avg_day5_return."""
+        from api.services.tradeflow_service import generate_review
+        import sqlite3
+        from tradingagents.tradeflow.candidate_engine import init_db
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_tf_review_strat.db")
+            init_db(db_path)
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            from datetime import datetime
+            now = datetime.now().isoformat()
+            conn.execute(
+                "INSERT INTO tradeflow_candidates (trade_date, symbol, name, score, tier, trigger_price, invalid_price, strategy_tags_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("2026-06-02", "000001.SZ", "测试股", 60.0, "A", 10.5, 9.0, '["VCP"]', "active", now, now),
+            )
+            conn.commit()
+            conn.close()
+
+            result = generate_review("2026-06-02", tf_db_path=db_path)
+            review = result.get("review", {})
+            stats = review.get("strategy_stats", {})
+            assert "VCP" in stats
+            assert "avg_day3_return" in stats["VCP"]
+            assert "avg_day5_return" in stats["VCP"]
+
+
+# ── Non-trading day plan mapping acceptance ──
+
+
+class TestNonTradingDayPlanMapping:
+    def test_weekend_plan_maps_to_next_trading_day(self):
+        """A candidate pool generated on 2026-05-31 (Sunday) maps to 2026-06-01 (Monday) for review."""
+        eff_date = next_cn_trading_day("2026-05-31")
+        assert eff_date == "2026-06-01"
+
+        review_date = resolve_review_date("2026-05-31", eff_date)
+        assert review_date == "2026-06-01"
+
+    def test_review_summary_cross_date(self):
+        """Review summary correctly reflects cross-date mapping."""
+        perf = CandidatePerformance(
+            symbol="000001.SZ", trade_date="2026-05-31",
+            entry_price=10.0, trigger_price=10.5, invalid_price=9.0,
+            strategy_tags=["VCP", "POLICY_VERSION"], tier="A",
+            next_day_close=10.8,
+        )
+        summary = run_post_market_review(
+            [perf],
+            candidate_date="2026-05-31",
+            review_date="2026-06-01",
+            plan_date="2026-05-31",
+            effective_trade_date="2026-06-01",
+        )
+        assert summary.plan_date == "2026-05-31"
+        assert summary.effective_trade_date == "2026-06-01"
+        assert summary.review_date == "2026-06-01"
+        assert summary.overall_hit_count == 1
+
+    def test_data_status_message_not_empty_when_no_data(self):
+        """When data_status is not OK, data_status_message must be non-empty."""
+        summary = run_post_market_review([], candidate_date="2026-05-31")
+        assert summary.data_status != ReviewDataStatus.OK.value
+        assert summary.data_status_message != ""
+
+    def test_no_blank_page_when_no_data(self):
+        """Markdown report explains why data is missing, instead of showing a blank table."""
+        summary = run_post_market_review([], candidate_date="2026-05-31", review_date="2026-06-01")
+        md = render_review_markdown(summary)
+        assert "总候选数 | 0" in md
+        assert ReviewDataStatus.NO_CANDIDATES.value in md
+        # Must have an explanation, not just "N/A"
+        assert summary.data_status_message in md
+
+exec
+/bin/zsh -lc "sed -n '1,140p' tradingagents/tradeflow/date_semantics.py && sed -n '280,540p' api/services/tradeflow_service.py && sed -n '840,980p' api/services/tradeflow_service.py && sed -n '1380,1565p' api/services/tradeflow_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""TradeFlow date semantics — resolve plan_date, effective_trade_date, observe_date.
+
+# [TF-DATE-001] tradeflow_date_semantics
+
+Solves the problem where `trade_date` was simultaneously used to mean:
+- candidate pool generation date (can be weekend/holiday)
+- plan effective trading date (must be a valid A-share trading day)
+- observation date (which trading day to observe during)
+
+Now each semantic has its own field:
+- plan_date: when the candidate pool was generated (any calendar date)
+- effective_trade_date: which trading day this plan targets for observation
+- observe_date: actual observation date (first version: same as effective_trade_date)
+"""
+
+from __future__ import annotations
+
+from datetime import date, datetime, time, timedelta
+from typing import Optional
+
+from tradingagents.dataflows.trade_calendar import is_cn_trading_day, now_cn, cn_market_phase
+
+
+def _parse_date(date_str: str) -> date:
+    return datetime.strptime(date_str, "%Y-%m-%d").date()
+
+
+def next_cn_trading_day(date_str: str) -> str:
+    d = _parse_date(date_str)
+    cur = d + timedelta(days=1)
+    max_days = 30
+    for _ in range(max_days):
+        if is_cn_trading_day(cur.strftime("%Y-%m-%d")):
+            return cur.strftime("%Y-%m-%d")
+        cur += timedelta(days=1)
+    return cur.strftime("%Y-%m-%d")
+
+
+def resolve_effective_trade_date(plan_date: str, now: Optional[datetime] = None) -> str:
+    if now is None:
+        now = now_cn()
+
+    plan_d = _parse_date(plan_date)
+    is_trading = is_cn_trading_day(plan_date)
+
+    if not is_trading:
+        return next_cn_trading_day(plan_date)
+
+    now_date_str = now.strftime("%Y-%m-%d") if now.tzinfo else now.date().strftime("%Y-%m-%d")
+
+    if plan_date != now_date_str:
+        return next_cn_trading_day(plan_date)
+
+    phase = cn_market_phase(now)
+    if phase in ("pre_open", "in_session", "lunch_break"):
+        return plan_date
+    return next_cn_trading_day(plan_date)
+
+
+def resolve_plan_date(now: Optional[datetime] = None) -> str:
+    if now is None:
+        now = now_cn()
+    return now.strftime("%Y-%m-%d") if now.tzinfo else now.date().strftime("%Y-%m-%d")
+
+
+def resolve_observe_date(effective_trade_date: str) -> str:
+    return effective_trade_date
+
+
+# [TF-REVIEW-002] review_date_mapping
+def resolve_review_date(plan_date: str, effective_trade_date: str = "") -> str:
+    """Resolve which trading day a plan should be reviewed on.
+
+    If the plan was generated on a non-trading day (e.g. 2026-05-31 Sunday),
+    the review happens on the effective_trade_date (e.g. 2026-06-01 Monday).
+
+    Args:
+        plan_date: The date the candidate pool was generated.
+        effective_trade_date: The resolved effective trading day (from resolve_effective_trade_date).
+            If empty, computed from plan_date.
+
+    Returns:
+        The trading day the review should target.
+    """
+    if effective_trade_date:
+        return effective_trade_date
+    if is_cn_trading_day(plan_date):
+        return plan_date
+    return next_cn_trading_day(plan_date)
+
+
+def find_latest_plan_date(dates: list[str], target_date: str = "") -> str:
+    """Find the most recent plan date that should be reviewed.
+
+    Used by the Review page to default-select the most recent plan with candidates.
+    If target_date is given, prefers the exact match; otherwise returns the max date.
+
+    Args:
+        dates: list of plan_date strings available in the DB.
+        target_date: the date the user is viewing (optional).
+
+    Returns:
+        The best plan_date to show, or "" if no dates available.
+    """
+    if not dates:
+        return ""
+    if target_date in dates:
+        return target_date
+    return max(dates)
+                    for row in rows:
+                        plan_date = row["trade_date"]
+                        if plan_date and plan_date not in dates:
+                            dates.append(plan_date)
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return dates
+
+
+def _merge_filtered_candidates(current: list[dict], persisted: list[dict]) -> list[dict]:
+    """Merge live pool-gate filtered rows with persisted filtered trace rows."""
+    merged: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for item in [*current, *persisted]:
+        symbol = normalize_tradeflow_symbol(item.get("symbol", ""))
+        reason = item.get("pool_filter_reason") or item.get("reason", "")
+        key = (symbol, reason)
+        if not symbol or key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
+
+
+def _pool_counts_with_filtered(pool_counts: dict, filtered_candidates: list[dict]) -> dict:
+    """Keep pool count badges aligned with merged filtered trace rows."""
+    counts = dict(pool_counts or {})
+    counts["filtered"] = len(filtered_candidates)
+    return counts
+
+
+def _pool_gate_summary_with_counts(pool_counts: dict) -> str:
+    """Render a pool summary from final response counts."""
+    return (
+        f"主候选{pool_counts.get('main', 0)}只，"
+        f"观察{pool_counts.get('observation', 0)}只，"
+        f"过滤{pool_counts.get('filtered', 0)}只。"
+    )
+
+
+def _query_by_date_or_effective(conn, table: str, date_str: str,
+                                extra_conditions: list[str] = None,
+                                extra_params: list = None,
+                                order_clause: str = "") -> list:
+    """Query table by effective_trade_date, falling back to trade_date.  # [TF-DATE-001]
+    
+    Tries: WHERE effective_trade_date = ? ... UNION WHERE trade_date = ? AND effective_trade_date = ''
+    This finds candidates generated on non-trading days (e.g. 2026-05-31) that
+    are effective for the queried trading day (e.g. 2026-06-01).
+    """
+    columns = _table_columns(conn, table)
+    has_eff = "effective_trade_date" in columns
+    conditions = list(extra_conditions or [])
+    params = list(extra_params or [])
+
+    if has_eff:
+        rows = conn.execute(
+            f"SELECT * FROM {table} WHERE "
+            f"(effective_trade_date = ? OR (trade_date = ? AND (effective_trade_date = '' OR effective_trade_date IS NULL))) "
+            f"{' AND ' + ' AND '.join(conditions) if conditions else ''}"
+            f"{order_clause}",
+            [date_str, date_str] + params,
+        ).fetchall()
+    else:
+        conditions.insert(0, "trade_date = ?")
+        params.insert(0, date_str)
+        rows = conn.execute(
+            f"SELECT * FROM {table} WHERE {' AND '.join(conditions)}{order_clause}",
+            params,
+        ).fetchall()
+    return rows
+
+
+def get_daily_plan(trade_date: str, tf_db_path: str = "") -> dict:
+    _fast_meta = _tradeflow_meta("tradeflow_daily_plan")  # [PERF-001]
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+
+    try:
+        plan_row = conn.execute(
+            "SELECT * FROM tradeflow_daily_plans WHERE trade_date = ? AND mode = 'pre_market' ORDER BY created_at DESC LIMIT 1",
+            (trade_date,),
+        ).fetchone()
+
+        if plan_row is None:
+            plan_columns = _table_columns(conn, "tradeflow_daily_plans") if conn else set()
+            if "effective_trade_date" in plan_columns:
+                plan_row = conn.execute(
+                    "SELECT * FROM tradeflow_daily_plans WHERE effective_trade_date = ? AND mode = 'pre_market' ORDER BY created_at DESC LIMIT 1",
+                    (trade_date,),
+                ).fetchone()
+        if plan_row is None:
+            return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+
+        candidates_json = _parse_json(_rget(plan_row, "candidates_json", "[]"), [])
+        metadata_json = _parse_json(_rget(plan_row, "metadata_json", "{}"), {})
+
+        candidate_items = []
+        for entry in candidates_json:
+            sym = normalize_tradeflow_symbol(entry.get("symbol", ""))  # [UI-008]
+            raw_name = entry.get("name", "")
+            n = resolve_tradeflow_name(sym, raw_name)  # [UI-008]
+            item = {
+                "symbol": sym,
+                "name": n,
+                "tier": entry.get("tier", ""),
+                "composite_score": entry.get("composite_score", 0.0) or 0.0,
+                "score": entry.get("score", 0.0) or 0.0,
+                "strategy_tags": entry.get("strategies", entry.get("strategy_tags", [])),
+                "primary_strategy": entry.get("primary_strategy", ""),
+                "trigger_price": entry.get("trigger_price"),
+                "support_price": entry.get("support_price"),
+                "invalid_price": entry.get("invalid_price"),
+                "need_deep_ta": entry.get("need_deep_ta", False),
+                "action": entry.get("action", "OBSERVE"),
+                "reason": entry.get("reason", ""),
+                "observe_state": entry.get("observe_state", "WAITING"),
+                "observe_trigger_count": entry.get("observe_trigger_count", 0),
+                "observe_first_trigger_time": entry.get("observe_first_trigger_time", ""),
+                "tradeflow_data_completeness": entry.get("tradeflow_data_completeness", 0.0),
+                "missing_data_fields": entry.get("missing_data_fields", []),
+                "data_completeness": entry.get("data_completeness", 0.0),
+                "missing_evidence": entry.get("missing_evidence", []),
+                "game_balance": entry.get("game_balance", ""),
+                "bull_case": entry.get("bull_case", ""),
+                "bear_case": entry.get("bear_case", ""),
+                "policy_case": entry.get("policy_case", ""),
+                "fund_flow_case": entry.get("fund_flow_case", ""),
+                "why_deep_ta": entry.get("why_deep_ta", ""),
+                "why_not_deep_ta": entry.get("why_not_deep_ta", ""),
+                "risk_flags": entry.get("risk_flags", []),
+                "policy_tags": entry.get("policy_tags", []),
+                "version_score": entry.get("version_score", 0.0),
+                "narrative_score": entry.get("narrative_score", 0.0),
+                "fund_flow_anomaly_score": entry.get("fund_flow_anomaly_score", 0.0),
+                "fund_flow_anomaly_tags": entry.get("fund_flow_anomaly_tags", []),
+                "fund_flow_unit_verified": entry.get("fund_flow_unit_verified", False),
+                "evidence_gate_applied": entry.get("evidence_gate_applied", False),
+                "deep_ta_status": entry.get("deep_ta_status", ""),
+                "deep_ta_dispatch_reason": entry.get("deep_ta_dispatch_reason", ""),
+                "deep_ta_model": entry.get("deep_ta_model", ""),
+                "source": entry.get("source", "manual"),
+                "universe_sources": entry.get("universe_sources", []),
+                "resonance_count": entry.get("resonance_count", 0),
+                "ta_budget_priority": entry.get("ta_budget_priority", 0),
+                "tier_reason": entry.get("tier_reason", ""),
+                "missing_evidence_for_upgrade": entry.get("missing_evidence_for_upgrade", []),
+                "created_at": _rget(plan_row, "created_at", ""),
+                "updated_at": _rget(plan_row, "created_at", ""),
+            }
+            candidate_items.append(item)
+
+        return {
+            "status": "ok",
+            "trade_date": _rget(plan_row, "trade_date", trade_date),
+            "mode": _rget(plan_row, "mode", "pre_market"),
+            "summary": _rget(plan_row, "summary", ""),
+            "candidates": candidate_items,
+            "metadata": metadata_json,
+            "summary_agg": _compute_summary(candidate_items),
+            "created_at": _rget(plan_row, "created_at", ""),
+            "plan_date": _rget(plan_row, "plan_date", ""),  # [TF-DATE-001]
+            "effective_trade_date": _rget(plan_row, "effective_trade_date", ""),  # [TF-DATE-001]
+            "observe_date": _rget(plan_row, "observe_date", ""),  # [TF-DATE-001]
+            "runtime_tier_meta": _tradeflow_meta("tradeflow_daily_plan"),  # [PERF-001]
+        }
+    finally:
+        conn.close()
+
+
+def get_candidates(
+    trade_date: str,
+    tier: Optional[str] = None,
+    need_deep_ta: Optional[bool] = None,
+    candidate_type: Optional[str] = None,  # [H-005] mandate_radar_ui
+    pool: Optional[str] = None,  # [TF-P0-002] tradeflow_pool_split
+    tf_db_path: str = "",
+) -> dict:
+    # [TF-P0-002] tradeflow_pool_split — resolve pool to candidate_type list
+    pool_types: list[str] = []
+    if pool and not candidate_type:
+        from tradingagents.tradeflow.candidate_pool import pool_to_candidate_types
+        pool_types = pool_to_candidate_types(pool)
+        if len(pool_types) == 1:
+            candidate_type = pool_types[0]
+        elif len(pool_types) == 0:
+            pass  # "all" pool
+    _fast_meta = _tradeflow_meta("tradeflow_candidates")  # [PERF-001]
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+
+    try:
+        columns = _table_columns(conn, "tradeflow_candidates")
+        extra_conditions = ["status = 'active'" if "status" in columns else None]
+        extra_conditions = [c for c in extra_conditions if c is not None]
+        if tier and "tier" in columns:
+            extra_conditions.append("tier = ?")
+        if need_deep_ta is not None:
+            extra_conditions.append("need_deep_ta = ?")
+        if candidate_type and "candidate_type" in columns:  # [H-005] mandate_radar_ui
+            extra_conditions.append("candidate_type = ?")
+        elif len(pool_types) > 1 and "candidate_type" in columns:  # [TF-P0-002] tradeflow_pool_split
+            placeholders = ",".join(["?"] * len(pool_types))
+            extra_conditions.append(f"candidate_type IN ({placeholders})")
+
+        extra_params: list = []
+        if tier and "tier" in columns:
+            extra_params.append(tier)
+        if need_deep_ta is not None:
+            extra_params.append(1 if need_deep_ta else 0)
+        if candidate_type and "candidate_type" in columns:  # [H-005] mandate_radar_ui
+            extra_params.append(candidate_type)
+        elif len(pool_types) > 1:  # [TF-P0-002]
+            extra_params.extend(pool_types)
+
+        order_cols = []
+        if "trade_priority_score" in columns:
+            order_cols.append("trade_priority_score DESC")
+        if "composite_score" in columns:
+            order_cols.append("composite_score DESC")
+        if "score" in columns:
+            order_cols.append("score DESC")
+        order_clause = f" ORDER BY {', '.join(order_cols)}" if order_cols else " ORDER BY updated_at DESC, created_at DESC"
+
+        rows = _query_by_date_or_effective(
+            conn, "tradeflow_candidates", trade_date,
+            extra_conditions=extra_conditions if extra_conditions else None,
+            extra_params=extra_params if extra_params else None,
+            order_clause=order_clause,
+        )
+
+        items = [_row_to_candidate_item(r) for r in rows]
+        for it in items:
+            it["action"] = _compute_action(it)
+            it["reason"] = it.get("why_deep_ta") or it.get("why_not_deep_ta") or "候选观察"
+
+        _recompute_action_tiers(conn, items, trade_date)
+
+        # [TF-QUALITY-001A] pool_gate_contract — keep legacy candidates intact
+        # while exposing the strict main/observation/filtered split separately.
+        from tradingagents.tradeflow.candidate_pool_gate import run_pool_gate
+        pool_result = run_pool_gate(items)
+        filter_active = bool(tier or need_deep_ta is not None or candidate_type or pool_types)
+        allowed_filtered_symbols = {it["symbol"] for it in items} if filter_active else None
+        filtered_candidates = _merge_filtered_candidates(
+            pool_result.filtered_candidates,
+            _load_filtered_trace_candidates(
+                trade_date,
+                tf_db_path,
+                allowed_symbols=allowed_filtered_symbols,
+            ),
+        )
+        pool_counts = _pool_counts_with_filtered(pool_result.pool_counts, filtered_candidates)
+
+        return {
+            "status": "ok",
+            "trade_date": trade_date,
+                "evidence_gate_applied": bool(_rget(r, "evidence_gate_applied", 0)),
+            }
+            items.append(item)
+            if status_val == "DISPATCHED":
+                dispatched += 1
+            elif status_val == "BLOCKED":
+                blocked += 1
+            elif status_val in ("", "PENDING"):
+                pending += 1
+
+        return {
+            "status": "ok",
+            "trade_date": trade_date,
+            "queue": items,
+            "total_in_queue": len(items),
+            "dispatched_count": dispatched,
+            "blocked_count": blocked,
+            "pending_count": pending,
+            "runtime_tier_meta": _tradeflow_meta("tradeflow_ta_queue"),  # [PERF-001]
+        }
+    finally:
+        conn.close()
+
+
+def _get_available_dates(tf_db_path: str = "") -> list[str]:
+    """Return all distinct plan dates that have at least one candidate.  # [TF-REVIEW-002]
+
+    Used by the Review page to find the most recent plan with candidates
+    when the queried date has no data.
+    """
+    db_path = tf_db_path or _get_tradeflow_db_path()
+    dates: list[str] = []
+    if not os.path.exists(db_path):
+        return dates
+    try:
+        conn = _connect(db_path)
+        if conn is None:
+            return dates
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT trade_date FROM tradeflow_candidates ORDER BY trade_date DESC"
+            ).fetchall()
+            for row in rows:
+                d = row["trade_date"]
+                if d and d not in dates:
+                    dates.append(d)
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return dates
+
+
+def get_review(trade_date: str, tf_db_path: str = "") -> dict:
+    # [TF-REVIEW-002] review_date_mapping
+    _fast_meta = _tradeflow_meta("tradeflow_review")  # [PERF-001]
+    plan_data = get_daily_plan(trade_date, tf_db_path)
+
+    # If no plan for this exact date, try effective_trade_date mapping
+    # (e.g. plan generated on 5/31 weekend, review on 6/1 trading day)
+    if plan_data.get("status") == "no_data":
+        from tradingagents.tradeflow.candidate_engine import init_db  # noqa
+        from tradingagents.tradeflow.date_semantics import find_latest_plan_date
+
+        available_dates = _get_available_dates(tf_db_path)
+        if available_dates:
+            best = find_latest_plan_date(available_dates, trade_date)
+            if best and best != trade_date:
+                plan_data = get_daily_plan(best, tf_db_path)
+
+    if plan_data.get("status") == "no_data":
+        # [TF-REVIEW-002] review_date_mapping — return clear data_status
+        from tradingagents.tradeflow.post_market_review import ReviewDataStatus
+        return {
+            "status": "no_data",
+            "trade_date": trade_date,
+            "data_status": ReviewDataStatus.NO_CANDIDATES.value,
+            "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    candidates = plan_data.get("candidates", [])
+    results = []
+    for entry in candidates:
+        action = entry.get("action", "OBSERVE")
+        result = {
+            "symbol": entry.get("symbol", ""),
+            "name": entry.get("name", ""),
+            "plan_action": action,
+            "keep_observing": action != "REMOVE_FROM_WATCH",
+            "reason": "",
+            "tier": entry.get("tier", ""),
+            "composite_score": entry.get("composite_score", 0.0),
+            "strategy_tags": entry.get("strategy_tags", []),
+            "trigger_price": entry.get("trigger_price"),
+            "invalid_price": entry.get("invalid_price"),
+            "observe_state": entry.get("observe_state", "WAITING"),
+        }
+        if action == "REMOVE_FROM_WATCH":
+            result["reason"] = "已标记移除"
+        elif entry.get("trigger_price"):
+            result["reason"] = f"继续观察，关注触发价 {entry['trigger_price']}"
+        else:
+            result["reason"] = "继续观察"
+        results.append(result)
+
+    # [TF-REVIEW-002] review_date_mapping — include plan_date/effective_trade_date
+    return {
+        "status": "ok",
+        "trade_date": trade_date,
+        "reviewed_at": datetime.now().isoformat(),
+        "results": results,
+        "summary_agg": _compute_summary(candidates),
+        "plan_date": plan_data.get("plan_date", ""),  # [TF-DATE-001]
+        "effective_trade_date": plan_data.get("effective_trade_date", ""),  # [TF-DATE-001]
+        "data_status": "OK",
+        "data_status_message": "数据正常",
+        "runtime_tier_meta": _tradeflow_meta("tradeflow_review"),  # [PERF-001]
+    }
+
+
+def get_data_health(tf_db_path: str = "") -> dict:
+    db_path = tf_db_path or _get_tradeflow_db_path()
+    db_available = os.path.exists(db_path)
+
+    sources: List[Dict[str, Any]] = []
+    latest_plan_date = None
+    latest_candidates_date = None
+    latest_eff_date = None  # [TF-DATE-001]
+    latest_obs_date = None  # [TF-DATE-001]
+    total_candidates_today = 0
+    total_signals_today = 0
+    latest_observe_check_time = None  # [TF-OBS-001]
+    latest_signal_time = None  # [TF-OBS-001]
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    if db_available:
+        conn = _connect(db_path)
+        if conn is not None:
+            try:
+                plan_row = conn.execute(
+            "trade_date": trade_date,
+            "audits": [],
+            "credibilities": [],
+            "summary_markdown": "",
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    try:
+        columns = _table_columns(conn, "tradeflow_candidates")
+        extra_conditions = ["status = 'active'" if "status" in columns else None]
+        extra_conditions = [c for c in extra_conditions if c is not None]
+        rows = _query_by_date_or_effective(
+            conn, "tradeflow_candidates", trade_date,
+            extra_conditions=extra_conditions if extra_conditions else None,
+        )
+
+        audits = []
+        credibilities = []
+        for row in rows:
+            data_comp = float(row.get("data_completeness", 0) or 0)
+            tf_comp = float(row.get("tradeflow_data_completeness", 0) or 0)
+            cand_type = str(row.get("candidate_type", "") or "")
+            missing_fields = json.loads(row.get("missing_data_fields_json", "[]") or "[]")
+            gate_applied = bool(row.get("evidence_gate_applied", 0))
+            ff_verified = bool(row.get("fund_flow_unit_verified", 0))
+            symbol = str(row.get("symbol", ""))
+
+            has_policy = cand_type in ("POLICY_AMBUSH", "POLICY_CONFIRM", "PSEUDO_POLICY")
+            has_tech = cand_type == "TECH_TRADE"
+            has_realtime = tf_comp >= 0.5
+
+            cred = audit_candidate_evidence(
+                candidate_data_completeness=data_comp,
+                candidate_tradeflow_completeness=tf_comp,
+                candidate_type=cand_type,
+                missing_data_fields=missing_fields,
+                evidence_gate_applied=gate_applied,
+                fund_flow_unit_verified=ff_verified,
+                has_policy_evidence=has_policy,
+                has_tech_signal=has_tech,
+                has_realtime_quote=has_realtime,
+            )
+            cred.symbol = symbol
+
+            if cred.evidence_audit:
+                audits.append(cred.evidence_audit)
+            credibilities.append(cred)
+
+        summary_md = build_evidence_coverage_section(
+            audits=audits if audits else None,
+            credibilities=credibilities if credibilities else None,
+        )
+
+        return {
+            "status": "ok",
+            "trade_date": trade_date,
+            "total_candidates": len(rows),
+            "audits_count": len(audits),
+            "credibilities_count": len(credibilities),
+            "credibilities": [c.to_dict() for c in credibilities],
+            "summary_markdown": summary_md,
+            "runtime_tier_meta": _fast_meta,
+        }
+    finally:
+        conn.close()
+
+
+# [TF-UX-003] post_market_review  # [TF-REVIEW-002] review_date_mapping
+def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
+    """Generate post-market review for trade_date using post_market_review module."""
+    from tradingagents.tradeflow.candidate_engine import init_db
+    from tradingagents.tradeflow.post_market_review import (
+        ReviewDataStatus,
+        build_candidate_performance_from_dict,
+        run_post_market_review,
+        save_review_report,
+    )
+    from tradingagents.tradeflow.date_semantics import resolve_review_date, find_latest_plan_date
+
+    tf_db = tf_db_path or _get_tradeflow_db_path()
+    init_db(tf_db)
+
+    # [TF-REVIEW-002] Try the exact date first, then fall back to latest plan
+    resolved_date = trade_date
+    candidates_data = get_candidates(trade_date, tf_db_path=tf_db)
+    if candidates_data.get("status") == "no_data":
+        available = _get_available_dates(tf_db)
+        if available:
+            best = find_latest_plan_date(available, trade_date)
+            if best and best != trade_date:
+                resolved_date = best
+                candidates_data = get_candidates(best, tf_db_path=tf_db)
+
+    if candidates_data.get("status") == "no_data":
+        return {
+            "status": "no_data",
+            "trade_date": trade_date,
+            "message": "无候选数据",
+            "data_status": ReviewDataStatus.NO_CANDIDATES.value,
+            "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
+        }
+
+    candidates = candidates_data.get("candidates", [])
+    if not candidates:
+        return {
+            "status": "no_data",
+            "trade_date": trade_date,
+            "message": "候选列表为空",
+            "data_status": ReviewDataStatus.NO_CANDIDATES.value,
+            "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
+        }
+
+    # [TF-REVIEW-002] Resolve plan_date vs review_date
+    plan_date = resolved_date
+    effective_trade_date = resolved_date
+    if candidates:
+        first = candidates[0]
+        if first.get("effective_trade_date"):
+            effective_trade_date = first["effective_trade_date"]
+        if first.get("plan_date"):
+            plan_date = first["plan_date"]
+    review_date = resolve_review_date(plan_date, effective_trade_date)
+
+    performances = []
+    for c in candidates:
+        perf = build_candidate_performance_from_dict(c)
+        performances.append(perf)
+
+    summary = run_post_market_review(
+        performances,
+        candidate_date=resolved_date,
+        review_date=review_date,
+        plan_date=plan_date,
+        effective_trade_date=effective_trade_date,
+    )
+
+    try:
+        save_review_report(summary)
+    except Exception:
+        pass
+
+    return {
+        "status": "ok",
+        "trade_date": trade_date,
+        "data_status": summary.data_status,
+        "data_status_message": summary.data_status_message,
+        "review": {
+            "review_date": summary.review_date,
+            "candidate_date": summary.candidate_date,
+            "plan_date": summary.plan_date,
+            "effective_trade_date": summary.effective_trade_date,
+            "data_status": summary.data_status,
+            "data_status_message": summary.data_status_message,
+            "total_candidates": summary.total_candidates,
+            "scored_candidates": summary.scored_candidates,
+            "no_data_candidates": summary.no_data_candidates,
+            "overall_hit_count": summary.overall_hit_count,
+            "overall_miss_count": summary.overall_miss_count,
+            "overall_invalidated_count": summary.overall_invalidated_count,
+            "overall_hit_rate": summary.overall_hit_rate,
+            "overall_false_positive_rate": summary.overall_false_positive_rate,
+            "avg_next_day_return": summary.avg_next_day_return,
+            "avg_day3_return": summary.avg_day3_return,
+            "avg_day5_return": summary.avg_day5_return,
+            "strategy_stats": {
+                tag: {
+                    "strategy_tag": st.strategy_tag,
+                    "total_candidates": st.total_candidates,
+                    "hit_count": st.hit_count,
+                    "miss_count": st.miss_count,
+                    "no_data_count": st.no_data_count,
+                    "invalidated_count": st.invalidated_count,
+                    "hit_rate": st.hit_rate,
+                    "false_positive_rate": st.false_positive_rate,
+                    "avg_next_day_return": st.avg_next_day_return,
+                    "avg_day3_return": st.avg_day3_return,
+                    "avg_day5_return": st.avg_day5_return,
+                }
+                for tag, st in summary.strategy_stats.items()
+            },
+            "tier_stats": summary.tier_stats,
+            "common_removal_reasons": summary.common_removal_reasons,
+            "suggestions": summary.suggestions,
+        },
+    }
+
+
+exec
+/bin/zsh -lc "grep -n \"TF-REVIEW-002\" -A80 -B20 docs/TASKS.md && grep -R \"find_latest_plan_date\\|resolve_review_date\" -n . --exclude-dir=.git" in /Users/maybee/TradingAgents-AShare
+exec
+/bin/zsh -lc "sed -n '1,240p' tradingagents/tradeflow/post_market_review.py && sed -n '240,460p' tradingagents/tradeflow/post_market_review.py && sed -n '460,620p' tradingagents/tradeflow/post_market_review.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [M-007] post_market_review
+"""Post-Market Review & Strategy Hit Rate Analysis for TradeFlow.
+
+Responsibilities:
+1. Track candidate performance: next-day / 3-day / 5-day price change vs trigger.
+2. Compute per-strategy hit rate, miss rate, and false positive rate.
+3. Aggregate removal reasons and evidence gaps.
+4. Generate review report to docs/tradeflow_reviews/YYYY-MM-DD.md.
+
+Design constraints:
+- Does NOT auto-adjust strategy weights — only outputs suggestions.
+- Does NOT generate investment advice — only signal quality review.
+- Uses fixture data for testing, does NOT write to production DB.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import Optional
+
+from .schemas import Candidate, ALL_STRATEGIES, FORBIDDEN_WORDS
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG
+
+
+# [TF-REVIEW-002] review_date_mapping
+class ReviewDataStatus(str, Enum):
+    """Explains WHY review data is missing, instead of showing a blank page."""
+    OK = "OK"
+    NO_MARKET_DATA = "NO_MARKET_DATA"
+    NON_TRADING_DAY = "NON_TRADING_DAY"
+    SOURCE_FAILED = "SOURCE_FAILED"
+    NOT_ENOUGH_DAYS = "NOT_ENOUGH_DAYS"
+    NO_CANDIDATES = "NO_CANDIDATES"
+
+    @property
+    def message_cn(self) -> str:
+        _MAP = {
+            ReviewDataStatus.OK: "数据正常",
+            ReviewDataStatus.NO_MARKET_DATA: "无行情数据，等待收盘后补齐",
+            ReviewDataStatus.NON_TRADING_DAY: "非交易日，无行情更新",
+            ReviewDataStatus.SOURCE_FAILED: "行情数据源获取失败",
+            ReviewDataStatus.NOT_ENOUGH_DAYS: "交易日不足，多日收益暂不可用",
+            ReviewDataStatus.NO_CANDIDATES: "无候选记录",
+        }
+        return _MAP.get(self, "未知状态")
+
+
+@dataclass
+class CandidatePerformance:
+    symbol: str
+    trade_date: str
+    entry_price: float
+    trigger_price: Optional[float]
+    invalid_price: Optional[float]
+    strategy_tags: list[str] = field(default_factory=list)
+    tier: str = ""
+    need_deep_ta: bool = False
+    observe_state: str = "WAITING"
+    composite_score: float = 0.0
+    game_balance: str = ""
+    risk_flags: list[str] = field(default_factory=list)
+
+    next_day_close: Optional[float] = None
+    day3_close: Optional[float] = None
+    day5_close: Optional[float] = None
+    next_day_return_pct: Optional[float] = None
+    day3_return_pct: Optional[float] = None
+    day5_return_pct: Optional[float] = None
+    hit: Optional[bool] = None
+    invalidated: Optional[bool] = None
+    data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
+
+    def compute_returns(self) -> None:
+        if self.entry_price and self.entry_price > 0:
+            if self.next_day_close is not None:
+                self.next_day_return_pct = round(
+                    (self.next_day_close - self.entry_price) / self.entry_price * 100, 2
+                )
+            if self.day3_close is not None:
+                self.day3_return_pct = round(
+                    (self.day3_close - self.entry_price) / self.entry_price * 100, 2
+                )
+            if self.day5_close is not None:
+                self.day5_return_pct = round(
+                    (self.day5_close - self.entry_price) / self.entry_price * 100, 2
+                )
+
+        if self.next_day_return_pct is not None:
+            if self.trigger_price is not None and self.entry_price > 0:
+                trigger_distance = (self.trigger_price - self.entry_price) / self.entry_price
+                self.hit = self.next_day_return_pct >= trigger_distance * 100
+            else:
+                self.hit = self.next_day_return_pct > 0
+
+        if self.invalid_price is not None and self.next_day_close is not None:
+            self.invalidated = self.next_day_close <= self.invalid_price
+
+
+@dataclass
+class StrategyStats:
+    strategy_tag: str
+    total_candidates: int = 0
+    hit_count: int = 0
+    miss_count: int = 0
+    no_data_count: int = 0
+    invalidated_count: int = 0
+    avg_next_day_return: Optional[float] = None
+    avg_day3_return: Optional[float] = None
+    avg_day5_return: Optional[float] = None
+    hit_rate: Optional[float] = None
+    false_positive_rate: Optional[float] = None
+
+    def compute_rates(self) -> None:
+        scored = self.hit_count + self.miss_count
+        if scored > 0:
+            self.hit_rate = round(self.hit_count / scored * 100, 1)
+            self.false_positive_rate = round(self.miss_count / scored * 100, 1)
+
+
+@dataclass
+class ReviewSummary:
+    review_date: str
+    candidate_date: str
+    total_candidates: int = 0
+    scored_candidates: int = 0
+    no_data_candidates: int = 0
+    overall_hit_count: int = 0
+    overall_miss_count: int = 0
+    overall_invalidated_count: int = 0
+    overall_hit_rate: Optional[float] = None
+    overall_false_positive_rate: Optional[float] = None
+    strategy_stats: dict[str, StrategyStats] = field(default_factory=dict)
+    tier_stats: dict[str, dict] = field(default_factory=dict)
+    common_removal_reasons: list[str] = field(default_factory=list)
+    suggestions: list[str] = field(default_factory=list)
+    avg_next_day_return: Optional[float] = None
+    avg_day3_return: Optional[float] = None
+    avg_day5_return: Optional[float] = None
+    data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
+    data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
+    plan_date: str = ""  # [TF-REVIEW-002] review_date_mapping — original candidate pool generation date
+    effective_trade_date: str = ""  # [TF-REVIEW-002] review_date_mapping
+
+    def compute_overall(self) -> None:
+        self.scored_candidates = self.overall_hit_count + self.overall_miss_count
+        if self.scored_candidates > 0:
+            self.overall_hit_rate = round(
+                self.overall_hit_count / self.scored_candidates * 100, 1
+            )
+            self.overall_false_positive_rate = round(
+                self.overall_miss_count / self.scored_candidates * 100, 1
+            )
+
+
+def build_candidate_performance(
+    candidate: Candidate,
+    next_day_close: Optional[float] = None,
+    day3_close: Optional[float] = None,
+    day5_close: Optional[float] = None,
+) -> CandidatePerformance:
+    perf = CandidatePerformance(
+        symbol=candidate.symbol,
+        trade_date=candidate.trade_date,
+        entry_price=float(candidate.trigger_price or 0),
+        trigger_price=candidate.trigger_price,
+        invalid_price=candidate.invalid_price,
+        strategy_tags=list(candidate.strategy_tags),
+        tier=candidate.tier,
+        need_deep_ta=candidate.need_deep_ta,
+        observe_state=candidate.observe_state,
+        composite_score=candidate.composite_score,
+        game_balance=candidate.game_balance,
+        risk_flags=list(candidate.risk_flags),
+        next_day_close=next_day_close,
+        day3_close=day3_close,
+        day5_close=day5_close,
+    )
+    if perf.entry_price == 0 and candidate.score > 0:
+        perf.entry_price = 0.0
+    perf.compute_returns()
+    return perf
+
+
+def build_candidate_performance_from_dict(
+    entry: dict,
+    next_day_close: Optional[float] = None,
+    day3_close: Optional[float] = None,
+    day5_close: Optional[float] = None,
+) -> CandidatePerformance:
+    trigger = entry.get("trigger_price")
+    perf = CandidatePerformance(
+        symbol=entry.get("symbol", ""),
+        trade_date=entry.get("trade_date", ""),
+        entry_price=float(trigger) if trigger else 0.0,
+        trigger_price=trigger,
+        invalid_price=entry.get("invalid_price"),
+        strategy_tags=entry.get("strategies", entry.get("strategy_tags", [])),
+        tier=entry.get("tier", ""),
+        need_deep_ta=entry.get("need_deep_ta", False),
+        observe_state=entry.get("observe_state", "WAITING"),
+        composite_score=entry.get("composite_score", 0.0),
+        game_balance=entry.get("game_balance", ""),
+        risk_flags=entry.get("risk_flags", []),
+        next_day_close=next_day_close,
+        day3_close=day3_close,
+        day5_close=day5_close,
+    )
+    perf.compute_returns()
+    return perf
+
+
+def compute_strategy_stats(
+    performances: list[CandidatePerformance],
+) -> dict[str, StrategyStats]:
+    stats_map: dict[str, StrategyStats] = {}
+
+    for perf in performances:
+        tags = perf.strategy_tags if perf.strategy_tags else ["NO_STRATEGY"]
+        for tag in tags:
+            if tag not in stats_map:
+                stats_map[tag] = StrategyStats(strategy_tag=tag)
+            st = stats_map[tag]
+            st.total_candidates += 1
+
+            if perf.hit is None:
+                st.no_data_count += 1
+            elif perf.hit:
+                st.hit_count += 1
+            else:
+                st.miss_count += 1
+
+            if perf.invalidated:
+                st.invalidated_count += 1
+
+    all_returns_next = []
+    all_returns_3 = []
+    all_returns_5 = []
+    all_returns_5 = []
+    for tag, st in stats_map.items():
+        st.compute_rates()
+        tag_perfs = [
+            p for p in performances
+            if tag in (p.strategy_tags or ["NO_STRATEGY"])
+        ]
+        next_returns = [p.next_day_return_pct for p in tag_perfs if p.next_day_return_pct is not None]
+        d3_returns = [p.day3_return_pct for p in tag_perfs if p.day3_return_pct is not None]
+        d5_returns = [p.day5_return_pct for p in tag_perfs if p.day5_return_pct is not None]
+        if next_returns:
+            st.avg_next_day_return = round(sum(next_returns) / len(next_returns), 2)
+        if d3_returns:
+            st.avg_day3_return = round(sum(d3_returns) / len(d3_returns), 2)
+        if d5_returns:
+            st.avg_day5_return = round(sum(d5_returns) / len(d5_returns), 2)
+        all_returns_next.extend(next_returns)
+        all_returns_3.extend(d3_returns)
+        all_returns_5.extend(d5_returns)
+
+    return stats_map
+
+
+def compute_tier_stats(
+    performances: list[CandidatePerformance],
+) -> dict[str, dict]:
+    tier_map: dict[str, dict] = {}
+    for perf in performances:
+        t = perf.tier or "unknown"
+        if t not in tier_map:
+            tier_map[t] = {"total": 0, "hit": 0, "miss": 0, "no_data": 0, "invalidated": 0}
+        tier_map[t]["total"] += 1
+        if perf.hit is None:
+            tier_map[t]["no_data"] += 1
+        elif perf.hit:
+            tier_map[t]["hit"] += 1
+        else:
+            tier_map[t]["miss"] += 1
+        if perf.invalidated:
+            tier_map[t]["invalidated"] += 1
+    return tier_map
+
+
+def generate_suggestions(
+    strategy_stats: dict[str, StrategyStats],
+    tier_stats: dict[str, dict],
+    total_candidates: int,
+) -> list[str]:
+    suggestions = []
+
+    for tag, st in strategy_stats.items():
+        if st.hit_rate is not None and st.hit_rate < 30 and st.total_candidates >= 3:
+            suggestions.append(
+                f"[{tag}] 命中率偏低({st.hit_rate:.0f}%)，建议检查策略阈值或信号质量"
+            )
+        if st.false_positive_rate is not None and st.false_positive_rate > 70 and st.total_candidates >= 3:
+            suggestions.append(
+                f"[{tag}] 误报率偏高({st.false_positive_rate:.0f}%)，建议收紧入池条件"
+            )
+        if st.invalidated_count >= 3:
+            suggestions.append(
+                f"[{tag}] 失效计数较高({st.invalidated_count})，建议检查失效价设置"
+            )
+
+    for t, ts in tier_stats.items():
+        total = ts["total"]
+        if total > 0:
+            no_data_pct = ts["no_data"] / total * 100
+            if no_data_pct > 50:
+                suggestions.append(
+                    f"[{t}层] 数据缺失率{no_data_pct:.0f}%，建议检查行情数据源"
+                )
+
+    if total_candidates == 0:
+        suggestions.append("无候选数据，无法生成复盘建议")
+
+    if not suggestions:
+        suggestions.append("策略信号质量正常，暂无调参建议")
+
+    return suggestions
+
+
+def run_post_market_review(
+    performances: list[CandidatePerformance],
+    candidate_date: Optional[str] = None,
+    review_date: Optional[str] = None,
+    plan_date: Optional[str] = None,
+    effective_trade_date: Optional[str] = None,
+) -> ReviewSummary:
+    if not review_date:
+        review_date = datetime.now().strftime("%Y-%m-%d")
+    if not candidate_date and performances:
+        candidate_date = performances[0].trade_date
+    elif not candidate_date:
+        candidate_date = review_date
+
+    # [M-007-fix] auto-compute returns before aggregation
+    for p in performances:
+        p.compute_returns()
+
+    strategy_stats = compute_strategy_stats(performances)
+    tier_stats = compute_tier_stats(performances)
+
+    total = len(performances)
+    hit_count = sum(1 for p in performances if p.hit is True)
+    miss_count = sum(1 for p in performances if p.hit is False)
+    no_data_count = sum(1 for p in performances if p.hit is None)
+    invalidated_count = sum(1 for p in performances if p.invalidated is True)
+
+    next_returns = [p.next_day_return_pct for p in performances if p.next_day_return_pct is not None]
+    d3_returns = [p.day3_return_pct for p in performances if p.day3_return_pct is not None]
+    d5_returns = [p.day5_return_pct for p in performances if p.day5_return_pct is not None]
+
+    removal_reasons = []
+    for p in performances:
+        if p.invalidated:
+            removal_reasons.append(f"{p.symbol}: 价格跌破失效价")
+        if p.observe_state == "EXPIRED":
+            removal_reasons.append(f"{p.symbol}: 观察到期未触发")
+
+    suggestions = generate_suggestions(strategy_stats, tier_stats, total)
+
+    # [TF-REVIEW-002] review_date_mapping — compute data_status
+    if total == 0:
+        data_status = ReviewDataStatus.NO_CANDIDATES
+    elif no_data_count == total:
+        data_status = ReviewDataStatus.NO_MARKET_DATA
+    elif len(next_returns) > 0 and len(d3_returns) == 0:
+        data_status = ReviewDataStatus.NOT_ENOUGH_DAYS
+    else:
+        data_status = ReviewDataStatus.OK
+
+    summary = ReviewSummary(
+        review_date=review_date,
+        candidate_date=candidate_date,
+        total_candidates=total,
+        overall_hit_count=hit_count,
+        overall_miss_count=miss_count,
+        no_data_candidates=no_data_count,
+        overall_invalidated_count=invalidated_count,
+        strategy_stats=strategy_stats,
+        tier_stats=tier_stats,
+        common_removal_reasons=removal_reasons,
+        suggestions=suggestions,
+        avg_next_day_return=round(sum(next_returns) / len(next_returns), 2) if next_returns else None,
+        avg_day3_return=round(sum(d3_returns) / len(d3_returns), 2) if d3_returns else None,
+        avg_day5_return=round(sum(d5_returns) / len(d5_returns), 2) if d5_returns else None,
+        data_status=data_status.value,
+        data_status_message=data_status.message_cn,
+        plan_date=plan_date or candidate_date,
+        effective_trade_date=effective_trade_date or review_date,
+    )
+    summary.compute_overall()
+    return summary
+
+
+def render_review_markdown(summary: ReviewSummary) -> str:
+    lines = [
+        f"# 盘后复盘 {summary.review_date}",
+        "",
+        f"## 候选日期: {summary.candidate_date}",
+        "",
+    ]
+
+    # [TF-REVIEW-002] review_date_mapping — show cross-date mapping
+    if summary.plan_date and summary.plan_date != summary.candidate_date:
+        lines.append(f"> 该候选池由 {summary.plan_date} 生成，将在 {summary.candidate_date} 复盘")
+        lines.append("")
+
+    if summary.effective_trade_date and summary.effective_trade_date != summary.review_date:
+        lines.append(f"> 生效交易日: {summary.effective_trade_date}")
+        lines.append("")
+
+    # [TF-REVIEW-002] review_date_mapping — show data_status
+    if summary.data_status and summary.data_status != ReviewDataStatus.OK.value:
+        lines.append(f"> **数据状态**: {summary.data_status} — {summary.data_status_message}")
+        lines.append("")
+
+    lines.extend([
+        "### 总体概览",
+        "",
+        f"| 指标 | 值 |",
+        f"|------|-----|",
+        f"| 总候选数 | {summary.total_candidates} |",
+        f"| 有评分数 | {summary.scored_candidates} |",
+        f"| 无数据数 | {summary.no_data_candidates} |",
+        f"| 命中数 | {summary.overall_hit_count} |",
+        f"| 误报数 | {summary.overall_miss_count} |",
+        f"| 失效数 | {summary.overall_invalidated_count} |",
+        f"| 总命中率 | {summary.overall_hit_rate if summary.overall_hit_rate is not None else 'N/A'}% |",
+        f"| 总误报率 | {summary.overall_false_positive_rate if summary.overall_false_positive_rate is not None else 'N/A'}% |",
+        f"| 平均次日收益 | {summary.avg_next_day_return if summary.avg_next_day_return is not None else 'N/A'}% |",
+        f"| 平均3日收益 | {summary.avg_day3_return if summary.avg_day3_return is not None else 'N/A'}% |",
+        f"| 平均5日收益 | {summary.avg_day5_return if summary.avg_day5_return is not None else 'N/A'}% |",
+        "",
+    ])
+
+    lines.append("### 策略命中率")
+    lines.append("")
+    lines.append("| 策略 | 总数 | 命中 | 误报 | 无数据 | 失效 | 命中率 | 误报率 | 平均次日 | 平均3日 | 平均5日 |")
+    lines.append("|------|------|------|------|--------|------|--------|--------|----------|----------|----------|")
+    for tag in sorted(summary.strategy_stats.keys()):
+        st = summary.strategy_stats[tag]
+        lines.append(
+            f"| {tag} | {st.total_candidates} | {st.hit_count} | {st.miss_count} "
+            f"| {st.no_data_count} | {st.invalidated_count} "
+            f"| {st.hit_rate if st.hit_rate is not None else 'N/A'}% | {st.false_positive_rate if st.false_positive_rate is not None else 'N/A'}% "
+            f"| {st.avg_next_day_return if st.avg_next_day_return is not None else 'N/A'}% | {st.avg_day3_return if st.avg_day3_return is not None else 'N/A'}% "
+            f"| {st.avg_day5_return if st.avg_day5_return is not None else 'N/A'}% |"
+        )
+    lines.append("")
+
+    lines.append("### 分层统计")
+    lines.append("")
+    lines.append("| 层级 | 总数 | 命中 | 误报 | 无数据 | 失效 |")
+    lines.append("|------|------|------|------|--------|------|")
+    for t in sorted(summary.tier_stats.keys()):
+        ts = summary.tier_stats[t]
+        lines.append(
+            f"| {t}层 | {ts['total']} | {ts['hit']} | {ts['miss']} "
+            f"| {ts['no_data']} | {ts['invalidated']} |"
+            f"| {ts['no_data']} | {ts['invalidated']} |"
+        )
+    lines.append("")
+
+    if summary.common_removal_reasons:
+        lines.append("### 移除理由")
+        lines.append("")
+        for r in summary.common_removal_reasons[:20]:
+            lines.append(f"- {r}")
+        lines.append("")
+
+    lines.append("### 调参建议")
+    lines.append("")
+    for s in summary.suggestions:
+        lines.append(f"- {s}")
+    lines.append("")
+
+    text = "\n".join(lines)
+    for word in FORBIDDEN_WORDS:
+        if word in text:
+            text = text.replace(word, "***")
+    return text
+
+
+def save_review_report(
+    summary: ReviewSummary,
+    output_dir: str = "docs/tradeflow_reviews",
+) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+    filename = f"{summary.review_date}.md"
+    filepath = os.path.join(output_dir, filename)
+    markdown = render_review_markdown(summary)
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(markdown)
+    return filepath
+
+ succeeded in 15136ms:
+./.pytest_cache/v/cache/nodeids:4827:  "tests/test_tf_review_002_date_mapping.py::TestDateSemanticsHelpers::test_find_latest_plan_date_empty",
+./.pytest_cache/v/cache/nodeids:4828:  "tests/test_tf_review_002_date_mapping.py::TestDateSemanticsHelpers::test_find_latest_plan_date_exact_match",
+./.pytest_cache/v/cache/nodeids:4829:  "tests/test_tf_review_002_date_mapping.py::TestDateSemanticsHelpers::test_find_latest_plan_date_no_match_returns_max",
+./.pytest_cache/v/cache/nodeids:4830:  "tests/test_tf_review_002_date_mapping.py::TestDateSemanticsHelpers::test_find_latest_plan_date_no_target",
+./.pytest_cache/v/cache/nodeids:4831:  "tests/test_tf_review_002_date_mapping.py::TestDateSemanticsHelpers::test_resolve_review_date_non_trading_day",
+./.pytest_cache/v/cache/nodeids:4832:  "tests/test_tf_review_002_date_mapping.py::TestDateSemanticsHelpers::test_resolve_review_date_trading_day",
+./.pytest_cache/v/cache/nodeids:4833:  "tests/test_tf_review_002_date_mapping.py::TestDateSemanticsHelpers::test_resolve_review_date_with_effective",
+Binary file ./tests/__pycache__/test_tf_review_002_date_mapping.cpython-312-pytest-9.0.2.pyc matches
+./tests/test_tf_review_002_date_mapping.py:18:    resolve_review_date,
+./tests/test_tf_review_002_date_mapping.py:19:    find_latest_plan_date,
+./tests/test_tf_review_002_date_mapping.py:234:    def test_resolve_review_date_with_effective(self):
+./tests/test_tf_review_002_date_mapping.py:235:        result = resolve_review_date("2026-05-31", "2026-06-01")
+./tests/test_tf_review_002_date_mapping.py:238:    def test_resolve_review_date_trading_day(self):
+./tests/test_tf_review_002_date_mapping.py:241:        result = resolve_review_date("2026-06-01", "")
+./tests/test_tf_review_002_date_mapping.py:244:    def test_resolve_review_date_non_trading_day(self):
+./tests/test_tf_review_002_date_mapping.py:247:        result = resolve_review_date("2026-05-31", "")
+./tests/test_tf_review_002_date_mapping.py:250:    def test_find_latest_plan_date_exact_match(self):
+./tests/test_tf_review_002_date_mapping.py:252:        assert find_latest_plan_date(dates, "2026-05-31") == "2026-05-31"
+./tests/test_tf_review_002_date_mapping.py:254:    def test_find_latest_plan_date_no_match_returns_max(self):
+./tests/test_tf_review_002_date_mapping.py:256:        assert find_latest_plan_date(dates, "2026-07-01") == "2026-06-02"
+./tests/test_tf_review_002_date_mapping.py:258:    def test_find_latest_plan_date_empty(self):
+./tests/test_tf_review_002_date_mapping.py:259:        assert find_latest_plan_date([], "2026-06-01") == ""
+./tests/test_tf_review_002_date_mapping.py:261:    def test_find_latest_plan_date_no_target(self):
+./tests/test_tf_review_002_date_mapping.py:263:        assert find_latest_plan_date(dates) == "2026-06-02"
+./tests/test_tf_review_002_date_mapping.py:411:        review_date = resolve_review_date("2026-05-31", eff_date)
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:32:[ ] Add resolve_review_date() / find latest reviewable plan helper to date_semantics.py
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:55:[ ] Add resolve_review_date() / find latest reviewable plan helper to date_semantics.py
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:234:[•] Add resolve_review_date() / find latest reviewable plan helper to date_semantics.py
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:255:+def resolve_review_date(plan_date: str, effective_trade_date: str = "") -> str:
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:276:+def find_latest_plan_date(dates: list[str], target_date: str = "") -> str:
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:298:[✓] Add resolve_review_date() / find latest reviewable plan helper to date_semantics.py
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:324:+        from tradingagents.tradeflow.date_semantics import find_latest_plan_date
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:328:+            best = find_latest_plan_date(available_dates, trade_date)
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:423:[✓] Add resolve_review_date() / find latest reviewable plan helper to date_semantics.py
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:453:+    from tradingagents.tradeflow.date_semantics import resolve_review_date, find_latest_plan_date
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:465:+            best = find_latest_plan_date(available, trade_date)
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:499:+    review_date = resolve_review_date(plan_date, effective_trade_date)
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:564:from tradingagents.tradeflow.date_semantics import resolve_review_date, find_latest_plan_date
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:609:from tradingagents.tradeflow.date_semantics import resolve_review_date, find_latest_plan_date
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:632:[✓] Add resolve_review_date() / find latest reviewable plan helper to date_semantics.py
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:987:[✓] Add resolve_review_date() / find latest reviewable plan helper to date_semantics.py
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:1014:+  - `tradingagents/tradeflow/date_semantics.py`：新增 `resolve_review_date()` 和 `find_latest_plan_date()` 辅助函数，支持非交易日计划映射到下一交易日复盘。
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:1073:[✓] Add resolve_review_date() / find latest reviewable plan helper to date_semantics.py
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:1124:| `tradingagents/tradeflow/date_semantics.py` | Added `resolve_review_date()` and `find_latest_plan_date()` helpers |
+./docs/task_runs/TF-REVIEW-002-20260613-232054/opencode-round1.txt:1133:1. **Non-trading day mapping**: `get_review()` and `generate_review()` now search for the latest plan with candidates when the queried date has no data, using `_get_available_dates()` + `find_latest_plan_date()`
+./docs/DEVLOG.md:15:  - `tradingagents/tradeflow/date_semantics.py`：新增 `resolve_review_date()` 和 `find_latest_plan_date()` 辅助函数，支持非交易日计划映射到下一交易日复盘。
+Binary file ./tradingagents/tradeflow/__pycache__/date_semantics.cpython-312.pyc matches
+./tradingagents/tradeflow/date_semantics.py:71:def resolve_review_date(plan_date: str, effective_trade_date: str = "") -> str:
+./tradingagents/tradeflow/date_semantics.py:92:def find_latest_plan_date(dates: list[str], target_date: str = "") -> str:
+Binary file ./api/services/__pycache__/tradeflow_service.cpython-312.pyc matches
+./api/services/tradeflow_service.py:902:        from tradingagents.tradeflow.date_semantics import find_latest_plan_date
+./api/services/tradeflow_service.py:906:            best = find_latest_plan_date(available_dates, trade_date)
+./api/services/tradeflow_service.py:1457:    from tradingagents.tradeflow.date_semantics import resolve_review_date, find_latest_plan_date
+./api/services/tradeflow_service.py:1468:            best = find_latest_plan_date(available, trade_date)
+./api/services/tradeflow_service.py:1501:    review_date = resolve_review_date(plan_date, effective_trade_date)
+
+exec
+/bin/zsh -lc "git show HEAD:tradingagents/tradeflow/post_market_review.py | sed -n '400,450p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    lines.append("")
+
+    if summary.common_removal_reasons:
+        lines.append("### 移除理由")
+        lines.append("")
+        for r in summary.common_removal_reasons[:20]:
+            lines.append(f"- {r}")
+        lines.append("")
+
+    lines.append("### 调参建议")
+    lines.append("")
+    for s in summary.suggestions:
+        lines.append(f"- {s}")
+    lines.append("")
+
+    text = "\n".join(lines)
+    for word in FORBIDDEN_WORDS:
+        if word in text:
+            text = text.replace(word, "***")
+    return text
+
+
+def save_review_report(
+    summary: ReviewSummary,
+    output_dir: str = "docs/tradeflow_reviews",
+) -> str:
+    os.makedirs(output_dir, exist_ok=True)
+    filename = f"{summary.review_date}.md"
+    filepath = os.path.join(output_dir, filename)
+    markdown = render_review_markdown(summary)
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(markdown)
+    return filepath
+
+exec
+/bin/zsh -lc "git show HEAD:tradingagents/tradeflow/post_market_review.py | sed -n '360,410p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        f"|------|-----|",
+        f"| 总候选数 | {summary.total_candidates} |",
+        f"| 有评分数 | {summary.scored_candidates} |",
+        f"| 无数据数 | {summary.no_data_candidates} |",
+        f"| 命中数 | {summary.overall_hit_count} |",
+        f"| 误报数 | {summary.overall_miss_count} |",
+        f"| 失效数 | {summary.overall_invalidated_count} |",
+        f"| 总命中率 | {summary.overall_hit_rate if summary.overall_hit_rate is not None else 'N/A'}% |",
+        f"| 总误报率 | {summary.overall_false_positive_rate if summary.overall_false_positive_rate is not None else 'N/A'}% |",
+        f"| 平均次日收益 | {summary.avg_next_day_return if summary.avg_next_day_return is not None else 'N/A'}% |",
+        f"| 平均3日收益 | {summary.avg_day3_return if summary.avg_day3_return is not None else 'N/A'}% |",
+        f"| 平均5日收益 | {summary.avg_day5_return if summary.avg_day5_return is not None else 'N/A'}% |",
+        "",
+    ]
+
+    lines.append("### 策略命中率")
+    lines.append("")
+    lines.append("| 策略 | 总数 | 命中 | 误报 | 无数据 | 失效 | 命中率 | 误报率 | 平均次日 | 平均3日 | 平均5日 |")
+    lines.append("|------|------|------|------|--------|------|--------|--------|----------|----------|----------|")
+    for tag in sorted(summary.strategy_stats.keys()):
+        st = summary.strategy_stats[tag]
+        lines.append(
+            f"| {tag} | {st.total_candidates} | {st.hit_count} | {st.miss_count} "
+            f"| {st.no_data_count} | {st.invalidated_count} "
+            f"| {st.hit_rate if st.hit_rate is not None else 'N/A'}% | {st.false_positive_rate if st.false_positive_rate is not None else 'N/A'}% "
+            f"| {st.avg_next_day_return if st.avg_next_day_return is not None else 'N/A'}% | {st.avg_day3_return if st.avg_day3_return is not None else 'N/A'}% "
+            f"| {st.avg_day5_return if st.avg_day5_return is not None else 'N/A'}% |"
+        )
+    lines.append("")
+
+    lines.append("### 分层统计")
+    lines.append("")
+    lines.append("| 层级 | 总数 | 命中 | 误报 | 无数据 | 失效 |")
+    lines.append("|------|------|------|------|--------|------|")
+    for t in sorted(summary.tier_stats.keys()):
+        ts = summary.tier_stats[t]
+        lines.append(
+            f"| {t}层 | {ts['total']} | {ts['hit']} | {ts['miss']} "
+            f"| {ts['no_data']} | {ts['invalidated']} |"
+        )
+    lines.append("")
+
+    if summary.common_removal_reasons:
+        lines.append("### 移除理由")
+        lines.append("")
+        for r in summary.common_removal_reasons[:20]:
+            lines.append(f"- {r}")
+        lines.append("")
+
+    lines.append("### 调参建议")
+    lines.append("")
+
+exec
+/bin/zsh -lc "git diff -U5 -- tradingagents/tradeflow/post_market_review.py | sed -n '80,180p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
++    effective_trade_date: Optional[str] = None,
+ ) -> ReviewSummary:
+     if not review_date:
+         review_date = datetime.now().strftime("%Y-%m-%d")
+     if not candidate_date and performances:
+         candidate_date = performances[0].trade_date
+@@ -326,10 +357,20 @@ def run_post_market_review(
+         if p.observe_state == "EXPIRED":
+             removal_reasons.append(f"{p.symbol}: 观察到期未触发")
+ 
+     suggestions = generate_suggestions(strategy_stats, tier_stats, total)
+ 
++    # [TF-REVIEW-002] review_date_mapping — compute data_status
++    if total == 0:
++        data_status = ReviewDataStatus.NO_CANDIDATES
++    elif no_data_count == total:
++        data_status = ReviewDataStatus.NO_MARKET_DATA
++    elif len(next_returns) > 0 and len(d3_returns) == 0:
++        data_status = ReviewDataStatus.NOT_ENOUGH_DAYS
++    else:
++        data_status = ReviewDataStatus.OK
++
+     summary = ReviewSummary(
+         review_date=review_date,
+         candidate_date=candidate_date,
+         total_candidates=total,
+         overall_hit_count=hit_count,
+@@ -341,10 +382,14 @@ def run_post_market_review(
+         common_removal_reasons=removal_reasons,
+         suggestions=suggestions,
+         avg_next_day_return=round(sum(next_returns) / len(next_returns), 2) if next_returns else None,
+         avg_day3_return=round(sum(d3_returns) / len(d3_returns), 2) if d3_returns else None,
+         avg_day5_return=round(sum(d5_returns) / len(d5_returns), 2) if d5_returns else None,
++        data_status=data_status.value,
++        data_status_message=data_status.message_cn,
++        plan_date=plan_date or candidate_date,
++        effective_trade_date=effective_trade_date or review_date,
+     )
+     summary.compute_overall()
+     return summary
+ 
+ 
+@@ -352,10 +397,27 @@ def render_review_markdown(summary: ReviewSummary) -> str:
+     lines = [
+         f"# 盘后复盘 {summary.review_date}",
+         "",
+         f"## 候选日期: {summary.candidate_date}",
+         "",
++    ]
++
++    # [TF-REVIEW-002] review_date_mapping — show cross-date mapping
++    if summary.plan_date and summary.plan_date != summary.candidate_date:
++        lines.append(f"> 该候选池由 {summary.plan_date} 生成，将在 {summary.candidate_date} 复盘")
++        lines.append("")
++
++    if summary.effective_trade_date and summary.effective_trade_date != summary.review_date:
++        lines.append(f"> 生效交易日: {summary.effective_trade_date}")
++        lines.append("")
++
++    # [TF-REVIEW-002] review_date_mapping — show data_status
++    if summary.data_status and summary.data_status != ReviewDataStatus.OK.value:
++        lines.append(f"> **数据状态**: {summary.data_status} — {summary.data_status_message}")
++        lines.append("")
++
++    lines.extend([
+         "### 总体概览",
+         "",
+         f"| 指标 | 值 |",
+         f"|------|-----|",
+         f"| 总候选数 | {summary.total_candidates} |",
+@@ -368,11 +430,11 @@ def render_review_markdown(summary: ReviewSummary) -> str:
+         f"| 总误报率 | {summary.overall_false_positive_rate if summary.overall_false_positive_rate is not None else 'N/A'}% |",
+         f"| 平均次日收益 | {summary.avg_next_day_return if summary.avg_next_day_return is not None else 'N/A'}% |",
+         f"| 平均3日收益 | {summary.avg_day3_return if summary.avg_day3_return is not None else 'N/A'}% |",
+         f"| 平均5日收益 | {summary.avg_day5_return if summary.avg_day5_return is not None else 'N/A'}% |",
+         "",
+-    ]
++    ])
+ 
+     lines.append("### 策略命中率")
+     lines.append("")
+     lines.append("| 策略 | 总数 | 命中 | 误报 | 无数据 | 失效 | 命中率 | 误报率 | 平均次日 | 平均3日 | 平均5日 |")
+     lines.append("|------|------|------|------|--------|------|--------|--------|----------|----------|----------|")
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/post_market_review.py | sed -n '440,480p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   440	    lines.append("|------|------|------|------|--------|------|--------|--------|----------|----------|----------|")
+   441	    for tag in sorted(summary.strategy_stats.keys()):
+   442	        st = summary.strategy_stats[tag]
+   443	        lines.append(
+   444	            f"| {tag} | {st.total_candidates} | {st.hit_count} | {st.miss_count} "
+   445	            f"| {st.no_data_count} | {st.invalidated_count} "
+   446	            f"| {st.hit_rate if st.hit_rate is not None else 'N/A'}% | {st.false_positive_rate if st.false_positive_rate is not None else 'N/A'}% "
+   447	            f"| {st.avg_next_day_return if st.avg_next_day_return is not None else 'N/A'}% | {st.avg_day3_return if st.avg_day3_return is not None else 'N/A'}% "
+   448	            f"| {st.avg_day5_return if st.avg_day5_return is not None else 'N/A'}% |"
+   449	        )
+   450	    lines.append("")
+   451	
+   452	    lines.append("### 分层统计")
+   453	    lines.append("")
+   454	    lines.append("| 层级 | 总数 | 命中 | 误报 | 无数据 | 失效 |")
+   455	    lines.append("|------|------|------|------|--------|------|")
+   456	    for t in sorted(summary.tier_stats.keys()):
+   457	        ts = summary.tier_stats[t]
+   458	        lines.append(
+   459	            f"| {t}层 | {ts['total']} | {ts['hit']} | {ts['miss']} "
+   460	            f"| {ts['no_data']} | {ts['invalidated']} |"
+   461	        )
+   462	    lines.append("")
+   463	
+   464	    if summary.common_removal_reasons:
+   465	        lines.append("### 移除理由")
+   466	        lines.append("")
+   467	        for r in summary.common_removal_reasons[:20]:
+   468	            lines.append(f"- {r}")
+   469	        lines.append("")
+   470	
+   471	    lines.append("### 调参建议")
+   472	    lines.append("")
+   473	    for s in summary.suggestions:
+   474	        lines.append(f"- {s}")
+   475	    lines.append("")
+   476	
+   477	    text = "\n".join(lines)
+   478	    for word in FORBIDDEN_WORDS:
+   479	        if word in text:
+   480	            text = text.replace(word, "***")
+
+exec
+/bin/zsh -lc 'grep -n "def _row_to_candidate_item" -A120 api/services/tradeflow_service.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+84:def _row_to_candidate_item(row: sqlite3.Row) -> dict:
+85-    symbol = normalize_tradeflow_symbol(row["symbol"])  # [UI-008]
+86-    raw_name = _rget(row, "name", "")
+87-    name = resolve_tradeflow_name(symbol, raw_name)  # [UI-008]
+88-    return {
+89-        "symbol": symbol,
+90-        "name": name,
+91-        "tier": _rget(row, "tier", ""),
+92-        "composite_score": _rget(row, "composite_score", 0.0) or 0.0,
+93-        "score": _rget(row, "score", 0.0) or 0.0,
+94-        "strategy_tags": _parse_json(_rget(row, "strategy_tags_json"), []),
+95-        "primary_strategy": _rget(row, "primary_strategy", ""),
+96-        "trigger_price": _rget(row, "trigger_price"),
+97-        "support_price": _rget(row, "support_price"),
+98-        "invalid_price": _rget(row, "invalid_price"),
+99-        "need_deep_ta": bool(_rget(row, "need_deep_ta", 0)),
+100-        "observe_state": _rget(row, "observe_state", "WAITING"),
+101-        "observe_trigger_count": _rget(row, "observe_trigger_count", 0) or 0,
+102-        "observe_first_trigger_time": _rget(row, "observe_first_trigger_time", ""),
+103-        "tradeflow_data_completeness": _rget(row, "tradeflow_data_completeness", 0.0) or 0.0,
+104-        "missing_data_fields": _parse_json(_rget(row, "missing_data_fields_json"), []),
+105-        "data_completeness": _rget(row, "data_completeness", 0.0) or 0.0,
+106-        "missing_evidence": _parse_json(_rget(row, "missing_evidence_json"), []),
+107-        "game_balance": _rget(row, "game_balance", ""),
+108-        "bull_case": _rget(row, "bull_case", ""),
+109-        "bear_case": _rget(row, "bear_case", ""),
+110-        "policy_case": _rget(row, "policy_case", ""),
+111-        "fund_flow_case": _rget(row, "fund_flow_case", ""),
+112-        "why_deep_ta": _rget(row, "why_deep_ta", ""),
+113-        "why_not_deep_ta": _rget(row, "why_not_deep_ta", ""),
+114-        "risk_flags": _parse_json(_rget(row, "risk_flags_json"), []),
+115-        "policy_tags": _parse_json(_rget(row, "policy_tags_json"), []),
+116-        "version_score": _rget(row, "version_score", 0.0) or 0.0,
+117-        "narrative_score": _rget(row, "narrative_score", 0.0) or 0.0,
+118-        "fund_flow_anomaly_score": _rget(row, "fund_flow_anomaly_score", 0.0) or 0.0,
+119-        "fund_flow_anomaly_tags": _parse_json(_rget(row, "fund_flow_anomaly_tags_json"), []),
+120-        "fund_flow_unit_verified": bool(_rget(row, "fund_flow_unit_verified", 0)),
+121-        "evidence_gate_applied": bool(_rget(row, "evidence_gate_applied", 0)),
+122-        "deep_ta_status": _rget(row, "deep_ta_status", ""),
+123-        "deep_ta_dispatch_reason": _rget(row, "deep_ta_dispatch_reason", ""),
+124-        "deep_ta_model": _rget(row, "deep_ta_model", ""),
+125-        "source": _rget(row, "source", "manual"),
+126-        "universe_sources": _parse_json(_rget(row, "universe_sources_json"), []),
+127-        "resonance_count": _rget(row, "resonance_count", 0) or 0,
+128-        "ta_budget_priority": _rget(row, "ta_budget_priority", 0) or 0,
+129-        "tier_reason": _rget(row, "tier_reason", ""),
+130-        "missing_evidence_for_upgrade": _parse_json(_rget(row, "missing_evidence_for_upgrade_json"), []),
+131-        "candidate_type": _rget(row, "candidate_type", ""),  # [H-005] mandate_radar_ui
+132-        "mandate_score": _rget(row, "mandate_score_component", 0.0) or 0.0,  # [H-005]
+133-        "ambush_score": _rget(row, "ambush_score", 0.0) or 0.0,  # [H-005]
+134-        "mandate_topic": _rget(row, "mandate_topic", ""),  # [H-005]
+135-        "company_role": _rget(row, "company_role", ""),  # [H-005]
+136-        "beneficiary_path": _parse_json(_rget(row, "beneficiary_path_json"), []),  # [H-005]
+137-        "candidate_type_reason": _rget(row, "candidate_type_reason", ""),  # [H-005]
+138-        "deep_ta_route": _rget(row, "deep_ta_route", ""),  # [H-005]
+139-        "research_queue": _rget(row, "research_queue", ""),  # [H-007] mandate_ta_queue_router
+140-        "research_intent": _rget(row, "research_intent", ""),  # [H-007]
+141-        "research_route_reason": _rget(row, "research_route_reason", ""),  # [H-007]
+142-        "watchlist_note": _rget(row, "watchlist_note", ""),  # [H-008] mandate_watchlist_note
+143-        "watchlist_note_suggested": _rget(row, "watchlist_note_suggested", ""),  # [H-008]
+144-        "watchlist_topic": _rget(row, "watchlist_topic", ""),  # [H-008]
+145-        "watchlist_benefit_score": _rget(row, "watchlist_benefit_score", 0.0) or 0.0,  # [H-008]
+146-        "watchlist_consensus_score": _rget(row, "watchlist_consensus_score", 0.0) or 0.0,  # [H-008]
+147-        "watchlist_evidence_gap": _parse_json(_rget(row, "watchlist_evidence_gap_json"), []),  # [H-008]
+148-        "plan_date": _rget(row, "plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
+149-        "effective_trade_date": _rget(row, "effective_trade_date", ""),  # [TF-DATE-001]
+150-        "observe_date": _rget(row, "observe_date", ""),  # [TF-DATE-001]
+151-        "action_tier": _rget(row, "action_tier", "scan"),  # [TF-UX-004]
+152-        "trade_priority_score": _rget(row, "trade_priority_score", 0.0) or 0.0,  # [TF-UX-004]
+153-        "action_tier_reason": _rget(row, "action_tier_reason", ""),  # [TF-UX-004]
+154-        "counter_evidence": _parse_json(_rget(row, "counter_evidence_json"), []),  # [H-009]
+155-        "overheat_flags": _parse_json(_rget(row, "overheat_flags_json"), []),  # [H-009]
+156-        "downgrade_reasons": _parse_json(_rget(row, "downgrade_reasons_json"), []),  # [H-009]
+157-        "what_would_change_mind": _parse_json(_rget(row, "what_would_change_mind_json"), []),  # [H-009]
+158-        "topic_lifecycle_state": _rget(row, "topic_lifecycle_state", ""),  # [H-010] mandate_topic_lifecycle
+159-        "topic_lifecycle_reason": _rget(row, "topic_lifecycle_reason", ""),  # [H-010]
+160-        "topic_last_signal_date": _rget(row, "topic_last_signal_date", ""),  # [H-010]
+161-        "topic_signal_count": _rget(row, "topic_signal_count", 0) or 0,  # [H-010]
+162-        "contradiction_level": _rget(row, "contradiction_level", ""),  # [H-011] candidate_contradiction_explainer
+163-        "contradiction_items": _parse_json(_rget(row, "contradiction_items_json"), []),  # [H-011]
+164-        "blocking_evidence_gaps": _parse_json(_rget(row, "blocking_evidence_gaps_json"), []),  # [H-011]
+165-        "next_verification_steps": _parse_json(_rget(row, "next_verification_steps_json"), []),  # [H-011]
+166-        "created_at": _rget(row, "created_at", ""),
+167-        "updated_at": _rget(row, "updated_at", ""),
+168-    }
+169-
+170-
+171-def _row_to_candidate_detail(row: sqlite3.Row) -> dict:
+172-    item = _row_to_candidate_item(row)
+173-    item.update({
+174-        "evidence": _parse_json(_rget(row, "evidence_json"), {}),
+175-        "policy_evidence_refs": _parse_json(_rget(row, "policy_evidence_refs_json"), []),
+176-        "narrative_evidence_refs": _parse_json(_rget(row, "narrative_evidence_refs_json"), []),
+177-        "narrative_reasons": _parse_json(_rget(row, "narrative_reasons_json"), []),
+178-        "risk_evidence_refs": _parse_json(_rget(row, "risk_evidence_refs_json"), []),
+179-        "risk_reasons": _parse_json(_rget(row, "risk_reasons_json"), []),
+180-        "game_balance_refs": _parse_json(_rget(row, "game_balance_refs_json"), []),
+181-        "fund_flow_anomaly_refs": _parse_json(_rget(row, "fund_flow_anomaly_refs_json"), []),
+182-        "fund_flow_individual_summary": _rget(row, "fund_flow_individual_summary", ""),
+183-        "fund_flow_board_summary": _rget(row, "fund_flow_board_summary", ""),
+184-        "signal_category_hits": _parse_json(_rget(row, "signal_category_hits_json"), []),
+185-        "positive_category_count": _rget(row, "positive_category_count", 0) or 0,
+186-        "what_to_upgrade": _parse_json(_rget(row, "what_to_upgrade_json"), []),
+187-        "deep_ta_report_path": _rget(row, "deep_ta_report_path", ""),
+188-        "deep_ta_dispatch_time": _rget(row, "deep_ta_dispatch_time", ""),
+189-        "deep_ta_position_context": _rget(row, "deep_ta_position_context", ""),
+190-        "ambush_reasons": _parse_json(_rget(row, "ambush_reasons_json"), []),  # [H-005] mandate_radar_ui
+191-        "ambush_evidence_refs": _parse_json(_rget(row, "ambush_evidence_refs_json"), []),  # [H-005]
+192-        "mandate_evidence_refs": _parse_json(_rget(row, "mandate_evidence_refs_json"), []),  # [H-005]
+193-    })
+194-    return item
+195-
+196-
+197-def _compute_action(item: dict) -> str:
+198-    if item.get("need_deep_ta"):
+199-        return "NEED_DEEP_TA"
+200-    trigger = item.get("trigger_price")
+201-    if trigger:
+202-        return "WAIT_TRIGGER"
+203-    return "OBSERVE"
+204-
+
+exec
+/bin/zsh -lc 'grep -R "plan_date" -n tradingagents/tradeflow api/services | head -80 && grep -R "INSERT INTO tradeflow_candidates" -n tradingagents api | head -20' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/tradeflow/candidate_engine.py:161:    ("plan_date", "TEXT DEFAULT ''"),
+tradingagents/tradeflow/candidate_engine.py:371:        ("plan_date", "TEXT DEFAULT ''"),
+tradingagents/tradeflow/candidate_engine.py:381:        ("plan_date", "TEXT DEFAULT ''"),
+tradingagents/tradeflow/candidate_engine.py:391:        ("plan_date", "TEXT DEFAULT ''"),
+tradingagents/tradeflow/candidate_engine.py:1246:            "plan_date, effective_trade_date, observe_date, "
+tradingagents/tradeflow/candidate_engine.py:1310:            "plan_date=excluded.plan_date, "
+tradingagents/tradeflow/candidate_engine.py:1382:                row["plan_date"], row["effective_trade_date"], row["observe_date"],
+tradingagents/tradeflow/candidate_engine.py:1440:            plan_date = f.get("plan_date") or trade_date
+tradingagents/tradeflow/candidate_engine.py:1444:                "(trade_date, symbol, name, source, reason, run_id, created_at, plan_date, effective_trade_date) "
+tradingagents/tradeflow/candidate_engine.py:1454:                    plan_date,
+tradingagents/tradeflow/discovery.py:371:            c.plan_date = trade_date
+tradingagents/tradeflow/discovery.py:386:        entry.setdefault("plan_date", trade_date)
+tradingagents/tradeflow/discovery.py:511:        "plan_date": candidate.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
+tradingagents/tradeflow/plan_runner.py:119:        "plan_date": candidate.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
+tradingagents/tradeflow/plan_runner.py:405:            c.plan_date = trade_date
+tradingagents/tradeflow/plan_runner.py:411:    plan.plan_date = trade_date
+tradingagents/tradeflow/plan_runner.py:426:            "plan_date, effective_trade_date, observe_date) "  # [TF-DATE-001]
+tradingagents/tradeflow/plan_runner.py:431:            "plan_date=excluded.plan_date, "  # [TF-DATE-001]
+tradingagents/tradeflow/plan_runner.py:436:             row["plan_date"], row["effective_trade_date"], row["observe_date"]),  # [TF-DATE-001]
+Binary file tradingagents/tradeflow/__pycache__/schemas.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/discovery.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/date_semantics.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/candidate_engine.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/plan_runner.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/observe_fixture_replay.cpython-312.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/post_market_review.cpython-312.pyc matches
+tradingagents/tradeflow/schemas.py:114:    plan_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+tradingagents/tradeflow/schemas.py:271:            "plan_date": self.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
+tradingagents/tradeflow/schemas.py:388:            plan_date=row.get("plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
+tradingagents/tradeflow/schemas.py:474:    plan_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+tradingagents/tradeflow/schemas.py:502:            "plan_date": self.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
+tradingagents/tradeflow/observe_fixture_replay.py:16:- Consistent with TF-DATE-001 plan_date/effective_trade_date/observe_date semantics.
+tradingagents/tradeflow/observe_fixture_replay.py:53:    plan_date: str = ""
+tradingagents/tradeflow/observe_fixture_replay.py:69:            "plan_date": self.plan_date,
+tradingagents/tradeflow/observe_fixture_replay.py:88:    plan_date: str = "",
+tradingagents/tradeflow/observe_fixture_replay.py:100:        plan_date=plan_date or trade_date,
+tradingagents/tradeflow/observe_fixture_replay.py:111:        "plan_date": "2026-06-02",
+tradingagents/tradeflow/observe_fixture_replay.py:126:        "plan_date": "2026-06-02",
+tradingagents/tradeflow/observe_fixture_replay.py:141:        "plan_date": "2026-06-02",
+tradingagents/tradeflow/observe_fixture_replay.py:156:        "plan_date": "2026-06-02",
+tradingagents/tradeflow/observe_fixture_replay.py:171:        "plan_date": "2026-05-31",
+tradingagents/tradeflow/observe_fixture_replay.py:266:            "plan_date": row_dict.get("plan_date", ""),
+tradingagents/tradeflow/observe_fixture_replay.py:283:    plan_date = fixture.get("plan_date", fixture["trade_date"])
+tradingagents/tradeflow/observe_fixture_replay.py:293:            plan_date=plan_date,
+tradingagents/tradeflow/observe_fixture_replay.py:331:            plan_date=plan_date,
+tradingagents/tradeflow/observe_fixture_replay.py:355:            plan_date=plan_date,
+tradingagents/tradeflow/date_semantics.py:1:"""TradeFlow date semantics — resolve plan_date, effective_trade_date, observe_date.
+tradingagents/tradeflow/date_semantics.py:11:- plan_date: when the candidate pool was generated (any calendar date)
+tradingagents/tradeflow/date_semantics.py:39:def resolve_effective_trade_date(plan_date: str, now: Optional[datetime] = None) -> str:
+tradingagents/tradeflow/date_semantics.py:43:    plan_d = _parse_date(plan_date)
+tradingagents/tradeflow/date_semantics.py:44:    is_trading = is_cn_trading_day(plan_date)
+tradingagents/tradeflow/date_semantics.py:47:        return next_cn_trading_day(plan_date)
+tradingagents/tradeflow/date_semantics.py:51:    if plan_date != now_date_str:
+tradingagents/tradeflow/date_semantics.py:52:        return next_cn_trading_day(plan_date)
+tradingagents/tradeflow/date_semantics.py:56:        return plan_date
+tradingagents/tradeflow/date_semantics.py:57:    return next_cn_trading_day(plan_date)
+tradingagents/tradeflow/date_semantics.py:60:def resolve_plan_date(now: Optional[datetime] = None) -> str:
+tradingagents/tradeflow/date_semantics.py:71:def resolve_review_date(plan_date: str, effective_trade_date: str = "") -> str:
+tradingagents/tradeflow/date_semantics.py:78:        plan_date: The date the candidate pool was generated.
+tradingagents/tradeflow/date_semantics.py:80:            If empty, computed from plan_date.
+tradingagents/tradeflow/date_semantics.py:87:    if is_cn_trading_day(plan_date):
+tradingagents/tradeflow/date_semantics.py:88:        return plan_date
+tradingagents/tradeflow/date_semantics.py:89:    return next_cn_trading_day(plan_date)
+tradingagents/tradeflow/date_semantics.py:92:def find_latest_plan_date(dates: list[str], target_date: str = "") -> str:
+tradingagents/tradeflow/date_semantics.py:99:        dates: list of plan_date strings available in the DB.
+tradingagents/tradeflow/date_semantics.py:103:        The best plan_date to show, or "" if no dates available.
+tradingagents/tradeflow/post_market_review.py:144:    plan_date: str = ""  # [TF-REVIEW-002] review_date_mapping — original candidate pool generation date
+tradingagents/tradeflow/post_market_review.py:326:    plan_date: Optional[str] = None,
+tradingagents/tradeflow/post_market_review.py:389:        plan_date=plan_date or candidate_date,
+tradingagents/tradeflow/post_market_review.py:405:    if summary.plan_date and summary.plan_date != summary.candidate_date:
+tradingagents/tradeflow/post_market_review.py:406:        lines.append(f"> 该候选池由 {summary.plan_date} 生成，将在 {summary.candidate_date} 复盘")
+Binary file api/services/__pycache__/tradeflow_service.cpython-312.pyc matches
+api/services/tradeflow_service.py:148:        "plan_date": _rget(row, "plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
+api/services/tradeflow_service.py:281:                        plan_date = row["trade_date"]
+api/services/tradeflow_service.py:282:                        if plan_date and plan_date not in dates:
+api/services/tradeflow_service.py:283:                            dates.append(plan_date)
+api/services/tradeflow_service.py:444:            "plan_date": _rget(plan_row, "plan_date", ""),  # [TF-DATE-001]
+api/services/tradeflow_service.py:902:        from tradingagents.tradeflow.date_semantics import find_latest_plan_date
+api/services/tradeflow_service.py:906:            best = find_latest_plan_date(available_dates, trade_date)
+api/services/tradeflow_service.py:946:    # [TF-REVIEW-002] review_date_mapping — include plan_date/effective_trade_date
+tradingagents/tradeflow/candidate_engine.py:1226:            "INSERT INTO tradeflow_candidates "
+Binary file tradingagents/tradeflow/__pycache__/candidate_engine.cpython-314.pyc matches
+Binary file tradingagents/tradeflow/__pycache__/candidate_engine.cpython-312.pyc matches
+
+exec
+/bin/zsh -lc "sed -n '360,440p' tradingagents/tradeflow/discovery.py && sed -n '1200,1320p' tradingagents/tradeflow/candidate_engine.py && sed -n '390,440p' tradingagents/tradeflow/plan_runner.py && sed -n '260,300p' api/services/tradeflow_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        scanned_symbols = {
+            normalize_tradeflow_symbol(item.get("symbol", ""))
+            for item in universe
+            if item.get("symbol")
+        }
+        _deactivate_candidates_outside_active_pool(tf_db_path, trade_date, active_pool_symbols, scanned_symbols)
+        for c in top_candidates:  # [TF-DATE-001] tradeflow_date_semantics
+            if normalize_tradeflow_symbol(c.symbol) not in active_pool_symbols:
+                continue  # [TF-QUALITY-001A] pool_gate_contract
+            if c.trade_date != trade_date:
+                c.trade_date = trade_date
+            c.plan_date = trade_date
+            c.effective_trade_date = eff_trade_date
+            c.observe_date = obs_date
+            save_candidate(c, tf_db_path)
+
+    # [UI-007] tradeflow_filtered_trace — persist filtered symbols
+    run_id = datetime.now().strftime("%Y%m%d%H%M%S")
+    all_filtered = [asdict(f) for f in filtered] + [
+        {
+            **e,
+            "reason": e.get("pool_filter_reason") or e.get("reason") or "候选池门禁过滤",
+        }
+        for e in gate_filtered_entries
+    ]  # [TF-QUALITY-001A] pool_gate_contract
+    for entry in all_filtered:
+        entry.setdefault("plan_date", trade_date)
+        entry.setdefault("effective_trade_date", eff_trade_date)
+    if tf_db_path and all_filtered:
+        init_db(tf_db_path)
+        _save_filtered_symbols(
+            filtered=all_filtered,
+            trade_date=trade_date,
+            run_id=run_id,
+            db_path=tf_db_path,
+        )
+    elif tf_db_path and not all_filtered:
+        init_db(tf_db_path)
+        import sqlite3
+        conn = sqlite3.connect(tf_db_path)
+        try:
+            conn.execute(
+                "DELETE FROM tradeflow_filtered_symbols WHERE trade_date = ?",
+                (trade_date,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    # [S-006] candidate_false_positive_audit — generate audit report
+    audit = build_audit_report(
+        candidates=top_candidates,
+        filtered_symbols=[asdict(f) for f in filtered],
+        trade_date=trade_date,
+    )
+    result.audit_report = audit
+    result.metadata["audit_summary"] = {
+        "total_candidates": audit.summary.total_candidates if audit.summary else 0,
+        "total_filtered": audit.summary.total_filtered if audit.summary else 0,
+        "by_category": audit.summary.by_category if audit.summary else {},
+        "common_evidence_gaps": audit.summary.common_evidence_gaps[:5] if audit.summary else [],
+    }
+
+    # [S-007] candidate_tier_budget — add budget allocation to metadata
+    result.metadata["tier_budget"] = {
+        "tier_a_count": budget_allocation.tier_a_count,
+        "tier_b_count": budget_allocation.tier_b_count,
+        "tier_c_count": budget_allocation.tier_c_count,
+        "total_budget": budget_allocation.total_budget,
+        "a_tier_cap_applied": budget_allocation.a_tier_cap_applied,
+        "demoted_count": len(budget_allocation.demoted_symbols),
+    }
+    result.metadata["tier_budget_summary"] = render_tier_budget_summary(budget_allocation)
+
+    # [S-008] tradeflow_evidence_gate — add evidence gate summary to metadata
+    all_pool_entries = plan_entries + observation_entries  # [TF-QUALITY-001]
+    gate_blocked_count = sum(1 for e in all_pool_entries if e.get("evidence_gate_applied"))
+    gate_deep_ta_blocked = sum(1 for e in all_pool_entries if e.get("evidence_gate_applied") and not e.get("need_deep_ta"))
+    result.metadata["evidence_gate"] = {
+        "gate_blocked_count": gate_blocked_count,
+        "deep_ta_blocked_count": gate_deep_ta_blocked,
+    candidate.watchlist_evidence_gap = wl_result.evidence_gap
+    candidate.evidence["watchlist_note"] = wl_result.to_dict()
+
+    return candidate, ""
+
+
+def save_candidate(candidate: Candidate, db_path: str) -> int:
+    """Save a candidate to the database. Upsert on (trade_date, symbol)."""
+    candidate.symbol = normalize_tradeflow_symbol(candidate.symbol)  # [UI-008]
+    _needs_name_lookup = (
+        not candidate.name
+        or candidate.name == "--"
+        or candidate.name == candidate.symbol
+        or candidate.name == symbol_bare_code(candidate.symbol)
+        or _looks_like_code(candidate.name)  # [TF-P0-001] runtime_schema_name_observe_fix
+    )
+    if _needs_name_lookup:
+        candidate.name = resolve_tradeflow_name(candidate.symbol, candidate.name)  # [UI-008]
+    if not candidate.candidate_type:
+        candidate.candidate_type = "TECH_TRADE"
+        candidate.candidate_type_reason = candidate.candidate_type_reason or "无政策/事件/受益路径证据，默认技术交易"
+    conn = sqlite3.connect(db_path)
+    ensure_columns(conn)
+    row = candidate.to_db_row()
+    try:
+        conn.execute(
+            "INSERT INTO tradeflow_candidates "
+            "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+            "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+            "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+            "policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
+            "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+            "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
+            "fund_flow_case, resonance_count, game_balance_refs_json, "
+            "fund_flow_anomaly_score, fund_flow_anomaly_tags_json, "
+            "fund_flow_anomaly_refs_json, fund_flow_unit_verified, "
+            "fund_flow_individual_summary, fund_flow_board_summary, "
+            "composite_score, signal_category_hits_json, positive_category_count, "
+            "data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta, "
+            "priority_rank, "
+            "tier, ta_budget_priority, tier_reason, missing_evidence_for_upgrade_json, "
+            "tradeflow_data_completeness, missing_data_fields_json, what_to_upgrade_json, evidence_gate_applied, "
+            "universe_sources_json, "
+            "observe_state, observe_trigger_count, observe_first_trigger_time, "
+            "deep_ta_status, deep_ta_dispatch_reason, deep_ta_model, "
+            "deep_ta_report_path, deep_ta_dispatch_time, deep_ta_position_context, "
+            "plan_date, effective_trade_date, observe_date, "
+            "beneficiary_path_json, company_role, mandate_topic, mandate_evidence_refs_json, "
+            "candidate_type, ambush_score, mandate_score_component, beneficiary_score_component, "
+            "pricing_gap_score, overheat_penalty, candidate_type_reason, "
+            "deep_ta_route, deep_ta_route_reason, "
+            "ambush_reasons_json, ambush_evidence_refs_json, "
+            "research_queue, research_intent, research_route_reason, "
+            "watchlist_note, watchlist_note_suggested, watchlist_topic, "
+            "watchlist_benefit_score, watchlist_consensus_score, watchlist_evidence_gap_json, "
+            "counter_evidence_json, overheat_flags_json, downgrade_reasons_json, "
+            "what_would_change_mind_json, "
+            "topic_lifecycle_state, topic_lifecycle_reason, topic_last_signal_date, topic_signal_count, "
+            "contradiction_level, contradiction_items_json, blocking_evidence_gaps_json, next_verification_steps_json, "
+            "created_at, updated_at) "
+            "VALUES ({}) ".format(",".join(["?"] * 103))
+            + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+            "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+            "trigger_price=excluded.trigger_price, "
+            "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+            "need_deep_ta=excluded.need_deep_ta, evidence_json=excluded.evidence_json, "
+            "risk_flags_json=excluded.risk_flags_json, "
+            "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+            "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
+            "narrative_score=excluded.narrative_score, "
+            "narrative_reasons_json=excluded.narrative_reasons_json, "
+            "narrative_evidence_refs_json=excluded.narrative_evidence_refs_json, "
+            "risk_penalty=excluded.risk_penalty, "
+            "risk_evidence_refs_json=excluded.risk_evidence_refs_json, "
+            "risk_reasons_json=excluded.risk_reasons_json, "
+            "game_balance=excluded.game_balance, "
+            "bull_case=excluded.bull_case, bear_case=excluded.bear_case, "
+            "policy_case=excluded.policy_case, fund_flow_case=excluded.fund_flow_case, "
+            "resonance_count=excluded.resonance_count, "
+            "game_balance_refs_json=excluded.game_balance_refs_json, "
+            "fund_flow_anomaly_score=excluded.fund_flow_anomaly_score, "
+            "fund_flow_anomaly_tags_json=excluded.fund_flow_anomaly_tags_json, "
+            "fund_flow_anomaly_refs_json=excluded.fund_flow_anomaly_refs_json, "
+            "fund_flow_unit_verified=excluded.fund_flow_unit_verified, "
+            "fund_flow_individual_summary=excluded.fund_flow_individual_summary, "
+            "fund_flow_board_summary=excluded.fund_flow_board_summary, "
+            "composite_score=excluded.composite_score, "
+            "signal_category_hits_json=excluded.signal_category_hits_json, "
+            "positive_category_count=excluded.positive_category_count, "
+            "data_completeness=excluded.data_completeness, "
+            "missing_evidence_json=excluded.missing_evidence_json, "
+            "why_deep_ta=excluded.why_deep_ta, why_not_deep_ta=excluded.why_not_deep_ta, "
+            "priority_rank=excluded.priority_rank, "
+            "tier=excluded.tier, ta_budget_priority=excluded.ta_budget_priority, "
+            "tier_reason=excluded.tier_reason, "
+            "missing_evidence_for_upgrade_json=excluded.missing_evidence_for_upgrade_json, "
+            "tradeflow_data_completeness=excluded.tradeflow_data_completeness, "
+            "missing_data_fields_json=excluded.missing_data_fields_json, "
+            "what_to_upgrade_json=excluded.what_to_upgrade_json, "
+            "evidence_gate_applied=excluded.evidence_gate_applied, "
+            "universe_sources_json=excluded.universe_sources_json, "
+            "observe_state=excluded.observe_state, "
+            "observe_trigger_count=excluded.observe_trigger_count, "
+            "observe_first_trigger_time=excluded.observe_first_trigger_time, "
+            "deep_ta_status=excluded.deep_ta_status, "
+            "deep_ta_dispatch_reason=excluded.deep_ta_dispatch_reason, "
+            "deep_ta_model=excluded.deep_ta_model, "
+            "deep_ta_report_path=excluded.deep_ta_report_path, "
+            "deep_ta_dispatch_time=excluded.deep_ta_dispatch_time, "
+            "deep_ta_position_context=excluded.deep_ta_position_context, "
+            "plan_date=excluded.plan_date, "
+            "effective_trade_date=excluded.effective_trade_date, "
+            "observe_date=excluded.observe_date, "
+            "beneficiary_path_json=excluded.beneficiary_path_json, "
+            "company_role=excluded.company_role, "
+            "mandate_topic=excluded.mandate_topic, "
+            "mandate_evidence_refs_json=excluded.mandate_evidence_refs_json, "
+            "candidate_type=excluded.candidate_type, "
+            "ambush_score=excluded.ambush_score, "
+            "mandate_score_component=excluded.mandate_score_component, "
+            "beneficiary_score_component=excluded.beneficiary_score_component, "
+        "gate_blocked_count": gate_blocked_count,
+        "deep_ta_blocked_count": gate_deep_ta_blocked,
+        "avg_completeness": round(sum(e.get("tradeflow_data_completeness", 0) for e in plan_entries) / max(len(plan_entries), 1), 3),
+    }
+
+    # Validate
+    issues = plan.validate()
+    if issues:
+        plan.metadata["validation_issues"] = issues
+
+    # Optionally persist candidates  # [G-004] tradeflow_candidate_date
+    if save_candidates and tf_db_path:
+        for c in candidates:  # [TF-DATE-001] tradeflow_date_semantics
+            if c.trade_date != trade_date:
+                c.trade_date = trade_date
+            c.plan_date = trade_date
+            c.effective_trade_date = eff_trade_date
+            c.observe_date = obs_date
+            save_candidate(c, tf_db_path)
+
+    # [TF-DATE-001] tradeflow_date_semantics — set plan date fields
+    plan.plan_date = trade_date
+    plan.effective_trade_date = eff_trade_date
+    plan.observe_date = obs_date
+
+    return plan
+
+
+def save_plan(plan: DailyPlan, db_path: str) -> int:
+    """Save daily plan to DB."""
+    conn = sqlite3.connect(db_path)
+    row = plan.to_db_row()
+    try:
+        conn.execute(
+            "INSERT INTO tradeflow_daily_plans "
+            "(trade_date, mode, summary, candidates_json, metadata_json, created_at, "
+            "plan_date, effective_trade_date, observe_date) "  # [TF-DATE-001]
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(trade_date, mode) DO UPDATE SET "
+            "summary=excluded.summary, candidates_json=excluded.candidates_json, "
+            "metadata_json=excluded.metadata_json, "
+            "plan_date=excluded.plan_date, "  # [TF-DATE-001]
+            "effective_trade_date=excluded.effective_trade_date, "
+            "observe_date=excluded.observe_date",
+            (row["trade_date"], row["mode"], row["summary"],
+             row["candidates_json"], row["metadata_json"], row["created_at"],
+             row["plan_date"], row["effective_trade_date"], row["observe_date"]),  # [TF-DATE-001]
+        )
+        conn.commit()
+        row_id = conn.execute(
+            "SELECT id FROM tradeflow_daily_plans WHERE trade_date=? AND mode=?",
+            "created_at": row.get("created_at", ""),
+        })
+    return items
+
+
+def _filtered_trace_dates_for_view(trade_date: str, db_path: str) -> list[str]:
+    """Resolve plan dates whose filtered traces should appear for a view date."""
+    dates = [trade_date]
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            for table in ("tradeflow_daily_plans", "tradeflow_candidates", "tradeflow_filtered_symbols"):
+                columns = _table_columns(conn, table)
+                if {"trade_date", "effective_trade_date"}.issubset(columns):
+                    rows = conn.execute(
+                        f"SELECT DISTINCT trade_date FROM {table} "
+                        "WHERE effective_trade_date = ? AND trade_date != ?",
+                        (trade_date, trade_date),
+                    ).fetchall()
+                    for row in rows:
+                        plan_date = row["trade_date"]
+                        if plan_date and plan_date not in dates:
+                            dates.append(plan_date)
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return dates
+
+
+def _merge_filtered_candidates(current: list[dict], persisted: list[dict]) -> list[dict]:
+    """Merge live pool-gate filtered rows with persisted filtered trace rows."""
+    merged: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for item in [*current, *persisted]:
+        symbol = normalize_tradeflow_symbol(item.get("symbol", ""))
+        reason = item.get("pool_filter_reason") or item.get("reason", "")
+        key = (symbol, reason)
+        if not symbol or key in seen:
+            continue
+
+exec
+/bin/zsh -lc "grep -n \"generate_review\\|review\" -n api/main.py | head -40 && sed -n '5300,5365p' api/main.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+2977:class FullTACostPreviewResponse(BaseModel):
+2992:@app.get("/v1/analyze/cost-preview", response_model=FullTACostPreviewResponse)
+2993:def get_full_ta_cost_preview(
+2996:    from api.runtime_tier import get_full_ta_cost_preview as _preview
+3002:    preview = _preview(
+3007:    return FullTACostPreviewResponse(**preview.to_dict())
+4004:        preview = str(raw).strip().replace("\n", " ")[:80] or "<empty>"
+4005:        return {"status": "ok", "model": model, "preview": preview}
+4057:            preview = content.replace("\n", " ")[:80]
+4058:            _log(f"[LLM Warmup] user={user_id} model={model} success response={preview}")
+5253:    get_review as _tf_get_review,
+5259:    generate_review as _tf_generate_review,  # [TF-UX-003]
+5314:@app.get("/v1/tradeflow/review", response_model=TradeFlowReviewResponse)
+5315:def tradeflow_review(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+5316:    return _tf_get_review(date)
+5368:# [TF-UX-003] post_market_review
+5369:@app.post("/v1/tradeflow/review/generate", response_model=TradeFlowReviewGenerateResponse)
+5370:def tradeflow_review_generate(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+5371:    return _tf_generate_review(date)
+):
+    return _tf_get_candidate_detail(symbol, date)
+
+
+@app.get("/v1/tradeflow/observe", response_model=TradeFlowObserveResponse)
+def tradeflow_observe(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_observe(date)
+
+
+@app.get("/v1/tradeflow/ta-queue", response_model=TradeFlowTAQueueResponse)
+def tradeflow_ta_queue(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_ta_queue(date)
+
+
+@app.get("/v1/tradeflow/review", response_model=TradeFlowReviewResponse)
+def tradeflow_review(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_review(date)
+
+
+@app.get("/v1/tradeflow/data-health", response_model=TradeFlowDataHealthResponse)
+def tradeflow_data_health():
+    return _tf_get_data_health()
+
+
+# [DATA-007] evidence_coverage_audit
+@app.get("/v1/tradeflow/evidence-audit", response_model=TradeFlowEvidenceAuditResponse)
+def tradeflow_evidence_audit(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_evidence_audit(date)
+
+
+# [UI-007] tradeflow_filtered_trace
+@app.get("/v1/tradeflow/filtered", response_model=TradeFlowFilteredResponse)
+def tradeflow_filtered(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_filtered(date)
+
+
+@app.post("/v1/tradeflow/discovery")
+def tradeflow_discovery(request: TradeFlowDiscoveryRequest):
+    return _tf_run_discovery_scan(
+        trade_date=request.date,
+        symbols=request.symbols,
+        top_n=request.top_n,
+        include_holdings=request.include_holdings,
+        include_watchlist=request.include_watchlist,
+        use_event_source=request.use_event_source,
+        news_texts=request.news_texts,
+        save_candidates=request.save_candidates,
+    )
+
+
+# [TF-OBS-001] tradeflow_observe_runner
+@app.post("/v1/tradeflow/observe/run")
+def tradeflow_observe_run(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_run_observe_check(date)
+
+
+# [T-004] intraday_observe_scheduler
+@app.get("/v1/tradeflow/observe/scheduler-status")
+def tradeflow_observe_scheduler_status():
+    return _tf_get_observe_scheduler_status()
+
+
+# [TF-UX-001] tiered candidates
+@app.get("/v1/tradeflow/candidates/tiered", response_model=TradeFlowTieredCandidatesResponse)
+def tradeflow_candidates_tiered(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_candidates_tiered(date)
+
+exec
+/bin/zsh -lc 'grep -n "def _connect" -A20 api/services/tradeflow_service.py && grep -n "def _table_columns" -A20 api/services/tradeflow_service.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+43:def _connect(tf_db_path: str = "") -> Optional[sqlite3.Connection]:
+44-    db_path = tf_db_path or _get_tradeflow_db_path()
+45-    if not os.path.exists(db_path):
+46-        return None
+47-    try:
+48-        from tradingagents.tradeflow.candidate_engine import init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+49-        init_db(db_path)
+50-        conn = sqlite3.connect(db_path)
+51-        conn.row_factory = sqlite3.Row
+52-        return conn
+53-    except Exception:
+54-        return None
+55-
+56-
+57-def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+58-    try:
+59-        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+60-        return {row["name"] for row in rows}
+61-    except Exception:
+62-        return set()
+63-
+57:def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+58-    try:
+59-        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+60-        return {row["name"] for row in rows}
+61-    except Exception:
+62-        return set()
+63-
+64-
+65-def _parse_json(value: Any, default: Any = None) -> Any:
+66-    if value is None:
+67-        return default if default is not None else []
+68-    if isinstance(value, str):
+69-        try:
+70-            return json.loads(value)
+71-        except (json.JSONDecodeError, TypeError):
+72-            return default if default is not None else []
+73-    return value
+74-
+75-
+76-def _rget(row: sqlite3.Row, col: str, default: Any = None) -> Any:
+77-    try:
+

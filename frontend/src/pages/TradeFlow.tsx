@@ -505,6 +505,20 @@ function ReviewTab({ data }: { data: TradeFlowReviewResponse }) {
         <div className="space-y-6 p-4">
             <div className="text-xs text-slate-400">复盘时间: {data.reviewed_at || '-'}</div>
 
+            {/* [TF-REVIEW-002] review_date_mapping — show data_status and cross-date mapping */}
+            {data.data_status && data.data_status !== 'OK' && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                    <span className="font-medium">数据状态: {data.data_status}</span>
+                    {data.data_status_message && <span className="ml-2">{data.data_status_message}</span>}
+                </div>
+            )}
+            {data.plan_date && data.plan_date !== data.trade_date && (
+                <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-xs text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+                    该候选池由 {data.plan_date} 生成
+                    {data.effective_trade_date && `，生效交易日: ${data.effective_trade_date}`}
+                </div>
+            )}
+
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
                 {[
                     { label: '总候选数', value: total, color: 'text-slate-900 dark:text-slate-100' },

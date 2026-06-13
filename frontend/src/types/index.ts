@@ -1068,6 +1068,10 @@ export interface TradeFlowReviewResponse {
     reviewed_at: string
     results: TradeFlowReviewItem[]
     summary_agg: TradeFlowSummary
+    plan_date?: string  // [TF-REVIEW-002] review_date_mapping
+    effective_trade_date?: string  // [TF-REVIEW-002] review_date_mapping
+    data_status?: string  // [TF-REVIEW-002] review_date_mapping
+    data_status_message?: string  // [TF-REVIEW-002] review_date_mapping
     runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
 }
 
@@ -1157,9 +1161,15 @@ export interface TradeFlowReviewGenerateResponse {
     status: string
     trade_date: string
     message: string
+    data_status?: string  // [TF-REVIEW-002] review_date_mapping
+    data_status_message?: string  // [TF-REVIEW-002] review_date_mapping
     review: {
         review_date: string
         candidate_date: string
+        plan_date?: string  // [TF-REVIEW-002] review_date_mapping
+        effective_trade_date?: string  // [TF-REVIEW-002] review_date_mapping
+        data_status?: string  // [TF-REVIEW-002] review_date_mapping
+        data_status_message?: string  // [TF-REVIEW-002] review_date_mapping
         total_candidates: number
         scored_candidates: number
         no_data_candidates: number
@@ -1181,6 +1191,8 @@ export interface TradeFlowReviewGenerateResponse {
             hit_rate: number | null
             false_positive_rate: number | null
             avg_next_day_return: number | null
+            avg_day3_return: number | null  // [TF-REVIEW-002] review_date_mapping
+            avg_day5_return: number | null  // [TF-REVIEW-002] review_date_mapping
         }>
         tier_stats: Record<string, { total: number; hit: number; miss: number; no_data: number; invalidated: number }>
         common_removal_reasons: string[]

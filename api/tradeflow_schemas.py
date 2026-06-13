@@ -252,6 +252,10 @@ class TradeFlowReviewResponse(BaseModel):
     reviewed_at: str = ""
     results: List[TradeFlowReviewItem] = Field(default_factory=list)
     summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
+    plan_date: str = ""  # [TF-REVIEW-002] review_date_mapping
+    effective_trade_date: str = ""  # [TF-REVIEW-002] review_date_mapping
+    data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
+    data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
 
 
@@ -323,6 +327,8 @@ class TradeFlowReviewGenerateResponse(BaseModel):
     status: str = "ok"
     trade_date: str = ""
     message: str = ""
+    data_status: str = ""  # [TF-REVIEW-002] review_date_mapping
+    data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
     review: Optional[Dict[str, Any]] = None
 
 

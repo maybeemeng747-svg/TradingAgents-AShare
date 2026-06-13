@@ -18,10 +18,34 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import Enum
 from typing import Optional
 
 from .schemas import Candidate, ALL_STRATEGIES, FORBIDDEN_WORDS
 from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG
+
+
+# [TF-REVIEW-002] review_date_mapping
+class ReviewDataStatus(str, Enum):
+    """Explains WHY review data is missing, instead of showing a blank page."""
+    OK = "OK"
+    NO_MARKET_DATA = "NO_MARKET_DATA"
+    NON_TRADING_DAY = "NON_TRADING_DAY"
+    SOURCE_FAILED = "SOURCE_FAILED"
+    NOT_ENOUGH_DAYS = "NOT_ENOUGH_DAYS"
+    NO_CANDIDATES = "NO_CANDIDATES"
+
+    @property
+    def message_cn(self) -> str:
+        _MAP = {
+            ReviewDataStatus.OK: "数据正常",
+            ReviewDataStatus.NO_MARKET_DATA: "无行情数据，等待收盘后补齐",
+            ReviewDataStatus.NON_TRADING_DAY: "非交易日，无行情更新",
+            ReviewDataStatus.SOURCE_FAILED: "行情数据源获取失败",
+            ReviewDataStatus.NOT_ENOUGH_DAYS: "交易日不足，多日收益暂不可用",
+            ReviewDataStatus.NO_CANDIDATES: "无候选记录",
+        }
+        return _MAP.get(self, "未知状态")
 
 
 @dataclass
@@ -47,6 +71,7 @@ class CandidatePerformance:
     day5_return_pct: Optional[float] = None
     hit: Optional[bool] = None
     invalidated: Optional[bool] = None
+    data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
 
     def compute_returns(self) -> None:
         if self.entry_price and self.entry_price > 0:
@@ -114,6 +139,10 @@ class ReviewSummary:
     avg_next_day_return: Optional[float] = None
     avg_day3_return: Optional[float] = None
     avg_day5_return: Optional[float] = None
+    data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
+    data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
+    plan_date: str = ""  # [TF-REVIEW-002] review_date_mapping — original candidate pool generation date
+    effective_trade_date: str = ""  # [TF-REVIEW-002] review_date_mapping
 
     def compute_overall(self) -> None:
         self.scored_candidates = self.overall_hit_count + self.overall_miss_count
@@ -294,6 +323,8 @@ def run_post_market_review(
     performances: list[CandidatePerformance],
     candidate_date: Optional[str] = None,
     review_date: Optional[str] = None,
+    plan_date: Optional[str] = None,
+    effective_trade_date: Optional[str] = None,
 ) -> ReviewSummary:
     if not review_date:
         review_date = datetime.now().strftime("%Y-%m-%d")
@@ -328,6 +359,16 @@ def run_post_market_review(
 
     suggestions = generate_suggestions(strategy_stats, tier_stats, total)
 
+    # [TF-REVIEW-002] review_date_mapping — compute data_status
+    if total == 0:
+        data_status = ReviewDataStatus.NO_CANDIDATES
+    elif no_data_count == total:
+        data_status = ReviewDataStatus.NO_MARKET_DATA
+    elif len(next_returns) > 0 and len(d3_returns) == 0:
+        data_status = ReviewDataStatus.NOT_ENOUGH_DAYS
+    else:
+        data_status = ReviewDataStatus.OK
+
     summary = ReviewSummary(
         review_date=review_date,
         candidate_date=candidate_date,
@@ -343,6 +384,10 @@ def run_post_market_review(
         avg_next_day_return=round(sum(next_returns) / len(next_returns), 2) if next_returns else None,
         avg_day3_return=round(sum(d3_returns) / len(d3_returns), 2) if d3_returns else None,
         avg_day5_return=round(sum(d5_returns) / len(d5_returns), 2) if d5_returns else None,
+        data_status=data_status.value,
+        data_status_message=data_status.message_cn,
+        plan_date=plan_date or candidate_date,
+        effective_trade_date=effective_trade_date or review_date,
     )
     summary.compute_overall()
     return summary
@@ -354,6 +399,23 @@ def render_review_markdown(summary: ReviewSummary) -> str:
         "",
         f"## 候选日期: {summary.candidate_date}",
         "",
+    ]
+
+    # [TF-REVIEW-002] review_date_mapping — show cross-date mapping
+    if summary.plan_date and summary.plan_date != summary.candidate_date:
+        lines.append(f"> 该候选池由 {summary.plan_date} 生成，将在 {summary.candidate_date} 复盘")
+        lines.append("")
+
+    if summary.effective_trade_date and summary.effective_trade_date != summary.review_date:
+        lines.append(f"> 生效交易日: {summary.effective_trade_date}")
+        lines.append("")
+
+    # [TF-REVIEW-002] review_date_mapping — show data_status
+    if summary.data_status and summary.data_status != ReviewDataStatus.OK.value:
+        lines.append(f"> **数据状态**: {summary.data_status} — {summary.data_status_message}")
+        lines.append("")
+
+    lines.extend([
         "### 总体概览",
         "",
         f"| 指标 | 值 |",
@@ -370,7 +432,7 @@ def render_review_markdown(summary: ReviewSummary) -> str:
         f"| 平均3日收益 | {summary.avg_day3_return if summary.avg_day3_return is not None else 'N/A'}% |",
         f"| 平均5日收益 | {summary.avg_day5_return if summary.avg_day5_return is not None else 'N/A'}% |",
         "",
-    ]
+    ])
 
     lines.append("### 策略命中率")
     lines.append("")

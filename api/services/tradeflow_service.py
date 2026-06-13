@@ -861,11 +861,62 @@ def get_ta_queue(trade_date: str, tf_db_path: str = "") -> dict:
         conn.close()
 
 
+def _get_available_dates(tf_db_path: str = "") -> list[str]:
+    """Return all distinct plan dates that have at least one candidate.  # [TF-REVIEW-002]
+
+    Used by the Review page to find the most recent plan with candidates
+    when the queried date has no data.
+    """
+    db_path = tf_db_path or _get_tradeflow_db_path()
+    dates: list[str] = []
+    if not os.path.exists(db_path):
+        return dates
+    try:
+        conn = _connect(db_path)
+        if conn is None:
+            return dates
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT trade_date FROM tradeflow_candidates ORDER BY trade_date DESC"
+            ).fetchall()
+            for row in rows:
+                d = row["trade_date"]
+                if d and d not in dates:
+                    dates.append(d)
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return dates
+
+
 def get_review(trade_date: str, tf_db_path: str = "") -> dict:
+    # [TF-REVIEW-002] review_date_mapping
     _fast_meta = _tradeflow_meta("tradeflow_review")  # [PERF-001]
     plan_data = get_daily_plan(trade_date, tf_db_path)
+
+    # If no plan for this exact date, try effective_trade_date mapping
+    # (e.g. plan generated on 5/31 weekend, review on 6/1 trading day)
     if plan_data.get("status") == "no_data":
-        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+        from tradingagents.tradeflow.candidate_engine import init_db  # noqa
+        from tradingagents.tradeflow.date_semantics import find_latest_plan_date
+
+        available_dates = _get_available_dates(tf_db_path)
+        if available_dates:
+            best = find_latest_plan_date(available_dates, trade_date)
+            if best and best != trade_date:
+                plan_data = get_daily_plan(best, tf_db_path)
+
+    if plan_data.get("status") == "no_data":
+        # [TF-REVIEW-002] review_date_mapping — return clear data_status
+        from tradingagents.tradeflow.post_market_review import ReviewDataStatus
+        return {
+            "status": "no_data",
+            "trade_date": trade_date,
+            "data_status": ReviewDataStatus.NO_CANDIDATES.value,
+            "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
+            "runtime_tier_meta": _fast_meta,
+        }
 
     candidates = plan_data.get("candidates", [])
     results = []
@@ -892,12 +943,17 @@ def get_review(trade_date: str, tf_db_path: str = "") -> dict:
             result["reason"] = "继续观察"
         results.append(result)
 
+    # [TF-REVIEW-002] review_date_mapping — include plan_date/effective_trade_date
     return {
         "status": "ok",
         "trade_date": trade_date,
         "reviewed_at": datetime.now().isoformat(),
         "results": results,
         "summary_agg": _compute_summary(candidates),
+        "plan_date": plan_data.get("plan_date", ""),  # [TF-DATE-001]
+        "effective_trade_date": plan_data.get("effective_trade_date", ""),  # [TF-DATE-001]
+        "data_status": "OK",
+        "data_status_message": "数据正常",
         "runtime_tier_meta": _tradeflow_meta("tradeflow_review"),  # [PERF-001]
     }
 
@@ -1388,33 +1444,74 @@ def get_evidence_audit(trade_date: str, tf_db_path: str = "") -> dict:
         conn.close()
 
 
-# [TF-UX-003] post_market_review
+# [TF-UX-003] post_market_review  # [TF-REVIEW-002] review_date_mapping
 def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
     """Generate post-market review for trade_date using post_market_review module."""
     from tradingagents.tradeflow.candidate_engine import init_db
     from tradingagents.tradeflow.post_market_review import (
+        ReviewDataStatus,
         build_candidate_performance_from_dict,
         run_post_market_review,
         save_review_report,
     )
+    from tradingagents.tradeflow.date_semantics import resolve_review_date, find_latest_plan_date
 
     tf_db = tf_db_path or _get_tradeflow_db_path()
     init_db(tf_db)
 
+    # [TF-REVIEW-002] Try the exact date first, then fall back to latest plan
+    resolved_date = trade_date
     candidates_data = get_candidates(trade_date, tf_db_path=tf_db)
     if candidates_data.get("status") == "no_data":
-        return {"status": "no_data", "trade_date": trade_date, "message": "无候选数据"}
+        available = _get_available_dates(tf_db)
+        if available:
+            best = find_latest_plan_date(available, trade_date)
+            if best and best != trade_date:
+                resolved_date = best
+                candidates_data = get_candidates(best, tf_db_path=tf_db)
+
+    if candidates_data.get("status") == "no_data":
+        return {
+            "status": "no_data",
+            "trade_date": trade_date,
+            "message": "无候选数据",
+            "data_status": ReviewDataStatus.NO_CANDIDATES.value,
+            "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
+        }
 
     candidates = candidates_data.get("candidates", [])
     if not candidates:
-        return {"status": "no_data", "trade_date": trade_date, "message": "候选列表为空"}
+        return {
+            "status": "no_data",
+            "trade_date": trade_date,
+            "message": "候选列表为空",
+            "data_status": ReviewDataStatus.NO_CANDIDATES.value,
+            "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
+        }
+
+    # [TF-REVIEW-002] Resolve plan_date vs review_date
+    plan_date = resolved_date
+    effective_trade_date = resolved_date
+    if candidates:
+        first = candidates[0]
+        if first.get("effective_trade_date"):
+            effective_trade_date = first["effective_trade_date"]
+        if first.get("plan_date"):
+            plan_date = first["plan_date"]
+    review_date = resolve_review_date(plan_date, effective_trade_date)
 
     performances = []
     for c in candidates:
         perf = build_candidate_performance_from_dict(c)
         performances.append(perf)
 
-    summary = run_post_market_review(performances, candidate_date=trade_date)
+    summary = run_post_market_review(
+        performances,
+        candidate_date=resolved_date,
+        review_date=review_date,
+        plan_date=plan_date,
+        effective_trade_date=effective_trade_date,
+    )
 
     try:
         save_review_report(summary)
@@ -1424,9 +1521,15 @@ def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
     return {
         "status": "ok",
         "trade_date": trade_date,
+        "data_status": summary.data_status,
+        "data_status_message": summary.data_status_message,
         "review": {
             "review_date": summary.review_date,
             "candidate_date": summary.candidate_date,
+            "plan_date": summary.plan_date,
+            "effective_trade_date": summary.effective_trade_date,
+            "data_status": summary.data_status,
+            "data_status_message": summary.data_status_message,
             "total_candidates": summary.total_candidates,
             "scored_candidates": summary.scored_candidates,
             "no_data_candidates": summary.no_data_candidates,
@@ -1449,6 +1552,8 @@ def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
                     "hit_rate": st.hit_rate,
                     "false_positive_rate": st.false_positive_rate,
                     "avg_next_day_return": st.avg_next_day_return,
+                    "avg_day3_return": st.avg_day3_return,
+                    "avg_day5_return": st.avg_day5_return,
                 }
                 for tag, st in summary.strategy_stats.items()
             },
