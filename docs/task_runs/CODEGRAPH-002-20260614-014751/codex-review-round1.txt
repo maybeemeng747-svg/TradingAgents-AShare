@@ -1,0 +1,2444 @@
+Task: CODEGRAPH-002 - CodeGraph 自动开发预检命令修复（P2）
+Date: 2026-06-14_01:53:13
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019ec21d-0d3d-7422-ad5a-3e25f2fabba2
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md && printf '\\n--- TASKS ---\\n' && sed -n '1,220p' docs/TASKS.md && printf '\\n--- DECISIONS ---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n--- DEVLOG ---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+--- TASKS ---
+# 任务池
+
+> 最后更新：2026-06-09
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，done）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，done，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，done，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，done，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，done，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，done，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done，依赖 DATA-004 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
+50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done，依赖 DATA-012 部分落地 ✓）。
+54. `DECISION-001`：最终动作语义分层 — 禁止默认 HOLD（P0，done，commit dee415c）。
+55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
+56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
+57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
+58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，blocked — NEEDS_HUMAN，commit 5f304db，见 task_runs）。
+59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done，Codex 修复，待提交）。
+60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
+63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
+65. `V-006`：最终动作语义端到端回放验收（P1，done，依赖 DECISION-004 ✓）。
+66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
+67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，ready，来自 TF-QUALITY-001 task_run）。
+68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
+69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，done，依赖 TF-OBS-002/TF-REVIEW-002）。
+70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，done，依赖 H-010/H-011）。
+71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，done，依赖 DATA-017/DATA-006）。
+72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，done，依赖 TF-QUALITY-002/TF-OBS-002）。
+73. `V-007`：TradeFlow 试用闭环端到端验收（P1，ready，依赖 TF-QUALITY-003/TF-PAPER-001）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
+16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done）。
+18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
+19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done）。
+21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## PERF. 运行成本 / 轻量分析任务池（2026-06-02 新增）
+
+> 目标：系统不能为了“全面”而变慢。TradeFlow 是雷达，轻量 TA 是候选验证，完整 TA 是深度体检。默认链路必须轻，完整多 Agent 分析只能由用户明确触发。
+
+### PERF-001: 运行层级与速度预算契约（P1）
+- **描述**：建立统一运行层级契约，所有 API、前端按钮、scheduler、自动开发任务都要标明属于 `fast/light/full` 哪一层，以及是否允许调用 LLM。
+- **优先级**：P1
+- **状态**：done -- commit ca08846
+- **背景**：
+  - 用户明确要求系统不能做得太重，不能“一发指令半天才回来”。
+  - 候选池/盘中观察需要时效；完整 TA 只能用于少量高价值标的。
+- **运行层级定义**：
+  1. `fast`：5-30 秒。TradeFlow 筛选、数据健康、证据缺口、候选分类。默认不调用 LLM。
+  2. `light`：1-3 分钟。轻量 TA，只跑必要模块，用于中线政策验证、短线技术确认、持仓风险复核。
+  3. `full`：10-20 分钟。完整 14 Agent TA，多空辩论和风控全链路，必须人工确认。
+- **执行约束**：
+  - 不改 prompts。
+  - 不触发 live TA。
+  - 不新增高成本模型调用。
+- **实现要点**：
+  1. 新增运行层级枚举/配置，例如 `runtime_tier`：
+     - `FAST_RADAR`
+     - `LIGHT_RESEARCH`
+     - `FULL_TA`
+  2. API/服务层统一返回：
+     - `runtime_tier`
+     - `expected_latency`
+     - `llm_allowed`
+     - `requires_confirmation`
+     - `cost_risk`
+  3. 前端按钮文案对应：
+     - `快速筛选`
+     - `轻量研究`
+     - `完整 TA`
+  4. `TradeFlow Discovery` 和 `Observe` 必须标记为 `FAST_RADAR`。
+  5. 自动任务/scheduler 不得默认进入 `FULL_TA`。
+- **验收方式**：
+  - TradeFlow candidates/observe/data-health API 返回 fast 层级或元数据。
+  - 前端能显示运行层级和预计耗时。
+  - 没有用户确认时，full TA 入口不可直接触发。
+  - `pytest tests/test_runtime_tier*.py tests/test_ui001_tradeflow_api.py -q` 或等价测试通过。
+- **代码标注要求**：`# [PERF-001] runtime_tier_contract` / `// [PERF-001] runtime_tier_contract`
+
+### PERF-002: 轻量 TA Profile 与模块路由（P1）
+- **描述**：在完整 TA 之外增加轻量 TA Profile，只跑与目标相关的模块，避免所有候选都进入 14 Agent 全链路。
+- **优先级**：P1
+- **状态**：done -- commit 20ff126
+- **前置条件**：`TA-UI-001`、`H-007` 完成或同步完成。
+- **执行约束**：
+  - 不删除完整 TA。
+  - 不改 prompts。
+  - 不自动调用 live LLM；第一版可先做路由配置和 mock/fixture。
+- **Profile 建议**：
+  1. `MIDLINE_POLICY_LIGHT`：
+     - 用于 `POLICY_AMBUSH/POLICY_CONFIRM`。
+     - 重点：政策/公告/基本面/风险/量价。
+  2. `SHORT_TECH_LIGHT`：
+     - 用于 `TECH_TRADE`。
+     - 重点：技术/量价/资金/风险。
+  3. `POSITION_RISK_LIGHT`：
+     - 用于已持仓复盘。
+     - 重点：风控/资金/关键价位/公告。
+  4. `FULL_TA`：
+     - 保持完整多 Agent，只能手动确认。
+- **实现要点**：
+  1. 新增 profile 配置，声明每个 profile 启用的 analyst/manager/risk 模块。
+  2. TradeFlow 候选根据 `candidate_type/research_queue/analysis_intent` 推荐 profile。
+  3. `/analysis` 控制台选择中线/短线后，能带入对应 profile。
+  4. 结果 metadata 中记录 `runtime_profile` 和实际启用模块。
+- **验收方式**：
+  - `POLICY_AMBUSH` 默认推荐 `MIDLINE_POLICY_LIGHT`。
+  - `TECH_TRADE` 默认推荐 `SHORT_TECH_LIGHT`。
+  - 已持仓复盘默认推荐 `POSITION_RISK_LIGHT`。
+  - 完整 TA 仍可人工选择。
+  - 测试覆盖 profile 路由，不触发真实 LLM。
+- **代码标注要求**：`# [PERF-002] lightweight_ta_profiles`
+
+### PERF-003: 分析运行耗时/调用成本遥测与前端展示（P1）
+- **描述**：为 TradeFlow、轻量 TA、完整 TA 增加运行遥测，记录耗时、模块、模型调用次数、失败原因和成本风险，让用户知道一次分析到底重不重。
+- **优先级**：P1
+- **状态**：done — commit 059fc21
+- **执行约束**：
+  - 不记录 API key/token。
+  - 不泄露完整 prompt。
+
+--- DECISIONS ---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+--- DEVLOG ---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-14 | V-007: TradeFlow 试用闭环端到端验收
+
+- **执行者**：OpenCode
+- **类型**：端到端验收测试（P1）
+- **任务**：V-007
+- **背景**：把候选筛选、盘中观察、轻量 TA 预案、模拟账本、盘后 Review 串成一条可回放链路，验证系统能支撑用户小资金试跑。
+- **修改文件**：
+  - `tests/test_v007_tradeflow_trial_e2e.py`（新建）— [V-007] tradeflow_trial_acceptance
+    - 55 个测试，覆盖 11 个验收维度：
+      1. **日期语义**：非交易日计划（周六 2026-06-13）→ 交易日观察（周一 2026-06-15）→ 盘后复盘
+      2. **候选 API**：5 只候选、中文名不为代码、候选类型多样（POLICY_AMBUSH/TECH_TRADE/EVENT_WATCH/UNCLASSIFIED_DATA_GAP）
+      3. **分层候选**：2 只主候选（1 昊天 + 1 技术）、pool_counts/precision_dimensions 验证
+      4. **候选详情**：昊天字段（mandate_topic/company_role/beneficiary_path）、触发价/失效价
+      5. **盘中观察**：mock 行情 → 300034.SZ TRIGGERED、信号落库、候选状态更新
+      6. **轻量 TA 预案**：政策候选推荐中线研究、技术候选推荐短线确认
+      7. **模拟账本**：加入候选 → 观察状态同步 → 确认买入 → 确认卖出 → 盈亏计算
+      8. **盘后 Review**：5 只候选覆盖、策略统计、日期映射（plan_date → effective_trade_date）
+      9. **数据健康**：DB 可用、日期字段完整
+      10. **安全约束**：无 LLM、无生产 DB 写入、无 prompts 修改、无禁止词
+      11. **验收报告生成**：9 步链路全部 PASS，报告写入 docs/tradeflow_trial_acceptance.md
+    - 5 只 fixture 候选：
+      - 300034.SZ 钢研高纳（POLICY_AMBUSH, tier A, 主候选, 触发）
+      - 601689.SH 拓普集团（TECH_TRADE, tier B, 主候选, 未触发）
+      - 600585.SH 海螺水泥（TECH_TRADE, tier C, 过滤）
+      - 002230.SZ 科大讯飞（EVENT_WATCH, tier B, 观察）
+      - 600711.SH 香江控股（UNCLASSIFIED_DATA_GAP, tier C, 过滤）
+  - `docs/tradeflow_trial_acceptance.md`（新建）— [V-007] tradeflow_trial_acceptance
+    - 验收报告：9 步全部 PASS
+    - 试用闭环说明：为什么入池、什么时候触发、触发后如何记录、盘后结果如何
+- **关键逻辑**：
+  1. 使用 `quote_provider` mock 参数注入模拟实时行情，不依赖 live API。
+  2. `update_paper_observe_state` 必须在 `add_paper_candidate` 之后调用（账本创建时 observe_state 硬编码为 WAITING）。
+  3. 分项评分（technical_score/policy_score 等）在 discovery 管线中计算，fixture 直存 DB 时为默认值 0.0，测试验证字段存在而非精确值。
+  4. 日期语义完整覆盖：plan_date（非交易日）≠ effective_trade_date（交易日）。
+- **测试结果**：55 passed, 0 failed
+- **风险点**：无；不调用 LLM，不写生产 DB，不修改 prompts，不输出买卖建议。
+
+---
+
+## 2026-06-14 | UI-012: TradeFlow 前端降噪与主候选优先工作台
+
+- **执行者**：OpenCode
+- **类型**：前端功能增强（P1）
+- **任务**：UI-012
+- **背景**：候选池信息过散，用户试跑时需要一眼看到少数主候选、原因、触发条件和下一步动作。本任务把前端默认视图改为主候选工作台。
+- **修改文件**：
+  - `frontend/src/types/index.ts` — [UI-012] tradeflow_focus_workspace
+    - `TradeFlowCandidateItem` 新增 8 个分项评分字段：`technical_score`/`policy_score`/`fund_flow_score`/`event_score`/`risk_penalty_score`/`data_quality_score`/`ranking_reasons`/`weakness_reasons`
+    - `TradeFlowTieredCandidatesResponse` 新增 `main_candidates`/`observation_candidates`/`filtered_candidates`/`pool_counts`/`pool_gate_summary` 可选字段
+  - `frontend/src/pages/TradeFlow.tsx` — [UI-012] tradeflow_focus_workspace
+    - 新增「主候选工作台」视图模式（`focus`），设为默认视图
+    - 新增 `renderMainCandidateCard()` — 主候选富卡片组件，显示：
+      - 代码、名称、候选类型徽章（昊天=靛蓝/技术=灰）、Tier 徽章、优先分
+      - 6 维分项评分 chip（形态/政策/资金/事件/风控/数据），高维标红
+      - 前 2 条排前原因（绿色 TrendingUp 图标）
+      - 前 2 条扣分原因（橙色 ShieldAlert 图标）
+      - 触发价（红色 A 股涨色）/失效价（绿色 A 股跌色）
+      - 观察状态
+      - 3 个「下一步」按钮：观察 / 轻量 TA / 模拟跟踪
+    - 新增 `renderObservationPool()` — 观察池折叠区域，默认收起
+    - 新增 `renderScoreChip()` — 分项评分 chip 渲染辅助
+    - 视图模式切换增加「主候选工作台」按钮（靛蓝色）
+    - 主候选按类型分为「昊天左侧池」（靛蓝左边框）和「短线技术池」（灰色左边框）
+    - 空状态显示明确原因：无候选/有观察候选/全部被过滤/需先生成
+    - 顶部 pool gate summary 横幅
+- **关键逻辑**：
+  1. 默认视图从 `tiered`（分级）改为 `focus`（主候选工作台），用户一进来就看到少数主候选。
+  2. 昊天池和技术池视觉区分：左边框颜色 + 分区标题 + 角标说明（中线埋伏 vs 形态共振）。
+  3. 颜色遵守 A 股红涨绿跌：触发价红、失效价绿、已触发红、已失效绿。
+  4. 观察池默认折叠，不干扰主视线，但可一键展开追溯。
+  5. 「下一步」按钮直接在卡片上，一键跳转观察/轻量 TA/模拟账本。
+  6. 轻量 TA 按钮根据候选类型自动带入短线/中线 horizon 和意图。
+  7. 模拟跟踪按钮一键加入账本并跳转。
+  8. 空状态有明确原因：区分"无候选+有观察"、"全部被过滤"、"需先生成"。
+- **测试结果**：
+  - 前端构建：`npm run build` 通过
+  - 回归测试（ui001/ui011/e2e_smoke）：127 passed, 0 failed
+- **风险点**：无；不调用 LLM，不写生产 DB，不修改 prompts，不输出买卖建议。
+
+---
+
+## 2026-06-14 | DATA-018: A股关键源新鲜度与 fallback 可视化日报
+
+- **执行者**：OpenCode
+- **类型**：新功能（P1）
+- **任务**：DATA-018
+- **背景**：把 DATA-017 的资金/LHB 健康巡检扩展到全部关键数据源（行情、资金、龙虎榜、公告、研报、评级、回购等），形成每日可读的数据源新鲜度与 fallback 报告，前端数据健康面板可展示红黄绿三色状态。
+- **修改文件**：
+  - `tradingagents/dataflows/source_freshness_report.py`（新建）— [DATA-018] source_freshness_report
+    - 6 态健康分类：HAS_DATA / NORMAL_NO_DATA / STALE / FAILED / RATE_LIMITED / UNIT_UNVERIFIED
+    - `SourceFreshnessEntry` / `SourceFreshnessReport` 数据模型，含 traffic_light（green/yellow/red）和 label_cn
+    - `classify_source_status()` — 6 态分类器，RATE_LIMITED 优先于 FAILED
+    - `_inspect_entry()` — 从 raw_evidence 单条证据检测健康状态
+    - `_catalog_only_entry()` — 从 source_catalog 生成未查询数据源的占位条目
+    - `run_source_freshness_report()` — 聚合全部数据源生成日报
+    - `render_source_freshness_report()` — Markdown 渲染（含 Issues & Warnings / Fallback Details）
+    - `save_source_freshness_report()` / `find_latest_freshness_report()` — 文件 I/O
+    - `build_freshness_section_for_nightly_report()` — 夜间日报集成
+    - 6 套样本 fixture：ALL_HEALTHY / AKSHARE_FAIL_FALLBACK / RATE_LIMITED / STALE_DATA / UNIT_UNVERIFIED / INTERFACE_FAILED
+  - `api/tradeflow_schemas.py` — [DATA-018] source_freshness_report
+    - 新增 `SourceFreshnessEntryItem`、`SourceFreshnessSummary`、`SourceFreshnessResponse` Pydantic 模型
+  - `api/services/tradeflow_service.py` — [DATA-018] source_freshness_report
+    - 新增 `get_source_freshness()` 服务函数
+  - `api/main.py` — 新增 `GET /v1/data-sources/freshness` 端点（FAST_RADAR 层级）
+  - `api/runtime_tier.py` — `tradeflow_source_freshness` 加入 `_TRADEFLOW_FAST_ENDPOINTS`
+  - `frontend/src/types/index.ts` — 新增 `SourceFreshnessStatus`、`SourceFreshnessEntry`、`SourceFreshnessSummary`、`SourceFreshnessResponse` 类型
+  - `frontend/src/services/api.ts` — 新增 `getSourceFreshness()` 方法
+  - `frontend/src/pages/TradeFlow.tsx` — [DATA-018] source_freshness_report
+    - 新增 `SourceFreshnessPanel` 组件（红黄绿三色状态表、限流风险标记、Fallback 标注、诊断信息）
+    - 新增 `freshnessTrafficLight()` 辅助函数
+    - 数据健康 tab 展示 TradeFlow DB 健康 + 数据源新鲜度两个面板
+  - `tests/test_data018_source_freshness.py`（新增）— 129 个测试
+    - 6 态分类测试（SourceFreshnessStatus）
+    - 检测辅助函数测试（_is_stale_date / _detect_rate_limited / _detect_failed / _detect_normal_no_data）
+    - `classify_source_status` 优先级测试（RATE_LIMITED > FAILED > STALE > UNIT_UNVERIFIED > NORMAL_NO_DATA > HAS_DATA）
+    - `_inspect_entry` dict/string/None 三类输入测试
+    - `_catalog_only_entry` / `_build_summary` / `_build_diagnosis` 测试
+    - `run_source_freshness_report` 完整报告生成测试
+    - 6 套样本 fixture 覆盖测试
+    - Markdown 渲染测试
+    - 文件 I/O 测试（save/find）
+    - 夜间日报集成测试
+    - 验收标准测试（AKShare fail + cn_astock fallback、LHB normal no-data、rate-limited 检测、无明文密钥）
+    - API 服务函数测试
+    - Pydantic schema 验证测试
+    - source_catalog 集成测试
+- **关键逻辑**：
+  1. 6 态分类优先级：RATE_LIMITED（429/频繁访问）→ FAILED（ProxyError/ConnectionError）→ STALE（as_of > 7 天）→ UNIT_UNVERIFIED（数据存在但单位未校验）→ NORMAL_NO_DATA（查询成功无数据）→ HAS_DATA。
+  2. NORMAL_NO_DATA 和 NOT_QUERIED 都归为"绿色"（正常无数据），不降低完整度评分。
+  3. RATE_LIMITED 与 FAILED 都是红色，但诊断信息不同（限流 vs 故障）。
+  4. 报告覆盖 source_catalog 中全部数据类型，即使本次分析未查询也能看到主源/fallback 链/限流风险。
+  5. 前端面板显示数据类型、状态（红黄绿）、主源、实际源、Fallback 链、最新日期、记录数、限流风险、诊断信息。
+- **测试结果**：129 passed（DATA-018）+ 314 passed（DATA-017/DATA-006/catalog/runtime_tier/ui001 回归）= 443 passed, 0 failed
+- **前端构建**：`npm run build` 通过
+- **风险点**：无；不调用 LLM，不写生产 DB，不修改 prompts，不输出买卖建议。
+
+---
+
+## 2026-06-14 | H-012: 昊天主题注册表与政策版本 Watchlist
+
+- **执行者**：OpenCode
+- **类型**：新功能（P1）
+- **任务**：H-012
+- **背景**：把昊天战法从零散政策关键词升级为可维护主题注册表，记录主题级别、生命周期、政策证据、产业链角色和重点观察标的。
+- **修改文件**：
+  - `tradingagents/tradeflow/topic_registry.py` — [H-012] mandate_topic_registry（新建）
+    - 主题状态枚举（酝酿/发酵/确认/兑现/退潮/未知），与 H-010 lifecycle 映射
+    - `TopicDefinition` — 静态预定义（低空经济/算力/半导体设备/机器人/新能源/国产替代/并购重组/出海）
+    - `TopicRegistryEntry` — 动态注册表条目（主题/状态/政策级别/证据/产业链/候选）
+    - `TopicRegistry` — in-memory 注册表（register/get/all_entries/to_dict/clear）
+    - `match_topic()` / `match_topic_from_text()` — 关键词/别名匹配
+    - `suggest_topic_watchlist_note()` — 短备注建议（不含买卖词）
+    - `build_topic_watchlist()` — 从候选列表生成按主题聚合的 Watchlist
+  - `tradingagents/tradeflow/candidate_engine.py` — [H-012] mandate_topic_registry
+    - 在 H-008 watchlist_note 之后调用 `register_candidate_topic()` 注册候选主题
+  - `api/tradeflow_schemas.py` — [H-012] mandate_topic_registry
+    - 新增 `TopicRegistryItem`、`TopicRegistryResponse`
+    - 新增 `TopicWatchlistSymbolItem`、`TopicWatchlistTopicItem`、`TopicWatchlistResponse`
+  - `api/services/tradeflow_service.py` — [H-012] mandate_topic_registry
+    - 新增 `get_topic_registry()` — 返回所有注册主题（含预定义+动态）
+    - 新增 `get_topic_watchlist()` — 按交易日从候选池生成主题 Watchlist
+  - `api/main.py` — [H-012] mandate_topic_registry
+    - 新增 `GET /v1/tradeflow/topic-registry` 端点
+    - 新增 `GET /v1/tradeflow/topic-watchlist?date=YYYY-MM-DD` 端点
+  - `tests/test_h012_topic_registry.py` — 113 个测试覆盖
+    - 主题状态/政策级别枚举
+    - lifecycle → status 映射
+    - 主题定义（低空经济/算力/半导体设备等关键词验证）
+    - 关键词匹配（match_topic / match_topic_from_text）
+    - 注册表 CRUD 和候选注册
+    - Watchlist 生成、排序、截断、缺口聚合
+    - 备注建议不含买卖词
+- **测试结果**：113 passed（H-012）+ 240 passed（H-008/H-010/H-011 回归）+ 136 passed（tradeflow 全量）
+- **风险点**：无；主题状态变化仅影响候选解释和排序，不影响交易动作；不调用 LLM；不覆盖用户自选备注。
+
+---
+
+## 2026-06-14 | TF-PAPER-001: 5000 元试跑模拟账户与候选跟踪账本
+
+- **执行者**：OpenCode
+- **类型**：新功能（P1）
+- **任务**：TF-PAPER-001
+- **背景**：用户需要 5000 元小资金试跑环境，记录候选进入、观察触发、模拟买入/卖出、收益和复盘，不连接真实交易。
+- **修改文件**：
+  - `tradingagents/tradeflow/candidate_engine.py` — [TF-PAPER-001] paper_trading_ledger
+    - 新增 `CREATE_PAPER_LEDGER_TABLE` 和 `CREATE_PAPER_TRADES_TABLE` SQL 常量
+    - `init_db()` 的 `executescript()` 追加两张新表
+  - `api/services/tradeflow_service.py` — [TF-PAPER-001] paper_trading_ledger
+    - 新增 `_ensure_paper_ledger_row()`、`_row_to_paper_trade()` 辅助函数
+    - 新增 `get_paper_ledger()` — 获取或自动创建 5000 元本金账本
+    - 新增 `add_paper_candidate()` — 加入候选到模拟跟踪（去重、金额上限）
+    - 新增 `remove_paper_candidate()` — 移除跟踪（持仓中不可移除）
+    - 新增 `confirm_paper_action()` — 确认模拟买入/卖出（扣减/回收现金、计算 P&L）
+    - 新增 `update_paper_observe_state()` — Observe 触发/失效同步到账本
+    - 新增 `get_paper_review()` — 盘后复盘聚合（已平仓 P&L、误报、未触发、失效）
+  - `api/tradeflow_schemas.py` — [TF-PAPER-001] paper_trading_ledger
+    - 新增 `PaperTradeItem`、`PaperLedgerSummary`、`PaperLedgerResponse`
+    - 新增 `PaperActionRequest`、`PaperAddCandidateRequest`、`PaperActionResponse`
+    - 新增 `PaperReviewResponse`
+  - `api/runtime_tier.py` — `_TRADEFLOW_FAST_ENDPOINTS` 新增 `tradeflow_paper_ledger`、`tradeflow_paper_review`
+  - `api/main.py` — 新增 5 个端点：
+    - `GET /v1/tradeflow/paper-ledger`
+    - `POST /v1/tradeflow/paper-ledger/add`
+    - `POST /v1/tradeflow/paper-ledger/remove`
+    - `POST /v1/tradeflow/paper-ledger/confirm`
+    - `GET /v1/tradeflow/paper-ledger/review`
+  - `frontend/src/types/index.ts` — 新增 `PaperTradeItem`、`PaperLedgerSummary`、`PaperLedgerResponse`、`PaperActionResponse`、`PaperReviewResponse`
+  - `frontend/src/services/api.ts` — 新增 `getPaperLedger()`、`addPaperCandidate()`、`removePaperCandidate()`、`confirmPaperAction()`、`getPaperReview()`
+  - `frontend/src/pages/TradeFlow.tsx` — 新增"模拟账本"tab，展示本金/现金余额/盈亏/持仓表，支持买入/卖出/移除操作
+  - `frontend/src/components/TradeFlowCandidateDrawer.tsx` — 新增"加入模拟跟踪"按钮（底部 footer 区域）
+  - `tests/test_tf_paper001_paper_ledger.py`（新增）— 57 个测试覆盖 DB schema、账本初始化、添加/移除候选、买入/卖出确认、Observe 状态同步、盘后复盘、Pydantic schema、运行层级、完整工作流、安全约束
+- **关键逻辑**：
+  1. 默认本金 5000 元，首次访问自动创建账本行。
+  2. 候选加入后状态为 `tracking`；Observe 触发后自动转为 `pending`（待人工确认）；人工确认买入后转为 `open`；卖出后转为 `closed`。
+
+exec
+/bin/zsh -lc "git status --short && printf '\\n--- AGENTS ---\\n' && sed -n '1,220p' AGENTS.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/TASKS.md
+ M docs/tradeflow_trial_acceptance.md
+ M scripts/codegraph_preflight.py
+ M tests/test_m013_codegraph_preflight.py
+?? docs/task_runs/CODEGRAPH-002-20260614-014751/
+
+--- AGENTS ---
+# TradingAgents-AShare — 项目协作规则
+
+## 项目简介
+
+A股智能投研多智能体系统，基于 LangGraph + LangChain 构建，模拟 14 名专业 Agent 的多空辩论与风控博弈，为投资者提供结构化的交易建议。
+
+核心模块：
+- **Agent 框架**：14 个多智能体（分析师/研究员/风控/交易员），LangGraph 编排
+- **后端 API**：FastAPI，提供分析、持仓、定时任务、研报管理等接口
+- **前端 UI**：React，意图驱动交互、辩论可视化、持仓看板
+- **定时调度**：独立 scheduler，支持自选股定时分析
+- **数据层**：AKShare + BaoStock + yfinance，SQLite 持久化
+
+## 多工具协作架构
+
+```
+孟（最终决策）
+  │
+  ├── OpenClaw（主控调度）── 读取上下文 → 判断任务 → 派发执行
+  │     ├── 简单任务：直接 exec 执行（git/python/npm）
+  │     └── 复杂任务：sessions_spawn 子 agent 或调用 OpenCode 执行
+  │
+  ├── OpenCode（代码执行器）── 读取同一套上下文 → 改代码 → 跑测试 → 输出 diff
+  │
+  └── OpenCode TUI/Web（审查界面）── 查看 diff → 确认修改 → 做 review
+```
+
+**核心原则**：三者读取同一套项目上下文，不各自保存独立记忆。
+
+## 必读文件（任何 coding agent 开始任务前）
+
+1. `AGENTS.md`（本文件）
+2. `docs/project-overview.md`（项目背景 + 架构 + 目录结构）
+3. `docs/TASKS.md`（当前任务池）
+4. `docs/DECISIONS.md`（架构决策记录）
+5. `docs/DEVLOG.md`（最近修改日志）
+6. 涉及模型/API 调用时，必须读 `docs/MODEL_API_CATALOG.md` 和 `docs/LLM_API_USAGE.md`，并可运行 `python scripts/audit_llm_config.py` 查看脱敏配置
+
+## 项目目录结构
+
+```
+TradingAgents-AShare/
+├── tradingagents/            # 核心 Python 包
+│   ├── agents/               # 14 个多智能体
+│   │   ├── analysts/         # 7 个分析师（基本面/情绪/新闻/技术/宏观/主力/量价）
+│   │   ├── researchers/      # 多头/空头研究员 + 研究总监
+│   │   ├── risk_mgmt/        # 风控团队
+│   │   ├── managers/         # 管理层
+│   │   └── trader/           # 交易员
+│   ├── dataflows/            # 数据获取与缓存
+│   ├── graph/                # LangGraph 编排图
+│   ├── llm_clients/          # 多模型厂商适配
+│   ├── prompts/              # Agent 提示词模板
+│   └── default_config.py     # 默认配置
+├── api/                      # FastAPI 后端
+│   ├── main.py               # 入口
+│   ├── database.py           # SQLite
+│   └── services/             # 业务逻辑（分析/持仓/定时/研报）
+├── frontend/                 # React 前端
+├── scheduler/                # 定时分析调度
+├── skills/                   # OpenClaw 技能
+├── tests/                    # 测试
+├── docs/                     # 项目文档
+└── eval_results/             # 回测评估结果
+```
+
+## 执行规则
+
+### 代码修改前
+1. 执行 `git status`，确认当前分支和未提交变更
+2. 激活虚拟环境：`source .venv/bin/activate`
+3. 确认修改范围不影响生产数据库（tradingagents.db）
+4. 如果涉及核心模块，先跑一遍测试确认基线
+
+### 代码修改后
+1. 运行测试，全部通过才算完成
+2. 输出：修改文件列表、测试结果、发现的风险点
+3. 更新 `docs/DEVLOG.md`
+
+### OpenClaw 调度方式
+- **简单任务**（改配置、修 bug、小重构）：OpenClaw 直接 `exec` 执行
+- **复杂任务**（新功能、跨模块修改）：调用 OpenCode 执行，由用户确认后执行
+- **审查任务**：OpenClaw 不直接审查代码，提示用户用 OpenCode TUI 查看 diff
+
+## 安全红线
+
+- 不误改 `tradingagents.db`（生产数据库）
+- 不误改 `eval_results/` 中的历史回测结果
+- 不直接修改 `tradingagents/prompts/` 中的提示词模板（需走审批）
+- 不删除 `logs/` 中的历史日志
+- 测试数据不得写入生产数据库
+- 不读取、解密、打印、提交任何模型 API Key 明文；只能使用 `HAS_KEY/NO_KEY` 级别的脱敏状态
+- 除用户主动发起的分析/定时任务外，任何 live LLM API 调用前都要说明 provider、base_url、模型名和预计调用次数，并征得用户确认
+
+## 技术栈
+
+- **后端**：Python 3.10+, FastAPI, LangGraph, LangChain
+- **前端**：React, TypeScript, Tailwind CSS
+- **数据库**：SQLite
+- **数据源**：AKShare, BaoStock, yfinance
+- **模型**：OpenAI / Anthropic / 智谱 / DeepSeek / 小米 MiMo 等
+
+exec
+/bin/zsh -lc "git diff --stat && git diff -- scripts/codegraph_preflight.py tests/test_m013_codegraph_preflight.py docs/TASKS.md docs/tradeflow_trial_acceptance.md && find docs/task_runs/CODEGRAPH-002-20260614-014751 -type f -maxdepth 2 -print -exec sed -n '1,220p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ docs/TASKS.md                          |  2 +-
+ docs/tradeflow_trial_acceptance.md     |  2 +-
+ scripts/codegraph_preflight.py         | 50 ++++++++++++++++++++---------
+ tests/test_m013_codegraph_preflight.py | 57 +++++++++++++++++++++++++++++++++-
+ 4 files changed, 93 insertions(+), 18 deletions(-)
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index f0081c3..d3d1646 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -2890,7 +2890,7 @@
+ ### CODEGRAPH-002: CodeGraph 自动开发预检命令修复（P2）
+ - **描述**：TF-QUALITY-001 task_run 中 CodeGraph 预检失败，原因是自动开发脚本使用了当前 codegraph CLI 不支持的参数（如 `-p`）。需要修复命令封装，避免影响后续任务的影响范围日志。
+ - **优先级**：P2
+-- **状态**：ready
++- **状态**：in_progress — claimed CODEGRAPH-002-20260614-014751
+ - **前置条件**：M-013 完成 ✓。
+ - **执行约束**：
+   - 不改业务代码。
+diff --git a/docs/tradeflow_trial_acceptance.md b/docs/tradeflow_trial_acceptance.md
+index 49cae63..0af7c49 100644
+--- a/docs/tradeflow_trial_acceptance.md
++++ b/docs/tradeflow_trial_acceptance.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 试用闭环端到端验收报告 (V-007)
+ 
+-**生成时间**: 2026-06-14 01:46:56
++**生成时间**: 2026-06-14 01:52:21
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **候选数**: 5 只 (2 主候选 + 1 弱技术 + 1 事件观察 + 1 证据缺口)
+diff --git a/scripts/codegraph_preflight.py b/scripts/codegraph_preflight.py
+index 1a776f7..6beb1d6 100755
+--- a/scripts/codegraph_preflight.py
++++ b/scripts/codegraph_preflight.py
+@@ -47,6 +47,7 @@ class CodeGraphStatus:
+     error: Optional[str] = None
+     files_indexed: int = 0
+     nodes_count: int = 0
++    command: Optional[str] = None
+ 
+     def to_dict(self):
+         return {
+@@ -56,6 +57,7 @@ class CodeGraphStatus:
+             "error": self.error,
+             "files_indexed": self.files_indexed,
+             "nodes_count": self.nodes_count,
++            "command": self.command,
+         }
+ 
+ 
+@@ -108,6 +110,9 @@ def _run_cmd(cmd, timeout=60, cwd=None):
+ 
+ 
+ def check_codegraph_available(repo_dir=None):
++    # [CODEGRAPH-002] codegraph_preflight
++    # codegraph status takes [path] as positional argument, not -p.
++    # Use -j for JSON output for robust parsing.
+     rc, stdout, stderr = _run_cmd(["codegraph", "--version"])
+     if rc != 0:
+         return CodeGraphStatus(available=False, error="codegraph not found in PATH")
+@@ -115,25 +120,40 @@ def check_codegraph_available(repo_dir=None):
+     version = stdout.strip()
+     status = CodeGraphStatus(available=True, version=version)
+ 
+-    rc, stdout, stderr = _run_cmd(
+-        ["codegraph", "status", "-p", repo_dir or "."], timeout=30
+-    )
++    status_cmd = ["codegraph", "status", "-j", repo_dir or "."]
++    status.command = " ".join(status_cmd)
++    rc, stdout, stderr = _run_cmd(status_cmd, timeout=30)
+     if rc != 0:
+         status.error = f"status check failed: {stderr.strip()[:200]}"
+         return status
+ 
+-    for line in stdout.splitlines():
+-        line = line.strip()
+-        if line.startswith("Files:"):
+-            try:
+-                status.files_indexed = int(line.split(":")[1].strip())
+-            except (ValueError, IndexError):
+-                pass
+-        elif line.startswith("Nodes:"):
+-            try:
+-                status.nodes_count = int(line.split(":")[1].strip())
+-            except (ValueError, IndexError):
+-                pass
++    # [CODEGRAPH-002] Parse JSON output from codegraph status -j
++    parsed = False
++    if stdout.strip():
++        try:
++            data = json.loads(stdout)
++            status.files_indexed = data.get("fileCount", 0)
++            status.nodes_count = data.get("nodeCount", 0)
++            parsed = True
++        except (json.JSONDecodeError, TypeError):
++            pass
++
++    # Fallback: parse text output (handles comma-formatted numbers)
++    if not parsed:
++        for line in stdout.splitlines():
++            line = line.strip()
++            if line.startswith("Files:"):
++                try:
++                    val = line.split(":", 1)[1].strip().replace(",", "")
++                    status.files_indexed = int(val)
++                except (ValueError, IndexError):
++                    pass
++            elif line.startswith("Nodes:"):
++                try:
++                    val = line.split(":", 1)[1].strip().replace(",", "")
++                    status.nodes_count = int(val)
++                except (ValueError, IndexError):
++                    pass
+ 
+     status.indexed = status.files_indexed > 0
+     return status
+diff --git a/tests/test_m013_codegraph_preflight.py b/tests/test_m013_codegraph_preflight.py
+index bd1100f..4fa8998 100644
+--- a/tests/test_m013_codegraph_preflight.py
++++ b/tests/test_m013_codegraph_preflight.py
+@@ -107,7 +107,13 @@ class TestCheckCodeGraphAvailable:
+ 
+     def test_available_with_index(self):
+         version_out = (0, "1.0.0", "")
+-        status_out = (0, "Files: 255\nNodes: 6195\n", "")
++        # [CODEGRAPH-002] codegraph status -j returns JSON
++        import json as _json
++
++        status_json = _json.dumps(
++            {"fileCount": 255, "nodeCount": 6195, "initialized": True}
++        )
++        status_out = (0, status_json, "")
+         with patch.object(CG, "_run_cmd", side_effect=[version_out, status_out]):
+             status = CG.check_codegraph_available()
+             assert status.available is True
+@@ -115,6 +121,55 @@ class TestCheckCodeGraphAvailable:
+             assert status.files_indexed == 255
+             assert status.nodes_count == 6195
+ 
++    def test_status_command_uses_positional_path(self):
++        """[CODEGRAPH-002] codegraph status must NOT use -p (unsupported); uses -j [path]."""
++        version_out = (0, "1.0.0", "")
++        status_json = '{"fileCount": 10, "nodeCount": 20}'
++        captured_cmds = []
++
++        original_run_cmd = CG._run_cmd
++
++        def tracking_run_cmd(cmd, **kwargs):
++            captured_cmds.append(list(cmd))
++            return original_run_cmd(cmd, **kwargs)
++
++        with patch.object(CG, "_run_cmd", side_effect=tracking_run_cmd):
++            CG.check_codegraph_available("/some/repo")
++
++        # First call: version check, second call: status check
++        assert len(captured_cmds) >= 2
++        status_cmd = captured_cmds[1]
++        assert status_cmd[0] == "codegraph"
++        assert status_cmd[1] == "status"
++        # Must NOT contain -p (unsupported by codegraph status)
++        assert "-p" not in status_cmd
++        # Path should be positional
++        assert "/some/repo" in status_cmd
++
++    def test_status_records_command_in_result(self):
++        version_out = (0, "1.0.0", "")
++        status_json = '{"fileCount": 5, "nodeCount": 10}'
++        with patch.object(
++            CG, "_run_cmd", side_effect=[version_out, (0, status_json, "")]
++        ):
++            status = CG.check_codegraph_available()
++            assert status.command is not None
++            assert "status" in status.command
++            assert "-p" not in status.command
++
++    def test_status_text_fallback_with_commas(self):
++        """[CODEGRAPH-002] Text fallback handles comma-formatted numbers."""
++        version_out = (0, "1.0.0", "")
++        # Invalid JSON, should fallback to text parsing
++        status_text = "Files:     255\nNodes:     6,195\n"
++        with patch.object(
++            CG, "_run_cmd", side_effect=[version_out, (0, status_text, "")]
++        ):
++            status = CG.check_codegraph_available()
++            assert status.available is True
++            assert status.files_indexed == 255
++            assert status.nodes_count == 6195
++
+ 
+ class TestExtractKeywords:
+     def test_basic(self):
+docs/task_runs/CODEGRAPH-002-20260614-014751/tests-round1.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  1%]
+................................................ss...................... [  2%]
+........................................................................ [  3%]
+........................................................................ [  4%]
+........................................................................ [  6%]
+........................................................................ [  7%]
+........................................................................ [  8%]
+........................................................................ [  9%]
+........................................................................ [ 11%]
+........................................................................ [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 18%]
+........................................................................ [ 19%]
+........................................................................ [ 21%]
+........................................................................ [ 22%]
+........................................................................ [ 23%]
+........................................................................ [ 24%]
+........................................................................ [ 25%]
+........................................................................ [ 27%]
+........................................................................ [ 28%]
+........................................................................ [ 29%]
+........................................................................ [ 30%]
+........................................................................ [ 32%]
+........................................................................ [ 33%]
+........................................................................ [ 34%]
+........................................................................ [ 35%]
+........................................................................ [ 37%]
+........................................................................ [ 38%]
+........................................................................ [ 39%]
+........................................................................ [ 40%]
+........................................................................ [ 42%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 45%]
+........................................................................ [ 46%]
+........................................................................ [ 48%]
+........................................................................ [ 49%]
+..........................................sssssssss..................... [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 53%]
+........................................................................ [ 54%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 58%]
+........................................................................ [ 59%]
+........................................................................ [ 60%]
+........................................................................ [ 61%]
+........................................................................ [ 63%]
+........................................................................ [ 64%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+........................................................................ [ 68%]
+........................................................................ [ 69%]
+........................................................................ [ 70%]
+.............................ss......................................... [ 71%]
+........ssss............................................................ [ 72%]
+........................................................................ [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 76%]
+........................................................................ [ 77%]
+........................................................................ [ 79%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+........................................................................ [ 82%]
+........................................................................ [ 84%]
+........................................................................ [ 85%]
+........................................................................ [ 86%]
+........................................................................ [ 87%]
+........................................................................ [ 89%]
+........................................................................ [ 90%]
+........................................................................ [ 91%]
+........................................................................ [ 92%]
+........................................................................ [ 93%]
+........................................................................ [ 95%]
+........................................................................ [ 96%]
+........................................................................ [ 97%]
+........................................................................ [ 98%]
+...............................................................          [100%]
+5806 passed, 17 skipped in 156.34s (0:02:36)
+
+Exit code: 0
+docs/task_runs/CODEGRAPH-002-20260614-014751/codegraph-status.json
+{
+  "task_id": "CODEGRAPH-002",
+  "generated_at": "2026-06-14T01:47:51.803863",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": false,
+    "version": "0.9.7",
+    "error": "status check failed: error: unknown option '-p'",
+    "files_indexed": 0,
+    "nodes_count": 0
+  },
+  "result": "SKIPPED",
+  "reason": "CodeGraph not indexed",
+  "post_generated_at": "2026-06-14T01:52:23.325585",
+  "codegraph_post": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "post_result": "OK",
+  "impact_files_count": 0,
+  "affected_tests_count": 0,
+  "changed_files": [
+    "docs/TASKS.md",
+    "docs/tradeflow_trial_acceptance.md",
+    "scripts/codegraph_preflight.py",
+    "tests/test_m013_codegraph_preflight.py"
+  ]
+}docs/task_runs/CODEGRAPH-002-20260614-014751/prompt-round1.md
+# Task: CODEGRAPH-002: CodeGraph 自动开发预检命令修复（P2）
+
+Read task "CODEGRAPH-002" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/CODEGRAPH-002-20260614-014751/codegraph-context.txt
+# CodeGraph Context: SKIPPED
+# Task: CODEGRAPH-002
+# Reason: CodeGraph not indexed
+docs/task_runs/CODEGRAPH-002-20260614-014751/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "CODEGRAPH-002"[90m 111 matches[0m
+I found the task reference on line 67. Let me search for the detailed task description and also look at related files.
+[0m✱ [0mGrep "CODEGRAPH"[90m 111 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [offset=2885, limit=30][0m
+[0m→ [0mRead docs/task_runs/CODEGRAPH-002-20260614-014751/codegraph-context.txt
+[0m→ [0mRead docs/task_runs/CODEGRAPH-002-20260614-014751/codegraph-status.json
+Let me read the detailed task description and the existing task run context.
+[0m→ [0mRead docs/task_runs/CODEGRAPH-002-20260614-014751/task.md
+[0m
+[0m# [0mTodos
+[•] Find and understand the codegraph command invocation in auto dev scripts
+[ ] Check actual codegraph CLI help/options
+[ ] Fix the codegraph command in auto dev scripts
+[ ] Add/update tests for codegraph preflight
+[ ] Run tests and verify fix
+[ ] Update DEVLOG.md and TASKS.md status
+[0m
+[0m✱ [0mGlob "scripts/auto_dev*.sh"[90m 1 match[0m
+[0m✱ [0mGlob "scripts/*codegraph*"[90m 1 match[0m
+[0m✱ [0mGrep "codegraph"[90m 1 match[0m
+[0m✱ [0mGrep "codegraph"[90m 63 matches[0m
+[0m→ [0mRead scripts/codegraph_preflight.py
+Now I can see the issue. The `codegraph_preflight.py` uses `-p` flag which isn't supported by codegraph 0.9.7. Let me read the full file and check the actual CLI help.
+[0m
+[0m$ [0mcodegraph --version 2>&1; echo "---"; codegraph --help 2>&1; echo "==="; codegraph status --help 2>&1; echo "==="; codegraph context --help 2>&1; echo "==="; codegraph impact --help 2>&1; echo "==="; codegraph affected --help 2>&1
+0.9.7
+---
+Usage: codegraph [options] [command]
+
+Code intelligence and knowledge graph for any codebase
+
+Options:
+  -V, --version                  output the version number
+  -h, --help                     display help for command
+
+Commands:
+  init [options] [path]          Initialize CodeGraph in a project directory
+  uninit [options] [path]        Remove CodeGraph from a project (deletes
+                                 .codegraph/ directory)
+  index [options] [path]         Index all files in the project
+  sync [options] [path]          Sync changes since last index
+  status [options] [path]        Show index status and statistics
+  query [options] <search>       Search for symbols in the codebase
+  files [options]                Show project file structure from the index
+  context [options] <task>       Build context for a task (outputs markdown)
+  serve [options]                Start CodeGraph as an MCP server for AI
+                                 assistants
+  unlock [path]                  Remove a stale lock file that is blocking
+                                 indexing
+  callers [options] <symbol>     Find all functions/methods that call a specific
+                                 symbol
+  callees [options] <symbol>     Find all functions/methods that a specific
+                                 symbol calls
+  impact [options] <symbol>      Analyze what code is affected by changing a
+                                 symbol
+  affected [options] [files...]  Find test files affected by changed source
+                                 files
+  install [options]              Install codegraph MCP server into one or more
+                                 agents (Claude Code, Cursor, Codex CLI,
+                                 opencode, Hermes Agent)
+  uninstall [options]            Remove codegraph from your agents (Claude Code,
+                                 Cursor, Codex CLI, opencode, Hermes Agent)
+  help [command]                 display help for command
+===
+Usage: codegraph status [options] [path]
+
+Show index status and statistics
+
+Options:
+  -j, --json  Output as JSON
+  -h, --help  display help for command
+===
+Usage: codegraph context [options] <task>
+
+Build context for a task (outputs markdown)
+
+Options:
+  -p, --path <path>         Project path
+  -n, --max-nodes <number>  Maximum nodes to include (default: "50")
+  -c, --max-code <number>   Maximum code blocks (default: "10")
+  --no-code                 Exclude code blocks
+  -f, --format <format>     Output format (markdown, json) (default: "markdown")
+  -h, --help                display help for command
+===
+Usage: codegraph impact [options] <symbol>
+
+Analyze what code is affected by changing a symbol
+
+Options:
+  -p, --path <path>     Project path
+  -d, --depth <number>  Traversal depth (default: "2")
+  -j, --json            Output as JSON
+  -h, --help            display help for command
+===
+Usage: codegraph affected [options] [files...]
+
+Find test files affected by changed source files
+
+Options:
+  -p, --path <path>     Project path
+  --stdin               Read file list from stdin (one per line)
+  -d, --depth <number>  Max dependency traversal depth (default: "5")
+  -f, --filter <glob>   Custom glob filter for test files (e.g. "e2e/*.spec.ts")
+  -j, --json            Output as JSON
+  -q, --quiet           Only output file paths, no decoration
+  -h, --help            display help for command
+[0m
+[0m→ [0mRead tests/test_m013_codegraph_preflight.py
+[0m→ [0mRead scripts/auto_dev_loop.sh[90m [offset=340, limit=80][0m
+Now I have a clear picture. The `codegraph status` command takes `[path]` as a positional argument, not `-p`. The other commands (`context`, `impact`, `affected`) all support `-p` correctly. The bug is specifically on line 119.
+
+Let me also read the test file and check the auto_dev_loop.sh invocation.
+[0m
+[0m$ [0mcodegraph status . 2>&1 | head -20; echo "---EXIT: $?"
+[1m
+CodeGraph Status
+[0m
+[36mProject:[0m /Users/maybee/TradingAgents-AShare
+
+[1mIndex Statistics:[0m
+  Files:     255
+  Nodes:     6,195
+  Edges:     12,658
+  DB Size:   11.74 MB
+  Backend:   [32mnode:sqlite — built-in (full WAL)[0m
+  Journal:   [32mwal[0m
+
+[1mNodes by Kind:[0m
+  method          2,126
+  import          1,340
+  function        1,265
+  class           562
+  variable        376
+  file            250
+---EXIT: 0
+[0m
+[0m$ [0mcodegraph status -j . 2>&1 | head -20
+{"initialized":true,"projectPath":"/Users/maybee/TradingAgents-AShare","fileCount":255,"nodeCount":6195,"edgeCount":12658,"dbSizeBytes":12308480,"backend":"node-sqlite","journalMode":"wal","nodesByKind":{"class":562,"constant":60,"file":250,"function":1265,"import":1340,"interface":123,"method":2126,"property":14,"route":66,"type_alias":13,"variable":376},"languages":["javascript","python","tsx","typescript","yaml"],"pendingChanges":{"added":0,"modified":0,"removed":0},"worktreeMismatch":null}
+[0m
+Let me check what `codegraph status` actually outputs, and also verify it works with the positional path argument.
+[0m# [0mTodos
+[✓] Find and understand the codegraph command invocation in auto dev scripts
+[✓] Check actual codegraph CLI help/options
+[•] Fix the codegraph status command in codegraph_preflight.py
+[ ] Add/update tests for codegraph preflight
+[ ] Run tests and verify fix
+[ ] Update DEVLOG.md and TASKS.md status
+[0m
+I can see two bugs:
+1. `codegraph status` doesn't support `-p` (it takes positional `[path]`)
+2. The text parser fails on comma-formatted numbers like "6,195"
+
+Let me fix both by using JSON output (`-j`) for more robust parsing, and record the actual command in the status.
+Now let me apply the fixes. First, add `command` field to `CodeGraphStatus` and fix the `check_codegraph_available` function:
+[0m← [0mEdit scripts/codegraph_preflight.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/codegraph_preflight.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/codegraph_preflight.py
++++ /Users/maybee/TradingAgents-AShare/scripts/codegraph_preflight.py
+@@ -46,8 +46,9 @@
+     version: Optional[str] = None
+     error: Optional[str] = None
+     files_indexed: int = 0
+     nodes_count: int = 0
++    command: Optional[str] = None
+ 
+     def to_dict(self):
+         return {
+             "available": self.available,
+@@ -55,8 +56,9 @@
+             "version": self.version,
+             "error": self.error,
+             "files_indexed": self.files_indexed,
+             "nodes_count": self.nodes_count,
++            "command": self.command,
+         }
+ 
+ 
+ @dataclass
+
+[0m
+Now fix the `check_codegraph_available` function to use the correct command syntax:
+[0m← [0mEdit scripts/codegraph_preflight.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/codegraph_preflight.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/codegraph_preflight.py
++++ /Users/maybee/TradingAgents-AShare/scripts/codegraph_preflight.py
+@@ -109,35 +109,53 @@
+         return 1, "", str(e)
+ 
+ 
+ def check_codegraph_available(repo_dir=None):
++    # [CODEGRAPH-002] codegraph_preflight
++    # codegraph status takes [path] as positional argument, not -p.
++    # Use -j for JSON output for robust parsing.
+     rc, stdout, stderr = _run_cmd(["codegraph", "--version"])
+     if rc != 0:
+         return CodeGraphStatus(available=False, error="codegraph not found in PATH")
+ 
+     version = stdout.strip()
+     status = CodeGraphStatus(available=True, version=version)
+ 
+-    rc, stdout, stderr = _run_cmd(
+-        ["codegraph", "status", "-p", repo_dir or "."], timeout=30
+-    )
++    status_cmd = ["codegraph", "status", "-j", repo_dir or "."]
++    status.command = " ".join(status_cmd)
++    rc, stdout, stderr = _run_cmd(status_cmd, timeout=30)
+     if rc != 0:
+         status.error = f"status check failed: {stderr.strip()[:200]}"
+         return status
+ 
+-    for line in stdout.splitlines():
+-        line = line.strip()
+-        if line.startswith("Files:"):
+-            try:
+docs/task_runs/CODEGRAPH-002-20260614-014751/task.md
+# Auto Dev Task Run
+
+- Task: CODEGRAPH-002 - CodeGraph 自动开发预检命令修复（P2）
+- Priority: P2
+- Status: CLAIMED
+- Started at: 2026-06-14_01:47:51
+- Git HEAD: 0b5b747
+- Test commands: pytest tests/ -q --tb=short
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/CODEGRAPH-002-20260614-014751/codegraph-impact.txt
+# CodeGraph Impact Analysis
+# Generated: 2026-06-14T01:52:23.325617
+# Changed files: 4
+
+## Source: docs/TASKS.md
+[34mℹ[0m Symbol "docs/TASKS.md" not found
+
+
+## Source: docs/tradeflow_trial_acceptance.md
+[34mℹ[0m Symbol "docs/tradeflow_trial_acceptance.md" not found
+
+
+## Source: scripts/codegraph_preflight.py
+[34mℹ[0m Symbol "scripts/codegraph_preflight.py" not found
+
+
+## Source: tests/test_m013_codegraph_preflight.py
+[34mℹ[0m Symbol "tests/test_m013_codegraph_preflight.py" not found
+
+
+## Affected Tests
+  (could not determine affected tests)
+exec
+/bin/zsh -lc "sed -n '1,260p' scripts/codegraph_preflight.py && sed -n '1,240p' tests/test_m013_codegraph_preflight.py && sed -n '1,120p' docs/task_runs/CODEGRAPH-002-20260614-014751/summary.md 2>/dev/null || true" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+#!/usr/bin/env python3
+"""[M-013] CodeGraph impact preflight for auto dev loop.
+
+Generates codegraph-context.txt, codegraph-impact.txt, and codegraph-status.json
+in the task run archive directory before and after each task.
+
+Usage:
+    # Pre-task: generate context from task description
+    python scripts/codegraph_preflight.py pre \\
+        --run-dir docs/task_runs/TASK-XXX \\
+        --task-id TASK-XXX \\
+        --task-title "Task title text"
+
+    # Post-task: generate impact from changed files
+    python scripts/codegraph_preflight.py post \\
+        --run-dir docs/task_runs/TASK-XXX \\
+        --changed-files "file1.py,file2.py"
+
+    # Full run: pre + post in one call
+    python scripts/codegraph_preflight.py full \\
+        --run-dir docs/task_runs/TASK-XXX \\
+        --task-id TASK-XXX \\
+        --task-title "Task title text" \\
+        --changed-files "file1.py,file2.py"
+
+CodeGraph CLI must be available in PATH. If not found, writes SKIPPED status
+and does not block task execution.
+"""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+
+@dataclass
+class CodeGraphStatus:
+    available: bool = False
+    indexed: bool = False
+    version: Optional[str] = None
+    error: Optional[str] = None
+    files_indexed: int = 0
+    nodes_count: int = 0
+    command: Optional[str] = None
+
+    def to_dict(self):
+        return {
+            "available": self.available,
+            "indexed": self.indexed,
+            "version": self.version,
+            "error": self.error,
+            "files_indexed": self.files_indexed,
+            "nodes_count": self.nodes_count,
+            "command": self.command,
+        }
+
+
+@dataclass
+class PreflightResult:
+    status: str = "UNKNOWN"
+    context_generated: bool = False
+    impact_generated: bool = False
+    context_file: Optional[str] = None
+    impact_file: Optional[str] = None
+    status_file: Optional[str] = None
+    symbols_found: int = 0
+    impact_files_count: int = 0
+    affected_tests_count: int = 0
+    warnings: list = field(default_factory=list)
+    error: Optional[str] = None
+
+    def to_dict(self):
+        return {
+            "status": self.status,
+            "context_generated": self.context_generated,
+            "impact_generated": self.impact_generated,
+            "context_file": self.context_file,
+            "impact_file": self.impact_file,
+            "status_file": self.status_file,
+            "symbols_found": self.symbols_found,
+            "impact_files_count": self.impact_files_count,
+            "affected_tests_count": self.affected_tests_count,
+            "warnings": self.warnings,
+            "error": self.error,
+        }
+
+
+def _run_cmd(cmd, timeout=60, cwd=None):
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd,
+        )
+        return result.returncode, result.stdout, result.stderr
+    except FileNotFoundError:
+        return 127, "", "command not found"
+    except subprocess.TimeoutExpired:
+        return 124, "", "timeout"
+    except OSError as e:
+        return 1, "", str(e)
+
+
+def check_codegraph_available(repo_dir=None):
+    # [CODEGRAPH-002] codegraph_preflight
+    # codegraph status takes [path] as positional argument, not -p.
+    # Use -j for JSON output for robust parsing.
+    rc, stdout, stderr = _run_cmd(["codegraph", "--version"])
+    if rc != 0:
+        return CodeGraphStatus(available=False, error="codegraph not found in PATH")
+
+    version = stdout.strip()
+    status = CodeGraphStatus(available=True, version=version)
+
+    status_cmd = ["codegraph", "status", "-j", repo_dir or "."]
+    status.command = " ".join(status_cmd)
+    rc, stdout, stderr = _run_cmd(status_cmd, timeout=30)
+    if rc != 0:
+        status.error = f"status check failed: {stderr.strip()[:200]}"
+        return status
+
+    # [CODEGRAPH-002] Parse JSON output from codegraph status -j
+    parsed = False
+    if stdout.strip():
+        try:
+            data = json.loads(stdout)
+            status.files_indexed = data.get("fileCount", 0)
+            status.nodes_count = data.get("nodeCount", 0)
+            parsed = True
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # Fallback: parse text output (handles comma-formatted numbers)
+    if not parsed:
+        for line in stdout.splitlines():
+            line = line.strip()
+            if line.startswith("Files:"):
+                try:
+                    val = line.split(":", 1)[1].strip().replace(",", "")
+                    status.files_indexed = int(val)
+                except (ValueError, IndexError):
+                    pass
+            elif line.startswith("Nodes:"):
+                try:
+                    val = line.split(":", 1)[1].strip().replace(",", "")
+                    status.nodes_count = int(val)
+                except (ValueError, IndexError):
+                    pass
+
+    status.indexed = status.files_indexed > 0
+    return status
+
+
+def _extract_keywords_from_task(task_id, task_title):
+    words = []
+    for part in task_id.split("-"):
+        if part and not part.isdigit() and len(part) > 1:
+            words.append(part.lower())
+    title_words = task_title.split()
+    skip = {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "of",
+        "in",
+        "to",
+        "for",
+        "with",
+        "on",
+        "at",
+        "by",
+        "from",
+        "is",
+        "it",
+        "as",
+        "no",
+        "not",
+        "do",
+        "be",
+    }
+    for w in title_words:
+        clean = w.strip(".,;:!?()[]{}").lower()
+        if len(clean) > 2 and clean not in skip:
+            words.append(clean)
+    return list(dict.fromkeys(words))[:20]
+
+
+def generate_context(run_dir, task_id, task_title, repo_dir=None):
+    os.makedirs(run_dir, exist_ok=True)
+    context_file = os.path.join(run_dir, "codegraph-context.txt")
+    status_file = os.path.join(run_dir, "codegraph-status.json")
+
+    cg_status = check_codegraph_available(repo_dir)
+
+    status_data = {
+        "task_id": task_id,
+        "generated_at": datetime.now().isoformat(),
+        "phase": "pre",
+        "codegraph": cg_status.to_dict(),
+    }
+
+    if not cg_status.available or not cg_status.indexed:
+        status_data["result"] = "SKIPPED"
+        status_data["reason"] = (
+            "CodeGraph not available"
+            if not cg_status.available
+            else "CodeGraph not indexed"
+        )
+        with open(status_file, "w", encoding="utf-8") as f:
+            json.dump(status_data, f, indent=2, ensure_ascii=False)
+        with open(context_file, "w", encoding="utf-8") as f:
+            f.write(f"# CodeGraph Context: SKIPPED\n")
+            f.write(f"# Task: {task_id}\n")
+            f.write(f"# Reason: {status_data['reason']}\n")
+        return PreflightResult(
+            status="SKIPPED",
+            context_file=context_file,
+            status_file=status_file,
+            warnings=[status_data["reason"]],
+        )
+
+    keywords = _extract_keywords_from_task(task_id, task_title)
+    query = " ".join(keywords)
+
+    rc, stdout, stderr = _run_cmd(
+        ["codegraph", "context", query, "-p", repo_dir or ".", "--no-code", "-n", "50"],
+        timeout=60,
+    )
+
+    context_lines = []
+    context_lines.append(f"# CodeGraph Context for {task_id}")
+    context_lines.append(f"# Task: {task_title}")
+    context_lines.append(f"# Generated: {datetime.now().isoformat()}")
+    context_lines.append(f"# Keywords: {', '.join(keywords)}")
+    context_lines.append("")
+
+    symbols_found = 0
+    if rc == 0 and stdout.strip():
+        context_lines.append(stdout)
+        sym_count = stdout.count("## ") + stdout.count("### ")
+        symbols_found = max(sym_count, stdout.count("`"))
+    else:
+        context_lines.append(f"# Context generation returned no results")
+        if stderr.strip():
+            context_lines.append(f"# Error: {stderr.strip()[:200]}")
+
+    with open(context_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(context_lines))
+
+    status_data["result"] = "OK" if rc == 0 else "PARTIAL"
+# [M-013] codegraph_auto_dev_preflight
+"""
+Tests for scripts/codegraph_preflight.py — CodeGraph impact preflight
+integration for auto dev loop. Generates context/impact/status files in
+task run archives.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
+sys.path.insert(0, str(SCRIPTS_DIR))
+
+import codegraph_preflight as CG
+
+
+class TestCodeGraphStatus:
+    def test_defaults(self):
+        s = CG.CodeGraphStatus()
+        assert s.available is False
+        assert s.indexed is False
+        assert s.version is None
+        assert s.error is None
+        assert s.files_indexed == 0
+        assert s.nodes_count == 0
+
+    def test_to_dict(self):
+        s = CG.CodeGraphStatus(available=True, version="1.2.3", files_indexed=100)
+        d = s.to_dict()
+        assert d["available"] is True
+        assert d["version"] == "1.2.3"
+        assert d["files_indexed"] == 100
+
+
+class TestPreflightResult:
+    def test_defaults(self):
+        r = CG.PreflightResult()
+        assert r.status == "UNKNOWN"
+        assert r.context_generated is False
+        assert r.impact_generated is False
+        assert r.symbols_found == 0
+        assert r.warnings == []
+
+    def test_to_dict(self):
+        r = CG.PreflightResult(
+            status="OK",
+            context_generated=True,
+            symbols_found=5,
+            warnings=["test"],
+        )
+        d = r.to_dict()
+        assert d["status"] == "OK"
+        assert d["context_generated"] is True
+        assert d["symbols_found"] == 5
+        assert d["warnings"] == ["test"]
+
+
+class TestRunCmd:
+    def test_success(self):
+        rc, stdout, stderr = CG._run_cmd(["echo", "hello"])
+        assert rc == 0
+        assert "hello" in stdout
+
+    def test_not_found(self):
+        rc, stdout, stderr = CG._run_cmd(["nonexistent_command_xyz_12345"])
+        assert rc == 127
+        assert "not found" in stderr
+
+    def test_nonzero_exit(self):
+        rc, stdout, stderr = CG._run_cmd(["false"])
+        assert rc != 0
+
+    def test_timeout(self):
+        rc, stdout, stderr = CG._run_cmd(["sleep", "10"], timeout=0.1)
+        assert rc == 124
+
+    def test_os_error(self):
+        with patch("subprocess.run", side_effect=OSError("mock error")):
+            rc, stdout, stderr = CG._run_cmd(["anything"])
+            assert rc == 1
+            assert "mock error" in stderr
+
+
+class TestCheckCodeGraphAvailable:
+    def test_not_in_path(self):
+        with patch.object(CG, "_run_cmd", return_value=(1, "", "not found")):
+            status = CG.check_codegraph_available()
+            assert status.available is False
+            assert "not found" in status.error
+
+    def test_available_no_index(self):
+        with patch.object(
+            CG, "_run_cmd", side_effect=[(0, "1.0.0", ""), (1, "", "no index")]
+        ):
+            status = CG.check_codegraph_available()
+            assert status.available is True
+            assert status.version == "1.0.0"
+            assert status.indexed is False
+
+    def test_available_with_index(self):
+        version_out = (0, "1.0.0", "")
+        # [CODEGRAPH-002] codegraph status -j returns JSON
+        import json as _json
+
+        status_json = _json.dumps(
+            {"fileCount": 255, "nodeCount": 6195, "initialized": True}
+        )
+        status_out = (0, status_json, "")
+        with patch.object(CG, "_run_cmd", side_effect=[version_out, status_out]):
+            status = CG.check_codegraph_available()
+            assert status.available is True
+            assert status.indexed is True
+            assert status.files_indexed == 255
+            assert status.nodes_count == 6195
+
+    def test_status_command_uses_positional_path(self):
+        """[CODEGRAPH-002] codegraph status must NOT use -p (unsupported); uses -j [path]."""
+        version_out = (0, "1.0.0", "")
+        status_json = '{"fileCount": 10, "nodeCount": 20}'
+        captured_cmds = []
+
+        original_run_cmd = CG._run_cmd
+
+        def tracking_run_cmd(cmd, **kwargs):
+            captured_cmds.append(list(cmd))
+            return original_run_cmd(cmd, **kwargs)
+
+        with patch.object(CG, "_run_cmd", side_effect=tracking_run_cmd):
+            CG.check_codegraph_available("/some/repo")
+
+        # First call: version check, second call: status check
+        assert len(captured_cmds) >= 2
+        status_cmd = captured_cmds[1]
+        assert status_cmd[0] == "codegraph"
+        assert status_cmd[1] == "status"
+        # Must NOT contain -p (unsupported by codegraph status)
+        assert "-p" not in status_cmd
+        # Path should be positional
+        assert "/some/repo" in status_cmd
+
+    def test_status_records_command_in_result(self):
+        version_out = (0, "1.0.0", "")
+        status_json = '{"fileCount": 5, "nodeCount": 10}'
+        with patch.object(
+            CG, "_run_cmd", side_effect=[version_out, (0, status_json, "")]
+        ):
+            status = CG.check_codegraph_available()
+            assert status.command is not None
+            assert "status" in status.command
+            assert "-p" not in status.command
+
+    def test_status_text_fallback_with_commas(self):
+        """[CODEGRAPH-002] Text fallback handles comma-formatted numbers."""
+        version_out = (0, "1.0.0", "")
+        # Invalid JSON, should fallback to text parsing
+        status_text = "Files:     255\nNodes:     6,195\n"
+        with patch.object(
+            CG, "_run_cmd", side_effect=[version_out, (0, status_text, "")]
+        ):
+            status = CG.check_codegraph_available()
+            assert status.available is True
+            assert status.files_indexed == 255
+            assert status.nodes_count == 6195
+
+
+class TestExtractKeywords:
+    def test_basic(self):
+        keywords = CG._extract_keywords_from_task("M-013", "CodeGraph impact preflight")
+        assert "codegraph" in keywords
+        assert "impact" in keywords
+        assert "preflight" in keywords
+
+    def test_stops_words_filtered(self):
+        keywords = CG._extract_keywords_from_task("X-000", "the an and or of in to for with on at by from")
+        assert len(keywords) == 0
+
+    def test_short_words_filtered(self):
+        keywords = CG._extract_keywords_from_task("H-001", "to be or not to be")
+        assert len(keywords) == 0
+
+    def test_limit_20(self):
+        long_title = " ".join([f"word{i}" for i in range(50)])
+        keywords = CG._extract_keywords_from_task("M-013", long_title)
+        assert len(keywords) <= 20
+
+    def test_dedup(self):
+        keywords = CG._extract_keywords_from_task("M-013", "codegraph codegraph codegraph")
+        assert keywords.count("codegraph") == 1
+
+
+class TestGenerateContext:
+    def test_skipped_not_available(self, tmp_path):
+        run_dir = str(tmp_path / "run")
+        with patch.object(
+            CG,
+            "check_codegraph_available",
+            return_value=CG.CodeGraphStatus(available=False),
+        ):
+            result = CG.generate_context(run_dir, "M-013", "test task")
+            assert result.status == "SKIPPED"
+            assert os.path.exists(os.path.join(run_dir, "codegraph-context.txt"))
+            assert os.path.exists(os.path.join(run_dir, "codegraph-status.json"))
+
+    def test_skipped_not_indexed(self, tmp_path):
+        run_dir = str(tmp_path / "run2")
+        with patch.object(
+            CG,
+            "check_codegraph_available",
+            return_value=CG.CodeGraphStatus(available=True, indexed=False),
+        ):
+            result = CG.generate_context(run_dir, "M-013", "test task")
+            assert result.status == "SKIPPED"
+
+    def test_context_generated(self, tmp_path):
+        run_dir = str(tmp_path / "run3")
+        cg_status = CG.CodeGraphStatus(
+            available=True, indexed=True, version="1.0", files_indexed=10
+        )
+        context_output = "## SymbolA\n### function foo\n### function bar"
+        with patch.object(
+            CG, "check_codegraph_available", return_value=cg_status
+        ), patch.object(CG, "_run_cmd", return_value=(0, context_output, "")):
+            result = CG.generate_context(run_dir, "M-013", "CodeGraph impact")
+            assert result.status == "OK"
+            assert result.context_generated is True
+            assert result.symbols_found > 0
+
+            with open(os.path.join(run_dir, "codegraph-status.json")) as f:
+                status_data = json.load(f)
+            assert status_data["result"] == "OK"
+
+    def test_context_no_results(self, tmp_path):
+
+exec
+/bin/zsh -lc "sed -n '260,620p' scripts/codegraph_preflight.py && sed -n '240,560p' tests/test_m013_codegraph_preflight.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    status_data["result"] = "OK" if rc == 0 else "PARTIAL"
+    status_data["symbols_found"] = symbols_found
+    with open(status_file, "w", encoding="utf-8") as f:
+        json.dump(status_data, f, indent=2, ensure_ascii=False)
+
+    warnings = []
+    if rc != 0:
+        warnings.append(f"codegraph context exited with code {rc}")
+    if symbols_found == 0:
+        warnings.append("no symbols found in context")
+
+    return PreflightResult(
+        status="OK" if rc == 0 else "PARTIAL",
+        context_generated=True,
+        context_file=context_file,
+        status_file=status_file,
+        symbols_found=symbols_found,
+        warnings=warnings,
+    )
+
+
+def generate_impact(run_dir, changed_files_str, repo_dir=None):
+    impact_file = os.path.join(run_dir, "codegraph-impact.txt")
+    status_file = os.path.join(run_dir, "codegraph-status.json")
+
+    cg_status = check_codegraph_available(repo_dir)
+
+    existing_status = {}
+    if os.path.exists(status_file):
+        try:
+            with open(status_file, "r", encoding="utf-8") as f:
+                existing_status = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+
+    status_data = existing_status.copy() if existing_status else {}
+    status_data["post_generated_at"] = datetime.now().isoformat()
+    status_data["phase"] = "post"
+    status_data["codegraph_post"] = cg_status.to_dict()
+
+    changed_files = [f.strip() for f in changed_files_str.split(",") if f.strip()]
+    if not changed_files:
+        status_data["post_result"] = "SKIPPED"
+        status_data["reason"] = "no changed files provided"
+        with open(status_file, "w", encoding="utf-8") as f:
+            json.dump(status_data, f, indent=2, ensure_ascii=False)
+        with open(impact_file, "w", encoding="utf-8") as f:
+            f.write("# CodeGraph Impact: SKIPPED\n")
+            f.write("# Reason: no changed files\n")
+        return PreflightResult(
+            status="SKIPPED",
+            impact_file=impact_file,
+            status_file=status_file,
+            warnings=["no changed files"],
+        )
+
+    if not cg_status.available or not cg_status.indexed:
+        status_data["post_result"] = "SKIPPED"
+        status_data["reason"] = (
+            "CodeGraph not available"
+            if not cg_status.available
+            else "CodeGraph not indexed"
+        )
+        with open(status_file, "w", encoding="utf-8") as f:
+            json.dump(status_data, f, indent=2, ensure_ascii=False)
+        with open(impact_file, "w", encoding="utf-8") as f:
+            f.write(f"# CodeGraph Impact: SKIPPED\n")
+            f.write(f"# Reason: {status_data['reason']}\n")
+        return PreflightResult(
+            status="SKIPPED",
+            impact_file=impact_file,
+            status_file=status_file,
+            warnings=[status_data["reason"]],
+        )
+
+    impact_lines = []
+    impact_lines.append("# CodeGraph Impact Analysis")
+    impact_lines.append(f"# Generated: {datetime.now().isoformat()}")
+    impact_lines.append(f"# Changed files: {len(changed_files)}")
+    impact_lines.append("")
+
+    for cf in changed_files:
+        impact_lines.append(f"## Source: {cf}")
+        rc, stdout, stderr = _run_cmd(
+            ["codegraph", "impact", cf, "-p", repo_dir or ".", "-d", "2"],
+            timeout=30,
+        )
+        if rc == 0 and stdout.strip():
+            impact_lines.append(stdout)
+        else:
+            impact_lines.append(f"(no impact data: rc={rc})")
+            if stderr.strip():
+                impact_lines.append(f"  error: {stderr.strip()[:100]}")
+        impact_lines.append("")
+
+    flat_lines = "\n".join(impact_lines).splitlines()
+    total_impact_files = sum(
+        1 for line in flat_lines if line.startswith("  →") or line.startswith("  -")
+    )
+
+    impact_lines.append("## Affected Tests")
+    affected_cmd = ["codegraph", "affected", "-p", repo_dir or ".", "-q"]
+    affected_cmd.extend(changed_files)
+    rc, stdout, stderr = _run_cmd(
+        affected_cmd,
+        timeout=30,
+    )
+    affected_tests_count = 0
+    if rc == 0 and stdout.strip():
+        test_lines = [line.strip() for line in stdout.strip().splitlines() if line.strip()]
+        affected_tests_count = len(test_lines)
+        for tl in test_lines:
+            impact_lines.append(f"  - {tl}")
+    else:
+        impact_lines.append("  (could not determine affected tests)")
+
+    with open(impact_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(impact_lines))
+
+    status_data["post_result"] = "OK"
+    status_data["impact_files_count"] = total_impact_files
+    status_data["affected_tests_count"] = affected_tests_count
+    status_data["changed_files"] = changed_files
+    with open(status_file, "w", encoding="utf-8") as f:
+        json.dump(status_data, f, indent=2, ensure_ascii=False)
+
+    warnings = []
+    if total_impact_files > 30:
+        warnings.append(
+            f"large blast radius: {total_impact_files} files impacted"
+        )
+    if affected_tests_count == 0:
+        warnings.append("no affected tests found — coverage gap possible")
+
+    return PreflightResult(
+        status="OK",
+        impact_generated=True,
+        impact_file=impact_file,
+        status_file=status_file,
+        impact_files_count=total_impact_files,
+        affected_tests_count=affected_tests_count,
+        warnings=warnings,
+    )
+
+
+def run_preflight(args):
+    repo_dir = args.repo_dir or os.getcwd()
+    run_dir = args.run_dir
+
+    os.makedirs(run_dir, exist_ok=True)
+
+    result = PreflightResult()
+
+    if args.phase in ("pre", "full"):
+        pre = generate_context(
+            run_dir, args.task_id or "UNKNOWN", args.task_title or "", repo_dir
+        )
+        result.context_generated = pre.context_generated
+        result.context_file = pre.context_file
+        result.status_file = pre.status_file
+        result.symbols_found = pre.symbols_found
+        result.warnings.extend(pre.warnings)
+        if pre.status == "SKIPPED":
+            result.status = "SKIPPED"
+        else:
+            result.status = pre.status
+
+    if args.phase in ("post", "full") and args.changed_files:
+        post = generate_impact(run_dir, args.changed_files, repo_dir)
+        result.impact_generated = post.impact_generated
+        result.impact_file = post.impact_file
+        result.impact_files_count = post.impact_files_count
+        result.affected_tests_count = post.affected_tests_count
+        result.warnings.extend(post.warnings)
+        if not result.status_file:
+            result.status_file = post.status_file
+        if result.status != "SKIPPED":
+            result.status = post.status
+
+    if not args.changed_files and args.phase in ("post", "full"):
+        result.warnings.append("no changed files — skipping impact")
+
+    if args.dry_run:
+        print(f"[DRY-RUN] Phase: {args.phase}")
+        print(f"[DRY-RUN] Run dir: {run_dir}")
+        print(f"[DRY-RUN] Status: {result.status}")
+        if result.warnings:
+            print(f"[DRY-RUN] Warnings: {len(result.warnings)}")
+            for w in result.warnings:
+                print(f"  - {w}")
+        return result
+
+    print(f"[M-013] CodeGraph preflight: {result.status}")
+    if result.context_file:
+        print(f"  Context: {result.context_file}")
+    if result.impact_file:
+        print(f"  Impact:  {result.impact_file}")
+    if result.status_file:
+        print(f"  Status:  {result.status_file}")
+    if result.warnings:
+        print(f"  Warnings ({len(result.warnings)}):")
+        for w in result.warnings:
+            print(f"    - {w}")
+
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="[M-013] CodeGraph impact preflight for auto dev loop"
+    )
+    parser.add_argument(
+        "phase",
+        choices=["pre", "post", "full"],
+        help="Pre-task context, post-task impact, or both",
+    )
+    parser.add_argument(
+        "--run-dir", required=True, help="Task run archive directory"
+    )
+    parser.add_argument("--task-id", default="", help="Task ID (e.g. M-013)")
+    parser.add_argument("--task-title", default="", help="Task title text")
+    parser.add_argument(
+        "--changed-files", default="", help="Comma-separated list of changed files"
+    )
+    parser.add_argument(
+        "--repo-dir", default=None, help="Repository root directory"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print results without writing files"
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Output result as JSON"
+    )
+
+    args = parser.parse_args()
+    result = run_preflight(args)
+
+    if args.json:
+        print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()
+    def test_context_no_results(self, tmp_path):
+        run_dir = str(tmp_path / "run4")
+        cg_status = CG.CodeGraphStatus(
+            available=True, indexed=True, version="1.0", files_indexed=10
+        )
+        with patch.object(
+            CG, "check_codegraph_available", return_value=cg_status
+        ), patch.object(CG, "_run_cmd", return_value=(1, "", "some error")):
+            result = CG.generate_context(run_dir, "M-013", "test task")
+            assert result.status == "PARTIAL"
+            assert len(result.warnings) > 0
+
+
+class TestGenerateImpact:
+    def test_no_changed_files(self, tmp_path):
+        run_dir = str(tmp_path / "run")
+        os.makedirs(run_dir, exist_ok=True)
+        result = CG.generate_impact(run_dir, "", ".")
+        assert result.status == "SKIPPED"
+        assert os.path.exists(os.path.join(run_dir, "codegraph-impact.txt"))
+
+    def test_skipped_not_available(self, tmp_path):
+        run_dir = str(tmp_path / "run")
+        os.makedirs(run_dir, exist_ok=True)
+        with patch.object(
+            CG,
+            "check_codegraph_available",
+            return_value=CG.CodeGraphStatus(available=False),
+        ):
+            result = CG.generate_impact(run_dir, "file1.py,file2.py", ".")
+            assert result.status == "SKIPPED"
+
+    def test_impact_generated(self, tmp_path):
+        run_dir = str(tmp_path / "run")
+        os.makedirs(run_dir, exist_ok=True)
+        cg_status = CG.CodeGraphStatus(
+            available=True, indexed=True, version="1.0", files_indexed=10
+        )
+        impact_output = "  → module.function\n  → other.call"
+        affected_output = "tests/test_a.py\ntests/test_b.py"
+        with patch.object(
+            CG, "check_codegraph_available", return_value=cg_status
+        ), patch.object(
+            CG, "_run_cmd", side_effect=[(0, impact_output, ""), (0, affected_output, "")]
+        ):
+            result = CG.generate_impact(run_dir, "src/main.py", ".")
+            assert result.status == "OK"
+            assert result.impact_generated is True
+            assert result.impact_files_count == 2
+            assert result.affected_tests_count == 2
+
+    def test_large_blast_radius_warning(self, tmp_path):
+        run_dir = str(tmp_path / "run")
+        os.makedirs(run_dir, exist_ok=True)
+        cg_status = CG.CodeGraphStatus(
+            available=True, indexed=True, version="1.0", files_indexed=10
+        )
+        impact_lines = ["  → file" + str(i) for i in range(35)]
+        impact_output = "\n".join(impact_lines)
+        with patch.object(
+            CG, "check_codegraph_available", return_value=cg_status
+        ), patch.object(
+            CG, "_run_cmd", side_effect=[(0, impact_output, ""), (0, "", "")]
+        ):
+            result = CG.generate_impact(run_dir, "src/core.py", ".")
+            assert result.status == "OK"
+            assert any("large blast radius" in w for w in result.warnings)
+
+    def test_preserves_existing_status(self, tmp_path):
+        run_dir = str(tmp_path / "run")
+        os.makedirs(run_dir, exist_ok=True)
+        existing_status = {"task_id": "M-013", "phase": "pre", "result": "OK"}
+        status_file = os.path.join(run_dir, "codegraph-status.json")
+        with open(status_file, "w") as f:
+            json.dump(existing_status, f)
+
+        cg_status = CG.CodeGraphStatus(
+            available=True, indexed=True, version="1.0", files_indexed=10
+        )
+        with patch.object(
+            CG, "check_codegraph_available", return_value=cg_status
+        ), patch.object(CG, "_run_cmd", side_effect=[(0, "ok", ""), (0, "", "")]):
+            CG.generate_impact(run_dir, "file.py", ".")
+
+            with open(status_file) as f:
+                merged = json.load(f)
+            assert merged["task_id"] == "M-013"
+            assert merged["phase"] == "post"
+            assert merged["post_result"] == "OK"
+
+
+class TestRunPreflight:
+    def test_pre_phase(self, tmp_path):
+        run_dir = str(tmp_path / "run")
+        args = MagicMock(
+            phase="pre",
+            run_dir=run_dir,
+            task_id="M-013",
+            task_title="test",
+            changed_files="",
+            repo_dir=str(tmp_path),
+            dry_run=False,
+        )
+        with patch.object(
+            CG,
+            "check_codegraph_available",
+            return_value=CG.CodeGraphStatus(available=False),
+        ):
+            result = CG.run_preflight(args)
+            assert result.status == "SKIPPED"
+
+    def test_post_phase_no_files(self, tmp_path):
+        run_dir = str(tmp_path / "run")
+        args = MagicMock(
+            phase="post",
+            run_dir=run_dir,
+            task_id="M-013",
+            task_title="test",
+            changed_files="",
+            repo_dir=str(tmp_path),
+            dry_run=False,
+        )
+        result = CG.run_preflight(args)
+        assert any("no changed files" in w for w in result.warnings)
+
+    def test_full_phase(self, tmp_path):
+        run_dir = str(tmp_path / "run")
+        args = MagicMock(
+            phase="full",
+            run_dir=run_dir,
+            task_id="M-013",
+            task_title="test",
+            changed_files="file1.py",
+            repo_dir=str(tmp_path),
+            dry_run=False,
+        )
+        with patch.object(
+            CG,
+            "check_codegraph_available",
+            return_value=CG.CodeGraphStatus(available=False),
+        ):
+            result = CG.run_preflight(args)
+            assert result.status == "SKIPPED"
+
+    def test_dry_run(self, tmp_path):
+        run_dir = str(tmp_path / "run")
+        args = MagicMock(
+            phase="pre",
+            run_dir=run_dir,
+            task_id="M-013",
+            task_title="test",
+            changed_files="",
+            repo_dir=str(tmp_path),
+            dry_run=True,
+        )
+        with patch.object(
+            CG,
+            "check_codegraph_available",
+            return_value=CG.CodeGraphStatus(available=False),
+        ):
+            result = CG.run_preflight(args)
+            assert result.status == "SKIPPED"
+
+
+class TestMainCli:
+    def test_pre_dry_run(self, tmp_path):
+        run_dir = str(tmp_path / "run")
+        with patch(
+            "sys.argv",
+            [
+                "codegraph_preflight.py",
+                "pre",
+                "--run-dir",
+                run_dir,
+                "--task-id",
+                "M-013",
+                "--dry-run",
+            ],
+        ), patch.object(
+            CG,
+            "check_codegraph_available",
+            return_value=CG.CodeGraphStatus(available=False),
+        ):
+            CG.main()
+
+    def test_json_output(self, tmp_path):
+        run_dir = str(tmp_path / "run")
+        with patch(
+            "sys.argv",
+            [
+                "codegraph_preflight.py",
+                "pre",
+                "--run-dir",
+                run_dir,
+                "--task-id",
+                "M-013",
+                "--dry-run",
+                "--json",
+            ],
+        ), patch.object(
+            CG,
+            "check_codegraph_available",
+            return_value=CG.CodeGraphStatus(available=False),
+        ):
+            CG.main()
+
+
+class TestAcceptanceM013:
+    def test_codegraph_unavailable_does_not_block(self, tmp_path):
+        run_dir = str(tmp_path / "run5")
+        with patch.object(
+            CG,
+            "check_codegraph_available",
+            return_value=CG.CodeGraphStatus(available=False),
+        ):
+            result = CG.generate_context(run_dir, "M-013", "test")
+            assert result.status == "SKIPPED"
+            assert os.path.exists(os.path.join(run_dir, "codegraph-context.txt"))
+            assert os.path.exists(os.path.join(run_dir, "codegraph-status.json"))
+
+    def test_codegraph_available_generates_files(self, tmp_path):
+        run_dir = str(tmp_path / "run6")
+        cg_status = CG.CodeGraphStatus(
+            available=True, indexed=True, version="1.0", files_indexed=10
+        )
+        with patch.object(
+            CG, "check_codegraph_available", return_value=cg_status
+        ), patch.object(
+            CG,
+            "_run_cmd",
+            side_effect=[
+                (0, "## SymbolA\n### func", ""),
+                (0, "  → dep1\n  → dep2", ""),
+                (0, "tests/test_a.py", ""),
+            ],
+        ):
+            pre = CG.generate_context(run_dir, "M-013", "test task")
+            assert pre.status == "OK"
+            assert pre.context_generated is True
+
+            post = CG.generate_impact(run_dir, "file.py", ".")
+            assert post.status == "OK"
+            assert post.impact_generated is True
+
+            assert os.path.exists(os.path.join(run_dir, "codegraph-context.txt"))
+            assert os.path.exists(os.path.join(run_dir, "codegraph-impact.txt"))
+            assert os.path.exists(os.path.join(run_dir, "codegraph-status.json"))
+
+    def test_status_json_roundtrip(self, tmp_path):
+        run_dir = str(tmp_path / "run7")
+        with patch.object(
+            CG,
+            "check_codegraph_available",
+            return_value=CG.CodeGraphStatus(available=False),
+        ):
+            CG.generate_context(run_dir, "M-013", "test")
+            status_file = os.path.join(run_dir, "codegraph-status.json")
+            with open(status_file) as f:
+                data = json.load(f)
+            assert data["task_id"] == "M-013"
+            assert "generated_at" in data
+            assert data["codegraph"]["available"] is False
+            assert data["result"] == "SKIPPED"
+
+    def test_no_external_network(self):
+        assert True
+
+    def test_no_sensitive_data_in_output(self, tmp_path):
+        run_dir = str(tmp_path / "run8")
+        with patch.object(
+            CG,
+            "check_codegraph_available",
+            return_value=CG.CodeGraphStatus(available=False),
+        ):
+            CG.generate_context(run_dir, "M-013", "test")
+
+            with open(os.path.join(run_dir, "codegraph-context.txt")) as f:
+                content = f.read()
+            assert "api_key" not in content.lower()
+            assert "password" not in content.lower()
+            assert "token" not in content.lower()
+
+    def test_shell_script_syntax(self):
+        script = Path(__file__).resolve().parent.parent / "scripts" / "auto_dev_loop.sh"
+        import subprocess
+
+        result = subprocess.run(
+            ["bash", "-n", str(script)], capture_output=True, text=True
+        )
+        assert result.returncode == 0, f"Shell syntax error: {result.stderr}"
+
+exec
+/bin/zsh -lc "nl -ba tests/test_m013_codegraph_preflight.py | sed -n '120,150p'; nl -ba scripts/codegraph_preflight.py | sed -n '118,142p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   120	            assert status.indexed is True
+   121	            assert status.files_indexed == 255
+   122	            assert status.nodes_count == 6195
+   123	
+   124	    def test_status_command_uses_positional_path(self):
+   125	        """[CODEGRAPH-002] codegraph status must NOT use -p (unsupported); uses -j [path]."""
+   126	        version_out = (0, "1.0.0", "")
+   127	        status_json = '{"fileCount": 10, "nodeCount": 20}'
+   128	        captured_cmds = []
+   129	
+   130	        original_run_cmd = CG._run_cmd
+   131	
+   132	        def tracking_run_cmd(cmd, **kwargs):
+   133	            captured_cmds.append(list(cmd))
+   134	            return original_run_cmd(cmd, **kwargs)
+   135	
+   136	        with patch.object(CG, "_run_cmd", side_effect=tracking_run_cmd):
+   137	            CG.check_codegraph_available("/some/repo")
+   138	
+   139	        # First call: version check, second call: status check
+   140	        assert len(captured_cmds) >= 2
+   141	        status_cmd = captured_cmds[1]
+   142	        assert status_cmd[0] == "codegraph"
+   143	        assert status_cmd[1] == "status"
+   144	        # Must NOT contain -p (unsupported by codegraph status)
+   145	        assert "-p" not in status_cmd
+   146	        # Path should be positional
+   147	        assert "/some/repo" in status_cmd
+   148	
+   149	    def test_status_records_command_in_result(self):
+   150	        version_out = (0, "1.0.0", "")
+   118	        return CodeGraphStatus(available=False, error="codegraph not found in PATH")
+   119	
+   120	    version = stdout.strip()
+   121	    status = CodeGraphStatus(available=True, version=version)
+   122	
+   123	    status_cmd = ["codegraph", "status", "-j", repo_dir or "."]
+   124	    status.command = " ".join(status_cmd)
+   125	    rc, stdout, stderr = _run_cmd(status_cmd, timeout=30)
+   126	    if rc != 0:
+   127	        status.error = f"status check failed: {stderr.strip()[:200]}"
+   128	        return status
+   129	
+   130	    # [CODEGRAPH-002] Parse JSON output from codegraph status -j
+   131	    parsed = False
+   132	    if stdout.strip():
+   133	        try:
+   134	            data = json.loads(stdout)
+   135	            status.files_indexed = data.get("fileCount", 0)
+   136	            status.nodes_count = data.get("nodeCount", 0)
+   137	            parsed = True
+   138	        except (json.JSONDecodeError, TypeError):
+   139	            pass
+   140	
+   141	    # Fallback: parse text output (handles comma-formatted numbers)
+   142	    if not parsed:
+
+codex
+The implementation fix appears reasonable, but the new regression test invokes the optional external CodeGraph binary and will fail in environments where it is absent. This makes the patch unsafe for the existing test suite.
+
+Review comment:
+
+- [P2] Mock the status command instead of invoking CodeGraph — /Users/maybee/TradingAgents-AShare/tests/test_m013_codegraph_preflight.py:130-137
+  When `codegraph` is not installed in the test environment, this test only captures the `--version` call because `check_codegraph_available()` returns early, so `assert len(captured_cmds) >= 2` fails. CodeGraph is treated as optional elsewhere in this suite, so this regression makes CI depend on a local CLI; mock `_run_cmd` to return the version and status JSON while still recording the command.
+The implementation fix appears reasonable, but the new regression test invokes the optional external CodeGraph binary and will fail in environments where it is absent. This makes the patch unsafe for the existing test suite.
+
+Review comment:
+
+- [P2] Mock the status command instead of invoking CodeGraph — /Users/maybee/TradingAgents-AShare/tests/test_m013_codegraph_preflight.py:130-137
+  When `codegraph` is not installed in the test environment, this test only captures the `--version` call because `check_codegraph_available()` returns early, so `assert len(captured_cmds) >= 2` fails. CodeGraph is treated as optional elsewhere in this suite, so this regression makes CI depend on a local CLI; mock `_run_cmd` to return the version and status JSON while still recording the command.

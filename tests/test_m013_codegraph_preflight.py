@@ -107,11 +107,66 @@ class TestCheckCodeGraphAvailable:
 
     def test_available_with_index(self):
         version_out = (0, "1.0.0", "")
-        status_out = (0, "Files: 255\nNodes: 6195\n", "")
+        # [CODEGRAPH-002] codegraph status -j returns JSON
+        import json as _json
+
+        status_json = _json.dumps(
+            {"fileCount": 255, "nodeCount": 6195, "initialized": True}
+        )
+        status_out = (0, status_json, "")
         with patch.object(CG, "_run_cmd", side_effect=[version_out, status_out]):
             status = CG.check_codegraph_available()
             assert status.available is True
             assert status.indexed is True
+            assert status.files_indexed == 255
+            assert status.nodes_count == 6195
+
+    def test_status_command_uses_positional_path(self):
+        """[CODEGRAPH-002] codegraph status must NOT use -p (unsupported); uses -j [path]."""
+        version_out = (0, "1.0.0", "")
+        status_json = '{"fileCount": 10, "nodeCount": 20}'
+        captured_cmds = []
+
+        original_run_cmd = CG._run_cmd
+
+        def tracking_run_cmd(cmd, **kwargs):
+            captured_cmds.append(list(cmd))
+            return original_run_cmd(cmd, **kwargs)
+
+        with patch.object(CG, "_run_cmd", side_effect=tracking_run_cmd):
+            CG.check_codegraph_available("/some/repo")
+
+        # First call: version check, second call: status check
+        assert len(captured_cmds) >= 2
+        status_cmd = captured_cmds[1]
+        assert status_cmd[0] == "codegraph"
+        assert status_cmd[1] == "status"
+        # Must NOT contain -p (unsupported by codegraph status)
+        assert "-p" not in status_cmd
+        # Path should be positional
+        assert "/some/repo" in status_cmd
+
+    def test_status_records_command_in_result(self):
+        version_out = (0, "1.0.0", "")
+        status_json = '{"fileCount": 5, "nodeCount": 10}'
+        with patch.object(
+            CG, "_run_cmd", side_effect=[version_out, (0, status_json, "")]
+        ):
+            status = CG.check_codegraph_available()
+            assert status.command is not None
+            assert "status" in status.command
+            assert "-p" not in status.command
+
+    def test_status_text_fallback_with_commas(self):
+        """[CODEGRAPH-002] Text fallback handles comma-formatted numbers."""
+        version_out = (0, "1.0.0", "")
+        # Invalid JSON, should fallback to text parsing
+        status_text = "Files:     255\nNodes:     6,195\n"
+        with patch.object(
+            CG, "_run_cmd", side_effect=[version_out, (0, status_text, "")]
+        ):
+            status = CG.check_codegraph_available()
+            assert status.available is True
             assert status.files_indexed == 255
             assert status.nodes_count == 6195
 

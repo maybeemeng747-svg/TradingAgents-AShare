@@ -47,6 +47,7 @@ class CodeGraphStatus:
     error: Optional[str] = None
     files_indexed: int = 0
     nodes_count: int = 0
+    command: Optional[str] = None
 
     def to_dict(self):
         return {
@@ -56,6 +57,7 @@ class CodeGraphStatus:
             "error": self.error,
             "files_indexed": self.files_indexed,
             "nodes_count": self.nodes_count,
+            "command": self.command,
         }
 
 
@@ -108,6 +110,9 @@ def _run_cmd(cmd, timeout=60, cwd=None):
 
 
 def check_codegraph_available(repo_dir=None):
+    # [CODEGRAPH-002] codegraph_preflight
+    # codegraph status takes [path] as positional argument, not -p.
+    # Use -j for JSON output for robust parsing.
     rc, stdout, stderr = _run_cmd(["codegraph", "--version"])
     if rc != 0:
         return CodeGraphStatus(available=False, error="codegraph not found in PATH")
@@ -115,25 +120,40 @@ def check_codegraph_available(repo_dir=None):
     version = stdout.strip()
     status = CodeGraphStatus(available=True, version=version)
 
-    rc, stdout, stderr = _run_cmd(
-        ["codegraph", "status", "-p", repo_dir or "."], timeout=30
-    )
+    status_cmd = ["codegraph", "status", "-j", repo_dir or "."]
+    status.command = " ".join(status_cmd)
+    rc, stdout, stderr = _run_cmd(status_cmd, timeout=30)
     if rc != 0:
         status.error = f"status check failed: {stderr.strip()[:200]}"
         return status
 
-    for line in stdout.splitlines():
-        line = line.strip()
-        if line.startswith("Files:"):
-            try:
-                status.files_indexed = int(line.split(":")[1].strip())
-            except (ValueError, IndexError):
-                pass
-        elif line.startswith("Nodes:"):
-            try:
-                status.nodes_count = int(line.split(":")[1].strip())
-            except (ValueError, IndexError):
-                pass
+    # [CODEGRAPH-002] Parse JSON output from codegraph status -j
+    parsed = False
+    if stdout.strip():
+        try:
+            data = json.loads(stdout)
+            status.files_indexed = data.get("fileCount", 0)
+            status.nodes_count = data.get("nodeCount", 0)
+            parsed = True
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # Fallback: parse text output (handles comma-formatted numbers)
+    if not parsed:
+        for line in stdout.splitlines():
+            line = line.strip()
+            if line.startswith("Files:"):
+                try:
+                    val = line.split(":", 1)[1].strip().replace(",", "")
+                    status.files_indexed = int(val)
+                except (ValueError, IndexError):
+                    pass
+            elif line.startswith("Nodes:"):
+                try:
+                    val = line.split(":", 1)[1].strip().replace(",", "")
+                    status.nodes_count = int(val)
+                except (ValueError, IndexError):
+                    pass
 
     status.indexed = status.files_indexed > 0
     return status

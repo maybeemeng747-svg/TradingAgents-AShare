@@ -2890,7 +2890,7 @@
 ### CODEGRAPH-002: CodeGraph 自动开发预检命令修复（P2）
 - **描述**：TF-QUALITY-001 task_run 中 CodeGraph 预检失败，原因是自动开发脚本使用了当前 codegraph CLI 不支持的参数（如 `-p`）。需要修复命令封装，避免影响后续任务的影响范围日志。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：in_progress — claimed CODEGRAPH-002-20260614-014751
 - **前置条件**：M-013 完成 ✓。
 - **执行约束**：
   - 不改业务代码。
