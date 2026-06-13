@@ -64,6 +64,7 @@ _TRADEFLOW_FAST_ENDPOINTS: set[str] = {
     "tradeflow_daily_plan",
     "tradeflow_candidates",
     "tradeflow_candidate_detail",
+    "tradeflow_company_overview",  # [TF-UI-011] candidate_research_entry
     "tradeflow_observe",
     "tradeflow_ta_queue",
     "tradeflow_review",

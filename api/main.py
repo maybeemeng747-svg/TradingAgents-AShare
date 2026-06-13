@@ -5243,6 +5243,7 @@ from api.tradeflow_schemas import (
     TradeFlowEvidenceAuditResponse,  # [DATA-007] evidence_coverage_audit
     TradeFlowResearchPlanResponse,  # [UI-009] candidate_ta_plan_draft
     TradeFlowCompareResponse,  # [UI-010] mandate_candidate_compare
+    CompanyOverviewResponse,  # [TF-UI-011] candidate_research_entry
 )
 from api.services.tradeflow_service import (
     get_daily_plan as _tf_get_daily_plan,
@@ -5261,6 +5262,7 @@ from api.services.tradeflow_service import (
     generate_research_plan as _tf_generate_research_plan,  # [UI-009] candidate_ta_plan_draft
     get_candidate_comparison as _tf_get_candidate_comparison,  # [UI-010] mandate_candidate_compare
     get_observe_scheduler_status as _tf_get_observe_scheduler_status,  # [T-004] intraday_observe_scheduler
+    get_company_overview as _tf_get_company_overview,  # [TF-UI-011] candidate_research_entry
 )
 
 # [UI-001] tradeflow_api — read-only endpoints
@@ -5378,6 +5380,15 @@ def tradeflow_research_plan(
     date: str = Query(..., description="交易日期 YYYY-MM-DD"),
 ):
     return _tf_generate_research_plan(symbol, date)
+
+
+# [TF-UI-011] candidate_research_entry
+@app.get("/v1/tradeflow/candidates/{symbol}/overview", response_model=CompanyOverviewResponse)
+def tradeflow_candidate_overview(
+    symbol: str,
+    date: str = Query("", description="交易日期 YYYY-MM-DD（可选，用于名称回填）"),
+):
+    return _tf_get_company_overview(symbol)
 
 
 # [UI-010] mandate_candidate_compare

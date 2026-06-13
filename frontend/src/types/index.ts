@@ -1201,6 +1201,7 @@ export interface TradeFlowReviewGenerateResponse {
 }
 
 // [UI-009] candidate_ta_plan_draft
+// [TF-UI-011] candidate_research_entry — profile metadata added
 export interface TradeFlowResearchPlanResponse {
     status: string
     trade_date: string
@@ -1212,6 +1213,11 @@ export interface TradeFlowResearchPlanResponse {
     analysis_intent: string
     position_context: string
     runtime_profile: string
+    profile_label: string  // [TF-UI-011]
+    expected_latency: string  // [TF-UI-011]
+    llm_allowed: boolean  // [TF-UI-011]
+    requires_confirmation: boolean  // [TF-UI-011]
+    cost_risk: string  // [TF-UI-011]
     enabled_modules: string[]
     required_evidence: string[]
     existing_evidence_coverage: number
@@ -1219,6 +1225,19 @@ export interface TradeFlowResearchPlanResponse {
     block_reason: string
     plan_markdown: string
     route_reason: string
+}
+
+// [TF-UI-011] candidate_research_entry
+export interface CompanyOverviewResponse {
+    status: string
+    symbol: string
+    name: string
+    industry: string
+    company_profile: string
+    profile_available: boolean
+    data_source: string
+    error: string
+    runtime_tier_meta: RuntimeTierMeta
 }
 
 // [UI-010] mandate_candidate_compare

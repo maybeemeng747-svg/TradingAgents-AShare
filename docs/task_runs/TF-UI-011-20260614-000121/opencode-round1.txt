@@ -1,0 +1,1115 @@
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+Let me find the detailed task description for TF-UI-011.
+[0m✱ [0mGrep "TF-UI-011"[90m 46 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [offset=2780, limit=60][0m
+[0m
+[0m# [0mTodos
+[•] Explore codebase: frontend candidate detail, backend API, PERF-002 profiles
+[ ] Backend: add candidate detail endpoint with company overview, K-line data, entry evidence
+[ ] Backend: add one-click lightweight TA preview endpoint (profile recommendation)
+[ ] Frontend: candidate detail panel with company overview, K-line, evidence, one-click light TA button
+[ ] Write/update tests
+[ ] Run tests, build, update DEVLOG.md
+[0m
+[0m• [0mExplore TF-UI-011 codebase[90m Explore Agent[0m
+[0m✓ [0mExplore TF-UI-011 codebase[90m Explore Agent[0m
+[0m→ [0mRead frontend/src/components/TradeFlowCandidateDrawer.tsx
+[0m→ [0mRead api/tradeflow_schemas.py
+Excellent exploration. Let me now read the key files I'll be modifying.
+[0m→ [0mRead api/ta_profile.py
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=560, limit=120][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=1570, limit=100][0m
+[0m→ [0mRead frontend/src/services/api.ts[90m [limit=60, offset=75][0m
+[0m→ [0mRead frontend/src/services/api.ts[90m [limit=70, offset=420][0m
+[0m→ [0mRead frontend/src/types/index.ts[90m [limit=100, offset=270][0m
+[0m✱ [0mGrep "TradeFlowResearchPlanResponse|TradeFlowCandidateDetail|TradeFlowCandidateDetailResponse"[90m 9 matches[0m
+[0m→ [0mRead frontend/src/types/index.ts[90m [limit=100, offset=850][0m
+[0m→ [0mRead frontend/src/types/index.ts[90m [limit=50, offset=1195][0m
+[0m→ [0mRead tradingagents/tradeflow/research_plan_draft.py
+Now let me read the research_plan_draft.py and check the existing tests:
+[0m→ [0mRead api/main.py[90m [limit=60, offset=5290][0m
+[0m✱ [0mGlob "tests/test_ui009*"[90m 1 match[0m
+[0m✱ [0mGlob "tests/test_tradeflow_candidate*"[90m 1 match[0m
+[0m→ [0mRead tests/test_ui009_research_plan_draft.py
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=100, offset=180][0m
+Let me check the service layer `_row_to_candidate_detail` and the main.py route wrappers:
+[0m✱ [0mGrep "_tf_get_candidate_detail|_tf_generate_research_plan"[90m 4 matches[0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_astock_provider.py[90m [limit=80, offset=380][0m
+[0m✱ [0mGrep "def route_to_vendor|def get_last_hit_vendor"[90m 2 matches[0m
+Let me check the cn_astock_provider company info function and how route_to_vendor works:
+[0m→ [0mRead tradingagents/dataflows/interface.py[90m [limit=80, offset=155][0m
+[0m→ [0mRead frontend/src/components/KlinePanel.tsx[90m [limit=40, offset=1][0m
+Now let me check the KlinePanel component and understand lightweight-charts usage:
+[0m→ [0mRead api/main.py[90m [limit=40, offset=5370][0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_astock_provider.py[90m [limit=50, offset=340][0m
+[0m
+[0m# [0mTodos
+[✓] Explore codebase: frontend candidate detail, backend API, PERF-002 profiles
+[•] Backend schemas + service: CompanyOverviewResponse, enrich research plan with profile metadata
+[ ] Backend endpoint: GET /v1/tradeflow/candidates/{symbol}/overview
+[ ] Frontend types + API: CompanyOverviewResponse, getCompanyOverview, profile metadata fields
+[ ] Frontend MiniKline component for drawer
+[ ] Frontend drawer: company overview section, K-line entry, enhanced research plan display
+[ ] Write tests for TF-UI-011
+[ ] Run tests, build, update DEVLOG.md
+[0m
+Now I have a thorough understanding. Let me start implementing. I'll update the todo list and begin with the backend.
+Now let me implement the backend schemas first:
+[0m→ [0mRead api/tradeflow_schemas.py[90m [limit=10, offset=358][0m
+[0m
+[0m← [0mEdit api/tradeflow_schemas.py
+Index: /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
++++ /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
+@@ -356,8 +356,9 @@
+     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+ 
+ 
+ # [UI-009] candidate_ta_plan_draft
++# [TF-UI-011] candidate_research_entry — profile metadata added
+ class TradeFlowResearchPlanResponse(BaseModel):
+     status: str = "ok"
+     trade_date: str = ""
+     symbol: str = ""
+@@ -367,8 +368,13 @@
+     horizon: str = ""
+     analysis_intent: str = ""
+     position_context: str = ""
+     runtime_profile: str = ""
++    profile_label: str = ""  # [TF-UI-011]
++    expected_latency: str = ""  # [TF-UI-011]
++    llm_allowed: bool = True  # [TF-UI-011]
++    requires_confirmation: bool = False  # [TF-UI-011]
++    cost_risk: str = ""  # [TF-UI-011]
+     enabled_modules: List[str] = Field(default_factory=list)
+     required_evidence: List[str] = Field(default_factory=list)
+     existing_evidence_coverage: float = 0.0
+     can_generate: bool = True
+@@ -376,8 +382,21 @@
+     plan_markdown: str = ""
+     route_reason: str = ""
+ 
+ 
++# [TF-UI-011] candidate_research_entry
++class CompanyOverviewResponse(BaseModel):
++    status: str = "ok"
++    symbol: str = ""
++    name: str = ""
++    industry: str = ""
++    company_profile: str = ""
++    profile_available: bool = False
++    data_source: str = ""
++    error: str = ""
++    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
++
++
+ # [UI-010] mandate_candidate_compare
+ class TradeFlowCompareResponse(BaseModel):
+     status: str = "ok"
+     trade_date: str = ""
+
+[0m
+Now let me update the research plan service to include profile metadata:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=70, offset=1620][0m
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -1637,8 +1637,25 @@
+     )
+ 
+     result = draft.to_dict()
+     result["status"] = "ok"
++
++    # [TF-UI-011] candidate_research_entry — enrich with profile metadata
++    try:
++        from api.ta_profile import recommend_profile, profile_to_meta
++        profile = recommend_profile(
++            candidate_type=item.get("candidate_type", ""),
++            research_queue=item.get("research_queue", ""),
++        )
++        meta = profile_to_meta(profile)
++        result["profile_label"] = meta.get("profile_label", "")
++        result["expected_latency"] = meta.get("expected_latency", "")
++        result["llm_allowed"] = meta.get("llm_allowed", True)
++        result["requires_confirmation"] = meta.get("requires_confirmation", False)
++        result["cost_risk"] = meta.get("cost_risk", "")
++    except Exception:
++        pass
++
+     return result
+ finally:
+     conn.close()
+ 
+
+[0m
+Now add the `get_company_overview` service function. Let me add it right after the `generate_research_plan` function:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=20, offset=1655][0m
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -1659,8 +1659,74 @@
+     finally:
+         conn.close()
+ 
+ 
++# [TF-UI-011] candidate_research_entry
++def get_company_overview(symbol: str, tf_db_path: str = "") -> dict:
++    """Fetch a lightweight company overview for a candidate symbol.
++
++    Uses existing data source providers (route_to_vendor) to retrieve
++    company fundamentals text.  Does NOT call any LLM.  Falls back
++    gracefully when data sources are unavailable.
++    """
++    _fast_meta = _tradeflow_meta("tradeflow_company_overview")
++
++    result: dict = {
++        "status": "ok",
++        "symbol": symbol,
++        "name": "",
++        "industry": "",
++        "company_profile": "",
++        "profile_available": False,
++        "data_source": "",
++        "error": "",
++        "runtime_tier_meta": _fast_meta,
++    }
++
++    # Try to resolve name from existing candidate data first
++    try:
++        conn = _connect(tf_db_path)
++        if conn is not None:
++            try:
++                row = conn.execute(
++                    "SELECT name FROM tradeflow_candidates WHERE symbol = ? ORDER BY created_at DESC LIMIT 1",
++                    (symbol,),
++                ).fetchone()
++                if row and row["name"]:
++                    result["name"] = row["name"]
++            finally:
++                conn.close()
++    except Exception:
++        pass
++
++    # Try to get fundamentals from data source providers
++    try:
++        from tradingagents.dataflows.interface import route_to_vendor, get_last_hit_vendor
++        profile_text = route_to_vendor("get_fundamentals", symbol)
++        if profile_text and isinstance(profile_text, str) and len(profile_text) > 20:
++            result["company_profile"] = profile_text
++            result["profile_available"] = True
++            try:
++                result["data_source"] = get_last_hit_vendor("get_fundamentals") or ""
++            except Exception:
++                pass
++            # Try to extract industry from the text
++            for line in profile_text.split("\n"):
++                low = line.lower()
++                if "行业" in line or "industry" in low:
++                    parts = line.split(":")
++                    if len(parts) >= 2:
++                        val = parts[-1].strip().strip("*").strip()
++                        if val:
++                            result["industry"] = val
++                            break
++    except Exception as exc:
++        result["error"] = f"数据源暂不可用: {type(exc).__name__}"
++        result["status"] = "unavailable"
++
++    return result
++
++
+ # [UI-010] mandate_candidate_compare
+ _VALID_SORT_KEYS = {
+     "mandate_score": "mandate_score_component",
+     "ambush_score": "ambush_score",
+
+[0m
+Now let me add the endpoint in main.py. First let me check the imports:
+[0m→ [0mRead api/main.py[90m [limit=30, offset=5248][0m
+[0m
+[0m← [0mEdit api/main.py
+Index: /Users/maybee/TradingAgents-AShare/api/main.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/main.py
++++ /Users/maybee/TradingAgents-AShare/api/main.py
+@@ -5260,8 +5260,9 @@
+     get_evidence_audit as _tf_get_evidence_audit,  # [DATA-007] evidence_coverage_audit
+     generate_research_plan as _tf_generate_research_plan,  # [UI-009] candidate_ta_plan_draft
+     get_candidate_comparison as _tf_get_candidate_comparison,  # [UI-010] mandate_candidate_compare
+     get_observe_scheduler_status as _tf_get_observe_scheduler_status,  # [T-004] intraday_observe_scheduler
++    get_company_overview as _tf_get_company_overview,  # [TF-UI-011] candidate_research_entry
+ )
+ 
+ # [UI-001] tradeflow_api — read-only endpoints
+ 
+
+[0m
+Now let me add the actual endpoint. Let me check what schemas are imported:
+[0m✱ [0mGrep "TradeFlowResearchPlanResponse|CompanyOverviewResponse"[90m in api · 2 matches[0m
+[0m→ [0mRead api/main.py[90m [limit=10, offset=5240][0m
+[0m
+[0m← [0mEdit api/main.py
+Index: /Users/maybee/TradingAgents-AShare/api/main.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/main.py
++++ /Users/maybee/TradingAgents-AShare/api/main.py
+@@ -5242,8 +5242,9 @@
+     TradeFlowReviewGenerateResponse,  # [TF-UX-003]
+     TradeFlowEvidenceAuditResponse,  # [DATA-007] evidence_coverage_audit
+     TradeFlowResearchPlanResponse,  # [UI-009] candidate_ta_plan_draft
+     TradeFlowCompareResponse,  # [UI-010] mandate_candidate_compare
++    CompanyOverviewResponse,  # [TF-UI-011] candidate_research_entry
+ )
+ from api.services.tradeflow_service import (
+     get_daily_plan as _tf_get_daily_plan,
+     get_candidates as _tf_get_candidates,
+
+[0m
+Now add the endpoint after the research-plan endpoint:
+[0m← [0mEdit api/main.py
+Index: /Users/maybee/TradingAgents-AShare/api/main.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/main.py
++++ /Users/maybee/TradingAgents-AShare/api/main.py
+@@ -5381,8 +5381,17 @@
+ ):
+     return _tf_generate_research_plan(symbol, date)
+ 
+ 
++# [TF-UI-011] candidate_research_entry
++@app.get("/v1/tradeflow/candidates/{symbol}/overview", response_model=CompanyOverviewResponse)
++def tradeflow_candidate_overview(
++    symbol: str,
++    date: str = Query("", description="交易日期 YYYY-MM-DD（可选，用于名称回填）"),
++):
++    return _tf_get_company_overview(symbol)
++
++
+ # [UI-010] mandate_candidate_compare
+ @app.get("/v1/tradeflow/candidates/compare", response_model=TradeFlowCompareResponse)
+ def tradeflow_candidates_compare(
+     date: str = Query(..., description="交易日期 YYYY-MM-DD"),
+
+[0m
+Now let me verify the backend is importable:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -c "from api.tradeflow_schemas import CompanyOverviewResponse, TradeFlowResearchPlanResponse; print('Schemas OK'); print('CompanyOverviewResponse fields:', list(CompanyOverviewResponse.model_fields.keys())); print('ResearchPlan fields:', [f for f in TradeFlowResearchPlanResponse.model_fields.keys() if f in ('profile_label','expected_latency','llm_allowed','requires_confirmation','cost_risk')])"
+Schemas OK
+CompanyOverviewResponse fields: ['status', 'symbol', 'name', 'industry', 'company_profile', 'profile_available', 'data_source', 'error', 'runtime_tier_meta']
+ResearchPlan fields: ['profile_label', 'expected_latency', 'llm_allowed', 'requires_confirmation', 'cost_risk']
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -c "from api.services.tradeflow_service import get_company_overview; print('Service import OK')"
+Service import OK
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -c "
+import ast, sys
+with open('api/main.py') as f:
+    tree = ast.parse(f.read())
+print('main.py parses OK')
+"
+main.py parses OK
+[0m
+[0m# [0mTodos
+[✓] Explore codebase: frontend candidate detail, backend API, PERF-002 profiles
+[✓] Backend schemas + service: CompanyOverviewResponse, enrich research plan with profile metadata
+[✓] Backend endpoint: GET /v1/tradeflow/candidates/{symbol}/overview
+[•] Frontend types + API: CompanyOverviewResponse, getCompanyOverview, profile metadata fields
+[ ] Frontend MiniKline component for drawer
+[ ] Frontend drawer: company overview section, K-line entry, enhanced research plan display
+[ ] Write tests for TF-UI-011
+[ ] Run tests, build, update DEVLOG.md
+[0m
+Now let me update the frontend types. First, add profile metadata fields to `TradeFlowResearchPlanResponse`:
+[0m← [0mEdit frontend/src/types/index.ts
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
++++ /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
+@@ -1200,8 +1200,9 @@
+     } | null
+ }
+ 
+ // [UI-009] candidate_ta_plan_draft
++// [TF-UI-011] candidate_research_entry — profile metadata added
+ export interface TradeFlowResearchPlanResponse {
+     status: string
+     trade_date: string
+     symbol: string
+@@ -1211,8 +1212,13 @@
+     horizon: string
+     analysis_intent: string
+     position_context: string
+     runtime_profile: string
++    profile_label: string  // [TF-UI-011]
++    expected_latency: string  // [TF-UI-011]
++    llm_allowed: boolean  // [TF-UI-011]
++    requires_confirmation: boolean  // [TF-UI-011]
++    cost_risk: string  // [TF-UI-011]
+     enabled_modules: string[]
+     required_evidence: string[]
+     existing_evidence_coverage: number
+     can_generate: boolean
+@@ -1220,8 +1226,21 @@
+     plan_markdown: string
+     route_reason: string
+ }
+ 
++// [TF-UI-011] candidate_research_entry
++export interface CompanyOverviewResponse {
++    status: string
++    symbol: string
++    name: string
++    industry: string
++    company_profile: string
++    profile_available: boolean
++    data_source: string
++    error: string
++    runtime_tier_meta: RuntimeTierMeta
++}
++
+ // [UI-010] mandate_candidate_compare
+ export interface TradeFlowCompareResponse {
+     status: string
+     trade_date: string
+
+[0m
+Now add the API method. Let me update api.ts imports and add the method:
+[0m→ [0mRead frontend/src/services/api.ts[90m [limit=3, offset=1][0m
+[0m
+[0m← [0mEdit frontend/src/services/api.ts
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/services/api.ts
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/services/api.ts
++++ /Users/maybee/TradingAgents-AShare/frontend/src/services/api.ts
+@@ -1,5 +1,5 @@
+-import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse } from '@/types'
++import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse, CompanyOverviewResponse } from '@/types'
+ 
+ export function getBaseUrl(): string {
+     const envUrl = (import.meta.env.VITE_API_URL as string) || ''
+     if (envUrl) return envUrl.replace(/\/$/, '')
+
+[0m
+Now add the API method after the `generateResearchPlan` method:
+[0m← [0mEdit frontend/src/services/api.ts
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/services/api.ts
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/services/api.ts
++++ /Users/maybee/TradingAgents-AShare/frontend/src/services/api.ts
+@@ -478,8 +478,16 @@
+         method: 'POST',
+     })
+ }
+ 
++// [TF-UI-011] candidate_research_entry
++async getCompanyOverview(symbol: string, date?: string): Promise<CompanyOverviewResponse> {
++    const params = new URLSearchParams()
++    if (date) params.append('date', date)
++    const qs = params.toString()
++    return this.request<CompanyOverviewResponse>(`/v1/tradeflow/candidates/${encodeURIComponent(symbol)}/overview${qs ? '?' + qs : ''}`)
++}
++
+ // [UI-010] mandate_candidate_compare
+ async getTradeFlowCandidatesCompare(date: string, sortBy?: string, sortOrder?: string, pool?: string): Promise<TradeFlowCompareResponse> {
+     const params = new URLSearchParams({ date })
+     if (sortBy) params.append('sort_by', sortBy)
+
+[0m
+[0m# [0mTodos
+[✓] Explore codebase: frontend candidate detail, backend API, PERF-002 profiles
+[✓] Backend schemas + service: CompanyOverviewResponse, enrich research plan with profile metadata
+[✓] Backend endpoint: GET /v1/tradeflow/candidates/{symbol}/overview
+[✓] Frontend types + API: CompanyOverviewResponse, getCompanyOverview, profile metadata fields
+[•] Frontend MiniKline component for drawer
+[ ] Frontend drawer: company overview section, K-line entry, enhanced research plan display
+[ ] Write tests for TF-UI-011
+[ ] Run tests, build, update DEVLOG.md
+[0m
+Now let me create the MiniKline component for the drawer:
+[0m← [0mWrite frontend/src/components/MiniKline.tsx
+Wrote file successfully.
+[0m
+Now let me update the main drawer component. This is the most complex change. Let me carefully update `TradeFlowCandidateDrawer.tsx`:
+[0m← [0mEdit frontend/src/components/TradeFlowCandidateDrawer.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/components/TradeFlowCandidateDrawer.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/components/TradeFlowCandidateDrawer.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/components/TradeFlowCandidateDrawer.tsx
+@@ -1,10 +1,12 @@
+ // [H-005] mandate_radar_ui
+ // [TA-UI-001] analysis_console_horizon_intent
++// [TF-UI-011] candidate_research_entry
+ import { useEffect, useState } from 'react'
+-import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote, FlaskConical, FileText } from 'lucide-react'
++import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote, FlaskConical, FileText, Building2, CandlestickChart, Clock, Cpu } from 'lucide-react'
+ import { api } from '@/services/api'
+-import type { TradeFlowCandidateItem, TradeFlowCandidateDetail, TradeFlowResearchPlanResponse } from '@/types'
++import type { TradeFlowCandidateItem, TradeFlowCandidateDetail, TradeFlowResearchPlanResponse, CompanyOverviewResponse } from '@/types'
++import MiniKline from './MiniKline'
+ 
+ const ALL_STRATEGIES = [
+     'VCP',
+     'PULLBACK_SUPPORT',
+
+[0m
+Now add state variables for company overview and K-line toggle:
+[0m← [0mEdit frontend/src/components/TradeFlowCandidateDrawer.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/components/TradeFlowCandidateDrawer.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/components/TradeFlowCandidateDrawer.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/components/TradeFlowCandidateDrawer.tsx
+@@ -111,8 +111,11 @@
+ const [detail, setDetail] = useState<TradeFlowCandidateDetail | null>(null)
+ const [loadingDetail, setLoadingDetail] = useState(false)
+ const [researchPlan, setResearchPlan] = useState<TradeFlowResearchPlanResponse | null>(null)  // [UI-009]
+ const [loadingPlan, setLoadingPlan] = useState(false)  // [UI-009]
++const [companyOverview, setCompanyOverview] = useState<CompanyOverviewResponse | null>(null)  // [TF-UI-011]
++const [loadingOverview, setLoadingOverview] = useState(false)  // [TF-UI-011]
++const [showKline, setShowKline] = useState(false)  // [TF-UI-011]
+ 
+ useEffect(() => {
+     if (!open) return
+     let cancelled = false
+
+[0m
+Now update the useEffect to also reset and fetch company overview:
+[0m← [0mEdit frontend/src/components/TradeFlowCandidateDrawer.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/components/TradeFlowCandidateDrawer.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/components/TradeFlowCandidateDrawer.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/components/TradeFlowCandidateDrawer.tsx
+@@ -121,8 +121,10 @@
+     let cancelled = false
+     setLoadingDetail(true)
+     setDetail(null)
+     setResearchPlan(null)
++    setCompanyOverview(null)  // [TF-UI-011]
++    setShowKline(false)  // [TF-UI-011]
+     api.getTradeFlowCandidateDetail(candidate.symbol, tradeDate)
+         .then(res => {
+             if (!cancelled && res.candidate) {
+                 setDetail(res.candidate)
+@@ -131,8 +133,14 @@
+         .catch(() => {})
+         .finally(() => {
+             if (!cancelled) setLoadingDetail(false)
+         })
++    // [TF-UI-011] candidate_research_entry — lazy load company overview
++    setLoadingOverview(true)
++    api.getCompanyOverview(candidate.symbol, tradeDate)
++        .then(res => { if (!cancelled) setCompanyOverview(res) })
++        .catch(() => {})
++        .finally(() => { if (!cancelled) setLoadingOverview(false) })
+     return () => { cancelled = true }
+ }, [open, candidate.symbol, tradeDate])
+ 
+ useEffect(() => {
+
+[0m
+Now let me add the company overview section and K-line section at the top of the drawer content (after the strategy hits, before policy logic). Let me find the right insertion point:
+[0m→ [0mRead frontend/src/components/TradeFlowCandidateDrawer.tsx[90m [limit=30, offset=195][0m
+[0m→ [0mRead frontend/src/components/TradeFlowCandidateDrawer.tsx[90m [limit=15, offset=228][0m
+Now I'll insert the company overview and K-line sections between the strategy hits and policy logic sections:
+[0m
+[0m← [0mEdit frontend/src/components/TradeFlowCandidateDrawer.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/components/TradeFlowCandidateDrawer.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/components/TradeFlowCandidateDrawer.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/components/TradeFlowCandidateDrawer.tsx
+@@ -232,8 +232,70 @@
+         </div>
+     )}
+ </div>
+ 
++{/* [TF-UI-011] candidate_research_entry — Company Overview */}
++<div>
++    <SectionTitle icon={Building2} title="公司概览" />
++    <div className="mt-2 space-y-2">
++        {loadingOverview && (
++            <div className="flex items-center gap-2 text-xs text-slate-400">
++                <Loader2 className="h-3.5 w-3.5 animate-spin" />
++                加载公司信息...
++            </div>
++        )}
++        {!loadingOverview && companyOverview && companyOverview.profile_available && (
++            <>
++                {companyOverview.industry && (
++                    <div className="flex items-center gap-2">
++                        <span className="text-xs text-slate-500 dark:text-slate-400">所属行业:</span>
++                        <span className="inline-block rounded bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
++                            {companyOverview.industry}
++                        </span>
++                    </div>
++                )}
++                <div className="rounded-lg border border-slate-100 bg-slate-50/50 p-3 dark:border-slate-700 dark:bg-slate-800/30">
++                    <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
++                        公司简介 {companyOverview.data_source && <span className="text-slate-400">({companyOverview.data_source})</span>}
++                    </div>
++                    <div className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-400 max-h-32 overflow-y-auto whitespace-pre-wrap">
++                        {companyOverview.company_profile}
++                    </div>
++                </div>
++            </>
++        )}
++        {!loadingOverview && companyOverview && !companyOverview.profile_available && (
++            <div className="rounded-lg border border-slate-100 bg-slate-50/50 p-3 dark:border-slate-700 dark:bg-slate-800/30">
++                <div className="text-xs text-slate-400">
++                    {companyOverview.error || '公司概览暂不可用，可能是数据源未返回'}
++                </div>
++            </div>
++        )}
++        {!loadingOverview && !companyOverview && (
++            <div className="text-xs text-slate-400">公司信息获取失败</div>
++        )}
++    </div>
++</div>
++
++{/* [TF-UI-011] candidate_research_entry — K-line entry */}
++<div>
++    <div className="flex items-center justify-between">
++        <SectionTitle icon={CandlestickChart} title="K 线走势" />
++        <button
++            onClick={() => setShowKline(!showKline)}
++            className="flex items-center gap-1 rounded-md bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700 transition-colors"
++        >
++            <CandlestickChart className="h-3.5 w-3.5" />
++            {showKline ? '收起 K 线' : '查看 K 线'}
++        </button>
++    </div>
++    {showKline && (
++        <div className="mt-2 rounded-lg border border-slate-100 bg-white p-2 dark:border-slate-700 dark:bg-slate-800/30">
++            <MiniKline symbol={candidate.symbol} height={200} />
++        </div>
++    )}
++</div>
++
+ {data.candidate_type && (  // [H-005] mandate_radar_ui
+     <div>
+         <SectionTitle icon={ShieldCheck} title="政策逻辑" />
+         <div className="mt-2 space-y-2">
+
+[0m
+Now let me enhance the research plan section to show profile metadata (expected_latency, llm_allowed, etc.). Let me find the research plan display section:
+[0m→ [0mRead frontend/src/components/TradeFlowCandidateDrawer.tsx[90m [limit=80, offset=600][0m
+Now let me enhance the research plan display with profile metadata:
+[0m
+[0m← [0mEdit frontend/src/components/TradeFlowCandidateDrawer.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/components/TradeFlowCandidateDrawer.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/components/TradeFlowCandidateDrawer.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/components/TradeFlowCandidateDrawer.tsx
+@@ -644,11 +644,11 @@
+ {researchPlan && researchPlan.status !== 'no_data' && (
+     <>
+         {researchPlan.can_generate ? (
+             <div className="rounded-lg border border-indigo-200 bg-indigo-50/50 p-3 dark:border-indigo-800 dark:bg-indigo-900/10">
+-                <div className="flex items-center gap-2">
++                <div className="flex items-center gap-2 flex-wrap">
+                     <span className="text-[11px] font-medium text-indigo-600 dark:text-indigo-400">
+-                        {researchPlan.horizon === 'medium' ? '中线研究预案' : '短线确认预案'}
++                        {researchPlan.profile_label || (researchPlan.horizon === 'medium' ? '中线研究预案' : '短线确认预案')}
+                     </span>
+                     <span className="text-[10px] text-slate-400">|</span>
+                     <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                         队列: {researchPlan.research_queue || '未分配'}
+@@ -657,8 +657,35 @@
+                     <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                         Profile: {researchPlan.runtime_profile}
+                     </span>
+                 </div>
++                {/* [TF-UI-011] candidate_research_entry — runtime metadata */}
++                <div className="mt-1 flex items-center gap-3 flex-wrap text-[10px]">
++                    {researchPlan.expected_latency && (
++                        <span className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
++                            <Clock className="h-3 w-3" />
++                            预计耗时 {researchPlan.expected_latency}
++                        </span>
++                    )}
++                    <span className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
++                        <Cpu className="h-3 w-3" />
++                        {researchPlan.llm_allowed ? '调用模型' : '不调用模型'}
++                    </span>
++                    {researchPlan.cost_risk && researchPlan.cost_risk !== 'none' && (
++                        <span className={`flex items-center gap-1 ${
++                            researchPlan.cost_risk === 'high' ? 'text-red-500' :
++                            researchPlan.cost_risk === 'medium' ? 'text-amber-500' :
++                            'text-emerald-500'
++                        }`}>
++                            成本风险: {researchPlan.cost_risk}
++                        </span>
++                    )}
++                </div>
++                {researchPlan.requires_confirmation && (
++                    <div className="mt-1 rounded bg-amber-50 dark:bg-amber-900/20 px-2 py-1 text-[10px] text-amber-600 dark:text-amber-400">
++                        ⚠ 需要 Explorer 确认后才能启动
++                    </div>
++                )}
+                 <div className="mt-1 flex flex-wrap gap-1">
+                     {researchPlan.enabled_modules.map(m => (
+                         <span key={m} className="inline-block rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600 dark:bg-blue-900/20 dark:text-blue-400">{m}</span>
+                     ))}
+
+[0m
+Now let me try the frontend build:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare/frontend && npm run build 2>&1 | tail -30
+> tradingagents-dashboard@0.1.0 build
+> tsc && vite build
+
+src/components/MiniKline.tsx(128,20): error TS6133: 'err' is declared but its value is never read.
+[0m
+[0m← [0mEdit frontend/src/components/MiniKline.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/components/MiniKline.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/components/MiniKline.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/components/MiniKline.tsx
+@@ -124,9 +124,9 @@
+         series.setData(validData)
+         chart.timeScale().fitContent()
+     }
+ })
+-.catch(err => {
++.catch(() => {
+     if (!cancelled) {
+         setError('K线数据获取失败')
+         setLoading(false)
+     }
+
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare/frontend && npm run build 2>&1 | tail -30
+> tradingagents-dashboard@0.1.0 build
+> tsc && vite build
+
+vite v6.4.2 building for production...
+(node:21397) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+transforming...
+✓ 1939 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                     1.15 kB │ gzip:   0.65 kB
+dist/assets/index-BQde87pL.css    160.82 kB │ gzip:  22.34 kB
+dist/assets/index-CjCdPc_0.js   1,139.81 kB │ gzip: 332.16 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 1.36s
+[0m
+[0m# [0mTodos
+[✓] Explore codebase: frontend candidate detail, backend API, PERF-002 profiles
+[✓] Backend schemas + service: CompanyOverviewResponse, enrich research plan with profile metadata
+[✓] Backend endpoint: GET /v1/tradeflow/candidates/{symbol}/overview
+[✓] Frontend types + API: CompanyOverviewResponse, getCompanyOverview, profile metadata fields
+[✓] Frontend MiniKline component for drawer
+[✓] Frontend drawer: company overview section, K-line entry, enhanced research plan display
+[•] Write tests for TF-UI-011
+[ ] Run tests, build, update DEVLOG.md
+[0m
+Frontend builds successfully. Now let me write the tests:
+[0m← [0mWrite tests/test_tf_ui011_candidate_research_entry.py
+Wrote file successfully.
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tf_ui011_candidate_research_entry.py -v 2>&1 | tail -50
+tests/test_tf_ui011_candidate_research_entry.py::TestProfileMeta::test_meta_has_all_required_fields PASSED [ 80%]
+tests/test_tf_ui011_candidate_research_entry.py::TestProfileMeta::test_meta_values_correct PASSED [ 85%]
+tests/test_tf_ui011_candidate_research_entry.py::TestSchemaValidation::test_company_overview_response_schema PASSED [ 90%]
+tests/test_tf_ui011_candidate_research_entry.py::TestSchemaValidation::test_company_overview_response_defaults PASSED [ 95%]
+tests/test_tf_ui011_candidate_research_entry.py::TestSchemaValidation::test_research_plan_response_has_profile_fields PASSED [100%]
+
+=================================== FAILURES ===================================
+________ TestCompanyOverviewService.test_overview_resolves_name_from_db ________
+
+self = <tests.test_tf_ui011_candidate_research_entry.TestCompanyOverviewService object at 0x107a094c0>
+
+    def test_overview_resolves_name_from_db(self):
+        """Company overview resolves name from existing candidate DB."""
+        from api.services.tradeflow_service import get_company_overview
+    
+        db_path = self._make_test_db()
+        try:
+            with patch("tradingagents.dataflows.interface.route_to_vendor", side_effect=RuntimeError("No vendor")):
+                result = get_company_overview("600519.SH", tf_db_path=db_path)
+>           assert result["name"] == "贵州茅台"
+E           AssertionError: assert '' == '贵州茅台'
+E             
+E             - 贵州茅台
+
+tests/test_tf_ui011_candidate_research_entry.py:93: AssertionError
+__________ TestCompanyOverviewService.test_overview_runtime_tier_meta __________
+
+self = <tests.test_tf_ui011_candidate_research_entry.TestCompanyOverviewService object at 0x107a098e0>
+
+    def test_overview_runtime_tier_meta(self):
+        """Company overview returns runtime tier metadata."""
+        from api.services.tradeflow_service import get_company_overview
+    
+        with patch("api.services.tradeflow_service._connect", return_value=None):
+            with patch("tradingagents.dataflows.interface.route_to_vendor", side_effect=RuntimeError("No vendor")):
+                result = get_company_overview("600519.SH")
+    
+        assert "runtime_tier_meta" in result
+        meta = result["runtime_tier_meta"]
+>       assert meta["runtime_tier"] == "FAST_RADAR"
+E       AssertionError: assert 'LIGHT_RESEARCH' == 'FAST_RADAR'
+E         
+E         - FAST_RADAR
+E         + LIGHT_RESEARCH
+
+tests/test_tf_ui011_candidate_research_entry.py:107: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_tf_ui011_candidate_research_entry.py::TestCompanyOverviewService::test_overview_resolves_name_from_db
+FAILED tests/test_tf_ui011_candidate_research_entry.py::TestCompanyOverviewService::test_overview_runtime_tier_meta
+========================= 2 failed, 19 passed in 1.39s =========================
+[0m
+Let me check the `_connect` and `_tradeflow_meta` functions:
+[0m✱ [0mGrep "def _connect|def _tradeflow_meta"[90m in api/services · 1 match[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=35, offset=43][0m
+[0m✱ [0mGrep "def _tradeflow_meta"[90m in api/services · 0 matches[0m
+[0m✱ [0mGrep "_tradeflow_meta""[90m in api/services · 0 matches[0m
+[0m✱ [0mGrep "_tradeflow_meta"[90m in api/services · 24 matches[0m
+[0m✱ [0mGrep "def tradeflow_meta"[90m in api · 1 match[0m
+[0m→ [0mRead api/runtime_tier.py[90m [limit=50, offset=95][0m
+[0m✱ [0mGrep "_TRADEFLOW_FAST_ENDPOINTS"[90m in api · 2 matches[0m
+[0m→ [0mRead api/runtime_tier.py[90m [limit=35, offset=63][0m
+I need to fix two issues. First, add the company overview endpoint to the fast endpoints list:
+[0m
+[0m← [0mEdit api/runtime_tier.py
+Index: /Users/maybee/TradingAgents-AShare/api/runtime_tier.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/runtime_tier.py
++++ /Users/maybee/TradingAgents-AShare/api/runtime_tier.py
+@@ -63,8 +63,9 @@
+ _TRADEFLOW_FAST_ENDPOINTS: set[str] = {
+     "tradeflow_daily_plan",
+     "tradeflow_candidates",
+     "tradeflow_candidate_detail",
++    "tradeflow_company_overview",  # [TF-UI-011] candidate_research_entry
+     "tradeflow_observe",
+     "tradeflow_ta_queue",
+     "tradeflow_review",
+     "tradeflow_data_health",
+
+[0m
+Now fix the name resolution query to be more robust (the test DB doesn't have `created_at`):
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -1686,12 +1686,19 @@
+ try:
+     conn = _connect(tf_db_path)
+     if conn is not None:
+         try:
+-            row = conn.execute(
+-                "SELECT name FROM tradeflow_candidates WHERE symbol = ? ORDER BY created_at DESC LIMIT 1",
+-                (symbol,),
+-            ).fetchone()
++            cols = _table_columns(conn, "tradeflow_candidates")
++            if "created_at" in cols:
++                row = conn.execute(
++                    "SELECT name FROM tradeflow_candidates WHERE symbol = ? ORDER BY created_at DESC LIMIT 1",
++                    (symbol,),
++                ).fetchone()
++            else:
++                row = conn.execute(
++                    "SELECT name FROM tradeflow_candidates WHERE symbol = ? LIMIT 1",
++                    (symbol,),
++                ).fetchone()
+             if row and row["name"]:
+                 result["name"] = row["name"]
+         finally:
+             conn.close()
+
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tf_ui011_candidate_research_entry.py -v 2>&1 | tail -40
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 21 items
+
+tests/test_tf_ui011_candidate_research_entry.py::TestCompanyOverviewService::test_overview_with_fundamentals PASSED [  4%]
+tests/test_tf_ui011_candidate_research_entry.py::TestCompanyOverviewService::test_overview_fundamentals_unavailable PASSED [  9%]
+tests/test_tf_ui011_candidate_research_entry.py::TestCompanyOverviewService::test_overview_resolves_name_from_db PASSED [ 14%]
+tests/test_tf_ui011_candidate_research_entry.py::TestCompanyOverviewService::test_overview_runtime_tier_meta PASSED [ 19%]
+tests/test_tf_ui011_candidate_research_entry.py::TestResearchPlanProfileMetadata::test_policy_ambush_has_profile_metadata PASSED [ 23%]
+tests/test_tf_ui011_candidate_research_entry.py::TestResearchPlanProfileMetadata::test_tech_trade_has_profile_metadata PASSED [ 28%]
+tests/test_tf_ui011_candidate_research_entry.py::TestResearchPlanProfileMetadata::test_light_profiles_no_confirmation PASSED [ 33%]
+tests/test_tf_ui011_candidate_research_entry.py::TestProfileRouting::test_policy_ambush_routes_to_midline PASSED [ 38%]
+tests/test_tf_ui011_candidate_research_entry.py::TestProfileRouting::test_policy_confirm_routes_to_midline PASSED [ 42%]
+tests/test_tf_ui011_candidate_research_entry.py::TestProfileRouting::test_tech_trade_routes_to_short PASSED [ 47%]
+tests/test_tf_ui011_candidate_research_entry.py::TestProfileRouting::test_event_watch_routes_to_short PASSED [ 52%]
+tests/test_tf_ui011_candidate_research_entry.py::TestProfileRouting::test_has_position_routes_to_position_risk PASSED [ 57%]
+tests/test_tf_ui011_candidate_research_entry.py::TestProfileRouting::test_unknown_type_routes_to_full_ta PASSED [ 61%]
+tests/test_tf_ui011_candidate_research_entry.py::TestFullTAGuard::test_full_ta_requires_confirmation PASSED [ 66%]
+tests/test_tf_ui011_candidate_research_entry.py::TestFullTAGuard::test_light_profiles_no_confirmation PASSED [ 71%]
+tests/test_tf_ui011_candidate_research_entry.py::TestFullTAGuard::test_full_ta_includes_all_modules PASSED [ 76%]
+tests/test_tf_ui011_candidate_research_entry.py::TestProfileMeta::test_meta_has_all_required_fields PASSED [ 80%]
+tests/test_tf_ui011_candidate_research_entry.py::TestProfileMeta::test_meta_values_correct PASSED [ 85%]
+tests/test_tf_ui011_candidate_research_entry.py::TestSchemaValidation::test_company_overview_response_schema PASSED [ 90%]
+tests/test_tf_ui011_candidate_research_entry.py::TestSchemaValidation::test_company_overview_response_defaults PASSED [ 95%]
+tests/test_tf_ui011_candidate_research_entry.py::TestSchemaValidation::test_research_plan_response_has_profile_fields PASSED [100%]
+
+============================== 21 passed in 1.23s ==============================
+[0m
+All 21 tests pass. Now let me run the related existing tests to ensure no regressions:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_ui009_research_plan_draft.py tests/test_runtime_tier_contract.py tests/test_tradeflow_candidate_engine.py -v 2>&1 | tail -40
+tests/test_runtime_tier_contract.py::TestResponseModels::test_daily_plan_response_has_meta PASSED [ 73%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_ta_queue_response_has_meta PASSED [ 74%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_review_response_has_meta PASSED [ 75%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_filtered_response_has_meta PASSED [ 75%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_candidate_detail_response_has_meta PASSED [ 76%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_response_json_includes_meta PASSED [ 77%]
+tests/test_runtime_tier_contract.py::TestResponseModels::test_custom_meta_overrides PASSED [ 77%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_tradeflow_candidates_returns_fast_tier PASSED [ 78%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_tradeflow_data_health_returns_fast_tier PASSED [ 79%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_full_ta_requires_confirmation PASSED [ 80%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_scheduler_not_full_ta PASSED [ 80%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_three_tier_labels_cn PASSED [ 81%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_fast_radar_no_llm PASSED [ 82%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_full_ta_llm_with_confirmation PASSED [ 82%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_all_tradeflow_endpoints_fast PASSED [ 83%]
+tests/test_runtime_tier_contract.py::TestAcceptancePERF001::test_no_live_ta_triggered PASSED [ 84%]
+tests/test_tradeflow_candidate_engine.py::TestFiltering::test_st_symbol_filter PASSED [ 85%]
+tests/test_tradeflow_candidate_engine.py::TestFiltering::test_low_liquidity_filter PASSED [ 85%]
+tests/test_tradeflow_candidate_engine.py::TestFiltering::test_missing_data_filter PASSED [ 86%]
+tests/test_tradeflow_candidate_engine.py::TestFiltering::test_short_data_filter PASSED [ 87%]
+tests/test_tradeflow_candidate_engine.py::TestEvaluation::test_evaluate_with_data PASSED [ 87%]
+tests/test_tradeflow_candidate_engine.py::TestEvaluation::test_evaluate_no_data PASSED [ 88%]
+tests/test_tradeflow_candidate_engine.py::TestEvaluation::test_evaluate_with_events PASSED [ 89%]
+tests/test_tradeflow_candidate_engine.py::TestEvaluation::test_evaluate_without_events PASSED [ 90%]
+tests/test_tradeflow_candidate_engine.py::TestPersistence::test_init_db PASSED [ 90%]
+tests/test_tradeflow_candidate_engine.py::TestPersistence::test_save_and_read_candidate PASSED [ 91%]
+tests/test_tradeflow_candidate_engine.py::TestPersistence::test_upsert_candidate PASSED [ 92%]
+tests/test_tradeflow_candidate_engine.py::TestPersistence::test_need_deep_ta_persisted PASSED [ 92%]
+tests/test_tradeflow_candidate_engine.py::TestPersistence::test_primary_strategy_migrated PASSED [ 93%]
+tests/test_tradeflow_candidate_engine.py::TestFilterReasons::test_filter_missing_data_returns_reason PASSED [ 94%]
+tests/test_tradeflow_candidate_engine.py::TestFilterReasons::test_filter_low_liquidity_returns_reason PASSED [ 95%]
+tests/test_tradeflow_candidate_engine.py::TestFilterReasons::test_no_strategy_hit_returns_reason PASSED [ 95%]
+tests/test_tradeflow_candidate_engine.py::TestLiquidityCalibration::test_high_price_low_volume_not_filtered PASSED [ 96%]
+tests/test_tradeflow_candidate_engine.py::TestLiquidityCalibration::test_low_price_high_volume_filtered PASSED [ 97%]
+tests/test_tradeflow_candidate_engine.py::TestLiquidityCalibration::test_amount_column_used_directly PASSED [ 97%]
+tests/test_tradeflow_candidate_engine.py::TestLiquidityCalibration::test_estimated_amount_when_no_amount_column PASSED [ 98%]
+tests/test_tradeflow_candidate_engine.py::TestLiquidityCalibration::test_filter_reason_shows_details PASSED [ 99%]
+tests/test_tradeflow_candidate_engine.py::TestLiquidityCalibration::test_short_data_is_low_liquidity PASSED [100%]
+
+============================= 140 passed in 16.76s =============================
+[0m
+All 140 related tests pass. Let me also run the UI-001 tradeflow API tests and PERF tests:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_ui001_tradeflow_api.py tests/test_perf002_lightweight_ta_profiles.py -v 2>&1 | tail -30
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... ERROR: file or directory not found: tests/test_perf002_lightweight_ta_profiles.py
+
+collected 0 items
+
+============================ no tests ran in 0.00s =============================
+[0m
+[0m✱ [0mGlob "tests/test_perf*"[90m 2 matches[0m
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_ui001_tradeflow_api.py tests/test_perf002_ta_profiles.py tests/test_perf004_full_ta_cost_gate.py -v 2>&1 | tail -30
+tests/test_perf004_full_ta_cost_gate.py::TestFullTAGateStillWorks::test_fast_allowed PASSED [ 86%]
+tests/test_perf004_full_ta_cost_gate.py::TestFullTAGateStillWorks::test_light_allowed PASSED [ 86%]
+tests/test_perf004_full_ta_cost_gate.py::TestFullTAGateStillWorks::test_none_blocked PASSED [ 87%]
+tests/test_perf004_full_ta_cost_gate.py::TestCostPreviewEndpoint::test_endpoint_registered PASSED [ 87%]
+tests/test_perf004_full_ta_cost_gate.py::TestCostPreviewEndpoint::test_response_model PASSED [ 88%]
+tests/test_perf004_full_ta_cost_gate.py::TestChatCompletionRequestRuntimeFields::test_runtime_tier_field PASSED [ 88%]
+tests/test_perf004_full_ta_cost_gate.py::TestChatCompletionRequestRuntimeFields::test_default_none PASSED [ 89%]
+tests/test_perf004_full_ta_cost_gate.py::TestAnalyzeEndpointGate::test_full_ta_without_confirmation_returns_403 PASSED [ 89%]
+tests/test_perf004_full_ta_cost_gate.py::TestAnalyzeEndpointGate::test_light_research_no_confirmation_needed PASSED [ 90%]
+tests/test_perf004_full_ta_cost_gate.py::TestSchedulerCostGateLogging::test_scheduler_log_includes_cost_risk PASSED [ 90%]
+tests/test_perf004_full_ta_cost_gate.py::TestSchedulerCostGateLogging::test_scheduler_explicit_full_ta PASSED [ 91%]
+tests/test_perf004_full_ta_cost_gate.py::TestScheduledListCostMeta::test_annotate_adds_cost_meta PASSED [ 91%]
+tests/test_perf004_full_ta_cost_gate.py::TestScheduledListCostMeta::test_annotate_no_last_run PASSED [ 92%]
+tests/test_perf004_full_ta_cost_gate.py::TestAutoDevCannotTriggerFullTA::test_scheduler_default_tier_is_not_full PASSED [ 92%]
+tests/test_perf004_full_ta_cost_gate.py::TestAutoDevCannotTriggerFullTA::test_is_full_ta_allowed_without_confirmation_blocks_auto PASSED [ 93%]
+tests/test_perf004_full_ta_cost_gate.py::TestFrontendTypeContract::test_cost_preview_response_matches_types PASSED [ 93%]
+tests/test_perf004_full_ta_cost_gate.py::TestFrontendTypeContract::test_scheduled_cost_meta_matches_types PASSED [ 94%]
+tests/test_perf004_full_ta_cost_gate.py::TestNoLiveLLMOrTA::test_cost_preview_no_external_calls PASSED [ 94%]
+tests/test_perf004_full_ta_cost_gate.py::TestNoLiveLLMOrTA::test_scheduled_cost_meta_no_external_calls PASSED [ 95%]
+tests/test_perf004_full_ta_cost_gate.py::TestAcceptancePERF004::test_unconfirmed_full_ta_blocked PASSED [ 95%]
+tests/test_perf004_full_ta_cost_gate.py::TestAcceptancePERF004::test_confirmed_full_ta_passes PASSED [ 96%]
+tests/test_perf004_full_ta_cost_gate.py::TestAcceptancePERF004::test_scheduler_cost_meta_records_creator PASSED [ 96%]
+tests/test_perf004_full_ta_cost_gate.py::TestAcceptancePERF004::test_scheduler_cost_meta_records_frequency PASSED [ 97%]
+tests/test_perf004_full_ta_cost_gate.py::TestAcceptancePERF004::test_scheduler_cost_meta_records_last_run PASSED [ 97%]
+tests/test_perf004_full_ta_cost_gate.py::TestAcceptancePERF004::test_cost_preview_has_14_modules PASSED [ 98%]
+tests/test_perf004_full_ta_cost_gate.py::TestAcceptancePERF004::test_cost_preview_has_estimated_calls PASSED [ 98%]
+tests/test_perf004_full_ta_cost_gate.py::TestAcceptancePERF004::test_no_api_key_leak PASSED [ 99%]
+tests/test_perf004_full_ta_cost_gate.py::TestAcceptancePERF004::test_auto_dev_default_tier_not_full PASSED [100%]
+
+============================= 197 passed in 10.97s =============================
+[0m
+[0m# [0mTodos
+[✓] Explore codebase: frontend candidate detail, backend API, PERF-002 profiles
+[✓] Backend schemas + service: CompanyOverviewResponse, enrich research plan with profile metadata
+[✓] Backend endpoint: GET /v1/tradeflow/candidates/{symbol}/overview
+[✓] Frontend types + API: CompanyOverviewResponse, getCompanyOverview, profile metadata fields
+[✓] Frontend MiniKline component for drawer
+[✓] Frontend drawer: company overview section, K-line entry, enhanced research plan display
+[✓] Write tests for TF-UI-011
+[•] Run tests, build, update DEVLOG.md
+[0m
+All 197 tests pass. Now let me update the DEVLOG.md and TASKS.md:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=30, offset=1][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,38 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-14 | TF-UI-011: 候选详情一键轻量 TA、K 线与公司概览
++
++- **执行者**：OpenCode
++- **类型**：功能增强
++- **任务**：TF-UI-011（P1）
++- **背景**：候选池中的票需要能继续研究——详情里显示公司概览、K 线入口、入池证据，并提供一键轻量 TA 预案。UI-009 已实现一键研究预案基础，TF-UI-011 在其上增加公司概览、K 线展示、以及 profile 运行时元数据（预计耗时/是否调用模型/成本风险）。
++- **修改文件**：
++  - `api/tradeflow_schemas.py`：新增 `CompanyOverviewResponse` 模型；`TradeFlowResearchPlanResponse` 新增 `profile_label/expected_latency/llm_allowed/requires_confirmation/cost_risk` 字段。
++  - `api/services/tradeflow_service.py`：新增 `get_company_overview()` 服务函数——通过 `route_to_vendor("get_fundamentals")` 获取公司基本面文本，并从候选 DB 回填名称；`generate_research_plan()` 末尾使用 `ta_profile.recommend_profile()` + `profile_to_meta()` 填充 profile 元数据。
++  - `api/main.py`：新增 `GET /v1/tradeflow/candidates/{symbol}/overview` 端点（FAST_RADAR 层级）。
++  - `api/runtime_tier.py`：将 `tradeflow_company_overview` 加入 `_TRADEFLOW_FAST_ENDPOINTS`。
++  - `frontend/src/types/index.ts`：新增 `CompanyOverviewResponse` 接口；`TradeFlowResearchPlanResponse` 新增 profile 元数据字段。
++  - `frontend/src/services/api.ts`：新增 `getCompanyOverview(symbol, date?)` 方法。
++  - `frontend/src/components/MiniKline.tsx`（新增）：轻量级 K 线组件，使用 `lightweight-charts` 在 200px 高度容器内渲染近 120 日蜡烛图，A 股红涨绿跌配色。
++  - `frontend/src/components/TradeFlowCandidateDrawer.tsx`：新增"公司概览"section（行业/公司简介/数据来源标注）、"K 线走势"section（可折叠 MiniKline）、增强研究预案显示（预计耗时/是否调用模型/成本风险/确认提示）。
++  - `tests/test_tf_ui011_candidate_research_entry.py`（新增）：21 个测试覆盖公司概览服务、研究预案 profile 元数据、profile 路由、Full TA 门禁、schema 校验。
++- **关键逻辑**：
++  1. 公司概览懒加载——打开 drawer 时并发请求 candidate detail 和 company overview，互不阻塞。
++  2. 公司概览数据源不可用时明确标注"数据源暂不可用"，不伪装为有数据。
++  3. K 线为可折叠入口，默认不加载（避免不必要的 API 调用），点击后渲染 MiniKline。
++  4. 研究预案显示 `profile_label`（中线政策轻量/短线技术轻量）、`expected_latency`（1-3min/1-2min）、`llm_allowed`、`cost_risk`。
++  5. Full TA 始终需要确认（`requires_confirmation=True, cost_risk=high`），轻量 profile 无需确认。
++- **测试结果**：
++  - TF-UI-011 专项：21 passed
++  - 关联回归（UI-009/runtime-tier/candidate-engine/UI-001/PERF-002/PERF-004）：197 + 140 = 337 passed
++  - 前端构建：`npm run build` 通过
++- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM，未跑全市场扫描。
++
++---
++
+ ## 2026-06-13 | TF-QUALITY-003: 候选池精度校准与弱候选压缩
+ 
+ - **执行者**：OpenCode
+ - **类型**：功能增强
+
+[0m
+Now update the TASKS.md status for TF-UI-011:
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -2785,9 +2785,9 @@
+ 
+ ### TF-UI-011: 候选详情一键轻量 TA、K 线与公司概览（P1）
+ - **描述**：候选池中的票必须能继续研究：详情里显示公司概览、K 线入口、入池证据，并提供一键轻量 TA 预案。
+ - **优先级**：P1
+-- **状态**：in_progress — claimed TF-UI-011-20260614-000121
++- **状态**：done — TF-UI-011-20260614-000121
+ - **前置条件**：PERF-002 完成 ✓；TF-QUALITY-001A 完成。
+ - **执行约束**：
+   - 默认只生成轻量 TA 预案，不直接启动 full TA。
+   - 不调用 live LLM，除非用户手动确认完整 TA。
+
+[0m
+Also update the priority queue entry:
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -85,9 +85,9 @@
+ 59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done，Codex 修复，待提交）。
+ 60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+ 61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+ 62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
+-63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，ready，依赖 TF-QUALITY-001A/PERF-002 ✓）。
++63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+ 64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
+ 65. `V-006`：最终动作语义端到端回放验收（P1，ready，依赖 DECISION-004）。
+ 66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
+ 67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，ready，来自 TF-QUALITY-001 task_run）。
+
+[0m
+Let me verify the frontend build one more time and run a broader test sweep:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare/frontend && npm run build 2>&1 | tail -10
+computing gzip size...
+dist/index.html                     1.15 kB │ gzip:   0.65 kB
+dist/assets/index-BQde87pL.css    160.82 kB │ gzip:  22.34 kB
+dist/assets/index-CjCdPc_0.js   1,139.81 kB │ gzip: 332.16 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 1.44s
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tf_ui011_candidate_research_entry.py tests/test_ui009_research_plan_draft.py tests/test_runtime_tier_contract.py tests/test_perf002_ta_profiles.py tests/test_perf004_full_ta_cost_gate.py tests/test_ui001_tradeflow_api.py -q 2>&1 | tail -10
+........................................................................ [ 21%]
+........................................................................ [ 42%]
+........................................................................ [ 64%]
+........................................................................ [ 85%]
+................................................                         [100%]
+336 passed in 13.35s
+[0m
+[0m# [0mTodos
+[✓] Explore codebase: frontend candidate detail, backend API, PERF-002 profiles
+[✓] Backend schemas + service: CompanyOverviewResponse, enrich research plan with profile metadata
+[✓] Backend endpoint: GET /v1/tradeflow/candidates/{symbol}/overview
+[✓] Frontend types + API: CompanyOverviewResponse, getCompanyOverview, profile metadata fields
+[✓] Frontend MiniKline component for drawer
+[✓] Frontend drawer: company overview section, K-line entry, enhanced research plan display
+[✓] Write tests for TF-UI-011
+[✓] Run tests, build, update DEVLOG.md
+[0m
+TF-UI-011 implementation complete.
+
+## Files Changed
+
+**Backend:**
+- `api/tradeflow_schemas.py` — New `CompanyOverviewResponse` model; `TradeFlowResearchPlanResponse` gains `profile_label`, `expected_latency`, `llm_allowed`, `requires_confirmation`, `cost_risk`
+- `api/services/tradeflow_service.py` — New `get_company_overview()` service; `generate_research_plan()` enriched with `ta_profile.profile_to_meta()` metadata
+- `api/main.py` — New endpoint `GET /v1/tradeflow/candidates/{symbol}/overview`
+- `api/runtime_tier.py` — Added `tradeflow_company_overview` to `_TRADEFLOW_FAST_ENDPOINTS`
+
+**Frontend:**
+- `frontend/src/types/index.ts` — `CompanyOverviewResponse` type; profile metadata fields on `TradeFlowResearchPlanResponse`
+- `frontend/src/services/api.ts` — `getCompanyOverview(symbol, date?)` method
+- `frontend/src/components/MiniKline.tsx` (new) — Compact 200px candlestick chart with A-share colors
+- `frontend/src/components/TradeFlowCandidateDrawer.tsx` — Company overview section, collapsible K-line entry, enhanced research plan with latency/LLM/cost display
+
+**Tests & Docs:**
+- `tests/test_tf_ui011_candidate_research_entry.py` (new) — 21 tests
+- `docs/DEVLOG.md`, `docs/TASKS.md` — Updated
+
+## Key Logic
+- Company overview lazy-loads via `route_to_vendor("get_fundamentals")`, gracefully falls back with "data unavailable" marker
+- K-line is a collapsible toggle (no unnecessary API calls until clicked)
+- Research plan shows `profile_label` + `expected_latency` + `llm_allowed` + `cost_risk`; Full TA always shows confirmation warning
+
+## Test Results
+- TF-UI-011: **21 passed**
+- Related regression suite (UI-009/runtime-tier/PERF-002/PERF-004/UI-001/candidate-engine): **336 passed**
+- Frontend build: **passed**

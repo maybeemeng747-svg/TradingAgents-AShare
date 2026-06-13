@@ -1638,9 +1638,99 @@ def generate_research_plan(symbol: str, trade_date: str, tf_db_path: str = "") -
 
         result = draft.to_dict()
         result["status"] = "ok"
+
+        # [TF-UI-011] candidate_research_entry — enrich with profile metadata
+        try:
+            from api.ta_profile import recommend_profile, profile_to_meta
+            profile = recommend_profile(
+                candidate_type=item.get("candidate_type", ""),
+                research_queue=item.get("research_queue", ""),
+            )
+            meta = profile_to_meta(profile)
+            result["profile_label"] = meta.get("profile_label", "")
+            result["expected_latency"] = meta.get("expected_latency", "")
+            result["llm_allowed"] = meta.get("llm_allowed", True)
+            result["requires_confirmation"] = meta.get("requires_confirmation", False)
+            result["cost_risk"] = meta.get("cost_risk", "")
+        except Exception:
+            pass
+
         return result
     finally:
         conn.close()
+
+
+# [TF-UI-011] candidate_research_entry
+def get_company_overview(symbol: str, tf_db_path: str = "") -> dict:
+    """Fetch a lightweight company overview for a candidate symbol.
+
+    Uses existing data source providers (route_to_vendor) to retrieve
+    company fundamentals text.  Does NOT call any LLM.  Falls back
+    gracefully when data sources are unavailable.
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_company_overview")
+
+    result: dict = {
+        "status": "ok",
+        "symbol": symbol,
+        "name": "",
+        "industry": "",
+        "company_profile": "",
+        "profile_available": False,
+        "data_source": "",
+        "error": "",
+        "runtime_tier_meta": _fast_meta,
+    }
+
+    # Try to resolve name from existing candidate data first
+    try:
+        conn = _connect(tf_db_path)
+        if conn is not None:
+            try:
+                cols = _table_columns(conn, "tradeflow_candidates")
+                if "created_at" in cols:
+                    row = conn.execute(
+                        "SELECT name FROM tradeflow_candidates WHERE symbol = ? ORDER BY created_at DESC LIMIT 1",
+                        (symbol,),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT name FROM tradeflow_candidates WHERE symbol = ? LIMIT 1",
+                        (symbol,),
+                    ).fetchone()
+                if row and row["name"]:
+                    result["name"] = row["name"]
+            finally:
+                conn.close()
+    except Exception:
+        pass
+
+    # Try to get fundamentals from data source providers
+    try:
+        from tradingagents.dataflows.interface import route_to_vendor, get_last_hit_vendor
+        profile_text = route_to_vendor("get_fundamentals", symbol)
+        if profile_text and isinstance(profile_text, str) and len(profile_text) > 20:
+            result["company_profile"] = profile_text
+            result["profile_available"] = True
+            try:
+                result["data_source"] = get_last_hit_vendor("get_fundamentals") or ""
+            except Exception:
+                pass
+            # Try to extract industry from the text
+            for line in profile_text.split("\n"):
+                low = line.lower()
+                if "行业" in line or "industry" in low:
+                    parts = line.split(":")
+                    if len(parts) >= 2:
+                        val = parts[-1].strip().strip("*").strip()
+                        if val:
+                            result["industry"] = val
+                            break
+    except Exception as exc:
+        result["error"] = f"数据源暂不可用: {type(exc).__name__}"
+        result["status"] = "unavailable"
+
+    return result
 
 
 # [UI-010] mandate_candidate_compare

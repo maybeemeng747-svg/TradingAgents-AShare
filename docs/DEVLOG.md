@@ -4,6 +4,36 @@
 
 ---
 
+## 2026-06-14 | TF-UI-011: 候选详情一键轻量 TA、K 线与公司概览
+
+- **执行者**：OpenCode
+- **类型**：功能增强
+- **任务**：TF-UI-011（P1）
+- **背景**：候选池中的票需要能继续研究——详情里显示公司概览、K 线入口、入池证据，并提供一键轻量 TA 预案。UI-009 已实现一键研究预案基础，TF-UI-011 在其上增加公司概览、K 线展示、以及 profile 运行时元数据（预计耗时/是否调用模型/成本风险）。
+- **修改文件**：
+  - `api/tradeflow_schemas.py`：新增 `CompanyOverviewResponse` 模型；`TradeFlowResearchPlanResponse` 新增 `profile_label/expected_latency/llm_allowed/requires_confirmation/cost_risk` 字段。
+  - `api/services/tradeflow_service.py`：新增 `get_company_overview()` 服务函数——通过 `route_to_vendor("get_fundamentals")` 获取公司基本面文本，并从候选 DB 回填名称；`generate_research_plan()` 末尾使用 `ta_profile.recommend_profile()` + `profile_to_meta()` 填充 profile 元数据。
+  - `api/main.py`：新增 `GET /v1/tradeflow/candidates/{symbol}/overview` 端点（FAST_RADAR 层级）。
+  - `api/runtime_tier.py`：将 `tradeflow_company_overview` 加入 `_TRADEFLOW_FAST_ENDPOINTS`。
+  - `frontend/src/types/index.ts`：新增 `CompanyOverviewResponse` 接口；`TradeFlowResearchPlanResponse` 新增 profile 元数据字段。
+  - `frontend/src/services/api.ts`：新增 `getCompanyOverview(symbol, date?)` 方法。
+  - `frontend/src/components/MiniKline.tsx`（新增）：轻量级 K 线组件，使用 `lightweight-charts` 在 200px 高度容器内渲染近 120 日蜡烛图，A 股红涨绿跌配色。
+  - `frontend/src/components/TradeFlowCandidateDrawer.tsx`：新增"公司概览"section（行业/公司简介/数据来源标注）、"K 线走势"section（可折叠 MiniKline）、增强研究预案显示（预计耗时/是否调用模型/成本风险/确认提示）。
+  - `tests/test_tf_ui011_candidate_research_entry.py`（新增）：21 个测试覆盖公司概览服务、研究预案 profile 元数据、profile 路由、Full TA 门禁、schema 校验。
+- **关键逻辑**：
+  1. 公司概览懒加载——打开 drawer 时并发请求 candidate detail 和 company overview，互不阻塞。
+  2. 公司概览数据源不可用时明确标注"数据源暂不可用"，不伪装为有数据。
+  3. K 线为可折叠入口，默认不加载（避免不必要的 API 调用），点击后渲染 MiniKline。
+  4. 研究预案显示 `profile_label`（中线政策轻量/短线技术轻量）、`expected_latency`（1-3min/1-2min）、`llm_allowed`、`cost_risk`。
+  5. Full TA 始终需要确认（`requires_confirmation=True, cost_risk=high`），轻量 profile 无需确认。
+- **测试结果**：
+  - TF-UI-011 专项：21 passed
+  - 关联回归（UI-009/runtime-tier/candidate-engine/UI-001/PERF-002/PERF-004）：197 + 140 = 337 passed
+  - 前端构建：`npm run build` 通过
+- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM，未跑全市场扫描。
+
+---
+
 ## 2026-06-13 | TF-QUALITY-003: 候选池精度校准与弱候选压缩
 
 - **执行者**：OpenCode
@@ -4252,3 +4282,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TF-QUALITY-003-20260614-round1.txt
 - **Run archive**: docs/task_runs/TF-QUALITY-003-20260613-234211/
+
+## 2026-06-14 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-UI-011 - 候选详情一键轻量 TA、K 线与公司概览（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TF-UI-011-20260614-round1.txt
+- **Run archive**: docs/task_runs/TF-UI-011-20260614-000121/

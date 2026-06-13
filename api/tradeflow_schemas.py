@@ -357,6 +357,7 @@ class TradeFlowEvidenceAuditResponse(BaseModel):
 
 
 # [UI-009] candidate_ta_plan_draft
+# [TF-UI-011] candidate_research_entry — profile metadata added
 class TradeFlowResearchPlanResponse(BaseModel):
     status: str = "ok"
     trade_date: str = ""
@@ -368,6 +369,11 @@ class TradeFlowResearchPlanResponse(BaseModel):
     analysis_intent: str = ""
     position_context: str = ""
     runtime_profile: str = ""
+    profile_label: str = ""  # [TF-UI-011]
+    expected_latency: str = ""  # [TF-UI-011]
+    llm_allowed: bool = True  # [TF-UI-011]
+    requires_confirmation: bool = False  # [TF-UI-011]
+    cost_risk: str = ""  # [TF-UI-011]
     enabled_modules: List[str] = Field(default_factory=list)
     required_evidence: List[str] = Field(default_factory=list)
     existing_evidence_coverage: float = 0.0
@@ -375,6 +381,19 @@ class TradeFlowResearchPlanResponse(BaseModel):
     block_reason: str = ""
     plan_markdown: str = ""
     route_reason: str = ""
+
+
+# [TF-UI-011] candidate_research_entry
+class CompanyOverviewResponse(BaseModel):
+    status: str = "ok"
+    symbol: str = ""
+    name: str = ""
+    industry: str = ""
+    company_profile: str = ""
+    profile_available: bool = False
+    data_source: str = ""
+    error: str = ""
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
 
 
 # [UI-010] mandate_candidate_compare

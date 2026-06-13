@@ -1,9 +1,11 @@
 // [H-005] mandate_radar_ui
 // [TA-UI-001] analysis_console_horizon_intent
+// [TF-UI-011] candidate_research_entry
 import { useEffect, useState } from 'react'
-import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote, FlaskConical, FileText } from 'lucide-react'
+import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote, FlaskConical, FileText, Building2, CandlestickChart, Clock, Cpu } from 'lucide-react'
 import { api } from '@/services/api'
-import type { TradeFlowCandidateItem, TradeFlowCandidateDetail, TradeFlowResearchPlanResponse } from '@/types'
+import type { TradeFlowCandidateItem, TradeFlowCandidateDetail, TradeFlowResearchPlanResponse, CompanyOverviewResponse } from '@/types'
+import MiniKline from './MiniKline'
 
 const ALL_STRATEGIES = [
     'VCP',
@@ -110,6 +112,9 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
     const [loadingDetail, setLoadingDetail] = useState(false)
     const [researchPlan, setResearchPlan] = useState<TradeFlowResearchPlanResponse | null>(null)  // [UI-009]
     const [loadingPlan, setLoadingPlan] = useState(false)  // [UI-009]
+    const [companyOverview, setCompanyOverview] = useState<CompanyOverviewResponse | null>(null)  // [TF-UI-011]
+    const [loadingOverview, setLoadingOverview] = useState(false)  // [TF-UI-011]
+    const [showKline, setShowKline] = useState(false)  // [TF-UI-011]
 
     useEffect(() => {
         if (!open) return
@@ -117,6 +122,8 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
         setLoadingDetail(true)
         setDetail(null)
         setResearchPlan(null)
+        setCompanyOverview(null)  // [TF-UI-011]
+        setShowKline(false)  // [TF-UI-011]
         api.getTradeFlowCandidateDetail(candidate.symbol, tradeDate)
             .then(res => {
                 if (!cancelled && res.candidate) {
@@ -127,6 +134,12 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
             .finally(() => {
                 if (!cancelled) setLoadingDetail(false)
             })
+        // [TF-UI-011] candidate_research_entry — lazy load company overview
+        setLoadingOverview(true)
+        api.getCompanyOverview(candidate.symbol, tradeDate)
+            .then(res => { if (!cancelled) setCompanyOverview(res) })
+            .catch(() => {})
+            .finally(() => { if (!cancelled) setLoadingOverview(false) })
         return () => { cancelled = true }
     }, [open, candidate.symbol, tradeDate])
 
@@ -216,6 +229,68 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
                         {data.strategy_tags.length > 0 && (
                             <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                                 主策略: <span className="font-medium text-slate-700 dark:text-slate-300">{data.primary_strategy}</span>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* [TF-UI-011] candidate_research_entry — Company Overview */}
+                    <div>
+                        <SectionTitle icon={Building2} title="公司概览" />
+                        <div className="mt-2 space-y-2">
+                            {loadingOverview && (
+                                <div className="flex items-center gap-2 text-xs text-slate-400">
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    加载公司信息...
+                                </div>
+                            )}
+                            {!loadingOverview && companyOverview && companyOverview.profile_available && (
+                                <>
+                                    {companyOverview.industry && (
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-xs text-slate-500 dark:text-slate-400">所属行业:</span>
+                                            <span className="inline-block rounded bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
+                                                {companyOverview.industry}
+                                            </span>
+                                        </div>
+                                    )}
+                                    <div className="rounded-lg border border-slate-100 bg-slate-50/50 p-3 dark:border-slate-700 dark:bg-slate-800/30">
+                                        <div className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                                            公司简介 {companyOverview.data_source && <span className="text-slate-400">({companyOverview.data_source})</span>}
+                                        </div>
+                                        <div className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-400 max-h-32 overflow-y-auto whitespace-pre-wrap">
+                                            {companyOverview.company_profile}
+                                        </div>
+                                    </div>
+                                </>
+                            )}
+                            {!loadingOverview && companyOverview && !companyOverview.profile_available && (
+                                <div className="rounded-lg border border-slate-100 bg-slate-50/50 p-3 dark:border-slate-700 dark:bg-slate-800/30">
+                                    <div className="text-xs text-slate-400">
+                                        {companyOverview.error || '公司概览暂不可用，可能是数据源未返回'}
+                                    </div>
+                                </div>
+                            )}
+                            {!loadingOverview && !companyOverview && (
+                                <div className="text-xs text-slate-400">公司信息获取失败</div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* [TF-UI-011] candidate_research_entry — K-line entry */}
+                    <div>
+                        <div className="flex items-center justify-between">
+                            <SectionTitle icon={CandlestickChart} title="K 线走势" />
+                            <button
+                                onClick={() => setShowKline(!showKline)}
+                                className="flex items-center gap-1 rounded-md bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100 dark:bg-slate-800 dark:text-slate-400 dark:hover:bg-slate-700 transition-colors"
+                            >
+                                <CandlestickChart className="h-3.5 w-3.5" />
+                                {showKline ? '收起 K 线' : '查看 K 线'}
+                            </button>
+                        </div>
+                        {showKline && (
+                            <div className="mt-2 rounded-lg border border-slate-100 bg-white p-2 dark:border-slate-700 dark:bg-slate-800/30">
+                                <MiniKline symbol={candidate.symbol} height={200} />
                             </div>
                         )}
                     </div>
@@ -570,9 +645,9 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
                                 <>
                                     {researchPlan.can_generate ? (
                                         <div className="rounded-lg border border-indigo-200 bg-indigo-50/50 p-3 dark:border-indigo-800 dark:bg-indigo-900/10">
-                                            <div className="flex items-center gap-2">
+                                            <div className="flex items-center gap-2 flex-wrap">
                                                 <span className="text-[11px] font-medium text-indigo-600 dark:text-indigo-400">
-                                                    {researchPlan.horizon === 'medium' ? '中线研究预案' : '短线确认预案'}
+                                                    {researchPlan.profile_label || (researchPlan.horizon === 'medium' ? '中线研究预案' : '短线确认预案')}
                                                 </span>
                                                 <span className="text-[10px] text-slate-400">|</span>
                                                 <span className="text-[11px] text-slate-500 dark:text-slate-400">
@@ -583,6 +658,33 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
                                                     Profile: {researchPlan.runtime_profile}
                                                 </span>
                                             </div>
+                                            {/* [TF-UI-011] candidate_research_entry — runtime metadata */}
+                                            <div className="mt-1 flex items-center gap-3 flex-wrap text-[10px]">
+                                                {researchPlan.expected_latency && (
+                                                    <span className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
+                                                        <Clock className="h-3 w-3" />
+                                                        预计耗时 {researchPlan.expected_latency}
+                                                    </span>
+                                                )}
+                                                <span className="flex items-center gap-1 text-slate-500 dark:text-slate-400">
+                                                    <Cpu className="h-3 w-3" />
+                                                    {researchPlan.llm_allowed ? '调用模型' : '不调用模型'}
+                                                </span>
+                                                {researchPlan.cost_risk && researchPlan.cost_risk !== 'none' && (
+                                                    <span className={`flex items-center gap-1 ${
+                                                        researchPlan.cost_risk === 'high' ? 'text-red-500' :
+                                                        researchPlan.cost_risk === 'medium' ? 'text-amber-500' :
+                                                        'text-emerald-500'
+                                                    }`}>
+                                                        成本风险: {researchPlan.cost_risk}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            {researchPlan.requires_confirmation && (
+                                                <div className="mt-1 rounded bg-amber-50 dark:bg-amber-900/20 px-2 py-1 text-[10px] text-amber-600 dark:text-amber-400">
+                                                    ⚠ 需要 Explorer 确认后才能启动
+                                                </div>
+                                            )}
                                             <div className="mt-1 flex flex-wrap gap-1">
                                                 {researchPlan.enabled_modules.map(m => (
                                                     <span key={m} className="inline-block rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600 dark:bg-blue-900/20 dark:text-blue-400">{m}</span>
