@@ -88,7 +88,7 @@
 62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
 63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
 64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
-65. `V-006`：最终动作语义端到端回放验收（P1，ready，依赖 DECISION-004）。
+65. `V-006`：最终动作语义端到端回放验收（P1，done，依赖 DECISION-004 ✓）。
 66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
 67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，ready，来自 TF-QUALITY-001 task_run）。
 68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
@@ -2841,7 +2841,7 @@
 ### V-006: 最终动作语义端到端回放验收（P1）
 - **描述**：DECISION-001~004 已完成后，用历史报告和最新报告回放验证系统不再“一片 HOLD/持有”，并确认前端/通知/DB 三处一致。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — V-006-20260614, 33 tests passed, 见 docs/decision_replay_report.md
 - **前置条件**：DECISION-004 完成 ✓。
 - **执行约束**：
   - 不调 LLM。

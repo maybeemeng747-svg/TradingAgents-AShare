@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-06-14 | V-006: 最终动作语义端到端回放验收
+
+- **执行者**：OpenCode
+- **类型**：验收测试
+- **任务**：V-006（P1）
+- **背景**：DECISION-001~004 完成动作语义 3 层拆分后，需要端到端回放验证系统不再"一片 HOLD/持有"，且 DB 轻量列、result_data JSON、通知推送三处一致。现有测试覆盖单层但缺少跨层 E2E。
+- **修改文件**：
+  - `tests/test_v006_decision_e2e_replay.py`（新增）：33 个测试覆盖 5 个典型场景的全链路回放：信号文本 → `_extract_decision_semantics` → `resolve_report_fields` → `create_report`（in-memory SQLite）→ DB 读回 → Bark/企业微信 payload。
+  - `docs/decision_replay_report.md`（新增）：验收报告，列出 5 个场景的预期值、DB 一致性、通知一致性、动作多样性结论。
+- **关键逻辑**：
+  1. 5 个场景覆盖 V-006 规定的全部动作：未持仓偏多无触发价→等待触发/WAIT、未持仓看多有触发价→条件入场/ENTER、未持仓偏空→回避/WAIT、已持仓中性→持有/HOLD、已持仓偏空→条件减仓/REDUCE。
+  2. 模拟真实管线：`resolve_report_fields(has_position=...)` → 语义合并到 `result_data` → `create_report` → DB 读回，验证 DECISION-004 position-aware 语义不丢失。
+  3. 跨层一致性：DB 轻量列 == result_data JSON == 通知 payload，三层全部使用 `action_label`。
+  4. 动作多样性断言：5 个场景产生 5 个不同 `action_label`（等待触发/条件入场/回避/持有/条件减仓），4 种 `execution_action`（WAIT/ENTER/HOLD/REDUCE）。
+- **测试结果**：
+  - V-006 专项：33 passed
+  - 回归（decision_semantics + decision_replay + bark + wecom）：58 passed
+  - 总计：91 passed, 0 failed
+
+---
+
 ## 2026-06-14 | DATA-017: 主力资金/龙虎榜数据源健康巡检与 fallback 验收
 
 - **执行者**：OpenCode
@@ -4326,3 +4347,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-017-20260614-round1.txt
 - **Run archive**: docs/task_runs/DATA-017-20260614-001936/
+
+## 2026-06-14 | AUTO-002 Auto Dev Loop
+
+- **Task**: V-006 - 最终动作语义端到端回放验收（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/V-006-20260614-round1.txt
+- **Run archive**: docs/task_runs/V-006-20260614-003128/
