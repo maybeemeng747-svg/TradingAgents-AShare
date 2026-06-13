@@ -106,8 +106,12 @@ def compute_split_scores(
         ranking_reasons.append("博弈有利")
     if positive_category_count >= 3:
         ranking_reasons.append(f"{positive_category_count}类正向信号")
-    if trigger_price is not None and trigger_price > 0:
-        ranking_reasons.append("有明确触发价")
+    if trigger_price is not None:
+        try:
+            if float(trigger_price) > 0:
+                ranking_reasons.append("有明确触发价")
+        except (TypeError, ValueError):
+            pass
 
     if not has_tech:
         weakness_reasons.append("无技术形态信号")

@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-06-13 | TF-QUALITY-003: 候选池精度校准与弱候选压缩
+
+- **执行者**：OpenCode
+- **类型**：功能增强
+- **任务**：TF-QUALITY-003（P0）
+- **背景**：TF-QUALITY-002 分项评分落地后，候选池仍可能包含弱 VCP、弱事件、数据不足的候选进入主候选。需要基于分项评分建立精度门禁，把候选池从"看起来很多"压缩到"真正值得盯的少数票"，同时保护昊天左侧候选不被短线未突破直接过滤。
+- **修改文件**：
+  - `tradingagents/tradeflow/strategy_config.py`：新增精度门禁配置字段 `precision_min_tech_dimensions`/`precision_min_policy_dimensions`/`precision_data_quality_threshold`/`precision_overheat_penalty_max`。
+  - `tradingagents/tradeflow/candidate_precision_gate.py`（新增）：精度门禁核心模块。实现 `compute_precision()`——对 TECH_TRADE 候选计算 {形态, 量能, 资金, 触发/失效价, 数据质量} 五维命中；对 POLICY_AMBUSH/POLICY_CONFIRM 计算 {政策主题, 受益路径, 反证不过热, 证据覆盖} 四维命中。每类需 ≥ 2 维共振才合格。同时支持 `enrich_with_precision()` 批量标注维度元数据。
+  - `tradingagents/tradeflow/candidate_pool_gate.py`：`run_pool_gate()` 集成精度门禁——legacy `_qualify_for_main()` 通过后再检查精度共振；精度不足的候选进入 observation（非 filtered）。新增昊天保护：POLICY 类型候选无论 legacy 还是精度失败都只能进入 observation，永远不会被 filtered。
+  - `tradingagents/tradeflow/candidate_engine.py`：`evaluate_symbol()` 末尾接入 `compute_split_scores()`，实际填充 `technical_score/policy_score/fund_flow_score/event_score/risk_penalty_score/data_quality_score/ranking_reasons/weakness_reasons` 到候选对象（TF-QUALITY-002 模块此前已定义但未接线）。
+  - `tradingagents/tradeflow/score_separation.py`：`trigger_price > 0` 比较增加类型安全守卫（MagicMock 兼容）。
+  - `tradingagents/tradeflow/discovery.py`：`_build_discovery_entry()` 新增分项评分字段和精度门禁所需字段（mandate_score_component/beneficiary_score_component/beneficiary_path/overheat_penalty/overheat_flags/mandate_topic）。
+  - `api/services/tradeflow_service.py`：`_row_to_candidate_item()` 新增分项评分列和精度门禁字段读取，使 API 层候选也能通过精度门禁评估。
+  - `tests/test_tf_quality001_pool_gate.py`：新增 21 个 TF-QUALITY-003 测试覆盖精度维度计算、昊天保护、20 候选压缩、弱候选过滤、精度元数据标注。同时扩展 `_make_entry()` helper 支持 `fund_flow_anomaly_tags/overheat_penalty/overheat_flags` 参数。
+- **关键逻辑**：
+  1. TECH_TRADE 主候选准入：形态(VCP/PULLBACK) + 量能(多类正向/共振/正向资金标签) + 资金(单位校验的异常资金流) + 触发/失效价(两者同时存在) + 数据质量(完整度≥0.5)，需 ≥ 2 维命中。
+  2. POLICY 主候选准入：政策主题 + 受益路径 + 反证不过热(无高危反证+过热罚分≤20+无过热标签) + 证据覆盖(完整度≥0.5)，需 ≥ 2 维命中。
+  3. 昊天保护：POLICY_AMBUSH/POLICY_CONFIRM 类型候选永远不进入 filtered，只能进入 observation 或 main。
+  4. 主候选上限：技术池 3 只、昊天池 3 只、总主候选 5 只（沿用 TF-QUALITY-001 配置）。
+- **测试结果**：
+  - 全量回归：5344 passed, 17 skipped（0 failed）
+  - 前端构建：`npm run build` 通过
+- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM。
+
+---
+
 ## 2026-06-13 | TF-REVIEW-002: 盘后 Review 数据补齐与非交易日计划映射
 
 - **执行者**：OpenCode
@@ -4214,3 +4241,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TF-REVIEW-002-20260613-round1.txt
 - **Run archive**: docs/task_runs/TF-REVIEW-002-20260613-232054/
+
+## 2026-06-14 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-QUALITY-003 - 候选池精度校准与弱候选压缩（P0）
+- **Priority**: P0
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TF-QUALITY-003-20260614-round1.txt
+- **Run archive**: docs/task_runs/TF-QUALITY-003-20260613-234211/

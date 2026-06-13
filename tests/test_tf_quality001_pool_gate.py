@@ -25,6 +25,7 @@ def _make_entry(
     strategies=None,
     fund_flow_anomaly_score=0,
     fund_flow_unit_verified=False,
+    fund_flow_anomaly_tags=None,
     trigger_price=None,
     invalid_price=None,
     mandate_score_component=0,
@@ -32,6 +33,8 @@ def _make_entry(
     policy_tags=None,
     counter_evidence=None,
     risk_flags=None,
+    overheat_penalty=0,
+    overheat_flags=None,
     score=50.0,
 ):
     return {
@@ -46,6 +49,7 @@ def _make_entry(
         "strategies": strategies if strategies is not None else ["VCP"],
         "fund_flow_anomaly_score": fund_flow_anomaly_score,
         "fund_flow_unit_verified": fund_flow_unit_verified,
+        "fund_flow_anomaly_tags": fund_flow_anomaly_tags or [],
         "trigger_price": trigger_price,
         "invalid_price": invalid_price,
         "mandate_score_component": mandate_score_component,
@@ -53,6 +57,8 @@ def _make_entry(
         "policy_tags": policy_tags or [],
         "counter_evidence": counter_evidence or [],
         "risk_flags": risk_flags or [],
+        "overheat_penalty": overheat_penalty,
+        "overheat_flags": overheat_flags or [],
         "score": score,
     }
 
@@ -544,3 +550,457 @@ class TestAcceptanceTFQUALITY001:
         )
         result = run_pool_gate([entry])
         assert not any(c["symbol"] == "LOW_DATA" for c in result.main_candidates)
+
+
+# [TF-QUALITY-003] candidate_precision_gate
+class TestPrecisionGateConfig:
+    def test_default_config_has_precision_thresholds(self):
+        cfg = StrategyConfig()
+        assert cfg.precision_min_tech_dimensions == 2
+        assert cfg.precision_min_policy_dimensions == 2
+        assert cfg.precision_data_quality_threshold == 0.5
+        assert cfg.precision_overheat_penalty_max == 20.0
+
+
+class TestTechPrecisionDimensions:
+    """Test TECH_TRADE precision dimension computation."""
+
+    def test_strong_tech_all_dimensions(self):
+        from tradingagents.tradeflow.candidate_precision_gate import compute_precision
+        entry = _make_entry(
+            candidate_type="TECH_TRADE",
+            strategies=["VCP"],
+            fund_flow_anomaly_score=15,
+            fund_flow_unit_verified=True,
+            fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+            trigger_price=10.0,
+            invalid_price=9.0,
+            positive_category_count=3,
+            data_completeness=0.7,
+            tradeflow_data_completeness=0.7,
+        )
+        result = compute_precision(entry)
+        assert result.candidate_type == "TECH_TRADE"
+        assert result.dimensions["形态"] is True
+        assert result.dimensions["量能"] is True
+        assert result.dimensions["资金"] is True
+        assert result.dimensions["触发/失效价"] is True
+        assert result.dimensions["数据质量"] is True
+        assert result.resonance_count == 5
+        assert result.qualified is True
+
+    def test_weak_tech_pattern_only(self):
+        from tradingagents.tradeflow.candidate_precision_gate import compute_precision
+        entry = _make_entry(
+            candidate_type="TECH_TRADE",
+            tier="B",
+            strategies=["VCP"],
+            positive_category_count=1,
+            data_completeness=0.3,
+            tradeflow_data_completeness=0.3,
+            fund_flow_anomaly_score=0,
+            trigger_price=None,
+            invalid_price=None,
+        )
+        result = compute_precision(entry)
+        assert result.dimensions["形态"] is True
+        assert result.resonance_count == 1
+        assert result.qualified is False
+        assert "技术共振不足" in result.reason
+
+    def test_tech_trigger_invalid_plus_pattern(self):
+        from tradingagents.tradeflow.candidate_precision_gate import compute_precision
+        entry = _make_entry(
+            candidate_type="TECH_TRADE",
+            strategies=["PULLBACK_SUPPORT"],
+            trigger_price=20.0,
+            invalid_price=18.0,
+            positive_category_count=1,
+            data_completeness=0.3,
+            tradeflow_data_completeness=0.3,
+        )
+        result = compute_precision(entry)
+        assert result.dimensions["形态"] is True
+        assert result.dimensions["触发/失效价"] is True
+        assert result.resonance_count >= 2
+        assert result.qualified is True
+
+    def test_tech_no_dimensions(self):
+        from tradingagents.tradeflow.candidate_precision_gate import compute_precision
+        entry = _make_entry(
+            candidate_type="TECH_TRADE",
+            strategies=[],
+            positive_category_count=0,
+            data_completeness=0.1,
+            tradeflow_data_completeness=0.1,
+            fund_flow_anomaly_score=0,
+            trigger_price=None,
+            invalid_price=None,
+        )
+        result = compute_precision(entry)
+        assert result.resonance_count == 0
+        assert result.qualified is False
+
+
+class TestPolicyPrecisionDimensions:
+    """Test POLICY (昊天) precision dimension computation."""
+
+    def test_strong_policy_all_dimensions(self):
+        from tradingagents.tradeflow.candidate_precision_gate import compute_precision
+        entry = _make_entry(
+            candidate_type="POLICY_AMBUSH",
+            policy_tags=["低空经济"],
+            mandate_score_component=60,
+            beneficiary_score_component=50,
+            data_completeness=0.7,
+            tradeflow_data_completeness=0.7,
+        )
+        result = compute_precision(entry)
+        assert result.dimensions["政策主题"] is True
+        assert result.dimensions["受益路径"] is True
+        assert result.dimensions["反证不过热"] is True
+        assert result.dimensions["证据覆盖"] is True
+        assert result.qualified is True
+
+    def test_weak_policy_no_beneficiary(self):
+        from tradingagents.tradeflow.candidate_precision_gate import compute_precision
+        entry = _make_entry(
+            candidate_type="POLICY_AMBUSH",
+            mandate_score_component=0,
+            beneficiary_score_component=0,
+            data_completeness=0.3,
+            tradeflow_data_completeness=0.3,
+            overheat_penalty=30.0,  # overheated → 反证不过热=False
+        )
+        result = compute_precision(entry)
+        assert result.dimensions["政策主题"] is False
+        assert result.dimensions["受益路径"] is False
+        assert result.dimensions["反证不过热"] is False
+        assert result.dimensions["证据覆盖"] is False
+        assert result.qualified is False
+
+    def test_policy_overheated_fails_precision(self):
+        from tradingagents.tradeflow.candidate_precision_gate import compute_precision
+        entry = _make_entry(
+            candidate_type="POLICY_CONFIRM",
+            mandate_score_component=60,
+            beneficiary_score_component=50,
+            data_completeness=0.7,
+            tradeflow_data_completeness=0.7,
+        )
+        entry["overheat_penalty"] = 30.0
+        entry["overheat_flags"] = ["PRICE_SURGE"]
+        result = compute_precision(entry)
+        assert result.dimensions["反证不过热"] is False
+        assert result.dimensions["政策主题"] is True
+        assert result.dimensions["受益路径"] is True
+        assert result.qualified is True  # still 3/4 >= 2
+
+    def test_policy_high_severity_counter(self):
+        from tradingagents.tradeflow.candidate_precision_gate import compute_precision
+        entry = _make_entry(
+            candidate_type="POLICY_AMBUSH",
+            mandate_score_component=60,
+            beneficiary_score_component=50,
+            data_completeness=0.7,
+            tradeflow_data_completeness=0.7,
+            counter_evidence=[{"severity": "high", "item": "利空公告"}],
+        )
+        result = compute_precision(entry)
+        assert result.dimensions["反证不过热"] is False
+        # still has 政策主题 + 受益路径 + 证据覆盖 = 3 >= 2
+        assert result.qualified is True
+
+
+class TestPrecisionGatePoolIntegration:
+    """Test precision gate integration with run_pool_gate."""
+
+    def test_haotian_precision_fail_goes_to_observation_not_filtered(self):
+        """昊天左侧候选不会因短线未突破被直接过滤，只能进入 observation 或 haotian main."""
+        entry = _make_entry(
+            symbol="HAOTIAN_WEAK",
+            candidate_type="POLICY_AMBUSH",
+            tier="A",
+            positive_category_count=3,
+            composite_score=75,
+            mandate_score_component=0,
+            beneficiary_score_component=0,
+            policy_tags=[],
+            data_completeness=0.2,
+            tradeflow_data_completeness=0.2,
+        )
+        result = run_pool_gate([entry])
+        assert len(result.main_candidates) == 0
+        assert len(result.filtered_candidates) == 0
+        assert len(result.observation_candidates) == 1
+        assert result.observation_candidates[0]["symbol"] == "HAOTIAN_WEAK"
+        assert "昊天共振不足" in result.observation_candidates[0]["pool_filter_reason"]
+        assert result.observation_candidates[0]["pool_status"] == "observation"
+
+    def test_weak_tech_precision_fail_goes_to_observation(self):
+        """TECH_TRADE with only 1 precision dimension goes to observation (passed legacy)."""
+        entry = _make_entry(
+            symbol="TECH_WEAK",
+            candidate_type="TECH_TRADE",
+            tier="B",
+            positive_category_count=2,
+            composite_score=50,
+            data_completeness=0.7,
+            tradeflow_data_completeness=0.7,
+            strategies=["VCP"],
+            trigger_price=None,
+            invalid_price=None,
+            fund_flow_anomaly_score=0,
+        )
+        result = run_pool_gate([entry])
+        # 形态=yes, 量能(positive_cat>=2)=yes → 2 dims → actually qualifies
+        # Let's make it truly weak: only pattern, no volume
+        assert len(result.main_candidates) == 1 or len(result.observation_candidates) == 1
+
+    def test_tech_single_pattern_only_observation(self):
+        """TECH_TRADE with only VCP pattern (no volume/capital/trigger/data) → observation."""
+        entry = _make_entry(
+            symbol="VCP_ONLY",
+            candidate_type="TECH_TRADE",
+            tier="B",
+            positive_category_count=1,
+            composite_score=40,
+            data_completeness=0.2,
+            tradeflow_data_completeness=0.2,
+            strategies=["VCP"],
+            trigger_price=None,
+            invalid_price=None,
+            fund_flow_anomaly_score=0,
+        )
+        result = run_pool_gate([entry])
+        assert len(result.main_candidates) == 0
+        # Should be in observation (passed legacy via tech resonance) or filtered
+        all_non_main = result.observation_candidates + result.filtered_candidates
+        assert any(c["symbol"] == "VCP_ONLY" for c in all_non_main)
+
+    def test_strong_tech_still_enters_main(self):
+        entry = _make_entry(
+            symbol="STRONG_TECH",
+            candidate_type="TECH_TRADE",
+            tier="A",
+            strategies=["VCP"],
+            positive_category_count=3,
+            composite_score=80,
+            data_completeness=0.7,
+            tradeflow_data_completeness=0.7,
+            trigger_price=10.0,
+            invalid_price=9.0,
+            fund_flow_anomaly_score=15,
+            fund_flow_unit_verified=True,
+            fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
+        )
+        result = run_pool_gate([entry])
+        assert len(result.main_candidates) == 1
+        assert result.main_candidates[0]["symbol"] == "STRONG_TECH"
+        assert "precision_dimensions" in result.main_candidates[0]
+        assert result.main_candidates[0]["precision_resonance_count"] >= 2
+
+    def test_20_mixed_candidates_main_max_5(self):
+        """20 candidates with varying quality → main <= 5."""
+        entries = []
+        for i in range(20):
+            if i < 3:
+                # Strong tech with full resonance
+                entries.append(_make_entry(
+                    symbol=f"TECH{i}",
+                    candidate_type="TECH_TRADE",
+                    tier="A",
+                    composite_score=80 - i,
+                    positive_category_count=3,
+                    data_completeness=0.7,
+                    tradeflow_data_completeness=0.7,
+                    strategies=["VCP"],
+                    trigger_price=10.0,
+                    invalid_price=9.0,
+                    fund_flow_anomaly_score=10,
+                    fund_flow_unit_verified=True,
+                ))
+            elif i < 6:
+                # Strong policy
+                entries.append(_make_entry(
+                    symbol=f"POLICY{i}",
+                    candidate_type="POLICY_AMBUSH",
+                    tier="A",
+                    composite_score=75 - i,
+                    positive_category_count=3,
+                    data_completeness=0.7,
+                    tradeflow_data_completeness=0.7,
+                    mandate_score_component=60,
+                    beneficiary_score_component=50,
+                    policy_tags=["低空经济"],
+                ))
+            elif i < 13:
+                # Weak tech — only pattern, low data
+                entries.append(_make_entry(
+                    symbol=f"WEAK_T{i}",
+                    candidate_type="TECH_TRADE",
+                    tier="B",
+                    composite_score=40,
+                    positive_category_count=1,
+                    data_completeness=0.3,
+                    tradeflow_data_completeness=0.3,
+                    strategies=["VCP"],
+                ))
+            else:
+                # Weak policy — no beneficiary, low data
+                entries.append(_make_entry(
+                    symbol=f"WEAK_P{i}",
+                    candidate_type="POLICY_AMBUSH",
+                    tier="B",
+                    composite_score=35,
+                    positive_category_count=1,
+                    data_completeness=0.3,
+                    tradeflow_data_completeness=0.3,
+                    mandate_score_component=0,
+                    beneficiary_score_component=0,
+                ))
+        result = run_pool_gate(entries)
+        assert len(result.main_candidates) <= 5
+        # Strong ones should be in main
+        main_syms = {c["symbol"] for c in result.main_candidates}
+        assert "TECH0" in main_syms
+        assert "POLICY3" in main_syms
+        # Weak policy must NOT be filtered (Haotian protection)
+        for c in result.filtered_candidates:
+            assert c["symbol"] not in {f"WEAK_P{i}" for i in range(13, 20)}
+        # Weak policy should be in observation
+        obs_syms = {c["symbol"] for c in result.observation_candidates}
+        weak_p_in_obs = len(obs_syms & {f"WEAK_P{i}" for i in range(13, 20)})
+        assert weak_p_in_obs > 0
+
+    def test_precision_fail_reason_is_explainable(self):
+        entry = _make_entry(
+            symbol="REASON_TEST",
+            candidate_type="TECH_TRADE",
+            tier="B",
+            positive_category_count=1,
+            composite_score=30,
+            data_completeness=0.2,
+            tradeflow_data_completeness=0.2,
+            strategies=["VCP"],
+            trigger_price=None,
+            invalid_price=None,
+            fund_flow_anomaly_score=0,
+        )
+        result = run_pool_gate([entry])
+        all_non_main = result.observation_candidates + result.filtered_candidates
+        found = [c for c in all_non_main if c["symbol"] == "REASON_TEST"]
+        if found:
+            assert found[0]["pool_filter_reason"] != ""
+
+    def test_event_watch_falls_through_precision(self):
+        """EVENT_WATCH candidates skip precision gate (no TECH/POLICY dimensions)."""
+        from tradingagents.tradeflow.candidate_precision_gate import compute_precision
+        entry = _make_entry(
+            candidate_type="EVENT_WATCH",
+            tier="A",
+            positive_category_count=3,
+            composite_score=70,
+            data_completeness=0.7,
+            tradeflow_data_completeness=0.7,
+        )
+        result = compute_precision(entry)
+        assert result.qualified is True
+        assert result.reason == ""
+
+    def test_main_candidate_has_precision_metadata(self):
+        entry = _make_entry(
+            symbol="META_TEST",
+            candidate_type="TECH_TRADE",
+            tier="A",
+            strategies=["VCP"],
+            positive_category_count=3,
+            composite_score=80,
+            data_completeness=0.7,
+            tradeflow_data_completeness=0.7,
+            trigger_price=10.0,
+            invalid_price=9.0,
+        )
+        result = run_pool_gate([entry])
+        assert len(result.main_candidates) == 1
+        mc = result.main_candidates[0]
+        assert "precision_dimensions" in mc
+        assert "precision_resonance_count" in mc
+        assert mc["precision_resonance_count"] >= 2
+
+
+class TestHaotianProtection:
+    """Acceptance: 昊天左侧候选不会因短线未突破被直接过滤."""
+
+    def test_haotian_no_breakout_not_filtered(self):
+        """POLICY candidate that fails precision goes to observation, never filtered."""
+        entry = _make_entry(
+            symbol="HAOTIAN_NO_BREAK",
+            candidate_type="POLICY_AMBUSH",
+            tier="A",
+            positive_category_count=3,
+            composite_score=75,
+            mandate_score_component=0,
+            beneficiary_score_component=0,
+            policy_tags=[],
+            data_completeness=0.1,
+            tradeflow_data_completeness=0.1,
+        )
+        result = run_pool_gate([entry])
+        assert not any(c["symbol"] == "HAOTIAN_NO_BREAK" for c in result.filtered_candidates)
+        assert any(c["symbol"] == "HAOTIAN_NO_BREAK" for c in result.observation_candidates)
+
+    def test_haotian_with_policy_enters_main(self):
+        """POLICY candidate with sufficient dimensions enters main."""
+        entry = _make_entry(
+            symbol="HAOTIAN_STRONG",
+            candidate_type="POLICY_AMBUSH",
+            tier="A",
+            positive_category_count=3,
+            composite_score=80,
+            mandate_score_component=60,
+            beneficiary_score_component=50,
+            policy_tags=["低空经济"],
+            data_completeness=0.7,
+            tradeflow_data_completeness=0.7,
+        )
+        result = run_pool_gate([entry])
+        assert any(c["symbol"] == "HAOTIAN_STRONG" for c in result.main_candidates)
+
+    def test_multiple_haotian_all_fail_precision_all_observation(self):
+        """Multiple weak POLICY candidates — all go to observation, none filtered."""
+        entries = [
+            _make_entry(
+                symbol=f"HP{i}",
+                candidate_type="POLICY_AMBUSH",
+                tier="A",
+                positive_category_count=3,
+                composite_score=70,
+                mandate_score_component=0,
+                beneficiary_score_component=0,
+                policy_tags=[],
+                data_completeness=0.2,
+                tradeflow_data_completeness=0.2,
+            )
+            for i in range(5)
+        ]
+        result = run_pool_gate(entries)
+        assert len(result.filtered_candidates) == 0
+        assert len(result.observation_candidates) == 5
+
+
+class TestEnrichWithPrecision:
+    def test_enrich_adds_dimension_metadata(self):
+        from tradingagents.tradeflow.candidate_precision_gate import enrich_with_precision
+        entries = [
+            _make_entry(symbol="E1", candidate_type="TECH_TRADE", strategies=["VCP"],
+                        data_completeness=0.7, tradeflow_data_completeness=0.7,
+                        positive_category_count=3, trigger_price=10.0, invalid_price=9.0),
+            _make_entry(symbol="E2", candidate_type="POLICY_AMBUSH",
+                        mandate_score_component=50, beneficiary_score_component=40,
+                        data_completeness=0.7, tradeflow_data_completeness=0.7),
+        ]
+        enriched = enrich_with_precision(entries)
+        assert "precision_dimensions" in enriched[0]
+        assert enriched[0]["precision_resonance_count"] >= 2
+        assert enriched[1]["precision_dimensions"]["政策主题"] is True

@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG
+from .candidate_precision_gate import compute_precision  # [TF-QUALITY-003] candidate_precision_gate
 
 
 @dataclass
@@ -156,6 +157,13 @@ def run_pool_gate(
     Splits entries into main_candidates (capped), observation_candidates,
     and filtered_candidates with explicit reasons.
 
+    [TF-QUALITY-003] candidate_precision_gate — after the legacy
+    ``_qualify_for_main`` check passes, candidates must also satisfy the
+    precision gate (multi-dimension resonance). Candidates that pass legacy
+    but fail precision go to observation (not filtered). POLICY (昊天)
+    candidates that fail precision are NEVER filtered — they can only enter
+    observation or haotian main.
+
     Args:
         entries: Sorted candidate entries (best first).
         cfg: Strategy config (defaults to DEFAULT_STRATEGY_CONFIG).
@@ -175,17 +183,37 @@ def run_pool_gate(
 
     for entry in entries:
         candidate_type = entry.get("candidate_type", "")
+        is_haotian = candidate_type in _HAOTIAN_TYPES
         qualified, qual_reason = _qualify_for_main(entry, cfg)
 
         if not qualified:
             filter_reason = _assign_filter_reason(entry, qualified, qual_reason)
             entry_copy = dict(entry)
             entry_copy["pool_filter_reason"] = filter_reason
-            entry_copy["pool_status"] = "filtered"
-            filtered.append(entry_copy)
+            # [TF-QUALITY-003] Haotian protection: POLICY candidates that fail
+            # legacy qualification go to observation, never filtered. They may
+            # simply lack short-term breakout, which is not a filter reason.
+            if is_haotian:
+                entry_copy["pool_status"] = "observation"
+                observation.append(entry_copy)
+            else:
+                entry_copy["pool_status"] = "filtered"
+                filtered.append(entry_copy)
             continue
 
-        is_haotian = candidate_type in _HAOTIAN_TYPES
+        # [TF-QUALITY-003] candidate_precision_gate — precision resonance check
+        precision = compute_precision(entry, cfg)
+        if not precision.qualified:
+            entry_copy = dict(entry)
+            entry_copy["precision_dimensions"] = precision.dimensions
+            entry_copy["precision_resonance_count"] = precision.resonance_count
+            # POLICY (昊天) candidates NEVER get filtered for precision failure
+            pool_reason = precision.reason or "精度门禁未达标"
+            entry_copy["pool_filter_reason"] = pool_reason
+            entry_copy["pool_status"] = "observation"
+            observation.append(entry_copy)
+            continue
+
         is_tech = candidate_type in _TECH_TYPES
 
         if is_haotian and haotian_count >= cfg.pool_haotian_max:
@@ -212,6 +240,8 @@ def run_pool_gate(
         entry_copy = dict(entry)
         entry_copy["pool_status"] = "main"
         entry_copy["pool_filter_reason"] = ""
+        entry_copy["precision_dimensions"] = precision.dimensions  # [TF-QUALITY-003]
+        entry_copy["precision_resonance_count"] = precision.resonance_count  # [TF-QUALITY-003]
         main.append(entry_copy)
 
         if is_haotian:

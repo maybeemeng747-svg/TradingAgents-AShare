@@ -146,6 +146,12 @@ class StrategyConfig:
     pool_min_composite_for_single_strong: float = 60.0
     pool_min_completeness_for_single_strong: float = 0.6
 
+    # ── Candidate Precision Gate [TF-QUALITY-003] candidate_precision_gate ──
+    precision_min_tech_dimensions: int = 2
+    precision_min_policy_dimensions: int = 2
+    precision_data_quality_threshold: float = 0.5
+    precision_overheat_penalty_max: float = 20.0
+
     # ── Deep TA Dispatch Gate [M-006] ──
     deep_ta_daily_limit: int = 3
     deep_ta_default_model: str = ""

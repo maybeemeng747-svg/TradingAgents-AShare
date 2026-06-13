@@ -163,6 +163,20 @@ def _row_to_candidate_item(row: sqlite3.Row) -> dict:
         "contradiction_items": _parse_json(_rget(row, "contradiction_items_json"), []),  # [H-011]
         "blocking_evidence_gaps": _parse_json(_rget(row, "blocking_evidence_gaps_json"), []),  # [H-011]
         "next_verification_steps": _parse_json(_rget(row, "next_verification_steps_json"), []),  # [H-011]
+        # [TF-QUALITY-002] score_separation — split scores for precision gate
+        "technical_score": _rget(row, "technical_score", 0.0) or 0.0,
+        "policy_score": _rget(row, "policy_score", 0.0) or 0.0,
+        "fund_flow_score": _rget(row, "fund_flow_score", 0.0) or 0.0,
+        "event_score": _rget(row, "event_score", 0.0) or 0.0,
+        "risk_penalty_score": _rget(row, "risk_penalty_score", 0.0) or 0.0,
+        "data_quality_score": _rget(row, "data_quality_score", 0.0) or 0.0,
+        "ranking_reasons": _parse_json(_rget(row, "ranking_reasons_json"), []),
+        "weakness_reasons": _parse_json(_rget(row, "weakness_reasons_json"), []),
+        # [TF-QUALITY-003] candidate_precision_gate — fields for precision dimensions
+        "mandate_score_component": _rget(row, "mandate_score_component", 0.0) or 0.0,
+        "beneficiary_score_component": _rget(row, "beneficiary_score_component", 0.0) or 0.0,
+        "overheat_penalty": _rget(row, "overheat_penalty", 0.0) or 0.0,
+        "overheat_flags": _parse_json(_rget(row, "overheat_flags_json"), []),
         "created_at": _rget(row, "created_at", ""),
         "updated_at": _rget(row, "updated_at", ""),
     }

@@ -26,6 +26,7 @@ from .universe import build_universe
 from .false_positive_audit import build_audit_report, render_audit_report, AuditReport  # [S-006] candidate_false_positive_audit
 from .tier_budget import allocate_tier_budget, render_tier_budget_summary  # [S-007] candidate_tier_budget
 from .candidate_pool_gate import run_pool_gate  # [TF-QUALITY-001] candidate_pool_gate
+from .score_separation import compute_split_scores  # [TF-QUALITY-002] score_separation
 from .symbol_utils import normalize_tradeflow_symbol, symbol_bare_code  # [UI-008] tradeflow_field_normalization
 
 
@@ -511,6 +512,22 @@ def _build_discovery_entry(candidate: Candidate, event_items: Optional[list] = N
         "plan_date": candidate.plan_date,  # [TF-DATE-001] tradeflow_date_semantics
         "effective_trade_date": candidate.effective_trade_date,  # [TF-DATE-001]
         "observe_date": candidate.observe_date,  # [TF-DATE-001]
+        # [TF-QUALITY-002] score_separation — populate split scores
+        "technical_score": candidate.technical_score,
+        "policy_score": candidate.policy_score,
+        "fund_flow_score": candidate.fund_flow_score,
+        "event_score": candidate.event_score,
+        "risk_penalty_score": candidate.risk_penalty_score,
+        "data_quality_score": candidate.data_quality_score,
+        "ranking_reasons": candidate.ranking_reasons,
+        "weakness_reasons": candidate.weakness_reasons,
+        # [TF-QUALITY-003] candidate_precision_gate — mandate fields for precision
+        "mandate_score_component": candidate.mandate_score_component,
+        "beneficiary_score_component": candidate.beneficiary_score_component,
+        "beneficiary_path": candidate.beneficiary_path,
+        "overheat_penalty": candidate.overheat_penalty,
+        "overheat_flags": candidate.overheat_flags,
+        "mandate_topic": candidate.mandate_topic,
     }
 
     # [T-006] event_source_discovery — add event metadata to discovery entry

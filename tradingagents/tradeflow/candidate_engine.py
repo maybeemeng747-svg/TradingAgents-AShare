@@ -38,6 +38,7 @@ from .topic_lifecycle import evaluate_topic_lifecycle, TopicLifecycleResult, app
 from .candidate_contradictions import evaluate_contradictions, ContradictionResult  # [H-011] candidate_contradiction_explainer
 from .mandate_ta_queue_router import route_to_research_queue, QueueRouteResult  # [H-007] mandate_ta_queue_router
 from .mandate_watchlist_note import generate_watchlist_note, WatchlistNoteResult  # [H-008] mandate_watchlist_note
+from .score_separation import compute_split_scores  # [TF-QUALITY-002] score_separation
 
 
 # ── SQL for table creation ──
@@ -1199,6 +1200,44 @@ def evaluate_symbol(
     candidate.watchlist_consensus_score = wl_result.consensus_score
     candidate.watchlist_evidence_gap = wl_result.evidence_gap
     candidate.evidence["watchlist_note"] = wl_result.to_dict()
+
+    # [TF-QUALITY-002] score_separation — compute dimension sub-scores
+    ss_result = compute_split_scores(
+        score=candidate.score,
+        strategy_tags=candidate.strategy_tags,
+        version_score=candidate.version_score,
+        policy_tags=candidate.policy_tags,
+        narrative_score=candidate.narrative_score,
+        fund_flow_anomaly_score=candidate.fund_flow_anomaly_score,
+        fund_flow_anomaly_tags=candidate.fund_flow_anomaly_tags,
+        fund_flow_unit_verified=candidate.fund_flow_unit_verified,
+        risk_penalty=candidate.risk_penalty,
+        risk_flags=candidate.risk_flags,
+        data_completeness=candidate.tradeflow_data_completeness or candidate.data_completeness,
+        game_balance=candidate.game_balance,
+        resonance_count=candidate.resonance_count,
+        positive_category_count=candidate.positive_category_count,
+        composite_score=candidate.composite_score,
+        trigger_price=candidate.trigger_price,
+    )
+    candidate.technical_score = ss_result.technical_score
+    candidate.policy_score = ss_result.policy_score
+    candidate.fund_flow_score = ss_result.fund_flow_score
+    candidate.event_score = ss_result.event_score
+    candidate.risk_penalty_score = ss_result.risk_penalty_score
+    candidate.data_quality_score = ss_result.data_quality_score
+    candidate.ranking_reasons = ss_result.ranking_reasons
+    candidate.weakness_reasons = ss_result.weakness_reasons
+    candidate.evidence["score_separation"] = {
+        "technical_score": ss_result.technical_score,
+        "policy_score": ss_result.policy_score,
+        "fund_flow_score": ss_result.fund_flow_score,
+        "event_score": ss_result.event_score,
+        "risk_penalty_score": ss_result.risk_penalty_score,
+        "data_quality_score": ss_result.data_quality_score,
+        "ranking_reasons": ss_result.ranking_reasons,
+        "weakness_reasons": ss_result.weakness_reasons,
+    }
 
     return candidate, ""
 

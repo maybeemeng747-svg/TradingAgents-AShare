@@ -91,7 +91,7 @@
 65. `V-006`：最终动作语义端到端回放验收（P1，ready，依赖 DECISION-004）。
 66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
 67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，ready，来自 TF-QUALITY-001 task_run）。
-68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，ready，依赖 TF-QUALITY-002）。
+68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
 69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，ready，依赖 TF-OBS-002/TF-REVIEW-002）。
 70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，ready，依赖 H-010/H-011）。
 71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，ready，依赖 DATA-017/DATA-006）。
@@ -2905,9 +2905,10 @@
 - **代码标注要求**：`# [CODEGRAPH-002] codegraph_preflight`
 
 ### TF-QUALITY-003: 候选池精度校准与弱候选压缩（P0）
-- **描述**：在 TF-QUALITY-002 分项评分落地后，继续把候选池从“看起来很多”压缩到“真正值得盯的少数票”，避免弱 VCP、弱事件、数据不足候选进入主候选。
+- **描述**：在 TF-QUALITY-002 分项评分落地后，继续把候选池从"看起来很多"压缩到"真正值得盯的少数票"，避免弱 VCP、弱事件、数据不足候选进入主候选。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done
+- **完成时间**：2026-06-13
 - **前置条件**：TF-QUALITY-002 完成。
 - **执行约束**：
   - 不调用 LLM。
