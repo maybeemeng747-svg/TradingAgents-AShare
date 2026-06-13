@@ -4,6 +4,63 @@
 
 ---
 
+## 2026-06-14 | DATA-018: A股关键源新鲜度与 fallback 可视化日报
+
+- **执行者**：OpenCode
+- **类型**：新功能（P1）
+- **任务**：DATA-018
+- **背景**：把 DATA-017 的资金/LHB 健康巡检扩展到全部关键数据源（行情、资金、龙虎榜、公告、研报、评级、回购等），形成每日可读的数据源新鲜度与 fallback 报告，前端数据健康面板可展示红黄绿三色状态。
+- **修改文件**：
+  - `tradingagents/dataflows/source_freshness_report.py`（新建）— [DATA-018] source_freshness_report
+    - 6 态健康分类：HAS_DATA / NORMAL_NO_DATA / STALE / FAILED / RATE_LIMITED / UNIT_UNVERIFIED
+    - `SourceFreshnessEntry` / `SourceFreshnessReport` 数据模型，含 traffic_light（green/yellow/red）和 label_cn
+    - `classify_source_status()` — 6 态分类器，RATE_LIMITED 优先于 FAILED
+    - `_inspect_entry()` — 从 raw_evidence 单条证据检测健康状态
+    - `_catalog_only_entry()` — 从 source_catalog 生成未查询数据源的占位条目
+    - `run_source_freshness_report()` — 聚合全部数据源生成日报
+    - `render_source_freshness_report()` — Markdown 渲染（含 Issues & Warnings / Fallback Details）
+    - `save_source_freshness_report()` / `find_latest_freshness_report()` — 文件 I/O
+    - `build_freshness_section_for_nightly_report()` — 夜间日报集成
+    - 6 套样本 fixture：ALL_HEALTHY / AKSHARE_FAIL_FALLBACK / RATE_LIMITED / STALE_DATA / UNIT_UNVERIFIED / INTERFACE_FAILED
+  - `api/tradeflow_schemas.py` — [DATA-018] source_freshness_report
+    - 新增 `SourceFreshnessEntryItem`、`SourceFreshnessSummary`、`SourceFreshnessResponse` Pydantic 模型
+  - `api/services/tradeflow_service.py` — [DATA-018] source_freshness_report
+    - 新增 `get_source_freshness()` 服务函数
+  - `api/main.py` — 新增 `GET /v1/data-sources/freshness` 端点（FAST_RADAR 层级）
+  - `api/runtime_tier.py` — `tradeflow_source_freshness` 加入 `_TRADEFLOW_FAST_ENDPOINTS`
+  - `frontend/src/types/index.ts` — 新增 `SourceFreshnessStatus`、`SourceFreshnessEntry`、`SourceFreshnessSummary`、`SourceFreshnessResponse` 类型
+  - `frontend/src/services/api.ts` — 新增 `getSourceFreshness()` 方法
+  - `frontend/src/pages/TradeFlow.tsx` — [DATA-018] source_freshness_report
+    - 新增 `SourceFreshnessPanel` 组件（红黄绿三色状态表、限流风险标记、Fallback 标注、诊断信息）
+    - 新增 `freshnessTrafficLight()` 辅助函数
+    - 数据健康 tab 展示 TradeFlow DB 健康 + 数据源新鲜度两个面板
+  - `tests/test_data018_source_freshness.py`（新增）— 129 个测试
+    - 6 态分类测试（SourceFreshnessStatus）
+    - 检测辅助函数测试（_is_stale_date / _detect_rate_limited / _detect_failed / _detect_normal_no_data）
+    - `classify_source_status` 优先级测试（RATE_LIMITED > FAILED > STALE > UNIT_UNVERIFIED > NORMAL_NO_DATA > HAS_DATA）
+    - `_inspect_entry` dict/string/None 三类输入测试
+    - `_catalog_only_entry` / `_build_summary` / `_build_diagnosis` 测试
+    - `run_source_freshness_report` 完整报告生成测试
+    - 6 套样本 fixture 覆盖测试
+    - Markdown 渲染测试
+    - 文件 I/O 测试（save/find）
+    - 夜间日报集成测试
+    - 验收标准测试（AKShare fail + cn_astock fallback、LHB normal no-data、rate-limited 检测、无明文密钥）
+    - API 服务函数测试
+    - Pydantic schema 验证测试
+    - source_catalog 集成测试
+- **关键逻辑**：
+  1. 6 态分类优先级：RATE_LIMITED（429/频繁访问）→ FAILED（ProxyError/ConnectionError）→ STALE（as_of > 7 天）→ UNIT_UNVERIFIED（数据存在但单位未校验）→ NORMAL_NO_DATA（查询成功无数据）→ HAS_DATA。
+  2. NORMAL_NO_DATA 和 NOT_QUERIED 都归为"绿色"（正常无数据），不降低完整度评分。
+  3. RATE_LIMITED 与 FAILED 都是红色，但诊断信息不同（限流 vs 故障）。
+  4. 报告覆盖 source_catalog 中全部数据类型，即使本次分析未查询也能看到主源/fallback 链/限流风险。
+  5. 前端面板显示数据类型、状态（红黄绿）、主源、实际源、Fallback 链、最新日期、记录数、限流风险、诊断信息。
+- **测试结果**：129 passed（DATA-018）+ 314 passed（DATA-017/DATA-006/catalog/runtime_tier/ui001 回归）= 443 passed, 0 failed
+- **前端构建**：`npm run build` 通过
+- **风险点**：无；不调用 LLM，不写生产 DB，不修改 prompts，不输出买卖建议。
+
+---
+
 ## 2026-06-14 | H-012: 昊天主题注册表与政策版本 Watchlist
 
 - **执行者**：OpenCode
@@ -4470,3 +4527,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/H-012-20260614-round1.txt
 - **Run archive**: docs/task_runs/H-012-20260614-005948/
+
+## 2026-06-14 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-018 - A股关键源新鲜度与 fallback 可视化日报（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-018-20260614-round1.txt
+- **Run archive**: docs/task_runs/DATA-018-20260614-011340/

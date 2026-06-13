@@ -556,3 +556,52 @@ class TopicWatchlistResponse(BaseModel):
     total_topics: int = 0
     total_symbols: int = 0
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [DATA-018] source_freshness_report
+
+class SourceFreshnessEntryItem(BaseModel):
+    data_type: str = ""
+    label: str = ""
+    status: str = "FAILED"
+    status_label_cn: str = "未知"
+    traffic_light: str = "red"
+    primary_vendor: str = ""
+    fallback_vendor: str = ""
+    fallback_chain: List[str] = Field(default_factory=list)
+    actual_vendor: str = ""
+    endpoint: str = ""
+    as_of: str = ""
+    latest_data_date: str = ""
+    unit: str = ""
+    unit_verified: bool = False
+    is_fallback: bool = False
+    record_count: int = 0
+    error: str = ""
+    rate_limit_risk: str = ""
+    diagnosis: str = ""
+    freshness_catalog: str = ""
+
+
+class SourceFreshnessSummary(BaseModel):
+    total_sources: int = 0
+    green_count: int = 0
+    yellow_count: int = 0
+    red_count: int = 0
+    fallback_triggered_count: int = 0
+    all_green: bool = False
+    has_failures: bool = False
+    has_warnings: bool = False
+    overall_status: str = "has_failures"
+    status_counts: Dict[str, int] = Field(default_factory=dict)
+    high_rate_limit_risk_sources: List[str] = Field(default_factory=list)
+
+
+class SourceFreshnessResponse(BaseModel):
+    status: str = "ok"
+    report_date: str = ""
+    generated_at: str = ""
+    symbol: str = ""
+    entries: List[SourceFreshnessEntryItem] = Field(default_factory=list)
+    summary: SourceFreshnessSummary = Field(default_factory=SourceFreshnessSummary)
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)

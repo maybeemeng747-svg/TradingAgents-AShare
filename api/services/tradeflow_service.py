@@ -2371,3 +2371,32 @@ def get_topic_watchlist(
         }
     finally:
         conn.close()
+
+
+# [DATA-018] source_freshness_report
+def get_source_freshness(
+    symbol: str = "",
+    raw_evidence: Optional[dict] = None,
+) -> dict:
+    """Generate source freshness & fallback report.
+
+    When raw_evidence is not provided, returns catalog-based report
+    (all sources show NORMAL_NO_DATA since no actual data was queried).
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_source_freshness")
+
+    from tradingagents.dataflows.source_freshness_report import (
+        run_source_freshness_report,
+    )
+
+    report = run_source_freshness_report(raw_evidence, symbol=symbol)
+
+    return {
+        "status": "ok",
+        "report_date": report.report_date,
+        "generated_at": report.generated_at,
+        "symbol": report.symbol,
+        "entries": [e.to_dict() for e in report.entries],
+        "summary": report.summary,
+        "runtime_tier_meta": _fast_meta,
+    }

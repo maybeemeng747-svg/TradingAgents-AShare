@@ -75,6 +75,7 @@ _TRADEFLOW_FAST_ENDPOINTS: set[str] = {
     "tradeflow_observe_scheduler",
     "tradeflow_paper_ledger",  # [TF-PAPER-001] paper_trading_ledger
     "tradeflow_paper_review",  # [TF-PAPER-001] paper_trading_ledger
+    "tradeflow_source_freshness",  # [DATA-018] source_freshness_report
 }
 
 

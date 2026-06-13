@@ -1102,6 +1102,58 @@ export interface TradeFlowDataHealthResponse {
     runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
 }
 
+// [DATA-018] source_freshness_report
+export type SourceFreshnessStatus =
+    | 'HAS_DATA' | 'NORMAL_NO_DATA' | 'STALE'
+    | 'FAILED' | 'RATE_LIMITED' | 'UNIT_UNVERIFIED'
+
+export interface SourceFreshnessEntry {
+    data_type: string
+    label: string
+    status: SourceFreshnessStatus
+    status_label_cn: string
+    traffic_light: 'green' | 'yellow' | 'red'
+    primary_vendor: string
+    fallback_vendor: string
+    fallback_chain: string[]
+    actual_vendor: string
+    endpoint: string
+    as_of: string
+    latest_data_date: string
+    unit: string
+    unit_verified: boolean
+    is_fallback: boolean
+    record_count: number
+    error: string
+    rate_limit_risk: string
+    diagnosis: string
+    freshness_catalog: string
+}
+
+export interface SourceFreshnessSummary {
+    total_sources: number
+    green_count: number
+    yellow_count: number
+    red_count: number
+    fallback_triggered_count: number
+    all_green: boolean
+    has_failures: boolean
+    has_warnings: boolean
+    overall_status: string
+    status_counts: Record<string, number>
+    high_rate_limit_risk_sources: string[]
+}
+
+export interface SourceFreshnessResponse {
+    status: string
+    report_date: string
+    generated_at: string
+    symbol: string
+    entries: SourceFreshnessEntry[]
+    summary: SourceFreshnessSummary
+    runtime_tier_meta: RuntimeTierMeta
+}
+
 // [UI-007] tradeflow_filtered_trace
 export interface TradeFlowFilteredItem {
     symbol: string

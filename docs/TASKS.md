@@ -94,7 +94,7 @@
 68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
 69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，done，依赖 TF-OBS-002/TF-REVIEW-002）。
 70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，done，依赖 H-010/H-011）。
-71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，ready，依赖 DATA-017/DATA-006）。
+71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，done，依赖 DATA-017/DATA-006）。
 72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，ready，依赖 TF-QUALITY-002/TF-OBS-002）。
 73. `V-007`：TradeFlow 试用闭环端到端验收（P1，ready，依赖 TF-QUALITY-003/TF-PAPER-001）。
 
@@ -2972,7 +2972,7 @@
 ### DATA-018: A股关键源新鲜度与 fallback 可视化日报（P1）
 - **描述**：把 DATA-017 的资金/LHB 健康巡检扩展到行情、资金、龙虎榜、公告、研报、评级、回购等关键源，形成每日可读的数据源新鲜度与 fallback 报告。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — 129 tests passed, commit pending
 - **前置条件**：DATA-017、DATA-006 完成。
 - **执行约束**：
   - 不调用 LLM。

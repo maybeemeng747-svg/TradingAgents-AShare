@@ -5251,6 +5251,9 @@ from api.tradeflow_schemas import (
     PaperReviewResponse,  # [TF-PAPER-001] paper_trading_ledger
     TopicRegistryResponse,  # [H-012] mandate_topic_registry
     TopicWatchlistResponse,  # [H-012] mandate_topic_registry
+    SourceFreshnessResponse,  # [DATA-018] source_freshness_report
+    SourceFreshnessEntryItem,  # [DATA-018] source_freshness_report
+    SourceFreshnessSummary,  # [DATA-018] source_freshness_report
 )
 from api.services.tradeflow_service import (
     get_daily_plan as _tf_get_daily_plan,
@@ -5278,6 +5281,7 @@ from api.services.tradeflow_service import (
     get_paper_review as _tf_get_paper_review,  # [TF-PAPER-001] paper_trading_ledger
     get_topic_registry as _tf_get_topic_registry,  # [H-012] mandate_topic_registry
     get_topic_watchlist as _tf_get_topic_watchlist,  # [H-012] mandate_topic_registry
+    get_source_freshness as _tf_get_source_freshness,  # [DATA-018] source_freshness_report
 )
 
 # [UI-001] tradeflow_api — read-only endpoints
@@ -5471,6 +5475,12 @@ def tradeflow_topic_watchlist(
     max_symbols: int = Query(5, description="每个主题最多标的数", ge=1, le=20),
 ):
     return _tf_get_topic_watchlist(date, max_symbols_per_topic=max_symbols)
+
+
+# [DATA-018] source_freshness_report
+@app.get("/v1/data-sources/freshness", response_model=SourceFreshnessResponse)
+def data_sources_freshness(symbol: str = Query("", description="股票代码（可选）")):
+    return _tf_get_source_freshness(symbol=symbol)
 
 
 # ─── Static Files & SPA Routing ──────────────────────────────────────────────

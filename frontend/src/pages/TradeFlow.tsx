@@ -28,6 +28,8 @@ import type {
     TradeFlowFilteredResponse,
     TradeFlowTieredCandidatesResponse,
     PaperLedgerResponse,
+    SourceFreshnessResponse,
+    SourceFreshnessEntry,
 } from '@/types'
 import TradeFlowCandidateDrawer from '@/components/TradeFlowCandidateDrawer'
 
@@ -937,6 +939,146 @@ function DataHealthPanel({ data }: { data: TradeFlowDataHealthResponse | null })
     )
 }
 
+// [DATA-018] source_freshness_report
+function freshnessTrafficLight(entry: SourceFreshnessEntry): { text: string; cls: string; dot: string } {
+    const light = entry.traffic_light
+    if (light === 'green') {
+        return { text: entry.status_label_cn || '正常', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300', dot: 'bg-emerald-500' }
+    }
+    if (light === 'yellow') {
+        return { text: entry.status_label_cn || '警告', cls: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300', dot: 'bg-yellow-500' }
+    }
+    return { text: entry.status_label_cn || '故障', cls: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300', dot: 'bg-red-500' }
+}
+
+function SourceFreshnessPanel({ data }: { data: SourceFreshnessResponse | null }) {
+    if (!data || data.entries.length === 0) {
+        return (
+            <div className="py-8 text-center text-sm text-slate-400">
+                <Activity className="mx-auto mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
+                数据源新鲜度报告未生成
+            </div>
+        )
+    }
+
+    const s = data.summary
+    const hasFailures = s.red_count > 0
+    const hasWarnings = s.yellow_count > 0
+
+    let bannerText: string
+    let bannerCls: string
+    let bannerIcon: string
+    if (hasFailures) {
+        bannerIcon = '\u274C'
+        bannerText = `${s.red_count} 个数据源故障`
+        bannerCls = 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+    } else if (hasWarnings) {
+        bannerIcon = '\u26A0\uFE0F'
+        bannerText = `${s.yellow_count} 个数据源有警告`
+        bannerCls = 'bg-yellow-50 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
+    } else {
+        bannerIcon = '\u2705'
+        bannerText = '全部数据源正常'
+        bannerCls = 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+    }
+
+    return (
+        <div className="space-y-4 p-4">
+            {/* Banner */}
+            <div className={`flex items-center gap-2 rounded-lg px-4 py-3 text-sm font-medium ${bannerCls}`}>
+                <span>{bannerIcon}</span>
+                {bannerText}
+                {data.runtime_tier_meta && (
+                    <span className="ml-auto">
+                        <RuntimeTierBadge tier={data.runtime_tier_meta.runtime_tier} latency={data.runtime_tier_meta.expected_latency} />
+                    </span>
+                )}
+            </div>
+
+            {/* Summary stats */}
+            <div className="flex flex-wrap gap-3 text-xs">
+                <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                    正常 {s.green_count}
+                </span>
+                <span className="rounded-full bg-yellow-100 px-2.5 py-1 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300">
+                    警告 {s.yellow_count}
+                </span>
+                <span className="rounded-full bg-red-100 px-2.5 py-1 text-red-700 dark:bg-red-900/40 dark:text-red-300">
+                    故障 {s.red_count}
+                </span>
+                {s.fallback_triggered_count > 0 && (
+                    <span className="rounded-full bg-blue-100 px-2.5 py-1 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                        Fallback {s.fallback_triggered_count}
+                    </span>
+                )}
+                {data.report_date && <span className="text-slate-500">日期: {data.report_date}</span>}
+            </div>
+
+            {/* Source table */}
+            <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                    <thead>
+                        <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+                            <th className="px-4 py-2.5 font-medium">数据源</th>
+                            <th className="px-4 py-2.5 font-medium">状态</th>
+                            <th className="px-4 py-2.5 font-medium">主源</th>
+                            <th className="px-4 py-2.5 font-medium">实际源</th>
+                            <th className="px-4 py-2.5 font-medium">Fallback</th>
+                            <th className="px-4 py-2.5 font-medium">最新日期</th>
+                            <th className="px-4 py-2.5 font-medium">记录数</th>
+                            <th className="px-4 py-2.5 font-medium">限流风险</th>
+                            <th className="px-4 py-2.5 font-medium">诊断</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {data.entries.map((e) => {
+                            const badge = freshnessTrafficLight(e)
+                            return (
+                                <tr
+                                    key={e.data_type}
+                                    className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
+                                >
+                                    <td className="px-4 py-2.5 font-medium text-slate-700 dark:text-slate-300">{e.label}</td>
+                                    <td className="px-4 py-2.5">
+                                        <span className={`inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium ${badge.cls}`}>
+                                            <span className={`h-1.5 w-1.5 rounded-full ${badge.dot}`} />
+                                            {badge.text}
+                                        </span>
+                                    </td>
+                                    <td className="px-4 py-2.5 text-xs text-slate-600 dark:text-slate-400">{e.primary_vendor || '-'}</td>
+                                    <td className="px-4 py-2.5 text-xs text-slate-600 dark:text-slate-400">
+                                        {e.actual_vendor || '-'}
+                                        {e.is_fallback && <span className="ml-1 text-blue-500">fallback</span>}
+                                    </td>
+                                    <td className="max-w-[160px] truncate px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400" title={e.fallback_chain.join(' -> ')}>
+                                        {e.fallback_chain.length > 1 ? e.fallback_chain.join(' -> ') : '-'}
+                                    </td>
+                                    <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{e.as_of || e.latest_data_date || '-'}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{e.record_count}</td>
+                                    <td className="px-4 py-2.5">
+                                        {e.rate_limit_risk === 'high' ? (
+                                            <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-600 dark:bg-red-900/40 dark:text-red-300">高</span>
+                                        ) : e.rate_limit_risk === 'medium' ? (
+                                            <span className="rounded bg-yellow-100 px-1.5 py-0.5 text-xs text-yellow-600 dark:bg-yellow-900/40 dark:text-yellow-300">中</span>
+                                        ) : e.rate_limit_risk === 'low' ? (
+                                            <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-300">低</span>
+                                        ) : (
+                                            <span className="text-xs text-slate-400">-</span>
+                                        )}
+                                    </td>
+                                    <td className="max-w-[240px] truncate px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400" title={e.diagnosis}>
+                                        {e.diagnosis || '-'}
+                                    </td>
+                                </tr>
+                            )
+                        })}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    )
+}
+
 // [UI-010] mandate_candidate_compare
 type CompareSortKey = 'mandate_score' | 'ambush_score' | 'evidence_coverage' | 'counter_evidence_count' | 'evidence_gap_count' | 'topic_lifecycle_state' | 'company_role'
 
@@ -1095,6 +1237,7 @@ export default function TradeFlow() {
         need_deep_ta_count: 0, avg_completeness: 0,
     })
     const [dataHealth, setDataHealth] = useState<TradeFlowDataHealthResponse | null>(null)
+    const [sourceFreshness, setSourceFreshness] = useState<SourceFreshnessResponse | null>(null)  // [DATA-018]
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [status, setStatus] = useState<string>('')
@@ -1272,6 +1415,16 @@ export default function TradeFlow() {
         }
     }, [])
 
+    // [DATA-018] source_freshness_report
+    const fetchSourceFreshness = useCallback(async () => {
+        try {
+            const res = await api.getSourceFreshness()
+            setSourceFreshness(res)
+        } catch {
+            // silent fail — freshness is supplementary
+        }
+    }, [])
+
     // [UI-007] tradeflow_filtered_trace
     const fetchFiltered = useCallback(async (date: string) => {
         setLoading(true)
@@ -1354,10 +1507,11 @@ export default function TradeFlow() {
             await fetchFiltered(date)
         } else if (activeTab === 'data-health') {
             await fetchDataHealth()
+            await fetchSourceFreshness()  // [DATA-018]
         } else if (activeTab === 'paper-ledger') {
             await fetchPaperLedger()
         }
-    }, [activeTab, fetchCandidates, fetchCompare, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth, fetchFiltered, fetchPaperLedger])
+    }, [activeTab, fetchCandidates, fetchCompare, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth, fetchSourceFreshness, fetchFiltered, fetchPaperLedger])
 
     useEffect(() => {
         void fetchData(tradeDate)
@@ -1710,7 +1864,18 @@ export default function TradeFlow() {
         }
 
         if (activeTab === 'data-health') {
-            return <DataHealthPanel data={dataHealth} />
+            return (
+                <div className="space-y-6">
+                    <DataHealthPanel data={dataHealth} />
+                    {/* [DATA-018] source_freshness_report */}
+                    <div>
+                        <h3 className="mb-2 px-4 text-sm font-semibold text-slate-700 dark:text-slate-300">
+                            数据源新鲜度与 Fallback
+                        </h3>
+                        <SourceFreshnessPanel data={sourceFreshness} />
+                    </div>
+                </div>
+            )
         }
 
         // [TF-PAPER-001] paper_trading_ledger
