@@ -1,0 +1,3755 @@
+Task: DATA-017 - 主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1）
+Date: 2026-06-14_00:31:27
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019ec1d1-21b6-7810-8332-86e291e64450
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md && printf '\\n---TASKS---\\n' && sed -n '1,220p' docs/TASKS.md && printf '\\n---DECISIONS---\\n' && sed -n '1,220p' docs/DECISIONS.md && printf '\\n---DEVLOG---\\n' && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+---TASKS---
+# 任务池
+
+> 最后更新：2026-06-09
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，done）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，done，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，done，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，done，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，done，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，done，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done，依赖 DATA-004 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
+50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done，依赖 DATA-012 部分落地 ✓）。
+54. `DECISION-001`：最终动作语义分层 — 禁止默认 HOLD（P0，done，commit dee415c）。
+55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
+56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
+57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
+58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，blocked — NEEDS_HUMAN，commit 5f304db，见 task_runs）。
+59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done，Codex 修复，待提交）。
+60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
+63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
+65. `V-006`：最终动作语义端到端回放验收（P1，ready，依赖 DECISION-004）。
+66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
+67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，ready，来自 TF-QUALITY-001 task_run）。
+68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
+69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，ready，依赖 TF-OBS-002/TF-REVIEW-002）。
+70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，ready，依赖 H-010/H-011）。
+71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，ready，依赖 DATA-017/DATA-006）。
+72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，ready，依赖 TF-QUALITY-002/TF-OBS-002）。
+73. `V-007`：TradeFlow 试用闭环端到端验收（P1，ready，依赖 TF-QUALITY-003/TF-PAPER-001）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
+16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done）。
+18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
+19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done）。
+21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## PERF. 运行成本 / 轻量分析任务池（2026-06-02 新增）
+
+> 目标：系统不能为了“全面”而变慢。TradeFlow 是雷达，轻量 TA 是候选验证，完整 TA 是深度体检。默认链路必须轻，完整多 Agent 分析只能由用户明确触发。
+
+### PERF-001: 运行层级与速度预算契约（P1）
+- **描述**：建立统一运行层级契约，所有 API、前端按钮、scheduler、自动开发任务都要标明属于 `fast/light/full` 哪一层，以及是否允许调用 LLM。
+- **优先级**：P1
+- **状态**：done -- commit ca08846
+- **背景**：
+  - 用户明确要求系统不能做得太重，不能“一发指令半天才回来”。
+  - 候选池/盘中观察需要时效；完整 TA 只能用于少量高价值标的。
+- **运行层级定义**：
+  1. `fast`：5-30 秒。TradeFlow 筛选、数据健康、证据缺口、候选分类。默认不调用 LLM。
+  2. `light`：1-3 分钟。轻量 TA，只跑必要模块，用于中线政策验证、短线技术确认、持仓风险复核。
+  3. `full`：10-20 分钟。完整 14 Agent TA，多空辩论和风控全链路，必须人工确认。
+- **执行约束**：
+  - 不改 prompts。
+  - 不触发 live TA。
+  - 不新增高成本模型调用。
+- **实现要点**：
+  1. 新增运行层级枚举/配置，例如 `runtime_tier`：
+     - `FAST_RADAR`
+     - `LIGHT_RESEARCH`
+     - `FULL_TA`
+  2. API/服务层统一返回：
+     - `runtime_tier`
+     - `expected_latency`
+     - `llm_allowed`
+     - `requires_confirmation`
+     - `cost_risk`
+  3. 前端按钮文案对应：
+     - `快速筛选`
+     - `轻量研究`
+     - `完整 TA`
+  4. `TradeFlow Discovery` 和 `Observe` 必须标记为 `FAST_RADAR`。
+  5. 自动任务/scheduler 不得默认进入 `FULL_TA`。
+- **验收方式**：
+  - TradeFlow candidates/observe/data-health API 返回 fast 层级或元数据。
+  - 前端能显示运行层级和预计耗时。
+  - 没有用户确认时，full TA 入口不可直接触发。
+  - `pytest tests/test_runtime_tier*.py tests/test_ui001_tradeflow_api.py -q` 或等价测试通过。
+- **代码标注要求**：`# [PERF-001] runtime_tier_contract` / `// [PERF-001] runtime_tier_contract`
+
+### PERF-002: 轻量 TA Profile 与模块路由（P1）
+- **描述**：在完整 TA 之外增加轻量 TA Profile，只跑与目标相关的模块，避免所有候选都进入 14 Agent 全链路。
+- **优先级**：P1
+- **状态**：done -- commit 20ff126
+- **前置条件**：`TA-UI-001`、`H-007` 完成或同步完成。
+- **执行约束**：
+  - 不删除完整 TA。
+  - 不改 prompts。
+  - 不自动调用 live LLM；第一版可先做路由配置和 mock/fixture。
+- **Profile 建议**：
+  1. `MIDLINE_POLICY_LIGHT`：
+     - 用于 `POLICY_AMBUSH/POLICY_CONFIRM`。
+     - 重点：政策/公告/基本面/风险/量价。
+  2. `SHORT_TECH_LIGHT`：
+     - 用于 `TECH_TRADE`。
+     - 重点：技术/量价/资金/风险。
+  3. `POSITION_RISK_LIGHT`：
+     - 用于已持仓复盘。
+     - 重点：风控/资金/关键价位/公告。
+  4. `FULL_TA`：
+     - 保持完整多 Agent，只能手动确认。
+- **实现要点**：
+  1. 新增 profile 配置，声明每个 profile 启用的 analyst/manager/risk 模块。
+  2. TradeFlow 候选根据 `candidate_type/research_queue/analysis_intent` 推荐 profile。
+  3. `/analysis` 控制台选择中线/短线后，能带入对应 profile。
+  4. 结果 metadata 中记录 `runtime_profile` 和实际启用模块。
+- **验收方式**：
+  - `POLICY_AMBUSH` 默认推荐 `MIDLINE_POLICY_LIGHT`。
+  - `TECH_TRADE` 默认推荐 `SHORT_TECH_LIGHT`。
+  - 已持仓复盘默认推荐 `POSITION_RISK_LIGHT`。
+  - 完整 TA 仍可人工选择。
+  - 测试覆盖 profile 路由，不触发真实 LLM。
+- **代码标注要求**：`# [PERF-002] lightweight_ta_profiles`
+
+### PERF-003: 分析运行耗时/调用成本遥测与前端展示（P1）
+- **描述**：为 TradeFlow、轻量 TA、完整 TA 增加运行遥测，记录耗时、模块、模型调用次数、失败原因和成本风险，让用户知道一次分析到底重不重。
+- **优先级**：P1
+- **状态**：done — commit 059fc21
+- **执行约束**：
+  - 不记录 API key/token。
+  - 不泄露完整 prompt。
+
+---DECISIONS---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+---DEVLOG---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-14 | DATA-017: 主力资金/龙虎榜数据源健康巡检与 fallback 验收
+
+- **执行者**：OpenCode
+- **类型**：功能增强
+- **任务**：DATA-017（P1）
+- **背景**：TA 报告中主力资金仍出现失败问题，需要可复现的数据源健康巡检，区分"该股无龙虎榜""接口失败""单位未校验""fallback 可用""数据过期"五种状态。现有 health_check（M-008）只覆盖 OK/FAILED/STALE/NOT_QUERIED 四态，缺少 UNIT_UNVERIFIED，且未专门针对 fund_flow/LHB 做精细诊断。
+- **修改文件**：
+  - `tradingagents/dataflows/fund_lhb_health.py`（新增）：主力资金/龙虎榜专项健康巡检模块。定义 5 态健康状态枚举（HAS_DATA / NORMAL_NO_DATA / FAILED / STALE / UNIT_UNVERIFIED），提供 `inspect_fund_flow_health()`、`inspect_sector_fund_flow_health()`、`inspect_lhb_health()`、`run_fund_lhb_health_check()` 和 `render_fund_lhb_health_report()`。包含 3 个代表性样本 fixture（HAS_FUND_DATA / NO_LHB_NORMAL / INTERFACE_FAILED）。
+  - `tests/test_data017_fund_lhb_health.py`（新增）：51 个测试覆盖 5 态分类、个股/板块资金流、龙虎榜四态区分、组合报告、摘要计算、Markdown 渲染、样本 fixture、关键行为保证、EvidenceContract 兼容性、readiness 门禁联动。
+- **关键逻辑**：
+  1. 5 怚分类：HAS_DATA（单位已校验的有效数据）→ UNIT_UNVERIFIED（有数据但单位未校验）→ STALE（数据超过 7 天）→ NORMAL_NO_DATA（查询正常无数据）→ FAILED（接口失败/未查询）。
+  2. 龙虎榜关键区分：NOT_QUERIED（force=False）和 NORMAL_NO_DATA（force=True 无记录）都归为 NORMAL_NO_DATA，不降低完整度；只有 FAILED 才标为失败。
+  3. 主力资金 fallback 透明记录：vendor、endpoint、fallback_from、unit、unit_verified、as_of 全部纳入诊断。
+  4. 与 EvidenceContract 完全兼容——可直接消费 `EvidenceContract.to_dict()` 输出。
+  5. 与 readiness_score 门禁联动——FAILED fund_flow 阻断 strong evidence，NORMAL_NO_DATA LHB 不阻断。
+- **测试结果**：
+  - DATA-017 专项：51 passed
+  - 回归（G-006/G-007/readiness/catalog/fund_route/health_check）：306 passed
+  - 总计：357 passed, 0 failed
+
+---
+
+## 2026-06-14 | TF-UI-011: 候选详情一键轻量 TA、K 线与公司概览
+
+- **执行者**：OpenCode
+- **类型**：功能增强
+- **任务**：TF-UI-011（P1）
+- **背景**：候选池中的票需要能继续研究——详情里显示公司概览、K 线入口、入池证据，并提供一键轻量 TA 预案。UI-009 已实现一键研究预案基础，TF-UI-011 在其上增加公司概览、K 线展示、以及 profile 运行时元数据（预计耗时/是否调用模型/成本风险）。
+- **修改文件**：
+  - `api/tradeflow_schemas.py`：新增 `CompanyOverviewResponse` 模型；`TradeFlowResearchPlanResponse` 新增 `profile_label/expected_latency/llm_allowed/requires_confirmation/cost_risk` 字段。
+  - `api/services/tradeflow_service.py`：新增 `get_company_overview()` 服务函数——通过 `route_to_vendor("get_fundamentals")` 获取公司基本面文本，并从候选 DB 回填名称；`generate_research_plan()` 末尾使用 `ta_profile.recommend_profile()` + `profile_to_meta()` 填充 profile 元数据。
+  - `api/main.py`：新增 `GET /v1/tradeflow/candidates/{symbol}/overview` 端点（FAST_RADAR 层级）。
+  - `api/runtime_tier.py`：将 `tradeflow_company_overview` 加入 `_TRADEFLOW_FAST_ENDPOINTS`。
+  - `frontend/src/types/index.ts`：新增 `CompanyOverviewResponse` 接口；`TradeFlowResearchPlanResponse` 新增 profile 元数据字段。
+  - `frontend/src/services/api.ts`：新增 `getCompanyOverview(symbol, date?)` 方法。
+  - `frontend/src/components/MiniKline.tsx`（新增）：轻量级 K 线组件，使用 `lightweight-charts` 在 200px 高度容器内渲染近 120 日蜡烛图，A 股红涨绿跌配色。
+  - `frontend/src/components/TradeFlowCandidateDrawer.tsx`：新增"公司概览"section（行业/公司简介/数据来源标注）、"K 线走势"section（可折叠 MiniKline）、增强研究预案显示（预计耗时/是否调用模型/成本风险/确认提示）。
+  - `tests/test_tf_ui011_candidate_research_entry.py`（新增）：21 个测试覆盖公司概览服务、研究预案 profile 元数据、profile 路由、Full TA 门禁、schema 校验。
+- **关键逻辑**：
+  1. 公司概览懒加载——打开 drawer 时并发请求 candidate detail 和 company overview，互不阻塞。
+  2. 公司概览数据源不可用时明确标注"数据源暂不可用"，不伪装为有数据。
+  3. K 线为可折叠入口，默认不加载（避免不必要的 API 调用），点击后渲染 MiniKline。
+  4. 研究预案显示 `profile_label`（中线政策轻量/短线技术轻量）、`expected_latency`（1-3min/1-2min）、`llm_allowed`、`cost_risk`。
+  5. Full TA 始终需要确认（`requires_confirmation=True, cost_risk=high`），轻量 profile 无需确认。
+- **测试结果**：
+  - TF-UI-011 专项：21 passed
+  - 关联回归（UI-009/runtime-tier/candidate-engine/UI-001/PERF-002/PERF-004）：197 + 140 = 337 passed
+  - 前端构建：`npm run build` 通过
+- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM，未跑全市场扫描。
+
+---
+
+## 2026-06-13 | TF-QUALITY-003: 候选池精度校准与弱候选压缩
+
+- **执行者**：OpenCode
+- **类型**：功能增强
+- **任务**：TF-QUALITY-003（P0）
+- **背景**：TF-QUALITY-002 分项评分落地后，候选池仍可能包含弱 VCP、弱事件、数据不足的候选进入主候选。需要基于分项评分建立精度门禁，把候选池从"看起来很多"压缩到"真正值得盯的少数票"，同时保护昊天左侧候选不被短线未突破直接过滤。
+- **修改文件**：
+  - `tradingagents/tradeflow/strategy_config.py`：新增精度门禁配置字段 `precision_min_tech_dimensions`/`precision_min_policy_dimensions`/`precision_data_quality_threshold`/`precision_overheat_penalty_max`。
+  - `tradingagents/tradeflow/candidate_precision_gate.py`（新增）：精度门禁核心模块。实现 `compute_precision()`——对 TECH_TRADE 候选计算 {形态, 量能, 资金, 触发/失效价, 数据质量} 五维命中；对 POLICY_AMBUSH/POLICY_CONFIRM 计算 {政策主题, 受益路径, 反证不过热, 证据覆盖} 四维命中。每类需 ≥ 2 维共振才合格。同时支持 `enrich_with_precision()` 批量标注维度元数据。
+  - `tradingagents/tradeflow/candidate_pool_gate.py`：`run_pool_gate()` 集成精度门禁——legacy `_qualify_for_main()` 通过后再检查精度共振；精度不足的候选进入 observation（非 filtered）。新增昊天保护：POLICY 类型候选无论 legacy 还是精度失败都只能进入 observation，永远不会被 filtered。
+  - `tradingagents/tradeflow/candidate_engine.py`：`evaluate_symbol()` 末尾接入 `compute_split_scores()`，实际填充 `technical_score/policy_score/fund_flow_score/event_score/risk_penalty_score/data_quality_score/ranking_reasons/weakness_reasons` 到候选对象（TF-QUALITY-002 模块此前已定义但未接线）。
+  - `tradingagents/tradeflow/score_separation.py`：`trigger_price > 0` 比较增加类型安全守卫（MagicMock 兼容）。
+  - `tradingagents/tradeflow/discovery.py`：`_build_discovery_entry()` 新增分项评分字段和精度门禁所需字段（mandate_score_component/beneficiary_score_component/beneficiary_path/overheat_penalty/overheat_flags/mandate_topic）。
+  - `api/services/tradeflow_service.py`：`_row_to_candidate_item()` 新增分项评分列和精度门禁字段读取，使 API 层候选也能通过精度门禁评估。
+  - `tests/test_tf_quality001_pool_gate.py`：新增 21 个 TF-QUALITY-003 测试覆盖精度维度计算、昊天保护、20 候选压缩、弱候选过滤、精度元数据标注。同时扩展 `_make_entry()` helper 支持 `fund_flow_anomaly_tags/overheat_penalty/overheat_flags` 参数。
+- **关键逻辑**：
+  1. TECH_TRADE 主候选准入：形态(VCP/PULLBACK) + 量能(多类正向/共振/正向资金标签) + 资金(单位校验的异常资金流) + 触发/失效价(两者同时存在) + 数据质量(完整度≥0.5)，需 ≥ 2 维命中。
+  2. POLICY 主候选准入：政策主题 + 受益路径 + 反证不过热(无高危反证+过热罚分≤20+无过热标签) + 证据覆盖(完整度≥0.5)，需 ≥ 2 维命中。
+  3. 昊天保护：POLICY_AMBUSH/POLICY_CONFIRM 类型候选永远不进入 filtered，只能进入 observation 或 main。
+  4. 主候选上限：技术池 3 只、昊天池 3 只、总主候选 5 只（沿用 TF-QUALITY-001 配置）。
+- **测试结果**：
+  - 全量回归：5344 passed, 17 skipped（0 failed）
+  - 前端构建：`npm run build` 通过
+- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM。
+
+---
+
+## 2026-06-13 | TF-REVIEW-002: 盘后 Review 数据补齐与非交易日计划映射
+
+- **执行者**：OpenCode
+- **类型**：功能增强
+- **任务**：TF-REVIEW-002（P0）
+- **背景**：盘后 Review 页面在以下场景显示空白且无解释：(1) 非交易日生成的候选池无法在下一交易日 Review；(2) 缺行情时只显示空表无原因说明；(3) 0% 收益可能显示为 N/A。
+- **修改文件**：
+  - `tradingagents/tradeflow/post_market_review.py`：新增 `ReviewDataStatus` 枚举（`OK/NO_MARKET_DATA/NON_TRADING_DAY/SOURCE_FAILED/NOT_ENOUGH_DAYS/NO_CANDIDATES`）；`CandidatePerformance` 和 `ReviewSummary` 新增 `data_status` 字段；`run_post_market_review()` 新增 `plan_date`/`effective_trade_date` 参数并自动计算 `data_status`；`render_review_markdown()` 显示数据状态和跨日期映射提示。
+  - `tradingagents/tradeflow/date_semantics.py`：新增 `resolve_review_date()` 和 `find_latest_plan_date()` 辅助函数，支持非交易日计划映射到下一交易日复盘。
+  - `api/services/tradeflow_service.py`：新增 `_get_available_dates()` 辅助函数；`get_review()` 当查询日期无计划时 fallback 到最近有候选的计划日期，并返回 `data_status`/`data_status_message`/`plan_date`/`effective_trade_date`；`generate_review()` 支持 `plan_date`→`review_date` 映射，strategy_stats 新增 `avg_day3_return`/`avg_day5_return`。
+  - `api/tradeflow_schemas.py`：`TradeFlowReviewResponse` 和 `TradeFlowReviewGenerateResponse` 新增 `data_status`/`data_status_message`/`plan_date`/`effective_trade_date` 字段。
+  - `frontend/src/types/index.ts`：TypeScript 类型同步新增字段。
+  - `frontend/src/pages/TradeFlow.tsx`：ReviewTab 组件展示数据状态横幅和跨日期映射提示。
+  - `tests/test_tf_review_002_date_mapping.py`：新增 34 个测试覆盖所有新逻辑。
+- **测试结果**：
+  - 全量回归：5323 passed, 17 skipped（0 failed）
+  - 前端构建：`npm run build` 通过
+- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM。
+
+---
+
+## 2026-06-13 | TF-OBS-002 fix: 盘中观察 auto-run 仅限当日
+
+- **执行者**：OpenCode
+- **类型**：Bug fix
+- **任务**：TF-OBS-002（fix）
+- **背景**：`get_observe()` 的 auto-run 逻辑在查看历史日期时也会触发，导致用当日实时行情覆盖历史日期候选的 observe_state（TRIGGERED/INVALIDATED），E2E 测试 `test_returns_all_three_observe_items` 中 `waiting_count` 从期望 3 变为 1。
+- **修改文件**：
+  - `api/services/tradeflow_service.py`：`get_observe()` auto-run 分支新增 `trade_date == today` 守卫——仅当日才会自动执行 observe check；非当日显示 "非当日，跳过自动观察"。
+  - `tests/test_tf_obs_002_observe_auto_run.py`：所有硬编码 `"2026-06-02"` 替换为动态 `TODAY = datetime.now().strftime("%Y-%m-%d")`，使 auto-run 测试在任意日期运行时都能正确触发。
+- **测试结果**：
+  - 全量回归：5289 passed, 17 skipped（0 failed）
+- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM。
+
+---
+
+## 2026-06-13 | TF-OBS-002: 盘中观察自动执行与 A 股红绿视觉修正
+
+- **执行者**：OpenCode
+- **类型**：功能增强 + 视觉修正
+- **任务**：TF-OBS-002（P0）
+- **背景**：盘中观察页必须用户点"执行观察"才能看到数据；同时状态徽章颜色使用美股直觉（绿涨红跌），与 A 股直觉相反。
+- **修改文件**：
+  - `api/services/tradeflow_service.py`：新增 `_precheck_observe_state()` 辅助函数；`get_observe()` 增加 auto-run 逻辑——当候选存在但无信号时自动执行 observe check，返回 `observe_auto_run`、`last_observed_at`、`observe_reason` 三个新字段。
+  - `api/tradeflow_schemas.py`：`TradeFlowObserveResponse` 新增 `observe_auto_run: bool`、`last_observed_at: str`、`observe_reason: str`。
+  - `frontend/src/types/index.ts`：`TradeFlowObserveResponse` 新增对应 TS 字段。
+  - `frontend/src/pages/TradeFlow.tsx`：
+    - 修正 `observeStateLabel` 和 `observeStateBg`：TRIGGERED=红色（A 股涨/触发），INVALIDATED=绿色（A 股跌/失效），WAITING=灰色。
+    - 修正 `priceDistanceColor`：等待状态从蓝色改为灰色。
+    - `ObserveTable` 接收并展示 `observeReason`、`observeAutoRun`、`lastObservedAt`；空状态不再要求点击，而是显示自动执行原因或"系统将在开盘后自动执行观察"。
+    - 按钮文案从"执行观察"改为"手动刷新"。
+    - `fetchObserve` 同步 `last_observed_at` 到 `lastObserveCheckTime`。
+  - `tests/test_tf_obs_002_observe_auto_run.py`：新增 24 个测试覆盖 precheck、auto-run 触发/跳过、无计划原因、非交易日映射、schema 字段、fixture 覆盖（triggered/waiting/invalidated/no-plan/cross-date）。
+- **测试结果**：
+  - 新增测试：24 passed
+  - 回归测试（tf_obs_001/m005/t004/t008/ui001）：274 passed
+  - 回归测试（candidate_engine/runtime_tier）：92 passed
+  - `npm run build`：通过
+- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM。
+
+---
+
+## 2026-06-13 | 释放下一波 TradeFlow 试跑闭环任务
+
+- **执行者**：Codex
+- **类型**：任务池规划
+- **背景**：用户要求继续释放任务。当前任务池已有 `TF-OBS-002`、`TF-REVIEW-002`、`TF-UI-011`、`DATA-017`、`V-006`、`CODEGRAPH-002` 等 ready 项；同时工作区存在 `TF-QUALITY-002` 半成品（`docs/task_runs/TF-QUALITY-002-20260612-200104/`、`tradingagents/tradeflow/score_separation.py`、`tradingagents/tradeflow/schemas.py`），因此自动链真正继续前需先 review/commit 当前半成品。
+- **任务池调整**：
+  - 顶部队列把 `TF-QUALITY-002` 从 ready 修正为 `in_progress — claimed TF-QUALITY-002-20260612-200104`，与详情段落一致。
+  - 新增并释放以下 ready 任务：
+    - `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0）
+    - `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1）
+    - `H-012`：昊天主题注册表与政策版本 Watchlist（P1）
+    - `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1）
+    - `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1）
+    - `V-007`：TradeFlow 试用闭环端到端验收（P1）
+- **执行建议**：
+  1. 先完成/审核/提交 `TF-QUALITY-002`。
+  2. 继续跑当前 P0/P1 链路：`TF-OBS-002` → `TF-REVIEW-002` → `TF-UI-011` → `DATA-017` → `V-006` → `CODEGRAPH-002`。
+  3. 新释放任务作为下一波队列，优先顺序：`TF-QUALITY-003` → `TF-PAPER-001` → `UI-012` → `V-007`，数据和昊天支线可穿插执行。
+- **安全红线**：仅更新任务池/日志，未改 prompts，未调用 live LLM，未写生产数据库。
+
+---
+
+## 2026-06-11 | DECISION 补修：避免 WAIT 全部显示为“数据不足观察”
+
+- **执行者**：Codex
+- **类型**：决策语义修复
+- **背景**：用户反馈最近 3 篇报告的决策建议都显示为“数据不足观察”，观察标签再次变得笼统。核查报告原文后发现，报告正文实际包含“回避/等待触发”等更具体动作，但保存/展示语义被覆盖。
+- **根因**：
+  1. `_extract_decision_semantics()` 只要检测到数据不足且 `execution_action=WAIT`，就无条件把 `action_label` 改成“数据不足观察”，覆盖了偏多的“等待触发”和偏空的“回避”。
+  2. 多 Agent 报告包含多个 `<!-- VERDICT -->`，解析器取第一个 VERDICT，容易把早期分析师结论当成最终风控结论。
+- **修复内容**：
+  - `tradingagents/graph/signal_processing.py`：只有 `research_direction=中性` 且数据不足时才使用“数据不足观察”；偏多仍显示“等待触发”，偏空/看空仍显示“回避”。
+  - `tradingagents/graph/signal_processing.py`：多 VERDICT 报告优先取“执行质检”之前的最后一个 VERDICT，避免 C-005/历史报告片段污染最终方向。
+  - `api/services/report_service.py`：读取旧报告时做轻量归一化，不改数据库；旧的 `WAIT + 数据不足观察 + 偏空/看空` 显示为“回避”，`WAIT + 数据不足观察 + 偏多/看多` 显示为“等待触发”。
+  - `tests/test_decision_semantics.py`：新增数据不足偏多/偏空不覆盖标签、多 VERDICT 取最终结论的回归测试。
+- **样本回放**：
+  - `analysis-603629.SH-2026-06-03.md`：看空 / WAIT / 回避
+  - `analysis-601991.SH-2026-06-02.md`：看空 / WAIT / 回避
+  - `analysis-603296.SH-2026-06-01.md`：偏多 / WAIT / 等待触发
+- **验证结果**：
+  - `.venv/bin/python -m pytest tests/test_decision_semantics.py tests/test_decision_replay.py tests/test_report_recovery.py tests/test_bark_notification_service.py tests/test_wecom_notification_service.py tests/test_api_smoke.py::TestReportsEndpoint::test_latest_by_symbols_returns_only_each_symbol_latest_report -q --tb=short`：62 passed
+  - 最近 3 条数据库报告经 `report_service.get_report()` 读取后显示为：603629.SH 回避、002015.SZ 回避、603629.SH 等待触发。
+- **安全红线**：未改 prompts，未调用 live LLM，未写生产数据库。
+
+---
+
+## 2026-06-10 | Codex 全项目收口检查：TradeFlow 契约与证据覆盖率回归修复
+
+- **执行者**：Codex
+- **类型**：全量检查 + 回归修复 + 任务池治理
+- **背景**：用户要求从头到尾细查项目并修复必要问题。重点检查昨晚 TF-QUALITY-001 后的 TradeFlow 候选池、盘中 Observe、E2E smoke，以及全量 pytest 暴露的数据覆盖率回归。
+- **修复内容**：
+  - `api/services/tradeflow_service.py`：恢复旧候选接口契约，`candidates` 保留查询池语义，同时新增 `main_candidates` / `main_summary_agg` 暴露严格主候选池，避免 `pool=all` 被主池收敛误伤。
+  - `tradingagents/tradeflow/discovery.py`：`save_candidates` 只落库通过门禁的主候选/观察候选；门禁过滤候选写入 filtered trace 并保留过滤原因，避免 DB/API 二次门禁不一致。
+  - `tradingagents/tradeflow/observe_runner.py`：盘中观察在指定日期无候选时，回退到最新有效 active plan，支持周末/非交易日计划映射到后续交易日观察。
+  - `tradingagents/tradeflow/candidate_pool_gate.py`：修复旧候选兼容条件，避免仅有 `composite_score` 的历史候选被误过滤。
+  - `tradingagents/dataflows/evidence_contract.py`：明确融资融券、研报、评级、回购为可选新增证据源，未出现时不进入 completeness 分母；`NORMAL_NO_DATA` 视为已完成查询状态。
+  - `tradingagents/dataflows/evidence_coverage_audit.py`：把可选/辅助源从 `critical_missing` 中排除，避免评级、回购、涨停池、热门股等辅助源缺失把主证据完整样本误降级为 LOW。
+  - `tradingagents/agents/utils/readiness_score.py`：评级/回购默认 `not_available`，保持旧调用的 evidence coverage 分母兼容；显式传入时仍参与覆盖率。
+- **任务池调整**：
+  - `TF-QUALITY-001A`、`DATA-COVERAGE-001` 标记为 done。
+  - 解锁 `TF-QUALITY-002`、`TF-OBS-002`、`TF-REVIEW-002`、`TF-UI-011` 为 ready。
+  - `DATA-017`、`V-006`、`CODEGRAPH-002` 保持 ready。
+- **验证结果**：
+  - `.venv/bin/python -m pytest tests/test_t004_intraday_observe.py tests/test_tf_p0_003_e2e_smoke.py tests/test_ui001_tradeflow_api.py tests/test_tf_quality001_pool_gate.py tests/test_t002_discovery.py -q --tb=short`：243 passed
+  - `.venv/bin/python -m pytest tests/test_data007_evidence_coverage_audit.py tests/test_e_series_fixes.py tests/test_v001_600584_data_authenticity.py -q --tb=short`：160 passed
+  - `.venv/bin/python -m pytest tests/test_data010_margin_trading.py tests/test_data011_research_report.py tests/test_data012_ratings.py tests/test_data013_buyback.py tests/test_data015_zt_pool.py -q --tb=short`：330 passed
+  - `.venv/bin/python -m pytest tests/ -q --tb=short`：5245 passed, 17 skipped
+- **安全红线**：未改 prompts，未调用 live LLM，未写生产数据库。
+
+---
+
+## 2026-06-09 | Codex 审核 TF-QUALITY-001 与任务框架重排
+
+exec
+/bin/zsh -lc "git status --short && printf '\\n---AGENTS---\\n' && sed -n '1,220p' AGENTS.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+?? docs/task_runs/DATA-017-20260614-001936/
+?? tests/test_data017_fund_lhb_health.py
+?? tradingagents/dataflows/fund_lhb_health.py
+
+---AGENTS---
+# TradingAgents-AShare — 项目协作规则
+
+## 项目简介
+
+A股智能投研多智能体系统，基于 LangGraph + LangChain 构建，模拟 14 名专业 Agent 的多空辩论与风控博弈，为投资者提供结构化的交易建议。
+
+核心模块：
+- **Agent 框架**：14 个多智能体（分析师/研究员/风控/交易员），LangGraph 编排
+- **后端 API**：FastAPI，提供分析、持仓、定时任务、研报管理等接口
+- **前端 UI**：React，意图驱动交互、辩论可视化、持仓看板
+- **定时调度**：独立 scheduler，支持自选股定时分析
+- **数据层**：AKShare + BaoStock + yfinance，SQLite 持久化
+
+## 多工具协作架构
+
+```
+孟（最终决策）
+  │
+  ├── OpenClaw（主控调度）── 读取上下文 → 判断任务 → 派发执行
+  │     ├── 简单任务：直接 exec 执行（git/python/npm）
+  │     └── 复杂任务：sessions_spawn 子 agent 或调用 OpenCode 执行
+  │
+  ├── OpenCode（代码执行器）── 读取同一套上下文 → 改代码 → 跑测试 → 输出 diff
+  │
+  └── OpenCode TUI/Web（审查界面）── 查看 diff → 确认修改 → 做 review
+```
+
+**核心原则**：三者读取同一套项目上下文，不各自保存独立记忆。
+
+## 必读文件（任何 coding agent 开始任务前）
+
+1. `AGENTS.md`（本文件）
+2. `docs/project-overview.md`（项目背景 + 架构 + 目录结构）
+3. `docs/TASKS.md`（当前任务池）
+4. `docs/DECISIONS.md`（架构决策记录）
+5. `docs/DEVLOG.md`（最近修改日志）
+6. 涉及模型/API 调用时，必须读 `docs/MODEL_API_CATALOG.md` 和 `docs/LLM_API_USAGE.md`，并可运行 `python scripts/audit_llm_config.py` 查看脱敏配置
+
+## 项目目录结构
+
+```
+TradingAgents-AShare/
+├── tradingagents/            # 核心 Python 包
+│   ├── agents/               # 14 个多智能体
+│   │   ├── analysts/         # 7 个分析师（基本面/情绪/新闻/技术/宏观/主力/量价）
+│   │   ├── researchers/      # 多头/空头研究员 + 研究总监
+│   │   ├── risk_mgmt/        # 风控团队
+│   │   ├── managers/         # 管理层
+│   │   └── trader/           # 交易员
+│   ├── dataflows/            # 数据获取与缓存
+│   ├── graph/                # LangGraph 编排图
+│   ├── llm_clients/          # 多模型厂商适配
+│   ├── prompts/              # Agent 提示词模板
+│   └── default_config.py     # 默认配置
+├── api/                      # FastAPI 后端
+│   ├── main.py               # 入口
+│   ├── database.py           # SQLite
+│   └── services/             # 业务逻辑（分析/持仓/定时/研报）
+├── frontend/                 # React 前端
+├── scheduler/                # 定时分析调度
+├── skills/                   # OpenClaw 技能
+├── tests/                    # 测试
+├── docs/                     # 项目文档
+└── eval_results/             # 回测评估结果
+```
+
+## 执行规则
+
+### 代码修改前
+1. 执行 `git status`，确认当前分支和未提交变更
+2. 激活虚拟环境：`source .venv/bin/activate`
+3. 确认修改范围不影响生产数据库（tradingagents.db）
+4. 如果涉及核心模块，先跑一遍测试确认基线
+
+### 代码修改后
+1. 运行测试，全部通过才算完成
+2. 输出：修改文件列表、测试结果、发现的风险点
+3. 更新 `docs/DEVLOG.md`
+
+### OpenClaw 调度方式
+- **简单任务**（改配置、修 bug、小重构）：OpenClaw 直接 `exec` 执行
+- **复杂任务**（新功能、跨模块修改）：调用 OpenCode 执行，由用户确认后执行
+- **审查任务**：OpenClaw 不直接审查代码，提示用户用 OpenCode TUI 查看 diff
+
+## 安全红线
+
+- 不误改 `tradingagents.db`（生产数据库）
+- 不误改 `eval_results/` 中的历史回测结果
+- 不直接修改 `tradingagents/prompts/` 中的提示词模板（需走审批）
+- 不删除 `logs/` 中的历史日志
+- 测试数据不得写入生产数据库
+- 不读取、解密、打印、提交任何模型 API Key 明文；只能使用 `HAS_KEY/NO_KEY` 级别的脱敏状态
+- 除用户主动发起的分析/定时任务外，任何 live LLM API 调用前都要说明 provider、base_url、模型名和预计调用次数，并征得用户确认
+
+## 技术栈
+
+- **后端**：Python 3.10+, FastAPI, LangGraph, LangChain
+- **前端**：React, TypeScript, Tailwind CSS
+- **数据库**：SQLite
+- **数据源**：AKShare, BaoStock, yfinance
+- **模型**：OpenAI / Anthropic / 智谱 / DeepSeek / 小米 MiMo 等
+
+exec
+/bin/zsh -lc "git diff -- docs/TASKS.md docs/DEVLOG.md && printf '\\n--- new files ---\\n' && find docs/task_runs/DATA-017-20260614-001936 -maxdepth 2 -type f -print -exec sed -n '1,220p' {} \\; && printf '\\n--- code file ---\\n' && sed -n '1,260p' tradingagents/dataflows/fund_lhb_health.py && printf '\\n--- tests ---\\n' && sed -n '1,260p' tests/test_data017_fund_lhb_health.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index cd7e26b..1035ea0 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,28 @@
+ 
+ ---
+ 
++## 2026-06-14 | DATA-017: 主力资金/龙虎榜数据源健康巡检与 fallback 验收
++
++- **执行者**：OpenCode
++- **类型**：功能增强
++- **任务**：DATA-017（P1）
++- **背景**：TA 报告中主力资金仍出现失败问题，需要可复现的数据源健康巡检，区分"该股无龙虎榜""接口失败""单位未校验""fallback 可用""数据过期"五种状态。现有 health_check（M-008）只覆盖 OK/FAILED/STALE/NOT_QUERIED 四态，缺少 UNIT_UNVERIFIED，且未专门针对 fund_flow/LHB 做精细诊断。
++- **修改文件**：
++  - `tradingagents/dataflows/fund_lhb_health.py`（新增）：主力资金/龙虎榜专项健康巡检模块。定义 5 态健康状态枚举（HAS_DATA / NORMAL_NO_DATA / FAILED / STALE / UNIT_UNVERIFIED），提供 `inspect_fund_flow_health()`、`inspect_sector_fund_flow_health()`、`inspect_lhb_health()`、`run_fund_lhb_health_check()` 和 `render_fund_lhb_health_report()`。包含 3 个代表性样本 fixture（HAS_FUND_DATA / NO_LHB_NORMAL / INTERFACE_FAILED）。
++  - `tests/test_data017_fund_lhb_health.py`（新增）：51 个测试覆盖 5 态分类、个股/板块资金流、龙虎榜四态区分、组合报告、摘要计算、Markdown 渲染、样本 fixture、关键行为保证、EvidenceContract 兼容性、readiness 门禁联动。
++- **关键逻辑**：
++  1. 5 怚分类：HAS_DATA（单位已校验的有效数据）→ UNIT_UNVERIFIED（有数据但单位未校验）→ STALE（数据超过 7 天）→ NORMAL_NO_DATA（查询正常无数据）→ FAILED（接口失败/未查询）。
++  2. 龙虎榜关键区分：NOT_QUERIED（force=False）和 NORMAL_NO_DATA（force=True 无记录）都归为 NORMAL_NO_DATA，不降低完整度；只有 FAILED 才标为失败。
++  3. 主力资金 fallback 透明记录：vendor、endpoint、fallback_from、unit、unit_verified、as_of 全部纳入诊断。
++  4. 与 EvidenceContract 完全兼容——可直接消费 `EvidenceContract.to_dict()` 输出。
++  5. 与 readiness_score 门禁联动——FAILED fund_flow 阻断 strong evidence，NORMAL_NO_DATA LHB 不阻断。
++- **测试结果**：
++  - DATA-017 专项：51 passed
++  - 回归（G-006/G-007/readiness/catalog/fund_route/health_check）：306 passed
++  - 总计：357 passed, 0 failed
++
++---
++
+ ## 2026-06-14 | TF-UI-011: 候选详情一键轻量 TA、K 线与公司概览
+ 
+ - **执行者**：OpenCode
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index a992e97..ffd6e19 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -87,7 +87,7 @@
+ 61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+ 62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
+ 63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+-64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
++64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
+ 65. `V-006`：最终动作语义端到端回放验收（P1，ready，依赖 DECISION-004）。
+ 66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
+ 67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，ready，来自 TF-QUALITY-001 task_run）。
+@@ -2812,7 +2812,7 @@
+ ### DATA-017: 主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1）
+ - **描述**：针对 TA 报告里主力资金仍失败的问题，建立可复现的数据源健康巡检，区分“该股无龙虎榜”“接口失败”“单位未校验”“fallback 可用”。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：done — DATA-017-20260614（待提交）
+ - **前置条件**：DATA-P0-FUND-ROUTE 完成 ✓。
+ - **执行约束**：
+   - 不把新闻/舆情转述当作主力资金原始证据。
+
+--- new files ---
+docs/task_runs/DATA-017-20260614-001936/tests-round1.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  1%]
+................................................ss...................... [  2%]
+........................................................................ [  3%]
+........................................................................ [  5%]
+........................................................................ [  6%]
+........................................................................ [  7%]
+........................................................................ [  9%]
+........................................................................ [ 10%]
+........................................................................ [ 11%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 15%]
+........................................................................ [ 17%]
+........................................................................ [ 18%]
+........................................................................ [ 19%]
+........................................................................ [ 21%]
+........................................................................ [ 22%]
+........................................................................ [ 23%]
+........................................................................ [ 25%]
+........................................................................ [ 26%]
+........................................................................ [ 27%]
+........................................................................ [ 29%]
+........................................................................ [ 30%]
+........................................................................ [ 31%]
+........................................................................ [ 33%]
+........................................................................ [ 34%]
+........................................................................ [ 35%]
+........................................................................ [ 37%]
+........................................................................ [ 38%]
+........................................................................ [ 39%]
+........................................................................ [ 41%]
+........................................................................ [ 42%]
+........................................................................ [ 43%]
+........................................................................ [ 45%]
+........................................................................ [ 46%]
+........................................................................ [ 47%]
+........................................................................ [ 49%]
+................sssssssss............................................... [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 53%]
+........................................................................ [ 54%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 58%]
+........................................................................ [ 59%]
+........................................................................ [ 60%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 64%]
+........................................................................ [ 66%]
+........................................................................ [ 67%]
+........................................................................ [ 68%]
+........................................................................ [ 70%]
+........................................................................ [ 71%]
+ss.................................................ssss................. [ 72%]
+........................................................................ [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 76%]
+........................................................................ [ 78%]
+........................................................................ [ 79%]
+........................................................................ [ 80%]
+........................................................................ [ 82%]
+........................................................................ [ 83%]
+........................................................................ [ 84%]
+........................................................................ [ 86%]
+........................................................................ [ 87%]
+........................................................................ [ 88%]
+........................................................................ [ 90%]
+........................................................................ [ 91%]
+........................................................................ [ 92%]
+........................................................................ [ 94%]
+........................................................................ [ 95%]
+........................................................................ [ 96%]
+........................................................................ [ 98%]
+........................................................................ [ 99%]
+.................................                                        [100%]
+5416 passed, 17 skipped in 155.57s (0:02:35)
+
+Exit code: 0
+docs/task_runs/DATA-017-20260614-001936/codegraph-status.json
+{
+  "task_id": "DATA-017",
+  "generated_at": "2026-06-14T00:19:36.481735",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": false,
+    "version": "0.9.7",
+    "error": "status check failed: error: unknown option '-p'",
+    "files_indexed": 0,
+    "nodes_count": 0
+  },
+  "result": "SKIPPED",
+  "reason": "CodeGraph not indexed",
+  "post_generated_at": "2026-06-14T00:29:27.636421",
+  "codegraph_post": {
+    "available": true,
+    "indexed": false,
+    "version": "0.9.7",
+    "error": "status check failed: error: unknown option '-p'",
+    "files_indexed": 0,
+    "nodes_count": 0
+  },
+  "post_result": "SKIPPED"
+}docs/task_runs/DATA-017-20260614-001936/prompt-round1.md
+# Task: DATA-017: 主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1）
+
+Read task "DATA-017" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/DATA-017-20260614-001936/codegraph-context.txt
+# CodeGraph Context: SKIPPED
+# Task: DATA-017
+# Reason: CodeGraph not indexed
+docs/task_runs/DATA-017-20260614-001936/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "DATA-017"[90m in docs · 71 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [offset=785][0m
+Let me read the full DATA-017 task description:
+[0m→ [0mRead docs/TASKS.md[90m [offset=2812, limit=80][0m
+[0m
+[0m# [0mTodos
+[•] Explore existing fund_flow/LHB health check and fallback infrastructure
+[ ] Implement DATA-017 health inspection module with 5 states
+[ ] Create test fixtures for 3 sample scenarios
+[ ] Write tests for fund_lhb_health
+[ ] Run tests and verify all pass
+[ ] Update docs/DEVLOG.md
+[ ] Update TASKS.md status to done
+[0m
+[0m• [0mExplore fund_flow/LHB health code[90m Explore Agent[0m
+[0m✓ [0mExplore fund_flow/LHB health code[90m Explore Agent[0m
+Now let me read the key existing modules to understand the patterns I should follow:
+[0m→ [0mRead tradingagents/dataflows/health_check.py
+[0m→ [0mRead tradingagents/dataflows/evidence_contract.py
+[0m→ [0mRead tradingagents/dataflows/fixture_replay.py[90m [limit=150, offset=1][0m
+Now let me look at the fixture_replay module and existing test patterns:
+[0m→ [0mRead tests/test_g007_fund_lhb_provenance.py[90m [limit=100, offset=1][0m
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=120, offset=1][0m
+Let me read a few more key sections to understand the readiness_score patterns:
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=100, offset=1798][0m
+[0m
+[0m# [0mTodos
+[✓] Explore existing fund_flow/LHB health check and fallback infrastructure
+[•] Implement DATA-017 health inspection module with 5 states
+[ ] Create test fixtures for 3 sample scenarios
+[ ] Write tests for fund_lhb_health
+[ ] Run tests and verify all pass
+[ ] Update docs/DEVLOG.md
+[ ] Update TASKS.md status to done
+[0m
+Let me check git status first, then create the health inspection module:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git status --short && git branch --show-current
+M docs/TASKS.md
+?? docs/task_runs/DATA-017-20260614-001936/
+local/tradingagents-custom
+[0m
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=100, offset=1895][0m
+Now I have a complete understanding. Let me create the health inspection module:
+[0m
+[0m← [0mWrite tradingagents/dataflows/fund_lhb_health.py
+Wrote file successfully.
+[0m
+Now let me create the test file:
+[0m← [0mWrite tests/test_data017_fund_lhb_health.py
+Wrote file successfully.
+[0m
+Now let's run the tests:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_data017_fund_lhb_health.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 51 items
+
+tests/test_data017_fund_lhb_health.py::TestFundLhbHealthStatus::test_all_five_statuses_defined PASSED [  1%]
+tests/test_data017_fund_lhb_health.py::TestFundLhbHealthStatus::test_all_list_contains_five PASSED [  3%]
+tests/test_data017_fund_lhb_health.py::TestInspectFundFlowHealth::test_has_data_with_verified_unit PASSED [  5%]
+tests/test_data017_fund_lhb_health.py::TestInspectFundFlowHealth::test_has_data_with_fallback PASSED [  7%]
+tests/test_data017_fund_lhb_health.py::TestInspectFundFlowHealth::test_unit_unverified PASSED [  9%]
+tests/test_data017_fund_lhb_health.py::TestInspectFundFlowHealth::test_failed_status PASSED [ 11%]
+tests/test_data017_fund_lhb_health.py::TestInspectFundFlowHealth::test_stale_data PASSED [ 13%]
+tests/test_data017_fund_lhb_health.py::TestInspectFundFlowHealth::test_normal_no_data PASSED [ 15%]
+tests/test_data017_fund_lhb_health.py::TestInspectFundFlowHealth::test_not_queried_treated_as_failed PASSED [ 17%]
+tests/test_data017_fund_lhb_health.py::TestInspectFundFlowHealth::test_missing_entry PASSED [ 19%]
+tests/test_data017_fund_lhb_health.py::TestInspectFundFlowHealth::test_legacy_string_format_has_data PASSED [ 21%]
+tests/test_data017_fund_lhb_health.py::TestInspectFundFlowHealth::test_legacy_string_format_failed PASSED [ 23%]
+tests/test_data017_fund_lhb_health.py::TestInspectSectorFundFlowHealth::test_has_data PASSED [ 25%]
+tests/test_data017_fund_lhb_health.py::TestInspectSectorFundFlowHealth::test_not_present_is_normal PASSED [ 27%]
+tests/test_data017_fund_lhb_health.py::TestInspectSectorFundFlowHealth::test_failed PASSED [ 29%]
+tests/test_data017_fund_lhb_health.py::TestInspectLhbHealth::test_has_data PASSED [ 31%]
+tests/test_data017_fund_lhb_health.py::TestInspectLhbHealth::test_normal_no_data_non_anomaly_day PASSED [ 33%]
+tests/test_data017_fund_lhb_health.py::TestInspectLhbHealth::test_not_queried_is_normal PASSED [ 35%]
+tests/test_data017_fund_lhb_health.py::TestInspectLhbHealth::test_failed PASSED [ 37%]
+tests/test_data017_fund_lhb_health.py::TestInspectLhbHealth::test_stale_lhb PASSED [ 39%]
+tests/test_data017_fund_lhb_health.py::TestInspectLhbHealth::test_missing_entry_is_normal PASSED [ 41%]
+tests/test_data017_fund_lhb_health.py::TestInspectLhbHealth::test_legacy_format_not_queried PASSED [ 43%]
+tests/test_data017_fund_lhb_health.py::TestInspectLhbHealth::test_legacy_format_normal_no_data PASSED [ 45%]
+tests/test_data017_fund_lhb_health.py::TestInspectLhbHealth::test_legacy_format_failed PASSED [ 47%]
+tests/test_data017_fund_lhb_health.py::TestInspectLhbHealth::test_legacy_format_has_data PASSED [ 49%]
+tests/test_data017_fund_lhb_health.py::TestRunFundLhbHealthCheck::test_all_healthy PASSED [ 50%]
+tests/test_data017_fund_lhb_health.py::TestRunFundLhbHealthCheck::test_fund_flow_failed PASSED [ 52%]
+tests/test_data017_fund_lhb_health.py::TestRunFundLhbHealthCheck::test_unit_unverified_summary PASSED [ 54%]
+tests/test_data017_fund_lhb_health.py::TestRunFundLhbHealthCheck::test_lhb_failed_not_normal PASSED [ 56%]
+tests/test_data017_fund_lhb_health.py::TestRunFundLhbHealthCheck::test_lhb_normal_no_data_does_not_fail PASSED [ 58%]
+tests/test_data017_fund_lhb_health.py::TestRunFundLhbHealthCheck::test_empty_raw_evidence PASSED [ 60%]
+tests/test_data017_fund_lhb_health.py::TestRunFundLhbHealthCheck::test_to_dict PASSED [ 62%]
+tests/test_data017_fund_lhb_health.py::TestRenderFundLhbHealthReport::test_renders_markdown PASSED [ 64%]
+tests/test_data017_fund_lhb_health.py::TestRenderFundLhbHealthReport::test_includes_diagnosis PASSED [ 66%]
+tests/test_data017_fund_lhb_health.py::TestRenderFundLhbHealthReport::test_includes_fallback_info PASSED [ 68%]
+tests/test_data017_fund_lhb_health.py::TestSampleFixtures::test_sample_has_fund_data PASSED [ 70%]
+tests/test_data017_fund_lhb_health.py::TestSampleFixtures::test_sample_no_lhb_normal PASSED [ 72%]
+tests/test_data017_fund_lhb_health.py::TestSampleFixtures::test_sample_interface_failed PASSED [ 74%]
+tests/test_data017_fund_lhb_health.py::TestSampleFixtures::test_all_samples_registered PASSED [ 76%]
+tests/test_data017_fund_lhb_health.py::TestSampleFixtures::test_each_sample_has_three_keys PASSED [ 78%]
+tests/test_data017_fund_lhb_health.py::TestCriticalBehavior::test_failed_fund_flow_not_has_data PASSED [ 80%]
+tests/test_data017_fund_lhb_health.py::TestCriticalBehavior::test_lhb_no_trigger_not_failed PASSED [ 82%]
+tests/test_data017_fund_lhb_health.py::TestCriticalBehavior::test_lhb_normal_no_data_not_failed PASSED [ 84%]
+tests/test_data017_fund_lhb_health.py::TestCriticalBehavior::test_unit_unverified_not_has_data PASSED [ 86%]
+tests/test_data017_fund_lhb_health.py::TestCriticalBehavior::test_fallback_vendor_recorded PASSED [ 88%]
+tests/test_data017_fund_lhb_health.py::TestCriticalBehavior::test_603629_like_failure_explained PASSED [ 90%]
+tests/test_data017_fund_lhb_health.py::TestCriticalBehavior::test_fund_flow_records_unit_date_vendor PASSED [ 92%]
+tests/test_data017_fund_lhb_health.py::TestEvidenceContractCompat::test_health_from_evidence_contract_dict PASSED [ 94%]
+tests/test_data017_fund_lhb_health.py::TestEvidenceContractCompat::test_health_from_lhb_evidence_contract PASSED [ 96%]
+tests/test_data017_fund_lhb_health.py::TestReadinessGateIntegration::test_failed_fund_flow_triggers_gate_block PASSED [ 98%]
+tests/test_data017_fund_lhb_health.py::TestReadinessGateIntegration::test_normal_no_data_lhb_does_not_block PASSED [100%]
+
+============================== 51 passed in 1.14s ==============================
+[0m
+All 51 tests pass. Now let me run the related regression tests to make sure nothing is broken:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_g007_fund_lhb_provenance.py tests/test_g006_raw_evidence_snapshot.py tests/test_readiness_score.py tests/test_data_source_catalog.py tests/test_data_p0_fund_route.py tests/test_m008_health_check.py -q 2>&1
+........................................................................ [ 23%]
+........................................................................ [ 47%]
+........................................................................ [ 70%]
+........................................................................ [ 94%]
+..................                                                       [100%]
+306 passed in 8.25s
+[0m
+[0m# [0mTodos
+[✓] Explore existing fund_flow/LHB health check and fallback infrastructure
+[✓] Implement DATA-017 health inspection module with 5 states
+[✓] Create test fixtures for 3 sample scenarios
+[✓] Write tests for fund_lhb_health
+[✓] Run tests and verify all pass
+[•] Update docs/DEVLOG.md
+[ ] Update TASKS.md status to done
+[0m
+All 306 regression tests pass. Let me update the documentation:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=30, offset=1][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,30 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-14 | DATA-017: 主力资金/龙虎榜数据源健康巡检与 fallback 验收
++
++- **执行者**：OpenCode
++- **类型**：功能增强
++- **任务**：DATA-017（P1）
++- **背景**：TA 报告中主力资金仍出现失败问题，需要可复现的数据源健康巡检，区分"该股无龙虎榜""接口失败""单位未校验""fallback 可用""数据过期"五种状态。现有 health_check（M-008）只覆盖 OK/FAILED/STALE/NOT_QUERIED 四态，缺少 UNIT_UNVERIFIED，且未专门针对 fund_flow/LHB 做精细诊断。
++- **修改文件**：
++  - `tradingagents/dataflows/fund_lhb_health.py`（新增）：主力资金/龙虎榜专项健康巡检模块。定义 5 态健康状态枚举（HAS_DATA / NORMAL_NO_DATA / FAILED / STALE / UNIT_UNVERIFIED），提供 `inspect_fund_flow_health()`、`inspect_sector_fund_flow_health()`、`inspect_lhb_health()`、`run_fund_lhb_health_check()` 和 `render_fund_lhb_health_report()`。包含 3 个代表性样本 fixture（HAS_FUND_DATA / NO_LHB_NORMAL / INTERFACE_FAILED）。
++  - `tests/test_data017_fund_lhb_health.py`（新增）：51 个测试覆盖 5 态分类、个股/板块资金流、龙虎榜四态区分、组合报告、摘要计算、Markdown 渲染、样本 fixture、关键行为保证、EvidenceContract 兼容性、readiness 门禁联动。
++- **关键逻辑**：
++  1. 5 怚分类：HAS_DATA（单位已校验的有效数据）→ UNIT_UNVERIFIED（有数据但单位未校验）→ STALE（数据超过 7 天）→ NORMAL_NO_DATA（查询正常无数据）→ FAILED（接口失败/未查询）。
++  2. 龙虎榜关键区分：NOT_QUERIED（force=False）和 NORMAL_NO_DATA（force=True 无记录）都归为 NORMAL_NO_DATA，不降低完整度；只有 FAILED 才标为失败。
++  3. 主力资金 fallback 透明记录：vendor、endpoint、fallback_from、unit、unit_verified、as_of 全部纳入诊断。
++  4. 与 EvidenceContract 完全兼容——可直接消费 `EvidenceContract.to_dict()` 输出。
++  5. 与 readiness_score 门禁联动——FAILED fund_flow 阻断 strong evidence，NORMAL_NO_DATA LHB 不阻断。
++- **测试结果**：
++  - DATA-017 专项：51 passed
++  - 回归（G-006/G-007/readiness/catalog/fund_route/health_check）：306 passed
++  - 总计：357 passed, 0 failed
++
++---
++
+ ## 2026-06-14 | TF-UI-011: 候选详情一键轻量 TA、K 线与公司概览
+ 
+ - **执行者**：OpenCode
+ - **类型**：功能增强
+
+[0m
+Now update the TASKS.md status:
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -2811,9 +2811,9 @@
+ 
+ ### DATA-017: 主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1）
+ - **描述**：针对 TA 报告里主力资金仍失败的问题，建立可复现的数据源健康巡检，区分“该股无龙虎榜”“接口失败”“单位未校验”“fallback 可用”。
+ - **优先级**：P1
+-- **状态**：in_progress — claimed DATA-017-20260614-001936
++- **状态**：done — DATA-017-20260614（待提交）
+ - **前置条件**：DATA-P0-FUND-ROUTE 完成 ✓。
+ - **执行约束**：
+   - 不把新闻/舆情转述当作主力资金原始证据。
+   - 不调用 LLM。
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -86,9 +86,9 @@
+ 60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+ 61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+ 62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
+ 63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+-64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
++64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
+ 65. `V-006`：最终动作语义端到端回放验收（P1，ready，依赖 DECISION-004）。
+ 66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
+ 67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，ready，来自 TF-QUALITY-001 task_run）。
+ 68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
+
+[0m
+Also update the queue line:
+[0m# [0mTodos
+[✓] Explore existing fund_flow/LHB health check and fallback infrastructure
+[✓] Implement DATA-017 health inspection module with 5 states
+[✓] Create test fixtures for 3 sample scenarios
+docs/task_runs/DATA-017-20260614-001936/task.md
+# Auto Dev Task Run
+
+- Task: DATA-017 - 主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1）
+- Priority: P1
+- Status: CLAIMED
+- Started at: 2026-06-14_00:19:36
+- Git HEAD: f21bbf3
+- Test commands: pytest tests/ -q --tb=short
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/DATA-017-20260614-001936/codegraph-impact.txt
+# CodeGraph Impact: SKIPPED
+# Reason: CodeGraph not indexed
+
+--- code file ---
+# [DATA-017] fund_lhb_health
+"""主力资金 / 龙虎榜数据源健康巡检与 fallback 验收。
+
+针对 TA 报告中主力资金仍失败的问题，提供可复现的数据源健康巡检，
+区分以下五种状态：
+
+  - HAS_DATA        — 接口成功返回有效数据
+  - NORMAL_NO_DATA  — 接口成功但正常无数据（如非异动日无龙虎榜）
+  - FAILED          — 接口失败 / 解析失败 / 超时
+  - STALE           — 数据过期（日期不符或长期未更新）
+  - UNIT_UNVERIFIED — 有数据但单位未校验，不能作为强证据
+
+Usage (library):
+    from tradingagents.dataflows.fund_lhb_health import (
+        FundLhbHealthStatus,
+        inspect_fund_flow_health,
+        inspect_lhb_health,
+        run_fund_lhb_health_check,
+        render_fund_lhb_health_report,
+    )
+    result = run_fund_lhb_health_check(raw_evidence)
+    print(render_fund_lhb_health_report(result))
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
+
+
+# ── Health Status ──────────────────────────────────────────────────────
+
+class FundLhbHealthStatus:
+    HAS_DATA = "HAS_DATA"
+    NORMAL_NO_DATA = "NORMAL_NO_DATA"
+    FAILED = "FAILED"
+    STALE = "STALE"
+    UNIT_UNVERIFIED = "UNIT_UNVERIFIED"
+
+    ALL = [HAS_DATA, NORMAL_NO_DATA, FAILED, STALE, UNIT_UNVERIFIED]
+
+
+# ── Data Models ────────────────────────────────────────────────────────
+
+@dataclass
+class FundFlowHealth:
+    """Individual fund flow health inspection result."""
+    status: str = FundLhbHealthStatus.FAILED
+    vendor: str = ""
+    endpoint: str = ""
+    fallback_from: str = ""
+    unit: str = ""
+    unit_verified: bool = False
+    as_of: str = ""
+    fetched_at: str = ""
+    record_count: int = 0
+    is_fallback: bool = False
+    error: str = ""
+    diagnosis: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status,
+            "vendor": self.vendor,
+            "endpoint": self.endpoint,
+            "fallback_from": self.fallback_from,
+            "unit": self.unit,
+            "unit_verified": self.unit_verified,
+            "as_of": self.as_of,
+            "fetched_at": self.fetched_at,
+            "record_count": self.record_count,
+            "is_fallback": self.is_fallback,
+            "error": self.error,
+            "diagnosis": self.diagnosis,
+        }
+
+
+@dataclass
+class SectorFundFlowHealth:
+    """Sector/board fund flow health inspection result."""
+    status: str = FundLhbHealthStatus.FAILED
+    vendor: str = ""
+    endpoint: str = ""
+    fallback_from: str = ""
+    record_count: int = 0
+    is_fallback: bool = False
+    error: str = ""
+    diagnosis: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status,
+            "vendor": self.vendor,
+            "endpoint": self.endpoint,
+            "fallback_from": self.fallback_from,
+            "record_count": self.record_count,
+            "is_fallback": self.is_fallback,
+            "error": self.error,
+            "diagnosis": self.diagnosis,
+        }
+
+
+@dataclass
+class LhbHealth:
+    """LHB health inspection result."""
+    status: str = FundLhbHealthStatus.FAILED
+    vendor: str = ""
+    endpoint: str = ""
+    fallback_from: str = ""
+    query_mode: str = "not_queried"
+    force_reason: str = ""
+    as_of: str = ""
+    record_count: int = 0
+    is_fallback: bool = False
+    error: str = ""
+    diagnosis: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status,
+            "vendor": self.vendor,
+            "endpoint": self.endpoint,
+            "fallback_from": self.fallback_from,
+            "query_mode": self.query_mode,
+            "force_reason": self.force_reason,
+            "as_of": self.as_of,
+            "record_count": self.record_count,
+            "is_fallback": self.is_fallback,
+            "error": self.error,
+            "diagnosis": self.diagnosis,
+        }
+
+
+@dataclass
+class FundLhbHealthReport:
+    """Combined health report for fund flow and LHB."""
+    run_at: str = ""
+    symbol: str = ""
+    fund_flow_individual: FundFlowHealth = field(default_factory=FundFlowHealth)
+    fund_flow_sector: SectorFundFlowHealth = field(default_factory=SectorFundFlowHealth)
+    lhb: LhbHealth = field(default_factory=LhbHealth)
+    summary: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "run_at": self.run_at,
+            "symbol": self.symbol,
+            "fund_flow_individual": self.fund_flow_individual.to_dict(),
+            "fund_flow_sector": self.fund_flow_sector.to_dict(),
+            "lhb": self.lhb.to_dict(),
+            "summary": self.summary,
+        }
+
+
+# ── Inspection Logic ───────────────────────────────────────────────────
+
+def _is_stale_date(as_of: str, max_age_days: int = 7) -> bool:
+    """Check if an as_of date is stale (older than max_age_days from now)."""
+    if not as_of:
+        return False
+    try:
+        parsed = datetime.strptime(as_of[:10], "%Y-%m-%d")
+        age = (datetime.now() - parsed).days
+        return age > max_age_days
+    except (ValueError, TypeError):
+        return False
+
+
+def inspect_fund_flow_health(
+    raw_evidence: Optional[Dict[str, Any]] = None,
+    symbol: str = "",
+) -> FundFlowHealth:
+    """Inspect individual fund flow health from raw_evidence.
+
+    Classifies into:
+      - HAS_DATA: successful retrieval with verified unit
+      - UNIT_UNVERIFIED: data present but unit not verified
+      - FAILED: API failure
+      - STALE: data is too old
+      - NORMAL_NO_DATA: queried but no data
+    """
+    raw = raw_evidence or {}
+    entry = raw.get("fund_flow_individual")
+
+    health = FundFlowHealth()
+
+    if entry is None:
+        health.status = FundLhbHealthStatus.FAILED
+        health.error = "fund_flow_individual not found in raw_evidence"
+        health.diagnosis = "个股资金流未在 raw_evidence 中找到，可能是数据采集阶段未执行或被跳过"
+        return health
+
+    if isinstance(entry, dict):
+        health.vendor = entry.get("vendor", "")
+        health.endpoint = entry.get("endpoint", "")
+        health.fallback_from = entry.get("fallback_from") or ""
+        health.unit = entry.get("unit") or ""
+        health.unit_verified = entry.get("unit_verified") is True
+        health.as_of = entry.get("as_of", "")
+        health.fetched_at = entry.get("fetched_at", "")
+        health.record_count = entry.get("record_count", 0)
+        health.is_fallback = bool(health.fallback_from)
+        raw_value = entry.get("raw")
+        status = entry.get("status", "NOT_QUERIED")
+        health.error = entry.get("error") or ""
+    else:
+        raw_value = entry
+        status = "NOT_QUERIED"
+        if isinstance(raw_value, str):
+            s = raw_value.strip()
+            if not s:
+                status = "NOT_QUERIED"
+            elif any(p in s for p in ("获取失败", "ProxyError", "ConnectionError", "不可用", "TimeoutError")):
+                status = "FAILED"
+                health.error = s[:200]
+            elif len(s) > 20:
+                status = "HAS_DATA"
+                health.unit = "万元"
+                health.unit_verified = True
+            else:
+                status = "NORMAL_NO_DATA"
+
+    # Classify into one of 5 health states
+    if status == "FAILED":
+        health.status = FundLhbHealthStatus.FAILED
+        if not health.diagnosis:
+            health.diagnosis = f"个股资金流接口失败: {health.error or '未知错误'}"
+            if health.vendor:
+                health.diagnosis += f"（vendor={health.vendor}）"
+    elif status == "NOT_QUERIED":
+        health.status = FundLhbHealthStatus.FAILED
+        health.diagnosis = "个股资金流未查询（NOT_QUERIED），数据采集阶段可能跳过或路由未触发"
+    elif status == "NORMAL_NO_DATA":
+        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+        health.diagnosis = "个股资金流查询成功但无数据返回（可能为新股或停牌）"
+    elif status == "HAS_DATA":
+        if _is_stale_date(health.as_of):
+            health.status = FundLhbHealthStatus.STALE
+            health.diagnosis = f"个股资金流数据过期（as_of={health.as_of}），超过 7 天未更新"
+        elif not health.unit_verified:
+            health.status = FundLhbHealthStatus.UNIT_UNVERIFIED
+            health.diagnosis = (
+                f"个股资金流有数据但单位未校验（unit={health.unit or '未知'}），"
+                "不能作为强证据使用"
+            )
+        else:
+            health.status = FundLhbHealthStatus.HAS_DATA
+            fb_note = ""
+            if health.is_fallback:
+                fb_note = f"，fallback from {health.fallback_from}"
+            health.diagnosis = (
+                f"个股资金流正常（vendor={health.vendor or '未知'}"
+                f"，unit={health.unit or '未知'}，records={health.record_count}{fb_note}）"
+            )
+    else:
+        health.status = FundLhbHealthStatus.FAILED
+        health.diagnosis = f"个股资金流状态未知: {status}"
+
+    return health
+
+--- tests ---
+"""[DATA-017] Tests for fund flow / LHB data source health inspection.
+
+Covers:
+1. FundLhbHealthStatus constants (5 states)
+2. inspect_fund_flow_health — HAS_DATA / FAILED / STALE / UNIT_UNVERIFIED / NORMAL_NO_DATA
+3. inspect_sector_fund_flow_health — sector/board fund flow
+4. inspect_lhb_health — HAS_DATA / NORMAL_NO_DATA / FAILED / NOT_QUERIED distinction
+5. run_fund_lhb_health_check — combined report + summary
+6. render_fund_lhb_health_report — markdown rendering
+7. Sample fixtures: HAS_FUND_DATA, NO_LHB_NORMAL, INTERFACE_FAILED
+8. Integration: readiness gating, EvidenceContract compatibility
+"""
+
+import pytest
+from datetime import datetime, timedelta
+
+from tradingagents.dataflows.fund_lhb_health import (
+    FundLhbHealthStatus,
+    FundFlowHealth,
+    SectorFundFlowHealth,
+    LhbHealth,
+    FundLhbHealthReport,
+    inspect_fund_flow_health,
+    inspect_sector_fund_flow_health,
+    inspect_lhb_health,
+    run_fund_lhb_health_check,
+    render_fund_lhb_health_report,
+    SAMPLE_HAS_FUND_DATA,
+    SAMPLE_NO_LHB_NORMAL,
+    SAMPLE_INTERFACE_FAILED,
+    ALL_SAMPLES,
+)
+
+
+# ── Status Constants ──────────────────────────────────────────────────
+
+class TestFundLhbHealthStatus:
+    def test_all_five_statuses_defined(self):
+        assert FundLhbHealthStatus.HAS_DATA == "HAS_DATA"
+        assert FundLhbHealthStatus.NORMAL_NO_DATA == "NORMAL_NO_DATA"
+        assert FundLhbHealthStatus.FAILED == "FAILED"
+        assert FundLhbHealthStatus.STALE == "STALE"
+        assert FundLhbHealthStatus.UNIT_UNVERIFIED == "UNIT_UNVERIFIED"
+
+    def test_all_list_contains_five(self):
+        assert len(FundLhbHealthStatus.ALL) == 5
+        for s in FundLhbHealthStatus.ALL:
+            assert isinstance(s, str)
+
+
+# ── inspect_fund_flow_health ──────────────────────────────────────────
+
+class TestInspectFundFlowHealth:
+
+    def test_has_data_with_verified_unit(self):
+        raw = {
+            "fund_flow_individual": {
+                "raw": "600519.SH 近20日主力资金：\n日期 净流入(万元)\n2026-06-10 12345",
+                "status": "HAS_DATA",
+                "unit": "万元",
+                "unit_verified": True,
+                "vendor": "cn_akshare",
+                "endpoint": "stock_individual_fund_flow",
+                "as_of": datetime.now().strftime("%Y-%m-%d"),
+                "fetched_at": datetime.now().isoformat(),
+                "record_count": 20,
+            }
+        }
+        h = inspect_fund_flow_health(raw)
+        assert h.status == FundLhbHealthStatus.HAS_DATA
+        assert h.vendor == "cn_akshare"
+        assert h.unit == "万元"
+        assert h.unit_verified is True
+        assert h.record_count == 20
+        assert "正常" in h.diagnosis
+
+    def test_has_data_with_fallback(self):
+        raw = {
+            "fund_flow_individual": {
+                "raw": "603629.SH 近20日主力资金...",
+                "status": "HAS_DATA",
+                "unit": "万元",
+                "unit_verified": True,
+                "vendor": "cn_astock",
+                "endpoint": "push2his.eastmoney.com/fflow",
+                "fallback_from": "cn_akshare",
+                "as_of": datetime.now().strftime("%Y-%m-%d"),
+                "record_count": 20,
+            }
+        }
+        h = inspect_fund_flow_health(raw)
+        assert h.status == FundLhbHealthStatus.HAS_DATA
+        assert h.is_fallback is True
+        assert h.fallback_from == "cn_akshare"
+        assert "fallback from cn_akshare" in h.diagnosis
+
+    def test_unit_unverified(self):
+        raw = {
+            "fund_flow_individual": {
+                "raw": "数据存在但单位未知",
+                "status": "HAS_DATA",
+                "unit": None,
+                "unit_verified": False,
+                "vendor": "cn_akshare",
+                "as_of": datetime.now().strftime("%Y-%m-%d"),
+                "record_count": 10,
+            }
+        }
+        h = inspect_fund_flow_health(raw)
+        assert h.status == FundLhbHealthStatus.UNIT_UNVERIFIED
+        assert h.unit_verified is False
+        assert "单位未校验" in h.diagnosis
+
+    def test_failed_status(self):
+        raw = {
+            "fund_flow_individual": {
+                "raw": "个股资金流向数据获取失败：ProxyError",
+                "status": "FAILED",
+                "unit": None,
+                "unit_verified": False,
+                "vendor": "cn_akshare",
+                "error": "ProxyError: Cannot connect",
+            }
+        }
+        h = inspect_fund_flow_health(raw)
+        assert h.status == FundLhbHealthStatus.FAILED
+        assert "ProxyError" in h.error
+        assert "失败" in h.diagnosis
+
+    def test_stale_data(self):
+        old_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        raw = {
+            "fund_flow_individual": {
+                "raw": "数据存在但太旧",
+                "status": "HAS_DATA",
+                "unit": "万元",
+                "unit_verified": True,
+                "vendor": "cn_akshare",
+                "as_of": old_date,
+                "record_count": 5,
+            }
+        }
+        h = inspect_fund_flow_health(raw)
+        assert h.status == FundLhbHealthStatus.STALE
+        assert "过期" in h.diagnosis
+
+    def test_normal_no_data(self):
+        raw = {
+            "fund_flow_individual": {
+                "raw": "",
+                "status": "NORMAL_NO_DATA",
+                "unit": None,
+                "unit_verified": False,
+            }
+        }
+        h = inspect_fund_flow_health(raw)
+        assert h.status == FundLhbHealthStatus.NORMAL_NO_DATA
+        assert "无数据" in h.diagnosis
+
+    def test_not_queried_treated_as_failed(self):
+        raw = {
+            "fund_flow_individual": {
+                "raw": None,
+                "status": "NOT_QUERIED",
+                "unit_verified": False,
+            }
+        }
+        h = inspect_fund_flow_health(raw)
+        assert h.status == FundLhbHealthStatus.FAILED
+        assert "未查询" in h.diagnosis
+
+    def test_missing_entry(self):
+        h = inspect_fund_flow_health({})
+        assert h.status == FundLhbHealthStatus.FAILED
+        assert "未在 raw_evidence 中找到" in h.diagnosis
+
+    def test_legacy_string_format_has_data(self):
+        raw = {
+            "fund_flow_individual": "600519.SH 近20日主力资金净流向：\n日期 净流入\n2026-05-26 12345",
+        }
+        h = inspect_fund_flow_health(raw)
+        assert h.status == FundLhbHealthStatus.HAS_DATA
+        assert h.unit_verified is True
+
+    def test_legacy_string_format_failed(self):
+        raw = {
+            "fund_flow_individual": "个股资金流向数据获取失败：ProxyError",
+        }
+        h = inspect_fund_flow_health(raw)
+        assert h.status == FundLhbHealthStatus.FAILED
+
+
+# ── inspect_sector_fund_flow_health ───────────────────────────────────
+
+class TestInspectSectorFundFlowHealth:
+
+    def test_has_data(self):
+        raw = {
+            "fund_flow_board": {
+                "raw": "板块资金流数据...",
+                "status": "HAS_DATA",
+                "vendor": "cn_akshare",
+                "record_count": 5,
+            }
+        }
+        h = inspect_sector_fund_flow_health(raw)
+        assert h.status == FundLhbHealthStatus.HAS_DATA
+        assert h.vendor == "cn_akshare"
+
+    def test_not_present_is_normal(self):
+        h = inspect_sector_fund_flow_health({})
+        assert h.status == FundLhbHealthStatus.NORMAL_NO_DATA
+
+    def test_failed(self):
+        raw = {
+            "fund_flow_board": {
+                "raw": "板块资金流获取失败",
+                "status": "FAILED",
+                "error": "ConnectionError",
+            }
+        }
+        h = inspect_sector_fund_flow_health(raw)
+        assert h.status == FundLhbHealthStatus.FAILED
+
+
+# ── inspect_lhb_health ────────────────────────────────────────────────
+
+class TestInspectLhbHealth:
+
+    def test_has_data(self):
+        raw = {
+            "lhb": {
+                "raw": "[G-007] LHB_HAS_DATA: 龙虎榜明细（2026-06-10）",
+                "status": "HAS_DATA",
+                "vendor": "cn_akshare",
+                "endpoint": "stock_lhb_detail_em",
+                "query_mode": "forced",
+                "force_reason": "anomaly_condition",
+                "as_of": datetime.now().strftime("%Y-%m-%d"),
+                "record_count": 3,
+            }
+        }
+        h = inspect_lhb_health(raw)
+        assert h.status == FundLhbHealthStatus.HAS_DATA
+        assert h.query_mode == "forced"
+        assert h.force_reason == "anomaly_condition"
+
+    def test_normal_no_data_non_anomaly_day(self):
+        raw = {
+            "lhb": {
+                "raw": "[G-007] LHB_NORMAL_NO_DATA: 在 2026-06-10 无龙虎榜数据（非异动日属正常）",
+                "status": "NORMAL_NO_DATA",
+                "vendor": "cn_akshare",
+                "query_mode": "forced",
+                "force_reason": "anomaly_condition",
+                "as_of": datetime.now().strftime("%Y-%m-%d"),
+                "record_count": 0,
+            }
+        }
+        h = inspect_lhb_health(raw)
+
+exec
+/bin/zsh -lc "sed -n '1,360p' tradingagents/dataflows/fund_lhb_health.py && sed -n '360,760p' tradingagents/dataflows/fund_lhb_health.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [DATA-017] fund_lhb_health
+"""主力资金 / 龙虎榜数据源健康巡检与 fallback 验收。
+
+针对 TA 报告中主力资金仍失败的问题，提供可复现的数据源健康巡检，
+区分以下五种状态：
+
+  - HAS_DATA        — 接口成功返回有效数据
+  - NORMAL_NO_DATA  — 接口成功但正常无数据（如非异动日无龙虎榜）
+  - FAILED          — 接口失败 / 解析失败 / 超时
+  - STALE           — 数据过期（日期不符或长期未更新）
+  - UNIT_UNVERIFIED — 有数据但单位未校验，不能作为强证据
+
+Usage (library):
+    from tradingagents.dataflows.fund_lhb_health import (
+        FundLhbHealthStatus,
+        inspect_fund_flow_health,
+        inspect_lhb_health,
+        run_fund_lhb_health_check,
+        render_fund_lhb_health_report,
+    )
+    result = run_fund_lhb_health_check(raw_evidence)
+    print(render_fund_lhb_health_report(result))
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
+
+
+# ── Health Status ──────────────────────────────────────────────────────
+
+class FundLhbHealthStatus:
+    HAS_DATA = "HAS_DATA"
+    NORMAL_NO_DATA = "NORMAL_NO_DATA"
+    FAILED = "FAILED"
+    STALE = "STALE"
+    UNIT_UNVERIFIED = "UNIT_UNVERIFIED"
+
+    ALL = [HAS_DATA, NORMAL_NO_DATA, FAILED, STALE, UNIT_UNVERIFIED]
+
+
+# ── Data Models ────────────────────────────────────────────────────────
+
+@dataclass
+class FundFlowHealth:
+    """Individual fund flow health inspection result."""
+    status: str = FundLhbHealthStatus.FAILED
+    vendor: str = ""
+    endpoint: str = ""
+    fallback_from: str = ""
+    unit: str = ""
+    unit_verified: bool = False
+    as_of: str = ""
+    fetched_at: str = ""
+    record_count: int = 0
+    is_fallback: bool = False
+    error: str = ""
+    diagnosis: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status,
+            "vendor": self.vendor,
+            "endpoint": self.endpoint,
+            "fallback_from": self.fallback_from,
+            "unit": self.unit,
+            "unit_verified": self.unit_verified,
+            "as_of": self.as_of,
+            "fetched_at": self.fetched_at,
+            "record_count": self.record_count,
+            "is_fallback": self.is_fallback,
+            "error": self.error,
+            "diagnosis": self.diagnosis,
+        }
+
+
+@dataclass
+class SectorFundFlowHealth:
+    """Sector/board fund flow health inspection result."""
+    status: str = FundLhbHealthStatus.FAILED
+    vendor: str = ""
+    endpoint: str = ""
+    fallback_from: str = ""
+    record_count: int = 0
+    is_fallback: bool = False
+    error: str = ""
+    diagnosis: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status,
+            "vendor": self.vendor,
+            "endpoint": self.endpoint,
+            "fallback_from": self.fallback_from,
+            "record_count": self.record_count,
+            "is_fallback": self.is_fallback,
+            "error": self.error,
+            "diagnosis": self.diagnosis,
+        }
+
+
+@dataclass
+class LhbHealth:
+    """LHB health inspection result."""
+    status: str = FundLhbHealthStatus.FAILED
+    vendor: str = ""
+    endpoint: str = ""
+    fallback_from: str = ""
+    query_mode: str = "not_queried"
+    force_reason: str = ""
+    as_of: str = ""
+    record_count: int = 0
+    is_fallback: bool = False
+    error: str = ""
+    diagnosis: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status,
+            "vendor": self.vendor,
+            "endpoint": self.endpoint,
+            "fallback_from": self.fallback_from,
+            "query_mode": self.query_mode,
+            "force_reason": self.force_reason,
+            "as_of": self.as_of,
+            "record_count": self.record_count,
+            "is_fallback": self.is_fallback,
+            "error": self.error,
+            "diagnosis": self.diagnosis,
+        }
+
+
+@dataclass
+class FundLhbHealthReport:
+    """Combined health report for fund flow and LHB."""
+    run_at: str = ""
+    symbol: str = ""
+    fund_flow_individual: FundFlowHealth = field(default_factory=FundFlowHealth)
+    fund_flow_sector: SectorFundFlowHealth = field(default_factory=SectorFundFlowHealth)
+    lhb: LhbHealth = field(default_factory=LhbHealth)
+    summary: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "run_at": self.run_at,
+            "symbol": self.symbol,
+            "fund_flow_individual": self.fund_flow_individual.to_dict(),
+            "fund_flow_sector": self.fund_flow_sector.to_dict(),
+            "lhb": self.lhb.to_dict(),
+            "summary": self.summary,
+        }
+
+
+# ── Inspection Logic ───────────────────────────────────────────────────
+
+def _is_stale_date(as_of: str, max_age_days: int = 7) -> bool:
+    """Check if an as_of date is stale (older than max_age_days from now)."""
+    if not as_of:
+        return False
+    try:
+        parsed = datetime.strptime(as_of[:10], "%Y-%m-%d")
+        age = (datetime.now() - parsed).days
+        return age > max_age_days
+    except (ValueError, TypeError):
+        return False
+
+
+def inspect_fund_flow_health(
+    raw_evidence: Optional[Dict[str, Any]] = None,
+    symbol: str = "",
+) -> FundFlowHealth:
+    """Inspect individual fund flow health from raw_evidence.
+
+    Classifies into:
+      - HAS_DATA: successful retrieval with verified unit
+      - UNIT_UNVERIFIED: data present but unit not verified
+      - FAILED: API failure
+      - STALE: data is too old
+      - NORMAL_NO_DATA: queried but no data
+    """
+    raw = raw_evidence or {}
+    entry = raw.get("fund_flow_individual")
+
+    health = FundFlowHealth()
+
+    if entry is None:
+        health.status = FundLhbHealthStatus.FAILED
+        health.error = "fund_flow_individual not found in raw_evidence"
+        health.diagnosis = "个股资金流未在 raw_evidence 中找到，可能是数据采集阶段未执行或被跳过"
+        return health
+
+    if isinstance(entry, dict):
+        health.vendor = entry.get("vendor", "")
+        health.endpoint = entry.get("endpoint", "")
+        health.fallback_from = entry.get("fallback_from") or ""
+        health.unit = entry.get("unit") or ""
+        health.unit_verified = entry.get("unit_verified") is True
+        health.as_of = entry.get("as_of", "")
+        health.fetched_at = entry.get("fetched_at", "")
+        health.record_count = entry.get("record_count", 0)
+        health.is_fallback = bool(health.fallback_from)
+        raw_value = entry.get("raw")
+        status = entry.get("status", "NOT_QUERIED")
+        health.error = entry.get("error") or ""
+    else:
+        raw_value = entry
+        status = "NOT_QUERIED"
+        if isinstance(raw_value, str):
+            s = raw_value.strip()
+            if not s:
+                status = "NOT_QUERIED"
+            elif any(p in s for p in ("获取失败", "ProxyError", "ConnectionError", "不可用", "TimeoutError")):
+                status = "FAILED"
+                health.error = s[:200]
+            elif len(s) > 20:
+                status = "HAS_DATA"
+                health.unit = "万元"
+                health.unit_verified = True
+            else:
+                status = "NORMAL_NO_DATA"
+
+    # Classify into one of 5 health states
+    if status == "FAILED":
+        health.status = FundLhbHealthStatus.FAILED
+        if not health.diagnosis:
+            health.diagnosis = f"个股资金流接口失败: {health.error or '未知错误'}"
+            if health.vendor:
+                health.diagnosis += f"（vendor={health.vendor}）"
+    elif status == "NOT_QUERIED":
+        health.status = FundLhbHealthStatus.FAILED
+        health.diagnosis = "个股资金流未查询（NOT_QUERIED），数据采集阶段可能跳过或路由未触发"
+    elif status == "NORMAL_NO_DATA":
+        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+        health.diagnosis = "个股资金流查询成功但无数据返回（可能为新股或停牌）"
+    elif status == "HAS_DATA":
+        if _is_stale_date(health.as_of):
+            health.status = FundLhbHealthStatus.STALE
+            health.diagnosis = f"个股资金流数据过期（as_of={health.as_of}），超过 7 天未更新"
+        elif not health.unit_verified:
+            health.status = FundLhbHealthStatus.UNIT_UNVERIFIED
+            health.diagnosis = (
+                f"个股资金流有数据但单位未校验（unit={health.unit or '未知'}），"
+                "不能作为强证据使用"
+            )
+        else:
+            health.status = FundLhbHealthStatus.HAS_DATA
+            fb_note = ""
+            if health.is_fallback:
+                fb_note = f"，fallback from {health.fallback_from}"
+            health.diagnosis = (
+                f"个股资金流正常（vendor={health.vendor or '未知'}"
+                f"，unit={health.unit or '未知'}，records={health.record_count}{fb_note}）"
+            )
+    else:
+        health.status = FundLhbHealthStatus.FAILED
+        health.diagnosis = f"个股资金流状态未知: {status}"
+
+    return health
+
+
+def inspect_sector_fund_flow_health(
+    raw_evidence: Optional[Dict[str, Any]] = None,
+    symbol: str = "",
+) -> SectorFundFlowHealth:
+    """Inspect sector/board fund flow health from raw_evidence."""
+    raw = raw_evidence or {}
+    entry = raw.get("fund_flow_board")
+
+    health = SectorFundFlowHealth()
+
+    if entry is None:
+        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+        health.diagnosis = "板块资金流未在 raw_evidence 中（非所有报告必查项）"
+        return health
+
+    if isinstance(entry, dict):
+        health.vendor = entry.get("vendor", "")
+        health.endpoint = entry.get("endpoint", "")
+        health.fallback_from = entry.get("fallback_from") or ""
+        health.record_count = entry.get("record_count", 0)
+        health.is_fallback = bool(health.fallback_from)
+        health.error = entry.get("error") or ""
+        status = entry.get("status", "NOT_QUERIED")
+    else:
+        raw_value = entry
+        status = "NOT_QUERIED"
+        if isinstance(raw_value, str):
+            s = raw_value.strip()
+            if not s:
+                status = "NOT_QUERIED"
+            elif any(p in s for p in ("获取失败", "ProxyError", "ConnectionError", "不可用")):
+                status = "FAILED"
+                health.error = s[:200]
+            elif len(s) > 20:
+                status = "HAS_DATA"
+            else:
+                status = "NORMAL_NO_DATA"
+
+    if status == "FAILED":
+        health.status = FundLhbHealthStatus.FAILED
+        health.diagnosis = f"板块资金流接口失败: {health.error or '未知错误'}"
+    elif status in ("NOT_QUERIED",):
+        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+        health.diagnosis = "板块资金流未查询（非关键路径）"
+    elif status == "NORMAL_NO_DATA":
+        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+        health.diagnosis = "板块资金流查询正常但无数据"
+    else:
+        health.status = FundLhbHealthStatus.HAS_DATA
+        health.diagnosis = f"板块资金流正常（vendor={health.vendor or '未知'}）"
+
+    return health
+
+
+def inspect_lhb_health(
+    raw_evidence: Optional[Dict[str, Any]] = None,
+    symbol: str = "",
+) -> LhbHealth:
+    """Inspect LHB health from raw_evidence.
+
+    Critical distinction:
+      - NORMAL_NO_DATA: force=True, queried successfully, stock not on LHB (normal)
+      - FAILED: API error / parse error / timeout
+      - NOT_QUERIED: force=False, not triggered (not a failure)
+      - HAS_DATA: actual LHB records found
+    """
+    raw = raw_evidence or {}
+    entry = raw.get("lhb")
+
+    health = LhbHealth()
+
+    if entry is None:
+        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+        health.query_mode = "not_queried"
+        health.diagnosis = "龙虎榜未在 raw_evidence 中（可能未触发查询）"
+        return health
+
+    if isinstance(entry, dict):
+        health.vendor = entry.get("vendor", "")
+        health.endpoint = entry.get("endpoint", "")
+        health.fallback_from = entry.get("fallback_from") or ""
+        health.query_mode = entry.get("query_mode", "not_queried") or "not_queried"
+        health.force_reason = entry.get("force_reason", "") or ""
+        health.as_of = entry.get("as_of", "")
+        health.record_count = entry.get("record_count", 0)
+        health.is_fallback = bool(health.fallback_from)
+        health.error = entry.get("error") or ""
+        status = entry.get("status", "NOT_QUERIED")
+    else:
+        raw_value = entry
+        status = "NOT_QUERIED"
+        health.query_mode = "not_queried"
+        if isinstance(entry, dict) and "raw" in entry:
+            raw_value = entry["raw"]
+        if raw_value is None:
+            status = "NOT_QUERIED"
+        elif isinstance(raw_value, str):
+            val = raw_value.strip()
+            val = raw_value.strip()
+            if not val:
+                status = "NOT_QUERIED"
+            elif "获取失败" in val or "LHB_FAILED" in val:
+                status = "FAILED"
+                health.error = val[:200]
+            elif "查询未触发" in val or "LHB_NOT_QUERIED" in val:
+                status = "NOT_QUERIED"
+                health.query_mode = "not_queried"
+            elif "无龙虎榜数据" in val or "非异动日" in val or "LHB_NORMAL_NO_DATA" in val:
+                status = "NORMAL_NO_DATA"
+                health.query_mode = "forced"
+            elif "龙虎榜明细" in val or "LHB_HAS_DATA" in val:
+                status = "HAS_DATA"
+                health.query_mode = "forced"
+            else:
+                status = "NOT_QUERIED"
+        else:
+            status = "HAS_DATA" if raw_value else "NOT_QUERIED"
+
+    if status == "FAILED":
+        health.status = FundLhbHealthStatus.FAILED
+        if not health.diagnosis:
+            health.diagnosis = (
+                f"龙虎榜查询失败: {health.error or '接口异常'}"
+                f"（vendor={health.vendor or '未知'}）"
+            )
+    elif status == "NOT_QUERIED":
+        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+        health.diagnosis = (
+            "龙虎榜未触发查询（force=False），非异常日不查询属正常行为，"
+            "不应显示为失败"
+        )
+    elif status == "NORMAL_NO_DATA":
+        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+        health.diagnosis = (
+            "龙虎榜已查询（force=True），当日无上榜记录，"
+            "属于非异动日正常情况，不应降低完整度"
+        )
+    elif status == "HAS_DATA":
+        if _is_stale_date(health.as_of):
+            health.status = FundLhbHealthStatus.STALE
+            health.diagnosis = f"龙虎榜数据过期（as_of={health.as_of}）"
+        else:
+            health.status = FundLhbHealthStatus.HAS_DATA
+            health.diagnosis = (
+                f"龙虎榜有数据（vendor={health.vendor or '未知'}，"
+                f"records={health.record_count}）"
+            )
+    else:
+        health.status = FundLhbHealthStatus.FAILED
+        health.diagnosis = f"龙虎榜状态未知: {status}"
+
+    return health
+
+
+# ── Combined Health Check ──────────────────────────────────────────────
+
+def run_fund_lhb_health_check(
+    raw_evidence: Optional[Dict[str, Any]] = None,
+    symbol: str = "",
+) -> FundLhbHealthReport:
+    """Run combined fund flow and LHB health check.
+
+    Returns a FundLhbHealthReport with individual inspection results
+    and an aggregated summary.
+    """
+    now = datetime.now()
+    report = FundLhbHealthReport(
+        run_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+        symbol=symbol,
+    )
+
+    report.fund_flow_individual = inspect_fund_flow_health(raw_evidence, symbol)
+    report.fund_flow_sector = inspect_sector_fund_flow_health(raw_evidence, symbol)
+    report.lhb = inspect_lhb_health(raw_evidence, symbol)
+
+    # Build summary
+    statuses = [
+        report.fund_flow_individual.status,
+        report.fund_flow_sector.status,
+        report.lhb.status,
+    ]
+    summary: Dict[str, Any] = {
+        "fund_flow_individual_status": report.fund_flow_individual.status,
+        "fund_flow_sector_status": report.fund_flow_sector.status,
+        "lhb_status": report.lhb.status,
+        "fund_flow_unit_verified": report.fund_flow_individual.unit_verified,
+        "fund_flow_is_fallback": report.fund_flow_individual.is_fallback,
+        "lhb_is_fallback": report.lhb.is_fallback,
+        "has_any_failed": FundLhbHealthStatus.FAILED in statuses,
+        "has_any_stale": FundLhbHealthStatus.STALE in statuses,
+        "has_unit_unverified": FundLhbHealthStatus.UNIT_UNVERIFIED in statuses,
+        "all_critical_ok": (
+            report.fund_flow_individual.status == FundLhbHealthStatus.HAS_DATA
+            and report.lhb.status in (
+                FundLhbHealthStatus.HAS_DATA,
+                FundLhbHealthStatus.NORMAL_NO_DATA,
+            )
+        ),
+        "status_counts": {s: statuses.count(s) for s in FundLhbHealthStatus.ALL if s in statuses},
+    }
+    report.summary = summary
+
+    return report
+
+
+# ── Markdown Rendering ─────────────────────────────────────────────────
+
+def render_fund_lhb_health_report(report: FundLhbHealthReport) -> str:
+    """Render fund flow / LHB health report as Markdown."""
+    lines: List[str] = []
+    lines.append("# Fund Flow & LHB Health Report")
+    lines.append("")
+    lines.append(f"- **Symbol**: {report.symbol or 'N/A'}")
+    lines.append(f"- **Run at**: {report.run_at}")
+    lines.append("")
+
+    s = report.summary
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+    lines.append(f"| Fund Flow (Individual) | {s.get('fund_flow_individual_status', 'N/A')} |")
+    lines.append(f"| Fund Flow (Sector) | {s.get('fund_flow_sector_status', 'N/A')} |")
+    lines.append(f"| LHB | {s.get('lhb_status', 'N/A')} |")
+    lines.append(f"| Unit Verified | {'Yes' if s.get('fund_flow_unit_verified') else 'No'} |")
+    lines.append(f"| Fund Flow Fallback | {'Yes' if s.get('fund_flow_is_fallback') else 'No'} |")
+    lines.append(f"| LHB Fallback | {'Yes' if s.get('lhb_is_fallback') else 'No'} |")
+    lines.append(f"| All Critical OK | {'Yes' if s.get('all_critical_ok') else 'No'} |")
+    lines.append("")
+
+    # Individual Fund Flow
+    ff = report.fund_flow_individual
+    lines.append("## Individual Fund Flow")
+    lines.append("")
+    lines.append(f"- **Status**: `{ff.status}`")
+    lines.append(f"- **Vendor**: {ff.vendor or 'N/A'}")
+    lines.append(f"- **Endpoint**: {ff.endpoint or 'N/A'}")
+    lines.append(f"- **Fallback From**: {ff.fallback_from or 'None'}")
+    lines.append(f"- **Unit**: {ff.unit or 'N/A'} (verified: {ff.unit_verified})")
+    lines.append(f"- **As Of**: {ff.as_of or 'N/A'}")
+    lines.append(f"- **Records**: {ff.record_count}")
+    if ff.error:
+        lines.append(f"- **Error**: {ff.error}")
+    lines.append(f"- **Diagnosis**: {ff.diagnosis}")
+    lines.append("")
+
+    # Sector Fund Flow
+    sf = report.fund_flow_sector
+    lines.append("## Sector Fund Flow")
+    lines.append("")
+    lines.append(f"- **Status**: `{sf.status}`")
+    lines.append(f"- **Vendor**: {sf.vendor or 'N/A'}")
+    lines.append(f"- **Endpoint**: {sf.endpoint or 'N/A'}")
+    if sf.error:
+        lines.append(f"- **Error**: {sf.error}")
+    lines.append(f"- **Diagnosis**: {sf.diagnosis}")
+    lines.append("")
+
+    # LHB
+    lhb = report.lhb
+    lines.append("## LHB (Dragon-Tiger Board)")
+    lines.append("")
+    lines.append(f"- **Status**: `{lhb.status}`")
+    lines.append(f"- **Vendor**: {lhb.vendor or 'N/A'}")
+    lines.append(f"- **Endpoint**: {lhb.endpoint or 'N/A'}")
+    lines.append(f"- **Query Mode**: {lhb.query_mode}")
+    if lhb.force_reason:
+        lines.append(f"- **Force Reason**: {lhb.force_reason}")
+    lines.append(f"- **Records**: {lhb.record_count}")
+    if lhb.error:
+        lines.append(f"- **Error**: {lhb.error}")
+    lines.append(f"- **Diagnosis**: {lhb.diagnosis}")
+    lines.append("")
+
+    lines.append("---")
+    lines.append("*Generated by fund_lhb_health.py — [DATA-017] fund_lhb_health*")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+# ── Sample Fixtures ────────────────────────────────────────────────────
+# Three representative samples as required by the task:
+#   1. HAS_DATA: fund flow with verified unit, no LHB (normal)
+#   2. NORMAL_NO_DATA: no LHB records on non-anomaly day
+#   3. FAILED: fund flow API failure fixture
+
+SAMPLE_HAS_FUND_DATA = {
+    "fund_flow_individual": {
+        "raw": "600519.SH 近20日主力资金净流向：\n日期 主力净流入(万元)\n2026-06-10 12345.6",
+        "status": "HAS_DATA",
+        "unit": "万元",
+        "unit_verified": True,
+        "vendor": "cn_akshare",
+        "endpoint": "stock_individual_fund_flow",
+        "as_of": datetime.now().strftime("%Y-%m-%d"),
+        "fetched_at": datetime.now().isoformat(),
+        "record_count": 20,
+    },
+    "fund_flow_board": {
+        "raw": "板块资金流...",
+        "status": "HAS_DATA",
+        "vendor": "cn_akshare",
+        "endpoint": "stock_sector_fund_flow",
+    },
+    "lhb": {
+        "raw": "[G-007] LHB_NORMAL_NO_DATA: 在 2026-06-10 无龙虎榜数据（非异动日属正常）",
+        "status": "NORMAL_NO_DATA",
+        "vendor": "cn_akshare",
+        "endpoint": "stock_lhb_detail_em",
+        "query_mode": "forced",
+        "force_reason": "fund_flow_anomaly",
+        "as_of": datetime.now().strftime("%Y-%m-%d"),
+        "record_count": 0,
+    },
+}
+
+SAMPLE_NO_LHB_NORMAL = {
+    "fund_flow_individual": {
+        "raw": "000001.SZ 近20日主力资金净流向：\n日期 主力净流入(万元)\n2026-06-10 -5000",
+        "status": "HAS_DATA",
+        "unit": "万元",
+        "unit_verified": True,
+        "vendor": "cn_astock",
+        "endpoint": "push2his.eastmoney.com/fflow",
+        "fallback_from": "cn_akshare",
+        "as_of": datetime.now().strftime("%Y-%m-%d"),
+        "fetched_at": datetime.now().isoformat(),
+        "record_count": 20,
+    },
+    "fund_flow_board": {
+        "raw": "",
+        "status": "NORMAL_NO_DATA",
+        "vendor": "",
+    },
+    "lhb": {
+        "raw": "[G-007] LHB_NORMAL_NO_DATA: 在 2026-06-10 无龙虎榜数据（非异动日属正常）",
+        "status": "NORMAL_NO_DATA",
+        "vendor": "cn_akshare",
+        "endpoint": "stock_lhb_detail_em",
+        "query_mode": "forced",
+        "force_reason": "anomaly_condition",
+        "as_of": datetime.now().strftime("%Y-%m-%d"),
+        "record_count": 0,
+    },
+}
+
+SAMPLE_INTERFACE_FAILED = {
+    "fund_flow_individual": {
+        "raw": "个股资金流向数据获取失败：ProxyError('Cannot connect to proxy.')",
+        "status": "FAILED",
+        "unit": None,
+        "unit_verified": False,
+        "vendor": "",
+        "endpoint": "",
+        "error": "ProxyError: Cannot connect to proxy.",
+        "as_of": "",
+        "fetched_at": "",
+        "record_count": 0,
+    },
+    "fund_flow_board": {
+        "raw": "",
+        "status": "NOT_QUERIED",
+        "vendor": "",
+    },
+    "lhb": {
+        "raw": "[G-007] LHB_FAILED: 龙虎榜数据获取失败（ConnectionError）",
+        "status": "FAILED",
+        "vendor": "",
+        "endpoint": "",
+        "query_mode": "forced",
+        "force_reason": "fund_flow_anomaly_and_anomaly_condition",
+        "error": "ConnectionError",
+        "as_of": "",
+        "record_count": 0,
+    },
+}
+
+ALL_SAMPLES = {
+    "HAS_FUND_DATA": SAMPLE_HAS_FUND_DATA,
+    "NO_LHB_NORMAL": SAMPLE_NO_LHB_NORMAL,
+    "INTERFACE_FAILED": SAMPLE_INTERFACE_FAILED,
+}
+
+exec
+/bin/zsh -lc "grep -R \"fund_flow_individual\\|fund_flow_board\\|lhb\" -n tradingagents tests | head -120 && grep -R \"raw_evidence\" -n tradingagents/dataflows/evidence_contract.py tradingagents/agents/utils/readiness_score.py | head -120" in /Users/maybee/TradingAgents-AShare
+ succeeded in 104ms:
+tradingagents/dataflows/evidence_contract.py:1:# [DATA-004] raw_evidence_contract
+tradingagents/dataflows/evidence_contract.py:3:raw_evidence 来源契约定义。
+tradingagents/dataflows/evidence_contract.py:28:    score = compute_contract_completeness(raw_evidence)
+tradingagents/dataflows/evidence_contract.py:142:    "margin_trading": "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+tradingagents/dataflows/evidence_contract.py:143:    "research_report": "report",  # [DATA-011] research_report_raw_evidence
+tradingagents/dataflows/evidence_contract.py:144:    "ratings": "rating",  # [DATA-012] rating_raw_evidence
+tradingagents/dataflows/evidence_contract.py:145:    "buybacks": "buyback",  # [DATA-013] buyback_raw_evidence
+tradingagents/dataflows/evidence_contract.py:187:    "margin_trading": ["status", "vendor", "unit"],  # [DATA-010] margin_trading_raw_evidence
+tradingagents/dataflows/evidence_contract.py:188:    "research_report": ["status", "vendor"],  # [DATA-011] research_report_raw_evidence
+tradingagents/dataflows/evidence_contract.py:189:    "ratings": ["status", "vendor"],  # [DATA-012] rating_raw_evidence
+tradingagents/dataflows/evidence_contract.py:190:    "buybacks": ["status", "vendor", "unit"],  # [DATA-013] buyback_raw_evidence
+tradingagents/dataflows/evidence_contract.py:203:def compute_contract_completeness(raw_evidence: Dict[str, Any]) -> Dict[str, Any]:
+tradingagents/dataflows/evidence_contract.py:209:        entry = raw_evidence.get(ev_key)
+tradingagents/dataflows/evidence_contract.py:211:            if ev_key in _OPTIONAL_FIELDS_FOR_COMPLETENESS and ev_key not in raw_evidence:
+tradingagents/dataflows/evidence_contract.py:250:def build_data_source_summary(raw_evidence: Dict[str, Any]) -> List[Dict[str, Any]]:
+tradingagents/dataflows/evidence_contract.py:252:    for key in sorted(raw_evidence.keys()):
+tradingagents/dataflows/evidence_contract.py:253:        entry = raw_evidence[key]
+tradingagents/agents/utils/readiness_score.py:162:def calculate_evidence_coverage_from_contract(raw_evidence: Optional[dict] = None) -> int:
+tradingagents/agents/utils/readiness_score.py:163:    """[DATA-004] raw_evidence_contract: calculate evidence coverage directly from contract.
+tradingagents/agents/utils/readiness_score.py:166:    than text-based regex. Falls back to 0 if no raw_evidence available.
+tradingagents/agents/utils/readiness_score.py:170:    if not raw_evidence:
+tradingagents/agents/utils/readiness_score.py:174:    result = compute_contract_completeness(raw_evidence)
+tradingagents/agents/utils/readiness_score.py:189:    buybacks: str = "not_available",  # [DATA-013] buyback_raw_evidence
+tradingagents/agents/utils/readiness_score.py:1124:def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) -> dict:
+tradingagents/agents/utils/readiness_score.py:1127:    When *raw_evidence* dict is provided (from DataCollector pool), structured
+tradingagents/agents/utils/readiness_score.py:1134:        raw_evidence: optional dict from DataCollector pool with keys like
+tradingagents/agents/utils/readiness_score.py:1144:        # [G-006] raw_evidence_snapshot: unwrap G-006 structured entries
+tradingagents/agents/utils/readiness_score.py:1157:    raw = raw_evidence or {}
+tradingagents/agents/utils/readiness_score.py:1184:    # 3. Turnover rate — check raw_evidence realtime quote data
+tradingagents/agents/utils/readiness_score.py:1197:    # 4. Volume ratio — check raw_evidence realtime quote data
+tradingagents/agents/utils/readiness_score.py:1249:    # 7. Margin trading (融资融券) — check raw_evidence margin_trading field
+tradingagents/agents/utils/readiness_score.py:1250:    # [DATA-010] margin_trading_raw_evidence
+tradingagents/agents/utils/readiness_score.py:1295:    # 9. Research reports — check raw_evidence research_report field
+tradingagents/agents/utils/readiness_score.py:1296:    # [DATA-011] research_report_raw_evidence
+tradingagents/agents/utils/readiness_score.py:1315:    # 10. Ratings — check raw_evidence ratings field
+tradingagents/agents/utils/readiness_score.py:1316:    # [DATA-012] rating_raw_evidence
+tradingagents/agents/utils/readiness_score.py:1344:    # 10. Buybacks (回购) — check raw_evidence buybacks field
+tradingagents/agents/utils/readiness_score.py:1345:    # [DATA-013] buyback_raw_evidence
+tradingagents/agents/utils/readiness_score.py:1798:def build_fund_flow_provenance(raw_evidence: Optional[dict], reports: dict) -> dict:
+tradingagents/agents/utils/readiness_score.py:1799:    """[G-007] Build fund flow provenance info from raw_evidence and reports.
+tradingagents/agents/utils/readiness_score.py:1816:    raw = raw_evidence or {}
+tradingagents/agents/utils/readiness_score.py:1895:def build_lhb_provenance(raw_evidence: Optional[dict], reports: dict) -> dict:
+tradingagents/agents/utils/readiness_score.py:1896:    """[G-007] Build LHB provenance info from raw_evidence and reports.
+tradingagents/agents/utils/readiness_score.py:1904:    raw = raw_evidence or {}
+
+exec
+/bin/zsh -lc "sed -n '660,715p' tradingagents/graph/data_collector.py && sed -n '1200,1245p' tradingagents/agents/utils/readiness_score.py && sed -n '1798,1955p' tradingagents/agents/utils/readiness_score.py && sed -n '120,210p' tradingagents/dataflows/evidence_contract.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+
+            if key == "stock_data" and isinstance(raw_value, str):
+                actual_vendor = get_last_hit_vendor("get_stock_data")
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+                if "is_realtime_patched=True" in raw_value:
+                    entry["is_realtime_patched"] = True
+                    for line in raw_value.split("\n"):
+                        if "source=" in line and "[G-005]" in line:
+                            parts = line.split("source=")
+                            if len(parts) > 1:
+                                entry["vendor"] = parts[1].split(",")[0].strip()
+                        if "quote_time=" in line and "[G-005]" in line:
+                            parts = line.split("quote_time=")
+                            if len(parts) > 1:
+                                entry["as_of"] = parts[1].strip()
+                if "adjustment=" in raw_value:  # [DATA-P0-603629] astock_source_fallback
+                    for line in raw_value.split("\n"):
+                        if "adjustment=" in line and "[DATA-P0-603629]" in line:
+                            parts = line.split("adjustment=")
+                            if len(parts) > 1:
+                                entry["adjustment"] = parts[1].strip().split("\n")[0].strip()
+
+            if key == "fund_flow_individual":
+                entry["unit"] = "万元"
+                entry["source_type"] = "individual_fund_flow"
+                entry["unit_verified"] = entry["unit"] is not None
+                actual_vendor = get_last_hit_vendor("get_individual_fund_flow")  # [DATA-P0-603629]
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key == "fund_flow_board":
+                entry["source_type"] = "board_fund_flow"
+                actual_vendor = get_last_hit_vendor("get_board_fund_flow")  # [DATA-P0-603629]
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key == "lhb":
+                entry["query_mode"] = pool.get("_lhb_query_mode", "on_demand")
+                entry["force_reason"] = pool.get("_lhb_force_reason")  # [DATA-P0-603629]
+                actual_vendor = get_last_hit_vendor("get_lhb_detail")  # [DATA-P0-603629]
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key in ("stock_data",):
+                entry["unit"] = "股"
+            elif key == "announcements":  # [DATA-P0-603629] astock_source_fallback
+                actual_vendor = get_last_hit_vendor("get_announcements")
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key == "margin_trading":  # [DATA-010] margin_trading_raw_evidence
+                actual_vendor = get_last_hit_vendor("get_margin_trading")
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key == "research_report":  # [DATA-011] research_report_raw_evidence
+                actual_vendor = get_last_hit_vendor("get_research_report")
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+            elif key == "ratings":  # [DATA-012A] rating_data_collector_wiring
+    if volume_price:
+        if re.search(_VOLUME_RATIO_PATTERN, volume_price, re.IGNORECASE):
+            volume_ratio = EvidenceStatus.HAS_DATA
+        elif volume_price.strip():
+            volume_ratio = EvidenceStatus.FIELD_MISSING
+    elif raw_stock_data_val and isinstance(raw_stock_data_val, str) and "volume_ratio" in raw_stock_data_val:
+        volume_ratio = EvidenceStatus.HAS_DATA
+
+    # 5. Individual fund flow — check fund_flow_individual
+    individual_fund_flow = EvidenceStatus.NOT_QUERIED
+    raw_fund_flow = _unwrap_raw(raw.get("fund_flow_individual"))
+    if raw_fund_flow is not None:
+        if isinstance(raw_fund_flow, str) and len(raw_fund_flow) > 20 and "失败" not in raw_fund_flow:
+            individual_fund_flow = EvidenceStatus.HAS_DATA
+        elif isinstance(raw_fund_flow, str) and "失败" in raw_fund_flow:
+            individual_fund_flow = EvidenceStatus.QUERY_FAILED
+        elif raw_fund_flow:
+            individual_fund_flow = EvidenceStatus.HAS_DATA
+        else:
+            individual_fund_flow = EvidenceStatus.NORMAL_NO_DATA
+    elif smart_money:
+        if re.search(_FUND_FLOW_PATTERN, smart_money, re.IGNORECASE | re.DOTALL):
+            individual_fund_flow = EvidenceStatus.HAS_DATA
+        elif smart_money.strip():
+            individual_fund_flow = EvidenceStatus.FIELD_MISSING
+
+    # 6. LHB (龙虎榜) — check lhb field
+    lhb_status = EvidenceStatus.NOT_QUERIED
+    raw_lhb = _unwrap_raw(raw.get("lhb"))
+    if raw_lhb is not None:
+        if isinstance(raw_lhb, str) and "失败" in raw_lhb:
+            lhb_status = EvidenceStatus.QUERY_FAILED
+        elif isinstance(raw_lhb, str) and ("无" in raw_lhb or "未上榜" in raw_lhb or "未触发" in raw_lhb or len(raw_lhb.strip()) == 0):
+            if "查询未触发" in raw_lhb or "LHB_NOT_QUERIED" in raw_lhb or raw_lhb.strip() == "未触发":
+                lhb_status = EvidenceStatus.NOT_QUERIED  # [G-007]
+            else:
+                lhb_status = EvidenceStatus.NORMAL_NO_DATA
+        elif raw_lhb:
+            lhb_status = EvidenceStatus.HAS_DATA
+        else:
+            lhb_status = EvidenceStatus.NORMAL_NO_DATA
+    elif combined:
+        if _text_match_any(combined, _LHB_FAILED_PATTERNS):
+            lhb_status = EvidenceStatus.QUERY_FAILED
+        elif _text_match_any(combined, _LHB_NORMAL_PATTERNS):
+            lhb_status = EvidenceStatus.NORMAL_NO_DATA
+def build_fund_flow_provenance(raw_evidence: Optional[dict], reports: dict) -> dict:
+    """[G-007] Build fund flow provenance info from raw_evidence and reports.
+
+    Determines whether fund flow data comes from individual fund flow API,
+    board fund flow API, or news text mentions.  Only individual_fund_flow
+    with HAS_DATA status and verified unit qualifies as strong evidence.
+
+    Returns:
+        {
+            "individual_status": str,
+            "board_status": str,
+            "news_reported_fund_flow": bool,
+            "strong_evidence_allowed": bool,
+            "unit_verified": bool,
+            "not_mixed": bool,
+            "conflict_summary": str,
+        }
+    """
+    raw = raw_evidence or {}
+
+    def _unwrap_g006(val):
+        if isinstance(val, dict) and "status" in val:
+            return val
+        return None
+
+    def _status_from_g006(val):
+        structured = _unwrap_g006(val)
+        if structured:
+            return structured.get("status", "NOT_QUERIED")
+        return None
+
+    def _unwrap_legacy(val):
+        if isinstance(val, dict) and "raw" in val and "status" in val:
+            return val["raw"]
+        return val
+
+    def _status_from_text(val):
+        if val is None:
+            return "NOT_QUERIED"
+        if isinstance(val, str):
+            s = val.strip()
+            if not s:
+                return "NOT_QUERIED"
+            if "获取失败" in s or "不可用" in s:
+                return "FAILED"
+            if len(s) > 20:
+                return "HAS_DATA"
+            return "NORMAL_NO_DATA"
+        return "HAS_DATA" if val else "NOT_QUERIED"
+
+    individual_status = _status_from_g006(raw.get("fund_flow_individual"))
+    individual_unit_verified = False
+    if individual_status:
+        structured = raw.get("fund_flow_individual")
+        individual_unit_verified = structured.get("unit_verified", False) is True
+    else:
+        raw_ff = _unwrap_legacy(raw.get("fund_flow_individual"))
+        individual_status = _status_from_text(raw_ff)
+        if individual_status == "HAS_DATA":
+            individual_unit_verified = True
+
+    board_status = _status_from_g006(raw.get("fund_flow_board"))
+    if not board_status:
+        raw_board = _unwrap_legacy(raw.get("fund_flow_board"))
+        board_status = _status_from_text(raw_board)
+
+    news_reported_fund_flow = False
+    news_text = reports.get("news_report", "") or ""
+    if news_text and _text_match_any(news_text, _NEWS_FUND_FLOW_PATTERNS):
+        news_reported_fund_flow = True
+
+    strong_evidence_allowed = (
+        individual_status == "HAS_DATA" and individual_unit_verified
+    )
+
+    conflict_parts = []
+    if individual_status == "FAILED":
+        conflict_parts.append("个股资金流接口查询失败")
+    elif individual_status == "NOT_QUERIED":
+        conflict_parts.append("个股资金流接口未查询")
+
+    if news_reported_fund_flow and not strong_evidence_allowed:
+        conflict_parts.append("新闻转述资金信息仅作弱证据，不得作为主力资金强证据")
+
+    conflict_summary = "；".join(conflict_parts) if conflict_parts else ""
+
+    return {
+        "individual_status": individual_status,
+        "board_status": board_status,
+        "news_reported_fund_flow": news_reported_fund_flow,
+        "strong_evidence_allowed": strong_evidence_allowed,
+        "unit_verified": individual_unit_verified,
+        "not_mixed": True,
+        "conflict_summary": conflict_summary,
+    }
+
+
+def build_lhb_provenance(raw_evidence: Optional[dict], reports: dict) -> dict:
+    """[G-007] Build LHB provenance info from raw_evidence and reports.
+
+    Distinguishes: HAS_DATA / NOT_QUERIED / NORMAL_NO_DATA / FAILED.
+    NOT_QUERIED  = force=False, no anomaly triggered
+    NORMAL_NO_DATA = force=True but stock not on LHB that day
+    FAILED = API error
+    HAS_DATA = actual LHB records found
+    """
+    raw = raw_evidence or {}
+
+    lhb_status = "NOT_QUERIED"
+    query_mode = "not_queried"
+
+    raw_lhb_entry = raw.get("lhb")
+
+    if isinstance(raw_lhb_entry, dict) and "status" in raw_lhb_entry:
+        lhb_status = raw_lhb_entry.get("status", "NOT_QUERIED")
+        query_mode = raw_lhb_entry.get("query_mode", "not_queried") or "not_queried"
+    else:
+        raw_lhb_val = raw_lhb_entry
+        if isinstance(raw_lhb_entry, dict) and "raw" in raw_lhb_entry:
+            raw_lhb_val = raw_lhb_entry["raw"]
+        if raw_lhb_val is None:
+            lhb_status = "NOT_QUERIED"
+        elif isinstance(raw_lhb_val, str):
+            val = raw_lhb_val.strip()
+            if not val:
+                lhb_status = "NOT_QUERIED"
+            elif "获取失败" in val or "LHB_FAILED" in val:
+                lhb_status = "FAILED"
+            elif "查询未触发" in val or "LHB_NOT_QUERIED" in val:
+                lhb_status = "NOT_QUERIED"
+            elif "无龙虎榜数据" in val or "非异动日" in val or "LHB_NORMAL_NO_DATA" in val:
+                lhb_status = "NORMAL_NO_DATA"
+            elif "龙虎榜明细" in val or "LHB_HAS_DATA" in val:
+                lhb_status = "HAS_DATA"
+            else:
+                lhb_status = "NOT_QUERIED"
+        else:
+            lhb_status = "HAS_DATA" if raw_lhb_val else "NOT_QUERIED"
+
+    if lhb_status == "NOT_QUERIED":
+        if query_mode == "not_queried":
+            query_mode = "not_queried"
+    elif lhb_status in ("NORMAL_NO_DATA", "HAS_DATA", "FAILED"):
+        if query_mode == "not_queried":
+            query_mode = "forced"
+
+    display_map = {
+        "HAS_DATA": "龙虎榜有数据",
+        "NOT_QUERIED": "龙虎榜未查询（非异动触发）",
+        "NORMAL_NO_DATA": "龙虎榜查询正常，当日无上榜记录",
+        "FAILED": "龙虎榜查询失败",
+        "FIELD_MISSING": "龙虎榜数据不完整",
+    }
+    display_text = display_map.get(lhb_status, f"龙虎榜状态未知: {lhb_status}")
+
+    return {
+        "status": lhb_status,
+        "query_mode": query_mode,
+    @property
+    def endpoint_known(self) -> bool:
+        return self.endpoint != ""
+
+
+_EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
+    "stock_data": "ohlcv",
+    "news": "news",
+    "global_news": "global_news",
+    "fund_flow_board": "board_fund_flow",
+    "fund_flow_individual": "fund_flow",
+    "lhb": "lhb",
+    "fundamentals": "financials",
+    "balance_sheet": "financials",
+    "cashflow": "financials",
+    "income_statement": "financials",
+    "insider_transactions": "insider",
+    "zt_pool": "zt_pool",
+    "hot_stocks": "hot_stocks",
+    "indicators": "ohlcv",
+    "vpa_indicators": "ohlcv",
+    "announcements": "notice",
+    "margin_trading": "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+    "research_report": "report",  # [DATA-011] research_report_raw_evidence
+    "ratings": "rating",  # [DATA-012] rating_raw_evidence
+    "buybacks": "buyback",  # [DATA-013] buyback_raw_evidence
+}
+
+
+def resolve_data_type(evidence_key: str) -> str:
+    return _EVIDENCE_KEY_TO_DATA_TYPE.get(evidence_key, "")
+
+
+def resolve_endpoint(vendor: str, data_type: str) -> str:
+    try:
+        from .source_catalog import get_primary_source, get_sources_for_type
+        sources = get_sources_for_type(data_type)
+        for s in sources:
+            if s.vendor == vendor:
+                return s.endpoint
+        if sources:
+            return sources[0].endpoint
+    except Exception:
+        pass
+    return ""
+
+
+def resolve_fallback_info(vendor: str, data_type: str) -> Optional[str]:
+    try:
+        from .source_catalog import get_primary_source
+        primary = get_primary_source(data_type)
+        if primary and primary.vendor != vendor:
+            return primary.vendor
+    except Exception:
+        pass
+    return None
+
+
+_REQUIRED_FIELDS_FOR_COMPLETENESS: Dict[str, List[str]] = {
+    "stock_data": ["status", "vendor", "unit"],
+    "fund_flow_individual": ["status", "vendor", "unit", "unit_verified"],
+    "fund_flow_board": ["status", "vendor"],
+    "lhb": ["status", "vendor"],
+    "news": ["status", "vendor"],
+    "global_news": ["status", "vendor"],
+    "announcements": ["status", "vendor"],
+    "fundamentals": ["status", "vendor"],
+    "margin_trading": ["status", "vendor", "unit"],  # [DATA-010] margin_trading_raw_evidence
+    "research_report": ["status", "vendor"],  # [DATA-011] research_report_raw_evidence
+    "ratings": ["status", "vendor"],  # [DATA-012] rating_raw_evidence
+    "buybacks": ["status", "vendor", "unit"],  # [DATA-013] buyback_raw_evidence
+    "zt_pool": ["status", "vendor"],  # [DATA-015] limit_up_pool_fallback
+    "hot_stocks": ["status", "vendor"],  # [DATA-016] hot_stock_fallback
+}
+
+_OPTIONAL_FIELDS_FOR_COMPLETENESS = {
+    "margin_trading",
+    "research_report",
+    "ratings",
+    "buybacks",
+}
+
+
+def compute_contract_completeness(raw_evidence: Dict[str, Any]) -> Dict[str, Any]:
+    total = 0
+    satisfied = 0
+    missing_details: Dict[str, List[str]] = {}
+
+    for ev_key, required in _REQUIRED_FIELDS_FOR_COMPLETENESS.items():
+        entry = raw_evidence.get(ev_key)
+        if entry is None:
+
+exec
+/bin/zsh -lc "sed -n '600,670p' tradingagents/graph/data_collector.py && sed -n '203,248p' tradingagents/dataflows/evidence_contract.py && grep -R \"status.*HAS_DATA\\|NORMAL_NO_DATA\\|NOT_QUERIED\" -n tradingagents/graph/data_collector.py tradingagents/dataflows | head -80" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            return "HAS_DATA"
+        if isinstance(raw_value, dict):
+            return "HAS_DATA" if raw_value else "NOT_QUERIED"
+        if isinstance(raw_value, list):
+            return "HAS_DATA" if raw_value else "NORMAL_NO_DATA"
+        return "HAS_DATA"
+
+    @staticmethod
+    def _count_records(raw_value: Any) -> int:
+        if raw_value is None:
+            return 0
+        if isinstance(raw_value, str):
+            lines = raw_value.strip().split("\n")
+            return max(0, len(lines) - 1) if len(lines) > 1 else 0
+        if isinstance(raw_value, (list, dict)):
+            return len(raw_value)
+        return 1
+
+    def build_raw_evidence(self, ticker: str, trade_date: str) -> Dict[str, Any]:
+        # [G-006] raw_evidence_snapshot
+        # [DATA-004] raw_evidence_contract: upgraded with endpoint/fallback_from/source_url
+        pool = self.get(ticker, trade_date)
+        if not pool:
+            return {}
+
+        now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+        data_source_keys = [
+            "stock_data", "news", "global_news",
+            "fund_flow_board", "fund_flow_individual", "lhb",
+            "fundamentals", "balance_sheet", "cashflow", "income_statement",
+            "insider_transactions", "zt_pool", "hot_stocks",
+            "indicators", "vpa_indicators",
+            "announcements",  # [DATA-P0-603629] astock_source_fallback
+            "margin_trading",  # [DATA-010] margin_trading_raw_evidence
+            "research_report",  # [DATA-011] research_report_raw_evidence
+            "ratings",  # [DATA-012A] rating_data_collector_wiring
+        ]
+
+        raw_evidence: Dict[str, Any] = {}
+        for key in data_source_keys:
+            raw_value = pool.get(key)
+            status = self._infer_source_status(raw_value)
+
+            entry: Dict[str, Any] = {
+                "status": status,
+                "vendor": "akshare",
+                "endpoint": "",  # [DATA-004] raw_evidence_contract
+                "fallback_from": None,  # [DATA-004] raw_evidence_contract
+                "source_url": None,  # [DATA-004] raw_evidence_contract
+                "field": key,  # [DATA-004] raw_evidence_contract
+                "as_of": trade_date,
+                "fetched_at": now_iso,
+                "record_count": self._count_records(raw_value),
+                "unit": None,
+                "error": None,
+                "is_realtime_patched": False,
+            }
+
+            data_type = _resolve_data_type_for_key(key)  # [DATA-004]
+
+            if key == "stock_data" and isinstance(raw_value, str):
+                actual_vendor = get_last_hit_vendor("get_stock_data")
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+                if "is_realtime_patched=True" in raw_value:
+                    entry["is_realtime_patched"] = True
+                    for line in raw_value.split("\n"):
+                        if "source=" in line and "[G-005]" in line:
+                            parts = line.split("source=")
+                            if len(parts) > 1:
+def compute_contract_completeness(raw_evidence: Dict[str, Any]) -> Dict[str, Any]:
+    total = 0
+    satisfied = 0
+    missing_details: Dict[str, List[str]] = {}
+
+    for ev_key, required in _REQUIRED_FIELDS_FOR_COMPLETENESS.items():
+        entry = raw_evidence.get(ev_key)
+        if entry is None:
+            if ev_key in _OPTIONAL_FIELDS_FOR_COMPLETENESS and ev_key not in raw_evidence:
+                continue
+            total += len(required)
+            missing_details[ev_key] = required
+            continue
+
+        if isinstance(entry, dict):
+            contract = EvidenceContract.from_dict(entry)
+        else:
+            total += len(required)
+            missing_details[ev_key] = required
+            continue
+
+        for req_field in required:
+            total += 1
+            if req_field == "status" and contract.status in {"HAS_DATA", "NORMAL_NO_DATA"}:
+                satisfied += 1
+            elif req_field == "vendor" and contract.vendor != "":
+                satisfied += 1
+            elif req_field == "unit" and contract.unit_known:
+                satisfied += 1
+            elif req_field == "unit_verified" and contract.unit_verified is True:
+                satisfied += 1
+            elif req_field == "endpoint" and contract.endpoint_known:
+                satisfied += 1
+            else:
+                if ev_key not in missing_details:
+                    missing_details[ev_key] = []
+                missing_details[ev_key].append(req_field)
+
+    score = int((satisfied / total) * 100) if total > 0 else 0
+    return {
+        "completeness_score": score,
+        "total_checks": total,
+        "satisfied_checks": satisfied,
+        "missing_details": missing_details,
+    }
+
+tradingagents/graph/data_collector.py:577:            return "NOT_QUERIED"
+tradingagents/graph/data_collector.py:581:                return "NOT_QUERIED"
+tradingagents/graph/data_collector.py:582:            if "RATINGS_NORMAL_NO_DATA" in val or "无分析师评级" in val:
+tradingagents/graph/data_collector.py:583:                return "NORMAL_NO_DATA"
+tradingagents/graph/data_collector.py:588:            if "[G-007] LHB_NOT_QUERIED" in val or "查询未触发" in val:
+tradingagents/graph/data_collector.py:589:                return "NOT_QUERIED"
+tradingagents/graph/data_collector.py:590:            if "[G-007] LHB_NORMAL_NO_DATA" in val or "无龙虎榜数据" in val:
+tradingagents/graph/data_collector.py:591:                return "NORMAL_NO_DATA"
+tradingagents/graph/data_collector.py:599:                return "NORMAL_NO_DATA"
+tradingagents/graph/data_collector.py:602:            return "HAS_DATA" if raw_value else "NOT_QUERIED"
+tradingagents/graph/data_collector.py:604:            return "HAS_DATA" if raw_value else "NORMAL_NO_DATA"
+tradingagents/dataflows/fund_lhb_health.py:8:  - NORMAL_NO_DATA  — 接口成功但正常无数据（如非异动日无龙虎榜）
+tradingagents/dataflows/fund_lhb_health.py:36:    NORMAL_NO_DATA = "NORMAL_NO_DATA"
+tradingagents/dataflows/fund_lhb_health.py:41:    ALL = [HAS_DATA, NORMAL_NO_DATA, FAILED, STALE, UNIT_UNVERIFIED]
+tradingagents/dataflows/fund_lhb_health.py:181:      - NORMAL_NO_DATA: queried but no data
+tradingagents/dataflows/fund_lhb_health.py:205:        status = entry.get("status", "NOT_QUERIED")
+tradingagents/dataflows/fund_lhb_health.py:209:        status = "NOT_QUERIED"
+tradingagents/dataflows/fund_lhb_health.py:213:                status = "NOT_QUERIED"
+tradingagents/dataflows/fund_lhb_health.py:218:                status = "HAS_DATA"
+tradingagents/dataflows/fund_lhb_health.py:222:                status = "NORMAL_NO_DATA"
+tradingagents/dataflows/fund_lhb_health.py:231:    elif status == "NOT_QUERIED":
+tradingagents/dataflows/fund_lhb_health.py:233:        health.diagnosis = "个股资金流未查询（NOT_QUERIED），数据采集阶段可能跳过或路由未触发"
+tradingagents/dataflows/fund_lhb_health.py:234:    elif status == "NORMAL_NO_DATA":
+tradingagents/dataflows/fund_lhb_health.py:235:        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+tradingagents/dataflows/fund_lhb_health.py:237:    elif status == "HAS_DATA":
+tradingagents/dataflows/fund_lhb_health.py:248:            health.status = FundLhbHealthStatus.HAS_DATA
+tradingagents/dataflows/fund_lhb_health.py:274:        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+tradingagents/dataflows/fund_lhb_health.py:285:        status = entry.get("status", "NOT_QUERIED")
+tradingagents/dataflows/fund_lhb_health.py:288:        status = "NOT_QUERIED"
+tradingagents/dataflows/fund_lhb_health.py:292:                status = "NOT_QUERIED"
+tradingagents/dataflows/fund_lhb_health.py:297:                status = "HAS_DATA"
+tradingagents/dataflows/fund_lhb_health.py:299:                status = "NORMAL_NO_DATA"
+tradingagents/dataflows/fund_lhb_health.py:304:    elif status in ("NOT_QUERIED",):
+tradingagents/dataflows/fund_lhb_health.py:305:        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+tradingagents/dataflows/fund_lhb_health.py:307:    elif status == "NORMAL_NO_DATA":
+tradingagents/dataflows/fund_lhb_health.py:308:        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+tradingagents/dataflows/fund_lhb_health.py:311:        health.status = FundLhbHealthStatus.HAS_DATA
+tradingagents/dataflows/fund_lhb_health.py:324:      - NORMAL_NO_DATA: force=True, queried successfully, stock not on LHB (normal)
+tradingagents/dataflows/fund_lhb_health.py:326:      - NOT_QUERIED: force=False, not triggered (not a failure)
+tradingagents/dataflows/fund_lhb_health.py:335:        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+tradingagents/dataflows/fund_lhb_health.py:350:        status = entry.get("status", "NOT_QUERIED")
+tradingagents/dataflows/fund_lhb_health.py:353:        status = "NOT_QUERIED"
+tradingagents/dataflows/fund_lhb_health.py:358:            status = "NOT_QUERIED"
+tradingagents/dataflows/fund_lhb_health.py:362:                status = "NOT_QUERIED"
+tradingagents/dataflows/fund_lhb_health.py:366:            elif "查询未触发" in val or "LHB_NOT_QUERIED" in val:
+tradingagents/dataflows/fund_lhb_health.py:367:                status = "NOT_QUERIED"
+tradingagents/dataflows/fund_lhb_health.py:369:            elif "无龙虎榜数据" in val or "非异动日" in val or "LHB_NORMAL_NO_DATA" in val:
+tradingagents/dataflows/fund_lhb_health.py:370:                status = "NORMAL_NO_DATA"
+tradingagents/dataflows/fund_lhb_health.py:373:                status = "HAS_DATA"
+tradingagents/dataflows/fund_lhb_health.py:376:                status = "NOT_QUERIED"
+tradingagents/dataflows/fund_lhb_health.py:378:            status = "HAS_DATA" if raw_value else "NOT_QUERIED"
+tradingagents/dataflows/fund_lhb_health.py:387:    elif status == "NOT_QUERIED":
+tradingagents/dataflows/fund_lhb_health.py:388:        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+tradingagents/dataflows/fund_lhb_health.py:393:    elif status == "NORMAL_NO_DATA":
+tradingagents/dataflows/fund_lhb_health.py:394:        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+tradingagents/dataflows/fund_lhb_health.py:399:    elif status == "HAS_DATA":
+tradingagents/dataflows/fund_lhb_health.py:404:            health.status = FundLhbHealthStatus.HAS_DATA
+tradingagents/dataflows/fund_lhb_health.py:454:            report.fund_flow_individual.status == FundLhbHealthStatus.HAS_DATA
+tradingagents/dataflows/fund_lhb_health.py:457:                FundLhbHealthStatus.NORMAL_NO_DATA,
+tradingagents/dataflows/fund_lhb_health.py:546:#   2. NORMAL_NO_DATA: no LHB records on non-anomaly day
+tradingagents/dataflows/fund_lhb_health.py:552:        "status": "HAS_DATA",
+tradingagents/dataflows/fund_lhb_health.py:563:        "status": "HAS_DATA",
+tradingagents/dataflows/fund_lhb_health.py:568:        "raw": "[G-007] LHB_NORMAL_NO_DATA: 在 2026-06-10 无龙虎榜数据（非异动日属正常）",
+tradingagents/dataflows/fund_lhb_health.py:569:        "status": "NORMAL_NO_DATA",
+tradingagents/dataflows/fund_lhb_health.py:582:        "status": "HAS_DATA",
+tradingagents/dataflows/fund_lhb_health.py:594:        "status": "NORMAL_NO_DATA",
+tradingagents/dataflows/fund_lhb_health.py:598:        "raw": "[G-007] LHB_NORMAL_NO_DATA: 在 2026-06-10 无龙虎榜数据（非异动日属正常）",
+tradingagents/dataflows/fund_lhb_health.py:599:        "status": "NORMAL_NO_DATA",
+tradingagents/dataflows/fund_lhb_health.py:624:        "status": "NOT_QUERIED",
+tradingagents/dataflows/live_smoke.py:102:_STATUS_NORMAL_NO_DATA = "NORMAL_NO_DATA"
+tradingagents/dataflows/live_smoke.py:256:            if "LHB_NORMAL_NO_DATA" in raw:
+tradingagents/dataflows/live_smoke.py:257:                result.status = _STATUS_NORMAL_NO_DATA
+tradingagents/dataflows/live_smoke.py:354:        "NORMAL_NO_DATA": 0,
+tradingagents/dataflows/live_smoke.py:366:            "NORMAL_NO_DATA": 0, "avg_latency_ms": 0.0,
+tradingagents/dataflows/live_smoke.py:381:        len(runnable) > 0 and all(r.status in (_STATUS_OK, _STATUS_NORMAL_NO_DATA) for r in runnable)
+tradingagents/dataflows/live_smoke.py:407:    lines.append(f"| NORMAL_NO_DATA | {s.get('NORMAL_NO_DATA', 0)} |")
+tradingagents/dataflows/source_catalog.py:325:        known_gaps=["高限流风险", "force=False 时返回 NOT_QUERIED"],
+tradingagents/dataflows/providers/cn_akshare_provider.py:468:            "status": "HAS_DATA",
+tradingagents/dataflows/providers/cn_akshare_provider.py:1132:                f"{symbol} [G-007] LHB_NOT_QUERIED: 龙虎榜查询未触发（force=False）。"
+tradingagents/dataflows/providers/cn_akshare_provider.py:1141:                return f"{symbol} [G-007] LHB_NORMAL_NO_DATA: 在 {date} 无龙虎榜数据（非异动日属正常）。"
+
+exec
+/bin/zsh -lc "sed -n '560,610p' tradingagents/graph/data_collector.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            self._refcounts[key] = self._refcounts.get(key, 0) + 1
+
+    def evict(self, ticker: str, trade_date: str) -> None:
+        """Decrement refcount and remove cached data when no one needs it."""
+        key = make_cache_key(ticker, trade_date)
+        with self._meta_lock:
+            count = self._refcounts.get(key, 1) - 1
+            if count <= 0:
+                self._cache.pop(key, None)
+                self._refcounts.pop(key, None)
+            else:
+                self._refcounts[key] = count
+
+    # [G-006] raw_evidence_snapshot
+    @staticmethod
+    def _infer_source_status(raw_value: Any) -> str:
+        if raw_value is None:
+            return "NOT_QUERIED"
+        if isinstance(raw_value, str):
+            val = raw_value.strip()
+            if not val:
+                return "NOT_QUERIED"
+            if "RATINGS_NORMAL_NO_DATA" in val or "无分析师评级" in val:
+                return "NORMAL_NO_DATA"
+            if "RATINGS_FAILED" in val:
+                return "FAILED"
+            if "RATINGS_HAS_DATA" in val:
+                return "HAS_DATA"
+            if "[G-007] LHB_NOT_QUERIED" in val or "查询未触发" in val:
+                return "NOT_QUERIED"
+            if "[G-007] LHB_NORMAL_NO_DATA" in val or "无龙虎榜数据" in val:
+                return "NORMAL_NO_DATA"
+            if "[G-007] LHB_FAILED" in val:
+                return "FAILED"
+            if "[G-007] LHB_HAS_DATA" in val or "龙虎榜明细" in val:
+                return "HAS_DATA"
+            if "获取失败" in val or "不可用" in val or "error" in val.lower():
+                return "FAILED"
+            if val.startswith("N/A") or val == "VPA 数据不足" or val == "VPA 计算失败":
+                return "NORMAL_NO_DATA"
+            return "HAS_DATA"
+        if isinstance(raw_value, dict):
+            return "HAS_DATA" if raw_value else "NOT_QUERIED"
+        if isinstance(raw_value, list):
+            return "HAS_DATA" if raw_value else "NORMAL_NO_DATA"
+        return "HAS_DATA"
+
+    @staticmethod
+    def _count_records(raw_value: Any) -> int:
+        if raw_value is None:
+            return 0
+
+exec
+/bin/zsh -lc "sed -n '640,660p' tradingagents/graph/data_collector.py && sed -n '715,750p' tradingagents/graph/data_collector.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        for key in data_source_keys:
+            raw_value = pool.get(key)
+            status = self._infer_source_status(raw_value)
+
+            entry: Dict[str, Any] = {
+                "status": status,
+                "vendor": "akshare",
+                "endpoint": "",  # [DATA-004] raw_evidence_contract
+                "fallback_from": None,  # [DATA-004] raw_evidence_contract
+                "source_url": None,  # [DATA-004] raw_evidence_contract
+                "field": key,  # [DATA-004] raw_evidence_contract
+                "as_of": trade_date,
+                "fetched_at": now_iso,
+                "record_count": self._count_records(raw_value),
+                "unit": None,
+                "error": None,
+                "is_realtime_patched": False,
+            }
+
+            data_type = _resolve_data_type_for_key(key)  # [DATA-004]
+
+            elif key == "ratings":  # [DATA-012A] rating_data_collector_wiring
+                actual_vendor = get_last_hit_vendor("get_ratings")
+                if actual_vendor:
+                    entry["vendor"] = actual_vendor
+
+            # [DATA-004] raw_evidence_contract: resolve endpoint and fallback info
+            entry["endpoint"] = _resolve_endpoint_for_vendor(
+                entry["vendor"], data_type
+            )
+            entry["fallback_from"] = _resolve_fallback_for_vendor(
+                entry["vendor"], data_type
+            )
+
+            if status == "FAILED" and isinstance(raw_value, str):
+                entry["error"] = raw_value[:200]
+
+            raw_evidence[key] = {
+                "raw": raw_value,
+                "field": entry["field"],  # [DATA-004]
+                "status": entry["status"],
+                "vendor": entry["vendor"],
+                "endpoint": entry["endpoint"],  # [DATA-004]
+                "as_of": entry["as_of"],
+                "fetched_at": entry["fetched_at"],
+                "record_count": entry["record_count"],
+                "unit": entry["unit"],
+                "error": entry["error"],
+                "fallback_from": entry["fallback_from"],  # [DATA-004]
+                "source_url": entry["source_url"],  # [DATA-004]
+                "is_realtime_patched": entry["is_realtime_patched"],
+                "source_type": entry.get("source_type"),
+                "unit_verified": entry.get("unit_verified", None),
+                "query_mode": entry.get("query_mode", None),
+                "adjustment": entry.get("adjustment", None),  # [DATA-P0-603629] astock_source_fallback
+                "force_reason": entry.get("force_reason", None),  # [DATA-P0-603629]
+            }
+
+exec
+/bin/zsh -lc "sed -n '240,520p' tests/test_data017_fund_lhb_health.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+                "record_count": 3,
+            }
+        }
+        h = inspect_lhb_health(raw)
+        assert h.status == FundLhbHealthStatus.HAS_DATA
+        assert h.query_mode == "forced"
+        assert h.force_reason == "anomaly_condition"
+
+    def test_normal_no_data_non_anomaly_day(self):
+        raw = {
+            "lhb": {
+                "raw": "[G-007] LHB_NORMAL_NO_DATA: 在 2026-06-10 无龙虎榜数据（非异动日属正常）",
+                "status": "NORMAL_NO_DATA",
+                "vendor": "cn_akshare",
+                "query_mode": "forced",
+                "force_reason": "anomaly_condition",
+                "as_of": datetime.now().strftime("%Y-%m-%d"),
+                "record_count": 0,
+            }
+        }
+        h = inspect_lhb_health(raw)
+        assert h.status == FundLhbHealthStatus.NORMAL_NO_DATA
+        assert "非异动日正常" in h.diagnosis
+        assert "不应降低完整度" in h.diagnosis
+
+    def test_not_queried_is_normal(self):
+        raw = {
+            "lhb": {
+                "raw": "[G-007] LHB_NOT_QUERIED: 龙虎榜查询未触发（force=False）",
+                "status": "NOT_QUERIED",
+                "query_mode": "not_queried",
+            }
+        }
+        h = inspect_lhb_health(raw)
+        assert h.status == FundLhbHealthStatus.NORMAL_NO_DATA
+        assert "未触发查询" in h.diagnosis
+
+    def test_failed(self):
+        raw = {
+            "lhb": {
+                "raw": "[G-007] LHB_FAILED: 龙虎榜数据获取失败",
+                "status": "FAILED",
+                "vendor": "cn_akshare",
+                "query_mode": "forced",
+                "error": "ConnectionError",
+            }
+        }
+        h = inspect_lhb_health(raw)
+        assert h.status == FundLhbHealthStatus.FAILED
+        assert "查询失败" in h.diagnosis
+
+    def test_stale_lhb(self):
+        old_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        raw = {
+            "lhb": {
+                "raw": "[G-007] LHB_HAS_DATA: 龙虎榜明细",
+                "status": "HAS_DATA",
+                "vendor": "cn_akshare",
+                "as_of": old_date,
+                "record_count": 2,
+            }
+        }
+        h = inspect_lhb_health(raw)
+        assert h.status == FundLhbHealthStatus.STALE
+
+    def test_missing_entry_is_normal(self):
+        h = inspect_lhb_health({})
+        assert h.status == FundLhbHealthStatus.NORMAL_NO_DATA
+
+    def test_legacy_format_not_queried(self):
+        raw = {
+            "lhb": "[G-007] LHB_NOT_QUERIED: 龙虎榜查询未触发",
+        }
+        h = inspect_lhb_health(raw)
+        assert h.status == FundLhbHealthStatus.NORMAL_NO_DATA
+
+    def test_legacy_format_normal_no_data(self):
+        raw = {
+            "lhb": "[G-007] LHB_NORMAL_NO_DATA: 在 2026-06-10 无龙虎榜数据",
+        }
+        h = inspect_lhb_health(raw)
+        assert h.status == FundLhbHealthStatus.NORMAL_NO_DATA
+
+    def test_legacy_format_failed(self):
+        raw = {
+            "lhb": "[G-007] LHB_FAILED: 龙虎榜数据获取失败",
+        }
+        h = inspect_lhb_health(raw)
+        assert h.status == FundLhbHealthStatus.FAILED
+
+    def test_legacy_format_has_data(self):
+        raw = {
+            "lhb": "[G-007] LHB_HAS_DATA: 龙虎榜明细（2026-06-10）",
+        }
+        h = inspect_lhb_health(raw)
+        assert h.status == FundLhbHealthStatus.HAS_DATA
+
+
+# ── run_fund_lhb_health_check ─────────────────────────────────────────
+
+class TestRunFundLhbHealthCheck:
+
+    def test_all_healthy(self):
+        raw = {
+            "fund_flow_individual": {
+                "status": "HAS_DATA",
+                "unit": "万元",
+                "unit_verified": True,
+                "vendor": "cn_akshare",
+                "as_of": datetime.now().strftime("%Y-%m-%d"),
+                "record_count": 20,
+            },
+            "fund_flow_board": {
+                "status": "HAS_DATA",
+                "vendor": "cn_akshare",
+            },
+            "lhb": {
+                "status": "NORMAL_NO_DATA",
+                "vendor": "cn_akshare",
+                "query_mode": "forced",
+                "as_of": datetime.now().strftime("%Y-%m-%d"),
+            },
+        }
+        report = run_fund_lhb_health_check(raw, symbol="600519.SH")
+        assert report.symbol == "600519.SH"
+        assert report.fund_flow_individual.status == FundLhbHealthStatus.HAS_DATA
+        assert report.lhb.status == FundLhbHealthStatus.NORMAL_NO_DATA
+        assert report.summary["all_critical_ok"] is True
+        assert report.summary["has_any_failed"] is False
+
+    def test_fund_flow_failed(self):
+        raw = {
+            "fund_flow_individual": {
+                "status": "FAILED",
+                "error": "ProxyError",
+                "unit_verified": False,
+            },
+            "lhb": {
+                "status": "NORMAL_NO_DATA",
+                "query_mode": "forced",
+            },
+        }
+        report = run_fund_lhb_health_check(raw)
+        assert report.fund_flow_individual.status == FundLhbHealthStatus.FAILED
+        assert report.summary["has_any_failed"] is True
+        assert report.summary["all_critical_ok"] is False
+
+    def test_unit_unverified_summary(self):
+        raw = {
+            "fund_flow_individual": {
+                "status": "HAS_DATA",
+                "unit": None,
+                "unit_verified": False,
+                "vendor": "cn_akshare",
+                "as_of": datetime.now().strftime("%Y-%m-%d"),
+            },
+            "lhb": {
+                "status": "NORMAL_NO_DATA",
+                "query_mode": "forced",
+            },
+        }
+        report = run_fund_lhb_health_check(raw)
+        assert report.fund_flow_individual.status == FundLhbHealthStatus.UNIT_UNVERIFIED
+        assert report.summary["has_unit_unverified"] is True
+        assert report.summary["all_critical_ok"] is False
+
+    def test_lhb_failed_not_normal(self):
+        raw = {
+            "fund_flow_individual": {
+                "status": "HAS_DATA",
+                "unit": "万元",
+                "unit_verified": True,
+                "as_of": datetime.now().strftime("%Y-%m-%d"),
+            },
+            "lhb": {
+                "status": "FAILED",
+                "query_mode": "forced",
+                "error": "ConnectionError",
+            },
+        }
+        report = run_fund_lhb_health_check(raw)
+        assert report.lhb.status == FundLhbHealthStatus.FAILED
+        assert report.summary["has_any_failed"] is True
+        assert report.summary["all_critical_ok"] is False
+
+    def test_lhb_normal_no_data_does_not_fail(self):
+        raw = {
+            "fund_flow_individual": {
+                "status": "HAS_DATA",
+                "unit": "万元",
+                "unit_verified": True,
+                "as_of": datetime.now().strftime("%Y-%m-%d"),
+            },
+            "lhb": {
+                "status": "NORMAL_NO_DATA",
+                "query_mode": "forced",
+                "as_of": datetime.now().strftime("%Y-%m-%d"),
+            },
+        }
+        report = run_fund_lhb_health_check(raw)
+        assert report.lhb.status == FundLhbHealthStatus.NORMAL_NO_DATA
+        assert report.summary["has_any_failed"] is False
+        assert report.summary["all_critical_ok"] is True
+
+    def test_empty_raw_evidence(self):
+        report = run_fund_lhb_health_check({})
+        assert report.fund_flow_individual.status == FundLhbHealthStatus.FAILED
+        assert report.lhb.status == FundLhbHealthStatus.NORMAL_NO_DATA
+        assert report.summary["has_any_failed"] is True
+
+    def test_to_dict(self):
+        raw = {
+            "fund_flow_individual": {
+                "status": "HAS_DATA",
+                "unit": "万元",
+                "unit_verified": True,
+                "vendor": "cn_akshare",
+                "as_of": datetime.now().strftime("%Y-%m-%d"),
+            },
+            "lhb": {
+                "status": "NORMAL_NO_DATA",
+                "query_mode": "forced",
+            },
+        }
+        report = run_fund_lhb_health_check(raw)
+        d = report.to_dict()
+        assert "fund_flow_individual" in d
+        assert "fund_flow_sector" in d
+        assert "lhb" in d
+        assert "summary" in d
+        assert d["fund_flow_individual"]["status"] == FundLhbHealthStatus.HAS_DATA
+
+
+# ── render_fund_lhb_health_report ─────────────────────────────────────
+
+class TestRenderFundLhbHealthReport:
+
+    def test_renders_markdown(self):
+        raw = {
+            "fund_flow_individual": {
+                "status": "HAS_DATA",
+                "unit": "万元",
+                "unit_verified": True,
+                "vendor": "cn_akshare",
+                "as_of": datetime.now().strftime("%Y-%m-%d"),
+            },
+            "lhb": {
+                "status": "NORMAL_NO_DATA",
+                "query_mode": "forced",
+            },
+        }
+        report = run_fund_lhb_health_check(raw, symbol="600519.SH")
+        md = render_fund_lhb_health_report(report)
+        assert "# Fund Flow & LHB Health Report" in md
+        assert "600519.SH" in md
+        assert "HAS_DATA" in md
+        assert "NORMAL_NO_DATA" in md
+        assert "[DATA-017]" in md
+
+    def test_includes_diagnosis(self):
+        raw = {
+            "fund_flow_individual": {
+                "status": "FAILED",
+                "error": "ProxyError",
+            },
+        }
+        report = run_fund_lhb_health_check(raw)
+        md = render_fund_lhb_health_report(report)
+        assert "ProxyError" in md
+        assert "失败" in md
+
+    def test_includes_fallback_info(self):
+        raw = {
+            "fund_flow_individual": {
+                "status": "HAS_DATA",
+                "unit": "万元",
+                "unit_verified": True,
+                "vendor": "cn_astock",
+                "fallback_from": "cn_akshare",
+                "as_of": datetime.now().strftime("%Y-%m-%d"),
+            },
+
+exec
+/bin/zsh -lc "sed -n '1,120p' tradingagents/dataflows/evidence_contract.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [DATA-004] raw_evidence_contract
+"""
+raw_evidence 来源契约定义。
+
+所有关键字段的来源、端点、时间、单位、状态纳入统一契约结构，
+使报告和前端都能回答"这个数从哪里来、是否实时、单位是什么、是否 fallback"。
+
+契约字段：
+  - field: 字段名称 (如 stock_data, fund_flow_individual)
+  - value: 原始数据 (raw)
+  - unit: 单位 (万元, 股, 条, %, 元/股 等)
+  - vendor: 实际返回数据的厂商 (cn_akshare, cn_astock, sina, ...)
+  - endpoint: 实际调用的端点 (stock_zh_a_hist, push2his.eastmoney.com/fflow, ...)
+  - as_of: 数据日期或行情时间
+  - fetched_at: 获取时间 ISO
+  - status: HAS_DATA / FAILED / NOT_QUERIED / NORMAL_NO_DATA
+  - fallback_from: 如果走了 fallback，记录原始厂商名
+  - source_url: 可选，数据源链接
+  - error: 失败时的错误摘要
+
+使用示例：
+    from tradingagents.dataflows.evidence_contract import (
+        EvidenceContract,
+        build_evidence_contract,
+        compute_contract_completeness,
+    )
+    contract = build_evidence_contract("stock_data", raw_value, ...)
+    score = compute_contract_completeness(raw_evidence)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field as dc_field
+from typing import Any, Dict, List, Optional
+
+
+@dataclass
+class EvidenceContract:
+    field: str
+    value: Any = None
+    unit: Optional[str] = None
+    vendor: str = ""
+    endpoint: str = ""
+    as_of: str = ""
+    fetched_at: str = ""
+    status: str = "NOT_QUERIED"
+    fallback_from: Optional[str] = None
+    source_url: Optional[str] = None
+    error: Optional[str] = None
+
+    is_realtime_patched: bool = False
+    source_type: Optional[str] = None
+    unit_verified: Optional[bool] = None
+    query_mode: Optional[str] = None
+    adjustment: Optional[str] = None
+    force_reason: Optional[str] = None
+    record_count: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "raw": self.value,
+            "field": self.field,
+            "unit": self.unit,
+            "vendor": self.vendor,
+            "endpoint": self.endpoint,
+            "as_of": self.as_of,
+            "fetched_at": self.fetched_at,
+            "status": self.status,
+            "fallback_from": self.fallback_from,
+            "source_url": self.source_url,
+            "error": self.error,
+            "is_realtime_patched": self.is_realtime_patched,
+            "source_type": self.source_type,
+            "unit_verified": self.unit_verified,
+            "query_mode": self.query_mode,
+            "adjustment": self.adjustment,
+            "force_reason": self.force_reason,
+            "record_count": self.record_count,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EvidenceContract":
+        return cls(
+            field=data.get("field", ""),
+            value=data.get("raw"),
+            unit=data.get("unit"),
+            vendor=data.get("vendor", ""),
+            endpoint=data.get("endpoint", ""),
+            as_of=data.get("as_of", ""),
+            fetched_at=data.get("fetched_at", ""),
+            status=data.get("status", "NOT_QUERIED"),
+            fallback_from=data.get("fallback_from"),
+            source_url=data.get("source_url"),
+            error=data.get("error"),
+            is_realtime_patched=data.get("is_realtime_patched", False),
+            source_type=data.get("source_type"),
+            unit_verified=data.get("unit_verified"),
+            query_mode=data.get("query_mode"),
+            adjustment=data.get("adjustment"),
+            force_reason=data.get("force_reason"),
+            record_count=data.get("record_count", 0),
+        )
+
+    @property
+    def has_data(self) -> bool:
+        return self.status == "HAS_DATA"
+
+    @property
+    def is_failed(self) -> bool:
+        return self.status == "FAILED"
+
+    @property
+    def is_fallback(self) -> bool:
+        return self.fallback_from is not None and self.fallback_from != ""
+
+    @property
+    def unit_known(self) -> bool:
+        return self.unit is not None and self.unit != ""
+
+    @property
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/dataflows/fund_lhb_health.py | sed -n '170,260p;330,410p;440,460p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   170	def inspect_fund_flow_health(
+   171	    raw_evidence: Optional[Dict[str, Any]] = None,
+   172	    symbol: str = "",
+   173	) -> FundFlowHealth:
+   174	    """Inspect individual fund flow health from raw_evidence.
+   175	
+   176	    Classifies into:
+   177	      - HAS_DATA: successful retrieval with verified unit
+   178	      - UNIT_UNVERIFIED: data present but unit not verified
+   179	      - FAILED: API failure
+   180	      - STALE: data is too old
+   181	      - NORMAL_NO_DATA: queried but no data
+   182	    """
+   183	    raw = raw_evidence or {}
+   184	    entry = raw.get("fund_flow_individual")
+   185	
+   186	    health = FundFlowHealth()
+   187	
+   188	    if entry is None:
+   189	        health.status = FundLhbHealthStatus.FAILED
+   190	        health.error = "fund_flow_individual not found in raw_evidence"
+   191	        health.diagnosis = "个股资金流未在 raw_evidence 中找到，可能是数据采集阶段未执行或被跳过"
+   192	        return health
+   193	
+   194	    if isinstance(entry, dict):
+   195	        health.vendor = entry.get("vendor", "")
+   196	        health.endpoint = entry.get("endpoint", "")
+   197	        health.fallback_from = entry.get("fallback_from") or ""
+   198	        health.unit = entry.get("unit") or ""
+   199	        health.unit_verified = entry.get("unit_verified") is True
+   200	        health.as_of = entry.get("as_of", "")
+   201	        health.fetched_at = entry.get("fetched_at", "")
+   202	        health.record_count = entry.get("record_count", 0)
+   203	        health.is_fallback = bool(health.fallback_from)
+   204	        raw_value = entry.get("raw")
+   205	        status = entry.get("status", "NOT_QUERIED")
+   206	        health.error = entry.get("error") or ""
+   207	    else:
+   208	        raw_value = entry
+   209	        status = "NOT_QUERIED"
+   210	        if isinstance(raw_value, str):
+   211	            s = raw_value.strip()
+   212	            if not s:
+   213	                status = "NOT_QUERIED"
+   214	            elif any(p in s for p in ("获取失败", "ProxyError", "ConnectionError", "不可用", "TimeoutError")):
+   215	                status = "FAILED"
+   216	                health.error = s[:200]
+   217	            elif len(s) > 20:
+   218	                status = "HAS_DATA"
+   219	                health.unit = "万元"
+   220	                health.unit_verified = True
+   221	            else:
+   222	                status = "NORMAL_NO_DATA"
+   223	
+   224	    # Classify into one of 5 health states
+   225	    if status == "FAILED":
+   226	        health.status = FundLhbHealthStatus.FAILED
+   227	        if not health.diagnosis:
+   228	            health.diagnosis = f"个股资金流接口失败: {health.error or '未知错误'}"
+   229	            if health.vendor:
+   230	                health.diagnosis += f"（vendor={health.vendor}）"
+   231	    elif status == "NOT_QUERIED":
+   232	        health.status = FundLhbHealthStatus.FAILED
+   233	        health.diagnosis = "个股资金流未查询（NOT_QUERIED），数据采集阶段可能跳过或路由未触发"
+   234	    elif status == "NORMAL_NO_DATA":
+   235	        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+   236	        health.diagnosis = "个股资金流查询成功但无数据返回（可能为新股或停牌）"
+   237	    elif status == "HAS_DATA":
+   238	        if _is_stale_date(health.as_of):
+   239	            health.status = FundLhbHealthStatus.STALE
+   240	            health.diagnosis = f"个股资金流数据过期（as_of={health.as_of}），超过 7 天未更新"
+   241	        elif not health.unit_verified:
+   242	            health.status = FundLhbHealthStatus.UNIT_UNVERIFIED
+   243	            health.diagnosis = (
+   244	                f"个股资金流有数据但单位未校验（unit={health.unit or '未知'}），"
+   245	                "不能作为强证据使用"
+   246	            )
+   247	        else:
+   248	            health.status = FundLhbHealthStatus.HAS_DATA
+   249	            fb_note = ""
+   250	            if health.is_fallback:
+   251	                fb_note = f"，fallback from {health.fallback_from}"
+   252	            health.diagnosis = (
+   253	                f"个股资金流正常（vendor={health.vendor or '未知'}"
+   254	                f"，unit={health.unit or '未知'}，records={health.record_count}{fb_note}）"
+   255	            )
+   256	    else:
+   257	        health.status = FundLhbHealthStatus.FAILED
+   258	        health.diagnosis = f"个股资金流状态未知: {status}"
+   259	
+   260	    return health
+   330	    entry = raw.get("lhb")
+   331	
+   332	    health = LhbHealth()
+   333	
+   334	    if entry is None:
+   335	        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+   336	        health.query_mode = "not_queried"
+   337	        health.diagnosis = "龙虎榜未在 raw_evidence 中（可能未触发查询）"
+   338	        return health
+   339	
+   340	    if isinstance(entry, dict):
+   341	        health.vendor = entry.get("vendor", "")
+   342	        health.endpoint = entry.get("endpoint", "")
+   343	        health.fallback_from = entry.get("fallback_from") or ""
+   344	        health.query_mode = entry.get("query_mode", "not_queried") or "not_queried"
+   345	        health.force_reason = entry.get("force_reason", "") or ""
+   346	        health.as_of = entry.get("as_of", "")
+   347	        health.record_count = entry.get("record_count", 0)
+   348	        health.is_fallback = bool(health.fallback_from)
+   349	        health.error = entry.get("error") or ""
+   350	        status = entry.get("status", "NOT_QUERIED")
+   351	    else:
+   352	        raw_value = entry
+   353	        status = "NOT_QUERIED"
+   354	        health.query_mode = "not_queried"
+   355	        if isinstance(entry, dict) and "raw" in entry:
+   356	            raw_value = entry["raw"]
+   357	        if raw_value is None:
+   358	            status = "NOT_QUERIED"
+   359	        elif isinstance(raw_value, str):
+   360	            val = raw_value.strip()
+   361	            if not val:
+   362	                status = "NOT_QUERIED"
+   363	            elif "获取失败" in val or "LHB_FAILED" in val:
+   364	                status = "FAILED"
+   365	                health.error = val[:200]
+   366	            elif "查询未触发" in val or "LHB_NOT_QUERIED" in val:
+   367	                status = "NOT_QUERIED"
+   368	                health.query_mode = "not_queried"
+   369	            elif "无龙虎榜数据" in val or "非异动日" in val or "LHB_NORMAL_NO_DATA" in val:
+   370	                status = "NORMAL_NO_DATA"
+   371	                health.query_mode = "forced"
+   372	            elif "龙虎榜明细" in val or "LHB_HAS_DATA" in val:
+   373	                status = "HAS_DATA"
+   374	                health.query_mode = "forced"
+   375	            else:
+   376	                status = "NOT_QUERIED"
+   377	        else:
+   378	            status = "HAS_DATA" if raw_value else "NOT_QUERIED"
+   379	
+   380	    if status == "FAILED":
+   381	        health.status = FundLhbHealthStatus.FAILED
+   382	        if not health.diagnosis:
+   383	            health.diagnosis = (
+   384	                f"龙虎榜查询失败: {health.error or '接口异常'}"
+   385	                f"（vendor={health.vendor or '未知'}）"
+   386	            )
+   387	    elif status == "NOT_QUERIED":
+   388	        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+   389	        health.diagnosis = (
+   390	            "龙虎榜未触发查询（force=False），非异常日不查询属正常行为，"
+   391	            "不应显示为失败"
+   392	        )
+   393	    elif status == "NORMAL_NO_DATA":
+   394	        health.status = FundLhbHealthStatus.NORMAL_NO_DATA
+   395	        health.diagnosis = (
+   396	            "龙虎榜已查询（force=True），当日无上榜记录，"
+   397	            "属于非异动日正常情况，不应降低完整度"
+   398	        )
+   399	    elif status == "HAS_DATA":
+   400	        if _is_stale_date(health.as_of):
+   401	            health.status = FundLhbHealthStatus.STALE
+   402	            health.diagnosis = f"龙虎榜数据过期（as_of={health.as_of}）"
+   403	        else:
+   404	            health.status = FundLhbHealthStatus.HAS_DATA
+   405	            health.diagnosis = (
+   406	                f"龙虎榜有数据（vendor={health.vendor or '未知'}，"
+   407	                f"records={health.record_count}）"
+   408	            )
+   409	    else:
+   410	        health.status = FundLhbHealthStatus.FAILED
+   440	        report.fund_flow_sector.status,
+   441	        report.lhb.status,
+   442	    ]
+   443	    summary: Dict[str, Any] = {
+   444	        "fund_flow_individual_status": report.fund_flow_individual.status,
+   445	        "fund_flow_sector_status": report.fund_flow_sector.status,
+   446	        "lhb_status": report.lhb.status,
+   447	        "fund_flow_unit_verified": report.fund_flow_individual.unit_verified,
+   448	        "fund_flow_is_fallback": report.fund_flow_individual.is_fallback,
+   449	        "lhb_is_fallback": report.lhb.is_fallback,
+   450	        "has_any_failed": FundLhbHealthStatus.FAILED in statuses,
+   451	        "has_any_stale": FundLhbHealthStatus.STALE in statuses,
+   452	        "has_unit_unverified": FundLhbHealthStatus.UNIT_UNVERIFIED in statuses,
+   453	        "all_critical_ok": (
+   454	            report.fund_flow_individual.status == FundLhbHealthStatus.HAS_DATA
+   455	            and report.lhb.status in (
+   456	                FundLhbHealthStatus.HAS_DATA,
+   457	                FundLhbHealthStatus.NORMAL_NO_DATA,
+   458	            )
+   459	        ),
+   460	        "status_counts": {s: statuses.count(s) for s in FundLhbHealthStatus.ALL if s in statuses},
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/dataflows/fund_lhb_health.py | sed -n '140,160p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   140	    fund_flow_individual: FundFlowHealth = field(default_factory=FundFlowHealth)
+   141	    fund_flow_sector: SectorFundFlowHealth = field(default_factory=SectorFundFlowHealth)
+   142	    lhb: LhbHealth = field(default_factory=LhbHealth)
+   143	    summary: Dict[str, Any] = field(default_factory=dict)
+   144	
+   145	    def to_dict(self) -> Dict[str, Any]:
+   146	        return {
+   147	            "run_at": self.run_at,
+   148	            "symbol": self.symbol,
+   149	            "fund_flow_individual": self.fund_flow_individual.to_dict(),
+   150	            "fund_flow_sector": self.fund_flow_sector.to_dict(),
+   151	            "lhb": self.lhb.to_dict(),
+   152	            "summary": self.summary,
+   153	        }
+   154	
+   155	
+   156	# ── Inspection Logic ───────────────────────────────────────────────────
+   157	
+   158	def _is_stale_date(as_of: str, max_age_days: int = 7) -> bool:
+   159	    """Check if an as_of date is stale (older than max_age_days from now)."""
+   160	    if not as_of:
+
+exec
+/bin/zsh -lc "sed -n '2812,2875p' docs/TASKS.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+### DATA-017: 主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1）
+- **描述**：针对 TA 报告里主力资金仍失败的问题，建立可复现的数据源健康巡检，区分“该股无龙虎榜”“接口失败”“单位未校验”“fallback 可用”。
+- **优先级**：P1
+- **状态**：done — DATA-017-20260614（待提交）
+- **前置条件**：DATA-P0-FUND-ROUTE 完成 ✓。
+- **执行约束**：
+  - 不把新闻/舆情转述当作主力资金原始证据。
+  - 不调用 LLM。
+  - 不写生产 DB。
+- **实现要点**：
+  1. 为 `fund_flow_individual`、`fund_flow_sector`、`lhb` 增加 live smoke/fixture 对比：
+     - HAS_DATA
+     - NORMAL_NO_DATA
+     - FAILED
+     - STALE
+     - UNIT_UNVERIFIED
+  2. 龙虎榜必须区分：
+     - 未上榜/非异动日：正常无数据。
+     - 查询失败/接口异常：失败。
+  3. 主力资金必须记录单位、日期、供应商、是否 fallback。
+  4. 报告数据源摘要里显示资金/LHB 的真实状态。
+  5. 选取 3 个样本：有资金数据、无龙虎榜、接口失败 fixture。
+- **验收方式**：
+  - fixture 覆盖三类状态。
+  - 主力资金失败时 readiness 不得标 HAS_DATA。
+  - 龙虎榜无触发不得降低完整度为失败。
+  - 603629 或等价样本能说明失败原因。
+- **代码标注要求**：`# [DATA-017] fund_lhb_health`
+
+### V-006: 最终动作语义端到端回放验收（P1）
+- **描述**：DECISION-001~004 已完成后，用历史报告和最新报告回放验证系统不再“一片 HOLD/持有”，并确认前端/通知/DB 三处一致。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：DECISION-004 完成 ✓。
+- **执行约束**：
+  - 不调 LLM。
+  - 不改 prompts。
+  - 测试使用历史报告 fixtures 或临时数据库。
+- **实现要点**：
+  1. 建立端到端回放脚本/测试：
+     - 未持仓偏多无触发价 → 等待触发/WAIT。
+     - 未持仓看多有触发价 → 条件入场/ENTER。
+     - 未持仓偏空 → 回避/WAIT。
+     - 已持仓中性 → 持有/HOLD。
+     - 已持仓偏空 → 条件减仓/REDUCE。
+  2. 验证 DB 轻量列、报告详情 result_data、前端 Report 类型、通知 payload 一致。
+  3. 输出一份 `docs/decision_replay_report.md`，列出样本与结果。
+- **验收方式**：
+  - 至少 5 个样本动作标签不全为“持有”。
+  - 保存报告后不会丢失 position-aware 语义。
+  - Bark/企业微信/报告列表均优先显示 `action_label`。
+- **代码标注要求**：`# [V-006] decision_semantics_e2e`
+
+### DATA-COVERAGE-001: raw_evidence 覆盖率分母/质量等级回归修复（P1）
+- **描述**：TF-QUALITY-001 全量回归暴露 DATA-007/E-004/V-001 相关覆盖率断言下降：新增 ratings/buybacks/report 等证据字段后，分母变化与 NORMAL_NO_DATA/NOT_AVAILABLE 处理导致“完整证据”样本被误降级为 LOW。需要单独修复数据覆盖率契约，不和 TradeFlow 门禁混在一起。
+- **优先级**：P1
+- **状态**：done — Codex 修复，待提交
+- **前置条件**：DATA-012A 完成 ✓；数据源目录回归修复 commit `e4a4062` 已完成。
+- **执行约束**：
+  - 不改 prompts。
+  - 不调用 LLM。
+  - 不写生产数据库。
+  - 不用改测试期望掩盖真实分母变化；必须解释每个新增 evidence key 是否进入分母、是否 critical。
+- **问题样本**：
+

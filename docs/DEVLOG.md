@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-06-14 | DATA-017: 主力资金/龙虎榜数据源健康巡检与 fallback 验收
+
+- **执行者**：OpenCode
+- **类型**：功能增强
+- **任务**：DATA-017（P1）
+- **背景**：TA 报告中主力资金仍出现失败问题，需要可复现的数据源健康巡检，区分"该股无龙虎榜""接口失败""单位未校验""fallback 可用""数据过期"五种状态。现有 health_check（M-008）只覆盖 OK/FAILED/STALE/NOT_QUERIED 四态，缺少 UNIT_UNVERIFIED，且未专门针对 fund_flow/LHB 做精细诊断。
+- **修改文件**：
+  - `tradingagents/dataflows/fund_lhb_health.py`（新增）：主力资金/龙虎榜专项健康巡检模块。定义 5 态健康状态枚举（HAS_DATA / NORMAL_NO_DATA / FAILED / STALE / UNIT_UNVERIFIED），提供 `inspect_fund_flow_health()`、`inspect_sector_fund_flow_health()`、`inspect_lhb_health()`、`run_fund_lhb_health_check()` 和 `render_fund_lhb_health_report()`。包含 3 个代表性样本 fixture（HAS_FUND_DATA / NO_LHB_NORMAL / INTERFACE_FAILED）。
+  - `tests/test_data017_fund_lhb_health.py`（新增）：51 个测试覆盖 5 态分类、个股/板块资金流、龙虎榜四态区分、组合报告、摘要计算、Markdown 渲染、样本 fixture、关键行为保证、EvidenceContract 兼容性、readiness 门禁联动。
+- **关键逻辑**：
+  1. 5 怚分类：HAS_DATA（单位已校验的有效数据）→ UNIT_UNVERIFIED（有数据但单位未校验）→ STALE（数据超过 7 天）→ NORMAL_NO_DATA（查询正常无数据）→ FAILED（接口失败/未查询）。
+  2. 龙虎榜关键区分：NOT_QUERIED（force=False）和 NORMAL_NO_DATA（force=True 无记录）都归为 NORMAL_NO_DATA，不降低完整度；只有 FAILED 才标为失败。
+  3. 主力资金 fallback 透明记录：vendor、endpoint、fallback_from、unit、unit_verified、as_of 全部纳入诊断。
+  4. 与 EvidenceContract 完全兼容——可直接消费 `EvidenceContract.to_dict()` 输出。
+  5. 与 readiness_score 门禁联动——FAILED fund_flow 阻断 strong evidence，NORMAL_NO_DATA LHB 不阻断。
+- **测试结果**：
+  - DATA-017 专项：51 passed
+  - 回归（G-006/G-007/readiness/catalog/fund_route/health_check）：306 passed
+  - 总计：357 passed, 0 failed
+
+---
+
 ## 2026-06-14 | TF-UI-011: 候选详情一键轻量 TA、K 线与公司概览
 
 - **执行者**：OpenCode
@@ -4293,3 +4315,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TF-UI-011-20260614-round1.txt
 - **Run archive**: docs/task_runs/TF-UI-011-20260614-000121/
+
+## 2026-06-14 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-017 - 主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-017-20260614-round1.txt
+- **Run archive**: docs/task_runs/DATA-017-20260614-001936/

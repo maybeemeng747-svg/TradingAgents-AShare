@@ -87,7 +87,7 @@
 61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
 62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
 63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
-64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
+64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
 65. `V-006`：最终动作语义端到端回放验收（P1，ready，依赖 DECISION-004）。
 66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
 67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，ready，来自 TF-QUALITY-001 task_run）。
@@ -2812,7 +2812,7 @@
 ### DATA-017: 主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1）
 - **描述**：针对 TA 报告里主力资金仍失败的问题，建立可复现的数据源健康巡检，区分“该股无龙虎榜”“接口失败”“单位未校验”“fallback 可用”。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — DATA-017-20260614（待提交）
 - **前置条件**：DATA-P0-FUND-ROUTE 完成 ✓。
 - **执行约束**：
   - 不把新闻/舆情转述当作主力资金原始证据。
