@@ -4,6 +4,47 @@
 
 ---
 
+## 2026-06-13 | TF-OBS-002 fix: 盘中观察 auto-run 仅限当日
+
+- **执行者**：OpenCode
+- **类型**：Bug fix
+- **任务**：TF-OBS-002（fix）
+- **背景**：`get_observe()` 的 auto-run 逻辑在查看历史日期时也会触发，导致用当日实时行情覆盖历史日期候选的 observe_state（TRIGGERED/INVALIDATED），E2E 测试 `test_returns_all_three_observe_items` 中 `waiting_count` 从期望 3 变为 1。
+- **修改文件**：
+  - `api/services/tradeflow_service.py`：`get_observe()` auto-run 分支新增 `trade_date == today` 守卫——仅当日才会自动执行 observe check；非当日显示 "非当日，跳过自动观察"。
+  - `tests/test_tf_obs_002_observe_auto_run.py`：所有硬编码 `"2026-06-02"` 替换为动态 `TODAY = datetime.now().strftime("%Y-%m-%d")`，使 auto-run 测试在任意日期运行时都能正确触发。
+- **测试结果**：
+  - 全量回归：5289 passed, 17 skipped（0 failed）
+- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM。
+
+---
+
+## 2026-06-13 | TF-OBS-002: 盘中观察自动执行与 A 股红绿视觉修正
+
+- **执行者**：OpenCode
+- **类型**：功能增强 + 视觉修正
+- **任务**：TF-OBS-002（P0）
+- **背景**：盘中观察页必须用户点"执行观察"才能看到数据；同时状态徽章颜色使用美股直觉（绿涨红跌），与 A 股直觉相反。
+- **修改文件**：
+  - `api/services/tradeflow_service.py`：新增 `_precheck_observe_state()` 辅助函数；`get_observe()` 增加 auto-run 逻辑——当候选存在但无信号时自动执行 observe check，返回 `observe_auto_run`、`last_observed_at`、`observe_reason` 三个新字段。
+  - `api/tradeflow_schemas.py`：`TradeFlowObserveResponse` 新增 `observe_auto_run: bool`、`last_observed_at: str`、`observe_reason: str`。
+  - `frontend/src/types/index.ts`：`TradeFlowObserveResponse` 新增对应 TS 字段。
+  - `frontend/src/pages/TradeFlow.tsx`：
+    - 修正 `observeStateLabel` 和 `observeStateBg`：TRIGGERED=红色（A 股涨/触发），INVALIDATED=绿色（A 股跌/失效），WAITING=灰色。
+    - 修正 `priceDistanceColor`：等待状态从蓝色改为灰色。
+    - `ObserveTable` 接收并展示 `observeReason`、`observeAutoRun`、`lastObservedAt`；空状态不再要求点击，而是显示自动执行原因或"系统将在开盘后自动执行观察"。
+    - 按钮文案从"执行观察"改为"手动刷新"。
+    - `fetchObserve` 同步 `last_observed_at` 到 `lastObserveCheckTime`。
+  - `tests/test_tf_obs_002_observe_auto_run.py`：新增 24 个测试覆盖 precheck、auto-run 触发/跳过、无计划原因、非交易日映射、schema 字段、fixture 覆盖（triggered/waiting/invalidated/no-plan/cross-date）。
+- **测试结果**：
+  - 新增测试：24 passed
+  - 回归测试（tf_obs_001/m005/t004/t008/ui001）：274 passed
+  - 回归测试（candidate_engine/runtime_tier）：92 passed
+  - `npm run build`：通过
+- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM。
+
+---
+
 ## 2026-06-13 | 释放下一波 TradeFlow 试跑闭环任务
 
 - **执行者**：Codex
@@ -4130,3 +4171,14 @@
 - **Status**: FAIL NEEDS_HUMAN
 - **Reason**: Default pytest failed with exit 1
 - **Run archive**: docs/task_runs/TF-QUALITY-001-20260609-202554/
+
+## 2026-06-13 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-OBS-002 - 盘中观察自动执行与 A 股红绿视觉修正（P0）
+- **Priority**: P0
+- **Rounds**: 2
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TF-OBS-002-20260613-round2.txt
+- **Run archive**: docs/task_runs/TF-OBS-002-20260613-225218/

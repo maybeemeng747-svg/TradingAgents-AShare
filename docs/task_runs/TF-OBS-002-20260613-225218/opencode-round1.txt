@@ -1,0 +1,679 @@
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "TF-OBS-002"[90m in docs/TASKS.md · 9 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [offset=2739, limit=30][0m
+[0m• [0mExplore TF-OBS-002 backend[90m Explore Agent[0m
+[0m• [0mExplore TF-OBS-002 frontend[90m Explore Agent[0m
+[0m• [0mExplore TF-OBS-002 tests[90m Explore Agent[0m
+Let me explore the relevant code areas in parallel.
+[0m✓ [0mExplore TF-OBS-002 frontend[90m Explore Agent[0m
+[0m✓ [0mExplore TF-OBS-002 backend[90m Explore Agent[0m
+[0m✓ [0mExplore TF-OBS-002 tests[90m Explore Agent[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=580, limit=120][0m
+[0m→ [0mRead api/tradeflow_schemas.py[90m [offset=170, limit=50][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [offset=40, limit=90][0m
+Now let me read the key files I need to modify.
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [offset=195, limit=120][0m
+[0m→ [0mRead frontend/src/types/index.ts[90m [limit=50, offset=990][0m
+[0m→ [0mRead frontend/src/types/index.ts[90m [limit=30, offset=1115][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=60, offset=1135][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=60, offset=1250][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=20, offset=1795][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=10, offset=1572][0m
+Let me read the observe header summary and observe render section.
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=60, offset=980][0m
+[0m→ [0mRead tradingagents/tradeflow/observe_runner.py
+Now let me read the observe_runner and the `get_observe` function more carefully, plus understand the `_query_by_date_or_effective` helper.
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=50, offset=310][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=30, offset=1][0m
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git status --short
+M docs/TASKS.md
+?? docs/task_runs/TF-OBS-002-20260613-225218/
+[0m
+Now let me check the git status and set up the todo list.
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=20, offset=30][0m
+[0m
+[0m# [0mTodos
+[ ] Backend: Add auto-run logic to get_observe() with observe_auto_run, last_observed_at, observe_reason fields
+[ ] Backend: Add new fields to TradeFlowObserveResponse schema
+[ ] Frontend: Add observe_auto_run, last_observed_at, observe_reason to TS types
+[ ] Frontend: Fix A-share color semantics (red=triggered/up, green=invalidated/down, gray=waiting)
+[ ] Frontend: Auto-load observe on tab open, show auto-run status/reason
+[ ] Tests: Add test_tf_obs_002_observe_auto_run.py with fixture coverage
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m# [0mTodos
+[•] Backend: Add auto-run logic to get_observe() with observe_auto_run, last_observed_at, observe_reason fields
+[ ] Backend: Add new fields to TradeFlowObserveResponse schema
+[ ] Frontend: Add observe_auto_run, last_observed_at, observe_reason to TS types
+[ ] Frontend: Fix A-share color semantics (red=triggered/up, green=invalidated/down, gray=waiting)
+[ ] Frontend: Auto-load observe on tab open, show auto-run status/reason
+[ ] Tests: Add test_tf_obs_002_observe_auto_run.py with fixture coverage
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+Now I have a complete understanding. Let me implement the changes.
+
+## 1. Backend: Modify `get_observe()` in `api/services/tradeflow_service.py`
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=10, offset=44][0m
+Now let me implement the backend changes. First, add the precheck helper and modify `get_observe()`:
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -588,13 +588,131 @@
+     finally:
+         conn.close()
+ 
+ 
++def _precheck_observe_state(db_path: str, trade_date: str) -> dict:
++    """Quick check whether candidates and observe signals exist for a date.  # [TF-OBS-002] observe_auto_run
++
++    Returns dict with:
++    - has_candidates: bool
++    - has_signals_for_date: bool
++    - last_observed_at: str
++    - reason: str (explanation when candidates are absent)
++    """
++    from tradingagents.tradeflow.candidate_engine import init_db
++    init_db(db_path)
++    conn = sqlite3.connect(db_path)
++    conn.row_factory = sqlite3.Row
++    try:
++        columns = {r[1] for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()}
++        has_eff = "effective_trade_date" in columns
++
++        if has_eff:
++            cnt_row = conn.execute(
++                "SELECT COUNT(*) AS cnt FROM tradeflow_candidates WHERE "
++                "(effective_trade_date = ? OR (trade_date = ? AND (effective_trade_date = '' OR effective_trade_date IS NULL))) "
++                "AND status = 'active'",
++                (trade_date, trade_date),
++            ).fetchone()
++        else:
++            cnt_row = conn.execute(
++                "SELECT COUNT(*) AS cnt FROM tradeflow_candidates WHERE trade_date = ? AND status = 'active'",
++                (trade_date,),
++            ).fetchone()
++        has_candidates = cnt_row is not None and cnt_row["cnt"] > 0
++
++        has_signals_for_date = False
++        last_observed_at = ""
++        try:
++            sig_rows = conn.execute(
++                "SELECT signal_time, evidence_json FROM tradeflow_signals "
++                "WHERE signal_type LIKE 'observe_%' ORDER BY signal_time DESC LIMIT 50"
++            ).fetchall()
++            for sr in sig_rows:
++                ev = json.loads(sr["evidence_json"]) if sr["evidence_json"] else {}
++                if ev.get("trade_date") == trade_date:
++                    has_signals_for_date = True
++                    last_observed_at = sr["signal_time"]
++                    break
++            if not last_observed_at and sig_rows:
++                last_observed_at = sig_rows[0]["signal_time"]
++        except Exception:
++            pass
++
++        reason = ""
++        if not has_candidates:
++            total = conn.execute("SELECT COUNT(*) AS cnt FROM tradeflow_candidates").fetchone()
++            if total and total["cnt"] > 0:
++                reason = "当日无活跃候选"
++            else:
++                reason = "无计划"
++
++        return {
++            "has_candidates": has_candidates,
++            "has_signals_for_date": has_signals_for_date,
++            "last_observed_at": last_observed_at,
++            "reason": reason,
++        }
++    finally:
++        conn.close()
++
++
+ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
+-    conn = _connect(tf_db_path)
++    tf_db = tf_db_path or _get_tradeflow_db_path()
+     _fast_meta = _tradeflow_meta("tradeflow_observe")  # [PERF-001]
++
++    if not os.path.exists(tf_db):
++        return {
++            "status": "no_data",
++            "trade_date": trade_date,
++            "observe_auto_run": False,        # [TF-OBS-002] observe_auto_run
++            "last_observed_at": "",           # [TF-OBS-002]
++            "observe_reason": "无数据库",      # [TF-OBS-002]
++            "observe_items": [],
++            "triggered_count": 0,
++            "invalidated_count": 0,
++            "waiting_count": 0,
++            "runtime_tier_meta": _fast_meta,
++        }
++
++    # [TF-OBS-002] observe_auto_run — auto-run observe check when page opens
++    observe_auto_run = False
++    observe_reason = ""
++    last_observed_at = ""
++
++    _pre = _precheck_observe_state(tf_db, trade_date)
++    last_observed_at = _pre["last_observed_at"]
++
++    if not _pre["has_candidates"]:
++        observe_reason = _pre["reason"]
++    elif not _pre["has_signals_for_date"]:
++        # Auto-run observe check so page isn't blank on first open
++        try:
++            from tradingagents.tradeflow.candidate_engine import init_db
++            from tradingagents.tradeflow.observe_runner import run_observe
++            init_db(tf_db)
++            _auto = run_observe(trade_date=trade_date, db_path=tf_db)
++            observe_auto_run = True
++            last_observed_at = _auto.run_time
++            if _auto.skipped_reason:
++                observe_reason = _auto.skipped_reason
++        except Exception as e:
++            observe_reason = f"自动执行失败: {e}"
++
++    conn = _connect(tf_db_path)
+     if conn is None:
+-        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
++        return {
++            "status": "no_data",
++            "trade_date": trade_date,
++            "observe_auto_run": observe_auto_run,
++            "last_observed_at": last_observed_at,
++            "observe_reason": observe_reason,
++            "observe_items": [],
++            "triggered_count": 0,
++            "invalidated_count": 0,
++            "waiting_count": 0,
++            "runtime_tier_meta": _fast_meta,
++        }
+ 
+     try:
+         columns = _table_columns(conn, "tradeflow_candidates")
+         extra_conditions = []
+@@ -662,8 +780,11 @@
+             "observe_items": items,
+             "triggered_count": triggered,
+             "invalidated_count": invalidated,
+             "waiting_count": waiting,
++            "observe_auto_run": observe_auto_run,        # [TF-OBS-002] observe_auto_run
++            "last_observed_at": last_observed_at,         # [TF-OBS-002]
++            "observe_reason": observe_reason,             # [TF-OBS-002]
+             "runtime_tier_meta": _tradeflow_meta("tradeflow_observe"),  # [PERF-001]
+         }
+     finally:
+         conn.close()
+
+[0m
+## 2. Backend: Add new fields to schema
+[0m← [0mEdit api/tradeflow_schemas.py
+Index: /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
++++ /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
+@@ -198,8 +198,11 @@
+     observe_items: List[TradeFlowObserveItem] = Field(default_factory=list)
+     triggered_count: int = 0
+     invalidated_count: int = 0
+     waiting_count: int = 0
++    observe_auto_run: bool = False  # [TF-OBS-002] observe_auto_run
++    last_observed_at: str = ""      # [TF-OBS-002]
++    observe_reason: str = ""        # [TF-OBS-002]
+     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+ 
+ 
+ class TradeFlowTAQueueItem(BaseModel):
+
+[0m
+[0m# [0mTodos
+[✓] Backend: Add auto-run logic to get_observe() with observe_auto_run, last_observed_at, observe_reason fields
+[✓] Backend: Add new fields to TradeFlowObserveResponse schema
+[•] Frontend: Add observe_auto_run, last_observed_at, observe_reason to TS types
+[ ] Frontend: Fix A-share color semantics (red=triggered/up, green=invalidated/down, gray=waiting)
+[ ] Frontend: Auto-load observe on tab open, show auto-run status/reason
+[ ] Tests: Add test_tf_obs_002_observe_auto_run.py with fixture coverage
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+## 3. Frontend: Add new fields to TS types
+[0m← [0mEdit frontend/src/types/index.ts
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
++++ /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
+@@ -1014,8 +1014,11 @@
+     observe_items: TradeFlowObserveItem[]
+     triggered_count: number
+     invalidated_count: number
+     waiting_count: number
++    observe_auto_run: boolean   // [TF-OBS-002] observe_auto_run
++    last_observed_at: string    // [TF-OBS-002]
++    observe_reason: string      // [TF-OBS-002]
+     runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
+ }
+ 
+ export interface TradeFlowTAQueueItem {
+
+[0m
+[0m# [0mTodos
+[✓] Backend: Add auto-run logic to get_observe() with observe_auto_run, last_observed_at, observe_reason fields
+[✓] Backend: Add new fields to TradeFlowObserveResponse schema
+[✓] Frontend: Add observe_auto_run, last_observed_at, observe_reason to TS types
+[•] Frontend: Fix A-share color semantics (red=triggered/up, green=invalidated/down, gray=waiting)
+[ ] Frontend: Auto-load observe on tab open, show auto-run status/reason
+[ ] Tests: Add test_tf_obs_002_observe_auto_run.py with fixture coverage
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+## 4. Frontend: Fix A-share color semantics
+Fix `observeStateLabel` — A-share convention: red=triggered (up), green=invalidated (down):
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -52,13 +52,14 @@
+         default: return { text: '观察', cls: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300' }
+     }
+ }
+ 
++// [TF-OBS-002] observe_auto_run — A-share colors: red=up/triggered, green=down/invalidated, gray=waiting
+ function observeStateLabel(state: string): { text: string; cls: string } {
+     switch (state) {
+-        case 'TRIGGERED': return { text: '已触发', cls: 'text-emerald-600 dark:text-emerald-400' }
++        case 'TRIGGERED': return { text: '已触发', cls: 'text-red-600 dark:text-red-400' }
+         case 'EXPIRED': return { text: '已过期', cls: 'text-amber-600 dark:text-amber-400' }
+-        case 'INVALIDATED': return { text: '已失效', cls: 'text-red-500 dark:text-red-400' }
++        case 'INVALIDATED': return { text: '已失效', cls: 'text-emerald-600 dark:text-emerald-400' }
+         default: return { text: '等待中', cls: 'text-slate-500 dark:text-slate-400' }
+     }
+ }
+ 
+
+[0m
+Fix `observeStateBg` — same A-share convention:
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -62,13 +62,14 @@
+         default: return { text: '等待中', cls: 'text-slate-500 dark:text-slate-400' }
+     }
+ }
+ 
++// [TF-OBS-002] observe_auto_run — A-share colors: red=up/triggered, green=down/invalidated
+ function observeStateBg(state: string): string {
+     switch (state) {
+-        case 'TRIGGERED': return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
++        case 'TRIGGERED': return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+         case 'EXPIRED': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+-        case 'INVALIDATED': return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
++        case 'INVALIDATED': return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+         default: return 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400'
+     }
+ }
+ 
+
+[0m
+Fix `priceDistanceColor` — waiting should be gray (not blue) per task spec:
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -123,9 +123,9 @@
+         const belowPct = ((invalidPrice - currentPrice) / invalidPrice * 100)
+         return { text: `已失效 / -${belowPct.toFixed(2)}%`, cls: 'text-emerald-600 dark:text-emerald-400', label: '已失效' }
+     }
+     const toTrigger = ((triggerPrice - currentPrice) / triggerPrice * 100)
+-    return { text: `还差 ${toTrigger.toFixed(2)}%`, cls: 'text-blue-600 dark:text-blue-400', label: '等待中' }
++    return { text: `还差 ${toTrigger.toFixed(2)}%`, cls: 'text-slate-500 dark:text-slate-400', label: '等待中' }
+ }
+ 
+ // [TF-P0-002] tradeflow_pool_split — pool tabs
+ type PoolKey = 'all' | 'haotian' | 'policy' | 'tech' | 'event' | 'gap'
+
+[0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=110, offset=201][0m
+## 5. Frontend: Auto-load observe and show auto-run status/reason
+Now let me update the `ObserveTable` component to accept and display the new auto-run metadata:
+[0m
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -199,29 +199,50 @@
+         </div>
+     )
+ }
+ 
+-function ObserveTable({ items, onRun, running, runResult, lastCheckTime }: { items: TradeFlowObserveItem[]; onRun: () => void; running: boolean; runResult: TradeFlowObserveRunResponse | null; lastCheckTime: string | null }) {
++// [TF-OBS-002] observe_auto_run
++function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observeReason, observeAutoRun, lastObservedAt }: {
++    items: TradeFlowObserveItem[]
++    onRun: () => void
++    running: boolean
++    runResult: TradeFlowObserveRunResponse | null
++    lastCheckTime: string | null
++    observeReason: string
++    observeAutoRun: boolean
++    lastObservedAt: string
++}) {
+     const [showResult, setShowResult] = useState(false)
++    const effectiveLastTime = lastObservedAt || lastCheckTime
+     return (
+         <div>
+             <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-700">
+                 <span className="text-sm font-medium text-slate-700 dark:text-slate-300">盘中观察</span>
+-                {lastCheckTime && (
++                {effectiveLastTime && (
+                     <span className="inline-flex items-center gap-1 text-xs text-slate-400">
+                         <Clock className="h-3 w-3" />
+-                        最后检查: {lastCheckTime}
++                        最后检查: {effectiveLastTime}
+                     </span>
+                 )}
++                {observeAutoRun && (
++                    <span className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">
++                        自动执行
++                    </span>
++                )}
+                 <button
+                     onClick={() => { onRun(); setShowResult(true) }}
+                     disabled={running}
+                     className="ml-auto inline-flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                 >
+                     {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+-                    {running ? '执行中...' : '执行观察'}
++                    {running ? '执行中...' : '手动刷新'}
+                 </button>
+             </div>
++            {observeReason && items.length === 0 && !runResult && (
++                <div className="mx-4 mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
++                    {observeReason}
++                </div>
++            )}
+             {showResult && runResult && (
+                 <div className={`mx-4 mt-3 rounded-lg border px-4 py-3 text-sm ${
+                     runResult.status === 'skipped'
+                         ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300'
+@@ -246,14 +267,14 @@
+                     )}
+                     <div className="mt-1 text-xs opacity-70">执行时间: {runResult.run_time}</div>
+                 </div>
+             )}
+-            {items.length === 0 && !runResult ? (
++            {items.length === 0 && !runResult && !observeReason ? (
+                 <div className="py-20 text-center text-sm text-slate-400">
+                     <div className="mb-3">暂无盘中观察数据</div>
+-                    <div className="text-xs">点击"执行观察"按钮手动触发盘中检查</div>
++                    <div className="text-xs">系统将在开盘后自动执行观察，或点击"手动刷新"</div>
+                 </div>
+-            ) : items.length === 0 ? null : (
++            ) : items.length === 0 && !runResult ? null : (
+             <div className="overflow-x-auto">
+                 <table className="w-full text-sm">
+                 <thead>
+                     <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+
+[0m
+Now update the call site to pass the new props:
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -1596,9 +1596,18 @@
+     )
+ }
+ 
+ if (activeTab === 'observe') {
+-    return <ObserveTable items={observeData?.observe_items ?? []} onRun={handleRunObserve} running={observeRunLoading} runResult={observeRunResult} lastCheckTime={lastObserveCheckTime} />
++    return <ObserveTable
++        items={observeData?.observe_items ?? []}
++        onRun={handleRunObserve}
++        running={observeRunLoading}
++        runResult={observeRunResult}
++        lastCheckTime={lastObserveCheckTime}
++        observeReason={observeData?.observe_reason ?? ''}
++        observeAutoRun={observeData?.observe_auto_run ?? false}
++        lastObservedAt={observeData?.last_observed_at ?? ''}
++    />
+ }
+ 
+ if (activeTab === 'ta-queue') {
+     if (!taQueueData) {
+
+[0m
+Let me also update `fetchObserve` to track the last observed time from the API response:
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=20, offset=1142][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=20, offset=1163][0m
+[0m
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -1167,8 +1167,12 @@
+ setError(null)
+ try {
+     const res = await api.getTradeFlowObserve(date)
+     setObserveData(res)
++    // [TF-OBS-002] observe_auto_run — sync last observed time from API
++    if (res.last_observed_at) {
++        setLastObserveCheckTime(res.last_observed_at)
++    }
+ } catch (e: unknown) {
+     setError(e instanceof Error ? e.message : '加载失败')
+ } finally {
+     setLoading(false)
+
+[0m
+[0m# [0mTodos
+[✓] Backend: Add auto-run logic to get_observe() with observe_auto_run, last_observed_at, observe_reason fields
+[✓] Backend: Add new fields to TradeFlowObserveResponse schema
+[✓] Frontend: Add observe_auto_run, last_observed_at, observe_reason to TS types
+[✓] Frontend: Fix A-share color semantics (red=triggered/up, green=invalidated/down, gray=waiting)
+[✓] Frontend: Auto-load observe on tab open, show auto-run status/reason
+[•] Tests: Add test_tf_obs_002_observe_auto_run.py with fixture coverage
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead tests/test_tf_obs_001_observe_runner.py[90m [limit=80, offset=1][0m
+## 6. Tests: Create `test_tf_obs_002_observe_auto_run.py`
+
+Let me first check the existing test patterns to match the conventions:
+[0m→ [0mRead tests/test_ui001_tradeflow_api.py[90m [limit=80, offset=447][0m
+[0m→ [0mRead tests/test_ui001_tradeflow_api.py[90m [limit=50, offset=524][0m
+[0m→ [0mRead tests/test_ui001_tradeflow_api.py[90m [limit=50, offset=1][0m
+[0m→ [0mRead tests/test_ui001_tradeflow_api.py[90m [limit=50, offset=50][0m
+[0m→ [0mRead tests/test_ui001_tradeflow_api.py[90m [limit=30, offset=100][0m
+Now let me create the test file:
+[0m
+[0m← [0mWrite tests/test_tf_obs_002_observe_auto_run.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[✓] Backend: Add auto-run logic to get_observe() with observe_auto_run, last_observed_at, observe_reason fields
+[✓] Backend: Add new fields to TradeFlowObserveResponse schema
+[✓] Frontend: Add observe_auto_run, last_observed_at, observe_reason to TS types
+[✓] Frontend: Fix A-share color semantics (red=triggered/up, green=invalidated/down, gray=waiting)
+[✓] Frontend: Auto-load observe on tab open, show auto-run status/reason
+[✓] Tests: Add test_tf_obs_002_observe_auto_run.py with fixture coverage
+[•] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+## 7. Run tests
+Run the new test file first, then the regression suite:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tf_obs_002_observe_auto_run.py -q --tb=short 2>&1
+........................                                                 [100%]
+24 passed in 1.69s
+[0m
+All 24 new tests pass. Now run the existing observe/TradeFlow regression tests:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tf_obs_001_observe_runner.py tests/test_m005_intraday_observe.py tests/test_t004_intraday_observe.py tests/test_t008_observe_fixture_replay.py tests/test_ui001_tradeflow_api.py -q --tb=short 2>&1
+........................................................................ [ 26%]
+........................................................................ [ 52%]
+........................................................................ [ 78%]
+..........................................................               [100%]
+274 passed in 75.44s (0:01:15)
+[0m
+All 274 regression tests pass. Now verify the frontend build:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare/frontend && npm run build 2>&1
+> tradingagents-dashboard@0.1.0 build
+> tsc && vite build
+
+vite v6.4.2 building for production...
+(node:2657) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+transforming...
+✓ 1938 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                     1.15 kB │ gzip:   0.65 kB
+dist/assets/index-BuYv712b.css    160.71 kB │ gzip:  22.33 kB
+dist/assets/index-CYmkfC3-.js   1,132.61 kB │ gzip: 330.35 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 1.35s
+[0m
+Frontend builds cleanly. Now run a broader test sweep to make sure nothing else broke:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tradeflow_candidate_engine.py tests/test_runtime_tier_contract.py -q --tb=short 2>&1
+........................................................................ [ 78%]
+....................                                                     [100%]
+92 passed in 49.93s
+[0m
+All tests pass. Let me now update the DEVLOG.
+
+## 8. Update docs/DEVLOG.md
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=40, offset=1][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,34 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-13 | TF-OBS-002: 盘中观察自动执行与 A 股红绿视觉修正
++
++- **执行者**：OpenCode
++- **类型**：功能增强 + 视觉修正
++- **任务**：TF-OBS-002（P0）
++- **背景**：盘中观察页必须用户点"执行观察"才能看到数据；同时状态徽章颜色使用美股直觉（绿涨红跌），与 A 股直觉相反。
++- **修改文件**：
++  - `api/services/tradeflow_service.py`：新增 `_precheck_observe_state()` 辅助函数；`get_observe()` 增加 auto-run 逻辑——当候选存在但无信号时自动执行 observe check，返回 `observe_auto_run`、`last_observed_at`、`observe_reason` 三个新字段。
++  - `api/tradeflow_schemas.py`：`TradeFlowObserveResponse` 新增 `observe_auto_run: bool`、`last_observed_at: str`、`observe_reason: str`。
++  - `frontend/src/types/index.ts`：`TradeFlowObserveResponse` 新增对应 TS 字段。
++  - `frontend/src/pages/TradeFlow.tsx`：
++    - 修正 `observeStateLabel` 和 `observeStateBg`：TRIGGERED=红色（A 股涨/触发），INVALIDATED=绿色（A 股跌/失效），WAITING=灰色。
++    - 修正 `priceDistanceColor`：等待状态从蓝色改为灰色。
++    - `ObserveTable` 接收并展示 `observeReason`、`observeAutoRun`、`lastObservedAt`；空状态不再要求点击，而是显示自动执行原因或"系统将在开盘后自动执行观察"。
++    - 按钮文案从"执行观察"改为"手动刷新"。
++    - `fetchObserve` 同步 `last_observed_at` 到 `lastObserveCheckTime`。
++  - `tests/test_tf_obs_002_observe_auto_run.py`：新增 24 个测试覆盖 precheck、auto-run 触发/跳过、无计划原因、非交易日映射、schema 字段、fixture 覆盖（triggered/waiting/invalidated/no-plan/cross-date）。
++- **测试结果**：
++  - 新增测试：24 passed
++  - 回归测试（tf_obs_001/m005/t004/t008/ui001）：274 passed
++  - 回归测试（candidate_engine/runtime_tier）：92 passed
++  - `npm run build`：通过
++- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM。
++
++---
++
+ ## 2026-06-13 | 释放下一波 TradeFlow 试跑闭环任务
+ 
+ - **执行者**：Codex
+ - **类型**：任务池规划
+
+[0m
+Now update the task status in TASKS.md:
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -83,9 +83,9 @@
+ 57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
+ 58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，blocked — NEEDS_HUMAN，commit 5f304db，见 task_runs）。
+ 59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done，Codex 修复，待提交）。
+ 60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+-61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，ready，依赖 TF-QUALITY-001A ✓）。
++61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+ 62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，ready，依赖 TF-QUALITY-001A ✓）。
+ 63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，ready，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+ 64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
+ 65. `V-006`：最终动作语义端到端回放验收（P1，ready，依赖 DECISION-004）。
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -2738,9 +2738,9 @@
+ 
+ ### TF-OBS-002: 盘中观察自动执行与 A 股红绿视觉修正（P0）
+ - **描述**：盘中观察不应必须用户点“执行”才看到结果；同时距离触发价的颜色要符合 A 股直觉：上涨/接近突破用红，跌破/远离/风险用绿或灰。
+ - **优先级**：P0
+-- **状态**：in_progress — claimed TF-OBS-002-20260613-225218
++- **状态**：done
+ - **前置条件**：T-004、T-008 完成 ✓；TF-QUALITY-001A 完成。
+ - **执行约束**：
+   - 不做高频盯盘；默认低频/手动刷新即可。
+   - 不调用 LLM。
+
+[0m
+[0m# [0mTodos
+[✓] Backend: Add auto-run logic to get_observe() with observe_auto_run, last_observed_at, observe_reason fields
+[✓] Backend: Add new fields to TradeFlowObserveResponse schema
+[✓] Frontend: Add observe_auto_run, last_observed_at, observe_reason to TS types
+[✓] Frontend: Fix A-share color semantics (red=triggered/up, green=invalidated/down, gray=waiting)
+[✓] Frontend: Auto-load observe on tab open, show auto-run status/reason
+[✓] Tests: Add test_tf_obs_002_observe_auto_run.py with fixture coverage
+[✓] Run tests and verify
+[✓] Update docs/DEVLOG.md
+[0m
+TF-OBS-002 is complete. Here's the summary:
+
+## Files Changed
+
+| File | Change |
+|---|---|
+| `api/services/tradeflow_service.py` | New `_precheck_observe_state()` helper; `get_observe()` auto-runs observe check when candidates exist but no signals; returns `observe_auto_run`, `last_observed_at`, `observe_reason` |
+| `api/tradeflow_schemas.py` | `TradeFlowObserveResponse` gains 3 new fields |
+| `frontend/src/types/index.ts` | `TradeFlowObserveResponse` TS interface updated |
+| `frontend/src/pages/TradeFlow.tsx` | A-share color fix (TRIGGERED=red, INVALIDATED=green, WAITING=gray in `observeStateLabel`, `observeStateBg`, `priceDistanceColor`); ObserveTable shows auto-run status/reason; empty state explains instead of demanding click; button renamed to "手动刷新" |
+| `tests/test_tf_obs_002_observe_auto_run.py` | 24 new tests |
+| `docs/DEVLOG.md` | Updated |
+| `docs/TASKS.md` | Status → done |
+
+## Key Logic
+
+- **Auto-run**: When GET `/observe` is called and candidates exist but no observe signals exist for the date, the backend automatically calls `run_observe()` before returning — so the page shows data on first open without clicking.
+- **No-plan clarity**: Returns clear `observe_reason` ("无计划", "当日无活跃候选", "非交易日", etc.) instead of blank.
+- **Color fix**: `observeStateLabel`/`observeStateBg` flipped from US convention (green=triggered, red=invalidated) to A-share convention (red=triggered/up, green=invalidated/down, gray=waiting).
+
+## Test Results
+
+- New tests: **24 passed**
+- Regression (tf_obs_001/m005/t004/t008/ui001): **274 passed**
+- Regression (candidate_engine/runtime_tier): **92 passed**
+- `npm run build`: **passed**

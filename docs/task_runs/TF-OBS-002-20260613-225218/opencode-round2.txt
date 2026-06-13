@@ -1,0 +1,560 @@
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead tests/test_tf_p0_003_e2e_smoke.py[90m [offset=360, limit=80][0m
+[0m✱ [0mGrep "def get_observe"[90m 2 matches[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=659, limit=120][0m
+[0m→ [0mRead tests/test_tf_p0_003_e2e_smoke.py[90m [limit=100, offset=1][0m
+[0m→ [0mRead tests/test_tf_p0_003_e2e_smoke.py[90m [limit=120, offset=100][0m
+[0m→ [0mRead tests/test_tf_p0_003_e2e_smoke.py[90m [limit=80, offset=219][0m
+[0m✱ [0mGrep "def _precheck_observe_state"[90m 1 match[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=67, offset=592][0m
+[0m✱ [0mGrep "def run_observe"[90m 5 matches[0m
+[0m→ [0mRead tradingagents/tradeflow/observe_runner.py[90m [limit=100, offset=242][0m
+[0m✱ [0mGrep "def _is_trading_day"[90m in tradingagents/tradeflow · 2 matches[0m
+[0m→ [0mRead tradingagents/tradeflow/observe_runner.py[90m [limit=60, offset=58][0m
+Now I understand the issue. The `get_observe()` auto-run logic (`[TF-OBS-002]`) fires whenever candidates exist but no observe signals exist for the date. It then calls `run_observe()` which fetches real-time quotes and mutates candidate states (TRIGGERED/INVALIDATED). For a past trade date, this is semantically wrong — today's live prices shouldn't be applied against a past date's triggers.
+
+Let me fix it to only auto-run for today's date:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=30, offset=684][0m
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -684,20 +684,24 @@
+ 
+ if not _pre["has_candidates"]:
+     observe_reason = _pre["reason"]
+ elif not _pre["has_signals_for_date"]:
+-    # Auto-run observe check so page isn't blank on first open
+-    try:
+-        from tradingagents.tradeflow.candidate_engine import init_db
+-        from tradingagents.tradeflow.observe_runner import run_observe
+-        init_db(tf_db)
+-        _auto = run_observe(trade_date=trade_date, db_path=tf_db)
+-        observe_auto_run = True
+-        last_observed_at = _auto.run_time
+-        if _auto.skipped_reason:
+-            observe_reason = _auto.skipped_reason
+-    except Exception as e:
+-        observe_reason = f"自动执行失败: {e}"
++    _today_str = datetime.now().strftime("%Y-%m-%d")
++    if trade_date != _today_str:
++        observe_reason = "非当日，跳过自动观察"
++    else:
++        # Auto-run observe check so page isn't blank on first open
++        try:
++            from tradingagents.tradeflow.candidate_engine import init_db
++            from tradingagents.tradeflow.observe_runner import run_observe
++            init_db(tf_db)
++            _auto = run_observe(trade_date=trade_date, db_path=tf_db)
++            observe_auto_run = True
++            last_observed_at = _auto.run_time
++            if _auto.skipped_reason:
++                observe_reason = _auto.skipped_reason
++        except Exception as e:
++            observe_reason = f"自动执行失败: {e}"
+ 
+ conn = _connect(tf_db_path)
+ if conn is None:
+     return {
+
+[0m
+Now let me verify `datetime` is imported in the file:
+[0m✱ [0mGrep "^from datetime|^import datetime"[90m 1 match[0m
+Good, `datetime` is imported. Now let me run the failing test:
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tf_p0_003_e2e_smoke.py::TestObserveE2E -x -q 2>&1
+.....                                                                    [100%]
+5 passed in 1.27s
+[0m
+All 5 observe tests pass. Let me run the full test file to make sure nothing else broke:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tf_p0_003_e2e_smoke.py -x -q 2>&1
+.....................................................                    [100%]
+53 passed in 2.32s
+[0m
+Let me check if there are other tests specifically testing the auto-run behavior that might be affected:
+[0m✱ [0mGrep "observe_auto_run"[90m in tests · 17 matches[0m
+[0m→ [0mRead tests/test_tf_obs_002_observe_auto_run.py[90m [limit=60, offset=130][0m
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tf_obs_002_observe_auto_run.py -x -q 2>&1
+.......F
+=================================== FAILURES ===================================
+___________ TestAutoRunTriggers.test_auto_run_called_when_no_signals ___________
+
+self = <tests.test_tf_obs_002_observe_auto_run.TestAutoRunTriggers object at 0x11146adb0>
+tmp_db = '/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-189/test_auto_run_called_when_no_s0/test_tf_obs002.db'
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x11146a6c0>
+
+    def test_auto_run_called_when_no_signals(self, tmp_db, monkeypatch):
+        save_candidate(_make_candidate("600519.SH", observe_state="TRIGGERED"), tmp_db)
+    
+        call_log = []
+    
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            call_log.append(trade_date)
+            r = ObserveRunResult()
+            r.checked = 1
+            r.triggered = 1
+            r.signals_written = 1
+            return r
+    
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+    
+        result = get_observe("2026-06-02", tf_db_path=tmp_db)
+>       assert len(call_log) == 1
+E       assert 0 == 1
+E        +  where 0 = len([])
+
+tests/test_tf_obs_002_observe_auto_run.py:157: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_tf_obs_002_observe_auto_run.py::TestAutoRunTriggers::test_auto_run_called_when_no_signals
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 7 passed in 1.37s
+[0m
+The fix is correct (auto-run should only happen for today), but the TF-OBS-002 unit tests use a hardcoded past date. Let me update those tests to use today's date:
+[0m→ [0mRead tests/test_tf_obs_002_observe_auto_run.py
+The fix is correct but the TF-OBS-002 unit tests use a hardcoded "2026-06-02" (which was today when written). I need to update them to use a dynamic today's date so auto-run triggers properly. Let me update the test file:
+[0m
+[0m← [0mEdit tests/test_tf_obs_002_observe_auto_run.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tf_obs_002_observe_auto_run.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tf_obs_002_observe_auto_run.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tf_obs_002_observe_auto_run.py
+@@ -16,8 +16,9 @@
+ import json
+ import os
+ import sqlite3
+ import sys
++from datetime import datetime
+ 
+ import pytest
+ 
+ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+[0m
+[0m← [0mEdit tests/test_tf_obs_002_observe_auto_run.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tf_obs_002_observe_auto_run.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tf_obs_002_observe_auto_run.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tf_obs_002_observe_auto_run.py
+@@ -30,8 +30,11 @@
+ from api.services.tradeflow_service import get_observe, _precheck_observe_state
+ from api.tradeflow_schemas import TradeFlowObserveResponse
+ 
+ 
++TODAY = datetime.now().strftime("%Y-%m-%d")
++
++
+ @pytest.fixture
+ def tmp_db(tmp_path):
+     db_path = str(tmp_path / "test_tf_obs002.db")
+     init_db(db_path)
+
+[0m
+Now replace all hardcoded "2026-06-02" with `TODAY`:
+[0m← [0mEdit tests/test_tf_obs_002_observe_auto_run.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tf_obs_002_observe_auto_run.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tf_obs_002_observe_auto_run.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tf_obs_002_observe_auto_run.py
+@@ -41,9 +41,9 @@
+     return db_path
+ 
+ 
+ def _make_candidate(symbol, trigger_price=10.0, invalid_price=9.0,
+-                    trade_date="2026-06-02", observe_state="WAITING",
++                    trade_date=TODAY, observe_state="WAITING",
+                     effective_trade_date=""):
+     c = Candidate(
+         symbol=symbol,
+         name=f"Test {symbol}",
+@@ -87,53 +87,53 @@
+ 
+ 
+ class TestPrecheckObserveState:
+     def test_no_candidates_no_db(self, tmp_path):
+-        result = _precheck_observe_state(str(tmp_path / "nonexistent.db"), "2026-06-02")
++        result = _precheck_observe_state(str(tmp_path / "nonexistent.db"), TODAY)
+         # init_db creates the DB, so after precheck it exists
+         assert result["has_candidates"] is False
+         assert result["reason"] == "无计划"
+ 
+     def test_has_candidates_no_signals(self, tmp_db):
+         save_candidate(_make_candidate("600519.SH"), tmp_db)
+-        result = _precheck_observe_state(tmp_db, "2026-06-02")
++        result = _precheck_observe_state(tmp_db, TODAY)
+         assert result["has_candidates"] is True
+         assert result["has_signals_for_date"] is False
+         assert result["reason"] == ""
+ 
+     def test_has_candidates_and_signals(self, tmp_db):
+         save_candidate(_make_candidate("600519.SH"), tmp_db)
+-        _insert_signal(tmp_db, "600519.SH", "2026-06-02")
+-        result = _precheck_observe_state(tmp_db, "2026-06-02")
++        _insert_signal(tmp_db, "600519.SH", TODAY)
++        result = _precheck_observe_state(tmp_db, TODAY)
+         assert result["has_candidates"] is True
+         assert result["has_signals_for_date"] is True
+         assert result["last_observed_at"] != ""
+ 
+     def test_no_candidates_but_db_has_data(self, tmp_db):
+         save_candidate(_make_candidate("600519.SH", trade_date="2026-05-01"), tmp_db)
+-        result = _precheck_observe_state(tmp_db, "2026-06-02")
++        result = _precheck_observe_state(tmp_db, TODAY)
+         assert result["has_candidates"] is False
+         assert result["reason"] == "当日无活跃候选"
+ 
+ 
+ class TestGetObserveNewFields:
+     def test_no_db_returns_auto_run_fields(self):
+-        result = get_observe("2026-06-02", tf_db_path="/nonexistent/path.db")
++        result = get_observe(TODAY, tf_db_path="/nonexistent/path.db")
+         assert "observe_auto_run" in result
+         assert "last_observed_at" in result
+         assert "observe_reason" in result
+         assert result["observe_auto_run"] is False
+         assert result["observe_reason"] == "无数据库"
+ 
+     def test_returns_observe_auto_run_false_when_signals_exist(self, tmp_db):
+         save_candidate(_make_candidate("600519.SH"), tmp_db)
+-        _insert_signal(tmp_db, "600519.SH", "2026-06-02")
+-        result = get_observe("2026-06-02", tf_db_path=tmp_db)
++        _insert_signal(tmp_db, "600519.SH", TODAY)
++        result = get_observe(TODAY, tf_db_path=tmp_db)
+         assert result["observe_auto_run"] is False
+         assert result["last_observed_at"] != ""
+ 
+     def test_returns_observe_reason_when_no_plan(self, tmp_db):
+-        result = get_observe("2026-06-02", tf_db_path=tmp_db)
++        result = get_observe(TODAY, tf_db_path=tmp_db)
+         assert result["observe_auto_run"] is False
+         assert result["observe_reason"] == "无计划"
+         assert result["observe_items"] == []
+ 
+@@ -156,11 +156,11 @@
+             "tradingagents.tradeflow.observe_runner.run_observe",
+             fake_run_observe,
+         )
+ 
+-        result = get_observe("2026-06-02", tf_db_path=tmp_db)
++        result = get_observe(TODAY, tf_db_path=tmp_db)
+         assert len(call_log) == 1
+-        assert call_log[0] == "2026-06-02"
++        assert call_log[0] == TODAY
+         assert result["observe_auto_run"] is True
+ 
+     def test_auto_run_populates_items_after_run(self, tmp_db, monkeypatch):
+         save_candidate(_make_candidate("600519.SH", observe_state="TRIGGERED"), tmp_db)
+@@ -178,18 +178,18 @@
+             "tradingagents.tradeflow.observe_runner.run_observe",
+             fake_run_observe,
+         )
+ 
+-        result = get_observe("2026-06-02", tf_db_path=tmp_db)
++        result = get_observe(TODAY, tf_db_path=tmp_db)
+         assert result["observe_auto_run"] is True
+         assert len(result["observe_items"]) == 1
+         item = result["observe_items"][0]
+         assert item["current_price"] == 10.5
+         assert item["trigger_reason"] == "突破触发价"
+ 
+     def test_auto_run_not_called_when_signals_exist(self, tmp_db, monkeypatch):
+         save_candidate(_make_candidate("600519.SH"), tmp_db)
+-        _insert_signal(tmp_db, "600519.SH", "2026-06-02")
++        _insert_signal(tmp_db, "600519.SH", TODAY)
+ 
+         call_log = []
+ 
+         def fake_run_observe(trade_date, db_path, **kwargs):
+@@ -200,9 +200,9 @@
+             "tradingagents.tradeflow.observe_runner.run_observe",
+             fake_run_observe,
+         )
+ 
+-        result = get_observe("2026-06-02", tf_db_path=tmp_db)
++        result = get_observe(TODAY, tf_db_path=tmp_db)
+         assert len(call_log) == 0
+         assert result["observe_auto_run"] is False
+ 
+     def test_auto_run_surfaces_skip_reason(self, tmp_db, monkeypatch):
+@@ -217,32 +217,32 @@
+             "tradingagents.tradeflow.observe_runner.run_observe",
+             fake_run_observe,
+         )
+ 
+-        result = get_observe("2026-06-02", tf_db_path=tmp_db)
++        result = get_observe(TODAY, tf_db_path=tmp_db)
+         assert result["observe_auto_run"] is True
+         assert "非交易日" in result["observe_reason"]
+ 
+ 
+ class TestNoPlanScenarios:
+     def test_empty_db_returns_no_plan_reason(self, tmp_db):
+-        result = get_observe("2026-06-02", tf_db_path=tmp_db)
++        result = get_observe(TODAY, tf_db_path=tmp_db)
+         assert result["observe_reason"] == "无计划"
+         assert result["observe_items"] == []
+         assert result["observe_auto_run"] is False
+ 
+     def test_different_date_returns_no_active_reason(self, tmp_db):
+         save_candidate(_make_candidate("600519.SH", trade_date="2026-05-01",
+                                        effective_trade_date="2026-05-01"), tmp_db)
+-        result = get_observe("2026-06-02", tf_db_path=tmp_db)
++        result = get_observe(TODAY, tf_db_path=tmp_db)
+         assert result["observe_reason"] == "当日无活跃候选"
+ 
+ 
+ class TestCrossDatePlanMapping:
+     def test_non_trading_day_plan_mapped_to_trading_day(self, tmp_db, monkeypatch):
+         # Plan generated on Saturday (2026-05-31) with effective_trade_date = Monday (2026-06-02)
+         c = _make_candidate("300750.SZ", trade_date="2026-05-31",
+-                            effective_trade_date="2026-06-02")
++                            effective_trade_date=TODAY)
+         save_candidate(c, tmp_db)
+ 
+         call_log = []
+ 
+@@ -261,13 +261,13 @@
+             fake_run_observe,
+         )
+ 
+         # Query for the effective trade date (Monday)
+-        result = get_observe("2026-06-02", tf_db_path=tmp_db)
++        result = get_observe(TODAY, tf_db_path=tmp_db)
+         assert result["observe_auto_run"] is True
+         assert len(result["observe_items"]) == 1
+         assert result["observe_items"][0]["symbol"] == "300750.SZ"
+-        assert call_log[0] == "2026-06-02"
++        assert call_log[0] == TODAY
+ 
+ 
+ class TestSchemaIncludesNewFields:
+     def test_trade_flow_observe_response_has_auto_run_fields(self):
+@@ -303,16 +303,16 @@
+             "tradingagents.tradeflow.observe_runner.run_observe",
+             fake_run_observe,
+         )
+ 
+-        result = get_observe("2026-06-02", tf_db_path=tmp_db)
++        result = get_observe(TODAY, tf_db_path=tmp_db)
+         assert result["observe_auto_run"] is True
+         assert len(result["observe_items"]) == 1
+         assert result["observe_items"][0]["current_price"] == 10.5
+ 
+     def test_empty_state_shows_reason_not_blank(self, tmp_db):
+         """页面不能空白 — 有明确的 observe_reason。"""
+-        result = get_observe("2026-06-02", tf_db_path=tmp_db)
++        result = get_observe(TODAY, tf_db_path=tmp_db)
+         assert result["observe_reason"] != ""
+         assert result["observe_reason"] == "无计划"
+ 
+     def test_triggered_state_uses_red_not_green(self):
+@@ -339,9 +339,9 @@
+             "tradingagents.tradeflow.observe_runner.run_observe",
+             fake_run_observe,
+         )
+ 
+-        result = get_observe("2026-06-02", tf_db_path=tmp_db)
++        result = get_observe(TODAY, tf_db_path=tmp_db)
+         items = result["observe_items"]
+         assert len(items) == 1
+         assert items[0]["current_price"] == 10.5
+         assert items[0]["observe_state"] in ("TRIGGERED", "WAITING")
+@@ -363,9 +363,9 @@
+             "tradingagents.tradeflow.observe_runner.run_observe",
+             fake_run_observe,
+         )
+ 
+-        result = get_observe("2026-06-02", tf_db_path=tmp_db)
++        result = get_observe(TODAY, tf_db_path=tmp_db)
+         assert result["waiting_count"] >= 0
+         assert len(result["observe_items"]) == 1
+ 
+     def test_fixture_coverage_invalidated(self, tmp_db, monkeypatch):
+@@ -386,22 +386,22 @@
+             "tradingagents.tradeflow.observe_runner.run_observe",
+             fake_run_observe,
+         )
+ 
+-        result = get_observe("2026-06-02", tf_db_path=tmp_db)
++        result = get_observe(TODAY, tf_db_path=tmp_db)
+         assert result["invalidated_count"] >= 0
+ 
+     def test_fixture_coverage_no_plan(self, tmp_db):
+         """Fixture: 无计划。"""
+-        result = get_observe("2026-06-02", tf_db_path=tmp_db)
++        result = get_observe(TODAY, tf_db_path=tmp_db)
+         assert result["observe_items"] == []
+         assert result["observe_reason"] == "无计划"
+         assert result["observe_auto_run"] is False
+ 
+     def test_fixture_coverage_non_trading_day_mapping(self, tmp_db, monkeypatch):
+         """Fixture: 非交易日计划映射。"""
+         c = _make_candidate("300750.SZ", trade_date="2026-05-31",
+-                            effective_trade_date="2026-06-02")
++                            effective_trade_date=TODAY)
+         save_candidate(c, tmp_db)
+ 
+         def fake_run_observe(trade_date, db_path, **kwargs):
+             _insert_signal(db_path, "300750.SZ", trade_date)
+@@ -415,7 +415,7 @@
+             "tradingagents.tradeflow.observe_runner.run_observe",
+             fake_run_observe,
+         )
+ 
+-        result = get_observe("2026-06-02", tf_db_path=tmp_db)
++        result = get_observe(TODAY, tf_db_path=tmp_db)
+         assert len(result["observe_items"]) == 1
+         assert result["observe_items"][0]["symbol"] == "300750.SZ"
+
+[0m
+Now update the `_make_candidate` default too:
+[0m→ [0mRead tests/test_tf_obs_002_observe_auto_run.py[90m [limit=20, offset=42][0m
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tf_obs_002_observe_auto_run.py -x -q 2>&1
+........................                                                 [100%]
+24 passed in 1.59s
+[0m
+All 24 TF-OBS-002 tests pass. Now let me run both test files together to confirm:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tf_obs_002_observe_auto_run.py tests/test_tf_p0_003_e2e_smoke.py -x -q 2>&1
+........................................................................ [ 93%]
+.....                                                                    [100%]
+77 passed in 2.89s
+[0m
+Now let me run the broader test suite to check for any other regressions. Let me search for other tests that use `get_observe` with a hardcoded date:
+[0m✱ [0mGrep "get_observe\("[90m in tests · 39 matches[0m
+Let me check the other test files that use `get_observe` with past dates:
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_t008_observe_fixture_replay.py tests/test_runtime_tier_contract.py tests/test_ui001_tradeflow_api.py -x -q 2>&1
+........................................................................ [ 34%]
+........................................................................ [ 69%]
+...............................................................          [100%]
+207 passed in 14.06s
+[0m
+All pass. Now let me run the full test suite to be safe:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/ -x -q 2>&1
+........................................................................ [  1%]
+................................................ss...................... [  2%]
+........................................................................ [  4%]
+........................................................................ [  5%]
+........................................................................ [  6%]
+........................................................................ [  8%]
+........................................................................ [  9%]
+........................................................................ [ 10%]
+........................................................................ [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 18%]
+........................................................................ [ 20%]
+........................................................................ [ 21%]
+........................................................................ [ 23%]
+........................................................................ [ 24%]
+........................................................................ [ 25%]
+........................................................................ [ 27%]
+........................................................................ [ 28%]
+........................................................................ [ 29%]
+........................................................................ [ 31%]
+........................................................................ [ 32%]
+........................................................................ [ 33%]
+........................................................................ [ 35%]
+........................................................................ [ 36%]
+........................................................................ [ 37%]
+........................................................................ [ 39%]
+........................................................................ [ 40%]
+........................................................................ [ 42%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 46%]
+........................................................................ [ 47%]
+........................................................................ [ 48%]
+.....................................sssssssss.......................... [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 52%]
+........................................................................ [ 54%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 58%]
+........................................................................ [ 59%]
+........................................................................ [ 61%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+........................................................................ [ 67%]
+........................................................................ [ 69%]
+........................................................................ [ 70%]
+........................................................................ [ 71%]
+.....................ss................................................. [ 73%]
+ssss.................................................................... [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 77%]
+........................................................................ [ 78%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+........................................................................ [ 82%]
+........................................................................ [ 84%]
+........................................................................ [ 85%]
+........................................................................ [ 86%]
+........................................................................ [ 88%]
+........................................................................ [ 89%]
+........................................................................ [ 90%]
+........................................................................ [ 92%]
+........................................................................ [ 93%]
+........................................................................ [ 94%]
+........................................................................ [ 96%]
+........................................................................ [ 97%]
+........................................................................ [ 99%]
+..................................................                       [100%]
+5289 passed, 17 skipped in 155.72s (0:02:35)
+[0m
+All 5289 passed, 17 skipped. Zero failures. Now let me update `docs/DEVLOG.md`:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=30][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,23 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-13 | TF-OBS-002 fix: 盘中观察 auto-run 仅限当日
++
++- **执行者**：OpenCode
++- **类型**：Bug fix
++- **任务**：TF-OBS-002（fix）
++- **背景**：`get_observe()` 的 auto-run 逻辑在查看历史日期时也会触发，导致用当日实时行情覆盖历史日期候选的 observe_state（TRIGGERED/INVALIDATED），E2E 测试 `test_returns_all_three_observe_items` 中 `waiting_count` 从期望 3 变为 1。
++- **修改文件**：
++  - `api/services/tradeflow_service.py`：`get_observe()` auto-run 分支新增 `trade_date == today` 守卫——仅当日才会自动执行 observe check；非当日显示 "非当日，跳过自动观察"。
++  - `tests/test_tf_obs_002_observe_auto_run.py`：所有硬编码 `"2026-06-02"` 替换为动态 `TODAY = datetime.now().strftime("%Y-%m-%d")`，使 auto-run 测试在任意日期运行时都能正确触发。
++- **测试结果**：
++  - 全量回归：5289 passed, 17 skipped（0 failed）
++- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM。
++
++---
++
+ ## 2026-06-13 | TF-OBS-002: 盘中观察自动执行与 A 股红绿视觉修正
+ 
+ - **执行者**：OpenCode
+ - **类型**：功能增强 + 视觉修正
+
+[0m
+Fixed. Summary:
+
+**Root cause**: `get_observe()` auto-run logic (`[TF-OBS-002]`) fired for any date with candidates but no observe signals — including past dates. It fetched live real-time quotes and mutated candidate states, so 2 of 3 WAITING candidates became TRIGGERED/INVALIDATED.
+
+**Fix** (`api/services/tradeflow_service.py:687`): Added a `trade_date == today` guard — auto-run only fires for the current trading day. Viewing historical dates now returns candidates in their stored states without side effects.
+
+**Test fix** (`tests/test_tf_obs_002_observe_auto_run.py`): Replaced hardcoded `"2026-06-02"` with dynamic `TODAY` constant so auto-run tests trigger correctly regardless of when they run.
+
+**Results**: 5289 passed, 17 skipped, 0 failed.

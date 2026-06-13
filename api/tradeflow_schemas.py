@@ -199,6 +199,9 @@ class TradeFlowObserveResponse(BaseModel):
     triggered_count: int = 0
     invalidated_count: int = 0
     waiting_count: int = 0
+    observe_auto_run: bool = False  # [TF-OBS-002] observe_auto_run
+    last_observed_at: str = ""      # [TF-OBS-002]
+    observe_reason: str = ""        # [TF-OBS-002]
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
 
 

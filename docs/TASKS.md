@@ -84,7 +84,7 @@
 58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，blocked — NEEDS_HUMAN，commit 5f304db，见 task_runs）。
 59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done，Codex 修复，待提交）。
 60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
-61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，ready，依赖 TF-QUALITY-001A ✓）。
+61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
 62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，ready，依赖 TF-QUALITY-001A ✓）。
 63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，ready，依赖 TF-QUALITY-001A/PERF-002 ✓）。
 64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
@@ -2739,7 +2739,7 @@
 ### TF-OBS-002: 盘中观察自动执行与 A 股红绿视觉修正（P0）
 - **描述**：盘中观察不应必须用户点“执行”才看到结果；同时距离触发价的颜色要符合 A 股直觉：上涨/接近突破用红，跌破/远离/风险用绿或灰。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done
 - **前置条件**：T-004、T-008 完成 ✓；TF-QUALITY-001A 完成。
 - **执行约束**：
   - 不做高频盯盘；默认低频/手动刷新即可。

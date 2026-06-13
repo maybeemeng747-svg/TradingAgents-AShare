@@ -1015,6 +1015,9 @@ export interface TradeFlowObserveResponse {
     triggered_count: number
     invalidated_count: number
     waiting_count: number
+    observe_auto_run: boolean   // [TF-OBS-002] observe_auto_run
+    last_observed_at: string    // [TF-OBS-002]
+    observe_reason: string      // [TF-OBS-002]
     runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
 }
 

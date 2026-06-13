@@ -1,0 +1,3094 @@
+Task: TF-OBS-002 - 盘中观察自动执行与 A 股红绿视觉修正（P0）
+Date: 2026-06-13_23:20:54
+Codex exit code: 0
+Round: 2
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019ec190-c33b-7a03-92e4-27f2729b9a24
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,200p' docs/project-overview.md && printf '\\n---TASKS---\\n' && sed -n '1,160p' docs/TASKS.md && printf '\\n---DECISIONS---\\n' && sed -n '1,160p' docs/DECISIONS.md && printf '\\n---DEVLOG---\\n' && sed -n '1,120p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+---TASKS---
+# 任务池
+
+> 最后更新：2026-06-09
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，done）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，done，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，done，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，done，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，done，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，done，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done，依赖 DATA-004 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
+50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done，依赖 DATA-012 部分落地 ✓）。
+54. `DECISION-001`：最终动作语义分层 — 禁止默认 HOLD（P0，done，commit dee415c）。
+55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
+56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
+57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
+58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，blocked — NEEDS_HUMAN，commit 5f304db，见 task_runs）。
+59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done，Codex 修复，待提交）。
+60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，ready，依赖 TF-QUALITY-001A ✓）。
+63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，ready，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
+65. `V-006`：最终动作语义端到端回放验收（P1，ready，依赖 DECISION-004）。
+66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
+67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，ready，来自 TF-QUALITY-001 task_run）。
+68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，ready，依赖 TF-QUALITY-002）。
+69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，ready，依赖 TF-OBS-002/TF-REVIEW-002）。
+70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，ready，依赖 H-010/H-011）。
+71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，ready，依赖 DATA-017/DATA-006）。
+72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，ready，依赖 TF-QUALITY-002/TF-OBS-002）。
+73. `V-007`：TradeFlow 试用闭环端到端验收（P1，ready，依赖 TF-QUALITY-003/TF-PAPER-001）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
+16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done）。
+18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
+19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done）。
+21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## PERF. 运行成本 / 轻量分析任务池（2026-06-02 新增）
+
+> 目标：系统不能为了“全面”而变慢。TradeFlow 是雷达，轻量 TA 是候选验证，完整 TA 是深度体检。默认链路必须轻，完整多 Agent 分析只能由用户明确触发。
+
+### PERF-001: 运行层级与速度预算契约（P1）
+- **描述**：建立统一运行层级契约，所有 API、前端按钮、scheduler、自动开发任务都要标明属于 `fast/light/full` 哪一层，以及是否允许调用 LLM。
+- **优先级**：P1
+- **状态**：done -- commit ca08846
+- **背景**：
+  - 用户明确要求系统不能做得太重，不能“一发指令半天才回来”。
+  - 候选池/盘中观察需要时效；完整 TA 只能用于少量高价值标的。
+- **运行层级定义**：
+  1. `fast`：5-30 秒。TradeFlow 筛选、数据健康、证据缺口、候选分类。默认不调用 LLM。
+  2. `light`：1-3 分钟。轻量 TA，只跑必要模块，用于中线政策验证、短线技术确认、持仓风险复核。
+  3. `full`：10-20 分钟。完整 14 Agent TA，多空辩论和风控全链路，必须人工确认。
+- **执行约束**：
+  - 不改 prompts。
+  - 不触发 live TA。
+  - 不新增高成本模型调用。
+- **实现要点**：
+  1. 新增运行层级枚举/配置，例如 `runtime_tier`：
+     - `FAST_RADAR`
+     - `LIGHT_RESEARCH`
+     - `FULL_TA`
+
+---DECISIONS---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+---DEVLOG---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-13 | TF-OBS-002 fix: 盘中观察 auto-run 仅限当日
+
+- **执行者**：OpenCode
+- **类型**：Bug fix
+- **任务**：TF-OBS-002（fix）
+- **背景**：`get_observe()` 的 auto-run 逻辑在查看历史日期时也会触发，导致用当日实时行情覆盖历史日期候选的 observe_state（TRIGGERED/INVALIDATED），E2E 测试 `test_returns_all_three_observe_items` 中 `waiting_count` 从期望 3 变为 1。
+- **修改文件**：
+  - `api/services/tradeflow_service.py`：`get_observe()` auto-run 分支新增 `trade_date == today` 守卫——仅当日才会自动执行 observe check；非当日显示 "非当日，跳过自动观察"。
+  - `tests/test_tf_obs_002_observe_auto_run.py`：所有硬编码 `"2026-06-02"` 替换为动态 `TODAY = datetime.now().strftime("%Y-%m-%d")`，使 auto-run 测试在任意日期运行时都能正确触发。
+- **测试结果**：
+  - 全量回归：5289 passed, 17 skipped（0 failed）
+- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM。
+
+---
+
+## 2026-06-13 | TF-OBS-002: 盘中观察自动执行与 A 股红绿视觉修正
+
+- **执行者**：OpenCode
+- **类型**：功能增强 + 视觉修正
+- **任务**：TF-OBS-002（P0）
+- **背景**：盘中观察页必须用户点"执行观察"才能看到数据；同时状态徽章颜色使用美股直觉（绿涨红跌），与 A 股直觉相反。
+- **修改文件**：
+  - `api/services/tradeflow_service.py`：新增 `_precheck_observe_state()` 辅助函数；`get_observe()` 增加 auto-run 逻辑——当候选存在但无信号时自动执行 observe check，返回 `observe_auto_run`、`last_observed_at`、`observe_reason` 三个新字段。
+  - `api/tradeflow_schemas.py`：`TradeFlowObserveResponse` 新增 `observe_auto_run: bool`、`last_observed_at: str`、`observe_reason: str`。
+  - `frontend/src/types/index.ts`：`TradeFlowObserveResponse` 新增对应 TS 字段。
+  - `frontend/src/pages/TradeFlow.tsx`：
+    - 修正 `observeStateLabel` 和 `observeStateBg`：TRIGGERED=红色（A 股涨/触发），INVALIDATED=绿色（A 股跌/失效），WAITING=灰色。
+    - 修正 `priceDistanceColor`：等待状态从蓝色改为灰色。
+    - `ObserveTable` 接收并展示 `observeReason`、`observeAutoRun`、`lastObservedAt`；空状态不再要求点击，而是显示自动执行原因或"系统将在开盘后自动执行观察"。
+    - 按钮文案从"执行观察"改为"手动刷新"。
+    - `fetchObserve` 同步 `last_observed_at` 到 `lastObserveCheckTime`。
+  - `tests/test_tf_obs_002_observe_auto_run.py`：新增 24 个测试覆盖 precheck、auto-run 触发/跳过、无计划原因、非交易日映射、schema 字段、fixture 覆盖（triggered/waiting/invalidated/no-plan/cross-date）。
+- **测试结果**：
+  - 新增测试：24 passed
+  - 回归测试（tf_obs_001/m005/t004/t008/ui001）：274 passed
+  - 回归测试（candidate_engine/runtime_tier）：92 passed
+  - `npm run build`：通过
+- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM。
+
+---
+
+## 2026-06-13 | 释放下一波 TradeFlow 试跑闭环任务
+
+- **执行者**：Codex
+- **类型**：任务池规划
+- **背景**：用户要求继续释放任务。当前任务池已有 `TF-OBS-002`、`TF-REVIEW-002`、`TF-UI-011`、`DATA-017`、`V-006`、`CODEGRAPH-002` 等 ready 项；同时工作区存在 `TF-QUALITY-002` 半成品（`docs/task_runs/TF-QUALITY-002-20260612-200104/`、`tradingagents/tradeflow/score_separation.py`、`tradingagents/tradeflow/schemas.py`），因此自动链真正继续前需先 review/commit 当前半成品。
+- **任务池调整**：
+  - 顶部队列把 `TF-QUALITY-002` 从 ready 修正为 `in_progress — claimed TF-QUALITY-002-20260612-200104`，与详情段落一致。
+  - 新增并释放以下 ready 任务：
+    - `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0）
+    - `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1）
+    - `H-012`：昊天主题注册表与政策版本 Watchlist（P1）
+    - `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1）
+    - `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1）
+    - `V-007`：TradeFlow 试用闭环端到端验收（P1）
+- **执行建议**：
+  1. 先完成/审核/提交 `TF-QUALITY-002`。
+  2. 继续跑当前 P0/P1 链路：`TF-OBS-002` → `TF-REVIEW-002` → `TF-UI-011` → `DATA-017` → `V-006` → `CODEGRAPH-002`。
+  3. 新释放任务作为下一波队列，优先顺序：`TF-QUALITY-003` → `TF-PAPER-001` → `UI-012` → `V-007`，数据和昊天支线可穿插执行。
+- **安全红线**：仅更新任务池/日志，未改 prompts，未调用 live LLM，未写生产数据库。
+
+---
+
+## 2026-06-11 | DECISION 补修：避免 WAIT 全部显示为“数据不足观察”
+
+- **执行者**：Codex
+- **类型**：决策语义修复
+- **背景**：用户反馈最近 3 篇报告的决策建议都显示为“数据不足观察”，观察标签再次变得笼统。核查报告原文后发现，报告正文实际包含“回避/等待触发”等更具体动作，但保存/展示语义被覆盖。
+- **根因**：
+  1. `_extract_decision_semantics()` 只要检测到数据不足且 `execution_action=WAIT`，就无条件把 `action_label` 改成“数据不足观察”，覆盖了偏多的“等待触发”和偏空的“回避”。
+  2. 多 Agent 报告包含多个 `<!-- VERDICT -->`，解析器取第一个 VERDICT，容易把早期分析师结论当成最终风控结论。
+- **修复内容**：
+  - `tradingagents/graph/signal_processing.py`：只有 `research_direction=中性` 且数据不足时才使用“数据不足观察”；偏多仍显示“等待触发”，偏空/看空仍显示“回避”。
+  - `tradingagents/graph/signal_processing.py`：多 VERDICT 报告优先取“执行质检”之前的最后一个 VERDICT，避免 C-005/历史报告片段污染最终方向。
+  - `api/services/report_service.py`：读取旧报告时做轻量归一化，不改数据库；旧的 `WAIT + 数据不足观察 + 偏空/看空` 显示为“回避”，`WAIT + 数据不足观察 + 偏多/看多` 显示为“等待触发”。
+  - `tests/test_decision_semantics.py`：新增数据不足偏多/偏空不覆盖标签、多 VERDICT 取最终结论的回归测试。
+- **样本回放**：
+  - `analysis-603629.SH-2026-06-03.md`：看空 / WAIT / 回避
+  - `analysis-601991.SH-2026-06-02.md`：看空 / WAIT / 回避
+  - `analysis-603296.SH-2026-06-01.md`：偏多 / WAIT / 等待触发
+- **验证结果**：
+  - `.venv/bin/python -m pytest tests/test_decision_semantics.py tests/test_decision_replay.py tests/test_report_recovery.py tests/test_bark_notification_service.py tests/test_wecom_notification_service.py tests/test_api_smoke.py::TestReportsEndpoint::test_latest_by_symbols_returns_only_each_symbol_latest_report -q --tb=short`：62 passed
+  - 最近 3 条数据库报告经 `report_service.get_report()` 读取后显示为：603629.SH 回避、002015.SZ 回避、603629.SH 等待触发。
+- **安全红线**：未改 prompts，未调用 live LLM，未写生产数据库。
+
+---
+
+## 2026-06-10 | Codex 全项目收口检查：TradeFlow 契约与证据覆盖率回归修复
+
+- **执行者**：Codex
+- **类型**：全量检查 + 回归修复 + 任务池治理
+- **背景**：用户要求从头到尾细查项目并修复必要问题。重点检查昨晚 TF-QUALITY-001 后的 TradeFlow 候选池、盘中 Observe、E2E smoke，以及全量 pytest 暴露的数据覆盖率回归。
+- **修复内容**：
+  - `api/services/tradeflow_service.py`：恢复旧候选接口契约，`candidates` 保留查询池语义，同时新增 `main_candidates` / `main_summary_agg` 暴露严格主候选池，避免 `pool=all` 被主池收敛误伤。
+  - `tradingagents/tradeflow/discovery.py`：`save_candidates` 只落库通过门禁的主候选/观察候选；门禁过滤候选写入 filtered trace 并保留过滤原因，避免 DB/API 二次门禁不一致。
+  - `tradingagents/tradeflow/observe_runner.py`：盘中观察在指定日期无候选时，回退到最新有效 active plan，支持周末/非交易日计划映射到后续交易日观察。
+  - `tradingagents/tradeflow/candidate_pool_gate.py`：修复旧候选兼容条件，避免仅有 `composite_score` 的历史候选被误过滤。
+  - `tradingagents/dataflows/evidence_contract.py`：明确融资融券、研报、评级、回购为可选新增证据源，未出现时不进入 completeness 分母；`NORMAL_NO_DATA` 视为已完成查询状态。
+  - `tradingagents/dataflows/evidence_coverage_audit.py`：把可选/辅助源从 `critical_missing` 中排除，避免评级、回购、涨停池、热门股等辅助源缺失把主证据完整样本误降级为 LOW。
+  - `tradingagents/agents/utils/readiness_score.py`：评级/回购默认 `not_available`，保持旧调用的 evidence coverage 分母兼容；显式传入时仍参与覆盖率。
+- **任务池调整**：
+  - `TF-QUALITY-001A`、`DATA-COVERAGE-001` 标记为 done。
+  - 解锁 `TF-QUALITY-002`、`TF-OBS-002`、`TF-REVIEW-002`、`TF-UI-011` 为 ready。
+  - `DATA-017`、`V-006`、`CODEGRAPH-002` 保持 ready。
+- **验证结果**：
+  - `.venv/bin/python -m pytest tests/test_t004_intraday_observe.py tests/test_tf_p0_003_e2e_smoke.py tests/test_ui001_tradeflow_api.py tests/test_tf_quality001_pool_gate.py tests/test_t002_discovery.py -q --tb=short`：243 passed
+  - `.venv/bin/python -m pytest tests/test_data007_evidence_coverage_audit.py tests/test_e_series_fixes.py tests/test_v001_600584_data_authenticity.py -q --tb=short`：160 passed
+  - `.venv/bin/python -m pytest tests/test_data010_margin_trading.py tests/test_data011_research_report.py tests/test_data012_ratings.py tests/test_data013_buyback.py tests/test_data015_zt_pool.py -q --tb=short`：330 passed
+  - `.venv/bin/python -m pytest tests/ -q --tb=short`：5245 passed, 17 skipped
+- **安全红线**：未改 prompts，未调用 live LLM，未写生产数据库。
+
+---
+
+## 2026-06-09 | Codex 审核 TF-QUALITY-001 与任务框架重排
+
+exec
+/bin/zsh -lc 'git status --short --branch' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+## local/tradingagents-custom...myfork/local/tradingagents-custom [ahead 79]
+ M api/services/tradeflow_service.py
+ M api/tradeflow_schemas.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M frontend/src/pages/TradeFlow.tsx
+ M frontend/src/types/index.ts
+?? docs/task_runs/TF-OBS-002-20260613-225218/
+?? tests/test_tf_obs_002_observe_auto_run.py
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- api/services/tradeflow_service.py api/tradeflow_schemas.py frontend/src/types/index.ts frontend/src/pages/TradeFlow.tsx tests/test_tf_obs_002_observe_auto_run.py docs/TASKS.md docs/DEVLOG.md' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ api/services/tradeflow_service.py | 129 +++++++++++++++++++++++++++++++++++++-
+ api/tradeflow_schemas.py          |   3 +
+ docs/DEVLOG.md                    |  41 ++++++++++++
+ docs/TASKS.md                     |   4 +-
+ frontend/src/pages/TradeFlow.tsx  |  62 ++++++++++++++----
+ frontend/src/types/index.ts       |   3 +
+ 6 files changed, 225 insertions(+), 17 deletions(-)
+diff --git a/api/services/tradeflow_service.py b/api/services/tradeflow_service.py
+index 4059135..41e7492 100644
+--- a/api/services/tradeflow_service.py
++++ b/api/services/tradeflow_service.py
+@@ -589,11 +589,133 @@ def get_candidate_detail(symbol: str, trade_date: str, tf_db_path: str = "") ->
+         conn.close()
+ 
+ 
++def _precheck_observe_state(db_path: str, trade_date: str) -> dict:
++    """Quick check whether candidates and observe signals exist for a date.  # [TF-OBS-002] observe_auto_run
++
++    Returns dict with:
++    - has_candidates: bool
++    - has_signals_for_date: bool
++    - last_observed_at: str
++    - reason: str (explanation when candidates are absent)
++    """
++    from tradingagents.tradeflow.candidate_engine import init_db
++    init_db(db_path)
++    conn = sqlite3.connect(db_path)
++    conn.row_factory = sqlite3.Row
++    try:
++        columns = {r[1] for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()}
++        has_eff = "effective_trade_date" in columns
++
++        if has_eff:
++            cnt_row = conn.execute(
++                "SELECT COUNT(*) AS cnt FROM tradeflow_candidates WHERE "
++                "(effective_trade_date = ? OR (trade_date = ? AND (effective_trade_date = '' OR effective_trade_date IS NULL))) "
++                "AND status = 'active'",
++                (trade_date, trade_date),
++            ).fetchone()
++        else:
++            cnt_row = conn.execute(
++                "SELECT COUNT(*) AS cnt FROM tradeflow_candidates WHERE trade_date = ? AND status = 'active'",
++                (trade_date,),
++            ).fetchone()
++        has_candidates = cnt_row is not None and cnt_row["cnt"] > 0
++
++        has_signals_for_date = False
++        last_observed_at = ""
++        try:
++            sig_rows = conn.execute(
++                "SELECT signal_time, evidence_json FROM tradeflow_signals "
++                "WHERE signal_type LIKE 'observe_%' ORDER BY signal_time DESC LIMIT 50"
++            ).fetchall()
++            for sr in sig_rows:
++                ev = json.loads(sr["evidence_json"]) if sr["evidence_json"] else {}
++                if ev.get("trade_date") == trade_date:
++                    has_signals_for_date = True
++                    last_observed_at = sr["signal_time"]
++                    break
++            if not last_observed_at and sig_rows:
++                last_observed_at = sig_rows[0]["signal_time"]
++        except Exception:
++            pass
++
++        reason = ""
++        if not has_candidates:
++            total = conn.execute("SELECT COUNT(*) AS cnt FROM tradeflow_candidates").fetchone()
++            if total and total["cnt"] > 0:
++                reason = "当日无活跃候选"
++            else:
++                reason = "无计划"
++
++        return {
++            "has_candidates": has_candidates,
++            "has_signals_for_date": has_signals_for_date,
++            "last_observed_at": last_observed_at,
++            "reason": reason,
++        }
++    finally:
++        conn.close()
++
++
+ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
+-    conn = _connect(tf_db_path)
++    tf_db = tf_db_path or _get_tradeflow_db_path()
+     _fast_meta = _tradeflow_meta("tradeflow_observe")  # [PERF-001]
++
++    if not os.path.exists(tf_db):
++        return {
++            "status": "no_data",
++            "trade_date": trade_date,
++            "observe_auto_run": False,        # [TF-OBS-002] observe_auto_run
++            "last_observed_at": "",           # [TF-OBS-002]
++            "observe_reason": "无数据库",      # [TF-OBS-002]
++            "observe_items": [],
++            "triggered_count": 0,
++            "invalidated_count": 0,
++            "waiting_count": 0,
++            "runtime_tier_meta": _fast_meta,
++        }
++
++    # [TF-OBS-002] observe_auto_run — auto-run observe check when page opens
++    observe_auto_run = False
++    observe_reason = ""
++    last_observed_at = ""
++
++    _pre = _precheck_observe_state(tf_db, trade_date)
++    last_observed_at = _pre["last_observed_at"]
++
++    if not _pre["has_candidates"]:
++        observe_reason = _pre["reason"]
++    elif not _pre["has_signals_for_date"]:
++        _today_str = datetime.now().strftime("%Y-%m-%d")
++        if trade_date != _today_str:
++            observe_reason = "非当日，跳过自动观察"
++        else:
++            # Auto-run observe check so page isn't blank on first open
++            try:
++                from tradingagents.tradeflow.candidate_engine import init_db
++                from tradingagents.tradeflow.observe_runner import run_observe
++                init_db(tf_db)
++                _auto = run_observe(trade_date=trade_date, db_path=tf_db)
++                observe_auto_run = True
++                last_observed_at = _auto.run_time
++                if _auto.skipped_reason:
++                    observe_reason = _auto.skipped_reason
++            except Exception as e:
++                observe_reason = f"自动执行失败: {e}"
++
++    conn = _connect(tf_db_path)
+     if conn is None:
+-        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
++        return {
++            "status": "no_data",
++            "trade_date": trade_date,
++            "observe_auto_run": observe_auto_run,
++            "last_observed_at": last_observed_at,
++            "observe_reason": observe_reason,
++            "observe_items": [],
++            "triggered_count": 0,
++            "invalidated_count": 0,
++            "waiting_count": 0,
++            "runtime_tier_meta": _fast_meta,
++        }
+ 
+     try:
+         columns = _table_columns(conn, "tradeflow_candidates")
+@@ -663,6 +785,9 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
+             "triggered_count": triggered,
+             "invalidated_count": invalidated,
+             "waiting_count": waiting,
++            "observe_auto_run": observe_auto_run,        # [TF-OBS-002] observe_auto_run
++            "last_observed_at": last_observed_at,         # [TF-OBS-002]
++            "observe_reason": observe_reason,             # [TF-OBS-002]
+             "runtime_tier_meta": _tradeflow_meta("tradeflow_observe"),  # [PERF-001]
+         }
+     finally:
+diff --git a/api/tradeflow_schemas.py b/api/tradeflow_schemas.py
+index 8790fa8..8012437 100644
+--- a/api/tradeflow_schemas.py
++++ b/api/tradeflow_schemas.py
+@@ -199,6 +199,9 @@ class TradeFlowObserveResponse(BaseModel):
+     triggered_count: int = 0
+     invalidated_count: int = 0
+     waiting_count: int = 0
++    observe_auto_run: bool = False  # [TF-OBS-002] observe_auto_run
++    last_observed_at: str = ""      # [TF-OBS-002]
++    observe_reason: str = ""        # [TF-OBS-002]
+     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+ 
+ 
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 5d0d98a..5e19fca 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,47 @@
+ 
+ ---
+ 
++## 2026-06-13 | TF-OBS-002 fix: 盘中观察 auto-run 仅限当日
++
++- **执行者**：OpenCode
++- **类型**：Bug fix
++- **任务**：TF-OBS-002（fix）
++- **背景**：`get_observe()` 的 auto-run 逻辑在查看历史日期时也会触发，导致用当日实时行情覆盖历史日期候选的 observe_state（TRIGGERED/INVALIDATED），E2E 测试 `test_returns_all_three_observe_items` 中 `waiting_count` 从期望 3 变为 1。
++- **修改文件**：
++  - `api/services/tradeflow_service.py`：`get_observe()` auto-run 分支新增 `trade_date == today` 守卫——仅当日才会自动执行 observe check；非当日显示 "非当日，跳过自动观察"。
++  - `tests/test_tf_obs_002_observe_auto_run.py`：所有硬编码 `"2026-06-02"` 替换为动态 `TODAY = datetime.now().strftime("%Y-%m-%d")`，使 auto-run 测试在任意日期运行时都能正确触发。
++- **测试结果**：
++  - 全量回归：5289 passed, 17 skipped（0 failed）
++- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM。
++
++---
++
++## 2026-06-13 | TF-OBS-002: 盘中观察自动执行与 A 股红绿视觉修正
++
++- **执行者**：OpenCode
++- **类型**：功能增强 + 视觉修正
++- **任务**：TF-OBS-002（P0）
++- **背景**：盘中观察页必须用户点"执行观察"才能看到数据；同时状态徽章颜色使用美股直觉（绿涨红跌），与 A 股直觉相反。
++- **修改文件**：
++  - `api/services/tradeflow_service.py`：新增 `_precheck_observe_state()` 辅助函数；`get_observe()` 增加 auto-run 逻辑——当候选存在但无信号时自动执行 observe check，返回 `observe_auto_run`、`last_observed_at`、`observe_reason` 三个新字段。
++  - `api/tradeflow_schemas.py`：`TradeFlowObserveResponse` 新增 `observe_auto_run: bool`、`last_observed_at: str`、`observe_reason: str`。
++  - `frontend/src/types/index.ts`：`TradeFlowObserveResponse` 新增对应 TS 字段。
++  - `frontend/src/pages/TradeFlow.tsx`：
++    - 修正 `observeStateLabel` 和 `observeStateBg`：TRIGGERED=红色（A 股涨/触发），INVALIDATED=绿色（A 股跌/失效），WAITING=灰色。
++    - 修正 `priceDistanceColor`：等待状态从蓝色改为灰色。
++    - `ObserveTable` 接收并展示 `observeReason`、`observeAutoRun`、`lastObservedAt`；空状态不再要求点击，而是显示自动执行原因或"系统将在开盘后自动执行观察"。
++    - 按钮文案从"执行观察"改为"手动刷新"。
++    - `fetchObserve` 同步 `last_observed_at` 到 `lastObserveCheckTime`。
++  - `tests/test_tf_obs_002_observe_auto_run.py`：新增 24 个测试覆盖 precheck、auto-run 触发/跳过、无计划原因、非交易日映射、schema 字段、fixture 覆盖（triggered/waiting/invalidated/no-plan/cross-date）。
++- **测试结果**：
++  - 新增测试：24 passed
++  - 回归测试（tf_obs_001/m005/t004/t008/ui001）：274 passed
++  - 回归测试（candidate_engine/runtime_tier）：92 passed
++  - `npm run build`：通过
++- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM。
++
++---
++
+ ## 2026-06-13 | 释放下一波 TradeFlow 试跑闭环任务
+ 
+ - **执行者**：Codex
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 14a1ac2..12d7409 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -84,7 +84,7 @@
+ 58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，blocked — NEEDS_HUMAN，commit 5f304db，见 task_runs）。
+ 59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done，Codex 修复，待提交）。
+ 60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+-61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，ready，依赖 TF-QUALITY-001A ✓）。
++61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+ 62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，ready，依赖 TF-QUALITY-001A ✓）。
+ 63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，ready，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+ 64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，ready，依赖 DATA-P0-FUND-ROUTE）。
+@@ -2739,7 +2739,7 @@
+ ### TF-OBS-002: 盘中观察自动执行与 A 股红绿视觉修正（P0）
+ - **描述**：盘中观察不应必须用户点“执行”才看到结果；同时距离触发价的颜色要符合 A 股直觉：上涨/接近突破用红，跌破/远离/风险用绿或灰。
+ - **优先级**：P0
+-- **状态**：ready
++- **状态**：done
+ - **前置条件**：T-004、T-008 完成 ✓；TF-QUALITY-001A 完成。
+ - **执行约束**：
+   - 不做高频盯盘；默认低频/手动刷新即可。
+diff --git a/frontend/src/pages/TradeFlow.tsx b/frontend/src/pages/TradeFlow.tsx
+index ec3dd27..1658b00 100644
+--- a/frontend/src/pages/TradeFlow.tsx
++++ b/frontend/src/pages/TradeFlow.tsx
+@@ -53,20 +53,22 @@ function actionLabel(action: string): { text: string; cls: string } {
+     }
+ }
+ 
++// [TF-OBS-002] observe_auto_run — A-share colors: red=up/triggered, green=down/invalidated, gray=waiting
+ function observeStateLabel(state: string): { text: string; cls: string } {
+     switch (state) {
+-        case 'TRIGGERED': return { text: '已触发', cls: 'text-emerald-600 dark:text-emerald-400' }
++        case 'TRIGGERED': return { text: '已触发', cls: 'text-red-600 dark:text-red-400' }
+         case 'EXPIRED': return { text: '已过期', cls: 'text-amber-600 dark:text-amber-400' }
+-        case 'INVALIDATED': return { text: '已失效', cls: 'text-red-500 dark:text-red-400' }
++        case 'INVALIDATED': return { text: '已失效', cls: 'text-emerald-600 dark:text-emerald-400' }
+         default: return { text: '等待中', cls: 'text-slate-500 dark:text-slate-400' }
+     }
+ }
+ 
++// [TF-OBS-002] observe_auto_run — A-share colors: red=up/triggered, green=down/invalidated
+ function observeStateBg(state: string): string {
+     switch (state) {
+-        case 'TRIGGERED': return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
++        case 'TRIGGERED': return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+         case 'EXPIRED': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+-        case 'INVALIDATED': return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
++        case 'INVALIDATED': return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+         default: return 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400'
+     }
+ }
+@@ -122,7 +124,7 @@ function priceDistanceColor(currentPrice: number | null, triggerPrice: number |
+         return { text: `已失效 / -${belowPct.toFixed(2)}%`, cls: 'text-emerald-600 dark:text-emerald-400', label: '已失效' }
+     }
+     const toTrigger = ((triggerPrice - currentPrice) / triggerPrice * 100)
+-    return { text: `还差 ${toTrigger.toFixed(2)}%`, cls: 'text-blue-600 dark:text-blue-400', label: '等待中' }
++    return { text: `还差 ${toTrigger.toFixed(2)}%`, cls: 'text-slate-500 dark:text-slate-400', label: '等待中' }
+ }
+ 
+ // [TF-P0-002] tradeflow_pool_split — pool tabs
+@@ -198,16 +200,32 @@ function CompletenessBar({ value }: { value: number }) {
+     )
+ }
+ 
+-function ObserveTable({ items, onRun, running, runResult, lastCheckTime }: { items: TradeFlowObserveItem[]; onRun: () => void; running: boolean; runResult: TradeFlowObserveRunResponse | null; lastCheckTime: string | null }) {
++// [TF-OBS-002] observe_auto_run
++function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observeReason, observeAutoRun, lastObservedAt }: {
++    items: TradeFlowObserveItem[]
++    onRun: () => void
++    running: boolean
++    runResult: TradeFlowObserveRunResponse | null
++    lastCheckTime: string | null
++    observeReason: string
++    observeAutoRun: boolean
++    lastObservedAt: string
++}) {
+     const [showResult, setShowResult] = useState(false)
++    const effectiveLastTime = lastObservedAt || lastCheckTime
+     return (
+         <div>
+             <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-700">
+                 <span className="text-sm font-medium text-slate-700 dark:text-slate-300">盘中观察</span>
+-                {lastCheckTime && (
++                {effectiveLastTime && (
+                     <span className="inline-flex items-center gap-1 text-xs text-slate-400">
+                         <Clock className="h-3 w-3" />
+-                        最后检查: {lastCheckTime}
++                        最后检查: {effectiveLastTime}
++                    </span>
++                )}
++                {observeAutoRun && (
++                    <span className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">
++                        自动执行
+                     </span>
+                 )}
+                 <button
+@@ -216,9 +234,14 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime }: { ite
+                     className="ml-auto inline-flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                 >
+                     {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+-                    {running ? '执行中...' : '执行观察'}
++                    {running ? '执行中...' : '手动刷新'}
+                 </button>
+             </div>
++            {observeReason && items.length === 0 && !runResult && (
++                <div className="mx-4 mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
++                    {observeReason}
++                </div>
++            )}
+             {showResult && runResult && (
+                 <div className={`mx-4 mt-3 rounded-lg border px-4 py-3 text-sm ${
+                     runResult.status === 'skipped'
+@@ -245,12 +268,12 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime }: { ite
+                     <div className="mt-1 text-xs opacity-70">执行时间: {runResult.run_time}</div>
+                 </div>
+             )}
+-            {items.length === 0 && !runResult ? (
++            {items.length === 0 && !runResult && !observeReason ? (
+                 <div className="py-20 text-center text-sm text-slate-400">
+                     <div className="mb-3">暂无盘中观察数据</div>
+-                    <div className="text-xs">点击"执行观察"按钮手动触发盘中检查</div>
++                    <div className="text-xs">系统将在开盘后自动执行观察，或点击"手动刷新"</div>
+                 </div>
+-            ) : items.length === 0 ? null : (
++            ) : items.length === 0 && !runResult ? null : (
+             <div className="overflow-x-auto">
+                 <table className="w-full text-sm">
+                 <thead>
+@@ -1145,6 +1168,10 @@ export default function TradeFlow() {
+         try {
+             const res = await api.getTradeFlowObserve(date)
+             setObserveData(res)
++            // [TF-OBS-002] observe_auto_run — sync last observed time from API
++            if (res.last_observed_at) {
++                setLastObserveCheckTime(res.last_observed_at)
++            }
+         } catch (e: unknown) {
+             setError(e instanceof Error ? e.message : '加载失败')
+         } finally {
+@@ -1574,7 +1601,16 @@ export default function TradeFlow() {
+         }
+ 
+         if (activeTab === 'observe') {
+-            return <ObserveTable items={observeData?.observe_items ?? []} onRun={handleRunObserve} running={observeRunLoading} runResult={observeRunResult} lastCheckTime={lastObserveCheckTime} />
++            return <ObserveTable
++                items={observeData?.observe_items ?? []}
++                onRun={handleRunObserve}
++                running={observeRunLoading}
++                runResult={observeRunResult}
++                lastCheckTime={lastObserveCheckTime}
++                observeReason={observeData?.observe_reason ?? ''}
++                observeAutoRun={observeData?.observe_auto_run ?? false}
++                lastObservedAt={observeData?.last_observed_at ?? ''}
++            />
+         }
+ 
+         if (activeTab === 'ta-queue') {
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index 5bf412c..73f8ece 100644
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -1015,6 +1015,9 @@ export interface TradeFlowObserveResponse {
+     triggered_count: number
+     invalidated_count: number
+     waiting_count: number
++    observe_auto_run: boolean   // [TF-OBS-002] observe_auto_run
++    last_observed_at: string    // [TF-OBS-002]
++    observe_reason: string      // [TF-OBS-002]
+     runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
+ }
+ 
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tests/test_tf_obs_002_observe_auto_run.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [TF-OBS-002] observe_auto_run
+"""Tests for TF-OBS-002: Observe auto-run on page open and A-share color metadata.
+
+Covers:
+- get_observe() returns observe_auto_run, last_observed_at, observe_reason fields.
+- Auto-run triggers when candidates exist but no observe signals for the date.
+- Auto-run skips when signals already exist for the date.
+- No-plan scenarios return clear observe_reason.
+- Non-trading-day auto-run returns skip reason.
+- Cross-date (non-trading day plan → trading day observe) mapping works.
+- Pydantic schema includes new fields.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import sys
+from datetime import datetime
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
+from tradingagents.tradeflow.schemas import Candidate
+from tradingagents.tradeflow.observe_runner import ObserveRunResult
+
+from api.services.tradeflow_service import get_observe, _precheck_observe_state
+from api.tradeflow_schemas import TradeFlowObserveResponse
+
+
+TODAY = datetime.now().strftime("%Y-%m-%d")
+
+
+@pytest.fixture
+def tmp_db(tmp_path):
+    db_path = str(tmp_path / "test_tf_obs002.db")
+    init_db(db_path)
+    return db_path
+
+
+def _make_candidate(symbol, trigger_price=10.0, invalid_price=9.0,
+                    trade_date=TODAY, observe_state="WAITING",
+                    effective_trade_date=""):
+    c = Candidate(
+        symbol=symbol,
+        name=f"Test {symbol}",
+        source="manual",
+        trade_date=trade_date,
+        trigger_price=trigger_price,
+        invalid_price=invalid_price,
+        status="active",
+        observe_state=observe_state,
+        effective_trade_date=effective_trade_date or trade_date,
+    )
+    return c
+
+
+def _insert_signal(db_path, symbol, trade_date, signal_type="observe_check",
+                   current_price=10.0, trigger_reason="test"):
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO tradeflow_signals "
+        "(signal_time, symbol, signal_type, signal_level, source, evidence_json, action_hint, status, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            f"{trade_date}T10:30:00",
+            symbol,
+            signal_type,
+            "info",
+            "observe_runner",
+            json.dumps({
+                "trade_date": trade_date,
+                "current_price": current_price,
+                "trigger_reason": trigger_reason,
+                "observe_state": "WAITING",
+            }),
+            "OBSERVE",
+            "new",
+            f"{trade_date}T10:30:00",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+class TestPrecheckObserveState:
+    def test_no_candidates_no_db(self, tmp_path):
+        result = _precheck_observe_state(str(tmp_path / "nonexistent.db"), TODAY)
+        # init_db creates the DB, so after precheck it exists
+        assert result["has_candidates"] is False
+        assert result["reason"] == "无计划"
+
+    def test_has_candidates_no_signals(self, tmp_db):
+        save_candidate(_make_candidate("600519.SH"), tmp_db)
+        result = _precheck_observe_state(tmp_db, TODAY)
+        assert result["has_candidates"] is True
+        assert result["has_signals_for_date"] is False
+        assert result["reason"] == ""
+
+    def test_has_candidates_and_signals(self, tmp_db):
+        save_candidate(_make_candidate("600519.SH"), tmp_db)
+        _insert_signal(tmp_db, "600519.SH", TODAY)
+        result = _precheck_observe_state(tmp_db, TODAY)
+        assert result["has_candidates"] is True
+        assert result["has_signals_for_date"] is True
+        assert result["last_observed_at"] != ""
+
+    def test_no_candidates_but_db_has_data(self, tmp_db):
+        save_candidate(_make_candidate("600519.SH", trade_date="2026-05-01"), tmp_db)
+        result = _precheck_observe_state(tmp_db, TODAY)
+        assert result["has_candidates"] is False
+        assert result["reason"] == "当日无活跃候选"
+
+
+class TestGetObserveNewFields:
+    def test_no_db_returns_auto_run_fields(self):
+        result = get_observe(TODAY, tf_db_path="/nonexistent/path.db")
+        assert "observe_auto_run" in result
+        assert "last_observed_at" in result
+        assert "observe_reason" in result
+        assert result["observe_auto_run"] is False
+        assert result["observe_reason"] == "无数据库"
+
+    def test_returns_observe_auto_run_false_when_signals_exist(self, tmp_db):
+        save_candidate(_make_candidate("600519.SH"), tmp_db)
+        _insert_signal(tmp_db, "600519.SH", TODAY)
+        result = get_observe(TODAY, tf_db_path=tmp_db)
+        assert result["observe_auto_run"] is False
+        assert result["last_observed_at"] != ""
+
+    def test_returns_observe_reason_when_no_plan(self, tmp_db):
+        result = get_observe(TODAY, tf_db_path=tmp_db)
+        assert result["observe_auto_run"] is False
+        assert result["observe_reason"] == "无计划"
+        assert result["observe_items"] == []
+
+
+class TestAutoRunTriggers:
+    def test_auto_run_called_when_no_signals(self, tmp_db, monkeypatch):
+        save_candidate(_make_candidate("600519.SH", observe_state="TRIGGERED"), tmp_db)
+
+        call_log = []
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            call_log.append(trade_date)
+            r = ObserveRunResult()
+            r.checked = 1
+            r.triggered = 1
+            r.signals_written = 1
+            return r
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        result = get_observe(TODAY, tf_db_path=tmp_db)
+        assert len(call_log) == 1
+        assert call_log[0] == TODAY
+        assert result["observe_auto_run"] is True
+
+    def test_auto_run_populates_items_after_run(self, tmp_db, monkeypatch):
+        save_candidate(_make_candidate("600519.SH", observe_state="TRIGGERED"), tmp_db)
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            _insert_signal(db_path, "600519.SH", trade_date, signal_type="observe_triggered",
+                           current_price=10.5, trigger_reason="突破触发价")
+            r = ObserveRunResult()
+            r.checked = 1
+            r.triggered = 1
+            r.signals_written = 1
+            return r
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        result = get_observe(TODAY, tf_db_path=tmp_db)
+        assert result["observe_auto_run"] is True
+        assert len(result["observe_items"]) == 1
+        item = result["observe_items"][0]
+        assert item["current_price"] == 10.5
+        assert item["trigger_reason"] == "突破触发价"
+
+    def test_auto_run_not_called_when_signals_exist(self, tmp_db, monkeypatch):
+        save_candidate(_make_candidate("600519.SH"), tmp_db)
+        _insert_signal(tmp_db, "600519.SH", TODAY)
+
+        call_log = []
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            call_log.append(trade_date)
+            return ObserveRunResult()
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        result = get_observe(TODAY, tf_db_path=tmp_db)
+        assert len(call_log) == 0
+        assert result["observe_auto_run"] is False
+
+    def test_auto_run_surfaces_skip_reason(self, tmp_db, monkeypatch):
+        save_candidate(_make_candidate("600519.SH"), tmp_db)
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            r = ObserveRunResult()
+            r.skipped_reason = f"{trade_date} 非交易日，跳过实时观察"
+            return r
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        result = get_observe(TODAY, tf_db_path=tmp_db)
+        assert result["observe_auto_run"] is True
+        assert "非交易日" in result["observe_reason"]
+
+
+class TestNoPlanScenarios:
+    def test_empty_db_returns_no_plan_reason(self, tmp_db):
+        result = get_observe(TODAY, tf_db_path=tmp_db)
+        assert result["observe_reason"] == "无计划"
+        assert result["observe_items"] == []
+        assert result["observe_auto_run"] is False
+
+    def test_different_date_returns_no_active_reason(self, tmp_db):
+        save_candidate(_make_candidate("600519.SH", trade_date="2026-05-01",
+                                       effective_trade_date="2026-05-01"), tmp_db)
+        result = get_observe(TODAY, tf_db_path=tmp_db)
+        assert result["observe_reason"] == "当日无活跃候选"
+
+
+class TestCrossDatePlanMapping:
+    def test_non_trading_day_plan_mapped_to_trading_day(self, tmp_db, monkeypatch):
+        # Plan generated on Saturday (2026-05-31) with effective_trade_date = Monday (2026-06-02)
+        c = _make_candidate("300750.SZ", trade_date="2026-05-31",
+                            effective_trade_date=TODAY)
+        save_candidate(c, tmp_db)
+
+        call_log = []
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            call_log.append(trade_date)
+            _insert_signal(db_path, "300750.SZ", trade_date, signal_type="observe_triggered",
+                           current_price=10.2, trigger_reason="跨日映射触发")
+            r = ObserveRunResult()
+            r.checked = 1
+            r.triggered = 1
+            r.signals_written = 1
+            return r
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+
+exec
+/bin/zsh -lc 'git diff --cached --stat && git diff --cached' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+exec
+/bin/zsh -lc "find docs/task_runs/TF-OBS-002-20260613-225218 -maxdepth 2 -type f -print -exec sed -n '1,120p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+docs/task_runs/TF-OBS-002-20260613-225218/tests-round2.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  1%]
+................................................ss...................... [  2%]
+........................................................................ [  4%]
+........................................................................ [  5%]
+........................................................................ [  6%]
+........................................................................ [  8%]
+........................................................................ [  9%]
+........................................................................ [ 10%]
+........................................................................ [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 18%]
+........................................................................ [ 20%]
+........................................................................ [ 21%]
+........................................................................ [ 23%]
+........................................................................ [ 24%]
+........................................................................ [ 25%]
+........................................................................ [ 27%]
+........................................................................ [ 28%]
+........................................................................ [ 29%]
+........................................................................ [ 31%]
+........................................................................ [ 32%]
+........................................................................ [ 33%]
+........................................................................ [ 35%]
+........................................................................ [ 36%]
+........................................................................ [ 37%]
+........................................................................ [ 39%]
+........................................................................ [ 40%]
+........................................................................ [ 42%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 46%]
+........................................................................ [ 47%]
+........................................................................ [ 48%]
+.....................................sssssssss.......................... [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 52%]
+........................................................................ [ 54%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 58%]
+........................................................................ [ 59%]
+........................................................................ [ 61%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+........................................................................ [ 67%]
+........................................................................ [ 69%]
+........................................................................ [ 70%]
+........................................................................ [ 71%]
+.....................ss................................................. [ 73%]
+ssss.................................................................... [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 77%]
+........................................................................ [ 78%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+........................................................................ [ 82%]
+........................................................................ [ 84%]
+........................................................................ [ 85%]
+........................................................................ [ 86%]
+........................................................................ [ 88%]
+........................................................................ [ 89%]
+........................................................................ [ 90%]
+........................................................................ [ 92%]
+........................................................................ [ 93%]
+........................................................................ [ 94%]
+........................................................................ [ 96%]
+........................................................................ [ 97%]
+........................................................................ [ 99%]
+..................................................                       [100%]
+5289 passed, 17 skipped in 156.65s (0:02:36)
+
+Exit code: 0
+docs/task_runs/TF-OBS-002-20260613-225218/tests-round1.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  1%]
+................................................ss...................... [  2%]
+........................................................................ [  4%]
+........................................................................ [  5%]
+........................................................................ [  6%]
+........................................................................ [  8%]
+........................................................................ [  9%]
+........................................................................ [ 10%]
+........................................................................ [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 18%]
+........................................................................ [ 20%]
+........................................................................ [ 21%]
+........................................................................ [ 23%]
+........................................................................ [ 24%]
+........................................................................ [ 25%]
+........................................................................ [ 27%]
+........................................................................ [ 28%]
+........................................................................ [ 29%]
+........................................................................ [ 31%]
+........................................................................ [ 32%]
+........................................................................ [ 33%]
+........................................................................ [ 35%]
+........................................................................ [ 36%]
+........................................................................ [ 37%]
+........................................................................ [ 39%]
+........................................................................ [ 40%]
+........................................................................ [ 42%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 46%]
+........................................................................ [ 47%]
+........................................................................ [ 48%]
+.....................................sssssssss.......................... [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 52%]
+........................................................................ [ 54%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 58%]
+........................................................................ [ 59%]
+........................................................................ [ 61%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+........................................................................ [ 67%]
+........................................................................ [ 69%]
+........................................................................ [ 70%]
+........................................................................ [ 71%]
+.....................ss................................................. [ 73%]
+ssss.................................................................... [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 77%]
+........................................................................ [ 78%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+........................................................................ [ 82%]
+........................................................................ [ 84%]
+........................................................................ [ 85%]
+............F........................................................... [ 86%]
+........................................................................ [ 88%]
+........................................................................ [ 89%]
+........................................................................ [ 90%]
+........................................................................ [ 92%]
+........................................................................ [ 93%]
+........................................................................ [ 94%]
+........................................................................ [ 96%]
+........................................................................ [ 97%]
+........................................................................ [ 99%]
+..................................................                       [100%]
+=================================== FAILURES ===================================
+_____________ TestObserveE2E.test_returns_all_three_observe_items ______________
+tests/test_tf_p0_003_e2e_smoke.py:394: in test_returns_all_three_observe_items
+    assert result["waiting_count"] == 3
+E   assert 1 == 3
+----------------------------- Captured stdout call -----------------------------
+[provider-trace] method=get_realtime_quotes symbol=['601689.SH', '300034.SZ', '600711.SH'] category=realtime_data configured='cn_akshare' chain=['cn_akshare', 'cn_baostock', 'yfinance', 'alpha_vantage', 'cn_astock']
+[provider-trace] method=get_realtime_quotes symbol=['601689.SH', '300034.SZ', '600711.SH'] vendor=cn_akshare status=hit
+=========================== short test summary info ============================
+FAILED tests/test_tf_p0_003_e2e_smoke.py::TestObserveE2E::test_returns_all_three_observe_items
+1 failed, 5288 passed, 17 skipped in 151.70s (0:02:31)
+
+Exit code: 1
+docs/task_runs/TF-OBS-002-20260613-225218/codegraph-status.json
+{
+  "task_id": "TF-OBS-002",
+  "generated_at": "2026-06-13T22:52:18.494064",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": false,
+    "version": "0.9.7",
+    "error": "status check failed: error: unknown option '-p'",
+    "files_indexed": 0,
+    "nodes_count": 0
+  },
+  "result": "SKIPPED",
+  "reason": "CodeGraph not indexed",
+  "post_generated_at": "2026-06-13T23:19:08.591888",
+  "codegraph_post": {
+    "available": true,
+    "indexed": false,
+    "version": "0.9.7",
+    "error": "status check failed: error: unknown option '-p'",
+    "files_indexed": 0,
+    "nodes_count": 0
+  },
+  "post_result": "SKIPPED"
+}docs/task_runs/TF-OBS-002-20260613-225218/prompt-round1.md
+# Task: TF-OBS-002: 盘中观察自动执行与 A 股红绿视觉修正（P0）
+
+Read task "TF-OBS-002" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/TF-OBS-002-20260613-225218/codegraph-context.txt
+# CodeGraph Context: SKIPPED
+# Task: TF-OBS-002
+# Reason: CodeGraph not indexed
+docs/task_runs/TF-OBS-002-20260613-225218/opencode-round2.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead tests/test_tf_p0_003_e2e_smoke.py[90m [offset=360, limit=80][0m
+[0m✱ [0mGrep "def get_observe"[90m 2 matches[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=659, limit=120][0m
+[0m→ [0mRead tests/test_tf_p0_003_e2e_smoke.py[90m [limit=100, offset=1][0m
+[0m→ [0mRead tests/test_tf_p0_003_e2e_smoke.py[90m [limit=120, offset=100][0m
+[0m→ [0mRead tests/test_tf_p0_003_e2e_smoke.py[90m [limit=80, offset=219][0m
+[0m✱ [0mGrep "def _precheck_observe_state"[90m 1 match[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=67, offset=592][0m
+[0m✱ [0mGrep "def run_observe"[90m 5 matches[0m
+[0m→ [0mRead tradingagents/tradeflow/observe_runner.py[90m [limit=100, offset=242][0m
+[0m✱ [0mGrep "def _is_trading_day"[90m in tradingagents/tradeflow · 2 matches[0m
+[0m→ [0mRead tradingagents/tradeflow/observe_runner.py[90m [limit=60, offset=58][0m
+Now I understand the issue. The `get_observe()` auto-run logic (`[TF-OBS-002]`) fires whenever candidates exist but no observe signals exist for the date. It then calls `run_observe()` which fetches real-time quotes and mutates candidate states (TRIGGERED/INVALIDATED). For a past trade date, this is semantically wrong — today's live prices shouldn't be applied against a past date's triggers.
+
+Let me fix it to only auto-run for today's date:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=30, offset=684][0m
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -684,20 +684,24 @@
+ 
+ if not _pre["has_candidates"]:
+     observe_reason = _pre["reason"]
+ elif not _pre["has_signals_for_date"]:
+-    # Auto-run observe check so page isn't blank on first open
+-    try:
+-        from tradingagents.tradeflow.candidate_engine import init_db
+-        from tradingagents.tradeflow.observe_runner import run_observe
+-        init_db(tf_db)
+-        _auto = run_observe(trade_date=trade_date, db_path=tf_db)
+-        observe_auto_run = True
+-        last_observed_at = _auto.run_time
+-        if _auto.skipped_reason:
+-            observe_reason = _auto.skipped_reason
+-    except Exception as e:
+-        observe_reason = f"自动执行失败: {e}"
++    _today_str = datetime.now().strftime("%Y-%m-%d")
++    if trade_date != _today_str:
++        observe_reason = "非当日，跳过自动观察"
++    else:
++        # Auto-run observe check so page isn't blank on first open
++        try:
++            from tradingagents.tradeflow.candidate_engine import init_db
++            from tradingagents.tradeflow.observe_runner import run_observe
++            init_db(tf_db)
++            _auto = run_observe(trade_date=trade_date, db_path=tf_db)
++            observe_auto_run = True
++            last_observed_at = _auto.run_time
++            if _auto.skipped_reason:
++                observe_reason = _auto.skipped_reason
++        except Exception as e:
++            observe_reason = f"自动执行失败: {e}"
+ 
+ conn = _connect(tf_db_path)
+ if conn is None:
+     return {
+
+[0m
+Now let me verify `datetime` is imported in the file:
+[0m✱ [0mGrep "^from datetime|^import datetime"[90m 1 match[0m
+Good, `datetime` is imported. Now let me run the failing test:
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tf_p0_003_e2e_smoke.py::TestObserveE2E -x -q 2>&1
+.....                                                                    [100%]
+5 passed in 1.27s
+[0m
+All 5 observe tests pass. Let me run the full test file to make sure nothing else broke:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tf_p0_003_e2e_smoke.py -x -q 2>&1
+.....................................................                    [100%]
+53 passed in 2.32s
+[0m
+Let me check if there are other tests specifically testing the auto-run behavior that might be affected:
+[0m✱ [0mGrep "observe_auto_run"[90m in tests · 17 matches[0m
+[0m→ [0mRead tests/test_tf_obs_002_observe_auto_run.py[90m [limit=60, offset=130][0m
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tf_obs_002_observe_auto_run.py -x -q 2>&1
+.......F
+=================================== FAILURES ===================================
+___________ TestAutoRunTriggers.test_auto_run_called_when_no_signals ___________
+
+self = <tests.test_tf_obs_002_observe_auto_run.TestAutoRunTriggers object at 0x11146adb0>
+tmp_db = '/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-189/test_auto_run_called_when_no_s0/test_tf_obs002.db'
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x11146a6c0>
+
+    def test_auto_run_called_when_no_signals(self, tmp_db, monkeypatch):
+        save_candidate(_make_candidate("600519.SH", observe_state="TRIGGERED"), tmp_db)
+    
+        call_log = []
+    
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            call_log.append(trade_date)
+            r = ObserveRunResult()
+            r.checked = 1
+            r.triggered = 1
+            r.signals_written = 1
+            return r
+    
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+    
+        result = get_observe("2026-06-02", tf_db_path=tmp_db)
+>       assert len(call_log) == 1
+E       assert 0 == 1
+E        +  where 0 = len([])
+
+tests/test_tf_obs_002_observe_auto_run.py:157: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_tf_obs_002_observe_auto_run.py::TestAutoRunTriggers::test_auto_run_called_when_no_signals
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 7 passed in 1.37s
+[0m
+The fix is correct (auto-run should only happen for today), but the TF-OBS-002 unit tests use a hardcoded past date. Let me update those tests to use today's date:
+docs/task_runs/TF-OBS-002-20260613-225218/prompt-round2.md
+# Fix task: TF-OBS-002
+
+Previous implementation failed tests. Please fix:
+
+## Test output (last 30 lines)
+```
+........................................................................ [ 75%]
+........................................................................ [ 77%]
+........................................................................ [ 78%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+........................................................................ [ 82%]
+........................................................................ [ 84%]
+........................................................................ [ 85%]
+............F........................................................... [ 86%]
+........................................................................ [ 88%]
+........................................................................ [ 89%]
+........................................................................ [ 90%]
+........................................................................ [ 92%]
+........................................................................ [ 93%]
+........................................................................ [ 94%]
+........................................................................ [ 96%]
+........................................................................ [ 97%]
+........................................................................ [ 99%]
+..................................................                       [100%]
+=================================== FAILURES ===================================
+_____________ TestObserveE2E.test_returns_all_three_observe_items ______________
+tests/test_tf_p0_003_e2e_smoke.py:394: in test_returns_all_three_observe_items
+    assert result["waiting_count"] == 3
+E   assert 1 == 3
+----------------------------- Captured stdout call -----------------------------
+[provider-trace] method=get_realtime_quotes symbol=['601689.SH', '300034.SZ', '600711.SH'] category=realtime_data configured='cn_akshare' chain=['cn_akshare', 'cn_baostock', 'yfinance', 'alpha_vantage', 'cn_astock']
+[provider-trace] method=get_realtime_quotes symbol=['601689.SH', '300034.SZ', '600711.SH'] vendor=cn_akshare status=hit
+=========================== short test summary info ============================
+FAILED tests/test_tf_p0_003_e2e_smoke.py::TestObserveE2E::test_returns_all_three_observe_items
+1 failed, 5288 passed, 17 skipped in 151.70s (0:02:31)
+```
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No push
+- **Do NOT git commit**
+- Update docs/DEVLOG.md after fix
+docs/task_runs/TF-OBS-002-20260613-225218/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "TF-OBS-002"[90m in docs/TASKS.md · 9 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [offset=2739, limit=30][0m
+[0m• [0mExplore TF-OBS-002 backend[90m Explore Agent[0m
+[0m• [0mExplore TF-OBS-002 frontend[90m Explore Agent[0m
+[0m• [0mExplore TF-OBS-002 tests[90m Explore Agent[0m
+Let me explore the relevant code areas in parallel.
+[0m✓ [0mExplore TF-OBS-002 frontend[90m Explore Agent[0m
+[0m✓ [0mExplore TF-OBS-002 backend[90m Explore Agent[0m
+[0m✓ [0mExplore TF-OBS-002 tests[90m Explore Agent[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=580, limit=120][0m
+[0m→ [0mRead api/tradeflow_schemas.py[90m [offset=170, limit=50][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [offset=40, limit=90][0m
+Now let me read the key files I need to modify.
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [offset=195, limit=120][0m
+[0m→ [0mRead frontend/src/types/index.ts[90m [limit=50, offset=990][0m
+[0m→ [0mRead frontend/src/types/index.ts[90m [limit=30, offset=1115][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=60, offset=1135][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=60, offset=1250][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=20, offset=1795][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=10, offset=1572][0m
+Let me read the observe header summary and observe render section.
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=60, offset=980][0m
+[0m→ [0mRead tradingagents/tradeflow/observe_runner.py
+Now let me read the observe_runner and the `get_observe` function more carefully, plus understand the `_query_by_date_or_effective` helper.
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=50, offset=310][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=30, offset=1][0m
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git status --short
+M docs/TASKS.md
+?? docs/task_runs/TF-OBS-002-20260613-225218/
+[0m
+Now let me check the git status and set up the todo list.
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=20, offset=30][0m
+[0m
+[0m# [0mTodos
+[ ] Backend: Add auto-run logic to get_observe() with observe_auto_run, last_observed_at, observe_reason fields
+[ ] Backend: Add new fields to TradeFlowObserveResponse schema
+[ ] Frontend: Add observe_auto_run, last_observed_at, observe_reason to TS types
+[ ] Frontend: Fix A-share color semantics (red=triggered/up, green=invalidated/down, gray=waiting)
+[ ] Frontend: Auto-load observe on tab open, show auto-run status/reason
+[ ] Tests: Add test_tf_obs_002_observe_auto_run.py with fixture coverage
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+[0m# [0mTodos
+[•] Backend: Add auto-run logic to get_observe() with observe_auto_run, last_observed_at, observe_reason fields
+[ ] Backend: Add new fields to TradeFlowObserveResponse schema
+[ ] Frontend: Add observe_auto_run, last_observed_at, observe_reason to TS types
+[ ] Frontend: Fix A-share color semantics (red=triggered/up, green=invalidated/down, gray=waiting)
+[ ] Frontend: Auto-load observe on tab open, show auto-run status/reason
+[ ] Tests: Add test_tf_obs_002_observe_auto_run.py with fixture coverage
+[ ] Run tests and verify
+[ ] Update docs/DEVLOG.md
+[0m
+Now I have a complete understanding. Let me implement the changes.
+
+## 1. Backend: Modify `get_observe()` in `api/services/tradeflow_service.py`
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=10, offset=44][0m
+Now let me implement the backend changes. First, add the precheck helper and modify `get_observe()`:
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -588,13 +588,131 @@
+     finally:
+         conn.close()
+ 
+ 
++def _precheck_observe_state(db_path: str, trade_date: str) -> dict:
++    """Quick check whether candidates and observe signals exist for a date.  # [TF-OBS-002] observe_auto_run
++
++    Returns dict with:
++    - has_candidates: bool
++    - has_signals_for_date: bool
++    - last_observed_at: str
++    - reason: str (explanation when candidates are absent)
++    """
++    from tradingagents.tradeflow.candidate_engine import init_db
++    init_db(db_path)
++    conn = sqlite3.connect(db_path)
++    conn.row_factory = sqlite3.Row
++    try:
++        columns = {r[1] for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()}
++        has_eff = "effective_trade_date" in columns
++
++        if has_eff:
++            cnt_row = conn.execute(
++                "SELECT COUNT(*) AS cnt FROM tradeflow_candidates WHERE "
++                "(effective_trade_date = ? OR (trade_date = ? AND (effective_trade_date = '' OR effective_trade_date IS NULL))) "
++                "AND status = 'active'",
++                (trade_date, trade_date),
++            ).fetchone()
++        else:
++            cnt_row = conn.execute(
++                "SELECT COUNT(*) AS cnt FROM tradeflow_candidates WHERE trade_date = ? AND status = 'active'",
++                (trade_date,),
++            ).fetchone()
++        has_candidates = cnt_row is not None and cnt_row["cnt"] > 0
++
++        has_signals_for_date = False
++        last_observed_at = ""
++        try:
++            sig_rows = conn.execute(
++                "SELECT signal_time, evidence_json FROM tradeflow_signals "
++                "WHERE signal_type LIKE 'observe_%' ORDER BY signal_time DESC LIMIT 50"
++            ).fetchall()
++            for sr in sig_rows:
++                ev = json.loads(sr["evidence_json"]) if sr["evidence_json"] else {}
++                if ev.get("trade_date") == trade_date:
++                    has_signals_for_date = True
++                    last_observed_at = sr["signal_time"]
++                    break
++            if not last_observed_at and sig_rows:
++                last_observed_at = sig_rows[0]["signal_time"]
+docs/task_runs/TF-OBS-002-20260613-225218/task.md
+# Auto Dev Task Run
+
+- Task: TF-OBS-002 - 盘中观察自动执行与 A 股红绿视觉修正（P0）
+- Priority: P0
+- Status: CLAIMED
+- Started at: 2026-06-13_22:52:18
+- Git HEAD: b1ca16f
+- Test commands: pytest tests/ -q --tb=short
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/TF-OBS-002-20260613-225218/codegraph-impact.txt
+# CodeGraph Impact: SKIPPED
+# Reason: CodeGraph not indexed
+
+exec
+/bin/zsh -lc "sed -n '260,560p' tests/test_tf_obs_002_observe_auto_run.py && sed -n '1,220p' tradingagents/tradeflow/observe_runner.py && sed -n '220,380p' tradingagents/tradeflow/observe_runner.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        # Query for the effective trade date (Monday)
+        result = get_observe(TODAY, tf_db_path=tmp_db)
+        assert result["observe_auto_run"] is True
+        assert len(result["observe_items"]) == 1
+        assert result["observe_items"][0]["symbol"] == "300750.SZ"
+        assert call_log[0] == TODAY
+
+
+class TestSchemaIncludesNewFields:
+    def test_trade_flow_observe_response_has_auto_run_fields(self):
+        schema_fields = TradeFlowObserveResponse.model_fields
+        assert "observe_auto_run" in schema_fields
+        assert "last_observed_at" in schema_fields
+        assert "observe_reason" in schema_fields
+
+    def test_trade_flow_observe_response_defaults(self):
+        resp = TradeFlowObserveResponse()
+        assert resp.observe_auto_run is False
+        assert resp.last_observed_at == ""
+        assert resp.observe_reason == ""
+
+
+class TestAcceptanceTF_OBS_002:
+    """Acceptance criteria for TF-OBS-002."""
+
+    def test_page_open_auto_runs_without_click(self, tmp_db, monkeypatch):
+        """进入页面后无需点击即可看到观察状态。"""
+        save_candidate(_make_candidate("600519.SH", observe_state="TRIGGERED"), tmp_db)
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            _insert_signal(db_path, "600519.SH", trade_date, signal_type="observe_triggered",
+                           current_price=10.5, trigger_reason="auto run")
+            r = ObserveRunResult()
+            r.checked = 1
+            r.triggered = 1
+            r.signals_written = 1
+            return r
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        result = get_observe(TODAY, tf_db_path=tmp_db)
+        assert result["observe_auto_run"] is True
+        assert len(result["observe_items"]) == 1
+        assert result["observe_items"][0]["current_price"] == 10.5
+
+    def test_empty_state_shows_reason_not_blank(self, tmp_db):
+        """页面不能空白 — 有明确的 observe_reason。"""
+        result = get_observe(TODAY, tf_db_path=tmp_db)
+        assert result["observe_reason"] != ""
+        assert result["observe_reason"] == "无计划"
+
+    def test_triggered_state_uses_red_not_green(self):
+        """触发价颜色符合 A 股红涨直觉 — 这在前端测试中验证，
+        后端只确保 observe_state 值正确返回。"""
+        # This is a documentation test; actual color logic is in frontend CSS.
+        assert True
+
+    def test_fixture_coverage_triggered(self, tmp_db, monkeypatch):
+        """Fixture: 已触发。"""
+        save_candidate(_make_candidate("600519.SH", observe_state="WAITING",
+                                       trigger_price=10.0, invalid_price=9.0), tmp_db)
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            _insert_signal(db_path, "600519.SH", trade_date, signal_type="observe_triggered",
+                           current_price=10.5, trigger_reason="突破")
+            r = ObserveRunResult()
+            r.checked = 1
+            r.triggered = 1
+            r.signals_written = 1
+            return r
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        result = get_observe(TODAY, tf_db_path=tmp_db)
+        items = result["observe_items"]
+        assert len(items) == 1
+        assert items[0]["current_price"] == 10.5
+        assert items[0]["observe_state"] in ("TRIGGERED", "WAITING")
+
+    def test_fixture_coverage_waiting(self, tmp_db, monkeypatch):
+        """Fixture: 等待中。"""
+        save_candidate(_make_candidate("600519.SH", trigger_price=10.0, invalid_price=9.0), tmp_db)
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            _insert_signal(db_path, "600519.SH", trade_date, signal_type="observe_check",
+                           current_price=9.5, trigger_reason="等待突破")
+            r = ObserveRunResult()
+            r.checked = 1
+            r.waiting = 1
+            r.signals_written = 1
+            return r
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        result = get_observe(TODAY, tf_db_path=tmp_db)
+        assert result["waiting_count"] >= 0
+        assert len(result["observe_items"]) == 1
+
+    def test_fixture_coverage_invalidated(self, tmp_db, monkeypatch):
+        """Fixture: 已失效。"""
+        save_candidate(_make_candidate("600519.SH", observe_state="INVALIDATED",
+                                       trigger_price=10.0, invalid_price=9.0), tmp_db)
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            _insert_signal(db_path, "600519.SH", trade_date, signal_type="observe_invalidated",
+                           current_price=8.5, trigger_reason="跌破失效价")
+            r = ObserveRunResult()
+            r.checked = 1
+            r.invalidated = 1
+            r.signals_written = 1
+            return r
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        result = get_observe(TODAY, tf_db_path=tmp_db)
+        assert result["invalidated_count"] >= 0
+
+    def test_fixture_coverage_no_plan(self, tmp_db):
+        """Fixture: 无计划。"""
+        result = get_observe(TODAY, tf_db_path=tmp_db)
+        assert result["observe_items"] == []
+        assert result["observe_reason"] == "无计划"
+        assert result["observe_auto_run"] is False
+
+    def test_fixture_coverage_non_trading_day_mapping(self, tmp_db, monkeypatch):
+        """Fixture: 非交易日计划映射。"""
+        c = _make_candidate("300750.SZ", trade_date="2026-05-31",
+                            effective_trade_date=TODAY)
+        save_candidate(c, tmp_db)
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            _insert_signal(db_path, "300750.SZ", trade_date)
+            r = ObserveRunResult()
+            r.checked = 1
+            r.waiting = 1
+            r.signals_written = 1
+            return r
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        result = get_observe(TODAY, tf_db_path=tmp_db)
+        assert len(result["observe_items"]) == 1
+        assert result["observe_items"][0]["symbol"] == "300750.SZ"
+# [TF-OBS-001] tradeflow_observe_runner
+"""TradeFlow Observe Runner — executes intraday observe checks for active candidates.
+
+Responsibilities:
+1. Read candidates with effective_trade_date = today and status = 'active'.
+2. Fetch realtime price/volume/amount for each candidate symbol.
+3. Call run_observe_check() for each candidate.
+4. Update tradeflow_candidates observe_state/trigger_count/first_trigger_time.
+5. Write tradeflow_signals with each check snapshot.
+6. Skip on non-trading days with explicit skip reason.
+
+Design constraints:
+- Low-frequency checks (default 30 min or manual trigger).
+- Does NOT auto-invoke deep TA or LLM.
+- Does NOT auto-push notifications.
+- Non-trading days return explicit skip status.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from typing import Optional
+
+from .intraday_observe import (
+    ObserveState,
+    ObserveSnapshot,
+    ObserveTracker,
+    run_observe_check,
+)
+from .schemas import Candidate, Signal
+from .candidate_engine import init_db, save_candidate
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG
+
+_MAX_OBSERVE_FALLBACK_DAYS = 5
+
+
+@dataclass
+class ObserveRunResult:
+    checked: int = 0
+    triggered: int = 0
+    invalidated: int = 0
+    waiting: int = 0
+    skipped: int = 0
+    signals_written: int = 0
+    errors: list[str] = field(default_factory=list)
+    skipped_reason: str = ""
+    run_time: str = ""
+    details: list[dict] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not self.run_time:
+            self.run_time = datetime.now().isoformat()
+
+
+def _is_trading_day(date_str: str) -> bool:
+    try:
+        from tradingagents.dataflows.trade_calendar import is_cn_trading_day
+        return is_cn_trading_day(date_str)
+    except Exception:
+        from datetime import datetime as _dt
+        d = _dt.strptime(date_str, "%Y-%m-%d")
+        return d.weekday() < 5
+
+
+def _fetch_realtime_quotes(symbols: list[str]) -> dict[str, dict]:
+    """Fetch realtime quotes for a list of symbols.
+
+    Returns dict keyed by symbol with keys:
+    current_price, current_volume, current_amount, quote_time, source.
+    """
+    if not symbols:
+        return {}
+
+    try:
+        from tradingagents.dataflows.interface import route_to_vendor
+        raw_json = route_to_vendor("get_realtime_quotes", symbols)
+        if not raw_json:
+            return {}
+        quotes = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
+    except Exception:
+        return {}
+
+    result: dict[str, dict] = {}
+    for sym, q in quotes.items():
+        if not isinstance(q, dict):
+            continue
+        price = q.get("price")
+        if price is not None:
+            try:
+                price = float(price)
+            except (TypeError, ValueError):
+                continue
+        result[sym] = {
+            "current_price": price,
+            "current_volume": q.get("volume"),
+            "current_amount": q.get("amount"),
+            "quote_time": q.get("quote_time", ""),
+            "source": q.get("source", ""),
+        }
+    return result
+
+
+def _load_active_candidates(db_path: str, trade_date: str) -> list[Candidate]:
+    """Load active candidates for a given effective_trade_date from DB."""
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()}
+        has_eff = "effective_trade_date" in columns
+
+        if has_eff:
+            rows = conn.execute(
+                "SELECT * FROM tradeflow_candidates WHERE "
+                "(effective_trade_date = ? OR (trade_date = ? AND (effective_trade_date = '' OR effective_trade_date IS NULL))) "
+                "AND status = 'active'",
+                (trade_date, trade_date),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM tradeflow_candidates WHERE trade_date = ? AND status = 'active'",
+                (trade_date,),
+            ).fetchall()
+
+        if not rows:
+            # [TF-QUALITY-001A] pool_gate_contract — if an observe date has no
+            # exact candidates, fall back to the latest active plan in this DB.
+            # This preserves weekend/next-trading-day workflows and keeps tests
+            # with isolated temp DB candidates from depending on today's date.
+            date_expr = "COALESCE(NULLIF(effective_trade_date, ''), trade_date)"
+            current_records = conn.execute(
+                f"SELECT COUNT(*) AS cnt FROM tradeflow_candidates "
+                f"WHERE {date_expr} = ?",
+                (trade_date,),
+            ).fetchone()
+            if current_records and current_records["cnt"] > 0:
+                return []
+
+            latest = conn.execute(
+                f"SELECT {date_expr} AS active_date FROM tradeflow_candidates "
+                f"WHERE status = 'active' AND {date_expr} IS NOT NULL AND {date_expr} != '' "
+                f"AND {date_expr} <= ? "
+                f"AND julianday(?) - julianday({date_expr}) <= ? "
+                f"ORDER BY active_date DESC LIMIT 1",
+                (trade_date, trade_date, _MAX_OBSERVE_FALLBACK_DAYS),
+            ).fetchone()
+            if latest and latest["active_date"]:
+                rows = conn.execute(
+                    f"SELECT * FROM tradeflow_candidates WHERE status = 'active' AND {date_expr} = ? "
+                    f"ORDER BY updated_at DESC, created_at DESC",
+                    (latest["active_date"],),
+                ).fetchall()
+
+        candidates = []
+        for r in rows:
+            d = {k: r[k] for k in r.keys()}
+            candidates.append(Candidate.from_db_row(d))
+        return candidates
+    finally:
+        conn.close()
+
+
+def _save_signal(signal: Signal, db_path: str) -> int:
+    """Persist a signal to tradeflow_signals table."""
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        row = signal.to_db_row()
+        cur = conn.execute(
+            "INSERT INTO tradeflow_signals "
+            "(signal_time, symbol, signal_type, signal_level, source, evidence_json, action_hint, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row["signal_time"],
+                row["symbol"],
+                row["signal_type"],
+                row["signal_level"],
+                row["source"],
+                row["evidence_json"],
+                row["action_hint"],
+                row["status"],
+                signal.created_at,
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def _build_signal_from_snapshot(
+    snapshot: ObserveSnapshot,
+    trade_date: str,
+    quote_source: str = "",
+) -> Signal:
+    """Convert an ObserveSnapshot into a Signal for persistence."""
+    state = snapshot.observe_state
+    if state == ObserveState.TRIGGERED:
+        signal_type = "observe_triggered"
+        signal_level = "warning"
+    elif state == ObserveState.INVALIDATED:
+        signal_type = "observe_invalidated"
+        signal_level = "error"
+    elif state == ObserveState.EXPIRED:
+        signal_type = "observe_expired"
+        signal_level = "info"
+    else:
+        signal_type = "observe_check"
+        signal_level = "info"
+
+    evidence = {
+        "trade_date": trade_date,
+        "check_time": snapshot.check_time,
+        "observe_state": state.value if isinstance(state, ObserveState) else str(state),
+        "trigger_price": snapshot.trigger_price,
+        "invalid_price": snapshot.invalid_price,
+        "current_price": snapshot.current_price,
+        "current_price": snapshot.current_price,
+        "current_volume": snapshot.current_volume,
+        "current_amount": snapshot.current_amount,
+        "trigger_reason": snapshot.trigger_reason,
+        "daily_trigger_count": snapshot.daily_trigger_count,
+        "price_evidence": snapshot.price_evidence,
+        "quote_source": quote_source,
+        "volume_anomaly": getattr(snapshot, "volume_anomaly", False),
+        "volume_ratio": getattr(snapshot, "volume_ratio", None),
+    }
+
+    return Signal(
+        symbol=snapshot.symbol,
+        signal_type=signal_type,
+        signal_level=signal_level,
+        source=f"observe_runner",
+        evidence=evidence,
+        action_hint="OBSERVE",
+        status="new",
+    )
+
+
+def run_observe(
+    trade_date: str,
+    db_path: str,
+    cfg: Optional[StrategyConfig] = None,
+    quote_provider=None,
+) -> ObserveRunResult:
+    """Run observe check for all active candidates on a given trade_date.
+
+    Args:
+        trade_date: The effective trade date (YYYY-MM-DD).
+        db_path: Path to tradeflow.db.
+        cfg: Strategy config (defaults to DEFAULT_STRATEGY_CONFIG).
+        quote_provider: Optional callable(symbols) -> dict for testing.
+                        When provided, overrides the default quote fetching.
+
+    Returns:
+        ObserveRunResult with check counts and details.
+    """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
+    result = ObserveRunResult()
+
+    if not _is_trading_day(trade_date):
+        result.skipped_reason = f"{trade_date} 非交易日，跳过实时观察"
+        return result
+
+    candidates = _load_active_candidates(db_path, trade_date)
+    if not candidates:
+        result.skipped_reason = f"{trade_date} 无活跃候选"
+        return result
+
+    symbols = [c.symbol for c in candidates]
+
+    if quote_provider is not None:
+        quotes = quote_provider(symbols)
+    else:
+        quotes = _fetch_realtime_quotes(symbols)
+
+    for cand in candidates:
+        q = quotes.get(cand.symbol, {})
+        current_price = q.get("current_price")
+        current_volume = q.get("current_volume")
+        current_amount = q.get("current_amount")
+        quote_source = q.get("source", "")
+
+        if current_price is None:
+            result.skipped += 1
+            result.details.append({
+                "symbol": cand.symbol,
+                "status": "skipped_no_price",
+                "reason": "实时行情不可用",
+            })
+            continue
+
+        tracker = ObserveTracker(
+            symbol=cand.symbol,
+            state=ObserveState(cand.observe_state) if cand.observe_state else ObserveState.WAITING,
+            trigger_price=cand.trigger_price,
+            invalid_price=cand.invalid_price,
+            daily_trigger_count=cand.observe_trigger_count,
+            trade_date=trade_date,
+            first_trigger_time=cand.observe_first_trigger_time or None,
+        )
+
+        snapshot = run_observe_check(
+            tracker=tracker,
+            current_price=current_price,
+            current_volume=current_volume,
+            current_amount=current_amount,
+            avg_volume=q.get("avg_volume"),
+            cfg=cfg,
+        )
+
+        cand.observe_state = tracker.state.value
+        cand.observe_trigger_count = tracker.daily_trigger_count
+        cand.observe_first_trigger_time = tracker.first_trigger_time or ""
+
+        try:
+            save_candidate(cand, db_path)
+        except Exception as e:
+            result.errors.append(f"{cand.symbol}: save failed: {e}")
+            continue
+
+        signal = _build_signal_from_snapshot(snapshot, trade_date, quote_source)
+        try:
+            _save_signal(signal, db_path)
+            result.signals_written += 1
+        except Exception as e:
+            result.errors.append(f"{cand.symbol}: signal save failed: {e}")
+
+        result.checked += 1
+        state = snapshot.observe_state
+        if state == ObserveState.TRIGGERED:
+            result.triggered += 1
+        elif state == ObserveState.INVALIDATED:
+            result.invalidated += 1
+        else:
+            result.waiting += 1
+
+        result.details.append({
+            "symbol": cand.symbol,
+            "observe_state": state.value if isinstance(state, ObserveState) else str(state),
+            "current_price": current_price,
+            "trigger_reason": snapshot.trigger_reason,
+            "volume_anomaly": getattr(snapshot, "volume_anomaly", False),
+            "volume_ratio": getattr(snapshot, "volume_ratio", None),
+        })
+
+    return result
+
+exec
+/bin/zsh -lc "nl -ba api/services/tradeflow_service.py | sed -n '620,820p' && nl -ba api/services/tradeflow_service.py | sed -n '300,380p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   620	            ).fetchone()
+   621	        has_candidates = cnt_row is not None and cnt_row["cnt"] > 0
+   622	
+   623	        has_signals_for_date = False
+   624	        last_observed_at = ""
+   625	        try:
+   626	            sig_rows = conn.execute(
+   627	                "SELECT signal_time, evidence_json FROM tradeflow_signals "
+   628	                "WHERE signal_type LIKE 'observe_%' ORDER BY signal_time DESC LIMIT 50"
+   629	            ).fetchall()
+   630	            for sr in sig_rows:
+   631	                ev = json.loads(sr["evidence_json"]) if sr["evidence_json"] else {}
+   632	                if ev.get("trade_date") == trade_date:
+   633	                    has_signals_for_date = True
+   634	                    last_observed_at = sr["signal_time"]
+   635	                    break
+   636	            if not last_observed_at and sig_rows:
+   637	                last_observed_at = sig_rows[0]["signal_time"]
+   638	        except Exception:
+   639	            pass
+   640	
+   641	        reason = ""
+   642	        if not has_candidates:
+   643	            total = conn.execute("SELECT COUNT(*) AS cnt FROM tradeflow_candidates").fetchone()
+   644	            if total and total["cnt"] > 0:
+   645	                reason = "当日无活跃候选"
+   646	            else:
+   647	                reason = "无计划"
+   648	
+   649	        return {
+   650	            "has_candidates": has_candidates,
+   651	            "has_signals_for_date": has_signals_for_date,
+   652	            "last_observed_at": last_observed_at,
+   653	            "reason": reason,
+   654	        }
+   655	    finally:
+   656	        conn.close()
+   657	
+   658	
+   659	def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
+   660	    tf_db = tf_db_path or _get_tradeflow_db_path()
+   661	    _fast_meta = _tradeflow_meta("tradeflow_observe")  # [PERF-001]
+   662	
+   663	    if not os.path.exists(tf_db):
+   664	        return {
+   665	            "status": "no_data",
+   666	            "trade_date": trade_date,
+   667	            "observe_auto_run": False,        # [TF-OBS-002] observe_auto_run
+   668	            "last_observed_at": "",           # [TF-OBS-002]
+   669	            "observe_reason": "无数据库",      # [TF-OBS-002]
+   670	            "observe_items": [],
+   671	            "triggered_count": 0,
+   672	            "invalidated_count": 0,
+   673	            "waiting_count": 0,
+   674	            "runtime_tier_meta": _fast_meta,
+   675	        }
+   676	
+   677	    # [TF-OBS-002] observe_auto_run — auto-run observe check when page opens
+   678	    observe_auto_run = False
+   679	    observe_reason = ""
+   680	    last_observed_at = ""
+   681	
+   682	    _pre = _precheck_observe_state(tf_db, trade_date)
+   683	    last_observed_at = _pre["last_observed_at"]
+   684	
+   685	    if not _pre["has_candidates"]:
+   686	        observe_reason = _pre["reason"]
+   687	    elif not _pre["has_signals_for_date"]:
+   688	        _today_str = datetime.now().strftime("%Y-%m-%d")
+   689	        if trade_date != _today_str:
+   690	            observe_reason = "非当日，跳过自动观察"
+   691	        else:
+   692	            # Auto-run observe check so page isn't blank on first open
+   693	            try:
+   694	                from tradingagents.tradeflow.candidate_engine import init_db
+   695	                from tradingagents.tradeflow.observe_runner import run_observe
+   696	                init_db(tf_db)
+   697	                _auto = run_observe(trade_date=trade_date, db_path=tf_db)
+   698	                observe_auto_run = True
+   699	                last_observed_at = _auto.run_time
+   700	                if _auto.skipped_reason:
+   701	                    observe_reason = _auto.skipped_reason
+   702	            except Exception as e:
+   703	                observe_reason = f"自动执行失败: {e}"
+   704	
+   705	    conn = _connect(tf_db_path)
+   706	    if conn is None:
+   707	        return {
+   708	            "status": "no_data",
+   709	            "trade_date": trade_date,
+   710	            "observe_auto_run": observe_auto_run,
+   711	            "last_observed_at": last_observed_at,
+   712	            "observe_reason": observe_reason,
+   713	            "observe_items": [],
+   714	            "triggered_count": 0,
+   715	            "invalidated_count": 0,
+   716	            "waiting_count": 0,
+   717	            "runtime_tier_meta": _fast_meta,
+   718	        }
+   719	
+   720	    try:
+   721	        columns = _table_columns(conn, "tradeflow_candidates")
+   722	        extra_conditions = []
+   723	        if "status" in columns:
+   724	            extra_conditions.append("status = 'active'")
+   725	        order_clause = " ORDER BY composite_score DESC" if "composite_score" in columns else " ORDER BY updated_at DESC, created_at DESC"
+   726	        rows = _query_by_date_or_effective(
+   727	            conn, "tradeflow_candidates", trade_date,
+   728	            extra_conditions=extra_conditions if extra_conditions else None,
+   729	            order_clause=order_clause,
+   730	        )
+   731	
+   732	        items = []
+   733	        triggered = 0
+   734	        invalidated = 0
+   735	        waiting = 0
+   736	        for r in rows:
+   737	            state = _rget(r, "observe_state", "WAITING")
+   738	            sym = normalize_tradeflow_symbol(r["symbol"])  # [UI-008]
+   739	            raw_n = _rget(r, "name", "")
+   740	
+   741	            # [TF-OBS-001] tradeflow_observe_runner — populate current_price/trigger_reason from latest signal
+   742	            current_price = None
+   743	            trigger_reason = ""
+   744	            try:
+   745	                sig_rows = conn.execute(
+   746	                    "SELECT evidence_json FROM tradeflow_signals WHERE symbol = ? AND signal_type LIKE 'observe_%' ORDER BY signal_time DESC LIMIT 20",
+   747	                    (sym,),
+   748	                ).fetchall()
+   749	                for sig_row in sig_rows:
+   750	                    ev = _parse_json(_rget(sig_row, "evidence_json", "{}"), {})
+   751	                    if ev.get("trade_date") != trade_date:
+   752	                        continue
+   753	                    current_price = ev.get("current_price")
+   754	                    trigger_reason = ev.get("trigger_reason", "")
+   755	                    break
+   756	            except Exception:
+   757	                pass
+   758	
+   759	            item = {
+   760	                "symbol": sym,
+   761	                "name": resolve_tradeflow_name(sym, raw_n),  # [UI-008]
+   762	                "observe_state": state,
+   763	                "trigger_price": _rget(r, "trigger_price"),
+   764	                "invalid_price": _rget(r, "invalid_price"),
+   765	                "observe_trigger_count": _rget(r, "observe_trigger_count", 0) or 0,
+   766	                "observe_first_trigger_time": _rget(r, "observe_first_trigger_time", ""),
+   767	                "tier": _rget(r, "tier", ""),
+   768	                "composite_score": _rget(r, "composite_score", 0.0) or 0.0,
+   769	                "current_price": current_price,
+   770	                "trigger_reason": trigger_reason,
+   771	                "strategy_tags": _parse_json(_rget(r, "strategy_tags_json"), []),
+   772	            }
+   773	            items.append(item)
+   774	            if state == "TRIGGERED":
+   775	                triggered += 1
+   776	            elif state == "INVALIDATED":
+   777	                invalidated += 1
+   778	            else:
+   779	                waiting += 1
+   780	
+   781	        return {
+   782	            "status": "ok",
+   783	            "trade_date": trade_date,
+   784	            "observe_items": items,
+   785	            "triggered_count": triggered,
+   786	            "invalidated_count": invalidated,
+   787	            "waiting_count": waiting,
+   788	            "observe_auto_run": observe_auto_run,        # [TF-OBS-002] observe_auto_run
+   789	            "last_observed_at": last_observed_at,         # [TF-OBS-002]
+   790	            "observe_reason": observe_reason,             # [TF-OBS-002]
+   791	            "runtime_tier_meta": _tradeflow_meta("tradeflow_observe"),  # [PERF-001]
+   792	        }
+   793	    finally:
+   794	        conn.close()
+   795	
+   796	
+   797	def get_ta_queue(trade_date: str, tf_db_path: str = "") -> dict:
+   798	    conn = _connect(tf_db_path)
+   799	    _fast_meta = _tradeflow_meta("tradeflow_ta_queue")  # [PERF-001]
+   800	    if conn is None:
+   801	        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+   802	
+   803	    try:
+   804	        columns = _table_columns(conn, "tradeflow_candidates")
+   805	        order_cols = []
+   806	        if "ta_budget_priority" in columns:
+   807	            order_cols.append("ta_budget_priority DESC")
+   808	        if "composite_score" in columns:
+   809	            order_cols.append("composite_score DESC")
+   810	        if "score" in columns:
+   811	            order_cols.append("score DESC")
+   812	        order_clause = f" ORDER BY {', '.join(order_cols)}" if order_cols else " ORDER BY updated_at DESC, created_at DESC"
+   813	        rows = _query_by_date_or_effective(
+   814	            conn, "tradeflow_candidates", trade_date,
+   815	            extra_conditions=["need_deep_ta = 1"],
+   816	            order_clause=order_clause,
+   817	        )
+   818	
+   819	        items = []
+   820	        dispatched = 0
+   300	            continue
+   301	        seen.add(key)
+   302	        merged.append(item)
+   303	    return merged
+   304	
+   305	
+   306	def _pool_counts_with_filtered(pool_counts: dict, filtered_candidates: list[dict]) -> dict:
+   307	    """Keep pool count badges aligned with merged filtered trace rows."""
+   308	    counts = dict(pool_counts or {})
+   309	    counts["filtered"] = len(filtered_candidates)
+   310	    return counts
+   311	
+   312	
+   313	def _pool_gate_summary_with_counts(pool_counts: dict) -> str:
+   314	    """Render a pool summary from final response counts."""
+   315	    return (
+   316	        f"主候选{pool_counts.get('main', 0)}只，"
+   317	        f"观察{pool_counts.get('observation', 0)}只，"
+   318	        f"过滤{pool_counts.get('filtered', 0)}只。"
+   319	    )
+   320	
+   321	
+   322	def _query_by_date_or_effective(conn, table: str, date_str: str,
+   323	                                extra_conditions: list[str] = None,
+   324	                                extra_params: list = None,
+   325	                                order_clause: str = "") -> list:
+   326	    """Query table by effective_trade_date, falling back to trade_date.  # [TF-DATE-001]
+   327	    
+   328	    Tries: WHERE effective_trade_date = ? ... UNION WHERE trade_date = ? AND effective_trade_date = ''
+   329	    This finds candidates generated on non-trading days (e.g. 2026-05-31) that
+   330	    are effective for the queried trading day (e.g. 2026-06-01).
+   331	    """
+   332	    columns = _table_columns(conn, table)
+   333	    has_eff = "effective_trade_date" in columns
+   334	    conditions = list(extra_conditions or [])
+   335	    params = list(extra_params or [])
+   336	
+   337	    if has_eff:
+   338	        rows = conn.execute(
+   339	            f"SELECT * FROM {table} WHERE "
+   340	            f"(effective_trade_date = ? OR (trade_date = ? AND (effective_trade_date = '' OR effective_trade_date IS NULL))) "
+   341	            f"{' AND ' + ' AND '.join(conditions) if conditions else ''}"
+   342	            f"{order_clause}",
+   343	            [date_str, date_str] + params,
+   344	        ).fetchall()
+   345	    else:
+   346	        conditions.insert(0, "trade_date = ?")
+   347	        params.insert(0, date_str)
+   348	        rows = conn.execute(
+   349	            f"SELECT * FROM {table} WHERE {' AND '.join(conditions)}{order_clause}",
+   350	            params,
+   351	        ).fetchall()
+   352	    return rows
+   353	
+   354	
+   355	def get_daily_plan(trade_date: str, tf_db_path: str = "") -> dict:
+   356	    _fast_meta = _tradeflow_meta("tradeflow_daily_plan")  # [PERF-001]
+   357	    conn = _connect(tf_db_path)
+   358	    if conn is None:
+   359	        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+   360	
+   361	    try:
+   362	        plan_row = conn.execute(
+   363	            "SELECT * FROM tradeflow_daily_plans WHERE trade_date = ? AND mode = 'pre_market' ORDER BY created_at DESC LIMIT 1",
+   364	            (trade_date,),
+   365	        ).fetchone()
+   366	
+   367	        if plan_row is None:
+   368	            plan_columns = _table_columns(conn, "tradeflow_daily_plans") if conn else set()
+   369	            if "effective_trade_date" in plan_columns:
+   370	                plan_row = conn.execute(
+   371	                    "SELECT * FROM tradeflow_daily_plans WHERE effective_trade_date = ? AND mode = 'pre_market' ORDER BY created_at DESC LIMIT 1",
+   372	                    (trade_date,),
+   373	                ).fetchone()
+   374	        if plan_row is None:
+   375	            return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+   376	
+   377	        candidates_json = _parse_json(_rget(plan_row, "candidates_json", "[]"), [])
+   378	        metadata_json = _parse_json(_rget(plan_row, "metadata_json", "{}"), {})
+   379	
+   380	        candidate_items = []
+
+exec
+/bin/zsh -lc "grep -R \"def normalize_tradeflow_symbol\" -n . && grep -R \"save_candidate\" -n tradingagents/tradeflow/candidate_engine.py | head && sed -n '1,120p' tradingagents/tradeflow/candidate_engine.py" in /Users/maybee/TradingAgents-AShare
+ exited 2 in 11796ms:
+grep: ./.git/fsmonitor--daemon.ipc: Operation not supported on socket
+./docs/task_runs/TF-P0-001-20260602-180012/codex-review-round1.txt:678:def normalize_tradeflow_symbol(raw: str) -> str:
+./docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:2347:/bin/zsh -lc "grep -R \"def normalize_tradeflow_symbol\\|CREATE TABLE tradeflow_signals\\|tradeflow_signals\\|def _save_signal\\|class Signal\" -n tradingagents api tests | head -100" in /Users/maybee/TradingAgents-AShare
+./docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:2354:tradingagents/tradeflow/symbol_utils.py:20:def normalize_tradeflow_symbol(raw: str) -> str:
+./docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:2500:def normalize_tradeflow_symbol(raw: str) -> str:
+./docs/reviews/TF-P0-001-20260602-round1.txt:678:def normalize_tradeflow_symbol(raw: str) -> str:
+./docs/reviews/DATA-001-20260601-round1.txt:2347:/bin/zsh -lc "grep -R \"def normalize_tradeflow_symbol\\|CREATE TABLE tradeflow_signals\\|tradeflow_signals\\|def _save_signal\\|class Signal\" -n tradingagents api tests | head -100" in /Users/maybee/TradingAgents-AShare
+./docs/reviews/DATA-001-20260601-round1.txt:2354:tradingagents/tradeflow/symbol_utils.py:20:def normalize_tradeflow_symbol(raw: str) -> str:
+./docs/reviews/DATA-001-20260601-round1.txt:2500:def normalize_tradeflow_symbol(raw: str) -> str:
+./tradingagents/tradeflow/symbol_utils.py:20:def normalize_tradeflow_symbol(raw: str) -> str:
+
+exec
+/bin/zsh -lc "sed -n '1,80p' tradingagents/tradeflow/symbol_utils.py && grep -n \"def save_candidate\" -A80 tradingagents/tradeflow/candidate_engine.py && grep -n \"class Signal\" -A70 tradingagents/tradeflow/schemas.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [UI-008] tradeflow_field_normalization
+"""TradeFlow symbol normalization and name resolution helpers.
+
+Central place for:
+- normalize_tradeflow_symbol(): ensures 6-digit codes carry .SH/.SZ/.BJ suffix
+- resolve_tradeflow_name(): fills missing stock names via fallback chain
+- symbol_bare_code(): strips suffix for akshare / event_source lookups
+"""
+
+from __future__ import annotations
+
+import re
+import threading
+from typing import Optional
+
+_SUFFIX_RE = re.compile(r"\.(SH|SZ|SS|BJ|sh|sz|ss|bj)$")
+_SIX_DIGIT_RE = re.compile(r"^(\d{6})$")
+
+
+def normalize_tradeflow_symbol(raw: str) -> str:
+    """Ensure a tradeflow symbol is in ``XXXXXX.SH/SZ/BJ`` form.
+
+    Rules:
+    - Already has a recognised suffix → normalise case (.SS → .SH), do not double-add.
+    - Bare 6-digit code starting with 5/6/9 → .SH
+    - Bare 6-digit code starting with 0/2/3 → .SZ
+    - Bare 6-digit code starting with 4/8 → .BJ
+    - Anything else (US tickers, non-standard) → return upper-cased as-is.
+    """
+    s = raw.strip().upper()
+    if not s:
+        return s
+
+    m = _SUFFIX_RE.search(s)
+    if m:
+        suffix = m.group(1)
+        base = s[: m.start()]
+        if suffix == "SS":
+            return f"{base}.SH"
+        return f"{base}.{suffix}"
+
+    dm = _SIX_DIGIT_RE.match(s)
+    if dm:
+        code = dm.group(1)
+        first = code[0]
+        if first in ("5", "6", "9"):
+            return f"{code}.SH"
+        if first in ("0", "2", "3"):
+            return f"{code}.SZ"
+        if first in ("4", "8"):
+            return f"{code}.BJ"
+        return code
+
+    return s
+
+
+def symbol_bare_code(symbol: str) -> str:
+    """Strip exchange suffix, returning the bare 6-digit code."""
+    s = symbol.strip().upper()
+    m = _SUFFIX_RE.search(s)
+    if m:
+        return s[: m.start()]
+    return s
+
+
+_NAME_PLACEHOLDER = "--"
+
+_IS_CODE_PATTERN = re.compile(r"^\d{6}(\.(SH|SZ|SS|BJ|sh|sz|ss|bj))?$", re.IGNORECASE)
+
+
+def _looks_like_code(name: str) -> bool:
+    """Return True if *name* looks like a stock code rather than a real name."""
+    if not name or not name.strip():
+        return True
+    s = name.strip()
+    return bool(_IS_CODE_PATTERN.match(s))
+
+
+class StockNameResolver:
+    """Thread-safe, lazy-loaded code→name resolver with TTL cache.
+1206:def save_candidate(candidate: Candidate, db_path: str) -> int:
+1207-    """Save a candidate to the database. Upsert on (trade_date, symbol)."""
+1208-    candidate.symbol = normalize_tradeflow_symbol(candidate.symbol)  # [UI-008]
+1209-    _needs_name_lookup = (
+1210-        not candidate.name
+1211-        or candidate.name == "--"
+1212-        or candidate.name == candidate.symbol
+1213-        or candidate.name == symbol_bare_code(candidate.symbol)
+1214-        or _looks_like_code(candidate.name)  # [TF-P0-001] runtime_schema_name_observe_fix
+1215-    )
+1216-    if _needs_name_lookup:
+1217-        candidate.name = resolve_tradeflow_name(candidate.symbol, candidate.name)  # [UI-008]
+1218-    if not candidate.candidate_type:
+1219-        candidate.candidate_type = "TECH_TRADE"
+1220-        candidate.candidate_type_reason = candidate.candidate_type_reason or "无政策/事件/受益路径证据，默认技术交易"
+1221-    conn = sqlite3.connect(db_path)
+1222-    ensure_columns(conn)
+1223-    row = candidate.to_db_row()
+1224-    try:
+1225-        conn.execute(
+1226-            "INSERT INTO tradeflow_candidates "
+1227-            "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+1228-            "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+1229-            "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+1230-            "policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
+1231-            "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+1232-            "risk_reasons_json, game_balance, bull_case, bear_case, policy_case, "
+1233-            "fund_flow_case, resonance_count, game_balance_refs_json, "
+1234-            "fund_flow_anomaly_score, fund_flow_anomaly_tags_json, "
+1235-            "fund_flow_anomaly_refs_json, fund_flow_unit_verified, "
+1236-            "fund_flow_individual_summary, fund_flow_board_summary, "
+1237-            "composite_score, signal_category_hits_json, positive_category_count, "
+1238-            "data_completeness, missing_evidence_json, why_deep_ta, why_not_deep_ta, "
+1239-            "priority_rank, "
+1240-            "tier, ta_budget_priority, tier_reason, missing_evidence_for_upgrade_json, "
+1241-            "tradeflow_data_completeness, missing_data_fields_json, what_to_upgrade_json, evidence_gate_applied, "
+1242-            "universe_sources_json, "
+1243-            "observe_state, observe_trigger_count, observe_first_trigger_time, "
+1244-            "deep_ta_status, deep_ta_dispatch_reason, deep_ta_model, "
+1245-            "deep_ta_report_path, deep_ta_dispatch_time, deep_ta_position_context, "
+1246-            "plan_date, effective_trade_date, observe_date, "
+1247-            "beneficiary_path_json, company_role, mandate_topic, mandate_evidence_refs_json, "
+1248-            "candidate_type, ambush_score, mandate_score_component, beneficiary_score_component, "
+1249-            "pricing_gap_score, overheat_penalty, candidate_type_reason, "
+1250-            "deep_ta_route, deep_ta_route_reason, "
+1251-            "ambush_reasons_json, ambush_evidence_refs_json, "
+1252-            "research_queue, research_intent, research_route_reason, "
+1253-            "watchlist_note, watchlist_note_suggested, watchlist_topic, "
+1254-            "watchlist_benefit_score, watchlist_consensus_score, watchlist_evidence_gap_json, "
+1255-            "counter_evidence_json, overheat_flags_json, downgrade_reasons_json, "
+1256-            "what_would_change_mind_json, "
+1257-            "topic_lifecycle_state, topic_lifecycle_reason, topic_last_signal_date, topic_signal_count, "
+1258-            "contradiction_level, contradiction_items_json, blocking_evidence_gaps_json, next_verification_steps_json, "
+1259-            "created_at, updated_at) "
+1260-            "VALUES ({}) ".format(",".join(["?"] * 103))
+1261-            + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
+1262-            "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
+1263-            "trigger_price=excluded.trigger_price, "
+1264-            "support_price=excluded.support_price, invalid_price=excluded.invalid_price, "
+1265-            "need_deep_ta=excluded.need_deep_ta, evidence_json=excluded.evidence_json, "
+1266-            "risk_flags_json=excluded.risk_flags_json, "
+1267-            "policy_tags_json=excluded.policy_tags_json, version_score=excluded.version_score, "
+1268-            "policy_evidence_refs_json=excluded.policy_evidence_refs_json, "
+1269-            "narrative_score=excluded.narrative_score, "
+1270-            "narrative_reasons_json=excluded.narrative_reasons_json, "
+1271-            "narrative_evidence_refs_json=excluded.narrative_evidence_refs_json, "
+1272-            "risk_penalty=excluded.risk_penalty, "
+1273-            "risk_evidence_refs_json=excluded.risk_evidence_refs_json, "
+1274-            "risk_reasons_json=excluded.risk_reasons_json, "
+1275-            "game_balance=excluded.game_balance, "
+1276-            "bull_case=excluded.bull_case, bear_case=excluded.bear_case, "
+1277-            "policy_case=excluded.policy_case, fund_flow_case=excluded.fund_flow_case, "
+1278-            "resonance_count=excluded.resonance_count, "
+1279-            "game_balance_refs_json=excluded.game_balance_refs_json, "
+1280-            "fund_flow_anomaly_score=excluded.fund_flow_anomaly_score, "
+1281-            "fund_flow_anomaly_tags_json=excluded.fund_flow_anomaly_tags_json, "
+1282-            "fund_flow_anomaly_refs_json=excluded.fund_flow_anomaly_refs_json, "
+1283-            "fund_flow_unit_verified=excluded.fund_flow_unit_verified, "
+1284-            "fund_flow_individual_summary=excluded.fund_flow_individual_summary, "
+1285-            "fund_flow_board_summary=excluded.fund_flow_board_summary, "
+1286-            "composite_score=excluded.composite_score, "
+431:class Signal:
+432-    """One signal event — row in tradeflow_signals."""
+433-    symbol: str
+434-    signal_type: str
+435-    signal_level: str = "info"
+436-    source: str = "tradeflow"
+437-    evidence: dict = field(default_factory=dict)
+438-    action_hint: str = "OBSERVE"
+439-    status: str = "new"
+440-    signal_time: str = ""
+441-    created_at: str = ""
+442-
+443-    def __post_init__(self):
+444-        if not self.signal_time:
+445-            self.signal_time = datetime.now().isoformat()
+446-        if not self.created_at:
+447-            self.created_at = datetime.now().isoformat()
+448-        # validate action_hint
+449-        if self.action_hint not in ALLOWED_ACTIONS:
+450-            self.action_hint = "OBSERVE"
+451-
+452-    def to_db_row(self) -> dict:
+453-        return {
+454-            "signal_time": self.signal_time,
+455-            "symbol": self.symbol,
+456-            "signal_type": self.signal_type,
+457-            "signal_level": self.signal_level,
+458-            "source": self.source,
+459-            "evidence_json": json.dumps(self.evidence, ensure_ascii=False),
+460-            "action_hint": self.action_hint,
+461-            "status": self.status,
+462-        }
+463-
+464-
+465-@dataclass
+466-class DailyPlan:
+467-    """Daily pre-market plan — row in tradeflow_daily_plans."""
+468-    trade_date: str
+469-    mode: str = "pre_market"
+470-    summary: str = ""
+471-    candidates: list[dict] = field(default_factory=list)
+472-    metadata: dict = field(default_factory=dict)
+473-    created_at: str = ""
+474-    plan_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+475-    effective_trade_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+476-    observe_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+477-
+478-    def __post_init__(self):
+479-        if not self.created_at:
+480-            self.created_at = datetime.now().isoformat()
+481-
+482-    def validate(self) -> list[str]:
+483-        """Validate plan — return list of issues (empty = OK)."""
+484-        issues = []
+485-        for word in FORBIDDEN_WORDS:
+486-            if word in self.summary:
+487-                issues.append(f"Forbidden word in summary: {word}")
+488-        for c in self.candidates:
+489-            action = c.get("action", "")
+490-            if action and action not in ALLOWED_ACTIONS:
+491-                issues.append(f"Invalid action '{action}' for {c.get('symbol', '?')}")
+492-        return issues
+493-
+494-    def to_db_row(self) -> dict:
+495-        return {
+496-            "trade_date": self.trade_date,
+497-            "mode": self.mode,
+498-            "summary": self.summary,
+499-            "candidates_json": json.dumps(self.candidates, ensure_ascii=False),
+500-            "metadata_json": json.dumps(self.metadata, ensure_ascii=False),
+501-            "created_at": self.created_at,
+
+exec
+/bin/zsh -lc "grep -R \"get_observe(.*tf_db_path\" -n tests | head -50 && grep -R \"fallback\\|latest active\\|无活跃候选\" -n tests/test_t004_intraday_observe.py tests/test_tf_p0_003_e2e_smoke.py tests | head -100" in /Users/maybee/TradingAgents-AShare
+ succeeded in 368ms:
+tests/test_data012_ratings.py:39:    def test_rating_fallback_chain(self):
+tests/test_data012_ratings.py:70:            assert s.fallback_priority > 0
+tests/test_data012_ratings.py:643:                     "fetched_at", "record_count", "unit", "error", "fallback_from",
+tests/test_m012_suggest_next_tasks.py:428:    def test_blocked_with_deps_unmet_in_fallback(self, tmp_path):
+tests/test_data_p0_fund_route.py:1:"""[DATA-P0-FUND-ROUTE] Tests for fund flow fallback truth and unit conversion.
+tests/test_data_p0_fund_route.py:4:1. route_to_vendor failure-string detection → fallback to next vendor
+tests/test_data_p0_fund_route.py:5:2. get_last_hit_vendor records the actual successful vendor after fallback
+tests/test_data_p0_fund_route.py:59:# ── route_to_vendor fallback chain ──────────────────────────────
+tests/test_data_p0_fund_route.py:74:    def test_akshare_failure_string_triggers_astock_fallback(self):
+tests/test_data_p0_fund_route.py:117:    def test_first_vendor_succeeds_no_fallback(self):
+tests/test_data_p0_fund_route.py:118:        """When first vendor returns valid data, no fallback occurs."""
+tests/test_data_p0_fund_route.py:138:    def test_exception_triggers_fallback(self):
+tests/test_data_p0_fund_route.py:139:        """When provider raises exception, fallback continues."""
+tests/test_data_p0_fund_route.py:158:    def test_last_hit_vendor_records_actual_vendor_after_fallback(self):
+tests/test_data_p0_fund_route.py:270:# ── Integration: fallback → provenance ──────────────────────────
+tests/test_data_p0_fund_route.py:277:    def test_fallback_produces_has_data_status(self):
+tests/test_data_p0_fund_route.py:290:                "fallback_from": "cn_akshare",
+tests/test_data_p0_fund_route.py:325:    def test_akshare_proxyerror_astock_fallback_succeeds(self):
+tests/test_intent_parser.py:21:def test_parse_intent_fallback_on_invalid_json():
+tests/test_intent_parser.py:24:    result = parse_intent("600519", mock_llm, fallback_ticker="600519")
+tests/test_data011_research_report.py:38:    def test_report_fallback_chain(self):
+tests/test_data011_research_report.py:39:        from tradingagents.dataflows.source_catalog import get_fallback_chain, DataType
+tests/test_data011_research_report.py:40:        chain = get_fallback_chain(DataType.REPORT)
+tests/test_data011_research_report.py:146:                "is_fallback": False,
+tests/test_data011_research_report.py:147:                "fallback_from": None,
+tests/test_data011_research_report.py:187:                "fallback_from": None,
+tests/test_data011_research_report.py:210:                "fallback_from": None,
+tests/test_p11_has_position.py:17:# ── P1-1a: _resolve_has_position priority fallback ─────────────────
+tests/test_p11_has_position.py:33:    def test_fallback_user_context_current_position_positive(self):
+tests/test_p11_has_position.py:38:    def test_fallback_user_context_current_position_zero(self):
+tests/test_p11_has_position.py:43:    def test_fallback_request_current_position_positive(self):
+tests/test_p11_has_position.py:49:    def test_fallback_request_current_position_zero(self):
+tests/test_ui008_tradeflow_field_normalization.py:7:- resolve_tradeflow_name(): fallback chain with mock
+tests/test_ui008_tradeflow_field_normalization.py:127:    def test_bare_code_fallback(self):
+tests/test_data008_astock_fallback_replay.py:1:# [DATA-008] astock_fallback_replay
+tests/test_data008_astock_fallback_replay.py:3:DATA-008: A股关键源 fallback smoke fixtures 扩展测试。
+tests/test_data008_astock_fallback_replay.py:6:  1. AKShare 个股资金流失败但 fallback 成功
+tests/test_data008_astock_fallback_replay.py:15:  - fallback 成功时显示实际 vendor
+tests/test_data008_astock_fallback_replay.py:18:  - replay 输出包含 vendor/endpoint/status/fallback_vendor/error/as_of
+tests/test_data008_astock_fallback_replay.py:55:    def test_fund_flow_fallback_fixture_exists(self):
+tests/test_data008_astock_fallback_replay.py:109:    def test_fund_flow_is_fallback(self):
+tests/test_data008_astock_fallback_replay.py:113:        assert contract.is_fallback is True
+tests/test_data008_astock_fallback_replay.py:114:        assert contract.fallback_from == "cn_akshare"
+tests/test_data008_astock_fallback_replay.py:130:    def test_replay_shows_fallback_vendor(self):
+tests/test_data008_astock_fallback_replay.py:134:        assert r.is_fallback is True
+tests/test_data008_astock_fallback_replay.py:135:        assert r.fallback_from == "cn_akshare"
+tests/test_data008_astock_fallback_replay.py:354:    """fallback 成功时必须显示实际 vendor。"""
+tests/test_data008_astock_fallback_replay.py:356:    def test_fallback_shows_actual_vendor_cn_astock(self):
+tests/test_data008_astock_fallback_replay.py:360:        assert ev["fallback_from"] == "cn_akshare"
+tests/test_data008_astock_fallback_replay.py:366:        assert r.fallback_from == "cn_akshare"
+tests/test_data008_astock_fallback_replay.py:367:        assert r.is_fallback is True
+tests/test_data008_astock_fallback_replay.py:392:    """replay 输出必须包含 vendor/endpoint/status/fallback_vendor/error/as_of。"""
+tests/test_data008_astock_fallback_replay.py:408:        assert hasattr(r, "fallback_from")
+tests/test_data008_astock_fallback_replay.py:433:    def test_fund_flow_fallback_full_coverage(self):
+tests/test_data008_astock_fallback_replay.py:516:    def test_render_includes_fund_flow_fallback(self):
+tests/test_data008_astock_fallback_replay.py:616:    def test_fallback_shows_actual_vendor(self):
+tests/test_data008_astock_fallback_replay.py:617:        """fallback 成功时显示实际 vendor。"""
+tests/test_data008_astock_fallback_replay.py:621:        assert ev["fallback_from"] == "cn_akshare"
+tests/test_data008_astock_fallback_replay.py:649:        """replay 输出包含 vendor/endpoint/status/fallback_vendor/error/as_of。"""
+tests/test_data008_astock_fallback_replay.py:661:            assert "fallback_from" in d
+tests/test_g008_valuation_sanity.py:160:    def test_fallback_to_state_root_raw_evidence(self):
+tests/test_data015_zt_pool.py:1:# [DATA-015] limit_up_pool_fallback
+tests/test_data015_zt_pool.py:3:Tests for ZT pool (涨停池) cn_astock fallback, source catalog registration,
+tests/test_data015_zt_pool.py:17:    get_fallback_chain,
+tests/test_data015_zt_pool.py:67:    def test_zt_pool_fallback_chain(self):
+tests/test_data015_zt_pool.py:68:        chain = get_fallback_chain(DataType.ZT_POOL)
+tests/test_data015_zt_pool.py:85:    def test_zt_pool_fallback_endpoint(self):
+tests/test_data015_zt_pool.py:233:    def test_astock_zt_pool_fallback_has_data(self, mock_dc):
+tests/test_data015_zt_pool.py:252:    def test_astock_zt_pool_push2_fallback_failed(self, mock_dc):
+tests/test_data015_zt_pool.py:265:        assert FIXTURE_ZT_POOL_AKSHARE_FAIL_FALLBACK == "zt_pool_akshare_fail_fallback"
+tests/test_data015_zt_pool.py:292:    def test_zt_pool_fallback_fixture(self):
+tests/test_data015_zt_pool.py:298:        assert ev.get("fallback_from") == "cn_akshare"
+tests/test_data015_zt_pool.py:336:    def test_replay_fallback(self):
+tests/test_data015_zt_pool.py:342:        assert r.fallback_from == "cn_akshare"
+tests/test_data015_zt_pool.py:343:        assert r.is_fallback
+tests/test_data015_zt_pool.py:427:    def test_fallback_shows_cn_astock_vendor(self):
+tests/test_data015_zt_pool.py:431:        assert ev["fallback_from"] == "cn_akshare"
+tests/test_data015_zt_pool.py:445:    def test_catalog_has_fallback_chain(self):
+tests/test_data015_zt_pool.py:446:        chain = get_fallback_chain(DataType.ZT_POOL)
+tests/test_data015_zt_pool.py:463:                "fallback_from": "cn_akshare",
+tests/test_data015_zt_pool.py:467:        assert "zt_pool" in result.fallback_fields
+tests/test_data015_zt_pool.py:487:    def test_provider_fallback_text_detected(self):
+tests/test_tf_obs_001_observe_runner.py:126:    def test_fallback_uses_latest_active_plan_on_or_before_observe_date(self, tmp_db):
+tests/test_tf_obs_001_observe_runner.py:135:    def test_fallback_does_not_load_future_plan_for_historical_observe_date(self, tmp_db):
+tests/test_tf_obs_001_observe_runner.py:143:    def test_fallback_does_not_load_stale_plan_after_current_filtered_run(self, tmp_db):
+tests/test_tf_obs_001_observe_runner.py:153:    def test_fallback_does_not_load_stale_old_plan(self, tmp_db):
+tests/test_tf_obs_001_observe_runner.py:342:        assert "无活跃候选" in result.skipped_reason
+tests/test_config_fallback.py:63:    def test_no_hardcoded_fallback_in_client(self):
+tests/test_data_p1_source_gap_audit.py:16:    "fallback",
+tests/test_data_p1_source_gap_audit.py:85:    assert "fallback" in content.lower()
+Binary file tests/__pycache__/test_data_p0_603629.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_m012_suggest_next_tasks.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_data005_fixture_replay.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_p11_has_position.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_g008_valuation_sanity.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_data014_policy_news_fixture.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_data016_hot_stocks.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_data012_ratings.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_ui001_tradeflow_api.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_data_p1_lhb_fund_decouple.cpython-312-pytest-9.0.2.pyc matches
+
+exec
+/bin/zsh -lc "sed -n '1,80p' api/services/tradeflow_service.py && grep -n \"def _connect\" -A25 api/services/tradeflow_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [UI-001] tradeflow_api
+# [PERF-001] runtime_tier_contract
+"""TradeFlow read-only data access service.
+
+Queries tradeflow SQLite tables for the API layer.
+Does NOT trigger TA, run full market scan, or call LLM.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from api.runtime_tier import RuntimeTier, tradeflow_meta as _tradeflow_meta  # [PERF-001]
+from tradingagents.tradeflow.symbol_utils import (  # [UI-008] tradeflow_field_normalization
+    normalize_tradeflow_symbol,
+    resolve_tradeflow_name,
+)
+from tradingagents.tradeflow.candidate_engine import get_filtered_symbols as _get_filtered_symbols  # [UI-007] tradeflow_filtered_trace
+
+
+def _get_project_root() -> str:
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _get_tradeflow_db_path() -> str:
+    env_path = os.environ.get("TRADEFLOW_DB_PATH", "")
+    if env_path:
+        return env_path
+    return os.path.join(_get_project_root(), "tradeflow.db")
+
+
+def _get_prod_db_path() -> str:
+    env_path = os.environ.get("DATABASE_URL", "")
+    if env_path.startswith("sqlite:///"):
+        return env_path.replace("sqlite:///", "", 1)
+    return os.path.join(_get_project_root(), "tradingagents.db")
+
+
+def _connect(tf_db_path: str = "") -> Optional[sqlite3.Connection]:
+    db_path = tf_db_path or _get_tradeflow_db_path()
+    if not os.path.exists(db_path):
+        return None
+    try:
+        from tradingagents.tradeflow.candidate_engine import init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception:
+        return None
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return {row["name"] for row in rows}
+    except Exception:
+        return set()
+
+
+def _parse_json(value: Any, default: Any = None) -> Any:
+    if value is None:
+        return default if default is not None else []
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return default if default is not None else []
+    return value
+
+
+def _rget(row: sqlite3.Row, col: str, default: Any = None) -> Any:
+    try:
+        val = row[col]
+        return val
+    except (KeyError, IndexError):
+43:def _connect(tf_db_path: str = "") -> Optional[sqlite3.Connection]:
+44-    db_path = tf_db_path or _get_tradeflow_db_path()
+45-    if not os.path.exists(db_path):
+46-        return None
+47-    try:
+48-        from tradingagents.tradeflow.candidate_engine import init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+49-        init_db(db_path)
+50-        conn = sqlite3.connect(db_path)
+51-        conn.row_factory = sqlite3.Row
+52-        return conn
+53-    except Exception:
+54-        return None
+55-
+56-
+57-def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+58-    try:
+59-        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+60-        return {row["name"] for row in rows}
+61-    except Exception:
+62-        return set()
+63-
+64-
+65-def _parse_json(value: Any, default: Any = None) -> Any:
+66-    if value is None:
+67-        return default if default is not None else []
+68-    if isinstance(value, str):
+
+exec
+/bin/zsh -lc 'grep -R "def.*observe" -n api | head -40 && grep -R "getTradeFlowObserve" -n frontend/src api' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+api/runtime_tier.py:67:    "tradeflow_observe",
+api/runtime_tier.py:73:    "tradeflow_observe_run",
+api/runtime_tier.py:74:    "tradeflow_observe_scheduler",
+Binary file api/__pycache__/main.cpython-312.pyc matches
+Binary file api/__pycache__/main.cpython-314.pyc matches
+Binary file api/__pycache__/runtime_tier.cpython-312.pyc matches
+Binary file api/__pycache__/tradeflow_schemas.cpython-312.pyc matches
+api/main.py:288:        from tradingagents.tradeflow.candidate_engine import init_db as _tf_init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+api/main.py:5257:    run_observe_check as _tf_run_observe_check,  # [TF-OBS-001] tradeflow_observe_runner
+api/main.py:5304:@app.get("/v1/tradeflow/observe", response_model=TradeFlowObserveResponse)
+api/main.py:5305:def tradeflow_observe(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+api/main.py:5350:# [TF-OBS-001] tradeflow_observe_runner
+api/main.py:5351:@app.post("/v1/tradeflow/observe/run")
+api/main.py:5352:def tradeflow_observe_run(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+api/main.py:5357:@app.get("/v1/tradeflow/observe/scheduler-status")
+api/main.py:5358:def tradeflow_observe_scheduler_status():
+Binary file api/services/__pycache__/tradeflow_service.cpython-312.pyc matches
+api/services/tradeflow_service.py:48:        from tradingagents.tradeflow.candidate_engine import init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+api/services/tradeflow_service.py:592:def _precheck_observe_state(db_path: str, trade_date: str) -> dict:
+api/services/tradeflow_service.py:659:def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
+api/services/tradeflow_service.py:661:    _fast_meta = _tradeflow_meta("tradeflow_observe")  # [PERF-001]
+api/services/tradeflow_service.py:695:                from tradingagents.tradeflow.observe_runner import run_observe
+api/services/tradeflow_service.py:741:            # [TF-OBS-001] tradeflow_observe_runner — populate current_price/trigger_reason from latest signal
+api/services/tradeflow_service.py:746:                    "SELECT evidence_json FROM tradeflow_signals WHERE symbol = ? AND signal_type LIKE 'observe_%' ORDER BY signal_time DESC LIMIT 20",
+api/services/tradeflow_service.py:791:            "runtime_tier_meta": _tradeflow_meta("tradeflow_observe"),  # [PERF-001]
+api/services/tradeflow_service.py:944:                        "SELECT observe_date FROM tradeflow_candidates WHERE observe_date != '' ORDER BY created_at DESC LIMIT 1"
+api/services/tradeflow_service.py:963:                # [TF-OBS-001] tradeflow_observe_runner — latest observe check and signal times
+api/services/tradeflow_service.py:965:                    "SELECT signal_time FROM tradeflow_signals WHERE signal_type LIKE 'observe_%' ORDER BY signal_time DESC LIMIT 1"
+api/services/tradeflow_service.py:1122:# [TF-OBS-001] tradeflow_observe_runner
+api/services/tradeflow_service.py:1123:def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
+api/services/tradeflow_service.py:1131:    from tradingagents.tradeflow.observe_runner import run_observe
+api/services/tradeflow_service.py:1154:        "runtime_tier_meta": _tradeflow_meta("tradeflow_observe_run"),  # [PERF-001]
+api/services/tradeflow_service.py:1159:def get_observe_scheduler_status() -> dict:
+api/services/tradeflow_service.py:1166:    from tradingagents.tradeflow.intraday_observe_scheduler import _is_trading_day, _is_market_hours
+api/services/tradeflow_service.py:1178:        "runtime_tier_meta": _tradeflow_meta("tradeflow_observe_scheduler"),
+frontend/src/pages/TradeFlow.tsx:1169:            const res = await api.getTradeFlowObserve(date)
+frontend/src/services/api.ts:428:    async getTradeFlowObserve(date: string): Promise<TradeFlowObserveResponse> {
+
+exec
+/bin/zsh -lc "nl -ba api/services/tradeflow_service.py | sed -n '1118,1158p' && nl -ba api/main.py | sed -n '5300,5358p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+  1118	        "runtime_tier_meta": _tradeflow_meta("tradeflow_discovery"),  # [PERF-001]
+  1119	    }
+  1120	
+  1121	
+  1122	# [TF-OBS-001] tradeflow_observe_runner
+  1123	def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
+  1124	    """Run intraday observe check for all active candidates on trade_date.
+  1125	
+  1126	    This reads candidates, fetches realtime quotes, runs observe checks,
+  1127	    updates candidate observe state, and writes signals.
+  1128	    Does NOT invoke deep TA or LLM.
+  1129	    """
+  1130	    from tradingagents.tradeflow.candidate_engine import init_db
+  1131	    from tradingagents.tradeflow.observe_runner import run_observe
+  1132	
+  1133	    tf_db = tf_db_path or _get_tradeflow_db_path()
+  1134	    init_db(tf_db)
+  1135	
+  1136	    result = run_observe(
+  1137	        trade_date=trade_date,
+  1138	        db_path=tf_db,
+  1139	    )
+  1140	
+  1141	    return {
+  1142	        "status": "skipped" if result.skipped_reason else "ok",
+  1143	        "trade_date": trade_date,
+  1144	        "checked": result.checked,
+  1145	        "triggered": result.triggered,
+  1146	        "invalidated": result.invalidated,
+  1147	        "waiting": result.waiting,
+  1148	        "skipped": result.skipped,
+  1149	        "signals_written": result.signals_written,
+  1150	        "errors": result.errors,
+  1151	        "skipped_reason": result.skipped_reason,
+  1152	        "run_time": result.run_time,
+  1153	        "details": result.details,
+  1154	        "runtime_tier_meta": _tradeflow_meta("tradeflow_observe_run"),  # [PERF-001]
+  1155	    }
+  1156	
+  1157	
+  1158	# [T-004] intraday_observe_scheduler
+  5300	):
+  5301	    return _tf_get_candidate_detail(symbol, date)
+  5302	
+  5303	
+  5304	@app.get("/v1/tradeflow/observe", response_model=TradeFlowObserveResponse)
+  5305	def tradeflow_observe(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+  5306	    return _tf_get_observe(date)
+  5307	
+  5308	
+  5309	@app.get("/v1/tradeflow/ta-queue", response_model=TradeFlowTAQueueResponse)
+  5310	def tradeflow_ta_queue(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+  5311	    return _tf_get_ta_queue(date)
+  5312	
+  5313	
+  5314	@app.get("/v1/tradeflow/review", response_model=TradeFlowReviewResponse)
+  5315	def tradeflow_review(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+  5316	    return _tf_get_review(date)
+  5317	
+  5318	
+  5319	@app.get("/v1/tradeflow/data-health", response_model=TradeFlowDataHealthResponse)
+  5320	def tradeflow_data_health():
+  5321	    return _tf_get_data_health()
+  5322	
+  5323	
+  5324	# [DATA-007] evidence_coverage_audit
+  5325	@app.get("/v1/tradeflow/evidence-audit", response_model=TradeFlowEvidenceAuditResponse)
+  5326	def tradeflow_evidence_audit(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+  5327	    return _tf_get_evidence_audit(date)
+  5328	
+  5329	
+  5330	# [UI-007] tradeflow_filtered_trace
+  5331	@app.get("/v1/tradeflow/filtered", response_model=TradeFlowFilteredResponse)
+  5332	def tradeflow_filtered(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+  5333	    return _tf_get_filtered(date)
+  5334	
+  5335	
+  5336	@app.post("/v1/tradeflow/discovery")
+  5337	def tradeflow_discovery(request: TradeFlowDiscoveryRequest):
+  5338	    return _tf_run_discovery_scan(
+  5339	        trade_date=request.date,
+  5340	        symbols=request.symbols,
+  5341	        top_n=request.top_n,
+  5342	        include_holdings=request.include_holdings,
+  5343	        include_watchlist=request.include_watchlist,
+  5344	        use_event_source=request.use_event_source,
+  5345	        news_texts=request.news_texts,
+  5346	        save_candidates=request.save_candidates,
+  5347	    )
+  5348	
+  5349	
+  5350	# [TF-OBS-001] tradeflow_observe_runner
+  5351	@app.post("/v1/tradeflow/observe/run")
+  5352	def tradeflow_observe_run(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+  5353	    return _tf_run_observe_check(date)
+  5354	
+  5355	
+  5356	# [T-004] intraday_observe_scheduler
+  5357	@app.get("/v1/tradeflow/observe/scheduler-status")
+  5358	def tradeflow_observe_scheduler_status():
+
+codex
+The patch adds the requested auto-run behavior, but skipped runs are not recorded, so common conditions like non-trading days or quote outages cause repeated automatic live observe attempts on each GET/page refresh.
+
+Review comment:
+
+- [P2] Avoid re-running observe on every skipped refresh — /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py:697-698
+  When `run_observe()` skips without writing any `observe_%` signals, e.g. today is a non-trading day or realtime quotes are unavailable for all candidates, `_precheck_observe_state()` will still return `has_signals_for_date == False` on the next GET. That makes every page refresh call the live observe runner again, which can repeatedly hit realtime providers despite the low-frequency/manual-refresh constraint; persist or otherwise throttle skipped auto-runs before treating the date as not observed.
+The patch adds the requested auto-run behavior, but skipped runs are not recorded, so common conditions like non-trading days or quote outages cause repeated automatic live observe attempts on each GET/page refresh.
+
+Review comment:
+
+- [P2] Avoid re-running observe on every skipped refresh — /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py:697-698
+  When `run_observe()` skips without writing any `observe_%` signals, e.g. today is a non-trading day or realtime quotes are unavailable for all candidates, `_precheck_observe_state()` will still return `has_signals_for_date == False` on the next GET. That makes every page refresh call the live observe runner again, which can repeatedly hit realtime providers despite the low-frequency/manual-refresh constraint; persist or otherwise throttle skipped auto-runs before treating the date as not observed.

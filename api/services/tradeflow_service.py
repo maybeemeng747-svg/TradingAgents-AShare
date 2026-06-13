@@ -589,11 +589,133 @@ def get_candidate_detail(symbol: str, trade_date: str, tf_db_path: str = "") -> 
         conn.close()
 
 
+def _precheck_observe_state(db_path: str, trade_date: str) -> dict:
+    """Quick check whether candidates and observe signals exist for a date.  # [TF-OBS-002] observe_auto_run
+
+    Returns dict with:
+    - has_candidates: bool
+    - has_signals_for_date: bool
+    - last_observed_at: str
+    - reason: str (explanation when candidates are absent)
+    """
+    from tradingagents.tradeflow.candidate_engine import init_db
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()}
+        has_eff = "effective_trade_date" in columns
+
+        if has_eff:
+            cnt_row = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM tradeflow_candidates WHERE "
+                "(effective_trade_date = ? OR (trade_date = ? AND (effective_trade_date = '' OR effective_trade_date IS NULL))) "
+                "AND status = 'active'",
+                (trade_date, trade_date),
+            ).fetchone()
+        else:
+            cnt_row = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM tradeflow_candidates WHERE trade_date = ? AND status = 'active'",
+                (trade_date,),
+            ).fetchone()
+        has_candidates = cnt_row is not None and cnt_row["cnt"] > 0
+
+        has_signals_for_date = False
+        last_observed_at = ""
+        try:
+            sig_rows = conn.execute(
+                "SELECT signal_time, evidence_json FROM tradeflow_signals "
+                "WHERE signal_type LIKE 'observe_%' ORDER BY signal_time DESC LIMIT 50"
+            ).fetchall()
+            for sr in sig_rows:
+                ev = json.loads(sr["evidence_json"]) if sr["evidence_json"] else {}
+                if ev.get("trade_date") == trade_date:
+                    has_signals_for_date = True
+                    last_observed_at = sr["signal_time"]
+                    break
+            if not last_observed_at and sig_rows:
+                last_observed_at = sig_rows[0]["signal_time"]
+        except Exception:
+            pass
+
+        reason = ""
+        if not has_candidates:
+            total = conn.execute("SELECT COUNT(*) AS cnt FROM tradeflow_candidates").fetchone()
+            if total and total["cnt"] > 0:
+                reason = "当日无活跃候选"
+            else:
+                reason = "无计划"
+
+        return {
+            "has_candidates": has_candidates,
+            "has_signals_for_date": has_signals_for_date,
+            "last_observed_at": last_observed_at,
+            "reason": reason,
+        }
+    finally:
+        conn.close()
+
+
 def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
-    conn = _connect(tf_db_path)
+    tf_db = tf_db_path or _get_tradeflow_db_path()
     _fast_meta = _tradeflow_meta("tradeflow_observe")  # [PERF-001]
+
+    if not os.path.exists(tf_db):
+        return {
+            "status": "no_data",
+            "trade_date": trade_date,
+            "observe_auto_run": False,        # [TF-OBS-002] observe_auto_run
+            "last_observed_at": "",           # [TF-OBS-002]
+            "observe_reason": "无数据库",      # [TF-OBS-002]
+            "observe_items": [],
+            "triggered_count": 0,
+            "invalidated_count": 0,
+            "waiting_count": 0,
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    # [TF-OBS-002] observe_auto_run — auto-run observe check when page opens
+    observe_auto_run = False
+    observe_reason = ""
+    last_observed_at = ""
+
+    _pre = _precheck_observe_state(tf_db, trade_date)
+    last_observed_at = _pre["last_observed_at"]
+
+    if not _pre["has_candidates"]:
+        observe_reason = _pre["reason"]
+    elif not _pre["has_signals_for_date"]:
+        _today_str = datetime.now().strftime("%Y-%m-%d")
+        if trade_date != _today_str:
+            observe_reason = "非当日，跳过自动观察"
+        else:
+            # Auto-run observe check so page isn't blank on first open
+            try:
+                from tradingagents.tradeflow.candidate_engine import init_db
+                from tradingagents.tradeflow.observe_runner import run_observe
+                init_db(tf_db)
+                _auto = run_observe(trade_date=trade_date, db_path=tf_db)
+                observe_auto_run = True
+                last_observed_at = _auto.run_time
+                if _auto.skipped_reason:
+                    observe_reason = _auto.skipped_reason
+            except Exception as e:
+                observe_reason = f"自动执行失败: {e}"
+
+    conn = _connect(tf_db_path)
     if conn is None:
-        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+        return {
+            "status": "no_data",
+            "trade_date": trade_date,
+            "observe_auto_run": observe_auto_run,
+            "last_observed_at": last_observed_at,
+            "observe_reason": observe_reason,
+            "observe_items": [],
+            "triggered_count": 0,
+            "invalidated_count": 0,
+            "waiting_count": 0,
+            "runtime_tier_meta": _fast_meta,
+        }
 
     try:
         columns = _table_columns(conn, "tradeflow_candidates")
@@ -663,6 +785,9 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
             "triggered_count": triggered,
             "invalidated_count": invalidated,
             "waiting_count": waiting,
+            "observe_auto_run": observe_auto_run,        # [TF-OBS-002] observe_auto_run
+            "last_observed_at": last_observed_at,         # [TF-OBS-002]
+            "observe_reason": observe_reason,             # [TF-OBS-002]
             "runtime_tier_meta": _tradeflow_meta("tradeflow_observe"),  # [PERF-001]
         }
     finally:

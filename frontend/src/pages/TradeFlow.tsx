@@ -53,20 +53,22 @@ function actionLabel(action: string): { text: string; cls: string } {
     }
 }
 
+// [TF-OBS-002] observe_auto_run — A-share colors: red=up/triggered, green=down/invalidated, gray=waiting
 function observeStateLabel(state: string): { text: string; cls: string } {
     switch (state) {
-        case 'TRIGGERED': return { text: '已触发', cls: 'text-emerald-600 dark:text-emerald-400' }
+        case 'TRIGGERED': return { text: '已触发', cls: 'text-red-600 dark:text-red-400' }
         case 'EXPIRED': return { text: '已过期', cls: 'text-amber-600 dark:text-amber-400' }
-        case 'INVALIDATED': return { text: '已失效', cls: 'text-red-500 dark:text-red-400' }
+        case 'INVALIDATED': return { text: '已失效', cls: 'text-emerald-600 dark:text-emerald-400' }
         default: return { text: '等待中', cls: 'text-slate-500 dark:text-slate-400' }
     }
 }
 
+// [TF-OBS-002] observe_auto_run — A-share colors: red=up/triggered, green=down/invalidated
 function observeStateBg(state: string): string {
     switch (state) {
-        case 'TRIGGERED': return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+        case 'TRIGGERED': return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
         case 'EXPIRED': return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
-        case 'INVALIDATED': return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+        case 'INVALIDATED': return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
         default: return 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400'
     }
 }
@@ -122,7 +124,7 @@ function priceDistanceColor(currentPrice: number | null, triggerPrice: number | 
         return { text: `已失效 / -${belowPct.toFixed(2)}%`, cls: 'text-emerald-600 dark:text-emerald-400', label: '已失效' }
     }
     const toTrigger = ((triggerPrice - currentPrice) / triggerPrice * 100)
-    return { text: `还差 ${toTrigger.toFixed(2)}%`, cls: 'text-blue-600 dark:text-blue-400', label: '等待中' }
+    return { text: `还差 ${toTrigger.toFixed(2)}%`, cls: 'text-slate-500 dark:text-slate-400', label: '等待中' }
 }
 
 // [TF-P0-002] tradeflow_pool_split — pool tabs
@@ -198,16 +200,32 @@ function CompletenessBar({ value }: { value: number }) {
     )
 }
 
-function ObserveTable({ items, onRun, running, runResult, lastCheckTime }: { items: TradeFlowObserveItem[]; onRun: () => void; running: boolean; runResult: TradeFlowObserveRunResponse | null; lastCheckTime: string | null }) {
+// [TF-OBS-002] observe_auto_run
+function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observeReason, observeAutoRun, lastObservedAt }: {
+    items: TradeFlowObserveItem[]
+    onRun: () => void
+    running: boolean
+    runResult: TradeFlowObserveRunResponse | null
+    lastCheckTime: string | null
+    observeReason: string
+    observeAutoRun: boolean
+    lastObservedAt: string
+}) {
     const [showResult, setShowResult] = useState(false)
+    const effectiveLastTime = lastObservedAt || lastCheckTime
     return (
         <div>
             <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-700">
                 <span className="text-sm font-medium text-slate-700 dark:text-slate-300">盘中观察</span>
-                {lastCheckTime && (
+                {effectiveLastTime && (
                     <span className="inline-flex items-center gap-1 text-xs text-slate-400">
                         <Clock className="h-3 w-3" />
-                        最后检查: {lastCheckTime}
+                        最后检查: {effectiveLastTime}
+                    </span>
+                )}
+                {observeAutoRun && (
+                    <span className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">
+                        自动执行
                     </span>
                 )}
                 <button
@@ -216,9 +234,14 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime }: { ite
                     className="ml-auto inline-flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                 >
                     {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                    {running ? '执行中...' : '执行观察'}
+                    {running ? '执行中...' : '手动刷新'}
                 </button>
             </div>
+            {observeReason && items.length === 0 && !runResult && (
+                <div className="mx-4 mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                    {observeReason}
+                </div>
+            )}
             {showResult && runResult && (
                 <div className={`mx-4 mt-3 rounded-lg border px-4 py-3 text-sm ${
                     runResult.status === 'skipped'
@@ -245,12 +268,12 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime }: { ite
                     <div className="mt-1 text-xs opacity-70">执行时间: {runResult.run_time}</div>
                 </div>
             )}
-            {items.length === 0 && !runResult ? (
+            {items.length === 0 && !runResult && !observeReason ? (
                 <div className="py-20 text-center text-sm text-slate-400">
                     <div className="mb-3">暂无盘中观察数据</div>
-                    <div className="text-xs">点击"执行观察"按钮手动触发盘中检查</div>
+                    <div className="text-xs">系统将在开盘后自动执行观察，或点击"手动刷新"</div>
                 </div>
-            ) : items.length === 0 ? null : (
+            ) : items.length === 0 && !runResult ? null : (
             <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                 <thead>
@@ -1145,6 +1168,10 @@ export default function TradeFlow() {
         try {
             const res = await api.getTradeFlowObserve(date)
             setObserveData(res)
+            // [TF-OBS-002] observe_auto_run — sync last observed time from API
+            if (res.last_observed_at) {
+                setLastObserveCheckTime(res.last_observed_at)
+            }
         } catch (e: unknown) {
             setError(e instanceof Error ? e.message : '加载失败')
         } finally {
@@ -1574,7 +1601,16 @@ export default function TradeFlow() {
         }
 
         if (activeTab === 'observe') {
-            return <ObserveTable items={observeData?.observe_items ?? []} onRun={handleRunObserve} running={observeRunLoading} runResult={observeRunResult} lastCheckTime={lastObserveCheckTime} />
+            return <ObserveTable
+                items={observeData?.observe_items ?? []}
+                onRun={handleRunObserve}
+                running={observeRunLoading}
+                runResult={observeRunResult}
+                lastCheckTime={lastObserveCheckTime}
+                observeReason={observeData?.observe_reason ?? ''}
+                observeAutoRun={observeData?.observe_auto_run ?? false}
+                lastObservedAt={observeData?.last_observed_at ?? ''}
+            />
         }
 
         if (activeTab === 'ta-queue') {
