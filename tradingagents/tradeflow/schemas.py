@@ -150,6 +150,14 @@ class Candidate:
     contradiction_items: list[dict] = field(default_factory=list)  # [H-011]
     blocking_evidence_gaps: list[str] = field(default_factory=list)  # [H-011]
     next_verification_steps: list[str] = field(default_factory=list)  # [H-011]
+    technical_score: float = 0.0  # [TF-QUALITY-002] score_separation
+    policy_score: float = 0.0  # [TF-QUALITY-002]
+    fund_flow_score: float = 0.0  # [TF-QUALITY-002]
+    event_score: float = 0.0  # [TF-QUALITY-002]
+    risk_penalty_score: float = 0.0  # [TF-QUALITY-002]
+    data_quality_score: float = 0.0  # [TF-QUALITY-002]
+    ranking_reasons: list[str] = field(default_factory=list)  # [TF-QUALITY-002]
+    weakness_reasons: list[str] = field(default_factory=list)  # [TF-QUALITY-002]
 
     def __post_init__(self):
         if not self.trade_date:
@@ -299,6 +307,14 @@ class Candidate:
             "contradiction_items_json": json.dumps(self.contradiction_items, ensure_ascii=False),  # [H-011]
             "blocking_evidence_gaps_json": json.dumps(self.blocking_evidence_gaps, ensure_ascii=False),  # [H-011]
             "next_verification_steps_json": json.dumps(self.next_verification_steps, ensure_ascii=False),  # [H-011]
+            "technical_score": self.technical_score,  # [TF-QUALITY-002] score_separation
+            "policy_score": self.policy_score,  # [TF-QUALITY-002]
+            "fund_flow_score": self.fund_flow_score,  # [TF-QUALITY-002]
+            "event_score": self.event_score,  # [TF-QUALITY-002]
+            "risk_penalty_score": self.risk_penalty_score,  # [TF-QUALITY-002]
+            "data_quality_score": self.data_quality_score,  # [TF-QUALITY-002]
+            "ranking_reasons_json": json.dumps(self.ranking_reasons, ensure_ascii=False),  # [TF-QUALITY-002]
+            "weakness_reasons_json": json.dumps(self.weakness_reasons, ensure_ascii=False),  # [TF-QUALITY-002]
             "updated_at": datetime.now().isoformat(),
         }
 

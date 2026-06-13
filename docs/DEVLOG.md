@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-06-13 | 释放下一波 TradeFlow 试跑闭环任务
+
+- **执行者**：Codex
+- **类型**：任务池规划
+- **背景**：用户要求继续释放任务。当前任务池已有 `TF-OBS-002`、`TF-REVIEW-002`、`TF-UI-011`、`DATA-017`、`V-006`、`CODEGRAPH-002` 等 ready 项；同时工作区存在 `TF-QUALITY-002` 半成品（`docs/task_runs/TF-QUALITY-002-20260612-200104/`、`tradingagents/tradeflow/score_separation.py`、`tradingagents/tradeflow/schemas.py`），因此自动链真正继续前需先 review/commit 当前半成品。
+- **任务池调整**：
+  - 顶部队列把 `TF-QUALITY-002` 从 ready 修正为 `in_progress — claimed TF-QUALITY-002-20260612-200104`，与详情段落一致。
+  - 新增并释放以下 ready 任务：
+    - `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0）
+    - `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1）
+    - `H-012`：昊天主题注册表与政策版本 Watchlist（P1）
+    - `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1）
+    - `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1）
+    - `V-007`：TradeFlow 试用闭环端到端验收（P1）
+- **执行建议**：
+  1. 先完成/审核/提交 `TF-QUALITY-002`。
+  2. 继续跑当前 P0/P1 链路：`TF-OBS-002` → `TF-REVIEW-002` → `TF-UI-011` → `DATA-017` → `V-006` → `CODEGRAPH-002`。
+  3. 新释放任务作为下一波队列，优先顺序：`TF-QUALITY-003` → `TF-PAPER-001` → `UI-012` → `V-007`，数据和昊天支线可穿插执行。
+- **安全红线**：仅更新任务池/日志，未改 prompts，未调用 live LLM，未写生产数据库。
+
+---
+
 ## 2026-06-11 | DECISION 补修：避免 WAIT 全部显示为“数据不足观察”
 
 - **执行者**：Codex

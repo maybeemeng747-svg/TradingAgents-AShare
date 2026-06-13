@@ -83,7 +83,7 @@
 57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
 58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，blocked — NEEDS_HUMAN，commit 5f304db，见 task_runs）。
 59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done，Codex 修复，待提交）。
-60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，ready，依赖 TF-QUALITY-001A ✓）。
+60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
 61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，ready，依赖 TF-QUALITY-001A ✓）。
 62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，ready，依赖 TF-QUALITY-001A ✓）。
 63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，ready，依赖 TF-QUALITY-001A/PERF-002 ✓）。
@@ -91,6 +91,12 @@
 65. `V-006`：最终动作语义端到端回放验收（P1，ready，依赖 DECISION-004）。
 66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
 67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，ready，来自 TF-QUALITY-001 task_run）。
+68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，ready，依赖 TF-QUALITY-002）。
+69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，ready，依赖 TF-OBS-002/TF-REVIEW-002）。
+70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，ready，依赖 H-010/H-011）。
+71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，ready，依赖 DATA-017/DATA-006）。
+72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，ready，依赖 TF-QUALITY-002/TF-OBS-002）。
+73. `V-007`：TradeFlow 试用闭环端到端验收（P1，ready，依赖 TF-QUALITY-003/TF-PAPER-001）。
 
 ### 数据源治理候选队列
 
@@ -2702,7 +2708,9 @@
 ### TF-QUALITY-002: TradeFlow 评分拉开差距与排序解释（P0）
 - **描述**：修复候选分数区分不明显的问题，让同一批股票能看出 A/B/C 层差距、为什么排前、为什么不够强。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done
+- **完成时间**：2026-06-13
+- **Commit**：待确认
 - **前置条件**：TF-P0-002、T-008 完成 ✓；TF-QUALITY-001A 完成。
 - **执行约束**：
   - 不改 prompts。
@@ -2895,6 +2903,130 @@
   - dry-run 自动开发能生成有效 codegraph status。
   - 无 codegraph 或命令失败时不阻塞 OpenCode 开发，只进入 warning。
 - **代码标注要求**：`# [CODEGRAPH-002] codegraph_preflight`
+
+### TF-QUALITY-003: 候选池精度校准与弱候选压缩（P0）
+- **描述**：在 TF-QUALITY-002 分项评分落地后，继续把候选池从“看起来很多”压缩到“真正值得盯的少数票”，避免弱 VCP、弱事件、数据不足候选进入主候选。
+- **优先级**：P0
+- **状态**：ready
+- **前置条件**：TF-QUALITY-002 完成。
+- **执行约束**：
+  - 不调用 LLM。
+  - 不改 prompts。
+  - 不输出强买卖词。
+  - 不用提高阈值一刀切误杀昊天左侧候选，必须区分短线技术池与昊天左侧池。
+- **实现要点**：
+  1. 基于 `technical_score/policy_score/fund_flow_score/event_score/data_quality_score/risk_penalty_score` 建立主候选准入规则。
+  2. `TECH_TRADE` 主候选必须满足至少两类共振：形态、量能、资金、触发/失效价、数据质量。
+  3. `POLICY_AMBUSH/POLICY_CONFIRM` 主候选必须满足政策主题、受益路径、反证不过热、证据覆盖四项中的至少两项。
+  4. 单一弱信号进入 observation 或 filtered，并写清 `pool_filter_reason`。
+  5. 输出主候选默认上限建议：技术池 3 只、昊天池 3 只、总主候选 5 只；超出进入 observation。
+- **验收方式**：
+  - fixture 中 20 只候选最终主候选不超过 5 只。
+  - 弱 VCP、弱事件、数据不足候选不进入 main。
+  - 昊天左侧候选不会因短线未突破被直接过滤，只能进入 observation 或 haotian main。
+  - `pytest tests/test_tf_quality001_pool_gate.py tests/test_ui001_tradeflow_api.py -q` 或等价测试通过。
+- **代码标注要求**：`# [TF-QUALITY-003] candidate_precision_gate`
+
+### TF-PAPER-001: 5000 元试跑模拟账户与候选跟踪账本（P1）
+- **描述**：为用户准备 5000 元小资金试跑环境，记录候选进入、观察触发、轻量 TA、模拟买入/卖出、收益和复盘，不连接真实交易。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：TF-OBS-002、TF-REVIEW-002 完成。
+- **执行约束**：
+  - 严禁接入真实券商交易。
+  - 不输出“立即买入/清仓”等强动作，只记录模拟动作与触发条件。
+  - 不调用 LLM。
+- **实现要点**：
+  1. 新增 TradeFlow paper ledger 表或轻量 JSON 存储：本金、候选、计划日期、触发价、失效价、模拟仓位、备注。
+  2. 候选详情支持“加入模拟跟踪”，默认金额上限 5000，可配置但不自动下单。
+  3. 盘中 Observe 触发后可写入“待人工确认模拟动作”。
+  4. 盘后 Review 聚合模拟账本收益、误报、未触发、失效。
+  5. 前端展示试跑看板：本金、持仓模拟、待确认、已完成复盘。
+- **验收方式**：
+  - 临时 DB/fixture 能创建 5000 元账本并加入 2 只候选。
+  - 未经人工确认不会生成模拟成交。
+  - 盘后 Review 能读取账本并展示收益或无数据原因。
+- **代码标注要求**：`# [TF-PAPER-001] paper_trading_ledger` / `// [TF-PAPER-001] paper_trading_ledger`
+
+### H-012: 昊天主题注册表与政策版本 Watchlist（P1）
+- **描述**：把昊天战法从零散政策关键词升级为可维护主题注册表，记录主题级别、生命周期、政策证据、产业链角色和重点观察标的。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：H-010、H-011 完成。
+- **执行约束**：
+  - 不调 LLM。
+  - 不把政策主题直接翻译成买卖建议。
+  - 不覆盖用户自选备注，只生成建议备注/主题标签。
+- **实现要点**：
+  1. 新增主题注册表结构：主题名、政策级别、状态、最近信号日、证据链接/摘要、核心产业链环节。
+  2. 候选入池时关联 `mandate_topic` 到主题注册表，输出主题状态：酝酿/发酵/确认/兑现/退潮。
+  3. 生成主题 Watchlist：每个主题最多列出核心标的、受益路径、反证缺口。
+  4. 与 H-008 自选备注联动，生成简短备注建议。
+- **验收方式**：
+  - fixture 中“低空经济/算力/半导体设备”等主题能注册并匹配候选。
+  - 主题状态变化不影响交易动作，只影响候选解释和排序。
+  - 前端或 API 能返回主题清单与候选映射。
+- **代码标注要求**：`# [H-012] mandate_topic_registry`
+
+### DATA-018: A股关键源新鲜度与 fallback 可视化日报（P1）
+- **描述**：把 DATA-017 的资金/LHB 健康巡检扩展到行情、资金、龙虎榜、公告、研报、评级、回购等关键源，形成每日可读的数据源新鲜度与 fallback 报告。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：DATA-017、DATA-006 完成。
+- **执行约束**：
+  - 不调用 LLM。
+  - 不打印 API key。
+  - live smoke 必须限频，失败不阻塞业务，只输出状态。
+- **实现要点**：
+  1. 建立 `source_freshness_report`：数据类型、主 vendor、fallback vendor、最近数据日、状态、错误摘要。
+  2. 区分 `HAS_DATA/NORMAL_NO_DATA/STALE/FAILED/RATE_LIMITED/UNIT_UNVERIFIED`。
+  3. 写入 `docs/data_source_reports/` 并接入夜间日报摘要。
+  4. 前端数据健康面板读取最新报告并显示红黄绿状态。
+- **验收方式**：
+  - fixture 能模拟 AKShare 失败、cn_astock fallback 成功、龙虎榜正常无数据。
+  - 报告中不出现明文密钥。
+  - 数据健康 API/前端能看到各源状态。
+- **代码标注要求**：`# [DATA-018] source_freshness_report`
+
+### UI-012: TradeFlow 前端降噪与主候选优先工作台（P1）
+- **描述**：当前候选池信息过散，用户要试跑时需要一眼看到少数主候选、原因、触发条件和下一步动作。本任务把前端默认视图改为主候选工作台。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：TF-QUALITY-002、TF-OBS-002 完成。
+- **执行约束**：
+  - 不新增营销式页面。
+  - 不隐藏 observation/filtered，只是默认折叠。
+  - 不触发 full TA。
+- **实现要点**：
+  1. TradeFlow 默认首屏展示 `main_candidates`，observation/filtered 折叠到独立 tab 或 drawer。
+  2. 每只主候选显示：候选类型、tier、总分、分项分、前两条排前原因、前两条扣分原因、触发价/失效价、观察状态。
+  3. 技术池与昊天池视觉区分，但颜色遵守 A 股红涨绿跌直觉。
+  4. 增加“下一步”按钮：观察、轻量 TA 预案、加入模拟账本。
+- **验收方式**：
+  - 主候选为空时有明确原因，不显示空白。
+  - 观察/过滤候选可追溯但不干扰主视线。
+  - 前端 build 通过。
+- **代码标注要求**：`// [UI-012] tradeflow_focus_workspace`
+
+### V-007: TradeFlow 试用闭环端到端验收（P1）
+- **描述**：把候选筛选、盘中观察、轻量 TA 预案、模拟账本、盘后 Review 串成一条可回放链路，验证系统能支撑用户小资金试跑。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：TF-QUALITY-003、TF-PAPER-001 完成。
+- **执行约束**：
+  - 不调用 LLM。
+  - 不写生产数据库。
+  - 不接真实交易。
+- **实现要点**：
+  1. 新增 E2E fixture：生成 5 只候选 → 主候选 2 只 → 盘中触发 1 只 → 加入模拟账本 → 盘后 Review。
+  2. 验证所有日期语义：非交易日计划、有效交易日观察、盘后复盘。
+  3. 验证前端/API 字段不丢：中文名、候选类型、分项分、观察状态、模拟账本、Review 结果。
+  4. 输出 `docs/tradeflow_trial_acceptance.md`。
+- **验收方式**：
+  - smoke/e2e 测试通过。
+  - 试跑报告能说明“为什么入池、什么时候触发、触发后如何记录、盘后结果如何”。
+  - 无强买卖建议。
+- **代码标注要求**：`# [V-007] tradeflow_trial_acceptance`
 
 ## B. 待办
 
