@@ -2841,7 +2841,7 @@
 ### V-006: 最终动作语义端到端回放验收（P1）
 - **描述**：DECISION-001~004 已完成后，用历史报告和最新报告回放验证系统不再“一片 HOLD/持有”，并确认前端/通知/DB 三处一致。
 - **优先级**：P1
-- **状态**：done — V-006-20260614, 33 tests passed, 见 docs/decision_replay_report.md
+- **状态**：done -- commit a1d2a89
 - **前置条件**：DECISION-004 完成 ✓。
 - **执行约束**：
   - 不调 LLM。
