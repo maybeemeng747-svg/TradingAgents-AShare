@@ -1,4 +1,4 @@
-import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse, CompanyOverviewResponse } from '@/types'
+import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse, CompanyOverviewResponse, PaperLedgerResponse, PaperActionResponse, PaperReviewResponse } from '@/types'
 
 export function getBaseUrl(): string {
     const envUrl = (import.meta.env.VITE_API_URL as string) || ''
@@ -494,6 +494,49 @@ class ApiService {
         if (sortOrder) params.append('sort_order', sortOrder)
         if (pool) params.append('pool', pool)
         return this.request<TradeFlowCompareResponse>(`/v1/tradeflow/candidates/compare?${params}`)
+    }
+
+    // [TF-PAPER-001] paper_trading_ledger
+    async getPaperLedger(): Promise<PaperLedgerResponse> {
+        return this.request<PaperLedgerResponse>(`/v1/tradeflow/paper-ledger`)
+    }
+
+    // [TF-PAPER-001] paper_trading_ledger
+    async addPaperCandidate(data: {
+        symbol: string
+        name?: string
+        trade_date: string
+        trigger_price?: number | null
+        invalid_price?: number | null
+        planned_amount?: number
+        candidate_type?: string
+        plan_date?: string
+        note?: string
+    }): Promise<PaperActionResponse> {
+        return this.request<PaperActionResponse>(`/v1/tradeflow/paper-ledger/add`, {
+            method: 'POST',
+            body: JSON.stringify(data),
+        })
+    }
+
+    // [TF-PAPER-001] paper_trading_ledger
+    async removePaperCandidate(tradeId: number): Promise<PaperActionResponse> {
+        return this.request<PaperActionResponse>(`/v1/tradeflow/paper-ledger/remove?trade_id=${tradeId}`, {
+            method: 'POST',
+        })
+    }
+
+    // [TF-PAPER-001] paper_trading_ledger
+    async confirmPaperAction(tradeId: number, actionType: string, price: number, note?: string): Promise<PaperActionResponse> {
+        return this.request<PaperActionResponse>(`/v1/tradeflow/paper-ledger/confirm`, {
+            method: 'POST',
+            body: JSON.stringify({ trade_id: tradeId, action_type: actionType, price, note: note || '' }),
+        })
+    }
+
+    // [TF-PAPER-001] paper_trading_ledger
+    async getPaperReview(date: string): Promise<PaperReviewResponse> {
+        return this.request<PaperReviewResponse>(`/v1/tradeflow/paper-ledger/review?date=${date}`)
     }
 }
 

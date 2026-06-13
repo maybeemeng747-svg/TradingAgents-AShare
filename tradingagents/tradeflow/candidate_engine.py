@@ -108,6 +108,47 @@ CREATE TABLE IF NOT EXISTS tradeflow_filtered_symbols (
 );
 """
 
+# [TF-PAPER-001] paper_trading_ledger
+CREATE_PAPER_LEDGER_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_paper_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    principal REAL DEFAULT 5000.0,
+    cash_balance REAL DEFAULT 5000.0,
+    config_json TEXT DEFAULT '{}',
+    created_at TEXT,
+    updated_at TEXT
+);
+"""
+
+# [TF-PAPER-001] paper_trading_ledger
+CREATE_PAPER_TRADES_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_paper_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    trade_date TEXT NOT NULL,
+    plan_date TEXT DEFAULT '',
+    candidate_type TEXT DEFAULT '',
+    trigger_price REAL,
+    invalid_price REAL,
+    planned_amount REAL DEFAULT 0.0,
+    status TEXT DEFAULT 'tracking',
+    action_type TEXT DEFAULT '',
+    action_price REAL,
+    action_date TEXT DEFAULT '',
+    confirmed INTEGER DEFAULT 0,
+    note TEXT DEFAULT '',
+    pnl REAL DEFAULT 0.0,
+    pnl_pct REAL DEFAULT 0.0,
+    observe_state TEXT DEFAULT 'WAITING',
+    close_price REAL,
+    close_date TEXT DEFAULT '',
+    close_reason TEXT DEFAULT '',
+    created_at TEXT,
+    updated_at TEXT
+);
+"""
+
 
 _MISSING_COLUMNS = [
     ("primary_strategy", "TEXT DEFAULT ''"),
@@ -236,6 +277,8 @@ def init_db(db_path: str) -> None:
         + CREATE_SIGNALS_TABLE
         + CREATE_DAILY_PLANS_TABLE
         + CREATE_FILTERED_SYMBOLS_TABLE  # [UI-007] tradeflow_filtered_trace
+        + CREATE_PAPER_LEDGER_TABLE  # [TF-PAPER-001] paper_trading_ledger
+        + CREATE_PAPER_TRADES_TABLE  # [TF-PAPER-001] paper_trading_ledger
     )
     ensure_columns(conn)
     try:

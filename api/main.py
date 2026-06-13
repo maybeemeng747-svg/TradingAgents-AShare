@@ -5244,6 +5244,11 @@ from api.tradeflow_schemas import (
     TradeFlowResearchPlanResponse,  # [UI-009] candidate_ta_plan_draft
     TradeFlowCompareResponse,  # [UI-010] mandate_candidate_compare
     CompanyOverviewResponse,  # [TF-UI-011] candidate_research_entry
+    PaperLedgerResponse,  # [TF-PAPER-001] paper_trading_ledger
+    PaperActionRequest,  # [TF-PAPER-001] paper_trading_ledger
+    PaperAddCandidateRequest,  # [TF-PAPER-001] paper_trading_ledger
+    PaperActionResponse,  # [TF-PAPER-001] paper_trading_ledger
+    PaperReviewResponse,  # [TF-PAPER-001] paper_trading_ledger
 )
 from api.services.tradeflow_service import (
     get_daily_plan as _tf_get_daily_plan,
@@ -5263,6 +5268,12 @@ from api.services.tradeflow_service import (
     get_candidate_comparison as _tf_get_candidate_comparison,  # [UI-010] mandate_candidate_compare
     get_observe_scheduler_status as _tf_get_observe_scheduler_status,  # [T-004] intraday_observe_scheduler
     get_company_overview as _tf_get_company_overview,  # [TF-UI-011] candidate_research_entry
+    get_paper_ledger as _tf_get_paper_ledger,  # [TF-PAPER-001] paper_trading_ledger
+    add_paper_candidate as _tf_add_paper_candidate,  # [TF-PAPER-001] paper_trading_ledger
+    remove_paper_candidate as _tf_remove_paper_candidate,  # [TF-PAPER-001] paper_trading_ledger
+    confirm_paper_action as _tf_confirm_paper_action,  # [TF-PAPER-001] paper_trading_ledger
+    update_paper_observe_state as _tf_update_paper_observe_state,  # [TF-PAPER-001] paper_trading_ledger
+    get_paper_review as _tf_get_paper_review,  # [TF-PAPER-001] paper_trading_ledger
 )
 
 # [UI-001] tradeflow_api — read-only endpoints
@@ -5400,6 +5411,47 @@ def tradeflow_candidates_compare(
     pool: Optional[str] = Query(None, description="候选池过滤: all/haotian/policy/tech/event/gap"),
 ):
     return _tf_get_candidate_comparison(date, sort_by=sort_by, sort_order=sort_order, pool=pool)
+
+
+# [TF-PAPER-001] paper_trading_ledger — endpoints
+@app.get("/v1/tradeflow/paper-ledger", response_model=PaperLedgerResponse)
+def tradeflow_paper_ledger():
+    return _tf_get_paper_ledger()
+
+
+@app.post("/v1/tradeflow/paper-ledger/add", response_model=PaperActionResponse)
+def tradeflow_paper_ledger_add(request: PaperAddCandidateRequest):
+    return _tf_add_paper_candidate(
+        symbol=request.symbol,
+        name=request.name,
+        trade_date=request.trade_date,
+        trigger_price=request.trigger_price,
+        invalid_price=request.invalid_price,
+        planned_amount=request.planned_amount,
+        candidate_type=request.candidate_type,
+        plan_date=request.plan_date,
+        note=request.note,
+    )
+
+
+@app.post("/v1/tradeflow/paper-ledger/remove", response_model=PaperActionResponse)
+def tradeflow_paper_ledger_remove(trade_id: int = Query(..., description="模拟跟踪记录 ID")):
+    return _tf_remove_paper_candidate(trade_id)
+
+
+@app.post("/v1/tradeflow/paper-ledger/confirm", response_model=PaperActionResponse)
+def tradeflow_paper_ledger_confirm(request: PaperActionRequest):
+    return _tf_confirm_paper_action(
+        trade_id=request.trade_id,
+        action_type=request.action_type,
+        price=request.price,
+        note=request.note,
+    )
+
+
+@app.get("/v1/tradeflow/paper-ledger/review", response_model=PaperReviewResponse)
+def tradeflow_paper_ledger_review(date: str = Query(..., description="复盘日期 YYYY-MM-DD")):
+    return _tf_get_paper_review(date)
 
 
 # ─── Static Files & SPA Routing ──────────────────────────────────────────────

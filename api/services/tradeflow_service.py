@@ -1856,3 +1856,410 @@ def get_candidate_comparison(
         }
     finally:
         conn.close()
+
+
+# ── [TF-PAPER-001] paper_trading_ledger ──────────────────────────────────
+
+_DEFAULT_PRINCIPAL = 5000.0
+
+
+def _ensure_paper_ledger_row(conn: sqlite3.Connection) -> sqlite3.Row:
+    """Return the single paper ledger row, creating it if necessary."""
+    row = conn.execute("SELECT * FROM tradeflow_paper_ledger LIMIT 1").fetchone()
+    if row is not None:
+        return row
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "INSERT INTO tradeflow_paper_ledger (principal, cash_balance, config_json, created_at, updated_at) "
+        "VALUES (?, ?, '{}', ?, ?)",
+        (_DEFAULT_PRINCIPAL, _DEFAULT_PRINCIPAL, now, now),
+    )
+    conn.commit()
+    return conn.execute("SELECT * FROM tradeflow_paper_ledger LIMIT 1").fetchone()
+
+
+def _row_to_paper_trade(row: sqlite3.Row) -> dict:
+    return {
+        "id": _rget(row, "id"),
+        "symbol": _rget(row, "symbol", ""),
+        "name": _rget(row, "name", ""),
+        "trade_date": _rget(row, "trade_date", ""),
+        "plan_date": _rget(row, "plan_date", ""),
+        "candidate_type": _rget(row, "candidate_type", ""),
+        "trigger_price": _rget(row, "trigger_price"),
+        "invalid_price": _rget(row, "invalid_price"),
+        "planned_amount": _rget(row, "planned_amount", 0.0),
+        "status": _rget(row, "status", "tracking"),
+        "action_type": _rget(row, "action_type", ""),
+        "action_price": _rget(row, "action_price"),
+        "action_date": _rget(row, "action_date", ""),
+        "confirmed": bool(_rget(row, "confirmed", 0)),
+        "note": _rget(row, "note", ""),
+        "pnl": _rget(row, "pnl", 0.0),
+        "pnl_pct": _rget(row, "pnl_pct", 0.0),
+        "observe_state": _rget(row, "observe_state", "WAITING"),
+        "close_price": _rget(row, "close_price"),
+        "close_date": _rget(row, "close_date", ""),
+        "close_reason": _rget(row, "close_reason", ""),
+        "created_at": _rget(row, "created_at", ""),
+        "updated_at": _rget(row, "updated_at", ""),
+    }
+
+
+def get_paper_ledger(tf_db_path: str = "") -> dict:
+    """Return the paper trading ledger with all trades and summary."""  # [TF-PAPER-001]
+    _fast_meta = _tradeflow_meta("tradeflow_paper_ledger")
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {
+            "status": "no_data",
+            "principal": _DEFAULT_PRINCIPAL,
+            "cash_balance": _DEFAULT_PRINCIPAL,
+            "config": {},
+            "trades": [],
+            "summary": {
+                "total_trades": 0,
+                "tracking_count": 0,
+                "pending_count": 0,
+                "open_count": 0,
+                "closed_count": 0,
+                "invested": 0.0,
+                "realized_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "total_pnl": 0.0,
+                "total_pnl_pct": 0.0,
+            },
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    try:
+        ledger = _ensure_paper_ledger_row(conn)
+        principal = _rget(ledger, "principal", _DEFAULT_PRINCIPAL)
+        cash_balance = _rget(ledger, "cash_balance", _DEFAULT_PRINCIPAL)
+        config = _parse_json(_rget(ledger, "config_json", "{}"), default={})
+
+        rows = conn.execute(
+            "SELECT * FROM tradeflow_paper_trades ORDER BY created_at DESC"
+        ).fetchall()
+        trades = [_row_to_paper_trade(r) for r in rows]
+
+        tracking_count = sum(1 for t in trades if t["status"] == "tracking")
+        pending_count = sum(1 for t in trades if t["status"] == "pending")
+        open_count = sum(1 for t in trades if t["status"] == "open")
+        closed_count = sum(1 for t in trades if t["status"] == "closed")
+        invested = sum(t["planned_amount"] for t in trades if t["status"] == "open")
+        realized_pnl = sum(t["pnl"] for t in trades if t["status"] == "closed")
+
+        summary = {
+            "total_trades": len(trades),
+            "tracking_count": tracking_count,
+            "pending_count": pending_count,
+            "open_count": open_count,
+            "closed_count": closed_count,
+            "invested": round(invested, 2),
+            "realized_pnl": round(realized_pnl, 2),
+            "unrealized_pnl": 0.0,
+            "total_pnl": round(realized_pnl, 2),
+            "total_pnl_pct": round(realized_pnl / principal * 100, 2) if principal else 0.0,
+        }
+
+        return {
+            "status": "ok",
+            "principal": principal,
+            "cash_balance": cash_balance,
+            "config": config,
+            "trades": trades,
+            "summary": summary,
+            "runtime_tier_meta": _fast_meta,
+        }
+    finally:
+        conn.close()
+
+
+def add_paper_candidate(
+    symbol: str,
+    name: str,
+    trade_date: str,
+    trigger_price: Optional[float] = None,
+    invalid_price: Optional[float] = None,
+    planned_amount: float = 0.0,
+    candidate_type: str = "",
+    plan_date: str = "",
+    note: str = "",
+    tf_db_path: str = "",
+) -> dict:
+    """Add a candidate to the paper trading ledger."""  # [TF-PAPER-001]
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available"}
+
+    try:
+        symbol = normalize_tradeflow_symbol(symbol)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        existing = conn.execute(
+            "SELECT id FROM tradeflow_paper_trades WHERE symbol = ? AND status IN ('tracking', 'pending', 'open')",
+            (symbol,),
+        ).fetchone()
+        if existing is not None:
+            return {"status": "duplicate", "message": f"{symbol} 已在模拟跟踪中"}
+
+        ledger = _ensure_paper_ledger_row(conn)
+        max_per_candidate = _parse_json(
+            _rget(ledger, "config_json", "{}"), default={}
+        ).get("max_per_candidate", 2000.0)
+
+        amount = min(planned_amount if planned_amount > 0 else 1000.0, max_per_candidate)
+
+        conn.execute(
+            "INSERT INTO tradeflow_paper_trades "
+            "(symbol, name, trade_date, plan_date, candidate_type, trigger_price, invalid_price, "
+            "planned_amount, status, note, observe_state, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'tracking', ?, 'WAITING', ?, ?)",
+            (
+                symbol, name, trade_date, plan_date or trade_date, candidate_type,
+                trigger_price, invalid_price, amount, note, now, now,
+            ),
+        )
+        conn.commit()
+
+        trade_id = conn.execute(
+            "SELECT id FROM tradeflow_paper_trades WHERE symbol = ? AND status = 'tracking' ORDER BY id DESC LIMIT 1",
+            (symbol,),
+        ).fetchone()["id"]
+        return {
+            "status": "ok",
+            "message": f"{symbol} 已加入模拟跟踪",
+            "trade_id": trade_id,
+            "planned_amount": amount,
+        }
+    finally:
+        conn.close()
+
+
+def remove_paper_candidate(trade_id: int, tf_db_path: str = "") -> dict:
+    """Remove a candidate from the paper trading ledger."""  # [TF-PAPER-001]
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available"}
+
+    try:
+        row = conn.execute(
+            "SELECT id, symbol, status FROM tradeflow_paper_trades WHERE id = ?", (trade_id,)
+        ).fetchone()
+        if row is None:
+            return {"status": "not_found", "message": f"trade_id={trade_id} 不存在"}
+
+        if row["status"] == "open":
+            return {"status": "blocked", "message": f"{row['symbol']} 有未平仓模拟仓位，请先平仓"}
+
+        conn.execute("DELETE FROM tradeflow_paper_trades WHERE id = ?", (trade_id,))
+        conn.commit()
+        return {"status": "ok", "message": f"{row['symbol']} 已移除"}
+    finally:
+        conn.close()
+
+
+def confirm_paper_action(
+    trade_id: int,
+    action_type: str,
+    price: float,
+    note: str = "",
+    tf_db_path: str = "",
+) -> dict:
+    """Confirm a simulated buy/sell action for a paper trade.
+
+    action_type: 'buy' → open position, 'sell' → close position.
+    """  # [TF-PAPER-001]
+    if action_type not in ("buy", "sell"):
+        return {"status": "error", "message": "action_type must be 'buy' or 'sell'"}
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available"}
+
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        row = conn.execute(
+            "SELECT * FROM tradeflow_paper_trades WHERE id = ?", (trade_id,)
+        ).fetchone()
+        if row is None:
+            return {"status": "not_found", "message": f"trade_id={trade_id} 不存在"}
+
+        ledger = _ensure_paper_ledger_row(conn)
+        cash_balance = _rget(ledger, "cash_balance", _DEFAULT_PRINCIPAL)
+
+        if action_type == "buy":
+            if row["status"] not in ("tracking", "pending"):
+                return {"status": "blocked", "message": f"当前状态 {row['status']} 不可买入"}
+            amount = _rget(row, "planned_amount", 0.0)
+            if amount > cash_balance:
+                return {"status": "insufficient_cash", "message": f"现金余额 {cash_balance:.2f} 不足买入 {amount:.2f}"}
+            conn.execute(
+                "UPDATE tradeflow_paper_trades SET status='open', action_type='buy', "
+                "action_price=?, action_date=?, confirmed=1, note=?, updated_at=? WHERE id=?",
+                (price, now, note, now, trade_id),
+            )
+            conn.execute(
+                "UPDATE tradeflow_paper_ledger SET cash_balance = cash_balance - ?, updated_at = ?",
+                (amount, now),
+            )
+            conn.commit()
+            return {
+                "status": "ok",
+                "message": f"{row['symbol']} 模拟买入 @ {price}",
+                "cash_balance": round(cash_balance - amount, 2),
+            }
+        else:
+            if row["status"] != "open":
+                return {"status": "blocked", "message": f"当前状态 {row['status']} 不可卖出"}
+            buy_price = _rget(row, "action_price", 0.0)
+            amount = _rget(row, "planned_amount", 0.0)
+            pnl = (price - buy_price) * (amount / buy_price) if buy_price else 0.0
+            pnl_pct = (price - buy_price) / buy_price * 100 if buy_price else 0.0
+            conn.execute(
+                "UPDATE tradeflow_paper_trades SET status='closed', action_type='sell', "
+                "action_price=?, action_date=?, confirmed=1, close_price=?, close_date=?, "
+                "pnl=?, pnl_pct=?, close_reason=?, note=?, updated_at=? WHERE id=?",
+                (price, now, price, now[:10], round(pnl, 2), round(pnl_pct, 2), note, note, now, trade_id),
+            )
+            conn.execute(
+                "UPDATE tradeflow_paper_ledger SET cash_balance = cash_balance + ? + ?, updated_at = ?",
+                (amount, round(pnl, 2), now),
+            )
+            conn.commit()
+            return {
+                "status": "ok",
+                "message": f"{row['symbol']} 模拟卖出 @ {price}, P&L {pnl:.2f}",
+                "cash_balance": round(cash_balance + amount + pnl, 2),
+                "pnl": round(pnl, 2),
+            }
+    finally:
+        conn.close()
+
+
+def update_paper_observe_state(
+    symbol: str,
+    observe_state: str,
+    tf_db_path: str = "",
+) -> dict:
+    """Sync observe_state from intraday observe to paper trades.
+
+    When a candidate in the paper ledger gets TRIGGERED, its paper trade
+    status transitions from 'tracking' to 'pending' (awaiting manual confirm).
+    """  # [TF-PAPER-001]
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available"}
+
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        rows = conn.execute(
+            "SELECT id, status FROM tradeflow_paper_trades WHERE symbol = ? AND status = 'tracking'",
+            (symbol,),
+        ).fetchall()
+        updated = 0
+        for row in rows:
+            new_status = "pending" if observe_state == "TRIGGERED" else "tracking"
+            conn.execute(
+                "UPDATE tradeflow_paper_trades SET observe_state=?, status=?, updated_at=? WHERE id=?",
+                (observe_state, new_status, now, row["id"]),
+            )
+            updated += 1
+        if observe_state == "INVALIDATED":
+            conn.execute(
+                "UPDATE tradeflow_paper_trades SET observe_state='INVALIDATED', status='invalidated', updated_at=? "
+                "WHERE symbol=? AND status IN ('tracking', 'pending')",
+                (now, symbol),
+            )
+        conn.commit()
+        return {"status": "ok", "updated": updated, "symbol": symbol}
+    finally:
+        conn.close()
+
+
+def get_paper_review(trade_date: str, tf_db_path: str = "") -> dict:
+    """Post-market review of paper trading ledger for a given date.
+
+    Aggregates: realized P&L, false triggers, un-triggered, invalidated.
+    """  # [TF-PAPER-001]
+    _fast_meta = _tradeflow_meta("tradeflow_paper_ledger")
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {
+            "status": "no_data",
+            "trade_date": trade_date,
+            "review": {
+                "total": 0,
+                "tracking": 0,
+                "pending": 0,
+                "open": 0,
+                "closed": 0,
+                "invalidated": 0,
+                "realized_pnl": 0.0,
+                "false_trigger_count": 0,
+                "untriggered_count": 0,
+                "invalidated_count": 0,
+                "review_note": "TradeFlow DB not available",
+            },
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    try:
+        ledger = _ensure_paper_ledger_row(conn)
+        principal = _rget(ledger, "principal", _DEFAULT_PRINCIPAL)
+        cash_balance = _rget(ledger, "cash_balance", _DEFAULT_PRINCIPAL)
+
+        rows = conn.execute(
+            "SELECT * FROM tradeflow_paper_trades ORDER BY created_at DESC"
+        ).fetchall()
+        trades = [_row_to_paper_trade(r) for r in rows]
+
+        closed = [t for t in trades if t["status"] == "closed"]
+        invalidated = [t for t in trades if t["status"] == "invalidated"]
+        tracking = [t for t in trades if t["status"] == "tracking"]
+        pending = [t for t in trades if t["status"] == "pending"]
+        open_pos = [t for t in trades if t["status"] == "open"]
+
+        realized_pnl = sum(t["pnl"] for t in closed)
+        false_trigger_count = sum(1 for t in closed if t["pnl"] < 0)
+        untriggered_count = len(tracking)
+        invalidated_count = len(invalidated)
+
+        if not trades:
+            review_note = "暂无模拟跟踪记录"
+        elif untriggered_count == len(trades):
+            review_note = f"全部 {untriggered_count} 只候选等待触发中"
+        else:
+            review_note = (
+                f"已平仓 {len(closed)} 只（其中亏损 {false_trigger_count} 只），"
+                f"持仓 {len(open_pos)} 只，待确认 {len(pending)} 只，"
+                f"已失效 {invalidated_count} 只"
+            )
+
+        review = {
+            "total": len(trades),
+            "tracking": untriggered_count,
+            "pending": len(pending),
+            "open": len(open_pos),
+            "closed": len(closed),
+            "invalidated": invalidated_count,
+            "realized_pnl": round(realized_pnl, 2),
+            "false_trigger_count": false_trigger_count,
+            "untriggered_count": untriggered_count,
+            "invalidated_count": invalidated_count,
+            "review_note": review_note,
+            "principal": principal,
+            "cash_balance": cash_balance,
+            "total_pnl_pct": round((cash_balance - principal) / principal * 100, 2) if principal else 0.0,
+        }
+
+        return {
+            "status": "ok",
+            "trade_date": trade_date,
+            "review": review,
+            "trades": trades,
+            "runtime_tier_meta": _fast_meta,
+        }
+    finally:
+        conn.close()

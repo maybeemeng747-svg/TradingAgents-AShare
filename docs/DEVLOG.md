@@ -4,6 +4,57 @@
 
 ---
 
+## 2026-06-14 | TF-PAPER-001: 5000 元试跑模拟账户与候选跟踪账本
+
+- **执行者**：OpenCode
+- **类型**：新功能（P1）
+- **任务**：TF-PAPER-001
+- **背景**：用户需要 5000 元小资金试跑环境，记录候选进入、观察触发、模拟买入/卖出、收益和复盘，不连接真实交易。
+- **修改文件**：
+  - `tradingagents/tradeflow/candidate_engine.py` — [TF-PAPER-001] paper_trading_ledger
+    - 新增 `CREATE_PAPER_LEDGER_TABLE` 和 `CREATE_PAPER_TRADES_TABLE` SQL 常量
+    - `init_db()` 的 `executescript()` 追加两张新表
+  - `api/services/tradeflow_service.py` — [TF-PAPER-001] paper_trading_ledger
+    - 新增 `_ensure_paper_ledger_row()`、`_row_to_paper_trade()` 辅助函数
+    - 新增 `get_paper_ledger()` — 获取或自动创建 5000 元本金账本
+    - 新增 `add_paper_candidate()` — 加入候选到模拟跟踪（去重、金额上限）
+    - 新增 `remove_paper_candidate()` — 移除跟踪（持仓中不可移除）
+    - 新增 `confirm_paper_action()` — 确认模拟买入/卖出（扣减/回收现金、计算 P&L）
+    - 新增 `update_paper_observe_state()` — Observe 触发/失效同步到账本
+    - 新增 `get_paper_review()` — 盘后复盘聚合（已平仓 P&L、误报、未触发、失效）
+  - `api/tradeflow_schemas.py` — [TF-PAPER-001] paper_trading_ledger
+    - 新增 `PaperTradeItem`、`PaperLedgerSummary`、`PaperLedgerResponse`
+    - 新增 `PaperActionRequest`、`PaperAddCandidateRequest`、`PaperActionResponse`
+    - 新增 `PaperReviewResponse`
+  - `api/runtime_tier.py` — `_TRADEFLOW_FAST_ENDPOINTS` 新增 `tradeflow_paper_ledger`、`tradeflow_paper_review`
+  - `api/main.py` — 新增 5 个端点：
+    - `GET /v1/tradeflow/paper-ledger`
+    - `POST /v1/tradeflow/paper-ledger/add`
+    - `POST /v1/tradeflow/paper-ledger/remove`
+    - `POST /v1/tradeflow/paper-ledger/confirm`
+    - `GET /v1/tradeflow/paper-ledger/review`
+  - `frontend/src/types/index.ts` — 新增 `PaperTradeItem`、`PaperLedgerSummary`、`PaperLedgerResponse`、`PaperActionResponse`、`PaperReviewResponse`
+  - `frontend/src/services/api.ts` — 新增 `getPaperLedger()`、`addPaperCandidate()`、`removePaperCandidate()`、`confirmPaperAction()`、`getPaperReview()`
+  - `frontend/src/pages/TradeFlow.tsx` — 新增"模拟账本"tab，展示本金/现金余额/盈亏/持仓表，支持买入/卖出/移除操作
+  - `frontend/src/components/TradeFlowCandidateDrawer.tsx` — 新增"加入模拟跟踪"按钮（底部 footer 区域）
+  - `tests/test_tf_paper001_paper_ledger.py`（新增）— 57 个测试覆盖 DB schema、账本初始化、添加/移除候选、买入/卖出确认、Observe 状态同步、盘后复盘、Pydantic schema、运行层级、完整工作流、安全约束
+- **关键逻辑**：
+  1. 默认本金 5000 元，首次访问自动创建账本行。
+  2. 候选加入后状态为 `tracking`；Observe 触发后自动转为 `pending`（待人工确认）；人工确认买入后转为 `open`；卖出后转为 `closed`。
+  3. Observe 失效后自动标记为 `invalidated`。
+  4. 买入扣除现金，卖出回收本金+盈亏。现金不足时拒绝买入。
+  5. 盘后复盘聚合已平仓 P&L、误报（亏损平仓）、未触发数、已失效数。
+  6. 不自动下单——所有模拟动作必须人工确认。不输出"立即买入/清仓"等强动作。
+- **测试结果**：
+  - TF-PAPER-001 专项：57 passed
+  - 回归（runtime_tier/ui001/obs_002/paper001）：204 passed
+  - 回归（pool_gate/discovery/observe/review/ui011/fixture_replay）：303 passed
+  - 前端构建：`npm run build` 通过
+  - 总计：564 passed, 0 failed
+- **安全红线**：未改 prompts，未写生产 DB，未调用 live LLM，未跑全市场扫描，未接入真实券商交易。
+
+---
+
 ## 2026-06-14 | V-006: 最终动作语义端到端回放验收
 
 - **执行者**：OpenCode
@@ -4358,3 +4409,14 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/V-006-20260614-round1.txt
 - **Run archive**: docs/task_runs/V-006-20260614-003128/
+
+## 2026-06-14 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-PAPER-001 - 5000 元试跑模拟账户与候选跟踪账本（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TF-PAPER-001-20260614-round1.txt
+- **Run archive**: docs/task_runs/TF-PAPER-001-20260614-004155/

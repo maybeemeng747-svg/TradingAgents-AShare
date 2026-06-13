@@ -8,7 +8,7 @@
 // [TF-UX-004] trade_priority_score
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX, ChevronDown, ChevronRight, Zap, Clock, GitCompare } from 'lucide-react'
+import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX, ChevronDown, ChevronRight, Zap, Clock, GitCompare, Wallet } from 'lucide-react'
 import { api } from '@/services/api'
 import {
     RUNTIME_TIER_LABELS,
@@ -27,10 +27,11 @@ import type {
     TradeFlowReviewResponse,
     TradeFlowFilteredResponse,
     TradeFlowTieredCandidatesResponse,
+    PaperLedgerResponse,
 } from '@/types'
 import TradeFlowCandidateDrawer from '@/components/TradeFlowCandidateDrawer'
 
-type TabKey = 'candidates' | 'observe' | 'ta-queue' | 'review' | 'filtered' | 'data-health' | 'compare'
+type TabKey = 'candidates' | 'observe' | 'ta-queue' | 'review' | 'filtered' | 'data-health' | 'compare' | 'paper-ledger'
 
 function todayStr(): string {
     return new Date().toISOString().slice(0, 10)
@@ -398,6 +399,7 @@ const TABS: { key: TabKey; label: string; icon: typeof Target }[] = [
     { key: 'review', label: '盘后 Review', icon: BarChart3 },
     { key: 'filtered', label: '被过滤', icon: FilterX },
     { key: 'data-health', label: '数据健康', icon: Activity },
+    { key: 'paper-ledger', label: '模拟账本', icon: Wallet },
 ]
 
 function fmtPct(v: number | null | undefined): string {
@@ -1135,6 +1137,10 @@ export default function TradeFlow() {
     const [compareData, setCompareData] = useState<TradeFlowCandidateItem[]>([])
     const [compareSortBy, setCompareSortBy] = useState<CompareSortKey>('mandate_score')
 
+    // [TF-PAPER-001] paper_trading_ledger
+    const [paperLedger, setPaperLedger] = useState<PaperLedgerResponse | null>(null)
+    const [paperActionLoading, setPaperActionLoading] = useState(false)
+
     // [TF-UX-002] check if market is in session
     const isInMarketHours = useCallback(() => {
         const now = new Date()
@@ -1293,6 +1299,46 @@ export default function TradeFlow() {
         }
     }, [tradeDate, fetchReview])
 
+    // [TF-PAPER-001] paper_trading_ledger
+    const fetchPaperLedger = useCallback(async () => {
+        setLoading(true)
+        setError(null)
+        try {
+            const res = await api.getPaperLedger()
+            setPaperLedger(res)
+        } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : '加载模拟账本失败')
+        } finally {
+            setLoading(false)
+        }
+    }, [])
+
+    // [TF-PAPER-001] paper_trading_ledger
+    const handlePaperAction = useCallback(async (tradeId: number, actionType: string, price: number, note?: string) => {
+        setPaperActionLoading(true)
+        try {
+            await api.confirmPaperAction(tradeId, actionType, price, note)
+            await fetchPaperLedger()
+        } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : '操作失败')
+        } finally {
+            setPaperActionLoading(false)
+        }
+    }, [fetchPaperLedger])
+
+    // [TF-PAPER-001] paper_trading_ledger
+    const handlePaperRemove = useCallback(async (tradeId: number) => {
+        setPaperActionLoading(true)
+        try {
+            await api.removePaperCandidate(tradeId)
+            await fetchPaperLedger()
+        } catch (e: unknown) {
+            setError(e instanceof Error ? e.message : '移除失败')
+        } finally {
+            setPaperActionLoading(false)
+        }
+    }, [fetchPaperLedger])
+
     const fetchData = useCallback(async (date: string) => {
         if (activeTab === 'candidates') {
             await fetchCandidates(date)
@@ -1308,8 +1354,10 @@ export default function TradeFlow() {
             await fetchFiltered(date)
         } else if (activeTab === 'data-health') {
             await fetchDataHealth()
+        } else if (activeTab === 'paper-ledger') {
+            await fetchPaperLedger()
         }
-    }, [activeTab, fetchCandidates, fetchCompare, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth, fetchFiltered])
+    }, [activeTab, fetchCandidates, fetchCompare, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth, fetchFiltered, fetchPaperLedger])
 
     useEffect(() => {
         void fetchData(tradeDate)
@@ -1663,6 +1711,143 @@ export default function TradeFlow() {
 
         if (activeTab === 'data-health') {
             return <DataHealthPanel data={dataHealth} />
+        }
+
+        // [TF-PAPER-001] paper_trading_ledger
+        if (activeTab === 'paper-ledger') {
+            if (!paperLedger) {
+                return <div className="py-20 text-center text-sm text-slate-400">加载中...</div>
+            }
+            const s = paperLedger.summary
+            const pnlColor = s.total_pnl >= 0 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'
+            return (
+                <div className="space-y-4 p-4">
+                    {/* Summary Cards */}
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                        <div className="card p-3">
+                            <div className="text-xs text-slate-400">本金</div>
+                            <div className="mt-1 text-lg font-bold text-slate-700 dark:text-slate-200">¥{paperLedger.principal.toFixed(0)}</div>
+                        </div>
+                        <div className="card p-3">
+                            <div className="text-xs text-slate-400">现金余额</div>
+                            <div className="mt-1 text-lg font-bold text-slate-700 dark:text-slate-200">¥{paperLedger.cash_balance.toFixed(2)}</div>
+                        </div>
+                        <div className="card p-3">
+                            <div className="text-xs text-slate-400">累计盈亏</div>
+                            <div className={`mt-1 text-lg font-bold ${pnlColor}`}>
+                                {s.total_pnl >= 0 ? '+' : ''}{s.total_pnl.toFixed(2)} ({s.total_pnl_pct.toFixed(2)}%)
+                            </div>
+                        </div>
+                        <div className="card p-3">
+                            <div className="text-xs text-slate-400">跟踪/持仓/已平仓</div>
+                            <div className="mt-1 text-lg font-bold text-slate-700 dark:text-slate-200">
+                                {s.tracking_count} / {s.open_count} / {s.closed_count}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Trades Table */}
+                    {paperLedger.trades.length === 0 ? (
+                        <div className="py-12 text-center text-sm text-slate-400">
+                            <Wallet className="mx-auto mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
+                            暂无模拟跟踪记录
+                            <div className="mt-2 text-xs">从候选详情点击「加入模拟跟踪」开始</div>
+                        </div>
+                    ) : (
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                                <thead>
+                                    <tr className="border-b border-slate-200 text-xs text-slate-400 dark:border-slate-700">
+                                        <th className="px-2 py-2 text-left">代码</th>
+                                        <th className="px-2 py-2 text-left">名称</th>
+                                        <th className="px-2 py-2 text-right">触发价</th>
+                                        <th className="px-2 py-2 text-right">失效价</th>
+                                        <th className="px-2 py-2 text-right">计划金额</th>
+                                        <th className="px-2 py-2 text-center">状态</th>
+                                        <th className="px-2 py-2 text-right">买入价</th>
+                                        <th className="px-2 py-2 text-right">盈亏</th>
+                                        <th className="px-2 py-2 text-center">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {paperLedger.trades.map((t) => {
+                                        const statusMap: Record<string, { text: string; cls: string }> = {
+                                            tracking: { text: '跟踪中', cls: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300' },
+                                            pending: { text: '待确认', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' },
+                                            open: { text: '持仓中', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' },
+                                            closed: { text: '已平仓', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' },
+                                            invalidated: { text: '已失效', cls: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' },
+                                        }
+                                        const st = statusMap[t.status] || statusMap.tracking
+                                        const tradePnlColor = t.pnl >= 0 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'
+                                        return (
+                                            <tr key={t.id} className="border-b border-slate-100 dark:border-slate-800">
+                                                <td className="px-2 py-2 font-mono text-xs">{t.symbol}</td>
+                                                <td className="px-2 py-2">{t.name || '-'}</td>
+                                                <td className="px-2 py-2 text-right tabular-nums">{t.trigger_price?.toFixed(2) || '-'}</td>
+                                                <td className="px-2 py-2 text-right tabular-nums">{t.invalid_price?.toFixed(2) || '-'}</td>
+                                                <td className="px-2 py-2 text-right tabular-nums">¥{t.planned_amount.toFixed(0)}</td>
+                                                <td className="px-2 py-2 text-center"><span className={`rounded px-2 py-0.5 text-xs ${st.cls}`}>{st.text}</span></td>
+                                                <td className="px-2 py-2 text-right tabular-nums">{t.action_price?.toFixed(2) || '-'}</td>
+                                                <td className={`px-2 py-2 text-right tabular-nums ${tradePnlColor}`}>
+                                                    {t.status === 'closed' ? `${t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)} (${t.pnl_pct.toFixed(2)}%)` : '-'}
+                                                </td>
+                                                <td className="px-2 py-2 text-center">
+                                                    <div className="flex items-center justify-center gap-1">
+                                                        {(t.status === 'tracking' || t.status === 'pending') && (
+                                                            <button
+                                                                disabled={paperActionLoading}
+                                                                onClick={() => {
+                                                                    const priceStr = window.prompt(`确认模拟买入 ${t.symbol}，输入买入价格：`, t.trigger_price?.toString() || '')
+                                                                    if (priceStr) {
+                                                                        const price = parseFloat(priceStr)
+                                                                        if (price > 0) void handlePaperAction(t.id, 'buy', price)
+                                                                    }
+                                                                }}
+                                                                className="rounded bg-red-500 px-2 py-0.5 text-xs text-white hover:bg-red-600 disabled:opacity-50"
+                                                            >
+                                                                买入
+                                                            </button>
+                                                        )}
+                                                        {t.status === 'open' && (
+                                                            <button
+                                                                disabled={paperActionLoading}
+                                                                onClick={() => {
+                                                                    const priceStr = window.prompt(`确认模拟卖出 ${t.symbol}，输入卖出价格：`, '')
+                                                                    if (priceStr) {
+                                                                        const price = parseFloat(priceStr)
+                                                                        if (price > 0) void handlePaperAction(t.id, 'sell', price)
+                                                                    }
+                                                                }}
+                                                                className="rounded bg-green-600 px-2 py-0.5 text-xs text-white hover:bg-green-700 disabled:opacity-50"
+                                                            >
+                                                                卖出
+                                                            </button>
+                                                        )}
+                                                        {(t.status === 'tracking' || t.status === 'pending') && (
+                                                            <button
+                                                                disabled={paperActionLoading}
+                                                                onClick={() => void handlePaperRemove(t.id)}
+                                                                className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-500 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-400 dark:hover:bg-slate-700 disabled:opacity-50"
+                                                            >
+                                                                移除
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        )
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+
+                    <div className="text-xs text-slate-400">
+                        模拟账户仅供学习研究，不构成投资建议，不连接真实交易。
+                    </div>
+                </div>
+            )
         }
 
         return null

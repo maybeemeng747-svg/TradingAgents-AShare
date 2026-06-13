@@ -1250,3 +1250,89 @@ export interface TradeFlowCompareResponse {
     total: number
     runtime_tier_meta: RuntimeTierMeta
 }
+
+// [TF-PAPER-001] paper_trading_ledger
+export interface PaperTradeItem {
+    id: number
+    symbol: string
+    name: string
+    trade_date: string
+    plan_date: string
+    candidate_type: string
+    trigger_price: number | null
+    invalid_price: number | null
+    planned_amount: number
+    status: string
+    action_type: string
+    action_price: number | null
+    action_date: string
+    confirmed: boolean
+    note: string
+    pnl: number
+    pnl_pct: number
+    observe_state: string
+    close_price: number | null
+    close_date: string
+    close_reason: string
+    created_at: string
+    updated_at: string
+}
+
+// [TF-PAPER-001] paper_trading_ledger
+export interface PaperLedgerSummary {
+    total_trades: number
+    tracking_count: number
+    pending_count: number
+    open_count: number
+    closed_count: number
+    invested: number
+    realized_pnl: number
+    unrealized_pnl: number
+    total_pnl: number
+    total_pnl_pct: number
+}
+
+// [TF-PAPER-001] paper_trading_ledger
+export interface PaperLedgerResponse {
+    status: string
+    principal: number
+    cash_balance: number
+    config: Record<string, unknown>
+    trades: PaperTradeItem[]
+    summary: PaperLedgerSummary
+    runtime_tier_meta: RuntimeTierMeta
+}
+
+// [TF-PAPER-001] paper_trading_ledger
+export interface PaperActionResponse {
+    status: string
+    message: string
+    trade_id?: number
+    planned_amount?: number
+    cash_balance?: number
+    pnl?: number
+}
+
+// [TF-PAPER-001] paper_trading_ledger
+export interface PaperReviewResponse {
+    status: string
+    trade_date: string
+    review: {
+        total: number
+        tracking: number
+        pending: number
+        open: number
+        closed: number
+        invalidated: number
+        realized_pnl: number
+        false_trigger_count: number
+        untriggered_count: number
+        invalidated_count: number
+        review_note: string
+        principal: number
+        cash_balance: number
+        total_pnl_pct: number
+    }
+    trades: PaperTradeItem[]
+    runtime_tier_meta: RuntimeTierMeta
+}

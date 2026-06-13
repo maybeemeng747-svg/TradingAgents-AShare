@@ -405,3 +405,95 @@ class TradeFlowCompareResponse(BaseModel):
     sort_order: str = "desc"
     total: int = 0
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [TF-PAPER-001] paper_trading_ledger
+class PaperTradeItem(BaseModel):
+    id: int = 0
+    symbol: str = ""
+    name: str = ""
+    trade_date: str = ""
+    plan_date: str = ""
+    candidate_type: str = ""
+    trigger_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    planned_amount: float = 0.0
+    status: str = "tracking"
+    action_type: str = ""
+    action_price: Optional[float] = None
+    action_date: str = ""
+    confirmed: bool = False
+    note: str = ""
+    pnl: float = 0.0
+    pnl_pct: float = 0.0
+    observe_state: str = "WAITING"
+    close_price: Optional[float] = None
+    close_date: str = ""
+    close_reason: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+# [TF-PAPER-001] paper_trading_ledger
+class PaperLedgerSummary(BaseModel):
+    total_trades: int = 0
+    tracking_count: int = 0
+    pending_count: int = 0
+    open_count: int = 0
+    closed_count: int = 0
+    invested: float = 0.0
+    realized_pnl: float = 0.0
+    unrealized_pnl: float = 0.0
+    total_pnl: float = 0.0
+    total_pnl_pct: float = 0.0
+
+
+# [TF-PAPER-001] paper_trading_ledger
+class PaperLedgerResponse(BaseModel):
+    status: str = "ok"
+    principal: float = 5000.0
+    cash_balance: float = 5000.0
+    config: Dict[str, Any] = Field(default_factory=dict)
+    trades: List[PaperTradeItem] = Field(default_factory=list)
+    summary: PaperLedgerSummary = Field(default_factory=PaperLedgerSummary)
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [TF-PAPER-001] paper_trading_ledger
+class PaperActionRequest(BaseModel):
+    trade_id: int
+    action_type: str = Field(..., description="buy 或 sell")
+    price: float
+    note: str = ""
+
+
+# [TF-PAPER-001] paper_trading_ledger
+class PaperAddCandidateRequest(BaseModel):
+    symbol: str
+    name: str = ""
+    trade_date: str
+    trigger_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    planned_amount: float = 0.0
+    candidate_type: str = ""
+    plan_date: str = ""
+    note: str = ""
+
+
+# [TF-PAPER-001] paper_trading_ledger
+class PaperActionResponse(BaseModel):
+    status: str = "ok"
+    message: str = ""
+    trade_id: Optional[int] = None
+    planned_amount: Optional[float] = None
+    cash_balance: Optional[float] = None
+    pnl: Optional[float] = None
+
+
+# [TF-PAPER-001] paper_trading_ledger
+class PaperReviewResponse(BaseModel):
+    status: str = "ok"
+    trade_date: str = ""
+    review: Dict[str, Any] = Field(default_factory=dict)
+    trades: List[PaperTradeItem] = Field(default_factory=list)
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)

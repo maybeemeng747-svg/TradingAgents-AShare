@@ -2,7 +2,7 @@
 // [TA-UI-001] analysis_console_horizon_intent
 // [TF-UI-011] candidate_research_entry
 import { useEffect, useState } from 'react'
-import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote, FlaskConical, FileText, Building2, CandlestickChart, Clock, Cpu } from 'lucide-react'
+import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote, FlaskConical, FileText, Building2, CandlestickChart, Clock, Cpu, Wallet } from 'lucide-react'
 import { api } from '@/services/api'
 import type { TradeFlowCandidateItem, TradeFlowCandidateDetail, TradeFlowResearchPlanResponse, CompanyOverviewResponse } from '@/types'
 import MiniKline from './MiniKline'
@@ -115,6 +115,8 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
     const [companyOverview, setCompanyOverview] = useState<CompanyOverviewResponse | null>(null)  // [TF-UI-011]
     const [loadingOverview, setLoadingOverview] = useState(false)  // [TF-UI-011]
     const [showKline, setShowKline] = useState(false)  // [TF-UI-011]
+    const [paperMsg, setPaperMsg] = useState<string | null>(null)  // [TF-PAPER-001]
+    const [paperLoading, setPaperLoading] = useState(false)  // [TF-PAPER-001]
 
     useEffect(() => {
         if (!open) return
@@ -716,9 +718,41 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
 
                     <div className="pb-4" />
 
-                    {/* [TA-UI-001] analysis_console_horizon_intent - Jump to analysis */}
-                    {onNavigateToAnalysis && (
-                        <div className="sticky bottom-0 bg-white dark:bg-slate-900 pt-3 pb-2 border-t border-slate-100 dark:border-slate-700">
+                    {/* [TF-PAPER-001] paper_trading_ledger — Add to paper tracking */}
+                    <div className="sticky bottom-0 bg-white dark:bg-slate-900 pt-3 pb-2 border-t border-slate-100 dark:border-slate-700 space-y-2">
+                        {paperMsg && (
+                            <div className={`text-xs text-center px-3 py-1.5 rounded ${paperMsg.includes('已加入') ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-amber-50 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400'}`}>
+                                {paperMsg}
+                            </div>
+                        )}
+                        {/* [TF-PAPER-001] paper_trading_ledger — Add to paper tracking button */}
+                        <button
+                            onClick={() => {
+                                setPaperLoading(true)
+                                setPaperMsg(null)
+                                api.addPaperCandidate({
+                                    symbol: candidate.symbol,
+                                    name: candidate.name,
+                                    trade_date: tradeDate,
+                                    trigger_price: candidate.trigger_price,
+                                    invalid_price: candidate.invalid_price,
+                                    planned_amount: 1000,
+                                    candidate_type: candidate.candidate_type,
+                                })
+                                    .then(res => setPaperMsg(res.message))
+                                    .catch(() => setPaperMsg('加入失败，请稍后重试'))
+                                    .finally(() => setPaperLoading(false))
+                            }}
+                            disabled={paperLoading}
+                            className="w-full flex items-center justify-center gap-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-4 py-2 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors disabled:opacity-50"
+                        >
+                            <Wallet className="h-4 w-4" />
+                            {paperLoading ? '添加中...' : '加入模拟跟踪'}
+                        </button>
+
+                        {/* [TA-UI-001] analysis_console_horizon_intent - Jump to analysis */}
+                        {onNavigateToAnalysis && (
+                            <div>
                             <button
                                 onClick={() => {
                                     const ct = data.candidate_type
@@ -741,6 +775,7 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
                             </div>
                         </div>
                     )}
+                    </div>
                 </div>
             </div>
         </>
