@@ -5314,6 +5314,32 @@ def tradeflow_candidates(
     return _tf_get_candidates(date, tier=tier, need_deep_ta=need_deep_ta, candidate_type=candidate_type, pool=pool)
 
 
+# [TF-UX-001] tiered candidates
+@app.get("/v1/tradeflow/candidates/tiered", response_model=TradeFlowTieredCandidatesResponse)
+def tradeflow_candidates_tiered(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+    return _tf_get_candidates_tiered(date)
+
+
+# [TF-UI-011] candidate_research_entry
+@app.get("/v1/tradeflow/candidates/{symbol}/overview", response_model=CompanyOverviewResponse)
+def tradeflow_candidate_overview(
+    symbol: str,
+    date: str = Query("", description="交易日期 YYYY-MM-DD（可选，用于名称回填）"),
+):
+    return _tf_get_company_overview(symbol)
+
+
+# [UI-010] mandate_candidate_compare
+@app.get("/v1/tradeflow/candidates/compare", response_model=TradeFlowCompareResponse)
+def tradeflow_candidates_compare(
+    date: str = Query(..., description="交易日期 YYYY-MM-DD"),
+    sort_by: str = Query("mandate_score", description="排序字段: mandate_score/ambush_score/evidence_coverage/counter_evidence_count/evidence_gap_count/topic_lifecycle_state/company_role"),
+    sort_order: str = Query("desc", description="排序方向: desc/asc"),
+    pool: Optional[str] = Query(None, description="候选池过滤: all/haotian/policy/tech/event/gap"),
+):
+    return _tf_get_candidate_comparison(date, sort_by=sort_by, sort_order=sort_order, pool=pool)
+
+
 @app.get("/v1/tradeflow/candidates/{symbol}", response_model=TradeFlowCandidateDetailResponse)
 def tradeflow_candidate_detail(
     symbol: str,
@@ -5380,12 +5406,6 @@ def tradeflow_observe_scheduler_status():
     return _tf_get_observe_scheduler_status()
 
 
-# [TF-UX-001] tiered candidates
-@app.get("/v1/tradeflow/candidates/tiered", response_model=TradeFlowTieredCandidatesResponse)
-def tradeflow_candidates_tiered(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
-    return _tf_get_candidates_tiered(date)
-
-
 # [TF-UX-003] post_market_review
 @app.post("/v1/tradeflow/review/generate", response_model=TradeFlowReviewGenerateResponse)
 def tradeflow_review_generate(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
@@ -5399,26 +5419,6 @@ def tradeflow_research_plan(
     date: str = Query(..., description="交易日期 YYYY-MM-DD"),
 ):
     return _tf_generate_research_plan(symbol, date)
-
-
-# [TF-UI-011] candidate_research_entry
-@app.get("/v1/tradeflow/candidates/{symbol}/overview", response_model=CompanyOverviewResponse)
-def tradeflow_candidate_overview(
-    symbol: str,
-    date: str = Query("", description="交易日期 YYYY-MM-DD（可选，用于名称回填）"),
-):
-    return _tf_get_company_overview(symbol)
-
-
-# [UI-010] mandate_candidate_compare
-@app.get("/v1/tradeflow/candidates/compare", response_model=TradeFlowCompareResponse)
-def tradeflow_candidates_compare(
-    date: str = Query(..., description="交易日期 YYYY-MM-DD"),
-    sort_by: str = Query("mandate_score", description="排序字段: mandate_score/ambush_score/evidence_coverage/counter_evidence_count/evidence_gap_count/topic_lifecycle_state/company_role"),
-    sort_order: str = Query("desc", description="排序方向: desc/asc"),
-    pool: Optional[str] = Query(None, description="候选池过滤: all/haotian/policy/tech/event/gap"),
-):
-    return _tf_get_candidate_comparison(date, sort_by=sort_by, sort_order=sort_order, pool=pool)
 
 
 # [TF-PAPER-001] paper_trading_ledger — endpoints

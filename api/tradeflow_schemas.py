@@ -78,6 +78,14 @@ class TradeFlowCandidateItem(BaseModel):
     tier_reason: str = ""
     missing_evidence_for_upgrade: List[str] = Field(default_factory=list)
     candidate_type: str = ""  # [H-005] mandate_radar_ui
+    technical_score: float = 0.0
+    policy_score: float = 0.0
+    fund_flow_score: float = 0.0
+    event_score: float = 0.0
+    ranking_reasons: List[str] = Field(default_factory=list)
+    weakness_reasons: List[str] = Field(default_factory=list)
+    risk_penalty_score: float = 0.0
+    data_quality_score: float = 0.0
     mandate_score: float = 0.0  # [H-005] mandate_radar_ui
     ambush_score: float = 0.0  # [H-005] mandate_radar_ui
     mandate_topic: str = ""  # [H-005] mandate_radar_ui
