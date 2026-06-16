@@ -31,6 +31,8 @@ class PoolGateResult:
     filtered_candidates: list[dict] = field(default_factory=list)
     pool_counts: dict = field(default_factory=dict)
     gate_summary: str = ""
+    # [TF-QUALITY-004] live_pool_calibration — calibration audit trail
+    calibration_summary: dict = field(default_factory=dict)
 
 
 _HAOTIAN_TYPES = {"POLICY_AMBUSH", "POLICY_CONFIRM"}
@@ -148,6 +150,133 @@ def _assign_filter_reason(entry: dict, qualified: bool, qual_reason: str) -> str
     return "；".join(reasons) if reasons else "质量未达主候选门槛"
 
 
+# [TF-QUALITY-004] live_pool_calibration
+def _safe_float(val, default: float = 0.0) -> float:
+    try:
+        if val is None:
+            return default
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+# [TF-QUALITY-004] live_pool_calibration
+def _compute_effective_main_cap(
+    entries: list[dict],
+    cfg: StrategyConfig,
+) -> tuple[int, str]:
+    """Reduce main cap when top candidates have indistinguishable scores.
+
+    If the spread among the top ``pool_main_max`` composite scores is less
+    than ``calibration_score_spread_min``, the main cap is reduced by
+    ``calibration_main_cap_reduction`` (floor of 2).  This prevents a
+    "flat pile" of candidates that all look the same.
+
+    Only applies when ``pool_main_max >= 4`` so explicitly-tight configs
+    are respected.
+    """
+    if cfg.pool_main_max < 4:
+        return cfg.pool_main_max, ""
+
+    if len(entries) <= cfg.pool_main_max:
+        return cfg.pool_main_max, ""
+
+    scores = sorted(
+        [_safe_float(e.get("composite_score")) for e in entries],
+        reverse=True,
+    )
+    top_scores = scores[: cfg.pool_main_max]
+    if len(top_scores) < 2:
+        return cfg.pool_main_max, ""
+
+    spread = top_scores[0] - top_scores[-1]
+    if spread < cfg.calibration_score_spread_min:
+        reduced = max(2, cfg.pool_main_max - cfg.calibration_main_cap_reduction)
+        return reduced, (
+            f"分项评分差异不足({spread:.1f}<{cfg.calibration_score_spread_min:.0f})，"
+            f"主候选上限缩减({cfg.pool_main_max}→{reduced})"
+        )
+
+    return cfg.pool_main_max, ""
+
+
+# [TF-QUALITY-004] live_pool_calibration
+def _apply_live_calibration(
+    entry: dict,
+    precision,
+    cfg: StrategyConfig,
+) -> tuple[str, str]:
+    """Apply per-candidate calibration rules after precision passes.
+
+    Returns ``(action, reason)``:
+    - ``("pass", "")`` — candidate survives calibration.
+    - ``("observation", reason)`` — downgrade to observation.
+    - ``("filtered", reason)`` — downgrade to filtered.
+
+    Rules (evaluated in order):
+    1. TECH_TRADE data insufficient: data quality below threshold → filtered.
+    2. TECH_TRADE weak VCP: no volume AND no fund-flow confirmation → observation.
+    3. POLICY (昊天) evidence insufficient: no policy score OR fewer than
+       ``calibration_haotian_min_support_dims`` support dimensions → observation.
+    """
+    candidate_type = entry.get("candidate_type", "")
+
+    if candidate_type in _TECH_TYPES:
+        dims = precision.dimensions if precision else {}
+
+        # Rule 1: data insufficient — below quality threshold
+        dq_score = _safe_float(entry.get("data_quality_score"))
+        data_comp = (
+            _safe_float(entry.get("tradeflow_data_completeness"))
+            or _safe_float(entry.get("data_completeness"))
+        )
+        dq_ok = (
+            dq_score >= cfg.calibration_tech_data_quality_min
+            or data_comp >= cfg.calibration_tech_data_quality_min / 100.0
+        )
+        if not dq_ok:
+            return "filtered", f"数据不足(质量分{dq_score:.0f})"
+
+        # Rule 2: weak VCP — no 量能 AND no 资金
+        has_volume = dims.get("量能", False)
+        has_capital = dims.get("资金", False)
+        if not has_volume and not has_capital:
+            return "observation", "弱VCP(无量能确认/无资金流验证)"
+
+    if candidate_type in _HAOTIAN_TYPES:
+        # Rule 3: must have policy_score > 0 AND >= 2 support dimensions
+        policy_score = (
+            _safe_float(entry.get("policy_score"))
+            or _safe_float(entry.get("version_score"))
+            or _safe_float(entry.get("mandate_score_component"))
+        )
+        support_dims = 0
+        if _safe_float(entry.get("event_score")) > 0:
+            support_dims += 1
+        if _safe_float(entry.get("fund_flow_score")) > 0:
+            support_dims += 1
+        if _safe_float(entry.get("narrative_score")) > 0:
+            support_dims += 1
+        if (
+            _safe_float(entry.get("beneficiary_score_component")) > 0
+            or bool(entry.get("beneficiary_path"))
+        ):
+            support_dims += 1
+        if _safe_float(entry.get("mandate_score_component")) > 0:
+            support_dims += 1
+
+        if policy_score <= 0:
+            return "observation", "昊天左侧无政策主题分"
+        if support_dims < cfg.calibration_haotian_min_support_dims:
+            return (
+                "observation",
+                f"昊天证据不足(仅{support_dims}类支撑维度，"
+                f"需≥{cfg.calibration_haotian_min_support_dims})",
+            )
+
+    return "pass", ""
+
+
 def run_pool_gate(
     entries: list[dict],
     cfg: Optional[StrategyConfig] = None,
@@ -164,6 +293,14 @@ def run_pool_gate(
     candidates that fail precision are NEVER filtered — they can only enter
     observation or haotian main.
 
+    [TF-QUALITY-004] live_pool_calibration — after precision passes, a
+    live-calibration layer applies stricter per-candidate rules:
+    - TECH weak VCP (no volume AND no fund-flow) → observation.
+    - TECH data quality below threshold → filtered.
+    - POLICY insufficient evidence (no policy score or < 2 support dims) → observation.
+    Additionally, when top candidates have indistinguishable scores
+    (spread < ``calibration_score_spread_min``), the main cap is reduced.
+
     Args:
         entries: Sorted candidate entries (best first).
         cfg: Strategy config (defaults to DEFAULT_STRATEGY_CONFIG).
@@ -174,12 +311,20 @@ def run_pool_gate(
     if cfg is None:
         cfg = DEFAULT_STRATEGY_CONFIG
 
+    # [TF-QUALITY-004] live_pool_calibration — dynamic main cap
+    effective_main_cap, spread_reason = _compute_effective_main_cap(entries, cfg)
+
     main: list[dict] = []
     observation: list[dict] = []
     filtered: list[dict] = []
 
     haotian_count = 0
     tech_count = 0
+
+    # [TF-QUALITY-004] live_pool_calibration — calibration audit trail
+    cal_weak_vcp: list[str] = []
+    cal_data_insufficient: list[str] = []
+    cal_haotian_evidence: list[str] = []
 
     for entry in entries:
         candidate_type = entry.get("candidate_type", "")
@@ -214,6 +359,27 @@ def run_pool_gate(
             observation.append(entry_copy)
             continue
 
+        # [TF-QUALITY-004] live_pool_calibration — per-candidate calibration
+        cal_action, cal_reason = _apply_live_calibration(entry, precision, cfg)
+        if cal_action != "pass":
+            entry_copy = dict(entry)
+            entry_copy["precision_dimensions"] = precision.dimensions
+            entry_copy["precision_resonance_count"] = precision.resonance_count
+            entry_copy["pool_filter_reason"] = cal_reason
+            entry_copy["calibration_rule"] = cal_reason  # [TF-QUALITY-004]
+            if cal_action == "filtered" and not is_haotian:
+                entry_copy["pool_status"] = "filtered"
+                filtered.append(entry_copy)
+                cal_data_insufficient.append(entry.get("symbol", ""))
+            else:
+                entry_copy["pool_status"] = "observation"
+                observation.append(entry_copy)
+                if "弱VCP" in cal_reason:
+                    cal_weak_vcp.append(entry.get("symbol", ""))
+                elif "昊天" in cal_reason:
+                    cal_haotian_evidence.append(entry.get("symbol", ""))
+            continue
+
         is_tech = candidate_type in _TECH_TYPES
 
         if is_haotian and haotian_count >= cfg.pool_haotian_max:
@@ -230,9 +396,14 @@ def run_pool_gate(
             observation.append(entry_copy)
             continue
 
-        if len(main) >= cfg.pool_main_max:
+        if len(main) >= effective_main_cap:
             entry_copy = dict(entry)
-            entry_copy["pool_filter_reason"] = f"主候选池已满({len(main)}/{cfg.pool_main_max})"
+            cap_label = (
+                f"主候选池已满({len(main)}/{effective_main_cap})"
+                if effective_main_cap == cfg.pool_main_max
+                else f"主候选池已满({len(main)}/{effective_main_cap}，校准缩减)"
+            )
+            entry_copy["pool_filter_reason"] = cap_label
             entry_copy["pool_status"] = "observation"
             observation.append(entry_copy)
             continue
@@ -256,6 +427,7 @@ def run_pool_gate(
         "haotian_in_main": haotian_count,
         "tech_in_main": tech_count,
         "main_max": cfg.pool_main_max,
+        "effective_main_max": effective_main_cap,  # [TF-QUALITY-004]
         "haotian_max": cfg.pool_haotian_max,
         "tech_max": cfg.pool_tech_max,
     }
@@ -267,10 +439,22 @@ def run_pool_gate(
     ]
     gate_summary = "，".join(summary_parts) + "。"
 
+    # [TF-QUALITY-004] live_pool_calibration — calibration summary
+    calibration_summary = {
+        "weak_vcp_downgraded": cal_weak_vcp,
+        "data_insufficient_filtered": cal_data_insufficient,
+        "haotian_evidence_insufficient": cal_haotian_evidence,
+        "score_spread_reduced": bool(spread_reason),
+        "score_spread_reason": spread_reason,
+        "effective_main_cap": effective_main_cap,
+        "original_main_cap": cfg.pool_main_max,
+    }
+
     return PoolGateResult(
         main_candidates=main,
         observation_candidates=observation,
         filtered_candidates=filtered,
         pool_counts=pool_counts,
         gate_summary=gate_summary,
+        calibration_summary=calibration_summary,
     )

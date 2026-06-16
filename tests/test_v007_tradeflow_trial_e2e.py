@@ -202,6 +202,10 @@ def _make_tech_trade_main() -> Candidate:
         research_queue="SHORT_TERM_TRADE",
         research_intent="trend_confirmation",
         research_route_reason="短线技术候选进入短线交易队列",
+        # [TF-QUALITY-004] live_pool_calibration — fund flow confirmation for main
+        fund_flow_anomaly_score=8.0,
+        fund_flow_unit_verified=True,
+        fund_flow_anomaly_tags=["CONSECUTIVE_INFLOW"],
         plan_date=PLAN_DATE,
         effective_trade_date=EFFECTIVE_TRADE_DATE,
         observe_date=EFFECTIVE_TRADE_DATE,

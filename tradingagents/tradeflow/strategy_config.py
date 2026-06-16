@@ -152,6 +152,12 @@ class StrategyConfig:
     precision_data_quality_threshold: float = 0.5
     precision_overheat_penalty_max: float = 20.0
 
+    # ── Live Pool Calibration [TF-QUALITY-004] live_pool_calibration ──
+    calibration_score_spread_min: float = 5.0
+    calibration_main_cap_reduction: int = 2
+    calibration_tech_data_quality_min: float = 50.0
+    calibration_haotian_min_support_dims: int = 2
+
     # ── Deep TA Dispatch Gate [M-006] ──
     deep_ta_daily_limit: int = 3
     deep_ta_default_model: str = ""

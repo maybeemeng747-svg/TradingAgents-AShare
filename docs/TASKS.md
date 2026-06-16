@@ -97,8 +97,8 @@
 71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，done，依赖 DATA-017/DATA-006）。
 72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，done，依赖 TF-QUALITY-002/TF-OBS-002）。
 73. `V-007`：TradeFlow 试用闭环端到端验收（P1，done，commit 9ceedbf）。
-74. `TF-API-013`：TradeFlow API 合约收口与 HTTP 路由回归（P0，in_progress，当前人工补修待提交）。
-75. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，ready，依赖 TF-API-013/V-007）。
+74. `TF-API-013`：TradeFlow API 合约收口与 HTTP 路由回归（P0，done，`fce3141` + `289a392`）。
+75. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，done，`OpenCode` 2026-06-16）。
 76. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，ready，依赖 TF-PAPER-001）。
 77. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，ready，依赖 TF-OBS-002/TF-PAPER-001）。
 78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，ready，依赖 TF-REVIEW-002/TF-PAPER-001）。
@@ -3040,7 +3040,7 @@
 ### TF-API-013: TradeFlow API 合约收口与 HTTP 路由回归（P0）
 - **描述**：收口 2026-06-14 Codex review 发现的 API 合约问题：静态路由被 `/candidates/{symbol}` 吞、`response_model` 过滤分项评分字段、daily-plan 字段缺失。当前已有人工补修，仍需补齐剩余字段与 HTTP 层测试后提交。
 - **优先级**：P0
-- **状态**：in_progress — 当前工作区已有 `api/main.py`、`api/services/tradeflow_service.py`、`api/tradeflow_schemas.py` 补修，待补 `risk_penalty_score`/`data_quality_score` 并提交。
+- **状态**：done — `fce3141` fix(tradeflow): close API response contract gaps；`289a392` docs(tasks): release next TradeFlow trial tasks。818 passed, 2 skipped, 0 failed。
 - **前置条件**：V-007 完成 ✓。
 - **执行约束**：
   - 不调用 LLM。
@@ -3061,7 +3061,7 @@
 ### TF-QUALITY-004: 候选池实盘区分度回放校准（P0）
 - **描述**：在候选池已经收敛后，用近期真实候选池/fixture 做回放，校准“主候选过多、分数差异不明显、像半山腰抄底”的问题。目标是让主候选默认非常少，且每只主候选都有明确“为什么值得盯”的证据。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done — 2026-06-16 OpenCode 执行，5842 passed/0 failed，4 条校准规则上线。
 - **前置条件**：TF-API-013、V-007 完成。
 - **执行约束**：
   - 不调用 LLM。

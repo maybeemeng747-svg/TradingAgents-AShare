@@ -4,6 +4,88 @@
 
 ---
 
+## 2026-06-16 | TF-QUALITY-004 Hotfix: 数据不足过滤优先级修复
+
+- **执行者**：OpenCode
+- **类型**：Bug 修复（P1）
+- **任务**：TF-QUALITY-004 Hotfix — 技术票数据不足过滤优先级
+- **状态**：✅ 完成
+
+### 问题
+
+`_apply_live_calibration()` 中 TECH_TRADE 块判断顺序有误：先判弱 VCP（→ observation），导致
+TECH_TRADE + 弱VCP + 数据不足 的候选被降级到 observation 而非 filtered。
+
+### 变更内容
+
+1. **`tradingagents/tradeflow/candidate_pool_gate.py`**：
+   - 调换 `_apply_live_calibration()` TECH_TRADE 块的判断顺序
+   - 现在 Rule 1 = 数据不足（→ filtered），Rule 2 = 弱 VCP（→ observation）
+   - 更新函数 docstring 反映新顺序
+
+2. **`tests/test_tf_quality004_calibration.py`**：新增回归测试
+   - `TestCalibrationPriorityDataInsufficientOverWeakVcp`：
+     TECH_TRADE + 弱VCP + data_quality_score=0 + data_completeness=0.2 → filtered（非 observation）
+   - 校验 `calibration_summary["data_insufficient_filtered"]` 记录 symbol，且不进 weak_vcp_downgraded
+
+### 验证
+
+- `pytest tests/test_tf_quality004_calibration.py tests/test_tf_quality001_pool_gate.py tests/test_v007_tradeflow_trial_e2e.py -q` → 158 passed
+- `git diff --check` 无错误
+
+---
+
+## 2026-06-16 | TF-QUALITY-004: 候选池实盘区分度回放校准
+
+- **执行者**：OpenCode
+- **类型**：候选池校准（P0）
+- **任务**：TF-QUALITY-004 — live_pool_calibration
+- **状态**：✅ 完成
+
+### 变更内容
+
+1. **`tradingagents/tradeflow/strategy_config.py`**：新增 4 个校准配置项
+   - `calibration_score_spread_min` (5.0) — 主候选分差阈值
+   - `calibration_main_cap_reduction` (2) — 平堆时上限缩减量
+   - `calibration_tech_data_quality_min` (50.0) — 技术候选数据质量阈值
+   - `calibration_haotian_min_support_dims` (2) — 昊天候选最小支撑维度
+
+2. **`tradingagents/tradeflow/candidate_pool_gate.py`**：
+   - 新增 `_compute_effective_main_cap()`：当 top 候选分差 < 5 时自动缩减主候选上限
+   - 新增 `_apply_live_calibration()`：精度门禁通过后执行 3 条校准规则
+     - 技术弱 VCP（无量能 + 无资金）→ observation
+     - 技术数据不足（quality < 50）→ filtered
+     - 昊天证据不足（无 policy_score 或 < 2 支撑维度）→ observation
+   - `PoolGateResult` 新增 `calibration_summary` 审计追踪字段
+   - `pool_counts` 新增 `effective_main_max`
+
+3. **`tests/test_tf_quality004_calibration.py`**（新增）：35 个测试
+   - 配置验证、有效主上限计算、技术/昊天校准规则、20 只回放验收、无误杀验证、分池独立性
+
+4. **`tests/test_tf_quality001_pool_gate.py`**：修正 4 个测试的 POLICY 候选数据
+   - `test_max_main_cap`、`test_haotian_pool_cap`、`test_mixed_candidates`、`test_pool_counts`
+   - 补充 `mandate_score_component` / `beneficiary_score_component` 使数据符合校准要求
+
+5. **`tests/test_v007_tradeflow_trial_e2e.py`**：TECH 候选 (`_make_tech_trade_main`) 补充 fund_flow 确认数据
+
+6. **`docs/tradeflow_calibration/calibration_report.md`**（新增）：校准报告
+
+### 测试结果
+
+```
+tests/test_tf_quality004_calibration.py:  35 passed
+tests/test_tf_quality001_pool_gate.py:    72 passed
+tests/test_v007_tradeflow_trial_e2e.py:   50 passed
+全量: 5842 passed, 17 skipped, 0 failed
+```
+
+### 风险点
+
+- 校准规则对 POLICY 候选更严格，需要 mandate/beneficiary/event/fund_flow/narrative 中至少 2 项支撑。生产数据中昊天候选如缺这些字段会被降级到 observation（不会被 filtered）。
+- 技术候选无量能确认且无资金流验证时会被降级。生产数据中需要确保 fund_flow_anomaly_score 和 fund_flow_unit_verified 正确填充。
+
+---
+
 ## 2026-06-15 | 释放下一波 TradeFlow 试跑前收口任务
 
 - **背景**：用户要求释放下一波任务。当前工作区仍有上一轮 TradeFlow API 合约补修未提交（`api/main.py`、`api/services/tradeflow_service.py`、`api/tradeflow_schemas.py`），并且 `docs/tradeflow_trial_acceptance.md` 是测试刷新时间导致的副作用。自动开发应先收口当前补修，再领取下一批。
@@ -4672,3 +4754,10 @@
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/CODEGRAPH-002-20260614-round1.txt
 - **Run archive**: docs/task_runs/CODEGRAPH-002-20260614-014751/
+
+### 2026-06-16 13:25 — TF-API-013 收口完成
+- `fce3141` fix(tradeflow): close API response contract gaps（4 files, +75 -26）
+- `289a392` docs(tasks): release next TradeFlow trial tasks（2 files, +194 -3）
+- 验收：818 passed, 2 skipped, 0 failed；8 分项字段 missing: []；tiered/compare 路由 shape 正确
+- 排除：tradeflow_trial_acceptance.md（仅生成时间变化）、task_suggestions/2026-06-14.md（未跟踪）
+- 下一步：TF-QUALITY-004 候选池实盘区分度回放校准

@@ -243,7 +243,8 @@ class TestRunPoolGate:
     def test_max_main_cap(self):
         cfg = StrategyConfig(pool_main_max=3, pool_tech_max=10, pool_haotian_max=10)
         entries = [
-            _make_entry(symbol=f"H{i}", candidate_type="POLICY_AMBUSH", positive_category_count=3, composite_score=70 + i)
+            _make_entry(symbol=f"H{i}", candidate_type="POLICY_AMBUSH", positive_category_count=3, composite_score=70 + i,
+                        mandate_score_component=50, beneficiary_score_component=40)
             for i in range(6)
         ]
         result = run_pool_gate(entries, cfg)
@@ -280,6 +281,8 @@ class TestRunPoolGate:
                 candidate_type="POLICY_AMBUSH",
                 positive_category_count=3,
                 composite_score=70,
+                mandate_score_component=50,
+                beneficiary_score_component=40,
             )
             for i in range(4)
         ]
@@ -289,7 +292,8 @@ class TestRunPoolGate:
 
     def test_mixed_candidates(self):
         entries = [
-            _make_entry(symbol="A1", candidate_type="POLICY_AMBUSH", positive_category_count=3, composite_score=80),
+            _make_entry(symbol="A1", candidate_type="POLICY_AMBUSH", positive_category_count=3, composite_score=80,
+                        mandate_score_component=50, beneficiary_score_component=40),
             _make_entry(symbol="T1", candidate_type="TECH_TRADE", positive_category_count=2, composite_score=60),
             _make_entry(symbol="W1", tier="C", composite_score=10),
             _make_entry(symbol="T2", candidate_type="TECH_TRADE", positive_category_count=1, composite_score=30, tradeflow_data_completeness=0.3),
@@ -300,7 +304,8 @@ class TestRunPoolGate:
 
     def test_pool_counts(self):
         entries = [
-            _make_entry(symbol="A1", candidate_type="POLICY_AMBUSH", positive_category_count=3, composite_score=80),
+            _make_entry(symbol="A1", candidate_type="POLICY_AMBUSH", positive_category_count=3, composite_score=80,
+                        mandate_score_component=50, beneficiary_score_component=40),
             _make_entry(symbol="T1", candidate_type="TECH_TRADE", positive_category_count=2, composite_score=60),
             _make_entry(symbol="W1", tier="C", composite_score=10),
         ]
