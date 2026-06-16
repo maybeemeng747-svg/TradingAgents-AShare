@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-06-15 | 释放下一波 TradeFlow 试跑前收口任务
+
+- **背景**：用户要求释放下一波任务。当前工作区仍有上一轮 TradeFlow API 合约补修未提交（`api/main.py`、`api/services/tradeflow_service.py`、`api/tradeflow_schemas.py`），并且 `docs/tradeflow_trial_acceptance.md` 是测试刷新时间导致的副作用。自动开发应先收口当前补修，再领取下一批。
+- **状态校准**：
+  - 顶部队列中 `CODEGRAPH-002`、`V-007` 已从 `ready` 校正为 `done`，与详细段落和自动开发日志一致。
+  - 新增 `TF-API-013` 标记为 `in_progress`，用于承接当前未提交 API 合约补修：路由顺序、response_model 字段、daily-plan 字段和 HTTP 回归测试。
+- **释放任务**：
+  1. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，ready）
+  2. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，ready）
+  3. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，ready）
+  4. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，ready）
+  5. `DATA-019`：关键数据源实盘抽样健康日报（P1，ready）
+  6. `H-013`：昊天主题热度曲线与政策证据看板（P1，ready）
+  7. `V-008`：TradeFlow 小资金试跑前整体验收（P1，ready）
+- **执行建议**：
+  1. 先补齐并提交 `TF-API-013`：特别是 `risk_penalty_score`、`data_quality_score` 进入 `TradeFlowCandidateItem`，并补 HTTP route/response_model 测试。
+  2. 再按队列运行 `TF-QUALITY-004` → `TF-RISK-001` → `TF-OBS-003` → `TF-REVIEW-003`。
+  3. `DATA-019` 和 `H-013` 可与主线并行，但 `V-008` 应最后执行。
+- **安全约束**：本次只更新任务/日志；不改 prompts、不调用 LLM、不写生产数据库。
+
 ## 2026-06-14 | V-007: TradeFlow 试用闭环端到端验收
 
 - **执行者**：OpenCode

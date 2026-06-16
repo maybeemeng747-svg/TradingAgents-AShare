@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-06-09
+> 最后更新：2026-06-15
 
 ---
 
@@ -90,13 +90,21 @@
 64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
 65. `V-006`：最终动作语义端到端回放验收（P1，done，依赖 DECISION-004 ✓）。
 66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
-67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，ready，来自 TF-QUALITY-001 task_run）。
+67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，done，commit f54a45e）。
 68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
 69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，done，依赖 TF-OBS-002/TF-REVIEW-002）。
 70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，done，依赖 H-010/H-011）。
 71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，done，依赖 DATA-017/DATA-006）。
 72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，done，依赖 TF-QUALITY-002/TF-OBS-002）。
-73. `V-007`：TradeFlow 试用闭环端到端验收（P1，ready，依赖 TF-QUALITY-003/TF-PAPER-001）。
+73. `V-007`：TradeFlow 试用闭环端到端验收（P1，done，commit 9ceedbf）。
+74. `TF-API-013`：TradeFlow API 合约收口与 HTTP 路由回归（P0，in_progress，当前人工补修待提交）。
+75. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，ready，依赖 TF-API-013/V-007）。
+76. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，ready，依赖 TF-PAPER-001）。
+77. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，ready，依赖 TF-OBS-002/TF-PAPER-001）。
+78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，ready，依赖 TF-REVIEW-002/TF-PAPER-001）。
+79. `DATA-019`：关键数据源实盘抽样健康日报（P1，ready，依赖 DATA-018/DATA-017）。
+80. `H-013`：昊天主题热度曲线与政策证据看板（P1，ready，依赖 H-012/H-010）。
+81. `V-008`：TradeFlow 小资金试跑前整体验收（P1，ready，依赖 TF-QUALITY-004/TF-RISK-001/TF-OBS-003/TF-REVIEW-003）。
 
 ### 数据源治理候选队列
 
@@ -3028,6 +3036,169 @@
   - 试跑报告能说明“为什么入池、什么时候触发、触发后如何记录、盘后结果如何”。
   - 无强买卖建议。
 - **代码标注要求**：`# [V-007] tradeflow_trial_acceptance`
+
+### TF-API-013: TradeFlow API 合约收口与 HTTP 路由回归（P0）
+- **描述**：收口 2026-06-14 Codex review 发现的 API 合约问题：静态路由被 `/candidates/{symbol}` 吞、`response_model` 过滤分项评分字段、daily-plan 字段缺失。当前已有人工补修，仍需补齐剩余字段与 HTTP 层测试后提交。
+- **优先级**：P0
+- **状态**：in_progress — 当前工作区已有 `api/main.py`、`api/services/tradeflow_service.py`、`api/tradeflow_schemas.py` 补修，待补 `risk_penalty_score`/`data_quality_score` 并提交。
+- **前置条件**：V-007 完成 ✓。
+- **执行约束**：
+  - 不调用 LLM。
+  - 不改 prompts。
+  - 不写生产数据库。
+  - 不把测试刷新生成时间的 `docs/tradeflow_trial_acceptance.md` 混入提交，除非验收报告内容确实变化。
+- **实现要点**：
+  1. 确认 `/v1/tradeflow/candidates/tiered`、`/v1/tradeflow/candidates/compare`、`/v1/tradeflow/candidates/{symbol}/overview` 注册顺序在 `/v1/tradeflow/candidates/{symbol}` 之前。
+  2. `TradeFlowCandidateItem` 必须包含 8 个分项字段：`technical_score/policy_score/fund_flow_score/event_score/risk_penalty_score/data_quality_score/ranking_reasons/weakness_reasons`。
+  3. `get_daily_plan()` 从 `candidates_json` 回填候选类型、昊天字段和 8 个分项字段。
+  4. 新增 HTTP 层回归测试，不能只测 service：真实请求 `tiered/compare` 返回正确 response shape，候选 response 不丢 8 个字段。
+- **验收方式**：
+  - `.venv/bin/python -m pytest tests/test_v007_tradeflow_trial_e2e.py tests/test_tf_ui011_candidate_research_entry.py tests/test_tf_quality001_pool_gate.py -q`
+  - 额外验证 `TradeFlowCandidateItem.model_fields` 包含 8 个分项字段。
+  - TestClient 访问 `/v1/tradeflow/candidates/tiered` 返回 `actionable/watch/scan/main_candidates`，不是 `candidate:null`。
+- **代码标注要求**：`# [TF-API-013] tradeflow_api_contract`
+
+### TF-QUALITY-004: 候选池实盘区分度回放校准（P0）
+- **描述**：在候选池已经收敛后，用近期真实候选池/fixture 做回放，校准“主候选过多、分数差异不明显、像半山腰抄底”的问题。目标是让主候选默认非常少，且每只主候选都有明确“为什么值得盯”的证据。
+- **优先级**：P0
+- **状态**：ready
+- **前置条件**：TF-API-013、V-007 完成。
+- **执行约束**：
+  - 不调用 LLM。
+  - 不改 prompts。
+  - 不写生产数据库。
+  - 不用一刀切高阈值误杀昊天左侧候选；技术做 T 与昊天左侧必须分池校准。
+- **实现要点**：
+  1. 新增 `docs/tradeflow_calibration/` 回放样本摘要，至少覆盖最近 2-3 次候选池。
+  2. 统计每次候选：main/observation/filtered 数量、候选类型、分项评分、触发后表现。
+  3. 技术池主候选默认不超过 3 只；弱 VCP、无资金/无量能/数据不足必须降到 observation 或 filtered。
+  4. 昊天左侧候选不要求短线突破，但必须有政策主题+受益路径/证据覆盖至少两类支撑。
+  5. 输出校准报告：哪些规则让候选减少、哪些票被降级、是否误杀。
+- **验收方式**：
+  - fixture/样本 20 只候选时主候选默认不超过 5 只，技术池不超过 3 只。
+  - 每只 main candidate 至少有 2 条 `ranking_reasons` 或 2 个 precision dimensions。
+  - `filtered_candidates` 有可读 `pool_filter_reason`。
+- **代码标注要求**：`# [TF-QUALITY-004] live_pool_calibration`
+
+### TF-RISK-001: 5000 元试跑风险预算与仓位纪律（P1）
+- **描述**：为用户 5000 元小资金试跑增加明确纪律：单票上限、单日上限、触发前不模拟成交、失效价缺失不得加入待执行动作，避免候选池变成随手点买。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：TF-PAPER-001 完成。
+- **执行约束**：
+  - 不接真实券商。
+  - 不输出强买卖词。
+  - 不调用 LLM。
+- **实现要点**：
+  1. paper ledger 增加配置：本金、单票计划金额上限、单日新增候选上限、最大同时跟踪数。
+  2. 加入模拟跟踪时校验 trigger/invalid price、candidate_type、data_quality_score。
+  3. 风险预算不足时只允许观察，不允许进入待确认模拟动作。
+  4. 前端显示“剩余额度/单票上限/当前风险暴露”。
+- **验收方式**：
+  - 5000 元账本单票默认不超过 1000-1500 元。
+  - 缺失失效价或数据质量过低时，加入模拟动作被拒绝并显示原因。
+  - 不影响已有 paper ledger 测试。
+- **代码标注要求**：`# [TF-RISK-001] paper_risk_budget` / `// [TF-RISK-001] paper_risk_budget`
+
+### TF-OBS-003: 盘中观察触发到模拟账本待确认联动（P1）
+- **描述**：盘中 Observe 触发后，不只是显示触发状态，还要把已加入模拟账本的候选同步为“待人工确认”，让用户能清楚看到哪些票真的到了执行条件。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：TF-OBS-002、TF-PAPER-001 完成。
+- **执行约束**：
+  - 不自动模拟成交。
+  - 不调用 LLM。
+  - 不接真实交易。
+- **实现要点**：
+  1. Observe runner 更新候选状态后，同步调用 paper ledger 的 observe state update。
+  2. 触发、失效、等待三种状态分别进入 pending/invalidated/tracking。
+  3. 前端 Observe 面板增加“已加入试跑/待确认”标识。
+  4. 保留手动“执行观察”按钮，但页面打开自动观察成功时也同步账本。
+- **验收方式**：
+  - fixture 中一只候选触发后，paper ledger 对应记录进入 pending。
+  - 失效后进入 invalidated。
+  - 未加入 paper ledger 的候选不会生成模拟记录。
+- **代码标注要求**：`# [TF-OBS-003] observe_paper_sync`
+
+### TF-REVIEW-003: 盘后 Review 策略命中归因与次日反馈（P1）
+- **描述**：盘后 Review 不只显示是否继续观察，还要解释策略质量：命中/未命中、触发后表现、失效原因、是否应该降低类似候选权重，为下一日候选池校准提供反馈。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：TF-REVIEW-002、TF-PAPER-001 完成。
+- **执行约束**：
+  - 不自动调参。
+  - 不调用 LLM。
+  - 不生成投资建议，只做信号质量复盘。
+- **实现要点**：
+  1. Review item 增加命中归因：technical_hit/policy_hit/fund_flow_hit/data_issue/risk_hit。
+  2. 聚合策略标签表现：VCP、PULLBACK、POLICY_AMBUSH、EVENT_WATCH 等。
+  3. 输出“明日关注/降级原因/需要补证据”的结构化字段。
+  4. 与 TF-QUALITY-004 的校准报告共享数据格式。
+- **验收方式**：
+  - fixture 能产生至少 1 个命中、1 个失效、1 个未触发样本。
+  - Review API 返回策略归因字段。
+  - 前端 Review 不再只有“继续观察”。
+- **代码标注要求**：`# [TF-REVIEW-003] strategy_attribution_review`
+
+### DATA-019: 关键数据源实盘抽样健康日报（P1）
+- **描述**：在 DATA-018 的 freshness 报告基础上，增加小样本实盘抽样：行情、主力资金、龙虎榜、公告、评级、回购、研报等源每天抽 3-5 只票验证状态，避免“接口看似可用但真实股票取不到”。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：DATA-018、DATA-017 完成。
+- **执行约束**：
+  - live smoke 必须限频，失败只记录，不阻塞主业务。
+  - 不打印 API key。
+  - 不把新闻/公告文本误当资金流证据。
+- **实现要点**：
+  1. 抽样 universe：一只大票、一只中小票、一只近期候选、一只用户自选。
+  2. 每个 data type 记录 `HAS_DATA/NORMAL_NO_DATA/STALE/FAILED/RATE_LIMITED/UNIT_UNVERIFIED`。
+  3. 对主力资金和龙虎榜单独说明：龙虎榜无触发是 NORMAL_NO_DATA，主力资金一般应可取，失败需 fallback。
+  4. 报告写入 `docs/data_source_reports/YYYY-MM-DD-live-smoke.md`。
+- **验收方式**：
+  - fixture 模拟 AKShare 失败、cn_astock fallback 成功、龙虎榜正常无数据。
+  - live smoke 可通过环境变量关闭。
+  - 报告不含密钥。
+- **代码标注要求**：`# [DATA-019] live_source_sampling`
+
+### H-013: 昊天主题热度曲线与政策证据看板（P1）
+- **描述**：把 H-012 的主题注册表做成可观察的“主题热度/生命周期”数据，帮助用户看政策重心是否持续，而不是只看单只股票技术形态。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：H-012、H-010 完成。
+- **执行约束**：
+  - 不调用 LLM。
+  - 不把主题热度直接等价为交易动作。
+  - 不覆盖用户自选备注。
+- **实现要点**：
+  1. 每个主题记录最近 7/20/60 天信号数、政策级别、候选数量、证据缺口、过热标记。
+  2. 输出主题状态变化：酝酿、发酵、确认、兑现、退潮。
+  3. 前端主题看板显示主题、核心证据、候选数、热度变化和反证。
+  4. 与候选详情互链：从主题进入候选，从候选回到主题。
+- **验收方式**：
+  - fixture 中低空经济/算力/半导体设备能生成主题热度。
+  - 主题热度变化不会直接改变最终动作，只影响排序解释。
+  - API/前端均能展示主题证据和候选映射。
+- **代码标注要求**：`# [H-013] mandate_topic_heatmap` / `// [H-013] mandate_topic_heatmap`
+
+### V-008: TradeFlow 小资金试跑前整体验收（P1）
+- **描述**：在 API 合约、候选压缩、风险预算、Observe 联动和 Review 归因完成后，做一次完整试跑前验收，确认用户可以用 5000 元模拟流程安全试用。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：TF-QUALITY-004、TF-RISK-001、TF-OBS-003、TF-REVIEW-003 完成。
+- **执行约束**：
+  - 不调用 LLM。
+  - 不写生产数据库。
+  - 不接真实交易。
+- **实现要点**：
+  1. 新增 E2E fixture：生成候选 → 压缩主候选 → 加入模拟账本 → 盘中触发 → 人工确认模拟动作 → 盘后 Review 归因。
+  2. 验证 API route/response_model 不丢字段。
+  3. 验证前端关键字段：主候选、分项评分、排前/扣分原因、额度、待确认、复盘归因。
+  4. 输出 `docs/tradeflow_trial_acceptance_v2.md`。
+- **验收方式**：
+  - E2E 测试通过。
+  - 试跑报告能回答：今天看哪几只、为什么、何时触发、风险额度、盘后表现。
+  - 无强买卖建议。
+- **代码标注要求**：`# [V-008] paper_trial_acceptance_v2`
 
 ## B. 待办
 
