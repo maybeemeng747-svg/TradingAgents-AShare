@@ -104,7 +104,7 @@
 78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，ready，依赖 TF-REVIEW-002/TF-PAPER-001）。
 79. `DATA-019`：关键数据源实盘抽样健康日报（P1，ready，依赖 DATA-018/DATA-017）。
 80. `H-013`：昊天主题热度曲线与政策证据看板（P1，ready，依赖 H-012/H-010）。
-81. `V-008`：TradeFlow 小资金试跑前整体验收（P1，ready，依赖 TF-QUALITY-004/TF-RISK-001/TF-OBS-003/TF-REVIEW-003）。
+81. `V-008`：TradeFlow 小资金试跑前整体验收（P1，blocked，等待 TF-OBS-003/TF-REVIEW-003 完成后释放）。
 
 ### 数据源治理候选队列
 
@@ -3183,7 +3183,7 @@
 ### V-008: TradeFlow 小资金试跑前整体验收（P1）
 - **描述**：在 API 合约、候选压缩、风险预算、Observe 联动和 Review 归因完成后，做一次完整试跑前验收，确认用户可以用 5000 元模拟流程安全试用。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：blocked — 等待 TF-OBS-003、TF-REVIEW-003 完成后释放；不要提前领取。
 - **前置条件**：TF-QUALITY-004、TF-RISK-001、TF-OBS-003、TF-REVIEW-003 完成。
 - **执行约束**：
   - 不调用 LLM。
