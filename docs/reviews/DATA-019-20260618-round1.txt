@@ -1,0 +1,3886 @@
+Task: DATA-019 - 关键数据源实盘抽样健康日报（P1）
+Date: 2026-06-18_02:49:22
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019ed6e9-b079-7362-a963-07c5c71e38c9
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' AGENTS.md; printf '\\n--- overview ---\\n'; sed -n '1,220p' docs/project-overview.md; printf '\\n--- tasks ---\\n'; sed -n '1,220p' docs/TASKS.md; printf '\\n--- decisions ---\\n'; sed -n '1,220p' docs/DECISIONS.md; printf '\\n--- devlog ---\\n'; sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# TradingAgents-AShare — 项目协作规则
+
+## 项目简介
+
+A股智能投研多智能体系统，基于 LangGraph + LangChain 构建，模拟 14 名专业 Agent 的多空辩论与风控博弈，为投资者提供结构化的交易建议。
+
+核心模块：
+- **Agent 框架**：14 个多智能体（分析师/研究员/风控/交易员），LangGraph 编排
+- **后端 API**：FastAPI，提供分析、持仓、定时任务、研报管理等接口
+- **前端 UI**：React，意图驱动交互、辩论可视化、持仓看板
+- **定时调度**：独立 scheduler，支持自选股定时分析
+- **数据层**：AKShare + BaoStock + yfinance，SQLite 持久化
+
+## 多工具协作架构
+
+```
+孟（最终决策）
+  │
+  ├── OpenClaw（主控调度）── 读取上下文 → 判断任务 → 派发执行
+  │     ├── 简单任务：直接 exec 执行（git/python/npm）
+  │     └── 复杂任务：sessions_spawn 子 agent 或调用 OpenCode 执行
+  │
+  ├── OpenCode（代码执行器）── 读取同一套上下文 → 改代码 → 跑测试 → 输出 diff
+  │
+  └── OpenCode TUI/Web（审查界面）── 查看 diff → 确认修改 → 做 review
+```
+
+**核心原则**：三者读取同一套项目上下文，不各自保存独立记忆。
+
+## 必读文件（任何 coding agent 开始任务前）
+
+1. `AGENTS.md`（本文件）
+2. `docs/project-overview.md`（项目背景 + 架构 + 目录结构）
+3. `docs/TASKS.md`（当前任务池）
+4. `docs/DECISIONS.md`（架构决策记录）
+5. `docs/DEVLOG.md`（最近修改日志）
+6. 涉及模型/API 调用时，必须读 `docs/MODEL_API_CATALOG.md` 和 `docs/LLM_API_USAGE.md`，并可运行 `python scripts/audit_llm_config.py` 查看脱敏配置
+
+## 项目目录结构
+
+```
+TradingAgents-AShare/
+├── tradingagents/            # 核心 Python 包
+│   ├── agents/               # 14 个多智能体
+│   │   ├── analysts/         # 7 个分析师（基本面/情绪/新闻/技术/宏观/主力/量价）
+│   │   ├── researchers/      # 多头/空头研究员 + 研究总监
+│   │   ├── risk_mgmt/        # 风控团队
+│   │   ├── managers/         # 管理层
+│   │   └── trader/           # 交易员
+│   ├── dataflows/            # 数据获取与缓存
+│   ├── graph/                # LangGraph 编排图
+│   ├── llm_clients/          # 多模型厂商适配
+│   ├── prompts/              # Agent 提示词模板
+│   └── default_config.py     # 默认配置
+├── api/                      # FastAPI 后端
+│   ├── main.py               # 入口
+│   ├── database.py           # SQLite
+│   └── services/             # 业务逻辑（分析/持仓/定时/研报）
+├── frontend/                 # React 前端
+├── scheduler/                # 定时分析调度
+├── skills/                   # OpenClaw 技能
+├── tests/                    # 测试
+├── docs/                     # 项目文档
+└── eval_results/             # 回测评估结果
+```
+
+## 执行规则
+
+### 代码修改前
+1. 执行 `git status`，确认当前分支和未提交变更
+2. 激活虚拟环境：`source .venv/bin/activate`
+3. 确认修改范围不影响生产数据库（tradingagents.db）
+4. 如果涉及核心模块，先跑一遍测试确认基线
+
+### 代码修改后
+1. 运行测试，全部通过才算完成
+2. 输出：修改文件列表、测试结果、发现的风险点
+3. 更新 `docs/DEVLOG.md`
+
+### OpenClaw 调度方式
+- **简单任务**（改配置、修 bug、小重构）：OpenClaw 直接 `exec` 执行
+- **复杂任务**（新功能、跨模块修改）：调用 OpenCode 执行，由用户确认后执行
+- **审查任务**：OpenClaw 不直接审查代码，提示用户用 OpenCode TUI 查看 diff
+
+## 安全红线
+
+- 不误改 `tradingagents.db`（生产数据库）
+- 不误改 `eval_results/` 中的历史回测结果
+- 不直接修改 `tradingagents/prompts/` 中的提示词模板（需走审批）
+- 不删除 `logs/` 中的历史日志
+- 测试数据不得写入生产数据库
+- 不读取、解密、打印、提交任何模型 API Key 明文；只能使用 `HAS_KEY/NO_KEY` 级别的脱敏状态
+- 除用户主动发起的分析/定时任务外，任何 live LLM API 调用前都要说明 provider、base_url、模型名和预计调用次数，并征得用户确认
+
+## 技术栈
+
+- **后端**：Python 3.10+, FastAPI, LangGraph, LangChain
+- **前端**：React, TypeScript, Tailwind CSS
+- **数据库**：SQLite
+- **数据源**：AKShare, BaoStock, yfinance
+- **模型**：OpenAI / Anthropic / 智谱 / DeepSeek / 小米 MiMo 等
+
+--- overview ---
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+--- tasks ---
+# 任务池
+
+> 最后更新：2026-06-15
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，done）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，done，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，done，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，done，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，done，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，done，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done，依赖 DATA-004 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
+50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done，依赖 DATA-012 部分落地 ✓）。
+54. `DECISION-001`：最终动作语义分层 — 禁止默认 HOLD（P0，done，commit dee415c）。
+55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
+56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
+57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
+58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，blocked — NEEDS_HUMAN，commit 5f304db，见 task_runs）。
+59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done，Codex 修复，待提交）。
+60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
+63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
+65. `V-006`：最终动作语义端到端回放验收（P1，done，依赖 DECISION-004 ✓）。
+66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
+67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，done，commit f54a45e）。
+68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
+69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，done，依赖 TF-OBS-002/TF-REVIEW-002）。
+70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，done，依赖 H-010/H-011）。
+71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，done，依赖 DATA-017/DATA-006）。
+72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，done，依赖 TF-QUALITY-002/TF-OBS-002）。
+73. `V-007`：TradeFlow 试用闭环端到端验收（P1，done，commit 9ceedbf）。
+74. `TF-API-013`：TradeFlow API 合约收口与 HTTP 路由回归（P0，done，`fce3141` + `289a392`）。
+75. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，done，`OpenCode` 2026-06-16）。
+76. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，done，依赖 TF-PAPER-001 ✓）。
+77. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，ready，依赖 TF-OBS-002/TF-PAPER-001）。
+78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，done，依赖 TF-REVIEW-002/TF-PAPER-001）。
+79. `DATA-019`：关键数据源实盘抽样健康日报（P1，ready，依赖 DATA-018/DATA-017）。
+80. `H-013`：昊天主题热度曲线与政策证据看板（P1，ready，依赖 H-012/H-010）。
+81. `V-008`：TradeFlow 小资金试跑前整体验收（P1，blocked，等待 TF-OBS-003/TF-REVIEW-003 完成后释放）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
+16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done）。
+18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
+19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done）。
+21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## PERF. 运行成本 / 轻量分析任务池（2026-06-02 新增）
+
+> 目标：系统不能为了“全面”而变慢。TradeFlow 是雷达，轻量 TA 是候选验证，完整 TA 是深度体检。默认链路必须轻，完整多 Agent 分析只能由用户明确触发。
+
+### PERF-001: 运行层级与速度预算契约（P1）
+- **描述**：建立统一运行层级契约，所有 API、前端按钮、scheduler、自动开发任务都要标明属于 `fast/light/full` 哪一层，以及是否允许调用 LLM。
+- **优先级**：P1
+- **状态**：done -- commit ca08846
+- **背景**：
+  - 用户明确要求系统不能做得太重，不能“一发指令半天才回来”。
+  - 候选池/盘中观察需要时效；完整 TA 只能用于少量高价值标的。
+- **运行层级定义**：
+  1. `fast`：5-30 秒。TradeFlow 筛选、数据健康、证据缺口、候选分类。默认不调用 LLM。
+  2. `light`：1-3 分钟。轻量 TA，只跑必要模块，用于中线政策验证、短线技术确认、持仓风险复核。
+  3. `full`：10-20 分钟。完整 14 Agent TA，多空辩论和风控全链路，必须人工确认。
+- **执行约束**：
+  - 不改 prompts。
+  - 不触发 live TA。
+  - 不新增高成本模型调用。
+- **实现要点**：
+  1. 新增运行层级枚举/配置，例如 `runtime_tier`：
+     - `FAST_RADAR`
+     - `LIGHT_RESEARCH`
+     - `FULL_TA`
+  2. API/服务层统一返回：
+     - `runtime_tier`
+     - `expected_latency`
+     - `llm_allowed`
+     - `requires_confirmation`
+     - `cost_risk`
+  3. 前端按钮文案对应：
+     - `快速筛选`
+     - `轻量研究`
+     - `完整 TA`
+  4. `TradeFlow Discovery` 和 `Observe` 必须标记为 `FAST_RADAR`。
+  5. 自动任务/scheduler 不得默认进入 `FULL_TA`。
+- **验收方式**：
+  - TradeFlow candidates/observe/data-health API 返回 fast 层级或元数据。
+  - 前端能显示运行层级和预计耗时。
+  - 没有用户确认时，full TA 入口不可直接触发。
+  - `pytest tests/test_runtime_tier*.py tests/test_ui001_tradeflow_api.py -q` 或等价测试通过。
+- **代码标注要求**：`# [PERF-001] runtime_tier_contract` / `// [PERF-001] runtime_tier_contract`
+
+### PERF-002: 轻量 TA Profile 与模块路由（P1）
+- **描述**：在完整 TA 之外增加轻量 TA Profile，只跑与目标相关的模块，避免所有候选都进入 14 Agent 全链路。
+- **优先级**：P1
+- **状态**：done -- commit 20ff126
+- **前置条件**：`TA-UI-001`、`H-007` 完成或同步完成。
+- **执行约束**：
+  - 不删除完整 TA。
+  - 不改 prompts。
+  - 不自动调用 live LLM；第一版可先做路由配置和 mock/fixture。
+- **Profile 建议**：
+  1. `MIDLINE_POLICY_LIGHT`：
+     - 用于 `POLICY_AMBUSH/POLICY_CONFIRM`。
+     - 重点：政策/公告/基本面/风险/量价。
+  2. `SHORT_TECH_LIGHT`：
+     - 用于 `TECH_TRADE`。
+     - 重点：技术/量价/资金/风险。
+  3. `POSITION_RISK_LIGHT`：
+     - 用于已持仓复盘。
+     - 重点：风控/资金/关键价位/公告。
+  4. `FULL_TA`：
+     - 保持完整多 Agent，只能手动确认。
+- **实现要点**：
+  1. 新增 profile 配置，声明每个 profile 启用的 analyst/manager/risk 模块。
+  2. TradeFlow 候选根据 `candidate_type/research_queue/analysis_intent` 推荐 profile。
+  3. `/analysis` 控制台选择中线/短线后，能带入对应 profile。
+  4. 结果 metadata 中记录 `runtime_profile` 和实际启用模块。
+- **验收方式**：
+  - `POLICY_AMBUSH` 默认推荐 `MIDLINE_POLICY_LIGHT`。
+  - `TECH_TRADE` 默认推荐 `SHORT_TECH_LIGHT`。
+  - 已持仓复盘默认推荐 `POSITION_RISK_LIGHT`。
+  - 完整 TA 仍可人工选择。
+  - 测试覆盖 profile 路由，不触发真实 LLM。
+- **代码标注要求**：`# [PERF-002] lightweight_ta_profiles`
+
+--- decisions ---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+--- devlog ---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-18 | DATA-019: 关键数据源实盘抽样健康日报
+
+- **执行者**：OpenCode
+- **类型**：feature / 数据源实盘抽样健康日报（P1）
+- **任务**：DATA-019 — live_source_sampling
+- **状态**：✅ 完成
+
+### 背景
+
+DATA-018 的 freshness 报告基于 raw_evidence 被动检查各数据源状态，但无法发现
+"接口看似可用但真实股票取不到"的问题。DATA-019 在此基础上增加小样本实盘抽样：
+每天选 3-5 只代表性股票（大票/中小票/近期候选/自选），对行情、主力资金、龙虎榜、
+公告、评级、回购、研报等关键源主动探测真实可用性。
+
+### 变更内容
+
+1. **`tradingagents/dataflows/live_source_sampling.py`**（新增核心模块）
+   - `SampleStock` / `SampleResult` / `LiveSamplingReport` 数据模型。
+   - `DEFAULT_SAMPLE_UNIVERSE`：4 只代表性股票覆盖大票（600519.SH）、中小票
+     （002415.SZ）、近期候选（603629.SH）、自选（000001.SZ）。
+   - `_make_data_type_definitions()`：7 个关键数据类型（quote/fund_flow/lhb/
+     notice/rating/buyback/report）映射到 provider 方法。
+   - `classify_sample_result()`：复用 DATA-018 的 6 态分类
+     （HAS_DATA/NORMAL_NO_DATA/STALE/FAILED/RATE_LIMITED/UNIT_UNVERIFIED），
+     并对 LHB/BUYBACK 的 NORMAL_NO_DATA 标记做特殊识别。
+   - `_sample_single()`：单次探测，含限流安全间隔（0.6s）、延迟测量、单位检测。
+   - `run_live_sampling()`：批量探测，支持注入 `fetch_fn`（测试可 mock），
+     默认用 `route_to_vendor`（完整 fallback 链）。
+   - `render_live_sampling_report()`：Markdown 报告含抽样宇宙、摘要、按数据源
+     聚合、详细结果、问题告警、主力资金/龙虎榜特殊说明。
+   - `save_live_sampling_report()`：输出 `docs/data_source_reports/
+     YYYY-MM-DD-live-smoke.md`。
+   - `build_sampling_section_for_nightly_report()`：夜间日报聚合接口。
+   - 环境门禁：`TA_LIVE_DATA_SMOKE=1` 启用 live 调用，否则全部 SKIPPED。
+   - fixture 响应集 `ALL_SAMPLE_RESPONSES`：覆盖 AKShare 失败/cn_astock fallback
+     成功/龙虎榜正常无数据/限流/过期等场景。
+
+2. **`tests/test_data019_live_source_sampling.py`**（新增 75 个测试）
+   - SampleStock/SampleResult 数据模型、traffic_light、label_cn。
+   - 抽样宇宙构建（4 类别覆盖、自定义、上限裁剪）。
+   - 数据类型定义完整性（7 类型、LHB force=True、特殊说明）。
+   - 6 态分类（HAS_DATA/NORMAL_NO_DATA/STALE/FAILED/RATE_LIMITED/
+     UNIT_UNVERIFIED）、LHB/BUYBACK NORMAL_NO_DATA 特殊识别。
+   - 单次探测 `_sample_single`：正常/失败/异常/限流/null 响应/diagnosis。
+   - `run_live_sampling` 环境门禁、mock live run、AKShare→cn_astock fallback
+     场景、全失败场景。
+   - 摘要计算（all_green/has_failures/skipped/by_data_type/fallback）。
+   - 报告渲染（基本/env gated/无密钥/特殊说明/问题区块）。
+   - 文件 I/O（保存/自定义文件名/查找最新/忽略其他文件）。
+   - 夜间日报聚合（有/无报告）。
+   - 环境门禁 helper。
+
+### 测试结果
+
+- `tests/test_data019_live_source_sampling.py`：75 passed
+- 回归：`tests/test_data018_source_freshness.py` + `tests/test_data_p1_astock_live_smoke.py`：205 passed
+
+### 约束遵守
+
+- 未修改 `tradingagents/prompts/`。
+- 未写入生产 `tradingagents.db`。
+- 未做全市场扫描或深度 TA。
+- live 调用必须显式设置 `TA_LIVE_DATA_SMOKE=1`，默认 SKIPPED 不阻塞业务。
+- 报告不含密钥（测试验证）。
+
+---
+
+## 2026-06-18 | TF-REVIEW-003: 盘后 Review 策略命中归因与次日反馈
+
+- **执行者**：OpenCode
+- **类型**：feature / TradeFlow 盘后 Review 归因（P1）
+- **任务**：TF-REVIEW-003 — strategy_attribution_review
+- **状态**：✅ 完成
+
+### 背景
+
+盘后 Review 此前只显示"是否继续观察"，无法解释策略质量：命中/未命中、触发后表现、
+失效原因、是否应该降低类似候选权重。缺乏对下一日候选池校准的反馈数据。
+
+### 变更内容
+
+1. **`tradingagents/tradeflow/post_market_review.py`**（核心引擎）
+   - 新增 `HitAttribution` 枚举：`technical_hit / policy_hit / fund_flow_hit / data_issue / risk_hit`，
+     每个值附带 `label_cn`（技术命中/政策命中/资金流命中/数据不足/风险触发）。
+   - 新增 `classify_hit_attribution(perf)` 函数：根据 observe_state、candidate_type、split_scores
+     和 risk_flags 推导主归因。data_issue 用于无行情数据且未触发的候选；risk_hit 用于
+     失效且带风险标记的候选；其余按 split_scores 主导维度或 candidate_type 推导。
+   - 新增 `compute_next_day_feedback(perf)` 函数：输出结构化次日反馈三元组
+     `(tomorrow_focus, downgrade_reason, evidence_needed)`，覆盖 TRIGGERED/INVALIDATED/EXPIRED/WAITING
+     四种 observe_state。
+   - `CandidatePerformance` 新增字段：`candidate_type / split_scores / hit_type /
+     tomorrow_focus / downgrade_reason / evidence_needed`，以及 `compute_attribution()` 方法。
+   - `StrategyStats` 新增 `attributions: dict` 字段，跟踪每个策略下的归因分布。
+   - 新增 `compute_candidate_type_stats()` — 按 candidate_type（POLICY_AMBUSH/TECH_TRADE 等）
+     聚合命中/误报/无数据/失效。
+   - 新增 `compute_attribution_stats()` — 按 5 种归因类型聚合，附带 affected symbols 列表，
+     与 TF-QUALITY-004 calibration_summary 共享 dict-of-lists 数据格式。
+   - `ReviewSummary` 新增 `candidate_type_stats / attribution_stats / next_day_feedback` 字段。
+   - `run_post_market_review()` 自动调用 `compute_attribution()`，填充归因统计和次日反馈。
+   - `render_review_markdown()` 新增"候选类型表现"、"命中归因"、"次日反馈"三个表格区块。
+
+2. **`api/services/tradeflow_service.py`**
+   - `get_review()`（轻量读取）：每个 review item 现在包含 `candidate_type / hit_type /
+     tomorrow_focus / downgrade_reason / evidence_needed`，通过构造 stub CandidatePerformance
+     并调用 `compute_attribution()` 推导。
+   - `generate_review()`（完整计算）：review dict 新增 `candidate_type_stats /
+     attribution_stats / next_day_feedback`，strategy_stats 每项新增 `attributions` 字段。
+
+3. **`api/tradeflow_schemas.py`**
+   - `TradeFlowReviewItem` 新增 5 个可选字段：`candidate_type / hit_type / tomorrow_focus /
+     downgrade_reason / evidence_needed`。
+
+4. **`frontend/src/types/index.ts`**
+   - `TradeFlowReviewItem` 接口新增对应 5 个可选字段。
+
+5. **`frontend/src/pages/TradeFlow.tsx`**
+   - `ReviewTab` 新增"命中归因"表格（按归因类型拆分数量/占比）和"次日反馈"表格
+     （代码/归因/明日关注/降级原因/需要补证据），不再只有"继续观察"。
+
+6. **`tests/test_tf_review_003_strategy_attribution.py`**（新增 36 个测试）
+   - 覆盖 HitAttribution 枚举、classify_hit_attribution 全路径、compute_next_day_feedback、
+     CandidatePerformance.compute_attribution、StrategyStats.attributions、
+     compute_candidate_type_stats、compute_attribution_stats、run_post_market_review 归因字段、
+     fixture 场景（命中+失效+未触发）、Markdown 渲染、build_from_dict、service-layer get_review。
+
+7. **`tests/test_m007_post_market_review.py`**
+   - 更新 `test_basic_render`：symbols 现在出现在"次日反馈"区块。
+
+### 验收
+
+- fixture 能产生至少 1 个命中、1 个失效、1 个未触发样本 ✓
+- Review API 返回策略归因字段（hit_type/attribution_stats/next_day_feedback）✓
+- 前端 Review 不再只有"继续观察"，新增命中归因表和次日反馈表 ✓
+- 36 个新测试全部通过；254 个 review 相关测试全部通过 ✓
+- `npm run build` 通过 ✓
+
+### 约束遵守
+
+- 未修改 `tradingagents/prompts/` ✓
+- 未写入生产 `tradingagents.db` ✓
+- 未执行全市场扫描或深度 TA ✓
+- 未调用 LLM ✓
+- 未自动调参，只输出信号质量复盘 ✓
+
+---
+
+## 2026-06-18 | TF-OBS-003: 盘中观察触发到模拟账本待确认联动
+
+- **执行者**：OpenCode
+- **类型**：feature / TradeFlow 联动（P1）
+- **任务**：TF-OBS-003 — observe_paper_sync
+- **状态**：✅ 完成
+
+### 背景
+
+盘中 Observe 触发候选后，只更新 `tradeflow_candidates` 的 observe_state，但不会同步
+到模拟账本（`tradeflow_paper_trades`）。用户无法直观看到哪些已跟踪的票真的到了
+执行条件。`update_paper_observe_state()` 已在 TF-PAPER-001 实现并测试，但从未被
+observe 流程调用。
+
+### 变更内容
+
+1. **`api/services/tradeflow_service.py`**
+   - 新增 `_sync_paper_from_observe(details, tf_db)` 辅助函数（`# [TF-OBS-003] observe_paper_sync`）：
+     遍历 observe details，对每个有已知状态（TRIGGERED/INVALIDATED/WAITING）的候选
+     调用 `update_paper_observe_state`，将触发的票同步为 `pending`、失效的同步为 `invalidated`。
+     未加入模拟账本的候选不会生成任何记录。
+   - `run_observe_check()`（手动刷新）：`run_observe()` 返回后调用 `_sync_paper_from_observe`，
+     响应新增 `paper_synced` / `paper_pending` / `paper_invalidated` 计数。
+   - `get_observe()`（页面自动执行）：auto-run 路径调用 `run_observe` 后也同步调用
+     `_sync_paper_from_observe`，保证打开页面即联动。
+   - `get_observe()` 返回的 observe_items 每项新增 `paper_status` 字段（从 `tradeflow_paper_trades`
+     查询 symbol → status 映射），供前端显示账本状态。
+
+2. **`frontend/src/types/index.ts`**
+   - `TradeFlowObserveItem` 新增 `paper_status: string` 字段。
+
+3. **`frontend/src/pages/TradeFlow.tsx`**
+   - `ObserveTable` 新增"模拟账本"列：根据 `paper_status` 显示徽标 ——
+     `pending`→"待确认"（琥珀）、`tracking`→"已加入试跑"（灰）、`open`→"持仓中"、
+     `closed`→"已平仓"、`invalidated`→"已失效"、`observation`→"观察降级"、未加入→"—"。
+
+4. **测试**
+   - 新增 `tests/test_tf_obs_003_observe_paper_sync.py`（21 个测试）：
+     - `_sync_paper_from_observe` 单元测试（triggered/invalidated/waiting/无账本/未知状态/空）。
+     - 端到端：`run_observe(quote_provider)` + sync → 账本状态正确流转。
+     - `run_observe_check` 服务包装层 sync 计数 + 实际同步验证。
+     - `get_observe` auto-run 路径同步验证（monkeypatch run_observe）。
+     - observe_items `paper_status` 字段验证。
+
+### 验收
+
+- ✅ 触发后 paper ledger 对应记录进入 pending。
+- ✅ 失效后进入 invalidated。
+- ✅ 未加入 paper ledger 的候选不会生成模拟记录。
+- ✅ 前端 Observe 面板显示"待确认/已加入试跑"标识。
+- ✅ 手动刷新 + 页面自动执行均同步账本。
+
+### 测试结果
+
+- 新增测试：21 passed
+- 回归（tf_paper/obs/risk）：146 passed
+- 全量 tradeflow 测试：772 passed
+- 前端 tsc --noEmit：0 errors
+
+---
+
+## 2026-06-17 | 释放 TradeFlow 下一批开发任务
+
+- **执行者**：Codex
+- **类型**：任务池调度
+- **状态**：✅ 完成
+
+### 释放口径
+
+exec
+/bin/zsh -lc 'git status --short && git rev-parse --show-toplevel' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M docs/tradeflow_trial_acceptance.md
+?? docs/task_runs/DATA-019-20260618-023825/
+?? tests/test_data019_live_source_sampling.py
+?? tradingagents/dataflows/live_source_sampling.py
+/Users/maybee/TradingAgents-AShare
+
+exec
+/bin/zsh -lc "find docs/task_runs/DATA-019-20260618-023825 -maxdepth 3 -type f -print -exec sed -n '1,220p' {} \\;" in /Users/maybee/TradingAgents-AShare
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- tradingagents/dataflows/live_source_sampling.py tests/test_data019_live_source_sampling.py docs/TASKS.md docs/DEVLOG.md docs/tradeflow_trial_acceptance.md' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ docs/DEVLOG.md                     | 67 ++++++++++++++++++++++++++++++++++++++
+ docs/TASKS.md                      |  2 +-
+ docs/tradeflow_trial_acceptance.md |  2 +-
+ 3 files changed, 69 insertions(+), 2 deletions(-)
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index a050b65..8bf55a3 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,73 @@
+ 
+ ---
+ 
++## 2026-06-18 | DATA-019: 关键数据源实盘抽样健康日报
++
++- **执行者**：OpenCode
++- **类型**：feature / 数据源实盘抽样健康日报（P1）
++- **任务**：DATA-019 — live_source_sampling
++- **状态**：✅ 完成
++
++### 背景
++
++DATA-018 的 freshness 报告基于 raw_evidence 被动检查各数据源状态，但无法发现
++"接口看似可用但真实股票取不到"的问题。DATA-019 在此基础上增加小样本实盘抽样：
++每天选 3-5 只代表性股票（大票/中小票/近期候选/自选），对行情、主力资金、龙虎榜、
++公告、评级、回购、研报等关键源主动探测真实可用性。
++
++### 变更内容
++
++1. **`tradingagents/dataflows/live_source_sampling.py`**（新增核心模块）
++   - `SampleStock` / `SampleResult` / `LiveSamplingReport` 数据模型。
++   - `DEFAULT_SAMPLE_UNIVERSE`：4 只代表性股票覆盖大票（600519.SH）、中小票
++     （002415.SZ）、近期候选（603629.SH）、自选（000001.SZ）。
++   - `_make_data_type_definitions()`：7 个关键数据类型（quote/fund_flow/lhb/
++     notice/rating/buyback/report）映射到 provider 方法。
++   - `classify_sample_result()`：复用 DATA-018 的 6 态分类
++     （HAS_DATA/NORMAL_NO_DATA/STALE/FAILED/RATE_LIMITED/UNIT_UNVERIFIED），
++     并对 LHB/BUYBACK 的 NORMAL_NO_DATA 标记做特殊识别。
++   - `_sample_single()`：单次探测，含限流安全间隔（0.6s）、延迟测量、单位检测。
++   - `run_live_sampling()`：批量探测，支持注入 `fetch_fn`（测试可 mock），
++     默认用 `route_to_vendor`（完整 fallback 链）。
++   - `render_live_sampling_report()`：Markdown 报告含抽样宇宙、摘要、按数据源
++     聚合、详细结果、问题告警、主力资金/龙虎榜特殊说明。
++   - `save_live_sampling_report()`：输出 `docs/data_source_reports/
++     YYYY-MM-DD-live-smoke.md`。
++   - `build_sampling_section_for_nightly_report()`：夜间日报聚合接口。
++   - 环境门禁：`TA_LIVE_DATA_SMOKE=1` 启用 live 调用，否则全部 SKIPPED。
++   - fixture 响应集 `ALL_SAMPLE_RESPONSES`：覆盖 AKShare 失败/cn_astock fallback
++     成功/龙虎榜正常无数据/限流/过期等场景。
++
++2. **`tests/test_data019_live_source_sampling.py`**（新增 75 个测试）
++   - SampleStock/SampleResult 数据模型、traffic_light、label_cn。
++   - 抽样宇宙构建（4 类别覆盖、自定义、上限裁剪）。
++   - 数据类型定义完整性（7 类型、LHB force=True、特殊说明）。
++   - 6 态分类（HAS_DATA/NORMAL_NO_DATA/STALE/FAILED/RATE_LIMITED/
++     UNIT_UNVERIFIED）、LHB/BUYBACK NORMAL_NO_DATA 特殊识别。
++   - 单次探测 `_sample_single`：正常/失败/异常/限流/null 响应/diagnosis。
++   - `run_live_sampling` 环境门禁、mock live run、AKShare→cn_astock fallback
++     场景、全失败场景。
++   - 摘要计算（all_green/has_failures/skipped/by_data_type/fallback）。
++   - 报告渲染（基本/env gated/无密钥/特殊说明/问题区块）。
++   - 文件 I/O（保存/自定义文件名/查找最新/忽略其他文件）。
++   - 夜间日报聚合（有/无报告）。
++   - 环境门禁 helper。
++
++### 测试结果
++
++- `tests/test_data019_live_source_sampling.py`：75 passed
++- 回归：`tests/test_data018_source_freshness.py` + `tests/test_data_p1_astock_live_smoke.py`：205 passed
++
++### 约束遵守
++
++- 未修改 `tradingagents/prompts/`。
++- 未写入生产 `tradingagents.db`。
++- 未做全市场扫描或深度 TA。
++- live 调用必须显式设置 `TA_LIVE_DATA_SMOKE=1`，默认 SKIPPED 不阻塞业务。
++- 报告不含密钥（测试验证）。
++
++---
++
+ ## 2026-06-18 | TF-REVIEW-003: 盘后 Review 策略命中归因与次日反馈
+ 
+ - **执行者**：OpenCode
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 15636c4..3011b18 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -3143,7 +3143,7 @@
+ ### DATA-019: 关键数据源实盘抽样健康日报（P1）
+ - **描述**：在 DATA-018 的 freshness 报告基础上，增加小样本实盘抽样：行情、主力资金、龙虎榜、公告、评级、回购、研报等源每天抽 3-5 只票验证状态，避免“接口看似可用但真实股票取不到”。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：in_progress — claimed DATA-019-20260618-023825
+ - **前置条件**：DATA-018、DATA-017 完成。
+ - **执行约束**：
+   - live smoke 必须限频，失败只记录，不阻塞主业务。
+diff --git a/docs/tradeflow_trial_acceptance.md b/docs/tradeflow_trial_acceptance.md
+index c7190c4..759a66c 100644
+--- a/docs/tradeflow_trial_acceptance.md
++++ b/docs/tradeflow_trial_acceptance.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 试用闭环端到端验收报告 (V-007)
+ 
+-**生成时间**: 2026-06-18 02:36:21
++**生成时间**: 2026-06-18 02:48:16
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **候选数**: 5 只 (2 主候选 + 1 弱技术 + 1 事件观察 + 1 证据缺口)
+
+ succeeded in 0ms:
+docs/task_runs/DATA-019-20260618-023825/tests-round1.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  1%]
+................................................ss...................... [  2%]
+........................................................................ [  3%]
+........................................................................ [  4%]
+........................................................................ [  5%]
+........................................................................ [  7%]
+........................................................................ [  8%]
+........................................................................ [  9%]
+........................................................................ [ 10%]
+........................................................................ [ 11%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 15%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 19%]
+........................................................................ [ 20%]
+........................................................................ [ 21%]
+........................................................................ [ 22%]
+........................................................................ [ 23%]
+........................................................................ [ 25%]
+........................................................................ [ 26%]
+........................................................................ [ 27%]
+........................................................................ [ 28%]
+........................................................................ [ 29%]
+........................................................................ [ 31%]
+........................................................................ [ 32%]
+........................................................................ [ 33%]
+........................................................................ [ 34%]
+........................................................................ [ 35%]
+........................................................................ [ 37%]
+........................................................................ [ 38%]
+........................................................................ [ 39%]
+........................................................................ [ 40%]
+........................................................................ [ 41%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 45%]
+........................................................................ [ 46%]
+........................................................................ [ 47%]
+........................................................................ [ 49%]
+.............................................sssssssss.................. [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 52%]
+........................................................................ [ 53%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 57%]
+........................................................................ [ 58%]
+........................................................................ [ 59%]
+........................................................................ [ 61%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 64%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+........................................................................ [ 68%]
+........................................................................ [ 69%]
+................................ss...................................... [ 70%]
+...........ssss......................................................... [ 71%]
+........................................................................ [ 72%]
+........................................................................ [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 76%]
+........................................................................ [ 77%]
+........................................................................ [ 78%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+........................................................................ [ 82%]
+........................................................................ [ 83%]
+........................................................................ [ 84%]
+........................................................................ [ 86%]
+........................................................................ [ 87%]
+........................................................................ [ 88%]
+........................................................................ [ 89%]
+........................................................................ [ 90%]
+........................................................................ [ 92%]
+........................................................................ [ 93%]
+........................................................................ [ 94%]
+........................................................................ [ 95%]
+........................................................................ [ 96%]
+........................................................................ [ 98%]
+........................................................................ [ 99%]
+..........................................                               [100%]
+6001 passed, 17 skipped in 179.62s (0:02:59)
+
+Exit code: 0
+docs/task_runs/DATA-019-20260618-023825/codegraph-status.json
+{
+  "task_id": "DATA-019",
+  "generated_at": "2026-06-18T02:38:25.388278",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "result": "OK",
+  "symbols_found": 5,
+  "post_generated_at": "2026-06-18T02:48:18.523697",
+  "codegraph_post": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "post_result": "OK",
+  "impact_files_count": 0,
+  "affected_tests_count": 0,
+  "changed_files": [
+    "docs/DEVLOG.md",
+    "docs/TASKS.md",
+    "docs/tradeflow_trial_acceptance.md"
+  ]
+}docs/task_runs/DATA-019-20260618-023825/prompt-round1.md
+# Task: DATA-019: 关键数据源实盘抽样健康日报（P1）
+
+Read task "DATA-019" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/DATA-019-20260618-023825/codegraph-context.txt
+# CodeGraph Context for DATA-019
+# Task: 关键数据源实盘抽样健康日报（P1）
+# Generated: 2026-06-18T02:38:25.507365
+# Keywords: data, 关键数据源实盘抽样健康日报（p1）
+
+## Code Context
+
+**Query:** data 关键数据源实盘抽样健康日报（p1）
+
+### Entry Points
+
+- **DATABASE_URL** (variable) - api/database.py:12
+  `= os.getenv("DATABASE_URL", "sqlite:///./tradingagents.db")`
+- **DataHealthSource** (class) - api/tradeflow_schemas.py:184
+- **DataCollector** (class) - tradingagents/graph/data_collector.py:394
+
+### Related Symbols
+
+- frontend/src/types/index.ts: TradeFlowDataHealthResponse:897
+- tradingagents/graph/data_collector.py: __init__:397, _get_key_lock:403, collect:409, get:422, get_window:426, ref:439, evict:445, _infer_source_status:458, _count_records:485
+
+docs/task_runs/DATA-019-20260618-023825/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "DATA-019"[90m in docs/TASKS.md · 4 matches[0m
+Let me find the specific DATA-019 task description:
+[0m✱ [0mGrep "DATA-018"[90m in docs/TASKS.md · 6 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [limit=30, offset=2980][0m
+[0m→ [0mRead docs/TASKS.md[90m [limit=60, offset=3143][0m
+Let me read the full DATA-019 task and the related DATA-018 for context:
+[0m
+[0m$ [0mls -la /Users/maybee/TradingAgents-AShare/docs/task_runs/ 2>/dev/null | head -30
+total 16
+drwx------  103 maybee  staff  3296 Jun 18 02:38 .
+drwxr-xr-x@  27 maybee  staff   864 Jun 18 02:04 ..
+drwx------   11 maybee  staff   352 Jun 14 01:53 CODEGRAPH-002-20260614-014751
+drwx------    8 maybee  staff   256 Jun  1 22:22 DATA-001-20260601-221610
+drwx------   12 maybee  staff   384 Jun  2 01:01 DATA-002-20260602-005310
+drwx------    8 maybee  staff   256 Jun  2 01:10 DATA-003-20260602-010127
+drwx------   12 maybee  staff   384 Jun  2 01:40 DATA-004-20260602-011020
+drwx------    8 maybee  staff   256 Jun  2 02:22 DATA-005-20260602-021515
+drwx------    8 maybee  staff   256 Jun  2 03:15 DATA-006-20260602-030716
+drwx------    8 maybee  staff   256 Jun  4 13:29 DATA-007-20260604-131503
+drwx------    8 maybee  staff   256 Jun  4 13:40 DATA-008-20260604-132917
+drwx------    8 maybee  staff   256 Jun  4 13:51 DATA-009-20260604-134042
+drwx------   11 maybee  staff   352 Jun  8 02:15 DATA-010-20260608-020414
+drwx------   10 maybee  staff   320 Jun  8 05:15 DATA-012-20260608-024928
+drwx------   11 maybee  staff   352 Jun  8 05:27 DATA-013-20260608-050752
+drwx------   11 maybee  staff   352 Jun  8 05:41 DATA-014-20260608-052740
+drwx------   15 maybee  staff   480 Jun  8 06:01 DATA-015-20260608-054126
+drwx------   11 maybee  staff   352 Jun  8 06:10 DATA-016-20260608-060126
+drwx------   11 maybee  staff   352 Jun 14 00:31 DATA-017-20260614-001936
+drwx------   11 maybee  staff   352 Jun 14 01:27 DATA-018-20260614-011340
+drwx------    6 maybee  staff   192 Jun 18 02:38 DATA-019-20260618-023825
+drwx------    7 maybee  staff   224 Jun  1 20:42 DATA-P0-603629-20260601-180732
+drwx------   10 maybee  staff   320 Jun  4 12:28 DATA-P0-FUND-ROUTE-20260604-121846
+drwx------    3 maybee  staff    96 Jun  4 12:57 DATA-P1-ASTOCK-LIVE-SMOKE-20260604
+drwx------    8 maybee  staff   256 Jun  4 12:59 DATA-P1-ASTOCK-LIVE-SMOKE-20260604-124937
+drwx------    8 maybee  staff   256 Jun  4 12:49 DATA-P1-LHB-FUND-DECOUPLE-20260604-123938
+drwx------   10 maybee  staff   320 Jun  4 13:13 DATA-P1-SOURCE-GAP-AUDIT-20260604-125917
+drwx------    8 maybee  staff   256 Jun  1 18:30 H-001-20260601-182415
+drwx------   11 maybee  staff   352 Jun  1 22:42 H-002-20260601-222242
+[0m
+[0m$ [0mls -la /Users/maybee/TradingAgents-AShare/docs/data_source_reports/ 2>/dev/null | head -30
+total 0
+drwx------   2 maybee  staff   64 Jun  4 12:52 .
+drwxr-xr-x@ 27 maybee  staff  864 Jun 18 02:04 ..
+[0m
+Now let me explore the existing DATA-018/DATA-017 implementation to understand patterns. Let me check the task_runs directory and the relevant code:
+[0m✱ [0mGrep "DATA-018"[90m in . · 15 matches[0m
+[0m
+[0m$ [0mls -la /Users/maybee/TradingAgents-AShare/docs/task_runs/DATA-019-20260618-023825/
+total 32
+drwx------    6 maybee  staff   192 Jun 18 02:38 .
+drwx------  103 maybee  staff  3296 Jun 18 02:38 ..
+-rw-------    1 maybee  staff   808 Jun 18 02:38 codegraph-context.txt
+-rw-------    1 maybee  staff   365 Jun 18 02:38 codegraph-status.json
+-rw-------    1 maybee  staff   488 Jun 18 02:38 prompt-round1.md
+-rw-------    1 maybee  staff   445 Jun 18 02:38 task.md
+[0m
+[0m$ [0mls -la /Users/maybee/TradingAgents-AShare/docs/task_runs/DATA-018-20260614-011340/
+total 624
+drwx------   11 maybee  staff     352 Jun 14 01:27 .
+drwx------  103 maybee  staff    3296 Jun 18 02:38 ..
+-rw-------    1 maybee  staff      78 Jun 14 01:13 codegraph-context.txt
+-rw-------    1 maybee  staff      60 Jun 14 01:25 codegraph-impact.txt
+-rw-------    1 maybee  staff     640 Jun 14 01:25 codegraph-status.json
+-rw-------    1 maybee  staff  231806 Jun 14 01:27 codex-review-round1.txt
+-rw-------    1 maybee  staff   49917 Jun 14 01:23 opencode-round1.txt
+-rw-------    1 maybee  staff     499 Jun 14 01:13 prompt-round1.md
+-rw-------    1 maybee  staff     343 Jun 14 01:27 summary.md
+-rw-------    1 maybee  staff     456 Jun 14 01:13 task.md
+-rw-------    1 maybee  staff    6571 Jun 14 01:25 tests-round1.txt
+[0m
+Let me check the existing DATA-019 task_run directory and the DATA-018 implementation:
+[0m→ [0mRead tradingagents/dataflows/source_freshness_report.py[90m [limit=100][0m
+[0m→ [0mRead docs/task_runs/DATA-019-20260618-023825/task.md
+[0m→ [0mRead docs/task_runs/DATA-018-20260614-011340/summary.md
+[0m→ [0mRead docs/task_runs/DATA-019-20260618-023825/prompt-round1.md
+Let me read more of the existing source_freshness_report.py to understand the full structure:
+[0m→ [0mRead tradingagents/dataflows/source_freshness_report.py[90m [limit=250, offset=100][0m
+[0m→ [0mRead tradingagents/dataflows/source_freshness_report.py[90m [limit=350, offset=350][0m
+[0m→ [0mRead tradingagents/dataflows/source_freshness_report.py[90m [limit=283, offset=700][0m
+[0m→ [0mRead tests/test_data018_source_freshness.py[90m [limit=120][0m
+[0m✱ [0mGlob "tradingagents/dataflows/*.py"[90m 23 matches[0m
+Now let me look at the test file for DATA-018 and the data source providers:
+[0m→ [0mRead tradingagents/dataflows/live_smoke.py
+There's an existing `live_smoke.py`. Let me check it and the source_catalog:
+[0m→ [0mRead tradingagents/dataflows/source_catalog.py[90m [limit=100][0m
+[0m✱ [0mGlob "tradingagents/dataflows/providers/*.py"[90m 9 matches[0m
+Let me explore the source_catalog and providers to understand available data types and methods:
+Let me look at the cn_astock provider methods and the route_to_vendor function to understand available sampling methods:
+[0m✱ [0mGrep "def route_to_vendor|def get_last_hit_vendor|def get_"[90m in tradingagents/dataflows/providers/registry.py · 0 matches[0m
+[0m✱ [0mGrep "def get_"[90m in tradingagents/dataflows/providers/cn_astock_provider.py · 23 matches[0m
+[0m✱ [0mGrep "^def |^    def "[90m in tradingagents/dataflows/providers/registry.py · 5 matches[0m
+[0m✱ [0mGrep "route_to_vendor"[90m in tradingagents/dataflows/providers · 0 matches[0m
+[0m✱ [0mGrep "def route_to_vendor"[90m in tradingagents/dataflows · 1 match[0m
+[0m→ [0mRead tradingagents/dataflows/interface.py[90m [limit=120, offset=120][0m
+Let me check the source_catalog data type definitions and the existing test patterns for live smoke:
+[0m→ [0mRead tradingagents/dataflows/source_catalog.py[90m [limit=200, offset=100][0m
+[0m→ [0mRead tradingagents/dataflows/source_catalog.py[90m [limit=120, offset=300][0m
+Let me check the rest of source_catalog and look at how the data types map to methods. Let me also check existing live smoke tests:
+[0m✱ [0mGlob "tests/test_*live_smoke*.py"[90m 1 match[0m
+[0m✱ [0mGlob "tests/test_*data017*.py"[90m 1 match[0m
+[0m→ [0mRead tests/test_data_p1_astock_live_smoke.py[90m [limit=100][0m
+[0m→ [0mRead tradingagents/dataflows/source_catalog.py[90m [limit=120, offset=420][0m
+Let me check the buyback registration and the rest of the catalog:
+[0m→ [0mRead tradingagents/dataflows/source_catalog.py[90m [limit=165, offset=540][0m
+Let me check the DEVLOG format and the cn_astock provider method signatures:
+[0m→ [0mRead tradingagents/dataflows/providers/cn_astock_provider.py[90m [limit=50, offset=760][0m
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=60][0m
+[0m
+[0m# [0mTodos
+[•] Create tradingagents/dataflows/live_source_sampling.py module
+[ ] Create tests/test_data019_live_source_sampling.py
+[ ] Run tests to verify
+[ ] Update docs/DEVLOG.md
+[0m
+Now I have a comprehensive understanding. Let me set up my task list and start implementing:
+[0m→ [0mRead tradingagents/dataflows/providers/cn_astock_provider.py[90m [limit=20, offset=957][0m
+[0m→ [0mRead tradingagents/dataflows/providers/cn_astock_provider.py[90m [limit=20, offset=1146][0m
+Let me verify the cn_astock provider method signatures I'll reference:
+[0m→ [0mRead tradingagents/dataflows/providers/cn_astock_provider.py[90m [limit=25, offset=1294][0m
+Now I have all the context I need. Let me create the `live_source_sampling.py` module:
+[0m
+[0m← [0mWrite tradingagents/dataflows/live_source_sampling.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[✓] Create tradingagents/dataflows/live_source_sampling.py module
+[•] Create tests/test_data019_live_source_sampling.py
+[ ] Run tests to verify
+[ ] Update docs/DEVLOG.md
+[0m
+Now let me create the test file:
+Let me verify the `get_last_hit_vendor` function location:
+[0m✱ [0mGrep "get_last_hit_vendor|_last_hit_vendor"[90m in tradingagents/dataflows/interface.py · 4 matches[0m
+I need to fix the import paths in the module - it's already inside `dataflows`:
+[0m
+[0m← [0mEdit tradingagents/dataflows/live_source_sampling.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/live_source_sampling.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/live_source_sampling.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/live_source_sampling.py
+@@ -308,17 +308,17 @@
+     """Default fetch using route_to_vendor (full fallback chain).
+ 
+     Only called when TA_LIVE_DATA_SMOKE=1 is set.
+     """
+-    from ..dataflows.interface import route_to_vendor  # local import to avoid cycle
++    from .interface import route_to_vendor  # local import to avoid cycle
+ 
+     return route_to_vendor(method, *args, **kwargs)
+ 
+ 
+ def _get_last_hit_vendor(method: str) -> str:
+     """Get the vendor that actually served the last call for this method."""
+     try:
+-        from ..dataflows.interface import get_last_hit_vendor
++        from .interface import get_last_hit_vendor
+ 
+         return get_last_hit_vendor(method) or ""
+     except Exception:
+         return ""
+
+[0m
+Now let me create the test file:
+[0m← [0mWrite tests/test_data019_live_source_sampling.py
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[✓] Create tradingagents/dataflows/live_source_sampling.py module
+[✓] Create tests/test_data019_live_source_sampling.py
+[•] Run tests to verify
+[ ] Update docs/DEVLOG.md
+[0m
+Now let's run the tests:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_data019_live_source_sampling.py -q --tb=short 2>&1 | tail -60
+........................................................................ [ 96%]
+...                                                                      [100%]
+75 passed in 18.59s
+[0m
+All 75 tests pass. Let me also run the related DATA-018 tests to make sure I haven't broken anything:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_data018_source_freshness.py tests/test_data_p1_astock_live_smoke.py -q --tb=short 2>&1 | tail -15
+........................................................................ [ 35%]
+........................................................................ [ 70%]
+.............................................................            [100%]
+205 passed in 23.54s
+[0m
+All passing. Let me also quickly verify the module imports cleanly and a smoke render works:
+[0m$ [0msource .venv/bin/activate && python -c "
+from tradingagents.dataflows.live_source_sampling import run_live_sampling, render_live_sampling_report
+report = run_live_sampling()
+print(render_live_sampling_report(report)[:600])
+print('---')
+print(f'Total results: {len(report.results)}')
+print(f'Env gated: {report.env_gated}')
+"
+# Live Source Sampling Health Report
+
+- **Date**: 2026-06-18
+- **Generated at**: 2026-06-18 02:44:15
+- **Env gated**: Yes (TA_LIVE_DATA_SMOKE not set)
+
+## Sample Universe
+
+| Symbol | Name | Category |
+|--------|------|----------|
+| 600519.SH | 贵州茅台 | 大票 |
+| 002415.SZ | 海康威视 | 中小票 |
+| 603629.SH | 苏利股份 | 近期候选 |
+| 000001.SZ | 平安银行 | 自选 |
+
+## Summary
+
+- **Total checks**: 28
+- **Green (OK)**: 0
+- **Yellow (Warning)**: 0
+- **Red (Failed)**: 0
+- **Skipped**: 28
+docs/task_runs/DATA-019-20260618-023825/task.md
+# Auto Dev Task Run
+
+- Task: DATA-019 - 关键数据源实盘抽样健康日报（P1）
+- Priority: P1
+- Status: CLAIMED
+- Started at: 2026-06-18_02:38:25
+- Git HEAD: 65a7311
+- Test commands: pytest tests/ -q --tb=short
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/DATA-019-20260618-023825/codegraph-impact.txt
+# CodeGraph Impact Analysis
+# Generated: 2026-06-18T02:48:18.523720
+# Changed files: 3
+
+## Source: docs/DEVLOG.md
+[34mℹ[0m Symbol "docs/DEVLOG.md" not found
+
+
+## Source: docs/TASKS.md
+[34mℹ[0m Symbol "docs/TASKS.md" not found
+
+
+## Source: docs/tradeflow_trial_acceptance.md
+[34mℹ[0m Symbol "docs/tradeflow_trial_acceptance.md" not found
+
+
+## Affected Tests
+  (could not determine affected tests)
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/dataflows/live_source_sampling.py; sed -n '260,620p' tradingagents/dataflows/live_source_sampling.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [DATA-019] live_source_sampling
+"""Small-sample live data source sampling health daily report.
+
+Builds on DATA-018's freshness report by adding **live small-sample probing**:
+each day we pick 3-5 representative stocks (one large-cap, one small/mid-cap,
+one recent TradeFlow candidate, one user watchlist) and verify that every key
+data type (quote, fund_flow, lhb, notice, rating, buyback, report) can
+actually return data for *real* stocks — not just "the interface looks alive".
+
+This catches the failure mode where an endpoint returns 200 OK with empty
+results, or a vendor is registered but silently drops a particular stock.
+
+6-state classification (reused from DATA-018 ``SourceFreshnessStatus``):
+
+  - HAS_DATA          — successful retrieval with verified data
+  - NORMAL_NO_DATA    — queried successfully, stock has no data (normal)
+  - STALE             — data older than threshold (e.g. > 7 days)
+  - FAILED            — API failure / parse error / timeout
+  - RATE_LIMITED      — 429 / rate-limit triggered
+  - UNIT_UNVERIFIED   — data present but unit not verified
+
+**Gating** — all live network calls require ``TA_LIVE_DATA_SMOKE=1`` in the
+environment.  Without it, results are marked ``SKIPPED`` and the report still
+renders (useful for CI / fixture replay).
+
+Usage (library):
+    from tradingagents.dataflows.live_source_sampling import (
+        run_live_sampling,
+        render_live_sampling_report,
+        save_live_sampling_report,
+    )
+    report = run_live_sampling()
+    print(render_live_sampling_report(report))
+    save_live_sampling_report(report)
+
+Usage (CLI):
+    TA_LIVE_DATA_SMOKE=1 python scripts/run_live_sampling.py
+    TA_LIVE_DATA_SMOKE=1 python scripts/run_live_sampling.py --symbols 600519.SH,002415.SZ
+
+Output:
+    docs/data_source_reports/YYYY-MM-DD-live-smoke.md
+"""
+
+from __future__ import annotations
+
+import os
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from .source_freshness_report import (
+    SourceFreshnessStatus,
+    _detect_failed,
+    _detect_normal_no_data,
+    _detect_rate_limited,
+    _is_stale_date,
+)
+from .source_catalog import get_fallback_chain, get_primary_source
+
+
+# ── Config ────────────────────────────────────────────────────────────
+
+_LIVE_ENV = "TA_LIVE_DATA_SMOKE"
+_MIN_ENDPOINT_INTERVAL = 0.6  # seconds between endpoint calls (rate-limit safety)
+_MAX_SYMBOLS = 5
+
+# Default sample universe: one large-cap, one small/mid-cap,
+# one recent TradeFlow candidate, one user watchlist.
+# These are stable, liquid names that should always have data.
+DEFAULT_SAMPLE_UNIVERSE: List[Dict[str, str]] = [
+    {
+        "symbol": "600519.SH",
+        "name": "贵州茅台",
+        "category": "large_cap",
+        "category_cn": "大票",
+    },
+    {
+        "symbol": "002415.SZ",
+        "name": "海康威视",
+        "category": "small_mid_cap",
+        "category_cn": "中小票",
+    },
+    {
+        "symbol": "603629.SH",
+        "name": "苏利股份",
+        "category": "recent_candidate",
+        "category_cn": "近期候选",
+    },
+    {
+        "symbol": "000001.SZ",
+        "name": "平安银行",
+        "category": "watchlist",
+        "category_cn": "自选",
+    },
+]
+
+
+# ── Data Models ───────────────────────────────────────────────────────
+
+
+@dataclass
+class SampleStock:
+    """A stock in the sample universe."""
+
+    symbol: str = ""
+    name: str = ""
+    category: str = ""  # large_cap / small_mid_cap / recent_candidate / watchlist
+    category_cn: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "name": self.name,
+            "category": self.category,
+            "category_cn": self.category_cn,
+        }
+
+
+@dataclass
+class SampleResult:
+    """Result of probing one (data_type, symbol) pair."""
+
+    data_type: str = ""
+    data_type_label: str = ""
+    symbol: str = ""
+    symbol_name: str = ""
+    category: str = ""
+    status: str = SourceFreshnessStatus.FAILED
+    actual_vendor: str = ""
+    primary_vendor: str = ""
+    fallback_vendor: str = ""
+    is_fallback: bool = False
+    latency_ms: float = 0.0
+    record_count: int = 0
+    unit: str = ""
+    unit_verified: bool = False
+    as_of: str = ""
+    error: str = ""
+    sample_snippet: str = ""
+    diagnosis: str = ""
+    rate_limit_risk: str = ""
+
+    @property
+    def traffic_light(self) -> str:
+        return SourceFreshnessStatus.TRAFFIC_LIGHT.get(self.status, "red")
+
+    @property
+    def label_cn(self) -> str:
+        return SourceFreshnessStatus.LABEL_CN.get(self.status, "未知")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "data_type": self.data_type,
+            "data_type_label": self.data_type_label,
+            "symbol": self.symbol,
+            "symbol_name": self.symbol_name,
+            "category": self.category,
+            "status": self.status,
+            "status_label_cn": self.label_cn,
+            "traffic_light": self.traffic_light,
+            "actual_vendor": self.actual_vendor,
+            "primary_vendor": self.primary_vendor,
+            "fallback_vendor": self.fallback_vendor,
+            "is_fallback": self.is_fallback,
+            "latency_ms": round(self.latency_ms, 1),
+            "record_count": self.record_count,
+            "unit": self.unit,
+            "unit_verified": self.unit_verified,
+            "as_of": self.as_of,
+            "error": self.error[:200] if self.error else "",
+            "sample_snippet": self.sample_snippet[:150],
+            "diagnosis": self.diagnosis,
+            "rate_limit_risk": self.rate_limit_risk,
+        }
+
+
+@dataclass
+class LiveSamplingReport:
+    """Top-level live sampling report."""
+
+    report_date: str = ""
+    generated_at: str = ""
+    samples: List[SampleStock] = field(default_factory=list)
+    results: List[SampleResult] = field(default_factory=list)
+    summary: Dict[str, Any] = field(default_factory=dict)
+    env_gated: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "report_date": self.report_date,
+            "generated_at": self.generated_at,
+            "samples": [s.to_dict() for s in self.samples],
+            "results": [r.to_dict() for r in self.results],
+            "summary": self.summary,
+            "env_gated": self.env_gated,
+        }
+
+
+# ── Data type label mapping (subset of DATA-018 labels) ───────────────
+
+_DATA_TYPE_LABELS: Dict[str, str] = {
+    "quote": "实时行情",
+    "fund_flow": "个股资金流",
+    "lhb": "龙虎榜",
+    "notice": "公告",
+    "rating": "评级",
+    "buyback": "回购",
+    "report": "研报",
+}
+
+
+# ── Data type → provider method definitions ───────────────────────────
+#
+# Each definition maps a data_type to:
+#   - method: the CnAstockProvider method name
+#   - args_template: how to build call args from (symbol, date)
+#   - kwargs: extra kwargs
+#   - expected_unit: the unit we expect to see in a healthy response
+#   - special_note: optional note for fund_flow/lhb semantics
+
+
+def _make_data_type_definitions() -> List[Dict[str, Any]]:
+    return [
+        {
+            "data_type": "quote",
+            "method": "get_realtime_quotes",
+            "args_template": (["{symbol}"],),
+            "kwargs": {},
+            "expected_unit": "元",
+            "special_note": "",
+        },
+        {
+            "data_type": "fund_flow",
+            "method": "get_individual_fund_flow",
+            "args_template": ("{symbol}",),
+            "kwargs": {},
+            "expected_unit": "万元",
+            "special_note": "主力资金一般应可取；失败需 fallback 到 cn_astock/Eastmoney push2his",
+        },
+        {
+            "data_type": "lhb",
+            "method": "get_lhb_detail",
+            "args_template": ("{symbol}", "{date}"),
+            "kwargs": {"force": True},
+            "expected_unit": "万元",
+            "special_note": "龙虎榜无触发是 NORMAL_NO_DATA（非异动日属正常），不是失败",
+        },
+        {
+            "data_type": "notice",
+            "method": "get_announcements",
+            "args_template": ("{symbol}",),
+            "kwargs": {},
+            "expected_unit": "条",
+            "special_note": "",
+        },
+        {
+            "data_type": "rating",
+            "method": "get_ratings",
+            "args_template": ("{symbol}",),
+            "args_template": ("{symbol}",),
+            "kwargs": {},
+            "expected_unit": "条",
+            "special_note": "",
+        },
+        {
+            "data_type": "buyback",
+            "method": "get_buybacks",
+            "args_template": ("{symbol}",),
+            "kwargs": {},
+            "expected_unit": "万元",
+            "special_note": "无回购计划是 NORMAL_NO_DATA，不是失败",
+        },
+        {
+            "data_type": "report",
+            "method": "get_research_report",
+            "args_template": ("{symbol}",),
+            "kwargs": {},
+            "expected_unit": "条",
+            "special_note": "",
+        },
+    ]
+
+
+def _resolve_args(template: tuple, symbol: str, date: str) -> tuple:
+    """Replace {symbol} / {date} placeholders in an args template."""
+    result = []
+    for arg in template:
+        if isinstance(arg, str):
+            arg = arg.replace("{symbol}", symbol).replace("{date}", date)
+            result.append(arg)
+        elif isinstance(arg, list):
+            result.append(
+                [a.replace("{symbol}", symbol).replace("{date}", date) for a in arg]
+            )
+        else:
+            result.append(arg)
+    return tuple(result)
+
+
+# ── Fetch function type ───────────────────────────────────────────────
+
+# A fetch_fn takes (method_name, args_tuple, kwargs_dict) and returns
+# a string result (or raises an exception).
+FetchFn = Callable[..., str]
+
+
+def _default_fetch_fn(method: str, args: tuple, kwargs: dict) -> str:
+    """Default fetch using route_to_vendor (full fallback chain).
+
+    Only called when TA_LIVE_DATA_SMOKE=1 is set.
+    """
+    from .interface import route_to_vendor  # local import to avoid cycle
+
+    return route_to_vendor(method, *args, **kwargs)
+
+
+def _get_last_hit_vendor(method: str) -> str:
+    """Get the vendor that actually served the last call for this method."""
+    try:
+        from .interface import get_last_hit_vendor
+
+        return get_last_hit_vendor(method) or ""
+    except Exception:
+        return ""
+
+
+# ── Classification ────────────────────────────────────────────────────
+
+
+def classify_sample_result(
+    raw: Any,
+    error: str = "",
+    as_of: str = "",
+    unit_verified: Optional[bool] = None,
+    data_type: str = "",
+) -> str:
+    """Classify a sample probe into one of the 6 states.
+
+    Delegates to DATA-018's ``classify_source_status`` but adds data-type
+    specific overrides (e.g. LHB NORMAL_NO_DATA patterns).
+    """
+    from .source_freshness_report import classify_source_status
+
+    # If we have an explicit LHB normal-no-data marker, honor it.
+    if isinstance(raw, str):
+        s = raw.strip()
+        if data_type == "lhb" and "LHB_NORMAL_NO_DATA" in s:
+            return SourceFreshnessStatus.NORMAL_NO_DATA
+        if data_type == "buyback" and "BUYBACK_NORMAL_NO_DATA" in s:
+            return SourceFreshnessStatus.NORMAL_NO_DATA
+
+    status_hint = ""
+    if isinstance(raw, str) and "LHB_NORMAL_NO_DATA" in raw:
+        status_hint = "NORMAL_NO_DATA"
+    if isinstance(raw, str) and "BUYBACK_NORMAL_NO_DATA" in raw:
+        status_hint = "NORMAL_NO_DATA"
+
+    return classify_source_status(
+        raw_value=raw,
+        status=status_hint,
+        error=error,
+        as_of=as_of,
+        unit_verified=unit_verified,
+    )
+
+
+# ── Unit detection helpers ────────────────────────────────────────────
+
+_WAN_YUAN_MARKERS = ["单位：万元", "单位:万元", "（万元）", "(万元)"]
+_YUAN_MARKERS = ["单位：元", "单位:元"]
+_TIAO_MARKERS = ["条", "total"]
+
+
+def _detect_unit_from_text(text: str) -> Tuple[str, bool]:
+    """Detect unit from response text. Returns (unit, unit_verified)."""
+    if not text:
+        return ("", False)
+    for marker in _WAN_YUAN_MARKERS:
+        if marker in text:
+            return ("万元", True)
+    for marker in _YUAN_MARKERS:
+        if marker in text:
+            return ("元", True)
+    return ("", False)
+
+
+def _count_data_lines(text: str) -> int:
+    """Count non-header data lines in a text response."""
+    if not text:
+        return 0
+    lines = [
+        l
+        for l in text.strip().split("\n")
+        if l.strip()
+        and not l.strip().startswith("#")
+        and not l.strip().startswith("##")
+        and not l.strip().startswith("---")
+    ]
+    # Subtract 1-2 for header rows
+    return max(0, len(lines) - 2) if len(lines) > 2 else max(0, len(lines) - 1)
+
+
+def _extract_as_of(text: str) -> str:
+    """Try to extract a date string (YYYY-MM-DD) from response text."""
+    if not text:
+        return ""
+    import re
+
+    match = re.search(r"(\d{4}-\d{2}-\d{2})", text)
+    return match.group(1) if match else ""
+
+
+# ── Core sampling logic ───────────────────────────────────────────────
+
+
+def _sample_single(
+    fetch_fn: FetchFn,
+    dt_def: Dict[str, Any],
+    stock: SampleStock,
+    date_str: str,
+) -> SampleResult:
+    """Probe a single (data_type, symbol) pair.
+
+    Args:
+        fetch_fn: callable that takes (method, args, kwargs) → str
+        dt_def: data type definition dict
+        stock: the sample stock
+        date_str: today's date string
+    """
+    data_type = dt_def["data_type"]
+    result = SampleResult(
+        data_type=data_type,
+        data_type_label=_DATA_TYPE_LABELS.get(data_type, data_type),
+        symbol=stock.symbol,
+        symbol_name=stock.name,
+        category=stock.category,
+    )
+
+    # Fill catalog info
+    primary = get_primary_source(data_type)
+    if primary:
+        result.primary_vendor = primary.vendor
+        chain = get_fallback_chain(data_type)
+        result.fallback_vendor = chain[1] if len(chain) > 1 else ""
+        result.unit = primary.unit or ""
+        result.rate_limit_risk = (
+            primary.rate_limit_risk.value
+            if hasattr(primary.rate_limit_risk, "value")
+            else str(primary.rate_limit_risk)
+        )
+
+    # Rate-limit safety pause
+    time.sleep(_MIN_ENDPOINT_INTERVAL)
+
+    method = dt_def["method"]
+    args = _resolve_args(dt_def["args_template"], stock.symbol, date_str)
+    kwargs = dict(dt_def.get("kwargs", {}))
+
+    t0 = time.monotonic()
+    try:
+        raw = fetch_fn(method, args, kwargs)
+        elapsed = (time.monotonic() - t0) * 1000
+        result.latency_ms = elapsed
+
+        if raw is None:
+            result.status = SourceFreshnessStatus.FAILED
+            result.error = "null_response"
+            result.diagnosis = _build_sample_diagnosis(result, dt_def)
+            return result
+
+        raw_str = str(raw)
+        result.sample_snippet = raw_str[:150]
+
+        # Detect unit from text
+        unit, unit_verified = _detect_unit_from_text(raw_str)
+        if unit:
+            result.unit = unit
+            result.unit_verified = unit_verified
+        else:
+            # For dict/JSON responses (e.g. quote), unit verification is N/A
+            result.unit_verified = True
+
+        # Extract as_of date
+        as_of = _extract_as_of(raw_str)
+        result.as_of = as_of
+
+        # Count records
+        result.record_count = _count_data_lines(raw_str)
+
+        # Classify
+        result.status = classify_sample_result(
+            raw=raw_str,
+            error="",
+            as_of=as_of,
+            unit_verified=result.unit_verified if result.unit_verified else None,
+            data_type=data_type,
+        )
+
+        # Determine actual vendor (only meaningful for live calls)
+        result.actual_vendor = _get_last_hit_vendor(method)
+        if result.actual_vendor and result.primary_vendor and result.actual_vendor != result.primary_vendor:
+            result.is_fallback = True
+
+        # If classified as FAILED but we have failure patterns in text, set error
+        if result.status == SourceFreshnessStatus.FAILED and not result.error:
+            result.error = "failure_string_detected"
+
+    except Exception as exc:
+        elapsed = (time.monotonic() - t0) * 1000
+        result.latency_ms = elapsed
+        err_str = f"{type(exc).__name__}: {exc}"
+        result.error = err_str[:200]
+
+        if _detect_rate_limited(err_str):
+            result.status = SourceFreshnessStatus.RATE_LIMITED
+        else:
+            result.status = SourceFreshnessStatus.FAILED
+
+    result.diagnosis = _build_sample_diagnosis(result, dt_def)
+    return result
+
+
+def _build_sample_diagnosis(result: SampleResult, dt_def: Dict[str, Any]) -> str:
+    """Build human-readable diagnosis for a sample result."""
+    special_note = dt_def.get("special_note", "")
+    note_suffix = f"（注意：{special_note}）" if special_note else ""
+
+    status = result.status
+    if status == SourceFreshnessStatus.HAS_DATA:
+        vendor_info = result.actual_vendor or result.primary_vendor or "未知"
+        fb_info = "，fallback" if result.is_fallback else ""
+        return (
+            f"{result.data_type_label}正常（vendor={vendor_info}"
+            f"，records={result.record_count}{fb_info}）{note_suffix}"
+        )
+    elif status == SourceFreshnessStatus.NORMAL_NO_DATA:
+        return f"{result.data_type_label}查询成功但无数据（正常情况）{note_suffix}"
+    elif status == SourceFreshnessStatus.STALE:
+        return f"{result.data_type_label}数据过期（as_of={result.as_of or '未知'}）{note_suffix}"
+    elif status == SourceFreshnessStatus.FAILED:
+        return f"{result.data_type_label}接口失败: {result.error or '未知错误'}{note_suffix}"
+    elif status == SourceFreshnessStatus.RATE_LIMITED:
+        return f"{result.data_type_label}触发限流{note_suffix}"
+    elif status == SourceFreshnessStatus.UNIT_UNVERIFIED:
+        return f"{result.data_type_label}有数据但单位未校验{note_suffix}"
+    return f"{result.data_type_label}状态未知{note_suffix}"
+
+
+# ── Report generation ─────────────────────────────────────────────────
+
+
+def build_sample_universe(
+    custom_stocks: Optional[List[Dict[str, str]]] = None,
+) -> List[SampleStock]:
+    """Build the sample universe from defaults or custom overrides.
+
+    Args:
+        custom_stocks: optional list of dicts with keys symbol/name/category/category_cn.
+                       If provided, replaces the default universe (capped at _MAX_SYMBOLS).
+    """
+    source = custom_stocks if custom_stocks is not None else DEFAULT_SAMPLE_UNIVERSE
+    stocks = []
+    for s in source[:_MAX_SYMBOLS]:
+        stocks.append(
+            SampleStock(
+                symbol=s.get("symbol", ""),
+                name=s.get("name", ""),
+                category=s.get("category", ""),
+                category_cn=s.get("category_cn", ""),
+            )
+        )
+    return stocks
+
+
+def run_live_sampling(
+    samples: Optional[List[SampleStock]] = None,
+    data_types: Optional[List[Dict[str, Any]]] = None,
+    fetch_fn: Optional[FetchFn] = None,
+    date_str: Optional[str] = None,
+) -> LiveSamplingReport:
+    """Run live sampling across the sample universe.
+
+    Args:
+        samples: list of SampleStock; defaults to DEFAULT_SAMPLE_UNIVERSE
+        data_types: list of data_type definitions; defaults to all key types
+        fetch_fn: callable (method, args, kwargs) → str; defaults to route_to_vendor.
+                  Only invoked when TA_LIVE_DATA_SMOKE=1.
+        date_str: override the date string; defaults to today
+
+    Returns:
+        LiveSamplingReport with results for each (stock, data_type) pair.
+    """
+    now = datetime.now()
+    if date_str is None:
+        date_str = now.strftime("%Y-%m-%d")
+
+    report = LiveSamplingReport(
+        report_date=date_str,
+        generated_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+        env_gated=False,
+    )
+
+    if samples is None:
+        samples = build_sample_universe()
+    report.samples = samples
+
+    if data_types is None:
+        data_types = _make_data_type_definitions()
+
+    # Env gate check
+    if os.getenv(_LIVE_ENV, "").strip() != "1":
+        report.env_gated = True
+        for stock in samples:
+            for dt_def in data_types:
+                result = SampleResult(
+                    data_type=dt_def["data_type"],
+                    data_type_label=_DATA_TYPE_LABELS.get(dt_def["data_type"], dt_def["data_type"]),
+                    symbol=stock.symbol,
+                    symbol_name=stock.name,
+                    category=stock.category,
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tests/test_data019_live_source_sampling.py; sed -n '260,620p' tests/test_data019_live_source_sampling.py; sed -n '620,1040p' tests/test_data019_live_source_sampling.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [DATA-019] live_source_sampling tests
+"""Tests for DATA-019: key data source live sampling health daily report.
+
+Tests cover:
+  - Sample universe construction (large/small/candidate/watchlist)
+  - 6-state classification (HAS_DATA/NORMAL_NO_DATA/STALE/FAILED/RATE_LIMITED/UNIT_UNVERIFIED)
+  - Fixture scenarios: AKShare fail → cn_astock fallback success, LHB normal no-data
+  - Env gating (TA_LIVE_DATA_SMOKE)
+  - Report rendering (no secrets)
+  - Report file I/O (YYYY-MM-DD-live-smoke.md)
+  - Per-data-type summary
+"""
+
+import json
+import os
+import sys
+import tempfile
+from datetime import datetime, timedelta
+from unittest.mock import patch, MagicMock
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tradingagents.dataflows.live_source_sampling import (
+    SampleStock,
+    SampleResult,
+    LiveSamplingReport,
+    DEFAULT_SAMPLE_UNIVERSE,
+    _MAX_SYMBOLS,
+    _MIN_ENDPOINT_INTERVAL,
+    _LIVE_ENV,
+    _DATA_TYPE_LABELS,
+    _make_data_type_definitions,
+    _resolve_args,
+    _detect_unit_from_text,
+    _count_data_lines,
+    _extract_as_of,
+    classify_sample_result,
+    _build_sample_diagnosis,
+    _sample_single,
+    _compute_summary,
+    build_sample_universe,
+    run_live_sampling,
+    render_live_sampling_report,
+    save_live_sampling_report,
+    find_latest_live_sampling_report,
+    build_sampling_section_for_nightly_report,
+    is_live_sampling_enabled,
+    ALL_SAMPLE_RESPONSES,
+)
+from tradingagents.dataflows.source_freshness_report import SourceFreshnessStatus
+
+
+# ── Test SampleStock ──────────────────────────────────────────────────
+
+
+class TestSampleStock:
+    def test_basic_construction(self):
+        s = SampleStock(symbol="600519.SH", name="贵州茅台", category="large_cap", category_cn="大票")
+        assert s.symbol == "600519.SH"
+        assert s.name == "贵州茅台"
+        assert s.category == "large_cap"
+
+    def test_to_dict(self):
+        s = SampleStock(symbol="000001.SZ", name="平安银行", category="watchlist", category_cn="自选")
+        d = s.to_dict()
+        assert d["symbol"] == "000001.SZ"
+        assert d["category"] == "watchlist"
+        assert d["category_cn"] == "自选"
+
+
+class TestSampleResult:
+    def test_traffic_light(self):
+        r = SampleResult(status=SourceFreshnessStatus.HAS_DATA)
+        assert r.traffic_light == "green"
+        r2 = SampleResult(status=SourceFreshnessStatus.FAILED)
+        assert r2.traffic_light == "red"
+
+    def test_label_cn(self):
+        r = SampleResult(status=SourceFreshnessStatus.HAS_DATA)
+        assert r.label_cn == "正常"
+        r2 = SampleResult(status=SourceFreshnessStatus.RATE_LIMITED)
+        assert r2.label_cn == "限流"
+
+    def test_to_dict(self):
+        r = SampleResult(
+            data_type="fund_flow",
+            symbol="600519.SH",
+            status=SourceFreshnessStatus.HAS_DATA,
+            latency_ms=150.0,
+            error="x" * 300,
+        )
+        d = r.to_dict()
+        assert d["data_type"] == "fund_flow"
+        assert d["status"] == "HAS_DATA"
+        assert len(d["error"]) <= 200  # truncated
+
+
+# ── Test default sample universe ──────────────────────────────────────
+
+
+class TestSampleUniverse:
+    def test_default_has_four_categories(self):
+        universe = DEFAULT_SAMPLE_UNIVERSE
+        assert len(universe) == 4
+        categories = [s["category"] for s in universe]
+        assert "large_cap" in categories
+        assert "small_mid_cap" in categories
+        assert "recent_candidate" in categories
+        assert "watchlist" in categories
+
+    def test_build_sample_universe_defaults(self):
+        stocks = build_sample_universe()
+        assert len(stocks) == 4
+        assert all(isinstance(s, SampleStock) for s in stocks)
+        assert stocks[0].category == "large_cap"
+        assert stocks[3].category == "watchlist"
+
+    def test_build_sample_universe_custom(self):
+        custom = [
+            {"symbol": "601318.SH", "name": "中国平安", "category": "large_cap", "category_cn": "大票"},
+            {"symbol": "300750.SZ", "name": "宁德时代", "category": "small_mid_cap", "category_cn": "中小票"},
+        ]
+        stocks = build_sample_universe(custom)
+        assert len(stocks) == 2
+        assert stocks[0].symbol == "601318.SH"
+
+    def test_build_sample_universe_capped(self):
+        custom = [{"symbol": f"{i:06d}.SH", "name": f"S{i}", "category": "x", "category_cn": "x"} for i in range(10)]
+        stocks = build_sample_universe(custom)
+        assert len(stocks) <= _MAX_SYMBOLS
+
+    def test_each_stock_has_name_and_symbol(self):
+        stocks = build_sample_universe()
+        for s in stocks:
+            assert s.symbol
+            assert s.name
+            assert "." in s.symbol  # e.g. 600519.SH
+
+
+# ── Test data type definitions ────────────────────────────────────────
+
+
+class TestDataTypeDefinitions:
+    def test_covers_key_data_types(self):
+        defs = _make_data_type_definitions()
+        dt_names = [d["data_type"] for d in defs]
+        # Task requires: quote, fund_flow, lhb, notice, rating, buyback, report
+        for required in ["quote", "fund_flow", "lhb", "notice", "rating", "buyback", "report"]:
+            assert required in dt_names, f"Missing data_type: {required}"
+
+    def test_each_def_has_method_and_args(self):
+        defs = _make_data_type_definitions()
+        for d in defs:
+            assert "method" in d
+            assert "args_template" in d
+            assert "kwargs" in d
+            assert "expected_unit" in d
+
+    def test_lhb_has_force_true(self):
+        defs = _make_data_type_definitions()
+        lhb_def = [d for d in defs if d["data_type"] == "lhb"][0]
+        assert lhb_def["kwargs"].get("force") is True
+
+    def test_fund_flow_has_special_note(self):
+        defs = _make_data_type_definitions()
+        ff_def = [d for d in defs if d["data_type"] == "fund_flow"][0]
+        assert "fallback" in ff_def["special_note"]
+
+    def test_lhb_has_special_note(self):
+        defs = _make_data_type_definitions()
+        lhb_def = [d for d in defs if d["data_type"] == "lhb"][0]
+        assert "NORMAL_NO_DATA" in lhb_def["special_note"]
+
+
+# ── Test arg resolution ───────────────────────────────────────────────
+
+
+class TestResolveArgs:
+    def test_string_args(self):
+        result = _resolve_args(("{symbol}", "{date}"), "600519.SH", "2026-06-18")
+        assert result == ("600519.SH", "2026-06-18")
+
+    def test_list_args(self):
+        result = _resolve_args((["{symbol}"],), "600519.SH", "2026-06-18")
+        assert result == (["600519.SH"],)
+
+    def test_no_placeholders(self):
+        result = _resolve_args(("static",), "600519.SH", "2026-06-18")
+        assert result == ("static",)
+
+
+# ── Test classification ───────────────────────────────────────────────
+
+
+class TestClassifySampleResult:
+    def test_has_data(self):
+        status = classify_sample_result("real data here with enough length", data_type="fund_flow")
+        assert status in (SourceFreshnessStatus.HAS_DATA, SourceFreshnessStatus.UNIT_UNVERIFIED)
+
+    def test_lhb_normal_no_data(self):
+        text = "600519.SH [G-007] LHB_NORMAL_NO_DATA: 非异动日属正常"
+        status = classify_sample_result(text, data_type="lhb")
+        assert status == SourceFreshnessStatus.NORMAL_NO_DATA
+
+    def test_buyback_normal_no_data(self):
+        text = "002415.SZ [DATA-013] BUYBACK_NORMAL_NO_DATA: 该股无回购计划"
+        status = classify_sample_result(text, data_type="buyback")
+        assert status == SourceFreshnessStatus.NORMAL_NO_DATA
+
+    def test_failed_string(self):
+        text = "个股资金流向数据获取失败：ProxyError"
+        status = classify_sample_result(text, data_type="fund_flow")
+        assert status == SourceFreshnessStatus.FAILED
+
+    def test_rate_limited(self):
+        status = classify_sample_result(
+            "", error="HTTPError 429: Too Many Requests", data_type="quote"
+        )
+        assert status == SourceFreshnessStatus.RATE_LIMITED
+
+    def test_stale(self):
+        old_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        status = classify_sample_result(
+            "data present", as_of=old_date, unit_verified=True, data_type="fund_flow"
+        )
+        assert status == SourceFreshnessStatus.STALE
+
+    def test_unit_unverified(self):
+        status = classify_sample_result(
+            "data present with content",
+            unit_verified=False,
+            data_type="fund_flow",
+        )
+        # Without as_of, and unit_verified=False → UNIT_UNVERIFIED
+        assert status == SourceFreshnessStatus.UNIT_UNVERIFIED
+
+
+# ── Test unit detection ───────────────────────────────────────────────
+
+
+class TestUnitDetection:
+    def test_detect_wanyuan(self):
+        text = "资金流向（单位：万元）："
+        unit, verified = _detect_unit_from_text(text)
+        assert unit == "万元"
+        assert verified is True
+
+    def test_detect_yuan(self):
+        text = "单位：元"
+        unit, verified = _detect_unit_from_text(text)
+        assert unit == "元"
+
+    def test_no_unit(self):
+        text = "some random data"
+        unit, verified = _detect_unit_from_text(text)
+        assert unit == ""
+        assert verified is False
+
+
+    def test_empty_text(self):
+        unit, verified = _detect_unit_from_text("")
+        assert unit == ""
+
+
+class TestCountDataLines:
+    def test_count(self):
+        text = "header\n2026-06-17 | data1\n2026-06-16 | data2"
+        count = _count_data_lines(text)
+        assert count >= 1
+
+    def test_empty(self):
+        assert _count_data_lines("") == 0
+
+
+class TestExtractAsOf:
+    def test_extract(self):
+        assert _extract_as_of("data from 2026-06-17 here") == "2026-06-17"
+
+    def test_no_date(self):
+        assert _extract_as_of("no date here") == ""
+
+    def test_empty(self):
+        assert _extract_as_of("") == ""
+
+
+# ── Test _sample_single with mock fetch_fn ────────────────────────────
+
+
+def _make_mock_fetch_fn(response_map):
+    """Create a mock fetch_fn that returns canned responses by (method, symbol)."""
+
+    def fetch_fn(method, args, kwargs):
+        symbol = ""
+        for a in args:
+            if isinstance(a, str) and "." in a:
+                symbol = a
+                break
+            elif isinstance(a, list):
+                for item in a:
+                    if isinstance(item, str) and "." in item:
+                        symbol = item
+                        break
+        key = (method, symbol)
+        if key in response_map:
+            resp = response_map[key]
+            if isinstance(resp, Exception):
+                raise resp
+            return resp
+        return "default response"
+
+    return fetch_fn
+
+
+class TestSampleSingle:
+    def test_fund_flow_ok(self):
+        stock = SampleStock(symbol="600519.SH", name="贵州茅台", category="large_cap")
+        dt_def = [d for d in _make_data_type_definitions() if d["data_type"] == "fund_flow"][0]
+        fetch_fn = _make_mock_fetch_fn({
+            ("get_individual_fund_flow", "600519.SH"): ALL_SAMPLE_RESPONSES["fund_flow_ok"]
+        })
+        result = _sample_single(fetch_fn, dt_def, stock, "2026-06-18")
+        assert result.status in (SourceFreshnessStatus.HAS_DATA, SourceFreshnessStatus.UNIT_UNVERIFIED)
+        assert result.data_type == "fund_flow"
+        assert result.latency_ms >= 0
+
+    def test_fund_flow_akshare_fail(self):
+        stock = SampleStock(symbol="600519.SH", name="贵州茅台", category="large_cap")
+        dt_def = [d for d in _make_data_type_definitions() if d["data_type"] == "fund_flow"][0]
+        fetch_fn = _make_mock_fetch_fn({
+            ("get_individual_fund_flow", "600519.SH"): ALL_SAMPLE_RESPONSES["fund_flow_akshare_fail"]
+        })
+        result = _sample_single(fetch_fn, dt_def, stock, "2026-06-18")
+        assert result.status == SourceFreshnessStatus.FAILED
+
+    def test_lhb_normal_no_data(self):
+        stock = SampleStock(symbol="600519.SH", name="贵州茅台", category="large_cap")
+        dt_def = [d for d in _make_data_type_definitions() if d["data_type"] == "lhb"][0]
+        fetch_fn = _make_mock_fetch_fn({
+            ("get_lhb_detail", "600519.SH"): ALL_SAMPLE_RESPONSES["lhb_normal_no_data"]
+        })
+        result = _sample_single(fetch_fn, dt_def, stock, "2026-06-18")
+        assert result.status == SourceFreshnessStatus.NORMAL_NO_DATA
+
+    def test_lhb_has_data(self):
+        stock = SampleStock(symbol="600519.SH", name="贵州茅台", category="large_cap")
+        dt_def = [d for d in _make_data_type_definitions() if d["data_type"] == "lhb"][0]
+        fetch_fn = _make_mock_fetch_fn({
+            ("get_lhb_detail", "600519.SH"): ALL_SAMPLE_RESPONSES["lhb_has_data"]
+        })
+        result = _sample_single(fetch_fn, dt_def, stock, "2026-06-18")
+        assert result.status in (SourceFreshnessStatus.HAS_DATA, SourceFreshnessStatus.UNIT_UNVERIFIED)
+
+    def test_exception_handling(self):
+        stock = SampleStock(symbol="600519.SH", name="贵州茅台", category="large_cap")
+        dt_def = _make_data_type_definitions()[0]
+        fetch_fn = _make_mock_fetch_fn({
+            ("get_realtime_quotes", "600519.SH"): ConnectionError("timeout")
+        })
+        result = _sample_single(fetch_fn, dt_def, stock, "2026-06-18")
+        assert result.status == SourceFreshnessStatus.FAILED
+        assert "ConnectionError" in result.error
+
+    def test_rate_limited_exception(self):
+        stock = SampleStock(symbol="600519.SH", name="贵州茅台", category="large_cap")
+        dt_def = _make_data_type_definitions()[0]
+        fetch_fn = _make_mock_fetch_fn({
+            ("get_realtime_quotes", "600519.SH"): Exception("HTTPError 429: Too Many Requests")
+        })
+        result = _sample_single(fetch_fn, dt_def, stock, "2026-06-18")
+        assert result.status == SourceFreshnessStatus.RATE_LIMITED
+
+    def test_buyback_normal_no_data(self):
+        stock = SampleStock(symbol="002415.SZ", name="海康威视", category="small_mid_cap")
+        dt_def = [d for d in _make_data_type_definitions() if d["data_type"] == "buyback"][0]
+        fetch_fn = _make_mock_fetch_fn({
+            ("get_buybacks", "002415.SZ"): ALL_SAMPLE_RESPONSES["buyback_normal_no_data"]
+        })
+        result = _sample_single(fetch_fn, dt_def, stock, "2026-06-18")
+        assert result.status == SourceFreshnessStatus.NORMAL_NO_DATA
+
+    def test_null_response(self):
+        stock = SampleStock(symbol="600519.SH", name="贵州茅台", category="large_cap")
+        dt_def = _make_data_type_definitions()[0]
+        fetch_fn = _make_mock_fetch_fn({
+            ("get_realtime_quotes", "600519.SH"): None
+        })
+        result = _sample_single(fetch_fn, dt_def, stock, "2026-06-18")
+        assert result.status == SourceFreshnessStatus.FAILED
+
+    def test_diagnosis_built(self):
+        stock = SampleStock(symbol="600519.SH", name="贵州茅台", category="large_cap")
+        dt_def = [d for d in _make_data_type_definitions() if d["data_type"] == "fund_flow"][0]
+        fetch_fn = _make_mock_fetch_fn({
+            ("get_individual_fund_flow", "600519.SH"): ALL_SAMPLE_RESPONSES["fund_flow_ok"]
+        })
+        result = _sample_single(fetch_fn, dt_def, stock, "2026-06-18")
+        assert result.diagnosis
+        assert "资金流" in result.diagnosis
+
+
+# ── Test run_live_sampling (env gated) ────────────────────────────────
+
+
+class TestRunLiveSamplingGated:
+    def test_env_gated_returns_skipped(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(_LIVE_ENV, None)
+            report = run_live_sampling()
+            assert report.env_gated is True
+            assert len(report.results) > 0
+            assert all(r.status == "SKIPPED" for r in report.results)
+
+    def test_env_gated_has_correct_sample_count(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(_LIVE_ENV, None)
+            report = run_live_sampling()
+            # 4 stocks × 7 data types = 28 results
+            assert len(report.results) == 4 * 7
+
+    def test_env_gated_summary(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(_LIVE_ENV, None)
+            report = run_live_sampling()
+            assert report.summary["skipped_count"] == 28
+            assert report.summary["green_count"] == 0
+
+
+class TestRunLiveSamplingMocked:
+    def test_mocked_live_run(self):
+        """Simulate a full live run with mocked fetch_fn."""
+        stock = SampleStock(symbol="600519.SH", name="贵州茅台", category="large_cap")
+
+        def mock_fetch(method, args, kwargs):
+            if method == "get_realtime_quotes":
+                return ALL_SAMPLE_RESPONSES["quote_ok"]
+            elif method == "get_individual_fund_flow":
+                return ALL_SAMPLE_RESPONSES["fund_flow_ok"]
+            elif method == "get_lhb_detail":
+                return ALL_SAMPLE_RESPONSES["lhb_normal_no_data"]
+            elif method == "get_announcements":
+                return ALL_SAMPLE_RESPONSES["notice_ok"]
+            elif method == "get_ratings":
+                return ALL_SAMPLE_RESPONSES["rating_ok"]
+            elif method == "get_buybacks":
+                return ALL_SAMPLE_RESPONSES["buyback_normal_no_data"]
+            elif method == "get_research_report":
+                return ALL_SAMPLE_RESPONSES["report_ok"]
+            return "unknown"
+
+        with patch.dict(os.environ, {_LIVE_ENV: "1"}):
+            report = run_live_sampling(
+                samples=[stock],
+                fetch_fn=mock_fetch,
+                date_str="2026-06-18",
+            )
+            assert report.env_gated is False
+            assert len(report.results) == 7  # 1 stock × 7 data types
+
+            # Check statuses
+            statuses = {r.data_type: r.status for r in report.results}
+            assert statuses["lhb"] == SourceFreshnessStatus.NORMAL_NO_DATA
+            assert statuses["buyback"] == SourceFreshnessStatus.NORMAL_NO_DATA
+
+    def test_akshare_fail_astock_fallback_scenario(self):
+        """Fixture: AKShare fails, cn_astock fallback succeeds for fund_flow."""
+        stock = SampleStock(symbol="603629.SH", name="苏利股份", category="recent_candidate")
+
+        def mock_fetch(method, args, kwargs):
+            if method == "get_individual_fund_flow":
+                return ALL_SAMPLE_RESPONSES["fund_flow_astock_fallback"]
+            return ALL_SAMPLE_RESPONSES["quote_ok"]
+
+        with patch.dict(os.environ, {_LIVE_ENV: "1"}):
+            report = run_live_sampling(
+                samples=[stock],
+                fetch_fn=mock_fetch,
+                date_str="2026-06-18",
+            )
+            fund_flow_result = [r for r in report.results if r.data_type == "fund_flow"][0]
+            assert fund_flow_result.status in (
+                SourceFreshnessStatus.HAS_DATA,
+                SourceFreshnessStatus.UNIT_UNVERIFIED,
+            )
+
+    def test_all_failed_scenario(self):
+        stock = SampleStock(symbol="600519.SH", name="贵州茅台", category="large_cap")
+
+        def mock_fetch(method, args, kwargs):
+            raise ConnectionError("all endpoints down")
+
+        with patch.dict(os.environ, {_LIVE_ENV: "1"}):
+            report = run_live_sampling(
+                samples=[stock],
+                fetch_fn=mock_fetch,
+                date_str="2026-06-18",
+            )
+            assert all(r.status == SourceFreshnessStatus.FAILED for r in report.results)
+            assert report.summary["red_count"] == 7
+            assert report.summary["has_failures"] is True
+
+
+# ── Test summary computation ──────────────────────────────────────────
+
+
+class TestComputeSummary:
+    def test_all_green(self):
+        results = [
+            SampleResult(data_type="quote", status=SourceFreshnessStatus.HAS_DATA),
+            SampleResult(data_type="fund_flow", status=SourceFreshnessStatus.NORMAL_NO_DATA),
+        ]
+        summary = _compute_summary(results)
+        assert summary["green_count"] == 2
+        assert summary["red_count"] == 0
+        assert summary["all_green"] is True
+
+    def test_has_failures(self):
+        results = [
+            SampleResult(data_type="quote", status=SourceFreshnessStatus.HAS_DATA),
+            SampleResult(data_type="fund_flow", status=SourceFreshnessStatus.FAILED),
+        ]
+        summary = _compute_summary(results)
+        assert summary["has_failures"] is True
+        assert summary["red_count"] == 1
+
+    def test_skipped(self):
+        results = [
+            SampleResult(data_type="quote", status="SKIPPED"),
+            SampleResult(data_type="fund_flow", status="SKIPPED"),
+        ]
+        summary = _compute_summary(results)
+        assert summary["skipped_count"] == 2
+
+    def test_by_data_type(self):
+        results = [
+            SampleResult(data_type="quote", data_type_label="实时行情", status=SourceFreshnessStatus.HAS_DATA),
+            SampleResult(data_type="quote", data_type_label="实时行情", status=SourceFreshnessStatus.FAILED),
+            SampleResult(data_type="fund_flow", data_type_label="个股资金流", status=SourceFreshnessStatus.HAS_DATA),
+        ]
+        summary = _compute_summary(results)
+        by_dt = summary["by_data_type"]
+        assert "quote" in by_dt
+        assert by_dt["quote"]["green"] == 1
+        assert by_dt["quote"]["red"] == 1
+        assert by_dt["fund_flow"]["green"] == 1
+
+    def test_fallback_triggered(self):
+        results = [
+            SampleResult(data_type="fund_flow", status=SourceFreshnessStatus.HAS_DATA, is_fallback=True),
+        ]
+        summary = _compute_summary(results)
+        assert summary["fallback_triggered_count"] == 1
+
+
+# ── Test report rendering ─────────────────────────────────────────────
+
+
+class TestRenderReport:
+    def test_basic_render(self):
+        report = LiveSamplingReport(
+            report_date="2026-06-18",
+            generated_at="2026-06-18 10:00:00",
+            samples=build_sample_universe(),
+        )
+        report.results = [
+            SampleResult(
+                data_type="fund_flow",
+                data_type_label="个股资金流",
+                symbol="600519.SH",
+                symbol_name="贵州茅台",
+                status=SourceFreshnessStatus.HAS_DATA,
+            )
+        ]
+        report.summary = _compute_summary(report.results)
+        md = render_live_sampling_report(report)
+        assert "Live Source Sampling" in md
+        assert "2026-06-18" in md
+        assert "fund_flow" in md or "个股资金流" in md
+        assert "[DATA-019]" in md
+
+    def test_env_gated_render(self):
+        report = LiveSamplingReport(
+            report_date="2026-06-18",
+            generated_at="2026-06-18 10:00:00",
+            env_gated=True,
+        )
+        md = render_live_sampling_report(report)
+        assert "Env gated" in md
+
+    def test_no_secrets_in_report(self):
+        """Report must not contain API keys or secrets."""
+        report = LiveSamplingReport(
+            report_date="2026-06-18",
+            generated_at="2026-06-18 10:00:00",
+            samples=build_sample_universe(),
+        )
+        report.results = [
+            SampleResult(
+                data_type="quote",
+                data_type_label="实时行情",
+                symbol="600519.SH",
+                status=SourceFreshnessStatus.HAS_DATA,
+            )
+        ]
+        report.summary = _compute_summary(report.results)
+        md = render_live_sampling_report(report)
+        # Check no common secret patterns
+        secret_patterns = ["api_key", "apikey", "secret", "password", "token=", "bearer "]
+        md_lower = md.lower()
+        for pattern in secret_patterns:
+            assert pattern not in md_lower, f"Found secret pattern '{pattern}' in report"
+
+    def test_special_notes_section(self):
+        report = LiveSamplingReport(report_date="2026-06-18")
+        report.results = []
+        report.summary = _compute_summary([])
+        md = render_live_sampling_report(report)
+        assert "Fund Flow" in md or "主力资金" in md
+        assert "LHB" in md or "龙虎榜" in md
+        assert "NORMAL_NO_DATA" in md
+        assert "NORMAL_NO_DATA" in md
+
+    def test_issues_section_for_failures(self):
+        report = LiveSamplingReport(
+            report_date="2026-06-18",
+            samples=[SampleStock(symbol="600519.SH", name="贵州茅台")],
+        )
+        report.results = [
+            SampleResult(
+                data_type="fund_flow",
+                data_type_label="个股资金流",
+                symbol="600519.SH",
+                symbol_name="贵州茅台",
+                status=SourceFreshnessStatus.FAILED,
+                error="ConnectionError",
+            )
+        ]
+        report.summary = _compute_summary(report.results)
+        md = render_live_sampling_report(report)
+        assert "Issues" in md or "RED" in md
+
+
+# ── Test file I/O ─────────────────────────────────────────────────────
+
+
+class TestFileIO:
+    def test_save_report(self):
+        report = LiveSamplingReport(
+            report_date="2026-06-18",
+            generated_at="2026-06-18 10:00:00",
+        )
+        report.results = [
+            SampleResult(data_type="quote", data_type_label="实时行情", symbol="600519.SH", status=SourceFreshnessStatus.HAS_DATA)
+        ]
+        report.summary = _compute_summary(report.results)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = save_live_sampling_report(report, output_dir=tmpdir)
+            assert os.path.exists(path)
+            assert "2026-06-18-live-smoke.md" in path
+            with open(path, encoding="utf-8") as f:
+                content = f.read()
+            assert "[DATA-019]" in content
+
+    def test_save_custom_filename(self):
+        report = LiveSamplingReport(report_date="2026-06-18")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = save_live_sampling_report(report, output_dir=tmpdir, filename="custom.md")
+            assert "custom.md" in path
+
+    def test_find_latest_report(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create reports for different dates
+            for date in ["2026-06-15", "2026-06-18", "2026-06-10"]:
+                path = os.path.join(tmpdir, f"{date}-live-smoke.md")
+                with open(path, "w") as f:
+                    f.write("# stub")
+
+            latest = find_latest_live_sampling_report(tmpdir)
+            assert latest is not None
+            assert "2026-06-18-live-smoke.md" in latest
+
+    def test_find_latest_none(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            assert find_latest_live_sampling_report(tmpdir) is None
+
+    def test_find_latest_ignores_other_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Non-matching file
+            with open(os.path.join(tmpdir, "freshness-2026-06-18.md"), "w") as f:
+                f.write("# stub")
+            with open(os.path.join(tmpdir, "live-smoke-2026-06-18.md"), "w") as f:
+                f.write("# stub")
+            assert find_latest_live_sampling_report(tmpdir) is None
+
+
+class TestNightlySection:
+    def test_build_section_with_report(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report = LiveSamplingReport(report_date="2026-06-18")
+            save_live_sampling_report(report, output_dir=tmpdir)
+            section = build_sampling_section_for_nightly_report(reports_dir=tmpdir)
+            assert "[DATA-019]" in section
+
+    def test_build_section_without_report(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            section = build_sampling_section_for_nightly_report(reports_dir=tmpdir)
+            assert "未生成" in section or "[DATA-019]" in section
+
+
+# ── Test env gate helper ──────────────────────────────────────────────
+
+
+class TestEnvGate:
+    def test_is_enabled_false_by_default(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(_LIVE_ENV, None)
+            assert is_live_sampling_enabled() is False
+
+    def test_is_enabled_true(self):
+        with patch.dict(os.environ, {_LIVE_ENV: "1"}):
+            assert is_live_sampling_enabled() is True
+
+
+# ── Test fixture responses ────────────────────────────────────────────
+
+
+class TestSampleResponses:
+    def test_all_responses_have_keys(self):
+        required = [
+            "quote_ok",
+            "fund_flow_ok",
+            "fund_flow_akshare_fail",
+            "fund_flow_astock_fallback",
+            "lhb_normal_no_data",
+            "lhb_has_data",
+            "lhb_failed",
+            "notice_ok",
+            "rating_ok",
+            "buyback_normal_no_data",
+            "buyback_has_data",
+            "report_ok",
+            "rate_limited",
+        ]
+        for key in required:
+            assert key in ALL_SAMPLE_RESPONSES, f"Missing fixture: {key}"
+
+    def test_fund_flow_ok_has_wanyuan(self):
+        assert "万元" in ALL_SAMPLE_RESPONSES["fund_flow_ok"]
+
+    def test_lhb_normal_no_data_marker(self):
+        assert "LHB_NORMAL_NO_DATA" in ALL_SAMPLE_RESPONSES["lhb_normal_no_data"]
+
+    def test_akshare_fail_has_error_pattern(self):
+        text = ALL_SAMPLE_RESPONSES["fund_flow_akshare_fail"]
+        assert "ProxyError" in text or "获取失败" in text
+
+
+# ── Test diagnosis builder ────────────────────────────────────────────
+
+
+class TestBuildDiagnosis:
+    def test_has_data_diagnosis(self):
+        result = SampleResult(
+            data_type="fund_flow",
+            data_type_label="个股资金流",
+            status=SourceFreshnessStatus.HAS_DATA,
+            record_count=20,
+            actual_vendor="cn_astock",
+        )
+        dt_def = {"special_note": "主力资金一般应可取"}
+        diag = _build_sample_diagnosis(result, dt_def)
+        assert "资金流" in diag
+        assert "正常" in diag
+        assert "注意" in diag
+
+    def test_normal_no_data_diagnosis(self):
+        result = SampleResult(
+            data_type="lhb",
+            data_type_label="龙虎榜",
+            status=SourceFreshnessStatus.NORMAL_NO_DATA,
+        )
+        dt_def = {"special_note": "龙虎榜无触发是 NORMAL_NO_DATA"}
+        diag = _build_sample_diagnosis(result, dt_def)
+        assert "无数据" in diag or "正常" in diag
+        assert "NORMAL_NO_DATA" in diag
+
+    def test_failed_diagnosis(self):
+        result = SampleResult(
+            data_type="fund_flow",
+            data_type_label="个股资金流",
+            status=SourceFreshnessStatus.FAILED,
+            error="ConnectionError",
+        )
+        dt_def = {"special_note": ""}
+        diag = _build_sample_diagnosis(result, dt_def)
+        assert "失败" in diag
+        assert "ConnectionError" in diag
+
+exec
+/bin/zsh -lc "sed -n '620,1040p' tradingagents/dataflows/live_source_sampling.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+                    category=stock.category,
+                    status="SKIPPED",
+                )
+                result.diagnosis = "未开启 live smoke（设置 TA_LIVE_DATA_SMOKE=1 启用）"
+                report.results.append(result)
+        report.summary = _compute_summary(report.results)
+        return report
+
+    # Live mode
+    report.env_gated = False
+    if fetch_fn is None:
+        fetch_fn = _default_fetch_fn
+
+    for stock in samples:
+        for dt_def in data_types:
+            result = _sample_single(fetch_fn, dt_def, stock, date_str)
+            report.results.append(result)
+
+    report.summary = _compute_summary(report.results)
+    return report
+
+
+def _compute_summary(results: List[SampleResult]) -> Dict[str, Any]:
+    """Compute summary statistics for the report."""
+    status_counts: Dict[str, int] = {s: 0 for s in SourceFreshnessStatus.ALL}
+    status_counts["SKIPPED"] = 0
+
+    for r in results:
+        status_counts[r.status] = status_counts.get(r.status, 0) + 1
+
+    total = len(results)
+    green = status_counts.get(SourceFreshnessStatus.HAS_DATA, 0) + status_counts.get(
+        SourceFreshnessStatus.NORMAL_NO_DATA, 0
+    )
+    yellow = status_counts.get(SourceFreshnessStatus.STALE, 0) + status_counts.get(
+        SourceFreshnessStatus.UNIT_UNVERIFIED, 0
+    )
+    red = status_counts.get(SourceFreshnessStatus.FAILED, 0) + status_counts.get(
+        SourceFreshnessStatus.RATE_LIMITED, 0
+    )
+
+    fallback_count = sum(1 for r in results if r.is_fallback)
+
+    # Per-data-type summary
+    by_data_type: Dict[str, Dict[str, Any]] = {}
+    for r in results:
+        dt = r.data_type
+        dt_stat = by_data_type.setdefault(
+            dt,
+            {
+                "total": 0,
+                "green": 0,
+                "yellow": 0,
+                "red": 0,
+                "skipped": 0,
+                "label": r.data_type_label,
+            },
+        )
+        dt_stat["total"] += 1
+        if r.status in (SourceFreshnessStatus.HAS_DATA, SourceFreshnessStatus.NORMAL_NO_DATA):
+            dt_stat["green"] += 1
+        elif r.status in (SourceFreshnessStatus.STALE, SourceFreshnessStatus.UNIT_UNVERIFIED):
+            dt_stat["yellow"] += 1
+        elif r.status in (SourceFreshnessStatus.FAILED, SourceFreshnessStatus.RATE_LIMITED):
+            dt_stat["red"] += 1
+        elif r.status == "SKIPPED":
+            dt_stat["skipped"] += 1
+
+    return {
+        "total_checks": total,
+        "status_counts": status_counts,
+        "green_count": green,
+        "yellow_count": yellow,
+        "red_count": red,
+        "skipped_count": status_counts.get("SKIPPED", 0),
+        "fallback_triggered_count": fallback_count,
+        "all_green": red == 0 and yellow == 0,
+        "has_failures": red > 0,
+        "has_warnings": yellow > 0,
+        "by_data_type": by_data_type,
+        "overall_status": (
+            "all_green"
+            if red == 0 and yellow == 0
+            else ("has_failures" if red > 0 else "has_warnings")
+        ),
+    }
+
+
+# ── Markdown rendering ────────────────────────────────────────────────
+
+
+def render_live_sampling_report(report: LiveSamplingReport) -> str:
+    """Render the live sampling report as Markdown."""
+    lines: List[str] = []
+    lines.append("# Live Source Sampling Health Report")
+    lines.append("")
+    lines.append(f"- **Date**: {report.report_date}")
+    lines.append(f"- **Generated at**: {report.generated_at}")
+    lines.append(
+        f"- **Env gated**: {'Yes (TA_LIVE_DATA_SMOKE not set)' if report.env_gated else 'No (live calls executed)'}"
+    )
+    lines.append("")
+
+    # Sample universe
+    lines.append("## Sample Universe")
+    lines.append("")
+    lines.append("| Symbol | Name | Category |")
+    lines.append("|--------|------|----------|")
+    for s in report.samples:
+        lines.append(f"| {s.symbol} | {s.name} | {s.category_cn or s.category} |")
+    lines.append("")
+
+    # Summary
+    s = report.summary
+    lines.append("## Summary")
+    lines.append("")
+    lines.append(f"- **Total checks**: {s.get('total_checks', 0)}")
+    lines.append(f"- **Green (OK)**: {s.get('green_count', 0)}")
+    lines.append(f"- **Yellow (Warning)**: {s.get('yellow_count', 0)}")
+    lines.append(f"- **Red (Failed)**: {s.get('red_count', 0)}")
+    lines.append(f"- **Skipped**: {s.get('skipped_count', 0)}")
+    lines.append(f"- **Fallback triggered**: {s.get('fallback_triggered_count', 0)}")
+    overall = s.get("overall_status", "unknown")
+    overall_label = {
+        "all_green": "ALL GREEN",
+        "has_failures": "HAS FAILURES",
+        "has_warnings": "HAS WARNINGS",
+    }.get(overall, overall)
+    lines.append(f"- **Overall**: {overall_label}")
+    lines.append("")
+
+    # Per-data-type summary
+    by_dt = s.get("by_data_type", {})
+    if by_dt:
+        lines.append("## Per-Data-Type Summary")
+        lines.append("")
+        lines.append("| Data Type | Total | Green | Yellow | Red | Skipped |")
+        lines.append("|-----------|-------|-------|--------|-----|---------|")
+        for dt, dt_stat in by_dt.items():
+            lines.append(
+                f"| {dt_stat.get('label', dt)} | {dt_stat['total']} | "
+                f"{dt_stat['green']} | {dt_stat['yellow']} | "
+                f"{dt_stat['red']} | {dt_stat['skipped']} |"
+            )
+        lines.append("")
+
+    # Main results table
+    lines.append("## Sampling Results")
+    lines.append("")
+    lines.append(
+        "| Data Type | Symbol | Status | Vendor | Fallback | Latency (ms) | "
+        "Records | Unit | As Of | Error |"
+    )
+    lines.append(
+        "|-----------|--------|--------|--------|----------|-------------|"
+        "---------|------|-------|-------|"
+    )
+    for r in report.results:
+        vendor_info = r.actual_vendor or r.primary_vendor or "-"
+        fb_info = "Yes" if r.is_fallback else "-"
+        unit_str = r.unit if r.unit else "-"
+        if r.unit_verified:
+            unit_str += " ✓"
+        as_of_str = r.as_of or "-"
+        error_str = (r.error[:40] + "...") if len(r.error) > 40 else (r.error or "-")
+        lines.append(
+            f"| {r.data_type_label} | {r.symbol} | {r.label_cn} ({r.status}) | "
+            f"{vendor_info} | {fb_info} | {r.latency_ms:.0f} | "
+            f"{r.record_count} | {unit_str} | {as_of_str} | {error_str} |"
+        )
+    lines.append("")
+
+    # Issues & warnings
+    problem_results = [
+        r
+        for r in report.results
+        if r.status
+        not in (
+            SourceFreshnessStatus.HAS_DATA,
+            SourceFreshnessStatus.NORMAL_NO_DATA,
+            "SKIPPED",
+        )
+    ]
+    if problem_results:
+        lines.append("## Issues & Warnings")
+        lines.append("")
+        for r in problem_results:
+            icon = "RED" if r.traffic_light == "red" else "YELLOW"
+            lines.append(f"### {icon}: {r.data_type_label} — {r.symbol} ({r.symbol_name})")
+            lines.append(f"- **Status**: `{r.status}`")
+            lines.append(f"- **Primary vendor**: {r.primary_vendor or 'N/A'}")
+            lines.append(f"- **Actual vendor**: {r.actual_vendor or 'N/A'}")
+            if r.error:
+                lines.append(f"- **Error**: {r.error}")
+            lines.append(f"- **Diagnosis**: {r.diagnosis}")
+            lines.append("")
+
+    # Fund flow & LHB special notes
+    lines.append("## Special Notes: Fund Flow & LHB")
+    lines.append("")
+    lines.append(
+        "- **主力资金 (fund_flow)**: 一般应可取。如果 FAILED，说明 fallback 链路断裂，"
+        "需检查 cn_astock/Eastmoney push2his 是否可用。"
+    )
+    lines.append(
+        "- **龙虎榜 (lhb)**: 非异动日无龙虎榜是 NORMAL_NO_DATA（正常），"
+        "不是接口失败。只有 FAILED 才需要告警。"
+    )
+    lines.append("")
+
+    lines.append("---")
+    lines.append("*Generated by live_source_sampling.py — [DATA-019] live_source_sampling*")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+# ── File I/O ──────────────────────────────────────────────────────────
+
+
+def save_live_sampling_report(
+    report: LiveSamplingReport,
+    output_dir: str = "docs/data_source_reports",
+    filename: Optional[str] = None,
+) -> str:
+    """Save report as Markdown. Returns the file path.
+
+    Output filename format: ``YYYY-MM-DD-live-smoke.md``
+    (per DATA-019 task spec).
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    if filename is None:
+        filename = f"{report.report_date}-live-smoke.md"
+
+    filepath = os.path.join(output_dir, filename)
+    content = render_live_sampling_report(report)
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    return filepath
+
+
+def find_latest_live_sampling_report(
+    reports_dir: str = "docs/data_source_reports",
+) -> Optional[str]:
+    """Find the latest live-sampling report file."""
+    if not os.path.isdir(reports_dir):
+        return None
+
+    files = []
+    for f in os.listdir(reports_dir):
+        if not f.endswith("-live-smoke.md"):
+            continue
+        date_part = f.replace("-live-smoke.md", "")
+        files.append((date_part, os.path.join(reports_dir, f)))
+
+    if not files:
+        return None
+
+    files.sort(key=lambda x: x[0], reverse=True)
+    return files[0][1]
+
+
+# ── Nightly report integration ────────────────────────────────────────
+
+
+def build_sampling_section_for_nightly_report(
+    reports_dir: str = "docs/data_source_reports",
+) -> str:
+    """Build a sampling section for the nightly auto-dev report.
+
+    Tries to find the latest saved report; if none exists, returns a stub.
+    """
+    report_path = find_latest_live_sampling_report(reports_dir)
+    if report_path:
+        try:
+            with open(report_path, encoding="utf-8") as f:
+                return f.read()
+        except Exception:
+            pass
+
+    # No report available — return stub
+    lines = [
+        "## 数据源实盘抽样健康日报",
+        "",
+        "- **状态**: 未生成（请运行 `TA_LIVE_DATA_SMOKE=1 python scripts/run_live_sampling.py`）",
+        "",
+        "---",
+        "*Generated by live_source_sampling.py — [DATA-019]*",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+# ── Env gate helper ───────────────────────────────────────────────────
+
+
+def is_live_sampling_enabled() -> bool:
+    """Check if live sampling is enabled (TA_LIVE_DATA_SMOKE=1)."""
+    return os.getenv(_LIVE_ENV, "").strip() == "1"
+
+
+# ── Sample fixtures (for testing) ─────────────────────────────────────
+# Representative fixture responses for testing classification logic.
+# These mirror real provider output formats without hitting live APIs.
+
+_SAMPLE_RESPONSES: Dict[str, Dict[str, str]] = {
+    # quote responses (JSON-like)
+    "quote_ok": '{"600519.SH": {"price": 1800.0, "open": 1790.0, "volume": 12345678, "amount": 22222222222, "source": "tencent"}}',
+    "quote_empty": "{}",
+    # fund_flow responses
+    "fund_flow_ok": (
+        "600519.SH 近20日主力资金净流向（Eastmoney push2his，单位：万元）：\n"
+        "日期 | 主力净流入 | 小单净流入 | 中单净流入 | 大单净流入 | 超大单净流入\n"
+        "2026-06-17 | 1234.56 | -500.00 | 200.00 | 600.00 | 434.56\n"
+        "2026-06-16 | -800.00 | 300.00 | -100.00 | -400.00 | -300.00\n"
+    ),
+    "fund_flow_akshare_fail": "个股资金流向数据获取失败：ProxyError: Cannot connect to proxy.",
+    "fund_flow_astock_fallback": (
+        "600519.SH 近20日主力资金净流向（Eastmoney push2his，单位：万元）：\n"
+        "日期 | 主力净流入 | 小单净流入\n"
+        "2026-06-17 | 1234.56 | -500.00\n"
+    ),
+    # lhb responses
+    "lhb_normal_no_data": (
+        "600519.SH [G-007] LHB_NORMAL_NO_DATA: 在 2026-06-18 无龙虎榜数据（非异动日属正常）。"
+    ),
+    "lhb_has_data": (
+        "600519.SH [G-007] LHB_HAS_DATA: 龙虎榜明细（2026-06-18，Eastmoney datacenter）：\n"
+        "- 涨幅偏离 | 净买 1234.5万 | 买入 2000.0万 | 卖出 765.5万\n"
+    ),
+    "lhb_failed": "龙虎榜数据获取失败：ConnectionError",
+    # notice responses
+    "notice_ok": (
+        "## Announcements for 600519.SH (3 total)\n\n"
+        "- 2026-06-17 | 定期报告 | 贵州茅台2025年年度报告\n"
+        "- 2026-06-15 | 股东大会 | 关于召开2025年年度股东大会的通知\n"
+    ),
+    "notice_empty": "## Announcements for 002415.SZ (0 total)",
+    # rating responses
+    "rating_ok": (
+        "## Ratings for 600519.SH (2 total)\n"
+        "- 2026-06-17 | 买入 | 目标价 2000.0 | 中信证券\n"
+        "- 2026-06-10 | 增持 | 目标价 1950.0 | 国泰君安\n"
+    ),
+    # buyback responses
+    "buyback_normal_no_data": "002415.SZ [DATA-013] BUYBACK_NORMAL_NO_DATA: 该股无回购计划或进展数据。",
+    "buyback_has_data": (
+        "002415.SZ [DATA-013] BUYBACK_HAS_DATA: 回购数据（Eastmoney datacenter）：\n"
+        "- 2026-06-01 | 回购金额 5000.0万 | 进度 实施中\n"
+    ),
+    # report responses
+    "report_ok": (
+        "## Research Reports for 600519.SH (5 total)\n"
+        "- 2026-06-17 | 中信证券 | 买入 | 茅台量价齐升\n"
+        "- 2026-06-15 | 国泰君安 | 增持 | 高端酒持续发力\n"
+    ),
+    "report_empty": "## Research Reports for 603629.SH (0 total)",
+    # stale
+    "fund_flow_stale": (
+        "600519.SH 近20日主力资金净流向（Eastmoney push2his，单位：万元）：\n"
+        "日期 | 主力净流入 | 小单净流入\n"
+        "2026-05-01 | 1234.56 | -500.00\n"
+    ),
+    # rate limited
+    "rate_limited": "HTTPError 429: Too Many Requests — 请求过于频繁",
+}
+
+ALL_SAMPLE_RESPONSES = _SAMPLE_RESPONSES
+
+exec
+/bin/zsh -lc "grep -R \"def classify_source_status\\|class SourceFreshnessStatus\" -n tradingagents/dataflows/source_freshness_report.py && sed -n '1,180p' tradingagents/dataflows/source_freshness_report.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/dataflows/source_freshness_report.py:49:class SourceFreshnessStatus:
+tradingagents/dataflows/source_freshness_report.py:267:def classify_source_status(
+# [DATA-018] source_freshness_report
+"""A-share key data source freshness & fallback visualization daily report.
+
+Extends DATA-017 fund_flow/LHB health inspection to ALL key sources
+(quote, ohlcv, fund_flow, lhb, margin_trading, notice, report, rating,
+news, global_news, financials, insider, zt_pool, hot_stocks, buyback).
+
+Provides 6-state classification:
+
+  - HAS_DATA          — successful retrieval with verified data
+  - NORMAL_NO_DATA    — queried successfully, stock has no data (normal)
+  - STALE             — data older than threshold (e.g. > 7 days)
+  - FAILED            — API failure / parse error / timeout
+  - RATE_LIMITED      — 429 / rate-limit triggered
+  - UNIT_UNVERIFIED   — data present but unit not verified
+
+Usage (library):
+    from tradingagents.dataflows.source_freshness_report import (
+        SourceFreshnessStatus,
+        SourceFreshnessEntry,
+        run_source_freshness_report,
+        render_source_freshness_report,
+        save_source_freshness_report,
+    )
+    report = run_source_freshness_report(raw_evidence)
+    print(render_source_freshness_report(report))
+    save_source_freshness_report(report, "docs/data_source_reports")
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
+
+from .source_catalog import (
+    DataType,
+    Freshness,
+    get_all_data_types,
+    get_fallback_chain,
+    get_primary_source,
+    get_sources_for_type,
+)
+
+
+# ── 6-State Health Classification ─────────────────────────────────────
+
+class SourceFreshnessStatus:
+    HAS_DATA = "HAS_DATA"
+    NORMAL_NO_DATA = "NORMAL_NO_DATA"
+    STALE = "STALE"
+    FAILED = "FAILED"
+    RATE_LIMITED = "RATE_LIMITED"
+    UNIT_UNVERIFIED = "UNIT_UNVERIFIED"
+
+    ALL = [HAS_DATA, NORMAL_NO_DATA, STALE, FAILED, RATE_LIMITED, UNIT_UNVERIFIED]
+
+    # Traffic-light mapping for visualization
+    TRAFFIC_LIGHT = {
+        HAS_DATA: "green",
+        NORMAL_NO_DATA: "green",
+        STALE: "yellow",
+        FAILED: "red",
+        RATE_LIMITED: "red",
+        UNIT_UNVERIFIED: "yellow",
+    }
+
+    # Chinese labels for display
+    LABEL_CN = {
+        HAS_DATA: "正常",
+        NORMAL_NO_DATA: "正常无数据",
+        STALE: "过期",
+        FAILED: "故障",
+        RATE_LIMITED: "限流",
+        UNIT_UNVERIFIED: "单位未校验",
+    }
+
+
+# ── Rate-limit detection patterns ─────────────────────────────────────
+
+_RATE_LIMIT_PATTERNS = [
+    "429", "rate limit", "rate_limit", "too many requests",
+    "请求过于频繁", "限流", "频繁访问",
+]
+
+_FAILURE_PATTERNS = [
+    "获取失败", "ProxyError", "ConnectionError", "不可用",
+    "TimeoutError", "Max retries exceeded", "Unable to connect",
+    "SSLError", "Connection refused", "Read timed out",
+    "HTTPError", "JSONDecodeError",
+]
+
+_NORMAL_NO_DATA_PATTERNS = [
+    "NORMAL_NO_DATA", "无数据", "空", "暂无", "未查询到",
+    "NOT_QUERIED", "查询未触发",
+]
+
+_RATE_LIMIT_RISK_TO_NOTE = {
+    "low": "低风险",
+    "medium": "中风险",
+    "high": "高风险",
+}
+
+
+# ── Data Models ────────────────────────────────────────────────────────
+
+@dataclass
+class SourceFreshnessEntry:
+    """Per-data-type source freshness entry."""
+    data_type: str = ""
+    label: str = ""
+    status: str = SourceFreshnessStatus.FAILED
+    primary_vendor: str = ""
+    fallback_vendor: str = ""
+    fallback_chain: List[str] = field(default_factory=list)
+    actual_vendor: str = ""
+    endpoint: str = ""
+    as_of: str = ""
+    latest_data_date: str = ""
+    unit: str = ""
+    unit_verified: bool = False
+    is_fallback: bool = False
+    record_count: int = 0
+    error: str = ""
+    rate_limit_risk: str = ""
+    diagnosis: str = ""
+    freshness_catalog: str = ""
+
+    @property
+    def traffic_light(self) -> str:
+        return SourceFreshnessStatus.TRAFFIC_LIGHT.get(self.status, "red")
+
+    @property
+    def label_cn(self) -> str:
+        return SourceFreshnessStatus.LABEL_CN.get(self.status, "未知")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "data_type": self.data_type,
+            "label": self.label,
+            "status": self.status,
+            "status_label_cn": self.label_cn,
+            "traffic_light": self.traffic_light,
+            "primary_vendor": self.primary_vendor,
+            "fallback_vendor": self.fallback_vendor,
+            "fallback_chain": self.fallback_chain,
+            "actual_vendor": self.actual_vendor,
+            "endpoint": self.endpoint,
+            "as_of": self.as_of,
+            "latest_data_date": self.latest_data_date,
+            "unit": self.unit,
+            "unit_verified": self.unit_verified,
+            "is_fallback": self.is_fallback,
+            "record_count": self.record_count,
+            "error": self.error,
+            "rate_limit_risk": self.rate_limit_risk,
+            "diagnosis": self.diagnosis,
+            "freshness_catalog": self.freshness_catalog,
+        }
+
+
+@dataclass
+class SourceFreshnessReport:
+    """Top-level source freshness report."""
+    report_date: str = ""
+    generated_at: str = ""
+    symbol: str = ""
+    entries: List[SourceFreshnessEntry] = field(default_factory=list)
+    summary: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "report_date": self.report_date,
+            "generated_at": self.generated_at,
+            "symbol": self.symbol,
+            "entries": [e.to_dict() for e in self.entries],
+            "summary": self.summary,
+        }
+
+
+exec
+/bin/zsh -lc "grep -R \"def route_to_vendor\\|def get_last_hit_vendor\" -n tradingagents/dataflows/interface.py && sed -n '120,230p' tradingagents/dataflows/interface.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/dataflows/interface.py:63:def get_last_hit_vendor(method: str) -> str:
+tradingagents/dataflows/interface.py:158:def route_to_vendor(method: str, *args, **kwargs):
+
+def get_category_for_method(method: str) -> str:
+    """Get the category that contains the specified method."""
+    for category, info in TOOLS_CATEGORIES.items():
+        if method in info["tools"]:
+            return category
+    raise ValueError(f"Method '{method}' not found in any category")
+
+
+def get_vendor(category: str, method: str = None) -> str:
+    """Get configured vendor for category or tool method."""
+    config = get_config()
+
+    if method:
+        tool_vendors = config.get("tool_vendors", {})
+        if method in tool_vendors:
+            return tool_vendors[method]
+
+    return config.get("data_vendors", {}).get(category, "yfinance")
+
+
+def _resolve_vendor_chain(method: str, configured_vendor: str) -> list[str]:
+    configured = [v.strip() for v in configured_vendor.split(",") if v.strip()]
+    fallback = configured.copy()
+
+    for provider_name in _registry.list_names():
+        if provider_name in fallback:
+            continue
+        provider = _registry.get(provider_name)
+        # 占位 provider（如 cn_stub）不自动追加进 fallback chain，
+        # 避免污染日志和兜底链；用户显式配置仍可强制使用。
+        if getattr(provider, "is_placeholder", False):
+            continue
+        fallback.append(provider_name)
+
+    return fallback
+
+
+def route_to_vendor(method: str, *args, **kwargs):
+    """Route method calls to provider implementations with fallback support."""
+    category = get_category_for_method(method)
+    vendor_config = get_vendor(category, method)
+    fallback_vendors = _resolve_vendor_chain(method, vendor_config)
+    args_summary = _summarize_args(args, kwargs)
+    last_exc = None
+    _trace(
+        f"method={method} {args_summary} category={category} "
+        f"configured='{vendor_config}' chain={fallback_vendors}"
+    )
+
+    for vendor in fallback_vendors:
+        provider = _registry.get(vendor)
+        if provider is None:
+            _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-registered")
+            continue
+
+        impl_func = getattr(provider, method, None)
+        if impl_func is None:
+            _trace(f"method={method} {args_summary} vendor={vendor} status=skip reason=not-implemented")
+            continue
+
+        try:
+            result = impl_func(*args, **kwargs)
+            if _is_failure_result(result):  # [DATA-P0-FUND-ROUTE] fund_flow_fallback_truth
+                _trace(
+                    f"method={method} {args_summary} vendor={vendor} status=fallback "
+                    f"reason=failure-string-detected"
+                )
+                continue
+            _last_hit_vendor[method] = vendor  # [N-003] cn_astock_raw_evidence
+            _trace(f"method={method} {args_summary} vendor={vendor} status=hit")
+            return result
+        except (AlphaVantageRateLimitError, NotImplementedError) as exc:
+            last_exc = exc
+            # Try next provider for transient/routing issues or placeholder providers.
+            _trace(
+                f"method={method} {args_summary} vendor={vendor} status=fallback "
+                f"reason={type(exc).__name__}: {exc}"
+            )
+            continue
+        except Exception as exc:
+            # Provider-specific runtime/parsing errors (e.g., schema changes, KeyError)
+            # should not terminate the full chain; fall through to next vendor.
+            last_exc = exc
+            _trace(
+                f"method={method} {args_summary} vendor={vendor} status=fallback "
+                f"reason={type(exc).__name__}: {exc}"
+            )
+            continue
+
+    _trace(f"method={method} {args_summary} status=failed reason=no-available-vendor")
+    if last_exc is not None:
+        raise RuntimeError(
+            f"No available vendor for method '{method}'. "
+            f"Configured chain: {fallback_vendors}. "
+            f"Last error: {type(last_exc).__name__}: {last_exc}"
+        ) from last_exc
+    raise RuntimeError(
+        f"No available vendor for method '{method}'. "
+        f"Configured chain: {fallback_vendors}"
+    )
+
+exec
+/bin/zsh -lc "grep -R \"def get_realtime_quotes\\|def get_individual_fund_flow\\|def get_lhb_detail\\|def get_announcements\\|def get_ratings\\|def get_buybacks\\|def get_research_report\" -n tradingagents/dataflows | head -50" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/dataflows/providers/cn_akshare_provider.py:903:    def get_realtime_quotes(self, symbols: list[str]) -> str:
+tradingagents/dataflows/providers/cn_akshare_provider.py:1106:    def get_individual_fund_flow(self, symbol: str) -> str:
+tradingagents/dataflows/providers/cn_akshare_provider.py:1122:    def get_lhb_detail(self, symbol: str, date: str, *, force: bool = False) -> str:
+tradingagents/dataflows/providers/cn_akshare_provider.py:1205:    def get_research_report(self, symbol: str) -> str:
+tradingagents/dataflows/providers/cn_akshare_provider.py:1233:    def get_ratings(self, symbol: str) -> str:
+tradingagents/dataflows/providers/cn_akshare_provider.py:1261:    def get_buybacks(self, symbol: str) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:760:    def get_individual_fund_flow(self, symbol: str) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:845:    def get_lhb_detail(self, symbol: str, date: str, *, force: bool = False) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:893:    def get_realtime_quotes(self, symbols: list[str]) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:957:    def get_research_report(self, symbol: str) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:1016:    def get_research_reports(self, symbol: str, max_pages: int = 3) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:1020:    def get_ratings(self, symbol: str) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:1146:    def get_announcements(self, symbol: str, page_size: int = 20) -> str:
+tradingagents/dataflows/providers/cn_astock_provider.py:1294:    def get_buybacks(self, symbol: str) -> str:
+tradingagents/dataflows/providers/base.py:59:    def get_realtime_quotes(self, symbols: list[str]) -> str:
+
+exec
+/bin/zsh -lc "sed -n '250,330p' tradingagents/dataflows/source_freshness_report.py; sed -n '1,120p' tradingagents/dataflows/interface.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    return any(p.lower() in lower for p in _RATE_LIMIT_PATTERNS)
+
+
+def _detect_failed(error_str: str) -> bool:
+    """Check if error/raw string indicates failure."""
+    if not error_str:
+        return False
+    return any(p in error_str for p in _FAILURE_PATTERNS)
+
+
+def _detect_normal_no_data(value: str) -> bool:
+    """Check if value string indicates normal no-data."""
+    if not value:
+        return False
+    return any(p in value for p in _NORMAL_NO_DATA_PATTERNS)
+
+
+def classify_source_status(
+    raw_value: Any = None,
+    status: str = "",
+    error: str = "",
+    as_of: str = "",
+    unit_verified: Optional[bool] = None,
+    is_dict_entry: bool = False,
+) -> str:
+    """Classify a source's health into one of 6 states.
+
+    Priority order:
+      1. RATE_LIMITED — error contains rate-limit patterns
+      2. FAILED — status is FAILED or error contains failure patterns
+      3. STALE — data exists but as_of is too old
+      4. UNIT_UNVERIFIED — data exists but unit not verified
+      5. NORMAL_NO_DATA — queried successfully, no data
+      6. HAS_DATA — valid data present
+    """
+    # 1. Rate-limited check first (most specific failure)
+    if error and _detect_rate_limited(error):
+        return SourceFreshnessStatus.RATE_LIMITED
+
+    # 2. Explicit FAILED status
+    if status == "FAILED":
+        # Check if failure is actually rate limiting
+        if error and _detect_rate_limited(error):
+            return SourceFreshnessStatus.RATE_LIMITED
+        return SourceFreshnessStatus.FAILED
+
+    # 2b. Check failure patterns in raw value or error
+    if isinstance(raw_value, str) and _detect_failed(raw_value):
+        return SourceFreshnessStatus.FAILED
+    if error and _detect_failed(error):
+        return SourceFreshnessStatus.FAILED
+
+    # 3. NOT_QUERIED maps to NORMAL_NO_DATA
+    if status == "NOT_QUERIED":
+        return SourceFreshnessStatus.NORMAL_NO_DATA
+
+    # 4. NORMAL_NO_DATA
+    if status == "NORMAL_NO_DATA":
+        return SourceFreshnessStatus.NORMAL_NO_DATA
+    if isinstance(raw_value, str) and _detect_normal_no_data(raw_value):
+        return SourceFreshnessStatus.NORMAL_NO_DATA
+
+    # 5. HAS_DATA with sub-classifications
+    if status == "HAS_DATA" or (raw_value is not None and str(raw_value).strip()):
+        # 5a. Stale check
+        if _is_stale_date(as_of):
+            return SourceFreshnessStatus.STALE
+
+        # 5b. Unit unverified check (only for numeric data types)
+        if unit_verified is False:
+            return SourceFreshnessStatus.UNIT_UNVERIFIED
+
+        # 5c. All good
+        return SourceFreshnessStatus.HAS_DATA
+
+    # 6. Empty value with no status
+    if not raw_value and not status:
+        return SourceFreshnessStatus.NORMAL_NO_DATA
+
+    return SourceFreshnessStatus.FAILED
+
+import os
+
+from .alpha_vantage_common import AlphaVantageRateLimitError
+from .config import get_config
+from .providers import build_default_registry
+
+# Tools organized by category
+TOOLS_CATEGORIES = {
+    "core_stock_apis": {
+        "description": "OHLCV stock price data",
+        "tools": ["get_stock_data"],
+    },
+    "technical_indicators": {
+        "description": "Technical analysis indicators",
+        "tools": ["get_indicators"],
+    },
+    "fundamental_data": {
+        "description": "Company fundamentals",
+        "tools": [
+            "get_fundamentals",
+            "get_balance_sheet",
+            "get_cashflow",
+            "get_income_statement",
+        ],
+    },
+    "news_data": {
+        "description": "News and insider data",
+        "tools": [
+            "get_news",
+            "get_global_news",
+            "get_insider_transactions",
+        ],
+    },
+    "realtime_data": {
+        "description": "Real-time market quotes",
+        "tools": ["get_realtime_quotes"],
+    },
+    "cn_market_data": {
+        "description": "China A-share market sentiment and fund flow data",
+        "tools": [
+            "get_board_fund_flow",
+            "get_individual_fund_flow",
+            "get_lhb_detail",
+            "get_zt_pool",
+            "get_hot_stocks_xq",
+            "get_announcements",  # [DATA-P0-603629] astock_source_fallback
+            "get_margin_trading",  # [DATA-010] margin_trading_raw_evidence
+            "get_research_report",  # [DATA-011] research_report_raw_evidence
+            "get_ratings",  # [DATA-012] rating_raw_evidence
+            "get_buybacks",  # [DATA-013] buyback_raw_evidence
+        ],
+    },
+}
+
+_registry = build_default_registry()
+
+VENDOR_LIST = _registry.list_names()
+
+# [N-003] cn_astock_raw_evidence: track which vendor last handled each method
+_last_hit_vendor: dict[str, str] = {}
+
+
+def get_last_hit_vendor(method: str) -> str:
+    """Return the vendor name that most recently produced a successful hit for *method*."""
+    return _last_hit_vendor.get(method, "")
+
+
+def _is_trace_enabled() -> bool:
+    env_value = os.getenv("TA_TRACE")
+    if env_value is not None:
+        return env_value.strip().lower() in ("1", "true", "yes", "on")
+
+    config = get_config()
+    return bool(config.get("provider_trace", True))
+
+
+def _trace(msg: str) -> None:
+    if _is_trace_enabled():
+        print(f"[provider-trace] {msg}", flush=True)
+
+
+_FAILURE_RESULT_PATTERNS = (
+    "数据获取失败",
+    "ProxyError",
+    "ConnectionError",
+    "Max retries exceeded",
+    "Unable to connect",
+    "暂不可用",
+    "获取失败",
+    "TimeoutError",
+    "ConnectTimeout",
+    "ReadTimeout",
+)
+
+
+def _is_failure_result(result) -> bool:
+    if not isinstance(result, str):
+        return False
+    return any(p in result for p in _FAILURE_RESULT_PATTERNS)
+
+
+_TRACE_KEYS = ("symbol", "ticker", "start_date", "end_date", "curr_date", "indicator")
+
+
+def _summarize_args(args: tuple, kwargs: dict) -> str:
+    """格式化首参数（通常是 symbol）和常见日期/指标键，用于 trace 日志定位。"""
+    parts = []
+    if args:
+        # 约定：所有 provider 方法首参数为 symbol/ticker
+        parts.append(f"symbol={args[0]!r}")
+        if len(args) >= 2:
+            parts.append(f"arg2={args[1]!r}")
+        if len(args) >= 3:
+            parts.append(f"arg3={args[2]!r}")
+    for k, v in kwargs.items():
+        if k in _TRACE_KEYS:
+            parts.append(f"{k}={v!r}")
+    return " ".join(parts)
+
+
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/dataflows/live_source_sampling.py | sed -n '190,245p;340,440p;520,570p'; nl -ba docs/TASKS.md | sed -n '3138,3148p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   190	        return {
+   191	            "report_date": self.report_date,
+   192	            "generated_at": self.generated_at,
+   193	            "samples": [s.to_dict() for s in self.samples],
+   194	            "results": [r.to_dict() for r in self.results],
+   195	            "summary": self.summary,
+   196	            "env_gated": self.env_gated,
+   197	        }
+   198	
+   199	
+   200	# ── Data type label mapping (subset of DATA-018 labels) ───────────────
+   201	
+   202	_DATA_TYPE_LABELS: Dict[str, str] = {
+   203	    "quote": "实时行情",
+   204	    "fund_flow": "个股资金流",
+   205	    "lhb": "龙虎榜",
+   206	    "notice": "公告",
+   207	    "rating": "评级",
+   208	    "buyback": "回购",
+   209	    "report": "研报",
+   210	}
+   211	
+   212	
+   213	# ── Data type → provider method definitions ───────────────────────────
+   214	#
+   215	# Each definition maps a data_type to:
+   216	#   - method: the CnAstockProvider method name
+   217	#   - args_template: how to build call args from (symbol, date)
+   218	#   - kwargs: extra kwargs
+   219	#   - expected_unit: the unit we expect to see in a healthy response
+   220	#   - special_note: optional note for fund_flow/lhb semantics
+   221	
+   222	
+   223	def _make_data_type_definitions() -> List[Dict[str, Any]]:
+   224	    return [
+   225	        {
+   226	            "data_type": "quote",
+   227	            "method": "get_realtime_quotes",
+   228	            "args_template": (["{symbol}"],),
+   229	            "kwargs": {},
+   230	            "expected_unit": "元",
+   231	            "special_note": "",
+   232	        },
+   233	        {
+   234	            "data_type": "fund_flow",
+   235	            "method": "get_individual_fund_flow",
+   236	            "args_template": ("{symbol}",),
+   237	            "kwargs": {},
+   238	            "expected_unit": "万元",
+   239	            "special_note": "主力资金一般应可取；失败需 fallback 到 cn_astock/Eastmoney push2his",
+   240	        },
+   241	        {
+   242	            "data_type": "lhb",
+   243	            "method": "get_lhb_detail",
+   244	            "args_template": ("{symbol}", "{date}"),
+   245	            "kwargs": {"force": True},
+   340	    specific overrides (e.g. LHB NORMAL_NO_DATA patterns).
+   341	    """
+   342	    from .source_freshness_report import classify_source_status
+   343	
+   344	    # If we have an explicit LHB normal-no-data marker, honor it.
+   345	    if isinstance(raw, str):
+   346	        s = raw.strip()
+   347	        if data_type == "lhb" and "LHB_NORMAL_NO_DATA" in s:
+   348	            return SourceFreshnessStatus.NORMAL_NO_DATA
+   349	        if data_type == "buyback" and "BUYBACK_NORMAL_NO_DATA" in s:
+   350	            return SourceFreshnessStatus.NORMAL_NO_DATA
+   351	
+   352	    status_hint = ""
+   353	    if isinstance(raw, str) and "LHB_NORMAL_NO_DATA" in raw:
+   354	        status_hint = "NORMAL_NO_DATA"
+   355	    if isinstance(raw, str) and "BUYBACK_NORMAL_NO_DATA" in raw:
+   356	        status_hint = "NORMAL_NO_DATA"
+   357	
+   358	    return classify_source_status(
+   359	        raw_value=raw,
+   360	        status=status_hint,
+   361	        error=error,
+   362	        as_of=as_of,
+   363	        unit_verified=unit_verified,
+   364	    )
+   365	
+   366	
+   367	# ── Unit detection helpers ────────────────────────────────────────────
+   368	
+   369	_WAN_YUAN_MARKERS = ["单位：万元", "单位:万元", "（万元）", "(万元)"]
+   370	_YUAN_MARKERS = ["单位：元", "单位:元"]
+   371	_TIAO_MARKERS = ["条", "total"]
+   372	
+   373	
+   374	def _detect_unit_from_text(text: str) -> Tuple[str, bool]:
+   375	    """Detect unit from response text. Returns (unit, unit_verified)."""
+   376	    if not text:
+   377	        return ("", False)
+   378	    for marker in _WAN_YUAN_MARKERS:
+   379	        if marker in text:
+   380	            return ("万元", True)
+   381	    for marker in _YUAN_MARKERS:
+   382	        if marker in text:
+   383	            return ("元", True)
+   384	    return ("", False)
+   385	
+   386	
+   387	def _count_data_lines(text: str) -> int:
+   388	    """Count non-header data lines in a text response."""
+   389	    if not text:
+   390	        return 0
+   391	    lines = [
+   392	        l
+   393	        for l in text.strip().split("\n")
+   394	        if l.strip()
+   395	        and not l.strip().startswith("#")
+   396	        and not l.strip().startswith("##")
+   397	        and not l.strip().startswith("---")
+   398	    ]
+   399	    # Subtract 1-2 for header rows
+   400	    return max(0, len(lines) - 2) if len(lines) > 2 else max(0, len(lines) - 1)
+   401	
+   402	
+   403	def _extract_as_of(text: str) -> str:
+   404	    """Try to extract a date string (YYYY-MM-DD) from response text."""
+   405	    if not text:
+   406	        return ""
+   407	    import re
+   408	
+   409	    match = re.search(r"(\d{4}-\d{2}-\d{2})", text)
+   410	    return match.group(1) if match else ""
+   411	
+   412	
+   413	# ── Core sampling logic ───────────────────────────────────────────────
+   414	
+   415	
+   416	def _sample_single(
+   417	    fetch_fn: FetchFn,
+   418	    dt_def: Dict[str, Any],
+   419	    stock: SampleStock,
+   420	    date_str: str,
+   421	) -> SampleResult:
+   422	    """Probe a single (data_type, symbol) pair.
+   423	
+   424	    Args:
+   425	        fetch_fn: callable that takes (method, args, kwargs) → str
+   426	        dt_def: data type definition dict
+   427	        stock: the sample stock
+   428	        date_str: today's date string
+   429	    """
+   430	    data_type = dt_def["data_type"]
+   431	    result = SampleResult(
+   432	        data_type=data_type,
+   433	        data_type_label=_DATA_TYPE_LABELS.get(data_type, data_type),
+   434	        symbol=stock.symbol,
+   435	        symbol_name=stock.name,
+   436	        category=stock.category,
+   437	    )
+   438	
+   439	    # Fill catalog info
+   440	    primary = get_primary_source(data_type)
+   520	    return result
+   521	
+   522	
+   523	def _build_sample_diagnosis(result: SampleResult, dt_def: Dict[str, Any]) -> str:
+   524	    """Build human-readable diagnosis for a sample result."""
+   525	    special_note = dt_def.get("special_note", "")
+   526	    note_suffix = f"（注意：{special_note}）" if special_note else ""
+   527	
+   528	    status = result.status
+   529	    if status == SourceFreshnessStatus.HAS_DATA:
+   530	        vendor_info = result.actual_vendor or result.primary_vendor or "未知"
+   531	        fb_info = "，fallback" if result.is_fallback else ""
+   532	        return (
+   533	            f"{result.data_type_label}正常（vendor={vendor_info}"
+   534	            f"，records={result.record_count}{fb_info}）{note_suffix}"
+   535	        )
+   536	    elif status == SourceFreshnessStatus.NORMAL_NO_DATA:
+   537	        return f"{result.data_type_label}查询成功但无数据（正常情况）{note_suffix}"
+   538	    elif status == SourceFreshnessStatus.STALE:
+   539	        return f"{result.data_type_label}数据过期（as_of={result.as_of or '未知'}）{note_suffix}"
+   540	    elif status == SourceFreshnessStatus.FAILED:
+   541	        return f"{result.data_type_label}接口失败: {result.error or '未知错误'}{note_suffix}"
+   542	    elif status == SourceFreshnessStatus.RATE_LIMITED:
+   543	        return f"{result.data_type_label}触发限流{note_suffix}"
+   544	    elif status == SourceFreshnessStatus.UNIT_UNVERIFIED:
+   545	        return f"{result.data_type_label}有数据但单位未校验{note_suffix}"
+   546	    return f"{result.data_type_label}状态未知{note_suffix}"
+   547	
+   548	
+   549	# ── Report generation ─────────────────────────────────────────────────
+   550	
+   551	
+   552	def build_sample_universe(
+   553	    custom_stocks: Optional[List[Dict[str, str]]] = None,
+   554	) -> List[SampleStock]:
+   555	    """Build the sample universe from defaults or custom overrides.
+   556	
+   557	    Args:
+   558	        custom_stocks: optional list of dicts with keys symbol/name/category/category_cn.
+   559	                       If provided, replaces the default universe (capped at _MAX_SYMBOLS).
+   560	    """
+   561	    source = custom_stocks if custom_stocks is not None else DEFAULT_SAMPLE_UNIVERSE
+   562	    stocks = []
+   563	    for s in source[:_MAX_SYMBOLS]:
+   564	        stocks.append(
+   565	            SampleStock(
+   566	                symbol=s.get("symbol", ""),
+   567	                name=s.get("name", ""),
+   568	                category=s.get("category", ""),
+   569	                category_cn=s.get("category_cn", ""),
+   570	            )
+  3138	  - fixture 能产生至少 1 个命中、1 个失效、1 个未触发样本。
+  3139	  - Review API 返回策略归因字段。
+  3140	  - 前端 Review 不再只有“继续观察”。
+  3141	- **代码标注要求**：`# [TF-REVIEW-003] strategy_attribution_review`
+  3142	
+  3143	### DATA-019: 关键数据源实盘抽样健康日报（P1）
+  3144	- **描述**：在 DATA-018 的 freshness 报告基础上，增加小样本实盘抽样：行情、主力资金、龙虎榜、公告、评级、回购、研报等源每天抽 3-5 只票验证状态，避免“接口看似可用但真实股票取不到”。
+  3145	- **优先级**：P1
+  3146	- **状态**：in_progress — claimed DATA-019-20260618-023825
+  3147	- **前置条件**：DATA-018、DATA-017 完成。
+  3148	- **执行约束**：
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/dataflows/live_source_sampling.py | sed -n '660,710p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   660	
+   661	    fallback_count = sum(1 for r in results if r.is_fallback)
+   662	
+   663	    # Per-data-type summary
+   664	    by_data_type: Dict[str, Dict[str, Any]] = {}
+   665	    for r in results:
+   666	        dt = r.data_type
+   667	        dt_stat = by_data_type.setdefault(
+   668	            dt,
+   669	            {
+   670	                "total": 0,
+   671	                "green": 0,
+   672	                "yellow": 0,
+   673	                "red": 0,
+   674	                "skipped": 0,
+   675	                "label": r.data_type_label,
+   676	            },
+   677	        )
+   678	        dt_stat["total"] += 1
+   679	        if r.status in (SourceFreshnessStatus.HAS_DATA, SourceFreshnessStatus.NORMAL_NO_DATA):
+   680	            dt_stat["green"] += 1
+   681	        elif r.status in (SourceFreshnessStatus.STALE, SourceFreshnessStatus.UNIT_UNVERIFIED):
+   682	            dt_stat["yellow"] += 1
+   683	        elif r.status in (SourceFreshnessStatus.FAILED, SourceFreshnessStatus.RATE_LIMITED):
+   684	            dt_stat["red"] += 1
+   685	        elif r.status == "SKIPPED":
+   686	            dt_stat["skipped"] += 1
+   687	
+   688	    return {
+   689	        "total_checks": total,
+   690	        "status_counts": status_counts,
+   691	        "green_count": green,
+   692	        "yellow_count": yellow,
+   693	        "red_count": red,
+   694	        "skipped_count": status_counts.get("SKIPPED", 0),
+   695	        "fallback_triggered_count": fallback_count,
+   696	        "all_green": red == 0 and yellow == 0,
+   697	        "has_failures": red > 0,
+   698	        "has_warnings": yellow > 0,
+   699	        "by_data_type": by_data_type,
+   700	        "overall_status": (
+   701	            "all_green"
+   702	            if red == 0 and yellow == 0
+   703	            else ("has_failures" if red > 0 else "has_warnings")
+   704	        ),
+   705	    }
+   706	
+   707	
+   708	# ── Markdown rendering ────────────────────────────────────────────────
+   709	
+   710	
+
+codex
+The implementation mostly adds the requested sampling module, but the report can misclassify fully skipped runs as healthy and the task pool is left in an inconsistent in-progress state.
+
+Full review comments:
+
+- [P2] Don’t report skipped live checks as all green — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/live_source_sampling.py:696-703
+  When `TA_LIVE_DATA_SMOKE` is unset, every result is `SKIPPED`, but this summary still sets `all_green`/`overall_status` to `all_green` because it only checks red/yellow counts. That makes the generated default/CI report say `ALL GREEN` even though no live endpoint was sampled, which defeats the health signal for the new report.
+
+- [P2] Mark the completed DATA-019 task as done — /Users/maybee/TradingAgents-AShare/docs/TASKS.md:3146-3146
+  The DEVLOG and task run artifacts describe DATA-019 as completed, but the task pool still marks it `in_progress`. With the documented auto-claim rules, this leaves the queue in an incorrect claimed state and prevents operators/automation from seeing that DATA-019 is finished.
+The implementation mostly adds the requested sampling module, but the report can misclassify fully skipped runs as healthy and the task pool is left in an inconsistent in-progress state.
+
+Full review comments:
+
+- [P2] Don’t report skipped live checks as all green — /Users/maybee/TradingAgents-AShare/tradingagents/dataflows/live_source_sampling.py:696-703
+  When `TA_LIVE_DATA_SMOKE` is unset, every result is `SKIPPED`, but this summary still sets `all_green`/`overall_status` to `all_green` because it only checks red/yellow counts. That makes the generated default/CI report say `ALL GREEN` even though no live endpoint was sampled, which defeats the health signal for the new report.
+
+- [P2] Mark the completed DATA-019 task as done — /Users/maybee/TradingAgents-AShare/docs/TASKS.md:3146-3146
+  The DEVLOG and task run artifacts describe DATA-019 as completed, but the task pool still marks it `in_progress`. With the documented auto-claim rules, this leaves the queue in an incorrect claimed state and prevents operators/automation from seeing that DATA-019 is finished.

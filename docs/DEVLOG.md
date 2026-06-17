@@ -4,6 +4,73 @@
 
 ---
 
+## 2026-06-18 | DATA-019: 关键数据源实盘抽样健康日报
+
+- **执行者**：OpenCode
+- **类型**：feature / 数据源实盘抽样健康日报（P1）
+- **任务**：DATA-019 — live_source_sampling
+- **状态**：✅ 完成
+
+### 背景
+
+DATA-018 的 freshness 报告基于 raw_evidence 被动检查各数据源状态，但无法发现
+"接口看似可用但真实股票取不到"的问题。DATA-019 在此基础上增加小样本实盘抽样：
+每天选 3-5 只代表性股票（大票/中小票/近期候选/自选），对行情、主力资金、龙虎榜、
+公告、评级、回购、研报等关键源主动探测真实可用性。
+
+### 变更内容
+
+1. **`tradingagents/dataflows/live_source_sampling.py`**（新增核心模块）
+   - `SampleStock` / `SampleResult` / `LiveSamplingReport` 数据模型。
+   - `DEFAULT_SAMPLE_UNIVERSE`：4 只代表性股票覆盖大票（600519.SH）、中小票
+     （002415.SZ）、近期候选（603629.SH）、自选（000001.SZ）。
+   - `_make_data_type_definitions()`：7 个关键数据类型（quote/fund_flow/lhb/
+     notice/rating/buyback/report）映射到 provider 方法。
+   - `classify_sample_result()`：复用 DATA-018 的 6 态分类
+     （HAS_DATA/NORMAL_NO_DATA/STALE/FAILED/RATE_LIMITED/UNIT_UNVERIFIED），
+     并对 LHB/BUYBACK 的 NORMAL_NO_DATA 标记做特殊识别。
+   - `_sample_single()`：单次探测，含限流安全间隔（0.6s）、延迟测量、单位检测。
+   - `run_live_sampling()`：批量探测，支持注入 `fetch_fn`（测试可 mock），
+     默认用 `route_to_vendor`（完整 fallback 链）。
+   - `render_live_sampling_report()`：Markdown 报告含抽样宇宙、摘要、按数据源
+     聚合、详细结果、问题告警、主力资金/龙虎榜特殊说明。
+   - `save_live_sampling_report()`：输出 `docs/data_source_reports/
+     YYYY-MM-DD-live-smoke.md`。
+   - `build_sampling_section_for_nightly_report()`：夜间日报聚合接口。
+   - 环境门禁：`TA_LIVE_DATA_SMOKE=1` 启用 live 调用，否则全部 SKIPPED。
+   - fixture 响应集 `ALL_SAMPLE_RESPONSES`：覆盖 AKShare 失败/cn_astock fallback
+     成功/龙虎榜正常无数据/限流/过期等场景。
+
+2. **`tests/test_data019_live_source_sampling.py`**（新增 75 个测试）
+   - SampleStock/SampleResult 数据模型、traffic_light、label_cn。
+   - 抽样宇宙构建（4 类别覆盖、自定义、上限裁剪）。
+   - 数据类型定义完整性（7 类型、LHB force=True、特殊说明）。
+   - 6 态分类（HAS_DATA/NORMAL_NO_DATA/STALE/FAILED/RATE_LIMITED/
+     UNIT_UNVERIFIED）、LHB/BUYBACK NORMAL_NO_DATA 特殊识别。
+   - 单次探测 `_sample_single`：正常/失败/异常/限流/null 响应/diagnosis。
+   - `run_live_sampling` 环境门禁、mock live run、AKShare→cn_astock fallback
+     场景、全失败场景。
+   - 摘要计算（all_green/has_failures/skipped/by_data_type/fallback）。
+   - 报告渲染（基本/env gated/无密钥/特殊说明/问题区块）。
+   - 文件 I/O（保存/自定义文件名/查找最新/忽略其他文件）。
+   - 夜间日报聚合（有/无报告）。
+   - 环境门禁 helper。
+
+### 测试结果
+
+- `tests/test_data019_live_source_sampling.py`：75 passed
+- 回归：`tests/test_data018_source_freshness.py` + `tests/test_data_p1_astock_live_smoke.py`：205 passed
+
+### 约束遵守
+
+- 未修改 `tradingagents/prompts/`。
+- 未写入生产 `tradingagents.db`。
+- 未做全市场扫描或深度 TA。
+- live 调用必须显式设置 `TA_LIVE_DATA_SMOKE=1`，默认 SKIPPED 不阻塞业务。
+- 报告不含密钥（测试验证）。
+
+---
+
 ## 2026-06-18 | TF-REVIEW-003: 盘后 Review 策略命中归因与次日反馈
 
 - **执行者**：OpenCode
@@ -5061,3 +5128,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TF-REVIEW-003-20260618-round1.txt
 - **Run archive**: docs/task_runs/TF-REVIEW-003-20260618-022047/
+
+## 2026-06-18 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-019 - 关键数据源实盘抽样健康日报（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-019-20260618-round1.txt
+- **Run archive**: docs/task_runs/DATA-019-20260618-023825/
