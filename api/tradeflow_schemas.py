@@ -449,11 +449,13 @@ class PaperLedgerSummary(BaseModel):
     pending_count: int = 0
     open_count: int = 0
     closed_count: int = 0
+    observation_count: int = 0  # [TF-RISK-001] paper_risk_budget
     invested: float = 0.0
     realized_pnl: float = 0.0
     unrealized_pnl: float = 0.0
     total_pnl: float = 0.0
     total_pnl_pct: float = 0.0
+    risk_exposure: Dict[str, Any] = Field(default_factory=dict)  # [TF-RISK-001] paper_risk_budget
 
 
 # [TF-PAPER-001] paper_trading_ledger
@@ -486,6 +488,7 @@ class PaperAddCandidateRequest(BaseModel):
     candidate_type: str = ""
     plan_date: str = ""
     note: str = ""
+    data_quality_score: Optional[float] = None  # [TF-RISK-001] paper_risk_budget
 
 
 # [TF-PAPER-001] paper_trading_ledger
@@ -496,6 +499,11 @@ class PaperActionResponse(BaseModel):
     planned_amount: Optional[float] = None
     cash_balance: Optional[float] = None
     pnl: Optional[float] = None
+    # [TF-RISK-001] paper_risk_budget
+    rejected: Optional[bool] = None
+    rule: Optional[str] = None
+    reason: Optional[str] = None
+    downgraded_to: Optional[str] = None
 
 
 # [TF-PAPER-001] paper_trading_ledger

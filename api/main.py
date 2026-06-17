@@ -5439,6 +5439,7 @@ def tradeflow_paper_ledger_add(request: PaperAddCandidateRequest):
         candidate_type=request.candidate_type,
         plan_date=request.plan_date,
         note=request.note,
+        data_quality_score=request.data_quality_score,  # [TF-RISK-001] paper_risk_budget
     )
 
 

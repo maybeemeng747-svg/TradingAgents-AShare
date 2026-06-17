@@ -1352,11 +1352,25 @@ export interface PaperLedgerSummary {
     pending_count: number
     open_count: number
     closed_count: number
+    observation_count: number
     invested: number
     realized_pnl: number
     unrealized_pnl: number
     total_pnl: number
     total_pnl_pct: number
+    // [TF-RISK-001] paper_risk_budget
+    risk_exposure: {
+        principal: number
+        invested: number
+        remaining: number
+        per_ticket_max: number
+        per_ticket_min: number
+        daily_new_today: number
+        daily_new_max: number
+        tracking_count: number
+        max_concurrent_tracking: number
+        budget_utilization_pct: number
+    }
 }
 
 // [TF-PAPER-001] paper_trading_ledger

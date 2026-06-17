@@ -4,6 +4,126 @@
 
 ---
 
+## 2026-06-17 | TF-RISK-001 P1 修复：风险预算预留 + 前端 data_quality_score 传递
+
+- **执行者**：OpenCode
+- **类型**：bugfix / 风控（P1）
+- **任务**：TF-RISK-001 — paper_risk_budget（审计修复）
+- **状态**：✅ 完成
+
+### 背景
+
+审计发现两个 P1 漏洞：风险预算只扣 `open` 没扣 `tracking/pending` 的计划占用，
+可同时挂 5 只 × 1500 的 tracking 计划暴露 7500 而预算仍显示 5000；前端加入模拟跟踪时
+未传 `data_quality_score`，低数据质量票绕过后端硬拒绝检查。
+
+### 变更内容
+
+1. **`api/services/tradeflow_service.py`**
+   - `add_paper_candidate()`：预算查询从 `status = 'open'` 改为
+     `status IN ('tracking', 'pending', 'open')`，tracking/pending 的 planned_amount
+     计入预留。
+   - `get_paper_ledger()`：新增 `reserved_invested`（tracking+pending+open）传入
+     `_compute_risk_exposure`；`summary["invested"]` 保持只统计 open（实际已部署资金）。
+   - `_compute_risk_exposure` 签名不变。
+
+2. **`frontend/src/services/api.ts`**
+   - `addPaperCandidate` 类型声明新增 `data_quality_score?: number`。
+
+3. **`frontend/src/pages/TradeFlow.tsx` / `frontend/src/components/TradeFlowCandidateDrawer.tsx`**
+   - 两个"模拟跟踪"入口调用 `addPaperCandidate` 时传 `data_quality_score`。
+
+4. **测试**
+   - 新增 `test_tracking_pending_reserved_in_budget`、`test_risk_exposure_mixed_statuses`。
+   - 更新 `test_risk_exposure_fields`（2 tracking 现计入 invested）。
+   - 更新 `test_buy_blocked_if_insufficient_cash`（抬高 principal 以容纳 3×2000 tracking）。
+
+---
+
+## 2026-06-16 | TF-RISK-001: 5000 元试跑风险预算与仓位纪律
+
+- **执行者**：OpenCode
+- **类型**：新功能 / 风控（P1）
+- **任务**：TF-RISK-001 — paper_risk_budget
+- **状态**：✅ 完成
+
+### 背景
+
+TF-PAPER-001 已建立 paper ledger（模拟跟踪/待确认/已执行）。候选池存在"随手点买"风险：
+缺触发价/失效价也能进跟踪、单票金额无硬上限、单日/并发无配额、风险占用不可见。
+
+### 变更内容
+
+1. **`api/services/tradeflow_service.py`**
+   - 新增 `_DEFAULT_RISK_BUDGET`（principal 5000 / per_ticket_max 1500 / per_ticket_min 500 /
+     daily_new_max 3 / max_concurrent_tracking 5 / require_trigger_price / require_invalid_price /
+     min_data_quality_score 40）。
+   - 新增 `_get_risk_budget()`：合并 config.risk_budget 于默认值，兼容旧 `max_per_candidate`。
+   - 新增 `_compute_risk_exposure()` / `_empty_risk_exposure()`。
+   - `_ensure_paper_ledger_row()`：新建账本时把默认 risk_budget 写入 config_json。
+   - `add_paper_candidate()`：加入 `data_quality_score` 参数并执行风控校验——
+     - 硬拒绝（`status="rejected"`，带 `rule`/`reason`）：缺 trigger_price、缺 invalid_price、
+       data_quality_score < 阈值。候选不落库。
+     - 软降级（`status="ok"`，带 `downgraded_to="observation"`）：并发跟踪满、当日新增满、
+       或计划金额超过剩余预算时，仅以 observation 状态入库，永不进 pending/open。
+     - 金额按 per_ticket_max 截断。
+   - 新增 `update_paper_ledger_config()`：深合并覆盖 config（供配置覆盖与测试）。
+   - `get_paper_ledger()` summary 新增 `risk_exposure` 与 `observation_count`；no_data 分支同步。
+   - `get_paper_review()` 新增 observation 计数与文案。
+
+2. **`api/tradeflow_schemas.py`**
+   - `PaperLedgerSummary` 增 `risk_exposure`、`observation_count`。
+   - `PaperAddCandidateRequest` 增 `data_quality_score`。
+   - `PaperActionResponse` 增 `rejected`/`rule`/`reason`/`downgraded_to`。
+
+3. **`api/main.py`**：`/v1/tradeflow/paper-ledger/add` 透传 `data_quality_score`。
+
+4. **前端**
+   - `frontend/src/types/index.ts`：`PaperLedgerSummary` 增 risk_exposure/observation_count。
+   - `frontend/src/pages/TradeFlow.tsx`：paper-ledger 面板新增"剩余额度/单票上限、风险占用、
+     今日新增/上限、并发跟踪/上限"风险预算卡片；状态映射新增 observation（仅观察）。
+
+5. **测试**
+   - `tests/test_tf_risk001_paper_risk_budget.py`（新增 24 项）：默认配置落库、三种硬拒绝、
+     金额截断、daily_new_max/max_concurrent_tracking/budget 三类降级、observation 不可买入且
+     不被触发联动、risk_exposure 字段与买入后占用计算、config 覆盖（含旧 max_per_candidate 兼容）、
+     schema 字段。
+   - `tests/test_tf_paper001_paper_ledger.py`：既有用例补齐 invalid_price，对需要放宽配额的场景
+     使用 `update_paper_ledger_config` 覆盖，保持原测试意图不变。
+
+### 校验规则一览（加入模拟跟踪时）
+
+| 规则 | 默认 | 违反结果 |
+|------|------|----------|
+| require_trigger_price | true | rejected（不入库） |
+| require_invalid_price | true | rejected（不入库） |
+| min_data_quality_score | 40 | rejected（不入库） |
+| per_ticket_max | 1500 | 金额截断 |
+| daily_new_max | 3 | observation 降级 |
+| max_concurrent_tracking | 5 | observation 降级 |
+| 剩余预算不足 | — | observation 降级 |
+
+### 风险暴露字段（summary.risk_exposure）
+
+principal / invested / remaining / per_ticket_max / per_ticket_min /
+daily_new_today / daily_new_max / tracking_count / max_concurrent_tracking /
+budget_utilization_pct。
+
+### 验证
+
+- `pytest tests/test_tf_risk001_paper_risk_budget.py tests/test_tf_paper001_paper_ledger.py -q` → 81 passed
+- `pytest tests/ -q -k "tradeflow or paper or tf_"` → 827 passed
+- `pytest tests/ -q`（全量）→ 5867 passed, 17 skipped
+- `python -m py_compile` 三个 Python 文件通过
+- 前端 `npx tsc --noEmit` 通过
+
+### 红线遵守
+
+- 不接真实券商、不输出强买卖词、不调用 LLM。
+- 未触碰生产库 / eval_results / prompts / logs。
+
+---
+
 ## 2026-06-16 | TF-QUALITY-004 Hotfix: 数据不足过滤优先级修复
 
 - **执行者**：OpenCode

@@ -518,6 +518,7 @@ class ApiService {
         candidate_type?: string
         plan_date?: string
         note?: string
+        data_quality_score?: number  // [TF-RISK-001] paper_risk_budget
     }): Promise<PaperActionResponse> {
         return this.request<PaperActionResponse>(`/v1/tradeflow/paper-ledger/add`, {
             method: 'POST',

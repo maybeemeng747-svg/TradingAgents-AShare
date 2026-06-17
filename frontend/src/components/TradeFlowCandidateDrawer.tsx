@@ -738,6 +738,7 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
                                     invalid_price: candidate.invalid_price,
                                     planned_amount: 1000,
                                     candidate_type: candidate.candidate_type,
+                                    data_quality_score: candidate.data_quality_score,  // [TF-RISK-001]
                                 })
                                     .then(res => setPaperMsg(res.message))
                                     .catch(() => setPaperMsg('加入失败，请稍后重试'))

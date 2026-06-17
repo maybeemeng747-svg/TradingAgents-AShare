@@ -35,6 +35,7 @@ from api.services.tradeflow_service import (
     confirm_paper_action,
     update_paper_observe_state,
     get_paper_review,
+    update_paper_ledger_config,
 )
 from api.tradeflow_schemas import (
     PaperLedgerResponse,
@@ -189,6 +190,7 @@ class TestAddPaperCandidate:
             name="杰瑞股份",
             trade_date=TODAY,
             trigger_price=35.0,
+            invalid_price=33.0,
             tf_db_path=tmp_db,
         )
         assert result["status"] == "ok"
@@ -197,11 +199,11 @@ class TestAddPaperCandidate:
     def test_add_duplicate_blocked(self, tmp_db):
         add_paper_candidate(
             symbol="601689.SH", name="拓普集团", trade_date=TODAY,
-            trigger_price=30.0, tf_db_path=tmp_db,
+            trigger_price=30.0, invalid_price=28.0, tf_db_path=tmp_db,
         )
         result = add_paper_candidate(
             symbol="601689.SH", name="拓普集团", trade_date=TODAY,
-            trigger_price=31.0, tf_db_path=tmp_db,
+            trigger_price=31.0, invalid_price=29.0, tf_db_path=tmp_db,
         )
         assert result["status"] == "duplicate"
 
@@ -284,17 +286,29 @@ class TestConfirmPaperBuy:
         assert result["status"] == "blocked"
 
     def test_buy_blocked_if_insufficient_cash(self, tmp_db):
-        """Add 3 candidates × 2000 each, buy 2 (4000), 3rd would exceed remaining 1000."""
+        """Buy exceeds cash_balance → insufficient_cash.
+
+        Budget principal raised so 3 × 2000 tracking reservations fit, but
+        cash_balance stays 5000 so the 3rd buy still exceeds available cash.
+        """  # [TF-RISK-001] tracking now reserves budget
+        update_paper_ledger_config(  # [TF-RISK-001] allow 2000 tickets for this scenario
+            {"risk_budget": {"per_ticket_max": 2000, "principal": 10000}}, tf_db_path=tmp_db,
+        )
+        # Raise ledger principal so 3 × 2000 = 6000 fits as tracking; keep cash at 5000.
+        conn = sqlite3.connect(tmp_db)
+        conn.execute("UPDATE tradeflow_paper_ledger SET principal = 10000")
+        conn.commit()
+        conn.close()
         for i in range(3):
             add_paper_candidate(
                 symbol=f"00000{i}.SZ", name=f"Test {i}", trade_date=TODAY,
-                planned_amount=2000, trigger_price=10.0, tf_db_path=tmp_db,
+                planned_amount=2000, trigger_price=10.0, invalid_price=9.0, tf_db_path=tmp_db,
             )
         ledger = get_paper_ledger(tf_db_path=tmp_db)
         # Buy first two (deduct 4000, leaving 1000)
         confirm_paper_action(ledger["trades"][2]["id"], "buy", 10.0, tf_db_path=tmp_db)
         confirm_paper_action(ledger["trades"][1]["id"], "buy", 10.0, tf_db_path=tmp_db)
-        # Third one: planned 2000 > remaining 1000
+        # Third one: planned 2000 > remaining cash 1000
         result = confirm_paper_action(ledger["trades"][0]["id"], "buy", 10.0, tf_db_path=tmp_db)
         assert result["status"] == "insufficient_cash"
 
@@ -570,7 +584,7 @@ class TestPaperLedgerE2E:
         """Verify that adding a candidate does NOT auto-create a buy."""
         add_paper_candidate(
             symbol="601689.SH", name="拓普集团", trade_date=TODAY,
-            trigger_price=30.0, planned_amount=1000, tf_db_path=tmp_db,
+            trigger_price=30.0, invalid_price=28.0, planned_amount=1000, tf_db_path=tmp_db,
         )
         ledger = get_paper_ledger(tf_db_path=tmp_db)
         trade = ledger["trades"][0]
@@ -588,7 +602,7 @@ class TestPaperLedgerSafety:
         """Adding a candidate should NOT produce 'immediate buy' or 'clear' action."""
         result = add_paper_candidate(
             symbol="601689.SH", name="拓普集团", trade_date=TODAY,
-            trigger_price=30.0, tf_db_path=tmp_db,
+            trigger_price=30.0, invalid_price=28.0, tf_db_path=tmp_db,
         )
         assert "status" in result
         assert "trade_id" in result
@@ -599,19 +613,23 @@ class TestPaperLedgerSafety:
         """Planned amount should not exceed reasonable defaults."""
         add_paper_candidate(
             symbol="601689.SH", name="拓普集团", trade_date=TODAY,
-            planned_amount=99999, trigger_price=30.0, tf_db_path=tmp_db,
+            planned_amount=99999, trigger_price=30.0, invalid_price=28.0, tf_db_path=tmp_db,
         )
         ledger = get_paper_ledger(tf_db_path=tmp_db)
         trade = ledger["trades"][0]
-        # Should be capped at max_per_candidate (2000 by default)
+        # Should be capped at per_ticket_max (1500 by default)  [TF-RISK-001]
         assert trade["planned_amount"] <= 2000
 
     def test_multiple_candidates_cash_management(self, tmp_db):
         """Add 5 candidates × 1000 each, verify cash stays >= 0."""
+        update_paper_ledger_config(  # [TF-RISK-001] relax limits for this scenario
+            {"risk_budget": {"daily_new_max": 5, "max_concurrent_tracking": 5}},
+            tf_db_path=tmp_db,
+        )
         for i in range(5):
             add_paper_candidate(
                 symbol=f"00000{i}.SZ", name=f"Test {i}", trade_date=TODAY,
-                planned_amount=1000, trigger_price=10.0, tf_db_path=tmp_db,
+                planned_amount=1000, trigger_price=10.0, invalid_price=9.0, tf_db_path=tmp_db,
             )
         ledger = get_paper_ledger(tf_db_path=tmp_db)
         assert ledger["summary"]["tracking_count"] == 5

@@ -1706,6 +1706,7 @@ export default function TradeFlow() {
                                     trigger_price: c.trigger_price,
                                     invalid_price: c.invalid_price,
                                     candidate_type: c.candidate_type,
+                                    data_quality_score: c.data_quality_score,  // [TF-RISK-001]
                                 })
                                 setActiveTab('paper-ledger')
                             } catch {
@@ -2166,6 +2167,11 @@ export default function TradeFlow() {
             }
             const s = paperLedger.summary
             const pnlColor = s.total_pnl >= 0 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'
+            // [TF-RISK-001] paper_risk_budget
+            const re = s.risk_exposure
+            const utilColor = (re?.budget_utilization_pct ?? 0) >= 80
+                ? 'text-amber-600 dark:text-amber-400'
+                : 'text-slate-700 dark:text-slate-200'
             return (
                 <div className="space-y-4 p-4">
                     {/* Summary Cards */}
@@ -2191,6 +2197,36 @@ export default function TradeFlow() {
                             </div>
                         </div>
                     </div>
+
+                    {/* [TF-RISK-001] paper_risk_budget — risk budget panel */}
+                    {re && (
+                        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                            <div className="card p-3">
+                                <div className="text-xs text-slate-400">剩余额度 / 单票上限</div>
+                                <div className="mt-1 text-sm font-bold text-slate-700 dark:text-slate-200">
+                                    ¥{re.remaining.toFixed(0)} <span className="text-xs font-normal text-slate-400">/ ¥{re.per_ticket_max.toFixed(0)}</span>
+                                </div>
+                            </div>
+                            <div className="card p-3">
+                                <div className="text-xs text-slate-400">风险占用</div>
+                                <div className={`mt-1 text-sm font-bold ${utilColor}`}>
+                                    ¥{re.invested.toFixed(0)} ({re.budget_utilization_pct.toFixed(1)}%)
+                                </div>
+                            </div>
+                            <div className="card p-3">
+                                <div className="text-xs text-slate-400">今日新增 / 上限</div>
+                                <div className="mt-1 text-sm font-bold text-slate-700 dark:text-slate-200">
+                                    {re.daily_new_today} / {re.daily_new_max}
+                                </div>
+                            </div>
+                            <div className="card p-3">
+                                <div className="text-xs text-slate-400">并发跟踪 / 上限</div>
+                                <div className="mt-1 text-sm font-bold text-slate-700 dark:text-slate-200">
+                                    {re.tracking_count} / {re.max_concurrent_tracking}
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {/* Trades Table */}
                     {paperLedger.trades.length === 0 ? (
@@ -2223,6 +2259,7 @@ export default function TradeFlow() {
                                             open: { text: '持仓中', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' },
                                             closed: { text: '已平仓', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' },
                                             invalidated: { text: '已失效', cls: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' },
+                                            observation: { text: '仅观察', cls: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300' },
                                         }
                                         const st = statusMap[t.status] || statusMap.tracking
                                         const tradePnlColor = t.pnl >= 0 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'

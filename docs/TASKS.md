@@ -99,7 +99,7 @@
 73. `V-007`：TradeFlow 试用闭环端到端验收（P1，done，commit 9ceedbf）。
 74. `TF-API-013`：TradeFlow API 合约收口与 HTTP 路由回归（P0，done，`fce3141` + `289a392`）。
 75. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，done，`OpenCode` 2026-06-16）。
-76. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，ready，依赖 TF-PAPER-001）。
+76. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，done，依赖 TF-PAPER-001 ✓）。
 77. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，ready，依赖 TF-OBS-002/TF-PAPER-001）。
 78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，ready，依赖 TF-REVIEW-002/TF-PAPER-001）。
 79. `DATA-019`：关键数据源实盘抽样健康日报（P1，ready，依赖 DATA-018/DATA-017）。
@@ -3083,7 +3083,7 @@
 ### TF-RISK-001: 5000 元试跑风险预算与仓位纪律（P1）
 - **描述**：为用户 5000 元小资金试跑增加明确纪律：单票上限、单日上限、触发前不模拟成交、失效价缺失不得加入待执行动作，避免候选池变成随手点买。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — 2026-06-16 OpenCode 执行，57+24 passed/0 failed。
 - **前置条件**：TF-PAPER-001 完成。
 - **执行约束**：
   - 不接真实券商。

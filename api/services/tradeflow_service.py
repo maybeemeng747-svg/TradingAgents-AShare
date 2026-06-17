@@ -1875,6 +1875,74 @@ def get_candidate_comparison(
 
 _DEFAULT_PRINCIPAL = 5000.0
 
+# [TF-RISK-001] paper_risk_budget
+_DEFAULT_RISK_BUDGET: Dict[str, Any] = {
+    "principal": _DEFAULT_PRINCIPAL,
+    "per_ticket_max": 1500.0,
+    "per_ticket_min": 500.0,
+    "daily_new_max": 3,
+    "max_concurrent_tracking": 5,
+    "require_trigger_price": True,
+    "require_invalid_price": True,
+    "min_data_quality_score": 40.0,
+}
+
+
+# [TF-RISK-001] paper_risk_budget
+def _get_risk_budget(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge the ledger config's risk_budget over the defaults.
+
+    Legacy top-level ``max_per_candidate`` is honored as ``per_ticket_max``
+    when no explicit override is present, preserving backwards compatibility.
+    """
+    rb: Dict[str, Any] = dict(_DEFAULT_RISK_BUDGET)
+    user_rb = config.get("risk_budget") if isinstance(config, dict) else None
+    if isinstance(user_rb, dict):
+        for k, v in user_rb.items():
+            if v is not None:
+                rb[k] = v
+    if isinstance(config, dict) and "max_per_candidate" in config and not (
+        isinstance(user_rb, dict) and "per_ticket_max" in user_rb
+    ):
+        rb["per_ticket_max"] = config["max_per_candidate"]
+    return rb
+
+
+# [TF-RISK-001] paper_risk_budget
+def _empty_risk_exposure() -> Dict[str, Any]:
+    rb = dict(_DEFAULT_RISK_BUDGET)
+    return _compute_risk_exposure(
+        rb=rb, principal=_DEFAULT_PRINCIPAL, invested=0.0,
+        tracking_count=0, pending_count=0, daily_new_today=0,
+    )
+
+
+# [TF-RISK-001] paper_risk_budget
+def _compute_risk_exposure(
+    rb: Dict[str, Any],
+    principal: float,
+    invested: float,
+    tracking_count: int,
+    pending_count: int,
+    daily_new_today: int,
+) -> Dict[str, Any]:
+    remaining = principal - invested
+    utilization = invested / principal * 100 if principal else 0.0
+    return {
+        "principal": principal,
+        "invested": round(invested, 2),
+        "remaining": round(remaining, 2),
+        "per_ticket_max": rb.get("per_ticket_max", _DEFAULT_RISK_BUDGET["per_ticket_max"]),
+        "per_ticket_min": rb.get("per_ticket_min", _DEFAULT_RISK_BUDGET["per_ticket_min"]),
+        "daily_new_today": daily_new_today,
+        "daily_new_max": rb.get("daily_new_max", _DEFAULT_RISK_BUDGET["daily_new_max"]),
+        "tracking_count": tracking_count + pending_count,
+        "max_concurrent_tracking": rb.get(
+            "max_concurrent_tracking", _DEFAULT_RISK_BUDGET["max_concurrent_tracking"]
+        ),
+        "budget_utilization_pct": round(utilization, 1),
+    }
+
 
 def _ensure_paper_ledger_row(conn: sqlite3.Connection) -> sqlite3.Row:
     """Return the single paper ledger row, creating it if necessary."""
@@ -1882,10 +1950,11 @@ def _ensure_paper_ledger_row(conn: sqlite3.Connection) -> sqlite3.Row:
     if row is not None:
         return row
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    seed_config = {"risk_budget": dict(_DEFAULT_RISK_BUDGET)}  # [TF-RISK-001] paper_risk_budget
     conn.execute(
         "INSERT INTO tradeflow_paper_ledger (principal, cash_balance, config_json, created_at, updated_at) "
-        "VALUES (?, ?, '{}', ?, ?)",
-        (_DEFAULT_PRINCIPAL, _DEFAULT_PRINCIPAL, now, now),
+        "VALUES (?, ?, ?, ?, ?)",
+        (_DEFAULT_PRINCIPAL, _DEFAULT_PRINCIPAL, json.dumps(seed_config), now, now),
     )
     conn.commit()
     return conn.execute("SELECT * FROM tradeflow_paper_ledger LIMIT 1").fetchone()
@@ -1928,7 +1997,7 @@ def get_paper_ledger(tf_db_path: str = "") -> dict:
             "status": "no_data",
             "principal": _DEFAULT_PRINCIPAL,
             "cash_balance": _DEFAULT_PRINCIPAL,
-            "config": {},
+            "config": {"risk_budget": dict(_DEFAULT_RISK_BUDGET)},  # [TF-RISK-001] paper_risk_budget
             "trades": [],
             "summary": {
                 "total_trades": 0,
@@ -1936,11 +2005,13 @@ def get_paper_ledger(tf_db_path: str = "") -> dict:
                 "pending_count": 0,
                 "open_count": 0,
                 "closed_count": 0,
+                "observation_count": 0,
                 "invested": 0.0,
                 "realized_pnl": 0.0,
                 "unrealized_pnl": 0.0,
                 "total_pnl": 0.0,
                 "total_pnl_pct": 0.0,
+                "risk_exposure": _empty_risk_exposure(),  # [TF-RISK-001] paper_risk_budget
             },
             "runtime_tier_meta": _fast_meta,
         }
@@ -1950,6 +2021,7 @@ def get_paper_ledger(tf_db_path: str = "") -> dict:
         principal = _rget(ledger, "principal", _DEFAULT_PRINCIPAL)
         cash_balance = _rget(ledger, "cash_balance", _DEFAULT_PRINCIPAL)
         config = _parse_json(_rget(ledger, "config_json", "{}"), default={})
+        rb = _get_risk_budget(config)  # [TF-RISK-001] paper_risk_budget
 
         rows = conn.execute(
             "SELECT * FROM tradeflow_paper_trades ORDER BY created_at DESC"
@@ -1960,8 +2032,20 @@ def get_paper_ledger(tf_db_path: str = "") -> dict:
         pending_count = sum(1 for t in trades if t["status"] == "pending")
         open_count = sum(1 for t in trades if t["status"] == "open")
         closed_count = sum(1 for t in trades if t["status"] == "closed")
+        observation_count = sum(1 for t in trades if t["status"] == "observation")
         invested = sum(t["planned_amount"] for t in trades if t["status"] == "open")
+        # [TF-RISK-001] risk budget reservation includes tracking/pending/open planned amounts
+        reserved_invested = sum(
+            t["planned_amount"] for t in trades
+            if t["status"] in ("tracking", "pending", "open")
+        )
         realized_pnl = sum(t["pnl"] for t in trades if t["status"] == "closed")
+
+        today_prefix = datetime.now().strftime("%Y-%m-%d")
+        daily_new_today = conn.execute(
+            "SELECT COUNT(*) FROM tradeflow_paper_trades WHERE created_at LIKE ?",
+            (today_prefix + "%",),
+        ).fetchone()[0]
 
         summary = {
             "total_trades": len(trades),
@@ -1969,11 +2053,20 @@ def get_paper_ledger(tf_db_path: str = "") -> dict:
             "pending_count": pending_count,
             "open_count": open_count,
             "closed_count": closed_count,
+            "observation_count": observation_count,
             "invested": round(invested, 2),
             "realized_pnl": round(realized_pnl, 2),
             "unrealized_pnl": 0.0,
             "total_pnl": round(realized_pnl, 2),
             "total_pnl_pct": round(realized_pnl / principal * 100, 2) if principal else 0.0,
+            "risk_exposure": _compute_risk_exposure(  # [TF-RISK-001] paper_risk_budget
+                rb=rb,
+                principal=principal,
+                invested=reserved_invested,  # tracking/pending/open planned reservation
+                tracking_count=tracking_count,
+                pending_count=pending_count,
+                daily_new_today=daily_new_today,
+            ),
         }
 
         return {
@@ -1989,6 +2082,46 @@ def get_paper_ledger(tf_db_path: str = "") -> dict:
         conn.close()
 
 
+# [TF-RISK-001] paper_risk_budget
+def update_paper_ledger_config(config_update: Dict[str, Any], tf_db_path: str = "") -> dict:
+    """Deep-merge ``config_update`` into the paper ledger ``config_json``.
+
+    Typically used to override the ``risk_budget`` block, e.g.::
+
+        update_paper_ledger_config({"risk_budget": {"daily_new_max": 5}})
+    """
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available"}
+
+    try:
+        ledger = _ensure_paper_ledger_row(conn)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        config = _parse_json(_rget(ledger, "config_json", "{}"), default={})
+
+        for key, value in (config_update or {}).items():
+            if isinstance(value, dict) and isinstance(config.get(key), dict):
+                merged = dict(config[key])
+                merged.update(value)
+                config[key] = merged
+            else:
+                config[key] = value
+
+        conn.execute(
+            "UPDATE tradeflow_paper_ledger SET config_json = ?, updated_at = ?",
+            (json.dumps(config), now),
+        )
+        conn.commit()
+        return {
+            "status": "ok",
+            "message": "模拟账本配置已更新",
+            "config": config,
+            "risk_budget": _get_risk_budget(config),
+        }
+    finally:
+        conn.close()
+
+
 def add_paper_candidate(
     symbol: str,
     name: str,
@@ -1999,9 +2132,22 @@ def add_paper_candidate(
     candidate_type: str = "",
     plan_date: str = "",
     note: str = "",
+    data_quality_score: Optional[float] = None,
     tf_db_path: str = "",
 ) -> dict:
-    """Add a candidate to the paper trading ledger."""  # [TF-PAPER-001]
+    """Add a candidate to the paper trading ledger.
+
+    Enforces the 5000 元试跑 risk budget & position discipline:
+
+    * **Hard reject** (candidate not added at all): missing ``trigger_price``,
+      missing ``invalid_price``, or ``data_quality_score`` below threshold.
+      Returns ``status="rejected"`` with a human-readable ``reason`` and the
+      offending ``rule`` name.
+    * **Observation downgrade** (added but not actionable): when the concurrent
+      tracking/pending slots or the daily-new quota are exhausted, or the
+      planned amount exceeds the remaining budget, the candidate is admitted
+      as ``observation`` only — it can never transition to ``pending``/``open``.
+    """  # [TF-PAPER-001] / [TF-RISK-001] paper_risk_budget
     conn = _connect(tf_db_path)
     if conn is None:
         return {"status": "no_data", "message": "TradeFlow DB not available"}
@@ -2011,41 +2157,121 @@ def add_paper_candidate(
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         existing = conn.execute(
-            "SELECT id FROM tradeflow_paper_trades WHERE symbol = ? AND status IN ('tracking', 'pending', 'open')",
+            "SELECT id FROM tradeflow_paper_trades "
+            "WHERE symbol = ? AND status IN ('tracking', 'pending', 'open', 'observation')",
             (symbol,),
         ).fetchone()
         if existing is not None:
             return {"status": "duplicate", "message": f"{symbol} 已在模拟跟踪中"}
 
         ledger = _ensure_paper_ledger_row(conn)
-        max_per_candidate = _parse_json(
-            _rget(ledger, "config_json", "{}"), default={}
-        ).get("max_per_candidate", 2000.0)
+        config = _parse_json(_rget(ledger, "config_json", "{}"), default={})
+        rb = _get_risk_budget(config)
 
-        amount = min(planned_amount if planned_amount > 0 else 1000.0, max_per_candidate)
+        # ── Hard rules: reject outright ────────────────────────────────
+        if rb.get("require_trigger_price", True) and not trigger_price:
+            reason = "缺少触发价(trigger_price)，不允许加入待执行动作"
+            return {
+                "status": "rejected",
+                "rejected": True,
+                "rule": "require_trigger_price",
+                "reason": reason,
+                "message": reason,
+            }
+        if rb.get("require_invalid_price", True) and not invalid_price:
+            reason = "缺少失效价(invalid_price)，不允许加入待执行动作"
+            return {
+                "status": "rejected",
+                "rejected": True,
+                "rule": "require_invalid_price",
+                "reason": reason,
+                "message": reason,
+            }
+        min_dq = rb.get("min_data_quality_score", _DEFAULT_RISK_BUDGET["min_data_quality_score"])
+        if data_quality_score is not None and data_quality_score < min_dq:
+            reason = (
+                f"数据质量评分 {data_quality_score} 低于阈值 {min_dq}，"
+                "不允许加入待执行动作"
+            )
+            return {
+                "status": "rejected",
+                "rejected": True,
+                "rule": "min_data_quality_score",
+                "reason": reason,
+                "message": reason,
+            }
+
+        # ── Amount clamping to per-ticket budget ───────────────────────
+        per_ticket_max = rb.get("per_ticket_max", _DEFAULT_RISK_BUDGET["per_ticket_max"])
+        per_ticket_min = rb.get("per_ticket_min", _DEFAULT_RISK_BUDGET["per_ticket_min"])
+        if planned_amount and planned_amount > 0:
+            amount = min(planned_amount, per_ticket_max)
+        else:
+            amount = min(1000.0, per_ticket_max)
+        if amount < per_ticket_min:
+            amount = min(per_ticket_min, per_ticket_max)
+
+        # ── Soft rules: decide actionable vs observation ───────────────
+        active = conn.execute(
+            "SELECT COUNT(*) FROM tradeflow_paper_trades "
+            "WHERE status IN ('tracking', 'pending')"
+        ).fetchone()[0]
+        today_prefix = now[:10]
+        today_new = conn.execute(
+            "SELECT COUNT(*) FROM tradeflow_paper_trades WHERE created_at LIKE ?",
+            (today_prefix + "%",),
+        ).fetchone()[0]
+
+        status = "tracking"
+        downgrade_reason = ""
+        if active >= rb.get("max_concurrent_tracking", _DEFAULT_RISK_BUDGET["max_concurrent_tracking"]):
+            status = "observation"
+            downgrade_reason = "已达最大并发跟踪数，仅允许观察"
+        elif today_new >= rb.get("daily_new_max", _DEFAULT_RISK_BUDGET["daily_new_max"]):
+            status = "observation"
+            downgrade_reason = "已达当日新增上限，仅允许观察"
+        else:
+            principal = _rget(ledger, "principal", _DEFAULT_PRINCIPAL)
+            # [TF-RISK-001] tracking/pending planned_amount must also reserve budget
+            invested = conn.execute(
+                "SELECT COALESCE(SUM(planned_amount), 0) FROM tradeflow_paper_trades "
+                "WHERE status IN ('tracking', 'pending', 'open')"
+            ).fetchone()[0]
+            remaining = principal - invested
+            if amount > remaining:
+                status = "observation"
+                downgrade_reason = f"风险预算不足（剩余 {remaining:.0f}），仅允许观察"
 
         conn.execute(
             "INSERT INTO tradeflow_paper_trades "
             "(symbol, name, trade_date, plan_date, candidate_type, trigger_price, invalid_price, "
             "planned_amount, status, note, observe_state, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'tracking', ?, 'WAITING', ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'WAITING', ?, ?)",
             (
                 symbol, name, trade_date, plan_date or trade_date, candidate_type,
-                trigger_price, invalid_price, amount, note, now, now,
+                trigger_price, invalid_price, amount, status, note, now, now,
             ),
         )
         conn.commit()
 
         trade_id = conn.execute(
-            "SELECT id FROM tradeflow_paper_trades WHERE symbol = ? AND status = 'tracking' ORDER BY id DESC LIMIT 1",
+            "SELECT id FROM tradeflow_paper_trades WHERE symbol = ? ORDER BY id DESC LIMIT 1",
             (symbol,),
         ).fetchone()["id"]
-        return {
+        result = {
             "status": "ok",
-            "message": f"{symbol} 已加入模拟跟踪",
+            "message": (
+                f"{symbol} 已加入模拟跟踪"
+                if status == "tracking"
+                else f"{symbol} 已加入观察（{downgrade_reason}）"
+            ),
             "trade_id": trade_id,
             "planned_amount": amount,
         }
+        if status == "observation":
+            result["downgraded_to"] = "observation"
+            result["reason"] = downgrade_reason
+        return result
     finally:
         conn.close()
 
@@ -2209,6 +2435,7 @@ def get_paper_review(trade_date: str, tf_db_path: str = "") -> dict:
                 "open": 0,
                 "closed": 0,
                 "invalidated": 0,
+                "observation": 0,
                 "realized_pnl": 0.0,
                 "false_trigger_count": 0,
                 "untriggered_count": 0,
@@ -2233,6 +2460,7 @@ def get_paper_review(trade_date: str, tf_db_path: str = "") -> dict:
         tracking = [t for t in trades if t["status"] == "tracking"]
         pending = [t for t in trades if t["status"] == "pending"]
         open_pos = [t for t in trades if t["status"] == "open"]
+        observation = [t for t in trades if t["status"] == "observation"]  # [TF-RISK-001]
 
         realized_pnl = sum(t["pnl"] for t in closed)
         false_trigger_count = sum(1 for t in closed if t["pnl"] < 0)
@@ -2244,10 +2472,11 @@ def get_paper_review(trade_date: str, tf_db_path: str = "") -> dict:
         elif untriggered_count == len(trades):
             review_note = f"全部 {untriggered_count} 只候选等待触发中"
         else:
+            obs_part = f"，观察 {len(observation)} 只" if observation else ""
             review_note = (
                 f"已平仓 {len(closed)} 只（其中亏损 {false_trigger_count} 只），"
                 f"持仓 {len(open_pos)} 只，待确认 {len(pending)} 只，"
-                f"已失效 {invalidated_count} 只"
+                f"已失效 {invalidated_count} 只{obs_part}"
             )
 
         review = {
@@ -2257,6 +2486,7 @@ def get_paper_review(trade_date: str, tf_db_path: str = "") -> dict:
             "open": len(open_pos),
             "closed": len(closed),
             "invalidated": invalidated_count,
+            "observation": len(observation),
             "realized_pnl": round(realized_pnl, 2),
             "false_trigger_count": false_trigger_count,
             "untriggered_count": untriggered_count,
