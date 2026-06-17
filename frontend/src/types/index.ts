@@ -1070,6 +1070,11 @@ export interface TradeFlowReviewItem {
     trigger_price: number | null
     invalid_price: number | null
     observe_state: string
+    candidate_type?: string  // [TF-REVIEW-003] strategy_attribution_review
+    hit_type?: string  // [TF-REVIEW-003] strategy_attribution_review
+    tomorrow_focus?: string  // [TF-REVIEW-003] strategy_attribution_review
+    downgrade_reason?: string  // [TF-REVIEW-003] strategy_attribution_review
+    evidence_needed?: string[]  // [TF-REVIEW-003] strategy_attribution_review
 }
 
 export interface TradeFlowReviewResponse {

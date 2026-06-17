@@ -252,6 +252,11 @@ class TradeFlowReviewItem(BaseModel):
     trigger_price: Optional[float] = None
     invalid_price: Optional[float] = None
     observe_state: str = "WAITING"
+    candidate_type: str = ""  # [TF-REVIEW-003] strategy_attribution_review
+    hit_type: str = ""  # [TF-REVIEW-003] strategy_attribution_review
+    tomorrow_focus: str = ""  # [TF-REVIEW-003] strategy_attribution_review
+    downgrade_reason: str = ""  # [TF-REVIEW-003] strategy_attribution_review
+    evidence_needed: List[str] = Field(default_factory=list)  # [TF-REVIEW-003]
 
 
 class TradeFlowReviewResponse(BaseModel):

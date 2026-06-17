@@ -1,0 +1,3705 @@
+Task: TF-REVIEW-003 - 盘后 Review 策略命中归因与次日反馈（P1）
+Date: 2026-06-18_02:38:24
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019ed6de-cad7-7540-9396-a232b73975aa
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md; printf '\\n---TASKS---\\n'; sed -n '1,200p' docs/TASKS.md; printf '\\n---DECISIONS---\\n'; sed -n '1,200p' docs/DECISIONS.md; printf '\\n---DEVLOG---\\n'; sed -n '1,160p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+---TASKS---
+# 任务池
+
+> 最后更新：2026-06-15
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，done）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，done，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，done，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，done，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，done，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，done，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done，依赖 DATA-004 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
+50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done，依赖 DATA-012 部分落地 ✓）。
+54. `DECISION-001`：最终动作语义分层 — 禁止默认 HOLD（P0，done，commit dee415c）。
+55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
+56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
+57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
+58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，blocked — NEEDS_HUMAN，commit 5f304db，见 task_runs）。
+59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done，Codex 修复，待提交）。
+60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
+63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
+65. `V-006`：最终动作语义端到端回放验收（P1，done，依赖 DECISION-004 ✓）。
+66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
+67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，done，commit f54a45e）。
+68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
+69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，done，依赖 TF-OBS-002/TF-REVIEW-002）。
+70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，done，依赖 H-010/H-011）。
+71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，done，依赖 DATA-017/DATA-006）。
+72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，done，依赖 TF-QUALITY-002/TF-OBS-002）。
+73. `V-007`：TradeFlow 试用闭环端到端验收（P1，done，commit 9ceedbf）。
+74. `TF-API-013`：TradeFlow API 合约收口与 HTTP 路由回归（P0，done，`fce3141` + `289a392`）。
+75. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，done，`OpenCode` 2026-06-16）。
+76. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，done，依赖 TF-PAPER-001 ✓）。
+77. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，ready，依赖 TF-OBS-002/TF-PAPER-001）。
+78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，done，依赖 TF-REVIEW-002/TF-PAPER-001）。
+79. `DATA-019`：关键数据源实盘抽样健康日报（P1，ready，依赖 DATA-018/DATA-017）。
+80. `H-013`：昊天主题热度曲线与政策证据看板（P1，ready，依赖 H-012/H-010）。
+81. `V-008`：TradeFlow 小资金试跑前整体验收（P1，blocked，等待 TF-OBS-003/TF-REVIEW-003 完成后释放）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
+16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done）。
+18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
+19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done）。
+21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## PERF. 运行成本 / 轻量分析任务池（2026-06-02 新增）
+
+> 目标：系统不能为了“全面”而变慢。TradeFlow 是雷达，轻量 TA 是候选验证，完整 TA 是深度体检。默认链路必须轻，完整多 Agent 分析只能由用户明确触发。
+
+### PERF-001: 运行层级与速度预算契约（P1）
+- **描述**：建立统一运行层级契约，所有 API、前端按钮、scheduler、自动开发任务都要标明属于 `fast/light/full` 哪一层，以及是否允许调用 LLM。
+- **优先级**：P1
+- **状态**：done -- commit ca08846
+- **背景**：
+  - 用户明确要求系统不能做得太重，不能“一发指令半天才回来”。
+  - 候选池/盘中观察需要时效；完整 TA 只能用于少量高价值标的。
+- **运行层级定义**：
+  1. `fast`：5-30 秒。TradeFlow 筛选、数据健康、证据缺口、候选分类。默认不调用 LLM。
+  2. `light`：1-3 分钟。轻量 TA，只跑必要模块，用于中线政策验证、短线技术确认、持仓风险复核。
+  3. `full`：10-20 分钟。完整 14 Agent TA，多空辩论和风控全链路，必须人工确认。
+- **执行约束**：
+  - 不改 prompts。
+  - 不触发 live TA。
+  - 不新增高成本模型调用。
+- **实现要点**：
+  1. 新增运行层级枚举/配置，例如 `runtime_tier`：
+     - `FAST_RADAR`
+     - `LIGHT_RESEARCH`
+     - `FULL_TA`
+  2. API/服务层统一返回：
+     - `runtime_tier`
+     - `expected_latency`
+     - `llm_allowed`
+     - `requires_confirmation`
+     - `cost_risk`
+  3. 前端按钮文案对应：
+     - `快速筛选`
+     - `轻量研究`
+     - `完整 TA`
+  4. `TradeFlow Discovery` 和 `Observe` 必须标记为 `FAST_RADAR`。
+  5. 自动任务/scheduler 不得默认进入 `FULL_TA`。
+- **验收方式**：
+  - TradeFlow candidates/observe/data-health API 返回 fast 层级或元数据。
+  - 前端能显示运行层级和预计耗时。
+  - 没有用户确认时，full TA 入口不可直接触发。
+  - `pytest tests/test_runtime_tier*.py tests/test_ui001_tradeflow_api.py -q` 或等价测试通过。
+- **代码标注要求**：`# [PERF-001] runtime_tier_contract` / `// [PERF-001] runtime_tier_contract`
+
+### PERF-002: 轻量 TA Profile 与模块路由（P1）
+- **描述**：在完整 TA 之外增加轻量 TA Profile，只跑与目标相关的模块，避免所有候选都进入 14 Agent 全链路。
+- **优先级**：P1
+- **状态**：done -- commit 20ff126
+- **前置条件**：`TA-UI-001`、`H-007` 完成或同步完成。
+- **执行约束**：
+  - 不删除完整 TA。
+  - 不改 prompts。
+  - 不自动调用 live LLM；第一版可先做路由配置和 mock/fixture。
+- **Profile 建议**：
+  1. `MIDLINE_POLICY_LIGHT`：
+     - 用于 `POLICY_AMBUSH/POLICY_CONFIRM`。
+     - 重点：政策/公告/基本面/风险/量价。
+
+---DECISIONS---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+---DEVLOG---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-18 | TF-REVIEW-003: 盘后 Review 策略命中归因与次日反馈
+
+- **执行者**：OpenCode
+- **类型**：feature / TradeFlow 盘后 Review 归因（P1）
+- **任务**：TF-REVIEW-003 — strategy_attribution_review
+- **状态**：✅ 完成
+
+### 背景
+
+盘后 Review 此前只显示"是否继续观察"，无法解释策略质量：命中/未命中、触发后表现、
+失效原因、是否应该降低类似候选权重。缺乏对下一日候选池校准的反馈数据。
+
+### 变更内容
+
+1. **`tradingagents/tradeflow/post_market_review.py`**（核心引擎）
+   - 新增 `HitAttribution` 枚举：`technical_hit / policy_hit / fund_flow_hit / data_issue / risk_hit`，
+     每个值附带 `label_cn`（技术命中/政策命中/资金流命中/数据不足/风险触发）。
+   - 新增 `classify_hit_attribution(perf)` 函数：根据 observe_state、candidate_type、split_scores
+     和 risk_flags 推导主归因。data_issue 用于无行情数据且未触发的候选；risk_hit 用于
+     失效且带风险标记的候选；其余按 split_scores 主导维度或 candidate_type 推导。
+   - 新增 `compute_next_day_feedback(perf)` 函数：输出结构化次日反馈三元组
+     `(tomorrow_focus, downgrade_reason, evidence_needed)`，覆盖 TRIGGERED/INVALIDATED/EXPIRED/WAITING
+     四种 observe_state。
+   - `CandidatePerformance` 新增字段：`candidate_type / split_scores / hit_type /
+     tomorrow_focus / downgrade_reason / evidence_needed`，以及 `compute_attribution()` 方法。
+   - `StrategyStats` 新增 `attributions: dict` 字段，跟踪每个策略下的归因分布。
+   - 新增 `compute_candidate_type_stats()` — 按 candidate_type（POLICY_AMBUSH/TECH_TRADE 等）
+     聚合命中/误报/无数据/失效。
+   - 新增 `compute_attribution_stats()` — 按 5 种归因类型聚合，附带 affected symbols 列表，
+     与 TF-QUALITY-004 calibration_summary 共享 dict-of-lists 数据格式。
+   - `ReviewSummary` 新增 `candidate_type_stats / attribution_stats / next_day_feedback` 字段。
+   - `run_post_market_review()` 自动调用 `compute_attribution()`，填充归因统计和次日反馈。
+   - `render_review_markdown()` 新增"候选类型表现"、"命中归因"、"次日反馈"三个表格区块。
+
+2. **`api/services/tradeflow_service.py`**
+   - `get_review()`（轻量读取）：每个 review item 现在包含 `candidate_type / hit_type /
+     tomorrow_focus / downgrade_reason / evidence_needed`，通过构造 stub CandidatePerformance
+     并调用 `compute_attribution()` 推导。
+   - `generate_review()`（完整计算）：review dict 新增 `candidate_type_stats /
+     attribution_stats / next_day_feedback`，strategy_stats 每项新增 `attributions` 字段。
+
+3. **`api/tradeflow_schemas.py`**
+   - `TradeFlowReviewItem` 新增 5 个可选字段：`candidate_type / hit_type / tomorrow_focus /
+     downgrade_reason / evidence_needed`。
+
+4. **`frontend/src/types/index.ts`**
+   - `TradeFlowReviewItem` 接口新增对应 5 个可选字段。
+
+5. **`frontend/src/pages/TradeFlow.tsx`**
+   - `ReviewTab` 新增"命中归因"表格（按归因类型拆分数量/占比）和"次日反馈"表格
+     （代码/归因/明日关注/降级原因/需要补证据），不再只有"继续观察"。
+
+6. **`tests/test_tf_review_003_strategy_attribution.py`**（新增 36 个测试）
+   - 覆盖 HitAttribution 枚举、classify_hit_attribution 全路径、compute_next_day_feedback、
+     CandidatePerformance.compute_attribution、StrategyStats.attributions、
+     compute_candidate_type_stats、compute_attribution_stats、run_post_market_review 归因字段、
+     fixture 场景（命中+失效+未触发）、Markdown 渲染、build_from_dict、service-layer get_review。
+
+7. **`tests/test_m007_post_market_review.py`**
+   - 更新 `test_basic_render`：symbols 现在出现在"次日反馈"区块。
+
+### 验收
+
+- fixture 能产生至少 1 个命中、1 个失效、1 个未触发样本 ✓
+- Review API 返回策略归因字段（hit_type/attribution_stats/next_day_feedback）✓
+- 前端 Review 不再只有"继续观察"，新增命中归因表和次日反馈表 ✓
+- 36 个新测试全部通过；254 个 review 相关测试全部通过 ✓
+- `npm run build` 通过 ✓
+
+### 约束遵守
+
+- 未修改 `tradingagents/prompts/` ✓
+- 未写入生产 `tradingagents.db` ✓
+- 未执行全市场扫描或深度 TA ✓
+- 未调用 LLM ✓
+- 未自动调参，只输出信号质量复盘 ✓
+
+---
+
+## 2026-06-18 | TF-OBS-003: 盘中观察触发到模拟账本待确认联动
+
+- **执行者**：OpenCode
+- **类型**：feature / TradeFlow 联动（P1）
+- **任务**：TF-OBS-003 — observe_paper_sync
+- **状态**：✅ 完成
+
+### 背景
+
+盘中 Observe 触发候选后，只更新 `tradeflow_candidates` 的 observe_state，但不会同步
+到模拟账本（`tradeflow_paper_trades`）。用户无法直观看到哪些已跟踪的票真的到了
+执行条件。`update_paper_observe_state()` 已在 TF-PAPER-001 实现并测试，但从未被
+observe 流程调用。
+
+### 变更内容
+
+1. **`api/services/tradeflow_service.py`**
+   - 新增 `_sync_paper_from_observe(details, tf_db)` 辅助函数（`# [TF-OBS-003] observe_paper_sync`）：
+     遍历 observe details，对每个有已知状态（TRIGGERED/INVALIDATED/WAITING）的候选
+     调用 `update_paper_observe_state`，将触发的票同步为 `pending`、失效的同步为 `invalidated`。
+     未加入模拟账本的候选不会生成任何记录。
+   - `run_observe_check()`（手动刷新）：`run_observe()` 返回后调用 `_sync_paper_from_observe`，
+     响应新增 `paper_synced` / `paper_pending` / `paper_invalidated` 计数。
+   - `get_observe()`（页面自动执行）：auto-run 路径调用 `run_observe` 后也同步调用
+     `_sync_paper_from_observe`，保证打开页面即联动。
+   - `get_observe()` 返回的 observe_items 每项新增 `paper_status` 字段（从 `tradeflow_paper_trades`
+     查询 symbol → status 映射），供前端显示账本状态。
+
+2. **`frontend/src/types/index.ts`**
+   - `TradeFlowObserveItem` 新增 `paper_status: string` 字段。
+
+3. **`frontend/src/pages/TradeFlow.tsx`**
+   - `ObserveTable` 新增"模拟账本"列：根据 `paper_status` 显示徽标 ——
+     `pending`→"待确认"（琥珀）、`tracking`→"已加入试跑"（灰）、`open`→"持仓中"、
+     `closed`→"已平仓"、`invalidated`→"已失效"、`observation`→"观察降级"、未加入→"—"。
+
+4. **测试**
+   - 新增 `tests/test_tf_obs_003_observe_paper_sync.py`（21 个测试）：
+     - `_sync_paper_from_observe` 单元测试（triggered/invalidated/waiting/无账本/未知状态/空）。
+     - 端到端：`run_observe(quote_provider)` + sync → 账本状态正确流转。
+     - `run_observe_check` 服务包装层 sync 计数 + 实际同步验证。
+     - `get_observe` auto-run 路径同步验证（monkeypatch run_observe）。
+     - observe_items `paper_status` 字段验证。
+
+### 验收
+
+- ✅ 触发后 paper ledger 对应记录进入 pending。
+- ✅ 失效后进入 invalidated。
+- ✅ 未加入 paper ledger 的候选不会生成模拟记录。
+- ✅ 前端 Observe 面板显示"待确认/已加入试跑"标识。
+- ✅ 手动刷新 + 页面自动执行均同步账本。
+
+### 测试结果
+
+- 新增测试：21 passed
+- 回归（tf_paper/obs/risk）：146 passed
+- 全量 tradeflow 测试：772 passed
+- 前端 tsc --noEmit：0 errors
+
+---
+
+## 2026-06-17 | 释放 TradeFlow 下一批开发任务
+
+- **执行者**：Codex
+- **类型**：任务池调度
+- **状态**：✅ 完成
+
+### 释放口径
+
+- TF-RISK-001 的 P1 审计问题已由 `b26a583` 修复：tracking/pending/open 均计入预算预留，前端两个模拟跟踪入口均传 `data_quality_score`。
+- 下一批保持 ready：
+  1. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动。
+  2. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈。
+  3. `DATA-019`：关键数据源实盘抽样健康日报。
+  4. `H-013`：昊天主题热度曲线与政策证据看板。
+
+exec
+/bin/zsh -lc 'git status --short && git rev-parse --show-toplevel' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M api/services/tradeflow_service.py
+ M api/tradeflow_schemas.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M docs/tradeflow_reviews/2026-06-02.md
+ M docs/tradeflow_reviews/2026-06-15.md
+ M docs/tradeflow_trial_acceptance.md
+ M frontend/src/pages/TradeFlow.tsx
+ M frontend/src/types/index.ts
+ M tests/test_m007_post_market_review.py
+ M tradingagents/tradeflow/post_market_review.py
+?? docs/task_runs/TF-REVIEW-003-20260618-022047/
+?? tests/test_tf_review_003_strategy_attribution.py
+/Users/maybee/TradingAgents-AShare
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- api/services/tradeflow_service.py api/tradeflow_schemas.py tradingagents/tradeflow/post_market_review.py frontend/src/pages/TradeFlow.tsx frontend/src/types/index.ts tests/test_m007_post_market_review.py tests/test_tf_review_003_strategy_attribution.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ api/services/tradeflow_service.py             |  44 +++-
+ api/tradeflow_schemas.py                      |   5 +
+ docs/DEVLOG.md                                |  79 +++++++
+ docs/TASKS.md                                 |   4 +-
+ docs/tradeflow_reviews/2026-06-02.md          |  18 ++
+ docs/tradeflow_reviews/2026-06-15.md          |  27 +++
+ docs/tradeflow_trial_acceptance.md            |   2 +-
+ frontend/src/pages/TradeFlow.tsx              | 101 +++++++++
+ frontend/src/types/index.ts                   |   5 +
+ tests/test_m007_post_market_review.py         |   3 +-
+ tradingagents/tradeflow/post_market_review.py | 297 ++++++++++++++++++++++++++
+ 11 files changed, 579 insertions(+), 6 deletions(-)
+diff --git a/api/services/tradeflow_service.py b/api/services/tradeflow_service.py
+index 622d141..0d46bbb 100644
+--- a/api/services/tradeflow_service.py
++++ b/api/services/tradeflow_service.py
+@@ -966,6 +966,36 @@ def get_review(trade_date: str, tf_db_path: str = "") -> dict:
+     results = []
+     for entry in candidates:
+         action = entry.get("action", "OBSERVE")
++        # [TF-REVIEW-003] strategy_attribution_review — derive attribution + feedback
++        from tradingagents.tradeflow.post_market_review import (
++            HitAttribution,
++            classify_hit_attribution,
++            compute_next_day_feedback,
++            CandidatePerformance,
++        )
++        _observe_state = entry.get("observe_state", "WAITING")
++        _candidate_type = entry.get("candidate_type", "")
++        _strategy_tags = entry.get("strategy_tags", [])
++        _risk_flags = entry.get("risk_flags", [])
++        _missing_evidence = entry.get("missing_evidence", [])
++        _stub = CandidatePerformance(
++            symbol=entry.get("symbol", ""),
++            trade_date=entry.get("trade_date", trade_date),
++            entry_price=float(entry.get("trigger_price") or 0),
++            trigger_price=entry.get("trigger_price"),
++            invalid_price=entry.get("invalid_price"),
++            strategy_tags=_strategy_tags,
++            observe_state=_observe_state,
++            risk_flags=_risk_flags,
++            candidate_type=_candidate_type,
++            split_scores={
++                "technical_score": entry.get("technical_score", 0.0) or 0.0,
++                "policy_score": entry.get("policy_score", 0.0) or 0.0,
++                "fund_flow_score": entry.get("fund_flow_score", 0.0) or 0.0,
++            },
++            evidence_needed=list(_missing_evidence),
++        )
++        _stub.compute_attribution()
+         result = {
+             "symbol": entry.get("symbol", ""),
+             "name": entry.get("name", ""),
+@@ -974,10 +1004,15 @@ def get_review(trade_date: str, tf_db_path: str = "") -> dict:
+             "reason": "",
+             "tier": entry.get("tier", ""),
+             "composite_score": entry.get("composite_score", 0.0),
+-            "strategy_tags": entry.get("strategy_tags", []),
++            "strategy_tags": _strategy_tags,
+             "trigger_price": entry.get("trigger_price"),
+             "invalid_price": entry.get("invalid_price"),
+-            "observe_state": entry.get("observe_state", "WAITING"),
++            "observe_state": _observe_state,
++            "candidate_type": _candidate_type,  # [TF-REVIEW-003]
++            "hit_type": _stub.hit_type,  # [TF-REVIEW-003]
++            "tomorrow_focus": _stub.tomorrow_focus,  # [TF-REVIEW-003]
++            "downgrade_reason": _stub.downgrade_reason,  # [TF-REVIEW-003]
++            "evidence_needed": list(_stub.evidence_needed),  # [TF-REVIEW-003]
+         }
+         if action == "REMOVE_FROM_WATCH":
+             result["reason"] = "已标记移除"
+@@ -1634,12 +1669,17 @@ def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
+                     "avg_next_day_return": st.avg_next_day_return,
+                     "avg_day3_return": st.avg_day3_return,
+                     "avg_day5_return": st.avg_day5_return,
++                    "attributions": dict(st.attributions),  # [TF-REVIEW-003]
+                 }
+                 for tag, st in summary.strategy_stats.items()
+             },
+             "tier_stats": summary.tier_stats,
+             "common_removal_reasons": summary.common_removal_reasons,
+             "suggestions": summary.suggestions,
++            # [TF-REVIEW-003] strategy_attribution_review
++            "candidate_type_stats": summary.candidate_type_stats,
++            "attribution_stats": summary.attribution_stats,
++            "next_day_feedback": summary.next_day_feedback,
+         },
+     }
+ 
+diff --git a/api/tradeflow_schemas.py b/api/tradeflow_schemas.py
+index 0788cb7..f41b2b5 100644
+--- a/api/tradeflow_schemas.py
++++ b/api/tradeflow_schemas.py
+@@ -252,6 +252,11 @@ class TradeFlowReviewItem(BaseModel):
+     trigger_price: Optional[float] = None
+     invalid_price: Optional[float] = None
+     observe_state: str = "WAITING"
++    candidate_type: str = ""  # [TF-REVIEW-003] strategy_attribution_review
++    hit_type: str = ""  # [TF-REVIEW-003] strategy_attribution_review
++    tomorrow_focus: str = ""  # [TF-REVIEW-003] strategy_attribution_review
++    downgrade_reason: str = ""  # [TF-REVIEW-003] strategy_attribution_review
++    evidence_needed: List[str] = Field(default_factory=list)  # [TF-REVIEW-003]
+ 
+ 
+ class TradeFlowReviewResponse(BaseModel):
+diff --git a/frontend/src/pages/TradeFlow.tsx b/frontend/src/pages/TradeFlow.tsx
+index 3d79939..d301851 100644
+--- a/frontend/src/pages/TradeFlow.tsx
++++ b/frontend/src/pages/TradeFlow.tsx
+@@ -443,6 +443,23 @@ interface TierRow {
+     invalidated: number
+ }
+ 
++// [TF-REVIEW-003] strategy_attribution_review
++const HIT_TYPE_LABELS: Record<string, string> = {
++    technical_hit: '技术命中',
++    policy_hit: '政策命中',
++    fund_flow_hit: '资金流命中',
++    data_issue: '数据不足',
++    risk_hit: '风险触发',
++}
++
++const HIT_TYPE_COLORS: Record<string, string> = {
++    technical_hit: 'text-blue-600 dark:text-blue-400',
++    policy_hit: 'text-purple-600 dark:text-purple-400',
++    fund_flow_hit: 'text-cyan-600 dark:text-cyan-400',
++    data_issue: 'text-amber-600 dark:text-amber-400',
++    risk_hit: 'text-red-600 dark:text-red-400',
++}
++
+ function ReviewTab({ data }: { data: TradeFlowReviewResponse }) {
+     const items = data.results
+     const agg = data.summary_agg
+@@ -506,6 +523,25 @@ function ReviewTab({ data }: { data: TradeFlowReviewResponse }) {
+         return items.filter(i => i.plan_action === 'REMOVE_FROM_WATCH' && i.reason)
+     }, [items])
+ 
++    // [TF-REVIEW-003] strategy_attribution_review — attribution breakdown
++    const attributionStats = useMemo(() => {
++        const map = new Map<string, number>()
++        for (const item of items) {
++            const ht = item.hit_type || 'data_issue'
++            map.set(ht, (map.get(ht) || 0) + 1)
++        }
++        return Array.from(map.entries())
++            .map(([type, count]) => ({ type, label: HIT_TYPE_LABELS[type] || type, count }))
++            .sort((a, b) => b.count - a.count)
++    }, [items])
++
++    // [TF-REVIEW-003] strategy_attribution_review — next-day feedback items
++    const nextDayFeedback = useMemo(() => {
++        return items.filter(i =>
++            i.hit_type || i.tomorrow_focus || i.downgrade_reason || (i.evidence_needed && i.evidence_needed.length > 0)
++        )
++    }, [items])
++
+     const suggestions = useMemo(() => {
+         const list: string[] = []
+         if (invalidatedRate > 50) list.push('失效占比偏高，建议收紧触发条件或优化失效价设置')
+@@ -630,6 +666,71 @@ function ReviewTab({ data }: { data: TradeFlowReviewResponse }) {
+                 </div>
+             )}
+ 
++            {/* [TF-REVIEW-003] strategy_attribution_review — hit attribution breakdown */}
++            {attributionStats.length > 0 && (
++                <div className="card overflow-x-auto">
++                    <div className="border-b border-slate-100 px-4 py-3 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-300">命中归因</div>
++                    <table className="w-full text-sm">
++                        <thead>
++                            <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
++                                <th className="px-4 py-2.5 font-medium">归因</th>
++                                <th className="px-4 py-2.5 font-medium">数量</th>
++                                <th className="px-4 py-2.5 font-medium">占比</th>
++                            </tr>
++                        </thead>
++                        <tbody>
++                            {attributionStats.map(row => (
++                                <tr key={row.type} className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50">
++                                    <td className={`px-4 py-2.5 font-medium ${HIT_TYPE_COLORS[row.type] || 'text-slate-700 dark:text-slate-300'}`}>{row.label}</td>
++                                    <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{row.count}</td>
++                                    <td className="px-4 py-2.5 tabular-nums text-slate-500">{fmtPct(total > 0 ? (row.count / total) * 100 : 0)}</td>
++                                </tr>
++                            ))}
++                        </tbody>
++                    </table>
++                </div>
++            )}
++
++            {/* [TF-REVIEW-003] strategy_attribution_review — next-day feedback */}
++            {nextDayFeedback.length > 0 && (
++                <div className="card">
++                    <div className="border-b border-slate-100 px-4 py-3 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-300">次日反馈</div>
++                    <div className="overflow-x-auto">
++                        <table className="w-full text-sm">
++                            <thead>
++                                <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
++                                    <th className="px-4 py-2.5 font-medium">代码</th>
++                                    <th className="px-4 py-2.5 font-medium">归因</th>
++                                    <th className="px-4 py-2.5 font-medium">明日关注</th>
++                                    <th className="px-4 py-2.5 font-medium">降级原因</th>
++                                    <th className="px-4 py-2.5 font-medium">需要补证据</th>
++                                </tr>
++                            </thead>
++                            <tbody>
++                                {nextDayFeedback.map(item => (
++                                    <tr key={item.symbol} className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50">
++                                        <td className="px-4 py-2.5">
++                                            <span className="font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{item.symbol}</span>
++                                            <span className="ml-1.5 max-w-[100px] truncate align-middle text-xs text-slate-500 dark:text-slate-400">{item.name || '--'}</span>
++                                        </td>
++                                        <td className={`px-4 py-2.5 text-xs font-medium ${HIT_TYPE_COLORS[item.hit_type || ''] || 'text-slate-500'}`}>
++                                            {HIT_TYPE_LABELS[item.hit_type || ''] || item.hit_type || '-'}
++                                        </td>
++                                        <td className="px-4 py-2.5 text-slate-600 dark:text-slate-400">{item.tomorrow_focus || '-'}</td>
++                                        <td className="px-4 py-2.5 text-amber-600 dark:text-amber-400">{item.downgrade_reason || '-'}</td>
++                                        <td className="px-4 py-2.5 text-slate-500">
++                                            {item.evidence_needed && item.evidence_needed.length > 0
++                                                ? item.evidence_needed.join('、')
++                                                : '-'}
++                                        </td>
++                                    </tr>
++                                ))}
++                            </tbody>
++                        </table>
++                    </div>
++                </div>
++            )}
++
+             {removalReasons.length > 0 && (
+                 <div className="card">
+                     <div className="border-b border-slate-100 px-4 py-3 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-300">移除理由</div>
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index 7ec8dbd..50f69a6 100644
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -1070,6 +1070,11 @@ export interface TradeFlowReviewItem {
+     trigger_price: number | null
+     invalid_price: number | null
+     observe_state: string
++    candidate_type?: string  // [TF-REVIEW-003] strategy_attribution_review
++    hit_type?: string  // [TF-REVIEW-003] strategy_attribution_review
++    tomorrow_focus?: string  // [TF-REVIEW-003] strategy_attribution_review
++    downgrade_reason?: string  // [TF-REVIEW-003] strategy_attribution_review
++    evidence_needed?: string[]  // [TF-REVIEW-003] strategy_attribution_review
+ }
+ 
+ export interface TradeFlowReviewResponse {
+diff --git a/tests/test_m007_post_market_review.py b/tests/test_m007_post_market_review.py
+index c0d9b31..b368fae 100644
+--- a/tests/test_m007_post_market_review.py
++++ b/tests/test_m007_post_market_review.py
+@@ -586,7 +586,8 @@ class TestRenderReviewMarkdown:
+         summary = run_post_market_review(perfs, candidate_date="2026-05-29", review_date="2026-05-30")
+         md = render_review_markdown(summary)
+         assert "# 盘后复盘 2026-05-30" in md
+-        assert "000001.SZ" not in md
++        # [TF-REVIEW-003] symbols now appear in the 次日反馈 section
++        assert "次日反馈" in md
+         assert "VCP" in md
+         assert "A层" in md
+ 
+diff --git a/tradingagents/tradeflow/post_market_review.py b/tradingagents/tradeflow/post_market_review.py
+index 22b2fb0..9144d5c 100644
+--- a/tradingagents/tradeflow/post_market_review.py
++++ b/tradingagents/tradeflow/post_market_review.py
+@@ -25,6 +25,34 @@ from .schemas import Candidate, ALL_STRATEGIES, FORBIDDEN_WORDS
+ from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG
+ 
+ 
++# [TF-REVIEW-003] strategy_attribution_review
++class HitAttribution(str, Enum):
++    """Explains WHAT dimension drove a candidate's outcome.
++
++    Used for strategy hit attribution in post-market review.
++    """
++    TECHNICAL_HIT = "technical_hit"
++    POLICY_HIT = "policy_hit"
++    FUND_FLOW_HIT = "fund_flow_hit"
++    DATA_ISSUE = "data_issue"
++    RISK_HIT = "risk_hit"
++
++    @property
++    def label_cn(self) -> str:
++        _MAP = {
++            HitAttribution.TECHNICAL_HIT: "技术命中",
++            HitAttribution.POLICY_HIT: "政策命中",
++            HitAttribution.FUND_FLOW_HIT: "资金流命中",
++            HitAttribution.DATA_ISSUE: "数据不足",
++            HitAttribution.RISK_HIT: "风险触发",
++        }
++        return _MAP.get(self, "未知")
++
++    @classmethod
++    def all_values(cls) -> list[str]:
++        return [a.value for a in cls]
++
++
+ # [TF-REVIEW-002] review_date_mapping
+ class ReviewDataStatus(str, Enum):
+     """Explains WHY review data is missing, instead of showing a blank page."""
+@@ -72,6 +100,13 @@ class CandidatePerformance:
+     hit: Optional[bool] = None
+     invalidated: Optional[bool] = None
+     data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
++    # [TF-REVIEW-003] strategy_attribution_review
++    candidate_type: str = ""
++    split_scores: dict = field(default_factory=dict)
++    hit_type: str = ""  # primary attribution: technical_hit/policy_hit/fund_flow_hit/data_issue/risk_hit
++    tomorrow_focus: str = ""  # 明日关注
++    downgrade_reason: str = ""  # 降级原因
++    evidence_needed: list[str] = field(default_factory=list)  # 需要补证据
+ 
+     def compute_returns(self) -> None:
+         if self.entry_price and self.entry_price > 0:
+@@ -98,6 +133,14 @@ class CandidatePerformance:
+         if self.invalid_price is not None and self.next_day_close is not None:
+             self.invalidated = self.next_day_close <= self.invalid_price
+ 
++    # [TF-REVIEW-003] strategy_attribution_review
++    def compute_attribution(self) -> None:
++        """Compute hit_type (attribution) and next-day feedback fields."""
++        self.hit_type = classify_hit_attribution(self)
++        self.tomorrow_focus, self.downgrade_reason, self.evidence_needed = (
++            compute_next_day_feedback(self)
++        )
++
+ 
+ @dataclass
+ class StrategyStats:
+@@ -112,6 +155,8 @@ class StrategyStats:
+     avg_day5_return: Optional[float] = None
+     hit_rate: Optional[float] = None
+     false_positive_rate: Optional[float] = None
++    # [TF-REVIEW-003] strategy_attribution_review
++    attributions: dict = field(default_factory=dict)
+ 
+     def compute_rates(self) -> None:
+         scored = self.hit_count + self.miss_count
+@@ -143,6 +188,10 @@ class ReviewSummary:
+     data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
+     plan_date: str = ""  # [TF-REVIEW-002] review_date_mapping — original candidate pool generation date
+     effective_trade_date: str = ""  # [TF-REVIEW-002] review_date_mapping
++    # [TF-REVIEW-003] strategy_attribution_review
++    candidate_type_stats: dict[str, dict] = field(default_factory=dict)
++    attribution_stats: dict[str, dict] = field(default_factory=dict)
++    next_day_feedback: list[dict] = field(default_factory=list)
+ 
+     def compute_overall(self) -> None:
+         self.scored_candidates = self.overall_hit_count + self.overall_miss_count
+@@ -155,6 +204,90 @@ class ReviewSummary:
+             )
+ 
+ 
++# [TF-REVIEW-003] strategy_attribution_review
++_POLICY_CANDIDATE_TYPES = {"POLICY_AMBUSH", "POLICY_CONFIRM"}
++
++
++def classify_hit_attribution(perf: "CandidatePerformance") -> str:
++    """Classify the primary attribution of a candidate's outcome.
++
++    Explains WHAT dimension drove the result, returning one of:
++    technical_hit / policy_hit / fund_flow_hit / data_issue / risk_hit.
++    """
++    # data_issue: no market data to evaluate AND not triggered/inactivated
++    if perf.hit is None and perf.observe_state not in ("TRIGGERED", "INVALIDATED"):
++        return HitAttribution.DATA_ISSUE.value
++
++    # risk_hit: invalidated AND has risk flags (covers both return-based and observe_state)
++    if (perf.invalidated or perf.observe_state == "INVALIDATED") and perf.risk_flags:
++        return HitAttribution.RISK_HIT.value
++
++    scores = perf.split_scores or {}
++    tech = float(scores.get("technical_score", 0.0) or 0.0)
++    policy = float(scores.get("policy_score", 0.0) or 0.0)
++    fund = float(scores.get("fund_flow_score", 0.0) or 0.0)
++
++    # candidate_type drives policy attribution for 昊天 left-side candidates
++    if perf.candidate_type in _POLICY_CANDIDATE_TYPES:
++        return HitAttribution.POLICY_HIT.value
++
++    # If split scores are all zero, fall back to strategy tags / candidate_type
++    if tech == 0 and policy == 0 and fund == 0:
++        tags = set(perf.strategy_tags or [])
++        if perf.candidate_type in _POLICY_CANDIDATE_TYPES or "POLICY_VERSION" in tags:
++            return HitAttribution.POLICY_HIT.value
++        if "FUND_FLOW_ANOMALY" in tags:
++            return HitAttribution.FUND_FLOW_HIT.value
++        return HitAttribution.TECHNICAL_HIT.value
++
++    # Dominant dimension wins
++    if policy > 0 and policy >= tech and policy >= fund:
++        return HitAttribution.POLICY_HIT.value
++    if fund > 0 and fund > tech and fund > policy:
++        return HitAttribution.FUND_FLOW_HIT.value
++    return HitAttribution.TECHNICAL_HIT.value
++
++
++def compute_next_day_feedback(
++    perf: "CandidatePerformance",
++) -> tuple[str, str, list[str]]:
++    """Compute structured next-day feedback for a candidate.
++
++    Returns (tomorrow_focus, downgrade_reason, evidence_needed):
++    - tomorrow_focus: 明日关注 — actionable next-step guidance.
++    - downgrade_reason: 降级原因 — why the candidate should lose weight.
++    - evidence_needed: 需要补证据 — evidence/data gaps to fill.
++    """
++    # tomorrow_focus (明日关注)
++    if perf.observe_state == "TRIGGERED":
++        if perf.hit:
++            tomorrow_focus = "已触发且命中，关注次日是否站稳触发价"
++        else:
++            tomorrow_focus = "已触发但回落，关注是否假突破"
++    elif perf.observe_state == "INVALIDATED":
++        tomorrow_focus = "已失效，建议移出观察或降低权重"
++    elif perf.observe_state == "EXPIRED":
++        tomorrow_focus = "观察期已过未触发，建议移出观察"
++    else:
++        tomorrow_focus = "继续等待触发信号"
++
++    # downgrade_reason (降级原因)
++    downgrade_reason = ""
++    if perf.invalidated:
++        downgrade_reason = "价格跌破失效价"
++    elif perf.hit is False and perf.next_day_return_pct is not None and perf.next_day_return_pct < 0:
++        downgrade_reason = f"触发后下跌 {abs(perf.next_day_return_pct):.1f}%"
++    elif perf.hit is False:
++        downgrade_reason = "未达到触发距离，信号偏弱"
++    elif perf.risk_flags:
++        downgrade_reason = "存在风险标记: " + "、".join(perf.risk_flags[:3])
++
++    # evidence_needed (需要补证据) — already set from candidate data
++    evidence_needed = list(perf.evidence_needed)
++
++    return tomorrow_focus, downgrade_reason, evidence_needed
++
++
+ def build_candidate_performance(
+     candidate: Candidate,
+     next_day_close: Optional[float] = None,
+@@ -177,10 +310,18 @@ def build_candidate_performance(
+         next_day_close=next_day_close,
+         day3_close=day3_close,
+         day5_close=day5_close,
++        candidate_type=candidate.candidate_type,  # [TF-REVIEW-003]
++        split_scores={
++            "technical_score": getattr(candidate, "technical_score", 0.0) or 0.0,
++            "policy_score": getattr(candidate, "policy_score", 0.0) or 0.0,
++            "fund_flow_score": getattr(candidate, "fund_flow_score", 0.0) or 0.0,
++        },  # [TF-REVIEW-003]
++        evidence_needed=list(getattr(candidate, "missing_evidence", []) or []),  # [TF-REVIEW-003]
+     )
+     if perf.entry_price == 0 and candidate.score > 0:
+         perf.entry_price = 0.0
+     perf.compute_returns()
++    perf.compute_attribution()  # [TF-REVIEW-003] strategy_attribution_review
+     return perf
+ 
+ 
+@@ -207,8 +348,16 @@ def build_candidate_performance_from_dict(
+         next_day_close=next_day_close,
+         day3_close=day3_close,
+         day5_close=day5_close,
++        candidate_type=entry.get("candidate_type", ""),  # [TF-REVIEW-003]
++        split_scores={
++            "technical_score": entry.get("technical_score", 0.0) or 0.0,
++            "policy_score": entry.get("policy_score", 0.0) or 0.0,
++            "fund_flow_score": entry.get("fund_flow_score", 0.0) or 0.0,
++        },  # [TF-REVIEW-003]
++        evidence_needed=list(entry.get("missing_evidence", []) or []),  # [TF-REVIEW-003]
+     )
+     perf.compute_returns()
++    perf.compute_attribution()  # [TF-REVIEW-003] strategy_attribution_review
+     return perf
+ 
+ 
+@@ -235,6 +384,10 @@ def compute_strategy_stats(
+             if perf.invalidated:
+                 st.invalidated_count += 1
+ 
++            # [TF-REVIEW-003] strategy_attribution_review
++            ht = perf.hit_type or HitAttribution.DATA_ISSUE.value
++            st.attributions[ht] = st.attributions.get(ht, 0) + 1
++
+     all_returns_next = []
+     all_returns_3 = []
+     all_returns_5 = []
+@@ -280,6 +433,71 @@ def compute_tier_stats(
+     return tier_map
+ 
+ 
++# [TF-REVIEW-003] strategy_attribution_review
++def compute_candidate_type_stats(
++    performances: list[CandidatePerformance],
++) -> dict[str, dict]:
++    """Aggregate performance by candidate_type (POLICY_AMBUSH/TECH_TRADE/...)."""
++    ct_map: dict[str, dict] = {}
++    for perf in performances:
++        ct = perf.candidate_type or "UNCLASSIFIED"
++        if ct not in ct_map:
++            ct_map[ct] = {"total": 0, "hit": 0, "miss": 0, "no_data": 0, "invalidated": 0}
++        ct_map[ct]["total"] += 1
++        if perf.hit is None:
++            ct_map[ct]["no_data"] += 1
++        elif perf.hit:
++            ct_map[ct]["hit"] += 1
++        else:
++            ct_map[ct]["miss"] += 1
++        if perf.invalidated:
++            ct_map[ct]["invalidated"] += 1
++    return ct_map
++
++
++# [TF-REVIEW-003] strategy_attribution_review
++def compute_attribution_stats(
++    performances: list[CandidatePerformance],
++) -> dict[str, dict]:
++    """Aggregate performance by hit attribution type.
++
++    Shares data format with TF-QUALITY-004 calibration_summary
++    (dict of per-category counts + lists of affected symbols).
++    """
++    attr_map: dict[str, dict] = {
++        a.value: {
++            "label": a.label_cn,
++            "total": 0,
++            "hit": 0,
++            "miss": 0,
++            "no_data": 0,
++            "invalidated": 0,
++            "symbols": [],
++        }
++        for a in HitAttribution
++    }
++    for perf in performances:
++        ht = perf.hit_type or HitAttribution.DATA_ISSUE.value
++        if ht not in attr_map:
++            attr_map[ht] = {
++                "label": ht,
++                "total": 0, "hit": 0, "miss": 0,
++                "no_data": 0, "invalidated": 0, "symbols": [],
++            }
++        row = attr_map[ht]
++        row["total"] += 1
++        if perf.hit is None:
++            row["no_data"] += 1
++        elif perf.hit:
++            row["hit"] += 1
++        else:
++            row["miss"] += 1
++        if perf.invalidated:
++            row["invalidated"] += 1
++        row["symbols"].append(perf.symbol)
++    return attr_map
++
++
+ def generate_suggestions(
+     strategy_stats: dict[str, StrategyStats],
+     tier_stats: dict[str, dict],
+@@ -336,9 +554,12 @@ def run_post_market_review(
+     # [M-007-fix] auto-compute returns before aggregation
+     for p in performances:
+         p.compute_returns()
++        p.compute_attribution()  # [TF-REVIEW-003] strategy_attribution_review
+ 
+     strategy_stats = compute_strategy_stats(performances)
+     tier_stats = compute_tier_stats(performances)
++    candidate_type_stats = compute_candidate_type_stats(performances)  # [TF-REVIEW-003]
++    attribution_stats = compute_attribution_stats(performances)  # [TF-REVIEW-003]
+ 
+     total = len(performances)
+     hit_count = sum(1 for p in performances if p.hit is True)
+@@ -359,6 +580,31 @@ def run_post_market_review(
+ 
+     suggestions = generate_suggestions(strategy_stats, tier_stats, total)
+ 
++    # [TF-REVIEW-003] strategy_attribution_review — attribution-based suggestions
++    for attr_val, row in attribution_stats.items():
++        if row["total"] >= 3 and attr_val == HitAttribution.DATA_ISSUE.value:
++            suggestions.append(
++                f"[{row['label']}] {row['total']} 个候选数据不足，建议补齐行情/证据后再复盘"
++            )
++        if row["total"] >= 3 and attr_val == HitAttribution.RISK_HIT.value:
++            suggestions.append(
++                f"[{row['label']}] {row['total']} 个候选因风险失效，建议检查风险阈值设置"
++            )
++
++    # [TF-REVIEW-003] strategy_attribution_review — next-day feedback items
++    next_day_feedback = [
++        {
++            "symbol": p.symbol,
++            "candidate_type": p.candidate_type,
++            "hit_type": p.hit_type,
++            "observe_state": p.observe_state,
++            "tomorrow_focus": p.tomorrow_focus,
++            "downgrade_reason": p.downgrade_reason,
++            "evidence_needed": list(p.evidence_needed),
++        }
++        for p in performances
++    ]
++
+     # [TF-REVIEW-002] review_date_mapping — compute data_status
+     if total == 0:
+         data_status = ReviewDataStatus.NO_CANDIDATES
+@@ -388,6 +634,9 @@ def run_post_market_review(
+         data_status_message=data_status.message_cn,
+         plan_date=plan_date or candidate_date,
+         effective_trade_date=effective_trade_date or review_date,
++        candidate_type_stats=candidate_type_stats,  # [TF-REVIEW-003]
++        attribution_stats=attribution_stats,  # [TF-REVIEW-003]
++        next_day_feedback=next_day_feedback,  # [TF-REVIEW-003]
+     )
+     summary.compute_overall()
+     return summary
+@@ -461,6 +710,54 @@ def render_review_markdown(summary: ReviewSummary) -> str:
+         )
+     lines.append("")
+ 
++    # [TF-REVIEW-003] strategy_attribution_review — candidate type stats
++    if summary.candidate_type_stats:
++        lines.append("### 候选类型表现")
++        lines.append("")
++        lines.append("| 类型 | 总数 | 命中 | 误报 | 无数据 | 失效 |")
++        lines.append("|------|------|------|------|--------|------|")
++        for ct in sorted(summary.candidate_type_stats.keys()):
++            cs = summary.candidate_type_stats[ct]
++            lines.append(
++                f"| {ct} | {cs['total']} | {cs['hit']} | {cs['miss']} "
++                f"| {cs['no_data']} | {cs['invalidated']} |"
++            )
++        lines.append("")
++
++    # [TF-REVIEW-003] strategy_attribution_review — attribution stats
++    if summary.attribution_stats:
++        lines.append("### 命中归因")
++        lines.append("")
++        lines.append("| 归因 | 总数 | 命中 | 误报 | 无数据 | 失效 |")
++        lines.append("|------|------|------|------|--------|------|")
++        for attr_val in HitAttribution.all_values():
++            if attr_val not in summary.attribution_stats:
++                continue
++            ar = summary.attribution_stats[attr_val]
++            if ar["total"] == 0:
++                continue
++            lines.append(
++                f"| {ar['label']} | {ar['total']} | {ar['hit']} | {ar['miss']} "
++                f"| {ar['no_data']} | {ar['invalidated']} |"
++            )
++        lines.append("")
++
++    # [TF-REVIEW-003] strategy_attribution_review — next-day feedback
++    if summary.next_day_feedback:
++        lines.append("### 次日反馈")
++        lines.append("")
++        lines.append("| 代码 | 归因 | 明日关注 | 降级原因 | 需要补证据 |")
++        lines.append("|------|------|----------|----------|------------|")
++        for fb in summary.next_day_feedback:
++            evidence_str = "、".join(fb.get("evidence_needed", [])) if fb.get("evidence_needed") else "-"
++            lines.append(
++                f"| {fb['symbol']} | {fb.get('hit_type', '')} "
++                f"| {fb.get('tomorrow_focus', '-')} "
++                f"| {fb.get('downgrade_reason', '-') or '-'} "
++                f"| {evidence_str} |"
++            )
++        lines.append("")
++
+     if summary.common_removal_reasons:
+         lines.append("### 移除理由")
+         lines.append("")
+
+exec
+/bin/zsh -lc "sed -n '880,1045p' api/services/tradeflow_service.py; sed -n '1550,1715p' api/services/tradeflow_service.py; sed -n '240,290p' api/tradeflow_schemas.py; sed -n '1,260p' tradingagents/tradeflow/post_market_review.py; sed -n '260,460p' tradingagents/tradeflow/post_market_review.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+                "why_deep_ta": _rget(r, "why_deep_ta", ""),
+                "why_not_deep_ta": _rget(r, "why_not_deep_ta", ""),
+                "composite_score": _rget(r, "composite_score", 0.0) or 0.0,
+                "tradeflow_data_completeness": _rget(r, "tradeflow_data_completeness", 0.0) or 0.0,
+                "evidence_gate_applied": bool(_rget(r, "evidence_gate_applied", 0)),
+            }
+            items.append(item)
+            if status_val == "DISPATCHED":
+                dispatched += 1
+            elif status_val == "BLOCKED":
+                blocked += 1
+            elif status_val in ("", "PENDING"):
+                pending += 1
+
+        return {
+            "status": "ok",
+            "trade_date": trade_date,
+            "queue": items,
+            "total_in_queue": len(items),
+            "dispatched_count": dispatched,
+            "blocked_count": blocked,
+            "pending_count": pending,
+            "runtime_tier_meta": _tradeflow_meta("tradeflow_ta_queue"),  # [PERF-001]
+        }
+    finally:
+        conn.close()
+
+
+def _get_available_dates(tf_db_path: str = "") -> list[str]:
+    """Return all distinct plan dates that have at least one candidate.  # [TF-REVIEW-002]
+
+    Used by the Review page to find the most recent plan with candidates
+    when the queried date has no data.
+    """
+    db_path = tf_db_path or _get_tradeflow_db_path()
+    dates: list[str] = []
+    if not os.path.exists(db_path):
+        return dates
+    try:
+        conn = _connect(db_path)
+        if conn is None:
+            return dates
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT trade_date FROM tradeflow_candidates ORDER BY trade_date DESC"
+            ).fetchall()
+            for row in rows:
+                d = row["trade_date"]
+                if d and d not in dates:
+                    dates.append(d)
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return dates
+
+
+def get_review(trade_date: str, tf_db_path: str = "") -> dict:
+    # [TF-REVIEW-002] review_date_mapping
+    _fast_meta = _tradeflow_meta("tradeflow_review")  # [PERF-001]
+    plan_data = get_daily_plan(trade_date, tf_db_path)
+
+    # If no plan for this exact date, try effective_trade_date mapping
+    # (e.g. plan generated on 5/31 weekend, review on 6/1 trading day)
+    if plan_data.get("status") == "no_data":
+        from tradingagents.tradeflow.candidate_engine import init_db  # noqa
+        from tradingagents.tradeflow.date_semantics import find_latest_plan_date
+
+        available_dates = _get_available_dates(tf_db_path)
+        if available_dates:
+            best = find_latest_plan_date(available_dates, trade_date)
+            if best and best != trade_date:
+                plan_data = get_daily_plan(best, tf_db_path)
+
+    if plan_data.get("status") == "no_data":
+        # [TF-REVIEW-002] review_date_mapping — return clear data_status
+        from tradingagents.tradeflow.post_market_review import ReviewDataStatus
+        return {
+            "status": "no_data",
+            "trade_date": trade_date,
+            "data_status": ReviewDataStatus.NO_CANDIDATES.value,
+            "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    candidates = plan_data.get("candidates", [])
+    results = []
+    for entry in candidates:
+        action = entry.get("action", "OBSERVE")
+        # [TF-REVIEW-003] strategy_attribution_review — derive attribution + feedback
+        from tradingagents.tradeflow.post_market_review import (
+            HitAttribution,
+            classify_hit_attribution,
+            compute_next_day_feedback,
+            CandidatePerformance,
+        )
+        _observe_state = entry.get("observe_state", "WAITING")
+        _candidate_type = entry.get("candidate_type", "")
+        _strategy_tags = entry.get("strategy_tags", [])
+        _risk_flags = entry.get("risk_flags", [])
+        _missing_evidence = entry.get("missing_evidence", [])
+        _stub = CandidatePerformance(
+            symbol=entry.get("symbol", ""),
+            trade_date=entry.get("trade_date", trade_date),
+            entry_price=float(entry.get("trigger_price") or 0),
+            trigger_price=entry.get("trigger_price"),
+            invalid_price=entry.get("invalid_price"),
+            strategy_tags=_strategy_tags,
+            observe_state=_observe_state,
+            risk_flags=_risk_flags,
+            candidate_type=_candidate_type,
+            split_scores={
+                "technical_score": entry.get("technical_score", 0.0) or 0.0,
+                "policy_score": entry.get("policy_score", 0.0) or 0.0,
+                "fund_flow_score": entry.get("fund_flow_score", 0.0) or 0.0,
+            },
+            evidence_needed=list(_missing_evidence),
+        )
+        _stub.compute_attribution()
+        result = {
+            "symbol": entry.get("symbol", ""),
+            "name": entry.get("name", ""),
+            "plan_action": action,
+            "keep_observing": action != "REMOVE_FROM_WATCH",
+            "reason": "",
+            "tier": entry.get("tier", ""),
+            "composite_score": entry.get("composite_score", 0.0),
+            "strategy_tags": _strategy_tags,
+            "trigger_price": entry.get("trigger_price"),
+            "invalid_price": entry.get("invalid_price"),
+            "observe_state": _observe_state,
+            "candidate_type": _candidate_type,  # [TF-REVIEW-003]
+            "hit_type": _stub.hit_type,  # [TF-REVIEW-003]
+            "tomorrow_focus": _stub.tomorrow_focus,  # [TF-REVIEW-003]
+            "downgrade_reason": _stub.downgrade_reason,  # [TF-REVIEW-003]
+            "evidence_needed": list(_stub.evidence_needed),  # [TF-REVIEW-003]
+        }
+        if action == "REMOVE_FROM_WATCH":
+            result["reason"] = "已标记移除"
+        elif entry.get("trigger_price"):
+            result["reason"] = f"继续观察，关注触发价 {entry['trigger_price']}"
+        else:
+            result["reason"] = "继续观察"
+        results.append(result)
+
+    # [TF-REVIEW-002] review_date_mapping — include plan_date/effective_trade_date
+    return {
+        "status": "ok",
+        "trade_date": trade_date,
+        "reviewed_at": datetime.now().isoformat(),
+        "results": results,
+        "summary_agg": _compute_summary(candidates),
+        "plan_date": plan_data.get("plan_date", ""),  # [TF-DATE-001]
+        "effective_trade_date": plan_data.get("effective_trade_date", ""),  # [TF-DATE-001]
+        "data_status": "OK",
+        "data_status_message": "数据正常",
+        "runtime_tier_meta": _tradeflow_meta("tradeflow_review"),  # [PERF-001]
+    }
+
+
+def get_data_health(tf_db_path: str = "") -> dict:
+    db_path = tf_db_path or _get_tradeflow_db_path()
+    db_available = os.path.exists(db_path)
+
+    sources: List[Dict[str, Any]] = []
+    latest_plan_date = None
+            "trade_date": trade_date,
+            "total_candidates": len(rows),
+            "audits_count": len(audits),
+            "credibilities_count": len(credibilities),
+            "credibilities": [c.to_dict() for c in credibilities],
+            "summary_markdown": summary_md,
+            "runtime_tier_meta": _fast_meta,
+        }
+    finally:
+        conn.close()
+
+
+# [TF-UX-003] post_market_review  # [TF-REVIEW-002] review_date_mapping
+def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
+    """Generate post-market review for trade_date using post_market_review module."""
+    from tradingagents.tradeflow.candidate_engine import init_db
+    from tradingagents.tradeflow.post_market_review import (
+        ReviewDataStatus,
+        build_candidate_performance_from_dict,
+        run_post_market_review,
+        save_review_report,
+    )
+    from tradingagents.tradeflow.date_semantics import resolve_review_date, find_latest_plan_date
+
+    tf_db = tf_db_path or _get_tradeflow_db_path()
+    init_db(tf_db)
+
+    # [TF-REVIEW-002] Try the exact date first, then fall back to latest plan
+    resolved_date = trade_date
+    candidates_data = get_candidates(trade_date, tf_db_path=tf_db)
+    if candidates_data.get("status") == "no_data":
+        available = _get_available_dates(tf_db)
+        if available:
+            best = find_latest_plan_date(available, trade_date)
+            if best and best != trade_date:
+                resolved_date = best
+                candidates_data = get_candidates(best, tf_db_path=tf_db)
+
+    if candidates_data.get("status") == "no_data":
+        return {
+            "status": "no_data",
+            "trade_date": trade_date,
+            "message": "无候选数据",
+            "data_status": ReviewDataStatus.NO_CANDIDATES.value,
+            "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
+        }
+
+    candidates = candidates_data.get("candidates", [])
+    if not candidates:
+        return {
+            "status": "no_data",
+            "trade_date": trade_date,
+            "message": "候选列表为空",
+            "data_status": ReviewDataStatus.NO_CANDIDATES.value,
+            "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
+        }
+
+    # [TF-REVIEW-002] Resolve plan_date vs review_date
+    plan_date = resolved_date
+    effective_trade_date = resolved_date
+    if candidates:
+        first = candidates[0]
+        if first.get("effective_trade_date"):
+            effective_trade_date = first["effective_trade_date"]
+        if first.get("plan_date"):
+            plan_date = first["plan_date"]
+    review_date = resolve_review_date(plan_date, effective_trade_date)
+
+    performances = []
+    for c in candidates:
+        perf = build_candidate_performance_from_dict(c)
+        performances.append(perf)
+
+    summary = run_post_market_review(
+        performances,
+        candidate_date=resolved_date,
+        review_date=review_date,
+        plan_date=plan_date,
+        effective_trade_date=effective_trade_date,
+    )
+
+    try:
+        save_review_report(summary)
+    except Exception:
+        pass
+
+    return {
+        "status": "ok",
+        "trade_date": trade_date,
+        "data_status": summary.data_status,
+        "data_status_message": summary.data_status_message,
+        "review": {
+            "review_date": summary.review_date,
+            "candidate_date": summary.candidate_date,
+            "plan_date": summary.plan_date,
+            "effective_trade_date": summary.effective_trade_date,
+            "data_status": summary.data_status,
+            "data_status_message": summary.data_status_message,
+            "total_candidates": summary.total_candidates,
+            "scored_candidates": summary.scored_candidates,
+            "no_data_candidates": summary.no_data_candidates,
+            "overall_hit_count": summary.overall_hit_count,
+            "overall_miss_count": summary.overall_miss_count,
+            "overall_invalidated_count": summary.overall_invalidated_count,
+            "overall_hit_rate": summary.overall_hit_rate,
+            "overall_false_positive_rate": summary.overall_false_positive_rate,
+            "avg_next_day_return": summary.avg_next_day_return,
+            "avg_day3_return": summary.avg_day3_return,
+            "avg_day5_return": summary.avg_day5_return,
+            "strategy_stats": {
+                tag: {
+                    "strategy_tag": st.strategy_tag,
+                    "total_candidates": st.total_candidates,
+                    "hit_count": st.hit_count,
+                    "miss_count": st.miss_count,
+                    "no_data_count": st.no_data_count,
+                    "invalidated_count": st.invalidated_count,
+                    "hit_rate": st.hit_rate,
+                    "false_positive_rate": st.false_positive_rate,
+                    "avg_next_day_return": st.avg_next_day_return,
+                    "avg_day3_return": st.avg_day3_return,
+                    "avg_day5_return": st.avg_day5_return,
+                    "attributions": dict(st.attributions),  # [TF-REVIEW-003]
+                }
+                for tag, st in summary.strategy_stats.items()
+            },
+            "tier_stats": summary.tier_stats,
+            "common_removal_reasons": summary.common_removal_reasons,
+            "suggestions": summary.suggestions,
+            # [TF-REVIEW-003] strategy_attribution_review
+            "candidate_type_stats": summary.candidate_type_stats,
+            "attribution_stats": summary.attribution_stats,
+            "next_day_feedback": summary.next_day_feedback,
+        },
+    }
+
+
+# [UI-009] candidate_ta_plan_draft
+def generate_research_plan(symbol: str, trade_date: str, tf_db_path: str = "") -> dict:
+    """Generate a TA research plan draft for a single candidate."""
+    from tradingagents.tradeflow.research_plan_draft import generate_research_plan as _gen_plan
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {
+            "status": "no_data",
+            "trade_date": trade_date,
+            "symbol": symbol,
+            "can_generate": False,
+            "block_reason": "TradeFlow 数据库不可用",
+        }
+
+    try:
+        row = conn.execute(
+            "SELECT * FROM tradeflow_candidates WHERE trade_date = ? AND symbol = ?",
+            (trade_date, symbol),
+        ).fetchone()
+
+        if row is None:
+            columns = _table_columns(conn, "tradeflow_candidates")
+            if "effective_trade_date" in columns:
+                row = conn.execute(
+                    "SELECT * FROM tradeflow_candidates WHERE effective_trade_date = ? AND symbol = ?",
+                    (trade_date, symbol),
+                ).fetchone()
+
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+
+
+class TradeFlowReviewItem(BaseModel):
+    symbol: str
+    name: str = ""
+    plan_action: str = "OBSERVE"
+    keep_observing: bool = True
+    reason: str = ""
+    tier: str = ""
+    composite_score: float = 0.0
+    strategy_tags: List[str] = Field(default_factory=list)
+    trigger_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    observe_state: str = "WAITING"
+    candidate_type: str = ""  # [TF-REVIEW-003] strategy_attribution_review
+    hit_type: str = ""  # [TF-REVIEW-003] strategy_attribution_review
+    tomorrow_focus: str = ""  # [TF-REVIEW-003] strategy_attribution_review
+    downgrade_reason: str = ""  # [TF-REVIEW-003] strategy_attribution_review
+    evidence_needed: List[str] = Field(default_factory=list)  # [TF-REVIEW-003]
+
+
+class TradeFlowReviewResponse(BaseModel):
+    status: str = "ok"
+    trade_date: str = ""
+    reviewed_at: str = ""
+    results: List[TradeFlowReviewItem] = Field(default_factory=list)
+    summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
+    plan_date: str = ""  # [TF-REVIEW-002] review_date_mapping
+    effective_trade_date: str = ""  # [TF-REVIEW-002] review_date_mapping
+    data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
+    data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+
+
+class DataHealthSource(BaseModel):
+    name: str
+    available: bool = False
+    status: str = "NOT_QUERIED"
+    fallback_vendor: str = ""
+    last_updated: Optional[str] = None
+    record_count: int = 0
+    error: str = ""
+
+
+class TradeFlowDataHealthResponse(BaseModel):
+    status: str = "ok"
+    tradeflow_db_available: bool = False
+    tradeflow_db_path: str = ""
+    sources: List[DataHealthSource] = Field(default_factory=list)
+    latest_plan_date: Optional[str] = None
+# [M-007] post_market_review
+"""Post-Market Review & Strategy Hit Rate Analysis for TradeFlow.
+
+Responsibilities:
+1. Track candidate performance: next-day / 3-day / 5-day price change vs trigger.
+2. Compute per-strategy hit rate, miss rate, and false positive rate.
+3. Aggregate removal reasons and evidence gaps.
+4. Generate review report to docs/tradeflow_reviews/YYYY-MM-DD.md.
+
+Design constraints:
+- Does NOT auto-adjust strategy weights — only outputs suggestions.
+- Does NOT generate investment advice — only signal quality review.
+- Uses fixture data for testing, does NOT write to production DB.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from typing import Optional
+
+from .schemas import Candidate, ALL_STRATEGIES, FORBIDDEN_WORDS
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG
+
+
+# [TF-REVIEW-003] strategy_attribution_review
+class HitAttribution(str, Enum):
+    """Explains WHAT dimension drove a candidate's outcome.
+
+    Used for strategy hit attribution in post-market review.
+    """
+    TECHNICAL_HIT = "technical_hit"
+    POLICY_HIT = "policy_hit"
+    FUND_FLOW_HIT = "fund_flow_hit"
+    DATA_ISSUE = "data_issue"
+    RISK_HIT = "risk_hit"
+
+    @property
+    def label_cn(self) -> str:
+        _MAP = {
+            HitAttribution.TECHNICAL_HIT: "技术命中",
+            HitAttribution.POLICY_HIT: "政策命中",
+            HitAttribution.FUND_FLOW_HIT: "资金流命中",
+            HitAttribution.DATA_ISSUE: "数据不足",
+            HitAttribution.RISK_HIT: "风险触发",
+        }
+        return _MAP.get(self, "未知")
+
+    @classmethod
+    def all_values(cls) -> list[str]:
+        return [a.value for a in cls]
+
+
+# [TF-REVIEW-002] review_date_mapping
+class ReviewDataStatus(str, Enum):
+    """Explains WHY review data is missing, instead of showing a blank page."""
+    OK = "OK"
+    NO_MARKET_DATA = "NO_MARKET_DATA"
+    NON_TRADING_DAY = "NON_TRADING_DAY"
+    SOURCE_FAILED = "SOURCE_FAILED"
+    NOT_ENOUGH_DAYS = "NOT_ENOUGH_DAYS"
+    NO_CANDIDATES = "NO_CANDIDATES"
+
+    @property
+    def message_cn(self) -> str:
+        _MAP = {
+            ReviewDataStatus.OK: "数据正常",
+            ReviewDataStatus.NO_MARKET_DATA: "无行情数据，等待收盘后补齐",
+            ReviewDataStatus.NON_TRADING_DAY: "非交易日，无行情更新",
+            ReviewDataStatus.SOURCE_FAILED: "行情数据源获取失败",
+            ReviewDataStatus.NOT_ENOUGH_DAYS: "交易日不足，多日收益暂不可用",
+            ReviewDataStatus.NO_CANDIDATES: "无候选记录",
+        }
+        return _MAP.get(self, "未知状态")
+
+
+@dataclass
+class CandidatePerformance:
+    symbol: str
+    trade_date: str
+    entry_price: float
+    trigger_price: Optional[float]
+    invalid_price: Optional[float]
+    strategy_tags: list[str] = field(default_factory=list)
+    tier: str = ""
+    need_deep_ta: bool = False
+    observe_state: str = "WAITING"
+    composite_score: float = 0.0
+    game_balance: str = ""
+    risk_flags: list[str] = field(default_factory=list)
+
+    next_day_close: Optional[float] = None
+    day3_close: Optional[float] = None
+    day5_close: Optional[float] = None
+    next_day_return_pct: Optional[float] = None
+    day3_return_pct: Optional[float] = None
+    day5_return_pct: Optional[float] = None
+    hit: Optional[bool] = None
+    invalidated: Optional[bool] = None
+    data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
+    # [TF-REVIEW-003] strategy_attribution_review
+    candidate_type: str = ""
+    split_scores: dict = field(default_factory=dict)
+    hit_type: str = ""  # primary attribution: technical_hit/policy_hit/fund_flow_hit/data_issue/risk_hit
+    tomorrow_focus: str = ""  # 明日关注
+    downgrade_reason: str = ""  # 降级原因
+    evidence_needed: list[str] = field(default_factory=list)  # 需要补证据
+
+    def compute_returns(self) -> None:
+        if self.entry_price and self.entry_price > 0:
+            if self.next_day_close is not None:
+                self.next_day_return_pct = round(
+                    (self.next_day_close - self.entry_price) / self.entry_price * 100, 2
+                )
+            if self.day3_close is not None:
+                self.day3_return_pct = round(
+                    (self.day3_close - self.entry_price) / self.entry_price * 100, 2
+                )
+            if self.day5_close is not None:
+                self.day5_return_pct = round(
+                    (self.day5_close - self.entry_price) / self.entry_price * 100, 2
+                )
+
+        if self.next_day_return_pct is not None:
+            if self.trigger_price is not None and self.entry_price > 0:
+                trigger_distance = (self.trigger_price - self.entry_price) / self.entry_price
+                self.hit = self.next_day_return_pct >= trigger_distance * 100
+            else:
+                self.hit = self.next_day_return_pct > 0
+
+        if self.invalid_price is not None and self.next_day_close is not None:
+            self.invalidated = self.next_day_close <= self.invalid_price
+
+    # [TF-REVIEW-003] strategy_attribution_review
+    def compute_attribution(self) -> None:
+        """Compute hit_type (attribution) and next-day feedback fields."""
+        self.hit_type = classify_hit_attribution(self)
+        self.tomorrow_focus, self.downgrade_reason, self.evidence_needed = (
+            compute_next_day_feedback(self)
+        )
+
+
+@dataclass
+class StrategyStats:
+    strategy_tag: str
+    total_candidates: int = 0
+    hit_count: int = 0
+    miss_count: int = 0
+    no_data_count: int = 0
+    invalidated_count: int = 0
+    avg_next_day_return: Optional[float] = None
+    avg_day3_return: Optional[float] = None
+    avg_day5_return: Optional[float] = None
+    hit_rate: Optional[float] = None
+    false_positive_rate: Optional[float] = None
+    # [TF-REVIEW-003] strategy_attribution_review
+    attributions: dict = field(default_factory=dict)
+
+    def compute_rates(self) -> None:
+        scored = self.hit_count + self.miss_count
+        if scored > 0:
+            self.hit_rate = round(self.hit_count / scored * 100, 1)
+            self.false_positive_rate = round(self.miss_count / scored * 100, 1)
+
+
+@dataclass
+class ReviewSummary:
+    review_date: str
+    candidate_date: str
+    total_candidates: int = 0
+    scored_candidates: int = 0
+    no_data_candidates: int = 0
+    overall_hit_count: int = 0
+    overall_miss_count: int = 0
+    overall_invalidated_count: int = 0
+    overall_hit_rate: Optional[float] = None
+    overall_false_positive_rate: Optional[float] = None
+    strategy_stats: dict[str, StrategyStats] = field(default_factory=dict)
+    tier_stats: dict[str, dict] = field(default_factory=dict)
+    common_removal_reasons: list[str] = field(default_factory=list)
+    suggestions: list[str] = field(default_factory=list)
+    avg_next_day_return: Optional[float] = None
+    avg_day3_return: Optional[float] = None
+    avg_day5_return: Optional[float] = None
+    data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
+    data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
+    plan_date: str = ""  # [TF-REVIEW-002] review_date_mapping — original candidate pool generation date
+    effective_trade_date: str = ""  # [TF-REVIEW-002] review_date_mapping
+    # [TF-REVIEW-003] strategy_attribution_review
+    candidate_type_stats: dict[str, dict] = field(default_factory=dict)
+    attribution_stats: dict[str, dict] = field(default_factory=dict)
+    next_day_feedback: list[dict] = field(default_factory=list)
+
+    def compute_overall(self) -> None:
+        self.scored_candidates = self.overall_hit_count + self.overall_miss_count
+        if self.scored_candidates > 0:
+            self.overall_hit_rate = round(
+                self.overall_hit_count / self.scored_candidates * 100, 1
+            )
+            self.overall_false_positive_rate = round(
+                self.overall_miss_count / self.scored_candidates * 100, 1
+            )
+
+
+# [TF-REVIEW-003] strategy_attribution_review
+_POLICY_CANDIDATE_TYPES = {"POLICY_AMBUSH", "POLICY_CONFIRM"}
+
+
+def classify_hit_attribution(perf: "CandidatePerformance") -> str:
+    """Classify the primary attribution of a candidate's outcome.
+
+    Explains WHAT dimension drove the result, returning one of:
+    technical_hit / policy_hit / fund_flow_hit / data_issue / risk_hit.
+    """
+    # data_issue: no market data to evaluate AND not triggered/inactivated
+    if perf.hit is None and perf.observe_state not in ("TRIGGERED", "INVALIDATED"):
+        return HitAttribution.DATA_ISSUE.value
+
+    # risk_hit: invalidated AND has risk flags (covers both return-based and observe_state)
+    if (perf.invalidated or perf.observe_state == "INVALIDATED") and perf.risk_flags:
+        return HitAttribution.RISK_HIT.value
+
+    scores = perf.split_scores or {}
+    tech = float(scores.get("technical_score", 0.0) or 0.0)
+    policy = float(scores.get("policy_score", 0.0) or 0.0)
+    fund = float(scores.get("fund_flow_score", 0.0) or 0.0)
+
+    # candidate_type drives policy attribution for 昊天 left-side candidates
+    if perf.candidate_type in _POLICY_CANDIDATE_TYPES:
+        return HitAttribution.POLICY_HIT.value
+
+    # If split scores are all zero, fall back to strategy tags / candidate_type
+    if tech == 0 and policy == 0 and fund == 0:
+        tags = set(perf.strategy_tags or [])
+        if perf.candidate_type in _POLICY_CANDIDATE_TYPES or "POLICY_VERSION" in tags:
+            return HitAttribution.POLICY_HIT.value
+        if "FUND_FLOW_ANOMALY" in tags:
+            return HitAttribution.FUND_FLOW_HIT.value
+        return HitAttribution.TECHNICAL_HIT.value
+
+    # Dominant dimension wins
+    if policy > 0 and policy >= tech and policy >= fund:
+        return HitAttribution.POLICY_HIT.value
+    if fund > 0 and fund > tech and fund > policy:
+        return HitAttribution.FUND_FLOW_HIT.value
+    return HitAttribution.TECHNICAL_HIT.value
+
+
+def compute_next_day_feedback(
+    perf: "CandidatePerformance",
+) -> tuple[str, str, list[str]]:
+    """Compute structured next-day feedback for a candidate.
+
+    Returns (tomorrow_focus, downgrade_reason, evidence_needed):
+    - tomorrow_focus: 明日关注 — actionable next-step guidance.
+    - downgrade_reason: 降级原因 — why the candidate should lose weight.
+    - evidence_needed: 需要补证据 — evidence/data gaps to fill.
+    """
+    """
+    # tomorrow_focus (明日关注)
+    if perf.observe_state == "TRIGGERED":
+        if perf.hit:
+            tomorrow_focus = "已触发且命中，关注次日是否站稳触发价"
+        else:
+            tomorrow_focus = "已触发但回落，关注是否假突破"
+    elif perf.observe_state == "INVALIDATED":
+        tomorrow_focus = "已失效，建议移出观察或降低权重"
+    elif perf.observe_state == "EXPIRED":
+        tomorrow_focus = "观察期已过未触发，建议移出观察"
+    else:
+        tomorrow_focus = "继续等待触发信号"
+
+    # downgrade_reason (降级原因)
+    downgrade_reason = ""
+    if perf.invalidated:
+        downgrade_reason = "价格跌破失效价"
+    elif perf.hit is False and perf.next_day_return_pct is not None and perf.next_day_return_pct < 0:
+        downgrade_reason = f"触发后下跌 {abs(perf.next_day_return_pct):.1f}%"
+    elif perf.hit is False:
+        downgrade_reason = "未达到触发距离，信号偏弱"
+    elif perf.risk_flags:
+        downgrade_reason = "存在风险标记: " + "、".join(perf.risk_flags[:3])
+
+    # evidence_needed (需要补证据) — already set from candidate data
+    evidence_needed = list(perf.evidence_needed)
+
+    return tomorrow_focus, downgrade_reason, evidence_needed
+
+
+def build_candidate_performance(
+    candidate: Candidate,
+    next_day_close: Optional[float] = None,
+    day3_close: Optional[float] = None,
+    day5_close: Optional[float] = None,
+) -> CandidatePerformance:
+    perf = CandidatePerformance(
+        symbol=candidate.symbol,
+        trade_date=candidate.trade_date,
+        entry_price=float(candidate.trigger_price or 0),
+        trigger_price=candidate.trigger_price,
+        invalid_price=candidate.invalid_price,
+        strategy_tags=list(candidate.strategy_tags),
+        tier=candidate.tier,
+        need_deep_ta=candidate.need_deep_ta,
+        observe_state=candidate.observe_state,
+        composite_score=candidate.composite_score,
+        game_balance=candidate.game_balance,
+        risk_flags=list(candidate.risk_flags),
+        next_day_close=next_day_close,
+        day3_close=day3_close,
+        day5_close=day5_close,
+        candidate_type=candidate.candidate_type,  # [TF-REVIEW-003]
+        split_scores={
+            "technical_score": getattr(candidate, "technical_score", 0.0) or 0.0,
+            "policy_score": getattr(candidate, "policy_score", 0.0) or 0.0,
+            "fund_flow_score": getattr(candidate, "fund_flow_score", 0.0) or 0.0,
+        },  # [TF-REVIEW-003]
+        evidence_needed=list(getattr(candidate, "missing_evidence", []) or []),  # [TF-REVIEW-003]
+    )
+    if perf.entry_price == 0 and candidate.score > 0:
+        perf.entry_price = 0.0
+    perf.compute_returns()
+    perf.compute_attribution()  # [TF-REVIEW-003] strategy_attribution_review
+    return perf
+
+
+def build_candidate_performance_from_dict(
+    entry: dict,
+    next_day_close: Optional[float] = None,
+    day3_close: Optional[float] = None,
+    day5_close: Optional[float] = None,
+) -> CandidatePerformance:
+    trigger = entry.get("trigger_price")
+    perf = CandidatePerformance(
+        symbol=entry.get("symbol", ""),
+        trade_date=entry.get("trade_date", ""),
+        entry_price=float(trigger) if trigger else 0.0,
+        trigger_price=trigger,
+        invalid_price=entry.get("invalid_price"),
+        strategy_tags=entry.get("strategies", entry.get("strategy_tags", [])),
+        tier=entry.get("tier", ""),
+        need_deep_ta=entry.get("need_deep_ta", False),
+        observe_state=entry.get("observe_state", "WAITING"),
+        composite_score=entry.get("composite_score", 0.0),
+        game_balance=entry.get("game_balance", ""),
+        risk_flags=entry.get("risk_flags", []),
+        next_day_close=next_day_close,
+        day3_close=day3_close,
+        day5_close=day5_close,
+        candidate_type=entry.get("candidate_type", ""),  # [TF-REVIEW-003]
+        split_scores={
+            "technical_score": entry.get("technical_score", 0.0) or 0.0,
+            "policy_score": entry.get("policy_score", 0.0) or 0.0,
+            "fund_flow_score": entry.get("fund_flow_score", 0.0) or 0.0,
+        },  # [TF-REVIEW-003]
+        evidence_needed=list(entry.get("missing_evidence", []) or []),  # [TF-REVIEW-003]
+    )
+    perf.compute_returns()
+    perf.compute_attribution()  # [TF-REVIEW-003] strategy_attribution_review
+    return perf
+
+
+def compute_strategy_stats(
+    performances: list[CandidatePerformance],
+) -> dict[str, StrategyStats]:
+    stats_map: dict[str, StrategyStats] = {}
+
+    for perf in performances:
+        tags = perf.strategy_tags if perf.strategy_tags else ["NO_STRATEGY"]
+        for tag in tags:
+            if tag not in stats_map:
+                stats_map[tag] = StrategyStats(strategy_tag=tag)
+            st = stats_map[tag]
+            st.total_candidates += 1
+
+            if perf.hit is None:
+                st.no_data_count += 1
+            elif perf.hit:
+                st.hit_count += 1
+            else:
+                st.miss_count += 1
+
+            if perf.invalidated:
+                st.invalidated_count += 1
+
+            # [TF-REVIEW-003] strategy_attribution_review
+            ht = perf.hit_type or HitAttribution.DATA_ISSUE.value
+            st.attributions[ht] = st.attributions.get(ht, 0) + 1
+
+    all_returns_next = []
+    all_returns_3 = []
+    all_returns_5 = []
+    for tag, st in stats_map.items():
+        st.compute_rates()
+        tag_perfs = [
+            p for p in performances
+            if tag in (p.strategy_tags or ["NO_STRATEGY"])
+        ]
+        next_returns = [p.next_day_return_pct for p in tag_perfs if p.next_day_return_pct is not None]
+        d3_returns = [p.day3_return_pct for p in tag_perfs if p.day3_return_pct is not None]
+        d5_returns = [p.day5_return_pct for p in tag_perfs if p.day5_return_pct is not None]
+        if next_returns:
+            st.avg_next_day_return = round(sum(next_returns) / len(next_returns), 2)
+        if d3_returns:
+            st.avg_day3_return = round(sum(d3_returns) / len(d3_returns), 2)
+        if d5_returns:
+            st.avg_day5_return = round(sum(d5_returns) / len(d5_returns), 2)
+        all_returns_next.extend(next_returns)
+        all_returns_3.extend(d3_returns)
+        all_returns_5.extend(d5_returns)
+
+    return stats_map
+
+
+def compute_tier_stats(
+    performances: list[CandidatePerformance],
+) -> dict[str, dict]:
+    tier_map: dict[str, dict] = {}
+    for perf in performances:
+        t = perf.tier or "unknown"
+        if t not in tier_map:
+            tier_map[t] = {"total": 0, "hit": 0, "miss": 0, "no_data": 0, "invalidated": 0}
+        tier_map[t]["total"] += 1
+        if perf.hit is None:
+            tier_map[t]["no_data"] += 1
+        elif perf.hit:
+            tier_map[t]["hit"] += 1
+        else:
+            tier_map[t]["miss"] += 1
+        if perf.invalidated:
+            tier_map[t]["invalidated"] += 1
+    return tier_map
+
+
+# [TF-REVIEW-003] strategy_attribution_review
+def compute_candidate_type_stats(
+    performances: list[CandidatePerformance],
+) -> dict[str, dict]:
+    """Aggregate performance by candidate_type (POLICY_AMBUSH/TECH_TRADE/...)."""
+    ct_map: dict[str, dict] = {}
+    for perf in performances:
+        ct = perf.candidate_type or "UNCLASSIFIED"
+        if ct not in ct_map:
+            ct_map[ct] = {"total": 0, "hit": 0, "miss": 0, "no_data": 0, "invalidated": 0}
+        ct_map[ct]["total"] += 1
+        if perf.hit is None:
+            ct_map[ct]["no_data"] += 1
+        elif perf.hit:
+            ct_map[ct]["hit"] += 1
+        else:
+            ct_map[ct]["miss"] += 1
+        if perf.invalidated:
+            ct_map[ct]["invalidated"] += 1
+    return ct_map
+
+
+# [TF-REVIEW-003] strategy_attribution_review
+def compute_attribution_stats(
+    performances: list[CandidatePerformance],
+
+exec
+/bin/zsh -lc "nl -ba tradingagents/tradeflow/post_market_review.py | sed -n '220,330p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   220	
+   221	    # risk_hit: invalidated AND has risk flags (covers both return-based and observe_state)
+   222	    if (perf.invalidated or perf.observe_state == "INVALIDATED") and perf.risk_flags:
+   223	        return HitAttribution.RISK_HIT.value
+   224	
+   225	    scores = perf.split_scores or {}
+   226	    tech = float(scores.get("technical_score", 0.0) or 0.0)
+   227	    policy = float(scores.get("policy_score", 0.0) or 0.0)
+   228	    fund = float(scores.get("fund_flow_score", 0.0) or 0.0)
+   229	
+   230	    # candidate_type drives policy attribution for 昊天 left-side candidates
+   231	    if perf.candidate_type in _POLICY_CANDIDATE_TYPES:
+   232	        return HitAttribution.POLICY_HIT.value
+   233	
+   234	    # If split scores are all zero, fall back to strategy tags / candidate_type
+   235	    if tech == 0 and policy == 0 and fund == 0:
+   236	        tags = set(perf.strategy_tags or [])
+   237	        if perf.candidate_type in _POLICY_CANDIDATE_TYPES or "POLICY_VERSION" in tags:
+   238	            return HitAttribution.POLICY_HIT.value
+   239	        if "FUND_FLOW_ANOMALY" in tags:
+   240	            return HitAttribution.FUND_FLOW_HIT.value
+   241	        return HitAttribution.TECHNICAL_HIT.value
+   242	
+   243	    # Dominant dimension wins
+   244	    if policy > 0 and policy >= tech and policy >= fund:
+   245	        return HitAttribution.POLICY_HIT.value
+   246	    if fund > 0 and fund > tech and fund > policy:
+   247	        return HitAttribution.FUND_FLOW_HIT.value
+   248	    return HitAttribution.TECHNICAL_HIT.value
+   249	
+   250	
+   251	def compute_next_day_feedback(
+   252	    perf: "CandidatePerformance",
+   253	) -> tuple[str, str, list[str]]:
+   254	    """Compute structured next-day feedback for a candidate.
+   255	
+   256	    Returns (tomorrow_focus, downgrade_reason, evidence_needed):
+   257	    - tomorrow_focus: 明日关注 — actionable next-step guidance.
+   258	    - downgrade_reason: 降级原因 — why the candidate should lose weight.
+   259	    - evidence_needed: 需要补证据 — evidence/data gaps to fill.
+   260	    """
+   261	    # tomorrow_focus (明日关注)
+   262	    if perf.observe_state == "TRIGGERED":
+   263	        if perf.hit:
+   264	            tomorrow_focus = "已触发且命中，关注次日是否站稳触发价"
+   265	        else:
+   266	            tomorrow_focus = "已触发但回落，关注是否假突破"
+   267	    elif perf.observe_state == "INVALIDATED":
+   268	        tomorrow_focus = "已失效，建议移出观察或降低权重"
+   269	    elif perf.observe_state == "EXPIRED":
+   270	        tomorrow_focus = "观察期已过未触发，建议移出观察"
+   271	    else:
+   272	        tomorrow_focus = "继续等待触发信号"
+   273	
+   274	    # downgrade_reason (降级原因)
+   275	    downgrade_reason = ""
+   276	    if perf.invalidated:
+   277	        downgrade_reason = "价格跌破失效价"
+   278	    elif perf.hit is False and perf.next_day_return_pct is not None and perf.next_day_return_pct < 0:
+   279	        downgrade_reason = f"触发后下跌 {abs(perf.next_day_return_pct):.1f}%"
+   280	    elif perf.hit is False:
+   281	        downgrade_reason = "未达到触发距离，信号偏弱"
+   282	    elif perf.risk_flags:
+   283	        downgrade_reason = "存在风险标记: " + "、".join(perf.risk_flags[:3])
+   284	
+   285	    # evidence_needed (需要补证据) — already set from candidate data
+   286	    evidence_needed = list(perf.evidence_needed)
+   287	
+   288	    return tomorrow_focus, downgrade_reason, evidence_needed
+   289	
+   290	
+   291	def build_candidate_performance(
+   292	    candidate: Candidate,
+   293	    next_day_close: Optional[float] = None,
+   294	    day3_close: Optional[float] = None,
+   295	    day5_close: Optional[float] = None,
+   296	) -> CandidatePerformance:
+   297	    perf = CandidatePerformance(
+   298	        symbol=candidate.symbol,
+   299	        trade_date=candidate.trade_date,
+   300	        entry_price=float(candidate.trigger_price or 0),
+   301	        trigger_price=candidate.trigger_price,
+   302	        invalid_price=candidate.invalid_price,
+   303	        strategy_tags=list(candidate.strategy_tags),
+   304	        tier=candidate.tier,
+   305	        need_deep_ta=candidate.need_deep_ta,
+   306	        observe_state=candidate.observe_state,
+   307	        composite_score=candidate.composite_score,
+   308	        game_balance=candidate.game_balance,
+   309	        risk_flags=list(candidate.risk_flags),
+   310	        next_day_close=next_day_close,
+   311	        day3_close=day3_close,
+   312	        day5_close=day5_close,
+   313	        candidate_type=candidate.candidate_type,  # [TF-REVIEW-003]
+   314	        split_scores={
+   315	            "technical_score": getattr(candidate, "technical_score", 0.0) or 0.0,
+   316	            "policy_score": getattr(candidate, "policy_score", 0.0) or 0.0,
+   317	            "fund_flow_score": getattr(candidate, "fund_flow_score", 0.0) or 0.0,
+   318	        },  # [TF-REVIEW-003]
+   319	        evidence_needed=list(getattr(candidate, "missing_evidence", []) or []),  # [TF-REVIEW-003]
+   320	    )
+   321	    if perf.entry_price == 0 and candidate.score > 0:
+   322	        perf.entry_price = 0.0
+   323	    perf.compute_returns()
+   324	    perf.compute_attribution()  # [TF-REVIEW-003] strategy_attribution_review
+   325	    return perf
+   326	
+   327	
+   328	def build_candidate_performance_from_dict(
+   329	    entry: dict,
+   330	    next_day_close: Optional[float] = None,
+
+exec
+/bin/zsh -lc "grep -R \"generate_review\\|get_review\" -n api frontend tests | head -100; grep -R \"summary_agg\\|TradeFlowReviewResponse\\|review\" -n api/main.py api | head -100" in /Users/maybee/TradingAgents-AShare
+ succeeded in 5245ms:
+Binary file api/__pycache__/main.cpython-312.pyc matches
+Binary file api/__pycache__/main.cpython-314.pyc matches
+api/main.py:5264:    get_review as _tf_get_review,
+api/main.py:5270:    generate_review as _tf_generate_review,  # [TF-UX-003]
+api/main.py:5363:    return _tf_get_review(date)
+api/main.py:5412:    return _tf_generate_review(date)
+Binary file api/services/__pycache__/tradeflow_service.cpython-312.pyc matches
+api/services/tradeflow_service.py:937:def get_review(trade_date: str, tf_db_path: str = "") -> dict:
+api/services/tradeflow_service.py:1563:def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
+tests/test_t005_review_fixture_replay.py:513:    def test_generate_review_no_db(self):
+tests/test_t005_review_fixture_replay.py:514:        from api.services.tradeflow_service import generate_review
+tests/test_t005_review_fixture_replay.py:515:        result = generate_review("2026-06-02", tf_db_path="/tmp/nonexistent_t005_test.db")
+tests/test_t005_review_fixture_replay.py:518:    def test_get_review_no_db(self):
+tests/test_t005_review_fixture_replay.py:519:        from api.services.tradeflow_service import get_review
+tests/test_t005_review_fixture_replay.py:520:        result = get_review("2026-06-02", tf_db_path="/tmp/nonexistent_t005_test.db")
+tests/test_t005_review_fixture_replay.py:523:    def test_generate_review_schema_fields(self):
+tests/test_t005_review_fixture_replay.py:524:        from api.services.tradeflow_service import generate_review
+tests/test_t005_review_fixture_replay.py:525:        result = generate_review("2026-06-02", tf_db_path="/tmp/nonexistent_t005_test.db")
+Binary file tests/__pycache__/test_tf_p0_003_e2e_smoke.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_tf_p0_003_e2e_smoke.cpython-312.pyc matches
+Binary file tests/__pycache__/test_tf_review_002_date_mapping.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_ui001_tradeflow_api.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_t005_review_fixture_replay.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_tf_review_003_strategy_attribution.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_runtime_tier_contract.cpython-312-pytest-9.0.2.pyc matches
+Binary file tests/__pycache__/test_v007_tradeflow_trial_e2e.cpython-312.pyc matches
+Binary file tests/__pycache__/test_v007_tradeflow_trial_e2e.cpython-312-pytest-9.0.2.pyc matches
+tests/test_runtime_tier_contract.py:456:        from api.services.tradeflow_service import get_review
+tests/test_runtime_tier_contract.py:460:            result = get_review("2026-06-02", tf_db_path=db_path)
+tests/test_runtime_tier_contract.py:632:                get_ta_queue, get_review, get_filtered,
+tests/test_runtime_tier_contract.py:635:            for fn in [get_candidates, get_observe, get_ta_queue, get_review, get_filtered]:
+tests/test_tf_p0_003_e2e_smoke.py:50:    get_review,
+tests/test_tf_p0_003_e2e_smoke.py:546:        result = get_review(TRADE_DATE, tf_db_path=e2e_db)
+tests/test_tf_p0_003_e2e_smoke.py:551:        result = get_review(TRADE_DATE, tf_db_path=e2e_db)
+tests/test_v007_tradeflow_trial_e2e.py:55:    get_review,
+tests/test_v007_tradeflow_trial_e2e.py:58:    generate_review,
+tests/test_v007_tradeflow_trial_e2e.py:867:        r = generate_review(EFFECTIVE_TRADE_DATE, tf_db_path=e2e_db)
+tests/test_v007_tradeflow_trial_e2e.py:880:        r = generate_review(EFFECTIVE_TRADE_DATE, tf_db_path=e2e_db)
+tests/test_v007_tradeflow_trial_e2e.py:887:        r = generate_review(EFFECTIVE_TRADE_DATE, tf_db_path=e2e_db)
+tests/test_v007_tradeflow_trial_e2e.py:896:        r = generate_review(EFFECTIVE_TRADE_DATE, tf_db_path=e2e_db)
+tests/test_v007_tradeflow_trial_e2e.py:1071:        r = generate_review(td, tf_db_path=db_path)
+tests/test_v007_tradeflow_trial_e2e.py:1176:        "- generate_review 生成盘后复盘报告，覆盖 5 只候选。",
+tests/test_ui001_tradeflow_api.py:41:    get_review,
+tests/test_ui001_tradeflow_api.py:596:        result = get_review("2026-05-30", tf_db_path="/nonexistent/path.db")
+tests/test_ui001_tradeflow_api.py:600:        result = get_review("2026-05-30", tf_db_path=populated_db)
+tests/test_ui001_tradeflow_api.py:607:        result = get_review("2026-05-30", tf_db_path=populated_db)
+tests/test_ui001_tradeflow_api.py:635:        result = get_review("2026-05-30", tf_db_path=populated_db)
+tests/test_tf_review_003_strategy_attribution.py:14:10. Service-layer get_review returns hit_type/tomorrow_focus/downgrade_reason/evidence_needed.
+tests/test_tf_review_003_strategy_attribution.py:463:# ── Service-layer: get_review returns attribution ──
+tests/test_tf_review_003_strategy_attribution.py:467:    def test_get_review_returns_hit_type(self):
+tests/test_tf_review_003_strategy_attribution.py:468:        from api.services.tradeflow_service import get_review
+tests/test_tf_review_003_strategy_attribution.py:523:            result = get_review("2026-05-29", tf_db_path=db_path)
+tests/test_tf_review_002_date_mapping.py:266:# ── Service layer: get_review with data_status ──
+tests/test_tf_review_002_date_mapping.py:270:    def test_get_review_no_db_returns_no_candidates(self):
+tests/test_tf_review_002_date_mapping.py:271:        from api.services.tradeflow_service import get_review
+tests/test_tf_review_002_date_mapping.py:272:        result = get_review("2026-06-02", tf_db_path="/tmp/nonexistent_tf_review_002.db")
+tests/test_tf_review_002_date_mapping.py:277:    def test_get_review_returns_data_status_ok(self):
+tests/test_tf_review_002_date_mapping.py:278:        """When a plan exists, get_review returns data_status OK."""
+tests/test_tf_review_002_date_mapping.py:279:        from api.services.tradeflow_service import get_review
+tests/test_tf_review_002_date_mapping.py:302:            result = get_review("2026-06-02", tf_db_path=db_path)
+tests/test_tf_review_002_date_mapping.py:308:    def test_get_review_falls_back_to_latest_plan(self):
+tests/test_tf_review_002_date_mapping.py:310:        from api.services.tradeflow_service import get_review
+tests/test_tf_review_002_date_mapping.py:329:            result = get_review("2026-06-15", tf_db_path=db_path)
+tests/test_tf_review_002_date_mapping.py:334:# ── Service layer: generate_review with data_status ──
+tests/test_tf_review_002_date_mapping.py:338:    def test_generate_review_no_db_returns_data_status(self):
+tests/test_tf_review_002_date_mapping.py:339:        from api.services.tradeflow_service import generate_review
+tests/test_tf_review_002_date_mapping.py:340:        result = generate_review("2026-06-02", tf_db_path="/tmp/nonexistent_tf_review_002_gen.db")
+tests/test_tf_review_002_date_mapping.py:345:    def test_generate_review_with_candidates(self):
+tests/test_tf_review_002_date_mapping.py:346:        """generate_review with actual candidates returns data_status."""
+tests/test_tf_review_002_date_mapping.py:347:        from api.services.tradeflow_service import generate_review
+tests/test_tf_review_002_date_mapping.py:365:            result = generate_review("2026-06-02", tf_db_path=db_path)
+tests/test_tf_review_002_date_mapping.py:374:    def test_generate_review_includes_strategy_day3_day5_returns(self):
+tests/test_tf_review_002_date_mapping.py:375:        """generate_review strategy_stats should include avg_day3_return and avg_day5_return."""
+tests/test_tf_review_002_date_mapping.py:376:        from api.services.tradeflow_service import generate_review
+tests/test_tf_review_002_date_mapping.py:394:            result = generate_review("2026-06-02", tf_db_path=db_path)
+api/main.py:2977:class FullTACostPreviewResponse(BaseModel):
+api/main.py:2992:@app.get("/v1/analyze/cost-preview", response_model=FullTACostPreviewResponse)
+api/main.py:2993:def get_full_ta_cost_preview(
+api/main.py:2996:    from api.runtime_tier import get_full_ta_cost_preview as _preview
+api/main.py:3002:    preview = _preview(
+api/main.py:3007:    return FullTACostPreviewResponse(**preview.to_dict())
+api/main.py:4004:        preview = str(raw).strip().replace("\n", " ")[:80] or "<empty>"
+api/main.py:4005:        return {"status": "ok", "model": model, "preview": preview}
+api/main.py:4057:            preview = content.replace("\n", " ")[:80]
+api/main.py:4058:            _log(f"[LLM Warmup] user={user_id} model={model} success response={preview}")
+api/main.py:5238:    TradeFlowReviewResponse,
+api/main.py:5264:    get_review as _tf_get_review,
+api/main.py:5270:    generate_review as _tf_generate_review,  # [TF-UX-003]
+api/main.py:5281:    get_paper_review as _tf_get_paper_review,  # [TF-PAPER-001] paper_trading_ledger
+api/main.py:5361:@app.get("/v1/tradeflow/review", response_model=TradeFlowReviewResponse)
+api/main.py:5362:def tradeflow_review(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+api/main.py:5363:    return _tf_get_review(date)
+api/main.py:5409:# [TF-UX-003] post_market_review
+api/main.py:5410:@app.post("/v1/tradeflow/review/generate", response_model=TradeFlowReviewGenerateResponse)
+api/main.py:5411:def tradeflow_review_generate(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+api/main.py:5412:    return _tf_generate_review(date)
+api/main.py:5461:@app.get("/v1/tradeflow/paper-ledger/review", response_model=PaperReviewResponse)
+api/main.py:5462:def tradeflow_paper_ledger_review(date: str = Query(..., description="复盘日期 YYYY-MM-DD")):
+api/main.py:5463:    return _tf_get_paper_review(date)
+api/ta_profile.py:7:- POSITION_RISK_LIGHT: for holding review
+api/runtime_tier.py:70:    "tradeflow_review",
+api/runtime_tier.py:77:    "tradeflow_paper_review",  # [TF-PAPER-001] paper_trading_ledger
+api/runtime_tier.py:136:class FullTACostPreview:
+api/runtime_tier.py:171:def get_full_ta_cost_preview(
+api/runtime_tier.py:175:) -> FullTACostPreview:
+api/runtime_tier.py:177:    return FullTACostPreview(
+api/tradeflow_schemas.py:162:    summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
+api/tradeflow_schemas.py:176:    summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
+api/tradeflow_schemas.py:177:    main_summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
+api/tradeflow_schemas.py:255:    candidate_type: str = ""  # [TF-REVIEW-003] strategy_attribution_review
+api/tradeflow_schemas.py:256:    hit_type: str = ""  # [TF-REVIEW-003] strategy_attribution_review
+api/tradeflow_schemas.py:257:    tomorrow_focus: str = ""  # [TF-REVIEW-003] strategy_attribution_review
+api/tradeflow_schemas.py:258:    downgrade_reason: str = ""  # [TF-REVIEW-003] strategy_attribution_review
+api/tradeflow_schemas.py:262:class TradeFlowReviewResponse(BaseModel):
+api/tradeflow_schemas.py:265:    reviewed_at: str = ""
+api/tradeflow_schemas.py:267:    summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
+api/tradeflow_schemas.py:268:    plan_date: str = ""  # [TF-REVIEW-002] review_date_mapping
+api/tradeflow_schemas.py:269:    effective_trade_date: str = ""  # [TF-REVIEW-002] review_date_mapping
+api/tradeflow_schemas.py:270:    data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
+api/tradeflow_schemas.py:271:    data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
+api/tradeflow_schemas.py:334:    summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
+api/tradeflow_schemas.py:338:# [TF-UX-003] post_market_review
+api/tradeflow_schemas.py:343:    data_status: str = ""  # [TF-REVIEW-002] review_date_mapping
+api/tradeflow_schemas.py:344:    data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
+api/tradeflow_schemas.py:345:    review: Optional[Dict[str, Any]] = None
+api/tradeflow_schemas.py:518:    review: Dict[str, Any] = Field(default_factory=dict)
+Binary file api/__pycache__/main.cpython-312.pyc matches
+Binary file api/__pycache__/main.cpython-314.pyc matches
+Binary file api/__pycache__/runtime_tier.cpython-312.pyc matches
+Binary file api/__pycache__/ta_profile.cpython-312.pyc matches
+Binary file api/__pycache__/tradeflow_schemas.cpython-312.pyc matches
+api/main.py:2977:class FullTACostPreviewResponse(BaseModel):
+api/main.py:2992:@app.get("/v1/analyze/cost-preview", response_model=FullTACostPreviewResponse)
+api/main.py:2993:def get_full_ta_cost_preview(
+api/main.py:2996:    from api.runtime_tier import get_full_ta_cost_preview as _preview
+api/main.py:3002:    preview = _preview(
+api/main.py:3007:    return FullTACostPreviewResponse(**preview.to_dict())
+api/main.py:4004:        preview = str(raw).strip().replace("\n", " ")[:80] or "<empty>"
+api/main.py:4005:        return {"status": "ok", "model": model, "preview": preview}
+api/main.py:4057:            preview = content.replace("\n", " ")[:80]
+api/main.py:4058:            _log(f"[LLM Warmup] user={user_id} model={model} success response={preview}")
+api/main.py:5238:    TradeFlowReviewResponse,
+api/main.py:5264:    get_review as _tf_get_review,
+api/main.py:5270:    generate_review as _tf_generate_review,  # [TF-UX-003]
+api/main.py:5281:    get_paper_review as _tf_get_paper_review,  # [TF-PAPER-001] paper_trading_ledger
+api/main.py:5361:@app.get("/v1/tradeflow/review", response_model=TradeFlowReviewResponse)
+api/main.py:5362:def tradeflow_review(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+api/main.py:5363:    return _tf_get_review(date)
+api/main.py:5409:# [TF-UX-003] post_market_review
+api/main.py:5410:@app.post("/v1/tradeflow/review/generate", response_model=TradeFlowReviewGenerateResponse)
+api/main.py:5411:def tradeflow_review_generate(date: str = Query(..., description="交易日期 YYYY-MM-DD")):
+api/main.py:5412:    return _tf_generate_review(date)
+api/main.py:5461:@app.get("/v1/tradeflow/paper-ledger/review", response_model=PaperReviewResponse)
+api/main.py:5462:def tradeflow_paper_ledger_review(date: str = Query(..., description="复盘日期 YYYY-MM-DD")):
+api/main.py:5463:    return _tf_get_paper_review(date)
+Binary file api/services/__pycache__/bark_notification_service.cpython-312.pyc matches
+Binary file api/services/__pycache__/tradeflow_service.cpython-312.pyc matches
+Binary file api/services/__pycache__/scheduled_service.cpython-312.pyc matches
+Binary file api/services/__pycache__/scheduled_service.cpython-314.pyc matches
+api/services/scheduled_service.py:22:    review points. Frontend guidance can still recommend 11:35/14:30/20:00,
+api/services/tradeflow_service.py:469:            "summary_agg": _compute_summary(candidate_items),
+api/services/tradeflow_service.py:574:            "summary_agg": _compute_summary(items),
+api/services/tradeflow_service.py:575:            "main_summary_agg": _compute_summary(pool_result.main_candidates),
+api/services/tradeflow_service.py:937:def get_review(trade_date: str, tf_db_path: str = "") -> dict:
+api/services/tradeflow_service.py:938:    # [TF-REVIEW-002] review_date_mapping
+api/services/tradeflow_service.py:939:    _fast_meta = _tradeflow_meta("tradeflow_review")  # [PERF-001]
+api/services/tradeflow_service.py:943:    # (e.g. plan generated on 5/31 weekend, review on 6/1 trading day)
+api/services/tradeflow_service.py:955:        # [TF-REVIEW-002] review_date_mapping — return clear data_status
+api/services/tradeflow_service.py:956:        from tradingagents.tradeflow.post_market_review import ReviewDataStatus
+api/services/tradeflow_service.py:969:        # [TF-REVIEW-003] strategy_attribution_review — derive attribution + feedback
+api/services/tradeflow_service.py:970:        from tradingagents.tradeflow.post_market_review import (
+api/services/tradeflow_service.py:1025:    # [TF-REVIEW-002] review_date_mapping — include plan_date/effective_trade_date
+api/services/tradeflow_service.py:1029:        "reviewed_at": datetime.now().isoformat(),
+api/services/tradeflow_service.py:1031:        "summary_agg": _compute_summary(candidates),
+api/services/tradeflow_service.py:1036:        "runtime_tier_meta": _tradeflow_meta("tradeflow_review"),  # [PERF-001]
+
+exec
+/bin/zsh -lc "sed -n '330,360p' api/tradeflow_schemas.py; sed -n '460,560p' tests/test_tf_review_003_strategy_attribution.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    pool_gate_summary: str = ""
+    actionable_count: int = 0
+    watch_count: int = 0
+    scan_count: int = 0
+    summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [TF-UX-003] post_market_review
+class TradeFlowReviewGenerateResponse(BaseModel):
+    status: str = "ok"
+    trade_date: str = ""
+    message: str = ""
+    data_status: str = ""  # [TF-REVIEW-002] review_date_mapping
+    data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
+    review: Optional[Dict[str, Any]] = None
+
+
+# [DATA-007] evidence_coverage_audit
+class EvidenceCredibilityItem(BaseModel):
+    symbol: str = ""
+    candidate_type: str = ""
+    evidence_coverage: float = 0.0
+    evidence_quality_level: str = "UNKNOWN"
+    tier_allowed: str = ""
+    tier_restricted: bool = False
+    need_deep_ta_allowed: bool = True
+    credibility_level: str = "UNKNOWN"
+    credibility_reasons: List[str] = Field(default_factory=list)
+
+
+        assert perf.tomorrow_focus != ""
+
+
+# ── Service-layer: get_review returns attribution ──
+
+
+class TestServiceGetReviewAttribution:
+    def test_get_review_returns_hit_type(self):
+        from api.services.tradeflow_service import get_review
+        from tradingagents.tradeflow.candidate_engine import init_db
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = f"{tmp}/tradeflow_test.db"
+            init_db(db_path)
+
+            # Insert a daily plan with candidates
+            import sqlite3
+            import json
+            conn = sqlite3.connect(db_path)
+            candidates_json = json.dumps([
+                {
+                    "symbol": "000001.SZ",
+                    "name": "测试股A",
+                    "action": "OBSERVE",
+                    "tier": "A",
+                    "composite_score": 75.0,
+                    "strategy_tags": ["VCP"],
+                    "trigger_price": 10.0,
+                    "invalid_price": 9.0,
+                    "observe_state": "TRIGGERED",
+                    "candidate_type": "TECH_TRADE",
+                    "technical_score": 80,
+                    "policy_score": 20,
+                    "fund_flow_score": 10,
+                    "missing_evidence": [],
+                    "risk_flags": [],
+                },
+                {
+                    "symbol": "000002.SZ",
+                    "name": "测试股B",
+                    "action": "OBSERVE",
+                    "tier": "B",
+                    "composite_score": 60.0,
+                    "strategy_tags": ["VCP"],
+                    "trigger_price": 10.0,
+                    "invalid_price": 9.0,
+                    "observe_state": "WAITING",
+                    "candidate_type": "POLICY_AMBUSH",
+                    "technical_score": 20,
+                    "policy_score": 80,
+                    "fund_flow_score": 10,
+                    "missing_evidence": ["fund_flow", "lhb_detail"],
+                    "risk_flags": [],
+                },
+            ])
+            conn.execute(
+                "INSERT INTO tradeflow_daily_plans (trade_date, mode, summary, candidates_json, metadata_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("2026-05-29", "pre_market", "test", candidates_json, "{}"),
+            )
+            conn.commit()
+            conn.close()
+
+            result = get_review("2026-05-29", tf_db_path=db_path)
+            assert result["status"] == "ok"
+            results = result["results"]
+            assert len(results) == 2
+
+            # First candidate: TRIGGERED TECH_TRADE -> technical_hit
+            r0 = [r for r in results if r["symbol"] == "000001.SZ"][0]
+            assert r0["hit_type"] == "technical_hit"
+            assert r0["tomorrow_focus"]
+            assert "candidate_type" in r0
+
+            # Second candidate: WAITING POLICY_AMBUSH with no returns -> data_issue
+            # (candidate_type is noted but outcome can't be evaluated without market data)
+            r1 = [r for r in results if r["symbol"] == "000002.SZ"][0]
+            assert r1["hit_type"] == "data_issue"
+            assert r1["downgrade_reason"] == ""  # waiting, no downgrade
+            assert "fund_flow" in r1["evidence_needed"]
+
+exec
+/bin/zsh -lc "grep -n \"def get_candidates\\|def get_daily_plan\\|risk_flags\" -n api/services/tradeflow_service.py | head -80; sed -n '400,620p' api/services/tradeflow_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+114:        "risk_flags": _parse_json(_rget(row, "risk_flags_json"), []),
+369:def get_daily_plan(trade_date: str, tf_db_path: str = "") -> dict:
+427:                "risk_flags": entry.get("risk_flags", []),
+480:def get_candidates(
+979:        _risk_flags = entry.get("risk_flags", [])
+989:            risk_flags=_risk_flags,
+1354:def get_candidates_tiered(trade_date: str, tf_db_path: str = "") -> dict:
+                "symbol": sym,
+                "name": n,
+                "tier": entry.get("tier", ""),
+                "composite_score": entry.get("composite_score", 0.0) or 0.0,
+                "score": entry.get("score", 0.0) or 0.0,
+                "strategy_tags": entry.get("strategies", entry.get("strategy_tags", [])),
+                "primary_strategy": entry.get("primary_strategy", ""),
+                "trigger_price": entry.get("trigger_price"),
+                "support_price": entry.get("support_price"),
+                "invalid_price": entry.get("invalid_price"),
+                "need_deep_ta": entry.get("need_deep_ta", False),
+                "action": entry.get("action", "OBSERVE"),
+                "reason": entry.get("reason", ""),
+                "observe_state": entry.get("observe_state", "WAITING"),
+                "observe_trigger_count": entry.get("observe_trigger_count", 0),
+                "observe_first_trigger_time": entry.get("observe_first_trigger_time", ""),
+                "tradeflow_data_completeness": entry.get("tradeflow_data_completeness", 0.0),
+                "missing_data_fields": entry.get("missing_data_fields", []),
+                "data_completeness": entry.get("data_completeness", 0.0),
+                "missing_evidence": entry.get("missing_evidence", []),
+                "game_balance": entry.get("game_balance", ""),
+                "bull_case": entry.get("bull_case", ""),
+                "bear_case": entry.get("bear_case", ""),
+                "policy_case": entry.get("policy_case", ""),
+                "fund_flow_case": entry.get("fund_flow_case", ""),
+                "why_deep_ta": entry.get("why_deep_ta", ""),
+                "why_not_deep_ta": entry.get("why_not_deep_ta", ""),
+                "risk_flags": entry.get("risk_flags", []),
+                "policy_tags": entry.get("policy_tags", []),
+                "version_score": entry.get("version_score", 0.0),
+                "narrative_score": entry.get("narrative_score", 0.0),
+                "fund_flow_anomaly_score": entry.get("fund_flow_anomaly_score", 0.0),
+                "fund_flow_anomaly_tags": entry.get("fund_flow_anomaly_tags", []),
+                "fund_flow_unit_verified": entry.get("fund_flow_unit_verified", False),
+                "evidence_gate_applied": entry.get("evidence_gate_applied", False),
+                "deep_ta_status": entry.get("deep_ta_status", ""),
+                "deep_ta_dispatch_reason": entry.get("deep_ta_dispatch_reason", ""),
+                "deep_ta_model": entry.get("deep_ta_model", ""),
+                "source": entry.get("source", "manual"),
+                "universe_sources": entry.get("universe_sources", []),
+                "resonance_count": entry.get("resonance_count", 0),
+                "ta_budget_priority": entry.get("ta_budget_priority", 0),
+                "tier_reason": entry.get("tier_reason", ""),
+                "missing_evidence_for_upgrade": entry.get("missing_evidence_for_upgrade", []),
+                "candidate_type": entry.get("candidate_type", ""),
+                "mandate_score": entry.get("mandate_score", 0.0) or 0.0,
+                "ambush_score": entry.get("ambush_score", 0.0) or 0.0,
+                "mandate_topic": entry.get("mandate_topic", ""),
+                "company_role": entry.get("company_role", ""),
+                "technical_score": entry.get("technical_score", 0.0) or 0.0,
+                "policy_score": entry.get("policy_score", 0.0) or 0.0,
+                "fund_flow_score": entry.get("fund_flow_score", 0.0) or 0.0,
+                "event_score": entry.get("event_score", 0.0) or 0.0,
+                "ranking_reasons": entry.get("ranking_reasons", []),
+                "weakness_reasons": entry.get("weakness_reasons", []),
+                "risk_penalty_score": entry.get("risk_penalty_score", 0.0) or 0.0,
+                "data_quality_score": entry.get("data_quality_score", 0.0) or 0.0,
+                "created_at": _rget(plan_row, "created_at", ""),
+                "updated_at": _rget(plan_row, "created_at", ""),
+            }
+            candidate_items.append(item)
+
+        return {
+            "status": "ok",
+            "trade_date": _rget(plan_row, "trade_date", trade_date),
+            "mode": _rget(plan_row, "mode", "pre_market"),
+            "summary": _rget(plan_row, "summary", ""),
+            "candidates": candidate_items,
+            "metadata": metadata_json,
+            "summary_agg": _compute_summary(candidate_items),
+            "created_at": _rget(plan_row, "created_at", ""),
+            "plan_date": _rget(plan_row, "plan_date", ""),  # [TF-DATE-001]
+            "effective_trade_date": _rget(plan_row, "effective_trade_date", ""),  # [TF-DATE-001]
+            "observe_date": _rget(plan_row, "observe_date", ""),  # [TF-DATE-001]
+            "runtime_tier_meta": _tradeflow_meta("tradeflow_daily_plan"),  # [PERF-001]
+        }
+    finally:
+        conn.close()
+
+
+def get_candidates(
+    trade_date: str,
+    tier: Optional[str] = None,
+    need_deep_ta: Optional[bool] = None,
+    candidate_type: Optional[str] = None,  # [H-005] mandate_radar_ui
+    pool: Optional[str] = None,  # [TF-P0-002] tradeflow_pool_split
+    tf_db_path: str = "",
+) -> dict:
+    # [TF-P0-002] tradeflow_pool_split — resolve pool to candidate_type list
+    pool_types: list[str] = []
+    if pool and not candidate_type:
+        from tradingagents.tradeflow.candidate_pool import pool_to_candidate_types
+        pool_types = pool_to_candidate_types(pool)
+        if len(pool_types) == 1:
+            candidate_type = pool_types[0]
+        elif len(pool_types) == 0:
+            pass  # "all" pool
+    _fast_meta = _tradeflow_meta("tradeflow_candidates")  # [PERF-001]
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+
+    try:
+        columns = _table_columns(conn, "tradeflow_candidates")
+        extra_conditions = ["status = 'active'" if "status" in columns else None]
+        extra_conditions = [c for c in extra_conditions if c is not None]
+        if tier and "tier" in columns:
+            extra_conditions.append("tier = ?")
+        if need_deep_ta is not None:
+            extra_conditions.append("need_deep_ta = ?")
+        if candidate_type and "candidate_type" in columns:  # [H-005] mandate_radar_ui
+            extra_conditions.append("candidate_type = ?")
+        elif len(pool_types) > 1 and "candidate_type" in columns:  # [TF-P0-002] tradeflow_pool_split
+            placeholders = ",".join(["?"] * len(pool_types))
+            extra_conditions.append(f"candidate_type IN ({placeholders})")
+
+        extra_params: list = []
+        if tier and "tier" in columns:
+            extra_params.append(tier)
+        if need_deep_ta is not None:
+            extra_params.append(1 if need_deep_ta else 0)
+        if candidate_type and "candidate_type" in columns:  # [H-005] mandate_radar_ui
+            extra_params.append(candidate_type)
+        elif len(pool_types) > 1:  # [TF-P0-002]
+            extra_params.extend(pool_types)
+
+        order_cols = []
+        if "trade_priority_score" in columns:
+            order_cols.append("trade_priority_score DESC")
+        if "composite_score" in columns:
+            order_cols.append("composite_score DESC")
+        if "score" in columns:
+            order_cols.append("score DESC")
+        order_clause = f" ORDER BY {', '.join(order_cols)}" if order_cols else " ORDER BY updated_at DESC, created_at DESC"
+
+        rows = _query_by_date_or_effective(
+            conn, "tradeflow_candidates", trade_date,
+            extra_conditions=extra_conditions if extra_conditions else None,
+            extra_params=extra_params if extra_params else None,
+            order_clause=order_clause,
+        )
+
+        items = [_row_to_candidate_item(r) for r in rows]
+        for it in items:
+            it["action"] = _compute_action(it)
+            it["reason"] = it.get("why_deep_ta") or it.get("why_not_deep_ta") or "候选观察"
+
+        _recompute_action_tiers(conn, items, trade_date)
+
+        # [TF-QUALITY-001A] pool_gate_contract — keep legacy candidates intact
+        # while exposing the strict main/observation/filtered split separately.
+        from tradingagents.tradeflow.candidate_pool_gate import run_pool_gate
+        pool_result = run_pool_gate(items)
+        filter_active = bool(tier or need_deep_ta is not None or candidate_type or pool_types)
+        allowed_filtered_symbols = {it["symbol"] for it in items} if filter_active else None
+        filtered_candidates = _merge_filtered_candidates(
+            pool_result.filtered_candidates,
+            _load_filtered_trace_candidates(
+                trade_date,
+                tf_db_path,
+                allowed_symbols=allowed_filtered_symbols,
+            ),
+        )
+        pool_counts = _pool_counts_with_filtered(pool_result.pool_counts, filtered_candidates)
+
+        return {
+            "status": "ok",
+            "trade_date": trade_date,
+            "candidates": items,
+            "main_candidates": pool_result.main_candidates,
+            "observation_candidates": pool_result.observation_candidates,
+            "filtered_candidates": filtered_candidates,
+            "pool_counts": pool_counts,
+            "pool_gate_summary": _pool_gate_summary_with_counts(pool_counts),
+            "summary_agg": _compute_summary(items),
+            "main_summary_agg": _compute_summary(pool_result.main_candidates),
+            "runtime_tier_meta": _tradeflow_meta("tradeflow_candidates"),  # [PERF-001]
+        }
+    finally:
+        conn.close()
+
+
+def get_candidate_detail(symbol: str, trade_date: str, tf_db_path: str = "") -> dict:
+    conn = _connect(tf_db_path)
+    _fast_meta = _tradeflow_meta("tradeflow_candidate_detail")  # [PERF-001]
+    if conn is None:
+        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+
+    try:
+        row = conn.execute(
+            "SELECT * FROM tradeflow_candidates WHERE trade_date = ? AND symbol = ?",
+            (trade_date, symbol),
+        ).fetchone()
+
+        if row is None:
+            columns = _table_columns(conn, "tradeflow_candidates")
+            if "effective_trade_date" in columns:
+                row = conn.execute(
+                    "SELECT * FROM tradeflow_candidates WHERE effective_trade_date = ? AND symbol = ?",
+                    (trade_date, symbol),
+                ).fetchone()
+
+        if row is None:
+            return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+
+        detail = _row_to_candidate_detail(row)
+        detail["action"] = _compute_action(detail)
+        detail["reason"] = detail.get("why_deep_ta") or detail.get("why_not_deep_ta") or "候选观察"
+
+        return {
+            "status": "ok",
+            "trade_date": trade_date,
+            "candidate": detail,
+            "runtime_tier_meta": _tradeflow_meta("tradeflow_candidate_detail"),  # [PERF-001]
+        }
+    finally:
+        conn.close()
+
+
+def _precheck_observe_state(db_path: str, trade_date: str) -> dict:
+    """Quick check whether candidates and observe signals exist for a date.  # [TF-OBS-002] observe_auto_run
+
+exec
+/bin/zsh -lc "sed -n '60,130p' api/services/tradeflow_service.py; sed -n '360,430p' api/services/tradeflow_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        return {row["name"] for row in rows}
+    except Exception:
+        return set()
+
+
+def _parse_json(value: Any, default: Any = None) -> Any:
+    if value is None:
+        return default if default is not None else []
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return default if default is not None else []
+    return value
+
+
+def _rget(row: sqlite3.Row, col: str, default: Any = None) -> Any:
+    try:
+        val = row[col]
+        return val
+    except (KeyError, IndexError):
+        return default
+
+
+def _row_to_candidate_item(row: sqlite3.Row) -> dict:
+    symbol = normalize_tradeflow_symbol(row["symbol"])  # [UI-008]
+    raw_name = _rget(row, "name", "")
+    name = resolve_tradeflow_name(symbol, raw_name)  # [UI-008]
+    return {
+        "symbol": symbol,
+        "name": name,
+        "tier": _rget(row, "tier", ""),
+        "composite_score": _rget(row, "composite_score", 0.0) or 0.0,
+        "score": _rget(row, "score", 0.0) or 0.0,
+        "strategy_tags": _parse_json(_rget(row, "strategy_tags_json"), []),
+        "primary_strategy": _rget(row, "primary_strategy", ""),
+        "trigger_price": _rget(row, "trigger_price"),
+        "support_price": _rget(row, "support_price"),
+        "invalid_price": _rget(row, "invalid_price"),
+        "need_deep_ta": bool(_rget(row, "need_deep_ta", 0)),
+        "observe_state": _rget(row, "observe_state", "WAITING"),
+        "observe_trigger_count": _rget(row, "observe_trigger_count", 0) or 0,
+        "observe_first_trigger_time": _rget(row, "observe_first_trigger_time", ""),
+        "tradeflow_data_completeness": _rget(row, "tradeflow_data_completeness", 0.0) or 0.0,
+        "missing_data_fields": _parse_json(_rget(row, "missing_data_fields_json"), []),
+        "data_completeness": _rget(row, "data_completeness", 0.0) or 0.0,
+        "missing_evidence": _parse_json(_rget(row, "missing_evidence_json"), []),
+        "game_balance": _rget(row, "game_balance", ""),
+        "bull_case": _rget(row, "bull_case", ""),
+        "bear_case": _rget(row, "bear_case", ""),
+        "policy_case": _rget(row, "policy_case", ""),
+        "fund_flow_case": _rget(row, "fund_flow_case", ""),
+        "why_deep_ta": _rget(row, "why_deep_ta", ""),
+        "why_not_deep_ta": _rget(row, "why_not_deep_ta", ""),
+        "risk_flags": _parse_json(_rget(row, "risk_flags_json"), []),
+        "policy_tags": _parse_json(_rget(row, "policy_tags_json"), []),
+        "version_score": _rget(row, "version_score", 0.0) or 0.0,
+        "narrative_score": _rget(row, "narrative_score", 0.0) or 0.0,
+        "fund_flow_anomaly_score": _rget(row, "fund_flow_anomaly_score", 0.0) or 0.0,
+        "fund_flow_anomaly_tags": _parse_json(_rget(row, "fund_flow_anomaly_tags_json"), []),
+        "fund_flow_unit_verified": bool(_rget(row, "fund_flow_unit_verified", 0)),
+        "evidence_gate_applied": bool(_rget(row, "evidence_gate_applied", 0)),
+        "deep_ta_status": _rget(row, "deep_ta_status", ""),
+        "deep_ta_dispatch_reason": _rget(row, "deep_ta_dispatch_reason", ""),
+        "deep_ta_model": _rget(row, "deep_ta_model", ""),
+        "source": _rget(row, "source", "manual"),
+        "universe_sources": _parse_json(_rget(row, "universe_sources_json"), []),
+        "resonance_count": _rget(row, "resonance_count", 0) or 0,
+        "ta_budget_priority": _rget(row, "ta_budget_priority", 0) or 0,
+        "tier_reason": _rget(row, "tier_reason", ""),
+        "missing_evidence_for_upgrade": _parse_json(_rget(row, "missing_evidence_for_upgrade_json"), []),
+        conditions.insert(0, "trade_date = ?")
+        params.insert(0, date_str)
+        rows = conn.execute(
+            f"SELECT * FROM {table} WHERE {' AND '.join(conditions)}{order_clause}",
+            params,
+        ).fetchall()
+    return rows
+
+
+def get_daily_plan(trade_date: str, tf_db_path: str = "") -> dict:
+    _fast_meta = _tradeflow_meta("tradeflow_daily_plan")  # [PERF-001]
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+
+    try:
+        plan_row = conn.execute(
+            "SELECT * FROM tradeflow_daily_plans WHERE trade_date = ? AND mode = 'pre_market' ORDER BY created_at DESC LIMIT 1",
+            (trade_date,),
+        ).fetchone()
+
+        if plan_row is None:
+            plan_columns = _table_columns(conn, "tradeflow_daily_plans") if conn else set()
+            if "effective_trade_date" in plan_columns:
+                plan_row = conn.execute(
+                    "SELECT * FROM tradeflow_daily_plans WHERE effective_trade_date = ? AND mode = 'pre_market' ORDER BY created_at DESC LIMIT 1",
+                    (trade_date,),
+                ).fetchone()
+        if plan_row is None:
+            return {"status": "no_data", "trade_date": trade_date, "runtime_tier_meta": _fast_meta}  # [PERF-001]
+
+        candidates_json = _parse_json(_rget(plan_row, "candidates_json", "[]"), [])
+        metadata_json = _parse_json(_rget(plan_row, "metadata_json", "{}"), {})
+
+        candidate_items = []
+        for entry in candidates_json:
+            sym = normalize_tradeflow_symbol(entry.get("symbol", ""))  # [UI-008]
+            raw_name = entry.get("name", "")
+            n = resolve_tradeflow_name(sym, raw_name)  # [UI-008]
+            item = {
+                "symbol": sym,
+                "name": n,
+                "tier": entry.get("tier", ""),
+                "composite_score": entry.get("composite_score", 0.0) or 0.0,
+                "score": entry.get("score", 0.0) or 0.0,
+                "strategy_tags": entry.get("strategies", entry.get("strategy_tags", [])),
+                "primary_strategy": entry.get("primary_strategy", ""),
+                "trigger_price": entry.get("trigger_price"),
+                "support_price": entry.get("support_price"),
+                "invalid_price": entry.get("invalid_price"),
+                "need_deep_ta": entry.get("need_deep_ta", False),
+                "action": entry.get("action", "OBSERVE"),
+                "reason": entry.get("reason", ""),
+                "observe_state": entry.get("observe_state", "WAITING"),
+                "observe_trigger_count": entry.get("observe_trigger_count", 0),
+                "observe_first_trigger_time": entry.get("observe_first_trigger_time", ""),
+                "tradeflow_data_completeness": entry.get("tradeflow_data_completeness", 0.0),
+                "missing_data_fields": entry.get("missing_data_fields", []),
+                "data_completeness": entry.get("data_completeness", 0.0),
+                "missing_evidence": entry.get("missing_evidence", []),
+                "game_balance": entry.get("game_balance", ""),
+                "bull_case": entry.get("bull_case", ""),
+                "bear_case": entry.get("bear_case", ""),
+                "policy_case": entry.get("policy_case", ""),
+                "fund_flow_case": entry.get("fund_flow_case", ""),
+                "why_deep_ta": entry.get("why_deep_ta", ""),
+                "why_not_deep_ta": entry.get("why_not_deep_ta", ""),
+                "risk_flags": entry.get("risk_flags", []),
+                "policy_tags": entry.get("policy_tags", []),
+                "version_score": entry.get("version_score", 0.0),
+                "narrative_score": entry.get("narrative_score", 0.0),
+
+exec
+/bin/zsh -lc "sed -n '130,180p' api/services/tradeflow_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        "missing_evidence_for_upgrade": _parse_json(_rget(row, "missing_evidence_for_upgrade_json"), []),
+        "candidate_type": _rget(row, "candidate_type", ""),  # [H-005] mandate_radar_ui
+        "mandate_score": _rget(row, "mandate_score_component", 0.0) or 0.0,  # [H-005]
+        "ambush_score": _rget(row, "ambush_score", 0.0) or 0.0,  # [H-005]
+        "mandate_topic": _rget(row, "mandate_topic", ""),  # [H-005]
+        "company_role": _rget(row, "company_role", ""),  # [H-005]
+        "beneficiary_path": _parse_json(_rget(row, "beneficiary_path_json"), []),  # [H-005]
+        "candidate_type_reason": _rget(row, "candidate_type_reason", ""),  # [H-005]
+        "deep_ta_route": _rget(row, "deep_ta_route", ""),  # [H-005]
+        "research_queue": _rget(row, "research_queue", ""),  # [H-007] mandate_ta_queue_router
+        "research_intent": _rget(row, "research_intent", ""),  # [H-007]
+        "research_route_reason": _rget(row, "research_route_reason", ""),  # [H-007]
+        "watchlist_note": _rget(row, "watchlist_note", ""),  # [H-008] mandate_watchlist_note
+        "watchlist_note_suggested": _rget(row, "watchlist_note_suggested", ""),  # [H-008]
+        "watchlist_topic": _rget(row, "watchlist_topic", ""),  # [H-008]
+        "watchlist_benefit_score": _rget(row, "watchlist_benefit_score", 0.0) or 0.0,  # [H-008]
+        "watchlist_consensus_score": _rget(row, "watchlist_consensus_score", 0.0) or 0.0,  # [H-008]
+        "watchlist_evidence_gap": _parse_json(_rget(row, "watchlist_evidence_gap_json"), []),  # [H-008]
+        "plan_date": _rget(row, "plan_date", ""),  # [TF-DATE-001] tradeflow_date_semantics
+        "effective_trade_date": _rget(row, "effective_trade_date", ""),  # [TF-DATE-001]
+        "observe_date": _rget(row, "observe_date", ""),  # [TF-DATE-001]
+        "action_tier": _rget(row, "action_tier", "scan"),  # [TF-UX-004]
+        "trade_priority_score": _rget(row, "trade_priority_score", 0.0) or 0.0,  # [TF-UX-004]
+        "action_tier_reason": _rget(row, "action_tier_reason", ""),  # [TF-UX-004]
+        "counter_evidence": _parse_json(_rget(row, "counter_evidence_json"), []),  # [H-009]
+        "overheat_flags": _parse_json(_rget(row, "overheat_flags_json"), []),  # [H-009]
+        "downgrade_reasons": _parse_json(_rget(row, "downgrade_reasons_json"), []),  # [H-009]
+        "what_would_change_mind": _parse_json(_rget(row, "what_would_change_mind_json"), []),  # [H-009]
+        "topic_lifecycle_state": _rget(row, "topic_lifecycle_state", ""),  # [H-010] mandate_topic_lifecycle
+        "topic_lifecycle_reason": _rget(row, "topic_lifecycle_reason", ""),  # [H-010]
+        "topic_last_signal_date": _rget(row, "topic_last_signal_date", ""),  # [H-010]
+        "topic_signal_count": _rget(row, "topic_signal_count", 0) or 0,  # [H-010]
+        "contradiction_level": _rget(row, "contradiction_level", ""),  # [H-011] candidate_contradiction_explainer
+        "contradiction_items": _parse_json(_rget(row, "contradiction_items_json"), []),  # [H-011]
+        "blocking_evidence_gaps": _parse_json(_rget(row, "blocking_evidence_gaps_json"), []),  # [H-011]
+        "next_verification_steps": _parse_json(_rget(row, "next_verification_steps_json"), []),  # [H-011]
+        # [TF-QUALITY-002] score_separation — split scores for precision gate
+        "technical_score": _rget(row, "technical_score", 0.0) or 0.0,
+        "policy_score": _rget(row, "policy_score", 0.0) or 0.0,
+        "fund_flow_score": _rget(row, "fund_flow_score", 0.0) or 0.0,
+        "event_score": _rget(row, "event_score", 0.0) or 0.0,
+        "risk_penalty_score": _rget(row, "risk_penalty_score", 0.0) or 0.0,
+        "data_quality_score": _rget(row, "data_quality_score", 0.0) or 0.0,
+        "ranking_reasons": _parse_json(_rget(row, "ranking_reasons_json"), []),
+        "weakness_reasons": _parse_json(_rget(row, "weakness_reasons_json"), []),
+        # [TF-QUALITY-003] candidate_precision_gate — fields for precision dimensions
+        "mandate_score_component": _rget(row, "mandate_score_component", 0.0) or 0.0,
+        "beneficiary_score_component": _rget(row, "beneficiary_score_component", 0.0) or 0.0,
+        "overheat_penalty": _rget(row, "overheat_penalty", 0.0) or 0.0,
+        "overheat_flags": _parse_json(_rget(row, "overheat_flags_json"), []),
+        "created_at": _rget(row, "created_at", ""),
+
+exec
+/bin/zsh -lc 'pytest tests/test_tf_review_003_strategy_attribution.py tests/test_m007_post_market_review.py -q' in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: pytest
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest tests/test_tf_review_003_strategy_attribution.py tests/test_m007_post_market_review.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 1482ms:
+........................................................................ [ 72%]
+............................                                             [100%]
+100 passed in 1.00s
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest tests/test_ui001_tradeflow_api.py::TestTradeFlowReviewAPI tests/test_tf_review_002_date_mapping.py tests/test_v007_tradeflow_trial_e2e.py::TestReviewFlow -q' in /Users/maybee/TradingAgents-AShare
+ exited 4 in 1475ms:
+ERROR: not found: /Users/maybee/TradingAgents-AShare/tests/test_ui001_tradeflow_api.py::TestTradeFlowReviewAPI
+(no match in any of [<Module test_ui001_tradeflow_api.py>])
+
+ERROR: not found: /Users/maybee/TradingAgents-AShare/tests/test_v007_tradeflow_trial_e2e.py::TestReviewFlow
+(no match in any of [<Module test_v007_tradeflow_trial_e2e.py>])
+
+
+no tests ran in 0.98s
+
+exec
+/bin/zsh -lc 'cd frontend && npm run build' in /Users/maybee/TradingAgents-AShare
+ succeeded in 3264ms:
+vite v6.4.2 building for production...
+(node:74448) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+transforming...
+✓ 1939 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                     1.15 kB │ gzip:   0.65 kB
+dist/assets/index-C0G9f7wx.css    163.03 kB │ gzip:  22.60 kB
+dist/assets/index-CUR7bkgQ.js   1,169.86 kB │ gzip: 337.69 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 1.30s
+
+exec
+/bin/zsh -lc "find docs/task_runs/TF-REVIEW-003-20260618-022047 -maxdepth 2 -type f -print -exec sed -n '1,180p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+docs/task_runs/TF-REVIEW-003-20260618-022047/tests-round1.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  1%]
+................................................ss...................... [  2%]
+........................................................................ [  3%]
+........................................................................ [  4%]
+........................................................................ [  6%]
+........................................................................ [  7%]
+........................................................................ [  8%]
+........................................................................ [  9%]
+........................................................................ [ 10%]
+........................................................................ [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 15%]
+........................................................................ [ 16%]
+........................................................................ [ 18%]
+........................................................................ [ 19%]
+........................................................................ [ 20%]
+........................................................................ [ 21%]
+........................................................................ [ 23%]
+........................................................................ [ 24%]
+........................................................................ [ 25%]
+........................................................................ [ 26%]
+........................................................................ [ 27%]
+........................................................................ [ 29%]
+........................................................................ [ 30%]
+........................................................................ [ 31%]
+........................................................................ [ 32%]
+........................................................................ [ 33%]
+........................................................................ [ 35%]
+........................................................................ [ 36%]
+........................................................................ [ 37%]
+........................................................................ [ 38%]
+........................................................................ [ 39%]
+........................................................................ [ 41%]
+........................................................................ [ 42%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 46%]
+........................................................................ [ 47%]
+........................................................................ [ 48%]
+..........................................sssssssss..................... [ 49%]
+........................................................................ [ 50%]
+........................................................................ [ 52%]
+........................................................................ [ 53%]
+........................................................................ [ 54%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 58%]
+........................................................................ [ 59%]
+........................................................................ [ 60%]
+........................................................................ [ 61%]
+........................................................................ [ 62%]
+........................................................................ [ 64%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+........................................................................ [ 67%]
+........................................................................ [ 69%]
+.............................ss......................................... [ 70%]
+........ssss............................................................ [ 71%]
+........................................................................ [ 72%]
+........................................................................ [ 73%]
+........................................................................ [ 75%]
+........................................................................ [ 76%]
+........................................................................ [ 77%]
+........................................................................ [ 78%]
+........................................................................ [ 79%]
+........................................................................ [ 81%]
+........................................................................ [ 82%]
+........................................................................ [ 83%]
+........................................................................ [ 84%]
+........................................................................ [ 86%]
+........................................................................ [ 87%]
+........................................................................ [ 88%]
+........................................................................ [ 89%]
+........................................................................ [ 90%]
+........................................................................ [ 92%]
+........................................................................ [ 93%]
+........................................................................ [ 94%]
+........................................................................ [ 95%]
+........................................................................ [ 96%]
+........................................................................ [ 98%]
+........................................................................ [ 99%]
+.......................................                                  [100%]
+5926 passed, 17 skipped in 183.94s (0:03:03)
+
+Exit code: 0
+docs/task_runs/TF-REVIEW-003-20260618-022047/codegraph-status.json
+{
+  "task_id": "TF-REVIEW-003",
+  "generated_at": "2026-06-18T02:20:48.233022",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "result": "OK",
+  "symbols_found": 5,
+  "post_generated_at": "2026-06-18T02:36:23.460513",
+  "codegraph_post": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "post_result": "OK",
+  "impact_files_count": 0,
+  "affected_tests_count": 0,
+  "changed_files": [
+    "api/services/tradeflow_service.py",
+    "api/tradeflow_schemas.py",
+    "docs/DEVLOG.md",
+    "docs/TASKS.md",
+    "docs/tradeflow_reviews/2026-06-02.md",
+    "docs/tradeflow_reviews/2026-06-15.md",
+    "docs/tradeflow_trial_acceptance.md",
+    "frontend/src/pages/TradeFlow.tsx",
+    "frontend/src/types/index.ts",
+    "tests/test_m007_post_market_review.py",
+    "tradingagents/tradeflow/post_market_review.py"
+  ]
+}docs/task_runs/TF-REVIEW-003-20260618-022047/prompt-round1.md
+# Task: TF-REVIEW-003: 盘后 Review 策略命中归因与次日反馈（P1）
+
+Read task "TF-REVIEW-003" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/TF-REVIEW-003-20260618-022047/codegraph-context.txt
+# CodeGraph Context for TF-REVIEW-003
+# Task: 盘后 Review 策略命中归因与次日反馈（P1）
+# Generated: 2026-06-18T02:20:48.387818
+# Keywords: tf, review, 策略命中归因与次日反馈（p1）
+
+## Code Context
+
+**Query:** tf review 策略命中归因与次日反馈（p1）
+
+### Entry Points
+
+- **ReviewSummary** (class) - tradingagents/tradeflow/post_market_review.py:99
+- **review_plan** (function) - tradingagents/tradeflow/review_runner.py:18
+  `(
+    plan: DailyPlan,
+    tf_db_path: str = "",
+) -> dict`
+- **ReviewTab** (function) - frontend/src/pages/TradeFlow.tsx:291
+  `({ data }: { data: TradeFlowReviewResponse })`
+
+### Related Symbols
+
+- tradingagents/tradeflow/post_market_review.py: compute_overall:118, run_post_market_review:293
+- tests/test_m007_post_market_review.py: test_render_empty_summary:607, test_save_creates_directory:676
+- frontend/src/pages/TradeFlow.tsx: fmtPct:266, tierBadgeClass:23, TradeFlow:495
+- api/tradeflow_schemas.py: TradeFlowReviewResponse:176
+
+docs/task_runs/TF-REVIEW-003-20260618-022047/opencode-round1.txt
+[0m
+> build · glm-5.1
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "TF-REVIEW-003"[90m in docs/TASKS.md · 7 matches[0m
+Let me search for the specific TF-REVIEW-003 task details.
+[0m✱ [0mGrep "TF-REVIEW-002"[90m in docs/TASKS.md · 8 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [limit=90, offset=3123][0m
+Let me read the full task description for TF-REVIEW-003 and the related TF-REVIEW-002 task for context.
+[0m→ [0mRead docs/TASKS.md[90m [limit=40, offset=2771][0m
+[0m
+[0m# [0mTodos
+[•] Explore existing Review service/API/schema (TF-REVIEW-002)
+[ ] Understand candidate/observe state model and signal table
+[ ] Design strategy attribution data model (hit_type, performance, next-day feedback)
+[ ] Implement backend: review service aggregation + API fields
+[ ] Update DB schema/migration for attribution fields (non-prod)
+[ ] Implement frontend Review component enhancement
+[ ] Write/update tests with fixture (hit/invalid/not-triggered)
+[ ] Run tests + lint + typecheck
+[ ] Update docs/DEVLOG.md
+[0m
+[0m• [0mExplore TradeFlow Review code[90m Explore Agent[0m
+Let me explore the codebase in parallel to understand the existing Review infrastructure.
+[0m✓ [0mExplore TradeFlow Review code[90m Explore Agent[0m
+I have a comprehensive understanding now. Let me read the key files I'll need to modify directly.
+[0m→ [0mRead tradingagents/tradeflow/post_market_review.py
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=110, offset=84][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=120, offset=1528][0m
+Now let me read the key service file sections and the schemas in parallel.
+[0m→ [0mRead api/tradeflow_schemas.py[90m [limit=100, offset=240][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=220, offset=446][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=70, offset=937][0m
+Let me read the frontend ReviewTab and existing test, plus the schemas and the lightweight `get_review`.
+[0m→ [0mRead frontend/src/types/index.ts[90m [limit=30, offset=1061][0m
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [limit=35, offset=15][0m
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [limit=30, offset=118][0m
+Let me read the schemas and the existing tests to understand patterns.
+[0m→ [0mRead tests/test_m007_post_market_review.py[90m [limit=120, offset=1][0m
+[0m✱ [0mGrep "interface (StrategyRow|TierRow)"[90m in frontend/src/pages/TradeFlow.tsx · 2 matches[0m
+[0m→ [0mRead tests/test_tf_review_002_date_mapping.py[90m [limit=60, offset=1][0m
+Let me check the frontend types for StrategyRow and the existing TF-REVIEW-002 test pattern.
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=20, offset=426][0m
+[0m
+[0m# [0mTodos
+[✓] Explore existing Review service/API/schema (TF-REVIEW-002)
+[✓] Understand candidate/observe state model and signal table
+[✓] Design strategy attribution data model (hit_type, performance, next-day feedback)
+[•] Implement core engine: post_market_review.py (HitAttribution, feedback, aggregation)
+[ ] Update service layer: get_review + generate_review attribution fields
+[ ] Update API schemas: TradeFlowReviewItem new fields
+[ ] Update frontend types + ReviewTab component
+[ ] Write tests: test_tf_review_003_strategy_attribution.py (hit/invalid/not-triggered)
+[ ] Run tests + lint + typecheck + npm build
+[ ] Update docs/DEVLOG.md
+[0m
+I now have a complete understanding. Let me update my todos and start implementing the core engine.
+Now let me implement the core engine. First, the `HitAttribution` enum and new `CandidatePerformance` fields:
+[0m← [0mEdit tradingagents/tradeflow/post_market_review.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
+@@ -24,8 +24,36 @@
+ from .schemas import Candidate, ALL_STRATEGIES, FORBIDDEN_WORDS
+ from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG
+ 
+ 
++# [TF-REVIEW-003] strategy_attribution_review
++class HitAttribution(str, Enum):
++    """Explains WHAT dimension drove a candidate's outcome.
++
++    Used for strategy hit attribution in post-market review.
++    """
++    TECHNICAL_HIT = "technical_hit"
++    POLICY_HIT = "policy_hit"
++    FUND_FLOW_HIT = "fund_flow_hit"
++    DATA_ISSUE = "data_issue"
++    RISK_HIT = "risk_hit"
++
++    @property
++    def label_cn(self) -> str:
++        _MAP = {
++            HitAttribution.TECHNICAL_HIT: "技术命中",
++            HitAttribution.POLICY_HIT: "政策命中",
++            HitAttribution.FUND_FLOW_HIT: "资金流命中",
++            HitAttribution.DATA_ISSUE: "数据不足",
++            HitAttribution.RISK_HIT: "风险触发",
++        }
++        return _MAP.get(self, "未知")
++
++    @classmethod
++    def all_values(cls) -> list[str]:
++        return [a.value for a in cls]
++
++
+ # [TF-REVIEW-002] review_date_mapping
+ class ReviewDataStatus(str, Enum):
+     """Explains WHY review data is missing, instead of showing a blank page."""
+     OK = "OK"
+
+[0m
+Now add the new fields to `CandidatePerformance` and the attribution/feedback computation methods:
+[0m← [0mEdit tradingagents/tradeflow/post_market_review.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
+@@ -99,8 +99,15 @@
+     day5_return_pct: Optional[float] = None
+     hit: Optional[bool] = None
+     invalidated: Optional[bool] = None
+     data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
++    # [TF-REVIEW-003] strategy_attribution_review
++    candidate_type: str = ""
++    split_scores: dict = field(default_factory=dict)
++    hit_type: str = ""  # primary attribution: technical_hit/policy_hit/fund_flow_hit/data_issue/risk_hit
++    tomorrow_focus: str = ""  # 明日关注
++    downgrade_reason: str = ""  # 降级原因
++    evidence_needed: list[str] = field(default_factory=list)  # 需要补证据
+ 
+     def compute_returns(self) -> None:
+         if self.entry_price and self.entry_price > 0:
+             if self.next_day_close is not None:
+@@ -125,9 +132,17 @@
+ 
+         if self.invalid_price is not None and self.next_day_close is not None:
+             self.invalidated = self.next_day_close <= self.invalid_price
+ 
++    # [TF-REVIEW-003] strategy_attribution_review
++    def compute_attribution(self) -> None:
++        """Compute hit_type (attribution) and next-day feedback fields."""
++        self.hit_type = classify_hit_attribution(self)
++        self.tomorrow_focus, self.downgrade_reason, self.evidence_needed = (
++            compute_next_day_feedback(self)
++        )
+ 
++
+ @dataclass
+ class StrategyStats:
+     strategy_tag: str
+     total_candidates: int = 0
+
+[0m
+[0m→ [0mRead tradingagents/tradeflow/post_market_review.py[90m [limit=15, offset=178][0m
+Now add the `classify_hit_attribution` and `compute_next_day_feedback` standalone functions before `build_candidate_performance`:
+[0m→ [0mRead tradingagents/tradeflow/post_market_review.py[90m [limit=30, offset=193][0m
+Now let me add the attribution/feedback functions and update `ReviewSummary` with attribution fields. Let me insert the functions before `build_candidate_performance`:
+[0m
+[0m← [0mEdit tradingagents/tradeflow/post_market_review.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
+@@ -185,8 +185,12 @@
+ data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
+ data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
+ plan_date: str = ""  # [TF-REVIEW-002] review_date_mapping — original candidate pool generation date
+ effective_trade_date: str = ""  # [TF-REVIEW-002] review_date_mapping
++# [TF-REVIEW-003] strategy_attribution_review
++candidate_type_stats: dict[str, dict] = field(default_factory=dict)
++attribution_stats: dict[str, dict] = field(default_factory=dict)
++next_day_feedback: list[dict] = field(default_factory=list)
+ 
+ def compute_overall(self) -> None:
+     self.scored_candidates = self.overall_hit_count + self.overall_miss_count
+     if self.scored_candidates > 0:
+
+[0m
+Now add the attribution/feedback standalone functions before `build_candidate_performance`:
+[0m← [0mEdit tradingagents/tradeflow/post_market_review.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_review.py
+@@ -201,8 +201,92 @@
+                 self.overall_miss_count / self.scored_candidates * 100, 1
+             )
+ 
+ 
+docs/task_runs/TF-REVIEW-003-20260618-022047/task.md
+# Auto Dev Task Run
+
+- Task: TF-REVIEW-003 - 盘后 Review 策略命中归因与次日反馈（P1）
+- Priority: P1
+- Status: CLAIMED
+- Started at: 2026-06-18_02:20:47
+- Git HEAD: 790869b
+- Test commands: pytest tests/ -q --tb=short
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/TF-REVIEW-003-20260618-022047/codegraph-impact.txt
+# CodeGraph Impact Analysis
+# Generated: 2026-06-18T02:36:23.460540
+# Changed files: 11
+
+## Source: api/services/tradeflow_service.py
+[1m
+Impact of changing "api/services/tradeflow_service.py" — 1 affected symbols:
+[0m
+[36mapi/services/tradeflow_service.py[0m
+  [2mfile        [0mtradeflow_service.py[2m:1[0m
+
+
+
+## Source: api/tradeflow_schemas.py
+[1m
+Impact of changing "api/tradeflow_schemas.py" — 1 affected symbols:
+[0m
+[36mapi/tradeflow_schemas.py[0m
+  [2mfile        [0mtradeflow_schemas.py[2m:1[0m
+
+
+
+## Source: docs/DEVLOG.md
+[34mℹ[0m Symbol "docs/DEVLOG.md" not found
+
+
+## Source: docs/TASKS.md
+[34mℹ[0m Symbol "docs/TASKS.md" not found
+
+
+## Source: docs/tradeflow_reviews/2026-06-02.md
+[34mℹ[0m Symbol "docs/tradeflow_reviews/2026-06-02.md" not found
+
+
+## Source: docs/tradeflow_reviews/2026-06-15.md
+[34mℹ[0m Symbol "docs/tradeflow_reviews/2026-06-15.md" not found
+
+
+## Source: docs/tradeflow_trial_acceptance.md
+[34mℹ[0m Symbol "docs/tradeflow_trial_acceptance.md" not found
+
+
+## Source: frontend/src/pages/TradeFlow.tsx
+[1m
+Impact of changing "frontend/src/pages/TradeFlow.tsx" — 1 affected symbols:
+[0m
+[36mfrontend/src/pages/TradeFlow.tsx[0m
+  [2mfile        [0mTradeFlow.tsx[2m:1[0m
+
+
+
+## Source: frontend/src/types/index.ts
+[1m
+Impact of changing "frontend/src/types/index.ts" — 1 affected symbols:
+[0m
+[36mfrontend/src/types/index.ts[0m
+  [2mfile        [0mindex.ts[2m:1[0m
+
+
+
+## Source: tests/test_m007_post_market_review.py
+[1m
+Impact of changing "tests/test_m007_post_market_review.py" — 1 affected symbols:
+[0m
+[36mtests/test_m007_post_market_review.py[0m
+  [2mfile        [0mtest_m007_post_market_review.py[2m:1[0m
+
+
+
+## Source: tradingagents/tradeflow/post_market_review.py
+[1m
+Impact of changing "tradingagents/tradeflow/post_market_review.py" — 1 affected symbols:
+[0m
+[36mtradingagents/tradeflow/post_market_review.py[0m
+  [2mfile        [0mpost_market_review.py[2m:1[0m
+
+
+
+## Affected Tests
+  (could not determine affected tests)
+exec
+/bin/zsh -lc "sed -n '1,170p' tradingagents/tradeflow/schemas.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""TradeFlow schemas — data models for candidates, signals, and daily plans."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from typing import Optional
+
+
+# ── Allowed actions ──
+ALLOWED_ACTIONS = {"OBSERVE", "WAIT_TRIGGER", "NEED_DEEP_TA", "REMOVE_FROM_WATCH"}
+FORBIDDEN_WORDS = {"立即买入", "重仓买入", "立即清仓", "满仓", "梭哈"}
+
+STRATEGY_VCP = "VCP"
+STRATEGY_PULLBACK = "PULLBACK_SUPPORT"
+STRATEGY_EVENT = "EVENT_CATALYST"
+STRATEGY_POLICY_VERSION = "POLICY_VERSION"  # [S-001] policy_version_signal
+STRATEGY_NARRATIVE = "NARRATIVE_QUALITY"  # [S-002] narrative_quality_score
+STRATEGY_FUND_FLOW = "FUND_FLOW_ANOMALY"  # [T-003] fund_flow_anomaly_pool
+ALL_STRATEGIES = {STRATEGY_VCP, STRATEGY_PULLBACK, STRATEGY_EVENT, STRATEGY_POLICY_VERSION, STRATEGY_NARRATIVE, STRATEGY_FUND_FLOW}
+
+# [N-004] astock_signal_tags
+SIGNAL_TAG_POLICY_CATALYST = "POLICY_CATALYST"
+SIGNAL_TAG_HOT_MONEY_LHB = "HOT_MONEY_LHB"
+SIGNAL_TAG_LOCKUP_RISK = "LOCKUP_RISK"
+SIGNAL_TAG_BUYBACK_EVENT = "BUYBACK_EVENT"
+SIGNAL_TAG_RATING_CHANGE = "RATING_CHANGE"
+
+
+@dataclass
+class CandidateSignal:
+    """One strategy hit on a symbol."""
+    strategy_tag: str
+    trigger_price: Optional[float] = None
+    support_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    score: float = 0.0
+    reason: str = ""
+    evidence: dict = field(default_factory=dict)
+    risk_flags: list[str] = field(default_factory=list)
+    need_deep_ta: bool = False
+
+
+@dataclass
+class Candidate:
+    """A tradeflow candidate — one row in tradeflow_candidates."""
+    symbol: str
+    name: str = ""
+    source: str = "manual"
+    strategy_tags: list[str] = field(default_factory=list)
+    score: float = 0.0
+    status: str = "active"
+    trigger_price: Optional[float] = None
+    support_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    need_deep_ta: bool = False
+    evidence: dict = field(default_factory=dict)
+    risk_flags: list[str] = field(default_factory=list)
+    trade_date: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+    primary_strategy: str = ""
+    signals: list[CandidateSignal] = field(default_factory=list, repr=False)
+    policy_tags: list[str] = field(default_factory=list)  # [S-001] policy_version_signal
+    version_score: float = 0.0  # [S-001] policy_version_signal
+    policy_evidence_refs: list[dict] = field(default_factory=list)  # [S-001] policy_version_signal
+    narrative_score: float = 0.0  # [S-002] narrative_quality_score
+    narrative_reasons: list[str] = field(default_factory=list)  # [S-002] narrative_quality_score
+    narrative_evidence_refs: list[dict] = field(default_factory=list)  # [S-002] narrative_quality_score
+    risk_penalty: float = 0.0  # [S-003] underwater_risk_flags
+    risk_evidence_refs: list[dict] = field(default_factory=list)  # [S-003] underwater_risk_flags
+    risk_reasons: list[str] = field(default_factory=list)  # [S-003] underwater_risk_flags
+    game_balance: str = ""  # [S-004] candidate_game_balance
+    bull_case: str = ""  # [S-004] candidate_game_balance
+    bear_case: str = ""  # [S-004] candidate_game_balance
+    policy_case: str = ""  # [S-004] candidate_game_balance
+    fund_flow_case: str = ""  # [S-004] candidate_game_balance
+    resonance_count: int = 0  # [S-004] candidate_game_balance
+    game_balance_refs: list[dict] = field(default_factory=list)  # [S-004] candidate_game_balance
+    fund_flow_anomaly_score: float = 0.0  # [T-003] fund_flow_anomaly_pool
+    fund_flow_anomaly_tags: list[str] = field(default_factory=list)  # [T-003]
+    fund_flow_anomaly_refs: list[dict] = field(default_factory=list)  # [T-003]
+    fund_flow_unit_verified: bool = False  # [T-003]
+    fund_flow_individual_summary: str = ""  # [T-003]
+    fund_flow_board_summary: str = ""  # [T-003]
+    composite_score: float = 0.0  # [S-005] selection_priority_gate
+    signal_category_hits: list[str] = field(default_factory=list)  # [S-005]
+    positive_category_count: int = 0  # [S-005]
+    data_completeness: float = 0.0  # [S-005]
+    missing_evidence: list[str] = field(default_factory=list)  # [S-005]
+    why_deep_ta: str = ""  # [S-005]
+    why_not_deep_ta: str = ""  # [S-005]
+    priority_rank: str = ""  # [S-005]
+    tier: str = ""  # [S-007] candidate_tier_budget
+    ta_budget_priority: int = 0  # [S-007] candidate_tier_budget
+    tier_reason: str = ""  # [S-007] candidate_tier_budget
+    missing_evidence_for_upgrade: list[str] = field(default_factory=list)  # [S-007]
+    tradeflow_data_completeness: float = 0.0  # [S-008] tradeflow_evidence_gate
+    missing_data_fields: list[str] = field(default_factory=list)  # [S-008]
+    what_to_upgrade: list[str] = field(default_factory=list)  # [S-008]
+    evidence_gate_applied: bool = False  # [S-008]
+    universe_sources: list[str] = field(default_factory=list)  # [M-003] tradeflow_universe_manager
+    observe_state: str = "WAITING"  # [M-005] intraday_observe_state
+    observe_trigger_count: int = 0  # [M-005] intraday_observe_state
+    observe_first_trigger_time: str = ""  # [M-005] intraday_observe_state
+    deep_ta_status: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_dispatch_reason: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_model: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_report_path: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_dispatch_time: str = ""  # [M-006] gated_deep_ta_dispatch
+    deep_ta_position_context: str = ""  # [M-006] gated_deep_ta_dispatch
+    plan_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+    effective_trade_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+    observe_date: str = ""  # [TF-DATE-001] tradeflow_date_semantics
+    beneficiary_path: list[str] = field(default_factory=list)  # [H-003] mandate_beneficiary_map
+    company_role: str = ""  # [H-003] mandate_beneficiary_map
+    mandate_topic: str = ""  # [H-003] mandate_beneficiary_map
+    mandate_evidence_refs: list[dict] = field(default_factory=list)  # [H-003] mandate_beneficiary_map
+    candidate_type: str = ""  # [H-004] mandate_ambush_score
+    ambush_score: float = 0.0  # [H-004] mandate_ambush_score
+    mandate_score_component: float = 0.0  # [H-004] mandate_ambush_score
+    beneficiary_score_component: float = 0.0  # [H-004] mandate_ambush_score
+    pricing_gap_score: float = 0.0  # [H-004] mandate_ambush_score
+    overheat_penalty: float = 0.0  # [H-004] mandate_ambush_score
+    candidate_type_reason: str = ""  # [H-004] mandate_ambush_score
+    deep_ta_route: str = ""  # [H-004] mandate_ambush_score
+    deep_ta_route_reason: str = ""  # [H-004] mandate_ambush_score
+    ambush_reasons: list[str] = field(default_factory=list)  # [H-004] mandate_ambush_score
+    ambush_evidence_refs: list[dict] = field(default_factory=list)  # [H-004] mandate_ambush_score
+    research_queue: str = ""  # [H-007] mandate_ta_queue_router
+    research_intent: str = ""  # [H-007] mandate_ta_queue_router
+    research_route_reason: str = ""  # [H-007] mandate_ta_queue_router
+    watchlist_note: str = ""  # [H-008] mandate_watchlist_note
+    watchlist_note_suggested: str = ""  # [H-008] mandate_watchlist_note
+    watchlist_topic: str = ""  # [H-008] mandate_watchlist_note
+    watchlist_benefit_score: float = 0.0  # [H-008] mandate_watchlist_note
+    watchlist_consensus_score: float = 0.0  # [H-008] mandate_watchlist_note
+    watchlist_evidence_gap: list[str] = field(default_factory=list)  # [H-008] mandate_watchlist_note
+    counter_evidence: list[dict] = field(default_factory=list)  # [H-009] mandate_counter_evidence_calibration
+    overheat_flags: list[str] = field(default_factory=list)  # [H-009]
+    downgrade_reasons: list[str] = field(default_factory=list)  # [H-009]
+    what_would_change_mind: list[str] = field(default_factory=list)  # [H-009]
+    topic_lifecycle_state: str = ""  # [H-010] mandate_topic_lifecycle
+    topic_lifecycle_reason: str = ""  # [H-010] mandate_topic_lifecycle
+    topic_last_signal_date: str = ""  # [H-010] mandate_topic_lifecycle
+    topic_signal_count: int = 0  # [H-010] mandate_topic_lifecycle
+    contradiction_level: str = ""  # [H-011] candidate_contradiction_explainer
+    contradiction_items: list[dict] = field(default_factory=list)  # [H-011]
+    blocking_evidence_gaps: list[str] = field(default_factory=list)  # [H-011]
+    next_verification_steps: list[str] = field(default_factory=list)  # [H-011]
+    technical_score: float = 0.0  # [TF-QUALITY-002] score_separation
+    policy_score: float = 0.0  # [TF-QUALITY-002]
+    fund_flow_score: float = 0.0  # [TF-QUALITY-002]
+    event_score: float = 0.0  # [TF-QUALITY-002]
+    risk_penalty_score: float = 0.0  # [TF-QUALITY-002]
+    data_quality_score: float = 0.0  # [TF-QUALITY-002]
+    ranking_reasons: list[str] = field(default_factory=list)  # [TF-QUALITY-002]
+    weakness_reasons: list[str] = field(default_factory=list)  # [TF-QUALITY-002]
+
+    def __post_init__(self):
+        if not self.trade_date:
+            self.trade_date = datetime.now().strftime("%Y-%m-%d")
+        if not self.created_at:
+            self.created_at = datetime.now().isoformat()
+        if not self.updated_at:
+            self.updated_at = self.created_at
+
+    def merge_signals(self):
+
+exec
+/bin/zsh -lc "git diff -- docs/tradeflow_reviews/2026-06-02.md docs/tradeflow_reviews/2026-06-15.md docs/tradeflow_trial_acceptance.md docs/TASKS.md | sed -n '1,260p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 501259f..e1a6e3d 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -101,7 +101,7 @@
+ 75. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，done，`OpenCode` 2026-06-16）。
+ 76. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，done，依赖 TF-PAPER-001 ✓）。
+ 77. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，ready，依赖 TF-OBS-002/TF-PAPER-001）。
+-78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，ready，依赖 TF-REVIEW-002/TF-PAPER-001）。
++78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，done，依赖 TF-REVIEW-002/TF-PAPER-001）。
+ 79. `DATA-019`：关键数据源实盘抽样健康日报（P1，ready，依赖 DATA-018/DATA-017）。
+ 80. `H-013`：昊天主题热度曲线与政策证据看板（P1，ready，依赖 H-012/H-010）。
+ 81. `V-008`：TradeFlow 小资金试跑前整体验收（P1，blocked，等待 TF-OBS-003/TF-REVIEW-003 完成后释放）。
+@@ -3123,7 +3123,7 @@
+ ### TF-REVIEW-003: 盘后 Review 策略命中归因与次日反馈（P1）
+ - **描述**：盘后 Review 不只显示是否继续观察，还要解释策略质量：命中/未命中、触发后表现、失效原因、是否应该降低类似候选权重，为下一日候选池校准提供反馈。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：done — OpenCode 2026-06-18
+ - **前置条件**：TF-REVIEW-002、TF-PAPER-001 完成。
+ - **执行约束**：
+   - 不自动调参。
+diff --git a/docs/tradeflow_reviews/2026-06-02.md b/docs/tradeflow_reviews/2026-06-02.md
+index 10b8cde..56de0e1 100644
+--- a/docs/tradeflow_reviews/2026-06-02.md
++++ b/docs/tradeflow_reviews/2026-06-02.md
+@@ -32,6 +32,24 @@
+ |------|------|------|------|--------|------|
+ | A层 | 1 | 0 | 0 | 1 | 0 |
+ 
++### 候选类型表现
++
++| 类型 | 总数 | 命中 | 误报 | 无数据 | 失效 |
++|------|------|------|------|--------|------|
++| UNCLASSIFIED | 1 | 0 | 0 | 1 | 0 |
++
++### 命中归因
++
++| 归因 | 总数 | 命中 | 误报 | 无数据 | 失效 |
++|------|------|------|------|--------|------|
++| 数据不足 | 1 | 0 | 0 | 1 | 0 |
++
++### 次日反馈
++
++| 代码 | 归因 | 明日关注 | 降级原因 | 需要补证据 |
++|------|------|----------|----------|------------|
++| 000001.SZ | data_issue | 继续等待触发信号 | - | - |
++
+ ### 调参建议
+ 
+ - [A层] 数据缺失率100%，建议检查行情数据源
+diff --git a/docs/tradeflow_reviews/2026-06-15.md b/docs/tradeflow_reviews/2026-06-15.md
+index 677f3f5..c5f6395 100644
+--- a/docs/tradeflow_reviews/2026-06-15.md
++++ b/docs/tradeflow_reviews/2026-06-15.md
+@@ -39,8 +39,35 @@
+ | B层 | 2 | 0 | 0 | 2 | 0 |
+ | C层 | 2 | 0 | 0 | 2 | 0 |
+ 
++### 候选类型表现
++
++| 类型 | 总数 | 命中 | 误报 | 无数据 | 失效 |
++|------|------|------|------|--------|------|
++| EVENT_WATCH | 1 | 0 | 0 | 1 | 0 |
++| POLICY_AMBUSH | 1 | 0 | 0 | 1 | 0 |
++| TECH_TRADE | 2 | 0 | 0 | 2 | 0 |
++| UNCLASSIFIED_DATA_GAP | 1 | 0 | 0 | 1 | 0 |
++
++### 命中归因
++
++| 归因 | 总数 | 命中 | 误报 | 无数据 | 失效 |
++|------|------|------|------|--------|------|
++| 政策命中 | 1 | 0 | 0 | 1 | 0 |
++| 数据不足 | 4 | 0 | 0 | 4 | 0 |
++
++### 次日反馈
++
++| 代码 | 归因 | 明日关注 | 降级原因 | 需要补证据 |
++|------|------|----------|----------|------------|
++| 300034.SZ | policy_hit | 已触发但回落，关注是否假突破 | - | - |
++| 601689.SH | data_issue | 继续等待触发信号 | - | - |
++| 002230.SZ | data_issue | 继续等待触发信号 | - | 资金流数据 |
++| 600585.SH | data_issue | 继续等待触发信号 | - | 资金流数据、事件/新闻数据 |
++| 600711.SH | data_issue | 继续等待触发信号 | - | 资金流数据、事件/新闻数据、60日K线、财务数据、龙虎榜 |
++
+ ### 调参建议
+ 
+ - [A层] 数据缺失率100%，建议检查行情数据源
+ - [B层] 数据缺失率100%，建议检查行情数据源
+ - [C层] 数据缺失率100%，建议检查行情数据源
++- [数据不足] 4 个候选数据不足，建议补齐行情/证据后再复盘
+diff --git a/docs/tradeflow_trial_acceptance.md b/docs/tradeflow_trial_acceptance.md
+index ef886ac..c7190c4 100644
+--- a/docs/tradeflow_trial_acceptance.md
++++ b/docs/tradeflow_trial_acceptance.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 试用闭环端到端验收报告 (V-007)
+ 
+-**生成时间**: 2026-06-18 02:18:44
++**生成时间**: 2026-06-18 02:36:21
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **候选数**: 5 只 (2 主候选 + 1 弱技术 + 1 事件观察 + 1 证据缺口)
+

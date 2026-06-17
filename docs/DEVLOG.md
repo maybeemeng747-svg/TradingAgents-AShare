@@ -4,6 +4,85 @@
 
 ---
 
+## 2026-06-18 | TF-REVIEW-003: 盘后 Review 策略命中归因与次日反馈
+
+- **执行者**：OpenCode
+- **类型**：feature / TradeFlow 盘后 Review 归因（P1）
+- **任务**：TF-REVIEW-003 — strategy_attribution_review
+- **状态**：✅ 完成
+
+### 背景
+
+盘后 Review 此前只显示"是否继续观察"，无法解释策略质量：命中/未命中、触发后表现、
+失效原因、是否应该降低类似候选权重。缺乏对下一日候选池校准的反馈数据。
+
+### 变更内容
+
+1. **`tradingagents/tradeflow/post_market_review.py`**（核心引擎）
+   - 新增 `HitAttribution` 枚举：`technical_hit / policy_hit / fund_flow_hit / data_issue / risk_hit`，
+     每个值附带 `label_cn`（技术命中/政策命中/资金流命中/数据不足/风险触发）。
+   - 新增 `classify_hit_attribution(perf)` 函数：根据 observe_state、candidate_type、split_scores
+     和 risk_flags 推导主归因。data_issue 用于无行情数据且未触发的候选；risk_hit 用于
+     失效且带风险标记的候选；其余按 split_scores 主导维度或 candidate_type 推导。
+   - 新增 `compute_next_day_feedback(perf)` 函数：输出结构化次日反馈三元组
+     `(tomorrow_focus, downgrade_reason, evidence_needed)`，覆盖 TRIGGERED/INVALIDATED/EXPIRED/WAITING
+     四种 observe_state。
+   - `CandidatePerformance` 新增字段：`candidate_type / split_scores / hit_type /
+     tomorrow_focus / downgrade_reason / evidence_needed`，以及 `compute_attribution()` 方法。
+   - `StrategyStats` 新增 `attributions: dict` 字段，跟踪每个策略下的归因分布。
+   - 新增 `compute_candidate_type_stats()` — 按 candidate_type（POLICY_AMBUSH/TECH_TRADE 等）
+     聚合命中/误报/无数据/失效。
+   - 新增 `compute_attribution_stats()` — 按 5 种归因类型聚合，附带 affected symbols 列表，
+     与 TF-QUALITY-004 calibration_summary 共享 dict-of-lists 数据格式。
+   - `ReviewSummary` 新增 `candidate_type_stats / attribution_stats / next_day_feedback` 字段。
+   - `run_post_market_review()` 自动调用 `compute_attribution()`，填充归因统计和次日反馈。
+   - `render_review_markdown()` 新增"候选类型表现"、"命中归因"、"次日反馈"三个表格区块。
+
+2. **`api/services/tradeflow_service.py`**
+   - `get_review()`（轻量读取）：每个 review item 现在包含 `candidate_type / hit_type /
+     tomorrow_focus / downgrade_reason / evidence_needed`，通过构造 stub CandidatePerformance
+     并调用 `compute_attribution()` 推导。
+   - `generate_review()`（完整计算）：review dict 新增 `candidate_type_stats /
+     attribution_stats / next_day_feedback`，strategy_stats 每项新增 `attributions` 字段。
+
+3. **`api/tradeflow_schemas.py`**
+   - `TradeFlowReviewItem` 新增 5 个可选字段：`candidate_type / hit_type / tomorrow_focus /
+     downgrade_reason / evidence_needed`。
+
+4. **`frontend/src/types/index.ts`**
+   - `TradeFlowReviewItem` 接口新增对应 5 个可选字段。
+
+5. **`frontend/src/pages/TradeFlow.tsx`**
+   - `ReviewTab` 新增"命中归因"表格（按归因类型拆分数量/占比）和"次日反馈"表格
+     （代码/归因/明日关注/降级原因/需要补证据），不再只有"继续观察"。
+
+6. **`tests/test_tf_review_003_strategy_attribution.py`**（新增 36 个测试）
+   - 覆盖 HitAttribution 枚举、classify_hit_attribution 全路径、compute_next_day_feedback、
+     CandidatePerformance.compute_attribution、StrategyStats.attributions、
+     compute_candidate_type_stats、compute_attribution_stats、run_post_market_review 归因字段、
+     fixture 场景（命中+失效+未触发）、Markdown 渲染、build_from_dict、service-layer get_review。
+
+7. **`tests/test_m007_post_market_review.py`**
+   - 更新 `test_basic_render`：symbols 现在出现在"次日反馈"区块。
+
+### 验收
+
+- fixture 能产生至少 1 个命中、1 个失效、1 个未触发样本 ✓
+- Review API 返回策略归因字段（hit_type/attribution_stats/next_day_feedback）✓
+- 前端 Review 不再只有"继续观察"，新增命中归因表和次日反馈表 ✓
+- 36 个新测试全部通过；254 个 review 相关测试全部通过 ✓
+- `npm run build` 通过 ✓
+
+### 约束遵守
+
+- 未修改 `tradingagents/prompts/` ✓
+- 未写入生产 `tradingagents.db` ✓
+- 未执行全市场扫描或深度 TA ✓
+- 未调用 LLM ✓
+- 未自动调参，只输出信号质量复盘 ✓
+
+---
+
 ## 2026-06-18 | TF-OBS-003: 盘中观察触发到模拟账本待确认联动
 
 - **执行者**：OpenCode
@@ -4971,3 +5050,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TF-OBS-003-20260618-round1.txt
 - **Run archive**: docs/task_runs/TF-OBS-003-20260618-020511/
+
+## 2026-06-18 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-REVIEW-003 - 盘后 Review 策略命中归因与次日反馈（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TF-REVIEW-003-20260618-round1.txt
+- **Run archive**: docs/task_runs/TF-REVIEW-003-20260618-022047/

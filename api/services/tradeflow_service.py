@@ -966,6 +966,36 @@ def get_review(trade_date: str, tf_db_path: str = "") -> dict:
     results = []
     for entry in candidates:
         action = entry.get("action", "OBSERVE")
+        # [TF-REVIEW-003] strategy_attribution_review — derive attribution + feedback
+        from tradingagents.tradeflow.post_market_review import (
+            HitAttribution,
+            classify_hit_attribution,
+            compute_next_day_feedback,
+            CandidatePerformance,
+        )
+        _observe_state = entry.get("observe_state", "WAITING")
+        _candidate_type = entry.get("candidate_type", "")
+        _strategy_tags = entry.get("strategy_tags", [])
+        _risk_flags = entry.get("risk_flags", [])
+        _missing_evidence = entry.get("missing_evidence", [])
+        _stub = CandidatePerformance(
+            symbol=entry.get("symbol", ""),
+            trade_date=entry.get("trade_date", trade_date),
+            entry_price=float(entry.get("trigger_price") or 0),
+            trigger_price=entry.get("trigger_price"),
+            invalid_price=entry.get("invalid_price"),
+            strategy_tags=_strategy_tags,
+            observe_state=_observe_state,
+            risk_flags=_risk_flags,
+            candidate_type=_candidate_type,
+            split_scores={
+                "technical_score": entry.get("technical_score", 0.0) or 0.0,
+                "policy_score": entry.get("policy_score", 0.0) or 0.0,
+                "fund_flow_score": entry.get("fund_flow_score", 0.0) or 0.0,
+            },
+            evidence_needed=list(_missing_evidence),
+        )
+        _stub.compute_attribution()
         result = {
             "symbol": entry.get("symbol", ""),
             "name": entry.get("name", ""),
@@ -974,10 +1004,15 @@ def get_review(trade_date: str, tf_db_path: str = "") -> dict:
             "reason": "",
             "tier": entry.get("tier", ""),
             "composite_score": entry.get("composite_score", 0.0),
-            "strategy_tags": entry.get("strategy_tags", []),
+            "strategy_tags": _strategy_tags,
             "trigger_price": entry.get("trigger_price"),
             "invalid_price": entry.get("invalid_price"),
-            "observe_state": entry.get("observe_state", "WAITING"),
+            "observe_state": _observe_state,
+            "candidate_type": _candidate_type,  # [TF-REVIEW-003]
+            "hit_type": _stub.hit_type,  # [TF-REVIEW-003]
+            "tomorrow_focus": _stub.tomorrow_focus,  # [TF-REVIEW-003]
+            "downgrade_reason": _stub.downgrade_reason,  # [TF-REVIEW-003]
+            "evidence_needed": list(_stub.evidence_needed),  # [TF-REVIEW-003]
         }
         if action == "REMOVE_FROM_WATCH":
             result["reason"] = "已标记移除"
@@ -1634,12 +1669,17 @@ def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
                     "avg_next_day_return": st.avg_next_day_return,
                     "avg_day3_return": st.avg_day3_return,
                     "avg_day5_return": st.avg_day5_return,
+                    "attributions": dict(st.attributions),  # [TF-REVIEW-003]
                 }
                 for tag, st in summary.strategy_stats.items()
             },
             "tier_stats": summary.tier_stats,
             "common_removal_reasons": summary.common_removal_reasons,
             "suggestions": summary.suggestions,
+            # [TF-REVIEW-003] strategy_attribution_review
+            "candidate_type_stats": summary.candidate_type_stats,
+            "attribution_stats": summary.attribution_stats,
+            "next_day_feedback": summary.next_day_feedback,
         },
     }
 

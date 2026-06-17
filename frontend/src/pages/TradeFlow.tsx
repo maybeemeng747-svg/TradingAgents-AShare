@@ -443,6 +443,23 @@ interface TierRow {
     invalidated: number
 }
 
+// [TF-REVIEW-003] strategy_attribution_review
+const HIT_TYPE_LABELS: Record<string, string> = {
+    technical_hit: '技术命中',
+    policy_hit: '政策命中',
+    fund_flow_hit: '资金流命中',
+    data_issue: '数据不足',
+    risk_hit: '风险触发',
+}
+
+const HIT_TYPE_COLORS: Record<string, string> = {
+    technical_hit: 'text-blue-600 dark:text-blue-400',
+    policy_hit: 'text-purple-600 dark:text-purple-400',
+    fund_flow_hit: 'text-cyan-600 dark:text-cyan-400',
+    data_issue: 'text-amber-600 dark:text-amber-400',
+    risk_hit: 'text-red-600 dark:text-red-400',
+}
+
 function ReviewTab({ data }: { data: TradeFlowReviewResponse }) {
     const items = data.results
     const agg = data.summary_agg
@@ -504,6 +521,25 @@ function ReviewTab({ data }: { data: TradeFlowReviewResponse }) {
 
     const removalReasons = useMemo(() => {
         return items.filter(i => i.plan_action === 'REMOVE_FROM_WATCH' && i.reason)
+    }, [items])
+
+    // [TF-REVIEW-003] strategy_attribution_review — attribution breakdown
+    const attributionStats = useMemo(() => {
+        const map = new Map<string, number>()
+        for (const item of items) {
+            const ht = item.hit_type || 'data_issue'
+            map.set(ht, (map.get(ht) || 0) + 1)
+        }
+        return Array.from(map.entries())
+            .map(([type, count]) => ({ type, label: HIT_TYPE_LABELS[type] || type, count }))
+            .sort((a, b) => b.count - a.count)
+    }, [items])
+
+    // [TF-REVIEW-003] strategy_attribution_review — next-day feedback items
+    const nextDayFeedback = useMemo(() => {
+        return items.filter(i =>
+            i.hit_type || i.tomorrow_focus || i.downgrade_reason || (i.evidence_needed && i.evidence_needed.length > 0)
+        )
     }, [items])
 
     const suggestions = useMemo(() => {
@@ -627,6 +663,71 @@ function ReviewTab({ data }: { data: TradeFlowReviewResponse }) {
                             ))}
                         </tbody>
                     </table>
+                </div>
+            )}
+
+            {/* [TF-REVIEW-003] strategy_attribution_review — hit attribution breakdown */}
+            {attributionStats.length > 0 && (
+                <div className="card overflow-x-auto">
+                    <div className="border-b border-slate-100 px-4 py-3 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-300">命中归因</div>
+                    <table className="w-full text-sm">
+                        <thead>
+                            <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+                                <th className="px-4 py-2.5 font-medium">归因</th>
+                                <th className="px-4 py-2.5 font-medium">数量</th>
+                                <th className="px-4 py-2.5 font-medium">占比</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {attributionStats.map(row => (
+                                <tr key={row.type} className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50">
+                                    <td className={`px-4 py-2.5 font-medium ${HIT_TYPE_COLORS[row.type] || 'text-slate-700 dark:text-slate-300'}`}>{row.label}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{row.count}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-slate-500">{fmtPct(total > 0 ? (row.count / total) * 100 : 0)}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            )}
+
+            {/* [TF-REVIEW-003] strategy_attribution_review — next-day feedback */}
+            {nextDayFeedback.length > 0 && (
+                <div className="card">
+                    <div className="border-b border-slate-100 px-4 py-3 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-300">次日反馈</div>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                            <thead>
+                                <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+                                    <th className="px-4 py-2.5 font-medium">代码</th>
+                                    <th className="px-4 py-2.5 font-medium">归因</th>
+                                    <th className="px-4 py-2.5 font-medium">明日关注</th>
+                                    <th className="px-4 py-2.5 font-medium">降级原因</th>
+                                    <th className="px-4 py-2.5 font-medium">需要补证据</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {nextDayFeedback.map(item => (
+                                    <tr key={item.symbol} className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50">
+                                        <td className="px-4 py-2.5">
+                                            <span className="font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{item.symbol}</span>
+                                            <span className="ml-1.5 max-w-[100px] truncate align-middle text-xs text-slate-500 dark:text-slate-400">{item.name || '--'}</span>
+                                        </td>
+                                        <td className={`px-4 py-2.5 text-xs font-medium ${HIT_TYPE_COLORS[item.hit_type || ''] || 'text-slate-500'}`}>
+                                            {HIT_TYPE_LABELS[item.hit_type || ''] || item.hit_type || '-'}
+                                        </td>
+                                        <td className="px-4 py-2.5 text-slate-600 dark:text-slate-400">{item.tomorrow_focus || '-'}</td>
+                                        <td className="px-4 py-2.5 text-amber-600 dark:text-amber-400">{item.downgrade_reason || '-'}</td>
+                                        <td className="px-4 py-2.5 text-slate-500">
+                                            {item.evidence_needed && item.evidence_needed.length > 0
+                                                ? item.evidence_needed.join('、')
+                                                : '-'}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             )}
 

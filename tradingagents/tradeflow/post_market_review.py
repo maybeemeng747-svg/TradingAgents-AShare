@@ -25,6 +25,34 @@ from .schemas import Candidate, ALL_STRATEGIES, FORBIDDEN_WORDS
 from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG
 
 
+# [TF-REVIEW-003] strategy_attribution_review
+class HitAttribution(str, Enum):
+    """Explains WHAT dimension drove a candidate's outcome.
+
+    Used for strategy hit attribution in post-market review.
+    """
+    TECHNICAL_HIT = "technical_hit"
+    POLICY_HIT = "policy_hit"
+    FUND_FLOW_HIT = "fund_flow_hit"
+    DATA_ISSUE = "data_issue"
+    RISK_HIT = "risk_hit"
+
+    @property
+    def label_cn(self) -> str:
+        _MAP = {
+            HitAttribution.TECHNICAL_HIT: "技术命中",
+            HitAttribution.POLICY_HIT: "政策命中",
+            HitAttribution.FUND_FLOW_HIT: "资金流命中",
+            HitAttribution.DATA_ISSUE: "数据不足",
+            HitAttribution.RISK_HIT: "风险触发",
+        }
+        return _MAP.get(self, "未知")
+
+    @classmethod
+    def all_values(cls) -> list[str]:
+        return [a.value for a in cls]
+
+
 # [TF-REVIEW-002] review_date_mapping
 class ReviewDataStatus(str, Enum):
     """Explains WHY review data is missing, instead of showing a blank page."""
@@ -72,6 +100,13 @@ class CandidatePerformance:
     hit: Optional[bool] = None
     invalidated: Optional[bool] = None
     data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
+    # [TF-REVIEW-003] strategy_attribution_review
+    candidate_type: str = ""
+    split_scores: dict = field(default_factory=dict)
+    hit_type: str = ""  # primary attribution: technical_hit/policy_hit/fund_flow_hit/data_issue/risk_hit
+    tomorrow_focus: str = ""  # 明日关注
+    downgrade_reason: str = ""  # 降级原因
+    evidence_needed: list[str] = field(default_factory=list)  # 需要补证据
 
     def compute_returns(self) -> None:
         if self.entry_price and self.entry_price > 0:
@@ -98,6 +133,14 @@ class CandidatePerformance:
         if self.invalid_price is not None and self.next_day_close is not None:
             self.invalidated = self.next_day_close <= self.invalid_price
 
+    # [TF-REVIEW-003] strategy_attribution_review
+    def compute_attribution(self) -> None:
+        """Compute hit_type (attribution) and next-day feedback fields."""
+        self.hit_type = classify_hit_attribution(self)
+        self.tomorrow_focus, self.downgrade_reason, self.evidence_needed = (
+            compute_next_day_feedback(self)
+        )
+
 
 @dataclass
 class StrategyStats:
@@ -112,6 +155,8 @@ class StrategyStats:
     avg_day5_return: Optional[float] = None
     hit_rate: Optional[float] = None
     false_positive_rate: Optional[float] = None
+    # [TF-REVIEW-003] strategy_attribution_review
+    attributions: dict = field(default_factory=dict)
 
     def compute_rates(self) -> None:
         scored = self.hit_count + self.miss_count
@@ -143,6 +188,10 @@ class ReviewSummary:
     data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
     plan_date: str = ""  # [TF-REVIEW-002] review_date_mapping — original candidate pool generation date
     effective_trade_date: str = ""  # [TF-REVIEW-002] review_date_mapping
+    # [TF-REVIEW-003] strategy_attribution_review
+    candidate_type_stats: dict[str, dict] = field(default_factory=dict)
+    attribution_stats: dict[str, dict] = field(default_factory=dict)
+    next_day_feedback: list[dict] = field(default_factory=list)
 
     def compute_overall(self) -> None:
         self.scored_candidates = self.overall_hit_count + self.overall_miss_count
@@ -153,6 +202,90 @@ class ReviewSummary:
             self.overall_false_positive_rate = round(
                 self.overall_miss_count / self.scored_candidates * 100, 1
             )
+
+
+# [TF-REVIEW-003] strategy_attribution_review
+_POLICY_CANDIDATE_TYPES = {"POLICY_AMBUSH", "POLICY_CONFIRM"}
+
+
+def classify_hit_attribution(perf: "CandidatePerformance") -> str:
+    """Classify the primary attribution of a candidate's outcome.
+
+    Explains WHAT dimension drove the result, returning one of:
+    technical_hit / policy_hit / fund_flow_hit / data_issue / risk_hit.
+    """
+    # data_issue: no market data to evaluate AND not triggered/inactivated
+    if perf.hit is None and perf.observe_state not in ("TRIGGERED", "INVALIDATED"):
+        return HitAttribution.DATA_ISSUE.value
+
+    # risk_hit: invalidated AND has risk flags (covers both return-based and observe_state)
+    if (perf.invalidated or perf.observe_state == "INVALIDATED") and perf.risk_flags:
+        return HitAttribution.RISK_HIT.value
+
+    scores = perf.split_scores or {}
+    tech = float(scores.get("technical_score", 0.0) or 0.0)
+    policy = float(scores.get("policy_score", 0.0) or 0.0)
+    fund = float(scores.get("fund_flow_score", 0.0) or 0.0)
+
+    # candidate_type drives policy attribution for 昊天 left-side candidates
+    if perf.candidate_type in _POLICY_CANDIDATE_TYPES:
+        return HitAttribution.POLICY_HIT.value
+
+    # If split scores are all zero, fall back to strategy tags / candidate_type
+    if tech == 0 and policy == 0 and fund == 0:
+        tags = set(perf.strategy_tags or [])
+        if perf.candidate_type in _POLICY_CANDIDATE_TYPES or "POLICY_VERSION" in tags:
+            return HitAttribution.POLICY_HIT.value
+        if "FUND_FLOW_ANOMALY" in tags:
+            return HitAttribution.FUND_FLOW_HIT.value
+        return HitAttribution.TECHNICAL_HIT.value
+
+    # Dominant dimension wins
+    if policy > 0 and policy >= tech and policy >= fund:
+        return HitAttribution.POLICY_HIT.value
+    if fund > 0 and fund > tech and fund > policy:
+        return HitAttribution.FUND_FLOW_HIT.value
+    return HitAttribution.TECHNICAL_HIT.value
+
+
+def compute_next_day_feedback(
+    perf: "CandidatePerformance",
+) -> tuple[str, str, list[str]]:
+    """Compute structured next-day feedback for a candidate.
+
+    Returns (tomorrow_focus, downgrade_reason, evidence_needed):
+    - tomorrow_focus: 明日关注 — actionable next-step guidance.
+    - downgrade_reason: 降级原因 — why the candidate should lose weight.
+    - evidence_needed: 需要补证据 — evidence/data gaps to fill.
+    """
+    # tomorrow_focus (明日关注)
+    if perf.observe_state == "TRIGGERED":
+        if perf.hit:
+            tomorrow_focus = "已触发且命中，关注次日是否站稳触发价"
+        else:
+            tomorrow_focus = "已触发但回落，关注是否假突破"
+    elif perf.observe_state == "INVALIDATED":
+        tomorrow_focus = "已失效，建议移出观察或降低权重"
+    elif perf.observe_state == "EXPIRED":
+        tomorrow_focus = "观察期已过未触发，建议移出观察"
+    else:
+        tomorrow_focus = "继续等待触发信号"
+
+    # downgrade_reason (降级原因)
+    downgrade_reason = ""
+    if perf.invalidated:
+        downgrade_reason = "价格跌破失效价"
+    elif perf.hit is False and perf.next_day_return_pct is not None and perf.next_day_return_pct < 0:
+        downgrade_reason = f"触发后下跌 {abs(perf.next_day_return_pct):.1f}%"
+    elif perf.hit is False:
+        downgrade_reason = "未达到触发距离，信号偏弱"
+    elif perf.risk_flags:
+        downgrade_reason = "存在风险标记: " + "、".join(perf.risk_flags[:3])
+
+    # evidence_needed (需要补证据) — already set from candidate data
+    evidence_needed = list(perf.evidence_needed)
+
+    return tomorrow_focus, downgrade_reason, evidence_needed
 
 
 def build_candidate_performance(
@@ -177,10 +310,18 @@ def build_candidate_performance(
         next_day_close=next_day_close,
         day3_close=day3_close,
         day5_close=day5_close,
+        candidate_type=candidate.candidate_type,  # [TF-REVIEW-003]
+        split_scores={
+            "technical_score": getattr(candidate, "technical_score", 0.0) or 0.0,
+            "policy_score": getattr(candidate, "policy_score", 0.0) or 0.0,
+            "fund_flow_score": getattr(candidate, "fund_flow_score", 0.0) or 0.0,
+        },  # [TF-REVIEW-003]
+        evidence_needed=list(getattr(candidate, "missing_evidence", []) or []),  # [TF-REVIEW-003]
     )
     if perf.entry_price == 0 and candidate.score > 0:
         perf.entry_price = 0.0
     perf.compute_returns()
+    perf.compute_attribution()  # [TF-REVIEW-003] strategy_attribution_review
     return perf
 
 
@@ -207,8 +348,16 @@ def build_candidate_performance_from_dict(
         next_day_close=next_day_close,
         day3_close=day3_close,
         day5_close=day5_close,
+        candidate_type=entry.get("candidate_type", ""),  # [TF-REVIEW-003]
+        split_scores={
+            "technical_score": entry.get("technical_score", 0.0) or 0.0,
+            "policy_score": entry.get("policy_score", 0.0) or 0.0,
+            "fund_flow_score": entry.get("fund_flow_score", 0.0) or 0.0,
+        },  # [TF-REVIEW-003]
+        evidence_needed=list(entry.get("missing_evidence", []) or []),  # [TF-REVIEW-003]
     )
     perf.compute_returns()
+    perf.compute_attribution()  # [TF-REVIEW-003] strategy_attribution_review
     return perf
 
 
@@ -234,6 +383,10 @@ def compute_strategy_stats(
 
             if perf.invalidated:
                 st.invalidated_count += 1
+
+            # [TF-REVIEW-003] strategy_attribution_review
+            ht = perf.hit_type or HitAttribution.DATA_ISSUE.value
+            st.attributions[ht] = st.attributions.get(ht, 0) + 1
 
     all_returns_next = []
     all_returns_3 = []
@@ -278,6 +431,71 @@ def compute_tier_stats(
         if perf.invalidated:
             tier_map[t]["invalidated"] += 1
     return tier_map
+
+
+# [TF-REVIEW-003] strategy_attribution_review
+def compute_candidate_type_stats(
+    performances: list[CandidatePerformance],
+) -> dict[str, dict]:
+    """Aggregate performance by candidate_type (POLICY_AMBUSH/TECH_TRADE/...)."""
+    ct_map: dict[str, dict] = {}
+    for perf in performances:
+        ct = perf.candidate_type or "UNCLASSIFIED"
+        if ct not in ct_map:
+            ct_map[ct] = {"total": 0, "hit": 0, "miss": 0, "no_data": 0, "invalidated": 0}
+        ct_map[ct]["total"] += 1
+        if perf.hit is None:
+            ct_map[ct]["no_data"] += 1
+        elif perf.hit:
+            ct_map[ct]["hit"] += 1
+        else:
+            ct_map[ct]["miss"] += 1
+        if perf.invalidated:
+            ct_map[ct]["invalidated"] += 1
+    return ct_map
+
+
+# [TF-REVIEW-003] strategy_attribution_review
+def compute_attribution_stats(
+    performances: list[CandidatePerformance],
+) -> dict[str, dict]:
+    """Aggregate performance by hit attribution type.
+
+    Shares data format with TF-QUALITY-004 calibration_summary
+    (dict of per-category counts + lists of affected symbols).
+    """
+    attr_map: dict[str, dict] = {
+        a.value: {
+            "label": a.label_cn,
+            "total": 0,
+            "hit": 0,
+            "miss": 0,
+            "no_data": 0,
+            "invalidated": 0,
+            "symbols": [],
+        }
+        for a in HitAttribution
+    }
+    for perf in performances:
+        ht = perf.hit_type or HitAttribution.DATA_ISSUE.value
+        if ht not in attr_map:
+            attr_map[ht] = {
+                "label": ht,
+                "total": 0, "hit": 0, "miss": 0,
+                "no_data": 0, "invalidated": 0, "symbols": [],
+            }
+        row = attr_map[ht]
+        row["total"] += 1
+        if perf.hit is None:
+            row["no_data"] += 1
+        elif perf.hit:
+            row["hit"] += 1
+        else:
+            row["miss"] += 1
+        if perf.invalidated:
+            row["invalidated"] += 1
+        row["symbols"].append(perf.symbol)
+    return attr_map
 
 
 def generate_suggestions(
@@ -336,9 +554,12 @@ def run_post_market_review(
     # [M-007-fix] auto-compute returns before aggregation
     for p in performances:
         p.compute_returns()
+        p.compute_attribution()  # [TF-REVIEW-003] strategy_attribution_review
 
     strategy_stats = compute_strategy_stats(performances)
     tier_stats = compute_tier_stats(performances)
+    candidate_type_stats = compute_candidate_type_stats(performances)  # [TF-REVIEW-003]
+    attribution_stats = compute_attribution_stats(performances)  # [TF-REVIEW-003]
 
     total = len(performances)
     hit_count = sum(1 for p in performances if p.hit is True)
@@ -358,6 +579,31 @@ def run_post_market_review(
             removal_reasons.append(f"{p.symbol}: 观察到期未触发")
 
     suggestions = generate_suggestions(strategy_stats, tier_stats, total)
+
+    # [TF-REVIEW-003] strategy_attribution_review — attribution-based suggestions
+    for attr_val, row in attribution_stats.items():
+        if row["total"] >= 3 and attr_val == HitAttribution.DATA_ISSUE.value:
+            suggestions.append(
+                f"[{row['label']}] {row['total']} 个候选数据不足，建议补齐行情/证据后再复盘"
+            )
+        if row["total"] >= 3 and attr_val == HitAttribution.RISK_HIT.value:
+            suggestions.append(
+                f"[{row['label']}] {row['total']} 个候选因风险失效，建议检查风险阈值设置"
+            )
+
+    # [TF-REVIEW-003] strategy_attribution_review — next-day feedback items
+    next_day_feedback = [
+        {
+            "symbol": p.symbol,
+            "candidate_type": p.candidate_type,
+            "hit_type": p.hit_type,
+            "observe_state": p.observe_state,
+            "tomorrow_focus": p.tomorrow_focus,
+            "downgrade_reason": p.downgrade_reason,
+            "evidence_needed": list(p.evidence_needed),
+        }
+        for p in performances
+    ]
 
     # [TF-REVIEW-002] review_date_mapping — compute data_status
     if total == 0:
@@ -388,6 +634,9 @@ def run_post_market_review(
         data_status_message=data_status.message_cn,
         plan_date=plan_date or candidate_date,
         effective_trade_date=effective_trade_date or review_date,
+        candidate_type_stats=candidate_type_stats,  # [TF-REVIEW-003]
+        attribution_stats=attribution_stats,  # [TF-REVIEW-003]
+        next_day_feedback=next_day_feedback,  # [TF-REVIEW-003]
     )
     summary.compute_overall()
     return summary
@@ -460,6 +709,54 @@ def render_review_markdown(summary: ReviewSummary) -> str:
             f"| {ts['no_data']} | {ts['invalidated']} |"
         )
     lines.append("")
+
+    # [TF-REVIEW-003] strategy_attribution_review — candidate type stats
+    if summary.candidate_type_stats:
+        lines.append("### 候选类型表现")
+        lines.append("")
+        lines.append("| 类型 | 总数 | 命中 | 误报 | 无数据 | 失效 |")
+        lines.append("|------|------|------|------|--------|------|")
+        for ct in sorted(summary.candidate_type_stats.keys()):
+            cs = summary.candidate_type_stats[ct]
+            lines.append(
+                f"| {ct} | {cs['total']} | {cs['hit']} | {cs['miss']} "
+                f"| {cs['no_data']} | {cs['invalidated']} |"
+            )
+        lines.append("")
+
+    # [TF-REVIEW-003] strategy_attribution_review — attribution stats
+    if summary.attribution_stats:
+        lines.append("### 命中归因")
+        lines.append("")
+        lines.append("| 归因 | 总数 | 命中 | 误报 | 无数据 | 失效 |")
+        lines.append("|------|------|------|------|--------|------|")
+        for attr_val in HitAttribution.all_values():
+            if attr_val not in summary.attribution_stats:
+                continue
+            ar = summary.attribution_stats[attr_val]
+            if ar["total"] == 0:
+                continue
+            lines.append(
+                f"| {ar['label']} | {ar['total']} | {ar['hit']} | {ar['miss']} "
+                f"| {ar['no_data']} | {ar['invalidated']} |"
+            )
+        lines.append("")
+
+    # [TF-REVIEW-003] strategy_attribution_review — next-day feedback
+    if summary.next_day_feedback:
+        lines.append("### 次日反馈")
+        lines.append("")
+        lines.append("| 代码 | 归因 | 明日关注 | 降级原因 | 需要补证据 |")
+        lines.append("|------|------|----------|----------|------------|")
+        for fb in summary.next_day_feedback:
+            evidence_str = "、".join(fb.get("evidence_needed", [])) if fb.get("evidence_needed") else "-"
+            lines.append(
+                f"| {fb['symbol']} | {fb.get('hit_type', '')} "
+                f"| {fb.get('tomorrow_focus', '-')} "
+                f"| {fb.get('downgrade_reason', '-') or '-'} "
+                f"| {evidence_str} |"
+            )
+        lines.append("")
 
     if summary.common_removal_reasons:
         lines.append("### 移除理由")

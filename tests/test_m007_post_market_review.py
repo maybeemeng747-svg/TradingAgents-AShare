@@ -586,7 +586,8 @@ class TestRenderReviewMarkdown:
         summary = run_post_market_review(perfs, candidate_date="2026-05-29", review_date="2026-05-30")
         md = render_review_markdown(summary)
         assert "# 盘后复盘 2026-05-30" in md
-        assert "000001.SZ" not in md
+        # [TF-REVIEW-003] symbols now appear in the 次日反馈 section
+        assert "次日反馈" in md
         assert "VCP" in md
         assert "A层" in md
 

@@ -101,7 +101,7 @@
 75. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，done，`OpenCode` 2026-06-16）。
 76. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，done，依赖 TF-PAPER-001 ✓）。
 77. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，ready，依赖 TF-OBS-002/TF-PAPER-001）。
-78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，ready，依赖 TF-REVIEW-002/TF-PAPER-001）。
+78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，done，依赖 TF-REVIEW-002/TF-PAPER-001）。
 79. `DATA-019`：关键数据源实盘抽样健康日报（P1，ready，依赖 DATA-018/DATA-017）。
 80. `H-013`：昊天主题热度曲线与政策证据看板（P1，ready，依赖 H-012/H-010）。
 81. `V-008`：TradeFlow 小资金试跑前整体验收（P1，blocked，等待 TF-OBS-003/TF-REVIEW-003 完成后释放）。
@@ -3123,7 +3123,7 @@
 ### TF-REVIEW-003: 盘后 Review 策略命中归因与次日反馈（P1）
 - **描述**：盘后 Review 不只显示是否继续观察，还要解释策略质量：命中/未命中、触发后表现、失效原因、是否应该降低类似候选权重，为下一日候选池校准提供反馈。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — OpenCode 2026-06-18
 - **前置条件**：TF-REVIEW-002、TF-PAPER-001 完成。
 - **执行约束**：
   - 不自动调参。
