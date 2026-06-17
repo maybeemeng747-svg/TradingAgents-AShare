@@ -2709,6 +2709,96 @@ def get_topic_watchlist(
         conn.close()
 
 
+# [H-013] mandate_topic_heatmap
+def get_topic_heatmap(
+    as_of: str = "",
+    window_days: int = 60,
+    tf_db_path: str = "",
+) -> dict:
+    """Build a topic heatmap from candidate history across the window.
+
+    Queries `tradeflow_candidates` within the trailing `window_days` and
+    feeds the rows into the topic heatmap builder.
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_topic_heatmap")
+    conn = _connect(tf_db_path)
+    if conn is None:
+        from tradingagents.tradeflow.topic_heatmap import build_topic_heatmap
+        report = build_topic_heatmap([], as_of=as_of, window_days=window_days)
+        return {
+            "status": "no_data",
+            **report.to_dict(),
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    try:
+        from datetime import datetime as _dt, timedelta as _td
+
+        cols = _table_columns(conn, "tradeflow_candidates")
+        has_eff = "effective_trade_date" in cols
+
+        if not as_of:
+            date_col = "effective_trade_date" if has_eff else "trade_date"
+            try:
+                row = conn.execute(
+                    f"SELECT {date_col} AS d FROM tradeflow_candidates "
+                    f"WHERE {date_col} != '' ORDER BY d DESC LIMIT 1"
+                ).fetchone()
+                as_of = row["d"] if row else _dt.now().strftime("%Y-%m-%d")
+            except Exception:
+                as_of = _dt.now().strftime("%Y-%m-%d")
+
+        try:
+            as_of_dt = _dt.strptime(as_of, "%Y-%m-%d")
+        except ValueError:
+            as_of_dt = _dt.now()
+        start_date = (as_of_dt - _td(days=window_days)).strftime("%Y-%m-%d")
+
+        date_col = "effective_trade_date" if has_eff else "trade_date"
+        rows = conn.execute(
+            f"SELECT * FROM tradeflow_candidates "
+            f"WHERE {date_col} >= ? AND {date_col} <= ? "
+            f"ORDER BY {date_col} ASC",
+            (start_date, as_of),
+        ).fetchall()
+
+        candidates: list[dict] = []
+        for row in rows:
+            item = _row_to_candidate_item(row)
+            policy_refs = _parse_json(_rget(row, "policy_evidence_refs_json"), [])
+            candidates.append({
+                "symbol": item.get("symbol", ""),
+                "name": item.get("name", ""),
+                "mandate_topic": item.get("mandate_topic", ""),
+                "policy_tags": item.get("policy_tags", []),
+                "company_role": item.get("company_role", ""),
+                "beneficiary_path": item.get("beneficiary_path", []),
+                "mandate_score_component": item.get("mandate_score", 0.0),
+                "composite_score": item.get("composite_score", 0.0),
+                "tier": item.get("tier", ""),
+                "candidate_type": item.get("candidate_type", ""),
+                "effective_trade_date": item.get("effective_trade_date", ""),
+                "policy_evidence_refs": policy_refs,
+                "overheat_flags": item.get("overheat_flags", []),
+                "topic_lifecycle_state": item.get("topic_lifecycle_state", ""),
+                "topic_signal_count": item.get("topic_signal_count", 0),
+                "topic_last_signal_date": item.get("topic_last_signal_date", ""),
+                "blocking_evidence_gaps": item.get("blocking_evidence_gaps", []),
+                "watchlist_evidence_gap": item.get("watchlist_evidence_gap", []),
+            })
+
+        from tradingagents.tradeflow.topic_heatmap import build_topic_heatmap
+        report = build_topic_heatmap(candidates, as_of=as_of, window_days=window_days)
+
+        return {
+            "status": "ok",
+            **report.to_dict(),
+            "runtime_tier_meta": _fast_meta,
+        }
+    finally:
+        conn.close()
+
+
 # [DATA-018] source_freshness_report
 def get_source_freshness(
     symbol: str = "",

@@ -5251,6 +5251,7 @@ from api.tradeflow_schemas import (
     PaperReviewResponse,  # [TF-PAPER-001] paper_trading_ledger
     TopicRegistryResponse,  # [H-012] mandate_topic_registry
     TopicWatchlistResponse,  # [H-012] mandate_topic_registry
+    TopicHeatmapResponse,  # [H-013] mandate_topic_heatmap
     SourceFreshnessResponse,  # [DATA-018] source_freshness_report
     SourceFreshnessEntryItem,  # [DATA-018] source_freshness_report
     SourceFreshnessSummary,  # [DATA-018] source_freshness_report
@@ -5281,6 +5282,7 @@ from api.services.tradeflow_service import (
     get_paper_review as _tf_get_paper_review,  # [TF-PAPER-001] paper_trading_ledger
     get_topic_registry as _tf_get_topic_registry,  # [H-012] mandate_topic_registry
     get_topic_watchlist as _tf_get_topic_watchlist,  # [H-012] mandate_topic_registry
+    get_topic_heatmap as _tf_get_topic_heatmap,  # [H-013] mandate_topic_heatmap
     get_source_freshness as _tf_get_source_freshness,  # [DATA-018] source_freshness_report
 )
 
@@ -5476,6 +5478,15 @@ def tradeflow_topic_watchlist(
     max_symbols: int = Query(5, description="每个主题最多标的数", ge=1, le=20),
 ):
     return _tf_get_topic_watchlist(date, max_symbols_per_topic=max_symbols)
+
+
+# [H-013] mandate_topic_heatmap
+@app.get("/v1/tradeflow/topic-heatmap", response_model=TopicHeatmapResponse)
+def tradeflow_topic_heatmap(
+    as_of: str = Query("", description="截止日期 YYYY-MM-DD（默认最新候选日）"),
+    window_days: int = Query(60, description="回看窗口天数", ge=7, le=180),
+):
+    return _tf_get_topic_heatmap(as_of=as_of, window_days=window_days)
 
 
 # [DATA-018] source_freshness_report

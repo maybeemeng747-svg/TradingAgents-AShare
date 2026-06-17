@@ -9,7 +9,7 @@
 // [UI-012] tradeflow_focus_workspace
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX, ChevronDown, ChevronRight, Zap, Clock, GitCompare, Wallet, TrendingUp, ShieldAlert, Lightbulb, Eye as EyeIcon } from 'lucide-react'
+import { Target, Loader2, AlertCircle, Calendar, Filter, Eye, RefreshCw, ListOrdered, ClipboardList, BarChart3, Activity, Search, FilterX, ChevronDown, ChevronRight, Zap, Clock, GitCompare, Wallet, TrendingUp, ShieldAlert, Lightbulb, Eye as EyeIcon, Flame } from 'lucide-react'
 import { api } from '@/services/api'
 import {
     RUNTIME_TIER_LABELS,
@@ -31,10 +31,12 @@ import type {
     PaperLedgerResponse,
     SourceFreshnessResponse,
     SourceFreshnessEntry,
+    TopicHeatmapResponse,
+    TopicHeatmapEntry,
 } from '@/types'
 import TradeFlowCandidateDrawer from '@/components/TradeFlowCandidateDrawer'
 
-type TabKey = 'candidates' | 'observe' | 'ta-queue' | 'review' | 'filtered' | 'data-health' | 'compare' | 'paper-ledger'
+type TabKey = 'candidates' | 'observe' | 'ta-queue' | 'review' | 'filtered' | 'data-health' | 'compare' | 'paper-ledger' | 'topic-heatmap'
 
 function todayStr(): string {
     return new Date().toISOString().slice(0, 10)
@@ -415,6 +417,7 @@ const TABS: { key: TabKey; label: string; icon: typeof Target }[] = [
     { key: 'review', label: '盘后 Review', icon: BarChart3 },
     { key: 'filtered', label: '被过滤', icon: FilterX },
     { key: 'data-health', label: '数据健康', icon: Activity },
+    { key: 'topic-heatmap', label: '主题热度', icon: Flame },
     { key: 'paper-ledger', label: '模拟账本', icon: Wallet },
 ]
 
@@ -1194,6 +1197,229 @@ function SourceFreshnessPanel({ data }: { data: SourceFreshnessResponse | null }
     )
 }
 
+// [H-013] mandate_topic_heatmap
+function heatTrendBadge(trend: string): { text: string; cls: string } {
+    switch (trend) {
+        case 'RISING': return { text: '升温', cls: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' }
+        case 'COOLING': return { text: '降温', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' }
+        case 'STABLE': return { text: '平稳', cls: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300' }
+        default: return { text: '未知', cls: 'bg-slate-100 text-slate-400 dark:bg-slate-700 dark:text-slate-500' }
+    }
+}
+
+function topicStatusBadge(status: string): { text: string; cls: string } {
+    switch (status) {
+        case 'BREWING': return { text: '酝酿', cls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300' }
+        case 'FERMENTING': return { text: '发酵', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' }
+        case 'CONFIRMING': return { text: '确认', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' }
+        case 'DELIVERING': return { text: '兑现', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' }
+        case 'RECEDING': return { text: '退潮', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' }
+        default: return { text: '未知', cls: 'bg-slate-100 text-slate-400 dark:bg-slate-700 dark:text-slate-500' }
+    }
+}
+
+function heatBar(heat: number): string {
+    const n = Math.max(0, Math.min(10, Math.round(heat / 10)))
+    return '█'.repeat(n) + '░'.repeat(10 - n)
+}
+
+function TopicHeatmapPanel({
+    data,
+    onSelectSymbol,
+}: {
+    data: TopicHeatmapResponse | null
+    onSelectSymbol?: (symbol: string) => void
+}) {
+    if (!data || data.status === 'no_data') {
+        return (
+            <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-700 dark:bg-slate-800/50">
+                <p className="text-sm text-slate-500 dark:text-slate-400">暂无主题热度数据。生成候选池后将自动展示。</p>
+            </div>
+        )
+    }
+
+    const activeTopics = data.topics.filter(t => t.candidates.length > 0 || t.heat_curve.length > 0)
+
+    return (
+        <div className="space-y-4">
+            {/* summary banner */}
+            <div className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 dark:border-slate-700 dark:bg-slate-800/50">
+                <span className="text-sm font-medium text-slate-700 dark:text-slate-300">日期 {data.as_of || '-'}</span>
+                <span className="text-xs text-slate-400">|</span>
+                <span className="text-xs text-slate-500 dark:text-slate-400">
+                    主题 <b className="text-slate-700 dark:text-slate-300">{data.total_topics}</b>
+                </span>
+                <span className="text-xs text-slate-500 dark:text-slate-400">
+                    活跃 <b className="text-emerald-600 dark:text-emerald-400">{data.active_topics}</b>
+                </span>
+                <span className="text-xs text-slate-500 dark:text-slate-400">
+                    升温 <b className="text-red-600 dark:text-red-400">{data.rising_topics}</b>
+                </span>
+                <span className="text-xs text-slate-500 dark:text-slate-400">
+                    降温 <b className="text-emerald-600 dark:text-emerald-400">{data.cooling_topics}</b>
+                </span>
+                <span className="text-xs text-slate-500 dark:text-slate-400">
+                    左侧 <b className="text-indigo-600 dark:text-indigo-400">{data.left_side_topics}</b>
+                </span>
+                {data.runtime_tier_meta && (
+                    <span className="ml-auto text-xs text-slate-400">主题热度仅影响排序解释，不改变最终动作</span>
+                )}
+            </div>
+
+            {/* topic cards */}
+            {activeTopics.length === 0 ? (
+                <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-700 dark:bg-slate-800/50">
+                    <p className="text-sm text-slate-500 dark:text-slate-400">当前窗口暂无活跃主题信号。</p>
+                </div>
+            ) : (
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    {activeTopics.map((topic) => (
+                        <TopicHeatmapCard key={topic.topic} topic={topic} onSelectSymbol={onSelectSymbol} />
+                    ))}
+                </div>
+            )}
+        </div>
+    )
+}
+
+function TopicHeatmapCard({
+    topic,
+    onSelectSymbol,
+}: {
+    topic: TopicHeatmapEntry
+    onSelectSymbol?: (symbol: string) => void
+}) {
+    const [expanded, setExpanded] = useState(false)
+    const statusBd = topicStatusBadge(topic.topic_status)
+    const trendBd = heatTrendBadge(topic.heat_trend)
+    const w7 = topic.windows['7']
+    const w20 = topic.windows['20']
+    const w60 = topic.windows['60']
+
+    return (
+        <div className={`rounded-xl border bg-white p-4 dark:bg-slate-800/50 ${
+            topic.is_left_side ? 'border-l-4 border-l-indigo-400 border-slate-200 dark:border-slate-700'
+            : topic.is_observe_only ? 'border-l-4 border-l-slate-400 border-slate-200 dark:border-slate-700'
+            : 'border-slate-200 dark:border-slate-700'
+        }`}>
+            {/* header */}
+            <div className="mb-3 flex items-start justify-between">
+                <div>
+                    <div className="flex items-center gap-2">
+                        <h4 className="text-sm font-semibold text-slate-800 dark:text-slate-200">{topic.topic}</h4>
+                        <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${statusBd.cls}`}>{statusBd.text}</span>
+                        <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${trendBd.cls}`}>{trendBd.text}</span>
+                    </div>
+                    {topic.description && (
+                        <p className="mt-0.5 text-xs text-slate-400">{topic.description}</p>
+                    )}
+                </div>
+                <button
+                    onClick={() => setExpanded(!expanded)}
+                    className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                >
+                    {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                    {expanded ? '收起' : '详情'}
+                </button>
+            </div>
+
+            {/* state change */}
+            {topic.state_change_label && topic.state_change_label !== '持平' && (
+                <div className="mb-2 flex items-center gap-1 text-xs">
+                    <TrendingUp className={`h-3.5 w-3.5 ${topic.state_change_positive ? 'text-red-500' : 'text-emerald-500'}`} />
+                    <span className={topic.state_change_positive ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}>
+                        {topic.state_change_label}
+                    </span>
+                </div>
+            )}
+
+            {/* windowed stats */}
+            <div className="mb-3 grid grid-cols-3 gap-2">
+                {[w7, w20, w60].filter(Boolean).map((w) => (
+                    <div key={w!.window_days} className="rounded-lg bg-slate-50 px-2 py-1.5 text-center dark:bg-slate-900/40">
+                        <div className="text-xs text-slate-400">{w!.window_label}</div>
+                        <div className="text-sm font-semibold text-slate-700 dark:text-slate-300">{w!.candidate_count}只</div>
+                        <div className="text-xs text-slate-400">证据 {w!.evidence_count}</div>
+                    </div>
+                ))}
+            </div>
+
+            {/* heat curve (mini) */}
+            {topic.heat_curve.length > 0 && (
+                <div className="mb-3">
+                    <div className="mb-1 text-xs text-slate-400">热度曲线（近{topic.heat_curve.length}个信号日）</div>
+                    <div className="space-y-0.5 font-mono text-xs">
+                        {topic.heat_curve.slice(-6).map((p) => (
+                            <div key={p.date} className="flex items-center gap-2">
+                                <span className="w-20 text-slate-400">{p.date}</span>
+                                <span className="text-amber-500">{heatBar(p.heat)}</span>
+                                <span className="w-8 tabular-nums text-slate-500">{p.heat.toFixed(0)}</span>
+                                <span className="text-slate-400">{p.candidate_count}只</span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* counter evidence gaps */}
+            {topic.counter_evidence_gaps.length > 0 && (
+                <div className="mb-2 flex flex-wrap items-center gap-1">
+                    <ShieldAlert className="h-3.5 w-3.5 text-amber-500" />
+                    {topic.counter_evidence_gaps.slice(0, 3).map((g, i) => (
+                        <span key={i} className="rounded bg-amber-50 px-1.5 py-0.5 text-xs text-amber-600 dark:bg-amber-900/30 dark:text-amber-300">{g}</span>
+                    ))}
+                </div>
+            )}
+
+            {/* overheat flags */}
+            {topic.overheat_flags.length > 0 && (
+                <div className="mb-2 flex flex-wrap items-center gap-1">
+                    <AlertCircle className="h-3.5 w-3.5 text-red-500" />
+                    {topic.overheat_flags.map((f, i) => (
+                        <span key={i} className="rounded bg-red-50 px-1.5 py-0.5 text-xs text-red-600 dark:bg-red-900/30 dark:text-red-300">{f}</span>
+                    ))}
+                </div>
+            )}
+
+            {/* candidates with interlink */}
+            {topic.candidates.length > 0 && (
+                <div className="border-t border-slate-100 pt-2 dark:border-slate-700">
+                    <div className="mb-1.5 text-xs text-slate-400">关联候选</div>
+                    <div className="flex flex-wrap gap-1.5">
+                        {topic.candidates.slice(0, 5).map((c) => (
+                            <button
+                                key={c.symbol}
+                                onClick={() => onSelectSymbol?.(c.symbol)}
+                                className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600 transition-colors hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-300 dark:hover:border-indigo-700 dark:hover:bg-indigo-900/30 dark:hover:text-indigo-300"
+                                title={`${c.name} · ${c.company_role}`}
+                            >
+                                <span className="font-medium">{c.symbol}</span>
+                                <span className="text-slate-400">{c.name}</span>
+                                {c.tier && <span className="text-slate-400">·{c.tier}</span>}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* expanded: evidence links */}
+            {expanded && topic.evidence_links.length > 0 && (
+                <div className="mt-3 border-t border-slate-100 pt-2 dark:border-slate-700">
+                    <div className="mb-1.5 text-xs text-slate-400">政策证据</div>
+                    <ul className="space-y-1">
+                        {topic.evidence_links.slice(0, 5).map((ref, i) => (
+                            <li key={i} className="text-xs text-slate-500 dark:text-slate-400">
+                                <span className="text-slate-400">[{ref.date}]</span> {ref.title}
+                                <span className="ml-1 text-slate-400">({ref.source})</span>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            )}
+        </div>
+    )
+}
+
 // [UI-010] mandate_candidate_compare
 type CompareSortKey = 'mandate_score' | 'ambush_score' | 'evidence_coverage' | 'counter_evidence_count' | 'evidence_gap_count' | 'topic_lifecycle_state' | 'company_role'
 
@@ -1353,6 +1579,7 @@ export default function TradeFlow() {
     })
     const [dataHealth, setDataHealth] = useState<TradeFlowDataHealthResponse | null>(null)
     const [sourceFreshness, setSourceFreshness] = useState<SourceFreshnessResponse | null>(null)  // [DATA-018]
+    const [topicHeatmap, setTopicHeatmap] = useState<TopicHeatmapResponse | null>(null)  // [H-013] mandate_topic_heatmap
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [status, setStatus] = useState<string>('')
@@ -1540,6 +1767,16 @@ export default function TradeFlow() {
         }
     }, [])
 
+    // [H-013] mandate_topic_heatmap
+    const fetchTopicHeatmap = useCallback(async () => {
+        try {
+            const res = await api.getTopicHeatmap()
+            setTopicHeatmap(res)
+        } catch {
+            // silent fail — heatmap is supplementary
+        }
+    }, [])
+
     // [UI-007] tradeflow_filtered_trace
     const fetchFiltered = useCallback(async (date: string) => {
         setLoading(true)
@@ -1623,10 +1860,12 @@ export default function TradeFlow() {
         } else if (activeTab === 'data-health') {
             await fetchDataHealth()
             await fetchSourceFreshness()  // [DATA-018]
+        } else if (activeTab === 'topic-heatmap') {  // [H-013] mandate_topic_heatmap
+            await fetchTopicHeatmap()
         } else if (activeTab === 'paper-ledger') {
             await fetchPaperLedger()
         }
-    }, [activeTab, fetchCandidates, fetchCompare, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth, fetchSourceFreshness, fetchFiltered, fetchPaperLedger])
+    }, [activeTab, fetchCandidates, fetchCompare, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth, fetchSourceFreshness, fetchTopicHeatmap, fetchFiltered, fetchPaperLedger])
 
     useEffect(() => {
         void fetchData(tradeDate)
@@ -1659,6 +1898,11 @@ export default function TradeFlow() {
         setSelectedCandidate(c)
         setDrawerOpen(true)
     }
+
+    // [H-013] mandate_topic_heatmap — interlink: topic → candidates tab
+    const handleTopicSymbolClick = useCallback((_symbol: string) => {
+        setActiveTab('candidates')
+    }, [])
 
     const parseSymbolInput = (value: string) => (
         value
@@ -2270,6 +2514,18 @@ export default function TradeFlow() {
                         </h3>
                         <SourceFreshnessPanel data={sourceFreshness} />
                     </div>
+                </div>
+            )
+        }
+
+        // [H-013] mandate_topic_heatmap
+        if (activeTab === 'topic-heatmap') {
+            return (
+                <div className="space-y-4">
+                    <TopicHeatmapPanel
+                        data={topicHeatmap}
+                        onSelectSymbol={handleTopicSymbolClick}
+                    />
                 </div>
             )
         }

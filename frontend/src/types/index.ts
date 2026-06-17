@@ -1169,6 +1169,88 @@ export interface SourceFreshnessResponse {
     runtime_tier_meta: RuntimeTierMeta
 }
 
+// [H-013] mandate_topic_heatmap
+export interface TopicHeatPoint {
+    date: string
+    signal_count: number
+    candidate_count: number
+    unique_candidates: number
+    policy_level: string
+    policy_level_weight: number
+    evidence_count: number
+    overheat_flags: string[]
+    lifecycle_state: string
+    topic_status: string
+    topic_status_label: string
+    heat: number
+}
+
+export interface TopicHeatWindow {
+    window_days: number
+    window_label: string
+    signal_count: number
+    candidate_count: number
+    unique_candidates: number
+    evidence_count: number
+    active_days: number
+    max_policy_level: string
+    max_policy_level_weight: number
+}
+
+export interface TopicHeatCandidate {
+    symbol: string
+    name: string
+    company_role: string
+    beneficiary_path: string[]
+    mandate_score: number
+    tier: string
+    candidate_type: string
+    latest_date: string
+}
+
+export interface TopicHeatmapEntry {
+    topic: string
+    description: string
+    topic_status: string
+    topic_status_label: string
+    policy_level: string
+    policy_level_weight: number
+    is_left_side: boolean
+    is_observe_only: boolean
+    is_confirmed: boolean
+    heat_curve: TopicHeatPoint[]
+    windows: Record<string, TopicHeatWindow>
+    heat_trend: string
+    heat_trend_label: string
+    state_change_label: string
+    state_change_positive: boolean
+    latest_date: string
+    latest_signal_count: number
+    peak_date: string
+    peak_heat: number
+    evidence_links: Array<{ title: string; source: string; date: string; url: string; source_level: string }>
+    evidence_summary: string
+    counter_evidence_gaps: string[]
+    overheat_flags: string[]
+    candidates: TopicHeatCandidate[]
+    candidate_symbols: string[]
+}
+
+export interface TopicHeatmapResponse {
+    status: string
+    as_of: string
+    window_days: number
+    topics: TopicHeatmapEntry[]
+    total_topics: number
+    active_topics: number
+    rising_topics: number
+    cooling_topics: number
+    left_side_topics: number
+    observe_only_topics: number
+    summary: Record<string, unknown>
+    runtime_tier_meta: RuntimeTierMeta
+}
+
 // [UI-007] tradeflow_filtered_trace
 export interface TradeFlowFilteredItem {
     symbol: string

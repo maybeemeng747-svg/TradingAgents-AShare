@@ -626,3 +626,86 @@ class SourceFreshnessResponse(BaseModel):
     entries: List[SourceFreshnessEntryItem] = Field(default_factory=list)
     summary: SourceFreshnessSummary = Field(default_factory=SourceFreshnessSummary)
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [H-013] mandate_topic_heatmap
+
+class TopicHeatPointItem(BaseModel):
+    date: str = ""
+    signal_count: int = 0
+    candidate_count: int = 0
+    unique_candidates: int = 0
+    policy_level: str = "UNKNOWN"
+    policy_level_weight: int = 0
+    evidence_count: int = 0
+    overheat_flags: List[str] = Field(default_factory=list)
+    lifecycle_state: str = ""
+    topic_status: str = "UNKNOWN"
+    topic_status_label: str = "未知"
+    heat: float = 0.0
+
+
+class TopicHeatWindowItem(BaseModel):
+    window_days: int = 0
+    window_label: str = ""
+    signal_count: int = 0
+    candidate_count: int = 0
+    unique_candidates: int = 0
+    evidence_count: int = 0
+    active_days: int = 0
+    max_policy_level: str = "UNKNOWN"
+    max_policy_level_weight: int = 0
+
+
+class TopicHeatCandidateItem(BaseModel):
+    symbol: str = ""
+    name: str = ""
+    company_role: str = ""
+    beneficiary_path: List[str] = Field(default_factory=list)
+    mandate_score: float = 0.0
+    tier: str = ""
+    candidate_type: str = ""
+    latest_date: str = ""
+
+
+class TopicHeatmapEntryItem(BaseModel):
+    topic: str = ""
+    description: str = ""
+    topic_status: str = "UNKNOWN"
+    topic_status_label: str = "未知"
+    policy_level: str = "UNKNOWN"
+    policy_level_weight: int = 0
+    is_left_side: bool = False
+    is_observe_only: bool = False
+    is_confirmed: bool = False
+    heat_curve: List[TopicHeatPointItem] = Field(default_factory=list)
+    windows: Dict[str, TopicHeatWindowItem] = Field(default_factory=dict)
+    heat_trend: str = "UNKNOWN"
+    heat_trend_label: str = "未知"
+    state_change_label: str = "持平"
+    state_change_positive: bool = False
+    latest_date: str = ""
+    latest_signal_count: int = 0
+    peak_date: str = ""
+    peak_heat: float = 0.0
+    evidence_links: List[Dict[str, Any]] = Field(default_factory=list)
+    evidence_summary: str = ""
+    counter_evidence_gaps: List[str] = Field(default_factory=list)
+    overheat_flags: List[str] = Field(default_factory=list)
+    candidates: List[TopicHeatCandidateItem] = Field(default_factory=list)
+    candidate_symbols: List[str] = Field(default_factory=list)
+
+
+class TopicHeatmapResponse(BaseModel):
+    status: str = "ok"
+    as_of: str = ""
+    window_days: int = 60
+    topics: List[TopicHeatmapEntryItem] = Field(default_factory=list)
+    total_topics: int = 0
+    active_topics: int = 0
+    rising_topics: int = 0
+    cooling_topics: int = 0
+    left_side_topics: int = 0
+    observe_only_topics: int = 0
+    summary: Dict[str, Any] = Field(default_factory=dict)
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
