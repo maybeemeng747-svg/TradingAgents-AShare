@@ -1,0 +1,2992 @@
+Task: TF-OBS-003 - 盘中观察触发到模拟账本待确认联动（P1）
+Date: 2026-06-18_02:20:47
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019ed6ce-a95f-71a1-8238-f35aa16aacdd
+--------
+user
+current changes
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/project-overview.md; printf '\\n---TASKS---\\n'; sed -n '1,220p' docs/TASKS.md; printf '\\n---DECISIONS---\\n'; sed -n '1,220p' docs/DECISIONS.md; printf '\\n---DEVLOG---\\n'; sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+
+---TASKS---
+# 任务池
+
+> 最后更新：2026-06-15
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，done）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，done，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，done，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，done，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，done，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，done，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done，依赖 DATA-004 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
+50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done，依赖 DATA-012 部分落地 ✓）。
+54. `DECISION-001`：最终动作语义分层 — 禁止默认 HOLD（P0，done，commit dee415c）。
+55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
+56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
+57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
+58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，blocked — NEEDS_HUMAN，commit 5f304db，见 task_runs）。
+59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done，Codex 修复，待提交）。
+60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
+63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
+65. `V-006`：最终动作语义端到端回放验收（P1，done，依赖 DECISION-004 ✓）。
+66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
+67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，done，commit f54a45e）。
+68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
+69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，done，依赖 TF-OBS-002/TF-REVIEW-002）。
+70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，done，依赖 H-010/H-011）。
+71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，done，依赖 DATA-017/DATA-006）。
+72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，done，依赖 TF-QUALITY-002/TF-OBS-002）。
+73. `V-007`：TradeFlow 试用闭环端到端验收（P1，done，commit 9ceedbf）。
+74. `TF-API-013`：TradeFlow API 合约收口与 HTTP 路由回归（P0，done，`fce3141` + `289a392`）。
+75. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，done，`OpenCode` 2026-06-16）。
+76. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，done，依赖 TF-PAPER-001 ✓）。
+77. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，ready，依赖 TF-OBS-002/TF-PAPER-001）。
+78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，ready，依赖 TF-REVIEW-002/TF-PAPER-001）。
+79. `DATA-019`：关键数据源实盘抽样健康日报（P1，ready，依赖 DATA-018/DATA-017）。
+80. `H-013`：昊天主题热度曲线与政策证据看板（P1，ready，依赖 H-012/H-010）。
+81. `V-008`：TradeFlow 小资金试跑前整体验收（P1，blocked，等待 TF-OBS-003/TF-REVIEW-003 完成后释放）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
+16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done）。
+18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
+19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done）。
+21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## PERF. 运行成本 / 轻量分析任务池（2026-06-02 新增）
+
+> 目标：系统不能为了“全面”而变慢。TradeFlow 是雷达，轻量 TA 是候选验证，完整 TA 是深度体检。默认链路必须轻，完整多 Agent 分析只能由用户明确触发。
+
+### PERF-001: 运行层级与速度预算契约（P1）
+- **描述**：建立统一运行层级契约，所有 API、前端按钮、scheduler、自动开发任务都要标明属于 `fast/light/full` 哪一层，以及是否允许调用 LLM。
+- **优先级**：P1
+- **状态**：done -- commit ca08846
+- **背景**：
+  - 用户明确要求系统不能做得太重，不能“一发指令半天才回来”。
+  - 候选池/盘中观察需要时效；完整 TA 只能用于少量高价值标的。
+- **运行层级定义**：
+  1. `fast`：5-30 秒。TradeFlow 筛选、数据健康、证据缺口、候选分类。默认不调用 LLM。
+  2. `light`：1-3 分钟。轻量 TA，只跑必要模块，用于中线政策验证、短线技术确认、持仓风险复核。
+  3. `full`：10-20 分钟。完整 14 Agent TA，多空辩论和风控全链路，必须人工确认。
+- **执行约束**：
+  - 不改 prompts。
+  - 不触发 live TA。
+  - 不新增高成本模型调用。
+- **实现要点**：
+  1. 新增运行层级枚举/配置，例如 `runtime_tier`：
+     - `FAST_RADAR`
+     - `LIGHT_RESEARCH`
+     - `FULL_TA`
+  2. API/服务层统一返回：
+     - `runtime_tier`
+     - `expected_latency`
+     - `llm_allowed`
+     - `requires_confirmation`
+     - `cost_risk`
+  3. 前端按钮文案对应：
+     - `快速筛选`
+     - `轻量研究`
+     - `完整 TA`
+  4. `TradeFlow Discovery` 和 `Observe` 必须标记为 `FAST_RADAR`。
+  5. 自动任务/scheduler 不得默认进入 `FULL_TA`。
+- **验收方式**：
+  - TradeFlow candidates/observe/data-health API 返回 fast 层级或元数据。
+  - 前端能显示运行层级和预计耗时。
+  - 没有用户确认时，full TA 入口不可直接触发。
+  - `pytest tests/test_runtime_tier*.py tests/test_ui001_tradeflow_api.py -q` 或等价测试通过。
+- **代码标注要求**：`# [PERF-001] runtime_tier_contract` / `// [PERF-001] runtime_tier_contract`
+
+### PERF-002: 轻量 TA Profile 与模块路由（P1）
+- **描述**：在完整 TA 之外增加轻量 TA Profile，只跑与目标相关的模块，避免所有候选都进入 14 Agent 全链路。
+- **优先级**：P1
+- **状态**：done -- commit 20ff126
+- **前置条件**：`TA-UI-001`、`H-007` 完成或同步完成。
+- **执行约束**：
+  - 不删除完整 TA。
+  - 不改 prompts。
+  - 不自动调用 live LLM；第一版可先做路由配置和 mock/fixture。
+- **Profile 建议**：
+  1. `MIDLINE_POLICY_LIGHT`：
+     - 用于 `POLICY_AMBUSH/POLICY_CONFIRM`。
+     - 重点：政策/公告/基本面/风险/量价。
+  2. `SHORT_TECH_LIGHT`：
+     - 用于 `TECH_TRADE`。
+     - 重点：技术/量价/资金/风险。
+  3. `POSITION_RISK_LIGHT`：
+     - 用于已持仓复盘。
+     - 重点：风控/资金/关键价位/公告。
+  4. `FULL_TA`：
+     - 保持完整多 Agent，只能手动确认。
+- **实现要点**：
+  1. 新增 profile 配置，声明每个 profile 启用的 analyst/manager/risk 模块。
+  2. TradeFlow 候选根据 `candidate_type/research_queue/analysis_intent` 推荐 profile。
+  3. `/analysis` 控制台选择中线/短线后，能带入对应 profile。
+  4. 结果 metadata 中记录 `runtime_profile` 和实际启用模块。
+- **验收方式**：
+  - `POLICY_AMBUSH` 默认推荐 `MIDLINE_POLICY_LIGHT`。
+  - `TECH_TRADE` 默认推荐 `SHORT_TECH_LIGHT`。
+  - 已持仓复盘默认推荐 `POSITION_RISK_LIGHT`。
+  - 完整 TA 仍可人工选择。
+  - 测试覆盖 profile 路由，不触发真实 LLM。
+- **代码标注要求**：`# [PERF-002] lightweight_ta_profiles`
+
+---DECISIONS---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+
+---DEVLOG---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-18 | TF-OBS-003: 盘中观察触发到模拟账本待确认联动
+
+- **执行者**：OpenCode
+- **类型**：feature / TradeFlow 联动（P1）
+- **任务**：TF-OBS-003 — observe_paper_sync
+- **状态**：✅ 完成
+
+### 背景
+
+盘中 Observe 触发候选后，只更新 `tradeflow_candidates` 的 observe_state，但不会同步
+到模拟账本（`tradeflow_paper_trades`）。用户无法直观看到哪些已跟踪的票真的到了
+执行条件。`update_paper_observe_state()` 已在 TF-PAPER-001 实现并测试，但从未被
+observe 流程调用。
+
+### 变更内容
+
+1. **`api/services/tradeflow_service.py`**
+   - 新增 `_sync_paper_from_observe(details, tf_db)` 辅助函数（`# [TF-OBS-003] observe_paper_sync`）：
+     遍历 observe details，对每个有已知状态（TRIGGERED/INVALIDATED/WAITING）的候选
+     调用 `update_paper_observe_state`，将触发的票同步为 `pending`、失效的同步为 `invalidated`。
+     未加入模拟账本的候选不会生成任何记录。
+   - `run_observe_check()`（手动刷新）：`run_observe()` 返回后调用 `_sync_paper_from_observe`，
+     响应新增 `paper_synced` / `paper_pending` / `paper_invalidated` 计数。
+   - `get_observe()`（页面自动执行）：auto-run 路径调用 `run_observe` 后也同步调用
+     `_sync_paper_from_observe`，保证打开页面即联动。
+   - `get_observe()` 返回的 observe_items 每项新增 `paper_status` 字段（从 `tradeflow_paper_trades`
+     查询 symbol → status 映射），供前端显示账本状态。
+
+2. **`frontend/src/types/index.ts`**
+   - `TradeFlowObserveItem` 新增 `paper_status: string` 字段。
+
+3. **`frontend/src/pages/TradeFlow.tsx`**
+   - `ObserveTable` 新增"模拟账本"列：根据 `paper_status` 显示徽标 ——
+     `pending`→"待确认"（琥珀）、`tracking`→"已加入试跑"（灰）、`open`→"持仓中"、
+     `closed`→"已平仓"、`invalidated`→"已失效"、`observation`→"观察降级"、未加入→"—"。
+
+4. **测试**
+   - 新增 `tests/test_tf_obs_003_observe_paper_sync.py`（21 个测试）：
+     - `_sync_paper_from_observe` 单元测试（triggered/invalidated/waiting/无账本/未知状态/空）。
+     - 端到端：`run_observe(quote_provider)` + sync → 账本状态正确流转。
+     - `run_observe_check` 服务包装层 sync 计数 + 实际同步验证。
+     - `get_observe` auto-run 路径同步验证（monkeypatch run_observe）。
+     - observe_items `paper_status` 字段验证。
+
+### 验收
+
+- ✅ 触发后 paper ledger 对应记录进入 pending。
+- ✅ 失效后进入 invalidated。
+- ✅ 未加入 paper ledger 的候选不会生成模拟记录。
+- ✅ 前端 Observe 面板显示"待确认/已加入试跑"标识。
+- ✅ 手动刷新 + 页面自动执行均同步账本。
+
+### 测试结果
+
+- 新增测试：21 passed
+- 回归（tf_paper/obs/risk）：146 passed
+- 全量 tradeflow 测试：772 passed
+- 前端 tsc --noEmit：0 errors
+
+---
+
+## 2026-06-17 | 释放 TradeFlow 下一批开发任务
+
+- **执行者**：Codex
+- **类型**：任务池调度
+- **状态**：✅ 完成
+
+### 释放口径
+
+- TF-RISK-001 的 P1 审计问题已由 `b26a583` 修复：tracking/pending/open 均计入预算预留，前端两个模拟跟踪入口均传 `data_quality_score`。
+- 下一批保持 ready：
+  1. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动。
+  2. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈。
+  3. `DATA-019`：关键数据源实盘抽样健康日报。
+  4. `H-013`：昊天主题热度曲线与政策证据看板。
+- `V-008` 改为 blocked：它是最终整体验收，必须等 `TF-OBS-003` 和 `TF-REVIEW-003` 完成后再释放，避免自动开发提前验收半成品链路。
+
+---
+
+## 2026-06-17 | TF-RISK-001 P1 修复：风险预算预留 + 前端 data_quality_score 传递
+
+- **执行者**：OpenCode
+- **类型**：bugfix / 风控（P1）
+- **任务**：TF-RISK-001 — paper_risk_budget（审计修复）
+- **状态**：✅ 完成
+
+### 背景
+
+审计发现两个 P1 漏洞：风险预算只扣 `open` 没扣 `tracking/pending` 的计划占用，
+可同时挂 5 只 × 1500 的 tracking 计划暴露 7500 而预算仍显示 5000；前端加入模拟跟踪时
+未传 `data_quality_score`，低数据质量票绕过后端硬拒绝检查。
+
+### 变更内容
+
+1. **`api/services/tradeflow_service.py`**
+   - `add_paper_candidate()`：预算查询从 `status = 'open'` 改为
+     `status IN ('tracking', 'pending', 'open')`，tracking/pending 的 planned_amount
+     计入预留。
+   - `get_paper_ledger()`：新增 `reserved_invested`（tracking+pending+open）传入
+     `_compute_risk_exposure`；`summary["invested"]` 保持只统计 open（实际已部署资金）。
+   - `_compute_risk_exposure` 签名不变。
+
+2. **`frontend/src/services/api.ts`**
+   - `addPaperCandidate` 类型声明新增 `data_quality_score?: number`。
+
+3. **`frontend/src/pages/TradeFlow.tsx` / `frontend/src/components/TradeFlowCandidateDrawer.tsx`**
+   - 两个"模拟跟踪"入口调用 `addPaperCandidate` 时传 `data_quality_score`。
+
+4. **测试**
+   - 新增 `test_tracking_pending_reserved_in_budget`、`test_risk_exposure_mixed_statuses`。
+   - 更新 `test_risk_exposure_fields`（2 tracking 现计入 invested）。
+   - 更新 `test_buy_blocked_if_insufficient_cash`（抬高 principal 以容纳 3×2000 tracking）。
+
+---
+
+## 2026-06-16 | TF-RISK-001: 5000 元试跑风险预算与仓位纪律
+
+- **执行者**：OpenCode
+- **类型**：新功能 / 风控（P1）
+- **任务**：TF-RISK-001 — paper_risk_budget
+- **状态**：✅ 完成
+
+### 背景
+
+TF-PAPER-001 已建立 paper ledger（模拟跟踪/待确认/已执行）。候选池存在"随手点买"风险：
+缺触发价/失效价也能进跟踪、单票金额无硬上限、单日/并发无配额、风险占用不可见。
+
+### 变更内容
+
+1. **`api/services/tradeflow_service.py`**
+   - 新增 `_DEFAULT_RISK_BUDGET`（principal 5000 / per_ticket_max 1500 / per_ticket_min 500 /
+     daily_new_max 3 / max_concurrent_tracking 5 / require_trigger_price / require_invalid_price /
+     min_data_quality_score 40）。
+   - 新增 `_get_risk_budget()`：合并 config.risk_budget 于默认值，兼容旧 `max_per_candidate`。
+   - 新增 `_compute_risk_exposure()` / `_empty_risk_exposure()`。
+   - `_ensure_paper_ledger_row()`：新建账本时把默认 risk_budget 写入 config_json。
+   - `add_paper_candidate()`：加入 `data_quality_score` 参数并执行风控校验——
+     - 硬拒绝（`status="rejected"`，带 `rule`/`reason`）：缺 trigger_price、缺 invalid_price、
+       data_quality_score < 阈值。候选不落库。
+     - 软降级（`status="ok"`，带 `downgraded_to="observation"`）：并发跟踪满、当日新增满、
+       或计划金额超过剩余预算时，仅以 observation 状态入库，永不进 pending/open。
+     - 金额按 per_ticket_max 截断。
+   - 新增 `update_paper_ledger_config()`：深合并覆盖 config（供配置覆盖与测试）。
+   - `get_paper_ledger()` summary 新增 `risk_exposure` 与 `observation_count`；no_data 分支同步。
+   - `get_paper_review()` 新增 observation 计数与文案。
+
+2. **`api/tradeflow_schemas.py`**
+   - `PaperLedgerSummary` 增 `risk_exposure`、`observation_count`。
+   - `PaperAddCandidateRequest` 增 `data_quality_score`。
+   - `PaperActionResponse` 增 `rejected`/`rule`/`reason`/`downgraded_to`。
+
+3. **`api/main.py`**：`/v1/tradeflow/paper-ledger/add` 透传 `data_quality_score`。
+
+4. **前端**
+   - `frontend/src/types/index.ts`：`PaperLedgerSummary` 增 risk_exposure/observation_count。
+   - `frontend/src/pages/TradeFlow.tsx`：paper-ledger 面板新增"剩余额度/单票上限、风险占用、
+     今日新增/上限、并发跟踪/上限"风险预算卡片；状态映射新增 observation（仅观察）。
+
+5. **测试**
+   - `tests/test_tf_risk001_paper_risk_budget.py`（新增 24 项）：默认配置落库、三种硬拒绝、
+     金额截断、daily_new_max/max_concurrent_tracking/budget 三类降级、observation 不可买入且
+     不被触发联动、risk_exposure 字段与买入后占用计算、config 覆盖（含旧 max_per_candidate 兼容）、
+     schema 字段。
+   - `tests/test_tf_paper001_paper_ledger.py`：既有用例补齐 invalid_price，对需要放宽配额的场景
+     使用 `update_paper_ledger_config` 覆盖，保持原测试意图不变。
+
+### 校验规则一览（加入模拟跟踪时）
+
+| 规则 | 默认 | 违反结果 |
+|------|------|----------|
+| require_trigger_price | true | rejected（不入库） |
+| require_invalid_price | true | rejected（不入库） |
+| min_data_quality_score | 40 | rejected（不入库） |
+| per_ticket_max | 1500 | 金额截断 |
+| daily_new_max | 3 | observation 降级 |
+| max_concurrent_tracking | 5 | observation 降级 |
+| 剩余预算不足 | — | observation 降级 |
+
+### 风险暴露字段（summary.risk_exposure）
+
+principal / invested / remaining / per_ticket_max / per_ticket_min /
+daily_new_today / daily_new_max / tracking_count / max_concurrent_tracking /
+budget_utilization_pct。
+
+### 验证
+
+- `pytest tests/test_tf_risk001_paper_risk_budget.py tests/test_tf_paper001_paper_ledger.py -q` → 81 passed
+- `pytest tests/ -q -k "tradeflow or paper or tf_"` → 827 passed
+- `pytest tests/ -q`（全量）→ 5867 passed, 17 skipped
+- `python -m py_compile` 三个 Python 文件通过
+- 前端 `npx tsc --noEmit` 通过
+
+### 红线遵守
+
+- 不接真实券商、不输出强买卖词、不调用 LLM。
+- 未触碰生产库 / eval_results / prompts / logs。
+
+---
+
+## 2026-06-16 | TF-QUALITY-004 Hotfix: 数据不足过滤优先级修复
+
+- **执行者**：OpenCode
+- **类型**：Bug 修复（P1）
+- **任务**：TF-QUALITY-004 Hotfix — 技术票数据不足过滤优先级
+- **状态**：✅ 完成
+
+### 问题
+
+`_apply_live_calibration()` 中 TECH_TRADE 块判断顺序有误：先判弱 VCP（→ observation），导致
+TECH_TRADE + 弱VCP + 数据不足 的候选被降级到 observation 而非 filtered。
+
+### 变更内容
+
+1. **`tradingagents/tradeflow/candidate_pool_gate.py`**：
+
+exec
+/bin/zsh -lc 'git status --short && git rev-parse --show-toplevel' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M api/services/tradeflow_service.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M docs/tradeflow_trial_acceptance.md
+ M frontend/src/pages/TradeFlow.tsx
+ M frontend/src/types/index.ts
+?? docs/task_runs/TF-OBS-003-20260618-020511/
+?? tests/test_tf_obs_003_observe_paper_sync.py
+/Users/maybee/TradingAgents-AShare
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- api/services/tradeflow_service.py frontend/src/pages/TradeFlow.tsx frontend/src/types/index.ts tests/test_tf_obs_003_observe_paper_sync.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ api/services/tradeflow_service.py  | 53 +++++++++++++++++++++++++++++++++
+ docs/DEVLOG.md                     | 61 ++++++++++++++++++++++++++++++++++++++
+ docs/TASKS.md                      |  2 +-
+ docs/tradeflow_trial_acceptance.md |  2 +-
+ frontend/src/pages/TradeFlow.tsx   | 13 ++++++++
+ frontend/src/types/index.ts        |  1 +
+ 6 files changed, 130 insertions(+), 2 deletions(-)
+diff --git a/api/services/tradeflow_service.py b/api/services/tradeflow_service.py
+index c62df45..622d141 100644
+--- a/api/services/tradeflow_service.py
++++ b/api/services/tradeflow_service.py
+@@ -722,6 +722,8 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
+                 from tradingagents.tradeflow.observe_runner import run_observe
+                 init_db(tf_db)
+                 _auto = run_observe(trade_date=trade_date, db_path=tf_db)
++                # [TF-OBS-003] observe_paper_sync — sync ledger on page-open auto-run
++                _sync_paper_from_observe(_auto.details, tf_db)
+                 observe_auto_run = True
+                 last_observed_at = _auto.run_time
+                 if _auto.skipped_reason:
+@@ -760,6 +762,20 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
+         triggered = 0
+         invalidated = 0
+         waiting = 0
++
++        # [TF-OBS-003] observe_paper_sync — map symbol → paper ledger status
++        paper_status_map: dict[str, str] = {}
++        try:
++            pt_rows = conn.execute(
++                "SELECT symbol, status FROM tradeflow_paper_trades ORDER BY updated_at DESC"
++            ).fetchall()
++            for pt in pt_rows:
++                _psym = normalize_tradeflow_symbol(pt["symbol"])
++                if _psym not in paper_status_map:
++                    paper_status_map[_psym] = pt["status"]
++        except Exception:
++            pass
++
+         for r in rows:
+             state = _rget(r, "observe_state", "WAITING")
+             sym = normalize_tradeflow_symbol(r["symbol"])  # [UI-008]
+@@ -796,6 +812,7 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
+                 "current_price": current_price,
+                 "trigger_reason": trigger_reason,
+                 "strategy_tags": _parse_json(_rget(r, "strategy_tags_json"), []),
++                "paper_status": paper_status_map.get(sym, ""),  # [TF-OBS-003] observe_paper_sync
+             }
+             items.append(item)
+             if state == "TRIGGERED":
+@@ -1221,6 +1238,9 @@ def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
+         db_path=tf_db,
+     )
+ 
++    # [TF-OBS-003] observe_paper_sync — sync triggered/invalidated into paper ledger
++    paper_sync = _sync_paper_from_observe(result.details, tf_db)
++
+     return {
+         "status": "skipped" if result.skipped_reason else "ok",
+         "trade_date": trade_date,
+@@ -1234,10 +1254,43 @@ def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
+         "skipped_reason": result.skipped_reason,
+         "run_time": result.run_time,
+         "details": result.details,
++        "paper_synced": paper_sync["synced"],            # [TF-OBS-003] observe_paper_sync
++        "paper_pending": paper_sync["pending"],           # [TF-OBS-003]
++        "paper_invalidated": paper_sync["invalidated"],   # [TF-OBS-003]
+         "runtime_tier_meta": _tradeflow_meta("tradeflow_observe_run"),  # [PERF-001]
+     }
+ 
+ 
++# [TF-OBS-003] observe_paper_sync
++def _sync_paper_from_observe(details: list, tf_db: str) -> dict:
++    """Sync observe results into the paper ledger.
++
++    For each observe detail with a known state, call update_paper_observe_state
++    so triggered candidates become 'pending' (awaiting manual confirm) and
++    invalidated candidates become 'invalidated'. Candidates not in the paper
++    ledger are ignored — no record is created.
++    """
++    synced = 0
++    pending_count = 0
++    invalidated_count = 0
++    for d in details:
++        symbol = d.get("symbol") if isinstance(d, dict) else None
++        state = d.get("observe_state") if isinstance(d, dict) else None
++        if not symbol or state not in ("TRIGGERED", "INVALIDATED", "WAITING"):
++            continue
++        try:
++            res = update_paper_observe_state(symbol, state, tf_db_path=tf_db)
++            if res.get("status") == "ok" and res.get("updated", 0) > 0:
++                synced += res["updated"]
++                if state == "TRIGGERED":
++                    pending_count += 1
++                elif state == "INVALIDATED":
++                    invalidated_count += 1
++        except Exception:
++            pass
++    return {"synced": synced, "pending": pending_count, "invalidated": invalidated_count}
++
++
+ # [T-004] intraday_observe_scheduler
+ def get_observe_scheduler_status() -> dict:
+     """Return current observe scheduler status and configuration."""
+diff --git a/frontend/src/pages/TradeFlow.tsx b/frontend/src/pages/TradeFlow.tsx
+index 8fd95c9..3d79939 100644
+--- a/frontend/src/pages/TradeFlow.tsx
++++ b/frontend/src/pages/TradeFlow.tsx
+@@ -285,6 +285,7 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
+                         <th className="px-4 py-2.5 font-medium">代码</th>
+                         <th className="px-4 py-2.5 font-medium">名称</th>
+                         <th className="px-4 py-2.5 font-medium">状态</th>
++                        <th className="px-4 py-2.5 font-medium">模拟账本</th>
+                         <th className="px-4 py-2.5 font-medium">触发价</th>
+                         <th className="px-4 py-2.5 font-medium">失效价</th>
+                         <th className="px-4 py-2.5 font-medium">当前价</th>
+@@ -311,6 +312,18 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
+                                         {st.text}
+                                     </span>
+                                 </td>
++                                <td className="px-4 py-2.5">
++                                    {(() => {
++                                        const ps = item.paper_status || ''
++                                        if (ps === 'pending') return <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">待确认</span>
++                                        if (ps === 'tracking') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-300">已加入试跑</span>
++                                        if (ps === 'open') return <span className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">持仓中</span>
++                                        if (ps === 'closed') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-500 dark:bg-slate-700 dark:text-slate-400">已平仓</span>
++                                        if (ps === 'invalidated') return <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300">已失效</span>
++                                        if (ps === 'observation') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-400 dark:bg-slate-700 dark:text-slate-500">观察降级</span>
++                                        return <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
++                                    })()}
++                                </td>
+                                 <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{fmtPrice(item.trigger_price)}</td>
+                                 <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{fmtPrice(item.invalid_price)}</td>
+                                 <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index f43949f..7ec8dbd 100644
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -1015,6 +1015,7 @@ export interface TradeFlowObserveItem {
+     current_price: number | null
+     trigger_reason: string
+     strategy_tags: string[]
++    paper_status: string  // [TF-OBS-003] observe_paper_sync
+ }
+ 
+ export interface TradeFlowObserveResponse {
+
+exec
+/bin/zsh -lc "sed -n '650,840p' api/services/tradeflow_service.py; sed -n '1120,1285p' api/services/tradeflow_service.py; sed -n '1,260p' tests/test_tf_obs_003_observe_paper_sync.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        has_signals_for_date = False
+        last_observed_at = ""
+        try:
+            sig_rows = conn.execute(
+                "SELECT signal_time, evidence_json FROM tradeflow_signals "
+                "WHERE signal_type LIKE 'observe_%' ORDER BY signal_time DESC LIMIT 50"
+            ).fetchall()
+            for sr in sig_rows:
+                ev = json.loads(sr["evidence_json"]) if sr["evidence_json"] else {}
+                if ev.get("trade_date") == trade_date:
+                    has_signals_for_date = True
+                    last_observed_at = sr["signal_time"]
+                    break
+            if not last_observed_at and sig_rows:
+                last_observed_at = sig_rows[0]["signal_time"]
+        except Exception:
+            pass
+
+        reason = ""
+        if not has_candidates:
+            total = conn.execute("SELECT COUNT(*) AS cnt FROM tradeflow_candidates").fetchone()
+            if total and total["cnt"] > 0:
+                reason = "当日无活跃候选"
+            else:
+                reason = "无计划"
+
+        return {
+            "has_candidates": has_candidates,
+            "has_signals_for_date": has_signals_for_date,
+            "last_observed_at": last_observed_at,
+            "reason": reason,
+        }
+    finally:
+        conn.close()
+
+
+def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
+    tf_db = tf_db_path or _get_tradeflow_db_path()
+    _fast_meta = _tradeflow_meta("tradeflow_observe")  # [PERF-001]
+
+    if not os.path.exists(tf_db):
+        return {
+            "status": "no_data",
+            "trade_date": trade_date,
+            "observe_auto_run": False,        # [TF-OBS-002] observe_auto_run
+            "last_observed_at": "",           # [TF-OBS-002]
+            "observe_reason": "无数据库",      # [TF-OBS-002]
+            "observe_items": [],
+            "triggered_count": 0,
+            "invalidated_count": 0,
+            "waiting_count": 0,
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    # [TF-OBS-002] observe_auto_run — auto-run observe check when page opens
+    observe_auto_run = False
+    observe_reason = ""
+    last_observed_at = ""
+
+    _pre = _precheck_observe_state(tf_db, trade_date)
+    last_observed_at = _pre["last_observed_at"]
+
+    if not _pre["has_candidates"]:
+        observe_reason = _pre["reason"]
+    elif not _pre["has_signals_for_date"]:
+        _today_str = datetime.now().strftime("%Y-%m-%d")
+        if trade_date != _today_str:
+            observe_reason = "非当日，跳过自动观察"
+        else:
+            # Auto-run observe check so page isn't blank on first open
+            try:
+                from tradingagents.tradeflow.candidate_engine import init_db
+                from tradingagents.tradeflow.observe_runner import run_observe
+                init_db(tf_db)
+                _auto = run_observe(trade_date=trade_date, db_path=tf_db)
+                # [TF-OBS-003] observe_paper_sync — sync ledger on page-open auto-run
+                _sync_paper_from_observe(_auto.details, tf_db)
+                observe_auto_run = True
+                last_observed_at = _auto.run_time
+                if _auto.skipped_reason:
+                    observe_reason = _auto.skipped_reason
+            except Exception as e:
+                observe_reason = f"自动执行失败: {e}"
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {
+            "status": "no_data",
+            "trade_date": trade_date,
+            "observe_auto_run": observe_auto_run,
+            "last_observed_at": last_observed_at,
+            "observe_reason": observe_reason,
+            "observe_items": [],
+            "triggered_count": 0,
+            "invalidated_count": 0,
+            "waiting_count": 0,
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    try:
+        columns = _table_columns(conn, "tradeflow_candidates")
+        extra_conditions = []
+        if "status" in columns:
+            extra_conditions.append("status = 'active'")
+        order_clause = " ORDER BY composite_score DESC" if "composite_score" in columns else " ORDER BY updated_at DESC, created_at DESC"
+        rows = _query_by_date_or_effective(
+            conn, "tradeflow_candidates", trade_date,
+            extra_conditions=extra_conditions if extra_conditions else None,
+            order_clause=order_clause,
+        )
+
+        items = []
+        triggered = 0
+        invalidated = 0
+        waiting = 0
+
+        # [TF-OBS-003] observe_paper_sync — map symbol → paper ledger status
+        paper_status_map: dict[str, str] = {}
+        try:
+            pt_rows = conn.execute(
+                "SELECT symbol, status FROM tradeflow_paper_trades ORDER BY updated_at DESC"
+            ).fetchall()
+            for pt in pt_rows:
+                _psym = normalize_tradeflow_symbol(pt["symbol"])
+                if _psym not in paper_status_map:
+                    paper_status_map[_psym] = pt["status"]
+        except Exception:
+            pass
+
+        for r in rows:
+            state = _rget(r, "observe_state", "WAITING")
+            sym = normalize_tradeflow_symbol(r["symbol"])  # [UI-008]
+            raw_n = _rget(r, "name", "")
+
+            # [TF-OBS-001] tradeflow_observe_runner — populate current_price/trigger_reason from latest signal
+            current_price = None
+            trigger_reason = ""
+            try:
+                sig_rows = conn.execute(
+                    "SELECT evidence_json FROM tradeflow_signals WHERE symbol = ? AND signal_type LIKE 'observe_%' ORDER BY signal_time DESC LIMIT 20",
+                    (sym,),
+                ).fetchall()
+                for sig_row in sig_rows:
+                    ev = _parse_json(_rget(sig_row, "evidence_json", "{}"), {})
+                    if ev.get("trade_date") != trade_date:
+                        continue
+                    current_price = ev.get("current_price")
+                    trigger_reason = ev.get("trigger_reason", "")
+                    break
+            except Exception:
+                pass
+
+            item = {
+                "symbol": sym,
+                "name": resolve_tradeflow_name(sym, raw_n),  # [UI-008]
+                "observe_state": state,
+                "trigger_price": _rget(r, "trigger_price"),
+                "invalid_price": _rget(r, "invalid_price"),
+                "observe_trigger_count": _rget(r, "observe_trigger_count", 0) or 0,
+                "observe_first_trigger_time": _rget(r, "observe_first_trigger_time", ""),
+                "tier": _rget(r, "tier", ""),
+                "composite_score": _rget(r, "composite_score", 0.0) or 0.0,
+                "current_price": current_price,
+                "trigger_reason": trigger_reason,
+                "strategy_tags": _parse_json(_rget(r, "strategy_tags_json"), []),
+                "paper_status": paper_status_map.get(sym, ""),  # [TF-OBS-003] observe_paper_sync
+            }
+            items.append(item)
+            if state == "TRIGGERED":
+                triggered += 1
+            elif state == "INVALIDATED":
+                invalidated += 1
+            else:
+                waiting += 1
+
+        return {
+            "status": "ok",
+            "trade_date": trade_date,
+            "observe_items": items,
+            "triggered_count": triggered,
+            "invalidated_count": invalidated,
+            "waiting_count": waiting,
+            "observe_auto_run": observe_auto_run,        # [TF-OBS-002] observe_auto_run
+            "last_observed_at": last_observed_at,         # [TF-OBS-002]
+            "observe_reason": observe_reason,             # [TF-OBS-002]
+            "runtime_tier_meta": _tradeflow_meta("tradeflow_observe"),  # [PERF-001]
+        }
+    finally:
+        conn.close()
+
+
+        "tradeflow_db_available": db_available,
+        "tradeflow_db_path": "SET" if db_path else "NOT_SET",
+        "sources": sources,
+        "latest_plan_date": latest_plan_date,
+        "latest_candidates_date": latest_candidates_date,
+        "latest_effective_trade_date": latest_eff_date,  # [TF-DATE-001]
+        "latest_observe_date": latest_obs_date,  # [TF-DATE-001]
+        "total_candidates_today": total_candidates_today,
+        "total_signals_today": total_signals_today,
+        "latest_observe_check_time": latest_observe_check_time,  # [TF-OBS-001]
+        "latest_signal_time": latest_signal_time,  # [TF-OBS-001]
+        "evidence_contract_available": True,  # [DATA-004] raw_evidence_contract
+        "evidence_coverage_audit_available": True,  # [DATA-007] evidence_coverage_audit
+        "runtime_tier_meta": _tradeflow_meta("tradeflow_data_health"),  # [PERF-001]
+    }
+
+
+def get_filtered(trade_date: str, tf_db_path: str = "") -> dict:  # [UI-007] tradeflow_filtered_trace
+    db_path = tf_db_path or _get_tradeflow_db_path()
+    if not os.path.exists(db_path):
+        return {"status": "ok", "trade_date": trade_date, "filtered": [], "filter_breakdown": {}}
+    try:
+        from tradingagents.tradeflow.candidate_engine import init_db
+        init_db(db_path)
+        items = _get_filtered_symbols(trade_date, db_path)
+        breakdown: dict[str, int] = {}
+        for it in items:
+            reason = it.get("reason", "")
+            if "流动性" in reason:
+                cat = "流动性差"
+            elif "数据" in reason:
+                cat = "数据缺失"
+            elif "无策略" in reason:
+                cat = "无策略命中"
+            else:
+                cat = "其他"
+            breakdown[cat] = breakdown.get(cat, 0) + 1
+        return {
+            "status": "ok",
+            "trade_date": trade_date,
+            "filtered": items,
+            "filter_breakdown": breakdown,
+            "runtime_tier_meta": _tradeflow_meta("tradeflow_filtered"),  # [PERF-001]
+        }
+    except Exception:
+        return {"status": "ok", "trade_date": trade_date, "filtered": [], "filter_breakdown": {}}
+
+
+def run_discovery_scan(
+    trade_date: str,
+    symbols: Optional[List[str]] = None,
+    top_n: int = 20,
+    include_holdings: bool = True,
+    include_watchlist: bool = True,
+    use_event_source: bool = False,
+    news_texts: Optional[List[str]] = None,
+    save_candidates: bool = True,
+    tf_db_path: str = "",
+    prod_db_path: str = "",
+) -> dict:
+    """Run a bounded TradeFlow discovery scan for UI-triggered candidate generation.
+
+    This only evaluates and persists TradeFlow candidates. It does not invoke
+    deep TA or any LLM-backed analysis path.
+    """
+    from tradingagents.tradeflow.candidate_engine import init_db
+    from tradingagents.tradeflow.discovery import run_discovery
+
+    tf_db = tf_db_path or _get_tradeflow_db_path()
+    prod_db = prod_db_path or _get_prod_db_path()
+    top_n = max(1, min(int(top_n or 20), 100))
+    symbols = [normalize_tradeflow_symbol(s.strip()) for s in (symbols or []) if s and s.strip()]  # [UI-008]
+    news_texts = [t.strip() for t in (news_texts or []) if t and t.strip()]
+
+    init_db(tf_db)
+    result = run_discovery(
+        trade_date=trade_date,
+        symbols=symbols or None,
+        prod_db_path=prod_db,
+        tf_db_path=tf_db,
+        top_n=top_n,
+        include_holdings=include_holdings,
+        include_watchlist=include_watchlist,
+        news_texts=news_texts or None,
+        use_event_source=use_event_source,
+        save_candidates=save_candidates,
+    )
+
+    return {
+        "status": "ok",
+        "trade_date": result.trade_date,
+        "summary": result.summary,
+        "universe_size": result.universe_size,
+        "candidate_count": len(result.candidates),
+        "filtered_count": len(result.filtered),
+        "candidates": result.candidates,
+        "filtered": result.filtered[:50],
+        "metadata": result.metadata,
+        "runtime_tier_meta": _tradeflow_meta("tradeflow_discovery"),  # [PERF-001]
+    }
+
+
+# [TF-OBS-001] tradeflow_observe_runner
+def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
+    """Run intraday observe check for all active candidates on trade_date.
+
+    This reads candidates, fetches realtime quotes, runs observe checks,
+    updates candidate observe state, and writes signals.
+    Does NOT invoke deep TA or LLM.
+    """
+    from tradingagents.tradeflow.candidate_engine import init_db
+    from tradingagents.tradeflow.observe_runner import run_observe
+
+    tf_db = tf_db_path or _get_tradeflow_db_path()
+    init_db(tf_db)
+
+    result = run_observe(
+        trade_date=trade_date,
+        db_path=tf_db,
+    )
+
+    # [TF-OBS-003] observe_paper_sync — sync triggered/invalidated into paper ledger
+    paper_sync = _sync_paper_from_observe(result.details, tf_db)
+
+    return {
+        "status": "skipped" if result.skipped_reason else "ok",
+        "trade_date": trade_date,
+        "checked": result.checked,
+        "triggered": result.triggered,
+        "invalidated": result.invalidated,
+        "waiting": result.waiting,
+        "skipped": result.skipped,
+        "signals_written": result.signals_written,
+        "errors": result.errors,
+        "skipped_reason": result.skipped_reason,
+        "run_time": result.run_time,
+        "details": result.details,
+        "paper_synced": paper_sync["synced"],            # [TF-OBS-003] observe_paper_sync
+        "paper_pending": paper_sync["pending"],           # [TF-OBS-003]
+        "paper_invalidated": paper_sync["invalidated"],   # [TF-OBS-003]
+        "runtime_tier_meta": _tradeflow_meta("tradeflow_observe_run"),  # [PERF-001]
+    }
+
+
+# [TF-OBS-003] observe_paper_sync
+def _sync_paper_from_observe(details: list, tf_db: str) -> dict:
+    """Sync observe results into the paper ledger.
+
+    For each observe detail with a known state, call update_paper_observe_state
+    so triggered candidates become 'pending' (awaiting manual confirm) and
+    invalidated candidates become 'invalidated'. Candidates not in the paper
+    ledger are ignored — no record is created.
+    """
+    synced = 0
+    pending_count = 0
+    invalidated_count = 0
+    for d in details:
+        symbol = d.get("symbol") if isinstance(d, dict) else None
+        state = d.get("observe_state") if isinstance(d, dict) else None
+        if not symbol or state not in ("TRIGGERED", "INVALIDATED", "WAITING"):
+            continue
+        try:
+            res = update_paper_observe_state(symbol, state, tf_db_path=tf_db)
+            if res.get("status") == "ok" and res.get("updated", 0) > 0:
+                synced += res["updated"]
+                if state == "TRIGGERED":
+# [TF-OBS-003] observe_paper_sync
+"""Tests for TF-OBS-003: 盘中观察触发到模拟账本待确认联动.
+
+Covers:
+- _sync_paper_from_observe unit tests (triggered/invalidated/waiting/no-paper).
+- End-to-end: run_observe(quote_provider) + sync → paper trade transitions.
+- run_observe_check service wrapper returns paper_synced counts + syncs.
+- get_observe auto-run path syncs paper ledger on page open.
+- get_observe response enriches items with paper_status.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from datetime import datetime
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tradingagents.tradeflow.candidate_engine import init_db, save_candidate
+from tradingagents.tradeflow.observe_runner import run_observe, ObserveRunResult
+from tradingagents.tradeflow.schemas import Candidate
+
+from api.services.tradeflow_service import (
+    _sync_paper_from_observe,
+    add_paper_candidate,
+    get_observe,
+    get_paper_ledger,
+    run_observe_check,
+    update_paper_observe_state,
+)
+
+
+TODAY = datetime.now().strftime("%Y-%m-%d")
+
+
+# ── Fixtures ─────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def tmp_db(tmp_path):
+    db_path = str(tmp_path / "test_obs_paper_sync.db")
+    init_db(db_path)
+    return db_path
+
+
+def _make_candidate(symbol, trigger_price=10.0, invalid_price=9.0,
+                    trade_date=TODAY, observe_state="WAITING"):
+    return Candidate(
+        symbol=symbol,
+        name=f"Test {symbol}",
+        source="manual",
+        trade_date=trade_date,
+        trigger_price=trigger_price,
+        invalid_price=invalid_price,
+        status="active",
+        observe_state=observe_state,
+        effective_trade_date=trade_date,
+    )
+
+
+def _mock_quotes(symbols, price_map):
+    """Build a quote_provider that returns a fixed price per symbol."""
+    def provider(syms):
+        return {
+            s: {
+                "current_price": price_map.get(s, 10.0),
+                "current_volume": 1000,
+                "current_amount": price_map.get(s, 10.0) * 1000,
+                "quote_time": "10:00",
+                "source": "mock",
+            }
+            for s in syms
+        }
+    return provider
+
+
+def _setup_candidate_and_paper(db_path, symbol="601689.SH", trigger_price=10.0,
+                               invalid_price=9.0, trade_date=TODAY):
+    """Insert a candidate into tradeflow_candidates AND the paper ledger."""
+    save_candidate(_make_candidate(
+        symbol, trigger_price=trigger_price, invalid_price=invalid_price,
+        trade_date=trade_date,
+    ), db_path)
+    add_paper_candidate(
+        symbol=symbol,
+        name=f"Test {symbol}",
+        trade_date=trade_date,
+        trigger_price=trigger_price,
+        invalid_price=invalid_price,
+        planned_amount=1000,
+        candidate_type="TECH_TRADE",
+        tf_db_path=db_path,
+    )
+
+
+# ── _sync_paper_from_observe unit tests ──────────────────────────────────
+
+
+class TestSyncPaperFromObserveUnit:
+
+    def test_sync_triggered_to_pending(self, tmp_db):
+        _setup_candidate_and_paper(tmp_db, "601689.SH", 10.0, 9.0)
+        details = [{"symbol": "601689.SH", "observe_state": "TRIGGERED"}]
+        result = _sync_paper_from_observe(details, tmp_db)
+        assert result["synced"] == 1
+        assert result["pending"] == 1
+        ledger = get_paper_ledger(tf_db_path=tmp_db)
+        trade = next(t for t in ledger["trades"] if t["symbol"] == "601689.SH")
+        assert trade["status"] == "pending"
+        assert trade["observe_state"] == "TRIGGERED"
+
+    def test_sync_invalidated(self, tmp_db):
+        _setup_candidate_and_paper(tmp_db, "601689.SH", 10.0, 9.0)
+        details = [{"symbol": "601689.SH", "observe_state": "INVALIDATED"}]
+        result = _sync_paper_from_observe(details, tmp_db)
+        assert result["invalidated"] == 1
+        ledger = get_paper_ledger(tf_db_path=tmp_db)
+        trade = next(t for t in ledger["trades"] if t["symbol"] == "601689.SH")
+        assert trade["status"] == "invalidated"
+
+    def test_sync_waiting_keeps_tracking(self, tmp_db):
+        _setup_candidate_and_paper(tmp_db, "601689.SH", 10.0, 9.0)
+        details = [{"symbol": "601689.SH", "observe_state": "WAITING"}]
+        _sync_paper_from_observe(details, tmp_db)
+        ledger = get_paper_ledger(tf_db_path=tmp_db)
+        trade = next(t for t in ledger["trades"] if t["symbol"] == "601689.SH")
+        assert trade["status"] == "tracking"
+
+    def test_sync_non_paper_candidate_creates_nothing(self, tmp_db):
+        """Candidate not in paper ledger must not generate a record."""
+        save_candidate(_make_candidate("600519.SH"), tmp_db)
+        details = [{"symbol": "600519.SH", "observe_state": "TRIGGERED"}]
+        result = _sync_paper_from_observe(details, tmp_db)
+        assert result["synced"] == 0
+        ledger = get_paper_ledger(tf_db_path=tmp_db)
+        assert all(t["symbol"] != "600519.SH" for t in ledger["trades"])
+
+    def test_sync_skips_unknown_state(self, tmp_db):
+        _setup_candidate_and_paper(tmp_db, "601689.SH", 10.0, 9.0)
+        details = [{"symbol": "601689.SH", "observe_state": "EXPIRED"}]
+        result = _sync_paper_from_observe(details, tmp_db)
+        assert result["synced"] == 0
+
+    def test_sync_empty_details(self, tmp_db):
+        result = _sync_paper_from_observe([], tmp_db)
+        assert result == {"synced": 0, "pending": 0, "invalidated": 0}
+
+    def test_sync_skips_skipped_no_price_entries(self, tmp_db):
+        """Observe details with status=skipped_no_price should be ignored."""
+        _setup_candidate_and_paper(tmp_db, "601689.SH", 10.0, 9.0)
+        details = [{"symbol": "601689.SH", "status": "skipped_no_price"}]
+        result = _sync_paper_from_observe(details, tmp_db)
+        assert result["synced"] == 0
+
+
+# ── End-to-end: run_observe + sync ───────────────────────────────────────
+
+
+class TestObserveToPaperE2E:
+
+    def test_triggered_candidate_becomes_pending(self, tmp_db):
+        _setup_candidate_and_paper(tmp_db, "601689.SH", 10.0, 9.0)
+        quotes = _mock_quotes(["601689.SH"], {"601689.SH": 10.5})
+        result = run_observe(TODAY, tmp_db, quote_provider=quotes)
+        assert result.triggered == 1
+
+        _sync_paper_from_observe(result.details, tmp_db)
+
+        ledger = get_paper_ledger(tf_db_path=tmp_db)
+        trade = next(t for t in ledger["trades"] if t["symbol"] == "601689.SH")
+        assert trade["status"] == "pending"
+        assert trade["observe_state"] == "TRIGGERED"
+
+    def test_invalidated_candidate_becomes_invalidated(self, tmp_db):
+        _setup_candidate_and_paper(tmp_db, "002353.SZ", 35.0, 33.0)
+        quotes = _mock_quotes(["002353.SZ"], {"002353.SZ": 32.0})
+        result = run_observe(TODAY, tmp_db, quote_provider=quotes)
+        assert result.invalidated == 1
+
+        _sync_paper_from_observe(result.details, tmp_db)
+
+        ledger = get_paper_ledger(tf_db_path=tmp_db)
+        trade = next(t for t in ledger["trades"] if t["symbol"] == "002353.SZ")
+        assert trade["status"] == "invalidated"
+
+    def test_waiting_candidate_stays_tracking(self, tmp_db):
+        _setup_candidate_and_paper(tmp_db, "601689.SH", 10.0, 9.0)
+        quotes = _mock_quotes(["601689.SH"], {"601689.SH": 9.6})
+        result = run_observe(TODAY, tmp_db, quote_provider=quotes)
+        assert result.waiting == 1
+
+        _sync_paper_from_observe(result.details, tmp_db)
+
+        ledger = get_paper_ledger(tf_db_path=tmp_db)
+        trade = next(t for t in ledger["trades"] if t["symbol"] == "601689.SH")
+        assert trade["status"] == "tracking"
+
+    def test_non_paper_candidate_no_record_after_observe(self, tmp_db):
+        """Candidate observed but never added to paper ledger → no record."""
+        save_candidate(_make_candidate("600519.SH", 10.0, 9.0), tmp_db)
+        quotes = _mock_quotes(["600519.SH"], {"600519.SH": 10.5})
+        result = run_observe(TODAY, tmp_db, quote_provider=quotes)
+        assert result.triggered == 1
+
+        _sync_paper_from_observe(result.details, tmp_db)
+
+        ledger = get_paper_ledger(tf_db_path=tmp_db)
+        assert all(t["symbol"] != "600519.SH" for t in ledger["trades"])
+
+    def test_mixed_paper_and_non_paper(self, tmp_db):
+        """One paper candidate + one non-paper candidate observed together."""
+        _setup_candidate_and_paper(tmp_db, "601689.SH", 10.0, 9.0)
+        save_candidate(_make_candidate("600519.SH", 200.0, 180.0), tmp_db)
+        quotes = _mock_quotes(
+            ["601689.SH", "600519.SH"],
+            {"601689.SH": 10.5, "600519.SH": 210.0},
+        )
+        result = run_observe(TODAY, tmp_db, quote_provider=quotes)
+        assert result.triggered == 2
+
+        sync = _sync_paper_from_observe(result.details, tmp_db)
+        assert sync["synced"] == 1  # only the paper candidate
+
+        ledger = get_paper_ledger(tf_db_path=tmp_db)
+        paper_syms = {t["symbol"] for t in ledger["trades"]}
+        assert "601689.SH" in paper_syms
+        assert "600519.SH" not in paper_syms
+
+
+# ── run_observe_check service wrapper ────────────────────────────────────
+
+
+class TestRunObserveCheckPaperSync:
+    """The service wrapper run_observe_check should report paper_synced counts
+    and sync the paper ledger after running observe."""
+
+    def test_wrapper_syncs_paper_on_trigger(self, tmp_db, monkeypatch):
+        _setup_candidate_and_paper(tmp_db, "601689.SH", 10.0, 9.0)
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            r = ObserveRunResult()
+            r.checked = 1
+            r.triggered = 1
+            r.signals_written = 1
+            r.details = [{"symbol": "601689.SH", "observe_state": "TRIGGERED"}]
+            return r
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        resp = run_observe_check(TODAY, tf_db_path=tmp_db)
+        assert resp["status"] == "ok"
+        assert resp["paper_synced"] == 1
+        assert resp["paper_pending"] == 1
+
+
+exec
+/bin/zsh -lc "sed -n '260,560p' tests/test_tf_obs_003_observe_paper_sync.py; grep -n \"def update_paper_observe_state\\|CREATE TABLE.*tradeflow_paper_trades\\|tradeflow_paper_trades\" -n api/services/tradeflow_service.py tradingagents/tradeflow/candidate_engine.py | head -80" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+
+        ledger = get_paper_ledger(tf_db_path=tmp_db)
+        trade = next(t for t in ledger["trades"] if t["symbol"] == "601689.SH")
+        assert trade["status"] == "pending"
+
+    def test_wrapper_syncs_paper_on_invalidate(self, tmp_db, monkeypatch):
+        _setup_candidate_and_paper(tmp_db, "601689.SH", 10.0, 9.0)
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            r = ObserveRunResult()
+            r.checked = 1
+            r.invalidated = 1
+            r.details = [{"symbol": "601689.SH", "observe_state": "INVALIDATED"}]
+            return r
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        resp = run_observe_check(TODAY, tf_db_path=tmp_db)
+        assert resp["paper_synced"] == 1
+        assert resp["paper_invalidated"] == 1
+        ledger = get_paper_ledger(tf_db_path=tmp_db)
+        trade = next(t for t in ledger["trades"] if t["symbol"] == "601689.SH")
+        assert trade["status"] == "invalidated"
+
+    def test_wrapper_non_paper_candidate_syncs_zero(self, tmp_db, monkeypatch):
+        save_candidate(_make_candidate("600519.SH"), tmp_db)
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            r = ObserveRunResult()
+            r.triggered = 1
+            r.details = [{"symbol": "600519.SH", "observe_state": "TRIGGERED"}]
+            return r
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        resp = run_observe_check(TODAY, tf_db_path=tmp_db)
+        assert resp["paper_synced"] == 0
+        assert resp["paper_pending"] == 0
+
+
+# ── get_observe auto-run syncs paper ledger ──────────────────────────────
+
+
+class TestGetObserveAutoRunSync:
+
+    def test_auto_run_syncs_triggered_to_pending(self, tmp_db, monkeypatch):
+        _setup_candidate_and_paper(tmp_db, "601689.SH", 10.0, 9.0)
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            r = ObserveRunResult()
+            r.checked = 1
+            r.triggered = 1
+            r.signals_written = 1
+            r.details = [{"symbol": "601689.SH", "observe_state": "TRIGGERED"}]
+            return r
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        result = get_observe(TODAY, tf_db_path=tmp_db)
+        assert result["observe_auto_run"] is True
+
+        # Paper trade should have been synced to pending
+        ledger = get_paper_ledger(tf_db_path=tmp_db)
+        trade = next(t for t in ledger["trades"] if t["symbol"] == "601689.SH")
+        assert trade["status"] == "pending"
+
+    def test_auto_run_syncs_invalidated(self, tmp_db, monkeypatch):
+        _setup_candidate_and_paper(tmp_db, "002353.SZ", 35.0, 33.0)
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            r = ObserveRunResult()
+            r.invalidated = 1
+            r.details = [{"symbol": "002353.SZ", "observe_state": "INVALIDATED"}]
+            return r
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        get_observe(TODAY, tf_db_path=tmp_db)
+        ledger = get_paper_ledger(tf_db_path=tmp_db)
+        trade = next(t for t in ledger["trades"] if t["symbol"] == "002353.SZ")
+        assert trade["status"] == "invalidated"
+
+    def test_auto_run_non_paper_candidate_no_record(self, tmp_db, monkeypatch):
+        save_candidate(_make_candidate("600519.SH"), tmp_db)
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            r = ObserveRunResult()
+            r.triggered = 1
+            r.signals_written = 1
+            r.details = [{"symbol": "600519.SH", "observe_state": "TRIGGERED"}]
+            return r
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        get_observe(TODAY, tf_db_path=tmp_db)
+        ledger = get_paper_ledger(tf_db_path=tmp_db)
+        assert all(t["symbol"] != "600519.SH" for t in ledger["trades"])
+
+
+# ── get_observe enriches items with paper_status ─────────────────────────
+
+
+class TestObserveItemsPaperStatus:
+
+    def test_observe_item_has_paper_status_pending(self, tmp_db, monkeypatch):
+        _setup_candidate_and_paper(tmp_db, "601689.SH", 10.0, 9.0)
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            r = ObserveRunResult()
+            r.triggered = 1
+            r.signals_written = 1
+            r.details = [{"symbol": "601689.SH", "observe_state": "TRIGGERED"}]
+            return r
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        resp = get_observe(TODAY, tf_db_path=tmp_db)
+        assert resp["status"] == "ok"
+        item = next(
+            it for it in resp["observe_items"] if it["symbol"] == "601689.SH"
+        )
+        assert item["paper_status"] == "pending"
+
+    def test_non_paper_candidate_paper_status_empty(self, tmp_db):
+        save_candidate(_make_candidate("600519.SH", 10.0, 9.0), tmp_db)
+        resp = get_observe(TODAY, tf_db_path=tmp_db)
+        assert resp["status"] == "ok"
+        item = next(
+            it for it in resp["observe_items"] if it["symbol"] == "600519.SH"
+        )
+        assert item["paper_status"] == ""
+
+    def test_tracking_candidate_shows_tracking_status(self, tmp_db, monkeypatch):
+        _setup_candidate_and_paper(tmp_db, "601689.SH", 10.0, 9.0)
+
+        def fake_run_observe(trade_date, db_path, **kwargs):
+            r = ObserveRunResult()
+            r.waiting = 1
+            r.signals_written = 1
+            r.details = [{"symbol": "601689.SH", "observe_state": "WAITING"}]
+            return r
+
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.observe_runner.run_observe",
+            fake_run_observe,
+        )
+
+        resp = get_observe(TODAY, tf_db_path=tmp_db)
+        assert resp["status"] == "ok"
+        item = next(
+            it for it in resp["observe_items"] if it["symbol"] == "601689.SH"
+        )
+        assert item["paper_status"] == "tracking"
+api/services/tradeflow_service.py:770:                "SELECT symbol, status FROM tradeflow_paper_trades ORDER BY updated_at DESC"
+api/services/tradeflow_service.py:2080:            "SELECT * FROM tradeflow_paper_trades ORDER BY created_at DESC"
+api/services/tradeflow_service.py:2099:            "SELECT COUNT(*) FROM tradeflow_paper_trades WHERE created_at LIKE ?",
+api/services/tradeflow_service.py:2213:            "SELECT id FROM tradeflow_paper_trades "
+api/services/tradeflow_service.py:2269:            "SELECT COUNT(*) FROM tradeflow_paper_trades "
+api/services/tradeflow_service.py:2274:            "SELECT COUNT(*) FROM tradeflow_paper_trades WHERE created_at LIKE ?",
+api/services/tradeflow_service.py:2290:                "SELECT COALESCE(SUM(planned_amount), 0) FROM tradeflow_paper_trades "
+api/services/tradeflow_service.py:2299:            "INSERT INTO tradeflow_paper_trades "
+api/services/tradeflow_service.py:2311:            "SELECT id FROM tradeflow_paper_trades WHERE symbol = ? ORDER BY id DESC LIMIT 1",
+api/services/tradeflow_service.py:2340:            "SELECT id, symbol, status FROM tradeflow_paper_trades WHERE id = ?", (trade_id,)
+api/services/tradeflow_service.py:2348:        conn.execute("DELETE FROM tradeflow_paper_trades WHERE id = ?", (trade_id,))
+api/services/tradeflow_service.py:2376:            "SELECT * FROM tradeflow_paper_trades WHERE id = ?", (trade_id,)
+api/services/tradeflow_service.py:2391:                "UPDATE tradeflow_paper_trades SET status='open', action_type='buy', "
+api/services/tradeflow_service.py:2413:                "UPDATE tradeflow_paper_trades SET status='closed', action_type='sell', "
+api/services/tradeflow_service.py:2433:def update_paper_observe_state(
+api/services/tradeflow_service.py:2450:            "SELECT id, status FROM tradeflow_paper_trades WHERE symbol = ? AND status = 'tracking'",
+api/services/tradeflow_service.py:2457:                "UPDATE tradeflow_paper_trades SET observe_state=?, status=?, updated_at=? WHERE id=?",
+api/services/tradeflow_service.py:2463:                "UPDATE tradeflow_paper_trades SET observe_state='INVALIDATED', status='invalidated', updated_at=? "
+api/services/tradeflow_service.py:2507:            "SELECT * FROM tradeflow_paper_trades ORDER BY created_at DESC"
+tradingagents/tradeflow/candidate_engine.py:126:CREATE TABLE IF NOT EXISTS tradeflow_paper_trades (
+
+exec
+/bin/zsh -lc "sed -n '105,160p' tradingagents/tradeflow/candidate_engine.py; sed -n '2030,2475p' api/services/tradeflow_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    reason TEXT DEFAULT '',
+    run_id TEXT DEFAULT '',
+    created_at TEXT,
+    UNIQUE(trade_date, symbol, reason)
+);
+"""
+
+# [TF-PAPER-001] paper_trading_ledger
+CREATE_PAPER_LEDGER_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_paper_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    principal REAL DEFAULT 5000.0,
+    cash_balance REAL DEFAULT 5000.0,
+    config_json TEXT DEFAULT '{}',
+    created_at TEXT,
+    updated_at TEXT
+);
+"""
+
+# [TF-PAPER-001] paper_trading_ledger
+CREATE_PAPER_TRADES_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_paper_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    trade_date TEXT NOT NULL,
+    plan_date TEXT DEFAULT '',
+    candidate_type TEXT DEFAULT '',
+    trigger_price REAL,
+    invalid_price REAL,
+    planned_amount REAL DEFAULT 0.0,
+    status TEXT DEFAULT 'tracking',
+    action_type TEXT DEFAULT '',
+    action_price REAL,
+    action_date TEXT DEFAULT '',
+    confirmed INTEGER DEFAULT 0,
+    note TEXT DEFAULT '',
+    pnl REAL DEFAULT 0.0,
+    pnl_pct REAL DEFAULT 0.0,
+    observe_state TEXT DEFAULT 'WAITING',
+    close_price REAL,
+    close_date TEXT DEFAULT '',
+    close_reason TEXT DEFAULT '',
+    created_at TEXT,
+    updated_at TEXT
+);
+"""
+
+
+_MISSING_COLUMNS = [
+    ("primary_strategy", "TEXT DEFAULT ''"),
+    ("policy_tags_json", "TEXT DEFAULT '[]'"),
+    ("version_score", "REAL DEFAULT 0.0"),
+    ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ("narrative_score", "REAL DEFAULT 0.0"),
+    ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
+        "action_date": _rget(row, "action_date", ""),
+        "confirmed": bool(_rget(row, "confirmed", 0)),
+        "note": _rget(row, "note", ""),
+        "pnl": _rget(row, "pnl", 0.0),
+        "pnl_pct": _rget(row, "pnl_pct", 0.0),
+        "observe_state": _rget(row, "observe_state", "WAITING"),
+        "close_price": _rget(row, "close_price"),
+        "close_date": _rget(row, "close_date", ""),
+        "close_reason": _rget(row, "close_reason", ""),
+        "created_at": _rget(row, "created_at", ""),
+        "updated_at": _rget(row, "updated_at", ""),
+    }
+
+
+def get_paper_ledger(tf_db_path: str = "") -> dict:
+    """Return the paper trading ledger with all trades and summary."""  # [TF-PAPER-001]
+    _fast_meta = _tradeflow_meta("tradeflow_paper_ledger")
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {
+            "status": "no_data",
+            "principal": _DEFAULT_PRINCIPAL,
+            "cash_balance": _DEFAULT_PRINCIPAL,
+            "config": {"risk_budget": dict(_DEFAULT_RISK_BUDGET)},  # [TF-RISK-001] paper_risk_budget
+            "trades": [],
+            "summary": {
+                "total_trades": 0,
+                "tracking_count": 0,
+                "pending_count": 0,
+                "open_count": 0,
+                "closed_count": 0,
+                "observation_count": 0,
+                "invested": 0.0,
+                "realized_pnl": 0.0,
+                "unrealized_pnl": 0.0,
+                "total_pnl": 0.0,
+                "total_pnl_pct": 0.0,
+                "risk_exposure": _empty_risk_exposure(),  # [TF-RISK-001] paper_risk_budget
+            },
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    try:
+        ledger = _ensure_paper_ledger_row(conn)
+        principal = _rget(ledger, "principal", _DEFAULT_PRINCIPAL)
+        cash_balance = _rget(ledger, "cash_balance", _DEFAULT_PRINCIPAL)
+        config = _parse_json(_rget(ledger, "config_json", "{}"), default={})
+        rb = _get_risk_budget(config)  # [TF-RISK-001] paper_risk_budget
+
+        rows = conn.execute(
+            "SELECT * FROM tradeflow_paper_trades ORDER BY created_at DESC"
+        ).fetchall()
+        trades = [_row_to_paper_trade(r) for r in rows]
+
+        tracking_count = sum(1 for t in trades if t["status"] == "tracking")
+        pending_count = sum(1 for t in trades if t["status"] == "pending")
+        open_count = sum(1 for t in trades if t["status"] == "open")
+        closed_count = sum(1 for t in trades if t["status"] == "closed")
+        observation_count = sum(1 for t in trades if t["status"] == "observation")
+        invested = sum(t["planned_amount"] for t in trades if t["status"] == "open")
+        # [TF-RISK-001] risk budget reservation includes tracking/pending/open planned amounts
+        reserved_invested = sum(
+            t["planned_amount"] for t in trades
+            if t["status"] in ("tracking", "pending", "open")
+        )
+        realized_pnl = sum(t["pnl"] for t in trades if t["status"] == "closed")
+
+        today_prefix = datetime.now().strftime("%Y-%m-%d")
+        daily_new_today = conn.execute(
+            "SELECT COUNT(*) FROM tradeflow_paper_trades WHERE created_at LIKE ?",
+            (today_prefix + "%",),
+        ).fetchone()[0]
+
+        summary = {
+            "total_trades": len(trades),
+            "tracking_count": tracking_count,
+            "pending_count": pending_count,
+            "open_count": open_count,
+            "closed_count": closed_count,
+            "observation_count": observation_count,
+            "invested": round(invested, 2),
+            "realized_pnl": round(realized_pnl, 2),
+            "unrealized_pnl": 0.0,
+            "total_pnl": round(realized_pnl, 2),
+            "total_pnl_pct": round(realized_pnl / principal * 100, 2) if principal else 0.0,
+            "risk_exposure": _compute_risk_exposure(  # [TF-RISK-001] paper_risk_budget
+                rb=rb,
+                principal=principal,
+                invested=reserved_invested,  # tracking/pending/open planned reservation
+                tracking_count=tracking_count,
+                pending_count=pending_count,
+                daily_new_today=daily_new_today,
+            ),
+        }
+
+        return {
+            "status": "ok",
+            "principal": principal,
+            "cash_balance": cash_balance,
+            "config": config,
+            "trades": trades,
+            "summary": summary,
+            "runtime_tier_meta": _fast_meta,
+        }
+    finally:
+        conn.close()
+
+
+# [TF-RISK-001] paper_risk_budget
+def update_paper_ledger_config(config_update: Dict[str, Any], tf_db_path: str = "") -> dict:
+    """Deep-merge ``config_update`` into the paper ledger ``config_json``.
+
+    Typically used to override the ``risk_budget`` block, e.g.::
+
+        update_paper_ledger_config({"risk_budget": {"daily_new_max": 5}})
+    """
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available"}
+
+    try:
+        ledger = _ensure_paper_ledger_row(conn)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        config = _parse_json(_rget(ledger, "config_json", "{}"), default={})
+
+        for key, value in (config_update or {}).items():
+            if isinstance(value, dict) and isinstance(config.get(key), dict):
+                merged = dict(config[key])
+                merged.update(value)
+                config[key] = merged
+            else:
+                config[key] = value
+
+        conn.execute(
+            "UPDATE tradeflow_paper_ledger SET config_json = ?, updated_at = ?",
+            (json.dumps(config), now),
+        )
+        conn.commit()
+        return {
+            "status": "ok",
+            "message": "模拟账本配置已更新",
+            "config": config,
+            "risk_budget": _get_risk_budget(config),
+        }
+    finally:
+        conn.close()
+
+
+def add_paper_candidate(
+    symbol: str,
+    name: str,
+    trade_date: str,
+    trigger_price: Optional[float] = None,
+    invalid_price: Optional[float] = None,
+    planned_amount: float = 0.0,
+    candidate_type: str = "",
+    plan_date: str = "",
+    note: str = "",
+    data_quality_score: Optional[float] = None,
+    tf_db_path: str = "",
+) -> dict:
+    """Add a candidate to the paper trading ledger.
+
+    Enforces the 5000 元试跑 risk budget & position discipline:
+
+    * **Hard reject** (candidate not added at all): missing ``trigger_price``,
+      missing ``invalid_price``, or ``data_quality_score`` below threshold.
+      Returns ``status="rejected"`` with a human-readable ``reason`` and the
+      offending ``rule`` name.
+    * **Observation downgrade** (added but not actionable): when the concurrent
+      tracking/pending slots or the daily-new quota are exhausted, or the
+      planned amount exceeds the remaining budget, the candidate is admitted
+      as ``observation`` only — it can never transition to ``pending``/``open``.
+    """  # [TF-PAPER-001] / [TF-RISK-001] paper_risk_budget
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available"}
+
+    try:
+        symbol = normalize_tradeflow_symbol(symbol)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        existing = conn.execute(
+            "SELECT id FROM tradeflow_paper_trades "
+            "WHERE symbol = ? AND status IN ('tracking', 'pending', 'open', 'observation')",
+            (symbol,),
+        ).fetchone()
+        if existing is not None:
+            return {"status": "duplicate", "message": f"{symbol} 已在模拟跟踪中"}
+
+        ledger = _ensure_paper_ledger_row(conn)
+        config = _parse_json(_rget(ledger, "config_json", "{}"), default={})
+        rb = _get_risk_budget(config)
+
+        # ── Hard rules: reject outright ────────────────────────────────
+        if rb.get("require_trigger_price", True) and not trigger_price:
+            reason = "缺少触发价(trigger_price)，不允许加入待执行动作"
+            return {
+                "status": "rejected",
+                "rejected": True,
+                "rule": "require_trigger_price",
+                "reason": reason,
+                "message": reason,
+            }
+        if rb.get("require_invalid_price", True) and not invalid_price:
+            reason = "缺少失效价(invalid_price)，不允许加入待执行动作"
+            return {
+                "status": "rejected",
+                "rejected": True,
+                "rule": "require_invalid_price",
+                "reason": reason,
+                "message": reason,
+            }
+        min_dq = rb.get("min_data_quality_score", _DEFAULT_RISK_BUDGET["min_data_quality_score"])
+        if data_quality_score is not None and data_quality_score < min_dq:
+            reason = (
+                f"数据质量评分 {data_quality_score} 低于阈值 {min_dq}，"
+                "不允许加入待执行动作"
+            )
+            return {
+                "status": "rejected",
+                "rejected": True,
+                "rule": "min_data_quality_score",
+                "reason": reason,
+                "message": reason,
+            }
+
+        # ── Amount clamping to per-ticket budget ───────────────────────
+        per_ticket_max = rb.get("per_ticket_max", _DEFAULT_RISK_BUDGET["per_ticket_max"])
+        per_ticket_min = rb.get("per_ticket_min", _DEFAULT_RISK_BUDGET["per_ticket_min"])
+        if planned_amount and planned_amount > 0:
+            amount = min(planned_amount, per_ticket_max)
+        else:
+            amount = min(1000.0, per_ticket_max)
+        if amount < per_ticket_min:
+            amount = min(per_ticket_min, per_ticket_max)
+
+        # ── Soft rules: decide actionable vs observation ───────────────
+        active = conn.execute(
+            "SELECT COUNT(*) FROM tradeflow_paper_trades "
+            "WHERE status IN ('tracking', 'pending')"
+        ).fetchone()[0]
+        today_prefix = now[:10]
+        today_new = conn.execute(
+            "SELECT COUNT(*) FROM tradeflow_paper_trades WHERE created_at LIKE ?",
+            (today_prefix + "%",),
+        ).fetchone()[0]
+
+        status = "tracking"
+        downgrade_reason = ""
+        if active >= rb.get("max_concurrent_tracking", _DEFAULT_RISK_BUDGET["max_concurrent_tracking"]):
+            status = "observation"
+            downgrade_reason = "已达最大并发跟踪数，仅允许观察"
+        elif today_new >= rb.get("daily_new_max", _DEFAULT_RISK_BUDGET["daily_new_max"]):
+            status = "observation"
+            downgrade_reason = "已达当日新增上限，仅允许观察"
+        else:
+            principal = _rget(ledger, "principal", _DEFAULT_PRINCIPAL)
+            # [TF-RISK-001] tracking/pending planned_amount must also reserve budget
+            invested = conn.execute(
+                "SELECT COALESCE(SUM(planned_amount), 0) FROM tradeflow_paper_trades "
+                "WHERE status IN ('tracking', 'pending', 'open')"
+            ).fetchone()[0]
+            remaining = principal - invested
+            if amount > remaining:
+                status = "observation"
+                downgrade_reason = f"风险预算不足（剩余 {remaining:.0f}），仅允许观察"
+
+        conn.execute(
+            "INSERT INTO tradeflow_paper_trades "
+            "(symbol, name, trade_date, plan_date, candidate_type, trigger_price, invalid_price, "
+            "planned_amount, status, note, observe_state, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'WAITING', ?, ?)",
+            (
+                symbol, name, trade_date, plan_date or trade_date, candidate_type,
+                trigger_price, invalid_price, amount, status, note, now, now,
+            ),
+        )
+        conn.commit()
+
+        trade_id = conn.execute(
+            "SELECT id FROM tradeflow_paper_trades WHERE symbol = ? ORDER BY id DESC LIMIT 1",
+            (symbol,),
+        ).fetchone()["id"]
+        result = {
+            "status": "ok",
+            "message": (
+                f"{symbol} 已加入模拟跟踪"
+                if status == "tracking"
+                else f"{symbol} 已加入观察（{downgrade_reason}）"
+            ),
+            "trade_id": trade_id,
+            "planned_amount": amount,
+        }
+        if status == "observation":
+            result["downgraded_to"] = "observation"
+            result["reason"] = downgrade_reason
+        return result
+    finally:
+        conn.close()
+
+
+def remove_paper_candidate(trade_id: int, tf_db_path: str = "") -> dict:
+    """Remove a candidate from the paper trading ledger."""  # [TF-PAPER-001]
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available"}
+
+    try:
+        row = conn.execute(
+            "SELECT id, symbol, status FROM tradeflow_paper_trades WHERE id = ?", (trade_id,)
+        ).fetchone()
+        if row is None:
+            return {"status": "not_found", "message": f"trade_id={trade_id} 不存在"}
+
+        if row["status"] == "open":
+            return {"status": "blocked", "message": f"{row['symbol']} 有未平仓模拟仓位，请先平仓"}
+
+        conn.execute("DELETE FROM tradeflow_paper_trades WHERE id = ?", (trade_id,))
+        conn.commit()
+        return {"status": "ok", "message": f"{row['symbol']} 已移除"}
+    finally:
+        conn.close()
+
+
+def confirm_paper_action(
+    trade_id: int,
+    action_type: str,
+    price: float,
+    note: str = "",
+    tf_db_path: str = "",
+) -> dict:
+    """Confirm a simulated buy/sell action for a paper trade.
+
+    action_type: 'buy' → open position, 'sell' → close position.
+    """  # [TF-PAPER-001]
+    if action_type not in ("buy", "sell"):
+        return {"status": "error", "message": "action_type must be 'buy' or 'sell'"}
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available"}
+
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        row = conn.execute(
+            "SELECT * FROM tradeflow_paper_trades WHERE id = ?", (trade_id,)
+        ).fetchone()
+        if row is None:
+            return {"status": "not_found", "message": f"trade_id={trade_id} 不存在"}
+
+        ledger = _ensure_paper_ledger_row(conn)
+        cash_balance = _rget(ledger, "cash_balance", _DEFAULT_PRINCIPAL)
+
+        if action_type == "buy":
+            if row["status"] not in ("tracking", "pending"):
+                return {"status": "blocked", "message": f"当前状态 {row['status']} 不可买入"}
+            amount = _rget(row, "planned_amount", 0.0)
+            if amount > cash_balance:
+                return {"status": "insufficient_cash", "message": f"现金余额 {cash_balance:.2f} 不足买入 {amount:.2f}"}
+            conn.execute(
+                "UPDATE tradeflow_paper_trades SET status='open', action_type='buy', "
+                "action_price=?, action_date=?, confirmed=1, note=?, updated_at=? WHERE id=?",
+                (price, now, note, now, trade_id),
+            )
+            conn.execute(
+                "UPDATE tradeflow_paper_ledger SET cash_balance = cash_balance - ?, updated_at = ?",
+                (amount, now),
+            )
+            conn.commit()
+            return {
+                "status": "ok",
+                "message": f"{row['symbol']} 模拟买入 @ {price}",
+                "cash_balance": round(cash_balance - amount, 2),
+            }
+        else:
+            if row["status"] != "open":
+                return {"status": "blocked", "message": f"当前状态 {row['status']} 不可卖出"}
+            buy_price = _rget(row, "action_price", 0.0)
+            amount = _rget(row, "planned_amount", 0.0)
+            pnl = (price - buy_price) * (amount / buy_price) if buy_price else 0.0
+            pnl_pct = (price - buy_price) / buy_price * 100 if buy_price else 0.0
+            conn.execute(
+                "UPDATE tradeflow_paper_trades SET status='closed', action_type='sell', "
+                "action_price=?, action_date=?, confirmed=1, close_price=?, close_date=?, "
+                "pnl=?, pnl_pct=?, close_reason=?, note=?, updated_at=? WHERE id=?",
+                (price, now, price, now[:10], round(pnl, 2), round(pnl_pct, 2), note, note, now, trade_id),
+            )
+            conn.execute(
+                "UPDATE tradeflow_paper_ledger SET cash_balance = cash_balance + ? + ?, updated_at = ?",
+                (amount, round(pnl, 2), now),
+            )
+            conn.commit()
+            return {
+                "status": "ok",
+                "message": f"{row['symbol']} 模拟卖出 @ {price}, P&L {pnl:.2f}",
+                "cash_balance": round(cash_balance + amount + pnl, 2),
+                "pnl": round(pnl, 2),
+            }
+    finally:
+        conn.close()
+
+
+def update_paper_observe_state(
+    symbol: str,
+    observe_state: str,
+    tf_db_path: str = "",
+) -> dict:
+    """Sync observe_state from intraday observe to paper trades.
+
+    When a candidate in the paper ledger gets TRIGGERED, its paper trade
+    status transitions from 'tracking' to 'pending' (awaiting manual confirm).
+    """  # [TF-PAPER-001]
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available"}
+
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        rows = conn.execute(
+            "SELECT id, status FROM tradeflow_paper_trades WHERE symbol = ? AND status = 'tracking'",
+            (symbol,),
+        ).fetchall()
+        updated = 0
+        for row in rows:
+            new_status = "pending" if observe_state == "TRIGGERED" else "tracking"
+            conn.execute(
+                "UPDATE tradeflow_paper_trades SET observe_state=?, status=?, updated_at=? WHERE id=?",
+                (observe_state, new_status, now, row["id"]),
+            )
+            updated += 1
+        if observe_state == "INVALIDATED":
+            conn.execute(
+                "UPDATE tradeflow_paper_trades SET observe_state='INVALIDATED', status='invalidated', updated_at=? "
+                "WHERE symbol=? AND status IN ('tracking', 'pending')",
+                (now, symbol),
+            )
+        conn.commit()
+        return {"status": "ok", "updated": updated, "symbol": symbol}
+    finally:
+        conn.close()
+
+
+def get_paper_review(trade_date: str, tf_db_path: str = "") -> dict:
+    """Post-market review of paper trading ledger for a given date.
+
+
+exec
+/bin/zsh -lc "grep -n \"def _connect\" -A35 api/services/tradeflow_service.py; grep -n \"tradeflow_paper\" -n tradingagents/tradeflow/candidate_engine.py | head -30; sed -n '180,260p' tradingagents/tradeflow/candidate_engine.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+43:def _connect(tf_db_path: str = "") -> Optional[sqlite3.Connection]:
+44-    db_path = tf_db_path or _get_tradeflow_db_path()
+45-    if not os.path.exists(db_path):
+46-        return None
+47-    try:
+48-        from tradingagents.tradeflow.candidate_engine import init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+49-        init_db(db_path)
+50-        conn = sqlite3.connect(db_path)
+51-        conn.row_factory = sqlite3.Row
+52-        return conn
+53-    except Exception:
+54-        return None
+55-
+56-
+57-def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+58-    try:
+59-        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+60-        return {row["name"] for row in rows}
+61-    except Exception:
+62-        return set()
+63-
+64-
+65-def _parse_json(value: Any, default: Any = None) -> Any:
+66-    if value is None:
+67-        return default if default is not None else []
+68-    if isinstance(value, str):
+69-        try:
+70-            return json.loads(value)
+71-        except (json.JSONDecodeError, TypeError):
+72-            return default if default is not None else []
+73-    return value
+74-
+75-
+76-def _rget(row: sqlite3.Row, col: str, default: Any = None) -> Any:
+77-    try:
+78-        val = row[col]
+114:CREATE TABLE IF NOT EXISTS tradeflow_paper_ledger (
+126:CREATE TABLE IF NOT EXISTS tradeflow_paper_trades (
+    ("positive_category_count", "INTEGER DEFAULT 0"),
+    ("data_completeness", "REAL DEFAULT 0.0"),
+    ("missing_evidence_json", "TEXT DEFAULT '[]'"),
+    ("why_deep_ta", "TEXT DEFAULT ''"),
+    ("why_not_deep_ta", "TEXT DEFAULT ''"),
+    ("priority_rank", "TEXT DEFAULT ''"),
+    ("tier", "TEXT DEFAULT ''"),
+    ("ta_budget_priority", "INTEGER DEFAULT 0"),
+    ("tier_reason", "TEXT DEFAULT ''"),
+    ("missing_evidence_for_upgrade_json", "TEXT DEFAULT '[]'"),
+    ("tradeflow_data_completeness", "REAL DEFAULT 0.0"),
+    ("missing_data_fields_json", "TEXT DEFAULT '[]'"),
+    ("what_to_upgrade_json", "TEXT DEFAULT '[]'"),
+    ("evidence_gate_applied", "INTEGER DEFAULT 0"),
+    ("universe_sources_json", "TEXT DEFAULT '[]'"),
+    ("observe_state", "TEXT DEFAULT 'WAITING'"),
+    ("observe_trigger_count", "INTEGER DEFAULT 0"),
+    ("observe_first_trigger_time", "TEXT DEFAULT ''"),
+    ("deep_ta_status", "TEXT DEFAULT ''"),
+    ("deep_ta_dispatch_reason", "TEXT DEFAULT ''"),
+    ("deep_ta_model", "TEXT DEFAULT ''"),
+    ("deep_ta_report_path", "TEXT DEFAULT ''"),
+    ("deep_ta_dispatch_time", "TEXT DEFAULT ''"),
+    ("deep_ta_position_context", "TEXT DEFAULT ''"),
+    ("plan_date", "TEXT DEFAULT ''"),
+    ("effective_trade_date", "TEXT DEFAULT ''"),
+    ("observe_date", "TEXT DEFAULT ''"),
+    ("beneficiary_path_json", "TEXT DEFAULT '[]'"),
+    ("company_role", "TEXT DEFAULT ''"),
+    ("mandate_topic", "TEXT DEFAULT ''"),
+    ("mandate_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ("candidate_type", "TEXT DEFAULT ''"),
+    ("ambush_score", "REAL DEFAULT 0.0"),
+    ("mandate_score_component", "REAL DEFAULT 0.0"),
+    ("beneficiary_score_component", "REAL DEFAULT 0.0"),
+    ("pricing_gap_score", "REAL DEFAULT 0.0"),
+    ("overheat_penalty", "REAL DEFAULT 0.0"),
+    ("candidate_type_reason", "TEXT DEFAULT ''"),
+    ("deep_ta_route", "TEXT DEFAULT ''"),
+    ("deep_ta_route_reason", "TEXT DEFAULT ''"),
+    ("ambush_reasons_json", "TEXT DEFAULT '[]'"),
+    ("ambush_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ("research_queue", "TEXT DEFAULT ''"),
+    ("research_intent", "TEXT DEFAULT ''"),
+    ("research_route_reason", "TEXT DEFAULT ''"),
+    ("watchlist_note", "TEXT DEFAULT ''"),
+    ("watchlist_note_suggested", "TEXT DEFAULT ''"),
+    ("watchlist_topic", "TEXT DEFAULT ''"),
+    ("watchlist_benefit_score", "REAL DEFAULT 0.0"),
+    ("watchlist_consensus_score", "REAL DEFAULT 0.0"),
+    ("watchlist_evidence_gap_json", "TEXT DEFAULT '[]'"),
+    # [TF-UX-004] action_tier_scorer — add trade priority score & action tier
+    ("action_tier", "TEXT DEFAULT 'scan'"),
+    ("trade_priority_score", "REAL DEFAULT 0.0"),
+    ("action_tier_reason", "TEXT DEFAULT ''"),
+    # [H-009] mandate_counter_evidence_calibration
+    ("counter_evidence_json", "TEXT DEFAULT '[]'"),
+    ("overheat_flags_json", "TEXT DEFAULT '[]'"),
+    ("downgrade_reasons_json", "TEXT DEFAULT '[]'"),
+    ("what_would_change_mind_json", "TEXT DEFAULT '[]'"),
+    # [H-010] mandate_topic_lifecycle
+    ("topic_lifecycle_state", "TEXT DEFAULT ''"),
+    ("topic_lifecycle_reason", "TEXT DEFAULT ''"),
+    ("topic_last_signal_date", "TEXT DEFAULT ''"),
+    ("topic_signal_count", "INTEGER DEFAULT 0"),
+    # [H-011] candidate_contradiction_explainer
+    ("contradiction_level", "TEXT DEFAULT ''"),
+    ("contradiction_items_json", "TEXT DEFAULT '[]'"),
+    ("blocking_evidence_gaps_json", "TEXT DEFAULT '[]'"),
+    ("next_verification_steps_json", "TEXT DEFAULT '[]'"),
+]
+
+
+def ensure_columns(conn: sqlite3.Connection) -> None:
+    """Ensure all Candidate columns exist in tradeflow_candidates.
+
+    Safe to call repeatedly — uses ALTER TABLE ADD COLUMN wrapped in
+    try/except so existing columns are silently skipped.
+    """
+    existing = {
+        r[1]
+
+exec
+/bin/zsh -lc "sed -n '260,345p' tradingagents/tradeflow/candidate_engine.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        r[1]
+        for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()
+    }
+    for col_name, col_type in _MISSING_COLUMNS:
+        if col_name not in existing:
+            try:
+                conn.execute(
+                    f"ALTER TABLE tradeflow_candidates ADD COLUMN {col_name} {col_type}"
+                )
+            except sqlite3.OperationalError:
+                pass
+
+
+def init_db(db_path: str) -> None:
+    """Create tradeflow tables if they don't exist."""
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        CREATE_CANDIDATES_TABLE
+        + CREATE_SIGNALS_TABLE
+        + CREATE_DAILY_PLANS_TABLE
+        + CREATE_FILTERED_SYMBOLS_TABLE  # [UI-007] tradeflow_filtered_trace
+        + CREATE_PAPER_LEDGER_TABLE  # [TF-PAPER-001] paper_trading_ledger
+        + CREATE_PAPER_TRADES_TABLE  # [TF-PAPER-001] paper_trading_ledger
+    )
+    ensure_columns(conn)
+    try:
+        conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    # [S-001] policy_version_signal — add policy version columns
+    for _col, _type in [
+        ("policy_tags_json", "TEXT DEFAULT '[]'"),
+        ("version_score", "REAL DEFAULT 0.0"),
+        ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-002] narrative_quality_score — add narrative quality columns
+    for _col, _type in [
+        ("narrative_score", "REAL DEFAULT 0.0"),
+        ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
+        ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-003] underwater_risk_flags — add risk penalty columns
+    for _col, _type in [
+        ("risk_penalty", "REAL DEFAULT 0.0"),
+        ("risk_evidence_refs_json", "TEXT DEFAULT '[]'"),
+        ("risk_reasons_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [S-004] candidate_game_balance — add game balance columns
+    for _col, _type in [
+        ("game_balance", "TEXT DEFAULT ''"),
+        ("bull_case", "TEXT DEFAULT ''"),
+        ("bear_case", "TEXT DEFAULT ''"),
+        ("policy_case", "TEXT DEFAULT ''"),
+        ("fund_flow_case", "TEXT DEFAULT ''"),
+        ("resonance_count", "INTEGER DEFAULT 0"),
+        ("game_balance_refs_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [T-003] fund_flow_anomaly_pool — add fund flow anomaly columns
+    for _col, _type in [
+        ("fund_flow_anomaly_score", "REAL DEFAULT 0.0"),
+        ("fund_flow_anomaly_tags_json", "TEXT DEFAULT '[]'"),
+        ("fund_flow_anomaly_refs_json", "TEXT DEFAULT '[]'"),
+        ("fund_flow_unit_verified", "INTEGER DEFAULT 0"),
+        ("fund_flow_individual_summary", "TEXT DEFAULT ''"),
+        ("fund_flow_board_summary", "TEXT DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+
+exec
+/bin/zsh -lc 'git diff -- docs/TASKS.md docs/tradeflow_trial_acceptance.md; git diff --cached --stat' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 6cf27c1..8bd10fe 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -3103,7 +3103,7 @@
+ ### TF-OBS-003: 盘中观察触发到模拟账本待确认联动（P1）
+ - **描述**：盘中 Observe 触发后，不只是显示触发状态，还要把已加入模拟账本的候选同步为“待人工确认”，让用户能清楚看到哪些票真的到了执行条件。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：in_progress — claimed TF-OBS-003-20260618-020511
+ - **前置条件**：TF-OBS-002、TF-PAPER-001 完成。
+ - **执行约束**：
+   - 不自动模拟成交。
+diff --git a/docs/tradeflow_trial_acceptance.md b/docs/tradeflow_trial_acceptance.md
+index 0af7c49..ef886ac 100644
+--- a/docs/tradeflow_trial_acceptance.md
++++ b/docs/tradeflow_trial_acceptance.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 试用闭环端到端验收报告 (V-007)
+ 
+-**生成时间**: 2026-06-14 01:52:21
++**生成时间**: 2026-06-18 02:18:44
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **候选数**: 5 只 (2 主候选 + 1 弱技术 + 1 事件观察 + 1 证据缺口)
+
+exec
+/bin/zsh -lc 'pytest tests/test_tf_obs_003_observe_paper_sync.py -q' in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: pytest
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest tests/test_tf_obs_003_observe_paper_sync.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 2749ms:
+.....................                                                    [100%]
+21 passed in 2.16s
+
+exec
+/bin/zsh -lc "sed -n '1,280p' tradingagents/tradeflow/observe_runner.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [TF-OBS-001] tradeflow_observe_runner
+"""TradeFlow Observe Runner — executes intraday observe checks for active candidates.
+
+Responsibilities:
+1. Read candidates with effective_trade_date = today and status = 'active'.
+2. Fetch realtime price/volume/amount for each candidate symbol.
+3. Call run_observe_check() for each candidate.
+4. Update tradeflow_candidates observe_state/trigger_count/first_trigger_time.
+5. Write tradeflow_signals with each check snapshot.
+6. Skip on non-trading days with explicit skip reason.
+
+Design constraints:
+- Low-frequency checks (default 30 min or manual trigger).
+- Does NOT auto-invoke deep TA or LLM.
+- Does NOT auto-push notifications.
+- Non-trading days return explicit skip status.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from typing import Optional
+
+from .intraday_observe import (
+    ObserveState,
+    ObserveSnapshot,
+    ObserveTracker,
+    run_observe_check,
+)
+from .schemas import Candidate, Signal
+from .candidate_engine import init_db, save_candidate
+from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG
+
+_MAX_OBSERVE_FALLBACK_DAYS = 5
+
+
+@dataclass
+class ObserveRunResult:
+    checked: int = 0
+    triggered: int = 0
+    invalidated: int = 0
+    waiting: int = 0
+    skipped: int = 0
+    signals_written: int = 0
+    errors: list[str] = field(default_factory=list)
+    skipped_reason: str = ""
+    run_time: str = ""
+    details: list[dict] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not self.run_time:
+            self.run_time = datetime.now().isoformat()
+
+
+def _is_trading_day(date_str: str) -> bool:
+    try:
+        from tradingagents.dataflows.trade_calendar import is_cn_trading_day
+        return is_cn_trading_day(date_str)
+    except Exception:
+        from datetime import datetime as _dt
+        d = _dt.strptime(date_str, "%Y-%m-%d")
+        return d.weekday() < 5
+
+
+def _fetch_realtime_quotes(symbols: list[str]) -> dict[str, dict]:
+    """Fetch realtime quotes for a list of symbols.
+
+    Returns dict keyed by symbol with keys:
+    current_price, current_volume, current_amount, quote_time, source.
+    """
+    if not symbols:
+        return {}
+
+    try:
+        from tradingagents.dataflows.interface import route_to_vendor
+        raw_json = route_to_vendor("get_realtime_quotes", symbols)
+        if not raw_json:
+            return {}
+        quotes = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
+    except Exception:
+        return {}
+
+    result: dict[str, dict] = {}
+    for sym, q in quotes.items():
+        if not isinstance(q, dict):
+            continue
+        price = q.get("price")
+        if price is not None:
+            try:
+                price = float(price)
+            except (TypeError, ValueError):
+                continue
+        result[sym] = {
+            "current_price": price,
+            "current_volume": q.get("volume"),
+            "current_amount": q.get("amount"),
+            "quote_time": q.get("quote_time", ""),
+            "source": q.get("source", ""),
+        }
+    return result
+
+
+def _load_active_candidates(db_path: str, trade_date: str) -> list[Candidate]:
+    """Load active candidates for a given effective_trade_date from DB."""
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()}
+        has_eff = "effective_trade_date" in columns
+
+        if has_eff:
+            rows = conn.execute(
+                "SELECT * FROM tradeflow_candidates WHERE "
+                "(effective_trade_date = ? OR (trade_date = ? AND (effective_trade_date = '' OR effective_trade_date IS NULL))) "
+                "AND status = 'active'",
+                (trade_date, trade_date),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM tradeflow_candidates WHERE trade_date = ? AND status = 'active'",
+                (trade_date,),
+            ).fetchall()
+
+        if not rows:
+            # [TF-QUALITY-001A] pool_gate_contract — if an observe date has no
+            # exact candidates, fall back to the latest active plan in this DB.
+            # This preserves weekend/next-trading-day workflows and keeps tests
+            # with isolated temp DB candidates from depending on today's date.
+            date_expr = "COALESCE(NULLIF(effective_trade_date, ''), trade_date)"
+            current_records = conn.execute(
+                f"SELECT COUNT(*) AS cnt FROM tradeflow_candidates "
+                f"WHERE {date_expr} = ?",
+                (trade_date,),
+            ).fetchone()
+            if current_records and current_records["cnt"] > 0:
+                return []
+
+            latest = conn.execute(
+                f"SELECT {date_expr} AS active_date FROM tradeflow_candidates "
+                f"WHERE status = 'active' AND {date_expr} IS NOT NULL AND {date_expr} != '' "
+                f"AND {date_expr} <= ? "
+                f"AND julianday(?) - julianday({date_expr}) <= ? "
+                f"ORDER BY active_date DESC LIMIT 1",
+                (trade_date, trade_date, _MAX_OBSERVE_FALLBACK_DAYS),
+            ).fetchone()
+            if latest and latest["active_date"]:
+                rows = conn.execute(
+                    f"SELECT * FROM tradeflow_candidates WHERE status = 'active' AND {date_expr} = ? "
+                    f"ORDER BY updated_at DESC, created_at DESC",
+                    (latest["active_date"],),
+                ).fetchall()
+
+        candidates = []
+        for r in rows:
+            d = {k: r[k] for k in r.keys()}
+            candidates.append(Candidate.from_db_row(d))
+        return candidates
+    finally:
+        conn.close()
+
+
+def _save_signal(signal: Signal, db_path: str) -> int:
+    """Persist a signal to tradeflow_signals table."""
+    init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        row = signal.to_db_row()
+        cur = conn.execute(
+            "INSERT INTO tradeflow_signals "
+            "(signal_time, symbol, signal_type, signal_level, source, evidence_json, action_hint, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row["signal_time"],
+                row["symbol"],
+                row["signal_type"],
+                row["signal_level"],
+                row["source"],
+                row["evidence_json"],
+                row["action_hint"],
+                row["status"],
+                signal.created_at,
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def _build_signal_from_snapshot(
+    snapshot: ObserveSnapshot,
+    trade_date: str,
+    quote_source: str = "",
+) -> Signal:
+    """Convert an ObserveSnapshot into a Signal for persistence."""
+    state = snapshot.observe_state
+    if state == ObserveState.TRIGGERED:
+        signal_type = "observe_triggered"
+        signal_level = "warning"
+    elif state == ObserveState.INVALIDATED:
+        signal_type = "observe_invalidated"
+        signal_level = "error"
+    elif state == ObserveState.EXPIRED:
+        signal_type = "observe_expired"
+        signal_level = "info"
+    else:
+        signal_type = "observe_check"
+        signal_level = "info"
+
+    evidence = {
+        "trade_date": trade_date,
+        "check_time": snapshot.check_time,
+        "observe_state": state.value if isinstance(state, ObserveState) else str(state),
+        "trigger_price": snapshot.trigger_price,
+        "invalid_price": snapshot.invalid_price,
+        "current_price": snapshot.current_price,
+        "current_volume": snapshot.current_volume,
+        "current_amount": snapshot.current_amount,
+        "trigger_reason": snapshot.trigger_reason,
+        "daily_trigger_count": snapshot.daily_trigger_count,
+        "price_evidence": snapshot.price_evidence,
+        "quote_source": quote_source,
+        "volume_anomaly": getattr(snapshot, "volume_anomaly", False),
+        "volume_ratio": getattr(snapshot, "volume_ratio", None),
+    }
+
+    return Signal(
+        symbol=snapshot.symbol,
+        signal_type=signal_type,
+        signal_level=signal_level,
+        source=f"observe_runner",
+        evidence=evidence,
+        action_hint="OBSERVE",
+        status="new",
+    )
+
+
+def run_observe(
+    trade_date: str,
+    db_path: str,
+    cfg: Optional[StrategyConfig] = None,
+    quote_provider=None,
+) -> ObserveRunResult:
+    """Run observe check for all active candidates on a given trade_date.
+
+    Args:
+        trade_date: The effective trade date (YYYY-MM-DD).
+        db_path: Path to tradeflow.db.
+        cfg: Strategy config (defaults to DEFAULT_STRATEGY_CONFIG).
+        quote_provider: Optional callable(symbols) -> dict for testing.
+                        When provided, overrides the default quote fetching.
+
+    Returns:
+        ObserveRunResult with check counts and details.
+    """
+    if cfg is None:
+        cfg = DEFAULT_STRATEGY_CONFIG
+
+    result = ObserveRunResult()
+
+    if not _is_trading_day(trade_date):
+        result.skipped_reason = f"{trade_date} 非交易日，跳过实时观察"
+        return result
+
+    candidates = _load_active_candidates(db_path, trade_date)
+    if not candidates:
+        result.skipped_reason = f"{trade_date} 无活跃候选"
+        return result
+
+    symbols = [c.symbol for c in candidates]
+
+    if quote_provider is not None:
+        quotes = quote_provider(symbols)
+    else:
+        quotes = _fetch_realtime_quotes(symbols)
+
+
+exec
+/bin/zsh -lc "sed -n '280,560p' tradingagents/tradeflow/observe_runner.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+
+    for cand in candidates:
+        q = quotes.get(cand.symbol, {})
+        current_price = q.get("current_price")
+        current_volume = q.get("current_volume")
+        current_amount = q.get("current_amount")
+        quote_source = q.get("source", "")
+
+        if current_price is None:
+            result.skipped += 1
+            result.details.append({
+                "symbol": cand.symbol,
+                "status": "skipped_no_price",
+                "reason": "实时行情不可用",
+            })
+            continue
+
+        tracker = ObserveTracker(
+            symbol=cand.symbol,
+            state=ObserveState(cand.observe_state) if cand.observe_state else ObserveState.WAITING,
+            trigger_price=cand.trigger_price,
+            invalid_price=cand.invalid_price,
+            daily_trigger_count=cand.observe_trigger_count,
+            trade_date=trade_date,
+            first_trigger_time=cand.observe_first_trigger_time or None,
+        )
+
+        snapshot = run_observe_check(
+            tracker=tracker,
+            current_price=current_price,
+            current_volume=current_volume,
+            current_amount=current_amount,
+            avg_volume=q.get("avg_volume"),
+            cfg=cfg,
+        )
+
+        cand.observe_state = tracker.state.value
+        cand.observe_trigger_count = tracker.daily_trigger_count
+        cand.observe_first_trigger_time = tracker.first_trigger_time or ""
+
+        try:
+            save_candidate(cand, db_path)
+        except Exception as e:
+            result.errors.append(f"{cand.symbol}: save failed: {e}")
+            continue
+
+        signal = _build_signal_from_snapshot(snapshot, trade_date, quote_source)
+        try:
+            _save_signal(signal, db_path)
+            result.signals_written += 1
+        except Exception as e:
+            result.errors.append(f"{cand.symbol}: signal save failed: {e}")
+
+        result.checked += 1
+        state = snapshot.observe_state
+        if state == ObserveState.TRIGGERED:
+            result.triggered += 1
+        elif state == ObserveState.INVALIDATED:
+            result.invalidated += 1
+        else:
+            result.waiting += 1
+
+        result.details.append({
+            "symbol": cand.symbol,
+            "observe_state": state.value if isinstance(state, ObserveState) else str(state),
+            "current_price": current_price,
+            "trigger_reason": snapshot.trigger_reason,
+            "volume_anomaly": getattr(snapshot, "volume_anomaly", False),
+            "volume_ratio": getattr(snapshot, "volume_ratio", None),
+        })
+
+    return result
+
+exec
+/bin/zsh -lc "grep -n \"def save_candidate\\|normalize_tradeflow_symbol\" -A60 tradingagents/tradeflow/candidate_engine.py api/services/tradeflow_service.py | head -150" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/tradeflow/candidate_engine.py:34:from .symbol_utils import normalize_tradeflow_symbol, resolve_tradeflow_name, symbol_bare_code, _looks_like_code  # [UI-008] tradeflow_field_normalization  [TF-P0-001] runtime_schema_name_observe_fix
+tradingagents/tradeflow/candidate_engine.py-35-from .ambush_score import compute_ambush_score, AmbushScoreResult  # [H-004] mandate_ambush_score
+tradingagents/tradeflow/candidate_engine.py-36-from .counter_evidence_calibration import evaluate_counter_evidence, CounterEvidenceCalibrationResult  # [H-009] mandate_counter_evidence_calibration
+tradingagents/tradeflow/candidate_engine.py-37-from .topic_lifecycle import evaluate_topic_lifecycle, TopicLifecycleResult, apply_lifecycle_to_candidate  # [H-010] mandate_topic_lifecycle
+tradingagents/tradeflow/candidate_engine.py-38-from .candidate_contradictions import evaluate_contradictions, ContradictionResult  # [H-011] candidate_contradiction_explainer
+tradingagents/tradeflow/candidate_engine.py-39-from .mandate_ta_queue_router import route_to_research_queue, QueueRouteResult  # [H-007] mandate_ta_queue_router
+tradingagents/tradeflow/candidate_engine.py-40-from .mandate_watchlist_note import generate_watchlist_note, WatchlistNoteResult  # [H-008] mandate_watchlist_note
+tradingagents/tradeflow/candidate_engine.py-41-from .topic_registry import get_default_topic_registry  # [H-012] mandate_topic_registry
+tradingagents/tradeflow/candidate_engine.py-42-from .score_separation import compute_split_scores  # [TF-QUALITY-002] score_separation
+tradingagents/tradeflow/candidate_engine.py-43-
+tradingagents/tradeflow/candidate_engine.py-44-
+tradingagents/tradeflow/candidate_engine.py-45-# ── SQL for table creation ──
+tradingagents/tradeflow/candidate_engine.py-46-CREATE_CANDIDATES_TABLE = """
+tradingagents/tradeflow/candidate_engine.py-47-CREATE TABLE IF NOT EXISTS tradeflow_candidates (
+tradingagents/tradeflow/candidate_engine.py-48-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+tradingagents/tradeflow/candidate_engine.py-49-    trade_date TEXT NOT NULL,
+tradingagents/tradeflow/candidate_engine.py-50-    symbol TEXT NOT NULL,
+tradingagents/tradeflow/candidate_engine.py-51-    name TEXT DEFAULT '',
+tradingagents/tradeflow/candidate_engine.py-52-    source TEXT DEFAULT 'manual',
+tradingagents/tradeflow/candidate_engine.py-53-    strategy_tags_json TEXT DEFAULT '[]',
+tradingagents/tradeflow/candidate_engine.py-54-    primary_strategy TEXT DEFAULT '',
+tradingagents/tradeflow/candidate_engine.py-55-    score REAL DEFAULT 0.0,
+tradingagents/tradeflow/candidate_engine.py-56-    status TEXT DEFAULT 'active',
+tradingagents/tradeflow/candidate_engine.py-57-    trigger_price REAL,
+tradingagents/tradeflow/candidate_engine.py-58-    support_price REAL,
+tradingagents/tradeflow/candidate_engine.py-59-    invalid_price REAL,
+tradingagents/tradeflow/candidate_engine.py-60-    need_deep_ta INTEGER DEFAULT 0,
+tradingagents/tradeflow/candidate_engine.py-61-    evidence_json TEXT DEFAULT '{}',
+tradingagents/tradeflow/candidate_engine.py-62-    risk_flags_json TEXT DEFAULT '[]',
+tradingagents/tradeflow/candidate_engine.py-63-    created_at TEXT,
+tradingagents/tradeflow/candidate_engine.py-64-    updated_at TEXT,
+tradingagents/tradeflow/candidate_engine.py-65-    UNIQUE(trade_date, symbol)
+tradingagents/tradeflow/candidate_engine.py-66-);
+tradingagents/tradeflow/candidate_engine.py-67-"""
+tradingagents/tradeflow/candidate_engine.py-68-
+tradingagents/tradeflow/candidate_engine.py-69-CREATE_SIGNALS_TABLE = """
+tradingagents/tradeflow/candidate_engine.py-70-CREATE TABLE IF NOT EXISTS tradeflow_signals (
+tradingagents/tradeflow/candidate_engine.py-71-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+tradingagents/tradeflow/candidate_engine.py-72-    signal_time TEXT NOT NULL,
+tradingagents/tradeflow/candidate_engine.py-73-    symbol TEXT NOT NULL,
+tradingagents/tradeflow/candidate_engine.py-74-    signal_type TEXT NOT NULL,
+tradingagents/tradeflow/candidate_engine.py-75-    signal_level TEXT DEFAULT 'info',
+tradingagents/tradeflow/candidate_engine.py-76-    source TEXT DEFAULT 'tradeflow',
+tradingagents/tradeflow/candidate_engine.py-77-    evidence_json TEXT DEFAULT '{}',
+tradingagents/tradeflow/candidate_engine.py-78-    action_hint TEXT DEFAULT 'OBSERVE',
+tradingagents/tradeflow/candidate_engine.py-79-    status TEXT DEFAULT 'new',
+tradingagents/tradeflow/candidate_engine.py-80-    created_at TEXT
+tradingagents/tradeflow/candidate_engine.py-81-);
+tradingagents/tradeflow/candidate_engine.py-82-"""
+tradingagents/tradeflow/candidate_engine.py-83-
+tradingagents/tradeflow/candidate_engine.py-84-CREATE_DAILY_PLANS_TABLE = """
+tradingagents/tradeflow/candidate_engine.py-85-CREATE TABLE IF NOT EXISTS tradeflow_daily_plans (
+tradingagents/tradeflow/candidate_engine.py-86-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+tradingagents/tradeflow/candidate_engine.py-87-    trade_date TEXT NOT NULL,
+tradingagents/tradeflow/candidate_engine.py-88-    mode TEXT DEFAULT 'pre_market',
+tradingagents/tradeflow/candidate_engine.py-89-    summary TEXT DEFAULT '',
+tradingagents/tradeflow/candidate_engine.py-90-    candidates_json TEXT DEFAULT '[]',
+tradingagents/tradeflow/candidate_engine.py-91-    metadata_json TEXT DEFAULT '{}',
+tradingagents/tradeflow/candidate_engine.py-92-    created_at TEXT,
+tradingagents/tradeflow/candidate_engine.py-93-    UNIQUE(trade_date, mode)
+tradingagents/tradeflow/candidate_engine.py-94-);
+--
+tradingagents/tradeflow/candidate_engine.py:678:    symbol = normalize_tradeflow_symbol(symbol)  # [UI-008] tradeflow_field_normalization
+tradingagents/tradeflow/candidate_engine.py-679-    name = resolve_tradeflow_name(symbol, name)  # [UI-008]
+tradingagents/tradeflow/candidate_engine.py-680-
+tradingagents/tradeflow/candidate_engine.py-681-    if not trade_date:
+tradingagents/tradeflow/candidate_engine.py-682-        trade_date = datetime.now().strftime("%Y-%m-%d")
+tradingagents/tradeflow/candidate_engine.py-683-
+tradingagents/tradeflow/candidate_engine.py-684-    # Fetch data if not provided
+tradingagents/tradeflow/candidate_engine.py-685-    if df is None:
+tradingagents/tradeflow/candidate_engine.py-686-        df = _fetch_price_data(symbol)
+tradingagents/tradeflow/candidate_engine.py-687-
+tradingagents/tradeflow/candidate_engine.py-688-    # Filter check
+tradingagents/tradeflow/candidate_engine.py-689-    filtered, reasons = filter_symbol(symbol, df, cfg)  # [M-004]
+tradingagents/tradeflow/candidate_engine.py-690-    if filtered:
+tradingagents/tradeflow/candidate_engine.py-691-        return None, "；".join(reasons)
+tradingagents/tradeflow/candidate_engine.py-692-
+tradingagents/tradeflow/candidate_engine.py-693-    # Run strategies
+tradingagents/tradeflow/candidate_engine.py-694-    signals = run_strategies(symbol, df, news_texts, event_overrides, cfg=cfg)  # [M-004]
+tradingagents/tradeflow/candidate_engine.py-695-
+tradingagents/tradeflow/candidate_engine.py-696-    if not signals:
+tradingagents/tradeflow/candidate_engine.py-697-        return None, "无策略命中"
+tradingagents/tradeflow/candidate_engine.py-698-
+tradingagents/tradeflow/candidate_engine.py-699-    # Build candidate
+tradingagents/tradeflow/candidate_engine.py-700-    candidate = Candidate(
+tradingagents/tradeflow/candidate_engine.py-701-        symbol=symbol,
+tradingagents/tradeflow/candidate_engine.py-702-        name=name,
+tradingagents/tradeflow/candidate_engine.py-703-        source=source,
+tradingagents/tradeflow/candidate_engine.py-704-        trade_date=trade_date,
+tradingagents/tradeflow/candidate_engine.py-705-        signals=signals,
+tradingagents/tradeflow/candidate_engine.py-706-    )
+tradingagents/tradeflow/candidate_engine.py-707-    candidate.merge_signals()
+tradingagents/tradeflow/candidate_engine.py-708-
+tradingagents/tradeflow/candidate_engine.py-709-    # [N-004] astock_signal_tags — merge extra tags from event_catalyst evidence
+tradingagents/tradeflow/candidate_engine.py-710-    for sig in signals:
+tradingagents/tradeflow/candidate_engine.py-711-        if not isinstance(sig.evidence, dict):
+tradingagents/tradeflow/candidate_engine.py-712-            continue
+tradingagents/tradeflow/candidate_engine.py-713-        extra_tags = sig.evidence.get("astock_tags", [])
+tradingagents/tradeflow/candidate_engine.py-714-        extra_risks = sig.evidence.get("astock_risk_flags", [])
+tradingagents/tradeflow/candidate_engine.py-715-        if extra_tags or extra_risks:
+tradingagents/tradeflow/candidate_engine.py-716-            from .schemas import SIGNAL_TAG_LOCKUP_RISK  # [N-004] astock_signal_tags
+tradingagents/tradeflow/candidate_engine.py-717-            candidate.strategy_tags = sorted(
+tradingagents/tradeflow/candidate_engine.py-718-                set(candidate.strategy_tags) | set(extra_tags)
+tradingagents/tradeflow/candidate_engine.py-719-            )
+tradingagents/tradeflow/candidate_engine.py-720-            candidate.risk_flags = sorted(
+tradingagents/tradeflow/candidate_engine.py-721-                set(candidate.risk_flags) | set(extra_risks)
+tradingagents/tradeflow/candidate_engine.py-722-            )
+tradingagents/tradeflow/candidate_engine.py-723-            if SIGNAL_TAG_LOCKUP_RISK in candidate.risk_flags:
+tradingagents/tradeflow/candidate_engine.py-724-                candidate.score = round(candidate.score * cfg.risk_lockup_score_factor, 2)  # [M-004]
+tradingagents/tradeflow/candidate_engine.py-725-
+tradingagents/tradeflow/candidate_engine.py-726-    # [S-001] policy_version_signal — detect policy version and add bonus
+tradingagents/tradeflow/candidate_engine.py-727-    # Collect all available text sources: news_texts + event_override titles
+tradingagents/tradeflow/candidate_engine.py-728-    all_event_texts = list(news_texts) if news_texts else []
+tradingagents/tradeflow/candidate_engine.py-729-    if event_overrides:
+tradingagents/tradeflow/candidate_engine.py-730-        for ev in event_overrides:
+tradingagents/tradeflow/candidate_engine.py-731-            title = ev.get("title", "") or ev.get("headline", "")
+tradingagents/tradeflow/candidate_engine.py-732-            if title:
+tradingagents/tradeflow/candidate_engine.py-733-                all_event_texts.append(title)
+tradingagents/tradeflow/candidate_engine.py-734-    policy_result: PolicyVersionResult = detect_policy_version(  # [M-004]
+tradingagents/tradeflow/candidate_engine.py-735-        event_texts=all_event_texts if all_event_texts else None,
+tradingagents/tradeflow/candidate_engine.py-736-        cfg=cfg,
+tradingagents/tradeflow/candidate_engine.py-737-    )
+tradingagents/tradeflow/candidate_engine.py-738-    if policy_result.policy_tags:
+--
+tradingagents/tradeflow/candidate_engine.py:1303:def save_candidate(candidate: Candidate, db_path: str) -> int:
+tradingagents/tradeflow/candidate_engine.py-1304-    """Save a candidate to the database. Upsert on (trade_date, symbol)."""
+tradingagents/tradeflow/candidate_engine.py:1305:    candidate.symbol = normalize_tradeflow_symbol(candidate.symbol)  # [UI-008]
+tradingagents/tradeflow/candidate_engine.py-1306-    _needs_name_lookup = (
+tradingagents/tradeflow/candidate_engine.py-1307-        not candidate.name
+tradingagents/tradeflow/candidate_engine.py-1308-        or candidate.name == "--"
+tradingagents/tradeflow/candidate_engine.py-1309-        or candidate.name == candidate.symbol
+tradingagents/tradeflow/candidate_engine.py-1310-        or candidate.name == symbol_bare_code(candidate.symbol)
+tradingagents/tradeflow/candidate_engine.py-1311-        or _looks_like_code(candidate.name)  # [TF-P0-001] runtime_schema_name_observe_fix
+tradingagents/tradeflow/candidate_engine.py-1312-    )
+tradingagents/tradeflow/candidate_engine.py-1313-    if _needs_name_lookup:
+tradingagents/tradeflow/candidate_engine.py-1314-        candidate.name = resolve_tradeflow_name(candidate.symbol, candidate.name)  # [UI-008]
+tradingagents/tradeflow/candidate_engine.py-1315-    if not candidate.candidate_type:
+tradingagents/tradeflow/candidate_engine.py-1316-        candidate.candidate_type = "TECH_TRADE"
+tradingagents/tradeflow/candidate_engine.py-1317-        candidate.candidate_type_reason = candidate.candidate_type_reason or "无政策/事件/受益路径证据，默认技术交易"
+tradingagents/tradeflow/candidate_engine.py-1318-    conn = sqlite3.connect(db_path)
+tradingagents/tradeflow/candidate_engine.py-1319-    ensure_columns(conn)
+tradingagents/tradeflow/candidate_engine.py-1320-    row = candidate.to_db_row()
+tradingagents/tradeflow/candidate_engine.py-1321-    try:
+tradingagents/tradeflow/candidate_engine.py-1322-        conn.execute(
+tradingagents/tradeflow/candidate_engine.py-1323-            "INSERT INTO tradeflow_candidates "
+tradingagents/tradeflow/candidate_engine.py-1324-            "(trade_date, symbol, name, source, strategy_tags_json, primary_strategy, "
+tradingagents/tradeflow/candidate_engine.py-1325-            "score, status, trigger_price, support_price, invalid_price, need_deep_ta, "
+tradingagents/tradeflow/candidate_engine.py-1326-            "evidence_json, risk_flags_json, policy_tags_json, version_score, "
+tradingagents/tradeflow/candidate_engine.py-1327-            "policy_evidence_refs_json, narrative_score, narrative_reasons_json, "
+tradingagents/tradeflow/candidate_engine.py-1328-            "narrative_evidence_refs_json, risk_penalty, risk_evidence_refs_json, "
+
+exec
+/bin/zsh -lc "nl -ba api/services/tradeflow_service.py | sed -n '760,778p;1240,1278p;2438,2468p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   760	
+   761	        items = []
+   762	        triggered = 0
+   763	        invalidated = 0
+   764	        waiting = 0
+   765	
+   766	        # [TF-OBS-003] observe_paper_sync — map symbol → paper ledger status
+   767	        paper_status_map: dict[str, str] = {}
+   768	        try:
+   769	            pt_rows = conn.execute(
+   770	                "SELECT symbol, status FROM tradeflow_paper_trades ORDER BY updated_at DESC"
+   771	            ).fetchall()
+   772	            for pt in pt_rows:
+   773	                _psym = normalize_tradeflow_symbol(pt["symbol"])
+   774	                if _psym not in paper_status_map:
+   775	                    paper_status_map[_psym] = pt["status"]
+   776	        except Exception:
+   777	            pass
+   778	
+  1240	
+  1241	    # [TF-OBS-003] observe_paper_sync — sync triggered/invalidated into paper ledger
+  1242	    paper_sync = _sync_paper_from_observe(result.details, tf_db)
+  1243	
+  1244	    return {
+  1245	        "status": "skipped" if result.skipped_reason else "ok",
+  1246	        "trade_date": trade_date,
+  1247	        "checked": result.checked,
+  1248	        "triggered": result.triggered,
+  1249	        "invalidated": result.invalidated,
+  1250	        "waiting": result.waiting,
+  1251	        "skipped": result.skipped,
+  1252	        "signals_written": result.signals_written,
+  1253	        "errors": result.errors,
+  1254	        "skipped_reason": result.skipped_reason,
+  1255	        "run_time": result.run_time,
+  1256	        "details": result.details,
+  1257	        "paper_synced": paper_sync["synced"],            # [TF-OBS-003] observe_paper_sync
+  1258	        "paper_pending": paper_sync["pending"],           # [TF-OBS-003]
+  1259	        "paper_invalidated": paper_sync["invalidated"],   # [TF-OBS-003]
+  1260	        "runtime_tier_meta": _tradeflow_meta("tradeflow_observe_run"),  # [PERF-001]
+  1261	    }
+  1262	
+  1263	
+  1264	# [TF-OBS-003] observe_paper_sync
+  1265	def _sync_paper_from_observe(details: list, tf_db: str) -> dict:
+  1266	    """Sync observe results into the paper ledger.
+  1267	
+  1268	    For each observe detail with a known state, call update_paper_observe_state
+  1269	    so triggered candidates become 'pending' (awaiting manual confirm) and
+  1270	    invalidated candidates become 'invalidated'. Candidates not in the paper
+  1271	    ledger are ignored — no record is created.
+  1272	    """
+  1273	    synced = 0
+  1274	    pending_count = 0
+  1275	    invalidated_count = 0
+  1276	    for d in details:
+  1277	        symbol = d.get("symbol") if isinstance(d, dict) else None
+  1278	        state = d.get("observe_state") if isinstance(d, dict) else None
+  2438	    """Sync observe_state from intraday observe to paper trades.
+  2439	
+  2440	    When a candidate in the paper ledger gets TRIGGERED, its paper trade
+  2441	    status transitions from 'tracking' to 'pending' (awaiting manual confirm).
+  2442	    """  # [TF-PAPER-001]
+  2443	    conn = _connect(tf_db_path)
+  2444	    if conn is None:
+  2445	        return {"status": "no_data", "message": "TradeFlow DB not available"}
+  2446	
+  2447	    try:
+  2448	        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+  2449	        rows = conn.execute(
+  2450	            "SELECT id, status FROM tradeflow_paper_trades WHERE symbol = ? AND status = 'tracking'",
+  2451	            (symbol,),
+  2452	        ).fetchall()
+  2453	        updated = 0
+  2454	        for row in rows:
+  2455	            new_status = "pending" if observe_state == "TRIGGERED" else "tracking"
+  2456	            conn.execute(
+  2457	                "UPDATE tradeflow_paper_trades SET observe_state=?, status=?, updated_at=? WHERE id=?",
+  2458	                (observe_state, new_status, now, row["id"]),
+  2459	            )
+  2460	            updated += 1
+  2461	        if observe_state == "INVALIDATED":
+  2462	            conn.execute(
+  2463	                "UPDATE tradeflow_paper_trades SET observe_state='INVALIDATED', status='invalidated', updated_at=? "
+  2464	                "WHERE symbol=? AND status IN ('tracking', 'pending')",
+  2465	                (now, symbol),
+  2466	            )
+  2467	        conn.commit()
+  2468	        return {"status": "ok", "updated": updated, "symbol": symbol}
+
+exec
+/bin/zsh -lc "nl -ba api/services/tradeflow_service.py | sed -n '1276,1298p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+  1276	    for d in details:
+  1277	        symbol = d.get("symbol") if isinstance(d, dict) else None
+  1278	        state = d.get("observe_state") if isinstance(d, dict) else None
+  1279	        if not symbol or state not in ("TRIGGERED", "INVALIDATED", "WAITING"):
+  1280	            continue
+  1281	        try:
+  1282	            res = update_paper_observe_state(symbol, state, tf_db_path=tf_db)
+  1283	            if res.get("status") == "ok" and res.get("updated", 0) > 0:
+  1284	                synced += res["updated"]
+  1285	                if state == "TRIGGERED":
+  1286	                    pending_count += 1
+  1287	                elif state == "INVALIDATED":
+  1288	                    invalidated_count += 1
+  1289	        except Exception:
+  1290	            pass
+  1291	    return {"synced": synced, "pending": pending_count, "invalidated": invalidated_count}
+  1292	
+  1293	
+  1294	# [T-004] intraday_observe_scheduler
+  1295	def get_observe_scheduler_status() -> dict:
+  1296	    """Return current observe scheduler status and configuration."""
+  1297	    from tradingagents.tradeflow.strategy_config import DEFAULT_STRATEGY_CONFIG
+  1298	    cfg = DEFAULT_STRATEGY_CONFIG
+

@@ -722,6 +722,8 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
                 from tradingagents.tradeflow.observe_runner import run_observe
                 init_db(tf_db)
                 _auto = run_observe(trade_date=trade_date, db_path=tf_db)
+                # [TF-OBS-003] observe_paper_sync — sync ledger on page-open auto-run
+                _sync_paper_from_observe(_auto.details, tf_db)
                 observe_auto_run = True
                 last_observed_at = _auto.run_time
                 if _auto.skipped_reason:
@@ -760,6 +762,20 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
         triggered = 0
         invalidated = 0
         waiting = 0
+
+        # [TF-OBS-003] observe_paper_sync — map symbol → paper ledger status
+        paper_status_map: dict[str, str] = {}
+        try:
+            pt_rows = conn.execute(
+                "SELECT symbol, status FROM tradeflow_paper_trades ORDER BY updated_at DESC"
+            ).fetchall()
+            for pt in pt_rows:
+                _psym = normalize_tradeflow_symbol(pt["symbol"])
+                if _psym not in paper_status_map:
+                    paper_status_map[_psym] = pt["status"]
+        except Exception:
+            pass
+
         for r in rows:
             state = _rget(r, "observe_state", "WAITING")
             sym = normalize_tradeflow_symbol(r["symbol"])  # [UI-008]
@@ -796,6 +812,7 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
                 "current_price": current_price,
                 "trigger_reason": trigger_reason,
                 "strategy_tags": _parse_json(_rget(r, "strategy_tags_json"), []),
+                "paper_status": paper_status_map.get(sym, ""),  # [TF-OBS-003] observe_paper_sync
             }
             items.append(item)
             if state == "TRIGGERED":
@@ -1221,6 +1238,9 @@ def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
         db_path=tf_db,
     )
 
+    # [TF-OBS-003] observe_paper_sync — sync triggered/invalidated into paper ledger
+    paper_sync = _sync_paper_from_observe(result.details, tf_db)
+
     return {
         "status": "skipped" if result.skipped_reason else "ok",
         "trade_date": trade_date,
@@ -1234,8 +1254,41 @@ def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
         "skipped_reason": result.skipped_reason,
         "run_time": result.run_time,
         "details": result.details,
+        "paper_synced": paper_sync["synced"],            # [TF-OBS-003] observe_paper_sync
+        "paper_pending": paper_sync["pending"],           # [TF-OBS-003]
+        "paper_invalidated": paper_sync["invalidated"],   # [TF-OBS-003]
         "runtime_tier_meta": _tradeflow_meta("tradeflow_observe_run"),  # [PERF-001]
     }
+
+
+# [TF-OBS-003] observe_paper_sync
+def _sync_paper_from_observe(details: list, tf_db: str) -> dict:
+    """Sync observe results into the paper ledger.
+
+    For each observe detail with a known state, call update_paper_observe_state
+    so triggered candidates become 'pending' (awaiting manual confirm) and
+    invalidated candidates become 'invalidated'. Candidates not in the paper
+    ledger are ignored — no record is created.
+    """
+    synced = 0
+    pending_count = 0
+    invalidated_count = 0
+    for d in details:
+        symbol = d.get("symbol") if isinstance(d, dict) else None
+        state = d.get("observe_state") if isinstance(d, dict) else None
+        if not symbol or state not in ("TRIGGERED", "INVALIDATED", "WAITING"):
+            continue
+        try:
+            res = update_paper_observe_state(symbol, state, tf_db_path=tf_db)
+            if res.get("status") == "ok" and res.get("updated", 0) > 0:
+                synced += res["updated"]
+                if state == "TRIGGERED":
+                    pending_count += 1
+                elif state == "INVALIDATED":
+                    invalidated_count += 1
+        except Exception:
+            pass
+    return {"synced": synced, "pending": pending_count, "invalidated": invalidated_count}
 
 
 # [T-004] intraday_observe_scheduler

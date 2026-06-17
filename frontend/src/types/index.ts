@@ -1015,6 +1015,7 @@ export interface TradeFlowObserveItem {
     current_price: number | null
     trigger_reason: string
     strategy_tags: string[]
+    paper_status: string  // [TF-OBS-003] observe_paper_sync
 }
 
 export interface TradeFlowObserveResponse {

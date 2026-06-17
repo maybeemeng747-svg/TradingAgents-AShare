@@ -1,0 +1,683 @@
+[0m
+> build · glm-5.1
+[0m
+我先来阅读任务描述并了解项目上下文。
+[0m✱ [0mGrep "TF-OBS-003"[90m in docs/TASKS.md · 7 matches[0m
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=60][0m
+让我阅读一下完整的任务描述。
+[0m→ [0mRead docs/TASKS.md[90m [offset=3103, limit=90][0m
+[0m• [0mExplore Observe and paper ledger[90m Explore Agent[0m
+现在让我浏览一下代码库，以了解现有的 `Observe runner` 和 `paper ledger` 结构。
+[0m✓ [0mExplore Observe and paper ledger[90m Explore Agent[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=1196, limit=80][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=700, limit=60][0m
+分析得非常准确。现在让我读取需要修改的实际代码。让我读取一下关键文件。
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=2370, limit=80][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=130, offset=760][0m
+[0m→ [0mRead tradingagents/tradeflow/observe_runner.py[90m [limit=120, offset=240][0m
+[0m→ [0mRead tests/test_tf_paper001_paper_ledger.py[90m [limit=60, offset=370][0m
+让我查看更多上下文——`get_observe` 的其余部分、`observe_runner` 的详细信息结构，以及现有的测试用例。
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=130, offset=200][0m
+[0m→ [0mRead tests/test_tf_paper001_paper_ledger.py[90m [limit=90, offset=1][0m
+现在我来读取前端 `ObserveTable` 和测试文件设置，以了解 fixture 的模式。
+[0m✱ [0mGrep "TradeFlowObserveItem"[90m in frontend/src · 4 matches[0m
+我先查看一下前端的类型定义以及数据是如何获取的，以便理解如何添加“待确认”标识。
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=75, offset=1320][0m
+[0m→ [0mRead frontend/src/types/index.ts[90m [limit=55, offset=1000][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=60, offset=1440][0m
+我来查找一下 `paperLedger` 状态声明以及 `ObserveTable` 渲染的位置。
+[0m✱ [0mGrep "paperLedger|ObserveTable|observeData|setObserveData"[90m in frontend/src/pages/TradeFlow.tsx · 20 matches[0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=35, offset=2095][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=25, offset=1258][0m
+[0m→ [0mRead tests/test_tf_obs_001_observe_runner.py[90m [limit=110, offset=1][0m
+现在让我查看一下观察运行器（observe runner）测试，以了解用于测试设置的候选创建模式。
+我已经了解全貌了。让我检查一下 git status，然后设置任务进行实现。
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git status && git branch --show-current
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 108 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     docs/TASKS.md
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/task_runs/TF-OBS-003-20260618-020511/
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+local/tradingagents-custom
+[0m
+[0m# [0mTodos
+[ ] Backend: add _sync_paper_from_observe helper + wire into run_observe_check and get_observe auto-run, enrich observe items with paper_status
+[ ] Frontend: add paper_status to TradeFlowObserveItem type + render badge in ObserveTable
+[ ] Tests: create test_tf_obs_003_observe_paper_sync.py with e2e sync scenarios
+[ ] Run tests + lint/typecheck, update DEVLOG.md
+[0m
+让我检查一下服务顶部的 `_connect` 和 `_get_tradeflow_db_path` 辅助函数，并查看已导入的内容。
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=60, offset=1][0m
+现在我已经掌握了全部上下文。让我来实现后端更改。首先，是 sync helper 以及接入到 `run_observe_check`。
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -1220,8 +1220,11 @@
+         trade_date=trade_date,
+         db_path=tf_db,
+     )
+ 
++    # [TF-OBS-003] observe_paper_sync — sync triggered/invalidated into paper ledger
++    paper_sync = _sync_paper_from_observe(result.details, tf_db)
++
+     return {
+         "status": "skipped" if result.skipped_reason else "ok",
+         "trade_date": trade_date,
+         "checked": result.checked,
+@@ -1233,12 +1236,45 @@
+         "errors": result.errors,
+         "skipped_reason": result.skipped_reason,
+         "run_time": result.run_time,
+         "details": result.details,
++        "paper_synced": paper_sync["synced"],            # [TF-OBS-003] observe_paper_sync
++        "paper_pending": paper_sync["pending"],           # [TF-OBS-003]
++        "paper_invalidated": paper_sync["invalidated"],   # [TF-OBS-003]
+         "runtime_tier_meta": _tradeflow_meta("tradeflow_observe_run"),  # [PERF-001]
+     }
+ 
+ 
++# [TF-OBS-003] observe_paper_sync
++def _sync_paper_from_observe(details: list, tf_db: str) -> dict:
++    """Sync observe results into the paper ledger.
++
++    For each observe detail with a known state, call update_paper_observe_state
++    so triggered candidates become 'pending' (awaiting manual confirm) and
++    invalidated candidates become 'invalidated'. Candidates not in the paper
++    ledger are ignored — no record is created.
++    """
++    synced = 0
++    pending_count = 0
++    invalidated_count = 0
++    for d in details:
++        symbol = d.get("symbol") if isinstance(d, dict) else None
++        state = d.get("observe_state") if isinstance(d, dict) else None
++        if not symbol or state not in ("TRIGGERED", "INVALIDATED", "WAITING"):
++            continue
++        try:
++            res = update_paper_observe_state(symbol, state, tf_db_path=tf_db)
++            if res.get("status") == "ok" and res.get("updated", 0) > 0:
++                synced += res["updated"]
++                if state == "TRIGGERED":
++                    pending_count += 1
++                elif state == "INVALIDATED":
++                    invalidated_count += 1
++        except Exception:
++            pass
++    return {"synced": synced, "pending": pending_count, "invalidated": invalidated_count}
++
++
+ # [T-004] intraday_observe_scheduler
+ def get_observe_scheduler_status() -> dict:
+     """Return current observe scheduler status and configuration."""
+     from tradingagents.tradeflow.strategy_config import DEFAULT_STRATEGY_CONFIG
+
+[0m
+现在将其接入 `get_observe` 自动运行路径中：
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -721,8 +721,10 @@
+ from tradingagents.tradeflow.candidate_engine import init_db
+ from tradingagents.tradeflow.observe_runner import run_observe
+ init_db(tf_db)
+ _auto = run_observe(trade_date=trade_date, db_path=tf_db)
++# [TF-OBS-003] observe_paper_sync — sync ledger on page-open auto-run
++_sync_paper_from_observe(_auto.details, tf_db)
+ observe_auto_run = True
+ last_observed_at = _auto.run_time
+ if _auto.skipped_reason:
+     observe_reason = _auto.skipped_reason
+
+[0m
+现在让我读取观察项循环的当前状态来增强它：
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=75, offset=760][0m
+现在在 item loop 之前添加 `paper_status` 映射，并丰富每个 item：
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -761,8 +761,22 @@
+ items = []
+ triggered = 0
+ invalidated = 0
+ waiting = 0
++
++# [TF-OBS-003] observe_paper_sync — map symbol → paper ledger status
++paper_status_map: dict[str, str] = {}
++try:
++    pt_rows = conn.execute(
++        "SELECT symbol, status FROM tradeflow_paper_trades ORDER BY updated_at DESC"
++    ).fetchall()
++    for pt in pt_rows:
++        _psym = normalize_tradeflow_symbol(pt["symbol"])
++        if _psym not in paper_status_map:
++            paper_status_map[_psym] = pt["status"]
++except Exception:
++    pass
++
+ for r in rows:
+     state = _rget(r, "observe_state", "WAITING")
+     sym = normalize_tradeflow_symbol(r["symbol"])  # [UI-008]
+     raw_n = _rget(r, "name", "")
+
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -811,8 +811,9 @@
+     "composite_score": _rget(r, "composite_score", 0.0) or 0.0,
+     "current_price": current_price,
+     "trigger_reason": trigger_reason,
+     "strategy_tags": _parse_json(_rget(r, "strategy_tags_json"), []),
++    "paper_status": paper_status_map.get(sym, ""),  # [TF-OBS-003] observe_paper_sync
+ }
+ items.append(item)
+ if state == "TRIGGERED":
+     triggered += 1
+
+[0m
+[0m# [0mTodos
+[✓] Backend: add _sync_paper_from_observe helper + wire into run_observe_check and get_observe auto-run, enrich observe items with paper_status
+[•] Frontend: add paper_status to TradeFlowObserveItem type + render badge in ObserveTable
+[ ] Tests: create test_tf_obs_003_observe_paper_sync.py with e2e sync scenarios
+[ ] Run tests + lint/typecheck, update DEVLOG.md
+[0m
+后端已完成。现在处理前端——将 `paper_status` 添加到类型定义中，并在 `ObserveTable` 中渲染徽章。
+[0m← [0mEdit frontend/src/types/index.ts
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
++++ /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
+@@ -1014,8 +1014,9 @@
+     composite_score: number
+     current_price: number | null
+     trigger_reason: string
+     strategy_tags: string[]
++    paper_status: string  // [TF-OBS-003] observe_paper_sync
+ }
+ 
+ export interface TradeFlowObserveResponse {
+     status: string
+
+[0m
+现在请更新 `ObserveTable`，增加一个“模拟账本”列，以显示“待确认/跟踪中”的标识。我先查看一下表格表头和行渲染的结束位置，以便添加该列：
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=15, offset=282][0m
+[0m
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -284,8 +284,9 @@
+ <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+     <th className="px-4 py-2.5 font-medium">代码</th>
+     <th className="px-4 py-2.5 font-medium">名称</th>
+     <th className="px-4 py-2.5 font-medium">状态</th>
++    <th className="px-4 py-2.5 font-medium">模拟账本</th>
+     <th className="px-4 py-2.5 font-medium">触发价</th>
+     <th className="px-4 py-2.5 font-medium">失效价</th>
+     <th className="px-4 py-2.5 font-medium">当前价</th>
+     <th className="px-4 py-2.5 font-medium">触发距离</th>
+
+[0m
+现在在状态单元格后添加徽章单元格。让我查看一下当前行渲染中状态单元格附近的内容：
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=20, offset=299][0m
+[0m
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -311,8 +311,20 @@
+         {item.observe_state === 'WAITING' && <Eye className="h-3 w-3" />}
+         {st.text}
+     </span>
+ </td>
++<td className="px-4 py-2.5">
++    {(() => {
++        const ps = item.paper_status || ''
++        if (ps === 'pending') return <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">待确认</span>
++        if (ps === 'tracking') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-300">已加入试跑</span>
++        if (ps === 'open') return <span className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">持仓中</span>
++        if (ps === 'closed') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-500 dark:bg-slate-700 dark:text-slate-400">已平仓</span>
++        if (ps === 'invalidated') return <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300">已失效</span>
++        if (ps === 'observation') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-400 dark:bg-slate-700 dark:text-slate-500">观察降级</span>
++        return <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
++    })()}
++</td>
+ <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{fmtPrice(item.trigger_price)}</td>
+ <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{fmtPrice(item.invalid_price)}</td>
+ <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">
+     {item.current_price != null ? item.current_price.toFixed(2) : <span className="text-xs text-slate-400">实时行情不可用</span>}
+
+[0m
+[0m# [0mTodos
+[✓] Backend: add _sync_paper_from_observe helper + wire into run_observe_check and get_observe auto-run, enrich observe items with paper_status
+[✓] Frontend: add paper_status to TradeFlowObserveItem type + render badge in ObserveTable
+[•] Tests: create test_tf_obs_003_observe_paper_sync.py with e2e sync scenarios
+[ ] Run tests + lint/typecheck, update DEVLOG.md
+[0m
+现在我来创建测试文件。让我更新一下待办事项并编写测试。
+让我检查一下 `add_paper_candidate` 签名，以匹配测试设置：
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=30, offset=2125][0m
+[0m✱ [0mGrep "^def add_paper_candidate"[90m in api/services/tradeflow_service.py · 1 match[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=30, offset=2178][0m
+现在我已经掌握了所需的一切信息。让我来编写测试文件：
+[0m
+[0m← [0mWrite tests/test_tf_obs_003_observe_paper_sync.py
+Wrote file successfully.
+[0m
+我先检查一下 `run_observe_check` / `get_observe` 在现有测试中是如何进行测试的，以确保我的测试模式是兼容的：
+[0m✱ [0mGrep "run_observe_check|get_observe|quote_provider|_precheck|monkeypatch|mock"[90m in tests/test_tf_obs_002_observe_auto_run.py · 43 matches[0m
+我来读取 TF-OBS-002 的 monkeypatch 模式：
+[0m→ [0mRead tests/test_tf_obs_002_observe_auto_run.py[90m [limit=90, offset=142][0m
+我明白了 — 现有的测试使用 `monkeypatch` + `TODAY` 来测试 auto-run 路径。我来重写一下测试文件，使其更健壮并符合这种模式：
+[0m
+[0m← [0mWrite tests/test_tf_obs_003_observe_paper_sync.py
+Wrote file successfully.
+[0m
+现在我来运行一下测试：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tf_obs_003_observe_paper_sync.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 21 items
+
+tests/test_tf_obs_003_observe_paper_sync.py::TestSyncPaperFromObserveUnit::test_sync_triggered_to_pending PASSED [  4%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestSyncPaperFromObserveUnit::test_sync_invalidated PASSED [  9%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestSyncPaperFromObserveUnit::test_sync_waiting_keeps_tracking PASSED [ 14%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestSyncPaperFromObserveUnit::test_sync_non_paper_candidate_creates_nothing PASSED [ 19%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestSyncPaperFromObserveUnit::test_sync_skips_unknown_state PASSED [ 23%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestSyncPaperFromObserveUnit::test_sync_empty_details PASSED [ 28%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestSyncPaperFromObserveUnit::test_sync_skips_skipped_no_price_entries PASSED [ 33%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestObserveToPaperE2E::test_triggered_candidate_becomes_pending PASSED [ 38%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestObserveToPaperE2E::test_invalidated_candidate_becomes_invalidated PASSED [ 42%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestObserveToPaperE2E::test_waiting_candidate_stays_tracking PASSED [ 47%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestObserveToPaperE2E::test_non_paper_candidate_no_record_after_observe PASSED [ 52%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestObserveToPaperE2E::test_mixed_paper_and_non_paper PASSED [ 57%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestRunObserveCheckPaperSync::test_wrapper_syncs_paper_on_trigger PASSED [ 61%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestRunObserveCheckPaperSync::test_wrapper_syncs_paper_on_invalidate PASSED [ 66%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestRunObserveCheckPaperSync::test_wrapper_non_paper_candidate_syncs_zero PASSED [ 71%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestGetObserveAutoRunSync::test_auto_run_syncs_triggered_to_pending PASSED [ 76%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestGetObserveAutoRunSync::test_auto_run_syncs_invalidated PASSED [ 80%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestGetObserveAutoRunSync::test_auto_run_non_paper_candidate_no_record PASSED [ 85%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestObserveItemsPaperStatus::test_observe_item_has_paper_status_pending PASSED [ 90%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestObserveItemsPaperStatus::test_non_paper_candidate_paper_status_empty PASSED [ 95%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestObserveItemsPaperStatus::test_tracking_candidate_shows_tracking_status FAILED [100%]
+
+=================================== FAILURES ===================================
+__ TestObserveItemsPaperStatus.test_tracking_candidate_shows_tracking_status ___
+
+self = <tests.test_tf_obs_003_observe_paper_sync.TestObserveItemsPaperStatus object at 0x1103b7bf0>
+tmp_db = '/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-253/test_tracking_candidate_shows_0/test_obs_paper_sync.db'
+
+    def test_tracking_candidate_shows_tracking_status(self, tmp_db):
+        _setup_candidate_and_paper(tmp_db, "601689.SH", 10.0, 9.0)
+        resp = get_observe(TODAY, tf_db_path=tmp_db)
+        assert resp["status"] == "ok"
+        item = next(
+            it for it in resp["observe_items"] if it["symbol"] == "601689.SH"
+        )
+>       assert item["paper_status"] == "tracking"
+E       AssertionError: assert 'pending' == 'tracking'
+E         
+E         - tracking
+E         + pending
+
+tests/test_tf_obs_003_observe_paper_sync.py:417: AssertionError
+----------------------------- Captured stdout call -----------------------------
+[provider-trace] method=get_realtime_quotes symbol=['601689.SH'] category=realtime_data configured='cn_akshare' chain=['cn_akshare', 'cn_baostock', 'yfinance', 'alpha_vantage', 'cn_astock']
+[provider-trace] method=get_realtime_quotes symbol=['601689.SH'] vendor=cn_akshare status=hit
+=========================== short test summary info ============================
+FAILED tests/test_tf_obs_003_observe_paper_sync.py::TestObserveItemsPaperStatus::test_tracking_candidate_shows_tracking_status
+========================= 1 failed, 20 passed in 2.83s =========================
+[0m
+有一个测试失败了，因为 auto-run 获取了实时行情并触发了候选对象。我需要对这个测试也进行 monkeypatch 以控制状态。让我来修复它：
+[0m← [0mEdit tests/test_tf_obs_003_observe_paper_sync.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tf_obs_003_observe_paper_sync.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tf_obs_003_observe_paper_sync.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tf_obs_003_observe_paper_sync.py
+@@ -406,10 +406,23 @@
+         it for it in resp["observe_items"] if it["symbol"] == "600519.SH"
+     )
+     assert item["paper_status"] == ""
+ 
+-def test_tracking_candidate_shows_tracking_status(self, tmp_db):
++def test_tracking_candidate_shows_tracking_status(self, tmp_db, monkeypatch):
+     _setup_candidate_and_paper(tmp_db, "601689.SH", 10.0, 9.0)
++
++    def fake_run_observe(trade_date, db_path, **kwargs):
++        r = ObserveRunResult()
++        r.waiting = 1
++        r.signals_written = 1
++        r.details = [{"symbol": "601689.SH", "observe_state": "WAITING"}]
++        return r
++
++    monkeypatch.setattr(
++        "tradingagents.tradeflow.observe_runner.run_observe",
++        fake_run_observe,
++    )
++
+     resp = get_observe(TODAY, tf_db_path=tmp_db)
+     assert resp["status"] == "ok"
+     item = next(
+         it for it in resp["observe_items"] if it["symbol"] == "601689.SH"
+
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tf_obs_003_observe_paper_sync.py -v 2>&1
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 21 items
+
+tests/test_tf_obs_003_observe_paper_sync.py::TestSyncPaperFromObserveUnit::test_sync_triggered_to_pending PASSED [  4%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestSyncPaperFromObserveUnit::test_sync_invalidated PASSED [  9%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestSyncPaperFromObserveUnit::test_sync_waiting_keeps_tracking PASSED [ 14%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestSyncPaperFromObserveUnit::test_sync_non_paper_candidate_creates_nothing PASSED [ 19%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestSyncPaperFromObserveUnit::test_sync_skips_unknown_state PASSED [ 23%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestSyncPaperFromObserveUnit::test_sync_empty_details PASSED [ 28%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestSyncPaperFromObserveUnit::test_sync_skips_skipped_no_price_entries PASSED [ 33%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestObserveToPaperE2E::test_triggered_candidate_becomes_pending PASSED [ 38%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestObserveToPaperE2E::test_invalidated_candidate_becomes_invalidated PASSED [ 42%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestObserveToPaperE2E::test_waiting_candidate_stays_tracking PASSED [ 47%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestObserveToPaperE2E::test_non_paper_candidate_no_record_after_observe PASSED [ 52%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestObserveToPaperE2E::test_mixed_paper_and_non_paper PASSED [ 57%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestRunObserveCheckPaperSync::test_wrapper_syncs_paper_on_trigger PASSED [ 61%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestRunObserveCheckPaperSync::test_wrapper_syncs_paper_on_invalidate PASSED [ 66%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestRunObserveCheckPaperSync::test_wrapper_non_paper_candidate_syncs_zero PASSED [ 71%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestGetObserveAutoRunSync::test_auto_run_syncs_triggered_to_pending PASSED [ 76%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestGetObserveAutoRunSync::test_auto_run_syncs_invalidated PASSED [ 80%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestGetObserveAutoRunSync::test_auto_run_non_paper_candidate_no_record PASSED [ 85%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestObserveItemsPaperStatus::test_observe_item_has_paper_status_pending PASSED [ 90%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestObserveItemsPaperStatus::test_non_paper_candidate_paper_status_empty PASSED [ 95%]
+tests/test_tf_obs_003_observe_paper_sync.py::TestObserveItemsPaperStatus::test_tracking_candidate_shows_tracking_status PASSED [100%]
+
+============================== 21 passed in 1.94s ==============================
+[0m
+所有 21 个测试均已通过。现在让我运行现有的相关测试，以确认没有回归问题：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tf_paper001_paper_ledger.py tests/test_tf_obs_001_observe_runner.py tests/test_tf_obs_002_observe_auto_run.py tests/test_tf_risk001_paper_risk_budget.py -q 2>&1
+........................................................................ [ 49%]
+........................................................................ [ 98%]
+..                                                                       [100%]
+146 passed in 4.55s
+[0m
+所有 146 个现有测试均已通过。现在我来运行前端 typecheck：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare/frontend && npx tsc --noEmit 2>&1 | head -30
+(no output)
+[0m
+TypeScript 类型检查已通过。为了保险起见，我来运行更广泛的 Tradeflow 测试套件：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/ -k "tradeflow or tf_obs or tf_paper or tf_risk or observe or paper" -q 2>&1
+........................................................................ [  9%]
+........................................................................ [ 18%]
+........................................................................ [ 27%]
+........................................................................ [ 37%]
+........................................................................ [ 46%]
+........................................................................ [ 55%]
+........................................................................ [ 65%]
+........................................................................ [ 74%]
+........................................................................ [ 83%]
+........................................................................ [ 93%]
+....................................................                     [100%]
+772 passed, 5135 deselected in 87.58s (0:01:27)
+[0m
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=10, offset=1][0m
+所有 772 个 tradeflow 测试均已通过。现在让我更新 DEVLOG.md。让我先读取最近的一条记录以匹配其格式：
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,69 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-18 | TF-OBS-003: 盘中观察触发到模拟账本待确认联动
++
++- **执行者**：OpenCode
++- **类型**：feature / TradeFlow 联动（P1）
++- **任务**：TF-OBS-003 — observe_paper_sync
++- **状态**：✅ 完成
++
++### 背景
++
++盘中 Observe 触发候选后，只更新 `tradeflow_candidates` 的 observe_state，但不会同步
++到模拟账本（`tradeflow_paper_trades`）。用户无法直观看到哪些已跟踪的票真的到了
++执行条件。`update_paper_observe_state()` 已在 TF-PAPER-001 实现并测试，但从未被
++observe 流程调用。
++
++### 变更内容
++
++1. **`api/services/tradeflow_service.py`**
++   - 新增 `_sync_paper_from_observe(details, tf_db)` 辅助函数（`# [TF-OBS-003] observe_paper_sync`）：
++     遍历 observe details，对每个有已知状态（TRIGGERED/INVALIDATED/WAITING）的候选
++     调用 `update_paper_observe_state`，将触发的票同步为 `pending`、失效的同步为 `invalidated`。
++     未加入模拟账本的候选不会生成任何记录。
++   - `run_observe_check()`（手动刷新）：`run_observe()` 返回后调用 `_sync_paper_from_observe`，
++     响应新增 `paper_synced` / `paper_pending` / `paper_invalidated` 计数。
++   - `get_observe()`（页面自动执行）：auto-run 路径调用 `run_observe` 后也同步调用
++     `_sync_paper_from_observe`，保证打开页面即联动。
++   - `get_observe()` 返回的 observe_items 每项新增 `paper_status` 字段（从 `tradeflow_paper_trades`
++     查询 symbol → status 映射），供前端显示账本状态。
++
++2. **`frontend/src/types/index.ts`**
++   - `TradeFlowObserveItem` 新增 `paper_status: string` 字段。
++
++3. **`frontend/src/pages/TradeFlow.tsx`**
++   - `ObserveTable` 新增"模拟账本"列：根据 `paper_status` 显示徽标 ——
++     `pending`→"待确认"（琥珀）、`tracking`→"已加入试跑"（灰）、`open`→"持仓中"、
++     `closed`→"已平仓"、`invalidated`→"已失效"、`observation`→"观察降级"、未加入→"—"。
++
++4. **测试**
++   - 新增 `tests/test_tf_obs_003_observe_paper_sync.py`（21 个测试）：
++     - `_sync_paper_from_observe` 单元测试（triggered/invalidated/waiting/无账本/未知状态/空）。
++     - 端到端：`run_observe(quote_provider)` + sync → 账本状态正确流转。
++     - `run_observe_check` 服务包装层 sync 计数 + 实际同步验证。
++     - `get_observe` auto-run 路径同步验证（monkeypatch run_observe）。
++     - observe_items `paper_status` 字段验证。
++
++### 验收
++
++- ✅ 触发后 paper ledger 对应记录进入 pending。
++- ✅ 失效后进入 invalidated。
++- ✅ 未加入 paper ledger 的候选不会生成模拟记录。
++- ✅ 前端 Observe 面板显示"待确认/已加入试跑"标识。
++- ✅ 手动刷新 + 页面自动执行均同步账本。
++
++### 测试结果
++
++- 新增测试：21 passed
++- 回归（tf_paper/obs/risk）：146 passed
++- 全量 tradeflow 测试：772 passed
++- 前端 tsc --noEmit：0 errors
++
++---
++
+ ## 2026-06-17 | 释放 TradeFlow 下一批开发任务
+ 
+ - **执行者**：Codex
+ - **类型**：任务池调度
+
+[0m
+让我对所有更改进行最后检查：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git diff --stat
+api/services/tradeflow_service.py  | 53 +++++++++++++++++++++++++++++++++
+ docs/DEVLOG.md                     | 61 ++++++++++++++++++++++++++++++++++++++
+ docs/TASKS.md                      |  2 +-
+ docs/tradeflow_trial_acceptance.md |  2 +-
+ frontend/src/pages/TradeFlow.tsx   | 13 ++++++++
+ frontend/src/types/index.ts        |  1 +
+ 6 files changed, 130 insertions(+), 2 deletions(-)
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git status
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 108 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     api/services/tradeflow_service.py
+	修改：     docs/DEVLOG.md
+	修改：     docs/TASKS.md
+	修改：     docs/tradeflow_trial_acceptance.md
+	修改：     frontend/src/pages/TradeFlow.tsx
+	修改：     frontend/src/types/index.ts
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/task_runs/TF-OBS-003-20260618-020511/
+	tests/test_tf_obs_003_observe_paper_sync.py
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+[0m
+`docs/TASKS.md` 和 `docs/tradeflow_trial_acceptance.md` 在我开始之前就已经被修改了（任务认领过程）。让我对后端 diff 进行最后一次检查：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git diff api/services/tradeflow_service.py
+diff --git a/api/services/tradeflow_service.py b/api/services/tradeflow_service.py
+index c62df45..622d141 100644
+--- a/api/services/tradeflow_service.py
++++ b/api/services/tradeflow_service.py
+@@ -722,6 +722,8 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
+                 from tradingagents.tradeflow.observe_runner import run_observe
+                 init_db(tf_db)
+                 _auto = run_observe(trade_date=trade_date, db_path=tf_db)
++                # [TF-OBS-003] observe_paper_sync — sync ledger on page-open auto-run
++                _sync_paper_from_observe(_auto.details, tf_db)
+                 observe_auto_run = True
+                 last_observed_at = _auto.run_time
+                 if _auto.skipped_reason:
+@@ -760,6 +762,20 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
+         triggered = 0
+         invalidated = 0
+         waiting = 0
++
++        # [TF-OBS-003] observe_paper_sync — map symbol → paper ledger status
++        paper_status_map: dict[str, str] = {}
++        try:
++            pt_rows = conn.execute(
++                "SELECT symbol, status FROM tradeflow_paper_trades ORDER BY updated_at DESC"
++            ).fetchall()
++            for pt in pt_rows:
++                _psym = normalize_tradeflow_symbol(pt["symbol"])
++                if _psym not in paper_status_map:
++                    paper_status_map[_psym] = pt["status"]
++        except Exception:
++            pass
++
+         for r in rows:
+             state = _rget(r, "observe_state", "WAITING")
+             sym = normalize_tradeflow_symbol(r["symbol"])  # [UI-008]
+@@ -796,6 +812,7 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
+                 "current_price": current_price,
+                 "trigger_reason": trigger_reason,
+                 "strategy_tags": _parse_json(_rget(r, "strategy_tags_json"), []),
++                "paper_status": paper_status_map.get(sym, ""),  # [TF-OBS-003] observe_paper_sync
+             }
+             items.append(item)
+             if state == "TRIGGERED":
+@@ -1221,6 +1238,9 @@ def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
+         db_path=tf_db,
+     )
+ 
++    # [TF-OBS-003] observe_paper_sync — sync triggered/invalidated into paper ledger
++    paper_sync = _sync_paper_from_observe(result.details, tf_db)
++
+     return {
+         "status": "skipped" if result.skipped_reason else "ok",
+         "trade_date": trade_date,
+@@ -1234,10 +1254,43 @@ def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
+         "skipped_reason": result.skipped_reason,
+         "run_time": result.run_time,
+         "details": result.details,
++        "paper_synced": paper_sync["synced"],            # [TF-OBS-003] observe_paper_sync
++        "paper_pending": paper_sync["pending"],           # [TF-OBS-003]
++        "paper_invalidated": paper_sync["invalidated"],   # [TF-OBS-003]
+         "runtime_tier_meta": _tradeflow_meta("tradeflow_observe_run"),  # [PERF-001]
+     }
+ 
+ 
++# [TF-OBS-003] observe_paper_sync
++def _sync_paper_from_observe(details: list, tf_db: str) -> dict:
++    """Sync observe results into the paper ledger.
++
++    For each observe detail with a known state, call update_paper_observe_state
++    so triggered candidates become 'pending' (awaiting manual confirm) and
++    invalidated candidates become 'invalidated'. Candidates not in the paper
++    ledger are ignored — no record is created.
++    """
++    synced = 0
++    pending_count = 0
++    invalidated_count = 0
++    for d in details:
++        symbol = d.get("symbol") if isinstance(d, dict) else None
++        state = d.get("observe_state") if isinstance(d, dict) else None
++        if not symbol or state not in ("TRIGGERED", "INVALIDATED", "WAITING"):
++            continue
++        try:
++            res = update_paper_observe_state(symbol, state, tf_db_path=tf_db)
++            if res.get("status") == "ok" and res.get("updated", 0) > 0:
++                synced += res["updated"]
++                if state == "TRIGGERED":
++                    pending_count += 1
++                elif state == "INVALIDATED":
++                    invalidated_count += 1
++        except Exception:
++            pass
++    return {"synced": synced, "pending": pending_count, "invalidated": invalidated_count}
++
++
+ # [T-004] intraday_observe_scheduler
+ def get_observe_scheduler_status() -> dict:
+     """Return current observe scheduler status and configuration."""
+[0m
+[0m# [0mTodos
+[✓] Backend: add _sync_paper_from_observe helper + wire into run_observe_check and get_observe auto-run, enrich observe items with paper_status
+[✓] Frontend: add paper_status to TradeFlowObserveItem type + render badge in ObserveTable
+[✓] Tests: create test_tf_obs_003_observe_paper_sync.py with e2e sync scenarios
+[✓] Run tests + lint/typecheck, update DEVLOG.md
+[0m
+所有更改看起来都很整洁。让我更新一下待办事项列表，以标记所有已完成的内容：
+TF-OBS-003 已完成。
+
+## 修改的文件
+- **`api/services/tradeflow_service.py`** — 添加了 `_sync_paper_from_observe()` 辅助函数；并将其接入 `run_observe_check()`（手动刷新）和 `get_observe()`（页面自动运行）中；用 `paper_status` 字段丰富了观察项。
+- **`frontend/src/types/index.ts`** — 在 `TradeFlowObserveItem` 中添加了 `paper_status: string`。
+- **`frontend/src/pages/TradeFlow.tsx`** — ObserveTable 中新增了“模拟账本”列，显示 徽章（待确认/已加入试跑/持仓中/已平仓/已失效）。
+- **`tests/test_tf_obs_003_observe_paper_sync.py`** — 新增测试文件（21 个测试用例）。
+- **`docs/DEVLOG.md`** — 更新日志条目。
+
+## 核心逻辑
+`update_paper_observe_state()`（来自 TF-PAPER-001）已经可以处理 TRIGGERED→pending / INVALIDATED→invalidated 的映射，但之前从未被调用。新的 `_sync_paper_from_observe(details, tf_db)` 会遍历观察结果详情，并为每个候选对象调用它。两个观察入口点（手动 `run_observe_check` + 页面自动运行 `get_observe`）现在都调用此同步逻辑。未在模拟账本中的候选对象不受影响（无插入操作，仅对现有行进行 UPDATE）。
+
+## 测试结果
+- **新增测试：21 个通过**
+- **回归测试（tf_paper/obs/risk/observe）：146 个通过**
+- **完整 TradeFlow 测试套件：772 个通过**
+- **前端 `tsc --noEmit`：0 个错误**

@@ -285,6 +285,7 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
                         <th className="px-4 py-2.5 font-medium">代码</th>
                         <th className="px-4 py-2.5 font-medium">名称</th>
                         <th className="px-4 py-2.5 font-medium">状态</th>
+                        <th className="px-4 py-2.5 font-medium">模拟账本</th>
                         <th className="px-4 py-2.5 font-medium">触发价</th>
                         <th className="px-4 py-2.5 font-medium">失效价</th>
                         <th className="px-4 py-2.5 font-medium">当前价</th>
@@ -310,6 +311,18 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
                                         {item.observe_state === 'WAITING' && <Eye className="h-3 w-3" />}
                                         {st.text}
                                     </span>
+                                </td>
+                                <td className="px-4 py-2.5">
+                                    {(() => {
+                                        const ps = item.paper_status || ''
+                                        if (ps === 'pending') return <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">待确认</span>
+                                        if (ps === 'tracking') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-300">已加入试跑</span>
+                                        if (ps === 'open') return <span className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">持仓中</span>
+                                        if (ps === 'closed') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-500 dark:bg-slate-700 dark:text-slate-400">已平仓</span>
+                                        if (ps === 'invalidated') return <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300">已失效</span>
+                                        if (ps === 'observation') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-400 dark:bg-slate-700 dark:text-slate-500">观察降级</span>
+                                        return <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
+                                    })()}
                                 </td>
                                 <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{fmtPrice(item.trigger_price)}</td>
                                 <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{fmtPrice(item.invalid_price)}</td>

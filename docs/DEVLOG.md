@@ -4,6 +4,67 @@
 
 ---
 
+## 2026-06-18 | TF-OBS-003: 盘中观察触发到模拟账本待确认联动
+
+- **执行者**：OpenCode
+- **类型**：feature / TradeFlow 联动（P1）
+- **任务**：TF-OBS-003 — observe_paper_sync
+- **状态**：✅ 完成
+
+### 背景
+
+盘中 Observe 触发候选后，只更新 `tradeflow_candidates` 的 observe_state，但不会同步
+到模拟账本（`tradeflow_paper_trades`）。用户无法直观看到哪些已跟踪的票真的到了
+执行条件。`update_paper_observe_state()` 已在 TF-PAPER-001 实现并测试，但从未被
+observe 流程调用。
+
+### 变更内容
+
+1. **`api/services/tradeflow_service.py`**
+   - 新增 `_sync_paper_from_observe(details, tf_db)` 辅助函数（`# [TF-OBS-003] observe_paper_sync`）：
+     遍历 observe details，对每个有已知状态（TRIGGERED/INVALIDATED/WAITING）的候选
+     调用 `update_paper_observe_state`，将触发的票同步为 `pending`、失效的同步为 `invalidated`。
+     未加入模拟账本的候选不会生成任何记录。
+   - `run_observe_check()`（手动刷新）：`run_observe()` 返回后调用 `_sync_paper_from_observe`，
+     响应新增 `paper_synced` / `paper_pending` / `paper_invalidated` 计数。
+   - `get_observe()`（页面自动执行）：auto-run 路径调用 `run_observe` 后也同步调用
+     `_sync_paper_from_observe`，保证打开页面即联动。
+   - `get_observe()` 返回的 observe_items 每项新增 `paper_status` 字段（从 `tradeflow_paper_trades`
+     查询 symbol → status 映射），供前端显示账本状态。
+
+2. **`frontend/src/types/index.ts`**
+   - `TradeFlowObserveItem` 新增 `paper_status: string` 字段。
+
+3. **`frontend/src/pages/TradeFlow.tsx`**
+   - `ObserveTable` 新增"模拟账本"列：根据 `paper_status` 显示徽标 ——
+     `pending`→"待确认"（琥珀）、`tracking`→"已加入试跑"（灰）、`open`→"持仓中"、
+     `closed`→"已平仓"、`invalidated`→"已失效"、`observation`→"观察降级"、未加入→"—"。
+
+4. **测试**
+   - 新增 `tests/test_tf_obs_003_observe_paper_sync.py`（21 个测试）：
+     - `_sync_paper_from_observe` 单元测试（triggered/invalidated/waiting/无账本/未知状态/空）。
+     - 端到端：`run_observe(quote_provider)` + sync → 账本状态正确流转。
+     - `run_observe_check` 服务包装层 sync 计数 + 实际同步验证。
+     - `get_observe` auto-run 路径同步验证（monkeypatch run_observe）。
+     - observe_items `paper_status` 字段验证。
+
+### 验收
+
+- ✅ 触发后 paper ledger 对应记录进入 pending。
+- ✅ 失效后进入 invalidated。
+- ✅ 未加入 paper ledger 的候选不会生成模拟记录。
+- ✅ 前端 Observe 面板显示"待确认/已加入试跑"标识。
+- ✅ 手动刷新 + 页面自动执行均同步账本。
+
+### 测试结果
+
+- 新增测试：21 passed
+- 回归（tf_paper/obs/risk）：146 passed
+- 全量 tradeflow 测试：772 passed
+- 前端 tsc --noEmit：0 errors
+
+---
+
 ## 2026-06-17 | 释放 TradeFlow 下一批开发任务
 
 - **执行者**：Codex
@@ -4899,3 +4960,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - 验收：818 passed, 2 skipped, 0 failed；8 分项字段 missing: []；tiered/compare 路由 shape 正确
 - 排除：tradeflow_trial_acceptance.md（仅生成时间变化）、task_suggestions/2026-06-14.md（未跟踪）
 - 下一步：TF-QUALITY-004 候选池实盘区分度回放校准
+
+## 2026-06-18 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-OBS-003 - 盘中观察触发到模拟账本待确认联动（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TF-OBS-003-20260618-round1.txt
+- **Run archive**: docs/task_runs/TF-OBS-003-20260618-020511/
