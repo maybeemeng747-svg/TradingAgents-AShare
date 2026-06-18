@@ -100,11 +100,13 @@
 74. `TF-API-013`：TradeFlow API 合约收口与 HTTP 路由回归（P0，done，`fce3141` + `289a392`）。
 75. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，done，`OpenCode` 2026-06-16）。
 76. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，done，依赖 TF-PAPER-001 ✓）。
-77. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，ready，依赖 TF-OBS-002/TF-PAPER-001）。
+77. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，done，commit fcce883）。
 78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，done，依赖 TF-REVIEW-002/TF-PAPER-001）。
-79. `DATA-019`：关键数据源实盘抽样健康日报（P1，ready，依赖 DATA-018/DATA-017）。
-  80. `H-013`：昊天主题热度曲线与政策证据看板（P1，done，依赖 H-012/H-010）。
-81. `V-008`：TradeFlow 小资金试跑前整体验收（P1，blocked，等待 TF-OBS-003/TF-REVIEW-003 完成后释放）。
+79. `DATA-019`：关键数据源实盘抽样健康日报（P1，done，commit 58b5cd2）。
+80. `H-013`：昊天主题热度曲线与政策证据看板（P1，done，commit b1fe17d）。
+81. `DATA-019A`：实盘抽样 skipped 状态与任务池收口补修（P2，ready，依赖 DATA-019）。
+82. `H-013A`：昊天热度图历史日期 fallback 与窗口 unique 统计补修（P2，ready，依赖 H-013）。
+83. `V-008`：TradeFlow 小资金试跑前整体验收（P1，blocked，等待 DATA-019A/H-013A 完成后释放）。
 
 ### 数据源治理候选队列
 
@@ -3180,11 +3182,51 @@
   - API/前端均能展示主题证据和候选映射。
 - **代码标注要求**：`# [H-013] mandate_topic_heatmap` / `// [H-013] mandate_topic_heatmap`
 
+### DATA-019A: 实盘抽样 skipped 状态与任务池收口补修（P2）
+- **描述**：收口 DATA-019 Codex review 发现的 P2：当 `TA_LIVE_DATA_SMOKE` 未开启导致所有检查都是 `SKIPPED` 时，报告不能显示为 all green；并确保任务池顶部/详情状态一致。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：DATA-019 完成。
+- **执行约束**：
+  - 不调用 live API，除非显式设置 `TA_LIVE_DATA_SMOKE=1`。
+  - 不打印密钥。
+  - 不阻塞主业务。
+- **实现要点**：
+  1. `live_source_sampling.py` 汇总状态增加 skipped-only 场景，`overall_status` 应为 `skipped` 或等价非绿色状态。
+  2. Markdown 报告明确写“未执行实盘抽样/等待启用 live smoke”，不得写 `ALL GREEN`。
+  3. 补 skipped-only 回归测试。
+  4. 检查 `docs/TASKS.md` 顶部与详情状态一致。
+- **验收方式**：
+  - skipped-only fixture 不再 `all_green=True`。
+  - DATA-019 相关测试通过。
+  - `docs/TASKS.md` 不再残留 DATA-019 `ready/in_progress`。
+- **代码标注要求**：`# [DATA-019A] live_source_sampling_skip_status`
+
+### H-013A: 昊天热度图历史日期 fallback 与窗口 unique 统计补修（P2）
+- **描述**：收口 H-013 Codex review 发现的 P2/P3：topic heatmap 查询不能漏掉 `effective_trade_date` 为空但 `trade_date` 有值的历史候选；窗口统计里的 `unique_candidates` 不能永远为 0；前端 topic→candidate 点击应保留 symbol 上下文。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：H-013 完成。
+- **执行约束**：
+  - 不调用 LLM。
+  - 不写生产数据库。
+  - 不改变主题热度对最终动作的非强制属性。
+- **实现要点**：
+  1. `get_topic_heatmap()` 默认 as_of 查询与 window 过滤使用 `COALESCE(NULLIF(effective_trade_date, ''), trade_date)`。
+  2. `topic_heatmap.py` 的 7/20/60 日窗口统计正确填充候选 symbol 集合。
+  3. 前端点击关联候选时切到候选池并保留/打开对应 symbol。
+  4. 补 legacy empty effective_trade_date 与 unique_candidates 回归测试。
+- **验收方式**：
+  - legacy row 只有 `trade_date` 时仍进入 heatmap。
+  - 非空热度曲线窗口 `unique_candidates > 0`。
+  - 前端点击 topic candidate 不丢 symbol。
+- **代码标注要求**：`# [H-013A] mandate_topic_heatmap_fix` / `// [H-013A] mandate_topic_heatmap_fix`
+
 ### V-008: TradeFlow 小资金试跑前整体验收（P1）
 - **描述**：在 API 合约、候选压缩、风险预算、Observe 联动和 Review 归因完成后，做一次完整试跑前验收，确认用户可以用 5000 元模拟流程安全试用。
 - **优先级**：P1
-- **状态**：blocked — 等待 TF-OBS-003、TF-REVIEW-003 完成后释放；不要提前领取。
-- **前置条件**：TF-QUALITY-004、TF-RISK-001、TF-OBS-003、TF-REVIEW-003 完成。
+- **状态**：blocked — 等待 DATA-019A、H-013A 完成后释放；不要提前领取。
+- **前置条件**：TF-QUALITY-004、TF-RISK-001、TF-OBS-003、TF-REVIEW-003、DATA-019A、H-013A 完成。
 - **执行约束**：
   - 不调用 LLM。
   - 不写生产数据库。

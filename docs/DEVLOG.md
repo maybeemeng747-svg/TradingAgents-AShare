@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-06-18 | 晨间审核：TradeFlow 夜间开发收口
+
+- **执行者**：Codex
+- **类型**：审核 / 任务池收口
+- **状态**：✅ 完成
+
+### 审核结论
+
+- 夜间自动开发完成 4 个任务：`TF-OBS-003`、`TF-REVIEW-003`、`DATA-019`、`H-013`，均为 1 轮 PASS，Codex review 无 P0/P1。
+- 针对新增任务的 targeted tests 复跑通过：`232 passed`。
+- 发现任务池顶部状态滞后：`TF-OBS-003`、`DATA-019` 仍显示 ready，`H-013` 顶部有缩进异常；已同步为 done。
+
+### 遗留补刀
+
+- `DATA-019A`（P2，ready）：修复 skipped-only live smoke 被误报为 all green，并补任务池状态一致性回归。
+- `H-013A`（P2，ready）：修复 topic heatmap 历史日期 fallback、窗口 unique candidate 统计，以及前端 topic→candidate symbol 传递。
+- `V-008` 继续 blocked：等 `DATA-019A`、`H-013A` 完成后再释放最终小资金试跑验收。
+
+---
+
 ## 2026-06-18 | H-013: 昊天主题热度曲线与政策证据看板
 
 - **执行者**：OpenCode
