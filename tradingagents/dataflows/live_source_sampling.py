@@ -657,6 +657,12 @@ def _compute_summary(results: List[SampleResult]) -> Dict[str, Any]:
     red = status_counts.get(SourceFreshnessStatus.FAILED, 0) + status_counts.get(
         SourceFreshnessStatus.RATE_LIMITED, 0
     )
+    skipped = status_counts.get("SKIPPED", 0)
+
+    # [DATA-019A] live_source_sampling_skip_status
+    # skipped-only scenario: every check was SKIPPED (no actual PASS/FAIL).
+    # In this case the report must NOT claim ALL GREEN — nothing was executed.
+    skipped_only = total > 0 and skipped == total
 
     fallback_count = sum(1 for r in results if r.is_fallback)
 
@@ -691,16 +697,25 @@ def _compute_summary(results: List[SampleResult]) -> Dict[str, Any]:
         "green_count": green,
         "yellow_count": yellow,
         "red_count": red,
-        "skipped_count": status_counts.get("SKIPPED", 0),
+        "skipped_count": skipped,
+        # [DATA-019A] live_source_sampling_skip_status
+        "skipped_only": skipped_only,
         "fallback_triggered_count": fallback_count,
-        "all_green": red == 0 and yellow == 0,
+        # all_green requires at least one actually-executed check
+        # (i.e. not skipped-only) AND no red/yellow.
+        "all_green": (not skipped_only) and red == 0 and yellow == 0,
         "has_failures": red > 0,
         "has_warnings": yellow > 0,
         "by_data_type": by_data_type,
         "overall_status": (
-            "all_green"
-            if red == 0 and yellow == 0
-            else ("has_failures" if red > 0 else "has_warnings")
+            # [DATA-019A] live_source_sampling_skip_status
+            "skipped"
+            if skipped_only
+            else (
+                "all_green"
+                if red == 0 and yellow == 0
+                else ("has_failures" if red > 0 else "has_warnings")
+            )
         ),
     }
 
@@ -744,8 +759,17 @@ def render_live_sampling_report(report: LiveSamplingReport) -> str:
         "all_green": "ALL GREEN",
         "has_failures": "HAS FAILURES",
         "has_warnings": "HAS WARNINGS",
+        # [DATA-019A] live_source_sampling_skip_status
+        "skipped": "未执行实盘抽样（等待启用 live smoke）",
     }.get(overall, overall)
     lines.append(f"- **Overall**: {overall_label}")
+    # [DATA-019A] live_source_sampling_skip_status — explicit skipped-only banner
+    if s.get("skipped_only"):
+        lines.append("")
+        lines.append(
+            "> ⚠️ 本次报告所有检查均为 SKIPPED（未开启 `TA_LIVE_DATA_SMOKE=1`），"
+            "并未实际执行实盘抽样，不能视为全部通过/全绿。"
+        )
     lines.append("")
 
     # Per-data-type summary

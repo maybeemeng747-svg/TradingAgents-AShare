@@ -784,3 +784,188 @@ class TestSampleFixtures:
         assert "低空经济" in topics
         assert "算力" in topics
         assert "半导体设备" in topics
+
+
+# ── [H-013A] mandate_topic_heatmap_fix — regression tests ────────────
+
+
+class TestHeatPointSymbolsField:
+    """[H-013A] TopicHeatPoint now carries the symbol list so window stats
+    can compute true cross-day unique candidates."""
+
+    def test_point_carries_symbols(self):
+        p = TopicHeatPoint(date="2026-06-10", candidate_count=2, symbols=["A", "B"])
+        assert p.symbols == ["A", "B"]
+
+    def test_point_to_dict_includes_symbols(self):
+        p = TopicHeatPoint(date="2026-06-10", symbols=["A", "B"])
+        d = p.to_dict()
+        assert d["symbols"] == ["A", "B"]
+
+    def test_build_daily_point_populates_symbols(self):
+        cands = [
+            {"symbol": "A", "policy_evidence_refs": []},
+            {"symbol": "A", "policy_evidence_refs": []},
+            {"symbol": "B", "policy_evidence_refs": [{"title": "x"}]},
+        ]
+        p = _build_daily_point("2026-06-10", cands)
+        assert sorted(p.symbols) == ["A", "B"]
+        assert p.unique_candidates == 2
+
+
+class TestComputeWindowStatsUniqueCandidates:
+    """[H-013A] Regression: 7/20/60 window unique_candidates must be populated,
+    not always 0 (the symbols set was previously created but never filled)."""
+
+    def test_unique_candidates_populated_and_deduped(self):
+        curve = [
+            TopicHeatPoint(
+                date="2026-06-10",
+                candidate_count=2,
+                symbols=["300034.SZ", "002097.SZ"],
+            ),
+            TopicHeatPoint(
+                date="2026-06-11",
+                candidate_count=2,
+                # 300034.SZ repeats across days → must be deduped
+                symbols=["300034.SZ", "688012.SH"],
+            ),
+        ]
+        ws = _compute_window_stats(curve, 7, "2026-06-12")
+        assert ws.candidate_count == 4
+        # 3 unique symbols across the 2 days
+        assert ws.unique_candidates == 3
+
+    def test_unique_candidates_zero_when_no_symbols(self):
+        curve = [
+            TopicHeatPoint(date="2026-06-10", candidate_count=1, symbols=[]),
+        ]
+        ws = _compute_window_stats(curve, 7, "2026-06-12")
+        assert ws.unique_candidates == 0
+
+    def test_unique_candidates_not_zero_for_sample_fixtures(self):
+        """End-to-end guard: the sample fixtures must yield non-zero unique
+        candidates in the 7-day window (was always 0 before the fix)."""
+        cands = get_heatmap_sample_candidates()
+        report = build_topic_heatmap(cands, as_of="2026-06-12")
+        # at least one active topic should have unique_candidates > 0 in its 7d window
+        total_unique_7d = sum(
+            t.windows[7].unique_candidates for t in report.topics if t.candidates
+        )
+        assert total_unique_7d > 0
+
+    def test_unique_candidates_in_full_build(self):
+        cands = [
+            {"symbol": "A", "mandate_topic": "算力",
+             "effective_trade_date": "2026-06-10", "topic_lifecycle_state": "EMERGING"},
+            {"symbol": "B", "mandate_topic": "算力",
+             "effective_trade_date": "2026-06-11", "topic_lifecycle_state": "EMERGING"},
+            # A repeats on a different day
+            {"symbol": "A", "mandate_topic": "算力",
+             "effective_trade_date": "2026-06-11", "topic_lifecycle_state": "EMERGING"},
+        ]
+        report = build_topic_heatmap(cands, as_of="2026-06-12")
+        topic = next(t for t in report.topics if t.topic == "算力")
+        w7 = topic.windows[7]
+        # A and B deduped across the two signal days
+        assert w7.unique_candidates == 2
+
+
+class TestGetTopicHeatmapLegacyDateFallback:
+    """[H-013A] Regression: candidates with empty effective_trade_date but a
+    valid trade_date must NOT be dropped from the heatmap.
+
+    The SQL query in api.services.tradeflow_service.get_topic_heatmap now uses
+    COALESCE(NULLIF(effective_trade_date, ''), trade_date) so legacy rows are
+    included.
+    """
+
+    def test_legacy_empty_effective_trade_date_included(self):
+        import sqlite3
+        from tradingagents.tradeflow.candidate_engine import init_db
+        from api.services.tradeflow_service import get_topic_heatmap
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_h013a_heatmap_legacy.db")
+            init_db(db_path)
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            from datetime import datetime
+            now = datetime.now().isoformat()
+            # Row 1: LEGACY — empty effective_trade_date, valid trade_date
+            conn.execute(
+                "INSERT INTO tradeflow_candidates "
+                "(trade_date, symbol, name, score, tier, trigger_price, invalid_price, "
+                "strategy_tags_json, status, created_at, updated_at, "
+                "effective_trade_date, plan_date, observe_state, composite_score, mandate_topic) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("2026-06-10", "000001.SZ", "平安银行", 60.0, "A", 10.5, 9.0,
+                 '[]', "active", now, now, "", "2026-06-10", "WAITING", 70.0, "算力"),
+            )
+            # Row 2: MODERN — effective_trade_date populated
+            conn.execute(
+                "INSERT INTO tradeflow_candidates "
+                "(trade_date, symbol, name, score, tier, trigger_price, invalid_price, "
+                "strategy_tags_json, status, created_at, updated_at, "
+                "effective_trade_date, plan_date, observe_state, composite_score, mandate_topic) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("2026-06-11", "600519.SH", "贵州茅台", 80.0, "A", 1800.0, 1700.0,
+                 '[]', "active", now, now, "2026-06-11", "2026-06-11", "WAITING", 80.0, "算力"),
+            )
+            conn.commit()
+            conn.close()
+
+            result = get_topic_heatmap(as_of="2026-06-12", window_days=60, tf_db_path=db_path)
+            assert result["status"] == "ok"
+
+            # Both rows must be present — the legacy row (empty effective_trade_date)
+            # was previously dropped because the query filtered on effective_trade_date only.
+            all_symbols = set()
+            for t in result["topics"]:
+                for c in t.get("candidates", []):
+                    all_symbols.add(c["symbol"])
+            assert "000001.SZ" in all_symbols, (
+                "legacy row with empty effective_trade_date was dropped by the heatmap query"
+            )
+            assert "600519.SH" in all_symbols
+
+            topic = next(t for t in result["topics"] if t["topic"] == "算力")
+            curve_dates = {p["date"] for p in topic["heat_curve"]}
+            assert "2026-06-10" in curve_dates, (
+                "legacy row was selected but did not contribute to heat_curve/window stats"
+            )
+            assert topic["windows"]["7"]["unique_candidates"] == 2
+
+    def test_as_of_inferred_from_legacy_trade_date(self):
+        """When all rows have empty effective_trade_date, as_of should still be
+        inferred from trade_date via the COALESCE expression."""
+        import sqlite3
+        from tradingagents.tradeflow.candidate_engine import init_db
+        from api.services.tradeflow_service import get_topic_heatmap
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = os.path.join(tmpdir, "test_h013a_heatmap_asof.db")
+            init_db(db_path)
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            from datetime import datetime
+            now = datetime.now().isoformat()
+            conn.execute(
+                "INSERT INTO tradeflow_candidates "
+                "(trade_date, symbol, name, score, tier, trigger_price, invalid_price, "
+                "strategy_tags_json, status, created_at, updated_at, "
+                "effective_trade_date, plan_date, observe_state, composite_score, mandate_topic) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("2026-06-15", "000001.SZ", "平安银行", 60.0, "A", 10.5, 9.0,
+                 '[]', "active", now, now, "", "2026-06-15", "WAITING", 70.0, "算力"),
+            )
+            conn.commit()
+            conn.close()
+
+            # Don't pass as_of — should be inferred from trade_date via COALESCE
+            result = get_topic_heatmap(window_days=60, tf_db_path=db_path)
+            assert result["status"] == "ok"
+            assert result["as_of"] == "2026-06-15"
+            topic = next(t for t in result["topics"] if t["topic"] == "算力")
+            assert topic["heat_curve"][0]["date"] == "2026-06-15"
+            assert topic["windows"]["7"]["unique_candidates"] == 1

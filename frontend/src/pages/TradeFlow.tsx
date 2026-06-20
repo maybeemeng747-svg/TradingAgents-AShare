@@ -1598,6 +1598,8 @@ export default function TradeFlow() {
     const [poolFilter, setPoolFilter] = useState<PoolKey>('all')  // [TF-P0-002] tradeflow_pool_split
     const [drawerOpen, setDrawerOpen] = useState(false)
     const [selectedCandidate, setSelectedCandidate] = useState<TradeFlowCandidateItem | null>(null)
+    // [H-013A] mandate_topic_heatmap_fix — symbol carried over from topic heatmap
+    const [highlightSymbol, setHighlightSymbol] = useState<string | null>(null)
 
     const [observeData, setObserveData] = useState<TradeFlowObserveResponse | null>(null)
     const [observeRunLoading, setObserveRunLoading] = useState(false)  // [TF-OBS-001]
@@ -1890,6 +1892,17 @@ export default function TradeFlow() {
         }
     }, [activeTab, tradeDate, fetchObserve, isInMarketHours])
 
+    // [H-013A] mandate_topic_heatmap_fix — scroll the carried symbol into view
+    // (and clear it) once the candidates list has rendered it.
+    useEffect(() => {
+        if (!highlightSymbol) return
+        if (activeTab !== 'candidates') return
+        const el = document.querySelector(`[data-highlight-symbol="${highlightSymbol}"]`) as HTMLElement | null
+        if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        }
+    }, [highlightSymbol, activeTab, candidates, tieredData])
+
     const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         setTradeDate(e.target.value)
     }
@@ -1899,8 +1912,10 @@ export default function TradeFlow() {
         setDrawerOpen(true)
     }
 
-    // [H-013] mandate_topic_heatmap — interlink: topic → candidates tab
-    const handleTopicSymbolClick = useCallback((_symbol: string) => {
+    // [H-013A] mandate_topic_heatmap_fix — interlink: topic → candidates tab,
+    // carrying the clicked symbol so the candidates list can highlight/expand it.
+    const handleTopicSymbolClick = useCallback((symbol: string) => {
+        setHighlightSymbol(symbol || null)
         setActiveTab('candidates')
     }, [])
 
@@ -1964,11 +1979,17 @@ export default function TradeFlow() {
         const poolBorderCls = isHaotian
             ? 'border-l-indigo-400 dark:border-l-indigo-600'
             : 'border-l-slate-300 dark:border-l-slate-600'
+        // [H-013A] mandate_topic_heatmap_fix — highlight symbol carried from topic heatmap
+        const isHighlighted = !!highlightSymbol && c.symbol === highlightSymbol
+        const highlightCls = isHighlighted
+            ? 'ring-2 ring-indigo-400 bg-indigo-50/60 dark:bg-indigo-900/20'
+            : ''
 
         return (
             <div
                 key={c.symbol}
-                className={`cursor-pointer rounded-lg border border-slate-100 border-l-4 ${poolBorderCls} p-3 transition-colors hover:border-blue-200 hover:bg-blue-50/30 dark:border-slate-700 dark:hover:border-blue-800 dark:hover:bg-blue-900/10`}
+                data-highlight-symbol={isHighlighted ? c.symbol : undefined}
+                className={`cursor-pointer rounded-lg border border-slate-100 border-l-4 ${poolBorderCls} p-3 transition-colors hover:border-blue-200 hover:bg-blue-50/30 dark:border-slate-700 dark:hover:border-blue-800 dark:hover:bg-blue-900/10 ${highlightCls}`}
                 onClick={() => handleRowClick(c)}
             >
                 {/* Row 1: symbol + name + type + tier */}
@@ -2101,10 +2122,16 @@ export default function TradeFlow() {
                     <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                         {items.map(c => {
                             const ct = candidateTypeLabel(c.candidate_type)
+                            // [H-013A] mandate_topic_heatmap_fix
+                            const isHighlighted = !!highlightSymbol && c.symbol === highlightSymbol
+                            const highlightCls = isHighlighted
+                                ? 'ring-2 ring-indigo-400 bg-indigo-50/60 dark:bg-indigo-900/20'
+                                : ''
                             return (
                                 <div
                                     key={c.symbol}
-                                    className="cursor-pointer rounded border border-slate-100 p-2 transition-colors hover:border-amber-200 hover:bg-amber-50/30 dark:border-slate-700 dark:hover:border-amber-800 dark:hover:bg-amber-900/10"
+                                    data-highlight-symbol={isHighlighted ? c.symbol : undefined}
+                                    className={`cursor-pointer rounded border border-slate-100 p-2 transition-colors hover:border-amber-200 hover:bg-amber-50/30 dark:border-slate-700 dark:hover:border-amber-800 dark:hover:bg-amber-900/10 ${highlightCls}`}
                                     onClick={() => handleRowClick(c)}
                                 >
                                     <div className="flex items-center gap-1.5">
@@ -2132,10 +2159,16 @@ export default function TradeFlow() {
     const renderTieredCandidateCard = (c: TradeFlowCandidateItem) => {
         const at = actionTierBadge(c.action_tier)
         const ct = candidateTypeLabel(c.candidate_type)
+        // [H-013A] mandate_topic_heatmap_fix — highlight symbol carried from topic heatmap
+        const isHighlighted = !!highlightSymbol && c.symbol === highlightSymbol
+        const highlightCls = isHighlighted
+            ? 'ring-2 ring-indigo-400 bg-indigo-50/60 dark:bg-indigo-900/20'
+            : ''
         return (
             <div
                 key={c.symbol}
-                className="cursor-pointer rounded-lg border border-slate-100 p-3 transition-colors hover:border-blue-200 hover:bg-blue-50/30 dark:border-slate-700 dark:hover:border-blue-800 dark:hover:bg-blue-900/10"
+                data-highlight-symbol={isHighlighted ? c.symbol : undefined}
+                className={`cursor-pointer rounded-lg border border-slate-100 p-3 transition-colors hover:border-blue-200 hover:bg-blue-50/30 dark:border-slate-700 dark:hover:border-blue-800 dark:hover:bg-blue-900/10 ${highlightCls}`}
                 onClick={() => handleRowClick(c)}
             >
                 <div className="flex items-center gap-2">
@@ -2390,10 +2423,16 @@ export default function TradeFlow() {
                                 const obs = observeStateLabel(c.observe_state)
                                 const ct = candidateTypeLabel(c.candidate_type)
                                 const at = actionTierBadge(c.action_tier)
+                                // [H-013A] mandate_topic_heatmap_fix
+                                const isHighlighted = !!highlightSymbol && c.symbol === highlightSymbol
+                                const highlightCls = isHighlighted
+                                    ? 'ring-2 ring-inset ring-indigo-400 bg-indigo-50/60 dark:bg-indigo-900/20'
+                                    : ''
                                 return (
                                     <tr
                                         key={c.symbol}
-                                        className="cursor-pointer border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
+                                        data-highlight-symbol={isHighlighted ? c.symbol : undefined}
+                                        className={`cursor-pointer border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50 ${highlightCls}`}
                                         onClick={() => handleRowClick(c)}
                                     >
                                         <td className="px-4 py-2.5 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{c.symbol}</td>
@@ -2794,7 +2833,13 @@ export default function TradeFlow() {
                         return (
                             <button
                                 key={tab.key}
-                                onClick={() => setActiveTab(tab.key)}
+                                onClick={() => {
+                                    // [H-013A] mandate_topic_heatmap_fix — clear carried symbol when leaving candidates
+                                    if (activeTab === 'candidates' && tab.key !== 'candidates') {
+                                        setHighlightSymbol(null)
+                                    }
+                                    setActiveTab(tab.key)
+                                }}
                                 className={`flex items-center gap-1.5 rounded-t px-3 py-2 text-sm font-medium transition-colors ${
                                     isActive
                                         ? 'border-b-2 border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'

@@ -2737,12 +2737,20 @@ def get_topic_heatmap(
         cols = _table_columns(conn, "tradeflow_candidates")
         has_eff = "effective_trade_date" in cols
 
+        # [H-013A] mandate_topic_heatmap_fix
+        # Use COALESCE(NULLIF(effective_trade_date, ''), trade_date) so old rows
+        # that have an empty effective_trade_date but a valid trade_date are not
+        # silently dropped from the heatmap.
+        if has_eff:
+            date_expr = "COALESCE(NULLIF(effective_trade_date, ''), trade_date)"
+        else:
+            date_expr = "trade_date"
+
         if not as_of:
-            date_col = "effective_trade_date" if has_eff else "trade_date"
             try:
                 row = conn.execute(
-                    f"SELECT {date_col} AS d FROM tradeflow_candidates "
-                    f"WHERE {date_col} != '' ORDER BY d DESC LIMIT 1"
+                    f"SELECT {date_expr} AS d FROM tradeflow_candidates "
+                    f"WHERE {date_expr} != '' ORDER BY d DESC LIMIT 1"
                 ).fetchone()
                 as_of = row["d"] if row else _dt.now().strftime("%Y-%m-%d")
             except Exception:
@@ -2754,11 +2762,11 @@ def get_topic_heatmap(
             as_of_dt = _dt.now()
         start_date = (as_of_dt - _td(days=window_days)).strftime("%Y-%m-%d")
 
-        date_col = "effective_trade_date" if has_eff else "trade_date"
+        # [H-013A] mandate_topic_heatmap_fix — window filter uses the COALESCE expr
         rows = conn.execute(
             f"SELECT * FROM tradeflow_candidates "
-            f"WHERE {date_col} >= ? AND {date_col} <= ? "
-            f"ORDER BY {date_col} ASC",
+            f"WHERE {date_expr} >= ? AND {date_expr} <= ? "
+            f"ORDER BY {date_expr} ASC",
             (start_date, as_of),
         ).fetchall()
 
@@ -2777,7 +2785,12 @@ def get_topic_heatmap(
                 "composite_score": item.get("composite_score", 0.0),
                 "tier": item.get("tier", ""),
                 "candidate_type": item.get("candidate_type", ""),
-                "effective_trade_date": item.get("effective_trade_date", ""),
+                # [H-013A] mandate_topic_heatmap_fix — legacy rows may have
+                # empty effective_trade_date but a valid trade_date. Keep both
+                # so build_topic_heatmap() can resolve the candidate date and
+                # include the row in heat_curve/window stats.
+                "effective_trade_date": item.get("effective_trade_date", "") or _rget(row, "trade_date", ""),
+                "trade_date": _rget(row, "trade_date", ""),
                 "policy_evidence_refs": policy_refs,
                 "overheat_flags": item.get("overheat_flags", []),
                 "topic_lifecycle_state": item.get("topic_lifecycle_state", ""),

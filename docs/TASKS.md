@@ -104,9 +104,9 @@
 78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，done，依赖 TF-REVIEW-002/TF-PAPER-001）。
 79. `DATA-019`：关键数据源实盘抽样健康日报（P1，done，commit 58b5cd2）。
 80. `H-013`：昊天主题热度曲线与政策证据看板（P1，done，commit b1fe17d）。
-81. `DATA-019A`：实盘抽样 skipped 状态与任务池收口补修（P2，ready，依赖 DATA-019）。
-82. `H-013A`：昊天热度图历史日期 fallback 与窗口 unique 统计补修（P2，ready，依赖 H-013）。
-83. `V-008`：TradeFlow 小资金试跑前整体验收（P1，blocked，等待 DATA-019A/H-013A 完成后释放）。
+81. `DATA-019A`：实盘抽样 skipped 状态与任务池收口补修（P2，done）。
+82. `H-013A`：昊天热度图历史日期 fallback 与窗口 unique 统计补修（P2，done）。
+83. `V-008`：TradeFlow 小资金试跑前整体验收（P1，ready，DATA-019A/H-013A 前置已完成）。
 84. `TF-UX-001`：TradeFlow 小资金试跑主工作台降噪与默认视图（P1，ready，依赖 TF-QUALITY-004/TF-RISK-001）。
 85. `DATA-020`：数据源健康日报前端可视化与 skipped/failed 分层展示（P1，ready，依赖 DATA-019A）。
 86. `TF-REVIEW-004`：盘后 Review 空数据诊断与一键生成入口（P1，ready，依赖 TF-REVIEW-003）。
@@ -3189,7 +3189,7 @@
 ### DATA-019A: 实盘抽样 skipped 状态与任务池收口补修（P2）
 - **描述**：收口 DATA-019 Codex review 发现的 P2：当 `TA_LIVE_DATA_SMOKE` 未开启导致所有检查都是 `SKIPPED` 时，报告不能显示为 all green；并确保任务池顶部/详情状态一致。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — skipped-only 不再误报 ALL GREEN；targeted tests 与前端 build 通过。
 - **前置条件**：DATA-019 完成。
 - **执行约束**：
   - 不调用 live API，除非显式设置 `TA_LIVE_DATA_SMOKE=1`。
@@ -3209,7 +3209,7 @@
 ### H-013A: 昊天热度图历史日期 fallback 与窗口 unique 统计补修（P2）
 - **描述**：收口 H-013 Codex review 发现的 P2/P3：topic heatmap 查询不能漏掉 `effective_trade_date` 为空但 `trade_date` 有值的历史候选；窗口统计里的 `unique_candidates` 不能永远为 0；前端 topic→candidate 点击应保留 symbol 上下文。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — 日期 fallback、unique_candidates、前端 symbol 跳转已修复；targeted tests 与前端 build 通过。
 - **前置条件**：H-013 完成。
 - **执行约束**：
   - 不调用 LLM。
@@ -3229,7 +3229,7 @@
 ### V-008: TradeFlow 小资金试跑前整体验收（P1）
 - **描述**：在 API 合约、候选压缩、风险预算、Observe 联动和 Review 归因完成后，做一次完整试跑前验收，确认用户可以用 5000 元模拟流程安全试用。
 - **优先级**：P1
-- **状态**：blocked — 等待 DATA-019A、H-013A 完成后释放；不要提前领取。
+- **状态**：ready — DATA-019A、H-013A 已完成，可以领取。
 - **前置条件**：TF-QUALITY-004、TF-RISK-001、TF-OBS-003、TF-REVIEW-003、DATA-019A、H-013A 完成。
 - **执行约束**：
   - 不调用 LLM。

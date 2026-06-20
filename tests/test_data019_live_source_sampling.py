@@ -425,6 +425,16 @@ class TestRunLiveSamplingGated:
             assert report.summary["skipped_count"] == 28
             assert report.summary["green_count"] == 0
 
+    # [DATA-019A] live_source_sampling_skip_status
+    def test_env_gated_skipped_only_not_all_green(self):
+        """Env-gated run produces skipped-only results → NOT all_green."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(_LIVE_ENV, None)
+            report = run_live_sampling()
+            assert report.summary["skipped_only"] is True
+            assert report.summary["all_green"] is False
+            assert report.summary["overall_status"] == "skipped"
+
 
 class TestRunLiveSamplingMocked:
     def test_mocked_live_run(self):
@@ -531,6 +541,44 @@ class TestComputeSummary:
         summary = _compute_summary(results)
         assert summary["skipped_count"] == 2
 
+    # [DATA-019A] live_source_sampling_skip_status
+    def test_skipped_only_is_not_all_green(self):
+        """When every check is SKIPPED, the report must NOT claim ALL GREEN."""
+        results = [
+            SampleResult(data_type="quote", status="SKIPPED"),
+            SampleResult(data_type="fund_flow", status="SKIPPED"),
+            SampleResult(data_type="lhb", status="SKIPPED"),
+        ]
+        summary = _compute_summary(results)
+        assert summary["skipped_count"] == 3
+        assert summary["skipped_only"] is True
+        # the key regression: all_green must be False even though red/yellow are 0
+        assert summary["all_green"] is False
+        assert summary["overall_status"] == "skipped"
+        assert summary["green_count"] == 0
+        assert summary["red_count"] == 0
+        assert summary["yellow_count"] == 0
+        assert summary["has_failures"] is False
+        assert summary["has_warnings"] is False
+
+    # [DATA-019A] live_source_sampling_skip_status
+    def test_mixed_skipped_and_pass_is_all_green(self):
+        """Skipped mixed with green is OK — at least one real check ran."""
+        results = [
+            SampleResult(data_type="quote", status=SourceFreshnessStatus.HAS_DATA),
+            SampleResult(data_type="fund_flow", status="SKIPPED"),
+        ]
+        summary = _compute_summary(results)
+        assert summary["skipped_only"] is False
+        assert summary["all_green"] is True
+        assert summary["overall_status"] == "all_green"
+
+    # [DATA-019A] live_source_sampling_skip_status
+    def test_empty_results_not_skipped_only(self):
+        """Empty results (degenerate) should not be flagged skipped_only."""
+        summary = _compute_summary([])
+        assert summary["skipped_only"] is False
+
     def test_by_data_type(self):
         results = [
             SampleResult(data_type="quote", data_type_label="实时行情", status=SourceFreshnessStatus.HAS_DATA),
@@ -586,6 +634,38 @@ class TestRenderReport:
         )
         md = render_live_sampling_report(report)
         assert "Env gated" in md
+
+    # [DATA-019A] live_source_sampling_skip_status
+    def test_skipped_only_render_not_all_green(self):
+        """skipped-only report must not render ALL GREEN."""
+        report = LiveSamplingReport(
+            report_date="2026-06-18",
+            generated_at="2026-06-18 10:00:00",
+            env_gated=True,
+            samples=build_sample_universe(),
+        )
+        report.results = [
+            SampleResult(
+                data_type="quote",
+                data_type_label="实时行情",
+                symbol="600519.SH",
+                status="SKIPPED",
+            ),
+            SampleResult(
+                data_type="fund_flow",
+                data_type_label="个股资金流",
+                symbol="600519.SH",
+                status="SKIPPED",
+            ),
+        ]
+        report.summary = _compute_summary(report.results)
+        assert report.summary["skipped_only"] is True
+        md = render_live_sampling_report(report)
+        # must NOT contain ALL GREEN
+        assert "ALL GREEN" not in md
+        # must explicitly say skipped / live smoke not enabled
+        assert "未执行实盘抽样" in md or "live smoke" in md
+        assert report.summary["overall_status"] == "skipped"
 
     def test_no_secrets_in_report(self):
         """Report must not contain API keys or secrets."""

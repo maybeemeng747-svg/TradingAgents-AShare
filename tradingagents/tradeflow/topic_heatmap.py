@@ -170,6 +170,7 @@ class TopicHeatPoint:
     signal_count: int = 0
     candidate_count: int = 0
     unique_candidates: int = 0
+    symbols: List[str] = field(default_factory=list)  # [H-013A] mandate_topic_heatmap_fix
     policy_level: str = POLICY_LEVEL_UNKNOWN
     policy_level_weight: int = 0
     evidence_count: int = 0
@@ -185,6 +186,7 @@ class TopicHeatPoint:
             "signal_count": self.signal_count,
             "candidate_count": self.candidate_count,
             "unique_candidates": self.unique_candidates,
+            "symbols": list(self.symbols),  # [H-013A] mandate_topic_heatmap_fix
             "policy_level": self.policy_level,
             "policy_level_weight": self.policy_level_weight,
             "evidence_count": self.evidence_count,
@@ -432,6 +434,7 @@ def _build_daily_point(
         signal_count=max_signal,
         candidate_count=len(topic_candidates),
         unique_candidates=len(symbols),
+        symbols=sorted(symbols),  # [H-013A] mandate_topic_heatmap_fix — carry symbols for window dedup
         policy_level=policy_level,
         policy_level_weight=_POLICY_LEVEL_WEIGHTS.get(policy_level, 0),
         evidence_count=evidence_count,
@@ -474,6 +477,9 @@ def _compute_window_stats(
             evidence += p.evidence_count
             if p.candidate_count > 0:
                 active_days += 1
+            # [H-013A] mandate_topic_heatmap_fix — populate the symbols set
+            # (previously created but never filled, so unique_candidates was always 0)
+            symbols.update(p.symbols)
             levels.append(p.policy_level)
 
     return WindowStats(

@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-06-21 | DATA-019A + H-013A 两个 P2 补刀
+
+- **执行者**：OpenCode
+- **类型**：bug fix / 回归补强
+- **状态**：✅ 完成（Codex review 通过，已收口提交）
+
+### DATA-019A — 实盘抽样 skipped 状态收口
+
+- **问题**：`TA_LIVE_DATA_SMOKE` 未开启导致全部检查 SKIPPED 时，`all_green` 仍为 True、报告显示 ALL GREEN，实际未执行。
+- **改动**：
+  - `tradingagents/dataflows/live_source_sampling.py` `_compute_summary`：新增 `skipped_only` 标志（`total>0 and skipped==total`）；`all_green` 在 skipped-only 时强制 False；`overall_status` 新增 `"skipped"` 分支。`# [DATA-019A] live_source_sampling_skip_status`
+  - Markdown 渲染：skipped-only 场景显示「未执行实盘抽样（等待启用 live smoke）」并追加警示横幅，不再输出 ALL GREEN。
+- **测试**：`tests/test_data019_live_source_sampling.py` 新增 6 个回归测试（skipped-only 不再 all_green / 混合场景 / 空结果 / env-gated / 渲染不含 ALL GREEN）。与 H-013A 合并 targeted run：`189 passed`。
+
+### H-013A — 昊天热度图日期 fallback 与 unique 统计补修
+
+- **问题 1（SQL 日期 fallback）**：`get_topic_heatmap` 的 SQL 仅按 `effective_trade_date` 过滤，会漏掉 `effective_trade_date` 为空但 `trade_date` 有值的历史候选。
+  - **改动**：`api/services/tradeflow_service.py:get_topic_heatmap` as_of 推断与窗口过滤改用 `COALESCE(NULLIF(effective_trade_date, ''), trade_date)`。（任务标的文件写的 `topic_heatmap.py`，但实际 SQL 在 `tradeflow_service.py`，按实际位置修复。）`# [H-013A] mandate_topic_heatmap_fix`
+- **问题 2（unique_candidates 恒 0）**：`_compute_window_stats` 的 `symbols` 集合创建了但循环里没填充，导致 7/20/60 日 `unique_candidates` 永远为 0。
+  - **改动**：`tradingagents/tradeflow/topic_heatmap.py` 给 `TopicHeatPoint` 增加 `symbols` 字段，`_build_daily_point` 填充，`_compute_window_stats` 循环里 `symbols.update(p.symbols)`。`# [H-013A] mandate_topic_heatmap_fix`
+- **问题 3（前端跳转丢 symbol）**：`TradeFlow.tsx` 的 `handleTopicSymbolClick(_symbol)` 丢弃了 symbol。
+  - **改动**：`frontend/src/pages/TradeFlow.tsx` 新增 `highlightSymbol` 状态，点击关联候选时携带 symbol 切到候选池，主候选卡 / 分级卡 / 表格 / 观察池均高亮该 symbol 并 `scrollIntoView`，离开候选 tab 时清空。`// [H-013A] mandate_topic_heatmap_fix`
+- **测试**：`tests/test_h013_topic_heatmap.py` 新增 3 个测试类（symbols 字段 / window unique_candidates 去重 / service 层 legacy 空日期 fallback 含 as_of 推断）。与 DATA-019A 合并 targeted run：`189 passed`。
+- **前端**：项目没有 `typecheck` script；已执行 `npm run build`，`tsc && vite build` 通过。仅有 Vite chunk size warning，非本次 correctness 问题。
+
+### 改动文件清单
+
+- `tradingagents/dataflows/live_source_sampling.py`
+- `tradingagents/tradeflow/topic_heatmap.py`
+- `api/services/tradeflow_service.py`
+- `frontend/src/pages/TradeFlow.tsx`
+- `tests/test_data019_live_source_sampling.py`
+- `tests/test_h013_topic_heatmap.py`
+
+---
+
 ## 2026-06-20 | 释放下一波 TradeFlow 试跑任务
 
 - **执行者**：Codex
