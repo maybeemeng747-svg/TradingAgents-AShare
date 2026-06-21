@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-06-21 | V-008 TradeFlow 小资金试跑前整体验收
+
+- **执行者**：OpenCode / Codex
+- **类型**：validation / regression
+- **状态**：✅ 完成
+
+### 验收结果
+
+- 新增 `tests/test_v008_paper_trial_acceptance.py`，覆盖 9 步链路：
+  1. 候选生成
+  2. 候选压缩
+  3. 模拟账本风险预算
+  4. 盘中触发
+  5. Observe 联动
+  6. 人工确认模拟动作
+  7. Review 归因
+  8. API response model 字段契约
+  9. 禁止词扫描
+- 生成 `docs/tradeflow_trial_acceptance_v2.md`，回答“看哪几只、为什么、何时触发、风险额度、盘后表现”五个问题。
+- 测试：V-008 55 passed；TradeFlow 回归 676 passed，5 个 pre-existing 周日非交易日失败与本任务无关。
+
+### 后续任务
+
+- 新增 `TF-PERSIST-001`：修复 `save_candidate()` 直接保存时分项评分/解释字段未持久化的问题。该问题不阻塞 V-008 验收，但会影响手工构造候选或部分持久化路径的 API 展示质量。
+
+---
+
 ## 2026-06-21 | 继续释放 TradeFlow 夜间自动开发任务
 
 - **执行者**：Codex
