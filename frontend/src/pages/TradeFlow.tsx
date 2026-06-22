@@ -35,6 +35,15 @@ import type {
     TopicHeatmapEntry,
 } from '@/types'
 import TradeFlowCandidateDrawer from '@/components/TradeFlowCandidateDrawer'
+// [TF-UX-001] small_cap_trial_workbench — focus workspace helpers (grouping, risk budget)
+import {
+    groupMainCandidates,
+    computeTrialBudgetView,
+    computeCandidateRiskView,
+    pickWhySelected,
+    pickWhyNotMain,
+    DEFAULT_MAIN_VIEW_CAP,
+} from '@/utils/tradeflowFocus'
 
 type TabKey = 'candidates' | 'observe' | 'ta-queue' | 'review' | 'filtered' | 'data-health' | 'compare' | 'paper-ledger' | 'topic-heatmap'
 
@@ -946,6 +955,134 @@ function RuntimeTierBadge({ tier, latency }: { tier: string; latency: string }) 
     )
 }
 
+// [TF-UX-001] small_cap_trial_workbench — focus group visual cues
+function focusGroupDotClass(key: 'pending_confirm' | 'near_trigger' | 'main'): string {
+    switch (key) {
+        case 'pending_confirm': return 'bg-red-500'
+        case 'near_trigger': return 'bg-amber-500'
+        case 'main': return 'bg-indigo-500'
+    }
+}
+
+function focusGroupTitleClass(key: 'pending_confirm' | 'near_trigger' | 'main'): string {
+    switch (key) {
+        case 'pending_confirm': return 'text-red-700 dark:text-red-300'
+        case 'near_trigger': return 'text-amber-700 dark:text-amber-300'
+        case 'main': return 'text-indigo-700 dark:text-indigo-300'
+    }
+}
+
+// [TF-UX-001] small_cap_trial_workbench — "5000 元试跑" prompt area
+// Shows single-ticket budget, max occupancy, and pending confirmation actions.
+// Wording is intentionally soft — no 买/卖/加仓/减仓 terms.
+function TrialBudgetPrompt({ budget }: { budget: import('@/utils/tradeflowFocus').TrialBudgetView }) {
+    return (
+        <div className="rounded-lg border border-purple-200 bg-purple-50/70 px-3 py-2.5 text-xs dark:border-purple-800/60 dark:bg-purple-900/15">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                <div className="flex items-center gap-1 font-bold text-purple-700 dark:text-purple-300">
+                    <Wallet className="h-3.5 w-3.5" />
+                    5000 元试跑
+                </div>
+                <span className="text-slate-400">|</span>
+                <div className="flex items-center gap-1 text-slate-600 dark:text-slate-300">
+                    <span className="text-slate-400">本金</span>
+                    <span className="font-semibold tabular-nums">¥{budget.principal.toFixed(0)}</span>
+                </div>
+                <div className="flex items-center gap-1 text-slate-600 dark:text-slate-300">
+                    <span className="text-slate-400">单票预算</span>
+                    <span className="font-semibold tabular-nums">
+                        {budget.per_ticket_budget > 0 ? `¥${budget.per_ticket_budget.toFixed(0)}` : '—'}
+                    </span>
+                </div>
+                <div className="flex items-center gap-1 text-slate-600 dark:text-slate-300">
+                    <span className="text-slate-400">最大占用</span>
+                    <span className="font-semibold tabular-nums">
+                        {budget.max_occupancy > 0 ? `¥${budget.max_occupancy.toFixed(0)}` : '—'}
+                        <span className="ml-0.5 text-[10px] text-slate-400">
+                            （{budget.tracking_count}/{budget.max_concurrent_tracking || 0} 只）
+                        </span>
+                    </span>
+                </div>
+                {budget.pending_confirmation_count > 0 && (
+                    <div className="flex items-center gap-1 rounded bg-red-100 px-1.5 py-0.5 font-medium text-red-700 dark:bg-red-900/40 dark:text-red-300">
+                        <Clock className="h-3 w-3" />
+                        待确认动作 {budget.pending_confirmation_count}
+                    </div>
+                )}
+                {budget.at_capacity && budget.pending_confirmation_count === 0 && (
+                    <div className="flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                        <ShieldAlert className="h-3 w-3" />
+                        占用已满
+                    </div>
+                )}
+            </div>
+            <div className="mt-1.5 flex items-start gap-1 text-[11px] text-purple-700/80 dark:text-purple-200/70">
+                <Lightbulb className="mt-0.5 h-3 w-3 flex-shrink-0" />
+                <span>{budget.primary_hint}</span>
+            </div>
+        </div>
+    )
+}
+
+// [TF-UX-001] small_cap_trial_workbench — collapsed invalidated/expired pool
+// so previously main candidates that have been demoted are still visible
+// without crowding the default main view.
+function InvalidatedPool({
+    items,
+    onPick,
+    highlightSymbol,
+}: {
+    items: TradeFlowCandidateItem[]
+    onPick: (c: TradeFlowCandidateItem) => void
+    highlightSymbol: string | null
+}) {
+    const [open, setOpen] = useState(false)
+    if (items.length === 0) return null
+    return (
+        <div>
+            <button
+                onClick={() => setOpen(!open)}
+                className="mb-2 flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
+            >
+                {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                <ShieldAlert className="h-4 w-4 text-slate-400" />
+                已失效 / 已过期（{items.length} 只）
+                <span className="text-xs text-slate-400">— 不进入今日默认主视图</span>
+            </button>
+            {open && (
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    {items.map(c => {
+                        const ct = candidateTypeLabel(c.candidate_type)
+                        const obs = observeStateLabel(c.observe_state)
+                        const isHighlighted = !!highlightSymbol && c.symbol === highlightSymbol
+                        const highlightCls = isHighlighted
+                            ? 'ring-2 ring-indigo-400 bg-indigo-50/60 dark:bg-indigo-900/20'
+                            : ''
+                        return (
+                            <div
+                                key={c.symbol}
+                                data-highlight-symbol={isHighlighted ? c.symbol : undefined}
+                                className={`cursor-pointer rounded border border-slate-100 p-2 opacity-70 transition-colors hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800/50 ${highlightCls}`}
+                                onClick={() => onPick(c)}
+                            >
+                                <div className="flex items-center gap-1.5">
+                                    <span className="font-mono text-[11px] font-bold text-slate-600 dark:text-slate-300">{c.symbol}</span>
+                                    <span className="max-w-[60px] truncate text-xs text-slate-500 dark:text-slate-400">{c.name || '--'}</span>
+                                    <span className={`ml-auto rounded px-1 py-0.5 text-[9px] font-medium ${ct.cls}`}>{ct.text}</span>
+                                </div>
+                                <div className="mt-1 flex items-center gap-1.5 text-[10px] text-slate-400">
+                                    <span className="tabular-nums">综合: {(c.composite_score || 0).toFixed(1)}</span>
+                                    <span className={`font-medium ${obs.cls}`}>{obs.text}</span>
+                                </div>
+                            </div>
+                        )
+                    })}
+                </div>
+            )}
+        </div>
+    )
+}
+
 function DataHealthPanel({ data }: { data: TradeFlowDataHealthResponse | null }) {
     if (!data || data.sources.length === 0) {
         return (
@@ -1820,6 +1957,18 @@ export default function TradeFlow() {
         }
     }, [])
 
+    // [TF-UX-001] small_cap_trial_workbench — keep risk budget fresh while users
+    // are on the focus workspace. Non-blocking: failures only clear the ledger
+    // so the prompt area falls back to the "ledger missing" empty state.
+    const refreshPaperLedgerForFocus = useCallback(async () => {
+        try {
+            const res = await api.getPaperLedger()
+            setPaperLedger(res)
+        } catch {
+            // non-fatal — focus workspace still renders without budget data
+        }
+    }, [])
+
     // [TF-PAPER-001] paper_trading_ledger
     const handlePaperAction = useCallback(async (tradeId: number, actionType: string, price: number, note?: string) => {
         setPaperActionLoading(true)
@@ -1872,6 +2021,15 @@ export default function TradeFlow() {
     useEffect(() => {
         void fetchData(tradeDate)
     }, [tradeDate, fetchData])
+
+    // [TF-UX-001] small_cap_trial_workbench — preload the paper ledger so the
+    // "5000 元试跑" prompt area in the focus workspace has risk budget data
+    // without requiring users to navigate to the 模拟账本 tab first.
+    useEffect(() => {
+        if (activeTab === 'candidates') {
+            void refreshPaperLedgerForFocus()
+        }
+    }, [activeTab, refreshPaperLedgerForFocus])
 
     // [TF-UX-002] auto-refresh for observe tab
     useEffect(() => {
@@ -1972,7 +2130,10 @@ export default function TradeFlow() {
     }
 
     // [UI-012] tradeflow_focus_workspace — main candidate card with scores, reasons, next steps
-    const renderMainCandidateCard = (c: TradeFlowCandidateItem) => {
+    // [TF-UX-001] small_cap_trial_workbench — adds 综合分 + 风险预算占用 lines so each
+    // card surfaces the candidate type, composite score, core trigger price, risk occupancy,
+    // why selected and why-not-main reasons in a single glance.
+    const renderMainCandidateCard = (c: TradeFlowCandidateItem, budget?: import('@/utils/tradeflowFocus').TrialBudgetView) => {
         const ct = candidateTypeLabel(c.candidate_type)
         const obs = observeStateLabel(c.observe_state)
         const isHaotian = c.candidate_type === 'POLICY_AMBUSH' || c.candidate_type === 'POLICY_CONFIRM'
@@ -1984,6 +2145,9 @@ export default function TradeFlow() {
         const highlightCls = isHighlighted
             ? 'ring-2 ring-indigo-400 bg-indigo-50/60 dark:bg-indigo-900/20'
             : ''
+        // [TF-UX-001] small_cap_trial_workbench — risk occupancy for this candidate
+        const riskView = budget ? computeCandidateRiskView(c, paperLedger, budget) : null
+        const whySelected = pickWhySelected(c, 2)
 
         return (
             <div
@@ -1992,14 +2156,21 @@ export default function TradeFlow() {
                 className={`cursor-pointer rounded-lg border border-slate-100 border-l-4 ${poolBorderCls} p-3 transition-colors hover:border-blue-200 hover:bg-blue-50/30 dark:border-slate-700 dark:hover:border-blue-800 dark:hover:bg-blue-900/10 ${highlightCls}`}
                 onClick={() => handleRowClick(c)}
             >
-                {/* Row 1: symbol + name + type + tier */}
+                {/* Row 1: symbol + name + type + tier + composite score */}
                 <div className="flex items-center gap-2">
                     <span className="font-mono text-xs font-bold text-slate-900 dark:text-slate-100">{c.symbol}</span>
                     <span className="max-w-[80px] truncate text-sm font-medium text-slate-700 dark:text-slate-300">{c.name || '--'}</span>
                     <span className={`inline-block rounded px-1 py-0.5 text-[10px] font-medium ${ct.cls}`}>{ct.text}</span>
                     <span className={`inline-block rounded px-1 py-0.5 text-[10px] font-bold ${tierBadgeClass(c.tier)}`}>{c.tier || '-'}</span>
-                    <span className="ml-auto text-sm font-bold tabular-nums text-slate-900 dark:text-slate-100">
-                        {c.trade_priority_score.toFixed(1)}
+                    <span className="ml-auto flex items-baseline gap-1.5">
+                        <span className="text-[9px] uppercase tracking-wide text-slate-400">综合</span>
+                        <span className="text-sm font-bold tabular-nums text-slate-900 dark:text-slate-100">
+                            {(c.composite_score ?? 0).toFixed(1)}
+                        </span>
+                        <span className="text-[9px] uppercase tracking-wide text-slate-400">优先</span>
+                        <span className="text-xs font-semibold tabular-nums text-slate-600 dark:text-slate-300">
+                            {(c.trade_priority_score ?? 0).toFixed(1)}
+                        </span>
                     </span>
                 </div>
 
@@ -2013,37 +2184,44 @@ export default function TradeFlow() {
                     {renderScoreChip('数据', c.data_quality_score, false)}
                 </div>
 
-                {/* Row 3: ranking reasons (top 2) + weakness reasons (top 2) */}
+                {/* Row 3: why selected (top 2) */}
                 <div className="mt-1.5 space-y-0.5">
-                    {(c.ranking_reasons || []).slice(0, 2).map((r, i) => (
-                        <div key={i} className="flex items-start gap-1 text-[11px] text-emerald-600 dark:text-emerald-400">
-                            <TrendingUp className="mt-0.5 h-2.5 w-2.5 flex-shrink-0" />
-                            <span className="truncate">{r}</span>
-                        </div>
-                    ))}
-                    {(c.weakness_reasons || []).slice(0, 2).map((r, i) => (
-                        <div key={i} className="flex items-start gap-1 text-[11px] text-amber-600 dark:text-amber-400">
-                            <ShieldAlert className="mt-0.5 h-2.5 w-2.5 flex-shrink-0" />
-                            <span className="truncate">{r}</span>
-                        </div>
-                    ))}
-                    {!c.ranking_reasons?.length && !c.weakness_reasons?.length && (
-                        <div className="text-[11px] text-slate-400">
-                            {c.action_tier_reason || '暂无排前/扣分原因'}
-                        </div>
+                    {whySelected.length > 0 ? (
+                        whySelected.map((r, i) => (
+                            <div key={i} className="flex items-start gap-1 text-[11px] text-emerald-600 dark:text-emerald-400">
+                                <TrendingUp className="mt-0.5 h-2.5 w-2.5 flex-shrink-0" />
+                                <span className="truncate">{r}</span>
+                            </div>
+                        ))
+                    ) : (
+                        <div className="text-[11px] text-slate-400">暂无入选原因</div>
                     )}
                 </div>
 
-                {/* Row 4: trigger/invalid prices + observe state */}
+                {/* Row 4: core trigger price + risk budget occupancy + observe state */}
                 <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px]">
                     {c.trigger_price != null && (
-                        <span className="rounded bg-red-50 px-1.5 py-0.5 text-red-700 dark:bg-red-900/30 dark:text-red-300">
-                            触发 {fmtPrice(c.trigger_price)}
+                        <span className="rounded bg-red-50 px-1.5 py-0.5 font-medium text-red-700 dark:bg-red-900/30 dark:text-red-300">
+                            核心触发 {fmtPrice(c.trigger_price)}
                         </span>
                     )}
                     {c.invalid_price != null && (
                         <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">
                             失效 {fmtPrice(c.invalid_price)}
+                        </span>
+                    )}
+                    {riskView && (
+                        <span
+                            className={`rounded px-1.5 py-0.5 ${
+                                riskView.would_exceed_cap
+                                    ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+                                    : riskView.already_tracked
+                                    ? 'bg-purple-50 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300'
+                                    : 'bg-slate-50 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                            }`}
+                            title={riskView.hint}
+                        >
+                            风险占用 ¥{riskView.projected_amount.toFixed(0)} / {(riskView.occupancy_pct * 100).toFixed(0)}%
                         </span>
                     )}
                     <span className={`flex items-center gap-0.5 font-medium ${obs.cls}`}>
@@ -2127,6 +2305,8 @@ export default function TradeFlow() {
                             const highlightCls = isHighlighted
                                 ? 'ring-2 ring-indigo-400 bg-indigo-50/60 dark:bg-indigo-900/20'
                                 : ''
+                            // [TF-UX-001] small_cap_trial_workbench — explicit "why not main" reasons
+                            const whyNot = pickWhyNotMain(c, 2)
                             return (
                                 <div
                                     key={c.symbol}
@@ -2141,11 +2321,21 @@ export default function TradeFlow() {
                                     </div>
                                     <div className="mt-1 flex items-center gap-1.5 text-[10px] text-slate-400">
                                         <span className="tabular-nums">优先分: {(c.trade_priority_score || 0).toFixed(1)}</span>
+                                        <span className="tabular-nums">综合: {(c.composite_score || 0).toFixed(1)}</span>
                                         <span className="tabular-nums">完整度: {((c.tradeflow_data_completeness || 0) * 100).toFixed(0)}%</span>
                                     </div>
-                                    {c.action_tier_reason && (
+                                    {whyNot.length > 0 ? (
+                                        <div className="mt-0.5 space-y-0.5">
+                                            {whyNot.map((r, i) => (
+                                                <div key={i} className="flex items-start gap-0.5 text-[10px] text-amber-600 dark:text-amber-400">
+                                                    <ShieldAlert className="mt-0.5 h-2 w-2 flex-shrink-0" />
+                                                    <span className="truncate" title={`为什么未入选主候选：${r}`}>未入选主候选：{r}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : c.action_tier_reason ? (
                                         <div className="mt-0.5 truncate text-[10px] text-amber-500" title={c.action_tier_reason}>{c.action_tier_reason}</div>
-                                    )}
+                                    ) : null}
                                 </div>
                             )
                         })}
@@ -2246,6 +2436,9 @@ export default function TradeFlow() {
             }
 
             // [UI-012] tradeflow_focus_workspace — default focus view
+            // [TF-UX-001] small_cap_trial_workbench — three groups (pending_confirm / near_trigger / main)
+            // replace the previous haotian/tech split so users always see a small,
+            // actionable default main view, with the weak observation pool collapsed.
             if (viewMode === 'focus' && tieredData && tieredData.status === 'ok') {
                 const mainItems = tieredData.main_candidates ?? [
                     ...tieredData.actionable,
@@ -2256,11 +2449,17 @@ export default function TradeFlow() {
                 const poolSummary = tieredData.pool_gate_summary ?? ''
                 const poolCounts = tieredData.pool_counts ?? {}
 
+                // [TF-UX-001] small_cap_trial_workbench — split into the three required groups.
+                const focusGroups = groupMainCandidates(mainItems, DEFAULT_MAIN_VIEW_CAP)
+                // [TF-UX-001] small_cap_trial_workbench — risk budget for the 5000 元试跑 prompt area.
+                const trialBudget = computeTrialBudgetView(paperLedger)
+
                 if (mainItems.length === 0) {
                     const hasObservation = observationItems.length > 0
                     const hasFiltered = (poolCounts['filtered'] ?? 0) > 0
                     return (
                         <div className="space-y-4 p-4">
+                            <TrialBudgetPrompt budget={trialBudget} />
                             <div className="py-12 text-center text-sm text-slate-400">
                                 <Target className="mx-auto mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
                                 <div className="font-medium text-slate-500 dark:text-slate-400">今日无主候选</div>
@@ -2288,14 +2487,6 @@ export default function TradeFlow() {
                     )
                 }
 
-                // Split main candidates into haotian pool and tech pool for visual distinction
-                const haotianItems = mainItems.filter(c =>
-                    c.candidate_type === 'POLICY_AMBUSH' || c.candidate_type === 'POLICY_CONFIRM'
-                )
-                const techItems = mainItems.filter(c =>
-                    c.candidate_type !== 'POLICY_AMBUSH' && c.candidate_type !== 'POLICY_CONFIRM'
-                )
-
                 return (
                     <div className="space-y-4 p-4">
                         {/* Pool gate summary banner */}
@@ -2305,32 +2496,36 @@ export default function TradeFlow() {
                             </div>
                         )}
 
-                        {/* Haotian (policy) pool */}
-                        {haotianItems.length > 0 && (
-                            <div>
-                                <div className="mb-2 flex items-center gap-2">
-                                    <span className="inline-block h-2 w-2 rounded-full bg-indigo-500" />
-                                    <span className="text-sm font-bold text-indigo-700 dark:text-indigo-300">昊天左侧池</span>
-                                    <span className="text-xs text-slate-400">（政策驱动，中线埋伏）</span>
-                                </div>
-                                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                                    {haotianItems.map(renderMainCandidateCard)}
-                                </div>
-                            </div>
-                        )}
+                        {/* [TF-UX-001] 5000 元试跑 prompt area */}
+                        <TrialBudgetPrompt budget={trialBudget} />
 
-                        {/* Tech pool */}
-                        {techItems.length > 0 && (
-                            <div>
+                        {/* Three actionable groups — pending_confirm / near_trigger / main */}
+                        {focusGroups.groups.map(g => (
+                            <div key={g.key}>
                                 <div className="mb-2 flex items-center gap-2">
-                                    <span className="inline-block h-2 w-2 rounded-full bg-slate-400" />
-                                    <span className="text-sm font-bold text-slate-700 dark:text-slate-300">短线技术池</span>
-                                    <span className="text-xs text-slate-400">（形态/量能/资金共振）</span>
+                                    <span className={`inline-block h-2 w-2 rounded-full ${focusGroupDotClass(g.key)}`} />
+                                    <span className={`text-sm font-bold ${focusGroupTitleClass(g.key)}`}>{g.label}</span>
+                                    <span className="text-xs text-slate-400">（{g.hint}）</span>
+                                    <span className="ml-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-slate-700 dark:text-slate-300">
+                                        {g.items.length} 只
+                                    </span>
                                 </div>
-                                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                                    {techItems.map(renderMainCandidateCard)}
-                                </div>
+                                {g.items.length === 0 ? (
+                                    <div className="rounded border border-dashed border-slate-200 px-3 py-2 text-xs text-slate-400 dark:border-slate-700">
+                                        暂无
+                                    </div>
+                                ) : (
+                                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                                        {g.items.map(c => renderMainCandidateCard(c, trialBudget))}
+                                    </div>
+                                )}
                             </div>
+                        ))}
+
+                        {/* [TF-UX-001] Invalidated / expired — collapsed separate section so the
+                            user understands why a previously main candidate is no longer actionable. */}
+                        {focusGroups.invalidated.length > 0 && (
+                            <InvalidatedPool items={focusGroups.invalidated} onPick={handleRowClick} highlightSymbol={highlightSymbol} />
                         )}
 
                         {/* Observation pool — collapsed by default */}

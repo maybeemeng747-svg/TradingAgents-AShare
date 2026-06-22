@@ -107,15 +107,15 @@
 81. `DATA-019A`：实盘抽样 skipped 状态与任务池收口补修（P2，done）。
 82. `H-013A`：昊天热度图历史日期 fallback 与窗口 unique 统计补修（P2，done）。
 83. `V-008`：TradeFlow 小资金试跑前整体验收（P1，done，55 tests passed）。
-84. `TF-UX-001`：TradeFlow 小资金试跑主工作台降噪与默认视图（P1，ready，依赖 TF-QUALITY-004/TF-RISK-001）。
+84. `TF-UX-001`：TradeFlow 小资金试跑主工作台降噪与默认视图（P1，done，依赖 TF-QUALITY-004/TF-RISK-001 ✓）。
 85. `DATA-020`：数据源健康日报前端可视化与 skipped/failed 分层展示（P1，ready，依赖 DATA-019A）。
 86. `TF-REVIEW-004`：盘后 Review 空数据诊断与一键生成入口（P1，ready，依赖 TF-REVIEW-003）。
 87. `H-014`：昊天主题候选减少与主题集中度阈值校准（P1，ready，依赖 H-013A/H-012）。
 88. `V-009`：小资金试跑后回归清单与用户操作手册（P1，ready，依赖 V-008）。
 89. `TF-OBS-004`：盘中观察自动刷新、触发提醒与人工确认队列降噪（P1，ready，依赖 TF-OBS-003/TF-RISK-001）。
-90. `DATA-021`：TA 报告数据源失败原因透传与字段级降级说明（P1，ready，依赖 DATA-020/DATA-004）。
-91. `H-015`：昊天主题日报与候选入池/出池解释（P1，ready，依赖 H-014/H-013A）。
-92. `PERF-005`：TradeFlow 页面与 API 性能预算回归（P2，ready，依赖 TF-UX-001/DATA-020）。
+90. `DATA-021`：TA 报告数据源失败原因透传与字段级降级说明（P1，blocked — 前置 DATA-020 未完成，依赖 DATA-020/DATA-004）。
+91. `H-015`：昊天主题日报与候选入池/出池解释（P1，blocked — 前置 H-014 未完成，依赖 H-014/H-013A）。
+92. `PERF-005`：TradeFlow 页面与 API 性能预算回归（P2，blocked — 前置 TF-UX-001/DATA-020 未完成，依赖 TF-UX-001/DATA-020）。
 93. `HK-001`：港股输入边界与轻量行情-only 模式声明（P2，ready，独立安全边界任务）。
 94. `TF-PERSIST-001`：TradeFlow save_candidate 分项评分持久化补口（P2，ready，V-008 发现）。
 
@@ -3256,8 +3256,8 @@
 ### TF-UX-001: TradeFlow 小资金试跑主工作台降噪与默认视图（P1）
 - **描述**：把 TradeFlow 前端默认工作流收敛成“小资金试跑”视角，减少用户看到一堆候选却不知道先看哪只的问题。
 - **优先级**：P1
-- **状态**：ready
-- **前置条件**：TF-QUALITY-004、TF-RISK-001 完成。
+- **状态**：done — OpenCode 2026-06-22（commit 见下方 DEVLOG）
+- **前置条件**：TF-QUALITY-004、TF-RISK-001 完成 ✓
 - **执行约束**：
   - 不调用 LLM。
   - 不写生产数据库。

@@ -4,6 +4,49 @@
 
 ---
 
+## 2026-06-22 | TF-UX-001 TradeFlow 小资金试跑主工作台降噪与默认视图
+
+- **执行者**：OpenCode (glm-5.2)
+- **类型**：frontend / UX
+- **状态**：✅ 完成
+
+### 改动概要
+
+把 TradeFlow 前端默认工作流收敛成“小资金试跑”视角。后端候选评分完全不动，只调整前端默认展示与解释。
+
+### 修改文件
+
+- `frontend/src/utils/tradeflowFocus.ts`（新增，~370 行）
+  - `groupMainCandidates()`：把 `main_candidates` 拆成 `pending_confirm / near_trigger / main / invalidated` 四桶，三桶进入默认主视图，`invalidated` 折叠。
+  - `computeTrialBudgetView()`：从 `PaperLedgerResponse` 算出单票预算、最大占用、待确认动作数、`primary_hint` 软提示。
+  - `computeCandidateRiskView()`：每张候选卡的风险占用（已跟踪 / 待确认 / 超出上限三态）。
+  - `pickWhySelected / pickWhyNotMain`：入选原因和“为什么未入选主候选”聚合，弱观察池卡片显式打标。
+- `frontend/src/utils/tradeflowFocus.test.ts`（新增，~310 行）
+  - 18 个 smoke 测试，覆盖 10 候选 fixture 默认主视图不超过 5 只、软文案不含 买/卖/加仓/减仓、null ledger 兜底等。
+- `frontend/src/pages/TradeFlow.tsx`
+  - 焦点视图（`viewMode='focus'`）从“昊天左侧池 + 短线技术池”改为「待确认 / 接近触发 / 主候选」三组 + 折叠的已失效/已过期池 + 折叠的观察池。
+  - 新增 `<TrialBudgetPrompt>` 组件：顶部紫色提示区显示 本金 / 单票预算 / 最大占用 / 待确认动作 / 软提示。
+  - 新增 `<InvalidatedPool>` 组件：失效/过期候选默认折叠，不污染主视图。
+  - 主候选卡片在原维度评分之外加上：综合分（与优先分并列）、核心触发价（重命名）、风险占用徽标。
+  - 观察池卡片显式标出“未入选主候选：<reasons>”，使用 `pickWhyNotMain` 聚合 `weakness_reasons / downgrade_reasons / action_tier_reason / missing_evidence_for_upgrade`。
+  - 进入 `candidates` tab 时静默预取 `paperLedger`（非阻塞），让 5000 元试跑提示区开屏即有数据。
+
+### 验收
+
+- `frontend/` vitest 27 passed（新增 18 + 旧 9）。
+- `npm run build` 通过（仅 chunk size 警告，与本任务无关）。
+- `pytest tests/test_ui001_tradeflow_api.py tests/test_v007_tradeflow_trial_e2e.py -q`：108 passed。
+- 10 候选 fixture 默认主视图 = 5（2 pending + 2 near + 1 main），符合“10 只候选 fixture 中默认主视图不超过 5 只”验收要求。
+- 所有提示区文案 smoke 测试断言不含 买/卖/加仓/减仓/满仓/清仓。
+
+### 风险与后续
+
+- 前端 lint 有 1 个新增 `react-hooks/set-state-in-effect` 告警（paperLedger 预取 effect），与同文件原有 `fetchData / auto-refresh` 模式一致，未触发改写。
+- `PERF-005`（TradeFlow 页面与 API 性能预算回归）解除 blocked 后需要复核 focus 视图新增的 paperLedger 预取对首屏耗时的影响。
+- 未改变后端候选评分或 `tiered` API 合约。
+
+---
+
 ## 2026-06-21 | V-008 TradeFlow 小资金试跑前整体验收
 
 - **执行者**：OpenCode / Codex
