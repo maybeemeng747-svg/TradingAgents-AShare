@@ -1,15 +1,17 @@
+# [TRACK-002] tracking_board_v2_groups
 from __future__ import annotations
 
 import json
 import logging
 import re
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session, load_only
 
 from api.database import ImportedPortfolioPositionDB, ReportDB
 from tradingagents.dataflows.interface import route_to_vendor
-from tradingagents.dataflows.trade_calendar import cn_today_str, previous_cn_trading_day
+from tradingagents.dataflows.trade_calendar import cn_today_str, is_cn_trading_day, previous_cn_trading_day
 
 
 REFRESH_INTERVAL_SECONDS = 20
@@ -230,3 +232,331 @@ def _to_float(value: Any) -> float | None:
         return round(float(value), 4)
     except Exception:
         return None
+
+
+# [TRACK-002] tracking_board_v2_groups
+def get_tracking_board_v2(db: Session, user_id: str) -> dict[str, Any]:
+    """Tracking board v2: holdings + observation items + today guidance + alerts.
+
+    Returns:
+        - holdings: list of position items with live quotes and TA report
+        - observation_items: list of active observation warehouse items
+        - today_guidance: aggregated guidance items with source/priority/reason
+        - alerts: high-priority items needing attention
+        - review_summary: empty placeholder (populated by TRACK-005)
+        - data_freshness: freshness metadata for all data sources used
+    """
+    now = datetime.now()
+    previous_trade_date = previous_cn_trading_day(cn_today_str())
+    is_trading = is_cn_trading_day(cn_today_str())
+
+    # --- Holdings ---
+    holdings = _build_holdings_v2(db, user_id, previous_trade_date)
+
+    # --- Observation items ---
+    obs_items = _fetch_observation_items()
+    obs_symbols = [item["symbol"] for item in obs_items]
+    obs_quotes = _fetch_live_quotes(obs_symbols)
+    observation_items = _enrich_observation_items(obs_items, obs_quotes)
+
+    # --- Today guidance aggregation ---
+    guidance = _aggregate_today_guidance(
+        holdings, observation_items, obs_quotes, is_trading, now
+    )
+
+    # --- Alerts (P0 items) ---
+    alerts = [g for g in guidance if g.get("priority") == "P0"]
+
+    # --- Data freshness ---
+    data_freshness = _build_data_freshness(holdings, observation_items, obs_quotes, is_trading, now)
+
+    return {
+        "previous_trade_date": previous_trade_date,
+        "is_trading_day": is_trading,
+        "refresh_interval_seconds": REFRESH_INTERVAL_SECONDS,
+        "as_of": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "holdings": holdings,
+        "observation_items": observation_items,
+        "today_guidance": guidance,
+        "alerts": alerts,
+        "review_summary": None,
+        "data_freshness": data_freshness,
+    }
+
+
+# [TRACK-002] tracking_board_v2_groups
+def _build_holdings_v2(
+    db: Session, user_id: str, previous_trade_date: str
+) -> list[dict[str, Any]]:
+    """Build holdings list with live quotes and TA report for v2."""
+    rows = _list_imported_position_rows(db, user_id)
+    if not rows:
+        return []
+
+    symbols = [row.symbol for row in rows]
+    quotes = _fetch_live_quotes(symbols)
+    reports = _select_reports_for_symbols(db, user_id, symbols, previous_trade_date)
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        quote = quotes.get(row.symbol, {})
+        live_price = _to_float(quote.get("price"))
+        current_position = _to_float(row.current_position)
+        average_cost = _to_float(row.average_cost)
+        live_market_value = (
+            round(live_price * current_position, 2)
+            if live_price is not None and current_position is not None
+            else _to_float(row.market_value)
+        )
+        floating_pnl = (
+            round((live_price - average_cost) * current_position, 2)
+            if live_price is not None and average_cost is not None and current_position is not None
+            else None
+        )
+        floating_pnl_pct = (
+            round(((live_price - average_cost) / average_cost) * 100, 2)
+            if live_price is not None and average_cost not in (None, 0)
+            else None
+        )
+
+        items.append(
+            {
+                "symbol": row.symbol,
+                "name": row.security_name or row.symbol,
+                "current_position": current_position,
+                "available_position": _to_float(row.available_position),
+                "average_cost": average_cost,
+                "market_value": _to_float(row.market_value),
+                "live_market_value": live_market_value,
+                "floating_pnl": floating_pnl,
+                "floating_pnl_pct": floating_pnl_pct,
+                "live_price": live_price,
+                "price_change_pct": _to_float(quote.get("change_pct")),
+                "quote_time": quote.get("quote_time"),
+                "quote_source": quote.get("source"),
+                "analysis": _serialize_report_summary(reports.get(row.symbol), previous_trade_date),
+            }
+        )
+    return items
+
+
+# [TRACK-002] tracking_board_v2_groups
+def _fetch_observation_items() -> list[dict[str, Any]]:
+    """Fetch active (non-removed) observation items from tradeflow DB."""
+    try:
+        from api.services.tradeflow_service import get_observation_items
+        result = get_observation_items(status=None, include_removed=False)
+        return result.get("items", []) if isinstance(result, dict) else []
+    except Exception as exc:
+        logger.warning("[tracking-board-v2] failed to fetch observation items: %s", exc)
+        return []
+
+
+# [TRACK-002] tracking_board_v2_groups
+def _enrich_observation_items(
+    items: list[dict[str, Any]], quotes: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Add live quote data to observation items."""
+    enriched = []
+    for item in items:
+        quote = quotes.get(item.get("symbol", ""), {})
+        enriched_item = dict(item)
+        enriched_item["live_price"] = _to_float(quote.get("price"))
+        enriched_item["price_change_pct"] = _to_float(quote.get("change_pct"))
+        enriched_item["quote_time"] = quote.get("quote_time")
+        enriched_item["quote_source"] = quote.get("source")
+        enriched.append(enriched_item)
+    return enriched
+
+
+# [TRACK-002] tracking_board_v2_groups
+def _aggregate_today_guidance(
+    holdings: list[dict[str, Any]],
+    observation_items: list[dict[str, Any]],
+    obs_quotes: dict[str, dict[str, Any]],
+    is_trading_day: bool,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """Aggregate today's guidance from holdings risk and observation entry signals.
+
+    Each guidance has: type, priority (P0-P3), symbol, source, reason, as_of.
+    """
+    guidance: list[dict[str, Any]] = []
+    as_of = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    # 1. Holdings risk: large daily drop without TA analysis
+    for h in holdings:
+        symbol = h["symbol"]
+        analysis = h.get("analysis")
+        change_pct = h.get("price_change_pct")
+
+        # No analysis at all
+        if analysis is None:
+            guidance.append({
+                "type": "holdings_no_analysis",
+                "priority": "P2",
+                "symbol": symbol,
+                "name": h.get("name", symbol),
+                "reason": f"持仓 {symbol} 无最新 TA 报告，需人工确认",
+                "source": "tracking_board_v2",
+                "as_of": as_of,
+            })
+            continue
+
+        # Large daily drop (>3%)
+        if change_pct is not None and change_pct <= -3.0:
+            guidance.append({
+                "type": "holdings_risk",
+                "priority": "P0",
+                "symbol": symbol,
+                "name": h.get("name", symbol),
+                "reason": f"持仓 {symbol} 日跌幅 {change_pct:.2f}%，超阈值",
+                "source": "tracking_board_v2",
+                "as_of": as_of,
+            })
+        # Moderate drop (>1.5%)
+        elif change_pct is not None and change_pct <= -1.5:
+            guidance.append({
+                "type": "holdings_risk",
+                "priority": "P1",
+                "symbol": symbol,
+                "name": h.get("name", symbol),
+                "reason": f"持仓 {symbol} 日跌幅 {change_pct:.2f}%，需关注",
+                "source": "tracking_board_v2",
+                "as_of": as_of,
+            })
+
+    # 2. Observation items: near entry / in entry zone / needs TA
+    for obs in observation_items:
+        symbol = obs.get("symbol", "")
+        live_price = obs.get("live_price")
+        status = obs.get("status", "watching")
+        entry_low = obs.get("entry_low", 0.0)
+        entry_high = obs.get("entry_high", 0.0)
+        invalid_price = obs.get("invalid_price", 0.0)
+        obs_name = obs.get("name", symbol)
+
+        if live_price is None:
+            # No live price available
+            if is_trading_day:
+                guidance.append({
+                    "type": "observation_data_missing",
+                    "priority": "P3",
+                    "symbol": symbol,
+                    "name": obs_name,
+                    "reason": f"观察仓 {symbol} 无实时行情，无法判断入场区间",
+                    "source": "tracking_board_v2",
+                    "as_of": as_of,
+                })
+            continue
+
+        # Check invalidated
+        if invalid_price > 0 and live_price <= invalid_price:
+            guidance.append({
+                "type": "observation_invalidated",
+                "priority": "P1",
+                "symbol": symbol,
+                "name": obs_name,
+                "reason": f"观察仓 {symbol} 现价 {live_price} 已跌破失效价 {invalid_price}",
+                "source": "tracking_board_v2",
+                "as_of": as_of,
+            })
+            continue
+
+        # Check in entry zone
+        has_zone = entry_low > 0 or entry_high > 0
+        if has_zone:
+            in_zone = True
+            if entry_low > 0 and live_price < entry_low:
+                in_zone = False
+            if entry_high > 0 and live_price > entry_high:
+                in_zone = False
+
+            if in_zone:
+                guidance.append({
+                    "type": "observation_in_entry_zone",
+                    "priority": "P0",
+                    "symbol": symbol,
+                    "name": obs_name,
+                    "reason": f"观察仓 {symbol} 现价 {live_price} 进入买入区间 [{entry_low}, {entry_high}]",
+                    "source": "tracking_board_v2",
+                    "as_of": as_of,
+                })
+            elif entry_low > 0 and live_price < entry_low * 1.05:
+                # Near entry zone (within 5%)
+                guidance.append({
+                    "type": "observation_near_entry",
+                    "priority": "P1",
+                    "symbol": symbol,
+                    "name": obs_name,
+                    "reason": f"观察仓 {symbol} 现价 {live_price} 接近买点下沿 {entry_low}",
+                    "source": "tracking_board_v2",
+                    "as_of": as_of,
+                })
+
+        # Status-based guidance
+        if status == "ta_required":
+            guidance.append({
+                "type": "observation_ta_required",
+                "priority": "P1",
+                "symbol": symbol,
+                "name": obs_name,
+                "reason": f"观察仓 {symbol} 需要 TA 深度确认",
+                "source": "tracking_board_v2",
+                "as_of": as_of,
+            })
+
+    # Sort by priority
+    priority_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+    guidance.sort(key=lambda g: priority_order.get(g.get("priority", "P3"), 9))
+
+    return guidance
+
+
+# [TRACK-002] tracking_board_v2_groups
+def _build_data_freshness(
+    holdings: list[dict[str, Any]],
+    observation_items: list[dict[str, Any]],
+    obs_quotes: dict[str, dict[str, Any]],
+    is_trading_day: bool,
+    now: datetime,
+) -> dict[str, Any]:
+    """Build data freshness summary."""
+    as_of = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Count holdings with quotes
+    h_total = len(holdings)
+    h_with_quotes = sum(1 for h in holdings if h.get("live_price") is not None)
+    h_with_analysis = sum(1 for h in holdings if h.get("analysis") is not None)
+
+    # Count observation items with quotes
+    o_total = len(observation_items)
+    o_with_quotes = sum(1 for o in observation_items if o.get("live_price") is not None)
+
+    # Latest quote time
+    all_quote_times = []
+    for h in holdings:
+        if h.get("quote_time"):
+            all_quote_times.append(h["quote_time"])
+    for o in observation_items:
+        if o.get("quote_time"):
+            all_quote_times.append(o["quote_time"])
+
+    latest_quote_time = max(all_quote_times) if all_quote_times else None
+
+    status = "fresh"
+    if not is_trading_day:
+        status = "non_trading_day"
+    elif h_total > 0 and h_with_quotes == 0:
+        status = "stale"
+
+    return {
+        "status": status,
+        "holdings_total": h_total,
+        "holdings_with_live_quotes": h_with_quotes,
+        "holdings_with_analysis": h_with_analysis,
+        "observation_total": o_total,
+        "observation_with_live_quotes": o_with_quotes,
+        "latest_quote_time": latest_quote_time,
+        "as_of": as_of,
+    }

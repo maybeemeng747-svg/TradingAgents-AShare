@@ -4592,6 +4592,15 @@ def get_dashboard_tracking_board(
     return tracking_board_service.get_tracking_board(db, current_user.id)
 
 
+# [TRACK-002] tracking_board_v2_groups
+@app.get("/v1/dashboard/tracking-board/v2")
+def get_dashboard_tracking_board_v2(
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    return tracking_board_service.get_tracking_board_v2(db, current_user.id)
+
+
 # ── Watchlist ─────────────────────────────────────────────────────────────────
 
 @app.get("/v1/watchlist")
