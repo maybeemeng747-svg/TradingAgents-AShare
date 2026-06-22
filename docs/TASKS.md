@@ -108,10 +108,10 @@
 82. `H-013A`：昊天热度图历史日期 fallback 与窗口 unique 统计补修（P2，done）。
 83. `V-008`：TradeFlow 小资金试跑前整体验收（P1，done，55 tests passed）。
 84. `TF-UX-001`：TradeFlow 小资金试跑主工作台降噪与默认视图（P1，done，依赖 TF-QUALITY-004/TF-RISK-001 ✓）。
-85. `TRACK-001`：观察仓数据模型与只读/写入 API（P0，ready）。
-86. `TRACK-002`：跟踪看板 v2 分组接口与今日指引聚合（P0，blocked — 前置 TRACK-001 未完成）。
+85. `TRACK-001`：观察仓数据模型与只读/写入 API（P0，done，commit 2ef6c37）。
+86. `TRACK-002`：跟踪看板 v2 分组接口与今日指引聚合（P0，ready，依赖 TRACK-001 ✓）。
 87. `TRACK-003`：跟踪看板前端四区改版：持仓/观察仓/今日指引/盘后复盘（P0，blocked — 前置 TRACK-002 未完成）。
-88. `IC-TA-001`：investment-controller 只读上下文包与数据契约（P1，blocked — 前置 TRACK-001 未完成）。
+88. `IC-TA-001`：investment-controller 只读上下文包与数据契约（P1，ready，依赖 TRACK-001 ✓）。
 89. `TRACK-004`：观察仓入场区/失效区规则引擎与状态流转（P1，blocked — 前置 TRACK-001/TRACK-002 未完成）。
 90. `TRACK-005`：盘后复盘摘要与次日计划写回跟踪看板（P1，blocked — 前置 TRACK-002/TF-REVIEW-003 未完成）。
 91. `TRACK-006`：TradeFlow/TA 候选一键加入观察仓与来源追踪（P1，blocked — 前置 TRACK-001/UI-009 未完成）。
@@ -171,7 +171,7 @@
 ### TRACK-001: 观察仓数据模型与只读/写入 API（P0）
 - **描述**：新增“观察仓”容器，用于存放想买但尚未买入、等待价格/事件/资金确认的标的。
 - **优先级**：P0
-- **状态**：ready
+- **状态**：done — commit 2ef6c37
 - **背景**：
   - 当前跟踪看板只展示真实持仓，无法承载“我想进但等位置”的观察票。
   - 观察仓是盘前计划、盘中提醒、盘后复盘和 investment-controller 调度的基础状态。
@@ -210,8 +210,8 @@
 ### TRACK-002: 跟踪看板 v2 分组接口与今日指引聚合（P0）
 - **描述**：升级 `GET /v1/dashboard/tracking-board` 或新增 v2 接口，返回持仓、观察仓、今日提醒和复盘摘要四类数据。
 - **优先级**：P0
-- **状态**：blocked — 前置 TRACK-001 未完成
-- **前置条件**：TRACK-001
+- **状态**：ready，依赖 TRACK-001 ✓
+- **前置条件**：TRACK-001 ✓
 - **执行约束**：
   - 不触发 TA/LLM。
   - 不自动发通知。
@@ -262,8 +262,8 @@
 ### IC-TA-001: investment-controller 只读上下文包与数据契约（P1）
 - **描述**：为 investment-controller 提供稳定的 TA 侧只读上下文包，作为其盘前/盘中/盘后调度输入。
 - **优先级**：P1
-- **状态**：blocked — 前置 TRACK-001 未完成
-- **前置条件**：TRACK-001
+- **状态**：ready，依赖 TRACK-001 ✓
+- **前置条件**：TRACK-001 ✓
 - **执行约束**：
   - 只读接口，不写状态。
   - 不触发 TA/LLM。
