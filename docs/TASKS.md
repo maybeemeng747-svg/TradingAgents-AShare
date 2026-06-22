@@ -110,7 +110,7 @@
 84. `TF-UX-001`：TradeFlow 小资金试跑主工作台降噪与默认视图（P1，done，依赖 TF-QUALITY-004/TF-RISK-001 ✓）。
 85. `TRACK-001`：观察仓数据模型与只读/写入 API（P0，done，commit 2ef6c37）。
 86. `TRACK-002`：跟踪看板 v2 分组接口与今日指引聚合（P0，done，commit fd0d511）。
-87. `TRACK-003`：跟踪看板前端四区改版：持仓/观察仓/今日指引/盘后复盘（P0，ready，依赖 TRACK-002 ✓）。
+87. `TRACK-003`：跟踪看板前端四区改版：持仓/观察仓/今日指引/盘后复盘（P0，done，commit d80aa66）。
 88. `IC-TA-001`：investment-controller 只读上下文包与数据契约（P1，ready，依赖 TRACK-001 ✓）。
 89. `TRACK-004`：观察仓入场区/失效区规则引擎与状态流转（P1，ready，依赖 TRACK-001 ✓, TRACK-002 ✓）。
 90. `TRACK-005`：盘后复盘摘要与次日计划写回跟踪看板（P1，ready，依赖 TRACK-002 ✓, TF-REVIEW-003 ✓）。
@@ -240,7 +240,7 @@
 ### TRACK-003: 跟踪看板前端四区改版（P0）
 - **描述**：把跟踪看板前端改为“持仓 / 观察仓 / 今日指引 / 盘后复盘”四区。
 - **优先级**：P0
-- **状态**：ready，依赖 TRACK-002 ✓
+- **状态**：done ✓（commit d80aa66）
 - **前置条件**：TRACK-002 ✓
 - **执行约束**：
   - 不把观察仓 UI 做成交易下单。
