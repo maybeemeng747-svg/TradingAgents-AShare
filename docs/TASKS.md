@@ -1,6 +1,6 @@
 # 任务池
 
-> 最后更新：2026-06-20
+> 最后更新：2026-06-22
 
 ---
 
@@ -108,16 +108,25 @@
 82. `H-013A`：昊天热度图历史日期 fallback 与窗口 unique 统计补修（P2，done）。
 83. `V-008`：TradeFlow 小资金试跑前整体验收（P1，done，55 tests passed）。
 84. `TF-UX-001`：TradeFlow 小资金试跑主工作台降噪与默认视图（P1，done，依赖 TF-QUALITY-004/TF-RISK-001 ✓）。
-85. `DATA-020`：数据源健康日报前端可视化与 skipped/failed 分层展示（P1，ready，依赖 DATA-019A）。
-86. `TF-REVIEW-004`：盘后 Review 空数据诊断与一键生成入口（P1，ready，依赖 TF-REVIEW-003）。
-87. `H-014`：昊天主题候选减少与主题集中度阈值校准（P1，ready，依赖 H-013A/H-012）。
-88. `V-009`：小资金试跑后回归清单与用户操作手册（P1，ready，依赖 V-008）。
-89. `TF-OBS-004`：盘中观察自动刷新、触发提醒与人工确认队列降噪（P1，ready，依赖 TF-OBS-003/TF-RISK-001）。
-90. `DATA-021`：TA 报告数据源失败原因透传与字段级降级说明（P1，blocked — 前置 DATA-020 未完成，依赖 DATA-020/DATA-004）。
-91. `H-015`：昊天主题日报与候选入池/出池解释（P1，blocked — 前置 H-014 未完成，依赖 H-014/H-013A）。
-92. `PERF-005`：TradeFlow 页面与 API 性能预算回归（P2，blocked — 前置 TF-UX-001/DATA-020 未完成，依赖 TF-UX-001/DATA-020）。
-93. `HK-001`：港股输入边界与轻量行情-only 模式声明（P2，ready，独立安全边界任务）。
-94. `TF-PERSIST-001`：TradeFlow save_candidate 分项评分持久化补口（P2，ready，V-008 发现）。
+85. `TRACK-001`：观察仓数据模型与只读/写入 API（P0，ready）。
+86. `TRACK-002`：跟踪看板 v2 分组接口与今日指引聚合（P0，blocked — 前置 TRACK-001 未完成）。
+87. `TRACK-003`：跟踪看板前端四区改版：持仓/观察仓/今日指引/盘后复盘（P0，blocked — 前置 TRACK-002 未完成）。
+88. `IC-TA-001`：investment-controller 只读上下文包与数据契约（P1，blocked — 前置 TRACK-001 未完成）。
+89. `TRACK-004`：观察仓入场区/失效区规则引擎与状态流转（P1，blocked — 前置 TRACK-001/TRACK-002 未完成）。
+90. `TRACK-005`：盘后复盘摘要与次日计划写回跟踪看板（P1，blocked — 前置 TRACK-002/TF-REVIEW-003 未完成）。
+91. `TRACK-006`：TradeFlow/TA 候选一键加入观察仓与来源追踪（P1，blocked — 前置 TRACK-001/UI-009 未完成）。
+92. `TRACK-NOTIFY-001`：飞书/总控官通知草稿 payload 与去噪规则（P1，blocked — 前置 IC-TA-001/TRACK-002 未完成）。
+93. `TRACK-007`：跟踪看板端到端验收与用户操作手册（P2，blocked — 前置 TRACK-003/TRACK-004/TRACK-005 未完成）。
+94. `DATA-020`：数据源健康日报前端可视化与 skipped/failed 分层展示（P1，ready，依赖 DATA-019A）。
+95. `TF-REVIEW-004`：盘后 Review 空数据诊断与一键生成入口（P1，ready，依赖 TF-REVIEW-003）。
+96. `H-014`：昊天主题候选减少与主题集中度阈值校准（P1，ready，依赖 H-013A/H-012）。
+97. `V-009`：小资金试跑后回归清单与用户操作手册（P1，ready，依赖 V-008）。
+98. `TF-OBS-004`：盘中观察自动刷新、触发提醒与人工确认队列降噪（P1，ready，依赖 TF-OBS-003/TF-RISK-001）。
+99. `DATA-021`：TA 报告数据源失败原因透传与字段级降级说明（P1，blocked — 前置 DATA-020 未完成，依赖 DATA-020/DATA-004）。
+100. `H-015`：昊天主题日报与候选入池/出池解释（P1，blocked — 前置 H-014 未完成，依赖 H-014/H-013A）。
+101. `PERF-005`：TradeFlow 页面与 API 性能预算回归（P2，blocked — 前置 TF-UX-001/DATA-020 未完成，依赖 TF-UX-001/DATA-020）。
+102. `HK-001`：港股输入边界与轻量行情-only 模式声明（P2，ready，独立安全边界任务）。
+103. `TF-PERSIST-001`：TradeFlow save_candidate 分项评分持久化补口（P2，ready，V-008 发现）。
 
 ### 数据源治理候选队列
 
@@ -152,6 +161,245 @@
 - 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
 - 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
 - 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## TRACK. 跟踪看板 / 观察仓 / investment-controller 联动任务池（2026-06-22 新增）
+
+> 目标：把跟踪看板从“持仓实时行情表”升级为“交易日作战面板”。TA 负责数据、报告和状态容器；investment-controller 负责盘前/盘中/盘后调度、飞书播报和是否调用深度 TA 的判断。
+
+### TRACK-001: 观察仓数据模型与只读/写入 API（P0）
+- **描述**：新增“观察仓”容器，用于存放想买但尚未买入、等待价格/事件/资金确认的标的。
+- **优先级**：P0
+- **状态**：ready
+- **背景**：
+  - 当前跟踪看板只展示真实持仓，无法承载“我想进但等位置”的观察票。
+  - 观察仓是盘前计划、盘中提醒、盘后复盘和 investment-controller 调度的基础状态。
+- **执行约束**：
+  - 不写生产 `tradingagents.db` 测试数据。
+  - 不触发 TA/LLM。
+  - 不自动推送飞书。
+  - 不改 `tradingagents/prompts/`。
+- **实现要点**：
+  1. 新增观察仓表或等价持久化模型，字段至少包含：
+     - `symbol/name`
+     - `status`: `watching / near_entry / in_entry_zone / ta_required / entered / invalidated / removed`
+     - `entry_low/entry_high`
+     - `trigger_price`
+     - `invalid_price`
+     - `horizon`: `intraday / short / mid`
+     - `source`: `manual / tradeflow / ta / investment_controller`
+     - `reason`
+     - `priority`
+     - `notes`
+     - `created_at/updated_at/last_reviewed_at`
+  2. 新增 API：
+     - list observation items
+     - create/update item
+     - mark invalidated/removed
+     - optional bulk upsert
+  3. API 返回必须区分“真实持仓”和“观察仓”，禁止把观察仓误算入持仓市值。
+  4. 测试覆盖创建、更新、状态流转、空数据、symbol/name 规范化。
+- **验收方式**：
+  - 后端测试通过。
+  - 新建观察仓条目后可查询。
+  - `entry_low=0`、`entry_high=0` 等边界值不被显示成 `N/A`。
+  - 观察仓条目不会污染真实持仓接口。
+- **代码标注要求**：`# [TRACK-001] observation_warehouse`
+
+### TRACK-002: 跟踪看板 v2 分组接口与今日指引聚合（P0）
+- **描述**：升级 `GET /v1/dashboard/tracking-board` 或新增 v2 接口，返回持仓、观察仓、今日提醒和复盘摘要四类数据。
+- **优先级**：P0
+- **状态**：blocked — 前置 TRACK-001 未完成
+- **前置条件**：TRACK-001
+- **执行约束**：
+  - 不触发 TA/LLM。
+  - 不自动发通知。
+  - 不改变现有 v1 字段含义，前端旧页面必须兼容。
+- **实现要点**：
+  1. Response 至少包含：
+     - `holdings`
+     - `observation_items`
+     - `today_guidance`
+     - `alerts`
+     - `review_summary`
+     - `data_freshness`
+  2. `today_guidance` 聚合：
+     - 持仓风险票
+     - 观察仓接近买点票
+     - 需要 TA 深度确认票
+     - 数据不足只记录票
+  3. 每条 guidance 必须有 `source`、`as_of`、`reason`，不得给无来源结论。
+  4. 复用已有跟踪看板实时行情与最新报告语义字段：`research_direction / execution_action / action_label`。
+- **验收方式**：
+  - 无持仓、无观察仓时返回空数组和稳定空状态。
+  - 有观察仓但无实时行情时标记 `data_freshness`，不报错。
+  - 有最新 TA 报告时透传动作语义；没有报告时显示“未分析/需人工确认”。
+- **代码标注要求**：`# [TRACK-002] tracking_board_v2`
+
+### TRACK-003: 跟踪看板前端四区改版（P0）
+- **描述**：把跟踪看板前端改为“持仓 / 观察仓 / 今日指引 / 盘后复盘”四区。
+- **优先级**：P0
+- **状态**：blocked — 前置 TRACK-002 未完成
+- **前置条件**：TRACK-002
+- **执行约束**：
+  - 不把观察仓 UI 做成交易下单。
+  - 不展示强买卖词。
+  - 不隐藏数据缺失/非实时提示。
+- **实现要点**：
+  1. 持仓区：展示真实持仓、当日表现、浮盈、关键价位、最新 TA 动作语义。
+  2. 观察仓：展示观察状态、买入区间、触发价、失效价、来源、理由、优先级。
+  3. 今日指引：按 P0/P1/P2/P3 或“风险/接近买点/需 TA/仅记录”分组。
+  4. 盘后复盘：展示当日是否触发计划、是否失效、明日是否继续观察。
+  5. 提供新增/编辑观察仓的轻量表单。
+- **验收方式**：
+  - `npm run build` 通过。
+  - mock 数据下四区均可展示。
+  - 空状态有明确文案，不崩溃。
+  - 大 A 红涨绿跌视觉一致。
+- **代码标注要求**：`// [TRACK-003] tracking_board_frontend`
+
+### IC-TA-001: investment-controller 只读上下文包与数据契约（P1）
+- **描述**：为 investment-controller 提供稳定的 TA 侧只读上下文包，作为其盘前/盘中/盘后调度输入。
+- **优先级**：P1
+- **状态**：blocked — 前置 TRACK-001 未完成
+- **前置条件**：TRACK-001
+- **执行约束**：
+  - 只读接口，不写状态。
+  - 不触发 TA/LLM。
+  - 不暴露 API key/token。
+  - 输出必须包含数据来源和时间戳。
+- **实现要点**：
+  1. 新增或扩展只读 API，返回：
+     - holdings snapshot
+     - observation warehouse
+     - TradeFlow latest candidates
+     - latest TA report summary
+     - data health summary
+     - pending TA required items
+  2. 所有条目必须包含 `source` 与 `as_of`。
+  3. 明确 `data_status`: `fresh / stale / missing / failed / skipped`。
+  4. 不输出最终强动作，只输出结构化事实和软状态。
+- **验收方式**：
+  - 无数据时返回稳定空结构。
+  - 有观察仓和持仓时可被 investment-controller 一次读取。
+  - 测试确认接口不包含敏感字段。
+- **代码标注要求**：`# [IC-TA-001] investment_controller_context`
+
+### TRACK-004: 观察仓入场区/失效区规则引擎与状态流转（P1）
+- **描述**：根据实时价、买入区间、触发价、失效价和数据新鲜度，自动给观察仓标的打状态。
+- **优先级**：P1
+- **状态**：blocked — 前置 TRACK-001/TRACK-002 未完成
+- **前置条件**：TRACK-001、TRACK-002
+- **执行约束**：
+  - 不输出“立即买入”。
+  - 数据缺失时只能标记 `data_missing` 或 `needs_review`。
+- **实现要点**：
+  1. 状态判断：
+     - `watching`
+     - `near_entry`
+     - `in_entry_zone`
+     - `missed_entry`
+     - `invalidated`
+     - `ta_required`
+  2. 判断结果写入 tracking board v2 的 `today_guidance`。
+  3. 每个状态必须有 `reason` 和使用的数据字段。
+- **验收方式**：
+  - 价格进入区间时显示 `in_entry_zone`。
+  - 跌破失效价时显示 `invalidated`。
+  - 数据缺失时不误判为可入场。
+- **代码标注要求**：`# [TRACK-004] observation_state_engine`
+
+### TRACK-005: 盘后复盘摘要与次日计划写回跟踪看板（P1）
+- **描述**：盘后为持仓和观察仓生成复盘摘要，回答“今天是否触发计划、明天是否继续看、是否需要 TA”。
+- **优先级**：P1
+- **状态**：blocked — 前置 TRACK-002/TF-REVIEW-003 未完成
+- **前置条件**：TRACK-002、TF-REVIEW-003
+- **执行约束**：
+  - 先做规则版，不调用 LLM。
+  - 不发真实飞书，只写本地/数据库摘要。
+- **实现要点**：
+  1. 持仓复盘：涨跌、是否跌破关键位、是否偏离 TA 计划。
+  2. 观察仓复盘：是否接近买点、是否失效、是否需要重新 TA。
+  3. 候选池复盘：是否触发、是否淘汰、是否进入观察仓。
+  4. 输出 `tomorrow_focus`。
+- **验收方式**：
+  - 非交易日生成的计划可在下一交易日复盘。
+  - 空 Review 时能解释“为何无数据”。
+  - 输出不含强买卖词。
+- **代码标注要求**：`# [TRACK-005] post_market_tracking_review`
+
+### TRACK-006: TradeFlow/TA 候选一键加入观察仓与来源追踪（P1）
+- **描述**：从 TradeFlow 候选详情、TA 报告或分析结果页，将标的一键加入观察仓，并保留来源和理由。
+- **优先级**：P1
+- **状态**：blocked — 前置 TRACK-001/UI-009 未完成
+- **前置条件**：TRACK-001、UI-009
+- **执行约束**：
+  - 不自动加入，必须用户点击或 investment-controller 输出草稿。
+  - 不覆盖用户手动备注，除非显式确认。
+- **实现要点**：
+  1. TradeFlow 候选加入观察仓，自动带入：
+     - strategy tags
+     - trigger price
+     - invalid price
+     - score
+     - why selected
+  2. TA 报告加入观察仓，自动带入：
+     - action_label
+     - research_direction
+     - key support/stop/target
+  3. 重复 symbol 做 upsert，并保留历史来源。
+- **验收方式**：
+  - 从候选池加入后，跟踪看板观察仓立即可见。
+  - 重复加入不生成重复记录。
+  - 用户 notes 不丢失。
+- **代码标注要求**：`# [TRACK-006] add_to_observation`
+
+### TRACK-NOTIFY-001: 飞书/总控官通知草稿 payload 与去噪规则（P1）
+- **描述**：TA 侧生成给 investment-controller/飞书使用的通知草稿，不直接推送真实 webhook。
+- **优先级**：P1
+- **状态**：blocked — 前置 IC-TA-001/TRACK-002 未完成
+- **前置条件**：IC-TA-001、TRACK-002
+- **执行约束**：
+  - 第一阶段只生成 dry-run payload。
+  - 不读取/打印 webhook。
+  - 不真实发送飞书。
+  - P2/P3 只进日报，不盘中推送。
+- **实现要点**：
+  1. 定义通知 payload schema：
+     - `priority`: `P0/P1/P2/P3`
+     - `symbol`
+     - `title`
+     - `reason`
+     - `source`
+     - `as_of`
+     - `suggested_next_step`
+  2. 去噪规则：
+     - 同一标的同一事件 30 分钟内不重复。
+     - 数据不足只记录，不推送。
+     - P0/P1 才允许进入盘中主动提醒队列。
+  3. 生成本地 markdown/json 预览，供 OpenClaw/investment-controller 决定是否发。
+- **验收方式**：
+  - dry-run 生成 payload。
+  - 未配置 webhook 不报错。
+  - 重复事件被去重。
+  - payload 不含强买卖词。
+- **代码标注要求**：`# [TRACK-NOTIFY-001] notification_payload_dry_run`
+
+### TRACK-007: 跟踪看板端到端验收与用户操作手册（P2）
+- **描述**：对跟踪看板 v2、观察仓、今日指引、复盘摘要和总控官上下文包做端到端验收，并生成用户操作手册。
+- **优先级**：P2
+- **状态**：blocked — 前置 TRACK-003/TRACK-004/TRACK-005 未完成
+- **前置条件**：TRACK-003、TRACK-004、TRACK-005
+- **执行约束**：
+  - 不触发 live LLM。
+  - 不真实推送飞书。
+- **验收方式**：
+  - mock 持仓 + mock 观察仓 + mock TradeFlow 候选，可完整展示四区。
+  - 观察仓状态流转可回放。
+  - investment-controller context 可读。
+  - 生成 `docs/tracking_board_v2_acceptance.md`。
+- **代码标注要求**：`# [TRACK-007] tracking_board_acceptance`
 
 ---
 
