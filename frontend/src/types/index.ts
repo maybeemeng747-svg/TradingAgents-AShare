@@ -675,6 +675,73 @@ export interface TrackingBoardResponse {
     items: TrackingBoardItem[]
 }
 
+// [TRACK-003] tracking_board_v2_frontend
+type GuidancePriority = 'P0' | 'P1' | 'P2' | 'P3'
+type GuidanceType =
+    | 'holdings_risk'
+    | 'holdings_no_analysis'
+    | 'observation_in_entry_zone'
+    | 'observation_near_entry'
+    | 'observation_invalidated'
+    | 'observation_ta_required'
+    | 'observation_data_missing'
+
+export interface TrackingBoardV2Guidance {
+    type: GuidanceType
+    priority: GuidancePriority
+    symbol: string
+    name: string
+    reason: string
+    source: string
+    as_of: string
+}
+
+export interface TrackingBoardV2DataFreshness {
+    status: 'fresh' | 'stale' | 'non_trading_day'
+    holdings_total: number
+    holdings_with_live_quotes: number
+    holdings_with_analysis: number
+    observation_total: number
+    observation_with_live_quotes: number
+    latest_quote_time: string | null
+    as_of: string
+}
+
+export interface ObservationItemV2 {
+    id: number
+    symbol: string
+    name: string
+    status: string
+    entry_low?: number | null
+    entry_high?: number | null
+    trigger_price?: number | null
+    invalid_price?: number | null
+    horizon?: string | null
+    source?: string | null
+    reason?: string | null
+    priority?: number | null
+    notes?: string | null
+    live_price?: number | null
+    price_change_pct?: number | null
+    quote_time?: string | null
+    quote_source?: string | null
+    created_at?: string | null
+    updated_at?: string | null
+}
+
+export interface TrackingBoardV2Response {
+    previous_trade_date: string
+    is_trading_day: boolean
+    refresh_interval_seconds: number
+    as_of: string
+    holdings: TrackingBoardItem[]
+    observation_items: ObservationItemV2[]
+    today_guidance: TrackingBoardV2Guidance[]
+    alerts: TrackingBoardV2Guidance[]
+    review_summary: any
+    data_freshness: TrackingBoardV2DataFreshness
+}
+
 // Runtime config
 export interface RuntimeConfig {
     llm_provider: string
