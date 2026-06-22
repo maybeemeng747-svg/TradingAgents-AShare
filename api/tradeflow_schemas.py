@@ -709,3 +709,114 @@ class TopicHeatmapResponse(BaseModel):
     observe_only_topics: int = 0
     summary: Dict[str, Any] = Field(default_factory=dict)
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [TRACK-001] observation_warehouse
+# Note: numeric price fields use float (not Optional[float]) with default 0.0 so
+# that boundary values like entry_low=0 are never surfaced as N/A downstream.
+class ObservationItemResponse(BaseModel):
+    id: int = 0
+    symbol: str = ""
+    name: str = ""
+    status: str = "watching"
+    entry_low: float = 0.0
+    entry_high: float = 0.0
+    trigger_price: float = 0.0
+    invalid_price: float = 0.0
+    horizon: str = "short"
+    source: str = "manual"
+    reason: str = ""
+    priority: int = 0
+    notes: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    last_reviewed_at: str = ""
+
+
+# [TRACK-001] observation_warehouse
+class ObservationItemListResponse(BaseModel):
+    status: str = "ok"
+    items: List[ObservationItemResponse] = Field(default_factory=list)
+    summary: Dict[str, Any] = Field(default_factory=dict)
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [TRACK-001] observation_warehouse
+class ObservationItemCreateRequest(BaseModel):
+    symbol: str
+    name: str = ""
+    status: str = "watching"
+    entry_low: float = 0.0
+    entry_high: float = 0.0
+    trigger_price: float = 0.0
+    invalid_price: float = 0.0
+    horizon: str = "short"
+    source: str = "manual"
+    reason: str = ""
+    priority: int = 0
+    notes: str = ""
+
+
+# [TRACK-001] observation_warehouse
+class ObservationItemUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    status: Optional[str] = None
+    entry_low: Optional[float] = None
+    entry_high: Optional[float] = None
+    trigger_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    horizon: Optional[str] = None
+    source: Optional[str] = None
+    reason: Optional[str] = None
+    priority: Optional[int] = None
+    notes: Optional[str] = None
+    touch_last_reviewed: bool = False
+
+
+# [TRACK-001] observation_warehouse
+class ObservationItemMarkRequest(BaseModel):
+    status: str = Field(..., description="目标状态，如 invalidated / removed / entered / near_entry 等")
+    note: Optional[str] = None
+
+
+# [TRACK-001] observation_warehouse
+class ObservationBulkUpsertItem(BaseModel):
+    symbol: str
+    name: str = ""
+    status: str = "watching"
+    entry_low: float = 0.0
+    entry_high: float = 0.0
+    trigger_price: float = 0.0
+    invalid_price: float = 0.0
+    horizon: str = "short"
+    source: str = "manual"
+    reason: str = ""
+    priority: int = 0
+    notes: str = ""
+
+
+# [TRACK-001] observation_warehouse
+class ObservationBulkUpsertRequest(BaseModel):
+    items: List[ObservationBulkUpsertItem] = Field(default_factory=list)
+
+
+# [TRACK-001] observation_warehouse
+class ObservationActionResponse(BaseModel):
+    status: str = "ok"
+    message: str = ""
+    item: Optional[ObservationItemResponse] = None
+    item_id: Optional[int] = None
+    symbol: Optional[str] = None
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [TRACK-001] observation_warehouse
+class ObservationBulkUpsertResponse(BaseModel):
+    status: str = "ok"
+    created: List[str] = Field(default_factory=list)
+    updated: List[str] = Field(default_factory=list)
+    errored: List[Dict[str, Any]] = Field(default_factory=list)
+    created_count: int = 0
+    updated_count: int = 0
+    errored_count: int = 0
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)

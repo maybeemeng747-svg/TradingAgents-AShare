@@ -5255,6 +5255,14 @@ from api.tradeflow_schemas import (
     SourceFreshnessResponse,  # [DATA-018] source_freshness_report
     SourceFreshnessEntryItem,  # [DATA-018] source_freshness_report
     SourceFreshnessSummary,  # [DATA-018] source_freshness_report
+    ObservationItemResponse,  # [TRACK-001] observation_warehouse
+    ObservationItemListResponse,  # [TRACK-001] observation_warehouse
+    ObservationItemCreateRequest,  # [TRACK-001] observation_warehouse
+    ObservationItemUpdateRequest,  # [TRACK-001] observation_warehouse
+    ObservationItemMarkRequest,  # [TRACK-001] observation_warehouse
+    ObservationBulkUpsertRequest,  # [TRACK-001] observation_warehouse
+    ObservationBulkUpsertResponse,  # [TRACK-001] observation_warehouse
+    ObservationActionResponse,  # [TRACK-001] observation_warehouse
 )
 from api.services.tradeflow_service import (
     get_daily_plan as _tf_get_daily_plan,
@@ -5284,6 +5292,11 @@ from api.services.tradeflow_service import (
     get_topic_watchlist as _tf_get_topic_watchlist,  # [H-012] mandate_topic_registry
     get_topic_heatmap as _tf_get_topic_heatmap,  # [H-013] mandate_topic_heatmap
     get_source_freshness as _tf_get_source_freshness,  # [DATA-018] source_freshness_report
+    get_observation_items as _tf_get_observation_items,  # [TRACK-001] observation_warehouse
+    create_observation_item as _tf_create_observation_item,  # [TRACK-001] observation_warehouse
+    update_observation_item as _tf_update_observation_item,  # [TRACK-001] observation_warehouse
+    mark_observation_item_status as _tf_mark_observation_item_status,  # [TRACK-001] observation_warehouse
+    bulk_upsert_observation_items as _tf_bulk_upsert_observation_items,  # [TRACK-001] observation_warehouse
 )
 
 # [UI-001] tradeflow_api — read-only endpoints
@@ -5493,6 +5506,69 @@ def tradeflow_topic_heatmap(
 @app.get("/v1/data-sources/freshness", response_model=SourceFreshnessResponse)
 def data_sources_freshness(symbol: str = Query("", description="股票代码（可选）")):
     return _tf_get_source_freshness(symbol=symbol)
+
+
+# [TRACK-001] observation_warehouse — read & write endpoints
+@app.get("/v1/tradeflow/observation-items", response_model=ObservationItemListResponse)
+def tradeflow_observation_items(
+    status: Optional[str] = Query(None, description="按状态过滤 watching/near_entry/in_entry_zone/ta_required/entered/invalidated/removed"),
+    include_removed: bool = Query(False, description="是否包含已 removed 的条目（默认隐藏）"),
+):
+    return _tf_get_observation_items(status=status, include_removed=include_removed)
+
+
+@app.post("/v1/tradeflow/observation-items", response_model=ObservationActionResponse)
+def tradeflow_observation_item_create(request: ObservationItemCreateRequest):
+    return _tf_create_observation_item(
+        symbol=request.symbol,
+        name=request.name,
+        status=request.status,
+        entry_low=request.entry_low,
+        entry_high=request.entry_high,
+        trigger_price=request.trigger_price,
+        invalid_price=request.invalid_price,
+        horizon=request.horizon,
+        source=request.source,
+        reason=request.reason,
+        priority=request.priority,
+        notes=request.notes,
+    )
+
+
+@app.patch("/v1/tradeflow/observation-items/{item_id}", response_model=ObservationActionResponse)
+def tradeflow_observation_item_update(
+    item_id: int,
+    request: ObservationItemUpdateRequest,
+):
+    return _tf_update_observation_item(
+        item_id,
+        name=request.name,
+        status=request.status,
+        entry_low=request.entry_low,
+        entry_high=request.entry_high,
+        trigger_price=request.trigger_price,
+        invalid_price=request.invalid_price,
+        horizon=request.horizon,
+        source=request.source,
+        reason=request.reason,
+        priority=request.priority,
+        notes=request.notes,
+        touch_last_reviewed=request.touch_last_reviewed,
+    )
+
+
+@app.post("/v1/tradeflow/observation-items/{item_id}/mark", response_model=ObservationActionResponse)
+def tradeflow_observation_item_mark(
+    item_id: int,
+    request: ObservationItemMarkRequest,
+):
+    return _tf_mark_observation_item_status(item_id, request.status, note=request.note)
+
+
+@app.post("/v1/tradeflow/observation-items/bulk-upsert", response_model=ObservationBulkUpsertResponse)
+def tradeflow_observation_items_bulk_upsert(request: ObservationBulkUpsertRequest):
+    payload = [item.model_dump() for item in request.items]
+    return _tf_bulk_upsert_observation_items(payload)
 
 
 # ─── Static Files & SPA Routing ──────────────────────────────────────────────

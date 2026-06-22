@@ -150,6 +150,29 @@ CREATE TABLE IF NOT EXISTS tradeflow_paper_trades (
 );
 """
 
+# [TRACK-001] observation_warehouse
+CREATE_OBSERVATION_ITEMS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_observation_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    status TEXT DEFAULT 'watching',
+    entry_low REAL DEFAULT 0.0,
+    entry_high REAL DEFAULT 0.0,
+    trigger_price REAL DEFAULT 0.0,
+    invalid_price REAL DEFAULT 0.0,
+    horizon TEXT DEFAULT 'short',
+    source TEXT DEFAULT 'manual',
+    reason TEXT DEFAULT '',
+    priority INTEGER DEFAULT 0,
+    notes TEXT DEFAULT '',
+    created_at TEXT,
+    updated_at TEXT,
+    last_reviewed_at TEXT,
+    UNIQUE(symbol)
+);
+"""
+
 
 _MISSING_COLUMNS = [
     ("primary_strategy", "TEXT DEFAULT ''"),
@@ -280,6 +303,7 @@ def init_db(db_path: str) -> None:
         + CREATE_FILTERED_SYMBOLS_TABLE  # [UI-007] tradeflow_filtered_trace
         + CREATE_PAPER_LEDGER_TABLE  # [TF-PAPER-001] paper_trading_ledger
         + CREATE_PAPER_TRADES_TABLE  # [TF-PAPER-001] paper_trading_ledger
+        + CREATE_OBSERVATION_ITEMS_TABLE  # [TRACK-001] observation_warehouse
     )
     ensure_columns(conn)
     try:

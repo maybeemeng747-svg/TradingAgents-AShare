@@ -4,6 +4,61 @@
 
 ---
 
+## 2026-06-23 | TRACK-001 观察仓数据模型与只读/写入 API
+
+- **执行者**：OpenCode (glm-5.2)
+- **类型**：backend / data model
+- **状态**：✅ 完成
+
+### 背景
+
+新增"观察仓"容器，用于存放想买但尚未买入、等待价格/事件/资金确认的标的。观察仓是盘前计划、盘中提醒、盘后复盘和 investment-controller 调度的基础状态容器，是 TRACK-002/003/004 等后续任务的前置。
+
+### 设计决策
+
+- **存储位置**：观察仓表 `tradeflow_observation_items` 放在 `tradeflow.db`（与 paper_ledger 同库），**不**放入 `tradingagents.db`。这从物理层面满足"禁止把观察仓误算入持仓市值"的要求——真实持仓走 SQLAlchemy 的 `ImportedPortfolioPositionDB`，观察仓走原生 sqlite3 的 tradeflow 表，两者完全隔离。
+- **运行层级**：所有观察仓接口归类为 `FAST_RADAR`（不触发 LLM、不需要人工确认），与 paper_ledger 一致。
+- **边界值语义**：`entry_low / entry_high / trigger_price / invalid_price` 的 Pydantic 类型为 `float`（默认 `0.0`），而非 `Optional[float]`。服务层 `_num()` 直接从 `sqlite3.Row` 取值，避免 `val or default` 把 `0` 转成 `None`。`entry_low=0`、`entry_high=0` 等边界值因此不会被显示成 N/A。
+
+### 修改文件
+
+- `tradingagents/tradeflow/candidate_engine.py`
+  - 新增 `CREATE_OBSERVATION_ITEMS_TABLE`（含 status / entry_low / entry_high / trigger_price / invalid_price / horizon / source / reason / priority / notes / created_at / updated_at / last_reviewed_at，`UNIQUE(symbol)`）。
+  - `init_db()` 在 `executescript` 中注册新表。
+- `api/services/tradeflow_service.py`（新增 ~470 行）
+  - 状态/来源/周期枚举常量与校验函数 `_validate_observation_status / _validate_observation_horizon / _validate_observation_source`。
+  - `_row_to_observation_item()`：行转字典，保留 `0.0` 边界值，调用 `normalize_tradeflow_symbol + resolve_tradeflow_name` 规范化。
+  - `get_observation_items(status, include_removed)`：列表，支持状态过滤，默认隐藏 removed，附 `_observation_summary`。
+  - `create_observation_item()`：插入，重复 symbol 返回 `duplicate`。
+  - `update_observation_item()`：部分更新，未提供字段保持不变；`touch_last_reviewed` 刷新复盘时间。
+  - `mark_observation_item_status()`：状态流转便捷接口（invalidated / removed / entered 等）。
+  - `bulk_upsert_observation_items()`：按 symbol 批量 upsert，收集错误返回 `created/updated/errored`。
+- `api/tradeflow_schemas.py`：新增 9 个 Pydantic 模型（`ObservationItemResponse` 等），价格字段全部 `float` 默认 `0.0`。
+- `api/runtime_tier.py`：把 `tradeflow_observation_items` 加入 `_TRADEFLOW_FAST_ENDPOINTS`。
+- `api/main.py`：新增 5 个端点
+  - `GET  /v1/tradeflow/observation-items`
+  - `POST /v1/tradeflow/observation-items`
+  - `PATCH /v1/tradeflow/observation-items/{item_id}`
+  - `POST /v1/tradeflow/observation-items/{item_id}/mark`
+  - `POST /v1/tradeflow/observation-items/bulk-upsert`
+- `tests/test_track001_observation_warehouse.py`（新增，68 个用例）
+  - DB schema、list/empty、create（含全部 source/horizon 组合）、边界值（entry_low=0 / entry_high=0 / 负数）、部分更新、状态全流转（watching→near_entry→in_entry_zone→ta_required→entered / invalidated / removed）、bulk upsert（含混合批、错误收集、规范化）、symbol/name 规范化（裸 6 位代码、深/北交所、小写后缀、`.SS`→`.SH`、空白、去重）、**持仓隔离**（tradeflow.db 中无 `imported_portfolio_positions` 表、observation item 不含 market_value 等字段、独立 SQLAlchemy 会话不返回观察仓数据）、Pydantic schema、runtime tier、E2E 流程、安全（无强买卖词、不污染 tradingagents.db、按优先级排序）。
+
+### 验收检查
+
+- ✅ 后端测试 68 个全部通过（`pytest tests/test_track001_observation_warehouse.py`）。
+- ✅ 新建观察仓条目后可查询（`get_observation_items` 返回新条目）。
+- ✅ `entry_low=0`、`entry_high=0` 等边界值保留为 `0.0`，不显示成 N/A（`TestBoundaryValues` 6 个用例）。
+- ✅ 观察仓条目不污染真实持仓接口（`TestHoldingsIsolation` 3 个用例）。
+- ✅ 回归测试：`test_tf_paper001_paper_ledger / test_tradeflow_candidate_engine / test_ui001_tradeflow_api / test_tf_risk001_paper_risk_budget` 共 226 个用例全部通过。
+- ✅ 未触碰生产 `tradingagents.db`、未改 `tradingagents/prompts/`、未触发 LLM、未推送飞书。
+
+### 代码标注
+
+`# [TRACK-001] observation_warehouse`
+
+---
+
 ## 2026-06-22 | 释放 TRACK 跟踪看板 v2 / 观察仓 / 总控官联动任务
 
 - **执行者**：Codex

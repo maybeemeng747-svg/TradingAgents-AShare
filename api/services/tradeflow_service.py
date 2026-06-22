@@ -2839,3 +2839,538 @@ def get_source_freshness(
         "summary": report.summary,
         "runtime_tier_meta": _fast_meta,
     }
+
+
+# [TRACK-001] observation_warehouse
+# ──────────────────────────────────────────────────────────────────────────────
+# Observation warehouse: container for symbols the user wants to buy but is
+# waiting on price / event / capital confirmation before entry. Lives in
+# tradeflow.db so it can never pollute real holdings (ImportedPortfolioPositionDB
+# in tradingagents.db). Does NOT trigger TA / LLM and never sends notifications.
+# ──────────────────────────────────────────────────────────────────────────────
+
+OBSERVATION_STATUS_WATCHING = "watching"
+OBSERVATION_STATUS_NEAR_ENTRY = "near_entry"
+OBSERVATION_STATUS_IN_ENTRY_ZONE = "in_entry_zone"
+OBSERVATION_STATUS_TA_REQUIRED = "ta_required"
+OBSERVATION_STATUS_ENTERED = "entered"
+OBSERVATION_STATUS_INVALIDATED = "invalidated"
+OBSERVATION_STATUS_REMOVED = "removed"
+ALLOWED_OBSERVATION_STATUSES = frozenset({
+    OBSERVATION_STATUS_WATCHING,
+    OBSERVATION_STATUS_NEAR_ENTRY,
+    OBSERVATION_STATUS_IN_ENTRY_ZONE,
+    OBSERVATION_STATUS_TA_REQUIRED,
+    OBSERVATION_STATUS_ENTERED,
+    OBSERVATION_STATUS_INVALIDATED,
+    OBSERVATION_STATUS_REMOVED,
+})
+ALLOWED_OBSERVATION_HORIZONS = frozenset({"intraday", "short", "mid"})
+ALLOWED_OBSERVATION_SOURCES = frozenset({
+    "manual",
+    "tradeflow",
+    "ta",
+    "investment_controller",
+})
+# Statuses that are still actively tracked on the board (not terminal).
+_ACTIVE_OBSERVATION_STATUSES = frozenset({
+    OBSERVATION_STATUS_WATCHING,
+    OBSERVATION_STATUS_NEAR_ENTRY,
+    OBSERVATION_STATUS_IN_ENTRY_ZONE,
+    OBSERVATION_STATUS_TA_REQUIRED,
+    OBSERVATION_STATUS_ENTERED,
+})
+
+
+def _empty_observation_item(symbol: str = "", name: str = "") -> dict:
+    """Default observation item dict used for no-data fallbacks.
+
+    Note: numeric price fields default to ``0.0`` (NOT ``None``) so that
+    boundary values like ``entry_low=0`` never get rendered as N/A downstream.
+    """
+    return {
+        "id": 0,
+        "symbol": symbol,
+        "name": name,
+        "status": OBSERVATION_STATUS_WATCHING,
+        "entry_low": 0.0,
+        "entry_high": 0.0,
+        "trigger_price": 0.0,
+        "invalid_price": 0.0,
+        "horizon": "short",
+        "source": "manual",
+        "reason": "",
+        "priority": 0,
+        "notes": "",
+        "created_at": "",
+        "updated_at": "",
+        "last_reviewed_at": "",
+    }
+
+
+def _row_to_observation_item(row: sqlite3.Row) -> dict:
+    """Convert a tradeflow_observation_items row to a dict.
+
+    Preserves ``0.0`` price boundary values — never coerces 0 to None.
+    """
+    symbol = normalize_tradeflow_symbol(_rget(row, "symbol", ""))
+    raw_name = _rget(row, "name", "")
+    name = resolve_tradeflow_name(symbol, raw_name)
+
+    def _num(key: str) -> float:
+        # Read directly from the row so 0.0 is preserved (no `or` fallback).
+        try:
+            val = row[key]
+        except (KeyError, IndexError):
+            return 0.0
+        if val is None:
+            return 0.0
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return 0.0
+
+    return {
+        "id": _rget(row, "id", 0),
+        "symbol": symbol,
+        "name": name,
+        "status": _rget(row, "status", OBSERVATION_STATUS_WATCHING) or OBSERVATION_STATUS_WATCHING,
+        "entry_low": _num("entry_low"),
+        "entry_high": _num("entry_high"),
+        "trigger_price": _num("trigger_price"),
+        "invalid_price": _num("invalid_price"),
+        "horizon": _rget(row, "horizon", "short") or "short",
+        "source": _rget(row, "source", "manual") or "manual",
+        "reason": _rget(row, "reason", "") or "",
+        "priority": int(_rget(row, "priority", 0) or 0),
+        "notes": _rget(row, "notes", "") or "",
+        "created_at": _rget(row, "created_at", "") or "",
+        "updated_at": _rget(row, "updated_at", "") or "",
+        "last_reviewed_at": _rget(row, "last_reviewed_at", "") or "",
+    }
+
+
+def _observation_summary(items: list[dict]) -> dict:
+    """Aggregate counts by status, excluding removed/invalidated from active."""
+    summary = {status: 0 for status in ALLOWED_OBSERVATION_STATUSES}
+    summary["total"] = len(items)
+    summary["active"] = 0
+    for item in items:
+        status = item.get("status") or OBSERVATION_STATUS_WATCHING
+        if status in summary:
+            summary[status] += 1
+        if status in _ACTIVE_OBSERVATION_STATUSES:
+            summary["active"] += 1
+    return summary
+
+
+def _validate_observation_status(status: str) -> str:
+    if status not in ALLOWED_OBSERVATION_STATUSES:
+        raise ValueError(
+            f"非法观察仓状态: {status}，允许值: {sorted(ALLOWED_OBSERVATION_STATUSES)}"
+        )
+    return status
+
+
+def _validate_observation_horizon(horizon: str) -> str:
+    if horizon not in ALLOWED_OBSERVATION_HORIZONS:
+        raise ValueError(
+            f"非法 horizon: {horizon}，允许值: {sorted(ALLOWED_OBSERVATION_HORIZONS)}"
+        )
+    return horizon
+
+
+def _validate_observation_source(source: str) -> str:
+    if source not in ALLOWED_OBSERVATION_SOURCES:
+        raise ValueError(
+            f"非法 source: {source}，允许值: {sorted(ALLOWED_OBSERVATION_SOURCES)}"
+        )
+    return source
+
+
+def _coerce_price(value: Any) -> float:
+    """Coerce a price input to float, treating None/blank as 0.0.
+
+    Boundary note: explicit 0 / 0.0 / "0" all stay 0.0 — they are valid
+    placeholders meaning "未设定" and must NOT be displayed as N/A.
+    """
+    if value is None:
+        return 0.0
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return 0.0
+        try:
+            return float(s)
+        except ValueError:
+            raise ValueError(f"非法价格数值: {value!r}")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"非法价格数值: {value!r}")
+
+
+def get_observation_items(
+    status: Optional[str] = None,
+    include_removed: bool = False,
+    tf_db_path: str = "",
+) -> dict:
+    """List observation warehouse items.
+
+    ``include_removed=False`` (default) hides items whose status is
+    ``removed`` from the default board view. ``invalidated`` items are always
+    returned (they are still useful for post-market review).
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_observation_items")
+    if status is not None:
+        _validate_observation_status(status)
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {
+            "status": "no_data",
+            "items": [],
+            "summary": _observation_summary([]),
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    try:
+        query = "SELECT * FROM tradeflow_observation_items"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        elif not include_removed:
+            clauses.append("status != ?")
+            params.append(OBSERVATION_STATUS_REMOVED)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY priority DESC, created_at DESC, id DESC"
+
+        rows = conn.execute(query, params).fetchall()
+        items = [_row_to_observation_item(r) for r in rows]
+        return {
+            "status": "ok",
+            "items": items,
+            "summary": _observation_summary(items),
+            "runtime_tier_meta": _fast_meta,
+        }
+    finally:
+        conn.close()
+
+
+def create_observation_item(
+    symbol: str,
+    name: str = "",
+    status: str = OBSERVATION_STATUS_WATCHING,
+    entry_low: Any = 0.0,
+    entry_high: Any = 0.0,
+    trigger_price: Any = 0.0,
+    invalid_price: Any = 0.0,
+    horizon: str = "short",
+    source: str = "manual",
+    reason: str = "",
+    priority: Any = 0,
+    notes: str = "",
+    tf_db_path: str = "",
+) -> dict:
+    """Create a new observation warehouse item.
+
+    Returns ``status="duplicate"`` if an item with the same (normalized)
+    symbol already exists (the caller may want ``update`` instead).
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_observation_items")
+    norm_symbol = normalize_tradeflow_symbol(symbol)
+    if not norm_symbol:
+        return {"status": "error", "message": "symbol 不能为空", "runtime_tier_meta": _fast_meta}
+
+    _validate_observation_status(status)
+    _validate_observation_horizon(horizon)
+    _validate_observation_source(source)
+
+    entry_low_f = _coerce_price(entry_low)
+    entry_high_f = _coerce_price(entry_high)
+    trigger_price_f = _coerce_price(trigger_price)
+    invalid_price_f = _coerce_price(invalid_price)
+    try:
+        priority_i = int(priority)
+    except (TypeError, ValueError):
+        priority_i = 0
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available", "runtime_tier_meta": _fast_meta}
+
+    try:
+        existing = conn.execute(
+            "SELECT id FROM tradeflow_observation_items WHERE symbol = ?",
+            (norm_symbol,),
+        ).fetchone()
+        if existing is not None:
+            return {
+                "status": "duplicate",
+                "message": f"{norm_symbol} 已在观察仓中，请使用更新接口",
+                "symbol": norm_symbol,
+                "item_id": existing["id"],
+                "runtime_tier_meta": _fast_meta,
+            }
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        resolved_name = resolve_tradeflow_name(norm_symbol, name)
+        conn.execute(
+            """
+            INSERT INTO tradeflow_observation_items
+                (symbol, name, status, entry_low, entry_high, trigger_price,
+                 invalid_price, horizon, source, reason, priority, notes,
+                 created_at, updated_at, last_reviewed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                norm_symbol, resolved_name, status,
+                entry_low_f, entry_high_f, trigger_price_f, invalid_price_f,
+                horizon, source, reason, priority_i, notes,
+                now, now, now,
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM tradeflow_observation_items WHERE symbol = ?",
+            (norm_symbol,),
+        ).fetchone()
+        item = _row_to_observation_item(row)
+        return {
+            "status": "ok",
+            "message": f"{norm_symbol} 已加入观察仓",
+            "item": item,
+            "item_id": item["id"],
+            "runtime_tier_meta": _fast_meta,
+        }
+    finally:
+        conn.close()
+
+
+def update_observation_item(
+    item_id: int,
+    *,
+    name: Optional[str] = None,
+    status: Optional[str] = None,
+    entry_low: Any = None,
+    entry_high: Any = None,
+    trigger_price: Any = None,
+    invalid_price: Any = None,
+    horizon: Optional[str] = None,
+    source: Optional[str] = None,
+    reason: Optional[str] = None,
+    priority: Any = None,
+    notes: Optional[str] = None,
+    touch_last_reviewed: bool = False,
+    tf_db_path: str = "",
+) -> dict:
+    """Partially update an observation item. Only provided fields are changed.
+
+    Returns ``status="not_found"`` if ``item_id`` does not exist.
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_observation_items")
+    if status is not None:
+        _validate_observation_status(status)
+    if horizon is not None:
+        _validate_observation_horizon(horizon)
+    if source is not None:
+        _validate_observation_source(source)
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available", "runtime_tier_meta": _fast_meta}
+
+    try:
+        row = conn.execute(
+            "SELECT * FROM tradeflow_observation_items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        if row is None:
+            return {"status": "not_found", "message": f"item_id={item_id} 不存在", "runtime_tier_meta": _fast_meta}
+
+        current = _row_to_observation_item(row)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        updates: dict[str, Any] = {"updated_at": now}
+        if name is not None:
+            updates["name"] = resolve_tradeflow_name(current["symbol"], name)
+        if status is not None:
+            updates["status"] = status
+        if entry_low is not None:
+            updates["entry_low"] = _coerce_price(entry_low)
+        if entry_high is not None:
+            updates["entry_high"] = _coerce_price(entry_high)
+        if trigger_price is not None:
+            updates["trigger_price"] = _coerce_price(trigger_price)
+        if invalid_price is not None:
+            updates["invalid_price"] = _coerce_price(invalid_price)
+        if horizon is not None:
+            updates["horizon"] = horizon
+        if source is not None:
+            updates["source"] = source
+        if reason is not None:
+            updates["reason"] = reason
+        if priority is not None:
+            try:
+                updates["priority"] = int(priority)
+            except (TypeError, ValueError):
+                updates["priority"] = 0
+        if notes is not None:
+            updates["notes"] = notes
+        if touch_last_reviewed:
+            updates["last_reviewed_at"] = now
+
+        set_clause = ", ".join(f"{col} = ?" for col in updates.keys())
+        params: list[Any] = list(updates.values()) + [item_id]
+        conn.execute(
+            f"UPDATE tradeflow_observation_items SET {set_clause} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+
+        new_row = conn.execute(
+            "SELECT * FROM tradeflow_observation_items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        item = _row_to_observation_item(new_row)
+        return {
+            "status": "ok",
+            "message": f"{item['symbol']} 已更新",
+            "item": item,
+            "item_id": item_id,
+            "runtime_tier_meta": _fast_meta,
+        }
+    finally:
+        conn.close()
+
+
+def mark_observation_item_status(
+    item_id: int,
+    status: str,
+    note: Optional[str] = None,
+    tf_db_path: str = "",
+) -> dict:
+    """Transition an observation item to ``invalidated`` / ``removed`` / etc.
+
+    Convenience wrapper around ``update_observation_item`` for state-machine
+    transitions. When ``note`` is provided it appends to existing notes.
+    """
+    _validate_observation_status(status)
+    update_kwargs: dict[str, Any] = {"status": status, "touch_last_reviewed": True}
+    if note is not None:
+        update_kwargs["notes"] = note
+    return update_observation_item(item_id, tf_db_path=tf_db_path, **update_kwargs)
+
+
+def bulk_upsert_observation_items(
+    items: list[dict[str, Any]],
+    tf_db_path: str = "",
+) -> dict:
+    """Upsert a batch of observation items keyed by normalized symbol.
+
+    Each item must contain at least ``symbol``. Unknown keys are ignored.
+    Returns counts of created / updated / unchanged / errored items.
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_observation_items")
+    if not isinstance(items, list):
+        return {"status": "error", "message": "items 必须为列表", "runtime_tier_meta": _fast_meta}
+
+    created: list[int] = []
+    updated: list[int] = []
+    errored: list[dict[str, Any]] = []
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available", "runtime_tier_meta": _fast_meta}
+
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for raw in items:
+            try:
+                symbol = normalize_tradeflow_symbol(raw.get("symbol", ""))
+                if not symbol:
+                    raise ValueError("symbol 不能为空")
+                status = raw.get("status") or OBSERVATION_STATUS_WATCHING
+                horizon = raw.get("horizon") or "short"
+                source = raw.get("source") or "manual"
+                _validate_observation_status(status)
+                _validate_observation_horizon(horizon)
+                _validate_observation_source(source)
+
+                payload = {
+                    "name": resolve_tradeflow_name(symbol, raw.get("name", "")),
+                    "status": status,
+                    "entry_low": _coerce_price(raw.get("entry_low", 0.0)),
+                    "entry_high": _coerce_price(raw.get("entry_high", 0.0)),
+                    "trigger_price": _coerce_price(raw.get("trigger_price", 0.0)),
+                    "invalid_price": _coerce_price(raw.get("invalid_price", 0.0)),
+                    "horizon": horizon,
+                    "source": source,
+                    "reason": raw.get("reason", "") or "",
+                    "priority": int(raw.get("priority", 0) or 0),
+                    "notes": raw.get("notes", "") or "",
+                }
+
+                existing = conn.execute(
+                    "SELECT id FROM tradeflow_observation_items WHERE symbol = ?",
+                    (symbol,),
+                ).fetchone()
+                if existing is None:
+                    conn.execute(
+                        """
+                        INSERT INTO tradeflow_observation_items
+                            (symbol, name, status, entry_low, entry_high, trigger_price,
+                             invalid_price, horizon, source, reason, priority, notes,
+                             created_at, updated_at, last_reviewed_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            symbol, payload["name"], payload["status"],
+                            payload["entry_low"], payload["entry_high"],
+                            payload["trigger_price"], payload["invalid_price"],
+                            payload["horizon"], payload["source"], payload["reason"],
+                            payload["priority"], payload["notes"], now, now, now,
+                        ),
+                    )
+                    created.append(symbol)
+                else:
+                    set_parts = [
+                        "name = ?", "status = ?", "entry_low = ?", "entry_high = ?",
+                        "trigger_price = ?", "invalid_price = ?", "horizon = ?",
+                        "source = ?", "reason = ?", "priority = ?", "notes = ?",
+                        "updated_at = ?",
+                    ]
+                    params = [
+                        payload["name"], payload["status"], payload["entry_low"],
+                        payload["entry_high"], payload["trigger_price"],
+                        payload["invalid_price"], payload["horizon"], payload["source"],
+                        payload["reason"], payload["priority"], payload["notes"], now,
+                        existing["id"],
+                    ]
+                    conn.execute(
+                        f"UPDATE tradeflow_observation_items SET {', '.join(set_parts)} WHERE id = ?",
+                        params,
+                    )
+                    updated.append(symbol)
+            except Exception as exc:
+                errored.append({
+                    "symbol": raw.get("symbol", "") if isinstance(raw, dict) else "",
+                    "reason": str(exc),
+                })
+
+        conn.commit()
+        return {
+            "status": "ok" if not errored else "partial",
+            "created": created,
+            "updated": updated,
+            "errored": errored,
+            "created_count": len(created),
+            "updated_count": len(updated),
+            "errored_count": len(errored),
+            "runtime_tier_meta": _fast_meta,
+        }
+    finally:
+        conn.close()
