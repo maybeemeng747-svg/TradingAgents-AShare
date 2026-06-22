@@ -1,6 +1,7 @@
 # TF-UX-001 Run Summary
 
 - **Task**: TF-UX-001 — TradeFlow 小资金试跑主工作台降噪与默认视图（P1）
+- **Commit**: `5edaff2`
 - **Executor**: OpenCode (glm-5.2)
 - **Started**: 2026-06-22 ~13:19 (Asia/Shanghai)
 - **Finished**: 2026-06-22 ~13:35

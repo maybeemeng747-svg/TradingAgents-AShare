@@ -3256,7 +3256,7 @@
 ### TF-UX-001: TradeFlow 小资金试跑主工作台降噪与默认视图（P1）
 - **描述**：把 TradeFlow 前端默认工作流收敛成“小资金试跑”视角，减少用户看到一堆候选却不知道先看哪只的问题。
 - **优先级**：P1
-- **状态**：done — OpenCode 2026-06-22（commit 见下方 DEVLOG）
+- **状态**：done — OpenCode 2026-06-22（commit `5edaff2`，运行档案 `docs/task_runs/TF-UX-001-20260622-133149/`）
 - **前置条件**：TF-QUALITY-004、TF-RISK-001 完成 ✓
 - **执行约束**：
   - 不调用 LLM。
