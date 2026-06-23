@@ -712,6 +712,7 @@ class TopicHeatmapResponse(BaseModel):
 
 
 # [TRACK-001] observation_warehouse
+# [TRACK-006] add_to_observation — provenance fields surfaced to UI
 # Note: numeric price fields use float (not Optional[float]) with default 0.0 so
 # that boundary values like entry_low=0 are never surfaced as N/A downstream.
 class ObservationItemResponse(BaseModel):
@@ -731,6 +732,12 @@ class ObservationItemResponse(BaseModel):
     created_at: str = ""
     updated_at: str = ""
     last_reviewed_at: str = ""
+    # [TRACK-006] add_to_observation — provenance & history fields
+    strategy_tags: List[str] = Field(default_factory=list)
+    score: float = 0.0
+    action_label: str = ""
+    research_direction: str = ""
+    source_history: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 # [TRACK-001] observation_warehouse
@@ -755,6 +762,11 @@ class ObservationItemCreateRequest(BaseModel):
     reason: str = ""
     priority: int = 0
     notes: str = ""
+    # [TRACK-006] add_to_observation — optional provenance fields
+    strategy_tags: List[str] = Field(default_factory=list)
+    score: float = 0.0
+    action_label: str = ""
+    research_direction: str = ""
 
 
 # [TRACK-001] observation_warehouse
@@ -771,6 +783,11 @@ class ObservationItemUpdateRequest(BaseModel):
     priority: Optional[int] = None
     notes: Optional[str] = None
     touch_last_reviewed: bool = False
+    # [TRACK-006] add_to_observation — optional provenance updates
+    strategy_tags: Optional[List[str]] = None
+    score: Optional[float] = None
+    action_label: Optional[str] = None
+    research_direction: Optional[str] = None
 
 
 # [TRACK-001] observation_warehouse
@@ -793,6 +810,12 @@ class ObservationBulkUpsertItem(BaseModel):
     reason: str = ""
     priority: int = 0
     notes: str = ""
+    # [TRACK-006] add_to_observation — provenance + notes-protection flag
+    strategy_tags: List[str] = Field(default_factory=list)
+    score: float = 0.0
+    action_label: str = ""
+    research_direction: str = ""
+    force_overwrite_notes: bool = False
 
 
 # [TRACK-001] observation_warehouse
@@ -819,4 +842,55 @@ class ObservationBulkUpsertResponse(BaseModel):
     created_count: int = 0
     updated_count: int = 0
     errored_count: int = 0
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [TRACK-006] add_to_observation — one-click add from candidate / TA report
+class ObservationAddFromCandidateRequest(BaseModel):
+    """Push a TradeFlow candidate into the observation warehouse.
+
+    The endpoint accepts a slim payload (``symbol`` + ``trade_date``) and
+    resolves the rest from the persisted candidate row, so the frontend does
+    not need to forward the whole candidate dict. An optional ``extra_notes``
+    field lets the user annotate the new item; existing user notes are never
+    clobbered unless ``force_overwrite_notes`` is true.
+    """
+    symbol: str
+    trade_date: str = ""
+    via: str = "candidate_drawer"
+    extra_notes: str = ""
+    force_overwrite_notes: bool = False
+
+
+# [TRACK-006] add_to_observation
+class ObservationAddFromTAReportRequest(BaseModel):
+    """Push a TA report into the observation warehouse.
+
+    Accepts either:
+      - ``symbol`` + ``report_id`` (preferred — backend re-reads the stored
+        report), or
+      - ``symbol`` + inline ``action_label`` / ``research_direction`` /
+        ``target_price`` / ``stop_loss_price`` (fallback when the report is
+        not yet persisted, e.g. live preview).
+    """
+    symbol: str
+    report_id: Optional[str] = None
+    name: str = ""
+    action_label: str = ""
+    research_direction: str = ""
+    target_price: float = 0.0
+    stop_loss_price: float = 0.0
+    via: str = "analysis_page"
+    extra_notes: str = ""
+    force_overwrite_notes: bool = False
+
+
+# [TRACK-006] add_to_observation
+class ObservationAddResponse(BaseModel):
+    status: str = "ok"
+    action: str = ""  # "created" | "updated" | ""
+    message: str = ""
+    symbol: Optional[str] = None
+    item: Optional[ObservationItemResponse] = None
+    item_id: Optional[int] = None
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)

@@ -732,6 +732,17 @@ export interface ObservationItemV2 {
     quote_source?: string | null
     created_at?: string | null
     updated_at?: string | null
+    // [TRACK-006] add_to_observation — provenance fields surfaced to UI
+    strategy_tags?: string[]
+    score?: number | null
+    action_label?: string | null
+    research_direction?: string | null
+    source_history?: Array<{
+        source: string
+        as_of: string
+        via: string
+        reason: string
+    }>
 }
 
 export interface TrackingBoardV2Response {
@@ -1576,4 +1587,17 @@ export interface PaperReviewResponse {
     }
     trades: PaperTradeItem[]
     runtime_tier_meta: RuntimeTierMeta
+}
+
+// [TRACK-006] add_to_observation — one-click add from candidate / TA report
+export interface ObservationAddResponse {
+    status: string
+    action?: string  // "created" | "updated" | ""
+    message: string
+    symbol?: string
+    item_id?: number
+    item?: ObservationItemV2 & {
+        last_reviewed_at?: string | null
+    }
+    runtime_tier_meta?: RuntimeTierMeta
 }

@@ -151,6 +151,8 @@ CREATE TABLE IF NOT EXISTS tradeflow_paper_trades (
 """
 
 # [TRACK-001] observation_warehouse
+# [TRACK-006] add_to_observation — added strategy_tags_json / score /
+# action_label / research_direction / source_history_json columns.
 CREATE_OBSERVATION_ITEMS_TABLE = """
 CREATE TABLE IF NOT EXISTS tradeflow_observation_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,6 +171,11 @@ CREATE TABLE IF NOT EXISTS tradeflow_observation_items (
     created_at TEXT,
     updated_at TEXT,
     last_reviewed_at TEXT,
+    strategy_tags_json TEXT DEFAULT '[]',
+    score REAL DEFAULT 0.0,
+    action_label TEXT DEFAULT '',
+    research_direction TEXT DEFAULT '',
+    source_history_json TEXT DEFAULT '[]',
     UNIQUE(symbol)
 );
 """
@@ -524,6 +531,26 @@ def init_db(db_path: str) -> None:
     ]:
         try:
             conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+        except sqlite3.OperationalError:
+            pass
+    # [TRACK-006] add_to_observation — extend observation warehouse with
+    # candidate/TA-report provenance fields and an append-only source history.
+    # strategy_tags_json: list[str] from TradeFlow candidate (e.g. VCP/PULLBACK_SUPPORT)
+    # score:               composite_score / mandate_score from candidate
+    # action_label:        TA report action label (等待触发/条件入场/...)
+    # research_direction:  TA report research direction (看多/偏多/中性/...)
+    # source_history_json: append-only [{source, as_of, via, reason}] for replay
+    for _col, _type in [
+        ("strategy_tags_json", "TEXT DEFAULT '[]'"),
+        ("score", "REAL DEFAULT 0.0"),
+        ("action_label", "TEXT DEFAULT ''"),
+        ("research_direction", "TEXT DEFAULT ''"),
+        ("source_history_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(
+                f"ALTER TABLE tradeflow_observation_items ADD COLUMN {_col} {_type}"
+            )
         except sqlite3.OperationalError:
             pass
     conn.commit()

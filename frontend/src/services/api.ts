@@ -1,4 +1,4 @@
-import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, TrackingBoardV2Response, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse, CompanyOverviewResponse, PaperLedgerResponse, PaperActionResponse, PaperReviewResponse, SourceFreshnessResponse, TopicHeatmapResponse } from '@/types'
+import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, TrackingBoardV2Response, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse, CompanyOverviewResponse, PaperLedgerResponse, PaperActionResponse, PaperReviewResponse, SourceFreshnessResponse, TopicHeatmapResponse, ObservationAddResponse } from '@/types'
 
 export function getBaseUrl(): string {
     const envUrl = (import.meta.env.VITE_API_URL as string) || ''
@@ -558,6 +558,60 @@ class ApiService {
     // [TF-PAPER-001] paper_trading_ledger
     async getPaperReview(date: string): Promise<PaperReviewResponse> {
         return this.request<PaperReviewResponse>(`/v1/tradeflow/paper-ledger/review?date=${date}`)
+    }
+
+    // [TRACK-006] add_to_observation — one-click add from TradeFlow candidate
+    async addCandidateToObservervation(symbol: string, payload: {
+        trade_date?: string
+        via?: string
+        extra_notes?: string
+        force_overwrite_notes?: boolean
+    }): Promise<ObservationAddResponse> {
+        return this.request<ObservationAddResponse>(
+            `/v1/tradeflow/candidates/${encodeURIComponent(symbol)}/add-to-observation`,
+            {
+                method: 'POST',
+                body: JSON.stringify({
+                    symbol,
+                    trade_date: payload.trade_date || '',
+                    via: payload.via || 'candidate_drawer',
+                    extra_notes: payload.extra_notes || '',
+                    force_overwrite_notes: !!payload.force_overwrite_notes,
+                }),
+            },
+        )
+    }
+
+    // [TRACK-006] add_to_observation — one-click add from TA report
+    async addTAReportToObservervation(symbol: string, payload: {
+        report_id?: string
+        name?: string
+        action_label?: string
+        research_direction?: string
+        target_price?: number | null
+        stop_loss_price?: number | null
+        via?: string
+        extra_notes?: string
+        force_overwrite_notes?: boolean
+    }): Promise<ObservationAddResponse> {
+        return this.request<ObservationAddResponse>(
+            `/v1/tradeflow/ta-reports/${encodeURIComponent(symbol)}/add-to-observation`,
+            {
+                method: 'POST',
+                body: JSON.stringify({
+                    symbol,
+                    report_id: payload.report_id || null,
+                    name: payload.name || '',
+                    action_label: payload.action_label || '',
+                    research_direction: payload.research_direction || '',
+                    target_price: payload.target_price ?? 0,
+                    stop_loss_price: payload.stop_loss_price ?? 0,
+                    via: payload.via || 'analysis_page',
+                    extra_notes: payload.extra_notes || '',
+                    force_overwrite_notes: !!payload.force_overwrite_notes,
+                }),
+            },
+        )
     }
 }
 

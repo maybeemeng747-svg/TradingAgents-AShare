@@ -2909,7 +2909,30 @@ def _empty_observation_item(symbol: str = "", name: str = "") -> dict:
         "created_at": "",
         "updated_at": "",
         "last_reviewed_at": "",
+        # [TRACK-006] add_to_observation — provenance & history fields
+        "strategy_tags": [],
+        "score": 0.0,
+        "action_label": "",
+        "research_direction": "",
+        "source_history": [],
     }
+
+
+def _parse_observation_json_field(raw: Any, default: Any) -> Any:
+    """Best-effort JSON parse for observation provenance columns.
+
+    Older rows (or DBs upgraded in-place) may carry NULL / empty strings;
+    never raise — fall back to ``default`` so the API stays stable.
+    """
+    if raw is None or raw == "":
+        return default
+    if isinstance(raw, (list, dict)):
+        return raw
+    try:
+        import json as _json
+        return _json.loads(raw)
+    except (ValueError, TypeError):
+        return default
 
 
 def _row_to_observation_item(row: sqlite3.Row) -> dict:
@@ -2934,6 +2957,15 @@ def _row_to_observation_item(row: sqlite3.Row) -> dict:
         except (TypeError, ValueError):
             return 0.0
 
+    # [TRACK-006] add_to_observation — read provenance columns defensively
+    strategy_tags = _parse_observation_json_field(
+        _rget(row, "strategy_tags_json", "[]"), []
+    )
+    source_history = _parse_observation_json_field(
+        _rget(row, "source_history_json", "[]"), []
+    )
+    score_val = _num("score")
+
     return {
         "id": _rget(row, "id", 0),
         "symbol": symbol,
@@ -2951,6 +2983,12 @@ def _row_to_observation_item(row: sqlite3.Row) -> dict:
         "created_at": _rget(row, "created_at", "") or "",
         "updated_at": _rget(row, "updated_at", "") or "",
         "last_reviewed_at": _rget(row, "last_reviewed_at", "") or "",
+        # [TRACK-006] add_to_observation — provenance & history fields
+        "strategy_tags": strategy_tags if isinstance(strategy_tags, list) else [],
+        "score": score_val,
+        "action_label": _rget(row, "action_label", "") or "",
+        "research_direction": _rget(row, "research_direction", "") or "",
+        "source_history": source_history if isinstance(source_history, list) else [],
     }
 
 
@@ -3077,6 +3115,11 @@ def create_observation_item(
     reason: str = "",
     priority: Any = 0,
     notes: str = "",
+    strategy_tags: list[str] | None = None,  # [TRACK-006] add_to_observation
+    score: Any = 0.0,  # [TRACK-006] add_to_observation
+    action_label: str = "",  # [TRACK-006] add_to_observation
+    research_direction: str = "",  # [TRACK-006] add_to_observation
+    source_history: list[dict] | None = None,  # [TRACK-006] add_to_observation
     tf_db_path: str = "",
 ) -> dict:
     """Create a new observation warehouse item.
@@ -3101,6 +3144,15 @@ def create_observation_item(
         priority_i = int(priority)
     except (TypeError, ValueError):
         priority_i = 0
+    try:
+        score_f = float(score)
+    except (TypeError, ValueError):
+        score_f = 0.0
+
+    # [TRACK-006] add_to_observation — serialize provenance lists defensively
+    import json as _json
+    tags_json = _json.dumps(strategy_tags or [], ensure_ascii=False)
+    history_json = _json.dumps(source_history or [], ensure_ascii=False)
 
     conn = _connect(tf_db_path)
     if conn is None:
@@ -3127,14 +3179,18 @@ def create_observation_item(
             INSERT INTO tradeflow_observation_items
                 (symbol, name, status, entry_low, entry_high, trigger_price,
                  invalid_price, horizon, source, reason, priority, notes,
-                 created_at, updated_at, last_reviewed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 created_at, updated_at, last_reviewed_at,
+                 strategy_tags_json, score, action_label, research_direction,
+                 source_history_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 norm_symbol, resolved_name, status,
                 entry_low_f, entry_high_f, trigger_price_f, invalid_price_f,
                 horizon, source, reason, priority_i, notes,
                 now, now, now,
+                tags_json, score_f, action_label, research_direction,
+                history_json,
             ),
         )
         conn.commit()
@@ -3169,11 +3225,25 @@ def update_observation_item(
     priority: Any = None,
     notes: Optional[str] = None,
     touch_last_reviewed: bool = False,
+    # [TRACK-006] add_to_observation — provenance field updates
+    strategy_tags: Optional[list[str]] = None,
+    score: Any = None,
+    action_label: Optional[str] = None,
+    research_direction: Optional[str] = None,
+    append_source_history: Optional[list[dict]] = None,
     tf_db_path: str = "",
 ) -> dict:
     """Partially update an observation item. Only provided fields are changed.
 
     Returns ``status="not_found"`` if ``item_id`` does not exist.
+
+    [TRACK-006] notes semantics: caller-supplied ``notes`` ALWAYS overwrites
+    the stored value (preserving the existing TRACK-001 contract). Callers
+    that need preserve-user-notes semantics must read first, merge, and pass
+    the merged string — or use ``add_candidate_to_observation`` /
+    ``add_ta_report_to_observation`` which never clobber user notes.
+    ``append_source_history`` ADDS entries to the source_history_json list
+    (it never replaces); pass an empty list to no-op.
     """
     _fast_meta = _tradeflow_meta("tradeflow_observation_items")
     if status is not None:
@@ -3226,6 +3296,26 @@ def update_observation_item(
             updates["notes"] = notes
         if touch_last_reviewed:
             updates["last_reviewed_at"] = now
+        # [TRACK-006] add_to_observation — provenance field updates
+        if strategy_tags is not None:
+            import json as _json
+            updates["strategy_tags_json"] = _json.dumps(strategy_tags, ensure_ascii=False)
+        if score is not None:
+            try:
+                updates["score"] = float(score)
+            except (TypeError, ValueError):
+                updates["score"] = 0.0
+        if action_label is not None:
+            updates["action_label"] = action_label
+        if research_direction is not None:
+            updates["research_direction"] = research_direction
+        if append_source_history:
+            import json as _json
+            merged = list(current.get("source_history") or [])
+            for entry in append_source_history:
+                if isinstance(entry, dict):
+                    merged.append(entry)
+            updates["source_history_json"] = _json.dumps(merged, ensure_ascii=False)
 
         set_clause = ", ".join(f"{col} = ?" for col in updates.keys())
         params: list[Any] = list(updates.values()) + [item_id]
@@ -3277,6 +3367,13 @@ def bulk_upsert_observation_items(
 
     Each item must contain at least ``symbol``. Unknown keys are ignored.
     Returns counts of created / updated / unchanged / errored items.
+
+    [TRACK-006] add_to_observation — notes preservation:
+    By default, existing user notes are NEVER overwritten on update; only an
+    explicit ``force_overwrite_notes=True`` on the entry will replace them.
+    This protects manual annotations when investment-controller / scheduler
+    upserts the same symbol repeatedly. Empty incoming notes also never
+    clobber existing notes.
     """
     _fast_meta = _tradeflow_meta("tradeflow_observation_items")
     if not isinstance(items, list):
@@ -3291,6 +3388,7 @@ def bulk_upsert_observation_items(
         return {"status": "no_data", "message": "TradeFlow DB not available", "runtime_tier_meta": _fast_meta}
 
     try:
+        import json as _json
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for raw in items:
             try:
@@ -3304,6 +3402,9 @@ def bulk_upsert_observation_items(
                 _validate_observation_horizon(horizon)
                 _validate_observation_source(source)
 
+                force_overwrite_notes = bool(raw.get("force_overwrite_notes", False))  # [TRACK-006]
+                incoming_notes = raw.get("notes", "") or ""
+
                 payload = {
                     "name": resolve_tradeflow_name(symbol, raw.get("name", "")),
                     "status": status,
@@ -3315,11 +3416,23 @@ def bulk_upsert_observation_items(
                     "source": source,
                     "reason": raw.get("reason", "") or "",
                     "priority": int(raw.get("priority", 0) or 0),
-                    "notes": raw.get("notes", "") or "",
+                    "notes": incoming_notes,
                 }
 
+                # [TRACK-006] add_to_observation — provenance fields (optional)
+                strategy_tags = raw.get("strategy_tags") or []
+                if not isinstance(strategy_tags, list):
+                    strategy_tags = []
+                payload["strategy_tags_json"] = _json.dumps(strategy_tags, ensure_ascii=False)
+                try:
+                    payload["score"] = float(raw.get("score", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    payload["score"] = 0.0
+                payload["action_label"] = raw.get("action_label", "") or ""
+                payload["research_direction"] = raw.get("research_direction", "") or ""
+
                 existing = conn.execute(
-                    "SELECT id FROM tradeflow_observation_items WHERE symbol = ?",
+                    "SELECT id, notes FROM tradeflow_observation_items WHERE symbol = ?",
                     (symbol,),
                 ).fetchone()
                 if existing is None:
@@ -3328,8 +3441,10 @@ def bulk_upsert_observation_items(
                         INSERT INTO tradeflow_observation_items
                             (symbol, name, status, entry_low, entry_high, trigger_price,
                              invalid_price, horizon, source, reason, priority, notes,
-                             created_at, updated_at, last_reviewed_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             created_at, updated_at, last_reviewed_at,
+                             strategy_tags_json, score, action_label, research_direction,
+                             source_history_json)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             symbol, payload["name"], payload["status"],
@@ -3337,21 +3452,43 @@ def bulk_upsert_observation_items(
                             payload["trigger_price"], payload["invalid_price"],
                             payload["horizon"], payload["source"], payload["reason"],
                             payload["priority"], payload["notes"], now, now, now,
+                            payload["strategy_tags_json"], payload["score"],
+                            payload["action_label"], payload["research_direction"],
+                            "[]",
                         ),
                     )
                     created.append(symbol)
                 else:
+                    # [TRACK-006] add_to_observation — preserve user notes
+                    # unless caller explicitly forces overwrite AND incoming
+                    # notes are non-empty. Existing-empty + incoming-empty
+                    # stays empty; existing-non-empty + incoming-empty keeps
+                    # the existing value.
+                    existing_notes = existing["notes"] or ""
+                    if force_overwrite_notes and incoming_notes:
+                        final_notes = incoming_notes
+                    elif not existing_notes and incoming_notes:
+                        # Write into empty slot — this is not "overwriting"
+                        # user content, just persisting the new value.
+                        final_notes = incoming_notes
+                    else:
+                        final_notes = existing_notes
+
                     set_parts = [
                         "name = ?", "status = ?", "entry_low = ?", "entry_high = ?",
                         "trigger_price = ?", "invalid_price = ?", "horizon = ?",
                         "source = ?", "reason = ?", "priority = ?", "notes = ?",
+                        "strategy_tags_json = ?", "score = ?",
+                        "action_label = ?", "research_direction = ?",
                         "updated_at = ?",
                     ]
                     params = [
                         payload["name"], payload["status"], payload["entry_low"],
                         payload["entry_high"], payload["trigger_price"],
                         payload["invalid_price"], payload["horizon"], payload["source"],
-                        payload["reason"], payload["priority"], payload["notes"], now,
+                        payload["reason"], payload["priority"], final_notes,
+                        payload["strategy_tags_json"], payload["score"],
+                        payload["action_label"], payload["research_direction"], now,
                         existing["id"],
                     ]
                     conn.execute(
@@ -3376,5 +3513,324 @@ def bulk_upsert_observation_items(
             "errored_count": len(errored),
             "runtime_tier_meta": _fast_meta,
         }
+    finally:
+        conn.close()
+
+
+# [TRACK-006] add_to_observation
+# ──────────────────────────────────────────────────────────────────────────────
+# One-click add from TradeFlow candidate / TA report to the observation
+# warehouse. Both helpers:
+#   1. Normalize the symbol (601689 -> 601689.SH etc.).
+#   2. Create a fresh item if none exists, otherwise UPDATE — never returns
+#      "duplicate" because the user explicitly clicked the add button.
+#   3. PRESERVE existing user notes — auto-generated context lands in the
+#      structured ``reason`` / ``action_label`` / ``research_direction``
+#      fields instead. Only an explicit ``force_overwrite_notes=True`` from
+#      the caller may replace user notes.
+#   4. Append an entry to ``source_history_json`` recording the previous
+#      source so the audit trail is preserved across re-adds.
+# Neither helper triggers TA / LLM or sends notifications.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Strong-action words forbidden in any auto-generated reason / message that
+# surfaces to the user (mirrors TRACK-001 / TRACK-004 policy).
+_OBSERVATION_FORBIDDEN_WORDS = (
+    "立即买入", "重仓买入", "立即清仓", "满仓", "梭哈", "全仓",
+    "必涨", "必跌", "稳赚", "保本",
+)
+
+
+def _scrub_observation_text(text: str) -> str:
+    """Strip forbidden strong-action words from auto-generated text."""
+    if not text:
+        return ""
+    cleaned = text
+    for word in _OBSERVATION_FORBIDDEN_WORDS:
+        cleaned = cleaned.replace(word, "**")
+    return cleaned
+
+
+def _append_source_history_entry(
+    current_history: list[dict],
+    *,
+    source: str,
+    as_of: str,
+    via: str,
+    reason: str,
+) -> list[dict]:
+    """Append a provenance entry to source_history_json."""
+    new_entry = {
+        "source": source,
+        "as_of": as_of,
+        "via": via,
+        "reason": _scrub_observation_text(reason or "")[:240],
+    }
+    return list(current_history or []) + [new_entry]
+
+
+def _resolve_observation_horizon_from_candidate(candidate: dict) -> str:
+    """Derive a valid observation horizon from a candidate dict.
+
+    POLICY_AMBUSH / POLICY_CONFIRM candidates are typically mid-line; others
+    default to short. Anything that fails validation falls back to ``short``.
+    """
+    candidate_type = (candidate.get("candidate_type") or "").upper()
+    raw_horizon = "mid" if candidate_type in {"POLICY_AMBUSH", "POLICY_CONFIRM"} else "short"
+    try:
+        _validate_observation_horizon(raw_horizon)
+        return raw_horizon
+    except ValueError:
+        return "short"
+
+
+# [TRACK-006] add_to_observation
+def add_candidate_to_observation(
+    candidate: dict[str, Any],
+    *,
+    via: str = "candidate_drawer",
+    force_overwrite_notes: bool = False,
+    extra_notes: str = "",
+    tf_db_path: str = "",
+) -> dict:
+    """Add (or refresh) an observation item from a TradeFlow candidate dict.
+
+    Auto-populates: strategy_tags, trigger_price, invalid_price, score,
+    why_selected (-> reason), entry_low/entry_high (from support_price),
+    horizon (from candidate_type), source="tradeflow".
+
+    Behaviour on duplicate symbol:
+      - Item is UPDATED, never rejected.
+      - ``source`` is flipped to ``tradeflow`` and the previous source is
+        pushed onto ``source_history_json``.
+      - Existing user notes are PRESERVED unless ``force_overwrite_notes`` is
+        True AND ``extra_notes`` is non-empty.
+      - If ``extra_notes`` is non-empty and existing notes are empty, the new
+        notes are written (no overwrite risk).
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_observation_items")
+    raw_symbol = candidate.get("symbol", "") if isinstance(candidate, dict) else ""
+    norm_symbol = normalize_tradeflow_symbol(str(raw_symbol))
+    if not norm_symbol:
+        return {"status": "error", "message": "candidate.symbol 不能为空", "runtime_tier_meta": _fast_meta}
+
+    name = candidate.get("name", "") or ""
+    trigger_price = candidate.get("trigger_price") or 0.0
+    invalid_price = candidate.get("invalid_price") or 0.0
+    support_price = candidate.get("support_price") or 0.0
+    composite_score = candidate.get("composite_score")
+    if composite_score is None or composite_score == 0:
+        composite_score = candidate.get("mandate_score") or candidate.get("score") or 0.0
+    strategy_tags = candidate.get("strategy_tags") or []
+    if not isinstance(strategy_tags, list):
+        strategy_tags = []
+    why_selected = candidate.get("reason") or candidate.get("tier_reason") or candidate.get("why_deep_ta") or ""
+    horizon = _resolve_observation_horizon_from_candidate(candidate)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    reason_text = _scrub_observation_text(
+        f"TradeFlow 候选 · 评分 {float(composite_score or 0):.2f}"
+        + (f" · {why_selected}" if why_selected else "")
+    )
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available", "runtime_tier_meta": _fast_meta}
+
+    import json as _json
+    try:
+        existing_row = conn.execute(
+            "SELECT * FROM tradeflow_observation_items WHERE symbol = ?",
+            (norm_symbol,),
+        ).fetchone()
+        if existing_row is None:
+            create_result = create_observation_item(
+                symbol=norm_symbol,
+                name=name,
+                entry_low=float(support_price or 0.0),
+                entry_high=0.0,
+                trigger_price=float(trigger_price or 0.0),
+                invalid_price=float(invalid_price or 0.0),
+                horizon=horizon,
+                source="tradeflow",
+                reason=reason_text,
+                priority=int(candidate.get("ta_budget_priority") or 0),
+                notes=extra_notes or "",
+                strategy_tags=strategy_tags,
+                score=float(composite_score or 0.0),
+                tf_db_path=tf_db_path,
+            )
+            if create_result.get("status") not in {"ok", "duplicate"}:
+                return create_result
+            # Tag the create result so callers can tell create vs update apart.
+            create_result["action"] = "created"
+            return create_result
+
+        current = _row_to_observation_item(existing_row)
+        existing_notes = current.get("notes", "") or ""
+        if force_overwrite_notes and extra_notes:
+            final_notes = extra_notes
+        elif not existing_notes and extra_notes:
+            final_notes = extra_notes
+        else:
+            final_notes = existing_notes
+
+        # [TRACK-006] add_to_observation — only pass the NEW history entry;
+        # update_observation_item handles the append-merge internally.
+        new_history_entry = {
+            "source": current.get("source") or "manual",
+            "as_of": now,
+            "via": via,
+            "reason": _scrub_observation_text(
+                f"切前来源 · {(current.get('reason') or '')[:120]}"
+            ),
+        }
+
+        update_result = update_observation_item(
+            current["id"],
+            name=name,
+            entry_low=float(support_price or 0.0),
+            trigger_price=float(trigger_price or 0.0),
+            invalid_price=float(invalid_price or 0.0),
+            horizon=horizon,
+            source="tradeflow",
+            reason=reason_text,
+            priority=int(candidate.get("ta_budget_priority") or 0),
+            notes=final_notes,
+            strategy_tags=strategy_tags,
+            score=float(composite_score or 0.0),
+            append_source_history=[new_history_entry],
+            tf_db_path=tf_db_path,
+        )
+        if update_result.get("status") != "ok":
+            return update_result
+        update_result["action"] = "updated"
+        return update_result
+    finally:
+        conn.close()
+
+
+# [TRACK-006] add_to_observation
+def add_ta_report_to_observation(
+    report: dict[str, Any],
+    *,
+    via: str = "analysis_page",
+    force_overwrite_notes: bool = False,
+    extra_notes: str = "",
+    tf_db_path: str = "",
+) -> dict:
+    """Add (or refresh) an observation item from a TA report dict.
+
+    Auto-populates: action_label, research_direction, key support/stop/target
+    (entry_low=stop_loss, entry_high=target_price, trigger_price=target_price,
+    invalid_price=stop_loss_price), source="ta".
+
+    Behaviour on duplicate symbol mirrors ``add_candidate_to_observation``:
+    UPDATE never reject, source flipped to ``ta``, previous source pushed
+    onto history, user notes preserved unless explicitly overwritten.
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_observation_items")
+    raw_symbol = report.get("symbol", "") if isinstance(report, dict) else ""
+    norm_symbol = normalize_tradeflow_symbol(str(raw_symbol))
+    if not norm_symbol:
+        return {"status": "error", "message": "report.symbol 不能为空", "runtime_tier_meta": _fast_meta}
+
+    name = report.get("name", "") or ""
+    action_label = report.get("action_label", "") or report.get("execution_action", "") or ""
+    research_direction = report.get("research_direction", "") or report.get("direction", "") or ""
+    target_price = report.get("target_price") or 0.0
+    stop_loss_price = report.get("stop_loss_price") or 0.0
+
+    # Map TA report's key prices onto observation schema:
+    #   entry_low   = stop_loss_price  (lower bound of the entry zone)
+    #   entry_high  = target_price     (upper bound / first target)
+    #   trigger     = target_price     (price that confirms the thesis)
+    #   invalid     = stop_loss_price  (price that invalidates the thesis)
+    entry_low = float(stop_loss_price or 0.0)
+    entry_high = float(target_price or 0.0)
+    trigger_price = float(target_price or 0.0)
+    invalid_price = float(stop_loss_price or 0.0)
+
+    horizon = "mid"
+    try:
+        _validate_observation_horizon(horizon)
+    except ValueError:
+        horizon = "short"
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    reason_text = _scrub_observation_text(
+        f"TA 报告 · 方向 {research_direction or '未给'} · 动作 {action_label or '未给'}"
+        + (f" · 目标 {entry_high:.2f} / 止损 {entry_low:.2f}" if (entry_high or entry_low) else "")
+    )
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available", "runtime_tier_meta": _fast_meta}
+
+    try:
+        existing_row = conn.execute(
+            "SELECT * FROM tradeflow_observation_items WHERE symbol = ?",
+            (norm_symbol,),
+        ).fetchone()
+        if existing_row is None:
+            create_result = create_observation_item(
+                symbol=norm_symbol,
+                name=name,
+                entry_low=entry_low,
+                entry_high=entry_high,
+                trigger_price=trigger_price,
+                invalid_price=invalid_price,
+                horizon=horizon,
+                source="ta",
+                reason=reason_text,
+                notes=extra_notes or "",
+                action_label=action_label,
+                research_direction=research_direction,
+                tf_db_path=tf_db_path,
+            )
+            if create_result.get("status") not in {"ok", "duplicate"}:
+                return create_result
+            create_result["action"] = "created"
+            return create_result
+
+        current = _row_to_observation_item(existing_row)
+        existing_notes = current.get("notes", "") or ""
+        if force_overwrite_notes and extra_notes:
+            final_notes = extra_notes
+        elif not existing_notes and extra_notes:
+            final_notes = extra_notes
+        else:
+            final_notes = existing_notes
+
+        # [TRACK-006] add_to_observation — only pass the NEW history entry.
+        new_history_entry = {
+            "source": current.get("source") or "manual",
+            "as_of": now,
+            "via": via,
+            "reason": _scrub_observation_text(
+                f"切前来源 · {(current.get('reason') or '')[:120]}"
+            ),
+        }
+
+        update_result = update_observation_item(
+            current["id"],
+            name=name,
+            entry_low=entry_low,
+            entry_high=entry_high,
+            trigger_price=trigger_price,
+            invalid_price=invalid_price,
+            horizon=horizon,
+            source="ta",
+            reason=reason_text,
+            notes=final_notes,
+            action_label=action_label,
+            research_direction=research_direction,
+            append_source_history=[new_history_entry],
+            tf_db_path=tf_db_path,
+        )
+        if update_result.get("status") != "ok":
+            return update_result
+        update_result["action"] = "updated"
+        return update_result
     finally:
         conn.close()

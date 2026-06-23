@@ -1,8 +1,9 @@
 // [H-005] mandate_radar_ui
 // [TA-UI-001] analysis_console_horizon_intent
 // [TF-UI-011] candidate_research_entry
+// [TRACK-006] add_to_observation
 import { useEffect, useState } from 'react'
-import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote, FlaskConical, FileText, Building2, CandlestickChart, Clock, Cpu, Wallet } from 'lucide-react'
+import { X, Loader2, CheckCircle2, XCircle, AlertTriangle, Shield, BarChart3, FileCheck, Lightbulb, ShieldCheck, StickyNote, FlaskConical, FileText, Building2, CandlestickChart, Clock, Cpu, Wallet, Eye } from 'lucide-react'
 import { api } from '@/services/api'
 import type { TradeFlowCandidateItem, TradeFlowCandidateDetail, TradeFlowResearchPlanResponse, CompanyOverviewResponse } from '@/types'
 import MiniKline from './MiniKline'
@@ -117,6 +118,9 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
     const [showKline, setShowKline] = useState(false)  // [TF-UI-011]
     const [paperMsg, setPaperMsg] = useState<string | null>(null)  // [TF-PAPER-001]
     const [paperLoading, setPaperLoading] = useState(false)  // [TF-PAPER-001]
+    // [TRACK-006] add_to_observation — drawer-level state for one-click add
+    const [observeMsg, setObserveMsg] = useState<string | null>(null)
+    const [observeLoading, setObserveLoading] = useState(false)
 
     useEffect(() => {
         if (!open) return
@@ -126,6 +130,8 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
         setResearchPlan(null)
         setCompanyOverview(null)  // [TF-UI-011]
         setShowKline(false)  // [TF-UI-011]
+        setObserveMsg(null)  // [TRACK-006] reset on drawer reopen
+        setObserveLoading(false)  // [TRACK-006]
         api.getTradeFlowCandidateDetail(candidate.symbol, tradeDate)
             .then(res => {
                 if (!cancelled && res.candidate) {
@@ -720,6 +726,38 @@ export default function TradeFlowCandidateDrawer({ candidate, tradeDate, open, o
 
                     {/* [TF-PAPER-001] paper_trading_ledger — Add to paper tracking */}
                     <div className="sticky bottom-0 bg-white dark:bg-slate-900 pt-3 pb-2 border-t border-slate-100 dark:border-slate-700 space-y-2">
+                        {/* [TRACK-006] add_to_observation — one-click add to observation warehouse */}
+                        {observeMsg && (
+                            <div className={`text-xs text-center px-3 py-1.5 rounded ${observeMsg.includes('已加入') || observeMsg.includes('已更新') ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-amber-50 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400'}`}>
+                                {observeMsg}
+                            </div>
+                        )}
+                        <button
+                            onClick={() => {
+                                setObserveLoading(true)
+                                setObserveMsg(null)
+                                api.addCandidateToObservervation(candidate.symbol, {
+                                    trade_date: tradeDate,
+                                    via: 'candidate_drawer',
+                                })
+                                    .then(res => {
+                                        if (res.status === 'ok') {
+                                            const verb = res.action === 'updated' ? '已更新' : '已加入'
+                                            setObserveMsg(`${verb}观察仓 · ${res.symbol || candidate.symbol}`)
+                                        } else {
+                                            setObserveMsg(res.message || '加入失败，请稍后重试')
+                                        }
+                                    })
+                                    .catch(() => setObserveMsg('加入失败，请稍后重试'))
+                                    .finally(() => setObserveLoading(false))
+                            }}
+                            disabled={observeLoading}
+                            className="w-full flex items-center justify-center gap-2 rounded-lg border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-900/20 px-4 py-2 text-sm font-medium text-indigo-600 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 transition-colors disabled:opacity-50"
+                        >
+                            <Eye className="h-4 w-4" />
+                            {observeLoading ? '加入中...' : '加入观察仓'}
+                        </button>
+
                         {paperMsg && (
                             <div className={`text-xs text-center px-3 py-1.5 rounded ${paperMsg.includes('已加入') ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-amber-50 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400'}`}>
                                 {paperMsg}

@@ -332,7 +332,7 @@
 ### TRACK-006: TradeFlow/TA 候选一键加入观察仓与来源追踪（P1）
 - **描述**：从 TradeFlow 候选详情、TA 报告或分析结果页，将标的一键加入观察仓，并保留来源和理由。
 - **优先级**：P1
-- **状态**：ready，依赖 TRACK-001 ✓, UI-009 ✓
+- **状态**：in_progress — claimed TRACK-006-20260623-115358
 - **前置条件**：TRACK-001 ✓、UI-009 ✓
 - **执行约束**：
   - 不自动加入，必须用户点击或 investment-controller 输出草稿。

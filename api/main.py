@@ -5288,6 +5288,9 @@ from api.tradeflow_schemas import (
     ObservationBulkUpsertRequest,  # [TRACK-001] observation_warehouse
     ObservationBulkUpsertResponse,  # [TRACK-001] observation_warehouse
     ObservationActionResponse,  # [TRACK-001] observation_warehouse
+    ObservationAddFromCandidateRequest,  # [TRACK-006] add_to_observation
+    ObservationAddFromTAReportRequest,  # [TRACK-006] add_to_observation
+    ObservationAddResponse,  # [TRACK-006] add_to_observation
 )
 from api.services.tradeflow_service import (
     get_daily_plan as _tf_get_daily_plan,
@@ -5322,6 +5325,8 @@ from api.services.tradeflow_service import (
     update_observation_item as _tf_update_observation_item,  # [TRACK-001] observation_warehouse
     mark_observation_item_status as _tf_mark_observation_item_status,  # [TRACK-001] observation_warehouse
     bulk_upsert_observation_items as _tf_bulk_upsert_observation_items,  # [TRACK-001] observation_warehouse
+    add_candidate_to_observation as _tf_add_candidate_to_observation,  # [TRACK-006] add_to_observation
+    add_ta_report_to_observation as _tf_add_ta_report_to_observation,  # [TRACK-006] add_to_observation
 )
 
 # [UI-001] tradeflow_api — read-only endpoints
@@ -5594,6 +5599,86 @@ def tradeflow_observation_item_mark(
 def tradeflow_observation_items_bulk_upsert(request: ObservationBulkUpsertRequest):
     payload = [item.model_dump() for item in request.items]
     return _tf_bulk_upsert_observation_items(payload)
+
+
+# [TRACK-006] add_to_observation — one-click add from TradeFlow candidate.
+# Resolves the full candidate row from tradeflow_candidates by symbol+date so
+# the frontend just forwards the click; never auto-fires (no scheduler path).
+@app.post(
+    "/v1/tradeflow/candidates/{symbol}/add-to-observation",
+    response_model=ObservationAddResponse,
+)
+def tradeflow_candidate_add_to_observation(
+    symbol: str,
+    request: ObservationAddFromCandidateRequest,
+):
+    # Pull the persisted candidate so we don't trust client-supplied scores.
+    # If the candidate row is missing (e.g. trade_date mismatch) we still
+    # add the item with sane defaults — the click never fails.
+    candidate_dict: dict[str, Any] = {"symbol": symbol}
+    try:
+        detail = _tf_get_candidate_detail(symbol=symbol, trade_date=request.trade_date)
+        if detail and detail.get("candidate"):
+            candidate_dict = detail["candidate"].model_dump()
+            candidate_dict["symbol"] = candidate_dict.get("symbol") or symbol
+    except Exception as exc:  # never let candidate lookup break the click
+        logger.warning(
+            "[TRACK-006] candidate lookup failed for %s@%s: %s",
+            symbol, request.trade_date, exc,
+        )
+
+    return _tf_add_candidate_to_observation(
+        candidate_dict,
+        via=request.via or "candidate_drawer",
+        force_overwrite_notes=request.force_overwrite_notes,
+        extra_notes=request.extra_notes or "",
+    )
+
+
+# [TRACK-006] add_to_observation — one-click add from a TA report.
+# Prefers re-reading the stored ReportDB row by id; falls back to the inline
+# fields the caller supplied (e.g. live preview before the report is saved).
+@app.post(
+    "/v1/tradeflow/ta-reports/{symbol}/add-to-observation",
+    response_model=ObservationAddResponse,
+)
+def tradeflow_ta_report_add_to_observation(
+    symbol: str,
+    request: ObservationAddFromTAReportRequest,
+):
+    report_payload: dict[str, Any] = {
+        "symbol": symbol,
+        "name": request.name or "",
+        "action_label": request.action_label or "",
+        "research_direction": request.research_direction or "",
+        "target_price": request.target_price or 0.0,
+        "stop_loss_price": request.stop_loss_price or 0.0,
+    }
+
+    if request.report_id:
+        try:
+            with get_db_ctx() as db:
+                row = db.query(ReportDB).filter(
+                    ReportDB.id == request.report_id,
+                    ReportDB.symbol == symbol,
+                ).first()
+                if row is not None:
+                    report_payload.update({
+                        "name": report_payload["name"] or "",
+                        "action_label": row.action_label or report_payload["action_label"],
+                        "research_direction": row.research_direction or row.direction or report_payload["research_direction"],
+                        "target_price": row.target_price if row.target_price is not None else report_payload["target_price"],
+                        "stop_loss_price": row.stop_loss_price if row.stop_loss_price is not None else report_payload["stop_loss_price"],
+                    })
+        except Exception as exc:  # never let DB read break the add click
+            logger.warning("[TRACK-006] ReportDB lookup failed for %s: %s", request.report_id, exc)
+
+    return _tf_add_ta_report_to_observation(
+        report_payload,
+        via=request.via or "analysis_page",
+        force_overwrite_notes=request.force_overwrite_notes,
+        extra_notes=request.extra_notes or "",
+    )
 
 
 # ─── Static Files & SPA Routing ──────────────────────────────────────────────

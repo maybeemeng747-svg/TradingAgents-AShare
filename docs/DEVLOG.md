@@ -4,6 +4,106 @@
 
 ---
 
+## 2026-06-23 | TRACK-006 TradeFlow/TA 候选一键加入观察仓与来源追踪
+
+- **执行者**：OpenCode (glm-5.2)
+- **类型**：backend + frontend / one-click add to observation warehouse
+- **状态**：✅ 完成（待提交）
+
+### 背景
+
+TRACK-001 落地了观察仓数据模型与读写 API，TRACK-004 把状态引擎接到了实时价上。但用户从 TradeFlow 候选详情、TA 报告页加入观察仓仍然只能用通用的 `POST /v1/tradeflow/observation-items` 表单，缺三件事：
+
+1. 候选的 `strategy_tags / score / why_selected / trigger_price / invalid_price` 不会自动带过去。
+2. TA 报告的 `action_label / research_direction / key support-stop-target` 不会自动带过去。
+3. 重复加入会触发 `status=duplicate` 拒绝；用户手动备注在 `bulk_upsert_observation_items` 路径下还会被无脑覆盖。
+
+TRACK-006 在不触发 TA / LLM、不推送飞书、不改 prompts 的前提下，把"一键加入"补齐，并加上 append-only 的来源历史。
+
+### 变更
+
+#### 后端
+
+- **DB schema**（`tradingagents/tradeflow/candidate_engine.py`，标注 `# [TRACK-006] add_to_observation`）：
+  - `CREATE_OBSERVATION_ITEMS_TABLE` 增加 5 列：`strategy_tags_json / score / action_label / research_direction / source_history_json`。
+  - `init_db` 末尾追加 `ALTER TABLE tradeflow_observation_items ADD COLUMN ...` 兜底，老库平滑升级。
+  - 默认值用 `[]` / `0.0` / `''`，保持 TRACK-001 的"0 不变 N/A"语义。
+
+- **Service**（`api/services/tradeflow_service.py`，全部带 `# [TRACK-006] add_to_observation`）：
+  - `_empty_observation_item` / `_row_to_observation_item` 增加 5 个字段；新增 `_parse_observation_json_field` 防御性解析老库 NULL。
+  - `create_observation_item` / `update_observation_item` 支持 `strategy_tags / score / action_label / research_direction / append_source_history`。`append_source_history` 是增量合并（仅追加 dict 项），永远不替换。
+  - **关键修复**：`bulk_upsert_observation_items` 默认保留用户备注，仅在 `force_overwrite_notes=True` 且 incoming 非空时覆盖；空 incoming 即使强制也不清空已有备注。同步把 5 个新字段接入 upsert。
+  - 新增 `add_candidate_to_observation(candidate, ...)`：候选 dict → 观察仓，自动映射 `support_price→entry_low`、`trigger_price/invalid_price`、`composite_score→score`（回退到 `mandate_score`/`score`）、`strategy_tags`；`candidate_type=POLICY_AMBUSH/POLICY_CONFIRM → horizon=mid`，其余 `short`；`reason` 形如 `"TradeFlow 候选 · 评分 7.50 · {why_selected}"`。
+  - 新增 `add_ta_report_to_observation(report, ...)`：TA 报告 → 观察仓，自动映射 `target_price→entry_high/trigger_price`、`stop_loss_price→entry_low/invalid_price`、`action_label/research_direction`，`horizon=mid`。`action_label` 回退到 `execution_action`，`research_direction` 回退到 `direction`。
+  - 两个新函数统一行为：重复 symbol 走 UPDATE 不拒绝；`source` 翻转为当前路径；前 source 以 `{source, as_of, via, reason}` 追加进 `source_history_json`；**用户备注默认保留**，仅在 `force_overwrite_notes=True` 且 `extra_notes` 非空时覆盖；返回多一个 `action: "created" | "updated"` 字段。
+  - 新增 `_scrub_observation_text` + `_OBSERVATION_FORBIDDEN_WORDS`：自动剔除 `立即买入/重仓买入/满仓/梭哈/必涨...` 等强动作词，所有自动生成的 `reason` / `message` / 历史 `reason` 都过一遍。
+  - 新增 `_append_source_history_entry` 与 `_resolve_observation_horizon_from_candidate` 辅助函数。
+
+- **API endpoints**（`api/main.py`，标注 `# [TRACK-006] add_to_observation`）：
+  - `POST /v1/tradeflow/candidates/{symbol}/add-to-observation`：先 `_tf_get_candidate_detail(symbol, trade_date)` 拉持久化候选（lookup 失败时降级为最小 dict 不阻断 click），再调 `add_candidate_to_observation`。
+  - `POST /v1/tradeflow/ta-reports/{symbol}/add-to-observation`：优先按 `report_id` 从 `ReportDB` 读 `action_label/research_direction/target_price/stop_loss_price`，读不到时 fallback 到请求体 inline 字段（适配 live preview 未落库场景）；DB 读用 `get_db_ctx()` + try/except，任何失败都不阻断 click。
+
+- **Schemas**（`api/tradeflow_schemas.py`，全部 `# [TRACK-006] add_to_observation`）：
+  - `ObservationItemResponse` 增加 `strategy_tags / score / action_label / research_direction / source_history`。
+  - `ObservationItemCreateRequest / ObservationItemUpdateRequest / ObservationBulkUpsertItem` 增加对应可选字段；`ObservationBulkUpsertItem` 新增 `force_overwrite_notes: bool = False`。
+  - 新增 `ObservationAddFromCandidateRequest / ObservationAddFromTAReportRequest / ObservationAddResponse`。
+
+#### 前端
+
+- `frontend/src/types/index.ts`：`ObservationItemV2` 加 5 个可选字段；新增 `ObservationAddResponse` 类型。
+- `frontend/src/services/api.ts`：新增 `addCandidateToObservervation(symbol, payload)` 与 `addTAReportToObservervation(symbol, payload)`，分别对应两个新 endpoint。
+- `frontend/src/components/TradeFlowCandidateDrawer.tsx`（`// [TRACK-006] add_to_observation`）：候选详情抽屉底部"加入模拟跟踪"按钮上方新增"加入观察仓"按钮（眼睛图标），点击调用候选 add 接口，回显 `已加入观察仓` / `已更新观察仓`。
+- `frontend/src/pages/Analysis.tsx`：在 DecisionCard / RiskRadar / KeyMetrics 三栏 grid 下方，当存在 `report` 时显示"加入观察仓"按钮，调用 TA 报告 add 接口，自动透传 `action_label/research_direction/target_price/stop_loss_price`。
+
+### 验收对照
+
+- ✅ 从候选池加入后，跟踪看板观察仓立即可见：`test_visible_on_tracking_board_after_add` + TestClient E2E。
+- ✅ 重复加入不生成重复记录：`test_repeated_add_never_duplicates`（连续 3 次加入，`listing["items"]` 仍为 1 条）+ `UNIQUE(symbol)` 约束 + UPDATE 路径。
+- ✅ 用户 notes 不丢失：`test_user_notes_survive_full_lifecycle`（add → 手动 PATCH notes → TA re-add → 候选 re-add，notes 仍为手动值）+ bulk_upsert 5 个保备注用例。
+- ✅ TradeFlow 候选自动带入 strategy_tags/trigger_price/invalid_price/score/why_selected：`TestAddCandidateToObservation` 全套。
+- ✅ TA 报告自动带入 action_label/research_direction/key support-stop-target：`TestAddTAReportToObservation` 全套。
+- ✅ 重复 symbol 做 upsert 并保留历史来源：`test_candidate_then_ta_then_candidate_preserves_history`（3 次加入产生 2 条历史，source 翻转 tradeflow→ta→tradeflow）。
+
+### 不变量 / 安全
+
+- 未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未触发 LLM、未跑全市场扫描、未推送飞书。
+- 两端 DB 路径隔离：观察仓写 `tradeflow.db`，TA 报告 lookup 走 `tradingagents.db` 但只读、try/except 不阻断。
+- 自动文案全部过 `_scrub_observation_text`，禁用词表与 TRACK-001/TRACK-004 一致。
+- 用户备注默认不可覆盖；强制覆盖需同时满足 `force_overwrite_notes=True` 且 incoming 非空。
+- 新增列默认值安全（`[] / 0.0 / ''`），TRACK-001 的 `entry_low=0` 边界语义不受影响。
+
+### 测试
+
+- 新增 `tests/test_track006_add_to_observation.py`（57 用例）：
+  - DB schema 升级（2）。
+  - create/update with provenance（5）。
+  - `add_candidate_to_observation`（13）：create/update/horizon/score 回退/normalization/notes 保护/forbidden-word scrub。
+  - `add_ta_report_to_observation`（8）：key-price mapping/action_label 回退/zero-price 边界/source flip。
+  - bulk_upsert notes 保护（6）：默认保留 / 强制覆盖 / 空 incoming 不清空 / 首次写入 / provenance round-trip。
+  - source_history 辅助函数（5）。
+  - Pydantic schema（8）。
+  - E2E（4）：candidate→ta→candidate 历史 / 看板可见 / 重复不重 / notes 全生命周期。
+  - Safety（5）：禁用词 / 不污染 tradingagents.db / no-data / 坏输入不崩。
+  - 字段 round-trip（1）。
+- `pytest tests/test_track006_add_to_observation.py -q` → **57 passed**。
+- 回归 `test_track001/002/004/005 + ic_ta001 + tradeflow_schemas + api_smoke + tradeflow_candidate_engine` → **345 passed**。
+- `cd frontend && npx tsc --noEmit` → 0 errors；`npm run build` → 通过。
+
+### 文件变更清单
+
+- 修改：`tradingagents/tradeflow/candidate_engine.py`
+- 修改：`api/services/tradeflow_service.py`
+- 修改：`api/tradeflow_schemas.py`
+- 修改：`api/main.py`
+- 修改：`frontend/src/types/index.ts`
+- 修改：`frontend/src/services/api.ts`
+- 修改：`frontend/src/components/TradeFlowCandidateDrawer.tsx`
+- 修改：`frontend/src/pages/Analysis.tsx`
+- 新增：`tests/test_track006_add_to_observation.py`
+- 修改：`docs/DEVLOG.md`
+
+---
+
 ## 2026-06-23 | TRACK-005 盘后复盘摘要与次日计划写回跟踪看板
 
 - **执行者**：OpenCode (glm-5.2)
@@ -5809,3 +5909,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TRACK-005-20260623-round1.txt
 - **Run archive**: docs/task_runs/TRACK-005-20260623-113503/
+
+## 2026-06-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: TRACK-006 - TradeFlow/TA 候选一键加入观察仓与来源追踪（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TRACK-006-20260623-round1.txt
+- **Run archive**: docs/task_runs/TRACK-006-20260623-115358/
