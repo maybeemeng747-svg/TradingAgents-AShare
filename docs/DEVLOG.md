@@ -4,6 +4,117 @@
 
 ---
 
+## 2026-06-23 | Fix IC-TA-001 回归：2 个时间/字段耦合导致的测试失败
+
+- **执行者**：OpenCode (glm-5.2)
+- **类型**：test fix / non-functional
+- **状态**：✅ 完成
+
+### 背景
+
+IC-TA-001 任务收尾的回归套件（6291 passed）中残留 2 个失败，均与 IC-TA-001 本身无关，是测试自身与日历/架构耦合导致的 brittle 断言：
+
+1. `tests/test_event_source.py::TestFetchBuybackEvents::test_fetch_buyback_filters_old` — `_mock_buyback_df` 写死了 `2026-05-20` 作为「近期」回购公告日。`_fetch_buyback_events_raw` 的 cutoff 是 `today - 30d`，今天 `2026-06-23` 的 cutoff 为 `2026-05-24`，导致 002138 行（34 天前）也被过滤，`len(items) == 0`。
+2. `tests/test_v008_paper_trial_acceptance.py::TestFrontendFieldCoverage::test_ranking_weakness_reasons_rendered` — 对 `frontend/src/pages/TradeFlow.tsx` 做字面子串校验 `ranking_reasons` / `weakness_reasons`。但 V-008 验收里 DEVLOG 227/235 行明确的设计是把这两个字段下沉到 `tradeflowFocus.ts` 的 `pickWhySelected` / `pickWhyNotMain` 聚合器，再由 `TradeFlow.tsx` 导入调用（43-46/2150/2309 行）。字段确实被渲染，只是经由 helper 间接消费。
+
+### 变更
+
+- `tests/test_event_source.py`
+  - 新增 `from datetime import datetime, timedelta`。
+  - `_mock_buyback_df()`：`最新公告日期` 由写死的 `["2026-05-20", "2026-01-01"]` 改为相对今天计算（`today - 5d` / `today - 100d`），保证「近期」一行始终落在 30 天窗口内、「旧」一行始终在窗口外，断言 `len(items) == 1` 与 `items[0].symbol == "002138.SZ"` 长期稳定。
+- `tests/test_v008_paper_trial_acceptance.py:1080`
+  - `test_ranking_weakness_reasons_rendered` 放宽为 OR 断言：`ranking_reasons in source OR pickWhySelected in source`、`weakness_reasons in source OR pickWhyNotMain in source`。沿用同测试类 line 1102/1110 既有的 OR 模式，兼容「页面直接消费字段」和「经由 tradeflowFocus helper 聚合」两种实现。
+
+### 不变量
+
+- 未触碰 `tradingagents/tradeflow/event_source.py`：实现本身正确（cutoff 过滤逻辑符合 docstring「只取最新公告日期在近 30 天内」）。
+- 未触碰 `frontend/src/pages/TradeFlow.tsx` / `frontend/src/utils/tradeflowFocus.ts`：helper 聚合的设计是 V-008 既定架构。
+- 未改任何 prompt、未写生产 DB。
+
+### 验收
+
+- `pytest tests/test_event_source.py::TestFetchBuybackEvents::test_fetch_buyback_filters_old "tests/test_v008_paper_trial_acceptance.py::TestFrontendFieldCoverage::test_ranking_weakness_reasons_rendered" -v`：2 passed。
+- `pytest tests/test_event_source.py tests/test_v008_paper_trial_acceptance.py -q`：79 passed，无回归。
+
+### 风险与后续
+
+- 无功能风险；仅测试断言稳健性提升。
+- 后续若再有「相对今天」的 mock，建议统一抽到 `tests/conftest.py` 或工具函数，避免日历漂移型 flake 再次出现。
+
+---
+
+## 2026-06-23 | IC-TA-001 investment-controller 只读上下文包与数据契约
+
+- **执行者**：OpenCode (glm-5.2)
+- **类型**：backend / read-only context aggregation
+- **状态**：✅ 完成
+
+### 背景
+
+为 investment-controller 提供稳定的 TA 侧只读上下文包，作为其盘前/盘中/盘后调度输入。该接口聚合六个稳定 bucket，让总控官一次读取即可获得持仓、观察仓、候选池、最新 TA 报告、数据健康和待办 TA 项目，不必各自重复查询。是 TRACK-NOTIFY-001（飞书通知草稿）的前置。
+
+### 变更
+
+- 新增 `api/services/investment_controller_context.py`：聚合服务，标注 `# [IC-TA-001] investment_controller_context`。导出 `get_investment_controller_context(db, user_id, *, tf_db_path="")`，返回 schema_version=1.0 的稳定结构。
+- 修改 `api/main.py`：
+  - 第 44 行 services 导入新增 `investment_controller_context`。
+  - 第 4603-4617 行新增只读端点 `GET /v1/dashboard/investment-controller/context`，仅 GET、不写状态、不触发 TA/LLM。
+- 修改 `api/runtime_tier.py:83`：将 `investment_controller_context` 加入 `_TRADEFLOW_FAST_ENDPOINTS`，落定 `FAST_RADAR`（无 LLM、无确认）。
+- 新增 `tests/test_ic_ta001_investment_controller_context.py`：35 个用例。
+
+### 设计契约（对应 docs/TASKS.md IC-TA-001）
+
+1. **只读**：仅 GET，永不写状态；`read_only=True` 写入顶层字段。
+2. **不触发 TA/LLM**：`runtime_tier=FAST_RADAR`，`llm_allowed=False`。
+3. **每个 bucket 与条目都带 `source` + `as_of`**：source 为稳定标识（`imported_portfolio / observation_warehouse / tradeflow_candidates / ta_report / tradeflow_data_health / pending_ta_required`）。
+4. **`data_status` 限定 5 值**：`fresh / stale / missing / failed / skipped`。
+   - holdings：无持仓 → missing；交易日无行情 → stale；非交易日无行情 → skipped；有行情 → fresh。
+   - observation/candidates/reports：有数据 → fresh；无数据 → missing；底层异常 → failed。
+   - data_health：source FAILED → failed；DB 缺失 → missing；有 plan_date → fresh。
+5. **稳定空结构**：所有六个 bucket 在无数据时仍返回 `{source, as_of, data_status, count, items}`。
+6. **不输出强动作**：控制器自身只输出结构化事实和软状态。TA 报告 `decision / action_label` 作为结构化事实透传（描述报告，不是控制器的下单指令），控制器合成的 `notes / generated_by / data_status` 字段经 `assert_no_strong_action_verbs` 守卫，禁止 `立即买入 / 立即卖出 / 满仓 / 清仓 / 全仓`。
+7. **不暴露敏感字段**：测试递归扫描 payload，确认无 `api_key / token / secret / password / cookie` 字段，无 `sk- / Bearer / AKID / -----BEGIN` 凭据标记。
+8. **持仓隔离**：复用 TRACK-001 设计，观察仓数据来自 `tradeflow.db`，持仓来自 `tradingagents.db`，两者物理隔离。
+
+### 六个 Bucket 与复用关系
+
+| Bucket | 数据来源 | 复用函数 |
+|---|---|---|
+| holdings snapshot | tradingagents.db `imported_portfolio_positions` | `_list_imported_position_rows` + `_fetch_live_quotes` + `_serialize_report_summary`（来自 tracking_board_service）|
+| observation warehouse | tradeflow.db `tradeflow_observation_items` | `get_observation_items`（tradeflow_service）|
+| tradeflow candidates | tradeflow.db `tradeflow_candidates` | `get_candidates` + `get_data_health`（tradeflow_service）|
+| latest TA reports | tradingagents.db `reports` | `_select_reports_for_symbols` + `_serialize_report_summary`（tracking_board_service）|
+| data health | tradeflow.db 多表 | `get_data_health`（tradeflow_service）|
+| pending TA required | 观察仓 `ta_required` + 候选 `need_deep_ta=True` | `get_observation_items(status='ta_required')` + `get_candidates(need_deep_ta=True)` |
+
+### 优雅降级
+
+每个 bucket collector 单独 try/except：底层异常 → `data_status=failed` + 空 items；DB 缺失 → `data_status=missing`；非交易日 → `data_status=skipped`。整个端点永不抛 500。
+
+### 验证
+
+- `pytest tests/test_ic_ta001_investment_controller_context.py -v`：**35 passed**。
+- 回归：`pytest tests/test_track001_observation_warehouse.py tests/test_track002_tracking_board_v2.py tests/test_runtime_tier_contract.py tests/test_dashboard_tracking.py -q`：**162 passed**。
+- FastAPI 路由核对：`GET /v1/dashboard/investment-controller/context` 注册成功，方法仅 GET。
+
+### 测试覆盖分组
+
+- `TestEmptyBucketHelper / TestUnionSymbols`：纯单元，无 DB。
+- `TestEmptyStateContract`：6 bucket + 顶层元数据 + 空 holdings/observation/candidates/reports/pending_ta。
+- `TestSourceAndAsOfContract`：bucket 级 + holdings 条目级 source/as_of。
+- `TestDataStatusContract`：限定集合 + 交易日/非交易日/有行情三种 holdings 状态。
+- `TestAggregation`：观察仓 → context、TA 报告挂载、pending_ta_required、runtime tier、endpoint 注册。
+- `TestGracefulDegradation`：tradeflow DB 缺失、行情拉取异常、JSON 序列化。
+- `TestReadOnlySafetyContract`：强动作动词扫描、敏感字段递归扫描、凭据标记扫描。
+- `TestHoldingsIsolation`：观察仓条目不污染 holdings bucket。
+
+### 风险点
+
+- `_collect_latest_ta_reports` 只聚合 holdings + observation 的 symbol 集合（避免重复），未单独扫描全量报告；如总控官需要"近期所有报告"，后续任务可扩展。
+- 候选 `need_deep_ta=True` 的 pending_ta 查询依赖 `get_data_health` 返回的最新 `trade_date`；若 tradeflow DB 全空，该子查询静默跳过（data_status=missing）。
+
+---
+
 ## 2026-06-23 | TRACK-003 审核补修：今日指引 Hook 顺序
 
 - **执行者**：Codex
@@ -5555,3 +5666,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/H-013-20260618-round1.txt
 - **Run archive**: docs/task_runs/H-013-20260618-024922/
+
+## 2026-06-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: IC-TA-001 - investment-controller 只读上下文包与数据契约（P1）
+- **Priority**: P1
+- **Rounds**: 2
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/IC-TA-001-20260623-round2.txt
+- **Run archive**: docs/task_runs/IC-TA-001-20260623-104044/

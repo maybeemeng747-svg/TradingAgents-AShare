@@ -41,7 +41,7 @@ import pandas as pd
 
 from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, ReportDB, ImportedPortfolioPositionDB, FeedbackDB, SponsorDB, init_db, get_db, get_db_ctx
 from api.job_store import get_job_store as _new_job_store
-from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service
+from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service, investment_controller_context  # [IC-TA-001] investment_controller_context
 
 def _get_real_ip(request: Request) -> Optional[str]:
     """Extract real client IP, preferring Cloudflare/proxy headers."""
@@ -4599,6 +4599,22 @@ def get_dashboard_tracking_board_v2(
     db: Session = Depends(get_db),
 ):
     return tracking_board_service.get_tracking_board_v2(db, current_user.id)
+
+
+# [IC-TA-001] investment_controller_context
+@app.get("/v1/dashboard/investment-controller/context")
+def get_investment_controller_context(
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    """Read-only context pack for the investment-controller.
+
+    Aggregates holdings, observation warehouse, TradeFlow candidates, latest
+    TA report summary, data health and pending TA-required items. READ-ONLY:
+    never writes state, never triggers TA/LLM. Every entry carries source +
+    as_of; every bucket declares data_status (fresh/stale/missing/failed/skipped).
+    """
+    return investment_controller_context.get_investment_controller_context(db, current_user.id)
 
 
 # ── Watchlist ─────────────────────────────────────────────────────────────────

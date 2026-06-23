@@ -1078,9 +1078,13 @@ class TestFrontendFieldCoverage:
         assert "资金" in tradeflow_source
 
     def test_ranking_weakness_reasons_rendered(self, tradeflow_source):
-        """排前/扣分原因：ranking_reasons / weakness_reasons。"""
-        assert "ranking_reasons" in tradeflow_source
-        assert "weakness_reasons" in tradeflow_source
+        """排前/扣分原因：ranking_reasons / weakness_reasons。
+
+        字段可由 TradeFlow.tsx 直接消费，也可经由 tradeflowFocus.ts 的
+        pickWhySelected / pickWhyNotMain 聚合后渲染（两种实现均视为覆盖）。
+        """
+        assert "ranking_reasons" in tradeflow_source or "pickWhySelected" in tradeflow_source
+        assert "weakness_reasons" in tradeflow_source or "pickWhyNotMain" in tradeflow_source
 
     def test_risk_budget_rendered(self, tradeflow_source):
         """额度：risk_exposure / principal / cash_balance / remaining / per_ticket_max。"""

@@ -3,6 +3,7 @@
 import sys
 import os
 import pytest
+from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -87,6 +88,10 @@ def _mock_notice_df():
 
 
 def _mock_buyback_df():
+    # 使用相对今天的时间，避免随日历推进导致 cutoff 漏判
+    today = datetime.now()
+    recent_date = (today - timedelta(days=5)).strftime("%Y-%m-%d")
+    old_date = (today - timedelta(days=100)).strftime("%Y-%m-%d")
     return pd.DataFrame({
         "股票代码": ["002138", "600000"],
         "股票简称": ["顺络电子", "浦发银行"],
@@ -94,7 +99,7 @@ def _mock_buyback_df():
         "计划回购价格区间": ["25-35", "7-9"],
         "计划回购数量区间-下限": ["100万", "200万"],
         "计划回购数量区间-上限": ["200万", "400万"],
-        "最新公告日期": ["2026-05-20", "2026-01-01"],
+        "最新公告日期": [recent_date, old_date],
     })
 
 

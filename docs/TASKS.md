@@ -111,11 +111,11 @@
 85. `TRACK-001`：观察仓数据模型与只读/写入 API（P0，done，commit 2ef6c37）。
 86. `TRACK-002`：跟踪看板 v2 分组接口与今日指引聚合（P0，done，commit fd0d511）。
 87. `TRACK-003`：跟踪看板前端四区改版：持仓/观察仓/今日指引/盘后复盘（P0，done，commit d80aa66）。
-88. `IC-TA-001`：investment-controller 只读上下文包与数据契约（P1，ready，依赖 TRACK-001 ✓）。
+  88. `IC-TA-001`：investment-controller 只读上下文包与数据契约（P1，done，依赖 TRACK-001 ✓）。
 89. `TRACK-004`：观察仓入场区/失效区规则引擎与状态流转（P1，ready，依赖 TRACK-001 ✓, TRACK-002 ✓）。
 90. `TRACK-005`：盘后复盘摘要与次日计划写回跟踪看板（P1，ready，依赖 TRACK-002 ✓, TF-REVIEW-003 ✓）。
 91. `TRACK-006`：TradeFlow/TA 候选一键加入观察仓与来源追踪（P1，ready，依赖 TRACK-001 ✓, UI-009 ✓）。
-92. `TRACK-NOTIFY-001`：飞书/总控官通知草稿 payload 与去噪规则（P1，blocked — 前置 IC-TA-001/TRACK-002 未完成）。
+  92. `TRACK-NOTIFY-001`：飞书/总控官通知草稿 payload 与去噪规则（P1，ready — 前置 IC-TA-001 ✓/TRACK-002 ✓ 均完成）。
 93. `TRACK-007`：跟踪看板端到端验收与用户操作手册（P2，blocked — 前置 TRACK-003/TRACK-004/TRACK-005 未完成）。
 94. `DATA-020`：数据源健康日报前端可视化与 skipped/failed 分层展示（P1，ready，依赖 DATA-019A）。
 95. `TF-REVIEW-004`：盘后 Review 空数据诊断与一键生成入口（P1，ready，依赖 TF-REVIEW-003）。
@@ -262,7 +262,7 @@
 ### IC-TA-001: investment-controller 只读上下文包与数据契约（P1）
 - **描述**：为 investment-controller 提供稳定的 TA 侧只读上下文包，作为其盘前/盘中/盘后调度输入。
 - **优先级**：P1
-- **状态**：ready，依赖 TRACK-001 ✓
+- **状态**：done — OpenCode 2026-06-23（35 tests passed）
 - **前置条件**：TRACK-001 ✓
 - **执行约束**：
   - 只读接口，不写状态。
@@ -358,7 +358,7 @@
 ### TRACK-NOTIFY-001: 飞书/总控官通知草稿 payload 与去噪规则（P1）
 - **描述**：TA 侧生成给 investment-controller/飞书使用的通知草稿，不直接推送真实 webhook。
 - **优先级**：P1
-- **状态**：blocked — 前置 IC-TA-001/TRACK-002 未完成
+- **状态**：ready — 前置 IC-TA-001 ✓ / TRACK-002 ✓ 均完成
 - **前置条件**：IC-TA-001、TRACK-002
 - **执行约束**：
   - 第一阶段只生成 dry-run payload。

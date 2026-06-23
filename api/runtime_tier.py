@@ -80,6 +80,7 @@ _TRADEFLOW_FAST_ENDPOINTS: set[str] = {
     "tradeflow_topic_watchlist",  # [H-012] mandate_topic_registry
     "tradeflow_topic_heatmap",  # [H-013] mandate_topic_heatmap
     "tradeflow_observation_items",  # [TRACK-001] observation_warehouse
+    "investment_controller_context",  # [IC-TA-001] investment_controller_context
 }
 
 
