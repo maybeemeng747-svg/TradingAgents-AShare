@@ -262,7 +262,7 @@
 ### IC-TA-001: investment-controller 只读上下文包与数据契约（P1）
 - **描述**：为 investment-controller 提供稳定的 TA 侧只读上下文包，作为其盘前/盘中/盘后调度输入。
 - **优先级**：P1
-- **状态**：done — OpenCode 2026-06-23（35 tests passed）
+- **状态**：done -- commit bc5b7d3
 - **前置条件**：TRACK-001 ✓
 - **执行约束**：
   - 只读接口，不写状态。
