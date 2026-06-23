@@ -4,6 +4,64 @@
 
 ---
 
+## 2026-06-23 | TRACK-005 盘后复盘摘要与次日计划写回跟踪看板
+
+- **执行者**：OpenCode (glm-5.2)
+- **类型**：backend / rule-based post-market review summary
+- **状态**：✅ 完成（待提交）
+
+### 背景
+
+TRACK-002 落地了跟踪看板 v2 的四区结构，但 `review_summary` 字段一直是 `None` 占位（docstring 标注 "populated by TRACK-005"）。前端 `ReviewZone` 因此长期停留在"盘后复盘尚未生成"空状态。
+
+TRACK-005 在不调用 LLM、不推送飞书的前提下，用规则版回答三个问题：今天是否触发计划、明天是否继续看、是否需要 TA。复用 TRACK-004 观察仓状态引擎与 TF-REVIEW-003 候选池归因，避免重复实现价格区间/失效价/触发判定逻辑。
+
+### 变更
+
+- **新增** `tradingagents/tradeflow/post_market_tracking_review.py`，标注 `# [TRACK-005] post_market_tracking_review`：
+  - `build_post_market_tracking_review(...)` 纯函数（无 DB/网络/LLM），输入 holdings / observation_items / tradeflow_review，输出结构化 `review_summary` dict。
+  - 三类复盘：
+    - **持仓复盘** `_build_holdings_review`：日涨跌 / 是否跌破 TA 关键位（`analysis.low_price`） / 是否偏离 TA 计划（大跌 ≤-3%、破位、深套 ≤-10%） / 接近关键位（3% 内） / 无 TA 报告。软建议标签：`continue_monitoring / watch_key_level / review_ta / needs_attention`。
+    - **观察仓复盘** `_build_observation_review`：复用 `evaluate_observation_state` 得到派生状态，标记 `near_entry / invalidated / missed_entry / needs_re_ta`。软建议标签：`keep_watching / wait_trigger / mark_invalidated / rerun_ta`。
+    - **候选池复盘** `_build_candidate_pool_review`：消费 TF-REVIEW-003 的 `results`，标记 `triggered / eliminated / entered_observation`（与观察仓 symbol 交叉比对），透传 `tomorrow_focus / hit_type / evidence_needed`。
+  - `_aggregate_tomorrow_focus` 把三类复盘里需要关注的标的汇成按 P0/P1/P2 排序的次日清单，每条带 `source/as_of/reason/suggested_next_step`。
+  - `data_status` 四态：`OK / NON_TRADING_DAY / NO_DATA / PARTIAL_DATA`，附中文 `data_status_message`。非交易日明确提示"计划在下一交易日复盘时生效"，空数据明确提示"暂无持仓、观察仓与候选池数据"。
+  - `review_summary_has_forbidden_words(summary)` 扫描器 + 全部文案规避 `FORBIDDEN_STRONG_WORDS`（复用 TRACK-004 禁用词表）。
+- **修改** `api/services/tracking_board_service.py`：
+  - 顶部导入 `build_post_market_tracking_review`。
+  - 新增 `_build_review_summary(...)` 防御性包装：先 `_fetch_tradeflow_review(previous_trade_date)`（失败降级为 None），再调引擎；引擎自身异常时返回稳定的 `NO_DATA` fallback payload，绝不抛到看板层。
+  - 新增 `_fetch_tradeflow_review(trade_date)` 包装 `tradeflow_service.get_review`，任何异常返回 None。
+  - `get_tracking_board_v2` 把 `"review_summary": None` 替换为 `_build_review_summary(...)` 调用；docstring 同步更新。
+- **新增** `tests/test_track005_post_market_tracking_review.py`（32 用例）：
+  - data_status 四态（empty/NO_DATA、non-trading-day、partial-data、tradeflow-no-data）。
+  - 持仓 6 场景（大跌/破位/深套/接近关键位/无 TA/正常）。
+  - 观察仓 5 场景（in_entry_zone/invalidated/ta_required/missed_entry/data_missing 硬约束）。
+  - 候选池 6 场景（triggered/eliminated×2/entered_observation 交叉比对/空 results）。
+  - tomorrow_focus 优先级排序 + 空信号抑制 + source/as_of 齐全性。
+  - 禁用词扫描（含注入验证扫描器有效 + 禁用词表稳定）。
+  - summary_counts 字段映射。
+  - 服务层 `_build_review_summary` 4 场景（空输入/tradeflow 失败降级/引擎异常 fallback/非交易日路径）。
+
+### 验收对照
+
+- ✅ 非交易日生成的计划可在下一交易日复盘：`data_status=NON_TRADING_DAY` + "计划在下一交易日复盘时生效" 文案，且仍用 last-known 数据构建复盘。
+- ✅ 空 Review 时能解释"为何无数据"：`data_status=NO_DATA` + "暂无持仓、观察仓与候选池数据，复盘为空" 文案；候选池缺失时 `has_tradeflow_review=False / tradeflow_review_status=no_data`。
+- ✅ 输出不含强买卖词：`review_summary_has_forbidden_words` 扫描全 32 用例 0 命中，含注入验证扫描器有效。
+- ✅ 持仓/观察仓/候选池三类复盘 + `tomorrow_focus` 全部产出。
+
+### 不变量 / 安全
+
+- 未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未触发 LLM、未跑全市场扫描、未推送飞书。
+- 引擎是纯函数；写回（如把 invalidated/missed_entry 落到观察仓）仍由既有 `mark_observation_item_status` 走，本任务不自动写回（避免看板读路径产生副作用写）。
+- 服务层 `_build_review_summary` 双层 try/except，任何失败都降级为稳定 payload，不破坏 v2 看板主结构。
+
+### 测试
+
+- `pytest tests/test_track005_post_market_tracking_review.py -q` → 32 passed。
+- 回归 `tests/test_track001_observation_warehouse.py + test_track002_tracking_board_v2.py + test_track004_observation_state_engine.py + test_tf_review_002_date_mapping.py + test_tf_review_003_strategy_attribution.py` → 228 passed。
+
+---
+
 ## 2026-06-23 | TRACK-004 观察仓入场区/失效区规则引擎与状态流转
 
 - **执行者**：OpenCode (glm-5.2)
@@ -5740,3 +5798,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TRACK-004-20260623-round1.txt
 - **Run archive**: docs/task_runs/TRACK-004-20260623-111132/
+
+## 2026-06-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: TRACK-005 - 盘后复盘摘要与次日计划写回跟踪看板（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TRACK-005-20260623-round1.txt
+- **Run archive**: docs/task_runs/TRACK-005-20260623-113503/

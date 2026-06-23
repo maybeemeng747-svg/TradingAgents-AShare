@@ -1,0 +1,671 @@
+[0m
+> build · glm-5.2
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m
+[0m# [0mTodos
+[•] Explore TRACK-002 tracking board v2 structure and TF-REVIEW-003 review service
+[ ] Explore observation warehouse and holdings models
+[ ] Design post-market review summary generator (rule-based)
+[ ] Implement review summary service with tomorrow_focus
+[ ] Wire into tracking board v2 API review_summary
+[ ] Write tests covering empty/non-trading day/holdings/observation
+[ ] Run tests and update DEVLOG.md
+[0m
+Now I understand TRACK-005. Let me explore the relevant codebase to understand the existing structures from TRACK-002 and TF-REVIEW-003 dependencies.
+[0m• [0mFind TRACK-002 and review services[90m Explore Agent[0m
+[0m✓ [0mFind TRACK-002 and review services[90m Explore Agent[0m
+Now let me read the key files in detail to understand exact data shapes.
+[0m→ [0mRead api/services/tracking_board_service.py
+[0m→ [0mRead tradingagents/tradeflow/observation_state_engine.py
+Let me look at the existing TRACK-002 test patterns and the observation item structure.
+[0m→ [0mRead tests/test_track002_tracking_board_v2.py
+Let me look at the TF-REVIEW-003 review response structure and the candidate review item shape:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=937, limit=110][0m
+[0m→ [0mRead tradingagents/tradeflow/post_market_review.py[90m [limit=200, offset=1][0m
+[0m✱ [0mGrep "def compute_next_day_feedback|def classify_hit_attribution"[90m in tradingagents/tradeflow/post_market_review.py · 2 matches[0m
+[0m→ [0mRead tradingagents/tradeflow/post_market_review.py[90m [offset=205, limit=130][0m
+Now let me check the FORBIDDEN_WORDS list and the test patterns to align my implementation.
+[0m✱ [0mGrep "FORBIDDEN_WORDS|FORBIDDEN_STRONG_WORDS"[90m in tradingagents/tradeflow · 17 matches[0m
+[0m→ [0mRead tradingagents/tradeflow/schemas.py[90m [limit=25, offset=1][0m
+[0m✱ [0mGrep "def (cn_today_str|is_cn_trading_day|previous_cn_trading_day|next_cn_trading_day)"[90m in tradingagents/dataflows/trade_calendar.py · 3 matches[0m
+[0m→ [0mRead tradingagents/dataflows/trade_calendar.py[90m [limit=90, offset=1][0m
+[0m
+[0m# [0mTodos
+[✓] Explore TRACK-002 tracking board v2 structure and TF-REVIEW-003 review service
+[✓] Explore observation warehouse and holdings models
+[•] Create post_market_tracking_review.py pure-function engine
+[ ] Wire review summary into tracking_board_service.get_tracking_board_v2
+[ ] Write tests covering empty/non-trading day/holdings/observation/candidates
+[ ] Run tests and update DEVLOG.md
+[0m
+I have enough context. Let me update todos and start implementing.
+[0m$ [0mls tradingagents/tradeflow/ | head -30
+__init__.py
+__pycache__
+acceptance_replay.py
+action_tier_scorer.py
+ambush_score.py
+candidate_contradictions.py
+candidate_engine.py
+candidate_pool.py
+candidate_pool_gate.py
+candidate_precision_gate.py
+counter_evidence_calibration.py
+date_semantics.py
+discovery.py
+event_source.py
+evidence_gate.py
+false_positive_audit.py
+fund_flow_anomaly.py
+game_balance.py
+gated_deep_ta.py
+industry_mandate_map.py
+intraday_observe.py
+intraday_observe_scheduler.py
+mandate_event_normalizer.py
+mandate_quality_report.py
+mandate_replay_eval.py
+mandate_score.py
+mandate_signal.py
+mandate_ta_queue_router.py
+mandate_watchlist_note.py
+narrative_quality.py
+[0m
+Now let me create the core rule-based review engine module:
+[0m← [0mWrite tradingagents/tradeflow/post_market_tracking_review.py
+Wrote file successfully.
+[0m
+I spotted a typo in the code. Let me fix it:
+[0m← [0mEdit tradingagents/tradeflow/post_market_tracking_review.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_tracking_review.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_tracking_review.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_tracking_review.py
+@@ -218,9 +218,9 @@
+ analysis = h.get("analysis") or {}
+ has_analysis = bool(analysis)
+ 
+ key_level = _to_float(analysis.get("low_price")) if has_analysis else None
+-action_label = analysis.get("action_label") or analysis.get("decision) or "")
++action_label = analysis.get("action_label") or analysis.get("decision") or "")
+ 
+ # 是否跌破关键位（TA 止损/低位）
+ broke_key_level = False
+ if key_level is not None and key_level > 0 and live_price is not None:
+
+[0m
+Now let me wire it into the tracking board service. First let me check how `get_review` is typically called to understand the safe way to fetch it:
+[0m✱ [0mGrep "get_review\("[90m in . · 16 matches[0m
+Now let me wire the review summary into the tracking board service:
+[0m
+[0m← [0mEdit api/services/tracking_board_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tracking_board_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tracking_board_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tracking_board_service.py
+@@ -21,8 +21,12 @@
+     evaluate_observation_state,
+     result_to_guidance,
+     should_emit_guidance,
+ )
++# [TRACK-005] post_market_tracking_review
++from tradingagents.tradeflow.post_market_tracking_review import (
++    build_post_market_tracking_review,
++)
+ 
+ 
+ REFRESH_INTERVAL_SECONDS = 20
+ logger = logging.getLogger(__name__)
+
+[0m
+Now let me update `get_tracking_board_v2` to call the review summary builder:
+[0m← [0mEdit api/services/tracking_board_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tracking_board_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tracking_board_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tracking_board_service.py
+@@ -283,8 +283,13 @@
+ 
+ # --- Data freshness ---
+ data_freshness = _build_data_freshness(holdings, observation_items, obs_quotes, is_trading, now)
+ 
++# --- Post-market review summary (TRACK-005) ---
++review_summary = _build_review_summary(
++    holdings, observation_items, previous_trade_date, is_trading, now
++)
++
+ return {
+     "previous_trade_date": previous_trade_date,
+     "is_trading_day": is_trading,
+     "refresh_interval_seconds": REFRESH_INTERVAL_SECONDS,
+@@ -292,9 +297,9 @@
+     "holdings": holdings,
+     "observation_items": observation_items,
+     "today_guidance": guidance,
+     "alerts": alerts,
+-    "review_summary": None,
++    "review_summary": review_summary,
+     "data_freshness": data_freshness,
+ }
+ 
+ 
+
+[0m
+Now update the docstring and add the `_build_review_summary` helper. Let me update the docstring first:
+[0m← [0mEdit api/services/tracking_board_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tracking_board_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tracking_board_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tracking_board_service.py
+@@ -256,9 +256,9 @@
+     - holdings: list of position items with live quotes and TA report
+     - observation_items: list of active observation warehouse items
+     - today_guidance: aggregated guidance items with source/priority/reason
+     - alerts: high-priority items needing attention
+-    - review_summary: empty placeholder (populated by TRACK-005)
++    - review_summary: post-market review summary (TRACK-005, rule-based)
+     - data_freshness: freshness metadata for all data sources used
+ """
+ now = datetime.now()
+ previous_trade_date = previous_cn_trading_day(cn_today_str())
+
+[0m
+Now add the `_build_review_summary` helper at the end of the file:
+[0m→ [0mRead api/services/tracking_board_service.py[90m [limit=25, offset=505][0m
+[0m
+[0m← [0mEdit api/services/tracking_board_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tracking_board_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tracking_board_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tracking_board_service.py
+@@ -526,4 +526,73 @@
+         "observation_with_live_quotes": o_with_quotes,
+         "latest_quote_time": latest_quote_time,
+         "as_of": as_of,
+     }
++
++
++# [TRACK-005] post_market_tracking_review
++def _build_review_summary(
++    holdings: list[dict[str, Any]],
++    observation_items: list[dict[str, Any]],
++    previous_trade_date: str,
++    is_trading_day: bool,
++    now: datetime,
++) -> dict[str, Any]:
++    """Build the post-market review summary for the tracking board.
++
++    Defensive wrapper around ``build_post_market_tracking_review``:
++    - Fetches the TradeFlow review (TF-REVIEW-003) for ``previous_trade_date``
++      in a try/except so any DB failure degrades gracefully to "no candidate
++      pool review" instead of breaking the whole tracking board.
++    - Never raises; on any unexpected error returns a minimal "skipped" summary
++      so the frontend ReviewZone still has a stable payload.
++    """
++    as_of = now.strftime("%Y-%m-%d %H:%M:%S")
++    try:
++        tradeflow_review = _fetch_tradeflow_review(previous_trade_date)
++    except Exception as exc:
++        logger.warning("[tracking-board-v2] tradeflow review fetch failed: %s", exc)
++        tradeflow_review = None
++
++    try:
++        return build_post_market_tracking_review(
++            holdings=holdings,
++            observation_items=observation_items,
++            tradeflow_review=tradeflow_review,
++            is_trading_day=is_trading_day,
++            review_date=previous_trade_date,
++            as_of=as_of,
++        )
++    except Exception as exc:
++        logger.exception("[tracking-board-v2] review summary build failed: %s", exc)
++        return {
++            "review_date": previous_trade_date,
++            "as_of": as_of,
++            "is_trading_day": bool(is_trading_day),
++            "data_status": "NO_DATA",
++            "data_status_message": "复盘摘要生成失败，请稍后重试或人工复核",
++            "has_tradeflow_review": False,
++            "tradeflow_review_status": "skipped",
++            "holdings_review": [],
++            "observation_review": [],
++            "candidate_pool_review": [],
++            "tomorrow_focus": [],
++            "summary_counts": {
++                "holdings_total": len(holdings),
++                "observation_total": len(observation_items),
++                "candidates_total": 0,
++            },
++        }
++
++
++# [TRACK-005] post_market_tracking_review
++def _fetch_tradeflow_review(trade_date: str) -> dict[str, Any] | None:
++    """Fetch TradeFlow post-market review for the given trade date.
++
++    Defensive: returns None on any failure (missing DB, no candidates, etc.).
++    """
++    try:
++        from api.services.tradeflow_service import get_review
++        return get_review(trade_date)
++    except Exception as exc:
++        logger.warning("[tracking-board-v2] get_review(%s) failed: %s", trade_date, exc)
++        return None
+
+[0m
+Now let me verify the imports compile cleanly:
+[0m$ [0msource .venv/bin/activate && python -c "from api.services.tracking_board_service import get_tracking_board_v2, _build_review_summary; print('OK')"
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/Users/maybee/TradingAgents-AShare/api/services/__init__.py", line 4, in <module>
+    from . import tracking_board_service
+  File "/Users/maybee/TradingAgents-AShare/api/services/tracking_board_service.py", line 26, in <module>
+    from tradingagents.tradeflow.post_market_tracking_review import (
+  File "/Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_tracking_review.py", line 222
+    action_label = analysis.get("action_label") or analysis.get("decision") or "")
+                                                                                 ^
+SyntaxError: unmatched ')'
+[0m
+[0m→ [0mRead tradingagents/tradeflow/post_market_tracking_review.py[90m [limit=3, offset=221][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/post_market_tracking_review.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_tracking_review.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_tracking_review.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_tracking_review.py
+@@ -218,9 +218,9 @@
+ analysis = h.get("analysis") or {}
+ has_analysis = bool(analysis)
+ 
+ key_level = _to_float(analysis.get("low_price")) if has_analysis else None
+-action_label = analysis.get("action_label") or analysis.get("decision") or "")
++action_label = analysis.get("action_label") or analysis.get("decision") or ""
+ 
+ # 是否跌破关键位（TA 止损/低位）
+ broke_key_level = False
+ if key_level is not None and key_level > 0 and live_price is not None:
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -c "
+from api.services.tracking_board_service import get_tracking_board_v2, _build_review_summary
+from tradingagents.tradeflow.post_market_tracking_review import build_post_market_tracking_review, review_summary_has_forbidden_words
+print('imports OK')
+# quick smoke
+r = build_post_market_tracking_review(holdings=[], observation_items=[], tradeflow_review=None, is_trading_day=False, review_date='2026-06-21', as_of='2026-06-23 15:30:00')
+print('non-trading day data_status:', r['data_status'])
+print('message:', r['data_status_message'])
+print('forbidden words:', review_summary_has_forbidden_words(r))
+"
+imports OK
+non-trading day data_status: NON_TRADING_DAY
+message: 非交易日，无行情更新；计划在下一交易日复盘时生效
+forbidden words: []
+[0m
+The smoke test passes. Now let me write the comprehensive test suite:
+[0m← [0mWrite tests/test_track005_post_market_tracking_review.py
+Wrote file successfully.
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_track005_post_market_tracking_review.py -q 2>&1 | tail -40
+assert h["needs_attention"] is True
+        assert h["tomorrow_focus_tag"] == TAG_NEEDS_ATTENTION
+        assert h["deviated_from_ta_plan"] is True
+>       assert "浦发银行" in h["review_note"]
+E       AssertionError: assert '浦发银行' in '持仓 600000.SH 日跌幅 -4.00%，需要关注'
+
+tests/test_track005_post_market_tracking_review.py:164: AssertionError
+__ TestServiceBuildReviewSummary.test_engine_failure_returns_skipped_payload ___
+
+self = <tests.test_track005_post_market_tracking_review.TestServiceBuildReviewSummary object at 0x10bce0e90>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x10bcc2960>
+
+    def test_engine_failure_returns_skipped_payload(self, monkeypatch):
+        """If the pure engine raises, wrapper returns a stable NO_DATA payload."""
+        from api.services import tracking_board_service as svc
+        from datetime import datetime
+    
+        def _boom(**kwargs):
+            raise RuntimeError("engine broken")
+    
+        monkeypatch.setattr(
+            "tradingagents.tradeflow.post_market_tracking_review.build_post_market_tracking_review",
+            _boom,
+        )
+        r = svc._build_review_summary(
+            holdings=[{"symbol": "A"}], observation_items=[],
+            previous_trade_date="2026-06-22",
+            is_trading_day=True, now=datetime.now(),
+        )
+>       assert r["data_status"] == DATA_STATUS_NO_DATA
+E       AssertionError: assert 'PARTIAL_DATA' == 'NO_DATA'
+E         
+E         - NO_DATA
+E         + PARTIAL_DATA
+
+tests/test_track005_post_market_tracking_review.py:620: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_track005_post_market_tracking_review.py::TestHoldingsReview::test_large_drop_marks_needs_attention
+FAILED tests/test_track005_post_market_tracking_review.py::TestServiceBuildReviewSummary::test_engine_failure_returns_skipped_payload
+2 failed, 30 passed in 1.02s
+[0m
+Two issues to fix. Let me fix the review note to use name (more user-friendly) and fix the monkeypatch target:
+[0m← [0mEdit tradingagents/tradeflow/post_market_tracking_review.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_tracking_review.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_tracking_review.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/post_market_tracking_review.py
+@@ -244,28 +244,28 @@
+ 
+ # 软建议标签
+ if not has_analysis:
+     tag = TAG_REVIEW_TA
+-    note = f"持仓 {symbol} 暂无最新 TA 报告，建议盘后补一次轻量复盘"
++    note = f"持仓 {name} 暂无最新 TA 报告，建议盘后补一次轻量复盘"
+ elif broke_key_level or large_drop:
+     tag = TAG_NEEDS_ATTENTION
+     change_str = f"{change_pct:.2f}%" if change_pct is not None else "未知"
+     level_str = f"，已跌破关键位 {key_level:.2f}" if broke_key_level and key_level else ""
+-    note = f"持仓 {symbol} 日跌幅 {change_str}{level_str}，需要关注"
++    note = f"持仓 {name} 日跌幅 {change_str}{level_str}，需要关注"
+ elif near_key_level:
+     tag = TAG_WATCH_KEY_LEVEL
+-    note = f"持仓 {symbol} 现价接近关键位 {key_level:.2f}，关注是否企稳"
++    note = f"持仓 {name} 现价接近关键位 {key_level:.2f}，关注是否企稳"
+ elif deep_loss:
+     tag = TAG_NEEDS_ATTENTION
+-    note = f"持仓 {symbol} 浮亏 {floating_pnl_pct:.2f}%，偏离 TA 计划"
++    note = f"持仓 {name} 浮亏 {floating_pnl_pct:.2f}%，偏离 TA 计划"
+ else:
+     tag = TAG_CONTINUE_MONITORING
+     change_str = f"{change_pct:+.2f}%" if change_pct is not None else "持平"
+-    note = f"持仓 {symbol} 日涨跌 {change_str}，未偏离计划"
++    note = f"持仓 {name} 日涨跌 {change_str}，未偏离计划"
+ 
+ # 安全校验：若 reason 误含禁用词则降级为通用文案
+ if _contains_forbidden_word(note):
+-    note = f"持仓 {symbol} 状态已更新，请查看详情"
++    note = f"持仓 {name} 状态已更新，请查看详情"
+ 
+ reviews.append({
+     "symbol": symbol,
+     "name": name,
+
+[0m
+Now fix the monkeypatch target in the test:
+[0m← [0mEdit tests/test_track005_post_market_tracking_review.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_track005_post_market_tracking_review.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_track005_post_market_tracking_review.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_track005_post_market_tracking_review.py
+@@ -607,10 +607,11 @@
+ 
+ def _boom(**kwargs):
+     raise RuntimeError("engine broken")
+ 
++# Patch the name as imported in tracking_board_service (not the source module)
+ monkeypatch.setattr(
+-    "tradingagents.tradeflow.post_market_tracking_review.build_post_market_tracking_review",
++    "api.services.tracking_board_service.build_post_market_tracking_review",
+     _boom,
+ )
+ r = svc._build_review_summary(
+     holdings=[{"symbol": "A"}], observation_items=[],
+
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_track005_post_market_tracking_review.py -q 2>&1 | tail -15
+................................                                         [100%]
+32 passed in 1.03s
+[0m
+All 32 tests pass. Now let me run the existing TRACK-002/004 tests to ensure no regression, plus a broader sanity check:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_track002_tracking_board_v2.py tests/test_track001_observation_warehouse.py tests/test_track004_observation_state_engine.py -q 2>&1 | tail -15
+........................................................................ [ 57%]
+......................................................                   [100%]
+126 passed in 11.63s
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_track005_post_market_tracking_review.py tests/test_track002_tracking_board_v2.py tests/test_track001_observation_warehouse.py tests/test_track004_observation_state_engine.py tests/test_tf_review_003_strategy_attribution.py tests/test_tf_review_002_date_mapping.py -q 2>&1 | tail -15
+........................................................................ [ 31%]
+........................................................................ [ 63%]
+........................................................................ [ 94%]
+............                                                             [100%]
+228 passed in 15.60s
+[0m
+All 228 tests pass. Let me also verify the tracking board v2 endpoint integration works end-to-end by exercising the service function with a mocked DB session:
+[0m$ [0msource .venv/bin/activate && python -c "
+from unittest.mock import MagicMock
+from api.services.tracking_board_service import get_tracking_board_v2
+
+# Mock DB session returning no holdings, no observation items
+db = MagicMock()
+db.query.return_value.filter.return_value.order_by.return_value.all.return_value = []
+
+# Patch observation items fetch + tradeflow review fetch to avoid DB
+import api.services.tracking_board_service as svc
+svc._fetch_observation_items = lambda: []
+svc._fetch_tradeflow_review = lambda d: None
+
+result = get_tracking_board_v2(db, 'test_user')
+rs = result['review_summary']
+print('review_summary is None?', rs is None)
+print('data_status:', rs['data_status'])
+print('has_tradeflow_review:', rs['has_tradeflow_review'])
+print('keys:', sorted(rs.keys()))
+print('tomorrow_focus:', rs['tomorrow_focus'])
+print('summary_counts:', rs['summary_counts'])
+"
+review_summary is None? False
+data_status: NO_DATA
+has_tradeflow_review: False
+keys: ['as_of', 'candidate_pool_review', 'data_status', 'data_status_message', 'has_tradeflow_review', 'holdings_review', 'is_trading_day', 'observation_review', 'review_date', 'summary_counts', 'tomorrow_focus', 'tradeflow_review_status']
+tomorrow_focus: []
+summary_counts: {'holdings_total': 0, 'holdings_with_analysis': 0, 'holdings_risk': 0, 'holdings_no_analysis': 0, 'observation_total': 0, 'observation_near_entry': 0, 'observation_invalidated': 0, 'observation_needs_re_ta': 0, 'candidates_total': 0, 'candidates_triggered': 0, 'candidates_eliminated': 0, 'candidates_entered_observation': 0}
+[0m
+Let me run a broader regression sweep to be safe:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/ -q -k "tracking_board or track00 or track001 or track002 or track004 or track005 or review_003 or review_002 or observation" 2>&1 | tail -15
+........................................................................ [ 28%]
+........................................................................ [ 56%]
+........................................................................ [ 84%]
+.......................................                                  [100%]
+255 passed, 6125 deselected in 14.58s
+[0m
+All 255 pass. Now let me update the DEVLOG and TASKS.md status:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=40, offset=1][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,66 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-23 | TRACK-005 盘后复盘摘要与次日计划写回跟踪看板
++
++- **执行者**：OpenCode (glm-5.2)
++- **类型**：backend / rule-based post-market review summary
++- **状态**：✅ 完成（待提交）
++
++### 背景
++
++TRACK-002 落地了跟踪看板 v2 的四区结构，但 `review_summary` 字段一直是 `None` 占位（docstring 标注 "populated by TRACK-005"）。前端 `ReviewZone` 因此长期停留在"盘后复盘尚未生成"空状态。
++
++TRACK-005 在不调用 LLM、不推送飞书的前提下，用规则版回答三个问题：今天是否触发计划、明天是否继续看、是否需要 TA。复用 TRACK-004 观察仓状态引擎与 TF-REVIEW-003 候选池归因，避免重复实现价格区间/失效价/触发判定逻辑。
++
++### 变更
++
++- **新增** `tradingagents/tradeflow/post_market_tracking_review.py`，标注 `# [TRACK-005] post_market_tracking_review`：
++  - `build_post_market_tracking_review(...)` 纯函数（无 DB/网络/LLM），输入 holdings / observation_items / tradeflow_review，输出结构化 `review_summary` dict。
++  - 三类复盘：
++    - **持仓复盘** `_build_holdings_review`：日涨跌 / 是否跌破 TA 关键位（`analysis.low_price`） / 是否偏离 TA 计划（大跌 ≤-3%、破位、深套 ≤-10%） / 接近关键位（3% 内） / 无 TA 报告。软建议标签：`continue_monitoring / watch_key_level / review_ta / needs_attention`。
++    - **观察仓复盘** `_build_observation_review`：复用 `evaluate_observation_state` 得到派生状态，标记 `near_entry / invalidated / missed_entry / needs_re_ta`。软建议标签：`keep_watching / wait_trigger / mark_invalidated / rerun_ta`。
++    - **候选池复盘** `_build_candidate_pool_review`：消费 TF-REVIEW-003 的 `results`，标记 `triggered / eliminated / entered_observation`（与观察仓 symbol 交叉比对），透传 `tomorrow_focus / hit_type / evidence_needed`。
++  - `_aggregate_tomorrow_focus` 把三类复盘里需要关注的标的汇成按 P0/P1/P2 排序的次日清单，每条带 `source/as_of/reason/suggested_next_step`。
++  - `data_status` 四态：`OK / NON_TRADING_DAY / NO_DATA / PARTIAL_DATA`，附中文 `data_status_message`。非交易日明确提示"计划在下一交易日复盘时生效"，空数据明确提示"暂无持仓、观察仓与候选池数据"。
++  - `review_summary_has_forbidden_words(summary)` 扫描器 + 全部文案规避 `FORBIDDEN_STRONG_WORDS`（复用 TRACK-004 禁用词表）。
++- **修改** `api/services/tracking_board_service.py`：
++  - 顶部导入 `build_post_market_tracking_review`。
++  - 新增 `_build_review_summary(...)` 防御性包装：先 `_fetch_tradeflow_review(previous_trade_date)`（失败降级为 None），再调引擎；引擎自身异常时返回稳定的 `NO_DATA` fallback payload，绝不抛到看板层。
++  - 新增 `_fetch_tradeflow_review(trade_date)` 包装 `tradeflow_service.get_review`，任何异常返回 None。
++  - `get_tracking_board_v2` 把 `"review_summary": None` 替换为 `_build_review_summary(...)` 调用；docstring 同步更新。
++- **新增** `tests/test_track005_post_market_tracking_review.py`（32 用例）：
++  - data_status 四态（empty/NO_DATA、non-trading-day、partial-data、tradeflow-no-data）。
++  - 持仓 6 场景（大跌/破位/深套/接近关键位/无 TA/正常）。
++  - 观察仓 5 场景（in_entry_zone/invalidated/ta_required/missed_entry/data_missing 硬约束）。
++  - 候选池 6 场景（triggered/eliminated×2/entered_observation 交叉比对/空 results）。
++  - tomorrow_focus 优先级排序 + 空信号抑制 + source/as_of 齐全性。
++  - 禁用词扫描（含注入验证扫描器有效 + 禁用词表稳定）。
++  - summary_counts 字段映射。
++  - 服务层 `_build_review_summary` 4 场景（空输入/tradeflow 失败降级/引擎异常 fallback/非交易日路径）。
++
++### 验收对照
++
++- ✅ 非交易日生成的计划可在下一交易日复盘：`data_status=NON_TRADING_DAY` + "计划在下一交易日复盘时生效" 文案，且仍用 last-known 数据构建复盘。
++- ✅ 空 Review 时能解释"为何无数据"：`data_status=NO_DATA` + "暂无持仓、观察仓与候选池数据，复盘为空" 文案；候选池缺失时 `has_tradeflow_review=False / tradeflow_review_status=no_data`。
++- ✅ 输出不含强买卖词：`review_summary_has_forbidden_words` 扫描全 32 用例 0 命中，含注入验证扫描器有效。
++- ✅ 持仓/观察仓/候选池三类复盘 + `tomorrow_focus` 全部产出。
++
++### 不变量 / 安全
++
++- 未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未触发 LLM、未跑全市场扫描、未推送飞书。
++- 引擎是纯函数；写回（如把 invalidated/missed_entry 落到观察仓）仍由既有 `mark_observation_item_status` 走，本任务不自动写回（避免看板读路径产生副作用写）。
++- 服务层 `_build_review_summary` 双层 try/except，任何失败都降级为稳定 payload，不破坏 v2 看板主结构。
++
++### 测试
++
++- `pytest tests/test_track005_post_market_tracking_review.py -q` → 32 passed。
++- 回归 `tests/test_track001_observation_warehouse.py + test_track002_tracking_board_v2.py + test_track004_observation_state_engine.py + test_tf_review_002_date_mapping.py + test_tf_review_003_strategy_attribution.py` → 228 passed。
++
++---
++
+ ## 2026-06-23 | TRACK-004 观察仓入场区/失效区规则引擎与状态流转
+ 
+ - **执行者**：OpenCode (glm-5.2)
+ - **类型**：backend / pure-function state engine + today_guidance 重构
+
+[0m
+Now update TASKS.md to mark TRACK-005 as done:
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -312,9 +312,9 @@
+ 
+ ### TRACK-005: 盘后复盘摘要与次日计划写回跟踪看板（P1）
+ - **描述**：盘后为持仓和观察仓生成复盘摘要，回答“今天是否触发计划、明天是否继续看、是否需要 TA”。
+ - **优先级**：P1
+-- **状态**：in_progress — claimed TRACK-005-20260623-113503
++- **状态**：done — TRACK-005-20260623-113503（待提交）
+ - **前置条件**：TRACK-002 ✓、TF-REVIEW-003 ✓
+ - **执行约束**：
+   - 先做规则版，不调用 LLM。
+   - 不发真实飞书，只写本地/数据库摘要。
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -112,9 +112,9 @@
+ 86. `TRACK-002`：跟踪看板 v2 分组接口与今日指引聚合（P0，done，commit fd0d511）。
+ 87. `TRACK-003`：跟踪看板前端四区改版：持仓/观察仓/今日指引/盘后复盘（P0，done，commit d80aa66）。
+   88. `IC-TA-001`：investment-controller 只读上下文包与数据契约（P1，done，依赖 TRACK-001 ✓）。
+   89. `TRACK-004`：观察仓入场区/失效区规则引擎与状态流转（P1，done，依赖 TRACK-001 ✓, TRACK-002 ✓）。
+-90. `TRACK-005`：盘后复盘摘要与次日计划写回跟踪看板（P1，ready，依赖 TRACK-002 ✓, TF-REVIEW-003 ✓）。
++  90. `TRACK-005`：盘后复盘摘要与次日计划写回跟踪看板（P1，done，依赖 TRACK-002 ✓, TF-REVIEW-003 ✓）。
+ 91. `TRACK-006`：TradeFlow/TA 候选一键加入观察仓与来源追踪（P1，ready，依赖 TRACK-001 ✓, UI-009 ✓）。
+   92. `TRACK-NOTIFY-001`：飞书/总控官通知草稿 payload 与去噪规则（P1，ready — 前置 IC-TA-001 ✓/TRACK-002 ✓ 均完成）。
+ 93. `TRACK-007`：跟踪看板端到端验收与用户操作手册（P2，blocked — 前置 TRACK-003/TRACK-004/TRACK-005 未完成）。
+ 94. `DATA-020`：数据源健康日报前端可视化与 skipped/failed 分层展示（P1，ready，依赖 DATA-019A）。
+
+[0m
+Let me check if TRACK-007 (which depends on TRACK-005) needs updating:
+[0m→ [0mRead docs/TASKS.md[90m [limit=2, offset=119][0m
+Let me do a final verification — git status and a clean test run:
+[0m
+[0m$ [0mgit status --short && echo "---" && source .venv/bin/activate && python -m pytest tests/test_track005_post_market_tracking_review.py -q 2>&1 | tail -3
+M api/services/tracking_board_service.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+?? docs/task_runs/TRACK-005-20260623-113503/
+?? tests/test_track005_post_market_tracking_review.py
+?? tradingagents/tradeflow/post_market_tracking_review.py
+---
+................................                                         [100%]
+32 passed in 1.03s
+[0m
+Let me check the task_runs directory created by the outer script:
+[0m$ [0mls -la docs/task_runs/TRACK-005-20260623-113503/ 2>&1
+total 32
+drwx------    6 maybee  staff   192 Jun 23 11:35 .
+drwx------  109 maybee  staff  3488 Jun 23 11:35 ..
+-rw-------    1 maybee  staff  1011 Jun 23 11:35 codegraph-context.txt
+-rw-------    1 maybee  staff   366 Jun 23 11:35 codegraph-status.json
+-rw-------    1 maybee  staff   502 Jun 23 11:35 prompt-round1.md
+-rw-------    1 maybee  staff   458 Jun 23 11:35 task.md
+[0m
+[0m$ [0mls docs/task_runs/ | tail -8
+V-002-20260530-010220
+V-003-20260530-023514
+V-004-20260602-025921
+V-005-20260607-233817
+V-006-20260614-003128
+V-007-20260614-013628
+ui006-prompt.md
+ui006-task.md
+[0m
+[0m$ [0mls docs/task_runs/TRACK-004-20260622-*/ 2>&1 | head -20
+zsh:1: no matches found: docs/task_runs/TRACK-004-20260622-*/
+[0m
+[0m$ [0mls docs/task_runs/V-007-20260614-013828/
+ls: docs/task_runs/V-007-20260614-013828/: No such file or directory
+[0m
+[0m$ [0mls -d docs/task_runs/*/ 2>&1 | tail -5
+docs/task_runs/V-003-20260530-023514/
+docs/task_runs/V-004-20260602-025921/
+docs/task_runs/V-005-20260607-233817/
+docs/task_runs/V-006-20260614-003128/
+docs/task_runs/V-007-20260614-013628/
+[0m
+[0m$ [0mls docs/task_runs/V-007-20260614-013628/
+codegraph-context.txt
+codegraph-impact.txt
+codegraph-status.json
+codex-review-round1.txt
+opencode-round1.txt
+prompt-round1.md
+summary.md
+task.md
+tests-round1.txt
+[0m
+[0m→ [0mRead docs/task_runs/V-007-20260614-013628/summary.md
+Let me write a summary.md for the TRACK-005 task run:
+[0m
+[0m← [0mWrite docs/task_runs/TRACK-005-20260623-113503/summary.md
+Wrote file successfully.
+[0m
+[0m# [0mTodos
+[✓] Explore TRACK-002 tracking board v2 structure and TF-REVIEW-003 review service
+[✓] Explore observation warehouse and holdings models
+[✓] Create post_market_tracking_review.py pure-function engine
+[✓] Wire review summary into tracking_board_service.get_tracking_board_v2
+[✓] Write tests covering empty/non-trading day/holdings/observation/candidates
+[✓] Run tests and update DEVLOG.md
+[0m
+TRACK-005 complete.
+
+## Files changed
+- **New** `tradingagents/tradeflow/post_market_tracking_review.py` — rule-based review engine (`# [TRACK-005]`)
+- **Modified** `api/services/tracking_board_service.py` — `_build_review_summary` + `_fetch_tradeflow_review` defensive wrappers; replaced `"review_summary": None` placeholder
+- **New** `tests/test_track005_post_market_tracking_review.py` — 32 cases
+- **Updated** `docs/DEVLOG.md`, `docs/TASKS.md`, `docs/task_runs/TRACK-005-20260623-113503/summary.md`
+
+## Key logic
+Pure-function `build_post_market_tracking_review(...)` produces 3 review buckets (holdings / observation / candidate_pool) + aggregated `tomorrow_focus` (P0–P2 sorted) + 4-state `data_status`. Reuses TRACK-004 state engine and TF-REVIEW-003 candidate attribution (no LLM). Service wrapper is double-try/except — tradeflow fetch failure → None, engine exception → stable NO_DATA fallback, so the v2 board never breaks. Forbidden-words guard enforced across all output text.
+
+## Test results
+- TRACK-005 suite: **32 passed**
+- Regression (TRACK-001/002/004/005 + TF-REVIEW-002/003): **228 passed**

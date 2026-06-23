@@ -113,7 +113,7 @@
 87. `TRACK-003`：跟踪看板前端四区改版：持仓/观察仓/今日指引/盘后复盘（P0，done，commit d80aa66）。
   88. `IC-TA-001`：investment-controller 只读上下文包与数据契约（P1，done，依赖 TRACK-001 ✓）。
   89. `TRACK-004`：观察仓入场区/失效区规则引擎与状态流转（P1，done，依赖 TRACK-001 ✓, TRACK-002 ✓）。
-90. `TRACK-005`：盘后复盘摘要与次日计划写回跟踪看板（P1，ready，依赖 TRACK-002 ✓, TF-REVIEW-003 ✓）。
+  90. `TRACK-005`：盘后复盘摘要与次日计划写回跟踪看板（P1，done，依赖 TRACK-002 ✓, TF-REVIEW-003 ✓）。
 91. `TRACK-006`：TradeFlow/TA 候选一键加入观察仓与来源追踪（P1，ready，依赖 TRACK-001 ✓, UI-009 ✓）。
   92. `TRACK-NOTIFY-001`：飞书/总控官通知草稿 payload 与去噪规则（P1，ready — 前置 IC-TA-001 ✓/TRACK-002 ✓ 均完成）。
 93. `TRACK-007`：跟踪看板端到端验收与用户操作手册（P2，blocked — 前置 TRACK-003/TRACK-004/TRACK-005 未完成）。
@@ -313,7 +313,7 @@
 ### TRACK-005: 盘后复盘摘要与次日计划写回跟踪看板（P1）
 - **描述**：盘后为持仓和观察仓生成复盘摘要，回答“今天是否触发计划、明天是否继续看、是否需要 TA”。
 - **优先级**：P1
-- **状态**：ready，依赖 TRACK-002 ✓, TF-REVIEW-003 ✓
+- **状态**：done — TRACK-005-20260623-113503（待提交）
 - **前置条件**：TRACK-002 ✓、TF-REVIEW-003 ✓
 - **执行约束**：
   - 先做规则版，不调用 LLM。

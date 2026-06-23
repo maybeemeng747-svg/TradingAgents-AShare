@@ -22,6 +22,10 @@ from tradingagents.tradeflow.observation_state_engine import (
     result_to_guidance,
     should_emit_guidance,
 )
+# [TRACK-005] post_market_tracking_review
+from tradingagents.tradeflow.post_market_tracking_review import (
+    build_post_market_tracking_review,
+)
 
 
 REFRESH_INTERVAL_SECONDS = 20
@@ -253,7 +257,7 @@ def get_tracking_board_v2(db: Session, user_id: str) -> dict[str, Any]:
         - observation_items: list of active observation warehouse items
         - today_guidance: aggregated guidance items with source/priority/reason
         - alerts: high-priority items needing attention
-        - review_summary: empty placeholder (populated by TRACK-005)
+        - review_summary: post-market review summary (TRACK-005, rule-based)
         - data_freshness: freshness metadata for all data sources used
     """
     now = datetime.now()
@@ -280,6 +284,11 @@ def get_tracking_board_v2(db: Session, user_id: str) -> dict[str, Any]:
     # --- Data freshness ---
     data_freshness = _build_data_freshness(holdings, observation_items, obs_quotes, is_trading, now)
 
+    # --- Post-market review summary (TRACK-005) ---
+    review_summary = _build_review_summary(
+        holdings, observation_items, previous_trade_date, is_trading, now
+    )
+
     return {
         "previous_trade_date": previous_trade_date,
         "is_trading_day": is_trading,
@@ -289,7 +298,7 @@ def get_tracking_board_v2(db: Session, user_id: str) -> dict[str, Any]:
         "observation_items": observation_items,
         "today_guidance": guidance,
         "alerts": alerts,
-        "review_summary": None,
+        "review_summary": review_summary,
         "data_freshness": data_freshness,
     }
 
@@ -518,3 +527,72 @@ def _build_data_freshness(
         "latest_quote_time": latest_quote_time,
         "as_of": as_of,
     }
+
+
+# [TRACK-005] post_market_tracking_review
+def _build_review_summary(
+    holdings: list[dict[str, Any]],
+    observation_items: list[dict[str, Any]],
+    previous_trade_date: str,
+    is_trading_day: bool,
+    now: datetime,
+) -> dict[str, Any]:
+    """Build the post-market review summary for the tracking board.
+
+    Defensive wrapper around ``build_post_market_tracking_review``:
+    - Fetches the TradeFlow review (TF-REVIEW-003) for ``previous_trade_date``
+      in a try/except so any DB failure degrades gracefully to "no candidate
+      pool review" instead of breaking the whole tracking board.
+    - Never raises; on any unexpected error returns a minimal "skipped" summary
+      so the frontend ReviewZone still has a stable payload.
+    """
+    as_of = now.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        tradeflow_review = _fetch_tradeflow_review(previous_trade_date)
+    except Exception as exc:
+        logger.warning("[tracking-board-v2] tradeflow review fetch failed: %s", exc)
+        tradeflow_review = None
+
+    try:
+        return build_post_market_tracking_review(
+            holdings=holdings,
+            observation_items=observation_items,
+            tradeflow_review=tradeflow_review,
+            is_trading_day=is_trading_day,
+            review_date=previous_trade_date,
+            as_of=as_of,
+        )
+    except Exception as exc:
+        logger.exception("[tracking-board-v2] review summary build failed: %s", exc)
+        return {
+            "review_date": previous_trade_date,
+            "as_of": as_of,
+            "is_trading_day": bool(is_trading_day),
+            "data_status": "NO_DATA",
+            "data_status_message": "复盘摘要生成失败，请稍后重试或人工复核",
+            "has_tradeflow_review": False,
+            "tradeflow_review_status": "skipped",
+            "holdings_review": [],
+            "observation_review": [],
+            "candidate_pool_review": [],
+            "tomorrow_focus": [],
+            "summary_counts": {
+                "holdings_total": len(holdings),
+                "observation_total": len(observation_items),
+                "candidates_total": 0,
+            },
+        }
+
+
+# [TRACK-005] post_market_tracking_review
+def _fetch_tradeflow_review(trade_date: str) -> dict[str, Any] | None:
+    """Fetch TradeFlow post-market review for the given trade date.
+
+    Defensive: returns None on any failure (missing DB, no candidates, etc.).
+    """
+    try:
+        from api.services.tradeflow_service import get_review
+        return get_review(trade_date)
+    except Exception as exc:
+        logger.warning("[tracking-board-v2] get_review(%s) failed: %s", trade_date, exc)
+        return None
