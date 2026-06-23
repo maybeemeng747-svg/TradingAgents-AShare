@@ -404,10 +404,6 @@ function ObservationRow({ item }: { item: ObservationItemV2 }) {
 // ─── Guidance Zone ─────────────────────────────────────────
 
 function GuidanceZone({ guidance, onAnalyze }: { guidance: TrackingBoardV2Guidance[]; onAnalyze: (s: string) => void }) {
-    if (guidance.length === 0) {
-        return <EmptyState icon={ShieldAlert} title="今日无指引" desc="持仓和观察仓暂无需要特别关注的事项。" />
-    }
-
     const grouped = useMemo(() => {
         const g: Record<string, TrackingBoardV2Guidance[]> = {}
         for (const item of guidance) {
@@ -417,6 +413,10 @@ function GuidanceZone({ guidance, onAnalyze }: { guidance: TrackingBoardV2Guidan
         }
         return g
     }, [guidance])
+
+    if (guidance.length === 0) {
+        return <EmptyState icon={ShieldAlert} title="今日无指引" desc="持仓和观察仓暂无需要特别关注的事项。" />
+    }
 
     return (
         <div className="space-y-4">

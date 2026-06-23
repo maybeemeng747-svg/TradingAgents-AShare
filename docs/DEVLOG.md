@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-06-23 | TRACK-003 审核补修：今日指引 Hook 顺序
+
+- **执行者**：Codex
+- **类型**：code review / frontend bug fix
+- **状态**：✅ 完成
+
+### 问题
+
+审核昨晚 `TRACK-003` 前端四区改版时，单独运行新文件 lint 发现 `TrackingBoardV2Panel.tsx` 中 `GuidanceZone` 在空数组时提前 return，随后才调用 `useMemo`。这违反 React Hooks 固定调用顺序，可能在今日指引从空变非空时触发运行时错误。
+
+### 修复
+
+- `frontend/src/components/TrackingBoardV2Panel.tsx`：将 `useMemo` 移到空状态 return 之前，保持每次 render 的 Hook 调用顺序一致。
+
+### 验证
+
+- `npx eslint src/components/TrackingBoardV2Panel.tsx src/pages/TrackingBoard.tsx src/services/api.ts src/types/index.ts`：通过。
+- `npm run build`：通过（仅保留既有 Vite chunk size warning）。
+- `.venv/bin/pytest tests/test_track002_tracking_board_v2.py tests/test_track001_observation_warehouse.py -q`：88 passed。
+
+---
+
 ## 2026-06-23 | TRACK-002 完成后任务池状态同步
 
 - **执行者**：Codex
