@@ -12,6 +12,16 @@ from sqlalchemy.orm import Session, load_only
 from api.database import ImportedPortfolioPositionDB, ReportDB
 from tradingagents.dataflows.interface import route_to_vendor
 from tradingagents.dataflows.trade_calendar import cn_today_str, is_cn_trading_day, previous_cn_trading_day
+# [TRACK-004] observation_state_engine
+from tradingagents.tradeflow.observation_state_engine import (
+    STATE_IN_ENTRY_ZONE,
+    STATE_NEAR_ENTRY,
+    STATE_MISSED_ENTRY,
+    STATE_TA_REQUIRED,
+    evaluate_observation_state,
+    result_to_guidance,
+    should_emit_guidance,
+)
 
 
 REFRESH_INTERVAL_SECONDS = 20
@@ -426,76 +436,22 @@ def _aggregate_today_guidance(
                 "as_of": as_of,
             })
 
-    # 2. Observation items: near entry / in entry zone / needs TA
+    # 2. Observation items: state engine drives near entry / in entry zone /
+    #    invalidated / missed entry / ta_required / data_missing / needs_review.
+    #    [TRACK-004] observation_state_engine
     for obs in observation_items:
         symbol = obs.get("symbol", "")
-        live_price = obs.get("live_price")
-        status = obs.get("status", "watching")
-        entry_low = obs.get("entry_low", 0.0)
-        entry_high = obs.get("entry_high", 0.0)
-        invalid_price = obs.get("invalid_price", 0.0)
+        stored_status = obs.get("status", "watching")
         obs_name = obs.get("name", symbol)
 
-        if live_price is None:
-            # No live price available
-            if is_trading_day:
-                guidance.append({
-                    "type": "observation_data_missing",
-                    "priority": "P3",
-                    "symbol": symbol,
-                    "name": obs_name,
-                    "reason": f"观察仓 {symbol} 无实时行情，无法判断入场区间",
-                    "source": "tracking_board_v2",
-                    "as_of": as_of,
-                })
-            continue
+        result = evaluate_observation_state(obs, is_trading_day=is_trading_day)
+        if should_emit_guidance(result):
+            guidance.append(result_to_guidance(result, as_of=as_of))
 
-        # Check invalidated
-        if invalid_price > 0 and live_price <= invalid_price:
-            guidance.append({
-                "type": "observation_invalidated",
-                "priority": "P1",
-                "symbol": symbol,
-                "name": obs_name,
-                "reason": f"观察仓 {symbol} 现价 {live_price} 已跌破失效价 {invalid_price}",
-                "source": "tracking_board_v2",
-                "as_of": as_of,
-            })
-            continue
-
-        # Check in entry zone
-        has_zone = entry_low > 0 or entry_high > 0
-        if has_zone:
-            in_zone = True
-            if entry_low > 0 and live_price < entry_low:
-                in_zone = False
-            if entry_high > 0 and live_price > entry_high:
-                in_zone = False
-
-            if in_zone:
-                guidance.append({
-                    "type": "observation_in_entry_zone",
-                    "priority": "P0",
-                    "symbol": symbol,
-                    "name": obs_name,
-                    "reason": f"观察仓 {symbol} 现价 {live_price} 进入买入区间 [{entry_low}, {entry_high}]",
-                    "source": "tracking_board_v2",
-                    "as_of": as_of,
-                })
-            elif entry_low > 0 and live_price < entry_low * 1.05:
-                # Near entry zone (within 5%)
-                guidance.append({
-                    "type": "observation_near_entry",
-                    "priority": "P1",
-                    "symbol": symbol,
-                    "name": obs_name,
-                    "reason": f"观察仓 {symbol} 现价 {live_price} 接近买点下沿 {entry_low}",
-                    "source": "tracking_board_v2",
-                    "as_of": as_of,
-                })
-
-        # Status-based guidance
-        if status == "ta_required":
+        # 用户标记 ta_required 且引擎命中价格类状态时，额外补一条 ta_required
+        # 提示（与原 TRACK-002 行为保持一致：价格到位 + 仍需 TA 确认）。
+        price_states = {STATE_IN_ENTRY_ZONE, STATE_NEAR_ENTRY, STATE_MISSED_ENTRY}
+        if stored_status == "ta_required" and result.get("state") in price_states:
             guidance.append({
                 "type": "observation_ta_required",
                 "priority": "P1",
@@ -504,6 +460,8 @@ def _aggregate_today_guidance(
                 "reason": f"观察仓 {symbol} 需要 TA 深度确认",
                 "source": "tracking_board_v2",
                 "as_of": as_of,
+                "state": STATE_TA_REQUIRED,
+                "data_fields": {"stored_status": stored_status},
             })
 
     # Sort by priority

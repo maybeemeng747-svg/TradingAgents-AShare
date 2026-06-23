@@ -1,0 +1,3018 @@
+Task: TRACK-004 - 观察仓入场区/失效区规则引擎与状态流转（P1）
+Date: 2026-06-23_11:35:02
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019ef289-e4a3-7c43-a1c4-24a6a56e7a8d
+--------
+user
+current changes
+2026-06-23T03:33:04.837511Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-06-23T03:33:04.921874Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+2026-06-23T03:33:05.529833Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-06-23T03:33:05.979981Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+exec
+/bin/zsh -lc 'git status --short && git rev-parse --show-toplevel' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M api/services/tracking_board_service.py
+ M api/services/tradeflow_service.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M docs/tradeflow_trial_acceptance.md
+ M docs/tradeflow_trial_acceptance_v2.md
+ M frontend/src/components/TrackingBoardV2Panel.tsx
+ M frontend/src/types/index.ts
+?? docs/task_runs/TRACK-004-20260623-111132/
+?? tests/test_track004_observation_state_engine.py
+?? tradingagents/tradeflow/observation_state_engine.py
+/Users/maybee/TradingAgents-AShare
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- api/services/tracking_board_service.py api/services/tradeflow_service.py frontend/src/components/TrackingBoardV2Panel.tsx frontend/src/types/index.ts tradingagents/tradeflow/observation_state_engine.py tests/test_track004_observation_state_engine.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ api/services/tracking_board_service.py           | 88 +++++++-----------------
+ api/services/tradeflow_service.py                |  4 ++
+ docs/DEVLOG.md                                   | 52 ++++++++++++++
+ docs/TASKS.md                                    |  4 +-
+ docs/tradeflow_trial_acceptance.md               |  2 +-
+ docs/tradeflow_trial_acceptance_v2.md            |  2 +-
+ frontend/src/components/TrackingBoardV2Panel.tsx |  5 ++
+ frontend/src/types/index.ts                      |  5 ++
+ 8 files changed, 93 insertions(+), 69 deletions(-)
+diff --git a/api/services/tracking_board_service.py b/api/services/tracking_board_service.py
+index 89a8f64..a77f591 100644
+--- a/api/services/tracking_board_service.py
++++ b/api/services/tracking_board_service.py
+@@ -12,6 +12,16 @@ from sqlalchemy.orm import Session, load_only
+ from api.database import ImportedPortfolioPositionDB, ReportDB
+ from tradingagents.dataflows.interface import route_to_vendor
+ from tradingagents.dataflows.trade_calendar import cn_today_str, is_cn_trading_day, previous_cn_trading_day
++# [TRACK-004] observation_state_engine
++from tradingagents.tradeflow.observation_state_engine import (
++    STATE_IN_ENTRY_ZONE,
++    STATE_NEAR_ENTRY,
++    STATE_MISSED_ENTRY,
++    STATE_TA_REQUIRED,
++    evaluate_observation_state,
++    result_to_guidance,
++    should_emit_guidance,
++)
+ 
+ 
+ REFRESH_INTERVAL_SECONDS = 20
+@@ -426,76 +436,22 @@ def _aggregate_today_guidance(
+                 "as_of": as_of,
+             })
+ 
+-    # 2. Observation items: near entry / in entry zone / needs TA
++    # 2. Observation items: state engine drives near entry / in entry zone /
++    #    invalidated / missed entry / ta_required / data_missing / needs_review.
++    #    [TRACK-004] observation_state_engine
+     for obs in observation_items:
+         symbol = obs.get("symbol", "")
+-        live_price = obs.get("live_price")
+-        status = obs.get("status", "watching")
+-        entry_low = obs.get("entry_low", 0.0)
+-        entry_high = obs.get("entry_high", 0.0)
+-        invalid_price = obs.get("invalid_price", 0.0)
++        stored_status = obs.get("status", "watching")
+         obs_name = obs.get("name", symbol)
+ 
+-        if live_price is None:
+-            # No live price available
+-            if is_trading_day:
+-                guidance.append({
+-                    "type": "observation_data_missing",
+-                    "priority": "P3",
+-                    "symbol": symbol,
+-                    "name": obs_name,
+-                    "reason": f"观察仓 {symbol} 无实时行情，无法判断入场区间",
+-                    "source": "tracking_board_v2",
+-                    "as_of": as_of,
+-                })
+-            continue
+-
+-        # Check invalidated
+-        if invalid_price > 0 and live_price <= invalid_price:
+-            guidance.append({
+-                "type": "observation_invalidated",
+-                "priority": "P1",
+-                "symbol": symbol,
+-                "name": obs_name,
+-                "reason": f"观察仓 {symbol} 现价 {live_price} 已跌破失效价 {invalid_price}",
+-                "source": "tracking_board_v2",
+-                "as_of": as_of,
+-            })
+-            continue
++        result = evaluate_observation_state(obs, is_trading_day=is_trading_day)
++        if should_emit_guidance(result):
++            guidance.append(result_to_guidance(result, as_of=as_of))
+ 
+-        # Check in entry zone
+-        has_zone = entry_low > 0 or entry_high > 0
+-        if has_zone:
+-            in_zone = True
+-            if entry_low > 0 and live_price < entry_low:
+-                in_zone = False
+-            if entry_high > 0 and live_price > entry_high:
+-                in_zone = False
+-
+-            if in_zone:
+-                guidance.append({
+-                    "type": "observation_in_entry_zone",
+-                    "priority": "P0",
+-                    "symbol": symbol,
+-                    "name": obs_name,
+-                    "reason": f"观察仓 {symbol} 现价 {live_price} 进入买入区间 [{entry_low}, {entry_high}]",
+-                    "source": "tracking_board_v2",
+-                    "as_of": as_of,
+-                })
+-            elif entry_low > 0 and live_price < entry_low * 1.05:
+-                # Near entry zone (within 5%)
+-                guidance.append({
+-                    "type": "observation_near_entry",
+-                    "priority": "P1",
+-                    "symbol": symbol,
+-                    "name": obs_name,
+-                    "reason": f"观察仓 {symbol} 现价 {live_price} 接近买点下沿 {entry_low}",
+-                    "source": "tracking_board_v2",
+-                    "as_of": as_of,
+-                })
+-
+-        # Status-based guidance
+-        if status == "ta_required":
++        # 用户标记 ta_required 且引擎命中价格类状态时，额外补一条 ta_required
++        # 提示（与原 TRACK-002 行为保持一致：价格到位 + 仍需 TA 确认）。
++        price_states = {STATE_IN_ENTRY_ZONE, STATE_NEAR_ENTRY, STATE_MISSED_ENTRY}
++        if stored_status == "ta_required" and result.get("state") in price_states:
+             guidance.append({
+                 "type": "observation_ta_required",
+                 "priority": "P1",
+@@ -504,6 +460,8 @@ def _aggregate_today_guidance(
+                 "reason": f"观察仓 {symbol} 需要 TA 深度确认",
+                 "source": "tracking_board_v2",
+                 "as_of": as_of,
++                "state": STATE_TA_REQUIRED,
++                "data_fields": {"stored_status": stored_status},
+             })
+ 
+     # Sort by priority
+diff --git a/api/services/tradeflow_service.py b/api/services/tradeflow_service.py
+index b5d7557..eaee0fb 100644
+--- a/api/services/tradeflow_service.py
++++ b/api/services/tradeflow_service.py
+@@ -2853,6 +2853,7 @@ OBSERVATION_STATUS_WATCHING = "watching"
+ OBSERVATION_STATUS_NEAR_ENTRY = "near_entry"
+ OBSERVATION_STATUS_IN_ENTRY_ZONE = "in_entry_zone"
+ OBSERVATION_STATUS_TA_REQUIRED = "ta_required"
++OBSERVATION_STATUS_MISSED_ENTRY = "missed_entry"  # [TRACK-004] observation_state_engine
+ OBSERVATION_STATUS_ENTERED = "entered"
+ OBSERVATION_STATUS_INVALIDATED = "invalidated"
+ OBSERVATION_STATUS_REMOVED = "removed"
+@@ -2861,6 +2862,7 @@ ALLOWED_OBSERVATION_STATUSES = frozenset({
+     OBSERVATION_STATUS_NEAR_ENTRY,
+     OBSERVATION_STATUS_IN_ENTRY_ZONE,
+     OBSERVATION_STATUS_TA_REQUIRED,
++    OBSERVATION_STATUS_MISSED_ENTRY,
+     OBSERVATION_STATUS_ENTERED,
+     OBSERVATION_STATUS_INVALIDATED,
+     OBSERVATION_STATUS_REMOVED,
+@@ -2873,11 +2875,13 @@ ALLOWED_OBSERVATION_SOURCES = frozenset({
+     "investment_controller",
+ })
+ # Statuses that are still actively tracked on the board (not terminal).
++# missed_entry 仍属活跃：可重新 watching 或被 invalidated，故不计入终态。
+ _ACTIVE_OBSERVATION_STATUSES = frozenset({
+     OBSERVATION_STATUS_WATCHING,
+     OBSERVATION_STATUS_NEAR_ENTRY,
+     OBSERVATION_STATUS_IN_ENTRY_ZONE,
+     OBSERVATION_STATUS_TA_REQUIRED,
++    OBSERVATION_STATUS_MISSED_ENTRY,
+     OBSERVATION_STATUS_ENTERED,
+ })
+ 
+diff --git a/frontend/src/components/TrackingBoardV2Panel.tsx b/frontend/src/components/TrackingBoardV2Panel.tsx
+index ecfa9b7..0130a10 100644
+--- a/frontend/src/components/TrackingBoardV2Panel.tsx
++++ b/frontend/src/components/TrackingBoardV2Panel.tsx
+@@ -66,6 +66,9 @@ function guidanceTypeLabel(t: string): string {
+         observation_invalidated: '已失效',
+         observation_ta_required: '需TA确认',
+         observation_data_missing: '数据缺失',
++        observation_needs_review: '待复核',      // [TRACK-004] observation_state_engine
++        observation_missed_entry: '已错失',
++        observation_watching: '观察中',
+     }
+     return m[t] || t
+ }
+@@ -76,6 +79,7 @@ function obsStatusLabel(s: string): string {
+         near_entry: '接近买点',
+         in_entry_zone: '买点区间',
+         ta_required: '需TA确认',
++        missed_entry: '已错失',                  // [TRACK-004] observation_state_engine
+         entered: '已入场',
+         invalidated: '已失效',
+         removed: '已移除',
+@@ -86,6 +90,7 @@ function obsStatusLabel(s: string): string {
+ function obsStatusCls(s: string): string {
+     if (s === 'in_entry_zone') return 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300'
+     if (s === 'near_entry') return 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300'
++    if (s === 'missed_entry') return 'bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300'  // [TRACK-004] observation_state_engine
+     if (s === 'invalidated') return 'bg-slate-200 text-slate-500 dark:bg-slate-600 dark:text-slate-400 line-through'
+     if (s === 'ta_required') return 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300'
+     if (s === 'entered') return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index 08ad245..febb2b5 100644
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -685,6 +685,9 @@ type GuidanceType =
+     | 'observation_invalidated'
+     | 'observation_ta_required'
+     | 'observation_data_missing'
++    | 'observation_needs_review'   // [TRACK-004] observation_state_engine
++    | 'observation_missed_entry'
++    | 'observation_watching'
+ 
+ export interface TrackingBoardV2Guidance {
+     type: GuidanceType
+@@ -694,6 +697,8 @@ export interface TrackingBoardV2Guidance {
+     reason: string
+     source: string
+     as_of: string
++    state?: string                 // [TRACK-004] observation_state_engine
++    data_fields?: Record<string, unknown>
+ }
+ 
+ export interface TrackingBoardV2DataFreshness {
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/tradeflow/observation_state_engine.py && printf '\\n--- tests ---\\n' && sed -n '1,260p' tests/test_track004_observation_state_engine.py && printf '\\n--- service context ---\\n' && sed -n '360,490p' api/services/tracking_board_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [TRACK-004] observation_state_engine
+"""
+观察仓入场区/失效区规则引擎与状态流转.
+
+根据实时价、买入区间 (entry_low/entry_high)、触发价 (trigger_price)、
+失效价 (invalid_price) 以及数据新鲜度信号 (live_price / quote_time)，为单个
+观察仓标的计算"派生状态"，并产出可直接写入 tracking board v2 ``today_guidance``
+的结构化结果。
+
+设计原则
+--------
+1. 纯函数：不访问数据库、不联网、不写状态。输入一个 observation item dict
+   （已经由 ``_enrich_observation_items`` 注入 ``live_price`` 等行情字段），
+   输出一个状态结果 dict。便于单测与回放。
+2. 安全红线：
+   - 永不输出"立即买入 / 重仓 / 清仓"等强动作词；本引擎只描述事实状态。
+   - 数据缺失时只能返回 ``data_missing`` / ``needs_review``，绝不能把缺数据
+     的标的误判为可入场（硬约束，写在判断链最前面）。
+3. 状态优先级（高 -> 低）：
+   data_missing / needs_review  >  invalidated  >  in_entry_zone  >
+   ta_required(stored)  >  near_entry  >  missed_entry  >  watching
+4. 每个结果都带 ``reason`` 与 ``data_fields``（参与判断的数据字段），满足
+   TRACK-004 "每个状态必须有 reason 和使用的数据字段" 的要求。
+
+该模块不持久化状态；如需把失效/错失等终态写回观察仓，调用方应使用
+``api.services.tradeflow_service.mark_observation_item_status``。
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+# [TRACK-004] observation_state_engine
+# ── 派生状态枚举（字符串常量） ────────────────────────────────────────────
+STATE_DATA_MISSING = "data_missing"        # 交易日无实时行情，无法判断
+STATE_NEEDS_REVIEW = "needs_review"        # 非交易日无行情，需人工复核
+STATE_WATCHING = "watching"                 # 持续观察，价格未接近买点
+STATE_NEAR_ENTRY = "near_entry"             # 接近买点下沿（5% 内）
+STATE_IN_ENTRY_ZONE = "in_entry_zone"       # 价格进入买入区间
+STATE_MISSED_ENTRY = "missed_entry"         # 价格已偏离上沿 >5%，本轮窗口可能已过
+STATE_INVALIDATED = "invalidated"           # 跌破失效价
+STATE_TA_REQUIRED = "ta_required"           # 用户标记需要 TA 深度确认
+
+# 可出现在 today_guidance 的 guidance_type 前缀统一为 observation_*
+GUIDANCE_TYPE_DATA_MISSING = "observation_data_missing"
+GUIDANCE_TYPE_NEEDS_REVIEW = "observation_needs_review"
+GUIDANCE_TYPE_WATCHING = "observation_watching"
+GUIDANCE_TYPE_NEAR_ENTRY = "observation_near_entry"
+GUIDANCE_TYPE_IN_ENTRY_ZONE = "observation_in_entry_zone"
+GUIDANCE_TYPE_MISSED_ENTRY = "observation_missed_entry"
+GUIDANCE_TYPE_INVALIDATED = "observation_invalidated"
+GUIDANCE_TYPE_TA_REQUIRED = "observation_ta_required"
+
+# 接近买点下沿的容差（entry_low 下方 5% 内算 near_entry）
+NEAR_ENTRY_BAND = 0.05
+# 偏离买点上沿的阈值（entry_high 上方 5% 外算 missed_entry）
+MISSED_ENTRY_BAND = 0.05
+
+# 强动作禁用词，供调用方/测试核验引擎输出不含违规词
+FORBIDDEN_STRONG_WORDS = ("立即买入", "重仓买入", "重仓", "立即清仓", "清仓", "满仓", "梭哈")
+
+
+def _to_float(value: Any) -> float:
+    """宽松转 float，None/异常返回 0.0（保持 0 边界语义）。"""
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _result(
+    base: dict[str, Any],
+    state: str,
+    priority: str,
+    guidance_type: str,
+    reason: str,
+    used: dict[str, Any],
+) -> dict[str, Any]:
+    """构造一个状态结果 dict。"""
+    return {
+        "symbol": base.get("symbol", ""),
+        "name": base.get("name", base.get("symbol", "")),
+        "state": state,
+        "priority": priority,
+        "guidance_type": guidance_type,
+        "reason": reason,
+        # 参与本次判断的数据字段（满足"每个状态必须有使用的数据字段"）
+        "data_fields": dict(used),
+        # 背景上下文（便于审计/调试，不计入 data_fields）
+        "stored_status": base.get("stored_status", "watching"),
+        "live_price": base.get("live_price"),
+        "entry_low": base.get("entry_low", 0.0),
+        "entry_high": base.get("entry_high", 0.0),
+        "invalid_price": base.get("invalid_price", 0.0),
+        "trigger_price": base.get("trigger_price", 0.0),
+        "quote_time": base.get("quote_time"),
+        "quote_source": base.get("quote_source"),
+        "is_trading_day": bool(base.get("is_trading_day", True)),
+    }
+
+
+# [TRACK-004] observation_state_engine
+def evaluate_observation_state(
+    item: dict[str, Any],
+    *,
+    is_trading_day: bool = True,
+) -> dict[str, Any]:
+    """评估单个观察仓标的的派生状态.
+
+    Args:
+        item: observation item dict，需含 ``symbol``，可选 ``name/status/live_price/
+            entry_low/entry_high/trigger_price/invalid_price/quote_time/quote_source``。
+            ``live_price`` 为 ``None`` 表示无实时行情。
+        is_trading_day: 当前是否为 A 股交易日。仅影响无行情时的状态归类
+            (交易日 -> data_missing / 非交易日 -> needs_review)。
+
+    Returns:
+        状态结果 dict，键见 :func:`_result`。永远返回 dict，不返回 None。
+    """
+    symbol = (item.get("symbol") or "").strip() or "(unknown)"
+    name = item.get("name") or symbol
+    stored_status = item.get("status") or "watching"
+    live_price = item.get("live_price")  # None | float
+    entry_low = _to_float(item.get("entry_low", 0.0))
+    entry_high = _to_float(item.get("entry_high", 0.0))
+    invalid_price = _to_float(item.get("invalid_price", 0.0))
+    trigger_price = _to_float(item.get("trigger_price", 0.0))
+    quote_time = item.get("quote_time")
+    quote_source = item.get("quote_source")
+
+    base = {
+        "symbol": symbol,
+        "name": name,
+        "stored_status": stored_status,
+        "live_price": live_price,
+        "entry_low": entry_low,
+        "entry_high": entry_high,
+        "invalid_price": invalid_price,
+        "trigger_price": trigger_price,
+        "quote_time": quote_time,
+        "quote_source": quote_source,
+        "is_trading_day": is_trading_day,
+    }
+
+    # 1. 数据缺失 —— 硬约束：无行情时绝不能误判为可入场
+    if live_price is None:
+        if is_trading_day:
+            return _result(
+                base,
+                STATE_DATA_MISSING,
+                "P3",
+                GUIDANCE_TYPE_DATA_MISSING,
+                f"观察仓 {symbol} 无实时行情，无法判断入场区间",
+                used={"live_price": None, "is_trading_day": True},
+            )
+        return _result(
+            base,
+            STATE_NEEDS_REVIEW,
+            "P3",
+            GUIDANCE_TYPE_NEEDS_REVIEW,
+            f"观察仓 {symbol} 非交易日无实时行情，需盘后人工复核",
+            used={"live_price": None, "is_trading_day": False},
+        )
+
+    has_zone = entry_low > 0 or entry_high > 0
+
+    # 2. 失效 —— 现价已跌破失效价
+    if invalid_price > 0 and live_price <= invalid_price:
+        return _result(
+            base,
+            STATE_INVALIDATED,
+            "P1",
+            GUIDANCE_TYPE_INVALIDATED,
+            f"观察仓 {symbol} 现价 {live_price} 已跌破失效价 {invalid_price}",
+            used={"live_price": live_price, "invalid_price": invalid_price},
+        )
+
+    # 3. 进入买入区间
+    if has_zone:
+        in_zone = True
+        if entry_low > 0 and live_price < entry_low:
+            in_zone = False
+        if entry_high > 0 and live_price > entry_high:
+            in_zone = False
+
+        if in_zone:
+            return _result(
+                base,
+                STATE_IN_ENTRY_ZONE,
+                "P0",
+                GUIDANCE_TYPE_IN_ENTRY_ZONE,
+                f"观察仓 {symbol} 现价 {live_price} 进入买入区间 [{entry_low}, {entry_high}]",
+                used={
+                    "live_price": live_price,
+                    "entry_low": entry_low,
+                    "entry_high": entry_high,
+                },
+            )
+
+        # 4. 错失入场 —— 现价高于买入区上沿超过 5%
+        if entry_high > 0 and live_price > entry_high * (1 + MISSED_ENTRY_BAND):
+            return _result(
+                base,
+                STATE_MISSED_ENTRY,
+                "P2",
+                GUIDANCE_TYPE_MISSED_ENTRY,
+                f"观察仓 {symbol} 现价 {live_price} 已高于买入区上沿 {entry_high} 超过 5%，本轮入场窗口可能已过",
+                used={"live_price": live_price, "entry_high": entry_high},
+            )
+
+        # 5. 接近买点 —— 现价落在买点下沿下方 5% 内
+        if entry_low > 0 and entry_low * (1 - NEAR_ENTRY_BAND) <= live_price < entry_low:
+            return _result(
+                base,
+                STATE_NEAR_ENTRY,
+                "P1",
+                GUIDANCE_TYPE_NEAR_ENTRY,
+                f"观察仓 {symbol} 现价 {live_price} 接近买点下沿 {entry_low}",
+                used={"live_price": live_price, "entry_low": entry_low},
+            )
+
+    # 6. 用户标记需要 TA 深度确认
+    if stored_status == "ta_required":
+        return _result(
+            base,
+            STATE_TA_REQUIRED,
+            "P1",
+            GUIDANCE_TYPE_TA_REQUIRED,
+            f"观察仓 {symbol} 需要 TA 深度确认",
+            used={"stored_status": stored_status},
+        )
+
+    # 7. 默认：持续观察
+    suffix = f"，现价 {live_price} 暂未接近买入区间" if has_zone else "，暂未设定买入区间"
+    return _result(
+        base,
+        STATE_WATCHING,
+        "P3",
+        GUIDANCE_TYPE_WATCHING,
+        f"观察仓 {symbol} 持续观察中{suffix}",
+        used={"live_price": live_price, "has_zone": has_zone},
+    )
+
+
+# [TRACK-004] observation_state_engine
+def result_to_guidance(result: dict[str, Any], *, as_of: str, source: str = "tracking_board_v2") -> dict[str, Any]:
+    """把引擎结果 dict 转成 today_guidance 的一条记录."""
+    return {
+        "type": result.get("guidance_type", "observation_watching"),
+        "priority": result.get("priority", "P3"),
+        "symbol": result.get("symbol", ""),
+        "name": result.get("name", ""),
+        "reason": result.get("reason", ""),
+        "source": source,
+        "as_of": as_of,
+        "state": result.get("state", "watching"),
+        "data_fields": dict(result.get("data_fields", {})),
+    }
+
+--- tests ---
+# [TRACK-004] observation_state_engine
+"""Tests for TRACK-004: 观察仓入场区/失效区规则引擎与状态流转.
+
+Covers:
+- Pure state engine ``evaluate_observation_state``:
+  - data_missing (trading day, no live price)
+  - needs_review (non-trading day, no live price)
+  - invalidated (live <= invalid_price)
+  - in_entry_zone (entry_low <= live <= entry_high)
+  - near_entry (within 5% below entry_low)
+  - missed_entry (live > entry_high * 1.05)
+  - ta_required (stored status, no higher price state)
+  - watching (default, with/without zone)
+- Constraint: data missing NEVER judged as entry-able.
+- Constraint: no forbidden strong buy/sell wording in any reason.
+- Every result carries ``reason`` and ``data_fields``.
+- ``should_emit_guidance`` and ``result_to_guidance`` shaping.
+- Integration: ``_aggregate_today_guidance`` uses the engine (missed_entry,
+  dual ta_required emission, watching suppression for zone-less items).
+- ``missed_entry`` is now an accepted stored status in tradeflow_service.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tradingagents.tradeflow.observation_state_engine import (
+    STATE_DATA_MISSING,
+    STATE_NEEDS_REVIEW,
+    STATE_WATCHING,
+    STATE_NEAR_ENTRY,
+    STATE_IN_ENTRY_ZONE,
+    STATE_MISSED_ENTRY,
+    STATE_INVALIDATED,
+    STATE_TA_REQUIRED,
+    FORBIDDEN_STRONG_WORDS,
+    evaluate_observation_state,
+    result_to_guidance,
+    should_emit_guidance,
+)
+from api.services.tradeflow_service import (
+    ALLOWED_OBSERVATION_STATUSES,
+    OBSERVATION_STATUS_MISSED_ENTRY,
+    _validate_observation_status,
+)
+from api.services.tracking_board_service import _aggregate_today_guidance
+
+
+def _now():
+    from datetime import datetime
+    return datetime.now()
+
+
+def _item(**overrides):
+    base = {
+        "symbol": "000001.SZ",
+        "name": "平安银行",
+        "status": "watching",
+        "entry_low": 10.0,
+        "entry_high": 12.0,
+        "trigger_price": 0.0,
+        "invalid_price": 9.0,
+        "live_price": 11.0,
+        "quote_time": "10:00:00",
+        "quote_source": "tencent",
+    }
+    base.update(overrides)
+    return base
+
+
+# ── evaluate_observation_state: core state coverage ──────────────────────
+
+class TestEvaluateState:
+
+    def test_in_entry_zone(self):
+        r = evaluate_observation_state(_item(live_price=11.0), is_trading_day=True)
+        assert r["state"] == STATE_IN_ENTRY_ZONE
+        assert r["priority"] == "P0"
+        assert r["guidance_type"] == "observation_in_entry_zone"
+        assert "entry_low" in r["data_fields"] and "entry_high" in r["data_fields"]
+
+    def test_in_entry_zone_at_lower_bound(self):
+        r = evaluate_observation_state(_item(live_price=10.0), is_trading_day=True)
+        assert r["state"] == STATE_IN_ENTRY_ZONE
+
+    def test_in_entry_zone_at_upper_bound(self):
+        r = evaluate_observation_state(_item(live_price=12.0), is_trading_day=True)
+        assert r["state"] == STATE_IN_ENTRY_ZONE
+
+    def test_near_entry_within_5pct_below(self):
+        # entry_low=10, 9.6 is within 5% below (>= 9.5)
+        r = evaluate_observation_state(_item(live_price=9.6), is_trading_day=True)
+        assert r["state"] == STATE_NEAR_ENTRY
+        assert r["priority"] == "P1"
+
+    def test_near_entry_boundary_inclusive(self):
+        # exactly 9.5 = entry_low * 0.95 -> near_entry (inclusive lower bound)
+        r = evaluate_observation_state(_item(live_price=9.5), is_trading_day=True)
+        assert r["state"] == STATE_NEAR_ENTRY
+
+    def test_below_near_band_is_watching(self):
+        # 9.4 < 9.5 -> not near, not invalidated (invalid=9.0) -> watching
+        r = evaluate_observation_state(_item(live_price=9.4), is_trading_day=True)
+        assert r["state"] == STATE_WATCHING
+
+    def test_invalidated_at_invalid_price(self):
+        r = evaluate_observation_state(_item(live_price=9.0), is_trading_day=True)
+        assert r["state"] == STATE_INVALIDATED
+        assert r["priority"] == "P1"
+        assert r["data_fields"]["invalid_price"] == 9.0
+
+    def test_invalidated_below_invalid_price(self):
+        r = evaluate_observation_state(_item(live_price=8.5), is_trading_day=True)
+        assert r["state"] == STATE_INVALIDATED
+
+    def test_missed_entry_above_upper_band(self):
+        # entry_high=12, 12.7 > 12 * 1.05 = 12.6 -> missed_entry
+        r = evaluate_observation_state(_item(live_price=12.7), is_trading_day=True)
+        assert r["state"] == STATE_MISSED_ENTRY
+        assert r["priority"] == "P2"
+        assert r["guidance_type"] == "observation_missed_entry"
+
+    def test_missed_entry_boundary_exclusive(self):
+        # exactly 12.6 == entry_high * 1.05 -> NOT missed (> is strict); falls to watching
+        r = evaluate_observation_state(_item(live_price=12.6), is_trading_day=True)
+        assert r["state"] == STATE_WATCHING
+
+    def test_data_missing_trading_day(self):
+        r = evaluate_observation_state(_item(live_price=None), is_trading_day=True)
+        assert r["state"] == STATE_DATA_MISSING
+        assert r["priority"] == "P3"
+        assert r["guidance_type"] == "observation_data_missing"
+
+    def test_needs_review_non_trading_day_no_price(self):
+        r = evaluate_observation_state(_item(live_price=None), is_trading_day=False)
+        assert r["state"] == STATE_NEEDS_REVIEW
+        assert r["guidance_type"] == "observation_needs_review"
+
+    def test_ta_required_when_no_price_state(self):
+        # zone defined but price far above (missed) would normally be missed_entry;
+        # here we use no zone + stored ta_required
+        r = evaluate_observation_state(
+            _item(entry_low=0.0, entry_high=0.0, invalid_price=0.0,
+                  status="ta_required", live_price=15.0),
+            is_trading_day=True,
+        )
+        assert r["state"] == STATE_TA_REQUIRED
+        assert r["priority"] == "P1"
+
+    def test_in_zone_beats_ta_required_stored(self):
+        # stored ta_required but price in zone -> in_entry_zone wins as primary
+        r = evaluate_observation_state(
+            _item(status="ta_required", live_price=11.0),
+            is_trading_day=True,
+        )
+        assert r["state"] == STATE_IN_ENTRY_ZONE
+
+    def test_watching_with_zone_far_below(self):
+        r = evaluate_observation_state(_item(live_price=9.3), is_trading_day=True)
+        assert r["state"] == STATE_WATCHING
+        # data_fields records whether a zone was configured
+        assert r["data_fields"]["has_zone"] is True
+
+    def test_watching_without_zone(self):
+        r = evaluate_observation_state(
+            _item(entry_low=0.0, entry_high=0.0, invalid_price=0.0, live_price=15.0),
+            is_trading_day=True,
+        )
+        assert r["state"] == STATE_WATCHING
+        assert r["data_fields"]["has_zone"] is False
+
+    def test_invalidated_beats_in_zone(self):
+        # invalid_price inside the zone; live <= invalid -> invalidated first
+        r = evaluate_observation_state(
+            _item(entry_low=10.0, entry_high=12.0, invalid_price=10.5, live_price=10.5),
+            is_trading_day=True,
+        )
+        assert r["state"] == STATE_INVALIDATED
+
+    def test_result_always_carries_reason_and_data_fields(self):
+        for live in (None, 8.0, 9.4, 9.6, 10.0, 11.0, 12.7, 15.0):
+            r = evaluate_observation_state(_item(live_price=live), is_trading_day=True)
+            assert "reason" in r and isinstance(r["reason"], str) and r["reason"]
+            assert "data_fields" in r and isinstance(r["data_fields"], dict)
+
+
+# ── Constraint: data missing never entry-able ────────────────────────────
+
+class TestDataMissingSafety:
+
+    def test_no_live_price_never_entry_able_with_zone(self):
+        r = evaluate_observation_state(_item(live_price=None), is_trading_day=True)
+        assert r["state"] not in {STATE_IN_ENTRY_ZONE, STATE_NEAR_ENTRY, STATE_MISSED_ENTRY}
+
+    def test_no_live_price_never_entry_able_non_trading(self):
+        r = evaluate_observation_state(_item(live_price=None), is_trading_day=False)
+        assert r["state"] in {STATE_NEEDS_REVIEW, STATE_DATA_MISSING}
+
+    def test_no_live_price_takes_precedence_over_ta_required(self):
+        # Even if stored status is ta_required, no price -> data_missing (can't judge)
+        r = evaluate_observation_state(
+            _item(status="ta_required", live_price=None), is_trading_day=True,
+        )
+        assert r["state"] == STATE_DATA_MISSING
+
+
+# ── Constraint: no forbidden strong wording ──────────────────────────────
+
+class TestNoStrongActionWording:
+
+    def test_engine_reasons_have_no_forbidden_words(self):
+        scenarios = [
+            _item(live_price=None),               # data_missing
+            _item(live_price=9.0),                # invalidated
+            _item(live_price=11.0),               # in_entry_zone
+            _item(live_price=9.6),                # near_entry
+            _item(live_price=12.7),               # missed_entry
+            _item(entry_low=0.0, entry_high=0.0, invalid_price=0.0,
+                  status="ta_required", live_price=15.0),  # ta_required
+            _item(entry_low=0.0, entry_high=0.0, invalid_price=0.0,
+                  live_price=15.0),               # watching no zone
+        ]
+        for item in scenarios:
+            r = evaluate_observation_state(item, is_trading_day=True)
+            for word in FORBIDDEN_STRONG_WORDS:
+                assert word not in r["reason"], f"reason 含禁用词 {word}: {r['reason']}"
+
+    def test_guidance_payload_has_no_forbidden_words(self):
+        r = evaluate_observation_state(_item(live_price=11.0), is_trading_day=True)
+        g = result_to_guidance(r, as_of="2026-06-23 10:00:00")
+        for word in FORBIDDEN_STRONG_WORDS:
+            assert word not in g["reason"]
+
+
+# ── result_to_guidance / should_emit_guidance shaping ─────────────────────
+
+class TestGuidanceShaping:
+
+    def test_result_to_guidance_keys(self):
+        r = evaluate_observation_state(_item(live_price=11.0), is_trading_day=True)
+        g = result_to_guidance(r, as_of="2026-06-23 10:00:00")
+        for key in ("type", "priority", "symbol", "name", "reason", "source", "as_of", "state", "data_fields"):
+            assert key in g
+        assert g["source"] == "tracking_board_v2"
+        assert g["type"] == "observation_in_entry_zone"
+        assert g["state"] == STATE_IN_ENTRY_ZONE
+
+    def test_should_emit_for_non_watching(self):
+        r = evaluate_observation_state(_item(live_price=11.0), is_trading_day=True)
+        assert should_emit_guidance(r) is True
+
+    def test_should_emit_watching_with_zone(self):
+        r = evaluate_observation_state(_item(live_price=9.3), is_trading_day=True)
+        assert r["state"] == STATE_WATCHING
+        assert should_emit_guidance(r) is True  # has_zone True
+
+--- service context ---
+    except Exception as exc:
+        logger.warning("[tracking-board-v2] failed to fetch observation items: %s", exc)
+        return []
+
+
+# [TRACK-002] tracking_board_v2_groups
+def _enrich_observation_items(
+    items: list[dict[str, Any]], quotes: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Add live quote data to observation items."""
+    enriched = []
+    for item in items:
+        quote = quotes.get(item.get("symbol", ""), {})
+        enriched_item = dict(item)
+        enriched_item["live_price"] = _to_float(quote.get("price"))
+        enriched_item["price_change_pct"] = _to_float(quote.get("change_pct"))
+        enriched_item["quote_time"] = quote.get("quote_time")
+        enriched_item["quote_source"] = quote.get("source")
+        enriched.append(enriched_item)
+    return enriched
+
+
+# [TRACK-002] tracking_board_v2_groups
+def _aggregate_today_guidance(
+    holdings: list[dict[str, Any]],
+    observation_items: list[dict[str, Any]],
+    obs_quotes: dict[str, dict[str, Any]],
+    is_trading_day: bool,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """Aggregate today's guidance from holdings risk and observation entry signals.
+
+    Each guidance has: type, priority (P0-P3), symbol, source, reason, as_of.
+    """
+    guidance: list[dict[str, Any]] = []
+    as_of = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    # 1. Holdings risk: large daily drop without TA analysis
+    for h in holdings:
+        symbol = h["symbol"]
+        analysis = h.get("analysis")
+        change_pct = h.get("price_change_pct")
+
+        # No analysis at all
+        if analysis is None:
+            guidance.append({
+                "type": "holdings_no_analysis",
+                "priority": "P2",
+                "symbol": symbol,
+                "name": h.get("name", symbol),
+                "reason": f"持仓 {symbol} 无最新 TA 报告，需人工确认",
+                "source": "tracking_board_v2",
+                "as_of": as_of,
+            })
+            continue
+
+        # Large daily drop (>3%)
+        if change_pct is not None and change_pct <= -3.0:
+            guidance.append({
+                "type": "holdings_risk",
+                "priority": "P0",
+                "symbol": symbol,
+                "name": h.get("name", symbol),
+                "reason": f"持仓 {symbol} 日跌幅 {change_pct:.2f}%，超阈值",
+                "source": "tracking_board_v2",
+                "as_of": as_of,
+            })
+        # Moderate drop (>1.5%)
+        elif change_pct is not None and change_pct <= -1.5:
+            guidance.append({
+                "type": "holdings_risk",
+                "priority": "P1",
+                "symbol": symbol,
+                "name": h.get("name", symbol),
+                "reason": f"持仓 {symbol} 日跌幅 {change_pct:.2f}%，需关注",
+                "source": "tracking_board_v2",
+                "as_of": as_of,
+            })
+
+    # 2. Observation items: state engine drives near entry / in entry zone /
+    #    invalidated / missed entry / ta_required / data_missing / needs_review.
+    #    [TRACK-004] observation_state_engine
+    for obs in observation_items:
+        symbol = obs.get("symbol", "")
+        stored_status = obs.get("status", "watching")
+        obs_name = obs.get("name", symbol)
+
+        result = evaluate_observation_state(obs, is_trading_day=is_trading_day)
+        if should_emit_guidance(result):
+            guidance.append(result_to_guidance(result, as_of=as_of))
+
+        # 用户标记 ta_required 且引擎命中价格类状态时，额外补一条 ta_required
+        # 提示（与原 TRACK-002 行为保持一致：价格到位 + 仍需 TA 确认）。
+        price_states = {STATE_IN_ENTRY_ZONE, STATE_NEAR_ENTRY, STATE_MISSED_ENTRY}
+        if stored_status == "ta_required" and result.get("state") in price_states:
+            guidance.append({
+                "type": "observation_ta_required",
+                "priority": "P1",
+                "symbol": symbol,
+                "name": obs_name,
+                "reason": f"观察仓 {symbol} 需要 TA 深度确认",
+                "source": "tracking_board_v2",
+                "as_of": as_of,
+                "state": STATE_TA_REQUIRED,
+                "data_fields": {"stored_status": stored_status},
+            })
+
+    # Sort by priority
+    priority_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+    guidance.sort(key=lambda g: priority_order.get(g.get("priority", "P3"), 9))
+
+    return guidance
+
+
+# [TRACK-002] tracking_board_v2_groups
+def _build_data_freshness(
+    holdings: list[dict[str, Any]],
+    observation_items: list[dict[str, Any]],
+    obs_quotes: dict[str, dict[str, Any]],
+    is_trading_day: bool,
+    now: datetime,
+) -> dict[str, Any]:
+    """Build data freshness summary."""
+    as_of = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Count holdings with quotes
+    h_total = len(holdings)
+    h_with_quotes = sum(1 for h in holdings if h.get("live_price") is not None)
+    h_with_analysis = sum(1 for h in holdings if h.get("analysis") is not None)
+
+    # Count observation items with quotes
+
+exec
+/bin/zsh -lc "sed -n '260,560p' tradingagents/tradeflow/observation_state_engine.py && sed -n '260,620p' tests/test_track004_observation_state_engine.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    }
+
+
+# [TRACK-004] observation_state_engine
+def should_emit_guidance(result: dict[str, Any]) -> bool:
+    """决定引擎结果是否应当写入 today_guidance.
+
+    所有非 watching 状态都应当发出；watching 仅在已设定买入区间时发出
+    （让看板能展示"仍在观察、价格未到"的完整视图），未设定区间的纯 watching
+    不发出，避免噪声。
+    """
+    state = result.get("state")
+    if state != STATE_WATCHING:
+        return True
+    # watching：仅当 data_fields.has_zone 为真时才发出
+    used = result.get("data_fields", {}) or {}
+    return bool(used.get("has_zone", False))
+        assert should_emit_guidance(r) is True  # has_zone True
+
+    def test_should_not_emit_watching_without_zone(self):
+        r = evaluate_observation_state(
+            _item(entry_low=0.0, entry_high=0.0, invalid_price=0.0, live_price=15.0),
+            is_trading_day=True,
+        )
+        assert r["state"] == STATE_WATCHING
+        assert should_emit_guidance(r) is False  # has_zone False -> suppress noise
+
+
+# ── Integration: _aggregate_today_guidance uses the engine ────────────────
+
+class TestAggregateIntegration:
+
+    def test_missed_entry_appears_in_guidance(self):
+        obs = [_item(symbol="000001.SZ", live_price=12.7)]
+        guidance = _aggregate_today_guidance([], obs, {}, True, _now())
+        missed = [g for g in guidance if g["type"] == "observation_missed_entry"]
+        assert len(missed) == 1
+        assert missed[0]["priority"] == "P2"
+        assert missed[0]["state"] == STATE_MISSED_ENTRY
+
+    def test_dual_ta_required_when_in_zone_and_stored_ta_required(self):
+        obs = [_item(symbol="000001.SZ", status="ta_required", live_price=11.0)]
+        guidance = _aggregate_today_guidance([], obs, {}, True, _now())
+        types = [g["type"] for g in guidance]
+        assert "observation_in_entry_zone" in types
+        assert "observation_ta_required" in types
+
+    def test_no_dual_when_engine_returned_ta_required(self):
+        # no zone + stored ta_required -> engine returns ta_required; no duplicate
+        obs = [_item(symbol="000001.SZ", entry_low=0.0, entry_high=0.0,
+                     invalid_price=0.0, status="ta_required", live_price=15.0)]
+        guidance = _aggregate_today_guidance([], obs, {}, True, _now())
+        ta = [g for g in guidance if g["type"] == "observation_ta_required"]
+        assert len(ta) == 1
+
+    def test_zone_less_watching_suppressed_from_guidance(self):
+        obs = [_item(symbol="000001.SZ", entry_low=0.0, entry_high=0.0,
+                     invalid_price=0.0, status="watching", live_price=15.0)]
+        guidance = _aggregate_today_guidance([], obs, {}, True, _now())
+        assert guidance == []
+
+    def test_zone_watching_emitted_as_p3(self):
+        # has zone but price far below near band -> watching P3 emitted
+        obs = [_item(symbol="000001.SZ", live_price=9.3)]
+        guidance = _aggregate_today_guidance([], obs, {}, True, _now())
+        watching = [g for g in guidance if g["type"] == "observation_watching"]
+        assert len(watching) == 1
+        assert watching[0]["priority"] == "P3"
+
+    def test_needs_review_emitted_on_non_trading_day(self):
+        obs = [_item(symbol="000001.SZ", live_price=None)]
+        guidance = _aggregate_today_guidance([], obs, {}, False, _now())
+        review = [g for g in guidance if g["type"] == "observation_needs_review"]
+        assert len(review) == 1
+        # and no data_missing on non-trading day
+        assert not any(g["type"] == "observation_data_missing" for g in guidance)
+
+    def test_guidance_priority_sorting_with_new_states(self):
+        obs = [
+            _item(symbol="A", live_price=12.7),   # missed P2
+            _item(symbol="B", live_price=11.0),   # in zone P0
+            _item(symbol="C", live_price=9.6),    # near P1
+            _item(symbol="D", live_price=9.3),    # watching P3
+        ]
+        guidance = _aggregate_today_guidance([], obs, {}, True, _now())
+        priorities = [g["priority"] for g in guidance]
+        assert priorities == sorted(priorities, key={"P0": 0, "P1": 1, "P2": 2, "P3": 3}.get)
+
+    def test_every_guidance_has_source_reason_as_of_state(self):
+        obs = [_item(symbol="000001.SZ", live_price=11.0)]
+        for g in _aggregate_today_guidance([], obs, {}, True, _now()):
+            assert g["source"] == "tracking_board_v2"
+            assert g["as_of"] and g["reason"] and g["state"]
+            assert "data_fields" in g
+
+
+# ── missed_entry accepted as a stored status ──────────────────────────────
+
+class TestMissedEntryStatus:
+
+    def test_missed_entry_in_allowed_statuses(self):
+        assert OBSERVATION_STATUS_MISSED_ENTRY == "missed_entry"
+        assert "missed_entry" in ALLOWED_OBSERVATION_STATUSES
+
+    def test_validate_missed_entry(self):
+        assert _validate_observation_status("missed_entry") == "missed_entry"
+
+    def test_validate_rejects_unknown(self):
+        with pytest.raises(ValueError):
+            _validate_observation_status("bogus_state")
+
+exec
+/bin/zsh -lc "grep -R \"def _to_float\" -n api/services/tracking_board_service.py tradingagents/tradeflow/observation_state_engine.py && sed -n '1,80p' api/services/tracking_board_service.py && grep -R \"observation_\" -n frontend/src api | head -100" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+api/services/tracking_board_service.py:238:def _to_float(value: Any) -> float | None:
+tradingagents/tradeflow/observation_state_engine.py:63:def _to_float(value: Any) -> float:
+# [TRACK-002] tracking_board_v2_groups
+from __future__ import annotations
+
+import json
+import logging
+import re
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy.orm import Session, load_only
+
+from api.database import ImportedPortfolioPositionDB, ReportDB
+from tradingagents.dataflows.interface import route_to_vendor
+from tradingagents.dataflows.trade_calendar import cn_today_str, is_cn_trading_day, previous_cn_trading_day
+# [TRACK-004] observation_state_engine
+from tradingagents.tradeflow.observation_state_engine import (
+    STATE_IN_ENTRY_ZONE,
+    STATE_NEAR_ENTRY,
+    STATE_MISSED_ENTRY,
+    STATE_TA_REQUIRED,
+    evaluate_observation_state,
+    result_to_guidance,
+    should_emit_guidance,
+)
+
+
+REFRESH_INTERVAL_SECONDS = 20
+logger = logging.getLogger(__name__)
+
+
+def get_tracking_board(db: Session, user_id: str) -> dict[str, Any]:
+    previous_trade_date = previous_cn_trading_day(cn_today_str())
+    rows = _list_imported_position_rows(db, user_id)
+    symbols = [row.symbol for row in rows]
+    quotes = _fetch_live_quotes(symbols)
+    reports = _select_reports_for_symbols(db, user_id, symbols, previous_trade_date)
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        quote = quotes.get(row.symbol, {})
+        live_price = _to_float(quote.get("price"))
+        current_position = _to_float(row.current_position)
+        average_cost = _to_float(row.average_cost)
+        live_market_value = (
+            round(live_price * current_position, 2)
+            if live_price is not None and current_position is not None
+            else _to_float(row.market_value)
+        )
+        floating_pnl = (
+            round((live_price - average_cost) * current_position, 2)
+            if live_price is not None and average_cost is not None and current_position is not None
+            else None
+        )
+        floating_pnl_pct = (
+            round(((live_price - average_cost) / average_cost) * 100, 2)
+            if live_price is not None and average_cost not in (None, 0)
+            else None
+        )
+
+        items.append(
+            {
+                "symbol": row.symbol,
+                "name": row.security_name or row.symbol,
+                "current_position": _to_float(row.current_position),
+                "available_position": _to_float(row.available_position),
+                "average_cost": average_cost,
+                "market_value": _to_float(row.market_value),
+                "current_position_pct": _to_float(row.current_position_pct),
+                "live_market_value": live_market_value,
+                "floating_pnl": floating_pnl,
+                "floating_pnl_pct": floating_pnl_pct,
+                "live_price": live_price,
+                "day_open": _to_float(quote.get("open")),
+                "price_change": _to_float(quote.get("change")),
+                "price_change_pct": _to_float(quote.get("change_pct")),
+                "day_high": _to_float(quote.get("high")),
+                "day_low": _to_float(quote.get("low")),
+                "previous_close": _to_float(quote.get("previous_close")),
+                "volume": _to_float(quote.get("volume")),
+                "amount": _to_float(quote.get("amount")),
+frontend/src/types/index.ts:683:    | 'observation_in_entry_zone'
+frontend/src/types/index.ts:684:    | 'observation_near_entry'
+frontend/src/types/index.ts:685:    | 'observation_invalidated'
+frontend/src/types/index.ts:686:    | 'observation_ta_required'
+frontend/src/types/index.ts:687:    | 'observation_data_missing'
+frontend/src/types/index.ts:688:    | 'observation_needs_review'   // [TRACK-004] observation_state_engine
+frontend/src/types/index.ts:689:    | 'observation_missed_entry'
+frontend/src/types/index.ts:690:    | 'observation_watching'
+frontend/src/types/index.ts:700:    state?: string                 // [TRACK-004] observation_state_engine
+frontend/src/types/index.ts:709:    observation_total: number
+frontend/src/types/index.ts:710:    observation_with_live_quotes: number
+frontend/src/types/index.ts:743:    observation_items: ObservationItemV2[]
+frontend/src/types/index.ts:1380:    observation_candidates?: TradeFlowCandidateItem[]
+frontend/src/types/index.ts:1515:    observation_count: number
+frontend/src/utils/tradeflowFocus.ts:196:        observation_count: 0,
+frontend/src/utils/tradeflowFocus.test.ts:127:                observation_count: 0,
+frontend/src/utils/tradeflowFocus.test.ts:215:                observation_count: 0,
+frontend/src/components/TrackingBoardV2Panel.tsx:64:        observation_in_entry_zone: '进入买点',
+frontend/src/components/TrackingBoardV2Panel.tsx:65:        observation_near_entry: '接近买点',
+frontend/src/components/TrackingBoardV2Panel.tsx:66:        observation_invalidated: '已失效',
+frontend/src/components/TrackingBoardV2Panel.tsx:67:        observation_ta_required: '需TA确认',
+frontend/src/components/TrackingBoardV2Panel.tsx:68:        observation_data_missing: '数据缺失',
+frontend/src/components/TrackingBoardV2Panel.tsx:69:        observation_needs_review: '待复核',      // [TRACK-004] observation_state_engine
+frontend/src/components/TrackingBoardV2Panel.tsx:70:        observation_missed_entry: '已错失',
+frontend/src/components/TrackingBoardV2Panel.tsx:71:        observation_watching: '观察中',
+frontend/src/components/TrackingBoardV2Panel.tsx:82:        missed_entry: '已错失',                  // [TRACK-004] observation_state_engine
+frontend/src/components/TrackingBoardV2Panel.tsx:93:    if (s === 'missed_entry') return 'bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300'  // [TRACK-004] observation_state_engine
+frontend/src/components/TrackingBoardV2Panel.tsx:148:        { id: 'observation' as const, label: '观察仓', icon: Eye, count: data?.observation_items?.length ?? 0 },
+frontend/src/components/TrackingBoardV2Panel.tsx:200:                <StatCard label="观察仓" value={`${data?.observation_items?.length ?? 0} 只`} />
+frontend/src/components/TrackingBoardV2Panel.tsx:244:            {activeTab === 'observation' && <ObservationZone items={data?.observation_items ?? []} />}
+frontend/src/pages/TradeFlow.tsx:2448:                const observationItems = tieredData.observation_candidates ?? []
+api/runtime_tier.py:82:    "tradeflow_observation_items",  # [TRACK-001] observation_warehouse
+api/tradeflow_schemas.py:172:    observation_candidates: List[Dict[str, Any]] = Field(default_factory=list)
+api/tradeflow_schemas.py:327:    observation_candidates: List[Dict[str, Any]] = Field(default_factory=list)
+api/tradeflow_schemas.py:457:    observation_count: int = 0  # [TF-RISK-001] paper_risk_budget
+api/tradeflow_schemas.py:714:# [TRACK-001] observation_warehouse
+api/tradeflow_schemas.py:736:# [TRACK-001] observation_warehouse
+api/tradeflow_schemas.py:744:# [TRACK-001] observation_warehouse
+api/tradeflow_schemas.py:760:# [TRACK-001] observation_warehouse
+api/tradeflow_schemas.py:776:# [TRACK-001] observation_warehouse
+api/tradeflow_schemas.py:782:# [TRACK-001] observation_warehouse
+api/tradeflow_schemas.py:798:# [TRACK-001] observation_warehouse
+api/tradeflow_schemas.py:803:# [TRACK-001] observation_warehouse
+api/tradeflow_schemas.py:813:# [TRACK-001] observation_warehouse
+Binary file api/__pycache__/main.cpython-312.pyc matches
+Binary file api/__pycache__/runtime_tier.cpython-312.pyc matches
+Binary file api/__pycache__/tradeflow_schemas.cpython-312.pyc matches
+api/main.py:5283:    ObservationItemResponse,  # [TRACK-001] observation_warehouse
+api/main.py:5284:    ObservationItemListResponse,  # [TRACK-001] observation_warehouse
+api/main.py:5285:    ObservationItemCreateRequest,  # [TRACK-001] observation_warehouse
+api/main.py:5286:    ObservationItemUpdateRequest,  # [TRACK-001] observation_warehouse
+api/main.py:5287:    ObservationItemMarkRequest,  # [TRACK-001] observation_warehouse
+api/main.py:5288:    ObservationBulkUpsertRequest,  # [TRACK-001] observation_warehouse
+api/main.py:5289:    ObservationBulkUpsertResponse,  # [TRACK-001] observation_warehouse
+api/main.py:5290:    ObservationActionResponse,  # [TRACK-001] observation_warehouse
+api/main.py:5320:    get_observation_items as _tf_get_observation_items,  # [TRACK-001] observation_warehouse
+api/main.py:5321:    create_observation_item as _tf_create_observation_item,  # [TRACK-001] observation_warehouse
+api/main.py:5322:    update_observation_item as _tf_update_observation_item,  # [TRACK-001] observation_warehouse
+api/main.py:5323:    mark_observation_item_status as _tf_mark_observation_item_status,  # [TRACK-001] observation_warehouse
+api/main.py:5324:    bulk_upsert_observation_items as _tf_bulk_upsert_observation_items,  # [TRACK-001] observation_warehouse
+api/main.py:5536:# [TRACK-001] observation_warehouse — read & write endpoints
+api/main.py:5538:def tradeflow_observation_items(
+api/main.py:5542:    return _tf_get_observation_items(status=status, include_removed=include_removed)
+api/main.py:5546:def tradeflow_observation_item_create(request: ObservationItemCreateRequest):
+api/main.py:5547:    return _tf_create_observation_item(
+api/main.py:5564:def tradeflow_observation_item_update(
+api/main.py:5568:    return _tf_update_observation_item(
+api/main.py:5586:def tradeflow_observation_item_mark(
+api/main.py:5590:    return _tf_mark_observation_item_status(item_id, request.status, note=request.note)
+api/main.py:5594:def tradeflow_observation_items_bulk_upsert(request: ObservationBulkUpsertRequest):
+api/main.py:5596:    return _tf_bulk_upsert_observation_items(payload)
+api/services/investment_controller_context.py:104:    observation = _collect_observation_warehouse(as_of, tf_db_path, notes)
+api/services/investment_controller_context.py:133:        "observation_warehouse": observation,
+api/services/investment_controller_context.py:239:def _collect_observation_warehouse(
+api/services/investment_controller_context.py:244:        from api.services.tradeflow_service import get_observation_items
+api/services/investment_controller_context.py:245:        result = get_observation_items(status=None, include_removed=False, tf_db_path=tf_db_path)
+api/services/investment_controller_context.py:248:        return _empty_bucket("observation_warehouse", as_of, DATA_STATUS_FAILED)
+api/services/investment_controller_context.py:255:        notes.append("observation_warehouse: tradeflow DB unavailable")
+api/services/investment_controller_context.py:256:        return _empty_bucket("observation_warehouse", as_of, DATA_STATUS_MISSING)
+api/services/investment_controller_context.py:262:        entry["source"] = "observation_warehouse"
+api/services/investment_controller_context.py:268:        "source": "observation_warehouse",
+api/services/investment_controller_context.py:446:    observation_pending: list[dict[str, Any]] = []
+api/services/investment_controller_context.py:451:        from api.services.tradeflow_service import get_observation_items
+api/services/investment_controller_context.py:452:        obs_result = get_observation_items(
+api/services/investment_controller_context.py:457:                observation_pending.append({
+api/services/investment_controller_context.py:462:                    "origin": "observation_warehouse",
+api/services/investment_controller_context.py:463:                    "source": "observation_warehouse",
+api/services/investment_controller_context.py:492:    items = observation_pending + candidate_pending
+Binary file api/services/__pycache__/investment_controller_context.cpython-312.pyc matches
+Binary file api/services/__pycache__/tradeflow_service.cpython-312.pyc matches
+Binary file api/services/__pycache__/tracking_board_service.cpython-312.pyc matches
+api/services/tracking_board_service.py:15:# [TRACK-004] observation_state_engine
+api/services/tracking_board_service.py:16:from tradingagents.tradeflow.observation_state_engine import (
+api/services/tracking_board_service.py:21:    evaluate_observation_state,
+api/services/tracking_board_service.py:253:        - observation_items: list of active observation warehouse items
+api/services/tracking_board_service.py:267:    obs_items = _fetch_observation_items()
+api/services/tracking_board_service.py:270:    observation_items = _enrich_observation_items(obs_items, obs_quotes)
+api/services/tracking_board_service.py:274:        holdings, observation_items, obs_quotes, is_trading, now
+api/services/tracking_board_service.py:281:    data_freshness = _build_data_freshness(holdings, observation_items, obs_quotes, is_trading, now)
+api/services/tracking_board_service.py:289:        "observation_items": observation_items,
+
+exec
+/bin/zsh -lc "sed -n '220,310p' api/services/tracking_board_service.py && sed -n '640,720p' frontend/src/types/index.ts && sed -n '300,380p' api/tradeflow_schemas.py && sed -n '714,790p' api/tradeflow_schemas.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        return None
+    compact = re.sub(r"\s+", " ", text).strip(" ，,;；。")
+    if not compact:
+        return None
+    return compact[:96]
+
+
+def _fetch_live_quotes(symbols: list[str]) -> dict[str, dict[str, Any]]:
+    if not symbols:
+        return {}
+    try:
+        result_json = route_to_vendor("get_realtime_quotes", symbols)
+        return json.loads(result_json)
+    except Exception as exc:
+        logger.warning("[tracking-board] realtime quote fetch failed: %s", exc)
+        return {}
+
+
+def _to_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return round(float(value), 4)
+    except Exception:
+        return None
+
+
+# [TRACK-002] tracking_board_v2_groups
+def get_tracking_board_v2(db: Session, user_id: str) -> dict[str, Any]:
+    """Tracking board v2: holdings + observation items + today guidance + alerts.
+
+    Returns:
+        - holdings: list of position items with live quotes and TA report
+        - observation_items: list of active observation warehouse items
+        - today_guidance: aggregated guidance items with source/priority/reason
+        - alerts: high-priority items needing attention
+        - review_summary: empty placeholder (populated by TRACK-005)
+        - data_freshness: freshness metadata for all data sources used
+    """
+    now = datetime.now()
+    previous_trade_date = previous_cn_trading_day(cn_today_str())
+    is_trading = is_cn_trading_day(cn_today_str())
+
+    # --- Holdings ---
+    holdings = _build_holdings_v2(db, user_id, previous_trade_date)
+
+    # --- Observation items ---
+    obs_items = _fetch_observation_items()
+    obs_symbols = [item["symbol"] for item in obs_items]
+    obs_quotes = _fetch_live_quotes(obs_symbols)
+    observation_items = _enrich_observation_items(obs_items, obs_quotes)
+
+    # --- Today guidance aggregation ---
+    guidance = _aggregate_today_guidance(
+        holdings, observation_items, obs_quotes, is_trading, now
+    )
+
+    # --- Alerts (P0 items) ---
+    alerts = [g for g in guidance if g.get("priority") == "P0"]
+
+    # --- Data freshness ---
+    data_freshness = _build_data_freshness(holdings, observation_items, obs_quotes, is_trading, now)
+
+    return {
+        "previous_trade_date": previous_trade_date,
+        "is_trading_day": is_trading,
+        "refresh_interval_seconds": REFRESH_INTERVAL_SECONDS,
+        "as_of": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "holdings": holdings,
+        "observation_items": observation_items,
+        "today_guidance": guidance,
+        "alerts": alerts,
+        "review_summary": None,
+        "data_freshness": data_freshness,
+    }
+
+
+# [TRACK-002] tracking_board_v2_groups
+def _build_holdings_v2(
+    db: Session, user_id: str, previous_trade_date: str
+) -> list[dict[str, Any]]:
+    """Build holdings list with live quotes and TA report for v2."""
+    rows = _list_imported_position_rows(db, user_id)
+    if not rows:
+        return []
+
+    symbols = [row.symbol for row in rows]
+    quotes = _fetch_live_quotes(symbols)
+    reports = _select_reports_for_symbols(db, user_id, symbols, previous_trade_date)
+
+    items: list[dict[str, Any]] = []
+    low_price?: number | null
+    trader_advice_summary?: string | null
+    trader_investment_plan?: string | null
+    final_trade_decision?: string | null
+}
+
+export interface TrackingBoardItem {
+    symbol: string
+    name: string
+    current_position?: number | null
+    available_position?: number | null
+    average_cost?: number | null
+    market_value?: number | null
+    current_position_pct?: number | null
+    live_market_value?: number | null
+    floating_pnl?: number | null
+    floating_pnl_pct?: number | null
+    live_price?: number | null
+    day_open?: number | null
+    price_change?: number | null
+    price_change_pct?: number | null
+    day_high?: number | null
+    day_low?: number | null
+    previous_close?: number | null
+    volume?: number | null
+    amount?: number | null
+    quote_time?: string | null
+    quote_source?: string | null
+    last_imported_at?: string | null
+    analysis?: TrackingBoardAnalysis | null
+}
+
+export interface TrackingBoardResponse {
+    previous_trade_date: string
+    refresh_interval_seconds: number
+    items: TrackingBoardItem[]
+}
+
+// [TRACK-003] tracking_board_v2_frontend
+type GuidancePriority = 'P0' | 'P1' | 'P2' | 'P3'
+type GuidanceType =
+    | 'holdings_risk'
+    | 'holdings_no_analysis'
+    | 'observation_in_entry_zone'
+    | 'observation_near_entry'
+    | 'observation_invalidated'
+    | 'observation_ta_required'
+    | 'observation_data_missing'
+    | 'observation_needs_review'   // [TRACK-004] observation_state_engine
+    | 'observation_missed_entry'
+    | 'observation_watching'
+
+export interface TrackingBoardV2Guidance {
+    type: GuidanceType
+    priority: GuidancePriority
+    symbol: string
+    name: string
+    reason: string
+    source: string
+    as_of: string
+    state?: string                 // [TRACK-004] observation_state_engine
+    data_fields?: Record<string, unknown>
+}
+
+export interface TrackingBoardV2DataFreshness {
+    status: 'fresh' | 'stale' | 'non_trading_day'
+    holdings_total: number
+    holdings_with_live_quotes: number
+    holdings_with_analysis: number
+    observation_total: number
+    observation_with_live_quotes: number
+    latest_quote_time: string | null
+    as_of: string
+}
+
+export interface ObservationItemV2 {
+    id: number
+    symbol: string
+    name: string
+    status: string
+    entry_low?: number | null
+
+# [UI-007] tradeflow_filtered_trace
+class TradeFlowFilteredItem(BaseModel):
+    symbol: str
+    name: str = ""
+    source: str = ""
+    reason: str = ""
+    run_id: str = ""
+    created_at: str = ""
+
+
+class TradeFlowFilteredResponse(BaseModel):
+    status: str = "ok"
+    trade_date: str = ""
+    filtered: List[TradeFlowFilteredItem] = Field(default_factory=list)
+    filter_breakdown: Dict[str, int] = Field(default_factory=dict)
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+
+
+# [TF-UX-001] tiered candidates
+class TradeFlowTieredCandidatesResponse(BaseModel):
+    status: str = "ok"
+    trade_date: str = ""
+    actionable: List[TradeFlowCandidateItem] = Field(default_factory=list)
+    watch: List[TradeFlowCandidateItem] = Field(default_factory=list)
+    scan: List[TradeFlowCandidateItem] = Field(default_factory=list)
+    main_candidates: List[TradeFlowCandidateItem] = Field(default_factory=list)
+    observation_candidates: List[Dict[str, Any]] = Field(default_factory=list)
+    filtered_candidates: List[Dict[str, Any]] = Field(default_factory=list)
+    pool_counts: Dict[str, Any] = Field(default_factory=dict)
+    pool_gate_summary: str = ""
+    actionable_count: int = 0
+    watch_count: int = 0
+    scan_count: int = 0
+    summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [TF-UX-003] post_market_review
+class TradeFlowReviewGenerateResponse(BaseModel):
+    status: str = "ok"
+    trade_date: str = ""
+    message: str = ""
+    data_status: str = ""  # [TF-REVIEW-002] review_date_mapping
+    data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
+    review: Optional[Dict[str, Any]] = None
+
+
+# [DATA-007] evidence_coverage_audit
+class EvidenceCredibilityItem(BaseModel):
+    symbol: str = ""
+    candidate_type: str = ""
+    evidence_coverage: float = 0.0
+    evidence_quality_level: str = "UNKNOWN"
+    tier_allowed: str = ""
+    tier_restricted: bool = False
+    need_deep_ta_allowed: bool = True
+    credibility_level: str = "UNKNOWN"
+    credibility_reasons: List[str] = Field(default_factory=list)
+
+
+class TradeFlowEvidenceAuditResponse(BaseModel):
+    status: str = "ok"
+    trade_date: str = ""
+    total_candidates: int = 0
+    audits_count: int = 0
+    credibilities_count: int = 0
+    credibilities: List[EvidenceCredibilityItem] = Field(default_factory=list)
+    summary_markdown: str = ""
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [UI-009] candidate_ta_plan_draft
+# [TF-UI-011] candidate_research_entry — profile metadata added
+class TradeFlowResearchPlanResponse(BaseModel):
+    status: str = "ok"
+    trade_date: str = ""
+    symbol: str = ""
+    candidate_type: str = ""
+    research_queue: str = ""
+    research_intent: str = ""
+# [TRACK-001] observation_warehouse
+# Note: numeric price fields use float (not Optional[float]) with default 0.0 so
+# that boundary values like entry_low=0 are never surfaced as N/A downstream.
+class ObservationItemResponse(BaseModel):
+    id: int = 0
+    symbol: str = ""
+    name: str = ""
+    status: str = "watching"
+    entry_low: float = 0.0
+    entry_high: float = 0.0
+    trigger_price: float = 0.0
+    invalid_price: float = 0.0
+    horizon: str = "short"
+    source: str = "manual"
+    reason: str = ""
+    priority: int = 0
+    notes: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+    last_reviewed_at: str = ""
+
+
+# [TRACK-001] observation_warehouse
+class ObservationItemListResponse(BaseModel):
+    status: str = "ok"
+    items: List[ObservationItemResponse] = Field(default_factory=list)
+    summary: Dict[str, Any] = Field(default_factory=dict)
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [TRACK-001] observation_warehouse
+class ObservationItemCreateRequest(BaseModel):
+    symbol: str
+    name: str = ""
+    status: str = "watching"
+    entry_low: float = 0.0
+    entry_high: float = 0.0
+    trigger_price: float = 0.0
+    invalid_price: float = 0.0
+    horizon: str = "short"
+    source: str = "manual"
+    reason: str = ""
+    priority: int = 0
+    notes: str = ""
+
+
+# [TRACK-001] observation_warehouse
+class ObservationItemUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    status: Optional[str] = None
+    entry_low: Optional[float] = None
+    entry_high: Optional[float] = None
+    trigger_price: Optional[float] = None
+    invalid_price: Optional[float] = None
+    horizon: Optional[str] = None
+    source: Optional[str] = None
+    reason: Optional[str] = None
+    priority: Optional[int] = None
+    notes: Optional[str] = None
+    touch_last_reviewed: bool = False
+
+
+# [TRACK-001] observation_warehouse
+class ObservationItemMarkRequest(BaseModel):
+    status: str = Field(..., description="目标状态，如 invalidated / removed / entered / near_entry 等")
+    note: Optional[str] = None
+
+
+# [TRACK-001] observation_warehouse
+class ObservationBulkUpsertItem(BaseModel):
+    symbol: str
+    name: str = ""
+    status: str = "watching"
+    entry_low: float = 0.0
+    entry_high: float = 0.0
+    trigger_price: float = 0.0
+    invalid_price: float = 0.0
+
+exec
+/bin/zsh -lc "grep -n \"def _fetch_observation_items\\|get_observation_items\\|_ACTIVE_OBSERVATION_STATUSES\\|include_removed\" -n api/services/tracking_board_service.py api/services/tradeflow_service.py | head -80 && sed -n '330,365p' api/services/tracking_board_service.py && sed -n '2890,3005p' api/services/tradeflow_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+api/services/tracking_board_service.py:354:def _fetch_observation_items() -> list[dict[str, Any]]:
+api/services/tracking_board_service.py:357:        from api.services.tradeflow_service import get_observation_items
+api/services/tracking_board_service.py:358:        result = get_observation_items(status=None, include_removed=False)
+api/services/tradeflow_service.py:2879:_ACTIVE_OBSERVATION_STATUSES = frozenset({
+api/services/tradeflow_service.py:2966:        if status in _ACTIVE_OBSERVATION_STATUSES:
+api/services/tradeflow_service.py:3017:def get_observation_items(
+api/services/tradeflow_service.py:3019:    include_removed: bool = False,
+api/services/tradeflow_service.py:3024:    ``include_removed=False`` (default) hides items whose status is
+api/services/tradeflow_service.py:3048:        elif not include_removed:
+        )
+
+        items.append(
+            {
+                "symbol": row.symbol,
+                "name": row.security_name or row.symbol,
+                "current_position": current_position,
+                "available_position": _to_float(row.available_position),
+                "average_cost": average_cost,
+                "market_value": _to_float(row.market_value),
+                "live_market_value": live_market_value,
+                "floating_pnl": floating_pnl,
+                "floating_pnl_pct": floating_pnl_pct,
+                "live_price": live_price,
+                "price_change_pct": _to_float(quote.get("change_pct")),
+                "quote_time": quote.get("quote_time"),
+                "quote_source": quote.get("source"),
+                "analysis": _serialize_report_summary(reports.get(row.symbol), previous_trade_date),
+            }
+        )
+    return items
+
+
+# [TRACK-002] tracking_board_v2_groups
+def _fetch_observation_items() -> list[dict[str, Any]]:
+    """Fetch active (non-removed) observation items from tradeflow DB."""
+    try:
+        from api.services.tradeflow_service import get_observation_items
+        result = get_observation_items(status=None, include_removed=False)
+        return result.get("items", []) if isinstance(result, dict) else []
+    except Exception as exc:
+        logger.warning("[tracking-board-v2] failed to fetch observation items: %s", exc)
+        return []
+
+
+# [TRACK-002] tracking_board_v2_groups
+    """Default observation item dict used for no-data fallbacks.
+
+    Note: numeric price fields default to ``0.0`` (NOT ``None``) so that
+    boundary values like ``entry_low=0`` never get rendered as N/A downstream.
+    """
+    return {
+        "id": 0,
+        "symbol": symbol,
+        "name": name,
+        "status": OBSERVATION_STATUS_WATCHING,
+        "entry_low": 0.0,
+        "entry_high": 0.0,
+        "trigger_price": 0.0,
+        "invalid_price": 0.0,
+        "horizon": "short",
+        "source": "manual",
+        "reason": "",
+        "priority": 0,
+        "notes": "",
+        "created_at": "",
+        "updated_at": "",
+        "last_reviewed_at": "",
+    }
+
+
+def _row_to_observation_item(row: sqlite3.Row) -> dict:
+    """Convert a tradeflow_observation_items row to a dict.
+
+    Preserves ``0.0`` price boundary values — never coerces 0 to None.
+    """
+    symbol = normalize_tradeflow_symbol(_rget(row, "symbol", ""))
+    raw_name = _rget(row, "name", "")
+    name = resolve_tradeflow_name(symbol, raw_name)
+
+    def _num(key: str) -> float:
+        # Read directly from the row so 0.0 is preserved (no `or` fallback).
+        try:
+            val = row[key]
+        except (KeyError, IndexError):
+            return 0.0
+        if val is None:
+            return 0.0
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return 0.0
+
+    return {
+        "id": _rget(row, "id", 0),
+        "symbol": symbol,
+        "name": name,
+        "status": _rget(row, "status", OBSERVATION_STATUS_WATCHING) or OBSERVATION_STATUS_WATCHING,
+        "entry_low": _num("entry_low"),
+        "entry_high": _num("entry_high"),
+        "trigger_price": _num("trigger_price"),
+        "invalid_price": _num("invalid_price"),
+        "horizon": _rget(row, "horizon", "short") or "short",
+        "source": _rget(row, "source", "manual") or "manual",
+        "reason": _rget(row, "reason", "") or "",
+        "priority": int(_rget(row, "priority", 0) or 0),
+        "notes": _rget(row, "notes", "") or "",
+        "created_at": _rget(row, "created_at", "") or "",
+        "updated_at": _rget(row, "updated_at", "") or "",
+        "last_reviewed_at": _rget(row, "last_reviewed_at", "") or "",
+    }
+
+
+def _observation_summary(items: list[dict]) -> dict:
+    """Aggregate counts by status, excluding removed/invalidated from active."""
+    summary = {status: 0 for status in ALLOWED_OBSERVATION_STATUSES}
+    summary["total"] = len(items)
+    summary["active"] = 0
+    for item in items:
+        status = item.get("status") or OBSERVATION_STATUS_WATCHING
+        if status in summary:
+            summary[status] += 1
+        if status in _ACTIVE_OBSERVATION_STATUSES:
+            summary["active"] += 1
+    return summary
+
+
+def _validate_observation_status(status: str) -> str:
+    if status not in ALLOWED_OBSERVATION_STATUSES:
+        raise ValueError(
+            f"非法观察仓状态: {status}，允许值: {sorted(ALLOWED_OBSERVATION_STATUSES)}"
+        )
+    return status
+
+
+def _validate_observation_horizon(horizon: str) -> str:
+    if horizon not in ALLOWED_OBSERVATION_HORIZONS:
+        raise ValueError(
+            f"非法 horizon: {horizon}，允许值: {sorted(ALLOWED_OBSERVATION_HORIZONS)}"
+        )
+    return horizon
+
+
+def _validate_observation_source(source: str) -> str:
+    if source not in ALLOWED_OBSERVATION_SOURCES:
+        raise ValueError(
+            f"非法 source: {source}，允许值: {sorted(ALLOWED_OBSERVATION_SOURCES)}"
+        )
+    return source
+
+
+def _coerce_price(value: Any) -> float:
+    """Coerce a price input to float, treating None/blank as 0.0.
+
+    Boundary note: explicit 0 / 0.0 / "0" all stay 0.0 — they are valid
+    placeholders meaning "未设定" and must NOT be displayed as N/A.
+    """
+    if value is None:
+        return 0.0
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+
+exec
+/bin/zsh -lc "sed -n '3010,3070p' api/services/tradeflow_service.py && sed -n '2870,2888p' api/services/tradeflow_service.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            raise ValueError(f"非法价格数值: {value!r}")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"非法价格数值: {value!r}")
+
+
+def get_observation_items(
+    status: Optional[str] = None,
+    include_removed: bool = False,
+    tf_db_path: str = "",
+) -> dict:
+    """List observation warehouse items.
+
+    ``include_removed=False`` (default) hides items whose status is
+    ``removed`` from the default board view. ``invalidated`` items are always
+    returned (they are still useful for post-market review).
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_observation_items")
+    if status is not None:
+        _validate_observation_status(status)
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {
+            "status": "no_data",
+            "items": [],
+            "summary": _observation_summary([]),
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    try:
+        query = "SELECT * FROM tradeflow_observation_items"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        elif not include_removed:
+            clauses.append("status != ?")
+            params.append(OBSERVATION_STATUS_REMOVED)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY priority DESC, created_at DESC, id DESC"
+
+        rows = conn.execute(query, params).fetchall()
+        items = [_row_to_observation_item(r) for r in rows]
+        return {
+            "status": "ok",
+            "items": items,
+            "summary": _observation_summary(items),
+            "runtime_tier_meta": _fast_meta,
+        }
+    finally:
+        conn.close()
+
+
+def create_observation_item(
+    symbol: str,
+    name: str = "",
+    status: str = OBSERVATION_STATUS_WATCHING,
+ALLOWED_OBSERVATION_HORIZONS = frozenset({"intraday", "short", "mid"})
+ALLOWED_OBSERVATION_SOURCES = frozenset({
+    "manual",
+    "tradeflow",
+    "ta",
+    "investment_controller",
+})
+# Statuses that are still actively tracked on the board (not terminal).
+# missed_entry 仍属活跃：可重新 watching 或被 invalidated，故不计入终态。
+_ACTIVE_OBSERVATION_STATUSES = frozenset({
+    OBSERVATION_STATUS_WATCHING,
+    OBSERVATION_STATUS_NEAR_ENTRY,
+    OBSERVATION_STATUS_IN_ENTRY_ZONE,
+    OBSERVATION_STATUS_TA_REQUIRED,
+    OBSERVATION_STATUS_MISSED_ENTRY,
+    OBSERVATION_STATUS_ENTERED,
+})
+
+
+
+exec
+/bin/zsh -lc 'python -m pytest tests/test_track004_observation_state_engine.py -q' in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: python
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && python -m pytest tests/test_track004_observation_state_engine.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 1522ms:
+......................................                                   [100%]
+38 passed in 0.98s
+
+exec
+/bin/zsh -lc 'ls -la tradingagents/tradeflow && find tradingagents/tradeflow -maxdepth 1 -type f -print' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+total 1728
+drwx------  53 maybee  staff   1696 Jun 23 11:22 .
+drwx------  12 maybee  staff    384 Jun  2 11:47 ..
+-rw-------   1 maybee  staff    197 May 25 16:54 __init__.py
+drwx------  54 maybee  staff   1728 Jun 23 11:24 __pycache__
+-rw-------   1 maybee  staff  19078 Jun  1 11:14 acceptance_replay.py
+-rw-------   1 maybee  staff   9325 Jun  3 19:02 action_tier_scorer.py
+-rw-------   1 maybee  staff  17580 Jun  2 18:51 ambush_score.py
+-rw-------   1 maybee  staff  19150 Jun  7 23:50 candidate_contradictions.py
+-rw-------@  1 maybee  staff  76187 Jun 23 01:55 candidate_engine.py
+-rw-------   1 maybee  staff   1300 Jun  2 18:47 candidate_pool.py
+-rw-------@  1 maybee  staff  17724 Jun 16 14:13 candidate_pool_gate.py
+-rw-------   1 maybee  staff   9571 Jun 13 23:48 candidate_precision_gate.py
+-rw-------   1 maybee  staff  16794 Jun  4 13:58 counter_evidence_calibration.py
+-rw-------   1 maybee  staff   3660 Jun 13 23:26 date_semantics.py
+-rw-------@  1 maybee  staff  30588 Jun 13 23:49 discovery.py
+-rw-------   1 maybee  staff  14137 Jun  1 11:14 event_source.py
+-rw-------   1 maybee  staff  11617 Jun  1 11:14 evidence_gate.py
+-rw-------   1 maybee  staff  24280 Jun  1 11:14 false_positive_audit.py
+-rw-------   1 maybee  staff  14911 Jun  1 11:14 fund_flow_anomaly.py
+-rw-------   1 maybee  staff  10268 Jun  1 11:14 game_balance.py
+-rw-------   1 maybee  staff   9151 Jun  1 11:14 gated_deep_ta.py
+-rw-------   1 maybee  staff  19556 Jun  1 22:50 industry_mandate_map.py
+-rw-------   1 maybee  staff   7801 Jun  8 04:05 intraday_observe.py
+-rw-------   1 maybee  staff   5812 Jun  8 04:10 intraday_observe_scheduler.py
+-rw-------   1 maybee  staff  15361 Jun  2 01:03 mandate_event_normalizer.py
+-rw-------   1 maybee  staff  19054 Jun  7 23:42 mandate_quality_report.py
+-rw-------   1 maybee  staff  45695 Jun  7 22:58 mandate_replay_eval.py
+-rw-------   1 maybee  staff  14373 Jun  1 22:27 mandate_score.py
+-rw-------   1 maybee  staff  11085 Jun  1 18:27 mandate_signal.py
+-rw-------   1 maybee  staff  11430 Jun  2 02:42 mandate_ta_queue_router.py
+-rw-------   1 maybee  staff   9151 Jun  2 02:51 mandate_watchlist_note.py
+-rw-------   1 maybee  staff   8899 Jun  1 11:14 narrative_quality.py
+-rw-------   1 maybee  staff  11310 Jun 23 11:22 observation_state_engine.py
+-rw-------   1 maybee  staff  13245 Jun  8 00:38 observe_fixture_replay.py
+-rw-------@  1 maybee  staff  12226 Jun 12 15:17 observe_runner.py
+-rw-------   1 maybee  staff  21776 Jun  2 02:52 plan_runner.py
+-rw-------   1 maybee  staff   5953 Jun  1 11:14 policy_version_signal.py
+-rw-------   1 maybee  staff  32097 Jun 18 02:30 post_market_review.py
+-rw-------   1 maybee  staff   7878 Jun  7 23:36 research_plan_draft.py
+-rw-------   1 maybee  staff  17320 Jun  8 04:05 review_fixture_replay.py
+-rw-------   1 maybee  staff   1513 May 25 16:58 review_runner.py
+-rw-------@  1 maybee  staff  43284 Jun 12 20:04 schemas.py
+-rw-r--r--@  1 maybee  staff   7256 Jun 13 23:55 score_separation.py
+-rw-------   1 maybee  staff  12248 Jun  1 11:14 selection_priority_gate.py
+drwx------   7 maybee  staff    224 Jun  1 11:14 strategies
+-rw-------   1 maybee  staff   6370 Jun 16 13:31 strategy_config.py
+-rw-------   1 maybee  staff   5376 Jun  2 18:12 symbol_utils.py
+-rw-------   1 maybee  staff  11632 Jun  1 11:14 tier_budget.py
+-rw-------   1 maybee  staff  44564 Jun 20 20:51 topic_heatmap.py
+-rw-------   1 maybee  staff  11715 Jun  7 23:02 topic_lifecycle.py
+-rw-------   1 maybee  staff  31011 Jun 14 01:03 topic_registry.py
+-rw-------   1 maybee  staff   9474 Jun  1 11:14 underwater_risk_flags.py
+-rw-------   1 maybee  staff  14171 Jun  1 11:14 universe.py
+tradingagents/tradeflow/event_source.py
+tradingagents/tradeflow/observation_state_engine.py
+tradingagents/tradeflow/acceptance_replay.py
+tradingagents/tradeflow/candidate_engine.py
+tradingagents/tradeflow/observe_runner.py
+tradingagents/tradeflow/selection_priority_gate.py
+tradingagents/tradeflow/mandate_score.py
+tradingagents/tradeflow/game_balance.py
+tradingagents/tradeflow/underwater_risk_flags.py
+tradingagents/tradeflow/topic_heatmap.py
+tradingagents/tradeflow/gated_deep_ta.py
+tradingagents/tradeflow/strategy_config.py
+tradingagents/tradeflow/action_tier_scorer.py
+tradingagents/tradeflow/intraday_observe.py
+tradingagents/tradeflow/discovery.py
+tradingagents/tradeflow/candidate_contradictions.py
+tradingagents/tradeflow/topic_lifecycle.py
+tradingagents/tradeflow/evidence_gate.py
+tradingagents/tradeflow/mandate_signal.py
+tradingagents/tradeflow/review_runner.py
+tradingagents/tradeflow/industry_mandate_map.py
+tradingagents/tradeflow/mandate_quality_report.py
+tradingagents/tradeflow/symbol_utils.py
+tradingagents/tradeflow/__init__.py
+tradingagents/tradeflow/plan_runner.py
+tradingagents/tradeflow/mandate_event_normalizer.py
+tradingagents/tradeflow/candidate_precision_gate.py
+tradingagents/tradeflow/universe.py
+tradingagents/tradeflow/schemas.py
+tradingagents/tradeflow/policy_version_signal.py
+tradingagents/tradeflow/review_fixture_replay.py
+tradingagents/tradeflow/false_positive_audit.py
+tradingagents/tradeflow/intraday_observe_scheduler.py
+tradingagents/tradeflow/topic_registry.py
+tradingagents/tradeflow/counter_evidence_calibration.py
+tradingagents/tradeflow/mandate_ta_queue_router.py
+tradingagents/tradeflow/candidate_pool.py
+tradingagents/tradeflow/observe_fixture_replay.py
+tradingagents/tradeflow/fund_flow_anomaly.py
+tradingagents/tradeflow/date_semantics.py
+tradingagents/tradeflow/post_market_review.py
+tradingagents/tradeflow/research_plan_draft.py
+tradingagents/tradeflow/ambush_score.py
+tradingagents/tradeflow/score_separation.py
+tradingagents/tradeflow/mandate_replay_eval.py
+tradingagents/tradeflow/candidate_pool_gate.py
+tradingagents/tradeflow/narrative_quality.py
+tradingagents/tradeflow/tier_budget.py
+tradingagents/tradeflow/mandate_watchlist_note.py
+
+exec
+/bin/zsh -lc "git diff -- docs/TASKS.md docs/DEVLOG.md docs/tradeflow_trial_acceptance.md docs/tradeflow_trial_acceptance_v2.md | sed -n '1,220p' && find docs/task_runs/TRACK-004-20260623-111132 -maxdepth 2 -type f -print -exec sed -n '1,120p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 4634e7e..51d17fa 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,58 @@
+ 
+ ---
+ 
++## 2026-06-23 | TRACK-004 观察仓入场区/失效区规则引擎与状态流转
++
++- **执行者**：OpenCode (glm-5.2)
++- **类型**：backend / pure-function state engine + today_guidance 重构
++- **状态**：✅ 完成（待提交）
++
++### 背景
++
++TRACK-001 落地了观察仓容器，TRACK-002 把"接近买点 / 在买入区间 / 失效 / 需 TA / 缺数据"的判断硬编码在 `_aggregate_today_guidance` 内联逻辑里。这导致：
++- 状态判断无法单测复用，`near_entry` 阈值过宽（任何低于 `entry_low` 的价格都被算"接近"）。
++- 缺 `missed_entry`（价格已远离上沿、本轮窗口已过）这一关键状态。
++- "数据新鲜度"只体现在 `live_price is None`，且非交易日无行情时完全静默。
++
++TRACK-004 把判断逻辑抽成纯函数规则引擎，统一状态优先级与数据字段溯源，并把结果写入 tracking board v2 的 `today_guidance`。
++
++### 变更
++
++- **新增** `tradingagents/tradeflow/observation_state_engine.py`，标注 `# [TRACK-004] observation_state_engine`：
++  - `evaluate_observation_state(item, *, is_trading_day)` 纯函数，输入一个观察仓 item（含 `live_price` 等注入字段），输出状态结果 dict（`state/priority/guidance_type/reason/data_fields` + 上下文）。
++  - 状态优先级链：`data_missing/needs_review`（数据缺失硬约束，最先判断）> `invalidated`（跌破失效价）> `in_entry_zone`（进入区间）> `ta_required`（存储态）> `near_entry`（`entry_low` 下方 5% 内）> `missed_entry`（`entry_high` 上方 5% 外）> `watching`。
++  - `should_emit_guidance(result)` 决定是否写入 `today_guidance`：非 watching 全发；watching 仅在已设定买入区间时发，未设定区间的纯 watching 抑制噪声。
++  - `result_to_guidance(result, as_of)` 把结果转成 guidance 记录，新增透传 `state` 与 `data_fields` 字段。
++  - `FORBIDDEN_STRONG_WORDS` 常量 + 全部 reason 规避"立即买入/重仓/清仓/满仓/梭哈"。
++- **修改** `api/services/tradeflow_service.py:2852-2883`：
++  - 新增 `OBSERVATION_STATUS_MISSED_ENTRY = "missed_entry"`，并入 `ALLOWED_OBSERVATION_STATUSES` 与 `_ACTIVE_OBSERVATION_STATUSES`（missed_entry 仍属活跃，可重新 watching 或转 invalidated）。`mark_observation_item_status` / schema 自动支持新状态。
++- **修改** `api/services/tracking_board_service.py`：
++  - 顶部导入引擎函数；`_aggregate_today_guidance` 的观察仓分支由内联逻辑改为调用引擎 + `should_emit_guidance` + `result_to_guidance`。
++  - 保留 TRACK-002 既有行为：存储态 `ta_required` 命中价格类状态（in_zone/near/missed）时**额外**补一条 `ta_required` guidance（价格到位 + 仍需 TA 确认）。
++- **新增** `tests/test_track004_observation_state_engine.py`（38 用例）：覆盖 8 个状态、边界值（`entry_low*0.95` 内含、`entry_high*1.05` 外含）、数据缺失硬约束、禁用词检查、guidance 整形、`_aggregate_today_guidance` 集成（missed_entry、双 ta_required、watching 抑制）、`missed_entry` 存储态校验。
++
++### 不变量 / 安全
++
++- 未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未触发 LLM、未跑全市场扫描。
++- 引擎是纯函数，不写 DB；持久化失效/错失等终态仍由既有 `mark_observation_item_status` 走，本任务不自动写回（避免看板读路径产生副作用写）。
++- 数据缺失时只返回 `data_missing` / `needs_review`，绝不会误判为 `in_entry_zone` / `near_entry`。
++- `near_entry` 阈值由"任何低于 entry_low 的价格"收紧为"entry_low 下方 5% 内"，更符合直觉；TRACK-002 既有用例（10.5 vs entry_low=11）仍通过。
++
++### 验收
++
++- `pytest tests/test_track004_observation_state_engine.py tests/test_track002_tracking_board_v2.py tests/test_track001_observation_warehouse.py -q`：126 passed。
++- 广义回归 `pytest tests/ -q -k "track or observation or tracking or dashboard or tradeflow or investment_controller or ic_ta"`：613 passed, 0 failed。
++- API 主模块 + 引擎 import smoke 通过；`missed_entry` 通过 Pydantic schema 校验。
++- 验收点对照：价格进入区间 → `in_entry_zone`(P0) ✓；跌破失效价 → `invalidated`(P1) ✓；数据缺失 → `data_missing`/`needs_review`，不误判可入场 ✓；新增 `missed_entry` 覆盖"价格已远离上沿"场景 ✓。
++
++### 风险与后续
++
++- `near_entry` 边界收紧属行为微调；如后续发现看板少报"接近买点"，可放宽 `NEAR_ENTRY_BAND`。
++- "数据新鲜度"目前仍以 `live_price is None` 为主要信号；基于 `quote_time` 时长的陈旧行情检测留给后续 TRACK-005 / DATA freshness 任务。
++- 持久化派生状态（如自动把 missed_entry/invalidated 写回观察仓）未在本任务启用，待 TRACK-005 盘后复盘链路决定写回策略。
++
++---
++
+ ## 2026-06-23 | Fix IC-TA-001 回归：2 个时间/字段耦合导致的测试失败
+ 
+ - **执行者**：OpenCode (glm-5.2)
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index a9acdac..ecc4655 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -112,7 +112,7 @@
+ 86. `TRACK-002`：跟踪看板 v2 分组接口与今日指引聚合（P0，done，commit fd0d511）。
+ 87. `TRACK-003`：跟踪看板前端四区改版：持仓/观察仓/今日指引/盘后复盘（P0，done，commit d80aa66）。
+   88. `IC-TA-001`：investment-controller 只读上下文包与数据契约（P1，done，依赖 TRACK-001 ✓）。
+-89. `TRACK-004`：观察仓入场区/失效区规则引擎与状态流转（P1，ready，依赖 TRACK-001 ✓, TRACK-002 ✓）。
++  89. `TRACK-004`：观察仓入场区/失效区规则引擎与状态流转（P1，done，依赖 TRACK-001 ✓, TRACK-002 ✓）。
+ 90. `TRACK-005`：盘后复盘摘要与次日计划写回跟踪看板（P1，ready，依赖 TRACK-002 ✓, TF-REVIEW-003 ✓）。
+ 91. `TRACK-006`：TradeFlow/TA 候选一键加入观察仓与来源追踪（P1，ready，依赖 TRACK-001 ✓, UI-009 ✓）。
+   92. `TRACK-NOTIFY-001`：飞书/总控官通知草稿 payload 与去噪规则（P1，ready — 前置 IC-TA-001 ✓/TRACK-002 ✓ 均完成）。
+@@ -289,7 +289,7 @@
+ ### TRACK-004: 观察仓入场区/失效区规则引擎与状态流转（P1）
+ - **描述**：根据实时价、买入区间、触发价、失效价和数据新鲜度，自动给观察仓标的打状态。
+ - **优先级**：P1
+-- **状态**：ready，依赖 TRACK-001 ✓, TRACK-002 ✓
++- **状态**：done — TRACK-004-20260623-111132，待提交
+ - **前置条件**：TRACK-001、TRACK-002
+ - **执行约束**：
+   - 不输出“立即买入”。
+diff --git a/docs/tradeflow_trial_acceptance.md b/docs/tradeflow_trial_acceptance.md
+index b44622c..0b55aeb 100644
+--- a/docs/tradeflow_trial_acceptance.md
++++ b/docs/tradeflow_trial_acceptance.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 试用闭环端到端验收报告 (V-007)
+ 
+-**生成时间**: 2026-06-23 11:09:26
++**生成时间**: 2026-06-23 11:32:56
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **候选数**: 5 只 (2 主候选 + 1 弱技术 + 1 事件观察 + 1 证据缺口)
+diff --git a/docs/tradeflow_trial_acceptance_v2.md b/docs/tradeflow_trial_acceptance_v2.md
+index 7b02e17..2367f30 100644
+--- a/docs/tradeflow_trial_acceptance_v2.md
++++ b/docs/tradeflow_trial_acceptance_v2.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 小资金试跑前整体验收报告 (V-008)
+ 
+-**生成时间**: 2026-06-23 11:09:29
++**生成时间**: 2026-06-23 11:32:59
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **模拟本金**: ¥5000
+docs/task_runs/TRACK-004-20260623-111132/tests-round1.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  1%]
+................................................ss...................... [  2%]
+........................................................................ [  3%]
+........................................................................ [  4%]
+........................................................................ [  5%]
+........................................................................ [  6%]
+........................................................................ [  7%]
+........................................................................ [  9%]
+........................................................................ [ 10%]
+........................................................................ [ 11%]
+........................................................................ [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 15%]
+........................................................................ [ 17%]
+........................................................................ [ 18%]
+........................................................................ [ 19%]
+........................................................................ [ 20%]
+........................................................................ [ 21%]
+........................................................................ [ 22%]
+........................................................................ [ 23%]
+........................................................................ [ 24%]
+........................................................................ [ 26%]
+........................................................................ [ 27%]
+........................................................................ [ 28%]
+........................................................................ [ 29%]
+........................................................................ [ 30%]
+........................................................................ [ 31%]
+........................................................................ [ 32%]
+........................................................................ [ 34%]
+........................................................................ [ 35%]
+........................................................................ [ 36%]
+........................................................................ [ 37%]
+........................................................................ [ 38%]
+........................................................................ [ 39%]
+........................................................................ [ 40%]
+........................................................................ [ 41%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 45%]
+........................................................................ [ 46%]
+........................................................................ [ 47%]
+........................................................................ [ 48%]
+..................................................sssssssss............. [ 49%]
+........................................................................ [ 51%]
+........................................................................ [ 52%]
+........................................................................ [ 53%]
+........................................................................ [ 54%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 57%]
+........................................................................ [ 58%]
+........................................................................ [ 60%]
+........................................................................ [ 61%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 64%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+........................................................................ [ 68%]
+.....................................ss................................. [ 69%]
+................ssss.................................................... [ 70%]
+........................................................................ [ 71%]
+........................................................................ [ 72%]
+........................................................................ [ 73%]
+........................................................................ [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 77%]
+........................................................................ [ 78%]
+........................................................................ [ 79%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+........................................................................ [ 82%]
+........................................................................ [ 83%]
+........................................................................ [ 85%]
+........................................................................ [ 86%]
+........................................................................ [ 87%]
+........................................................................ [ 88%]
+........................................................................ [ 89%]
+........................................................................ [ 90%]
+........................................................................ [ 91%]
+........................................................................ [ 93%]
+........................................................................ [ 94%]
+........................................................................ [ 95%]
+........................................................................ [ 96%]
+........................................................................ [ 97%]
+........................................................................ [ 98%]
+........................................................................ [ 99%]
+............                                                             [100%]
+6331 passed, 17 skipped in 184.61s (0:03:04)
+
+Exit code: 0
+docs/task_runs/TRACK-004-20260623-111132/summary.md
+# TRACK-004 Run Summary
+
+- Task: 观察仓入场区/失效区规则引擎与状态流转（P1）
+- Runner: OpenCode (glm-5.2)
+- Status: ✅ done（待外层提交）
+- Date: 2026-06-23
+
+## Files changed
+
+- `tradingagents/tradeflow/observation_state_engine.py` (NEW) — pure-function state engine.
+- `api/services/tradeflow_service.py` — added `OBSERVATION_STATUS_MISSED_ENTRY` + registries.
+- `api/services/tracking_board_service.py` — `_aggregate_today_guidance` observation branch now uses the engine.
+- `tests/test_track004_observation_state_engine.py` (NEW) — 38 cases.
+- `frontend/src/components/TrackingBoardV2Panel.tsx` — labels/colors for new states.
+- `frontend/src/types/index.ts` — extended GuidanceType union + optional state/data_fields.
+- `docs/DEVLOG.md`, `docs/TASKS.md` — records.
+
+## Key logic
+
+State priority: data_missing/needs_review (data-missing hard constraint) > invalidated >
+in_entry_zone > ta_required(stored) > near_entry (5% below entry_low) > missed_entry
+(5% above entry_high) > watching. Engine is pure (no DB/network); results flow into
+`today_guidance` via `should_emit_guidance` + `result_to_guidance`. No "立即买入" wording;
+data missing never judged entry-able.
+
+## Tests
+
+- TRACK-004 + TRACK-001/002: 126 passed.
+- Broad regression (-k track/observation/tracking/dashboard/tradeflow/investment_controller): 613 passed, 0 failed.
+- `npm run build`: success.
+docs/task_runs/TRACK-004-20260623-111132/codegraph-status.json
+{
+  "task_id": "TRACK-004",
+  "generated_at": "2026-06-23T11:11:33.049678",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "result": "OK",
+  "symbols_found": 5,
+  "post_generated_at": "2026-06-23T11:33:01.532505",
+  "codegraph_post": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "post_result": "OK",
+  "impact_files_count": 0,
+  "affected_tests_count": 0,
+  "changed_files": [
+    "api/services/tracking_board_service.py",
+    "api/services/tradeflow_service.py",
+    "docs/DEVLOG.md",
+    "docs/TASKS.md",
+    "docs/tradeflow_trial_acceptance.md",
+    "docs/tradeflow_trial_acceptance_v2.md",
+    "frontend/src/components/TrackingBoardV2Panel.tsx",
+    "frontend/src/types/index.ts"
+  ]
+}docs/task_runs/TRACK-004-20260623-111132/prompt-round1.md
+# Task: TRACK-004: 观察仓入场区/失效区规则引擎与状态流转（P1）
+
+Read task "TRACK-004" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/TRACK-004-20260623-111132/codegraph-context.txt
+# CodeGraph Context for TRACK-004
+# Task: 观察仓入场区/失效区规则引擎与状态流转（P1）
+# Generated: 2026-06-23T11:11:33.184450
+# Keywords: track, 观察仓入场区/失效区规则引擎与状态流转（p1）
+
+## Code Context
+
+**Query:** track 观察仓入场区/失效区规则引擎与状态流转（p1）
+
+### Entry Points
+
+- **get_tracking_board** (function) - api/services/tracking_board_service.py:19
+  `(db: Session, user_id: str) -> dict[str, Any]`
+- **TrackingBoardItem** (interface) - frontend/src/types/index.ts:528
+- **TrackingBoardAnalysis** (interface) - frontend/src/types/index.ts:515
+
+### Related Symbols
+
+- tradingagents/dataflows/trade_calendar.py: previous_cn_trading_day:57, cn_today_str:17
+- api/services/tracking_board_service.py: _list_imported_position_rows:83, _fetch_live_quotes:197, _select_reports_for_symbols:97, _to_float:208, _serialize_report_summary:131
+- frontend/src/components/TrackingBoardPanel.tsx: SimpleBoardView:443, SimpleTrackingRow:500, SimpleDayCandle:624
+
+docs/task_runs/TRACK-004-20260623-111132/opencode-round1.txt
+[0m
+> build · glm-5.2
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git status && echo "---BRANCH---" && git branch --show-current && echo "---RECENT LOG---" && git log --oneline -10
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 135 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     docs/TASKS.md
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/task_runs/TRACK-004-20260623-111132/
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+---BRANCH---
+local/tradingagents-custom
+---RECENT LOG---
+7411744 docs: mark IC-TA-001 done after auto run
+bc5b7d3 auto: IC-TA-001 investment-controller 只读上下文包与数据契约（P1） [AUTO-002]
+e1426a1 fix(track): repair guidance hook order
+5c5a997 docs: TRACK-003 标记 done (d80aa66)
+d80aa66 [TRACK-003] tracking_board_v2_frontend: 四区改版（持仓/观察仓/今日指引/盘后复盘）
+77fcfcb docs(tasks): unlock tracking board follow-ups
+e7e11b2 docs: [TRACK-002] mark done, unblock TRACK-003/004
+fd0d511 feat: [TRACK-002] tracking board v2 groups + today guidance aggregation
+8f6b72e docs(tracks): add TRACK-001 run archive and review notes
+441d4b3 docs(tasks): record TRACK-001 commit hash 2ef6c37, unblock TRACK-002 and IC-TA-001
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && ls -la docs/task_runs/TRACK-004-20260623-111132/
+total 32
+drwx------    6 maybee  staff   192 Jun 23 11:11 .
+drwx------  108 maybee  staff  3456 Jun 23 11:11 ..
+-rw-------    1 maybee  staff  1023 Jun 23 11:11 codegraph-context.txt
+-rw-------    1 maybee  staff   366 Jun 23 11:11 codegraph-status.json
+-rw-------    1 maybee  staff   506 Jun 23 11:11 prompt-round1.md
+-rw-------    1 maybee  staff   462 Jun 23 11:11 task.md
+[0m
+[0m• [0mExplore observation warehouse and tracking board code[90m Explore Agent[0m
+[0m✓ [0mExplore observation warehouse and tracking board code[90m Explore Agent[0m
+[0m→ [0mRead api/services/tracking_board_service.py
+Now let me read the key files in detail to plan implementation.
+[0m→ [0mRead api/services/tradeflow_service.py[90m [offset=2840, limit=200][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=200, offset=3040][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=140, offset=3240][0m
+Now let me look at the test files and the candidate_engine.py for the table schema.
+[0m→ [0mRead tests/test_track002_tracking_board_v2.py
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [limit=60, offset=140][0m
+[0m→ [0mRead tests/test_track001_observation_warehouse.py[90m [limit=40][0m
+[0m→ [0mRead tests/test_track001_observation_warehouse.py[90m [limit=60, offset=40][0m
+[0m→ [0mRead tests/test_track001_observation_warehouse.py[90m [limit=35, offset=790][0m
+Now let me check the task_runs folder for the task.md and codegraph-context to understand what the auto-claim recorded.
+[0m→ [0mRead docs/task_runs/TRACK-004-20260623-111132/task.md
+[0m→ [0mRead docs/task_runs/TRACK-004-20260623-111132/codegraph-context.txt
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=60][0m
+Let me check the DEVLOG convention and runtime_tier registration.
+[0m→ [0mRead api/runtime_tier.py[90m [limit=120, offset=60][0m
+[0m
+[0m# [0mTodos
+[•] Create observation_state_engine.py (pure functions, 6 states + data_missing/needs_review)
+[ ] Add missed_entry status to tradeflow_service constants
+[ ] Refactor _aggregate_today_guidance to use the engine
+[ ] Write tests/test_track004_observation_state_engine.py
+[ ] Run tests (TRACK-002/004 regression + broader)
+[ ] Update docs/DEVLOG.md and docs/TASKS.md
+[0m
+I now have full context. Let me set up a task list and verify the test baseline.
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_track002_tracking_board_v2.py tests/test_track001_observation_warehouse.py -q 2>&1 | tail -15
+........................................................................ [ 81%]
+................                                                         [100%]
+88 passed in 15.81s
+[0m
+Baseline green (88 passed). Let me verify the tradeflow package structure.
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && ls tradingagents/tradeflow/ && echo "---" && test -f tradingagents/tradeflow/__init__.py && head -5 tradingagents/tradeflow/__init__.py
+__init__.py
+__pycache__
+acceptance_replay.py
+action_tier_scorer.py
+ambush_score.py
+candidate_contradictions.py
+candidate_engine.py
+candidate_pool.py
+candidate_pool_gate.py
+candidate_precision_gate.py
+counter_evidence_calibration.py
+date_semantics.py
+discovery.py
+event_source.py
+evidence_gate.py
+false_positive_audit.py
+fund_flow_anomaly.py
+game_balance.py
+gated_deep_ta.py
+industry_mandate_map.py
+intraday_observe.py
+intraday_observe_scheduler.py
+mandate_event_normalizer.py
+mandate_quality_report.py
+mandate_replay_eval.py
+mandate_score.py
+mandate_signal.py
+mandate_ta_queue_router.py
+mandate_watchlist_note.py
+narrative_quality.py
+observe_fixture_replay.py
+observe_runner.py
+plan_runner.py
+policy_version_signal.py
+post_market_review.py
+research_plan_draft.py
+review_fixture_replay.py
+review_runner.py
+schemas.py
+score_separation.py
+selection_priority_gate.py
+docs/task_runs/TRACK-004-20260623-111132/task.md
+# Auto Dev Task Run
+
+- Task: TRACK-004 - 观察仓入场区/失效区规则引擎与状态流转（P1）
+- Priority: P1
+- Status: CLAIMED
+- Started at: 2026-06-23_11:11:32
+- Git HEAD: 7411744
+- Test commands: pytest tests/ -q --tb=short
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/TRACK-004-20260623-111132/codegraph-impact.txt
+# CodeGraph Impact Analysis
+# Generated: 2026-06-23T11:33:01.532532
+# Changed files: 8
+
+## Source: api/services/tracking_board_service.py
+[1m
+Impact of changing "api/services/tracking_board_service.py" — 1 affected symbols:
+[0m
+[36mapi/services/tracking_board_service.py[0m
+  [2mfile        [0mtracking_board_service.py[2m:1[0m
+
+
+
+## Source: api/services/tradeflow_service.py
+[1m
+Impact of changing "api/services/tradeflow_service.py" — 1 affected symbols:
+[0m
+[36mapi/services/tradeflow_service.py[0m
+  [2mfile        [0mtradeflow_service.py[2m:1[0m
+
+
+
+## Source: docs/DEVLOG.md
+[34mℹ[0m Symbol "docs/DEVLOG.md" not found
+
+
+## Source: docs/TASKS.md
+[34mℹ[0m Symbol "docs/TASKS.md" not found
+
+
+## Source: docs/tradeflow_trial_acceptance.md
+[34mℹ[0m Symbol "docs/tradeflow_trial_acceptance.md" not found
+
+
+## Source: docs/tradeflow_trial_acceptance_v2.md
+[34mℹ[0m Symbol "docs/tradeflow_trial_acceptance_v2.md" not found
+
+
+## Source: frontend/src/components/TrackingBoardV2Panel.tsx
+[34mℹ[0m Symbol "frontend/src/components/TrackingBoardV2Panel.tsx" not found
+
+
+## Source: frontend/src/types/index.ts
+[1m
+Impact of changing "frontend/src/types/index.ts" — 1 affected symbols:
+[0m
+[36mfrontend/src/types/index.ts[0m
+  [2mfile        [0mindex.ts[2m:1[0m
+
+
+
+## Affected Tests
+  (could not determine affected tests)
+exec
+/bin/zsh -lc 'grep -n "TRACK-004" -A35 docs/TASKS.md' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+115:  89. `TRACK-004`：观察仓入场区/失效区规则引擎与状态流转（P1，done，依赖 TRACK-001 ✓, TRACK-002 ✓）。
+116-90. `TRACK-005`：盘后复盘摘要与次日计划写回跟踪看板（P1，ready，依赖 TRACK-002 ✓, TF-REVIEW-003 ✓）。
+117-91. `TRACK-006`：TradeFlow/TA 候选一键加入观察仓与来源追踪（P1，ready，依赖 TRACK-001 ✓, UI-009 ✓）。
+118-  92. `TRACK-NOTIFY-001`：飞书/总控官通知草稿 payload 与去噪规则（P1，ready — 前置 IC-TA-001 ✓/TRACK-002 ✓ 均完成）。
+119:93. `TRACK-007`：跟踪看板端到端验收与用户操作手册（P2，blocked — 前置 TRACK-003/TRACK-004/TRACK-005 未完成）。
+120-94. `DATA-020`：数据源健康日报前端可视化与 skipped/failed 分层展示（P1，ready，依赖 DATA-019A）。
+121-95. `TF-REVIEW-004`：盘后 Review 空数据诊断与一键生成入口（P1，ready，依赖 TF-REVIEW-003）。
+122-96. `H-014`：昊天主题候选减少与主题集中度阈值校准（P1，ready，依赖 H-013A/H-012）。
+123-97. `V-009`：小资金试跑后回归清单与用户操作手册（P1，ready，依赖 V-008）。
+124-98. `TF-OBS-004`：盘中观察自动刷新、触发提醒与人工确认队列降噪（P1，ready，依赖 TF-OBS-003/TF-RISK-001）。
+125-99. `DATA-021`：TA 报告数据源失败原因透传与字段级降级说明（P1，blocked — 前置 DATA-020 未完成，依赖 DATA-020/DATA-004）。
+126-100. `H-015`：昊天主题日报与候选入池/出池解释（P1，blocked — 前置 H-014 未完成，依赖 H-014/H-013A）。
+127-101. `PERF-005`：TradeFlow 页面与 API 性能预算回归（P2，blocked — 前置 TF-UX-001/DATA-020 未完成，依赖 TF-UX-001/DATA-020）。
+128-102. `HK-001`：港股输入边界与轻量行情-only 模式声明（P2，ready，独立安全边界任务）。
+129-103. `TF-PERSIST-001`：TradeFlow save_candidate 分项评分持久化补口（P2，ready，V-008 发现）。
+130-
+131-### 数据源治理候选队列
+132-
+133-> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+134-
+135-1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+136-2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+137-3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+138-4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+139-5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+140-6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+141-7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+142-8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+143-9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+144-10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+145-11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+146-12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+147-13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+148-14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+149-15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
+150-16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
+151-17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+152-17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done）。
+153-18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
+154-19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+--
+289:### TRACK-004: 观察仓入场区/失效区规则引擎与状态流转（P1）
+290-- **描述**：根据实时价、买入区间、触发价、失效价和数据新鲜度，自动给观察仓标的打状态。
+291-- **优先级**：P1
+292:- **状态**：done — TRACK-004-20260623-111132，待提交
+293-- **前置条件**：TRACK-001、TRACK-002
+294-- **执行约束**：
+295-  - 不输出“立即买入”。
+296-  - 数据缺失时只能标记 `data_missing` 或 `needs_review`。
+297-- **实现要点**：
+298-  1. 状态判断：
+299-     - `watching`
+300-     - `near_entry`
+301-     - `in_entry_zone`
+302-     - `missed_entry`
+303-     - `invalidated`
+304-     - `ta_required`
+305-  2. 判断结果写入 tracking board v2 的 `today_guidance`。
+306-  3. 每个状态必须有 `reason` 和使用的数据字段。
+307-- **验收方式**：
+308-  - 价格进入区间时显示 `in_entry_zone`。
+309-  - 跌破失效价时显示 `invalidated`。
+310-  - 数据缺失时不误判为可入场。
+311:- **代码标注要求**：`# [TRACK-004] observation_state_engine`
+312-
+313-### TRACK-005: 盘后复盘摘要与次日计划写回跟踪看板（P1）
+314-- **描述**：盘后为持仓和观察仓生成复盘摘要，回答“今天是否触发计划、明天是否继续看、是否需要 TA”。
+315-- **优先级**：P1
+316-- **状态**：ready，依赖 TRACK-002 ✓, TF-REVIEW-003 ✓
+317-- **前置条件**：TRACK-002 ✓、TF-REVIEW-003 ✓
+318-- **执行约束**：
+319-  - 先做规则版，不调用 LLM。
+320-  - 不发真实飞书，只写本地/数据库摘要。
+321-- **实现要点**：
+322-  1. 持仓复盘：涨跌、是否跌破关键位、是否偏离 TA 计划。
+323-  2. 观察仓复盘：是否接近买点、是否失效、是否需要重新 TA。
+324-  3. 候选池复盘：是否触发、是否淘汰、是否进入观察仓。
+325-  4. 输出 `tomorrow_focus`。
+326-- **验收方式**：
+327-  - 非交易日生成的计划可在下一交易日复盘。
+328-  - 空 Review 时能解释“为何无数据”。
+329-  - 输出不含强买卖词。
+330-- **代码标注要求**：`# [TRACK-005] post_market_tracking_review`
+331-
+332-### TRACK-006: TradeFlow/TA 候选一键加入观察仓与来源追踪（P1）
+333-- **描述**：从 TradeFlow 候选详情、TA 报告或分析结果页，将标的一键加入观察仓，并保留来源和理由。
+334-- **优先级**：P1
+335-- **状态**：ready，依赖 TRACK-001 ✓, UI-009 ✓
+336-- **前置条件**：TRACK-001 ✓、UI-009 ✓
+337-- **执行约束**：
+338-  - 不自动加入，必须用户点击或 investment-controller 输出草稿。
+339-  - 不覆盖用户手动备注，除非显式确认。
+340-- **实现要点**：
+341-  1. TradeFlow 候选加入观察仓，自动带入：
+342-     - strategy tags
+343-     - trigger price
+344-     - invalid price
+345-     - score
+346-     - why selected
+--
+392:- **状态**：blocked — 前置 TRACK-003/TRACK-004/TRACK-005 未完成
+393:- **前置条件**：TRACK-003、TRACK-004、TRACK-005
+394-- **执行约束**：
+395-  - 不触发 live LLM。
+396-  - 不真实推送飞书。
+397-- **验收方式**：
+398-  - mock 持仓 + mock 观察仓 + mock TradeFlow 候选，可完整展示四区。
+399-  - 观察仓状态流转可回放。
+400-  - investment-controller context 可读。
+401-  - 生成 `docs/tracking_board_v2_acceptance.md`。
+402-- **代码标注要求**：`# [TRACK-007] tracking_board_acceptance`
+403-
+404----
+405-
+406-## PERF. 运行成本 / 轻量分析任务池（2026-06-02 新增）
+407-
+408-> 目标：系统不能为了“全面”而变慢。TradeFlow 是雷达，轻量 TA 是候选验证，完整 TA 是深度体检。默认链路必须轻，完整多 Agent 分析只能由用户明确触发。
+409-
+410-### PERF-001: 运行层级与速度预算契约（P1）
+411-- **描述**：建立统一运行层级契约，所有 API、前端按钮、scheduler、自动开发任务都要标明属于 `fast/light/full` 哪一层，以及是否允许调用 LLM。
+412-- **优先级**：P1
+413-- **状态**：done -- commit ca08846
+414-- **背景**：
+415-  - 用户明确要求系统不能做得太重，不能“一发指令半天才回来”。
+416-  - 候选池/盘中观察需要时效；完整 TA 只能用于少量高价值标的。
+417-- **运行层级定义**：
+418-  1. `fast`：5-30 秒。TradeFlow 筛选、数据健康、证据缺口、候选分类。默认不调用 LLM。
+419-  2. `light`：1-3 分钟。轻量 TA，只跑必要模块，用于中线政策验证、短线技术确认、持仓风险复核。
+420-  3. `full`：10-20 分钟。完整 14 Agent TA，多空辩论和风控全链路，必须人工确认。
+421-- **执行约束**：
+422-  - 不改 prompts。
+423-  - 不触发 live TA。
+424-  - 不新增高成本模型调用。
+425-- **实现要点**：
+426-  1. 新增运行层级枚举/配置，例如 `runtime_tier`：
+427-     - `FAST_RADAR`
+428-     - `LIGHT_RESEARCH`
+
+exec
+/bin/zsh -lc "sed -n '720,755p' frontend/src/types/index.ts && sed -n '40,120p' frontend/src/components/TrackingBoardV2Panel.tsx && sed -n '250,350p' frontend/src/components/TrackingBoardV2Panel.tsx" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    entry_low?: number | null
+    entry_high?: number | null
+    trigger_price?: number | null
+    invalid_price?: number | null
+    horizon?: string | null
+    source?: string | null
+    reason?: string | null
+    priority?: number | null
+    notes?: string | null
+    live_price?: number | null
+    price_change_pct?: number | null
+    quote_time?: string | null
+    quote_source?: string | null
+    created_at?: string | null
+    updated_at?: string | null
+}
+
+export interface TrackingBoardV2Response {
+    previous_trade_date: string
+    is_trading_day: boolean
+    refresh_interval_seconds: number
+    as_of: string
+    holdings: TrackingBoardItem[]
+    observation_items: ObservationItemV2[]
+    today_guidance: TrackingBoardV2Guidance[]
+    alerts: TrackingBoardV2Guidance[]
+    review_summary: any
+    data_freshness: TrackingBoardV2DataFreshness
+}
+
+// Runtime config
+export interface RuntimeConfig {
+    llm_provider: string
+    deep_think_llm: string
+    quick_think_llm: string
+    backend_url: string
+    if (v == null) return 'text-slate-400'
+    return v >= 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'
+}
+
+function pctBg(v?: number | null): string {
+    if (v == null) return 'bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500'
+    return v >= 0
+        ? 'bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-400'
+        : 'bg-emerald-50 text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400'
+}
+
+function priorityBadge(p: string): { label: string; cls: string } {
+    switch (p) {
+        case 'P0': return { label: '紧急', cls: 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300' }
+        case 'P1': return { label: '关注', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300' }
+        case 'P2': return { label: '留意', cls: 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300' }
+        default:  return { label: '记录', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400' }
+    }
+}
+
+function guidanceTypeLabel(t: string): string {
+    const m: Record<string, string> = {
+        holdings_risk: '持仓风险',
+        holdings_no_analysis: '未分析',
+        observation_in_entry_zone: '进入买点',
+        observation_near_entry: '接近买点',
+        observation_invalidated: '已失效',
+        observation_ta_required: '需TA确认',
+        observation_data_missing: '数据缺失',
+        observation_needs_review: '待复核',      // [TRACK-004] observation_state_engine
+        observation_missed_entry: '已错失',
+        observation_watching: '观察中',
+    }
+    return m[t] || t
+}
+
+function obsStatusLabel(s: string): string {
+    const m: Record<string, string> = {
+        watching: '观察中',
+        near_entry: '接近买点',
+        in_entry_zone: '买点区间',
+        ta_required: '需TA确认',
+        missed_entry: '已错失',                  // [TRACK-004] observation_state_engine
+        entered: '已入场',
+        invalidated: '已失效',
+        removed: '已移除',
+    }
+    return m[s] || s
+}
+
+function obsStatusCls(s: string): string {
+    if (s === 'in_entry_zone') return 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300'
+    if (s === 'near_entry') return 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300'
+    if (s === 'missed_entry') return 'bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300'  // [TRACK-004] observation_state_engine
+    if (s === 'invalidated') return 'bg-slate-200 text-slate-500 dark:bg-slate-600 dark:text-slate-400 line-through'
+    if (s === 'ta_required') return 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300'
+    if (s === 'entered') return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
+    return 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400'
+}
+
+function fmtMoney(v: number): string {
+    const abs = Math.abs(v)
+    if (abs >= 1e8) return `${(v / 1e8).toFixed(2)}亿`
+    if (abs >= 1e4) return `${(v / 1e4).toFixed(2)}万`
+    return v.toFixed(2)
+}
+
+// ─── main component ────────────────────────────────────────
+
+export default function TrackingBoardV2Panel() {
+    const { user } = useAuthStore()
+    const navigate = useNavigate()
+    const [data, setData] = useState<TrackingBoardV2Response | null>(null)
+    const [loading, setLoading] = useState(true)
+    const [refreshing, setRefreshing] = useState(false)
+    const [error, setError] = useState<string | null>(null)
+    const [activeTab, setActiveTab] = useState<'holdings' | 'observation' | 'guidance' | 'review'>('holdings')
+
+    const fetchData = useCallback(async (silent: boolean) => {
+        if (silent) setRefreshing(true)
+        else setLoading(true)
+
+// ─── Stat card ─────────────────────────────────────────────
+
+function StatCard({ label, value, tone }: { label: string; value: string; tone?: 'up' | 'down' | 'alert' }) {
+    const valueCls = tone === 'up' ? 'text-rose-600 dark:text-rose-400'
+        : tone === 'down' ? 'text-emerald-600 dark:text-emerald-400'
+        : tone === 'alert' ? 'text-rose-600 dark:text-rose-400'
+        : 'text-slate-900 dark:text-slate-100'
+    return (
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 dark:border-slate-700 dark:bg-slate-900">
+            <div className="text-xs text-slate-500 dark:text-slate-400">{label}</div>
+            <div className={`mt-1 text-lg font-semibold ${valueCls}`}>{value}</div>
+        </div>
+    )
+}
+
+// ─── Holdings Zone ─────────────────────────────────────────
+
+function HoldingsZone({ items, onAnalyze }: { items: TrackingBoardItem[]; onAnalyze: (s: string) => void }) {
+    if (items.length === 0) {
+        return <EmptyState icon={Wallet} title="暂无持仓" desc="导入持仓后，这里会展示实时行情和 TA 报告摘要。" />
+    }
+    return (
+        <div className="space-y-2">
+            {items.map(item => (
+                <HoldingsRow key={item.symbol} item={item} onAnalyze={onAnalyze} />
+            ))}
+        </div>
+    )
+}
+
+function HoldingsRow({ item, onAnalyze }: { item: TrackingBoardItem; onAnalyze: (s: string) => void }) {
+    const changePct = item.price_change_pct ?? null
+    return (
+        <div className="rounded-xl border border-slate-200 bg-white p-4 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800/80">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                {/* Left: symbol + price */}
+                <div className="flex items-start gap-3">
+                    <div>
+                        <div className="text-lg font-semibold text-slate-900 dark:text-slate-100">{item.name}</div>
+                        <div className="text-sm text-slate-500 dark:text-slate-400">{item.symbol}</div>
+                    </div>
+                    <div className="ml-4 text-right sm:ml-6">
+                        <div className={`text-xl font-bold ${pctColor(changePct)}`}>{fmtPrice(item.live_price)}</div>
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-sm font-semibold ${pctBg(changePct)}`}>
+                            {fmtPct(changePct)}
+                        </span>
+                    </div>
+                </div>
+
+                {/* Right: metrics */}
+                <div className="flex flex-wrap items-center gap-3 text-sm">
+                    <Metric label="持仓" value={item.current_position != null ? `${item.current_position}股` : '--'} />
+                    <Metric label="成本" value={fmtPrice(item.average_cost)} />
+                    <Metric label="市值" value={item.live_market_value != null ? `¥${fmtMoney(item.live_market_value)}` : '--'} />
+                    <Metric label="浮盈" value={item.floating_pnl_pct != null ? fmtPct(item.floating_pnl_pct) : '--'} tone={item.floating_pnl_pct} />
+                    {item.analysis && (
+                        <button
+                            type="button"
+                            onClick={() => onAnalyze(item.symbol)}
+                            className="inline-flex items-center gap-1 rounded-lg bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-600 hover:bg-blue-100 dark:bg-blue-500/10 dark:text-blue-400 dark:hover:bg-blue-500/20"
+                        >
+                            <TrendingUp className="h-3 w-3" />
+                            {item.analysis.action_label || item.analysis.decision || '查看报告'}
+                        </button>
+                    )}
+                    {!item.analysis && (
+                        <span className="inline-flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
+                            <Info className="h-3 w-3" />
+                            未分析
+                        </span>
+                    )}
+                </div>
+            </div>
+        </div>
+    )
+}
+
+function Metric({ label, value, tone }: { label: string; value: string; tone?: number | null }) {
+    return (
+        <div className="text-center">
+            <div className="text-[11px] text-slate-400">{label}</div>
+            <div className={`text-sm font-medium ${tone != null ? pctColor(tone) : 'text-slate-700 dark:text-slate-200'}`}>{value}</div>
+        </div>
+    )
+}
+
+// ─── Observation Zone ──────────────────────────────────────
+
+function ObservationZone({ items }: { items: ObservationItemV2[] }) {
+    if (items.length === 0) {
+        return <EmptyState icon={Eye} title="观察仓为空" desc="在候选池或分析报告中可以将标的一键加入观察仓。" />
+    }
+    return (
+        <div className="space-y-2">
+            {items.map(item => (
+                <ObservationRow key={item.id} item={item} />
+            ))}
+        </div>
+    )
+}
+
+exec
+/bin/zsh -lc 'git diff --check && git status --short' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M api/services/tracking_board_service.py
+ M api/services/tradeflow_service.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M docs/tradeflow_trial_acceptance.md
+ M docs/tradeflow_trial_acceptance_v2.md
+ M frontend/src/components/TrackingBoardV2Panel.tsx
+ M frontend/src/types/index.ts
+?? docs/task_runs/TRACK-004-20260623-111132/
+?? tests/test_track004_observation_state_engine.py
+?? tradingagents/tradeflow/observation_state_engine.py
+
+exec
+/bin/zsh -lc "grep -R \"TrackingBoardV2Guidance\\|today_guidance\\|tracking_board_v2\" -n api | head -100" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+Binary file api/__pycache__/main.cpython-312.pyc matches
+api/main.py:4595:# [TRACK-002] tracking_board_v2_groups
+api/main.py:4597:def get_dashboard_tracking_board_v2(
+api/main.py:4601:    return tracking_board_service.get_tracking_board_v2(db, current_user.id)
+Binary file api/services/__pycache__/tracking_board_service.cpython-312.pyc matches
+api/services/tracking_board_service.py:1:# [TRACK-002] tracking_board_v2_groups
+api/services/tracking_board_service.py:247:# [TRACK-002] tracking_board_v2_groups
+api/services/tracking_board_service.py:248:def get_tracking_board_v2(db: Session, user_id: str) -> dict[str, Any]:
+api/services/tracking_board_service.py:254:        - today_guidance: aggregated guidance items with source/priority/reason
+api/services/tracking_board_service.py:273:    guidance = _aggregate_today_guidance(
+api/services/tracking_board_service.py:290:        "today_guidance": guidance,
+api/services/tracking_board_service.py:297:# [TRACK-002] tracking_board_v2_groups
+api/services/tracking_board_service.py:353:# [TRACK-002] tracking_board_v2_groups
+api/services/tracking_board_service.py:365:# [TRACK-002] tracking_board_v2_groups
+api/services/tracking_board_service.py:382:# [TRACK-002] tracking_board_v2_groups
+api/services/tracking_board_service.py:383:def _aggregate_today_guidance(
+api/services/tracking_board_service.py:411:                "source": "tracking_board_v2",
+api/services/tracking_board_service.py:424:                "source": "tracking_board_v2",
+api/services/tracking_board_service.py:435:                "source": "tracking_board_v2",
+api/services/tracking_board_service.py:461:                "source": "tracking_board_v2",
+api/services/tracking_board_service.py:474:# [TRACK-002] tracking_board_v2_groups
+
+exec
+/bin/zsh -lc "sed -n '1,220p' tests/test_track002_tracking_board_v2.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [TRACK-002] tracking_board_v2_groups
+"""Tests for TRACK-002: 跟踪看板 v2 分组接口与今日指引聚合.
+
+Covers:
+- Empty state: no holdings, no observation items → empty arrays + stable structure.
+- Holdings with analysis vs without analysis.
+- Observation items near entry zone, in entry zone, invalidated.
+- Today guidance priority sorting (P0 > P1 > P2 > P3).
+- Guidance aggregation: holdings_risk, observation_in_entry_zone, observation_near_entry,
+  observation_ta_required, holdings_no_analysis, observation_data_missing.
+- Data freshness metadata.
+- Alerts filter (P0 only).
+- No real-time quotes → data_freshness stale/missing markers.
+"""
+
+from __future__ import annotations
+
+import sys
+import os
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+# ---------------------------------------------------------------------------
+# Pure unit tests on the service helpers (no DB / no network)
+# ---------------------------------------------------------------------------
+from api.services.tracking_board_service import (
+    _aggregate_today_guidance,
+    _build_data_freshness,
+    _enrich_observation_items,
+)
+
+
+class TestAggregateTodayGuidance:
+    """Unit tests for _aggregate_today_guidance."""
+
+    def test_empty_holdings_and_observation(self):
+        guidance = _aggregate_today_guidance([], [], {}, True, _now())
+        assert guidance == []
+
+    def test_holdings_no_analysis(self):
+        holdings = [{"symbol": "600000.SH", "name": "浦发银行", "price_change_pct": 0.5, "analysis": None}]
+        guidance = _aggregate_today_guidance(holdings, [], {}, True, _now())
+        assert len(guidance) == 1
+        assert guidance[0]["type"] == "holdings_no_analysis"
+        assert guidance[0]["priority"] == "P2"
+
+    def test_holdings_risk_large_drop(self):
+        holdings = [{"symbol": "600000.SH", "name": "浦发银行", "price_change_pct": -4.0,
+                      "analysis": {"decision": "HOLD"}}]
+        guidance = _aggregate_today_guidance(holdings, [], {}, True, _now())
+        risk = [g for g in guidance if g["type"] == "holdings_risk"]
+        assert len(risk) == 1
+        assert risk[0]["priority"] == "P0"
+
+    def test_holdings_risk_moderate_drop(self):
+        holdings = [{"symbol": "600000.SH", "name": "浦发银行", "price_change_pct": -2.0,
+                      "analysis": {"decision": "HOLD"}}]
+        guidance = _aggregate_today_guidance(holdings, [], {}, True, _now())
+        risk = [g for g in guidance if g["type"] == "holdings_risk"]
+        assert len(risk) == 1
+        assert risk[0]["priority"] == "P1"
+
+    def test_observation_in_entry_zone(self):
+        obs = [{"symbol": "000001.SZ", "name": "平安银行", "status": "watching",
+                "entry_low": 10.0, "entry_high": 12.0, "invalid_price": 9.0,
+                "live_price": 11.0}]
+        guidance = _aggregate_today_guidance([], obs, {}, True, _now())
+        assert any(g["type"] == "observation_in_entry_zone" for g in guidance)
+
+    def test_observation_near_entry(self):
+        obs = [{"symbol": "000001.SZ", "name": "平安银行", "status": "watching",
+                "entry_low": 11.0, "entry_high": 12.0, "invalid_price": 9.0,
+                "live_price": 10.5}]  # below entry_low but within 5%
+        guidance = _aggregate_today_guidance([], obs, {}, True, _now())
+        assert any(g["type"] == "observation_near_entry" for g in guidance)
+        assert not any(g["type"] == "observation_in_entry_zone" for g in guidance)
+
+    def test_observation_invalidated(self):
+        obs = [{"symbol": "000001.SZ", "name": "平安银行", "status": "watching",
+                "entry_low": 10.0, "entry_high": 12.0, "invalid_price": 9.5,
+                "live_price": 9.0}]
+        guidance = _aggregate_today_guidance([], obs, {}, True, _now())
+        assert any(g["type"] == "observation_invalidated" for g in guidance)
+
+    def test_observation_no_live_price_on_trading_day(self):
+        obs = [{"symbol": "000001.SZ", "name": "平安银行", "status": "watching",
+                "entry_low": 10.0, "entry_high": 12.0, "invalid_price": 9.0,
+                "live_price": None}]
+        guidance = _aggregate_today_guidance([], obs, {}, True, _now())
+        assert any(g["type"] == "observation_data_missing" for g in guidance)
+
+    def test_observation_no_live_price_non_trading_day(self):
+        obs = [{"symbol": "000001.SZ", "name": "平安银行", "status": "watching",
+                "entry_low": 10.0, "entry_high": 12.0, "invalid_price": 9.0,
+                "live_price": None}]
+        guidance = _aggregate_today_guidance([], obs, {}, False, _now())
+        assert not any(g["type"] == "observation_data_missing" for g in guidance)
+
+    def test_observation_ta_required(self):
+        obs = [{"symbol": "000001.SZ", "name": "平安银行", "status": "ta_required",
+                "entry_low": 0.0, "entry_high": 0.0, "invalid_price": 0.0,
+                "live_price": 15.0}]
+        guidance = _aggregate_today_guidance([], obs, {}, True, _now())
+        assert any(g["type"] == "observation_ta_required" for g in guidance)
+
+    def test_priority_sorting(self):
+        holdings = [
+            {"symbol": "A", "name": "A", "price_change_pct": 0.0, "analysis": None},  # P2
+            {"symbol": "B", "name": "B", "price_change_pct": -4.0, "analysis": {}},  # P0
+        ]
+        guidance = _aggregate_today_guidance(holdings, [], {}, True, _now())
+        priorities = [g["priority"] for g in guidance]
+        assert priorities == sorted(priorities)
+
+    def test_every_guidance_has_source_and_as_of(self):
+        holdings = [{"symbol": "X", "name": "X", "price_change_pct": 0.0, "analysis": None}]
+        obs = [{"symbol": "Y", "name": "Y", "status": "watching",
+                "entry_low": 0.0, "entry_high": 0.0, "invalid_price": 0.0,
+                "live_price": None}]
+        guidance = _aggregate_today_guidance(holdings, obs, {}, True, _now())
+        for g in guidance:
+            assert g["source"] == "tracking_board_v2"
+            assert "as_of" in g
+            assert "reason" in g
+            assert "symbol" in g
+
+
+class TestBuildDataFreshness:
+    """Unit tests for _build_data_freshness."""
+
+    def test_empty_state(self):
+        df = _build_data_freshness([], [], {}, True, _now())
+        assert df["holdings_total"] == 0
+        assert df["observation_total"] == 0
+        assert df["status"] == "fresh"
+
+    def test_stale_when_no_quotes_on_trading_day(self):
+        holdings = [{"symbol": "A", "live_price": None}]
+        df = _build_data_freshness(holdings, [], {}, True, _now())
+        assert df["status"] == "stale"
+
+    def test_fresh_with_quotes(self):
+        holdings = [{"symbol": "A", "live_price": 10.0, "quote_time": "09:30:00"}]
+        df = _build_data_freshness(holdings, [], {}, True, _now())
+        assert df["status"] == "fresh"
+        assert df["holdings_with_live_quotes"] == 1
+
+    def test_non_trading_day(self):
+        df = _build_data_freshness([{"symbol": "A", "live_price": None}], [], {}, False, _now())
+        assert df["status"] == "non_trading_day"
+
+    def test_latest_quote_time(self):
+        holdings = [{"symbol": "A", "live_price": 10.0, "quote_time": "10:00:00"}]
+        obs = [{"symbol": "B", "live_price": 5.0, "quote_time": "10:30:00"}]
+        df = _build_data_freshness(holdings, obs, {}, True, _now())
+        assert df["latest_quote_time"] == "10:30:00"
+
+
+class TestEnrichObservationItems:
+    """Unit tests for _enrich_observation_items."""
+
+    def test_empty(self):
+        result = _enrich_observation_items([], {})
+        assert result == []
+
+    def test_enriches_with_quote(self):
+        items = [{"symbol": "000001.SZ", "name": "平安银行"}]
+        quotes = {"000001.SZ": {"price": 12.5, "change_pct": 1.2, "quote_time": "10:00", "source": "tencent"}}
+        result = _enrich_observation_items(items, quotes)
+        assert len(result) == 1
+        assert result[0]["live_price"] == 12.5
+        assert result[0]["price_change_pct"] == 1.2
+
+    def test_no_quote_returns_none_live_price(self):
+        items = [{"symbol": "000001.SZ", "name": "平安银行"}]
+        result = _enrich_observation_items(items, {})
+        assert result[0]["live_price"] is None
+
+
+def _now():
+    from datetime import datetime
+    return datetime.now()
+

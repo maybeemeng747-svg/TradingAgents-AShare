@@ -66,6 +66,9 @@ function guidanceTypeLabel(t: string): string {
         observation_invalidated: '已失效',
         observation_ta_required: '需TA确认',
         observation_data_missing: '数据缺失',
+        observation_needs_review: '待复核',      // [TRACK-004] observation_state_engine
+        observation_missed_entry: '已错失',
+        observation_watching: '观察中',
     }
     return m[t] || t
 }
@@ -76,6 +79,7 @@ function obsStatusLabel(s: string): string {
         near_entry: '接近买点',
         in_entry_zone: '买点区间',
         ta_required: '需TA确认',
+        missed_entry: '已错失',                  // [TRACK-004] observation_state_engine
         entered: '已入场',
         invalidated: '已失效',
         removed: '已移除',
@@ -86,6 +90,7 @@ function obsStatusLabel(s: string): string {
 function obsStatusCls(s: string): string {
     if (s === 'in_entry_zone') return 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300'
     if (s === 'near_entry') return 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300'
+    if (s === 'missed_entry') return 'bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300'  // [TRACK-004] observation_state_engine
     if (s === 'invalidated') return 'bg-slate-200 text-slate-500 dark:bg-slate-600 dark:text-slate-400 line-through'
     if (s === 'ta_required') return 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300'
     if (s === 'entered') return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'

@@ -4,6 +4,58 @@
 
 ---
 
+## 2026-06-23 | TRACK-004 观察仓入场区/失效区规则引擎与状态流转
+
+- **执行者**：OpenCode (glm-5.2)
+- **类型**：backend / pure-function state engine + today_guidance 重构
+- **状态**：✅ 完成（待提交）
+
+### 背景
+
+TRACK-001 落地了观察仓容器，TRACK-002 把"接近买点 / 在买入区间 / 失效 / 需 TA / 缺数据"的判断硬编码在 `_aggregate_today_guidance` 内联逻辑里。这导致：
+- 状态判断无法单测复用，`near_entry` 阈值过宽（任何低于 `entry_low` 的价格都被算"接近"）。
+- 缺 `missed_entry`（价格已远离上沿、本轮窗口已过）这一关键状态。
+- "数据新鲜度"只体现在 `live_price is None`，且非交易日无行情时完全静默。
+
+TRACK-004 把判断逻辑抽成纯函数规则引擎，统一状态优先级与数据字段溯源，并把结果写入 tracking board v2 的 `today_guidance`。
+
+### 变更
+
+- **新增** `tradingagents/tradeflow/observation_state_engine.py`，标注 `# [TRACK-004] observation_state_engine`：
+  - `evaluate_observation_state(item, *, is_trading_day)` 纯函数，输入一个观察仓 item（含 `live_price` 等注入字段），输出状态结果 dict（`state/priority/guidance_type/reason/data_fields` + 上下文）。
+  - 状态优先级链：`data_missing/needs_review`（数据缺失硬约束，最先判断）> `invalidated`（跌破失效价）> `in_entry_zone`（进入区间）> `ta_required`（存储态）> `near_entry`（`entry_low` 下方 5% 内）> `missed_entry`（`entry_high` 上方 5% 外）> `watching`。
+  - `should_emit_guidance(result)` 决定是否写入 `today_guidance`：非 watching 全发；watching 仅在已设定买入区间时发，未设定区间的纯 watching 抑制噪声。
+  - `result_to_guidance(result, as_of)` 把结果转成 guidance 记录，新增透传 `state` 与 `data_fields` 字段。
+  - `FORBIDDEN_STRONG_WORDS` 常量 + 全部 reason 规避"立即买入/重仓/清仓/满仓/梭哈"。
+- **修改** `api/services/tradeflow_service.py:2852-2883`：
+  - 新增 `OBSERVATION_STATUS_MISSED_ENTRY = "missed_entry"`，并入 `ALLOWED_OBSERVATION_STATUSES` 与 `_ACTIVE_OBSERVATION_STATUSES`（missed_entry 仍属活跃，可重新 watching 或转 invalidated）。`mark_observation_item_status` / schema 自动支持新状态。
+- **修改** `api/services/tracking_board_service.py`：
+  - 顶部导入引擎函数；`_aggregate_today_guidance` 的观察仓分支由内联逻辑改为调用引擎 + `should_emit_guidance` + `result_to_guidance`。
+  - 保留 TRACK-002 既有行为：存储态 `ta_required` 命中价格类状态（in_zone/near/missed）时**额外**补一条 `ta_required` guidance（价格到位 + 仍需 TA 确认）。
+- **新增** `tests/test_track004_observation_state_engine.py`（38 用例）：覆盖 8 个状态、边界值（`entry_low*0.95` 内含、`entry_high*1.05` 外含）、数据缺失硬约束、禁用词检查、guidance 整形、`_aggregate_today_guidance` 集成（missed_entry、双 ta_required、watching 抑制）、`missed_entry` 存储态校验。
+
+### 不变量 / 安全
+
+- 未改 `tradingagents/prompts/`、未写生产 `tradingagents.db`、未触发 LLM、未跑全市场扫描。
+- 引擎是纯函数，不写 DB；持久化失效/错失等终态仍由既有 `mark_observation_item_status` 走，本任务不自动写回（避免看板读路径产生副作用写）。
+- 数据缺失时只返回 `data_missing` / `needs_review`，绝不会误判为 `in_entry_zone` / `near_entry`。
+- `near_entry` 阈值由"任何低于 entry_low 的价格"收紧为"entry_low 下方 5% 内"，更符合直觉；TRACK-002 既有用例（10.5 vs entry_low=11）仍通过。
+
+### 验收
+
+- `pytest tests/test_track004_observation_state_engine.py tests/test_track002_tracking_board_v2.py tests/test_track001_observation_warehouse.py -q`：126 passed。
+- 广义回归 `pytest tests/ -q -k "track or observation or tracking or dashboard or tradeflow or investment_controller or ic_ta"`：613 passed, 0 failed。
+- API 主模块 + 引擎 import smoke 通过；`missed_entry` 通过 Pydantic schema 校验。
+- 验收点对照：价格进入区间 → `in_entry_zone`(P0) ✓；跌破失效价 → `invalidated`(P1) ✓；数据缺失 → `data_missing`/`needs_review`，不误判可入场 ✓；新增 `missed_entry` 覆盖"价格已远离上沿"场景 ✓。
+
+### 风险与后续
+
+- `near_entry` 边界收紧属行为微调；如后续发现看板少报"接近买点"，可放宽 `NEAR_ENTRY_BAND`。
+- "数据新鲜度"目前仍以 `live_price is None` 为主要信号；基于 `quote_time` 时长的陈旧行情检测留给后续 TRACK-005 / DATA freshness 任务。
+- 持久化派生状态（如自动把 missed_entry/invalidated 写回观察仓）未在本任务启用，待 TRACK-005 盘后复盘链路决定写回策略。
+
+---
+
 ## 2026-06-23 | Fix IC-TA-001 回归：2 个时间/字段耦合导致的测试失败
 
 - **执行者**：OpenCode (glm-5.2)
@@ -5677,3 +5729,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/IC-TA-001-20260623-round2.txt
 - **Run archive**: docs/task_runs/IC-TA-001-20260623-104044/
+
+## 2026-06-23 | AUTO-002 Auto Dev Loop
+
+- **Task**: TRACK-004 - 观察仓入场区/失效区规则引擎与状态流转（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TRACK-004-20260623-round1.txt
+- **Run archive**: docs/task_runs/TRACK-004-20260623-111132/

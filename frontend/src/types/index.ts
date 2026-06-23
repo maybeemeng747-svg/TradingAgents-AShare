@@ -685,6 +685,9 @@ type GuidanceType =
     | 'observation_invalidated'
     | 'observation_ta_required'
     | 'observation_data_missing'
+    | 'observation_needs_review'   // [TRACK-004] observation_state_engine
+    | 'observation_missed_entry'
+    | 'observation_watching'
 
 export interface TrackingBoardV2Guidance {
     type: GuidanceType
@@ -694,6 +697,8 @@ export interface TrackingBoardV2Guidance {
     reason: string
     source: string
     as_of: string
+    state?: string                 // [TRACK-004] observation_state_engine
+    data_fields?: Record<string, unknown>
 }
 
 export interface TrackingBoardV2DataFreshness {
