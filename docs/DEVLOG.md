@@ -4,6 +4,76 @@
 
 ---
 
+## 2026-06-23 | TRACK-NOTIFY-001 飞书/总控官通知草稿 payload 与去噪规则
+
+- **执行者**：OpenCode (glm-5.2)
+- **类型**：backend / notification draft dry-run engine
+- **状态**：✅ 完成（Codex review 通过，待提交）
+
+### 背景
+
+IC-TA-001 落地了 investment-controller 只读上下文包，TRACK-002/004/005 已把持仓风险、观察仓状态引擎、盘后复盘聚合到 tracking board。但 TA 侧仍然没有一个统一的"通知草稿"出口——investment-controller/飞书想知道"现在该推什么"时，需要自己再去拼六个 bucket，且没有去噪和通道分流规则，容易造成重复推送、P2/P3 噪声打扰盘中、或数据不足时误推。
+
+TRACK-NOTIFY-001 在不触发 LLM、不读取/打印 webhook、不真实发送飞书的前提下，新增一个纯引擎 + dry-run service，产出标准化草稿 payload 和 markdown/json 预览，交给 OpenClaw/investment-controller 决定是否发。
+
+### 变更
+
+#### 新增：纯引擎 `tradingagents/tradeflow/notification_draft.py`（`# [TRACK-NOTIFY-001] notification_payload_dry_run`）
+
+- **草稿 schema**（实现要点 1）：每条草稿含 `event_type / priority(P0-P3) / symbol / name / title / reason / source / as_of / suggested_next_step / record_only`，外加可选 `extra`。
+- **草稿合成** `build_notification_drafts_from_context(context)`：接收 IC-TA-001 的六个 bucket dict（纯函数，不读 DB/网络），派生事件：
+  - 持仓：大跌(≤-3%,P0) / 中跌(≤-1.5%,P1) / 无 TA 报告(P2)。
+  - 观察仓：复用 TRACK-004 `evaluate_observation_state` → in_entry_zone(P0) / invalidated(P1) / near_entry(P1) / ta_required(P1) / missed_entry(P2) / data_missing(P2,record_only) / needs_review(P3) / watching(P3)。
+  - 候选池：`need_deep_ta=True` → pending_ta(P2)。
+  - 数据健康：交易日源 FAILED → data_source_failure(P2,record_only)；stale → data_stale(P2,record_only)。
+  - pending_ta_required bucket：origin=observation_warehouse 的条目 → pending_ta(P2)。
+- **去噪规则**（实现要点 2）：`NotificationDeduplicator` 按 `(symbol, event_type)` 在 `DEDUP_WINDOW_SECONDS=30*60` 窗口内去重；`apply_dedup` 返回 `{emitted, deduplicated}`（被抑制项带 `dedup_reason`）。
+- **通道分流**（实现要点 2）：`classify_delivery_channel` —— P0/P1 且非 `record_only` → `intraday_push`；其余（P2/P3 + 数据不足）→ `daily_digest`。硬约束：P2/P3 不盘中推送；数据不足只记录。
+- **数据不足只记录**：源 bucket `data_status ∈ {missing,failed}` 或观察仓 `state ∈ {data_missing,needs_review}` → 草稿 `record_only=True`，即使 P0 也只进日报。
+- **预览渲染**（实现要点 3）：`render_drafts_markdown` 产出本地 markdown 预览（含分通道小节 + 计数）；`render_drafts_json` 产出带 `channel` 标注的扁平 json 列表。
+- **强动作词护栏**：复用并扩展 TRACK-004 `FORBIDDEN_STRONG_WORDS`（含"立即买入/清仓/满仓/梭哈/必涨..."），`assert_no_forbidden_words` 自检 title/reason/suggested_next_step；`suggested_next_step` 只描述软状态（关注/复核/记录/等 TA）。
+
+#### 新增：service `api/services/notification_draft_service.py`
+
+- `build_notification_dry_run(db, user_id, ...)`：在 IC-TA-001 上下文之上合成草稿、套去噪器、分通道、渲染预览，返回 dry-run payload。
+- **安全红线**：`webhook_configured` 恒为 `None`（本服务不读取 webhook 配置，由 investment-controller 自行判断）；`dry_run` 恒为 `True`（第一阶段不真实发送）；IC context 构建失败时降级为空 context 不抛异常。
+- 模块级 `NotificationDeduplicator` 单例跨调用复用 30 分钟窗口；`reset_dedup_state()` / `force_refresh=True` 供测试与人工强制重发。
+- 返回字段含 `intraday_push / daily_digest / recorded_only / deduplicated / summary_counts / markdown_preview / json_preview / runtime_tier_meta / context_data_status`。
+
+#### API
+
+- `api/main.py`：新增 `POST /v1/dashboard/investment-controller/notify/dry-run`（`NotificationDryRunRequest{force_refresh, tf_db_path}`），依赖 `_require_api_user`，复用 `get_db`。标注 `# [TRACK-NOTIFY-001] notification_payload_dry_run`。
+- `api/runtime_tier.py`：`notification_draft_dry_run` 加入 `_TRADEFLOW_FAST_ENDPOINTS` → `FAST_RADAR`（不触发 LLM）。
+
+#### 测试 `tests/test_track_notify001_notification_draft.py`（25 用例）
+
+覆盖：schema/空结构、去噪（首次放行/窗口内抑制/过窗口重发/不同事件不去重/reset）、通道分流（P0/P1→盘中、P2/P3→日报、record_only 恒日报、bucket failed→record_only、data_missing→record_only）、强动作词护栏（生成草稿自检 + 断言抛错 + 核心动词在禁用表）、markdown/json 预览、service 端到端（空 payload 稳定、跨调用去重、force_refresh 重发、删除 webhook env 不报错）。
+
+### 验收对照
+
+- ✅ dry-run 生成 payload（`dry_run=True`，schema 完整）。
+- ✅ 未配置 webhook 不报错（`webhook_configured=None`，删 env 仍正常）。
+- ✅ 重复事件被去重（30 分钟窗口，`deduplicated` 列表带 reason）。
+- ✅ payload 不含强买卖词（`assert_no_forbidden_words` + 引擎内置自检）。
+- ✅ P2/P3 只进日报；数据不足只记录不推送（`record_only` + 通道分流）。
+
+### 测试结果
+
+- `tests/test_track_notify001_notification_draft.py`：**25 passed**。
+- 关联回归（IC-TA-001 + TRACK-001/002/004/005/006 + runtime_tier）：**320 passed**。
+- Codex review 复验：
+  - `pytest tests/test_track_notify001_notification_draft.py -q`：25 passed。
+  - `pytest tests/test_ic_ta001_investment_controller_context.py tests/test_track004_observation_state_engine.py tests/test_track005_post_market_tracking_review.py tests/test_track006_add_to_observation.py -q`：162 passed。
+  - `python -m py_compile api/services/notification_draft_service.py tradingagents/tradeflow/notification_draft.py api/main.py api/runtime_tier.py tests/test_track_notify001_notification_draft.py`：通过。
+- 无 LLM 调用、无飞书推送、未读取/打印 webhook、未写生产 `tradingagents.db`、未改 `tradingagents/prompts/`。
+
+### 风险点
+
+- 去噪器为模块级内存单例，多进程部署下不共享（dry-run 场景可接受；后续如需真实推送可换带 TTL 的共享存储）。
+- 第一阶段只产出 dry-run payload，真实投递由 investment-controller 决定，本任务不实现 webhook 发送链路。
+
+---
+
 ## 2026-06-23 | TRACK-006 TradeFlow/TA 候选一键加入观察仓与来源追踪
 
 - **执行者**：OpenCode (glm-5.2)

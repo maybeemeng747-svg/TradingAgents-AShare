@@ -41,7 +41,7 @@ import pandas as pd
 
 from api.database import UserDB, UserLLMConfigDB, VersionStatsDB, ReportDB, ImportedPortfolioPositionDB, FeedbackDB, SponsorDB, init_db, get_db, get_db_ctx
 from api.job_store import get_job_store as _new_job_store
-from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service, investment_controller_context  # [IC-TA-001] investment_controller_context
+from api.services import auth_service, portfolio_import_service, report_service, token_service, watchlist_service, scheduled_service, tracking_board_service, feedback_service, sponsor_service, investment_controller_context, notification_draft_service  # [IC-TA-001] investment_controller_context  # [TRACK-NOTIFY-001] notification_payload_dry_run
 
 def _get_real_ip(request: Request) -> Optional[str]:
     """Extract real client IP, preferring Cloudflare/proxy headers."""
@@ -4615,6 +4615,32 @@ def get_investment_controller_context(
     as_of; every bucket declares data_status (fresh/stale/missing/failed/skipped).
     """
     return investment_controller_context.get_investment_controller_context(db, current_user.id)
+
+
+# [TRACK-NOTIFY-001] notification_payload_dry_run
+class NotificationDryRunRequest(BaseModel):
+    force_refresh: bool = False
+    tf_db_path: str = ""
+
+
+@app.post("/v1/dashboard/investment-controller/notify/dry-run")
+def post_notification_dry_run(
+    body: NotificationDryRunRequest,
+    current_user: UserDB = Depends(_require_api_user),
+    db: Session = Depends(get_db),
+):
+    """生成飞书 / 总控官通知草稿 dry-run payload.
+
+    第一阶段只产出本地预览（markdown + json），不读取 / 打印 webhook，
+    不真实发送飞书。只有 P0/P1 且非数据不足的草稿进入 ``intraday_push``；
+    P2/P3 与数据不足草稿只进 ``daily_digest``。同一标的同一事件 30 分钟内
+    去重。runtime_tier=FAST_RADAR（不触发 LLM）。
+    """
+    return notification_draft_service.build_notification_dry_run(
+        db, current_user.id,
+        tf_db_path=body.tf_db_path,
+        force_refresh=body.force_refresh,
+    )
 
 
 # ── Watchlist ─────────────────────────────────────────────────────────────────
