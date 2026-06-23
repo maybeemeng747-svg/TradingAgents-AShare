@@ -8,7 +8,7 @@
 
 - **执行者**：OpenCode (glm-5.2)
 - **类型**：backend / notification draft dry-run engine
-- **状态**：✅ 完成（Codex review 通过，待提交）
+- **状态**：✅ 完成（已提交 commit `572649a`；Codex round-1 review clean pass，round-2 fix 提示为误报——见下）
 
 ### 背景
 
@@ -71,6 +71,14 @@ TRACK-NOTIFY-001 在不触发 LLM、不读取/打印 webhook、不真实发送�
 
 - 去噪器为模块级内存单例，多进程部署下不共享（dry-run 场景可接受；后续如需真实推送可换带 TTL 的共享存储）。
 - 第一阶段只产出 dry-run payload，真实投递由 investment-controller 决定，本任务不实现 webhook 发送链路。
+
+### Round-2 review 复核（2026-06-23）
+
+- auto-dev-loop 基于 round-1 review 生成 "Codex review found critical issues" 的 round-2 fix 提示，**经人工核对为误报**。
+- round-1 review 运行时 TRACK-NOTIFY-001 代码已落在 commit `572649a`，当时工作区只剩生成物（`tests-round1.txt` 测试日志、`codegraph-status.json` post 状态、重跑时间戳的 `tradeflow_trial_acceptance*.md`），Codex 对这些变更的结论原文："The current changes only update generated documentation/task-run artifacts and test logs. I did not find any actionable correctness, security, or maintainability issue introduced by these changes."
+- 复核检索 `critical / must fix / blocker / bug / incorrect` 等关键词，review 中无任何可执行的代码缺陷条目；提示中引用的 review 片段为 MCP transport 噪声 + `docs/project-overview.md` 回显，被截断，不含任何 issue 描述。
+- 复跑 `pytest tests/test_track_notify001_notification_draft.py -q` → **25 passed**。
+- 结论：**无需代码修复**，未改动 `tradingagents/prompts/`、未写生产 DB、未提交、未推送。仅更正本条目状态行。
 
 ---
 
