@@ -76,6 +76,7 @@ _TRADEFLOW_FAST_ENDPOINTS: set[str] = {
     "tradeflow_paper_ledger",  # [TF-PAPER-001] paper_trading_ledger
     "tradeflow_paper_review",  # [TF-PAPER-001] paper_trading_ledger
     "tradeflow_source_freshness",  # [DATA-018] source_freshness_report
+    "tradeflow_live_sampling",  # [DATA-020] live_sampling_health_ui
     "tradeflow_topic_registry",  # [H-012] mandate_topic_registry
     "tradeflow_topic_watchlist",  # [H-012] mandate_topic_registry
     "tradeflow_topic_heatmap",  # [H-013] mandate_topic_heatmap

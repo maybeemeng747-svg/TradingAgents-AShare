@@ -31,6 +31,8 @@ import type {
     PaperLedgerResponse,
     SourceFreshnessResponse,
     SourceFreshnessEntry,
+    LiveSamplingResponse,
+    LiveSamplingResult,
     TopicHeatmapResponse,
     TopicHeatmapEntry,
 } from '@/types'
@@ -1334,6 +1336,230 @@ function SourceFreshnessPanel({ data }: { data: SourceFreshnessResponse | null }
     )
 }
 
+// [DATA-020] live_sampling_health_ui
+//
+// Layered status display for the live-sampling health daily report.
+// Crucially distinguishes:
+//   - SKIPPED          → grey "未启用实盘抽样" (never green)
+//   - FAILED/RATE_LIMITED → red fault, with impacted-report-field hint
+//   - NORMAL_NO_DATA   → grey "正常无数据"
+//   - HAS_DATA         → green
+//   - fallback entries → blue accent
+function liveSamplingStatusBadge(r: LiveSamplingResult): { text: string; cls: string; dot: string } {
+    // Skipped must never look healthy — it means live smoke was NOT executed.
+    if (r.status === 'SKIPPED') {
+        return {
+            text: '未启用实盘抽样',
+            cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400',
+            dot: 'bg-slate-400',
+        }
+    }
+    // Red faults
+    if (r.status === 'FAILED' || r.status === 'RATE_LIMITED') {
+        return {
+            text: r.status_label_cn || '故障',
+            cls: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
+            dot: 'bg-red-500',
+        }
+    }
+    // Grey "normal no data" — queried successfully, stock just has no such data
+    if (r.status === 'NORMAL_NO_DATA') {
+        return {
+            text: r.status_label_cn || '正常无数据',
+            cls: 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400',
+            dot: 'bg-slate-400',
+        }
+    }
+    // Yellow warnings
+    if (r.status === 'STALE' || r.status === 'UNIT_UNVERIFIED') {
+        return {
+            text: r.status_label_cn || '警告',
+            cls: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300',
+            dot: 'bg-yellow-500',
+        }
+    }
+    // Green healthy
+    return {
+        text: r.status_label_cn || '正常',
+        cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
+        dot: 'bg-emerald-500',
+    }
+}
+
+// [DATA-020] live_sampling_health_ui
+// Short hint about which TA report fields a data-type failure impacts.
+const LIVE_SAMPLING_FIELD_IMPACT: Record<string, string> = {
+    quote: '影响：实时行情、技术分析、盘中观察触发',
+    fund_flow: '影响：主力资金、资金面判断',
+    lhb: '影响：龙虎榜、游资动向',
+    notice: '影响：公告/监管事件、风险提示',
+    rating: '影响：机构评级',
+    buyback: '影响：回购数据',
+    report: '影响：机构研报、研报观点',
+}
+
+function LiveSamplingPanel({ data }: { data: LiveSamplingResponse | null }) {
+    // No report at all — clean empty state, never an error.
+    if (!data || !data.has_report) {
+        return (
+            <div className="py-8 text-center text-sm text-slate-400">
+                <Activity className="mx-auto mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
+                实盘抽样报告未生成
+                <div className="mt-2 text-xs">
+                    运行 <code className="rounded bg-slate-100 px-1 dark:bg-slate-800">TA_LIVE_DATA_SMOKE=1 python scripts/run_live_sampling.py</code> 生成
+                </div>
+            </div>
+        )
+    }
+
+    const s = data.summary
+    const skippedOnly = !!s.skipped_only
+
+    // Banner reflects layered status — skipped-only is NEVER green.
+    let bannerIcon: string
+    let bannerText: string
+    let bannerCls: string
+    if (skippedOnly) {
+        bannerIcon = '\u23F8\uFE0F'
+        bannerText = '实盘抽样未启用（全部检查为 SKIPPED，不可视为健康）'
+        bannerCls = 'bg-slate-50 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+    } else if (s.red_count > 0) {
+        bannerIcon = '\u274C'
+        bannerText = `实盘抽样发现 ${s.red_count} 个故障`
+        bannerCls = 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+    } else if (s.yellow_count > 0) {
+        bannerIcon = '\u26A0\uFE0F'
+        bannerText = `实盘抽样有 ${s.yellow_count} 个警告`
+        bannerCls = 'bg-yellow-50 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300'
+    } else {
+        bannerIcon = '\u2705'
+        bannerText = '实盘抽样全部通过'
+        bannerCls = 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+    }
+
+    return (
+        <div className="space-y-4 p-4">
+            {/* Banner */}
+            <div className={`flex items-center gap-2 rounded-lg px-4 py-3 text-sm font-medium ${bannerCls}`}>
+                <span>{bannerIcon}</span>
+                {bannerText}
+                {data.runtime_tier_meta && (
+                    <span className="ml-auto">
+                        <RuntimeTierBadge tier={data.runtime_tier_meta.runtime_tier} latency={data.runtime_tier_meta.expected_latency} />
+                    </span>
+                )}
+            </div>
+
+            {/* Summary stats — skipped and fallback are first-class layers */}
+            <div className="flex flex-wrap gap-3 text-xs">
+                <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                    正常 {s.green_count}
+                </span>
+                <span className="rounded-full bg-yellow-100 px-2.5 py-1 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300">
+                    警告 {s.yellow_count}
+                </span>
+                <span className="rounded-full bg-red-100 px-2.5 py-1 text-red-700 dark:bg-red-900/40 dark:text-red-300">
+                    故障 {s.red_count}
+                </span>
+                <span className="rounded-full bg-slate-200 px-2.5 py-1 text-slate-600 dark:bg-slate-700 dark:text-slate-300">
+                    跳过 {s.skipped_count}
+                </span>
+                {s.fallback_triggered_count > 0 && (
+                    <span className="rounded-full bg-blue-100 px-2.5 py-1 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                        Fallback {s.fallback_triggered_count}
+                    </span>
+                )}
+                {data.report_date && <span className="text-slate-500">抽样日期: {data.report_date}</span>}
+                {data.env_gated && <span className="text-slate-400">（未开启 live smoke）</span>}
+            </div>
+
+            {/* Per-data-type summary */}
+            {Object.keys(s.by_data_type).length > 0 && (
+                <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                        <thead>
+                            <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+                                <th className="px-4 py-2.5 font-medium">数据类型</th>
+                                <th className="px-4 py-2.5 font-medium">总数</th>
+                                <th className="px-4 py-2.5 font-medium">正常</th>
+                                <th className="px-4 py-2.5 font-medium">警告</th>
+                                <th className="px-4 py-2.5 font-medium">故障</th>
+                                <th className="px-4 py-2.5 font-medium">跳过</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {Object.entries(s.by_data_type).map(([dt, stat]: [string, any]) => (
+                                <tr key={dt} className="border-b border-slate-50 dark:border-slate-800">
+                                    <td className="px-4 py-2.5 font-medium text-slate-700 dark:text-slate-300">{stat.label || dt}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-slate-600 dark:text-slate-300">{stat.total}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-emerald-600 dark:text-emerald-400">{stat.green}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-yellow-600 dark:text-yellow-400">{stat.yellow}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-red-600 dark:text-red-400">{stat.red}</td>
+                                    <td className="px-4 py-2.5 tabular-nums text-slate-500 dark:text-slate-400">{stat.skipped}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            )}
+
+            {/* Detailed results — layered by status */}
+            <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                    <thead>
+                        <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+                            <th className="px-4 py-2.5 font-medium">数据类型</th>
+                            <th className="px-4 py-2.5 font-medium">股票</th>
+                            <th className="px-4 py-2.5 font-medium">状态</th>
+                            <th className="px-4 py-2.5 font-medium">实际源</th>
+                            <th className="px-4 py-2.5 font-medium">Fallback</th>
+                            <th className="px-4 py-2.5 font-medium">记录数</th>
+                            <th className="px-4 py-2.5 font-medium">影响</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {data.results.map((r, idx) => {
+                            const badge = liveSamplingStatusBadge(r)
+                            const impactHint = (r.status === 'FAILED' || r.status === 'RATE_LIMITED')
+                                ? LIVE_SAMPLING_FIELD_IMPACT[r.data_type] || ''
+                                : ''
+                            return (
+                                <tr
+                                    key={`${r.data_type}-${r.symbol}-${idx}`}
+                                    className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
+                                >
+                                    <td className="px-4 py-2.5 font-medium text-slate-700 dark:text-slate-300">{r.data_type_label || r.data_type}</td>
+                                    <td className="px-4 py-2.5 text-xs text-slate-600 dark:text-slate-400">
+                                        <div className="font-mono">{r.symbol}</div>
+                                        {r.symbol_name && <div className="text-slate-400">{r.symbol_name}</div>}
+                                    </td>
+                                    <td className="px-4 py-2.5">
+                                        <span className={`inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium ${badge.cls}`}>
+                                            <span className={`h-1.5 w-1.5 rounded-full ${badge.dot}`} />
+                                            {badge.text}
+                                        </span>
+                                    </td>
+                                    <td className="px-4 py-2.5 text-xs text-slate-600 dark:text-slate-400">
+                                        {r.actual_vendor || r.primary_vendor || '-'}
+                                        {r.is_fallback && <span className="ml-1 text-blue-500">fallback</span>}
+                                    </td>
+                                    <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">
+                                        {r.is_fallback ? `${r.primary_vendor || '-'} → ${r.actual_vendor || '-'}` : '-'}
+                                    </td>
+                                    <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{r.record_count}</td>
+                                    <td className="max-w-[260px] px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400" title={r.diagnosis || impactHint}>
+                                        {impactHint || r.diagnosis || '-'}
+                                    </td>
+                                </tr>
+                            )
+                        })}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    )
+}
+
 // [H-013] mandate_topic_heatmap
 function heatTrendBadge(trend: string): { text: string; cls: string } {
     switch (trend) {
@@ -1716,6 +1942,7 @@ export default function TradeFlow() {
     })
     const [dataHealth, setDataHealth] = useState<TradeFlowDataHealthResponse | null>(null)
     const [sourceFreshness, setSourceFreshness] = useState<SourceFreshnessResponse | null>(null)  // [DATA-018]
+    const [liveSampling, setLiveSampling] = useState<LiveSamplingResponse | null>(null)  // [DATA-020] live_sampling_health_ui
     const [topicHeatmap, setTopicHeatmap] = useState<TopicHeatmapResponse | null>(null)  // [H-013] mandate_topic_heatmap
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -1906,6 +2133,16 @@ export default function TradeFlow() {
         }
     }, [])
 
+    // [DATA-020] live_sampling_health_ui
+    const fetchLiveSampling = useCallback(async () => {
+        try {
+            const res = await api.getLiveSamplingReport()
+            setLiveSampling(res)
+        } catch {
+            // silent fail — live sampling is supplementary
+        }
+    }, [])
+
     // [H-013] mandate_topic_heatmap
     const fetchTopicHeatmap = useCallback(async () => {
         try {
@@ -1931,10 +2168,18 @@ export default function TradeFlow() {
     }, [])
 
     // [TF-UX-003] generate review
+    // [TF-REVIEW-004] review_empty_diagnostics — surface failure reason
+    const [reviewGenerateError, setReviewGenerateError] = useState<string>('')
     const handleGenerateReview = useCallback(async () => {
         setReviewGenerating(true)
+        setReviewGenerateError('')
         try {
-            await api.generateTradeFlowReview(tradeDate)
+            const res = await api.generateTradeFlowReview(tradeDate)
+            if (res.status === 'no_data') {
+                // [TF-REVIEW-004] explain why generation could not proceed
+                const reason = res.empty_reason_message || res.data_status_message || res.message || '生成复盘失败'
+                setReviewGenerateError(reason)
+            }
             await fetchReview(tradeDate)
         } catch (e: unknown) {
             setError(e instanceof Error ? e.message : '生成复盘失败')
@@ -2011,12 +2256,13 @@ export default function TradeFlow() {
         } else if (activeTab === 'data-health') {
             await fetchDataHealth()
             await fetchSourceFreshness()  // [DATA-018]
+            await fetchLiveSampling()  // [DATA-020] live_sampling_health_ui
         } else if (activeTab === 'topic-heatmap') {  // [H-013] mandate_topic_heatmap
             await fetchTopicHeatmap()
         } else if (activeTab === 'paper-ledger') {
             await fetchPaperLedger()
         }
-    }, [activeTab, fetchCandidates, fetchCompare, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth, fetchSourceFreshness, fetchTopicHeatmap, fetchFiltered, fetchPaperLedger])
+    }, [activeTab, fetchCandidates, fetchCompare, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth, fetchSourceFreshness, fetchLiveSampling, fetchTopicHeatmap, fetchFiltered, fetchPaperLedger])
 
     useEffect(() => {
         void fetchData(tradeDate)
@@ -2712,18 +2958,55 @@ export default function TradeFlow() {
 
         if (activeTab === 'review') {
             if (!reviewData || reviewData.status === 'no_data') {
+                // [TF-REVIEW-004] review_empty_diagnostics — show specific reason + cross-date mapping
+                const emptyReason = reviewData?.empty_reason ?? ''
+                const emptyMsg = reviewData?.empty_reason_message ?? '尚未生成盘后复盘'
+                const suggested = reviewData?.suggested_action ?? ''
+                const hasPlanDates = (reviewData?.available_plan_dates?.length ?? 0) > 0
+                const showMapping = !!(reviewData?.plan_date && reviewData.plan_date !== reviewData.trade_date)
                 return (
-                    <div className="py-20 text-center text-sm text-slate-400">
-                        <BarChart3 className="mx-auto mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-                        <div className="mb-4">尚未生成盘后复盘</div>
-                        <button
-                            onClick={() => void handleGenerateReview()}
-                            disabled={reviewGenerating}
-                            className="inline-flex items-center gap-1.5 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                        >
-                            {reviewGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <BarChart3 className="h-4 w-4" />}
-                            {reviewGenerating ? '生成中...' : '生成今日复盘'}
-                        </button>
+                    <div className="space-y-4 p-4">
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-6 text-center text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                            <BarChart3 className="mx-auto mb-3 h-8 w-8 text-amber-400 dark:text-amber-500" />
+                            <div className="mb-1 text-base font-medium">{emptyMsg}</div>
+                            {emptyReason && (
+                                <div className="mb-1 text-[11px] uppercase tracking-wide text-amber-500 dark:text-amber-400/80">{emptyReason}</div>
+                            )}
+                            {suggested && (
+                                <div className="mb-1 text-xs text-amber-600 dark:text-amber-400">建议：{suggested}</div>
+                            )}
+                            {showMapping && (
+                                <div className="mt-2 inline-block rounded bg-blue-50 px-3 py-1.5 text-xs text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">
+                                    候选池生成日 {reviewData?.plan_date}
+                                    {reviewData?.effective_trade_date && `，生效交易日：${reviewData.effective_trade_date}`}
+                                    {reviewData?.review_date && `，复盘日：${reviewData.review_date}`}
+                                </div>
+                            )}
+                        </div>
+                        {hasPlanDates && (
+                            <div className="card px-4 py-3 text-xs text-slate-500 dark:text-slate-400">
+                                <span className="font-medium text-slate-600 dark:text-slate-300">已有候选池日期：</span>
+                                <span className="ml-1.5 font-mono">{reviewData?.available_plan_dates?.slice(0, 8).join('、') || '-'}</span>
+                                {(reviewData?.available_plan_dates?.length ?? 0) > 8 && (
+                                    <span className="ml-1">等 {reviewData?.available_plan_dates?.length} 个</span>
+                                )}
+                            </div>
+                        )}
+                        {reviewGenerateError && (
+                            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-xs text-red-600 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400">
+                                {reviewGenerateError}
+                            </div>
+                        )}
+                        <div className="text-center">
+                            <button
+                                onClick={() => void handleGenerateReview()}
+                                disabled={reviewGenerating}
+                                className="inline-flex items-center gap-1.5 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                            >
+                                {reviewGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <BarChart3 className="h-4 w-4" />}
+                                {reviewGenerating ? '生成中...' : '一键生成盘后复盘'}
+                            </button>
+                        </div>
                     </div>
                 )
             }
@@ -2747,6 +3030,13 @@ export default function TradeFlow() {
                             数据源新鲜度与 Fallback
                         </h3>
                         <SourceFreshnessPanel data={sourceFreshness} />
+                    </div>
+                    {/* [DATA-020] live_sampling_health_ui */}
+                    <div>
+                        <h3 className="mb-2 px-4 text-sm font-semibold text-slate-700 dark:text-slate-300">
+                            实盘抽样健康日报
+                        </h3>
+                        <LiveSamplingPanel data={liveSampling} />
                     </div>
                 </div>
             )

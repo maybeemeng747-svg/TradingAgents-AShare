@@ -180,6 +180,19 @@ CREATE TABLE IF NOT EXISTS tradeflow_observation_items (
 );
 """
 
+# [TF-REVIEW-004] review_empty_diagnostics — track generated review reports
+# per tradeflow DB so report-existence checks stay isolated from the global
+# docs/tradeflow_reviews/ filesystem (test isolation).
+CREATE_REVIEW_REPORTS_TABLE = """
+CREATE TABLE IF NOT EXISTS tradeflow_review_reports (
+    review_date TEXT PRIMARY KEY,
+    plan_date TEXT DEFAULT '',
+    effective_trade_date TEXT DEFAULT '',
+    generated_at TEXT DEFAULT '',
+    report_path TEXT DEFAULT ''
+);
+"""
+
 
 _MISSING_COLUMNS = [
     ("primary_strategy", "TEXT DEFAULT ''"),
@@ -311,6 +324,7 @@ def init_db(db_path: str) -> None:
         + CREATE_PAPER_LEDGER_TABLE  # [TF-PAPER-001] paper_trading_ledger
         + CREATE_PAPER_TRADES_TABLE  # [TF-PAPER-001] paper_trading_ledger
         + CREATE_OBSERVATION_ITEMS_TABLE  # [TRACK-001] observation_warehouse
+        + CREATE_REVIEW_REPORTS_TABLE  # [TF-REVIEW-004] review_empty_diagnostics
     )
     ensure_columns(conn)
     try:

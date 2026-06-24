@@ -117,8 +117,8 @@
 91. `TRACK-006`：TradeFlow/TA 候选一键加入观察仓与来源追踪（P1，done，commit 5aa512d）。
 92. `TRACK-NOTIFY-001`：飞书/总控官通知草稿 payload 与去噪规则（P1，done — TRACK-NOTIFY-001-20260623-122700，前置 IC-TA-001 ✓/TRACK-002 ✓ 均完成）。
 93. `TRACK-007`：跟踪看板端到端验收与用户操作手册（P2，done ✓，依赖 TRACK-003 ✓, TRACK-004 ✓, TRACK-005 ✓）。
-94. `DATA-020`：数据源健康日报前端可视化与 skipped/failed 分层展示（P1，ready，依赖 DATA-019A）。
-95. `TF-REVIEW-004`：盘后 Review 空数据诊断与一键生成入口（P1，ready，依赖 TF-REVIEW-003）。
+  94. `DATA-020`：数据源健康日报前端可视化与 skipped/failed 分层展示（P1，done，依赖 DATA-019A）。
+  95. `TF-REVIEW-004`：盘后 Review 空数据诊断与一键生成入口（P1，done，依赖 TF-REVIEW-003）。
 96. `H-014`：昊天主题候选减少与主题集中度阈值校准（P1，ready，依赖 H-013A/H-012）。
 97. `V-009`：小资金试跑后回归清单与用户操作手册（P1，ready，依赖 V-008）。
 98. `TF-OBS-004`：盘中观察自动刷新、触发提醒与人工确认队列降噪（P1，ready，依赖 TF-OBS-003/TF-RISK-001）。
@@ -3524,7 +3524,7 @@
 ### DATA-020: 数据源健康日报前端可视化与 skipped/failed 分层展示（P1）
 - **描述**：把 DATA-019/019A 的关键数据源抽样结果接入 TradeFlow/数据健康面板，让 skipped、failed、normal-no-data、fallback 不再混在一起。
 - **优先级**：P1
-- **状态**：in_progress — claimed DATA-020-20260624-111210
+- **状态**：done — DATA-020-20260624-111210
 - **前置条件**：DATA-019A 完成。
 - **执行约束**：
   - 默认不触发 live smoke。
@@ -3544,7 +3544,7 @@
 ### TF-REVIEW-004: 盘后 Review 空数据诊断与一键生成入口（P1）
 - **描述**：用户反馈盘后 Review 经常“没有数据”。本任务要求把空数据原因讲清楚，并提供一键生成/补生成入口。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — TF-REVIEW-004-20260624-111425（21 tests passed；回归 339+149 passed；npm build 通过）
 - **前置条件**：TF-REVIEW-003 完成。
 - **执行约束**：
   - 不调用 LLM。

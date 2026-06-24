@@ -1,0 +1,760 @@
+[0m
+> build · glm-5.2
+[0m
+[0m→ [0mRead tests/test_tf_review_004_empty_diagnostics.py
+[0m✱ [0mGrep "_diagnose_review_empty_state"[90m in . · 18 matches[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=130, offset=971][0m
+[0m✱ [0mGrep "_review_report_exists"[90m in . · 2 matches[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=12, offset=955][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=10, offset=960][0m
+[0m✱ [0mGlob "docs/tradeflow_reviews/2026-06-02.md"[90m 1 match[0m
+[0m✱ [0mGrep "tradeflow_reviews"[90m in . · 3 matches[0m
+[0m→ [0mRead tradingagents/tradeflow/post_market_review.py[90m [limit=40, offset=810][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=120, offset=1700][0m
+[0m✱ [0mGrep "CREATE TABLE"[90m in . · 36 matches[0m
+[0m✱ [0mGrep "_get_project_root|_get_tradeflow_db_path"[90m in api/services/tradeflow_service.py · 15 matches[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=30, offset=25][0m
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [limit=130, offset=40][0m
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [limit=90, offset=169][0m
+[0m✱ [0mGrep "def init_db|CREATE_OBSERVATION_ITEMS_TABLE|CREATE_PAPER_TRADES_TABLE|CREATE_FILTERED_SYMBOLS_TABLE|CREATE_DAILY_PLANS_TABLE|CREATE_SIGNALS_TABLE|CREATE_CANDIDATES_TABLE|CREATE_PAPER_LEDGER_TABLE"[90m in tradingagents/tradeflow/candidate_engine.py · 15 matches[0m
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [limit=60, offset=303][0m
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git log --oneline -3 -- docs/tradeflow_reviews/2026-06-02.md 2>/dev/null; echo "---tracked?---"; git ls-files docs/tradeflow_reviews/ | head -20; echo "---all files---"; ls -la docs/tradeflow_reviews/ 2>/dev/null | head
+738baa2 auto: TF-REVIEW-003 盘后 Review 策略命中归因与次日反馈（P1） [AUTO-002]
+19b879b auto: TF-REVIEW-002 盘后 Review 数据补齐与非交易日计划映射（P0） [AUTO-002]
+---tracked?---
+docs/tradeflow_reviews/2026-06-02.md
+docs/tradeflow_reviews/2026-06-08.md
+docs/tradeflow_reviews/2026-06-15.md
+docs/tradeflow_reviews/2026-06-22.md
+docs/tradeflow_reviews/2026-06-23.md
+---all files---
+total 48
+drwxr-xr-x   8 maybee  staff   256 Jun 24 11:29 .
+drwxr-xr-x@ 29 maybee  staff   928 Jun 24 11:30 ..
+-rw-------   1 maybee  staff  1520 Jun 24 11:45 2026-05-31.md
+-rw-------   1 maybee  staff  1502 Jun 24 11:46 2026-06-02.md
+-rw-r--r--   1 maybee  staff  1229 Jun  8 17:08 2026-06-08.md
+-rw-------@  1 maybee  staff  2593 Jun 24 11:47 2026-06-15.md
+-rw-r--r--   1 maybee  staff  3391 Jun 22 15:54 2026-06-22.md
+-rw-r--r--   1 maybee  staff  2315 Jun 23 15:04 2026-06-23.md
+[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=24, offset=1][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=50, offset=900][0m
+I've identified the root cause. The test uses a temp DB for candidates/signals, but `_review_report_exists` checks the global `docs/tradeflow_reviews/` filesystem. Since `docs/tradeflow_reviews/2026-06-02.md` is a committed report file, it leaks into the test → `MARKET_DATA_MISSING` instead of `NOT_GENERATED`.
+
+The fix: track generated review reports in the tradeflow DB (per-context, isolated) and prefer the DB record, with a file fallback only for the default production DB.
+[0m→ [0mRead tradingagents/tradeflow/candidate_engine.py[90m [limit=8, offset=153][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -179,9 +179,22 @@
+     UNIQUE(symbol)
+ );
+ """
+ 
++# [TF-REVIEW-004] review_empty_diagnostics — track generated review reports
++# per tradeflow DB so report-existence checks stay isolated from the global
++# docs/tradeflow_reviews/ filesystem (test isolation).
++CREATE_REVIEW_REPORTS_TABLE = """
++CREATE TABLE IF NOT EXISTS tradeflow_review_reports (
++    review_date TEXT PRIMARY KEY,
++    plan_date TEXT DEFAULT '',
++    effective_trade_date TEXT DEFAULT '',
++    generated_at TEXT DEFAULT '',
++    report_path TEXT DEFAULT ''
++);
++"""
+ 
++
+ _MISSING_COLUMNS = [
+     ("primary_strategy", "TEXT DEFAULT ''"),
+     ("policy_tags_json", "TEXT DEFAULT '[]'"),
+     ("version_score", "REAL DEFAULT 0.0"),
+
+[0m
+Now let me implement the fix. First, add the review reports table to `candidate_engine.py`:
+[0m← [0mEdit tradingagents/tradeflow/candidate_engine.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/candidate_engine.py
+@@ -323,8 +323,9 @@
+     + CREATE_FILTERED_SYMBOLS_TABLE  # [UI-007] tradeflow_filtered_trace
+     + CREATE_PAPER_LEDGER_TABLE  # [TF-PAPER-001] paper_trading_ledger
+     + CREATE_PAPER_TRADES_TABLE  # [TF-PAPER-001] paper_trading_ledger
+     + CREATE_OBSERVATION_ITEMS_TABLE  # [TRACK-001] observation_warehouse
++    + CREATE_REVIEW_REPORTS_TABLE  # [TF-REVIEW-004] review_empty_diagnostics
+ )
+ ensure_columns(conn)
+ try:
+     conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+
+[0m
+Now update `_review_report_exists` to prefer the per-DB record with a production-only file fallback:
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -956,16 +956,40 @@
+         return False
+ 
+ 
+ # [TF-REVIEW-004] review_empty_diagnostics
+-def _review_report_exists(review_date: str) -> bool:
+-    """Return True if a saved review markdown report exists for review_date."""
++def _review_report_exists(review_date: str, tf_db_path: str = "") -> bool:
++    """Return True if a saved review report exists for review_date.
++
++    Prefers the per-DB record in ``tradeflow_review_reports`` so report
++    existence stays isolated to the queried tradeflow DB (test isolation).
++    Falls back to the project report file *only* when querying the default
++    production DB, ensuring injected test DBs never leak global report files.
++    """
+     if not review_date:
+         return False
+-    report_path = os.path.join(
+-        _get_project_root(), "docs", "tradeflow_reviews", f"{review_date}.md"
+-    )
+-    return os.path.exists(report_path)
++    db_path = tf_db_path or _get_tradeflow_db_path()
++    conn = _connect(db_path)
++    if conn is not None:
++        try:
++            row = conn.execute(
++                "SELECT 1 FROM tradeflow_review_reports WHERE review_date = ?",
++                (review_date,),
++            ).fetchone()
++            if row:
++                return True
++        except sqlite3.Error:
++            pass
++        finally:
++            conn.close()
++    # Legacy file fallback — only for the default production DB context,
++    # never for injected (test) DBs, to keep tests isolated.
++    if db_path == _get_tradeflow_db_path():
++        report_path = os.path.join(
++            _get_project_root(), "docs", "tradeflow_reviews", f"{review_date}.md"
++        )
++        return os.path.exists(report_path)
++    return False
+ 
+ 
+ # [TF-REVIEW-004] review_empty_diagnostics
+ def _diagnose_review_empty_state(trade_date: str, tf_db_path: str = "") -> dict:
+
+[0m
+Now update the call site in `_diagnose_review_empty_state` to pass the resolved `db_path`:
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -1059,9 +1059,9 @@
+ if best and best == trade_date:
+     if not has_signals:
+         # Candidates present but observe never ran
+         reason = ReviewEmptyReason.NO_OBSERVE
+-    elif not _review_report_exists(trade_date):
++    elif not _review_report_exists(trade_date, db_path):
+         reason = ReviewEmptyReason.NOT_GENERATED
+     else:
+         # Report exists but data still empty → likely market data missing
+         reason = ReviewEmptyReason.MARKET_DATA_MISSING
+
+[0m
+Now record the generated report in the DB within `generate_review`. Let me look at the exact context around `save_review_report`:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=10, offset=1815][0m
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -1816,13 +1816,34 @@
+     plan_date=plan_date,
+     effective_trade_date=effective_trade_date,
+ )
+ 
++report_saved_path = ""
+ try:
+-    save_review_report(summary)
++    report_saved_path = save_review_report(summary)
+ except Exception:
+     pass
+ 
++# [TF-REVIEW-004] track generated report in DB for isolated diagnostics
++try:
++    conn = sqlite3.connect(tf_db)
++    conn.execute(
++        "INSERT OR REPLACE INTO tradeflow_review_reports "
++        "(review_date, plan_date, effective_trade_date, generated_at, report_path) "
++        "VALUES (?, ?, ?, ?, ?)",
++        (
++            review_date,
++            plan_date,
++            effective_trade_date,
++            datetime.now().isoformat(timespec="seconds"),
++            report_saved_path or "",
++        ),
++    )
++    conn.commit()
++    conn.close()
++except Exception:
++    pass
++
+ return {
+     "status": "ok",
+     "trade_date": trade_date,
+     "data_status": summary.data_status,
+
+[0m
+Now let me verify the fix by running the failing test:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tf_review_004_empty_diagnostics.py -x -q 2>&1 | tail -25
+if not is_td:
+            reason = ReviewEmptyReason.NON_TRADING_DAY_MAPPED
+            eff = next_cn_trading_day(trade_date)
+            diag["empty_reason"] = reason.value
+            diag["empty_reason_message"] = reason.message_cn
+            diag["suggested_action"] = reason.suggested_action_cn
+            diag["plan_date"] = best or trade_date
+            diag["effective_trade_date"] = eff
+            diag["review_date"] = eff
+            return diag
+    
+        # Case 3: candidates exist for this trading day (best == trade_date)
+        if best and best == trade_date:
+            if not has_signals:
+                # Candidates present but observe never ran
+                reason = ReviewEmptyReason.NO_OBSERVE
+>           elif not _review_report_exists(trade_date, db_path):
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           TypeError: TestDiagnoseEmptyState.test_candidates_and_observe_but_not_generated.<locals>.<lambda>() takes 1 positional argument but 2 were given
+
+api/services/tradeflow_service.py:1063: TypeError
+=========================== short test summary info ============================
+FAILED tests/test_tf_review_004_empty_diagnostics.py::TestDiagnoseEmptyState::test_candidates_and_observe_but_not_generated
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 11 passed in 1.53s
+[0m
+[0m✱ [0mGrep "_review_report_exists"[90m in . · 4 matches[0m
+The file differs from my earlier read. Let me re-read the current state:
+[0m→ [0mRead tests/test_tf_review_004_empty_diagnostics.py[90m [limit=60, offset=155][0m
+The test file on disk differs from the task's snapshot — it now uses `monkeypatch` with a 1-arg lambda. Let me check git status to understand the current state:
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git status && echo "===DIFF TEST FILE===" && git diff -- tests/test_tf_review_004_empty_diagnostics.py | head -80
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 145 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     api/main.py
+	修改：     api/runtime_tier.py
+	修改：     api/services/tradeflow_service.py
+	修改：     api/tradeflow_schemas.py
+	修改：     docs/DEVLOG.md
+	修改：     docs/TASKS.md
+	修改：     docs/tradeflow_trial_acceptance.md
+	修改：     docs/tradeflow_trial_acceptance_v2.md
+	修改：     frontend/src/pages/TradeFlow.tsx
+	修改：     frontend/src/services/api.ts
+	修改：     frontend/src/types/index.ts
+	修改：     tradingagents/dataflows/live_source_sampling.py
+	修改：     tradingagents/tradeflow/candidate_engine.py
+	修改：     tradingagents/tradeflow/post_market_review.py
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/task_runs/DATA-020-20260624-111210/opencode-round1.txt
+	docs/task_runs/DATA-020-20260624-111210/prompt-round2.md
+	docs/task_runs/DATA-020-20260624-111210/summary.md
+	docs/task_runs/DATA-020-20260624-111210/tests-round1.txt
+	docs/task_runs/TF-REVIEW-004-20260624-111425/
+	docs/tradeflow_reviews/2026-05-31.md
+	tests/test_data020_live_sampling_api.py
+	tests/test_tf_review_004_empty_diagnostics.py
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+===DIFF TEST FILE===
+[0m
+The test file is untracked and was updated (now uses `monkeypatch` with 1-arg lambdas). My 2-arg call broke those lambdas. Let me check the full current test state and the implementation diff to choose the most robust fix:
+[0m→ [0mRead tests/test_tf_review_004_empty_diagnostics.py[90m [limit=35, offset=155][0m
+The test file has been updated again — it now expects the DB-tracking design exactly as I implemented it (no monkeypatch; it inserts/queries the `tradeflow_review_reports` table directly). My implementation matches. Let me verify it passes:
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tf_review_004_empty_diagnostics.py -q 2>&1 | tail -20
+.....................                                                    [100%]
+21 passed in 1.68s
+[0m
+All 21 tests pass. Let me verify I haven't broken related functionality by running broader tradeflow review/generate tests:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/ -q -k "review or generate_review or tradeflow_service or tf_review or post_market" 2>&1 | tail -20
+........................................................................ [ 19%]
+........................................................................ [ 39%]
+........................................................................ [ 59%]
+........................................................................ [ 78%]
+........................................................................ [ 98%]
+......                                                                   [100%]
+366 passed, 6144 deselected in 17.03s
+[0m
+Let me also verify the `candidate_engine` / `init_db` change doesn't break schema-related tests:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/ -q -k "candidate_engine or init_db or runtime_tier or paper or observation" 2>&1 | tail -12
+........................................................................ [ 15%]
+........................................................................ [ 30%]
+........................................................................ [ 46%]
+........................................................................ [ 61%]
+........................................................................ [ 76%]
+........................................................................ [ 92%]
+.....................................                                    [100%]
+469 passed, 6041 deselected in 33.01s
+[0m
+All passing. Let me review my final implementation changes to confirm correctness:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git diff -- api/services/tradeflow_service.py tradingagents/tradeflow/candidate_engine.py
+diff --git a/api/services/tradeflow_service.py b/api/services/tradeflow_service.py
+index 726f036..c0f5cd4 100644
+--- a/api/services/tradeflow_service.py
++++ b/api/services/tradeflow_service.py
+@@ -934,6 +934,162 @@ def _get_available_dates(tf_db_path: str = "") -> list[str]:
+     return dates
+ 
+ 
++# [TF-REVIEW-004] review_empty_diagnostics
++def _has_observe_signals_for_date(db_path: str, trade_date: str) -> bool:
++    """Return True if tradeflow_signals has any observe_* signal on trade_date."""
++    if not os.path.exists(db_path) or not trade_date:
++        return False
++    try:
++        conn = _connect(db_path)
++        if conn is None:
++            return False
++        try:
++            row = conn.execute(
++                "SELECT COUNT(*) as cnt FROM tradeflow_signals "
++                "WHERE signal_type LIKE 'observe_%' AND date(signal_time) = ?",
++                (trade_date,),
++            ).fetchone()
++            return bool(row and row["cnt"] > 0)
++        finally:
++            conn.close()
++    except Exception:
++        return False
++
++
++# [TF-REVIEW-004] review_empty_diagnostics
++def _review_report_exists(review_date: str, tf_db_path: str = "") -> bool:
++    """Return True if a saved review report exists for review_date.
++
++    Prefers the per-DB record in ``tradeflow_review_reports`` so report
++    existence stays isolated to the queried tradeflow DB (test isolation).
++    Falls back to the project report file *only* when querying the default
++    production DB, ensuring injected test DBs never leak global report files.
++    """
++    if not review_date:
++        return False
++    db_path = tf_db_path or _get_tradeflow_db_path()
++    conn = _connect(db_path)
++    if conn is not None:
++        try:
++            row = conn.execute(
++                "SELECT 1 FROM tradeflow_review_reports WHERE review_date = ?",
++                (review_date,),
++            ).fetchone()
++            if row:
++                return True
++        except sqlite3.Error:
++            pass
++        finally:
++            conn.close()
++    # Legacy file fallback — only for the default production DB context,
++    # never for injected (test) DBs, to keep tests isolated.
++    if db_path == _get_tradeflow_db_path():
++        report_path = os.path.join(
++            _get_project_root(), "docs", "tradeflow_reviews", f"{review_date}.md"
++        )
++        return os.path.exists(report_path)
++    return False
++
++
++# [TF-REVIEW-004] review_empty_diagnostics
++def _diagnose_review_empty_state(trade_date: str, tf_db_path: str = "") -> dict:
++    """Diagnose WHY a post-market Review is empty for ``trade_date``.
++
++    Returns a dict with:
++      - empty_reason: one of ReviewEmptyReason values ("" if not empty-diagnostic)
++      - empty_reason_message: Chinese explanation
++      - suggested_action: actionable hint for the user
++      - available_plan_dates: dates that have candidates
++      - latest_plan_date
++      - has_observe_signals: whether observe signals exist for the relevant date
++      - plan_date / effective_trade_date / review_date: cross-date mapping
++    """
++    from tradingagents.tradeflow.post_market_review import ReviewEmptyReason
++    from tradingagents.tradeflow.date_semantics import (
++        find_latest_plan_date,
++        next_cn_trading_day,
++    )
++    from tradingagents.dataflows.trade_calendar import is_cn_trading_day
++
++    db_path = tf_db_path or _get_tradeflow_db_path()
++    available_dates = _get_available_dates(tf_db_path)
++
++    diag: Dict[str, Any] = {
++        "empty_reason": "",
++        "empty_reason_message": "",
++        "suggested_action": "",
++        "available_plan_dates": available_dates,
++        "latest_plan_date": max(available_dates) if available_dates else "",
++        "has_observe_signals": False,
++        "plan_date": "",
++        "effective_trade_date": "",
++        "review_date": "",
++    }
++
++    # Case 1: no candidates anywhere → NO_CANDIDATES
++    if not available_dates:
++        reason = ReviewEmptyReason.NO_CANDIDATES
++        diag["empty_reason"] = reason.value
++        diag["empty_reason_message"] = reason.message_cn
++        diag["suggested_action"] = reason.suggested_action_cn
++        return diag
++
++    best = find_latest_plan_date(available_dates, trade_date)
++    is_td = is_cn_trading_day(trade_date)
++    has_signals = _has_observe_signals_for_date(db_path, trade_date) or (
++        _has_observe_signals_for_date(db_path, best) if best else False
++    )
++    diag["has_observe_signals"] = has_signals
++
++    # Case 2: queried date is a non-trading day → plan maps to next trading day
++    # This takes precedence: a weekend plan (e.g. 5/31) should be reviewed on
++    # the next trading day (e.g. 6/1), regardless of where candidates are stored.
++    if not is_td:
++        reason = ReviewEmptyReason.NON_TRADING_DAY_MAPPED
++        eff = next_cn_trading_day(trade_date)
++        diag["empty_reason"] = reason.value
++        diag["empty_reason_message"] = reason.message_cn
++        diag["suggested_action"] = reason.suggested_action_cn
++        diag["plan_date"] = best or trade_date
++        diag["effective_trade_date"] = eff
++        diag["review_date"] = eff
++        return diag
++
++    # Case 3: candidates exist for this trading day (best == trade_date)
++    if best and best == trade_date:
++        if not has_signals:
++            # Candidates present but observe never ran
++            reason = ReviewEmptyReason.NO_OBSERVE
++        elif not _review_report_exists(trade_date, db_path):
++            reason = ReviewEmptyReason.NOT_GENERATED
++        else:
++            # Report exists but data still empty → likely market data missing
++            reason = ReviewEmptyReason.MARKET_DATA_MISSING
++        diag["empty_reason"] = reason.value
++        diag["empty_reason_message"] = reason.message_cn
++        diag["suggested_action"] = reason.suggested_action_cn
++        diag["plan_date"] = best
++        diag["effective_trade_date"] = best
++        diag["review_date"] = trade_date
++        return diag
++
++    # Case 4: candidates exist elsewhere but not for this trading day
++    if best and best != trade_date and is_td:
++        reason = ReviewEmptyReason.NO_CANDIDATES
++        diag["empty_reason"] = reason.value
++        diag["empty_reason_message"] = reason.message_cn
++        diag["suggested_action"] = reason.suggested_action_cn
++        diag["plan_date"] = best
++        return diag
++
++    # Fallback: no candidates for this date
++    reason = ReviewEmptyReason.NO_CANDIDATES
++    diag["empty_reason"] = reason.value
++    diag["empty_reason_message"] = reason.message_cn
++    diag["suggested_action"] = reason.suggested_action_cn
++    return diag
++
++
+ def get_review(trade_date: str, tf_db_path: str = "") -> dict:
+     # [TF-REVIEW-002] review_date_mapping
+     _fast_meta = _tradeflow_meta("tradeflow_review")  # [PERF-001]
+@@ -953,13 +1109,24 @@ def get_review(trade_date: str, tf_db_path: str = "") -> dict:
+ 
+     if plan_data.get("status") == "no_data":
+         # [TF-REVIEW-002] review_date_mapping — return clear data_status
++        # [TF-REVIEW-004] review_empty_diagnostics — diagnose the empty reason
+         from tradingagents.tradeflow.post_market_review import ReviewDataStatus
++        _diag = _diagnose_review_empty_state(trade_date, tf_db_path)
+         return {
+             "status": "no_data",
+             "trade_date": trade_date,
+             "data_status": ReviewDataStatus.NO_CANDIDATES.value,
+             "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
+             "runtime_tier_meta": _fast_meta,
++            "empty_reason": _diag["empty_reason"],
++            "empty_reason_message": _diag["empty_reason_message"],
++            "suggested_action": _diag["suggested_action"],
++            "available_plan_dates": _diag["available_plan_dates"],
++            "latest_plan_date": _diag["latest_plan_date"],
++            "has_observe_signals": _diag["has_observe_signals"],
++            "plan_date": _diag["plan_date"],
++            "effective_trade_date": _diag["effective_trade_date"],
++            "review_date": _diag["review_date"],
+         }
+ 
+     candidates = plan_data.get("candidates", [])
+@@ -1586,22 +1753,44 @@ def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
+                 candidates_data = get_candidates(best, tf_db_path=tf_db)
+ 
+     if candidates_data.get("status") == "no_data":
++        # [TF-REVIEW-004] review_empty_diagnostics — diagnose the empty reason
++        _diag = _diagnose_review_empty_state(trade_date, tf_db_path=tf_db)
+         return {
+             "status": "no_data",
+             "trade_date": trade_date,
+             "message": "无候选数据",
+             "data_status": ReviewDataStatus.NO_CANDIDATES.value,
+             "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
++            "empty_reason": _diag["empty_reason"],
++            "empty_reason_message": _diag["empty_reason_message"],
++            "suggested_action": _diag["suggested_action"],
++            "available_plan_dates": _diag["available_plan_dates"],
++            "latest_plan_date": _diag["latest_plan_date"],
++            "has_observe_signals": _diag["has_observe_signals"],
++            "plan_date": _diag["plan_date"],
++            "effective_trade_date": _diag["effective_trade_date"],
++            "review_date": _diag["review_date"],
+         }
+ 
+     candidates = candidates_data.get("candidates", [])
+     if not candidates:
++        # [TF-REVIEW-004] review_empty_diagnostics — diagnose the empty reason
++        _diag = _diagnose_review_empty_state(trade_date, tf_db_path=tf_db)
+         return {
+             "status": "no_data",
+             "trade_date": trade_date,
+             "message": "候选列表为空",
+             "data_status": ReviewDataStatus.NO_CANDIDATES.value,
+             "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
++            "empty_reason": _diag["empty_reason"],
++            "empty_reason_message": _diag["empty_reason_message"],
++            "suggested_action": _diag["suggested_action"],
++            "available_plan_dates": _diag["available_plan_dates"],
++            "latest_plan_date": _diag["latest_plan_date"],
++            "has_observe_signals": _diag["has_observe_signals"],
++            "plan_date": _diag["plan_date"],
++            "effective_trade_date": _diag["effective_trade_date"],
++            "review_date": _diag["review_date"],
+         }
+ 
+     # [TF-REVIEW-002] Resolve plan_date vs review_date
+@@ -1628,8 +1817,29 @@ def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
+         effective_trade_date=effective_trade_date,
+     )
+ 
++    report_saved_path = ""
+     try:
+-        save_review_report(summary)
++        report_saved_path = save_review_report(summary)
++    except Exception:
++        pass
++
++    # [TF-REVIEW-004] track generated report in DB for isolated diagnostics
++    try:
++        conn = sqlite3.connect(tf_db)
++        conn.execute(
++            "INSERT OR REPLACE INTO tradeflow_review_reports "
++            "(review_date, plan_date, effective_trade_date, generated_at, report_path) "
++            "VALUES (?, ?, ?, ?, ?)",
++            (
++                review_date,
++                plan_date,
++                effective_trade_date,
++                datetime.now().isoformat(timespec="seconds"),
++                report_saved_path or "",
++            ),
++        )
++        conn.commit()
++        conn.close()
+     except Exception:
+         pass
+ 
+@@ -2841,6 +3051,69 @@ def get_source_freshness(
+     }
+ 
+ 
++# [DATA-020] live_sampling_health_ui
++def get_live_sampling_report(
++    reports_dir: str = "docs/data_source_reports",
++) -> dict:
++    """Read the latest live-sampling report for the frontend health panel.
++
++    Returns a ``no_data`` envelope when no report exists so the UI can render
++    a clean empty state instead of erroring. Never performs live network
++    calls — it only reads the JSON sidecar written by
++    :func:`save_live_sampling_report`.
++    """
++    _fast_meta = _tradeflow_meta("tradeflow_live_sampling")
++
++    from tradingagents.dataflows.live_source_sampling import (
++        load_latest_live_sampling_report,
++    )
++
++    data = load_latest_live_sampling_report(reports_dir)
++
++    if not data:
++        return {
++            "status": "no_data",
++            "has_report": False,
++            "report_date": "",
++            "generated_at": "",
++            "env_gated": True,
++            "samples": [],
++            "results": [],
++            "summary": {
++                "total_checks": 0,
++                "status_counts": {},
++                "green_count": 0,
++                "yellow_count": 0,
++                "red_count": 0,
++                "skipped_count": 0,
++                "skipped_only": False,
++                "fallback_triggered_count": 0,
++                "all_green": False,
++                "has_failures": False,
++                "has_warnings": False,
++                "by_data_type": {},
++                "overall_status": "no_data",
++            },
++            "runtime_tier_meta": _fast_meta,
++        }
++
++    summary = data.get("summary") or {}
++    if not summary.get("overall_status"):
++        summary["overall_status"] = "no_data"
++
++    return {
++        "status": "ok",
++        "has_report": True,
++        "report_date": data.get("report_date", ""),
++        "generated_at": data.get("generated_at", ""),
++        "env_gated": bool(data.get("env_gated", True)),
++        "samples": data.get("samples", []),
++        "results": data.get("results", []),
++        "summary": summary,
++        "runtime_tier_meta": _fast_meta,
++    }
++
++
+ # [TRACK-001] observation_warehouse
+ # ──────────────────────────────────────────────────────────────────────────────
+ # Observation warehouse: container for symbols the user wants to buy but is
+diff --git a/tradingagents/tradeflow/candidate_engine.py b/tradingagents/tradeflow/candidate_engine.py
+index 0f6926a..43e472a 100644
+--- a/tradingagents/tradeflow/candidate_engine.py
++++ b/tradingagents/tradeflow/candidate_engine.py
+@@ -180,6 +180,19 @@ CREATE TABLE IF NOT EXISTS tradeflow_observation_items (
+ );
+ """
+ 
++# [TF-REVIEW-004] review_empty_diagnostics — track generated review reports
++# per tradeflow DB so report-existence checks stay isolated from the global
++# docs/tradeflow_reviews/ filesystem (test isolation).
++CREATE_REVIEW_REPORTS_TABLE = """
++CREATE TABLE IF NOT EXISTS tradeflow_review_reports (
++    review_date TEXT PRIMARY KEY,
++    plan_date TEXT DEFAULT '',
++    effective_trade_date TEXT DEFAULT '',
++    generated_at TEXT DEFAULT '',
++    report_path TEXT DEFAULT ''
++);
++"""
++
+ 
+ _MISSING_COLUMNS = [
+     ("primary_strategy", "TEXT DEFAULT ''"),
+@@ -311,6 +324,7 @@ def init_db(db_path: str) -> None:
+         + CREATE_PAPER_LEDGER_TABLE  # [TF-PAPER-001] paper_trading_ledger
+         + CREATE_PAPER_TRADES_TABLE  # [TF-PAPER-001] paper_trading_ledger
+         + CREATE_OBSERVATION_ITEMS_TABLE  # [TRACK-001] observation_warehouse
++        + CREATE_REVIEW_REPORTS_TABLE  # [TF-REVIEW-004] review_empty_diagnostics
+     )
+     ensure_columns(conn)
+     try:
+[0m
+The fix is complete and all tests pass. The diff shows my targeted additions on top of the pre-existing (uncommitted) TF-REVIEW-004 work. Now let me update `docs/DEVLOG.md` as required:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=40][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,45 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-24 | DATA-020 修复 TF-REVIEW-004 空状态诊断测试隔离
++
++- **执行者**：OpenCode (glm-5.2)
++- **类型**：backend / 测试隔离修复
++- **状态**：✅ 完成（不提交）
++
++### 背景
++
++`tests/test_tf_review_004_empty_diagnostics.py::TestDiagnoseEmptyState::test_candidates_and_observe_but_not_generated` 失败：临时库里有候选 + observe 信号但无报告，期望 `not_generated`，实际返回 `market_data_missing`。
++
++根因：`_review_report_exists()` 直接检查全局 `docs/tradeflow_reviews/YYYY-MM-DD.md` 文件，而该目录下 `2026-06-02.md` 等真实报告已被 git 跟踪并落盘。测试用临时 DB 注入候选/信号做隔离，但报告存在性检查却读的是全局文件系统，导致泄漏 → 误判为「报告已存在」，从而走入 `MARKET_DATA_MISSING` 分支。
++
++### 变更
++
++#### `tradingagents/tradeflow/candidate_engine.py`（`# [TF-REVIEW-004]`）
++
++- 新增 `tradeflow_review_reports` 表（`CREATE_REVIEW_REPORTS_TABLE`）并在 `init_db()` 中创建：`review_date` 主键 + `plan_date / effective_trade_date / generated_at / report_path`。报告生成记录下沉到 tradeflow DB，按库隔离。
++
++#### `api/services/tradeflow_service.py`（`# [TF-REVIEW-004]`）
++
++- `_review_report_exists(review_date, tf_db_path="")` 改为优先查 `tradeflow_review_reports` 表（按传入的 `tf_db_path` 隔离）；文件系统回退仅在查询默认生产库（`db_path == _get_tradeflow_db_path()`）时启用，注入的测试库绝不回退到全局文件，彻底消除泄漏。
++- `_diagnose_review_empty_state` 调用点改为 `_review_report_exists(trade_date, db_path)`，把上下文 DB 透传进去。
++- `generate_review` 在 `save_review_report()` 后向 `tradeflow_review_reports` 写入一行（`INSERT OR REPLACE`），使后续诊断与新报告自洽；写库失败不影响主流程。
++
++### 验证
++
++- `pytest tests/test_tf_review_004_empty_diagnostics.py` → 21 passed。
++- `pytest -k "review or generate_review or tradeflow_service or tf_review or post_market"` → 366 passed。
++- `pytest -k "candidate_engine or init_db or runtime_tier or paper or observation"` → 469 passed。
++
++### 风险点
++
++- 生产库历史报告（仅落盘未入库）首次诊断时会显示 `not_generated` 而非 `market_data_missing`；下次 `generate_review` 即自动补录，自愈且无副作用。
++- 未改动 `tradingagents/prompts/`，未写生产 `tradingagents.db`，未提交。
++
++---
++
+ ## 2026-06-24 | TF-REVIEW-004 盘后 Review 空数据诊断与一键生成入口
+ 
+ - **执行者**：OpenCode (glm-5.2)
+ - **类型**：backend + frontend / review empty-state diagnostics
+
+[0m
+Final confirmation — re-run the originally failing test and a compile check:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -c "import api.services.tradeflow_service, tradingagents.tradeflow.candidate_engine" && python -m pytest tests/test_tf_review_004_empty_diagnostics.py::TestDiagnoseEmptyState::test_candidates_and_observe_but_not_generated tests/test_tf_review_004_empty_diagnostics.py::TestDiagnoseEmptyState -q 2>&1 | tail -8
+......                                                                   [100%]
+6 passed in 1.36s
+[0m
+The fix is complete. Summary:
+
+**Root cause:** `_review_report_exists()` checked the global `docs/tradeflow_reviews/YYYY-MM-DD.md` filesystem. Since `2026-06-02.md` is a committed report, it leaked into the test (which isolates candidates/signals via a temp DB) → misdiagnosed as `market_data_missing` instead of `not_generated`.
+
+**Fix (DB-tracked report existence for proper isolation):**
+- `tradingagents/tradeflow/candidate_engine.py:183` — added `tradeflow_review_reports` table to `init_db`.
+- `api/services/tradeflow_service.py:960` — `_review_report_exists(review_date, tf_db_path)` now queries that table first; file fallback is gated to only the default production DB, so injected test DBs never leak global files.
+- `api/services/tradeflow_service.py:1063` — diagnose passes the resolved `db_path`.
+- `api/services/tradeflow_service.py:1820` — `generate_review` records each generated report into the table.
+
+**Verification:** the originally failing test now passes (21/21 in file; 366 related + 469 schema tests green). `docs/DEVLOG.md` updated. No prompts touched, no prod DB writes, no commit.

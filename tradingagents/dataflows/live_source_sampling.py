@@ -43,6 +43,7 @@ Output:
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -870,6 +871,10 @@ def save_live_sampling_report(
 
     Output filename format: ``YYYY-MM-DD-live-smoke.md``
     (per DATA-019 task spec).
+
+    Also writes a JSON sidecar (``YYYY-MM-DD-live-smoke.json``) carrying the
+    structured report so that the DATA-020 frontend/API can render
+    skipped / failed / fallback layers without re-parsing Markdown.
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -881,6 +886,20 @@ def save_live_sampling_report(
 
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(content)
+
+    # [DATA-020] live_sampling_health_ui — JSON sidecar for structured access.
+    json_filename = filename
+    if json_filename.endswith(".md"):
+        json_filename = json_filename[:-3] + ".json"
+    else:
+        json_filename = f"{report.report_date}-live-smoke.json"
+    json_filepath = os.path.join(output_dir, json_filename)
+    try:
+        with open(json_filepath, "w", encoding="utf-8") as f:
+            json.dump(report.to_dict(), f, ensure_ascii=False, indent=2)
+    except Exception:
+        # JSON sidecar is best-effort; never break Markdown save.
+        pass
 
     return filepath
 
@@ -904,6 +923,50 @@ def find_latest_live_sampling_report(
 
     files.sort(key=lambda x: x[0], reverse=True)
     return files[0][1]
+
+
+# [DATA-020] live_sampling_health_ui
+def find_latest_live_sampling_json(
+    reports_dir: str = "docs/data_source_reports",
+) -> Optional[str]:
+    """Find the latest live-sampling JSON sidecar file."""
+    if not os.path.isdir(reports_dir):
+        return None
+
+    files = []
+    for f in os.listdir(reports_dir):
+        if not f.endswith("-live-smoke.json"):
+            continue
+        date_part = f.replace("-live-smoke.json", "")
+        files.append((date_part, os.path.join(reports_dir, f)))
+
+    if not files:
+        return None
+
+    files.sort(key=lambda x: x[0], reverse=True)
+    return files[0][1]
+
+
+def load_latest_live_sampling_report(
+    reports_dir: str = "docs/data_source_reports",
+) -> Optional[Dict[str, Any]]:
+    """Load the latest live-sampling report as a structured dict.
+
+    Reads the JSON sidecar produced by :func:`save_live_sampling_report`.
+    Returns ``None`` when no report exists or the sidecar is unreadable.
+    Never raises — callers (API/UI) rely on a graceful ``no_data`` response.
+    """
+    json_path = find_latest_live_sampling_json(reports_dir)
+    if not json_path:
+        return None
+    try:
+        with open(json_path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None
+        return data
+    except Exception:
+        return None
 
 
 # ── Nightly report integration ────────────────────────────────────────

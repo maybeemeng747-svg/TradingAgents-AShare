@@ -5306,6 +5306,7 @@ from api.tradeflow_schemas import (
     SourceFreshnessResponse,  # [DATA-018] source_freshness_report
     SourceFreshnessEntryItem,  # [DATA-018] source_freshness_report
     SourceFreshnessSummary,  # [DATA-018] source_freshness_report
+    LiveSamplingResponse,  # [DATA-020] live_sampling_health_ui
     ObservationItemResponse,  # [TRACK-001] observation_warehouse
     ObservationItemListResponse,  # [TRACK-001] observation_warehouse
     ObservationItemCreateRequest,  # [TRACK-001] observation_warehouse
@@ -5346,6 +5347,7 @@ from api.services.tradeflow_service import (
     get_topic_watchlist as _tf_get_topic_watchlist,  # [H-012] mandate_topic_registry
     get_topic_heatmap as _tf_get_topic_heatmap,  # [H-013] mandate_topic_heatmap
     get_source_freshness as _tf_get_source_freshness,  # [DATA-018] source_freshness_report
+    get_live_sampling_report as _tf_get_live_sampling_report,  # [DATA-020] live_sampling_health_ui
     get_observation_items as _tf_get_observation_items,  # [TRACK-001] observation_warehouse
     create_observation_item as _tf_create_observation_item,  # [TRACK-001] observation_warehouse
     update_observation_item as _tf_update_observation_item,  # [TRACK-001] observation_warehouse
@@ -5562,6 +5564,12 @@ def tradeflow_topic_heatmap(
 @app.get("/v1/data-sources/freshness", response_model=SourceFreshnessResponse)
 def data_sources_freshness(symbol: str = Query("", description="股票代码（可选）")):
     return _tf_get_source_freshness(symbol=symbol)
+
+
+# [DATA-020] live_sampling_health_ui
+@app.get("/v1/data-sources/live-sampling", response_model=LiveSamplingResponse)
+def data_sources_live_sampling():
+    return _tf_get_live_sampling_report()
 
 
 # [TRACK-001] observation_warehouse — read & write endpoints

@@ -1170,6 +1170,14 @@ export interface TradeFlowReviewResponse {
     effective_trade_date?: string  // [TF-REVIEW-002] review_date_mapping
     data_status?: string  // [TF-REVIEW-002] review_date_mapping
     data_status_message?: string  // [TF-REVIEW-002] review_date_mapping
+    // [TF-REVIEW-004] review_empty_diagnostics
+    empty_reason?: string
+    empty_reason_message?: string
+    suggested_action?: string
+    available_plan_dates?: string[]
+    latest_plan_date?: string
+    has_observe_signals?: boolean
+    review_date?: string
     runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
 }
 
@@ -1249,6 +1257,69 @@ export interface SourceFreshnessResponse {
     symbol: string
     entries: SourceFreshnessEntry[]
     summary: SourceFreshnessSummary
+    runtime_tier_meta: RuntimeTierMeta
+}
+
+// [DATA-020] live_sampling_health_ui
+export type LiveSamplingStatus =
+    | 'HAS_DATA' | 'NORMAL_NO_DATA' | 'STALE'
+    | 'FAILED' | 'RATE_LIMITED' | 'UNIT_UNVERIFIED' | 'SKIPPED'
+
+export interface LiveSamplingSample {
+    symbol: string
+    name: string
+    category: string
+    category_cn: string
+}
+
+export interface LiveSamplingResult {
+    data_type: string
+    data_type_label: string
+    symbol: string
+    symbol_name: string
+    category: string
+    status: LiveSamplingStatus
+    status_label_cn: string
+    traffic_light: 'green' | 'yellow' | 'red'
+    actual_vendor: string
+    primary_vendor: string
+    fallback_vendor: string
+    is_fallback: boolean
+    latency_ms: number
+    record_count: number
+    unit: string
+    unit_verified: boolean
+    as_of: string
+    error: string
+    diagnosis: string
+    rate_limit_risk: string
+}
+
+export interface LiveSamplingSummary {
+    total_checks: number
+    status_counts: Record<string, number>
+    green_count: number
+    yellow_count: number
+    red_count: number
+    skipped_count: number
+    skipped_only: boolean
+    fallback_triggered_count: number
+    all_green: boolean
+    has_failures: boolean
+    has_warnings: boolean
+    by_data_type: Record<string, any>
+    overall_status: string
+}
+
+export interface LiveSamplingResponse {
+    status: string
+    has_report: boolean
+    report_date: string
+    generated_at: string
+    env_gated: boolean
+    samples: LiveSamplingSample[]
+    results: LiveSamplingResult[]
+    summary: LiveSamplingSummary
     runtime_tier_meta: RuntimeTierMeta
 }
 
@@ -1401,6 +1472,16 @@ export interface TradeFlowReviewGenerateResponse {
     message: string
     data_status?: string  // [TF-REVIEW-002] review_date_mapping
     data_status_message?: string  // [TF-REVIEW-002] review_date_mapping
+    // [TF-REVIEW-004] review_empty_diagnostics
+    empty_reason?: string
+    empty_reason_message?: string
+    suggested_action?: string
+    available_plan_dates?: string[]
+    latest_plan_date?: string
+    has_observe_signals?: boolean
+    plan_date?: string
+    effective_trade_date?: string
+    review_date?: string
     review: {
         review_date: string
         candidate_date: string

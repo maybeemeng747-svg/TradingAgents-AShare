@@ -76,6 +76,47 @@ class ReviewDataStatus(str, Enum):
         return _MAP.get(self, "未知状态")
 
 
+# [TF-REVIEW-004] review_empty_diagnostics
+class ReviewEmptyReason(str, Enum):
+    """Explains the SPECIFIC reason why a post-market Review appears empty.
+
+    Distinguishes the common "没有数据" cases so the frontend can show an
+    actionable message instead of a blank page.
+    """
+
+    NO_CANDIDATES = "no_candidates"
+    NO_OBSERVE = "no_observe"
+    NON_TRADING_DAY_MAPPED = "non_trading_day_mapped"
+    MARKET_DATA_MISSING = "market_data_missing"
+    NOT_GENERATED = "not_generated"
+
+    @property
+    def message_cn(self) -> str:
+        _MAP = {
+            ReviewEmptyReason.NO_CANDIDATES: "尚未生成该日期的候选池，无法复盘",
+            ReviewEmptyReason.NO_OBSERVE: "候选池已生成，但盘中观察尚未执行，暂无触发/失效数据",
+            ReviewEmptyReason.NON_TRADING_DAY_MAPPED: "查询日为非交易日或属于跨日计划，候选池将在生效交易日复盘",
+            ReviewEmptyReason.MARKET_DATA_MISSING: "行情数据缺失，等待收盘后补齐再复盘",
+            ReviewEmptyReason.NOT_GENERATED: "候选池存在，但尚未生成盘后复盘报告",
+        }
+        return _MAP.get(self, "未知原因")
+
+    @property
+    def suggested_action_cn(self) -> str:
+        _MAP = {
+            ReviewEmptyReason.NO_CANDIDATES: "前往候选池 Tab 生成今日候选，或选择已有候选池的日期",
+            ReviewEmptyReason.NO_OBSERVE: "运行盘中观察后再复盘",
+            ReviewEmptyReason.NON_TRADING_DAY_MAPPED: "切换到生效交易日查看复盘",
+            ReviewEmptyReason.MARKET_DATA_MISSING: "收盘后重新生成复盘",
+            ReviewEmptyReason.NOT_GENERATED: "点击下方按钮一键生成今日复盘",
+        }
+        return _MAP.get(self, "")
+
+    @classmethod
+    def all_values(cls) -> list[str]:
+        return [r.value for r in cls]
+
+
 @dataclass
 class CandidatePerformance:
     symbol: str

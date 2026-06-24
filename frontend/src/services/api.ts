@@ -1,4 +1,4 @@
-import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, TrackingBoardV2Response, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse, CompanyOverviewResponse, PaperLedgerResponse, PaperActionResponse, PaperReviewResponse, SourceFreshnessResponse, TopicHeatmapResponse, ObservationAddResponse } from '@/types'
+import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, TrackingBoardV2Response, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse, CompanyOverviewResponse, PaperLedgerResponse, PaperActionResponse, PaperReviewResponse, SourceFreshnessResponse, TopicHeatmapResponse, ObservationAddResponse, LiveSamplingResponse } from '@/types'
 
 export function getBaseUrl(): string {
     const envUrl = (import.meta.env.VITE_API_URL as string) || ''
@@ -450,6 +450,11 @@ class ApiService {
     async getSourceFreshness(symbol?: string): Promise<SourceFreshnessResponse> {
         const query = symbol ? `?symbol=${encodeURIComponent(symbol)}` : ''
         return this.request<SourceFreshnessResponse>(`/v1/data-sources/freshness${query}`)
+    }
+
+    // [DATA-020] live_sampling_health_ui
+    async getLiveSamplingReport(): Promise<LiveSamplingResponse> {
+        return this.request<LiveSamplingResponse>('/v1/data-sources/live-sampling')
     }
 
     // [H-013] mandate_topic_heatmap

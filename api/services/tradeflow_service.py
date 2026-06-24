@@ -934,6 +934,162 @@ def _get_available_dates(tf_db_path: str = "") -> list[str]:
     return dates
 
 
+# [TF-REVIEW-004] review_empty_diagnostics
+def _has_observe_signals_for_date(db_path: str, trade_date: str) -> bool:
+    """Return True if tradeflow_signals has any observe_* signal on trade_date."""
+    if not os.path.exists(db_path) or not trade_date:
+        return False
+    try:
+        conn = _connect(db_path)
+        if conn is None:
+            return False
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM tradeflow_signals "
+                "WHERE signal_type LIKE 'observe_%' AND date(signal_time) = ?",
+                (trade_date,),
+            ).fetchone()
+            return bool(row and row["cnt"] > 0)
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+
+# [TF-REVIEW-004] review_empty_diagnostics
+def _review_report_exists(review_date: str, tf_db_path: str = "") -> bool:
+    """Return True if a saved review report exists for review_date.
+
+    Prefers the per-DB record in ``tradeflow_review_reports`` so report
+    existence stays isolated to the queried tradeflow DB (test isolation).
+    Falls back to the project report file *only* when querying the default
+    production DB, ensuring injected test DBs never leak global report files.
+    """
+    if not review_date:
+        return False
+    db_path = tf_db_path or _get_tradeflow_db_path()
+    conn = _connect(db_path)
+    if conn is not None:
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM tradeflow_review_reports WHERE review_date = ?",
+                (review_date,),
+            ).fetchone()
+            if row:
+                return True
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    # Legacy file fallback — only for the default production DB context,
+    # never for injected (test) DBs, to keep tests isolated.
+    if db_path == _get_tradeflow_db_path():
+        report_path = os.path.join(
+            _get_project_root(), "docs", "tradeflow_reviews", f"{review_date}.md"
+        )
+        return os.path.exists(report_path)
+    return False
+
+
+# [TF-REVIEW-004] review_empty_diagnostics
+def _diagnose_review_empty_state(trade_date: str, tf_db_path: str = "") -> dict:
+    """Diagnose WHY a post-market Review is empty for ``trade_date``.
+
+    Returns a dict with:
+      - empty_reason: one of ReviewEmptyReason values ("" if not empty-diagnostic)
+      - empty_reason_message: Chinese explanation
+      - suggested_action: actionable hint for the user
+      - available_plan_dates: dates that have candidates
+      - latest_plan_date
+      - has_observe_signals: whether observe signals exist for the relevant date
+      - plan_date / effective_trade_date / review_date: cross-date mapping
+    """
+    from tradingagents.tradeflow.post_market_review import ReviewEmptyReason
+    from tradingagents.tradeflow.date_semantics import (
+        find_latest_plan_date,
+        next_cn_trading_day,
+    )
+    from tradingagents.dataflows.trade_calendar import is_cn_trading_day
+
+    db_path = tf_db_path or _get_tradeflow_db_path()
+    available_dates = _get_available_dates(tf_db_path)
+
+    diag: Dict[str, Any] = {
+        "empty_reason": "",
+        "empty_reason_message": "",
+        "suggested_action": "",
+        "available_plan_dates": available_dates,
+        "latest_plan_date": max(available_dates) if available_dates else "",
+        "has_observe_signals": False,
+        "plan_date": "",
+        "effective_trade_date": "",
+        "review_date": "",
+    }
+
+    # Case 1: no candidates anywhere → NO_CANDIDATES
+    if not available_dates:
+        reason = ReviewEmptyReason.NO_CANDIDATES
+        diag["empty_reason"] = reason.value
+        diag["empty_reason_message"] = reason.message_cn
+        diag["suggested_action"] = reason.suggested_action_cn
+        return diag
+
+    best = find_latest_plan_date(available_dates, trade_date)
+    is_td = is_cn_trading_day(trade_date)
+    has_signals = _has_observe_signals_for_date(db_path, trade_date) or (
+        _has_observe_signals_for_date(db_path, best) if best else False
+    )
+    diag["has_observe_signals"] = has_signals
+
+    # Case 2: queried date is a non-trading day → plan maps to next trading day
+    # This takes precedence: a weekend plan (e.g. 5/31) should be reviewed on
+    # the next trading day (e.g. 6/1), regardless of where candidates are stored.
+    if not is_td:
+        reason = ReviewEmptyReason.NON_TRADING_DAY_MAPPED
+        eff = next_cn_trading_day(trade_date)
+        diag["empty_reason"] = reason.value
+        diag["empty_reason_message"] = reason.message_cn
+        diag["suggested_action"] = reason.suggested_action_cn
+        diag["plan_date"] = best or trade_date
+        diag["effective_trade_date"] = eff
+        diag["review_date"] = eff
+        return diag
+
+    # Case 3: candidates exist for this trading day (best == trade_date)
+    if best and best == trade_date:
+        if not has_signals:
+            # Candidates present but observe never ran
+            reason = ReviewEmptyReason.NO_OBSERVE
+        elif not _review_report_exists(trade_date, db_path):
+            reason = ReviewEmptyReason.NOT_GENERATED
+        else:
+            # Report exists but data still empty → likely market data missing
+            reason = ReviewEmptyReason.MARKET_DATA_MISSING
+        diag["empty_reason"] = reason.value
+        diag["empty_reason_message"] = reason.message_cn
+        diag["suggested_action"] = reason.suggested_action_cn
+        diag["plan_date"] = best
+        diag["effective_trade_date"] = best
+        diag["review_date"] = trade_date
+        return diag
+
+    # Case 4: candidates exist elsewhere but not for this trading day
+    if best and best != trade_date and is_td:
+        reason = ReviewEmptyReason.NO_CANDIDATES
+        diag["empty_reason"] = reason.value
+        diag["empty_reason_message"] = reason.message_cn
+        diag["suggested_action"] = reason.suggested_action_cn
+        diag["plan_date"] = best
+        return diag
+
+    # Fallback: no candidates for this date
+    reason = ReviewEmptyReason.NO_CANDIDATES
+    diag["empty_reason"] = reason.value
+    diag["empty_reason_message"] = reason.message_cn
+    diag["suggested_action"] = reason.suggested_action_cn
+    return diag
+
+
 def get_review(trade_date: str, tf_db_path: str = "") -> dict:
     # [TF-REVIEW-002] review_date_mapping
     _fast_meta = _tradeflow_meta("tradeflow_review")  # [PERF-001]
@@ -953,13 +1109,24 @@ def get_review(trade_date: str, tf_db_path: str = "") -> dict:
 
     if plan_data.get("status") == "no_data":
         # [TF-REVIEW-002] review_date_mapping — return clear data_status
+        # [TF-REVIEW-004] review_empty_diagnostics — diagnose the empty reason
         from tradingagents.tradeflow.post_market_review import ReviewDataStatus
+        _diag = _diagnose_review_empty_state(trade_date, tf_db_path)
         return {
             "status": "no_data",
             "trade_date": trade_date,
             "data_status": ReviewDataStatus.NO_CANDIDATES.value,
             "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
             "runtime_tier_meta": _fast_meta,
+            "empty_reason": _diag["empty_reason"],
+            "empty_reason_message": _diag["empty_reason_message"],
+            "suggested_action": _diag["suggested_action"],
+            "available_plan_dates": _diag["available_plan_dates"],
+            "latest_plan_date": _diag["latest_plan_date"],
+            "has_observe_signals": _diag["has_observe_signals"],
+            "plan_date": _diag["plan_date"],
+            "effective_trade_date": _diag["effective_trade_date"],
+            "review_date": _diag["review_date"],
         }
 
     candidates = plan_data.get("candidates", [])
@@ -1586,22 +1753,44 @@ def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
                 candidates_data = get_candidates(best, tf_db_path=tf_db)
 
     if candidates_data.get("status") == "no_data":
+        # [TF-REVIEW-004] review_empty_diagnostics — diagnose the empty reason
+        _diag = _diagnose_review_empty_state(trade_date, tf_db_path=tf_db)
         return {
             "status": "no_data",
             "trade_date": trade_date,
             "message": "无候选数据",
             "data_status": ReviewDataStatus.NO_CANDIDATES.value,
             "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
+            "empty_reason": _diag["empty_reason"],
+            "empty_reason_message": _diag["empty_reason_message"],
+            "suggested_action": _diag["suggested_action"],
+            "available_plan_dates": _diag["available_plan_dates"],
+            "latest_plan_date": _diag["latest_plan_date"],
+            "has_observe_signals": _diag["has_observe_signals"],
+            "plan_date": _diag["plan_date"],
+            "effective_trade_date": _diag["effective_trade_date"],
+            "review_date": _diag["review_date"],
         }
 
     candidates = candidates_data.get("candidates", [])
     if not candidates:
+        # [TF-REVIEW-004] review_empty_diagnostics — diagnose the empty reason
+        _diag = _diagnose_review_empty_state(trade_date, tf_db_path=tf_db)
         return {
             "status": "no_data",
             "trade_date": trade_date,
             "message": "候选列表为空",
             "data_status": ReviewDataStatus.NO_CANDIDATES.value,
             "data_status_message": ReviewDataStatus.NO_CANDIDATES.message_cn,
+            "empty_reason": _diag["empty_reason"],
+            "empty_reason_message": _diag["empty_reason_message"],
+            "suggested_action": _diag["suggested_action"],
+            "available_plan_dates": _diag["available_plan_dates"],
+            "latest_plan_date": _diag["latest_plan_date"],
+            "has_observe_signals": _diag["has_observe_signals"],
+            "plan_date": _diag["plan_date"],
+            "effective_trade_date": _diag["effective_trade_date"],
+            "review_date": _diag["review_date"],
         }
 
     # [TF-REVIEW-002] Resolve plan_date vs review_date
@@ -1628,8 +1817,29 @@ def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
         effective_trade_date=effective_trade_date,
     )
 
+    report_saved_path = ""
     try:
-        save_review_report(summary)
+        report_saved_path = save_review_report(summary)
+    except Exception:
+        pass
+
+    # [TF-REVIEW-004] track generated report in DB for isolated diagnostics
+    try:
+        conn = sqlite3.connect(tf_db)
+        conn.execute(
+            "INSERT OR REPLACE INTO tradeflow_review_reports "
+            "(review_date, plan_date, effective_trade_date, generated_at, report_path) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                review_date,
+                plan_date,
+                effective_trade_date,
+                datetime.now().isoformat(timespec="seconds"),
+                report_saved_path or "",
+            ),
+        )
+        conn.commit()
+        conn.close()
     except Exception:
         pass
 
@@ -2837,6 +3047,69 @@ def get_source_freshness(
         "symbol": report.symbol,
         "entries": [e.to_dict() for e in report.entries],
         "summary": report.summary,
+        "runtime_tier_meta": _fast_meta,
+    }
+
+
+# [DATA-020] live_sampling_health_ui
+def get_live_sampling_report(
+    reports_dir: str = "docs/data_source_reports",
+) -> dict:
+    """Read the latest live-sampling report for the frontend health panel.
+
+    Returns a ``no_data`` envelope when no report exists so the UI can render
+    a clean empty state instead of erroring. Never performs live network
+    calls — it only reads the JSON sidecar written by
+    :func:`save_live_sampling_report`.
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_live_sampling")
+
+    from tradingagents.dataflows.live_source_sampling import (
+        load_latest_live_sampling_report,
+    )
+
+    data = load_latest_live_sampling_report(reports_dir)
+
+    if not data:
+        return {
+            "status": "no_data",
+            "has_report": False,
+            "report_date": "",
+            "generated_at": "",
+            "env_gated": True,
+            "samples": [],
+            "results": [],
+            "summary": {
+                "total_checks": 0,
+                "status_counts": {},
+                "green_count": 0,
+                "yellow_count": 0,
+                "red_count": 0,
+                "skipped_count": 0,
+                "skipped_only": False,
+                "fallback_triggered_count": 0,
+                "all_green": False,
+                "has_failures": False,
+                "has_warnings": False,
+                "by_data_type": {},
+                "overall_status": "no_data",
+            },
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    summary = data.get("summary") or {}
+    if not summary.get("overall_status"):
+        summary["overall_status"] = "no_data"
+
+    return {
+        "status": "ok",
+        "has_report": True,
+        "report_date": data.get("report_date", ""),
+        "generated_at": data.get("generated_at", ""),
+        "env_gated": bool(data.get("env_gated", True)),
+        "samples": data.get("samples", []),
+        "results": data.get("results", []),
+        "summary": summary,
         "runtime_tier_meta": _fast_meta,
     }
 

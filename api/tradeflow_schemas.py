@@ -269,6 +269,14 @@ class TradeFlowReviewResponse(BaseModel):
     effective_trade_date: str = ""  # [TF-REVIEW-002] review_date_mapping
     data_status: str = "OK"  # [TF-REVIEW-002] review_date_mapping
     data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
+    # [TF-REVIEW-004] review_empty_diagnostics
+    empty_reason: str = ""
+    empty_reason_message: str = ""
+    suggested_action: str = ""
+    available_plan_dates: List[str] = Field(default_factory=list)
+    latest_plan_date: str = ""
+    has_observe_signals: bool = False
+    review_date: str = ""
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
 
 
@@ -343,6 +351,16 @@ class TradeFlowReviewGenerateResponse(BaseModel):
     data_status: str = ""  # [TF-REVIEW-002] review_date_mapping
     data_status_message: str = ""  # [TF-REVIEW-002] review_date_mapping
     review: Optional[Dict[str, Any]] = None
+    # [TF-REVIEW-004] review_empty_diagnostics
+    empty_reason: str = ""
+    empty_reason_message: str = ""
+    suggested_action: str = ""
+    available_plan_dates: List[str] = Field(default_factory=list)
+    latest_plan_date: str = ""
+    has_observe_signals: bool = False
+    plan_date: str = ""
+    effective_trade_date: str = ""
+    review_date: str = ""
 
 
 # [DATA-007] evidence_coverage_audit
@@ -625,6 +643,72 @@ class SourceFreshnessResponse(BaseModel):
     symbol: str = ""
     entries: List[SourceFreshnessEntryItem] = Field(default_factory=list)
     summary: SourceFreshnessSummary = Field(default_factory=SourceFreshnessSummary)
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [DATA-020] live_sampling_health_ui
+#
+# Layered status classification for the live-sampling health daily report.
+# The frontend MUST distinguish:
+#   - skipped          → "未启用实盘抽样" (grey, never green)
+#   - failed/rate_limited → red fault
+#   - normal_no_data   → grey "正常无数据"
+#   - has_data/stale/unit_unverified → green/yellow as usual
+class LiveSamplingSampleItem(BaseModel):
+    symbol: str = ""
+    name: str = ""
+    category: str = ""
+    category_cn: str = ""
+
+
+class LiveSamplingResultItem(BaseModel):
+    data_type: str = ""
+    data_type_label: str = ""
+    symbol: str = ""
+    symbol_name: str = ""
+    category: str = ""
+    status: str = "FAILED"
+    status_label_cn: str = "未知"
+    traffic_light: str = "red"
+    actual_vendor: str = ""
+    primary_vendor: str = ""
+    fallback_vendor: str = ""
+    is_fallback: bool = False
+    latency_ms: float = 0.0
+    record_count: int = 0
+    unit: str = ""
+    unit_verified: bool = False
+    as_of: str = ""
+    error: str = ""
+    diagnosis: str = ""
+    rate_limit_risk: str = ""
+
+
+class LiveSamplingSummary(BaseModel):
+    total_checks: int = 0
+    status_counts: Dict[str, int] = Field(default_factory=dict)
+    green_count: int = 0
+    yellow_count: int = 0
+    red_count: int = 0
+    skipped_count: int = 0
+    skipped_only: bool = False
+    fallback_triggered_count: int = 0
+    all_green: bool = False
+    has_failures: bool = False
+    has_warnings: bool = False
+    by_data_type: Dict[str, Any] = Field(default_factory=dict)
+    overall_status: str = "no_data"
+
+
+class LiveSamplingResponse(BaseModel):
+    status: str = "ok"
+    has_report: bool = False
+    report_date: str = ""
+    generated_at: str = ""
+    env_gated: bool = True
+    samples: List[LiveSamplingSampleItem] = Field(default_factory=list)
+    results: List[LiveSamplingResultItem] = Field(default_factory=list)
+    summary: LiveSamplingSummary = Field(default_factory=LiveSamplingSummary)
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
 
 

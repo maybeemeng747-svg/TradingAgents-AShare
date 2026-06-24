@@ -4,6 +4,162 @@
 
 ---
 
+## 2026-06-24 | DATA-020 修复 TF-REVIEW-004 空状态诊断测试隔离
+
+- **执行者**：OpenCode (glm-5.2)
+- **类型**：backend / 测试隔离修复
+- **状态**：✅ 完成（不提交）
+
+### 背景
+
+`tests/test_tf_review_004_empty_diagnostics.py::TestDiagnoseEmptyState::test_candidates_and_observe_but_not_generated` 失败：临时库里有候选 + observe 信号但无报告，期望 `not_generated`，实际返回 `market_data_missing`。
+
+根因：`_review_report_exists()` 直接检查全局 `docs/tradeflow_reviews/YYYY-MM-DD.md` 文件，而该目录下 `2026-06-02.md` 等真实报告已被 git 跟踪并落盘。测试用临时 DB 注入候选/信号做隔离，但报告存在性检查却读的是全局文件系统，导致泄漏 → 误判为「报告已存在」，从而走入 `MARKET_DATA_MISSING` 分支。
+
+### 变更
+
+#### `tradingagents/tradeflow/candidate_engine.py`（`# [TF-REVIEW-004]`）
+
+- 新增 `tradeflow_review_reports` 表（`CREATE_REVIEW_REPORTS_TABLE`）并在 `init_db()` 中创建：`review_date` 主键 + `plan_date / effective_trade_date / generated_at / report_path`。报告生成记录下沉到 tradeflow DB，按库隔离。
+
+#### `api/services/tradeflow_service.py`（`# [TF-REVIEW-004]`）
+
+- `_review_report_exists(review_date, tf_db_path="")` 改为优先查 `tradeflow_review_reports` 表（按传入的 `tf_db_path` 隔离）；文件系统回退仅在查询默认生产库（`db_path == _get_tradeflow_db_path()`）时启用，注入的测试库绝不回退到全局文件，彻底消除泄漏。
+- `_diagnose_review_empty_state` 调用点改为 `_review_report_exists(trade_date, db_path)`，把上下文 DB 透传进去。
+- `generate_review` 在 `save_review_report()` 后向 `tradeflow_review_reports` 写入一行（`INSERT OR REPLACE`），使后续诊断与新报告自洽；写库失败不影响主流程。
+
+### 验证
+
+- `pytest tests/test_tf_review_004_empty_diagnostics.py` → 21 passed。
+- `pytest -k "review or generate_review or tradeflow_service or tf_review or post_market"` → 366 passed。
+- `pytest -k "candidate_engine or init_db or runtime_tier or paper or observation"` → 469 passed。
+
+### 风险点
+
+- 生产库历史报告（仅落盘未入库）首次诊断时会显示 `not_generated` 而非 `market_data_missing`；下次 `generate_review` 即自动补录，自愈且无副作用。
+- 未改动 `tradingagents/prompts/`，未写生产 `tradingagents.db`，未提交。
+
+---
+
+## 2026-06-24 | TF-REVIEW-004 盘后 Review 空数据诊断与一键生成入口
+
+- **执行者**：OpenCode (glm-5.2)
+- **类型**：backend + frontend / review empty-state diagnostics
+- **状态**：✅ 完成（待外层脚本提交）
+
+### 背景
+
+用户反馈盘后 Review 经常「没有数据」，但前端只显示一句「尚未生成盘后复盘」，无法区分到底是：候选池没生成、盘中观察没跑、查询的是非交易日、行情缺失、还是报告没生成。`ReviewDataStatus` 只有粗粒度的 `NO_CANDIDATES`，`get_review` / `generate_review` 在所有空状态下都返回同一个原因，用户无法对症操作。
+
+TF-REVIEW-004 在不调用 LLM、不写生产库、不跑全市场扫描的前提下，为空 Review 提供细分诊断字段和一键生成入口。
+
+### 变更
+
+#### 后端：空状态细分枚举（`tradingagents/tradeflow/post_market_review.py`，`# [TF-REVIEW-004] review_empty_diagnostics`）
+
+- 新增 `ReviewEmptyReason` 枚举（5 值）：`no_candidates / no_observe / non_trading_day_mapped / market_data_missing / not_generated`，每个值带中文 `message_cn`（解释为什么空）和 `suggested_action_cn`（建议下一步）。
+- 与既有 `ReviewDataStatus`（描述数据可用性）正交：`ReviewEmptyReason` 描述「为什么这个日期的 Review 是空的」。
+
+#### 后端：诊断引擎 + 接线（`api/services/tradeflow_service.py`，`# [TF-REVIEW-004] review_empty_diagnostics`）
+
+- 新增 `_has_observe_signals_for_date()`：查询 `tradeflow_signals` 是否有 `observe_*` 信号。
+- 新增 `_review_report_exists()`：检查 `docs/tradeflow_reviews/YYYY-MM-DD.md` 是否已生成。
+- 新增 `_diagnose_review_empty_state()`：综合 available_plan_dates / 是否交易日 / observe 信号 / 报告文件，输出 `empty_reason / empty_reason_message / suggested_action / available_plan_dates / latest_plan_date / has_observe_signals / plan_date / effective_trade_date / review_date`。
+  - 判定优先级：无任何候选 → `NO_CANDIDATES`；非交易日 → `NON_TRADING_DAY_MAPPED`（带跨日映射）；候选存在无观察 → `NO_OBSERVE`；有观察无报告 → `NOT_GENERATED`；报告存在仍空 → `MARKET_DATA_MISSING`。
+- `get_review()` / `generate_review()` 的 `no_data` 分支全部接入诊断字段，前端可直接消费。
+
+#### 后端：API schema（`api/tradeflow_schemas.py`）
+
+- `TradeFlowReviewResponse` / `TradeFlowReviewGenerateResponse` 增加 `empty_reason / empty_reason_message / suggested_action / available_plan_dates / latest_plan_date / has_observe_signals / plan_date / effective_trade_date / review_date`。
+
+#### 前端：Review Tab 空状态细化（`frontend/src/pages/TradeFlow.tsx`，`// [TF-REVIEW-004] review_empty_diagnostics`）
+
+- Review Tab 空状态从单一「尚未生成盘后复盘」改为按 `empty_reason_message` 显示具体原因 + `suggested_action` 建议。
+- 非交易日/跨日计划显示 `plan_date / effective_trade_date / review_date` 映射条。
+- 显示已有候选池日期列表，方便用户切换。
+- 「一键生成盘后复盘」按钮保留；生成失败时透传 `empty_reason_message` 红色提示，不再静默。
+- `ReviewTab` 主视图跨日映射条增加 `review_date`。
+
+#### 前端：类型（`frontend/src/types/index.ts`）
+
+- `TradeFlowReviewResponse` / `TradeFlowReviewGenerateResponse` 增加诊断字段。
+
+### 测试
+
+- 新增 `tests/test_tf_review_004_empty_diagnostics.py`（21 用例）：`ReviewEmptyReason` 枚举、`_diagnose_review_empty_state` 五类空状态（NO_CANDIDATES / NON_TRADING_DAY_MAPPED / NO_OBSERVE / NOT_GENERATED / MARKET_DATA_MISSING）、`get_review` / `generate_review` 诊断字段、非交易日跨日链路回放、一键生成失败原因透传。
+- 回归：`test_tf_review_002 / 003 / m007 / track005 / t005 / ui001` 共 339 passed；`test_v008 / tf_obs_002 / runtime_tier` 共 149 passed。
+- `npm run build` 通过。
+
+### 安全红线核对
+
+- 未改 `tradingagents/prompts/`。
+- 未写生产 `tradingagents.db`（测试全部用 tempfile 临时库）。
+- 未调用 LLM / 未跑全市场扫描。
+- 未打印任何密钥。
+- 未输出强买卖词（诊断文案仅描述数据状态）。
+
+---
+
+## 2026-06-24 | DATA-020 数据源健康日报前端可视化与 skipped/failed 分层展示
+
+- **执行者**：OpenCode (glm-5.2)
+- **类型**：backend + frontend / live-sampling health daily report UI
+- **状态**：✅ 完成（待外层脚本提交）
+
+### 背景
+
+DATA-019/019A 已能在 `docs/data_source_reports/YYYY-MM-DD-live-smoke.md` 产出关键数据源实盘抽样健康日报，并在 `_compute_summary` 里区分了 `skipped_only`。但抽样结果没有接入 API/前端：数据健康 tab 只能看到 TradeFlow DB 新鲜度（DataHealthPanel）和 catalog 级新鲜度（SourceFreshnessPanel），无法回答"今天到底跑了实盘抽样没有、失败没失败、走了几次 fallback"。更关键的是 skipped/failed/normal-no-data/fallback 在 UI 上完全混在一起，skipped-only 容易被误读成"全部健康"。
+
+DATA-020 在不触发 live smoke、不打印密钥、不把 skipped 显示为健康的前提下，把抽样日报结构化接入 API 和前端，并做分层展示。
+
+### 变更
+
+#### 后端：数据层 JSON sidecar（`tradingagents/dataflows/live_source_sampling.py`，`# [DATA-020] live_sampling_health_ui`）
+
+- `save_live_sampling_report` 在写 Markdown 的同时多写一份 `YYYY-MM-DD-live-smoke.json` 结构化 sidecar（best-effort，失败不阻断 Markdown 保存），向后兼容 DATA-019 的 Markdown 消费者。
+- 新增 `find_latest_live_sampling_json(reports_dir)` 按 `YYYY-MM-DD` 选最新 sidecar。
+- 新增 `load_latest_live_sampling_report(reports_dir)`：读 JSON sidecar 返回结构化 dict；无报告/目录不存在/JSON 损坏一律返回 `None`，**永不抛异常**（API/UI 依赖优雅的 `no_data`）。
+
+#### 后端：API schema + service + 路由
+
+- `api/tradeflow_schemas.py`：新增 `LiveSamplingSampleItem / LiveSamplingResultItem / LiveSamplingSummary / LiveSamplingResponse`，`summary` 显式带 `skipped_count / skipped_only / fallback_triggered_count / overall_status`。
+- `api/services/tradeflow_service.py`：新增 `get_live_sampling_report(reports_dir)`，无报告时返回 `status=no_data` 空信封；有报告时透传结构化字段 + `runtime_tier_meta`。**不发起任何网络调用**，只读 JSON sidecar。
+- `api/main.py`：新增 `GET /v1/data-sources/live-sampling`（FAST_RADAR，只读）。
+- `api/runtime_tier.py`：`tradeflow_live_sampling` 注册进 fast 层白名单。
+
+#### 前端：分层展示组件（`frontend/src/pages/TradeFlow.tsx`，`// [DATA-020] live_sampling_health_ui`）
+
+- 新增 `LiveSamplingPanel`，挂在数据健康 tab「实盘抽样健康日报」区块：
+  - **Banner** 按 `skipped_only / red / yellow / green` 四态显式分层；skipped-only 永远不是绿色（"实盘抽样未启用（全部检查为 SKIPPED，不可视为健康）"）。
+  - **汇总统计**：正常 / 警告 / 故障 / 跳过 / Fallback 五个第一类 chip，skipped 和 fallback 独立成层。
+  - **按数据类型汇总表**（green/yellow/red/skipped 分列）。
+  - **明细表**：状态徽章按 `SKIPPED(灰) / FAILED·RATE_LIMITED(红) / NORMAL_NO_DATA(灰) / STALE·UNIT_UNVERIFIED(黄) / HAS_DATA(绿)` 分层；FAILED/RATE_LIMITED 行附「影响哪些报告字段」简短说明（`LIVE_SAMPLING_FIELD_IMPACT`）；fallback 行展示 `主源 → 实际源`。
+  - 无报告时渲染干净空状态 + 生成命令提示，不报错。
+- `frontend/src/types/index.ts`：新增 `LiveSamplingStatus / LiveSamplingSample / LiveSamplingResult / LiveSamplingSummary / LiveSamplingResponse`。
+- `frontend/src/services/api.ts`：新增 `getLiveSamplingReport()`。
+- 数据健康 tab 进入时同时拉取 `live-sampling`（supplementary，失败静默）。
+
+#### 顺带修复：TF-REVIEW-004 遗留 `emptyReason` 未渲染（`TradeFlow.tsx`）
+
+- TF-REVIEW-004 计算了 `empty_reason` 但 JSX 未使用，触发 `noUnusedLocals` 阻断 `npm run build`。按其注释意图把 `emptyReason` 作为小标签渲染到空状态卡片，不改变语义。
+
+### 测试
+
+- 新增 `tests/test_data020_live_sampling_api.py`（27 用例）：JSON sidecar I/O、`find_latest_live_sampling_json`、`load_latest_live_sampling_report`（含损坏 JSON/空目录不抛）、`get_live_sampling_report` service（no_data 信封 / 报告信封 / skipped-only / runtime tier）、Pydantic schema、分层契约（skipped 非绿、failed ≠ normal_no_data、fallback 计数）。
+- 回归：`test_data019 / test_data018 / test_runtime_tier_contract / test_ui001_tradeflow_api / test_g006 / test_g007` 共 408 passed。
+- 全量 `pytest tests/ -q -x`：5376 passed，唯一失败为 TF-REVIEW-004 自身测试（`test_tf_review_004_empty_diagnostics.py::test_non_trading_day_mapped`，与本任务无关）。
+- `npm run build` 通过。
+
+### 安全红线核对
+
+- 未改 `tradingagents/prompts/`。
+- 未写生产 `tradingagents.db`。
+- 未触发 live smoke / LLM。
+- 未打印任何密钥。
+- skipped 未显示为健康。
+
+---
+
 ## 2026-06-23 | TRACK-NOTIFY-001 飞书/总控官通知草稿 payload 与去噪规则
 
 - **执行者**：OpenCode (glm-5.2)
@@ -5998,3 +6154,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TRACK-006-20260623-round1.txt
 - **Run archive**: docs/task_runs/TRACK-006-20260623-115358/
+
+## 2026-06-24 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-REVIEW-004 - 盘后 Review 空数据诊断与一键生成入口（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TF-REVIEW-004-20260624-round1.txt
+- **Run archive**: docs/task_runs/TF-REVIEW-004-20260624-111425/
