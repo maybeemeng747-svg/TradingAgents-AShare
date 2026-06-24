@@ -4,6 +4,21 @@
 
 ---
 
+## 2026-06-24 | TASKS 状态同步：DATA-021 / PERF-005 解锁
+
+- **执行者**：Codex
+- **类型**：task queue hygiene
+- **状态**：✅ 完成
+
+### 变更
+
+- 同步 `docs/TASKS.md` 顶部当前优先队列：
+  - `DATA-021`：`blocked — 前置 DATA-020 未完成` → `ready`（DATA-020/DATA-004 已完成）。
+  - `PERF-005`：`blocked — 前置 TF-UX-001/DATA-020 未完成` → `ready`（TF-UX-001/DATA-020 已完成）。
+- 详情段落本来已经是 `ready`，本次只修复顶部队列与详情段落不一致，确保 19:00 cron 能按预期领取。
+
+---
+
 ## 2026-06-24 | TF-OBS-004 盘中观察自动刷新、触发提醒与人工确认队列降噪
 
 - **执行者**：OpenCode (glm-5.2)
