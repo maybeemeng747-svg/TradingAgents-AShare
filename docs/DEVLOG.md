@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-06-24 | TRACK-008 跟踪看板 v2 入口与复盘展示补齐
+
+- **执行者**：Codex
+- **类型**：frontend UX fix
+- **状态**：✅ 完成
+
+### 背景
+
+跟踪看板 v2 替换旧版后，只展示持仓 / 观察仓 / 今日指引 / 盘后复盘四区，但没有迁移旧版的持仓导入入口；观察仓只有后端 API 和 TradeFlow/TA 一键加入入口，没有在看板页提供手动新增；盘后复盘直接渲染 `JSON.stringify(summary)`，用户侧读起来像乱码。
+
+### 变更
+
+- `TrackingBoardV2Panel.tsx`
+  - 持仓 tab 新增“导入 / 管理持仓”折叠面板：支持文本导入、持仓截图识别、清空持仓。
+  - 观察仓 tab 新增“手动加入观察仓”折叠面板：支持代码、名称、入场区间、失效价、观察理由、备注。
+  - 盘后复盘改为结构化展示：状态摘要、关键计数、持仓复盘、观察仓复盘、候选池复盘、明日重点。
+- `api.ts`
+  - 新增 `createObservationItem()` 前端 API 封装，调用既有 `/v1/tradeflow/observation-items`。
+- `types/index.ts`
+  - 新增观察仓创建 payload 与 action response 类型。
+
+### 验证
+
+- `npm run build` → ✅ 通过（tsc + vite）。
+
+---
+
 ## 2026-06-24 | TASKS 状态同步：DATA-021 / PERF-005 解锁
 
 - **执行者**：Codex

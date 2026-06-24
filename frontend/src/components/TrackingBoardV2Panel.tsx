@@ -9,8 +9,13 @@ import {
     TrendingUp,
     Wallet,
     Info,
+    ImagePlus,
+    PlusCircle,
+    Save,
+    Trash2,
+    Upload,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { api } from '@/services/api'
@@ -20,6 +25,7 @@ import type {
     TrackingBoardV2Response,
     TrackingBoardV2Guidance,
     ObservationItemV2,
+    PortfolioPositionInput,
     TrackingBoardV2DataFreshness,
 } from '@/types'
 
@@ -114,6 +120,25 @@ export default function TrackingBoardV2Panel() {
     const [refreshing, setRefreshing] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [activeTab, setActiveTab] = useState<'holdings' | 'observation' | 'guidance' | 'review'>('holdings')
+    const fileInputRef = useRef<HTMLInputElement | null>(null)
+    const [showHoldingImport, setShowHoldingImport] = useState(false)
+    const [positionText, setPositionText] = useState('')
+    const [importSaving, setImportSaving] = useState(false)
+    const [importClearing, setImportClearing] = useState(false)
+    const [vlmParsing, setVlmParsing] = useState(false)
+    const [importFeedback, setImportFeedback] = useState<{ tone: 'success' | 'error'; message: string } | null>(null)
+    const [showObservationCreate, setShowObservationCreate] = useState(false)
+    const [observationSaving, setObservationSaving] = useState(false)
+    const [observationFeedback, setObservationFeedback] = useState<{ tone: 'success' | 'error'; message: string } | null>(null)
+    const [observationDraft, setObservationDraft] = useState({
+        symbol: '',
+        name: '',
+        entry_low: '',
+        entry_high: '',
+        invalid_price: '',
+        reason: '',
+        notes: '',
+    })
 
     const fetchData = useCallback(async (silent: boolean) => {
         if (silent) setRefreshing(true)
@@ -138,6 +163,130 @@ export default function TrackingBoardV2Panel() {
         const iv = setInterval(() => { if (!cancelled) void fetchData(true) }, (data?.refresh_interval_seconds ?? 20) * 1000)
         return () => { cancelled = true; clearInterval(iv) }
     }, [user?.id, fetchData, data?.refresh_interval_seconds])
+
+    const refreshBoard = useCallback(async () => {
+        await fetchData(true)
+    }, [fetchData])
+
+    const parsePositionLines = useCallback((text: string): PortfolioPositionInput[] => {
+        const positions: PortfolioPositionInput[] = []
+        for (const raw of text.split('\n')) {
+            const line = raw.trim()
+            if (!line) continue
+            const parts = line.split(/[\s\t]+/)
+            const symbol = (parts[0] || '').replace(/\.(SZ|SH|BJ)$/i, '')
+            if (!/^\d{6}$/.test(symbol)) continue
+            const name = parts.length > 1 && !/^\d/.test(parts[1]) ? parts[1] : undefined
+            const numericParts = parts.slice(1).filter(p => /^[\d.]+$/.test(p))
+            positions.push({
+                symbol,
+                name,
+                current_position: numericParts[0] ? Number(numericParts[0]) : undefined,
+                average_cost: numericParts[1] ? Number(numericParts[1]) : undefined,
+                market_value: numericParts[2] ? Number(numericParts[2]) : undefined,
+            })
+        }
+        return positions
+    }, [])
+
+    const handleSavePositions = useCallback(async () => {
+        const positions = parsePositionLines(positionText)
+        if (positions.length === 0) {
+            setImportFeedback({ tone: 'error', message: '未解析到有效持仓，请按“代码 名称 持仓数 成本价 市值”格式输入' })
+            return
+        }
+        setImportSaving(true)
+        setImportFeedback(null)
+        try {
+            await api.syncPortfolioImport({ positions, source: 'tracking_board_v2', auto_apply_scheduled: false })
+            setImportFeedback({ tone: 'success', message: `已保存 ${positions.length} 只持仓` })
+            setPositionText('')
+            await refreshBoard()
+        } catch (e) {
+            setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '保存失败' })
+        } finally {
+            setImportSaving(false)
+        }
+    }, [parsePositionLines, positionText, refreshBoard])
+
+    const handleClearPositions = useCallback(async () => {
+        if (!confirm('确定清空所有已导入的持仓吗？')) return
+        setImportClearing(true)
+        setImportFeedback(null)
+        try {
+            await api.clearPortfolioImport()
+            setImportFeedback({ tone: 'success', message: '已清空持仓' })
+            await refreshBoard()
+        } catch (e) {
+            setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '清空失败' })
+        } finally {
+            setImportClearing(false)
+        }
+    }, [refreshBoard])
+
+    const handlePositionImageUpload = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0]
+        if (!file) return
+        e.target.value = ''
+        setVlmParsing(true)
+        setImportFeedback(null)
+        try {
+            const result = await api.parsePositionImage(file, 'position')
+            if (!('positions' in result) || result.positions.length === 0) {
+                setImportFeedback({ tone: 'error', message: '未从截图中识别到持仓信息' })
+                return
+            }
+            const lines = result.positions.map(p => {
+                const parts = [p.symbol, p.name || '']
+                if (p.current_position != null) parts.push(String(p.current_position))
+                if (p.average_cost != null) parts.push(String(p.average_cost))
+                if (p.market_value != null) parts.push(String(p.market_value))
+                return parts.join(' ').trim()
+            })
+            setPositionText(lines.join('\n'))
+            setImportFeedback({ tone: 'success', message: `已识别 ${result.positions.length} 只持仓，请确认后保存` })
+        } catch (e) {
+            setImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '图片解析失败' })
+        } finally {
+            setVlmParsing(false)
+        }
+    }, [])
+
+    const handleCreateObservation = useCallback(async () => {
+        const symbol = observationDraft.symbol.trim()
+        if (!symbol) {
+            setObservationFeedback({ tone: 'error', message: '请输入股票代码' })
+            return
+        }
+        setObservationSaving(true)
+        setObservationFeedback(null)
+        const toNumber = (v: string) => {
+            const n = Number(v)
+            return Number.isFinite(n) && n > 0 ? n : 0
+        }
+        try {
+            await api.createObservationItem({
+                symbol,
+                name: observationDraft.name.trim(),
+                status: 'watching',
+                entry_low: toNumber(observationDraft.entry_low),
+                entry_high: toNumber(observationDraft.entry_high),
+                trigger_price: toNumber(observationDraft.entry_high || observationDraft.entry_low),
+                invalid_price: toNumber(observationDraft.invalid_price),
+                horizon: 'mid',
+                source: 'tracking_board_v2',
+                reason: observationDraft.reason.trim(),
+                notes: observationDraft.notes.trim(),
+            })
+            setObservationFeedback({ tone: 'success', message: `${symbol} 已加入观察仓` })
+            setObservationDraft({ symbol: '', name: '', entry_low: '', entry_high: '', invalid_price: '', reason: '', notes: '' })
+            await refreshBoard()
+        } catch (e) {
+            setObservationFeedback({ tone: 'error', message: e instanceof Error ? e.message : '加入观察仓失败' })
+        } finally {
+            setObservationSaving(false)
+        }
+    }, [observationDraft, refreshBoard])
 
     const freshness = data?.data_freshness
     const alertCount = data?.alerts?.length ?? 0
@@ -201,6 +350,42 @@ export default function TrackingBoardV2Panel() {
                 <StatCard label="今日指引" value={`${data?.today_guidance?.length ?? 0} 条`} tone={alertCount > 0 ? 'alert' : undefined} />
             </div>
 
+            {activeTab === 'holdings' && (
+                <HoldingsImportPanel
+                    open={showHoldingImport}
+                    onToggle={() => setShowHoldingImport(v => !v)}
+                    positionText={positionText}
+                    onPositionTextChange={setPositionText}
+                    onSave={handleSavePositions}
+                    onClear={handleClearPositions}
+                    onPickImage={() => fileInputRef.current?.click()}
+                    saving={importSaving}
+                    clearing={importClearing}
+                    parsing={vlmParsing}
+                    feedback={importFeedback}
+                />
+            )}
+
+            {activeTab === 'observation' && (
+                <ObservationCreatePanel
+                    open={showObservationCreate}
+                    onToggle={() => setShowObservationCreate(v => !v)}
+                    draft={observationDraft}
+                    onDraftChange={setObservationDraft}
+                    onSave={handleCreateObservation}
+                    saving={observationSaving}
+                    feedback={observationFeedback}
+                />
+            )}
+
+            <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handlePositionImageUpload}
+            />
+
             {/* Tabs */}
             <div className="flex gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800">
                 {tabs.map(tab => (
@@ -260,6 +445,169 @@ function StatCard({ label, value, tone }: { label: string; value: string; tone?:
             <div className="text-xs text-slate-500 dark:text-slate-400">{label}</div>
             <div className={`mt-1 text-lg font-semibold ${valueCls}`}>{value}</div>
         </div>
+    )
+}
+
+function FeedbackMessage({ feedback }: { feedback: { tone: 'success' | 'error'; message: string } | null }) {
+    if (!feedback) return null
+    return (
+        <div className={`rounded-lg border px-3 py-2 text-xs ${
+            feedback.tone === 'success'
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-300'
+                : 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300'
+        }`}>
+            {feedback.message}
+        </div>
+    )
+}
+
+function HoldingsImportPanel({
+    open,
+    onToggle,
+    positionText,
+    onPositionTextChange,
+    onSave,
+    onClear,
+    onPickImage,
+    saving,
+    clearing,
+    parsing,
+    feedback,
+}: {
+    open: boolean
+    onToggle: () => void
+    positionText: string
+    onPositionTextChange: (v: string) => void
+    onSave: () => void
+    onClear: () => void
+    onPickImage: () => void
+    saving: boolean
+    clearing: boolean
+    parsing: boolean
+    feedback: { tone: 'success' | 'error'; message: string } | null
+}) {
+    return (
+        <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900">
+            <button
+                type="button"
+                onClick={onToggle}
+                className="flex w-full items-center gap-2 px-4 py-3 text-sm font-medium text-slate-700 hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100"
+            >
+                <Upload className="h-4 w-4" />
+                导入 / 管理持仓
+                <span className="ml-auto text-xs text-slate-400">{open ? '收起' : '展开'}</span>
+            </button>
+            {open && (
+                <div className="space-y-3 border-t border-slate-100 p-4 dark:border-slate-800">
+                    <textarea
+                        value={positionText}
+                        onChange={e => onPositionTextChange(e.target.value)}
+                        placeholder={'每行一只股票：代码 名称 持仓数 成本价 市值\n例如：600519 贵州茅台 100 1800 180000'}
+                        className="min-h-[96px] w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                    />
+                    <div className="flex flex-wrap gap-2">
+                        <button
+                            type="button"
+                            onClick={onSave}
+                            disabled={saving || !positionText.trim()}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-40"
+                        >
+                            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                            保存持仓
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onPickImage}
+                            disabled={parsing}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-40"
+                        >
+                            {parsing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ImagePlus className="h-3.5 w-3.5" />}
+                            {parsing ? '识别中...' : '上传持仓截图'}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onClear}
+                            disabled={clearing}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-slate-200 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-300 disabled:opacity-40 dark:bg-slate-700 dark:text-slate-200"
+                        >
+                            {clearing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                            清空持仓
+                        </button>
+                    </div>
+                    <FeedbackMessage feedback={feedback} />
+                </div>
+            )}
+        </div>
+    )
+}
+
+function ObservationCreatePanel({
+    open,
+    onToggle,
+    draft,
+    onDraftChange,
+    onSave,
+    saving,
+    feedback,
+}: {
+    open: boolean
+    onToggle: () => void
+    draft: { symbol: string; name: string; entry_low: string; entry_high: string; invalid_price: string; reason: string; notes: string }
+    onDraftChange: (v: { symbol: string; name: string; entry_low: string; entry_high: string; invalid_price: string; reason: string; notes: string }) => void
+    onSave: () => void
+    saving: boolean
+    feedback: { tone: 'success' | 'error'; message: string } | null
+}) {
+    const update = (key: keyof typeof draft, value: string) => onDraftChange({ ...draft, [key]: value })
+    return (
+        <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900">
+            <button
+                type="button"
+                onClick={onToggle}
+                className="flex w-full items-center gap-2 px-4 py-3 text-sm font-medium text-slate-700 hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100"
+            >
+                <PlusCircle className="h-4 w-4" />
+                手动加入观察仓
+                <span className="ml-auto text-xs text-slate-400">{open ? '收起' : '展开'}</span>
+            </button>
+            {open && (
+                <div className="space-y-3 border-t border-slate-100 p-4 dark:border-slate-800">
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                        <SmallInput label="代码" value={draft.symbol} onChange={v => update('symbol', v)} placeholder="600519.SH" />
+                        <SmallInput label="名称" value={draft.name} onChange={v => update('name', v)} placeholder="可选" />
+                        <SmallInput label="入场下沿" value={draft.entry_low} onChange={v => update('entry_low', v)} placeholder="可选" />
+                        <SmallInput label="入场上沿" value={draft.entry_high} onChange={v => update('entry_high', v)} placeholder="可选" />
+                        <SmallInput label="失效价" value={draft.invalid_price} onChange={v => update('invalid_price', v)} placeholder="可选" />
+                    </div>
+                    <SmallInput label="观察理由" value={draft.reason} onChange={v => update('reason', v)} placeholder="例如：政策主题埋伏 / 等回踩区间" />
+                    <SmallInput label="备注" value={draft.notes} onChange={v => update('notes', v)} placeholder="可选，写你自己的观察点" />
+                    <button
+                        type="button"
+                        onClick={onSave}
+                        disabled={saving || !draft.symbol.trim()}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-40"
+                    >
+                        {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlusCircle className="h-3.5 w-3.5" />}
+                        加入观察仓
+                    </button>
+                    <FeedbackMessage feedback={feedback} />
+                </div>
+            )}
+        </div>
+    )
+}
+
+function SmallInput({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
+    return (
+        <label className="block">
+            <span className="mb-1 block text-[11px] text-slate-400">{label}</span>
+            <input
+                value={value}
+                onChange={e => onChange(e.target.value)}
+                placeholder={placeholder}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+            />
+        </label>
     )
 }
 
@@ -481,9 +829,80 @@ function ReviewZone({ summary, freshness }: { summary: any; freshness?: Tracking
             </div>
         )
     }
+    const counts = summary.summary_counts || {}
+    const holdings = Array.isArray(summary.holdings_review) ? summary.holdings_review : []
+    const observations = Array.isArray(summary.observation_review) ? summary.observation_review : []
+    const candidates = Array.isArray(summary.candidate_pool_review) ? summary.candidate_pool_review : []
+    const focus = Array.isArray(summary.tomorrow_focus) ? summary.tomorrow_focus : []
+    return (
+        <div className="space-y-4">
+            <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                        <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                            {summary.review_date || '盘后复盘'} · {summary.data_status_message || summary.data_status || '已生成'}
+                        </div>
+                        <div className="mt-1 text-xs text-slate-400">
+                            生成时间：{summary.as_of || '--'} · TradeFlow：{summary.has_tradeflow_review ? '已接入' : '暂无复盘'}
+                        </div>
+                    </div>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs text-slate-500 dark:bg-slate-700 dark:text-slate-300">
+                        {summary.data_status || 'UNKNOWN'}
+                    </span>
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <MiniReviewStat label="持仓" value={counts.holdings_total ?? holdings.length} />
+                    <MiniReviewStat label="持仓风险" value={counts.holdings_risk ?? 0} tone={(counts.holdings_risk ?? 0) > 0 ? 'alert' : undefined} />
+                    <MiniReviewStat label="观察仓" value={counts.observation_total ?? observations.length} />
+                    <MiniReviewStat label="明日重点" value={focus.length} tone={focus.length > 0 ? 'alert' : undefined} />
+                </div>
+            </div>
+
+            <ReviewList title="持仓复盘" items={holdings} empty="暂无持仓复盘" />
+            <ReviewList title="观察仓复盘" items={observations} empty="暂无观察仓复盘" />
+            <ReviewList title="候选池复盘" items={candidates} empty="暂无候选池复盘" />
+            <ReviewList title="明日重点" items={focus} empty="暂无明日重点" />
+        </div>
+    )
+}
+
+function MiniReviewStat({ label, value, tone }: { label: string; value: number; tone?: 'alert' }) {
+    return (
+        <div className="rounded-lg bg-slate-50 px-3 py-2 dark:bg-slate-800">
+            <div className="text-[11px] text-slate-400">{label}</div>
+            <div className={`text-base font-semibold ${tone === 'alert' ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>{value}</div>
+        </div>
+    )
+}
+
+function ReviewList({ title, items, empty }: { title: string; items: any[]; empty: string }) {
     return (
         <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900">
-            <pre className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap">{JSON.stringify(summary, null, 2)}</pre>
+            <div className="mb-3 text-sm font-semibold text-slate-900 dark:text-slate-100">{title}</div>
+            {items.length === 0 ? (
+                <div className="text-sm text-slate-400">{empty}</div>
+            ) : (
+                <div className="space-y-2">
+                    {items.slice(0, 12).map((item, idx) => (
+                        <ReviewListItem key={`${item.symbol || item.name || title}-${idx}`} item={item} />
+                    ))}
+                </div>
+            )}
+        </div>
+    )
+}
+
+function ReviewListItem({ item }: { item: any }) {
+    const title = [item.name, item.symbol].filter(Boolean).join(' ') || item.topic || item.source || '复盘项'
+    const note = item.review_note || item.reason || item.status_reason || item.tomorrow_reason || item.data_status_message || item.tag || ''
+    const tag = item.tomorrow_focus_tag || item.state || item.status || item.action_label || item.result || ''
+    return (
+        <div className="rounded-lg bg-slate-50 px-3 py-2 dark:bg-slate-800">
+            <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium text-slate-800 dark:text-slate-100">{title}</span>
+                {tag && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-600 dark:bg-slate-700 dark:text-slate-300">{String(tag)}</span>}
+            </div>
+            {note && <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{String(note)}</div>}
         </div>
     )
 }

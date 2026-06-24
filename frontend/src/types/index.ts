@@ -604,6 +604,29 @@ export interface PortfolioPositionInput {
     current_position_pct?: number | null
 }
 
+export interface ObservationItemCreatePayload {
+    symbol: string
+    name?: string
+    status?: string
+    entry_low?: number
+    entry_high?: number
+    trigger_price?: number
+    invalid_price?: number
+    horizon?: string
+    source?: string
+    reason?: string
+    priority?: number
+    notes?: string
+}
+
+export interface ObservationActionResponse {
+    status: string
+    message: string
+    item?: ObservationItemV2 | null
+    item_id?: number | null
+    symbol?: string | null
+}
+
 // [VLM-001] watchlist_table_parser
 export interface WatchlistTableItem {
     symbol: string
