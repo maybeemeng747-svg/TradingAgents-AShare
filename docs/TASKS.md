@@ -3524,7 +3524,7 @@
 ### DATA-020: 数据源健康日报前端可视化与 skipped/failed 分层展示（P1）
 - **描述**：把 DATA-019/019A 的关键数据源抽样结果接入 TradeFlow/数据健康面板，让 skipped、failed、normal-no-data、fallback 不再混在一起。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：in_progress — claimed DATA-020-20260624-111210
 - **前置条件**：DATA-019A 完成。
 - **执行约束**：
   - 默认不触发 live smoke。
