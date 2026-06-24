@@ -4,6 +4,71 @@
 
 ---
 
+## 2026-06-24 | TF-OBS-004 盘中观察自动刷新、触发提醒与人工确认队列降噪
+
+- **执行者**：OpenCode (glm-5.2)
+- **类型**：backend + frontend + tests
+- **状态**：✅ 完成（不提交，外层脚本负责 commit）
+
+### 背景
+
+盘中观察 tab 之前是单一平铺表格，用户需要反复手点"手动刷新"，且无法看出：哪些票接近触发、哪些已进入待确认队列、下一次自动刷新何时发生、非交易时段是否暂停。TF-OBS-004 把观察 tab 升级为「接近触发的票浮上来、待确认优先、自动刷新可见、结构化解释为什么触发/未触发」。前置 TF-OBS-003（触发→模拟账本 pending 同步）与 TF-RISK-001 均已完成。
+
+### 变更
+
+#### `tradingagents/tradeflow/strategy_config.py`（`# [TF-OBS-004] observe_refresh_alert_queue`）
+- 新增 `observe_near_trigger_band_pct: float = 0.03` —— 接近触发显示分组阈值（3%），保守默认。
+
+#### `api/tradeflow_schemas.py`（`# [TF-OBS-004] observe_refresh_alert_queue`）
+- `TradeFlowObserveItem` 扩展：`paper_status`（对齐已返回的字段）、`trigger_distance_pct`、`near_trigger`、`trigger_explain`（结构化为什么触发/未触发/差多少）。
+- `TradeFlowObserveResponse` 扩展：`refresh_interval_seconds`、`is_market_hours`、`is_trading_day`、`near_trigger_count`、`pending_count`。
+
+#### `api/services/tradeflow_service.py`（`# [TF-OBS-004] observe_refresh_alert_queue`）
+- 模块级导入 `DEFAULT_STRATEGY_CONFIG`。
+- 新增 `_observe_market_status()` —— 防御式返回 is_trading_day/is_market_hours（不抛异常）。
+- 新增 `_build_trigger_explain()` —— 输出 `{category, why_triggered, why_not, how_far_off, breach_pct}`，category ∈ triggered/near_trigger/invalidated/waiting/no_data。
+- `get_observe()` 三条返回路径（no_db / no_conn / ok）全部补齐刷新元数据字段；item 构建 loop 注入 trigger_explain / trigger_distance_pct / near_trigger，并聚合 near_trigger_count / pending_count。
+
+#### `frontend/src/types/index.ts`（`// [TF-OBS-004] observe_refresh_alert_queue`）
+- 新增 `TriggerExplain` interface；`TradeFlowObserveItem` / `TradeFlowObserveResponse` 补齐新字段。
+
+#### `frontend/src/pages/TradeFlow.tsx`（`// [TF-OBS-004] observe_refresh_alert_queue`）
+- 拆出 `ObserveRow` / `ObserveGroup` 子组件，把单平铺表改为三段分组：**已触发（待确认优先）→ 接近触发 → 已失效/等待**，待确认（paper_status=pending）排在最前。
+- 头部新增自动刷新状态胶囊：交易时段显示「自动刷新 · N分钟 · 下次 M:SS」倒计时；非交易时段显示「已暂停 · 非交易日/非交易时段」。
+- 顶部摘要栏新增 待确认/已触发/接近触发/已失效 计数。
+- 自动刷新 effect 改为服务端 `refresh_interval_seconds` 驱动（上限保持 3 分钟/5 分钟，不引入更高频轮询），并新增 1 秒 countdown ticker；通过 props 把 nextRefreshIn / autoRefreshActive 传入表格。
+
+#### 新增 `tests/test_tf_obs_004_observe_refresh_alert_queue.py`（`# [TF-OBS-004] observe_refresh_alert_queue`）
+- 36 用例，8 个测试类：`_build_trigger_explain` 单元（triggered/near/waiting/invalidated/no_data/边界/字段完备/零触发价防御）、刷新元数据（存在性/速度预算/配置一致性）、item 注入（trigger_explain/distance/near_trigger/paper_status）、三段分组 fixture（triggered+near+invalidated 同时存在）、待确认队列（触发→pending 非 open、pending_count、非 paper 不创建）、Pydantic schema 接受性、禁用词扫描、FULL_TA/LLM 不升级。
+
+### 文件清单
+
+- 修改：`tradingagents/tradeflow/strategy_config.py`
+- 修改：`api/tradeflow_schemas.py`
+- 修改：`api/services/tradeflow_service.py`
+- 修改：`frontend/src/types/index.ts`
+- 修改：`frontend/src/pages/TradeFlow.tsx`
+- 新增：`tests/test_tf_obs_004_observe_refresh_alert_queue.py`
+
+### 验证 / 测试结果
+
+- `pytest tests/test_tf_obs_004_observe_refresh_alert_queue.py -q` → **36 passed**。
+- 观察链路回归：`pytest tests/test_tf_obs_001_observe_runner.py tests/test_tf_obs_002_observe_auto_run.py tests/test_tf_obs_003_observe_paper_sync.py tests/test_tf_obs_004_observe_refresh_alert_queue.py tests/test_m005_intraday_observe.py tests/test_t004_intraday_observe.py tests/test_t008_observe_fixture_replay.py -q` → **302 passed**。
+- API/账本/试跑回归：`pytest tests/test_ui001_tradeflow_api.py tests/test_tf_paper001_paper_ledger.py tests/test_tf_risk001_paper_risk_budget.py tests/test_v008_paper_trial_acceptance.py tests/test_v009_trial_guide_smoke.py -q` → **211 passed**。
+- `npm run build` → ✅ 通过（tsc + vite，无 TS 错误）。
+
+### 约束合规 / 风险点
+
+- 不调用 LLM ✓（无任何 LLM/FULL_TA 调用；runtime_tier 保持 fast）。
+- 不写生产 `tradingagents.db` ✓（测试用 `tmp_path`，schema 改的是 TradeFlow 侧）。
+- 不接真实交易 ✓（触发仅进入模拟账本 pending，需人工 confirm 才转 open，`update_paper_observe_state` 行为未改）。
+- 不改 `tradingagents/prompts/` ✓。
+- 不新增高频轮询 ✓（interval 上限仍为 3 分钟盘中 / 5 分钟盘后，countdown 仅本地 1s tick 不触发网络请求）。
+- 不输出强买卖词 ✓（禁用词扫描覆盖所有 trigger_explain 文案）。
+- 风险点：`_observe_market_status()` 在 scheduler helper 导入失败时回退为 False，可能导致非交易时段误暂停自动刷新——但这是降级行为，比抛 500 更安全。
+
+---
+
 ## 2026-06-24 | V-009 小资金试跑后回归清单与用户操作手册
 
 - **执行者**：OpenCode (glm-5.2)

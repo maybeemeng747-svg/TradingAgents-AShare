@@ -218,7 +218,74 @@ function CompletenessBar({ value }: { value: number }) {
 }
 
 // [TF-OBS-002] observe_auto_run
-function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observeReason, observeAutoRun, lastObservedAt }: {
+// [TF-OBS-004] observe_refresh_alert_queue — grouping + countdown
+function ObserveRow({ item }: { item: TradeFlowObserveItem }) {
+    const st = observeStateLabel(item.observe_state)
+    const distInfo = priceDistanceColor(item.current_price, item.trigger_price, item.invalid_price)
+    const explain = item.trigger_explain
+    return (
+        <tr
+            key={item.symbol}
+            className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
+        >
+            <td className="px-4 py-2.5 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{item.symbol}</td>
+            <td className="max-w-[120px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{item.name || '--'}</td>
+            <td className="px-4 py-2.5">
+                <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${observeStateBg(item.observe_state)}`}>
+                    {item.observe_state === 'WAITING' && <Eye className="h-3 w-3" />}
+                    {st.text}
+                </span>
+            </td>
+            <td className="px-4 py-2.5">
+                {(() => {
+                    const ps = item.paper_status || ''
+                    if (ps === 'pending') return <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">待确认</span>
+                    if (ps === 'tracking') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-300">已加入试跑</span>
+                    if (ps === 'open') return <span className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">持仓中</span>
+                    if (ps === 'closed') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-500 dark:bg-slate-700 dark:text-slate-400">已平仓</span>
+                    if (ps === 'invalidated') return <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300">已失效</span>
+                    if (ps === 'observation') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-400 dark:bg-slate-700 dark:text-slate-500">观察降级</span>
+                    return <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
+                })()}
+            </td>
+            <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{fmtPrice(item.trigger_price)}</td>
+            <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{fmtPrice(item.invalid_price)}</td>
+            <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">
+                {item.current_price != null ? item.current_price.toFixed(2) : <span className="text-xs text-slate-400">实时行情不可用</span>}
+            </td>
+            <td className="px-4 py-2.5 tabular-nums">
+                <span className={distInfo.cls} title={explain?.why_triggered || explain?.why_not || ''}>{distInfo.text}</span>
+            </td>
+            <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{item.observe_trigger_count}</td>
+            <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{item.observe_first_trigger_time || '-'}</td>
+            <td className="max-w-[200px] truncate px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400" title={item.trigger_reason || explain?.why_triggered || explain?.why_not || ''}>
+                {explain?.how_far_off || item.trigger_reason || '-'}
+            </td>
+        </tr>
+    )
+}
+
+function ObserveGroup({ title, subtitle, items, accent }: { title: string; subtitle?: string; items: TradeFlowObserveItem[]; accent: string }) {
+    if (items.length === 0) return null
+    return (
+        <div className="border-b border-slate-100 last:border-0 dark:border-slate-800">
+            <div className="flex items-center gap-2 bg-slate-50/60 px-4 py-2 dark:bg-slate-800/40">
+                <span className={`inline-block h-2 w-2 rounded-full ${accent}`} />
+                <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{title}</span>
+                <span className="text-xs text-slate-400">{items.length} 条</span>
+                {subtitle && <span className="text-[11px] text-slate-400">{subtitle}</span>}
+            </div>
+            <table className="w-full text-sm">
+                <tbody>
+                    {items.map(item => <ObserveRow key={item.symbol} item={item} />)}
+                </tbody>
+            </table>
+        </div>
+    )
+}
+
+function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observeReason, observeAutoRun, lastObservedAt,
+    refreshIntervalSeconds, isMarketHours, isTradingDay, nearTriggerCount, pendingCount, nextRefreshIn, autoRefreshActive }: {
     items: TradeFlowObserveItem[]
     onRun: () => void
     running: boolean
@@ -227,12 +294,40 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
     observeReason: string
     observeAutoRun: boolean
     lastObservedAt: string
+    refreshIntervalSeconds: number  // [TF-OBS-004]
+    isMarketHours: boolean          // [TF-OBS-004]
+    isTradingDay: boolean           // [TF-OBS-004]
+    nearTriggerCount: number        // [TF-OBS-004]
+    pendingCount: number            // [TF-OBS-004]
+    nextRefreshIn: number | null    // [TF-OBS-004] seconds until next auto-refresh, null = paused
+    autoRefreshActive: boolean      // [TF-OBS-004]
 }) {
     const [showResult, setShowResult] = useState(false)
     const effectiveLastTime = lastObservedAt || lastCheckTime
+
+    // [TF-OBS-004] observe_refresh_alert_queue — group items: triggered (pending-first) / near-trigger / invalidated+other
+    const triggeredItems = items.filter(it => it.observe_state === 'TRIGGERED' || it.trigger_explain?.category === 'triggered')
+        .sort((a, b) => {
+            // pending-confirmation first, then by distance desc
+            const ap = a.paper_status === 'pending' ? 0 : 1
+            const bp = b.paper_status === 'pending' ? 0 : 1
+            if (ap !== bp) return ap - bp
+            return (b.trigger_distance_pct ?? -999) - (a.trigger_distance_pct ?? -999)
+        })
+    const nearItems = items.filter(it => it.near_trigger && !triggeredItems.includes(it))
+        .sort((a, b) => (b.trigger_distance_pct ?? -999) - (a.trigger_distance_pct ?? -999))
+    const otherItems = items.filter(it => !triggeredItems.includes(it) && !nearItems.includes(it))
+
+    const countdownText = (() => {
+        if (!autoRefreshActive || nextRefreshIn == null) return null
+        const mm = Math.floor(nextRefreshIn / 60)
+        const ss = nextRefreshIn % 60
+        return mm > 0 ? `${mm}:${ss.toString().padStart(2, '0')}` : `${ss}s`
+    })()
+
     return (
         <div>
-            <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-700">
+            <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-700">
                 <span className="text-sm font-medium text-slate-700 dark:text-slate-300">盘中观察</span>
                 {effectiveLastTime && (
                     <span className="inline-flex items-center gap-1 text-xs text-slate-400">
@@ -245,6 +340,21 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
                         自动执行
                     </span>
                 )}
+                {/* [TF-OBS-004] observe_refresh_alert_queue — auto-refresh status + countdown */}
+                {autoRefreshActive && countdownText ? (
+                    <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300">
+                        <RefreshCw className="h-3 w-3" />
+                        自动刷新 · {Math.round(refreshIntervalSeconds / 60)}分钟 · 下次 {countdownText}
+                    </span>
+                ) : autoRefreshActive ? (
+                    <span className="inline-flex items-center gap-1 rounded bg-slate-50 px-1.5 py-0.5 text-[11px] font-medium text-slate-500 dark:bg-slate-700 dark:text-slate-400">
+                        自动刷新中
+                    </span>
+                ) : (
+                    <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-600 dark:bg-amber-900/30 dark:text-amber-300" title={!isTradingDay ? '非交易日' : !isMarketHours ? '非交易时段' : '已暂停'}>
+                        已暂停 · {!isTradingDay ? '非交易日' : !isMarketHours ? '非交易时段' : '已暂停'}
+                    </span>
+                )}
                 <button
                     onClick={() => { onRun(); setShowResult(true) }}
                     disabled={running}
@@ -254,6 +364,15 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
                     {running ? '执行中...' : '手动刷新'}
                 </button>
             </div>
+            {/* [TF-OBS-004] observe_refresh_alert_queue — grouped summary */}
+            {items.length > 0 && (
+                <div className="flex flex-wrap items-center gap-4 border-b border-slate-100 px-4 py-2 dark:border-slate-700">
+                    <span className="text-xs text-slate-500">待确认: <span className="font-medium text-amber-600 dark:text-amber-400">{pendingCount}</span></span>
+                    <span className="text-xs text-slate-500">已触发: <span className="font-medium text-red-600 dark:text-red-400">{triggeredItems.length}</span></span>
+                    <span className="text-xs text-slate-500">接近触发: <span className="font-medium text-blue-600 dark:text-blue-400">{nearTriggerCount}</span></span>
+                    <span className="text-xs text-slate-500">已失效: <span className="font-medium text-emerald-600 dark:text-emerald-400">{items.filter(i => i.observe_state === 'INVALIDATED').length}</span></span>
+                </div>
+            )}
             {observeReason && items.length === 0 && !runResult && (
                 <div className="mx-4 mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
                     {observeReason}
@@ -292,67 +411,15 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
                 </div>
             ) : items.length === 0 && !runResult ? null : (
             <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                <thead>
-                    <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
-                        <th className="px-4 py-2.5 font-medium">代码</th>
-                        <th className="px-4 py-2.5 font-medium">名称</th>
-                        <th className="px-4 py-2.5 font-medium">状态</th>
-                        <th className="px-4 py-2.5 font-medium">模拟账本</th>
-                        <th className="px-4 py-2.5 font-medium">触发价</th>
-                        <th className="px-4 py-2.5 font-medium">失效价</th>
-                        <th className="px-4 py-2.5 font-medium">当前价</th>
-                        <th className="px-4 py-2.5 font-medium">触发距离</th>
-                        <th className="px-4 py-2.5 font-medium">触发次数</th>
-                        <th className="px-4 py-2.5 font-medium">首次触发时间</th>
-                        <th className="px-4 py-2.5 font-medium">触发原因</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {items.map(item => {
-                        const st = observeStateLabel(item.observe_state)
-                        const distInfo = priceDistanceColor(item.current_price, item.trigger_price, item.invalid_price)
-                        return (
-                            <tr
-                                key={item.symbol}
-                                className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
-                            >
-                                <td className="px-4 py-2.5 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{item.symbol}</td>
-                                <td className="max-w-[120px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{item.name || '--'}</td>
-                                <td className="px-4 py-2.5">
-                                    <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${observeStateBg(item.observe_state)}`}>
-                                        {item.observe_state === 'WAITING' && <Eye className="h-3 w-3" />}
-                                        {st.text}
-                                    </span>
-                                </td>
-                                <td className="px-4 py-2.5">
-                                    {(() => {
-                                        const ps = item.paper_status || ''
-                                        if (ps === 'pending') return <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">待确认</span>
-                                        if (ps === 'tracking') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-300">已加入试跑</span>
-                                        if (ps === 'open') return <span className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">持仓中</span>
-                                        if (ps === 'closed') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-500 dark:bg-slate-700 dark:text-slate-400">已平仓</span>
-                                        if (ps === 'invalidated') return <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300">已失效</span>
-                                        if (ps === 'observation') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-400 dark:bg-slate-700 dark:text-slate-500">观察降级</span>
-                                        return <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
-                                    })()}
-                                </td>
-                                <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{fmtPrice(item.trigger_price)}</td>
-                                <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{fmtPrice(item.invalid_price)}</td>
-                                <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">
-                                    {item.current_price != null ? item.current_price.toFixed(2) : <span className="text-xs text-slate-400">实时行情不可用</span>}
-                                </td>
-                                <td className="px-4 py-2.5 tabular-nums">
-                                    <span className={distInfo.cls}>{distInfo.text}</span>
-                                </td>
-                                <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{item.observe_trigger_count}</td>
-                                <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{item.observe_first_trigger_time || '-'}</td>
-                                <td className="max-w-[200px] truncate px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400" title={item.trigger_reason}>{item.trigger_reason || '-'}</td>
-                            </tr>
-                        )
-                    })}
-                </tbody>
-            </table>
+                {/* [TF-OBS-004] observe_refresh_alert_queue — grouped sections, pending-first */}
+                <ObserveGroup title="已触发（待确认优先）" subtitle="已进入模拟账本待确认队列，需人工确认，不自动下单" items={triggeredItems} accent="bg-red-500" />
+                <ObserveGroup title="接近触发" subtitle="价格接近触发价，重点关注" items={nearItems} accent="bg-blue-500" />
+                <ObserveGroup title="已失效 / 等待中" items={otherItems} accent="bg-slate-400" />
+                {items.length > 0 && triggeredItems.length === 0 && nearItems.length === 0 && otherItems.length === 0 && (
+                    <table className="w-full text-sm">
+                        <tbody>{items.map(item => <ObserveRow key={item.symbol} item={item} />)}</tbody>
+                    </table>
+                )}
             </div>
             )}
         </div>
@@ -1978,8 +2045,13 @@ export default function TradeFlow() {
     const [viewMode, setViewMode] = useState<'focus' | 'tiered' | 'table'>('focus')  // [UI-012] default to focus workspace
 
     // [TF-UX-002] auto-refresh state
+    // [TF-OBS-004] observe_refresh_alert_queue — countdown + server-driven interval
     const [lastObserveCheckTime, setLastObserveCheckTime] = useState<string | null>(null)
     const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
+    const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
+    const [nextRefreshIn, setNextRefreshIn] = useState<number | null>(null)
+    const [autoRefreshActive, setAutoRefreshActive] = useState<boolean>(false)
+    const [effectiveObserveRefreshSeconds, setEffectiveObserveRefreshSeconds] = useState<number>(180)
 
     // [TF-UX-003] review generation
     const [reviewGenerating, setReviewGenerating] = useState(false)
@@ -2278,23 +2350,47 @@ export default function TradeFlow() {
     }, [activeTab, refreshPaperLedgerForFocus])
 
     // [TF-UX-002] auto-refresh for observe tab
+    // [TF-OBS-004] observe_refresh_alert_queue — server-driven interval + 1s countdown ticker
     useEffect(() => {
         if (autoRefreshRef.current) {
             clearInterval(autoRefreshRef.current)
             autoRefreshRef.current = null
         }
-        if (activeTab === 'observe') {
-            const interval = isInMarketHours() ? 3 * 60 * 1000 : 5 * 60 * 1000
+        if (countdownRef.current) {
+            clearInterval(countdownRef.current)
+            countdownRef.current = null
+        }
+        // Respect speed budget: keep conservative intervals, do NOT add high-frequency polling.
+        const inMarket = isInMarketHours()
+        // Prefer server-authoritative interval when available; cap to existing budget (3min in-market / 5min off).
+        const serverIntervalMs = (observeData?.refresh_interval_seconds ?? 0) * 1000
+        const interval = inMarket
+            ? Math.min(serverIntervalMs > 0 ? serverIntervalMs : 3 * 60 * 1000, 3 * 60 * 1000)
+            : 5 * 60 * 1000
+        const active = inMarket && activeTab === 'observe'
+        setEffectiveObserveRefreshSeconds(Math.round(interval / 1000))
+        setAutoRefreshActive(active)
+        if (active) {
+            setNextRefreshIn(Math.round(interval / 1000))
             autoRefreshRef.current = setInterval(() => {
                 void fetchObserve(tradeDate)
+                setNextRefreshIn(Math.round(interval / 1000))
             }, interval)
+            countdownRef.current = setInterval(() => {
+                setNextRefreshIn(prev => (prev == null ? null : Math.max(0, prev - 1)))
+            }, 1000)
+        } else {
+            setNextRefreshIn(null)
         }
         return () => {
             if (autoRefreshRef.current) {
                 clearInterval(autoRefreshRef.current)
             }
+            if (countdownRef.current) {
+                clearInterval(countdownRef.current)
+            }
         }
-    }, [activeTab, tradeDate, fetchObserve, isInMarketHours])
+    }, [activeTab, tradeDate, fetchObserve, isInMarketHours, observeData?.refresh_interval_seconds])
 
     // [H-013A] mandate_topic_heatmap_fix — scroll the carried symbol into view
     // (and clear it) once the candidates list has rendered it.
@@ -2961,6 +3057,13 @@ export default function TradeFlow() {
                 observeReason={observeData?.observe_reason ?? ''}
                 observeAutoRun={observeData?.observe_auto_run ?? false}
                 lastObservedAt={observeData?.last_observed_at ?? ''}
+                refreshIntervalSeconds={effectiveObserveRefreshSeconds}
+                isMarketHours={observeData?.is_market_hours ?? false}
+                isTradingDay={observeData?.is_trading_day ?? false}
+                nearTriggerCount={observeData?.near_trigger_count ?? 0}
+                pendingCount={observeData?.pending_count ?? 0}
+                nextRefreshIn={nextRefreshIn}
+                autoRefreshActive={autoRefreshActive}
             />
         }
 

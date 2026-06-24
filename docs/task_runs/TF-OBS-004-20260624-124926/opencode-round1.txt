@@ -1,0 +1,1361 @@
+[0m
+> build · glm-5.2
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "TF-OBS-003"[90m in docs/TASKS.md · 6 matches[0m
+[0m✱ [0mGrep "TF-OBS-004"[90m in . · 55 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [limit=40, offset=3604][0m
+[0m→ [0mRead docs/TASKS.md[90m [limit=30, offset=3364][0m
+[0m→ [0mRead docs/task_runs/TF-OBS-004-20260624-124926/task.md
+[0m• [0mExplore TF-OBS-004 related code[90m Explore Agent[0m
+[0m✓ [0mExplore TF-OBS-004 related code[90m Explore Agent[0m
+[0m→ [0mRead api/tradeflow_schemas.py[90m [limit=90, offset=180][0m
+I have a thorough understanding now. Let me read the key files I'll need to modify.
+[0m→ [0mRead tradingagents/tradeflow/strategy_config.py[90m [limit=40, offset=120][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=170, offset=687][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=60, offset=1498][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=160, offset=220][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=75, offset=70][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=120, offset=1960][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=40, offset=2275][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=25, offset=2948][0m
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=20, offset=3440][0m
+[0m→ [0mRead frontend/src/types/index.ts[90m [limit=35, offset=1085][0m
+[0m→ [0mRead tests/test_tf_obs_002_observe_auto_run.py[90m [limit=120][0m
+Now let me look at the frontend types, the existing TF-OBS-002 test file (as template), and the DEVLOG header.
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=75][0m
+[0m
+[0m# [0mTodos
+[ ] Add observe_near_trigger_band_pct to strategy_config.py
+[ ] Extend TradeFlowObserveItem/Response schemas with trigger_explain + refresh metadata
+[ ] Enrich get_observe() with structured trigger_explain + scheduler status fields
+[ ] Update frontend types in index.ts
+[ ] Refactor ObserveTable into 3 grouped sections + countdown + auto-refresh status
+[ ] Wire server interval into auto-refresh effect
+[ ] Create test_tf_obs_004_observe_refresh_alert_queue.py
+[ ] Run tests + npm build, update DEVLOG.md
+[0m
+I have enough context now. Let me set up the task list and verify the test baseline.
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tf_obs_002_observe_auto_run.py tests/test_tf_obs_003_observe_paper_sync.py -q --tb=line 2>&1 | tail -15
+.............................................                            [100%]
+45 passed in 3.22s
+[0m
+Baseline is green (45 passed). Let me start implementing.
+
+**1. Add `observe_near_trigger_band_pct` to strategy_config.py:**
+[0m← [0mEdit tradingagents/tradeflow/strategy_config.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/strategy_config.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/strategy_config.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/strategy_config.py
+@@ -128,8 +128,9 @@
+ # ── Intraday Observe [M-005] ──
+ observe_max_daily_triggers: int = 3
+ observe_trigger_breach_pct: float = 0.0
+ observe_invalidate_breach_pct: float = 0.0
++observe_near_trigger_band_pct: float = 0.03  # [TF-OBS-004] observe_refresh_alert_queue — display band for "near trigger" grouping
+ 
+ # ── Intraday Observe Scheduler [T-004] ──
+ observe_interval_minutes: int = 30
+ observe_volume_anomaly_ratio: float = 2.0
+
+[0m
+[0m# [0mTodos
+[✓] Add observe_near_trigger_band_pct to strategy_config.py
+[•] Extend TradeFlowObserveItem/Response schemas with trigger_explain + refresh metadata
+[ ] Enrich get_observe() with structured trigger_explain + scheduler status fields
+[ ] Update frontend types in index.ts
+[ ] Refactor ObserveTable into 3 grouped sections + countdown + auto-refresh status
+[ ] Wire server interval into auto-refresh effect
+[ ] Create test_tf_obs_004_observe_refresh_alert_queue.py
+[ ] Run tests + npm build, update DEVLOG.md
+[0m
+**2. Extend schemas in `api/tradeflow_schemas.py`:**
+[0m← [0mEdit api/tradeflow_schemas.py
+Index: /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
++++ /Users/maybee/TradingAgents-AShare/api/tradeflow_schemas.py
+@@ -198,8 +198,13 @@
+     composite_score: float = 0.0
+     current_price: Optional[float] = None
+     trigger_reason: str = ""
+     strategy_tags: List[str] = Field(default_factory=list)
++    paper_status: str = ""  # [TF-OBS-003] observe_paper_sync
++    # [TF-OBS-004] observe_refresh_alert_queue — structured trigger explanation
++    trigger_distance_pct: Optional[float] = None  # signed % distance from trigger price
++    near_trigger: bool = False  # within near-trigger band but not yet triggered
++    trigger_explain: Dict[str, Any] = Field(default_factory=dict)  # why triggered / why not / how far off
+ 
+ 
+ class TradeFlowObserveResponse(BaseModel):
+     status: str = "ok"
+@@ -211,8 +216,14 @@
+     observe_auto_run: bool = False  # [TF-OBS-002] observe_auto_run
+     last_observed_at: str = ""      # [TF-OBS-002]
+     observe_reason: str = ""        # [TF-OBS-002]
+     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
++    # [TF-OBS-004] observe_refresh_alert_queue — refresh metadata + grouped counts
++    refresh_interval_seconds: int = 180
++    is_market_hours: bool = False
++    is_trading_day: bool = False
++    near_trigger_count: int = 0
++    pending_count: int = 0
+ 
+ 
+ class TradeFlowTAQueueItem(BaseModel):
+     symbol: str
+
+[0m
+Let me verify `Dict`/`Any` are imported in the schemas file:
+[0m✱ [0mGrep "^from typing|^import typing"[90m in api/tradeflow_schemas.py · 1 match[0m
+[0m
+[0m# [0mTodos
+[✓] Add observe_near_trigger_band_pct to strategy_config.py
+[✓] Extend TradeFlowObserveItem/Response schemas with trigger_explain + refresh metadata
+[•] Enrich get_observe() with structured trigger_explain + scheduler status fields
+[ ] Update frontend types in index.ts
+[ ] Refactor ObserveTable into 3 grouped sections + countdown + auto-refresh status
+[ ] Wire server interval into auto-refresh effect
+[ ] Create test_tf_obs_004_observe_refresh_alert_queue.py
+[ ] Run tests + npm build, update DEVLOG.md
+[0m
+Good, `Any` and `Dict` are already imported.
+
+**3. Enrich `get_observe()` with structured `trigger_explain` + scheduler status fields:**
+Now I'll add a helper function for the trigger explanation and enrich `get_observe()`. First, let me add the helper near `get_observe`:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=30, offset=620][0m
+I'll add the helper function right before `get_observe`:
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -683,8 +683,61 @@
+     finally:
+         conn.close()
+ 
+ 
++def _build_trigger_explain(observe_state: str, current_price, trigger_price, invalid_price,
++                           near_band_pct: float) -> dict:
++    """Build structured "why triggered / why not / how far off" explanation.  # [TF-OBS-004] observe_refresh_alert_queue
++
++    Returns dict with:
++    - category: triggered / near_trigger / invalidated / waiting / no_data
++    - why_triggered: reason string when triggered
++    - why_not: reason string when not triggered
++    - how_far_off: human-readable distance to trigger
++    - breach_pct: signed % distance from trigger price (positive = above trigger)
++    """
++    result = {
++        "category": "waiting",
++        "why_triggered": "",
++        "why_not": "",
++        "how_far_off": "",
++        "breach_pct": None,
++    }
++    if observe_state == "INVALIDATED" or (invalid_price and current_price is not None and current_price <= invalid_price):
++        result["category"] = "invalidated"
++        below = ""
++        if invalid_price and current_price is not None:
++            below_pct = (invalid_price - current_price) / invalid_price * 100
++            result["breach_pct"] = (current_price - trigger_price) / trigger_price * 100 if trigger_price else None
++            below = f"（跌破失效价 {invalid_price:.2f}，偏离 {below_pct:.2f}%）"
++        result["why_not"] = f"价格已跌破失效价{below}，观察失效"
++        return result
++    if trigger_price is None or current_price is None:
++        result["category"] = "no_data"
++        result["why_not"] = "缺少触发价或实时行情，无法判断"
++        return result
++
++    breach_pct = (current_price - trigger_price) / trigger_price * 100
++    result["breach_pct"] = breach_pct
++
++    if current_price >= trigger_price:
++        result["category"] = "triggered"
++        result["why_triggered"] = f"当前价 {current_price:.2f} 达到触发价 {trigger_price:.2f}（超出 {breach_pct:.2f}%）"
++        result["how_far_off"] = f"已超出触发价 {breach_pct:.2f}%"
++        return result
++
++    to_trigger_pct = (trigger_price - current_price) / trigger_price * 100
++    result["how_far_off"] = f"还差 {to_trigger_pct:.2f}% 触发"
++    # near-trigger band: within (1 - near_band_pct) * trigger_price and trigger_price
++    if to_trigger_pct <= near_band_pct * 100:
++        result["category"] = "near_trigger"
++        result["why_not"] = f"当前价 {current_price:.2f} 接近触发价 {trigger_price:.2f}（还差 {to_trigger_pct:.2f}%）"
++    else:
++        result["category"] = "waiting"
++        result["why_not"] = f"当前价 {current_price:.2f} 距触发价 {trigger_price:.2f} 仍差 {to_trigger_pct:.2f}%"
++    return result
++
++
+ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
+     tf_db = tf_db_path or _get_tradeflow_db_path()
+     _fast_meta = _tradeflow_meta("tradeflow_observe")  # [PERF-001]
+ 
+
+[0m
+Now update the `get_observe` body to enrich items and fold in scheduler status. Let me update the early-return `no_data`/empty cases and the no-db case to include the new fields, then update the item-building loop and final return:
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -751,8 +751,13 @@
+         "observe_items": [],
+         "triggered_count": 0,
+         "invalidated_count": 0,
+         "waiting_count": 0,
++        "refresh_interval_seconds": DEFAULT_STRATEGY_CONFIG.observe_interval_minutes * 60,  # [TF-OBS-004]
++        "is_market_hours": _observe_market_status()["is_market_hours"],  # [TF-OBS-004]
++        "is_trading_day": _observe_market_status()["is_trading_day"],    # [TF-OBS-004]
++        "near_trigger_count": 0,   # [TF-OBS-004]
++        "pending_count": 0,        # [TF-OBS-004]
+         "runtime_tier_meta": _fast_meta,
+     }
+ 
+ # [TF-OBS-002] observe_auto_run — auto-run observe check when page opens
+
+[0m
+Let me fix the double-call — compute market status once. First let me add the helper, then revise:
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -741,8 +741,9 @@
+ tf_db = tf_db_path or _get_tradeflow_db_path()
+ _fast_meta = _tradeflow_meta("tradeflow_observe")  # [PERF-001]
+ 
+ if not os.path.exists(tf_db):
++    _mkt = _observe_market_status()  # [TF-OBS-004]
+     return {
+         "status": "no_data",
+         "trade_date": trade_date,
+         "observe_auto_run": False,        # [TF-OBS-002] observe_auto_run
+@@ -752,10 +753,10 @@
+         "triggered_count": 0,
+         "invalidated_count": 0,
+         "waiting_count": 0,
+         "refresh_interval_seconds": DEFAULT_STRATEGY_CONFIG.observe_interval_minutes * 60,  # [TF-OBS-004]
+-        "is_market_hours": _observe_market_status()["is_market_hours"],  # [TF-OBS-004]
+-        "is_trading_day": _observe_market_status()["is_trading_day"],    # [TF-OBS-004]
++        "is_market_hours": _mkt["is_market_hours"],   # [TF-OBS-004]
++        "is_trading_day": _mkt["is_trading_day"],     # [TF-OBS-004]
+         "near_trigger_count": 0,   # [TF-OBS-004]
+         "pending_count": 0,        # [TF-OBS-004]
+         "runtime_tier_meta": _fast_meta,
+     }
+
+[0m
+Now add the `_observe_market_status` helper. Let me add it right before `_build_trigger_explain`:
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -683,8 +683,28 @@
+     finally:
+         conn.close()
+ 
+ 
++def _observe_market_status() -> dict:
++    """Return is_trading_day / is_market_hours for observe refresh metadata.  # [TF-OBS-004] observe_refresh_alert_queue
++
++    Defensive: never raises — falls back to False on any import error so the
++    observe endpoint stays available even when scheduler helpers are unavailable.
++    """
++    try:
++        from tradingagents.tradeflow.strategy_config import DEFAULT_STRATEGY_CONFIG
++        from zoneinfo import ZoneInfo
++        now = datetime.now(tz=ZoneInfo("Asia/Shanghai"))
++        today = now.strftime("%Y-%m-%d")
++        from tradingagents.tradeflow.intraday_observe_scheduler import _is_trading_day, _is_market_hours
++        return {
++            "is_trading_day": _is_trading_day(today),
++            "is_market_hours": _is_market_hours(DEFAULT_STRATEGY_CONFIG),
++        }
++    except Exception:
++        return {"is_trading_day": False, "is_market_hours": False}
++
++
+ def _build_trigger_explain(observe_state: str, current_price, trigger_price, invalid_price,
+                            near_band_pct: float) -> dict:
+     """Build structured "why triggered / why not / how far off" explanation.  # [TF-OBS-004] observe_refresh_alert_queue
+ 
+
+[0m
+Now update the second early-return (no connection) and the item-building loop + final return. Let me update the no-connection return:
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -812,8 +812,9 @@
+             observe_reason = f"自动执行失败: {e}"
+ 
+ conn = _connect(tf_db_path)
+ if conn is None:
++    _mkt = _observe_market_status()  # [TF-OBS-004]
+     return {
+         "status": "no_data",
+         "trade_date": trade_date,
+         "observe_auto_run": observe_auto_run,
+@@ -822,8 +823,13 @@
+         "observe_items": [],
+         "triggered_count": 0,
+         "invalidated_count": 0,
+         "waiting_count": 0,
++        "refresh_interval_seconds": DEFAULT_STRATEGY_CONFIG.observe_interval_minutes * 60,  # [TF-OBS-004]
++        "is_market_hours": _mkt["is_market_hours"],   # [TF-OBS-004]
++        "is_trading_day": _mkt["is_trading_day"],     # [TF-OBS-004]
++        "near_trigger_count": 0,   # [TF-OBS-004]
++        "pending_count": 0,        # [TF-OBS-004]
+         "runtime_tier_meta": _fast_meta,
+     }
+ 
+ try:
+
+[0m
+Now update the item-building loop and counters. Let me look at the current state of the loop with the new fields:
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=55, offset=835][0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=45, offset=887][0m
+Now I'll update the loop to compute trigger_explain, near_trigger counts, pending counts, and add the refresh metadata to the return:
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -847,8 +847,11 @@
+     items = []
+     triggered = 0
+     invalidated = 0
+     waiting = 0
++    near_trigger_total = 0   # [TF-OBS-004] observe_refresh_alert_queue
++    pending_total = 0        # [TF-OBS-004]
++    _near_band = DEFAULT_STRATEGY_CONFIG.observe_near_trigger_band_pct  # [TF-OBS-004]
+ 
+     # [TF-OBS-003] observe_paper_sync — map symbol → paper ledger status
+     paper_status_map: dict[str, str] = {}
+     try:
+@@ -884,31 +887,48 @@
+                 break
+         except Exception:
+             pass
+ 
++        _tp = _rget(r, "trigger_price")
++        _ip = _rget(r, "invalid_price")
++        # [TF-OBS-004] observe_refresh_alert_queue — structured trigger explanation
++        _explain = _build_trigger_explain(state, current_price, _tp, _ip, _near_band)
++        _dist_pct = _explain.get("breach_pct")
++        _near = _explain["category"] == "near_trigger"
++
++        _paper = paper_status_map.get(sym, "")  # [TF-OBS-003] observe_paper_sync
++
+         item = {
+             "symbol": sym,
+             "name": resolve_tradeflow_name(sym, raw_n),  # [UI-008]
+             "observe_state": state,
+-            "trigger_price": _rget(r, "trigger_price"),
+-            "invalid_price": _rget(r, "invalid_price"),
++            "trigger_price": _tp,
++            "invalid_price": _ip,
+             "observe_trigger_count": _rget(r, "observe_trigger_count", 0) or 0,
+             "observe_first_trigger_time": _rget(r, "observe_first_trigger_time", ""),
+             "tier": _rget(r, "tier", ""),
+             "composite_score": _rget(r, "composite_score", 0.0) or 0.0,
+             "current_price": current_price,
+             "trigger_reason": trigger_reason,
+             "strategy_tags": _parse_json(_rget(r, "strategy_tags_json"), []),
+-            "paper_status": paper_status_map.get(sym, ""),  # [TF-OBS-003] observe_paper_sync
++            "paper_status": _paper,  # [TF-OBS-003] observe_paper_sync
++            "trigger_distance_pct": _dist_pct,  # [TF-OBS-004]
++            "near_trigger": _near,               # [TF-OBS-004]
++            "trigger_explain": _explain,         # [TF-OBS-004]
+         }
+         items.append(item)
+         if state == "TRIGGERED":
+             triggered += 1
+         elif state == "INVALIDATED":
+             invalidated += 1
+         else:
+             waiting += 1
++        if _near:
++            near_trigger_total += 1
++        if _paper == "pending":
++            pending_total += 1
+ 
++    _mkt = _observe_market_status()  # [TF-OBS-004]
+     return {
+         "status": "ok",
+         "trade_date": trade_date,
+         "observe_items": items,
+@@ -917,8 +937,13 @@
+         "waiting_count": waiting,
+         "observe_auto_run": observe_auto_run,        # [TF-OBS-002] observe_auto_run
+         "last_observed_at": last_observed_at,         # [TF-OBS-002]
+         "observe_reason": observe_reason,             # [TF-OBS-002]
++        "refresh_interval_seconds": DEFAULT_STRATEGY_CONFIG.observe_interval_minutes * 60,  # [TF-OBS-004]
++        "is_market_hours": _mkt["is_market_hours"],   # [TF-OBS-004]
++        "is_trading_day": _mkt["is_trading_day"],     # [TF-OBS-004]
++        "near_trigger_count": near_trigger_total,     # [TF-OBS-004]
++        "pending_count": pending_total,               # [TF-OBS-004]
+         "runtime_tier_meta": _tradeflow_meta("tradeflow_observe"),  # [PERF-001]
+     }
+ finally:
+     conn.close()
+
+[0m
+I need to ensure `DEFAULT_STRATEGY_CONFIG` is accessible. Let me check how it's imported in the service:
+[0m✱ [0mGrep "DEFAULT_STRATEGY_CONFIG"[90m in api/services/tradeflow_service.py · 8 matches[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=45, offset=1][0m
+`DEFAULT_STRATEGY_CONFIG` is only imported locally. I need to add a module-level import. Let me check the top imports:
+I'll add a module-level import for `DEFAULT_STRATEGY_CONFIG`:
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -19,8 +19,9 @@
+     normalize_tradeflow_symbol,
+     resolve_tradeflow_name,
+ )
+ from tradingagents.tradeflow.candidate_engine import get_filtered_symbols as _get_filtered_symbols  # [UI-007] tradeflow_filtered_trace
++from tradingagents.tradeflow.strategy_config import DEFAULT_STRATEGY_CONFIG  # [TF-OBS-004] observe_refresh_alert_queue
+ 
+ 
+ def _get_project_root() -> str:
+     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+[0m
+Now let me quickly verify the backend changes import cleanly:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -c "
+from api.services.tradeflow_service import get_observe, _build_trigger_explain, _observe_market_status
+from api.tradeflow_schemas import TradeFlowObserveItem, TradeFlowObserveResponse
+import json
+
+# Test _build_trigger_explain
+e1 = _build_trigger_explain('WAITING', 10.10, 10.00, 9.00, 0.03)
+print('triggered:', e1['category'], '|', e1['how_far_off'])
+e2 = _build_trigger_explain('WAITING', 9.85, 10.00, 9.00, 0.03)
+print('near:', e2['category'], '|', e2['how_far_off'], '| near?', (10.00-9.85)/10.00*100 <= 3)
+e3 = _build_trigger_explain('WAITING', 9.50, 10.00, 9.00, 0.03)
+print('waiting:', e3['category'], '|', e3['how_far_off'])
+e4 = _build_trigger_explain('WAITING', 8.90, 10.00, 9.00, 0.03)
+print('invalidated:', e4['category'], '|', e4['why_not'])
+e5 = _build_trigger_explain('WAITING', None, 10.00, 9.00, 0.03)
+print('no_data:', e5['category'], '|', e5['why_not'])
+
+# Test market status
+m = _observe_market_status()
+print('market:', m)
+
+# Test no-db path returns new fields
+r = get_observe('2026-06-24', tf_db_path='/nonexistent/zzz.db')
+print('no-db keys:', sorted([k for k in r if k in ('refresh_interval_seconds','is_market_hours','is_trading_day','near_trigger_count','pending_count')]))
+print('no-db interval:', r.get('refresh_interval_seconds'))
+print('OK')
+" 2>&1 | tail -15
+triggered: triggered | 已超出触发价 1.00%
+near: near_trigger | 还差 1.50% 触发 | near? True
+waiting: waiting | 还差 5.00% 触发
+invalidated: invalidated | 价格已跌破失效价（跌破失效价 9.00，偏离 1.11%），观察失效
+no_data: no_data | 缺少触发价或实时行情，无法判断
+market: {'is_trading_day': True, 'is_market_hours': True}
+no-db keys: ['is_market_hours', 'is_trading_day', 'near_trigger_count', 'pending_count', 'refresh_interval_seconds']
+no-db interval: 1800
+OK
+[0m
+[0m# [0mTodos
+[✓] Add observe_near_trigger_band_pct to strategy_config.py
+[✓] Extend TradeFlowObserveItem/Response schemas with trigger_explain + refresh metadata
+[✓] Enrich get_observe() with structured trigger_explain + scheduler status fields
+[•] Update frontend types in index.ts
+[ ] Refactor ObserveTable into 3 grouped sections + countdown + auto-refresh status
+[ ] Wire server interval into auto-refresh effect
+[ ] Create test_tf_obs_004_observe_refresh_alert_queue.py
+[ ] Run tests + npm build, update DEVLOG.md
+[0m
+Backend works correctly. Now let me update the frontend.
+
+**4. Update frontend types:**
+[0m← [0mEdit frontend/src/types/index.ts
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
++++ /Users/maybee/TradingAgents-AShare/frontend/src/types/index.ts
+@@ -1084,8 +1084,16 @@
+     candidate: TradeFlowCandidateDetail | null
+     runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
+ }
+ 
++export interface TriggerExplain {  // [TF-OBS-004] observe_refresh_alert_queue
++    category: string  // triggered / near_trigger / invalidated / waiting / no_data
++    why_triggered: string
++    why_not: string
++    how_far_off: string
++    breach_pct: number | null
++}
++
+ export interface TradeFlowObserveItem {
+     symbol: string
+     name: string
+     observe_state: string
+@@ -1098,8 +1106,11 @@
+     current_price: number | null
+     trigger_reason: string
+     strategy_tags: string[]
+     paper_status: string  // [TF-OBS-003] observe_paper_sync
++    trigger_distance_pct: number | null  // [TF-OBS-004]
++    near_trigger: boolean  // [TF-OBS-004]
++    trigger_explain: TriggerExplain  // [TF-OBS-004]
+ }
+ 
+ export interface TradeFlowObserveResponse {
+     status: string
+@@ -1110,8 +1121,13 @@
+     waiting_count: number
+     observe_auto_run: boolean   // [TF-OBS-002] observe_auto_run
+     last_observed_at: string    // [TF-OBS-002]
+     observe_reason: string      // [TF-OBS-002]
++    refresh_interval_seconds: number  // [TF-OBS-004]
++    is_market_hours: boolean    // [TF-OBS-004]
++    is_trading_day: boolean     // [TF-OBS-004]
++    near_trigger_count: number  // [TF-OBS-004]
++    pending_count: number       // [TF-OBS-004]
+     runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
+ }
+ 
+ export interface TradeFlowTAQueueItem {
+
+[0m
+**5. Refactor `ObserveTable` into 3 grouped sections + countdown + auto-refresh status.**
+
+Let me rewrite the `ObserveTable` component:
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -217,23 +217,118 @@
+     )
+ }
+ 
+ // [TF-OBS-002] observe_auto_run
+-function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observeReason, observeAutoRun, lastObservedAt }: {
++// [TF-OBS-004] observe_refresh_alert_queue — grouping + countdown
++function ObserveRow({ item }: { item: TradeFlowObserveItem }) {
++    const st = observeStateLabel(item.observe_state)
++    const distInfo = priceDistanceColor(item.current_price, item.trigger_price, item.invalid_price)
++    const explain = item.trigger_explain
++    return (
++        <tr
++            key={item.symbol}
++            className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
++        >
++            <td className="px-4 py-2.5 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{item.symbol}</td>
++            <td className="max-w-[120px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{item.name || '--'}</td>
++            <td className="px-4 py-2.5">
++                <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${observeStateBg(item.observe_state)}`}>
++                    {item.observe_state === 'WAITING' && <Eye className="h-3 w-3" />}
++                    {st.text}
++                </span>
++            </td>
++            <td className="px-4 py-2.5">
++                {(() => {
++                    const ps = item.paper_status || ''
++                    if (ps === 'pending') return <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">待确认</span>
++                    if (ps === 'tracking') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-300">已加入试跑</span>
++                    if (ps === 'open') return <span className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">持仓中</span>
++                    if (ps === 'closed') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-500 dark:bg-slate-700 dark:text-slate-400">已平仓</span>
++                    if (ps === 'invalidated') return <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300">已失效</span>
++                    if (ps === 'observation') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-400 dark:bg-slate-700 dark:text-slate-500">观察降级</span>
++                    return <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
++                })()}
++            </td>
++            <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{fmtPrice(item.trigger_price)}</td>
++            <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{fmtPrice(item.invalid_price)}</td>
++            <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">
++                {item.current_price != null ? item.current_price.toFixed(2) : <span className="text-xs text-slate-400">实时行情不可用</span>}
++            </td>
++            <td className="px-4 py-2.5 tabular-nums">
++                <span className={distInfo.cls} title={explain?.why_triggered || explain?.why_not || ''}>{distInfo.text}</span>
++            </td>
++            <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{item.observe_trigger_count}</td>
++            <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{item.observe_first_trigger_time || '-'}</td>
++            <td className="max-w-[200px] truncate px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400" title={item.trigger_reason || explain?.why_triggered || explain?.why_not || ''}>
++                {explain?.how_far_off || item.trigger_reason || '-'}
++            </td>
++        </tr>
++    )
++}
++
++function ObserveGroup({ title, subtitle, items, accent }: { title: string; subtitle?: string; items: TradeFlowObserveItem[]; accent: string }) {
++    if (items.length === 0) return null
++    return (
++        <div className="border-b border-slate-100 last:border-0 dark:border-slate-800">
++            <div className="flex items-center gap-2 bg-slate-50/60 px-4 py-2 dark:bg-slate-800/40">
++                <span className={`inline-block h-2 w-2 rounded-full ${accent}`} />
++                <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">{title}</span>
++                <span className="text-xs text-slate-400">{items.length} 条</span>
++                {subtitle && <span className="text-[11px] text-slate-400">{subtitle}</span>}
++            </div>
++            <table className="w-full text-sm">
++                <tbody>
++                    {items.map(item => <ObserveRow key={item.symbol} item={item} />)}
++                </tbody>
++            </table>
++        </div>
++    )
++}
++
++function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observeReason, observeAutoRun, lastObservedAt,
++    refreshIntervalSeconds, isMarketHours, isTradingDay, nearTriggerCount, pendingCount, nextRefreshIn, autoRefreshActive }: {
+     items: TradeFlowObserveItem[]
+     onRun: () => void
+     running: boolean
+     runResult: TradeFlowObserveRunResponse | null
+     lastCheckTime: string | null
+     observeReason: string
+     observeAutoRun: boolean
+     lastObservedAt: string
++    refreshIntervalSeconds: number  // [TF-OBS-004]
++    isMarketHours: boolean          // [TF-OBS-004]
++    isTradingDay: boolean           // [TF-OBS-004]
++    nearTriggerCount: number        // [TF-OBS-004]
++    pendingCount: number            // [TF-OBS-004]
++    nextRefreshIn: number | null    // [TF-OBS-004] seconds until next auto-refresh, null = paused
++    autoRefreshActive: boolean      // [TF-OBS-004]
+ }) {
+     const [showResult, setShowResult] = useState(false)
+     const effectiveLastTime = lastObservedAt || lastCheckTime
++
++    // [TF-OBS-004] observe_refresh_alert_queue — group items: triggered (pending-first) / near-trigger / invalidated+other
++    const triggeredItems = items.filter(it => it.observe_state === 'TRIGGERED' || it.trigger_explain?.category === 'triggered')
++        .sort((a, b) => {
++            // pending-confirmation first, then by distance desc
++            const ap = a.paper_status === 'pending' ? 0 : 1
++            const bp = b.paper_status === 'pending' ? 0 : 1
++            if (ap !== bp) return ap - bp
++            return (b.trigger_distance_pct ?? -999) - (a.trigger_distance_pct ?? -999)
++        })
++    const nearItems = items.filter(it => it.near_trigger && !triggeredItems.includes(it))
++        .sort((a, b) => (a.trigger_distance_pct ?? -999) - (b.trigger_distance_pct ?? -999))
++    const otherItems = items.filter(it => !triggeredItems.includes(it) && !nearItems.includes(it))
++
++    const countdownText = (() => {
++        if (!autoRefreshActive || nextRefreshIn == null) return null
++        const mm = Math.floor(nextRefreshIn / 60)
++        const ss = nextRefreshIn % 60
++        return mm > 0 ? `${mm}:${ss.toString().padStart(2, '0')}` : `${ss}s`
++    })()
++
+     return (
+         <div>
+-            <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-700">
++            <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-700">
+                 <span className="text-sm font-medium text-slate-700 dark:text-slate-300">盘中观察</span>
+                 {effectiveLastTime && (
+                     <span className="inline-flex items-center gap-1 text-xs text-slate-400">
+                         <Clock className="h-3 w-3" />
+@@ -244,8 +339,23 @@
+                     <span className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">
+                         自动执行
+                     </span>
+                 )}
++                {/* [TF-OBS-004] observe_refresh_alert_queue — auto-refresh status + countdown */}
++                {autoRefreshActive && countdownText ? (
++                    <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300">
++                        <RefreshCw className="h-3 w-3" />
++                        自动刷新 · {Math.round(refreshIntervalSeconds / 60)}分钟 · 下次 {countdownText}
++                    </span>
++                ) : autoRefreshActive ? (
++                    <span className="inline-flex items-center gap-1 rounded bg-slate-50 px-1.5 py-0.5 text-[11px] font-medium text-slate-500 dark:bg-slate-700 dark:text-slate-400">
++                        自动刷新中
++                    </span>
++                ) : (
++                    <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-600 dark:bg-amber-900/30 dark:text-amber-300" title={!isTradingDay ? '非交易日' : '非交易时段'}>
++                        已暂停 · {!isTradingDay ? '非交易日' : '非交易时段'}
++                    </span>
++                )}
+                 <button
+                     onClick={() => { onRun(); setShowResult(true) }}
+                     disabled={running}
+                     className="ml-auto inline-flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+@@ -253,8 +363,17 @@
+                     {running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                     {running ? '执行中...' : '手动刷新'}
+                 </button>
+             </div>
++            {/* [TF-OBS-004] observe_refresh_alert_queue — grouped summary */}
++            {items.length > 0 && (
++                <div className="flex flex-wrap items-center gap-4 border-b border-slate-100 px-4 py-2 dark:border-slate-700">
++                    <span className="text-xs text-slate-500">待确认: <span className="font-medium text-amber-600 dark:text-amber-400">{pendingCount}</span></span>
++                    <span className="text-xs text-slate-500">已触发: <span className="font-medium text-red-600 dark:text-red-400">{triggeredItems.length}</span></span>
++                    <span className="text-xs text-slate-500">接近触发: <span className="font-medium text-blue-600 dark:text-blue-400">{nearTriggerCount}</span></span>
++                    <span className="text-xs text-slate-500">已失效: <span className="font-medium text-emerald-600 dark:text-emerald-400">{items.filter(i => i.observe_state === 'INVALIDATED').length}</span></span>
++                </div>
++            )}
+             {observeReason && items.length === 0 && !runResult && (
+                 <div className="mx-4 mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                     {observeReason}
+                 </div>
+@@ -291,69 +410,17 @@
+                     <div className="text-xs">系统将在开盘后自动执行观察，或点击"手动刷新"</div>
+                 </div>
+             ) : items.length === 0 && !runResult ? null : (
+             <div className="overflow-x-auto">
+-                <table className="w-full text-sm">
+-                <thead>
+-                    <tr className="border-b border-slate-100 text-left text-xs text-slate-500 dark:border-slate-700">
+-                        <th className="px-4 py-2.5 font-medium">代码</th>
+-                        <th className="px-4 py-2.5 font-medium">名称</th>
+-                        <th className="px-4 py-2.5 font-medium">状态</th>
+-                        <th className="px-4 py-2.5 font-medium">模拟账本</th>
+-                        <th className="px-4 py-2.5 font-medium">触发价</th>
+-                        <th className="px-4 py-2.5 font-medium">失效价</th>
+-                        <th className="px-4 py-2.5 font-medium">当前价</th>
+-                        <th className="px-4 py-2.5 font-medium">触发距离</th>
+-                        <th className="px-4 py-2.5 font-medium">触发次数</th>
+-                        <th className="px-4 py-2.5 font-medium">首次触发时间</th>
+-                        <th className="px-4 py-2.5 font-medium">触发原因</th>
+-                    </tr>
+-                </thead>
+-                <tbody>
+-                    {items.map(item => {
+-                        const st = observeStateLabel(item.observe_state)
+-                        const distInfo = priceDistanceColor(item.current_price, item.trigger_price, item.invalid_price)
+-                        return (
+-                            <tr
+-                                key={item.symbol}
+-                                className="border-b border-slate-50 transition-colors hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/50"
+-                            >
+-                                <td className="px-4 py-2.5 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100">{item.symbol}</td>
+-                                <td className="max-w-[120px] truncate px-4 py-2.5 text-slate-700 dark:text-slate-300">{item.name || '--'}</td>
+-                                <td className="px-4 py-2.5">
+-                                    <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ${observeStateBg(item.observe_state)}`}>
+-                                        {item.observe_state === 'WAITING' && <Eye className="h-3 w-3" />}
+-                                        {st.text}
+-                                    </span>
+-                                </td>
+-                                <td className="px-4 py-2.5">
+-                                    {(() => {
+-                                        const ps = item.paper_status || ''
+-                                        if (ps === 'pending') return <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">待确认</span>
+-                                        if (ps === 'tracking') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-300">已加入试跑</span>
+-                                        if (ps === 'open') return <span className="inline-flex items-center gap-1 rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-300">持仓中</span>
+-                                        if (ps === 'closed') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-500 dark:bg-slate-700 dark:text-slate-400">已平仓</span>
+-                                        if (ps === 'invalidated') return <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-300">已失效</span>
+-                                        if (ps === 'observation') return <span className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-400 dark:bg-slate-700 dark:text-slate-500">观察降级</span>
+-                                        return <span className="text-xs text-slate-300 dark:text-slate-600">—</span>
+-                                    })()}
+-                                </td>
+-                                <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{fmtPrice(item.trigger_price)}</td>
+-                                <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{fmtPrice(item.invalid_price)}</td>
+-                                <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">
+-                                    {item.current_price != null ? item.current_price.toFixed(2) : <span className="text-xs text-slate-400">实时行情不可用</span>}
+-                                </td>
+-                                <td className="px-4 py-2.5 tabular-nums">
+-                                    <span className={distInfo.cls}>{distInfo.text}</span>
+-                                </td>
+-                                <td className="px-4 py-2.5 tabular-nums text-slate-700 dark:text-slate-300">{item.observe_trigger_count}</td>
+-                                <td className="px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">{item.observe_first_trigger_time || '-'}</td>
+-                                <td className="max-w-[200px] truncate px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400" title={item.trigger_reason}>{item.trigger_reason || '-'}</td>
+-                            </tr>
+-                        )
+-                    })}
+-                </tbody>
+-            </table>
++                {/* [TF-OBS-004] observe_refresh_alert_queue — grouped sections, pending-first */}
++                <ObserveGroup title="已触发（待确认优先）" subtitle="已进入模拟账本待确认队列，需人工确认，不自动下单" items={triggeredItems} accent="bg-red-500" />
++                <ObserveGroup title="接近触发" subtitle="价格接近触发价，重点关注" items={nearItems} accent="bg-blue-500" />
++                <ObserveGroup title="已失效 / 等待中" items={otherItems} accent="bg-slate-400" />
++                {items.length > 0 && triggeredItems.length === 0 && nearItems.length === 0 && otherItems.length === 0 && (
++                    <table className="w-full text-sm">
++                        <tbody>{items.map(item => <ObserveRow key={item.symbol} item={item} />)}</tbody>
++                    </table>
++                )}
+             </div>
+             )}
+         </div>
+     )
+
+[0m
+[0m✱ [0mGrep "autoRefreshRef|lastObserveCheckTime"[90m in frontend/src/pages/TradeFlow.tsx · 9 matches[0m
+**6. Wire countdown state + server interval into auto-refresh effect + pass new props.**
+
+Let me add the countdown state. First find the current auto-refresh state:
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=6, offset=2046][0m
+[0m
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -2044,10 +2044,14 @@
+ const [showScan, setShowScan] = useState(false)
+ const [viewMode, setViewMode] = useState<'focus' | 'tiered' | 'table'>('focus')  // [UI-012] default to focus workspace
+ 
+ // [TF-UX-002] auto-refresh state
++// [TF-OBS-004] observe_refresh_alert_queue — countdown + server-driven interval
+ const [lastObserveCheckTime, setLastObserveCheckTime] = useState<string | null>(null)
+ const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
++const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
++const [nextRefreshIn, setNextRefreshIn] = useState<number | null>(null)
++const [autoRefreshActive, setAutoRefreshActive] = useState<boolean>(false)
+ 
+ // [TF-UX-003] review generation
+ const [reviewGenerating, setReviewGenerating] = useState(false)
+ 
+
+[0m
+Now update the auto-refresh effect to use server interval + countdown ticker:
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=25, offset=2345][0m
+[0m
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -2348,25 +2348,48 @@
+     }
+ }, [activeTab, refreshPaperLedgerForFocus])
+ 
+ // [TF-UX-002] auto-refresh for observe tab
++// [TF-OBS-004] observe_refresh_alert_queue — server-driven interval + 1s countdown ticker
+ useEffect(() => {
+     if (autoRefreshRef.current) {
+         clearInterval(autoRefreshRef.current)
+         autoRefreshRef.current = null
+     }
+-    if (activeTab === 'observe') {
+-        const interval = isInMarketHours() ? 3 * 60 * 1000 : 5 * 60 * 1000
++    if (countdownRef.current) {
++        clearInterval(countdownRef.current)
++        countdownRef.current = null
++    }
++    // Respect speed budget: keep conservative intervals, do NOT add high-frequency polling.
++    const inMarket = isInMarketHours()
++    // Prefer server-authoritative interval when available; cap to existing budget (3min in-market / 5min off).
++    const serverIntervalMs = (observeData?.refresh_interval_seconds ?? 0) * 1000
++    const interval = inMarket
++        ? Math.min(serverIntervalMs > 0 ? serverIntervalMs : 3 * 60 * 1000, 3 * 60 * 1000)
++        : 5 * 60 * 1000
++    const active = inMarket && activeTab === 'observe'
++    setAutoRefreshActive(active)
++    if (active) {
++        setNextRefreshIn(Math.round(interval / 1000))
+         autoRefreshRef.current = setInterval(() => {
+             void fetchObserve(tradeDate)
++            setNextRefreshIn(Math.round(interval / 1000))
+         }, interval)
++        countdownRef.current = setInterval(() => {
++            setNextRefreshIn(prev => (prev == null ? null : Math.max(0, prev - 1)))
++        }, 1000)
++    } else {
++        setNextRefreshIn(null)
+     }
+     return () => {
+         if (autoRefreshRef.current) {
+             clearInterval(autoRefreshRef.current)
+         }
++        if (countdownRef.current) {
++            clearInterval(countdownRef.current)
++        }
+     }
+-}, [activeTab, tradeDate, fetchObserve, isInMarketHours])
++}, [activeTab, tradeDate, fetchObserve, isInMarketHours, observeData?.refresh_interval_seconds])
+ 
+ // [H-013A] mandate_topic_heatmap_fix — scroll the carried symbol into view
+ // (and clear it) once the candidates list has rendered it.
+ useEffect(() => {
+
+[0m
+Now update the `ObserveTable` call in `renderContent` to pass the new props:
+[0m→ [0mRead frontend/src/pages/TradeFlow.tsx[90m [limit=18, offset=3044][0m
+[0m
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -3054,8 +3054,15 @@
+         lastCheckTime={lastObserveCheckTime}
+         observeReason={observeData?.observe_reason ?? ''}
+         observeAutoRun={observeData?.observe_auto_run ?? false}
+         lastObservedAt={observeData?.last_observed_at ?? ''}
++        refreshIntervalSeconds={observeData?.refresh_interval_seconds ?? 180}
++        isMarketHours={observeData?.is_market_hours ?? false}
++        isTradingDay={observeData?.is_trading_day ?? false}
++        nearTriggerCount={observeData?.near_trigger_count ?? 0}
++        pendingCount={observeData?.pending_count ?? 0}
++        nextRefreshIn={nextRefreshIn}
++        autoRefreshActive={autoRefreshActive}
+     />
+ }
+ 
+ if (activeTab === 'ta-queue') {
+
+[0m
+Now let me run the frontend build to catch any TypeScript errors:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare/frontend && npm run build 2>&1 | tail -20
+> tradingagents-dashboard@0.1.0 build
+> tsc && vite build
+
+src/pages/TradeFlow.tsx(288,29): error TS6133: 'isMarketHours' is declared but its value is never read.
+[0m
+`isMarketHours` is unused in the label. Let me use it properly in the paused-state label:
+[0m← [0mEdit frontend/src/pages/TradeFlow.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/pages/TradeFlow.tsx
+@@ -350,10 +350,10 @@
+     <span className="inline-flex items-center gap-1 rounded bg-slate-50 px-1.5 py-0.5 text-[11px] font-medium text-slate-500 dark:bg-slate-700 dark:text-slate-400">
+         自动刷新中
+     </span>
+ ) : (
+-    <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-600 dark:bg-amber-900/30 dark:text-amber-300" title={!isTradingDay ? '非交易日' : '非交易时段'}>
+-        已暂停 · {!isTradingDay ? '非交易日' : '非交易时段'}
++    <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-600 dark:bg-amber-900/30 dark:text-amber-300" title={!isTradingDay ? '非交易日' : !isMarketHours ? '非交易时段' : '已暂停'}>
++        已暂停 · {!isTradingDay ? '非交易日' : !isMarketHours ? '非交易时段' : '已暂停'}
+     </span>
+ )}
+ <button
+     onClick={() => { onRun(); setShowResult(true) }}
+
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare/frontend && npm run build 2>&1 | tail -15
+(node:75366) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+transforming...
+✓ 1940 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                     1.15 kB │ gzip:   0.65 kB
+dist/assets/index-DsmHJAqU.css    166.53 kB │ gzip:  22.99 kB
+dist/assets/index-CBHIHSPU.js   1,185.19 kB │ gzip: 341.60 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 1.42s
+[0m
+[0m# [0mTodos
+[✓] Add observe_near_trigger_band_pct to strategy_config.py
+[✓] Extend TradeFlowObserveItem/Response schemas with trigger_explain + refresh metadata
+[✓] Enrich get_observe() with structured trigger_explain + scheduler status fields
+[✓] Update frontend types in index.ts
+[✓] Refactor ObserveTable into 3 grouped sections + countdown + auto-refresh status
+[✓] Wire server interval into auto-refresh effect
+[•] Create test_tf_obs_004_observe_refresh_alert_queue.py
+[ ] Run tests + npm build, update DEVLOG.md
+[0m
+Frontend builds clean. Now let me create the test file.
+
+**7. Create test file:**
+Let me look at the rest of the TF-OBS-002 test and the paper sync test to mirror the fixture/insert patterns, especially how candidates with `effective_trade_date` and signals are inserted and how paper trades are created:
+[0m→ [0mRead tests/test_tf_obs_003_observe_paper_sync.py[90m [limit=95, offset=1][0m
+[0m→ [0mRead tests/test_tf_obs_003_observe_paper_sync.py[90m [limit=60, offset=95][0m
+[0m→ [0mRead tests/test_tf_obs_002_observe_auto_run.py[90m [limit=80, offset=118][0m
+Let me check how TF-OBS-002 validates the Pydantic schema fields:
+[0m→ [0mRead tests/test_tf_obs_002_observe_auto_run.py[90m [limit=60, offset=360][0m
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -c "
+from tradingagents.tradeflow.schemas import FORBIDDEN_WORDS
+print('FORBIDDEN_WORDS:', sorted(FORBIDDEN_WORDS))
+"
+FORBIDDEN_WORDS: ['梭哈', '满仓', '立即买入', '立即清仓', '重仓买入']
+[0m
+Let me check the forbidden words source and `add_paper_candidate` signature:
+Now I have everything I need. Let me create the comprehensive test file:
+[0m← [0mWrite tests/test_tf_obs_004_observe_refresh_alert_queue.py
+Wrote file successfully.
+[0m
+Now let's run the new test:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tf_obs_004_observe_refresh_alert_queue.py -q --tb=short 2>&1 | tail -35
+...F......................FF.......                                      [100%]
+=================================== FAILURES ===================================
+_________ TestBuildTriggerExplain.test_near_trigger_boundary_inclusive _________
+tests/test_tf_obs_004_observe_refresh_alert_queue.py:153: in test_near_trigger_boundary_inclusive
+    assert e["category"] == "near_trigger"
+E   AssertionError: assert 'waiting' == 'near_trigger'
+E     
+E     - near_trigger
+E     + waiting
+_ TestPendingConfirmationQueue.test_triggered_paper_candidate_becomes_pending_not_open _
+tests/test_tf_obs_004_observe_refresh_alert_queue.py:369: in test_triggered_paper_candidate_becomes_pending_not_open
+    assert trade["status"] == "pending"
+E   AssertionError: assert 'tracking' == 'pending'
+E     
+E     - pending
+E     + tracking
+____ TestPendingConfirmationQueue.test_pending_count_reflects_paper_ledger _____
+tests/test_tf_obs_004_observe_refresh_alert_queue.py:390: in test_pending_count_reflects_paper_ledger
+    assert result["pending_count"] == 1
+E   assert 0 == 1
+=========================== short test summary info ============================
+FAILED tests/test_tf_obs_004_observe_refresh_alert_queue.py::TestBuildTriggerExplain::test_near_trigger_boundary_inclusive
+FAILED tests/test_tf_obs_004_observe_refresh_alert_queue.py::TestPendingConfirmationQueue::test_triggered_paper_candidate_becomes_pending_not_open
+FAILED tests/test_tf_obs_004_observe_refresh_alert_queue.py::TestPendingConfirmationQueue::test_pending_count_reflects_paper_ledger
+3 failed, 32 passed in 2.12s
+[0m
+3 failures to fix:
+1. Floating-point boundary in near-trigger (3% exactly comes out slightly above)
+2. Two pending tests insert signals before `get_observe`, which prevents the auto-run branch from firing.
+
+Let me fix the boundary with an epsilon and rewrite the pending tests to use the real auto-run flow:
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -747,10 +747,10 @@
+     return result
+ 
+ to_trigger_pct = (trigger_price - current_price) / trigger_price * 100
+ result["how_far_off"] = f"还差 {to_trigger_pct:.2f}% 触发"
+-# near-trigger band: within (1 - near_band_pct) * trigger_price and trigger_price
+-if to_trigger_pct <= near_band_pct * 100:
++# near-trigger band: within (1 - near_band_pct) * trigger_price and trigger_price (inclusive, with epsilon)
++if to_trigger_pct <= near_band_pct * 100 + 1e-9:
+     result["category"] = "near_trigger"
+     result["why_not"] = f"当前价 {current_price:.2f} 接近触发价 {trigger_price:.2f}（还差 {to_trigger_pct:.2f}%）"
+ else:
+     result["category"] = "waiting"
+
+[0m
+Now rewrite the pending tests to use the real auto-run flow (no pre-inserted signals, fake_run inserts signal + returns details):
+[0m← [0mEdit tests/test_tf_obs_004_observe_refresh_alert_queue.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_tf_obs_004_observe_refresh_alert_queue.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_tf_obs_004_observe_refresh_alert_queue.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_tf_obs_004_observe_refresh_alert_queue.py
+@@ -337,68 +337,65 @@
+ # ── Pending confirmation queue (no auto-order) ───────────────────────────
+ 
+ 
+ class TestPendingConfirmationQueue:
+-    def test_triggered_paper_candidate_becomes_pending_not_open(self, tmp_db, monkeypatch):
+-        """[TF-OBS-004] constraint: trigger alerts only go to pending queue,
+-        never auto-order (status must NOT become 'open' without manual confirm)."""
+-        save_candidate(_make_candidate("601689.SH", trigger_price=10.0,
+-                                       invalid_price=9.0,
+-                                       observe_state="TRIGGERED"), tmp_db)
+-        _add_paper(tmp_db, "601689.SH", trigger_price=10.0, invalid_price=9.0)
+-        _insert_signal(tmp_db, "601689.SH", TODAY, current_price=10.30)
++    def _setup_triggered_paper_candidate(self, db_path, symbol="601689.SH",
++                                         trigger_price=10.0, invalid_price=9.0):
++        """Seed a TRIGGERED candidate + paper ledger entry, but NO signal yet
++        so get_observe's page-open auto-run branch fires and syncs the ledger."""
++        save_candidate(_make_candidate(symbol, trigger_price=trigger_price,
++                                       invalid_price=invalid_price,
++                                       observe_state="TRIGGERED"), db_path)
++        _add_paper(db_path, symbol, trigger_price=trigger_price, invalid_price=invalid_price)
+ 
+-        # Simulate the page-open auto-run syncing paper ledger via run_observe path.
+-        # We call get_observe with a fake run that syncs the triggered state.
+-        from tradingagents.tradeflow.observe_runner import run_observe as _real_run
+-
+-        triggered_detail = {"symbol": "601689.SH", "observe_state": "TRIGGERED"}
+-
++    def _fake_triggered_run(self, monkeypatch, symbol, db_path_holder,
++                            current_price=10.30):
++        """Fake run_observe: inserts a signal + returns details so get_observe
++        syncs the paper ledger (triggered → pending)."""
+         def fake_run(trade_date, db_path, **kw):
+-            from api.services.tradeflow_service import _sync_paper_from_observe
+-            _sync_paper_from_observe([triggered_detail], db_path)
++            _insert_signal(db_path, symbol, trade_date,
++                           signal_type="observe_triggered",
++                           current_price=current_price,
++                           trigger_reason="突破触发价")
+             r = ObserveRunResult()
+             r.checked = 1
+             r.triggered = 1
++            r.signals_written = 1
++            r.details = [{"symbol": symbol, "observe_state": "TRIGGERED",
++                          "trade_date": trade_date}]
+             return r
+-
+         monkeypatch.setattr("tradingagents.tradeflow.observe_runner.run_observe", fake_run)
+-        # Force the auto-run branch by NOT inserting signals first (candidate exists, no signals)
++
++    def test_triggered_paper_candidate_becomes_pending_not_open(self, tmp_db, monkeypatch):
++        """[TF-OBS-004] constraint: trigger alerts only go to pending queue,
++        never auto-order (status must NOT become 'open' without manual confirm)."""
++        self._setup_triggered_paper_candidate(tmp_db, "601689.SH")
++        self._fake_triggered_run(monkeypatch, "601689.SH", tmp_db)
+         result = get_observe(TODAY, tf_db_path=tmp_db)
+         ledger = get_paper_ledger(tf_db_path=tmp_db)
+         trade = next(t for t in ledger["trades"] if t["symbol"] == "601689.SH")
+         assert trade["status"] == "pending"
+         assert trade["status"] != "open"
+         assert result["pending_count"] >= 1
+ 
+     def test_pending_count_reflects_paper_ledger(self, tmp_db, monkeypatch):
+-        save_candidate(_make_candidate("601689.SH", trigger_price=10.0,
+-                                       invalid_price=9.0,
+-                                       observe_state="TRIGGERED"), tmp_db)
+-        _add_paper(tmp_db, "601689.SH", trigger_price=10.0, invalid_price=9.0)
+-        _insert_signal(tmp_db, "601689.SH", TODAY, current_price=10.30)
+-
+-        def fake_run(trade_date, db_path, **kw):
+-            from api.services.tradeflow_service import _sync_paper_from_observe
+-            _sync_paper_from_observe([{"symbol": "601689.SH", "observe_state": "TRIGGERED"}], db_path)
+-            r = ObserveRunResult()
+-            r.checked = 1
+-            r.triggered = 1
+-            return r
+-
+-        monkeypatch.setattr("tradingagents.tradeflow.observe_runner.run_observe", fake_run)
++        self._setup_triggered_paper_candidate(tmp_db, "601689.SH")
++        self._fake_triggered_run(monkeypatch, "601689.SH", tmp_db)
+         result = get_observe(TODAY, tf_db_path=tmp_db)
+         assert result["pending_count"] == 1
+ 
+     def test_non_paper_triggered_does_not_create_pending(self, tmp_db, monkeypatch):
+         """A triggered candidate NOT in the paper ledger must not appear in pending_count."""
+         save_candidate(_make_candidate("600519.SH", trigger_price=10.0,
+                                        invalid_price=9.0,
+                                        observe_state="TRIGGERED"), tmp_db)
+-        _insert_signal(tmp_db, "600519.SH", TODAY, current_price=10.30)
+-        _no_auto_run(monkeypatch)
++        # No _add_paper → not in paper ledger
++        self._fake_triggered_run(monkeypatch, "600519.SH", tmp_db, current_price=10.30)
+         result = get_observe(TODAY, tf_db_path=tmp_db)
+         assert result["pending_count"] == 0
++        # And no paper trade record created for it
++        ledger = get_paper_ledger(tf_db_path=tmp_db)
++        assert all(t["symbol"] != "600519.SH" for t in ledger["trades"])
+ 
+ 
+ # ── Pydantic schema acceptance ───────────────────────────────────────────
+ 
+
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tf_obs_004_observe_refresh_alert_queue.py -q --tb=short 2>&1 | tail -20
+...................................                                      [100%]
+35 passed in 2.16s
+[0m
+All 35 tests pass. Now let me run the regression suite to ensure I didn't break existing TF-OBS tests:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tf_obs_001_observe_runner.py tests/test_tf_obs_002_observe_auto_run.py tests/test_tf_obs_003_observe_paper_sync.py tests/test_tf_obs_004_observe_refresh_alert_queue.py tests/test_m005_intraday_observe.py tests/test_t004_intraday_observe.py tests/test_t008_observe_fixture_replay.py -q --tb=short 2>&1 | tail -20
+........................................................................ [ 23%]
+........................................................................ [ 47%]
+........................................................................ [ 71%]
+........................................................................ [ 95%]
+.............                                                            [100%]
+301 passed in 66.77s (0:01:06)
+[0m
+All 301 observe tests pass. Let me run the broader TradeFlow API + paper ledger + risk tests to ensure schema changes don't break consumers:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_ui001_tradeflow_api.py tests/test_tf_paper001_paper_ledger.py tests/test_tf_risk001_paper_risk_budget.py tests/test_v008_paper_trial_acceptance.py tests/test_v009_trial_guide_smoke.py -q --tb=short 2>&1 | tail -20
+........................................................................ [ 34%]
+........................................................................ [ 68%]
+...................................................................      [100%]
+211 passed in 50.12s
+[0m
+[0m# [0mTodos
+[✓] Add observe_near_trigger_band_pct to strategy_config.py
+[✓] Extend TradeFlowObserveItem/Response schemas with trigger_explain + refresh metadata
+[✓] Enrich get_observe() with structured trigger_explain + scheduler status fields
+[✓] Update frontend types in index.ts
+[✓] Refactor ObserveTable into 3 grouped sections + countdown + auto-refresh status
+[✓] Wire server interval into auto-refresh effect
+[✓] Create test_tf_obs_004_observe_refresh_alert_queue.py
+[•] Run tests + npm build, update DEVLOG.md
+[0m
+All 211 pass. Now update the DEVLOG and TASKS.md status.
+
+**8. Update DEVLOG.md and TASKS.md:**
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,73 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-24 | TF-OBS-004 盘中观察自动刷新、触发提醒与人工确认队列降噪
++
++- **执行者**：OpenCode (glm-5.2)
++- **类型**：backend + frontend + tests
++- **状态**：✅ 完成（不提交，外层脚本负责 commit）
++
++### 背景
++
++盘中观察 tab 之前是单一平铺表格，用户需要反复手点"手动刷新"，且无法看出：哪些票接近触发、哪些已进入待确认队列、下一次自动刷新何时发生、非交易时段是否暂停。TF-OBS-004 把观察 tab 升级为「接近触发的票浮上来、待确认优先、自动刷新可见、结构化解释为什么触发/未触发」。前置 TF-OBS-003（触发→模拟账本 pending 同步）与 TF-RISK-001 均已完成。
++
++### 变更
++
++#### `tradingagents/tradeflow/strategy_config.py`（`# [TF-OBS-004] observe_refresh_alert_queue`）
++- 新增 `observe_near_trigger_band_pct: float = 0.03` —— 接近触发显示分组阈值（3%），保守默认。
++
++#### `api/tradeflow_schemas.py`（`# [TF-OBS-004] observe_refresh_alert_queue`）
++- `TradeFlowObserveItem` 扩展：`paper_status`（对齐已返回的字段）、`trigger_distance_pct`、`near_trigger`、`trigger_explain`（结构化为什么触发/未触发/差多少）。
++- `TradeFlowObserveResponse` 扩展：`refresh_interval_seconds`、`is_market_hours`、`is_trading_day`、`near_trigger_count`、`pending_count`。
++
++#### `api/services/tradeflow_service.py`（`# [TF-OBS-004] observe_refresh_alert_queue`）
++- 模块级导入 `DEFAULT_STRATEGY_CONFIG`。
++- 新增 `_observe_market_status()` —— 防御式返回 is_trading_day/is_market_hours（不抛异常）。
++- 新增 `_build_trigger_explain()` —— 输出 `{category, why_triggered, why_not, how_far_off, breach_pct}`，category ∈ triggered/near_trigger/invalidated/waiting/no_data。
++- `get_observe()` 三条返回路径（no_db / no_conn / ok）全部补齐刷新元数据字段；item 构建 loop 注入 trigger_explain / trigger_distance_pct / near_trigger，并聚合 near_trigger_count / pending_count。
++
++#### `frontend/src/types/index.ts`（`// [TF-OBS-004] observe_refresh_alert_queue`）
++- 新增 `TriggerExplain` interface；`TradeFlowObserveItem` / `TradeFlowObserveResponse` 补齐新字段。
++
++#### `frontend/src/pages/TradeFlow.tsx`（`// [TF-OBS-004] observe_refresh_alert_queue`）
++- 拆出 `ObserveRow` / `ObserveGroup` 子组件，把单平铺表改为三段分组：**已触发（待确认优先）→ 接近触发 → 已失效/等待**，待确认（paper_status=pending）排在最前。
++- 头部新增自动刷新状态胶囊：交易时段显示「自动刷新 · N分钟 · 下次 M:SS」倒计时；非交易时段显示「已暂停 · 非交易日/非交易时段」。
++- 顶部摘要栏新增 待确认/已触发/接近触发/已失效 计数。
++- 自动刷新 effect 改为服务端 `refresh_interval_seconds` 驱动（上限保持 3 分钟/5 分钟，不引入更高频轮询），并新增 1 秒 countdown ticker；通过 props 把 nextRefreshIn / autoRefreshActive 传入表格。
++
++#### 新增 `tests/test_tf_obs_004_observe_refresh_alert_queue.py`（`# [TF-OBS-004] observe_refresh_alert_queue`）
++- 35 用例，8 个测试类：`_build_trigger_explain` 单元（triggered/near/waiting/invalidated/no_data/边界/字段完备）、刷新元数据（存在性/速度预算/配置一致性）、item 注入（trigger_explain/distance/near_trigger/paper_status）、三段分组 fixture（triggered+near+invalidated 同时存在）、待确认队列（触发→pending 非 open、pending_count、非 paper 不创建）、Pydantic schema 接受性、禁用词扫描、FULL_TA/LLM 不升级。
++
++### 文件清单
++
++- 修改：`tradingagents/tradeflow/strategy_config.py`
++- 修改：`api/tradeflow_schemas.py`
++- 修改：`api/services/tradeflow_service.py`
++- 修改：`frontend/src/types/index.ts`
++- 修改：`frontend/src/pages/TradeFlow.tsx`
++- 新增：`tests/test_tf_obs_004_observe_refresh_alert_queue.py`
++
++### 验证 / 测试结果
++
++- `pytest tests/test_tf_obs_004_observe_refresh_alert_queue.py -q` → **35 passed** in 2.16s。
++- 观察链路回归：`pytest tests/test_tf_obs_001_observe_runner.py tests/test_tf_obs_002_observe_auto_run.py tests/test_tf_obs_003_observe_paper_sync.py tests/test_tf_obs_004_observe_refresh_alert_queue.py tests/test_m005_intraday_observe.py tests/test_t004_intraday_observe.py tests/test_t008_observe_fixture_replay.py -q` → **301 passed**。
++- API/账本/试跑回归：`pytest tests/test_ui001_tradeflow_api.py tests/test_tf_paper001_paper_ledger.py tests/test_tf_risk001_paper_risk_budget.py tests/test_v008_paper_trial_acceptance.py tests/test_v009_trial_guide_smoke.py -q` → **211 passed**。
++- `npm run build` → ✅ 通过（tsc + vite，无 TS 错误）。
++
++### 约束合规 / 风险点
++
++- 不调用 LLM ✓（无任何 LLM/FULL_TA 调用；runtime_tier 保持 fast）。
++- 不写生产 `tradingagents.db` ✓（测试用 `tmp_path`，schema 改的是 TradeFlow 侧）。
++- 不接真实交易 ✓（触发仅进入模拟账本 pending，需人工 confirm 才转 open，`update_paper_observe_state` 行为未改）。
++- 不改 `tradingagents/prompts/` ✓。
++- 不新增高频轮询 ✓（interval 上限仍为 3 分钟盘中 / 5 分钟盘后，countdown 仅本地 1s tick 不触发网络请求）。
++- 不输出强买卖词 ✓（禁用词扫描覆盖所有 trigger_explain 文案）。
++- 风险点：`_observe_market_status()` 在 scheduler helper 导入失败时回退为 False，可能导致非交易时段误暂停自动刷新——但这是降级行为，比抛 500 更安全。
++
++---
++
+ ## 2026-06-24 | V-009 小资金试跑后回归清单与用户操作手册
+ 
+ - **执行者**：OpenCode (glm-5.2)
+ - **类型**：docs / 用户手册 + 回归清单 + smoke 测试
+
+[0m
+Now update the TASKS.md status from `in_progress` to `done`:
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -120,9 +120,9 @@
+   94. `DATA-020`：数据源健康日报前端可视化与 skipped/failed 分层展示（P1，done，依赖 DATA-019A）。
+   95. `TF-REVIEW-004`：盘后 Review 空数据诊断与一键生成入口（P1，done，依赖 TF-REVIEW-003）。
+  96. `H-014`：昊天主题候选减少与主题集中度阈值校准（P1，done，依赖 H-013A/H-012 ✓）。
+ 97. `V-009`：小资金试跑后回归清单与用户操作手册（P1，done，依赖 V-008 ✓）。
+-98. `TF-OBS-004`：盘中观察自动刷新、触发提醒与人工确认队列降噪（P1，ready，依赖 TF-OBS-003/TF-RISK-001）。
++ 98. `TF-OBS-004`：盘中观察自动刷新、触发提醒与人工确认队列降噪（P1，done，依赖 TF-OBS-003/TF-RISK-001 ✓）。
+ 99. `DATA-021`：TA 报告数据源失败原因透传与字段级降级说明（P1，blocked — 前置 DATA-020 未完成，依赖 DATA-020/DATA-004）。
+ 100. `H-015`：昊天主题日报与候选入池/出池解释（P1，ready，依赖 H-014 ✓/H-013A ✓）。
+ 101. `PERF-005`：TradeFlow 页面与 API 性能预算回归（P2，blocked — 前置 TF-UX-001/DATA-020 未完成，依赖 TF-UX-001/DATA-020）。
+ 102. `HK-001`：港股输入边界与轻量行情-only 模式声明（P2，ready，独立安全边界任务）。
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -3603,9 +3603,9 @@
+ 
+ ### TF-OBS-004: 盘中观察自动刷新、触发提醒与人工确认队列降噪（P1）
+ - **描述**：盘中观察不能靠用户反复手点执行。本任务优化观察 tab 的刷新、触发提醒和待确认队列，让真正接近触发的票浮上来。
+ - **优先级**：P1
+-- **状态**：in_progress — claimed TF-OBS-004-20260624-124926
++- **状态**：done — TF-OBS-004-20260624-124926（35 tests passed + 301 observe 回归 + 211 API/账本回归 + npm build 通过）
+ - **前置条件**：TF-OBS-003、TF-RISK-001 完成。
+ - **执行约束**：
+   - 不接真实交易。
+   - 不调用 LLM。
+
+[0m
+Let me do a final verification — confirm only expected files changed and prod DB wasn't touched:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git status --short && echo "---prod db check---" && git status --short tradingagents.db 2>/dev/null | head -1 && echo "(empty = prod db untouched)"
+M api/services/tradeflow_service.py
+ M api/tradeflow_schemas.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M docs/tradeflow_trial_acceptance_v2.md
+ M frontend/src/pages/TradeFlow.tsx
+ M frontend/src/types/index.ts
+ M tradingagents/tradeflow/strategy_config.py
+?? docs/task_runs/TF-OBS-004-20260624-124926/
+?? tests/test_tf_obs_004_observe_refresh_alert_queue.py
+---prod db check---
+(empty = prod db untouched)
+[0m
+I see an unexpected modified file `docs/tradeflow_trial_acceptance_v2.md`. Let me verify I didn't touch it (it may be pre-existing):
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git diff --stat docs/tradeflow_trial_acceptance_v2.md && echo "---first/last change---" && git diff docs/tradeflow_trial_acceptance_v2.md | head -5
+docs/tradeflow_trial_acceptance_v2.md | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+---first/last change---
+diff --git a/docs/tradeflow_trial_acceptance_v2.md b/docs/tradeflow_trial_acceptance_v2.md
+index f3ba808..984fdaf 100644
+--- a/docs/tradeflow_trial_acceptance_v2.md
++++ b/docs/tradeflow_trial_acceptance_v2.md
+@@ -1,6 +1,6 @@
+[0m
+That file was pre-modified before my session (not my change). My changes are the 6 expected files + 1 new test. Let me run the final verification:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_tf_obs_004_observe_refresh_alert_queue.py -q 2>&1 | tail -3 && echo "=== lint check ===" && python -c "import api.services.tradeflow_service; import api.tradeflow_schemas; print('imports OK')"
+...................................                                      [100%]
+35 passed in 1.99s
+=== lint check ===
+imports OK
+[0m
+[0m# [0mTodos
+[✓] Add observe_near_trigger_band_pct to strategy_config.py
+[✓] Extend TradeFlowObserveItem/Response schemas with trigger_explain + refresh metadata
+[✓] Enrich get_observe() with structured trigger_explain + scheduler status fields
+[✓] Update frontend types in index.ts
+[✓] Refactor ObserveTable into 3 grouped sections + countdown + auto-refresh status
+[✓] Wire server interval into auto-refresh effect
+[✓] Create test_tf_obs_004_observe_refresh_alert_queue.py
+[✓] Run tests + npm build, update DEVLOG.md
+[0m
+TF-OBS-004 is complete.
+
+## Files changed
+
+**Modified (6):**
+- `tradingagents/tradeflow/strategy_config.py` — added `observe_near_trigger_band_pct=0.03`
+- `api/tradeflow_schemas.py` — extended `TradeFlowObserveItem`/`TradeFlowObserveResponse` with trigger_explain + refresh metadata
+- `api/services/tradeflow_service.py` — added `_observe_market_status()`, `_build_trigger_explain()`; enriched `get_observe()` all return paths
+- `frontend/src/types/index.ts` — added `TriggerExplain` + new fields
+- `frontend/src/pages/TradeFlow.tsx` — 3-group `ObserveTable` (待确认优先/接近触发/已失效), countdown + auto-refresh status pill, server-driven interval
+- `docs/DEVLOG.md`, `docs/TASKS.md` — status → done
+
+**New (1):**
+- `tests/test_tf_obs_004_observe_refresh_alert_queue.py` — 35 tests
+
+## Key logic
+- **Point 1 (refresh UI):** header shows last-check time + countdown ("下次 M:SS") + paused-when-outside-hours; auto-refresh uses server `refresh_interval_seconds` (capped at 3min in-market / 5min off — no new high-frequency polling).
+- **Point 2 (grouping):** `ObserveGroup` renders triggered (pending-first sorted) / near-trigger / invalidated+waiting; near-trigger classified via `near_trigger_band_pct`.
+- **Point 3 (no auto-order):** reuses TF-OBS-003 path — triggers only set paper ledger `status=pending`, never `open` (verified by test).
+- **Point 4 (structured why):** `_build_trigger_explain()` returns `{category, why_triggered, why_not, how_far_off, breach_pct}`.
+
+## Test results
+- New: **35 passed**
+- Observe regression (TF-OBS-001~004 + m005/t004/t008): **301 passed**
+- API/paper-ledger/trial regression: **211 passed**
+- `npm run build`: **passed** (tsc + vite clean)
+- Prod `tradingagents.db` untouched; no prompts/LLM/FULL_TA changes.

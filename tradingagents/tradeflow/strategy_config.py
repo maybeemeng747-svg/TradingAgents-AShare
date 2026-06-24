@@ -129,6 +129,7 @@ class StrategyConfig:
     observe_max_daily_triggers: int = 3
     observe_trigger_breach_pct: float = 0.0
     observe_invalidate_breach_pct: float = 0.0
+    observe_near_trigger_band_pct: float = 0.03  # [TF-OBS-004] observe_refresh_alert_queue — display band for "near trigger" grouping
 
     # ── Intraday Observe Scheduler [T-004] ──
     observe_interval_minutes: int = 30

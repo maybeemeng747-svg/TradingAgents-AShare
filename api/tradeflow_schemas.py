@@ -199,6 +199,11 @@ class TradeFlowObserveItem(BaseModel):
     current_price: Optional[float] = None
     trigger_reason: str = ""
     strategy_tags: List[str] = Field(default_factory=list)
+    paper_status: str = ""  # [TF-OBS-003] observe_paper_sync
+    # [TF-OBS-004] observe_refresh_alert_queue — structured trigger explanation
+    trigger_distance_pct: Optional[float] = None  # signed % distance from trigger price
+    near_trigger: bool = False  # within near-trigger band but not yet triggered
+    trigger_explain: Dict[str, Any] = Field(default_factory=dict)  # why triggered / why not / how far off
 
 
 class TradeFlowObserveResponse(BaseModel):
@@ -212,6 +217,12 @@ class TradeFlowObserveResponse(BaseModel):
     last_observed_at: str = ""      # [TF-OBS-002]
     observe_reason: str = ""        # [TF-OBS-002]
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
+    # [TF-OBS-004] observe_refresh_alert_queue — refresh metadata + grouped counts
+    refresh_interval_seconds: int = 180
+    is_market_hours: bool = False
+    is_trading_day: bool = False
+    near_trigger_count: int = 0
+    pending_count: int = 0
 
 
 class TradeFlowTAQueueItem(BaseModel):

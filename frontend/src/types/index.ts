@@ -1085,6 +1085,14 @@ export interface TradeFlowCandidateDetailResponse {
     runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
 }
 
+export interface TriggerExplain {  // [TF-OBS-004] observe_refresh_alert_queue
+    category: string  // triggered / near_trigger / invalidated / waiting / no_data
+    why_triggered: string
+    why_not: string
+    how_far_off: string
+    breach_pct: number | null
+}
+
 export interface TradeFlowObserveItem {
     symbol: string
     name: string
@@ -1099,6 +1107,9 @@ export interface TradeFlowObserveItem {
     trigger_reason: string
     strategy_tags: string[]
     paper_status: string  // [TF-OBS-003] observe_paper_sync
+    trigger_distance_pct: number | null  // [TF-OBS-004]
+    near_trigger: boolean  // [TF-OBS-004]
+    trigger_explain: TriggerExplain  // [TF-OBS-004]
 }
 
 export interface TradeFlowObserveResponse {
@@ -1111,6 +1122,11 @@ export interface TradeFlowObserveResponse {
     observe_auto_run: boolean   // [TF-OBS-002] observe_auto_run
     last_observed_at: string    // [TF-OBS-002]
     observe_reason: string      // [TF-OBS-002]
+    refresh_interval_seconds: number  // [TF-OBS-004]
+    is_market_hours: boolean    // [TF-OBS-004]
+    is_trading_day: boolean     // [TF-OBS-004]
+    near_trigger_count: number  // [TF-OBS-004]
+    pending_count: number       // [TF-OBS-004]
     runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
 }
 

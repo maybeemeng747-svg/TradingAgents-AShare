@@ -20,6 +20,7 @@ from tradingagents.tradeflow.symbol_utils import (  # [UI-008] tradeflow_field_n
     resolve_tradeflow_name,
 )
 from tradingagents.tradeflow.candidate_engine import get_filtered_symbols as _get_filtered_symbols  # [UI-007] tradeflow_filtered_trace
+from tradingagents.tradeflow.strategy_config import DEFAULT_STRATEGY_CONFIG  # [TF-OBS-004] observe_refresh_alert_queue
 
 
 def _get_project_root() -> str:
@@ -684,11 +685,85 @@ def _precheck_observe_state(db_path: str, trade_date: str) -> dict:
         conn.close()
 
 
+def _observe_market_status() -> dict:
+    """Return is_trading_day / is_market_hours for observe refresh metadata.  # [TF-OBS-004] observe_refresh_alert_queue
+
+    Defensive: never raises — falls back to False on any import error so the
+    observe endpoint stays available even when scheduler helpers are unavailable.
+    """
+    try:
+        from tradingagents.tradeflow.strategy_config import DEFAULT_STRATEGY_CONFIG
+        from zoneinfo import ZoneInfo
+        now = datetime.now(tz=ZoneInfo("Asia/Shanghai"))
+        today = now.strftime("%Y-%m-%d")
+        from tradingagents.tradeflow.intraday_observe_scheduler import _is_trading_day, _is_market_hours
+        return {
+            "is_trading_day": _is_trading_day(today),
+            "is_market_hours": _is_market_hours(DEFAULT_STRATEGY_CONFIG),
+        }
+    except Exception:
+        return {"is_trading_day": False, "is_market_hours": False}
+
+
+def _build_trigger_explain(observe_state: str, current_price, trigger_price, invalid_price,
+                           near_band_pct: float) -> dict:
+    """Build structured "why triggered / why not / how far off" explanation.  # [TF-OBS-004] observe_refresh_alert_queue
+
+    Returns dict with:
+    - category: triggered / near_trigger / invalidated / waiting / no_data
+    - why_triggered: reason string when triggered
+    - why_not: reason string when not triggered
+    - how_far_off: human-readable distance to trigger
+    - breach_pct: signed % distance from trigger price (positive = above trigger)
+    """
+    result = {
+        "category": "waiting",
+        "why_triggered": "",
+        "why_not": "",
+        "how_far_off": "",
+        "breach_pct": None,
+    }
+    if observe_state == "INVALIDATED" or (invalid_price and current_price is not None and current_price <= invalid_price):
+        result["category"] = "invalidated"
+        below = ""
+        if invalid_price and current_price is not None:
+            below_pct = (invalid_price - current_price) / invalid_price * 100
+            result["breach_pct"] = (current_price - trigger_price) / trigger_price * 100 if trigger_price else None
+            below = f"（跌破失效价 {invalid_price:.2f}，偏离 {below_pct:.2f}%）"
+        result["why_not"] = f"价格已跌破失效价{below}，观察失效"
+        return result
+    if trigger_price is None or current_price is None or trigger_price <= 0:
+        result["category"] = "no_data"
+        result["why_not"] = "缺少触发价或实时行情，无法判断"
+        return result
+
+    breach_pct = (current_price - trigger_price) / trigger_price * 100
+    result["breach_pct"] = breach_pct
+
+    if current_price >= trigger_price:
+        result["category"] = "triggered"
+        result["why_triggered"] = f"当前价 {current_price:.2f} 达到触发价 {trigger_price:.2f}（超出 {breach_pct:.2f}%）"
+        result["how_far_off"] = f"已超出触发价 {breach_pct:.2f}%"
+        return result
+
+    to_trigger_pct = (trigger_price - current_price) / trigger_price * 100
+    result["how_far_off"] = f"还差 {to_trigger_pct:.2f}% 触发"
+    # near-trigger band: within (1 - near_band_pct) * trigger_price and trigger_price (inclusive, with epsilon)
+    if to_trigger_pct <= near_band_pct * 100 + 1e-9:
+        result["category"] = "near_trigger"
+        result["why_not"] = f"当前价 {current_price:.2f} 接近触发价 {trigger_price:.2f}（还差 {to_trigger_pct:.2f}%）"
+    else:
+        result["category"] = "waiting"
+        result["why_not"] = f"当前价 {current_price:.2f} 距触发价 {trigger_price:.2f} 仍差 {to_trigger_pct:.2f}%"
+    return result
+
+
 def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
     tf_db = tf_db_path or _get_tradeflow_db_path()
     _fast_meta = _tradeflow_meta("tradeflow_observe")  # [PERF-001]
 
     if not os.path.exists(tf_db):
+        _mkt = _observe_market_status()  # [TF-OBS-004]
         return {
             "status": "no_data",
             "trade_date": trade_date,
@@ -699,6 +774,11 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
             "triggered_count": 0,
             "invalidated_count": 0,
             "waiting_count": 0,
+            "refresh_interval_seconds": DEFAULT_STRATEGY_CONFIG.observe_interval_minutes * 60,  # [TF-OBS-004]
+            "is_market_hours": _mkt["is_market_hours"],   # [TF-OBS-004]
+            "is_trading_day": _mkt["is_trading_day"],     # [TF-OBS-004]
+            "near_trigger_count": 0,   # [TF-OBS-004]
+            "pending_count": 0,        # [TF-OBS-004]
             "runtime_tier_meta": _fast_meta,
         }
 
@@ -734,6 +814,7 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
 
     conn = _connect(tf_db_path)
     if conn is None:
+        _mkt = _observe_market_status()  # [TF-OBS-004]
         return {
             "status": "no_data",
             "trade_date": trade_date,
@@ -744,6 +825,11 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
             "triggered_count": 0,
             "invalidated_count": 0,
             "waiting_count": 0,
+            "refresh_interval_seconds": DEFAULT_STRATEGY_CONFIG.observe_interval_minutes * 60,  # [TF-OBS-004]
+            "is_market_hours": _mkt["is_market_hours"],   # [TF-OBS-004]
+            "is_trading_day": _mkt["is_trading_day"],     # [TF-OBS-004]
+            "near_trigger_count": 0,   # [TF-OBS-004]
+            "pending_count": 0,        # [TF-OBS-004]
             "runtime_tier_meta": _fast_meta,
         }
 
@@ -763,6 +849,9 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
         triggered = 0
         invalidated = 0
         waiting = 0
+        near_trigger_total = 0   # [TF-OBS-004] observe_refresh_alert_queue
+        pending_total = 0        # [TF-OBS-004]
+        _near_band = DEFAULT_STRATEGY_CONFIG.observe_near_trigger_band_pct  # [TF-OBS-004]
 
         # [TF-OBS-003] observe_paper_sync — map symbol → paper ledger status
         paper_status_map: dict[str, str] = {}
@@ -800,12 +889,21 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
             except Exception:
                 pass
 
+            _tp = _rget(r, "trigger_price")
+            _ip = _rget(r, "invalid_price")
+            # [TF-OBS-004] observe_refresh_alert_queue — structured trigger explanation
+            _explain = _build_trigger_explain(state, current_price, _tp, _ip, _near_band)
+            _dist_pct = _explain.get("breach_pct")
+            _near = _explain["category"] == "near_trigger"
+
+            _paper = paper_status_map.get(sym, "")  # [TF-OBS-003] observe_paper_sync
+
             item = {
                 "symbol": sym,
                 "name": resolve_tradeflow_name(sym, raw_n),  # [UI-008]
                 "observe_state": state,
-                "trigger_price": _rget(r, "trigger_price"),
-                "invalid_price": _rget(r, "invalid_price"),
+                "trigger_price": _tp,
+                "invalid_price": _ip,
                 "observe_trigger_count": _rget(r, "observe_trigger_count", 0) or 0,
                 "observe_first_trigger_time": _rget(r, "observe_first_trigger_time", ""),
                 "tier": _rget(r, "tier", ""),
@@ -813,7 +911,10 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
                 "current_price": current_price,
                 "trigger_reason": trigger_reason,
                 "strategy_tags": _parse_json(_rget(r, "strategy_tags_json"), []),
-                "paper_status": paper_status_map.get(sym, ""),  # [TF-OBS-003] observe_paper_sync
+                "paper_status": _paper,  # [TF-OBS-003] observe_paper_sync
+                "trigger_distance_pct": _dist_pct,  # [TF-OBS-004]
+                "near_trigger": _near,               # [TF-OBS-004]
+                "trigger_explain": _explain,         # [TF-OBS-004]
             }
             items.append(item)
             if state == "TRIGGERED":
@@ -822,7 +923,12 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
                 invalidated += 1
             else:
                 waiting += 1
+            if _near:
+                near_trigger_total += 1
+            if _paper == "pending":
+                pending_total += 1
 
+        _mkt = _observe_market_status()  # [TF-OBS-004]
         return {
             "status": "ok",
             "trade_date": trade_date,
@@ -833,6 +939,11 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
             "observe_auto_run": observe_auto_run,        # [TF-OBS-002] observe_auto_run
             "last_observed_at": last_observed_at,         # [TF-OBS-002]
             "observe_reason": observe_reason,             # [TF-OBS-002]
+            "refresh_interval_seconds": DEFAULT_STRATEGY_CONFIG.observe_interval_minutes * 60,  # [TF-OBS-004]
+            "is_market_hours": _mkt["is_market_hours"],   # [TF-OBS-004]
+            "is_trading_day": _mkt["is_trading_day"],     # [TF-OBS-004]
+            "near_trigger_count": near_trigger_total,     # [TF-OBS-004]
+            "pending_count": pending_total,               # [TF-OBS-004]
             "runtime_tier_meta": _tradeflow_meta("tradeflow_observe"),  # [PERF-001]
         }
     finally:
