@@ -175,6 +175,7 @@ class TradeFlowCandidatesResponse(BaseModel):
     pool_gate_summary: str = ""
     summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
     main_summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
+    concentration_summary: Dict[str, Any] = Field(default_factory=dict)  # [H-014] mandate_concentration_gate
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
 
 
@@ -340,6 +341,7 @@ class TradeFlowTieredCandidatesResponse(BaseModel):
     watch_count: int = 0
     scan_count: int = 0
     summary_agg: TradeFlowSummary = Field(default_factory=TradeFlowSummary)
+    concentration_summary: Dict[str, Any] = Field(default_factory=dict)  # [H-014] mandate_concentration_gate
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
 
 

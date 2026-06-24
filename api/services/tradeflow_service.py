@@ -573,6 +573,7 @@ def get_candidates(
             "pool_gate_summary": _pool_gate_summary_with_counts(pool_counts),
             "summary_agg": _compute_summary(items),
             "main_summary_agg": _compute_summary(pool_result.main_candidates),
+            "concentration_summary": pool_result.concentration_summary,  # [H-014] mandate_concentration_gate
             "runtime_tier_meta": _tradeflow_meta("tradeflow_candidates"),  # [PERF-001]
         }
     finally:
@@ -1582,6 +1583,7 @@ def get_candidates_tiered(trade_date: str, tf_db_path: str = "") -> dict:
             "watch_count": len([it for it in pool_result.main_candidates if it.get("action_tier") == "watch"]),
             "scan_count": len(scan),
             "summary_agg": _compute_summary(pool_result.main_candidates),
+            "concentration_summary": pool_result.concentration_summary,  # [H-014] mandate_concentration_gate
             "runtime_tier_meta": _tradeflow_meta("tradeflow_candidates_tiered"),
         }
     finally:

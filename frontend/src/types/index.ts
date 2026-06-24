@@ -1463,6 +1463,29 @@ export interface TradeFlowTieredCandidatesResponse {
     filtered_candidates?: Array<{ symbol: string; name: string; source: string; reason: string }>
     pool_counts?: Record<string, number>
     pool_gate_summary?: string
+    // [H-014] mandate_concentration_gate — theme concentration payload
+    concentration_summary?: {
+        enabled?: boolean
+        top_theme?: string
+        top_theme_status?: string
+        top_theme_main_symbols?: string[]
+        weak_topics_downgraded?: string[]
+        per_topic_cap_downgraded?: string[]
+        headline?: string
+        per_topic?: Record<string, {
+            strength?: string
+            strength_reason?: string
+            admission_cap?: number
+            candidate_count?: number
+            admitted_count?: number
+            admitted_symbols?: string[]
+            lifecycle_state?: string
+            topic_status_label?: string
+            max_signal_count?: number
+            evidence_gap_burden?: number
+            symbols?: string[]
+        }>
+    }
 }
 
 // [TF-UX-003] post_market_review

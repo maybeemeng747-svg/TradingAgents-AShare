@@ -2694,6 +2694,8 @@ export default function TradeFlow() {
                 const observationItems = tieredData.observation_candidates ?? []
                 const poolSummary = tieredData.pool_gate_summary ?? ''
                 const poolCounts = tieredData.pool_counts ?? {}
+                // [H-014] mandate_concentration_gate — theme concentration headline
+                const concentration = tieredData.concentration_summary
 
                 // [TF-UX-001] small_cap_trial_workbench — split into the three required groups.
                 const focusGroups = groupMainCandidates(mainItems, DEFAULT_MAIN_VIEW_CAP)
@@ -2739,6 +2741,19 @@ export default function TradeFlow() {
                         {poolSummary && (
                             <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
                                 {poolSummary}
+                            </div>
+                        )}
+
+                        {/* [H-014] mandate_concentration_gate — 昊天主题集中度 headline */}
+                        {concentration && concentration.enabled && concentration.headline && (
+                            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
+                                <span className="font-semibold">昊天主题集中度｜</span>
+                                {concentration.headline}
+                                {concentration.top_theme_main_symbols && concentration.top_theme_main_symbols.length > 0 && (
+                                    <span className="ml-1 text-emerald-600 dark:text-emerald-400">
+                                        （主候选已压缩至强主题 Top {concentration.top_theme_main_symbols.length}）
+                                    </span>
+                                )}
                             </div>
                         )}
 

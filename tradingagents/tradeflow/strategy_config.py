@@ -158,6 +158,13 @@ class StrategyConfig:
     calibration_tech_data_quality_min: float = 50.0
     calibration_haotian_min_support_dims: int = 2
 
+    # ── Mandate Concentration Gate [H-014] mandate_concentration_gate ──
+    # Compress 昊天 left-side pool: strong themes keep Top N, weak themes 0.
+    concentration_enabled: bool = True
+    concentration_per_topic_max: int = 3
+    concentration_moderate_topic_max: int = 1
+    concentration_min_signals_for_strong: int = 2
+
     # ── Deep TA Dispatch Gate [M-006] ──
     deep_ta_daily_limit: int = 3
     deep_ta_default_model: str = ""

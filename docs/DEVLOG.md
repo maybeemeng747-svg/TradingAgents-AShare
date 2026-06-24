@@ -4,6 +4,79 @@
 
 ---
 
+## 2026-06-24 | H-014 昊天主题候选减少与主题集中度阈值校准
+
+- **执行者**：OpenCode (glm-5.2)
+- **类型**：backend / 候选池压缩 + 前端展示
+- **状态**：✅ 完成（不提交，外层脚本负责 commit）
+
+### 背景
+
+左侧埋伏（昊天雷达）吐出的候选过多，像短线做 T 一样铺一摊票，缺乏主题集中度。H-014 要求用主题集中度、政策证据强度和反证缺口把昊天候选池压缩到「强主题 Top 1-3」，弱主题不占主候选，并解释「为什么只选这几只」。
+
+前置：H-013A（热度曲线）/ H-012（主题注册表）/ H-010（主题生命周期）/ H-009（反证/过热降权）已完成，提供了 `topic_lifecycle_state`、`topic_signal_count`、`mandate_topic`、`overheat_flags`、`blocking_evidence_gaps` 等字段，本任务据此做主候选分层。
+
+### 变更
+
+#### 新增 `tradingagents/tradeflow/mandate_concentration_gate.py`（`# [H-014] mandate_concentration_gate`）
+
+- `TopicConcentrationMetrics` dataclass：每个主题的候选数、生命周期、最大信号数、是否左侧/退潮、证据缺口负担、过热标记数、强度分级、主候选配额。
+- `resolve_topic_for_entry(entry)`：复用 `topic_registry.match_topic` 解析规范主题；无主题返回 `""`，调用方需跳过 H-014（安全 fallback）。
+- `assess_topic_strength(topic, entries, cfg)`：三分级规则——
+  - **weak**：observe-only 生命周期（CROWDED/FADING/RECEDING）→ 配额 0；
+  - **strong**：左侧/确认生命周期 + 信号数 ≥ `concentration_min_signals_for_strong` + 有昊天分 → 配额 `concentration_per_topic_max`（默认 3）；
+  - **moderate**：其余（如未确认生命周期、信号不足）→ 配额 `concentration_moderate_topic_max`（默认 1）。
+- `compute_topic_metrics_map(entries, cfg)`：仅对 POLICY_AMBUSH/POLICY_CONFIRM 且主题可解析的候选分组并评估，产出 `{topic: metrics}`。
+- `build_concentration_summary(...)`：回答 H-014 三问——现在重心在哪个主题、该主题先看哪几只、证据缺口是什么；附带 `weak_topics_downgraded` / `per_topic_cap_downgraded` 审计。
+- `downgrade_reason_for_weak/cap(...)`：生成不含买卖词的中文降级理由。
+
+#### `tradingagents/tradeflow/strategy_config.py`（`# [H-014]`）
+
+新增四个门禁旋钮（带安全默认值）：
+- `concentration_enabled: bool = True`（feature flag，可一键回滚）
+- `concentration_per_topic_max: int = 3`
+- `concentration_moderate_topic_max: int = 1`
+- `concentration_min_signals_for_strong: int = 2`
+
+#### `tradingagents/tradeflow/candidate_pool_gate.py`（`# [H-014]`）
+
+- `PoolGateResult` 新增 `concentration_summary: dict`。
+- `run_pool_gate()` 在 precision + calibration 之后、全局 `pool_haotian_max` 之前插入按主题配额门：弱主题全降观察、强/中主题超出配额的降观察，并给每条记录 `concentration_topic/concentration_strength`；被准入的主候选同步回填主题与强度。无主题候选直接落到既有全局门，行为完全兼容。
+- 末尾汇总 `concentration_summary`，含降级审计轨迹。
+
+#### `api/tradeflow_schemas.py`（`# [H-014]`）
+
+- `TradeFlowCandidatesResponse` / `TradeFlowTieredCandidatesResponse` 新增 `concentration_summary: Dict[str, Any]` 字段。
+
+#### `api/services/tradeflow_service.py`（`# [H-014]`）
+
+- `get_candidates` / `get_candidates_tiered` 两个响应均透传 `pool_result.concentration_summary`。
+
+#### `frontend/src/types/index.ts` / `frontend/src/pages/TradeFlow.tsx`（`// [H-014]`）
+
+- `TradeFlowTieredCandidatesResponse` 类型补 `concentration_summary`。
+- 焦点工作台在 `pool_gate_summary` 之下新增绿色「昊天主题集中度」横幅，展示 headline（重心主题/先看哪几只/弱主题降级），让用户一眼明白「为什么只选这几只」。
+
+#### `tests/test_h014_mandate_concentration_gate.py`（新增）
+
+26 个测试覆盖：强度分级（strong/moderate/weak/empty）、主题分组、解析回退、`run_pool_gate` 集成（强主题封顶 3、弱主题全降级、混合主题、feature flag 关闭、无主题穿透、按主题先于全局门）、**20 候选 fixture → 主候选 ≤ 5 验收**、summary 三问、TECH 候选不受影响、向后兼容。
+
+### 验证
+
+- `pytest tests/test_h014_mandate_concentration_gate.py` → 26 passed。
+- `pytest tests/test_tf_quality001_pool_gate.py tests/test_tf_quality004_calibration.py` → 103 passed（无回归）。
+- `pytest tests/ -q`（全量）→ **6519 passed, 17 skipped**。
+- `npm run build` → 通过。
+
+### 设计要点 / 风险
+
+- H-014 门位于既有四层门（qualify→precision→calibration→global cap）之后、全局 haotian_max 之前，**只做更细的按主题压缩**，不删除任何原始候选，被压缩的全部落到观察池并附中文理由，满足「不删除原始候选，只改变主候选/观察候选分层」。
+- 无主题或主题不可解析的候选不受 H-014 影响，落到既有全局门，保证兼容。
+- `concentration_enabled=False` 可一键关闭，回滚为零风险。
+- 主题强度判断只用 list-view 已落库字段（`topic_lifecycle_state`/`topic_signal_count`/`mandate_score_component`/`blocking_evidence_gaps`/`overheat_flags`），不依赖 detail-only 的 `policy_evidence_refs`，也不调用 LLM、不改 prompts、不写生产 `tradingagents.db`。
+
+---
+
 ## 2026-06-24 | DATA-020 修复 TF-REVIEW-004 空状态诊断测试隔离
 
 - **执行者**：OpenCode (glm-5.2)
@@ -6165,3 +6238,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TF-REVIEW-004-20260624-round1.txt
 - **Run archive**: docs/task_runs/TF-REVIEW-004-20260624-111425/
+
+## 2026-06-24 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-014 - 昊天主题候选减少与主题集中度阈值校准（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/H-014-20260624-round1.txt
+- **Run archive**: docs/task_runs/H-014-20260624-115804/

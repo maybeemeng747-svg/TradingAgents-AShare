@@ -22,6 +22,15 @@ from typing import Optional
 
 from .strategy_config import StrategyConfig, DEFAULT_STRATEGY_CONFIG
 from .candidate_precision_gate import compute_precision  # [TF-QUALITY-003] candidate_precision_gate
+# [H-014] mandate_concentration_gate
+from .mandate_concentration_gate import (
+    STRENGTH_WEAK,
+    build_concentration_summary,
+    compute_topic_metrics_map,
+    downgrade_reason_for_cap,
+    downgrade_reason_for_weak,
+    resolve_topic_for_entry,
+)
 
 
 @dataclass
@@ -33,6 +42,8 @@ class PoolGateResult:
     gate_summary: str = ""
     # [TF-QUALITY-004] live_pool_calibration — calibration audit trail
     calibration_summary: dict = field(default_factory=dict)
+    # [H-014] mandate_concentration_gate — theme concentration audit trail
+    concentration_summary: dict = field(default_factory=dict)
 
 
 _HAOTIAN_TYPES = {"POLICY_AMBUSH", "POLICY_CONFIRM"}
@@ -314,6 +325,13 @@ def run_pool_gate(
     # [TF-QUALITY-004] live_pool_calibration — dynamic main cap
     effective_main_cap, spread_reason = _compute_effective_main_cap(entries, cfg)
 
+    # [H-014] mandate_concentration_gate — precompute per-topic strength so
+    # the loop can apply per-topic admission caps to 昊天 candidates. Topics
+    # without metrics (non-haotian / unresolved topic) fall through.
+    topic_metrics = compute_topic_metrics_map(entries, cfg) if cfg.concentration_enabled else {}
+    topic_admission_count: dict[str, int] = {t: 0 for t in topic_metrics}
+    admitted_by_topic: dict[str, list[str]] = {t: [] for t in topic_metrics}
+
     main: list[dict] = []
     observation: list[dict] = []
     filtered: list[dict] = []
@@ -325,6 +343,9 @@ def run_pool_gate(
     cal_weak_vcp: list[str] = []
     cal_data_insufficient: list[str] = []
     cal_haotian_evidence: list[str] = []
+    # [H-014] mandate_concentration_gate — concentration audit trail
+    conc_weak_topic: list[str] = []
+    conc_topic_cap: list[str] = []
 
     for entry in entries:
         candidate_type = entry.get("candidate_type", "")
@@ -382,6 +403,38 @@ def run_pool_gate(
 
         is_tech = candidate_type in _TECH_TYPES
 
+        # [H-014] mandate_concentration_gate — per-topic admission cap for
+        # 昊天 candidates. Runs before the global haotian_max so the pool
+        # reflects "strong theme Top 1-3" instead of a flat pile. Candidates
+        # whose topic cannot be resolved skip this gate (safe fallback).
+        if is_haotian and topic_metrics:
+            topic = resolve_topic_for_entry(entry)
+            metrics = topic_metrics.get(topic) if topic else None
+            if metrics is not None:
+                if metrics.admission_cap <= 0:
+                    entry_copy = dict(entry)
+                    entry_copy["precision_dimensions"] = precision.dimensions
+                    entry_copy["precision_resonance_count"] = precision.resonance_count
+                    entry_copy["pool_filter_reason"] = downgrade_reason_for_weak(metrics)
+                    entry_copy["concentration_topic"] = topic
+                    entry_copy["concentration_strength"] = metrics.strength
+                    entry_copy["pool_status"] = "observation"
+                    observation.append(entry_copy)
+                    conc_weak_topic.append(entry.get("symbol", ""))
+                    continue
+                rank_in_topic = topic_admission_count.get(topic, 0) + 1
+                if rank_in_topic > metrics.admission_cap:
+                    entry_copy = dict(entry)
+                    entry_copy["precision_dimensions"] = precision.dimensions
+                    entry_copy["precision_resonance_count"] = precision.resonance_count
+                    entry_copy["pool_filter_reason"] = downgrade_reason_for_cap(metrics, rank_in_topic)
+                    entry_copy["concentration_topic"] = topic
+                    entry_copy["concentration_strength"] = metrics.strength
+                    entry_copy["pool_status"] = "observation"
+                    observation.append(entry_copy)
+                    conc_topic_cap.append(entry.get("symbol", ""))
+                    continue
+
         if is_haotian and haotian_count >= cfg.pool_haotian_max:
             entry_copy = dict(entry)
             entry_copy["pool_filter_reason"] = f"昊天池已满({haotian_count}/{cfg.pool_haotian_max})"
@@ -413,6 +466,15 @@ def run_pool_gate(
         entry_copy["pool_filter_reason"] = ""
         entry_copy["precision_dimensions"] = precision.dimensions  # [TF-QUALITY-003]
         entry_copy["precision_resonance_count"] = precision.resonance_count  # [TF-QUALITY-003]
+        # [H-014] mandate_concentration_gate — stamp topic/strength on main
+        if is_haotian and topic_metrics:
+            topic = resolve_topic_for_entry(entry)
+            metrics = topic_metrics.get(topic) if topic else None
+            if metrics is not None:
+                topic_admission_count[topic] = topic_admission_count.get(topic, 0) + 1
+                admitted_by_topic.setdefault(topic, []).append(entry.get("symbol", ""))
+                entry_copy["concentration_topic"] = topic
+                entry_copy["concentration_strength"] = metrics.strength
         main.append(entry_copy)
 
         if is_haotian:
@@ -450,6 +512,13 @@ def run_pool_gate(
         "original_main_cap": cfg.pool_main_max,
     }
 
+    # [H-014] mandate_concentration_gate — concentration summary
+    concentration_summary = build_concentration_summary(
+        topic_metrics, admitted_by_topic, cfg
+    )
+    concentration_summary["weak_topic_downgraded"] = conc_weak_topic
+    concentration_summary["per_topic_cap_downgraded"] = conc_topic_cap
+
     return PoolGateResult(
         main_candidates=main,
         observation_candidates=observation,
@@ -457,4 +526,5 @@ def run_pool_gate(
         pool_counts=pool_counts,
         gate_summary=gate_summary,
         calibration_summary=calibration_summary,
+        concentration_summary=concentration_summary,
     )
