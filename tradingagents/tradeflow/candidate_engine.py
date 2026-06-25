@@ -290,6 +290,16 @@ _MISSING_COLUMNS = [
     ("contradiction_items_json", "TEXT DEFAULT '[]'"),
     ("blocking_evidence_gaps_json", "TEXT DEFAULT '[]'"),
     ("next_verification_steps_json", "TEXT DEFAULT '[]'"),
+    # [TF-PERSIST-001] split_score_persistence — persist 8 split-score/reason
+    # fields so save_candidate() round-trips through DB without losing values.
+    ("technical_score", "REAL DEFAULT 0.0"),
+    ("policy_score", "REAL DEFAULT 0.0"),
+    ("fund_flow_score", "REAL DEFAULT 0.0"),
+    ("event_score", "REAL DEFAULT 0.0"),
+    ("risk_penalty_score", "REAL DEFAULT 0.0"),
+    ("data_quality_score", "REAL DEFAULT 0.0"),
+    ("ranking_reasons_json", "TEXT DEFAULT '[]'"),
+    ("weakness_reasons_json", "TEXT DEFAULT '[]'"),
 ]
 
 
@@ -565,6 +575,24 @@ def init_db(db_path: str) -> None:
             conn.execute(
                 f"ALTER TABLE tradeflow_observation_items ADD COLUMN {_col} {_type}"
             )
+        except sqlite3.OperationalError:
+            pass
+    # [TF-PERSIST-001] split_score_persistence — add 8 split-score/reason
+    # columns to tradeflow_candidates so save_candidate() can persist them.
+    # Note: ensure_columns() already migrates via _MISSING_COLUMNS, but every
+    # recent feature adds an explicit block here too for traceability.
+    for _col, _type in [
+        ("technical_score", "REAL DEFAULT 0.0"),
+        ("policy_score", "REAL DEFAULT 0.0"),
+        ("fund_flow_score", "REAL DEFAULT 0.0"),
+        ("event_score", "REAL DEFAULT 0.0"),
+        ("risk_penalty_score", "REAL DEFAULT 0.0"),
+        ("data_quality_score", "REAL DEFAULT 0.0"),
+        ("ranking_reasons_json", "TEXT DEFAULT '[]'"),
+        ("weakness_reasons_json", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
         except sqlite3.OperationalError:
             pass
     conn.commit()
@@ -1418,8 +1446,11 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "what_would_change_mind_json, "
             "topic_lifecycle_state, topic_lifecycle_reason, topic_last_signal_date, topic_signal_count, "
             "contradiction_level, contradiction_items_json, blocking_evidence_gaps_json, next_verification_steps_json, "
+            # [TF-PERSIST-001] split_score_persistence — 8 split-score/reason columns
+            "technical_score, policy_score, fund_flow_score, event_score, "
+            "risk_penalty_score, data_quality_score, ranking_reasons_json, weakness_reasons_json, "
             "created_at, updated_at) "
-            "VALUES ({}) ".format(",".join(["?"] * 103))
+            "VALUES ({}) ".format(",".join(["?"] * 111))
             + "ON CONFLICT(trade_date, symbol) DO UPDATE SET "
             "primary_strategy=excluded.primary_strategy, score=excluded.score, status=excluded.status, "
             "trigger_price=excluded.trigger_price, "
@@ -1508,6 +1539,15 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
             "contradiction_items_json=excluded.contradiction_items_json, "
             "blocking_evidence_gaps_json=excluded.blocking_evidence_gaps_json, "
             "next_verification_steps_json=excluded.next_verification_steps_json, "
+            # [TF-PERSIST-001] split_score_persistence — refresh on upsert
+            "technical_score=excluded.technical_score, "
+            "policy_score=excluded.policy_score, "
+            "fund_flow_score=excluded.fund_flow_score, "
+            "event_score=excluded.event_score, "
+            "risk_penalty_score=excluded.risk_penalty_score, "
+            "data_quality_score=excluded.data_quality_score, "
+            "ranking_reasons_json=excluded.ranking_reasons_json, "
+            "weakness_reasons_json=excluded.weakness_reasons_json, "
             "updated_at=excluded.updated_at",
             (
                 row["trade_date"], row["symbol"], row["name"], row["source"],
@@ -1560,6 +1600,11 @@ def save_candidate(candidate: Candidate, db_path: str) -> int:
                 row["topic_last_signal_date"], row["topic_signal_count"],
                 row["contradiction_level"], row["contradiction_items_json"],
                 row["blocking_evidence_gaps_json"], row["next_verification_steps_json"],
+                # [TF-PERSIST-001] split_score_persistence
+                row["technical_score"], row["policy_score"],
+                row["fund_flow_score"], row["event_score"],
+                row["risk_penalty_score"], row["data_quality_score"],
+                row["ranking_reasons_json"], row["weakness_reasons_json"],
                 candidate.created_at, row["updated_at"],
             ),
         )

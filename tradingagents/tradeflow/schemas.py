@@ -424,6 +424,17 @@ class Candidate:
             contradiction_items=json.loads(row.get("contradiction_items_json", "[]")),  # [H-011]
             blocking_evidence_gaps=json.loads(row.get("blocking_evidence_gaps_json", "[]")),  # [H-011]
             next_verification_steps=json.loads(row.get("next_verification_steps_json", "[]")),  # [H-011]
+            # [TF-PERSIST-001] split_score_persistence — restore 8 split-score/
+            # reason fields so DB round-trip preserves real values instead of
+            # falling back to dataclass defaults.
+            technical_score=row.get("technical_score", 0.0),  # [TF-QUALITY-002]
+            policy_score=row.get("policy_score", 0.0),  # [TF-QUALITY-002]
+            fund_flow_score=row.get("fund_flow_score", 0.0),  # [TF-QUALITY-002]
+            event_score=row.get("event_score", 0.0),  # [TF-QUALITY-002]
+            risk_penalty_score=row.get("risk_penalty_score", 0.0),  # [TF-QUALITY-002]
+            data_quality_score=row.get("data_quality_score", 0.0),  # [TF-QUALITY-002]
+            ranking_reasons=json.loads(row.get("ranking_reasons_json", "[]")),  # [TF-QUALITY-002]
+            weakness_reasons=json.loads(row.get("weakness_reasons_json", "[]")),  # [TF-QUALITY-002]
         )
 
 

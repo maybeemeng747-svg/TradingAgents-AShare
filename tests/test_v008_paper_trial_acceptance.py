@@ -534,8 +534,9 @@ class TestStep2TieredRanking:
 
         重点关注持久化字段：candidate_type / mandate_topic / mandate_score /
         ambush_score / trigger_price / invalid_price。
-        分项评分（technical_score 等）通过 save_candidate 直接保存时不持久化
-        （DB 无列），但字段在响应中存在（默认 0.0），API 契约不丢字段。
+        分项评分（technical_score 等）通过 save_candidate 直接保存现已持久化
+        （[TF-PERSIST-001] split_score_persistence 补齐 DB 列与 INSERT/UPDATE
+        子句），字段值应原样返回，不再回落到默认 0.0 / 空 list。
         """
         result = get_candidates_tiered(EFFECTIVE_TRADE_DATE, tf_db_path=e2e_db)
         policy = next(c for c in result["main_candidates"] if c["symbol"] == "300034.SZ")
@@ -544,11 +545,15 @@ class TestStep2TieredRanking:
         assert policy["mandate_topic"] == "低空经济"
         assert policy["mandate_score"] == 70.0
         assert policy["ambush_score"] == 65.0
-        # 分项评分字段存在（API 契约）
-        assert "technical_score" in policy
-        assert "policy_score" in policy
-        assert "ranking_reasons" in policy
-        assert "weakness_reasons" in policy
+        # [TF-PERSIST-001] 分项评分字段值真实返回（不再只是字段存在）
+        assert policy["technical_score"] == 55.0
+        assert policy["policy_score"] == 80.0
+        assert policy["fund_flow_score"] == 15.0
+        assert policy["event_score"] == 10.0
+        assert policy["risk_penalty_score"] == 0.0
+        assert policy["data_quality_score"] == 82.0
+        assert policy["ranking_reasons"] == ["政策连续性强", "受益路径明确"]
+        assert policy["weakness_reasons"] == ["估值偏高"]
 
     def test_main_candidates_have_precision_dimensions(self, e2e_db):
         """[TF-QUALITY-003] 主候选必须有精度维度信息。"""

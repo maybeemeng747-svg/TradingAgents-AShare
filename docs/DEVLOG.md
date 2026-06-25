@@ -4,6 +4,86 @@
 
 ---
 
+## 2026-06-25 | TF-PERSIST-001 TradeFlow save_candidate 分项评分持久化补口
+
+- **执行者**：OpenCode
+- **类型**：bugfix / persistence-gap
+- **状态**：✅ 完成（待提交）
+- **优先级**：P2
+- **代码标注**：`# [TF-PERSIST-001] split_score_persistence`
+
+### 背景
+
+V-008 验收发现 `save_candidate()` 直接保存候选时没有持久化 8 个
+`[TF-QUALITY-002] score_separation` 分项评分 / 原因字段：
+`technical_score` / `policy_score` / `fund_flow_score` / `event_score` /
+`risk_penalty_score` / `data_quality_score` / `ranking_reasons` /
+`weakness_reasons`。
+
+具体缺口：
+- `tradeflow_candidates` 表既不在 `CREATE TABLE` 里声明这些列，也不在
+  `_MISSING_COLUMNS` / `init_db()` 的 `ALTER TABLE` 兜底里，老 DB 不会
+  自动补列。
+- `Candidate.to_db_row()` 已输出这 8 个字段，但 `save_candidate()` 的
+  INSERT 列表（103 个占位符）和 ON CONFLICT DO UPDATE 子句都漏掉了，
+  导致写入 DB 时被丢弃。
+- `Candidate.from_db_row()` 也没读回这 8 个字段，DB round-trip 后回落到
+  dataclass 默认值。
+- API 服务层 `_row_to_candidate_item()` 走的是 `_rget(..., 0.0)`，所以
+  DB 里没列时也只会默认 0.0，掩盖了上述缺口。
+
+生产 `evaluate_symbol` 内存链路能算出分项评分，但一旦走
+`save_candidate → DB → API` 持久化路径，前端就只能拿到默认 0.0 / 空 list。
+
+### 改动文件
+
+- `tradingagents/tradeflow/candidate_engine.py`
+  - `_MISSING_COLUMNS` 末尾追加 8 个列定义（`ensure_columns` 兜底迁移）。
+  - `init_db()` 在 `tradeflow_observation_items` 扩展块后新增
+    `[TF-PERSIST-001]` 显式迁移块，沿用每个 recent feature 一块的惯例。
+  - `save_candidate()` 的 INSERT 列表加入 8 个列，占位符从 `? * 103`
+    增至 `? * 111`；ON CONFLICT DO UPDATE 子句追加 8 个
+    `field=excluded.field`；params 元组对应补齐 8 个 `row[...]`。
+- `tradingagents/tradeflow/schemas.py`
+  - `Candidate.from_db_row()` 末尾追加 8 个字段的回读，使用
+    `row.get(..., default)` + `json.loads`，保持和 `to_db_row()` 对称。
+- `tests/test_tf_persist_001_split_score_persistence.py`（新增，8 用例）
+  - `TestSchemaMigration`：`init_db` 后列存在；legacy DB 自动补列。
+  - `TestSaveCandidateRoundTrip`：DB row 持久化、`from_db_row` 还原、
+    upsert 更新分项评分。
+  - `TestApiServiceReturnsPersistedSplitScores`：`get_candidates` /
+    `get_candidates_tiered` / `get_candidate_detail` 真实返回持久化值。
+- `tests/test_v008_paper_trial_acceptance.py`
+  - `test_main_candidates_keep_full_fields` 把原来「字段存在」的弱断言
+    升级为「值真实返回」的强断言（technical_score=55.0 等），并更新
+    docstring 反映 TF-PERSIST-001 已补齐持久化。
+
+### 不改的部分
+
+- 不改候选评分算法（`compute_split_scores` 不变）。
+- 不写生产 `tradingagents.db`（所有测试走 tmp_path 临时 DB）。
+- 不改 `tradingagents/prompts/`。
+- API 层 `_row_to_candidate_item` 不动（本就读这些列，靠 `_rget` 默认值
+  掩盖了 DB 缺口；补 DB 列后即可原样返回真实值）。
+
+### 验收
+
+- `pytest tests/test_tf_persist_001_split_score_persistence.py -q` →
+  8 passed。
+- `pytest tests/test_v008_paper_trial_acceptance.py -q` → 55 passed。
+- 全量回归：`pytest tests/ -q` → 6651 passed, 17 skipped, 0 failed。
+- legacy DB 自动迁移测试通过：旧 schema `init_db()` 后 8 列全部补齐。
+
+### 风险点
+
+- 老用户首次启动时会触发 8 次 `ALTER TABLE ADD COLUMN`，均在
+  `try/except sqlite3.OperationalError` 内，幂等安全。
+- `save_candidate` 占位符数量从 103 增至 111，已用 sanity check 脚本
+  对称验证列数与 params 数量；现有所有调用方（V-008 fixture、M-005/M-006
+  持久化测试、discovery 流水线等）回归全绿。
+
+---
+
 ## 2026-06-25 | HK-001 港股输入边界与轻量行情-only 模式声明
 
 - **执行者**：OpenCode
@@ -6692,3 +6772,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/HK-001-20260625-round1.txt
 - **Run archive**: docs/task_runs/HK-001-20260625-175657/
+
+## 2026-06-25 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-PERSIST-001 - TradeFlow save_candidate 分项评分持久化补口（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TF-PERSIST-001-20260625-round1.txt
+- **Run archive**: docs/task_runs/TF-PERSIST-001-20260625-182110/
