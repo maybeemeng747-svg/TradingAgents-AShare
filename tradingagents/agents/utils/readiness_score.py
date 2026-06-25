@@ -21,7 +21,96 @@ class EvidenceStatus:
     QUERY_FAILED = "query_failed"
     NOT_QUERIED = "not_queried"
     FIELD_MISSING = "field_missing"
+    SKIPPED = "skipped"
     NOT_AVAILABLE = "not_available"  # Data source does not provide this field
+
+
+# [DATA-021] report_data_blockers
+_DATA_BLOCKER_FIELDS = {
+    "ohlcv_5d": {
+        "label": "行情/K线",
+        "reason": "最近开高低收或基础行情证据不可用",
+        "impact": "无法校验价格位置、趋势和触发区间，强动作需要降级或等待确认。",
+    },
+    "individual_fund_flow": {
+        "label": "主力资金",
+        "reason": "个股主力资金流证据不可用",
+        "impact": "资金面不能支撑买入/减仓强结论，相关判断置信度下调。",
+    },
+    "lhb_status": {
+        "label": "龙虎榜",
+        "reason": "龙虎榜证据不可用",
+        "impact": "无法确认异动席位和游资结构；若为未上榜，通常只作为正常无数据记录。",
+    },
+    "announcements": {
+        "label": "公告/新闻",
+        "reason": "公告或事件证据不可用",
+        "impact": "无法验证重大利好/利空是否对冲技术或资金信号。",
+    },
+    "ratings": {
+        "label": "分析师评级",
+        "reason": "分析师评级证据不可用",
+        "impact": "外部一致预期缺口，只能作为辅助信息降权，不单独触发交易动作。",
+    },
+    "buybacks": {
+        "label": "回购",
+        "reason": "回购事件证据不可用",
+        "impact": "无法确认公司层面的主动托底或股东回报信号。",
+    },
+    "research_report": {
+        "label": "券商研报",
+        "reason": "券商研报证据不可用",
+        "impact": "中线逻辑和盈利预测缺少外部验证，趋势结论需要更多原始证据支撑。",
+    },
+    "margin_trading": {
+        "label": "融资融券",
+        "reason": "融资融券证据不可用",
+        "impact": "杠杆资金变化无法交叉验证风险偏好。",
+    },
+    "turnover_rate": {
+        "label": "换手率",
+        "reason": "换手率字段缺失",
+        "impact": "无法判断筹码交换强度，短线触发信号需要降权。",
+    },
+    "volume_ratio": {
+        "label": "量比",
+        "reason": "量比字段缺失",
+        "impact": "盘中/短线量能确认不足，突破或破位信号需要等待补证。",
+    },
+}
+
+_BLOCKER_STATUS_META = {
+    EvidenceStatus.NORMAL_NO_DATA: {
+        "status": "normal_no_data",
+        "severity": "info",
+        "status_label": "正常无数据",
+    },
+    EvidenceStatus.QUERY_FAILED: {
+        "status": "query_failed",
+        "severity": "high",
+        "status_label": "查询失败",
+    },
+    EvidenceStatus.NOT_QUERIED: {
+        "status": "not_queried",
+        "severity": "medium",
+        "status_label": "未查询",
+    },
+    EvidenceStatus.FIELD_MISSING: {
+        "status": "field_missing",
+        "severity": "medium",
+        "status_label": "字段缺失",
+    },
+    EvidenceStatus.NOT_AVAILABLE: {
+        "status": "skipped",
+        "severity": "low",
+        "status_label": "已跳过",
+    },
+    EvidenceStatus.SKIPPED: {
+        "status": "skipped",
+        "severity": "low",
+        "status_label": "已跳过",
+    },
+}
 
 
 _STRONG_NAME_CONTEXTS = [
@@ -1146,6 +1235,22 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
             return val["raw"]
         return val
 
+    def _structured_evidence_status(val) -> Optional[str]:
+        if not isinstance(val, dict) or "status" not in val:
+            return None
+        struct_status = str(val.get("status") or "").upper()
+        if struct_status == "HAS_DATA":
+            return EvidenceStatus.HAS_DATA
+        if struct_status in {"FAILED", "ERROR", "QUERY_FAILED"}:
+            return EvidenceStatus.QUERY_FAILED
+        if struct_status in {"NORMAL_NO_DATA", "NO_DATA"}:
+            return EvidenceStatus.NORMAL_NO_DATA
+        if struct_status in {"SKIPPED", "NOT_AVAILABLE"}:
+            return EvidenceStatus.SKIPPED
+        if struct_status == "NOT_QUERIED":
+            return EvidenceStatus.NOT_QUERIED
+        return None
+
     market = reports.get("market_report", "") or ""
     volume_price = reports.get("volume_price_report", "") or ""
     smart_money = reports.get("smart_money_report", "") or ""
@@ -1158,8 +1263,12 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
 
     # 1. OHLCV 5d — check stock_data CSV
     ohlcv_5d = EvidenceStatus.NOT_QUERIED
-    raw_stock_data = _unwrap_raw(raw.get("stock_data"))
-    if raw_stock_data and isinstance(raw_stock_data, str) and len(raw_stock_data) > 50:
+    raw_stock_data_entry = raw.get("stock_data")
+    stock_struct_status = _structured_evidence_status(raw_stock_data_entry)
+    raw_stock_data = _unwrap_raw(raw_stock_data_entry)
+    if stock_struct_status:
+        ohlcv_5d = stock_struct_status
+    elif raw_stock_data and isinstance(raw_stock_data, str) and len(raw_stock_data) > 50:
         ohlcv_5d = EvidenceStatus.HAS_DATA
     elif raw_stock_data is not None:
         ohlcv_5d = EvidenceStatus.QUERY_FAILED if (isinstance(raw_stock_data, str) and "失败" in raw_stock_data) else EvidenceStatus.NORMAL_NO_DATA
@@ -1207,8 +1316,12 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
 
     # 5. Individual fund flow — check fund_flow_individual
     individual_fund_flow = EvidenceStatus.NOT_QUERIED
-    raw_fund_flow = _unwrap_raw(raw.get("fund_flow_individual"))
-    if raw_fund_flow is not None:
+    raw_fund_flow_entry = raw.get("fund_flow_individual")
+    fund_struct_status = _structured_evidence_status(raw_fund_flow_entry)
+    raw_fund_flow = _unwrap_raw(raw_fund_flow_entry)
+    if fund_struct_status:
+        individual_fund_flow = fund_struct_status
+    elif raw_fund_flow is not None:
         if isinstance(raw_fund_flow, str) and len(raw_fund_flow) > 20 and "失败" not in raw_fund_flow:
             individual_fund_flow = EvidenceStatus.HAS_DATA
         elif isinstance(raw_fund_flow, str) and "失败" in raw_fund_flow:
@@ -1225,8 +1338,12 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
 
     # 6. LHB (龙虎榜) — check lhb field
     lhb_status = EvidenceStatus.NOT_QUERIED
-    raw_lhb = _unwrap_raw(raw.get("lhb"))
-    if raw_lhb is not None:
+    raw_lhb_entry = raw.get("lhb")
+    lhb_struct_status = _structured_evidence_status(raw_lhb_entry)
+    raw_lhb = _unwrap_raw(raw_lhb_entry)
+    if lhb_struct_status:
+        lhb_status = lhb_struct_status
+    elif raw_lhb is not None:
         if isinstance(raw_lhb, str) and "失败" in raw_lhb:
             lhb_status = EvidenceStatus.QUERY_FAILED
         elif isinstance(raw_lhb, str) and ("无" in raw_lhb or "未上榜" in raw_lhb or "未触发" in raw_lhb or len(raw_lhb.strip()) == 0):
@@ -1251,14 +1368,9 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
     margin_trading = EvidenceStatus.NOT_QUERIED
     raw_margin_entry = raw.get("margin_trading")
     # Check structured status first (P2: honor structured contract status)
-    if isinstance(raw_margin_entry, dict) and "status" in raw_margin_entry:
-        struct_status = raw_margin_entry["status"]
-        if struct_status == "HAS_DATA":
-            margin_trading = EvidenceStatus.HAS_DATA
-        elif struct_status == "FAILED":
-            margin_trading = EvidenceStatus.QUERY_FAILED
-        elif struct_status in ("NORMAL_NO_DATA", "NO_DATA"):
-            margin_trading = EvidenceStatus.NORMAL_NO_DATA
+    margin_struct_status = _structured_evidence_status(raw_margin_entry)
+    if margin_struct_status:
+        margin_trading = margin_struct_status
     raw_margin = _unwrap_raw(raw_margin_entry)
     if margin_trading == EvidenceStatus.NOT_QUERIED and raw_margin is not None:
         if isinstance(raw_margin, str) and "MARGIN_HAS_DATA" in raw_margin:
@@ -1278,8 +1390,12 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
 
     # 8. Announcements — check news data
     announcements = EvidenceStatus.NOT_QUERIED
-    raw_news = _unwrap_raw(raw.get("news"))
-    if raw_news is not None:
+    raw_news_entry = raw.get("news")
+    news_struct_status = _structured_evidence_status(raw_news_entry)
+    raw_news = _unwrap_raw(raw_news_entry)
+    if news_struct_status:
+        announcements = news_struct_status
+    elif raw_news is not None:
         if isinstance(raw_news, str) and len(raw_news) > 50:
             announcements = EvidenceStatus.HAS_DATA
         elif isinstance(raw_news, str) and "失败" in raw_news:
@@ -1295,8 +1411,12 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
     # 9. Research reports — check raw_evidence research_report field
     # [DATA-011] research_report_raw_evidence
     research_report = EvidenceStatus.NOT_QUERIED
-    raw_report = _unwrap_raw(raw.get("research_report"))
-    if raw_report is not None:
+    raw_report_entry = raw.get("research_report")
+    report_struct_status = _structured_evidence_status(raw_report_entry)
+    raw_report = _unwrap_raw(raw_report_entry)
+    if report_struct_status:
+        research_report = report_struct_status
+    elif raw_report is not None:
         if isinstance(raw_report, str) and "REPORT_HAS_DATA" in raw_report:
             research_report = EvidenceStatus.HAS_DATA
         elif isinstance(raw_report, str) and "REPORT_FAILED" in raw_report:
@@ -1316,14 +1436,9 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
     # [DATA-012] rating_raw_evidence
     ratings = EvidenceStatus.NOT_QUERIED
     raw_ratings_entry = raw.get("ratings")
-    if isinstance(raw_ratings_entry, dict) and "status" in raw_ratings_entry:
-        struct_status = raw_ratings_entry["status"]
-        if struct_status == "HAS_DATA":
-            ratings = EvidenceStatus.HAS_DATA
-        elif struct_status == "FAILED":
-            ratings = EvidenceStatus.QUERY_FAILED
-        elif struct_status in ("NORMAL_NO_DATA", "NO_DATA"):
-            ratings = EvidenceStatus.NORMAL_NO_DATA
+    rating_struct_status = _structured_evidence_status(raw_ratings_entry)
+    if rating_struct_status:
+        ratings = rating_struct_status
     raw_ratings = _unwrap_raw(raw_ratings_entry)
     if ratings == EvidenceStatus.NOT_QUERIED and raw_ratings is not None:
         if isinstance(raw_ratings, str) and "RATINGS_HAS_DATA" in raw_ratings:
@@ -1345,14 +1460,9 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
     # [DATA-013] buyback_raw_evidence
     buybacks = EvidenceStatus.NOT_QUERIED
     raw_buyback_entry = raw.get("buybacks")
-    if isinstance(raw_buyback_entry, dict) and "status" in raw_buyback_entry:
-        struct_status = raw_buyback_entry["status"]
-        if struct_status == "HAS_DATA":
-            buybacks = EvidenceStatus.HAS_DATA
-        elif struct_status == "FAILED":
-            buybacks = EvidenceStatus.QUERY_FAILED
-        elif struct_status in ("NORMAL_NO_DATA", "NO_DATA"):
-            buybacks = EvidenceStatus.NORMAL_NO_DATA
+    buyback_struct_status = _structured_evidence_status(raw_buyback_entry)
+    if buyback_struct_status:
+        buybacks = buyback_struct_status
     raw_buyback = _unwrap_raw(raw_buyback_entry)
     if buybacks == EvidenceStatus.NOT_QUERIED and raw_buyback is not None:
         if isinstance(raw_buyback, str) and "BUYBACK_HAS_DATA" in raw_buyback:
@@ -1382,6 +1492,96 @@ def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) 
         "research_report": research_report,
         "ratings": ratings,
         "buybacks": buybacks,
+    }
+
+
+def _data_blocker_status_meta(status: str) -> Optional[dict]:
+    return _BLOCKER_STATUS_META.get(status)
+
+
+def _data_blocker_reason(key: str, status: str, default_reason: str) -> str:
+    if key == "lhb_status" and status == EvidenceStatus.NORMAL_NO_DATA:
+        return "未上龙虎榜或非异动日无龙虎榜数据，属于正常无数据。"
+    if key in {"ratings", "buybacks", "research_report"} and status == EvidenceStatus.NORMAL_NO_DATA:
+        return f"{_DATA_BLOCKER_FIELDS[key]['label']}当前未返回匹配记录，属于辅助数据正常无数据。"
+    if status == EvidenceStatus.QUERY_FAILED:
+        return f"{default_reason}，数据源查询失败或返回异常。"
+    if status == EvidenceStatus.NOT_QUERIED:
+        return f"{default_reason}，本次分析未查询该字段。"
+    if status == EvidenceStatus.FIELD_MISSING:
+        return f"{default_reason}，报告文本未包含可校验原始值。"
+    if status == EvidenceStatus.NOT_AVAILABLE:
+        return f"{default_reason}，当前数据源暂不提供该字段。"
+    return default_reason
+
+
+def build_data_blockers(reports: dict, raw_evidence: Optional[dict] = None) -> list:
+    """Build field-level data blockers for report metadata.
+
+    [DATA-021] report_data_blockers
+    This is an explanatory layer only: it does not change readiness gates or
+    trading levels. It makes "数据不足" auditable by separating normal no-data
+    cases from query failures, skipped fields and text-only missing evidence.
+    """
+    statuses = infer_evidence_statuses(reports or {}, raw_evidence=raw_evidence)
+    blockers = []
+    for key, info in _DATA_BLOCKER_FIELDS.items():
+        status = statuses.get(key)
+        if status == EvidenceStatus.HAS_DATA:
+            continue
+        meta = _data_blocker_status_meta(status)
+        if not meta:
+            continue
+        blockers.append({
+            "key": key,
+            "label": info["label"],
+            "status": meta["status"],
+            "status_label": meta["status_label"],
+            "severity": meta["severity"],
+            "reason": _data_blocker_reason(key, status, info["reason"]),
+            "impact": info["impact"],
+        })
+    return blockers
+
+
+def summarize_data_blockers(blockers: list) -> dict:
+    """Return a compact summary for UI/report cards.
+
+    [DATA-021] report_data_blockers
+    """
+    counts = {
+        "query_failed": 0,
+        "field_missing": 0,
+        "not_queried": 0,
+        "normal_no_data": 0,
+        "skipped": 0,
+    }
+    for blocker in blockers or []:
+        status = blocker.get("status")
+        if status in counts:
+            counts[status] += 1
+
+    severe = counts["query_failed"] + counts["field_missing"]
+    medium = counts["not_queried"]
+    normal = counts["normal_no_data"] + counts["skipped"]
+    if not blockers:
+        message = "核心数据源未发现字段级缺口。"
+        level = "ok"
+    elif severe:
+        message = f"{severe} 项关键数据查询失败或字段缺失，强结论需降级；另有 {medium} 项未查询、{normal} 项正常无数据/跳过。"
+        level = "warning"
+    elif medium:
+        message = f"{medium} 项数据未查询，结论需保留条件；另有 {normal} 项正常无数据/跳过。"
+        level = "caution"
+    else:
+        message = f"{normal} 项为正常无数据或数据源跳过，不单独构成强降级理由。"
+        level = "info"
+
+    return {
+        "level": level,
+        "message": message,
+        "counts": counts,
+        "total": len(blockers or []),
     }
 
 

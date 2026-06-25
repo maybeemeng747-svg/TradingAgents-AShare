@@ -169,6 +169,56 @@ class StructuredReport(BaseModel):
         return v
 
 
+def _report_sections_for_data_blockers(result_data: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    if not isinstance(result_data, dict):
+        return {}
+    return {
+        "market_report": result_data.get("market_report") or "",
+        "volume_price_report": result_data.get("volume_price_report") or "",
+        "smart_money_report": result_data.get("smart_money_report") or "",
+        "news_report": result_data.get("news_report") or "",
+    }
+
+
+def _raw_evidence_for_data_blockers(result_data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(result_data, dict):
+        return None
+    raw = result_data.get("raw_evidence")
+    if isinstance(raw, dict):
+        return raw
+    metadata = result_data.get("metadata")
+    if isinstance(metadata, dict) and isinstance(metadata.get("raw_evidence"), dict):
+        return metadata["raw_evidence"]
+    return None
+
+
+def attach_report_data_blockers(result_data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Attach field-level data blockers to report result_data.
+
+    [DATA-021] report_data_blockers
+    This function is deliberately read-only with respect to trading logic: it
+    only adds explanatory metadata and does not alter action labels or gates.
+    """
+    if not isinstance(result_data, dict):
+        return result_data
+    try:
+        from tradingagents.agents.utils.readiness_score import (
+            build_data_blockers,
+            summarize_data_blockers,
+        )
+
+        reports = _report_sections_for_data_blockers(result_data)
+        raw_evidence = _raw_evidence_for_data_blockers(result_data)
+        blockers = build_data_blockers(reports, raw_evidence=raw_evidence)
+        enriched = dict(result_data)
+        enriched["data_blockers"] = blockers
+        enriched["data_blocker_summary"] = summarize_data_blockers(blockers)
+        return enriched
+    except Exception as exc:
+        logger.warning("DATA-021 data blocker attachment failed: %s", exc)
+        return result_data
+
+
 def extract_structured_data(
     final_trade_decision: str,
     fundamentals_report: str = "",
@@ -564,6 +614,7 @@ def create_report(
     report_id: Optional[str] = None,  # If provided, update existing
 ) -> ReportDB:
     """Create or finalize a report."""
+    result_data = attach_report_data_blockers(result_data)
     resolved = resolve_report_fields(
         result_data=result_data,
         confidence_override=confidence_override,

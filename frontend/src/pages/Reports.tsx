@@ -1,9 +1,9 @@
-import { FileText, Download, Trash2, Search, ChevronLeft, ChevronRight, Loader2, History, Clock3 } from 'lucide-react'
+import { FileText, Download, Trash2, Search, ChevronLeft, ChevronRight, Loader2, History, Clock3, AlertTriangle } from 'lucide-react'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import TaskProgressBanner from '@/components/TaskProgressBanner'
 import { api } from '@/services/api'
-import type { Report, ReportDetail } from '@/types'
+import type { DataBlocker, DataBlockerSummary, Report, ReportDetail } from '@/types'
 import DecisionCard from '@/components/DecisionCard'
 import ReportViewer from '@/components/ReportViewer'
 import RiskRadar from '@/components/RiskRadar'
@@ -63,6 +63,63 @@ function getQueueHint(report: Pick<Report, 'status' | 'waiting_ahead_count' | 's
     }
 
     return `前方还有 ${waitingAhead} 项等待`
+}
+
+const dataBlockerBadgeClass = (status: DataBlocker['status']) => {
+    if (status === 'query_failed' || status === 'field_missing') return 'bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-300 dark:ring-rose-500/30'
+    if (status === 'not_queried') return 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/30'
+    return 'bg-slate-50 text-slate-600 ring-slate-200 dark:bg-slate-700/40 dark:text-slate-300 dark:ring-slate-600'
+}
+
+// [DATA-021] report_data_blockers
+function DataBlockersPanel({
+    blockers,
+    summary,
+}: {
+    blockers?: DataBlocker[] | null
+    summary?: DataBlockerSummary | null
+}) {
+    const visible = (blockers || []).filter(Boolean)
+    if (!visible.length && !summary) return null
+
+    return (
+        <div className="card xl:col-span-3 border-amber-100 bg-amber-50/50 dark:border-amber-500/20 dark:bg-amber-500/5">
+            <div className="flex items-start gap-3">
+                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">
+                    <AlertTriangle className="h-4 w-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">数据缺口</h3>
+                        {summary?.level && (
+                            <span className="rounded-full bg-white/70 px-2 py-0.5 text-xs text-slate-600 ring-1 ring-slate-200 dark:bg-slate-900/30 dark:text-slate-300 dark:ring-slate-700">
+                                {summary.level}
+                            </span>
+                        )}
+                    </div>
+                    {summary?.message && (
+                        <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">{summary.message}</p>
+                    )}
+                    {!!visible.length && (
+                        <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+                            {visible.map(item => (
+                                <div key={item.key} className="rounded-lg bg-white/80 p-3 ring-1 ring-slate-200 dark:bg-slate-900/30 dark:ring-slate-700">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <span className="text-sm font-medium text-slate-900 dark:text-slate-100">{item.label}</span>
+                                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ring-1 ${dataBlockerBadgeClass(item.status)}`}>
+                                            {item.status_label}
+                                        </span>
+                                    </div>
+                                    <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">{item.reason}</p>
+                                    <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{item.impact}</p>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    )
 }
 
 function ActiveReportStatus({ report }: { report: Report }) {
@@ -531,6 +588,10 @@ export default function Reports() {
                     )}
                     <RiskRadar items={selectedReport.risk_items ?? undefined} />
                     <KeyMetrics items={selectedReport.key_metrics ?? undefined} />
+                    <DataBlockersPanel
+                        blockers={selectedReport.data_blockers ?? selectedReport.result_data?.data_blockers}
+                        summary={selectedReport.data_blocker_summary ?? selectedReport.result_data?.data_blocker_summary}
+                    />
                 </div>
 
                 <div className="card">

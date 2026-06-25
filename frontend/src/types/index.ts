@@ -355,6 +355,27 @@ export interface AnalysisReport {
     research_direction?: string
     execution_action?: string
     action_label?: string
+    data_blockers?: DataBlocker[]
+    data_blocker_summary?: DataBlockerSummary
+}
+
+// [DATA-021] report_data_blockers
+export interface DataBlocker {
+    key: string
+    label: string
+    status: 'normal_no_data' | 'query_failed' | 'not_queried' | 'field_missing' | 'skipped'
+    status_label: string
+    severity: 'info' | 'low' | 'medium' | 'high'
+    reason: string
+    impact: string
+}
+
+// [DATA-021] report_data_blockers
+export interface DataBlockerSummary {
+    level: 'ok' | 'info' | 'caution' | 'warning'
+    message: string
+    counts: Record<string, number>
+    total: number
 }
 
 // UI Types
@@ -431,6 +452,8 @@ export interface Report {
     waiting_ahead_count?: number | null
     scheduled_running_count?: number | null
     scheduled_concurrency_limit?: number | null
+    data_blockers?: DataBlocker[] | null
+    data_blocker_summary?: DataBlockerSummary | null
 }
 
 export interface ReportDetail extends Report {

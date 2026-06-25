@@ -844,6 +844,8 @@ class ReportResponse(BaseModel):
     waiting_ahead_count: Optional[int] = None
     scheduled_running_count: Optional[int] = None
     scheduled_concurrency_limit: Optional[int] = None
+    data_blockers: Optional[List[Dict[str, Any]]] = None
+    data_blocker_summary: Optional[Dict[str, Any]] = None
 
     model_config = {"from_attributes": True}
 
@@ -3624,6 +3626,15 @@ async def chat_completions(
 
 
 # Report API Endpoints
+def _attach_report_data_blockers_for_response(report: Any) -> Any:
+    # [DATA-021] report_data_blockers
+    result_data = getattr(report, "result_data", None)
+    if isinstance(result_data, dict):
+        setattr(report, "data_blockers", result_data.get("data_blockers"))
+        setattr(report, "data_blocker_summary", result_data.get("data_blocker_summary"))
+    return report
+
+
 @app.post("/v1/reports", response_model=ReportResponse)
 def create_report_endpoint(
     request: ReportCreateRequest,
@@ -3640,6 +3651,7 @@ def create_report_endpoint(
         result_data=request.result_data,
         user_id=current_user.id,
     )
+    _attach_report_data_blockers_for_response(report)
     background_tasks.add_task(
         _send_report_bark_notification_background,
         current_user.id,
@@ -3708,6 +3720,7 @@ def get_report_endpoint(
     code_to_name = _get_reverse_stock_map()
     report.name = code_to_name.get(report.symbol, report.symbol)
     _attach_job_runtime_state(report, report_id)
+    _attach_report_data_blockers_for_response(report)
     return report
 
 

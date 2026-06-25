@@ -4,6 +4,44 @@
 
 ---
 
+## 2026-06-25 | DATA-021 报告数据源失败原因透传与字段级降级说明
+
+- **执行者**：Codex
+- **类型**：backend + frontend + tests
+- **状态**：✅ 完成
+
+### 背景
+
+用户近期报告经常出现“数据不足观察”，但报告页没有解释到底缺行情、主力资金、龙虎榜、公告、评级、回购还是研报，也没有区分“正常无数据”和“查询失败”。DATA-021 在不改变强动作门禁的前提下，把数据缺口变成可审计字段。
+
+### 变更
+
+- `readiness_score.py`
+  - 新增 `build_data_blockers()` / `summarize_data_blockers()`。
+  - 对行情/K线、主力资金、龙虎榜、公告/新闻、评级、回购、券商研报、融资融券、换手率、量比生成字段级缺口。
+  - 显式区分 `normal_no_data`、`query_failed`、`not_queried`、`field_missing`、`skipped`。
+- `report_service.py`
+  - 报告保存时将 `data_blockers` / `data_blocker_summary` 写入 `result_data`。
+  - 该层只增加解释性 metadata，不改动作标签、买卖等级或强动作门禁。
+- `api/main.py`
+  - 报告响应模型新增 `data_blockers` / `data_blocker_summary` 可选字段。
+  - 报告详情响应从 `result_data` 透传数据缺口。
+- `frontend/src/pages/Reports.tsx`
+  - 报告详情页新增“数据缺口”面板，展示每项缺口状态、原因和动作影响。
+- `frontend/src/types/index.ts`
+  - 新增 `DataBlocker` / `DataBlockerSummary` 类型，并接入 `AnalysisReport` / `Report`。
+- `tests/test_data021_report_data_blockers.py`
+  - 新增字段状态区分、摘要和报告落库接线测试。
+
+### 验证
+
+- `pytest tests/test_data021_report_data_blockers.py tests/test_readiness_score.py tests/test_decision_semantics.py -q` → **154 passed**。
+- `python -m py_compile tradingagents/agents/utils/readiness_score.py api/services/report_service.py api/main.py` → ✅ 通过。
+- `pytest tests/test_report_recovery.py tests/test_data021_report_data_blockers.py -q` → **9 passed**。
+- `npm run build`（frontend）→ ✅ 通过。
+
+---
+
 ## 2026-06-24 | TRACK-008 跟踪看板 v2 入口与复盘展示补齐
 
 - **执行者**：Codex
