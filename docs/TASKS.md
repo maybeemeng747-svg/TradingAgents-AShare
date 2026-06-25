@@ -3714,7 +3714,7 @@
 ### TF-PERSIST-001: TradeFlow save_candidate 分项评分持久化补口（P2）
 - **描述**：V-008 验收发现 `save_candidate()` 直接保存候选时没有持久化 8 个分项评分/解释字段，导致 API 从 DB 读取时返回默认值。生产 `evaluate_symbol` 内存链路可计算，但持久化层存在缺口。
 - **优先级**：P2
-- **状态**：in_progress — claimed TF-PERSIST-001-20260625-182110
+- **状态**：done -- commit 0016a92
 - **前置条件**：V-008 完成。
 - **执行约束**：
   - 不改候选评分算法。
