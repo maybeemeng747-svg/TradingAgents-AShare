@@ -5316,6 +5316,7 @@ from api.tradeflow_schemas import (
     TopicRegistryResponse,  # [H-012] mandate_topic_registry
     TopicWatchlistResponse,  # [H-012] mandate_topic_registry
     TopicHeatmapResponse,  # [H-013] mandate_topic_heatmap
+    MandateDailyReportResponse,  # [H-015] mandate_daily_report
     SourceFreshnessResponse,  # [DATA-018] source_freshness_report
     SourceFreshnessEntryItem,  # [DATA-018] source_freshness_report
     SourceFreshnessSummary,  # [DATA-018] source_freshness_report
@@ -5359,6 +5360,7 @@ from api.services.tradeflow_service import (
     get_topic_registry as _tf_get_topic_registry,  # [H-012] mandate_topic_registry
     get_topic_watchlist as _tf_get_topic_watchlist,  # [H-012] mandate_topic_registry
     get_topic_heatmap as _tf_get_topic_heatmap,  # [H-013] mandate_topic_heatmap
+    get_mandate_daily_report as _tf_get_mandate_daily_report,  # [H-015] mandate_daily_report
     get_source_freshness as _tf_get_source_freshness,  # [DATA-018] source_freshness_report
     get_live_sampling_report as _tf_get_live_sampling_report,  # [DATA-020] live_sampling_health_ui
     get_observation_items as _tf_get_observation_items,  # [TRACK-001] observation_warehouse
@@ -5571,6 +5573,20 @@ def tradeflow_topic_heatmap(
     window_days: int = Query(60, description="回看窗口天数", ge=7, le=180),
 ):
     return _tf_get_topic_heatmap(as_of=as_of, window_days=window_days)
+
+
+# [H-015] mandate_daily_report
+@app.get("/v1/tradeflow/mandate-daily-report/latest", response_model=MandateDailyReportResponse)
+def tradeflow_mandate_daily_report_latest(
+    as_of: str = Query("", description="截止日期 YYYY-MM-DD（为空时优先读取最新日报）"),
+    window_days: int = Query(60, description="回看窗口天数", ge=7, le=180),
+    save_report: bool = Query(False, description="是否将本次生成结果写入 docs/mandate_daily_reports"),
+):
+    return _tf_get_mandate_daily_report(
+        as_of=as_of,
+        window_days=window_days,
+        save_report=save_report,
+    )
 
 
 # [DATA-018] source_freshness_report

@@ -1467,6 +1467,38 @@ export interface TopicHeatmapResponse {
     runtime_tier_meta: RuntimeTierMeta
 }
 
+// [H-015] mandate_daily_report
+export interface MandateDailyCandidate {
+    symbol: string
+    name: string
+    topic: string
+    company_role: string
+    candidate_type: string
+    tier: string
+    mandate_score: number
+    latest_date: string
+    entry_reason: string
+    evidence_gaps: string[]
+}
+
+export interface MandateDailyReportResponse {
+    status: string
+    as_of: string
+    generated_at: string
+    rising_topics: Array<Record<string, unknown>>
+    cooling_topics: Array<Record<string, unknown>>
+    main_candidates: MandateDailyCandidate[]
+    observation_candidates: MandateDailyCandidate[]
+    entry_reasons: Array<Record<string, unknown>>
+    exit_reasons: Array<Record<string, unknown>>
+    evidence_gaps: Array<Record<string, unknown>>
+    markdown: string
+    source: string
+    path?: string
+    markdown_path?: string
+    runtime_tier_meta: RuntimeTierMeta
+}
+
 // [UI-007] tradeflow_filtered_trace
 export interface TradeFlowFilteredItem {
     symbol: string

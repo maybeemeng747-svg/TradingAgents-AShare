@@ -4,6 +4,40 @@
 
 ---
 
+## 2026-06-25 | H-015 昊天主题日报与候选入池/出池解释
+
+- **执行者**：Codex
+- **类型**：backend + frontend + tests
+- **状态**：✅ 完成
+
+### 背景
+
+昊天雷达已有主题热度和候选池，但用户还需要一份每天可读的摘要：当前重心在哪些主题、哪些候选进入主线/观察、为什么入池、哪些主题需要降级或出池、证据缺口是什么。
+
+### 变更
+
+- `tradingagents/tradeflow/mandate_daily_report.py`
+  - 新增 `build_mandate_daily_report()`、`render_mandate_daily_report_markdown()`、保存/读取 latest 报告能力。
+  - 输入来自 H-013 topic heatmap，不调用 LLM，不输出交易指令。
+  - 生成：升温主题、降温主题、主候选、观察候选、入池原因、出池原因、证据缺口。
+- `api/services/tradeflow_service.py`
+  - 新增 `get_mandate_daily_report()`，优先读取 latest；无文件时从当前 heatmap 即时生成只读预览。
+- `api/tradeflow_schemas.py` / `api/main.py`
+  - 新增 `MandateDailyReportResponse`。
+  - 新增 `/v1/tradeflow/mandate-daily-report/latest`。
+- `frontend/src/types/index.ts` / `frontend/src/services/api.ts` / `frontend/src/pages/TradeFlow.tsx`
+  - TradeFlow 主题热度 tab 增加“昊天主题日报”卡片，展示升温/降温主题、主候选解释和证据缺口。
+- `tests/test_h015_mandate_daily_report.py`
+  - 覆盖日报生成、强词约束、保存/读取 latest。
+
+### 验证
+
+- `python -m py_compile tradingagents/tradeflow/mandate_daily_report.py api/services/tradeflow_service.py api/tradeflow_schemas.py api/main.py` → ✅ 通过。
+- `pytest tests/test_h015_mandate_daily_report.py tests/test_h013_topic_heatmap.py -q` → **112 passed**。
+- `npm run build`（frontend）→ ✅ 通过。
+
+---
+
 ## 2026-06-25 | DATA-021 报告数据源失败原因透传与字段级降级说明
 
 - **执行者**：Codex

@@ -3135,6 +3135,41 @@ def get_topic_heatmap(
         conn.close()
 
 
+# [H-015] mandate_daily_report
+def get_mandate_daily_report(
+    as_of: str = "",
+    window_days: int = 60,
+    reports_dir: str = "docs/mandate_daily_reports",
+    save_report: bool = False,
+) -> dict:
+    """Return the latest mandate daily report or generate a read-only preview."""
+    _fast_meta = _tradeflow_meta("tradeflow_mandate_daily_report")
+    from tradingagents.tradeflow.mandate_daily_report import (
+        build_mandate_daily_report,
+        load_latest_mandate_daily_report,
+        save_mandate_daily_report,
+    )
+
+    if not as_of:
+        latest = load_latest_mandate_daily_report(reports_dir)
+        if latest:
+            latest["status"] = "ok"
+            latest["runtime_tier_meta"] = _fast_meta
+            return latest
+
+    heatmap = get_topic_heatmap(as_of=as_of, window_days=window_days)
+    report = build_mandate_daily_report(heatmap, as_of=heatmap.get("as_of") or as_of)
+    data = report.to_dict()
+    data["status"] = "ok" if heatmap.get("status") != "no_data" else "no_data"
+    data["runtime_tier_meta"] = _fast_meta
+    if save_report:
+        md_path, json_path = save_mandate_daily_report(report, output_dir=reports_dir)
+        data["path"] = json_path
+        data["markdown_path"] = md_path
+        data["source"] = "generated_file"
+    return data
+
+
 # [DATA-018] source_freshness_report
 def get_source_freshness(
     symbol: str = "",

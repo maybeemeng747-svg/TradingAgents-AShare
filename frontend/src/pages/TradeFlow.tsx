@@ -35,6 +35,7 @@ import type {
     LiveSamplingResult,
     TopicHeatmapResponse,
     TopicHeatmapEntry,
+    MandateDailyReportResponse,
 } from '@/types'
 import TradeFlowCandidateDrawer from '@/components/TradeFlowCandidateDrawer'
 // [TF-UX-001] small_cap_trial_workbench — focus workspace helpers (grouping, risk budget)
@@ -1712,6 +1713,97 @@ function TopicHeatmapPanel({
     )
 }
 
+// [H-015] mandate_daily_report
+function MandateDailyReportPanel({ data }: { data: MandateDailyReportResponse | null }) {
+    if (!data || data.status === 'no_data') {
+        return (
+            <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800/50">
+                <p className="text-sm text-slate-500 dark:text-slate-400">暂无昊天主题日报。生成候选池后可自动汇总主题重心。</p>
+            </div>
+        )
+    }
+    const topicName = (item: Record<string, unknown>) => String(item.topic || '')
+    const topicDesc = (item: Record<string, unknown>) => {
+        const trend = String(item.heat_trend_label || '未知')
+        const status = String(item.status_label || '未知')
+        const change = String(item.state_change_label || '持平')
+        return `${trend} / ${status} / ${change}`
+    }
+
+    return (
+        <div className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4 dark:border-indigo-500/20 dark:bg-indigo-500/5">
+            <div className="flex flex-wrap items-center gap-3">
+                <div>
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">昊天主题日报</h3>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                        {data.as_of || '-'} · 升温 {data.rising_topics.length} · 降温 {data.cooling_topics.length} · 主候选 {data.main_candidates.length} · 观察候选 {data.observation_candidates.length}
+                    </p>
+                </div>
+                <span className="ml-auto rounded-full bg-white/80 px-2 py-1 text-xs text-slate-500 ring-1 ring-slate-200 dark:bg-slate-900/30 dark:ring-slate-700">
+                    只做雷达摘要
+                </span>
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+                <div className="rounded-lg bg-white/80 p-3 ring-1 ring-slate-200 dark:bg-slate-900/30 dark:ring-slate-700">
+                    <div className="text-xs font-medium text-red-600 dark:text-red-300">升温主题</div>
+                    <div className="mt-2 space-y-1">
+                        {data.rising_topics.slice(0, 4).map((item, idx) => (
+                            <div key={`${topicName(item)}-${idx}`} className="text-sm text-slate-700 dark:text-slate-300">
+                                <span className="font-medium">{topicName(item) || '未知主题'}</span>
+                                <span className="ml-2 text-xs text-slate-500">{topicDesc(item)}</span>
+                            </div>
+                        ))}
+                        {!data.rising_topics.length && <p className="text-xs text-slate-400">暂无升温主题。</p>}
+                    </div>
+                </div>
+                <div className="rounded-lg bg-white/80 p-3 ring-1 ring-slate-200 dark:bg-slate-900/30 dark:ring-slate-700">
+                    <div className="text-xs font-medium text-emerald-600 dark:text-emerald-300">降温主题</div>
+                    <div className="mt-2 space-y-1">
+                        {data.cooling_topics.slice(0, 4).map((item, idx) => (
+                            <div key={`${topicName(item)}-${idx}`} className="text-sm text-slate-700 dark:text-slate-300">
+                                <span className="font-medium">{topicName(item) || '未知主题'}</span>
+                                <span className="ml-2 text-xs text-slate-500">{topicDesc(item)}</span>
+                            </div>
+                        ))}
+                        {!data.cooling_topics.length && <p className="text-xs text-slate-400">暂无降温主题。</p>}
+                    </div>
+                </div>
+            </div>
+
+            {!!data.main_candidates.length && (
+                <div className="mt-3 rounded-lg bg-white/80 p-3 ring-1 ring-slate-200 dark:bg-slate-900/30 dark:ring-slate-700">
+                    <div className="text-xs font-medium text-slate-600 dark:text-slate-300">主候选解释</div>
+                    <div className="mt-2 grid grid-cols-1 gap-2 lg:grid-cols-2">
+                        {data.main_candidates.slice(0, 6).map(c => (
+                            <div key={`${c.symbol}-${c.topic}`} className="rounded-md bg-slate-50 p-2 dark:bg-slate-800/60">
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="text-sm font-medium text-slate-900 dark:text-slate-100">{c.name || c.symbol}</span>
+                                    <span className="text-xs text-indigo-600 dark:text-indigo-300">{c.topic}</span>
+                                </div>
+                                <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-slate-400">{c.entry_reason}</p>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {!!data.evidence_gaps.length && (
+                <div className="mt-3 rounded-lg bg-white/80 p-3 ring-1 ring-slate-200 dark:bg-slate-900/30 dark:ring-slate-700">
+                    <div className="text-xs font-medium text-amber-600 dark:text-amber-300">证据缺口</div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                        {data.evidence_gaps.slice(0, 8).map((item, idx) => (
+                            <span key={idx} className="rounded-full bg-amber-50 px-2 py-1 text-xs text-amber-700 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/20">
+                                {String(item.topic || '未知主题')}：{Array.isArray(item.gaps) ? item.gaps.slice(0, 2).join('、') : ''}
+                            </span>
+                        ))}
+                    </div>
+                </div>
+            )}
+        </div>
+    )
+}
+
 function TopicHeatmapCard({
     topic,
     onSelectSymbol,
@@ -2011,6 +2103,7 @@ export default function TradeFlow() {
     const [sourceFreshness, setSourceFreshness] = useState<SourceFreshnessResponse | null>(null)  // [DATA-018]
     const [liveSampling, setLiveSampling] = useState<LiveSamplingResponse | null>(null)  // [DATA-020] live_sampling_health_ui
     const [topicHeatmap, setTopicHeatmap] = useState<TopicHeatmapResponse | null>(null)  // [H-013] mandate_topic_heatmap
+    const [mandateDailyReport, setMandateDailyReport] = useState<MandateDailyReportResponse | null>(null)  // [H-015] mandate_daily_report
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [status, setStatus] = useState<string>('')
@@ -2225,6 +2318,16 @@ export default function TradeFlow() {
         }
     }, [])
 
+    // [H-015] mandate_daily_report
+    const fetchMandateDailyReport = useCallback(async () => {
+        try {
+            const res = await api.getMandateDailyReport()
+            setMandateDailyReport(res)
+        } catch {
+            // silent fail — mandate daily report is supplementary
+        }
+    }, [])
+
     // [UI-007] tradeflow_filtered_trace
     const fetchFiltered = useCallback(async (date: string) => {
         setLoading(true)
@@ -2331,10 +2434,11 @@ export default function TradeFlow() {
             await fetchLiveSampling()  // [DATA-020] live_sampling_health_ui
         } else if (activeTab === 'topic-heatmap') {  // [H-013] mandate_topic_heatmap
             await fetchTopicHeatmap()
+            await fetchMandateDailyReport()
         } else if (activeTab === 'paper-ledger') {
             await fetchPaperLedger()
         }
-    }, [activeTab, fetchCandidates, fetchCompare, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth, fetchSourceFreshness, fetchLiveSampling, fetchTopicHeatmap, fetchFiltered, fetchPaperLedger])
+    }, [activeTab, fetchCandidates, fetchCompare, fetchObserve, fetchTaQueue, fetchReview, fetchDataHealth, fetchSourceFreshness, fetchLiveSampling, fetchTopicHeatmap, fetchMandateDailyReport, fetchFiltered, fetchPaperLedger])
 
     useEffect(() => {
         void fetchData(tradeDate)
@@ -3164,6 +3268,7 @@ export default function TradeFlow() {
         if (activeTab === 'topic-heatmap') {
             return (
                 <div className="space-y-4">
+                    <MandateDailyReportPanel data={mandateDailyReport} />
                     <TopicHeatmapPanel
                         data={topicHeatmap}
                         onSelectSymbol={handleTopicSymbolClick}

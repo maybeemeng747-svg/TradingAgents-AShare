@@ -808,6 +808,38 @@ class TopicHeatmapResponse(BaseModel):
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
 
 
+# [H-015] mandate_daily_report
+class MandateDailyCandidateItem(BaseModel):
+    symbol: str = ""
+    name: str = ""
+    topic: str = ""
+    company_role: str = ""
+    candidate_type: str = ""
+    tier: str = ""
+    mandate_score: float = 0.0
+    latest_date: str = ""
+    entry_reason: str = ""
+    evidence_gaps: List[str] = Field(default_factory=list)
+
+
+class MandateDailyReportResponse(BaseModel):
+    status: str = "ok"
+    as_of: str = ""
+    generated_at: str = ""
+    rising_topics: List[Dict[str, Any]] = Field(default_factory=list)
+    cooling_topics: List[Dict[str, Any]] = Field(default_factory=list)
+    main_candidates: List[MandateDailyCandidateItem] = Field(default_factory=list)
+    observation_candidates: List[MandateDailyCandidateItem] = Field(default_factory=list)
+    entry_reasons: List[Dict[str, Any]] = Field(default_factory=list)
+    exit_reasons: List[Dict[str, Any]] = Field(default_factory=list)
+    evidence_gaps: List[Dict[str, Any]] = Field(default_factory=list)
+    markdown: str = ""
+    source: str = "generated"
+    path: str = ""
+    markdown_path: str = ""
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
 # [TRACK-001] observation_warehouse
 # [TRACK-006] add_to_observation — provenance fields surfaced to UI
 # Note: numeric price fields use float (not Optional[float]) with default 0.0 so
