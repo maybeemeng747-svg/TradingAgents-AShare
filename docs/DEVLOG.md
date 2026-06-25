@@ -4,6 +4,106 @@
 
 ---
 
+## 2026-06-25 | PERF-005 修复 live source sampling 两个 STALE 误判失败
+
+- **执行者**：OpenCode
+- **类型**：bugfix
+- **状态**：✅ 完成
+
+### 背景
+
+`tests/test_data019_live_source_sampling.py` 中两个用例失败：
+
+- `TestSampleSingle::test_fund_flow_ok`
+- `TestRunLiveSamplingMocked::test_akshare_fail_astock_fallback_scenario`
+
+两者均断言 fund_flow 探测结果为 `HAS_DATA`/`UNIT_UNVERIFIED`，但实际返回
+`STALE`，错误诊断「个股资金流数据过期（as_of=2026-06-17）」。
+
+### 根因
+
+`_sample_single` 接收 `date_str`（测试场景下的 today，固定为 `2026-06-18`），
+sample 响应 `as_of=2026-06-17`（场景内仅 1 天差）。但 freshness 判定链
+`_is_stale_date` → `classify_source_status` → `classify_sample_result`
+全部使用真实墙钟 `datetime.now()`（运行日 2026-06-25），导致 8 天差被判 STALE。
+`date_str` 只用于解析 args_template，从未传入 stale 判定，使得测试注入的 today
+失效。
+
+### 变更
+
+- `tradingagents/dataflows/source_freshness_report.py`
+  - `_is_stale_date` 新增 `today: Optional[str]` 参数；为 None 时保持原行为
+    （`datetime.now()`），便于 wall-clock 调用方与 fund_lhb_health 等既有调用
+    零改动。
+  - `classify_source_status` 新增 `today` 参数并透传给 `_is_stale_date`。
+- `tradingagents/dataflows/live_source_sampling.py`
+  - `classify_sample_result` 新增 `today` 参数并透传。
+  - `_sample_single` 调用 `classify_sample_result` 时传入 `today=date_str`，
+    让测试/任意参考日期能正确驱动 stale 判定。
+
+全部为可选参数向后兼容，既有调用方（fund_lhb_health、DATA-018 单测等）无需改动。
+
+### 验证
+
+- `pytest tests/test_data019_live_source_sampling.py -q` → **80 passed**。
+- `pytest tests/test_data018_source_freshness.py tests/test_data017_fund_lhb_health.py -q`
+  → **180 passed**（回归确认）。
+
+### 约束遵守
+
+- 未改 `tradingagents/prompts/`。
+- 未写生产 `tradingagents.db`。
+- 未 commit / push。
+
+---
+
+## 2026-06-25 | PERF-005 TradeFlow 页面与 API 性能预算回归
+
+- **执行者**：OpenCode
+- **类型**：tests + docs
+- **状态**：✅ 完成
+
+### 背景
+
+随着 TradeFlow UI 和数据面板增多，需要建立轻量性能回归，防止页面越来越重、
+API 越来越慢，保证默认操作仍然快。任务明确要求**不写易碎的绝对耗时**，只做
+预算分层和明显退化检测。
+
+### 变更
+
+- `tests/test_perf005_tradeflow_perf_budget.py`（新增）
+  - 为 `candidates / observe / review / data-health / topic-heatmap` 5 个端点
+    建立 fast 层级 smoke 性能测试。
+  - 覆盖 empty DB（no_data 快路径）与 populated DB（3 候选 fixture）。
+  - `_check_budget()` 实现“超预算输出建议、≥5× 才硬失败”的策略，对齐验收准则 4。
+  - `TestEndpointTierConsistency` 校验 5 端点全部 `FAST_RADAR`、`llm_allowed=False`、
+    `expected_latency=5-30s` 的 `runtime_tier_meta` 一致性。
+  - `TestSuggestionEmission` 单元测试建议/硬失败策略。
+  - 测试用历史日期 fixture 避开 `get_observe` 的 auto-run live quote 抓取，满足
+    “不触发真实数据/模型调用”约束。
+- `docs/tradeflow_perf_budget.md`（新增）
+  - 列出 5 端点的运行层级、广告 latency、测试预算、当前观察基线（median ~1.7–4.3 ms）。
+  - 记录前端 bundle 体积告警：JS ~1.2 MB / gzip ~346 kB（超 Vite 500 kB 阈值），
+    本次不做 code split，仅记录基线与后续建议。
+  - 说明超预算处理策略与如何运行性能 smoke。
+
+### 验证
+
+- `pytest tests/test_perf005_tradeflow_perf_budget.py -q` → **39 passed**。
+- `pytest tests/test_perf005_tradeflow_perf_budget.py tests/test_runtime_tier_contract.py tests/test_perf004_full_ta_cost_gate.py tests/test_perf002_ta_profiles.py -q` → **253 passed**。
+- `pytest tests/test_ui001_tradeflow_api.py tests/test_h013_topic_heatmap.py tests/test_tradeflow_schemas.py -q` → **186 passed**（无回归）。
+- `cd frontend && npm run build` → ✅ 通过（bundle 告警已记录到 `docs/tradeflow_perf_budget.md`）。
+- 测试输出无 `provider-trace` / live 行情抓取痕迹。
+
+### 约束遵守
+
+- 未改 `tradingagents/prompts/`。
+- 未写生产 `tradingagents.db`（全用 `tempfile.TemporaryDirectory`）。
+- 未跑全市场扫描、未触发 live LLM/行情。
+- 未 commit / push。
+
+---
+
 ## 2026-06-25 | H-015 昊天主题日报与候选入池/出池解释
 
 - **执行者**：Codex
@@ -6504,3 +6604,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/V-009-20260624-round1.txt
 - **Run archive**: docs/task_runs/V-009-20260624-122900/
+
+## 2026-06-25 | AUTO-002 Auto Dev Loop
+
+- **Task**: PERF-005 - TradeFlow 页面与 API 性能预算回归（P2）
+- **Priority**: P2
+- **Rounds**: 2
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/PERF-005-20260625-round2.txt
+- **Run archive**: docs/task_runs/PERF-005-20260625-172514/

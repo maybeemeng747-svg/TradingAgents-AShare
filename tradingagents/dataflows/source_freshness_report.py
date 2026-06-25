@@ -230,13 +230,28 @@ _EVIDENCE_KEY_TO_DATA_TYPE: Dict[str, str] = {
 
 # ── Classification helpers ────────────────────────────────────────────
 
-def _is_stale_date(as_of: str, max_age_days: int = 7) -> bool:
-    """Check if an as_of date is stale."""
+def _is_stale_date(as_of: str, max_age_days: int = 7, today: Optional[str] = None) -> bool:
+    """Check if an as_of date is stale.
+
+    Args:
+        today: optional reference date (YYYY-MM-DD). When None, uses the
+            real current date. Threading this through lets callers (and
+            tests) evaluate freshness against a fixed reference point
+            instead of the wall clock.
+    """
     if not as_of:
         return False
     try:
         parsed = datetime.strptime(as_of[:10], "%Y-%m-%d")
-        age = (datetime.now() - parsed).days
+        ref = parsed
+        if today:
+            try:
+                ref = datetime.strptime(today[:10], "%Y-%m-%d")
+            except (ValueError, TypeError):
+                ref = datetime.now()
+        else:
+            ref = datetime.now()
+        age = (ref - parsed).days
         return age > max_age_days
     except (ValueError, TypeError):
         return False
@@ -271,6 +286,7 @@ def classify_source_status(
     as_of: str = "",
     unit_verified: Optional[bool] = None,
     is_dict_entry: bool = False,
+    today: Optional[str] = None,
 ) -> str:
     """Classify a source's health into one of 6 states.
 
@@ -312,7 +328,7 @@ def classify_source_status(
     # 5. HAS_DATA with sub-classifications
     if status == "HAS_DATA" or (raw_value is not None and str(raw_value).strip()):
         # 5a. Stale check
-        if _is_stale_date(as_of):
+        if _is_stale_date(as_of, today=today):
             return SourceFreshnessStatus.STALE
 
         # 5b. Unit unverified check (only for numeric data types)

@@ -334,6 +334,7 @@ def classify_sample_result(
     as_of: str = "",
     unit_verified: Optional[bool] = None,
     data_type: str = "",
+    today: Optional[str] = None,
 ) -> str:
     """Classify a sample probe into one of the 6 states.
 
@@ -362,6 +363,7 @@ def classify_sample_result(
         error=error,
         as_of=as_of,
         unit_verified=unit_verified,
+        today=today,
     )
 
 
@@ -495,6 +497,7 @@ def _sample_single(
             as_of=as_of,
             unit_verified=result.unit_verified if result.unit_verified else None,
             data_type=data_type,
+            today=date_str,
         )
 
         # Determine actual vendor (only meaningful for live calls)

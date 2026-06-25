@@ -124,7 +124,7 @@
  98. `TF-OBS-004`：盘中观察自动刷新、触发提醒与人工确认队列降噪（P1，done，依赖 TF-OBS-003/TF-RISK-001 ✓）。
 99. `DATA-021`：TA 报告数据源失败原因透传与字段级降级说明（P1，done — Codex 接管完成，依赖 DATA-020/DATA-004 ✓）。
 100. `H-015`：昊天主题日报与候选入池/出池解释（P1，done — Codex 直接开发，依赖 H-014 ✓/H-013A ✓）。
-101. `PERF-005`：TradeFlow 页面与 API 性能预算回归（P2，ready，依赖 TF-UX-001/DATA-020 ✓）。
+ 101. `PERF-005`：TradeFlow 页面与 API 性能预算回归（P2，done，依赖 TF-UX-001/DATA-020 ✓）。
 102. `HK-001`：港股输入边界与轻量行情-only 模式声明（P2，ready，独立安全边界任务）。
 103. `TF-PERSIST-001`：TradeFlow save_candidate 分项评分持久化补口（P2，ready，V-008 发现）。
 
@@ -3674,7 +3674,7 @@
 ### PERF-005: TradeFlow 页面与 API 性能预算回归（P2）
 - **描述**：随着 TradeFlow UI 和数据面板增多，需要防止页面越来越重、API 越来越慢。本任务建立轻量性能回归，保证默认操作仍然快。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — PERF-005-20260625-172514
 - **前置条件**：TF-UX-001、DATA-020 完成。
 - **执行约束**：
   - 不调用真实 LLM。
