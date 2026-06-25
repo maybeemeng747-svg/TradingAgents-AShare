@@ -36,6 +36,7 @@ from tradingagents.dataflows.evidence_contract import (  # [DATA-004] raw_eviden
     resolve_endpoint as _resolve_endpoint_contract,
     resolve_fallback_info as _resolve_fallback_info_contract,
 )
+from tradingagents.agents.utils.context_utils import infer_instrument_context  # [HK-001] hk_market_boundary
 
 INDICATORS = [
     "close_50_sma", "close_200_sma", "close_10_ema",
@@ -420,6 +421,26 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
         "ratings": (get_ratings, {"symbol": ticker}),  # [DATA-012A] rating_data_collector_wiring
     }
 
+    # [HK-001] hk_market_boundary: 港股只走 yfinance 轻量行情/新闻/财报，
+    # 禁用 A 股特有的资金流/龙虎榜/涨停池/融资融券/评级/公告/热门股门禁，
+    # 避免港股请求被 A 股数据缺失误判为强动作阻断。
+    instrument_ctx = infer_instrument_context(ticker)
+    is_hk_market = instrument_ctx.get("market_country") == "HK"
+    hk_skipped_keys: tuple[str, ...] = ()
+    if is_hk_market:
+        hk_skipped_keys = (
+            "fund_flow_board",
+            "fund_flow_individual",
+            "lhb",
+            "zt_pool",
+            "hot_stocks",
+            "announcements",
+            "margin_trading",
+            "ratings",
+        )
+        for skip_key in hk_skipped_keys:
+            tasks.pop(skip_key, None)
+
     # 财务报表类数据始终拉取，Research Manager 根据 horizon 自行判断权重
     tasks.update({
         "fundamentals": (get_fundamentals, {"ticker": ticker, "curr_date": trade_date}),
@@ -436,24 +457,43 @@ def _fetch_all(ticker: str, trade_date: str) -> Dict[str, Any]:
         for future in future_to_key:
             results[future_to_key[future]] = future.result()
 
+    # [HK-001] hk_market_boundary: 为被跳过的 A 股专属字段写入显式 NOT_AVAILABLE
+    # 结构化条目，让 raw_evidence / readiness 识别为"已跳过（低危）"而非"未查询/缺失"，
+    # 避免港股触发 A 股门禁的误导性结论。
+    if is_hk_market:
+        for skip_key in hk_skipped_keys:
+            results[skip_key] = {
+                "status": "NOT_AVAILABLE",
+                "raw": "",
+                "vendor": "skipped",
+                "reason": "HK market not supported for A-share-only data source",
+                "field": skip_key,
+                "as_of": trade_date,
+            }
+        results["_hk_light_mode"] = True  # [HK-001] hk_market_boundary
+
     # ── [E-003] 资金流异动时自动升级 LHB 查询 ─────────────────────────
     # [DATA-P0-603629] astock_source_fallback: LHB force conditions expanded
     # [DATA-P1-LHB-FUND-DECOUPLE] 资金流失败不阻断异常条件 force 检查
+    # [HK-001] hk_market_boundary: 港股不触发 A 股龙虎榜强制查询链路。
     results["_lhb_query_mode"] = "on_demand"  # [G-007] default: force=False
     ff_text = results.get("fund_flow_individual", "") or ""
     news_text = results.get("news", "") or ""
 
-    lhb_force_needed, lhb_force_reason = _compute_lhb_force_decision(
-        ff_text, news_text, results.get("stock_data", ""),
-        results.get("announcements", ""),
-    )
+    if not is_hk_market:
+        lhb_force_needed, lhb_force_reason = _compute_lhb_force_decision(
+            ff_text, news_text, results.get("stock_data", ""),
+            results.get("announcements", ""),
+        )
 
-    if lhb_force_needed:
-        print(f"  [E-003] 龙虎榜强制查询触发 (reason={lhb_force_reason})，升级 LHB force=True")
-        lhb_forced = _safe(get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": True})
-        results["lhb"] = lhb_forced
-        results["_lhb_query_mode"] = "forced"  # [G-007] fund_lhb_provenance
-        results["_lhb_force_reason"] = lhb_force_reason  # [DATA-P0-603629]
+        if lhb_force_needed:
+            print(f"  [E-003] 龙虎榜强制查询触发 (reason={lhb_force_reason})，升级 LHB force=True")
+            lhb_forced = _safe(get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": True})
+            results["lhb"] = lhb_forced
+            results["_lhb_query_mode"] = "forced"  # [G-007] fund_lhb_provenance
+            results["_lhb_force_reason"] = lhb_force_reason  # [DATA-P0-603629]
+    else:
+        results["_lhb_query_mode"] = "skipped_hk"  # [HK-001] hk_market_boundary
 
     # ── Parse CSV once, reuse for indicators and VPA ──────────────────
     raw_csv = results.get("stock_data", "")
@@ -573,6 +613,15 @@ class DataCollector:
     # [G-006] raw_evidence_snapshot
     @staticmethod
     def _infer_source_status(raw_value: Any) -> str:
+        # [HK-001] hk_market_boundary: honour explicit structured status written
+        # by the collector itself (e.g. A-share-only fields skipped for HK).
+        if isinstance(raw_value, dict) and "status" in raw_value:
+            explicit = str(raw_value.get("status") or "").upper()
+            if explicit in {
+                "NOT_AVAILABLE", "SKIPPED", "NOT_QUERIED",
+                "NORMAL_NO_DATA", "HAS_DATA", "FAILED",
+            }:
+                return explicit
         if raw_value is None:
             return "NOT_QUERIED"
         if isinstance(raw_value, str):

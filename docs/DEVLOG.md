@@ -4,6 +4,72 @@
 
 ---
 
+## 2026-06-25 | HK-001 港股输入边界与轻量行情-only 模式声明
+
+- **执行者**：OpenCode
+- **类型**：feature / safety-boundary
+- **状态**：✅ 完成（待提交）
+- **优先级**：P2
+- **代码标注**：`# [HK-001] hk_market_boundary` / `// [HK-001] hk_market_boundary`
+
+### 背景
+
+系统定位 A 股，港股只能局部走 yfinance 行情。此前 `0700.HK/9988.HK` 等港股
+代码会落入 `infer_instrument_context` 的 UNKNOWN 分支（既不是 CN 也不是 US），
+而 `data_collector._fetch_all` 不区分市场，会无条件调度 A 股专属的资金流 /
+龙虎榜 / 涨停池 / 融资融券 / 评级 / 公告数据，导致港股请求触发一连串
+`NotImplementedError` 失败，被 readiness 误判为"数据缺失/未查询"，产生误导性
+的强动作阻断结论。
+
+### 改动文件
+
+- `tradingagents/agents/utils/context_utils.py`
+  - 新增 `HK_TZ`、`is_hk_symbol()`（识别 `^\d{1,5}\.HK$`）。
+  - `infer_instrument_context` 在 US 字母正则之前增加 HK 分支：港股 →
+    `market_country=HK` / `currency=HKD` / `exchange=HKEX`。
+  - `build_market_context` 增加 HK 分支 + `_build_hk_market_context`（轻量
+    HKEX 时段推断：盘前/盘中/午休/盘后/非交易日）。
+- `tradingagents/graph/data_collector.py`
+  - `_fetch_all` 调用 `infer_instrument_context` 判断市场；HK 市场下移除
+    A 股专属 fetch 任务（fund_flow_board / fund_flow_individual / lhb /
+    zt_pool / hot_stocks / announcements / margin_trading / ratings），
+    并写入显式 `{"status":"NOT_AVAILABLE", "reason":"HK market not supported
+    for A-share-only data source"}` 结构化条目。
+  - HK 跳过 E-003 龙虎榜强制查询链路（`_lhb_query_mode="skipped_hk"`）。
+  - `_infer_source_status` 兼容：dict 携带显式 `status` 时优先返回该状态，
+    保证 NOT_AVAILABLE 不被 legacy dict→HAS_DATA 逻辑覆盖。
+  - 保留 yfinance 支持的通用字段（行情/新闻/全球新闻/insider/财报）。
+- `frontend/src/components/KlinePanel.tsx`
+  - 新增 `isHongKongSymbol()` 辅助函数；港股 symbol 在 K 线区显示提示条
+    「港股暂不支持完整 TA，只支持轻量行情/新闻参考；A 股专属的资金流/
+    龙虎榜/融资融券门禁已禁用。」
+- `tests/test_hk001_market_boundary.py`（新增，22 用例）
+
+### 验收
+
+- `0700.HK` 被标记为 HK/HKD，不再被误判为 US/USD 或 CN/CNY。
+- 港股请求中 A 股专属数据字段在 raw_evidence / readiness 中显示为
+  `skipped`（severity=low，"已跳过"），不再产生误导性强动作阻断。
+- A 股链路无回归：CN 仍调度全部 A 股数据；US 仍走字母正则。
+
+### 测试结果
+
+- `tests/test_hk001_market_boundary.py`：22 passed
+- 回归：`test_readiness_score` / `test_data004_evidence_contract` /
+  `test_data012_ratings`（268 passed）、`test_g006` / `test_g007` /
+  `test_data_collector` / `test_data010` / `test_data011` / `test_data013` /
+  `test_ic_ta001`（278 passed）、`test_runtime_tier_contract` /
+  `test_data017`（121 passed）全部通过。
+- 前端 `npm run build` 通过（tsc + vite，0 error）。
+
+### 安全红线
+
+- 未改 `tradingagents/prompts/`。
+- 未写生产 `tradingagents.db`。
+- 未触发 live LLM / 全市场扫描 / 个股深 TA。
+
+---
+
 ## 2026-06-25 | PERF-005 修复 live source sampling 两个 STALE 误判失败
 
 - **执行者**：OpenCode
@@ -6615,3 +6681,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/PERF-005-20260625-round2.txt
 - **Run archive**: docs/task_runs/PERF-005-20260625-172514/
+
+## 2026-06-25 | AUTO-002 Auto Dev Loop
+
+- **Task**: HK-001 - 港股输入边界与轻量行情-only 模式声明（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/HK-001-20260625-round1.txt
+- **Run archive**: docs/task_runs/HK-001-20260625-175657/

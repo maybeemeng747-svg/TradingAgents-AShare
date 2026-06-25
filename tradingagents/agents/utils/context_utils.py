@@ -15,6 +15,7 @@ from tradingagents.dataflows.trade_calendar import (
 )
 
 US_TZ = ZoneInfo("America/New_York")
+HK_TZ = ZoneInfo("Asia/Hong_Kong")  # [HK-001] hk_market_boundary
 
 USER_CONTEXT_KEYS = (
     "objective",
@@ -40,6 +41,18 @@ def infer_instrument_context(symbol: str) -> dict[str, Any]:
             "market_country": "CN",
             "exchange": exchange,
             "currency": "CNY",
+            "asset_type": "equity",
+        }
+
+    # [HK-001] hk_market_boundary: HKEX codes (e.g. 0700.HK, 9988.HK) must be
+    # recognised before the US-letter regex to avoid misclassification.
+    if is_hk_symbol(normalized):
+        return {
+            "symbol": normalized,
+            "security_name": normalized,
+            "market_country": "HK",
+            "exchange": "HKEX",
+            "currency": "HKD",
             "asset_type": "equity",
         }
 
@@ -70,6 +83,8 @@ def build_market_context(symbol: str, trade_date: str, now: datetime | None = No
 
     if market_country == "CN":
         context = _build_cn_market_context(trade_date, now)
+    elif market_country == "HK":  # [HK-001] hk_market_boundary
+        context = _build_hk_market_context(trade_date, now)
     elif market_country == "US":
         context = _build_us_market_context(trade_date, now)
     else:
@@ -243,6 +258,39 @@ def build_prompt_context_block(state: Mapping[str, Any], role: str = "agent") ->
     )
 
 
+def is_hk_symbol(symbol: str) -> bool:
+    """[HK-001] hk_market_boundary: detect HKEX tickers such as 0700.HK / 9988.HK."""
+    normalized = (symbol or "").strip().upper()
+    return bool(re.fullmatch(r"\d{1,5}\.HK", normalized))
+
+
+def _build_hk_market_context(trade_date: str, now: datetime | None = None) -> dict[str, Any]:
+    # [HK-001] hk_market_boundary: lightweight session inference for HKEX.
+    now_dt = (now or datetime.now(HK_TZ)).astimezone(HK_TZ)
+    today = now_dt.date().strftime("%Y-%m-%d")
+    is_trade_day = _is_hk_trading_day(trade_date)
+
+    if trade_date == today:
+        market_session = _hk_market_phase(now_dt) if is_trade_day else "closed"
+    elif trade_date < today and is_trade_day:
+        market_session = "post_close"
+    elif trade_date > today and is_trade_day:
+        market_session = "pre_open"
+    else:
+        market_session = "closed"
+
+    analysis_mode = _determine_hk_analysis_mode(trade_date, today, market_session)
+    return {
+        "trade_date": trade_date,
+        "timezone": "Asia/Hong_Kong",
+        "market_session": market_session,
+        "market_is_open": trade_date == today and market_session == "in_session",
+        "analysis_mode": analysis_mode,
+        "data_as_of": trade_date if trade_date <= today else today,
+        "session_note": _hk_session_note(trade_date, today, market_session, is_trade_day),
+    }
+
+
 def _build_cn_market_context(trade_date: str, now: datetime | None = None) -> dict[str, Any]:
     now_dt = (now or datetime.now(CN_TZ)).astimezone(CN_TZ)
     today = now_dt.date().strftime("%Y-%m-%d")
@@ -403,3 +451,54 @@ def _us_session_note(trade_date: str, today: str, market_session: str, is_trade_
     if market_session == "in_session":
         return "美股当前处于交易时段。"
     return "美股已收盘。"
+
+
+# [HK-001] hk_market_boundary: HKEX session helpers.
+# 港股暂不支持完整 TA，这里只做轻量交易时段推断，不接 A 股资金/LHB/融资融券门禁。
+def _is_hk_trading_day(date_str: str) -> bool:
+    return datetime.strptime(date_str, "%Y-%m-%d").weekday() < 5
+
+
+def _determine_hk_analysis_mode(trade_date: str, today: str, market_session: str) -> str:
+    if trade_date == today:
+        if market_session == "pre_open":
+            return "pre_market"
+        if market_session in {"in_session", "lunch_break"}:
+            return "intraday"
+        if market_session == "post_close":
+            return "post_market"
+        return "closed"
+    if trade_date > today:
+        return "forward_look"
+    return "historical"
+
+
+def _hk_market_phase(now_dt: datetime) -> str:
+    local = now_dt.astimezone(HK_TZ)
+    current_time = local.time()
+    # HKEX: 09:30-12:00, 13:00-16:00 (lunch break 12:00-13:00)
+    if current_time < time(9, 30):
+        return "pre_open"
+    if time(9, 30) <= current_time < time(12, 0):
+        return "in_session"
+    if time(12, 0) <= current_time < time(13, 0):
+        return "lunch_break"
+    if time(13, 0) <= current_time < time(16, 0):
+        return "in_session"
+    return "post_close"
+
+
+def _hk_session_note(trade_date: str, today: str, market_session: str, is_trade_day: bool) -> str:
+    if not is_trade_day:
+        return "请求日期为港股非交易日（周末/节假日简化判断）。"
+    if trade_date > today:
+        return "请求日期晚于当前日期，按最新可用市场状态推断。"
+    if trade_date < today:
+        return "请求日期为历史港股交易日，市场已收盘。"
+    if market_session == "pre_open":
+        return "港股当前处于盘前时段。"
+    if market_session == "lunch_break":
+        return "港股午间休市。"
+    if market_session == "in_session":
+        return "港股当前处于交易时段。"
+    return "港股已收盘。"

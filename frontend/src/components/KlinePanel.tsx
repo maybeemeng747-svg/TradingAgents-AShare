@@ -53,6 +53,11 @@ function getDisplayName(symbol: string): string {
     return SYMBOL_NAME_MAP[s] ? `${SYMBOL_NAME_MAP[s]}（${s}）` : s
 }
 
+// [HK-001] hk_market_boundary: detect HKEX tickers (e.g. 0700.HK, 9988.HK).
+function isHongKongSymbol(symbol: string): boolean {
+    return /^\d{1,5}\.HK$/.test(symbol.trim().toUpperCase())
+}
+
 function formatNumber(value?: number | null, digits = 2): string {
     if (value == null || !Number.isFinite(value)) return '--'
     return new Intl.NumberFormat('zh-CN', {
@@ -272,6 +277,8 @@ export default function KlinePanel({ symbol, onSymbolChange }: KlinePanelProps) 
     const showCurrentSymbolButton = !!currentAnalysisSymbol && currentAnalysisSymbol !== symbol
     const currentSymbolLabel = currentAnalysisSymbol ? getDisplayName(currentAnalysisSymbol).replace(/（.*?）/, '') : '当前标的'
     const currentSymbolButtonLabel = `回到分析标的：${currentSymbolLabel}`
+    // [HK-001] hk_market_boundary
+    const isHongKong = isHongKongSymbol(symbol)
 
     return (
         <section className="card h-full flex flex-col overflow-hidden">
@@ -319,6 +326,12 @@ export default function KlinePanel({ symbol, onSymbolChange }: KlinePanelProps) 
             </div>
             <div className="relative flex-1 min-h-0 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 overflow-hidden">
                 <div ref={containerRef} className="absolute inset-0" />
+                {isHongKong && (
+                    // [HK-001] hk_market_boundary
+                    <div className="absolute left-3 top-3 right-3 z-10 text-xs px-3 py-2 rounded bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/40 text-amber-700 dark:text-amber-300">
+                        港股暂不支持完整 TA，只支持轻量行情/新闻参考；A 股专属的资金流/龙虎榜/融资融券门禁已禁用。
+                    </div>
+                )}
                 {loading && (
                     <div className="absolute right-3 top-3 text-xs px-2 py-1 rounded bg-white/90 dark:bg-slate-800/90 text-slate-600 dark:text-slate-400 flex items-center gap-1">
                         <Activity className="w-3 h-3 animate-pulse" />

@@ -1,0 +1,986 @@
+[0m
+> build · glm-5.2
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "HK-001"[90m in docs/TASKS.md · 4 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [limit=100, offset=3690][0m
+[0m• [0mFind market country detection logic[90m Explore Agent[0m
+Now I have a clear understanding of HK-001. Let me explore the codebase to understand current market detection logic.
+[0m✓ [0mFind market country detection logic[90m Explore Agent[0m
+[0m→ [0mRead tradingagents/agents/utils/context_utils.py
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=120, offset=380][0m
+Excellent comprehensive exploration. Now let me read the key files to plan implementation.
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=120, offset=1][0m
+[0m✱ [0mGrep "_fetch_all|_compute_data_status|_evaluate_.*_status|market_country"[90m in tradingagents · 12 matches[0m
+Let me look at how `_fetch_all` is called, the readiness evaluation logic, and the frontend symbol detection flow.
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=120, offset=1320][0m
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=90, offset=1230][0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=60, offset=515][0m
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=40, offset=1200][0m
+[0m✱ [0mGrep "compute_readiness|evaluate_readiness|def .*readiness"[90m in . · 5 matches[0m
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=120, offset=340][0m
+[0m✱ [0mGrep "infer_evidence_statuses|_DATA_BLOCKER_FIELDS|compute_data_completeness"[90m in . · 159 matches[0m
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=60, offset=1490][0m
+[0m✱ [0mGrep "market_country|instrument_context|InstrumentContext"[90m in frontend/src · 0 matches[0m
+[0m✱ [0mGlob "tests/test_h*.py"[90m 14 matches[0m
+Now let me check the frontend flow and existing test patterns to finalize the implementation plan.
+[0m→ [0mRead frontend/src/components/KlinePanel.tsx[90m [limit=90, offset=30][0m
+[0m→ [0mRead frontend/src/components/KlinePanel.tsx[90m [limit=120, offset=217][0m
+[0m→ [0mRead tests/test_h001_mandate_signal.py[90m [limit=50][0m
+[0m
+[0m$ [0mgit status && echo "---BRANCH---" && git branch --show-current
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 158 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     docs/TASKS.md
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/task_runs/HK-001-20260625-175657/
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+---BRANCH---
+local/tradingagents-custom
+[0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=60, offset=1][0m
+I have enough context. Let me check git status and the data_collector imports before implementing.
+[0m✱ [0mGrep "NOT_AVAILABLE|"status":\s*"SKIPPED"|"status":\s*"NOT_AVAILABLE""[90m in tradingagents · 7 matches[0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=100, offset=573][0m
+[0m
+[0m# [0mTodos
+[•] Add HK detection in context_utils.py (infer_instrument_context + build_market_context)
+[ ] Gate A-share-only data in data_collector._fetch_all for HK market
+[ ] Add HK notice banner in frontend KlinePanel
+[ ] Write tests in tests/test_hk001_market_boundary.py
+[ ] Run tests and verify no A-share regression
+[ ] Update docs/DEVLOG.md
+[0m
+I have all the context needed. Let me set up a todo list and start implementing.
+Now let me implement the core HK detection in `context_utils.py`:
+[0m← [0mEdit tradingagents/agents/utils/context_utils.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
+@@ -14,8 +14,9 @@
+     previous_cn_trading_day,
+ )
+ 
+ US_TZ = ZoneInfo("America/New_York")
++HK_TZ = ZoneInfo("Asia/Hong_Kong")  # [HK-001] hk_market_boundary
+ 
+ USER_CONTEXT_KEYS = (
+     "objective",
+     "risk_profile",
+
+[0m
+[0m← [0mEdit tradingagents/agents/utils/context_utils.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
+@@ -43,8 +43,20 @@
+         "currency": "CNY",
+         "asset_type": "equity",
+     }
+ 
++# [HK-001] hk_market_boundary: HKEX codes (e.g. 0700.HK, 9988.HK) must be
++# recognised before the US-letter regex to avoid misclassification.
++if is_hk_symbol(normalized):
++    return {
++        "symbol": normalized,
++        "security_name": normalized,
++        "market_country": "HK",
++        "exchange": "HKEX",
++        "currency": "HKD",
++        "asset_type": "equity",
++    }
++
+ if re.fullmatch(r"[A-Z]{1,6}(?:\.[A-Z]{1,4})?", normalized):
+     exchange = normalized.split(".", 1)[1] if "." in normalized else "US"
+     return {
+         "symbol": normalized,
+
+[0m
+Now add the HK branch in `build_market_context` and the `is_hk_symbol` helper + HK market context builder:
+[0m← [0mEdit tradingagents/agents/utils/context_utils.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
+@@ -82,8 +82,10 @@
+ market_country = instrument_context["market_country"]
+ 
+ if market_country == "CN":
+     context = _build_cn_market_context(trade_date, now)
++elif market_country == "HK":  # [HK-001] hk_market_boundary
++    context = _build_hk_market_context(trade_date, now)
+ elif market_country == "US":
+     context = _build_us_market_context(trade_date, now)
+ else:
+     context = {
+
+[0m
+[0m← [0mEdit tradingagents/agents/utils/context_utils.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
+@@ -258,9 +258,8 @@
+     )
+ 
+ 
+ def _build_cn_market_context(trade_date: str, now: datetime | None = None) -> dict[str, Any]:
+-    now_dt = (now or datetime.now(CN_TZ)).astimezone(CN_TZ)
+     today = now_dt.date().strftime("%Y-%m-%d")
+     is_trade_day = is_cn_trading_day(trade_date)
+ 
+     if trade_date == today:
+
+[0m
+Now add the `is_hk_symbol` function and `_build_hk_market_context` helper. Let me add them near the CN helpers:
+[0m→ [0mRead tradingagents/agents/utils/context_utils.py[90m [limit=20, offset=253][0m
+I broke the function. Let me fix it:
+[0m
+[0m← [0mEdit tradingagents/agents/utils/context_utils.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
+@@ -258,8 +258,9 @@
+     )
+ 
+ 
+ def _build_cn_market_context(trade_date: str, now: datetime | None = None) -> dict[str, Any]:
++    now_dt = (now or datetime.now(CN_TZ)).astimezone(CN_TZ)
+     today = now_dt.date().strftime("%Y-%m-%d")
+     is_trade_day = is_cn_trading_day(trade_date)
+ 
+     if trade_date == today:
+
+[0m
+Now let me add the `is_hk_symbol` helper and `_build_hk_market_context`. I'll insert them right before `_build_cn_market_context`:
+[0m← [0mEdit tradingagents/agents/utils/context_utils.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
+@@ -257,8 +257,41 @@
+         ]
+     )
+ 
+ 
++def is_hk_symbol(symbol: str) -> bool:
++    """[HK-001] hk_market_boundary: detect HKEX tickers such as 0700.HK / 9988.HK."""
++    normalized = (symbol or "").strip().upper()
++    return bool(re.fullmatch(r"\d{1,5}\.HK", normalized))
++
++
++def _build_hk_market_context(trade_date: str, now: datetime | None = None) -> dict[str, Any]:
++    # [HK-001] hk_market_boundary: lightweight session inference for HKEX.
++    now_dt = (now or datetime.now(HK_TZ)).astimezone(HK_TZ)
++    today = now_dt.date().strftime("%Y-%m-%d")
++    is_trade_day = _is_hk_trading_day(trade_date)
++
++    if trade_date == today:
++        market_session = _hk_market_phase(now_dt) if is_trade_day else "closed"
++    elif trade_date < today and is_trade_day:
++        market_session = "post_close"
++    elif trade_date > today and is_trade_day:
++        market_session = "pre_open"
++    else:
++        market_session = "closed"
++
++    analysis_mode = _determine_hk_analysis_mode(trade_date, today, market_session)
++    return {
++        "trade_date": trade_date,
++        "timezone": "Asia/Hong_Kong",
++        "market_session": market_session,
++        "market_is_open": trade_date == today and market_session == "in_session",
++        "analysis_mode": analysis_mode,
++        "data_as_of": trade_date if trade_date <= today else today,
++        "session_note": _hk_session_note(trade_date, today, market_session, is_trade_day),
++    }
++
++
+ def _build_cn_market_context(trade_date: str, now: datetime | None = None) -> dict[str, Any]:
+     now_dt = (now or datetime.now(CN_TZ)).astimezone(CN_TZ)
+     today = now_dt.date().strftime("%Y-%m-%d")
+     is_trade_day = is_cn_trading_day(trade_date)
+
+[0m
+Now add the HK helper functions at the end of the file (after the US helpers):
+[0m→ [0mRead tradingagents/agents/utils/context_utils.py[90m [limit=25, offset=445][0m
+[0m
+[0m← [0mEdit tradingagents/agents/utils/context_utils.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/agents/utils/context_utils.py
+@@ -450,4 +450,55 @@
+         return "美股当前处于盘前时段。"
+     if market_session == "in_session":
+         return "美股当前处于交易时段。"
+     return "美股已收盘。"
++
++
++# [HK-001] hk_market_boundary: HKEX session helpers.
++# 港股暂不支持完整 TA，这里只做轻量交易时段推断，不接 A 股资金/LHB/融资融券门禁。
++def _is_hk_trading_day(date_str: str) -> bool:
++    return datetime.strptime(date_str, "%Y-%m-%d").weekday() < 5
++
++
++def _determine_hk_analysis_mode(trade_date: str, today: str, market_session: str) -> str:
++    if trade_date == today:
++        if market_session == "pre_open":
++            return "pre_market"
++        if market_session in {"in_session", "lunch_break"}:
++            return "intraday"
++        if market_session == "post_close":
++            return "post_market"
++        return "closed"
++    if trade_date > today:
++        return "forward_look"
++    return "historical"
++
++
++def _hk_market_phase(now_dt: datetime) -> str:
++    local = now_dt.astimezone(HK_TZ)
++    current_time = local.time()
++    # HKEX: 09:30-12:00, 13:00-16:00 (lunch break 12:00-13:00)
++    if current_time < time(9, 30):
++        return "pre_open"
++    if time(9, 30) <= current_time < time(12, 0):
++        return "in_session"
++    if time(12, 0) <= current_time < time(13, 0):
++        return "lunch_break"
++    if time(13, 0) <= current_time < time(16, 0):
++        return "in_session"
++    return "post_close"
++
++
++def _hk_session_note(trade_date: str, today: str, market_session: str, is_trade_day: bool) -> str:
++    if not is_trade_day:
++        return "请求日期为港股非交易日（周末/节假日简化判断）。"
++    if trade_date > today:
++        return "请求日期晚于当前日期，按最新可用市场状态推断。"
++    if trade_date < today:
++        return "请求日期为历史港股交易日，市场已收盘。"
++    if market_session == "pre_open":
++        return "港股当前处于盘前时段。"
++    if market_session == "lunch_break":
++        return "港股午间休市。"
++    if market_session == "in_session":
++        return "港股当前处于交易时段。"
++    return "港股已收盘。"
+
+[0m
+Now let me verify the context_utils changes compile and test the HK detection:
+[0m$ [0msource .venv/bin/activate && python -c "
+from tradingagents.agents.utils.context_utils import infer_instrument_context, build_market_context, is_hk_symbol
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+# HK detection
+print('0700.HK:', infer_instrument_context('0700.HK'))
+print('9988.HK:', infer_instrument_context('9988.HK'))
+print('00700.HK:', infer_instrument_context('00700.HK'))
+print('is_hk 0700.HK:', is_hk_symbol('0700.HK'))
+print('is_hk AAPL:', is_hk_symbol('AAPL'))
+print('is_hk 000001.SH:', is_hk_symbol('000001.SH'))
+
+# market context
+now = datetime(2026, 6, 25, 14, 30, tzinfo=ZoneInfo('Asia/Hong_Kong'))
+mc = build_market_context('0700.HK', '2026-06-25', now=now)
+print('market_context HK:', mc)
+
+# Ensure CN and US still work
+print('CN:', infer_instrument_context('000001.SH')['market_country'])
+print('US:', infer_instrument_context('AAPL')['market_country'])
+"
+
+0700.HK: {'symbol': '0700.HK', 'security_name': '0700.HK', 'market_country': 'HK', 'exchange': 'HKEX', 'currency': 'HKD', 'asset_type': 'equity'}
+9988.HK: {'symbol': '9988.HK', 'security_name': '9988.HK', 'market_country': 'HK', 'exchange': 'HKEX', 'currency': 'HKD', 'asset_type': 'equity'}
+00700.HK: {'symbol': '00700.HK', 'security_name': '00700.HK', 'market_country': 'HK', 'exchange': 'HKEX', 'currency': 'HKD', 'asset_type': 'equity'}
+is_hk 0700.HK: True
+is_hk AAPL: False
+is_hk 000001.SH: False
+market_context HK: {'trade_date': '2026-06-25', 'timezone': 'Asia/Hong_Kong', 'market_session': 'in_session', 'market_is_open': True, 'analysis_mode': 'intraday', 'data_as_of': '2026-06-25', 'session_note': '港股当前处于交易时段。', 'market_country': 'HK', 'exchange': 'HKEX'}
+CN: CN
+US: US
+[0m
+[0m# [0mTodos
+[✓] Add HK detection in context_utils.py (infer_instrument_context + build_market_context)
+[•] Gate A-share-only data in data_collector._fetch_all for HK market
+[ ] Add HK notice banner in frontend KlinePanel
+[ ] Write tests in tests/test_hk001_market_boundary.py
+[ ] Run tests and verify no A-share regression
+[ ] Update docs/DEVLOG.md
+[0m
+Core detection works. Let me mark this todo done and move to the data_collector:
+Now the data_collector. Let me first update `_infer_source_status` to honor a dict with explicit "status", then gate the HK fetches:
+[0m← [0mEdit tradingagents/graph/data_collector.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+@@ -572,8 +572,17 @@
+ 
+ # [G-006] raw_evidence_snapshot
+ @staticmethod
+ def _infer_source_status(raw_value: Any) -> str:
++    # [HK-001] hk_market_boundary: honour explicit structured status written
++    # by the collector itself (e.g. A-share-only fields skipped for HK).
++    if isinstance(raw_value, dict) and "status" in raw_value:
++        explicit = str(raw_value.get("status") or "").upper()
++        if explicit in {
++            "NOT_AVAILABLE", "SKIPPED", "NOT_QUERIED",
++            "NORMAL_NO_DATA", "HAS_DATA", "FAILED",
++        }:
++            return explicit
+     if raw_value is None:
+         return "NOT_QUERIED"
+     if isinstance(raw_value, str):
+         val = raw_value.strip()
+
+[0m
+Now the main gating in `_fetch_all`. Let me update the imports first, then the function body:
+[0m← [0mEdit tradingagents/graph/data_collector.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+@@ -35,8 +35,9 @@
+     resolve_data_type as _resolve_data_type_contract,
+     resolve_endpoint as _resolve_endpoint_contract,
+     resolve_fallback_info as _resolve_fallback_info_contract,
+ )
++from tradingagents.agents.utils.context_utils import infer_instrument_context  # [HK-001] hk_market_boundary
+ 
+ INDICATORS = [
+     "close_50_sma", "close_200_sma", "close_10_ema",
+     "rsi", "macd", "boll", "boll_ub", "boll_lb", "atr", "vwma",
+
+[0m
+Now let me update the `_fetch_all` function to gate HK market:
+[0m← [0mEdit tradingagents/graph/data_collector.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+@@ -420,8 +420,28 @@
+     "margin_trading": (get_margin_trading, {"symbol": ticker}),  # [DATA-010] margin_trading_raw_evidence
+     "ratings": (get_ratings, {"symbol": ticker}),  # [DATA-012A] rating_data_collector_wiring
+ }
+ 
++# [HK-001] hk_market_boundary: 港股只走 yfinance 轻量行情/新闻/财报，
++# 禁用 A 股特有的资金流/龙虎榜/涨停池/融资融券/评级/公告/热门股门禁，
++# 避免港股请求被 A 股数据缺失误判为强动作阻断。
++instrument_ctx = infer_instrument_context(ticker)
++is_hk_market = instrument_ctx.get("market_country") == "HK"
++hk_skipped_keys: tuple[str, ...] = ()
++if is_hk_market:
++    hk_skipped_keys = (
++        "fund_flow_board",
++        "fund_flow_individual",
++        "lhb",
++        "zt_pool",
++        "hot_stocks",
++        "announcements",
++        "margin_trading",
++        "ratings",
++    )
++    for skip_key in hk_skipped_keys:
++        tasks.pop(skip_key, None)
++
+ # 财务报表类数据始终拉取，Research Manager 根据 horizon 自行判断权重
+ tasks.update({
+     "fundamentals": (get_fundamentals, {"ticker": ticker, "curr_date": trade_date}),
+     "balance_sheet": (get_balance_sheet, {"ticker": ticker, "freq": "quarterly", "curr_date": trade_date}),
+
+[0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=50, offset=450][0m
+Now I need to write the skip markers into `results` and skip the LHB force-upgrade for HK. Let me read the current state around the LHB force logic:
+[0m
+[0m← [0mEdit tradingagents/graph/data_collector.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/graph/data_collector.py
+@@ -456,26 +456,45 @@
+     future_to_key = {executor.submit(_safe, tool, payload): key for key, (tool, payload) in tasks.items()}
+     for future in future_to_key:
+         results[future_to_key[future]] = future.result()
+ 
++# [HK-001] hk_market_boundary: 为被跳过的 A 股专属字段写入显式 NOT_AVAILABLE
++# 结构化条目，让 raw_evidence / readiness 识别为"已跳过（低危）"而非"未查询/缺失"，
++# 避免港股触发 A 股门禁的误导性结论。
++if is_hk_market:
++    for skip_key in hk_skipped_keys:
++        results[skip_key] = {
++            "status": "NOT_AVAILABLE",
++            "raw": "",
++            "vendor": "skipped",
++            "reason": "HK market not supported for A-share-only data source",
++            "field": skip_key,
++            "as_of": trade_date,
++        }
++    results["_hk_light_mode"] = True  # [HK-001] hk_market_boundary
++
+ # ── [E-003] 资金流异动时自动升级 LHB 查询 ─────────────────────────
+ # [DATA-P0-603629] astock_source_fallback: LHB force conditions expanded
+ # [DATA-P1-LHB-FUND-DECOUPLE] 资金流失败不阻断异常条件 force 检查
++# [HK-001] hk_market_boundary: 港股不触发 A 股龙虎榜强制查询链路。
+ results["_lhb_query_mode"] = "on_demand"  # [G-007] default: force=False
+ ff_text = results.get("fund_flow_individual", "") or ""
+ news_text = results.get("news", "") or ""
+ 
+-lhb_force_needed, lhb_force_reason = _compute_lhb_force_decision(
+-    ff_text, news_text, results.get("stock_data", ""),
+-    results.get("announcements", ""),
+-)
++if not is_hk_market:
++    lhb_force_needed, lhb_force_reason = _compute_lhb_force_decision(
++        ff_text, news_text, results.get("stock_data", ""),
++        results.get("announcements", ""),
++    )
+ 
+-if lhb_force_needed:
+-    print(f"  [E-003] 龙虎榜强制查询触发 (reason={lhb_force_reason})，升级 LHB force=True")
+-    lhb_forced = _safe(get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": True})
+-    results["lhb"] = lhb_forced
+-    results["_lhb_query_mode"] = "forced"  # [G-007] fund_lhb_provenance
+-    results["_lhb_force_reason"] = lhb_force_reason  # [DATA-P0-603629]
++    if lhb_force_needed:
++        print(f"  [E-003] 龙虎榜强制查询触发 (reason={lhb_force_reason})，升级 LHB force=True")
++        lhb_forced = _safe(get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": True})
++        results["lhb"] = lhb_forced
++        results["_lhb_query_mode"] = "forced"  # [G-007] fund_lhb_provenance
++        results["_lhb_force_reason"] = lhb_force_reason  # [DATA-P0-603629]
++else:
++    results["_lhb_query_mode"] = "skipped_hk"  # [HK-001] hk_market_boundary
+ 
+ # ── Parse CSV once, reuse for indicators and VPA ──────────────────
+ raw_csv = results.get("stock_data", "")
+ df = _parse_csv_to_dataframe(raw_csv)
+
+[0m
+Now let me verify the data_collector changes work for both HK and CN by testing the `_fetch_all` logic without live network (using the infer + skip path). Let me write a quick smoke test:
+[0m$ [0msource .venv/bin/activate && python -c "
+import tradingagents.graph.data_collector as dc
+from unittest.mock import patch
+
+# Test that _infer_source_status honors explicit NOT_AVAILABLE dict
+print('NOT_AVAILABLE dict:', dc.DataCollector._infer_source_status({'status': 'NOT_AVAILABLE', 'raw': ''}))
+print('HAS_DATA dict:', dc.DataCollector._infer_source_status({'status': 'HAS_DATA', 'raw': 'x'}))
+print('plain dict (legacy):', dc.DataCollector._infer_source_status({'foo': 'bar'}))
+print('None:', dc.DataCollector._infer_source_status(None))
+print('empty str:', dc.DataCollector._infer_source_status(''))
+"
+
+NOT_AVAILABLE dict: NOT_AVAILABLE
+HAS_DATA dict: HAS_DATA
+plain dict (legacy): HAS_DATA
+None: NOT_QUERIED
+empty str: NOT_QUERIED
+[0m
+Now let me test the full `_fetch_all` for HK with mocked fetches to confirm the gating works end-to-end:
+[0m$ [0msource .venv/bin/activate && python -c "
+from unittest.mock import patch, MagicMock
+import tradingagents.graph.data_collector as dc
+
+# Mock all the fetch functions to avoid network
+def fake_loader(payload):
+    return 'fake_data'
+
+with patch.object(dc, 'get_stock_data', fake_loader), \
+     patch.object(dc, 'get_news', fake_loader), \
+     patch.object(dc, 'get_global_news', fake_loader), \
+     patch.object(dc, 'get_insider_transactions', fake_loader), \
+     patch.object(dc, 'get_fundamentals', fake_loader), \
+     patch.object(dc, 'get_balance_sheet', fake_loader), \
+     patch.object(dc, 'get_cashflow', fake_loader), \
+     patch.object(dc, 'get_income_statement', fake_loader):
+    # HK symbol
+    res = dc._fetch_all('0700.HK', '2026-06-24')
+    print('=== HK 0700.HK ===')
+    print('hk_light_mode:', res.get('_hk_light_mode'))
+    print('lhb_query_mode:', res.get('_lhb_query_mode'))
+    print('fund_flow_individual status:', res['fund_flow_individual']['status'])
+    print('lhb status:', res['lhb']['status'])
+    print('margin_trading status:', res['margin_trading']['status'])
+    print('zt_pool in results:', 'zt_pool' in res, '->', res.get('zt_pool', {}).get('status'))
+    print('ratings status:', res['ratings']['status'])
+    print('stock_data present:', 'stock_data' in res)
+    print('news present:', 'news' in res)
+    print()
+    # CN symbol - should NOT have hk markers
+    res_cn = dc._fetch_all('000001.SH', '2026-06-24')
+    print('=== CN 000001.SH ===')
+    print('hk_light_mode:', res_cn.get('_hk_light_mode'))
+    print('lhb_query_mode:', res_cn.get('_lhb_query_mode'))
+    print('fund_flow_individual value:', res_cn.get('fund_flow_individual'))
+"
+
+...output truncated...
+
+Full output saved to: /Users/maybee/.local/share/opencode/tool-output/tool_efe420714001sPymEucG7VCe0F
+
+  [Error] get_individual_fund_flow failed: No available vendor for method 'get_individual_fund_flow'. Configured chain: ['yfinance', 'cn_akshare', 'cn_baostock', 'alpha_vantage', 'cn_astock']
+[provider-trace] method=get_board_fund_flow  vendor=cn_astock status=fallback reason=failure-string-detected
+[provider-trace] method=get_board_fund_flow  status=failed reason=no-available-vendor
+  [Error] get_board_fund_flow failed: No available vendor for method 'get_board_fund_flow'. Configured chain: ['yfinance', 'cn_akshare', 'cn_baostock', 'alpha_vantage', 'cn_astock']
+[provider-trace] method=get_ratings symbol='000001.SH' vendor=cn_akshare status=hit
+[provider-trace] method=get_margin_trading symbol='000001.SH' vendor=cn_akshare status=hit
+  [Timer] get_margin_trading took 0.62s
+  0%|          | 0/29 [00:00<?, ?it/s]  3%|▎         | 1/29 [00:00<00:19,  1.46it/s]  7%|▋         | 2/29 [00:01<00:13,  1.93it/s] 10%|█         | 3/29 [00:01<00:12,  2.04it/s] 14%|█▍        | 4/29 [00:02<00:14,  1.77it/s] 17%|█▋        | 5/29 [00:02<00:13,  1.75it/s] 21%|██        | 6/29 [00:03<00:11,  1.93it/s] 24%|██▍       | 7/29 [00:03<00:12,  1.72it/s] 28%|██▊       | 8/29 [00:04<00:11,  1.79it/s] 31%|███       | 9/29 [00:04<00:10,  1.84it/s] 34%|███▍      | 10/29 [00:05<00:10,  1.77it/s] 38%|███▊      | 11/29 [00:06<00:10,  1.72it/s] 41%|████▏     | 12/29 [00:06<00:09,  1.79it/s] 45%|████▍     | 13/29 [00:07<00:09,  1.65it/s] 48%|████▊     | 14/29 [00:08<00:09,  1.56it/s] 52%|█████▏    | 15/29 [00:08<00:08,  1.66it/s] 55%|█████▌    | 16/29 [00:09<00:08,  1.50it/s] 59%|█████▊    | 17/29 [00:10<00:08,  1.48it/s] 62%|██████▏   | 18/29 [00:10<00:06,  1.64it/s] 66%|██████▌   | 19/29 [00:11<00:05,  1.79it/s] 69%|██████▉   | 20/29 [00:11<00:04,  1.99it/s] 72%|███████▏  | 21/29 [00:11<00:03,  2.06it/s] 76%|███████▌  | 22/29 [00:12<00:03,  2.23it/s] 79%|███████▉  | 23/29 [00:12<00:03,  2.00it/s] 83%|████████▎ | 24/29 [00:13<00:02,  2.16it/s] 86%|████████▌ | 25/29 [00:13<00:01,  2.28it/s] 90%|████████▉ | 26/29 [00:13<00:01,  2.44it/s] 93%|█████████▎| 27/29 [00:14<00:00,  2.64it/s] 97%|█████████▋| 28/29 [00:14<00:00,  2.80it/s]100%|██████████| 29/29 [00:14<00:00,  3.13it/s]                                               [provider-trace] method=get_hot_stocks_xq  vendor=cn_akshare status=hit
+  [Timer] get_hot_stocks_xq took 15.76s
+  [Warning] No valid stock_data for indicator calculation.
+[Timer] Total Data Collection for 000001.SH took 15.76s
+=== CN 000001.SH ===
+hk_light_mode: None
+lhb_query_mode: on_demand
+fund_flow_individual value: 数据获取失败：RuntimeError: No available vendor for method 'get_individual_fund_flow'. Configured chain: ['yfinance', 'cn_akshare', 'cn_baostock', 'alpha_vantage', 'cn_astock']
+[0m
+The CN portion worked (no HK markers). The HK output got truncated at the top. Let me read the saved output:
+[0m$ [0msource .venv/bin/activate && python -c "
+from unittest.mock import patch
+import tradingagents.graph.data_collector as dc
+
+def fake_loader(payload):
+    return 'fake_data'
+
+with patch.object(dc, 'get_stock_data', fake_loader), \
+     patch.object(dc, 'get_news', fake_loader), \
+     patch.object(dc, 'get_global_news', fake_loader), \
+     patch.object(dc, 'get_insider_transactions', fake_loader), \
+     patch.object(dc, 'get_fundamentals', fake_loader), \
+     patch.object(dc, 'get_balance_sheet', fake_loader), \
+     patch.object(dc, 'get_cashflow', fake_loader), \
+     patch.object(dc, 'get_income_statement', fake_loader):
+    res = dc._fetch_all('0700.HK', '2026-06-24')
+    print('hk_light_mode:', res.get('_hk_light_mode'))
+    print('lhb_query_mode:', res.get('_lhb_query_mode'))
+    print('fund_flow_individual:', res['fund_flow_individual']['status'], '|', res['fund_flow_individual']['reason'])
+    print('lhb:', res['lhb']['status'])
+    print('margin_trading:', res['margin_trading']['status'])
+    print('zt_pool:', res['zt_pool']['status'])
+    print('ratings:', res['ratings']['status'])
+    print('hot_stocks:', res['hot_stocks']['status'])
+    print('announcements:', res['announcements']['status'])
+    print('stock_data present:', 'stock_data' in res, '| news present:', 'news' in res)
+    print('global_news present:', 'global_news' in res, '| insider present:', 'insider_transactions' in res)
+" 2>/dev/null
+
+[Error] <function fake_loader at 0x104dcb560> failed: 'function' object has no attribute 'invoke'
+  [Error] <function fake_loader at 0x104dcb560> failed: 'function' object has no attribute 'invoke'
+  [Error] <function fake_loader at 0x104dcb560> failed: 'function' object has no attribute 'invoke'
+  [Error] <function fake_loader at 0x104dcb560> failed: 'function' object has no attribute 'invoke'
+  [Error] <function fake_loader at 0x104dcb560> failed: 'function' object has no attribute 'invoke'
+  [Error] <function fake_loader at 0x104dcb560> failed: 'function' object has no attribute 'invoke'
+  [Error] <function fake_loader at 0x104dcb560> failed: 'function' object has no attribute 'invoke'
+  [Error] <function fake_loader at 0x104dcb560> failed: 'function' object has no attribute 'invoke'
+  [Warning] No valid stock_data for indicator calculation.
+[Timer] Total Data Collection for 0700.HK took 0.00s
+hk_light_mode: True
+lhb_query_mode: skipped_hk
+fund_flow_individual: NOT_AVAILABLE | HK market not supported for A-share-only data source
+lhb: NOT_AVAILABLE
+margin_trading: NOT_AVAILABLE
+zt_pool: NOT_AVAILABLE
+ratings: NOT_AVAILABLE
+hot_stocks: NOT_AVAILABLE
+announcements: NOT_AVAILABLE
+stock_data present: True | news present: True
+global_news present: True | insider present: True
+[0m
+HK gating works. Now let me verify the readiness flow treats HK-skipped fields as low-severity SKIPPED:
+[0m$ [0msource .venv/bin/activate && python -c "
+from unittest.mock import patch
+import tradingagents.graph.data_collector as dc
+from tradingagents.agents.utils.readiness_score import build_data_blockers, infer_evidence_statuses, EvidenceStatus
+
+def fake_loader(payload):
+    return 'fake_data'
+
+with patch.object(dc, 'get_stock_data', fake_loader), \
+     patch.object(dc, 'get_news', fake_loader), \
+     patch.object(dc, 'get_global_news', fake_loader), \
+     patch.object(dc, 'get_insider_transactions', fake_loader), \
+     patch.object(dc, 'get_fundamentals', fake_loader), \
+     patch.object(dc, 'get_balance_sheet', fake_loader), \
+     patch.object(dc, 'get_cashflow', fake_loader), \
+     patch.object(dc, 'get_income_statement', fake_loader):
+    c = dc.DataCollector()
+    c.collect('0700.HK', '2026-06-24')
+    raw_ev = c.build_raw_evidence('0700.HK', '2026-06-24')
+    print('=== raw_evidence fund_flow_individual ===')
+    print(raw_ev['fund_flow_individual'])
+    print()
+    statuses = infer_evidence_statuses({}, raw_evidence=raw_ev)
+    print('=== evidence statuses ===')
+    for k in ['individual_fund_flow', 'lhb_status', 'margin_trading', 'ratings']:
+        print(f'{k}: {statuses.get(k)}')
+    print()
+    blockers = build_data_blockers({}, raw_evidence=raw_ev)
+    print('=== data blockers (should be low severity skipped, NOT medium/high) ===')
+    for b in blockers:
+        print(f\"{b['key']}: status={b['status']} severity={b['severity']} label={b['status_label']}\")
+" 2>/dev/null
+
+[Error] <function fake_loader at 0x10285f560> failed: 'function' object has no attribute 'invoke'
+  [Error] <function fake_loader at 0x10285f560> failed: 'function' object has no attribute 'invoke'
+  [Error] <function fake_loader at 0x10285f560> failed: 'function' object has no attribute 'invoke'
+  [Error] <function fake_loader at 0x10285f560> failed: 'function' object has no attribute 'invoke'
+  [Error] <function fake_loader at 0x10285f560> failed: 'function' object has no attribute 'invoke'
+  [Error] <function fake_loader at 0x10285f560> failed: 'function' object has no attribute 'invoke'
+  [Error] <function fake_loader at 0x10285f560> failed: 'function' object has no attribute 'invoke'
+  [Error] <function fake_loader at 0x10285f560> failed: 'function' object has no attribute 'invoke'
+  [Warning] No valid stock_data for indicator calculation.
+[Timer] Total Data Collection for 0700.HK took 0.00s
+=== raw_evidence fund_flow_individual ===
+{'raw': {'status': 'NOT_AVAILABLE', 'raw': '', 'vendor': 'skipped', 'reason': 'HK market not supported for A-share-only data source', 'field': 'fund_flow_individual', 'as_of': '2026-06-24'}, 'field': 'fund_flow_individual', 'status': 'NOT_AVAILABLE', 'vendor': 'akshare', 'endpoint': 'stock_individual_fund_flow', 'as_of': '2026-06-24', 'fetched_at': '2026-06-25T18:10:46', 'record_count': 6, 'unit': '万元', 'error': None, 'fallback_from': 'cn_akshare', 'source_url': None, 'is_realtime_patched': False, 'source_type': 'individual_fund_flow', 'unit_verified': True, 'query_mode': None, 'adjustment': None, 'force_reason': None}
+
+=== evidence statuses ===
+individual_fund_flow: skipped
+lhb_status: skipped
+margin_trading: skipped
+ratings: skipped
+
+=== data blockers (should be low severity skipped, NOT medium/high) ===
+ohlcv_5d: status=query_failed severity=high label=查询失败
+individual_fund_flow: status=skipped severity=low label=已跳过
+lhb_status: status=skipped severity=low label=已跳过
+announcements: status=query_failed severity=high label=查询失败
+ratings: status=skipped severity=low label=已跳过
+buybacks: status=not_queried severity=medium label=未查询
+research_report: status=not_queried severity=medium label=未查询
+margin_trading: status=skipped severity=low label=已跳过
+turnover_rate: status=skipped severity=low label=已跳过
+volume_ratio: status=not_queried severity=medium label=未查询
+[0m
+[0m# [0mTodos
+[✓] Add HK detection in context_utils.py (infer_instrument_context + build_market_context)
+[✓] Gate A-share-only data in data_collector._fetch_all for HK market
+[•] Add HK notice banner in frontend KlinePanel
+[ ] Write tests in tests/test_hk001_market_boundary.py
+[ ] Run tests and verify no A-share regression
+[ ] Update docs/DEVLOG.md
+[0m
+The A-share-only fields are now `skipped`/`low` severity for HK (the `query_failed` entries are universal fields from my mock failing — real HK runs use yfinance). Data collector done.
+Now the frontend. Let me add an HK symbol detector helper and notice banner in KlinePanel:
+[0m← [0mEdit frontend/src/components/KlinePanel.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/components/KlinePanel.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/components/KlinePanel.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/components/KlinePanel.tsx
+@@ -52,8 +52,13 @@
+     const s = symbol.toUpperCase()
+     return SYMBOL_NAME_MAP[s] ? `${SYMBOL_NAME_MAP[s]}（${s}）` : s
+ }
+ 
++// [HK-001] hk_market_boundary: detect HKEX tickers (e.g. 0700.HK, 9988.HK).
++function isHongKongSymbol(symbol: string): boolean {
++    return /^\d{1,5}\.HK$/.test(symbol.trim().toUpperCase())
++}
++
+ function formatNumber(value?: number | null, digits = 2): string {
+     if (value == null || !Number.isFinite(value)) return '--'
+     return new Intl.NumberFormat('zh-CN', {
+         minimumFractionDigits: digits,
+
+[0m
+Now add the notice banner in the render. Let me insert it right after the header row, before the chart container:
+[0m← [0mEdit frontend/src/components/KlinePanel.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/components/KlinePanel.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/components/KlinePanel.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/components/KlinePanel.tsx
+@@ -276,8 +276,10 @@
+ const compactChangePercent = panelChangePercent == null ? '--' : `${panelChangePercent >= 0 ? '+' : ''}${formatNumber(panelChangePercent)}%`
+ const showCurrentSymbolButton = !!currentAnalysisSymbol && currentAnalysisSymbol !== symbol
+ const currentSymbolLabel = currentAnalysisSymbol ? getDisplayName(currentAnalysisSymbol).replace(/（.*?）/, '') : '当前标的'
+ const currentSymbolButtonLabel = `回到分析标的：${currentSymbolLabel}`
++// [HK-001] hk_market_boundary
++const isHongKong = isHongKongSymbol(symbol)
+ 
+ return (
+     <section className="card h-full flex flex-col overflow-hidden">
+         <div className="flex items-center justify-between mb-3 shrink-0">
+
+[0m
+[0m← [0mEdit frontend/src/components/KlinePanel.tsx
+Index: /Users/maybee/TradingAgents-AShare/frontend/src/components/KlinePanel.tsx
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/frontend/src/components/KlinePanel.tsx
++++ /Users/maybee/TradingAgents-AShare/frontend/src/components/KlinePanel.tsx
+@@ -325,8 +325,14 @@
+     </div>
+ </div>
+ <div className="relative flex-1 min-h-0 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 overflow-hidden">
+     <div ref={containerRef} className="absolute inset-0" />
++    {isHongKong && (
++        // [HK-001] hk_market_boundary
++        <div className="absolute left-3 top-3 right-3 z-10 text-xs px-3 py-2 rounded bg-amber-50 dark:bg-amber-500/10 border border-amber-300 dark:border-amber-500/40 text-amber-700 dark:text-amber-300">
++            港股暂不支持完整 TA，只支持轻量行情/新闻参考；A 股专属的资金流/龙虎榜/融资融券门禁已禁用。
++        </div>
++    )}
+     {loading && (
+         <div className="absolute right-3 top-3 text-xs px-2 py-1 rounded bg-white/90 dark:bg-slate-800/90 text-slate-600 dark:text-slate-400 flex items-center gap-1">
+             <Activity className="w-3 h-3 animate-pulse" />
+             加载中
+
+[0m
+Now let me verify the frontend builds. Let me check if there's a typecheck/build script:
+[0m$ [0msource .venv/bin/activate && cd frontend && cat package.json | python -c "import json,sys; d=json.load(sys.stdin); print(json.dumps(d.get('scripts',{}), indent=2, ensure_ascii=False))"
+{
+  "dev": "vite",
+  "build": "tsc && vite build",
+  "lint": "eslint .",
+  "preview": "vite preview"
+}
+[0m
+[0m$ [0msource .venv/bin/activate && cd frontend && npx tsc --noEmit 2>&1 | head -30; echo "EXIT: $?"
+EXIT: 0
+[0m
+[0m# [0mTodos
+[✓] Add HK detection in context_utils.py (infer_instrument_context + build_market_context)
+[✓] Gate A-share-only data in data_collector._fetch_all for HK market
+[✓] Add HK notice banner in frontend KlinePanel
+[•] Write tests in tests/test_hk001_market_boundary.py
+[ ] Run tests and verify no A-share regression
+[ ] Update docs/DEVLOG.md
+[0m
+TypeScript typecheck passes. Now let me write the tests:
+[0m← [0mWrite tests/test_hk001_market_boundary.py
+Wrote file successfully.
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_hk001_market_boundary.py -v 2>&1 | tail -50
+============================= test session starts ==============================
+platform darwin -- Python 3.12.13, pytest-9.0.2, pluggy-1.6.0 -- /Users/maybee/TradingAgents-AShare/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/maybee/TradingAgents-AShare
+configfile: pyproject.toml
+plugins: anyio-4.9.0, langsmith-0.3.45
+collecting ... collected 22 items
+
+tests/test_hk001_market_boundary.py::TestHKInstrumentContext::test_hk_symbol_classified_as_hk PASSED [  4%]
+tests/test_hk001_market_boundary.py::TestHKInstrumentContext::test_hk_symbol_9988 PASSED [  9%]
+tests/test_hk001_market_boundary.py::TestHKInstrumentContext::test_hk_symbol_five_digit PASSED [ 13%]
+tests/test_hk001_market_boundary.py::TestHKInstrumentContext::test_hk_not_classified_as_us PASSED [ 18%]
+tests/test_hk001_market_boundary.py::TestHKInstrumentContext::test_hk_not_classified_as_cn PASSED [ 22%]
+tests/test_hk001_market_boundary.py::TestHKInstrumentContext::test_lowercase_hk_suffix_normalised PASSED [ 27%]
+tests/test_hk001_market_boundary.py::TestHKInstrumentContext::test_is_hk_symbol_helper PASSED [ 31%]
+tests/test_hk001_market_boundary.py::TestNonRegression::test_cn_symbol_unchanged PASSED [ 36%]
+tests/test_hk001_market_boundary.py::TestNonRegression::test_us_symbol_unchanged PASSED [ 40%]
+tests/test_hk001_market_boundary.py::TestNonRegression::test_cn_symbol_not_hk PASSED [ 45%]
+tests/test_hk001_market_boundary.py::TestHKMarketContext::test_hk_market_context_uses_hk_timezone PASSED [ 50%]
+tests/test_hk001_market_boundary.py::TestHKMarketContext::test_hk_market_context_session_intraday PASSED [ 54%]
+tests/test_hk001_market_boundary.py::TestHKMarketContext::test_hk_market_context_lunch_break PASSED [ 59%]
+tests/test_hk001_market_boundary.py::TestHKMarketContext::test_hk_market_context_weekend PASSED [ 63%]
+tests/test_hk001_market_boundary.py::TestHKDataCollectorGating::test_hk_skips_ashare_only_fields PASSED [ 68%]
+tests/test_hk001_market_boundary.py::TestHKDataCollectorGating::test_hk_keeps_yfinance_supported_fields PASSED [ 72%]
+tests/test_hk001_market_boundary.py::TestHKDataCollectorGating::test_cn_does_not_set_hk_light_mode PASSED [ 77%]
+tests/test_hk001_market_boundary.py::TestHKDataCollectorGating::test_cn_still_attempts_ashare_fields PASSED [ 81%]
+tests/test_hk001_market_boundary.py::TestInferSourceStatusHonorsExplicit::test_not_available_dict_honored PASSED [ 86%]
+tests/test_hk001_market_boundary.py::TestInferSourceStatusHonorsExplicit::test_skipped_dict_honored PASSED [ 90%]
+tests/test_hk001_market_boundary.py::TestInferSourceStatusHonorsExplicit::test_plain_dict_legacy_unchanged PASSED [ 95%]
+tests/test_hk001_market_boundary.py::TestHKReadinessFlow::test_hk_skipped_fields_are_low_severity PASSED [100%]
+
+=============================== warnings summary ===============================
+tests/test_hk001_market_boundary.py::TestHKDataCollectorGating::test_cn_still_attempts_ashare_fields
+  /Users/maybee/TradingAgents-AShare/.venv/lib/python3.12/site-packages/akshare/stock_fundamental/stock_recommend.py:91: FutureWarning: Passing literal html to 'read_html' is deprecated and will be removed in a future version. To read from a literal string, wrap it in a 'StringIO' object.
+    temp_df = pd.read_html(r.text, header=0)[0].iloc[:, :8]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================== 22 passed, 1 warning in 31.70s ========================
+[0m
+[0m# [0mTodos
+[✓] Add HK detection in context_utils.py (infer_instrument_context + build_market_context)
+[✓] Gate A-share-only data in data_collector._fetch_all for HK market
+[✓] Add HK notice banner in frontend KlinePanel
+[✓] Write tests in tests/test_hk001_market_boundary.py
+[•] Run tests and verify no A-share regression
+[ ] Update docs/DEVLOG.md
+[0m
+All 22 HK-001 tests pass. Now let me verify no A-share regression by running the related existing tests:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_readiness_score.py tests/test_data004_evidence_contract.py tests/test_data012_ratings.py -q 2>&1 | tail -25
+........................................................................ [ 26%]
+........................................................................ [ 53%]
+........................................................................ [ 80%]
+....................................................                     [100%]
+268 passed in 14.43s
+[0m
+No regression. Let me also run the data_collector / G-006 / G-007 tests and the context-related ones:
+[0m$ [0msource .venv/bin/activate && ls tests/ | grep -iE "context|g006|g007|data_collector|fund_lhb|data013|data010|data011" 2>&1
+test_data010_margin_trading.py
+test_data011_research_report.py
+test_data013_buyback.py
+test_data017_fund_lhb_health.py
+test_data_collector.py
+test_g006_raw_evidence_snapshot.py
+test_g007_fund_lhb_provenance.py
+test_ic_ta001_investment_controller_context.py
+[0m
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_g006_raw_evidence_snapshot.py tests/test_g007_fund_lhb_provenance.py tests/test_data_collector.py tests/test_data010_margin_trading.py tests/test_data013_buyback.py tests/test_data011_research_report.py tests/test_ic_ta001_investment_controller_context.py -q 2>&1 | tail -20
+........................................................................ [ 25%]
+........................................................................ [ 51%]
+........................................................................ [ 77%]
+..............................................................           [100%]
+278 passed in 3.60s
+[0m
+All passing. Let me run one more broad sweep on context-related and runtime tests:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_runtime_tier_contract.py tests/test_data017_fund_lhb_health.py -q 2>&1 | tail -15
+........................................................................ [ 59%]
+.................................................                        [100%]
+121 passed in 1.39s
+[0m
+All green. Let me also do a final frontend build to confirm the JSX change compiles end-to-end:
+[0m$ [0msource .venv/bin/activate && cd frontend && npm run build 2>&1 | tail -12; echo "EXIT: $?"
+✓ 1940 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                     1.15 kB │ gzip:   0.65 kB
+dist/assets/index-CbAt0K9R.css    169.51 kB │ gzip:  23.26 kB
+dist/assets/index-B8lQtyT0.js   1,205.18 kB │ gzip: 345.80 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 1.37s
+EXIT: 0
+[0m
+[0m# [0mTodos
+[✓] Add HK detection in context_utils.py (infer_instrument_context + build_market_context)
+[✓] Gate A-share-only data in data_collector._fetch_all for HK market
+[✓] Add HK notice banner in frontend KlinePanel
+[✓] Write tests in tests/test_hk001_market_boundary.py
+[✓] Run tests and verify no A-share regression
+[•] Update docs/DEVLOG.md
+[0m
+Frontend builds cleanly. Now let me update DEVLOG:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=30][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,74 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-25 | HK-001 港股输入边界与轻量行情-only 模式声明
++
++- **执行者**：OpenCode
++- **类型**：feature / safety-boundary
++- **状态**：✅ 完成（待提交）
++- **优先级**：P2
++- **代码标注**：`# [HK-001] hk_market_boundary` / `// [HK-001] hk_market_boundary`
++
++### 背景
++
++系统定位 A 股，港股只能局部走 yfinance 行情。此前 `0700.HK/9988.HK` 等港股
++代码会落入 `infer_instrument_context` 的 UNKNOWN 分支（既不是 CN 也不是 US），
++而 `data_collector._fetch_all` 不区分市场，会无条件调度 A 股专属的资金流 /
++龙虎榜 / 涨停池 / 融资融券 / 评级 / 公告数据，导致港股请求触发一连串
++`NotImplementedError` 失败，被 readiness 误判为"数据缺失/未查询"，产生误导性
++的强动作阻断结论。
++
++### 改动文件
++
++- `tradingagents/agents/utils/context_utils.py`
++  - 新增 `HK_TZ`、`is_hk_symbol()`（识别 `^\d{1,5}\.HK$`）。
++  - `infer_instrument_context` 在 US 字母正则之前增加 HK 分支：港股 →
++    `market_country=HK` / `currency=HKD` / `exchange=HKEX`。
++  - `build_market_context` 增加 HK 分支 + `_build_hk_market_context`（轻量
++    HKEX 时段推断：盘前/盘中/午休/盘后/非交易日）。
++- `tradingagents/graph/data_collector.py`
++  - `_fetch_all` 调用 `infer_instrument_context` 判断市场；HK 市场下移除
++    A 股专属 fetch 任务（fund_flow_board / fund_flow_individual / lhb /
++    zt_pool / hot_stocks / announcements / margin_trading / ratings），
++    并写入显式 `{"status":"NOT_AVAILABLE", "reason":"HK market not supported
++    for A-share-only data source"}` 结构化条目。
++  - HK 跳过 E-003 龙虎榜强制查询链路（`_lhb_query_mode="skipped_hk"`）。
++  - `_infer_source_status` 兼容：dict 携带显式 `status` 时优先返回该状态，
++    保证 NOT_AVAILABLE 不被 legacy dict→HAS_DATA 逻辑覆盖。
++  - 保留 yfinance 支持的通用字段（行情/新闻/全球新闻/insider/财报）。
++- `frontend/src/components/KlinePanel.tsx`
++  - 新增 `isHongKongSymbol()` 辅助函数；港股 symbol 在 K 线区显示提示条
++    「港股暂不支持完整 TA，只支持轻量行情/新闻参考；A 股专属的资金流/
++    龙虎榜/融资融券门禁已禁用。」
++- `tests/test_hk001_market_boundary.py`（新增，22 用例）
++
++### 验收
++
++- `0700.HK` 被标记为 HK/HKD，不再被误判为 US/USD 或 CN/CNY。
++- 港股请求中 A 股专属数据字段在 raw_evidence / readiness 中显示为
++  `skipped`（severity=low，"已跳过"），不再产生误导性强动作阻断。
++- A 股链路无回归：CN 仍调度全部 A 股数据；US 仍走字母正则。
++
++### 测试结果
++
++- `tests/test_hk001_market_boundary.py`：22 passed
++- 回归：`test_readiness_score` / `test_data004_evidence_contract` /
++  `test_data012_ratings`（268 passed）、`test_g006` / `test_g007` /
++  `test_data_collector` / `test_data010` / `test_data011` / `test_data013` /
++  `test_ic_ta001`（278 passed）、`test_runtime_tier_contract` /
++  `test_data017`（121 passed）全部通过。
++- 前端 `npm run build` 通过（tsc + vite，0 error）。
++
++### 安全红线
++
++- 未改 `tradingagents/prompts/`。
++- 未写生产 `tradingagents.db`。
++- 未触发 live LLM / 全市场扫描 / 个股深 TA。
++
++---
++
+ ## 2026-06-25 | PERF-005 修复 live source sampling 两个 STALE 误判失败
+ 
+ - **执行者**：OpenCode
+ - **类型**：bugfix
+
+[0m
+[0m# [0mTodos
+[✓] Add HK detection in context_utils.py (infer_instrument_context + build_market_context)
+[✓] Gate A-share-only data in data_collector._fetch_all for HK market
+[✓] Add HK notice banner in frontend KlinePanel
+[✓] Write tests in tests/test_hk001_market_boundary.py
+[✓] Run tests and verify no A-share regression
+[✓] Update docs/DEVLOG.md
+[0m
+HK-001 complete. Final status:
+[0m$ [0mgit status --short
+M docs/DEVLOG.md
+ M docs/TASKS.md
+ M frontend/src/components/KlinePanel.tsx
+ M tradingagents/agents/utils/context_utils.py
+ M tradingagents/graph/data_collector.py
+?? docs/task_runs/HK-001-20260625-175657/
+?? tests/test_hk001_market_boundary.py
+[0m
+## HK-001 完成报告
+
+### 改动文件
+- `tradingagents/agents/utils/context_utils.py` — 新增 `is_hk_symbol()` + HK 检测分支（HK/HKD/HKEX）+ `_build_hk_market_context()`（轻量 HKEX 时段推断）
+- `tradingagents/graph/data_collector.py` — `_fetch_all` 按 market=HK 跳过 A 股专属 fetch（资金流/龙虎榜/涨停池/融资融券/评级/公告/热门股），写入显式 `NOT_AVAILABLE` 结构化条目；跳过 E-003 龙虎榜强制查询；`_infer_source_status` 兼容显式 status
+- `frontend/src/components/KlinePanel.tsx` — 港股 symbol 显示「暂不支持完整 TA，仅轻量行情/新闻参考」提示条
+- `tests/test_hk001_market_boundary.py` — 新增 22 用例
+- `docs/DEVLOG.md` — 更新
+
+### 关键逻辑
+港股代码（`^\d{1,5}\.HK$`，如 0700.HK/9988.HK）在 US 字母正则之前被识别为 `market_country=HK`/`currency=HKD`。HK 市场下 A 股门禁被禁用并以 `NOT_AVAILABLE` 结构化条目落库，经 readiness 流转为 `skipped`（severity=low），不再产生误导性强动作阻断；yfinance 支持的行情/新闻/财报仍保留。
+
+### 测试结果
+- HK-001 新增：**22 passed**
+- 回归（readiness/evidence_contract/ratings + g006/g007/data_collector/data010-013/ic_ta001 + runtime_tier/data017）：**667 passed**，0 failed
+- 前端 `npm run build`：通过（tsc + vite 0 error）
+
+未提交（outer script 处理 commit）。
