@@ -4,6 +4,81 @@
 
 ---
 
+## 2026-06-26 | REPORT-UX-002 历史报告动作语义与数据缺口只读迁移预检
+
+- **执行者**：OpenCode
+- **类型**：audit / migration-precheck
+- **状态**：✅ 完成（待提交）
+- **优先级**：P1
+- **代码标注**：`# [REPORT-UX-002] report_semantics_audit`
+
+### 背景
+
+DECISION-001 引入 3 层动作语义（`research_direction` / `execution_action` /
+`action_label`），DATA-021 引入字段级 `data_blockers`，DATA-004 引入
+`raw_evidence`。但这些字段只对**新建**报告生效；历史报告（pre-DECISION-001 /
+pre-DATA-021）在库里仍是旧行：3 层语义为空、`data_blockers` 缺失、`raw_evidence`
+缺失，导致前端继续显示旧字段或空动作标签。本任务提供一个**只读 dry-run 预检**，
+告诉运营哪些历史报告可以补算、哪些需要重跑、哪些已无法判断，不直接改生产数据。
+
+### 变更
+
+- `api/services/report_semantics_audit.py`（新增）
+  - `audit_report_semantics(db, *, user_id, limit, as_of)`：扫描 `completed`
+    报告（`load_only` 投影 + `created_at desc`，沿用
+    `investment_controller_context._collect_recent_report_data_blockers` 的只读
+    范式），输出三缺口统计 + 四档建议。
+  - 三类缺口：`missing_semantics` / `missing_data_blockers` / `missing_raw_evidence`
+    （后者兼容 `result_data.raw_evidence` 与 `result_data.metadata.raw_evidence`
+    两种存储形态）。
+  - 四档建议（取最差）：
+    * `ok` — 无缺口。
+    * `can_derive`（可读时补算）— 缺失字段可在只读副本上补回：语义走
+      `signal_processing._extract_decision_semantics(final_trade_decision)`
+      （与 `resolve_report_fields` 同一路径），blockers 走
+      `report_service.attach_report_data_blockers(dict(result_data))`（与
+      IC-TA-002 同一路径）。
+    * `needs_rerun`（需要重跑）— 至少一项缺口无源文本可补（缺 FTD，或缺
+      raw_evidence 且无正文）。
+    * `cannot_judge`（无法判断）— `result_data` 与 `final_trade_decision` 均缺失。
+  - 每行扫描包 try/except，单行异常计为 `audit_error` 不中断整轮。
+  - `render_audit_report(audit)`：渲染为 markdown（缺口统计表 + 建议分布表 +
+    有缺口报告明细表），供 CLI/文档使用。
+- `scripts/audit_report_semantics.py`（新增）
+  - 只读 CLI：`--dry-run`（恒开，保留以与其他 audit CLI 对齐）/ `--db-url` /
+    `--user-id` / `--limit` / `--output`，默认 DB 指向 `./tradingagents.db`，
+    只 SELECT、从不 `commit`。
+- `docs/report_semantics_audit_sample.md`（新增）
+  - 在内存 fixture 上生成的 audit 示例（5 条报告覆盖 ok/can_derive×2/
+    needs_rerun/cannot_judge 四档），作为「文档显示 audit 示例」验收物。
+
+### 只读保证（硬约束）
+
+- 全程仅 `SELECT`，从不调用 `db.add` / `db.commit` / `db.delete`。
+- 对 `result_data` 一律操作 `dict(result_data)` 副本，绝不回写 ORM 行。
+- `audit_session.new/dirty/deleted` 在扫描后均为空；用第二个 session 读同一
+  engine 验证派生值未落盘。
+
+### 测试 / 验证
+
+- 新增 `tests/test_report_ux002_semantics_audit.py`（14 用例，全通过）：
+  空库稳定空结构、只扫 `completed`、`user_id` 过滤、`limit`、四档建议分别命中、
+  混合人群聚合、**只读不写**（snapshot 对比 + session dirty 为空 + 跨 session
+  未落盘）、markdown 渲染。
+- 回归：`tests/test_report_ux001_data_blocker_replay.py` /
+  `tests/test_report_recovery.py` /
+  `tests/test_data021_report_data_blockers.py` 全通过（33 passed）。
+
+### 约束遵守
+
+- 未改 `tradingagents/prompts/`。
+- 未写生产 `tradingagents.db`（全部测试用 in-memory / tmp DB）。
+- 未调用 LLM（`_extract_decision_semantics` 为纯正则/解析器）。
+- 未全市场扫描（只扫报告表，`limit` 默认 500）。
+- 未 git commit（由外部脚本处理）。
+
+---
+
 ## 2026-06-26 | TRACK-008 观察仓批量导入/导出 CSV 与去重合并
 
 - **执行者**：OpenCode
@@ -7326,3 +7401,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TRACK-008-20260626-round1.txt
 - **Run archive**: docs/task_runs/TRACK-008-20260626-203656/
+
+## 2026-06-26 | AUTO-002 Auto Dev Loop
+
+- **Task**: REPORT-UX-002 - 历史报告动作语义与数据缺口只读迁移预检（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/REPORT-UX-002-20260626-round1.txt
+- **Run archive**: docs/task_runs/REPORT-UX-002-20260626-205847/
