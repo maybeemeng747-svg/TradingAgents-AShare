@@ -3937,7 +3937,7 @@
 ### H-016: 昊天主题日报 CLI 生成与保留策略（P2）
 - **描述**：H-015 已支持 API/latest。本任务补 CLI/脚本入口与保留策略，让夜间或手工可以生成 `docs/mandate_daily_reports/mandate-YYYY-MM-DD.*`，并清理过旧报告。
 - **优先级**：P2
-- **状态**：in_progress — claimed H-016-20260626-215858
+- **状态**：done -- commit cb8b2ec
 - **前置条件**：H-015 完成。
 - **执行约束**：
   - 不调用 LLM。
