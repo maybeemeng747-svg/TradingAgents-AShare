@@ -4,6 +4,63 @@
 
 ---
 
+## 2026-06-27 | NOTIFY-003 通知去噪规则回放测试与日报/盘中分层验收
+
+- **执行者**：OpenCode
+- **类型**：test + acceptance report（无核心引擎改动）
+- **状态**：✅ 完成（待提交）
+- **代码标注**：`# [NOTIFY-003] notification_noise_replay`
+
+### 背景
+
+NOTIFY-002 在 TRACK-NOTIFY-001 之上接入了昊天日报摘要（`mandate_daily_digest`）
+与数据缺口摘要（`data_blocker_digest`）。摘要变多后最大风险是把"普通数据缺口 /
+正常无数据 / 观察项"误推成盘中主动提醒，造成用户被噪声淹没。本任务用一张覆盖
+P0/P1/P2/P3 + 各类数据缺口的 fixture 矩阵回放整条通知链路，做日报/盘中分层
+验收，并输出去噪回放报告。**全程 dry-run，不真实发送、不调用 LLM、不写生产 DB。**
+
+### 验收结论
+
+引擎既有分层规则正确，无需修改 `notification_draft.py`：
+- P0/P1（非 record_only）→ `intraday_push`；P2/P3 → `daily_digest`。
+- NORMAL_NO_DATA / 数据缺口 / 无行情 / bucket failed|missing → `record_only=True`，
+  只进日报摘要，绝不进入盘中提醒（即使原始信号是 P0 大跌或进入买入区）。
+- 同一标的同一事件 30 分钟窗口内去重。
+- 全矩阵草稿禁用词扫描通过。
+
+### 修改内容
+
+- **新增 `tests/test_notify003_noise_replay.py`**（`# [NOTIFY-003] notification_noise_replay`）
+  - `ReplayCase` 数据类 + `_priority_matrix()` / `_noise_matrix()` / `_digest_matrix()`：
+    19 条 fixture 场景，覆盖 P0/P1/P2/P3 优先级、NORMAL_NO_DATA 噪声隔离、
+    NOTIFY-002 全局摘要。
+  - `replay_case(case)`：纯函数回放执行器（构建草稿 → 全新 deduplicator 去噪 →
+    分通道 → 校验期望分层），返回 `ReplayResult`。
+  - `render_noise_replay_report(results)`：渲染去噪回放 markdown 报告，与静态文档对齐。
+  - 参数化测试 `test_replay_matrix_case`（19 条逐场景）+ `TestTieringInvariants`
+    （优先级分层 / NORMAL_NO_DATA 不进 intraday / P2/P3 不进 intraday /
+    record_only 强制覆盖 P0）+ `TestDedupReplay`（窗口内去重 / 窗口后重发 /
+    不同事件不去重）+ `TestForbiddenWordsAcrossMatrix`（全矩阵禁用词扫描）+
+    `TestNoiseReplayReport`（报告渲染）+ `TestServiceDryRunNoiseReplay`
+    （service 层 dry-run payload 可读 / failed 持仓噪声隔离 / 禁用词）。
+- **新增 `docs/notification_noise_replay/NOTIFY-003-replay-report.md`**
+  - 由测试矩阵同一回放器生成：**19/19 场景通过**。
+  - 含 A 优先级覆盖矩阵 / B NORMAL_NO_DATA 噪声隔离 / C 全局摘要日报 三张分层表。
+
+### 测试结果
+
+- `tests/test_notify003_noise_replay.py`：**36 passed**。
+- 相关链路回归（NOTIFY-002 / TRACK-NOTIFY-001 / IC-TA-001~003 / Bark / 企业微信）：
+  **231 passed, 0 failed**。
+
+### 风险点
+
+- 本任务为验收/回放性质，未改动通知引擎或 service 层逻辑，回归面极小。
+- 回放矩阵以纯函数 + 内存态 deduplicator 跑，确定性可重放；报告可随时由
+  `render_noise_replay_report([replay_case(c) for c in _full_matrix()])` 重建。
+
+---
+
 ## 2026-06-27 | PERF-006 前端 bundle 体积趋势记录与懒加载候选建议
 
 - **执行者**：OpenCode
@@ -8135,3 +8192,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/V-011-20260627-round1.txt
 - **Run archive**: docs/task_runs/V-011-20260627-005428/
+
+## 2026-06-27 | AUTO-002 Auto Dev Loop
+
+- **Task**: NOTIFY-003 - 通知去噪规则回放测试与日报/盘中分层验收（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/NOTIFY-003-20260627-round1.txt
+- **Run archive**: docs/task_runs/NOTIFY-003-20260627-010451/
