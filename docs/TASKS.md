@@ -3957,7 +3957,7 @@
 ### IC-TA-003: investment-controller 盘前/盘后 briefing fixture dry-run（P2）
 - **描述**：IC-TA-002 接入更多上下文后，需要固定盘前/盘后 briefing 的 dry-run 输出，确保 investment-controller 拿到的是流程提示和调度建议，而不是另一个 TA 结论。
 - **优先级**：P2
-- **状态**：done — IC-TA-003-20260626-222709
+- **状态**：done -- commit a1896ad
 - **前置条件**：IC-TA-002 完成。
 - **执行约束**：
   - 不调用 LLM。
