@@ -3917,7 +3917,7 @@
 ### REPORT-UX-002: 历史报告动作语义与数据缺口只读迁移预检（P1）
 - **描述**：历史报告可能缺少 `research_direction/execution_action/action_label/data_blockers`。本任务做只读迁移预检，告诉用户哪些历史报告可以补语义、哪些需要重新跑，不直接改生产数据。
 - **优先级**：P1
-- **状态**：in_progress — claimed REPORT-UX-002-20260626-205847
+- **状态**：done -- commit eecfe9f
 - **前置条件**：DECISION-004、DATA-021 完成。
 - **执行约束**：
   - 只读扫描，不写生产 DB。
