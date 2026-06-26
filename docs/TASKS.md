@@ -132,6 +132,18 @@
 106. `IC-TA-002`：investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1，ready，依赖 IC-TA-001/DATA-021/H-015 ✓）。
 107. `V-010`：小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口（P1，ready，依赖 V-009/DATA-021/H-015 ✓）。
 108. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2，ready，依赖 TRACK-NOTIFY-001/H-015/DATA-021 ✓）。
+109. `DATA-022`：主力资金/龙虎榜失败矩阵 fixture 回放（P1，ready，依赖 DATA-021/DATA-017 ✓）。
+110. `TF-OBS-005`：非交易日候选计划到下一交易日观察语义回归（P1，ready，依赖 TF-OBS-004 ✓）。
+111. `TRACK-008`：观察仓批量导入/导出 CSV 与去重合并（P1，ready，依赖 TRACK-001/TRACK-003 ✓）。
+112. `REPORT-UX-002`：历史报告动作语义与数据缺口只读迁移预检（P1，ready，依赖 DECISION-004/DATA-021 ✓）。
+113. `H-016`：昊天主题日报 CLI 生成与保留策略（P2，ready，依赖 H-015 ✓）。
+114. `IC-TA-003`：investment-controller 盘前/盘后 briefing fixture dry-run（P2，ready，依赖 IC-TA-002 ✓）。
+115. `TF-REVIEW-005`：盘后 Review 归因接入观察信号与模拟账本（P1，ready，依赖 TF-REVIEW-004/TF-PAPER-001 ✓）。
+116. `UI-013`：TradeFlow 空状态与下一步 CTA 文案收口（P2，ready，依赖 UI-012/H-015 ✓）。
+117. `DATA-023`：数据源目录 API/文档同步与供应商能力矩阵导出（P2，ready，依赖 DATA-020/DATA-CATALOG-FIX ✓）。
+118. `PERF-006`：前端 bundle 体积趋势记录与懒加载候选建议（P2，ready，依赖 PERF-005 ✓）。
+119. `V-011`：夜间自动开发日报验收与 ready 队列续航检查（P2，ready，依赖 AUTO-003 ✓）。
+120. `NOTIFY-003`：通知去噪规则回放测试与日报/盘中分层验收（P2，ready，依赖 NOTIFY-002 ✓）。
 
 ### 数据源治理候选队列
 
@@ -3841,6 +3853,246 @@
   - 不真实发送。
   - 禁用词扫描通过。
 - **代码标注要求**：`# [NOTIFY-002] notification_mandate_data_blockers`
+
+### DATA-022: 主力资金/龙虎榜失败矩阵 fixture 回放（P1）
+- **描述**：用户多次遇到主力资金失败、龙虎榜无数据/未触发/查询失败混淆。本任务用 fixture 矩阵回放数据源状态，确保 DATA-021 和 TA 报告不会把“正常无数据”当失败，也不会把失败当可用。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：DATA-021、DATA-017 完成。
+- **执行约束**：
+  - 不调用 live API。
+  - 不修改 prompts。
+  - 不写生产数据库。
+- **实现要点**：
+  1. 构造主力资金 `HAS_DATA/FAILED/NORMAL_NO_DATA/SKIPPED` fixture。
+  2. 构造龙虎榜 `HAS_DATA/FAILED/NORMAL_NO_DATA/NOT_QUERIED` fixture。
+  3. 覆盖 `infer_evidence_statuses()`、`build_data_blockers()`、`data_collector` 状态推断边界。
+  4. 输出一份简短矩阵文档，说明各状态对报告动作的影响。
+- **验收方式**：
+  - fixture 测试通过。
+  - `NORMAL_NO_DATA` 不计作查询失败。
+  - `FAILED` 不被 `len > 20` 文本误判为 HAS_DATA。
+- **代码标注要求**：`# [DATA-022] fund_lhb_status_matrix`
+
+### TF-OBS-005: 非交易日候选计划到下一交易日观察语义回归（P1）
+- **描述**：用户会在周末/盘后生成候选池，用下一个交易日观察。本任务固定候选生成日、计划生效日、实际观察日三者的语义，避免盘中观察显示无数据或错取日期。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：TF-OBS-004 完成。
+- **执行约束**：
+  - 不调用 live API。
+  - 不接真实交易。
+  - 不修改观察触发阈值算法。
+- **实现要点**：
+  1. 增加周末生成、下周一观察 fixture。
+  2. `observe/run` 默认按 `effective_trade_date` 或下一交易日映射候选。
+  3. API 返回中显式区分 `plan_date/effective_trade_date/observe_date`。
+  4. 前端观察 tab 对非交易日计划显示“用于下一交易日观察”。
+- **验收方式**：
+  - 周末候选在下一交易日可被 observe 读取。
+  - 不再返回“无活跃候选”的误判。
+  - 旧交易日 fixture 不回归。
+- **代码标注要求**：`# [TF-OBS-005] observe_date_semantics` / `// [TF-OBS-005] observe_date_semantics`
+
+### TRACK-008: 观察仓批量导入/导出 CSV 与去重合并（P1）
+- **描述**：观察仓现在有手动新增，但用户常会从截图/表格/外部清单批量导入。本任务提供 CSV/文本批量导入导出与去重合并，减少重复手工维护。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：TRACK-001、TRACK-003 完成。
+- **执行约束**：
+  - 不覆盖用户已有备注，除非显式 merge。
+  - 不写生产数据库测试数据。
+  - 不调用 OCR/LLM。
+- **实现要点**：
+  1. 后端新增观察仓 CSV/text parse + bulk upsert helper。
+  2. 去重键使用 `symbol + horizon + source`，备注采用 append/keep 策略。
+  3. 前端观察仓增加“批量导入/导出”入口。
+  4. 支持字段：代码、名称、主题、入场区、失效价、理由、备注、优先级。
+- **验收方式**：
+  - 重复导入不产生重复记录。
+  - 已有 notes 不被清空。
+  - 导出再导入 round-trip 通过。
+- **代码标注要求**：`# [TRACK-008] observation_bulk_import_export` / `// [TRACK-008] observation_bulk_import_export`
+
+### REPORT-UX-002: 历史报告动作语义与数据缺口只读迁移预检（P1）
+- **描述**：历史报告可能缺少 `research_direction/execution_action/action_label/data_blockers`。本任务做只读迁移预检，告诉用户哪些历史报告可以补语义、哪些需要重新跑，不直接改生产数据。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：DECISION-004、DATA-021 完成。
+- **执行约束**：
+  - 只读扫描，不写生产 DB。
+  - 不调用 LLM。
+  - 不修改 prompts。
+- **实现要点**：
+  1. 新增历史报告 dry-run audit helper。
+  2. 输出缺字段统计：动作语义缺失、data_blockers 缺失、raw_evidence 缺失。
+  3. 提供建议动作：可读时补算、需要重跑、无法判断。
+  4. 前端或文档显示 audit 示例。
+- **验收方式**：
+  - fixture 历史报告扫描通过。
+  - dry-run 不写 DB。
+  - 输出能解释为什么旧报告仍显示旧字段。
+- **代码标注要求**：`# [REPORT-UX-002] report_semantics_audit`
+
+### H-016: 昊天主题日报 CLI 生成与保留策略（P2）
+- **描述**：H-015 已支持 API/latest。本任务补 CLI/脚本入口与保留策略，让夜间或手工可以生成 `docs/mandate_daily_reports/mandate-YYYY-MM-DD.*`，并清理过旧报告。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：H-015 完成。
+- **执行约束**：
+  - 不调用 LLM。
+  - 不扫描全市场。
+  - 默认只读现有 TradeFlow DB/fixture。
+- **实现要点**：
+  1. 新增脚本或 CLI：按日期生成昊天主题日报。
+  2. 支持 `--as-of`、`--window-days`、`--output-dir`、`--retention-days`。
+  3. 增加 dry-run 模式，只打印摘要不写文件。
+  4. 文档说明如何被 OpenClaw 或 cron 调用。
+- **验收方式**：
+  - fixture 能生成 md/json。
+  - dry-run 不写文件。
+  - retention 只清理目标目录中的旧 mandate 文件。
+- **代码标注要求**：`# [H-016] mandate_daily_cli`
+
+### IC-TA-003: investment-controller 盘前/盘后 briefing fixture dry-run（P2）
+- **描述**：IC-TA-002 接入更多上下文后，需要固定盘前/盘后 briefing 的 dry-run 输出，确保 investment-controller 拿到的是流程提示和调度建议，而不是另一个 TA 结论。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：IC-TA-002 完成。
+- **执行约束**：
+  - 不调用 LLM。
+  - 不发送飞书。
+  - 不输出强买卖词。
+- **实现要点**：
+  1. 构造盘前 fixture：持仓、观察仓、昊天日报、数据健康、待处理 TA。
+  2. 构造盘后 fixture：今日表现、Review、报告数据缺口。
+  3. 输出 briefing payload，包含待调度 TA、只进日报项、需要人工确认项。
+  4. 禁用词扫描。
+- **验收方式**：
+  - dry-run fixture 测试通过。
+  - briefing 中包含“为什么要/不要调 TA”。
+  - 不出现强动作建议。
+- **代码标注要求**：`# [IC-TA-003] controller_briefing_dry_run`
+
+### TF-REVIEW-005: 盘后 Review 归因接入观察信号与模拟账本（P1）
+- **描述**：盘后 Review 需要解释候选盘中是否触发、是否进入模拟账本、是否被人工确认。当前 Review 更多看候选自身，本任务接入 observe signals 与 paper ledger 归因。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：TF-REVIEW-004、TF-PAPER-001 完成。
+- **执行约束**：
+  - 不接真实交易。
+  - 不调用 LLM。
+  - 不写生产数据库测试数据。
+- **实现要点**：
+  1. Review 读取观察信号和模拟账本状态。
+  2. 输出每只候选：未触发/触发待确认/已确认/已失效/缺数据。
+  3. 盘后汇总区展示“今天实际值得复盘的票”。
+  4. 生成 fixture 文档片段。
+- **验收方式**：
+  - 有 pending/open/invalidated 三类 fixture。
+  - Review 不再空白或只显示候选原始分数。
+  - 不输出强买卖词。
+- **代码标注要求**：`# [TF-REVIEW-005] review_observe_paper_attribution`
+
+### UI-013: TradeFlow 空状态与下一步 CTA 文案收口（P2）
+- **描述**：用户看到候选池、观察、Review、主题日报为空时，不知道该点什么。本任务统一 TradeFlow 各 tab 空状态和下一步按钮，降低试用迷路感。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：UI-012、H-015 完成。
+- **执行约束**：
+  - 不改核心业务逻辑。
+  - 不增加营销式页面。
+  - 不调用 API 以外的新服务。
+- **实现要点**：
+  1. 候选池空：提示生成候选池/导入观察仓。
+  2. 观察空：提示先生成候选或加入观察仓。
+  3. Review 空：提示一键生成/说明非交易日映射。
+  4. 主题日报空：提示先生成候选池或 heatmap。
+- **验收方式**：
+  - 前端构建通过。
+  - 空状态不遮挡主流程。
+  - 文案不含买卖建议。
+- **代码标注要求**：`// [UI-013] tradeflow_empty_state_cta`
+
+### DATA-023: 数据源目录 API/文档同步与供应商能力矩阵导出（P2）
+- **描述**：数据源能力分散在 source_catalog、docs 和报告里。用户需要知道行情/资金/龙虎榜/公告/评级/回购/研报分别来自哪里、fallback 是什么、是否实时。本任务导出统一矩阵。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：DATA-020、DATA-CATALOG-FIX 完成。
+- **执行约束**：
+  - 不调用 live API。
+  - 不打印 API key。
+  - 不改变 provider 路由。
+- **实现要点**：
+  1. 新增数据源能力矩阵导出函数/API 或文档生成脚本。
+  2. 字段包括 data_type、primary_vendor、fallback_vendor、freshness、known_limits、status_semantics。
+  3. 与 `MODEL_API_CATALOG` 类似，输出给 agent 可读的文档。
+  4. 增加测试确保新增 data type 不会漏进矩阵。
+- **验收方式**：
+  - 生成文档/JSON。
+  - 覆盖资金、龙虎榜、公告、评级、回购、研报。
+  - 不含密钥。
+- **代码标注要求**：`# [DATA-023] source_capability_matrix`
+
+### PERF-006: 前端 bundle 体积趋势记录与懒加载候选建议（P2）
+- **描述**：前端构建长期提示 bundle 超 500KB。PERF-005 只记录预算，本任务补体积趋势记录和低风险 code-split 建议，不强制拆大模块。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：PERF-005 完成。
+- **执行约束**：
+  - 不做大规模前端重构。
+  - 不改变路由行为。
+  - 不让性能测试依赖绝对耗时。
+- **实现要点**：
+  1. 解析 `npm run build` 输出，记录 js/css gzip 尺寸。
+  2. 生成 `docs/perf/frontend_bundle_report.md`。
+  3. 给出懒加载候选：Reports、TradeFlow、TrackingBoard、Charts。
+  4. 测试只验证解析逻辑和报告格式。
+- **验收方式**：
+  - fixture build output 可解析。
+  - 报告生成。
+  - 不要求实际 code split。
+- **代码标注要求**：`# [PERF-006] frontend_bundle_trend`
+
+### V-011: 夜间自动开发日报验收与 ready 队列续航检查（P2）
+- **描述**：自动开发跑完后需要稳定回答“昨晚做了什么、失败在哪、明晚还有多少任务”。本任务验收 auto_dev_reports / DEVLOG / task_runs 的一致性。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：AUTO-003 完成。
+- **执行约束**：
+  - 不调用 OpenCode。
+  - 不修改历史 run 内容，只做读取和报告。
+  - 不发送通知。
+- **实现要点**：
+  1. 扫描最近 24 小时 commits、task_runs、reviews。
+  2. 检查每个 done task 是否有 run archive/review/DEVLOG 记录。
+  3. 输出 ready 队列剩余数量和预计可跑时长。
+  4. 生成 `docs/auto_dev_reports/YYYY-MM-DD.md`。
+- **验收方式**：
+  - fixture/本地数据能生成日报。
+  - ready 队列为空时给出明确提示。
+  - 不误改 TASKS 状态。
+- **代码标注要求**：`# [V-011] nightly_auto_dev_acceptance`
+
+### NOTIFY-003: 通知去噪规则回放测试与日报/盘中分层验收（P2）
+- **描述**：NOTIFY-002 接入更多摘要后，需要保证不会把普通数据缺口、正常无数据、观察项全部推成盘中提醒。本任务做通知分层回放测试。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：NOTIFY-002 完成。
+- **执行约束**：
+  - dry-run，不真实发送。
+  - 不调用 LLM。
+  - 不输出强动作词。
+- **实现要点**：
+  1. 构造 P0/P1/P2/P3 通知 fixture。
+  2. 验证 P0/P1 可即时草稿，P2/P3 只进日报。
+  3. NORMAL_NO_DATA 只进日报摘要，不盘中打扰。
+  4. 输出去噪回放报告。
+- **验收方式**：
+  - 通知分层测试通过。
+  - dry-run payload 可读。
+  - 禁用词扫描通过。
+- **代码标注要求**：`# [NOTIFY-003] notification_noise_replay`
 
 ## B. 待办
 
