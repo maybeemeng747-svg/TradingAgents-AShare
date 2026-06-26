@@ -134,7 +134,7 @@
 108. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2，ready，依赖 TRACK-NOTIFY-001/H-015/DATA-021 ✓）。
 109. `DATA-022`：主力资金/龙虎榜失败矩阵 fixture 回放（P1，done，依赖 DATA-021/DATA-017 ✓）。
 110. `TF-OBS-005`：非交易日候选计划到下一交易日观察语义回归（P1，done，依赖 TF-OBS-004 ✓）。
-111. `TRACK-008`：观察仓批量导入/导出 CSV 与去重合并（P1，ready，依赖 TRACK-001/TRACK-003 ✓）。
+ 111. `TRACK-008`：观察仓批量导入/导出 CSV 与去重合并（P1，done，依赖 TRACK-001/TRACK-003 ✓）。
 112. `REPORT-UX-002`：历史报告动作语义与数据缺口只读迁移预检（P1，ready，依赖 DECISION-004/DATA-021 ✓）。
 113. `H-016`：昊天主题日报 CLI 生成与保留策略（P2，ready，依赖 H-015 ✓）。
 114. `IC-TA-003`：investment-controller 盘前/盘后 briefing fixture dry-run（P2，ready，依赖 IC-TA-002 ✓）。
@@ -3897,7 +3897,7 @@
 ### TRACK-008: 观察仓批量导入/导出 CSV 与去重合并（P1）
 - **描述**：观察仓现在有手动新增，但用户常会从截图/表格/外部清单批量导入。本任务提供 CSV/文本批量导入导出与去重合并，减少重复手工维护。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — TRACK-008-20260626-203656（52 tests passed）
 - **前置条件**：TRACK-001、TRACK-003 完成。
 - **执行约束**：
   - 不覆盖用户已有备注，除非显式 merge。

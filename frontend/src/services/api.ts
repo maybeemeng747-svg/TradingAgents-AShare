@@ -1,4 +1,4 @@
-import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, TrackingBoardV2Response, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse, CompanyOverviewResponse, PaperLedgerResponse, PaperActionResponse, PaperReviewResponse, SourceFreshnessResponse, TopicHeatmapResponse, MandateDailyReportResponse, ObservationAddResponse, ObservationActionResponse, ObservationItemCreatePayload, LiveSamplingResponse } from '@/types'
+import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, TrackingBoardV2Response, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse, CompanyOverviewResponse, PaperLedgerResponse, PaperActionResponse, PaperReviewResponse, SourceFreshnessResponse, TopicHeatmapResponse, MandateDailyReportResponse, ObservationAddResponse, ObservationActionResponse, ObservationItemCreatePayload, ObservationImportResponse, ObservationExportResponse, LiveSamplingResponse } from '@/types'
 
 export function getBaseUrl(): string {
     const envUrl = (import.meta.env.VITE_API_URL as string) || ''
@@ -320,6 +320,21 @@ class ApiService {
             method: 'POST',
             body: JSON.stringify(data),
         })
+    }
+
+    // [TRACK-008] observation_bulk_import_export
+    async importObservationItems(csvText: string, forceOverwriteNotes = false): Promise<ObservationImportResponse> {
+        return this.request<ObservationImportResponse>('/v1/tradeflow/observation-items/import', {
+            method: 'POST',
+            body: JSON.stringify({ csv_text: csvText, force_overwrite_notes: forceOverwriteNotes }),
+        })
+    }
+
+    // [TRACK-008] observation_bulk_import_export
+    async exportObservationItems(includeRemoved = true): Promise<ObservationExportResponse> {
+        return this.request<ObservationExportResponse>(
+            `/v1/tradeflow/observation-items/export?include_removed=${includeRemoved}`,
+        )
     }
 
     // Stock Search

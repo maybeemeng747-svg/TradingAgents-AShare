@@ -1,0 +1,3264 @@
+Task: TRACK-008 - 观察仓批量导入/导出 CSV 与去重合并（P1）
+Date: 2026-06-26_20:58:47
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019f0401-8528-70c3-9ba7-5ab6fc690598
+--------
+user
+current changes
+2026-06-26T12:57:19.023683Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-06-26T12:57:19.147020Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+2026-06-26T12:57:19.730479Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-06-26T12:57:19.741820Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/DECISIONS.md && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-26 | TRACK-008 观察仓批量导入/导出 CSV 与去重合并
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **状态**：✅ 完成（待提交）
+- **优先级**：P1
+- **代码标注**：`# [TRACK-008] observation_bulk_import_export` / `// [TRACK-008] observation_bulk_import_export`
+
+### 背景
+
+观察仓已有手动新增（TRACK-001）和一键加入（TRACK-006），但用户常从截图/表格/外部
+清单批量导入标的。本任务提供 CSV / 文本批量导入导出与去重合并，减少重复手工维护，
+并保证导出再导入能 round-trip。
+
+### 变更
+
+- `api/services/tradeflow_service.py`
+  - 新增 `parse_observation_csv(text)`：解析 CSV / 制表符 / 空格文本块为观察仓条目
+    dict。自动识别两种格式：含识别表头的 CSV 表格 vs 快速粘贴的 `代码 [名称]` 文本
+    清单。支持中英文表头别名（代码/symbol、名称/name、入场区/entry_zone 等），
+    支持"入场区"合并单元格（如 `29.0-30.5` 自动拆成 entry_low/high）。
+  - CSV 内部按规范化 symbol 去重，notes 采用 append 策略（相同片段去重），
+    strategy_tags 取并集，标量字段取最后非空值。
+  - 新增 `import_observation_csv(csv_text, force_overwrite_notes, tf_db_path)`：
+    解析后转发到现有 `bulk_upsert_observation_items` 写入路径，复用全部 TRACK-001 /
+    TRACK-006 契约（UNIQUE(symbol)、notes 保留、价格边界 0.0、枚举校验）。导入前对
+    reason 字段做 `_scrub_observation_text` 过滤强动作词。
+  - 新增 `export_observation_csv(include_removed, tf_db_path)`：导出全量观察仓为
+    带 UTF-8 BOM 的 CSV 字符串，中文表头，价格 0 保留为 "0"（不显示 N/A）。
+- `api/tradeflow_schemas.py`
+  - 新增 `ObservationImportRequest`（csv_text + force_overwrite_notes）。
+  - 新增 `ObservationImportResponse`（parsed_count + created/updated/errored 计数）。
+  - 新增 `ObservationExportResponse`（csv_text + count）。
+- `api/main.py`
+  - `POST /v1/tradeflow/observation-items/import`：接收 CSV 文本，解析后批量 upsert。
+  - `GET /v1/tradeflow/observation-items/export`：导出全量观察仓 CSV。
+- `api/runtime_tier.py`
+  - 将 `tradeflow_observation_import` / `tradeflow_observation_export` 注册为
+    FAST_RADAR 层级（无 LLM、无 TA）。
+- `frontend/src/types/index.ts`
+  - 新增 `ObservationImportResponse` / `ObservationExportResponse` 类型。
+- `frontend/src/services/api.ts`
+  - 新增 `importObservationItems(csvText, forceOverwriteNotes)` 方法。
+  - 新增 `exportObservationItems(includeRemoved)` 方法。
+- `frontend/src/components/TrackingBoardV2Panel.tsx`
+  - 观察仓 tab 新增"批量导入/导出 CSV"可折叠面板（`ObservationImportPanel`）：
+    支持粘贴 CSV / 文本清单导入、一键导出全部为 CSV 文件下载。导入结果展示
+    新增/更新/失败计数。已注册 `Download` 图标导入。
+
+### 去重与 notes 保留策略
+
+- 去重键：规范化 symbol（因 DB UNIQUE(symbol) 约束，实际一行一票）。CSV 内同 symbol
+  多行合并 notes/tags。
+- notes 默认 keep-existing：重复导入不清空已有备注；仅在 `force_overwrite_notes=True`
+  且导入行 notes 非空时替换。
+- 导出表头使用中文别名，import 可识别，保证 round-trip。
+
+### 测试
+
+- 新增 `tests/test_track008_observation_csv.py`（52 用例，全通过）：
+  CSV 检测、中文/英文/Tab 表头解析、入场区拆分、文本清单解析、blob 内去重合并、
+  导入创建/更新/notes 保留/force_overwrite/零边界/错误收集/禁用词过滤、导出表头/
+  BOM/零价格/全量、导出→导入 round-trip、schema 校验、FAST_RADAR 层级、
+  tradingagents.db 隔离。
+- 回归：`tests/test_track001_observation_warehouse.py`（125 用例）、
+  `tests/test_runtime_tier_contract.py`（70 用例）全通过。
+- 前端 `npm run build`（tsc + vite）通过；`npm run lint` 在改动文件无新增告警。
+
+### 约束遵守
+
+- 未改 `tradingagents/prompts/`。
+- 未写生产 `tradingagents.db`（全部测试用 tmp DB）。
+- 未触发 OCR / LLM / 全市场扫描。
+- 未 git commit（由外部脚本处理）。
+
+---
+
+## 2026-06-26 | TF-OBS-005 非交易日候选计划到下一交易日观察语义回归
+
+- **执行者**：OpenCode
+- **类型**：feature / regression-guard
+- **状态**：✅ 完成（待提交）
+- **优先级**：P1
+- **代码标注**：`# [TF-OBS-005] observe_date_semantics` / `// [TF-OBS-005] observe_date_semantics`
+
+### 背景
+
+用户会在周末/节假日/盘后生成候选池，计划在下一 A 股交易日观察。TF-DATE-001
+已在候选生成阶段写入 `plan_date/effective_trade_date/observe_date`，observe runner
+也已能按 `effective_trade_date` 拉取候选。但 Observe API 响应没有显式区分这三个日期，
+且用户在**非交易日当天**（如周六）打开观察页时，precheck 会因为候选映射到下周一而
+返回“当日无活跃候选”的误判，让人以为系统漏了候选。
+
+本任务把三者语义在 Observe 响应里显式暴露，并在前端观察 tab 给出“该候选池于
+{plan_date}（非交易日）生成，将在 {effective_trade_date}（下一交易日）观察”的提示，
+消除误判。
+
+### 变更
+
+- `api/services/tradeflow_service.py`
+  - 新增 `_resolve_observe_date_semantics(tf_db, trade_date)`：检测跨日计划
+    （plan_date 与 effective_trade_date 不同），区分两种视图：
+    1. 查看非交易日 plan_date 本身 → 返回“下一交易日待观察”提示；
+    2. 查看生效交易日 → 返回候选池来源 provenance。
+    同时返回 `is_view_trading_day`。
+  - `get_observe()`：所有返回路径新增 `plan_date/effective_trade_date/observe_date/
+    non_trading_day_plan/next_trading_day_hint/is_view_trading_day` 六个字段；
+    当查看非交易日 plan_date 且无候选时，用 cross-date 提示覆盖“当日无活跃候选”
+    误判（核心防回归点）。
+  - `run_observe_check()`：响应新增同样的六个日期语义字段。
+- `api/tradeflow_schemas.py`
+  - `TradeFlowObserveResponse` 新增 `plan_date/effective_trade_date/observe_date/
+    non_trading_day_plan/next_trading_day_hint/is_view_trading_day` 字段（带默认值，
+    旧 shape 仍可序列化）。
+- `frontend/src/types/index.ts`
+  - `TradeFlowObserveResponse`、`TradeFlowObserveRunResponse` 新增可选日期语义字段。
+- `frontend/src/pages/TradeFlow.tsx`
+  - `ObserveTable` 新增 `planDate/effectiveTradeDate/nonTradingDayPlan/
+    nextTradingDayHint` props；当 `nonTradingDayPlan && nextTradingDayHint` 为真时
+    渲染蓝色提示卡片（带 Calendar 图标、候选池日期 → 生效交易日映射），并保留原
+    “暂无盘中观察数据”空状态与“observe_reason”黄条互不冲突。
+  - `<ObserveTable>` 调用处透传 `observeData` 的新字段。
+- `tests/test_tf_obs_005_observe_date_semantics.py`：新增 17 个测试，覆盖：
+  - 周末（周六/周日）→ 下周一日期映射正确。
+  - `_resolve_observe_date_semantics`：no-DB / 空库 / 非交易日视图 / 生效交易日视图 /
+    同日计划不误判 5 条路径。
+  - `get_observe(Monday)` 能读到周末生成的候选 + 显式日期字段。
+  - `get_observe(Saturday)` 不再返回“当日无活跃候选”误判，给出 cross-date 提示。
+  - `run_observe_check` 响应携带 cross-date 字段；同日计划不误判。
+  - Pydantic schema 接受新字段且旧 shape 默认值正确；`get_observe` 结果可经 schema
+    序列化。
+  - 提示文案不含 FORBIDDEN_WORDS（立即买入/重仓买入/满仓等）。
+
+### 测试
+
+- `pytest tests/test_tf_obs_005_observe_date_semantics.py -q` → 17 passed。
+- 回归：`tests/test_tf_obs_001_observe_runner.py` + `002/003/004` → 120 passed。
+- 回归：`tests/test_ui001_tradeflow_api.py` + `test_tradeflow_candidate_engine.py` +
+  `test_tf_review_002_date_mapping.py` + `test_tf_review_004_empty_diagnostics.py` +
+  `test_tradeflow_schemas.py` → 154 passed。
+- 回归：`tests/test_v007_tradeflow_trial_e2e.py` + `test_v008_paper_trial_acceptance.py`
+  → 110 passed（跨日 e2e 不回归）。
+- `npm run build` → 通过。
+
+### 风险
+
+- 仅在 Observe 响应**新增**字段，不改既有查询/触发阈值算法，旧前端/旧测试兼容。
+- 未触碰 `tradingagents/prompts/`、生产 `tradingagents.db`、`eval_results/`。
+- 未调用任何 live API（测试全部用 fixture + monkeypatch stub）。
+
+---
+
+
+
+- **执行者**：OpenCode
+- **类型**：test / regression-guard
+- **状态**：✅ 完成（待提交）
+- **优先级**：P1
+- **代码标注**：`# [DATA-022] fund_lhb_status_matrix`
+
+### 背景
+
+用户多次遇到主力资金失败、龙虎榜无数据/未触发/查询失败混淆。本任务用
+fixture 矩阵回放数据源状态，确保 DATA-021 的 data_blockers 与 TA 报告不会把
+"正常无数据" 当失败，也不会把失败因文本长度大于 20 而误判为 HAS_DATA。
+
+### 变更
+
+- 新增 `tests/test_data022_fund_lhb_status_matrix.py`：54 个测试，7 个维度。
+  - fund_flow_individual 矩阵：HAS_DATA / FAILED / NORMAL_NO_DATA / SKIPPED
+    （结构化 + legacy_text 两条路径）。
+  - lhb 矩阵：HAS_DATA / FAILED / NORMAL_NO_DATA / NOT_QUERIED
+    （结构化 + legacy_text 两条路径）。
+  - 覆盖 `DataCollector._infer_source_status`（`[G-007] LHB_*` 标记识别）→
+    `infer_evidence_statuses`（EvidenceStatus wire 值）→
+    `build_data_blockers` / `summarize_data_blockers`（severity/level）→
+    `build_fund_flow_provenance` / `build_lhb_provenance`（strong_evidence）
+    全链路状态推断边界。
+  - 核心防回归：
+    1. `FAILED` 长（>20 字符）文本不得因长度规则被误判为 HAS_DATA
+       （fund_flow 长/短文本、lhb 长文本、provenance 路径共 4 个用例）。
+    2. `NORMAL_NO_DATA` 不计入 query_failed 计数；纯 normal_no_data/skipped
+       时 summarize_data_blockers.level = info，不升级到 warning。
+    3. 4 个 canonical 状态产出 4 个不同的 EvidenceStatus wire 值，不复用桶。
+- 新增 `docs/data022_fund_lhb_status_matrix.md`：状态矩阵文档，说明每个状态
+  对 blocker severity / report action / strong_evidence_allowed 的影响，以及
+  结构化契约优先于文本启发式的实现保证。
+
+### 验证
+
+- `pytest tests/test_data022_fund_lhb_status_matrix.py -q` → 54 passed。
+- 关联回归 `pytest tests/test_data017_fund_lhb_health.py
+  tests/test_data021_report_data_blockers.py
+  tests/test_report_ux001_data_blocker_replay.py
+  tests/test_g007_fund_lhb_provenance.py -q` → 全部通过（合计 157 passed）。
+- 未触发 live API、未改 prompts、未写生产 DB。
+
+### 风险
+
+- `infer_evidence_statuses` 的纯文本回退路径对 `[G-007] LHB_NORMAL_NO_DATA` /
+  `[G-007] LHB_FAILED` 标记识别不全（会被 length 规则吞成 HAS_DATA）；
+  实际链路依赖 `DataCollector.build_raw_evidence` 写入的结构化 `status` 字段
+  绕过该路径，已在矩阵文档 §2.3 显式记录为已知边界。
+
+---
+
+## 2026-06-26 | V-010 小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口
+
+- **执行者**：OpenCode
+- **类型**：test / acceptance-e2e
+- **状态**：✅ 完成（待提交）
+- **优先级**：P1
+- **代码标注**：`# [V-010] small_cap_trial_v2_acceptance`
+
+
+exec
+/bin/zsh -lc "git status --short --branch && sed -n '1,220p' docs/project-overview.md && sed -n '1,220p' docs/TASKS.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+## local/tradingagents-custom...myfork/local/tradingagents-custom [ahead 174]
+ M api/main.py
+ M api/runtime_tier.py
+ M api/services/tradeflow_service.py
+ M api/tradeflow_schemas.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M docs/tradeflow_trial_acceptance.md
+ M docs/tradeflow_trial_acceptance_v2.md
+ M docs/tradeflow_trial_acceptance_v3.md
+ M frontend/src/components/TrackingBoardV2Panel.tsx
+ M frontend/src/services/api.ts
+ M frontend/src/types/index.ts
+?? docs/task_runs/TRACK-008-20260626-203656/
+?? tests/test_track008_observation_csv.py
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+# 任务池
+
+> 最后更新：2026-06-22
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，done）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，done，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，done，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，done，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，done，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，done，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done，依赖 DATA-004 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
+50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done，依赖 DATA-012 部分落地 ✓）。
+54. `DECISION-001`：最终动作语义分层 — 禁止默认 HOLD（P0，done，commit dee415c）。
+55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
+56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
+57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
+58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，done — commit 5f304db，后续 001A/DATA-COVERAGE 已闭环）。
+59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done — 后续任务已闭环）。
+60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
+63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
+65. `V-006`：最终动作语义端到端回放验收（P1，done，依赖 DECISION-004 ✓）。
+66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
+67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，done，commit f54a45e）。
+68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
+69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，done，依赖 TF-OBS-002/TF-REVIEW-002）。
+70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，done，依赖 H-010/H-011）。
+71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，done，依赖 DATA-017/DATA-006）。
+72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，done，依赖 TF-QUALITY-002/TF-OBS-002）。
+73. `V-007`：TradeFlow 试用闭环端到端验收（P1，done，commit 9ceedbf）。
+74. `TF-API-013`：TradeFlow API 合约收口与 HTTP 路由回归（P0，done，`fce3141` + `289a392`）。
+75. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，done，`OpenCode` 2026-06-16）。
+76. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，done，依赖 TF-PAPER-001 ✓）。
+77. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，done，commit fcce883）。
+78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，done，依赖 TF-REVIEW-002/TF-PAPER-001）。
+79. `DATA-019`：关键数据源实盘抽样健康日报（P1，done，commit 58b5cd2）。
+80. `H-013`：昊天主题热度曲线与政策证据看板（P1，done，commit b1fe17d）。
+81. `DATA-019A`：实盘抽样 skipped 状态与任务池收口补修（P2，done）。
+82. `H-013A`：昊天热度图历史日期 fallback 与窗口 unique 统计补修（P2，done）。
+83. `V-008`：TradeFlow 小资金试跑前整体验收（P1，done，55 tests passed）。
+84. `TF-UX-001`：TradeFlow 小资金试跑主工作台降噪与默认视图（P1，done，依赖 TF-QUALITY-004/TF-RISK-001 ✓）。
+85. `TRACK-001`：观察仓数据模型与只读/写入 API（P0，done，commit 2ef6c37）。
+86. `TRACK-002`：跟踪看板 v2 分组接口与今日指引聚合（P0，done，commit fd0d511）。
+87. `TRACK-003`：跟踪看板前端四区改版：持仓/观察仓/今日指引/盘后复盘（P0，done，commit d80aa66）。
+  88. `IC-TA-001`：investment-controller 只读上下文包与数据契约（P1，done，依赖 TRACK-001 ✓）。
+  89. `TRACK-004`：观察仓入场区/失效区规则引擎与状态流转（P1，done，依赖 TRACK-001 ✓, TRACK-002 ✓）。
+  90. `TRACK-005`：盘后复盘摘要与次日计划写回跟踪看板（P1，done，依赖 TRACK-002 ✓, TF-REVIEW-003 ✓）。
+91. `TRACK-006`：TradeFlow/TA 候选一键加入观察仓与来源追踪（P1，done，commit 5aa512d）。
+92. `TRACK-NOTIFY-001`：飞书/总控官通知草稿 payload 与去噪规则（P1，done — TRACK-NOTIFY-001-20260623-122700，前置 IC-TA-001 ✓/TRACK-002 ✓ 均完成）。
+93. `TRACK-007`：跟踪看板端到端验收与用户操作手册（P2，done ✓，依赖 TRACK-003 ✓, TRACK-004 ✓, TRACK-005 ✓）。
+  94. `DATA-020`：数据源健康日报前端可视化与 skipped/failed 分层展示（P1，done，依赖 DATA-019A）。
+  95. `TF-REVIEW-004`：盘后 Review 空数据诊断与一键生成入口（P1，done，依赖 TF-REVIEW-003）。
+ 96. `H-014`：昊天主题候选减少与主题集中度阈值校准（P1，done，依赖 H-013A/H-012 ✓）。
+97. `V-009`：小资金试跑后回归清单与用户操作手册（P1，done，依赖 V-008 ✓）。
+ 98. `TF-OBS-004`：盘中观察自动刷新、触发提醒与人工确认队列降噪（P1，done，依赖 TF-OBS-003/TF-RISK-001 ✓）。
+99. `DATA-021`：TA 报告数据源失败原因透传与字段级降级说明（P1，done — Codex 接管完成，依赖 DATA-020/DATA-004 ✓）。
+100. `H-015`：昊天主题日报与候选入池/出池解释（P1，done — Codex 直接开发，依赖 H-014 ✓/H-013A ✓）。
+ 101. `PERF-005`：TradeFlow 页面与 API 性能预算回归（P2，done，依赖 TF-UX-001/DATA-020 ✓）。
+102. `HK-001`：港股输入边界与轻量行情-only 模式声明（P2，done — commit 2326a3d + a9fd09a）。
+103. `TF-PERSIST-001`：TradeFlow save_candidate 分项评分持久化补口（P2，done — commit 0016a92 + 2257f32）。
+104. `AUTO-003`：任务建议去重与已完成任务过滤（P1，ready，修复 M-012 误把 done/blocked-resolved 任务重复建议）。
+105. `REPORT-UX-001`：TA 报告“数据不足观察”端到端回放验收（P1，ready，依赖 DATA-021 ✓）。
+  106. `IC-TA-002`：investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1，done，依赖 IC-TA-001/DATA-021/H-015 ✓）。
+107. `V-010`：小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口（P1，done，依赖 V-009/DATA-021/H-015 ✓）。
+108. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2，ready，依赖 TRACK-NOTIFY-001/H-015/DATA-021 ✓）。
+109. `DATA-022`：主力资金/龙虎榜失败矩阵 fixture 回放（P1，done，依赖 DATA-021/DATA-017 ✓）。
+110. `TF-OBS-005`：非交易日候选计划到下一交易日观察语义回归（P1，done，依赖 TF-OBS-004 ✓）。
+ 111. `TRACK-008`：观察仓批量导入/导出 CSV 与去重合并（P1，done，依赖 TRACK-001/TRACK-003 ✓）。
+112. `REPORT-UX-002`：历史报告动作语义与数据缺口只读迁移预检（P1，ready，依赖 DECISION-004/DATA-021 ✓）。
+113. `H-016`：昊天主题日报 CLI 生成与保留策略（P2，ready，依赖 H-015 ✓）。
+114. `IC-TA-003`：investment-controller 盘前/盘后 briefing fixture dry-run（P2，ready，依赖 IC-TA-002 ✓）。
+115. `TF-REVIEW-005`：盘后 Review 归因接入观察信号与模拟账本（P1，ready，依赖 TF-REVIEW-004/TF-PAPER-001 ✓）。
+116. `UI-013`：TradeFlow 空状态与下一步 CTA 文案收口（P2，ready，依赖 UI-012/H-015 ✓）。
+117. `DATA-023`：数据源目录 API/文档同步与供应商能力矩阵导出（P2，ready，依赖 DATA-020/DATA-CATALOG-FIX ✓）。
+118. `PERF-006`：前端 bundle 体积趋势记录与懒加载候选建议（P2，ready，依赖 PERF-005 ✓）。
+119. `V-011`：夜间自动开发日报验收与 ready 队列续航检查（P2，ready，依赖 AUTO-003 ✓）。
+120. `NOTIFY-003`：通知去噪规则回放测试与日报/盘中分层验收（P2，ready，依赖 NOTIFY-002 ✓）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
+16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done）。
+18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
+19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done）。
+21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## TRACK. 跟踪看板 / 观察仓 / investment-controller 联动任务池（2026-06-22 新增）
+
+> 目标：把跟踪看板从“持仓实时行情表”升级为“交易日作战面板”。TA 负责数据、报告和状态容器；investment-controller 负责盘前/盘中/盘后调度、飞书播报和是否调用深度 TA 的判断。
+
+### TRACK-001: 观察仓数据模型与只读/写入 API（P0）
+- **描述**：新增“观察仓”容器，用于存放想买但尚未买入、等待价格/事件/资金确认的标的。
+- **优先级**：P0
+- **状态**：done — commit 2ef6c37
+- **背景**：
+  - 当前跟踪看板只展示真实持仓，无法承载“我想进但等位置”的观察票。
+  - 观察仓是盘前计划、盘中提醒、盘后复盘和 investment-controller 调度的基础状态。
+- **执行约束**：
+  - 不写生产 `tradingagents.db` 测试数据。
+  - 不触发 TA/LLM。
+  - 不自动推送飞书。
+  - 不改 `tradingagents/prompts/`。
+- **实现要点**：
+  1. 新增观察仓表或等价持久化模型，字段至少包含：
+     - `symbol/name`
+     - `status`: `watching / near_entry / in_entry_zone / ta_required / entered / invalidated / removed`
+     - `entry_low/entry_high`
+     - `trigger_price`
+     - `invalid_price`
+     - `horizon`: `intraday / short / mid`
+     - `source`: `manual / tradeflow / ta / investment_controller`
+     - `reason`
+     - `priority`
+     - `notes`
+     - `created_at/updated_at/last_reviewed_at`
+  2. 新增 API：
+     - list observation items
+     - create/update item
+     - mark invalidated/removed
+     - optional bulk upsert
+  3. API 返回必须区分“真实持仓”和“观察仓”，禁止把观察仓误算入持仓市值。
+  4. 测试覆盖创建、更新、状态流转、空数据、symbol/name 规范化。
+- **验收方式**：
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- api/main.py api/runtime_tier.py api/services/tradeflow_service.py api/tradeflow_schemas.py frontend/src/components/TrackingBoardV2Panel.tsx frontend/src/services/api.ts frontend/src/types/index.ts tests/test_track008_observation_csv.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ api/main.py                                      |  26 ++
+ api/runtime_tier.py                              |   2 +
+ api/services/tradeflow_service.py                | 345 +++++++++++++++++++++++
+ api/tradeflow_schemas.py                         |  35 +++
+ docs/DEVLOG.md                                   |  77 +++++
+ docs/TASKS.md                                    |   4 +-
+ docs/tradeflow_trial_acceptance.md               |   2 +-
+ docs/tradeflow_trial_acceptance_v2.md            |   2 +-
+ docs/tradeflow_trial_acceptance_v3.md            |   2 +-
+ frontend/src/components/TrackingBoardV2Panel.tsx | 145 ++++++++++
+ frontend/src/services/api.ts                     |  17 +-
+ frontend/src/types/index.ts                      |  20 ++
+ 12 files changed, 671 insertions(+), 6 deletions(-)
+diff --git a/api/main.py b/api/main.py
+index ac572a8..36a8c7c 100644
+--- a/api/main.py
++++ b/api/main.py
+@@ -5334,6 +5334,9 @@ from api.tradeflow_schemas import (
+     ObservationAddFromCandidateRequest,  # [TRACK-006] add_to_observation
+     ObservationAddFromTAReportRequest,  # [TRACK-006] add_to_observation
+     ObservationAddResponse,  # [TRACK-006] add_to_observation
++    ObservationImportRequest,  # [TRACK-008] observation_bulk_import_export
++    ObservationImportResponse,  # [TRACK-008] observation_bulk_import_export
++    ObservationExportResponse,  # [TRACK-008] observation_bulk_import_export
+ )
+ from api.services.tradeflow_service import (
+     get_daily_plan as _tf_get_daily_plan,
+@@ -5372,6 +5375,8 @@ from api.services.tradeflow_service import (
+     bulk_upsert_observation_items as _tf_bulk_upsert_observation_items,  # [TRACK-001] observation_warehouse
+     add_candidate_to_observation as _tf_add_candidate_to_observation,  # [TRACK-006] add_to_observation
+     add_ta_report_to_observation as _tf_add_ta_report_to_observation,  # [TRACK-006] add_to_observation
++    import_observation_csv as _tf_import_observation_csv,  # [TRACK-008] observation_bulk_import_export
++    export_observation_csv as _tf_export_observation_csv,  # [TRACK-008] observation_bulk_import_export
+ )
+ 
+ # [UI-001] tradeflow_api — read-only endpoints
+@@ -5666,6 +5671,27 @@ def tradeflow_observation_items_bulk_upsert(request: ObservationBulkUpsertReques
+     return _tf_bulk_upsert_observation_items(payload)
+ 
+ 
++# [TRACK-008] observation_bulk_import_export — CSV / text bulk import.
++# Parses the blob, dedups within it by normalized symbol (merging notes), then
++# forwards to the shared bulk_upsert write path so all TRACK-001 / TRACK-006
++# contracts (UNIQUE(symbol), notes preservation, price boundary 0.0) hold.
++@app.post("/v1/tradeflow/observation-items/import", response_model=ObservationImportResponse)
++def tradeflow_observation_items_import(request: ObservationImportRequest):
++    return _tf_import_observation_csv(
++        request.csv_text,
++        force_overwrite_notes=request.force_overwrite_notes,
++    )
++
++
++# [TRACK-008] observation_bulk_import_export — CSV export.
++# Returns a CSV string (UTF-8 BOM for Excel) whose headers are the Chinese
++# aliases import recognizes, so export→import round-trips. Never triggers
++# TA / LLM and never touches tradingagents.db.
++@app.get("/v1/tradeflow/observation-items/export", response_model=ObservationExportResponse)
++def tradeflow_observation_items_export(include_removed: bool = Query(True, description="是否包含已 removed 条目（导出默认全量）")):
++    return _tf_export_observation_csv(include_removed=include_removed)
++
++
+ # [TRACK-006] add_to_observation — one-click add from TradeFlow candidate.
+ # Resolves the full candidate row from tradeflow_candidates by symbol+date so
+ # the frontend just forwards the click; never auto-fires (no scheduler path).
+diff --git a/api/runtime_tier.py b/api/runtime_tier.py
+index 2ca0d9b..027249e 100644
+--- a/api/runtime_tier.py
++++ b/api/runtime_tier.py
+@@ -81,6 +81,8 @@ _TRADEFLOW_FAST_ENDPOINTS: set[str] = {
+     "tradeflow_topic_watchlist",  # [H-012] mandate_topic_registry
+     "tradeflow_topic_heatmap",  # [H-013] mandate_topic_heatmap
+     "tradeflow_observation_items",  # [TRACK-001] observation_warehouse
++    "tradeflow_observation_import",  # [TRACK-008] observation_bulk_import_export
++    "tradeflow_observation_export",  # [TRACK-008] observation_bulk_import_export
+     "investment_controller_context",  # [IC-TA-001] investment_controller_context
+     "notification_draft_dry_run",  # [TRACK-NOTIFY-001] notification_payload_dry_run
+ }
+diff --git a/api/services/tradeflow_service.py b/api/services/tradeflow_service.py
+index f55f782..861f9a0 100644
+--- a/api/services/tradeflow_service.py
++++ b/api/services/tradeflow_service.py
+@@ -4378,3 +4378,348 @@ def add_ta_report_to_observation(
+         return update_result
+     finally:
+         conn.close()
++
++
++# [TRACK-008] observation_bulk_import_export
++# ──────────────────────────────────────────────────────────────────────────────
++# CSV / text bulk import & export for the observation warehouse.
++#   - Import parses a CSV (or simple whitespace-separated text) blob into
++#     observation item dicts, dedups within the blob by normalized symbol
++#     (merging notes via append/keep), then forwards to the existing
++#     ``bulk_upsert_observation_items`` write path so all TRACK-001 / TRACK-006
++#     contracts (UNIQUE(symbol), notes preservation, price boundary 0.0,
++#     forbidden-word scrub, enum validation) are honored.
++#   - Export flattens every observation item to a CSV row using the same
++#     header aliases import accepts, so export→import round-trips.
++#   - Neither path triggers TA / LLM or writes to tradingagents.db.
++# ──────────────────────────────────────────────────────────────────────────────
++
++# Canonical CSV header + accepted aliases (case-insensitive, whitespace-trimmed).
++# Chinese headers first so exported CSVs are readable by the target user.
++_OBSERVATION_CSV_COLUMNS: list[tuple[str, ...]] = [
++    ("symbol",     ("代码", "symbol", "code", "股票代码", "标的")),
++    ("name",       ("名称", "name", "股票名称", "股票名")),
++    ("status",     ("状态", "status")),
++    ("entry_low",  ("入场下沿", "entry_low", "买入下限")),
++    ("entry_high", ("入场上沿", "entry_high", "买入上限")),
++    ("trigger_price", ("触发价", "trigger_price", "触发价格")),
++    ("invalid_price", ("失效价", "invalid_price", "止损价")),
++    ("horizon",    ("周期", "horizon", "持仓周期")),
++    ("source",     ("来源", "source")),
++    ("reason",     ("理由", "reason", "观察理由")),
++    ("notes",      ("备注", "notes", "说明")),
++    ("priority",   ("优先级", "priority")),
++    ("strategy_tags", ("主题", "tags", "标签", "strategy_tags")),
++]
++# Combined "entry zone" column (e.g. "29.0-30.5") — split into entry_low/high.
++_OBSERVATION_ENTRY_ZONE_ALIASES = ("入场区", "入场区间", "entry_zone", "entry_range")
++
++# Chinese display headers used when exporting (order matters).
++_OBSERVATION_EXPORT_HEADERS = [
++    "代码", "名称", "状态", "入场下沿", "入场上沿", "触发价", "失效价",
++    "周期", "来源", "主题", "优先级", "理由", "备注",
++]
++
++
++def _observation_csv_alias_map() -> dict[str, str]:
++    """Build a lower-cased alias → canonical field map."""
++    amap: dict[str, str] = {}
++    for canon, aliases in _OBSERVATION_CSV_COLUMNS:
++        for a in aliases:
++            amap[a.strip().lower()] = canon
++    for a in _OBSERVATION_ENTRY_ZONE_ALIASES:
++        amap[a.strip().lower()] = "entry_zone"
++    return amap
++
++
++def _split_observation_entry_zone(raw: str) -> tuple[float, float]:
++    """Split a combined entry-zone string like '29.0-30.5' / '29~30.5' into
++    (low, high). Returns (0.0, 0.0) if the string is blank or unparseable."""
++    if not raw:
++        return 0.0, 0.0
++    s = raw.strip()
++    if not s:
++        return 0.0, 0.0
++    for sep in ("-", "—", "~", "至", "到", ","):
++        if sep in s:
++            parts = s.split(sep)
++            if len(parts) == 2:
++                try:
++                    lo = float(parts[0].strip())
++                    hi = float(parts[1].strip())
++                    return lo, hi
++                except ValueError:
++                    continue
++    # Single number: treat as both low and high (a point entry).
++    try:
++        v = float(s)
++        return v, v
++    except ValueError:
++        return 0.0, 0.0
++
++
++def _split_tags(raw: str) -> list[str]:
++    """Split a tag-cell string into a list, on comma / pipe / semicolon."""
++    if not raw:
++        return []
++    s = raw.strip()
++    if not s:
++        return []
++    out: list[str] = []
++    for chunk in s.replace(";", ",").replace("|", ",").replace("、", ",").split(","):
++        c = chunk.strip()
++        if c:
++            out.append(c)
++    return out
++
++
++def _looks_like_observation_csv(text: str) -> bool:
++    """Heuristic: does this blob look like a CSV table (has a recognized
++    header or contains commas in the first non-empty line)?"""
++    for ln in text.splitlines():
++        s = ln.strip()
++        if not s or s.startswith("#"):
++            continue
++        first = s
++        break
++    else:
++        return False
++    if "," not in first and "\t" not in first:
++        return False
++    header_tokens = {t.strip().lower() for t in first.replace("\t", ",").split(",")}
++    amap = _observation_csv_alias_map()
++    hits = sum(1 for t in header_tokens if t in amap)
++    return hits >= 2
++
++
++def parse_observation_csv(text: str) -> list[dict[str, Any]]:
++    """Parse a CSV / tab-separated / whitespace text blob into observation
++    item dicts.
++
++    Recognition:
++      - If the first non-empty line contains ≥2 recognized headers (or has a
++        comma/tab structure with a header row) → parse as CSV with headers.
++      - Otherwise → parse as simple whitespace-separated lines
++        ``<symbol> [name...]`` (quick-paste watchlist).
++
++    Within the blob, rows sharing the same normalized symbol are merged:
++      - notes appended (duplicate note fragments deduped),
++      - strategy_tags unioned,
++      - last non-empty value wins for scalar fields.
++    """
++    import csv as _csv
++    import io as _io
++
++    if not text or not text.strip():
++        return []
++
++    # Strip a leading UTF-8 BOM so exported CSVs re-import cleanly.
++    if text.startswith("\ufeff"):
++        text = text[1:]
++
++    raw_rows: list[dict[str, str]] = []
++
++    if _looks_like_observation_csv(text):
++        # Normalize tabs to commas so DictReader handles TSV too.
++        normalized = "\n".join(
++            ln.replace("\t", ",") if not ln.lstrip().startswith("#") else ""
++            for ln in text.splitlines()
++        )
++        reader = _csv.DictReader(_io.StringIO(normalized))
++        amap = _observation_csv_alias_map()
++        for row in reader:
++            mapped: dict[str, str] = {}
++            for raw_key, val in row.items():
++                if raw_key is None:
++                    continue
++                canon = amap.get(raw_key.strip().lower())
++                if canon and canon not in mapped:
++                    mapped[canon] = (val or "").strip()
++                elif canon:
++                    # Keep first non-empty occurrence.
++                    if not mapped[canon]:
++                        mapped[canon] = (val or "").strip()
++            if mapped:
++                raw_rows.append(mapped)
++    else:
++        # Simple whitespace-separated watchlist: "<symbol> [name...]"
++        for ln in text.splitlines():
++            s = ln.strip()
++            if not s or s.startswith("#"):
++                continue
++            parts = s.split()
++            sym = parts[0]
++            nm = " ".join(parts[1:]) if len(parts) > 1 else ""
++            raw_rows.append({"symbol": sym, "name": nm})
++
++    # Materialize each row, expanding entry_zone if present.
++    items: list[dict[str, Any]] = []
++    for r in raw_rows:
++        symbol = (r.get("symbol") or "").strip()
++        if not symbol:
++            continue
++        entry: dict[str, Any] = {"symbol": symbol, "name": (r.get("name") or "").strip()}
++        zone = r.get("entry_zone")
++        if zone:
++            lo, hi = _split_observation_entry_zone(zone)
++            # Explicit entry_low / entry_high columns override the zone cell.
++            entry["entry_low"] = lo
++            entry["entry_high"] = hi
++        for canon in (
++            "status", "trigger_price", "invalid_price", "horizon",
++            "source", "reason", "notes", "priority", "entry_low", "entry_high",
++            "name",
++        ):
++            if canon in r and r[canon] != "":
++                entry[canon] = r[canon]
++        if "strategy_tags" in r and r["strategy_tags"]:
++            entry["strategy_tags"] = _split_tags(r["strategy_tags"])
++        items.append(entry)
++
++    # Dedup within blob by normalized symbol (notes append, tags union).
++    merged: dict[str, dict[str, Any]] = {}
++    order: list[str] = []
++    for it in items:
++        norm = normalize_tradeflow_symbol(it.get("symbol", ""))
++        if not norm:
++            continue
++        if norm not in merged:
++            it["symbol"] = norm
++            merged[norm] = it
++            order.append(norm)
++        else:
++            base = merged[norm]
++            for k, v in it.items():
++                if k == "symbol":
++                    continue
++                if k == "notes":
++                    existing = base.get("notes", "")
++                    incoming = v or ""
++                    if incoming and incoming not in existing:
++                        base["notes"] = (existing + " | " + incoming).strip(" |") if existing else incoming
++                elif k == "strategy_tags":
++                    existing_tags = base.get("strategy_tags", [])
++                    if isinstance(existing_tags, list) and isinstance(v, list):
++                        for t in v:
++                            if t not in existing_tags:
++                                existing_tags.append(t)
++                        base["strategy_tags"] = existing_tags
++                else:
++                    if v not in (None, "", 0, 0.0) or k not in base:
++                        base[k] = v
++    return [merged[s] for s in order]
++
++
++def import_observation_csv(
++    csv_text: str,
++    force_overwrite_notes: bool = False,
++    tf_db_path: str = "",
++) -> dict:
++    """Parse ``csv_text`` and bulk-upsert the resulting items.
++
++    Honors all TRACK-001 / TRACK-006 contracts via the shared
++    ``bulk_upsert_observation_items`` write path. Returns a dict with the
++    upsert result plus CSV-level parse stats.
++    """
++    _fast_meta = _tradeflow_meta("tradeflow_observation_import")
++    if not isinstance(csv_text, str):
++        return {
++            "status": "error",
++            "message": "csv_text 必须为字符串",
++            "runtime_tier_meta": _fast_meta,
++        }
++
++    try:
++        parsed = parse_observation_csv(csv_text)
++    except Exception as exc:
++        return {
++            "status": "error",
++            "message": f"CSV 解析失败: {exc}",
++            "parsed_count": 0,
++            "runtime_tier_meta": _fast_meta,
++        }
++
++    if not parsed:
++        return {
++            "status": "ok",
++            "message": "无可导入条目",
++            "parsed_count": 0,
++            "created": [],
++            "updated": [],
++            "errored": [],
++            "created_count": 0,
++            "updated_count": 0,
++            "errored_count": 0,
++            "runtime_tier_meta": _fast_meta,
++        }
++
++    for it in parsed:
++        it["force_overwrite_notes"] = bool(force_overwrite_notes)
++        # Scrub forbidden strong-action words from imported reason text so
++        # CSV imports honor the same safety policy as TRACK-006 helpers.
++        if it.get("reason"):
++            it["reason"] = _scrub_observation_text(it["reason"])
++
++    result = bulk_upsert_observation_items(parsed, tf_db_path=tf_db_path)
++    result["parsed_count"] = len(parsed)
++    result["runtime_tier_meta"] = _fast_meta
++    return result
++
++
++def export_observation_csv(
++    include_removed: bool = True,
++    tf_db_path: str = "",
++) -> dict:
++    """Export all observation items as a CSV string.
++
++    Uses the Chinese display header set so the file is directly readable by
++    the user; re-importing the exported file round-trips because the headers
++    are recognized aliases.
++    """
++    import csv as _csv
++    import io as _io
++
++    _fast_meta = _tradeflow_meta("tradeflow_observation_export")
++    listing = get_observation_items(include_removed=include_removed, tf_db_path=tf_db_path)
++    items = listing.get("items", []) if isinstance(listing, dict) else []
++
++    def _fmt_price(v: Any) -> str:
++        try:
++            f = float(v)
++        except (TypeError, ValueError):
++            return "0"
++        # Trim trailing zeros but keep 0 as "0" (boundary value preserved).
++        if f == 0:
++            return "0"
++        return (f"{f:.4f}").rstrip("0").rstrip(".")
++
++    buf = _io.StringIO()
++    # Write UTF-8 BOM so Excel opens Chinese headers correctly.
++    buf.write("\ufeff")
++    writer = _csv.writer(buf)
++    writer.writerow(_OBSERVATION_EXPORT_HEADERS)
++    for it in items:
++        tags = it.get("strategy_tags") or []
++        tags_str = ",".join(tags) if isinstance(tags, list) else ""
++        writer.writerow([
++            it.get("symbol", ""),
++            it.get("name", ""),
++            it.get("status", "watching"),
++            _fmt_price(it.get("entry_low", 0.0)),
++            _fmt_price(it.get("entry_high", 0.0)),
++            _fmt_price(it.get("trigger_price", 0.0)),
++            _fmt_price(it.get("invalid_price", 0.0)),
++            it.get("horizon", "short"),
++            it.get("source", "manual"),
++            tags_str,
++            it.get("priority", 0),
++            it.get("reason", ""),
++            it.get("notes", ""),
++        ])
++
++    return {
++        "status": "ok",
++        "csv_text": buf.getvalue(),
++        "count": len(items),
++        "runtime_tier_meta": _fast_meta,
++    }
+diff --git a/api/tradeflow_schemas.py b/api/tradeflow_schemas.py
+index 2eb3743..575a56c 100644
+--- a/api/tradeflow_schemas.py
++++ b/api/tradeflow_schemas.py
+@@ -1030,3 +1030,38 @@ class ObservationAddResponse(BaseModel):
+     item: Optional[ObservationItemResponse] = None
+     item_id: Optional[int] = None
+     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
++
++
++# [TRACK-008] observation_bulk_import_export
++class ObservationImportRequest(BaseModel):
++    """Bulk import observation items from a CSV / text blob.
++
++    The backend parses the blob (Chinese or English headers, or simple
++    whitespace-separated ``<code> [name]`` lines), dedups within the blob by
++    normalized symbol, then upserts. Existing user notes are preserved unless
++    ``force_overwrite_notes`` is true AND incoming notes are non-empty.
++    """
++    csv_text: str = Field(..., description="CSV / 制表符 / 空格分隔的观察仓条目文本")
++    force_overwrite_notes: bool = False
++
++
++# [TRACK-008] observation_bulk_import_export
++class ObservationImportResponse(BaseModel):
++    status: str = "ok"
++    message: str = ""
++    parsed_count: int = 0
++    created: List[str] = Field(default_factory=list)
++    updated: List[str] = Field(default_factory=list)
++    errored: List[Dict[str, Any]] = Field(default_factory=list)
++    created_count: int = 0
++    updated_count: int = 0
++    errored_count: int = 0
++    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
++
++
++# [TRACK-008] observation_bulk_import_export
++class ObservationExportResponse(BaseModel):
++    status: str = "ok"
++    csv_text: str = ""
++    count: int = 0
++    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+diff --git a/frontend/src/components/TrackingBoardV2Panel.tsx b/frontend/src/components/TrackingBoardV2Panel.tsx
+index 345c2df..77720a1 100644
+--- a/frontend/src/components/TrackingBoardV2Panel.tsx
++++ b/frontend/src/components/TrackingBoardV2Panel.tsx
+@@ -14,6 +14,7 @@ import {
+     Save,
+     Trash2,
+     Upload,
++    Download,
+ } from 'lucide-react'
+ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+ import { useNavigate } from 'react-router-dom'
+@@ -140,6 +141,12 @@ export default function TrackingBoardV2Panel() {
+         notes: '',
+     })
+ 
++    // [TRACK-008] observation_bulk_import_export — CSV import/export state
++    const [showObservationImport, setShowObservationImport] = useState(false)
++    const [observationImportText, setObservationImportText] = useState('')
++    const [observationImporting, setObservationImporting] = useState(false)
++    const [observationImportFeedback, setObservationImportFeedback] = useState<{ tone: 'success' | 'error'; message: string } | null>(null)
++
+     const fetchData = useCallback(async (silent: boolean) => {
+         if (silent) setRefreshing(true)
+         else setLoading(true)
+@@ -288,6 +295,61 @@ export default function TrackingBoardV2Panel() {
+         }
+     }, [observationDraft, refreshBoard])
+ 
++    // [TRACK-008] observation_bulk_import_export
++    const handleImportObservation = useCallback(async () => {
++        const text = observationImportText.trim()
++        if (!text) {
++            setObservationImportFeedback({ tone: 'error', message: '请粘贴 CSV / 文本清单' })
++            return
++        }
++        setObservationImporting(true)
++        setObservationImportFeedback(null)
++        try {
++            const resp = await api.importObservationItems(text)
++            const parts: string[] = []
++            if (resp.created_count > 0) parts.push(`新增 ${resp.created_count} 条`)
++            if (resp.updated_count > 0) parts.push(`更新 ${resp.updated_count} 条`)
++            if (resp.errored_count > 0) parts.push(`失败 ${resp.errored_count} 条`)
++            const msg = parts.length ? parts.join('、') : '没有变化（已存在且无新字段）'
++            setObservationImportFeedback({
++                tone: resp.errored_count > 0 ? 'error' : 'success',
++                message: `导入完成：${msg}`,
++            })
++            if (resp.created_count > 0 || resp.updated_count > 0) {
++                setObservationImportText('')
++                await refreshBoard()
++            }
++        } catch (e) {
++            setObservationImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '导入失败' })
++        } finally {
++            setObservationImporting(false)
++        }
++    }, [observationImportText, refreshBoard])
++
++    // [TRACK-008] observation_bulk_import_export
++    const handleExportObservation = useCallback(async () => {
++        setObservationImportFeedback(null)
++        try {
++            const resp = await api.exportObservationItems(true)
++            // Strip a leading UTF-8 BOM before creating the Blob so the file
++            // opens cleanly in both Excel and plain editors.
++            const csv = resp.csv_text.startsWith('\ufeff') ? resp.csv_text.slice(1) : resp.csv_text
++            const blob = new Blob(['\ufeff', csv], { type: 'text/csv;charset=utf-8;' })
++            const url = URL.createObjectURL(blob)
++            const a = document.createElement('a')
++            a.href = url
++            const today = new Date().toISOString().slice(0, 10)
++            a.download = `observation_warehouse_${today}.csv`
++            document.body.appendChild(a)
++            a.click()
++            document.body.removeChild(a)
++            URL.revokeObjectURL(url)
++            setObservationImportFeedback({ tone: 'success', message: `已导出 ${resp.count} 条观察仓` })
++        } catch (e) {
++            setObservationImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '导出失败' })
++        }
++    }, [])
++
+     const freshness = data?.data_freshness
+     const alertCount = data?.alerts?.length ?? 0
+ 
+@@ -378,6 +440,20 @@ export default function TrackingBoardV2Panel() {
+                 />
+             )}
+ 
++            {activeTab === 'observation' && (
++                // [TRACK-008] observation_bulk_import_export
++                <ObservationImportPanel
++                    open={showObservationImport}
++                    onToggle={() => setShowObservationImport(v => !v)}
++                    text={observationImportText}
++                    onTextChange={setObservationImportText}
++                    onImport={handleImportObservation}
++                    onExport={handleExportObservation}
++                    importing={observationImporting}
++                    feedback={observationImportFeedback}
++                />
++            )}
++
+             <input
+                 ref={fileInputRef}
+                 type="file"
+@@ -597,6 +673,75 @@ function ObservationCreatePanel({
+     )
+ }
+ 
++// [TRACK-008] observation_bulk_import_export
++function ObservationImportPanel({
++    open,
++    onToggle,
++    text,
++    onTextChange,
++    onImport,
++    onExport,
++    importing,
++    feedback,
++}: {
++    open: boolean
++    onToggle: () => void
++    text: string
++    onTextChange: (v: string) => void
++    onImport: () => void
++    onExport: () => void
++    importing: boolean
++    feedback: { tone: 'success' | 'error'; message: string } | null
++}) {
++    return (
++        <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900">
++            <button
++                type="button"
++                onClick={onToggle}
++                className="flex w-full items-center gap-2 px-4 py-3 text-sm font-medium text-slate-700 hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100"
++            >
++                <Upload className="h-4 w-4" />
++                批量导入 / 导出 CSV
++                <span className="ml-auto text-xs text-slate-400">{open ? '收起' : '展开'}</span>
++            </button>
++            {open && (
++                <div className="space-y-3 border-t border-slate-100 p-4 dark:border-slate-800">
++                    <p className="text-xs text-slate-500 dark:text-slate-400">
++                        粘贴 CSV（表头：代码,名称,入场下沿,入场上沿,失效价,理由,备注,优先级,主题）或直接粘贴股票代码清单（每行一个）。重复导入不会产生重复记录；已有备注默认保留。
++                    </p>
++                    <textarea
++                        value={text}
++                        onChange={e => onTextChange(e.target.value)}
++                        rows={6}
++                        placeholder={'601689.SH 拓普集团\n002353.SZ 杰瑞股份\n或 CSV：\n代码,名称,入场区,失效价,备注\n600519.SH,贵州茅台,1680-1700,1650,等回调'}
++                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-700 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
++                    />
++                    <div className="flex flex-wrap gap-2">
++                        <button
++                            type="button"
++                            onClick={onImport}
++                            disabled={importing || !text.trim()}
++                            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-40"
++                        >
++                            {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
++                            导入清单
++                        </button>
++                        <button
++                            type="button"
++                            onClick={onExport}
++                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
++                        >
++                            <Download className="h-3.5 w-3.5" />
++                            导出全部
++                        </button>
++                    </div>
++                    <FeedbackMessage feedback={feedback} />
++                </div>
++            )}
++        </div>
++    )
++}
++
+ function SmallInput({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
+     return (
+         <label className="block">
+diff --git a/frontend/src/services/api.ts b/frontend/src/services/api.ts
+index 224731b..e7267d6 100644
+--- a/frontend/src/services/api.ts
++++ b/frontend/src/services/api.ts
+@@ -1,4 +1,4 @@
+-import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, TrackingBoardV2Response, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse, CompanyOverviewResponse, PaperLedgerResponse, PaperActionResponse, PaperReviewResponse, SourceFreshnessResponse, TopicHeatmapResponse, MandateDailyReportResponse, ObservationAddResponse, ObservationActionResponse, ObservationItemCreatePayload, LiveSamplingResponse } from '@/types'
++import type { AnalysisRequest, AnalysisResponse, Announcement, AuthUser, AuthVerifyResponse, JobStatus, AnalysisReport, KlineResponse, LatestAnnouncementResponse, PortfolioImportState, PortfolioOverviewResponse, PortfolioPositionInput, Report, ReportDetail, ReportListResponse, RuntimeConfig, RuntimeConfigUpdate, RuntimeConfigUpdateResponse, RuntimeWarmupRequest, RuntimeWarmupResponse, WatchlistItem, WatchlistBatchResponse, WatchlistTableParseResponse, ScheduledAnalysis, ScheduledBatchTriggerResponse, StockSearchResult, TrackingBoardResponse, TrackingBoardV2Response, UserToken, UserTokenCreateRequest, WecomWarmupRequest, WecomWarmupResponse, BarkWarmupRequest, BarkWarmupResponse, FeedbackItem, FeedbackListResponse, FeedbackUnreadResponse, TradeFlowDailyPlanResponse, TradeFlowCandidatesResponse, TradeFlowCandidateDetailResponse, TradeFlowObserveResponse, TradeFlowTAQueueResponse, TradeFlowReviewResponse, TradeFlowDataHealthResponse, TradeFlowDiscoveryRequest, TradeFlowDiscoveryResponse, TradeFlowFilteredResponse, TradeFlowObserveRunResponse, TradeFlowTieredCandidatesResponse, TradeFlowReviewGenerateResponse, FullTACostPreview, TradeFlowResearchPlanResponse, TradeFlowCompareResponse, CompanyOverviewResponse, PaperLedgerResponse, PaperActionResponse, PaperReviewResponse, SourceFreshnessResponse, TopicHeatmapResponse, MandateDailyReportResponse, ObservationAddResponse, ObservationActionResponse, ObservationItemCreatePayload, ObservationImportResponse, ObservationExportResponse, LiveSamplingResponse } from '@/types'
+ 
+ export function getBaseUrl(): string {
+     const envUrl = (import.meta.env.VITE_API_URL as string) || ''
+@@ -322,6 +322,21 @@ class ApiService {
+         })
+     }
+ 
++    // [TRACK-008] observation_bulk_import_export
++    async importObservationItems(csvText: string, forceOverwriteNotes = false): Promise<ObservationImportResponse> {
++        return this.request<ObservationImportResponse>('/v1/tradeflow/observation-items/import', {
++            method: 'POST',
++            body: JSON.stringify({ csv_text: csvText, force_overwrite_notes: forceOverwriteNotes }),
++        })
++    }
++
++    // [TRACK-008] observation_bulk_import_export
++    async exportObservationItems(includeRemoved = true): Promise<ObservationExportResponse> {
++        return this.request<ObservationExportResponse>(
++            `/v1/tradeflow/observation-items/export?include_removed=${includeRemoved}`,
++        )
++    }
++
+     // Stock Search
+     async searchStocks(q: string): Promise<{ results: StockSearchResult[] }> {
+         return this.request<{ results: StockSearchResult[] }>(`/v1/market/stock-search?q=${encodeURIComponent(q)}`)
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index 1648a76..c1057d5 100644
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -650,6 +650,26 @@ export interface ObservationActionResponse {
+     symbol?: string | null
+ }
+ 
++// [TRACK-008] observation_bulk_import_export
++export interface ObservationImportResponse {
++    status: string
++    message: string
++    parsed_count: number
++    created: string[]
++    updated: string[]
++    errored: { symbol: string; reason: string }[]
++    created_count: number
++    updated_count: number
++    errored_count: number
++}
++
++// [TRACK-008] observation_bulk_import_export
++export interface ObservationExportResponse {
++    status: string
++    csv_text: string
++    count: number
++}
++
+ // [VLM-001] watchlist_table_parser
+ export interface WatchlistTableItem {
+     symbol: string
+
+exec
+/bin/zsh -lc "grep -R \"def bulk_upsert_observation_items\\|def get_observation_items\\|def normalize_tradeflow_symbol\\|_scrub_observation_text\\|def _tradeflow_meta\" -n api/services/tradeflow_service.py api/runtime_tier.py && sed -n '3950,4385p' api/services/tradeflow_service.py && sed -n '1,130p' api/runtime_tier.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+api/services/tradeflow_service.py:3599:def get_observation_items(
+api/services/tradeflow_service.py:3906:def bulk_upsert_observation_items(
+api/services/tradeflow_service.py:4088:def _scrub_observation_text(text: str) -> str:
+api/services/tradeflow_service.py:4111:        "reason": _scrub_observation_text(reason or "")[:240],
+api/services/tradeflow_service.py:4175:    reason_text = _scrub_observation_text(
+api/services/tradeflow_service.py:4228:            "reason": _scrub_observation_text(
+api/services/tradeflow_service.py:4305:    reason_text = _scrub_observation_text(
+api/services/tradeflow_service.py:4354:            "reason": _scrub_observation_text(
+api/services/tradeflow_service.py:4661:            it["reason"] = _scrub_observation_text(it["reason"])
+                incoming_notes = raw.get("notes", "") or ""
+
+                payload = {
+                    "name": resolve_tradeflow_name(symbol, raw.get("name", "")),
+                    "status": status,
+                    "entry_low": _coerce_price(raw.get("entry_low", 0.0)),
+                    "entry_high": _coerce_price(raw.get("entry_high", 0.0)),
+                    "trigger_price": _coerce_price(raw.get("trigger_price", 0.0)),
+                    "invalid_price": _coerce_price(raw.get("invalid_price", 0.0)),
+                    "horizon": horizon,
+                    "source": source,
+                    "reason": raw.get("reason", "") or "",
+                    "priority": int(raw.get("priority", 0) or 0),
+                    "notes": incoming_notes,
+                }
+
+                # [TRACK-006] add_to_observation — provenance fields (optional)
+                strategy_tags = raw.get("strategy_tags") or []
+                if not isinstance(strategy_tags, list):
+                    strategy_tags = []
+                payload["strategy_tags_json"] = _json.dumps(strategy_tags, ensure_ascii=False)
+                try:
+                    payload["score"] = float(raw.get("score", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    payload["score"] = 0.0
+                payload["action_label"] = raw.get("action_label", "") or ""
+                payload["research_direction"] = raw.get("research_direction", "") or ""
+
+                existing = conn.execute(
+                    "SELECT id, notes FROM tradeflow_observation_items WHERE symbol = ?",
+                    (symbol,),
+                ).fetchone()
+                if existing is None:
+                    conn.execute(
+                        """
+                        INSERT INTO tradeflow_observation_items
+                            (symbol, name, status, entry_low, entry_high, trigger_price,
+                             invalid_price, horizon, source, reason, priority, notes,
+                             created_at, updated_at, last_reviewed_at,
+                             strategy_tags_json, score, action_label, research_direction,
+                             source_history_json)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            symbol, payload["name"], payload["status"],
+                            payload["entry_low"], payload["entry_high"],
+                            payload["trigger_price"], payload["invalid_price"],
+                            payload["horizon"], payload["source"], payload["reason"],
+                            payload["priority"], payload["notes"], now, now, now,
+                            payload["strategy_tags_json"], payload["score"],
+                            payload["action_label"], payload["research_direction"],
+                            "[]",
+                        ),
+                    )
+                    created.append(symbol)
+                else:
+                    # [TRACK-006] add_to_observation — preserve user notes
+                    # unless caller explicitly forces overwrite AND incoming
+                    # notes are non-empty. Existing-empty + incoming-empty
+                    # stays empty; existing-non-empty + incoming-empty keeps
+                    # the existing value.
+                    existing_notes = existing["notes"] or ""
+                    if force_overwrite_notes and incoming_notes:
+                        final_notes = incoming_notes
+                    elif not existing_notes and incoming_notes:
+                        # Write into empty slot — this is not "overwriting"
+                        # user content, just persisting the new value.
+                        final_notes = incoming_notes
+                    else:
+                        final_notes = existing_notes
+
+                    set_parts = [
+                        "name = ?", "status = ?", "entry_low = ?", "entry_high = ?",
+                        "trigger_price = ?", "invalid_price = ?", "horizon = ?",
+                        "source = ?", "reason = ?", "priority = ?", "notes = ?",
+                        "strategy_tags_json = ?", "score = ?",
+                        "action_label = ?", "research_direction = ?",
+                        "updated_at = ?",
+                    ]
+                    params = [
+                        payload["name"], payload["status"], payload["entry_low"],
+                        payload["entry_high"], payload["trigger_price"],
+                        payload["invalid_price"], payload["horizon"], payload["source"],
+                        payload["reason"], payload["priority"], final_notes,
+                        payload["strategy_tags_json"], payload["score"],
+                        payload["action_label"], payload["research_direction"], now,
+                        existing["id"],
+                    ]
+                    conn.execute(
+                        f"UPDATE tradeflow_observation_items SET {', '.join(set_parts)} WHERE id = ?",
+                        params,
+                    )
+                    updated.append(symbol)
+            except Exception as exc:
+                errored.append({
+                    "symbol": raw.get("symbol", "") if isinstance(raw, dict) else "",
+                    "reason": str(exc),
+                })
+
+        conn.commit()
+        return {
+            "status": "ok" if not errored else "partial",
+            "created": created,
+            "updated": updated,
+            "errored": errored,
+            "created_count": len(created),
+            "updated_count": len(updated),
+            "errored_count": len(errored),
+            "runtime_tier_meta": _fast_meta,
+        }
+    finally:
+        conn.close()
+
+
+# [TRACK-006] add_to_observation
+# ──────────────────────────────────────────────────────────────────────────────
+# One-click add from TradeFlow candidate / TA report to the observation
+# warehouse. Both helpers:
+#   1. Normalize the symbol (601689 -> 601689.SH etc.).
+#   2. Create a fresh item if none exists, otherwise UPDATE — never returns
+#      "duplicate" because the user explicitly clicked the add button.
+#   3. PRESERVE existing user notes — auto-generated context lands in the
+#      structured ``reason`` / ``action_label`` / ``research_direction``
+#      fields instead. Only an explicit ``force_overwrite_notes=True`` from
+#      the caller may replace user notes.
+#   4. Append an entry to ``source_history_json`` recording the previous
+#      source so the audit trail is preserved across re-adds.
+# Neither helper triggers TA / LLM or sends notifications.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Strong-action words forbidden in any auto-generated reason / message that
+# surfaces to the user (mirrors TRACK-001 / TRACK-004 policy).
+_OBSERVATION_FORBIDDEN_WORDS = (
+    "立即买入", "重仓买入", "立即清仓", "满仓", "梭哈", "全仓",
+    "必涨", "必跌", "稳赚", "保本",
+)
+
+
+def _scrub_observation_text(text: str) -> str:
+    """Strip forbidden strong-action words from auto-generated text."""
+    if not text:
+        return ""
+    cleaned = text
+    for word in _OBSERVATION_FORBIDDEN_WORDS:
+        cleaned = cleaned.replace(word, "**")
+    return cleaned
+
+
+def _append_source_history_entry(
+    current_history: list[dict],
+    *,
+    source: str,
+    as_of: str,
+    via: str,
+    reason: str,
+) -> list[dict]:
+    """Append a provenance entry to source_history_json."""
+    new_entry = {
+        "source": source,
+        "as_of": as_of,
+        "via": via,
+        "reason": _scrub_observation_text(reason or "")[:240],
+    }
+    return list(current_history or []) + [new_entry]
+
+
+def _resolve_observation_horizon_from_candidate(candidate: dict) -> str:
+    """Derive a valid observation horizon from a candidate dict.
+
+    POLICY_AMBUSH / POLICY_CONFIRM candidates are typically mid-line; others
+    default to short. Anything that fails validation falls back to ``short``.
+    """
+    candidate_type = (candidate.get("candidate_type") or "").upper()
+    raw_horizon = "mid" if candidate_type in {"POLICY_AMBUSH", "POLICY_CONFIRM"} else "short"
+    try:
+        _validate_observation_horizon(raw_horizon)
+        return raw_horizon
+    except ValueError:
+        return "short"
+
+
+# [TRACK-006] add_to_observation
+def add_candidate_to_observation(
+    candidate: dict[str, Any],
+    *,
+    via: str = "candidate_drawer",
+    force_overwrite_notes: bool = False,
+    extra_notes: str = "",
+    tf_db_path: str = "",
+) -> dict:
+    """Add (or refresh) an observation item from a TradeFlow candidate dict.
+
+    Auto-populates: strategy_tags, trigger_price, invalid_price, score,
+    why_selected (-> reason), entry_low/entry_high (from support_price),
+    horizon (from candidate_type), source="tradeflow".
+
+    Behaviour on duplicate symbol:
+      - Item is UPDATED, never rejected.
+      - ``source`` is flipped to ``tradeflow`` and the previous source is
+        pushed onto ``source_history_json``.
+      - Existing user notes are PRESERVED unless ``force_overwrite_notes`` is
+        True AND ``extra_notes`` is non-empty.
+      - If ``extra_notes`` is non-empty and existing notes are empty, the new
+        notes are written (no overwrite risk).
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_observation_items")
+    raw_symbol = candidate.get("symbol", "") if isinstance(candidate, dict) else ""
+    norm_symbol = normalize_tradeflow_symbol(str(raw_symbol))
+    if not norm_symbol:
+        return {"status": "error", "message": "candidate.symbol 不能为空", "runtime_tier_meta": _fast_meta}
+
+    name = candidate.get("name", "") or ""
+    trigger_price = candidate.get("trigger_price") or 0.0
+    invalid_price = candidate.get("invalid_price") or 0.0
+    support_price = candidate.get("support_price") or 0.0
+    composite_score = candidate.get("composite_score")
+    if composite_score is None or composite_score == 0:
+        composite_score = candidate.get("mandate_score") or candidate.get("score") or 0.0
+    strategy_tags = candidate.get("strategy_tags") or []
+    if not isinstance(strategy_tags, list):
+        strategy_tags = []
+    why_selected = candidate.get("reason") or candidate.get("tier_reason") or candidate.get("why_deep_ta") or ""
+    horizon = _resolve_observation_horizon_from_candidate(candidate)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    reason_text = _scrub_observation_text(
+        f"TradeFlow 候选 · 评分 {float(composite_score or 0):.2f}"
+        + (f" · {why_selected}" if why_selected else "")
+    )
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available", "runtime_tier_meta": _fast_meta}
+
+    import json as _json
+    try:
+        existing_row = conn.execute(
+            "SELECT * FROM tradeflow_observation_items WHERE symbol = ?",
+            (norm_symbol,),
+        ).fetchone()
+        if existing_row is None:
+            create_result = create_observation_item(
+                symbol=norm_symbol,
+                name=name,
+                entry_low=float(support_price or 0.0),
+                entry_high=0.0,
+                trigger_price=float(trigger_price or 0.0),
+                invalid_price=float(invalid_price or 0.0),
+                horizon=horizon,
+                source="tradeflow",
+                reason=reason_text,
+                priority=int(candidate.get("ta_budget_priority") or 0),
+                notes=extra_notes or "",
+                strategy_tags=strategy_tags,
+                score=float(composite_score or 0.0),
+                tf_db_path=tf_db_path,
+            )
+            if create_result.get("status") not in {"ok", "duplicate"}:
+                return create_result
+            # Tag the create result so callers can tell create vs update apart.
+            create_result["action"] = "created"
+            return create_result
+
+        current = _row_to_observation_item(existing_row)
+        existing_notes = current.get("notes", "") or ""
+        if force_overwrite_notes and extra_notes:
+            final_notes = extra_notes
+        elif not existing_notes and extra_notes:
+            final_notes = extra_notes
+        else:
+            final_notes = existing_notes
+
+        # [TRACK-006] add_to_observation — only pass the NEW history entry;
+        # update_observation_item handles the append-merge internally.
+        new_history_entry = {
+            "source": current.get("source") or "manual",
+            "as_of": now,
+            "via": via,
+            "reason": _scrub_observation_text(
+                f"切前来源 · {(current.get('reason') or '')[:120]}"
+            ),
+        }
+
+        update_result = update_observation_item(
+            current["id"],
+            name=name,
+            entry_low=float(support_price or 0.0),
+            trigger_price=float(trigger_price or 0.0),
+            invalid_price=float(invalid_price or 0.0),
+            horizon=horizon,
+            source="tradeflow",
+            reason=reason_text,
+            priority=int(candidate.get("ta_budget_priority") or 0),
+            notes=final_notes,
+            strategy_tags=strategy_tags,
+            score=float(composite_score or 0.0),
+            append_source_history=[new_history_entry],
+            tf_db_path=tf_db_path,
+        )
+        if update_result.get("status") != "ok":
+            return update_result
+        update_result["action"] = "updated"
+        return update_result
+    finally:
+        conn.close()
+
+
+# [TRACK-006] add_to_observation
+def add_ta_report_to_observation(
+    report: dict[str, Any],
+    *,
+    via: str = "analysis_page",
+    force_overwrite_notes: bool = False,
+    extra_notes: str = "",
+    tf_db_path: str = "",
+) -> dict:
+    """Add (or refresh) an observation item from a TA report dict.
+
+    Auto-populates: action_label, research_direction, key support/stop/target
+    (entry_low=stop_loss, entry_high=target_price, trigger_price=target_price,
+    invalid_price=stop_loss_price), source="ta".
+
+    Behaviour on duplicate symbol mirrors ``add_candidate_to_observation``:
+    UPDATE never reject, source flipped to ``ta``, previous source pushed
+    onto history, user notes preserved unless explicitly overwritten.
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_observation_items")
+    raw_symbol = report.get("symbol", "") if isinstance(report, dict) else ""
+    norm_symbol = normalize_tradeflow_symbol(str(raw_symbol))
+    if not norm_symbol:
+        return {"status": "error", "message": "report.symbol 不能为空", "runtime_tier_meta": _fast_meta}
+
+    name = report.get("name", "") or ""
+    action_label = report.get("action_label", "") or report.get("execution_action", "") or ""
+    research_direction = report.get("research_direction", "") or report.get("direction", "") or ""
+    target_price = report.get("target_price") or 0.0
+    stop_loss_price = report.get("stop_loss_price") or 0.0
+
+    # Map TA report's key prices onto observation schema:
+    #   entry_low   = stop_loss_price  (lower bound of the entry zone)
+    #   entry_high  = target_price     (upper bound / first target)
+    #   trigger     = target_price     (price that confirms the thesis)
+    #   invalid     = stop_loss_price  (price that invalidates the thesis)
+    entry_low = float(stop_loss_price or 0.0)
+    entry_high = float(target_price or 0.0)
+    trigger_price = float(target_price or 0.0)
+    invalid_price = float(stop_loss_price or 0.0)
+
+    horizon = "mid"
+    try:
+        _validate_observation_horizon(horizon)
+    except ValueError:
+        horizon = "short"
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    reason_text = _scrub_observation_text(
+        f"TA 报告 · 方向 {research_direction or '未给'} · 动作 {action_label or '未给'}"
+        + (f" · 目标 {entry_high:.2f} / 止损 {entry_low:.2f}" if (entry_high or entry_low) else "")
+    )
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available", "runtime_tier_meta": _fast_meta}
+
+    try:
+        existing_row = conn.execute(
+            "SELECT * FROM tradeflow_observation_items WHERE symbol = ?",
+            (norm_symbol,),
+        ).fetchone()
+        if existing_row is None:
+            create_result = create_observation_item(
+                symbol=norm_symbol,
+                name=name,
+                entry_low=entry_low,
+                entry_high=entry_high,
+                trigger_price=trigger_price,
+                invalid_price=invalid_price,
+                horizon=horizon,
+                source="ta",
+                reason=reason_text,
+                notes=extra_notes or "",
+                action_label=action_label,
+                research_direction=research_direction,
+                tf_db_path=tf_db_path,
+            )
+            if create_result.get("status") not in {"ok", "duplicate"}:
+                return create_result
+            create_result["action"] = "created"
+            return create_result
+
+        current = _row_to_observation_item(existing_row)
+        existing_notes = current.get("notes", "") or ""
+        if force_overwrite_notes and extra_notes:
+            final_notes = extra_notes
+        elif not existing_notes and extra_notes:
+            final_notes = extra_notes
+        else:
+            final_notes = existing_notes
+
+        # [TRACK-006] add_to_observation — only pass the NEW history entry.
+        new_history_entry = {
+            "source": current.get("source") or "manual",
+            "as_of": now,
+            "via": via,
+            "reason": _scrub_observation_text(
+                f"切前来源 · {(current.get('reason') or '')[:120]}"
+            ),
+        }
+
+        update_result = update_observation_item(
+            current["id"],
+            name=name,
+            entry_low=entry_low,
+            entry_high=entry_high,
+            trigger_price=trigger_price,
+            invalid_price=invalid_price,
+            horizon=horizon,
+            source="ta",
+            reason=reason_text,
+            notes=final_notes,
+            action_label=action_label,
+            research_direction=research_direction,
+            append_source_history=[new_history_entry],
+            tf_db_path=tf_db_path,
+        )
+        if update_result.get("status") != "ok":
+            return update_result
+        update_result["action"] = "updated"
+        return update_result
+    finally:
+        conn.close()
+
+
+# [TRACK-008] observation_bulk_import_export
+# ──────────────────────────────────────────────────────────────────────────────
+# CSV / text bulk import & export for the observation warehouse.
+# [PERF-001] runtime_tier_contract
+# [PERF-004] full_ta_cost_gate
+"""Runtime tier contract for TradeFlow, light TA, and full TA.
+
+Defines three tiers with latency budgets, LLM access, and confirmation gates.
+All API endpoints and UI actions must declare their tier.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional
+
+
+class RuntimeTier(str, Enum):
+    FAST_RADAR = "FAST_RADAR"
+    LIGHT_RESEARCH = "LIGHT_RESEARCH"
+    FULL_TA = "FULL_TA"
+
+
+@dataclass
+class RuntimeTierSpec:
+    tier: RuntimeTier
+    label_cn: str
+    expected_latency: str
+    llm_allowed: bool
+    requires_confirmation: bool
+    cost_risk: str
+    description: str
+
+
+_TIER_SPECS: Dict[RuntimeTier, RuntimeTierSpec] = {
+    RuntimeTier.FAST_RADAR: RuntimeTierSpec(
+        tier=RuntimeTier.FAST_RADAR,
+        label_cn="快速筛选",
+        expected_latency="5-30s",
+        llm_allowed=False,
+        requires_confirmation=False,
+        cost_risk="none",
+        description="TradeFlow 筛选、数据健康、证据缺口、候选分类。默认不调用 LLM。",
+    ),
+    RuntimeTier.LIGHT_RESEARCH: RuntimeTierSpec(
+        tier=RuntimeTier.LIGHT_RESEARCH,
+        label_cn="轻量研究",
+        expected_latency="1-3min",
+        llm_allowed=True,
+        requires_confirmation=False,
+        cost_risk="low",
+        description="轻量 TA，只跑必要模块，用于中线政策验证、短线技术确认、持仓风险复核。",
+    ),
+    RuntimeTier.FULL_TA: RuntimeTierSpec(
+        tier=RuntimeTier.FULL_TA,
+        label_cn="完整 TA",
+        expected_latency="10-20min",
+        llm_allowed=True,
+        requires_confirmation=True,
+        cost_risk="high",
+        description="完整 14 Agent TA，多空辩论和风控全链路，必须人工确认。",
+    ),
+}
+
+_TRADEFLOW_FAST_ENDPOINTS: set[str] = {
+    "tradeflow_daily_plan",
+    "tradeflow_candidates",
+    "tradeflow_candidate_detail",
+    "tradeflow_company_overview",  # [TF-UI-011] candidate_research_entry
+    "tradeflow_observe",
+    "tradeflow_ta_queue",
+    "tradeflow_review",
+    "tradeflow_data_health",
+    "tradeflow_filtered",
+    "tradeflow_discovery",
+    "tradeflow_observe_run",
+    "tradeflow_observe_scheduler",
+    "tradeflow_paper_ledger",  # [TF-PAPER-001] paper_trading_ledger
+    "tradeflow_paper_review",  # [TF-PAPER-001] paper_trading_ledger
+    "tradeflow_source_freshness",  # [DATA-018] source_freshness_report
+    "tradeflow_live_sampling",  # [DATA-020] live_sampling_health_ui
+    "tradeflow_topic_registry",  # [H-012] mandate_topic_registry
+    "tradeflow_topic_watchlist",  # [H-012] mandate_topic_registry
+    "tradeflow_topic_heatmap",  # [H-013] mandate_topic_heatmap
+    "tradeflow_observation_items",  # [TRACK-001] observation_warehouse
+    "tradeflow_observation_import",  # [TRACK-008] observation_bulk_import_export
+    "tradeflow_observation_export",  # [TRACK-008] observation_bulk_import_export
+    "investment_controller_context",  # [IC-TA-001] investment_controller_context
+    "notification_draft_dry_run",  # [TRACK-NOTIFY-001] notification_payload_dry_run
+}
+
+
+def get_tier_spec(tier: RuntimeTier) -> RuntimeTierSpec:
+    return _TIER_SPECS[tier]
+
+
+def tier_to_meta(tier: RuntimeTier) -> dict:
+    spec = get_tier_spec(tier)
+    return {
+        "runtime_tier": spec.tier.value,
+        "expected_latency": spec.expected_latency,
+        "llm_allowed": spec.llm_allowed,
+        "requires_confirmation": spec.requires_confirmation,
+        "cost_risk": spec.cost_risk,
+        "tier_label": spec.label_cn,
+        "tier_description": spec.description,
+    }
+
+
+def tradeflow_endpoint_tier(endpoint_name: str) -> RuntimeTier:
+    if endpoint_name in _TRADEFLOW_FAST_ENDPOINTS:
+        return RuntimeTier.FAST_RADAR
+    return RuntimeTier.LIGHT_RESEARCH
+
+
+def tradeflow_meta(endpoint_name: str) -> dict:
+    return tier_to_meta(tradeflow_endpoint_tier(endpoint_name))
+
+
+def is_full_ta_allowed_without_confirmation(runtime_tier: Optional[str]) -> bool:
+    if runtime_tier is None:
+        return False
+    try:
+        tier = RuntimeTier(runtime_tier)
+    except ValueError:
+        return False
+    if tier == RuntimeTier.FULL_TA:
+        return False
+    return True
+
+
+def scheduler_default_tier() -> RuntimeTier:
+
+exec
+/bin/zsh -lc "sed -n '3550,3975p' api/services/tradeflow_service.py && grep -R \"tradeflow_endpoint_tier(\\|tradeflow_meta(\\|runtime_tier\" -n tests/test_runtime_tier_contract.py tests/test_track008_observation_csv.py api/main.py | head -80" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+    return summary
+
+
+def _validate_observation_status(status: str) -> str:
+    if status not in ALLOWED_OBSERVATION_STATUSES:
+        raise ValueError(
+            f"非法观察仓状态: {status}，允许值: {sorted(ALLOWED_OBSERVATION_STATUSES)}"
+        )
+    return status
+
+
+def _validate_observation_horizon(horizon: str) -> str:
+    if horizon not in ALLOWED_OBSERVATION_HORIZONS:
+        raise ValueError(
+            f"非法 horizon: {horizon}，允许值: {sorted(ALLOWED_OBSERVATION_HORIZONS)}"
+        )
+    return horizon
+
+
+def _validate_observation_source(source: str) -> str:
+    if source not in ALLOWED_OBSERVATION_SOURCES:
+        raise ValueError(
+            f"非法 source: {source}，允许值: {sorted(ALLOWED_OBSERVATION_SOURCES)}"
+        )
+    return source
+
+
+def _coerce_price(value: Any) -> float:
+    """Coerce a price input to float, treating None/blank as 0.0.
+
+    Boundary note: explicit 0 / 0.0 / "0" all stay 0.0 — they are valid
+    placeholders meaning "未设定" and must NOT be displayed as N/A.
+    """
+    if value is None:
+        return 0.0
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return 0.0
+        try:
+            return float(s)
+        except ValueError:
+            raise ValueError(f"非法价格数值: {value!r}")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"非法价格数值: {value!r}")
+
+
+def get_observation_items(
+    status: Optional[str] = None,
+    include_removed: bool = False,
+    tf_db_path: str = "",
+) -> dict:
+    """List observation warehouse items.
+
+    ``include_removed=False`` (default) hides items whose status is
+    ``removed`` from the default board view. ``invalidated`` items are always
+    returned (they are still useful for post-market review).
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_observation_items")
+    if status is not None:
+        _validate_observation_status(status)
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {
+            "status": "no_data",
+            "items": [],
+            "summary": _observation_summary([]),
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    try:
+        query = "SELECT * FROM tradeflow_observation_items"
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        elif not include_removed:
+            clauses.append("status != ?")
+            params.append(OBSERVATION_STATUS_REMOVED)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY priority DESC, created_at DESC, id DESC"
+
+        rows = conn.execute(query, params).fetchall()
+        items = [_row_to_observation_item(r) for r in rows]
+        return {
+            "status": "ok",
+            "items": items,
+            "summary": _observation_summary(items),
+            "runtime_tier_meta": _fast_meta,
+        }
+    finally:
+        conn.close()
+
+
+def create_observation_item(
+    symbol: str,
+    name: str = "",
+    status: str = OBSERVATION_STATUS_WATCHING,
+    entry_low: Any = 0.0,
+    entry_high: Any = 0.0,
+    trigger_price: Any = 0.0,
+    invalid_price: Any = 0.0,
+    horizon: str = "short",
+    source: str = "manual",
+    reason: str = "",
+    priority: Any = 0,
+    notes: str = "",
+    strategy_tags: list[str] | None = None,  # [TRACK-006] add_to_observation
+    score: Any = 0.0,  # [TRACK-006] add_to_observation
+    action_label: str = "",  # [TRACK-006] add_to_observation
+    research_direction: str = "",  # [TRACK-006] add_to_observation
+    source_history: list[dict] | None = None,  # [TRACK-006] add_to_observation
+    tf_db_path: str = "",
+) -> dict:
+    """Create a new observation warehouse item.
+
+    Returns ``status="duplicate"`` if an item with the same (normalized)
+    symbol already exists (the caller may want ``update`` instead).
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_observation_items")
+    norm_symbol = normalize_tradeflow_symbol(symbol)
+    if not norm_symbol:
+        return {"status": "error", "message": "symbol 不能为空", "runtime_tier_meta": _fast_meta}
+
+    _validate_observation_status(status)
+    _validate_observation_horizon(horizon)
+    _validate_observation_source(source)
+
+    entry_low_f = _coerce_price(entry_low)
+    entry_high_f = _coerce_price(entry_high)
+    trigger_price_f = _coerce_price(trigger_price)
+    invalid_price_f = _coerce_price(invalid_price)
+    try:
+        priority_i = int(priority)
+    except (TypeError, ValueError):
+        priority_i = 0
+    try:
+        score_f = float(score)
+    except (TypeError, ValueError):
+        score_f = 0.0
+
+    # [TRACK-006] add_to_observation — serialize provenance lists defensively
+    import json as _json
+    tags_json = _json.dumps(strategy_tags or [], ensure_ascii=False)
+    history_json = _json.dumps(source_history or [], ensure_ascii=False)
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available", "runtime_tier_meta": _fast_meta}
+
+    try:
+        existing = conn.execute(
+            "SELECT id FROM tradeflow_observation_items WHERE symbol = ?",
+            (norm_symbol,),
+        ).fetchone()
+        if existing is not None:
+            return {
+                "status": "duplicate",
+                "message": f"{norm_symbol} 已在观察仓中，请使用更新接口",
+                "symbol": norm_symbol,
+                "item_id": existing["id"],
+                "runtime_tier_meta": _fast_meta,
+            }
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        resolved_name = resolve_tradeflow_name(norm_symbol, name)
+        conn.execute(
+            """
+            INSERT INTO tradeflow_observation_items
+                (symbol, name, status, entry_low, entry_high, trigger_price,
+                 invalid_price, horizon, source, reason, priority, notes,
+                 created_at, updated_at, last_reviewed_at,
+                 strategy_tags_json, score, action_label, research_direction,
+                 source_history_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                norm_symbol, resolved_name, status,
+                entry_low_f, entry_high_f, trigger_price_f, invalid_price_f,
+                horizon, source, reason, priority_i, notes,
+                now, now, now,
+                tags_json, score_f, action_label, research_direction,
+                history_json,
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM tradeflow_observation_items WHERE symbol = ?",
+            (norm_symbol,),
+        ).fetchone()
+        item = _row_to_observation_item(row)
+        return {
+            "status": "ok",
+            "message": f"{norm_symbol} 已加入观察仓",
+            "item": item,
+            "item_id": item["id"],
+            "runtime_tier_meta": _fast_meta,
+        }
+    finally:
+        conn.close()
+
+
+def update_observation_item(
+    item_id: int,
+    *,
+    name: Optional[str] = None,
+    status: Optional[str] = None,
+    entry_low: Any = None,
+    entry_high: Any = None,
+    trigger_price: Any = None,
+    invalid_price: Any = None,
+    horizon: Optional[str] = None,
+    source: Optional[str] = None,
+    reason: Optional[str] = None,
+    priority: Any = None,
+    notes: Optional[str] = None,
+    touch_last_reviewed: bool = False,
+    # [TRACK-006] add_to_observation — provenance field updates
+    strategy_tags: Optional[list[str]] = None,
+    score: Any = None,
+    action_label: Optional[str] = None,
+    research_direction: Optional[str] = None,
+    append_source_history: Optional[list[dict]] = None,
+    tf_db_path: str = "",
+) -> dict:
+    """Partially update an observation item. Only provided fields are changed.
+
+    Returns ``status="not_found"`` if ``item_id`` does not exist.
+
+    [TRACK-006] notes semantics: caller-supplied ``notes`` ALWAYS overwrites
+    the stored value (preserving the existing TRACK-001 contract). Callers
+    that need preserve-user-notes semantics must read first, merge, and pass
+    the merged string — or use ``add_candidate_to_observation`` /
+    ``add_ta_report_to_observation`` which never clobber user notes.
+    ``append_source_history`` ADDS entries to the source_history_json list
+    (it never replaces); pass an empty list to no-op.
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_observation_items")
+    if status is not None:
+        _validate_observation_status(status)
+    if horizon is not None:
+        _validate_observation_horizon(horizon)
+    if source is not None:
+        _validate_observation_source(source)
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available", "runtime_tier_meta": _fast_meta}
+
+    try:
+        row = conn.execute(
+            "SELECT * FROM tradeflow_observation_items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        if row is None:
+            return {"status": "not_found", "message": f"item_id={item_id} 不存在", "runtime_tier_meta": _fast_meta}
+
+        current = _row_to_observation_item(row)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        updates: dict[str, Any] = {"updated_at": now}
+        if name is not None:
+            updates["name"] = resolve_tradeflow_name(current["symbol"], name)
+        if status is not None:
+            updates["status"] = status
+        if entry_low is not None:
+            updates["entry_low"] = _coerce_price(entry_low)
+        if entry_high is not None:
+            updates["entry_high"] = _coerce_price(entry_high)
+        if trigger_price is not None:
+            updates["trigger_price"] = _coerce_price(trigger_price)
+        if invalid_price is not None:
+            updates["invalid_price"] = _coerce_price(invalid_price)
+        if horizon is not None:
+            updates["horizon"] = horizon
+        if source is not None:
+            updates["source"] = source
+        if reason is not None:
+            updates["reason"] = reason
+        if priority is not None:
+            try:
+                updates["priority"] = int(priority)
+            except (TypeError, ValueError):
+                updates["priority"] = 0
+        if notes is not None:
+            updates["notes"] = notes
+        if touch_last_reviewed:
+            updates["last_reviewed_at"] = now
+        # [TRACK-006] add_to_observation — provenance field updates
+        if strategy_tags is not None:
+            import json as _json
+            updates["strategy_tags_json"] = _json.dumps(strategy_tags, ensure_ascii=False)
+        if score is not None:
+            try:
+                updates["score"] = float(score)
+            except (TypeError, ValueError):
+                updates["score"] = 0.0
+        if action_label is not None:
+            updates["action_label"] = action_label
+        if research_direction is not None:
+            updates["research_direction"] = research_direction
+        if append_source_history:
+            import json as _json
+            merged = list(current.get("source_history") or [])
+            for entry in append_source_history:
+                if isinstance(entry, dict):
+                    merged.append(entry)
+            updates["source_history_json"] = _json.dumps(merged, ensure_ascii=False)
+
+        set_clause = ", ".join(f"{col} = ?" for col in updates.keys())
+        params: list[Any] = list(updates.values()) + [item_id]
+        conn.execute(
+            f"UPDATE tradeflow_observation_items SET {set_clause} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+
+        new_row = conn.execute(
+            "SELECT * FROM tradeflow_observation_items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        item = _row_to_observation_item(new_row)
+        return {
+            "status": "ok",
+            "message": f"{item['symbol']} 已更新",
+            "item": item,
+            "item_id": item_id,
+            "runtime_tier_meta": _fast_meta,
+        }
+    finally:
+        conn.close()
+
+
+def mark_observation_item_status(
+    item_id: int,
+    status: str,
+    note: Optional[str] = None,
+    tf_db_path: str = "",
+) -> dict:
+    """Transition an observation item to ``invalidated`` / ``removed`` / etc.
+
+    Convenience wrapper around ``update_observation_item`` for state-machine
+    transitions. When ``note`` is provided it appends to existing notes.
+    """
+    _validate_observation_status(status)
+    update_kwargs: dict[str, Any] = {"status": status, "touch_last_reviewed": True}
+    if note is not None:
+        update_kwargs["notes"] = note
+    return update_observation_item(item_id, tf_db_path=tf_db_path, **update_kwargs)
+
+
+def bulk_upsert_observation_items(
+    items: list[dict[str, Any]],
+    tf_db_path: str = "",
+) -> dict:
+    """Upsert a batch of observation items keyed by normalized symbol.
+
+    Each item must contain at least ``symbol``. Unknown keys are ignored.
+    Returns counts of created / updated / unchanged / errored items.
+
+    [TRACK-006] add_to_observation — notes preservation:
+    By default, existing user notes are NEVER overwritten on update; only an
+    explicit ``force_overwrite_notes=True`` on the entry will replace them.
+    This protects manual annotations when investment-controller / scheduler
+    upserts the same symbol repeatedly. Empty incoming notes also never
+    clobber existing notes.
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_observation_items")
+    if not isinstance(items, list):
+        return {"status": "error", "message": "items 必须为列表", "runtime_tier_meta": _fast_meta}
+
+    created: list[int] = []
+    updated: list[int] = []
+    errored: list[dict[str, Any]] = []
+
+    conn = _connect(tf_db_path)
+    if conn is None:
+        return {"status": "no_data", "message": "TradeFlow DB not available", "runtime_tier_meta": _fast_meta}
+
+    try:
+        import json as _json
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for raw in items:
+            try:
+                symbol = normalize_tradeflow_symbol(raw.get("symbol", ""))
+                if not symbol:
+                    raise ValueError("symbol 不能为空")
+                status = raw.get("status") or OBSERVATION_STATUS_WATCHING
+                horizon = raw.get("horizon") or "short"
+                source = raw.get("source") or "manual"
+                _validate_observation_status(status)
+                _validate_observation_horizon(horizon)
+                _validate_observation_source(source)
+
+                force_overwrite_notes = bool(raw.get("force_overwrite_notes", False))  # [TRACK-006]
+                incoming_notes = raw.get("notes", "") or ""
+
+                payload = {
+                    "name": resolve_tradeflow_name(symbol, raw.get("name", "")),
+                    "status": status,
+                    "entry_low": _coerce_price(raw.get("entry_low", 0.0)),
+                    "entry_high": _coerce_price(raw.get("entry_high", 0.0)),
+                    "trigger_price": _coerce_price(raw.get("trigger_price", 0.0)),
+                    "invalid_price": _coerce_price(raw.get("invalid_price", 0.0)),
+                    "horizon": horizon,
+                    "source": source,
+                    "reason": raw.get("reason", "") or "",
+                    "priority": int(raw.get("priority", 0) or 0),
+                    "notes": incoming_notes,
+                }
+
+                # [TRACK-006] add_to_observation — provenance fields (optional)
+                strategy_tags = raw.get("strategy_tags") or []
+                if not isinstance(strategy_tags, list):
+                    strategy_tags = []
+                payload["strategy_tags_json"] = _json.dumps(strategy_tags, ensure_ascii=False)
+                try:
+                    payload["score"] = float(raw.get("score", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    payload["score"] = 0.0
+                payload["action_label"] = raw.get("action_label", "") or ""
+tests/test_runtime_tier_contract.py:1:# [PERF-001] runtime_tier_contract
+tests/test_runtime_tier_contract.py:9:5. tradeflow_meta injects runtime_tier_meta into all TradeFlow service responses
+tests/test_runtime_tier_contract.py:27:from api.runtime_tier import (
+tests/test_runtime_tier_contract.py:120:            "runtime_tier", "expected_latency", "llm_allowed",
+tests/test_runtime_tier_contract.py:126:        assert meta["runtime_tier"] == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:135:        assert meta["runtime_tier"] == "FULL_TA"
+tests/test_runtime_tier_contract.py:142:        assert meta["runtime_tier"] == "LIGHT_RESEARCH"
+tests/test_runtime_tier_contract.py:167:        assert tradeflow_endpoint_tier(endpoint) == RuntimeTier.FAST_RADAR
+tests/test_runtime_tier_contract.py:170:        assert tradeflow_endpoint_tier("unknown_endpoint") == RuntimeTier.LIGHT_RESEARCH
+tests/test_runtime_tier_contract.py:173:        assert tradeflow_endpoint_tier("tradeflow_discovery") == RuntimeTier.FAST_RADAR
+tests/test_runtime_tier_contract.py:176:        assert tradeflow_endpoint_tier("tradeflow_observe_run") == RuntimeTier.FAST_RADAR
+tests/test_runtime_tier_contract.py:185:        meta = tradeflow_meta("tradeflow_candidates")
+tests/test_runtime_tier_contract.py:186:        assert meta["runtime_tier"] == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:190:        meta = tradeflow_meta("tradeflow_data_health")
+tests/test_runtime_tier_contract.py:252:        assert meta.runtime_tier == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:259:            runtime_tier="FULL_TA",
+tests/test_runtime_tier_contract.py:267:        assert meta.runtime_tier == "FULL_TA"
+tests/test_runtime_tier_contract.py:273:        assert meta.runtime_tier == "LIGHT_RESEARCH"
+tests/test_runtime_tier_contract.py:414:    def test_candidates_has_runtime_tier_meta(self):
+tests/test_runtime_tier_contract.py:421:            assert "runtime_tier_meta" in result
+tests/test_runtime_tier_contract.py:422:            assert result["runtime_tier_meta"]["runtime_tier"] == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:423:            assert result["runtime_tier_meta"]["llm_allowed"] is False
+tests/test_runtime_tier_contract.py:425:    def test_observe_has_runtime_tier_meta(self):
+tests/test_runtime_tier_contract.py:432:            assert "runtime_tier_meta" in result
+tests/test_runtime_tier_contract.py:433:            assert result["runtime_tier_meta"]["runtime_tier"] == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:435:    def test_data_health_has_runtime_tier_meta(self):
+tests/test_runtime_tier_contract.py:441:            assert "runtime_tier_meta" in result
+tests/test_runtime_tier_contract.py:442:            assert result["runtime_tier_meta"]["runtime_tier"] == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:443:            assert result["runtime_tier_meta"]["expected_latency"] == "5-30s"
+tests/test_runtime_tier_contract.py:445:    def test_ta_queue_has_runtime_tier_meta(self):
+tests/test_runtime_tier_contract.py:452:            assert "runtime_tier_meta" in result
+tests/test_runtime_tier_contract.py:453:            assert result["runtime_tier_meta"]["runtime_tier"] == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:455:    def test_review_has_runtime_tier_meta(self):
+tests/test_runtime_tier_contract.py:461:            assert "runtime_tier_meta" in result
+tests/test_runtime_tier_contract.py:463:    def test_filtered_has_runtime_tier_meta(self):
+tests/test_runtime_tier_contract.py:469:            assert "runtime_tier_meta" in result
+tests/test_runtime_tier_contract.py:471:    def test_candidate_detail_has_runtime_tier_meta(self):
+tests/test_runtime_tier_contract.py:478:            assert "runtime_tier_meta" in result
+tests/test_runtime_tier_contract.py:487:            assert result["runtime_tier_meta"]["runtime_tier"] == "FAST_RADAR"  # [PERF-001]
+tests/test_runtime_tier_contract.py:494:        assert result["runtime_tier_meta"]["runtime_tier"] == "FAST_RADAR"  # [PERF-001]
+tests/test_runtime_tier_contract.py:506:        assert resp.runtime_tier_meta.runtime_tier == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:512:        assert resp.runtime_tier_meta.runtime_tier == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:518:        assert resp.runtime_tier_meta.runtime_tier == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:524:        assert resp.runtime_tier_meta.runtime_tier == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:530:        assert resp.runtime_tier_meta.runtime_tier == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:536:        assert resp.runtime_tier_meta.runtime_tier == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:542:        assert resp.runtime_tier_meta.runtime_tier == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:548:        assert resp.runtime_tier_meta.runtime_tier == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:555:        assert "runtime_tier_meta" in d
+tests/test_runtime_tier_contract.py:556:        assert d["runtime_tier_meta"]["runtime_tier"] == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:562:            runtime_tier="LIGHT_RESEARCH",
+tests/test_runtime_tier_contract.py:568:        resp = TradeFlowCandidatesResponse(runtime_tier_meta=custom)
+tests/test_runtime_tier_contract.py:569:        assert resp.runtime_tier_meta.runtime_tier == "LIGHT_RESEARCH"
+tests/test_runtime_tier_contract.py:570:        assert resp.runtime_tier_meta.llm_allowed is True
+tests/test_runtime_tier_contract.py:585:            assert result["runtime_tier_meta"]["runtime_tier"] == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:593:            assert result["runtime_tier_meta"]["runtime_tier"] == "FAST_RADAR"
+tests/test_runtime_tier_contract.py:624:            assert tradeflow_endpoint_tier(ep) == RuntimeTier.FAST_RADAR, f"{ep} should be FAST_RADAR"
+tests/test_runtime_tier_contract.py:637:                assert result["runtime_tier_meta"]["llm_allowed"] is False
+tests/test_runtime_tier_contract.py:639:            assert result["runtime_tier_meta"]["llm_allowed"] is False
+tests/test_runtime_tier_contract.py:641:            assert result["runtime_tier_meta"]["llm_allowed"] is False
+tests/test_track008_observation_csv.py:47:from api.runtime_tier import tradeflow_endpoint_tier, RuntimeTier
+tests/test_track008_observation_csv.py:465:        assert tradeflow_endpoint_tier("tradeflow_observation_import") == RuntimeTier.FAST_RADAR
+tests/test_track008_observation_csv.py:468:        assert tradeflow_endpoint_tier("tradeflow_observation_export") == RuntimeTier.FAST_RADAR
+api/main.py:196:        runtime_tier="FULL_TA",  # [PERF-001] scheduler explicitly opts into FULL_TA
+api/main.py:739:    runtime_tier: Optional[str] = Field(default=None, description="运行层级 FAST_RADAR/LIGHT_RESEARCH/FULL_TA [PERF-001]")  # [PERF-001]
+api/main.py:748:    runtime_tier: str = "FULL_TA"  # [PERF-001]
+api/main.py:749:    runtime_tier_label: str = "完整 TA"  # [PERF-001]
+api/main.py:803:    runtime_tier: Optional[str] = Field(default=None, description="运行层级 [PERF-004]")  # [PERF-004]
+api/main.py:2980:    runtime_tier: str = "FULL_TA"
+api/main.py:2998:    from api.runtime_tier import get_full_ta_cost_preview as _preview
+api/main.py:3017:    from api.runtime_tier import (  # [PERF-001] runtime_tier_contract
+api/main.py:3032:    tier_value = request.runtime_tier or RuntimeTier.LIGHT_RESEARCH.value
+api/main.py:3047:                "runtime_tier": meta["runtime_tier"],
+api/main.py:3121:            runtime_tier=tier_meta["runtime_tier"],
+api/main.py:3122:            runtime_tier_label=tier_meta["tier_label"],
+api/main.py:3131:        runtime_tier=tier_meta["runtime_tier"],
+api/main.py:3132:        runtime_tier_label=tier_meta["tier_label"],
+api/main.py:3473:                    runtime_tier=request.runtime_tier,  # [PERF-004]
+api/main.py:3556:        runtime_tier=request.runtime_tier,  # [PERF-004]
+api/main.py:4447:    from api.runtime_tier import build_scheduled_cost_meta  # [PERF-004] full_ta_cost_gate
+
+exec
+/bin/zsh -lc "sed -n '1,560p' tests/test_track008_observation_csv.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [TRACK-008] observation_bulk_import_export
+"""Tests for TRACK-008: 观察仓批量导入/导出 CSV 与去重合并.
+
+Covers:
+- CSV parse (Chinese headers, English headers, tab-separated).
+- Simple whitespace text parse (quick-paste watchlist).
+- Combined "入场区" cell split (e.g. "29.0-30.5").
+- Import → bulk upsert (create + update).
+- Repeat import does NOT create duplicates (dedup by normalized symbol).
+- Existing user notes are preserved on re-import (keep strategy).
+- force_overwrite_notes replaces notes when incoming notes non-empty.
+- Price boundary 0.0 round-trips (never coerced to None/N/A).
+- Export → import round-trip reproduces the item set.
+- Error handling: invalid status / empty symbol collected, not fatal.
+- Symbol normalization on import (bare 6-digit code, lower-case suffix).
+- Forbidden strong-action words scrubbed from imported reason.
+- Schemas validate.
+- Runtime tier is FAST_RADAR (no LLM).
+- Holdings isolation: import never writes to tradingagents.db.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from tradingagents.tradeflow.candidate_engine import init_db
+
+from api.services.tradeflow_service import (
+    parse_observation_csv,
+    import_observation_csv,
+    export_observation_csv,
+    get_observation_items,
+    create_observation_item,
+    update_observation_item,
+    _looks_like_observation_csv,
+)
+from api.tradeflow_schemas import (
+    ObservationImportRequest,
+    ObservationImportResponse,
+    ObservationExportResponse,
+)
+from api.runtime_tier import tradeflow_endpoint_tier, RuntimeTier
+
+
+# ── Fixtures ─────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def tmp_db(tmp_path):
+    db_path = str(tmp_path / "test_track008.db")
+    init_db(db_path)
+    return db_path
+
+
+# ── CSV Detection / Parse ────────────────────────────────────────────────
+
+class TestCsvDetection:
+
+    def test_detects_csv_with_chinese_header(self):
+        assert _looks_like_observation_csv("代码,名称,入场下沿\n601689,拓普,29") is True
+
+    def test_detects_csv_with_english_header(self):
+        assert _looks_like_observation_csv("symbol,name\nA,B") is True
+
+    def test_detects_tab_separated(self):
+        assert _looks_like_observation_csv("代码\t名称\n601689\t拓普") is True
+
+    def test_rejects_plain_text_watchlist(self):
+        # Single column per line, no commas → not CSV.
+        assert _looks_like_observation_csv("601689.SH 拓普集团\n002353 杰瑞") is False
+
+    def test_rejects_empty(self):
+        assert _looks_like_observation_csv("") is False
+        assert _looks_like_observation_csv("# comment only") is False
+
+
+class TestParseCsv:
+
+    def test_parse_chinese_headers(self):
+        csv = "代码,名称,入场下沿,入场上沿,失效价,理由,备注,优先级\n601689.SH,拓普集团,29.0,30.5,28.0,接近买点,等突破,5\n"
+        items = parse_observation_csv(csv)
+        assert len(items) == 1
+        it = items[0]
+        assert it["symbol"] == "601689.SH"
+        assert it["name"] == "拓普集团"
+        assert it["entry_low"] == "29.0"
+        assert it["entry_high"] == "30.5"
+        assert it["invalid_price"] == "28.0"
+        assert it["notes"] == "等突破"
+        assert it["priority"] == "5"
+
+    def test_parse_english_headers(self):
+        csv = "symbol,name,entry_low,entry_high\n002353.SZ,杰瑞,34,35.5\n"
+        items = parse_observation_csv(csv)
+        assert len(items) == 1
+        assert items[0]["symbol"] == "002353.SZ"
+        assert items[0]["entry_low"] == "34"
+
+    def test_parse_tab_separated(self):
+        csv = "代码\t名称\t入场区\n601689.SH\t拓普\t29-30\n"
+        items = parse_observation_csv(csv)
+        assert len(items) == 1
+        assert items[0]["symbol"] == "601689.SH"
+        assert items[0]["entry_low"] == 29.0
+        assert items[0]["entry_high"] == 30.0
+
+    def test_parse_entry_zone_cell_dash(self):
+        csv = "代码,入场区\n600519.SH,1680-1700\n"
+        items = parse_observation_csv(csv)
+        assert items[0]["entry_low"] == 1680.0
+        assert items[0]["entry_high"] == 1700.0
+
+    def test_parse_entry_zone_cell_tilde(self):
+        csv = "代码,入场区\n600519.SH,1680~1700\n"
+        items = parse_observation_csv(csv)
+        assert items[0]["entry_low"] == 1680.0
+        assert items[0]["entry_high"] == 1700.0
+
+    def test_parse_entry_zone_single_number(self):
+        csv = "代码,入场区\n600519.SH,1680\n"
+        items = parse_observation_csv(csv)
+        assert items[0]["entry_low"] == 1680.0
+        assert items[0]["entry_high"] == 1680.0
+
+    def test_parse_explicit_columns_override_zone(self):
+        csv = "代码,入场区,入场下沿,入场上沿\n600519.SH,100-200,1680,1700\n"
+        items = parse_observation_csv(csv)
+        assert items[0]["entry_low"] == "1680"
+        assert items[0]["entry_high"] == "1700"
+
+    def test_parse_strategy_tags(self):
+        csv = '代码,主题\n601689.SH,"消费,新能源"\n'
+        items = parse_observation_csv(csv)
+        assert items[0]["strategy_tags"] == ["消费", "新能源"]
+
+    def test_parse_strategy_tags_pipe(self):
+        csv = "代码,tags\n601689.SH,消费|新能源\n"
+        items = parse_observation_csv(csv)
+        assert items[0]["strategy_tags"] == ["消费", "新能源"]
+
+    def test_parse_skips_empty_symbol_rows(self):
+        csv = "代码,名称\n,无代码\n601689.SH,拓普\n"
+        items = parse_observation_csv(csv)
+        assert len(items) == 1
+        assert items[0]["symbol"] == "601689.SH"
+
+    def test_parse_strips_bom(self):
+        csv = "\ufeff代码,名称\n601689.SH,拓普\n"
+        items = parse_observation_csv(csv)
+        assert len(items) == 1
+        assert items[0]["symbol"] == "601689.SH"
+
+    def test_parse_empty_returns_empty(self):
+        assert parse_observation_csv("") == []
+        assert parse_observation_csv("   \n  ") == []
+
+
+class TestParseTextWatchlist:
+
+    def test_parse_whitespace_text(self):
+        text = "601689.SH 拓普集团\n002353 杰瑞股份\n"
+        items = parse_observation_csv(text)
+        assert len(items) == 2
+        assert items[0]["symbol"] == "601689.SH"
+        assert items[0]["name"] == "拓普集团"
+        assert items[1]["symbol"] == "002353.SZ"  # normalized bare code
+        assert items[1]["name"] == "杰瑞股份"
+
+    def test_parse_text_symbol_only(self):
+        text = "601689.SH\n002353.SZ\n"
+        items = parse_observation_csv(text)
+        assert len(items) == 2
+        assert items[0]["name"] == ""
+
+    def test_parse_text_skips_comments(self):
+        text = "# 这是备注\n601689.SH 拓普\n"
+        items = parse_observation_csv(text)
+        assert len(items) == 1
+
+
+class TestParseDedupWithinBlob:
+
+    def test_dedup_same_symbol_merges_notes(self):
+        csv = "代码,备注\n601689.SH,备注A\n601689,备注B\n"
+        items = parse_observation_csv(csv)
+        # Both rows normalize to 601689.SH → merged into one item.
+        assert len(items) == 1
+        assert "备注A" in items[0]["notes"]
+        assert "备注B" in items[0]["notes"]
+
+    def test_dedup_same_symbol_unions_tags(self):
+        csv = "代码,主题\n601689.SH,消费\n601689.SH,新能源\n"
+        items = parse_observation_csv(csv)
+        assert len(items) == 1
+        assert set(items[0]["strategy_tags"]) == {"消费", "新能源"}
+
+    def test_dedup_last_non_empty_wins_for_scalar(self):
+        csv = "代码,优先级\n601689.SH,1\n601689.SH,9\n"
+        items = parse_observation_csv(csv)
+        assert len(items) == 1
+        assert items[0]["priority"] == "9"
+
+
+# ── Import ───────────────────────────────────────────────────────────────
+
+class TestImport:
+
+    def test_import_csv_creates_items(self, tmp_db):
+        csv = (
+            "代码,名称,入场下沿,入场上沿,失效价,理由,备注,优先级\n"
+            "601689.SH,拓普集团,29.0,30.5,28.0,接近买点,等突破,5\n"
+            "002353.SZ,杰瑞股份,34.0,35.5,33.0,政策利好,等回调,3\n"
+        )
+        result = import_observation_csv(csv, tf_db_path=tmp_db)
+        assert result["status"] == "ok"
+        assert result["created_count"] == 2
+        assert result["updated_count"] == 0
+        assert result["parsed_count"] == 2
+
+        items = get_observation_items(tf_db_path=tmp_db)["items"]
+        by_sym = {i["symbol"]: i for i in items}
+        assert by_sym["601689.SH"]["entry_low"] == 29.0
+        assert by_sym["601689.SH"]["entry_high"] == 30.5
+        assert by_sym["601689.SH"]["notes"] == "等突破"
+        assert by_sym["002353.SZ"]["priority"] == 3
+
+    def test_import_text_watchlist(self, tmp_db):
+        result = import_observation_csv("601689.SH 拓普集团\n002353 杰瑞\n", tf_db_path=tmp_db)
+        assert result["status"] == "ok"
+        assert result["created_count"] == 2
+        items = get_observation_items(tf_db_path=tmp_db)["items"]
+        syms = {i["symbol"] for i in items}
+        assert "601689.SH" in syms
+        assert "002353.SZ" in syms
+
+    def test_import_normalizes_symbols(self, tmp_db):
+        csv = "代码,名称\n601689,拓普\n002353.sz,杰瑞\n"
+        import_observation_csv(csv, tf_db_path=tmp_db)
+        syms = {i["symbol"] for i in get_observation_items(tf_db_path=tmp_db)["items"]}
+        assert "601689.SH" in syms
+        assert "002353.SZ" in syms
+
+    def test_repeat_import_no_duplicates(self, tmp_db):
+        csv = "代码,名称,备注\n601689.SH,拓普,原始备注\n"
+        r1 = import_observation_csv(csv, tf_db_path=tmp_db)
+        assert r1["created_count"] == 1
+        r2 = import_observation_csv(csv, tf_db_path=tmp_db)
+        # Second import: symbol already exists → updated, NOT a new row.
+        assert r2["created_count"] == 0
+        assert r2["updated_count"] == 1
+        items = get_observation_items(tf_db_path=tmp_db)["items"]
+        assert len(items) == 1  # still only one row
+
+    def test_import_preserves_existing_notes_by_default(self, tmp_db):
+        create_observation_item(
+            symbol="601689.SH", notes="手动备注", tf_db_path=tmp_db,
+        )
+        # Re-import without notes → keeps existing.
+        import_observation_csv("601689.SH\n", tf_db_path=tmp_db)
+        items = get_observation_items(tf_db_path=tmp_db)["items"]
+        notes_by_sym = {i["symbol"]: i["notes"] for i in items}
+        assert notes_by_sym.get("601689.SH") == "手动备注"
+
+    def test_import_empty_notes_does_not_clear(self, tmp_db):
+        create_observation_item(
+            symbol="601689.SH", notes="保留我", tf_db_path=tmp_db,
+        )
+        import_observation_csv("代码,备注\n601689.SH,\n", tf_db_path=tmp_db)
+        items = get_observation_items(tf_db_path=tmp_db)["items"]
+        assert items[0]["notes"] == "保留我"
+
+    def test_import_force_overwrite_replaces_notes(self, tmp_db):
+        create_observation_item(
+            symbol="601689.SH", notes="旧备注", tf_db_path=tmp_db,
+        )
+        import_observation_csv(
+            "代码,备注\n601689.SH,新备注\n",
+            force_overwrite_notes=True,
+            tf_db_path=tmp_db,
+        )
+        items = get_observation_items(tf_db_path=tmp_db)["items"]
+        assert items[0]["notes"] == "新备注"
+
+    def test_import_force_overwrite_with_empty_keeps_existing(self, tmp_db):
+        create_observation_item(
+            symbol="601689.SH", notes="保留我", tf_db_path=tmp_db,
+        )
+        import_observation_csv(
+            "代码,备注\n601689.SH,\n",
+            force_overwrite_notes=True,
+            tf_db_path=tmp_db,
+        )
+        items = get_observation_items(tf_db_path=tmp_db)["items"]
+        assert items[0]["notes"] == "保留我"
+
+    def test_import_preserves_zero_boundary(self, tmp_db):
+        csv = "代码,入场下沿,入场上沿\n601689.SH,0,0\n"
+        import_observation_csv(csv, tf_db_path=tmp_db)
+        item = get_observation_items(tf_db_path=tmp_db)["items"][0]
+        assert item["entry_low"] == 0.0
+        assert item["entry_high"] == 0.0
+
+    def test_import_collects_errors_for_invalid_status(self, tmp_db):
+        csv = "代码,状态\n601689.SH,BOGUS\n002353.SZ,watching\n"
+        result = import_observation_csv(csv, tf_db_path=tmp_db)
+        assert result["errored_count"] == 1
+        assert result["created_count"] == 1
+        err = result["errored"][0]
+        assert err["symbol"] in ("601689.SH", "601689")
+
+    def test_import_collects_errors_for_empty_symbol(self, tmp_db):
+        csv = "代码,名称\n,无代码\n002353.SZ,杰瑞\n"
+        result = import_observation_csv(csv, tf_db_path=tmp_db)
+        # Empty symbol row is dropped at parse → not counted as error,
+        # but the valid row still imports.
+        assert result["created_count"] == 1
+
+    def test_import_empty_text_returns_ok(self, tmp_db):
+        result = import_observation_csv("", tf_db_path=tmp_db)
+        assert result["status"] == "ok"
+        assert result["created_count"] == 0
+        assert result["parsed_count"] == 0
+
+    def test_import_non_string_returns_error(self, tmp_db):
+        result = import_observation_csv(123, tf_db_path=tmp_db)  # type: ignore[arg-type]
+        assert result["status"] == "error"
+
+    def test_import_scrubs_forbidden_words_in_reason(self, tmp_db):
+        csv = "代码,理由\n601689.SH,立即买入这只票\n"
+        import_observation_csv(csv, tf_db_path=tmp_db)
+        item = get_observation_items(tf_db_path=tmp_db)["items"][0]
+        assert "立即买入" not in item["reason"]
+        assert "**" in item["reason"]
+
+
+# ── Export ───────────────────────────────────────────────────────────────
+
+class TestExport:
+
+    def test_export_empty(self, tmp_db):
+        result = export_observation_csv(tf_db_path=tmp_db)
+        assert result["status"] == "ok"
+        assert result["count"] == 0
+        # Header row present even when empty.
+        assert "代码" in result["csv_text"]
+        assert "名称" in result["csv_text"]
+
+    def test_export_has_chinese_headers(self, tmp_db):
+        create_observation_item(symbol="601689.SH", name="拓普集团", tf_db_path=tmp_db)
+        result = export_observation_csv(tf_db_path=tmp_db)
+        headers = result["csv_text"].splitlines()[0].lstrip("\ufeff").split(",")
+        for h in ["代码", "名称", "状态", "入场下沿", "入场上沿", "失效价", "备注"]:
+            assert h in headers
+
+    def test_export_has_utf8_bom(self, tmp_db):
+        create_observation_item(symbol="601689.SH", name="拓普集团", tf_db_path=tmp_db)
+        result = export_observation_csv(tf_db_path=tmp_db)
+        assert result["csv_text"].startswith("\ufeff")
+
+    def test_export_preserves_zero_prices(self, tmp_db):
+        create_observation_item(symbol="601689.SH", entry_low=0, entry_high=0, tf_db_path=tmp_db)
+        result = export_observation_csv(tf_db_path=tmp_db)
+        # The row should contain "0" for prices, not "N/A" or empty.
+        lines = result["csv_text"].splitlines()
+        row = lines[1].split(",")
+        # entry_low and entry_high positions (after BOM strip on header):
+        # 代码,名称,状态,入场下沿,入场上沿,触发价,失效价,...
+        assert row[3] == "0"  # entry_low
+        assert row[4] == "0"  # entry_high
+
+    def test_export_includes_all_items(self, tmp_db):
+        for s in ["601689.SH", "002353.SZ", "600519.SH"]:
+            create_observation_item(symbol=s, tf_db_path=tmp_db)
+        result = export_observation_csv(tf_db_path=tmp_db)
+        assert result["count"] == 3
+
+
+# ── Round-trip ───────────────────────────────────────────────────────────
+
+class TestRoundTrip:
+
+    def test_export_import_roundtrip(self, tmp_db):
+        # Seed items with rich data.
+        create_observation_item(
+            symbol="601689.SH", name="拓普集团", entry_low=29.0,
+            entry_high=30.5, invalid_price=28.0, reason="接近买点",
+            notes="等突破", priority=5, tf_db_path=tmp_db,
+        )
+        create_observation_item(
+            symbol="002353.SZ", name="杰瑞股份", entry_low=34.0,
+            entry_high=35.5, invalid_price=33.0, reason="政策利好",
+            notes="等回调", priority=3, tf_db_path=tmp_db,
+        )
+        exported = export_observation_csv(tf_db_path=tmp_db)
+        assert exported["count"] == 2
+
+        # Clear DB and reimport.
+        import sqlite3
+        from api.services.tradeflow_service import _connect
+        conn = _connect(tmp_db)
+        conn.execute("DELETE FROM tradeflow_observation_items")
+        conn.commit()
+        conn.close()
+
+        reimport = import_observation_csv(exported["csv_text"], tf_db_path=tmp_db)
+        assert reimport["status"] == "ok"
+        assert reimport["created_count"] == 2
+
+        items = get_observation_items(tf_db_path=tmp_db)["items"]
+        by_sym = {i["symbol"]: i for i in items}
+        assert by_sym["601689.SH"]["entry_low"] == 29.0
+        assert by_sym["601689.SH"]["entry_high"] == 30.5
+        assert by_sym["601689.SH"]["invalid_price"] == 28.0
+        assert by_sym["601689.SH"]["notes"] == "等突破"
+        assert by_sym["601689.SH"]["priority"] == 5
+        assert by_sym["002353.SZ"]["notes"] == "等回调"
+
+    def test_export_import_idempotent(self, tmp_db):
+        """Exporting then re-importing into the same DB (no clear) produces
+        updates, not duplicates."""
+        create_observation_item(
+            symbol="601689.SH", name="拓普集团", notes="备注", tf_db_path=tmp_db,
+        )
+        exported = export_observation_csv(tf_db_path=tmp_db)
+        import_observation_csv(exported["csv_text"], tf_db_path=tmp_db)
+        items = get_observation_items(tf_db_path=tmp_db)["items"]
+        assert len(items) == 1  # no duplicate
+        assert items[0]["notes"] == "备注"  # notes preserved
+
+
+# ── Schemas ──────────────────────────────────────────────────────────────
+
+class TestSchemas:
+
+    def test_import_request_defaults(self):
+        req = ObservationImportRequest(csv_text="601689.SH\n")
+        assert req.csv_text == "601689.SH\n"
+        assert req.force_overwrite_notes is False
+
+    def test_import_request_requires_csv_text(self):
+        with pytest.raises(Exception):
+            ObservationImportRequest()  # type: ignore[call-arg]
+
+    def test_import_response_defaults(self):
+        resp = ObservationImportResponse()
+        assert resp.parsed_count == 0
+        assert resp.created == []
+        assert resp.errored == []
+
+    def test_export_response_defaults(self):
+        resp = ObservationExportResponse()
+        assert resp.csv_text == ""
+        assert resp.count == 0
+
+
+# ── Runtime Tier ─────────────────────────────────────────────────────────
+
+class TestRuntimeTier:
+
+    def test_import_is_fast_radar(self):
+        assert tradeflow_endpoint_tier("tradeflow_observation_import") == RuntimeTier.FAST_RADAR
+
+    def test_export_is_fast_radar(self):
+        assert tradeflow_endpoint_tier("tradeflow_observation_export") == RuntimeTier.FAST_RADAR
+
+
+# ── Holdings Isolation ───────────────────────────────────────────────────
+
+class TestHoldingsIsolation:
+
+    def test_import_does_not_touch_tradingagents_db(self, tmp_db, monkeypatch):
+        """Import must only write to tradeflow.db, never tradingagents.db."""
+        import api.services.tradeflow_service as svc
+        called: list[str] = []
+        original = svc._connect
+
+        def spy(path: str = ""):
+            called.append(path)
+            return original(path)
+
+        monkeypatch.setattr(svc, "_connect", spy)
+        import_observation_csv("601689.SH\n", tf_db_path=tmp_db)
+        # Every connection opened must target the tradeflow tmp DB, not the
+        # production tradingagents.db path.
+        for p in called:
+            assert p == tmp_db, f"unexpected DB path: {p}"
+
+    def test_no_strong_action_words_in_export(self, tmp_db):
+        create_observation_item(
+            symbol="601689.SH", reason="正常理由", tf_db_path=tmp_db,
+        )
+        result = export_observation_csv(tf_db_path=tmp_db)
+        for forbidden in ("立即买入", "重仓买入", "满仓", "梭哈"):
+            assert forbidden not in result["csv_text"]
+
+exec
+/bin/zsh -lc "python - <<'PY'
+import csv, io
+s='\\n代码,名称\\n601689,拓普\\n'
+r=csv.DictReader(io.StringIO(s))
+print(r.fieldnames)
+for row in r: print(row)
+PY" in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: python
+
+exec
+/bin/zsh -lc "source .venv/bin/activate && python - <<'PY'
+import csv, io
+for s in ['\\n代码,名称\\n601689,拓普\\n','#c\\n代码,名称\\n601689,拓普\\n']:
+ print('---')
+ norm='\\n'.join(ln if not ln.lstrip().startswith('#') else '' for ln in s.splitlines())
+ print(repr(norm))
+ r=csv.DictReader(io.StringIO(norm))
+ print('fieldnames', r.fieldnames)
+ for row in r: print(row)
+PY" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+---
+'\n代码,名称\n601689,拓普'
+fieldnames []
+{None: ['代码', '名称']}
+{None: ['601689', '拓普']}
+---
+'\n代码,名称\n601689,拓普'
+fieldnames []
+{None: ['代码', '名称']}
+{None: ['601689', '拓普']}
+
+exec
+/bin/zsh -lc "nl -ba api/services/tradeflow_service.py | sed -n '4538,4670p' && nl -ba api/services/tradeflow_service.py | sed -n '4450,4488p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+  4538	                elif canon:
+  4539	                    # Keep first non-empty occurrence.
+  4540	                    if not mapped[canon]:
+  4541	                        mapped[canon] = (val or "").strip()
+  4542	            if mapped:
+  4543	                raw_rows.append(mapped)
+  4544	    else:
+  4545	        # Simple whitespace-separated watchlist: "<symbol> [name...]"
+  4546	        for ln in text.splitlines():
+  4547	            s = ln.strip()
+  4548	            if not s or s.startswith("#"):
+  4549	                continue
+  4550	            parts = s.split()
+  4551	            sym = parts[0]
+  4552	            nm = " ".join(parts[1:]) if len(parts) > 1 else ""
+  4553	            raw_rows.append({"symbol": sym, "name": nm})
+  4554	
+  4555	    # Materialize each row, expanding entry_zone if present.
+  4556	    items: list[dict[str, Any]] = []
+  4557	    for r in raw_rows:
+  4558	        symbol = (r.get("symbol") or "").strip()
+  4559	        if not symbol:
+  4560	            continue
+  4561	        entry: dict[str, Any] = {"symbol": symbol, "name": (r.get("name") or "").strip()}
+  4562	        zone = r.get("entry_zone")
+  4563	        if zone:
+  4564	            lo, hi = _split_observation_entry_zone(zone)
+  4565	            # Explicit entry_low / entry_high columns override the zone cell.
+  4566	            entry["entry_low"] = lo
+  4567	            entry["entry_high"] = hi
+  4568	        for canon in (
+  4569	            "status", "trigger_price", "invalid_price", "horizon",
+  4570	            "source", "reason", "notes", "priority", "entry_low", "entry_high",
+  4571	            "name",
+  4572	        ):
+  4573	            if canon in r and r[canon] != "":
+  4574	                entry[canon] = r[canon]
+  4575	        if "strategy_tags" in r and r["strategy_tags"]:
+  4576	            entry["strategy_tags"] = _split_tags(r["strategy_tags"])
+  4577	        items.append(entry)
+  4578	
+  4579	    # Dedup within blob by normalized symbol (notes append, tags union).
+  4580	    merged: dict[str, dict[str, Any]] = {}
+  4581	    order: list[str] = []
+  4582	    for it in items:
+  4583	        norm = normalize_tradeflow_symbol(it.get("symbol", ""))
+  4584	        if not norm:
+  4585	            continue
+  4586	        if norm not in merged:
+  4587	            it["symbol"] = norm
+  4588	            merged[norm] = it
+  4589	            order.append(norm)
+  4590	        else:
+  4591	            base = merged[norm]
+  4592	            for k, v in it.items():
+  4593	                if k == "symbol":
+  4594	                    continue
+  4595	                if k == "notes":
+  4596	                    existing = base.get("notes", "")
+  4597	                    incoming = v or ""
+  4598	                    if incoming and incoming not in existing:
+  4599	                        base["notes"] = (existing + " | " + incoming).strip(" |") if existing else incoming
+  4600	                elif k == "strategy_tags":
+  4601	                    existing_tags = base.get("strategy_tags", [])
+  4602	                    if isinstance(existing_tags, list) and isinstance(v, list):
+  4603	                        for t in v:
+  4604	                            if t not in existing_tags:
+  4605	                                existing_tags.append(t)
+  4606	                        base["strategy_tags"] = existing_tags
+  4607	                else:
+  4608	                    if v not in (None, "", 0, 0.0) or k not in base:
+  4609	                        base[k] = v
+  4610	    return [merged[s] for s in order]
+  4611	
+  4612	
+  4613	def import_observation_csv(
+  4614	    csv_text: str,
+  4615	    force_overwrite_notes: bool = False,
+  4616	    tf_db_path: str = "",
+  4617	) -> dict:
+  4618	    """Parse ``csv_text`` and bulk-upsert the resulting items.
+  4619	
+  4620	    Honors all TRACK-001 / TRACK-006 contracts via the shared
+  4621	    ``bulk_upsert_observation_items`` write path. Returns a dict with the
+  4622	    upsert result plus CSV-level parse stats.
+  4623	    """
+  4624	    _fast_meta = _tradeflow_meta("tradeflow_observation_import")
+  4625	    if not isinstance(csv_text, str):
+  4626	        return {
+  4627	            "status": "error",
+  4628	            "message": "csv_text 必须为字符串",
+  4629	            "runtime_tier_meta": _fast_meta,
+  4630	        }
+  4631	
+  4632	    try:
+  4633	        parsed = parse_observation_csv(csv_text)
+  4634	    except Exception as exc:
+  4635	        return {
+  4636	            "status": "error",
+  4637	            "message": f"CSV 解析失败: {exc}",
+  4638	            "parsed_count": 0,
+  4639	            "runtime_tier_meta": _fast_meta,
+  4640	        }
+  4641	
+  4642	    if not parsed:
+  4643	        return {
+  4644	            "status": "ok",
+  4645	            "message": "无可导入条目",
+  4646	            "parsed_count": 0,
+  4647	            "created": [],
+  4648	            "updated": [],
+  4649	            "errored": [],
+  4650	            "created_count": 0,
+  4651	            "updated_count": 0,
+  4652	            "errored_count": 0,
+  4653	            "runtime_tier_meta": _fast_meta,
+  4654	        }
+  4655	
+  4656	    for it in parsed:
+  4657	        it["force_overwrite_notes"] = bool(force_overwrite_notes)
+  4658	        # Scrub forbidden strong-action words from imported reason text so
+  4659	        # CSV imports honor the same safety policy as TRACK-006 helpers.
+  4660	        if it.get("reason"):
+  4661	            it["reason"] = _scrub_observation_text(it["reason"])
+  4662	
+  4663	    result = bulk_upsert_observation_items(parsed, tf_db_path=tf_db_path)
+  4664	    result["parsed_count"] = len(parsed)
+  4665	    result["runtime_tier_meta"] = _fast_meta
+  4666	    return result
+  4667	
+  4668	
+  4669	def export_observation_csv(
+  4670	    include_removed: bool = True,
+  4450	                    return lo, hi
+  4451	                except ValueError:
+  4452	                    continue
+  4453	    # Single number: treat as both low and high (a point entry).
+  4454	    try:
+  4455	        v = float(s)
+  4456	        return v, v
+  4457	    except ValueError:
+  4458	        return 0.0, 0.0
+  4459	
+  4460	
+  4461	def _split_tags(raw: str) -> list[str]:
+  4462	    """Split a tag-cell string into a list, on comma / pipe / semicolon."""
+  4463	    if not raw:
+  4464	        return []
+  4465	    s = raw.strip()
+  4466	    if not s:
+  4467	        return []
+  4468	    out: list[str] = []
+  4469	    for chunk in s.replace(";", ",").replace("|", ",").replace("、", ",").split(","):
+  4470	        c = chunk.strip()
+  4471	        if c:
+  4472	            out.append(c)
+  4473	    return out
+  4474	
+  4475	
+  4476	def _looks_like_observation_csv(text: str) -> bool:
+  4477	    """Heuristic: does this blob look like a CSV table (has a recognized
+  4478	    header or contains commas in the first non-empty line)?"""
+  4479	    for ln in text.splitlines():
+  4480	        s = ln.strip()
+  4481	        if not s or s.startswith("#"):
+  4482	            continue
+  4483	        first = s
+  4484	        break
+  4485	    else:
+  4486	        return False
+  4487	    if "," not in first and "\t" not in first:
+  4488	        return False
+
+exec
+/bin/zsh -lc "nl -ba api/services/tradeflow_service.py | sed -n '4488,4545p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+  4488	        return False
+  4489	    header_tokens = {t.strip().lower() for t in first.replace("\t", ",").split(",")}
+  4490	    amap = _observation_csv_alias_map()
+  4491	    hits = sum(1 for t in header_tokens if t in amap)
+  4492	    return hits >= 2
+  4493	
+  4494	
+  4495	def parse_observation_csv(text: str) -> list[dict[str, Any]]:
+  4496	    """Parse a CSV / tab-separated / whitespace text blob into observation
+  4497	    item dicts.
+  4498	
+  4499	    Recognition:
+  4500	      - If the first non-empty line contains ≥2 recognized headers (or has a
+  4501	        comma/tab structure with a header row) → parse as CSV with headers.
+  4502	      - Otherwise → parse as simple whitespace-separated lines
+  4503	        ``<symbol> [name...]`` (quick-paste watchlist).
+  4504	
+  4505	    Within the blob, rows sharing the same normalized symbol are merged:
+  4506	      - notes appended (duplicate note fragments deduped),
+  4507	      - strategy_tags unioned,
+  4508	      - last non-empty value wins for scalar fields.
+  4509	    """
+  4510	    import csv as _csv
+  4511	    import io as _io
+  4512	
+  4513	    if not text or not text.strip():
+  4514	        return []
+  4515	
+  4516	    # Strip a leading UTF-8 BOM so exported CSVs re-import cleanly.
+  4517	    if text.startswith("\ufeff"):
+  4518	        text = text[1:]
+  4519	
+  4520	    raw_rows: list[dict[str, str]] = []
+  4521	
+  4522	    if _looks_like_observation_csv(text):
+  4523	        # Normalize tabs to commas so DictReader handles TSV too.
+  4524	        normalized = "\n".join(
+  4525	            ln.replace("\t", ",") if not ln.lstrip().startswith("#") else ""
+  4526	            for ln in text.splitlines()
+  4527	        )
+  4528	        reader = _csv.DictReader(_io.StringIO(normalized))
+  4529	        amap = _observation_csv_alias_map()
+  4530	        for row in reader:
+  4531	            mapped: dict[str, str] = {}
+  4532	            for raw_key, val in row.items():
+  4533	                if raw_key is None:
+  4534	                    continue
+  4535	                canon = amap.get(raw_key.strip().lower())
+  4536	                if canon and canon not in mapped:
+  4537	                    mapped[canon] = (val or "").strip()
+  4538	                elif canon:
+  4539	                    # Keep first non-empty occurrence.
+  4540	                    if not mapped[canon]:
+  4541	                        mapped[canon] = (val or "").strip()
+  4542	            if mapped:
+  4543	                raw_rows.append(mapped)
+  4544	    else:
+  4545	        # Simple whitespace-separated watchlist: "<symbol> [name...]"
+
+exec
+/bin/zsh -lc "source .venv/bin/activate && python - <<'PY'
+from tradingagents.tradeflow.candidate_engine import init_db
+from api.services.tradeflow_service import create_observation_item, import_observation_csv, get_observation_items, parse_observation_csv
+import tempfile, os
+p=tempfile.mktemp('.db'); init_db(p)
+create_observation_item(symbol='601689.SH', status='in_entry_zone', entry_low=29, entry_high=30, source='tradeflow', horizon='mid', notes='手动', tf_db_path=p)
+print(get_observation_items(tf_db_path=p)['items'][0])
+print(import_observation_csv('601689.SH 拓普集团\\n', tf_db_path=p))
+print(get_observation_items(tf_db_path=p)['items'][0])
+print(parse_observation_csv('\\n代码,名称\\n601689.SH,拓普\\n'))
+print(parse_observation_csv('#comment\\n代码,名称\\n601689.SH,拓普\\n'))
+os.remove(p)
+PY" in /Users/maybee/TradingAgents-AShare
+ succeeded in 13062ms:
+  0%|          | 0/17 [00:00<?, ?it/s]  6%|▌         | 1/17 [00:00<00:04,  3.99it/s] 12%|█▏        | 2/17 [00:00<00:03,  4.17it/s] 18%|█▊        | 3/17 [00:00<00:03,  4.35it/s] 24%|██▎       | 4/17 [00:00<00:02,  4.51it/s] 29%|██▉       | 5/17 [00:01<00:03,  3.54it/s] 35%|███▌      | 6/17 [00:01<00:03,  3.65it/s] 41%|████      | 7/17 [00:01<00:02,  3.91it/s] 47%|████▋     | 8/17 [00:02<00:02,  4.04it/s] 53%|█████▎    | 9/17 [00:02<00:01,  4.18it/s] 59%|█████▉    | 10/17 [00:02<00:01,  4.11it/s] 65%|██████▍   | 11/17 [00:02<00:01,  4.21it/s] 71%|███████   | 12/17 [00:02<00:01,  4.28it/s] 76%|███████▋  | 13/17 [00:03<00:01,  3.98it/s] 82%|████████▏ | 14/17 [00:03<00:00,  3.60it/s] 88%|████████▊ | 15/17 [00:03<00:00,  3.84it/s] 94%|█████████▍| 16/17 [00:04<00:00,  3.73it/s]100%|██████████| 17/17 [00:04<00:00,  4.00it/s]                                               {'id': 1, 'symbol': '601689.SH', 'name': '拓普集团', 'status': 'in_entry_zone', 'entry_low': 29.0, 'entry_high': 30.0, 'trigger_price': 0.0, 'invalid_price': 0.0, 'horizon': 'mid', 'source': 'tradeflow', 'reason': '', 'priority': 0, 'notes': '手动', 'created_at': '2026-06-26 20:58:15', 'updated_at': '2026-06-26 20:58:15', 'last_reviewed_at': '2026-06-26 20:58:15', 'strategy_tags': [], 'score': 0.0, 'action_label': '', 'research_direction': '', 'source_history': []}
+{'status': 'ok', 'created': [], 'updated': ['601689.SH'], 'errored': [], 'created_count': 0, 'updated_count': 1, 'errored_count': 0, 'runtime_tier_meta': {'runtime_tier': 'FAST_RADAR', 'expected_latency': '5-30s', 'llm_allowed': False, 'requires_confirmation': False, 'cost_risk': 'none', 'tier_label': '快速筛选', 'tier_description': 'TradeFlow 筛选、数据健康、证据缺口、候选分类。默认不调用 LLM。'}, 'parsed_count': 1}
+{'id': 1, 'symbol': '601689.SH', 'name': '拓普集团', 'status': 'watching', 'entry_low': 0.0, 'entry_high': 0.0, 'trigger_price': 0.0, 'invalid_price': 0.0, 'horizon': 'short', 'source': 'manual', 'reason': '', 'priority': 0, 'notes': '手动', 'created_at': '2026-06-26 20:58:15', 'updated_at': '2026-06-26 20:58:26', 'last_reviewed_at': '2026-06-26 20:58:15', 'strategy_tags': [], 'score': 0.0, 'action_label': '', 'research_direction': '', 'source_history': []}
+[]
+[]
+
+codex
+The new import feature can silently clobber existing observation warehouse state for overlapping sparse imports, and it also fails to parse valid CSV pasted with leading blank/comment lines. These are functional regressions in the added import path.
+
+Full review comments:
+
+- [P1] Preserve existing observation state on sparse imports — /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py:4663-4663
+  When the pasted list contains an existing symbol with only `symbol/name` (the quick-paste path the UI advertises), this forwards the sparse item to `bulk_upsert_observation_items`, whose update path fills missing fields with defaults (`status=watching`, prices `0.0`, `horizon=short`, `source=manual`). Re-importing or merging an external list that overlaps an active observation therefore silently resets entry zones, status, source, and horizon for that row; sparse imports should update only fields actually present or merge against the existing item before upsert.
+
+- [P2] Skip leading blanks before reading CSV headers — /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py:4524-4528
+  Although `_looks_like_observation_csv` intentionally detects the first non-empty/non-comment line as the header, the normalized text passed to `csv.DictReader` preserves leading blank/comment lines as empty rows. If a user pastes a valid CSV with a blank line or `#` comment before `代码,名称`, `DictReader` uses an empty header and the import parses zero items, so a common pasted format is silently ignored.
+The new import feature can silently clobber existing observation warehouse state for overlapping sparse imports, and it also fails to parse valid CSV pasted with leading blank/comment lines. These are functional regressions in the added import path.
+
+Full review comments:
+
+- [P1] Preserve existing observation state on sparse imports — /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py:4663-4663
+  When the pasted list contains an existing symbol with only `symbol/name` (the quick-paste path the UI advertises), this forwards the sparse item to `bulk_upsert_observation_items`, whose update path fills missing fields with defaults (`status=watching`, prices `0.0`, `horizon=short`, `source=manual`). Re-importing or merging an external list that overlaps an active observation therefore silently resets entry zones, status, source, and horizon for that row; sparse imports should update only fields actually present or merge against the existing item before upsert.
+
+- [P2] Skip leading blanks before reading CSV headers — /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py:4524-4528
+  Although `_looks_like_observation_csv` intentionally detects the first non-empty/non-comment line as the header, the normalized text passed to `csv.DictReader` preserves leading blank/comment lines as empty rows. If a user pastes a valid CSV with a blank line or `#` comment before `代码,名称`, `DictReader` uses an empty header and the import parses zero items, so a common pasted format is silently ignored.

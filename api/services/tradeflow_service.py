@@ -4378,3 +4378,348 @@ def add_ta_report_to_observation(
         return update_result
     finally:
         conn.close()
+
+
+# [TRACK-008] observation_bulk_import_export
+# ──────────────────────────────────────────────────────────────────────────────
+# CSV / text bulk import & export for the observation warehouse.
+#   - Import parses a CSV (or simple whitespace-separated text) blob into
+#     observation item dicts, dedups within the blob by normalized symbol
+#     (merging notes via append/keep), then forwards to the existing
+#     ``bulk_upsert_observation_items`` write path so all TRACK-001 / TRACK-006
+#     contracts (UNIQUE(symbol), notes preservation, price boundary 0.0,
+#     forbidden-word scrub, enum validation) are honored.
+#   - Export flattens every observation item to a CSV row using the same
+#     header aliases import accepts, so export→import round-trips.
+#   - Neither path triggers TA / LLM or writes to tradingagents.db.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Canonical CSV header + accepted aliases (case-insensitive, whitespace-trimmed).
+# Chinese headers first so exported CSVs are readable by the target user.
+_OBSERVATION_CSV_COLUMNS: list[tuple[str, ...]] = [
+    ("symbol",     ("代码", "symbol", "code", "股票代码", "标的")),
+    ("name",       ("名称", "name", "股票名称", "股票名")),
+    ("status",     ("状态", "status")),
+    ("entry_low",  ("入场下沿", "entry_low", "买入下限")),
+    ("entry_high", ("入场上沿", "entry_high", "买入上限")),
+    ("trigger_price", ("触发价", "trigger_price", "触发价格")),
+    ("invalid_price", ("失效价", "invalid_price", "止损价")),
+    ("horizon",    ("周期", "horizon", "持仓周期")),
+    ("source",     ("来源", "source")),
+    ("reason",     ("理由", "reason", "观察理由")),
+    ("notes",      ("备注", "notes", "说明")),
+    ("priority",   ("优先级", "priority")),
+    ("strategy_tags", ("主题", "tags", "标签", "strategy_tags")),
+]
+# Combined "entry zone" column (e.g. "29.0-30.5") — split into entry_low/high.
+_OBSERVATION_ENTRY_ZONE_ALIASES = ("入场区", "入场区间", "entry_zone", "entry_range")
+
+# Chinese display headers used when exporting (order matters).
+_OBSERVATION_EXPORT_HEADERS = [
+    "代码", "名称", "状态", "入场下沿", "入场上沿", "触发价", "失效价",
+    "周期", "来源", "主题", "优先级", "理由", "备注",
+]
+
+
+def _observation_csv_alias_map() -> dict[str, str]:
+    """Build a lower-cased alias → canonical field map."""
+    amap: dict[str, str] = {}
+    for canon, aliases in _OBSERVATION_CSV_COLUMNS:
+        for a in aliases:
+            amap[a.strip().lower()] = canon
+    for a in _OBSERVATION_ENTRY_ZONE_ALIASES:
+        amap[a.strip().lower()] = "entry_zone"
+    return amap
+
+
+def _split_observation_entry_zone(raw: str) -> tuple[float, float]:
+    """Split a combined entry-zone string like '29.0-30.5' / '29~30.5' into
+    (low, high). Returns (0.0, 0.0) if the string is blank or unparseable."""
+    if not raw:
+        return 0.0, 0.0
+    s = raw.strip()
+    if not s:
+        return 0.0, 0.0
+    for sep in ("-", "—", "~", "至", "到", ","):
+        if sep in s:
+            parts = s.split(sep)
+            if len(parts) == 2:
+                try:
+                    lo = float(parts[0].strip())
+                    hi = float(parts[1].strip())
+                    return lo, hi
+                except ValueError:
+                    continue
+    # Single number: treat as both low and high (a point entry).
+    try:
+        v = float(s)
+        return v, v
+    except ValueError:
+        return 0.0, 0.0
+
+
+def _split_tags(raw: str) -> list[str]:
+    """Split a tag-cell string into a list, on comma / pipe / semicolon."""
+    if not raw:
+        return []
+    s = raw.strip()
+    if not s:
+        return []
+    out: list[str] = []
+    for chunk in s.replace(";", ",").replace("|", ",").replace("、", ",").split(","):
+        c = chunk.strip()
+        if c:
+            out.append(c)
+    return out
+
+
+def _looks_like_observation_csv(text: str) -> bool:
+    """Heuristic: does this blob look like a CSV table (has a recognized
+    header or contains commas in the first non-empty line)?"""
+    for ln in text.splitlines():
+        s = ln.strip()
+        if not s or s.startswith("#"):
+            continue
+        first = s
+        break
+    else:
+        return False
+    if "," not in first and "\t" not in first:
+        return False
+    header_tokens = {t.strip().lower() for t in first.replace("\t", ",").split(",")}
+    amap = _observation_csv_alias_map()
+    hits = sum(1 for t in header_tokens if t in amap)
+    return hits >= 2
+
+
+def parse_observation_csv(text: str) -> list[dict[str, Any]]:
+    """Parse a CSV / tab-separated / whitespace text blob into observation
+    item dicts.
+
+    Recognition:
+      - If the first non-empty line contains ≥2 recognized headers (or has a
+        comma/tab structure with a header row) → parse as CSV with headers.
+      - Otherwise → parse as simple whitespace-separated lines
+        ``<symbol> [name...]`` (quick-paste watchlist).
+
+    Within the blob, rows sharing the same normalized symbol are merged:
+      - notes appended (duplicate note fragments deduped),
+      - strategy_tags unioned,
+      - last non-empty value wins for scalar fields.
+    """
+    import csv as _csv
+    import io as _io
+
+    if not text or not text.strip():
+        return []
+
+    # Strip a leading UTF-8 BOM so exported CSVs re-import cleanly.
+    if text.startswith("\ufeff"):
+        text = text[1:]
+
+    raw_rows: list[dict[str, str]] = []
+
+    if _looks_like_observation_csv(text):
+        # Normalize tabs to commas so DictReader handles TSV too.
+        normalized = "\n".join(
+            ln.replace("\t", ",") if not ln.lstrip().startswith("#") else ""
+            for ln in text.splitlines()
+        )
+        reader = _csv.DictReader(_io.StringIO(normalized))
+        amap = _observation_csv_alias_map()
+        for row in reader:
+            mapped: dict[str, str] = {}
+            for raw_key, val in row.items():
+                if raw_key is None:
+                    continue
+                canon = amap.get(raw_key.strip().lower())
+                if canon and canon not in mapped:
+                    mapped[canon] = (val or "").strip()
+                elif canon:
+                    # Keep first non-empty occurrence.
+                    if not mapped[canon]:
+                        mapped[canon] = (val or "").strip()
+            if mapped:
+                raw_rows.append(mapped)
+    else:
+        # Simple whitespace-separated watchlist: "<symbol> [name...]"
+        for ln in text.splitlines():
+            s = ln.strip()
+            if not s or s.startswith("#"):
+                continue
+            parts = s.split()
+            sym = parts[0]
+            nm = " ".join(parts[1:]) if len(parts) > 1 else ""
+            raw_rows.append({"symbol": sym, "name": nm})
+
+    # Materialize each row, expanding entry_zone if present.
+    items: list[dict[str, Any]] = []
+    for r in raw_rows:
+        symbol = (r.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        entry: dict[str, Any] = {"symbol": symbol, "name": (r.get("name") or "").strip()}
+        zone = r.get("entry_zone")
+        if zone:
+            lo, hi = _split_observation_entry_zone(zone)
+            # Explicit entry_low / entry_high columns override the zone cell.
+            entry["entry_low"] = lo
+            entry["entry_high"] = hi
+        for canon in (
+            "status", "trigger_price", "invalid_price", "horizon",
+            "source", "reason", "notes", "priority", "entry_low", "entry_high",
+            "name",
+        ):
+            if canon in r and r[canon] != "":
+                entry[canon] = r[canon]
+        if "strategy_tags" in r and r["strategy_tags"]:
+            entry["strategy_tags"] = _split_tags(r["strategy_tags"])
+        items.append(entry)
+
+    # Dedup within blob by normalized symbol (notes append, tags union).
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for it in items:
+        norm = normalize_tradeflow_symbol(it.get("symbol", ""))
+        if not norm:
+            continue
+        if norm not in merged:
+            it["symbol"] = norm
+            merged[norm] = it
+            order.append(norm)
+        else:
+            base = merged[norm]
+            for k, v in it.items():
+                if k == "symbol":
+                    continue
+                if k == "notes":
+                    existing = base.get("notes", "")
+                    incoming = v or ""
+                    if incoming and incoming not in existing:
+                        base["notes"] = (existing + " | " + incoming).strip(" |") if existing else incoming
+                elif k == "strategy_tags":
+                    existing_tags = base.get("strategy_tags", [])
+                    if isinstance(existing_tags, list) and isinstance(v, list):
+                        for t in v:
+                            if t not in existing_tags:
+                                existing_tags.append(t)
+                        base["strategy_tags"] = existing_tags
+                else:
+                    if v not in (None, "", 0, 0.0) or k not in base:
+                        base[k] = v
+    return [merged[s] for s in order]
+
+
+def import_observation_csv(
+    csv_text: str,
+    force_overwrite_notes: bool = False,
+    tf_db_path: str = "",
+) -> dict:
+    """Parse ``csv_text`` and bulk-upsert the resulting items.
+
+    Honors all TRACK-001 / TRACK-006 contracts via the shared
+    ``bulk_upsert_observation_items`` write path. Returns a dict with the
+    upsert result plus CSV-level parse stats.
+    """
+    _fast_meta = _tradeflow_meta("tradeflow_observation_import")
+    if not isinstance(csv_text, str):
+        return {
+            "status": "error",
+            "message": "csv_text 必须为字符串",
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    try:
+        parsed = parse_observation_csv(csv_text)
+    except Exception as exc:
+        return {
+            "status": "error",
+            "message": f"CSV 解析失败: {exc}",
+            "parsed_count": 0,
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    if not parsed:
+        return {
+            "status": "ok",
+            "message": "无可导入条目",
+            "parsed_count": 0,
+            "created": [],
+            "updated": [],
+            "errored": [],
+            "created_count": 0,
+            "updated_count": 0,
+            "errored_count": 0,
+            "runtime_tier_meta": _fast_meta,
+        }
+
+    for it in parsed:
+        it["force_overwrite_notes"] = bool(force_overwrite_notes)
+        # Scrub forbidden strong-action words from imported reason text so
+        # CSV imports honor the same safety policy as TRACK-006 helpers.
+        if it.get("reason"):
+            it["reason"] = _scrub_observation_text(it["reason"])
+
+    result = bulk_upsert_observation_items(parsed, tf_db_path=tf_db_path)
+    result["parsed_count"] = len(parsed)
+    result["runtime_tier_meta"] = _fast_meta
+    return result
+
+
+def export_observation_csv(
+    include_removed: bool = True,
+    tf_db_path: str = "",
+) -> dict:
+    """Export all observation items as a CSV string.
+
+    Uses the Chinese display header set so the file is directly readable by
+    the user; re-importing the exported file round-trips because the headers
+    are recognized aliases.
+    """
+    import csv as _csv
+    import io as _io
+
+    _fast_meta = _tradeflow_meta("tradeflow_observation_export")
+    listing = get_observation_items(include_removed=include_removed, tf_db_path=tf_db_path)
+    items = listing.get("items", []) if isinstance(listing, dict) else []
+
+    def _fmt_price(v: Any) -> str:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return "0"
+        # Trim trailing zeros but keep 0 as "0" (boundary value preserved).
+        if f == 0:
+            return "0"
+        return (f"{f:.4f}").rstrip("0").rstrip(".")
+
+    buf = _io.StringIO()
+    # Write UTF-8 BOM so Excel opens Chinese headers correctly.
+    buf.write("\ufeff")
+    writer = _csv.writer(buf)
+    writer.writerow(_OBSERVATION_EXPORT_HEADERS)
+    for it in items:
+        tags = it.get("strategy_tags") or []
+        tags_str = ",".join(tags) if isinstance(tags, list) else ""
+        writer.writerow([
+            it.get("symbol", ""),
+            it.get("name", ""),
+            it.get("status", "watching"),
+            _fmt_price(it.get("entry_low", 0.0)),
+            _fmt_price(it.get("entry_high", 0.0)),
+            _fmt_price(it.get("trigger_price", 0.0)),
+            _fmt_price(it.get("invalid_price", 0.0)),
+            it.get("horizon", "short"),
+            it.get("source", "manual"),
+            tags_str,
+            it.get("priority", 0),
+            it.get("reason", ""),
+            it.get("notes", ""),
+        ])
+
+    return {
+        "status": "ok",
+        "csv_text": buf.getvalue(),
+        "count": len(items),
+        "runtime_tier_meta": _fast_meta,
+    }

@@ -4,6 +4,83 @@
 
 ---
 
+## 2026-06-26 | TRACK-008 观察仓批量导入/导出 CSV 与去重合并
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **状态**：✅ 完成（待提交）
+- **优先级**：P1
+- **代码标注**：`# [TRACK-008] observation_bulk_import_export` / `// [TRACK-008] observation_bulk_import_export`
+
+### 背景
+
+观察仓已有手动新增（TRACK-001）和一键加入（TRACK-006），但用户常从截图/表格/外部
+清单批量导入标的。本任务提供 CSV / 文本批量导入导出与去重合并，减少重复手工维护，
+并保证导出再导入能 round-trip。
+
+### 变更
+
+- `api/services/tradeflow_service.py`
+  - 新增 `parse_observation_csv(text)`：解析 CSV / 制表符 / 空格文本块为观察仓条目
+    dict。自动识别两种格式：含识别表头的 CSV 表格 vs 快速粘贴的 `代码 [名称]` 文本
+    清单。支持中英文表头别名（代码/symbol、名称/name、入场区/entry_zone 等），
+    支持"入场区"合并单元格（如 `29.0-30.5` 自动拆成 entry_low/high）。
+  - CSV 内部按规范化 symbol 去重，notes 采用 append 策略（相同片段去重），
+    strategy_tags 取并集，标量字段取最后非空值。
+  - 新增 `import_observation_csv(csv_text, force_overwrite_notes, tf_db_path)`：
+    解析后转发到现有 `bulk_upsert_observation_items` 写入路径，复用全部 TRACK-001 /
+    TRACK-006 契约（UNIQUE(symbol)、notes 保留、价格边界 0.0、枚举校验）。导入前对
+    reason 字段做 `_scrub_observation_text` 过滤强动作词。
+  - 新增 `export_observation_csv(include_removed, tf_db_path)`：导出全量观察仓为
+    带 UTF-8 BOM 的 CSV 字符串，中文表头，价格 0 保留为 "0"（不显示 N/A）。
+- `api/tradeflow_schemas.py`
+  - 新增 `ObservationImportRequest`（csv_text + force_overwrite_notes）。
+  - 新增 `ObservationImportResponse`（parsed_count + created/updated/errored 计数）。
+  - 新增 `ObservationExportResponse`（csv_text + count）。
+- `api/main.py`
+  - `POST /v1/tradeflow/observation-items/import`：接收 CSV 文本，解析后批量 upsert。
+  - `GET /v1/tradeflow/observation-items/export`：导出全量观察仓 CSV。
+- `api/runtime_tier.py`
+  - 将 `tradeflow_observation_import` / `tradeflow_observation_export` 注册为
+    FAST_RADAR 层级（无 LLM、无 TA）。
+- `frontend/src/types/index.ts`
+  - 新增 `ObservationImportResponse` / `ObservationExportResponse` 类型。
+- `frontend/src/services/api.ts`
+  - 新增 `importObservationItems(csvText, forceOverwriteNotes)` 方法。
+  - 新增 `exportObservationItems(includeRemoved)` 方法。
+- `frontend/src/components/TrackingBoardV2Panel.tsx`
+  - 观察仓 tab 新增"批量导入/导出 CSV"可折叠面板（`ObservationImportPanel`）：
+    支持粘贴 CSV / 文本清单导入、一键导出全部为 CSV 文件下载。导入结果展示
+    新增/更新/失败计数。已注册 `Download` 图标导入。
+
+### 去重与 notes 保留策略
+
+- 去重键：规范化 symbol（因 DB UNIQUE(symbol) 约束，实际一行一票）。CSV 内同 symbol
+  多行合并 notes/tags。
+- notes 默认 keep-existing：重复导入不清空已有备注；仅在 `force_overwrite_notes=True`
+  且导入行 notes 非空时替换。
+- 导出表头使用中文别名，import 可识别，保证 round-trip。
+
+### 测试
+
+- 新增 `tests/test_track008_observation_csv.py`（52 用例，全通过）：
+  CSV 检测、中文/英文/Tab 表头解析、入场区拆分、文本清单解析、blob 内去重合并、
+  导入创建/更新/notes 保留/force_overwrite/零边界/错误收集/禁用词过滤、导出表头/
+  BOM/零价格/全量、导出→导入 round-trip、schema 校验、FAST_RADAR 层级、
+  tradingagents.db 隔离。
+- 回归：`tests/test_track001_observation_warehouse.py`（125 用例）、
+  `tests/test_runtime_tier_contract.py`（70 用例）全通过。
+- 前端 `npm run build`（tsc + vite）通过；`npm run lint` 在改动文件无新增告警。
+
+### 约束遵守
+
+- 未改 `tradingagents/prompts/`。
+- 未写生产 `tradingagents.db`（全部测试用 tmp DB）。
+- 未触发 OCR / LLM / 全市场扫描。
+- 未 git commit（由外部脚本处理）。
+
+---
+
 ## 2026-06-26 | TF-OBS-005 非交易日候选计划到下一交易日观察语义回归
 
 - **执行者**：OpenCode
@@ -7238,3 +7315,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TF-OBS-005-20260626-round1.txt
 - **Run archive**: docs/task_runs/TF-OBS-005-20260626-201927/
+
+## 2026-06-26 | AUTO-002 Auto Dev Loop
+
+- **Task**: TRACK-008 - 观察仓批量导入/导出 CSV 与去重合并（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TRACK-008-20260626-round1.txt
+- **Run archive**: docs/task_runs/TRACK-008-20260626-203656/

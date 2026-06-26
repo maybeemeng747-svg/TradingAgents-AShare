@@ -650,6 +650,26 @@ export interface ObservationActionResponse {
     symbol?: string | null
 }
 
+// [TRACK-008] observation_bulk_import_export
+export interface ObservationImportResponse {
+    status: string
+    message: string
+    parsed_count: number
+    created: string[]
+    updated: string[]
+    errored: { symbol: string; reason: string }[]
+    created_count: number
+    updated_count: number
+    errored_count: number
+}
+
+// [TRACK-008] observation_bulk_import_export
+export interface ObservationExportResponse {
+    status: string
+    csv_text: string
+    count: number
+}
+
 // [VLM-001] watchlist_table_parser
 export interface WatchlistTableItem {
     symbol: string

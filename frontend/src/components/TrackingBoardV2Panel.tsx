@@ -14,6 +14,7 @@ import {
     Save,
     Trash2,
     Upload,
+    Download,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -139,6 +140,12 @@ export default function TrackingBoardV2Panel() {
         reason: '',
         notes: '',
     })
+
+    // [TRACK-008] observation_bulk_import_export — CSV import/export state
+    const [showObservationImport, setShowObservationImport] = useState(false)
+    const [observationImportText, setObservationImportText] = useState('')
+    const [observationImporting, setObservationImporting] = useState(false)
+    const [observationImportFeedback, setObservationImportFeedback] = useState<{ tone: 'success' | 'error'; message: string } | null>(null)
 
     const fetchData = useCallback(async (silent: boolean) => {
         if (silent) setRefreshing(true)
@@ -288,6 +295,61 @@ export default function TrackingBoardV2Panel() {
         }
     }, [observationDraft, refreshBoard])
 
+    // [TRACK-008] observation_bulk_import_export
+    const handleImportObservation = useCallback(async () => {
+        const text = observationImportText.trim()
+        if (!text) {
+            setObservationImportFeedback({ tone: 'error', message: '请粘贴 CSV / 文本清单' })
+            return
+        }
+        setObservationImporting(true)
+        setObservationImportFeedback(null)
+        try {
+            const resp = await api.importObservationItems(text)
+            const parts: string[] = []
+            if (resp.created_count > 0) parts.push(`新增 ${resp.created_count} 条`)
+            if (resp.updated_count > 0) parts.push(`更新 ${resp.updated_count} 条`)
+            if (resp.errored_count > 0) parts.push(`失败 ${resp.errored_count} 条`)
+            const msg = parts.length ? parts.join('、') : '没有变化（已存在且无新字段）'
+            setObservationImportFeedback({
+                tone: resp.errored_count > 0 ? 'error' : 'success',
+                message: `导入完成：${msg}`,
+            })
+            if (resp.created_count > 0 || resp.updated_count > 0) {
+                setObservationImportText('')
+                await refreshBoard()
+            }
+        } catch (e) {
+            setObservationImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '导入失败' })
+        } finally {
+            setObservationImporting(false)
+        }
+    }, [observationImportText, refreshBoard])
+
+    // [TRACK-008] observation_bulk_import_export
+    const handleExportObservation = useCallback(async () => {
+        setObservationImportFeedback(null)
+        try {
+            const resp = await api.exportObservationItems(true)
+            // Strip a leading UTF-8 BOM before creating the Blob so the file
+            // opens cleanly in both Excel and plain editors.
+            const csv = resp.csv_text.startsWith('\ufeff') ? resp.csv_text.slice(1) : resp.csv_text
+            const blob = new Blob(['\ufeff', csv], { type: 'text/csv;charset=utf-8;' })
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            const today = new Date().toISOString().slice(0, 10)
+            a.download = `observation_warehouse_${today}.csv`
+            document.body.appendChild(a)
+            a.click()
+            document.body.removeChild(a)
+            URL.revokeObjectURL(url)
+            setObservationImportFeedback({ tone: 'success', message: `已导出 ${resp.count} 条观察仓` })
+        } catch (e) {
+            setObservationImportFeedback({ tone: 'error', message: e instanceof Error ? e.message : '导出失败' })
+        }
+    }, [])
+
     const freshness = data?.data_freshness
     const alertCount = data?.alerts?.length ?? 0
 
@@ -375,6 +437,20 @@ export default function TrackingBoardV2Panel() {
                     onSave={handleCreateObservation}
                     saving={observationSaving}
                     feedback={observationFeedback}
+                />
+            )}
+
+            {activeTab === 'observation' && (
+                // [TRACK-008] observation_bulk_import_export
+                <ObservationImportPanel
+                    open={showObservationImport}
+                    onToggle={() => setShowObservationImport(v => !v)}
+                    text={observationImportText}
+                    onTextChange={setObservationImportText}
+                    onImport={handleImportObservation}
+                    onExport={handleExportObservation}
+                    importing={observationImporting}
+                    feedback={observationImportFeedback}
                 />
             )}
 
@@ -590,6 +666,75 @@ function ObservationCreatePanel({
                         {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlusCircle className="h-3.5 w-3.5" />}
                         加入观察仓
                     </button>
+                    <FeedbackMessage feedback={feedback} />
+                </div>
+            )}
+        </div>
+    )
+}
+
+// [TRACK-008] observation_bulk_import_export
+function ObservationImportPanel({
+    open,
+    onToggle,
+    text,
+    onTextChange,
+    onImport,
+    onExport,
+    importing,
+    feedback,
+}: {
+    open: boolean
+    onToggle: () => void
+    text: string
+    onTextChange: (v: string) => void
+    onImport: () => void
+    onExport: () => void
+    importing: boolean
+    feedback: { tone: 'success' | 'error'; message: string } | null
+}) {
+    return (
+        <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900">
+            <button
+                type="button"
+                onClick={onToggle}
+                className="flex w-full items-center gap-2 px-4 py-3 text-sm font-medium text-slate-700 hover:text-slate-900 dark:text-slate-300 dark:hover:text-slate-100"
+            >
+                <Upload className="h-4 w-4" />
+                批量导入 / 导出 CSV
+                <span className="ml-auto text-xs text-slate-400">{open ? '收起' : '展开'}</span>
+            </button>
+            {open && (
+                <div className="space-y-3 border-t border-slate-100 p-4 dark:border-slate-800">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                        粘贴 CSV（表头：代码,名称,入场下沿,入场上沿,失效价,理由,备注,优先级,主题）或直接粘贴股票代码清单（每行一个）。重复导入不会产生重复记录；已有备注默认保留。
+                    </p>
+                    <textarea
+                        value={text}
+                        onChange={e => onTextChange(e.target.value)}
+                        rows={6}
+                        placeholder={'601689.SH 拓普集团\n002353.SZ 杰瑞股份\n或 CSV：\n代码,名称,入场区,失效价,备注\n600519.SH,贵州茅台,1680-1700,1650,等回调'}
+                        className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-700 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                    />
+                    <div className="flex flex-wrap gap-2">
+                        <button
+                            type="button"
+                            onClick={onImport}
+                            disabled={importing || !text.trim()}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-40"
+                        >
+                            {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+                            导入清单
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onExport}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                        >
+                            <Download className="h-3.5 w-3.5" />
+                            导出全部
+                        </button>
+                    </div>
                     <FeedbackMessage feedback={feedback} />
                 </div>
             )}

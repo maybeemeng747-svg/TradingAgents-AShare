@@ -5334,6 +5334,9 @@ from api.tradeflow_schemas import (
     ObservationAddFromCandidateRequest,  # [TRACK-006] add_to_observation
     ObservationAddFromTAReportRequest,  # [TRACK-006] add_to_observation
     ObservationAddResponse,  # [TRACK-006] add_to_observation
+    ObservationImportRequest,  # [TRACK-008] observation_bulk_import_export
+    ObservationImportResponse,  # [TRACK-008] observation_bulk_import_export
+    ObservationExportResponse,  # [TRACK-008] observation_bulk_import_export
 )
 from api.services.tradeflow_service import (
     get_daily_plan as _tf_get_daily_plan,
@@ -5372,6 +5375,8 @@ from api.services.tradeflow_service import (
     bulk_upsert_observation_items as _tf_bulk_upsert_observation_items,  # [TRACK-001] observation_warehouse
     add_candidate_to_observation as _tf_add_candidate_to_observation,  # [TRACK-006] add_to_observation
     add_ta_report_to_observation as _tf_add_ta_report_to_observation,  # [TRACK-006] add_to_observation
+    import_observation_csv as _tf_import_observation_csv,  # [TRACK-008] observation_bulk_import_export
+    export_observation_csv as _tf_export_observation_csv,  # [TRACK-008] observation_bulk_import_export
 )
 
 # [UI-001] tradeflow_api — read-only endpoints
@@ -5664,6 +5669,27 @@ def tradeflow_observation_item_mark(
 def tradeflow_observation_items_bulk_upsert(request: ObservationBulkUpsertRequest):
     payload = [item.model_dump() for item in request.items]
     return _tf_bulk_upsert_observation_items(payload)
+
+
+# [TRACK-008] observation_bulk_import_export — CSV / text bulk import.
+# Parses the blob, dedups within it by normalized symbol (merging notes), then
+# forwards to the shared bulk_upsert write path so all TRACK-001 / TRACK-006
+# contracts (UNIQUE(symbol), notes preservation, price boundary 0.0) hold.
+@app.post("/v1/tradeflow/observation-items/import", response_model=ObservationImportResponse)
+def tradeflow_observation_items_import(request: ObservationImportRequest):
+    return _tf_import_observation_csv(
+        request.csv_text,
+        force_overwrite_notes=request.force_overwrite_notes,
+    )
+
+
+# [TRACK-008] observation_bulk_import_export — CSV export.
+# Returns a CSV string (UTF-8 BOM for Excel) whose headers are the Chinese
+# aliases import recognizes, so export→import round-trips. Never triggers
+# TA / LLM and never touches tradingagents.db.
+@app.get("/v1/tradeflow/observation-items/export", response_model=ObservationExportResponse)
+def tradeflow_observation_items_export(include_removed: bool = Query(True, description="是否包含已 removed 条目（导出默认全量）")):
+    return _tf_export_observation_csv(include_removed=include_removed)
 
 
 # [TRACK-006] add_to_observation — one-click add from TradeFlow candidate.

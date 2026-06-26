@@ -1030,3 +1030,38 @@ class ObservationAddResponse(BaseModel):
     item: Optional[ObservationItemResponse] = None
     item_id: Optional[int] = None
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [TRACK-008] observation_bulk_import_export
+class ObservationImportRequest(BaseModel):
+    """Bulk import observation items from a CSV / text blob.
+
+    The backend parses the blob (Chinese or English headers, or simple
+    whitespace-separated ``<code> [name]`` lines), dedups within the blob by
+    normalized symbol, then upserts. Existing user notes are preserved unless
+    ``force_overwrite_notes`` is true AND incoming notes are non-empty.
+    """
+    csv_text: str = Field(..., description="CSV / 制表符 / 空格分隔的观察仓条目文本")
+    force_overwrite_notes: bool = False
+
+
+# [TRACK-008] observation_bulk_import_export
+class ObservationImportResponse(BaseModel):
+    status: str = "ok"
+    message: str = ""
+    parsed_count: int = 0
+    created: List[str] = Field(default_factory=list)
+    updated: List[str] = Field(default_factory=list)
+    errored: List[Dict[str, Any]] = Field(default_factory=list)
+    created_count: int = 0
+    updated_count: int = 0
+    errored_count: int = 0
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
+
+
+# [TRACK-008] observation_bulk_import_export
+class ObservationExportResponse(BaseModel):
+    status: str = "ok"
+    csv_text: str = ""
+    count: int = 0
+    runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)
