@@ -223,6 +223,13 @@ class TradeFlowObserveResponse(BaseModel):
     is_trading_day: bool = False
     near_trigger_count: int = 0
     pending_count: int = 0
+    # [TF-OBS-005] observe_date_semantics — explicit plan/effective/observe dates
+    plan_date: str = ""
+    effective_trade_date: str = ""
+    observe_date: str = ""
+    non_trading_day_plan: bool = False  # plan generated on a non-trading day
+    next_trading_day_hint: str = ""     # human-readable cross-date hint
+    is_view_trading_day: bool = True    # whether the queried date is a trading day
 
 
 class TradeFlowTAQueueItem(BaseModel):

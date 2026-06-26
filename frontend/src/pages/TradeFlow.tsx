@@ -286,7 +286,8 @@ function ObserveGroup({ title, subtitle, items, accent }: { title: string; subti
 }
 
 function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observeReason, observeAutoRun, lastObservedAt,
-    refreshIntervalSeconds, isMarketHours, isTradingDay, nearTriggerCount, pendingCount, nextRefreshIn, autoRefreshActive }: {
+    refreshIntervalSeconds, isMarketHours, isTradingDay, nearTriggerCount, pendingCount, nextRefreshIn, autoRefreshActive,
+    planDate, effectiveTradeDate, nonTradingDayPlan, nextTradingDayHint }: {
     items: TradeFlowObserveItem[]
     onRun: () => void
     running: boolean
@@ -302,6 +303,10 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
     pendingCount: number            // [TF-OBS-004]
     nextRefreshIn: number | null    // [TF-OBS-004] seconds until next auto-refresh, null = paused
     autoRefreshActive: boolean      // [TF-OBS-004]
+    planDate?: string                       // [TF-OBS-005] observe_date_semantics
+    effectiveTradeDate?: string             // [TF-OBS-005]
+    nonTradingDayPlan?: boolean             // [TF-OBS-005]
+    nextTradingDayHint?: string             // [TF-OBS-005]
 }) {
     const [showResult, setShowResult] = useState(false)
     const effectiveLastTime = lastObservedAt || lastCheckTime
@@ -372,6 +377,21 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
                     <span className="text-xs text-slate-500">已触发: <span className="font-medium text-red-600 dark:text-red-400">{triggeredItems.length}</span></span>
                     <span className="text-xs text-slate-500">接近触发: <span className="font-medium text-blue-600 dark:text-blue-400">{nearTriggerCount}</span></span>
                     <span className="text-xs text-slate-500">已失效: <span className="font-medium text-emerald-600 dark:text-emerald-400">{items.filter(i => i.observe_state === 'INVALIDATED').length}</span></span>
+                </div>
+            )}
+            {/* [TF-OBS-005] observe_date_semantics — non-trading-day plan → next trading day hint */}
+            {nonTradingDayPlan && nextTradingDayHint && (
+                <div className="mx-4 mt-3 flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
+                    <Calendar className="mt-0.5 h-4 w-4 shrink-0" />
+                    <div>
+                        <div>{nextTradingDayHint}</div>
+                        {planDate && effectiveTradeDate && (
+                            <div className="mt-1 text-xs opacity-80">
+                                候选池日期 <span className="font-medium">{planDate}</span>
+                                {' → '}生效交易日 <span className="font-medium">{effectiveTradeDate}</span>
+                            </div>
+                        )}
+                    </div>
                 </div>
             )}
             {observeReason && items.length === 0 && !runResult && (
@@ -3168,6 +3188,10 @@ export default function TradeFlow() {
                 pendingCount={observeData?.pending_count ?? 0}
                 nextRefreshIn={nextRefreshIn}
                 autoRefreshActive={autoRefreshActive}
+                planDate={observeData?.plan_date}                                   // [TF-OBS-005]
+                effectiveTradeDate={observeData?.effective_trade_date}             // [TF-OBS-005]
+                nonTradingDayPlan={observeData?.non_trading_day_plan}             // [TF-OBS-005]
+                nextTradingDayHint={observeData?.next_trading_day_hint}           // [TF-OBS-005]
             />
         }
 

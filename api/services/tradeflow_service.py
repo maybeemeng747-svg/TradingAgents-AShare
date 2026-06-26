@@ -761,6 +761,8 @@ def _build_trigger_explain(observe_state: str, current_price, trigger_price, inv
 def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
     tf_db = tf_db_path or _get_tradeflow_db_path()
     _fast_meta = _tradeflow_meta("tradeflow_observe")  # [PERF-001]
+    # [TF-OBS-005] observe_date_semantics — cross-date plan hint
+    _sem = _resolve_observe_date_semantics(tf_db, trade_date)
 
     if not os.path.exists(tf_db):
         _mkt = _observe_market_status()  # [TF-OBS-004]
@@ -779,6 +781,12 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
             "is_trading_day": _mkt["is_trading_day"],     # [TF-OBS-004]
             "near_trigger_count": 0,   # [TF-OBS-004]
             "pending_count": 0,        # [TF-OBS-004]
+            "plan_date": _sem["plan_date"],                          # [TF-OBS-005]
+            "effective_trade_date": _sem["effective_trade_date"],    # [TF-OBS-005]
+            "observe_date": _sem["observe_date"],                    # [TF-OBS-005]
+            "non_trading_day_plan": _sem["non_trading_day_plan"],    # [TF-OBS-005]
+            "next_trading_day_hint": _sem["next_trading_day_hint"],  # [TF-OBS-005]
+            "is_view_trading_day": _sem["is_view_trading_day"],      # [TF-OBS-005]
             "runtime_tier_meta": _fast_meta,
         }
 
@@ -792,6 +800,12 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
 
     if not _pre["has_candidates"]:
         observe_reason = _pre["reason"]
+        # [TF-OBS-005] observe_date_semantics — when viewing a non-trading-day plan
+        # date, the precheck reports "当日无活跃候选" because candidates are mapped to
+        # the next trading day. Replace that false negative with a cross-date hint so
+        # the user understands the plan is queued for the next trading day.
+        if _sem["non_trading_day_plan"] and _sem["next_trading_day_hint"]:
+            observe_reason = _sem["next_trading_day_hint"]
     elif not _pre["has_signals_for_date"]:
         _today_str = datetime.now().strftime("%Y-%m-%d")
         if trade_date != _today_str:
@@ -830,6 +844,12 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
             "is_trading_day": _mkt["is_trading_day"],     # [TF-OBS-004]
             "near_trigger_count": 0,   # [TF-OBS-004]
             "pending_count": 0,        # [TF-OBS-004]
+            "plan_date": _sem["plan_date"],                          # [TF-OBS-005]
+            "effective_trade_date": _sem["effective_trade_date"],    # [TF-OBS-005]
+            "observe_date": _sem["observe_date"],                    # [TF-OBS-005]
+            "non_trading_day_plan": _sem["non_trading_day_plan"],    # [TF-OBS-005]
+            "next_trading_day_hint": _sem["next_trading_day_hint"],  # [TF-OBS-005]
+            "is_view_trading_day": _sem["is_view_trading_day"],      # [TF-OBS-005]
             "runtime_tier_meta": _fast_meta,
         }
 
@@ -944,6 +964,12 @@ def get_observe(trade_date: str, tf_db_path: str = "") -> dict:
             "is_trading_day": _mkt["is_trading_day"],     # [TF-OBS-004]
             "near_trigger_count": near_trigger_total,     # [TF-OBS-004]
             "pending_count": pending_total,               # [TF-OBS-004]
+            "plan_date": _sem["plan_date"],                          # [TF-OBS-005]
+            "effective_trade_date": _sem["effective_trade_date"],    # [TF-OBS-005]
+            "observe_date": _sem["observe_date"],                    # [TF-OBS-005]
+            "non_trading_day_plan": _sem["non_trading_day_plan"],    # [TF-OBS-005]
+            "next_trading_day_hint": _sem["next_trading_day_hint"],  # [TF-OBS-005]
+            "is_view_trading_day": _sem["is_view_trading_day"],      # [TF-OBS-005]
             "runtime_tier_meta": _tradeflow_meta("tradeflow_observe"),  # [PERF-001]
         }
     finally:
@@ -1101,6 +1127,94 @@ def _review_report_exists(review_date: str, tf_db_path: str = "") -> bool:
         )
         return os.path.exists(report_path)
     return False
+
+
+# [TF-OBS-005] observe_date_semantics
+def _resolve_observe_date_semantics(tf_db: str, trade_date: str) -> dict:
+    """Resolve plan_date / effective_trade_date / observe_date for an observe view.
+
+    Detects cross-date plans: when a candidate pool was generated on a non-trading
+    day (e.g. Saturday 2026-05-30) but is effective for the next trading day
+    (e.g. Monday 2026-06-01). This lets the observe UI explain "this plan is for
+    the next trading day" instead of showing a false "no active candidates" when
+    a user opens the observe tab on the non-trading plan date itself.
+
+    Returns dict with:
+    - plan_date: plan_date of the cross-date plan covering this view (or "")
+    - effective_trade_date: effective trading day (or "")
+    - observe_date: same as effective_trade_date (first version)
+    - non_trading_day_plan: True when plan_date != effective_trade_date
+    - next_trading_day_hint: human-readable hint, "" when not applicable
+    - is_view_trading_day: whether the viewed trade_date is itself a trading day
+    """
+    result = {
+        "plan_date": "",
+        "effective_trade_date": "",
+        "observe_date": "",
+        "non_trading_day_plan": False,
+        "next_trading_day_hint": "",
+        "is_view_trading_day": True,
+    }
+
+    try:
+        from tradingagents.dataflows.trade_calendar import is_cn_trading_day
+        result["is_view_trading_day"] = bool(is_cn_trading_day(trade_date)) if trade_date else True
+    except Exception:
+        pass
+
+    if not trade_date or not os.path.exists(tf_db):
+        return result
+
+    conn = _connect(tf_db)
+    if conn is None:
+        return result
+    try:
+        columns = _table_columns(conn, "tradeflow_candidates")
+        if "plan_date" not in columns or "effective_trade_date" not in columns:
+            return result
+
+        # Case 1: viewed date is itself the plan_date (e.g. user opens observe on
+        # the Saturday/Sunday the pool was generated). Look for a cross-date plan.
+        row = conn.execute(
+            "SELECT plan_date, effective_trade_date FROM tradeflow_candidates "
+            "WHERE plan_date = ? AND effective_trade_date != '' "
+            "AND effective_trade_date != plan_date "
+            "ORDER BY effective_trade_date DESC LIMIT 1",
+            (trade_date,),
+        ).fetchone()
+
+        if row is None:
+            # Case 2: viewed date is the effective_trade_date (e.g. Monday).
+            # Report the originating plan_date so the UI can show provenance.
+            row = conn.execute(
+                "SELECT plan_date, effective_trade_date FROM tradeflow_candidates "
+                "WHERE effective_trade_date = ? AND plan_date != '' "
+                "AND plan_date != effective_trade_date "
+                "ORDER BY plan_date DESC LIMIT 1",
+                (trade_date,),
+            ).fetchone()
+
+        if row and row["effective_trade_date"]:
+            pd = row["plan_date"] or trade_date
+            eff = row["effective_trade_date"]
+            result["plan_date"] = pd
+            result["effective_trade_date"] = eff
+            result["observe_date"] = eff
+            result["non_trading_day_plan"] = pd != eff
+            if pd != eff:
+                if not result["is_view_trading_day"] and pd == trade_date:
+                    # Viewing the non-trading plan date itself → next-trading-day hint
+                    result["next_trading_day_hint"] = (
+                        f"该候选池于 {pd}（非交易日）生成，将在 {eff}（下一交易日）观察"
+                    )
+                else:
+                    # Viewing the effective trading day; informational provenance
+                    result["next_trading_day_hint"] = (
+                        f"该候选池由 {pd} 生成，于 {eff}（交易日）观察"
+                    )
+    finally:
+        conn.close()
+    return result
 
 
 # [TF-REVIEW-004] review_empty_diagnostics
@@ -1555,6 +1669,9 @@ def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
     # [TF-OBS-003] observe_paper_sync — sync triggered/invalidated into paper ledger
     paper_sync = _sync_paper_from_observe(result.details, tf_db)
 
+    # [TF-OBS-005] observe_date_semantics — surface cross-date plan provenance
+    _sem = _resolve_observe_date_semantics(tf_db, trade_date)
+
     return {
         "status": "skipped" if result.skipped_reason else "ok",
         "trade_date": trade_date,
@@ -1571,6 +1688,12 @@ def run_observe_check(trade_date: str, tf_db_path: str = "") -> dict:
         "paper_synced": paper_sync["synced"],            # [TF-OBS-003] observe_paper_sync
         "paper_pending": paper_sync["pending"],           # [TF-OBS-003]
         "paper_invalidated": paper_sync["invalidated"],   # [TF-OBS-003]
+        "plan_date": _sem["plan_date"],                          # [TF-OBS-005]
+        "effective_trade_date": _sem["effective_trade_date"],    # [TF-OBS-005]
+        "observe_date": _sem["observe_date"],                    # [TF-OBS-005]
+        "non_trading_day_plan": _sem["non_trading_day_plan"],    # [TF-OBS-005]
+        "next_trading_day_hint": _sem["next_trading_day_hint"],  # [TF-OBS-005]
+        "is_view_trading_day": _sem["is_view_trading_day"],      # [TF-OBS-005]
         "runtime_tier_meta": _tradeflow_meta("tradeflow_observe_run"),  # [PERF-001]
     }
 

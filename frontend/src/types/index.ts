@@ -1174,6 +1174,13 @@ export interface TradeFlowObserveResponse {
     near_trigger_count: number  // [TF-OBS-004]
     pending_count: number       // [TF-OBS-004]
     runtime_tier_meta: RuntimeTierMeta  // [PERF-001]
+    // [TF-OBS-005] observe_date_semantics — explicit plan/effective/observe dates
+    plan_date?: string
+    effective_trade_date?: string
+    observe_date?: string
+    non_trading_day_plan?: boolean
+    next_trading_day_hint?: string
+    is_view_trading_day?: boolean
 }
 
 export interface TradeFlowTAQueueItem {
@@ -1538,6 +1545,13 @@ export interface TradeFlowObserveRunResponse {
         status?: string
         reason?: string
     }[]
+    // [TF-OBS-005] observe_date_semantics — cross-date plan provenance
+    plan_date?: string
+    effective_trade_date?: string
+    observe_date?: string
+    non_trading_day_plan?: boolean
+    next_trading_day_hint?: string
+    is_view_trading_day?: boolean
 }
 
 // [TF-UX-001] tiered candidates

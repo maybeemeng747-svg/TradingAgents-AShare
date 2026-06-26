@@ -4,7 +4,82 @@
 
 ---
 
-## 2026-06-26 | DATA-022 主力资金/龙虎榜失败矩阵 fixture 回放
+## 2026-06-26 | TF-OBS-005 非交易日候选计划到下一交易日观察语义回归
+
+- **执行者**：OpenCode
+- **类型**：feature / regression-guard
+- **状态**：✅ 完成（待提交）
+- **优先级**：P1
+- **代码标注**：`# [TF-OBS-005] observe_date_semantics` / `// [TF-OBS-005] observe_date_semantics`
+
+### 背景
+
+用户会在周末/节假日/盘后生成候选池，计划在下一 A 股交易日观察。TF-DATE-001
+已在候选生成阶段写入 `plan_date/effective_trade_date/observe_date`，observe runner
+也已能按 `effective_trade_date` 拉取候选。但 Observe API 响应没有显式区分这三个日期，
+且用户在**非交易日当天**（如周六）打开观察页时，precheck 会因为候选映射到下周一而
+返回“当日无活跃候选”的误判，让人以为系统漏了候选。
+
+本任务把三者语义在 Observe 响应里显式暴露，并在前端观察 tab 给出“该候选池于
+{plan_date}（非交易日）生成，将在 {effective_trade_date}（下一交易日）观察”的提示，
+消除误判。
+
+### 变更
+
+- `api/services/tradeflow_service.py`
+  - 新增 `_resolve_observe_date_semantics(tf_db, trade_date)`：检测跨日计划
+    （plan_date 与 effective_trade_date 不同），区分两种视图：
+    1. 查看非交易日 plan_date 本身 → 返回“下一交易日待观察”提示；
+    2. 查看生效交易日 → 返回候选池来源 provenance。
+    同时返回 `is_view_trading_day`。
+  - `get_observe()`：所有返回路径新增 `plan_date/effective_trade_date/observe_date/
+    non_trading_day_plan/next_trading_day_hint/is_view_trading_day` 六个字段；
+    当查看非交易日 plan_date 且无候选时，用 cross-date 提示覆盖“当日无活跃候选”
+    误判（核心防回归点）。
+  - `run_observe_check()`：响应新增同样的六个日期语义字段。
+- `api/tradeflow_schemas.py`
+  - `TradeFlowObserveResponse` 新增 `plan_date/effective_trade_date/observe_date/
+    non_trading_day_plan/next_trading_day_hint/is_view_trading_day` 字段（带默认值，
+    旧 shape 仍可序列化）。
+- `frontend/src/types/index.ts`
+  - `TradeFlowObserveResponse`、`TradeFlowObserveRunResponse` 新增可选日期语义字段。
+- `frontend/src/pages/TradeFlow.tsx`
+  - `ObserveTable` 新增 `planDate/effectiveTradeDate/nonTradingDayPlan/
+    nextTradingDayHint` props；当 `nonTradingDayPlan && nextTradingDayHint` 为真时
+    渲染蓝色提示卡片（带 Calendar 图标、候选池日期 → 生效交易日映射），并保留原
+    “暂无盘中观察数据”空状态与“observe_reason”黄条互不冲突。
+  - `<ObserveTable>` 调用处透传 `observeData` 的新字段。
+- `tests/test_tf_obs_005_observe_date_semantics.py`：新增 17 个测试，覆盖：
+  - 周末（周六/周日）→ 下周一日期映射正确。
+  - `_resolve_observe_date_semantics`：no-DB / 空库 / 非交易日视图 / 生效交易日视图 /
+    同日计划不误判 5 条路径。
+  - `get_observe(Monday)` 能读到周末生成的候选 + 显式日期字段。
+  - `get_observe(Saturday)` 不再返回“当日无活跃候选”误判，给出 cross-date 提示。
+  - `run_observe_check` 响应携带 cross-date 字段；同日计划不误判。
+  - Pydantic schema 接受新字段且旧 shape 默认值正确；`get_observe` 结果可经 schema
+    序列化。
+  - 提示文案不含 FORBIDDEN_WORDS（立即买入/重仓买入/满仓等）。
+
+### 测试
+
+- `pytest tests/test_tf_obs_005_observe_date_semantics.py -q` → 17 passed。
+- 回归：`tests/test_tf_obs_001_observe_runner.py` + `002/003/004` → 120 passed。
+- 回归：`tests/test_ui001_tradeflow_api.py` + `test_tradeflow_candidate_engine.py` +
+  `test_tf_review_002_date_mapping.py` + `test_tf_review_004_empty_diagnostics.py` +
+  `test_tradeflow_schemas.py` → 154 passed。
+- 回归：`tests/test_v007_tradeflow_trial_e2e.py` + `test_v008_paper_trial_acceptance.py`
+  → 110 passed（跨日 e2e 不回归）。
+- `npm run build` → 通过。
+
+### 风险
+
+- 仅在 Observe 响应**新增**字段，不改既有查询/触发阈值算法，旧前端/旧测试兼容。
+- 未触碰 `tradingagents/prompts/`、生产 `tradingagents.db`、`eval_results/`。
+- 未调用任何 live API（测试全部用 fixture + monkeypatch stub）。
+
+---
+
+
 
 - **执行者**：OpenCode
 - **类型**：test / regression-guard
@@ -7152,3 +7227,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-022-20260626-round1.txt
 - **Run archive**: docs/task_runs/DATA-022-20260626-200333/
+
+## 2026-06-26 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-OBS-005 - 非交易日候选计划到下一交易日观察语义回归（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TF-OBS-005-20260626-round1.txt
+- **Run archive**: docs/task_runs/TF-OBS-005-20260626-201927/
