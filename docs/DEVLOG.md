@@ -4,6 +4,107 @@
 
 ---
 
+## 2026-06-27 | PERF-006 前端 bundle 体积趋势记录与懒加载候选建议
+
+- **执行者**：OpenCode
+- **类型**：tooling + report
+- **状态**：✅ 完成（待提交）
+- **代码标注**：`# [PERF-006] frontend_bundle_trend`
+
+### 背景
+
+PERF-005 已经记录了一次性 bundle 基线（单 chunk raw 1212 kB / gzip 348 kB，
+超 Vite 500 kB 告警），但没有可重放的**趋势日志**，也没有给出**懒加载候选**。
+本任务补齐：每次构建产物以一行 JSON 追加到
+`docs/perf/frontend_bundle_trend.jsonl`，并生成可读的
+`docs/perf/frontend_bundle_report.md`，列出 Reports / TradeFlow /
+TrackingBoard / 图表组件等懒加载候选（**不强制执行 code split**）。
+
+### 修改内容
+
+- **新增 `scripts/measure_frontend_bundle.py`**（`# [PERF-006] frontend_bundle_trend`）
+  - `parse_vite_output(log)`：用单个正则解析 vite v6 stdout
+    （`path  raw kB │ gzip: gzip kB`），自动剥离千位逗号，跳过
+    `.html/.svg` 等非 js/css 行，dedupe 重复路径。
+  - `detect_chunk_size_warning(log)`：识别 `>500 kB` 告警，兼容未来措辞变化。
+  - `BundleMeasurement` / `AssetMeasurement` 数据类：聚合 JS/CSS raw/gzip
+    与最大 JS chunk。
+  - `append_trend(m, path)` / `read_trend(path)`：JSONL 趋势日志（append-only，
+    自动建父目录，损坏行容错跳过）。
+  - `LAZY_LOAD_CANDIDATES`：静态候选清单（page + chart_component），每条带
+    `源文件 / 预估影响 / 拆分理由`。
+  - `generate_report(...)`：纯函数，渲染 `docs/perf/frontend_bundle_report.md`
+    4 个章节（最新快照 / 历史趋势 / 懒加载候选 / 约束与运行方式），
+    支持首次运行（无历史）、增量更新（含与上次的 delta）、`--report-only`
+    从历史重建。
+  - CLI：`--from-log / --run-build / --report-only` 三选一 + `--write`
+    落盘；支持自定义 `--trend-path / --report-path / --frontend-dir`。
+
+- **新增 `docs/perf/frontend_bundle_report.md`**
+  - 由脚本生成；当前快照 JS gzip 348.06 kB / CSS gzip 23.23 kB / 最大 chunk
+    raw 1212.22 kB（⚠️ 超 500 kB）。
+  - 历史趋势表 1 行（首次记录）。
+  - 9 个懒加载候选（TradeFlow/Reports/TrackingBoard/Portfolio/Settings/Analysis
+    + AgentCollaboration/KlinePanel/MiniKline），含推荐落地顺序
+    （路由级 React.lazy → 图表组件懒加载 → vendor manualChunks → 检查整包 import）。
+
+- **新增 `docs/perf/frontend_bundle_trend.jsonl`**
+  - 第一条记录：commit `9e0d083`，2026-06-27T00:44:06。
+
+- **新增 `tests/test_perf006_frontend_bundle.py`**（45 tests）
+  - `TestParseViteOutput`（11）：真实日志解析、千位逗号、多 chunk 未来场景、
+    非 string 输入拒绝、dedupe、HTML/SVG 行不匹配。
+  - `TestDetectChunkSizeWarning`（4）：当前/无告警/空日志/异型措辞。
+  - `TestBundleMeasurement`（5）：JS/CSS 分区、聚合、最大 chunk、空集合、
+    trend dict shape。
+  - `TestTrendIO`（5）：append/read 回环、自动建目录、损坏行容错、
+    append-only 不重写历史。
+  - `TestLazyLoadCandidates`（5）：覆盖 Reports/TradeFlow/TrackingBoard/
+    图表组件；候选源文件真实存在（防陈旧）。
+  - `TestGenerateReport`（9）：4 个必需章节、>500kB 告警标记、<500kB 不告警、
+    候选表渲染、历史趋势表、delta 计算、空历史优雅降级、report-only 重建。
+  - `TestEndToEnd`（2）：parse→append→report-only 回环；
+    **monkeypatch subprocess 拒绝任何子进程**，证明测试不依赖 live `npm run build`。
+  - `TestAcceptancePERF006`（4）：对齐任务验收清单。
+
+### 约束与不变量
+
+- ❌ 不做大规模前端重构、不改变路由行为、不添加 `React.lazy`
+  （测试 `test_no_source_files_modified_by_import` 显式断言 App.tsx 未引入 React.lazy）。
+- ❌ 不触发 live `npm run build`（测试 monkeypatch subprocess）。
+- ❌ 不改 `tradingagents/prompts/`。
+- ❌ 不写生产 `tradingagents.db`（全部 `tmp_path`）。
+- ❌ 不让性能测试依赖绝对耗时（只验证解析与格式）。
+- ✅ 趋势日志 append-only（测试 `test_append_never_rewrites_history`）。
+- ✅ 候选源文件必须存在（测试 `test_candidate_sources_actually_exist`）。
+
+### 测试结果
+
+```
+pytest tests/test_perf005_tradeflow_perf_budget.py tests/test_perf006_frontend_bundle.py -q
+84 passed in 1.75s
+```
+
+PERF-006 单独：
+
+```
+pytest tests/test_perf006_frontend_bundle.py -q
+45 passed in 0.07s
+```
+
+### 如何刷新报告
+
+```bash
+# 在 frontend/ 跑一次构建并捕获日志
+cd frontend && npm run build > /tmp/build.log 2>&1
+# 解析 + 追加趋势 + 重写报告
+python scripts/measure_frontend_bundle.py --from-log /tmp/build.log --write
+# 或者直接由脚本拉起构建
+python scripts/measure_frontend_bundle.py --run-build --write
+```
+
+---
+
 ## 2026-06-27 | DATA-023 数据源目录 API/文档同步与供应商能力矩阵导出
 
 - **执行者**：OpenCode
@@ -8012,3 +8113,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/DATA-023-20260627-round1.txt
 - **Run archive**: docs/task_runs/DATA-023-20260627-002620/
+
+## 2026-06-27 | AUTO-002 Auto Dev Loop
+
+- **Task**: PERF-006 - 前端 bundle 体积趋势记录与懒加载候选建议（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/PERF-006-20260627-round1.txt
+- **Run archive**: docs/task_runs/PERF-006-20260627-004018/

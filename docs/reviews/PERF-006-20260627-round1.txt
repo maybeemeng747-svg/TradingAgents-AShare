@@ -1,0 +1,3268 @@
+Task: PERF-006 - 前端 bundle 体积趋势记录与懒加载候选建议（P2）
+Date: 2026-06-27_00:54:27
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019f04d9-4c62-72a2-830f-e90092d9c092
+--------
+user
+current changes
+2026-06-26T16:52:58.646132Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-06-26T16:52:58.748322Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+2026-06-26T16:53:00.057010Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-06-26T16:53:00.137779Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+exec
+/bin/zsh -lc "printf '%s\\n' '--- overview ---'; sed -n '1,220p' docs/project-overview.md; printf '%s\\n' '--- TASKS ---'; sed -n '1,220p' docs/TASKS.md; printf '%s\\n' '--- DECISIONS ---'; sed -n '1,220p' docs/DECISIONS.md; printf '%s\\n' '--- DEVLOG ---'; sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+--- overview ---
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+--- TASKS ---
+# 任务池
+
+> 最后更新：2026-06-22
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，done）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，done，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，done，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，done，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，done，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，done，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done，依赖 DATA-004 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
+50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done，依赖 DATA-012 部分落地 ✓）。
+54. `DECISION-001`：最终动作语义分层 — 禁止默认 HOLD（P0，done，commit dee415c）。
+55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
+56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
+57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
+58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，done — commit 5f304db，后续 001A/DATA-COVERAGE 已闭环）。
+59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done — 后续任务已闭环）。
+60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
+63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
+65. `V-006`：最终动作语义端到端回放验收（P1，done，依赖 DECISION-004 ✓）。
+66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
+67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，done，commit f54a45e）。
+68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
+69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，done，依赖 TF-OBS-002/TF-REVIEW-002）。
+70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，done，依赖 H-010/H-011）。
+71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，done，依赖 DATA-017/DATA-006）。
+72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，done，依赖 TF-QUALITY-002/TF-OBS-002）。
+73. `V-007`：TradeFlow 试用闭环端到端验收（P1，done，commit 9ceedbf）。
+74. `TF-API-013`：TradeFlow API 合约收口与 HTTP 路由回归（P0，done，`fce3141` + `289a392`）。
+75. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，done，`OpenCode` 2026-06-16）。
+76. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，done，依赖 TF-PAPER-001 ✓）。
+77. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，done，commit fcce883）。
+78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，done，依赖 TF-REVIEW-002/TF-PAPER-001）。
+79. `DATA-019`：关键数据源实盘抽样健康日报（P1，done，commit 58b5cd2）。
+80. `H-013`：昊天主题热度曲线与政策证据看板（P1，done，commit b1fe17d）。
+81. `DATA-019A`：实盘抽样 skipped 状态与任务池收口补修（P2，done）。
+82. `H-013A`：昊天热度图历史日期 fallback 与窗口 unique 统计补修（P2，done）。
+83. `V-008`：TradeFlow 小资金试跑前整体验收（P1，done，55 tests passed）。
+84. `TF-UX-001`：TradeFlow 小资金试跑主工作台降噪与默认视图（P1，done，依赖 TF-QUALITY-004/TF-RISK-001 ✓）。
+85. `TRACK-001`：观察仓数据模型与只读/写入 API（P0，done，commit 2ef6c37）。
+86. `TRACK-002`：跟踪看板 v2 分组接口与今日指引聚合（P0，done，commit fd0d511）。
+87. `TRACK-003`：跟踪看板前端四区改版：持仓/观察仓/今日指引/盘后复盘（P0，done，commit d80aa66）。
+  88. `IC-TA-001`：investment-controller 只读上下文包与数据契约（P1，done，依赖 TRACK-001 ✓）。
+  89. `TRACK-004`：观察仓入场区/失效区规则引擎与状态流转（P1，done，依赖 TRACK-001 ✓, TRACK-002 ✓）。
+  90. `TRACK-005`：盘后复盘摘要与次日计划写回跟踪看板（P1，done，依赖 TRACK-002 ✓, TF-REVIEW-003 ✓）。
+91. `TRACK-006`：TradeFlow/TA 候选一键加入观察仓与来源追踪（P1，done，commit 5aa512d）。
+92. `TRACK-NOTIFY-001`：飞书/总控官通知草稿 payload 与去噪规则（P1，done — TRACK-NOTIFY-001-20260623-122700，前置 IC-TA-001 ✓/TRACK-002 ✓ 均完成）。
+93. `TRACK-007`：跟踪看板端到端验收与用户操作手册（P2，done ✓，依赖 TRACK-003 ✓, TRACK-004 ✓, TRACK-005 ✓）。
+  94. `DATA-020`：数据源健康日报前端可视化与 skipped/failed 分层展示（P1，done，依赖 DATA-019A）。
+  95. `TF-REVIEW-004`：盘后 Review 空数据诊断与一键生成入口（P1，done，依赖 TF-REVIEW-003）。
+ 96. `H-014`：昊天主题候选减少与主题集中度阈值校准（P1，done，依赖 H-013A/H-012 ✓）。
+97. `V-009`：小资金试跑后回归清单与用户操作手册（P1，done，依赖 V-008 ✓）。
+ 98. `TF-OBS-004`：盘中观察自动刷新、触发提醒与人工确认队列降噪（P1，done，依赖 TF-OBS-003/TF-RISK-001 ✓）。
+99. `DATA-021`：TA 报告数据源失败原因透传与字段级降级说明（P1，done — Codex 接管完成，依赖 DATA-020/DATA-004 ✓）。
+100. `H-015`：昊天主题日报与候选入池/出池解释（P1，done — Codex 直接开发，依赖 H-014 ✓/H-013A ✓）。
+ 101. `PERF-005`：TradeFlow 页面与 API 性能预算回归（P2，done，依赖 TF-UX-001/DATA-020 ✓）。
+102. `HK-001`：港股输入边界与轻量行情-only 模式声明（P2，done — commit 2326a3d + a9fd09a）。
+103. `TF-PERSIST-001`：TradeFlow save_candidate 分项评分持久化补口（P2，done — commit 0016a92 + 2257f32）。
+104. `AUTO-003`：任务建议去重与已完成任务过滤（P1，ready，修复 M-012 误把 done/blocked-resolved 任务重复建议）。
+105. `REPORT-UX-001`：TA 报告“数据不足观察”端到端回放验收（P1，ready，依赖 DATA-021 ✓）。
+  106. `IC-TA-002`：investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1，done，依赖 IC-TA-001/DATA-021/H-015 ✓）。
+107. `V-010`：小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口（P1，done，依赖 V-009/DATA-021/H-015 ✓）。
+108. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2，done — NOTIFY-002-20260626-214133，依赖 TRACK-NOTIFY-001/H-015/DATA-021 ✓）。
+109. `DATA-022`：主力资金/龙虎榜失败矩阵 fixture 回放（P1，done，依赖 DATA-021/DATA-017 ✓）。
+110. `TF-OBS-005`：非交易日候选计划到下一交易日观察语义回归（P1，done，依赖 TF-OBS-004 ✓）。
+ 111. `TRACK-008`：观察仓批量导入/导出 CSV 与去重合并（P1，done，依赖 TRACK-001/TRACK-003 ✓）。
+112. `REPORT-UX-002`：历史报告动作语义与数据缺口只读迁移预检（P1，ready，依赖 DECISION-004/DATA-021 ✓）。
+113. `H-016`：昊天主题日报 CLI 生成与保留策略（P2，ready，依赖 H-015 ✓）。
+  114. `IC-TA-003`：investment-controller 盘前/盘后 briefing fixture dry-run（P2，done，依赖 IC-TA-002 ✓）。
+115. `TF-REVIEW-005`：盘后 Review 归因接入观察信号与模拟账本（P1，done，依赖 TF-REVIEW-004/TF-PAPER-001 ✓）。
+116. `UI-013`：TradeFlow 空状态与下一步 CTA 文案收口（P2，done，依赖 UI-012/H-015 ✓）。
+117. `DATA-023`：数据源目录 API/文档同步与供应商能力矩阵导出（P2，ready，依赖 DATA-020/DATA-CATALOG-FIX ✓）。
+118. `PERF-006`：前端 bundle 体积趋势记录与懒加载候选建议（P2，done，依赖 PERF-005 ✓）。
+119. `V-011`：夜间自动开发日报验收与 ready 队列续航检查（P2，ready，依赖 AUTO-003 ✓）。
+120. `NOTIFY-003`：通知去噪规则回放测试与日报/盘中分层验收（P2，ready，依赖 NOTIFY-002 ✓）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
+16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done）。
+18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
+19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done）。
+21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## TRACK. 跟踪看板 / 观察仓 / investment-controller 联动任务池（2026-06-22 新增）
+
+> 目标：把跟踪看板从“持仓实时行情表”升级为“交易日作战面板”。TA 负责数据、报告和状态容器；investment-controller 负责盘前/盘中/盘后调度、飞书播报和是否调用深度 TA 的判断。
+
+### TRACK-001: 观察仓数据模型与只读/写入 API（P0）
+- **描述**：新增“观察仓”容器，用于存放想买但尚未买入、等待价格/事件/资金确认的标的。
+- **优先级**：P0
+- **状态**：done — commit 2ef6c37
+- **背景**：
+  - 当前跟踪看板只展示真实持仓，无法承载“我想进但等位置”的观察票。
+  - 观察仓是盘前计划、盘中提醒、盘后复盘和 investment-controller 调度的基础状态。
+- **执行约束**：
+  - 不写生产 `tradingagents.db` 测试数据。
+  - 不触发 TA/LLM。
+  - 不自动推送飞书。
+  - 不改 `tradingagents/prompts/`。
+- **实现要点**：
+  1. 新增观察仓表或等价持久化模型，字段至少包含：
+     - `symbol/name`
+     - `status`: `watching / near_entry / in_entry_zone / ta_required / entered / invalidated / removed`
+     - `entry_low/entry_high`
+     - `trigger_price`
+     - `invalid_price`
+     - `horizon`: `intraday / short / mid`
+     - `source`: `manual / tradeflow / ta / investment_controller`
+     - `reason`
+     - `priority`
+     - `notes`
+     - `created_at/updated_at/last_reviewed_at`
+  2. 新增 API：
+     - list observation items
+     - create/update item
+     - mark invalidated/removed
+     - optional bulk upsert
+  3. API 返回必须区分“真实持仓”和“观察仓”，禁止把观察仓误算入持仓市值。
+  4. 测试覆盖创建、更新、状态流转、空数据、symbol/name 规范化。
+- **验收方式**：
+--- DECISIONS ---
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+--- DEVLOG ---
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-27 | PERF-006 前端 bundle 体积趋势记录与懒加载候选建议
+
+- **执行者**：OpenCode
+- **类型**：tooling + report
+- **状态**：✅ 完成（待提交）
+- **代码标注**：`# [PERF-006] frontend_bundle_trend`
+
+### 背景
+
+PERF-005 已经记录了一次性 bundle 基线（单 chunk raw 1212 kB / gzip 348 kB，
+超 Vite 500 kB 告警），但没有可重放的**趋势日志**，也没有给出**懒加载候选**。
+本任务补齐：每次构建产物以一行 JSON 追加到
+`docs/perf/frontend_bundle_trend.jsonl`，并生成可读的
+`docs/perf/frontend_bundle_report.md`，列出 Reports / TradeFlow /
+TrackingBoard / 图表组件等懒加载候选（**不强制执行 code split**）。
+
+### 修改内容
+
+- **新增 `scripts/measure_frontend_bundle.py`**（`# [PERF-006] frontend_bundle_trend`）
+  - `parse_vite_output(log)`：用单个正则解析 vite v6 stdout
+    （`path  raw kB │ gzip: gzip kB`），自动剥离千位逗号，跳过
+    `.html/.svg` 等非 js/css 行，dedupe 重复路径。
+  - `detect_chunk_size_warning(log)`：识别 `>500 kB` 告警，兼容未来措辞变化。
+  - `BundleMeasurement` / `AssetMeasurement` 数据类：聚合 JS/CSS raw/gzip
+    与最大 JS chunk。
+  - `append_trend(m, path)` / `read_trend(path)`：JSONL 趋势日志（append-only，
+    自动建父目录，损坏行容错跳过）。
+  - `LAZY_LOAD_CANDIDATES`：静态候选清单（page + chart_component），每条带
+    `源文件 / 预估影响 / 拆分理由`。
+  - `generate_report(...)`：纯函数，渲染 `docs/perf/frontend_bundle_report.md`
+    4 个章节（最新快照 / 历史趋势 / 懒加载候选 / 约束与运行方式），
+    支持首次运行（无历史）、增量更新（含与上次的 delta）、`--report-only`
+    从历史重建。
+  - CLI：`--from-log / --run-build / --report-only` 三选一 + `--write`
+    落盘；支持自定义 `--trend-path / --report-path / --frontend-dir`。
+
+- **新增 `docs/perf/frontend_bundle_report.md`**
+  - 由脚本生成；当前快照 JS gzip 348.06 kB / CSS gzip 23.23 kB / 最大 chunk
+    raw 1212.22 kB（⚠️ 超 500 kB）。
+  - 历史趋势表 1 行（首次记录）。
+  - 9 个懒加载候选（TradeFlow/Reports/TrackingBoard/Portfolio/Settings/Analysis
+    + AgentCollaboration/KlinePanel/MiniKline），含推荐落地顺序
+    （路由级 React.lazy → 图表组件懒加载 → vendor manualChunks → 检查整包 import）。
+
+- **新增 `docs/perf/frontend_bundle_trend.jsonl`**
+  - 第一条记录：commit `9e0d083`，2026-06-27T00:44:06。
+
+- **新增 `tests/test_perf006_frontend_bundle.py`**（45 tests）
+  - `TestParseViteOutput`（11）：真实日志解析、千位逗号、多 chunk 未来场景、
+    非 string 输入拒绝、dedupe、HTML/SVG 行不匹配。
+  - `TestDetectChunkSizeWarning`（4）：当前/无告警/空日志/异型措辞。
+  - `TestBundleMeasurement`（5）：JS/CSS 分区、聚合、最大 chunk、空集合、
+    trend dict shape。
+  - `TestTrendIO`（5）：append/read 回环、自动建目录、损坏行容错、
+    append-only 不重写历史。
+  - `TestLazyLoadCandidates`（5）：覆盖 Reports/TradeFlow/TrackingBoard/
+    图表组件；候选源文件真实存在（防陈旧）。
+  - `TestGenerateReport`（9）：4 个必需章节、>500kB 告警标记、<500kB 不告警、
+    候选表渲染、历史趋势表、delta 计算、空历史优雅降级、report-only 重建。
+  - `TestEndToEnd`（2）：parse→append→report-only 回环；
+    **monkeypatch subprocess 拒绝任何子进程**，证明测试不依赖 live `npm run build`。
+  - `TestAcceptancePERF006`（4）：对齐任务验收清单。
+
+### 约束与不变量
+
+- ❌ 不做大规模前端重构、不改变路由行为、不添加 `React.lazy`
+  （测试 `test_no_source_files_modified_by_import` 显式断言 App.tsx 未引入 React.lazy）。
+- ❌ 不触发 live `npm run build`（测试 monkeypatch subprocess）。
+- ❌ 不改 `tradingagents/prompts/`。
+- ❌ 不写生产 `tradingagents.db`（全部 `tmp_path`）。
+- ❌ 不让性能测试依赖绝对耗时（只验证解析与格式）。
+- ✅ 趋势日志 append-only（测试 `test_append_never_rewrites_history`）。
+- ✅ 候选源文件必须存在（测试 `test_candidate_sources_actually_exist`）。
+
+### 测试结果
+
+```
+pytest tests/test_perf005_tradeflow_perf_budget.py tests/test_perf006_frontend_bundle.py -q
+84 passed in 1.75s
+```
+
+PERF-006 单独：
+
+```
+pytest tests/test_perf006_frontend_bundle.py -q
+45 passed in 0.07s
+```
+
+### 如何刷新报告
+
+```bash
+# 在 frontend/ 跑一次构建并捕获日志
+cd frontend && npm run build > /tmp/build.log 2>&1
+# 解析 + 追加趋势 + 重写报告
+python scripts/measure_frontend_bundle.py --from-log /tmp/build.log --write
+# 或者直接由脚本拉起构建
+python scripts/measure_frontend_bundle.py --run-build --write
+```
+
+---
+
+## 2026-06-27 | DATA-023 数据源目录 API/文档同步与供应商能力矩阵导出
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **状态**：✅ 完成（待提交）
+- **代码标注**：`# [DATA-023] source_capability_matrix`
+
+### 背景
+
+数据源能力信息分散在 `source_catalog.py`、`docs/DATA_SOURCE_GAP_AUDIT.md`
+和各类 freshness / daily_digest 报告里。用户/agent 需要单一可信来源回答：
+"行情/资金/龙虎榜/公告/评级/回购/研报分别来自哪里、fallback 是什么、是否实时、
+有什么已知限制"。本任务导出统一矩阵，并提供 API + 文档 + CLI 三个出口。
+
+### 修改内容
+
+- **新增 `tradingagents/dataflows/source_capability_matrix.py`**
+  - `get_source_capability_matrix()` 静态导出 16 个 data_type 的能力矩阵，
+    字段含 `data_type / primary_vendor / primary_endpoint / fallback_vendor /
+    fallback_chain / freshness / unit / fields / rate_limit_risk /
+    known_limits / status_semantics / source_count / notes`。
+  - `validate_matrix_coverage()` 校验所有已注册 `DataType` 都进入矩阵，
+    关键字段非空，freshness 在合法枚举内 —— 守护"新增 data type 漏进矩阵"。
+  - `render_source_capability_matrix_markdown()` / `_text()` 输出 agent 可读文档。
+  - `FRESHNESS_STATUS_SEMANTICS` / `RATE_LIMIT_RISK_LABEL` / `DATA_TYPE_LABEL_CN`
+    三张图例统一新鲜度、限流、数据类型语义。
+  - 完全静态导出，不调用 live API，不读取任何 API Key。
+
+- **新增 `scripts/export_source_capability_matrix.py`**
+  - CLI：`--validate / --md / --json / --stdout-json / --stdout-text / --no-md`。
+  - `--stdout-json` 时 summary 走 stderr，保证 stdout 是纯 JSON 可管道解析。
+
+- **新增 API：`api/main.py`**
+  - `GET /v1/config/source-capability-matrix`（鉴权同 model-catalog）。
+  - 新增 `SourceCapabilityMatrixItem` / `SourceCapabilityMatrixResponse`
+    两个 Pydantic 响应模型。
+
+- **新增文档**
+  - `docs/SOURCE_CAPABILITY_MATRIX.md`：自动生成的 Markdown 矩阵总览 + 详情 + 图例。
+  - `docs/source_capability_matrix.json`：结构化 JSON 产物。
+
+- **新增测试 `tests/test_data023_source_capability_matrix.py`（31 cases）**
+  - `TestCoverage` 守护"新增 DataType 不会漏进矩阵"（核心验收点）。
+  - `TestBusinessCoverage` 验收 资金/板块资金/龙虎榜/公告/评级/回购/研报 均覆盖。
+  - `TestNoSecrets` 全文扫描 `api_key/secret/token/sk-/Bearer ` 确认无密钥泄露。
+  - `TestCatalogConsistency` 双向校验 matrix 与 `source_catalog` primary 一致。
+  - `TestScriptCli` 跑通 `--validate` 与 `--stdout-json` 子进程路径。
+
+### 影响范围
+
+- 不修改 `source_catalog.py` / provider / fallback 路由，纯新增导出层。
+- 不触碰 `tradingagents/prompts/`、`tradingagents.db`、`eval_results/`、`logs/`。
+- 新增 API endpoint 与现有 `/v1/config/model-catalog` 同构，鉴权策略一致。
+
+### 验证
+
+- `python -m pytest tests/test_data023_source_capability_matrix.py -q` → **31 passed**。
+- `python -m pytest tests/test_data_source_catalog.py tests/test_data018_source_freshness.py tests/test_data022_fund_lhb_status_matrix.py -q` → **249 passed**（无回归）。
+- `python scripts/export_source_capability_matrix.py --validate` →
+  `OK: matrix covers all 16 data_types, no coverage issues.`
+- API response 模型序列化检查通过，`/v1/config/source-capability-matrix` 路由已注册。
+
+---
+
+## 2026-06-27 | UI-013 修复 TF-OBS-003 E2E 测试在非交易日全部跳过的缺陷
+
+- **执行者**：OpenCode
+- **类型**：bugfix
+- **状态**：✅ 完成（待提交）
+- **代码标注**：`# [TF-OBS-003] observe_paper_sync`
+
+### 背景
+
+`test_tf_obs_003_observe_paper_sync.py` 中 `TestObserveToPaperE2E` 的 5 个测试在周末（2026-06-27 周六）全部失败。原因是这些 E2E 测试调用 `run_observe(TODAY, ..., quote_provider=quotes)`，但 `run_observe` 顶部的交易日门控在 `_is_trading_day(trade_date)` 返回 False 时直接 skip 返回零计数，导致 `result.triggered/invalidated/waiting` 全为 0。测试使用 `TODAY = datetime.now()` 作为交易日，当当天恰好是周末时就全部被跳过。
+
+### 修改内容
+
+- **`tradingagents/tradeflow/observe_runner.py`** (`run_observe`)
+  - 将交易日门控条件从 `if not _is_trading_day(trade_date)` 改为
+    `if quote_provider is None and not _is_trading_day(trade_date)`。
+  - 当调用方注入 `quote_provider`（文档明确标注 "for testing"）时，跳过交易日检查，
+    使命中真实 observe 逻辑的 E2E 测试在任意日期均可运行。
+  - 生产路径（`quote_provider=None`）仍严格执行非交易日 skip 语义，行为不变。
+
+### 影响范围
+
+- 其他使用 `quote_provider` 的测试（`test_tf_obs_001`、`test_v007/v008/v010` 验收测试）
+  均使用固定交易日（2026-06-01 / 2026-06-15，周一），交易日门控本就放行，无回归。
+- 非交易日 skip 专项测试（`test_tf_obs_001::TestRunObserveNonTradingDay`、
+  `test_tf_obs_002`、`test_ui001`）不传 `quote_provider`，skip 语义不变。
+
+### 验证
+
+```
+tests/test_tf_obs_003_observe_paper_sync.py  21 passed
+tests/test_tf_obs_001_observe_runner.py + test_tf_obs_002 + test_ui001  116 passed
+tests/test_v007 + test_v008 + test_v010  145 passed
+```
+
+---
+
+## 2026-06-26 | UI-013 TradeFlow 空状态与下一步 CTA 文案收口
+
+- **执行者**：OpenCode
+- **类型**：feature / UX
+- **状态**：✅ 完成（待提交）
+- **优先级**：P2
+- **代码标注**：`// [UI-013] tradeflow_empty_state_cta`
+
+### 背景
+
+用户看到候选池、盘中观察、盘后 Review、主题热度/昊天日报为空时，不知道下一步该点
+什么，容易在 tab 之间反复跳转。UI-013 统一这些空状态的文案与下一步 CTA，降低试用
+
+exec
+/bin/zsh -lc "git status --short && printf '\\n--- AGENTS ---\\n' && sed -n '1,220p' AGENTS.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M docs/tradeflow_trial_acceptance.md
+ M docs/tradeflow_trial_acceptance_v2.md
+ M docs/tradeflow_trial_acceptance_v3.md
+?? docs/perf/
+?? docs/task_runs/PERF-006-20260627-004018/
+?? scripts/measure_frontend_bundle.py
+?? tests/test_perf006_frontend_bundle.py
+
+--- AGENTS ---
+# TradingAgents-AShare — 项目协作规则
+
+## 项目简介
+
+A股智能投研多智能体系统，基于 LangGraph + LangChain 构建，模拟 14 名专业 Agent 的多空辩论与风控博弈，为投资者提供结构化的交易建议。
+
+核心模块：
+- **Agent 框架**：14 个多智能体（分析师/研究员/风控/交易员），LangGraph 编排
+- **后端 API**：FastAPI，提供分析、持仓、定时任务、研报管理等接口
+- **前端 UI**：React，意图驱动交互、辩论可视化、持仓看板
+- **定时调度**：独立 scheduler，支持自选股定时分析
+- **数据层**：AKShare + BaoStock + yfinance，SQLite 持久化
+
+## 多工具协作架构
+
+```
+孟（最终决策）
+  │
+  ├── OpenClaw（主控调度）── 读取上下文 → 判断任务 → 派发执行
+  │     ├── 简单任务：直接 exec 执行（git/python/npm）
+  │     └── 复杂任务：sessions_spawn 子 agent 或调用 OpenCode 执行
+  │
+  ├── OpenCode（代码执行器）── 读取同一套上下文 → 改代码 → 跑测试 → 输出 diff
+  │
+  └── OpenCode TUI/Web（审查界面）── 查看 diff → 确认修改 → 做 review
+```
+
+**核心原则**：三者读取同一套项目上下文，不各自保存独立记忆。
+
+## 必读文件（任何 coding agent 开始任务前）
+
+1. `AGENTS.md`（本文件）
+2. `docs/project-overview.md`（项目背景 + 架构 + 目录结构）
+3. `docs/TASKS.md`（当前任务池）
+4. `docs/DECISIONS.md`（架构决策记录）
+5. `docs/DEVLOG.md`（最近修改日志）
+6. 涉及模型/API 调用时，必须读 `docs/MODEL_API_CATALOG.md` 和 `docs/LLM_API_USAGE.md`，并可运行 `python scripts/audit_llm_config.py` 查看脱敏配置
+
+## 项目目录结构
+
+```
+TradingAgents-AShare/
+├── tradingagents/            # 核心 Python 包
+│   ├── agents/               # 14 个多智能体
+│   │   ├── analysts/         # 7 个分析师（基本面/情绪/新闻/技术/宏观/主力/量价）
+│   │   ├── researchers/      # 多头/空头研究员 + 研究总监
+│   │   ├── risk_mgmt/        # 风控团队
+│   │   ├── managers/         # 管理层
+│   │   └── trader/           # 交易员
+│   ├── dataflows/            # 数据获取与缓存
+│   ├── graph/                # LangGraph 编排图
+│   ├── llm_clients/          # 多模型厂商适配
+│   ├── prompts/              # Agent 提示词模板
+│   └── default_config.py     # 默认配置
+├── api/                      # FastAPI 后端
+│   ├── main.py               # 入口
+│   ├── database.py           # SQLite
+│   └── services/             # 业务逻辑（分析/持仓/定时/研报）
+├── frontend/                 # React 前端
+├── scheduler/                # 定时分析调度
+├── skills/                   # OpenClaw 技能
+├── tests/                    # 测试
+├── docs/                     # 项目文档
+└── eval_results/             # 回测评估结果
+```
+
+## 执行规则
+
+### 代码修改前
+1. 执行 `git status`，确认当前分支和未提交变更
+2. 激活虚拟环境：`source .venv/bin/activate`
+3. 确认修改范围不影响生产数据库（tradingagents.db）
+4. 如果涉及核心模块，先跑一遍测试确认基线
+
+### 代码修改后
+1. 运行测试，全部通过才算完成
+2. 输出：修改文件列表、测试结果、发现的风险点
+3. 更新 `docs/DEVLOG.md`
+
+### OpenClaw 调度方式
+- **简单任务**（改配置、修 bug、小重构）：OpenClaw 直接 `exec` 执行
+- **复杂任务**（新功能、跨模块修改）：调用 OpenCode 执行，由用户确认后执行
+- **审查任务**：OpenClaw 不直接审查代码，提示用户用 OpenCode TUI 查看 diff
+
+## 安全红线
+
+- 不误改 `tradingagents.db`（生产数据库）
+- 不误改 `eval_results/` 中的历史回测结果
+- 不直接修改 `tradingagents/prompts/` 中的提示词模板（需走审批）
+- 不删除 `logs/` 中的历史日志
+- 测试数据不得写入生产数据库
+- 不读取、解密、打印、提交任何模型 API Key 明文；只能使用 `HAS_KEY/NO_KEY` 级别的脱敏状态
+- 除用户主动发起的分析/定时任务外，任何 live LLM API 调用前都要说明 provider、base_url、模型名和预计调用次数，并征得用户确认
+
+## 技术栈
+
+- **后端**：Python 3.10+, FastAPI, LangGraph, LangChain
+- **前端**：React, TypeScript, Tailwind CSS
+- **数据库**：SQLite
+- **数据源**：AKShare, BaoStock, yfinance
+- **模型**：OpenAI / Anthropic / 智谱 / DeepSeek / 小米 MiMo 等
+
+exec
+/bin/zsh -lc "git diff --stat && printf '\\n-- diff --\\n' && git diff -- . ':(exclude)docs/DEVLOG.md' ':(exclude)docs/TASKS.md' | sed -n '1,260p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ docs/DEVLOG.md                        | 101 ++++++++++++++++++++++++++++++++++
+ docs/TASKS.md                         |   4 +-
+ docs/tradeflow_trial_acceptance.md    |   2 +-
+ docs/tradeflow_trial_acceptance_v2.md |   2 +-
+ docs/tradeflow_trial_acceptance_v3.md |   2 +-
+ 5 files changed, 106 insertions(+), 5 deletions(-)
+
+-- diff --
+diff --git a/docs/tradeflow_trial_acceptance.md b/docs/tradeflow_trial_acceptance.md
+index 29eb1e2..f9833b6 100644
+--- a/docs/tradeflow_trial_acceptance.md
++++ b/docs/tradeflow_trial_acceptance.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 试用闭环端到端验收报告 (V-007)
+ 
+-**生成时间**: 2026-06-27 00:38:10
++**生成时间**: 2026-06-27 00:52:45
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **候选数**: 5 只 (2 主候选 + 1 弱技术 + 1 事件观察 + 1 证据缺口)
+diff --git a/docs/tradeflow_trial_acceptance_v2.md b/docs/tradeflow_trial_acceptance_v2.md
+index 2021628..3c7ee8f 100644
+--- a/docs/tradeflow_trial_acceptance_v2.md
++++ b/docs/tradeflow_trial_acceptance_v2.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 小资金试跑前整体验收报告 (V-008)
+ 
+-**生成时间**: 2026-06-27 00:38:14
++**生成时间**: 2026-06-27 00:52:49
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **模拟本金**: ¥5000
+diff --git a/docs/tradeflow_trial_acceptance_v3.md b/docs/tradeflow_trial_acceptance_v3.md
+index 2dbe53d..fd85451 100644
+--- a/docs/tradeflow_trial_acceptance_v3.md
++++ b/docs/tradeflow_trial_acceptance_v3.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 小资金试跑 v2 验收报告 (V-010)
+ 
+-**生成时间**: 2026-06-27 00:38:15
++**生成时间**: 2026-06-27 00:52:50
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **模拟本金**: ¥5000
+
+exec
+/bin/zsh -lc "find docs/perf docs/task_runs/PERF-006-20260627-004018 -type f -maxdepth 4 -print -exec sed -n '1,220p' {} \\; | sed -n '1,600p'
+printf '\\n--- script ---\\n'; sed -n '1,260p' scripts/measure_frontend_bundle.py
+printf '\\n--- tests ---\\n'; sed -n '1,320p' tests/test_perf006_frontend_bundle.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+docs/perf/frontend_bundle_trend.jsonl
+{"recorded_at": "2026-06-27T00:44:06", "git_commit": "9e0d083", "total_raw_kb": 1381.47, "total_gzip_kb": 371.29, "js_raw_kb": 1212.22, "js_gzip_kb": 348.06, "css_raw_kb": 169.25, "css_gzip_kb": 23.23, "largest_js_path": "dist/assets/index-CgqzJoWi.js", "largest_js_raw_kb": 1212.22, "largest_js_gzip_kb": 348.06}
+docs/perf/frontend_bundle_report.md
+# 前端 Bundle 体积趋势报告（PERF-006）
+> 建立：2026-06-27 · 任务 `PERF-006` · 代码标注 `# [PERF-006] frontend_bundle_trend`
+> 本报告由 `scripts/measure_frontend_bundle.py` 自动生成，记录前端构建产物的 js/css gzip 体积趋势，并给出懒加载候选建议。**本任务不强制 code split**，候选仅供后续优化参考。
+
+_报告生成时间：2026-06-27T00:45:17_
+
+## 1. 最新构建快照
+
+- **记录时间**：2026-06-27T00:44:06
+- **commit**：`9e0d083`
+- **总 JS**：raw 1212.22 kB / gzip 348.06 kB
+- **总 CSS**：raw 169.25 kB / gzip 23.23 kB
+- **最大 JS chunk**：`dist/assets/index-CgqzJoWi.js` raw 1212.22 kB / gzip 348.06 kB ⚠️ **超 Vite 默认告警阈值**
+
+## 2. 历史趋势
+
+> 数据源：`docs/perf/frontend_bundle_trend.jsonl` （每次 `--write` 追加一行；不重写历史）。
+
+| 记录时间 | commit | JS raw | JS gzip | CSS raw | CSS gzip | Largest JS raw | Largest JS gzip |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2026-06-27T00:44:06 | 9e0d083 | 1212.22 kB | 348.06 kB | 169.25 kB | 23.23 kB | 1212.22 kB | 348.06 kB |
+
+## 3. 懒加载候选（建议，不强制执行）
+
+> PERF-006 验收准则：**不要求实际 code split**。下列候选由源码静态分析得出，供后续优化任务参考。
+
+| 候选 | 类型 | 源文件 | 预估影响 | 拆分理由 |
+| --- | --- | --- | --- | --- |
+| TradeFlow | page | `frontend/src/pages/TradeFlow.tsx` | high | 最大的页面模块（~3800 行）。仅在 /tradeflow 路由下使用，适合 React.lazy + Suspense 路由级拆分。 |
+| Reports | page | `frontend/src/pages/Reports.tsx` | medium | 报告列表/详情页（~785 行），含 ReportViewer 子组件。非首屏路由，可安全懒加载。 |
+| TrackingBoard | page | `frontend/src/pages/TrackingBoard.tsx` | medium | 跟踪看板路由（依赖 TrackingBoardV2Panel 等较重组件）。用户大多从 Dashboard 进入，可懒加载。 |
+| Portfolio | page | `frontend/src/pages/Portfolio.tsx` | medium | 持仓页（~1343 行），含表格与图表组件。非首屏，可懒加载。 |
+| Settings | page | `frontend/src/pages/Settings.tsx` | low | 设置页（~947 行），与主链路解耦，访问频率低，适合懒加载。 |
+| Analysis | page | `frontend/src/pages/Analysis.tsx` | medium | 智能分析控制台（~430 行 + 多个子组件）。TradeFlow 跳转入口，可懒加载。 |
+| AgentCollaboration | chart_component | `frontend/src/components/AgentCollaboration.tsx` | medium | 依赖 @xyflow/react（Flow 图视图），只在报告详情页打开。可用 React.lazy 在 ReportViewer 内部按需加载。 |
+| KlinePanel | chart_component | `frontend/src/components/KlinePanel.tsx` | medium | 依赖 lightweight-charts（K 线渲染），仅在 TradeFlow/Reports 中展开。可在父组件中 React.lazy 引入。 |
+| MiniKline | chart_component | `frontend/src/components/MiniKline.tsx` | medium | 依赖 lightweight-charts，在候选行/卡片中按需展开。可懒加载以避免首屏引入 chart 引擎。 |
+
+### 3.1 推荐落地顺序（不强制）
+
+1. **路由级 `React.lazy()`**：把 `TradeFlow / Reports / TrackingBoard / Portfolio / Settings` 等大页改为 `const TradeFlow = React.lazy(() => import('./pages/TradeFlow'))`，并用 `<Suspense fallback={…}>` 包裹路由。这是收益最大、风险最低的改造，能直接把首屏 JS gzip 拉到 ~250 kB 以下。
+2. **图表组件懒加载**：`AgentCollaboration / KlinePanel / MiniKline` 依赖 `@xyflow/react` 与 `lightweight-charts`，可在父组件内通过 `React.lazy` 在用户展开时再加载，避免首屏引入 chart 引擎。
+3. **vendor chunk 拆分**（可选）：在 `vite.config.ts` 中配置 `build.rollupOptions.output.manualChunks`，把 `lightweight-charts` / `@xyflow/react` / `@dnd-kit/*` 拆成独立 vendor chunk，提升缓存命中率。
+4. **检查意外整包 import**：例如 `lucide-react` 务必按图标 import （`import { IconX } from 'lucide-react'`），不要 `import * as`。
+
+## 4. 约束与运行方式
+
+- ❌ 本任务不进行大规模前端重构。
+- ❌ 本任务不改变路由行为。
+- ❌ 性能测试不依赖绝对耗时，只验证解析逻辑与报告格式。
+- ✅ 每次构建产物以一行 JSON 追加到 `docs/perf/frontend_bundle_trend.jsonl`，可重放历史。
+
+### 4.1 如何刷新本报告
+
+```bash
+# 1. 在 frontend/ 跑一次构建，捕获 stdout 到文件
+cd frontend && npm run build > /tmp/build.log 2>&1
+
+# 2. 解析日志 + 追加趋势 + 重写报告
+python scripts/measure_frontend_bundle.py --from-log /tmp/build.log --write
+
+# 或者直接由脚本调用 npm run build
+python scripts/measure_frontend_bundle.py --run-build --write
+
+# 只重渲染报告（不重新构建）
+python scripts/measure_frontend_bundle.py --report-only
+```
+
+docs/task_runs/PERF-006-20260627-004018/tests-round1.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  1%]
+................................................ss...................... [  2%]
+........................................................................ [  3%]
+........................................................................ [  4%]
+........................................................................ [  5%]
+........................................................................ [  6%]
+........................................................................ [  7%]
+........................................................................ [  8%]
+........................................................................ [  9%]
+........................................................................ [ 10%]
+........................................................................ [ 11%]
+........................................................................ [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 15%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 18%]
+........................................................................ [ 19%]
+........................................................................ [ 20%]
+........................................................................ [ 21%]
+........................................................................ [ 22%]
+........................................................................ [ 23%]
+........................................................................ [ 24%]
+........................................................................ [ 25%]
+........................................................................ [ 26%]
+........................................................................ [ 27%]
+........................................................................ [ 28%]
+........................................................................ [ 29%]
+........................................................................ [ 30%]
+........................................................................ [ 31%]
+........................................................................ [ 32%]
+........................................................................ [ 33%]
+........................................................................ [ 34%]
+........................................................................ [ 35%]
+........................................................................ [ 36%]
+........................................................................ [ 37%]
+........................................................................ [ 38%]
+........................................................................ [ 39%]
+........................................................................ [ 40%]
+........................................................................ [ 41%]
+........................................................................ [ 42%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 45%]
+........................................................................ [ 46%]
+........................................................................ [ 47%]
+...........................sssssssss.................................... [ 48%]
+........................................................................ [ 49%]
+........................................................................ [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 52%]
+........................................................................ [ 53%]
+........................................................................ [ 54%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 57%]
+........................................................................ [ 58%]
+........................................................................ [ 59%]
+........................................................................ [ 60%]
+........................................................................ [ 61%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 64%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+.........ss.................................................ssss........ [ 67%]
+........................................................................ [ 68%]
+........................................................................ [ 70%]
+........................................................................ [ 71%]
+........................................................................ [ 72%]
+........................................................................ [ 73%]
+........................................................................ [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 76%]
+........................................................................ [ 77%]
+........................................................................ [ 78%]
+........................................................................ [ 79%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+........................................................................ [ 82%]
+........................................................................ [ 83%]
+........................................................................ [ 84%]
+........................................................................ [ 85%]
+........................................................................ [ 86%]
+........................................................................ [ 87%]
+........................................................................ [ 88%]
+........................................................................ [ 89%]
+........................................................................ [ 90%]
+........................................................................ [ 91%]
+........................................................................ [ 92%]
+........................................................................ [ 93%]
+........................................................................ [ 94%]
+........................................................................ [ 95%]
+........................................................................ [ 96%]
+........................................................................ [ 97%]
+........................................................................ [ 98%]
+........................................................................ [ 99%]
+.........................................                                [100%]
+=============================== warnings summary ===============================
+tests/test_hk001_market_boundary.py::TestHKDataCollectorGating::test_cn_does_not_set_hk_light_mode
+tests/test_hk001_market_boundary.py::TestHKDataCollectorGating::test_cn_still_attempts_ashare_fields
+  /Users/maybee/TradingAgents-AShare/.venv/lib/python3.12/site-packages/akshare/stock_fundamental/stock_recommend.py:91: FutureWarning: Passing literal html to 'read_html' is deprecated and will be removed in a future version. To read from a literal string, wrap it in a 'StringIO' object.
+    temp_df = pd.read_html(r.text, header=0)[0].iloc[:, :8]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+7080 passed, 17 skipped, 2 warnings in 232.85s (0:03:52)
+
+Exit code: 0
+docs/task_runs/PERF-006-20260627-004018/codegraph-status.json
+{
+  "task_id": "PERF-006",
+  "generated_at": "2026-06-27T00:40:19.139711",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "result": "OK",
+  "symbols_found": 5,
+  "post_generated_at": "2026-06-27T00:52:52.488546",
+  "codegraph_post": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "post_result": "OK",
+  "impact_files_count": 0,
+  "affected_tests_count": 0,
+  "changed_files": [
+    "docs/DEVLOG.md",
+    "docs/TASKS.md",
+    "docs/tradeflow_trial_acceptance.md",
+    "docs/tradeflow_trial_acceptance_v2.md",
+    "docs/tradeflow_trial_acceptance_v3.md"
+  ]
+}docs/task_runs/PERF-006-20260627-004018/prompt-round1.md
+# Task: PERF-006: 前端 bundle 体积趋势记录与懒加载候选建议（P2）
+
+Read task "PERF-006" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/PERF-006-20260627-004018/codegraph-context.txt
+# CodeGraph Context for PERF-006
+# Task: 前端 bundle 体积趋势记录与懒加载候选建议（P2）
+# Generated: 2026-06-27T00:40:19.301989
+# Keywords: perf, bundle, 体积趋势记录与懒加载候选建议（p2）
+
+## Code Context
+
+**Query:** perf bundle 体积趋势记录与懒加载候选建议（p2）
+
+### Entry Points
+
+- **CandidatePerformance** (class) - tradingagents/tradeflow/post_market_review.py:28
+- **build_candidate_performance** (function) - tradingagents/tradeflow/post_market_review.py:129
+  `(
+    candidate: Candidate,
+    next_day_close: Optional[float] = None,
+    day3_close: Optional[float] = None,
+    day5_close: Optional[float] = None,
+) -> CandidatePerformance`
+- **build_candidate_performance_from_dict** (function) - tradingagents/tradeflow/post_market_review.py:158
+  `(
+    entry: dict,
+    next_day_close: Optional[float] = None,
+    day3_close: Optional[float] = None,
+    day5_close: Optional[float] = None,
+) -> CandidatePerformance`
+
+### Related Symbols
+
+- tradingagents/tradeflow/post_market_review.py: compute_returns:51
+- tests/test_m007_post_market_review.py: test_basic_build:187, test_no_price_data:198, test_preserves_strategy_tags:204, test_preserves_risk_flags:210, test_candidate_to_review:705, test_candidate_to_review_to_file:743, test_multi_day_returns:782, test_candidate_with_zero_trigger_price:851
+
+docs/task_runs/PERF-006-20260627-004018/opencode-round1.txt
+[0m
+> build · glm-5.2
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "PERF-006"[90m in docs/TASKS.md · 4 matches[0m
+[0m✱ [0mGrep "PERF-005"[90m in docs/TASKS.md · 6 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [offset=4030, limit=60][0m
+[0m→ [0mRead docs/TASKS.md[90m [limit=30, offset=3696][0m
+现在让我来了解一下 PERF-005 的上下文并查看项目结构。
+[0m
+[0m$ [0mgit status && git log --oneline -5
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 190 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     docs/TASKS.md
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/task_runs/PERF-006-20260627-004018/
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+9e0d083 docs: mark DATA-023 done after auto run
+defb365 auto: DATA-023 数据源目录 API/文档同步与供应商能力矩阵导出（P2） [AUTO-002]
+40d97c8 docs: mark UI-013 done after auto run
+1901fe2 auto: UI-013 TradeFlow 空状态与下一步 CTA 文案收口（P2） [AUTO-002]
+24871dc docs: mark IC-TA-003 done after auto run
+[0m
+[0m$ [0mls docs/task_runs/PERF-006-20260627-004018/ && ls docs/perf/ 2>/dev/null || echo "no perf dir"
+codegraph-context.txt
+codegraph-status.json
+prompt-round1.md
+task.md
+no perf dir
+[0m
+[0m$ [0mls frontend/ && cat frontend/package.json 2>/dev/null | head -50
+LICENSE
+NOTICE
+README.md
+dist
+eslint.config.js
+index.html
+node_modules
+package-lock.json
+package.json
+postcss.config.js
+public
+src
+tailwind.config.js
+tsconfig.json
+tsconfig.node.json
+vercel.json
+vite.config.ts
+{
+  "name": "tradingagents-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@tailwindcss/postcss": "^4.2.4",
+    "@tanstack/react-virtual": "^3.13.24",
+    "@vercel/speed-insights": "^2.0.0",
+    "@xyflow/react": "^12.10.2",
+    "clsx": "^2.1.0",
+    "date-fns": "^4.1.0",
+    "lightweight-charts": "^5.2.0",
+    "lucide-react": "^0.344.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.14.1",
+    "recharts": "^2.12.0",
+    "remark-gfm": "^4.0.1",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss": "^4.2.2",
+    "zustand": "^5.0.12"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.55",
+    "@types/react-dom": "^18.2.19",
+    "@typescript-eslint/eslint-plugin": "^8.59.1",
+    "@typescript-eslint/parser": "^8.57.2",
+    "@vitejs/plugin-react": "^4.2.1",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.5.0",
+    "postcss": "^8.5.13",
+    "typescript": "^6.0.3",
+    "vite": "^6.4.2",
+    "vitest": "^4.1.5"
+  }
+}
+[0m
+[0m$ [0mls tests/ | grep -iE "perf|bundle" | head -20 && echo "---src---" && ls frontend/src/ && echo "---tests dir for frontend---" && ls frontend/src/__tests__ 2>/dev/null || ls frontend/tests 2>/dev/null || echo "no dedicated frontend tests dir"
+test_perf002_ta_profiles.py
+test_perf004_full_ta_cost_gate.py
+test_perf005_tradeflow_perf_budget.py
+---src---
+App.tsx
+components
+hooks
+index.css
+main.js
+main.tsx
+pages
+services
+stores
+styles.css
+types
+utils
+vite-env.d.ts
+---tests dir for frontend---
+no dedicated frontend tests dir
+[0m
+[0m→ [0mRead tests/test_perf005_tradeflow_perf_budget.py
+[0m
+[0m$ [0mls frontend/src/pages/ && echo "---App.tsx---" && cat frontend/src/App.tsx 2>/dev/null | head -80
+Analysis.tsx
+Dashboard.tsx
+Feedback.tsx
+Login.tsx
+Portfolio.tsx
+Reports.tsx
+Settings.tsx
+Sponsor.tsx
+Thanks.tsx
+TrackingBoard.tsx
+TradeFlow.tsx
+---App.tsx---
+import { BrowserRouter, Navigate, Routes, Route } from 'react-router-dom'
+import { useEffect } from 'react'
+import { SpeedInsights } from '@vercel/speed-insights/react'
+import Layout from './components/Layout'
+import Dashboard from './pages/Dashboard'
+import Analysis from './pages/Analysis'
+import Reports from './pages/Reports'
+import Settings from './pages/Settings'
+import Portfolio from './pages/Portfolio'
+import TrackingBoard from './pages/TrackingBoard'
+import TradeFlow from './pages/TradeFlow'
+import Login from './pages/Login'
+import Feedback from './pages/Feedback'
+import Sponsor from './pages/Sponsor'
+import Thanks from './pages/Thanks'
+import { useAuthStore } from './stores/authStore'
+
+const ONLINE_HOST = 'app.510168.xyz'
+const isOnline = typeof window !== 'undefined' && window.location.hostname === ONLINE_HOST
+
+function ExternalRedirect({ to, fallback }: { to: string; fallback: JSX.Element }) {
+  if (isOnline) return fallback
+  window.location.href = to
+  return null
+}
+
+function RequireAuth({ children }: { children: JSX.Element }) {
+  const { user, hydrated, hydrate } = useAuthStore()
+
+  useEffect(() => {
+    if (!hydrated) void hydrate()
+  }, [hydrated, hydrate])
+
+  if (!hydrated) {
+    return <div className="min-h-screen flex items-center justify-center text-slate-500">加载中...</div>
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace />
+  }
+
+  return children
+}
+
+function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/sponsor" element={<ExternalRedirect to={`https://${ONLINE_HOST}/sponsor`} fallback={<Sponsor />} />} />
+        <Route path="/thanks" element={<ExternalRedirect to={`https://${ONLINE_HOST}/thanks`} fallback={<Thanks />} />} />
+        <Route
+          path="*"
+          element={
+            <RequireAuth>
+              <Layout>
+                <Routes>
+                  <Route path="/" element={<Dashboard />} />
+                  <Route path="/tracking-board" element={<TrackingBoard />} />
+                  <Route path="/analysis" element={<Analysis />} />
+                  <Route path="/reports" element={<Reports />} />
+                  <Route path="/tradeflow" element={<TradeFlow />} />
+                  <Route path="/portfolio" element={<Portfolio />} />
+                  <Route path="/settings" element={<Settings />} />
+                  <Route path="/feedback" element={<Feedback />} />
+                </Routes>
+              </Layout>
+            </RequireAuth>
+          }
+        />
+      </Routes>
+      <SpeedInsights />
+    </BrowserRouter>
+  )
+}
+
+export default App
+[0m
+docs/task_runs/PERF-006-20260627-004018/task.md
+# Auto Dev Task Run
+
+- Task: PERF-006 - 前端 bundle 体积趋势记录与懒加载候选建议（P2）
+- Priority: P2
+- Status: CLAIMED
+- Started at: 2026-06-27_00:40:18
+- Git HEAD: 9e0d083
+- Test commands: pytest tests/ -q --tb=short
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/PERF-006-20260627-004018/codegraph-impact.txt
+# CodeGraph Impact Analysis
+# Generated: 2026-06-27T00:52:52.488570
+# Changed files: 5
+
+## Source: docs/DEVLOG.md
+[34mℹ[0m Symbol "docs/DEVLOG.md" not found
+
+
+## Source: docs/TASKS.md
+[34mℹ[0m Symbol "docs/TASKS.md" not found
+
+
+## Source: docs/tradeflow_trial_acceptance.md
+[34mℹ[0m Symbol "docs/tradeflow_trial_acceptance.md" not found
+
+
+## Source: docs/tradeflow_trial_acceptance_v2.md
+[34mℹ[0m Symbol "docs/tradeflow_trial_acceptance_v2.md" not found
+
+
+## Source: docs/tradeflow_trial_acceptance_v3.md
+[34mℹ[0m Symbol "docs/tradeflow_trial_acceptance_v3.md" not found
+
+
+## Affected Tests
+  (could not determine affected tests)
+--- script ---
+#!/usr/bin/env python3
+# [PERF-006] frontend_bundle_trend
+"""Frontend bundle size parser and trend report generator.
+
+This script implements PERF-006 acceptance:
+
+1. Parse `npm run build` (vite) output and capture js/css gzip sizes.
+2. Append a record to `docs/perf/frontend_bundle_trend.jsonl` (one JSON per line)
+   so we can track bundle size over time without re-running builds.
+3. Generate `docs/perf/frontend_bundle_report.md` summarizing the latest
+   measurement, the historical trend, and a list of lazy-load candidates
+   (Reports / TradeFlow / TrackingBoard / Charts).
+
+Design notes
+------------
+- **No live build dependency**: the parser accepts raw vite stdout text. This
+  lets tests feed in a fixture string (PERF-006 constraint: "测试只验证解析
+  逻辑和报告格式，不让性能测试依赖绝对耗时").
+- **No routing changes, no code split**: this script only *suggests*
+  lazy-load candidates; it never edits source files.
+- **Deterministic output**: report generation is a pure function of
+  (measurement, history, candidates) so tests can pin it down.
+
+Usage
+-----
+    # Parse a captured build log
+    python scripts/measure_frontend_bundle.py --from-log build.txt --write
+
+    # Run npm run build inline and record (requires node/npm on PATH)
+    python scripts/measure_frontend_bundle.py --run-build --write
+
+    # Just regenerate the report from existing trend history
+    python scripts/measure_frontend_bundle.py --report-only
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import json
+import os
+import re
+import subprocess
+import sys
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Iterable, List, Optional, Sequence
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_TREND_PATH = REPO_ROOT / "docs" / "perf" / "frontend_bundle_trend.jsonl"
+DEFAULT_REPORT_PATH = REPO_ROOT / "docs" / "perf" / "frontend_bundle_report.md"
+DEFAULT_BUILD_CMD = ["npm", "run", "build"]
+DEFAULT_FRONTEND_DIR = REPO_ROOT / "frontend"
+
+# Vite prints each emitted asset on its own line in this shape
+# (note the │ separator and gzip token):
+#   dist/assets/index-CgqzJoWi.js   1,212.22 kB │ gzip: 348.06 kB
+# Some lines omit gzip (e.g. svg/jpg) — we only track js/css here.
+_VITE_LINE_RE = re.compile(
+    r"""
+    ^\s*
+    (?P<path>\S+\.(?P<ext>js|css))       # emitted asset path + extension
+    \s+
+    (?P<raw>[\d,]+(?:\.\d+)?)\s*k?B      # raw minified size
+    \s*\│\s*
+    gzip:\s*
+    (?P<gzip>[\d,]+(?:\.\d+)?)\s*k?B     # gzip size
+    """,
+    re.VERBOSE,
+)
+
+# Vite >=5 emits a chunk-size warning when any chunk crosses this threshold.
+VITE_DEFAULT_WARN_KB = 500
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [PERF-006] Data model
+# ═══════════════════════════════════════════════════════════════════
+@dataclass(frozen=True)
+class AssetMeasurement:
+    """One emitted asset (js or css) from a single build."""
+
+    path: str
+    kind: str  # "js" | "css"
+    raw_kb: float
+    gzip_kb: float
+
+    @property
+    def raw_bytes(self) -> int:
+        return int(round(self.raw_kb * 1024))
+
+    @property
+    def gzip_bytes(self) -> int:
+        return int(round(self.gzip_kb * 1024))
+
+
+@dataclass(frozen=True)
+class BundleMeasurement:
+    """All assets emitted by one build run + metadata."""
+
+    recorded_at: str  # ISO-8601 local
+    git_commit: str
+    assets: Sequence[AssetMeasurement] = field(default_factory=tuple)
+    build_log: str = ""  # full stdout (optional, not persisted to trend)
+
+    @property
+    def js_assets(self) -> List[AssetMeasurement]:
+        return [a for a in self.assets if a.kind == "js"]
+
+    @property
+    def css_assets(self) -> List[AssetMeasurement]:
+        return [a for a in self.assets if a.kind == "css"]
+
+    @property
+    def total_raw_kb(self) -> float:
+        return round(sum(a.raw_kb for a in self.assets), 2)
+
+    @property
+    def total_gzip_kb(self) -> float:
+        return round(sum(a.gzip_kb for a in self.assets), 2)
+
+    @property
+    def largest_js(self) -> Optional[AssetMeasurement]:
+        js = self.js_assets
+        return max(js, key=lambda a: a.raw_kb) if js else None
+
+    def to_trend_dict(self) -> dict:
+        """Compact dict for appending to the jsonl trend log."""
+        return {
+            "recorded_at": self.recorded_at,
+            "git_commit": self.git_commit,
+            "total_raw_kb": self.total_raw_kb,
+            "total_gzip_kb": self.total_gzip_kb,
+            "js_raw_kb": round(sum(a.raw_kb for a in self.js_assets), 2),
+            "js_gzip_kb": round(sum(a.gzip_kb for a in self.js_assets), 2),
+            "css_raw_kb": round(sum(a.raw_kb for a in self.css_assets), 2),
+            "css_gzip_kb": round(sum(a.gzip_kb for a in self.css_assets), 2),
+            "largest_js_path": self.largest_js.path if self.largest_js else None,
+            "largest_js_raw_kb": (
+                round(self.largest_js.raw_kb, 2) if self.largest_js else 0.0
+            ),
+            "largest_js_gzip_kb": (
+                round(self.largest_js.gzip_kb, 2) if self.largest_js else 0.0
+            ),
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [PERF-006] Parsing
+# ═══════════════════════════════════════════════════════════════════
+def parse_vite_output(log: str) -> List[AssetMeasurement]:
+    """Parse vite build stdout and return all js/css asset measurements.
+
+    The parser is intentionally tolerant: any line that matches the
+    `path  raw kB │ gzip: gzip kB` shape is captured, regardless of the
+    surrounding context. Unknown lines (deprecation warnings, transform
+    counts, the chunk-size advisory, etc.) are silently skipped.
+
+    Raises ValueError only when the log clearly never reached the asset
+    summary (no matches AND looks like a failed build) — this protects
+    tests from accidentally asserting on an empty parse.
+    """
+    if not isinstance(log, str):
+        raise TypeError("vite log must be a string")
+
+    measurements: List[AssetMeasurement] = []
+    seen_paths: set[str] = set()
+
+    for raw_line in log.splitlines():
+        line = raw_line.strip()
+        if not line or "gzip:" not in line:
+            continue
+        match = _VITE_LINE_RE.search(line)
+        if not match:
+            continue
+        path = match.group("path")
+        if path in seen_paths:
+            # Vite never emits the same asset path twice in one build;
+            # dedupe defensively in case of stray log noise.
+            continue
+        seen_paths.add(path)
+        try:
+            raw_kb = float(match.group("raw").replace(",", ""))
+            gzip_kb = float(match.group("gzip").replace(",", ""))
+        except ValueError:
+            continue
+        measurements.append(
+            AssetMeasurement(
+                path=path,
+                kind=match.group("ext").lower(),
+                raw_kb=raw_kb,
+                gzip_kb=gzip_kb,
+            )
+        )
+
+    return measurements
+
+
+def detect_chunk_size_warning(log: str) -> bool:
+    """Return True if vite emitted the >500kB chunk-size warning."""
+    if not log:
+        return False
+    # Match both the old ("larger than 500 kB") and new ("larger than 500 kB")
+    # phrasings; the trigger keyword is "chunks are larger than".
+    return (
+        "chunks are larger than" in log
+        or "chunks are larger than 500 kB" in log
+        or "Some chunks are larger than" in log
+    )
+
+
+def _run_git_commit() -> str:
+    for cmd in (
+        ["git", "rev-parse", "--short", "HEAD"],
+        ["git", "rev-parse", "HEAD"],
+    ):
+        try:
+            out = subprocess.check_output(
+                cmd, cwd=str(REPO_ROOT), stderr=subprocess.DEVNULL
+            ).decode("utf-8", errors="replace").strip()
+            if out:
+                return out[:12]
+        except Exception:
+            continue
+    return "unknown"
+
+
+def _run_build(frontend_dir: Path) -> str:
+    """Run `npm run build` and return combined stdout+stderr."""
+    if not frontend_dir.exists():
+        raise FileNotFoundError(f"frontend dir not found: {frontend_dir}")
+    proc = subprocess.run(
+        DEFAULT_BUILD_CMD,
+        cwd=str(frontend_dir),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.stdout + "\n" + proc.stderr
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [PERF-006] Lazy-load candidates
+# ═══════════════════════════════════════════════════════════════════
+# Static candidate list. These are *suggestions* derived from source-tree
+# analysis (see report.md §3 for the rationale). The script never edits
+# source code — humans/agents decide when to actually wire React.lazy().
+@dataclass(frozen=True)
+class LazyLoadCandidate:
+    name: str
+    kind: str  # "page" | "chart_component" | "vendor_lib"
+    source: str  # file path under frontend/src
+    rationale: str
+    estimated_impact: str  # "high" | "medium" | "low"
+
+
+LAZY_LOAD_CANDIDATES: List[LazyLoadCandidate] = [
+    LazyLoadCandidate(
+        name="TradeFlow",
+        kind="page",
+
+--- tests ---
+# [PERF-006] frontend_bundle_trend
+"""Tests for the frontend bundle measurement script.
+
+PERF-006 acceptance:
+1. fixture build output can be parsed (no live npm run build required).
+2. report markdown is generated and contains the expected sections.
+3. lazy-load candidates cover Reports / TradeFlow / TrackingBoard / Charts.
+
+Constraints honoured:
+- No live `npm run build` is ever invoked — all parsing tests use fixture
+  strings captured from a real vite v6 build.
+- No assertion on absolute timing.
+- No writes outside tmp_path.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+# Module under test
+from scripts.measure_frontend_bundle import (
+    AssetMeasurement,
+    BundleMeasurement,
+    LAZY_LOAD_CANDIDATES,
+    LazyLoadCandidate,
+    VITE_DEFAULT_WARN_KB,
+    _VITE_LINE_RE,
+    append_trend,
+    detect_chunk_size_warning,
+    generate_report,
+    parse_vite_output,
+    read_trend,
+)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [PERF-006] Fixture build logs
+# ═══════════════════════════════════════════════════════════════════
+# Captured from a real `npm run build` (vite v6.4.2) on this repo at
+# commit 9e0d083. Two scenarios:
+#   - VITE_LOG_FULL: chunk-size warning + 1 js + 1 css (current state).
+#   - VITE_LOG_NO_WARNING: trimmed log without the chunk-size advisory.
+#   - VITE_LOG_MULTI_CHUNK: hypothetical future with split chunks.
+VITE_LOG_FULL = """\
+vite v6.4.2 building for production...
+(node:37085) [DEP0205] DeprecationWarning: `module.register()` is deprecated.
+transforming...
+✓ 1940 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                     1.15 kB │ gzip:   0.65 kB
+dist/assets/index-DmcBNlVs.css    169.25 kB │ gzip:  23.23 kB
+dist/assets/index-CgqzJoWi.js   1,212.22 kB │ gzip: 348.06 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking
+- Adjust chunk size limit for build.chunkSizeWarningLimit.
+✓ built in 1.35s
+"""
+
+VITE_LOG_NO_WARNING = """\
+vite v6.4.2 building for production...
+transforming...
+✓ 100 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                     1.15 kB │ gzip:   0.65 kB
+dist/assets/index-DmcBNlVs.css    169.25 kB │ gzip:  23.23 kB
+dist/assets/index-CgqzJoWi.js   312.22 kB │ gzip: 98.06 kB
+✓ built in 1.35s
+"""
+
+# Hypothetical future where code-splitting landed: one vendor chunk +
+# per-route chunks. Numbers are illustrative, not measured.
+VITE_LOG_MULTI_CHUNK = """\
+vite v6.4.2 building for production...
+✓ 2000 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                     1.15 kB │ gzip:   0.65 kB
+dist/assets/index-DmcBNlVs.css    169.25 kB │ gzip:  23.23 kB
+dist/assets/vendor-DgqzJoWi.js    480.00 kB │ gzip: 142.00 kB
+dist/assets/TradeFlow-Ab12.js     380.00 kB │ gzip: 102.00 kB
+dist/assets/Reports-Cd34.js       210.00 kB │ gzip:  58.00 kB
+dist/assets/index-Ef56.js         120.00 kB │ gzip:  42.00 kB
+✓ built in 1.40s
+"""
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [PERF-006] Parser tests
+# ═══════════════════════════════════════════════════════════════════
+class TestParseViteOutput:
+    """parse_vite_output extracts js/css assets from vite stdout."""
+
+    def test_parses_current_real_build_log(self):
+        """The actual captured build log parses to 1 js + 1 css asset."""
+        assets = parse_vite_output(VITE_LOG_FULL)
+        kinds = sorted(a.kind for a in assets)
+        assert kinds == ["css", "js"]
+        js = next(a for a in assets if a.kind == "js")
+        assert js.path == "dist/assets/index-CgqzJoWi.js"
+        # raw value has a thousands comma — must be stripped.
+        assert js.raw_kb == pytest.approx(1212.22, abs=0.01)
+        assert js.gzip_kb == pytest.approx(348.06, abs=0.01)
+        css = next(a for a in assets if a.kind == "css")
+        assert css.path == "dist/assets/index-DmcBNlVs.css"
+        assert css.raw_kb == pytest.approx(169.25, abs=0.01)
+        assert css.gzip_kb == pytest.approx(23.23, abs=0.01)
+
+    def test_ignores_non_asset_lines(self):
+        """Deprecation warnings, transform counts, and the chunk-size
+        advisory must NOT be mis-parsed as assets."""
+        assets = parse_vite_output(VITE_LOG_FULL)
+        paths = {a.path for a in assets}
+        # The index.html line should be skipped because .html != js|css.
+        assert all(not p.endswith(".html") for p in paths)
+        # The advisory lines contain "Consider:" etc. — none of them
+        # match the `path kB │ gzip: kB` shape, so they are skipped.
+        for a in assets:
+            assert a.kind in {"js", "css"}
+
+    def test_handles_thousands_separator(self):
+        """Vite prints 1,212.22 with a thousands comma — must parse."""
+        assets = parse_vite_output(VITE_LOG_FULL)
+        js = next(a for a in assets if a.kind == "js")
+        assert js.raw_kb == pytest.approx(1212.22, abs=0.01)
+
+    def test_parses_multi_chunk_future_build(self):
+        """When code-splitting lands, multiple chunks must all be captured."""
+        assets = parse_vite_output(VITE_LOG_MULTI_CHUNK)
+        js_assets = sorted(a.path for a in assets if a.kind == "js")
+        assert len(js_assets) == 4
+        assert any("TradeFlow" in p for p in js_assets)
+        assert any("Reports" in p for p in js_assets)
+        assert any("vendor" in p for p in js_assets)
+
+    def test_parses_no_warning_log(self):
+        """A log without the chunk-size advisory must still parse."""
+        assets = parse_vite_output(VITE_LOG_NO_WARNING)
+        assert len(assets) == 2  # 1 js + 1 css
+        js = next(a for a in assets if a.kind == "js")
+        # Confirm we got the smaller-numbered asset (no warning).
+        assert js.raw_kb < VITE_DEFAULT_WARN_KB
+
+    def test_dedupes_repeated_paths(self):
+        """If the same asset path appears twice (log noise), only the
+        first occurrence is captured."""
+        dup_log = (
+            "dist/assets/index-X.js   100.00 kB │ gzip: 30.00 kB\n"
+            "dist/assets/index-X.js   100.00 kB │ gzip: 30.00 kB\n"
+        )
+        assets = parse_vite_output(dup_log)
+        assert len(assets) == 1
+        assert assets[0].path == "dist/assets/index-X.js"
+
+    def test_empty_log_returns_empty_list(self):
+        assert parse_vite_output("") == []
+
+    def test_log_without_assets_returns_empty(self):
+        """A log that crashed before emitting assets returns []. The
+        parser does not raise — callers detect via empty result."""
+        crash_log = (
+            "vite v6.4.2 building for production...\n"
+            "Error: ENOENT no entry point\n"
+        )
+        assert parse_vite_output(crash_log) == []
+
+    def test_rejects_non_string_input(self):
+        """Defensive: parser must refuse non-string input."""
+        with pytest.raises(TypeError):
+            parse_vite_output(b"bytes are not allowed")  # type: ignore[arg-type]
+        with pytest.raises(TypeError):
+            parse_vite_output(None)  # type: ignore[arg-type]
+
+    def test_regex_does_not_match_html_or_svg(self):
+        """The path group requires .js or .css extension."""
+        match = _VITE_LINE_RE.search(
+            "dist/index.html  1.15 kB │ gzip: 0.65 kB"
+        )
+        assert match is None
+
+    def test_asset_measurement_byte_conversion(self):
+        """raw_bytes / gzip_bytes are derived correctly from kB."""
+        a = AssetMeasurement(path="x.js", kind="js", raw_kb=1.0, gzip_kb=0.5)
+        assert a.raw_bytes == 1024
+        assert a.gzip_bytes == 512
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [PERF-006] Chunk-size warning detection
+# ═══════════════════════════════════════════════════════════════════
+class TestDetectChunkSizeWarning:
+    def test_detects_current_warning(self):
+        assert detect_chunk_size_warning(VITE_LOG_FULL) is True
+
+    def test_detects_no_warning(self):
+        assert detect_chunk_size_warning(VITE_LOG_NO_WARNING) is False
+
+    def test_handles_empty_log(self):
+        assert detect_chunk_size_warning("") is False
+
+    def test_detects_alternative_phrasings(self):
+        # Future vite versions may rephrase; we match on the keyword.
+        assert (
+            detect_chunk_size_warning(
+                "Some chunks are larger than 500 kB..."
+            )
+            is True
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [PERF-006] BundleMeasurement aggregation
+# ═══════════════════════════════════════════════════════════════════
+class TestBundleMeasurement:
+    def _make(self) -> BundleMeasurement:
+        return BundleMeasurement(
+            recorded_at="2026-06-27T00:00:00",
+            git_commit="abc1234",
+            assets=(
+                AssetMeasurement("a.js", "js", 100.0, 30.0),
+                AssetMeasurement("b.js", "js", 200.0, 60.0),
+                AssetMeasurement("a.css", "css", 50.0, 10.0),
+            ),
+        )
+
+    def test_js_css_partition(self):
+        m = self._make()
+        assert len(m.js_assets) == 2
+        assert len(m.css_assets) == 1
+
+    def test_totals(self):
+        m = self._make()
+        assert m.total_raw_kb == pytest.approx(350.0)
+        assert m.total_gzip_kb == pytest.approx(100.0)
+
+    def test_largest_js(self):
+        m = self._make()
+        assert m.largest_js is not None
+        assert m.largest_js.path == "b.js"
+        assert m.largest_js.raw_kb == 200.0
+
+    def test_largest_js_empty(self):
+        m = BundleMeasurement(
+            recorded_at="t", git_commit="c", assets=()
+        )
+        assert m.largest_js is None
+
+    def test_to_trend_dict_shape(self):
+        """trend dict must carry the fields the report reconstruction
+        relies on (js/css aggregates + largest JS path/sizes)."""
+        m = self._make()
+        d = m.to_trend_dict()
+        for key in (
+            "recorded_at",
+            "git_commit",
+            "total_raw_kb",
+            "total_gzip_kb",
+            "js_raw_kb",
+            "js_gzip_kb",
+            "css_raw_kb",
+            "css_gzip_kb",
+            "largest_js_path",
+            "largest_js_raw_kb",
+            "largest_js_gzip_kb",
+        ):
+            assert key in d, f"missing key {key}"
+        assert d["js_gzip_kb"] == pytest.approx(90.0)
+        assert d["css_gzip_kb"] == pytest.approx(10.0)
+        assert d["largest_js_path"] == "b.js"
+        assert d["largest_js_raw_kb"] == pytest.approx(200.0)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [PERF-006] Trend log I/O
+# ═══════════════════════════════════════════════════════════════════
+class TestTrendIO:
+    def _make_measurement(self, when: str = "2026-06-27T00:00:00") -> BundleMeasurement:
+        return BundleMeasurement(
+            recorded_at=when,
+            git_commit="abc1234",
+            assets=(
+                AssetMeasurement("index.js", "js", 1212.22, 348.06),
+                AssetMeasurement("index.css", "css", 169.25, 23.23),
+            ),
+        )
+
+    def test_append_then_read_roundtrip(self, tmp_path):
+        trend = tmp_path / "trend.jsonl"
+        append_trend(self._make_measurement("t1"), trend)
+        append_trend(self._make_measurement("t2"), trend)
+        records = read_trend(trend)
+        assert len(records) == 2
+        assert records[0]["recorded_at"] == "t1"
+        assert records[1]["recorded_at"] == "t2"
+        # Each line must be valid JSON.
+        for rec in records:
+            json.dumps(rec)
+
+    def test_append_creates_parent_dirs(self, tmp_path):
+        trend = tmp_path / "subdir" / "deep" / "trend.jsonl"
+        append_trend(self._make_measurement(), trend)
+        assert trend.exists()
+
+    def test_read_trend_missing_file_returns_empty(self, tmp_path):
+        trend = tmp_path / "nope.jsonl"
+        assert read_trend(trend) == []
+
+    def test_read_trend_skips_corrupted_lines(self, tmp_path):
+        """A partially-written line must not crash the reader."""
+        trend = tmp_path / "trend.jsonl"
+        trend.write_text(
+            json.dumps({"recorded_at": "good"}) + "\n" +
+            "this is not json\n" +
+            "\n" +
+
+exec
+/bin/zsh -lc "nl -ba scripts/measure_frontend_bundle.py | sed -n '1,360p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+     1	#!/usr/bin/env python3
+     2	# [PERF-006] frontend_bundle_trend
+     3	"""Frontend bundle size parser and trend report generator.
+     4	
+     5	This script implements PERF-006 acceptance:
+     6	
+     7	1. Parse `npm run build` (vite) output and capture js/css gzip sizes.
+     8	2. Append a record to `docs/perf/frontend_bundle_trend.jsonl` (one JSON per line)
+     9	   so we can track bundle size over time without re-running builds.
+    10	3. Generate `docs/perf/frontend_bundle_report.md` summarizing the latest
+    11	   measurement, the historical trend, and a list of lazy-load candidates
+    12	   (Reports / TradeFlow / TrackingBoard / Charts).
+    13	
+    14	Design notes
+    15	------------
+    16	- **No live build dependency**: the parser accepts raw vite stdout text. This
+    17	  lets tests feed in a fixture string (PERF-006 constraint: "测试只验证解析
+    18	  逻辑和报告格式，不让性能测试依赖绝对耗时").
+    19	- **No routing changes, no code split**: this script only *suggests*
+    20	  lazy-load candidates; it never edits source files.
+    21	- **Deterministic output**: report generation is a pure function of
+    22	  (measurement, history, candidates) so tests can pin it down.
+    23	
+    24	Usage
+    25	-----
+    26	    # Parse a captured build log
+    27	    python scripts/measure_frontend_bundle.py --from-log build.txt --write
+    28	
+    29	    # Run npm run build inline and record (requires node/npm on PATH)
+    30	    python scripts/measure_frontend_bundle.py --run-build --write
+    31	
+    32	    # Just regenerate the report from existing trend history
+    33	    python scripts/measure_frontend_bundle.py --report-only
+    34	"""
+    35	
+    36	from __future__ import annotations
+    37	
+    38	import argparse
+    39	import datetime as _dt
+    40	import json
+    41	import os
+    42	import re
+    43	import subprocess
+    44	import sys
+    45	from dataclasses import asdict, dataclass, field
+    46	from pathlib import Path
+    47	from typing import Iterable, List, Optional, Sequence
+    48	
+    49	REPO_ROOT = Path(__file__).resolve().parent.parent
+    50	DEFAULT_TREND_PATH = REPO_ROOT / "docs" / "perf" / "frontend_bundle_trend.jsonl"
+    51	DEFAULT_REPORT_PATH = REPO_ROOT / "docs" / "perf" / "frontend_bundle_report.md"
+    52	DEFAULT_BUILD_CMD = ["npm", "run", "build"]
+    53	DEFAULT_FRONTEND_DIR = REPO_ROOT / "frontend"
+    54	
+    55	# Vite prints each emitted asset on its own line in this shape
+    56	# (note the │ separator and gzip token):
+    57	#   dist/assets/index-CgqzJoWi.js   1,212.22 kB │ gzip: 348.06 kB
+    58	# Some lines omit gzip (e.g. svg/jpg) — we only track js/css here.
+    59	_VITE_LINE_RE = re.compile(
+    60	    r"""
+    61	    ^\s*
+    62	    (?P<path>\S+\.(?P<ext>js|css))       # emitted asset path + extension
+    63	    \s+
+    64	    (?P<raw>[\d,]+(?:\.\d+)?)\s*k?B      # raw minified size
+    65	    \s*\│\s*
+    66	    gzip:\s*
+    67	    (?P<gzip>[\d,]+(?:\.\d+)?)\s*k?B     # gzip size
+    68	    """,
+    69	    re.VERBOSE,
+    70	)
+    71	
+    72	# Vite >=5 emits a chunk-size warning when any chunk crosses this threshold.
+    73	VITE_DEFAULT_WARN_KB = 500
+    74	
+    75	
+    76	# ═══════════════════════════════════════════════════════════════════
+    77	# [PERF-006] Data model
+    78	# ═══════════════════════════════════════════════════════════════════
+    79	@dataclass(frozen=True)
+    80	class AssetMeasurement:
+    81	    """One emitted asset (js or css) from a single build."""
+    82	
+    83	    path: str
+    84	    kind: str  # "js" | "css"
+    85	    raw_kb: float
+    86	    gzip_kb: float
+    87	
+    88	    @property
+    89	    def raw_bytes(self) -> int:
+    90	        return int(round(self.raw_kb * 1024))
+    91	
+    92	    @property
+    93	    def gzip_bytes(self) -> int:
+    94	        return int(round(self.gzip_kb * 1024))
+    95	
+    96	
+    97	@dataclass(frozen=True)
+    98	class BundleMeasurement:
+    99	    """All assets emitted by one build run + metadata."""
+   100	
+   101	    recorded_at: str  # ISO-8601 local
+   102	    git_commit: str
+   103	    assets: Sequence[AssetMeasurement] = field(default_factory=tuple)
+   104	    build_log: str = ""  # full stdout (optional, not persisted to trend)
+   105	
+   106	    @property
+   107	    def js_assets(self) -> List[AssetMeasurement]:
+   108	        return [a for a in self.assets if a.kind == "js"]
+   109	
+   110	    @property
+   111	    def css_assets(self) -> List[AssetMeasurement]:
+   112	        return [a for a in self.assets if a.kind == "css"]
+   113	
+   114	    @property
+   115	    def total_raw_kb(self) -> float:
+   116	        return round(sum(a.raw_kb for a in self.assets), 2)
+   117	
+   118	    @property
+   119	    def total_gzip_kb(self) -> float:
+   120	        return round(sum(a.gzip_kb for a in self.assets), 2)
+   121	
+   122	    @property
+   123	    def largest_js(self) -> Optional[AssetMeasurement]:
+   124	        js = self.js_assets
+   125	        return max(js, key=lambda a: a.raw_kb) if js else None
+   126	
+   127	    def to_trend_dict(self) -> dict:
+   128	        """Compact dict for appending to the jsonl trend log."""
+   129	        return {
+   130	            "recorded_at": self.recorded_at,
+   131	            "git_commit": self.git_commit,
+   132	            "total_raw_kb": self.total_raw_kb,
+   133	            "total_gzip_kb": self.total_gzip_kb,
+   134	            "js_raw_kb": round(sum(a.raw_kb for a in self.js_assets), 2),
+   135	            "js_gzip_kb": round(sum(a.gzip_kb for a in self.js_assets), 2),
+   136	            "css_raw_kb": round(sum(a.raw_kb for a in self.css_assets), 2),
+   137	            "css_gzip_kb": round(sum(a.gzip_kb for a in self.css_assets), 2),
+   138	            "largest_js_path": self.largest_js.path if self.largest_js else None,
+   139	            "largest_js_raw_kb": (
+   140	                round(self.largest_js.raw_kb, 2) if self.largest_js else 0.0
+   141	            ),
+   142	            "largest_js_gzip_kb": (
+   143	                round(self.largest_js.gzip_kb, 2) if self.largest_js else 0.0
+   144	            ),
+   145	        }
+   146	
+   147	
+   148	# ═══════════════════════════════════════════════════════════════════
+   149	# [PERF-006] Parsing
+   150	# ═══════════════════════════════════════════════════════════════════
+   151	def parse_vite_output(log: str) -> List[AssetMeasurement]:
+   152	    """Parse vite build stdout and return all js/css asset measurements.
+   153	
+   154	    The parser is intentionally tolerant: any line that matches the
+   155	    `path  raw kB │ gzip: gzip kB` shape is captured, regardless of the
+   156	    surrounding context. Unknown lines (deprecation warnings, transform
+   157	    counts, the chunk-size advisory, etc.) are silently skipped.
+   158	
+   159	    Raises ValueError only when the log clearly never reached the asset
+   160	    summary (no matches AND looks like a failed build) — this protects
+   161	    tests from accidentally asserting on an empty parse.
+   162	    """
+   163	    if not isinstance(log, str):
+   164	        raise TypeError("vite log must be a string")
+   165	
+   166	    measurements: List[AssetMeasurement] = []
+   167	    seen_paths: set[str] = set()
+   168	
+   169	    for raw_line in log.splitlines():
+   170	        line = raw_line.strip()
+   171	        if not line or "gzip:" not in line:
+   172	            continue
+   173	        match = _VITE_LINE_RE.search(line)
+   174	        if not match:
+   175	            continue
+   176	        path = match.group("path")
+   177	        if path in seen_paths:
+   178	            # Vite never emits the same asset path twice in one build;
+   179	            # dedupe defensively in case of stray log noise.
+   180	            continue
+   181	        seen_paths.add(path)
+   182	        try:
+   183	            raw_kb = float(match.group("raw").replace(",", ""))
+   184	            gzip_kb = float(match.group("gzip").replace(",", ""))
+   185	        except ValueError:
+   186	            continue
+   187	        measurements.append(
+   188	            AssetMeasurement(
+   189	                path=path,
+   190	                kind=match.group("ext").lower(),
+   191	                raw_kb=raw_kb,
+   192	                gzip_kb=gzip_kb,
+   193	            )
+   194	        )
+   195	
+   196	    return measurements
+   197	
+   198	
+   199	def detect_chunk_size_warning(log: str) -> bool:
+   200	    """Return True if vite emitted the >500kB chunk-size warning."""
+   201	    if not log:
+   202	        return False
+   203	    # Match both the old ("larger than 500 kB") and new ("larger than 500 kB")
+   204	    # phrasings; the trigger keyword is "chunks are larger than".
+   205	    return (
+   206	        "chunks are larger than" in log
+   207	        or "chunks are larger than 500 kB" in log
+   208	        or "Some chunks are larger than" in log
+   209	    )
+   210	
+   211	
+   212	def _run_git_commit() -> str:
+   213	    for cmd in (
+   214	        ["git", "rev-parse", "--short", "HEAD"],
+   215	        ["git", "rev-parse", "HEAD"],
+   216	    ):
+   217	        try:
+   218	            out = subprocess.check_output(
+   219	                cmd, cwd=str(REPO_ROOT), stderr=subprocess.DEVNULL
+   220	            ).decode("utf-8", errors="replace").strip()
+   221	            if out:
+   222	                return out[:12]
+   223	        except Exception:
+   224	            continue
+   225	    return "unknown"
+   226	
+   227	
+   228	def _run_build(frontend_dir: Path) -> str:
+   229	    """Run `npm run build` and return combined stdout+stderr."""
+   230	    if not frontend_dir.exists():
+   231	        raise FileNotFoundError(f"frontend dir not found: {frontend_dir}")
+   232	    proc = subprocess.run(
+   233	        DEFAULT_BUILD_CMD,
+   234	        cwd=str(frontend_dir),
+   235	        capture_output=True,
+   236	        text=True,
+   237	        check=False,
+   238	    )
+   239	    return proc.stdout + "\n" + proc.stderr
+   240	
+   241	
+   242	# ═══════════════════════════════════════════════════════════════════
+   243	# [PERF-006] Lazy-load candidates
+   244	# ═══════════════════════════════════════════════════════════════════
+   245	# Static candidate list. These are *suggestions* derived from source-tree
+   246	# analysis (see report.md §3 for the rationale). The script never edits
+   247	# source code — humans/agents decide when to actually wire React.lazy().
+   248	@dataclass(frozen=True)
+   249	class LazyLoadCandidate:
+   250	    name: str
+   251	    kind: str  # "page" | "chart_component" | "vendor_lib"
+   252	    source: str  # file path under frontend/src
+   253	    rationale: str
+   254	    estimated_impact: str  # "high" | "medium" | "low"
+   255	
+   256	
+   257	LAZY_LOAD_CANDIDATES: List[LazyLoadCandidate] = [
+   258	    LazyLoadCandidate(
+   259	        name="TradeFlow",
+   260	        kind="page",
+   261	        source="frontend/src/pages/TradeFlow.tsx",
+   262	        rationale=(
+   263	            "最大的页面模块（~3800 行）。仅在 /tradeflow 路由下使用，"
+   264	            "适合 React.lazy + Suspense 路由级拆分。"
+   265	        ),
+   266	        estimated_impact="high",
+   267	    ),
+   268	    LazyLoadCandidate(
+   269	        name="Reports",
+   270	        kind="page",
+   271	        source="frontend/src/pages/Reports.tsx",
+   272	        rationale=(
+   273	            "报告列表/详情页（~785 行），含 ReportViewer 子组件。"
+   274	            "非首屏路由，可安全懒加载。"
+   275	        ),
+   276	        estimated_impact="medium",
+   277	    ),
+   278	    LazyLoadCandidate(
+   279	        name="TrackingBoard",
+   280	        kind="page",
+   281	        source="frontend/src/pages/TrackingBoard.tsx",
+   282	        rationale=(
+   283	            "跟踪看板路由（依赖 TrackingBoardV2Panel 等较重组件）。"
+   284	            "用户大多从 Dashboard 进入，可懒加载。"
+   285	        ),
+   286	        estimated_impact="medium",
+   287	    ),
+   288	    LazyLoadCandidate(
+   289	        name="Portfolio",
+   290	        kind="page",
+   291	        source="frontend/src/pages/Portfolio.tsx",
+   292	        rationale=(
+   293	            "持仓页（~1343 行），含表格与图表组件。"
+   294	            "非首屏，可懒加载。"
+   295	        ),
+   296	        estimated_impact="medium",
+   297	    ),
+   298	    LazyLoadCandidate(
+   299	        name="Settings",
+   300	        kind="page",
+   301	        source="frontend/src/pages/Settings.tsx",
+   302	        rationale=(
+   303	            "设置页（~947 行），与主链路解耦，访问频率低，适合懒加载。"
+   304	        ),
+   305	        estimated_impact="low",
+   306	    ),
+   307	    LazyLoadCandidate(
+   308	        name="Analysis",
+   309	        kind="page",
+   310	        source="frontend/src/pages/Analysis.tsx",
+   311	        rationale=(
+   312	            "智能分析控制台（~430 行 + 多个子组件）。"
+   313	            "TradeFlow 跳转入口，可懒加载。"
+   314	        ),
+   315	        estimated_impact="medium",
+   316	    ),
+   317	    LazyLoadCandidate(
+   318	        name="AgentCollaboration",
+   319	        kind="chart_component",
+   320	        source="frontend/src/components/AgentCollaboration.tsx",
+   321	        rationale=(
+   322	            "依赖 @xyflow/react（Flow 图视图），只在报告详情页打开。"
+   323	            "可用 React.lazy 在 ReportViewer 内部按需加载。"
+   324	        ),
+   325	        estimated_impact="medium",
+   326	    ),
+   327	    LazyLoadCandidate(
+   328	        name="KlinePanel",
+   329	        kind="chart_component",
+   330	        source="frontend/src/components/KlinePanel.tsx",
+   331	        rationale=(
+   332	            "依赖 lightweight-charts（K 线渲染），仅在 TradeFlow/Reports 中展开。"
+   333	            "可在父组件中 React.lazy 引入。"
+   334	        ),
+   335	        estimated_impact="medium",
+   336	    ),
+   337	    LazyLoadCandidate(
+   338	        name="MiniKline",
+   339	        kind="chart_component",
+   340	        source="frontend/src/components/MiniKline.tsx",
+   341	        rationale=(
+   342	            "依赖 lightweight-charts，在候选行/卡片中按需展开。"
+   343	            "可懒加载以避免首屏引入 chart 引擎。"
+   344	        ),
+   345	        estimated_impact="medium",
+   346	    ),
+   347	]
+   348	
+   349	
+   350	# ═══════════════════════════════════════════════════════════════════
+   351	# [PERF-006] Trend log I/O
+   352	# ═══════════════════════════════════════════════════════════════════
+   353	def append_trend(measurement: BundleMeasurement, trend_path: Path) -> None:
+   354	    """Append one measurement (one JSON object per line) to the trend log.
+   355	
+   356	    Creates parent dirs if needed. Never rewrites history — PERF-006 only
+   357	    *records* the trend, it does not edit past entries.
+   358	    """
+   359	    trend_path.parent.mkdir(parents=True, exist_ok=True)
+   360	    record = measurement.to_trend_dict()
+
+exec
+/bin/zsh -lc "nl -ba scripts/measure_frontend_bundle.py | sed -n '360,760p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   360	    record = measurement.to_trend_dict()
+   361	    with trend_path.open("a", encoding="utf-8") as fp:
+   362	        fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+   363	
+   364	
+   365	def read_trend(trend_path: Path) -> List[dict]:
+   366	    """Read the full trend history (one dict per line)."""
+   367	    if not trend_path.exists():
+   368	        return []
+   369	    out: List[dict] = []
+   370	    with trend_path.open("r", encoding="utf-8") as fp:
+   371	        for line in fp:
+   372	            line = line.strip()
+   373	            if not line:
+   374	                continue
+   375	            try:
+   376	                out.append(json.loads(line))
+   377	            except json.JSONDecodeError:
+   378	                # Skip corrupted lines rather than crashing — the trend
+   379	                # log is append-only and may have been partially written.
+   380	                continue
+   381	    return out
+   382	
+   383	
+   384	# ═══════════════════════════════════════════════════════════════════
+   385	# [PERF-006] Report generation
+   386	# ═══════════════════════════════════════════════════════════════════
+   387	def _fmt_delta(current: float, previous: Optional[float]) -> str:
+   388	    if previous is None or previous == 0:
+   389	        return "—"
+   390	    delta = current - previous
+   391	    pct = (delta / previous) * 100.0
+   392	    sign = "+" if delta >= 0 else ""
+   393	    return f"{sign}{delta:.2f} kB ({sign}{pct:.1f}%)"
+   394	
+   395	
+   396	def _format_trend_table(history: Sequence[dict]) -> str:
+   397	    if not history:
+   398	        return "_（暂无历史趋势）_\n"
+   399	    header = (
+   400	        "| 记录时间 | commit | JS raw | JS gzip | CSS raw | CSS gzip | "
+   401	        "Largest JS raw | Largest JS gzip |\n"
+   402	        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n"
+   403	    )
+   404	    rows = []
+   405	    for rec in history:
+   406	        rows.append(
+   407	            "| {when} | {commit} | {js_raw:.2f} kB | {js_gzip:.2f} kB | "
+   408	            "{css_raw:.2f} kB | {css_gzip:.2f} kB | {lraw:.2f} kB | "
+   409	            "{lgzip:.2f} kB |\n".format(
+   410	                when=rec.get("recorded_at", "—"),
+   411	                commit=rec.get("git_commit", "—"),
+   412	                js_raw=float(rec.get("js_raw_kb", 0.0)),
+   413	                js_gzip=float(rec.get("js_gzip_kb", 0.0)),
+   414	                css_raw=float(rec.get("css_raw_kb", 0.0)),
+   415	                css_gzip=float(rec.get("css_gzip_kb", 0.0)),
+   416	                lraw=float(rec.get("largest_js_raw_kb", 0.0)),
+   417	                lgzip=float(rec.get("largest_js_gzip_kb", 0.0)),
+   418	            )
+   419	        )
+   420	    return header + "".join(rows)
+   421	
+   422	
+   423	def _format_candidates_table(candidates: Sequence[LazyLoadCandidate]) -> str:
+   424	    if not candidates:
+   425	        return "_（暂无候选）_\n"
+   426	    header = (
+   427	        "| 候选 | 类型 | 源文件 | 预估影响 | 拆分理由 |\n"
+   428	        "| --- | --- | --- | --- | --- |\n"
+   429	    )
+   430	    rows = []
+   431	    for c in candidates:
+   432	        rows.append(
+   433	            f"| {c.name} | {c.kind} | `{c.source}` | {c.estimated_impact} "
+   434	            f"| {c.rationale} |\n"
+   435	        )
+   436	    return header + "".join(rows)
+   437	
+   438	
+   439	def generate_report(
+   440	    measurement: Optional[BundleMeasurement],
+   441	    history: Sequence[dict],
+   442	    candidates: Sequence[LazyLoadCandidate],
+   443	    vite_warn_threshold_kb: int = VITE_DEFAULT_WARN_KB,
+   444	    now_iso: Optional[str] = None,
+   445	) -> str:
+   446	    """Render the markdown report. Pure function — no I/O.
+   447	
+   448	    `measurement` may be None when the caller only wants to regenerate the
+   449	    report from history (e.g. `--report-only`). In that case the "latest
+   450	    snapshot" section renders from the last history entry.
+   451	    """
+   452	    if now_iso is None:
+   453	        now_iso = _dt.datetime.now().isoformat(timespec="seconds")
+   454	
+   455	    latest_from_history = history[-1] if history else None
+   456	    if measurement is None and latest_from_history is not None:
+   457	        # Reconstruct a synthetic BundleMeasurement from the trend aggregates.
+   458	        # The trend log stores per-kind (js/css) aggregates plus the single
+   459	        # largest JS asset, so we synthesize one js and one css AssetMeasurement
+   460	        # for display purposes (per-file detail is only available on fresh
+   461	        # measurements — that is intentional, the trend log is compact).
+   462	        largest_path = latest_from_history.get("largest_js_path") or "index-*.js"
+   463	        measurement = BundleMeasurement(
+   464	            recorded_at=latest_from_history.get("recorded_at", now_iso),
+   465	            git_commit=latest_from_history.get("git_commit", "unknown"),
+   466	            assets=(
+   467	                AssetMeasurement(
+   468	                    path=largest_path,
+   469	                    kind="js",
+   470	                    raw_kb=float(latest_from_history.get("js_raw_kb", 0.0)),
+   471	                    gzip_kb=float(latest_from_history.get("js_gzip_kb", 0.0)),
+   472	                ),
+   473	                AssetMeasurement(
+   474	                    path="index-*.css",
+   475	                    kind="css",
+   476	                    raw_kb=float(latest_from_history.get("css_raw_kb", 0.0)),
+   477	                    gzip_kb=float(latest_from_history.get("css_gzip_kb", 0.0)),
+   478	                ),
+   479	            ),
+   480	        )
+   481	
+   482	    # Previous measurement (for delta calc). The trend log is append-only;
+   483	    # depending on the caller, `history` may or may not already contain the
+   484	    # current measurement (the CLI appends before calling us; tests may not).
+   485	    previous: Optional[dict] = None
+   486	    if measurement is None:
+   487	        # report-only: history[-1] is "current", second-to-last is previous.
+   488	        if len(history) >= 2:
+   489	            previous = history[-2]
+   490	    elif history and history[-1].get("recorded_at") == measurement.recorded_at:
+   491	        # Caller already appended the current measurement to history.
+   492	        if len(history) >= 2:
+   493	            previous = history[-2]
+   494	    elif history:
+   495	        # Measurement not yet in history; latest on disk is the previous.
+   496	        previous = history[-1]
+   497	
+   498	    lines: List[str] = []
+   499	    lines.append("# 前端 Bundle 体积趋势报告（PERF-006）\n")
+   500	    lines.append(
+   501	        "> 建立：2026-06-27 · 任务 `PERF-006` · "
+   502	        "代码标注 `# [PERF-006] frontend_bundle_trend`\n"
+   503	    )
+   504	    lines.append(
+   505	        "> 本报告由 `scripts/measure_frontend_bundle.py` 自动生成，"
+   506	        "记录前端构建产物的 js/css gzip 体积趋势，并给出懒加载候选建议。"
+   507	        "**本任务不强制 code split**，候选仅供后续优化参考。\n"
+   508	    )
+   509	    lines.append("\n")
+   510	    lines.append(f"_报告生成时间：{now_iso}_\n\n")
+   511	
+   512	    # ── Section 1: latest snapshot ──
+   513	    lines.append("## 1. 最新构建快照\n\n")
+   514	    if measurement is None:
+   515	        lines.append(
+   516	            "_（暂无测量数据。请先运行 "
+   517	            "`python scripts/measure_frontend_bundle.py --run-build --write`）_\n\n"
+   518	        )
+   519	    else:
+   520	        lines.append(
+   521	            f"- **记录时间**：{measurement.recorded_at}\n"
+   522	            f"- **commit**：`{measurement.git_commit}`\n"
+   523	            f"- **总 JS**：raw "
+   524	            f"{sum(a.raw_kb for a in measurement.js_assets):.2f} kB / "
+   525	            f"gzip {sum(a.gzip_kb for a in measurement.js_assets):.2f} kB\n"
+   526	            f"- **总 CSS**：raw "
+   527	            f"{sum(a.raw_kb for a in measurement.css_assets):.2f} kB / "
+   528	            f"gzip {sum(a.gzip_kb for a in measurement.css_assets):.2f} kB\n"
+   529	        )
+   530	        if measurement.largest_js is not None:
+   531	            over = (
+   532	                measurement.largest_js.raw_kb > vite_warn_threshold_kb
+   533	            )
+   534	            flag = " ⚠️ **超 Vite 默认告警阈值**" if over else ""
+   535	            lines.append(
+   536	                f"- **最大 JS chunk**：`{measurement.largest_js.path}` "
+   537	                f"raw {measurement.largest_js.raw_kb:.2f} kB / "
+   538	                f"gzip {measurement.largest_js.gzip_kb:.2f} kB"
+   539	                f"{flag}\n"
+   540	            )
+   541	        if previous:
+   542	            lines.append("\n**与上次记录的变化**：\n\n")
+   543	            lines.append(
+   544	                "| 指标 | 上次 | 本次 | 变化 |\n| --- | ---: | ---: | --- |\n"
+   545	            )
+   546	            lines.append(
+   547	                "| JS gzip | {prev:.2f} kB | {cur:.2f} kB | {delta} |\n".format(
+   548	                    prev=float(previous.get("js_gzip_kb", 0.0)),
+   549	                    cur=sum(a.gzip_kb for a in measurement.js_assets),
+   550	                    delta=_fmt_delta(
+   551	                        sum(a.gzip_kb for a in measurement.js_assets),
+   552	                        float(previous.get("js_gzip_kb", 0.0)),
+   553	                    ),
+   554	                )
+   555	            )
+   556	            lines.append(
+   557	                "| CSS gzip | {prev:.2f} kB | {cur:.2f} kB | {delta} |\n".format(
+   558	                    prev=float(previous.get("css_gzip_kb", 0.0)),
+   559	                    cur=sum(a.gzip_kb for a in measurement.css_assets),
+   560	                    delta=_fmt_delta(
+   561	                        sum(a.gzip_kb for a in measurement.css_assets),
+   562	                        float(previous.get("css_gzip_kb", 0.0)),
+   563	                    ),
+   564	                )
+   565	            )
+   566	            if measurement.largest_js is not None:
+   567	                lines.append(
+   568	                    "| 最大 JS gzip | {prev:.2f} kB | {cur:.2f} kB | {delta} |\n".format(
+   569	                        prev=float(previous.get("largest_js_gzip_kb", 0.0)),
+   570	                        cur=measurement.largest_js.gzip_kb,
+   571	                        delta=_fmt_delta(
+   572	                            measurement.largest_js.gzip_kb,
+   573	                            float(previous.get("largest_js_gzip_kb", 0.0)),
+   574	                        ),
+   575	                    )
+   576	                )
+   577	        lines.append("\n")
+   578	
+   579	    # ── Section 2: trend table ──
+   580	    lines.append("## 2. 历史趋势\n\n")
+   581	    lines.append(
+   582	        "> 数据源：`docs/perf/frontend_bundle_trend.jsonl` "
+   583	        "（每次 `--write` 追加一行；不重写历史）。\n\n"
+   584	    )
+   585	    lines.append(_format_trend_table(history))
+   586	    lines.append("\n")
+   587	
+   588	    # ── Section 3: lazy-load candidates ──
+   589	    lines.append("## 3. 懒加载候选（建议，不强制执行）\n\n")
+   590	    lines.append(
+   591	        "> PERF-006 验收准则：**不要求实际 code split**。"
+   592	        "下列候选由源码静态分析得出，供后续优化任务参考。\n\n"
+   593	    )
+   594	    lines.append(_format_candidates_table(candidates))
+   595	    lines.append("\n")
+   596	    lines.append(
+   597	        "### 3.1 推荐落地顺序（不强制）\n\n"
+   598	        "1. **路由级 `React.lazy()`**：把 `TradeFlow / Reports / "
+   599	        "TrackingBoard / Portfolio / Settings` 等大页改为 "
+   600	        "`const TradeFlow = React.lazy(() => import('./pages/TradeFlow'))`，"
+   601	        "并用 `<Suspense fallback={…}>` 包裹路由。这是收益最大、风险最低的"
+   602	        "改造，能直接把首屏 JS gzip 拉到 ~250 kB 以下。\n"
+   603	        "2. **图表组件懒加载**：`AgentCollaboration / KlinePanel / MiniKline` "
+   604	        "依赖 `@xyflow/react` 与 `lightweight-charts`，可在父组件内通过 "
+   605	        "`React.lazy` 在用户展开时再加载，避免首屏引入 chart 引擎。\n"
+   606	        "3. **vendor chunk 拆分**（可选）：在 `vite.config.ts` 中配置 "
+   607	        "`build.rollupOptions.output.manualChunks`，把 "
+   608	        "`lightweight-charts` / `@xyflow/react` / `@dnd-kit/*` 拆成独立 "
+   609	        "vendor chunk，提升缓存命中率。\n"
+   610	        "4. **检查意外整包 import**：例如 `lucide-react` 务必按图标 import "
+   611	        "（`import { IconX } from 'lucide-react'`），不要 `import * as`。\n\n"
+   612	    )
+   613	
+   614	    # ── Section 4: constraints & how-to ──
+   615	    lines.append("## 4. 约束与运行方式\n\n")
+   616	    lines.append(
+   617	        "- ❌ 本任务不进行大规模前端重构。\n"
+   618	        "- ❌ 本任务不改变路由行为。\n"
+   619	        "- ❌ 性能测试不依赖绝对耗时，只验证解析逻辑与报告格式。\n"
+   620	        "- ✅ 每次构建产物以一行 JSON 追加到 "
+   621	        "`docs/perf/frontend_bundle_trend.jsonl`，可重放历史。\n\n"
+   622	    )
+   623	    lines.append("### 4.1 如何刷新本报告\n\n")
+   624	    lines.append(
+   625	        "```bash\n"
+   626	        "# 1. 在 frontend/ 跑一次构建，捕获 stdout 到文件\n"
+   627	        "cd frontend && npm run build > /tmp/build.log 2>&1\n"
+   628	        "\n"
+   629	        "# 2. 解析日志 + 追加趋势 + 重写报告\n"
+   630	        "python scripts/measure_frontend_bundle.py --from-log /tmp/build.log --write\n"
+   631	        "\n"
+   632	        "# 或者直接由脚本调用 npm run build\n"
+   633	        "python scripts/measure_frontend_bundle.py --run-build --write\n"
+   634	        "\n"
+   635	        "# 只重渲染报告（不重新构建）\n"
+   636	        "python scripts/measure_frontend_bundle.py --report-only\n"
+   637	        "```\n\n"
+   638	    )
+   639	
+   640	    return "".join(lines)
+   641	
+   642	
+   643	# ═══════════════════════════════════════════════════════════════════
+   644	# [PERF-006] CLI entry
+   645	# ═══════════════════════════════════════════════════════════════════
+   646	def _build_measurement_from_log(log: str) -> BundleMeasurement:
+   647	    assets = parse_vite_output(log)
+   648	    if not assets:
+   649	        raise ValueError(
+   650	            "no js/css assets parsed from build log — "
+   651	            "did the build actually emit assets?"
+   652	        )
+   653	    return BundleMeasurement(
+   654	        recorded_at=_dt.datetime.now().isoformat(timespec="seconds"),
+   655	        git_commit=_run_git_commit(),
+   656	        assets=tuple(assets),
+   657	        build_log=log,
+   658	    )
+   659	
+   660	
+   661	def main(argv: Optional[Sequence[str]] = None) -> int:
+   662	    parser = argparse.ArgumentParser(
+   663	        description="Parse vite build output, record bundle size trend, "
+   664	        "and emit docs/perf/frontend_bundle_report.md (PERF-006).",
+   665	    )
+   666	    src = parser.add_mutually_exclusive_group()
+   667	    src.add_argument(
+   668	        "--from-log",
+   669	        metavar="PATH",
+   670	        help="parse an existing vite build log file",
+   671	    )
+   672	    src.add_argument(
+   673	        "--run-build",
+   674	        action="store_true",
+   675	        help="run `npm run build` in ./frontend and parse its output",
+   676	    )
+   677	    src.add_argument(
+   678	        "--report-only",
+   679	        action="store_true",
+   680	        help="skip measurement; regenerate report from existing trend",
+   681	    )
+   682	    parser.add_argument(
+   683	        "--write",
+   684	        action="store_true",
+   685	        help="append measurement to trend jsonl and rewrite the report md",
+   686	    )
+   687	    parser.add_argument(
+   688	        "--trend-path",
+   689	        type=Path,
+   690	        default=DEFAULT_TREND_PATH,
+   691	        help=f"trend jsonl path (default: {DEFAULT_TREND_PATH})",
+   692	    )
+   693	    parser.add_argument(
+   694	        "--report-path",
+   695	        type=Path,
+   696	        default=DEFAULT_REPORT_PATH,
+   697	        help=f"report md path (default: {DEFAULT_REPORT_PATH})",
+   698	    )
+   699	    parser.add_argument(
+   700	        "--frontend-dir",
+   701	        type=Path,
+   702	        default=DEFAULT_FRONTEND_DIR,
+   703	        help=f"frontend dir for --run-build (default: {DEFAULT_FRONTEND_DIR})",
+   704	    )
+   705	    args = parser.parse_args(argv)
+   706	
+   707	    measurement: Optional[BundleMeasurement] = None
+   708	    if args.report_only:
+   709	        # No new measurement; just regenerate the report from history.
+   710	        pass
+   711	    elif args.from_log:
+   712	        log = Path(args.from_log).read_text(encoding="utf-8", errors="replace")
+   713	        measurement = _build_measurement_from_log(log)
+   714	    elif args.run_build:
+   715	        log = _run_build(args.frontend_dir)
+   716	        measurement = _build_measurement_from_log(log)
+   717	    else:
+   718	        parser.error(
+   719	            "must specify one of --from-log / --run-build / --report-only"
+   720	        )
+   721	
+   722	    if args.write:
+   723	        if measurement is not None:
+   724	            append_trend(measurement, args.trend_path)
+   725	        history = read_trend(args.trend_path)
+   726	        report = generate_report(
+   727	            measurement=measurement,
+   728	            history=history,
+   729	            candidates=LAZY_LOAD_CANDIDATES,
+   730	        )
+   731	        args.report_path.parent.mkdir(parents=True, exist_ok=True)
+   732	        args.report_path.write_text(report, encoding="utf-8")
+   733	        print(
+   734	            f"[PERF-006] wrote trend -> {args.trend_path} "
+   735	            f"({len(history)} records)"
+   736	        )
+   737	        print(f"[PERF-006] wrote report -> {args.report_path}")
+   738	    elif measurement is not None:
+   739	        # Dry-run: print parsed summary, do not write.
+   740	        snap = measurement.to_trend_dict()
+   741	        print(json.dumps(snap, ensure_ascii=False, indent=2))
+   742	    else:
+   743	        # report-only without --write: print current report to stdout.
+   744	        history = read_trend(args.trend_path)
+   745	        print(
+   746	            generate_report(
+   747	                measurement=None,
+   748	                history=history,
+   749	                candidates=LAZY_LOAD_CANDIDATES,
+   750	            )
+   751	        )
+   752	
+   753	    return 0
+   754	
+   755	
+   756	if __name__ == "__main__":
+   757	    sys.exit(main())
+
+exec
+/bin/zsh -lc "sed -n '320,760p' tests/test_perf006_frontend_bundle.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            "\n" +
+            json.dumps({"recorded_at": "good2"}) + "\n"
+        )
+        records = read_trend(trend)
+        assert len(records) == 2
+        assert records[0]["recorded_at"] == "good"
+        assert records[1]["recorded_at"] == "good2"
+
+    def test_append_never_rewrites_history(self, tmp_path):
+        """PERF-006 constraint: trend log is append-only. Appending must
+        preserve all existing bytes."""
+        trend = tmp_path / "trend.jsonl"
+        append_trend(self._make_measurement("first"), trend)
+        before = trend.read_bytes()
+        append_trend(self._make_measurement("second"), trend)
+        after = trend.read_bytes()
+        # The original bytes must still be the prefix (append-only).
+        assert after.startswith(before)
+        assert len(after) > len(before)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [PERF-006] Lazy-load candidates
+# ═══════════════════════════════════════════════════════════════════
+class TestLazyLoadCandidates:
+    """PERF-006 §3: candidates must include Reports, TradeFlow,
+    TrackingBoard, and chart components."""
+
+    def test_includes_required_pages(self):
+        names = {c.name for c in LAZY_LOAD_CANDIDATES}
+        # The four required by the task spec.
+        assert "Reports" in names
+        assert "TradeFlow" in names
+        assert "TrackingBoard" in names
+
+    def test_includes_chart_components(self):
+        """Charts (xyflow / lightweight-charts) must be represented."""
+        chart_kinds = {
+            c.name for c in LAZY_LOAD_CANDIDATES if c.kind == "chart_component"
+        }
+        assert len(chart_kinds) >= 2, (
+            "expected at least 2 chart_component candidates "
+            "(AgentCollaboration, KlinePanel, MiniKline)"
+        )
+
+    def test_all_candidates_have_source_paths(self):
+        for c in LAZY_LOAD_CANDIDATES:
+            assert c.source.startswith("frontend/src/"), c
+            assert c.estimated_impact in {"high", "medium", "low"}, c
+            assert c.rationale, c
+
+    def test_all_candidate_kinds_valid(self):
+        for c in LAZY_LOAD_CANDIDATES:
+            assert c.kind in {"page", "chart_component", "vendor_lib"}, c
+
+    def test_candidate_sources_actually_exist(self):
+        """The static candidate list must point at real files in the repo.
+        Guards against the list going stale after a rename/move."""
+        repo_root = Path(__file__).resolve().parent.parent
+        for c in LAZY_LOAD_CANDIDATES:
+            assert (repo_root / c.source).exists(), (
+                f"candidate {c.name} source missing: {c.source}"
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [PERF-006] Report generation
+# ═══════════════════════════════════════════════════════════════════
+class TestGenerateReport:
+    def _make_measurement(self) -> BundleMeasurement:
+        return BundleMeasurement(
+            recorded_at="2026-06-27T00:00:00",
+            git_commit="abc1234",
+            assets=(
+                AssetMeasurement("dist/assets/index-X.js", "js", 1212.22, 348.06),
+                AssetMeasurement("dist/assets/index-Y.css", "css", 169.25, 23.23),
+            ),
+        )
+
+    def test_report_has_required_sections(self):
+        """The markdown must contain the four sections the task spec asks
+        for: snapshot / trend / candidates / how-to."""
+        report = generate_report(
+            measurement=self._make_measurement(),
+            history=[],
+            candidates=LAZY_LOAD_CANDIDATES,
+        )
+        assert "# 前端 Bundle 体积趋势报告（PERF-006）" in report
+        assert "## 1. 最新构建快照" in report
+        assert "## 2. 历史趋势" in report
+        assert "## 3. 懒加载候选" in report
+        assert "## 4. 约束与运行方式" in report
+
+    def test_report_marks_chunk_over_threshold(self):
+        """A JS chunk > 500 kB must be flagged with the warning marker."""
+        report = generate_report(
+            measurement=self._make_measurement(),
+            history=[],
+            candidates=LAZY_LOAD_CANDIDATES,
+        )
+        assert "⚠️" in report
+        assert "超 Vite 默认告警阈值" in report
+
+    def test_report_no_warning_when_under_threshold(self):
+        """A JS chunk < 500 kB must NOT be flagged."""
+        m = BundleMeasurement(
+            recorded_at="2026-06-27T00:00:00",
+            git_commit="abc1234",
+            assets=(
+                AssetMeasurement("dist/assets/index-X.js", "js", 312.0, 98.0),
+                AssetMeasurement("dist/assets/index-Y.css", "css", 50.0, 8.0),
+            ),
+        )
+        report = generate_report(
+            measurement=m, history=[], candidates=LAZY_LOAD_CANDIDATES
+        )
+        assert "⚠️" not in report
+
+    def test_report_lists_candidates_table(self):
+        report = generate_report(
+            measurement=self._make_measurement(),
+            history=[],
+            candidates=LAZY_LOAD_CANDIDATES,
+        )
+        # Table header
+        assert "| 候选 | 类型 | 源文件 |" in report
+        # Each candidate name appears
+        for c in LAZY_LOAD_CANDIDATES:
+            assert c.name in report
+
+    def test_report_shows_trend_table_from_history(self):
+        """With history, the trend table must render one row per entry."""
+        history = [
+            {
+                "recorded_at": "2026-06-20T00:00:00",
+                "git_commit": "aaaaaaa",
+                "js_raw_kb": 1100.0,
+                "js_gzip_kb": 320.0,
+                "css_raw_kb": 160.0,
+                "css_gzip_kb": 22.0,
+                "largest_js_path": "dist/assets/index-A.js",
+                "largest_js_raw_kb": 1100.0,
+                "largest_js_gzip_kb": 320.0,
+            },
+            {
+                "recorded_at": "2026-06-27T00:00:00",
+                "git_commit": "abc1234",
+                "js_raw_kb": 1212.22,
+                "js_gzip_kb": 348.06,
+                "css_raw_kb": 169.25,
+                "css_gzip_kb": 23.23,
+                "largest_js_path": "dist/assets/index-X.js",
+                "largest_js_raw_kb": 1212.22,
+                "largest_js_gzip_kb": 348.06,
+            },
+        ]
+        report = generate_report(
+            measurement=self._make_measurement(),
+            history=history,
+            candidates=LAZY_LOAD_CANDIDATES,
+        )
+        assert "aaaaaaa" in report
+        assert "abc1234" in report
+        # Delta line should reference change vs previous
+        assert "变化" in report
+
+    def test_report_computes_delta_vs_previous(self):
+        """Delta must show positive growth when current > previous."""
+        history = [
+            {
+                "recorded_at": "2026-06-20T00:00:00",
+                "git_commit": "aaaaaaa",
+                "js_raw_kb": 1100.0,
+                "js_gzip_kb": 320.0,
+                "css_raw_kb": 160.0,
+                "css_gzip_kb": 22.0,
+                "largest_js_path": "dist/assets/index-A.js",
+                "largest_js_raw_kb": 1100.0,
+                "largest_js_gzip_kb": 320.0,
+            },
+            # The "current" entry — matches measurement.recorded_at so it
+            # is treated as the current measurement, not previous.
+            {
+                "recorded_at": "2026-06-27T00:00:00",
+                "git_commit": "abc1234",
+                "js_raw_kb": 1212.22,
+                "js_gzip_kb": 348.06,
+                "css_raw_kb": 169.25,
+                "css_gzip_kb": 23.23,
+                "largest_js_path": "dist/assets/index-X.js",
+                "largest_js_raw_kb": 1212.22,
+                "largest_js_gzip_kb": 348.06,
+            },
+        ]
+        report = generate_report(
+            measurement=self._make_measurement(),
+            history=history,
+            candidates=LAZY_LOAD_CANDIDATES,
+        )
+        # JS gzip grew from 320 -> 348.06, delta ≈ +28.06
+        assert "+28.06" in report or "+28.1" in report
+
+    def test_report_handles_no_history_gracefully(self):
+        """First-ever run with empty history must not crash or show deltas."""
+        report = generate_report(
+            measurement=self._make_measurement(),
+            history=[],
+            candidates=LAZY_LOAD_CANDIDATES,
+        )
+        assert "暂无历史趋势" in report or "记录时间" in report
+        # No delta table when there is no previous.
+        assert "与上次记录的变化" not in report
+
+    def test_report_only_mode_reconstructs_from_history(self):
+        """generate_report(measurement=None, history=[...]) must rebuild
+        a displayable snapshot from the trend log."""
+        history = [
+            {
+                "recorded_at": "2026-06-27T00:00:00",
+                "git_commit": "abc1234",
+                "js_raw_kb": 1212.22,
+                "js_gzip_kb": 348.06,
+                "css_raw_kb": 169.25,
+                "css_gzip_kb": 23.23,
+                "largest_js_path": "dist/assets/index-X.js",
+                "largest_js_raw_kb": 1212.22,
+                "largest_js_gzip_kb": 348.06,
+            },
+        ]
+        report = generate_report(
+            measurement=None,
+            history=history,
+            candidates=LAZY_LOAD_CANDIDATES,
+        )
+        # Snapshot must still show JS/CSS numbers from the trend entry.
+        assert "348.06" in report
+        assert "23.23" in report
+        assert "abc1234" in report
+
+    def test_report_only_empty_history(self):
+        """report-only with no history must produce a valid empty-state."""
+        report = generate_report(
+            measurement=None, history=[], candidates=LAZY_LOAD_CANDIDATES
+        )
+        assert "暂无测量数据" in report
+        assert "## 3. 懒加载候选" in report  # candidates section still present
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [PERF-006] End-to-end: parse -> write trend -> regenerate
+# ═══════════════════════════════════════════════════════════════════
+class TestEndToEnd:
+    """Simulate the full PERF-006 flow against fixture logs and tmp_path,
+    without ever invoking npm/node."""
+
+    def test_parse_then_write_then_report_only(self, tmp_path):
+        from scripts.measure_frontend_bundle import _build_measurement_from_log
+
+        trend = tmp_path / "trend.jsonl"
+        report_path = tmp_path / "report.md"
+
+        # Round 1: parse the full fixture log and append.
+        m1 = _build_measurement_from_log(VITE_LOG_FULL)
+        append_trend(m1, trend)
+        history = read_trend(trend)
+        assert len(history) == 1
+
+        report1 = generate_report(
+            measurement=m1, history=history, candidates=LAZY_LOAD_CANDIDATES
+        )
+        report_path.write_text(report1)
+        assert "348.06" in report1
+        assert "⚠️" in report1  # over 500 kB threshold
+
+        # Round 2: simulate a future smaller build (post code-split).
+        m2 = _build_measurement_from_log(VITE_LOG_NO_WARNING)
+        append_trend(m2, trend)
+        history = read_trend(trend)
+        assert len(history) == 2
+
+        report2 = generate_report(
+            measurement=m2, history=history, candidates=LAZY_LOAD_CANDIDATES
+        )
+        # Delta must reflect shrinkage from 348 -> 98.
+        assert "-" in report2  # negative delta
+        assert "98.06" in report2
+
+    def test_no_live_build_invoked(self, tmp_path, monkeypatch):
+        """PERF-006 constraint: tests must not invoke `npm run build`.
+
+        We monkeypatch subprocess to fail loudly if anything tries to
+        spawn a process — every code path under test must be hermetic.
+        """
+        import scripts.measure_frontend_bundle as mod
+
+        def _fail_subprocess(*args, **kwargs):
+            raise AssertionError(
+                "test must not spawn a subprocess — "
+                "got args={!r} kwargs={!r}".format(args, kwargs)
+            )
+
+        monkeypatch.setattr(mod.subprocess, "run", _fail_subprocess)
+        monkeypatch.setattr(mod.subprocess, "check_output", _fail_subprocess)
+
+        # All pure functions must still work with subprocess disabled.
+        assets = parse_vite_output(VITE_LOG_FULL)
+        assert len(assets) == 2
+        report = generate_report(
+            measurement=None, history=[], candidates=LAZY_LOAD_CANDIDATES
+        )
+        assert "# 前端 Bundle 体积趋势报告" in report
+
+
+# ═══════════════════════════════════════════════════════════════════
+# [PERF-006] Acceptance smoke — mirrors the task acceptance criteria
+# ═══════════════════════════════════════════════════════════════════
+class TestAcceptancePERF006:
+    """Single acceptance covering all four PERF-006 acceptance bullets:
+
+    - fixture build output can be parsed ✓
+    - report is generated ✓
+    - lazy-load candidates include Reports/TradeFlow/TrackingBoard/Charts ✓
+    - no actual code split required ✓ (no source files changed)
+    """
+
+    def test_fixture_log_parses(self):
+        assets = parse_vite_output(VITE_LOG_FULL)
+        assert assets, "fixture build log must parse to non-empty assets"
+        kinds = {a.kind for a in assets}
+        assert kinds == {"js", "css"}
+
+    def test_report_generation_succeeds(self, tmp_path):
+        from scripts.measure_frontend_bundle import _build_measurement_from_log
+
+        m = _build_measurement_from_log(VITE_LOG_FULL)
+        report = generate_report(
+            measurement=m, history=[], candidates=LAZY_LOAD_CANDIDATES
+        )
+        assert "# 前端 Bundle 体积趋势报告" in report
+        assert "## 1. 最新构建快照" in report
+
+    def test_candidates_cover_required_areas(self):
+        names = {c.name for c in LAZY_LOAD_CANDIDATES}
+        # Task spec §3 explicitly names these four buckets.
+        assert "Reports" in names
+        assert "TradeFlow" in names
+        assert "TrackingBoard" in names
+        # Charts represented by chart_component kind.
+        assert any(c.kind == "chart_component" for c in LAZY_LOAD_CANDIDATES)
+
+    def test_no_source_files_modified_by_import(self):
+        """Importing the module must not touch frontend source files.
+
+        This is a static check that the module under test carries no
+        top-level side effects that would mutate source code (the task
+        explicitly forbids code split / routing changes).
+        """
+        repo_root = Path(__file__).resolve().parent.parent
+        # The candidate source paths must still exist and be unchanged.
+        for c in LAZY_LOAD_CANDIDATES:
+            src = repo_root / c.source
+            assert src.exists(), f"{c.source} missing"
+        # App.tsx still imports pages eagerly (no React.lazy added).
+        app_tsx = (repo_root / "frontend" / "src" / "App.tsx").read_text()
+        assert "React.lazy" not in app_tsx, (
+            "PERF-006 must NOT add React.lazy — that's a follow-up task"
+        )
+
+exec
+/bin/zsh -lc 'git diff --cached --stat && git diff --cached --' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+exec
+/bin/zsh -lc 'grep -n "PERF-006" -A80 -B10 docs/TASKS.md' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+134-108. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2，done — NOTIFY-002-20260626-214133，依赖 TRACK-NOTIFY-001/H-015/DATA-021 ✓）。
+135-109. `DATA-022`：主力资金/龙虎榜失败矩阵 fixture 回放（P1，done，依赖 DATA-021/DATA-017 ✓）。
+136-110. `TF-OBS-005`：非交易日候选计划到下一交易日观察语义回归（P1，done，依赖 TF-OBS-004 ✓）。
+137- 111. `TRACK-008`：观察仓批量导入/导出 CSV 与去重合并（P1，done，依赖 TRACK-001/TRACK-003 ✓）。
+138-112. `REPORT-UX-002`：历史报告动作语义与数据缺口只读迁移预检（P1，ready，依赖 DECISION-004/DATA-021 ✓）。
+139-113. `H-016`：昊天主题日报 CLI 生成与保留策略（P2，ready，依赖 H-015 ✓）。
+140-  114. `IC-TA-003`：investment-controller 盘前/盘后 briefing fixture dry-run（P2，done，依赖 IC-TA-002 ✓）。
+141-115. `TF-REVIEW-005`：盘后 Review 归因接入观察信号与模拟账本（P1，done，依赖 TF-REVIEW-004/TF-PAPER-001 ✓）。
+142-116. `UI-013`：TradeFlow 空状态与下一步 CTA 文案收口（P2，done，依赖 UI-012/H-015 ✓）。
+143-117. `DATA-023`：数据源目录 API/文档同步与供应商能力矩阵导出（P2，ready，依赖 DATA-020/DATA-CATALOG-FIX ✓）。
+144:118. `PERF-006`：前端 bundle 体积趋势记录与懒加载候选建议（P2，done，依赖 PERF-005 ✓）。
+145-119. `V-011`：夜间自动开发日报验收与 ready 队列续航检查（P2，ready，依赖 AUTO-003 ✓）。
+146-120. `NOTIFY-003`：通知去噪规则回放测试与日报/盘中分层验收（P2，ready，依赖 NOTIFY-002 ✓）。
+147-
+148-### 数据源治理候选队列
+149-
+150-> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+151-
+152-1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+153-2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+154-3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+155-4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+156-5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+157-6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+158-7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+159-8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+160-9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+161-10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+162-11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+163-12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+164-13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+165-14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+166-15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
+167-16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
+168-17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+169-17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done）。
+170-18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
+171-19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+172-20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done）。
+173-21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done）。
+174-
+175-### 总体路线图
+176-
+177-- 详见 `docs/ROADMAP.md`。
+178-- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+179-- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+180-- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+181-
+182----
+183-
+184-## TRACK. 跟踪看板 / 观察仓 / investment-controller 联动任务池（2026-06-22 新增）
+185-
+186-> 目标：把跟踪看板从“持仓实时行情表”升级为“交易日作战面板”。TA 负责数据、报告和状态容器；investment-controller 负责盘前/盘中/盘后调度、飞书播报和是否调用深度 TA 的判断。
+187-
+188-### TRACK-001: 观察仓数据模型与只读/写入 API（P0）
+189-- **描述**：新增“观察仓”容器，用于存放想买但尚未买入、等待价格/事件/资金确认的标的。
+190-- **优先级**：P0
+191-- **状态**：done — commit 2ef6c37
+192-- **背景**：
+193-  - 当前跟踪看板只展示真实持仓，无法承载“我想进但等位置”的观察票。
+194-  - 观察仓是盘前计划、盘中提醒、盘后复盘和 investment-controller 调度的基础状态。
+195-- **执行约束**：
+196-  - 不写生产 `tradingagents.db` 测试数据。
+197-  - 不触发 TA/LLM。
+198-  - 不自动推送飞书。
+199-  - 不改 `tradingagents/prompts/`。
+200-- **实现要点**：
+201-  1. 新增观察仓表或等价持久化模型，字段至少包含：
+202-     - `symbol/name`
+203-     - `status`: `watching / near_entry / in_entry_zone / ta_required / entered / invalidated / removed`
+204-     - `entry_low/entry_high`
+205-     - `trigger_price`
+206-     - `invalid_price`
+207-     - `horizon`: `intraday / short / mid`
+208-     - `source`: `manual / tradeflow / ta / investment_controller`
+209-     - `reason`
+210-     - `priority`
+211-     - `notes`
+212-     - `created_at/updated_at/last_reviewed_at`
+213-  2. 新增 API：
+214-     - list observation items
+215-     - create/update item
+216-     - mark invalidated/removed
+217-     - optional bulk upsert
+218-  3. API 返回必须区分“真实持仓”和“观察仓”，禁止把观察仓误算入持仓市值。
+219-  4. 测试覆盖创建、更新、状态流转、空数据、symbol/name 规范化。
+220-- **验收方式**：
+221-  - 后端测试通过。
+222-  - 新建观察仓条目后可查询。
+223-  - `entry_low=0`、`entry_high=0` 等边界值不被显示成 `N/A`。
+224-  - 观察仓条目不会污染真实持仓接口。
+--
+4027-  1. 新增数据源能力矩阵导出函数/API 或文档生成脚本。
+4028-  2. 字段包括 data_type、primary_vendor、fallback_vendor、freshness、known_limits、status_semantics。
+4029-  3. 与 `MODEL_API_CATALOG` 类似，输出给 agent 可读的文档。
+4030-  4. 增加测试确保新增 data type 不会漏进矩阵。
+4031-- **验收方式**：
+4032-  - 生成文档/JSON。
+4033-  - 覆盖资金、龙虎榜、公告、评级、回购、研报。
+4034-  - 不含密钥。
+4035-- **代码标注要求**：`# [DATA-023] source_capability_matrix`
+4036-
+4037:### PERF-006: 前端 bundle 体积趋势记录与懒加载候选建议（P2）
+4038-- **描述**：前端构建长期提示 bundle 超 500KB。PERF-005 只记录预算，本任务补体积趋势记录和低风险 code-split 建议，不强制拆大模块。
+4039-- **优先级**：P2
+4040:- **状态**：done — PERF-006-20260627-004018（45 tests passed）
+4041-- **前置条件**：PERF-005 完成。
+4042-- **执行约束**：
+4043-  - 不做大规模前端重构。
+4044-  - 不改变路由行为。
+4045-  - 不让性能测试依赖绝对耗时。
+4046-- **实现要点**：
+4047-  1. 解析 `npm run build` 输出，记录 js/css gzip 尺寸。
+4048-  2. 生成 `docs/perf/frontend_bundle_report.md`。
+4049-  3. 给出懒加载候选：Reports、TradeFlow、TrackingBoard、Charts。
+4050-  4. 测试只验证解析逻辑和报告格式。
+4051-- **验收方式**：
+4052-  - fixture build output 可解析。
+4053-  - 报告生成。
+4054-  - 不要求实际 code split。
+4055:- **代码标注要求**：`# [PERF-006] frontend_bundle_trend`
+4056-
+4057-### V-011: 夜间自动开发日报验收与 ready 队列续航检查（P2）
+4058-- **描述**：自动开发跑完后需要稳定回答“昨晚做了什么、失败在哪、明晚还有多少任务”。本任务验收 auto_dev_reports / DEVLOG / task_runs 的一致性。
+4059-- **优先级**：P2
+4060-- **状态**：ready
+4061-- **前置条件**：AUTO-003 完成。
+4062-- **执行约束**：
+4063-  - 不调用 OpenCode。
+4064-  - 不修改历史 run 内容，只做读取和报告。
+4065-  - 不发送通知。
+4066-- **实现要点**：
+4067-  1. 扫描最近 24 小时 commits、task_runs、reviews。
+4068-  2. 检查每个 done task 是否有 run archive/review/DEVLOG 记录。
+4069-  3. 输出 ready 队列剩余数量和预计可跑时长。
+4070-  4. 生成 `docs/auto_dev_reports/YYYY-MM-DD.md`。
+4071-- **验收方式**：
+4072-  - fixture/本地数据能生成日报。
+4073-  - ready 队列为空时给出明确提示。
+4074-  - 不误改 TASKS 状态。
+4075-- **代码标注要求**：`# [V-011] nightly_auto_dev_acceptance`
+4076-
+4077-### NOTIFY-003: 通知去噪规则回放测试与日报/盘中分层验收（P2）
+4078-- **描述**：NOTIFY-002 接入更多摘要后，需要保证不会把普通数据缺口、正常无数据、观察项全部推成盘中提醒。本任务做通知分层回放测试。
+4079-- **优先级**：P2
+4080-- **状态**：ready
+4081-- **前置条件**：NOTIFY-002 完成。
+4082-- **执行约束**：
+4083-  - dry-run，不真实发送。
+4084-  - 不调用 LLM。
+4085-  - 不输出强动作词。
+4086-- **实现要点**：
+4087-  1. 构造 P0/P1/P2/P3 通知 fixture。
+4088-  2. 验证 P0/P1 可即时草稿，P2/P3 只进日报。
+4089-  3. NORMAL_NO_DATA 只进日报摘要，不盘中打扰。
+4090-  4. 输出去噪回放报告。
+4091-- **验收方式**：
+4092-  - 通知分层测试通过。
+4093-  - dry-run payload 可读。
+4094-  - 禁用词扫描通过。
+4095-- **代码标注要求**：`# [NOTIFY-003] notification_noise_replay`
+4096-
+4097-## B. 待办
+4098-
+4099-### B-001: 接入小米 MiMo 模型到 TA 系统
+4100-- **描述**：在 `llm_clients/` 中添加小米 MiMo 适配器，支持 mimo-v2.5 和 mimo-v2.5-pro
+4101-- **优先级**：高
+4102-- **前置条件**：无
+4103-- **验证方式**：前端设置页切换到小米模型，执行一次分析任务成功
+4104-
+4105-### B-002: 定时任务与 OpenClaw 联动
+4106-- **描述**：定时分析完成后自动通知 OpenClaw，由主控 AI 决定是否推送到飞书
+4107-- **优先级**：中
+4108-- **前置条件**：OpenClaw API 可达
+4109-- **验证方式**：定时任务完成后飞书收到通知
+4110-
+4111-### B-003: 研报导出为飞书文档
+4112-- **描述**：分析结果支持导出为飞书云文档，方便分享和存档
+4113-- **优先级**：中
+4114-- **前置条件**：飞书 API 权限
+4115-- **验证方式**：点击导出按钮，飞书生成对应文档
+4116-
+4117-### B-004: 持仓快照与 investment-controller 同步
+4118-- **描述**：TA 系统的持仓数据与 investment-controller 项目的 current_holdings.json 双向同步
+4119-- **优先级**：中
+4120-- **前置条件**：investment-controller API 可达
+4121-- **验证方式**：两边持仓数据一致
+4122-
+4123----
+4124-
+4125-## T. TradeFlow 自动开发路线（2026-05-26 新增）
+4126-
+4127-> 详细自动开发边界、日报格式和验收标准见 `docs/AUTO_DEV_PLAN.md`。
+4128-
+4129-### T-000: 自动开发巡检基线
+4130-- **描述**：为 OpenClaw 自动开发建立每日/每轮固定巡检清单，先检查项目状态、敏感风险、测试健康和 token/API 消耗风险，再决定是否进入代码开发。
+4131-- **优先级**：高
+4132-- **状态**：done — commit 2e0c946
+4133-- **执行时机**：
+4134-  - 每次 OpenClaw 自动开发开始前
+4135-  - OpenCode/OpenClaw 完成代码修改后
+
+codex
+The bundle trend tooling mostly works, but report-only reconstruction misreports the largest JS chunk for multi-chunk builds, which is central to tracking future code-splitting progress.
+
+Review comment:
+
+- [P2] Preserve largest chunk size in report-only mode — /Users/maybee/TradingAgents-AShare/scripts/measure_frontend_bundle.py:467-472
+  When `--report-only` rebuilds a report from history after code-splitting has produced multiple JS chunks, this synthetic asset uses the total JS size as the size of `largest_js_path`. That makes the latest snapshot show the largest chunk as the aggregate JS bundle and can incorrectly keep the Vite >500 kB warning even when every individual chunk is below the threshold. Use `largest_js_raw_kb`/`largest_js_gzip_kb` for the largest chunk display rather than `js_raw_kb`/`js_gzip_kb`.
+The bundle trend tooling mostly works, but report-only reconstruction misreports the largest JS chunk for multi-chunk builds, which is central to tracking future code-splitting progress.
+
+Review comment:
+
+- [P2] Preserve largest chunk size in report-only mode — /Users/maybee/TradingAgents-AShare/scripts/measure_frontend_bundle.py:467-472
+  When `--report-only` rebuilds a report from history after code-splitting has produced multiple JS chunks, this synthetic asset uses the total JS size as the size of `largest_js_path`. That makes the latest snapshot show the largest chunk as the aggregate JS bundle and can incorrectly keep the Vite >500 kB warning even when every individual chunk is below the threshold. Use `largest_js_raw_kb`/`largest_js_gzip_kb` for the largest chunk display rather than `js_raw_kb`/`js_gzip_kb`.

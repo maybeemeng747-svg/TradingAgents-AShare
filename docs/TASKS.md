@@ -141,7 +141,7 @@
 115. `TF-REVIEW-005`：盘后 Review 归因接入观察信号与模拟账本（P1，done，依赖 TF-REVIEW-004/TF-PAPER-001 ✓）。
 116. `UI-013`：TradeFlow 空状态与下一步 CTA 文案收口（P2，done，依赖 UI-012/H-015 ✓）。
 117. `DATA-023`：数据源目录 API/文档同步与供应商能力矩阵导出（P2，ready，依赖 DATA-020/DATA-CATALOG-FIX ✓）。
-118. `PERF-006`：前端 bundle 体积趋势记录与懒加载候选建议（P2，ready，依赖 PERF-005 ✓）。
+118. `PERF-006`：前端 bundle 体积趋势记录与懒加载候选建议（P2，done，依赖 PERF-005 ✓）。
 119. `V-011`：夜间自动开发日报验收与 ready 队列续航检查（P2，ready，依赖 AUTO-003 ✓）。
 120. `NOTIFY-003`：通知去噪规则回放测试与日报/盘中分层验收（P2，ready，依赖 NOTIFY-002 ✓）。
 
@@ -4037,7 +4037,7 @@
 ### PERF-006: 前端 bundle 体积趋势记录与懒加载候选建议（P2）
 - **描述**：前端构建长期提示 bundle 超 500KB。PERF-005 只记录预算，本任务补体积趋势记录和低风险 code-split 建议，不强制拆大模块。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — PERF-006-20260627-004018（45 tests passed）
 - **前置条件**：PERF-005 完成。
 - **执行约束**：
   - 不做大规模前端重构。
