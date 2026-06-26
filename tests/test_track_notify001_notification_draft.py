@@ -315,7 +315,13 @@ class TestPreviewRender:
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestServiceDryRun:
-    def test_empty_state_payload_is_stable(self, tmp_sqla_session, tmp_tf_db):
+    def test_empty_state_payload_is_stable(self, tmp_sqla_session, tmp_tf_db, monkeypatch):
+        # NOTIFY-002: isolate from any saved mandate report shipped with the repo
+        # so the empty-state path is exercised in isolation.
+        monkeypatch.setattr(
+            "api.services.tradeflow_service.get_mandate_daily_report",
+            lambda **kw: {"status": "no_data"},
+        )
         from api.services import notification_draft_service
         notification_draft_service.reset_dedup_state()
         payload = notification_draft_service.build_notification_dry_run(

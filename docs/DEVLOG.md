@@ -4,6 +4,112 @@
 
 ---
 
+## 2026-06-26 | NOTIFY-002 飞书/通知草稿接入昊天日报与数据缺口摘要
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **状态**：✅ 完成（待提交）
+- **优先级**：P2
+- **代码标注**：`# [NOTIFY-002] notification_mandate_data_blockers`
+
+### 背景
+
+TRACK-NOTIFY-001 已完成通知草稿 payload 与去噪规则，IC-TA-002 也已把 H-015 昊天
+日报和 DATA-021 数据缺口接入 investment-controller 上下文。但通知草稿只输出
+"候选数量 / 持仓风险 / 观察仓状态"等单标的单事件，用户早上 / 盘后打开日报时看不到
+**主题重心**（哪些政策主题在升温、主候选是谁）和**数据风险**（哪些数据源最近失败
+最多、哪些标的的 TA 报告因缺口不可信），只能看到一堆零散的候选条目。
+
+NOTIFY-002 在 TRACK-NOTIFY-001 之上，把 IC-TA-002 的两个顶层 bucket 压缩成两个
+结构化摘要并接入通知草稿，让日报一眼看到主题重心与数据风险。
+
+### 设计要点
+
+1. **两个顶层摘要字段**（供 investment-controller 直接读取）：
+   - `mandate_daily_digest`：升温主题（top 3）、主候选（top 3）、证据缺口、
+     一句话摘要。仅在 mandate report `data_status=fresh` 时 `available=True`。
+   - `data_blocker_digest`：失败最多字段（按次数倒序 top 5）、受影响标的（top 5）、
+     summary_level（ok/warning）、一句话摘要。仅在存在 severe 缺口
+     （`query_failed`/`field_missing`）时生成草稿，扫描干净不刷屏。
+
+2. **两条 P2 日报草稿**（进入 `daily_digest` 通道，绝不进 `intraday_push`）：
+   - 昊天日报摘要草稿：`record_only=False`（主题重心是可规划信息，进日报主体）。
+   - 数据缺口摘要草稿：`record_only=True`（缺口是事实陈述，进"仅记录"区）。
+   - 去噪规则：两条摘要都走 P2 → `daily_digest`；数据缺口草稿 `record_only=True`
+     不进盘中提醒；普通正常无数据 / 扫描干净不生成草稿。
+
+3. **markdown 预览新增两个独立摘要区块**：放在日报区之前，突出主题重心与数据风险，
+   分别由 `_render_mandate_digest_section` / `_render_data_blocker_digest_section`
+   渲染（升温主题 / 主候选 / 证据缺口 / 失败字段 / 受影响标的）。
+
+### 去噪语义对齐（验收点 3）
+
+| 场景 | 优先级 | 通道 | record_only |
+|------|--------|------|-------------|
+| 昊天日报摘要（有升温主题/主候选） | P2 | daily_digest | False |
+| 数据缺口摘要（有 severe 缺口） | P2 | daily_digest | True |
+| 数据缺口摘要（扫描干净） | — | 不生成草稿 | — |
+| 数据缺口摘要（无报告/missing） | — | 不生成草稿 | — |
+| 昊天日报摘要（无日报/missing） | — | 不生成草稿 | — |
+
+只有候选触发（观察仓 in_entry_zone 等）和 P0/P1 数据失败才进入 `intraday_push`
+（已由 TRACK-NOTIFY-001 覆盖），普通正常无数据只进日报。
+
+### 变更
+
+- `tradingagents/tradeflow/notification_draft.py`
+  - 新增 `build_mandate_daily_digest(mandate_bucket)`：从 IC-TA-002
+    `mandate_daily_report` bucket 压缩摘要，返回稳定结构（`available`/
+    `top_rising_topics`/`top_main_candidates`/`evidence_gaps`/`summary_text`）。
+    缺失/failed bucket 返回 `available=False` 空壳。
+  - 新增 `build_data_blocker_digest(blockers_bucket)`：从
+    `recent_report_data_blockers` bucket 压缩摘要，返回稳定结构（`available`/
+    `has_blockers`/`top_failed_fields`/`affected_symbols`/`summary_text`）。
+    字段按失败次数倒序取 top 5。
+  - 新增 `_build_mandate_digest_draft(digest, as_of)`：摘要可用时生成一条 P2
+    日报草稿（`EVENT_MANDATE_DAILY_DIGEST`，`record_only=False`）。
+  - 新增 `_build_data_blocker_digest_draft(digest, as_of)`：存在 severe 缺口时
+    生成一条 P2 record_only 草稿（`EVENT_DATA_BLOCKER_DIGEST`）。
+  - `build_notification_drafts_from_context`：在原有五个 bucket 草稿之后，
+    额外构建两个摘要 + 两条摘要草稿，统一走强动作词自检。
+  - `render_drafts_markdown`：新增可选 kwargs `mandate_digest` /
+    `data_blocker_digest`，在日报区前渲染两个独立摘要区块。
+  - 新增 `_render_mandate_digest_section` / `_render_data_blocker_digest_section`
+    渲染辅助（升温主题 / 主候选 / 证据缺口 / 失败字段 / 受影响标的）。
+  - 新增事件常量 `EVENT_MANDATE_DAILY_DIGEST` / `EVENT_DATA_BLOCKER_DIGEST`，
+    并加入 `__all__`。
+
+- `api/services/notification_draft_service.py`
+  - `build_notification_dry_run`：在合成草稿后额外构建两个顶层摘要，作为
+    `mandate_daily_digest` / `data_blocker_digest` 顶层字段返回；并传入
+    `render_drafts_markdown` 渲染独立摘要区块。
+  - `context_data_status` 额外透传 `mandate_daily_report` /
+    `recent_report_data_blockers` 的 data_status，便于 investment-controller 判断。
+
+- `tests/test_notify002_mandate_data_blockers.py`（新增）
+  - 32 条测试覆盖：摘要构建（fresh/missing/failed/None/cap）、草稿生成
+    （去噪规则、record_only、通道分类、禁用词）、markdown 渲染（区块出现/跳过）、
+    service 端到端（顶层字段、markdown 区块、去重、dry_run 不变）。
+
+- `tests/test_track_notify001_notification_draft.py`
+  - `test_empty_state_payload_is_stable`：新增 monkeypatch 隔离仓库自带的
+    mandate report，保证空状态路径在 NOTIFY-002 接入后仍可独立验证。
+
+### 测试
+
+- `pytest tests/test_notify002_mandate_data_blockers.py -q` → 32 passed
+- `pytest tests/test_track_notify001_notification_draft.py tests/test_ic_ta002_controller_context_tradeflow_report.py tests/test_notify002_mandate_data_blockers.py -q` → 83 passed
+- `pytest tests/ -q -k "notify or ic_ta or tracking_board or observation_state"` → 182 passed
+
+### 风险点
+
+- 仓库自带 saved mandate report 会使空状态 service 测试产生 mandate 摘要草稿，
+  已通过 monkeypatch 隔离（仅测试层）。
+- 两个摘要草稿复用 `NotificationDeduplicator`，去重 key 为空 symbol +
+  事件类型，跨调用 30 分钟窗口内不重复。
+
+---
+
 ## 2026-06-26 | TF-REVIEW-005 盘后 Review 归因接入观察信号与模拟账本
 
 - **执行者**：OpenCode
@@ -7574,3 +7680,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TF-REVIEW-005-20260626-round1.txt
 - **Run archive**: docs/task_runs/TF-REVIEW-005-20260626-211746/
+
+## 2026-06-26 | AUTO-002 Auto Dev Loop
+
+- **Task**: NOTIFY-002 - 飞书/通知草稿接入昊天日报与数据缺口摘要（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/NOTIFY-002-20260626-round1.txt
+- **Run archive**: docs/task_runs/NOTIFY-002-20260626-214133/

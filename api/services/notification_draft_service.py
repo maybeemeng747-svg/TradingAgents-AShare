@@ -1,4 +1,5 @@
 # [TRACK-NOTIFY-001] notification_payload_dry_run
+# [NOTIFY-002] notification_mandate_data_blockers
 """通知草稿 dry-run service（TA 侧 -> investment-controller / 飞书）.
 
 在 IC-TA-001 只读上下文包之上，合成通知草稿 payload 并套上去噪器，产出
@@ -8,6 +9,12 @@
   代表"本服务不读取该配置"，调用方/investment-controller 自行判断是否发送）。
 - 不真实发送飞书 / 企业微信。
 - P2 / P3 与数据不足的草稿只进 ``daily_digest``，不进入 ``intraday_push``。
+
+NOTIFY-002：在 IC-TA-002 新增的 ``mandate_daily_report`` /
+``recent_report_data_blockers`` bucket 之上，额外产出两个结构化顶层摘要
+（``mandate_daily_digest`` / ``data_blocker_digest``），供 investment-controller
+一次读取即可获得昊天主题重心与报告数据风险；两个摘要各生成一条 P2 日报草稿
+进入 ``daily_digest`` 通道，并在 markdown 预览中渲染独立摘要区块。
 
 去噪器（``NotificationDeduplicator``）以模块级单例持有，跨调用复用 30 分钟
 窗口；提供 ``reset_dedup_state`` 供测试与人工强制重发使用。
@@ -30,6 +37,8 @@ from tradingagents.tradeflow.notification_draft import (
     NOTIFY_SOURCE,
     NotificationDeduplicator,
     apply_dedup,
+    build_data_blocker_digest,  # [NOTIFY-002]
+    build_mandate_daily_digest,  # [NOTIFY-002]
     build_notification_drafts_from_context,
     classify_delivery_channel,
     render_drafts_json,
@@ -96,6 +105,13 @@ def build_notification_dry_run(
     # 2. 合成草稿（纯函数，已做强动作词自检）
     drafts = build_notification_drafts_from_context(context, as_of=as_of, now=now)
 
+    # [NOTIFY-002] 构建两个顶层摘要（mandate_daily_digest / data_blocker_digest）
+    # 直接从 IC-TA-002 的 bucket 压缩，供 investment-controller 一次读取。
+    mandate_bucket = context.get("mandate_daily_report") or {}
+    blockers_bucket = context.get("recent_report_data_blockers") or {}
+    mandate_digest = build_mandate_daily_digest(mandate_bucket)
+    data_blocker_digest = build_data_blocker_digest(blockers_bucket)
+
     # 3. 去噪
     dedup_result = apply_dedup(drafts, _DEDUPLICATOR, now=now)
     emitted = dedup_result["emitted"]
@@ -109,13 +125,15 @@ def build_notification_dry_run(
     recorded_only = [d for d in daily_all if d.get("record_only")]
     daily_digest = [d for d in daily_all if not d.get("record_only")]
 
-    # 5. 预览渲染
+    # 5. 预览渲染（NOTIFY-002: 传入两个摘要，渲染独立摘要区块）
     markdown_preview = render_drafts_markdown(
         intraday_push=intraday_push,
         daily_digest=daily_digest,
         recorded_only=recorded_only,
         deduplicated=deduplicated,
         as_of=as_of,
+        mandate_digest=mandate_digest,
+        data_blocker_digest=data_blocker_digest,
     )
     json_preview = render_drafts_json(
         intraday_push=intraday_push,
@@ -134,6 +152,9 @@ def build_notification_dry_run(
         "daily_digest": daily_digest,
         "recorded_only": recorded_only,
         "deduplicated": deduplicated,
+        # [NOTIFY-002] 顶层结构化摘要：investment-controller 直接读取主题重心与数据风险
+        "mandate_daily_digest": mandate_digest,
+        "data_blocker_digest": data_blocker_digest,
         "summary_counts": {
             "total_drafts": len(drafts),
             "intraday_push": len(intraday_push),
@@ -150,6 +171,9 @@ def build_notification_dry_run(
             "observation_warehouse": (context.get("observation_warehouse") or {}).get("data_status"),
             "tradeflow_candidates": (context.get("tradeflow_candidates") or {}).get("data_status"),
             "data_health": (context.get("data_health") or {}).get("data_status"),
+            # [NOTIFY-002] 额外透传 mandate / blockers 的 data_status
+            "mandate_daily_report": mandate_bucket.get("data_status"),
+            "recent_report_data_blockers": blockers_bucket.get("data_status"),
         },
     }
 

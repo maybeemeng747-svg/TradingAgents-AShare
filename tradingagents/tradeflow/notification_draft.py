@@ -1,10 +1,17 @@
 # [TRACK-NOTIFY-001] notification_payload_dry_run
+# [NOTIFY-002] notification_mandate_data_blockers
 """
 飞书 / 总控官通知草稿 payload 与去噪规则（纯引擎）.
 
 TA 侧生成给 investment-controller / 飞书使用的通知草稿。第一阶段只产出
 ``dry-run`` payload —— 不读取 / 打印 webhook，不真实发送飞书，只生成本地
 markdown / json 预览，交给 OpenClaw / investment-controller 决定是否发。
+
+NOTIFY-002 在 TRACK-NOTIFY-001 之上接入 H-015 昊天日报与 DATA-021 数据缺口，
+让用户早上 / 盘后能看到主题重心与数据风险，而不是只看到候选数量：两个结构化
+摘要（``mandate_daily_digest`` / ``data_blocker_digest``）既作为顶层 payload
+字段供 investment-controller 直接读取，也各自生成一条 P2 日报草稿进入
+``daily_digest`` 通道（不进入 ``intraday_push``）。
 
 设计原则
 --------
@@ -96,6 +103,9 @@ EVENT_OBSERVATION_WATCHING = "observation_watching"
 EVENT_PENDING_TA_REQUIRED = "pending_ta_required"
 EVENT_DATA_SOURCE_FAILURE = "data_source_failure"
 EVENT_DATA_STALE = "data_stale"
+# [NOTIFY-002] notification_mandate_data_blockers
+EVENT_MANDATE_DAILY_DIGEST = "mandate_daily_digest"
+EVENT_DATA_BLOCKER_DIGEST = "data_blocker_digest"
 
 
 # ── 草稿构造 ──────────────────────────────────────────────────────────────────
@@ -231,6 +241,17 @@ def build_notification_drafts_from_context(
     drafts.extend(_build_candidate_drafts(candidates, as_of))
     drafts.extend(_build_data_health_drafts(data_health, is_trading, as_of))
     drafts.extend(_build_pending_ta_drafts(pending_ta, as_of))
+    # [NOTIFY-002] 昊天日报 + 数据缺口摘要草稿（P2 日报通道）
+    mandate_bucket = context.get("mandate_daily_report") or {}
+    blockers_bucket = context.get("recent_report_data_blockers") or {}
+    mandate_digest = build_mandate_daily_digest(mandate_bucket)
+    blocker_digest = build_data_blocker_digest(blockers_bucket)
+    mandate_draft = _build_mandate_digest_draft(mandate_digest, as_of)
+    if mandate_draft is not None:
+        drafts.append(mandate_draft)
+    blocker_draft = _build_data_blocker_digest_draft(blocker_digest, as_of)
+    if blocker_draft is not None:
+        drafts.append(blocker_draft)
 
     # 统一裁剪 reason，并做强动作词自检（防御性）
     cleaned: list[dict[str, Any]] = []
@@ -534,6 +555,302 @@ def _build_pending_ta_drafts(
     return drafts
 
 
+# ── NOTIFY-002: 昊天日报 / 数据缺口摘要 ──────────────────────────────────────
+# [NOTIFY-002] notification_mandate_data_blockers
+#
+# TRACK-NOTIFY-001 的草稿都是"单标的单事件"。NOTIFY-002 把 IC-TA-002 新增的
+# 两个顶层 bucket（``mandate_daily_report`` / ``recent_report_data_blockers``）
+# 压缩成两条 P2 日报草稿，同时把结构化摘要作为顶层字段返回给 service 层。
+#
+# 去噪语义：两个摘要都是"早上/盘后看的全局摘要"，按设计只进 ``daily_digest``
+# （P2），绝不进入 ``intraday_push`` 盘中主动提醒队列。数据缺口草稿额外标记
+# ``record_only=True``：缺口本身是事实陈述，不构成可操作提醒。
+
+# 摘要里最多保留的主题/候选/字段条数（避免日报过长）
+_MANDATE_DIGEST_TOPIC_LIMIT = 3
+_MANDATE_DIGEST_CANDIDATE_LIMIT = 3
+_MANDATE_DIGEST_GAP_LIMIT = 5
+_BLOCKER_DIGEST_FIELD_LIMIT = 5
+_BLOCKER_DIGEST_SYMBOL_LIMIT = 5
+
+
+def build_mandate_daily_digest(
+    mandate_bucket: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """从 IC-TA-002 ``mandate_daily_report`` bucket 压缩出日报摘要.
+
+    返回稳定结构（即使 bucket 缺失也返回 ``available=False`` 的空壳）::
+
+        {
+            "available": bool,            # mandate report 是否 fresh
+            "report_as_of": str,
+            "rising_topic_count": int,
+            "cooling_topic_count": int,
+            "main_candidate_count": int,
+            "observation_candidate_count": int,
+            "evidence_gap_count": int,
+            "top_rising_topics": [...],   # [{topic, status_label, heat_trend_label, candidate_count}]
+            "top_main_candidates": [...], # [{symbol, name, topic, candidate_type, mandate_score}]
+            "evidence_gaps": [...],       # 字符串列表
+            "summary_text": str,          # 一句话摘要（不含强买卖词）
+        }
+    """
+    empty = {
+        "available": False,
+        "report_as_of": "",
+        "rising_topic_count": 0,
+        "cooling_topic_count": 0,
+        "main_candidate_count": 0,
+        "observation_candidate_count": 0,
+        "evidence_gap_count": 0,
+        "top_rising_topics": [],
+        "top_main_candidates": [],
+        "evidence_gaps": [],
+        "summary_text": "",
+    }
+    if not isinstance(mandate_bucket, dict):
+        return empty
+    # 只有 fresh 才视为可用；missing/failed/skipped 都返回空壳（避免把"无日报"
+    # 误报成"昊天平静"）。
+    if str(mandate_bucket.get("data_status", "missing")) != "fresh":
+        return empty
+
+    rising = mandate_bucket.get("rising_topics", []) or []
+    main_candidates = mandate_bucket.get("main_candidates", []) or []
+    gaps = mandate_bucket.get("evidence_gaps", []) or []
+
+    top_rising = [
+        {
+            "topic": t.get("topic", ""),
+            "status_label": t.get("status_label", ""),
+            "heat_trend_label": t.get("heat_trend_label", ""),
+            "candidate_count": t.get("candidate_count", 0),
+        }
+        for t in rising[:_MANDATE_DIGEST_TOPIC_LIMIT]
+        if isinstance(t, dict)
+    ]
+    top_candidates = [
+        {
+            "symbol": c.get("symbol", ""),
+            "name": c.get("name", ""),
+            "topic": c.get("topic", ""),
+            "candidate_type": c.get("candidate_type", ""),
+            "mandate_score": c.get("mandate_score"),
+        }
+        for c in main_candidates[:_MANDATE_DIGEST_CANDIDATE_LIMIT]
+        if isinstance(c, dict)
+    ]
+    gap_list = [str(g) for g in gaps[:_MANDATE_DIGEST_GAP_LIMIT] if g]
+
+    rising_count = int(mandate_bucket.get("rising_topic_count", len(rising)) or 0)
+    main_count = int(mandate_bucket.get("main_candidate_count", len(main_candidates)) or 0)
+    gap_count = int(mandate_bucket.get("evidence_gap_count", len(gaps)) or 0)
+
+    if rising_count or main_count:
+        summary = (
+            f"昊天日报：{rising_count} 个升温主题，{main_count} 个主候选"
+            + (f"，{gap_count} 项证据缺口" if gap_count else "")
+        )
+    else:
+        summary = "昊天日报：暂无升温主题与主候选"
+
+    return {
+        "available": True,
+        "report_as_of": str(mandate_bucket.get("report_as_of", "")),
+        "rising_topic_count": rising_count,
+        "cooling_topic_count": int(mandate_bucket.get("cooling_topic_count", 0) or 0),
+        "main_candidate_count": main_count,
+        "observation_candidate_count": int(
+            mandate_bucket.get("observation_candidate_count", 0) or 0
+        ),
+        "evidence_gap_count": gap_count,
+        "top_rising_topics": top_rising,
+        "top_main_candidates": top_candidates,
+        "evidence_gaps": gap_list,
+        "summary_text": summary,
+    }
+
+
+def build_data_blocker_digest(
+    blockers_bucket: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """从 IC-TA-002 ``recent_report_data_blockers`` bucket 压缩出数据缺口摘要.
+
+    返回稳定结构（即使 bucket 缺失也返回 ``available=False`` 的空壳）::
+
+        {
+            "available": bool,            # 是否成功扫描过报告
+            "has_blockers": bool,         # 是否存在 severe 缺口
+            "scanned_report_count": int,
+            "affected_report_count": int,
+            "total_severe_blockers": int,
+            "summary_level": str,         # ok / warning
+            "top_failed_fields": [...],   # [{field, count}] 按次数倒序
+            "affected_symbols": [...],    # [{symbol, severe_count, fields}]
+            "summary_text": str,
+        }
+    """
+    empty = {
+        "available": False,
+        "has_blockers": False,
+        "scanned_report_count": 0,
+        "affected_report_count": 0,
+        "total_severe_blockers": 0,
+        "summary_level": "ok",
+        "top_failed_fields": [],
+        "affected_symbols": [],
+        "summary_text": "",
+    }
+    if not isinstance(blockers_bucket, dict):
+        return empty
+    # failed/missing 时不算"成功扫描"，只返回空壳，避免把"没报告"误报成"无缺口"。
+    status = str(blockers_bucket.get("data_status", "missing"))
+    if status not in ("fresh", "stale", "skipped"):
+        return empty
+
+    field_counts = blockers_bucket.get("field_counts", {}) or {}
+    affected = blockers_bucket.get("affected_symbols", []) or []
+    total_severe = int(blockers_bucket.get("total_severe_blockers", 0) or 0)
+    scanned = int(blockers_bucket.get("scanned_report_count", 0) or 0)
+    affected_count = int(blockers_bucket.get("affected_report_count", len(affected)) or 0)
+    summary_level = str(blockers_bucket.get("summary_level", "ok") or "ok")
+
+    # 按失败次数倒序取 top N 字段
+    sorted_fields = sorted(
+        (
+            {"field": str(k), "count": int(v or 0)}
+            for k, v in field_counts.items()
+            if isinstance(v, (int, float)) and v
+        ),
+        key=lambda x: x["count"],
+        reverse=True,
+    )[:_BLOCKER_DIGEST_FIELD_LIMIT]
+
+    slim_affected = [
+        {
+            "symbol": a.get("symbol", ""),
+            "severe_count": int(a.get("severe_count", 0) or 0),
+            "fields": list(a.get("fields", []) or [])[:3],
+        }
+        for a in affected[:_BLOCKER_DIGEST_SYMBOL_LIMIT]
+        if isinstance(a, dict)
+    ]
+
+    has_blockers = bool(affected) and total_severe > 0
+    if has_blockers:
+        top_field_names = ", ".join(f["field"] for f in sorted_fields[:3]) or "未知字段"
+        summary = (
+            f"最近报告数据缺口：{affected_count} 份报告受影响，"
+            f"共 {total_severe} 项严重缺口（{top_field_names}）"
+        )
+    elif scanned:
+        summary = f"最近报告数据缺口：扫描 {scanned} 份报告，未发现严重缺口"
+    else:
+        summary = ""
+
+    return {
+        "available": True,
+        "has_blockers": has_blockers,
+        "scanned_report_count": scanned,
+        "affected_report_count": affected_count,
+        "total_severe_blockers": total_severe,
+        "summary_level": summary_level,
+        "top_failed_fields": sorted_fields,
+        "affected_symbols": slim_affected,
+        "summary_text": summary,
+    }
+
+
+def _build_mandate_digest_draft(
+    digest: dict[str, Any], as_of: str
+) -> dict[str, Any] | None:
+    """昊天日报摘要 -> 一条 P2 日报草稿（系统级，symbol 为空）.
+
+    摘要可用（``available=True``）才生成草稿；否则返回 None。该草稿不进入
+    盘中主动提醒队列（classify_delivery_channel 对 P2 返回 daily_digest）。
+    """
+    if not digest.get("available"):
+        return None
+    rising = digest.get("top_rising_topics", [])
+    candidates = digest.get("top_main_candidates", [])
+    gap_count = digest.get("evidence_gap_count", 0)
+
+    reason_parts: list[str] = []
+    if rising:
+        topic_names = "、".join(t.get("topic", "") for t in rising if t.get("topic"))
+        reason_parts.append(f"升温主题：{topic_names}")
+    if candidates:
+        cand_names = "、".join(
+            f"{c.get('name', c.get('symbol', ''))}（{c.get('topic', '')}）"
+            for c in candidates
+        )
+        reason_parts.append(f"主候选：{cand_names}")
+    if gap_count:
+        reason_parts.append(f"{gap_count} 项证据缺口待补")
+    reason = "；".join(reason_parts) if reason_parts else digest.get("summary_text", "")
+
+    return _draft(
+        event_type=EVENT_MANDATE_DAILY_DIGEST,
+        priority=PRIORITY_P2,
+        symbol="",
+        name="MANDATE",
+        title=digest.get("summary_text", "昊天日报摘要") or "昊天日报摘要",
+        reason=reason,
+        source="mandate_daily_report",
+        as_of=as_of,
+        suggested_next_step="早上盘前结合主题重心与主候选安排 TA 研究队列。",
+        record_only=False,
+        extra={
+            "report_as_of": digest.get("report_as_of", ""),
+            "rising_topic_count": digest.get("rising_topic_count", 0),
+            "main_candidate_count": digest.get("main_candidate_count", 0),
+            "evidence_gap_count": gap_count,
+        },
+    )
+
+
+def _build_data_blocker_digest_draft(
+    digest: dict[str, Any], as_of: str
+) -> dict[str, Any] | None:
+    """数据缺口摘要 -> 一条 P2 record_only 日报草稿（系统级）.
+
+    只在确实存在 severe 缺口（``has_blockers=True``）时生成草稿；扫描干净
+    （``available=True`` 但 ``has_blockers=False``）不生成草稿，避免"无缺口"
+    刷屏。``record_only=True``：缺口是事实陈述，不进入盘中主动提醒队列。
+    """
+    if not digest.get("available") or not digest.get("has_blockers"):
+        return None
+    fields = digest.get("top_failed_fields", [])
+    field_text = "、".join(f"{f['field']}×{f['count']}" for f in fields) or "未知字段"
+    affected = digest.get("affected_symbols", [])
+    affected_text = "、".join(
+        a.get("symbol", "") for a in affected if a.get("symbol")
+    )
+
+    return _draft(
+        event_type=EVENT_DATA_BLOCKER_DIGEST,
+        priority=PRIORITY_P2,
+        symbol="",
+        name="DATA",
+        title="最近报告数据缺口摘要",
+        reason=(
+            f"{digest.get('summary_text', '')} 失败最多：{field_text}。"
+            + (f"受影响标的：{affected_text}。" if affected_text else "")
+            + "相关报告结论需人工复核，不作强结论推送。"
+        ),
+        source="recent_report_data_blockers",
+        as_of=as_of,
+        suggested_next_step="检查数据源 fallback 链路，必要时重跑受影响标的的 TA。",
+        record_only=True,
+        extra={
+            "scanned_report_count": digest.get("scanned_report_count", 0),
+            "affected_report_count": digest.get("affected_report_count", 0),
+            "total_severe_blockers": digest.get("total_severe_blockers", 0),
+            "summary_level": digest.get("summary_level", "ok"),
+        },
+    )
+
+
 # ── 去噪应用 + 分通道 ─────────────────────────────────────────────────────────
 
 def apply_dedup(
@@ -573,6 +890,75 @@ def split_by_channel(
     return {CHANNEL_INTRADAY_PUSH: intraday, CHANNEL_DAILY_DIGEST: daily}
 
 
+# [NOTIFY-002] notification_mandate_data_blockers
+# ── 摘要区块渲染辅助 ──────────────────────────────────────────────────────────
+
+def _render_mandate_digest_section(
+    lines: list[str], digest: dict[str, Any]
+) -> None:
+    """渲染昊天日报摘要区块（升温主题 / 主候选 / 证据缺口）."""
+    if not digest.get("available"):
+        return
+    lines.append("## 昊天日报摘要（mandate_daily_digest）\n")
+    summary = digest.get("summary_text", "")
+    if summary:
+        lines.append(f"> {summary}\n")
+    rising = digest.get("top_rising_topics", []) or []
+    if rising:
+        lines.append("- **升温主题**：")
+        for t in rising:
+            label = t.get("heat_trend_label") or t.get("status_label") or ""
+            cnt = t.get("candidate_count", 0)
+            tail = f"（{label}，{cnt} 候选）" if label else (f"（{cnt} 候选）" if cnt else "")
+            lines.append(f"  - {t.get('topic', '')}{tail}")
+    candidates = digest.get("top_main_candidates", []) or []
+    if candidates:
+        lines.append("- **主候选**：")
+        for c in candidates:
+            sym = c.get("symbol", "")
+            name = c.get("name", "") or sym
+            topic = c.get("topic", "")
+            score = c.get("mandate_score")
+            score_text = f" 昊天分 {score}" if score is not None else ""
+            lines.append(f"  - `{sym}` {name}（{topic}）{score_text}".rstrip())
+    gaps = digest.get("evidence_gaps", []) or []
+    if gaps:
+        lines.append(f"- **证据缺口**（{digest.get('evidence_gap_count', 0)}）：")
+        for g in gaps:
+            lines.append(f"  - {g}")
+    lines.append("")
+
+
+def _render_data_blocker_digest_section(
+    lines: list[str], digest: dict[str, Any]
+) -> None:
+    """渲染数据缺口摘要区块（失败字段 / 受影响标的）."""
+    if not digest.get("available"):
+        return
+    # 扫描干净时不渲染独立区块（避免"无缺口"刷屏），只在摘要已有时展示。
+    if not digest.get("has_blockers"):
+        return
+    lines.append("## 数据缺口摘要（data_blocker_digest）\n")
+    summary = digest.get("summary_text", "")
+    if summary:
+        lines.append(f"> {summary}\n")
+    fields = digest.get("top_failed_fields", []) or []
+    if fields:
+        lines.append("- **失败最多字段**：")
+        for f in fields:
+            lines.append(f"  - {f.get('field', '')}：{f.get('count', 0)} 次")
+    affected = digest.get("affected_symbols", []) or []
+    if affected:
+        lines.append("- **受影响标的**：")
+        for a in affected:
+            sym = a.get("symbol", "")
+            cnt = a.get("severe_count", 0)
+            flds = "、".join(a.get("fields", []) or [])
+            tail = f"（{flds}）" if flds else ""
+            lines.append(f"  - `{sym}` {cnt} 项缺口{tail}")
+    lines.append("")
+
+
 # ── 预览渲染 ──────────────────────────────────────────────────────────────────
 
 def render_drafts_markdown(
@@ -582,8 +968,15 @@ def render_drafts_markdown(
     recorded_only: list[dict[str, Any]],
     deduplicated: list[dict[str, Any]],
     as_of: str,
+    mandate_digest: dict[str, Any] | None = None,  # [NOTIFY-002]
+    data_blocker_digest: dict[str, Any] | None = None,  # [NOTIFY-002]
 ) -> str:
-    """渲染本地 markdown 预览，供 OpenClaw / investment-controller 决定是否发."""
+    """渲染本地 markdown 预览，供 OpenClaw / investment-controller 决定是否发.
+
+    NOTIFY-002: 当传入 ``mandate_digest`` / ``data_blocker_digest`` 时，在日报
+    区之前渲染两个独立的摘要区块（升温主题 / 主候选 / 证据缺口 / 失败字段），
+    让用户一眼看到主题重心和数据风险，而不是只看到候选数量。
+    """
     lines: list[str] = [
         "# 通知草稿预览（dry-run）",
         "",
@@ -594,6 +987,12 @@ def render_drafts_markdown(
         f"- 去重抑制：{len(deduplicated)} 条",
         "",
     ]
+
+    # [NOTIFY-002] 两个全局摘要区块（放在日报之前，突出主题重心与数据风险）
+    if mandate_digest is not None:
+        _render_mandate_digest_section(lines, mandate_digest)
+    if data_blocker_digest is not None:
+        _render_data_blocker_digest_section(lines, data_blocker_digest)
 
     def _section(title: str, items: list[dict[str, Any]]) -> None:
         if not items:
@@ -685,6 +1084,8 @@ __all__ = [
     "DEDUP_WINDOW_SECONDS",
     "EVENT_DATA_SOURCE_FAILURE",
     "EVENT_DATA_STALE",
+    "EVENT_DATA_BLOCKER_DIGEST",  # [NOTIFY-002]
+    "EVENT_MANDATE_DAILY_DIGEST",  # [NOTIFY-002]
     "EVENT_HOLDINGS_NO_ANALYSIS",
     "EVENT_HOLDINGS_RISK_LARGE",
     "EVENT_HOLDINGS_RISK_MODERATE",
@@ -707,6 +1108,8 @@ __all__ = [
     "NotificationDeduplicator",
     "apply_dedup",
     "assert_no_forbidden_words",
+    "build_data_blocker_digest",  # [NOTIFY-002]
+    "build_mandate_daily_digest",  # [NOTIFY-002]
     "build_notification_drafts_from_context",
     "classify_delivery_channel",
     "render_drafts_json",

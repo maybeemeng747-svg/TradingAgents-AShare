@@ -1,0 +1,1198 @@
+[0m
+> build · glm-5.2
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "NOTIFY-002"[90m in docs/TASKS.md · 7 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [offset=3837, limit=60][0m
+现在让我找到现有的 `TRACK-NOTIFY-001` 实现以了解其代码结构。
+[0m✱ [0mGrep "TRACK-NOTIFY-001"[90m 577 matches[0m
+让我读取一下现有的 notification draft 实现。
+[0m→ [0mRead tradingagents/tradeflow/notification_draft.py
+[0m→ [0mRead api/services/notification_draft_service.py
+现在让我查看 service 层和现有的测试。
+[0m✱ [0mGlob "tests/**/*track_notify*"[90m 1 match[0m
+[0m→ [0mRead tests/test_track_notify001_notification_draft.py
+现在让我来了解一下 H-015 (昊天日报) 和 DATA-021 (数据缺口) 的实现。让我查看一下 IC-TA-002 任务，因为它整合了这些数据源，并找到了相关文件。
+[0m✱ [0mGrep "mandate_daily_digest|data_blocker_digest|build_data_blockers|build_mandate_digest"[90m 137 matches[0m
+让我查看一下 `investment_controller_context.py`，看看它是如何使用 H-015 和 DATA-021 的 (IC-TA-002)。
+[0m→ [0mRead api/services/investment_controller_context.py
+现在让我查看 `api/main.py` 中的路由以及 IC-TA-002 测试，以了解其模式。
+[0m→ [0mRead api/main.py[90m [offset=4620, limit=90][0m
+[0m✱ [0mGlob "tests/**/*ic_ta*"[90m 2 matches[0m
+[0m→ [0mRead tests/test_ic_ta002_controller_context_tradeflow_report.py[90m [limit=120, offset=1][0m
+[0m→ [0mRead tests/test_ic_ta002_controller_context_tradeflow_report.py[90m [limit=200, offset=120][0m
+让我检查一下 runtime_tier 的注册情况以及现有的 IC-TA-002 测试结构，以了解其中的 mock 模式。
+[0m→ [0mRead api/runtime_tier.py[90m [limit=110, offset=70][0m
+我来检查一下最近的 DEVLOG 格式，并设置任务跟踪。
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=60, offset=1][0m
+现在让我检查一下 `git status` 并设置我的任务列表。
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git status && git branch --show-current
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 180 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     docs/TASKS.md
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/task_runs/NOTIFY-002-20260626-214133/
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+local/tradingagents-custom
+[0m
+[0m# [0mTodos
+[•] Add mandate_daily_digest + data_blocker_digest builders to notification_draft.py engine
+[ ] Wire digests into build_notification_drafts_from_context + render functions
+[ ] Surface digests in notification_draft_service.py payload
+[ ] Write test_notify002_mandate_data_blockers.py
+[ ] Run tests + lint, update DEVLOG.md
+[0m
+我现在已经完全理解了。让我来实现这个引擎的变更。首先，我会向 `notification_draft.py` 添加新的 event types、digest builders 和 draft builders。
+[0m← [0mEdit tradingagents/tradeflow/notification_draft.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
+@@ -1,12 +1,19 @@
+ # [TRACK-NOTIFY-001] notification_payload_dry_run
++# [NOTIFY-002] notification_mandate_data_blockers
+ """
+ 飞书 / 总控官通知草稿 payload 与去噪规则（纯引擎）.
+ 
+ TA 侧生成给 investment-controller / 飞书使用的通知草稿。第一阶段只产出
+ ``dry-run`` payload —— 不读取 / 打印 webhook，不真实发送飞书，只生成本地
+ markdown / json 预览，交给 OpenClaw / investment-controller 决定是否发。
+ 
++NOTIFY-002 在 TRACK-NOTIFY-001 之上接入 H-015 昊天日报与 DATA-021 数据缺口，
++让用户早上 / 盘后能看到主题重心与数据风险，而不是只看到候选数量：两个结构化
++摘要（``mandate_daily_digest`` / ``data_blocker_digest``）既作为顶层 payload
++字段供 investment-controller 直接读取，也各自生成一条 P2 日报草稿进入
++``daily_digest`` 通道（不进入 ``intraday_push``）。
++
+ 设计原则
+ --------
+ 1. 纯函数：不访问数据库、不联网、不读环境变量（webhook 等敏感配置由调用方
+    的 service 层负责，本引擎只接收结构化上下文 dict）。
+
+[0m
+现在添加 NOTIFY-002 的新事件类型：
+[0m← [0mEdit tradingagents/tradeflow/notification_draft.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
+@@ -102,8 +102,11 @@
+ EVENT_OBSERVATION_WATCHING = "observation_watching"
+ EVENT_PENDING_TA_REQUIRED = "pending_ta_required"
+ EVENT_DATA_SOURCE_FAILURE = "data_source_failure"
+ EVENT_DATA_STALE = "data_stale"
++# [NOTIFY-002] notification_mandate_data_blockers
++EVENT_MANDATE_DAILY_DIGEST = "mandate_daily_digest"
++EVENT_DATA_BLOCKER_DIGEST = "data_blocker_digest"
+ 
+ 
+ # ── 草稿构造 ──────────────────────────────────────────────────────────────────
+ 
+
+[0m
+现在添加摘要构建器。让我把它们插入到 `_build_pending_ta_drafts` 之后（在 "去噪应用 + 分通道" 章节之前）：
+[0m← [0mEdit tradingagents/tradeflow/notification_draft.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
+@@ -543,8 +543,304 @@
+         ))
+     return drafts
+ 
+ 
++# ── NOTIFY-002: 昊天日报 / 数据缺口摘要 ──────────────────────────────────────
++# [NOTIFY-002] notification_mandate_data_blockers
++#
++# TRACK-NOTIFY-001 的草稿都是"单标的单事件"。NOTIFY-002 把 IC-TA-002 新增的
++# 两个顶层 bucket（``mandate_daily_report`` / ``recent_report_data_blockers``）
++# 压缩成两条 P2 日报草稿，同时把结构化摘要作为顶层字段返回给 service 层。
++#
++# 去噪语义：两个摘要都是"早上/盘后看的全局摘要"，按设计只进 ``daily_digest``
++# （P2），绝不进入 ``intraday_push`` 盘中主动提醒队列。数据缺口草稿额外标记
++# ``record_only=True``：缺口本身是事实陈述，不构成可操作提醒。
++
++# 摘要里最多保留的主题/候选/字段条数（避免日报过长）
++_MANDATE_DIGEST_TOPIC_LIMIT = 3
++_MANDATE_DIGEST_CANDIDATE_LIMIT = 3
++_MANDATE_DIGEST_GAP_LIMIT = 5
++_BLOCKER_DIGEST_FIELD_LIMIT = 5
++_BLOCKER_DIGEST_SYMBOL_LIMIT = 5
++
++
++def build_mandate_daily_digest(
++    mandate_bucket: dict[str, Any] | None,
++) -> dict[str, Any]:
++    """从 IC-TA-002 ``mandate_daily_report`` bucket 压缩出日报摘要.
++
++    返回稳定结构（即使 bucket 缺失也返回 ``available=False`` 的空壳）::
++
++        {
++            "available": bool,            # mandate report 是否 fresh
++            "report_as_of": str,
++            "rising_topic_count": int,
++            "cooling_topic_count": int,
++            "main_candidate_count": int,
++            "observation_candidate_count": int,
++            "evidence_gap_count": int,
++            "top_rising_topics": [...],   # [{topic, status_label, heat_trend_label, candidate_count}]
++            "top_main_candidates": [...], # [{symbol, name, topic, candidate_type, mandate_score}]
++            "evidence_gaps": [...],       # 字符串列表
++            "summary_text": str,          # 一句话摘要（不含强买卖词）
++        }
++    """
++    empty = {
++        "available": False,
++        "report_as_of": "",
++        "rising_topic_count": 0,
++        "cooling_topic_count": 0,
++        "main_candidate_count": 0,
++        "observation_candidate_count": 0,
++        "evidence_gap_count": 0,
++        "top_rising_topics": [],
++        "top_main_candidates": [],
++        "evidence_gaps": [],
++        "summary_text": "",
++    }
++    if not isinstance(mandate_bucket, dict):
++        return empty
++    # 只有 fresh 才视为可用；missing/failed/skipped 都返回空壳（避免把"无日报"
++    # 误报成"昊天平静"）。
++    if str(mandate_bucket.get("data_status", "missing")) != "fresh":
++        return empty
++
++    rising = mandate_bucket.get("rising_topics", []) or []
++    main_candidates = mandate_bucket.get("main_candidates", []) or []
++    gaps = mandate_bucket.get("evidence_gaps", []) or []
++
++    top_rising = [
++        {
++            "topic": t.get("topic", ""),
++            "status_label": t.get("status_label", ""),
++            "heat_trend_label": t.get("heat_trend_label", ""),
++            "candidate_count": t.get("candidate_count", 0),
++        }
++        for t in rising[:_MANDATE_DIGEST_TOPIC_LIMIT]
++        if isinstance(t, dict)
++    ]
++    top_candidates = [
++        {
++            "symbol": c.get("symbol", ""),
++            "name": c.get("name", ""),
++            "topic": c.get("topic", ""),
++            "candidate_type": c.get("candidate_type", ""),
++            "mandate_score": c.get("mandate_score"),
++        }
++        for c in main_candidates[:_MANDATE_DIGEST_CANDIDATE_LIMIT]
++        if isinstance(c, dict)
++    ]
++    gap_list = [str(g) for g in gaps[:_MANDATE_DIGEST_GAP_LIMIT] if g]
++
++    rising_count = int(mandate_bucket.get("rising_topic_count", len(rising)) or 0)
++    main_count = int(mandate_bucket.get("main_candidate_count", len(main_candidates)) or 0)
++    gap_count = int(mandate_bucket.get("evidence_gap_count", len(gaps)) or 0)
++
++    if rising_count or main_count:
++        summary = (
++            f"昊天日报：{rising_count} 个升温主题，{main_count} 个主候选"
++            + (f"，{gap_count} 项证据缺口" if gap_count else "")
++        )
++    else:
++        summary = "昊天日报：暂无升温主题与主候选"
++
++    return {
++        "available": True,
++        "report_as_of": str(mandate_bucket.get("report_as_of", "")),
++        "rising_topic_count": rising_count,
++        "cooling_topic_count": int(mandate_bucket.get("cooling_topic_count", 0) or 0),
++        "main_candidate_count": main_count,
++        "observation_candidate_count": int(
++            mandate_bucket.get("observation_candidate_count", 0) or 0
++        ),
++        "evidence_gap_count": gap_count,
++        "top_rising_topics": top_rising,
++        "top_main_candidates": top_candidates,
++        "evidence_gaps": gap_list,
++        "summary_text": summary,
++    }
++
++
++def build_data_blocker_digest(
++    blockers_bucket: dict[str, Any] | None,
++) -> dict[str, Any]:
++    """从 IC-TA-002 ``recent_report_data_blockers`` bucket 压缩出数据缺口摘要.
++
++    返回稳定结构（即使 bucket 缺失也返回 ``available=False`` 的空壳）::
++
++        {
++            "available": bool,            # 是否成功扫描过报告
++            "has_blockers": bool,         # 是否存在 severe 缺口
++            "scanned_report_count": int,
++            "affected_report_count": int,
++            "total_severe_blockers": int,
++            "summary_level": str,         # ok / warning
++            "top_failed_fields": [...],   # [{field, count}] 按次数倒序
++            "affected_symbols": [...],    # [{symbol, severe_count, fields}]
++            "summary_text": str,
++        }
++    """
++    empty = {
++        "available": False,
++        "has_blockers": False,
++        "scanned_report_count": 0,
++        "affected_report_count": 0,
++        "total_severe_blockers": 0,
++        "summary_level": "ok",
++        "top_failed_fields": [],
++        "affected_symbols": [],
++        "summary_text": "",
++    }
++    if not isinstance(blockers_bucket, dict):
++        return empty
++    # failed/missing 时不算"成功扫描"，只返回空壳，避免把"没报告"误报成"无缺口"。
++    status = str(blockers_bucket.get("data_status", "missing"))
++    if status not in ("fresh", "stale", "skipped"):
++        return empty
++
++    field_counts = blockers_bucket.get("field_counts", {}) or {}
++    affected = blockers_bucket.get("affected_symbols", []) or []
++    total_severe = int(blockers_bucket.get("total_severe_blockers", 0) or 0)
++    scanned = int(blockers_bucket.get("scanned_report_count", 0) or 0)
++    affected_count = int(blockers_bucket.get("affected_report_count", len(affected)) or 0)
++    summary_level = str(blockers_bucket.get("summary_level", "ok") or "ok")
++
++    # 按失败次数倒序取 top N 字段
++    sorted_fields = sorted(
++        (
++            {"field": str(k), "count": int(v or 0)}
++            for k, v in field_counts.items()
++            if isinstance(v, (int, float)) and v
++        ),
++        key=lambda x: x["count"],
++        reverse=True,
++    )[:_BLOCKER_DIGEST_FIELD_LIMIT]
++
++    slim_affected = [
++        {
++            "symbol": a.get("symbol", ""),
++            "severe_count": int(a.get("severe_count", 0) or 0),
++            "fields": list(a.get("fields", []) or [])[:3],
++        }
++        for a in affected[:_BLOCKER_DIGEST_SYMBOL_LIMIT]
++        if isinstance(a, dict)
++    ]
++
++    has_blockers = bool(affected) and total_severe > 0
++    if has_blockers:
++        top_field_names = ", ".join(f["field"] for f in sorted_fields[:3]) or "未知字段"
++        summary = (
++            f"最近报告数据缺口：{affected_count} 份报告受影响，"
++            f"共 {total_severe} 项严重缺口（{top_field_names}）"
++        )
++    elif scanned:
++        summary = f"最近报告数据缺口：扫描 {scanned} 份报告，未发现严重缺口"
++    else:
++        summary = ""
++
++    return {
++        "available": True,
++        "has_blockers": has_blockers,
++        "scanned_report_count": scanned,
++        "affected_report_count": affected_count,
++        "total_severe_blockers": total_severe,
++        "summary_level": summary_level,
++        "top_failed_fields": sorted_fields,
++        "affected_symbols": slim_affected,
++        "summary_text": summary,
++    }
++
++
++def _build_mandate_digest_draft(
++    digest: dict[str, Any], as_of: str
++) -> dict[str, Any] | None:
++    """昊天日报摘要 -> 一条 P2 日报草稿（系统级，symbol 为空）.
++
++    摘要可用（``available=True``）才生成草稿；否则返回 None。该草稿不进入
++    盘中主动提醒队列（classify_delivery_channel 对 P2 返回 daily_digest）。
++    """
++    if not digest.get("available"):
++        return None
++    rising = digest.get("top_rising_topics", [])
++    candidates = digest.get("top_main_candidates", [])
++    gap_count = digest.get("evidence_gap_count", 0)
++
++    reason_parts: list[str] = []
++    if rising:
++        topic_names = "、".join(t.get("topic", "") for t in rising if t.get("topic"))
++        reason_parts.append(f"升温主题：{topic_names}")
++    if candidates:
++        cand_names = "、".join(
++            f"{c.get('name', c.get('symbol', ''))}（{c.get('topic', '')}）"
++            for c in candidates
++        )
++        reason_parts.append(f"主候选：{cand_names}")
++    if gap_count:
++        reason_parts.append(f"{gap_count} 项证据缺口待补")
++    reason = "；".join(reason_parts) if reason_parts else digest.get("summary_text", "")
++
++    return _draft(
++        event_type=EVENT_MANDATE_DAILY_DIGEST,
++        priority=PRIORITY_P2,
++        symbol="",
++        name="MANDATE",
++        title=digest.get("summary_text", "昊天日报摘要") or "昊天日报摘要",
++        reason=reason,
++        source="mandate_daily_report",
++        as_of=as_of,
++        suggested_next_step="早上盘前结合主题重心与主候选安排 TA 研究队列。",
++        record_only=False,
++        extra={
++            "report_as_of": digest.get("report_as_of", ""),
++            "rising_topic_count": digest.get("rising_topic_count", 0),
++            "main_candidate_count": digest.get("main_candidate_count", 0),
++            "evidence_gap_count": gap_count,
++        },
++    )
++
++
++def _build_data_blocker_digest_draft(
++    digest: dict[str, Any], as_of: str
++) -> dict[str, Any] | None:
++    """数据缺口摘要 -> 一条 P2 record_only 日报草稿（系统级）.
++
++    只在确实存在 severe 缺口（``has_blockers=True``）时生成草稿；扫描干净
++    （``available=True`` 但 ``has_blockers=False``）不生成草稿，避免"无缺口"
++    刷屏。``record_only=True``：缺口是事实陈述，不进入盘中主动提醒队列。
++    """
++    if not digest.get("available") or not digest.get("has_blockers"):
++        return None
++    fields = digest.get("top_failed_fields", [])
++    field_text = "、".join(f"{f['field']}×{f['count']}" for f in fields) or "未知字段"
++    affected = digest.get("affected_symbols", [])
++    affected_text = "、".join(
++        a.get("symbol", "") for a in affected if a.get("symbol")
++    )
++
++    return _draft(
++        event_type=EVENT_DATA_BLOCKER_DIGEST,
++        priority=PRIORITY_P2,
++        symbol="",
++        name="DATA",
++        title="最近报告数据缺口摘要",
++        reason=(
++            f"{digest.get('summary_text', '')} 失败最多：{field_text}。"
++            + (f"受影响标的：{affected_text}。" if affected_text else "")
++            + "相关报告结论需人工复核，不作强结论推送。"
++        ),
++        source="recent_report_data_blockers",
++        as_of=as_of,
++        suggested_next_step="检查数据源 fallback 链路，必要时重跑受影响标的的 TA。",
++        record_only=True,
++        extra={
++            "scanned_report_count": digest.get("scanned_report_count", 0),
++            "affected_report_count": digest.get("affected_report_count", 0),
++            "total_severe_blockers": digest.get("total_severe_blockers", 0),
++            "summary_level": digest.get("summary_level", "ok"),
++        },
++    )
++
++
+ # ── 去噪应用 + 分通道 ─────────────────────────────────────────────────────────
+ 
+ def apply_dedup(
+     drafts: Iterable[dict[str, Any]],
+
+[0m
+现在将摘要草稿接入 `build_notification_drafts_from_context`：
+[0m← [0mEdit tradingagents/tradeflow/notification_draft.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
+@@ -240,8 +240,19 @@
+ drafts.extend(_build_observation_drafts(observation, is_trading, as_of))
+ drafts.extend(_build_candidate_drafts(candidates, as_of))
+ drafts.extend(_build_data_health_drafts(data_health, is_trading, as_of))
+ drafts.extend(_build_pending_ta_drafts(pending_ta, as_of))
++# [NOTIFY-002] 昊天日报 + 数据缺口摘要草稿（P2 日报通道）
++mandate_bucket = context.get("mandate_daily_report") or {}
++blockers_bucket = context.get("recent_report_data_blockers") or {}
++mandate_digest = build_mandate_daily_digest(mandate_bucket)
++blocker_digest = build_data_blocker_digest(blockers_bucket)
++mandate_draft = _build_mandate_digest_draft(mandate_digest, as_of)
++if mandate_draft is not None:
++    drafts.append(mandate_draft)
++blocker_draft = _build_data_blocker_digest_draft(blocker_digest, as_of)
++if blocker_draft is not None:
++    drafts.append(blocker_draft)
+ 
+ # 统一裁剪 reason，并做强动作词自检（防御性）
+ cleaned: list[dict[str, Any]] = []
+ for d in drafts:
+
+[0m
+现在更新 markdown 渲染，以包含专门的摘要部分。让我查看一下当前的渲染函数结构：
+[0m→ [0mRead tradingagents/tradeflow/notification_draft.py[90m [limit=120, offset=820][0m
+现在更新 markdown 渲染以支持专门的摘要部分：
+[0m
+[0m← [0mEdit tradingagents/tradeflow/notification_draft.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
+@@ -898,10 +898,17 @@
+     daily_digest: list[dict[str, Any]],
+     recorded_only: list[dict[str, Any]],
+     deduplicated: list[dict[str, Any]],
+     as_of: str,
++    mandate_digest: dict[str, Any] | None = None,  # [NOTIFY-002]
++    data_blocker_digest: dict[str, Any] | None = None,  # [NOTIFY-002]
+ ) -> str:
+-    """渲染本地 markdown 预览，供 OpenClaw / investment-controller 决定是否发."""
++    """渲染本地 markdown 预览，供 OpenClaw / investment-controller 决定是否发.
++
++    NOTIFY-002: 当传入 ``mandate_digest`` / ``data_blocker_digest`` 时，在日报
++    区之前渲染两个独立的摘要区块（升温主题 / 主候选 / 证据缺口 / 失败字段），
++    让用户一眼看到主题重心和数据风险，而不是只看到候选数量。
++    """
+     lines: list[str] = [
+         "# 通知草稿预览（dry-run）",
+         "",
+         f"- 生成时间：{as_of}",
+@@ -911,8 +918,14 @@
+         f"- 去重抑制：{len(deduplicated)} 条",
+         "",
+     ]
+ 
++    # [NOTIFY-002] 两个全局摘要区块（放在日报之前，突出主题重心与数据风险）
++    if mandate_digest is not None:
++        _render_mandate_digest_section(lines, mandate_digest)
++    if data_blocker_digest is not None:
++        _render_data_blocker_digest_section(lines, data_blocker_digest)
++
+     def _section(title: str, items: list[dict[str, Any]]) -> None:
+         if not items:
+             lines.append(f"## {title}\n\n_（无）_\n")
+             return
+
+[0m
+[0m→ [0mRead tradingagents/tradeflow/notification_draft.py[90m [limit=70, offset=945][0m
+现在让我查看 `render_drafts_markdown` 的其余部分和 `render_drafts_json`，以添加 digest 渲染辅助函数：
+现在让我把 digest 渲染辅助函数添加到 `render_drafts_markdown` 之前，并更新 `__all__`。首先，在“预览渲染”部分之前添加这两个辅助函数：
+[0m
+[0m← [0mEdit tradingagents/tradeflow/notification_draft.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
+@@ -889,8 +889,77 @@
+             daily.append(d)
+     return {CHANNEL_INTRADAY_PUSH: intraday, CHANNEL_DAILY_DIGEST: daily}
+ 
+ 
++# [NOTIFY-002] notification_mandate_data_blockers
++# ── 摘要区块渲染辅助 ──────────────────────────────────────────────────────────
++
++def _render_mandate_digest_section(
++    lines: list[str], digest: dict[str, Any]
++) -> None:
++    """渲染昊天日报摘要区块（升温主题 / 主候选 / 证据缺口）."""
++    if not digest.get("available"):
++        return
++    lines.append("## 昊天日报摘要（mandate_daily_digest）\n")
++    summary = digest.get("summary_text", "")
++    if summary:
++        lines.append(f"> {summary}\n")
++    rising = digest.get("top_rising_topics", []) or []
++    if rising:
++        lines.append("- **升温主题**：")
++        for t in rising:
++            label = t.get("heat_trend_label") or t.get("status_label") or ""
++            cnt = t.get("candidate_count", 0)
++            tail = f"（{label}，{cnt} 候选）" if label else (f"（{cnt} 候选）" if cnt else "")
++            lines.append(f"  - {t.get('topic', '')}{tail}")
++    candidates = digest.get("top_main_candidates", []) or []
++    if candidates:
++        lines.append("- **主候选**：")
++        for c in candidates:
++            sym = c.get("symbol", "")
++            name = c.get("name", "") or sym
++            topic = c.get("topic", "")
++            score = c.get("mandate_score")
++            score_text = f" 昊天分 {score}" if score is not None else ""
++            lines.append(f"  - `{sym}` {name}（{topic}）{score_text}".rstrip())
++    gaps = digest.get("evidence_gaps", []) or []
++    if gaps:
++        lines.append(f"- **证据缺口**（{digest.get('evidence_gap_count', 0)}）：")
++        for g in gaps:
++            lines.append(f"  - {g}")
++    lines.append("")
++
++
++def _render_data_blocker_digest_section(
++    lines: list[str], digest: dict[str, Any]
++) -> None:
++    """渲染数据缺口摘要区块（失败字段 / 受影响标的）."""
++    if not digest.get("available"):
++        return
++    # 扫描干净时不渲染独立区块（避免"无缺口"刷屏），只在摘要已有时展示。
++    if not digest.get("has_blockers"):
++        return
++    lines.append("## 数据缺口摘要（data_blocker_digest）\n")
++    summary = digest.get("summary_text", "")
++    if summary:
++        lines.append(f"> {summary}\n")
++    fields = digest.get("top_failed_fields", []) or []
++    if fields:
++        lines.append("- **失败最多字段**：")
++        for f in fields:
++            lines.append(f"  - {f.get('field', '')}：{f.get('count', 0)} 次")
++    affected = digest.get("affected_symbols", []) or []
++    if affected:
++        lines.append("- **受影响标的**：")
++        for a in affected:
++            sym = a.get("symbol", "")
++            cnt = a.get("severe_count", 0)
++            flds = "、".join(a.get("fields", []) or [])
++            tail = f"（{flds}）" if flds else ""
++            lines.append(f"  - `{sym}` {cnt} 项缺口{tail}")
++    lines.append("")
++
++
+ # ── 预览渲染 ──────────────────────────────────────────────────────────────────
+ 
+ def render_drafts_markdown(
+     *,
+
+[0m
+现在更新 `__all__` 列表以包含新的公共函数和事件类型：
+[0m→ [0mRead tradingagents/tradeflow/notification_draft.py[90m [limit=50, offset=1085][0m
+[0m
+[0m← [0mEdit tradingagents/tradeflow/notification_draft.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/notification_draft.py
+@@ -1083,8 +1083,10 @@
+ "CHANNEL_INTRADAY_PUSH",
+ "DEDUP_WINDOW_SECONDS",
+ "EVENT_DATA_SOURCE_FAILURE",
+ "EVENT_DATA_STALE",
++"EVENT_DATA_BLOCKER_DIGEST",  # [NOTIFY-002]
++"EVENT_MANDATE_DAILY_DIGEST",  # [NOTIFY-002]
+ "EVENT_HOLDINGS_NO_ANALYSIS",
+ "EVENT_HOLDINGS_RISK_LARGE",
+ "EVENT_HOLDINGS_RISK_MODERATE",
+ "EVENT_OBSERVATION_DATA_MISSING",
+@@ -1105,8 +1107,10 @@
+ "PRIORITY_P3",
+ "NotificationDeduplicator",
+ "apply_dedup",
+ "assert_no_forbidden_words",
++"build_data_blocker_digest",  # [NOTIFY-002]
++"build_mandate_daily_digest",  # [NOTIFY-002]
+ "build_notification_drafts_from_context",
+ "classify_delivery_channel",
+ "render_drafts_json",
+ "render_drafts_markdown",
+
+[0m
+[0m# [0mTodos
+[✓] Add mandate_daily_digest + data_blocker_digest builders to notification_draft.py engine
+[✓] Wire digests into build_notification_drafts_from_context + render functions
+[•] Surface digests in notification_draft_service.py payload
+[ ] Write test_notify002_mandate_data_blockers.py
+[ ] Run tests + lint, update DEVLOG.md
+[0m
+现在让我更新 `todowrite` 并更新服务层。
+[0m← [0mEdit api/services/notification_draft_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/notification_draft_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/notification_draft_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/notification_draft_service.py
+@@ -1,5 +1,6 @@
+ # [TRACK-NOTIFY-001] notification_payload_dry_run
++# [NOTIFY-002] notification_mandate_data_blockers
+ """通知草稿 dry-run service（TA 侧 -> investment-controller / 飞书）.
+ 
+ 在 IC-TA-001 只读上下文包之上，合成通知草稿 payload 并套上去噪器，产出
+ 本地 markdown / json 预览。**第一阶段只做 dry-run**：
+@@ -8,8 +9,14 @@
+   代表"本服务不读取该配置"，调用方/investment-controller 自行判断是否发送）。
+ - 不真实发送飞书 / 企业微信。
+ - P2 / P3 与数据不足的草稿只进 ``daily_digest``，不进入 ``intraday_push``。
+ 
++NOTIFY-002：在 IC-TA-002 新增的 ``mandate_daily_report`` /
++``recent_report_data_blockers`` bucket 之上，额外产出两个结构化顶层摘要
++（``mandate_daily_digest`` / ``data_blocker_digest``），供 investment-controller
++一次读取即可获得昊天主题重心与报告数据风险；两个摘要各生成一条 P2 日报草稿
++进入 ``daily_digest`` 通道，并在 markdown 预览中渲染独立摘要区块。
++
+ 去噪器（``NotificationDeduplicator``）以模块级单例持有，跨调用复用 30 分钟
+ 窗口；提供 ``reset_dedup_state`` 供测试与人工强制重发使用。
+ """
+ 
+
+[0m
+[0m← [0mEdit api/services/notification_draft_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/notification_draft_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/notification_draft_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/notification_draft_service.py
+@@ -36,8 +36,10 @@
+ NOTIFY_SCHEMA_VERSION,
+ NOTIFY_SOURCE,
+ NotificationDeduplicator,
+ apply_dedup,
++build_data_blocker_digest,  # [NOTIFY-002]
++build_mandate_daily_digest,  # [NOTIFY-002]
+ build_notification_drafts_from_context,
+ classify_delivery_channel,
+ render_drafts_json,
+ render_drafts_markdown,
+
+[0m
+现在更新 `notification_draft.py` 的引用，以包含新的摘要构建器：
+现在更新 `build_notification_dry_run` 函数体，以构建摘要、呈现它们，并在 payload 中展示：
+[0m→ [0mRead api/services/notification_draft_service.py[90m [limit=80, offset=90][0m
+[0m
+[0m← [0mEdit api/services/notification_draft_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/notification_draft_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/notification_draft_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/notification_draft_service.py
+@@ -104,8 +104,15 @@
+ 
+ # 2. 合成草稿（纯函数，已做强动作词自检）
+ drafts = build_notification_drafts_from_context(context, as_of=as_of, now=now)
+ 
++# [NOTIFY-002] 构建两个顶层摘要（mandate_daily_digest / data_blocker_digest）
++# 直接从 IC-TA-002 的 bucket 压缩，供 investment-controller 一次读取。
++mandate_bucket = context.get("mandate_daily_report") or {}
++blockers_bucket = context.get("recent_report_data_blockers") or {}
++mandate_digest = build_mandate_daily_digest(mandate_bucket)
++data_blocker_digest = build_data_blocker_digest(blockers_bucket)
++
+ # 3. 去噪
+ dedup_result = apply_dedup(drafts, _DEDUPLICATOR, now=now)
+ emitted = dedup_result["emitted"]
+ deduplicated = dedup_result["deduplicated"]
+@@ -117,15 +124,17 @@
+ # daily_digest 里再拆出 record_only（数据不足只记录）单独展示
+ recorded_only = [d for d in daily_all if d.get("record_only")]
+ daily_digest = [d for d in daily_all if not d.get("record_only")]
+ 
+-# 5. 预览渲染
++# 5. 预览渲染（NOTIFY-002: 传入两个摘要，渲染独立摘要区块）
+ markdown_preview = render_drafts_markdown(
+     intraday_push=intraday_push,
+     daily_digest=daily_digest,
+     recorded_only=recorded_only,
+     deduplicated=deduplicated,
+     as_of=as_of,
++    mandate_digest=mandate_digest,
++    data_blocker_digest=data_blocker_digest,
+ )
+ json_preview = render_drafts_json(
+     intraday_push=intraday_push,
+     daily_digest=daily_digest,
+@@ -142,8 +151,11 @@
+     "intraday_push": intraday_push,
+     "daily_digest": daily_digest,
+     "recorded_only": recorded_only,
+     "deduplicated": deduplicated,
++    # [NOTIFY-002] 顶层结构化摘要：investment-controller 直接读取主题重心与数据风险
++    "mandate_daily_digest": mandate_digest,
++    "data_blocker_digest": data_blocker_digest,
+     "summary_counts": {
+         "total_drafts": len(drafts),
+         "intraday_push": len(intraday_push),
+         "daily_digest": len(daily_digest),
+@@ -158,8 +170,11 @@
+         "holdings": (context.get("holdings") or {}).get("data_status"),
+         "observation_warehouse": (context.get("observation_warehouse") or {}).get("data_status"),
+         "tradeflow_candidates": (context.get("tradeflow_candidates") or {}).get("data_status"),
+         "data_health": (context.get("data_health") or {}).get("data_status"),
++        # [NOTIFY-002] 额外透传 mandate / blockers 的 data_status
++        "mandate_daily_report": mandate_bucket.get("data_status"),
++        "recent_report_data_blockers": blockers_bucket.get("data_status"),
+     },
+ }
+ 
+ 
+
+[0m
+现在让我核实一下引擎文件的语法是否正确：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -c "from tradingagents.tradeflow import notification_draft; print('engine ok'); print('exports:', len(notification_draft.__all__))"
+engine ok
+exports: 38
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -c "from api.services import notification_draft_service; print('service ok')"
+service ok
+[0m
+[0m# [0mTodos
+[✓] Add mandate_daily_digest + data_blocker_digest builders to notification_draft.py engine
+[✓] Wire digests into build_notification_drafts_from_context + render functions
+[✓] Surface digests in notification_draft_service.py payload
+[•] Write test_notify002_mandate_data_blockers.py
+[ ] Run tests + lint, update DEVLOG.md
+[0m
+现在我来编写测试文件。先查看一下现有的测试是如何 mock mandate report 的，以便遵循既定模式：
+[0m→ [0mRead tests/test_ic_ta002_controller_context_tradeflow_report.py[90m [limit=100, offset=320][0m
+现在我已经很清楚测试模式了。让我来编写测试文件：
+[0m
+[0m← [0mWrite tests/test_notify002_mandate_data_blockers.py
+Wrote file successfully.
+[0m
+现在我来运行新的测试文件：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_notify002_mandate_data_blockers.py -q 2>&1 | tail -40
+........................F.......                                         [100%]
+=================================== FAILURES ===================================
+_____ TestServiceDryRunDigests.test_payload_contains_digest_top_level_keys _____
+
+self = <tests.test_notify002_mandate_data_blockers.TestServiceDryRunDigests object at 0x10ac3c0b0>
+tmp_sqla_session = <sqlalchemy.orm.session.Session object at 0x10ac1e120>
+tmp_tf_db = '/Users/maybee/.openclaw/tmp/pytest-of-maybee/pytest-419/test_payload_contains_digest_t0/test_notify002_tradeflow.db'
+
+    def test_payload_contains_digest_top_level_keys(self, tmp_sqla_session, tmp_tf_db):
+        from api.services import notification_draft_service
+        notification_draft_service.reset_dedup_state()
+        payload = notification_draft_service.build_notification_dry_run(
+            tmp_sqla_session, "ghost_user", tf_db_path=tmp_tf_db, now=NOW,
+        )
+        assert "mandate_daily_digest" in payload
+        assert "data_blocker_digest" in payload
+        # Stable empty structure even with no mandate report / no reports.
+>       assert payload["mandate_daily_digest"]["available"] is False
+E       assert True is False
+
+tests/test_notify002_mandate_data_blockers.py:450: AssertionError
+----------------------------- Captured stderr call -----------------------------
+  0%|          | 0/17 [00:00<?, ?it/s]  6%|▌         | 1/17 [00:00<00:03,  5.01it/s] 12%|█▏        | 2/17 [00:00<00:03,  4.59it/s] 18%|█▊        | 3/17 [00:00<00:03,  4.31it/s] 24%|██▎       | 4/17 [00:00<00:03,  4.26it/s] 29%|██▉       | 5/17 [00:01<00:02,  4.20it/s] 35%|███▌      | 6/17 [00:01<00:02,  4.25it/s] 41%|████      | 7/17 [00:01<00:02,  4.19it/s] 47%|████▋     | 8/17 [00:01<00:02,  3.65it/s] 53%|█████▎    | 9/17 [00:02<00:02,  3.78it/s] 59%|█████▉    | 10/17 [00:02<00:01,  3.86it/s] 65%|██████▍   | 11/17 [00:02<00:01,  4.13it/s] 71%|███████   | 12/17 [00:02<00:01,  4.05it/s] 76%|███████▋  | 13/17 [00:03<00:00,  4.04it/s] 82%|████████▏ | 14/17 [00:03<00:00,  3.95it/s] 88%|████████▊ | 15/17 [00:03<00:00,  3.93it/s] 94%|█████████▍| 16/17 [00:03<00:00,  3.96it/s]100%|██████████| 17/17 [00:04<00:00,  4.03it/s]                                               
+=========================== short test summary info ============================
+FAILED tests/test_notify002_mandate_data_blockers.py::TestServiceDryRunDigests::test_payload_contains_digest_top_level_keys
+1 failed, 31 passed in 21.63s
+[0m
+测试失败是因为仓库中已保存了授权报告。我来修复 empty-state 测试，将其 monkeypatch 掉：
+[0m← [0mEdit tests/test_notify002_mandate_data_blockers.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_notify002_mandate_data_blockers.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_notify002_mandate_data_blockers.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_notify002_mandate_data_blockers.py
+@@ -437,9 +437,15 @@
+ 
+ 
+ class TestServiceDryRunDigests:
+ 
+-    def test_payload_contains_digest_top_level_keys(self, tmp_sqla_session, tmp_tf_db):
++    def test_payload_contains_digest_top_level_keys(self, tmp_sqla_session, tmp_tf_db, monkeypatch):
++        # Force mandate report to no_data so empty-state path is isolated from
++        # any saved mandate report shipped with the repo.
++        monkeypatch.setattr(
++            "api.services.tradeflow_service.get_mandate_daily_report",
++            lambda **kw: {"status": "no_data"},
++        )
+         from api.services import notification_draft_service
+         notification_draft_service.reset_dedup_state()
+         payload = notification_draft_service.build_notification_dry_run(
+             tmp_sqla_session, "ghost_user", tf_db_path=tmp_tf_db, now=NOW,
+
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_notify002_mandate_data_blockers.py -q 2>&1 | tail -15
+................................                                         [100%]
+32 passed in 20.18s
+[0m
+32 个测试全部通过。现在我来运行现有的 `TRACK-NOTIFY-001` 测试，以确保向后兼容性：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_track_notify001_notification_draft.py tests/test_ic_ta002_controller_context_tradeflow_report.py -q 2>&1 | tail -15
+# 未配置 webhook 不报错：webhook_configured 恒 None（本服务不读取）
+        assert payload["webhook_configured"] is None
+        assert payload["intraday_push"] == []
+>       assert payload["daily_digest"] == []
+E       AssertionError: assert [{'as_of': '2...ANDATE', ...}] == []
+E         
+E         Left contains one more item: {'as_of': '2026-06-23 14:00:00', 'event_type': 'mandate_daily_digest', 'extra': {'evidence_gap_count': 5, 'main_candidate_count': 0, 'report_as_of': '2026-06-26', 'rising_topic_count': 3}, 'name': 'MANDATE', ...}
+E         Use -v to get more diff
+
+tests/test_track_notify001_notification_draft.py:329: AssertionError
+----------------------------- Captured stderr call -----------------------------
+  0%|          | 0/17 [00:00<?, ?it/s]  6%|▌         | 1/17 [00:00<00:03,  4.38it/s] 12%|█▏        | 2/17 [00:00<00:04,  3.16it/s] 18%|█▊        | 3/17 [00:00<00:03,  3.61it/s] 24%|██▎       | 4/17 [00:01<00:03,  3.81it/s] 29%|██▉       | 5/17 [00:01<00:03,  3.38it/s] 35%|███▌      | 6/17 [00:01<00:03,  3.64it/s] 41%|████      | 7/17 [00:01<00:02,  3.87it/s] 47%|████▋     | 8/17 [00:02<00:02,  3.90it/s] 53%|█████▎    | 9/17 [00:02<00:01,  4.06it/s] 59%|█████▉    | 10/17 [00:02<00:01,  4.12it/s] 65%|██████▍   | 11/17 [00:02<00:01,  4.10it/s] 71%|███████   | 12/17 [00:03<00:01,  4.15it/s] 76%|███████▋  | 13/17 [00:03<00:00,  4.31it/s] 82%|████████▏ | 14/17 [00:03<00:00,  4.23it/s] 88%|████████▊ | 15/17 [00:03<00:00,  4.23it/s] 94%|█████████▍| 16/17 [00:04<00:00,  4.10it/s]100%|██████████| 17/17 [00:04<00:00,  4.04it/s]                                               
+=========================== short test summary info ============================
+FAILED tests/test_track_notify001_notification_draft.py::TestServiceDryRun::test_empty_state_payload_is_stable
+1 failed, 50 passed in 17.51s
+[0m
+现有的 `TRACK-NOTIFY-001` 测试需要进行调整，因为仓库中已包含已保存的 mandate report。我来查看一下该测试并进行更新：
+[0m→ [0mRead tests/test_track_notify001_notification_draft.py[90m [limit=25, offset=317][0m
+我将更新现有的测试以隔离开已发布的任务报告（其原始意图是验证空状态的稳定性）：
+[0m
+[0m← [0mEdit tests/test_track_notify001_notification_draft.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_track_notify001_notification_draft.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_track_notify001_notification_draft.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_track_notify001_notification_draft.py
+@@ -314,9 +314,15 @@
+ # Service 层端到端（dry-run payload）
+ # ──────────────────────────────────────────────────────────────────────────────
+ 
+ class TestServiceDryRun:
+-    def test_empty_state_payload_is_stable(self, tmp_sqla_session, tmp_tf_db):
++    def test_empty_state_payload_is_stable(self, tmp_sqla_session, tmp_tf_db, monkeypatch):
++        # NOTIFY-002: isolate from any saved mandate report shipped with the repo
++        # so the empty-state path is exercised in isolation.
++        monkeypatch.setattr(
++            "api.services.tradeflow_service.get_mandate_daily_report",
++            lambda **kw: {"status": "no_data"},
++        )
+         from api.services import notification_draft_service
+         notification_draft_service.reset_dedup_state()
+         payload = notification_draft_service.build_notification_dry_run(
+             tmp_sqla_session, "ghost_user", tf_db_path=tmp_tf_db, now=NOW,
+
+[0m
+现在让我检查一下同一个测试文件中的另一个测试（`test_service_dedups_across_calls`）是否可能受到影响：
+[0m→ [0mRead tests/test_track_notify001_notification_draft.py[90m [limit=45, offset=342][0m
+该测试使用相对比较，因此应该仍然有效。让我一起运行这三个测试文件：
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_track_notify001_notification_draft.py tests/test_ic_ta002_controller_context_tradeflow_report.py tests/test_notify002_mandate_data_blockers.py -q 2>&1 | tail -15
+........................................................................ [ 86%]
+...........                                                              [100%]
+83 passed in 30.57s
+[0m
+83 个测试全部通过。我再运行一下 IC-TA-001 测试以及更广泛的 notification/tradeflow 测试套件，以确保没有引入回归问题：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_ic_ta001_investment_controller_context.py tests/test_track_notify001_notification_draft.py tests/test_ic_ta002_controller_context_tradeflow_report.py tests/test_notify002_mandate_data_blockers.py -q 2>&1 | tail -10
+........................................................................ [ 61%]
+..............................................                           [100%]
+118 passed in 30.64s
+[0m
+全部 118 个测试用例通过。现在我来检查一下是否有需要运行的 linter 或 typecheck 命令：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m ruff check tradingagents/tradeflow/notification_draft.py api/services/notification_draft_service.py tests/test_notify002_mandate_data_blockers.py 2>&1 | tail -20
+/Users/maybee/TradingAgents-AShare/.venv/bin/python: No module named ruff
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m flake8 --max-line-length=120 tradingagents/tradeflow/notification_draft.py api/services/notification_draft_service.py tests/test_notify002_mandate_data_blockers.py 2>&1 | tail -20
+/Users/maybee/TradingAgents-AShare/.venv/bin/python: No module named flake8
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m py_compile tradingagents/tradeflow/notification_draft.py api/services/notification_draft_service.py tests/test_notify002_mandate_data_blockers.py && echo "compile ok" && python -c "import ast; ast.parse(open('tradingagents/tradeflow/notification_draft.py').read()); print('ast ok')"
+compile ok
+ast ok
+[0m
+我来检查一下项目的 lint 设置：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && cat pyproject.toml 2>/dev/null | head -40; ls Makefile 2>/dev/null && grep -E "lint|check|ruff|flake" Makefile 2>/dev/null | head
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tradingagents"
+version = "0.2.0"
+description = "TradingAgents: Multi-Agents LLM Financial Trading Framework"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "langchain-core>=0.3.81",
+    "langchain-anthropic>=0.3.15",
+    "langchain-experimental>=0.3.4",
+    "langchain-google-genai>=2.1.5",
+    "langchain-openai>=0.3.23",
+    "langgraph>=0.4.8",
+    "langgraph-checkpoint-sqlite>=3.0.3",
+    "pandas>=2.3.0",
+    "rank-bm25>=0.2.2",
+    "requests>=2.32.4",
+    "setuptools>=80.9.0",
+    "stockstats>=0.6.5",
+    "typing-extensions>=4.14.0",
+    "yfinance>=0.2.63",
+    "akshare>=1.16.80",
+    "baostock>=0.9.1",
+    "fastapi>=0.116.1",
+    "python-multipart>=0.0.18",
+    "uvicorn>=0.35.0",
+    "sqlalchemy>=2.0.48",
+    "PyJWT>=2.11.0",
+    "cryptography>=45.0.3",
+    "json-repair>=0.44.0",
+    "markdown>=3.7",
+    "redis[hiredis]>=5.0.0",
+]
+
+[project.scripts]
+tradingagents = "cli.main:app"
+[0m
+未配置 linter。编译和 AST 检查已通过。现在让我更新任务跟踪和 DEVLOG。首先，让我运行更广泛的相关测试，以确认没有发生其他回归：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/ -q -k "notify or ic_ta or tracking_board or observation_state" 2>&1 | tail -12
+........................................................................ [ 39%]
+........................................................................ [ 79%]
+......................................                                   [100%]
+182 passed, 6767 deselected in 26.14s
+[0m
+[0m# [0mTodos
+[✓] Add mandate_daily_digest + data_blocker_digest builders to notification_draft.py engine
+[✓] Wire digests into build_notification_drafts_from_context + render functions
+[✓] Surface digests in notification_draft_service.py payload
+[✓] Write test_notify002_mandate_data_blockers.py
+[•] Run tests + lint, update DEVLOG.md
+[0m
+182 个相关测试已全部通过。现在我来更新 DEVLOG 并将任务状态更新为“已完成”：
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,114 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-26 | NOTIFY-002 飞书/通知草稿接入昊天日报与数据缺口摘要
++
++- **执行者**：OpenCode
++- **类型**：feature
++- **状态**：✅ 完成（待提交）
++- **优先级**：P2
++- **代码标注**：`# [NOTIFY-002] notification_mandate_data_blockers`
++
++### 背景
++
++TRACK-NOTIFY-001 已完成通知草稿 payload 与去噪规则，IC-TA-002 也已把 H-015 昊天
++日报和 DATA-021 数据缺口接入 investment-controller 上下文。但通知草稿只输出
++"候选数量 / 持仓风险 / 观察仓状态"等单标的单事件，用户早上 / 盘后打开日报时看不到
++**主题重心**（哪些政策主题在升温、主候选是谁）和**数据风险**（哪些数据源最近失败
++最多、哪些标的的 TA 报告因缺口不可信），只能看到一堆零散的候选条目。
++
++NOTIFY-002 在 TRACK-NOTIFY-001 之上，把 IC-TA-002 的两个顶层 bucket 压缩成两个
++结构化摘要并接入通知草稿，让日报一眼看到主题重心与数据风险。
++
++### 设计要点
++
++1. **两个顶层摘要字段**（供 investment-controller 直接读取）：
++   - `mandate_daily_digest`：升温主题（top 3）、主候选（top 3）、证据缺口、
++     一句话摘要。仅在 mandate report `data_status=fresh` 时 `available=True`。
++   - `data_blocker_digest`：失败最多字段（按次数倒序 top 5）、受影响标的（top 5）、
++     summary_level（ok/warning）、一句话摘要。仅在存在 severe 缺口
++     （`query_failed`/`field_missing`）时生成草稿，扫描干净不刷屏。
++
++2. **两条 P2 日报草稿**（进入 `daily_digest` 通道，绝不进 `intraday_push`）：
++   - 昊天日报摘要草稿：`record_only=False`（主题重心是可规划信息，进日报主体）。
++   - 数据缺口摘要草稿：`record_only=True`（缺口是事实陈述，进"仅记录"区）。
++   - 去噪规则：两条摘要都走 P2 → `daily_digest`；数据缺口草稿 `record_only=True`
++     不进盘中提醒；普通正常无数据 / 扫描干净不生成草稿。
++
++3. **markdown 预览新增两个独立摘要区块**：放在日报区之前，突出主题重心与数据风险，
++   分别由 `_render_mandate_digest_section` / `_render_data_blocker_digest_section`
++   渲染（升温主题 / 主候选 / 证据缺口 / 失败字段 / 受影响标的）。
++
++### 去噪语义对齐（验收点 3）
++
++| 场景 | 优先级 | 通道 | record_only |
++|------|--------|------|-------------|
++| 昊天日报摘要（有升温主题/主候选） | P2 | daily_digest | False |
++| 数据缺口摘要（有 severe 缺口） | P2 | daily_digest | True |
++| 数据缺口摘要（扫描干净） | — | 不生成草稿 | — |
++| 数据缺口摘要（无报告/missing） | — | 不生成草稿 | — |
++| 昊天日报摘要（无日报/missing） | — | 不生成草稿 | — |
++
++只有候选触发（观察仓 in_entry_zone 等）和 P0/P1 数据失败才进入 `intraday_push`
++（已由 TRACK-NOTIFY-001 覆盖），普通正常无数据只进日报。
++
++### 变更
++
++- `tradingagents/tradeflow/notification_draft.py`
++  - 新增 `build_mandate_daily_digest(mandate_bucket)`：从 IC-TA-002
++    `mandate_daily_report` bucket 压缩摘要，返回稳定结构（`available`/
++    `top_rising_topics`/`top_main_candidates`/`evidence_gaps`/`summary_text`）。
++    缺失/failed bucket 返回 `available=False` 空壳。
++  - 新增 `build_data_blocker_digest(blockers_bucket)`：从
++    `recent_report_data_blockers` bucket 压缩摘要，返回稳定结构（`available`/
++    `has_blockers`/`top_failed_fields`/`affected_symbols`/`summary_text`）。
++    字段按失败次数倒序取 top 5。
++  - 新增 `_build_mandate_digest_draft(digest, as_of)`：摘要可用时生成一条 P2
++    日报草稿（`EVENT_MANDATE_DAILY_DIGEST`，`record_only=False`）。
++  - 新增 `_build_data_blocker_digest_draft(digest, as_of)`：存在 severe 缺口时
++    生成一条 P2 record_only 草稿（`EVENT_DATA_BLOCKER_DIGEST`）。
++  - `build_notification_drafts_from_context`：在原有五个 bucket 草稿之后，
++    额外构建两个摘要 + 两条摘要草稿，统一走强动作词自检。
++  - `render_drafts_markdown`：新增可选 kwargs `mandate_digest` /
++    `data_blocker_digest`，在日报区前渲染两个独立摘要区块。
++  - 新增 `_render_mandate_digest_section` / `_render_data_blocker_digest_section`
++    渲染辅助（升温主题 / 主候选 / 证据缺口 / 失败字段 / 受影响标的）。
++  - 新增事件常量 `EVENT_MANDATE_DAILY_DIGEST` / `EVENT_DATA_BLOCKER_DIGEST`，
++    并加入 `__all__`。
++
++- `api/services/notification_draft_service.py`
++  - `build_notification_dry_run`：在合成草稿后额外构建两个顶层摘要，作为
++    `mandate_daily_digest` / `data_blocker_digest` 顶层字段返回；并传入
++    `render_drafts_markdown` 渲染独立摘要区块。
++  - `context_data_status` 额外透传 `mandate_daily_report` /
++    `recent_report_data_blockers` 的 data_status，便于 investment-controller 判断。
++
++- `tests/test_notify002_mandate_data_blockers.py`（新增）
++  - 32 条测试覆盖：摘要构建（fresh/missing/failed/None/cap）、草稿生成
++    （去噪规则、record_only、通道分类、禁用词）、markdown 渲染（区块出现/跳过）、
++    service 端到端（顶层字段、markdown 区块、去重、dry_run 不变）。
++
++- `tests/test_track_notify001_notification_draft.py`
++  - `test_empty_state_payload_is_stable`：新增 monkeypatch 隔离仓库自带的
++    mandate report，保证空状态路径在 NOTIFY-002 接入后仍可独立验证。
++
++### 测试
++
++- `pytest tests/test_notify002_mandate_data_blockers.py -q` → 32 passed
++- `pytest tests/test_track_notify001_notification_draft.py tests/test_ic_ta002_controller_context_tradeflow_report.py tests/test_notify002_mandate_data_blockers.py -q` → 83 passed
++- `pytest tests/ -q -k "notify or ic_ta or tracking_board or observation_state"` → 182 passed
++
++### 风险点
++
++- 仓库自带 saved mandate report 会使空状态 service 测试产生 mandate 摘要草稿，
++  已通过 monkeypatch 隔离（仅测试层）。
++- 两个摘要草稿复用 `NotificationDeduplicator`，去重 key 为空 symbol +
++  事件类型，跨调用 30 分钟窗口内不重复。
++
++---
++
+ ## 2026-06-26 | TF-REVIEW-005 盘后 Review 归因接入观察信号与模拟账本
+ 
+ - **执行者**：OpenCode
+ - **类型**：feature
+
+[0m
+现在让我更新 TASKS.md，将 NOTIFY-002 标记为已完成。首先，让我查看队列中的条目和任务详情：
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -130,9 +130,9 @@
+ 104. `AUTO-003`：任务建议去重与已完成任务过滤（P1，ready，修复 M-012 误把 done/blocked-resolved 任务重复建议）。
+ 105. `REPORT-UX-001`：TA 报告“数据不足观察”端到端回放验收（P1，ready，依赖 DATA-021 ✓）。
+   106. `IC-TA-002`：investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1，done，依赖 IC-TA-001/DATA-021/H-015 ✓）。
+ 107. `V-010`：小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口（P1，done，依赖 V-009/DATA-021/H-015 ✓）。
+-108. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2，ready，依赖 TRACK-NOTIFY-001/H-015/DATA-021 ✓）。
++108. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2，done — NOTIFY-002-20260626-214133，依赖 TRACK-NOTIFY-001/H-015/DATA-021 ✓）。
+ 109. `DATA-022`：主力资金/龙虎榜失败矩阵 fixture 回放（P1，done，依赖 DATA-021/DATA-017 ✓）。
+ 110. `TF-OBS-005`：非交易日候选计划到下一交易日观察语义回归（P1，done，依赖 TF-OBS-004 ✓）。
+  111. `TRACK-008`：观察仓批量导入/导出 CSV 与去重合并（P1，done，依赖 TRACK-001/TRACK-003 ✓）。
+ 112. `REPORT-UX-002`：历史报告动作语义与数据缺口只读迁移预检（P1，ready，依赖 DECISION-004/DATA-021 ✓）。
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -3836,9 +3836,9 @@
+ 
+ ### NOTIFY-002: 飞书/通知草稿接入昊天日报与数据缺口摘要（P2）
+ - **描述**：TRACK-NOTIFY-001 已完成通知草稿 payload 与去噪规则。本任务把 H-015 昊天日报和 DATA-021 数据缺口纳入通知草稿，让用户早上/盘后能看到主题重心与数据风险，而不是只看到候选数量。
+ - **优先级**：P2
+-- **状态**：in_progress — claimed NOTIFY-002-20260626-214133
++- **状态**：done — NOTIFY-002-20260626-214133
+ - **前置条件**：TRACK-NOTIFY-001、H-015、DATA-021 完成。
+ - **执行约束**：
+   - dry-run 生成草稿，不真实发送飞书。
+   - P2/P3 信息只进日报，不触发盘中强提醒。
+
+[0m
+现在让我运行最后一次全面的测试，以确认一切测试均已通过：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_notify002_mandate_data_blockers.py tests/test_track_notify001_notification_draft.py tests/test_ic_ta001_investment_controller_context.py tests/test_ic_ta002_controller_context_tradeflow_report.py -v 2>&1 | tail -50
+tests/test_ic_ta001_investment_controller_context.py::TestSourceAndAsOfContract::test_bucket_level_source_and_as_of PASSED [ 60%]
+tests/test_ic_ta001_investment_controller_context.py::TestSourceAndAsOfContract::test_holdings_items_carry_source_and_as_of PASSED [ 61%]
+tests/test_ic_ta001_investment_controller_context.py::TestDataStatusContract::test_all_statuses_in_allowed_set PASSED [ 61%]
+tests/test_ic_ta001_investment_controller_context.py::TestDataStatusContract::test_holdings_without_quotes_on_trading_day_is_stale_or_skipped PASSED [ 62%]
+tests/test_ic_ta001_investment_controller_context.py::TestDataStatusContract::test_holdings_without_quotes_on_non_trading_day_is_skipped PASSED [ 63%]
+tests/test_ic_ta001_investment_controller_context.py::TestDataStatusContract::test_holdings_with_quotes_is_fresh PASSED [ 64%]
+tests/test_ic_ta001_investment_controller_context.py::TestAggregation::test_observation_items_surface_in_context PASSED [ 65%]
+tests/test_ic_ta001_investment_controller_context.py::TestAggregation::test_ta_reports_attached_to_holdings PASSED [ 66%]
+tests/test_ic_ta001_investment_controller_context.py::TestAggregation::test_pending_ta_required_includes_observation_items PASSED [ 66%]
+tests/test_ic_ta001_investment_controller_context.py::TestAggregation::test_runtime_tier_is_fast_radar PASSED [ 67%]
+tests/test_ic_ta001_investment_controller_context.py::TestAggregation::test_endpoint_registered_as_fast PASSED [ 68%]
+tests/test_ic_ta001_investment_controller_context.py::TestGracefulDegradation::test_tradeflow_db_missing_does_not_raise PASSED [ 69%]
+tests/test_ic_ta001_investment_controller_context.py::TestGracefulDegradation::test_failed_quotes_do_not_break_holdings PASSED [ 70%]
+tests/test_ic_ta001_investment_controller_context.py::TestGracefulDegradation::test_serializable_to_json PASSED [ 71%]
+tests/test_ic_ta001_investment_controller_context.py::TestReadOnlySafetyContract::test_no_strong_action_verb_synthesised[\u7acb\u5373\u4e70\u5165] PASSED [ 72%]
+tests/test_ic_ta001_investment_controller_context.py::TestReadOnlySafetyContract::test_no_strong_action_verb_synthesised[\u7acb\u5373\u5356\u51fa] PASSED [ 72%]
+tests/test_ic_ta001_investment_controller_context.py::TestReadOnlySafetyContract::test_no_strong_action_verb_synthesised[\u6ee1\u4ed3] PASSED [ 73%]
+tests/test_ic_ta001_investment_controller_context.py::TestReadOnlySafetyContract::test_no_strong_action_verb_synthesised[\u6e05\u4ed3] PASSED [ 74%]
+tests/test_ic_ta001_investment_controller_context.py::TestReadOnlySafetyContract::test_no_strong_action_verb_synthesised[\u5168\u4ed3] PASSED [ 75%]
+tests/test_ic_ta001_investment_controller_context.py::TestReadOnlySafetyContract::test_no_sensitive_field_keys PASSED [ 76%]
+tests/test_ic_ta001_investment_controller_context.py::TestReadOnlySafetyContract::test_no_credential_string_in_values PASSED [ 77%]
+tests/test_ic_ta001_investment_controller_context.py::TestHoldingsIsolation::test_observation_items_not_in_holdings PASSED [ 77%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestNewBucketsPresence::test_new_buckets_always_present PASSED [ 78%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestNewBucketsPresence::test_mandate_report_empty_state PASSED [ 79%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestNewBucketsPresence::test_report_blockers_empty_state PASSED [ 80%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestNewBucketsPresence::test_controller_hints_empty_state PASSED [ 81%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestNewBucketsPresence::test_new_buckets_carry_source_and_as_of PASSED [ 82%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestNewBucketsPresence::test_new_buckets_data_status_in_allowed_set PASSED [ 83%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestRecentReportDataBlockers::test_severe_blockers_aggregated_from_stored_data PASSED [ 83%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestRecentReportDataBlockers::test_field_missing_also_counts_as_severe PASSED [ 84%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestRecentReportDataBlockers::test_clean_reports_yield_no_affected_symbols PASSED [ 85%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestRecentReportDataBlockers::test_legacy_report_without_stored_blockers_is_derived PASSED [ 86%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestRecentReportDataBlockers::test_only_most_recent_reports_scanned PASSED [ 87%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestControllerHints::test_ta_required_observation_appears_in_needs_ta PASSED [ 88%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestControllerHints::test_watching_observation_goes_to_daily_report_only PASSED [ 88%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestControllerHints::test_severe_blockers_surface_in_suppress_push PASSED [ 89%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestControllerHints::test_hint_entries_carry_source_and_as_of PASSED [ 90%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestReadOnlyAndSafety::test_runtime_tier_unchanged_fast_radar PASSED [ 91%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestReadOnlyAndSafety::test_aggregation_does_not_write_db PASSED [ 92%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestReadOnlyAndSafety::test_no_strong_action_verb_in_synthesised_fields[\u7acb\u5373\u4e70\u5165] PASSED [ 93%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestReadOnlyAndSafety::test_no_strong_action_verb_in_synthesised_fields[\u7acb\u5373\u5356\u51fa] PASSED [ 94%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestReadOnlyAndSafety::test_no_strong_action_verb_in_synthesised_fields[\u6ee1\u4ed3] PASSED [ 94%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestReadOnlyAndSafety::test_no_strong_action_verb_in_synthesised_fields[\u6e05\u4ed3] PASSED [ 95%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestReadOnlyAndSafety::test_no_strong_action_verb_in_synthesised_fields[\u5168\u4ed3] PASSED [ 96%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestReadOnlyAndSafety::test_no_sensitive_field_keys PASSED [ 97%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestReadOnlyAndSafety::test_payload_is_json_serializable PASSED [ 98%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestGracefulDegradation::test_tradeflow_db_missing_does_not_raise PASSED [ 99%]
+tests/test_ic_ta002_controller_context_tradeflow_report.py::TestGracefulDegradation::test_mandate_report_failure_degrades_to_failed PASSED [100%]
+
+============================= 118 passed in 20.39s =============================
+[0m
+[0m# [0mTodos
+[✓] Add mandate_daily_digest + data_blocker_digest builders to notification_draft.py engine
+[✓] Wire digests into build_notification_drafts_from_context + render functions
+[✓] Surface digests in notification_draft_service.py payload
+[✓] Write test_notify002_mandate_data_blockers.py
+[✓] Run tests + lint, update DEVLOG.md
+[0m
+全部 118 个测试通过。让我来完成任务追踪并核实 git diff 的摘要：
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git status --short && echo "---" && git diff --stat
+M api/services/notification_draft_service.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M tests/test_track_notify001_notification_draft.py
+ M tradingagents/tradeflow/notification_draft.py
+?? docs/task_runs/NOTIFY-002-20260626-214133/
+?? tests/test_notify002_mandate_data_blockers.py
+---
+ api/services/notification_draft_service.py       |  26 +-
+ docs/DEVLOG.md                                   | 106 ++++++
+ docs/TASKS.md                                    |   4 +-
+ tests/test_track_notify001_notification_draft.py |   8 +-
+ tradingagents/tradeflow/notification_draft.py    | 405 ++++++++++++++++++++++-
+ 5 files changed, 544 insertions(+), 5 deletions(-)
+[0m
+NOTIFY-002 已实现完成。
+
+## 变更文件
+
+- `tradingagents/tradeflow/notification_draft.py` — 新增 `build_mandate_daily_digest` / `build_data_blocker_digest` 两个纯函数摘要构建器，`_build_mandate_digest_draft` / `_build_data_blocker_digest_draft` 两条 P2 草稿生成器，wire 进 `build_notification_drafts_from_context`；`render_drafts_markdown` 新增 `mandate_digest` / `data_blocker_digest` kwargs + 两个独立摘要区块渲染辅助。
+- `api/services/notification_draft_service.py` — `build_notification_dry_run` 产出 `mandate_daily_digest` / `data_blocker_digest` 顶层字段并传入 markdown 渲染；`context_data_status` 透传两个新 bucket 的 data_status。
+- `tests/test_notify002_mandate_data_blockers.py`（新增）— 32 条测试。
+- `tests/test_track_notify001_notification_draft.py` — 空状态测试 monkeypatch 隔离仓库自带 mandate report。
+- `docs/DEVLOG.md` / `docs/TASKS.md` — 更新。
+
+## 核心逻辑
+
+两个摘要都只进 `daily_digest`（P2），不进 `intraday_push`：昊天日报摘要 `record_only=False`（主题重心可规划），数据缺口摘要 `record_only=True`（事实陈述）。去噪规则：仅 P0/P1 数据失败或候选触发进入即时草稿；扫描干净 / 无报告 / 无日报均不生成草稿，避免刷屏。
+
+## 测试结果
+
+- `test_notify002_mandate_data_blockers.py`：**32 passed**
+- NOTIFY-002 + TRACK-NOTIFY-001 + IC-TA-001/002 联合：**118 passed**
+- 广泛回归（notify/ic_ta/tracking_board/observation_state）：**182 passed**
