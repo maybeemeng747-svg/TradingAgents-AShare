@@ -129,7 +129,7 @@
 103. `TF-PERSIST-001`：TradeFlow save_candidate 分项评分持久化补口（P2，done — commit 0016a92 + 2257f32）。
 104. `AUTO-003`：任务建议去重与已完成任务过滤（P1，ready，修复 M-012 误把 done/blocked-resolved 任务重复建议）。
 105. `REPORT-UX-001`：TA 报告“数据不足观察”端到端回放验收（P1，ready，依赖 DATA-021 ✓）。
-106. `IC-TA-002`：investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1，ready，依赖 IC-TA-001/DATA-021/H-015 ✓）。
+  106. `IC-TA-002`：investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1，done，依赖 IC-TA-001/DATA-021/H-015 ✓）。
 107. `V-010`：小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口（P1，ready，依赖 V-009/DATA-021/H-015 ✓）。
 108. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2，ready，依赖 TRACK-NOTIFY-001/H-015/DATA-021 ✓）。
 109. `DATA-022`：主力资金/龙虎榜失败矩阵 fixture 回放（P1，ready，依赖 DATA-021/DATA-017 ✓）。
@@ -3797,7 +3797,7 @@
 ### IC-TA-002: investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1）
 - **描述**：investment-controller v5 的职责是 TA 调度官/飞书播报官。当前只读上下文需要继续纳入 H-015 昊天主题日报和 DATA-021 报告数据缺口，帮助它决定“是否值得让 TA 出手”和“推送什么”。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — IC-TA-002-20260626-191456
 - **前置条件**：IC-TA-001、DATA-021、H-015 完成。
 - **执行约束**：
   - 只读上下文，不触发 TA、不写交易动作。

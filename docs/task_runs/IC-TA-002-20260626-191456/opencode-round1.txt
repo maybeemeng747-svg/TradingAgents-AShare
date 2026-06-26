@@ -1,0 +1,1083 @@
+[0m
+> build · glm-5.2
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "IC-TA-002"[90m in docs/TASKS.md · 7 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [limit=160, offset=3790][0m
+[0m✱ [0mGrep "investment_controller_context"[90m 595 matches[0m
+Now let me explore the existing IC-TA-001 implementation and relevant dependencies.
+Let me read the existing investment_controller_context service and related services.
+[0m→ [0mRead api/services/investment_controller_context.py
+Now let me find the H-015 mandate daily report and DATA-021 data_blockers services.
+[0m✱ [0mGrep "mandate.?daily.?report|mandate_daily_report"[90m 43 matches[0m
+[0m✱ [0mGrep "data_blocker|build_data_blockers|recent_report_data_blockers"[90m 85 matches[0m
+[0m→ [0mRead tradingagents/tradeflow/mandate_daily_report.py
+Let me read the key service modules for mandate report and data blockers.
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=90, offset=3130][0m
+Let me read the readiness_score data_blockers section and report_service.
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=120, offset=1490][0m
+Let me look at how reports are queried and the test for IC-TA-001.
+[0m✱ [0mGrep "def _select_reports_for_symbols|def list_recent_reports|def get_recent_reports"[90m 1 match[0m
+[0m→ [0mRead api/services/tracking_board_service.py[90m [limit=200, offset=100][0m
+[0m→ [0mRead api/services/report_service.py[90m [limit=230][0m
+Now let me look at the report_service and ReportDB model to understand how to query recent reports.
+Let me look at how reports are listed and the ReportDB model.
+[0m✱ [0mGrep "def get_reports|def list_reports|def get_user_reports|query\(ReportDB\).*order_by"[90m in api · 2 matches[0m
+[0m→ [0mRead api/services/report_service.py[90m [limit=110, offset=700][0m
+[0m→ [0mRead tests/test_ic_ta001_investment_controller_context.py
+Let me read the existing IC-TA-001 test file to understand the test patterns.
+[0m→ [0mRead api/main.py[90m [limit=35, offset=4604][0m
+Let me look at the IC-TA-001 endpoint in main.py and the topic_heatmap function.
+[0m✱ [0mGrep "def get_topic_heatmap"[90m 1 match[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=60, offset=3036][0m
+Let me check the ReportDB model and how result_data is stored.
+[0m✱ [0mGrep "class ReportDB|result_data"[90m in api/database.py · 3 matches[0m
+[0m→ [0mRead api/database.py[90m [limit=75, offset=364][0m
+Let me check git status and review a DATA-021 test for fixture patterns.
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && git status && git log --oneline -5
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 166 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     docs/TASKS.md
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/task_runs/IC-TA-002-20260626-191456/
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+6158a23 docs: mark REPORT-UX-001 done after auto run
+b0f4c9c auto: REPORT-UX-001 TA 报告“数据不足观察”端到端回放验收（P1） [AUTO-002]
+59a7db0 docs(tasks): expand ready task backlog
+e0948c2 docs(tasks): release next ready queue
+2257f32 docs: mark TF-PERSIST-001 done after auto run
+[0m
+[0m→ [0mRead tests/test_data021_report_data_blockers.py[90m [limit=120][0m
+[0m
+[0m# [0mTodos
+[•] Extend investment_controller_context.py with mandate_daily_report + recent_report_data_blockers buckets and controller_hints
+[ ] Add IC-TA-002 test file covering new buckets, controller_hints, read-only and safety contracts
+[ ] Run pytest + verify no regressions
+[ ] Update docs/DEVLOG.md and docs/TASKS.md status
+[0m
+I have enough context. Let me set up a task list and start implementing.
+Now let me implement the changes to the investment_controller_context service.
+[0m← [0mEdit api/services/investment_controller_context.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
++++ /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+@@ -1,17 +1,32 @@
+ # [IC-TA-001] investment_controller_context
++# [IC-TA-002] controller_context_tradeflow_report
+ """Read-only context pack for the investment-controller.
+ 
+-Aggregates six stable buckets that the investment-controller (the external
++Aggregates the stable buckets that the investment-controller (the external
+ pre/open/post-market scheduler) needs as input:
+ 
++IC-TA-001 (six core buckets):
+     1. holdings snapshot          - real imported portfolio positions
+     2. observation warehouse      - symbols awaiting entry confirmation
+     3. TradeFlow latest candidates- latest candidate pool summary
+     4. latest TA report summary   - most recent completed TA report per symbol
+     5. data health summary        - TradeFlow DB freshness + source availability
+     6. pending TA required items  - observation items + candidates flagged for TA
+ 
++IC-TA-002 (mandate radar + report data gaps):
++    7. mandate daily report       - H-015 昊天主题日报 digest (rising/cooling
++                                    topics, main/observation candidates,
++                                    evidence gaps). Read-only, no network call.
++    8. recent report data blockers- DATA-021 field-level query_failed /
++                                    field_missing aggregation across the user's
++                                    most recent TA reports.
++    + controller_hints            - soft scheduling hints derived from the
++                                    buckets above: which symbols need TA, which
++                                    only enter the daily report, and which
++                                    should not be pushed because data is
++                                    insufficient.
++
+ Design contract (see docs/TASKS.md IC-TA-001):
+ 
+     * READ-ONLY. No state writes, no TA/LLM triggers, no notifications.
+     * Every bucket entry carries ``source`` + ``as_of``.
+
+[0m
+Now let me update the `get_investment_controller_context` function to add the two new buckets and controller_hints:
+[0m← [0mEdit api/services/investment_controller_context.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
++++ /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+@@ -136,8 +136,26 @@
+ pending_ta = _collect_pending_ta_required(
+     as_of, tf_db_path, candidates.get("trade_date"), notes
+ )
+ 
++# --- Bucket 7 (IC-TA-002): mandate daily report ---
++mandate_report = _collect_mandate_daily_report(as_of, notes)
++
++# --- Bucket 8 (IC-TA-002): recent report data blockers ---
++report_blockers = _collect_recent_report_data_blockers(
++    db, user_id, as_of, notes
++)
++
++# --- Controller hints (IC-TA-002): soft scheduling hints ---
++controller_hints = _build_controller_hints(
++    as_of,
++    observation=observation,
++    pending_ta=pending_ta,
++    mandate_report=mandate_report,
++    report_blockers=report_blockers,
++    notes=notes,
++)
++
+ return {
+     "schema_version": CONTEXT_SCHEMA_VERSION,
+     "as_of": as_of,
+     "previous_trade_date": previous_trade_date,
+@@ -149,8 +167,11 @@
+     "tradeflow_candidates": candidates,
+     "latest_ta_reports": ta_reports,
+     "data_health": data_health,
+     "pending_ta_required": pending_ta,
++    "mandate_daily_report": mandate_report,  # [IC-TA-002]
++    "recent_report_data_blockers": report_blockers,  # [IC-TA-002]
++    "controller_hints": controller_hints,  # [IC-TA-002]
+     "notes": notes,
+     "runtime_tier_meta": _tradeflow_meta("investment_controller_context"),
+ }
+ 
+
+[0m
+Now let me add the new collector functions and the controller_hints builder. Let me insert them before the Helpers section:
+[0m← [0mEdit api/services/investment_controller_context.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
++++ /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+@@ -541,8 +541,333 @@
+     }
+ 
+ 
+ # ──────────────────────────────────────────────────────────────────────────────
++# Bucket 7 (IC-TA-002): mandate daily report
++# ──────────────────────────────────────────────────────────────────────────────
++
++def _collect_mandate_daily_report(
++    as_of: str, notes: list[str]
++) -> dict[str, Any]:
++    """H-015 mandate daily report digest (read-only, no network call).
++
++    Delegates to ``tradeflow_service.get_mandate_daily_report`` which either
++    reads the latest saved report JSON from disk or rebuilds it from the
++    topic heatmap (heatmap only reads the tradeflow SQLite). Never writes,
++    never hits the network.
++    """
++    try:
++        from api.services.tradeflow_service import get_mandate_daily_report
++        report = get_mandate_daily_report(as_of="", save_report=False)
++    except Exception as exc:
++        logger.warning("[ic-ta-002] mandate daily report lookup failed: %s", exc)
++        return _empty_bucket("mandate_daily_report", as_of, DATA_STATUS_FAILED)
++
++    if not isinstance(report, dict) or report.get("status") == "no_data":
++        notes.append("mandate_daily_report: no mandate report available yet")
++        return _empty_bucket("mandate_daily_report", as_of, DATA_STATUS_MISSING)
++
++    rising = report.get("rising_topics", []) or []
++    cooling = report.get("cooling_topics", []) or []
++    main_candidates = report.get("main_candidates", []) or []
++    observation_candidates = report.get("observation_candidates", []) or []
++    evidence_gaps = report.get("evidence_gaps", []) or []
++
++    digest = {
++        "source": "mandate_daily_report",
++        "as_of": as_of,
++        "report_as_of": report.get("as_of") or "",
++        "data_status": DATA_STATUS_FRESH,
++        "rising_topic_count": len(rising),
++        "cooling_topic_count": len(cooling),
++        "main_candidate_count": len(main_candidates),
++        "observation_candidate_count": len(observation_candidates),
++        "evidence_gap_count": len(evidence_gaps),
++        # Slimmed topic/candidate digests (facts only, no trade verbs).
++        "rising_topics": [
++            {
++                "topic": t.get("topic", ""),
++                "status_label": t.get("status_label", ""),
++                "heat_trend_label": t.get("heat_trend_label", ""),
++                "candidate_count": t.get("candidate_count", 0),
++            }
++            for t in rising[:5]
++        ],
++        "cooling_topics": [
++            {
++                "topic": t.get("topic", ""),
++                "status_label": t.get("status_label", ""),
++                "heat_trend_label": t.get("heat_trend_label", ""),
++            }
++            for t in cooling[:5]
++        ],
++        "main_candidates": [
++            {
++                "symbol": c.get("symbol", ""),
++                "name": c.get("name", ""),
++                "topic": c.get("topic", ""),
++                "candidate_type": c.get("candidate_type", ""),
++                "mandate_score": c.get("mandate_score"),
++                "entry_reason": c.get("entry_reason", ""),
++            }
++            for c in main_candidates[:8]
++        ],
++        "observation_candidates": [
++            {
++                "symbol": c.get("symbol", ""),
++                "name": c.get("name", ""),
++                "topic": c.get("topic", ""),
++                "mandate_score": c.get("mandate_score"),
++            }
++            for c in observation_candidates[:12]
++        ],
++        "evidence_gaps": list(evidence_gaps[:12]),
++    }
++    return digest
++
++
++# ──────────────────────────────────────────────────────────────────────────────
++# Bucket 8 (IC-TA-002): recent report data blockers
++# ──────────────────────────────────────────────────────────────────────────────
++
++# How many recent completed reports to scan for data blockers. Kept small so
++# the controller context stays inside the FAST_RADAR latency budget.
++_RECENT_REPORT_SCAN_LIMIT = 10
++# Blocker statuses that constitute a real data gap (severe). Everything else
++# (normal_no_data / skipped / not_queried) is informational, not a blocker.
++_SEVERE_BLOCKER_STATUSES = frozenset({"query_failed", "field_missing"})
++
++
++def _collect_recent_report_data_blockers(
++    db: Session,
++    user_id: str,
++    as_of: str,
++    notes: list[str],
++) -> dict[str, Any]:
++    """DATA-021 aggregation: query_failed / field_missing across recent reports.
++
++    Scans the user's most recent completed reports and aggregates the severe
++    field-level data blockers. Read-only: never writes, derives blockers from
++    stored ``result_data`` (re-running ``attach_report_data_blockers`` when the
++    report predates DATA-021).
++    """
++    try:
++        from api.database import ReportDB
++        from sqlalchemy.orm import load_only
++        rows = (
++            db.query(ReportDB)
++            .options(load_only(
++                ReportDB.id,
++                ReportDB.symbol,
++                ReportDB.trade_date,
++                ReportDB.status,
++                ReportDB.action_label,
++                ReportDB.research_direction,
++                ReportDB.created_at,
++                ReportDB.result_data,
++            ))
++            .filter(
++                ReportDB.user_id == user_id,
++                ReportDB.status == "completed",
++            )
++            .order_by(ReportDB.created_at.desc())
++            .limit(_RECENT_REPORT_SCAN_LIMIT)
++            .all()
++        )
++    except Exception as exc:
++        logger.warning("[ic-ta-002] recent report scan failed: %s", exc)
++        return _empty_bucket("recent_report_data_blockers", as_of, DATA_STATUS_FAILED)
++
++    if not rows:
++        notes.append("recent_report_data_blockers: no completed reports yet")
++        return _empty_bucket("recent_report_data_blockers", as_of, DATA_STATUS_MISSING)
++
++    from api.services.report_service import attach_report_data_blockers
++
++    affected_symbols: list[dict[str, Any]] = []
++    field_counts: dict[str, int] = {}
++    total_severe = 0
++    scanned = 0
++
++    for row in rows:
++        scanned += 1
++        result_data = getattr(row, "result_data", None)
++        if not isinstance(result_data, dict):
++            continue
++        # Use stored blockers when present (post-DATA-021), otherwise derive
++        # a read-only enriched copy without mutating the ORM row.
++        blockers = result_data.get("data_blockers")
++        if not isinstance(blockers, list):
++            enriched = attach_report_data_blockers(dict(result_data))
++            blockers = enriched.get("data_blockers") if isinstance(enriched, dict) else []
++
++        severe_here = [
++            b for b in (blockers or [])
++            if isinstance(b, dict) and b.get("status") in _SEVERE_BLOCKER_STATUSES
++        ]
++        if not severe_here:
++            continue
++
++        total_severe += len(severe_here)
++        field_keys = sorted({str(b.get("key", "")) for b in severe_here if b.get("key")})
++        for key in field_keys:
++            field_counts[key] = field_counts.get(key, 0) + 1
++        affected_symbols.append({
++            "symbol": row.symbol,
++            "report_id": row.id,
++            "trade_date": row.trade_date,
++            "severe_count": len(severe_here),
++            "fields": field_keys,
++            "action_label": row.action_label or "",
++            "research_direction": row.research_direction or "",
++        })
++
++    summary_level = "warning" if affected_symbols else "ok"
++
++    data_status = DATA_STATUS_FRESH if affected_symbols else (
++        DATA_STATUS_FRESH if scanned else DATA_STATUS_MISSING
++    )
++    # When reports exist but none carry severe blockers, the bucket is still
++    # "fresh" (we successfully confirmed there are no data gaps) — surface a
++    # note so the controller can tell "scanned & clean" apart from "no data".
++    if not affected_symbols:
++        notes.append(
++            f"recent_report_data_blockers: scanned {scanned} report(s), no severe gaps"
++        )
++
++    return {
++        "source": "recent_report_data_blockers",
++        "as_of": as_of,
++        "data_status": data_status,
++        "scanned_report_count": scanned,
++        "affected_report_count": len(affected_symbols),
++        "total_severe_blockers": total_severe,
++        "summary_level": summary_level,
++        "field_counts": field_counts,
++        "affected_symbols": affected_symbols,
++    }
++
++
++# ──────────────────────────────────────────────────────────────────────────────
++# Controller hints (IC-TA-002): soft scheduling guidance
++# ──────────────────────────────────────────────────────────────────────────────
++
++# Observation statuses that only justify a daily-report entry, not an active
++# push or a TA trigger.
++_DAILY_REPORT_ONLY_OBS_STATUSES = frozenset({"watching"})
++
++
++def _build_controller_hints(
++    as_of: str,
++    *,
++    observation: dict[str, Any],
++    pending_ta: dict[str, Any],
++    mandate_report: dict[str, Any],
++    report_blockers: dict[str, Any],
++    notes: list[str],
++) -> dict[str, Any]:
++    """Derive soft scheduling hints from the already-collected buckets.
++
++    Three lanes (facts only, no trade verbs):
++        - ``needs_ta``: observation/candidate symbols flagged for deep TA.
++        - ``daily_report_only``: soft items that only enter the daily digest
++          (passive observation + mandate observation candidates).
++        - ``suppress_push_data_insufficient``: symbols whose latest report
++          carried severe data blockers — the controller should not push them
++          as confident conclusions.
++
++    The hints never carry a strong buy/sell verb; they only route attention.
++    """
++    needs_ta: list[dict[str, Any]] = []
++    seen_ta: set[str] = set()
++    for item in pending_ta.get("items", []):
++        symbol = item.get("symbol", "")
++        if not symbol or symbol in seen_ta:
++            continue
++        seen_ta.add(symbol)
++        needs_ta.append({
++            "symbol": symbol,
++            "name": item.get("name", ""),
++            "origin": item.get("origin", ""),
++            "reason": item.get("reason", ""),
++            "suggested_next_step": "consider_light_or_full_ta",
++            "source": "pending_ta_required",
++            "as_of": as_of,
++        })
++
++    daily_only: list[dict[str, Any]] = []
++    seen_daily: set[str] = set()
++    for item in observation.get("items", []):
++        symbol = item.get("symbol", "")
++        status = item.get("status", "")
++        if not symbol or symbol in seen_daily:
++            continue
++        if status in _DAILY_REPORT_ONLY_OBS_STATUSES:
++            seen_daily.add(symbol)
++            daily_only.append({
++                "symbol": symbol,
++                "name": item.get("name", ""),
++                "origin": "observation_warehouse",
++                "reason": item.get("reason", "") or "passive observation, daily digest only",
++                "suggested_next_step": "daily_report_only",
++                "source": "observation_warehouse",
++                "as_of": as_of,
++            })
++
++    # Mandate radar observation candidates are daily-digest by design.
++    mandate_ok = mandate_report.get("data_status") == DATA_STATUS_FRESH
++    if mandate_ok:
++        for cand in mandate_report.get("observation_candidates", []):
++            symbol = cand.get("symbol", "")
++            if not symbol or symbol in seen_daily:
++                continue
++            seen_daily.add(symbol)
++            daily_only.append({
++                "symbol": symbol,
++                "name": cand.get("name", ""),
++                "origin": "mandate_observation",
++                "reason": f"主题：{cand.get('topic', '') or '未知'}，观察候选",
++                "suggested_next_step": "daily_report_only",
++                "source": "mandate_daily_report",
++                "as_of": as_of,
++            })
++
++    suppress_push: list[dict[str, Any]] = []
++    seen_suppress: set[str] = set()
++    for entry in report_blockers.get("affected_symbols", []):
++        symbol = entry.get("symbol", "")
++        if not symbol or symbol in seen_suppress:
++            continue
++        seen_suppress.add(symbol)
++        suppress_push.append({
++            "symbol": symbol,
++            "name": "",
++            "origin": "recent_report_data_blockers",
++            "reason": (
++                f"最近报告存在 {entry.get('severe_count', 0)} 项关键数据缺口"
++                f"（{', '.join(entry.get('fields', [])[:3])}），不作为强结论推送"
++            ),
++            "fields": entry.get("fields", []),
++            "suggested_next_step": "suppress_push_data_insufficient",
++            "source": "recent_report_data_blockers",
++            "as_of": as_of,
++        })
++
++    has_any = bool(needs_ta or daily_only or suppress_push)
++    if not has_any:
++        notes.append("controller_hints: no routing hints derived")
++
++    return {
++        "source": "controller_hints",
++        "as_of": as_of,
++        "data_status": DATA_STATUS_FRESH if has_any else DATA_STATUS_MISSING,
++        "needs_ta": needs_ta,
++        "daily_report_only": daily_only,
++        "suppress_push_data_insufficient": suppress_push,
++    }
++
++
++# ──────────────────────────────────────────────────────────────────────────────
+ # Helpers
+ # ──────────────────────────────────────────────────────────────────────────────
+ 
+ def _empty_bucket(source: str, as_of: str, data_status: str) -> dict[str, Any]:
+
+[0m
+Now let me update the `assert_no_strong_action_verbs` helper to also cover the new buckets and `__all__`:
+[0m→ [0mRead api/services/investment_controller_context.py[90m [limit=40, offset=820][0m
+[0m→ [0mRead api/services/investment_controller_context.py[90m [limit=56, offset=860][0m
+Let me update the strong-action-verb guard to also cover the new controller-synthesised hints:
+[0m
+[0m← [0mEdit api/services/investment_controller_context.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
++++ /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+@@ -896,16 +896,28 @@
+ 
+ def assert_no_strong_action_verbs(payload: dict[str, Any]) -> None:
+     """Test helper: assert no synthesised strong action verb leaked into payload.
+ 
+-    Only checks the controller-synthesised fields (notes, data_status, source
+-    labels). TA report.decision fields are structured facts and intentionally
+-    allowed to pass through.
++    Only checks the controller-synthesised fields (notes, generated_by,
++    controller_hints reasons, mandate/blocker digests). TA report.decision
++    fields are structured facts and intentionally allowed to pass through.
+     """
+-    text = str(payload.get("notes", "")) + " " + str(payload.get("generated_by", ""))
++    chunks: list[str] = [
++        str(payload.get("notes", "")),
++        str(payload.get("generated_by", "")),
++    ]
++    # Controller-synthesised hint reasons (IC-TA-002) — never carry trade verbs.
++    hints = payload.get("controller_hints") or {}
++    if isinstance(hints, dict):
++        for lane in ("needs_ta", "daily_report_only", "suppress_push_data_insufficient"):
++            for item in hints.get(lane, []) or []:
++                if isinstance(item, dict):
++                    chunks.append(str(item.get("reason", "")))
++                    chunks.append(str(item.get("suggested_next_step", "")))
+     for pattern in _STRONG_ACTION_PATTERNS:
+-        if pattern in text:
+-            raise AssertionError(f"strong action verb leaked into context: {pattern!r}")
++        for chunk in chunks:
++            if pattern in chunk:
++                raise AssertionError(f"strong action verb leaked into context: {pattern!r}")
+ 
+ 
+ __all__ = [
+     "ALLOWED_DATA_STATUSES",
+
+[0m
+[0m→ [0mRead api/services/investment_controller_context.py[90m [limit=15, offset=919][0m
+Let me verify the full updated service reads correctly around the main function:
+[0m→ [0mRead api/services/investment_controller_context.py[90m [limit=60, offset=107][0m
+Now let me verify the observation item structure (status field) for the controller_hints logic:
+[0m✱ [0mGrep "def create_observation_item|def mark_observation_item_status"[90m 2 matches[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=80, offset=3526][0m
+Now let me write the test file for IC-TA-002:
+[0m
+[0m← [0mWrite tests/test_ic_ta002_controller_context_tradeflow_report.py
+Wrote file successfully.
+[0m
+I have a typo in one test. Let me fix it:
+[0m← [0mEdit tests/test_ic_ta002_controller_context_tradeflow_report.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_ic_ta002_controller_context_tradeflow_report.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_ic_ta002_controller_context_tradeflow_report.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_ic_ta002_controller_context_tradeflow_report.py
+@@ -481,9 +481,9 @@
+         tmp_sqla_session, "ic_user", tf_db_path=tmp_tf_db
+     )
+ 
+ from api.database import ReportDB
+-refreshed = tmp_sqla_session.get(Query=ReportDB) if False else tmp_sqla_session.query(ReportDB).filter_by(id=report_id).first()
++refreshed = tmp_sqla_session.query(ReportDB).filter_by(id=report_id).first()
+ after_summary = json.dumps(
+     refreshed.result_data["data_blocker_summary"], sort_keys=True
+ )
+ assert after_summary == original_summary
+
+[0m
+Now let me run the new tests to verify the implementation:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_ic_ta002_controller_context_tradeflow_report.py -q --tb=short 2>&1 | tail -40
+..FF......................                                               [100%]
+=================================== FAILURES ===================================
+___________ TestNewBucketsPresence.test_report_blockers_empty_state ____________
+tests/test_ic_ta002_controller_context_tradeflow_report.py:202: in test_report_blockers_empty_state
+    assert blockers["affected_symbols"] == []
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'affected_symbols'
+___________ TestNewBucketsPresence.test_controller_hints_empty_state ___________
+tests/test_ic_ta002_controller_context_tradeflow_report.py:213: in test_controller_hints_empty_state
+    assert hints["daily_report_only"] == []
+E   AssertionError: assert [{'as_of': '2...选', ...}, ...] == []
+E     
+E     Left contains 9 more items, first extra item: {'as_of': '2026-06-26 19:23:47', 'name': '中无人机', 'origin': 'mandate_observation', 'reason': '主题：低空经济，观察候选', ...}
+E     Use -v to get more diff
+=========================== short test summary info ============================
+FAILED tests/test_ic_ta002_controller_context_tradeflow_report.py::TestNewBucketsPresence::test_report_blockers_empty_state
+FAILED tests/test_ic_ta002_controller_context_tradeflow_report.py::TestNewBucketsPresence::test_controller_hints_empty_state
+2 failed, 24 passed in 17.50s
+[0m
+Two issues to fix. First, the report_blockers bucket needs a consistent shape even when empty. Let me fix the service:
+[0m← [0mEdit api/services/investment_controller_context.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
++++ /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+@@ -678,9 +678,19 @@
+     return _empty_bucket("recent_report_data_blockers", as_of, DATA_STATUS_FAILED)
+ 
+ if not rows:
+     notes.append("recent_report_data_blockers: no completed reports yet")
+-    return _empty_bucket("recent_report_data_blockers", as_of, DATA_STATUS_MISSING)
++    return {
++        "source": "recent_report_data_blockers",
++        "as_of": as_of,
++        "data_status": DATA_STATUS_MISSING,
++        "scanned_report_count": 0,
++        "affected_report_count": 0,
++        "total_severe_blockers": 0,
++        "summary_level": "ok",
++        "field_counts": {},
++        "affected_symbols": [],
++    }
+ 
+ from api.services.report_service import attach_report_data_blockers
+ 
+ affected_symbols: list[dict[str, Any]] = []
+
+[0m
+Now let me also make the failed-degradation case return the consistent shape (it currently uses `_empty_bucket`). Let me check and fix:
+[0m→ [0mRead api/services/investment_controller_context.py[90m [limit=15, offset=595][0m
+[0m→ [0mRead api/services/investment_controller_context.py[90m [limit=22, offset=640][0m
+[0m→ [0mRead api/services/investment_controller_context.py[90m [limit=10, offset=672][0m
+Let me make the report_blockers bucket shape fully consistent by adding a local helper:
+[0m
+[0m← [0mEdit api/services/investment_controller_context.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
++++ /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+@@ -636,8 +636,23 @@
+ # (normal_no_data / skipped / not_queried) is informational, not a blocker.
+ _SEVERE_BLOCKER_STATUSES = frozenset({"query_failed", "field_missing"})
+ 
+ 
++def _empty_blockers_bucket(as_of: str, data_status: str) -> dict[str, Any]:
++    """Stable empty shape for the recent_report_data_blockers bucket."""
++    return {
++        "source": "recent_report_data_blockers",
++        "as_of": as_of,
++        "data_status": data_status,
++        "scanned_report_count": 0,
++        "affected_report_count": 0,
++        "total_severe_blockers": 0,
++        "summary_level": "ok",
++        "field_counts": {},
++        "affected_symbols": [],
++    }
++
++
+ def _collect_recent_report_data_blockers(
+     db: Session,
+     user_id: str,
+     as_of: str,
+
+[0m
+[0m← [0mEdit api/services/investment_controller_context.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
++++ /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+@@ -689,23 +689,13 @@
+         .all()
+     )
+ except Exception as exc:
+     logger.warning("[ic-ta-002] recent report scan failed: %s", exc)
+-    return _empty_bucket("recent_report_data_blockers", as_of, DATA_STATUS_FAILED)
++    return _empty_blockers_bucket(as_of, DATA_STATUS_FAILED)
+ 
+ if not rows:
+     notes.append("recent_report_data_blockers: no completed reports yet")
+-    return {
+-        "source": "recent_report_data_blockers",
+-        "as_of": as_of,
+-        "data_status": DATA_STATUS_MISSING,
+-        "scanned_report_count": 0,
+-        "affected_report_count": 0,
+-        "total_severe_blockers": 0,
+-        "summary_level": "ok",
+-        "field_counts": {},
+-        "affected_symbols": [],
+-    }
++    return _empty_blockers_bucket(as_of, DATA_STATUS_MISSING)
+ 
+ from api.services.report_service import attach_report_data_blockers
+ 
+ affected_symbols: list[dict[str, Any]] = []
+
+[0m
+Now let me fix the tests. The mandate report reads real saved reports from disk, so empty-state tests need to monkeypatch it. Let me update the affected tests:
+[0m← [0mEdit tests/test_ic_ta002_controller_context_tradeflow_report.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_ic_ta002_controller_context_tradeflow_report.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_ic_ta002_controller_context_tradeflow_report.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_ic_ta002_controller_context_tradeflow_report.py
+@@ -179,17 +179,23 @@
+     assert "mandate_daily_report" in result
+     assert "recent_report_data_blockers" in result
+     assert "controller_hints" in result
+ 
+-def test_mandate_report_empty_state(self, tmp_sqla_session, tmp_tf_db):
++def test_mandate_report_empty_state(self, tmp_sqla_session, tmp_tf_db, monkeypatch):
++    # Force the mandate report to report no data so the empty-state path
++    # is exercised in isolation (the repo may ship saved mandate reports).
++    monkeypatch.setattr(
++        "api.services.tradeflow_service.get_mandate_daily_report",
++        lambda **kw: {"status": "no_data"},
++    )
+     result = get_investment_controller_context(
+         tmp_sqla_session, "ic_user", tf_db_path=tmp_tf_db
+     )
+     mandate = result["mandate_daily_report"]
+     assert mandate["source"] == "mandate_daily_report"
+     assert mandate["as_of"]
+     # No heatmap / saved report in a bare tradeflow DB → missing.
+-    assert mandate["data_status"] in ALLOWED_DATA_STATUSES
++    assert mandate["data_status"] == DATA_STATUS_MISSING
+     assert mandate["main_candidate_count"] == 0
+ 
+ def test_report_blockers_empty_state(self, tmp_sqla_session, tmp_tf_db):
+     result = get_investment_controller_context(
+
+[0m
+[0m← [0mEdit tests/test_ic_ta002_controller_context_tradeflow_report.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_ic_ta002_controller_context_tradeflow_report.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_ic_ta002_controller_context_tradeflow_report.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_ic_ta002_controller_context_tradeflow_report.py
+@@ -207,9 +207,14 @@
+     assert blockers["data_status"] in ALLOWED_DATA_STATUSES
+     assert blockers["affected_symbols"] == []
+     assert blockers["scanned_report_count"] == 0
+ 
+-def test_controller_hints_empty_state(self, tmp_sqla_session, tmp_tf_db):
++def test_controller_hints_empty_state(self, tmp_sqla_session, tmp_tf_db, monkeypatch):
++    # Isolate from any saved mandate report shipped with the repo.
++    monkeypatch.setattr(
++        "api.services.tradeflow_service.get_mandate_daily_report",
++        lambda **kw: {"status": "no_data"},
++    )
+     result = get_investment_controller_context(
+         tmp_sqla_session, "ic_user", tf_db_path=tmp_tf_db
+     )
+     hints = result["controller_hints"]
+
+[0m
+Now let me run the tests again:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_ic_ta002_controller_context_tradeflow_report.py -q --tb=short 2>&1 | tail -30
+.F........................                                               [100%]
+=================================== FAILURES ===================================
+____________ TestNewBucketsPresence.test_mandate_report_empty_state ____________
+tests/test_ic_ta002_controller_context_tradeflow_report.py:198: in test_mandate_report_empty_state
+    assert mandate["main_candidate_count"] == 0
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   KeyError: 'main_candidate_count'
+=========================== short test summary info ============================
+FAILED tests/test_ic_ta002_controller_context_tradeflow_report.py::TestNewBucketsPresence::test_mandate_report_empty_state
+1 failed, 25 passed in 16.65s
+[0m
+The mandate bucket empty state also needs a consistent shape. Let me fix:
+[0m← [0mEdit api/services/investment_controller_context.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
++++ /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+@@ -559,13 +559,13 @@
+     from api.services.tradeflow_service import get_mandate_daily_report
+     report = get_mandate_daily_report(as_of="", save_report=False)
+ except Exception as exc:
+     logger.warning("[ic-ta-002] mandate daily report lookup failed: %s", exc)
+-    return _empty_bucket("mandate_daily_report", as_of, DATA_STATUS_FAILED)
++    return _empty_mandate_bucket(as_of, DATA_STATUS_FAILED)
+ 
+ if not isinstance(report, dict) or report.get("status") == "no_data":
+     notes.append("mandate_daily_report: no mandate report available yet")
+-    return _empty_bucket("mandate_daily_report", as_of, DATA_STATUS_MISSING)
++    return _empty_mandate_bucket(as_of, DATA_STATUS_MISSING)
+ 
+ rising = report.get("rising_topics", []) or []
+ cooling = report.get("cooling_topics", []) or []
+ main_candidates = report.get("main_candidates", []) or []
+
+[0m
+[0m← [0mEdit api/services/investment_controller_context.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
++++ /Users/maybee/TradingAgents-AShare/api/services/investment_controller_context.py
+@@ -544,8 +544,28 @@
+ # ──────────────────────────────────────────────────────────────────────────────
+ # Bucket 7 (IC-TA-002): mandate daily report
+ # ──────────────────────────────────────────────────────────────────────────────
+ 
++def _empty_mandate_bucket(as_of: str, data_status: str) -> dict[str, Any]:
++    """Stable empty shape for the mandate_daily_report bucket."""
++    return {
++        "source": "mandate_daily_report",
++        "as_of": as_of,
++        "report_as_of": "",
++        "data_status": data_status,
++        "rising_topic_count": 0,
++        "cooling_topic_count": 0,
++        "main_candidate_count": 0,
++        "observation_candidate_count": 0,
++        "evidence_gap_count": 0,
++        "rising_topics": [],
++        "cooling_topics": [],
++        "main_candidates": [],
++        "observation_candidates": [],
++        "evidence_gaps": [],
++    }
++
++
+ def _collect_mandate_daily_report(
+     as_of: str, notes: list[str]
+ ) -> dict[str, Any]:
+     """H-015 mandate daily report digest (read-only, no network call).
+
+[0m
+Now let me add the `_empty_mandate_bucket` helper right before `_collect_mandate_daily_report`:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_ic_ta002_controller_context_tradeflow_report.py -q --tb=short 2>&1 | tail -20
+.........................F                                               [100%]
+=================================== FAILURES ===================================
+____ TestGracefulDegradation.test_mandate_report_failure_degrades_to_failed ____
+tests/test_ic_ta002_controller_context_tradeflow_report.py:598: in test_mandate_report_failure_degrades_to_failed
+    assert mandate["items"] == []
+           ^^^^^^^^^^^^^^^^
+E   KeyError: 'items'
+------------------------------ Captured log call -------------------------------
+WARNING  api.services.investment_controller_context:investment_controller_context.py:582 [ic-ta-002] mandate daily report lookup failed: heatmap exploded
+=========================== short test summary info ============================
+FAILED tests/test_ic_ta002_controller_context_tradeflow_report.py::TestGracefulDegradation::test_mandate_report_failure_degrades_to_failed
+1 failed, 25 passed in 16.62s
+[0m
+The test needs updating to match the new mandate bucket shape:
+[0m← [0mEdit tests/test_ic_ta002_controller_context_tradeflow_report.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_ic_ta002_controller_context_tradeflow_report.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_ic_ta002_controller_context_tradeflow_report.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_ic_ta002_controller_context_tradeflow_report.py
+@@ -594,5 +594,6 @@
+     tmp_sqla_session, "ic_user", tf_db_path=tmp_tf_db
+ )
+ mandate = result["mandate_daily_report"]
+ assert mandate["data_status"] == DATA_STATUS_FAILED
+-assert mandate["items"] == []
++assert mandate["main_candidates"] == []
++assert mandate["main_candidate_count"] == 0
+
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_ic_ta002_controller_context_tradeflow_report.py -q --tb=short 2>&1 | tail -15
+..........................                                               [100%]
+26 passed in 13.41s
+[0m
+All 26 IC-TA-002 tests pass. Now let me run the original IC-TA-001 tests and related suites to confirm no regressions:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_ic_ta001_investment_controller_context.py tests/test_ic_ta002_controller_context_tradeflow_report.py tests/test_track002_tracking_board_v2.py tests/test_track001_observation_warehouse.py tests/test_track004_observation_state_engine.py tests/test_track005_post_market_tracking_review.py tests/test_track006_add_to_observation.py tests/test_runtime_tier_contract.py tests/test_data021_report_data_blockers.py tests/test_h015_mandate_daily_report.py -q --tb=short 2>&1 | tail -20
+........................................................................ [ 20%]
+........................................................................ [ 40%]
+........................................................................ [ 61%]
+........................................................................ [ 81%]
+.................................................................        [100%]
+353 passed in 21.04s
+[0m
+All 353 tests pass. Let me also run a broader smoke on tests that touch the controller context endpoint and tradeflow service to be safe:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_track_notify001_notification_payload.py tests/test_track007_tracking_board_acceptance.py -q --tb=short 2>&1 | tail -15
+ERROR: file or directory not found: tests/test_track_notify001_notification_payload.py
+
+
+no tests ran in 0.00s
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && ls tests/ | grep -iE "notify|track007|tradeflow_acceptance|tracking_board" 2>&1 | head
+test_track002_tracking_board_v2.py
+test_track_notify001_notification_draft.py
+test_v003_tradeflow_acceptance_replay.py
+[0m
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -m pytest tests/test_track_notify001_notification_draft.py tests/test_v003_tradeflow_acceptance_replay.py -q --tb=short 2>&1 | tail -12
+........................................................................ [ 66%]
+.....................................                                    [100%]
+109 passed in 15.08s
+[0m
+[0m# [0mTodos
+[✓] Extend investment_controller_context.py with mandate_daily_report + recent_report_data_blockers buckets and controller_hints
+[✓] Add IC-TA-002 test file covering new buckets, controller_hints, read-only and safety contracts
+[✓] Run pytest + verify no regressions
+[•] Update docs/DEVLOG.md and docs/TASKS.md status
+[0m
+All passing. Let me update the todo and now update the docs. First let me update the endpoint docstring in main.py to mention the new buckets:
+[0m← [0mEdit api/main.py
+Index: /Users/maybee/TradingAgents-AShare/api/main.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/main.py
++++ /Users/maybee/TradingAgents-AShare/api/main.py
+@@ -4622,11 +4622,13 @@
+ ):
+     """Read-only context pack for the investment-controller.
+ 
+     Aggregates holdings, observation warehouse, TradeFlow candidates, latest
+-    TA report summary, data health and pending TA-required items. READ-ONLY:
+-    never writes state, never triggers TA/LLM. Every entry carries source +
+-    as_of; every bucket declares data_status (fresh/stale/missing/failed/skipped).
++    TA report summary, data health and pending TA-required items, plus the
++    IC-TA-002 mandate daily report digest, recent report data blockers and
++    soft controller routing hints. READ-ONLY: never writes state, never
++    triggers TA/LLM. Every entry carries source + as_of; every bucket
++    declares data_status (fresh/stale/missing/failed/skipped).
+     """
+     return investment_controller_context.get_investment_controller_context(db, current_user.id)
+ 
+ 
+
+[0m
+Now let me update the TASKS.md status for IC-TA-002 (mark done) and the queue reference. First let me update the task detail status:
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -3796,9 +3796,9 @@
+ 
+ ### IC-TA-002: investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1）
+ - **描述**：investment-controller v5 的职责是 TA 调度官/飞书播报官。当前只读上下文需要继续纳入 H-015 昊天主题日报和 DATA-021 报告数据缺口，帮助它决定“是否值得让 TA 出手”和“推送什么”。
+ - **优先级**：P1
+-- **状态**：in_progress — claimed IC-TA-002-20260626-191456
++- **状态**：done — IC-TA-002-20260626-191456
+ - **前置条件**：IC-TA-001、DATA-021、H-015 完成。
+ - **执行约束**：
+   - 只读上下文，不触发 TA、不写交易动作。
+   - 不输出强买卖词。
+
+[0m
+[0m← [0mEdit docs/TASKS.md
+Index: /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/TASKS.md
++++ /Users/maybee/TradingAgents-AShare/docs/TASKS.md
+@@ -128,9 +128,9 @@
+ 102. `HK-001`：港股输入边界与轻量行情-only 模式声明（P2，done — commit 2326a3d + a9fd09a）。
+ 103. `TF-PERSIST-001`：TradeFlow save_candidate 分项评分持久化补口（P2，done — commit 0016a92 + 2257f32）。
+ 104. `AUTO-003`：任务建议去重与已完成任务过滤（P1，ready，修复 M-012 误把 done/blocked-resolved 任务重复建议）。
+ 105. `REPORT-UX-001`：TA 报告“数据不足观察”端到端回放验收（P1，ready，依赖 DATA-021 ✓）。
+-106. `IC-TA-002`：investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1，ready，依赖 IC-TA-001/DATA-021/H-015 ✓）。
++  106. `IC-TA-002`：investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1，done，依赖 IC-TA-001/DATA-021/H-015 ✓）。
+ 107. `V-010`：小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口（P1，ready，依赖 V-009/DATA-021/H-015 ✓）。
+ 108. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2，ready，依赖 TRACK-NOTIFY-001/H-015/DATA-021 ✓）。
+ 109. `DATA-022`：主力资金/龙虎榜失败矩阵 fixture 回放（P1，ready，依赖 DATA-021/DATA-017 ✓）。
+ 110. `TF-OBS-005`：非交易日候选计划到下一交易日观察语义回归（P1，ready，依赖 TF-OBS-004 ✓）。
+
+[0m
+Now let me update DEVLOG.md. Let me read the top of the file to follow the format:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=40][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,80 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-26 | IC-TA-002 investment-controller 上下文接入昊天日报与报告数据缺口
++
++- **执行者**：OpenCode
++- **类型**：feature / read-only-context
++- **状态**：✅ 完成（待提交）
++- **优先级**：P1
++- **代码标注**：`# [IC-TA-002] controller_context_tradeflow_report`
++
++### 背景
++
++investment-controller v5 是 TA 调度官/飞书播报官。IC-TA-001 已提供 6 个只读
++bucket，但要决定“是否值得让 TA 出手”和“推送什么”，还需纳入 H-015 昊天主题日报
++与 DATA-021 报告字段级数据缺口。
++
++### 变更
++
++- 扩展 `api/services/investment_controller_context.py`：在 IC-TA-001 六个 bucket
++  基础上新增两个只读 bucket + 一组软调度 hints（不写状态、不触发 TA/LLM、不做网络调用）。
++  1. **`mandate_daily_report`**：调用 `tradeflow_service.get_mandate_daily_report`
++     （等价 `/tradeflow/mandate-daily-report/latest`），读取磁盘最新日报或基于
++     topic heatmap（仅读 tradeflow SQLite）重建摘要：升温/降温主题、主候选、观察候选、
++     证据缺口。稳定空结构由 `_empty_mandate_bucket` 提供。
++  2. **`recent_report_data_blockers`**：扫描该用户最近 10 份 completed 报告，
++     聚合 DATA-021 严重缺口（`query_failed` / `field_missing`）。优先读已落库的
++     `result_data.data_blockers`；对 DATA-021 之前的 legacy 报告，调用
++     `attach_report_data_blockers(dict(result_data))` 派生（只读、不回写 ORM）。
++     输出 `field_counts` / `affected_symbols` / `summary_level`，正常无数据不计入。
++  3. **`controller_hints`**：基于已收集 bucket 派生三条软路由（仅事实，无强买卖词）：
++     - `needs_ta`：来自 `pending_ta_required`（观察仓 ta_required + 候选 need_deep_ta）。
++     - `daily_report_only`：`watching` 状态观察仓条目 + 昊天观察候选（只进日报）。
++     - `suppress_push_data_insufficient`：最近报告存在严重数据缺口的标的，不作强结论推送。
++- 新增 `_empty_mandate_bucket` / `_empty_blockers_bucket`：保证两个新 bucket 在
++  无数据/失败路径下形状一致（`source/as_of/data_status` + 各自字段）。
++- 扩展 `assert_no_strong_action_verbs`：同步扫描 `controller_hints` 的 reason /
++  suggested_next_step，确保合成字段不含“立即买入/清仓/满仓”等强词。
++- 更新模块 docstring 与 `api/main.py:4623` endpoint docstring，描述新 bucket。
++- 新增 `tests/test_ic_ta002_controller_context_tradeflow_report.py`：26 个用例，
++  覆盖 bucket 存在性/空状态、`source+as_of+data_status` 契约、stored 与 legacy
++  两条 data_blockers 路径、scan 上限、controller_hints 三条路由、READ-ONLY（不改
++  ORM result_data）、强词扫描、敏感字段、JSON 序列化、降级。
++
++### 验证要点
++
++- `query_failed` 与 `field_missing` 计入 severe；`normal_no_data` / `skipped` /
++  `not_queried` 仅信息性，不计入 affected_symbols。
++- 仅扫描最近 N 份报告（`_RECENT_REPORT_SCAN_LIMIT=10`），不触发全表扫描，符合
++  FAST_RADAR 时延预算；endpoint 仍为 `investment_controller_context`（FAST_RADAR /
++  llm_allowed=False / requires_confirmation=False）。
++- 不写生产 `tradingagents.db`；不调 LLM；不改 prompts；不含强买卖词。
++
++### 测试结果
++
++- `pytest tests/test_ic_ta002_controller_context_tradeflow_report.py -q`：**26 passed**。
++- 回归：`pytest tests/test_ic_ta001_investment_controller_context.py
++  tests/test_ic_ta002_controller_context_tradeflow_report.py
++  tests/test_track002_tracking_board_v2.py tests/test_track001_observation_warehouse.py
++  tests/test_track004_observation_state_engine.py tests/test_track005_post_market_tracking_review.py
++  tests/test_track006_add_to_observation.py tests/test_runtime_tier_contract.py
++  tests/test_data021_report_data_blockers.py tests/test_h015_mandate_daily_report.py -q`：
++  **353 passed**。
++- 补充回归：`tests/test_track_notify001_notification_draft.py
++  tests/test_v003_tradeflow_acceptance_replay.py`：**109 passed**。
++
++### 修改文件
++
++- `api/services/investment_controller_context.py`
++- `api/main.py`（endpoint docstring）
++- `tests/test_ic_ta002_controller_context_tradeflow_report.py`（新增）
++- `docs/TASKS.md`、`docs/DEVLOG.md`
++
++---
++
+ ## 2026-06-26 | REPORT-UX-001 TA 报告“数据不足观察”端到端回放验收
+ 
+ - **执行者**：OpenCode
+ - **类型**：test / acceptance-replay
+
+[0m
+Now let me create the task run archive directory as required by the project rules (rule #4):
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && ls docs/task_runs/IC-TA-002-20260626-191456/ 2>&1
+codegraph-context.txt
+codegraph-status.json
+prompt-round1.md
+task.md
+[0m
+The task run dir exists. Let me write a run summary file following the project convention:
+[0m← [0mWrite docs/task_runs/IC-TA-002-20260626-191456/run-summary.md
+Wrote file successfully.
+[0m
+Let me do a final lint check with python compile to make sure the module is syntactically clean:
+[0m$ [0mcd /Users/maybee/TradingAgents-AShare && source .venv/bin/activate && python -c "import api.services.investment_controller_context; import api.main; print('import OK')" 2>&1 | tail -5
+import OK
+[0m
+[0m# [0mTodos
+[✓] Extend investment_controller_context.py with mandate_daily_report + recent_report_data_blockers buckets and controller_hints
+[✓] Add IC-TA-002 test file covering new buckets, controller_hints, read-only and safety contracts
+[✓] Run pytest + verify no regressions
+[✓] Update docs/DEVLOG.md and docs/TASKS.md status
+[0m
+IC-TA-002 complete.
+
+## Files changed
+- `api/services/investment_controller_context.py` — added 2 read-only buckets (`mandate_daily_report`, `recent_report_data_blockers`) + `controller_hints` soft routing, with stable empty-shape helpers and extended strong-verb guard.
+- `api/main.py` — endpoint docstring updated.
+- `tests/test_ic_ta002_controller_context_tradeflow_report.py` — new, 26 cases.
+- `docs/TASKS.md` (status → done), `docs/DEVLOG.md`, `docs/task_runs/IC-TA-002-20260626-191456/run-summary.md`.
+
+## Key logic
+- `mandate_daily_report` calls `get_mandate_daily_report(save_report=False)` (≡ `/tradeflow/mandate-daily-report/latest`), reading disk/tradeflow SQLite only — no network.
+- `recent_report_data_blockers` scans the 10 most-recent completed reports, aggregating DATA-021 severe statuses (`query_failed`/`field_missing`); legacy reports derive blockers read-only via `attach_report_data_blockers(dict(...))` without mutating ORM.
+- `controller_hints` derives 3 lanes: `needs_ta` (pending_ta_required), `daily_report_only` (`watching` observation + mandate observation candidates), `suppress_push_data_insufficient` (reports with severe gaps).
+
+## Test results
+- New suite: **26 passed**.
+- Regression (IC-TA-001 + track + runtime_tier + data021 + h015): **353 passed**.
+- Supplementary (notify + tradeflow acceptance): **109 passed**.

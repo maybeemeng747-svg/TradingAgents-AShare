@@ -1,15 +1,30 @@
 # [IC-TA-001] investment_controller_context
+# [IC-TA-002] controller_context_tradeflow_report
 """Read-only context pack for the investment-controller.
 
-Aggregates six stable buckets that the investment-controller (the external
+Aggregates the stable buckets that the investment-controller (the external
 pre/open/post-market scheduler) needs as input:
 
+IC-TA-001 (six core buckets):
     1. holdings snapshot          - real imported portfolio positions
     2. observation warehouse      - symbols awaiting entry confirmation
     3. TradeFlow latest candidates- latest candidate pool summary
     4. latest TA report summary   - most recent completed TA report per symbol
     5. data health summary        - TradeFlow DB freshness + source availability
     6. pending TA required items  - observation items + candidates flagged for TA
+
+IC-TA-002 (mandate radar + report data gaps):
+    7. mandate daily report       - H-015 昊天主题日报 digest (rising/cooling
+                                    topics, main/observation candidates,
+                                    evidence gaps). Read-only, no network call.
+    8. recent report data blockers- DATA-021 field-level query_failed /
+                                    field_missing aggregation across the user's
+                                    most recent TA reports.
+    + controller_hints            - soft scheduling hints derived from the
+                                    buckets above: which symbols need TA, which
+                                    only enter the daily report, and which
+                                    should not be pushed because data is
+                                    insufficient.
 
 Design contract (see docs/TASKS.md IC-TA-001):
 
@@ -122,6 +137,24 @@ def get_investment_controller_context(
         as_of, tf_db_path, candidates.get("trade_date"), notes
     )
 
+    # --- Bucket 7 (IC-TA-002): mandate daily report ---
+    mandate_report = _collect_mandate_daily_report(as_of, notes)
+
+    # --- Bucket 8 (IC-TA-002): recent report data blockers ---
+    report_blockers = _collect_recent_report_data_blockers(
+        db, user_id, as_of, notes
+    )
+
+    # --- Controller hints (IC-TA-002): soft scheduling hints ---
+    controller_hints = _build_controller_hints(
+        as_of,
+        observation=observation,
+        pending_ta=pending_ta,
+        mandate_report=mandate_report,
+        report_blockers=report_blockers,
+        notes=notes,
+    )
+
     return {
         "schema_version": CONTEXT_SCHEMA_VERSION,
         "as_of": as_of,
@@ -135,6 +168,9 @@ def get_investment_controller_context(
         "latest_ta_reports": ta_reports,
         "data_health": data_health,
         "pending_ta_required": pending_ta,
+        "mandate_daily_report": mandate_report,  # [IC-TA-002]
+        "recent_report_data_blockers": report_blockers,  # [IC-TA-002]
+        "controller_hints": controller_hints,  # [IC-TA-002]
         "notes": notes,
         "runtime_tier_meta": _tradeflow_meta("investment_controller_context"),
     }
@@ -506,6 +542,366 @@ def _collect_pending_ta_required(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Bucket 7 (IC-TA-002): mandate daily report
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _empty_mandate_bucket(as_of: str, data_status: str) -> dict[str, Any]:
+    """Stable empty shape for the mandate_daily_report bucket."""
+    return {
+        "source": "mandate_daily_report",
+        "as_of": as_of,
+        "report_as_of": "",
+        "data_status": data_status,
+        "rising_topic_count": 0,
+        "cooling_topic_count": 0,
+        "main_candidate_count": 0,
+        "observation_candidate_count": 0,
+        "evidence_gap_count": 0,
+        "rising_topics": [],
+        "cooling_topics": [],
+        "main_candidates": [],
+        "observation_candidates": [],
+        "evidence_gaps": [],
+    }
+
+
+def _collect_mandate_daily_report(
+    as_of: str, notes: list[str]
+) -> dict[str, Any]:
+    """H-015 mandate daily report digest (read-only, no network call).
+
+    Delegates to ``tradeflow_service.get_mandate_daily_report`` which either
+    reads the latest saved report JSON from disk or rebuilds it from the
+    topic heatmap (heatmap only reads the tradeflow SQLite). Never writes,
+    never hits the network.
+    """
+    try:
+        from api.services.tradeflow_service import get_mandate_daily_report
+        report = get_mandate_daily_report(as_of="", save_report=False)
+    except Exception as exc:
+        logger.warning("[ic-ta-002] mandate daily report lookup failed: %s", exc)
+        return _empty_mandate_bucket(as_of, DATA_STATUS_FAILED)
+
+    if not isinstance(report, dict) or report.get("status") == "no_data":
+        notes.append("mandate_daily_report: no mandate report available yet")
+        return _empty_mandate_bucket(as_of, DATA_STATUS_MISSING)
+
+    rising = report.get("rising_topics", []) or []
+    cooling = report.get("cooling_topics", []) or []
+    main_candidates = report.get("main_candidates", []) or []
+    observation_candidates = report.get("observation_candidates", []) or []
+    evidence_gaps = report.get("evidence_gaps", []) or []
+
+    digest = {
+        "source": "mandate_daily_report",
+        "as_of": as_of,
+        "report_as_of": report.get("as_of") or "",
+        "data_status": DATA_STATUS_FRESH,
+        "rising_topic_count": len(rising),
+        "cooling_topic_count": len(cooling),
+        "main_candidate_count": len(main_candidates),
+        "observation_candidate_count": len(observation_candidates),
+        "evidence_gap_count": len(evidence_gaps),
+        # Slimmed topic/candidate digests (facts only, no trade verbs).
+        "rising_topics": [
+            {
+                "topic": t.get("topic", ""),
+                "status_label": t.get("status_label", ""),
+                "heat_trend_label": t.get("heat_trend_label", ""),
+                "candidate_count": t.get("candidate_count", 0),
+            }
+            for t in rising[:5]
+        ],
+        "cooling_topics": [
+            {
+                "topic": t.get("topic", ""),
+                "status_label": t.get("status_label", ""),
+                "heat_trend_label": t.get("heat_trend_label", ""),
+            }
+            for t in cooling[:5]
+        ],
+        "main_candidates": [
+            {
+                "symbol": c.get("symbol", ""),
+                "name": c.get("name", ""),
+                "topic": c.get("topic", ""),
+                "candidate_type": c.get("candidate_type", ""),
+                "mandate_score": c.get("mandate_score"),
+                "entry_reason": c.get("entry_reason", ""),
+            }
+            for c in main_candidates[:8]
+        ],
+        "observation_candidates": [
+            {
+                "symbol": c.get("symbol", ""),
+                "name": c.get("name", ""),
+                "topic": c.get("topic", ""),
+                "mandate_score": c.get("mandate_score"),
+            }
+            for c in observation_candidates[:12]
+        ],
+        "evidence_gaps": list(evidence_gaps[:12]),
+    }
+    return digest
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Bucket 8 (IC-TA-002): recent report data blockers
+# ──────────────────────────────────────────────────────────────────────────────
+
+# How many recent completed reports to scan for data blockers. Kept small so
+# the controller context stays inside the FAST_RADAR latency budget.
+_RECENT_REPORT_SCAN_LIMIT = 10
+# Blocker statuses that constitute a real data gap (severe). Everything else
+# (normal_no_data / skipped / not_queried) is informational, not a blocker.
+_SEVERE_BLOCKER_STATUSES = frozenset({"query_failed", "field_missing"})
+
+
+def _empty_blockers_bucket(as_of: str, data_status: str) -> dict[str, Any]:
+    """Stable empty shape for the recent_report_data_blockers bucket."""
+    return {
+        "source": "recent_report_data_blockers",
+        "as_of": as_of,
+        "data_status": data_status,
+        "scanned_report_count": 0,
+        "affected_report_count": 0,
+        "total_severe_blockers": 0,
+        "summary_level": "ok",
+        "field_counts": {},
+        "affected_symbols": [],
+    }
+
+
+def _collect_recent_report_data_blockers(
+    db: Session,
+    user_id: str,
+    as_of: str,
+    notes: list[str],
+) -> dict[str, Any]:
+    """DATA-021 aggregation: query_failed / field_missing across recent reports.
+
+    Scans the user's most recent completed reports and aggregates the severe
+    field-level data blockers. Read-only: never writes, derives blockers from
+    stored ``result_data`` (re-running ``attach_report_data_blockers`` when the
+    report predates DATA-021).
+    """
+    try:
+        from api.database import ReportDB
+        from sqlalchemy.orm import load_only
+        rows = (
+            db.query(ReportDB)
+            .options(load_only(
+                ReportDB.id,
+                ReportDB.symbol,
+                ReportDB.trade_date,
+                ReportDB.status,
+                ReportDB.action_label,
+                ReportDB.research_direction,
+                ReportDB.created_at,
+                ReportDB.result_data,
+            ))
+            .filter(
+                ReportDB.user_id == user_id,
+                ReportDB.status == "completed",
+            )
+            .order_by(ReportDB.created_at.desc())
+            .limit(_RECENT_REPORT_SCAN_LIMIT)
+            .all()
+        )
+    except Exception as exc:
+        logger.warning("[ic-ta-002] recent report scan failed: %s", exc)
+        return _empty_blockers_bucket(as_of, DATA_STATUS_FAILED)
+
+    if not rows:
+        notes.append("recent_report_data_blockers: no completed reports yet")
+        return _empty_blockers_bucket(as_of, DATA_STATUS_MISSING)
+
+    from api.services.report_service import attach_report_data_blockers
+
+    affected_symbols: list[dict[str, Any]] = []
+    field_counts: dict[str, int] = {}
+    total_severe = 0
+    scanned = 0
+
+    for row in rows:
+        scanned += 1
+        result_data = getattr(row, "result_data", None)
+        if not isinstance(result_data, dict):
+            continue
+        # Use stored blockers when present (post-DATA-021), otherwise derive
+        # a read-only enriched copy without mutating the ORM row.
+        blockers = result_data.get("data_blockers")
+        if not isinstance(blockers, list):
+            enriched = attach_report_data_blockers(dict(result_data))
+            blockers = enriched.get("data_blockers") if isinstance(enriched, dict) else []
+
+        severe_here = [
+            b for b in (blockers or [])
+            if isinstance(b, dict) and b.get("status") in _SEVERE_BLOCKER_STATUSES
+        ]
+        if not severe_here:
+            continue
+
+        total_severe += len(severe_here)
+        field_keys = sorted({str(b.get("key", "")) for b in severe_here if b.get("key")})
+        for key in field_keys:
+            field_counts[key] = field_counts.get(key, 0) + 1
+        affected_symbols.append({
+            "symbol": row.symbol,
+            "report_id": row.id,
+            "trade_date": row.trade_date,
+            "severe_count": len(severe_here),
+            "fields": field_keys,
+            "action_label": row.action_label or "",
+            "research_direction": row.research_direction or "",
+        })
+
+    summary_level = "warning" if affected_symbols else "ok"
+
+    data_status = DATA_STATUS_FRESH if affected_symbols else (
+        DATA_STATUS_FRESH if scanned else DATA_STATUS_MISSING
+    )
+    # When reports exist but none carry severe blockers, the bucket is still
+    # "fresh" (we successfully confirmed there are no data gaps) — surface a
+    # note so the controller can tell "scanned & clean" apart from "no data".
+    if not affected_symbols:
+        notes.append(
+            f"recent_report_data_blockers: scanned {scanned} report(s), no severe gaps"
+        )
+
+    return {
+        "source": "recent_report_data_blockers",
+        "as_of": as_of,
+        "data_status": data_status,
+        "scanned_report_count": scanned,
+        "affected_report_count": len(affected_symbols),
+        "total_severe_blockers": total_severe,
+        "summary_level": summary_level,
+        "field_counts": field_counts,
+        "affected_symbols": affected_symbols,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Controller hints (IC-TA-002): soft scheduling guidance
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Observation statuses that only justify a daily-report entry, not an active
+# push or a TA trigger.
+_DAILY_REPORT_ONLY_OBS_STATUSES = frozenset({"watching"})
+
+
+def _build_controller_hints(
+    as_of: str,
+    *,
+    observation: dict[str, Any],
+    pending_ta: dict[str, Any],
+    mandate_report: dict[str, Any],
+    report_blockers: dict[str, Any],
+    notes: list[str],
+) -> dict[str, Any]:
+    """Derive soft scheduling hints from the already-collected buckets.
+
+    Three lanes (facts only, no trade verbs):
+        - ``needs_ta``: observation/candidate symbols flagged for deep TA.
+        - ``daily_report_only``: soft items that only enter the daily digest
+          (passive observation + mandate observation candidates).
+        - ``suppress_push_data_insufficient``: symbols whose latest report
+          carried severe data blockers — the controller should not push them
+          as confident conclusions.
+
+    The hints never carry a strong buy/sell verb; they only route attention.
+    """
+    needs_ta: list[dict[str, Any]] = []
+    seen_ta: set[str] = set()
+    for item in pending_ta.get("items", []):
+        symbol = item.get("symbol", "")
+        if not symbol or symbol in seen_ta:
+            continue
+        seen_ta.add(symbol)
+        needs_ta.append({
+            "symbol": symbol,
+            "name": item.get("name", ""),
+            "origin": item.get("origin", ""),
+            "reason": item.get("reason", ""),
+            "suggested_next_step": "consider_light_or_full_ta",
+            "source": "pending_ta_required",
+            "as_of": as_of,
+        })
+
+    daily_only: list[dict[str, Any]] = []
+    seen_daily: set[str] = set()
+    for item in observation.get("items", []):
+        symbol = item.get("symbol", "")
+        status = item.get("status", "")
+        if not symbol or symbol in seen_daily:
+            continue
+        if status in _DAILY_REPORT_ONLY_OBS_STATUSES:
+            seen_daily.add(symbol)
+            daily_only.append({
+                "symbol": symbol,
+                "name": item.get("name", ""),
+                "origin": "observation_warehouse",
+                "reason": item.get("reason", "") or "passive observation, daily digest only",
+                "suggested_next_step": "daily_report_only",
+                "source": "observation_warehouse",
+                "as_of": as_of,
+            })
+
+    # Mandate radar observation candidates are daily-digest by design.
+    mandate_ok = mandate_report.get("data_status") == DATA_STATUS_FRESH
+    if mandate_ok:
+        for cand in mandate_report.get("observation_candidates", []):
+            symbol = cand.get("symbol", "")
+            if not symbol or symbol in seen_daily:
+                continue
+            seen_daily.add(symbol)
+            daily_only.append({
+                "symbol": symbol,
+                "name": cand.get("name", ""),
+                "origin": "mandate_observation",
+                "reason": f"主题：{cand.get('topic', '') or '未知'}，观察候选",
+                "suggested_next_step": "daily_report_only",
+                "source": "mandate_daily_report",
+                "as_of": as_of,
+            })
+
+    suppress_push: list[dict[str, Any]] = []
+    seen_suppress: set[str] = set()
+    for entry in report_blockers.get("affected_symbols", []):
+        symbol = entry.get("symbol", "")
+        if not symbol or symbol in seen_suppress:
+            continue
+        seen_suppress.add(symbol)
+        suppress_push.append({
+            "symbol": symbol,
+            "name": "",
+            "origin": "recent_report_data_blockers",
+            "reason": (
+                f"最近报告存在 {entry.get('severe_count', 0)} 项关键数据缺口"
+                f"（{', '.join(entry.get('fields', [])[:3])}），不作为强结论推送"
+            ),
+            "fields": entry.get("fields", []),
+            "suggested_next_step": "suppress_push_data_insufficient",
+            "source": "recent_report_data_blockers",
+            "as_of": as_of,
+        })
+
+    has_any = bool(needs_ta or daily_only or suppress_push)
+    if not has_any:
+        notes.append("controller_hints: no routing hints derived")
+
+    return {
+        "source": "controller_hints",
+        "as_of": as_of,
+        "data_status": DATA_STATUS_FRESH if has_any else DATA_STATUS_MISSING,
+        "needs_ta": needs_ta,
+        "daily_report_only": daily_only,
+        "suppress_push_data_insufficient": suppress_push,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -536,14 +932,26 @@ def _union_symbols(*buckets: list[dict[str, Any]]) -> list[str]:
 def assert_no_strong_action_verbs(payload: dict[str, Any]) -> None:
     """Test helper: assert no synthesised strong action verb leaked into payload.
 
-    Only checks the controller-synthesised fields (notes, data_status, source
-    labels). TA report.decision fields are structured facts and intentionally
-    allowed to pass through.
+    Only checks the controller-synthesised fields (notes, generated_by,
+    controller_hints reasons, mandate/blocker digests). TA report.decision
+    fields are structured facts and intentionally allowed to pass through.
     """
-    text = str(payload.get("notes", "")) + " " + str(payload.get("generated_by", ""))
+    chunks: list[str] = [
+        str(payload.get("notes", "")),
+        str(payload.get("generated_by", "")),
+    ]
+    # Controller-synthesised hint reasons (IC-TA-002) — never carry trade verbs.
+    hints = payload.get("controller_hints") or {}
+    if isinstance(hints, dict):
+        for lane in ("needs_ta", "daily_report_only", "suppress_push_data_insufficient"):
+            for item in hints.get(lane, []) or []:
+                if isinstance(item, dict):
+                    chunks.append(str(item.get("reason", "")))
+                    chunks.append(str(item.get("suggested_next_step", "")))
     for pattern in _STRONG_ACTION_PATTERNS:
-        if pattern in text:
-            raise AssertionError(f"strong action verb leaked into context: {pattern!r}")
+        for chunk in chunks:
+            if pattern in chunk:
+                raise AssertionError(f"strong action verb leaked into context: {pattern!r}")
 
 
 __all__ = [

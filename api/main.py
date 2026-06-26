@@ -4623,9 +4623,11 @@ def get_investment_controller_context(
     """Read-only context pack for the investment-controller.
 
     Aggregates holdings, observation warehouse, TradeFlow candidates, latest
-    TA report summary, data health and pending TA-required items. READ-ONLY:
-    never writes state, never triggers TA/LLM. Every entry carries source +
-    as_of; every bucket declares data_status (fresh/stale/missing/failed/skipped).
+    TA report summary, data health and pending TA-required items, plus the
+    IC-TA-002 mandate daily report digest, recent report data blockers and
+    soft controller routing hints. READ-ONLY: never writes state, never
+    triggers TA/LLM. Every entry carries source + as_of; every bucket
+    declares data_status (fresh/stale/missing/failed/skipped).
     """
     return investment_controller_context.get_investment_controller_context(db, current_user.id)
 

@@ -4,6 +4,78 @@
 
 ---
 
+## 2026-06-26 | IC-TA-002 investment-controller 上下文接入昊天日报与报告数据缺口
+
+- **执行者**：OpenCode
+- **类型**：feature / read-only-context
+- **状态**：✅ 完成（待提交）
+- **优先级**：P1
+- **代码标注**：`# [IC-TA-002] controller_context_tradeflow_report`
+
+### 背景
+
+investment-controller v5 是 TA 调度官/飞书播报官。IC-TA-001 已提供 6 个只读
+bucket，但要决定“是否值得让 TA 出手”和“推送什么”，还需纳入 H-015 昊天主题日报
+与 DATA-021 报告字段级数据缺口。
+
+### 变更
+
+- 扩展 `api/services/investment_controller_context.py`：在 IC-TA-001 六个 bucket
+  基础上新增两个只读 bucket + 一组软调度 hints（不写状态、不触发 TA/LLM、不做网络调用）。
+  1. **`mandate_daily_report`**：调用 `tradeflow_service.get_mandate_daily_report`
+     （等价 `/tradeflow/mandate-daily-report/latest`），读取磁盘最新日报或基于
+     topic heatmap（仅读 tradeflow SQLite）重建摘要：升温/降温主题、主候选、观察候选、
+     证据缺口。稳定空结构由 `_empty_mandate_bucket` 提供。
+  2. **`recent_report_data_blockers`**：扫描该用户最近 10 份 completed 报告，
+     聚合 DATA-021 严重缺口（`query_failed` / `field_missing`）。优先读已落库的
+     `result_data.data_blockers`；对 DATA-021 之前的 legacy 报告，调用
+     `attach_report_data_blockers(dict(result_data))` 派生（只读、不回写 ORM）。
+     输出 `field_counts` / `affected_symbols` / `summary_level`，正常无数据不计入。
+  3. **`controller_hints`**：基于已收集 bucket 派生三条软路由（仅事实，无强买卖词）：
+     - `needs_ta`：来自 `pending_ta_required`（观察仓 ta_required + 候选 need_deep_ta）。
+     - `daily_report_only`：`watching` 状态观察仓条目 + 昊天观察候选（只进日报）。
+     - `suppress_push_data_insufficient`：最近报告存在严重数据缺口的标的，不作强结论推送。
+- 新增 `_empty_mandate_bucket` / `_empty_blockers_bucket`：保证两个新 bucket 在
+  无数据/失败路径下形状一致（`source/as_of/data_status` + 各自字段）。
+- 扩展 `assert_no_strong_action_verbs`：同步扫描 `controller_hints` 的 reason /
+  suggested_next_step，确保合成字段不含“立即买入/清仓/满仓”等强词。
+- 更新模块 docstring 与 `api/main.py:4623` endpoint docstring，描述新 bucket。
+- 新增 `tests/test_ic_ta002_controller_context_tradeflow_report.py`：26 个用例，
+  覆盖 bucket 存在性/空状态、`source+as_of+data_status` 契约、stored 与 legacy
+  两条 data_blockers 路径、scan 上限、controller_hints 三条路由、READ-ONLY（不改
+  ORM result_data）、强词扫描、敏感字段、JSON 序列化、降级。
+
+### 验证要点
+
+- `query_failed` 与 `field_missing` 计入 severe；`normal_no_data` / `skipped` /
+  `not_queried` 仅信息性，不计入 affected_symbols。
+- 仅扫描最近 N 份报告（`_RECENT_REPORT_SCAN_LIMIT=10`），不触发全表扫描，符合
+  FAST_RADAR 时延预算；endpoint 仍为 `investment_controller_context`（FAST_RADAR /
+  llm_allowed=False / requires_confirmation=False）。
+- 不写生产 `tradingagents.db`；不调 LLM；不改 prompts；不含强买卖词。
+
+### 测试结果
+
+- `pytest tests/test_ic_ta002_controller_context_tradeflow_report.py -q`：**26 passed**。
+- 回归：`pytest tests/test_ic_ta001_investment_controller_context.py
+  tests/test_ic_ta002_controller_context_tradeflow_report.py
+  tests/test_track002_tracking_board_v2.py tests/test_track001_observation_warehouse.py
+  tests/test_track004_observation_state_engine.py tests/test_track005_post_market_tracking_review.py
+  tests/test_track006_add_to_observation.py tests/test_runtime_tier_contract.py
+  tests/test_data021_report_data_blockers.py tests/test_h015_mandate_daily_report.py -q`：
+  **353 passed**。
+- 补充回归：`tests/test_track_notify001_notification_draft.py
+  tests/test_v003_tradeflow_acceptance_replay.py`：**109 passed**。
+
+### 修改文件
+
+- `api/services/investment_controller_context.py`
+- `api/main.py`（endpoint docstring）
+- `tests/test_ic_ta002_controller_context_tradeflow_report.py`（新增）
+- `docs/TASKS.md`、`docs/DEVLOG.md`
+
+---
+
 ## 2026-06-26 | REPORT-UX-001 TA 报告“数据不足观察”端到端回放验收
 
 - **执行者**：OpenCode
@@ -6896,3 +6968,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/REPORT-UX-001-20260626-round1.txt
 - **Run archive**: docs/task_runs/REPORT-UX-001-20260626-190006/
+
+## 2026-06-26 | AUTO-002 Auto Dev Loop
+
+- **Task**: IC-TA-002 - investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/IC-TA-002-20260626-round1.txt
+- **Run archive**: docs/task_runs/IC-TA-002-20260626-191456/
