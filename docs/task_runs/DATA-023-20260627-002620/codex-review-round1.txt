@@ -1,0 +1,2851 @@
+Task: DATA-023 - 数据源目录 API/文档同步与供应商能力矩阵导出（P2）
+Date: 2026-06-27_00:40:18
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019f04cb-e6d7-7102-9423-54a5b0f8c8af
+--------
+user
+current changes
+2026-06-26T16:38:24.764464Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-06-26T16:38:24.878351Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+2026-06-26T16:38:24.882362Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-06-26T16:38:24.957619Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+exec
+/bin/zsh -lc "sed -n '1,200p' docs/DECISIONS.md && sed -n '1,200p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-27 | DATA-023 数据源目录 API/文档同步与供应商能力矩阵导出
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **状态**：✅ 完成（待提交）
+- **代码标注**：`# [DATA-023] source_capability_matrix`
+
+### 背景
+
+数据源能力信息分散在 `source_catalog.py`、`docs/DATA_SOURCE_GAP_AUDIT.md`
+和各类 freshness / daily_digest 报告里。用户/agent 需要单一可信来源回答：
+"行情/资金/龙虎榜/公告/评级/回购/研报分别来自哪里、fallback 是什么、是否实时、
+有什么已知限制"。本任务导出统一矩阵，并提供 API + 文档 + CLI 三个出口。
+
+### 修改内容
+
+- **新增 `tradingagents/dataflows/source_capability_matrix.py`**
+  - `get_source_capability_matrix()` 静态导出 16 个 data_type 的能力矩阵，
+    字段含 `data_type / primary_vendor / primary_endpoint / fallback_vendor /
+    fallback_chain / freshness / unit / fields / rate_limit_risk /
+    known_limits / status_semantics / source_count / notes`。
+  - `validate_matrix_coverage()` 校验所有已注册 `DataType` 都进入矩阵，
+    关键字段非空，freshness 在合法枚举内 —— 守护"新增 data type 漏进矩阵"。
+  - `render_source_capability_matrix_markdown()` / `_text()` 输出 agent 可读文档。
+  - `FRESHNESS_STATUS_SEMANTICS` / `RATE_LIMIT_RISK_LABEL` / `DATA_TYPE_LABEL_CN`
+    三张图例统一新鲜度、限流、数据类型语义。
+  - 完全静态导出，不调用 live API，不读取任何 API Key。
+
+- **新增 `scripts/export_source_capability_matrix.py`**
+  - CLI：`--validate / --md / --json / --stdout-json / --stdout-text / --no-md`。
+  - `--stdout-json` 时 summary 走 stderr，保证 stdout 是纯 JSON 可管道解析。
+
+- **新增 API：`api/main.py`**
+  - `GET /v1/config/source-capability-matrix`（鉴权同 model-catalog）。
+  - 新增 `SourceCapabilityMatrixItem` / `SourceCapabilityMatrixResponse`
+    两个 Pydantic 响应模型。
+
+- **新增文档**
+  - `docs/SOURCE_CAPABILITY_MATRIX.md`：自动生成的 Markdown 矩阵总览 + 详情 + 图例。
+  - `docs/source_capability_matrix.json`：结构化 JSON 产物。
+
+- **新增测试 `tests/test_data023_source_capability_matrix.py`（31 cases）**
+  - `TestCoverage` 守护"新增 DataType 不会漏进矩阵"（核心验收点）。
+  - `TestBusinessCoverage` 验收 资金/板块资金/龙虎榜/公告/评级/回购/研报 均覆盖。
+  - `TestNoSecrets` 全文扫描 `api_key/secret/token/sk-/Bearer ` 确认无密钥泄露。
+  - `TestCatalogConsistency` 双向校验 matrix 与 `source_catalog` primary 一致。
+  - `TestScriptCli` 跑通 `--validate` 与 `--stdout-json` 子进程路径。
+
+### 影响范围
+
+- 不修改 `source_catalog.py` / provider / fallback 路由，纯新增导出层。
+- 不触碰 `tradingagents/prompts/`、`tradingagents.db`、`eval_results/`、`logs/`。
+- 新增 API endpoint 与现有 `/v1/config/model-catalog` 同构，鉴权策略一致。
+
+### 验证
+
+- `python -m pytest tests/test_data023_source_capability_matrix.py -q` → **31 passed**。
+- `python -m pytest tests/test_data_source_catalog.py tests/test_data018_source_freshness.py tests/test_data022_fund_lhb_status_matrix.py -q` → **249 passed**（无回归）。
+- `python scripts/export_source_capability_matrix.py --validate` →
+  `OK: matrix covers all 16 data_types, no coverage issues.`
+- API response 模型序列化检查通过，`/v1/config/source-capability-matrix` 路由已注册。
+
+---
+
+## 2026-06-27 | UI-013 修复 TF-OBS-003 E2E 测试在非交易日全部跳过的缺陷
+
+- **执行者**：OpenCode
+- **类型**：bugfix
+- **状态**：✅ 完成（待提交）
+- **代码标注**：`# [TF-OBS-003] observe_paper_sync`
+
+### 背景
+
+`test_tf_obs_003_observe_paper_sync.py` 中 `TestObserveToPaperE2E` 的 5 个测试在周末（2026-06-27 周六）全部失败。原因是这些 E2E 测试调用 `run_observe(TODAY, ..., quote_provider=quotes)`，但 `run_observe` 顶部的交易日门控在 `_is_trading_day(trade_date)` 返回 False 时直接 skip 返回零计数，导致 `result.triggered/invalidated/waiting` 全为 0。测试使用 `TODAY = datetime.now()` 作为交易日，当当天恰好是周末时就全部被跳过。
+
+### 修改内容
+
+- **`tradingagents/tradeflow/observe_runner.py`** (`run_observe`)
+  - 将交易日门控条件从 `if not _is_trading_day(trade_date)` 改为
+    `if quote_provider is None and not _is_trading_day(trade_date)`。
+  - 当调用方注入 `quote_provider`（文档明确标注 "for testing"）时，跳过交易日检查，
+    使命中真实 observe 逻辑的 E2E 测试在任意日期均可运行。
+  - 生产路径（`quote_provider=None`）仍严格执行非交易日 skip 语义，行为不变。
+
+### 影响范围
+
+- 其他使用 `quote_provider` 的测试（`test_tf_obs_001`、`test_v007/v008/v010` 验收测试）
+  均使用固定交易日（2026-06-01 / 2026-06-15，周一），交易日门控本就放行，无回归。
+- 非交易日 skip 专项测试（`test_tf_obs_001::TestRunObserveNonTradingDay`、
+  `test_tf_obs_002`、`test_ui001`）不传 `quote_provider`，skip 语义不变。
+
+### 验证
+
+```
+tests/test_tf_obs_003_observe_paper_sync.py  21 passed
+tests/test_tf_obs_001_observe_runner.py + test_tf_obs_002 + test_ui001  116 passed
+tests/test_v007 + test_v008 + test_v010  145 passed
+```
+
+---
+
+## 2026-06-26 | UI-013 TradeFlow 空状态与下一步 CTA 文案收口
+
+- **执行者**：OpenCode
+- **类型**：feature / UX
+- **状态**：✅ 完成（待提交）
+- **优先级**：P2
+- **代码标注**：`// [UI-013] tradeflow_empty_state_cta`
+
+### 背景
+
+用户看到候选池、盘中观察、盘后 Review、主题热度/昊天日报为空时，不知道下一步该点
+什么，容易在 tab 之间反复跳转。UI-013 统一这些空状态的文案与下一步 CTA，降低试用
+迷路感。约束：不改核心业务逻辑、不增加营销式页面、文案不含买卖建议、不遮挡主流程。
+
+### 修改内容
+
+1. **新增共享 `EmptyStateCTA` 组件**（`frontend/src/pages/TradeFlow.tsx`）
+   - 统一图标 + 标题 + 描述 + 提示行 + 软 CTA 按钮渲染。
+   - 文案中性：仅用「前往生成候选池 / 前往观察仓 / 查看数据健康」等导航词，
+     不出现 买/卖/加仓/减仓。
+   - 按钮只做导航（切 tab / 跳路由），不触发扫描或 LLM。
+
+2. **候选池空（`status === 'no_data'`）**
+   - 提示：使用上方「生成候选池」、候选池为空时其它 tab 无法汇总、可先加入观察仓。
+   - CTA：查看上方生成候选池（滚动到扫描面板）/ 前往观察仓 / 查看数据健康。
+
+3. **盘中观察空（`ObserveTable`）**
+   - 新增 `onGoToCandidates` / `onGoToObservationWarehouse` props。
+   - 区分交易日 vs 非交易日文案；CTA：前往生成候选池 / 前往观察仓。
+
+4. **盘后 Review 空**
+   - 复用 `EmptyStateCTA`，保留 TF-REVIEW-004 的诊断与候选池日期映射。
+   - 主 CTA：一键生成盘后复盘；无候选池日期时追加「前往生成候选池」。
+   - 新增非交易日映射文案提示（周末/节假日候选池在下一交易日复盘）。
+
+5. **主题热度空 / 昊天日报空（`TopicHeatmapPanel` / `MandateDailyReportPanel`）**
+   - 新增 `onGenerateCandidates` prop，CTA：前往生成候选池。
+   - 提示：热度/日报由候选池汇总而来，只做雷达摘要、不含买卖建议。
+
+6. **扫描面板加 `id="tradeflow-scan-panel"`**，供候选池空状态 CTA 滚动定位。
+
+### 验收
+
+- `npm run build`（tsc + vite build）通过。
+- `npm run lint`：49 problems 与改动前完全一致，**未引入新 lint 错误**
+  （既有问题均为 observe 自动刷新 effect 的 `react-hooks/set-state-in-effect`，未触碰）。
+- `npx vitest run`：3 test files / 27 tests passed。
+- `pytest tests/ -q`：7004 passed, 17 skipped。
+- 文案无买卖建议，空状态不遮挡主流程（仅导航）。
+
+### 修改文件
+
+- `frontend/src/pages/TradeFlow.tsx` — [UI-013] tradeflow_empty_state_cta
+
+---
+
+## 2026-06-26 | IC-TA-003 investment-controller 盘前/盘后 briefing fixture dry-run
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **状态**：✅ 完成（待提交）
+- **优先级**：P2
+- **代码标注**：`# [IC-TA-003] controller_briefing_dry_run`
+
+### 背景
+
+IC-TA-002 把昊天日报与报告数据缺口接进 `investment_controller_context` 后，需要
+固定盘前 / 盘后 briefing 的 dry-run 输出，确保 investment-controller 拿到的是**流程
+提示 + 调度建议**（为什么要/不要调 TA、哪些只进日报、哪些需人工确认），而不是又一份
+TA 结论。本任务只做 dry-run，不调 LLM、不发飞书、不写文件、不写数据库。
+
+### 修改内容
+
+1. **新增 `tradingagents/tradeflow/controller_briefing.py`**（纯引擎，~640 行）
+   - `build_pre_market_briefing(context, *, as_of=None)`：盘前 briefing。
+   - `build_post_market_briefing(context, *, as_of=None)`：盘后 briefing。
+   - 两条 briefing 都把 IC-TA-002 的 `controller_hints` 路由成三条 lane：
+     - `ta_to_schedule` / `tomorrow_ta_candidates`：每条带 `reason_call_ta`
+       （**为什么调 TA**）+ `suggested_profile`（POLICY_AMBUSH→MIDLINE_POLICY_LIGHT、
+       TECH_TRADE→SHORT_TECH_LIGHT、observation→POSITION_RISK_LIGHT、未知→FULL_TA 且
+       `requires_confirmation=True`，符合 PERF-004 门禁）。
+     - `daily_report_only`：每条带 `reason_skip_ta`（**为什么不调 TA**）。
+     - `needs_manual_confirmation`：从 `recent_report_data_blockers` 来，每条带 `fields`
+       与 `reason`。
+   - 盘后额外含 `today_performance`（涨/跌/平/无行情计数）+ `report_data_gaps`
+     （DATA-021 缺口摘要）。
+   - `scan_forbidden_words(payload)`：自检引擎合成字段是否含
+     `FORBIDDEN_STRONG_WORDS`（复用 observation_state_engine 的禁用词，补 `立即卖出/
+     全仓/必涨/必跌/无脑买/加杠杆`）；跳过 TA 报告原始 `decision` 等结构化事实字段。
+   - 每条 briefing 自带 `forbidden_word_scan` 字段。
+   - 内置 `PRE_MARKET_FIXTURE_CONTEXT` / `POST_MARKET_FIXTURE_CONTEXT`（形状与 IC-TA-002
+     返回一致，含 2 只持仓 / 观察仓 ta_required+watching / 政策候选 / 昊天日报 / 数据缺口）。
+   - `dry_run_all_fixtures()`：跑两条 fixture，返回汇总（含 `forbidden_word_scan_passed`）。
+
+exec
+/bin/zsh -lc "git status --short && sed -n '1,200p' docs/project-overview.md && sed -n '1,200p' docs/TASKS.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M api/main.py
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M docs/tradeflow_trial_acceptance.md
+ M docs/tradeflow_trial_acceptance_v2.md
+ M docs/tradeflow_trial_acceptance_v3.md
+?? docs/SOURCE_CAPABILITY_MATRIX.md
+?? docs/source_capability_matrix.json
+?? docs/task_runs/DATA-023-20260627-002620/
+?? scripts/export_source_capability_matrix.py
+?? tests/test_data023_source_capability_matrix.py
+?? tradingagents/dataflows/source_capability_matrix.py
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+# 任务池
+
+> 最后更新：2026-06-22
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，done）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，done，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，done，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，done，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，done，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，done，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done，依赖 DATA-004 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
+50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done，依赖 DATA-012 部分落地 ✓）。
+54. `DECISION-001`：最终动作语义分层 — 禁止默认 HOLD（P0，done，commit dee415c）。
+55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
+56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
+57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
+58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，done — commit 5f304db，后续 001A/DATA-COVERAGE 已闭环）。
+59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done — 后续任务已闭环）。
+60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
+63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
+65. `V-006`：最终动作语义端到端回放验收（P1，done，依赖 DECISION-004 ✓）。
+66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
+67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，done，commit f54a45e）。
+68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
+69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，done，依赖 TF-OBS-002/TF-REVIEW-002）。
+70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，done，依赖 H-010/H-011）。
+71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，done，依赖 DATA-017/DATA-006）。
+72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，done，依赖 TF-QUALITY-002/TF-OBS-002）。
+73. `V-007`：TradeFlow 试用闭环端到端验收（P1，done，commit 9ceedbf）。
+74. `TF-API-013`：TradeFlow API 合约收口与 HTTP 路由回归（P0，done，`fce3141` + `289a392`）。
+75. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，done，`OpenCode` 2026-06-16）。
+76. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，done，依赖 TF-PAPER-001 ✓）。
+77. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，done，commit fcce883）。
+78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，done，依赖 TF-REVIEW-002/TF-PAPER-001）。
+79. `DATA-019`：关键数据源实盘抽样健康日报（P1，done，commit 58b5cd2）。
+80. `H-013`：昊天主题热度曲线与政策证据看板（P1，done，commit b1fe17d）。
+81. `DATA-019A`：实盘抽样 skipped 状态与任务池收口补修（P2，done）。
+82. `H-013A`：昊天热度图历史日期 fallback 与窗口 unique 统计补修（P2，done）。
+83. `V-008`：TradeFlow 小资金试跑前整体验收（P1，done，55 tests passed）。
+84. `TF-UX-001`：TradeFlow 小资金试跑主工作台降噪与默认视图（P1，done，依赖 TF-QUALITY-004/TF-RISK-001 ✓）。
+85. `TRACK-001`：观察仓数据模型与只读/写入 API（P0，done，commit 2ef6c37）。
+86. `TRACK-002`：跟踪看板 v2 分组接口与今日指引聚合（P0，done，commit fd0d511）。
+87. `TRACK-003`：跟踪看板前端四区改版：持仓/观察仓/今日指引/盘后复盘（P0，done，commit d80aa66）。
+  88. `IC-TA-001`：investment-controller 只读上下文包与数据契约（P1，done，依赖 TRACK-001 ✓）。
+  89. `TRACK-004`：观察仓入场区/失效区规则引擎与状态流转（P1，done，依赖 TRACK-001 ✓, TRACK-002 ✓）。
+  90. `TRACK-005`：盘后复盘摘要与次日计划写回跟踪看板（P1，done，依赖 TRACK-002 ✓, TF-REVIEW-003 ✓）。
+91. `TRACK-006`：TradeFlow/TA 候选一键加入观察仓与来源追踪（P1，done，commit 5aa512d）。
+92. `TRACK-NOTIFY-001`：飞书/总控官通知草稿 payload 与去噪规则（P1，done — TRACK-NOTIFY-001-20260623-122700，前置 IC-TA-001 ✓/TRACK-002 ✓ 均完成）。
+93. `TRACK-007`：跟踪看板端到端验收与用户操作手册（P2，done ✓，依赖 TRACK-003 ✓, TRACK-004 ✓, TRACK-005 ✓）。
+  94. `DATA-020`：数据源健康日报前端可视化与 skipped/failed 分层展示（P1，done，依赖 DATA-019A）。
+  95. `TF-REVIEW-004`：盘后 Review 空数据诊断与一键生成入口（P1，done，依赖 TF-REVIEW-003）。
+ 96. `H-014`：昊天主题候选减少与主题集中度阈值校准（P1，done，依赖 H-013A/H-012 ✓）。
+97. `V-009`：小资金试跑后回归清单与用户操作手册（P1，done，依赖 V-008 ✓）。
+ 98. `TF-OBS-004`：盘中观察自动刷新、触发提醒与人工确认队列降噪（P1，done，依赖 TF-OBS-003/TF-RISK-001 ✓）。
+99. `DATA-021`：TA 报告数据源失败原因透传与字段级降级说明（P1，done — Codex 接管完成，依赖 DATA-020/DATA-004 ✓）。
+100. `H-015`：昊天主题日报与候选入池/出池解释（P1，done — Codex 直接开发，依赖 H-014 ✓/H-013A ✓）。
+ 101. `PERF-005`：TradeFlow 页面与 API 性能预算回归（P2，done，依赖 TF-UX-001/DATA-020 ✓）。
+102. `HK-001`：港股输入边界与轻量行情-only 模式声明（P2，done — commit 2326a3d + a9fd09a）。
+103. `TF-PERSIST-001`：TradeFlow save_candidate 分项评分持久化补口（P2，done — commit 0016a92 + 2257f32）。
+104. `AUTO-003`：任务建议去重与已完成任务过滤（P1，ready，修复 M-012 误把 done/blocked-resolved 任务重复建议）。
+105. `REPORT-UX-001`：TA 报告“数据不足观察”端到端回放验收（P1，ready，依赖 DATA-021 ✓）。
+  106. `IC-TA-002`：investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1，done，依赖 IC-TA-001/DATA-021/H-015 ✓）。
+107. `V-010`：小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口（P1，done，依赖 V-009/DATA-021/H-015 ✓）。
+108. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2，done — NOTIFY-002-20260626-214133，依赖 TRACK-NOTIFY-001/H-015/DATA-021 ✓）。
+109. `DATA-022`：主力资金/龙虎榜失败矩阵 fixture 回放（P1，done，依赖 DATA-021/DATA-017 ✓）。
+110. `TF-OBS-005`：非交易日候选计划到下一交易日观察语义回归（P1，done，依赖 TF-OBS-004 ✓）。
+ 111. `TRACK-008`：观察仓批量导入/导出 CSV 与去重合并（P1，done，依赖 TRACK-001/TRACK-003 ✓）。
+112. `REPORT-UX-002`：历史报告动作语义与数据缺口只读迁移预检（P1，ready，依赖 DECISION-004/DATA-021 ✓）。
+113. `H-016`：昊天主题日报 CLI 生成与保留策略（P2，ready，依赖 H-015 ✓）。
+  114. `IC-TA-003`：investment-controller 盘前/盘后 briefing fixture dry-run（P2，done，依赖 IC-TA-002 ✓）。
+115. `TF-REVIEW-005`：盘后 Review 归因接入观察信号与模拟账本（P1，done，依赖 TF-REVIEW-004/TF-PAPER-001 ✓）。
+116. `UI-013`：TradeFlow 空状态与下一步 CTA 文案收口（P2，done，依赖 UI-012/H-015 ✓）。
+117. `DATA-023`：数据源目录 API/文档同步与供应商能力矩阵导出（P2，ready，依赖 DATA-020/DATA-CATALOG-FIX ✓）。
+118. `PERF-006`：前端 bundle 体积趋势记录与懒加载候选建议（P2，ready，依赖 PERF-005 ✓）。
+119. `V-011`：夜间自动开发日报验收与 ready 队列续航检查（P2，ready，依赖 AUTO-003 ✓）。
+120. `NOTIFY-003`：通知去噪规则回放测试与日报/盘中分层验收（P2，ready，依赖 NOTIFY-002 ✓）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
+16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done）。
+18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
+19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done）。
+21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## TRACK. 跟踪看板 / 观察仓 / investment-controller 联动任务池（2026-06-22 新增）
+
+> 目标：把跟踪看板从“持仓实时行情表”升级为“交易日作战面板”。TA 负责数据、报告和状态容器；investment-controller 负责盘前/盘中/盘后调度、飞书播报和是否调用深度 TA 的判断。
+
+### TRACK-001: 观察仓数据模型与只读/写入 API（P0）
+- **描述**：新增“观察仓”容器，用于存放想买但尚未买入、等待价格/事件/资金确认的标的。
+- **优先级**：P0
+- **状态**：done — commit 2ef6c37
+- **背景**：
+  - 当前跟踪看板只展示真实持仓，无法承载“我想进但等位置”的观察票。
+  - 观察仓是盘前计划、盘中提醒、盘后复盘和 investment-controller 调度的基础状态。
+- **执行约束**：
+  - 不写生产 `tradingagents.db` 测试数据。
+  - 不触发 TA/LLM。
+  - 不自动推送飞书。
+  - 不改 `tradingagents/prompts/`。
+- **实现要点**：
+
+exec
+/bin/zsh -lc 'git diff --stat && git diff -- api/main.py tradingagents/dataflows/source_capability_matrix.py scripts/export_source_capability_matrix.py tests/test_data023_source_capability_matrix.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ api/main.py                           | 45 ++++++++++++++++++++++++
+ docs/DEVLOG.md                        | 64 +++++++++++++++++++++++++++++++++++
+ docs/TASKS.md                         |  2 +-
+ docs/tradeflow_trial_acceptance.md    |  2 +-
+ docs/tradeflow_trial_acceptance_v2.md |  2 +-
+ docs/tradeflow_trial_acceptance_v3.md |  2 +-
+ 6 files changed, 113 insertions(+), 4 deletions(-)
+diff --git a/api/main.py b/api/main.py
+index 36a8c7c..987aafc 100644
+--- a/api/main.py
++++ b/api/main.py
+@@ -1036,6 +1036,33 @@ class ModelApiCatalogResponse(BaseModel):
+     items: List[ModelApiCatalogItem]
+ 
+ 
++class SourceCapabilityMatrixItem(BaseModel):
++    # [DATA-023] source_capability_matrix
++    data_type: str
++    label_cn: str = ""
++    primary_vendor: str
++    primary_endpoint: str
++    is_primary_confirmed: bool = False
++    fallback_vendor: str = ""
++    fallback_chain: List[str] = []
++    freshness: str
++    unit: str = ""
++    fields: List[str] = []
++    rate_limit_risk: str = ""
++    known_limits: str = ""
++    status_semantics: str = ""
++    source_count: int = 0
++    notes: str = ""
++
++
++class SourceCapabilityMatrixResponse(BaseModel):
++    # [DATA-023] source_capability_matrix
++    version: str
++    items: List[SourceCapabilityMatrixItem]
++    freshness_legend: Dict[str, str] = {}
++    rate_limit_legend: Dict[str, str] = {}
++
++
+ class UserRuntimeWarmupResponse(BaseModel):
+     prompt: str
+     results: List[RuntimeWarmupResult]
+@@ -4196,6 +4223,24 @@ def get_model_api_catalog_endpoint(
+     return get_model_api_catalog()
+ 
+ 
++@app.get(
++    "/v1/config/source-capability-matrix",
++    response_model=SourceCapabilityMatrixResponse,
++)
++def get_source_capability_matrix_endpoint(
++    current_user: UserDB = Depends(_require_web_user),
++):
++    """返回数据源能力矩阵（不含任何密钥 / live 调用）。
++
++    [DATA-023] source_capability_matrix
++    """
++    from tradingagents.dataflows.source_capability_matrix import (
++        get_source_capability_matrix,
++    )
++
++    return get_source_capability_matrix()
++
++
+ @app.patch("/v1/config")
+ def update_runtime_config(
+     updates: UserRuntimeConfigUpdateRequest,
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tradingagents/dataflows/source_capability_matrix.py && sed -n '1,240p' scripts/export_source_capability_matrix.py && sed -n '1,260p' tests/test_data023_source_capability_matrix.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# [DATA-023] source_capability_matrix
+"""A股数据源能力矩阵导出。
+
+把分散在 `source_catalog`、docs 与报告里的数据源能力信息，
+统一导出成 agent 可读、用户可查的供应商能力矩阵。
+
+每条 matrix entry 描述一种 `data_type`（行情 / 资金 / 龙虎榜 / 公告 /
+评级 / 回购 / 研报 ...）的：
+  - primary_vendor        — 当前首选数据源 vendor
+  - primary_endpoint      — 首选 vendor 的端点
+  - fallback_vendor       — 备选 vendor（fallback chain 中 priority 最小的下一个）
+  - fallback_chain        — 全量 fallback vendor 列表（按 priority 排序）
+  - freshness             — 实时性（realtime / intraday / daily / delayed / stale / unknown）
+  - unit                  — 字段单位（万元 / 元 / 股 / 条 等）
+  - known_limits          — 已知限制摘要（rate_limit_risk + known_gaps）
+  - status_semantics      — 状态语义说明（告诉 agent 这条数据可用边界）
+  - fields                — 主要字段
+  - rate_limit_risk       — 限流风险等级
+  - notes                 — 备注说明
+
+设计原则：
+  - 不调用任何 live API；完全基于 source_catalog 静态导出。
+  - 不读取 / 输出任何 API Key 或密钥相关内容。
+  - 不改变 provider 路由 / fallback 行为。
+  - 与 `MODEL_API_CATALOG` 类似，输出给 agent / UI / 文档复用。
+
+使用示例：
+    from tradingagents.dataflows.source_capability_matrix import (
+        get_source_capability_matrix,
+        render_source_capability_matrix_markdown,
+        validate_matrix_coverage,
+    )
+    matrix = get_source_capability_matrix()
+    print(render_source_capability_matrix_markdown(matrix))
+    issues = validate_matrix_coverage(matrix)
+"""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any, Dict, List, Optional
+
+from .source_catalog import (
+    DataType,
+    Freshness,
+    RateLimitRisk,
+    get_fallback_chain,
+    get_primary_source,
+    get_sources_for_type,
+)
+
+
+SOURCE_CAPABILITY_MATRIX_VERSION = "2026-06-27"
+
+
+# ── 新鲜度语义说明 ────────────────────────────────────────────────────
+# 告诉 agent / 用户每种 freshness 值代表的可用边界。
+FRESHNESS_STATUS_SEMANTICS: Dict[str, str] = {
+    Freshness.REALTIME.value: (
+        "盘中实时推送（秒级）。最接近实时价，可作盘中决策依据；"
+        "停牌 / 非交易时段无更新。"
+    ),
+    Freshness.INTRADAY.value: (
+        "盘中更新但有延迟（分钟级）。适合盘中观察，不宜做毫秒级套利。"
+    ),
+    Freshness.DAILY.value: (
+        "收盘后至次日开市前更新。盘中为前一交易日快照，不可用于实时决策。"
+    ),
+    Freshness.DELAYED.value: (
+        "延迟 >1 个交易日（如 T+1 / T+2 财务数据）。仅适合长期回看与季度评估。"
+    ),
+    Freshness.STALE.value: (
+        "数据陈旧或长期不更新。不可作为决策依据，需触发 fallback 或人工核实。"
+    ),
+    Freshness.UNKNOWN.value: (
+        "新鲜度未知。使用前必须 verify，未 verify 不得作为 primary source。"
+    ),
+}
+
+
+# ── 限流风险中文标签 ──────────────────────────────────────────────────
+RATE_LIMIT_RISK_LABEL: Dict[str, str] = {
+    RateLimitRisk.LOW.value: "低（可频繁调用）",
+    RateLimitRisk.MEDIUM.value: "中（建议带缓存与退避）",
+    RateLimitRisk.HIGH.value: "高（必须限流 + 可切换 fallback）",
+    RateLimitRisk.UNKNOWN.value: "未知",
+}
+
+
+# ── data_type 中文标签 ────────────────────────────────────────────────
+DATA_TYPE_LABEL_CN: Dict[str, str] = {
+    DataType.QUOTE.value: "行情快照",
+    DataType.OHLCV.value: "K 线 / 历史行情",
+    DataType.FUND_FLOW.value: "个股资金流",
+    DataType.BOARD_FUND_FLOW.value: "板块资金流",
+    DataType.LHB.value: "龙虎榜",
+    DataType.MARGIN_TRADING.value: "融资融券",
+    DataType.NOTICE.value: "公司公告",
+    DataType.REPORT.value: "券商研报",
+    DataType.RATING.value: "分析师评级",
+    DataType.NEWS.value: "个股新闻",
+    DataType.GLOBAL_NEWS.value: "全市场快讯",
+    DataType.FINANCIALS.value: "财务三表",
+    DataType.INSIDER.value: "内部交易 / 股东",
+    DataType.HOT_STOCKS.value: "热门股票",
+    DataType.ZT_POOL.value: "涨停池",
+    DataType.REALTIME_QUOTES.value: "实时行情",
+    DataType.BUYBACK.value: "回购",
+}
+
+
+def _format_known_limits(
+    rate_limit_risk: str,
+    known_gaps: List[str],
+) -> str:
+    """把 rate_limit_risk 与 known_gaps 合并成一段可读的限制摘要。"""
+    parts: List[str] = []
+    risk_label = RATE_LIMIT_RISK_LABEL.get(
+        rate_limit_risk, RATE_LIMIT_RISK_LABEL[RateLimitRisk.UNKNOWN.value]
+    )
+    parts.append(f"限流风险：{risk_label}")
+    if known_gaps:
+        parts.append("已知缺口：" + "；".join(known_gaps))
+    return " | ".join(parts)
+
+
+def _format_status_semantics(
+    freshness_value: str,
+    rate_limit_risk: str,
+    known_gaps: List[str],
+    is_primary: bool,
+) -> str:
+    """生成 status_semantics 字符串，说明这条数据的可用边界。
+
+    包含：freshness 含义 + primary/fallback 角色提示 + 关键风险。
+    """
+    base = FRESHNESS_STATUS_SEMANTICS.get(
+        freshness_value, FRESHNESS_STATUS_SEMANTICS[Freshness.UNKNOWN.value]
+    )
+    role = "首选源（primary）" if is_primary else "备选源（fallback）"
+    extras: List[str] = [f"角色：{role}"]
+    if rate_limit_risk == RateLimitRisk.HIGH.value:
+        extras.append("高限流风险，必须启用 fallback 与重试退避")
+    if any("force" in g or "NOT_QUERIED" in g for g in known_gaps):
+        extras.append("需 force=True 才会实际查询，默认返回 NOT_QUERIED")
+    if any("不稳定" in g or "字段覆盖" in g for g in known_gaps):
+        extras.append("字段覆盖不稳定，需校验后再信任")
+    return base + "；" + "；".join(extras)
+
+
+def _build_matrix_entry(data_type: DataType) -> Optional[Dict[str, Any]]:
+    """为单个 data_type 构造 matrix entry；无任何 source 时返回 None。"""
+    sources = get_sources_for_type(data_type)
+    if not sources:
+        return None
+
+    primary = get_primary_source(data_type)
+    primary_source = primary if primary is not None else sources[0]
+    fallback_chain = get_fallback_chain(data_type)
+
+    # fallback_vendor：剔除 primary 后下一个 vendor
+    fallback_vendor = ""
+    for vendor in fallback_chain:
+        if vendor != primary_source.vendor:
+            fallback_vendor = vendor
+            break
+
+    known_gaps = list(primary_source.known_gaps)
+    freshness_value = primary_source.freshness.value
+    rate_limit_risk = primary_source.rate_limit_risk.value
+
+    return {
+        "data_type": data_type.value,
+        "label_cn": DATA_TYPE_LABEL_CN.get(data_type.value, data_type.value),
+        "primary_vendor": primary_source.vendor,
+        "primary_endpoint": primary_source.endpoint,
+        "is_primary_confirmed": primary is not None,
+        "fallback_vendor": fallback_vendor,
+        "fallback_chain": fallback_chain,
+        "freshness": freshness_value,
+        "unit": primary_source.unit,
+        "fields": list(primary_source.fields),
+        "rate_limit_risk": rate_limit_risk,
+        "known_limits": _format_known_limits(rate_limit_risk, known_gaps),
+        "status_semantics": _format_status_semantics(
+            freshness_value,
+            rate_limit_risk,
+            known_gaps,
+            primary is not None,
+        ),
+        "source_count": len(sources),
+        "notes": primary_source.notes,
+    }
+
+
+def get_source_capability_matrix() -> Dict[str, Any]:
+    """导出统一的数据源能力矩阵。
+
+    返回结构：
+        {
+            "version": "2026-06-27",
+            "items": [ ... matrix entry ... ],
+            "freshness_legend": {freshness_value: 说明},
+            "rate_limit_legend": {risk_value: 说明},
+        }
+
+    返回深拷贝，调用方修改不会影响模块内部状态。
+    """
+    items: List[Dict[str, Any]] = []
+    for data_type in DataType:
+        entry = _build_matrix_entry(data_type)
+        if entry is not None:
+            items.append(entry)
+
+    return {
+        "version": SOURCE_CAPABILITY_MATRIX_VERSION,
+        "items": items,
+        "freshness_legend": dict(FRESHNESS_STATUS_SEMANTICS),
+        "rate_limit_legend": dict(RATE_LIMIT_RISK_LABEL),
+    }
+
+
+def get_matrix_item(data_type: str) -> Optional[Dict[str, Any]]:
+    """按 data_type 查询单条 matrix entry。"""
+    matrix = get_source_capability_matrix()
+    for item in matrix["items"]:
+        if item["data_type"] == data_type:
+            return deepcopy(item)
+    return None
+
+
+def validate_matrix_coverage(
+    matrix: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """检查 matrix 覆盖是否完整。
+
+    验收要求：新增 DataType 不会漏进矩阵；每条 entry 关键字段非空。
+
+    返回 issue 列表（空列表表示通过）。
+    """
+    if matrix is None:
+        matrix = get_source_capability_matrix()
+
+    issues: List[str] = []
+
+    # 1. 每个 source_catalog 中的 DataType 必须有对应 matrix entry
+    expected_types = {dt.value for dt in DataType}
+    present_types = {item["data_type"] for item in matrix.get("items", [])}
+    # 只校验 source_catalog 中确实有 source 注册的 data_type
+    registered_types = set()
+    for dt in DataType:
+        if get_sources_for_type(dt):
+            registered_types.add(dt.value)
+
+    missing = registered_types - present_types
+    for dt_value in sorted(missing):
+        issues.append(
+            f"data_type '{dt_value}' 在 source_catalog 已注册但未出现在 matrix"
+        )
+
+#!/usr/bin/env python3
+# [DATA-023] source_capability_matrix
+"""导出 A 股数据源能力矩阵（Markdown + JSON）。
+
+完全静态导出，不调用任何 live API，不读取任何 API Key。
+
+用法：
+    python scripts/export_source_capability_matrix.py
+    python scripts/export_source_capability_matrix.py --json docs/source_capability_matrix.json
+    python scripts/export_source_capability_matrix.py --md docs/SOURCE_CAPABILITY_MATRIX.md
+    python scripts/export_source_capability_matrix.py --stdout-json
+    python scripts/export_source_capability_matrix.py --validate
+
+默认行为：在仓库根目录写 docs/SOURCE_CAPABILITY_MATRIX.md，
+并把 JSON 打印到 stdout（如果没传 --json 也没传 --stdout-json，则只写 MD）。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_MD = ROOT / "docs" / "SOURCE_CAPABILITY_MATRIX.md"
+DEFAULT_JSON = ROOT / "docs" / "source_capability_matrix.json"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="导出 A 股数据源能力矩阵（Markdown + JSON）。",
+    )
+    parser.add_argument(
+        "--md",
+        default=str(DEFAULT_MD),
+        help=f"Markdown 输出路径（默认 {DEFAULT_MD}，传空字符串跳过）",
+    )
+    parser.add_argument(
+        "--json",
+        default="",
+        help=f"JSON 输出路径（默认不写文件，需显式指定路径，例如 {DEFAULT_JSON}）",
+    )
+    parser.add_argument(
+        "--stdout-json",
+        action="store_true",
+        help="把 JSON 打印到 stdout（便于管道处理）",
+    )
+    parser.add_argument(
+        "--stdout-text",
+        action="store_true",
+        help="把紧凑文本打印到 stdout（便于塞进 agent 上下文）",
+    )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="只跑覆盖率校验，不写文件",
+    )
+    parser.add_argument(
+        "--no-md",
+        action="store_true",
+        help="不写默认 Markdown 文件",
+    )
+    args = parser.parse_args()
+
+    sys.path.insert(0, str(ROOT))
+    from tradingagents.dataflows.source_capability_matrix import (
+        get_source_capability_matrix,
+        render_source_capability_matrix_markdown,
+        render_source_capability_matrix_text,
+        validate_matrix_coverage,
+    )
+
+    matrix = get_source_capability_matrix()
+
+    if args.validate:
+        issues = validate_matrix_coverage(matrix)
+        if issues:
+            print("VALIDATION FAILED:")
+            for issue in issues:
+                print(f"  - {issue}")
+            return 1
+        print(
+            f"OK: matrix covers all {len(matrix['items'])} data_types, "
+            "no coverage issues."
+        )
+        return 0
+
+    # 写 Markdown
+    md_paths: list[Path] = []
+    if not args.no_md and args.md:
+        md_path = Path(args.md).expanduser().resolve()
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text(
+            render_source_capability_matrix_markdown(matrix),
+            encoding="utf-8",
+        )
+        md_paths.append(md_path)
+    if args.json:
+        json_path = Path(args.json).expanduser().resolve()
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(
+            json.dumps(matrix, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        md_paths.append(json_path)
+
+    if args.stdout_json:
+        print(json.dumps(matrix, ensure_ascii=False, indent=2))
+    if args.stdout_text:
+        print(render_source_capability_matrix_text(matrix))
+
+    # 简短人类可读总结（走 stderr，避免污染 stdout-json 的管道解析）
+    if md_paths:
+        for p in md_paths:
+            print(f"wrote: {p}", file=sys.stderr)
+    print(
+        f"data_types={len(matrix['items'])} version={matrix['version']} "
+        f"validation_issues={len(validate_matrix_coverage(matrix))}",
+        file=sys.stderr,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+# [DATA-023] source_capability_matrix
+
+import json
+from pathlib import Path
+
+import pytest
+
+from tradingagents.dataflows.source_catalog import (
+    DataType,
+    Freshness,
+    RateLimitRisk,
+    get_sources_for_type,
+)
+from tradingagents.dataflows.source_capability_matrix import (
+    DATA_TYPE_LABEL_CN,
+    FRESHNESS_STATUS_SEMANTICS,
+    RATE_LIMIT_RISK_LABEL,
+    SOURCE_CAPABILITY_MATRIX_VERSION,
+    get_matrix_item,
+    get_source_capability_matrix,
+    render_source_capability_matrix_markdown,
+    render_source_capability_matrix_text,
+    validate_matrix_coverage,
+)
+
+
+# ── 基础导出 ──────────────────────────────────────────────────────────
+class TestMatrixShape:
+    def test_has_version(self):
+        matrix = get_source_capability_matrix()
+        assert matrix["version"] == SOURCE_CAPABILITY_MATRIX_VERSION
+
+    def test_items_is_list(self):
+        matrix = get_source_capability_matrix()
+        assert isinstance(matrix["items"], list)
+        assert len(matrix["items"]) > 0
+
+    def test_legends_present(self):
+        matrix = get_source_capability_matrix()
+        assert "freshness_legend" in matrix
+        assert "rate_limit_legend" in matrix
+        # legend 覆盖所有 enum 值
+        assert set(matrix["freshness_legend"].keys()) == {
+            f.value for f in Freshness
+        }
+        assert set(matrix["rate_limit_legend"].keys()) == {
+            r.value for r in RateLimitRisk
+        }
+
+    def test_returns_deep_copy(self):
+        m1 = get_source_capability_matrix()
+        original_vendor = m1["items"][0]["primary_vendor"]
+        m1["items"][0]["primary_vendor"] = "MUTATED"
+        m2 = get_source_capability_matrix()
+        assert m2["items"][0]["primary_vendor"] == original_vendor
+
+
+# ── entry 字段完整性 ──────────────────────────────────────────────────
+class TestEntryFields:
+    REQUIRED_FIELDS = (
+        "data_type",
+        "primary_vendor",
+        "primary_endpoint",
+        "fallback_chain",
+        "freshness",
+        "unit",
+        "known_limits",
+        "status_semantics",
+    )
+
+    def test_every_entry_has_required_fields(self):
+        matrix = get_source_capability_matrix()
+        for item in matrix["items"]:
+            for name in self.REQUIRED_FIELDS:
+                assert name in item, (
+                    f"data_type={item.get('data_type')} missing field {name}"
+                )
+
+    def test_freshness_in_legal_enum(self):
+        legal = {f.value for f in Freshness}
+        matrix = get_source_capability_matrix()
+        for item in matrix["items"]:
+            assert item["freshness"] in legal, (
+                f"data_type={item['data_type']} freshness={item['freshness']}"
+            )
+
+    def test_rate_limit_risk_in_legal_enum(self):
+        legal = {r.value for r in RateLimitRisk}
+        matrix = get_source_capability_matrix()
+        for item in matrix["items"]:
+            assert item["rate_limit_risk"] in legal, (
+                f"data_type={item['data_type']} rate_limit_risk={item['rate_limit_risk']}"
+            )
+
+    def test_fallback_chain_is_list(self):
+        matrix = get_source_capability_matrix()
+        for item in matrix["items"]:
+            assert isinstance(item["fallback_chain"], list)
+
+    def test_fallback_chain_starts_with_primary(self):
+        matrix = get_source_capability_matrix()
+        for item in matrix["items"]:
+            assert item["fallback_chain"], item
+            assert item["fallback_chain"][0] == item["primary_vendor"], (
+                f"data_type={item['data_type']} fallback_chain does not start "
+                f"with primary_vendor"
+            )
+
+    def test_source_count_matches_catalog(self):
+        matrix = get_source_capability_matrix()
+        for item in matrix["items"]:
+            sources = get_sources_for_type(item["data_type"])
+            assert item["source_count"] == len(sources), (
+                f"data_type={item['data_type']} source_count mismatch: "
+                f"matrix={item['source_count']} catalog={len(sources)}"
+            )
+
+
+# ── 覆盖率验收（核心：新增 data_type 不会漏进矩阵）────────────────────
+class TestCoverage:
+    """验收要点：新增 DataType 不会漏进矩阵。"""
+
+    def test_all_registered_data_types_in_matrix(self):
+        matrix = get_source_capability_matrix()
+        present = {item["data_type"] for item in matrix["items"]}
+        registered = {
+            dt.value for dt in DataType if get_sources_for_type(dt)
+        }
+        missing = registered - present
+        assert not missing, (
+            f"以下已注册的 data_type 漏进 matrix: {sorted(missing)}"
+        )
+
+    def test_no_unregistered_data_type_in_matrix(self):
+        matrix = get_source_capability_matrix()
+        legal = {dt.value for dt in DataType}
+        present = {item["data_type"] for item in matrix["items"]}
+        extra = present - legal
+        assert not extra, f"matrix 出现未注册的 data_type: {sorted(extra)}"
+
+    def test_validate_matrix_coverage_returns_no_issues(self):
+        matrix = get_source_capability_matrix()
+        issues = validate_matrix_coverage(matrix)
+        assert issues == [], f"matrix coverage issues: {issues}"
+
+    def test_validate_catches_missing_data_type(self):
+        """模拟新增 DataType 后 matrix 未同步的情况。"""
+        matrix = get_source_capability_matrix()
+        # 移除一条 entry，模拟"漏掉"
+        tampered = {
+            "version": matrix["version"],
+            "items": matrix["items"][:-1],
+            "freshness_legend": matrix["freshness_legend"],
+            "rate_limit_legend": matrix["rate_limit_legend"],
+        }
+        issues = validate_matrix_coverage(tampered)
+        assert issues, "validate_matrix_coverage 应该检测出漏掉的 data_type"
+        assert any("未出现在 matrix" in i for i in issues)
+
+    def test_validate_catches_empty_required_field(self):
+        matrix = get_source_capability_matrix()
+        first = dict(matrix["items"][0])
+        # 强行清空 unit（对定量类型应当报错）
+        if first["data_type"] in (
+            "ohlcv", "fund_flow", "board_fund_flow",
+            "realtime_quotes", "quote",
+        ):
+            first["unit"] = ""
+        else:
+            first["status_semantics"] = ""
+        tampered = {
+            "version": matrix["version"],
+            "items": [first, *matrix["items"][1:]],
+            "freshness_legend": matrix["freshness_legend"],
+            "rate_limit_legend": matrix["rate_limit_legend"],
+        }
+        issues = validate_matrix_coverage(tampered)
+        assert issues, "validate 应当报告被清空的字段"
+
+
+# ── 业务覆盖验收（任务要求：资金/龙虎榜/公告/评级/回购/研报）──────────
+class TestBusinessCoverage:
+    REQUIRED = [
+        "fund_flow",
+        "board_fund_flow",
+        "lhb",
+        "notice",
+        "rating",
+        "buyback",
+        "report",
+    ]
+
+    def test_required_business_types_covered(self):
+        matrix = get_source_capability_matrix()
+        present = {item["data_type"] for item in matrix["items"]}
+        for dt in self.REQUIRED:
+            assert dt in present, f"业务必需 data_type 缺失: {dt}"
+
+    def test_required_business_types_have_primary(self):
+        for dt in self.REQUIRED:
+            item = get_matrix_item(dt)
+            assert item is not None, f"{dt} 不在 matrix"
+            assert item["primary_vendor"], f"{dt} 缺 primary_vendor"
+            assert item["primary_endpoint"], f"{dt} 缺 primary_endpoint"
+            assert item["freshness"], f"{dt} 缺 freshness"
+            assert item["known_limits"], f"{dt} 缺 known_limits"
+            assert item["status_semantics"], f"{dt} 缺 status_semantics"
+
+    def test_fund_flow_unit_is_wan_yuan(self):
+        item = get_matrix_item("fund_flow")
+        assert item is not None
+        assert "万元" in item["unit"]
+
+    def test_lhb_force_requirement_in_semantics_or_limits(self):
+        item = get_matrix_item("lhb")
+        assert item is not None
+        combined = item["known_limits"] + " " + item["status_semantics"]
+        assert "force" in combined or "NOT_QUERIED" in combined, (
+            "LHB 的 force=True 要求应当反映在 known_limits 或 status_semantics"
+        )
+
+    def test_buyback_present(self):
+        item = get_matrix_item("buyback")
+        assert item is not None
+        assert item["primary_vendor"]
+
+    def test_report_and_rating_distinct(self):
+        rep = get_matrix_item("report")
+        rat = get_matrix_item("rating")
+        assert rep and rat
+        assert rep["data_type"] != rat["data_type"]
+
+
+# ── 安全：不含密钥 ────────────────────────────────────────────────────
+class TestNoSecrets:
+    SECRET_PATTERNS = [
+        "api_key",
+        "apikey",
+        "secret",
+        "token",
+        "Bearer ",
+        "sk-",
+    ]
+
+    def test_no_secret_patterns_in_matrix(self):
+        matrix = get_source_capability_matrix()
+        blob = json.dumps(matrix, ensure_ascii=False)
+        lowered = blob.lower()
+        for pat in self.SECRET_PATTERNS:
+            assert pat.lower() not in lowered, (
+                f"matrix 中出现疑似密钥字段: {pat}"
+            )
+
+    def test_no_secret_patterns_in_markdown(self):
+        md = render_source_capability_matrix_markdown()
+        lowered = md.lower()
+        for pat in self.SECRET_PATTERNS:
+            assert pat.lower() not in lowered, (
+                f"matrix markdown 中出现疑似密钥字段: {pat}"
+            )
+
+exec
+/bin/zsh -lc "sed -n '260,560p' tradingagents/dataflows/source_capability_matrix.py && sed -n '260,560p' tests/test_data023_source_capability_matrix.py && sed -n '1,220p' tradingagents/dataflows/source_catalog.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+
+    extra = present_types - expected_types
+    for dt_value in sorted(extra):
+        issues.append(
+            f"matrix 出现未注册的 data_type '{dt_value}'"
+        )
+
+    # 2. 每条 entry 关键字段非空
+    required_fields = (
+        "data_type",
+        "primary_vendor",
+        "primary_endpoint",
+        "fallback_chain",
+        "freshness",
+        "unit",
+        "known_limits",
+        "status_semantics",
+    )
+    for item in matrix.get("items", []):
+        for field_name in required_fields:
+            value = item.get(field_name)
+            if value is None or value == "" or value == []:
+                # unit / fallback_chain 对个别纯文本类 data_type 允许为空
+                if field_name == "unit" and item.get("data_type") in (
+                    DataType.NOTICE.value,
+                    DataType.REPORT.value,
+                    DataType.NEWS.value,
+                    DataType.GLOBAL_NEWS.value,
+                    DataType.RATING.value,
+                    DataType.INSIDER.value,
+                    DataType.ZT_POOL.value,
+                    DataType.HOT_STOCKS.value,
+                ):
+                    continue
+                if field_name == "fallback_chain" and item.get("source_count", 0) >= 1:
+                    continue
+                issues.append(
+                    f"data_type '{item.get('data_type')}' 字段 '{field_name}' 为空"
+                )
+
+    # 3. status_semantics 必须引用合法 freshness 值
+    valid_freshness = set(FRESHNESS_STATUS_SEMANTICS.keys())
+    for item in matrix.get("items", []):
+        if item.get("freshness") not in valid_freshness:
+            issues.append(
+                f"data_type '{item.get('data_type')}' freshness='"
+                f"{item.get('freshness')}' 不在合法枚举中"
+            )
+
+    return issues
+
+
+# ── 渲染：Markdown 文档 ──────────────────────────────────────────────
+def render_source_capability_matrix_markdown(
+    matrix: Optional[Dict[str, Any]] = None,
+) -> str:
+    """把 matrix 渲染成 Markdown 文档字符串（agent 可读）。"""
+    if matrix is None:
+        matrix = get_source_capability_matrix()
+
+    lines: List[str] = []
+    lines.append("# A 股数据源能力矩阵")
+    lines.append("")
+    lines.append(
+        "> 本文档由 `tradingagents/dataflows/source_capability_matrix.py` 自动生成。"
+        "记录每个 data_type 的首选 vendor、fallback、实时性、单位、已知限制与状态语义。"
+        "不包含任何 API Key 或密钥信息。"
+    )
+    lines.append("")
+    lines.append(f"- 代码目录：`tradingagents/dataflows/source_capability_matrix.py`")
+    lines.append(f"- 数据源目录：`tradingagents/dataflows/source_catalog.py`")
+    lines.append(f"- API 目录：`GET /v1/config/source-capability-matrix`")
+    lines.append(f"- 矩阵版本：`{matrix.get('version', '')}`")
+    lines.append(f"- data_type 数量：`{len(matrix.get('items', []))}`")
+    lines.append("")
+
+    lines.append("## 矩阵总览")
+    lines.append("")
+    lines.append(
+        "| data_type | 中文名 | primary_vendor | primary_endpoint | "
+        "fallback_vendor | freshness | unit | 限流风险 | source_count |"
+    )
+    lines.append(
+        "|-----------|--------|----------------|------------------|"
+        "-----------------|-----------|------|---------|--------------|"
+    )
+    for item in matrix.get("items", []):
+        lines.append(
+            f"| `{item['data_type']}` | {item.get('label_cn', '')} | "
+            f"{item['primary_vendor']} | `{item['primary_endpoint']}` | "
+            f"{item.get('fallback_vendor') or '-'} | `{item['freshness']}` | "
+            f"{item.get('unit') or '-'} | `{item.get('rate_limit_risk', '')}` | "
+            f"{item.get('source_count', 0)} |"
+        )
+    lines.append("")
+
+    lines.append("## 状态语义详情")
+    lines.append("")
+    lines.append(
+        "下表说明每个 data_type 的实时性边界、已知限制与 agent 应当如何使用。"
+    )
+    lines.append("")
+    for item in matrix.get("items", []):
+        lines.append(f"### `{item['data_type']}` — {item.get('label_cn', '')}")
+        lines.append("")
+        lines.append(f"- **首选源**：`{item['primary_vendor']}` / `{item['primary_endpoint']}`")
+        if item.get("fallback_chain"):
+            chain = " → ".join(item["fallback_chain"])
+            lines.append(f"- **Fallback 链**：{chain}")
+        lines.append(f"- **实时性**：`{item['freshness']}`")
+        lines.append(f"- **单位**：{item.get('unit') or '-'}")
+        lines.append(f"- **字段**：{', '.join(item.get('fields', [])) or '-'}")
+        lines.append(f"- **已知限制**：{item.get('known_limits', '-')}")
+        lines.append(f"- **状态语义**：{item.get('status_semantics', '-')}")
+        if item.get("notes"):
+            lines.append(f"- **备注**：{item['notes']}")
+        lines.append("")
+
+    lines.append("## Freshness 语义图例")
+    lines.append("")
+    lines.append("| freshness | 说明 |")
+    lines.append("|-----------|------|")
+    for key, value in matrix.get("freshness_legend", {}).items():
+        lines.append(f"| `{key}` | {value} |")
+    lines.append("")
+
+    lines.append("## 限流风险图例")
+    lines.append("")
+    lines.append("| rate_limit_risk | 说明 |")
+    lines.append("|-----------------|------|")
+    for key, value in matrix.get("rate_limit_legend", {}).items():
+        lines.append(f"| `{key}` | {value} |")
+    lines.append("")
+
+    lines.append("## 字段说明")
+    lines.append("")
+    lines.append("- `data_type`：数据类型枚举（quote / ohlcv / fund_flow / lhb / notice / report / rating / news / buyback ...）。")
+    lines.append("- `primary_vendor`：当前首选数据源 vendor（cn_akshare / cn_astock / cn_baostock ...）。")
+    lines.append("- `fallback_vendor`：首选 vendor 失败时的下一个 fallback vendor。")
+    lines.append("- `fallback_chain`：完整 fallback vendor 列表（按 priority 排序）。")
+    lines.append("- `freshness`：实时性等级（realtime / intraday / daily / delayed / stale / unknown）。")
+    lines.append("- `unit`：主要字段单位（万元 / 元 / 股 / 条 ...）。")
+    lines.append("- `known_limits`：已知限制摘要（限流风险 + known_gaps）。")
+    lines.append("- `status_semantics`：状态语义说明（freshness 含义 + 角色提示 + 关键风险）。")
+    lines.append("- `source_count`：该 data_type 在 source_catalog 中登记的 source 数量。")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def render_source_capability_matrix_text(
+    matrix: Optional[Dict[str, Any]] = None,
+) -> str:
+    """把 matrix 渲染成纯文本（用于 agent 紧凑上下文）。"""
+    if matrix is None:
+        matrix = get_source_capability_matrix()
+
+    lines: List[str] = []
+    lines.append("[Source Capability Matrix]")
+    lines.append(f"version: {matrix.get('version', '')}")
+    for item in matrix.get("items", []):
+        chain = ",".join(item.get("fallback_chain", []))
+        lines.append(
+            f"- {item['data_type']} | primary={item['primary_vendor']}/{item['primary_endpoint']} "
+            f"| fallback_chain={chain} | freshness={item['freshness']} "
+            f"| unit={item.get('unit') or '-'} | rate_limit={item.get('rate_limit_risk', '')} "
+            f"| limits={item.get('known_limits', '')} | semantics={item.get('status_semantics', '')}"
+        )
+    return "\n".join(lines)
+            )
+
+    def test_no_secret_patterns_in_text(self):
+        text = render_source_capability_matrix_text()
+        lowered = text.lower()
+        for pat in self.SECRET_PATTERNS:
+            assert pat.lower() not in lowered, (
+                f"matrix text 中出现疑似密钥字段: {pat}"
+            )
+
+
+# ── 渲染 ─────────────────────────────────────────────────────────────
+class TestRender:
+    def test_markdown_has_overview_table(self):
+        md = render_source_capability_matrix_markdown()
+        assert "# A 股数据源能力矩阵" in md
+        assert "## 矩阵总览" in md
+        assert "## 状态语义详情" in md
+        assert "## Freshness 语义图例" in md
+        assert "## 限流风险图例" in md
+
+    def test_markdown_includes_every_data_type(self):
+        matrix = get_source_capability_matrix()
+        md = render_source_capability_matrix_markdown(matrix)
+        for item in matrix["items"]:
+            assert f"`{item['data_type']}`" in md
+
+    def test_text_render_compact(self):
+        matrix = get_source_capability_matrix()
+        text = render_source_capability_matrix_text(matrix)
+        assert "[Source Capability Matrix]" in text
+        assert f"version: {matrix['version']}" in text
+        # 每条 entry 一行
+        lines = [
+            ln for ln in text.splitlines() if ln.startswith("- ")
+        ]
+        assert len(lines) == len(matrix["items"])
+
+
+# ── 一致性：matrix ↔ source_catalog ──────────────────────────────────
+class TestCatalogConsistency:
+    def test_primary_matches_catalog_primary(self):
+        from tradingagents.dataflows.source_catalog import get_primary_source
+
+        matrix = get_source_capability_matrix()
+        for item in matrix["items"]:
+            catalog_primary = get_primary_source(item["data_type"])
+            if catalog_primary is None:
+                continue
+            assert item["primary_vendor"] == catalog_primary.vendor, (
+                f"data_type={item['data_type']} primary vendor 不一致: "
+                f"matrix={item['primary_vendor']} "
+                f"catalog={catalog_primary.vendor}"
+            )
+
+    def test_freshness_matches_catalog_primary(self):
+        from tradingagents.dataflows.source_catalog import get_primary_source
+
+        matrix = get_source_capability_matrix()
+        for item in matrix["items"]:
+            catalog_primary = get_primary_source(item["data_type"])
+            if catalog_primary is None:
+                continue
+            assert item["freshness"] == catalog_primary.freshness.value
+
+
+# ── 脚本：CLI 生成的 MD 与 JSON 文件 ──────────────────────────────────
+class TestScriptCli:
+    """验证 scripts/export_source_capability_matrix.py 能稳定生成产物。"""
+
+    def test_script_validate_returns_zero(self):
+        import subprocess
+        import sys
+
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            [sys.executable, "scripts/export_source_capability_matrix.py",
+             "--validate", "--no-md"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, (
+            f"validate 失败: {result.stderr or result.stdout}"
+        )
+        assert "OK" in result.stdout
+
+    def test_script_stdout_json_is_valid_json(self):
+        import subprocess
+        import sys
+
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            [sys.executable, "scripts/export_source_capability_matrix.py",
+             "--stdout-json", "--no-md"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0
+        payload = json.loads(result.stdout)
+        assert payload["version"] == SOURCE_CAPABILITY_MATRIX_VERSION
+        assert isinstance(payload["items"], list)
+        assert len(payload["items"]) > 0
+# [DATA-001] source_catalog
+"""
+A股数据源能力目录与 fallback 矩阵。
+
+提供统一的 source capability 查询接口：
+  - 每种 data_type (quote / fund_flow / lhb / notice / report / ...)
+    有明确的主选 vendor / fallback 顺序
+  - 每个 source 记录 fields / unit / freshness / rate_limit_risk / known_gaps
+  - 缺少字段或单位未知的数据源不得标为 primary
+
+使用示例：
+    from tradingagents.dataflows.source_catalog import (
+        get_sources_for_type,
+        get_primary_source,
+        SourceCapability,
+    )
+    sources = get_sources_for_type("quote")
+    for s in sources:
+        print(s.vendor, s.fallback_priority, s.fields)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional
+
+
+class DataType(str, Enum):
+    QUOTE = "quote"
+    OHLCV = "ohlcv"
+    FUND_FLOW = "fund_flow"
+    BOARD_FUND_FLOW = "board_fund_flow"
+    LHB = "lhb"
+    MARGIN_TRADING = "margin_trading"
+    NOTICE = "notice"
+    REPORT = "report"
+    RATING = "rating"
+    NEWS = "news"
+    GLOBAL_NEWS = "global_news"
+    FINANCIALS = "financials"
+    INSIDER = "insider"
+    HOT_STOCKS = "hot_stocks"
+    ZT_POOL = "zt_pool"
+    REALTIME_QUOTES = "realtime_quotes"
+    BUYBACK = "buyback"  # [DATA-013] buyback_raw_evidence
+
+
+class Freshness(str, Enum):
+    REALTIME = "realtime"
+    INTRADAY = "intraday"
+    DAILY = "daily"
+    DELAYED = "delayed"
+    STALE = "stale"
+    UNKNOWN = "unknown"
+
+
+class RateLimitRisk(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class SourceCapability:
+    vendor: str
+    endpoint: str
+    data_type: DataType
+    fields: List[str] = field(default_factory=list)
+    unit: str = ""
+    freshness: Freshness = Freshness.UNKNOWN
+    rate_limit_risk: RateLimitRisk = RateLimitRisk.UNKNOWN
+    fallback_priority: int = 99
+    known_gaps: List[str] = field(default_factory=list)
+    is_primary: bool = False
+    notes: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "vendor": self.vendor,
+            "endpoint": self.endpoint,
+            "data_type": self.data_type.value,
+            "fields": self.fields,
+            "unit": self.unit,
+            "freshness": self.freshness.value,
+            "rate_limit_risk": self.rate_limit_risk.value,
+            "fallback_priority": self.fallback_priority,
+            "known_gaps": self.known_gaps,
+            "is_primary": self.is_primary,
+            "notes": self.notes,
+        }
+
+    @property
+    def can_be_primary(self) -> bool:
+        if not self.fields:
+            return False
+        if not self.unit and self.data_type in (
+            DataType.FUND_FLOW,
+            DataType.BOARD_FUND_FLOW,
+            DataType.OHLCV,
+            DataType.QUOTE,
+            DataType.REALTIME_QUOTES,
+        ):
+            return False
+        if self.freshness == Freshness.UNKNOWN:
+            return False
+        if self.freshness == Freshness.STALE:
+            return False
+        return True
+
+
+_SOURCE_CATALOG: List[SourceCapability] = []
+
+
+def _register(
+    vendor: str,
+    endpoint: str,
+    data_type: DataType,
+    *,
+    fields: Optional[List[str]] = None,
+    unit: str = "",
+    freshness: Freshness = Freshness.UNKNOWN,
+    rate_limit_risk: RateLimitRisk = RateLimitRisk.UNKNOWN,
+    fallback_priority: int = 99,
+    known_gaps: Optional[List[str]] = None,
+    is_primary: bool = False,
+    notes: str = "",
+) -> None:
+    cap = SourceCapability(
+        vendor=vendor,
+        endpoint=endpoint,
+        data_type=data_type,
+        fields=fields or [],
+        unit=unit,
+        freshness=freshness,
+        rate_limit_risk=rate_limit_risk,
+        fallback_priority=fallback_priority,
+        known_gaps=known_gaps or [],
+        is_primary=is_primary,
+        notes=notes,
+    )
+    if is_primary and not cap.can_be_primary:
+        cap.is_primary = False
+    _SOURCE_CATALOG.append(cap)
+
+
+def _build_catalog() -> None:
+    if _SOURCE_CATALOG:
+        return
+
+    # ── OHLCV / K-line ──────────────────────────────────────────────────
+    _register(
+        "cn_akshare", "stock_zh_a_hist",
+        DataType.OHLCV,
+        fields=["Date", "Open", "High", "Low", "Close", "Volume"],
+        unit="元/股, 股",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.MEDIUM,
+        fallback_priority=1,
+        is_primary=True,
+        notes="东财前复权日线，通过 AKShare 调用；盘中实时 patch 由 G-005 补丁机制提供",
+    )
+    _register(
+        "cn_akshare", "stock_zh_a_daily",
+        DataType.OHLCV,
+        fields=["Date", "Open", "High", "Low", "Close", "Volume"],
+        unit="元/股, 股",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.LOW,
+        fallback_priority=2,
+        known_gaps=["新浪历史接口偶有停机"],
+        notes="新浪前复权日线，cn_akshare 内部 fallback",
+    )
+    _register(
+        "cn_akshare", "stock_zh_a_hist_tx",
+        DataType.OHLCV,
+        fields=["Date", "Open", "High", "Low", "Close", "Volume"],
+        unit="元/股, 股",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.LOW,
+        fallback_priority=3,
+        known_gaps=["腾讯历史接口数据覆盖不如东财"],
+        notes="腾讯前复权日线，cn_akshare 内部 fallback",
+    )
+    _register(
+        "cn_astock", "finance.pae.baidu.com/kline",
+        DataType.OHLCV,
+        fields=["Date", "Open", "High", "Low", "Close", "Volume", "Amount"],
+        unit="未知",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.LOW,
+        fallback_priority=4,
+        known_gaps=["adjustment type unknown", "amount 单位不明确"],
+        notes="百度股市通 K 线，cn_astock 内部首选",
+    )
+    _register(
+        "cn_astock", "push2his.eastmoney.com/kline",
+        DataType.OHLCV,
+        fields=["Date", "Open", "High", "Low", "Close", "Volume"],
+        unit="元/股, 股",
+        freshness=Freshness.DAILY,
+        rate_limit_risk=RateLimitRisk.MEDIUM,
+        fallback_priority=5,
+        notes="东财 push2his 前复权 K 线，cn_astock 内部 fallback",
+    )
+    _register(
+        "cn_baostock", "query_history_k_data_plus",
+        DataType.OHLCV,
+        fields=["Date", "Open", "High", "Low", "Close", "Volume"],
+        unit="元/股, 股",
+        freshness=Freshness.DELAYED,
+        rate_limit_risk=RateLimitRisk.LOW,
+        fallback_priority=6,
+        known_gaps=["前复权 adjustflag=2，更新有延迟"],
+        notes="BaoStock 日线，延迟较大但稳定",
+    )
+
+    # ── 实时行情 ────────────────────────────────────────────────────────
+    _register(
+
+exec
+/bin/zsh -lc "nl -ba tests/test_data023_source_capability_matrix.py | sed -n '180,260p'; nl -ba tradingagents/dataflows/source_capability_matrix.py | sed -n '1,360p'; grep -R \"get_fallback_chain\\|def get_sources_for_type\\|def get_primary_source\" -n tradingagents/dataflows/source_catalog.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+   180	
+   181	# ── 业务覆盖验收（任务要求：资金/龙虎榜/公告/评级/回购/研报）──────────
+   182	class TestBusinessCoverage:
+   183	    REQUIRED = [
+   184	        "fund_flow",
+   185	        "board_fund_flow",
+   186	        "lhb",
+   187	        "notice",
+   188	        "rating",
+   189	        "buyback",
+   190	        "report",
+   191	    ]
+   192	
+   193	    def test_required_business_types_covered(self):
+   194	        matrix = get_source_capability_matrix()
+   195	        present = {item["data_type"] for item in matrix["items"]}
+   196	        for dt in self.REQUIRED:
+   197	            assert dt in present, f"业务必需 data_type 缺失: {dt}"
+   198	
+   199	    def test_required_business_types_have_primary(self):
+   200	        for dt in self.REQUIRED:
+   201	            item = get_matrix_item(dt)
+   202	            assert item is not None, f"{dt} 不在 matrix"
+   203	            assert item["primary_vendor"], f"{dt} 缺 primary_vendor"
+   204	            assert item["primary_endpoint"], f"{dt} 缺 primary_endpoint"
+   205	            assert item["freshness"], f"{dt} 缺 freshness"
+   206	            assert item["known_limits"], f"{dt} 缺 known_limits"
+   207	            assert item["status_semantics"], f"{dt} 缺 status_semantics"
+   208	
+   209	    def test_fund_flow_unit_is_wan_yuan(self):
+   210	        item = get_matrix_item("fund_flow")
+   211	        assert item is not None
+   212	        assert "万元" in item["unit"]
+   213	
+   214	    def test_lhb_force_requirement_in_semantics_or_limits(self):
+   215	        item = get_matrix_item("lhb")
+   216	        assert item is not None
+   217	        combined = item["known_limits"] + " " + item["status_semantics"]
+   218	        assert "force" in combined or "NOT_QUERIED" in combined, (
+   219	            "LHB 的 force=True 要求应当反映在 known_limits 或 status_semantics"
+   220	        )
+   221	
+   222	    def test_buyback_present(self):
+   223	        item = get_matrix_item("buyback")
+   224	        assert item is not None
+   225	        assert item["primary_vendor"]
+   226	
+   227	    def test_report_and_rating_distinct(self):
+   228	        rep = get_matrix_item("report")
+   229	        rat = get_matrix_item("rating")
+   230	        assert rep and rat
+   231	        assert rep["data_type"] != rat["data_type"]
+   232	
+   233	
+   234	# ── 安全：不含密钥 ────────────────────────────────────────────────────
+   235	class TestNoSecrets:
+   236	    SECRET_PATTERNS = [
+   237	        "api_key",
+   238	        "apikey",
+   239	        "secret",
+   240	        "token",
+   241	        "Bearer ",
+   242	        "sk-",
+   243	    ]
+   244	
+   245	    def test_no_secret_patterns_in_matrix(self):
+   246	        matrix = get_source_capability_matrix()
+   247	        blob = json.dumps(matrix, ensure_ascii=False)
+   248	        lowered = blob.lower()
+   249	        for pat in self.SECRET_PATTERNS:
+   250	            assert pat.lower() not in lowered, (
+   251	                f"matrix 中出现疑似密钥字段: {pat}"
+   252	            )
+   253	
+   254	    def test_no_secret_patterns_in_markdown(self):
+   255	        md = render_source_capability_matrix_markdown()
+   256	        lowered = md.lower()
+   257	        for pat in self.SECRET_PATTERNS:
+   258	            assert pat.lower() not in lowered, (
+   259	                f"matrix markdown 中出现疑似密钥字段: {pat}"
+   260	            )
+     1	# [DATA-023] source_capability_matrix
+     2	"""A股数据源能力矩阵导出。
+     3	
+     4	把分散在 `source_catalog`、docs 与报告里的数据源能力信息，
+     5	统一导出成 agent 可读、用户可查的供应商能力矩阵。
+     6	
+     7	每条 matrix entry 描述一种 `data_type`（行情 / 资金 / 龙虎榜 / 公告 /
+     8	评级 / 回购 / 研报 ...）的：
+     9	  - primary_vendor        — 当前首选数据源 vendor
+    10	  - primary_endpoint      — 首选 vendor 的端点
+    11	  - fallback_vendor       — 备选 vendor（fallback chain 中 priority 最小的下一个）
+    12	  - fallback_chain        — 全量 fallback vendor 列表（按 priority 排序）
+    13	  - freshness             — 实时性（realtime / intraday / daily / delayed / stale / unknown）
+    14	  - unit                  — 字段单位（万元 / 元 / 股 / 条 等）
+    15	  - known_limits          — 已知限制摘要（rate_limit_risk + known_gaps）
+    16	  - status_semantics      — 状态语义说明（告诉 agent 这条数据可用边界）
+    17	  - fields                — 主要字段
+    18	  - rate_limit_risk       — 限流风险等级
+    19	  - notes                 — 备注说明
+    20	
+    21	设计原则：
+    22	  - 不调用任何 live API；完全基于 source_catalog 静态导出。
+    23	  - 不读取 / 输出任何 API Key 或密钥相关内容。
+    24	  - 不改变 provider 路由 / fallback 行为。
+    25	  - 与 `MODEL_API_CATALOG` 类似，输出给 agent / UI / 文档复用。
+    26	
+    27	使用示例：
+    28	    from tradingagents.dataflows.source_capability_matrix import (
+    29	        get_source_capability_matrix,
+    30	        render_source_capability_matrix_markdown,
+    31	        validate_matrix_coverage,
+    32	    )
+    33	    matrix = get_source_capability_matrix()
+    34	    print(render_source_capability_matrix_markdown(matrix))
+    35	    issues = validate_matrix_coverage(matrix)
+    36	"""
+    37	
+    38	from __future__ import annotations
+    39	
+    40	from copy import deepcopy
+    41	from typing import Any, Dict, List, Optional
+    42	
+    43	from .source_catalog import (
+    44	    DataType,
+    45	    Freshness,
+    46	    RateLimitRisk,
+    47	    get_fallback_chain,
+    48	    get_primary_source,
+    49	    get_sources_for_type,
+    50	)
+    51	
+    52	
+    53	SOURCE_CAPABILITY_MATRIX_VERSION = "2026-06-27"
+    54	
+    55	
+    56	# ── 新鲜度语义说明 ────────────────────────────────────────────────────
+    57	# 告诉 agent / 用户每种 freshness 值代表的可用边界。
+    58	FRESHNESS_STATUS_SEMANTICS: Dict[str, str] = {
+    59	    Freshness.REALTIME.value: (
+    60	        "盘中实时推送（秒级）。最接近实时价，可作盘中决策依据；"
+    61	        "停牌 / 非交易时段无更新。"
+    62	    ),
+    63	    Freshness.INTRADAY.value: (
+    64	        "盘中更新但有延迟（分钟级）。适合盘中观察，不宜做毫秒级套利。"
+    65	    ),
+    66	    Freshness.DAILY.value: (
+    67	        "收盘后至次日开市前更新。盘中为前一交易日快照，不可用于实时决策。"
+    68	    ),
+    69	    Freshness.DELAYED.value: (
+    70	        "延迟 >1 个交易日（如 T+1 / T+2 财务数据）。仅适合长期回看与季度评估。"
+    71	    ),
+    72	    Freshness.STALE.value: (
+    73	        "数据陈旧或长期不更新。不可作为决策依据，需触发 fallback 或人工核实。"
+    74	    ),
+    75	    Freshness.UNKNOWN.value: (
+    76	        "新鲜度未知。使用前必须 verify，未 verify 不得作为 primary source。"
+    77	    ),
+    78	}
+    79	
+    80	
+    81	# ── 限流风险中文标签 ──────────────────────────────────────────────────
+    82	RATE_LIMIT_RISK_LABEL: Dict[str, str] = {
+    83	    RateLimitRisk.LOW.value: "低（可频繁调用）",
+    84	    RateLimitRisk.MEDIUM.value: "中（建议带缓存与退避）",
+    85	    RateLimitRisk.HIGH.value: "高（必须限流 + 可切换 fallback）",
+    86	    RateLimitRisk.UNKNOWN.value: "未知",
+    87	}
+    88	
+    89	
+    90	# ── data_type 中文标签 ────────────────────────────────────────────────
+    91	DATA_TYPE_LABEL_CN: Dict[str, str] = {
+    92	    DataType.QUOTE.value: "行情快照",
+    93	    DataType.OHLCV.value: "K 线 / 历史行情",
+    94	    DataType.FUND_FLOW.value: "个股资金流",
+    95	    DataType.BOARD_FUND_FLOW.value: "板块资金流",
+    96	    DataType.LHB.value: "龙虎榜",
+    97	    DataType.MARGIN_TRADING.value: "融资融券",
+    98	    DataType.NOTICE.value: "公司公告",
+    99	    DataType.REPORT.value: "券商研报",
+   100	    DataType.RATING.value: "分析师评级",
+   101	    DataType.NEWS.value: "个股新闻",
+   102	    DataType.GLOBAL_NEWS.value: "全市场快讯",
+   103	    DataType.FINANCIALS.value: "财务三表",
+   104	    DataType.INSIDER.value: "内部交易 / 股东",
+   105	    DataType.HOT_STOCKS.value: "热门股票",
+   106	    DataType.ZT_POOL.value: "涨停池",
+   107	    DataType.REALTIME_QUOTES.value: "实时行情",
+   108	    DataType.BUYBACK.value: "回购",
+   109	}
+   110	
+   111	
+   112	def _format_known_limits(
+   113	    rate_limit_risk: str,
+   114	    known_gaps: List[str],
+   115	) -> str:
+   116	    """把 rate_limit_risk 与 known_gaps 合并成一段可读的限制摘要。"""
+   117	    parts: List[str] = []
+   118	    risk_label = RATE_LIMIT_RISK_LABEL.get(
+   119	        rate_limit_risk, RATE_LIMIT_RISK_LABEL[RateLimitRisk.UNKNOWN.value]
+   120	    )
+   121	    parts.append(f"限流风险：{risk_label}")
+   122	    if known_gaps:
+   123	        parts.append("已知缺口：" + "；".join(known_gaps))
+   124	    return " | ".join(parts)
+   125	
+   126	
+   127	def _format_status_semantics(
+   128	    freshness_value: str,
+   129	    rate_limit_risk: str,
+   130	    known_gaps: List[str],
+   131	    is_primary: bool,
+   132	) -> str:
+   133	    """生成 status_semantics 字符串，说明这条数据的可用边界。
+   134	
+   135	    包含：freshness 含义 + primary/fallback 角色提示 + 关键风险。
+   136	    """
+   137	    base = FRESHNESS_STATUS_SEMANTICS.get(
+   138	        freshness_value, FRESHNESS_STATUS_SEMANTICS[Freshness.UNKNOWN.value]
+   139	    )
+   140	    role = "首选源（primary）" if is_primary else "备选源（fallback）"
+   141	    extras: List[str] = [f"角色：{role}"]
+   142	    if rate_limit_risk == RateLimitRisk.HIGH.value:
+   143	        extras.append("高限流风险，必须启用 fallback 与重试退避")
+   144	    if any("force" in g or "NOT_QUERIED" in g for g in known_gaps):
+   145	        extras.append("需 force=True 才会实际查询，默认返回 NOT_QUERIED")
+   146	    if any("不稳定" in g or "字段覆盖" in g for g in known_gaps):
+   147	        extras.append("字段覆盖不稳定，需校验后再信任")
+   148	    return base + "；" + "；".join(extras)
+   149	
+   150	
+   151	def _build_matrix_entry(data_type: DataType) -> Optional[Dict[str, Any]]:
+   152	    """为单个 data_type 构造 matrix entry；无任何 source 时返回 None。"""
+   153	    sources = get_sources_for_type(data_type)
+   154	    if not sources:
+   155	        return None
+   156	
+   157	    primary = get_primary_source(data_type)
+   158	    primary_source = primary if primary is not None else sources[0]
+   159	    fallback_chain = get_fallback_chain(data_type)
+   160	
+   161	    # fallback_vendor：剔除 primary 后下一个 vendor
+   162	    fallback_vendor = ""
+   163	    for vendor in fallback_chain:
+   164	        if vendor != primary_source.vendor:
+   165	            fallback_vendor = vendor
+   166	            break
+   167	
+   168	    known_gaps = list(primary_source.known_gaps)
+   169	    freshness_value = primary_source.freshness.value
+   170	    rate_limit_risk = primary_source.rate_limit_risk.value
+   171	
+   172	    return {
+   173	        "data_type": data_type.value,
+   174	        "label_cn": DATA_TYPE_LABEL_CN.get(data_type.value, data_type.value),
+   175	        "primary_vendor": primary_source.vendor,
+   176	        "primary_endpoint": primary_source.endpoint,
+   177	        "is_primary_confirmed": primary is not None,
+   178	        "fallback_vendor": fallback_vendor,
+   179	        "fallback_chain": fallback_chain,
+   180	        "freshness": freshness_value,
+   181	        "unit": primary_source.unit,
+   182	        "fields": list(primary_source.fields),
+   183	        "rate_limit_risk": rate_limit_risk,
+   184	        "known_limits": _format_known_limits(rate_limit_risk, known_gaps),
+   185	        "status_semantics": _format_status_semantics(
+   186	            freshness_value,
+   187	            rate_limit_risk,
+   188	            known_gaps,
+   189	            primary is not None,
+   190	        ),
+   191	        "source_count": len(sources),
+   192	        "notes": primary_source.notes,
+   193	    }
+   194	
+   195	
+   196	def get_source_capability_matrix() -> Dict[str, Any]:
+   197	    """导出统一的数据源能力矩阵。
+   198	
+   199	    返回结构：
+   200	        {
+   201	            "version": "2026-06-27",
+   202	            "items": [ ... matrix entry ... ],
+   203	            "freshness_legend": {freshness_value: 说明},
+   204	            "rate_limit_legend": {risk_value: 说明},
+   205	        }
+   206	
+   207	    返回深拷贝，调用方修改不会影响模块内部状态。
+   208	    """
+   209	    items: List[Dict[str, Any]] = []
+   210	    for data_type in DataType:
+   211	        entry = _build_matrix_entry(data_type)
+   212	        if entry is not None:
+   213	            items.append(entry)
+   214	
+   215	    return {
+   216	        "version": SOURCE_CAPABILITY_MATRIX_VERSION,
+   217	        "items": items,
+   218	        "freshness_legend": dict(FRESHNESS_STATUS_SEMANTICS),
+   219	        "rate_limit_legend": dict(RATE_LIMIT_RISK_LABEL),
+   220	    }
+   221	
+   222	
+   223	def get_matrix_item(data_type: str) -> Optional[Dict[str, Any]]:
+   224	    """按 data_type 查询单条 matrix entry。"""
+   225	    matrix = get_source_capability_matrix()
+   226	    for item in matrix["items"]:
+   227	        if item["data_type"] == data_type:
+   228	            return deepcopy(item)
+   229	    return None
+   230	
+   231	
+   232	def validate_matrix_coverage(
+   233	    matrix: Optional[Dict[str, Any]] = None,
+   234	) -> List[str]:
+   235	    """检查 matrix 覆盖是否完整。
+   236	
+   237	    验收要求：新增 DataType 不会漏进矩阵；每条 entry 关键字段非空。
+   238	
+   239	    返回 issue 列表（空列表表示通过）。
+   240	    """
+   241	    if matrix is None:
+   242	        matrix = get_source_capability_matrix()
+   243	
+   244	    issues: List[str] = []
+   245	
+   246	    # 1. 每个 source_catalog 中的 DataType 必须有对应 matrix entry
+   247	    expected_types = {dt.value for dt in DataType}
+   248	    present_types = {item["data_type"] for item in matrix.get("items", [])}
+   249	    # 只校验 source_catalog 中确实有 source 注册的 data_type
+   250	    registered_types = set()
+   251	    for dt in DataType:
+   252	        if get_sources_for_type(dt):
+   253	            registered_types.add(dt.value)
+   254	
+   255	    missing = registered_types - present_types
+   256	    for dt_value in sorted(missing):
+   257	        issues.append(
+   258	            f"data_type '{dt_value}' 在 source_catalog 已注册但未出现在 matrix"
+   259	        )
+   260	
+   261	    extra = present_types - expected_types
+   262	    for dt_value in sorted(extra):
+   263	        issues.append(
+   264	            f"matrix 出现未注册的 data_type '{dt_value}'"
+   265	        )
+   266	
+   267	    # 2. 每条 entry 关键字段非空
+   268	    required_fields = (
+   269	        "data_type",
+   270	        "primary_vendor",
+   271	        "primary_endpoint",
+   272	        "fallback_chain",
+   273	        "freshness",
+   274	        "unit",
+   275	        "known_limits",
+   276	        "status_semantics",
+   277	    )
+   278	    for item in matrix.get("items", []):
+   279	        for field_name in required_fields:
+   280	            value = item.get(field_name)
+   281	            if value is None or value == "" or value == []:
+   282	                # unit / fallback_chain 对个别纯文本类 data_type 允许为空
+   283	                if field_name == "unit" and item.get("data_type") in (
+   284	                    DataType.NOTICE.value,
+   285	                    DataType.REPORT.value,
+   286	                    DataType.NEWS.value,
+   287	                    DataType.GLOBAL_NEWS.value,
+   288	                    DataType.RATING.value,
+   289	                    DataType.INSIDER.value,
+   290	                    DataType.ZT_POOL.value,
+   291	                    DataType.HOT_STOCKS.value,
+   292	                ):
+   293	                    continue
+   294	                if field_name == "fallback_chain" and item.get("source_count", 0) >= 1:
+   295	                    continue
+   296	                issues.append(
+   297	                    f"data_type '{item.get('data_type')}' 字段 '{field_name}' 为空"
+   298	                )
+   299	
+   300	    # 3. status_semantics 必须引用合法 freshness 值
+   301	    valid_freshness = set(FRESHNESS_STATUS_SEMANTICS.keys())
+   302	    for item in matrix.get("items", []):
+   303	        if item.get("freshness") not in valid_freshness:
+   304	            issues.append(
+   305	                f"data_type '{item.get('data_type')}' freshness='"
+   306	                f"{item.get('freshness')}' 不在合法枚举中"
+   307	            )
+   308	
+   309	    return issues
+   310	
+   311	
+   312	# ── 渲染：Markdown 文档 ──────────────────────────────────────────────
+   313	def render_source_capability_matrix_markdown(
+   314	    matrix: Optional[Dict[str, Any]] = None,
+   315	) -> str:
+   316	    """把 matrix 渲染成 Markdown 文档字符串（agent 可读）。"""
+   317	    if matrix is None:
+   318	        matrix = get_source_capability_matrix()
+   319	
+   320	    lines: List[str] = []
+   321	    lines.append("# A 股数据源能力矩阵")
+   322	    lines.append("")
+   323	    lines.append(
+   324	        "> 本文档由 `tradingagents/dataflows/source_capability_matrix.py` 自动生成。"
+   325	        "记录每个 data_type 的首选 vendor、fallback、实时性、单位、已知限制与状态语义。"
+   326	        "不包含任何 API Key 或密钥信息。"
+   327	    )
+   328	    lines.append("")
+   329	    lines.append(f"- 代码目录：`tradingagents/dataflows/source_capability_matrix.py`")
+   330	    lines.append(f"- 数据源目录：`tradingagents/dataflows/source_catalog.py`")
+   331	    lines.append(f"- API 目录：`GET /v1/config/source-capability-matrix`")
+   332	    lines.append(f"- 矩阵版本：`{matrix.get('version', '')}`")
+   333	    lines.append(f"- data_type 数量：`{len(matrix.get('items', []))}`")
+   334	    lines.append("")
+   335	
+   336	    lines.append("## 矩阵总览")
+   337	    lines.append("")
+   338	    lines.append(
+   339	        "| data_type | 中文名 | primary_vendor | primary_endpoint | "
+   340	        "fallback_vendor | freshness | unit | 限流风险 | source_count |"
+   341	    )
+   342	    lines.append(
+   343	        "|-----------|--------|----------------|------------------|"
+   344	        "-----------------|-----------|------|---------|--------------|"
+   345	    )
+   346	    for item in matrix.get("items", []):
+   347	        lines.append(
+   348	            f"| `{item['data_type']}` | {item.get('label_cn', '')} | "
+   349	            f"{item['primary_vendor']} | `{item['primary_endpoint']}` | "
+   350	            f"{item.get('fallback_vendor') or '-'} | `{item['freshness']}` | "
+   351	            f"{item.get('unit') or '-'} | `{item.get('rate_limit_risk', '')}` | "
+   352	            f"{item.get('source_count', 0)} |"
+   353	        )
+   354	    lines.append("")
+   355	
+   356	    lines.append("## 状态语义详情")
+   357	    lines.append("")
+   358	    lines.append(
+   359	        "下表说明每个 data_type 的实时性边界、已知限制与 agent 应当如何使用。"
+   360	    )
+tradingagents/dataflows/source_catalog.py:631:def get_sources_for_type(data_type: str | DataType) -> List[SourceCapability]:
+tradingagents/dataflows/source_catalog.py:643:def get_primary_source(data_type: str | DataType) -> Optional[SourceCapability]:
+tradingagents/dataflows/source_catalog.py:651:def get_fallback_chain(data_type: str | DataType) -> List[str]:
+
+exec
+/bin/zsh -lc "nl -ba tests/test_data023_source_capability_matrix.py | sed -n '254,330p'; nl -ba tradingagents/dataflows/source_catalog.py | sed -n '620,670p'; python -m pytest tests/test_data023_source_capability_matrix.py -q" in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+   254	    def test_no_secret_patterns_in_markdown(self):
+   255	        md = render_source_capability_matrix_markdown()
+   256	        lowered = md.lower()
+   257	        for pat in self.SECRET_PATTERNS:
+   258	            assert pat.lower() not in lowered, (
+   259	                f"matrix markdown 中出现疑似密钥字段: {pat}"
+   260	            )
+   261	
+   262	    def test_no_secret_patterns_in_text(self):
+   263	        text = render_source_capability_matrix_text()
+   264	        lowered = text.lower()
+   265	        for pat in self.SECRET_PATTERNS:
+   266	            assert pat.lower() not in lowered, (
+   267	                f"matrix text 中出现疑似密钥字段: {pat}"
+   268	            )
+   269	
+   270	
+   271	# ── 渲染 ─────────────────────────────────────────────────────────────
+   272	class TestRender:
+   273	    def test_markdown_has_overview_table(self):
+   274	        md = render_source_capability_matrix_markdown()
+   275	        assert "# A 股数据源能力矩阵" in md
+   276	        assert "## 矩阵总览" in md
+   277	        assert "## 状态语义详情" in md
+   278	        assert "## Freshness 语义图例" in md
+   279	        assert "## 限流风险图例" in md
+   280	
+   281	    def test_markdown_includes_every_data_type(self):
+   282	        matrix = get_source_capability_matrix()
+   283	        md = render_source_capability_matrix_markdown(matrix)
+   284	        for item in matrix["items"]:
+   285	            assert f"`{item['data_type']}`" in md
+   286	
+   287	    def test_text_render_compact(self):
+   288	        matrix = get_source_capability_matrix()
+   289	        text = render_source_capability_matrix_text(matrix)
+   290	        assert "[Source Capability Matrix]" in text
+   291	        assert f"version: {matrix['version']}" in text
+   292	        # 每条 entry 一行
+   293	        lines = [
+   294	            ln for ln in text.splitlines() if ln.startswith("- ")
+   295	        ]
+   296	        assert len(lines) == len(matrix["items"])
+   297	
+   298	
+   299	# ── 一致性：matrix ↔ source_catalog ──────────────────────────────────
+   300	class TestCatalogConsistency:
+   301	    def test_primary_matches_catalog_primary(self):
+   302	        from tradingagents.dataflows.source_catalog import get_primary_source
+   303	
+   304	        matrix = get_source_capability_matrix()
+   305	        for item in matrix["items"]:
+   306	            catalog_primary = get_primary_source(item["data_type"])
+   307	            if catalog_primary is None:
+   308	                continue
+   309	            assert item["primary_vendor"] == catalog_primary.vendor, (
+   310	                f"data_type={item['data_type']} primary vendor 不一致: "
+   311	                f"matrix={item['primary_vendor']} "
+   312	                f"catalog={catalog_primary.vendor}"
+   313	            )
+   314	
+   315	    def test_freshness_matches_catalog_primary(self):
+   316	        from tradingagents.dataflows.source_catalog import get_primary_source
+   317	
+   318	        matrix = get_source_capability_matrix()
+   319	        for item in matrix["items"]:
+   320	            catalog_primary = get_primary_source(item["data_type"])
+   321	            if catalog_primary is None:
+   322	                continue
+   323	            assert item["freshness"] == catalog_primary.freshness.value
+   324	
+   325	
+   326	# ── 脚本：CLI 生成的 MD 与 JSON 文件 ──────────────────────────────────
+   327	class TestScriptCli:
+   328	    """验证 scripts/export_source_capability_matrix.py 能稳定生成产物。"""
+   329	
+   330	    def test_script_validate_returns_zero(self):
+   620	        unit="元(需/10000转万元)",
+   621	        freshness=Freshness.DAILY,
+   622	        rate_limit_risk=RateLimitRisk.MEDIUM,
+   623	        fallback_priority=2,
+   624	        notes="东财 datacenter 回购数据",
+   625	    )
+   626	
+   627	
+   628	_build_catalog()
+   629	
+   630	
+   631	def get_sources_for_type(data_type: str | DataType) -> List[SourceCapability]:
+   632	    if isinstance(data_type, str):
+   633	        try:
+   634	            data_type = DataType(data_type)
+   635	        except ValueError:
+   636	            return []
+   637	    return sorted(
+   638	        [s for s in _SOURCE_CATALOG if s.data_type == data_type],
+   639	        key=lambda s: s.fallback_priority,
+   640	    )
+   641	
+   642	
+   643	def get_primary_source(data_type: str | DataType) -> Optional[SourceCapability]:
+   644	    sources = get_sources_for_type(data_type)
+   645	    for s in sources:
+   646	        if s.is_primary:
+   647	            return s
+   648	    return None
+   649	
+   650	
+   651	def get_fallback_chain(data_type: str | DataType) -> List[str]:
+   652	    sources = get_sources_for_type(data_type)
+   653	    return [s.vendor for s in sources]
+   654	
+   655	
+   656	def get_all_data_types() -> List[str]:
+   657	    seen = set()
+   658	    result = []
+   659	    for s in _SOURCE_CATALOG:
+   660	        if s.data_type.value not in seen:
+   661	            seen.add(s.data_type.value)
+   662	            result.append(s.data_type.value)
+   663	    return result
+   664	
+   665	
+   666	def get_catalog_summary() -> List[Dict[str, Any]]:
+   667	    return [s.to_dict() for s in _SOURCE_CATALOG]
+   668	
+   669	
+   670	def get_vendor_capabilities(vendor: str) -> List[SourceCapability]:
+zsh:1: command not found: python
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && python -m pytest tests/test_data023_source_capability_matrix.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 279ms:
+...............................                                          [100%]
+31 passed in 0.08s
+
+exec
+/bin/zsh -lc "grep -n \"model-catalog\" -B5 -A15 api/main.py; sed -n '1,120p' docs/source_capability_matrix.json; sed -n '1,120p' docs/SOURCE_CAPABILITY_MATRIX.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+4211-):
+4212-    """获取当前用户运行时配置。"""
+4213-    return _config_response_for_user(current_user, db)
+4214-
+4215-
+4216:@app.get("/v1/config/model-catalog", response_model=ModelApiCatalogResponse)
+4217-def get_model_api_catalog_endpoint(
+4218-    current_user: UserDB = Depends(_require_web_user),
+4219-):
+4220-    """返回项目已整理的模型/API 端点目录，不包含任何密钥。"""
+4221-    from tradingagents.llm_clients import get_model_api_catalog
+4222-
+4223-    return get_model_api_catalog()
+4224-
+4225-
+4226-@app.get(
+4227-    "/v1/config/source-capability-matrix",
+4228-    response_model=SourceCapabilityMatrixResponse,
+4229-)
+4230-def get_source_capability_matrix_endpoint(
+4231-    current_user: UserDB = Depends(_require_web_user),
+{
+  "version": "2026-06-27",
+  "items": [
+    {
+      "data_type": "ohlcv",
+      "label_cn": "K 线 / 历史行情",
+      "primary_vendor": "cn_akshare",
+      "primary_endpoint": "stock_zh_a_hist",
+      "is_primary_confirmed": true,
+      "fallback_vendor": "cn_astock",
+      "fallback_chain": [
+        "cn_akshare",
+        "cn_akshare",
+        "cn_akshare",
+        "cn_astock",
+        "cn_astock",
+        "cn_baostock"
+      ],
+      "freshness": "daily",
+      "unit": "元/股, 股",
+      "fields": [
+        "Date",
+        "Open",
+        "High",
+        "Low",
+        "Close",
+        "Volume"
+      ],
+      "rate_limit_risk": "medium",
+      "known_limits": "限流风险：中（建议带缓存与退避）",
+      "status_semantics": "收盘后至次日开市前更新。盘中为前一交易日快照，不可用于实时决策。；角色：首选源（primary）",
+      "source_count": 6,
+      "notes": "东财前复权日线，通过 AKShare 调用；盘中实时 patch 由 G-005 补丁机制提供"
+    },
+    {
+      "data_type": "fund_flow",
+      "label_cn": "个股资金流",
+      "primary_vendor": "cn_akshare",
+      "primary_endpoint": "stock_individual_fund_flow",
+      "is_primary_confirmed": true,
+      "fallback_vendor": "cn_astock",
+      "fallback_chain": [
+        "cn_akshare",
+        "cn_astock"
+      ],
+      "freshness": "daily",
+      "unit": "万元",
+      "fields": [
+        "日期",
+        "主力净流入",
+        "小单净流入",
+        "中单净流入",
+        "大单净流入",
+        "超大单净流入"
+      ],
+      "rate_limit_risk": "high",
+      "known_limits": "限流风险：高（必须限流 + 可切换 fallback） | 已知缺口：高限流风险；ConnectionError 常见",
+      "status_semantics": "收盘后至次日开市前更新。盘中为前一交易日快照，不可用于实时决策。；角色：首选源（primary）；高限流风险，必须启用 fallback 与重试退避",
+      "source_count": 2,
+      "notes": "AKShare/东财个股资金流，限流风险高，fallback 必须可切换"
+    },
+    {
+      "data_type": "board_fund_flow",
+      "label_cn": "板块资金流",
+      "primary_vendor": "cn_akshare",
+      "primary_endpoint": "stock_board_industry_fund_flow_em",
+      "is_primary_confirmed": true,
+      "fallback_vendor": "cn_astock",
+      "fallback_chain": [
+        "cn_akshare",
+        "cn_akshare",
+        "cn_astock"
+      ],
+      "freshness": "daily",
+      "unit": "万元",
+      "fields": [
+        "板块名称",
+        "今日主力净流入-净额"
+      ],
+      "rate_limit_risk": "medium",
+      "known_limits": "限流风险：中（建议带缓存与退避）",
+      "status_semantics": "收盘后至次日开市前更新。盘中为前一交易日快照，不可用于实时决策。；角色：首选源（primary）",
+      "source_count": 3,
+      "notes": "AKShare/东财行业板块资金流"
+    },
+    {
+      "data_type": "lhb",
+      "label_cn": "龙虎榜",
+      "primary_vendor": "cn_akshare",
+      "primary_endpoint": "stock_lhb_detail_em",
+      "is_primary_confirmed": true,
+      "fallback_vendor": "cn_astock",
+      "fallback_chain": [
+        "cn_akshare",
+        "cn_astock"
+      ],
+      "freshness": "daily",
+      "unit": "万元",
+      "fields": [
+        "代码",
+        "名称",
+        "上榜原因",
+        "买入额",
+        "卖出额",
+        "净买额"
+      ],
+      "rate_limit_risk": "high",
+      "known_limits": "限流风险：高（必须限流 + 可切换 fallback） | 已知缺口：高限流风险；force=False 时返回 NOT_QUERIED",
+      "status_semantics": "收盘后至次日开市前更新。盘中为前一交易日快照，不可用于实时决策。；角色：首选源（primary）；高限流风险，必须启用 fallback 与重试退避；需 force=True 才会实际查询，默认返回 NOT_QUERIED",
+      "source_count": 2,
+      "notes": "AKShare/东财龙虎榜，必须 force=True 才实际查询"
+    },
+    {
+      "data_type": "margin_trading",
+      "label_cn": "融资融券",
+      "primary_vendor": "cn_akshare",
+      "primary_endpoint": "stock_margin_underlying_info_szse",
+      "is_primary_confirmed": true,
+      "fallback_vendor": "cn_astock",
+      "fallback_chain": [
+# A 股数据源能力矩阵
+
+> 本文档由 `tradingagents/dataflows/source_capability_matrix.py` 自动生成。记录每个 data_type 的首选 vendor、fallback、实时性、单位、已知限制与状态语义。不包含任何 API Key 或密钥信息。
+
+- 代码目录：`tradingagents/dataflows/source_capability_matrix.py`
+- 数据源目录：`tradingagents/dataflows/source_catalog.py`
+- API 目录：`GET /v1/config/source-capability-matrix`
+- 矩阵版本：`2026-06-27`
+- data_type 数量：`16`
+
+## 矩阵总览
+
+| data_type | 中文名 | primary_vendor | primary_endpoint | fallback_vendor | freshness | unit | 限流风险 | source_count |
+|-----------|--------|----------------|------------------|-----------------|-----------|------|---------|--------------|
+| `ohlcv` | K 线 / 历史行情 | cn_akshare | `stock_zh_a_hist` | cn_astock | `daily` | 元/股, 股 | `medium` | 6 |
+| `fund_flow` | 个股资金流 | cn_akshare | `stock_individual_fund_flow` | cn_astock | `daily` | 万元 | `high` | 2 |
+| `board_fund_flow` | 板块资金流 | cn_akshare | `stock_board_industry_fund_flow_em` | cn_astock | `daily` | 万元 | `medium` | 3 |
+| `lhb` | 龙虎榜 | cn_akshare | `stock_lhb_detail_em` | cn_astock | `daily` | 万元 | `high` | 2 |
+| `margin_trading` | 融资融券 | cn_akshare | `stock_margin_underlying_info_szse` | cn_astock | `daily` | 万元/股 | `medium` | 2 |
+| `notice` | 公司公告 | cn_astock | `cninfo.com.cn/hisAnnouncement` | cn_akshare | `daily` | 条 | `low` | 2 |
+| `report` | 券商研报 | cn_akshare | `stock_institute_recommend` | cn_astock | `daily` | 条 | `medium` | 2 |
+| `rating` | 分析师评级 | cn_akshare | `stock_institute_recommend_detail` | cn_astock | `daily` | 条 | `medium` | 2 |
+| `news` | 个股新闻 | cn_akshare | `stock_news_em` | cn_astock | `daily` | 条 | `medium` | 2 |
+| `global_news` | 全市场快讯 | cn_akshare | `news_cctv` | cn_astock | `daily` | 条 | `low` | 3 |
+| `financials` | 财务三表 | cn_akshare | `stock_individual_info_em` | cn_astock | `delayed` | 项 | `medium` | 4 |
+| `insider` | 内部交易 / 股东 | cn_akshare | `stock_main_stock_holder` | cn_astock | `delayed` | 股 | `medium` | 2 |
+| `hot_stocks` | 热门股票 | cn_akshare | `stock_hot_follow_xq` | cn_astock | `intraday` | 条 | `medium` | 2 |
+| `zt_pool` | 涨停池 | cn_akshare | `stock_zt_pool_em` | cn_astock | `daily` | 条 | `medium` | 2 |
+| `realtime_quotes` | 实时行情 | cn_akshare | `hq.sinajs.cn` | cn_astock | `realtime` | 元, 股, 元 | `low` | 3 |
+| `buyback` | 回购 | cn_akshare | `stock_repurchase` | cn_astock | `daily` | 万元 | `medium` | 2 |
+
+## 状态语义详情
+
+下表说明每个 data_type 的实时性边界、已知限制与 agent 应当如何使用。
+
+### `ohlcv` — K 线 / 历史行情
+
+- **首选源**：`cn_akshare` / `stock_zh_a_hist`
+- **Fallback 链**：cn_akshare → cn_akshare → cn_akshare → cn_astock → cn_astock → cn_baostock
+- **实时性**：`daily`
+- **单位**：元/股, 股
+- **字段**：Date, Open, High, Low, Close, Volume
+- **已知限制**：限流风险：中（建议带缓存与退避）
+- **状态语义**：收盘后至次日开市前更新。盘中为前一交易日快照，不可用于实时决策。；角色：首选源（primary）
+- **备注**：东财前复权日线，通过 AKShare 调用；盘中实时 patch 由 G-005 补丁机制提供
+
+### `fund_flow` — 个股资金流
+
+- **首选源**：`cn_akshare` / `stock_individual_fund_flow`
+- **Fallback 链**：cn_akshare → cn_astock
+- **实时性**：`daily`
+- **单位**：万元
+- **字段**：日期, 主力净流入, 小单净流入, 中单净流入, 大单净流入, 超大单净流入
+- **已知限制**：限流风险：高（必须限流 + 可切换 fallback） | 已知缺口：高限流风险；ConnectionError 常见
+- **状态语义**：收盘后至次日开市前更新。盘中为前一交易日快照，不可用于实时决策。；角色：首选源（primary）；高限流风险，必须启用 fallback 与重试退避
+- **备注**：AKShare/东财个股资金流，限流风险高，fallback 必须可切换
+
+### `board_fund_flow` — 板块资金流
+
+- **首选源**：`cn_akshare` / `stock_board_industry_fund_flow_em`
+- **Fallback 链**：cn_akshare → cn_akshare → cn_astock
+- **实时性**：`daily`
+- **单位**：万元
+- **字段**：板块名称, 今日主力净流入-净额
+- **已知限制**：限流风险：中（建议带缓存与退避）
+- **状态语义**：收盘后至次日开市前更新。盘中为前一交易日快照，不可用于实时决策。；角色：首选源（primary）
+- **备注**：AKShare/东财行业板块资金流
+
+### `lhb` — 龙虎榜
+
+- **首选源**：`cn_akshare` / `stock_lhb_detail_em`
+- **Fallback 链**：cn_akshare → cn_astock
+- **实时性**：`daily`
+- **单位**：万元
+- **字段**：代码, 名称, 上榜原因, 买入额, 卖出额, 净买额
+- **已知限制**：限流风险：高（必须限流 + 可切换 fallback） | 已知缺口：高限流风险；force=False 时返回 NOT_QUERIED
+- **状态语义**：收盘后至次日开市前更新。盘中为前一交易日快照，不可用于实时决策。；角色：首选源（primary）；高限流风险，必须启用 fallback 与重试退避；需 force=True 才会实际查询，默认返回 NOT_QUERIED
+- **备注**：AKShare/东财龙虎榜，必须 force=True 才实际查询
+
+### `margin_trading` — 融资融券
+
+- **首选源**：`cn_akshare` / `stock_margin_underlying_info_szse`
+- **Fallback 链**：cn_akshare → cn_astock
+- **实时性**：`daily`
+- **单位**：万元/股
+- **字段**：标的证券代码, 标的证券简称, 融资买入额, 融资余额, 融券卖出量, 融券余量
+- **已知限制**：限流风险：中（建议带缓存与退避）
+- **状态语义**：收盘后至次日开市前更新。盘中为前一交易日快照，不可用于实时决策。；角色：首选源（primary）
+- **备注**：AKShare 深交所融资融券标的；沪市用 stock_margin_underlying_info_sse
+
+### `notice` — 公司公告
+
+- **首选源**：`cn_astock` / `cninfo.com.cn/hisAnnouncement`
+- **Fallback 链**：cn_astock → cn_akshare
+- **实时性**：`daily`
+- **单位**：条
+- **字段**：announcementTitle, announcementTypeName, announcementTime, announcementId
+- **已知限制**：限流风险：低（可频繁调用）
+- **状态语义**：收盘后至次日开市前更新。盘中为前一交易日快照，不可用于实时决策。；角色：首选源（primary）
+- **备注**：巨潮公告全文检索，需 orgId 映射
+
+### `report` — 券商研报
+
+- **首选源**：`cn_akshare` / `stock_institute_recommend`
+- **Fallback 链**：cn_akshare → cn_astock
+- **实时性**：`daily`
+- **单位**：条
+- **字段**：日期, 研究机构, 评级, 标题, 目标价
+- **已知限制**：限流风险：中（建议带缓存与退避） | 已知缺口：AKShare 研报接口字段覆盖不稳定
+- **状态语义**：收盘后至次日开市前更新。盘中为前一交易日快照，不可用于实时决策。；角色：首选源（primary）；字段覆盖不稳定，需校验后再信任
+- **备注**：AKShare 券商研报/评级推荐接口
+
+### `rating` — 分析师评级
+
+- **首选源**：`cn_akshare` / `stock_institute_recommend_detail`
+- **Fallback 链**：cn_akshare → cn_astock
+- **实时性**：`daily`
+- **单位**：条
+- **字段**：股票代码, 股票名称, 目标价, 最新评级, 评级机构, 分析师, 行业, 评级日期
+- **已知限制**：限流风险：中（建议带缓存与退避） | 已知缺口：新浪财经评级数据覆盖不全
+
+exec
+/bin/zsh -lc "sed -n '1,80p' api/main.py; grep -R \"source-capability-matrix\\|SourceCapability\" -n frontend api tests docs | head -100; git diff --cached --stat" in /Users/maybee/TradingAgents-AShare
+ succeeded in 6155ms:
+Binary file api/__pycache__/main.cpython-312.pyc matches
+api/main.py:1039:class SourceCapabilityMatrixItem(BaseModel):
+api/main.py:1058:class SourceCapabilityMatrixResponse(BaseModel):
+api/main.py:1061:    items: List[SourceCapabilityMatrixItem]
+api/main.py:4227:    "/v1/config/source-capability-matrix",
+api/main.py:4228:    response_model=SourceCapabilityMatrixResponse,
+Binary file tests/__pycache__/test_data_source_catalog.cpython-312-pytest-9.0.2.pyc matches
+tests/test_data_source_catalog.py:9:    SourceCapability,
+tests/test_data_source_catalog.py:52:class TestSourceCapability:
+tests/test_data_source_catalog.py:54:        cap = SourceCapability(
+tests/test_data_source_catalog.py:67:        cap = SourceCapability(
+tests/test_data_source_catalog.py:92:        cap = SourceCapability(
+tests/test_data_source_catalog.py:99:        cap = SourceCapability(
+tests/test_data_source_catalog.py:106:        cap = SourceCapability(
+tests/test_data_source_catalog.py:113:        cap = SourceCapability(
+tests/test_data_source_catalog.py:120:        cap = SourceCapability(
+tests/test_data_source_catalog.py:127:        cap = SourceCapability(
+tests/test_data_source_catalog.py:134:        cap = SourceCapability(
+tests/test_data_source_catalog.py:141:        cap = SourceCapability(
+docs/task_runs/TF-REVIEW-004-20260624-111425/codex-review-round1.txt:4452:    - `SourceCapability` 数据类：vendor / endpoint / data_type / fields / unit / freshness / rate_limit_risk / fallback_priority / known_gaps / is_primary / notes
+docs/task_runs/TF-REVIEW-004-20260624-111425/codex-review-round1.txt:4454:    - `get_sources_for_type(data_type)` → 按 fallback_priority 排序的 SourceCapability 列表
+docs/task_runs/TF-REVIEW-004-20260624-111425/codex-review-round1.txt:4464:    - `TestSourceCapability` (10): 默认值、to_dict、can_be_primary 各条件（无字段/无单位/quote/fund_flow/非金融/unknown/stale/board_fund_flow）
+docs/task_runs/V-010-20260626-193752/codex-review-round1.txt:9905:    - `SourceCapability` 数据类：vendor / endpoint / data_type / fields / unit / freshness / rate_limit_risk / fallback_priority / known_gaps / is_primary / notes
+docs/task_runs/V-010-20260626-193752/codex-review-round1.txt:9907:    - `get_sources_for_type(data_type)` → 按 fallback_priority 排序的 SourceCapability 列表
+docs/task_runs/V-010-20260626-193752/codex-review-round1.txt:9917:    - `TestSourceCapability` (10): 默认值、to_dict、can_be_primary 各条件（无字段/无单位/quote/fund_flow/非金融/unknown/stale/board_fund_flow）
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:459:[ ] Add API endpoint GET /v1/config/source-capability-matrix in api/main.py
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:496:+class SourceCapabilityMatrixItem(BaseModel):
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:515:+class SourceCapabilityMatrixResponse(BaseModel):
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:518:+    items: List[SourceCapabilityMatrixItem]
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:544:+    "/v1/config/source-capability-matrix",
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:545:+    response_model=SourceCapabilityMatrixResponse,
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:687:assert '/v1/config/source-capability-matrix' in paths, 'endpoint missing'
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:688:print('endpoint registered:', '/v1/config/source-capability-matrix' in paths)
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:690:print('SourceCapabilityMatrixResponse fields:', list(m.SourceCapabilityMatrixResponse.model_fields.keys()))
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:691:print('SourceCapabilityMatrixItem fields:', list(m.SourceCapabilityMatrixItem.model_fields.keys()))
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:694:SourceCapabilityMatrixResponse fields: ['version', 'items', 'freshness_legend', 'rate_limit_legend']
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:695:SourceCapabilityMatrixItem fields: ['data_type', 'label_cn', 'primary_vendor', 'primary_endpoint', 'is_primary_confirmed', 'fallback_vendor', 'fallback_chain', 'freshness', 'unit', 'fields', 'rate_limit_risk', 'known_limits', 'status_semantics', 'source_count', 'notes']
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:711:resp = m.SourceCapabilityMatrixResponse(**matrix)
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:726:[✓] Add API endpoint GET /v1/config/source-capability-matrix in api/main.py
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:778:+  - `GET /v1/config/source-capability-matrix`（鉴权同 model-catalog）。
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:779:+  - 新增 `SourceCapabilityMatrixItem` / `SourceCapabilityMatrixResponse`
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:805:+- API response 模型序列化检查通过，`/v1/config/source-capability-matrix` 路由已注册。
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:853:[✓] Add API endpoint GET /v1/config/source-capability-matrix in api/main.py
+docs/task_runs/DATA-023-20260627-002620/opencode-round1.txt:866:- **修改** `api/main.py` — 新增 `GET /v1/config/source-capability-matrix` + 两个响应模型
+docs/task_runs/DATA-018-20260614-011340/codex-review-round1.txt:2702:        SourceCapability,
+docs/task_runs/DATA-018-20260614-011340/codex-review-round1.txt:2753:class SourceCapability:
+docs/task_runs/DATA-018-20260614-011340/codex-review-round1.txt:2800:_SOURCE_CATALOG: List[SourceCapability] = []
+docs/task_runs/DATA-018-20260614-011340/codex-review-round1.txt:2817:    cap = SourceCapability(
+docs/task_runs/TF-PERSIST-001-20260625-182110/codex-review-round1.txt:9468:    - `SourceCapability` 数据类：vendor / endpoint / data_type / fields / unit / freshness / rate_limit_risk / fallback_priority / known_gaps / is_primary / notes
+docs/task_runs/TF-PERSIST-001-20260625-182110/codex-review-round1.txt:9470:    - `get_sources_for_type(data_type)` → 按 fallback_priority 排序的 SourceCapability 列表
+docs/task_runs/TF-PERSIST-001-20260625-182110/codex-review-round1.txt:9480:    - `TestSourceCapability` (10): 默认值、to_dict、can_be_primary 各条件（无字段/无单位/quote/fund_flow/非金融/unknown/stale/board_fund_flow）
+docs/task_runs/DATA-010-20260608-020414/codex-review-round1.txt:1888:        SourceCapability,
+docs/task_runs/DATA-010-20260608-020414/codex-review-round1.txt:1938:class SourceCapability:
+docs/task_runs/DATA-005-20260602-021515/codex-review-round1.txt:2972:540:def get_primary_source(data_type: str | DataType) -> Optional[SourceCapability]:
+docs/task_runs/DATA-005-20260602-021515/codex-review-round1.txt:2987:        SourceCapability,
+docs/task_runs/DATA-005-20260602-021515/codex-review-round1.txt:3037:class SourceCapability:
+docs/task_runs/DATA-005-20260602-021515/codex-review-round1.txt:3084:_SOURCE_CATALOG: List[SourceCapability] = []
+docs/task_runs/DATA-005-20260602-021515/codex-review-round1.txt:3101:    cap = SourceCapability(
+docs/task_runs/DATA-005-20260602-021515/codex-review-round1.txt:3205:def get_sources_for_type(data_type: str | DataType) -> List[SourceCapability]:
+docs/task_runs/DATA-005-20260602-021515/codex-review-round1.txt:3217:def get_primary_source(data_type: str | DataType) -> Optional[SourceCapability]:
+docs/task_runs/DATA-005-20260602-021515/codex-review-round1.txt:3244:def get_vendor_capabilities(vendor: str) -> List[SourceCapability]:
+docs/task_runs/TF-QUALITY-003-20260613-234211/codex-review-round1.txt:6499:    - `SourceCapability` 数据类：vendor / endpoint / data_type / fields / unit / freshness / rate_limit_risk / fallback_priority / known_gaps / is_primary / notes
+docs/task_runs/TF-QUALITY-003-20260613-234211/codex-review-round1.txt:6501:    - `get_sources_for_type(data_type)` → 按 fallback_priority 排序的 SourceCapability 列表
+docs/task_runs/TF-QUALITY-003-20260613-234211/codex-review-round1.txt:6511:    - `TestSourceCapability` (10): 默认值、to_dict、can_be_primary 各条件（无字段/无单位/quote/fund_flow/非金融/unknown/stale/board_fund_flow）
+docs/task_runs/DATA-002-20260602-005310/codex-review-round2.txt:492:    - `SourceCapability` 数据类：vendor / endpoint / data_type / fields / unit / freshness / rate_limit_risk / fallback_priority / known_gaps / is_primary / notes
+docs/task_runs/DATA-002-20260602-005310/codex-review-round2.txt:494:    - `get_sources_for_type(data_type)` → 按 fallback_priority 排序的 SourceCapability 列表
+docs/task_runs/DATA-002-20260602-005310/codex-review-round2.txt:504:    - `TestSourceCapability` (10): 默认值、to_dict、can_be_primary 各条件（无字段/无单位/quote/fund_flow/非金融/unknown/stale/board_fund_flow）
+docs/task_runs/H-004-20260602-003706/codex-review-round1.txt:255:    - `SourceCapability` 数据类：vendor / endpoint / data_type / fields / unit / freshness / rate_limit_risk / fallback_priority / known_gaps / is_primary / notes
+docs/task_runs/H-004-20260602-003706/codex-review-round1.txt:257:    - `get_sources_for_type(data_type)` → 按 fallback_priority 排序的 SourceCapability 列表
+docs/task_runs/H-004-20260602-003706/codex-review-round1.txt:267:    - `TestSourceCapability` (10): 默认值、to_dict、can_be_primary 各条件（无字段/无单位/quote/fund_flow/非金融/unknown/stale/board_fund_flow）
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:431:    - `SourceCapability` 数据类：vendor / endpoint / data_type / fields / unit / freshness / rate_limit_risk / fallback_priority / known_gaps / is_primary / notes
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:433:    - `get_sources_for_type(data_type)` → 按 fallback_priority 排序的 SourceCapability 列表
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:443:    - `TestSourceCapability` (10): 默认值、to_dict、can_be_primary 各条件（无字段/无单位/quote/fund_flow/非金融/unknown/stale/board_fund_flow）
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:804:+    - `SourceCapability` 数据类：vendor / endpoint / data_type / fields / unit / freshness / rate_limit_risk / fallback_priority / known_gaps / is_primary / notes
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:806:+    - `get_sources_for_type(data_type)` → 按 fallback_priority 排序的 SourceCapability 列表
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:816:+    - `TestSourceCapability` (10): 默认值、to_dict、can_be_primary 各条件（无字段/无单位/quote/fund_flow/非金融/unknown/stale/board_fund_flow）
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1092:        SourceCapability,
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1142:class SourceCapability:
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1189:_SOURCE_CATALOG: List[SourceCapability] = []
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1206:    cap = SourceCapability(
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1350:    SourceCapability,
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1393:class TestSourceCapability:
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1395:        cap = SourceCapability(
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1408:        cap = SourceCapability(
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1433:        cap = SourceCapability(
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1440:        cap = SourceCapability(
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1447:        cap = SourceCapability(
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1454:        cap = SourceCapability(
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1461:        cap = SourceCapability(
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1468:        cap = SourceCapability(
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1475:        cap = SourceCapability(
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1482:        cap = SourceCapability(
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1733:tests/test_data_source_catalog.py::TestSourceCapability::test_defaults PASSED [  9%]
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1734:tests/test_data_source_catalog.py::TestSourceCapability::test_to_dict PASSED [ 10%]
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1735:tests/test_data_source_catalog.py::TestSourceCapability::test_can_be_primary_all_good PASSED [ 12%]
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1736:tests/test_data_source_catalog.py::TestSourceCapability::test_can_be_primary_no_fields PASSED [ 13%]
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1737:tests/test_data_source_catalog.py::TestSourceCapability::test_can_be_primary_no_unit_for_quote PASSED [ 15%]
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1738:tests/test_data_source_catalog.py::TestSourceCapability::test_can_be_primary_no_unit_for_fund_flow PASSED [ 16%]
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1739:tests/test_data_source_catalog.py::TestSourceCapability::test_can_be_primary_no_unit_for_non_financial PASSED [ 18%]
+docs/task_runs/DATA-001-20260601-221610/codex-review-round1.txt:1740:tests/test_data_source_catalog.py::TestSourceCapability::test_can_be_primary_unknown_freshness PASSED [ 19%]
+
+exec
+/bin/zsh -lc 'git diff -- docs/TASKS.md docs/tradeflow_trial_acceptance.md docs/tradeflow_trial_acceptance_v2.md docs/tradeflow_trial_acceptance_v3.md' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 085ad82..f66b286 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -4017,7 +4017,7 @@
+ ### DATA-023: 数据源目录 API/文档同步与供应商能力矩阵导出（P2）
+ - **描述**：数据源能力分散在 source_catalog、docs 和报告里。用户需要知道行情/资金/龙虎榜/公告/评级/回购/研报分别来自哪里、fallback 是什么、是否实时。本任务导出统一矩阵。
+ - **优先级**：P2
+-- **状态**：ready
++- **状态**：in_progress — claimed DATA-023-20260627-002620
+ - **前置条件**：DATA-020、DATA-CATALOG-FIX 完成。
+ - **执行约束**：
+   - 不调用 live API。
+diff --git a/docs/tradeflow_trial_acceptance.md b/docs/tradeflow_trial_acceptance.md
+index c9ecc0e..29eb1e2 100644
+--- a/docs/tradeflow_trial_acceptance.md
++++ b/docs/tradeflow_trial_acceptance.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 试用闭环端到端验收报告 (V-007)
+ 
+-**生成时间**: 2026-06-27 00:24:21
++**生成时间**: 2026-06-27 00:38:10
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **候选数**: 5 只 (2 主候选 + 1 弱技术 + 1 事件观察 + 1 证据缺口)
+diff --git a/docs/tradeflow_trial_acceptance_v2.md b/docs/tradeflow_trial_acceptance_v2.md
+index f9d090d..2021628 100644
+--- a/docs/tradeflow_trial_acceptance_v2.md
++++ b/docs/tradeflow_trial_acceptance_v2.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 小资金试跑前整体验收报告 (V-008)
+ 
+-**生成时间**: 2026-06-27 00:24:25
++**生成时间**: 2026-06-27 00:38:14
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **模拟本金**: ¥5000
+diff --git a/docs/tradeflow_trial_acceptance_v3.md b/docs/tradeflow_trial_acceptance_v3.md
+index 68828ad..2dbe53d 100644
+--- a/docs/tradeflow_trial_acceptance_v3.md
++++ b/docs/tradeflow_trial_acceptance_v3.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 小资金试跑 v2 验收报告 (V-010)
+ 
+-**生成时间**: 2026-06-27 00:24:26
++**生成时间**: 2026-06-27 00:38:15
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **模拟本金**: ¥5000
+
+exec
+/bin/zsh -lc "grep -n \"DataType.QUOTE\\|DataType.REALTIME_QUOTES\" -n tradingagents/dataflows/source_catalog.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+102:            DataType.QUOTE,
+103:            DataType.REALTIME_QUOTES,
+222:        DataType.REALTIME_QUOTES,
+234:        DataType.REALTIME_QUOTES,
+246:        DataType.REALTIME_QUOTES,
+
+exec
+/bin/zsh -lc "source .venv/bin/activate && python - <<'PY'
+from api.main import SourceCapabilityMatrixResponse
+from tradingagents.dataflows.source_capability_matrix import get_source_capability_matrix
+r=SourceCapabilityMatrixResponse(**get_source_capability_matrix())
+print(len(r.items))
+PY" in /Users/maybee/TradingAgents-AShare
+ succeeded in 1406ms:
+16
+
+exec
+/bin/zsh -lc "grep -n \"@app\\.get(\\\"/v1/config\" -n api/main.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+4207:@app.get("/v1/config", response_model=UserRuntimeConfigResponse)
+4216:@app.get("/v1/config/model-catalog", response_model=ModelApiCatalogResponse)
+

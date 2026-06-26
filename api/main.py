@@ -1036,6 +1036,33 @@ class ModelApiCatalogResponse(BaseModel):
     items: List[ModelApiCatalogItem]
 
 
+class SourceCapabilityMatrixItem(BaseModel):
+    # [DATA-023] source_capability_matrix
+    data_type: str
+    label_cn: str = ""
+    primary_vendor: str
+    primary_endpoint: str
+    is_primary_confirmed: bool = False
+    fallback_vendor: str = ""
+    fallback_chain: List[str] = []
+    freshness: str
+    unit: str = ""
+    fields: List[str] = []
+    rate_limit_risk: str = ""
+    known_limits: str = ""
+    status_semantics: str = ""
+    source_count: int = 0
+    notes: str = ""
+
+
+class SourceCapabilityMatrixResponse(BaseModel):
+    # [DATA-023] source_capability_matrix
+    version: str
+    items: List[SourceCapabilityMatrixItem]
+    freshness_legend: Dict[str, str] = {}
+    rate_limit_legend: Dict[str, str] = {}
+
+
 class UserRuntimeWarmupResponse(BaseModel):
     prompt: str
     results: List[RuntimeWarmupResult]
@@ -4194,6 +4221,24 @@ def get_model_api_catalog_endpoint(
     from tradingagents.llm_clients import get_model_api_catalog
 
     return get_model_api_catalog()
+
+
+@app.get(
+    "/v1/config/source-capability-matrix",
+    response_model=SourceCapabilityMatrixResponse,
+)
+def get_source_capability_matrix_endpoint(
+    current_user: UserDB = Depends(_require_web_user),
+):
+    """返回数据源能力矩阵（不含任何密钥 / live 调用）。
+
+    [DATA-023] source_capability_matrix
+    """
+    from tradingagents.dataflows.source_capability_matrix import (
+        get_source_capability_matrix,
+    )
+
+    return get_source_capability_matrix()
 
 
 @app.patch("/v1/config")

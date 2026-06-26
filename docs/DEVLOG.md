@@ -4,6 +4,70 @@
 
 ---
 
+## 2026-06-27 | DATA-023 数据源目录 API/文档同步与供应商能力矩阵导出
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **状态**：✅ 完成（待提交）
+- **代码标注**：`# [DATA-023] source_capability_matrix`
+
+### 背景
+
+数据源能力信息分散在 `source_catalog.py`、`docs/DATA_SOURCE_GAP_AUDIT.md`
+和各类 freshness / daily_digest 报告里。用户/agent 需要单一可信来源回答：
+"行情/资金/龙虎榜/公告/评级/回购/研报分别来自哪里、fallback 是什么、是否实时、
+有什么已知限制"。本任务导出统一矩阵，并提供 API + 文档 + CLI 三个出口。
+
+### 修改内容
+
+- **新增 `tradingagents/dataflows/source_capability_matrix.py`**
+  - `get_source_capability_matrix()` 静态导出 16 个 data_type 的能力矩阵，
+    字段含 `data_type / primary_vendor / primary_endpoint / fallback_vendor /
+    fallback_chain / freshness / unit / fields / rate_limit_risk /
+    known_limits / status_semantics / source_count / notes`。
+  - `validate_matrix_coverage()` 校验所有已注册 `DataType` 都进入矩阵，
+    关键字段非空，freshness 在合法枚举内 —— 守护"新增 data type 漏进矩阵"。
+  - `render_source_capability_matrix_markdown()` / `_text()` 输出 agent 可读文档。
+  - `FRESHNESS_STATUS_SEMANTICS` / `RATE_LIMIT_RISK_LABEL` / `DATA_TYPE_LABEL_CN`
+    三张图例统一新鲜度、限流、数据类型语义。
+  - 完全静态导出，不调用 live API，不读取任何 API Key。
+
+- **新增 `scripts/export_source_capability_matrix.py`**
+  - CLI：`--validate / --md / --json / --stdout-json / --stdout-text / --no-md`。
+  - `--stdout-json` 时 summary 走 stderr，保证 stdout 是纯 JSON 可管道解析。
+
+- **新增 API：`api/main.py`**
+  - `GET /v1/config/source-capability-matrix`（鉴权同 model-catalog）。
+  - 新增 `SourceCapabilityMatrixItem` / `SourceCapabilityMatrixResponse`
+    两个 Pydantic 响应模型。
+
+- **新增文档**
+  - `docs/SOURCE_CAPABILITY_MATRIX.md`：自动生成的 Markdown 矩阵总览 + 详情 + 图例。
+  - `docs/source_capability_matrix.json`：结构化 JSON 产物。
+
+- **新增测试 `tests/test_data023_source_capability_matrix.py`（31 cases）**
+  - `TestCoverage` 守护"新增 DataType 不会漏进矩阵"（核心验收点）。
+  - `TestBusinessCoverage` 验收 资金/板块资金/龙虎榜/公告/评级/回购/研报 均覆盖。
+  - `TestNoSecrets` 全文扫描 `api_key/secret/token/sk-/Bearer ` 确认无密钥泄露。
+  - `TestCatalogConsistency` 双向校验 matrix 与 `source_catalog` primary 一致。
+  - `TestScriptCli` 跑通 `--validate` 与 `--stdout-json` 子进程路径。
+
+### 影响范围
+
+- 不修改 `source_catalog.py` / provider / fallback 路由，纯新增导出层。
+- 不触碰 `tradingagents/prompts/`、`tradingagents.db`、`eval_results/`、`logs/`。
+- 新增 API endpoint 与现有 `/v1/config/model-catalog` 同构，鉴权策略一致。
+
+### 验证
+
+- `python -m pytest tests/test_data023_source_capability_matrix.py -q` → **31 passed**。
+- `python -m pytest tests/test_data_source_catalog.py tests/test_data018_source_freshness.py tests/test_data022_fund_lhb_status_matrix.py -q` → **249 passed**（无回归）。
+- `python scripts/export_source_capability_matrix.py --validate` →
+  `OK: matrix covers all 16 data_types, no coverage issues.`
+- API response 模型序列化检查通过，`/v1/config/source-capability-matrix` 路由已注册。
+
+---
+
 ## 2026-06-27 | UI-013 修复 TF-OBS-003 E2E 测试在非交易日全部跳过的缺陷
 
 - **执行者**：OpenCode
@@ -7937,3 +8001,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/UI-013-20260627-round2.txt
 - **Run archive**: docs/task_runs/UI-013-20260626-225108/
+
+## 2026-06-27 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-023 - 数据源目录 API/文档同步与供应商能力矩阵导出（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-023-20260627-round1.txt
+- **Run archive**: docs/task_runs/DATA-023-20260627-002620/
