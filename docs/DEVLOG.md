@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-06-26 | 任务池收口：TF-QUALITY-001 解阻与下一波 ready 任务释放
+
+- **执行者**：Codex
+- **类型**：task queue hygiene / planning
+- **状态**：✅ 完成
+
+### 背景
+
+M-012 生成的 `docs/task_suggestions/2026-06-25.md` 在 ready 队列为空时给出了 25 条建议，但其中包含大量已完成任务，以及已经由 follow-up 闭环的 `TF-QUALITY-001`。如果不处理，19:00 cron 会继续空转或重复领取旧任务。
+
+### 决策
+
+- `TF-QUALITY-001` 原 NEEDS_HUMAN 的失败已拆分为：
+  - TradeFlow 三池契约回归 → `TF-QUALITY-001A` 已完成。
+  - DATA 覆盖率分母回归 → `DATA-COVERAGE-001` 已完成。
+- 因此 `TF-QUALITY-001` 不再保持 blocked，标记为 done 并说明由 follow-up 闭环。
+- `HK-001`、`TF-PERSIST-001` 顶部队列状态同步为 done。
+- 将误判建议文件归档到 `docs/task_suggestions/archive/2026-06-25.md`。
+
+### 新释放 ready 任务
+
+1. `AUTO-003`：任务建议去重与已完成任务过滤（P1）。
+2. `REPORT-UX-001`：TA 报告“数据不足观察”端到端回放验收（P1）。
+3. `IC-TA-002`：investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1）。
+4. `V-010`：小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口（P1）。
+5. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2）。
+
+---
+
 ## 2026-06-25 | TF-PERSIST-001 TradeFlow save_candidate 分项评分持久化补口
 
 - **执行者**：OpenCode

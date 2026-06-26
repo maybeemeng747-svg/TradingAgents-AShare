@@ -81,8 +81,8 @@
 55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
 56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
 57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
-58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，blocked — NEEDS_HUMAN，commit 5f304db，见 task_runs）。
-59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done，Codex 修复，待提交）。
+58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，done — commit 5f304db，后续 001A/DATA-COVERAGE 已闭环）。
+59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done — 后续任务已闭环）。
 60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
 61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
 62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
@@ -125,8 +125,13 @@
 99. `DATA-021`：TA 报告数据源失败原因透传与字段级降级说明（P1，done — Codex 接管完成，依赖 DATA-020/DATA-004 ✓）。
 100. `H-015`：昊天主题日报与候选入池/出池解释（P1，done — Codex 直接开发，依赖 H-014 ✓/H-013A ✓）。
  101. `PERF-005`：TradeFlow 页面与 API 性能预算回归（P2，done，依赖 TF-UX-001/DATA-020 ✓）。
-102. `HK-001`：港股输入边界与轻量行情-only 模式声明（P2，ready，独立安全边界任务）。
-103. `TF-PERSIST-001`：TradeFlow save_candidate 分项评分持久化补口（P2，ready，V-008 发现）。
+102. `HK-001`：港股输入边界与轻量行情-only 模式声明（P2，done — commit 2326a3d + a9fd09a）。
+103. `TF-PERSIST-001`：TradeFlow save_candidate 分项评分持久化补口（P2，done — commit 0016a92 + 2257f32）。
+104. `AUTO-003`：任务建议去重与已完成任务过滤（P1，ready，修复 M-012 误把 done/blocked-resolved 任务重复建议）。
+105. `REPORT-UX-001`：TA 报告“数据不足观察”端到端回放验收（P1，ready，依赖 DATA-021 ✓）。
+106. `IC-TA-002`：investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1，ready，依赖 IC-TA-001/DATA-021/H-015 ✓）。
+107. `V-010`：小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口（P1，ready，依赖 V-009/DATA-021/H-015 ✓）。
+108. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2，ready，依赖 TRACK-NOTIFY-001/H-015/DATA-021 ✓）。
 
 ### 数据源治理候选队列
 
@@ -2921,7 +2926,7 @@
 ### TF-QUALITY-001: TradeFlow 候选池严格收敛门禁（P0）
 - **描述**：收窄候选池，默认只输出少量高质量候选，弱信号进入过滤/观察原因，不进入主候选池。
 - **优先级**：P0
-- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/TF-QUALITY-001-20260609-202554
+- **状态**：done — commit 5f304db；NEEDS_HUMAN 已由 TF-QUALITY-001A 与 DATA-COVERAGE-001 拆分闭环
 - **前置条件**：TF-P0-002、T-008、H-010 完成 ✓。
 - **执行约束**：
   - 不改 prompts。
@@ -2941,11 +2946,16 @@
   - 被过滤股票必须有明确原因：低分/单信号/数据缺口/流动性不足。
   - TradeFlow 前端候选池展示数量与后端主候选一致。
 - **代码标注要求**：`# [TF-QUALITY-001] candidate_pool_gate` / `// [TF-QUALITY-001] candidate_pool_gate`
+- **收口说明**：
+  - 原 task_run 的失败由两类问题构成：TradeFlow 三池契约回归、DATA 覆盖率分母回归。
+  - TradeFlow 回归已由 `TF-QUALITY-001A` 闭环。
+  - DATA 覆盖率回归已由 `DATA-COVERAGE-001` 闭环。
+  - 因此原任务不再需要保持 blocked，避免 M-012 反复生成错误建议。
 
 ### TF-QUALITY-001A: 收敛门禁回归修复与状态一致性（P0）
 - **描述**：审核 TF-QUALITY-001（commit 5f304db）后发现全量回归中存在真实 TradeFlow 断裂：候选主池收敛后，旧候选接口、盘中 Observe、E2E smoke 对 data_gap/observation/filtered 的契约不一致。先修这个补丁，再继续评分和前端任务。
 - **优先级**：P0
-- **状态**：done — Codex 修复，待提交
+- **状态**：done — 后续任务已闭环
 - **前置条件**：TF-QUALITY-001 已提交但 blocked；必须读取 `docs/task_runs/TF-QUALITY-001-20260609-202554/summary.md` 与 `tests-round2.txt`。
 - **执行约束**：
   - 不改 prompts。
@@ -3694,7 +3704,7 @@
 ### HK-001: 港股输入边界与轻量行情-only 模式声明（P2）
 - **描述**：当前系统定位 A 股，港股只能局部走 yfinance 行情。为避免用户输入港股时被 A 股资金/LHB/政策门禁误判，本任务加边界识别和清晰提示。
 - **优先级**：P2
-- **状态**：done -- commit 2326a3d
+- **状态**：done — commit 2326a3d + a9fd09a
 - **前置条件**：无。
 - **执行约束**：
   - 不承诺完整港股 TA。
@@ -3714,7 +3724,7 @@
 ### TF-PERSIST-001: TradeFlow save_candidate 分项评分持久化补口（P2）
 - **描述**：V-008 验收发现 `save_candidate()` 直接保存候选时没有持久化 8 个分项评分/解释字段，导致 API 从 DB 读取时返回默认值。生产 `evaluate_symbol` 内存链路可计算，但持久化层存在缺口。
 - **优先级**：P2
-- **状态**：done -- commit 0016a92
+- **状态**：done — commit 0016a92 + 2257f32
 - **前置条件**：V-008 完成。
 - **执行约束**：
   - 不改候选评分算法。
@@ -3730,6 +3740,107 @@
   - V-008 中直接 save_candidate 路径可以验证分项评分真实返回。
   - 老 DB 自动补列，不需要手动删库。
 - **代码标注要求**：`# [TF-PERSIST-001] split_score_persistence`
+
+### AUTO-003: 任务建议去重与已完成任务过滤（P1）
+- **描述**：M-012 生成的 `docs/task_suggestions/2026-06-25.md` 把大量已完成任务、已由 follow-up 闭环的 blocked 任务重新建议为 ready，导致任务池误报和 cron 空转风险。本任务修复 suggest_next_tasks 逻辑。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：M-012 完成。
+- **执行约束**：
+  - 不改自动开发执行链主流程，只改建议生成/过滤逻辑。
+  - 不删除历史 task_suggestions，历史文件只归档。
+  - 不把 proposed 自动改 ready。
+- **实现要点**：
+  1. 解析 `docs/TASKS.md` 顶部队列与详情段落时，统一识别 `done`、`done —`、`blocked — 已由 ... 闭环`、标题含 `✅ 已完成` 的任务，禁止再进入建议列表。
+  2. 对 `blocked — NEEDS_HUMAN` 增加 follow-up 检测：若同 ID 后缀任务（如 `TF-QUALITY-001A`）和拆分任务均 done，则建议“收口状态”而不是“转 ready”。
+  3. 输出建议文件时增加 `filtered_out` 摘要，列出被跳过的 done/obsolete 任务数量。
+  4. 为 2026-06-25 这种重复建议 fixture 增加回归测试。
+- **验收方式**：
+  - dry-run 不再建议 D/E 已完成任务、TF-QUALITY-001、HK-001、TF-PERSIST-001。
+  - 无 ready 时仍能生成 proposed 草案。
+  - `docs/task_suggestions/YYYY-MM-DD.md` 不自动改 TASKS 状态。
+- **代码标注要求**：`# [AUTO-003] task_suggestion_dedupe`
+
+### REPORT-UX-001: TA 报告“数据不足观察”端到端回放验收（P1）
+- **描述**：DATA-021 已把字段级 data_blockers 接入报告 metadata 和前端。需要用 fixture/历史样本验证“数据不足观察”不再是笼统黑盒，且不会改变强动作门禁。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：DATA-021 完成。
+- **执行约束**：
+  - 不调用 live API。
+  - 不调用 LLM。
+  - 不修改 prompts。
+  - 不写生产数据库。
+- **实现要点**：
+  1. 构造至少 3 个报告 fixture：主力资金失败 + 龙虎榜正常无数据；公告失败 + 评级正常无数据；行情缺失 + skipped 辅助源。
+  2. 通过 `report_service.create_report()` 或 API schema 回放，确认 `result_data.data_blockers` 与 response 顶层字段一致。
+  3. 验证前端类型/构建不回归，报告详情能显示 `query_failed`、`normal_no_data`、`skipped`。
+  4. 验证 `decision/action_label/Buy Level/Risk Level` 不因 DATA-021 metadata 被改写。
+- **验收方式**：
+  - 新增回放测试通过。
+  - `npm run build` 通过。
+  - 测试断言覆盖“主力资金失败 vs 龙虎榜正常无数据”的差异。
+- **代码标注要求**：`# [REPORT-UX-001] data_blocker_replay` / `// [REPORT-UX-001] data_blocker_replay`
+
+### IC-TA-002: investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1）
+- **描述**：investment-controller v5 的职责是 TA 调度官/飞书播报官。当前只读上下文需要继续纳入 H-015 昊天主题日报和 DATA-021 报告数据缺口，帮助它决定“是否值得让 TA 出手”和“推送什么”。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：IC-TA-001、DATA-021、H-015 完成。
+- **执行约束**：
+  - 只读上下文，不触发 TA、不写交易动作。
+  - 不输出强买卖词。
+  - 不调用 LLM。
+- **实现要点**：
+  1. `investment_controller_context` 增加两个 bucket：`mandate_daily_report`、`recent_report_data_blockers`。
+  2. `mandate_daily_report` 读取 `/tradeflow/mandate-daily-report/latest` 等价服务函数，不做网络调用。
+  3. `recent_report_data_blockers` 汇总最近 TA 报告中 `query_failed/field_missing` 的字段和影响。
+  4. 输出 `controller_hints`：哪些观察仓/候选需要 TA、哪些只进日报、哪些因数据不足不推送。
+- **验收方式**：
+  - endpoint fixture 包含昊天日报摘要和报告缺口摘要。
+  - 只读测试证明不写 DB。
+  - 不含“立即清仓/重仓买入”等强词。
+- **代码标注要求**：`# [IC-TA-002] controller_context_tradeflow_report`
+
+### V-010: 小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口（P1）
+- **描述**：在 TF-QUALITY、DATA-021、H-015、TRACK 系列完成后，补一条新的端到端验收，确认用户 5000 元小资金试跑链路能回答“看哪几只、为什么、何时观察、数据缺什么、盘后怎么复盘”。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：V-009、DATA-021、H-015、TF-OBS-004、TRACK-007 完成。
+- **执行约束**：
+  - fixture/临时库，不写生产数据库。
+  - 不调用 LLM/live API。
+  - 不发真实通知。
+- **实现要点**：
+  1. 构造小型候选池 fixture：技术主候选、昊天主候选、观察候选、过滤候选各至少 1 个。
+  2. 跑候选 API、Observe、Mandate Daily Report、Report data_blockers、Tracking Board v2 只读摘要。
+  3. 输出 `docs/tradeflow_trial_acceptance_v3.md`，包含 5 个问题答案。
+  4. 验证强词扫描、runtime_tier 不升级、无真实通知。
+- **验收方式**：
+  - 新增 V-010 测试通过。
+  - 验收文档生成。
+  - 链路能明确展示主候选不超过配置上限。
+- **代码标注要求**：`# [V-010] small_cap_trial_v2_acceptance`
+
+### NOTIFY-002: 飞书/通知草稿接入昊天日报与数据缺口摘要（P2）
+- **描述**：TRACK-NOTIFY-001 已完成通知草稿 payload 与去噪规则。本任务把 H-015 昊天日报和 DATA-021 数据缺口纳入通知草稿，让用户早上/盘后能看到主题重心与数据风险，而不是只看到候选数量。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：TRACK-NOTIFY-001、H-015、DATA-021 完成。
+- **执行约束**：
+  - dry-run 生成草稿，不真实发送飞书。
+  - P2/P3 信息只进日报，不触发盘中强提醒。
+  - 不输出强买卖词。
+- **实现要点**：
+  1. 通知草稿 payload 增加 `mandate_daily_digest`：升温主题、主候选、证据缺口。
+  2. 增加 `data_blocker_digest`：最近报告中失败最多的数据源和影响。
+  3. 去噪：仅 P0/P1 数据失败或候选触发才进入即时草稿；普通正常无数据只进日报。
+  4. 增加 dry-run markdown 示例。
+- **验收方式**：
+  - dry-run payload 包含昊天日报和数据缺口摘要。
+  - 不真实发送。
+  - 禁用词扫描通过。
+- **代码标注要求**：`# [NOTIFY-002] notification_mandate_data_blockers`
 
 ## B. 待办
 
