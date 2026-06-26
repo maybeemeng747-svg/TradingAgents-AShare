@@ -4,6 +4,78 @@
 
 ---
 
+## 2026-06-26 | IC-TA-003 investment-controller 盘前/盘后 briefing fixture dry-run
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **状态**：✅ 完成（待提交）
+- **优先级**：P2
+- **代码标注**：`# [IC-TA-003] controller_briefing_dry_run`
+
+### 背景
+
+IC-TA-002 把昊天日报与报告数据缺口接进 `investment_controller_context` 后，需要
+固定盘前 / 盘后 briefing 的 dry-run 输出，确保 investment-controller 拿到的是**流程
+提示 + 调度建议**（为什么要/不要调 TA、哪些只进日报、哪些需人工确认），而不是又一份
+TA 结论。本任务只做 dry-run，不调 LLM、不发飞书、不写文件、不写数据库。
+
+### 修改内容
+
+1. **新增 `tradingagents/tradeflow/controller_briefing.py`**（纯引擎，~640 行）
+   - `build_pre_market_briefing(context, *, as_of=None)`：盘前 briefing。
+   - `build_post_market_briefing(context, *, as_of=None)`：盘后 briefing。
+   - 两条 briefing 都把 IC-TA-002 的 `controller_hints` 路由成三条 lane：
+     - `ta_to_schedule` / `tomorrow_ta_candidates`：每条带 `reason_call_ta`
+       （**为什么调 TA**）+ `suggested_profile`（POLICY_AMBUSH→MIDLINE_POLICY_LIGHT、
+       TECH_TRADE→SHORT_TECH_LIGHT、observation→POSITION_RISK_LIGHT、未知→FULL_TA 且
+       `requires_confirmation=True`，符合 PERF-004 门禁）。
+     - `daily_report_only`：每条带 `reason_skip_ta`（**为什么不调 TA**）。
+     - `needs_manual_confirmation`：从 `recent_report_data_blockers` 来，每条带 `fields`
+       与 `reason`。
+   - 盘后额外含 `today_performance`（涨/跌/平/无行情计数）+ `report_data_gaps`
+     （DATA-021 缺口摘要）。
+   - `scan_forbidden_words(payload)`：自检引擎合成字段是否含
+     `FORBIDDEN_STRONG_WORDS`（复用 observation_state_engine 的禁用词，补 `立即卖出/
+     全仓/必涨/必跌/无脑买/加杠杆`）；跳过 TA 报告原始 `decision` 等结构化事实字段。
+   - 每条 briefing 自带 `forbidden_word_scan` 字段。
+   - 内置 `PRE_MARKET_FIXTURE_CONTEXT` / `POST_MARKET_FIXTURE_CONTEXT`（形状与 IC-TA-002
+     返回一致，含 2 只持仓 / 观察仓 ta_required+watching / 政策候选 / 昊天日报 / 数据缺口）。
+   - `dry_run_all_fixtures()`：跑两条 fixture，返回汇总（含 `forbidden_word_scan_passed`）。
+2. **新增 `api/services/controller_briefing_service.py`**（thin service）
+   - `build_pre_market_briefing_dry_run` / `build_post_market_briefing_dry_run`：读取真实
+     IC context → 调纯引擎；IC context 失败时降级为空 context，不抛异常。
+   - `run_briefing_fixtures(kind="both"|"pre"|"post")`：跑内置 fixture 的 dry-run 入口。
+3. **修改 `api/runtime_tier.py`**：把 `controller_briefing_dry_run` 加入
+   `_TRADEFLOW_FAST_ENDPOINTS`，落定 FAST_RADAR（无 LLM、无确认）。
+4. **新增 `tests/test_ic_ta003_controller_briefing.py`**：59 个用例，覆盖：
+   - `scan_forbidden_words`（clean/检测/跳过 decision/嵌套/全词参数化）。
+   - 盘前/盘后 briefing 结构、fixture 路由、profile 路由、reason_call_ta/reason_skip_ta。
+   - 空/降级 context、未知 candidate_type→FULL_TA。
+   - `dry_run_all_fixtures` 汇总。
+   - service wrapper READ-ONLY（DB 不写入）+ FAST_RADAR + context 失败降级。
+   - runtime_tier 注册。
+
+### 验证
+
+- `pytest tests/test_ic_ta003_controller_briefing.py -q` → **59 passed**。
+- `pytest tests/test_ic_ta001_investment_controller_context.py
+  tests/test_ic_ta002_controller_context_tradeflow_report.py
+  tests/test_runtime_tier_contract.py -q` → **131 passed**（无回归）。
+- `pytest tests/ -q`（全量）→ **7004 passed, 17 skipped**（无回归）。
+- 手动：`dry_run_all_fixtures()` 盘前 headline `盘前 briefing：2 项待 TA，1 项仅日报，
+  0 项需人工确认；昊天升温主题 2 个，主候选 1 只`，盘后 headline `盘后 briefing：1 项待
+  TA，1 项仅日报，1 项需人工确认；持仓 2 只（1 涨 1 跌）；报告缺口 2 项`，
+  `forbidden_word_scan_passed=True`。
+
+### 风险点
+
+- 引擎是纯函数，输入依赖 IC-TA-002 context 形状；若未来 context schema 变更，
+  `_bucket` / `_items` helper 会降级为空，不会抛异常，但路由会变空——需要 IC-TA-001/002
+  测试继续守住形状契约。
+- `suggested_profile` 仅为建议（FULL_TA 需人工确认），引擎本身不触发任何 TA。
+
+---
+
 ## 2026-06-26 | H-016 修复（Codex round-1 review）：CLI 真正只读，不再写 tradeflow.db
 
 - **执行者**：OpenCode
@@ -7750,3 +7822,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/H-016-20260626-round2.txt
 - **Run archive**: docs/task_runs/H-016-20260626-215858/
+
+## 2026-06-26 | AUTO-002 Auto Dev Loop
+
+- **Task**: IC-TA-003 - investment-controller 盘前/盘后 briefing fixture dry-run（P2）
+- **Priority**: P2
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/IC-TA-003-20260626-round1.txt
+- **Run archive**: docs/task_runs/IC-TA-003-20260626-222709/

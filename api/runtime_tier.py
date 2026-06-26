@@ -85,6 +85,7 @@ _TRADEFLOW_FAST_ENDPOINTS: set[str] = {
     "tradeflow_observation_export",  # [TRACK-008] observation_bulk_import_export
     "investment_controller_context",  # [IC-TA-001] investment_controller_context
     "notification_draft_dry_run",  # [TRACK-NOTIFY-001] notification_payload_dry_run
+    "controller_briefing_dry_run",  # [IC-TA-003] controller_briefing_dry_run
 }
 
 

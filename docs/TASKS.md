@@ -137,7 +137,7 @@
  111. `TRACK-008`：观察仓批量导入/导出 CSV 与去重合并（P1，done，依赖 TRACK-001/TRACK-003 ✓）。
 112. `REPORT-UX-002`：历史报告动作语义与数据缺口只读迁移预检（P1，ready，依赖 DECISION-004/DATA-021 ✓）。
 113. `H-016`：昊天主题日报 CLI 生成与保留策略（P2，ready，依赖 H-015 ✓）。
-114. `IC-TA-003`：investment-controller 盘前/盘后 briefing fixture dry-run（P2，ready，依赖 IC-TA-002 ✓）。
+  114. `IC-TA-003`：investment-controller 盘前/盘后 briefing fixture dry-run（P2，done，依赖 IC-TA-002 ✓）。
 115. `TF-REVIEW-005`：盘后 Review 归因接入观察信号与模拟账本（P1，done，依赖 TF-REVIEW-004/TF-PAPER-001 ✓）。
 116. `UI-013`：TradeFlow 空状态与下一步 CTA 文案收口（P2，ready，依赖 UI-012/H-015 ✓）。
 117. `DATA-023`：数据源目录 API/文档同步与供应商能力矩阵导出（P2，ready，依赖 DATA-020/DATA-CATALOG-FIX ✓）。
@@ -3957,7 +3957,7 @@
 ### IC-TA-003: investment-controller 盘前/盘后 briefing fixture dry-run（P2）
 - **描述**：IC-TA-002 接入更多上下文后，需要固定盘前/盘后 briefing 的 dry-run 输出，确保 investment-controller 拿到的是流程提示和调度建议，而不是另一个 TA 结论。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — IC-TA-003-20260626-222709
 - **前置条件**：IC-TA-002 完成。
 - **执行约束**：
   - 不调用 LLM。
