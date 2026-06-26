@@ -1,0 +1,1782 @@
+Task: H-016 - 昊天主题日报 CLI 生成与保留策略（P2）
+Date: 2026-06-26_22:08:58
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019f0441-913c-77a1-86d7-10616161786a
+--------
+user
+current changes
+2026-06-26T14:07:15.378929Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-06-26T14:07:15.434737Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+2026-06-26T14:07:16.380282Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-06-26T14:07:16.454565Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+exec
+/bin/zsh -lc 'git status --short && git status --branch --short' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+ M docs/TASKS.md
+ M docs/tradeflow_trial_acceptance.md
+ M docs/tradeflow_trial_acceptance_v2.md
+ M docs/tradeflow_trial_acceptance_v3.md
+ M tradingagents/tradeflow/mandate_daily_report.py
+?? docs/task_runs/H-016-20260626-215858/
+?? scripts/run_mandate_daily_report.py
+?? tests/test_h016_mandate_daily_cli.py
+## local/tradingagents-custom...myfork/local/tradingagents-custom [ahead 182]
+ M docs/TASKS.md
+ M docs/tradeflow_trial_acceptance.md
+ M docs/tradeflow_trial_acceptance_v2.md
+ M docs/tradeflow_trial_acceptance_v3.md
+ M tradingagents/tradeflow/mandate_daily_report.py
+?? docs/task_runs/H-016-20260626-215858/
+?? scripts/run_mandate_daily_report.py
+?? tests/test_h016_mandate_daily_cli.py
+
+exec
+/bin/zsh -lc 'git diff -- tradingagents/tradeflow/mandate_daily_report.py scripts/run_mandate_daily_report.py tests/test_h016_mandate_daily_cli.py && git diff --stat' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/tradingagents/tradeflow/mandate_daily_report.py b/tradingagents/tradeflow/mandate_daily_report.py
+index 0c2b98e..d7dfa5a 100644
+--- a/tradingagents/tradeflow/mandate_daily_report.py
++++ b/tradingagents/tradeflow/mandate_daily_report.py
+@@ -10,12 +10,17 @@ from __future__ import annotations
+ 
+ import json
+ import os
++import re
+ from dataclasses import dataclass, field
+-from datetime import datetime
++from datetime import datetime, timedelta
+ from typing import Any, Dict, List, Optional
+ 
+ 
+ _DEFAULT_REPORT_DIR = "docs/mandate_daily_reports"
++# [H-016] mandate_daily_cli — keep at most this many days of mandate reports.
++_DEFAULT_RETENTION_DAYS = 90
++# [H-016] mandate_daily_cli — filename pattern we are allowed to read/delete.
++_MANDATE_FILE_RE = re.compile(r"^mandate-(\d{4}-\d{2}-\d{2})\.(md|json)$")
+ 
+ 
+ @dataclass
+@@ -343,3 +348,104 @@ def load_latest_mandate_daily_report(
+     data["source"] = "file"
+     data["path"] = path
+     return data
++
++
++# [H-016] mandate_daily_cli
++def _parse_mandate_filename(filename: str) -> Optional[tuple[str, str]]:
++    """Return ``(date_str, ext)`` for ``mandate-YYYY-MM-DD.(md|json)`` files.
++
++    Anything that does not match the canonical mandate report filename pattern
++    returns ``None`` so the retention pass never touches sibling files (README,
++    index, ad-hoc notes, ...).
++    """
++    match = _MANDATE_FILE_RE.match(filename)
++    if not match:
++        return None
++    date_str, ext = match.group(1), match.group(2)
++    try:
++        datetime.strptime(date_str, "%Y-%m-%d")
++    except ValueError:
++        return None
++    return date_str, ext
++
++
++# [H-016] mandate_daily_cli
++def purge_old_mandate_daily_reports(
++    reports_dir: str = _DEFAULT_REPORT_DIR,
++    retention_days: int = _DEFAULT_RETENTION_DAYS,
++    *,
++    as_of: str = "",
++    now: Optional[datetime] = None,
++) -> Dict[str, List[str]]:
++    """Delete ``mandate-*.md`` / ``mandate-*.json`` files older than retention.
++
++    Only touches files matching the canonical mandate report filename pattern
++    inside ``reports_dir`` (so a README/index/fixture placed alongside is left
++    alone). Returns a dict with ``deleted`` / ``kept`` / ``skipped`` filename
++    lists so callers can show a clear audit trail. ``skipped`` covers files
++    whose name does not match the pattern or carries an unparseable date.
++
++    ``as_of`` (``YYYY-MM-DD``) / ``now`` are explicit override hooks so tests
++    and dry-run previews do not depend on the wall clock.
++    """
++    purge_log: Dict[str, List[str]] = {"deleted": [], "kept": [], "skipped": []}
++    if retention_days <= 0 or not reports_dir or not os.path.isdir(reports_dir):
++        return purge_log
++
++    if now is None:
++        if as_of:
++            try:
++                now = datetime.strptime(as_of, "%Y-%m-%d")
++            except ValueError:
++                now = datetime.now()
++        else:
++            now = datetime.now()
++    cutoff = now - timedelta(days=retention_days)
++
++    for filename in sorted(os.listdir(reports_dir)):
++        parsed = _parse_mandate_filename(filename)
++        if parsed is None:
++            purge_log["skipped"].append(filename)
++            continue
++        date_str, _ext = parsed
++        try:
++            file_dt = datetime.strptime(date_str, "%Y-%m-%d")
++        except ValueError:
++            purge_log["skipped"].append(filename)
++            continue
++
++        if file_dt < cutoff:
++            try:
++                os.remove(os.path.join(reports_dir, filename))
++                purge_log["deleted"].append(filename)
++            except OSError:
++                purge_log["skipped"].append(filename)
++        else:
++            purge_log["kept"].append(filename)
++
++    return purge_log
++
++
++# [H-016] mandate_daily_cli
++def build_mandate_daily_summary(
++    report: MandateDailyReport,
++    *,
++    source: str = "generated",
++    status: str = "ok",
++) -> str:
++    """Render a short, audit-friendly summary line for CLI / dry-run output.
++
++    Includes counts that map 1:1 to the report sections plus the as-of date so
++    a human (or OpenClaw log) can see what would have been written without
++    opening the file. Never emits trade verbs.
++    """
++    rising = len(report.rising_topics)
++    cooling = len(report.cooling_topics)
++    main = len(report.main_candidates)
++    obs = len(report.observation_candidates)
++    gaps = len(report.evidence_gaps)
++    return (
++        f"[H-016] mandate daily report | as_of={report.as_of} | "
++        f"source={source} | status={status} | "
++        f"rising={rising} cooling={cooling} main={main} observe={obs} gaps={gaps}"
++    )
+ docs/TASKS.md                                   |   2 +-
+ docs/tradeflow_trial_acceptance.md              |   2 +-
+ docs/tradeflow_trial_acceptance_v2.md           |   2 +-
+ docs/tradeflow_trial_acceptance_v3.md           |   2 +-
+ tradingagents/tradeflow/mandate_daily_report.py | 108 +++++++++++++++++++++++-
+ 5 files changed, 111 insertions(+), 5 deletions(-)
+
+exec
+/bin/zsh -lc "sed -n '1,240p' scripts/run_mandate_daily_report.py; printf '\\n---TEST---\\n'; sed -n '1,260p' tests/test_h016_mandate_daily_cli.py; printf '\\n---DOC files---\\n'; find docs/task_runs/H-016-20260626-215858 -maxdepth 2 -type f -print -exec sed -n '1,80p' {} \\;" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+#!/usr/bin/env python3
+# [H-016] mandate_daily_cli
+"""H-016 — CLI entry point for the Haotian / policy-left-side daily report.
+
+Wraps the H-015 ``build_mandate_daily_report`` pipeline so OpenClaw or a cron
+job can regenerate ``docs/mandate_daily_reports/mandate-YYYY-MM-DD.{md,json}``
+overnight or on demand, and rotate the older reports out.
+
+Hard rules (also enforced in the underlying module):
+
+* Never calls an LLM.
+* Never scans the full market — only reads the existing TradeFlow candidate
+  pool (``tradeflow.db``) and the topic heatmap built from it.
+* Never writes to ``tradeflow.db`` / ``tradingagents.db``. The only side
+  effects are the mandate report files inside ``--output-dir`` (and only when
+  ``--dry-run`` is *not* set).
+* Retention only deletes files matching ``mandate-YYYY-MM-DD.(md|json)`` in
+  ``--output-dir``; sibling files are left untouched.
+
+Usage:
+
+    # Generate today's report with the default 60-day heatmap window.
+    python scripts/run_mandate_daily_report.py
+
+    # Backfill a specific trading day.
+    python scripts/run_mandate_daily_report.py --as-of 2026-06-24
+
+    # Preview without writing (OpenClaw dry-run / cron pre-check).
+    python scripts/run_mandate_daily_report.py --dry-run
+
+    # Custom output dir + retention.
+    python scripts/run_mandate_daily_report.py \\
+        --output-dir docs/mandate_daily_reports \\
+        --retention-days 120
+
+    # Point at a different tradeflow.db (read-only).
+    python scripts/run_mandate_daily_report.py --tf-db-path /srv/data/tradeflow.db
+
+OpenClaw / cron example (no LLM, no live market scan, no DB write):
+
+    30 22 * * 1-5  cd /path/to/TradingAgents-AShare && \\
+        .venv/bin/python scripts/run_mandate_daily_report.py \\
+        --output-dir docs/mandate_daily_reports \\
+        --retention-days 90 >> logs/mandate_daily.log 2>&1
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+
+from tradingagents.tradeflow.mandate_daily_report import (  # noqa: E402
+    _DEFAULT_REPORT_DIR,
+    _DEFAULT_RETENTION_DAYS,
+    build_mandate_daily_report,
+    build_mandate_daily_summary,
+    purge_old_mandate_daily_reports,
+    save_mandate_daily_report,
+)
+
+
+def _resolve_tf_db_path(arg_path: str | None) -> str:
+    """Resolve the read-only tradeflow DB path the same way the API does."""
+    if arg_path:
+        return arg_path
+    env_path = os.environ.get("TRADEFLOW_DB_PATH", "")
+    if env_path:
+        return env_path
+    return os.path.join(project_root, "tradeflow.db")
+
+
+def _load_topic_heatmap(as_of: str, window_days: int, tf_db_path: str) -> dict:
+    """Build the topic heatmap from the read-only TradeFlow DB.
+
+    Imported lazily so the CLI's ``--help`` and dry-run path stay cheap and so
+    we never accidentally spin up the wider API service.
+    """
+    from api.services.tradeflow_service import get_topic_heatmap
+
+    return get_topic_heatmap(as_of=as_of, window_days=window_days, tf_db_path=tf_db_path)
+
+
+def _cli(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="[H-016] Haotian mandate daily report generator (no LLM, no market scan)",
+    )
+    parser.add_argument(
+        "--as-of",
+        default="",
+        help="Report date (YYYY-MM-DD). Defaults to the latest tradeflow_candidates date.",
+    )
+    parser.add_argument(
+        "--window-days",
+        type=int,
+        default=60,
+        help="Heatmap lookback window in days (default 60).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=_DEFAULT_REPORT_DIR,
+        help=f"Directory for mandate-YYYY-MM-DD.{{md,json}} (default {_DEFAULT_REPORT_DIR}).",
+    )
+    parser.add_argument(
+        "--retention-days",
+        type=int,
+        default=_DEFAULT_RETENTION_DAYS,
+        help=(
+            f"Rotate out mandate report files older than N days (default "
+            f"{_DEFAULT_RETENTION_DAYS}). Only deletes mandate-* files in "
+            f"--output-dir. Set to 0 to disable retention."
+        ),
+    )
+    parser.add_argument(
+        "--tf-db-path",
+        default=None,
+        help=(
+            "Read-only TradeFlow DB path. Defaults to $TRADEFLOW_DB_PATH or "
+            "tradeflow.db in the project root."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the summary only; do not write files or run retention.",
+    )
+    args = parser.parse_args(argv)
+
+    tf_db_path = _resolve_tf_db_path(args.tf_db_path)
+
+    if not os.path.exists(tf_db_path):
+        print(
+            f"[H-016] no tradeflow DB at {tf_db_path}; "
+            "falling back to an empty heatmap (no market scan, no LLM).",
+            file=sys.stderr,
+        )
+
+    heatmap = _load_topic_heatmap(args.as_of, args.window_days, tf_db_path)
+    status = "ok" if heatmap.get("status") != "no_data" else "no_data"
+
+    report = build_mandate_daily_report(heatmap, as_of=heatmap.get("as_of") or args.as_of)
+
+    if args.dry_run:
+        # [H-016] mandate_daily_cli — dry-run: print summary, never write.
+        print(build_mandate_daily_summary(report, source="dry_run", status=status))
+        if status == "no_data":
+            print(
+                "[H-016] dry-run produced no_data (empty heatmap); "
+                "run TradeFlow discovery/plan first.",
+                file=sys.stderr,
+            )
+        return 0
+
+    os.makedirs(args.output_dir, exist_ok=True)
+    md_path, json_path = save_mandate_daily_report(report, output_dir=args.output_dir)
+
+    purge_summary: dict[str, list[str]] = {"deleted": [], "kept": [], "skipped": []}
+    if args.retention_days > 0:
+        purge_summary = purge_old_mandate_daily_reports(
+            args.output_dir,
+            args.retention_days,
+            as_of=report.as_of,
+        )
+
+    print(build_mandate_daily_summary(report, source="generated_file", status=status))
+    print(f"[H-016] wrote {md_path}")
+    print(f"[H-016] wrote {json_path}")
+    print(
+        f"[H-016] retention({args.retention_days}d): "
+        f"deleted={len(purge_summary['deleted'])} "
+        f"kept={len(purge_summary['kept'])} "
+        f"skipped={len(purge_summary['skipped'])}"
+    )
+    if purge_summary["deleted"]:
+        for name in purge_summary["deleted"]:
+            print(f"  - purged {name}")
+    return 0
+
+
+def main() -> None:
+    raise SystemExit(_cli())
+
+
+if __name__ == "__main__":
+    main()
+
+---TEST---
+# [H-016] mandate_daily_cli
+"""Tests for the H-016 mandate daily CLI: retention + dry-run + fixture write."""
+
+from __future__ import annotations
+
+import importlib.util
+import os
+from datetime import datetime
+from pathlib import Path
+
+import pytest
+
+from tradingagents.tradeflow.mandate_daily_report import (
+    MandateDailyReport,
+    _parse_mandate_filename,
+    build_mandate_daily_report,
+    build_mandate_daily_summary,
+    purge_old_mandate_daily_reports,
+    save_mandate_daily_report,
+)
+
+
+def _fixture_heatmap():
+    return {
+        "as_of": "2026-06-24",
+        "status": "ok",
+        "topics": [
+            {
+                "topic": "低空经济",
+                "topic_status": "FERMENTING",
+                "topic_status_label": "发酵",
+                "heat_trend": "RISING",
+                "heat_trend_label": "升温",
+                "state_change_label": "升温发酵",
+                "state_change_positive": True,
+                "is_left_side": True,
+                "is_confirmed": False,
+                "latest_date": "2026-06-24",
+                "peak_heat": 82,
+                "windows": {"7": {"evidence_count": 5, "candidate_count": 2}},
+                "evidence_summary": "低空经济政策支持",
+                "counter_evidence_gaps": ["订单兑现仍需跟踪"],
+                "overheat_flags": [],
+                "candidates": [
+                    {
+                        "symbol": "000001.SZ",
+                        "name": "示例科技",
+                        "company_role": "核心设备",
+                        "candidate_type": "POLICY_AMBUSH",
+                        "tier": "main",
+                        "mandate_score": 88,
+                        "latest_date": "2026-06-24",
+                    }
+                ],
+            },
+            {
+                "topic": "机器人",
+                "topic_status": "RECEDING",
+                "topic_status_label": "退潮",
+                "heat_trend": "COOLING",
+                "heat_trend_label": "降温",
+                "state_change_label": "退潮",
+                "state_change_positive": False,
+                "is_left_side": False,
+                "is_confirmed": False,
+                "latest_date": "2026-06-23",
+                "peak_heat": 43,
+                "heat_curve": [{"date": "2026-06-23", "candidate_count": 1, "heat": 43}],
+                "windows": {"7": {"evidence_count": 1, "candidate_count": 0}},
+                "counter_evidence_gaps": ["资金承接不足"],
+                "overheat_flags": ["短期过热"],
+                "candidates": [],
+            },
+        ],
+    }
+
+
+def _seed_dir(tree: dict[str, str]) -> Path:
+    """Materialise a ``{filename: content}`` mapping onto a temp dir."""
+    base = tree.pop("__BASE__", None)
+    assert base is not None, "caller must pass __BASE__"
+    for name, payload in tree.items():
+        full = base / name
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_text(payload, encoding="utf-8")
+    return base
+
+
+# ---------------------------------------------------------------------------
+# Retention helper
+# ---------------------------------------------------------------------------
+
+
+def test_parse_mandate_filename_accepts_canonical_pattern():
+    assert _parse_mandate_filename("mandate-2026-06-24.md") == ("2026-06-24", "md")
+    assert _parse_mandate_filename("mandate-2026-06-24.json") == ("2026-06-24", "json")
+
+
+def test_parse_mandate_filename_rejects_other_files():
+    assert _parse_mandate_filename("README.md") is None
+    assert _parse_mandate_filename("mandate-2026-06-24.txt") is None
+    assert _parse_mandate_filename("mandate-20260624.md") is None
+    assert _parse_mandate_filename("mandate-2026-13-40.md") is None  # invalid date
+    assert _parse_mandate_filename("topic_heatmap-2026-06-24.json") is None
+
+
+def test_purge_only_deletes_old_mandate_files_and_keeps_siblings(tmp_path):
+    base = _seed_dir(
+        {
+            "__BASE__": tmp_path,
+            "mandate-2026-03-01.md": "old md",
+            "mandate-2026-03-01.json": "{}",
+            "mandate-2026-06-24.md": "fresh md",
+            "mandate-2026-06-24.json": "{}",
+            "README.md": "do not touch",
+            "notes-2026-01-01.md": "sidecar",
+        }
+    )
+
+    purge_log = purge_old_mandate_daily_reports(
+        str(base),
+        retention_days=90,
+        as_of="2026-06-24",
+    )
+
+    # Old mandate pair was purged, fresh pair kept, non-mandate files skipped.
+    assert sorted(purge_log["deleted"]) == [
+        "mandate-2026-03-01.json",
+        "mandate-2026-03-01.md",
+    ]
+    assert sorted(purge_log["kept"]) == [
+        "mandate-2026-06-24.json",
+        "mandate-2026-06-24.md",
+    ]
+    assert sorted(purge_log["skipped"]) == ["README.md", "notes-2026-01-01.md"]
+
+    # Sibling files physically remain on disk.
+    assert (base / "README.md").exists()
+    assert (base / "notes-2026-01-01.md").exists()
+    # Old pair gone, fresh pair still present.
+    assert not (base / "mandate-2026-03-01.md").exists()
+    assert (base / "mandate-2026-06-24.md").exists()
+
+
+def test_purge_retention_zero_is_noop(tmp_path):
+    base = _seed_dir(
+        {
+            "__BASE__": tmp_path,
+            "mandate-2025-01-01.md": "ancient",
+        }
+    )
+    purge_log = purge_old_mandate_daily_reports(str(base), retention_days=0)
+    assert purge_log == {"deleted": [], "kept": [], "skipped": []}
+    assert (base / "mandate-2025-01-01.md").exists()
+
+
+def test_purge_missing_dir_is_safe():
+    purge_log = purge_old_mandate_daily_reports(
+        "/nonexistent/path/does-not-exist",
+        retention_days=30,
+    )
+    assert purge_log == {"deleted": [], "kept": [], "skipped": []}
+
+
+# ---------------------------------------------------------------------------
+# Summary helper
+# ---------------------------------------------------------------------------
+
+
+def test_build_mandate_daily_summary_is_auditable_and_has_no_trade_words():
+    report = build_mandate_daily_report(_fixture_heatmap())
+    summary = build_mandate_daily_summary(
+        report, source="dry_run", status="ok"
+    )
+
+    assert "as_of=2026-06-24" in summary
+    assert "source=dry_run" in summary
+    assert "status=ok" in summary
+    assert "rising=1" in summary
+    assert "cooling=1" in summary
+    assert "main=1" in summary
+    for forbidden in ["立即清仓", "重仓买入", "满仓", "梭哈", "买入", "卖出"]:
+        assert forbidden not in summary
+
+
+def test_build_mandate_daily_summary_handles_empty_report():
+    empty = MandateDailyReport(as_of="2026-06-24")
+    summary = build_mandate_daily_summary(empty)
+    assert "rising=0" in summary
+    assert "cooling=0" in summary
+    assert "main=0" in summary
+
+
+# ---------------------------------------------------------------------------
+# End-to-end CLI behaviour (fixture -> md/json, dry-run, retention)
+# ---------------------------------------------------------------------------
+
+
+def _load_cli_module():
+    """Import the CLI script as a module without invoking ``__main__``."""
+    repo_root = Path(__file__).resolve().parents[1]
+    script_path = repo_root / "scripts" / "run_mandate_daily_report.py"
+    spec = importlib.util.spec_from_file_location(
+        "run_mandate_daily_report", script_path
+    )
+    assert spec and spec.loader, "unable to build spec for CLI module"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_cli_dry_run_does_not_write_files(tmp_path, monkeypatch, capsys):
+    cli = _load_cli_module()
+
+    # Patch the heatmap loader so we do NOT touch tradeflow.db / prod DB.
+    def _fake_load(as_of, window_days, tf_db_path):
+        return _fixture_heatmap()
+
+    monkeypatch.setattr(cli, "_load_topic_heatmap", _fake_load)
+
+    out_dir = tmp_path / "reports"
+    rc = cli._cli(
+        [
+            "--as-of",
+            "2026-06-24",
+            "--output-dir",
+            str(out_dir),
+            "--dry-run",
+        ]
+    )
+
+    assert rc == 0
+    assert not out_dir.exists() or not any(out_dir.iterdir())
+    captured = capsys.readouterr()
+    assert "source=dry_run" in captured.out
+    assert "as_of=2026-06-24" in captured.out
+
+
+def test_cli_writes_md_json_and_purges_old(tmp_path, monkeypatch, capsys):
+    cli = _load_cli_module()
+
+    # Pre-seed an old report pair + a sidecar file that must survive.
+    _seed_dir(
+        {
+            "__BASE__": tmp_path,
+            "mandate-2025-01-01.md": "ancient md",
+            "mandate-2025-01-01.json": "{}",
+            "README.md": "keep me",
+        }
+    )
+
+    def _fake_load(as_of, window_days, tf_db_path):
+        return _fixture_heatmap()
+
+    monkeypatch.setattr(cli, "_load_topic_heatmap", _fake_load)
+
+    rc = cli._cli(
+        [
+            "--as-of",
+            "2026-06-24",
+
+---DOC files---
+docs/task_runs/H-016-20260626-215858/tests-round1.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  1%]
+................................................ss...................... [  2%]
+........................................................................ [  3%]
+........................................................................ [  4%]
+........................................................................ [  5%]
+........................................................................ [  6%]
+........................................................................ [  7%]
+........................................................................ [  8%]
+........................................................................ [  9%]
+........................................................................ [ 10%]
+........................................................................ [ 11%]
+........................................................................ [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 15%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 18%]
+........................................................................ [ 19%]
+........................................................................ [ 20%]
+........................................................................ [ 21%]
+........................................................................ [ 22%]
+........................................................................ [ 23%]
+........................................................................ [ 24%]
+........................................................................ [ 25%]
+........................................................................ [ 26%]
+........................................................................ [ 27%]
+........................................................................ [ 28%]
+........................................................................ [ 30%]
+........................................................................ [ 31%]
+........................................................................ [ 32%]
+........................................................................ [ 33%]
+........................................................................ [ 34%]
+........................................................................ [ 35%]
+........................................................................ [ 36%]
+........................................................................ [ 37%]
+........................................................................ [ 38%]
+........................................................................ [ 39%]
+........................................................................ [ 40%]
+........................................................................ [ 41%]
+........................................................................ [ 42%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 45%]
+........................................................................ [ 46%]
+........................................................................ [ 47%]
+.......sssssssss........................................................ [ 48%]
+........................................................................ [ 49%]
+........................................................................ [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 52%]
+........................................................................ [ 53%]
+........................................................................ [ 54%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 57%]
+........................................................................ [ 58%]
+........................................................................ [ 60%]
+........................................................................ [ 61%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 64%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+................ss.................................................ssss. [ 67%]
+........................................................................ [ 68%]
+........................................................................ [ 69%]
+........................................................................ [ 70%]
+........................................................................ [ 71%]
+........................................................................ [ 72%]
+........................................................................ [ 73%]
+........................................................................ [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 76%]
+........................................................................ [ 77%]
+........................................................................ [ 78%]
+........................................................................ [ 79%]
+........................................................................ [ 80%]
+docs/task_runs/H-016-20260626-215858/codegraph-status.json
+{
+  "task_id": "H-016",
+  "generated_at": "2026-06-26T21:58:58.786669",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "result": "OK",
+  "symbols_found": 6,
+  "post_generated_at": "2026-06-26T22:07:11.806815",
+  "codegraph_post": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "post_result": "OK",
+  "impact_files_count": 0,
+  "affected_tests_count": 0,
+  "changed_files": [
+    "docs/TASKS.md",
+    "docs/tradeflow_trial_acceptance.md",
+    "docs/tradeflow_trial_acceptance_v2.md",
+    "docs/tradeflow_trial_acceptance_v3.md",
+    "tradingagents/tradeflow/mandate_daily_report.py"
+  ]
+}docs/task_runs/H-016-20260626-215858/prompt-round1.md
+# Task: H-016: 昊天主题日报 CLI 生成与保留策略（P2）
+
+Read task "H-016" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+docs/task_runs/H-016-20260626-215858/codegraph-context.txt
+# CodeGraph Context for H-016
+# Task: 昊天主题日报 CLI 生成与保留策略（P2）
+# Generated: 2026-06-26T21:58:58.913527
+# Keywords: 昊天主题日报, cli, 生成与保留策略（p2）
+
+## Code Context
+
+**Query:** 昊天主题日报 cli 生成与保留策略（p2）
+
+### Entry Points
+
+- **_clip_summary** (function) - api/services/tracking_board_service.py:188
+  `(text: str | None) -> str | None`
+- **_clip_text** (function) - api/services/bark_notification_service.py:19
+  `(text: str | None, limit: int = 720) -> str`
+- **_clip_text** (function) - api/services/wecom_notification_service.py:19
+  `(text: str | None, limit: int = 720) -> str`
+
+### Related Symbols
+
+- api/services/tracking_board_service.py: _summarize_trader_advice:152
+- api/services/bark_notification_service.py: build_test_payload:174, send_message:183
+- api/services/wecom_notification_service.py: build_report_message:26, send_message:88
+
+docs/task_runs/H-016-20260626-215858/opencode-round1.txt
+[0m
+> build · glm-5.2
+[0m
+[0m$ [0mgrep -n "H-016" docs/TASKS.md
+139:113. `H-016`：昊天主题日报 CLI 生成与保留策略（P2，ready，依赖 H-015 ✓）。
+3937:### H-016: 昊天主题日报 CLI 生成与保留策略（P2）
+3940:- **状态**：in_progress — claimed H-016-20260626-215858
+3955:- **代码标注要求**：`# [H-016] mandate_daily_cli`
+[0m
+[0m→ [0mRead docs/TASKS.md[90m [offset=3930, limit=100][0m
+[0m
+[0m$ [0mgrep -n "H-015" docs/TASKS.md | head -20
+126:100. `H-015`：昊天主题日报与候选入池/出池解释（P1，done — Codex 直接开发，依赖 H-014 ✓/H-013A ✓）。
+132:  106. `IC-TA-002`：investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1，done，依赖 IC-TA-001/DATA-021/H-015 ✓）。
+133:107. `V-010`：小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口（P1，done，依赖 V-009/DATA-021/H-015 ✓）。
+134:108. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2，done — NOTIFY-002-20260626-214133，依赖 TRACK-NOTIFY-001/H-015/DATA-021 ✓）。
+139:113. `H-016`：昊天主题日报 CLI 生成与保留策略（P2，ready，依赖 H-015 ✓）。
+142:116. `UI-013`：TradeFlow 空状态与下一步 CTA 文案收口（P2，ready，依赖 UI-012/H-015 ✓）。
+3671:### H-015: 昊天主题日报与候选入池/出池解释（P1）
+3689:- **代码标注要求**：`# [H-015] mandate_daily_report` / `// [H-015] mandate_daily_report`
+3694:  - 验证：H-015/H-013 共 112 个测试通过，前端 `npm run build` 通过。
+3798:- **描述**：investment-controller v5 的职责是 TA 调度官/飞书播报官。当前只读上下文需要继续纳入 H-015 昊天主题日报和 DATA-021 报告数据缺口，帮助它决定“是否值得让 TA 出手”和“推送什么”。
+3801:- **前置条件**：IC-TA-001、DATA-021、H-015 完成。
+3818:- **描述**：在 TF-QUALITY、DATA-021、H-015、TRACK 系列完成后，补一条新的端到端验收，确认用户 5000 元小资金试跑链路能回答“看哪几只、为什么、何时观察、数据缺什么、盘后怎么复盘”。
+3821:- **前置条件**：V-009、DATA-021、H-015、TF-OBS-004、TRACK-007 完成。
+3838:- **描述**：TRACK-NOTIFY-001 已完成通知草稿 payload 与去噪规则。本任务把 H-015 昊天日报和 DATA-021 数据缺口纳入通知草稿，让用户早上/盘后能看到主题重心与数据风险，而不是只看到候选数量。
+3841:- **前置条件**：TRACK-NOTIFY-001、H-015、DATA-021 完成。
+3938:- **描述**：H-015 已支持 API/latest。本任务补 CLI/脚本入口与保留策略，让夜间或手工可以生成 `docs/mandate_daily_reports/mandate-YYYY-MM-DD.*`，并清理过旧报告。
+3941:- **前置条件**：H-015 完成。
+4001:- **前置条件**：UI-012、H-015 完成。
+[0m
+Now let me look at the H-015 task and what was implemented for it:
+[0m$ [0mls docs/mandate_daily_reports/ 2>/dev/null || echo "directory does not exist"
+directory does not exist
+[0m
+[0m→ [0mRead docs/TASKS.md[90m [limit=35, offset=3671][0m
+[0m✱ [0mGlob "**/mandate_daily_report.py"[90m 1 match[0m
+Now let me find the existing mandate_daily_report.py from H-015:
+[0m✱ [0mGlob "**/mandate*.py"[90m 9 matches[0m
+[0m→ [0mRead tradingagents/tradeflow/mandate_daily_report.py
+[0m✱ [0mGrep "mandate.daily.report|mandate_daily_report"[90m in api · 40 matches[0m
+[0m✱ [0mGlob "**/fixtures/**/*heatmap*"[90m 0 matches[0m
+Now let me check the API endpoint and look for fixtures and existing CLI/script patterns:
+[0m✱ [0mGlob "scripts/*.py"[90m 9 matches[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=60, offset=3445][0m
+[0m→ [0mRead scripts/run_tradeflow_plan.py
+Now let me look at the existing CLI/script style in this project to understand the pattern, and look at the heatmap function:
+[0m✱ [0mGrep "def get_topic_heatmap"[90m in api/services/tradeflow_service.py · 1 match[0m
+[0m✱ [0mGlob "tests/**/test_mandate_daily*"[90m 0 matches[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=100, offset=3343][0m
+Now let me look at how the H-015 tests are organized to follow that pattern:
+[0m✱ [0mGlob "tests/**/*mandate*"[90m 11 matches[0m
+[0m✱ [0mGlob "tests/**/test_*.py"[90m 100 matches[0m
+[0m→ [0mRead tests/test_h015_mandate_daily_report.py
+[0m
+[0m$ [0mls /Users/maybee/TradingAgents-AShare/*.cfg /Users/maybee/TradingAgents-AShare/*.toml /Users/maybee/TradingAgents-AShare/*.ini 2>/dev/null; ls /Users/maybee/TradingAgents-AShare/Makefile 2>/dev/null; ls /Users/maybee/TradingAgents-AShare/pytest.ini 2>/dev/null
+zsh:1: no matches found: /Users/maybee/TradingAgents-AShare/*.cfg
+[0m
+Now let me check the project's testing setup and DEVLOG format:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=80][0m
+[0m
+[0m$ [0mls *.toml *.cfg 2>/dev/null; cat pyproject.toml 2>/dev/null | head -50
+zsh:1: no matches found: *.cfg
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tradingagents"
+version = "0.2.0"
+description = "TradingAgents: Multi-Agents LLM Financial Trading Framework"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "langchain-core>=0.3.81",
+    "langchain-anthropic>=0.3.15",
+    "langchain-experimental>=0.3.4",
+    "langchain-google-genai>=2.1.5",
+    "langchain-openai>=0.3.23",
+    "langgraph>=0.4.8",
+docs/task_runs/H-016-20260626-215858/task.md
+# Auto Dev Task Run
+
+- Task: H-016 - 昊天主题日报 CLI 生成与保留策略（P2）
+- Priority: P2
+- Status: CLAIMED
+- Started at: 2026-06-26_21:58:58
+- Git HEAD: c3e32a7
+- Test commands: pytest tests/ -q --tb=short
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+docs/task_runs/H-016-20260626-215858/codegraph-impact.txt
+# CodeGraph Impact Analysis
+# Generated: 2026-06-26T22:07:11.806838
+# Changed files: 5
+
+## Source: docs/TASKS.md
+[34mℹ[0m Symbol "docs/TASKS.md" not found
+
+
+## Source: docs/tradeflow_trial_acceptance.md
+[34mℹ[0m Symbol "docs/tradeflow_trial_acceptance.md" not found
+
+
+## Source: docs/tradeflow_trial_acceptance_v2.md
+[34mℹ[0m Symbol "docs/tradeflow_trial_acceptance_v2.md" not found
+
+
+## Source: docs/tradeflow_trial_acceptance_v3.md
+[34mℹ[0m Symbol "docs/tradeflow_trial_acceptance_v3.md" not found
+
+
+## Source: tradingagents/tradeflow/mandate_daily_report.py
+[34mℹ[0m Symbol "tradingagents/tradeflow/mandate_daily_report.py" not found
+
+
+## Affected Tests
+  (could not determine affected tests)
+exec
+/bin/zsh -lc "sed -n '260,520p' tests/test_h016_mandate_daily_cli.py; git diff -- docs/TASKS.md docs/tradeflow_trial_acceptance.md docs/tradeflow_trial_acceptance_v2.md docs/tradeflow_trial_acceptance_v3.md docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+            "2026-06-24",
+            "--output-dir",
+            str(tmp_path),
+            "--retention-days",
+            "90",
+        ]
+    )
+
+    assert rc == 0
+    # Fresh report pair materialised.
+    assert (tmp_path / "mandate-2026-06-24.md").exists()
+    assert (tmp_path / "mandate-2026-06-24.json").exists()
+    # Old pair purged.
+    assert not (tmp_path / "mandate-2025-01-01.md").exists()
+    assert not (tmp_path / "mandate-2025-01-01.json").exists()
+    # Sidecar survived.
+    assert (tmp_path / "README.md").exists()
+
+    captured = capsys.readouterr()
+    assert "source=generated_file" in captured.out
+    assert "deleted=2" in captured.out
+    assert "kept=2" in captured.out  # the freshly written md+json
+
+
+def test_cli_no_data_heatmap_does_not_crash(tmp_path, monkeypatch):
+    cli = _load_cli_module()
+
+    def _fake_load(as_of, window_days, tf_db_path):
+        return {"status": "no_data", "as_of": as_of or "2026-06-24", "topics": []}
+
+    monkeypatch.setattr(cli, "_load_topic_heatmap", _fake_load)
+
+    rc = cli._cli(
+        [
+            "--as-of",
+            "2026-06-24",
+            "--output-dir",
+            str(tmp_path),
+            "--dry-run",
+        ]
+    )
+
+    assert rc == 0
+    # Dry-run must not have written anything even on no_data.
+    assert not any(p.name.startswith("mandate-") for p in tmp_path.iterdir())
+
+
+def test_fixture_generates_md_and_json_round_trip(tmp_path):
+    """Acceptance: a fixture heatmap can produce md+json and survive a reload."""
+    from tradingagents.tradeflow.mandate_daily_report import (
+        find_latest_mandate_daily_report,
+        load_latest_mandate_daily_report,
+    )
+
+    report = build_mandate_daily_report(_fixture_heatmap())
+    md_path, json_path = save_mandate_daily_report(report, output_dir=str(tmp_path))
+
+    assert md_path.endswith("mandate-2026-06-24.md")
+    assert json_path.endswith("mandate-2026-06-24.json")
+    assert "不构成交易建议" in Path(md_path).read_text(encoding="utf-8")
+
+    latest = load_latest_mandate_daily_report(str(tmp_path))
+    assert latest is not None
+    assert latest["as_of"] == "2026-06-24"
+    assert find_latest_mandate_daily_report(str(tmp_path)).endswith(
+        "mandate-2026-06-24.json"
+    )
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index e2ec56f..e49337f 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -3937,7 +3937,7 @@
+ ### H-016: 昊天主题日报 CLI 生成与保留策略（P2）
+ - **描述**：H-015 已支持 API/latest。本任务补 CLI/脚本入口与保留策略，让夜间或手工可以生成 `docs/mandate_daily_reports/mandate-YYYY-MM-DD.*`，并清理过旧报告。
+ - **优先级**：P2
+-- **状态**：ready
++- **状态**：in_progress — claimed H-016-20260626-215858
+ - **前置条件**：H-015 完成。
+ - **执行约束**：
+   - 不调用 LLM。
+diff --git a/docs/tradeflow_trial_acceptance.md b/docs/tradeflow_trial_acceptance.md
+index 0631895..a21702a 100644
+--- a/docs/tradeflow_trial_acceptance.md
++++ b/docs/tradeflow_trial_acceptance.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 试用闭环端到端验收报告 (V-007)
+ 
+-**生成时间**: 2026-06-26 21:56:49
++**生成时间**: 2026-06-26 22:07:04
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **候选数**: 5 只 (2 主候选 + 1 弱技术 + 1 事件观察 + 1 证据缺口)
+diff --git a/docs/tradeflow_trial_acceptance_v2.md b/docs/tradeflow_trial_acceptance_v2.md
+index 87fad32..b996131 100644
+--- a/docs/tradeflow_trial_acceptance_v2.md
++++ b/docs/tradeflow_trial_acceptance_v2.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 小资金试跑前整体验收报告 (V-008)
+ 
+-**生成时间**: 2026-06-26 21:56:53
++**生成时间**: 2026-06-26 22:07:08
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **模拟本金**: ¥5000
+diff --git a/docs/tradeflow_trial_acceptance_v3.md b/docs/tradeflow_trial_acceptance_v3.md
+index d2ed48f..6b21b8c 100644
+--- a/docs/tradeflow_trial_acceptance_v3.md
++++ b/docs/tradeflow_trial_acceptance_v3.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 小资金试跑 v2 验收报告 (V-010)
+ 
+-**生成时间**: 2026-06-26 21:56:55
++**生成时间**: 2026-06-26 22:07:09
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **模拟本金**: ¥5000
+
+exec
+/bin/zsh -lc "sed -n '1,420p' tradingagents/tradeflow/mandate_daily_report.py; grep -R \"save_mandate_daily_report\\|load_latest_mandate_daily_report\\|find_latest_mandate\" -n . | head -50" in /Users/maybee/TradingAgents-AShare
+ succeeded in 20796ms:
+grep: ./.git/fsmonitor--daemon.ipc: Operation not supported on socket
+./.pytest_cache/v/cache/nodeids:3262:  "tests/test_h015_mandate_daily_report.py::test_save_and_load_latest_mandate_daily_report",
+./tests/test_h016_mandate_daily_cli.py:19:    save_mandate_daily_report,
+./tests/test_h016_mandate_daily_cli.py:310:        find_latest_mandate_daily_report,
+./tests/test_h016_mandate_daily_cli.py:311:        load_latest_mandate_daily_report,
+./tests/test_h016_mandate_daily_cli.py:315:    md_path, json_path = save_mandate_daily_report(report, output_dir=str(tmp_path))
+./tests/test_h016_mandate_daily_cli.py:321:    latest = load_latest_mandate_daily_report(str(tmp_path))
+./tests/test_h016_mandate_daily_cli.py:324:    assert find_latest_mandate_daily_report(str(tmp_path)).endswith(
+./tests/test_h015_mandate_daily_report.py:5:    load_latest_mandate_daily_report,
+./tests/test_h015_mandate_daily_report.py:6:    save_mandate_daily_report,
+./tests/test_h015_mandate_daily_report.py:86:def test_save_and_load_latest_mandate_daily_report(tmp_path):
+./tests/test_h015_mandate_daily_report.py:88:    md_path, json_path = save_mandate_daily_report(report, output_dir=str(tmp_path))
+./tests/test_h015_mandate_daily_report.py:90:    loaded = load_latest_mandate_daily_report(str(tmp_path))
+Binary file ./tests/__pycache__/test_h016_mandate_daily_cli.cpython-312-pytest-9.0.2.pyc matches
+Binary file ./tests/__pycache__/test_h015_mandate_daily_report.cpython-312-pytest-9.0.2.pyc matches
+./docs/task_runs/NOTIFY-002-20260626-214133/codex-review-round1.txt:1917:api/services/tradeflow_service.py:3456:        load_latest_mandate_daily_report,
+./docs/task_runs/NOTIFY-002-20260626-214133/codex-review-round1.txt:1918:api/services/tradeflow_service.py:3457:        save_mandate_daily_report,
+./docs/task_runs/NOTIFY-002-20260626-214133/codex-review-round1.txt:1919:api/services/tradeflow_service.py:3461:        latest = load_latest_mandate_daily_report(reports_dir)
+./docs/task_runs/NOTIFY-002-20260626-214133/codex-review-round1.txt:1921:api/services/tradeflow_service.py:3473:        md_path, json_path = save_mandate_daily_report(report, output_dir=reports_dir)
+./docs/task_runs/NOTIFY-002-20260626-214133/codex-review-round1.txt:1927:tradingagents/tradeflow/mandate_daily_report.py:305:def save_mandate_daily_report(
+./docs/task_runs/NOTIFY-002-20260626-214133/codex-review-round1.txt:1928:tradingagents/tradeflow/mandate_daily_report.py:319:def find_latest_mandate_daily_report(
+./docs/task_runs/NOTIFY-002-20260626-214133/codex-review-round1.txt:1929:tradingagents/tradeflow/mandate_daily_report.py:335:def load_latest_mandate_daily_report(
+./docs/task_runs/NOTIFY-002-20260626-214133/codex-review-round1.txt:1930:tradingagents/tradeflow/mandate_daily_report.py:338:    path = find_latest_mandate_daily_report(reports_dir)
+./docs/task_runs/NOTIFY-002-20260626-214133/codex-review-round1.txt:2016:tests/test_h015_mandate_daily_report.py:5:    load_latest_mandate_daily_report,
+./docs/task_runs/NOTIFY-002-20260626-214133/codex-review-round1.txt:2017:tests/test_h015_mandate_daily_report.py:6:    save_mandate_daily_report,
+./docs/task_runs/NOTIFY-002-20260626-214133/codex-review-round1.txt:2022:tests/test_h015_mandate_daily_report.py:86:def test_save_and_load_latest_mandate_daily_report(tmp_path):
+./docs/task_runs/NOTIFY-002-20260626-214133/codex-review-round1.txt:2024:tests/test_h015_mandate_daily_report.py:88:    md_path, json_path = save_mandate_daily_report(report, output_dir=str(tmp_path))
+./docs/task_runs/NOTIFY-002-20260626-214133/codex-review-round1.txt:2025:tests/test_h015_mandate_daily_report.py:90:    loaded = load_latest_mandate_daily_report(str(tmp_path))
+./docs/task_runs/NOTIFY-002-20260626-214133/codex-review-round1.txt:2488:        load_latest_mandate_daily_report,
+./docs/task_runs/NOTIFY-002-20260626-214133/codex-review-round1.txt:2489:        save_mandate_daily_report,
+./docs/task_runs/NOTIFY-002-20260626-214133/codex-review-round1.txt:2493:        latest = load_latest_mandate_daily_report(reports_dir)
+./docs/task_runs/NOTIFY-002-20260626-214133/codex-review-round1.txt:2505:        md_path, json_path = save_mandate_daily_report(report, output_dir=reports_dir)
+./docs/task_runs/IC-TA-002-20260626-191456/codex-review-round1.txt:3297:        load_latest_mandate_daily_report,
+./docs/task_runs/IC-TA-002-20260626-191456/codex-review-round1.txt:3298:        save_mandate_daily_report,
+./docs/task_runs/IC-TA-002-20260626-191456/codex-review-round1.txt:3302:        latest = load_latest_mandate_daily_report(reports_dir)
+./docs/task_runs/IC-TA-002-20260626-191456/codex-review-round1.txt:3314:        md_path, json_path = save_mandate_daily_report(report, output_dir=reports_dir)
+./docs/task_runs/H-016-20260626-215858/opencode-round1.txt:341:tests/test_h015_mandate_daily_report.py::test_save_and_load_latest_mandate_daily_report PASSED [100%]
+./docs/reviews/NOTIFY-002-20260626-round1.txt:1917:api/services/tradeflow_service.py:3456:        load_latest_mandate_daily_report,
+./docs/reviews/NOTIFY-002-20260626-round1.txt:1918:api/services/tradeflow_service.py:3457:        save_mandate_daily_report,
+./docs/reviews/NOTIFY-002-20260626-round1.txt:1919:api/services/tradeflow_service.py:3461:        latest = load_latest_mandate_daily_report(reports_dir)
+./docs/reviews/NOTIFY-002-20260626-round1.txt:1921:api/services/tradeflow_service.py:3473:        md_path, json_path = save_mandate_daily_report(report, output_dir=reports_dir)
+./docs/reviews/NOTIFY-002-20260626-round1.txt:1927:tradingagents/tradeflow/mandate_daily_report.py:305:def save_mandate_daily_report(
+./docs/reviews/NOTIFY-002-20260626-round1.txt:1928:tradingagents/tradeflow/mandate_daily_report.py:319:def find_latest_mandate_daily_report(
+./docs/reviews/NOTIFY-002-20260626-round1.txt:1929:tradingagents/tradeflow/mandate_daily_report.py:335:def load_latest_mandate_daily_report(
+./docs/reviews/NOTIFY-002-20260626-round1.txt:1930:tradingagents/tradeflow/mandate_daily_report.py:338:    path = find_latest_mandate_daily_report(reports_dir)
+./docs/reviews/NOTIFY-002-20260626-round1.txt:2016:tests/test_h015_mandate_daily_report.py:5:    load_latest_mandate_daily_report,
+./docs/reviews/NOTIFY-002-20260626-round1.txt:2017:tests/test_h015_mandate_daily_report.py:6:    save_mandate_daily_report,
+./docs/reviews/NOTIFY-002-20260626-round1.txt:2022:tests/test_h015_mandate_daily_report.py:86:def test_save_and_load_latest_mandate_daily_report(tmp_path):
+./docs/reviews/NOTIFY-002-20260626-round1.txt:2024:tests/test_h015_mandate_daily_report.py:88:    md_path, json_path = save_mandate_daily_report(report, output_dir=str(tmp_path))
+./docs/reviews/NOTIFY-002-20260626-round1.txt:2025:tests/test_h015_mandate_daily_report.py:90:    loaded = load_latest_mandate_daily_report(str(tmp_path))
+./docs/reviews/NOTIFY-002-20260626-round1.txt:2488:        load_latest_mandate_daily_report,
+
+2026-06-26T14:08:06.950208Z ERROR codex_core::tools::router: error=write_stdin failed: stdin is closed for this session; rerun exec_command with tty=true to keep stdin open
+exec
+/bin/zsh -lc "nl -ba scripts/run_mandate_daily_report.py | sed -n '1,220p'; nl -ba tradingagents/tradeflow/mandate_daily_report.py | sed -n '330,460p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+     1	#!/usr/bin/env python3
+     2	# [H-016] mandate_daily_cli
+     3	"""H-016 — CLI entry point for the Haotian / policy-left-side daily report.
+     4	
+     5	Wraps the H-015 ``build_mandate_daily_report`` pipeline so OpenClaw or a cron
+     6	job can regenerate ``docs/mandate_daily_reports/mandate-YYYY-MM-DD.{md,json}``
+     7	overnight or on demand, and rotate the older reports out.
+     8	
+     9	Hard rules (also enforced in the underlying module):
+    10	
+    11	* Never calls an LLM.
+    12	* Never scans the full market — only reads the existing TradeFlow candidate
+    13	  pool (``tradeflow.db``) and the topic heatmap built from it.
+    14	* Never writes to ``tradeflow.db`` / ``tradingagents.db``. The only side
+    15	  effects are the mandate report files inside ``--output-dir`` (and only when
+    16	  ``--dry-run`` is *not* set).
+    17	* Retention only deletes files matching ``mandate-YYYY-MM-DD.(md|json)`` in
+    18	  ``--output-dir``; sibling files are left untouched.
+    19	
+    20	Usage:
+    21	
+    22	    # Generate today's report with the default 60-day heatmap window.
+    23	    python scripts/run_mandate_daily_report.py
+    24	
+    25	    # Backfill a specific trading day.
+    26	    python scripts/run_mandate_daily_report.py --as-of 2026-06-24
+    27	
+    28	    # Preview without writing (OpenClaw dry-run / cron pre-check).
+    29	    python scripts/run_mandate_daily_report.py --dry-run
+    30	
+    31	    # Custom output dir + retention.
+    32	    python scripts/run_mandate_daily_report.py \\
+    33	        --output-dir docs/mandate_daily_reports \\
+    34	        --retention-days 120
+    35	
+    36	    # Point at a different tradeflow.db (read-only).
+    37	    python scripts/run_mandate_daily_report.py --tf-db-path /srv/data/tradeflow.db
+    38	
+    39	OpenClaw / cron example (no LLM, no live market scan, no DB write):
+    40	
+    41	    30 22 * * 1-5  cd /path/to/TradingAgents-AShare && \\
+    42	        .venv/bin/python scripts/run_mandate_daily_report.py \\
+    43	        --output-dir docs/mandate_daily_reports \\
+    44	        --retention-days 90 >> logs/mandate_daily.log 2>&1
+    45	"""
+    46	
+    47	from __future__ import annotations
+    48	
+    49	import argparse
+    50	import os
+    51	import sys
+    52	
+    53	project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    54	sys.path.insert(0, project_root)
+    55	
+    56	from tradingagents.tradeflow.mandate_daily_report import (  # noqa: E402
+    57	    _DEFAULT_REPORT_DIR,
+    58	    _DEFAULT_RETENTION_DAYS,
+    59	    build_mandate_daily_report,
+    60	    build_mandate_daily_summary,
+    61	    purge_old_mandate_daily_reports,
+    62	    save_mandate_daily_report,
+    63	)
+    64	
+    65	
+    66	def _resolve_tf_db_path(arg_path: str | None) -> str:
+    67	    """Resolve the read-only tradeflow DB path the same way the API does."""
+    68	    if arg_path:
+    69	        return arg_path
+    70	    env_path = os.environ.get("TRADEFLOW_DB_PATH", "")
+    71	    if env_path:
+    72	        return env_path
+    73	    return os.path.join(project_root, "tradeflow.db")
+    74	
+    75	
+    76	def _load_topic_heatmap(as_of: str, window_days: int, tf_db_path: str) -> dict:
+    77	    """Build the topic heatmap from the read-only TradeFlow DB.
+    78	
+    79	    Imported lazily so the CLI's ``--help`` and dry-run path stay cheap and so
+    80	    we never accidentally spin up the wider API service.
+    81	    """
+    82	    from api.services.tradeflow_service import get_topic_heatmap
+    83	
+    84	    return get_topic_heatmap(as_of=as_of, window_days=window_days, tf_db_path=tf_db_path)
+    85	
+    86	
+    87	def _cli(argv: list[str] | None = None) -> int:
+    88	    parser = argparse.ArgumentParser(
+    89	        description="[H-016] Haotian mandate daily report generator (no LLM, no market scan)",
+    90	    )
+    91	    parser.add_argument(
+    92	        "--as-of",
+    93	        default="",
+    94	        help="Report date (YYYY-MM-DD). Defaults to the latest tradeflow_candidates date.",
+    95	    )
+    96	    parser.add_argument(
+    97	        "--window-days",
+    98	        type=int,
+    99	        default=60,
+   100	        help="Heatmap lookback window in days (default 60).",
+   101	    )
+   102	    parser.add_argument(
+   103	        "--output-dir",
+   104	        default=_DEFAULT_REPORT_DIR,
+   105	        help=f"Directory for mandate-YYYY-MM-DD.{{md,json}} (default {_DEFAULT_REPORT_DIR}).",
+   106	    )
+   107	    parser.add_argument(
+   108	        "--retention-days",
+   109	        type=int,
+   110	        default=_DEFAULT_RETENTION_DAYS,
+   111	        help=(
+   112	            f"Rotate out mandate report files older than N days (default "
+   113	            f"{_DEFAULT_RETENTION_DAYS}). Only deletes mandate-* files in "
+   114	            f"--output-dir. Set to 0 to disable retention."
+   115	        ),
+   116	    )
+   117	    parser.add_argument(
+   118	        "--tf-db-path",
+   119	        default=None,
+   120	        help=(
+   121	            "Read-only TradeFlow DB path. Defaults to $TRADEFLOW_DB_PATH or "
+   122	            "tradeflow.db in the project root."
+   123	        ),
+   124	    )
+   125	    parser.add_argument(
+   126	        "--dry-run",
+   127	        action="store_true",
+   128	        help="Print the summary only; do not write files or run retention.",
+   129	    )
+   130	    args = parser.parse_args(argv)
+   131	
+   132	    tf_db_path = _resolve_tf_db_path(args.tf_db_path)
+   133	
+   134	    if not os.path.exists(tf_db_path):
+   135	        print(
+   136	            f"[H-016] no tradeflow DB at {tf_db_path}; "
+   137	            "falling back to an empty heatmap (no market scan, no LLM).",
+   138	            file=sys.stderr,
+   139	        )
+   140	
+   141	    heatmap = _load_topic_heatmap(args.as_of, args.window_days, tf_db_path)
+   142	    status = "ok" if heatmap.get("status") != "no_data" else "no_data"
+   143	
+   144	    report = build_mandate_daily_report(heatmap, as_of=heatmap.get("as_of") or args.as_of)
+   145	
+   146	    if args.dry_run:
+   147	        # [H-016] mandate_daily_cli — dry-run: print summary, never write.
+   148	        print(build_mandate_daily_summary(report, source="dry_run", status=status))
+   149	        if status == "no_data":
+   150	            print(
+   151	                "[H-016] dry-run produced no_data (empty heatmap); "
+   152	                "run TradeFlow discovery/plan first.",
+   153	                file=sys.stderr,
+   154	            )
+   155	        return 0
+   156	
+   157	    os.makedirs(args.output_dir, exist_ok=True)
+   158	    md_path, json_path = save_mandate_daily_report(report, output_dir=args.output_dir)
+   159	
+   160	    purge_summary: dict[str, list[str]] = {"deleted": [], "kept": [], "skipped": []}
+   161	    if args.retention_days > 0:
+   162	        purge_summary = purge_old_mandate_daily_reports(
+   163	            args.output_dir,
+   164	            args.retention_days,
+   165	            as_of=report.as_of,
+   166	        )
+   167	
+   168	    print(build_mandate_daily_summary(report, source="generated_file", status=status))
+   169	    print(f"[H-016] wrote {md_path}")
+   170	    print(f"[H-016] wrote {json_path}")
+   171	    print(
+   172	        f"[H-016] retention({args.retention_days}d): "
+   173	        f"deleted={len(purge_summary['deleted'])} "
+   174	        f"kept={len(purge_summary['kept'])} "
+   175	        f"skipped={len(purge_summary['skipped'])}"
+   176	    )
+   177	    if purge_summary["deleted"]:
+   178	        for name in purge_summary["deleted"]:
+   179	            print(f"  - purged {name}")
+   180	    return 0
+   181	
+   182	
+   183	def main() -> None:
+   184	    raise SystemExit(_cli())
+   185	
+   186	
+   187	if __name__ == "__main__":
+   188	    main()
+   330	        os.path.join(reports_dir, f)
+   331	        for f in os.listdir(reports_dir)
+   332	        if f.startswith("mandate-") and f.endswith(".json")
+   333	    ]
+   334	    if not files:
+   335	        return None
+   336	    files.sort(reverse=True)
+   337	    return files[0]
+   338	
+   339	
+   340	def load_latest_mandate_daily_report(
+   341	    reports_dir: str = _DEFAULT_REPORT_DIR,
+   342	) -> Optional[dict]:
+   343	    path = find_latest_mandate_daily_report(reports_dir)
+   344	    if not path:
+   345	        return None
+   346	    with open(path, "r", encoding="utf-8") as f:
+   347	        data = json.load(f)
+   348	    data["source"] = "file"
+   349	    data["path"] = path
+   350	    return data
+   351	
+   352	
+   353	# [H-016] mandate_daily_cli
+   354	def _parse_mandate_filename(filename: str) -> Optional[tuple[str, str]]:
+   355	    """Return ``(date_str, ext)`` for ``mandate-YYYY-MM-DD.(md|json)`` files.
+   356	
+   357	    Anything that does not match the canonical mandate report filename pattern
+   358	    returns ``None`` so the retention pass never touches sibling files (README,
+   359	    index, ad-hoc notes, ...).
+   360	    """
+   361	    match = _MANDATE_FILE_RE.match(filename)
+   362	    if not match:
+   363	        return None
+   364	    date_str, ext = match.group(1), match.group(2)
+   365	    try:
+   366	        datetime.strptime(date_str, "%Y-%m-%d")
+   367	    except ValueError:
+   368	        return None
+   369	    return date_str, ext
+   370	
+   371	
+   372	# [H-016] mandate_daily_cli
+   373	def purge_old_mandate_daily_reports(
+   374	    reports_dir: str = _DEFAULT_REPORT_DIR,
+   375	    retention_days: int = _DEFAULT_RETENTION_DAYS,
+   376	    *,
+   377	    as_of: str = "",
+   378	    now: Optional[datetime] = None,
+   379	) -> Dict[str, List[str]]:
+   380	    """Delete ``mandate-*.md`` / ``mandate-*.json`` files older than retention.
+   381	
+   382	    Only touches files matching the canonical mandate report filename pattern
+   383	    inside ``reports_dir`` (so a README/index/fixture placed alongside is left
+   384	    alone). Returns a dict with ``deleted`` / ``kept`` / ``skipped`` filename
+   385	    lists so callers can show a clear audit trail. ``skipped`` covers files
+   386	    whose name does not match the pattern or carries an unparseable date.
+   387	
+   388	    ``as_of`` (``YYYY-MM-DD``) / ``now`` are explicit override hooks so tests
+   389	    and dry-run previews do not depend on the wall clock.
+   390	    """
+   391	    purge_log: Dict[str, List[str]] = {"deleted": [], "kept": [], "skipped": []}
+   392	    if retention_days <= 0 or not reports_dir or not os.path.isdir(reports_dir):
+   393	        return purge_log
+   394	
+   395	    if now is None:
+   396	        if as_of:
+   397	            try:
+   398	                now = datetime.strptime(as_of, "%Y-%m-%d")
+   399	            except ValueError:
+   400	                now = datetime.now()
+   401	        else:
+   402	            now = datetime.now()
+   403	    cutoff = now - timedelta(days=retention_days)
+   404	
+   405	    for filename in sorted(os.listdir(reports_dir)):
+   406	        parsed = _parse_mandate_filename(filename)
+   407	        if parsed is None:
+   408	            purge_log["skipped"].append(filename)
+   409	            continue
+   410	        date_str, _ext = parsed
+   411	        try:
+   412	            file_dt = datetime.strptime(date_str, "%Y-%m-%d")
+   413	        except ValueError:
+   414	            purge_log["skipped"].append(filename)
+   415	            continue
+   416	
+   417	        if file_dt < cutoff:
+   418	            try:
+   419	                os.remove(os.path.join(reports_dir, filename))
+   420	                purge_log["deleted"].append(filename)
+   421	            except OSError:
+   422	                purge_log["skipped"].append(filename)
+   423	        else:
+   424	            purge_log["kept"].append(filename)
+   425	
+   426	    return purge_log
+   427	
+   428	
+   429	# [H-016] mandate_daily_cli
+   430	def build_mandate_daily_summary(
+   431	    report: MandateDailyReport,
+   432	    *,
+   433	    source: str = "generated",
+   434	    status: str = "ok",
+   435	) -> str:
+   436	    """Render a short, audit-friendly summary line for CLI / dry-run output.
+   437	
+   438	    Includes counts that map 1:1 to the report sections plus the as-of date so
+   439	    a human (or OpenClaw log) can see what would have been written without
+   440	    opening the file. Never emits trade verbs.
+   441	    """
+   442	    rising = len(report.rising_topics)
+   443	    cooling = len(report.cooling_topics)
+   444	    main = len(report.main_candidates)
+   445	    obs = len(report.observation_candidates)
+   446	    gaps = len(report.evidence_gaps)
+   447	    return (
+   448	        f"[H-016] mandate daily report | as_of={report.as_of} | "
+   449	        f"source={source} | status={status} | "
+   450	        f"rising={rising} cooling={cooling} main={main} observe={obs} gaps={gaps}"
+   451	    )
+
+exec
+/bin/zsh -lc 'grep -n "def get_topic_heatmap" -A160 api/services/tradeflow_service.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+3343:def get_topic_heatmap(
+3344-    as_of: str = "",
+3345-    window_days: int = 60,
+3346-    tf_db_path: str = "",
+3347-) -> dict:
+3348-    """Build a topic heatmap from candidate history across the window.
+3349-
+3350-    Queries `tradeflow_candidates` within the trailing `window_days` and
+3351-    feeds the rows into the topic heatmap builder.
+3352-    """
+3353-    _fast_meta = _tradeflow_meta("tradeflow_topic_heatmap")
+3354-    conn = _connect(tf_db_path)
+3355-    if conn is None:
+3356-        from tradingagents.tradeflow.topic_heatmap import build_topic_heatmap
+3357-        report = build_topic_heatmap([], as_of=as_of, window_days=window_days)
+3358-        return {
+3359-            "status": "no_data",
+3360-            **report.to_dict(),
+3361-            "runtime_tier_meta": _fast_meta,
+3362-        }
+3363-
+3364-    try:
+3365-        from datetime import datetime as _dt, timedelta as _td
+3366-
+3367-        cols = _table_columns(conn, "tradeflow_candidates")
+3368-        has_eff = "effective_trade_date" in cols
+3369-
+3370-        # [H-013A] mandate_topic_heatmap_fix
+3371-        # Use COALESCE(NULLIF(effective_trade_date, ''), trade_date) so old rows
+3372-        # that have an empty effective_trade_date but a valid trade_date are not
+3373-        # silently dropped from the heatmap.
+3374-        if has_eff:
+3375-            date_expr = "COALESCE(NULLIF(effective_trade_date, ''), trade_date)"
+3376-        else:
+3377-            date_expr = "trade_date"
+3378-
+3379-        if not as_of:
+3380-            try:
+3381-                row = conn.execute(
+3382-                    f"SELECT {date_expr} AS d FROM tradeflow_candidates "
+3383-                    f"WHERE {date_expr} != '' ORDER BY d DESC LIMIT 1"
+3384-                ).fetchone()
+3385-                as_of = row["d"] if row else _dt.now().strftime("%Y-%m-%d")
+3386-            except Exception:
+3387-                as_of = _dt.now().strftime("%Y-%m-%d")
+3388-
+3389-        try:
+3390-            as_of_dt = _dt.strptime(as_of, "%Y-%m-%d")
+3391-        except ValueError:
+3392-            as_of_dt = _dt.now()
+3393-        start_date = (as_of_dt - _td(days=window_days)).strftime("%Y-%m-%d")
+3394-
+3395-        # [H-013A] mandate_topic_heatmap_fix — window filter uses the COALESCE expr
+3396-        rows = conn.execute(
+3397-            f"SELECT * FROM tradeflow_candidates "
+3398-            f"WHERE {date_expr} >= ? AND {date_expr} <= ? "
+3399-            f"ORDER BY {date_expr} ASC",
+3400-            (start_date, as_of),
+3401-        ).fetchall()
+3402-
+3403-        candidates: list[dict] = []
+3404-        for row in rows:
+3405-            item = _row_to_candidate_item(row)
+3406-            policy_refs = _parse_json(_rget(row, "policy_evidence_refs_json"), [])
+3407-            candidates.append({
+3408-                "symbol": item.get("symbol", ""),
+3409-                "name": item.get("name", ""),
+3410-                "mandate_topic": item.get("mandate_topic", ""),
+3411-                "policy_tags": item.get("policy_tags", []),
+3412-                "company_role": item.get("company_role", ""),
+3413-                "beneficiary_path": item.get("beneficiary_path", []),
+3414-                "mandate_score_component": item.get("mandate_score", 0.0),
+3415-                "composite_score": item.get("composite_score", 0.0),
+3416-                "tier": item.get("tier", ""),
+3417-                "candidate_type": item.get("candidate_type", ""),
+3418-                # [H-013A] mandate_topic_heatmap_fix — legacy rows may have
+3419-                # empty effective_trade_date but a valid trade_date. Keep both
+3420-                # so build_topic_heatmap() can resolve the candidate date and
+3421-                # include the row in heat_curve/window stats.
+3422-                "effective_trade_date": item.get("effective_trade_date", "") or _rget(row, "trade_date", ""),
+3423-                "trade_date": _rget(row, "trade_date", ""),
+3424-                "policy_evidence_refs": policy_refs,
+3425-                "overheat_flags": item.get("overheat_flags", []),
+3426-                "topic_lifecycle_state": item.get("topic_lifecycle_state", ""),
+3427-                "topic_signal_count": item.get("topic_signal_count", 0),
+3428-                "topic_last_signal_date": item.get("topic_last_signal_date", ""),
+3429-                "blocking_evidence_gaps": item.get("blocking_evidence_gaps", []),
+3430-                "watchlist_evidence_gap": item.get("watchlist_evidence_gap", []),
+3431-            })
+3432-
+3433-        from tradingagents.tradeflow.topic_heatmap import build_topic_heatmap
+3434-        report = build_topic_heatmap(candidates, as_of=as_of, window_days=window_days)
+3435-
+3436-        return {
+3437-            "status": "ok",
+3438-            **report.to_dict(),
+3439-            "runtime_tier_meta": _fast_meta,
+3440-        }
+3441-    finally:
+3442-        conn.close()
+3443-
+3444-
+3445-# [H-015] mandate_daily_report
+3446-def get_mandate_daily_report(
+3447-    as_of: str = "",
+3448-    window_days: int = 60,
+3449-    reports_dir: str = "docs/mandate_daily_reports",
+3450-    save_report: bool = False,
+3451-) -> dict:
+3452-    """Return the latest mandate daily report or generate a read-only preview."""
+3453-    _fast_meta = _tradeflow_meta("tradeflow_mandate_daily_report")
+3454-    from tradingagents.tradeflow.mandate_daily_report import (
+3455-        build_mandate_daily_report,
+3456-        load_latest_mandate_daily_report,
+3457-        save_mandate_daily_report,
+3458-    )
+3459-
+3460-    if not as_of:
+3461-        latest = load_latest_mandate_daily_report(reports_dir)
+3462-        if latest:
+3463-            latest["status"] = "ok"
+3464-            latest["runtime_tier_meta"] = _fast_meta
+3465-            return latest
+3466-
+3467-    heatmap = get_topic_heatmap(as_of=as_of, window_days=window_days)
+3468-    report = build_mandate_daily_report(heatmap, as_of=heatmap.get("as_of") or as_of)
+3469-    data = report.to_dict()
+3470-    data["status"] = "ok" if heatmap.get("status") != "no_data" else "no_data"
+3471-    data["runtime_tier_meta"] = _fast_meta
+3472-    if save_report:
+3473-        md_path, json_path = save_mandate_daily_report(report, output_dir=reports_dir)
+3474-        data["path"] = json_path
+3475-        data["markdown_path"] = md_path
+3476-        data["source"] = "generated_file"
+3477-    return data
+3478-
+3479-
+3480-# [DATA-018] source_freshness_report
+3481-def get_source_freshness(
+3482-    symbol: str = "",
+3483-    raw_evidence: Optional[dict] = None,
+3484-) -> dict:
+3485-    """Generate source freshness & fallback report.
+3486-
+3487-    When raw_evidence is not provided, returns catalog-based report
+3488-    (all sources show NORMAL_NO_DATA since no actual data was queried).
+3489-    """
+3490-    _fast_meta = _tradeflow_meta("tradeflow_source_freshness")
+3491-
+3492-    from tradingagents.dataflows.source_freshness_report import (
+3493-        run_source_freshness_report,
+3494-    )
+3495-
+3496-    report = run_source_freshness_report(raw_evidence, symbol=symbol)
+3497-
+3498-    return {
+3499-        "status": "ok",
+3500-        "report_date": report.report_date,
+3501-        "generated_at": report.generated_at,
+3502-        "symbol": report.symbol,
+3503-        "entries": [e.to_dict() for e in report.entries],
+
+exec
+/bin/zsh -lc 'grep -n "def _connect" -A35 api/services/tradeflow_service.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+44:def _connect(tf_db_path: str = "") -> Optional[sqlite3.Connection]:
+45-    db_path = tf_db_path or _get_tradeflow_db_path()
+46-    if not os.path.exists(db_path):
+47-        return None
+48-    try:
+49-        from tradingagents.tradeflow.candidate_engine import init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+50-        init_db(db_path)
+51-        conn = sqlite3.connect(db_path)
+52-        conn.row_factory = sqlite3.Row
+53-        return conn
+54-    except Exception:
+55-        return None
+56-
+57-
+58-def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+59-    try:
+60-        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+61-        return {row["name"] for row in rows}
+62-    except Exception:
+63-        return set()
+64-
+65-
+66-def _parse_json(value: Any, default: Any = None) -> Any:
+67-    if value is None:
+68-        return default if default is not None else []
+69-    if isinstance(value, str):
+70-        try:
+71-            return json.loads(value)
+72-        except (json.JSONDecodeError, TypeError):
+73-            return default if default is not None else []
+74-    return value
+75-
+76-
+77-def _rget(row: sqlite3.Row, col: str, default: Any = None) -> Any:
+78-    try:
+79-        val = row[col]
+
+exec
+/bin/zsh -lc 'grep -R "def init_db" -n tradingagents/tradeflow/candidate_engine.py api/services/tradeflow_service.py | head -5; grep -n "def init_db" -A100 tradingagents/tradeflow/candidate_engine.py' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/tradeflow/candidate_engine.py:326:def init_db(db_path: str) -> None:
+326:def init_db(db_path: str) -> None:
+327-    """Create tradeflow tables if they don't exist."""
+328-    conn = sqlite3.connect(db_path)
+329-    conn.executescript(
+330-        CREATE_CANDIDATES_TABLE
+331-        + CREATE_SIGNALS_TABLE
+332-        + CREATE_DAILY_PLANS_TABLE
+333-        + CREATE_FILTERED_SYMBOLS_TABLE  # [UI-007] tradeflow_filtered_trace
+334-        + CREATE_PAPER_LEDGER_TABLE  # [TF-PAPER-001] paper_trading_ledger
+335-        + CREATE_PAPER_TRADES_TABLE  # [TF-PAPER-001] paper_trading_ledger
+336-        + CREATE_OBSERVATION_ITEMS_TABLE  # [TRACK-001] observation_warehouse
+337-        + CREATE_REVIEW_REPORTS_TABLE  # [TF-REVIEW-004] review_empty_diagnostics
+338-    )
+339-    ensure_columns(conn)
+340-    try:
+341-        conn.execute("ALTER TABLE tradeflow_candidates ADD COLUMN primary_strategy TEXT DEFAULT ''")
+342-    except sqlite3.OperationalError:
+343-        pass
+344-    # [S-001] policy_version_signal — add policy version columns
+345-    for _col, _type in [
+346-        ("policy_tags_json", "TEXT DEFAULT '[]'"),
+347-        ("version_score", "REAL DEFAULT 0.0"),
+348-        ("policy_evidence_refs_json", "TEXT DEFAULT '[]'"),
+349-    ]:
+350-        try:
+351-            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+352-        except sqlite3.OperationalError:
+353-            pass
+354-    # [S-002] narrative_quality_score — add narrative quality columns
+355-    for _col, _type in [
+356-        ("narrative_score", "REAL DEFAULT 0.0"),
+357-        ("narrative_reasons_json", "TEXT DEFAULT '[]'"),
+358-        ("narrative_evidence_refs_json", "TEXT DEFAULT '[]'"),
+359-    ]:
+360-        try:
+361-            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+362-        except sqlite3.OperationalError:
+363-            pass
+364-    # [S-003] underwater_risk_flags — add risk penalty columns
+365-    for _col, _type in [
+366-        ("risk_penalty", "REAL DEFAULT 0.0"),
+367-        ("risk_evidence_refs_json", "TEXT DEFAULT '[]'"),
+368-        ("risk_reasons_json", "TEXT DEFAULT '[]'"),
+369-    ]:
+370-        try:
+371-            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+372-        except sqlite3.OperationalError:
+373-            pass
+374-    # [S-004] candidate_game_balance — add game balance columns
+375-    for _col, _type in [
+376-        ("game_balance", "TEXT DEFAULT ''"),
+377-        ("bull_case", "TEXT DEFAULT ''"),
+378-        ("bear_case", "TEXT DEFAULT ''"),
+379-        ("policy_case", "TEXT DEFAULT ''"),
+380-        ("fund_flow_case", "TEXT DEFAULT ''"),
+381-        ("resonance_count", "INTEGER DEFAULT 0"),
+382-        ("game_balance_refs_json", "TEXT DEFAULT '[]'"),
+383-    ]:
+384-        try:
+385-            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+386-        except sqlite3.OperationalError:
+387-            pass
+388-    # [T-003] fund_flow_anomaly_pool — add fund flow anomaly columns
+389-    for _col, _type in [
+390-        ("fund_flow_anomaly_score", "REAL DEFAULT 0.0"),
+391-        ("fund_flow_anomaly_tags_json", "TEXT DEFAULT '[]'"),
+392-        ("fund_flow_anomaly_refs_json", "TEXT DEFAULT '[]'"),
+393-        ("fund_flow_unit_verified", "INTEGER DEFAULT 0"),
+394-        ("fund_flow_individual_summary", "TEXT DEFAULT ''"),
+395-        ("fund_flow_board_summary", "TEXT DEFAULT ''"),
+396-    ]:
+397-        try:
+398-            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+399-        except sqlite3.OperationalError:
+400-            pass
+401-    # [S-005] selection_priority_gate — add priority gate columns
+402-    for _col, _type in [
+403-        ("composite_score", "REAL DEFAULT 0.0"),
+404-        ("signal_category_hits_json", "TEXT DEFAULT '[]'"),
+405-        ("positive_category_count", "INTEGER DEFAULT 0"),
+406-        ("data_completeness", "REAL DEFAULT 0.0"),
+407-        ("missing_evidence_json", "TEXT DEFAULT '[]'"),
+408-        ("why_deep_ta", "TEXT DEFAULT ''"),
+409-        ("why_not_deep_ta", "TEXT DEFAULT ''"),
+410-        ("priority_rank", "TEXT DEFAULT ''"),
+411-    ]:
+412-        try:
+413-            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+414-        except sqlite3.OperationalError:
+415-            pass
+416-    # [S-007] candidate_tier_budget — add tier budget columns
+417-    for _col, _type in [
+418-        ("tier", "TEXT DEFAULT ''"),
+419-        ("ta_budget_priority", "INTEGER DEFAULT 0"),
+420-        ("tier_reason", "TEXT DEFAULT ''"),
+421-        ("missing_evidence_for_upgrade_json", "TEXT DEFAULT '[]'"),
+422-    ]:
+423-        try:
+424-            conn.execute(f"ALTER TABLE tradeflow_candidates ADD COLUMN {_col} {_type}")
+425-        except sqlite3.OperationalError:
+426-            pass
+
+exec
+/bin/zsh -lc "sed -n '3937,3975p' docs/TASKS.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+### H-016: 昊天主题日报 CLI 生成与保留策略（P2）
+- **描述**：H-015 已支持 API/latest。本任务补 CLI/脚本入口与保留策略，让夜间或手工可以生成 `docs/mandate_daily_reports/mandate-YYYY-MM-DD.*`，并清理过旧报告。
+- **优先级**：P2
+- **状态**：in_progress — claimed H-016-20260626-215858
+- **前置条件**：H-015 完成。
+- **执行约束**：
+  - 不调用 LLM。
+  - 不扫描全市场。
+  - 默认只读现有 TradeFlow DB/fixture。
+- **实现要点**：
+  1. 新增脚本或 CLI：按日期生成昊天主题日报。
+  2. 支持 `--as-of`、`--window-days`、`--output-dir`、`--retention-days`。
+  3. 增加 dry-run 模式，只打印摘要不写文件。
+  4. 文档说明如何被 OpenClaw 或 cron 调用。
+- **验收方式**：
+  - fixture 能生成 md/json。
+  - dry-run 不写文件。
+  - retention 只清理目标目录中的旧 mandate 文件。
+- **代码标注要求**：`# [H-016] mandate_daily_cli`
+
+### IC-TA-003: investment-controller 盘前/盘后 briefing fixture dry-run（P2）
+- **描述**：IC-TA-002 接入更多上下文后，需要固定盘前/盘后 briefing 的 dry-run 输出，确保 investment-controller 拿到的是流程提示和调度建议，而不是另一个 TA 结论。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：IC-TA-002 完成。
+- **执行约束**：
+  - 不调用 LLM。
+  - 不发送飞书。
+  - 不输出强买卖词。
+- **实现要点**：
+  1. 构造盘前 fixture：持仓、观察仓、昊天日报、数据健康、待处理 TA。
+  2. 构造盘后 fixture：今日表现、Review、报告数据缺口。
+  3. 输出 briefing payload，包含待调度 TA、只进日报项、需要人工确认项。
+  4. 禁用词扫描。
+- **验收方式**：
+  - dry-run fixture 测试通过。
+  - briefing 中包含“为什么要/不要调 TA”。
+  - 不出现强动作建议。
+- **代码标注要求**：`# [IC-TA-003] controller_briefing_dry_run`
+
+codex
+The new CLI can mutate an existing TradeFlow database while claiming and requiring read-only behavior, including in dry-run mode. This violates a core task constraint and should be fixed before the patch is considered correct.
+
+Review comment:
+
+- [P2] Avoid mutating TradeFlow DB in report CLI — /Users/maybee/TradingAgents-AShare/scripts/run_mandate_daily_report.py:82-84
+  When `--tf-db-path` points to an existing database, this call goes through `api.services.tradeflow_service.get_topic_heatmap()`, whose `_connect()` invokes `candidate_engine.init_db(db_path)` before reading; that runs `CREATE TABLE`/`ALTER TABLE` statements. This means even `--dry-run` and the documented “read-only TradeFlow DB” path can mutate `tradeflow.db`, violating H-016’s default read-only/no DB write constraint. The CLI needs a genuinely read-only heatmap load path or the service needs a read-only mode.
+The new CLI can mutate an existing TradeFlow database while claiming and requiring read-only behavior, including in dry-run mode. This violates a core task constraint and should be fixed before the patch is considered correct.
+
+Review comment:
+
+- [P2] Avoid mutating TradeFlow DB in report CLI — /Users/maybee/TradingAgents-AShare/scripts/run_mandate_daily_report.py:82-84
+  When `--tf-db-path` points to an existing database, this call goes through `api.services.tradeflow_service.get_topic_heatmap()`, whose `_connect()` invokes `candidate_engine.init_db(db_path)` before reading; that runs `CREATE TABLE`/`ALTER TABLE` statements. This means even `--dry-run` and the documented “read-only TradeFlow DB” path can mutate `tradeflow.db`, violating H-016’s default read-only/no DB write constraint. The CLI needs a genuinely read-only heatmap load path or the service needs a read-only mode.

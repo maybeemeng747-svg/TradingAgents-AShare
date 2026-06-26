@@ -41,11 +41,26 @@ def _get_prod_db_path() -> str:
     return os.path.join(_get_project_root(), "tradingagents.db")
 
 
-def _connect(tf_db_path: str = "") -> Optional[sqlite3.Connection]:
+def _connect(
+    tf_db_path: str = "",
+    *,
+    read_only: bool = False,
+) -> Optional[sqlite3.Connection]:
     db_path = tf_db_path or _get_tradeflow_db_path()
     if not os.path.exists(db_path):
         return None
     try:
+        if read_only:
+            # [H-016] mandate_daily_cli — genuinely read-only path: never call
+            # init_db() (which issues CREATE/ALTER TABLE) and open the DB in
+            # SQLite URI read-only mode so the report CLI / dry-run can never
+            # mutate tradeflow.db even if the on-disk schema is stale.
+            import urllib.request
+
+            uri = "file:" + urllib.request.pathname2url(os.path.abspath(db_path)) + "?mode=ro"
+            conn = sqlite3.connect(uri, uri=True)
+            conn.row_factory = sqlite3.Row
+            return conn
         from tradingagents.tradeflow.candidate_engine import init_db  # [TF-P0-001] runtime_schema_name_observe_fix
         init_db(db_path)
         conn = sqlite3.connect(db_path)
@@ -3344,15 +3359,21 @@ def get_topic_heatmap(
     as_of: str = "",
     window_days: int = 60,
     tf_db_path: str = "",
+    *,
+    read_only: bool = False,
 ) -> dict:
     """Build a topic heatmap from candidate history across the window.
 
     Queries `tradeflow_candidates` within the trailing `window_days` and
     feeds the rows into the topic heatmap builder.
+
+    When ``read_only`` is True the DB is opened in SQLite read-only mode and
+    schema migration (``init_db``) is skipped entirely, so callers like the
+    H-016 report CLI / dry-run can never mutate ``tradeflow.db``. A stale or
+    empty DB in read-only mode degrades to the ``no_data`` fallback rather
+    than raising.
     """
-    _fast_meta = _tradeflow_meta("tradeflow_topic_heatmap")
-    conn = _connect(tf_db_path)
-    if conn is None:
+    def _empty_no_data() -> dict:
         from tradingagents.tradeflow.topic_heatmap import build_topic_heatmap
         report = build_topic_heatmap([], as_of=as_of, window_days=window_days)
         return {
@@ -3361,10 +3382,20 @@ def get_topic_heatmap(
             "runtime_tier_meta": _fast_meta,
         }
 
+    _fast_meta = _tradeflow_meta("tradeflow_topic_heatmap")
+    conn = _connect(tf_db_path, read_only=read_only)
+    if conn is None:
+        return _empty_no_data()
+
     try:
         from datetime import datetime as _dt, timedelta as _td
 
         cols = _table_columns(conn, "tradeflow_candidates")
+        # [H-016] mandate_daily_cli — in read-only mode the table may not exist
+        # (or the schema is too stale to query safely). Rather than raising on
+        # the SELECT below, fall back to no_data instead of mutating the DB.
+        if not cols:
+            return _empty_no_data()
         has_eff = "effective_trade_date" in cols
 
         # [H-013A] mandate_topic_heatmap_fix

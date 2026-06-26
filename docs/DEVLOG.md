@@ -4,6 +4,54 @@
 
 ---
 
+## 2026-06-26 | H-016 修复（Codex round-1 review）：CLI 真正只读，不再写 tradeflow.db
+
+- **执行者**：OpenCode
+- **类型**：bugfix / 安全
+- **状态**：✅ 完成（待提交）
+- **优先级**：P2
+- **代码标注**：`# [H-016] mandate_daily_cli`
+
+### 背景
+
+Codex round-1 review 发现：H-016 的 `scripts/run_mandate_daily_report.py` 号称只读，
+但 `_load_topic_heatmap` 走的是 `api.services.tradeflow_service.get_topic_heatmap`，
+其 `_connect()` 会先调 `candidate_engine.init_db(db_path)`（执行 `CREATE TABLE`/
+`ALTER TABLE`）。这意味着连 `--dry-run` 和文档里声明的"只读 TradeFlow DB"路径都
+会改写 `tradeflow.db` 的 schema，违反 H-016 的只读 / 不写 DB 约束。
+
+### 修改内容
+
+1. `api/services/tradeflow_service.py`
+   - `_connect(..., *, read_only=False)`：新增只读开关。`read_only=True` 时**跳过
+     `init_db()`**，并以 SQLite URI `file:<abspath>?mode=ro` 方式打开连接，从根本上
+     杜绝写库（即使 schema 过期也只读不迁）。
+   - `get_topic_heatmap(..., *, read_only=False)`：透传 `read_only`；并在只读模式下，
+     当 `tradeflow_candidates` 表不存在（`cols` 为空）时优雅回退到 `no_data`，而非
+     抛异常 —— 因为只读模式不能建表兜底。
+2. `scripts/run_mandate_daily_report.py`
+   - `_load_topic_heatmap` 固定传 `read_only=True`，保证 CLI（含 dry-run）永不写库。
+3. `tests/test_h016_mandate_daily_cli.py`
+   - 新增 `test_cli_heatmap_loader_is_genuinely_read_only`：对空 DB 跑真实 loader，
+     断言返回 `no_data` 且 DB 仍为空（`init_db` 没有建表）。
+   - 新增 `test_get_topic_heatmap_read_only_preserves_populated_db`：用"缺列"的旧
+     schema DB 验证只读模式不会跑 ALTER TABLE 迁移，磁盘列集合不变。
+
+### 验证
+
+- `pytest tests/test_h016_mandate_daily_cli.py` → 13 passed（含 2 个新回归测试）。
+- `pytest tests/` 全量 → 6945 passed, 17 skipped（无回归）。
+- 手动：对一个"已存在的空 DB"跑 `--dry-run`，前后 `sqlite_master` 均为空
+  （修复前会被 `init_db` 建出全部 tradeflow 表）。
+
+### 风险点
+
+- 只读模式下若 DB schema 过旧（缺 `effective_trade_date` 等列），heatmap 会退化为
+  只用 `trade_date` / `no_data`，不会报错也不会补列——这是只读语义下的预期降级，
+  不影响写库路径。生产 API 仍走默认 `read_only=False`，行为不变。
+
+---
+
 ## 2026-06-26 | NOTIFY-002 飞书/通知草稿接入昊天日报与数据缺口摘要
 
 - **执行者**：OpenCode
@@ -7691,3 +7739,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/NOTIFY-002-20260626-round1.txt
 - **Run archive**: docs/task_runs/NOTIFY-002-20260626-214133/
+
+## 2026-06-26 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-016 - 昊天主题日报 CLI 生成与保留策略（P2）
+- **Priority**: P2
+- **Rounds**: 2
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/H-016-20260626-round2.txt
+- **Run archive**: docs/task_runs/H-016-20260626-215858/

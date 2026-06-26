@@ -10,12 +10,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 
 _DEFAULT_REPORT_DIR = "docs/mandate_daily_reports"
+# [H-016] mandate_daily_cli — keep at most this many days of mandate reports.
+_DEFAULT_RETENTION_DAYS = 90
+# [H-016] mandate_daily_cli — filename pattern we are allowed to read/delete.
+_MANDATE_FILE_RE = re.compile(r"^mandate-(\d{4}-\d{2}-\d{2})\.(md|json)$")
 
 
 @dataclass
@@ -343,3 +348,104 @@ def load_latest_mandate_daily_report(
     data["source"] = "file"
     data["path"] = path
     return data
+
+
+# [H-016] mandate_daily_cli
+def _parse_mandate_filename(filename: str) -> Optional[tuple[str, str]]:
+    """Return ``(date_str, ext)`` for ``mandate-YYYY-MM-DD.(md|json)`` files.
+
+    Anything that does not match the canonical mandate report filename pattern
+    returns ``None`` so the retention pass never touches sibling files (README,
+    index, ad-hoc notes, ...).
+    """
+    match = _MANDATE_FILE_RE.match(filename)
+    if not match:
+        return None
+    date_str, ext = match.group(1), match.group(2)
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return date_str, ext
+
+
+# [H-016] mandate_daily_cli
+def purge_old_mandate_daily_reports(
+    reports_dir: str = _DEFAULT_REPORT_DIR,
+    retention_days: int = _DEFAULT_RETENTION_DAYS,
+    *,
+    as_of: str = "",
+    now: Optional[datetime] = None,
+) -> Dict[str, List[str]]:
+    """Delete ``mandate-*.md`` / ``mandate-*.json`` files older than retention.
+
+    Only touches files matching the canonical mandate report filename pattern
+    inside ``reports_dir`` (so a README/index/fixture placed alongside is left
+    alone). Returns a dict with ``deleted`` / ``kept`` / ``skipped`` filename
+    lists so callers can show a clear audit trail. ``skipped`` covers files
+    whose name does not match the pattern or carries an unparseable date.
+
+    ``as_of`` (``YYYY-MM-DD``) / ``now`` are explicit override hooks so tests
+    and dry-run previews do not depend on the wall clock.
+    """
+    purge_log: Dict[str, List[str]] = {"deleted": [], "kept": [], "skipped": []}
+    if retention_days <= 0 or not reports_dir or not os.path.isdir(reports_dir):
+        return purge_log
+
+    if now is None:
+        if as_of:
+            try:
+                now = datetime.strptime(as_of, "%Y-%m-%d")
+            except ValueError:
+                now = datetime.now()
+        else:
+            now = datetime.now()
+    cutoff = now - timedelta(days=retention_days)
+
+    for filename in sorted(os.listdir(reports_dir)):
+        parsed = _parse_mandate_filename(filename)
+        if parsed is None:
+            purge_log["skipped"].append(filename)
+            continue
+        date_str, _ext = parsed
+        try:
+            file_dt = datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            purge_log["skipped"].append(filename)
+            continue
+
+        if file_dt < cutoff:
+            try:
+                os.remove(os.path.join(reports_dir, filename))
+                purge_log["deleted"].append(filename)
+            except OSError:
+                purge_log["skipped"].append(filename)
+        else:
+            purge_log["kept"].append(filename)
+
+    return purge_log
+
+
+# [H-016] mandate_daily_cli
+def build_mandate_daily_summary(
+    report: MandateDailyReport,
+    *,
+    source: str = "generated",
+    status: str = "ok",
+) -> str:
+    """Render a short, audit-friendly summary line for CLI / dry-run output.
+
+    Includes counts that map 1:1 to the report sections plus the as-of date so
+    a human (or OpenClaw log) can see what would have been written without
+    opening the file. Never emits trade verbs.
+    """
+    rising = len(report.rising_topics)
+    cooling = len(report.cooling_topics)
+    main = len(report.main_candidates)
+    obs = len(report.observation_candidates)
+    gaps = len(report.evidence_gaps)
+    return (
+        f"[H-016] mandate daily report | as_of={report.as_of} | "
+        f"source={source} | status={status} | "
+        f"rising={rising} cooling={cooling} main={main} observe={obs} gaps={gaps}"
+    )

@@ -1,0 +1,490 @@
+[0m
+> build · glm-5.2
+[0m
+[0m$ [0mgit status --short && echo "---BRANCH---" && git status --branch --short
+M docs/TASKS.md
+ M docs/tradeflow_trial_acceptance.md
+ M docs/tradeflow_trial_acceptance_v2.md
+ M docs/tradeflow_trial_acceptance_v3.md
+ M tradingagents/tradeflow/mandate_daily_report.py
+?? docs/reviews/H-016-20260626-round1.txt
+?? docs/task_runs/H-016-20260626-215858/
+?? scripts/run_mandate_daily_report.py
+?? tests/test_h016_mandate_daily_cli.py
+---BRANCH---
+## local/tradingagents-custom...myfork/local/tradingagents-custom [领先 182]
+ M docs/TASKS.md
+ M docs/tradeflow_trial_acceptance.md
+ M docs/tradeflow_trial_acceptance_v2.md
+ M docs/tradeflow_trial_acceptance_v3.md
+ M tradingagents/tradeflow/mandate_daily_report.py
+?? docs/reviews/H-016-20260626-round1.txt
+?? docs/task_runs/H-016-20260626-215858/
+?? scripts/run_mandate_daily_report.py
+?? tests/test_h016_mandate_daily_cli.py
+[0m
+I'll start by understanding the current state of task H-016 and the modified files.
+[0m→ [0mRead scripts/run_mandate_daily_report.py
+[0m→ [0mRead tests/test_h016_mandate_daily_cli.py
+[0m→ [0mRead tradingagents/tradeflow/mandate_daily_report.py
+[0m→ [0mRead docs/reviews/H-016-20260626-round1.txt
+The Codex review output in the prompt is truncated. There's a review file at `docs/reviews/H-016-20260626-round1.txt`. Let me read it along with the task documentation.
+[0m
+[0m$ [0mls -la docs/task_runs/H-016-20260626-215858/
+total 280
+drwx------   11 maybee  staff    352 Jun 26 22:08 .
+drwx------  131 maybee  staff   4192 Jun 26 21:58 ..
+-rw-------    1 maybee  staff    926 Jun 26 21:58 codegraph-context.txt
+-rw-------    1 maybee  staff    715 Jun 26 22:07 codegraph-impact.txt
+-rw-------    1 maybee  staff    965 Jun 26 22:07 codegraph-status.json
+-rw-------    1 maybee  staff  82446 Jun 26 22:08 codex-review-round1.txt
+-rw-------    1 maybee  staff  18477 Jun 26 22:03 opencode-round1.txt
+-rw-------    1 maybee  staff    487 Jun 26 21:58 prompt-round1.md
+-rw-------    1 maybee  staff   3417 Jun 26 22:08 prompt-round2.md
+-rw-------    1 maybee  staff    447 Jun 26 21:58 task.md
+-rw-------    1 maybee  staff   8567 Jun 26 22:07 tests-round1.txt
+[0m
+[0m→ [0mRead docs/task_runs/H-016-20260626-215858/prompt-round2.md
+The review log I read is the input context. The actual Codex review findings are in `docs/task_runs/H-016-20260626-215858/codex-review-round1.txt`. Let me read that and the round2 prompt.
+[0m→ [0mRead docs/task_runs/H-016-20260626-215858/codex-review-round1.txt[90m [offset=1098][0m
+[0m
+[0m# [0mTodos
+[•] Add read-only mode to _connect() and get_topic_heatmap() in api/services/tradeflow_service.py
+[ ] Make CLI _load_topic_heatmap use read_only=True
+[ ] Add/extend tests verifying read-only path never mutates DB
+[ ] Run H-015/H-016 + service tests
+[ ] Update docs/DEVLOG.md
+[0m
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=80, offset=1][0m
+Now I understand the actual issue. The Codex review found one critical (P2) problem:
+
+**The CLI can mutate the TradeFlow DB despite claiming read-only behavior.** The CLI's `_load_topic_heatmap` calls `get_topic_heatmap()`, whose `_connect()` invokes `candidate_engine.init_db()` — that runs `CREATE TABLE`/`ALTER TABLE` — meaning even `--dry-run` mutates `tradeflow.db`, violating H-016's read-only constraint.
+
+Let me set up a task list and read the exact service code to fix.
+[0m→ [0mRead api/services/tradeflow_service.py[90m [limit=110, offset=3340][0m
+Let me check if the codebase has an existing read-only SQLite connection pattern to follow conventions.
+[0m✱ [0mGrep "mode=ro|uri=True|pathname2url"[90m 0 matches[0m
+[0m✱ [0mGrep "def get_mandate_daily_report"[90m 1 match[0m
+No existing read-only URI pattern. Now I'll implement the fix. First, modify `_connect()` to support a genuine read-only mode:
+[0m
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -40,13 +40,28 @@
+         return env_path.replace("sqlite:///", "", 1)
+     return os.path.join(_get_project_root(), "tradingagents.db")
+ 
+ 
+-def _connect(tf_db_path: str = "") -> Optional[sqlite3.Connection]:
++def _connect(
++    tf_db_path: str = "",
++    *,
++    read_only: bool = False,
++) -> Optional[sqlite3.Connection]:
+     db_path = tf_db_path or _get_tradeflow_db_path()
+     if not os.path.exists(db_path):
+         return None
+     try:
++        if read_only:
++            # [H-016] mandate_daily_cli — genuinely read-only path: never call
++            # init_db() (which issues CREATE/ALTER TABLE) and open the DB in
++            # SQLite URI read-only mode so the report CLI / dry-run can never
++            # mutate tradeflow.db even if the on-disk schema is stale.
++            import urllib.request
++
++            uri = "file:" + urllib.request.pathname2url(os.path.abspath(db_path)) + "?mode=ro"
++            conn = sqlite3.connect(uri, uri=True)
++            conn.row_factory = sqlite3.Row
++            return conn
+         from tradingagents.tradeflow.candidate_engine import init_db  # [TF-P0-001] runtime_schema_name_observe_fix
+         init_db(db_path)
+         conn = sqlite3.connect(db_path)
+         conn.row_factory = sqlite3.Row
+
+[0m
+Now modify `get_topic_heatmap()` to accept and propagate `read_only`, and handle a missing table gracefully in read-only mode (so a stale/empty DB doesn't raise):
+[0m← [0mEdit api/services/tradeflow_service.py
+Index: /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
++++ /Users/maybee/TradingAgents-AShare/api/services/tradeflow_service.py
+@@ -3358,29 +3358,45 @@
+ def get_topic_heatmap(
+     as_of: str = "",
+     window_days: int = 60,
+     tf_db_path: str = "",
++    *,
++    read_only: bool = False,
+ ) -> dict:
+     """Build a topic heatmap from candidate history across the window.
+ 
+     Queries `tradeflow_candidates` within the trailing `window_days` and
+     feeds the rows into the topic heatmap builder.
++
++    When ``read_only`` is True the DB is opened in SQLite read-only mode and
++    schema migration (``init_db``) is skipped entirely, so callers like the
++    H-016 report CLI / dry-run can never mutate ``tradeflow.db``. A stale or
++    empty DB in read-only mode degrades to the ``no_data`` fallback rather
++    than raising.
+     """
+-    _fast_meta = _tradeflow_meta("tradeflow_topic_heatmap")
+-    conn = _connect(tf_db_path)
+-    if conn is None:
++    def _empty_no_data() -> dict:
+         from tradingagents.tradeflow.topic_heatmap import build_topic_heatmap
+         report = build_topic_heatmap([], as_of=as_of, window_days=window_days)
+         return {
+             "status": "no_data",
+             **report.to_dict(),
+             "runtime_tier_meta": _fast_meta,
+         }
+ 
++    _fast_meta = _tradeflow_meta("tradeflow_topic_heatmap")
++    conn = _connect(tf_db_path, read_only=read_only)
++    if conn is None:
++        return _empty_no_data()
++
+     try:
+         from datetime import datetime as _dt, timedelta as _td
+ 
+         cols = _table_columns(conn, "tradeflow_candidates")
++        # [H-016] mandate_daily_cli — in read-only mode the table may not exist
++        # (or the schema is too stale to query safely). Rather than raising on
++        # the SELECT below, fall back to no_data instead of mutating the DB.
++        if not cols:
++            return _empty_no_data()
+         has_eff = "effective_trade_date" in cols
+ 
+         # [H-013A] mandate_topic_heatmap_fix
+         # Use COALESCE(NULLIF(effective_trade_date, ''), trade_date) so old rows
+
+[0m
+Now update the CLI to use `read_only=True`:
+[0m← [0mEdit scripts/run_mandate_daily_report.py
+Index: /Users/maybee/TradingAgents-AShare/scripts/run_mandate_daily_report.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/scripts/run_mandate_daily_report.py
++++ /Users/maybee/TradingAgents-AShare/scripts/run_mandate_daily_report.py
+@@ -77,12 +77,21 @@
+     """Build the topic heatmap from the read-only TradeFlow DB.
+ 
+     Imported lazily so the CLI's ``--help`` and dry-run path stay cheap and so
+     we never accidentally spin up the wider API service.
++
++    ``read_only=True`` is mandatory here: the report CLI must NEVER mutate
++    ``tradeflow.db`` (no schema migration, no writes), even when the file is
++    missing columns or tables. See H-016 / Codex round-1 review.
+     """
+     from api.services.tradeflow_service import get_topic_heatmap
+ 
+-    return get_topic_heatmap(as_of=as_of, window_days=window_days, tf_db_path=tf_db_path)
++    return get_topic_heatmap(
++        as_of=as_of,
++        window_days=window_days,
++        tf_db_path=tf_db_path,
++        read_only=True,
++    )
+ 
+ 
+ def _cli(argv: list[str] | None = None) -> int:
+     parser = argparse.ArgumentParser(
+
+[0m
+[0m# [0mTodos
+[✓] Add read-only mode to _connect() and get_topic_heatmap() in api/services/tradeflow_service.py
+[✓] Make CLI _load_topic_heatmap use read_only=True
+[•] Add/extend tests verifying read-only path never mutates DB
+[ ] Run H-015/H-016 + service tests
+[ ] Update docs/DEVLOG.md
+[0m
+Now update the task list and add a regression test that locks in the read-only guarantee:
+[0m← [0mEdit tests/test_h016_mandate_daily_cli.py
+Index: /Users/maybee/TradingAgents-AShare/tests/test_h016_mandate_daily_cli.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tests/test_h016_mandate_daily_cli.py
++++ /Users/maybee/TradingAgents-AShare/tests/test_h016_mandate_daily_cli.py
+@@ -303,8 +303,107 @@
+     # Dry-run must not have written anything even on no_data.
+     assert not any(p.name.startswith("mandate-") for p in tmp_path.iterdir())
+ 
+ 
++def test_cli_heatmap_loader_is_genuinely_read_only(tmp_path):
++    """[H-016] regression: pointing the CLI at a DB must never mutate it.
++
++    Codex round-1 found that ``--dry-run`` / the read-only report path could
++    still call ``candidate_engine.init_db()`` (CREATE/ALTER TABLE) on
++    ``tradeflow.db``. This test builds an empty SQLite file (no
++    ``tradeflow_candidates`` table), runs the real heatmap loader against it,
++    and asserts the loader degrades to ``no_data`` WITHOUT creating any
++    tables — i.e. ``init_db()`` was never called.
++    """
++    import sqlite3
++
++    cli = _load_cli_module()
++
++    empty_db = tmp_path / "tradeflow.db"
++    # Touch an empty SQLite DB (header only, zero tables).
++    sqlite3.connect(str(empty_db)).close()
++    assert empty_db.exists()
++
++    heatmap = cli._load_topic_heatmap("", window_days=60, tf_db_path=str(empty_db))
++
++    # Read-only loader must degrade gracefully to no_data.
++    assert heatmap["status"] == "no_data"
++
++    # Crucially: no tradeflow tables were created (init_db never ran).
++    conn = sqlite3.connect(str(empty_db))
++    try:
++        tables = {
++            row[0]
++            for row in conn.execute(
++                "SELECT name FROM sqlite_master WHERE type='table'"
++            ).fetchall()
++        }
++    finally:
++        conn.close()
++    assert "tradeflow_candidates" not in tables
++    assert tables == set()  # the empty DB is still completely empty
++
++
++def test_get_topic_heatmap_read_only_preserves_populated_db(tmp_path):
++    """[H-016] read-only mode must not ALTER an existing DB either.
++
++    Seed a DB whose ``tradeflow_candidates`` table is deliberately missing the
++    newer ``effective_trade_date`` column (a stale schema). In read-only mode
++    the heatmap loader must NOT run init_db's ALTER TABLE migration; the
++    column set on disk has to stay exactly as seeded.
++    """
++    import sqlite3
++
++    from api.services.tradeflow_service import get_topic_heatmap
++
++    stale_db = tmp_path / "stale.db"
++    conn = sqlite3.connect(str(stale_db))
++    try:
++        # Minimal stale schema: trade_date only, no effective_trade_date,
++        # none of the newer mandate columns. init_db() would ALTER these in.
++        conn.execute(
++            "CREATE TABLE tradeflow_candidates ("
++            "symbol TEXT, name TEXT, trade_date TEXT, mandate_topic TEXT)"
++        )
++        conn.execute(
++            "INSERT INTO tradeflow_candidates (symbol, name, trade_date, mandate_topic) "
++            "VALUES ('000001.SZ', '示例', '2026-06-24', '低空经济')"
++        )
++        conn.commit()
++    finally:
++        conn.close()
++
++    cols_before = _db_columns(stale_db)
++
++    heatmap = get_topic_heatmap(
++        as_of="2026-06-24",
++        window_days=60,
++        tf_db_path=str(stale_db),
++        read_only=True,
++    )
++    # It reads what it can (status ok) without mutating the schema.
++    assert heatmap["status"] == "ok"
++
++    cols_after = _db_columns(stale_db)
++    # No ALTER TABLE migration happened on disk.
++    assert cols_before == cols_after
++    # The deliberately-absent column was NOT added in read-only mode.
++    assert "effective_trade_date" not in cols_after
++
++
++def _db_columns(db_path) -> set:
++    import sqlite3
++
++    conn = sqlite3.connect(str(db_path))
++    try:
++        return {
++            row[1]
++            for row in conn.execute("PRAGMA table_info(tradeflow_candidates)").fetchall()
++        }
++    finally:
++        conn.close()
++
++
+ def test_fixture_generates_md_and_json_round_trip(tmp_path):
+     """Acceptance: a fixture heatmap can produce md+json and survive a reload."""
+     from tradingagents.tradeflow.mandate_daily_report import (
+         find_latest_mandate_daily_report,
+
+[0m
+Now let me run the tests. First the H-016 tests including my new ones, then H-015 and the broader service tests:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_h016_mandate_daily_cli.py -q --tb=short 2>&1
+.............                                                            [100%]
+13 passed in 1.16s
+[0m
+All 13 pass (including my 2 new regression tests). Now let me verify I didn't break the broader service tests:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_h015_mandate_daily_report.py tests/ -q -k "tradeflow_service or topic_heatmap or mandate" --tb=short 2>&1 | tail -40
+........................................................................ [  8%]
+........................................................................ [ 16%]
+........................................................................ [ 24%]
+........................................................................ [ 32%]
+........................................................................ [ 40%]
+........................................................................ [ 49%]
+........................................................................ [ 57%]
+........................................................................ [ 65%]
+........................................................................ [ 73%]
+........................................................................ [ 81%]
+........................................................................ [ 90%]
+........................................................................ [ 98%]
+................                                                         [100%]
+880 passed, 6082 deselected in 16.23s
+[0m
+880 passed. Let me run the full suite to confirm nothing regressed, since I touched a shared `_connect`:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/ -q --tb=short 2>&1 | tail -15
+(no output)
+
+<shell_metadata>
+shell tool terminated command after exceeding timeout 120000 ms. If this command is expected to take longer and is not waiting for interactive input, retry with a larger timeout value in milliseconds.
+</shell_metadata>
+[0m
+Full suite is large; let me run it with a longer timeout:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/ -q --tb=short -p no:cacheprovider 2>&1 | tail -15
+........................................................................ [ 94%]
+........................................................................ [ 95%]
+........................................................................ [ 96%]
+........................................................................ [ 97%]
+........................................................................ [ 98%]
+........................................................................ [ 99%]
+..................................................                       [100%]
+=============================== warnings summary ===============================
+tests/test_hk001_market_boundary.py::TestHKDataCollectorGating::test_cn_does_not_set_hk_light_mode
+tests/test_hk001_market_boundary.py::TestHKDataCollectorGating::test_cn_still_attempts_ashare_fields
+  /Users/maybee/TradingAgents-AShare/.venv/lib/python3.12/site-packages/akshare/stock_fundamental/stock_recommend.py:91: FutureWarning: Passing literal html to 'read_html' is deprecated and will be removed in a future version. To read from a literal string, wrap it in a 'StringIO' object.
+    temp_df = pd.read_html(r.text, header=0)[0].iloc[:, :8]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+6945 passed, 17 skipped, 2 warnings in 229.48s (0:03:49)
+[0m
+Full suite green: **6945 passed, 17 skipped**. Now let me check for a linter and run it on the changed files:
+[0m$ [0msource .venv/bin/activate && (ruff --version 2>/dev/null && ruff check api/services/tradeflow_service.py scripts/run_mandate_daily_report.py tests/test_h016_mandate_daily_cli.py) || echo "no ruff"
+no ruff
+[0m
+[0m$ [0msource .venv/bin/activate && python -m py_compile api/services/tradeflow_service.py scripts/run_mandate_daily_report.py tests/test_h016_mandate_daily_cli.py tradingagents/tradeflow/mandate_daily_report.py && echo "compile OK"
+compile OK
+[0m
+Let me smoke-test the real CLI dry-run against a missing DB to confirm end-to-end read-only behavior (pointing at a temp path to avoid the real DB):
+[0m$ [0msource .venv/bin/activate && python scripts/run_mandate_daily_report.py --as-of 2026-06-24 --tf-db-path /tmp/h016_missing.db --output-dir /tmp/h016_out_smoke --dry-run 2>&1; echo "---"; ls -la /tmp/h016_missing.db 2>&1 || echo "(missing db stays missing - good)"
+[H-016] no tradeflow DB at /tmp/h016_missing.db; falling back to an empty heatmap (no market scan, no LLM).
+[H-016] dry-run produced no_data (empty heatmap); run TradeFlow discovery/plan first.
+[H-016] mandate daily report | as_of=2026-06-24 | source=dry_run | status=no_data | rising=0 cooling=0 main=0 observe=0 gaps=0
+---
+ls: /tmp/h016_missing.db: No such file or directory
+(missing db stays missing - good)
+[0m
+Now the critical regression check — pointing at an existing empty DB must not create tables (the exact bug Codex flagged):
+[0m$ [0msource .venv/bin/activate && python -c "
+import sqlite3, os
+db='/tmp/h016_empty.db'
+if os.path.exists(db): os.remove(db)
+sqlite3.connect(db).close()  # empty DB, no tables
+print('tables before:', [r[0] for r in sqlite3.connect(db).execute(\"SELECT name FROM sqlite_master WHERE type='table'\")])
+" && python scripts/run_mandate_daily_report.py --as-of 2026-06-24 --tf-db-path /tmp/h016_empty.db --output-dir /tmp/h016_out2 --dry-run 2>&1 && python -c "
+import sqlite3
+print('tables after:', [r[0] for r in sqlite3.connect('/tmp/h016_empty.db').execute(\"SELECT name FROM sqlite_master WHERE type='table'\")])
+"
+tables before: []
+[H-016] dry-run produced no_data (empty heatmap); run TradeFlow discovery/plan first.
+[H-016] mandate daily report | as_of=2026-06-24 | source=dry_run | status=no_data | rising=0 cooling=0 main=0 observe=0 gaps=0
+tables after: []
+[0m
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=40][0m
+The bug is fixed — `tables after: []` confirms the DB is no longer mutated (previously `init_db()` would have created all the tradeflow tables). Now let me update DEVLOG.md following its existing format:
+I'll insert the H-016 entry at the top of the log, after the header:
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,56 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-26 | H-016 修复（Codex round-1 review）：CLI 真正只读，不再写 tradeflow.db
++
++- **执行者**：OpenCode
++- **类型**：bugfix / 安全
++- **状态**：✅ 完成（待提交）
++- **优先级**：P2
++- **代码标注**：`# [H-016] mandate_daily_cli`
++
++### 背景
++
++Codex round-1 review 发现：H-016 的 `scripts/run_mandate_daily_report.py` 号称只读，
++但 `_load_topic_heatmap` 走的是 `api.services.tradeflow_service.get_topic_heatmap`，
++其 `_connect()` 会先调 `candidate_engine.init_db(db_path)`（执行 `CREATE TABLE`/
++`ALTER TABLE`）。这意味着连 `--dry-run` 和文档里声明的"只读 TradeFlow DB"路径都
++会改写 `tradeflow.db` 的 schema，违反 H-016 的只读 / 不写 DB 约束。
++
++### 修改内容
++
++1. `api/services/tradeflow_service.py`
++   - `_connect(..., *, read_only=False)`：新增只读开关。`read_only=True` 时**跳过
++     `init_db()`**，并以 SQLite URI `file:<abspath>?mode=ro` 方式打开连接，从根本上
++     杜绝写库（即使 schema 过期也只读不迁）。
++   - `get_topic_heatmap(..., *, read_only=False)`：透传 `read_only`；并在只读模式下，
++     当 `tradeflow_candidates` 表不存在（`cols` 为空）时优雅回退到 `no_data`，而非
++     抛异常 —— 因为只读模式不能建表兜底。
++2. `scripts/run_mandate_daily_report.py`
++   - `_load_topic_heatmap` 固定传 `read_only=True`，保证 CLI（含 dry-run）永不写库。
++3. `tests/test_h016_mandate_daily_cli.py`
++   - 新增 `test_cli_heatmap_loader_is_genuinely_read_only`：对空 DB 跑真实 loader，
++     断言返回 `no_data` 且 DB 仍为空（`init_db` 没有建表）。
++   - 新增 `test_get_topic_heatmap_read_only_preserves_populated_db`：用"缺列"的旧
++     schema DB 验证只读模式不会跑 ALTER TABLE 迁移，磁盘列集合不变。
++
++### 验证
++
++- `pytest tests/test_h016_mandate_daily_cli.py` → 13 passed（含 2 个新回归测试）。
++- `pytest tests/` 全量 → 6945 passed, 17 skipped（无回归）。
++- 手动：对一个"已存在的空 DB"跑 `--dry-run`，前后 `sqlite_master` 均为空
++  （修复前会被 `init_db` 建出全部 tradeflow 表）。
++
++### 风险点
++
++- 只读模式下若 DB schema 过旧（缺 `effective_trade_date` 等列），heatmap 会退化为
++  只用 `trade_date` / `no_data`，不会报错也不会补列——这是只读语义下的预期降级，
++  不影响写库路径。生产 API 仍走默认 `read_only=False`，行为不变。
++
++---
++
+ ## 2026-06-26 | NOTIFY-002 飞书/通知草稿接入昊天日报与数据缺口摘要
+ 
+ - **执行者**：OpenCode
+ - **类型**：feature
+
+[0m
+[0m# [0mTodos
+[✓] Add read-only mode to _connect() and get_topic_heatmap() in api/services/tradeflow_service.py
+[✓] Make CLI _load_topic_heatmap use read_only=True
+[✓] Add/extend tests verifying read-only path never mutates DB
+[✓] Run H-015/H-016 + service tests
+[✓] Update docs/DEVLOG.md
+[0m
+Fixed the Codex round-1 finding (the CLI mutated `tradeflow.db` despite claiming read-only).
+
+## Root cause
+`scripts/run_mandate_daily_report.py:82-84` called `get_topic_heatmap()`, whose `_connect()` ran `candidate_engine.init_db()` (`CREATE/ALTER TABLE`) before reading — so even `--dry-run` mutated `tradeflow.db`.
+
+## Changes
+- **`api/services/tradeflow_service.py`** — `_connect(..., *, read_only=False)`: when `read_only=True`, skips `init_db()` and opens via SQLite URI `file:<abspath>?mode=ro` (genuinely immutable). `get_topic_heatmap(..., *, read_only=False)` propagates it and gracefully degrades to `no_data` when the table is missing in read-only mode.
+- **`scripts/run_mandate_daily_report.py`** — `_load_topic_heatmap` now hard-codes `read_only=True`.
+- **`tests/test_h016_mandate_daily_cli.py`** — added 2 regression tests: empty DB stays empty after load; stale-schema DB is not ALTER-migrated.
+- **`docs/DEVLOG.md`** — added H-016 fix entry.
+
+## Verification
+- `tests/test_h016_mandate_daily_cli.py` → 13 passed (incl. 2 new).
+- Full suite → **6945 passed, 17 skipped**.
+- Manual: existing empty DB → `tables before: []` / `tables after: []` (previously `init_db` would create all tradeflow tables).
+
+## Risk
+In read-only mode a stale schema (missing newer columns) degrades to `trade_date`-only / `no_data` instead of auto-migrating — expected for read-only semantics. Production API still defaults to `read_only=False`, unchanged. Per constraints: **no commit**, no prompt/db changes.
