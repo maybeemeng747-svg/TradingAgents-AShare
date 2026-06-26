@@ -3776,7 +3776,7 @@
 ### REPORT-UX-001: TA 报告“数据不足观察”端到端回放验收（P1）
 - **描述**：DATA-021 已把字段级 data_blockers 接入报告 metadata 和前端。需要用 fixture/历史样本验证“数据不足观察”不再是笼统黑盒，且不会改变强动作门禁。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：in_progress — claimed REPORT-UX-001-20260626-190006
 - **前置条件**：DATA-021 完成。
 - **执行约束**：
   - 不调用 live API。

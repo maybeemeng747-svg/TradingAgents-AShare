@@ -4,6 +4,52 @@
 
 ---
 
+## 2026-06-26 | REPORT-UX-001 TA 报告“数据不足观察”端到端回放验收
+
+- **执行者**：OpenCode
+- **类型**：test / acceptance-replay
+- **状态**：✅ 完成（待提交）
+- **优先级**：P1
+- **代码标注**：`# [REPORT-UX-001] data_blocker_replay`
+
+### 背景
+
+DATA-021 已把字段级 `data_blockers` 接入报告 `result_data` metadata 与前端。需要用
+fixture/历史样本回放验证“数据不足观察”不再是笼统黑盒，且不会改写强动作门禁
+（`decision` / `action_label` / Buy Level / Risk Level）。
+
+### 变更
+
+- 新增 `tests/test_report_ux001_data_blocker_replay.py`：3 个内联 fixture 场景 + 6 个回放断言。
+  1. **主力资金失败 + 龙虎榜正常无数据**（603629.SH 经典区分场景，legacy 字符串路径）。
+  2. **公告失败 + 评级正常无数据**（G-006 结构化 `{status, raw}` 契约路径）。
+  3. **行情/K线缺失 + 辅助源 skipped**（`stock_data` FAILED + fund_flow/lhb/ratings/news SKIPPED）。
+
+### 验证要点
+
+- `result_data.data_blockers` 与 `data_blocker_summary` 在 `create_report()` 后正确落库，
+  `query_failed` / `normal_no_data` / `skipped` 三类状态互不混淆。
+- API 顶层字段一致性：`_attach_report_data_blockers_for_response()` 复制的顶层
+  `data_blockers` / `data_blocker_summary` 与 `result_data` 内的同名字段完全相等，
+  `ReportResponse.model_validate()` 序列化结果一致；每个 blocker 携带前端可渲染的 5 种 wire status。
+- 强动作门禁不被 DATA-021 改写：`decision` / `action_label` / `research_direction` /
+  `execution_action` 以及 `final_trade_decision` 内的 Buy Level / Risk Level 文本逐字保留。
+- `attach_report_data_blockers()` 纯增量：仅新增 `data_blockers` / `data_blocker_summary`，
+  原有 result_data 键值不被触碰。
+
+### 测试结果
+
+- `pytest tests/test_report_ux001_data_blocker_replay.py -v` → 9 passed。
+- `pytest tests/test_data021_report_data_blockers.py tests/test_readiness_score.py tests/test_report_recovery.py tests/test_report_ux001_data_blocker_replay.py -q` → 135 passed。
+- `npm run build`（`tsc && vite build`）→ 通过，无类型回归；前端 `DataBlockersPanel`
+  已覆盖 `query_failed` / `normal_no_data` / `skipped` 渲染（`frontend/src/pages/Reports.tsx`）。
+
+### 约束遵守
+
+- 未调用 live API / LLM；未修改 `tradingagents/prompts/`；未写生产 `tradingagents.db`（全部使用内存 SQLite）。
+
+---
+
 ## 2026-06-26 | 扩充夜间自动开发 ready 队列
 
 - **执行者**：Codex
@@ -6839,3 +6885,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TF-PERSIST-001-20260625-round1.txt
 - **Run archive**: docs/task_runs/TF-PERSIST-001-20260625-182110/
+
+## 2026-06-26 | AUTO-002 Auto Dev Loop
+
+- **Task**: REPORT-UX-001 - TA 报告“数据不足观察”端到端回放验收（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/REPORT-UX-001-20260626-round1.txt
+- **Run archive**: docs/task_runs/REPORT-UX-001-20260626-190006/
