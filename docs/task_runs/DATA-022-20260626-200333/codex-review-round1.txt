@@ -1,0 +1,2822 @@
+Task: DATA-022 - 主力资金/龙虎榜失败矩阵 fixture 回放（P1）
+Date: 2026-06-26_20:19:27
+Codex exit code: 0
+Round: 1
+---
+OpenAI Codex v0.130.0
+--------
+workdir: /Users/maybee/TradingAgents-AShare
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 019f03dd-b36c-7b43-9d4b-95b6f8ee0918
+--------
+user
+current changes
+2026-06-26T12:18:10.049528Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-06-26T12:18:10.116000Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+2026-06-26T12:18:11.236318Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\"OAuth\", resource_metadata=\"https://mcp.notion.com/.well-known/oauth-protected-resource/mcp\", error=\"invalid_token\", error_description=\"Missing or invalid access token\"" })
+2026-06-26T12:18:11.295951Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer resource_metadata=\"https://mcp.figma.com/.well-known/oauth-protected-resource\",scope=\"mcp:connect\",authorization_uri=\"https://api.figma.com/.well-known/oauth-authorization-server\"" })
+exec
+/bin/zsh -lc "sed -n '1,220p' docs/DECISIONS.md && sed -n '1,220p' docs/DEVLOG.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+# 架构决策记录
+
+> 记录项目中的关键架构决策，方便后续回溯"为什么这样做"。
+
+---
+
+## ADR-001: 采用 LangGraph 编排多智能体
+- **日期**：项目初始化
+- **背景**：需要 14 个 Agent 按特定流程协作，有循环（辩论）和条件分支
+- **决策**：使用 LangGraph 状态图编排，而非简单的链式调用
+- **原因**：LangGraph 原生支持循环、条件路由、状态管理，适合辩论机制
+- **影响**：所有 Agent 间通信通过 Graph State 传递，新增 Agent 需要注册到图中
+
+## ADR-002: 多模型厂商适配层
+- **日期**：项目初始化
+- **背景**：不同 Agent 对模型能力需求不同，用户可能有不同的模型偏好
+- **决策**：通过 `llm_clients/` 统一适配，支持通过配置切换厂商和模型
+- **原因**：避免硬编码单一厂商，降低用户使用门槛
+- **影响**：新增模型厂商需要在 `llm_clients/` 中添加适配器
+
+## ADR-003: SQLite 作为持久化方案
+- **日期**：项目初始化
+- **背景**：需要存储研报、自选股、定时任务等结构化数据
+- **决策**：使用 SQLite，单文件部署，无需额外数据库服务
+- **原因**：本地部署场景，轻量级，零运维
+- **影响**：并发写入有限，定时任务和分析任务需要串行化写入
+
+## ADR-004: OpenClaw 作为项目协作调度层
+- **日期**：2026-05-09
+- **背景**：需要 OpenClaw、OpenCode、OpenCode TUI 三者协作处理同一项目
+- **决策**：OpenClaw 负责任务判断和调度，不直接做代码修改；OpenCode 负责代码执行；OpenCode TUI 负责审查
+- **原因**：OpenClaw 有完整的 agent 调度能力（exec / sessions_spawn / cron），适合做编排层
+- **影响**：所有代码修改任务必须经过 OpenClaw 判断复杂度后决定执行路径
+
+## ADR-005: Git 仓库 + docs/ 作为项目事实源
+- **日期**：2026-05-09
+- **背景**：多个工具需要读取同一套项目上下文
+- **决策**：不使用任何 agent 的独立记忆系统保存项目状态，所有关键信息写入 Git 仓库的 docs/ 目录
+- **原因**：避免信息分散、版本冲突、单点失效
+- **影响**：每次任务开始前必须读取 AGENTS.md + docs/ 下的上下文文件
+
+---
+
+## 决策模板（后续新增时复制）
+
+```
+## ADR-NNN: [决策标题]
+- **日期**：YYYY-MM-DD
+- **背景**：[为什么需要做这个决策]
+- **决策**：[做了什么决定]
+- **原因**：[为什么选这个方案]
+- **影响**：[对项目的影响]
+```
+# 修改日志
+
+> 每次代码修改后必须更新此文件，保持连续性。
+
+---
+
+## 2026-06-26 | DATA-022 主力资金/龙虎榜失败矩阵 fixture 回放
+
+- **执行者**：OpenCode
+- **类型**：test / regression-guard
+- **状态**：✅ 完成（待提交）
+- **优先级**：P1
+- **代码标注**：`# [DATA-022] fund_lhb_status_matrix`
+
+### 背景
+
+用户多次遇到主力资金失败、龙虎榜无数据/未触发/查询失败混淆。本任务用
+fixture 矩阵回放数据源状态，确保 DATA-021 的 data_blockers 与 TA 报告不会把
+"正常无数据" 当失败，也不会把失败因文本长度大于 20 而误判为 HAS_DATA。
+
+### 变更
+
+- 新增 `tests/test_data022_fund_lhb_status_matrix.py`：54 个测试，7 个维度。
+  - fund_flow_individual 矩阵：HAS_DATA / FAILED / NORMAL_NO_DATA / SKIPPED
+    （结构化 + legacy_text 两条路径）。
+  - lhb 矩阵：HAS_DATA / FAILED / NORMAL_NO_DATA / NOT_QUERIED
+    （结构化 + legacy_text 两条路径）。
+  - 覆盖 `DataCollector._infer_source_status`（`[G-007] LHB_*` 标记识别）→
+    `infer_evidence_statuses`（EvidenceStatus wire 值）→
+    `build_data_blockers` / `summarize_data_blockers`（severity/level）→
+    `build_fund_flow_provenance` / `build_lhb_provenance`（strong_evidence）
+    全链路状态推断边界。
+  - 核心防回归：
+    1. `FAILED` 长（>20 字符）文本不得因长度规则被误判为 HAS_DATA
+       （fund_flow 长/短文本、lhb 长文本、provenance 路径共 4 个用例）。
+    2. `NORMAL_NO_DATA` 不计入 query_failed 计数；纯 normal_no_data/skipped
+       时 summarize_data_blockers.level = info，不升级到 warning。
+    3. 4 个 canonical 状态产出 4 个不同的 EvidenceStatus wire 值，不复用桶。
+- 新增 `docs/data022_fund_lhb_status_matrix.md`：状态矩阵文档，说明每个状态
+  对 blocker severity / report action / strong_evidence_allowed 的影响，以及
+  结构化契约优先于文本启发式的实现保证。
+
+### 验证
+
+- `pytest tests/test_data022_fund_lhb_status_matrix.py -q` → 54 passed。
+- 关联回归 `pytest tests/test_data017_fund_lhb_health.py
+  tests/test_data021_report_data_blockers.py
+  tests/test_report_ux001_data_blocker_replay.py
+  tests/test_g007_fund_lhb_provenance.py -q` → 全部通过（合计 157 passed）。
+- 未触发 live API、未改 prompts、未写生产 DB。
+
+### 风险
+
+- `infer_evidence_statuses` 的纯文本回退路径对 `[G-007] LHB_NORMAL_NO_DATA` /
+  `[G-007] LHB_FAILED` 标记识别不全（会被 length 规则吞成 HAS_DATA）；
+  实际链路依赖 `DataCollector.build_raw_evidence` 写入的结构化 `status` 字段
+  绕过该路径，已在矩阵文档 §2.3 显式记录为已知边界。
+
+---
+
+## 2026-06-26 | V-010 小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口
+
+- **执行者**：OpenCode
+- **类型**：test / acceptance-e2e
+- **状态**：✅ 完成（待提交）
+- **优先级**：P1
+- **代码标注**：`# [V-010] small_cap_trial_v2_acceptance`
+
+### 背景
+
+V-008 验收覆盖了候选生成→模拟账本→观察→确认→复盘的基础闭环，但此后的
+TF-QUALITY / DATA-021 / H-015 / TRACK / IC-TA-002 系列又新增了 4 条链路：
+严格收敛门禁、字段级 data_blockers、昊天主题日报、投资控只读上下文。需要补
+一条端到端验收，确认用户 ¥5000 小资金试跑链路能回答「看哪几只、为什么、
+何时观察、数据缺什么、盘后怎么复盘」5 个问题。
+
+### 变更
+
+- 新增 `tests/test_v010_small_cap_trial_v2_acceptance.py`：35 个用例，6 步链路
+  + 6 类 step test + 验收文档生成。
+  - 链路覆盖：
+    1. **候选收敛** —— 4 类候选 fixture（昊天主 + 技术主 + 观察 + 过滤），
+       tiered ranking 收敛到 2 只主候选；4 类 `candidate_type` 全部覆盖。
+    2. **盘中观察** —— `run_observe` + mock quote 触发昊天主候选，信号
+       落 `tradeflow_signals`。
+    3. **昊天日报 (H-015)** —— `get_mandate_daily_report` 从 topic heatmap
+       重建，识别升温主题「低空经济」+ evidence_gaps 字段。
+    4. **数据缺口 + Tracking Board v2 摘要 (IC-TA-002)** —— 通过
+       `get_investment_controller_context` 一次聚合 `recent_report_data_blockers`
+       （severe 2 项 / `600711.SH` 命中 individual_fund_flow + announcements
+       query_failed）+ `tradeflow_candidates` (4 只) + `controller_hints`
+       （suppress_push_data_insufficient）。
+    5. **盘后复盘** —— `generate_review` 输出 attribution_stats +
+       next_day_feedback（每只候选携带 tomorrow_focus/downgrade_reason）。
+    6. **安全约束** —— 强词扫描、runtime_tier 不升级到 FULL_TA、
+       notification sender monkeypatch counter 保持 0。
+- 新增 `docs/tradeflow_trial_acceptance_v3.md`：通过 `_render_trial_report`
+  自动生成，回答 V-010 五问，标注合规声明（不构成投资建议、不发真实通知、
+  runtime_tier 全程不升级）。
+
+### 关键实现要点
+
+- **fixture 隔离**：`e2e_db` 用 `tmp_path` 隔离 tradeflow SQLite；
+  `e2e_sqla_session` 用 in-memory SQLAlchemy 隔离报告表；两者完全不触碰
+  生产 `tradingagents.db` / `tradeflow.db`。
+- **heatmap DB pin**：`get_mandate_daily_report` 服务层不接收 `tf_db_path`
+  参数，直接调用会读取默认 tradeflow.db。新增 `_patch_heatmap_db` fixture
+  与 `_run_trial_checks` 内的 monkeypatch，把 `get_topic_heatmap` 默认
+  tf_db_path 钉在 fixture DB 上，保证链路读 fixture 数据。
+- **runtime_tier 校验范围**：`generate_review` 是盘后批量写操作，响应未携带
+  `runtime_tier_meta`（其触发入口 `POST /v1/tradeflow/review/generate` 显式
+  人工触发，不在自动读路径上），所以 `test_runtime_tier_never_full_ta`
+  只覆盖 candidates / tiered / mandate_daily_report 三个读路径 endpoint。
+  这三个均不属于 FULL_TA。
+- **通知零调用校验**：`test_no_real_notification_side_effects` monkeypatch
+  `wecom_notification_service.send_wecom_message`、
+  `bark_notification_service.send_bark`、`email_report_service.send_email`、
+  `notification_draft_service.dispatch_notification_draft` 四个 sender，
+  跑完整链路后断言 call list 为空。
+- **强词清单**：复用 `FORBIDDEN_WORDS` 并扩展 V-008/V-009 禁词（买入/卖出/
+  清仓/满仓/梭哈/加仓/减仓/抄底/逃顶/追涨/杀跌/立即卖出/全仓），对 candidates
+  / tiered / mandate_report / review / controller_context 全部扫描通过。
+
+### 验证要点
+
+- 4 类候选 fixture 全部落库且名称回填正确（无 .SH/.SZ/.BJ 当名称）。
+- tiered ranking 收敛门禁：主候选恰好 2 只（昊天 + 技术），过滤/观察候选不
+  混入主池；`pool_counts` {main:2, haotian_in_main:1, tech_in_main:1}。
+- H-015 日报：低空经济主题升温、candidates=[300034.SZ]、`evidence_gaps` 字段
+  存在；runtime_tier 非 FULL_TA、requires_confirmation 为 False/None。
+- DATA-021：query_failed 计 severe（2 项），normal_no_data 不计；
+  `600711.SH` 同时出现在 candidate pool（过滤）与 report blocker bucket
+  （severe），证明两条视图连通。
+- `controller_hints.suppress_push_data_insufficient` 路由命中
+  `600711.SH`，避免把数据不足的报告当 confident 结论推送。
+- 链路 `read_only=True`，不发真实通知。
+
+### 测试结果
+
+- `pytest tests/test_v010_small_cap_trial_v2_acceptance.py -q`：**35 passed**。
+- 回归：`pytest tests/test_v008_paper_trial_acceptance.py
+  tests/test_v009_trial_guide_smoke.py
+  tests/test_ic_ta002_controller_context_tradeflow_report.py
+  tests/test_ic_ta001_investment_controller_context.py
+  tests/test_h015_mandate_daily_report.py
+  tests/test_data021_report_data_blockers.py
+  tests/test_report_ux001_data_blocker_replay.py
+  tests/test_v010_small_cap_trial_v2_acceptance.py -q`：**187 passed**。
+
+### 修改文件
+
+- `tests/test_v010_small_cap_trial_v2_acceptance.py`（新增）
+- `docs/tradeflow_trial_acceptance_v3.md`（新增，由测试生成）
+- `docs/TASKS.md`、`docs/DEVLOG.md`
+
+---
+
+## 2026-06-26 | IC-TA-002 investment-controller 上下文接入昊天日报与报告数据缺口
+
+- **执行者**：OpenCode
+- **类型**：feature / read-only-context
+- **状态**：✅ 完成（待提交）
+- **优先级**：P1
+- **代码标注**：`# [IC-TA-002] controller_context_tradeflow_report`
+
+### 背景
+
+investment-controller v5 是 TA 调度官/飞书播报官。IC-TA-001 已提供 6 个只读
+bucket，但要决定“是否值得让 TA 出手”和“推送什么”，还需纳入 H-015 昊天主题日报
+与 DATA-021 报告字段级数据缺口。
+
+### 变更
+
+- 扩展 `api/services/investment_controller_context.py`：在 IC-TA-001 六个 bucket
+  基础上新增两个只读 bucket + 一组软调度 hints（不写状态、不触发 TA/LLM、不做网络调用）。
+  1. **`mandate_daily_report`**：调用 `tradeflow_service.get_mandate_daily_report`
+     （等价 `/tradeflow/mandate-daily-report/latest`），读取磁盘最新日报或基于
+     topic heatmap（仅读 tradeflow SQLite）重建摘要：升温/降温主题、主候选、观察候选、
+     证据缺口。稳定空结构由 `_empty_mandate_bucket` 提供。
+  2. **`recent_report_data_blockers`**：扫描该用户最近 10 份 completed 报告，
+     聚合 DATA-021 严重缺口（`query_failed` / `field_missing`）。优先读已落库的
+     `result_data.data_blockers`；对 DATA-021 之前的 legacy 报告，调用
+     `attach_report_data_blockers(dict(result_data))` 派生（只读、不回写 ORM）。
+     输出 `field_counts` / `affected_symbols` / `summary_level`，正常无数据不计入。
+  3. **`controller_hints`**：基于已收集 bucket 派生三条软路由（仅事实，无强买卖词）：
+     - `needs_ta`：来自 `pending_ta_required`（观察仓 ta_required + 候选 need_deep_ta）。
+     - `daily_report_only`：`watching` 状态观察仓条目 + 昊天观察候选（只进日报）。
+     - `suppress_push_data_insufficient`：最近报告存在严重数据缺口的标的，不作强结论推送。
+- 新增 `_empty_mandate_bucket` / `_empty_blockers_bucket`：保证两个新 bucket 在
+  无数据/失败路径下形状一致（`source/as_of/data_status` + 各自字段）。
+- 扩展 `assert_no_strong_action_verbs`：同步扫描 `controller_hints` 的 reason /
+  suggested_next_step，确保合成字段不含“立即买入/清仓/满仓”等强词。
+- 更新模块 docstring 与 `api/main.py:4623` endpoint docstring，描述新 bucket。
+- 新增 `tests/test_ic_ta002_controller_context_tradeflow_report.py`：26 个用例，
+  覆盖 bucket 存在性/空状态、`source+as_of+data_status` 契约、stored 与 legacy
+  两条 data_blockers 路径、scan 上限、controller_hints 三条路由、READ-ONLY（不改
+  ORM result_data）、强词扫描、敏感字段、JSON 序列化、降级。
+
+### 验证要点
+
+- `query_failed` 与 `field_missing` 计入 severe；`normal_no_data` / `skipped` /
+  `not_queried` 仅信息性，不计入 affected_symbols。
+- 仅扫描最近 N 份报告（`_RECENT_REPORT_SCAN_LIMIT=10`），不触发全表扫描，符合
+  FAST_RADAR 时延预算；endpoint 仍为 `investment_controller_context`（FAST_RADAR /
+  llm_allowed=False / requires_confirmation=False）。
+- 不写生产 `tradingagents.db`；不调 LLM；不改 prompts；不含强买卖词。
+
+### 测试结果
+
+- `pytest tests/test_ic_ta002_controller_context_tradeflow_report.py -q`：**26 passed**。
+- 回归：`pytest tests/test_ic_ta001_investment_controller_context.py
+  tests/test_ic_ta002_controller_context_tradeflow_report.py
+  tests/test_track002_tracking_board_v2.py tests/test_track001_observation_warehouse.py
+  tests/test_track004_observation_state_engine.py tests/test_track005_post_market_tracking_review.py
+  tests/test_track006_add_to_observation.py tests/test_runtime_tier_contract.py
+  tests/test_data021_report_data_blockers.py tests/test_h015_mandate_daily_report.py -q`：
+  **353 passed**。
+- 补充回归：`tests/test_track_notify001_notification_draft.py
+  tests/test_v003_tradeflow_acceptance_replay.py`：**109 passed**。
+
+
+exec
+/bin/zsh -lc "git status --short --branch && sed -n '1,220p' docs/project-overview.md && sed -n '1,220p' docs/TASKS.md" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+## local/tradingagents-custom...myfork/local/tradingagents-custom [ahead 170]
+ M docs/DEVLOG.md
+ M docs/TASKS.md
+ M docs/tradeflow_trial_acceptance.md
+ M docs/tradeflow_trial_acceptance_v2.md
+ M docs/tradeflow_trial_acceptance_v3.md
+?? docs/data022_fund_lhb_status_matrix.md
+?? docs/task_runs/DATA-022-20260626-200333/
+?? tests/test_data022_fund_lhb_status_matrix.py
+# 项目说明
+
+## 项目定位
+
+TradingAgents-AShare 是一个面向 A 股投资者的多智能体投研系统，核心理念：
+
+- **模拟真实投研机构**：14 个专业角色分工协作
+- **多空辩论机制**：多头研究员 vs 空头研究员，研究总监裁决
+- **多模型厂商支持**：OpenAI / Anthropic / Google / 智谱 / DeepSeek / 小米等
+- **意图驱动交互**：自然语言输入，自动识别标的和周期
+- **持仓追踪**：导入持仓，自动跟踪，连续分析
+
+## 核心架构
+
+### 1. 分析师团队（7 个）
+
+| 角色 | 职责 | 数据源 |
+|------|------|--------|
+| 基本面分析师 | 财务指标、估值分析 | AKShare/BaoStock |
+| 情绪分析师 | 社交媒体情绪、舆情 | AKShare |
+| 新闻分析师 | 新闻事件、政策影响 | AKShare |
+| 技术分析师 | K线形态、技术指标 | AKShare/BaoStock |
+| 宏观分析师 | 宏观经济、利率环境 | AKShare |
+| 主力资金分析师 | 大单流向、主力动向 | AKShare |
+| 量价分析师 | 成交量、量价关系 | AKShare/BaoStock |
+
+### 2. 研究员团队
+
+- **多头研究员**：综合分析师结论，构建看多 Claim
+- **空头研究员**：综合分析师结论，构建看空 Claim
+- **研究总监**：裁决多空辩论，形成投资计划
+
+### 3. 风控团队
+
+- **风控经理**：评估风险、设置止损止盈
+- **合规检查**：确保建议符合投资规范
+
+### 4. 交易员
+
+- 根据研究计划和风控要求，输出最终交易建议
+
+### 5. 编排层
+
+- **LangGraph**：状态图编排，控制 Agent 间信息流转
+- **辩论机制**：多轮辩论，每轮有 Claim → Counter-Claim → 裁决
+
+## 数据流
+
+```
+用户输入（自然语言）
+  ↓
+意图识别 → 标的 + 周期
+  ↓
+数据获取（7 路并行）
+  ↓
+分析师团队（7 个并行分析）
+  ↓
+研究员辩论（多轮）
+  ↓
+风控评估
+  ↓
+交易建议输出
+  ↓
+研报存储 + 通知推送
+```
+
+## 模型配置
+
+系统支持多层模型配置：
+
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| `deep_think_llm` | 深度思考模型 | gpt-4o |
+| `quick_think_llm` | 快速思考模型 | gpt-4o-mini |
+| `mid_think_llm` | 中等思考模型 | gpt-4o |
+| `ultra_think_llm` | 超深度思考模型 | gpt-4o |
+| `backend_url` | API 端点 | https://api.openai.com/v1 |
+
+支持通过环境变量或前端设置页切换模型厂商。
+
+## API 接口
+
+后端 FastAPI 提供以下主要接口：
+
+- `POST /api/analyze` — 启动分析任务
+- `GET /api/analysis/{id}` — 获取分析结果
+- `GET /api/holdings` — 获取持仓
+- `POST /api/watchlist` — 管理自选股
+- `GET /api/reports` — 历史研报
+- `POST /api/scheduler` — 定时任务管理
+
+## 前端功能
+
+- 意图驱动的自然语言交互
+- 辩论对战可视化（多空对抗 Drawer）
+- 持仓追踪与跟踪看板
+- 结构化研报管理
+- 定时分析配置
+- 模型厂商设置
+# 任务池
+
+> 最后更新：2026-06-22
+
+---
+
+## 0. 自动领取规则与当前队列
+
+### 状态规则
+
+- `ready`：允许 `scripts/auto_dev_loop.sh` 自动领取。
+- `in_progress`：已有 OpenCode/OpenClaw/Codex 半成品或人工正在处理，自动开发不得重复领取。
+- `blocked`：前置任务、人工确认、权限或成本条件未满足。
+- `done`：已完成并有 commit / 验收记录。
+- `proposed`：候选任务草案，只能人工或 Codex 确认后转为 `ready`。
+
+### 自动领取顺序
+
+1. 自动脚本只领取 `状态=ready` 的任务。
+2. 同优先级按文档顺序领取；批量模式会在任务完成后继续领取下一个 `ready` 任务，直到无任务或某个任务失败。
+3. 工作区不干净时必须停止，先进入人工/Codex review，不允许覆盖半成品。
+4. 每个任务必须写入 `docs/task_runs/<TASK_ID>-YYYYMMDD-HHMMSS/` 运行档案。
+5. 通过任务必须同时更新 `docs/TASKS.md`、`docs/DEVLOG.md`。
+
+### 当前优先队列
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `TF-DATE-001`：TradeFlow 日期语义拆分与非交易日计划生效（P0，done）。
+3. `TF-OBS-001`：TradeFlow 盘中观察执行器与信号落库（P0，done）。
+4. `H-001`：昊天雷达 v0 数据模型与信号分类（P1，done）。
+5. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+6. `H-002`：政策连续性与级别权重评分（P1，done）。
+7. `H-003`：产业链受益路径与标杆候选映射（P1，done）。
+8. `H-004`：左侧埋伏评分与候选类型分流（P0，done）。
+9. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+10. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+11. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+12. `H-005`：TradeFlow 前端昊天候选池视图（P1，done，依赖 H-004 ✓）。
+13. `H-006`：昊天候选池回放评估与反证机制（P1，done，依赖 H-004 ✓）。
+14. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done，依赖 DATA-001/DATA-004 ✓）。
+15. `H-007`：昊天候选到 TA 中线研究队列分流（P1，done，依赖 H-004 ✓）。
+16. `H-008`：昊天主题观察清单与自选备注摘要（P1，done，依赖 H-004/VLM-001 ✓）。
+17. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+18. `V-004`：昊天链路端到端 smoke 验收（P1，done，依赖 H-004/DATA-004 ✓）。
+19. `TF-P0-001`：TradeFlow 运行态 schema 迁移、名称回填与观察路由修复（P0，done）。
+20. `TA-UI-001`：智能分析控制台增加短线/中线、分析意图、持仓状态选择（P0，done）。
+21. `TF-P0-002`：候选池分层：短线技术池与昊天左侧池显式拆分（P0，done）。
+22. `TF-P0-003`：TradeFlow 生成候选池后的端到端 UI smoke 验收（P0，done）。
+23. `PERF-001`：运行层级与速度预算契约（P1，done）。
+24. `PERF-002`：轻量 TA Profile 与模块路由（P1，done）。
+25. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+26. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+27. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+28. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done，依赖 DATA-001/DATA-004 ✓）。
+29. `PERF-003`：分析运行耗时/调用成本遥测与前端展示（P1，done）。
+30. `PERF-004`：完整 TA 手动确认与 scheduler 成本门禁（P1，done）。
+31. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done，依赖 DATA-004/DATA-006 ✓）。
+32. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done，依赖 DATA-005 ✓）。
+33. `H-009`：昊天候选反证/过热降权校准（P1，done，依赖 H-006/V-004 ✓）。
+34. `H-010`：政策主题生命周期与版本状态注册表（P1，done，依赖 H-002/H-006 ✓）。
+35. `H-011`：候选矛盾证据与负面清单解释（P2，done，依赖 H-009 ✓）。
+36. `UI-009`：候选详情一键生成 TA 研究任务预案（P1，done，依赖 H-007/UI-006 ✓）。
+37. `UI-010`：昊天候选对比视图与证据缺口排序（P2，done，依赖 H-005/DATA-007 ✓）。
+38. `V-005`：夜间昊天候选质量日报与样本回放（P1，done，依赖 V-004/DATA-006 ✓）。
+39. `M-012`：任务池空转时自动生成 proposed 任务草案（P1，done，依赖 V-002 ✓）。
+40. `M-013`：CodeGraph 影响范围预检接入自动开发日志（P2，done，依赖 INF-001 ✓）。
+41. `T-008`：TradeFlow 观察信号 fixture 回放与前端状态一致性验收（P2，done）。
+42. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done，依赖 H-008/VLM-001 ✓）。
+43. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done，依赖 DATA-001/DATA-004 ✓）。
+44. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done，依赖 DATA-004 ✓）。
+45. `V-001`：600584 数据真实性端到端验收（P1，done，依赖 G-009/G-010/N-002/N-003 ✓）。
+46. `T-004`：TradeFlow P2 盘中 Observe（本轮 P1，done，依赖 TF-OBS-001/T-008 ✓）。
+47. `T-005`：TradeFlow P3 盘后 Review（本轮 P1，done，依赖 M-007/T-008/V-005 ✓）。
+48. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+49. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done，依赖 DATA-003/DATA-004 ✓）。
+50. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+51. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+52. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done，依赖 DATA-005/DATA-P0-FUND-ROUTE ✓）。
+53. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done，依赖 DATA-012 部分落地 ✓）。
+54. `DECISION-001`：最终动作语义分层 — 禁止默认 HOLD（P0，done，commit dee415c）。
+55. `DECISION-002`：历史报告回放测试 — 覆盖典型场景（P1，done，依赖 DECISION-001 ✓）。
+56. `DECISION-003`：前端展示 3 层语义（P1，done，依赖 DECISION-001 ✓）。
+57. `DECISION-004`：报告卡片和推送通知不再只取 decision（P2，done，commit f73f4d5）。
+58. `TF-QUALITY-001`：TradeFlow 候选池严格收敛门禁（P0，done — commit 5f304db，后续 001A/DATA-COVERAGE 已闭环）。
+59. `TF-QUALITY-001A`：收敛门禁回归修复与状态一致性（P0，done — 后续任务已闭环）。
+60. `TF-QUALITY-002`：TradeFlow 评分拉开差距与排序解释（P0，done，commit 见下方）。
+61. `TF-OBS-002`：盘中观察自动执行与 A 股红绿视觉修正（P0，done，依赖 TF-QUALITY-001A ✓）。
+62. `TF-REVIEW-002`：盘后 Review 数据补齐与非交易日计划映射（P0，done，依赖 TF-QUALITY-001A ✓）。
+63. `TF-UI-011`：候选详情一键轻量 TA、K 线与公司概览（P1，done，依赖 TF-QUALITY-001A/PERF-002 ✓）。
+64. `DATA-017`：主力资金/龙虎榜数据源健康巡检与 fallback 验收（P1，done，依赖 DATA-P0-FUND-ROUTE）。
+65. `V-006`：最终动作语义端到端回放验收（P1，done，依赖 DECISION-004 ✓）。
+66. `DATA-COVERAGE-001`：raw_evidence 覆盖率分母/质量等级回归修复（P1，done，Codex 修复，待提交）。
+67. `CODEGRAPH-002`：CodeGraph 自动开发预检命令修复（P2，done，commit f54a45e）。
+68. `TF-QUALITY-003`：候选池精度校准与弱候选压缩（P0，done，依赖 TF-QUALITY-002）。
+69. `TF-PAPER-001`：5000 元试跑模拟账户与候选跟踪账本（P1，done，依赖 TF-OBS-002/TF-REVIEW-002）。
+70. `H-012`：昊天主题注册表与政策版本 Watchlist（P1，done，依赖 H-010/H-011）。
+71. `DATA-018`：A股关键源新鲜度与 fallback 可视化日报（P1，done，依赖 DATA-017/DATA-006）。
+72. `UI-012`：TradeFlow 前端降噪与主候选优先工作台（P1，done，依赖 TF-QUALITY-002/TF-OBS-002）。
+73. `V-007`：TradeFlow 试用闭环端到端验收（P1，done，commit 9ceedbf）。
+74. `TF-API-013`：TradeFlow API 合约收口与 HTTP 路由回归（P0，done，`fce3141` + `289a392`）。
+75. `TF-QUALITY-004`：候选池实盘区分度回放校准（P0，done，`OpenCode` 2026-06-16）。
+76. `TF-RISK-001`：5000 元试跑风险预算与仓位纪律（P1，done，依赖 TF-PAPER-001 ✓）。
+77. `TF-OBS-003`：盘中观察触发到模拟账本待确认联动（P1，done，commit fcce883）。
+78. `TF-REVIEW-003`：盘后 Review 策略命中归因与次日反馈（P1，done，依赖 TF-REVIEW-002/TF-PAPER-001）。
+79. `DATA-019`：关键数据源实盘抽样健康日报（P1，done，commit 58b5cd2）。
+80. `H-013`：昊天主题热度曲线与政策证据看板（P1，done，commit b1fe17d）。
+81. `DATA-019A`：实盘抽样 skipped 状态与任务池收口补修（P2，done）。
+82. `H-013A`：昊天热度图历史日期 fallback 与窗口 unique 统计补修（P2，done）。
+83. `V-008`：TradeFlow 小资金试跑前整体验收（P1，done，55 tests passed）。
+84. `TF-UX-001`：TradeFlow 小资金试跑主工作台降噪与默认视图（P1，done，依赖 TF-QUALITY-004/TF-RISK-001 ✓）。
+85. `TRACK-001`：观察仓数据模型与只读/写入 API（P0，done，commit 2ef6c37）。
+86. `TRACK-002`：跟踪看板 v2 分组接口与今日指引聚合（P0，done，commit fd0d511）。
+87. `TRACK-003`：跟踪看板前端四区改版：持仓/观察仓/今日指引/盘后复盘（P0，done，commit d80aa66）。
+  88. `IC-TA-001`：investment-controller 只读上下文包与数据契约（P1，done，依赖 TRACK-001 ✓）。
+  89. `TRACK-004`：观察仓入场区/失效区规则引擎与状态流转（P1，done，依赖 TRACK-001 ✓, TRACK-002 ✓）。
+  90. `TRACK-005`：盘后复盘摘要与次日计划写回跟踪看板（P1，done，依赖 TRACK-002 ✓, TF-REVIEW-003 ✓）。
+91. `TRACK-006`：TradeFlow/TA 候选一键加入观察仓与来源追踪（P1，done，commit 5aa512d）。
+92. `TRACK-NOTIFY-001`：飞书/总控官通知草稿 payload 与去噪规则（P1，done — TRACK-NOTIFY-001-20260623-122700，前置 IC-TA-001 ✓/TRACK-002 ✓ 均完成）。
+93. `TRACK-007`：跟踪看板端到端验收与用户操作手册（P2，done ✓，依赖 TRACK-003 ✓, TRACK-004 ✓, TRACK-005 ✓）。
+  94. `DATA-020`：数据源健康日报前端可视化与 skipped/failed 分层展示（P1，done，依赖 DATA-019A）。
+  95. `TF-REVIEW-004`：盘后 Review 空数据诊断与一键生成入口（P1，done，依赖 TF-REVIEW-003）。
+ 96. `H-014`：昊天主题候选减少与主题集中度阈值校准（P1，done，依赖 H-013A/H-012 ✓）。
+97. `V-009`：小资金试跑后回归清单与用户操作手册（P1，done，依赖 V-008 ✓）。
+ 98. `TF-OBS-004`：盘中观察自动刷新、触发提醒与人工确认队列降噪（P1，done，依赖 TF-OBS-003/TF-RISK-001 ✓）。
+99. `DATA-021`：TA 报告数据源失败原因透传与字段级降级说明（P1，done — Codex 接管完成，依赖 DATA-020/DATA-004 ✓）。
+100. `H-015`：昊天主题日报与候选入池/出池解释（P1，done — Codex 直接开发，依赖 H-014 ✓/H-013A ✓）。
+ 101. `PERF-005`：TradeFlow 页面与 API 性能预算回归（P2，done，依赖 TF-UX-001/DATA-020 ✓）。
+102. `HK-001`：港股输入边界与轻量行情-only 模式声明（P2，done — commit 2326a3d + a9fd09a）。
+103. `TF-PERSIST-001`：TradeFlow save_candidate 分项评分持久化补口（P2，done — commit 0016a92 + 2257f32）。
+104. `AUTO-003`：任务建议去重与已完成任务过滤（P1，ready，修复 M-012 误把 done/blocked-resolved 任务重复建议）。
+105. `REPORT-UX-001`：TA 报告“数据不足观察”端到端回放验收（P1，ready，依赖 DATA-021 ✓）。
+  106. `IC-TA-002`：investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1，done，依赖 IC-TA-001/DATA-021/H-015 ✓）。
+107. `V-010`：小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口（P1，done，依赖 V-009/DATA-021/H-015 ✓）。
+108. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2，ready，依赖 TRACK-NOTIFY-001/H-015/DATA-021 ✓）。
+109. `DATA-022`：主力资金/龙虎榜失败矩阵 fixture 回放（P1，done，依赖 DATA-021/DATA-017 ✓）。
+110. `TF-OBS-005`：非交易日候选计划到下一交易日观察语义回归（P1，ready，依赖 TF-OBS-004 ✓）。
+111. `TRACK-008`：观察仓批量导入/导出 CSV 与去重合并（P1，ready，依赖 TRACK-001/TRACK-003 ✓）。
+112. `REPORT-UX-002`：历史报告动作语义与数据缺口只读迁移预检（P1，ready，依赖 DECISION-004/DATA-021 ✓）。
+113. `H-016`：昊天主题日报 CLI 生成与保留策略（P2，ready，依赖 H-015 ✓）。
+114. `IC-TA-003`：investment-controller 盘前/盘后 briefing fixture dry-run（P2，ready，依赖 IC-TA-002 ✓）。
+115. `TF-REVIEW-005`：盘后 Review 归因接入观察信号与模拟账本（P1，ready，依赖 TF-REVIEW-004/TF-PAPER-001 ✓）。
+116. `UI-013`：TradeFlow 空状态与下一步 CTA 文案收口（P2，ready，依赖 UI-012/H-015 ✓）。
+117. `DATA-023`：数据源目录 API/文档同步与供应商能力矩阵导出（P2，ready，依赖 DATA-020/DATA-CATALOG-FIX ✓）。
+118. `PERF-006`：前端 bundle 体积趋势记录与懒加载候选建议（P2，ready，依赖 PERF-005 ✓）。
+119. `V-011`：夜间自动开发日报验收与 ready 队列续航检查（P2，ready，依赖 AUTO-003 ✓）。
+120. `NOTIFY-003`：通知去噪规则回放测试与日报/盘中分层验收（P2，ready，依赖 NOTIFY-002 ✓）。
+
+### 数据源治理候选队列
+
+> 参考 SimonLin1212 `a-stock-data` 的数据源 Skill 思路：吸收“端点目录、vendor fallback、实时补丁、来源溯源、字段契约”，不替换本项目的 raw_evidence、强动作门禁、Buy/Risk Level 和自动审核闭环。
+
+1. `DATA-P0-603629`：TA A股关键数据源补强与假可用修复（P0，done）。
+2. `DATA-001`：A股数据源能力目录与 fallback 矩阵（P1，done）。
+3. `DATA-002`：实时行情 freshness 检测与补丁标注（P1，done）。
+4. `DATA-003`：公告/研报/政策事件源归一化接入昊天雷达（P1，done）。
+5. `DATA-004`：raw_evidence 来源契约升级（P1，done）。
+6. `DATA-005`：数据源 fixture replay 与限流/失败回放（P1，done）。
+7. `DATA-006`：数据源质量报告接入夜间日报（P2，done，依赖 DATA-005 ✓）。
+8. `DATA-P0-FUND-ROUTE`：主力资金 fallback 假成功与单位修复（P0，done）。
+9. `DATA-P1-LHB-FUND-DECOUPLE`：龙虎榜与资金流触发链路复核（P1，done）。
+10. `DATA-P1-ASTOCK-LIVE-SMOKE`：cn_astock/Eastmoney 关键源 live smoke 与限流验证（P1，done）。
+11. `DATA-P1-SOURCE-GAP-AUDIT`：Simon 数据源吸收落地差距审计（P1，done）。
+12. `DATA-007`：raw_evidence 覆盖率审计与候选可信度联动（P1，done）。
+13. `DATA-008`：A股关键源 fallback smoke fixtures 扩展（P1，done）。
+14. `DATA-009`：自选备注与截图识别字段持久化回归保护（P1，done）。
+15. `DATA-010`：融资融券数据源注册与 raw_evidence 接入（P1，done）。
+16. `DATA-011`：研报端点接入 route_to_vendor 与 raw_evidence（P1，done）。
+17. `DATA-012`：评级数据接入 provider 路由与 raw_evidence（P2，done — commit 3a8351f + 4d9ae52，DATA-012A 收口完成）。
+17a. `DATA-012A`：评级数据 data_collector 接线与回归验收（P1，done）。
+18. `DATA-013`：回购数据接入 provider 路由与 raw_evidence（P2，done）。
+19. `DATA-014`：新闻/政策事件 fixture 与 live smoke 补充（P2，done）。
+20. `DATA-015`：涨停池 cn_astock fallback 与 fixture（P2，done）。
+21. `DATA-016`：热门股票 cn_astock fallback 与 fixture（P2，done）。
+
+### 总体路线图
+
+- 详见 `docs/ROADMAP.md`。
+- 当前主线：先稳定 TradeFlow，再建设 Mandate Radar（昊天雷达），再接入轻量 TA / 完整 TA 分层和回放评估。
+- 运行原则：快速雷达优先，轻量研究其次，完整 TA 必须人工确认。
+- 任务新增原则：新想法必须归入 Roadmap 的某一层；不能直接插队到 ready，除非它阻塞当前主线。
+
+---
+
+## TRACK. 跟踪看板 / 观察仓 / investment-controller 联动任务池（2026-06-22 新增）
+
+> 目标：把跟踪看板从“持仓实时行情表”升级为“交易日作战面板”。TA 负责数据、报告和状态容器；investment-controller 负责盘前/盘中/盘后调度、飞书播报和是否调用深度 TA 的判断。
+
+### TRACK-001: 观察仓数据模型与只读/写入 API（P0）
+- **描述**：新增“观察仓”容器，用于存放想买但尚未买入、等待价格/事件/资金确认的标的。
+- **优先级**：P0
+- **状态**：done — commit 2ef6c37
+- **背景**：
+  - 当前跟踪看板只展示真实持仓，无法承载“我想进但等位置”的观察票。
+  - 观察仓是盘前计划、盘中提醒、盘后复盘和 investment-controller 调度的基础状态。
+- **执行约束**：
+  - 不写生产 `tradingagents.db` 测试数据。
+  - 不触发 TA/LLM。
+  - 不自动推送飞书。
+  - 不改 `tradingagents/prompts/`。
+- **实现要点**：
+  1. 新增观察仓表或等价持久化模型，字段至少包含：
+     - `symbol/name`
+     - `status`: `watching / near_entry / in_entry_zone / ta_required / entered / invalidated / removed`
+     - `entry_low/entry_high`
+     - `trigger_price`
+     - `invalid_price`
+     - `horizon`: `intraday / short / mid`
+     - `source`: `manual / tradeflow / ta / investment_controller`
+     - `reason`
+     - `priority`
+     - `notes`
+     - `created_at/updated_at/last_reviewed_at`
+  2. 新增 API：
+     - list observation items
+     - create/update item
+     - mark invalidated/removed
+     - optional bulk upsert
+  3. API 返回必须区分“真实持仓”和“观察仓”，禁止把观察仓误算入持仓市值。
+  4. 测试覆盖创建、更新、状态流转、空数据、symbol/name 规范化。
+- **验收方式**：
+
+exec
+/bin/zsh -lc 'git diff -- docs/TASKS.md docs/DEVLOG.md docs/tradeflow_trial_acceptance.md docs/tradeflow_trial_acceptance_v2.md docs/tradeflow_trial_acceptance_v3.md && git diff --stat --cached && git diff --stat && find docs/task_runs/DATA-022-20260626-200333 -maxdepth 2 -type f -print' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+diff --git a/docs/DEVLOG.md b/docs/DEVLOG.md
+index 995412e..b391a16 100644
+--- a/docs/DEVLOG.md
++++ b/docs/DEVLOG.md
+@@ -4,6 +4,60 @@
+ 
+ ---
+ 
++## 2026-06-26 | DATA-022 主力资金/龙虎榜失败矩阵 fixture 回放
++
++- **执行者**：OpenCode
++- **类型**：test / regression-guard
++- **状态**：✅ 完成（待提交）
++- **优先级**：P1
++- **代码标注**：`# [DATA-022] fund_lhb_status_matrix`
++
++### 背景
++
++用户多次遇到主力资金失败、龙虎榜无数据/未触发/查询失败混淆。本任务用
++fixture 矩阵回放数据源状态，确保 DATA-021 的 data_blockers 与 TA 报告不会把
++"正常无数据" 当失败，也不会把失败因文本长度大于 20 而误判为 HAS_DATA。
++
++### 变更
++
++- 新增 `tests/test_data022_fund_lhb_status_matrix.py`：54 个测试，7 个维度。
++  - fund_flow_individual 矩阵：HAS_DATA / FAILED / NORMAL_NO_DATA / SKIPPED
++    （结构化 + legacy_text 两条路径）。
++  - lhb 矩阵：HAS_DATA / FAILED / NORMAL_NO_DATA / NOT_QUERIED
++    （结构化 + legacy_text 两条路径）。
++  - 覆盖 `DataCollector._infer_source_status`（`[G-007] LHB_*` 标记识别）→
++    `infer_evidence_statuses`（EvidenceStatus wire 值）→
++    `build_data_blockers` / `summarize_data_blockers`（severity/level）→
++    `build_fund_flow_provenance` / `build_lhb_provenance`（strong_evidence）
++    全链路状态推断边界。
++  - 核心防回归：
++    1. `FAILED` 长（>20 字符）文本不得因长度规则被误判为 HAS_DATA
++       （fund_flow 长/短文本、lhb 长文本、provenance 路径共 4 个用例）。
++    2. `NORMAL_NO_DATA` 不计入 query_failed 计数；纯 normal_no_data/skipped
++       时 summarize_data_blockers.level = info，不升级到 warning。
++    3. 4 个 canonical 状态产出 4 个不同的 EvidenceStatus wire 值，不复用桶。
++- 新增 `docs/data022_fund_lhb_status_matrix.md`：状态矩阵文档，说明每个状态
++  对 blocker severity / report action / strong_evidence_allowed 的影响，以及
++  结构化契约优先于文本启发式的实现保证。
++
++### 验证
++
++- `pytest tests/test_data022_fund_lhb_status_matrix.py -q` → 54 passed。
++- 关联回归 `pytest tests/test_data017_fund_lhb_health.py
++  tests/test_data021_report_data_blockers.py
++  tests/test_report_ux001_data_blocker_replay.py
++  tests/test_g007_fund_lhb_provenance.py -q` → 全部通过（合计 157 passed）。
++- 未触发 live API、未改 prompts、未写生产 DB。
++
++### 风险
++
++- `infer_evidence_statuses` 的纯文本回退路径对 `[G-007] LHB_NORMAL_NO_DATA` /
++  `[G-007] LHB_FAILED` 标记识别不全（会被 length 规则吞成 HAS_DATA）；
++  实际链路依赖 `DataCollector.build_raw_evidence` 写入的结构化 `status` 字段
++  绕过该路径，已在矩阵文档 §2.3 显式记录为已知边界。
++
++---
++
+ ## 2026-06-26 | V-010 小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口
+ 
+ - **执行者**：OpenCode
+diff --git a/docs/TASKS.md b/docs/TASKS.md
+index 68c5b33..00253f2 100644
+--- a/docs/TASKS.md
++++ b/docs/TASKS.md
+@@ -132,7 +132,7 @@
+   106. `IC-TA-002`：investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1，done，依赖 IC-TA-001/DATA-021/H-015 ✓）。
+ 107. `V-010`：小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口（P1，done，依赖 V-009/DATA-021/H-015 ✓）。
+ 108. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2，ready，依赖 TRACK-NOTIFY-001/H-015/DATA-021 ✓）。
+-109. `DATA-022`：主力资金/龙虎榜失败矩阵 fixture 回放（P1，ready，依赖 DATA-021/DATA-017 ✓）。
++109. `DATA-022`：主力资金/龙虎榜失败矩阵 fixture 回放（P1，done，依赖 DATA-021/DATA-017 ✓）。
+ 110. `TF-OBS-005`：非交易日候选计划到下一交易日观察语义回归（P1，ready，依赖 TF-OBS-004 ✓）。
+ 111. `TRACK-008`：观察仓批量导入/导出 CSV 与去重合并（P1，ready，依赖 TRACK-001/TRACK-003 ✓）。
+ 112. `REPORT-UX-002`：历史报告动作语义与数据缺口只读迁移预检（P1，ready，依赖 DECISION-004/DATA-021 ✓）。
+@@ -3857,7 +3857,7 @@
+ ### DATA-022: 主力资金/龙虎榜失败矩阵 fixture 回放（P1）
+ - **描述**：用户多次遇到主力资金失败、龙虎榜无数据/未触发/查询失败混淆。本任务用 fixture 矩阵回放数据源状态，确保 DATA-021 和 TA 报告不会把“正常无数据”当失败，也不会把失败当可用。
+ - **优先级**：P1
+-- **状态**：ready
++- **状态**：done — DATA-022-20260626-200333，54 tests passed
+ - **前置条件**：DATA-021、DATA-017 完成。
+ - **执行约束**：
+   - 不调用 live API。
+diff --git a/docs/tradeflow_trial_acceptance.md b/docs/tradeflow_trial_acceptance.md
+index 2312b0b..2786727 100644
+--- a/docs/tradeflow_trial_acceptance.md
++++ b/docs/tradeflow_trial_acceptance.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 试用闭环端到端验收报告 (V-007)
+ 
+-**生成时间**: 2026-06-26 20:01:25
++**生成时间**: 2026-06-26 20:17:58
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **候选数**: 5 只 (2 主候选 + 1 弱技术 + 1 事件观察 + 1 证据缺口)
+diff --git a/docs/tradeflow_trial_acceptance_v2.md b/docs/tradeflow_trial_acceptance_v2.md
+index a7c6dd9..9769177 100644
+--- a/docs/tradeflow_trial_acceptance_v2.md
++++ b/docs/tradeflow_trial_acceptance_v2.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 小资金试跑前整体验收报告 (V-008)
+ 
+-**生成时间**: 2026-06-26 20:01:29
++**生成时间**: 2026-06-26 20:18:02
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **模拟本金**: ¥5000
+diff --git a/docs/tradeflow_trial_acceptance_v3.md b/docs/tradeflow_trial_acceptance_v3.md
+index 329125e..bafafcd 100644
+--- a/docs/tradeflow_trial_acceptance_v3.md
++++ b/docs/tradeflow_trial_acceptance_v3.md
+@@ -1,6 +1,6 @@
+ # TradeFlow 小资金试跑 v2 验收报告 (V-010)
+ 
+-**生成时间**: 2026-06-26 20:03:31
++**生成时间**: 2026-06-26 20:18:04
+ **计划日期 (plan_date)**: 2026-06-13 (周六，非交易日)
+ **生效交易日 (effective_trade_date)**: 2026-06-15 (周一，交易日)
+ **模拟本金**: ¥5000
+ docs/DEVLOG.md                        | 54 +++++++++++++++++++++++++++++++++++
+ docs/TASKS.md                         |  4 +--
+ docs/tradeflow_trial_acceptance.md    |  2 +-
+ docs/tradeflow_trial_acceptance_v2.md |  2 +-
+ docs/tradeflow_trial_acceptance_v3.md |  2 +-
+ 5 files changed, 59 insertions(+), 5 deletions(-)
+docs/task_runs/DATA-022-20260626-200333/tests-round1.txt
+docs/task_runs/DATA-022-20260626-200333/codegraph-status.json
+docs/task_runs/DATA-022-20260626-200333/prompt-round1.md
+docs/task_runs/DATA-022-20260626-200333/codegraph-context.txt
+docs/task_runs/DATA-022-20260626-200333/opencode-round1.txt
+docs/task_runs/DATA-022-20260626-200333/task.md
+docs/task_runs/DATA-022-20260626-200333/codegraph-impact.txt
+
+exec
+/bin/zsh -lc "sed -n '1,260p' tests/test_data022_fund_lhb_status_matrix.py && sed -n '1,260p' docs/data022_fund_lhb_status_matrix.md && for f in docs/task_runs/DATA-022-20260626-200333/*; do echo '---' "'$f; sed -n '"'1,120p' "'$f; done' in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+"""[DATA-022] 主力资金/龙虎榜失败矩阵 fixture 回放.
+
+Replays a full status matrix for fund_flow_individual and lhb through:
+  1. ``DataCollector._infer_source_status`` — raw pool → structured status
+  2. ``infer_evidence_statuses`` — structured/legacy raw_evidence → EvidenceStatus
+  3. ``build_data_blockers`` / ``summarize_data_blockers`` — status → blocker layer
+  4. ``build_fund_flow_provenance`` / ``build_lhb_provenance`` — status → gate info
+
+Goal: prove that the pipeline keeps ``NORMAL_NO_DATA`` apart from ``FAILED`` and
+never lets a long ``FAILED`` text be misjudged as ``HAS_DATA`` via the
+``len > 20`` heuristic. Also documents (via the matching doc
+``docs/data022_fund_lhb_status_matrix.md``) how each status influences report
+action severity.
+
+No live API, no LLM, no prompts, no prod DB — all fixtures are inline.
+
+# [DATA-022] fund_lhb_status_matrix
+"""
+
+import copy
+import pytest
+
+from tradingagents.agents.utils.readiness_score import (
+    EvidenceStatus,
+    build_data_blockers,
+    build_fund_flow_provenance,
+    build_lhb_provenance,
+    infer_evidence_statuses,
+    summarize_data_blockers,
+)
+from tradingagents.graph.data_collector import DataCollector
+
+
+# ─── Fixture matrices ─────────────────────────────────────────────────────────
+#
+# Each fixture covers one canonical status. The "structured" form mirrors what
+# DataCollector.build_raw_evidence writes into the pool (G-006 contract); the
+# "legacy_text" form mirrors the pre-G-006 fallback where only a raw string was
+# available, and is the path most prone to false positives (the boundary
+# acceptance criterion is anchored here).
+
+FUND_FLOW_FIXTURES = {
+    "HAS_DATA": {
+        "structured": {
+            "status": "HAS_DATA",
+            "raw": "600519.SH 近20日主力资金：\n日期 净流入(万元)\n2026-06-10 12345",
+            "unit": "万元",
+            "unit_verified": True,
+            "vendor": "cn_akshare",
+            "record_count": 20,
+        },
+        # Long text without "失败" → HAS_DATA (len > 20 path)
+        "legacy_text": "600519.SH 近20日主力资金净流入12345万元，连续3日净流入",
+    },
+    "FAILED": {
+        "structured": {
+            "status": "FAILED",
+            "raw": "个股资金流向数据获取失败：AKShare timeout",
+            "unit_verified": False,
+            "vendor": "",
+            "error": "timeout",
+        },
+        # Acceptance boundary: long text WITH "失败" must NOT become HAS_DATA
+        # via len > 20 — must stay QUERY_FAILED.
+        "legacy_text": "主力资金获取失败：AKShare timeout，Eastmoney push2 返回 502 错误",
+        "legacy_text_short": "个股资金流向数据获取失败",
+    },
+    "NORMAL_NO_DATA": {
+        "structured": {
+            "status": "NORMAL_NO_DATA",
+            "raw": "",
+            "unit_verified": False,
+        },
+        # Empty string → NORMAL_NO_DATA (not a failure)
+        "legacy_text": "",
+    },
+    "SKIPPED": {
+        "structured": {
+            "status": "SKIPPED",
+            "raw": "",
+        },
+        # SKIPPED has no legacy_text representation; only structured carries it.
+        "legacy_text": None,
+    },
+}
+
+LHB_FIXTURES = {
+    "HAS_DATA": {
+        "structured": {
+            "status": "HAS_DATA",
+            "raw": "[G-007] LHB_HAS_DATA: 龙虎榜明细 2026-06-10 机构席位净买入",
+            "query_mode": "forced",
+            "force_reason": "anomaly_condition",
+        },
+        "legacy_text": "龙虎榜明细：2026-06-10 机构席位净买入1.2亿",
+    },
+    "FAILED": {
+        "structured": {
+            "status": "FAILED",
+            "raw": "[G-007] LHB_FAILED: 龙虎榜查询失败 ConnectionError",
+            "query_mode": "forced",
+            "force_reason": "fund_flow_anomaly",
+            "error": "ConnectionError",
+        },
+        "legacy_text": "龙虎榜获取失败：ConnectionError",
+    },
+    "NORMAL_NO_DATA": {
+        "structured": {
+            "status": "NORMAL_NO_DATA",
+            "raw": "[G-007] LHB_NORMAL_NO_DATA: 非异动日无上榜记录",
+            "query_mode": "forced",
+            "force_reason": "anomaly_condition",
+        },
+        "legacy_text": "龙虎榜：未上榜，非异动日无数据",
+    },
+    "NOT_QUERIED": {
+        "structured": {
+            "status": "NOT_QUERIED",
+            "raw": "[G-007] LHB_NOT_QUERIED: 无异动触发，未强制查询",
+            "query_mode": "on_demand",
+        },
+        "legacy_text": "查询未触发",
+    },
+}
+
+
+def _expected_evidence_status(canonical: str) -> str:
+    """Map canonical fixture status → expected EvidenceStatus wire value."""
+    return {
+        "HAS_DATA": EvidenceStatus.HAS_DATA,
+        "FAILED": EvidenceStatus.QUERY_FAILED,
+        "NORMAL_NO_DATA": EvidenceStatus.NORMAL_NO_DATA,
+        "NOT_QUERIED": EvidenceStatus.NOT_QUERIED,
+        "SKIPPED": EvidenceStatus.SKIPPED,
+    }[canonical]
+
+
+# ─── 1. DataCollector._infer_source_status matrix ────────────────────────────
+
+
+class TestDataCollectorStatusInference:
+    """[DATA-022] Verify DataCollector turns raw pool values into the right
+    structured status — this is the first status-inference boundary and the
+    one most exposed to marker-strings written by upstream fetchers."""
+
+    @pytest.mark.parametrize(
+        "canonical,fixture",
+        [(k, v) for k, v in FUND_FLOW_FIXTURES.items()],
+        ids=list(FUND_FLOW_FIXTURES),
+    )
+    def test_fund_flow_structured_status_preserved(self, canonical, fixture):
+        """A structured entry's ``status`` field must be honoured verbatim by
+        DataCollector (HK-001 explicit-status path)."""
+        structured = copy.deepcopy(fixture["structured"])
+        # DataCollector._infer_source_status inspects {"status": ...} form.
+        wrapped = {"status": structured["status"], "raw": structured["raw"]}
+        assert DataCollector._infer_source_status(wrapped) == canonical
+
+    @pytest.mark.parametrize(
+        "canonical,fixture",
+        [(k, v) for k, v in LHB_FIXTURES.items()],
+        ids=list(LHB_FIXTURES),
+    )
+    def test_lhb_structured_status_preserved(self, canonical, fixture):
+        structured = copy.deepcopy(fixture["structured"])
+        wrapped = {"status": structured["status"], "raw": structured["raw"]}
+        assert DataCollector._infer_source_status(wrapped) == canonical
+
+    @pytest.mark.parametrize(
+        "raw_text,expected",
+        [
+            ("[G-007] LHB_HAS_DATA: 龙虎榜明细", "HAS_DATA"),
+            ("[G-007] LHB_FAILED: 错误", "FAILED"),
+            ("[G-007] LHB_NORMAL_NO_DATA: 非异动日", "NORMAL_NO_DATA"),
+            ("[G-007] LHB_NOT_QUERIED: 无触发", "NOT_QUERIED"),
+            ("龙虎榜获取失败：超时", "FAILED"),
+            ("主力资金获取失败：ProxyError", "FAILED"),
+        ],
+    )
+    def test_lhb_and_fund_markers_recognized(self, raw_text, expected):
+        """The [G-007] markers and "获取失败" substring must route to the
+        correct status rather than falling through to HAS_DATA."""
+        assert DataCollector._infer_source_status(raw_text) == expected
+
+    def test_empty_and_none_are_not_queried(self):
+        assert DataCollector._infer_source_status("") == "NOT_QUERIED"
+        assert DataCollector._infer_source_status(None) == "NOT_QUERIED"
+
+
+# ─── 2. infer_evidence_statuses matrix ───────────────────────────────────────
+
+
+class TestInferEvidenceStatusesMatrix:
+    """[DATA-022] Verify infer_evidence_statuses maps each canonical status to
+    the right EvidenceStatus wire value, for both structured and legacy_text
+    forms of fund_flow_individual and lhb."""
+
+    @pytest.mark.parametrize(
+        "canonical,fixture",
+        [(k, v) for k, v in FUND_FLOW_FIXTURES.items()],
+        ids=list(FUND_FLOW_FIXTURES),
+    )
+    def test_fund_flow_structured(self, canonical, fixture):
+        raw = {"fund_flow_individual": copy.deepcopy(fixture["structured"])}
+        statuses = infer_evidence_statuses({}, raw_evidence=raw)
+        assert statuses["individual_fund_flow"] == _expected_evidence_status(canonical)
+
+    @pytest.mark.parametrize(
+        "canonical,fixture",
+        [(k, v) for k, v in FUND_FLOW_FIXTURES.items() if v["legacy_text"] is not None],
+        ids=[k for k, v in FUND_FLOW_FIXTURES.items() if v["legacy_text"] is not None],
+    )
+    def test_fund_flow_legacy_text(self, canonical, fixture):
+        raw = {"fund_flow_individual": fixture["legacy_text"]}
+        statuses = infer_evidence_statuses({}, raw_evidence=raw)
+        assert statuses["individual_fund_flow"] == _expected_evidence_status(canonical)
+
+    @pytest.mark.parametrize(
+        "canonical,fixture",
+        [(k, v) for k, v in LHB_FIXTURES.items()],
+        ids=list(LHB_FIXTURES),
+    )
+    def test_lhb_structured(self, canonical, fixture):
+        raw = {"lhb": copy.deepcopy(fixture["structured"])}
+        statuses = infer_evidence_statuses({}, raw_evidence=raw)
+        assert statuses["lhb_status"] == _expected_evidence_status(canonical)
+
+    @pytest.mark.parametrize(
+        "canonical,fixture",
+        [(k, v) for k, v in LHB_FIXTURES.items() if v["legacy_text"] is not None],
+        ids=[k for k, v in LHB_FIXTURES.items() if v["legacy_text"] is not None],
+    )
+    def test_lhb_legacy_text(self, canonical, fixture):
+        raw = {"lhb": fixture["legacy_text"]}
+        statuses = infer_evidence_statuses({}, raw_evidence=raw)
+        assert statuses["lhb_status"] == _expected_evidence_status(canonical)
+
+
+# ─── 3. Acceptance: FAILED not misjudged as HAS_DATA via len > 20 ─────────────
+
+
+class TestFailedNotMisjudgedAsHasData:
+    """[DATA-022] Headline acceptance: a long FAILED text must not be classified
+    as HAS_DATA just because it is longer than 20 characters. This is the
+    regression guard for the false-positive that motivated this task."""
+
+    def test_fund_flow_long_failed_text_stays_query_failed(self):
+        long_failed = FUND_FLOW_FIXTURES["FAILED"]["legacy_text"]
+        assert len(long_failed) > 20, "fixture sanity: must be > 20 chars"
+        assert "失败" in long_failed
+        statuses = infer_evidence_statuses(
+            {}, raw_evidence={"fund_flow_individual": long_failed}
+        )
+        assert statuses["individual_fund_flow"] == EvidenceStatus.QUERY_FAILED
+        assert statuses["individual_fund_flow"] != EvidenceStatus.HAS_DATA
+
+    def test_fund_flow_short_failed_text_stays_query_failed(self):
+        short_failed = FUND_FLOW_FIXTURES["FAILED"]["legacy_text_short"]
+        assert len(short_failed) <= 20
+        statuses = infer_evidence_statuses(
+# [DATA-022] 主力资金/龙虎榜状态失败矩阵
+
+> 任务：DATA-022 — 主力资金/龙虎榜失败矩阵 fixture 回放（P1）
+> 依赖：DATA-021（report data_blockers）、DATA-017（fund/lhb health inspection）
+> 测试：`tests/test_data022_fund_lhb_status_matrix.py`（54 cases，全部通过）
+
+本文档说明主力资金与龙虎榜各状态在 TA 报告中产生的不同影响，确保系统不会把"正常无数据"误判为查询失败，也不会把"查询失败"因文本长度大于 20 而误判为 HAS_DATA。
+
+---
+
+## 1. 状态矩阵
+
+### 1.1 主力资金（fund_flow_individual）
+
+| 状态 | 含义 | 进入 blocker? | severity | 对报告动作的影响 |
+|---|---|---|---|---|
+| `HAS_DATA` | 接口返回有效记录，单位已校验 | 否（被排除） | — | 主力资金强证据可用，允许进入买入/减仓强结论路径。`build_fund_flow_provenance.strong_evidence_allowed = True` |
+| `FAILED` | 接口超时/ConnectionError/限流，或文本含"失败" | 是 | **high** | 强动作必须降级。`strong_evidence_allowed = False`；`summarize_data_blockers.level = warning`；提示"资金面不能支撑买入/减仓强结论" |
+| `NORMAL_NO_DATA` | 接口正常但当日无记录（空字符串） | 是 | info | 仅作信息记录，**不计入查询失败计数**，不单独触发强降级。多源叠加仍是 info/低权重 |
+| `SKIPPED` | 数据源本轮跳过（如港股对 A 股专用字段） | 是 | low | 视同"已跳过"，不增加 high/medium 计数，level 不升级 |
+| `NOT_QUERIED` | 本轮未查询该字段（raw 为 None） | 是 | medium | 提示"本次分析未查询该字段"，结论需保留条件，level=caution |
+
+### 1.2 龙虎榜（lhb）
+
+| 状态 | 含义 | 进入 blocker? | severity | 对报告动作的影响 |
+|---|---|---|---|---|
+| `HAS_DATA` | 当日上榜，存在席位/游资明细 | 否（被排除） | — | 可作为异动证据，辅助短线/事件型结论 |
+| `FAILED` | 龙虎榜接口异常（ConnectionError、限流） | 是 | **high** | 无法确认异动席位结构；提示"查询失败"，强结论需要降级 |
+| `NORMAL_NO_DATA` | 已强制查询但当日未上榜（非异动日属正常） | 是 | info | **明确不算失败**。blocker reason 显式写"未上龙虎榜或非异动日无龙虎榜数据，属于正常无数据"，不影响强动作门禁 |
+| `NOT_QUERIED` | 无异动触发、未强制查询（query_mode=on_demand） | 是 | medium | 提示"本次分析未查询该字段"，结论需保留条件 |
+
+---
+
+## 2. 关键边界与防回归点
+
+### 2.1 `FAILED` 不被 `len > 20` 误判为 HAS_DATA
+
+这是本任务最重要的防回归边界。历史上曾出现：`infer_evidence_statuses` 与 `build_fund_flow_provenance._status_from_text` 在判断"是否为有效数据"时使用 `len(text) > 20` 启发式，若一段超过 20 字符的错误文本（如 `"主力资金获取失败：AKShare timeout，Eastmoney push2 返回 502 错误"`）先被长度规则匹配，就会被错误地标为 HAS_DATA，掩盖真实的查询失败。
+
+**当前实现保证（已由 fixture 回放验证）**：
+
+- `infer_evidence_statuses`：`len > 20 and "失败" not in text` 才进 HAS_DATA 分支；含"失败"的字符串无论长度都走 `QUERY_FAILED`。
+- `build_fund_flow_provenance._status_from_text`：先检查 `"获取失败"` / `"不可用"`，再判断长度。
+- `DataCollector._infer_source_status`：先识别 `[G-007] LHB_FAILED` / `获取失败` / `error` 等标记，再回退到 HAS_DATA。
+
+### 2.2 `NORMAL_NO_DATA` 不计入查询失败
+
+`summarize_data_blockers` 把 `normal_no_data` 与 `skipped` 归入 `normal` 桶，只有 `query_failed` + `field_missing` 才会让 level 升到 `warning`。当所有 blocker 都是 normal_no_data/skipped 时，level 保持 `info`，message 为"不单独构成强降级理由"。
+
+### 2.3 结构化契约优先于文本启发式
+
+`DataCollector.build_raw_evidence` 写入的 G-006 结构（`{"status": "...", "raw": ..., "vendor": ..., "unit": ...}`）会被 `_infer_source_status`（HK-001 显式状态路径）和 `infer_evidence_statuses._structured_evidence_status` 直接采纳，绕过文本正则。因此：
+
+- 上游 fetcher 必须尽量写入结构化 `status` 字段；
+- 仅当缺失结构化字段时才退化到 legacy text 启发式；
+- `[G-007] LHB_*` 文本标记在 `DataCollector._infer_source_status` 中被识别，但在 `infer_evidence_statuses` 的纯文本回退路径中只有部分被识别，因此**结构化路径是首选**。
+
+---
+
+## 3. 防回归矩阵覆盖
+
+`tests/test_data022_fund_lhb_status_matrix.py` 共 54 个测试，按 7 个维度组织：
+
+| 维度 | 覆盖内容 |
+|---|---|
+| `TestDataCollectorStatusInference` | `DataCollector._infer_source_status` 对结构化 status、`[G-007] LHB_*` 标记、`获取失败`、空值的识别 |
+| `TestInferEvidenceStatusesMatrix` | fund_flow 4 态 + lhb 4 态，结构化与 legacy_text 两条路径 |
+| `TestFailedNotMisjudgedAsHasData` | 长 FAILED 文本不变成 HAS_DATA（fund_flow 长/短文本、lhb 长文本、provenance 路径） |
+| `TestNormalNoDataNotCountedAsFailure` | NORMAL_NO_DATA severity=info、不进 query_failed 计数、纯 normal_no_data 时 level=info、lhb NORMAL_NO_DATA 不阻断 strong evidence |
+| `TestFailedSeverityAndHasDataExclusion` | FAILED→high、HAS_DATA 被排除、SKIPPED→low |
+| `TestProvenanceMatrix` | fund/lhb provenance 对每个状态返回正确 status 与 strong_evidence_allowed |
+| `TestStatusesDoNotCollapse` | 4 个状态产出 4 个不同的 wire value，不复用同一桶 |
+
+---
+
+## 4. 字段→blocker 映射速查
+
+| raw_evidence key | blocker key | EvidenceStatus 字段名 |
+|---|---|---|
+| `fund_flow_individual` | `individual_fund_flow` | `has_data` / `query_failed` / `normal_no_data` / `skipped` / `not_queried` |
+| `lhb` | `lhb_status` | `has_data` / `query_failed` / `normal_no_data` / `not_queried` |
+
+severity 映射（来自 `_BLOCKER_STATUS_META`）：
+
+```
+query_failed   → high    （强降级）
+field_missing  → medium  （结论需保留条件）
+not_queried    → medium  （结论需保留条件）
+normal_no_data → info    （不单独降级）
+skipped        → low     （不单独降级）
+not_available  → low     （不单独降级）
+```
+--- docs/task_runs/DATA-022-20260626-200333/codegraph-context.txt
+# CodeGraph Context for DATA-022
+# Task: 主力资金/龙虎榜失败矩阵 fixture 回放（P1）
+# Generated: 2026-06-26T20:03:34.533008
+# Keywords: data, 主力资金/龙虎榜失败矩阵, fixture, 回放（p1）
+
+## Code Context
+
+**Query:** data 主力资金/龙虎榜失败矩阵 fixture 回放（p1）
+
+### Entry Points
+
+- **DATABASE_URL** (variable) - api/database.py:12
+  `= os.getenv("DATABASE_URL", "sqlite:///./tradingagents.db")`
+- **DataCollector** (class) - tradingagents/graph/data_collector.py:394
+- **_parse_csv_to_dataframe** (function) - tradingagents/graph/data_collector.py:46
+  `(raw_csv: str) -> Optional[pd.DataFrame]`
+
+### Related Symbols
+
+- tradingagents/graph/data_collector.py: __init__:397, _get_key_lock:403, collect:409, get:422, get_window:426, ref:439, evict:445, _infer_source_status:458
+- tests/test_data_collector.py: test_collect_populates_required_keys:9, test_collect_uses_cache_on_second_call:25
+
+--- docs/task_runs/DATA-022-20260626-200333/codegraph-impact.txt
+# CodeGraph Impact Analysis
+# Generated: 2026-06-26T20:18:06.013636
+# Changed files: 5
+
+## Source: docs/DEVLOG.md
+[34mℹ[0m Symbol "docs/DEVLOG.md" not found
+
+
+## Source: docs/TASKS.md
+[34mℹ[0m Symbol "docs/TASKS.md" not found
+
+
+## Source: docs/tradeflow_trial_acceptance.md
+[34mℹ[0m Symbol "docs/tradeflow_trial_acceptance.md" not found
+
+
+## Source: docs/tradeflow_trial_acceptance_v2.md
+[34mℹ[0m Symbol "docs/tradeflow_trial_acceptance_v2.md" not found
+
+
+## Source: docs/tradeflow_trial_acceptance_v3.md
+[34mℹ[0m Symbol "docs/tradeflow_trial_acceptance_v3.md" not found
+
+
+## Affected Tests
+  (could not determine affected tests)--- docs/task_runs/DATA-022-20260626-200333/codegraph-status.json
+{
+  "task_id": "DATA-022",
+  "generated_at": "2026-06-26T20:03:34.374098",
+  "phase": "post",
+  "codegraph": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "result": "OK",
+  "symbols_found": 5,
+  "post_generated_at": "2026-06-26T20:18:06.013609",
+  "codegraph_post": {
+    "available": true,
+    "indexed": true,
+    "version": "0.9.7",
+    "error": null,
+    "files_indexed": 255,
+    "nodes_count": 6195,
+    "command": "codegraph status -j /Users/maybee/TradingAgents-AShare"
+  },
+  "post_result": "OK",
+  "impact_files_count": 0,
+  "affected_tests_count": 0,
+  "changed_files": [
+    "docs/DEVLOG.md",
+    "docs/TASKS.md",
+    "docs/tradeflow_trial_acceptance.md",
+    "docs/tradeflow_trial_acceptance_v2.md",
+    "docs/tradeflow_trial_acceptance_v3.md"
+  ]
+}--- docs/task_runs/DATA-022-20260626-200333/opencode-round1.txt
+[0m
+> build · glm-5.2
+[0m
+[0m→ [0mRead docs/TASKS.md
+[0m✱ [0mGrep "DATA-022"[90m in docs/TASKS.md · 4 matches[0m
+[0m→ [0mRead docs/TASKS.md[90m [limit=100, offset=3855][0m
+[0m
+[0m# [0mTodos
+[•] Explore relevant code: infer_evidence_statuses, build_data_blockers, data_collector
+[ ] Review DATA-021/DATA-017 existing tests/fixture patterns
+[ ] Design fund/lhb fixture matrix (HAS_DATA/FAILED/NORMAL_NO_DATA/SKIPPED/NOT_QUERIED)
+[ ] Implement tests covering status inference boundaries
+[ ] Write matrix doc explaining status impact on report actions
+[ ] Run tests, update DEVLOG
+[0m
+[0m✱ [0mGrep "infer_evidence_statuses|build_data_blockers"[90m 710 matches[0m
+[0m✱ [0mGrep "def infer_evidence_statuses|def build_data_blockers"[90m 2 matches[0m
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=450, offset=1200][0m
+[0m✱ [0mGrep "class EvidenceStatus|_DATA_BLOCKER_FIELDS|_BLOCKER_STATUS_META"[90m in tradingagents/agents/utils/readiness_score.py · 6 matches[0m
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=130, offset=1][0m
+[0m→ [0mRead tests/test_report_ux001_data_blocker_replay.py
+[0m✱ [0mGrep "build_fund_flow_provenance|build_lhb_provenance|build_raw_evidence"[90m 129 matches[0m
+[0m→ [0mRead tradingagents/agents/utils/readiness_score.py[90m [limit=200, offset=1990][0m
+[0m→ [0mRead tests/test_data017_fund_lhb_health.py[90m [limit=100][0m
+[0m→ [0mRead tests/test_data017_fund_lhb_health.py[90m [limit=100, offset=700][0m
+[0m✱ [0mGrep "SAMPLE_HAS_FUND_DATA|SAMPLE_NO_LHB_NORMAL|SAMPLE_INTERFACE_FAILED|ALL_SAMPLES"[90m in tradingagents/dataflows/fund_lhb_health.py · 7 matches[0m
+[0m→ [0mRead tradingagents/dataflows/fund_lhb_health.py[90m [limit=110, offset=540][0m
+[0m
+[0m$ [0mls tests/ | grep -i "data\|fixture" | head -40
+test_data003_mandate_event_normalizer.py
+test_data004_evidence_contract.py
+test_data005_fixture_replay.py
+test_data006_daily_digest.py
+test_data007_evidence_coverage_audit.py
+test_data008_astock_fallback_replay.py
+test_data009_watchlist_notes_persistence.py
+test_data010_margin_trading.py
+test_data011_research_report.py
+test_data012_ratings.py
+test_data013_buyback.py
+test_data014_policy_news_fixture.py
+test_data015_zt_pool.py
+test_data016_hot_stocks.py
+test_data017_fund_lhb_health.py
+test_data018_source_freshness.py
+test_data019_live_source_sampling.py
+test_data020_live_sampling_api.py
+test_data021_report_data_blockers.py
+test_data_collector.py
+test_data_consistency.py
+test_data_p0_603629.py
+test_data_p0_fund_route.py
+test_data_p1_astock_live_smoke.py
+test_data_p1_lhb_fund_decouple.py
+test_data_p1_source_gap_audit.py
+test_data_source_catalog.py
+test_data_source_replay.py
+test_report_ux001_data_blocker_replay.py
+test_t005_review_fixture_replay.py
+test_t008_observe_fixture_replay.py
+test_v001_600584_data_authenticity.py
+[0m
+[0m→ [0mRead tests/test_data021_report_data_blockers.py[90m [limit=80][0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=130, offset=660][0m
+[0m✱ [0mGrep "_infer_source_status"[90m in tradingagents/graph/data_collector.py · 2 matches[0m
+[0m→ [0mRead tradingagents/graph/data_collector.py[90m [limit=50, offset=610][0m
+[0m
+[0m$ [0mls docs/task_runs/ | head -5 && echo "---" && ls docs/task_runs/DATA-021* 2>/dev/null || ls docs/task_runs/ | grep DATA-021
+CODEGRAPH-002-20260614-014751
+DATA-001-20260601-221610
+DATA-002-20260602-005310
+DATA-003-20260602-010127
+DATA-004-20260602-011020
+---
+codegraph-context.txt
+codegraph-status.json
+prompt-round1.md
+summary.md
+task.md
+[0m
+[0m$ [0mls docs/task_runs/ | grep -E "DATA-021|DATA-022" 2>/dev/null
+DATA-021-20260624-200058
+DATA-022-20260626-200333
+[0m
+[0m$ [0mls docs/task_runs/DATA-022-20260626-200333/
+codegraph-context.txt
+codegraph-status.json
+prompt-round1.md
+task.md
+[0m
+[0m→ [0mRead docs/task_runs/DATA-022-20260626-200333/task.md
+[0m
+[0m$ [0mgit status && echo "---" && git log --oneline -5
+位于分支 local/tradingagents-custom
+您的分支领先 'myfork/local/tradingagents-custom' 共 170 个提交。
+  （使用 "git push" 来发布您的本地提交）
+
+尚未暂存以备提交的变更：
+  （使用 "git add <文件>..." 更新要提交的内容）
+  （使用 "git restore <文件>..." 丢弃工作区的改动）
+	修改：     docs/TASKS.md
+
+未跟踪的文件:
+  （使用 "git add <文件>..." 以包含要提交的内容）
+	docs/task_runs/DATA-022-20260626-200333/
+
+修改尚未加入提交（使用 "git add" 和/或 "git commit -a"）
+---
+8c06b9c docs: mark V-010 done after auto run
+cd6e73b auto: V-010 小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口（P1） [AUTO-002]
+12435a6 docs: mark IC-TA-002 done after auto run
+257b14a auto: IC-TA-002 investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1） [AUTO-002]
+6158a23 docs: mark REPORT-UX-001 done after auto run
+[0m
+[0m# [0mTodos
+[✓] Explore relevant code: infer_evidence_statuses, build_data_blockers, data_collector
+[✓] Review DATA-021/DATA-017 existing tests/fixture patterns
+[✓] Design fund/lhb fixture matrix (HAS_DATA/FAILED/NORMAL_NO_DATA/SKIPPED/NOT_QUERIED)
+[•] Implement tests covering status inference boundaries
+[ ] Write matrix doc explaining status impact on report actions
+--- docs/task_runs/DATA-022-20260626-200333/prompt-round1.md
+# Task: DATA-022: 主力资金/龙虎榜失败矩阵 fixture 回放（P1）
+
+Read task "DATA-022" from docs/TASKS.md and implement as described.
+
+## Constraints
+- No changes to tradingagents/prompts/
+- No writes to prod tradingagents.db
+- No full-market scan or stock deep TA
+- No push / PR / merge
+- **Do NOT git commit** -- outer script handles commits
+- Update docs/DEVLOG.md after changes
+
+## Output when done
+- Which files were changed
+- Key logic summary
+- Test results (passed/failed count)
+--- docs/task_runs/DATA-022-20260626-200333/task.md
+# Auto Dev Task Run
+
+- Task: DATA-022 - 主力资金/龙虎榜失败矩阵 fixture 回放（P1）
+- Priority: P1
+- Status: CLAIMED
+- Started at: 2026-06-26_20:03:33
+- Git HEAD: 8c06b9c
+- Test commands: pytest tests/ -q --tb=short
+- Runner: scripts/auto_dev_loop.sh
+
+## Trace Files
+
+- OpenCode prompts: prompt-round*.md
+- OpenCode logs: opencode-round*.txt
+- Test logs: tests-round*.txt
+- Codex reviews: codex-review-round*.txt
+- Final summary: summary.md
+--- docs/task_runs/DATA-022-20260626-200333/tests-round1.txt
+## pytest tests/ -q --tb=short
+
+........................................................................ [  1%]
+................................................ss...................... [  2%]
+........................................................................ [  3%]
+........................................................................ [  4%]
+........................................................................ [  5%]
+........................................................................ [  6%]
+........................................................................ [  7%]
+........................................................................ [  8%]
+........................................................................ [  9%]
+........................................................................ [ 10%]
+........................................................................ [ 11%]
+........................................................................ [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 15%]
+........................................................................ [ 16%]
+........................................................................ [ 18%]
+........................................................................ [ 19%]
+........................................................................ [ 20%]
+........................................................................ [ 21%]
+........................................................................ [ 22%]
+........................................................................ [ 23%]
+........................................................................ [ 24%]
+........................................................................ [ 25%]
+........................................................................ [ 26%]
+........................................................................ [ 27%]
+........................................................................ [ 28%]
+........................................................................ [ 29%]
+........................................................................ [ 30%]
+........................................................................ [ 31%]
+........................................................................ [ 32%]
+........................................................................ [ 33%]
+........................................................................ [ 34%]
+........................................................................ [ 36%]
+........................................................................ [ 37%]
+........................................................................ [ 38%]
+........................................................................ [ 39%]
+........................................................................ [ 40%]
+........................................................................ [ 41%]
+........................................................................ [ 42%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 45%]
+........................................................................ [ 46%]
+........................................................................ [ 47%]
+....................................................................ssss [ 48%]
+sssss................................................................... [ 49%]
+........................................................................ [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 53%]
+........................................................................ [ 54%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 57%]
+........................................................................ [ 58%]
+........................................................................ [ 59%]
+........................................................................ [ 60%]
+........................................................................ [ 61%]
+........................................................................ [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 64%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+...............................ss....................................... [ 67%]
+..........ssss.......................................................... [ 68%]
+........................................................................ [ 69%]
+........................................................................ [ 71%]
+........................................................................ [ 72%]
+........................................................................ [ 73%]
+........................................................................ [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 76%]
+........................................................................ [ 77%]
+........................................................................ [ 78%]
+........................................................................ [ 79%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+........................................................................ [ 82%]
+........................................................................ [ 83%]
+........................................................................ [ 84%]
+........................................................................ [ 85%]
+........................................................................ [ 86%]
+........................................................................ [ 87%]
+........................................................................ [ 89%]
+........................................................................ [ 90%]
+........................................................................ [ 91%]
+........................................................................ [ 92%]
+........................................................................ [ 93%]
+........................................................................ [ 94%]
+........................................................................ [ 95%]
+........................................................................ [ 96%]
+........................................................................ [ 97%]
+........................................................................ [ 98%]
+........................................................................ [ 99%]
+........................                                                 [100%]
+=============================== warnings summary ===============================
+tests/test_hk001_market_boundary.py::TestHKDataCollectorGating::test_cn_still_attempts_ashare_fields
+  /Users/maybee/TradingAgents-AShare/.venv/lib/python3.12/site-packages/akshare/stock_fundamental/stock_recommend.py:91: FutureWarning: Passing literal html to 'read_html' is deprecated and will be removed in a future version. To read from a literal string, wrap it in a 'StringIO' object.
+    temp_df = pd.read_html(r.text, header=0)[0].iloc[:, :8]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+6775 passed, 17 skipped, 1 warning in 278.67s (0:04:38)
+
+Exit code: 0
+
+exec
+/bin/zsh -lc "sed -n '260,620p' tests/test_data022_fund_lhb_status_matrix.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+        statuses = infer_evidence_statuses(
+            {}, raw_evidence={"fund_flow_individual": short_failed}
+        )
+        assert statuses["individual_fund_flow"] == EvidenceStatus.QUERY_FAILED
+
+    def test_lhb_long_failed_text_stays_query_failed(self):
+        long_failed = (
+            "龙虎榜获取失败：API返回 ConnectionError，重试3次均失败，已记录到限流日志"
+        )
+        assert len(long_failed) > 20
+        statuses = infer_evidence_statuses({}, raw_evidence={"lhb": long_failed})
+        assert statuses["lhb_status"] == EvidenceStatus.QUERY_FAILED
+
+    def test_fund_flow_provenance_long_failed_text(self):
+        """build_fund_flow_provenance must also refuse strong evidence for a
+        long FAILED string (its _status_from_text checks 失败 before length)."""
+        long_failed = FUND_FLOW_FIXTURES["FAILED"]["legacy_text"]
+        prov = build_fund_flow_provenance({"fund_flow_individual": long_failed}, {})
+        assert prov["individual_status"] == "FAILED"
+        assert prov["strong_evidence_allowed"] is False
+        assert prov["unit_verified"] is False
+
+
+# ─── 4. Acceptance: NORMAL_NO_DATA not counted as query failure ───────────────
+
+
+class TestNormalNoDataNotCountedAsFailure:
+    """[DATA-022] NORMAL_NO_DATA is informational and must never inflate the
+    query_failed counter in the data_blocker summary, nor block strong actions
+    on its own."""
+
+    def test_fund_flow_normal_no_data_excluded_from_query_failed(self):
+        blockers = build_data_blockers(
+            {}, raw_evidence={"fund_flow_individual": FUND_FLOW_FIXTURES["NORMAL_NO_DATA"]["structured"]}
+        )
+        by_key = {b["key"]: b for b in blockers}
+        assert by_key["individual_fund_flow"]["status"] == "normal_no_data"
+        assert by_key["individual_fund_flow"]["severity"] == "info"
+
+    def test_lhb_normal_no_data_is_info_not_high(self):
+        blockers = build_data_blockers(
+            {}, raw_evidence={"lhb": LHB_FIXTURES["NORMAL_NO_DATA"]["structured"]}
+        )
+        by_key = {b["key"]: b for b in blockers}
+        assert by_key["lhb_status"]["status"] == "normal_no_data"
+        assert by_key["lhb_status"]["severity"] == "info"
+        assert "正常无数据" in by_key["lhb_status"]["reason"]
+
+    def test_summary_does_not_count_normal_no_data_as_query_failed(self):
+        blockers = [
+            {"status": "normal_no_data"},
+            {"status": "normal_no_data"},
+            {"status": "query_failed"},
+        ]
+        summary = summarize_data_blockers(blockers)
+        assert summary["counts"]["query_failed"] == 1
+        assert summary["counts"]["normal_no_data"] == 2
+        # With only 1 query_failed the level must be warning (not info).
+        assert summary["level"] == "warning"
+
+    def test_pure_normal_no_data_yields_info_level(self):
+        """When every blocker is NORMAL_NO_DATA/SKIPPED, the summary level must
+        be info — the report should not pretend data is broken."""
+        blockers = [
+            {"status": "normal_no_data"},
+            {"status": "skipped"},
+        ]
+        summary = summarize_data_blockers(blockers)
+        assert summary["counts"]["query_failed"] == 0
+        assert summary["level"] == "info"
+        assert "不单独构成强降级理由" in summary["message"]
+
+    def test_lhb_normal_no_data_does_not_block_strong_evidence(self):
+        """build_lhb_provenance must NOT treat NORMAL_NO_DATA as a failure —
+        the LHB just has no record that day."""
+        prov = build_lhb_provenance(
+            {"lhb": LHB_FIXTURES["NORMAL_NO_DATA"]["structured"]}, {}
+        )
+        assert prov["status"] == "NORMAL_NO_DATA"
+        assert "正常" in prov["display_text"]
+
+
+# ─── 5. FAILED → high severity; HAS_DATA excluded from blockers ──────────────
+
+
+class TestFailedSeverityAndHasDataExclusion:
+    """[DATA-022] FAILED must surface as high severity, and HAS_DATA must be
+    excluded from the blocker list entirely."""
+
+    def test_fund_flow_failed_is_high_severity(self):
+        blockers = build_data_blockers(
+            {}, raw_evidence={"fund_flow_individual": FUND_FLOW_FIXTURES["FAILED"]["structured"]}
+        )
+        by_key = {b["key"]: b for b in blockers}
+        assert by_key["individual_fund_flow"]["status"] == "query_failed"
+        assert by_key["individual_fund_flow"]["severity"] == "high"
+        assert "查询失败" in by_key["individual_fund_flow"]["status_label"]
+
+    def test_lhb_failed_is_high_severity(self):
+        blockers = build_data_blockers(
+            {}, raw_evidence={"lhb": LHB_FIXTURES["FAILED"]["structured"]}
+        )
+        by_key = {b["key"]: b for b in blockers}
+        assert by_key["lhb_status"]["status"] == "query_failed"
+        assert by_key["lhb_status"]["severity"] == "high"
+
+    def test_has_data_excluded_from_blockers(self):
+        """When fund_flow and lhb are HAS_DATA, they must not appear as
+        blockers at all — the report should not claim data is missing."""
+        blockers = build_data_blockers(
+            {},
+            raw_evidence={
+                "fund_flow_individual": FUND_FLOW_FIXTURES["HAS_DATA"]["structured"],
+                "lhb": LHB_FIXTURES["HAS_DATA"]["structured"],
+            },
+        )
+        by_key = {b["key"]: b for b in blockers}
+        assert "individual_fund_flow" not in by_key
+        assert "lhb_status" not in by_key
+
+    def test_skipped_is_low_severity(self):
+        blockers = build_data_blockers(
+            {}, raw_evidence={"fund_flow_individual": FUND_FLOW_FIXTURES["SKIPPED"]["structured"]}
+        )
+        by_key = {b["key"]: b for b in blockers}
+        assert by_key["individual_fund_flow"]["status"] == "skipped"
+        assert by_key["individual_fund_flow"]["severity"] == "low"
+
+
+# ─── 6. Provenance consistency across the matrix ─────────────────────────────
+
+
+class TestProvenanceMatrix:
+    """[DATA-022] build_fund_flow_provenance / build_lhb_provenance must agree
+    with the canonical fixture status for every matrix cell."""
+
+    @pytest.mark.parametrize(
+        "canonical,fixture",
+        [(k, v) for k, v in FUND_FLOW_FIXTURES.items()],
+        ids=list(FUND_FLOW_FIXTURES),
+    )
+    def test_fund_flow_provenance_per_status(self, canonical, fixture):
+        prov = build_fund_flow_provenance(
+            {"fund_flow_individual": copy.deepcopy(fixture["structured"])}, {}
+        )
+        assert prov["individual_status"] == canonical
+        # strong_evidence_allowed only when HAS_DATA + unit_verified.
+        unit_ok = fixture["structured"].get("unit_verified") is True
+        assert prov["strong_evidence_allowed"] == (canonical == "HAS_DATA" and unit_ok)
+
+    @pytest.mark.parametrize(
+        "canonical,fixture",
+        [(k, v) for k, v in LHB_FIXTURES.items()],
+        ids=list(LHB_FIXTURES),
+    )
+    def test_lhb_provenance_per_status(self, canonical, fixture):
+        prov = build_lhb_provenance({"lhb": copy.deepcopy(fixture["structured"])}, {})
+        assert prov["status"] == canonical
+        # query_mode escalates from on_demand → forced for any non NOT_QUERIED.
+        if canonical == "NOT_QUERIED":
+            assert prov["query_mode"] == "on_demand" or prov["query_mode"] == "not_queried"
+        else:
+            # The structured fixture already carries query_mode; provenance
+            # must preserve a forced mode for any real query outcome.
+            assert prov["query_mode"] in {"forced", "on_demand", "not_queried"}
+
+
+# ─── 7. Cross-status distinction (no two canonical statuses collapse) ─────────
+
+
+class TestStatusesDoNotCollapse:
+    """[DATA-022] The four LHB statuses and four fund-flow statuses must remain
+    distinct wire values after going through infer_evidence_statuses — no
+    collapse that would let a failure masquerade as no-data or vice versa."""
+
+    def test_lhb_four_statuses_are_distinct(self):
+        outputs = {
+            canonical: infer_evidence_statuses(
+                {}, raw_evidence={"lhb": copy.deepcopy(fixture["structured"])}
+            )["lhb_status"]
+            for canonical, fixture in LHB_FIXTURES.items()
+        }
+        assert outputs == {
+            "HAS_DATA": EvidenceStatus.HAS_DATA,
+            "FAILED": EvidenceStatus.QUERY_FAILED,
+            "NORMAL_NO_DATA": EvidenceStatus.NORMAL_NO_DATA,
+            "NOT_QUERIED": EvidenceStatus.NOT_QUERIED,
+        }
+        # Sanity: four distinct values.
+        assert len(set(outputs.values())) == 4
+
+    def test_fund_flow_statuses_are_distinct(self):
+        outputs = {
+            canonical: infer_evidence_statuses(
+                {},
+                raw_evidence={"fund_flow_individual": copy.deepcopy(fixture["structured"])},
+            )["individual_fund_flow"]
+            for canonical, fixture in FUND_FLOW_FIXTURES.items()
+        }
+        assert outputs == {
+            "HAS_DATA": EvidenceStatus.HAS_DATA,
+            "FAILED": EvidenceStatus.QUERY_FAILED,
+            "NORMAL_NO_DATA": EvidenceStatus.NORMAL_NO_DATA,
+            "SKIPPED": EvidenceStatus.SKIPPED,
+        }
+        assert len(set(outputs.values())) == 4
+
+    def test_failed_and_normal_no_data_wire_values_differ(self):
+        """The canonical confusion case from the field: a fund flow failure
+        alongside a normal LHB no-data result must produce two different
+        blocker statuses, not one shared bucket."""
+        blockers = build_data_blockers(
+            {},
+            raw_evidence={
+                "fund_flow_individual": FUND_FLOW_FIXTURES["FAILED"]["structured"],
+                "lhb": LHB_FIXTURES["NORMAL_NO_DATA"]["structured"],
+            },
+        )
+        by_key = {b["key"]: b for b in blockers}
+        assert by_key["individual_fund_flow"]["status"] == "query_failed"
+        assert by_key["lhb_status"]["status"] == "normal_no_data"
+        assert by_key["individual_fund_flow"]["status"] != by_key["lhb_status"]["status"]
+        assert by_key["individual_fund_flow"]["severity"] == "high"
+        assert by_key["lhb_status"]["severity"] == "info"
+
+exec
+/bin/zsh -lc 'pytest tests/test_data022_fund_lhb_status_matrix.py -q' in /Users/maybee/TradingAgents-AShare
+ exited 127 in 0ms:
+zsh:1: command not found: pytest
+
+exec
+/bin/zsh -lc 'source .venv/bin/activate && pytest tests/test_data022_fund_lhb_status_matrix.py -q' in /Users/maybee/TradingAgents-AShare
+ succeeded in 1365ms:
+......................................................                   [100%]
+54 passed in 0.90s
+
+exec
+/bin/zsh -lc "nl -ba tests/test_data022_fund_lhb_status_matrix.py | sed -n '1,520p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+     1	"""[DATA-022] 主力资金/龙虎榜失败矩阵 fixture 回放.
+     2	
+     3	Replays a full status matrix for fund_flow_individual and lhb through:
+     4	  1. ``DataCollector._infer_source_status`` — raw pool → structured status
+     5	  2. ``infer_evidence_statuses`` — structured/legacy raw_evidence → EvidenceStatus
+     6	  3. ``build_data_blockers`` / ``summarize_data_blockers`` — status → blocker layer
+     7	  4. ``build_fund_flow_provenance`` / ``build_lhb_provenance`` — status → gate info
+     8	
+     9	Goal: prove that the pipeline keeps ``NORMAL_NO_DATA`` apart from ``FAILED`` and
+    10	never lets a long ``FAILED`` text be misjudged as ``HAS_DATA`` via the
+    11	``len > 20`` heuristic. Also documents (via the matching doc
+    12	``docs/data022_fund_lhb_status_matrix.md``) how each status influences report
+    13	action severity.
+    14	
+    15	No live API, no LLM, no prompts, no prod DB — all fixtures are inline.
+    16	
+    17	# [DATA-022] fund_lhb_status_matrix
+    18	"""
+    19	
+    20	import copy
+    21	import pytest
+    22	
+    23	from tradingagents.agents.utils.readiness_score import (
+    24	    EvidenceStatus,
+    25	    build_data_blockers,
+    26	    build_fund_flow_provenance,
+    27	    build_lhb_provenance,
+    28	    infer_evidence_statuses,
+    29	    summarize_data_blockers,
+    30	)
+    31	from tradingagents.graph.data_collector import DataCollector
+    32	
+    33	
+    34	# ─── Fixture matrices ─────────────────────────────────────────────────────────
+    35	#
+    36	# Each fixture covers one canonical status. The "structured" form mirrors what
+    37	# DataCollector.build_raw_evidence writes into the pool (G-006 contract); the
+    38	# "legacy_text" form mirrors the pre-G-006 fallback where only a raw string was
+    39	# available, and is the path most prone to false positives (the boundary
+    40	# acceptance criterion is anchored here).
+    41	
+    42	FUND_FLOW_FIXTURES = {
+    43	    "HAS_DATA": {
+    44	        "structured": {
+    45	            "status": "HAS_DATA",
+    46	            "raw": "600519.SH 近20日主力资金：\n日期 净流入(万元)\n2026-06-10 12345",
+    47	            "unit": "万元",
+    48	            "unit_verified": True,
+    49	            "vendor": "cn_akshare",
+    50	            "record_count": 20,
+    51	        },
+    52	        # Long text without "失败" → HAS_DATA (len > 20 path)
+    53	        "legacy_text": "600519.SH 近20日主力资金净流入12345万元，连续3日净流入",
+    54	    },
+    55	    "FAILED": {
+    56	        "structured": {
+    57	            "status": "FAILED",
+    58	            "raw": "个股资金流向数据获取失败：AKShare timeout",
+    59	            "unit_verified": False,
+    60	            "vendor": "",
+    61	            "error": "timeout",
+    62	        },
+    63	        # Acceptance boundary: long text WITH "失败" must NOT become HAS_DATA
+    64	        # via len > 20 — must stay QUERY_FAILED.
+    65	        "legacy_text": "主力资金获取失败：AKShare timeout，Eastmoney push2 返回 502 错误",
+    66	        "legacy_text_short": "个股资金流向数据获取失败",
+    67	    },
+    68	    "NORMAL_NO_DATA": {
+    69	        "structured": {
+    70	            "status": "NORMAL_NO_DATA",
+    71	            "raw": "",
+    72	            "unit_verified": False,
+    73	        },
+    74	        # Empty string → NORMAL_NO_DATA (not a failure)
+    75	        "legacy_text": "",
+    76	    },
+    77	    "SKIPPED": {
+    78	        "structured": {
+    79	            "status": "SKIPPED",
+    80	            "raw": "",
+    81	        },
+    82	        # SKIPPED has no legacy_text representation; only structured carries it.
+    83	        "legacy_text": None,
+    84	    },
+    85	}
+    86	
+    87	LHB_FIXTURES = {
+    88	    "HAS_DATA": {
+    89	        "structured": {
+    90	            "status": "HAS_DATA",
+    91	            "raw": "[G-007] LHB_HAS_DATA: 龙虎榜明细 2026-06-10 机构席位净买入",
+    92	            "query_mode": "forced",
+    93	            "force_reason": "anomaly_condition",
+    94	        },
+    95	        "legacy_text": "龙虎榜明细：2026-06-10 机构席位净买入1.2亿",
+    96	    },
+    97	    "FAILED": {
+    98	        "structured": {
+    99	            "status": "FAILED",
+   100	            "raw": "[G-007] LHB_FAILED: 龙虎榜查询失败 ConnectionError",
+   101	            "query_mode": "forced",
+   102	            "force_reason": "fund_flow_anomaly",
+   103	            "error": "ConnectionError",
+   104	        },
+   105	        "legacy_text": "龙虎榜获取失败：ConnectionError",
+   106	    },
+   107	    "NORMAL_NO_DATA": {
+   108	        "structured": {
+   109	            "status": "NORMAL_NO_DATA",
+   110	            "raw": "[G-007] LHB_NORMAL_NO_DATA: 非异动日无上榜记录",
+   111	            "query_mode": "forced",
+   112	            "force_reason": "anomaly_condition",
+   113	        },
+   114	        "legacy_text": "龙虎榜：未上榜，非异动日无数据",
+   115	    },
+   116	    "NOT_QUERIED": {
+   117	        "structured": {
+   118	            "status": "NOT_QUERIED",
+   119	            "raw": "[G-007] LHB_NOT_QUERIED: 无异动触发，未强制查询",
+   120	            "query_mode": "on_demand",
+   121	        },
+   122	        "legacy_text": "查询未触发",
+   123	    },
+   124	}
+   125	
+   126	
+   127	def _expected_evidence_status(canonical: str) -> str:
+   128	    """Map canonical fixture status → expected EvidenceStatus wire value."""
+   129	    return {
+   130	        "HAS_DATA": EvidenceStatus.HAS_DATA,
+   131	        "FAILED": EvidenceStatus.QUERY_FAILED,
+   132	        "NORMAL_NO_DATA": EvidenceStatus.NORMAL_NO_DATA,
+   133	        "NOT_QUERIED": EvidenceStatus.NOT_QUERIED,
+   134	        "SKIPPED": EvidenceStatus.SKIPPED,
+   135	    }[canonical]
+   136	
+   137	
+   138	# ─── 1. DataCollector._infer_source_status matrix ────────────────────────────
+   139	
+   140	
+   141	class TestDataCollectorStatusInference:
+   142	    """[DATA-022] Verify DataCollector turns raw pool values into the right
+   143	    structured status — this is the first status-inference boundary and the
+   144	    one most exposed to marker-strings written by upstream fetchers."""
+   145	
+   146	    @pytest.mark.parametrize(
+   147	        "canonical,fixture",
+   148	        [(k, v) for k, v in FUND_FLOW_FIXTURES.items()],
+   149	        ids=list(FUND_FLOW_FIXTURES),
+   150	    )
+   151	    def test_fund_flow_structured_status_preserved(self, canonical, fixture):
+   152	        """A structured entry's ``status`` field must be honoured verbatim by
+   153	        DataCollector (HK-001 explicit-status path)."""
+   154	        structured = copy.deepcopy(fixture["structured"])
+   155	        # DataCollector._infer_source_status inspects {"status": ...} form.
+   156	        wrapped = {"status": structured["status"], "raw": structured["raw"]}
+   157	        assert DataCollector._infer_source_status(wrapped) == canonical
+   158	
+   159	    @pytest.mark.parametrize(
+   160	        "canonical,fixture",
+   161	        [(k, v) for k, v in LHB_FIXTURES.items()],
+   162	        ids=list(LHB_FIXTURES),
+   163	    )
+   164	    def test_lhb_structured_status_preserved(self, canonical, fixture):
+   165	        structured = copy.deepcopy(fixture["structured"])
+   166	        wrapped = {"status": structured["status"], "raw": structured["raw"]}
+   167	        assert DataCollector._infer_source_status(wrapped) == canonical
+   168	
+   169	    @pytest.mark.parametrize(
+   170	        "raw_text,expected",
+   171	        [
+   172	            ("[G-007] LHB_HAS_DATA: 龙虎榜明细", "HAS_DATA"),
+   173	            ("[G-007] LHB_FAILED: 错误", "FAILED"),
+   174	            ("[G-007] LHB_NORMAL_NO_DATA: 非异动日", "NORMAL_NO_DATA"),
+   175	            ("[G-007] LHB_NOT_QUERIED: 无触发", "NOT_QUERIED"),
+   176	            ("龙虎榜获取失败：超时", "FAILED"),
+   177	            ("主力资金获取失败：ProxyError", "FAILED"),
+   178	        ],
+   179	    )
+   180	    def test_lhb_and_fund_markers_recognized(self, raw_text, expected):
+   181	        """The [G-007] markers and "获取失败" substring must route to the
+   182	        correct status rather than falling through to HAS_DATA."""
+   183	        assert DataCollector._infer_source_status(raw_text) == expected
+   184	
+   185	    def test_empty_and_none_are_not_queried(self):
+   186	        assert DataCollector._infer_source_status("") == "NOT_QUERIED"
+   187	        assert DataCollector._infer_source_status(None) == "NOT_QUERIED"
+   188	
+   189	
+   190	# ─── 2. infer_evidence_statuses matrix ───────────────────────────────────────
+   191	
+   192	
+   193	class TestInferEvidenceStatusesMatrix:
+   194	    """[DATA-022] Verify infer_evidence_statuses maps each canonical status to
+   195	    the right EvidenceStatus wire value, for both structured and legacy_text
+   196	    forms of fund_flow_individual and lhb."""
+   197	
+   198	    @pytest.mark.parametrize(
+   199	        "canonical,fixture",
+   200	        [(k, v) for k, v in FUND_FLOW_FIXTURES.items()],
+   201	        ids=list(FUND_FLOW_FIXTURES),
+   202	    )
+   203	    def test_fund_flow_structured(self, canonical, fixture):
+   204	        raw = {"fund_flow_individual": copy.deepcopy(fixture["structured"])}
+   205	        statuses = infer_evidence_statuses({}, raw_evidence=raw)
+   206	        assert statuses["individual_fund_flow"] == _expected_evidence_status(canonical)
+   207	
+   208	    @pytest.mark.parametrize(
+   209	        "canonical,fixture",
+   210	        [(k, v) for k, v in FUND_FLOW_FIXTURES.items() if v["legacy_text"] is not None],
+   211	        ids=[k for k, v in FUND_FLOW_FIXTURES.items() if v["legacy_text"] is not None],
+   212	    )
+   213	    def test_fund_flow_legacy_text(self, canonical, fixture):
+   214	        raw = {"fund_flow_individual": fixture["legacy_text"]}
+   215	        statuses = infer_evidence_statuses({}, raw_evidence=raw)
+   216	        assert statuses["individual_fund_flow"] == _expected_evidence_status(canonical)
+   217	
+   218	    @pytest.mark.parametrize(
+   219	        "canonical,fixture",
+   220	        [(k, v) for k, v in LHB_FIXTURES.items()],
+   221	        ids=list(LHB_FIXTURES),
+   222	    )
+   223	    def test_lhb_structured(self, canonical, fixture):
+   224	        raw = {"lhb": copy.deepcopy(fixture["structured"])}
+   225	        statuses = infer_evidence_statuses({}, raw_evidence=raw)
+   226	        assert statuses["lhb_status"] == _expected_evidence_status(canonical)
+   227	
+   228	    @pytest.mark.parametrize(
+   229	        "canonical,fixture",
+   230	        [(k, v) for k, v in LHB_FIXTURES.items() if v["legacy_text"] is not None],
+   231	        ids=[k for k, v in LHB_FIXTURES.items() if v["legacy_text"] is not None],
+   232	    )
+   233	    def test_lhb_legacy_text(self, canonical, fixture):
+   234	        raw = {"lhb": fixture["legacy_text"]}
+   235	        statuses = infer_evidence_statuses({}, raw_evidence=raw)
+   236	        assert statuses["lhb_status"] == _expected_evidence_status(canonical)
+   237	
+   238	
+   239	# ─── 3. Acceptance: FAILED not misjudged as HAS_DATA via len > 20 ─────────────
+   240	
+   241	
+   242	class TestFailedNotMisjudgedAsHasData:
+   243	    """[DATA-022] Headline acceptance: a long FAILED text must not be classified
+   244	    as HAS_DATA just because it is longer than 20 characters. This is the
+   245	    regression guard for the false-positive that motivated this task."""
+   246	
+   247	    def test_fund_flow_long_failed_text_stays_query_failed(self):
+   248	        long_failed = FUND_FLOW_FIXTURES["FAILED"]["legacy_text"]
+   249	        assert len(long_failed) > 20, "fixture sanity: must be > 20 chars"
+   250	        assert "失败" in long_failed
+   251	        statuses = infer_evidence_statuses(
+   252	            {}, raw_evidence={"fund_flow_individual": long_failed}
+   253	        )
+   254	        assert statuses["individual_fund_flow"] == EvidenceStatus.QUERY_FAILED
+   255	        assert statuses["individual_fund_flow"] != EvidenceStatus.HAS_DATA
+   256	
+   257	    def test_fund_flow_short_failed_text_stays_query_failed(self):
+   258	        short_failed = FUND_FLOW_FIXTURES["FAILED"]["legacy_text_short"]
+   259	        assert len(short_failed) <= 20
+   260	        statuses = infer_evidence_statuses(
+   261	            {}, raw_evidence={"fund_flow_individual": short_failed}
+   262	        )
+   263	        assert statuses["individual_fund_flow"] == EvidenceStatus.QUERY_FAILED
+   264	
+   265	    def test_lhb_long_failed_text_stays_query_failed(self):
+   266	        long_failed = (
+   267	            "龙虎榜获取失败：API返回 ConnectionError，重试3次均失败，已记录到限流日志"
+   268	        )
+   269	        assert len(long_failed) > 20
+   270	        statuses = infer_evidence_statuses({}, raw_evidence={"lhb": long_failed})
+   271	        assert statuses["lhb_status"] == EvidenceStatus.QUERY_FAILED
+   272	
+   273	    def test_fund_flow_provenance_long_failed_text(self):
+   274	        """build_fund_flow_provenance must also refuse strong evidence for a
+   275	        long FAILED string (its _status_from_text checks 失败 before length)."""
+   276	        long_failed = FUND_FLOW_FIXTURES["FAILED"]["legacy_text"]
+   277	        prov = build_fund_flow_provenance({"fund_flow_individual": long_failed}, {})
+   278	        assert prov["individual_status"] == "FAILED"
+   279	        assert prov["strong_evidence_allowed"] is False
+   280	        assert prov["unit_verified"] is False
+   281	
+   282	
+   283	# ─── 4. Acceptance: NORMAL_NO_DATA not counted as query failure ───────────────
+   284	
+   285	
+   286	class TestNormalNoDataNotCountedAsFailure:
+   287	    """[DATA-022] NORMAL_NO_DATA is informational and must never inflate the
+   288	    query_failed counter in the data_blocker summary, nor block strong actions
+   289	    on its own."""
+   290	
+   291	    def test_fund_flow_normal_no_data_excluded_from_query_failed(self):
+   292	        blockers = build_data_blockers(
+   293	            {}, raw_evidence={"fund_flow_individual": FUND_FLOW_FIXTURES["NORMAL_NO_DATA"]["structured"]}
+   294	        )
+   295	        by_key = {b["key"]: b for b in blockers}
+   296	        assert by_key["individual_fund_flow"]["status"] == "normal_no_data"
+   297	        assert by_key["individual_fund_flow"]["severity"] == "info"
+   298	
+   299	    def test_lhb_normal_no_data_is_info_not_high(self):
+   300	        blockers = build_data_blockers(
+   301	            {}, raw_evidence={"lhb": LHB_FIXTURES["NORMAL_NO_DATA"]["structured"]}
+   302	        )
+   303	        by_key = {b["key"]: b for b in blockers}
+   304	        assert by_key["lhb_status"]["status"] == "normal_no_data"
+   305	        assert by_key["lhb_status"]["severity"] == "info"
+   306	        assert "正常无数据" in by_key["lhb_status"]["reason"]
+   307	
+   308	    def test_summary_does_not_count_normal_no_data_as_query_failed(self):
+   309	        blockers = [
+   310	            {"status": "normal_no_data"},
+   311	            {"status": "normal_no_data"},
+   312	            {"status": "query_failed"},
+   313	        ]
+   314	        summary = summarize_data_blockers(blockers)
+   315	        assert summary["counts"]["query_failed"] == 1
+   316	        assert summary["counts"]["normal_no_data"] == 2
+   317	        # With only 1 query_failed the level must be warning (not info).
+   318	        assert summary["level"] == "warning"
+   319	
+   320	    def test_pure_normal_no_data_yields_info_level(self):
+   321	        """When every blocker is NORMAL_NO_DATA/SKIPPED, the summary level must
+   322	        be info — the report should not pretend data is broken."""
+   323	        blockers = [
+   324	            {"status": "normal_no_data"},
+   325	            {"status": "skipped"},
+   326	        ]
+   327	        summary = summarize_data_blockers(blockers)
+   328	        assert summary["counts"]["query_failed"] == 0
+   329	        assert summary["level"] == "info"
+   330	        assert "不单独构成强降级理由" in summary["message"]
+   331	
+   332	    def test_lhb_normal_no_data_does_not_block_strong_evidence(self):
+   333	        """build_lhb_provenance must NOT treat NORMAL_NO_DATA as a failure —
+   334	        the LHB just has no record that day."""
+   335	        prov = build_lhb_provenance(
+   336	            {"lhb": LHB_FIXTURES["NORMAL_NO_DATA"]["structured"]}, {}
+   337	        )
+   338	        assert prov["status"] == "NORMAL_NO_DATA"
+   339	        assert "正常" in prov["display_text"]
+   340	
+   341	
+   342	# ─── 5. FAILED → high severity; HAS_DATA excluded from blockers ──────────────
+   343	
+   344	
+   345	class TestFailedSeverityAndHasDataExclusion:
+   346	    """[DATA-022] FAILED must surface as high severity, and HAS_DATA must be
+   347	    excluded from the blocker list entirely."""
+   348	
+   349	    def test_fund_flow_failed_is_high_severity(self):
+   350	        blockers = build_data_blockers(
+   351	            {}, raw_evidence={"fund_flow_individual": FUND_FLOW_FIXTURES["FAILED"]["structured"]}
+   352	        )
+   353	        by_key = {b["key"]: b for b in blockers}
+   354	        assert by_key["individual_fund_flow"]["status"] == "query_failed"
+   355	        assert by_key["individual_fund_flow"]["severity"] == "high"
+   356	        assert "查询失败" in by_key["individual_fund_flow"]["status_label"]
+   357	
+   358	    def test_lhb_failed_is_high_severity(self):
+   359	        blockers = build_data_blockers(
+   360	            {}, raw_evidence={"lhb": LHB_FIXTURES["FAILED"]["structured"]}
+   361	        )
+   362	        by_key = {b["key"]: b for b in blockers}
+   363	        assert by_key["lhb_status"]["status"] == "query_failed"
+   364	        assert by_key["lhb_status"]["severity"] == "high"
+   365	
+   366	    def test_has_data_excluded_from_blockers(self):
+   367	        """When fund_flow and lhb are HAS_DATA, they must not appear as
+   368	        blockers at all — the report should not claim data is missing."""
+   369	        blockers = build_data_blockers(
+   370	            {},
+   371	            raw_evidence={
+   372	                "fund_flow_individual": FUND_FLOW_FIXTURES["HAS_DATA"]["structured"],
+   373	                "lhb": LHB_FIXTURES["HAS_DATA"]["structured"],
+   374	            },
+   375	        )
+   376	        by_key = {b["key"]: b for b in blockers}
+   377	        assert "individual_fund_flow" not in by_key
+   378	        assert "lhb_status" not in by_key
+   379	
+   380	    def test_skipped_is_low_severity(self):
+   381	        blockers = build_data_blockers(
+   382	            {}, raw_evidence={"fund_flow_individual": FUND_FLOW_FIXTURES["SKIPPED"]["structured"]}
+   383	        )
+   384	        by_key = {b["key"]: b for b in blockers}
+   385	        assert by_key["individual_fund_flow"]["status"] == "skipped"
+   386	        assert by_key["individual_fund_flow"]["severity"] == "low"
+   387	
+   388	
+   389	# ─── 6. Provenance consistency across the matrix ─────────────────────────────
+   390	
+   391	
+   392	class TestProvenanceMatrix:
+   393	    """[DATA-022] build_fund_flow_provenance / build_lhb_provenance must agree
+   394	    with the canonical fixture status for every matrix cell."""
+   395	
+   396	    @pytest.mark.parametrize(
+   397	        "canonical,fixture",
+   398	        [(k, v) for k, v in FUND_FLOW_FIXTURES.items()],
+   399	        ids=list(FUND_FLOW_FIXTURES),
+   400	    )
+   401	    def test_fund_flow_provenance_per_status(self, canonical, fixture):
+   402	        prov = build_fund_flow_provenance(
+   403	            {"fund_flow_individual": copy.deepcopy(fixture["structured"])}, {}
+   404	        )
+   405	        assert prov["individual_status"] == canonical
+   406	        # strong_evidence_allowed only when HAS_DATA + unit_verified.
+   407	        unit_ok = fixture["structured"].get("unit_verified") is True
+   408	        assert prov["strong_evidence_allowed"] == (canonical == "HAS_DATA" and unit_ok)
+   409	
+   410	    @pytest.mark.parametrize(
+   411	        "canonical,fixture",
+   412	        [(k, v) for k, v in LHB_FIXTURES.items()],
+   413	        ids=list(LHB_FIXTURES),
+   414	    )
+   415	    def test_lhb_provenance_per_status(self, canonical, fixture):
+   416	        prov = build_lhb_provenance({"lhb": copy.deepcopy(fixture["structured"])}, {})
+   417	        assert prov["status"] == canonical
+   418	        # query_mode escalates from on_demand → forced for any non NOT_QUERIED.
+   419	        if canonical == "NOT_QUERIED":
+   420	            assert prov["query_mode"] == "on_demand" or prov["query_mode"] == "not_queried"
+   421	        else:
+   422	            # The structured fixture already carries query_mode; provenance
+   423	            # must preserve a forced mode for any real query outcome.
+   424	            assert prov["query_mode"] in {"forced", "on_demand", "not_queried"}
+   425	
+   426	
+   427	# ─── 7. Cross-status distinction (no two canonical statuses collapse) ─────────
+   428	
+   429	
+   430	class TestStatusesDoNotCollapse:
+   431	    """[DATA-022] The four LHB statuses and four fund-flow statuses must remain
+   432	    distinct wire values after going through infer_evidence_statuses — no
+   433	    collapse that would let a failure masquerade as no-data or vice versa."""
+   434	
+   435	    def test_lhb_four_statuses_are_distinct(self):
+   436	        outputs = {
+   437	            canonical: infer_evidence_statuses(
+   438	                {}, raw_evidence={"lhb": copy.deepcopy(fixture["structured"])}
+   439	            )["lhb_status"]
+   440	            for canonical, fixture in LHB_FIXTURES.items()
+   441	        }
+   442	        assert outputs == {
+   443	            "HAS_DATA": EvidenceStatus.HAS_DATA,
+   444	            "FAILED": EvidenceStatus.QUERY_FAILED,
+   445	            "NORMAL_NO_DATA": EvidenceStatus.NORMAL_NO_DATA,
+   446	            "NOT_QUERIED": EvidenceStatus.NOT_QUERIED,
+   447	        }
+   448	        # Sanity: four distinct values.
+   449	        assert len(set(outputs.values())) == 4
+   450	
+   451	    def test_fund_flow_statuses_are_distinct(self):
+   452	        outputs = {
+   453	            canonical: infer_evidence_statuses(
+   454	                {},
+   455	                raw_evidence={"fund_flow_individual": copy.deepcopy(fixture["structured"])},
+   456	            )["individual_fund_flow"]
+   457	            for canonical, fixture in FUND_FLOW_FIXTURES.items()
+   458	        }
+   459	        assert outputs == {
+   460	            "HAS_DATA": EvidenceStatus.HAS_DATA,
+   461	            "FAILED": EvidenceStatus.QUERY_FAILED,
+   462	            "NORMAL_NO_DATA": EvidenceStatus.NORMAL_NO_DATA,
+   463	            "SKIPPED": EvidenceStatus.SKIPPED,
+   464	        }
+   465	        assert len(set(outputs.values())) == 4
+   466	
+   467	    def test_failed_and_normal_no_data_wire_values_differ(self):
+   468	        """The canonical confusion case from the field: a fund flow failure
+   469	        alongside a normal LHB no-data result must produce two different
+   470	        blocker statuses, not one shared bucket."""
+   471	        blockers = build_data_blockers(
+   472	            {},
+   473	            raw_evidence={
+   474	                "fund_flow_individual": FUND_FLOW_FIXTURES["FAILED"]["structured"],
+   475	                "lhb": LHB_FIXTURES["NORMAL_NO_DATA"]["structured"],
+   476	            },
+   477	        )
+   478	        by_key = {b["key"]: b for b in blockers}
+   479	        assert by_key["individual_fund_flow"]["status"] == "query_failed"
+   480	        assert by_key["lhb_status"]["status"] == "normal_no_data"
+   481	        assert by_key["individual_fund_flow"]["status"] != by_key["lhb_status"]["status"]
+   482	        assert by_key["individual_fund_flow"]["severity"] == "high"
+   483	        assert by_key["lhb_status"]["severity"] == "info"
+
+exec
+/bin/zsh -lc "grep -n \"def infer_evidence_statuses\\|def _structured_evidence_status\\|def _infer_text\\|fund_flow_individual\\|lhb_status\\|def build_lhb_provenance\\|def build_fund_flow_provenance\" -n tradingagents/agents/utils/readiness_score.py tradingagents/graph/data_collector.py | head -120 && sed -n '1,180p' tradingagents/agents/utils/readiness_score.py | sed -n '1,160p'" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+tradingagents/agents/utils/readiness_score.py:40:    "lhb_status": {
+tradingagents/agents/utils/readiness_score.py:273:    lhb_status: str = "not_queried",
+tradingagents/agents/utils/readiness_score.py:289:        individual_fund_flow, lhb_status, margin_trading, announcements,
+tradingagents/agents/utils/readiness_score.py:1213:def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) -> dict:
+tradingagents/agents/utils/readiness_score.py:1224:                      'stock_data', 'fund_flow_individual', 'lhb', etc.
+tradingagents/agents/utils/readiness_score.py:1238:    def _structured_evidence_status(val) -> Optional[str]:
+tradingagents/agents/utils/readiness_score.py:1317:    # 5. Individual fund flow — check fund_flow_individual
+tradingagents/agents/utils/readiness_score.py:1319:    raw_fund_flow_entry = raw.get("fund_flow_individual")
+tradingagents/agents/utils/readiness_score.py:1340:    lhb_status = EvidenceStatus.NOT_QUERIED
+tradingagents/agents/utils/readiness_score.py:1345:        lhb_status = lhb_struct_status
+tradingagents/agents/utils/readiness_score.py:1348:            lhb_status = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1351:                lhb_status = EvidenceStatus.NOT_QUERIED  # [G-007]
+tradingagents/agents/utils/readiness_score.py:1353:                lhb_status = EvidenceStatus.NORMAL_NO_DATA
+tradingagents/agents/utils/readiness_score.py:1355:            lhb_status = EvidenceStatus.HAS_DATA
+tradingagents/agents/utils/readiness_score.py:1357:            lhb_status = EvidenceStatus.NORMAL_NO_DATA
+tradingagents/agents/utils/readiness_score.py:1360:            lhb_status = EvidenceStatus.QUERY_FAILED
+tradingagents/agents/utils/readiness_score.py:1362:            lhb_status = EvidenceStatus.NORMAL_NO_DATA
+tradingagents/agents/utils/readiness_score.py:1364:            lhb_status = EvidenceStatus.FIELD_MISSING
+tradingagents/agents/utils/readiness_score.py:1489:        "lhb_status": lhb_status,
+tradingagents/agents/utils/readiness_score.py:1503:    if key == "lhb_status" and status == EvidenceStatus.NORMAL_NO_DATA:
+tradingagents/agents/utils/readiness_score.py:1998:def build_fund_flow_provenance(raw_evidence: Optional[dict], reports: dict) -> dict:
+tradingagents/agents/utils/readiness_score.py:2048:    individual_status = _status_from_g006(raw.get("fund_flow_individual"))
+tradingagents/agents/utils/readiness_score.py:2051:        structured = raw.get("fund_flow_individual")
+tradingagents/agents/utils/readiness_score.py:2054:        raw_ff = _unwrap_legacy(raw.get("fund_flow_individual"))
+tradingagents/agents/utils/readiness_score.py:2095:def build_lhb_provenance(raw_evidence: Optional[dict], reports: dict) -> dict:
+tradingagents/agents/utils/readiness_score.py:2106:    lhb_status = "NOT_QUERIED"
+tradingagents/agents/utils/readiness_score.py:2112:        lhb_status = raw_lhb_entry.get("status", "NOT_QUERIED")
+tradingagents/agents/utils/readiness_score.py:2119:            lhb_status = "NOT_QUERIED"
+tradingagents/agents/utils/readiness_score.py:2123:                lhb_status = "NOT_QUERIED"
+tradingagents/agents/utils/readiness_score.py:2125:                lhb_status = "FAILED"
+tradingagents/agents/utils/readiness_score.py:2127:                lhb_status = "NOT_QUERIED"
+tradingagents/agents/utils/readiness_score.py:2129:                lhb_status = "NORMAL_NO_DATA"
+tradingagents/agents/utils/readiness_score.py:2131:                lhb_status = "HAS_DATA"
+tradingagents/agents/utils/readiness_score.py:2133:                lhb_status = "NOT_QUERIED"
+tradingagents/agents/utils/readiness_score.py:2135:            lhb_status = "HAS_DATA" if raw_lhb_val else "NOT_QUERIED"
+tradingagents/agents/utils/readiness_score.py:2137:    if lhb_status == "NOT_QUERIED":
+tradingagents/agents/utils/readiness_score.py:2140:    elif lhb_status in ("NORMAL_NO_DATA", "HAS_DATA", "FAILED"):
+tradingagents/agents/utils/readiness_score.py:2151:    display_text = display_map.get(lhb_status, f"龙虎榜状态未知: {lhb_status}")
+tradingagents/agents/utils/readiness_score.py:2154:        "status": lhb_status,
+tradingagents/graph/data_collector.py:60:    "fund_flow_individual": "fund_flow",
+tradingagents/graph/data_collector.py:414:        "fund_flow_individual": (get_individual_fund_flow, {"symbol": ticker}),
+tradingagents/graph/data_collector.py:433:            "fund_flow_individual",
+tradingagents/graph/data_collector.py:480:    ff_text = results.get("fund_flow_individual", "") or ""
+tradingagents/graph/data_collector.py:678:            "fund_flow_board", "fund_flow_individual", "lhb",
+tradingagents/graph/data_collector.py:732:            if key == "fund_flow_individual":
+# [C-008] readiness_score
+"""报告质量评分（数据完整度 + 置信度 + 证据门禁 + 等级输出 + 机会评分）"""
+
+import re
+from datetime import datetime
+from enum import Enum
+from typing import Optional
+
+
+class ConfidenceLevel(Enum):
+    """置信度等级"""
+    HIGH = "高"
+    MEDIUM = "中"
+    LOW = "低"
+
+
+class EvidenceStatus:
+    """原始证据查询状态"""
+    HAS_DATA = "has_data"
+    NORMAL_NO_DATA = "normal_no_data"
+    QUERY_FAILED = "query_failed"
+    NOT_QUERIED = "not_queried"
+    FIELD_MISSING = "field_missing"
+    SKIPPED = "skipped"
+    NOT_AVAILABLE = "not_available"  # Data source does not provide this field
+
+
+# [DATA-021] report_data_blockers
+_DATA_BLOCKER_FIELDS = {
+    "ohlcv_5d": {
+        "label": "行情/K线",
+        "reason": "最近开高低收或基础行情证据不可用",
+        "impact": "无法校验价格位置、趋势和触发区间，强动作需要降级或等待确认。",
+    },
+    "individual_fund_flow": {
+        "label": "主力资金",
+        "reason": "个股主力资金流证据不可用",
+        "impact": "资金面不能支撑买入/减仓强结论，相关判断置信度下调。",
+    },
+    "lhb_status": {
+        "label": "龙虎榜",
+        "reason": "龙虎榜证据不可用",
+        "impact": "无法确认异动席位和游资结构；若为未上榜，通常只作为正常无数据记录。",
+    },
+    "announcements": {
+        "label": "公告/新闻",
+        "reason": "公告或事件证据不可用",
+        "impact": "无法验证重大利好/利空是否对冲技术或资金信号。",
+    },
+    "ratings": {
+        "label": "分析师评级",
+        "reason": "分析师评级证据不可用",
+        "impact": "外部一致预期缺口，只能作为辅助信息降权，不单独触发交易动作。",
+    },
+    "buybacks": {
+        "label": "回购",
+        "reason": "回购事件证据不可用",
+        "impact": "无法确认公司层面的主动托底或股东回报信号。",
+    },
+    "research_report": {
+        "label": "券商研报",
+        "reason": "券商研报证据不可用",
+        "impact": "中线逻辑和盈利预测缺少外部验证，趋势结论需要更多原始证据支撑。",
+    },
+    "margin_trading": {
+        "label": "融资融券",
+        "reason": "融资融券证据不可用",
+        "impact": "杠杆资金变化无法交叉验证风险偏好。",
+    },
+    "turnover_rate": {
+        "label": "换手率",
+        "reason": "换手率字段缺失",
+        "impact": "无法判断筹码交换强度，短线触发信号需要降权。",
+    },
+    "volume_ratio": {
+        "label": "量比",
+        "reason": "量比字段缺失",
+        "impact": "盘中/短线量能确认不足，突破或破位信号需要等待补证。",
+    },
+}
+
+_BLOCKER_STATUS_META = {
+    EvidenceStatus.NORMAL_NO_DATA: {
+        "status": "normal_no_data",
+        "severity": "info",
+        "status_label": "正常无数据",
+    },
+    EvidenceStatus.QUERY_FAILED: {
+        "status": "query_failed",
+        "severity": "high",
+        "status_label": "查询失败",
+    },
+    EvidenceStatus.NOT_QUERIED: {
+        "status": "not_queried",
+        "severity": "medium",
+        "status_label": "未查询",
+    },
+    EvidenceStatus.FIELD_MISSING: {
+        "status": "field_missing",
+        "severity": "medium",
+        "status_label": "字段缺失",
+    },
+    EvidenceStatus.NOT_AVAILABLE: {
+        "status": "skipped",
+        "severity": "low",
+        "status_label": "已跳过",
+    },
+    EvidenceStatus.SKIPPED: {
+        "status": "skipped",
+        "severity": "low",
+        "status_label": "已跳过",
+    },
+}
+
+
+_STRONG_NAME_CONTEXTS = [
+    re.compile(r'\d{6}\.(?:SZ|SH)\s*[\(（]\s*([\u4e00-\u9fff]{2,8})\s*[\)）]'),
+    re.compile(r'(?:标的|公司|名称|股票名称)\s*[：:]\s*([\u4e00-\u9fff]{2,8})'),
+    re.compile(r'关于\s*([\u4e00-\u9fff]{2,8})\s*的'),
+    re.compile(r'#\s*\d{6}\.(?:SZ|SH)\s+([\u4e00-\u9fff]{2,8})'),
+]
+
+
+def validate_stock_name(ticker: str, report_text: str) -> dict:
+    """Validate that the stock name in the report matches the actual name.
+
+    Only extracts names from strong context patterns (ticker+paren, 标的：,
+    公司：, etc.) to avoid false positives from industry words.
+
+    Returns:
+        {"name_mismatch": bool, "expected_name": str|None,
+         "found_names": list[str], "note": str}
+    """
+    if not ticker:
+        return {"name_mismatch": False, "expected_name": None, "found_names": [], "note": "无 ticker"}
+
+    expected_name = _resolve_name_from_ticker(ticker)
+    if not expected_name:
+        return {"name_mismatch": False, "expected_name": None, "found_names": [], "note": "名称映射不可用"}
+
+    if not report_text:
+        return {"name_mismatch": False, "expected_name": expected_name, "found_names": [], "note": ""}
+
+    found_names = []
+    for pattern in _STRONG_NAME_CONTEXTS:
+        for m in pattern.finditer(report_text):
+            name = m.group(1).strip()
+            if name and len(name) >= 2:
+                found_names.append(name)
+
+    found_names = list(dict.fromkeys(found_names))
+
+    mismatched = [n for n in found_names if n != expected_name]
+
+    if mismatched:
+        return {
+            "name_mismatch": True,
+            "expected_name": expected_name,
+            "found_names": mismatched,
+            "note": f"⚠️ [E-002] 股票名称校验失败：代码 {ticker} 实际名称为「{expected_name}」，报告中出现「{', '.join(mismatched)}」",
+
+exec
+/bin/zsh -lc "sed -n '1213,1370p' tradingagents/agents/utils/readiness_score.py && sed -n '1990,2165p' tradingagents/agents/utils/readiness_score.py && sed -n '450,510p' tradingagents/graph/data_collector.py" in /Users/maybee/TradingAgents-AShare
+ succeeded in 0ms:
+def infer_evidence_statuses(reports: dict, raw_evidence: Optional[dict] = None) -> dict:
+    """根据报告文本推断各项证据状态。
+
+    When *raw_evidence* dict is provided (from DataCollector pool), structured
+    fields are used directly and text-based regex is skipped for those keys.
+    Falls back to text regex for keys without raw evidence.
+
+    Args:
+        reports: dict with keys like 'market_report', 'volume_price_report',
+                 'smart_money_report', 'news_report' etc.
+        raw_evidence: optional dict from DataCollector pool with keys like
+                      'stock_data', 'fund_flow_individual', 'lhb', etc.
+                      Supports both legacy format (raw values) and G-006 format
+                      (dict with 'raw', 'status', 'vendor', etc. keys).
+
+    Returns:
+        dict with evidence field names mapped to EvidenceStatus values.
+    """
+
+    def _unwrap_raw(val):
+        # [G-006] raw_evidence_snapshot: unwrap G-006 structured entries
+        if isinstance(val, dict) and "raw" in val and "status" in val:
+            return val["raw"]
+        return val
+
+    def _structured_evidence_status(val) -> Optional[str]:
+        if not isinstance(val, dict) or "status" not in val:
+            return None
+        struct_status = str(val.get("status") or "").upper()
+        if struct_status == "HAS_DATA":
+            return EvidenceStatus.HAS_DATA
+        if struct_status in {"FAILED", "ERROR", "QUERY_FAILED"}:
+            return EvidenceStatus.QUERY_FAILED
+        if struct_status in {"NORMAL_NO_DATA", "NO_DATA"}:
+            return EvidenceStatus.NORMAL_NO_DATA
+        if struct_status in {"SKIPPED", "NOT_AVAILABLE"}:
+            return EvidenceStatus.SKIPPED
+        if struct_status == "NOT_QUERIED":
+            return EvidenceStatus.NOT_QUERIED
+        return None
+
+    market = reports.get("market_report", "") or ""
+    volume_price = reports.get("volume_price_report", "") or ""
+    smart_money = reports.get("smart_money_report", "") or ""
+    news = reports.get("news_report", "") or ""
+
+    combined = f"{market}\n{volume_price}\n{smart_money}\n{news}"
+
+    # ── Structured evidence from raw data pool (E-004) ──
+    raw = raw_evidence or {}
+
+    # 1. OHLCV 5d — check stock_data CSV
+    ohlcv_5d = EvidenceStatus.NOT_QUERIED
+    raw_stock_data_entry = raw.get("stock_data")
+    stock_struct_status = _structured_evidence_status(raw_stock_data_entry)
+    raw_stock_data = _unwrap_raw(raw_stock_data_entry)
+    if stock_struct_status:
+        ohlcv_5d = stock_struct_status
+    elif raw_stock_data and isinstance(raw_stock_data, str) and len(raw_stock_data) > 50:
+        ohlcv_5d = EvidenceStatus.HAS_DATA
+    elif raw_stock_data is not None:
+        ohlcv_5d = EvidenceStatus.QUERY_FAILED if (isinstance(raw_stock_data, str) and "失败" in raw_stock_data) else EvidenceStatus.NORMAL_NO_DATA
+    elif market:
+        if _text_match_any(market, _OHLC_PATTERNS):
+            ohlcv_5d = EvidenceStatus.HAS_DATA
+        elif market.strip():
+            ohlcv_5d = EvidenceStatus.FIELD_MISSING
+
+    # 2. Volume — derived from stock_data
+    volume = EvidenceStatus.NOT_QUERIED
+    if raw_stock_data and isinstance(raw_stock_data, str) and len(raw_stock_data) > 50:
+        volume = EvidenceStatus.HAS_DATA
+    else:
+        src = market or volume_price
+        if src:
+            if re.search(_VOLUME_PATTERN, src, re.IGNORECASE):
+                volume = EvidenceStatus.HAS_DATA
+            elif src.strip():
+                volume = EvidenceStatus.FIELD_MISSING
+
+    # 3. Turnover rate — check raw_evidence realtime quote data
+    # [DATA-P0-603629] astock_source_fallback: cn_astock now provides turnover_rate in realtime
+    turnover_rate = EvidenceStatus.NOT_AVAILABLE
+    raw_news_val = _unwrap_raw(raw.get("news"))
+    raw_stock_data_val = _unwrap_raw(raw.get("stock_data"))
+    if volume_price:
+        if re.search(_TURNOVER_PATTERN, volume_price, re.IGNORECASE):
+            turnover_rate = EvidenceStatus.HAS_DATA
+        elif volume_price.strip():
+            turnover_rate = EvidenceStatus.FIELD_MISSING
+    elif raw_stock_data_val and isinstance(raw_stock_data_val, str) and "turnover_rate" in raw_stock_data_val:
+        turnover_rate = EvidenceStatus.HAS_DATA
+
+    # 4. Volume ratio — check raw_evidence realtime quote data
+    # [DATA-P0-603629] astock_source_fallback: cn_astock now provides volume_ratio in realtime
+    volume_ratio = EvidenceStatus.NOT_QUERIED
+    if volume_price:
+        if re.search(_VOLUME_RATIO_PATTERN, volume_price, re.IGNORECASE):
+            volume_ratio = EvidenceStatus.HAS_DATA
+        elif volume_price.strip():
+            volume_ratio = EvidenceStatus.FIELD_MISSING
+    elif raw_stock_data_val and isinstance(raw_stock_data_val, str) and "volume_ratio" in raw_stock_data_val:
+        volume_ratio = EvidenceStatus.HAS_DATA
+
+    # 5. Individual fund flow — check fund_flow_individual
+    individual_fund_flow = EvidenceStatus.NOT_QUERIED
+    raw_fund_flow_entry = raw.get("fund_flow_individual")
+    fund_struct_status = _structured_evidence_status(raw_fund_flow_entry)
+    raw_fund_flow = _unwrap_raw(raw_fund_flow_entry)
+    if fund_struct_status:
+        individual_fund_flow = fund_struct_status
+    elif raw_fund_flow is not None:
+        if isinstance(raw_fund_flow, str) and len(raw_fund_flow) > 20 and "失败" not in raw_fund_flow:
+            individual_fund_flow = EvidenceStatus.HAS_DATA
+        elif isinstance(raw_fund_flow, str) and "失败" in raw_fund_flow:
+            individual_fund_flow = EvidenceStatus.QUERY_FAILED
+        elif raw_fund_flow:
+            individual_fund_flow = EvidenceStatus.HAS_DATA
+        else:
+            individual_fund_flow = EvidenceStatus.NORMAL_NO_DATA
+    elif smart_money:
+        if re.search(_FUND_FLOW_PATTERN, smart_money, re.IGNORECASE | re.DOTALL):
+            individual_fund_flow = EvidenceStatus.HAS_DATA
+        elif smart_money.strip():
+            individual_fund_flow = EvidenceStatus.FIELD_MISSING
+
+    # 6. LHB (龙虎榜) — check lhb field
+    lhb_status = EvidenceStatus.NOT_QUERIED
+    raw_lhb_entry = raw.get("lhb")
+    lhb_struct_status = _structured_evidence_status(raw_lhb_entry)
+    raw_lhb = _unwrap_raw(raw_lhb_entry)
+    if lhb_struct_status:
+        lhb_status = lhb_struct_status
+    elif raw_lhb is not None:
+        if isinstance(raw_lhb, str) and "失败" in raw_lhb:
+            lhb_status = EvidenceStatus.QUERY_FAILED
+        elif isinstance(raw_lhb, str) and ("无" in raw_lhb or "未上榜" in raw_lhb or "未触发" in raw_lhb or len(raw_lhb.strip()) == 0):
+            if "查询未触发" in raw_lhb or "LHB_NOT_QUERIED" in raw_lhb or raw_lhb.strip() == "未触发":
+                lhb_status = EvidenceStatus.NOT_QUERIED  # [G-007]
+            else:
+                lhb_status = EvidenceStatus.NORMAL_NO_DATA
+        elif raw_lhb:
+            lhb_status = EvidenceStatus.HAS_DATA
+        else:
+            lhb_status = EvidenceStatus.NORMAL_NO_DATA
+    elif combined:
+        if _text_match_any(combined, _LHB_FAILED_PATTERNS):
+            lhb_status = EvidenceStatus.QUERY_FAILED
+        elif _text_match_any(combined, _LHB_NORMAL_PATTERNS):
+            lhb_status = EvidenceStatus.NORMAL_NO_DATA
+        elif re.search(r'龙虎榜', combined, re.IGNORECASE):
+            lhb_status = EvidenceStatus.FIELD_MISSING
+
+    # 7. Margin trading (融资融券) — check raw_evidence margin_trading field
+    # [DATA-010] margin_trading_raw_evidence
+    margin_trading = EvidenceStatus.NOT_QUERIED
+    raw_margin_entry = raw.get("margin_trading")
+    # Check structured status first (P2: honor structured contract status)
+_NEWS_FUND_FLOW_PATTERNS = [
+    r'主力.*?(?:净流出|净流入)',
+    r'(?:净流出|净流入).*?主力',
+    r'大单.*?(?:净流出|净流入)',
+    r'资金.*?(?:流出|流入)',
+]
+
+
+def build_fund_flow_provenance(raw_evidence: Optional[dict], reports: dict) -> dict:
+    """[G-007] Build fund flow provenance info from raw_evidence and reports.
+
+    Determines whether fund flow data comes from individual fund flow API,
+    board fund flow API, or news text mentions.  Only individual_fund_flow
+    with HAS_DATA status and verified unit qualifies as strong evidence.
+
+    Returns:
+        {
+            "individual_status": str,
+            "board_status": str,
+            "news_reported_fund_flow": bool,
+            "strong_evidence_allowed": bool,
+            "unit_verified": bool,
+            "not_mixed": bool,
+            "conflict_summary": str,
+        }
+    """
+    raw = raw_evidence or {}
+
+    def _unwrap_g006(val):
+        if isinstance(val, dict) and "status" in val:
+            return val
+        return None
+
+    def _status_from_g006(val):
+        structured = _unwrap_g006(val)
+        if structured:
+            return structured.get("status", "NOT_QUERIED")
+        return None
+
+    def _unwrap_legacy(val):
+        if isinstance(val, dict) and "raw" in val and "status" in val:
+            return val["raw"]
+        return val
+
+    def _status_from_text(val):
+        if val is None:
+            return "NOT_QUERIED"
+        if isinstance(val, str):
+            s = val.strip()
+            if not s:
+                return "NOT_QUERIED"
+            if "获取失败" in s or "不可用" in s:
+                return "FAILED"
+            if len(s) > 20:
+                return "HAS_DATA"
+            return "NORMAL_NO_DATA"
+        return "HAS_DATA" if val else "NOT_QUERIED"
+
+    individual_status = _status_from_g006(raw.get("fund_flow_individual"))
+    individual_unit_verified = False
+    if individual_status:
+        structured = raw.get("fund_flow_individual")
+        individual_unit_verified = structured.get("unit_verified", False) is True
+    else:
+        raw_ff = _unwrap_legacy(raw.get("fund_flow_individual"))
+        individual_status = _status_from_text(raw_ff)
+        if individual_status == "HAS_DATA":
+            individual_unit_verified = True
+
+    board_status = _status_from_g006(raw.get("fund_flow_board"))
+    if not board_status:
+        raw_board = _unwrap_legacy(raw.get("fund_flow_board"))
+        board_status = _status_from_text(raw_board)
+
+    news_reported_fund_flow = False
+    news_text = reports.get("news_report", "") or ""
+    if news_text and _text_match_any(news_text, _NEWS_FUND_FLOW_PATTERNS):
+        news_reported_fund_flow = True
+
+    strong_evidence_allowed = (
+        individual_status == "HAS_DATA" and individual_unit_verified
+    )
+
+    conflict_parts = []
+    if individual_status == "FAILED":
+        conflict_parts.append("个股资金流接口查询失败")
+    elif individual_status == "NOT_QUERIED":
+        conflict_parts.append("个股资金流接口未查询")
+
+    if news_reported_fund_flow and not strong_evidence_allowed:
+        conflict_parts.append("新闻转述资金信息仅作弱证据，不得作为主力资金强证据")
+
+    conflict_summary = "；".join(conflict_parts) if conflict_parts else ""
+
+    return {
+        "individual_status": individual_status,
+        "board_status": board_status,
+        "news_reported_fund_flow": news_reported_fund_flow,
+        "strong_evidence_allowed": strong_evidence_allowed,
+        "unit_verified": individual_unit_verified,
+        "not_mixed": True,
+        "conflict_summary": conflict_summary,
+    }
+
+
+def build_lhb_provenance(raw_evidence: Optional[dict], reports: dict) -> dict:
+    """[G-007] Build LHB provenance info from raw_evidence and reports.
+
+    Distinguishes: HAS_DATA / NOT_QUERIED / NORMAL_NO_DATA / FAILED.
+    NOT_QUERIED  = force=False, no anomaly triggered
+    NORMAL_NO_DATA = force=True but stock not on LHB that day
+    FAILED = API error
+    HAS_DATA = actual LHB records found
+    """
+    raw = raw_evidence or {}
+
+    lhb_status = "NOT_QUERIED"
+    query_mode = "not_queried"
+
+    raw_lhb_entry = raw.get("lhb")
+
+    if isinstance(raw_lhb_entry, dict) and "status" in raw_lhb_entry:
+        lhb_status = raw_lhb_entry.get("status", "NOT_QUERIED")
+        query_mode = raw_lhb_entry.get("query_mode", "not_queried") or "not_queried"
+    else:
+        raw_lhb_val = raw_lhb_entry
+        if isinstance(raw_lhb_entry, dict) and "raw" in raw_lhb_entry:
+            raw_lhb_val = raw_lhb_entry["raw"]
+        if raw_lhb_val is None:
+            lhb_status = "NOT_QUERIED"
+        elif isinstance(raw_lhb_val, str):
+            val = raw_lhb_val.strip()
+            if not val:
+                lhb_status = "NOT_QUERIED"
+            elif "获取失败" in val or "LHB_FAILED" in val:
+                lhb_status = "FAILED"
+            elif "查询未触发" in val or "LHB_NOT_QUERIED" in val:
+                lhb_status = "NOT_QUERIED"
+            elif "无龙虎榜数据" in val or "非异动日" in val or "LHB_NORMAL_NO_DATA" in val:
+                lhb_status = "NORMAL_NO_DATA"
+            elif "龙虎榜明细" in val or "LHB_HAS_DATA" in val:
+                lhb_status = "HAS_DATA"
+            else:
+                lhb_status = "NOT_QUERIED"
+        else:
+            lhb_status = "HAS_DATA" if raw_lhb_val else "NOT_QUERIED"
+
+    if lhb_status == "NOT_QUERIED":
+        if query_mode == "not_queried":
+            query_mode = "not_queried"
+    elif lhb_status in ("NORMAL_NO_DATA", "HAS_DATA", "FAILED"):
+        if query_mode == "not_queried":
+            query_mode = "forced"
+
+    display_map = {
+        "HAS_DATA": "龙虎榜有数据",
+        "NOT_QUERIED": "龙虎榜未查询（非异动触发）",
+        "NORMAL_NO_DATA": "龙虎榜查询正常，当日无上榜记录",
+        "FAILED": "龙虎榜查询失败",
+        "FIELD_MISSING": "龙虎榜数据不完整",
+    }
+    display_text = display_map.get(lhb_status, f"龙虎榜状态未知: {lhb_status}")
+
+    return {
+        "status": lhb_status,
+        "query_mode": query_mode,
+        "display_text": display_text,
+    }
+
+
+def format_fund_lhb_provenance(fund_prov: dict, lhb_prov: dict) -> str:
+    """[G-007] Format fund flow and LHB provenance summary for reports."""
+    lines = ["\n\n📊 [G-007] 资金流与龙虎榜数据源口径："]
+
+    ff_labels = {
+        "HAS_DATA": "✅ 有数据",
+    })
+
+    results: Dict[str, Any] = {}
+    fetch_start = time.time()
+    # 减少并发池大小，避免被反爬
+    with ThreadPoolExecutor(max_workers=min(10, len(tasks))) as executor:
+        future_to_key = {executor.submit(_safe, tool, payload): key for key, (tool, payload) in tasks.items()}
+        for future in future_to_key:
+            results[future_to_key[future]] = future.result()
+
+    # [HK-001] hk_market_boundary: 为被跳过的 A 股专属字段写入显式 NOT_AVAILABLE
+    # 结构化条目，让 raw_evidence / readiness 识别为"已跳过（低危）"而非"未查询/缺失"，
+    # 避免港股触发 A 股门禁的误导性结论。
+    if is_hk_market:
+        for skip_key in hk_skipped_keys:
+            results[skip_key] = {
+                "status": "NOT_AVAILABLE",
+                "raw": "",
+                "vendor": "skipped",
+                "reason": "HK market not supported for A-share-only data source",
+                "field": skip_key,
+                "as_of": trade_date,
+            }
+        results["_hk_light_mode"] = True  # [HK-001] hk_market_boundary
+
+    # ── [E-003] 资金流异动时自动升级 LHB 查询 ─────────────────────────
+    # [DATA-P0-603629] astock_source_fallback: LHB force conditions expanded
+    # [DATA-P1-LHB-FUND-DECOUPLE] 资金流失败不阻断异常条件 force 检查
+    # [HK-001] hk_market_boundary: 港股不触发 A 股龙虎榜强制查询链路。
+    results["_lhb_query_mode"] = "on_demand"  # [G-007] default: force=False
+    ff_text = results.get("fund_flow_individual", "") or ""
+    news_text = results.get("news", "") or ""
+
+    if not is_hk_market:
+        lhb_force_needed, lhb_force_reason = _compute_lhb_force_decision(
+            ff_text, news_text, results.get("stock_data", ""),
+            results.get("announcements", ""),
+        )
+
+        if lhb_force_needed:
+            print(f"  [E-003] 龙虎榜强制查询触发 (reason={lhb_force_reason})，升级 LHB force=True")
+            lhb_forced = _safe(get_lhb_detail, {"symbol": ticker, "date": trade_date, "force": True})
+            results["lhb"] = lhb_forced
+            results["_lhb_query_mode"] = "forced"  # [G-007] fund_lhb_provenance
+            results["_lhb_force_reason"] = lhb_force_reason  # [DATA-P0-603629]
+    else:
+        results["_lhb_query_mode"] = "skipped_hk"  # [HK-001] hk_market_boundary
+
+    # ── Parse CSV once, reuse for indicators and VPA ──────────────────
+    raw_csv = results.get("stock_data", "")
+    df = _parse_csv_to_dataframe(raw_csv)
+
+    # ── 核心加速：本地计算所有技术指标 ──────────────────
+    indicators_res = {}
+    try:
+        if df is not None and "close" in df.columns:
+            ss = wrap(df.copy())
+
+            calc_map = {
+                "close_50_sma": "close_50_sma",
+                "close_200_sma": "close_200_sma",
+
+codex
+The patch is primarily a regression-test addition, but one of the new assertions is too permissive and fails to enforce the LHB query-mode contract it documents. This weakens the intended guard against future regressions.
+
+Review comment:
+
+- [P3] Reject not_queried query mode for queried LHB outcomes — /Users/maybee/TradingAgents-AShare/tests/test_data022_fund_lhb_status_matrix.py:424-424
+  For the HAS_DATA/FAILED/NORMAL_NO_DATA fixture rows, this assertion still accepts `not_queried`, so a regression where `build_lhb_provenance` stops preserving a forced LHB query would pass despite the fixture and comment saying these are real query outcomes. Since DATA-022 is intended as a regression guard for status boundaries, this should assert the expected query mode for the fixture (e.g. `forced`) rather than allowing the default non-query state.
+The patch is primarily a regression-test addition, but one of the new assertions is too permissive and fails to enforce the LHB query-mode contract it documents. This weakens the intended guard against future regressions.
+
+Review comment:
+
+- [P3] Reject not_queried query mode for queried LHB outcomes — /Users/maybee/TradingAgents-AShare/tests/test_data022_fund_lhb_status_matrix.py:424-424
+  For the HAS_DATA/FAILED/NORMAL_NO_DATA fixture rows, this assertion still accepts `not_queried`, so a regression where `build_lhb_provenance` stops preserving a forced LHB query would pass despite the fixture and comment saying these are real query outcomes. Since DATA-022 is intended as a regression guard for status boundaries, this should assert the expected query mode for the fixture (e.g. `forced`) rather than allowing the default non-query state.

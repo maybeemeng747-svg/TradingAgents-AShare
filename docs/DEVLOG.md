@@ -4,6 +4,60 @@
 
 ---
 
+## 2026-06-26 | DATA-022 主力资金/龙虎榜失败矩阵 fixture 回放
+
+- **执行者**：OpenCode
+- **类型**：test / regression-guard
+- **状态**：✅ 完成（待提交）
+- **优先级**：P1
+- **代码标注**：`# [DATA-022] fund_lhb_status_matrix`
+
+### 背景
+
+用户多次遇到主力资金失败、龙虎榜无数据/未触发/查询失败混淆。本任务用
+fixture 矩阵回放数据源状态，确保 DATA-021 的 data_blockers 与 TA 报告不会把
+"正常无数据" 当失败，也不会把失败因文本长度大于 20 而误判为 HAS_DATA。
+
+### 变更
+
+- 新增 `tests/test_data022_fund_lhb_status_matrix.py`：54 个测试，7 个维度。
+  - fund_flow_individual 矩阵：HAS_DATA / FAILED / NORMAL_NO_DATA / SKIPPED
+    （结构化 + legacy_text 两条路径）。
+  - lhb 矩阵：HAS_DATA / FAILED / NORMAL_NO_DATA / NOT_QUERIED
+    （结构化 + legacy_text 两条路径）。
+  - 覆盖 `DataCollector._infer_source_status`（`[G-007] LHB_*` 标记识别）→
+    `infer_evidence_statuses`（EvidenceStatus wire 值）→
+    `build_data_blockers` / `summarize_data_blockers`（severity/level）→
+    `build_fund_flow_provenance` / `build_lhb_provenance`（strong_evidence）
+    全链路状态推断边界。
+  - 核心防回归：
+    1. `FAILED` 长（>20 字符）文本不得因长度规则被误判为 HAS_DATA
+       （fund_flow 长/短文本、lhb 长文本、provenance 路径共 4 个用例）。
+    2. `NORMAL_NO_DATA` 不计入 query_failed 计数；纯 normal_no_data/skipped
+       时 summarize_data_blockers.level = info，不升级到 warning。
+    3. 4 个 canonical 状态产出 4 个不同的 EvidenceStatus wire 值，不复用桶。
+- 新增 `docs/data022_fund_lhb_status_matrix.md`：状态矩阵文档，说明每个状态
+  对 blocker severity / report action / strong_evidence_allowed 的影响，以及
+  结构化契约优先于文本启发式的实现保证。
+
+### 验证
+
+- `pytest tests/test_data022_fund_lhb_status_matrix.py -q` → 54 passed。
+- 关联回归 `pytest tests/test_data017_fund_lhb_health.py
+  tests/test_data021_report_data_blockers.py
+  tests/test_report_ux001_data_blocker_replay.py
+  tests/test_g007_fund_lhb_provenance.py -q` → 全部通过（合计 157 passed）。
+- 未触发 live API、未改 prompts、未写生产 DB。
+
+### 风险
+
+- `infer_evidence_statuses` 的纯文本回退路径对 `[G-007] LHB_NORMAL_NO_DATA` /
+  `[G-007] LHB_FAILED` 标记识别不全（会被 length 规则吞成 HAS_DATA）；
+  实际链路依赖 `DataCollector.build_raw_evidence` 写入的结构化 `status` 字段
+  绕过该路径，已在矩阵文档 §2.3 显式记录为已知边界。
+
+---
+
 ## 2026-06-26 | V-010 小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口
 
 - **执行者**：OpenCode
@@ -7087,3 +7141,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/V-010-20260626-round1.txt
 - **Run archive**: docs/task_runs/V-010-20260626-193752/
+
+## 2026-06-26 | AUTO-002 Auto Dev Loop
+
+- **Task**: DATA-022 - 主力资金/龙虎榜失败矩阵 fixture 回放（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/DATA-022-20260626-round1.txt
+- **Run archive**: docs/task_runs/DATA-022-20260626-200333/
