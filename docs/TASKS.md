@@ -3977,7 +3977,7 @@
 ### TF-REVIEW-005: 盘后 Review 归因接入观察信号与模拟账本（P1）
 - **描述**：盘后 Review 需要解释候选盘中是否触发、是否进入模拟账本、是否被人工确认。当前 Review 更多看候选自身，本任务接入 observe signals 与 paper ledger 归因。
 - **优先级**：P1
-- **状态**：done — TF-REVIEW-005-20260626-211746（42 tests passed）
+- **状态**：done -- commit d1d90e0
 - **前置条件**：TF-REVIEW-004、TF-PAPER-001 完成。
 - **执行约束**：
   - 不接真实交易。
