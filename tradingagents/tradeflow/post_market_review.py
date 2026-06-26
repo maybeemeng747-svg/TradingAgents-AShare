@@ -117,6 +117,203 @@ class ReviewEmptyReason(str, Enum):
         return [r.value for r in cls]
 
 
+# [TF-REVIEW-005] review_observe_paper_attribution
+class ReviewBucket(str, Enum):
+    """Per-candidate post-market review bucket joining observe signals +
+    paper ledger.
+
+    Answers the four questions a盘后 Review must explain per candidate:
+    did it trigger today? enter the paper ledger? get human-confirmed?
+    invalidate? or is the data missing?
+
+    Mapping to the five required Chinese labels:
+      NOT_TRIGGERED     -> 未触发
+      TRIGGERED_PENDING -> 触发待确认
+      CONFIRMED         -> 已确认
+      INVALIDATED       -> 已失效
+      DATA_MISSING      -> 缺数据
+    """
+
+    NOT_TRIGGERED = "not_triggered"
+    TRIGGERED_PENDING = "triggered_pending"
+    CONFIRMED = "confirmed"
+    INVALIDATED = "invalidated"
+    DATA_MISSING = "data_missing"
+
+    @property
+    def label_cn(self) -> str:
+        _MAP = {
+            ReviewBucket.NOT_TRIGGERED: "未触发",
+            ReviewBucket.TRIGGERED_PENDING: "触发待确认",
+            ReviewBucket.CONFIRMED: "已确认",
+            ReviewBucket.INVALIDATED: "已失效",
+            ReviewBucket.DATA_MISSING: "缺数据",
+        }
+        return _MAP.get(self, "未知")
+
+    @property
+    def worth_review(self) -> bool:
+        """Whether this candidate is actually worth a post-market review.
+
+        Only candidates that had real action today (triggered / confirmed /
+        invalidated) belong in the "今天实际值得复盘的票" summary.
+        """
+        return self in (
+            ReviewBucket.TRIGGERED_PENDING,
+            ReviewBucket.CONFIRMED,
+            ReviewBucket.INVALIDATED,
+        )
+
+    @classmethod
+    def all_values(cls) -> list[str]:
+        return [b.value for b in cls]
+
+
+# [TF-REVIEW-005] review_observe_paper_attribution
+def classify_review_bucket(
+    observe_state: str,
+    paper_status: str,
+    has_signal_for_date: bool,
+    signal_state: str = "",
+) -> "ReviewBucket":
+    """Classify a candidate into a review bucket.
+
+    Joins three sources of truth (risk-first precedence):
+
+    1. ``paper_status`` from ``tradeflow_paper_trades`` (human-confirmed ledger).
+    2. ``observe_state`` from the candidate row (last persisted observe state).
+    3. ``signal_state`` from the latest ``tradeflow_signals`` row for the date
+       plus ``has_signal_for_date`` (did observe actually run today?).
+
+    Precedence (most actionable / risk-first first):
+      * INVALIDATED     — paper_status==invalidated OR observe_state==INVALIDATED
+                          OR signal_state==INVALIDATED.
+      * CONFIRMED       — paper_status in (open, closed): human confirmed a
+                          buy/sell action.
+      * TRIGGERED_PENDING — paper_status==pending OR observe_state==TRIGGERED
+                          OR signal_state==TRIGGERED.
+      * NOT_TRIGGERED   — observe ran today (has_signal_for_date) but stayed
+                          WAITING, or observe_state==EXPIRED (period ended
+                          without trigger).
+      * DATA_MISSING    — no observe signal for the date and no trigger: observe
+                          never ran, cannot evaluate.
+    """
+    # 1. INVALIDATED — risk first
+    if (
+        paper_status == "invalidated"
+        or observe_state == "INVALIDATED"
+        or signal_state == "INVALIDATED"
+    ):
+        return ReviewBucket.INVALIDATED
+
+    # 2. CONFIRMED — human acted on the paper ledger
+    if paper_status in ("open", "closed"):
+        return ReviewBucket.CONFIRMED
+
+    # 3. TRIGGERED_PENDING — triggered, awaiting human confirmation
+    if (
+        paper_status == "pending"
+        or observe_state == "TRIGGERED"
+        or signal_state == "TRIGGERED"
+    ):
+        return ReviewBucket.TRIGGERED_PENDING
+
+    # 4. NOT_TRIGGERED — observe ran but no trigger (or period expired)
+    if has_signal_for_date or observe_state == "EXPIRED":
+        return ReviewBucket.NOT_TRIGGERED
+
+    # 5. DATA_MISSING — observe never ran for this date
+    return ReviewBucket.DATA_MISSING
+
+
+def review_bucket_reason(
+    bucket: "ReviewBucket",
+    *,
+    observe_state: str = "",
+    paper_status: str = "",
+    signal_state: str = "",
+    has_signal_for_date: bool = False,
+) -> str:
+    """Return a short Chinese explanation for why a candidate landed in a bucket.
+
+    The explanation only states facts (no buy/sell advice).
+    """
+    if bucket is ReviewBucket.INVALIDATED:
+        if paper_status == "invalidated":
+            return "模拟账本标记为已失效"
+        if signal_state == "INVALIDATED" or observe_state == "INVALIDATED":
+            return "盘中观察标记失效（跌破失效价）"
+        return "已失效"
+    if bucket is ReviewBucket.CONFIRMED:
+        if paper_status == "open":
+            return "模拟账本已确认建仓"
+        if paper_status == "closed":
+            return "模拟账本已确认平仓"
+        return "已人工确认"
+    if bucket is ReviewBucket.TRIGGERED_PENDING:
+        if paper_status == "pending":
+            return "盘中触发，模拟账本待人工确认"
+        if signal_state == "TRIGGERED" or observe_state == "TRIGGERED":
+            return "盘中观察已触发，等待确认"
+        return "触发待确认"
+    if bucket is ReviewBucket.NOT_TRIGGERED:
+        if observe_state == "EXPIRED":
+            return "观察期已过未触发"
+        if has_signal_for_date:
+            return "盘中观察已运行，未触发"
+        return "未触发"
+    # DATA_MISSING
+    return "盘中观察未运行，暂无触发/失效数据"
+
+
+def compute_today_review_focus(items: list[dict]) -> dict:
+    """Aggregate the "今天实际值得复盘的票" summary from per-candidate items.
+
+    Each item should carry (at least): ``symbol``, ``name``, ``review_bucket``,
+    ``review_bucket_label``. Candidates whose bucket is not ``worth_review``
+    are excluded from the focus list but counted in the breakdown.
+
+    Returns a dict with: ``focus_items``, ``focus_count`` and ``bucket_counts``.
+    Output contains no strong buy/sell words.
+    """  # [TF-REVIEW-005] review_observe_paper_attribution
+    bucket_counts = {b.value: 0 for b in ReviewBucket}
+    focus_items: list[dict] = []
+    for it in items:
+        raw_bucket = it.get("review_bucket", "")
+        try:
+            bucket = ReviewBucket(raw_bucket)
+        except ValueError:
+            bucket = ReviewBucket.DATA_MISSING
+        bucket_counts[bucket.value] = bucket_counts.get(bucket.value, 0) + 1
+        if not bucket.worth_review:
+            continue
+        focus_items.append({
+            "symbol": it.get("symbol", ""),
+            "name": it.get("name", ""),
+            "review_bucket": bucket.value,
+            "review_bucket_label": bucket.label_cn,
+            "review_bucket_reason": it.get("review_bucket_reason", ""),
+            "candidate_type": it.get("candidate_type", ""),
+            "trigger_price": it.get("trigger_price"),
+            "invalid_price": it.get("invalid_price"),
+            "observe_state": it.get("observe_state", ""),
+            "paper_status": it.get("paper_status", ""),
+        })
+
+    # Risk-first ordering: invalidated, then triggered pending, then confirmed
+    _ORDER = {
+        ReviewBucket.INVALIDATED.value: 0,
+        ReviewBucket.TRIGGERED_PENDING.value: 1,
+        ReviewBucket.CONFIRMED.value: 2,
+    }
+    focus_items.sort(key=lambda x: _ORDER.get(x["review_bucket"], 9))
+    return {
+        "focus_items": focus_items,
+        "focus_count": len(focus_items),
+        "bucket_counts": bucket_counts,
+    }
+
+
 @dataclass
 class CandidatePerformance:
     symbol: str
@@ -148,6 +345,15 @@ class CandidatePerformance:
     tomorrow_focus: str = ""  # 明日关注
     downgrade_reason: str = ""  # 降级原因
     evidence_needed: list[str] = field(default_factory=list)  # 需要补证据
+    # [TF-REVIEW-005] review_observe_paper_attribution — observe signal + paper ledger join
+    paper_status: str = ""  # tracking/pending/open/closed/invalidated/observation
+    signal_state: str = ""  # latest observe signal state for the date (WAITING/TRIGGERED/INVALIDATED/EXPIRED)
+    has_signal_for_date: bool = False  # whether observe ran for the review date
+    signal_current_price: Optional[float] = None
+    signal_trigger_reason: str = ""
+    review_bucket: str = ""  # not_triggered/triggered_pending/confirmed/invalidated/data_missing
+    review_bucket_label: str = ""
+    review_bucket_reason: str = ""
 
     def compute_returns(self) -> None:
         if self.entry_price and self.entry_price > 0:
@@ -180,6 +386,25 @@ class CandidatePerformance:
         self.hit_type = classify_hit_attribution(self)
         self.tomorrow_focus, self.downgrade_reason, self.evidence_needed = (
             compute_next_day_feedback(self)
+        )
+
+    # [TF-REVIEW-005] review_observe_paper_attribution
+    def compute_review_bucket(self) -> None:
+        """Compute the observe+paper review bucket + label + reason."""
+        bucket = classify_review_bucket(
+            observe_state=self.observe_state,
+            paper_status=self.paper_status,
+            has_signal_for_date=self.has_signal_for_date,
+            signal_state=self.signal_state,
+        )
+        self.review_bucket = bucket.value
+        self.review_bucket_label = bucket.label_cn
+        self.review_bucket_reason = review_bucket_reason(
+            bucket,
+            observe_state=self.observe_state,
+            paper_status=self.paper_status,
+            signal_state=self.signal_state,
+            has_signal_for_date=self.has_signal_for_date,
         )
 
 
@@ -233,6 +458,8 @@ class ReviewSummary:
     candidate_type_stats: dict[str, dict] = field(default_factory=dict)
     attribution_stats: dict[str, dict] = field(default_factory=dict)
     next_day_feedback: list[dict] = field(default_factory=list)
+    # [TF-REVIEW-005] review_observe_paper_attribution — observe+paper bucket summary
+    today_review_focus: dict = field(default_factory=dict)
 
     def compute_overall(self) -> None:
         self.scored_candidates = self.overall_hit_count + self.overall_miss_count
@@ -396,9 +623,16 @@ def build_candidate_performance_from_dict(
             "fund_flow_score": entry.get("fund_flow_score", 0.0) or 0.0,
         },  # [TF-REVIEW-003]
         evidence_needed=list(entry.get("missing_evidence", []) or []),  # [TF-REVIEW-003]
+        # [TF-REVIEW-005] review_observe_paper_attribution — observe+paper join
+        paper_status=entry.get("paper_status", "") or "",
+        signal_state=entry.get("signal_state", "") or "",
+        has_signal_for_date=bool(entry.get("has_signal_for_date", False)),
+        signal_current_price=entry.get("signal_current_price"),
+        signal_trigger_reason=entry.get("signal_trigger_reason", "") or "",
     )
     perf.compute_returns()
     perf.compute_attribution()  # [TF-REVIEW-003] strategy_attribution_review
+    perf.compute_review_bucket()  # [TF-REVIEW-005] review_observe_paper_attribution
     return perf
 
 
@@ -596,6 +830,7 @@ def run_post_market_review(
     for p in performances:
         p.compute_returns()
         p.compute_attribution()  # [TF-REVIEW-003] strategy_attribution_review
+        p.compute_review_bucket()  # [TF-REVIEW-005] review_observe_paper_attribution
 
     strategy_stats = compute_strategy_stats(performances)
     tier_stats = compute_tier_stats(performances)
@@ -642,9 +877,35 @@ def run_post_market_review(
             "tomorrow_focus": p.tomorrow_focus,
             "downgrade_reason": p.downgrade_reason,
             "evidence_needed": list(p.evidence_needed),
+            # [TF-REVIEW-005] review_observe_paper_attribution — observe+paper join
+            "paper_status": p.paper_status,
+            "signal_state": p.signal_state,
+            "has_signal_for_date": p.has_signal_for_date,
+            "review_bucket": p.review_bucket,
+            "review_bucket_label": p.review_bucket_label,
+            "review_bucket_reason": p.review_bucket_reason,
         }
         for p in performances
     ]
+
+    # [TF-REVIEW-005] review_observe_paper_attribution — "今天实际值得复盘的票"
+    today_review_focus = compute_today_review_focus(
+        [
+            {
+                "symbol": p.symbol,
+                "name": getattr(p, "name", ""),
+                "candidate_type": p.candidate_type,
+                "trigger_price": p.trigger_price,
+                "invalid_price": p.invalid_price,
+                "observe_state": p.observe_state,
+                "paper_status": p.paper_status,
+                "review_bucket": p.review_bucket,
+                "review_bucket_label": p.review_bucket_label,
+                "review_bucket_reason": p.review_bucket_reason,
+            }
+            for p in performances
+        ]
+    )
 
     # [TF-REVIEW-002] review_date_mapping — compute data_status
     if total == 0:
@@ -678,6 +939,7 @@ def run_post_market_review(
         candidate_type_stats=candidate_type_stats,  # [TF-REVIEW-003]
         attribution_stats=attribution_stats,  # [TF-REVIEW-003]
         next_day_feedback=next_day_feedback,  # [TF-REVIEW-003]
+        today_review_focus=today_review_focus,  # [TF-REVIEW-005] review_observe_paper_attribution
     )
     summary.compute_overall()
     return summary
@@ -798,6 +1060,40 @@ def render_review_markdown(summary: ReviewSummary) -> str:
                 f"| {evidence_str} |"
             )
         lines.append("")
+
+    # [TF-REVIEW-005] review_observe_paper_attribution — today's worth-reviewing tickers
+    focus = summary.today_review_focus or {}
+    focus_items = focus.get("focus_items", [])
+    bucket_counts = focus.get("bucket_counts", {})
+    if focus_items or bucket_counts:
+        lines.append("### 今天实际值得复盘的票")
+        lines.append("")
+        if bucket_counts:
+            parts = []
+            for b in ReviewBucket:
+                cnt = bucket_counts.get(b.value, 0)
+                if cnt:
+                    parts.append(f"{b.label_cn} {cnt}")
+            if parts:
+                lines.append("> 归类：" + "、".join(parts))
+                lines.append("")
+        if focus_items:
+            lines.append("| 代码 | 名称 | 归类 | 原因 | 触发价 | 失效价 |")
+            lines.append("|------|------|------|------|--------|--------|")
+            for it in focus_items:
+                tp = it.get("trigger_price")
+                ip = it.get("invalid_price")
+                lines.append(
+                    f"| {it.get('symbol', '')} | {it.get('name', '-')} "
+                    f"| {it.get('review_bucket_label', '-')} "
+                    f"| {it.get('review_bucket_reason', '-') or '-'} "
+                    f"| {tp if tp is not None else '-'} "
+                    f"| {ip if ip is not None else '-'} |"
+                )
+            lines.append("")
+        else:
+            lines.append("> 今日无触发/失效/已确认候选，暂无需重点复盘的票")
+            lines.append("")
 
     if summary.common_removal_reasons:
         lines.append("### 移除理由")

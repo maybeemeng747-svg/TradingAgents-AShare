@@ -138,7 +138,7 @@
 112. `REPORT-UX-002`：历史报告动作语义与数据缺口只读迁移预检（P1，ready，依赖 DECISION-004/DATA-021 ✓）。
 113. `H-016`：昊天主题日报 CLI 生成与保留策略（P2，ready，依赖 H-015 ✓）。
 114. `IC-TA-003`：investment-controller 盘前/盘后 briefing fixture dry-run（P2，ready，依赖 IC-TA-002 ✓）。
-115. `TF-REVIEW-005`：盘后 Review 归因接入观察信号与模拟账本（P1，ready，依赖 TF-REVIEW-004/TF-PAPER-001 ✓）。
+115. `TF-REVIEW-005`：盘后 Review 归因接入观察信号与模拟账本（P1，done，依赖 TF-REVIEW-004/TF-PAPER-001 ✓）。
 116. `UI-013`：TradeFlow 空状态与下一步 CTA 文案收口（P2，ready，依赖 UI-012/H-015 ✓）。
 117. `DATA-023`：数据源目录 API/文档同步与供应商能力矩阵导出（P2，ready，依赖 DATA-020/DATA-CATALOG-FIX ✓）。
 118. `PERF-006`：前端 bundle 体积趋势记录与懒加载候选建议（P2，ready，依赖 PERF-005 ✓）。
@@ -3977,7 +3977,7 @@
 ### TF-REVIEW-005: 盘后 Review 归因接入观察信号与模拟账本（P1）
 - **描述**：盘后 Review 需要解释候选盘中是否触发、是否进入模拟账本、是否被人工确认。当前 Review 更多看候选自身，本任务接入 observe signals 与 paper ledger 归因。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — TF-REVIEW-005-20260626-211746（42 tests passed）
 - **前置条件**：TF-REVIEW-004、TF-PAPER-001 完成。
 - **执行约束**：
   - 不接真实交易。

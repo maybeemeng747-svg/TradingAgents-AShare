@@ -4,6 +4,157 @@
 
 ---
 
+## 2026-06-26 | TF-REVIEW-005 盘后 Review 归因接入观察信号与模拟账本
+
+- **执行者**：OpenCode
+- **类型**：feature
+- **状态**：✅ 完成（待提交）
+- **优先级**：P1
+- **代码标注**：`# [TF-REVIEW-005] review_observe_paper_attribution`
+
+### 背景
+
+TF-REVIEW-003 接入了候选**命中归因**（technical/policy/fund_flow/risk/data_issue），
+TF-REVIEW-004 补齐了空数据诊断，但盘后 Review 仍然只看候选**自身**字段
+（候选行的 `observe_state` + 分项分数），没有 join 两路关键事实：
+
+1. `tradeflow_signals` 里**当天真实的盘中观察证据**（是否触发、触发价、
+   触发原因、最新快照价）。
+2. `tradeflow_paper_trades` 里**模拟账本状态**（pending/open/closed/
+   invalidated — 是否已被人工确认）。
+
+结果 Review 无法回答用户最关心的四问：今天到底有没有触发？有没有进模拟
+账本？有没有被人工确认？有没有失效？候选行上的 `observe_state` 是**最后
+一次持久化**的状态，未必和当日 signals / 账本一致。本任务把这两路证据接
+入归因，并新增"今天实际值得复盘的票"汇总区。
+
+### 五态归类（ReviewBucket）
+
+`classify_review_bucket(observe_state, paper_status, has_signal_for_date,
+signal_state)` 按风险优先（risk-first）把每只候选归到五态之一：
+
+| bucket | 中文 | 触发条件（按优先级） |
+|--------|------|----------------------|
+| `invalidated` | 已失效 | paper==invalidated ∨ observe_state==INVALIDATED ∨ signal==INVALIDATED |
+| `confirmed` | 已确认 | paper ∈ {open, closed}（人工已确认建仓/平仓） |
+| `triggered_pending` | 触发待确认 | paper==pending ∨ observe_state==TRIGGERED ∨ signal==TRIGGERED |
+| `not_triggered` | 未触发 | 当天有 observe 信号但未触发，或 observe_state==EXPIRED |
+| `data_missing` | 缺数据 | 当天无任何 observe 信号，observe 没跑 |
+
+优先级设计为 `invalidated > confirmed > triggered_pending > not_triggered >
+data_missing`，理由：
+
+- `invalidated` 最优先：失效是风险事件，无论账本状态如何都要优先提示。
+- `confirmed` 次之：人工已 act，比"仅触发待确认"更确定。
+- `triggered_pending` 第三：有触发但等确认。
+- `not_triggered` / `data_missing` 不进"今天实际值得复盘的票"汇总
+  （`worth_review=False`）。
+
+### 变更
+
+- `tradingagents/tradeflow/post_market_review.py`
+  - 新增 `ReviewBucket` 枚举（5 值 + `label_cn` + `worth_review` +
+    `all_values`），中文映射严格对齐任务要求的 未触发/触发待确认/已确认/
+    已失效/缺数据。
+  - 新增 `classify_review_bucket(...)`：风险优先五态归类，融合 paper /
+    observe_state / signal_state / has_signal_for_date 四路输入。
+  - 新增 `review_bucket_reason(...)`：为每个 bucket 生成中文事实说明
+    （不含买卖词），如"模拟账本已确认建仓"、"盘中观察标记失效（跌破
+    失效价）"、"盘中观察未运行，暂无触发/失效数据"。
+  - 新增 `compute_today_review_focus(items)`：聚合"今天实际值得复盘的票"
+    汇总——只收 `worth_review=True` 的候选，按 invalid → pending →
+    confirmed 排序，附带 `bucket_counts` 全五态计数。
+  - `CandidatePerformance` 新增 8 个 TF-REVIEW-005 字段
+    (`paper_status/signal_state/has_signal_for_date/signal_current_price/
+    signal_trigger_reason/review_bucket/review_bucket_label/
+    review_bucket_reason`) + `compute_review_bucket()` 方法。
+  - `build_candidate_performance_from_dict` 读取 entry 中的 paper/signal
+    字段并调用 `compute_review_bucket()`。
+  - `run_post_market_review`：每个 perf 调 `compute_review_bucket()`；
+    `next_day_feedback` 每条带上 `paper_status/signal_state/
+    has_signal_for_date/review_bucket/review_bucket_label/
+    review_bucket_reason`；`ReviewSummary` 新增 `today_review_focus` 字段。
+  - `render_review_markdown` 新增 **"今天实际值得复盘的票"** 一节：
+    顶部展示五态归类计数（如"已失效 1、触发待确认 2"），表格列出
+    worth-review 候选（代码/名称/归类/原因/触发价/失效价）；无候选时显示
+    "今日无触发/失效/已确认候选，暂无需重点复盘的票"。
+
+- `api/services/tradeflow_service.py`
+  - 新增 `_load_review_attribution(conn, trade_date, symbols)`：一次读取
+    `tradeflow_signals`（按 `signal_type LIKE 'observe_%'` + evidence 里
+    `trade_date` 匹配当日，取每 symbol 最新一条）和
+    `tradeflow_paper_trades`（取每 symbol 最新 status），返回
+    `(signal_map, paper_map)`。只读、容忍缺表/缺列；**严格按 review date
+    过滤**，其他日期的信号不会泄漏。
+  - 新增 `_enrich_review_result_with_attribution(result, signal,
+    paper_status)`：把 paper/signal/bucket 字段写到一个 get_review 结果
+    dict 上。
+  - `get_review` OK 分支：在构建 results 前先 `_load_review_attribution`，
+    每条候选 enrichment 后用 `compute_today_review_focus(results)` 算出
+    `today_review_focus`，写入响应。**Review 不再只显示候选原始分数**。
+  - `generate_review`：在 `build_candidate_performance_from_dict` 前注入
+    paper/signal 字段到候选 dict（`signal_state/has_signal_for_date/
+    signal_current_price/signal_trigger_reason/paper_status`），使**持久化
+    的复盘报告**也带上观察+账本归因；返回的 `review` dict 新增
+    `today_review_focus`。
+
+- `api/tradeflow_schemas.py`
+  - `TradeFlowReviewItem` 新增 9 个 TF-REVIEW-005 字段
+    (`paper_status/signal_state/signal_current_price/signal_trigger_reason/
+    signal_time/has_signal_for_date/review_bucket/review_bucket_label/
+    review_bucket_reason`)。
+  - `TradeFlowReviewResponse` 新增 `today_review_focus: Dict`。
+
+- `tests/test_tf_review_005_observe_paper_attribution.py`（新增，42 tests）
+  - `ReviewBucket` 枚举：5 值、中文 label、`worth_review` 标志。
+  - `classify_review_bucket`：12 个用例覆盖 paper pending/open/closed/
+    invalidated、observe_state INVALIDATED/TRIGGERED/EXPIRED、signal
+    INVALIDATED/TRIGGERED、有/无 signal、以及**优先级冲突**（invalidated
+    压过 open、confirmed 压过 triggered）。
+  - `review_bucket_reason`：每态非空、含中文、含对应关键词、禁用词扫描。
+  - `compute_today_review_focus`：只收 worth_review、五态计数、风险优先排
+    序、空输入、未知 bucket fallback。
+  - `CandidatePerformance.compute_review_bucket` +
+    `build_candidate_performance_from_dict`（含/缺 paper+signal 字段）。
+  - `run_post_market_review` + `render_review_markdown`：summary 含
+    today_review_focus、feedback 带 bucket 字段、markdown 含"今天实际值得
+    复盘的票"节、空 focus 文案、禁用词扫描。
+  - **服务层 `get_review` pending/open/invalidated 三类 fixture 验收**
+    （任务硬性要求）：构造 daily_plan + paper_trades（pending/open/
+    invalidated）+ signals（observe_triggered/observe_invalidated），
+    断言三态归类正确、today_review_focus 含 3 只且 invalidated 排第一。
+  - `not_triggered` + `data_missing` 两态 fixture（含跨日信号不泄漏）。
+  - `generate_review` 持久化路径：候选表 + paper + signals，断言 review
+    里 today_review_focus 与 next_day_feedback 都带 bucket。
+  - **fixture 文档片段**：生成可回放的 markdown，覆盖 pending/open/
+    invalidated 三类，落盘重读一致，全文禁用词扫描通过。
+
+### 测试
+
+- `pytest tests/test_tf_review_005_observe_paper_attribution.py -q` →
+  **42 passed**。
+- 回归：`test_tf_review_003_strategy_attribution.py` +
+  `test_tf_review_004_empty_diagnostics.py` + `test_tf_review_002_date_mapping.py`
+  + `test_m007_post_market_review.py` + `test_t005_review_fixture_replay.py`
+  → **275 passed**。
+- 回归：`test_tf_paper001_paper_ledger.py` +
+  `test_tf_risk001_paper_risk_budget.py` +
+  `test_tf_obs_003_observe_paper_sync.py` + `test_tradeflow_schemas.py` +
+  `test_v008_paper_trial_acceptance.py` → **183 passed**。
+- 回归：`test_tradeflow_candidate_engine.py` +
+  `test_tradeflow_schema_scores.py` + `test_ui001_tradeflow_api.py` +
+  `test_track005_post_market_tracking_review.py` → **132 passed**。
+
+### 约束遵守
+
+- 未改 `tradingagents/prompts/`。
+- 未写生产 `tradingagents.db`（全部用 `tmp_path` 隔离 DB）。
+- 未触发 live LLM / 全市场扫描 / TA。
+- 未 push / PR / commit（外层脚本负责）。
+- 输出无强买卖词（FORBIDDEN_WORDS 扫描通过）。
+
+---
+
 ## 2026-06-26 | REPORT-UX-002 历史报告动作语义与数据缺口只读迁移预检
 
 - **执行者**：OpenCode
@@ -7412,3 +7563,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/REPORT-UX-002-20260626-round1.txt
 - **Run archive**: docs/task_runs/REPORT-UX-002-20260626-205847/
+
+## 2026-06-26 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-REVIEW-005 - 盘后 Review 归因接入观察信号与模拟账本（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TF-REVIEW-005-20260626-round1.txt
+- **Run archive**: docs/task_runs/TF-REVIEW-005-20260626-211746/

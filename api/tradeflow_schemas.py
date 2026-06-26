@@ -276,6 +276,16 @@ class TradeFlowReviewItem(BaseModel):
     tomorrow_focus: str = ""  # [TF-REVIEW-003] strategy_attribution_review
     downgrade_reason: str = ""  # [TF-REVIEW-003] strategy_attribution_review
     evidence_needed: List[str] = Field(default_factory=list)  # [TF-REVIEW-003]
+    # [TF-REVIEW-005] review_observe_paper_attribution — observe signal + paper ledger join
+    paper_status: str = ""
+    signal_state: str = ""
+    signal_current_price: Optional[float] = None
+    signal_trigger_reason: str = ""
+    signal_time: str = ""
+    has_signal_for_date: bool = False
+    review_bucket: str = ""  # not_triggered/triggered_pending/confirmed/invalidated/data_missing
+    review_bucket_label: str = ""  # 未触发/触发待确认/已确认/已失效/缺数据
+    review_bucket_reason: str = ""
 
 
 class TradeFlowReviewResponse(BaseModel):
@@ -296,6 +306,7 @@ class TradeFlowReviewResponse(BaseModel):
     latest_plan_date: str = ""
     has_observe_signals: bool = False
     review_date: str = ""
+    today_review_focus: Dict[str, Any] = Field(default_factory=dict)  # [TF-REVIEW-005]
     runtime_tier_meta: RuntimeTierMeta = Field(default_factory=RuntimeTierMeta)  # [PERF-001]
 
 

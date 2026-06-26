@@ -1316,6 +1316,136 @@ def _diagnose_review_empty_state(trade_date: str, tf_db_path: str = "") -> dict:
     return diag
 
 
+# [TF-REVIEW-005] review_observe_paper_attribution
+def _load_review_attribution(
+    conn: sqlite3.Connection,
+    trade_date: str,
+    symbols: Optional[list[str]] = None,
+) -> tuple[dict[str, dict], dict[str, str]]:
+    """Load observe signals + paper ledger status for the review date.
+
+    Returns ``(signal_map, paper_map)``:
+
+    * ``signal_map[symbol]`` = latest observe signal for ``trade_date`` with
+      ``{state, signal_type, current_price, trigger_reason, signal_time,
+      has_signal_for_date=True}``.
+    * ``paper_map[symbol]`` = latest paper ledger status string
+      (tracking/pending/open/closed/invalidated/observation).
+
+    Reads only; never writes. Tolerates missing tables/columns.
+    """
+    signal_map: dict[str, dict] = {}
+    paper_map: dict[str, str] = {}
+
+    # Observe signals — latest per symbol for the date
+    try:
+        sig_rows = conn.execute(
+            "SELECT signal_time, symbol, signal_type, evidence_json "
+            "FROM tradeflow_signals "
+            "WHERE signal_type LIKE 'observe_%' "
+            "ORDER BY signal_time DESC"
+        ).fetchall()
+    except Exception:
+        sig_rows = []
+    for sig in sig_rows:
+        try:
+            sym = normalize_tradeflow_symbol(sig["symbol"])
+        except Exception:
+            continue
+        if sym in signal_map:
+            continue  # latest only (rows are DESC by signal_time)
+        if symbols is not None and sym not in symbols:
+            continue
+        ev = _parse_json(_rget(sig, "evidence_json", "{}"), {})
+        # Match the review date (observe evidence carries trade_date)
+        if ev.get("trade_date") != trade_date:
+            continue
+        sig_type = _rget(sig, "signal_type", "")
+        sig_state = str(ev.get("observe_state", "") or "")
+        if not sig_state:
+            # Derive from signal_type when evidence lacks observe_state
+            if sig_type == "observe_triggered":
+                sig_state = "TRIGGERED"
+            elif sig_type == "observe_invalidated":
+                sig_state = "INVALIDATED"
+            elif sig_type == "observe_expired":
+                sig_state = "EXPIRED"
+            else:
+                sig_state = "WAITING"
+        signal_map[sym] = {
+            "state": sig_state,
+            "signal_type": sig_type,
+            "current_price": ev.get("current_price"),
+            "trigger_reason": ev.get("trigger_reason", "") or "",
+            "signal_time": _rget(sig, "signal_time", "") or "",
+            "has_signal_for_date": True,
+        }
+
+    # Paper ledger status — latest per symbol
+    try:
+        pt_rows = conn.execute(
+            "SELECT symbol, status FROM tradeflow_paper_trades "
+            "ORDER BY updated_at DESC, created_at DESC"
+        ).fetchall()
+    except Exception:
+        pt_rows = []
+    for pt in pt_rows:
+        try:
+            sym = normalize_tradeflow_symbol(pt["symbol"])
+        except Exception:
+            continue
+        if sym in paper_map:
+            continue
+        if symbols is not None and sym not in symbols:
+            continue
+        paper_map[sym] = _rget(pt, "status", "") or ""
+
+    return signal_map, paper_map
+
+
+def _enrich_review_result_with_attribution(
+    result: dict,
+    signal: Optional[dict],
+    paper_status: str,
+) -> dict:
+    """Attach observe+paper attribution fields to a get_review result item.
+
+    Pure dict transformation; no side effects. Tag: [TF-REVIEW-005].
+    """
+    from tradingagents.tradeflow.post_market_review import (
+        classify_review_bucket,
+        review_bucket_reason,
+    )
+
+    signal = signal or {}
+    signal_state = signal.get("state", "") or ""
+    has_signal = bool(signal.get("has_signal_for_date", False))
+    observe_state = result.get("observe_state", "WAITING")
+
+    bucket = classify_review_bucket(
+        observe_state=observe_state,
+        paper_status=paper_status,
+        has_signal_for_date=has_signal,
+        signal_state=signal_state,
+    )
+    result["paper_status"] = paper_status
+    result["signal_state"] = signal_state
+    result["signal_current_price"] = signal.get("current_price")
+    result["signal_trigger_reason"] = signal.get("trigger_reason", "") or ""
+    result["signal_time"] = signal.get("signal_time", "") or ""
+    result["has_signal_for_date"] = has_signal
+    result["review_bucket"] = bucket.value
+    result["review_bucket_label"] = bucket.label_cn
+    result["review_bucket_reason"] = review_bucket_reason(
+        bucket,
+        observe_state=observe_state,
+        paper_status=paper_status,
+        signal_state=signal_state,
+        has_signal_for_date=has_signal,
+    )
+    return result
+
+
 def get_review(trade_date: str, tf_db_path: str = "") -> dict:
     # [TF-REVIEW-002] review_date_mapping
     _fast_meta = _tradeflow_meta("tradeflow_review")  # [PERF-001]
@@ -1356,6 +1486,21 @@ def get_review(trade_date: str, tf_db_path: str = "") -> dict:
         }
 
     candidates = plan_data.get("candidates", [])
+
+    # [TF-REVIEW-005] review_observe_paper_attribution — load observe signals + paper ledger
+    _review_symbols = [normalize_tradeflow_symbol(c.get("symbol", "")) for c in candidates]
+    _review_symbols = [s for s in _review_symbols if s]
+    _signal_map: dict[str, dict] = {}
+    _paper_map: dict[str, str] = {}
+    _attr_conn = _connect(tf_db_path)
+    if _attr_conn is not None:
+        try:
+            _signal_map, _paper_map = _load_review_attribution(
+                _attr_conn, trade_date, symbols=_review_symbols or None
+            )
+        finally:
+            _attr_conn.close()
+
     results = []
     for entry in candidates:
         action = entry.get("action", "OBSERVE")
@@ -1413,7 +1558,18 @@ def get_review(trade_date: str, tf_db_path: str = "") -> dict:
             result["reason"] = f"继续观察，关注触发价 {entry['trigger_price']}"
         else:
             result["reason"] = "继续观察"
+        # [TF-REVIEW-005] review_observe_paper_attribution — enrich with observe+paper
+        _sym = normalize_tradeflow_symbol(entry.get("symbol", ""))
+        _enrich_review_result_with_attribution(
+            result,
+            _signal_map.get(_sym),
+            _paper_map.get(_sym, ""),
+        )
         results.append(result)
+
+    # [TF-REVIEW-005] review_observe_paper_attribution — "今天实际值得复盘的票"
+    from tradingagents.tradeflow.post_market_review import compute_today_review_focus
+    _today_focus = compute_today_review_focus(results)
 
     # [TF-REVIEW-002] review_date_mapping — include plan_date/effective_trade_date
     return {
@@ -1422,6 +1578,7 @@ def get_review(trade_date: str, tf_db_path: str = "") -> dict:
         "reviewed_at": datetime.now().isoformat(),
         "results": results,
         "summary_agg": _compute_summary(candidates),
+        "today_review_focus": _today_focus,  # [TF-REVIEW-005] review_observe_paper_attribution
         "plan_date": plan_data.get("plan_date", ""),  # [TF-DATE-001]
         "effective_trade_date": plan_data.get("effective_trade_date", ""),  # [TF-DATE-001]
         "data_status": "OK",
@@ -2040,8 +2197,33 @@ def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
             plan_date = first["plan_date"]
     review_date = resolve_review_date(plan_date, effective_trade_date)
 
+    # [TF-REVIEW-005] review_observe_paper_attribution — load observe signals + paper
+    # ledger and inject into candidate dicts so the persisted report carries the
+    # 触发/确认/失效 attribution, not just raw candidate scores.
+    _gen_symbols = [normalize_tradeflow_symbol(c.get("symbol", "")) for c in candidates]
+    _gen_symbols = [s for s in _gen_symbols if s]
+    _gen_signal_map: dict[str, dict] = {}
+    _gen_paper_map: dict[str, str] = {}
+    _gen_conn = _connect(tf_db)
+    if _gen_conn is not None:
+        try:
+            _gen_signal_map, _gen_paper_map = _load_review_attribution(
+                _gen_conn, review_date, symbols=_gen_symbols or None
+            )
+        finally:
+            _gen_conn.close()
+
     performances = []
     for c in candidates:
+        _csym = normalize_tradeflow_symbol(c.get("symbol", ""))
+        _csig = _gen_signal_map.get(_csym, {})
+        if _csig:
+            c["signal_state"] = _csig.get("state", "")
+            c["has_signal_for_date"] = True
+            c["signal_current_price"] = _csig.get("current_price")
+            c["signal_trigger_reason"] = _csig.get("trigger_reason", "")
+        if _gen_paper_map.get(_csym):
+            c["paper_status"] = _gen_paper_map.get(_csym)
         perf = build_candidate_performance_from_dict(c)
         performances.append(perf)
 
@@ -2126,6 +2308,8 @@ def generate_review(trade_date: str, tf_db_path: str = "") -> dict:
             "candidate_type_stats": summary.candidate_type_stats,
             "attribution_stats": summary.attribution_stats,
             "next_day_feedback": summary.next_day_feedback,
+            # [TF-REVIEW-005] review_observe_paper_attribution
+            "today_review_focus": summary.today_review_focus,
         },
     }
 
