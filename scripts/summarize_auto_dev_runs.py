@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # [M-002] auto_dev_report_index
 # [V-002] nightly_acceptance_report
+# [V-011] nightly_auto_dev_acceptance
 """
 Scan docs/task_runs/ and generate a nightly dev report in docs/auto_dev_reports/YYYY-MM-DD.md.
 
@@ -10,15 +11,25 @@ V-002 extends M-002 with:
   - Test results summary from test log files
   - "任务池不足" warning when ready queue is empty
 
+V-011 extends V-002 with acceptance / endurance checks:
+  - Done task consistency: each done task in the report window is checked for
+    run archive / review / DEVLOG entry presence.
+  - Ready queue endurance: estimate how long the remaining ready queue can
+    sustain the nightly auto-dev loop based on priority buckets.
+  - Explicit "ready 队列为空" notice and "fixture/本地数据能生成日报" acceptance
+    smoke.
+
 Usage:
     python scripts/summarize_auto_dev_runs.py [--date YYYY-MM-DD] [--dry-run] [--repo-dir PATH]
                                               [--with-sample-replay]
+                                              [--with-consistency-check]
 
 Constraints:
     - Read-only: only reads docs/task_runs/, docs/reviews/, git log, TASKS.md
     - No model calls, no stock analysis
     - No API keys or sensitive logs in output
     - Redacts any leaked keys from included content
+    - Never modifies TASKS.md status (only reads)
 """
 
 from __future__ import annotations
@@ -100,6 +111,216 @@ def parse_ready_queue(tasks_md_path: Path) -> list[dict[str, str]]:
         })
 
     return ready_tasks
+
+
+# ── [V-011] nightly_auto_dev_acceptance: Done task consistency check ──
+
+def parse_done_tasks_for_ids(
+    tasks_md_path: Path, target_ids: "set[str] | None" = None
+) -> list[dict[str, str]]:
+    """Parse docs/TASKS.md to extract tasks whose status line begins with ``done``.
+
+    If ``target_ids`` is provided, only tasks whose ID appears in that set are
+    returned (used to scope the consistency check to today's runs).
+
+    Returns list of dicts with keys: task_id, title, priority, status (raw text).
+    """
+    if not tasks_md_path.exists():
+        return []
+
+    done_tasks: list[dict[str, str]] = []
+    text = tasks_md_path.read_text(encoding="utf-8")
+
+    current_task_id = ""
+    current_title = ""
+    current_priority = ""
+    current_status = ""
+
+    for line in text.splitlines():
+        header_match = re.match(r"^###\s+([A-Z]+-[\w-]+)\s*:\s*(.+)$", line)
+        if header_match:
+            if (
+                current_task_id
+                and current_status.lower().startswith("done")
+                and (target_ids is None or current_task_id in target_ids)
+            ):
+                done_tasks.append({
+                    "task_id": current_task_id,
+                    "title": current_title.strip(),
+                    "priority": current_priority,
+                    "status": current_status,
+                })
+            current_task_id = header_match.group(1)
+            current_title = header_match.group(2)
+            current_priority = ""
+            current_status = ""
+            continue
+
+        if current_task_id:
+            status_match = re.match(r"^-\s+\*\*状态\*\*\s*[:：]\s*(.+)$", line)
+            if status_match:
+                current_status = status_match.group(1).strip()
+            priority_match = re.match(r"^-\s+\*\*优先级\*\*\s*[:：]\s*(.+)$", line)
+            if priority_match:
+                current_priority = priority_match.group(1).strip()
+
+    if (
+        current_task_id
+        and current_status.lower().startswith("done")
+        and (target_ids is None or current_task_id in target_ids)
+    ):
+        done_tasks.append({
+            "task_id": current_task_id,
+            "title": current_title.strip(),
+            "priority": current_priority,
+            "status": current_status,
+        })
+
+    return done_tasks
+
+
+def check_done_task_consistency(
+    done_tasks: list[dict[str, str]],
+    runs: list[TaskRun],
+    reviews_dir: Path,
+    devlog_path: Path,
+) -> list[dict[str, object]]:
+    """For each done task, check whether run archive / review / DEVLOG exist.
+
+    Each result dict has keys:
+      - task_id
+      - has_run_archive (bool): any task_runs/<task_id>-* directory found
+      - has_review (bool): a review file in docs/reviews/ contains the task_id
+      - has_devlog_entry (bool): the DEVLOG.md mentions the task_id
+      - missing (list[str]): human-readable list of missing pieces
+    """
+    run_task_ids = {r.task_id for r in runs if r.task_id}
+
+    review_hits: dict[str, bool] = {}
+    if reviews_dir.exists():
+        review_blobs: list[tuple[str, str]] = []
+        for f in sorted(reviews_dir.iterdir()):
+            if not f.is_file():
+                continue
+            try:
+                review_blobs.append((f.name, f.read_text(encoding="utf-8", errors="replace")))
+            except OSError:
+                continue
+        for tid in run_task_ids:
+            review_hits[tid] = any(tid in blob for _, blob in review_blobs)
+    else:
+        review_hits = {tid: False for tid in run_task_ids}
+
+    devlog_text = ""
+    if devlog_path.exists():
+        try:
+            devlog_text = devlog_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            devlog_text = ""
+
+    results: list[dict[str, object]] = []
+    for t in done_tasks:
+        tid = t["task_id"]
+        has_run = tid in run_task_ids
+        has_review = review_hits.get(tid, False)
+        has_devlog = tid in devlog_text
+
+        missing: list[str] = []
+        if not has_run:
+            missing.append("run archive")
+        if not has_review:
+            missing.append("review")
+        if not has_devlog:
+            missing.append("DEVLOG")
+
+        results.append({
+            "task_id": tid,
+            "title": t.get("title", ""),
+            "has_run_archive": has_run,
+            "has_review": has_review,
+            "has_devlog_entry": has_devlog,
+            "missing": missing,
+        })
+
+    return results
+
+
+# ── [V-011] nightly_auto_dev_acceptance: Ready queue endurance estimate ──
+
+# Per-task runtime budget (minutes) by priority. Range = (min, max).
+_PRIORITY_RUNTIME_MINUTES: dict[str, tuple[int, int]] = {
+    "P0": (30, 60),
+    "P1": (20, 40),
+    "P2": (10, 30),
+    "P3": (5, 15),
+}
+_DEFAULT_RUNTIME_MINUTES: tuple[int, int] = (15, 30)
+
+
+def estimate_ready_endurance(
+    ready_queue: "list[dict[str, str]] | None",
+) -> dict[str, object]:
+    """Estimate how long the ready queue can sustain the auto-dev loop.
+
+    Returns dict with:
+      - count: int
+      - total_min_minutes / total_max_minutes: int
+      - hours_range: str, e.g. "1.0-2.5h"
+      - empty: bool
+      - by_priority: dict[priority] -> count
+      - summary: str, human-readable Chinese summary line
+    """
+    if not ready_queue:
+        return {
+            "count": 0,
+            "total_min_minutes": 0,
+            "total_max_minutes": 0,
+            "hours_range": "0h",
+            "empty": True,
+            "by_priority": {},
+            "summary": "Ready 队列为空，夜间 cron 不应空转。",
+        }
+
+    total_min = 0
+    total_max = 0
+    by_priority: dict[str, int] = {}
+
+    for task in ready_queue:
+        prio_raw = (task.get("priority") or "").strip()
+        # Extract first P-level token (e.g. "P1" out of "P1（高）")
+        token = ""
+        for tok in re.split(r"[\s,，、（）()]+", prio_raw):
+            if tok.upper() in _PRIORITY_RUNTIME_MINUTES:
+                token = tok.upper()
+                break
+        lo, hi = _PRIORITY_RUNTIME_MINUTES.get(token, _DEFAULT_RUNTIME_MINUTES)
+        total_min += lo
+        total_max += hi
+        by_priority[token or "OTHER"] = by_priority.get(token or "OTHER", 0) + 1
+
+    def _fmt_hours(minutes: int) -> str:
+        if minutes <= 0:
+            return "0h"
+        hours = minutes / 60.0
+        if hours >= 1.0:
+            return f"{hours:.1f}h"
+        return f"{minutes}m"
+
+    hours_range = f"{_fmt_hours(total_min)}-{_fmt_hours(total_max)}"
+    summary = (
+        f"Ready 队列剩余 {len(ready_queue)} 个任务，"
+        f"预计可续航约 {hours_range}（{total_min}-{total_max} 分钟）。"
+    )
+
+    return {
+        "count": len(ready_queue),
+        "total_min_minutes": total_min,
+        "total_max_minutes": total_max,
+        "hours_range": hours_range,
+        "empty": False,
+        "by_priority": by_priority,
+        "summary": summary,
+    }
 
 
 # ── [V-002] nightly_acceptance_report: Test log parsing ──
@@ -284,6 +505,14 @@ def scan_task_runs(task_runs_dir: Path, target_date: Optional[str] = None) -> li
             task_id, task_title = task_id.split("—", 1)
             task_id = task_id.strip()
             task_title = task_title.strip()
+        else:
+            # [V-011] Real auto-dev task.md uses " - " (regular hyphen) as the
+            # ID/title separator. Extract the canonical task ID via regex and
+            # treat the remainder as the title so consistency checks can match.
+            m = re.match(r"^([A-Z]+-[\w-]+)\s*-\s*(.+)$", task_id)
+            if m:
+                task_id = m.group(1).strip()
+                task_title = m.group(2).strip()
 
         summary_content = ""
         if summary_md.exists():
@@ -386,11 +615,25 @@ def generate_report(
     target_date: str,
     ready_queue: Optional[list[dict[str, str]]] = None,  # [V-002]
     replay_results: Optional[list[dict]] = None,  # [V-002]
+    consistency_results: Optional[list[dict[str, object]]] = None,  # [V-011]
+    endurance: Optional[dict[str, object]] = None,  # [V-011]
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     lines: list[str] = []
     lines.append(f"# 自动开发日报 — {target_date}")
+    lines.append("")
+    lines.append(f"> 生成时间: {now}  ")
+    lines.append(f"> 运行档案数: {len(runs)}  ")
+    lines.append(f"> 提交数: {len(commits)}  ")
+    lines.append(f"> Review 数: {len(reviews)}  ")
+
+    if ready_queue is not None:  # [V-002]
+        lines.append(f"> Ready 队列: {len(ready_queue)} 个任务  ")
+    if endurance is not None:  # [V-011]
+        lines.append(f"> 预计续航: {endurance.get('hours_range', 'N/A')}  ")
+    lines.append("")
+    lines.append("---")
     lines.append("")
     lines.append(f"> 生成时间: {now}  ")
     lines.append(f"> 运行档案数: {len(runs)}  ")
@@ -535,6 +778,55 @@ def generate_report(
                 lines.append(f"| {t['task_id']} | {t['title']} | {t['priority']} |")
         lines.append("")
 
+    # [V-011] nightly_auto_dev_acceptance: Ready queue endurance
+    if endurance is not None:
+        lines.append("## Ready 队列续航估计")
+        lines.append("")
+        count = endurance.get("count", 0)
+        if endurance.get("empty", count == 0):
+            lines.append("> Ready 队列为空，无续航。请人工补充 `ready` 任务。")
+        else:
+            lines.append(f"- **任务数**: {count}")
+            lines.append(f"- **预计续航**: {endurance.get('hours_range', 'N/A')} "
+                         f"({endurance.get('total_min_minutes', 0)}-"
+                         f"{endurance.get('total_max_minutes', 0)} 分钟)")
+            by_prio = endurance.get("by_priority", {}) or {}
+            if by_prio:
+                prio_str = ", ".join(f"{k}: {v}" for k, v in sorted(by_prio.items()))
+                lines.append(f"- **优先级分布**: {prio_str}")
+            lines.append("")
+            lines.append(f"> {endurance.get('summary', '')}")
+        lines.append("")
+
+    # [V-011] nightly_auto_dev_acceptance: Done task consistency check
+    if consistency_results is not None:
+        lines.append("## Done 任务一致性验收")
+        lines.append("")
+        if not consistency_results:
+            lines.append("> 本报告窗口内无 done 任务需要验收。")
+        else:
+            lines.append("| 任务ID | Run | Review | DEVLOG | 缺失 |")
+            lines.append("|--------|-----|--------|--------|------|")
+            all_complete = True
+            for c in consistency_results:
+                missing = c.get("missing", []) or []
+                if missing:
+                    all_complete = False
+                missing_str = "、".join(missing) if missing else "无"
+                lines.append(
+                    f"| {c.get('task_id', '')} | "
+                    f"{'是' if c.get('has_run_archive') else '否'} | "
+                    f"{'是' if c.get('has_review') else '否'} | "
+                    f"{'是' if c.get('has_devlog_entry') else '否'} | "
+                    f"{missing_str} |"
+                )
+            lines.append("")
+            if all_complete:
+                lines.append("> 所有 done 任务的 run archive / review / DEVLOG 均已记录。")
+            else:
+                lines.append("> **注意**: 部分 done 任务缺少记录，请补齐对应 run/review/DEVLOG。")
+        lines.append("")
+
     # [V-002] nightly_acceptance_report: Candidate sample replay
     if replay_results:
         replay_section = format_sample_replay(replay_results)
@@ -545,7 +837,9 @@ def generate_report(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="[M-002/V-002] Summarize auto dev runs into a daily report")
+    parser = argparse.ArgumentParser(
+        description="[M-002/V-002/V-011] Summarize auto dev runs into a daily report"
+    )
     parser.add_argument("--date", default=None, help="Target date YYYY-MM-DD (default: today)")
     parser.add_argument("--dry-run", action="store_true", help="Print report to stdout without writing file")
     parser.add_argument("--repo-dir", default=None, help="Repository root directory")
@@ -553,6 +847,10 @@ def main() -> None:
                         help="Include TradeFlow candidate sample replay in report")
     parser.add_argument("--with-data-source-digest", action="store_true",  # [DATA-006]
                         help="Include data source health digest in report")
+    parser.add_argument("--with-consistency-check", action="store_true",  # [V-011]
+                        help="Check each done task in window has run/review/DEVLOG")
+    parser.add_argument("--no-endurance", action="store_true",  # [V-011]
+                        help="Skip ready queue endurance estimate (default: on)")
     args = parser.parse_args()
 
     repo_dir = Path(args.repo_dir) if args.repo_dir else Path(__file__).resolve().parent.parent
@@ -560,6 +858,7 @@ def main() -> None:
     reviews_dir = repo_dir / "docs" / "reviews"
     reports_dir = repo_dir / "docs" / "auto_dev_reports"
     tasks_md_path = repo_dir / "docs" / "TASKS.md"  # [V-002]
+    devlog_path = repo_dir / "docs" / "DEVLOG.md"  # [V-011]
 
     target_date = args.date or datetime.now().strftime("%Y-%m-%d")
 
@@ -573,8 +872,30 @@ def main() -> None:
     if args.with_sample_replay:
         replay_results = run_sample_replay()
 
-    report = generate_report(runs, commits, reviews, target_date,
-                             ready_queue=ready_queue, replay_results=replay_results)  # [V-002]
+    # [V-011] nightly_auto_dev_acceptance: endurance estimate (default on)
+    endurance = None
+    if not args.no_endurance:
+        endurance = estimate_ready_endurance(ready_queue)
+
+    # [V-011] nightly_auto_dev_acceptance: done task consistency check
+    consistency_results = None
+    if args.with_consistency_check:
+        window_ids = {r.task_id for r in runs if r.task_id}
+        # When no runs in window, fall back to all done tasks so the report still
+        # documents which done tasks lack records.
+        done_tasks = parse_done_tasks_for_ids(
+            tasks_md_path,
+            target_ids=window_ids if window_ids else None,
+        )
+        consistency_results = check_done_task_consistency(
+            done_tasks, runs, reviews_dir, devlog_path,
+        )
+
+    report = generate_report(
+        runs, commits, reviews, target_date,
+        ready_queue=ready_queue, replay_results=replay_results,  # [V-002]
+        consistency_results=consistency_results, endurance=endurance,  # [V-011]
+    )
 
     report = redact(report)  # [V-002] final redaction pass
 
