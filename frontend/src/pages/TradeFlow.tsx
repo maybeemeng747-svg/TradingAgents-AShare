@@ -287,7 +287,8 @@ function ObserveGroup({ title, subtitle, items, accent }: { title: string; subti
 
 function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observeReason, observeAutoRun, lastObservedAt,
     refreshIntervalSeconds, isMarketHours, isTradingDay, nearTriggerCount, pendingCount, nextRefreshIn, autoRefreshActive,
-    planDate, effectiveTradeDate, nonTradingDayPlan, nextTradingDayHint }: {
+    planDate, effectiveTradeDate, nonTradingDayPlan, nextTradingDayHint,
+    onGoToCandidates, onGoToObservationWarehouse }: {  // [UI-013] tradeflow_empty_state_cta
     items: TradeFlowObserveItem[]
     onRun: () => void
     running: boolean
@@ -307,6 +308,8 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
     effectiveTradeDate?: string             // [TF-OBS-005]
     nonTradingDayPlan?: boolean             // [TF-OBS-005]
     nextTradingDayHint?: string             // [TF-OBS-005]
+    onGoToCandidates?: () => void           // [UI-013] tradeflow_empty_state_cta
+    onGoToObservationWarehouse?: () => void // [UI-013] tradeflow_empty_state_cta
 }) {
     const [showResult, setShowResult] = useState(false)
     const effectiveLastTime = lastObservedAt || lastCheckTime
@@ -426,9 +429,23 @@ function ObserveTable({ items, onRun, running, runResult, lastCheckTime, observe
                 </div>
             )}
             {items.length === 0 && !runResult && !observeReason ? (
-                <div className="py-20 text-center text-sm text-slate-400">
-                    <div className="mb-3">暂无盘中观察数据</div>
-                    <div className="text-xs">系统将在开盘后自动执行观察，或点击"手动刷新"</div>
+                <div className="p-4">
+                    <EmptyStateCTA
+                        icon={Eye}
+                        title="暂无盘中观察数据"
+                        desc={isTradingDay
+                            ? '盘中观察对象来自当日生效候选池，开盘后将自动执行。'
+                            : '当前为非交易日，观察将在下一个交易日开盘后自动执行。'}
+                        hints={[
+                            '先生成候选池，候选会自动进入当日观察',
+                            '或手动将标的加入观察仓（跟踪看板）',
+                            '也可点击右上角「手动刷新」立即触发一次检查',
+                        ]}
+                        actions={[
+                            ...(onGoToCandidates ? [{ label: '前往生成候选池', onClick: onGoToCandidates, primary: true }] : []),
+                            ...(onGoToObservationWarehouse ? [{ label: '前往观察仓', onClick: onGoToObservationWarehouse }] : []),
+                        ]}
+                    />
                 </div>
             ) : items.length === 0 && !runResult ? null : (
             <div className="overflow-x-auto">
@@ -1042,6 +1059,67 @@ function RuntimeTierBadge({ tier, latency }: { tier: string; latency: string }) 
             {label}
             <span className="text-[10px] opacity-70">~{latency}</span>
         </span>
+    )
+}
+
+// [UI-013] tradeflow_empty_state_cta
+// Unified empty state with soft next-step CTAs. Wording is intentionally neutral —
+// no 买/卖/加仓/减仓 terms, no marketing language. Empty states must never block
+// the main flow: they only suggest where to go next.
+interface EmptyStateAction {
+    label: string
+    onClick: () => void
+    primary?: boolean
+    disabled?: boolean
+}
+
+function EmptyStateCTA({
+    icon: Icon,
+    title,
+    desc,
+    hints,
+    actions,
+}: {
+    icon: typeof Target
+    title: string
+    desc?: string
+    hints?: string[]
+    actions?: EmptyStateAction[]
+}) {
+    return (
+        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center dark:border-slate-600 dark:bg-slate-800/40">
+            <Icon className="mx-auto mb-3 h-10 w-10 text-slate-300 dark:text-slate-600" />
+            <p className="font-medium text-slate-600 dark:text-slate-300">{title}</p>
+            {desc && <p className="mt-1 text-sm text-slate-400 dark:text-slate-500">{desc}</p>}
+            {hints && hints.length > 0 && (
+                <div className="mt-3 space-y-1 text-xs text-slate-400 dark:text-slate-500">
+                    {hints.map((h, i) => (
+                        <div key={i} className="flex items-start justify-center gap-1.5">
+                            <span className="mt-1 inline-block h-1 w-1 flex-shrink-0 rounded-full bg-slate-300 dark:bg-slate-600" />
+                            <span>{h}</span>
+                        </div>
+                    ))}
+                </div>
+            )}
+            {actions && actions.length > 0 && (
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                    {actions.map((a, i) => (
+                        <button
+                            key={i}
+                            onClick={a.onClick}
+                            disabled={a.disabled}
+                            className={`inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                                a.primary
+                                    ? 'bg-blue-600 text-white hover:bg-blue-700'
+                                    : 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+                            }`}
+                        >
+                            {a.label}
+                        </button>
+                    ))}
+                </div>
+            )}
+        </div>
     )
 }
 
@@ -1677,15 +1755,26 @@ function heatBar(heat: number): string {
 function TopicHeatmapPanel({
     data,
     onSelectSymbol,
+    onGenerateCandidates,  // [UI-013] tradeflow_empty_state_cta
 }: {
     data: TopicHeatmapResponse | null
     onSelectSymbol?: (symbol: string) => void
+    onGenerateCandidates?: () => void
 }) {
     if (!data || data.status === 'no_data') {
         return (
-            <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-700 dark:bg-slate-800/50">
-                <p className="text-sm text-slate-500 dark:text-slate-400">暂无主题热度数据。生成候选池后将自动展示。</p>
-            </div>
+            <EmptyStateCTA
+                icon={Flame}
+                title="暂无主题热度数据"
+                desc="主题热度由候选池汇总而来，生成候选池后将自动展示。"
+                hints={[
+                    '热度图只做排序解释，不改变最终动作',
+                    '若已有候选池，可尝试刷新当前 Tab',
+                ]}
+                actions={onGenerateCandidates ? [
+                    { label: '前往生成候选池', onClick: onGenerateCandidates, primary: true },
+                ] : undefined}
+            />
         )
     }
 
@@ -1734,12 +1823,26 @@ function TopicHeatmapPanel({
 }
 
 // [H-015] mandate_daily_report
-function MandateDailyReportPanel({ data }: { data: MandateDailyReportResponse | null }) {
+function MandateDailyReportPanel({
+    data,
+    onGenerateCandidates,  // [UI-013] tradeflow_empty_state_cta
+}: {
+    data: MandateDailyReportResponse | null
+    onGenerateCandidates?: () => void
+}) {
     if (!data || data.status === 'no_data') {
         return (
-            <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800/50">
-                <p className="text-sm text-slate-500 dark:text-slate-400">暂无昊天主题日报。生成候选池后可自动汇总主题重心。</p>
-            </div>
+            <EmptyStateCTA
+                icon={Lightbulb}
+                title="暂无昊天主题日报"
+                desc="生成候选池后可自动汇总主题重心、升温/降温主题与主候选解释。"
+                hints={[
+                    '日报只做雷达摘要，不含具体买卖建议',
+                ]}
+                actions={onGenerateCandidates ? [
+                    { label: '前往生成候选池', onClick: onGenerateCandidates, primary: true },
+                ] : undefined}
+            />
         )
     }
     const topicName = (item: Record<string, unknown>) => String(item.topic || '')
@@ -2543,6 +2646,29 @@ export default function TradeFlow() {
         setActiveTab('candidates')
     }, [])
 
+    // [UI-013] tradeflow_empty_state_cta — soft next-step CTAs shared across empty states.
+    // Wording stays neutral (no 买/卖/加仓/减仓). These only navigate, never trigger scans.
+    const goToCandidatesTab = useCallback(() => {
+        setActiveTab('candidates')
+    }, [])
+    const goToDataHealthTab = useCallback(() => {
+        setActiveTab('data-health')
+    }, [])
+    const goToObservationWarehouse = useCallback(() => {
+        navigate('/tracking-board')
+    }, [navigate])
+    const goToScanPanel = useCallback(() => {
+        setActiveTab('candidates')
+        // The scan panel is rendered above the tab content on the candidates tab.
+        // Defer the scroll so the panel is mounted before we look it up.
+        window.setTimeout(() => {
+            const el = document.getElementById('tradeflow-scan-panel')
+            if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+            }
+        }, 60)
+    }, [])
+
     const parseSymbolInput = (value: string) => (
         value
             .split(/[\s,，;；]+/)
@@ -2875,11 +3001,21 @@ export default function TradeFlow() {
         if (activeTab === 'candidates') {
             if (status === 'no_data') {
                 return (
-                    <div className="py-20 text-center text-sm text-slate-400">
-                        <Target className="mx-auto mb-3 h-8 w-8 text-slate-300 dark:text-slate-600" />
-                        {tradeDate} 暂无候选数据
-                        <div className="mt-2 text-xs text-slate-400">尚未生成候选池，或接口/数据源暂时不可用</div>
-                    </div>
+                    <EmptyStateCTA
+                        icon={Target}
+                        title={`${tradeDate} 暂无候选数据`}
+                        desc="尚未生成候选池，或接口/数据源暂时不可用"
+                        hints={[
+                            '使用上方「生成候选池」扫描自选股 / 持仓 / 事件源',
+                            '候选池为空时，盘中观察、盘后 Review、主题热度均无法汇总',
+                            '可将关注标的先加入观察仓（跟踪看板）再做轻量研究',
+                        ]}
+                        actions={[
+                            { label: '查看上方生成候选池', onClick: goToScanPanel, primary: true },
+                            { label: '前往观察仓', onClick: goToObservationWarehouse },
+                            { label: '查看数据健康', onClick: goToDataHealthTab },
+                        ]}
+                    />
                 )
             }
             if (candidates.length === 0) {
@@ -3192,6 +3328,8 @@ export default function TradeFlow() {
                 effectiveTradeDate={observeData?.effective_trade_date}             // [TF-OBS-005]
                 nonTradingDayPlan={observeData?.non_trading_day_plan}             // [TF-OBS-005]
                 nextTradingDayHint={observeData?.next_trading_day_hint}           // [TF-OBS-005]
+                onGoToCandidates={goToCandidatesTab}                                // [UI-013] tradeflow_empty_state_cta
+                onGoToObservationWarehouse={goToObservationWarehouse}              // [UI-013] tradeflow_empty_state_cta
             />
         }
 
@@ -3205,30 +3343,44 @@ export default function TradeFlow() {
         if (activeTab === 'review') {
             if (!reviewData || reviewData.status === 'no_data') {
                 // [TF-REVIEW-004] review_empty_diagnostics — show specific reason + cross-date mapping
+                // [UI-013] tradeflow_empty_state_cta — unified CTA + non-trading-day mapping wording
                 const emptyReason = reviewData?.empty_reason ?? ''
                 const emptyMsg = reviewData?.empty_reason_message ?? '尚未生成盘后复盘'
                 const suggested = reviewData?.suggested_action ?? ''
                 const hasPlanDates = (reviewData?.available_plan_dates?.length ?? 0) > 0
                 const showMapping = !!(reviewData?.plan_date && reviewData.plan_date !== reviewData.trade_date)
+                const reviewHints: string[] = []
+                if (!hasPlanDates) {
+                    reviewHints.push('盘后 Review 依赖候选池，请先在「候选池」生成今日候选')
+                }
+                if (showMapping) {
+                    reviewHints.push('非交易日（周末/节假日）生成的候选池会在下一个交易日复盘')
+                }
+                reviewHints.push('若当日为非交易日，可切换日期或等待下一交易日自动汇总')
                 return (
                     <div className="space-y-4 p-4">
-                        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-6 text-center text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
-                            <BarChart3 className="mx-auto mb-3 h-8 w-8 text-amber-400 dark:text-amber-500" />
-                            <div className="mb-1 text-base font-medium">{emptyMsg}</div>
-                            {emptyReason && (
-                                <div className="mb-1 text-[11px] uppercase tracking-wide text-amber-500 dark:text-amber-400/80">{emptyReason}</div>
-                            )}
-                            {suggested && (
-                                <div className="mb-1 text-xs text-amber-600 dark:text-amber-400">建议：{suggested}</div>
-                            )}
-                            {showMapping && (
-                                <div className="mt-2 inline-block rounded bg-blue-50 px-3 py-1.5 text-xs text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">
+                        <EmptyStateCTA
+                            icon={BarChart3}
+                            title={emptyMsg}
+                            desc={emptyReason ? `原因：${emptyReason}` : undefined}
+                            hints={reviewHints.length > 0 ? reviewHints : undefined}
+                            actions={[
+                                { label: reviewGenerating ? '生成中...' : '一键生成盘后复盘', onClick: () => void handleGenerateReview(), primary: true, disabled: reviewGenerating },
+                                ...(!hasPlanDates ? [{ label: '前往生成候选池', onClick: goToCandidatesTab }] : []),
+                            ]}
+                        />
+                        {suggested && (
+                            <div className="text-center text-xs text-amber-600 dark:text-amber-400">建议：{suggested}</div>
+                        )}
+                        {showMapping && (
+                            <div className="text-center">
+                                <span className="inline-block rounded bg-blue-50 px-3 py-1.5 text-xs text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">
                                     候选池生成日 {reviewData?.plan_date}
                                     {reviewData?.effective_trade_date && `，生效交易日：${reviewData.effective_trade_date}`}
                                     {reviewData?.review_date && `，复盘日：${reviewData.review_date}`}
-                                </div>
-                            )}
-                        </div>
+                                </span>
+                            </div>
+                        )}
                         {hasPlanDates && (
                             <div className="card px-4 py-3 text-xs text-slate-500 dark:text-slate-400">
                                 <span className="font-medium text-slate-600 dark:text-slate-300">已有候选池日期：</span>
@@ -3243,16 +3395,6 @@ export default function TradeFlow() {
                                 {reviewGenerateError}
                             </div>
                         )}
-                        <div className="text-center">
-                            <button
-                                onClick={() => void handleGenerateReview()}
-                                disabled={reviewGenerating}
-                                className="inline-flex items-center gap-1.5 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                            >
-                                {reviewGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <BarChart3 className="h-4 w-4" />}
-                                {reviewGenerating ? '生成中...' : '一键生成盘后复盘'}
-                            </button>
-                        </div>
                     </div>
                 )
             }
@@ -3292,10 +3434,14 @@ export default function TradeFlow() {
         if (activeTab === 'topic-heatmap') {
             return (
                 <div className="space-y-4">
-                    <MandateDailyReportPanel data={mandateDailyReport} />
+                    <MandateDailyReportPanel
+                        data={mandateDailyReport}
+                        onGenerateCandidates={goToCandidatesTab}  // [UI-013] tradeflow_empty_state_cta
+                    />
                     <TopicHeatmapPanel
                         data={topicHeatmap}
                         onSelectSymbol={handleTopicSymbolClick}
+                        onGenerateCandidates={goToCandidatesTab}  // [UI-013] tradeflow_empty_state_cta
                     />
                 </div>
             )
@@ -3510,7 +3656,7 @@ export default function TradeFlow() {
             )}
 
             {activeTab === 'candidates' && (
-                <div className="card p-4">
+                <div id="tradeflow-scan-panel" className="card p-4">  {/* [UI-013] tradeflow_empty_state_cta — scroll target for empty-state CTA */}
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
                         <div className="min-w-0 flex-1">
                             <label className="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">股票池</label>

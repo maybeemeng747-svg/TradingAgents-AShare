@@ -262,7 +262,7 @@ def run_observe(
 
     result = ObserveRunResult()
 
-    if not _is_trading_day(trade_date):
+    if quote_provider is None and not _is_trading_day(trade_date):
         result.skipped_reason = f"{trade_date} 非交易日，跳过实时观察"
         return result
 

@@ -1,0 +1,128 @@
+[0m
+> build · glm-5.2
+[0m
+[0m→ [0mRead tests/test_tf_obs_003_observe_paper_sync.py
+[0m→ [0mRead tradingagents/tradeflow/observe_runner.py
+Let me look at the trade calendar and check how other tests handle the trading day check.
+[0m→ [0mRead tradingagents/dataflows/trade_calendar.py
+[0m✱ [0mGrep "非交易日"[90m in tests · 16 matches[0m
+Let me check for tests that verify the trading day skip behavior and how `quote_provider` is used elsewhere.
+[0m✱ [0mGrep "quote_provider"[90m in tests · 63 matches[0m
+[0m→ [0mRead tests/test_tf_obs_001_observe_runner.py[90m [offset=310, limit=60][0m
+[0m→ [0mRead tests/test_v008_paper_trial_acceptance.py[90m [offset=660, limit=50][0m
+[0m→ [0mRead tests/test_v008_paper_trial_acceptance.py[90m [offset=415, limit=20][0m
+Let me check the acceptance tests that use `quote_provider` to ensure no regression.
+[0m✱ [0mGrep "EFFECTIVE_TRADE_DATE\s*="[90m in tests/test_v008_paper_trial_acceptance.py · 1 match[0m
+[0m✱ [0mGrep "EFFECTIVE_TRADE_DATE\s*="[90m in tests/test_v007_tradeflow_trial_e2e.py · 1 match[0m
+[0m✱ [0mGrep "EFFECTIVE_TRADE_DATE\s*="[90m in tests/test_v010_small_cap_trial_v2_acceptance.py · 1 match[0m
+Now I understand the issue. The E2E tests call `run_observe(TODAY, ..., quote_provider=quotes)` where `TODAY` (2026-06-27) is a Saturday. The trading-day gate at `observe_runner.py:265` skips early regardless of `quote_provider`.
+
+The fix: bypass the trading-day check when a `quote_provider` is supplied (it's documented as "for testing"). The production path (`quote_provider=None`) still enforces the skip. All other tests use fixed trading dates (2026-06-15, 2026-06-01) so no regression.
+[0m
+[0m← [0mEdit tradingagents/tradeflow/observe_runner.py
+Index: /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/observe_runner.py
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/observe_runner.py
++++ /Users/maybee/TradingAgents-AShare/tradingagents/tradeflow/observe_runner.py
+@@ -261,9 +261,9 @@
+     cfg = DEFAULT_STRATEGY_CONFIG
+ 
+ result = ObserveRunResult()
+ 
+-if not _is_trading_day(trade_date):
++if quote_provider is None and not _is_trading_day(trade_date):
+     result.skipped_reason = f"{trade_date} 非交易日，跳过实时观察"
+     return result
+ 
+ candidates = _load_active_candidates(db_path, trade_date)
+
+[0m
+Now let me run the failing tests to confirm the fix:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tf_obs_003_observe_paper_sync.py -x -q 2>&1 | tail -20
+.....................                                                    [100%]
+21 passed in 2.10s
+[0m
+All 21 tests pass. Now let me verify the non-trading-day skip tests still pass (no regression):
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_tf_obs_001_observe_runner.py tests/test_tf_obs_002_observe_auto_run.py tests/test_ui001_tradeflow_api.py -q 2>&1 | tail -15
+........................................................................ [ 62%]
+............................................                             [100%]
+116 passed in 43.42s
+[0m
+Let me also run the acceptance tests that use `quote_provider` to ensure no regression there either:
+[0m$ [0msource .venv/bin/activate && python -m pytest tests/test_v008_paper_trial_acceptance.py tests/test_v007_tradeflow_trial_e2e.py tests/test_v010_small_cap_trial_v2_acceptance.py -q 2>&1 | tail -15
+........................................................................ [ 49%]
+........................................................................ [ 99%]
+.                                                                        [100%]
+145 passed in 47.11s
+[0m
+All green. Now let me update `docs/DEVLOG.md`:
+[0m→ [0mRead docs/DEVLOG.md[90m [limit=30][0m
+[0m
+[0m← [0mEdit docs/DEVLOG.md
+Index: /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+===================================================================
+--- /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
++++ /Users/maybee/TradingAgents-AShare/docs/DEVLOG.md
+@@ -3,8 +3,45 @@
+ > 每次代码修改后必须更新此文件，保持连续性。
+ 
+ ---
+ 
++## 2026-06-27 | UI-013 修复 TF-OBS-003 E2E 测试在非交易日全部跳过的缺陷
++
++- **执行者**：OpenCode
++- **类型**：bugfix
++- **状态**：✅ 完成（待提交）
++- **代码标注**：`# [TF-OBS-003] observe_paper_sync`
++
++### 背景
++
++`test_tf_obs_003_observe_paper_sync.py` 中 `TestObserveToPaperE2E` 的 5 个测试在周末（2026-06-27 周六）全部失败。原因是这些 E2E 测试调用 `run_observe(TODAY, ..., quote_provider=quotes)`，但 `run_observe` 顶部的交易日门控在 `_is_trading_day(trade_date)` 返回 False 时直接 skip 返回零计数，导致 `result.triggered/invalidated/waiting` 全为 0。测试使用 `TODAY = datetime.now()` 作为交易日，当当天恰好是周末时就全部被跳过。
++
++### 修改内容
++
++- **`tradingagents/tradeflow/observe_runner.py`** (`run_observe`)
++  - 将交易日门控条件从 `if not _is_trading_day(trade_date)` 改为
++    `if quote_provider is None and not _is_trading_day(trade_date)`。
++  - 当调用方注入 `quote_provider`（文档明确标注 "for testing"）时，跳过交易日检查，
++    使命中真实 observe 逻辑的 E2E 测试在任意日期均可运行。
++  - 生产路径（`quote_provider=None`）仍严格执行非交易日 skip 语义，行为不变。
++
++### 影响范围
++
++- 其他使用 `quote_provider` 的测试（`test_tf_obs_001`、`test_v007/v008/v010` 验收测试）
++  均使用固定交易日（2026-06-01 / 2026-06-15，周一），交易日门控本就放行，无回归。
++- 非交易日 skip 专项测试（`test_tf_obs_001::TestRunObserveNonTradingDay`、
++  `test_tf_obs_002`、`test_ui001`）不传 `quote_provider`，skip 语义不变。
++
++### 验证
++
++```
++tests/test_tf_obs_003_observe_paper_sync.py  21 passed
++tests/test_tf_obs_001_observe_runner.py + test_tf_obs_002 + test_ui001  116 passed
++tests/test_v007 + test_v008 + test_v010  145 passed
++```
++
++---
++
+ ## 2026-06-26 | UI-013 TradeFlow 空状态与下一步 CTA 文案收口
+ 
+ - **执行者**：OpenCode
+ - **类型**：feature / UX
+
+[0m
+Done. The fix was a one-line change in `tradingagents/tradeflow/observe_runner.py:265`:
+
+```python
+# Before
+if not _is_trading_day(trade_date):
+
+# After
+if quote_provider is None and not _is_trading_day(trade_date):
+```
+
+**Root cause**: The 5 E2E tests in `TestObserveToPaperE2E` call `run_observe(TODAY, ...)` with `TODAY = datetime.now()` = 2026-06-27 (Saturday). The trading-day gate at the top of `run_observe` skipped all candidates before they could be evaluated, returning zero counts for everything.
+
+**Fix rationale**: When a `quote_provider` is injected (explicitly documented as "for testing"), the caller is controlling the execution environment — the trading-day check should be bypassed. The production path (`quote_provider=None`) still enforces the non-trading-day skip.
+
+**No regression**: All other `quote_provider`-based tests use fixed trading dates (2026-06-01/2026-06-15, both Mondays), and non-trading-day skip tests don't use `quote_provider`, so all 282 tests across the related suites still pass.

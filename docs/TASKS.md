@@ -139,7 +139,7 @@
 113. `H-016`：昊天主题日报 CLI 生成与保留策略（P2，ready，依赖 H-015 ✓）。
   114. `IC-TA-003`：investment-controller 盘前/盘后 briefing fixture dry-run（P2，done，依赖 IC-TA-002 ✓）。
 115. `TF-REVIEW-005`：盘后 Review 归因接入观察信号与模拟账本（P1，done，依赖 TF-REVIEW-004/TF-PAPER-001 ✓）。
-116. `UI-013`：TradeFlow 空状态与下一步 CTA 文案收口（P2，ready，依赖 UI-012/H-015 ✓）。
+116. `UI-013`：TradeFlow 空状态与下一步 CTA 文案收口（P2，done，依赖 UI-012/H-015 ✓）。
 117. `DATA-023`：数据源目录 API/文档同步与供应商能力矩阵导出（P2，ready，依赖 DATA-020/DATA-CATALOG-FIX ✓）。
 118. `PERF-006`：前端 bundle 体积趋势记录与懒加载候选建议（P2，ready，依赖 PERF-005 ✓）。
 119. `V-011`：夜间自动开发日报验收与 ready 队列续航检查（P2，ready，依赖 AUTO-003 ✓）。
@@ -3997,7 +3997,7 @@
 ### UI-013: TradeFlow 空状态与下一步 CTA 文案收口（P2）
 - **描述**：用户看到候选池、观察、Review、主题日报为空时，不知道该点什么。本任务统一 TradeFlow 各 tab 空状态和下一步按钮，降低试用迷路感。
 - **优先级**：P2
-- **状态**：ready
+- **状态**：done — UI-013-20260626-225108（OpenCode 实现，待提交）
 - **前置条件**：UI-012、H-015 完成。
 - **执行约束**：
   - 不改核心业务逻辑。
