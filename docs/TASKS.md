@@ -144,6 +144,16 @@
 118. `PERF-006`：前端 bundle 体积趋势记录与懒加载候选建议（P2，done，依赖 PERF-005 ✓）。
 119. `V-011`：夜间自动开发日报验收与 ready 队列续航检查（P2，ready，依赖 AUTO-003 ✓）。
 120. `NOTIFY-003`：通知去噪规则回放测试与日报/盘中分层验收（P2，done，依赖 NOTIFY-002 ✓）。
+121. `TRACK-009`：跟踪看板持仓导入入口与 OpenClaw holdings 契约对齐（P1，ready，依赖 TRACK-003/TRACK-007 ✓）。
+122. `TRACK-010`：跟踪看板盘后复盘乱码与编码/渲染回归（P1，ready，依赖 TRACK-005/TRACK-007 ✓）。
+123. `TF-QUALITY-005`：候选池“过多且像抄底”回放校准与强度分层（P1，ready，依赖 TF-QUALITY-004/H-014 ✓）。
+124. `H-017`：昊天左侧候选证据包：政策-产业-公司三层链路（P1，ready，依赖 H-015/H-016 ✓）。
+125. `DATA-024`：主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1，ready，依赖 DATA-022/DATA-023 ✓）。
+126. `REPORT-UX-003`：报告最终结论“数据不足观察”原因分解与前端显示（P1，ready，依赖 REPORT-UX-001/REPORT-UX-002 ✓）。
+127. `TF-OBS-006`：盘中观察自动执行入口与红涨绿跌视觉语义修正（P2，ready，依赖 TF-OBS-005/UI-013 ✓）。
+128. `IC-TA-004`：investment-controller 飞书 briefing payload 与 TA 调度闭环验收（P2，ready，依赖 IC-TA-003/NOTIFY-003 ✓）。
+129. `V-012`：5000 元小资金试跑 5 日回放验收与人工操作手册 v3（P2，ready，依赖 V-010/V-011 ✓）。
+130. `AUTO-004`：夜间三小时任务续航预算与失败后停止策略回归（P2，ready，依赖 AUTO-003/V-011 ✓）。
 
 ### 数据源治理候选队列
 
@@ -3756,7 +3766,7 @@
 ### AUTO-003: 任务建议去重与已完成任务过滤（P1）
 - **描述**：M-012 生成的 `docs/task_suggestions/2026-06-25.md` 把大量已完成任务、已由 follow-up 闭环的 blocked 任务重新建议为 ready，导致任务池误报和 cron 空转风险。本任务修复 suggest_next_tasks 逻辑。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done -- commit 62f0d46
 - **前置条件**：M-012 完成。
 - **执行约束**：
   - 不改自动开发执行链主流程，只改建议生成/过滤逻辑。

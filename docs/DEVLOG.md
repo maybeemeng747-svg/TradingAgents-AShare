@@ -8203,3 +8203,11 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/NOTIFY-003-20260627-round1.txt
 - **Run archive**: docs/task_runs/NOTIFY-003-20260627-010451/
+
+## 2026-06-28 AUTO-003: 任务建议去重与已完成任务过滤
+
+- **commit**: 62f0d46
+- **变更**: `scripts/suggest_next_tasks.py`, `tests/test_m012_suggest_next_tasks.py`
+- **效果**: dry-run 建议从 24 条降至 15 条，过滤 176 个已完成任务
+- **过滤层**: done status (167) + ✅ 已完成 title (8) + NEEDS_HUMAN followup (1)
+- **新增测试**: 7 个（TestAuto003Dedupe），总计 60 个测试通过
