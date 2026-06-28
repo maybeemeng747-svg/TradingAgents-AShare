@@ -4104,6 +4104,206 @@
   - 禁用词扫描通过。
 - **代码标注要求**：`# [NOTIFY-003] notification_noise_replay`
 
+### TRACK-009: 跟踪看板持仓导入入口与 OpenClaw holdings 契约对齐（P1）
+- **描述**：用户当前持仓通过 OpenClaw 导入，但 TA 跟踪看板前端没有明显入口，也没有说明 `/api/holdings` 与跟踪看板数据如何对齐。本任务补一个低成本、可验证的导入入口与契约说明。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：TRACK-003、TRACK-007 完成。
+- **执行约束**：
+  - 不接真实券商交易。
+  - 不覆盖用户已有持仓备注。
+  - 不写生产数据库测试数据。
+- **实现要点**：
+  1. 后端新增 holdings import dry-run/validate helper，校验 symbol、name、shares、avg_cost、source。
+  2. 前端跟踪看板持仓区增加“导入/同步持仓”入口，支持粘贴 JSON/CSV 或显示 OpenClaw API 契约。
+  3. 导入前展示差异：新增、更新、缺失、字段异常。
+  4. 写入路径必须走既有 holdings service，避免旁路 DB。
+- **验收方式**：
+  - CSV/JSON fixture 导入 dry-run 测试通过。
+  - 重复导入不清空 notes。
+  - 前端构建通过。
+- **代码标注要求**：`# [TRACK-009] holdings_import_contract` / `// [TRACK-009] holdings_import_contract`
+
+### TRACK-010: 跟踪看板盘后复盘乱码与编码/渲染回归（P1）
+- **描述**：用户反馈跟踪看板“盘后复盘”区域出现乱码。本任务追踪从 Review 文本、数据库、API JSON 到前端渲染的编码链路，补充中文回归 fixture。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：TRACK-005、TRACK-007 完成。
+- **执行约束**：
+  - 不重写 Review 生成逻辑。
+  - 不修改历史生产数据，只做读取/渲染修复。
+  - 不调用 LLM。
+- **实现要点**：
+  1. 构造含中文、百分号、表格、特殊符号的 review_summary fixture。
+  2. 校验 SQLite 读取、FastAPI JSON 序列化、前端展示均保持 UTF-8。
+  3. 如有 bytes/escape/markdown 二次转义，统一在 service 层清洗。
+  4. 前端盘后复盘区域增加安全换行和空状态。
+- **验收方式**：
+  - 中文 fixture API 返回不乱码。
+  - 前端单测或渲染测试覆盖复盘文本。
+  - 盘后复盘为空时不显示异常字符。
+- **代码标注要求**：`# [TRACK-010] review_encoding_regression` / `// [TRACK-010] review_encoding_regression`
+
+### TF-QUALITY-005: 候选池“过多且像抄底”回放校准与强度分层（P1）
+- **描述**：用户试用后认为候选池过多、像半山腰抄底，缺少真正可做 T 的优先级。本任务基于历史候选 fixture 做校准，明确主候选、观察候选、过滤候选三层。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：TF-QUALITY-004、H-014 完成。
+- **执行约束**：
+  - 不引入真实交易建议。
+  - 不调用全市场 live scan。
+  - 不把阈值调得过拟合单日样本。
+- **实现要点**：
+  1. 收集最近候选池样本 fixture，覆盖 VCP、回踩、事件、昊天主题。
+  2. 增加 `primary_candidate/secondary_candidate/filtered_reason` 分层规则。
+  3. 对“弱缩量无资金确认”“反弹但趋势未修复”“数据不足”降层。
+  4. 输出候选收敛报告，说明从 N 只压缩到主候选 M 只的原因。
+- **验收方式**：
+  - fixture 中主候选数量明显少于总候选。
+  - 每只被降层候选有可读原因。
+  - 现有候选评分字段不丢失。
+- **代码标注要求**：`# [TF-QUALITY-005] candidate_pool_strength_tiers`
+
+### H-017: 昊天左侧候选证据包：政策-产业-公司三层链路（P1）
+- **描述**：昊天左侧候选不能只显示分数，需要展示政策版本、产业位置、公司角色三层证据，让用户判断是否值得长期观察。本任务生成可落库、可前端展示的 evidence packet。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：H-015、H-016 完成。
+- **执行约束**：
+  - 不调用 LLM。
+  - 不制造政策结论；只整理已有事件、主题、公告、研报证据。
+  - 不输出买入建议。
+- **实现要点**：
+  1. 定义 `MandateEvidencePacket`：policy_theme、industry_chain_role、company_role、evidence_titles、missing_evidence。
+  2. 从 H-015 日报、事件源、公告/研报 raw evidence 中汇总证据。
+  3. 对证据不足的候选标记 `needs_manual_research`。
+  4. 前端或 API 返回三层链路摘要。
+- **验收方式**：
+  - fixture 生成三层证据包。
+  - 缺政策/缺公司证据时不虚高。
+  - 禁用词扫描通过。
+- **代码标注要求**：`# [H-017] mandate_evidence_packet`
+
+### DATA-024: 主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1）
+- **描述**：主力资金仍是用户高频痛点。本任务不直接更换供应商，而是建立 provider fallback 的 dry-run 检查与错误归因报告，明确 AKShare、备用源、网络、限流、无数据各自原因。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：DATA-022、DATA-023 完成。
+- **执行约束**：
+  - 默认使用 fixture；live-smoke 必须显式开关。
+  - 不打印密钥或 cookie。
+  - 不把板块资金流当个股资金流。
+- **实现要点**：
+  1. 新增 `fund_flow_source_probe`，返回 vendor、status、error_type、unit、record_count。
+  2. 支持 fixture replay 和 `--live-smoke --symbols` 小样本。
+  3. 报告区分：网络失败、接口字段变更、正常无数据、限流、单位不明。
+  4. 接入 DATA-023 能力矩阵。
+- **验收方式**：
+  - fixture 覆盖 5 类失败/无数据。
+  - live-smoke 默认关闭。
+  - 报告不出现明文敏感信息。
+- **代码标注要求**：`# [DATA-024] fund_flow_source_probe`
+
+### REPORT-UX-003: 报告最终结论“数据不足观察”原因分解与前端显示（P1）
+- **描述**：用户反馈最近三篇报告最终都变成“数据不足观察”，过于笼统。本任务把观察原因拆成数据缺口、门禁降级、结论冲突、未触发入场、风险优先等可解释标签。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：REPORT-UX-001、REPORT-UX-002 完成。
+- **执行约束**：
+  - 不放宽强动作门禁。
+  - 不修改 prompts。
+  - 不调用 LLM。
+- **实现要点**：
+  1. 定义 `wait_reason_codes`：DATA_MISSING、GATE_BLOCKED、CONFLICT、NO_TRIGGER、RISK_FIRST、NORMAL_NO_DATA。
+  2. 在 report_service 或 signal_processing 输出 reason codes。
+  3. 前端报告卡片显示“观察原因”，而不是单一“数据不足观察”。
+  4. 历史报告 fallback 兼容旧字段。
+- **验收方式**：
+  - 3 类 WAIT fixture 输出不同 reason codes。
+  - 数据正常但未触发不显示“数据不足”。
+  - 前端构建通过。
+- **代码标注要求**：`# [REPORT-UX-003] wait_reason_codes` / `// [REPORT-UX-003] wait_reason_codes`
+
+### TF-OBS-006: 盘中观察自动执行入口与红涨绿跌视觉语义修正（P2）
+- **描述**：用户认为盘中观察需要手动点执行，且距离触发价的红绿含义反大 A 直觉。本任务增加更清晰的刷新入口和视觉语义说明。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：TF-OBS-005、UI-013 完成。
+- **执行约束**：
+  - 不开启后台高频轮询。
+  - 不自动发送交易动作。
+  - 不改触发算法。
+- **实现要点**：
+  1. 盘中观察 tab 增加“一键刷新观察”和最近刷新时间。
+  2. 颜色改为：接近触发/强势接近用红系，远离/走弱用绿或灰，并加图例。
+  3. 非交易时段显示“可查看上次观察/等待交易时段”。
+  4. 增加前端测试或 snapshot。
+- **验收方式**：
+  - 前端构建通过。
+  - 红涨绿跌语义不再反直觉。
+  - 不产生自动交易措辞。
+- **代码标注要求**：`// [TF-OBS-006] observe_refresh_visual_semantics`
+
+### IC-TA-004: investment-controller 飞书 briefing payload 与 TA 调度闭环验收（P2）
+- **描述**：investment-controller 已转型为 TA 调度官/播报官。本任务固定它给飞书/总控的 briefing payload，验证盘前、盘中、盘后各自只做调度与摘要，不越权下最终交易结论。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：IC-TA-003、NOTIFY-003 完成。
+- **执行约束**：
+  - dry-run，不真实发送。
+  - 不调用 LLM。
+  - 不输出强买卖词。
+- **实现要点**：
+  1. 定义 `controller_briefing_payload`：scene、summary、ta_requests、watch_items、data_warnings、notify_level。
+  2. 盘前、盘中、盘后三类 fixture。
+  3. 接入通知去噪规则，P2/P3 进入日报。
+  4. 输出 markdown 预览供飞书卡片后续接入。
+- **验收方式**：
+  - 三场景 dry-run 测试通过。
+  - 禁用词扫描通过。
+  - payload 不包含密钥/敏感配置。
+- **代码标注要求**：`# [IC-TA-004] controller_briefing_payload`
+
+### V-012: 5000 元小资金试跑 5 日回放验收与人工操作手册 v3（P2）
+- **描述**：用户准备拿约 5000 元试跑，需要一份 5 日纸面交易/模拟观察回放验收，验证候选收敛、观察触发、人工确认、盘后归因能闭环。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：V-010、V-011 完成。
+- **执行约束**：
+  - 不连接真实交易。
+  - 不输出收益承诺。
+  - 不调用 LLM。
+- **实现要点**：
+  1. 构造 5 个交易日 fixture：候选、观察、模拟账本、盘后 Review。
+  2. 输出用户手册：每天盘前看什么、盘中点什么、盘后复盘什么。
+  3. 记录风险预算：单票金额、最大回撤、失败退出条件。
+  4. 生成验收文档。
+- **验收方式**：
+  - 5 日 fixture replay 通过。
+  - 能回答“今天看哪几只、为什么、何时触发、盘后如何处理”。
+  - 无强买卖词。
+- **代码标注要求**：`# [V-012] paper_trial_5day_replay`
+
+### AUTO-004: 夜间三小时任务续航预算与失败后停止策略回归（P2）
+- **描述**：用户希望夜间能跑 3 小时左右。本任务给自动开发链增加续航预算报告：当前 ready 任务预计可跑多久、失败是否停止、是否会因任务池空而空转。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：AUTO-003、V-011 完成。
+- **执行约束**：
+  - 不改变 cron 时间。
+  - 不自动启动 OpenCode。
+  - 不绕过 Codex review。
+- **实现要点**：
+  1. 根据历史 task_runs 估算每类任务平均耗时。
+  2. dry-run 输出预计续航时长和 ready 队列排序。
+  3. 确认失败即停策略仍生效。
+  4. ready 不足 2 小时时生成 proposed 补充建议。
+- **验收方式**：
+  - dry-run 报告包含预计时长。
+  - ready 为空时不直接空转。
+  - 不影响现有 auto_dev_loop 领取逻辑。
+- **代码标注要求**：`# [AUTO-004] auto_dev_runtime_budget`
+
 ## B. 待办
 
 ### B-001: 接入小米 MiMo 模型到 TA 系统
