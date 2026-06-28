@@ -115,9 +115,17 @@ def parse_ready_tasks(tasks: list[TaskInfo]) -> list[TaskInfo]:
 
 
 def parse_done_task_ids(tasks: list[TaskInfo]) -> set[str]:
+    """Collect IDs of all done tasks.
+
+    [AUTO-003] task_suggestion_dedupe — also match tasks whose title
+    contains the Chinese done marker '✅ 已完成' even when no explicit
+    status field is present (e.g. D-001, E-001 series).
+    """
     done_ids: set[str] = set()
     for t in tasks:
         if "done" in t.status:
+            done_ids.add(t.task_id)
+        elif "✅ 已完成" in t.title:
             done_ids.add(t.task_id)
     return done_ids
 
@@ -197,17 +205,67 @@ def _is_dev_task(task: TaskInfo) -> bool:
     return True
 
 
+def _is_done_task(task: TaskInfo) -> bool:
+    """Check if a task should be considered done.
+
+    [AUTO-003] task_suggestion_dedupe — matches:
+    - status field containing 'done'
+    - title containing '✅ 已完成' (tasks without explicit status field)
+    - status containing '闭环' or '已由' (blocked — 已由 ... 闭环)
+    """
+    if "done" in task.status:
+        return True
+    if "✅ 已完成" in task.title:
+        return True
+    if "闭环" in task.status or "已由" in task.status:
+        return True
+    return False
+
+
+def _is_needs_human_with_followup_done(task: TaskInfo, done_ids: set[str]) -> bool:
+    """Check if a NEEDS_HUMAN task has all follow-up tasks done.
+
+    [AUTO-003] task_suggestion_dedupe — for tasks like TF-QUALITY-001
+    that are NEEDS_HUMAN but have follow-up tasks (001A, 001B, etc.) done.
+    """
+    if "NEEDS_HUMAN" not in task.status.upper() and "needs_human" not in task.status:
+        return False
+    base_id = task.task_id
+    # Check if any task with same prefix + suffix letter exists and is done
+    for t_id in done_ids:
+        if t_id.startswith(base_id) and t_id != base_id and t_id[len(base_id):].startswith(
+            tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+        ):
+            return True
+    # Also check dependencies — if all deps are done, consider it closed
+    if task.dependencies and _deps_satisfied(task.dependencies, done_ids):
+        return True
+    return False
+
+
 def generate_suggestions(
     tasks: list[TaskInfo],
     roadmap_phases: dict[str, dict],
     done_ids: set[str],
     recent_runs: list[str],
-) -> list[ProposedSuggestion]:
+) -> tuple[list[ProposedSuggestion], dict[str, int]]:
+    """Generate suggestions. Returns (suggestions, filtered_out_summary).
+
+    [AUTO-003] task_suggestion_dedupe — returns filtered_out summary
+    and properly excludes done/obsolete tasks.
+    """
     suggestions: list[ProposedSuggestion] = []
+    filtered_out: dict[str, int] = {
+        "done_status": 0,
+        "done_title": 0,
+        "needs_human_followup_done": 0,
+        "in_progress": 0,
+        "proposed": 0,
+    }
 
     ready_tasks = parse_ready_tasks(tasks)
     if ready_tasks:
-        return suggestions
+        return suggestions, filtered_out
 
     blocked_tasks = parse_blocked_tasks(tasks)
     existing_proposed = parse_proposed_tasks(tasks)
@@ -217,13 +275,26 @@ def generate_suggestions(
         if not _is_dev_task(task):
             continue
 
+        # [AUTO-003] Multi-layer done filtering
         if "done" in task.status:
+            filtered_out["done_status"] += 1
+            continue
+        if "✅ 已完成" in task.title:
+            filtered_out["done_title"] += 1
+            continue
+        if "闭环" in task.status or "已由" in task.status:
+            filtered_out["done_status"] += 1
+            continue
+        if _is_needs_human_with_followup_done(task, done_ids):
+            filtered_out["needs_human_followup_done"] += 1
             continue
         if "ready" in task.status:
             continue
         if "in_progress" in task.status:
+            filtered_out["in_progress"] += 1
             continue
         if task.task_id in proposed_ids:
+            filtered_out["proposed"] += 1
             continue
         if "blocked" in task.status and _deps_satisfied(task.dependencies, done_ids):
             pass
@@ -285,6 +356,9 @@ def generate_suggestions(
         for task in blocked_tasks:
             if task.task_id in proposed_ids:
                 continue
+            if _is_done_task(task):
+                filtered_out["done_status"] += 1
+                continue
             unsatisfied = [d for d in task.dependencies if d not in done_ids]
             suggestions.append(
                 ProposedSuggestion(
@@ -302,7 +376,7 @@ def generate_suggestions(
 
     suggestions.sort(key=lambda s: (0 if "P0" in s.priority else 1 if "P1" in s.priority else 2, s.suggested_id))
 
-    return suggestions
+    return suggestions, filtered_out
 
 
 def render_suggestions_report(
@@ -311,6 +385,7 @@ def render_suggestions_report(
     target_date: str,
     recent_runs: list[str],
     tasks_md_path: Path,
+    filtered_out: dict[str, int] | None = None,
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -390,6 +465,25 @@ def render_suggestions_report(
     lines.append("4. 重新运行 `scripts/auto_dev_loop.sh` 领取 ready 任务。")
     lines.append("")
 
+    if filtered_out:
+        total_filtered = sum(filtered_out.values())
+        if total_filtered > 0:
+            lines.append("## 已过滤任务摘要")
+            lines.append("")
+            lines.append(f"共过滤 {total_filtered} 个不应被建议的任务：")
+            lines.append("")
+            if filtered_out.get("done_status", 0):
+                lines.append(f"- 状态为 done/闭环/已由: {filtered_out['done_status']}")
+            if filtered_out.get("done_title", 0):
+                lines.append(f"- 标题含 ✅ 已完成: {filtered_out['done_title']}")
+            if filtered_out.get("needs_human_followup_done", 0):
+                lines.append(f"- NEEDS_HUMAN 但后续任务已完成: {filtered_out['needs_human_followup_done']}")
+            if filtered_out.get("in_progress", 0):
+                lines.append(f"- 进行中: {filtered_out['in_progress']}")
+            if filtered_out.get("proposed", 0):
+                lines.append(f"- 已有 proposed: {filtered_out['proposed']}")
+            lines.append("")
+
     if recent_runs:
         lines.append("## 最近任务运行")
         lines.append("")
@@ -419,7 +513,7 @@ def run_suggest(
     roadmap_phases = parse_roadmap_phases(roadmap_path)
     recent_runs = get_recent_task_runs(task_runs_dir)
 
-    suggestions = generate_suggestions(tasks, roadmap_phases, done_ids, recent_runs)
+    suggestions, filtered_out = generate_suggestions(tasks, roadmap_phases, done_ids, recent_runs)
 
     report = render_suggestions_report(
         suggestions=suggestions,
@@ -427,6 +521,7 @@ def run_suggest(
         target_date=target_date,
         recent_runs=recent_runs,
         tasks_md_path=tasks_md_path,
+        filtered_out=filtered_out,
     )
 
     if not dry_run:

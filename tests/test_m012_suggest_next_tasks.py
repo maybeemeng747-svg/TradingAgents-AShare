@@ -395,7 +395,7 @@ class TestGenerateSuggestions:
         path = write_tasks_md(tmp_path, SAMPLE_TASKS_MD)
         tasks = S.parse_all_tasks(path)
         done = S.parse_done_task_ids(tasks)
-        suggestions = S.generate_suggestions(tasks, {}, done, [])
+        suggestions, _ = S.generate_suggestions(tasks, {}, done, [])
         assert len(suggestions) == 0
 
     def test_no_ready_unblocked_suggested(self, tmp_path):
@@ -405,7 +405,7 @@ class TestGenerateSuggestions:
         roadmap_path = write_roadmap(tmp_path, SAMPLE_ROADMAP_MD)
         phases = S.parse_roadmap_phases(roadmap_path)
 
-        suggestions = S.generate_suggestions(tasks, phases, done, [])
+        suggestions, _ = S.generate_suggestions(tasks, phases, done, [])
         assert len(suggestions) >= 1
 
         suggested_ids = {s.suggested_id for s in suggestions}
@@ -418,7 +418,7 @@ class TestGenerateSuggestions:
         path = write_tasks_md(tmp_path, SAMPLE_TASKS_MD_NO_READY)
         tasks = S.parse_all_tasks(path)
         done = S.parse_done_task_ids(tasks)
-        suggestions = S.generate_suggestions(tasks, {}, done, [])
+        suggestions, _ = S.generate_suggestions(tasks, {}, done, [])
 
         blocked_001_suggestions = [s for s in suggestions if s.suggested_id == "TASK-BLOCKED-001"]
         assert len(blocked_001_suggestions) == 1
@@ -429,7 +429,7 @@ class TestGenerateSuggestions:
         path = write_tasks_md(tmp_path, SAMPLE_TASKS_MD_NO_READY)
         tasks = S.parse_all_tasks(path)
         done = S.parse_done_task_ids(tasks)
-        suggestions = S.generate_suggestions(tasks, {}, done, [])
+        suggestions, _ = S.generate_suggestions(tasks, {}, done, [])
 
         blocked_002 = [s for s in suggestions if s.suggested_id == "TASK-BLOCKED-002"]
         if blocked_002:
@@ -442,7 +442,7 @@ class TestGenerateSuggestions:
         path = write_tasks_md(tmp_path, SAMPLE_TASKS_MD_NO_READY)
         tasks = S.parse_all_tasks(path)
         done = S.parse_done_task_ids(tasks)
-        suggestions = S.generate_suggestions(tasks, {}, done, [])
+        suggestions, _ = S.generate_suggestions(tasks, {}, done, [])
 
         suggested_ids = [s.suggested_id for s in suggestions]
         assert "TASK-PROPOSED-001" not in suggested_ids
@@ -454,7 +454,7 @@ class TestGenerateSuggestions:
         roadmap_path = write_roadmap(tmp_path, SAMPLE_ROADMAP_MD)
         phases = S.parse_roadmap_phases(roadmap_path)
 
-        suggestions = S.generate_suggestions(tasks, phases, done, [])
+        suggestions, _ = S.generate_suggestions(tasks, phases, done, [])
         blocked_001 = [s for s in suggestions if s.suggested_id == "TASK-BLOCKED-001"]
         if blocked_001 and phases.get("2", {}).get("key_tasks"):
             assert ("Phase" in blocked_001[0].source_reason
@@ -465,7 +465,7 @@ class TestGenerateSuggestions:
         path = write_tasks_md(tmp_path, SAMPLE_TASKS_MD_NO_READY)
         tasks = S.parse_all_tasks(path)
         done = S.parse_done_task_ids(tasks)
-        suggestions = S.generate_suggestions(tasks, {}, done, [])
+        suggestions, _ = S.generate_suggestions(tasks, {}, done, [])
 
         if len(suggestions) >= 2:
             priorities = [s.priority for s in suggestions]
@@ -688,3 +688,178 @@ class TestAcceptanceM012:
             content = script_path.read_text(encoding="utf-8")
             assert "suggest_next_tasks" in content
             assert "M-012" in content
+
+
+# ── Test: AUTO-003 task_suggestion_dedupe ─────────────────────
+
+SAMPLE_TASKS_MD_AUTO003 = textwrap.dedent("""\
+# 任务池
+
+---
+
+## D. 已完成但无状态字段（标题含 ✅）
+
+### D-001: 修正数据完整度评分 ✅ 已完成（含真证据修复）
+- **描述**：修复评分逻辑
+- **验证方式**：coverage=50%
+
+### D-002: 强结论证据门禁 ✅ 已完成（含真降级修复）
+- **描述**：新增双维度评分
+- **验证方式**：coverage<70 时强动作被替换
+
+### E-001: 运行版本戳 ✅ 已完成
+- **描述**：报告末尾追加版本
+- **验证方式**：报告末尾包含版本区块
+
+## F. 闭环任务
+
+### TF-QUALITY-001: 候选池门禁（P0）
+- **描述**：收敛门禁
+- **优先级**：P0
+- **状态**：done — commit 5f304db；NEEDS_HUMAN 已由 TF-QUALITY-001A 与 DATA-COVERAGE-001 拆分闭环
+
+### TF-QUALITY-001A: 收敛门禁回归修复（P0）
+- **描述**：修复回归
+- **优先级**：P0
+- **状态**：done — 后续任务已闭环
+
+## G. NEEDS_HUMAN 待检测
+
+### V-001: 数据真实性验收（P1）
+- **描述**：600584 端到端验收
+- **优先级**：P1
+- **状态**：blocked — NEEDS_HUMAN, see docs/task_runs/V-001-20260608-022250
+- **前置条件**：G-009、G-010 完成
+
+### G-009: 资金流口径校验（P0）
+- **描述**：校验
+- **优先级**：P0
+- **状态**：done
+
+### G-010: 估值 sanity check（P0）
+- **描述**：补修
+- **优先级**：P0
+- **状态**：done
+
+## H. 可执行任务
+
+### H-NEW-001: 新任务（P1）
+- **描述**：一个新任务
+- **优先级**：P1
+- **状态**：blocked
+- **前置条件**：G-009 完成
+""")
+
+
+class TestAuto003Dedupe:
+    """[AUTO-003] Tests for done/obsolete task filtering."""
+
+    def test_done_title_filtered(self, tmp_path):
+        """Tasks with ✅ 已完成 in title are excluded from suggestions."""
+        path = write_tasks_md(tmp_path, SAMPLE_TASKS_MD_AUTO003)
+        tasks = S.parse_all_tasks(path)
+        done_ids = S.parse_done_task_ids(tasks)
+
+        # D-001, D-002, E-001 should be in done_ids
+        assert "D-001" in done_ids
+        assert "D-002" in done_ids
+        assert "E-001" in done_ids
+
+        suggestions, filtered = S.generate_suggestions(tasks, {}, done_ids, [])
+        suggested_ids = {s.suggested_id for s in suggestions}
+
+        # These should NOT appear in suggestions
+        assert "D-001" not in suggested_ids
+        assert "D-002" not in suggested_ids
+        assert "E-001" not in suggested_ids
+
+    def test_done_status_with_loopback_filtered(self, tmp_path):
+        """Tasks with 'done — ...闭环' in status are excluded."""
+        path = write_tasks_md(tmp_path, SAMPLE_TASKS_MD_AUTO003)
+        tasks = S.parse_all_tasks(path)
+        done_ids = S.parse_done_task_ids(tasks)
+
+        assert "TF-QUALITY-001" in done_ids
+        assert "TF-QUALITY-001A" in done_ids
+
+        suggestions, _ = S.generate_suggestions(tasks, {}, done_ids, [])
+        suggested_ids = {s.suggested_id for s in suggestions}
+        assert "TF-QUALITY-001" not in suggested_ids
+        assert "TF-QUALITY-001A" not in suggested_ids
+
+    def test_needs_human_with_followup_done_filtered(self, tmp_path):
+        """NEEDS_HUMAN tasks with deps done are excluded."""
+        path = write_tasks_md(tmp_path, SAMPLE_TASKS_MD_AUTO003)
+        tasks = S.parse_all_tasks(path)
+        done_ids = S.parse_done_task_ids(tasks)
+
+        # V-001 is NEEDS_HUMAN but deps (G-009, G-010) are done
+        suggestions, filtered = S.generate_suggestions(tasks, {}, done_ids, [])
+        suggested_ids = {s.suggested_id for s in suggestions}
+        assert "V-001" not in suggested_ids
+        assert filtered["needs_human_followup_done"] >= 1
+
+    def test_filtered_out_summary_counts(self, tmp_path):
+        """Filtered out summary correctly counts filtered tasks."""
+        path = write_tasks_md(tmp_path, SAMPLE_TASKS_MD_AUTO003)
+        tasks = S.parse_all_tasks(path)
+        done_ids = S.parse_done_task_ids(tasks)
+
+        _, filtered = S.generate_suggestions(tasks, {}, done_ids, [])
+
+        # D-001, D-002, E-001 = 3 title matches
+        assert filtered["done_title"] == 3
+        # TF-QUALITY-001, TF-QUALITY-001A = 2 status matches (done/闭环)
+        assert filtered["done_status"] >= 2
+        # V-001 = 1 NEEDS_HUMAN
+        assert filtered["needs_human_followup_done"] >= 1
+
+    def test_valid_task_still_suggested(self, tmp_path):
+        """Valid blocked tasks with deps met are still suggested."""
+        path = write_tasks_md(tmp_path, SAMPLE_TASKS_MD_AUTO003)
+        tasks = S.parse_all_tasks(path)
+        done_ids = S.parse_done_task_ids(tasks)
+
+        suggestions, _ = S.generate_suggestions(tasks, {}, done_ids, [])
+        suggested_ids = {s.suggested_id for s in suggestions}
+        # H-NEW-001 depends on G-009 which is done
+        assert "H-NEW-001" in suggested_ids
+
+    def test_report_includes_filtered_summary(self, tmp_path):
+        """Report includes filtered_out summary section."""
+        path = write_tasks_md(tmp_path, SAMPLE_TASKS_MD_AUTO003)
+        tasks = S.parse_all_tasks(path)
+        done_ids = S.parse_done_task_ids(tasks)
+
+        suggestions, filtered = S.generate_suggestions(tasks, {}, done_ids, [])
+        report = S.render_suggestions_report(
+            suggestions=suggestions,
+            ready_count=0,
+            target_date="2026-06-28",
+            recent_runs=[],
+            tasks_md_path=path,
+            filtered_out=filtered,
+        )
+        assert "已过滤任务摘要" in report
+        assert "✅ 已完成" in report
+
+    def test_real_tasks_md_no_done_in_suggestions(self):
+        """Integration: real TASKS.md should not suggest done tasks."""
+        repo_dir = Path(__file__).resolve().parent.parent
+        tasks_md = repo_dir / "docs" / "TASKS.md"
+        if not tasks_md.exists():
+            pytest.skip("docs/TASKS.md not found")
+
+        tasks = S.parse_all_tasks(tasks_md)
+        done_ids = S.parse_done_task_ids(tasks)
+        suggestions, filtered = S.generate_suggestions(tasks, {}, done_ids, [])
+        suggested_ids = {s.suggested_id for s in suggestions}
+
+        # These are known-done tasks that were incorrectly suggested before
+        known_done = ["D-001", "D-002", "D-003", "D-004",
+                      "E-001", "E-002", "E-003", "E-004"]
+        for task_id in known_done:
+            assert task_id not in suggested_ids, f"{task_id} should not be suggested"
+
+        # Total filtered should be > 0
+        assert sum(filtered.values()) > 0
