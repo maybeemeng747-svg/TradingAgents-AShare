@@ -8264,6 +8264,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Review file**: docs/reviews/NOTIFY-003-20260627-round1.txt
 - **Run archive**: docs/task_runs/NOTIFY-003-20260627-010451/
 
+## 2026-06-29 | 全局协作规则：开发/验收双模式
+
+- **背景**：用户提出“开发功能时用第一性原理+剃刀定律；功能验收/测试时用多 Agent + 墨菲定律 + 对抗性审查”。
+- **变更**：更新 `AGENTS.md`，新增“开发与验收思维模式”。
+- **原则**：
+  - 功能开发阶段回到问题本质，选择满足目标的最小实现，避免无必要抽象和功能堆叠。
+  - 验收阶段默认最坏情况会发生，从实现者、用户操作、风控/数据真实性三类视角做对抗性审查。
+  - 重要改动必须优先找 P0/P1 风险，失败路径和边界条件优先于功能亮点。
+
 ## 2026-06-29 | KB 系列任务释放：Tree Work 本地知识库接入 TA
 
 - **背景**：用户确认本地知识库位于 `~/Documents/knowledge/`，由 Tree Work 基于 Karpathy LLM Wiki 模式消化研报；TA 应接入已消化的 `wiki/investment/`，而不是直接消化 raw PDF/截图。
