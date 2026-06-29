@@ -97,6 +97,7 @@ acquire_lock() {
             echo "pid=$$"
             echo "started_at=$(date +%Y-%m-%d_%H:%M:%S)"
             echo "repo=$REPO_DIR"
+            echo "task_id=${TASK_ID:-unknown}"
         } > "$LOCK_DIR/owner"
         return 0
     fi
@@ -144,16 +145,138 @@ print(f"TASKS.md: {target_id} -> {status_text}")
 PYEOF
 }
 
+# --- Stale lock recovery ---
+recover_stale_lock() {
+    # [INF-001] task_claim_lock — stale lock recovery (conservative)
+    local owner_file="$LOCK_DIR/owner"
+    if [ ! -f "$owner_file" ]; then
+        err "Lock exists but no owner file, exiting"
+        exit 1
+    fi
+
+    # Parse owner file
+    local lock_pid lock_started_at lock_task_id
+    lock_pid=$(grep '^pid=' "$owner_file" | cut -d= -f2)
+    lock_started_at=$(grep '^started_at=' "$owner_file" | cut -d= -f2)
+    lock_task_id=$(grep '^task_id=' "$owner_file" | cut -d= -f2)
+
+    # Check if pid is still alive
+    if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+        err "Lock held by live process PID=$lock_pid, exiting"
+        cat "$owner_file" >&2
+        exit 1
+    fi
+    log "Lock PID=$lock_pid is not alive"
+
+    # Check lock age (must be > 30 minutes)
+    if [ -n "$lock_started_at" ]; then
+        local lock_epoch now_epoch age_seconds
+        lock_epoch=$(date -j -f '%Y-%m-%d_%H:%M:%S' "$lock_started_at" '+%s' 2>/dev/null || echo 0)
+        now_epoch=$(date '+%s')
+        age_seconds=$((now_epoch - lock_epoch))
+        if [ "$age_seconds" -lt 1800 ]; then
+            err "Lock is only ${age_seconds}s old (< 30min), exiting to be safe"
+            cat "$owner_file" >&2
+            exit 1
+        fi
+        log "Lock age: ${age_seconds}s (> 30min threshold)"
+    fi
+
+    # Stale lock confirmed. Check working tree.
+    local dirty_files
+    dirty_files=$(git status --porcelain 2>/dev/null | grep -v '^?? .auto_dev.lock' || true)
+    if [ -n "$dirty_files" ]; then
+        err "NEEDS_HUMAN: Stale lock detected but working tree is dirty — cannot auto-recover"
+        err "Dirty files:"
+        echo "$dirty_files" >&2
+        err "Please review the dirty files, then either:"
+        err "  1. Commit/restore them manually, then re-run"
+        err "  2. Or delete .auto_dev.lock manually if safe"
+        # Write stale lock report
+        mkdir -p "$REVIEW_DIR"
+        local report_file="$REVIEW_DIR/stale-lock-$(date +%Y-%m-%d).md"
+        {
+            echo "# Stale Lock Recovery — NEEDS_HUMAN"
+            echo ""
+            echo "- **Time**: $(date '+%Y-%m-%d %H:%M:%S')"
+            echo "- **Lock PID**: $lock_pid (dead)"
+            echo "- **Lock Task**: ${lock_task_id:-unknown}"
+            echo "- **Lock Age**: ${age_seconds:-?}s"
+            echo "- **Reason**: Working tree dirty, cannot auto-recover"
+            echo ""
+            echo "## Dirty Files"
+            echo '```'
+            echo "$dirty_files"
+            echo '```'
+        } >> "$report_file"
+        exit 1
+    fi
+
+    # Working tree clean — safe to recover
+    log "Stale lock recovery: PID=$lock_pid dead, lock age ${age_seconds:-?}s, tree clean"
+    rm -rf "$LOCK_DIR"
+    log "Deleted stale lock: $LOCK_DIR"
+
+    # Restore the specific task to ready (only the one in owner file)
+    if [ -n "$lock_task_id" ]; then
+        python3 - "$TASKS_FILE" "$lock_task_id" <<'PYEOF'
+import re, sys
+tasks_file, target_id = sys.argv[1], sys.argv[2]
+with open(tasks_file, "r", encoding="utf-8") as f:
+    content = f.read()
+pattern = re.compile(
+    r"(###\s+" + re.escape(target_id) + r":.*?)(?=\n###|\n---|\Z)",
+    re.DOTALL,
+)
+m = pattern.search(content)
+if m:
+    section = m.group(1)
+    new_section, n = re.subn(
+        r"(- \*\*(status|状态)\*\*[：:,]+\s*).+",
+        r"\1ready",
+        section,
+        count=1,
+    )
+    if n > 0:
+        content = content[:m.start()] + new_section + content[m.end():]
+        with open(tasks_file, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"TASKS.md: {target_id} restored to ready")
+    else:
+        print(f"TASKS.md: {target_id} — no status line found to update")
+else:
+    print(f"TASKS.md: {target_id} not found")
+PYEOF
+        log "Task $lock_task_id restored to ready"
+    fi
+
+    # Write stale lock report
+    mkdir -p "$REVIEW_DIR"
+    local report_file="$REVIEW_DIR/stale-lock-$(date +%Y-%m-%d).md"
+    {
+        echo "# Stale Lock Recovery — Auto Recovered"
+        echo ""
+        echo "- **Time**: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "- **Lock PID**: $lock_pid (dead)"
+        echo "- **Lock Task**: ${lock_task_id:-unknown}"
+        echo "- **Lock Age**: ${age_seconds:-?}s"
+        echo "- **Action**: Deleted lock, restored ${lock_task_id:-unknown} to ready"
+        echo "- **Tree Status**: Clean"
+    } >> "$report_file"
+}
+
 # --- 0. Pre-checks ---
 log "=== AUTO-002 Auto Dev Loop v1.3 ==="
 log "Repo: $REPO_DIR"
 
 mkdir -p "$REVIEW_DIR" "$TASK_RUN_ROOT"
 
+RECOVERED_STALE_LOCK=false
+
 if [ -d "$LOCK_DIR" ]; then
-    err "Auto dev lock detected, exiting to avoid duplicate task claim: $LOCK_DIR"
-    [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
-    exit 1
+    log "Lock detected, attempting stale lock recovery..."
+    recover_stale_lock
+    RECOVERED_STALE_LOCK=true
 fi
 
 # 0a. Preflight check (T-000)
@@ -173,11 +296,14 @@ if [ -x "${SCRIPT_DIR}/preflight_check.sh" ]; then
     log "Preflight completed (exit=${PREFLIGHT_EXIT})"
 fi
 
-DIRTY=$(git status --porcelain | head -5 || true)
-if [ -n "$DIRTY" ]; then
+DIRTY=$(git status --porcelain | grep -v '^?? .auto_dev.lock' | head -5 || true)
+if [ -n "$DIRTY" ] && [ "$RECOVERED_STALE_LOCK" = false ]; then
     err "Working tree dirty, exiting to avoid overwriting user changes:"
     echo "$DIRTY"
     exit 1
+fi
+if [ "$RECOVERED_STALE_LOCK" = true ] && [ -n "$DIRTY" ]; then
+    log "Tree has changes from stale lock recovery (TASKS.md + review), continuing"
 fi
 log "Working tree clean"
 

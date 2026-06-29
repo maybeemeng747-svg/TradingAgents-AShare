@@ -160,6 +160,10 @@
 134. `KB-004`：TradeFlow 昊天候选接入本地知识命中分与证据摘要（P1，ready，依赖 KB-003/H-017）。
 135. `KB-005`：Tree Work inbox/raw/wiki 对齐与未消化研报清单（P2，ready，依赖 KB-001）。
 136. `KB-006`：本地知识库查询 API 与 investment-controller 只读上下文接入（P2，ready，依赖 KB-003/IC-TA-004）。
+137. `KB-007`：多研报重复提及因子 Research Attention Score（P1，ready，依赖 KB-001/KB-002）。
+138. `KB-008`：TA/TradeFlow 接入研报关注度与主题交叉度展示（P1，ready，依赖 KB-003/KB-007）。
+139. `DATA-025`：免费研报来源目录与 Eastmoney/AKShare 研报源 smoke（P2，ready，依赖 DATA-011/DATA-023）。
+140. `KB-009`：研报来源去重、时效衰减与过热惩罚规则（P2，ready，依赖 KB-007）。
 
 ### 数据源治理候选队列
 
@@ -4436,6 +4440,95 @@
   - 非 investment 分区默认不可见。
   - controller dry-run payload 不含长篇原文。
 - **代码标注要求**：`# [KB-006] local_knowledge_context_api`
+
+### KB-007: 多研报重复提及因子 Research Attention Score（P1）
+- **描述**：统计 Tree Work `wiki/investment/` 中每只股票被多少篇研报/评分表/主题页重复提及，形成“研报关注度/主题交叉度”因子，用于候选发现和中线研究优先级。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：KB-001、KB-002 完成。
+- **执行约束**：
+  - 不把多研报提及当成买入信号。
+  - 不读取 raw PDF 全文，只使用 Tree Work 已消化 wiki 的 frontmatter 和短摘要。
+  - 不调用 LLM，不访问外网。
+  - deprecated、过期、低置信页面必须降权或仅作弱证据。
+- **实现要点**：
+  1. 建立本地倒排索引：`symbol -> matched_pages[]`。
+  2. 计算字段：`mention_count`、`fresh_mention_count`、`theme_count`、`source_count`、`high_quality_mention_count`、`stale_mention_count`、`deprecated_mention_count`、`report_type_distribution`。
+  3. 合成 `research_attention_score`：提及次数 + 主题交叉 + 来源质量 + 新鲜度 - 过期/低置信/重复来源惩罚。
+  4. 输出 `docs/knowledge_reports/research_attention-YYYY-MM-DD.md/json`，列出 Top symbols 和明细。
+  5. 对基金代码、港股、美股、未上市主体与 A 股股票分类型处理，不混成一类。
+- **验收方式**：
+  - 对当前知识库可生成 symbol 关注度榜。
+  - 同一股票多篇命中能汇总主题与来源。
+  - 过期/低置信/废弃页面不提升强信号。
+  - 无任何买卖建议或强动作词。
+- **代码标注要求**：`# [KB-007] research_attention_score`
+
+### KB-008: TA/TradeFlow 接入研报关注度与主题交叉度展示（P1）
+- **描述**：将 KB-007 的研报关注度接入 TA 报告、TradeFlow 候选池和观察仓，使“多份研报反复提到同一股票”成为研究优先级和解释信息。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：KB-003、KB-007 完成。
+- **执行约束**：
+  - 仅作为候选排序/研究优先级因子，不直接改变交易动作。
+  - 不与公告、财务、行情、资金流混用。
+  - 前端展示必须同时显示负面信息：过期数、低置信数、主题是否拥挤。
+- **实现要点**：
+  1. TA “本地知识补充”区块增加：命中篇数、主题交叉、来源质量、过期数、综合关注度。
+  2. TradeFlow 候选增加 `research_attention_score`、`knowledge_theme_count`、`research_attention_summary` 字段。
+  3. 昊天左侧池优先展示“多主题交叉但未过热”的候选。
+  4. 观察仓详情展示命中页面列表和最近更新时间。
+- **验收方式**：
+  - fixture 中同一股票多篇命中，前端/API 展示关注度摘要。
+  - 仅低置信命中不会推高候选层级。
+  - 无命中时返回 NORMAL_NO_DATA，不影响 TA 主流程。
+- **代码标注要求**：`# [KB-008] research_attention_integration` / `// [KB-008] research_attention_integration`
+
+### DATA-025: 免费研报来源目录与 Eastmoney/AKShare 研报源 smoke（P2）
+- **描述**：梳理免费可用研报来源，优先验证东方财富研报中心/AKShare `stock_research_report_em`，作为外部研报元数据补充源；其它免费页面先列入目录，不做重抓。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：DATA-011、DATA-023 完成。
+- **免费来源初版**：
+  1. 东方财富研报中心/个股研报：可通过 AKShare `stock_research_report_em(symbol)` 获取个股研报元数据、机构、评级、盈利预测、日期、PDF链接。
+  2. 新浪财经研究评级页：可作为补充索引源，字段以标题、日期、评级为主。
+  3. 巨潮资讯/CNInfo：这是公告/法披真源，不是券商研报源；只用于公告与原始披露交叉验证。
+  4. 券商官网/上市公司 IR 页面：可作为人工补充，不做默认爬取。
+- **执行约束**：
+  - 第一版只做目录和小样本 smoke，不批量下载 PDF。
+  - 尊重来源网站访问限制；默认 fixture，live-smoke 必须显式开关。
+  - 免费研报仅作为观点/关注度/预期源，不能替代公告或财报。
+  - 不提交下载的 PDF 正文或版权内容。
+- **实现要点**：
+  1. 更新数据源能力矩阵，增加 `research_report_free_sources`。
+  2. 为 Eastmoney/AKShare 个股研报做 3-5 只样本 smoke：有数据、无数据、接口失败三类。
+  3. 输出 `docs/data_source_reports/research_report_sources-YYYY-MM-DD.md`。
+  4. 对接 DATA-011 的 `research_report` raw_evidence 状态，不改变强动作门禁。
+- **验收方式**：
+  - AKShare 个股研报 fixture 解析字段完整。
+  - 无研报返回 NORMAL_NO_DATA，接口失败返回 FAILED。
+  - 报告明确区分“研报观点源”和“公告/财报事实源”。
+- **代码标注要求**：`# [DATA-025] free_research_report_sources`
+
+### KB-009: 研报来源去重、时效衰减与过热惩罚规则（P2）
+- **描述**：防止 Research Attention Score 被同源重复、过期周报或热门题材过度放大，加入去重、时效衰减和过热惩罚。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：KB-007 完成。
+- **执行约束**：
+  - 不压制真实多来源共识，只惩罚重复和过期。
+  - 不用单日价格涨幅作为唯一过热指标。
+  - 不调用 LLM。
+- **实现要点**：
+  1. source 去重：同一机构/同一标题/同一 raw source 重复命中只计一次主权重。
+  2. 时效衰减：`valid_until` 过期后只保留弱证据；高 stale_risk 页面权重衰减更快。
+  3. 过热惩罚：结合候选已有 overheat_flags、短期涨幅、主题拥挤度降低研究优先级。
+  4. 输出 explain：为什么加分、为什么降权。
+- **验收方式**：
+  - 同源重复不会把关注度刷高。
+  - 过期页面不提升主候选层级。
+  - explain 字段可读。
+- **代码标注要求**：`# [KB-009] research_attention_decay`
 
 ## B. 待办
 
