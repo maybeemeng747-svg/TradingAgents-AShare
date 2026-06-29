@@ -4,6 +4,72 @@
 
 ---
 
+## 2026-06-29 | H-017：昊天左侧候选证据包：政策-产业-公司三层链路
+
+- **执行者**：OpenCode（task run H-017-20260629-230021）
+- **类型**：feature + integration + test
+- **状态**：✅ 完成（待提交）
+
+### 背景
+
+昊天左侧候选（POLICY_AMBUSH / POLICY_CONFIRM）此前只展示分数和入池原因，
+用户无法判断"这只票到底凭什么值得长期观察"。H-017 为每只左侧候选生成一个
+结构化、可落库、可前端展示的 **政策-产业-公司三层证据包**，把 H-002/H-003/
+H-010/H-011/H-012/H-015 已经产出的证据汇总到一个可审计的 payload 里。
+
+### 设计要点（第一性原理 + 剃刀定律）
+
+- 不调用 LLM，不制造政策结论，只整理已有事件/主题/公告/研报证据。
+- 三层结构对应三个判断维度：
+  1. **政策层** `policy_theme`：主题、政策级别(中央/部委/地方)、生命周期状态、政策证据条数。
+  2. **产业层** `industry_chain_role`：匹配到的产业链环节、受益路径。
+  3. **公司层** `company_role`：公司角色分类(龙头/核心供应商/基础设施/应用场景/外围/概念)、
+     是否有公司层面证据(公告/研报)、原始角色描述保留。
+- `needs_manual_research` 在政策层或公司层证据缺失时置 True，防止薄候选被虚高。
+- `confidence` (high/medium/low) 描述证据充实度，**不**是买卖信号。
+- raw_evidence 的 announcements/research_report/news 只检测可用性(status=OK +
+  record_count>0)，不解析自由文本，避免捏造标题。
+- 复用已有 H-003 `CompanyRole` 枚举、H-012 `match_topic`/`_lifecycle_to_status`、
+  H-012 topic registry evidence_links，不新建并行数据源。
+
+### 关键逻辑
+
+| 字段 | 来源 | 说明 |
+|------|------|------|
+| `policy_theme` | `topic_registry.match_topic()` | 从 mandate_topic/policy_tags/name 解析 |
+| `policy_level` | candidate refs source_level / topic_entry | 中央 > 部委 > 地方 |
+| `policy_evidence_count` | policy_evidence_refs + mandate_evidence_refs + topic evidence_links | 去重计数 |
+| `industry_chain_segments` | beneficiary_path ∩ `_INDUSTRY_CHAIN_MAP[topic]` | 只保留精确匹配的环节 |
+| `company_role` | `_normalize_company_role(raw)` | 支持枚举值 + 中文标签(核心供应商/龙头…) |
+| `raw_company_role` | candidate.company_role 原值 | 保留描述性文本(如"动力系统")用于展示 |
+| `company_evidence_available` | raw_evidence[announcements/research_report/news] | 只看 status+record_count |
+| `missing_evidence` | 规则推导 | 列出政策/产业/公司各自缺什么 |
+| `needs_manual_research` | policy_thin OR company_thin | 薄候选不虚高 |
+| `confidence` | 三层各自 substantive 计数 | ≥3=high, 2=medium, ≤1=low |
+
+### 修改文件
+
+| 文件 | 变更 |
+|------|------|
+| `tradingagents/tradeflow/mandate_evidence_packet.py` | **新增** — MandateEvidencePacket dataclass + build_evidence_packet() + batch helper + summary renderer |
+| `tradingagents/tradeflow/mandate_daily_report.py` | MandateDailyCandidate 增加 `evidence_packet` 字段；build_mandate_daily_report 在生成候选时调用 build_evidence_packet（enriched 候选带上 topic_name + topic_status） |
+| `api/tradeflow_schemas.py` | 新增 MandateEvidencePacketItem Pydantic 模型；MandateDailyCandidateItem 增加 `evidence_packet` 字段 |
+| `tests/test_h017_mandate_evidence_packet.py` | **新增** — 36 个测试覆盖三层填充、缺口检测、confidence 分层、raw_evidence 检测、角色归一化、批量构建、日报集成、禁用词扫描、确定性、边界场景 |
+
+### 测试结果
+
+- `tests/test_h017_mandate_evidence_packet.py`：**36 passed**
+- 回归：H-015/H-016/H-014/H-013/H-012/H-003/UI-001 共 **423 passed / 0 failed**
+- 禁用词扫描：packet JSON + summary line + 日报 markdown 均无"买入/卖出/清仓/满仓/梭哈/加仓/减仓"
+
+### 后续衔接
+
+- KB-004（TradeFlow 昊天候选接入本地知识命中分）依赖本任务的 evidence_packet。
+- 前端可在 `TradeFlowCandidateDrawer.tsx` 的 `mandate_evidence_refs` 区块附近新增
+  三层证据包展示（本任务只做后端 + API schema，前端展示留后续）。
+
+---
+
 ## 2026-06-29 | TF-QUALITY-005：候选池"过多且像抄底"强度分层
 
 - **执行者**：OpenCode（task run TF-QUALITY-005-20260629-191253）
@@ -8621,3 +8687,15 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
   - 需要全量测试时显式设置 `AUTO_DEV_FULL_TESTS=1`。
   - 任务选中后把真实 `TASK_ID` 写入 `.auto_dev.lock/owner`，便于陈旧锁恢复定位具体任务。
 - **原则**：自动开发默认快反馈，专项验收优先；全量回归作为夜间专门任务或人工确认项，不再作为每个任务的隐性默认。
+
+## 2026-06-29 | AUTO-002 Auto Dev Loop
+
+- **Task**: H-017 - 昊天左侧候选证据包：政策-产业-公司三层链路（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Timeout budget**: OpenCode 1800s / tests 900s
+- **Review file**: docs/reviews/H-017-20260629-round1.txt
+- **Run archive**: docs/task_runs/H-017-20260629-230021/

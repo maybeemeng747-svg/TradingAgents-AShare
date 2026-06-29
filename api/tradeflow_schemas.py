@@ -827,6 +827,32 @@ class TopicHeatmapResponse(BaseModel):
 
 
 # [H-015] mandate_daily_report
+# [H-017] mandate_evidence_packet
+class MandateEvidencePacketItem(BaseModel):
+    symbol: str = ""
+    name: str = ""
+    topic: str = ""
+    policy_theme: str = ""
+    policy_level: str = ""
+    policy_level_weight: int = 0
+    topic_status: str = ""
+    topic_status_label: str = ""
+    policy_evidence_count: int = 0
+    industry_chain_role: str = ""
+    industry_chain_segments: List[str] = Field(default_factory=list)
+    beneficiary_path: List[str] = Field(default_factory=list)
+    company_role: str = ""
+    company_role_label: str = ""
+    raw_company_role: str = ""
+    has_company_evidence: bool = False
+    company_evidence_available: List[str] = Field(default_factory=list)
+    evidence_titles: List[Dict[str, Any]] = Field(default_factory=list)
+    missing_evidence: List[str] = Field(default_factory=list)
+    needs_manual_research: bool = False
+    confidence: str = ""
+    confidence_reason: str = ""
+
+
 class MandateDailyCandidateItem(BaseModel):
     symbol: str = ""
     name: str = ""
@@ -838,6 +864,7 @@ class MandateDailyCandidateItem(BaseModel):
     latest_date: str = ""
     entry_reason: str = ""
     evidence_gaps: List[str] = Field(default_factory=list)
+    evidence_packet: MandateEvidencePacketItem = Field(default_factory=MandateEvidencePacketItem)  # [H-017]
 
 
 class MandateDailyReportResponse(BaseModel):

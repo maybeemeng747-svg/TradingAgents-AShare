@@ -35,6 +35,7 @@ class MandateDailyCandidate:
     latest_date: str = ""
     entry_reason: str = ""
     evidence_gaps: List[str] = field(default_factory=list)
+    evidence_packet: dict = field(default_factory=dict)  # [H-017] mandate_evidence_packet
 
     def to_dict(self) -> dict:
         return {
@@ -48,6 +49,7 @@ class MandateDailyCandidate:
             "latest_date": self.latest_date,
             "entry_reason": self.entry_reason,
             "evidence_gaps": list(self.evidence_gaps),
+            "evidence_packet": dict(self.evidence_packet),  # [H-017]
         }
 
 
@@ -175,6 +177,24 @@ def build_mandate_daily_report(heatmap: dict, *, as_of: str = "") -> MandateDail
             evidence_gaps.append({"topic": topic_name, "gaps": gaps[:5]})
 
         for c in topic.get("candidates") or []:
+            # [H-017] mandate_evidence_packet — assemble the three-layer
+            # policy/industry/company packet from the candidate + topic
+            # evidence already present on the heatmap entry. The topic name
+            # and topic-level status/evidence are merged into a working copy
+            # so the packet can resolve the policy theme even when the
+            # candidate dict itself does not repeat ``mandate_topic``.
+            from tradingagents.tradeflow.mandate_evidence_packet import (
+                build_evidence_packet,
+            )
+            enriched = dict(c)
+            if topic_name and not enriched.get("mandate_topic"):
+                enriched["mandate_topic"] = topic_name
+            # Heatmap topic_status is already in H-012 format; pass it
+            # through directly so the packet can render the status label
+            # without needing a lifecycle → status round-trip.
+            if topic.get("topic_status") and not enriched.get("topic_status"):
+                enriched["topic_status"] = topic.get("topic_status", "")
+            packet = build_evidence_packet(enriched)
             item = MandateDailyCandidate(
                 symbol=c.get("symbol", ""),
                 name=c.get("name", ""),
@@ -186,6 +206,7 @@ def build_mandate_daily_report(heatmap: dict, *, as_of: str = "") -> MandateDail
                 latest_date=c.get("latest_date", ""),
                 entry_reason=_entry_reason(topic, c),
                 evidence_gaps=gaps[:5],
+                evidence_packet=packet.to_dict(),
             )
             target = main_candidates if (
                 topic.get("is_left_side") or topic.get("is_confirmed")
