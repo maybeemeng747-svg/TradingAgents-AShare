@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AUTO-002: Auto dev loop v1.3 reliability patch
+# AUTO-002: Auto dev loop v1.4 timeout governance patch
 # Usage: ./scripts/auto_dev_loop.sh [--dry-run]
 #
 # Constraints:
@@ -32,6 +32,11 @@ PROMPT_FILE=""
 OPENCODE_LOG=""
 REVIEW_FILE=""
 HAVE_LOCK=false
+OPENCODE_TIMEOUT_SECONDS="${AUTO_DEV_OPENCODE_TIMEOUT_SECONDS:-1800}"
+TEST_TIMEOUT_SECONDS="${AUTO_DEV_TEST_TIMEOUT_SECONDS:-900}"
+DEFAULT_TEST_CMD="${AUTO_DEV_DEFAULT_TEST_CMD:-pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short}"
+FULL_TEST_CMD="${AUTO_DEV_FULL_TEST_CMD:-pytest tests/ -q --tb=short}"
+AUTO_DEV_FULL_TESTS="${AUTO_DEV_FULL_TESTS:-0}"
 
 # Zhipu API Key (for quota check)
 ZAI_API_KEY="${ZAI_API_KEY:-}"
@@ -72,6 +77,51 @@ log()  { echo -e "${GREEN}[AUTO]${NC} $*"; }
 warn() { echo -e "${YELLOW}[AUTO]${NC} $*"; }
 err()  { echo -e "${RED}[AUTO]${NC} $*" >&2; }
 
+run_with_timeout() {
+    local seconds="$1"
+    shift
+
+    if command -v gtimeout &>/dev/null; then
+        gtimeout --kill-after=5s "$seconds" "$@"
+        return $?
+    fi
+    if command -v timeout &>/dev/null; then
+        timeout --kill-after=5s "$seconds" "$@"
+        return $?
+    fi
+
+    python3 -c '
+import os
+import signal
+import subprocess
+import sys
+
+seconds = float(sys.argv[1])
+cmd = sys.argv[2:]
+try:
+    proc = subprocess.Popen(cmd, start_new_session=True)
+except FileNotFoundError:
+    sys.exit(127)
+
+try:
+    sys.exit(proc.wait(timeout=seconds))
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+    sys.exit(124)
+' "$seconds" "$@"
+}
+
 redact_log() {
     # Redact API keys before persisting logs.
     sed -E \
@@ -105,6 +155,19 @@ acquire_lock() {
     err "Auto dev lock detected, exiting to avoid duplicate task claim: $LOCK_DIR"
     [ -f "$LOCK_DIR/owner" ] && cat "$LOCK_DIR/owner" >&2
     exit 1
+}
+
+record_lock_task() {
+    if [ "$HAVE_LOCK" != true ] || [ ! -f "$LOCK_DIR/owner" ]; then
+        return 0
+    fi
+    local tmp_owner="$LOCK_DIR/owner.tmp"
+    awk -v task_id="${TASK_ID:-unknown}" '
+        BEGIN { seen = 0 }
+        /^task_id=/ { print "task_id=" task_id; seen = 1; next }
+        { print }
+        END { if (!seen) print "task_id=" task_id }
+    ' "$LOCK_DIR/owner" > "$tmp_owner" && mv "$tmp_owner" "$LOCK_DIR/owner"
 }
 
 update_task_status() {
@@ -266,8 +329,14 @@ PYEOF
 }
 
 # --- 0. Pre-checks ---
-log "=== AUTO-002 Auto Dev Loop v1.3 ==="
+log "=== AUTO-002 Auto Dev Loop v1.4 ==="
 log "Repo: $REPO_DIR"
+log "Timeout budget: OpenCode=${OPENCODE_TIMEOUT_SECONDS}s, tests=${TEST_TIMEOUT_SECONDS}s"
+if [ "$AUTO_DEV_FULL_TESTS" = "1" ]; then
+    log "Default tests: full suite (${FULL_TEST_CMD})"
+else
+    log "Default tests: smoke suite (${DEFAULT_TEST_CMD})"
+fi
 
 mkdir -p "$REVIEW_DIR" "$TASK_RUN_ROOT"
 
@@ -440,6 +509,7 @@ if [ "$TASK_ID" = "NONE" ]; then
 fi
 
 log "Selected task: [$TASK_PRIO] $TASK_ID: $TASK_TITLE"
+record_lock_task
 [ -n "$TASK_TESTS" ] && log "Test commands: $TASK_TESTS"
 
 # --- dry-run mode: print task info only ---
@@ -451,7 +521,10 @@ if [ "$DRY_RUN" = true ]; then
     echo "  Task ID:    $TASK_ID"
     echo "  Task title: $TASK_TITLE"
     echo "  Priority:   $TASK_PRIO"
-    echo "  Test cmd:   ${TASK_TESTS:-default pytest}"
+    echo "  Test cmd:   ${TASK_TESTS:-$DEFAULT_TEST_CMD}"
+    echo "  OpenCode timeout: ${OPENCODE_TIMEOUT_SECONDS}s"
+    echo "  Test timeout:     ${TEST_TIMEOUT_SECONDS}s"
+    echo "  Full tests:       ${AUTO_DEV_FULL_TESTS}"
     echo "========================================"
     break
 fi
@@ -470,7 +543,10 @@ cat > "$RUN_DIR/task.md" <<TASK_META_EOF
 - Status: CLAIMED
 - Started at: $(date +%Y-%m-%d_%H:%M:%S)
 - Git HEAD: $(git rev-parse --short HEAD)
-- Test commands: ${TASK_TESTS:-pytest tests/ -q --tb=short}
+- Test commands: ${TASK_TESTS:-$DEFAULT_TEST_CMD}
+- OpenCode timeout seconds: $OPENCODE_TIMEOUT_SECONDS
+- Test timeout seconds: $TEST_TIMEOUT_SECONDS
+- Full tests enabled: $AUTO_DEV_FULL_TESTS
 - Runner: scripts/auto_dev_loop.sh
 
 ## Trace Files
@@ -537,7 +613,7 @@ while [ $ROUND -lt $MAX_FIX_ROUNDS ]; do
     cp "$PROMPT_FILE" "$RUN_DIR/prompt-round${ROUND}.md"
 
     # 3a. Run OpenCode
-    log "Starting OpenCode..."
+    log "Starting OpenCode (timeout=${OPENCODE_TIMEOUT_SECONDS}s)..."
     OPENCODE_LOG=$(mktemp -t auto-dev-opencode.XXXXXX)
     
     # Quota pre-check: pause if exhausted
@@ -554,13 +630,20 @@ while [ $ROUND -lt $MAX_FIX_ROUNDS ]; do
     fi
     
     set +e
-    opencode run < "$PROMPT_FILE" > "$OPENCODE_LOG" 2>&1
+    run_with_timeout "$OPENCODE_TIMEOUT_SECONDS" opencode run < "$PROMPT_FILE" > "$OPENCODE_LOG" 2>&1
     OPENCODE_EXIT=$?
     set -e
     log "OpenCode exit=${OPENCODE_EXIT}"
     redact_log < "$OPENCODE_LOG" > "$RUN_DIR/opencode-round${ROUND}.txt"
 
     if [ $OPENCODE_EXIT -ne 0 ]; then
+        if [ $OPENCODE_EXIT -eq 124 ]; then
+            LAST_FAILURE_REASON="OpenCode timed out after ${OPENCODE_TIMEOUT_SECONDS}s"
+            ISSUES_LOG+=("[Round $ROUND] OpenCode timeout after ${OPENCODE_TIMEOUT_SECONDS}s")
+            err "OpenCode timed out after ${OPENCODE_TIMEOUT_SECONDS}s"
+            RESULT_STATUS="NEEDS_HUMAN"
+            break
+        fi
         # Check if failure is due to quota exhaustion
         if grep -qi "429\|rate.limit\|quota\|exhausted\|too many requests" "$OPENCODE_LOG" 2>/dev/null; then
             err "[QUOTA] OpenCode failed: Zhipu API quota exhausted"
@@ -609,7 +692,7 @@ FIX_EOF
                 echo
             } >> "$TEST_LOG_FILE"
             set +e
-            TEST_OUTPUT=$(source .venv/bin/activate && eval "$test_cmd" 2>&1)
+            TEST_OUTPUT=$(source .venv/bin/activate && run_with_timeout "$TEST_TIMEOUT_SECONDS" bash -lc "$test_cmd" 2>&1)
             TEST_EXIT=$?
             set -e
             echo "$TEST_OUTPUT" | redact_log >> "$TEST_LOG_FILE"
@@ -620,21 +703,32 @@ FIX_EOF
             } >> "$TEST_LOG_FILE"
             if [ $TEST_EXIT -ne 0 ]; then
                 TEST_PASS=false
-                LAST_FAILURE_REASON="Test failed: ${test_cmd} (exit ${TEST_EXIT})"
-                FAILED_SUMMARY=$(echo "$TEST_OUTPUT" | grep -E "FAILED|ERROR|AssertionError" | head -5 | tr '\n' ' ')
+                if [ $TEST_EXIT -eq 124 ]; then
+                    LAST_FAILURE_REASON="Test timed out after ${TEST_TIMEOUT_SECONDS}s: ${test_cmd}"
+                    FAILED_SUMMARY="timeout after ${TEST_TIMEOUT_SECONDS}s"
+                else
+                    LAST_FAILURE_REASON="Test failed: ${test_cmd} (exit ${TEST_EXIT})"
+                    FAILED_SUMMARY=$(echo "$TEST_OUTPUT" | grep -E "FAILED|ERROR|AssertionError" | head -5 | tr '\n' ' ')
+                fi
                 ISSUES_LOG+=("[Round $ROUND] Test failed ($test_cmd): $FAILED_SUMMARY")
                 err "Test failed: $test_cmd (exit=$TEST_EXIT)"
                 break
             fi
         done
     else
-        log "No tests specified, running default pytest..."
+        if [ "$AUTO_DEV_FULL_TESTS" = "1" ]; then
+            EFFECTIVE_DEFAULT_TEST_CMD="$FULL_TEST_CMD"
+            log "No tests specified, running full default tests..."
+        else
+            EFFECTIVE_DEFAULT_TEST_CMD="$DEFAULT_TEST_CMD"
+            log "No tests specified, running smoke default tests..."
+        fi
         set +e
-        TEST_OUTPUT=$(source .venv/bin/activate && pytest tests/ -q --tb=short 2>&1)
+        TEST_OUTPUT=$(source .venv/bin/activate && run_with_timeout "$TEST_TIMEOUT_SECONDS" bash -lc "$EFFECTIVE_DEFAULT_TEST_CMD" 2>&1)
         TEST_EXIT=$?
         set -e
         {
-            echo "## pytest tests/ -q --tb=short"
+            echo "## $EFFECTIVE_DEFAULT_TEST_CMD"
             echo
             echo "$TEST_OUTPUT" | redact_log
             echo
@@ -642,8 +736,13 @@ FIX_EOF
         } >> "$TEST_LOG_FILE"
         if [ $TEST_EXIT -ne 0 ]; then
             TEST_PASS=false
-            LAST_FAILURE_REASON="Default pytest failed with exit ${TEST_EXIT}"
-            FAILED_SUMMARY=$(echo "$TEST_OUTPUT" | grep -E "FAILED|ERROR" | head -5 | tr '\n' ' ')
+            if [ $TEST_EXIT -eq 124 ]; then
+                LAST_FAILURE_REASON="Default tests timed out after ${TEST_TIMEOUT_SECONDS}s"
+                FAILED_SUMMARY="timeout after ${TEST_TIMEOUT_SECONDS}s"
+            else
+                LAST_FAILURE_REASON="Default tests failed with exit ${TEST_EXIT}"
+                FAILED_SUMMARY=$(echo "$TEST_OUTPUT" | grep -E "FAILED|ERROR" | head -5 | tr '\n' ' ')
+            fi
             ISSUES_LOG+=("[Round $ROUND] Default pytest failed: $FAILED_SUMMARY")
         fi
     fi
@@ -829,6 +928,8 @@ if [ "$RESULT_STATUS" = "PASS" ]; then
 - Rounds: $ROUND
 - Tests: PASS
 - Codex review: $REVIEW_NOTE
+- OpenCode timeout seconds: $OPENCODE_TIMEOUT_SECONDS
+- Test timeout seconds: $TEST_TIMEOUT_SECONDS
 - Review file: docs/reviews/${TASK_ID}-$(date +%Y%m%d)-round${ROUND}.txt
 - Run directory: docs/task_runs/$RUN_ID
 - Finished at: $(date +%Y-%m-%d_%H:%M:%S)
@@ -886,6 +987,7 @@ if [ "$RESULT_STATUS" = "PASS" ]; then
 - **Status**: OK $RESULT_STATUS
 - **Tests**: Passed
 - **Codex Review**: $REVIEW_DEVLOG_NOTE
+- **Timeout budget**: OpenCode ${OPENCODE_TIMEOUT_SECONDS}s / tests ${TEST_TIMEOUT_SECONDS}s
 - **Review file**: docs/reviews/${TASK_ID}-$(date +%Y%m%d)-round${ROUND}.txt
 - **Run archive**: docs/task_runs/$RUN_ID/
 DEVLOG_EOF
@@ -924,6 +1026,8 @@ if [ "$RESULT_STATUS" = "NEEDS_HUMAN" ]; then
 - Final status: NEEDS_HUMAN
 - Rounds: $ROUND
 - Reason: $LAST_FAILURE_REASON
+- OpenCode timeout seconds: $OPENCODE_TIMEOUT_SECONDS
+- Test timeout seconds: $TEST_TIMEOUT_SECONDS
 - Run directory: docs/task_runs/$RUN_ID
 - Finished at: $(date +%Y-%m-%d_%H:%M:%S)
 

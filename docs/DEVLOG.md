@@ -8610,3 +8610,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TF-QUALITY-005-20260629-round1.txt
 - **Run archive**: docs/task_runs/TF-QUALITY-005-20260629-191253/
+
+## 2026-06-29 | AUTO-002 超时治理补修
+
+- **背景**：排查自动开发超时发现，`TRACK-009` 这类跨后端/前端/API/测试任务实际耗时约 26 分钟，而旧外层 600 秒窗口会直接强杀，导致 `.auto_dev.lock`、dirty tree、`TASKS.md in_progress` 连锁残留。
+- **变更**：
+  - `scripts/auto_dev_loop.sh` 升级到 v1.4，新增 `AUTO_DEV_OPENCODE_TIMEOUT_SECONDS`（默认 1800 秒）和 `AUTO_DEV_TEST_TIMEOUT_SECONDS`（默认 900 秒）。
+  - `opencode run` 改为脚本内 timeout；超时后任务进入 `NEEDS_HUMAN`，不再等外层 cron 强杀。
+  - 无显式验收命令时，默认测试从全量 `pytest tests/` 改为 smoke：`pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short`。
+  - 需要全量测试时显式设置 `AUTO_DEV_FULL_TESTS=1`。
+  - 任务选中后把真实 `TASK_ID` 写入 `.auto_dev.lock/owner`，便于陈旧锁恢复定位具体任务。
+- **原则**：自动开发默认快反馈，专项验收优先；全量回归作为夜间专门任务或人工确认项，不再作为每个任务的隐性默认。

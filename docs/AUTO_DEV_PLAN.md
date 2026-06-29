@@ -21,6 +21,15 @@ P3   → 盘后 Review + 策略命中率复盘
 - 失败任务不提交残留代码，防止污染后续任务
 - 每轮完成数量取决于任务复杂度和 OpenCode 执行时间
 
+## 运行预算与测试策略
+
+- 单轮 OpenCode 默认预算：`AUTO_DEV_OPENCODE_TIMEOUT_SECONDS=1800`（30 分钟）。超时后任务直接进入 `NEEDS_HUMAN`，不再等待外层 cron 强杀。
+- 单条测试命令默认预算：`AUTO_DEV_TEST_TIMEOUT_SECONDS=900`（15 分钟）。
+- 任务写明验收命令时，自动开发只跑任务声明的命令。
+- 任务未写明验收命令时，默认只跑 smoke：`pytest tests/test_api_smoke.py tests/test_runtime_tier_contract.py -q --tb=short`。
+- 需要全量回归时，由人工或夜间专门任务显式设置 `AUTO_DEV_FULL_TESTS=1`，此时默认命令才切换为 `pytest tests/ -q --tb=short`。
+- 跨后端/前端/数据库的大任务应拆分；如果必须合并，任务描述中必须写清专项测试，避免每轮都落入全量 pytest。
+
 ## 自动开发允许做的事
 
 - 从下方"当前任务池"中挑选标记为 `[ready]` 的任务
@@ -116,7 +125,7 @@ Codex 审核时不只看 diff，还要同时检查：
 6. 是否允许接入外部数据源或调用模型
 7. 是否需要人工确认后才能继续下一阶段
 
-没有写清验收命令的任务，自动开发只能按默认测试执行，不能自行扩大到全市场扫描或深度 TA。
+没有写清验收命令的任务，自动开发只能按默认 smoke 测试执行，不能自行扩大到全量 pytest、全市场扫描或深度 TA。
 
 ### 强制 Codex Review 规则（2026-06-04）
 
