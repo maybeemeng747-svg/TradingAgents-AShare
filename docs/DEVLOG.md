@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-06-29 | AUTO-003 补修：测试 fixture 化与顶部队列同步
+
+- **执行者**：OpenCode + Codex review
+- **类型**：test + docs
+- **状态**：✅ 完成（待提交）
+
+### 背景
+
+Codex review 发现 `test_real_tasks_md_no_done_in_suggestions` 依赖真实
+`docs/TASKS.md` 状态；当任务池存在 ready 任务时，`generate_suggestions()`
+会提前返回，导致 filtered 摘要断言不稳定。同时顶部主队列仍有 6 个已完成任务
+显示为 ready，容易误导人工判断。
+
+### 修改内容
+
+- `tests/test_m012_suggest_next_tasks.py`：新增无 ready 的隔离 fixture，测试 done
+  任务过滤逻辑不再依赖真实任务池。
+- `docs/TASKS.md`：同步 `AUTO-003`、`REPORT-UX-001`、`REPORT-UX-002`、
+  `H-016`、`DATA-023`、`V-011` 顶部状态为 done。
+
+### 验证
+
+- `pytest tests/test_m012_suggest_next_tasks.py -q`：60 passed。
+- `git diff --check`：通过。
+
+---
+
 ## 2026-06-28 | 扩充三小时夜间自动开发任务池
 
 - **执行者**：Codex

@@ -692,6 +692,54 @@ class TestAcceptanceM012:
 
 # ── Test: AUTO-003 task_suggestion_dedupe ─────────────────────
 
+# 构造一个"无 ready 且含 done 任务"的场景，用于隔离测试 done 任务过滤逻辑，
+# 不依赖真实 docs/TASKS.md 的当前状态（真实任务池随时可能新增 ready 任务，
+# 导致 generate_suggestions 提前返回空 filtered 摘要）。
+SAMPLE_TASKS_MD_DEDUPE_NO_READY = textwrap.dedent("""\
+# 任务池
+
+---
+
+## D. 已完成但无状态字段（标题含 ✅）
+
+### D-001: 修正数据完整度评分 ✅ 已完成（含真证据修复）
+- **描述**：修复评分逻辑
+- **验证方式**：coverage=50%
+
+### D-002: 强结论证据门禁 ✅ 已完成（含真降级修复）
+- **描述**：新增双维度评分
+- **验证方式**：coverage<70 时强动作被替换
+
+### D-003: 数据源失败透传 ✅ 已完成
+- **描述**：透传失败原因到报告
+
+### D-004: fallback 假可用修复 ✅ 已完成
+- **描述**：修复假可用判定
+
+## E. 报告语义已完成
+
+### E-001: 运行版本戳 ✅ 已完成
+- **描述**：报告末尾追加版本
+
+### E-002: 动作语义分层 ✅ 已完成
+- **描述**：禁用默认 HOLD
+
+### E-003: 报告只读迁移 ✅ 已完成
+- **描述**：历史报告预检
+
+### E-004: 通知去噪 ✅ 已完成
+- **描述**：分层去噪规则
+
+## H. 可执行任务（无 ready）
+
+### H-DEDUPE-001: 阻塞任务（依赖已满足）
+- **描述**：依赖已完成的 D-001
+- **优先级**：P1
+- **状态**：blocked
+- **前置条件**：D-001 完成 ✓
+""")
+
+
 SAMPLE_TASKS_MD_AUTO003 = textwrap.dedent("""\
 # 任务池
 
@@ -843,14 +891,16 @@ class TestAuto003Dedupe:
         assert "已过滤任务摘要" in report
         assert "✅ 已完成" in report
 
-    def test_real_tasks_md_no_done_in_suggestions(self):
-        """Integration: real TASKS.md should not suggest done tasks."""
-        repo_dir = Path(__file__).resolve().parent.parent
-        tasks_md = repo_dir / "docs" / "TASKS.md"
-        if not tasks_md.exists():
-            pytest.skip("docs/TASKS.md not found")
+    def test_real_tasks_md_no_done_in_suggestions(self, tmp_path):
+        """Integration: a no-ready task pool with done tasks should not suggest done tasks.
 
-        tasks = S.parse_all_tasks(tasks_md)
+        Uses an isolated fixture instead of the real docs/TASKS.md to keep the
+        test stable regardless of the live ready queue state. The real pool may
+        contain ready tasks, which makes generate_suggestions return early with
+        an empty filtered summary and breaks the > 0 assertion.
+        """
+        path = write_tasks_md(tmp_path, SAMPLE_TASKS_MD_DEDUPE_NO_READY)
+        tasks = S.parse_all_tasks(path)
         done_ids = S.parse_done_task_ids(tasks)
         suggestions, filtered = S.generate_suggestions(tasks, {}, done_ids, [])
         suggested_ids = {s.suggested_id for s in suggestions}

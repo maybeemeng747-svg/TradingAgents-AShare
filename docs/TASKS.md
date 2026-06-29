@@ -127,22 +127,22 @@
  101. `PERF-005`：TradeFlow 页面与 API 性能预算回归（P2，done，依赖 TF-UX-001/DATA-020 ✓）。
 102. `HK-001`：港股输入边界与轻量行情-only 模式声明（P2，done — commit 2326a3d + a9fd09a）。
 103. `TF-PERSIST-001`：TradeFlow save_candidate 分项评分持久化补口（P2，done — commit 0016a92 + 2257f32）。
-104. `AUTO-003`：任务建议去重与已完成任务过滤（P1，ready，修复 M-012 误把 done/blocked-resolved 任务重复建议）。
-105. `REPORT-UX-001`：TA 报告“数据不足观察”端到端回放验收（P1，ready，依赖 DATA-021 ✓）。
+104. `AUTO-003`：任务建议去重与已完成任务过滤（P1，done — commit 62f0d46，修复 M-012 误把 done/blocked-resolved 任务重复建议）。
+105. `REPORT-UX-001`：TA 报告“数据不足观察”端到端回放验收（P1，done — commit b0f4c9c，依赖 DATA-021 ✓）。
   106. `IC-TA-002`：investment-controller 上下文接入 TradeFlow 昊天日报与报告数据缺口（P1，done，依赖 IC-TA-001/DATA-021/H-015 ✓）。
 107. `V-010`：小资金试跑 v2 验收：候选收敛→观察→日报→报告缺口（P1，done，依赖 V-009/DATA-021/H-015 ✓）。
 108. `NOTIFY-002`：飞书/通知草稿接入昊天日报与数据缺口摘要（P2，done — NOTIFY-002-20260626-214133，依赖 TRACK-NOTIFY-001/H-015/DATA-021 ✓）。
 109. `DATA-022`：主力资金/龙虎榜失败矩阵 fixture 回放（P1，done，依赖 DATA-021/DATA-017 ✓）。
 110. `TF-OBS-005`：非交易日候选计划到下一交易日观察语义回归（P1，done，依赖 TF-OBS-004 ✓）。
  111. `TRACK-008`：观察仓批量导入/导出 CSV 与去重合并（P1，done，依赖 TRACK-001/TRACK-003 ✓）。
-112. `REPORT-UX-002`：历史报告动作语义与数据缺口只读迁移预检（P1，ready，依赖 DECISION-004/DATA-021 ✓）。
-113. `H-016`：昊天主题日报 CLI 生成与保留策略（P2，ready，依赖 H-015 ✓）。
+112. `REPORT-UX-002`：历史报告动作语义与数据缺口只读迁移预检（P1，done — commit eecfe9f，依赖 DECISION-004/DATA-021 ✓）。
+113. `H-016`：昊天主题日报 CLI 生成与保留策略（P2，done — commit cb8b2ec，依赖 H-015 ✓）。
   114. `IC-TA-003`：investment-controller 盘前/盘后 briefing fixture dry-run（P2，done，依赖 IC-TA-002 ✓）。
 115. `TF-REVIEW-005`：盘后 Review 归因接入观察信号与模拟账本（P1，done，依赖 TF-REVIEW-004/TF-PAPER-001 ✓）。
 116. `UI-013`：TradeFlow 空状态与下一步 CTA 文案收口（P2，done，依赖 UI-012/H-015 ✓）。
-117. `DATA-023`：数据源目录 API/文档同步与供应商能力矩阵导出（P2，ready，依赖 DATA-020/DATA-CATALOG-FIX ✓）。
+117. `DATA-023`：数据源目录 API/文档同步与供应商能力矩阵导出（P2，done — commit defb365，依赖 DATA-020/DATA-CATALOG-FIX ✓）。
 118. `PERF-006`：前端 bundle 体积趋势记录与懒加载候选建议（P2，done，依赖 PERF-005 ✓）。
-119. `V-011`：夜间自动开发日报验收与 ready 队列续航检查（P2，ready，依赖 AUTO-003 ✓）。
+119. `V-011`：夜间自动开发日报验收与 ready 队列续航检查（P2，done — commit 6f585c3，依赖 AUTO-003 ✓）。
 120. `NOTIFY-003`：通知去噪规则回放测试与日报/盘中分层验收（P2，done，依赖 NOTIFY-002 ✓）。
 121. `TRACK-009`：跟踪看板持仓导入入口与 OpenClaw holdings 契约对齐（P1，ready，依赖 TRACK-003/TRACK-007 ✓）。
 122. `TRACK-010`：跟踪看板盘后复盘乱码与编码/渲染回归（P1，ready，依赖 TRACK-005/TRACK-007 ✓）。
