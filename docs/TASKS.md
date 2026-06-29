@@ -146,7 +146,7 @@
 120. `NOTIFY-003`：通知去噪规则回放测试与日报/盘中分层验收（P2，done，依赖 NOTIFY-002 ✓）。
   121. `TRACK-009`：跟踪看板持仓导入入口与 OpenClaw holdings 契约对齐（P1，done，依赖 TRACK-003/TRACK-007 ✓）。
 122. `TRACK-010`：跟踪看板盘后复盘乱码与编码/渲染回归（P1，done，依赖 TRACK-005/TRACK-007 ✓）。
-123. `TF-QUALITY-005`：候选池“过多且像抄底”回放校准与强度分层（P1，ready，依赖 TF-QUALITY-004/H-014 ✓）。
+  123. `TF-QUALITY-005`：候选池“过多且像抄底”回放校准与强度分层（P1，done — OpenCode 2026-06-29，7269 passed/0 failed，依赖 TF-QUALITY-004/H-014 ✓）。
 124. `H-017`：昊天左侧候选证据包：政策-产业-公司三层链路（P1，ready，依赖 H-015/H-016 ✓）。
 125. `DATA-024`：主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1，ready，依赖 DATA-022/DATA-023 ✓）。
 126. `REPORT-UX-003`：报告最终结论“数据不足观察”原因分解与前端显示（P1，ready，依赖 REPORT-UX-001/REPORT-UX-002 ✓）。
@@ -4157,7 +4157,7 @@
 ### TF-QUALITY-005: 候选池“过多且像抄底”回放校准与强度分层（P1）
 - **描述**：用户试用后认为候选池过多、像半山腰抄底，缺少真正可做 T 的优先级。本任务基于历史候选 fixture 做校准，明确主候选、观察候选、过滤候选三层。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — 2026-06-29 OpenCode 执行（task run TF-QUALITY-005-20260629-191253），7269 passed/0 failed，6 个 tier_* 配置项 + 3 条分层函数上线。
 - **前置条件**：TF-QUALITY-004、H-014 完成。
 - **执行约束**：
   - 不引入真实交易建议。

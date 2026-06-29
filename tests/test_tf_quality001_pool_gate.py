@@ -420,7 +420,16 @@ class TestStrategyConfigPoolGate:
         assert cfg.pool_min_completeness_for_single_strong == 0.6
 
     def test_custom_config(self):
-        cfg = StrategyConfig(pool_main_max=10, pool_tech_max=10, pool_haotian_max=10)
+        # [TF-QUALITY-005] candidate_pool_strength_tiers — also bump the
+        # secondary tier cap so the original TF-QUALITY-001 assertion (custom
+        # pool_main_max respected) stays meaningful. Without this, the new
+        # tier layer would compress weak-confirmation TECH entries further.
+        cfg = StrategyConfig(
+            pool_main_max=10,
+            pool_tech_max=10,
+            pool_haotian_max=10,
+            tier_secondary_max_count=10,
+        )
         entries = [_make_entry(symbol=f"S{i}", positive_category_count=3, composite_score=70) for i in range(8)]
         result = run_pool_gate(entries, cfg)
         assert len(result.main_candidates) == 8

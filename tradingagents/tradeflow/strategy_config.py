@@ -166,6 +166,18 @@ class StrategyConfig:
     concentration_moderate_topic_max: int = 1
     concentration_min_signals_for_strong: int = 2
 
+    # ── Candidate Strength Tiers [TF-QUALITY-005] candidate_pool_strength_tiers ──
+    # Further split main_candidates into primary (高优先级) vs secondary (次优)
+    # to address "candidate pool too large / looks like catching falling knives".
+    # Primary 必须同时满足: 高分 + 多维共振 + 全部确认维度 + 数据充足.
+    # Secondary 候选有可读 tier_reason, 仍留在 main_candidates 不丢失.
+    tier_primary_min_composite: float = 65.0
+    tier_primary_min_resonance: int = 3
+    tier_primary_require_volume_and_capital: bool = True
+    tier_primary_haotian_min_support_dims: int = 2
+    tier_secondary_data_completeness_min: float = 0.5
+    tier_secondary_max_count: int = 3
+
     # ── Deep TA Dispatch Gate [M-006] ──
     deep_ta_daily_limit: int = 3
     deep_ta_default_model: str = ""

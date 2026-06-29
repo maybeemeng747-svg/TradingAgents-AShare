@@ -44,6 +44,10 @@ class PoolGateResult:
     calibration_summary: dict = field(default_factory=dict)
     # [H-014] mandate_concentration_gate — theme concentration audit trail
     concentration_summary: dict = field(default_factory=dict)
+    # [TF-QUALITY-005] candidate_pool_strength_tiers — strength tier split of main
+    primary_candidates: list[dict] = field(default_factory=list)
+    secondary_candidates: list[dict] = field(default_factory=list)
+    strength_tier_summary: dict = field(default_factory=dict)
 
 
 _HAOTIAN_TYPES = {"POLICY_AMBUSH", "POLICY_CONFIRM"}
@@ -288,6 +292,240 @@ def _apply_live_calibration(
     return "pass", ""
 
 
+# [TF-QUALITY-005] candidate_pool_strength_tiers
+TIER_PRIMARY = "primary"
+TIER_SECONDARY = "secondary"
+
+
+# [TF-QUALITY-005] candidate_pool_strength_tiers
+def _haotian_support_dim_count(entry: dict) -> int:
+    """Count cross-signal support dimensions for a 昊天 candidate.
+
+    Mirrors the support-dim logic in :func:`_apply_live_calibration` so the
+    tier classifier reasons about the same evidence set.
+    """
+    support_dims = 0
+    if _safe_float(entry.get("event_score")) > 0:
+        support_dims += 1
+    if _safe_float(entry.get("fund_flow_score")) > 0:
+        support_dims += 1
+    if _safe_float(entry.get("narrative_score")) > 0:
+        support_dims += 1
+    if (
+        _safe_float(entry.get("beneficiary_score_component")) > 0
+        or bool(entry.get("beneficiary_path"))
+    ):
+        support_dims += 1
+    if _safe_float(entry.get("mandate_score_component")) > 0:
+        support_dims += 1
+    return support_dims
+
+
+# [TF-QUALITY-005] candidate_pool_strength_tiers
+def _classify_strength_tier(
+    entry: dict,
+    cfg: StrategyConfig,
+) -> tuple[str, str]:
+    """Classify a main candidate into ``primary`` or ``secondary`` tier.
+
+    Returns ``(tier, reason)``:
+    - ``(TIER_PRIMARY, "")`` — high conviction, all confirmation dimensions hit.
+    - ``(TIER_SECONDARY, reason)`` — passes main pool gate but lacks the extra
+      confirmation required to be a top-priority name. ``reason`` is a
+      human-readable Chinese string explaining which downgrade rule fired.
+
+    Downgrade rules (any match → secondary). Rules are evaluated in order and
+    the first matching rule wins so the reason stays specific:
+
+    1. 数据不足 — data completeness below the secondary floor.
+    2. TECH 弱缩量无资金确认 — 量能 or 资金 missing in precision dimensions.
+    3. TECH 反弹但趋势未修复 — only 形态 + 触发价 hit, no volume/capital
+       confirmation AND composite below primary threshold. This is the
+       "半山腰抄底" pattern: pattern-only rebound without trend repair.
+    4. TECH 共振维度偏少 — resonance count below primary minimum.
+    5. TECH 综合分偏低 — composite below primary minimum (after other rules
+       did not fire, this catches generally weak scores).
+    6. POLICY 弱主题 — H-014 concentration strength is "weak".
+    7. POLICY 证据单一 — only one cross-signal support dimension.
+    8. POLICY 共振维度偏少 — resonance count below primary minimum.
+    9. 兜底 — composite below primary minimum.
+    """
+    candidate_type = entry.get("candidate_type", "")
+    composite = _safe_float(entry.get("composite_score"))
+    resonance = int(entry.get("precision_resonance_count", 0) or 0)
+    dims = entry.get("precision_dimensions", {}) or {}
+    data_comp = (
+        _safe_float(entry.get("tradeflow_data_completeness"))
+        or _safe_float(entry.get("data_completeness"))
+    )
+
+    # Rule 1: 数据不足 — applies to all candidate types.
+    if data_comp < cfg.tier_secondary_data_completeness_min:
+        return (
+            TIER_SECONDARY,
+            f"数据不足(完整度{data_comp:.0%}<{cfg.tier_secondary_data_completeness_min:.0%})",
+        )
+
+    if candidate_type in _TECH_TYPES:
+        # Rule 2: 弱缩量无资金确认.
+        has_volume = bool(dims.get("量能", False))
+        has_capital = bool(dims.get("资金", False))
+        if cfg.tier_primary_require_volume_and_capital:
+            if not has_volume or not has_capital:
+                missing = []
+                if not has_volume:
+                    missing.append("量能")
+                if not has_capital:
+                    missing.append("资金")
+                return (
+                    TIER_SECONDARY,
+                    f"弱缩量无资金确认(缺{'/'.join(missing)})",
+                )
+
+        # Rule 3: 反弹但趋势未修复 — pattern + trigger only, no confirmation.
+        has_pattern = bool(dims.get("形态", False))
+        has_trigger = bool(dims.get("触发/失效价", False))
+        if (
+            has_pattern
+            and has_trigger
+            and not has_volume
+            and not has_capital
+            and composite < cfg.tier_primary_min_composite
+        ):
+            return (
+                TIER_SECONDARY,
+                "反弹但趋势未修复(仅形态+触发价，无量能/资金确认)",
+            )
+
+        # Rule 4: 共振维度偏少.
+        if resonance < cfg.tier_primary_min_resonance:
+            return (
+                TIER_SECONDARY,
+                f"共振维度偏少({resonance}<{cfg.tier_primary_min_resonance})",
+            )
+
+        # Rule 5: 综合分偏低.
+        if composite < cfg.tier_primary_min_composite:
+            return (
+                TIER_SECONDARY,
+                f"综合分偏低({composite:.0f}<{cfg.tier_primary_min_composite:.0f})",
+            )
+
+        return TIER_PRIMARY, ""
+
+    if candidate_type in _HAOTIAN_TYPES:
+        # Rule 6: 弱主题 — H-014 already downgraded topic; never primary.
+        strength = entry.get("concentration_strength", "")
+        if strength == STRENGTH_WEAK:
+            return (
+                TIER_SECONDARY,
+                f"弱主题({entry.get('concentration_topic', '') or '未分类'})",
+            )
+
+        # Rule 7: 证据单一.
+        support_dims = _haotian_support_dim_count(entry)
+        if support_dims < cfg.tier_primary_haotian_min_support_dims:
+            return (
+                TIER_SECONDARY,
+                f"证据单一(仅{support_dims}类支撑维度，"
+                f"需≥{cfg.tier_primary_haotian_min_support_dims})",
+            )
+
+        # Rule 8: 共振维度偏少.
+        if resonance < cfg.tier_primary_min_resonance:
+            return (
+                TIER_SECONDARY,
+                f"共振维度偏少({resonance}<{cfg.tier_primary_min_resonance})",
+            )
+
+        # Rule 9: 综合分偏低.
+        if composite < cfg.tier_primary_min_composite:
+            return (
+                TIER_SECONDARY,
+                f"综合分偏低({composite:.0f}<{cfg.tier_primary_min_composite:.0f})",
+            )
+
+        return TIER_PRIMARY, ""
+
+    # Other candidate types (EVENT_WATCH / UNCLASSIFIED): primary by composite.
+    if composite < cfg.tier_primary_min_composite:
+        return (
+            TIER_SECONDARY,
+            f"综合分偏低({composite:.0f}<{cfg.tier_primary_min_composite:.0f})",
+        )
+    if resonance > 0 and resonance < cfg.tier_primary_min_resonance:
+        return (
+            TIER_SECONDARY,
+            f"共振维度偏少({resonance}<{cfg.tier_primary_min_resonance})",
+        )
+
+    return TIER_PRIMARY, ""
+
+
+# [TF-QUALITY-005] candidate_pool_strength_tiers
+def _apply_strength_tiers(
+    main_entries: list[dict],
+    cfg: StrategyConfig,
+) -> tuple[list[dict], list[dict], dict]:
+    """Split main_entries into primary/secondary with readable reasons.
+
+    - Stamps ``strength_tier`` / ``tier_reason`` on each entry (in-place on a
+      copy via :func:`dict` so callers retain the original objects).
+    - Secondary cap: after the natural classification, only the first
+      ``tier_secondary_max_count`` secondaries stay in ``secondary_candidates``;
+      overflow is demoted to ``observation_candidates`` by the caller.
+    """
+    primary: list[dict] = []
+    secondary: list[dict] = []
+    downgrade_reasons: dict[str, list[str]] = {
+        "weak_volume_capital": [],
+        "rebound_trend_unrepaired": [],
+        "data_insufficient": [],
+        "low_resonance": [],
+        "low_composite": [],
+        "weak_topic": [],
+        "single_evidence": [],
+    }
+
+    for entry in main_entries:
+        tier, reason = _classify_strength_tier(entry, cfg)
+        entry_copy = dict(entry)
+        entry_copy["strength_tier"] = tier
+        entry_copy["tier_reason"] = reason
+        if tier == TIER_PRIMARY:
+            primary.append(entry_copy)
+        else:
+            secondary.append(entry_copy)
+            if "弱缩量" in reason:
+                downgrade_reasons["weak_volume_capital"].append(entry.get("symbol", ""))
+            elif "反弹" in reason:
+                downgrade_reasons["rebound_trend_unrepaired"].append(entry.get("symbol", ""))
+            elif "数据不足" in reason:
+                downgrade_reasons["data_insufficient"].append(entry.get("symbol", ""))
+            elif "共振维度" in reason:
+                downgrade_reasons["low_resonance"].append(entry.get("symbol", ""))
+            elif "综合分" in reason:
+                downgrade_reasons["low_composite"].append(entry.get("symbol", ""))
+            elif "弱主题" in reason:
+                downgrade_reasons["weak_topic"].append(entry.get("symbol", ""))
+            elif "证据单一" in reason:
+                downgrade_reasons["single_evidence"].append(entry.get("symbol", ""))
+
+    summary = {
+        "primary_count": len(primary),
+        "secondary_count": len(secondary),
+        "primary_min_composite": cfg.tier_primary_min_composite,
+        "primary_min_resonance": cfg.tier_primary_min_resonance,
+        "secondary_max": cfg.tier_secondary_max_count,
+        "downgrade_reasons": downgrade_reasons,
+        "headline": (
+            f"主候选分层：主候选{len(primary)}只，观察候选(次优)"
+            f"{len(secondary)}只"
+        ),
+    }
+    return primary, secondary, summary
+
+
 def run_pool_gate(
     entries: list[dict],
     cfg: Optional[StrategyConfig] = None,
@@ -519,6 +757,46 @@ def run_pool_gate(
     concentration_summary["weak_topic_downgraded"] = conc_weak_topic
     concentration_summary["per_topic_cap_downgraded"] = conc_topic_cap
 
+    # [TF-QUALITY-005] candidate_pool_strength_tiers — split main into
+    # primary/secondary. Secondary overflow (beyond tier_secondary_max_count)
+    # is demoted to observation so the secondary list itself stays tight and
+    # the user sees a clear "primary few + secondary few + observation rest"
+    # convergence. main_candidates keeps the full main set (primary + admitted
+    # secondary) so existing consumers do not lose scoring fields.
+    primary_candidates, secondary_candidates, strength_tier_summary = _apply_strength_tiers(
+        main, cfg
+    )
+    main_before_tier = len(main)
+    secondary_overflow: list[str] = []
+    if len(secondary_candidates) > cfg.tier_secondary_max_count:
+        overflow = secondary_candidates[cfg.tier_secondary_max_count:]
+        for ov in overflow:
+            ov["pool_status"] = "observation"
+            ov["pool_filter_reason"] = (
+                f"[TF-QUALITY-005]次优候选已满"
+                f"({cfg.tier_secondary_max_count}/{cfg.tier_secondary_max_count})，"
+                f"原因:{ov.get('tier_reason', '')}"
+            )
+            observation.append(ov)
+            secondary_overflow.append(ov.get("symbol", ""))
+        secondary_candidates = secondary_candidates[: cfg.tier_secondary_max_count]
+
+    # Rebuild main so it reflects the post-cap primary+secondary set and each
+    # entry carries strength_tier / tier_reason metadata. Entries demoted to
+    # observation are removed from main.
+    main = list(primary_candidates) + list(secondary_candidates)
+    strength_tier_summary["main_before_tier"] = main_before_tier
+    strength_tier_summary["main_after_tier"] = len(main)
+    strength_tier_summary["observation_after_tier"] = len(observation)
+    strength_tier_summary["secondary_overflow_to_observation"] = secondary_overflow
+
+    # Refresh pool_counts with tier split so API / frontend can render it.
+    # ``main`` is updated post-tier so pool_counts["main"] == len(main_candidates).
+    pool_counts["main"] = len(main)
+    pool_counts["primary"] = len(primary_candidates)
+    pool_counts["secondary"] = len(secondary_candidates)
+    pool_counts["secondary_overflow"] = len(secondary_overflow)
+
     return PoolGateResult(
         main_candidates=main,
         observation_candidates=observation,
@@ -527,4 +805,7 @@ def run_pool_gate(
         gate_summary=gate_summary,
         calibration_summary=calibration_summary,
         concentration_summary=concentration_summary,
+        primary_candidates=primary_candidates,
+        secondary_candidates=secondary_candidates,
+        strength_tier_summary=strength_tier_summary,
     )

@@ -4,6 +4,117 @@
 
 ---
 
+## 2026-06-29 | TF-QUALITY-005：候选池"过多且像抄底"强度分层
+
+- **执行者**：OpenCode（task run TF-QUALITY-005-20260629-191253）
+- **类型**：feature + calibration + test
+- **状态**：✅ 完成（待提交）
+
+### 背景
+
+用户试用反馈：经过 TF-QUALITY-001~004 + H-014 收窄后，`main_candidates`
+仍然最多 5 只，且这 5 只内部优先级不可区分；其中部分 TECH 候选只有形态+触发价、
+没有量能/资金确认，属于"反弹但趋势未修复"的半山腰抄底，不该与全维度共振的候选
+并列。本任务在 `main_candidates` 内部再叠加一层 **强度分层**，把候选明确分成
+`primary`（高优先级）+ `secondary`（次优）两档，secondary 超过上限再溢出到
+observation，让用户能看到"先看这几只"的清晰优先级。
+
+### 设计要点（第一性原理 + 剃刀定律）
+
+- 不动 TF-QUALITY-001/003/004 + H-014 的现有门禁链路，只在 `run_pool_gate`
+  末尾追加一层 `primary/secondary` 分类。
+- 现有候选评分字段（`composite_score` / `precision_dimensions` /
+  `precision_resonance_count` / `calibration_summary` / `concentration_summary`）
+  一律不丢失；`main_candidates` 条目新增 `strength_tier` / `tier_reason`
+  两个可选字段。
+- 规则跨 VCP / 回踩 / 事件 / 昊天 通用，不为单日样本过拟合；所有阈值集中在
+  `StrategyConfig` 的 `tier_*` 字段，方便后续校准。
+
+### 降层规则（命中任一即降为 secondary）
+
+| 规则 | tier_reason 示例 |
+|------|------------------|
+| 数据不足 | `数据不足(完整度30%<50%)` |
+| TECH 弱缩量无资金确认 | `弱缩量无资金确认(缺资金)` |
+| TECH 反弹但趋势未修复 | `反弹但趋势未修复(仅形态+触发价，无量能/资金确认)` |
+| TECH/POLICY 共振维度偏少 | `共振维度偏少(2<3)` |
+| POLICY 弱主题（来自 H-014） | `弱主题(退潮主题)` |
+| POLICY 证据单一 | `证据单一(仅1类支撑维度，需≥2)` |
+| 兜底：综合分偏低 | `综合分偏低(55<65)` |
+
+每条 reason 归入 `strength_tier_summary.downgrade_reasons` 的对应 bucket，
+便于后续审计与回放。secondary 默认上限 3 只，溢出部分降入 observation 并打上
+`[TF-QUALITY-005]次优候选已满(...)` 前缀的 `pool_filter_reason`。
+
+### 修改文件
+
+后端：
+- `tradingagents/tradeflow/strategy_config.py`：新增 6 个 tier_* 配置项
+  （`# [TF-QUALITY-005] candidate_pool_strength_tiers`）。
+  - `tier_primary_min_composite=65.0`、`tier_primary_min_resonance=3`、
+    `tier_primary_require_volume_and_capital=True`、
+    `tier_primary_haotian_min_support_dims=2`、
+    `tier_secondary_data_completeness_min=0.5`、
+    `tier_secondary_max_count=3`。
+- `tradingagents/tradeflow/candidate_pool_gate.py`：
+  - `PoolGateResult` 新增 `primary_candidates` / `secondary_candidates` /
+    `strength_tier_summary` 三个字段。
+  - 新增常量 `TIER_PRIMARY="primary"` / `TIER_SECONDARY="secondary"`。
+  - 新增 `_haotian_support_dim_count()` — 复用 TF-QUALITY-004 的支撑维度统计。
+  - 新增 `_classify_strength_tier(entry, cfg)` — 单只候选分层判定，按规则顺序
+    首条命中即返回。
+  - 新增 `_apply_strength_tiers(main_entries, cfg)` — 批量分层 + 汇总报告。
+  - `run_pool_gate()` 末尾集成分层：调用 `_apply_strength_tiers` → 处理
+    secondary 溢出 → 重建 `main` 列表 → 刷新 `pool_counts` →
+    返回扩展后的 `PoolGateResult`。
+
+测试：
+- `tests/test_tf_quality005_strength_tiers.py`（新增，59 用例）：覆盖
+  `_classify_strength_tier` 的 TECH/POLICY/EVENT 各降层路径、
+  `_apply_strength_tiers` 的元数据落标与 downgrade bucket 归并、
+  `run_pool_gate` 的端到端集成（主候选打标、secondary 溢出到 observation、
+  现有评分字段保留）、混合 fixture（VCP/回踩/事件/昊天）验收、20 只候选
+  fixture 验收、向后兼容（`calibration_summary`/`concentration_summary`
+  不破坏）、边界（空输入 / 全 primary / 全 secondary / 混合）、强候选误杀检查、
+  收敛报告字段完整性。
+- `tests/test_tf_quality001_pool_gate.py`：`test_custom_config` 同步 bump
+  `tier_secondary_max_count=10`，保留原 TF-QUALITY-001 关于自定义
+  `pool_main_max` 的断言意图。
+
+文档：
+- `docs/tradeflow_calibration/strength_tiers_calibration.md`（新增）：分层
+  规则、fixture 回放（VCP / 回踩 / 事件 / 昊天）、误杀检查、配置变更摘要、
+  API/前端契约增量、收敛报告 JSON 结构示例。
+
+### 风险点与对抗性审查
+
+- **行为变化**：`main_candidates` 现在可能比 `effective_main_cap` 更小
+  （secondary 溢出会降入 observation）。已通过 `pool_counts["main"]` 与
+  `len(main_candidates)` 保持一致、并新增 `main_before_tier` /
+  `main_after_tier` 审计字段，确保前端/服务层可见压缩原因。
+- **向后兼容**：所有新字段都是可选；老 consumer 不读 `primary_candidates` /
+  `secondary_candidates` 也不会出错。`calibration_summary` /
+  `concentration_summary` 完全不变。
+- **过拟合风险**：所有阈值集中在 `StrategyConfig.tier_*`，默认值取自
+  混合 fixture 回放，可跨日复用；没有为单日候选特调阈值。
+- **误杀防护**：`TestNoFalseKill` 三例覆盖强 TECH / 强 POLICY / 跨信号 POLICY，
+  确保 primary 不会误降；弱 POLICY 仍受 TF-QUALITY-004 + 昊天保护机制庇护，
+  永不进入 filtered。
+- **数据缺口路径**：`data_completeness` 缺失时按 0 处理 → 命中"数据不足"
+  规则降层，符合"数据不足观察"语义。
+
+### 测试结果
+
+```
+tests/test_tf_quality005_strength_tiers.py:   59 passed
+tests/test_tf_quality001_pool_gate.py:        72 passed
+tests/test_tf_quality004_calibration.py:      36 passed
+tests/test_h014_mandate_concentration_gate.py: 21 passed
+全套 tests/:                                  7269 passed, 17 skipped, 0 failed
+```
+
+---
+
 ## 2026-06-29 | TRACK-010：跟踪看板盘后复盘乱码与编码/渲染回归
 
 - **执行者**：OpenCode（task run TRACK-010-20260629-185231）
@@ -8488,3 +8599,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TRACK-010-20260629-round1.txt
 - **Run archive**: docs/task_runs/TRACK-010-20260629-185231/
+
+## 2026-06-29 | AUTO-002 Auto Dev Loop
+
+- **Task**: TF-QUALITY-005 - 候选池“过多且像抄底”回放校准与强度分层（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TF-QUALITY-005-20260629-round1.txt
+- **Run archive**: docs/task_runs/TF-QUALITY-005-20260629-191253/
