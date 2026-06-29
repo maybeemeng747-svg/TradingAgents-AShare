@@ -154,6 +154,12 @@
 128. `IC-TA-004`：investment-controller 飞书 briefing payload 与 TA 调度闭环验收（P2，ready，依赖 IC-TA-003/NOTIFY-003 ✓）。
 129. `V-012`：5000 元小资金试跑 5 日回放验收与人工操作手册 v3（P2，ready，依赖 V-010/V-011 ✓）。
 130. `AUTO-004`：夜间三小时任务续航预算与失败后停止策略回归（P2，ready，依赖 AUTO-003/V-011 ✓）。
+131. `KB-001`：Tree Work 本地知识库只读索引与健康审计（P1，ready）。
+132. `KB-002`：investment wiki 输出协议升级：TA 可消费字段 lint（P1，ready，依赖 KB-001）。
+133. `KB-003`：TA 本地知识源 raw_evidence 接入与报告“本地知识补充”区块（P1，ready，依赖 KB-001/KB-002）。
+134. `KB-004`：TradeFlow 昊天候选接入本地知识命中分与证据摘要（P1，ready，依赖 KB-003/H-017）。
+135. `KB-005`：Tree Work inbox/raw/wiki 对齐与未消化研报清单（P2，ready，依赖 KB-001）。
+136. `KB-006`：本地知识库查询 API 与 investment-controller 只读上下文接入（P2，ready，依赖 KB-003/IC-TA-004）。
 
 ### 数据源治理候选队列
 
@@ -4303,6 +4309,133 @@
   - ready 为空时不直接空转。
   - 不影响现有 auto_dev_loop 领取逻辑。
 - **代码标注要求**：`# [AUTO-004] auto_dev_runtime_budget`
+
+### KB-001: Tree Work 本地知识库只读索引与健康审计（P1）
+- **描述**：把 `~/Documents/knowledge/` 作为 TA 的本地投研知识源进行只读审计，确认 Tree Work 产物是否能被机器稳定检索和追溯。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：无。
+- **背景**：用户的 Tree Work 基于 Karpathy LLM Wiki 模式，`wiki/investment/` 已有 76 篇投资知识、`raw/` 保存原始资料、`inbox/` 有待处理材料。TA 需要接入消化后的 wiki，而不是直接消化 raw 研报。
+- **执行约束**：
+  - 只读扫描 `~/Documents/knowledge/`，不得修改知识库内容。
+  - 不读取或输出大段研报原文；只输出文件名、字段、统计、缺口。
+  - 不把本地知识观点当成实时事实或交易建议。
+  - 不调用 LLM，不访问外网。
+- **实现要点**：
+  1. 新增只读扫描脚本或服务 helper，统计 wiki/investment、raw、inbox、index/log 覆盖情况。
+  2. 输出 `docs/knowledge_reports/local_knowledge_audit-YYYY-MM-DD.md`，包含：页面数、frontmatter 覆盖、索引缺失、风险段缺失、摘要段缺失、未消化 inbox。
+  3. 识别 investment 页面类型：公司页、行业页、评分表、汇总表、待补充页。
+  4. 生成 TA 接入建议字段清单，不直接改 Tree Work。
+- **验收方式**：
+  - fixture 或真实只读扫描可运行。
+  - 报告不包含长篇原文和敏感信息。
+  - 能列出至少 5 类结构缺口和接入建议。
+- **代码标注要求**：`# [KB-001] local_knowledge_audit`
+
+### KB-002: investment wiki 输出协议升级：TA 可消费字段 lint（P1）
+- **描述**：为 Tree Work 提出稳定的 investment wiki 输出协议，并在 TA 仓库实现 lint，避免后续消化研报后 TA 仍抓不到股票、主题、风险、来源和时效。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：KB-001 完成。
+- **Tree Work 新要求草案**：
+  1. 每篇 investment wiki 必须保留基础 frontmatter：`title/created/updated/sources/tags/related`。
+  2. 推荐增加机器字段：`symbols`、`themes`、`industry_chain_roles`、`report_type`、`evidence_level`、`valid_until`、`source_quality`、`stale_risk`。
+  3. 正文必须至少包含：`一句话总结`、`投资逻辑/核心观点`、`风险提示`、`原始资料/关联研报`。
+  4. 公司评分表必须保留标准表头：公司、代码、核心业务、板块、利好度、共识度、预计启动、期待周期。
+  5. 未验证或扫描失败内容必须显式标记 `待补充/低置信`。
+- **执行约束**：
+  - 本任务只在 TA 侧写 lint 与文档，不批量改写知识库。
+  - 不要求 Tree Work 一次性重写历史 76 篇，只输出缺口清单。
+- **实现要点**：
+  1. 新增 `scripts/lint_local_knowledge.py` 或等价模块，检查字段和章节。
+  2. 输出每篇 investment wiki 的 `machine_readiness`：high/medium/low。
+  3. 对缺 symbol、缺 risk、缺 summary、缺 source 的页面给出修复建议。
+  4. 生成 `docs/local_knowledge_contract.md`，作为 Tree Work 后续消化研报的交付标准。
+- **验收方式**：
+  - lint 对当前知识库能跑通。
+  - 低分页面不会阻塞 TA，只降低本地知识源置信度。
+  - 文档可直接发给 Tree Work/HR Agent 执行。
+- **代码标注要求**：`# [KB-002] local_knowledge_contract`
+
+### KB-003: TA 本地知识源 raw_evidence 接入与报告“本地知识补充”区块（P1）
+- **描述**：TA 分析股票时，从 Tree Work 已消化的 `wiki/investment/` 中只读查询相关公司/主题，写入 `metadata.raw_evidence.local_knowledge`，并在报告中展示“本地知识补充”。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：KB-001、KB-002 完成。
+- **执行约束**：
+  - TA 只接入消化后的 wiki，不直接读 raw PDF 做结论。
+  - 本地知识只能作为背景/观点源，不能替代行情、公告、财务、资金流。
+  - 命中低置信/过期页面时必须标记 `STALE` 或 `LOW_CONFIDENCE`。
+  - 不输出长篇研报原文。
+- **实现要点**：
+  1. 新增 `local_knowledge_provider`，按 symbol/name/theme/tags 查询 investment wiki。
+  2. 返回结构：`status/vendor=tree_work_wiki/matched_pages/symbols/themes/summary/risks/sources/updated_at/confidence`。
+  3. 接入 DataCollector/raw_evidence，状态支持 `HAS_DATA/NORMAL_NO_DATA/FAILED/STALE/LOW_CONFIDENCE`。
+  4. 报告增加“本地知识补充”区块：最多 3 条摘要 + 风险 + 原页面路径。
+- **验收方式**：
+  - 给定 `603296` 能命中华勤技术页面。
+  - 给定主题“AI算力基础设施”能命中评分表。
+  - 无命中时返回 NORMAL_NO_DATA，不影响报告主结论。
+- **代码标注要求**：`# [KB-003] local_knowledge_raw_evidence`
+
+### KB-004: TradeFlow 昊天候选接入本地知识命中分与证据摘要（P1）
+- **描述**：TradeFlow 昊天左侧候选应优先利用 Tree Work 已消化的产业认知，候选入池时显示“本地知识命中：公司/主题/产业链角色/风险”。
+- **优先级**：P1
+- **状态**：ready
+- **前置条件**：KB-003、H-017 完成。
+- **执行约束**：
+  - 本地知识命中只加解释力，不单独触发候选入池。
+  - 过期知识不得加分，只能提示需更新。
+  - 不把券商观点当政策原文。
+- **实现要点**：
+  1. 候选评分增加 `local_knowledge_score` 与 `knowledge_hit_count`。
+  2. H-017 evidence packet 增加 `local_knowledge_summary`。
+  3. 前端候选详情显示命中页面、更新时间、风险提示。
+  4. 对知识缺失但主题热的候选标记 `needs_tree_work_research`。
+- **验收方式**：
+  - 本地知识命中页面能展示在候选详情。
+  - 无知识命中的候选不被误降为失败。
+  - 过期/低置信页面不提升主候选层级。
+- **代码标注要求**：`# [KB-004] tradeflow_knowledge_score`
+
+### KB-005: Tree Work inbox/raw/wiki 对齐与未消化研报清单（P2）
+- **描述**：建立本地知识库清理清单，找出 inbox 积压、raw 已存但 wiki 未消化、wiki 有占位但未补充的内容，方便 Tree Work 后续处理。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：KB-001 完成。
+- **执行约束**：
+  - 只生成清单，不移动/删除 knowledge 文件。
+  - 不批量读取 PDF 正文。
+- **实现要点**：
+  1. 输出 `docs/knowledge_reports/tree_work_ingest_backlog-YYYY-MM-DD.md`。
+  2. 分类：inbox 未处理、raw 未消化、wiki 待补充、index 未同步。
+  3. 为每项生成建议动作：ingest、补字段、补风险、补原始资料链接、归档。
+  4. 支持后续复制给 Tree Work 执行。
+- **验收方式**：
+  - 当前 inbox 5-8 项均被列出。
+  - 至少识别 `待补充` 页面。
+  - 不修改 knowledge 目录。
+- **代码标注要求**：`# [KB-005] tree_work_backlog`
+
+### KB-006: 本地知识库查询 API 与 investment-controller 只读上下文接入（P2）
+- **描述**：提供只读 API/服务函数，让 investment-controller 在盘前/盘后 briefing 中引用 Tree Work 知识命中，而不是让它自己读文件或编造背景。
+- **优先级**：P2
+- **状态**：ready
+- **前置条件**：KB-003、IC-TA-004 完成。
+- **执行约束**：
+  - 只读，不写 knowledge。
+  - API 不返回全文，只返回摘要、路径、更新时间和风险。
+  - 不暴露用户隐私分类内容，默认只开放 `wiki/investment`。
+- **实现要点**：
+  1. 新增 `/v1/knowledge/local/search` 或 service helper，支持 symbol/theme 查询。
+  2. investment-controller context 增加 `local_knowledge_hits` bucket。
+  3. briefing 中仅用作“背景补充/待研究提示”。
+  4. 增加访问路径配置，默认 `~/Documents/knowledge`，支持禁用。
+- **验收方式**：
+  - symbol 查询返回结构化摘要。
+  - 非 investment 分区默认不可见。
+  - controller dry-run payload 不含长篇原文。
+- **代码标注要求**：`# [KB-006] local_knowledge_context_api`
 
 ## B. 待办
 

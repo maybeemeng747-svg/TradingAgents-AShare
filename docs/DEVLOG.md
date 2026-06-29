@@ -8264,6 +8264,17 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Review file**: docs/reviews/NOTIFY-003-20260627-round1.txt
 - **Run archive**: docs/task_runs/NOTIFY-003-20260627-010451/
 
+## 2026-06-29 | KB 系列任务释放：Tree Work 本地知识库接入 TA
+
+- **背景**：用户确认本地知识库位于 `~/Documents/knowledge/`，由 Tree Work 基于 Karpathy LLM Wiki 模式消化研报；TA 应接入已消化的 `wiki/investment/`，而不是直接消化 raw PDF/截图。
+- **本次审计发现**：
+  - `wiki/investment/` 当前 76 篇，75 篇有标准 frontmatter。
+  - 6 篇 investment 页面未被 `wiki/index.md` 完整索引。
+  - 29 篇缺显式风险段或风险字段，29 篇缺“一句话总结/核心观点”等摘要钩子。
+  - 当前 Tree Work 模板偏人读 wiki，缺少 TA 可稳定消费的机器字段，如 `symbols/themes/report_type/evidence_level/valid_until`。
+- **任务池更新**：新增 KB-001~KB-006，覆盖本地知识库只读审计、输出协议 lint、TA raw_evidence 接入、TradeFlow 昊天知识命中、inbox/raw/wiki 对齐、investment-controller 只读上下文。
+- **原则**：Tree Work 保持唯一知识摄取/消化入口；TA/TradeFlow/investment-controller 只读消费消化后的知识，不把本地研报观点当实时事实或交易建议。
+
 ## 2026-06-28 AUTO-003: 任务建议去重与已完成任务过滤
 
 - **commit**: 62f0d46
