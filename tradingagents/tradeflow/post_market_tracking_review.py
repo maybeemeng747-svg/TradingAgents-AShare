@@ -587,3 +587,175 @@ def review_summary_has_forbidden_words(summary: dict[str, Any]) -> list[str]:
 
     _scan(summary)
     return hits
+
+
+# [TRACK-010] review_encoding_regression
+# ── 编码/转义清洗 ────────────────────────────────────────────────────────
+#
+# 用户反馈跟踪看板"盘后复盘"区域出现乱码。常见根因有三类：
+# 1. SQLite 文本列里写入了 ASCII 转义后的 JSON（例如 ``"\u4e2d\u6587"``），
+#    之后被原样回填到 review_summary 字符串字段，前端就会看到字面的
+#    ``\u4e2d\u6587`` 而不是中文。
+# 2. 字段中残留 BOM（``\ufeff``）、不可见控制符、或 ``repr()`` 形态的
+#    ``b'...'`` bytes 文本。
+# 3. 复盘文案里夹带了 markdown 表格 / 多行换行，被前端渲染成"一团乱"
+#    （视觉上的乱码）。
+#
+# 这些问题不应该在引擎里逐字段打补丁（引擎只负责语义），所以在
+# ``tracking_board_service._build_review_summary`` 把引擎结果交给 API
+# 之前，统一调用 ``sanitize_review_summary_text`` 做一次防御性清洗。
+#
+# 设计原则
+# --------
+# 1. **永不抛异常**：任何字段清洗失败都退回原值，不让编码问题拖垮整个
+#    看板。
+# 2. **只清洗文本字段**：数字/布尔/None 保持原值；列表/字典递归处理。
+# 3. **可单测**：每个分支都有独立 fixture（见
+#    ``tests/test_track010_review_encoding_regression.py``）。
+
+import re as _re
+
+# 形如 "\u4e2d\u6587" 的字面 ASCII 转义序列（注意：这里匹配的是字面
+# 反斜杠+u+4 位十六分），用于把被 json.dumps(ensure_ascii=True) 二次
+# 转义过的中文还原回 UTF-8。
+_LITERAL_UNICODE_ESCAPE = _re.compile(r"\\u([0-9a-fA-F]{4})")
+
+# 形如 "\n" / "\t" / "\r" 的字面转义（反斜杠+n 等单字符），出现在普通
+# 字符串里时通常意味着上游做过二次 json.dumps；还原成真实控制符。
+_LITERAL_CTRL_ESCAPE = _re.compile(r"\\([ntr])")
+
+# bytes repr 形态：b'...' 或 b"..."，多见于把 bytes 直接 str() 后塞进
+# 字段；尝试以 UTF-8 解码内容，失败则保持原值。
+_BYTES_REPR = _re.compile(r"""^b(['"])(.*)\1$""", _re.DOTALL)
+
+# BOM 字符（zero width no-break space）——出现在文本开头会把首字符推到
+# 后面，看起来像乱码。
+_BOM_CHAR = "\ufeff"
+
+# 其他不可见控制符（C0 控制符除 \n \t 外）
+_INVISIBLE_CTRL = _re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _decode_literal_unicode(s: str) -> str:
+    """``"\\u4e2d\\u6587"`` → ``"中文"``.
+
+    若字符串里同时含真实中文和字面转义，只还原字面转义部分。
+    """
+    def _sub(m: "_re.Match[str]") -> str:
+        try:
+            return chr(int(m.group(1), 16))
+        except (ValueError, OverflowError):
+            return m.group(0)
+    return _LITERAL_UNICODE_ESCAPE.sub(_sub, s)
+
+
+def _decode_literal_ctrl(s: str) -> str:
+    """``"行1\\n行2"`` → ``"行1\\n行2"`` (真实换行).
+
+    仅处理字面反斜杠+n/t/r，不影响已经是真实换行的字符串。
+    """
+    mapping = {"n": "\n", "t": "\t", "r": "\r"}
+    return _LITERAL_CTRL_ESCAPE.sub(lambda m: mapping.get(m.group(1), m.group(0)), s)
+
+
+def _decode_bytes_repr(s: str) -> str:
+    """``"b'\\xe8\\xb4\\xb5'"`` → ``"贵"``.
+
+    Handles two cases:
+    1. ``b'...'`` repr form — parse the ``\\xHH`` escapes into raw bytes,
+       then UTF-8 decode (fall back to latin-1 / replace on failure).
+    2. Other strings are returned unchanged.
+    """
+    m = _BYTES_REPR.match(s)
+    if not m:
+        return s
+    inner = m.group(2)
+    # Parse \xHH escapes into actual bytes. Also handle \uXXXX for completeness.
+    byte_buf = bytearray()
+    i = 0
+    saw_escape = False
+    while i < len(inner):
+        ch = inner[i]
+        if ch == "\\" and i + 3 < len(inner) and inner[i + 1] in ("x", "X"):
+            hex_chunk = inner[i + 2 : i + 4]
+            try:
+                byte_buf.append(int(hex_chunk, 16))
+                i += 4
+                saw_escape = True
+                continue
+            except ValueError:
+                pass
+        if ch == "\\" and i + 5 < len(inner) and inner[i + 1] in ("u", "U"):
+            hex_chunk = inner[i + 2 : i + 6]
+            try:
+                byte_buf.extend(chr(int(hex_chunk, 16)).encode("utf-8"))
+                i += 6
+                saw_escape = True
+                continue
+            except ValueError:
+                pass
+        # Plain ASCII byte (also part of UTF-8 for codepoints < 128).
+        byte_buf.extend(ch.encode("utf-8"))
+        i += 1
+    if not saw_escape:
+        # No escapes consumed — don't risk re-encoding a normal "b'foo'" string.
+        return s
+    try:
+        return byte_buf.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            return byte_buf.decode("utf-8", errors="replace")
+        except Exception:
+            return s
+
+
+def _sanitize_text(value: str) -> str:
+    """对一个字符串做 UTF-8/转义清洗，返回稳定 UTF-8 文本。"""
+    if not isinstance(value, str):
+        return value  # type: ignore[return-value]
+    # 1) bytes repr → utf-8 text
+    cleaned = _decode_bytes_repr(value)
+    # 2) 还原字面 \uXXXX
+    cleaned = _decode_literal_unicode(cleaned)
+    # 3) 还原字面 \n \t \r
+    cleaned = _decode_literal_ctrl(cleaned)
+    # 4) 去 BOM
+    if _BOM_CHAR in cleaned:
+        cleaned = cleaned.replace(_BOM_CHAR, "")
+    # 5) 去除其它不可见控制符（保留 \n \t）
+    cleaned = _INVISIBLE_CTRL.sub("", cleaned)
+    return cleaned
+
+
+# [TRACK-010] review_encoding_regression
+def sanitize_review_summary_text(node: Any) -> Any:
+    """递归清洗 review_summary（或任意 dict/list 结构）中的字符串字段.
+
+    - bytes → UTF-8 解码失败则保留 repr。
+    - 字面 ``\\uXXXX`` / ``\\n`` / ``\\t`` / ``\\r`` → 还原成真实字符。
+    - BOM 与不可见控制符剔除。
+    - 数字 / 布尔 / None 不变。
+    - 永不抛异常：单字段清洗失败回退为原值。
+    """
+    if node is None:
+        return None
+    if isinstance(node, str):
+        try:
+            return _sanitize_text(node)
+        except Exception:
+            return node
+    if isinstance(node, bytes):
+        try:
+            return node.decode("utf-8")
+        except Exception:
+            try:
+                return node.decode("utf-8", errors="replace")
+            except Exception:
+                return node
+    if isinstance(node, dict):
+        return {k: sanitize_review_summary_text(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [sanitize_review_summary_text(v) for v in node]
+    if isinstance(node, tuple):
+        return tuple(sanitize_review_summary_text(v) for v in node)
+    return node

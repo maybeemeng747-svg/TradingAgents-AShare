@@ -4,6 +4,100 @@
 
 ---
 
+## 2026-06-29 | TRACK-010：跟踪看板盘后复盘乱码与编码/渲染回归
+
+- **执行者**：OpenCode（task run TRACK-010-20260629-185231）
+- **类型**：bug fix + test + frontend hardening
+- **状态**：✅ 完成（待提交）
+
+### 背景
+
+用户反馈跟踪看板「盘后复盘」区域出现乱码。TRACK-005 落地时引擎本身输出
+UTF-8 干净的中文，但 TRACK-005 → TRACK-007 验收通过后，仍存在三类潜在
+回归源：
+
+1. **二次转义**：上游 SQLite 列或 cache 把字符串做过一次 `json.dumps(
+   ensure_ascii=True)`，结果 `"中文"` 在 review_summary 字段里变成字面的
+   `"\u4e2d\u6587"`，前端渲染就显示 `\u4e2d\u6587`。
+2. **BOM / 不可见控制符**：fixture / 报告拼接时混入 `\ufeff` 或 `\x00-\x1f`
+   控制符，前端看起来像乱码或对齐错位。
+3. **bytes 泄漏**：极少数路径把 `bytes` 直接 `str()` 后塞进字段，前端看到
+   `b'\xe8\xb4\xb5\xe5\xb7\x9e'` 这种字面量。
+
+本任务按 TRACK-010 要求追踪 Review 文本 → SQLite → FastAPI JSON → 前端渲染
+全链路，补 fixture、做服务层清洗、给前端加安全换行与空状态。**不重写 Review
+生成逻辑，不修改历史生产数据，不调用 LLM。**
+
+### 修改文件
+
+后端：
+- `tradingagents/tradeflow/post_market_tracking_review.py`：
+  - 新增 `sanitize_review_summary_text(node)` 递归清洗器（标注
+    `# [TRACK-010] review_encoding_regression`）。
+  - 内部辅助：`_decode_literal_unicode`（`\u4e2d\u6587` → `中文`）、
+    `_decode_literal_ctrl`（`\n` / `\t` / `\r` 字面 → 真实控制符）、
+    `_decode_bytes_repr`（`b'\xe8\xb4\xb5'` repr → UTF-8）、`_sanitize_text`。
+  - 永不抛异常；数字 / 布尔 / None / 列表 / 字典递归处理。
+- `api/services/tracking_board_service.py`：
+  - `_build_review_summary` 在 `build_post_market_tracking_review` 之后、
+    返回 API 之前调用 `sanitize_review_summary_text`；清洗失败降级 warning，
+    不影响主链路。
+
+前端：
+- `frontend/src/components/TrackingBoardV2Panel.tsx`：
+  - 新增镜像版 `sanitizeReviewText(value)` 客户端兜底（解码字面 `\uXXXX` /
+    `\n` / `\t`，去 BOM 与不可见控制符），双保险防 backend 回归。
+  - `ReviewZone`：所有文本字段（`review_date` / `data_status_message` /
+    `as_of` / `data_status`）经 `sanitizeReviewText` 后渲染。
+  - 新增 `allEmpty` 分支：当 summary 存在但四区（持仓/观察仓/候选池/明日
+    重点）全部为空时，渲染单个空状态卡片（按 `NON_TRADING_DAY` 分流文案），
+    而不是堆叠四张「暂无 XX 复盘」。
+  - `ReviewListItem`：note 渲染加 `whitespace-pre-line break-words`，让
+    多行 / 表格形态的复盘文案不再「挤成一团」被误认为乱码；tag 截断 48 字。
+
+测试：
+- `tests/test_track010_review_encoding_regression.py`：**29 个新用例**，
+  覆盖：
+  - `sanitize_review_summary_text` 7 个分支（pass-through / `\uXXXX` /
+    `\n\t\r` / BOM / bytes / `b'...'` repr / 敌对输入）。
+  - `_build_review_summary` 服务层 3 个端到端场景（clean pass-through /
+    BOM + `\uXXXX` + bytes 三重污染清除 / `json.dumps` 双向 round-trip）。
+  - FastAPI `GET /v1/dashboard/tracking-board/v2` E2E：raw body 必须直接
+    含 `贵州茅台` / `中国平安`，且无 `\ufeff` / `\uXXXX` 字面。
+  - 引擎基线：`build_post_market_tracking_review` 自身输出 UTF-8 干净。
+  - 空状态稳定：NO_DATA / NON_TRADING_DAY payload 无转义残留。
+
+### 关键不变式
+
+- **永不抛异常**：`sanitize_review_summary_text` 单字段清洗失败回退为原值；
+  `_build_review_summary` 包了一层 try/except 降级 warning，主链路不挂。
+- **不写库、不调 LLM**：纯字符串清洗，无 side effect。
+- **不重写 Review 生成逻辑**：引擎语义保持 TRACK-005 行为。
+- **前后端双保险**：sanitizer 在 service 层先清洗，前端再兜底一次，任何一
+  侧回归都不会让用户看到 `\u4e2d\u6587` 字面量。
+- **JSON 双向兼容**：`ensure_ascii=True` 与 `ensure_ascii=False` 两种序列
+  化路径都能 round-trip 回相同的中文（测试守卫）。
+- **空状态可解释**：当四区全空时显示 `data_status_message` 而不是四张空卡。
+
+### 验收
+
+- `pytest tests/test_track010_review_encoding_regression.py -q` → **29 passed**。
+- `pytest tests/test_track005_post_market_tracking_review.py tests/test_track002_tracking_board_v2.py tests/test_track004_observation_state_engine.py tests/test_track006_add_to_observation.py tests/test_track008_observation_csv.py tests/test_track009_holdings_import.py tests/test_track001_observation_warehouse.py tests/test_track_notify001_notification_draft.py -q` → **346 passed**。
+- `pytest tests/test_dashboard_tracking.py tests/test_api_smoke.py tests/test_ic_ta001_investment_controller_context.py -q` → **88 passed**。
+- 全量回归 `pytest tests/ -q`（排除 live network smoke）→ **7054 passed, 17 skipped**。
+- `npm run build` → 通过（`dist/assets/index-*.js` ≈ 1.22 MB）。
+
+### 风险点
+
+- sanitizer 使用正则递归处理 dict / list，对**异常巨大的嵌套**会有线性开销；
+  已用「单字段 try/except」兜底，且 review_summary 实际深度 ≤ 3 层，可控。
+- bytes-repr 解析（`b'...'`）只在能匹配严格 `^b(['"])...\\1$` 形态时触发，
+  普通字符串不受影响。
+- 前端 sanitizer 只做防御，不能替代 backend 正确序列化；若 backend 出现大
+  面积回退，单测会先 fail。
+
+---
+
 ## 2026-06-29 | TRACK-009：跟踪看板持仓导入入口与 OpenClaw holdings 契约对齐
 
 - **执行者**：OpenCode（task run TRACK-009-20260629-182604）
@@ -8383,3 +8477,14 @@ tests/test_v007_tradeflow_trial_e2e.py:   50 passed
 - **Codex Review**: no P0/P1 findings
 - **Review file**: docs/reviews/TRACK-009-20260629-round1.txt
 - **Run archive**: docs/task_runs/TRACK-009-20260629-182604/
+
+## 2026-06-29 | AUTO-002 Auto Dev Loop
+
+- **Task**: TRACK-010 - 跟踪看板盘后复盘乱码与编码/渲染回归（P1）
+- **Priority**: P1
+- **Rounds**: 1
+- **Status**: OK PASS
+- **Tests**: Passed
+- **Codex Review**: no P0/P1 findings
+- **Review file**: docs/reviews/TRACK-010-20260629-round1.txt
+- **Run archive**: docs/task_runs/TRACK-010-20260629-185231/

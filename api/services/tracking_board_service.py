@@ -25,6 +25,7 @@ from tradingagents.tradeflow.observation_state_engine import (
 # [TRACK-005] post_market_tracking_review
 from tradingagents.tradeflow.post_market_tracking_review import (
     build_post_market_tracking_review,
+    sanitize_review_summary_text,  # [TRACK-010] review_encoding_regression
 )
 
 
@@ -554,7 +555,7 @@ def _build_review_summary(
         tradeflow_review = None
 
     try:
-        return build_post_market_tracking_review(
+        summary = build_post_market_tracking_review(
             holdings=holdings,
             observation_items=observation_items,
             tradeflow_review=tradeflow_review,
@@ -562,6 +563,16 @@ def _build_review_summary(
             review_date=previous_trade_date,
             as_of=as_of,
         )
+        # [TRACK-010] review_encoding_regression — 在交给 API JSON 序列化
+        # 之前，统一清洗可能出现的字面 \uXXXX / \n / BOM / bytes repr，
+        # 避免前端"盘后复盘"区域出现乱码。永不抛异常。
+        try:
+            summary = sanitize_review_summary_text(summary)
+        except Exception as exc:
+            logger.warning(
+                "[tracking-board-v2] review summary sanitize failed: %s", exc
+            )
+        return summary
     except Exception as exc:
         logger.exception("[tracking-board-v2] review summary build failed: %s", exc)
         return {

@@ -145,7 +145,7 @@
 119. `V-011`：夜间自动开发日报验收与 ready 队列续航检查（P2，done — commit 6f585c3，依赖 AUTO-003 ✓）。
 120. `NOTIFY-003`：通知去噪规则回放测试与日报/盘中分层验收（P2，done，依赖 NOTIFY-002 ✓）。
   121. `TRACK-009`：跟踪看板持仓导入入口与 OpenClaw holdings 契约对齐（P1，done，依赖 TRACK-003/TRACK-007 ✓）。
-122. `TRACK-010`：跟踪看板盘后复盘乱码与编码/渲染回归（P1，ready，依赖 TRACK-005/TRACK-007 ✓）。
+122. `TRACK-010`：跟踪看板盘后复盘乱码与编码/渲染回归（P1，done，依赖 TRACK-005/TRACK-007 ✓）。
 123. `TF-QUALITY-005`：候选池“过多且像抄底”回放校准与强度分层（P1，ready，依赖 TF-QUALITY-004/H-014 ✓）。
 124. `H-017`：昊天左侧候选证据包：政策-产业-公司三层链路（P1，ready，依赖 H-015/H-016 ✓）。
 125. `DATA-024`：主力资金供应商 fallback live-smoke dry-run 与错误归因报告（P1，ready，依赖 DATA-022/DATA-023 ✓）。
@@ -4137,7 +4137,7 @@
 ### TRACK-010: 跟踪看板盘后复盘乱码与编码/渲染回归（P1）
 - **描述**：用户反馈跟踪看板“盘后复盘”区域出现乱码。本任务追踪从 Review 文本、数据库、API JSON 到前端渲染的编码链路，补充中文回归 fixture。
 - **优先级**：P1
-- **状态**：ready
+- **状态**：done — TRACK-010-20260629-185231（service 层 sanitizer + 前端兜底 + 29 个回归用例；待外层提交）
 - **前置条件**：TRACK-005、TRACK-007 完成。
 - **执行约束**：
   - 不重写 Review 生成逻辑。

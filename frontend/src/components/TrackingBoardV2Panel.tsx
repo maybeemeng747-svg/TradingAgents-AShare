@@ -1339,6 +1339,38 @@ function GuidanceZone({ guidance, onAnalyze }: { guidance: TrackingBoardV2Guidan
 
 // ─── Review Zone ───────────────────────────────────────────
 
+// [TRACK-010] review_encoding_regression
+// Frontend defensive sanitizer — mirrors backend sanitize_review_summary_text.
+// If the API ever regresses and sends literal "\\u4e2d\\u6587" or BOM/control
+// characters in review text, we clean them here so the user never sees "乱码".
+const _LITERAL_UNICODE_RE = /\\u([0-9a-fA-F]{4})/g
+const _LITERAL_CTRL_RE = /\\([ntr])/g
+const _BOM_AND_INVISIBLE_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufeff]/g
+
+function sanitizeReviewText(value: unknown): string {
+    if (value === null || value === undefined) return ''
+    let s = typeof value === 'string' ? value : String(value)
+    try {
+        s = s.replace(_LITERAL_UNICODE_RE, (_, hex: string) => {
+            try {
+                return String.fromCharCode(parseInt(hex, 16))
+            } catch {
+                return _
+            }
+        })
+        s = s.replace(_LITERAL_CTRL_RE, (_, c: string) => {
+            if (c === 'n') return '\n'
+            if (c === 't') return '\t'
+            if (c === 'r') return '\r'
+            return _
+        })
+        s = s.replace(_BOM_AND_INVISIBLE_RE, '')
+    } catch {
+        // best-effort — never crash the review zone over a single field
+    }
+    return s
+}
+
 function ReviewZone({ summary, freshness }: { summary: any; freshness?: TrackingBoardV2DataFreshness | null }) {
     if (!summary) {
         return (
@@ -1358,20 +1390,29 @@ function ReviewZone({ summary, freshness }: { summary: any; freshness?: Tracking
     const observations = Array.isArray(summary.observation_review) ? summary.observation_review : []
     const candidates = Array.isArray(summary.candidate_pool_review) ? summary.candidate_pool_review : []
     const focus = Array.isArray(summary.tomorrow_focus) ? summary.tomorrow_focus : []
+    const dataStatusRaw = sanitizeReviewText(summary.data_status || 'UNKNOWN')
+    const dataStatusMsgRaw = sanitizeReviewText(summary.data_status_message || summary.data_status || '已生成')
+    // [TRACK-010] review_encoding_regression — empty state when summary exists
+    // but every sub-list is empty (e.g. NO_DATA / NON_TRADING_DAY payload).
+    const allEmpty =
+        holdings.length === 0 &&
+        observations.length === 0 &&
+        candidates.length === 0 &&
+        focus.length === 0
     return (
         <div className="space-y-4">
             <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-900">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                     <div>
                         <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                            {summary.review_date || '盘后复盘'} · {summary.data_status_message || summary.data_status || '已生成'}
+                            {sanitizeReviewText(summary.review_date || '盘后复盘')} · {dataStatusMsgRaw}
                         </div>
                         <div className="mt-1 text-xs text-slate-400">
-                            生成时间：{summary.as_of || '--'} · TradeFlow：{summary.has_tradeflow_review ? '已接入' : '暂无复盘'}
+                            生成时间：{sanitizeReviewText(summary.as_of || '--')} · TradeFlow：{summary.has_tradeflow_review ? '已接入' : '暂无复盘'}
                         </div>
                     </div>
                     <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs text-slate-500 dark:bg-slate-700 dark:text-slate-300">
-                        {summary.data_status || 'UNKNOWN'}
+                        {dataStatusRaw}
                     </span>
                 </div>
                 <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -1382,10 +1423,29 @@ function ReviewZone({ summary, freshness }: { summary: any; freshness?: Tracking
                 </div>
             </div>
 
-            <ReviewList title="持仓复盘" items={holdings} empty="暂无持仓复盘" />
-            <ReviewList title="观察仓复盘" items={observations} empty="暂无观察仓复盘" />
-            <ReviewList title="候选池复盘" items={candidates} empty="暂无候选池复盘" />
-            <ReviewList title="明日重点" items={focus} empty="暂无明日重点" />
+            {allEmpty ? (
+                // [TRACK-010] review_encoding_regression — safe empty state.
+                // Don't render four empty cards stacked on top of each other,
+                // and don't show any stray escape characters from the payload.
+                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-6 py-10 text-center dark:border-slate-600 dark:bg-slate-800/50">
+                    <FileText className="mx-auto mb-3 h-10 w-10 text-slate-300 dark:text-slate-600" />
+                    <p className="text-slate-500 dark:text-slate-400">
+                        {dataStatusRaw === 'NON_TRADING_DAY'
+                            ? '当前为非交易日，盘后复盘将在下一交易日生成。'
+                            : '当前盘后复盘无明细数据。'}
+                    </p>
+                    <p className="mt-1 break-words text-xs text-slate-400 dark:text-slate-500">
+                        {dataStatusMsgRaw}
+                    </p>
+                </div>
+            ) : (
+                <>
+                    <ReviewList title="持仓复盘" items={holdings} empty="暂无持仓复盘" />
+                    <ReviewList title="观察仓复盘" items={observations} empty="暂无观察仓复盘" />
+                    <ReviewList title="候选池复盘" items={candidates} empty="暂无候选池复盘" />
+                    <ReviewList title="明日重点" items={focus} empty="暂无明日重点" />
+                </>
+            )}
         </div>
     )
 }
@@ -1417,16 +1477,32 @@ function ReviewList({ title, items, empty }: { title: string; items: any[]; empt
 }
 
 function ReviewListItem({ item }: { item: any }) {
-    const title = [item.name, item.symbol].filter(Boolean).join(' ') || item.topic || item.source || '复盘项'
-    const note = item.review_note || item.reason || item.status_reason || item.tomorrow_reason || item.data_status_message || item.tag || ''
-    const tag = item.tomorrow_focus_tag || item.state || item.status || item.action_label || item.result || ''
+    // [TRACK-010] review_encoding_regression — sanitize every text surface so
+    // the user never sees literal \uXXXX / \n / BOM even if upstream regresses.
+    const rawTitle = [item.name, item.symbol].filter(Boolean).join(' ') || item.topic || item.source || '复盘项'
+    const title = sanitizeReviewText(rawTitle)
+    const note = sanitizeReviewText(
+        item.review_note || item.reason || item.status_reason || item.tomorrow_reason || item.data_status_message || item.tag || ''
+    )
+    const tagRaw = item.tomorrow_focus_tag || item.state || item.status || item.action_label || item.result || ''
+    const tag = sanitizeReviewText(tagRaw)
     return (
         <div className="rounded-lg bg-slate-50 px-3 py-2 dark:bg-slate-800">
             <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-medium text-slate-800 dark:text-slate-100">{title}</span>
-                {tag && <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-600 dark:bg-slate-700 dark:text-slate-300">{String(tag)}</span>}
+                {tag && (
+                    <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-600 dark:bg-slate-700 dark:text-slate-300">
+                        {tag.length > 48 ? `${tag.slice(0, 48)}…` : tag}
+                    </span>
+                )}
             </div>
-            {note && <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">{String(note)}</div>}
+            {/* whitespace-pre-line keeps real \n and table-like spacing readable
+                without rendering arbitrary user content as raw markdown. */}
+            {note && (
+                <div className="mt-1 whitespace-pre-line break-words text-xs text-slate-500 dark:text-slate-400">
+                    {note}
+                </div>
+            )}
         </div>
     )
 }
